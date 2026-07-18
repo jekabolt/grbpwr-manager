@@ -238,8 +238,8 @@ func convertPbProductionRunCosts(pbs []*pb_common.ProductionRunCost) ([]entity.P
 			return nil, fmt.Errorf("production run cost: amount must be a non-negative number")
 		}
 		currency := strings.ToUpper(strings.TrimSpace(c.Currency))
-		if len(currency) != maxCurrency {
-			return nil, fmt.Errorf("production run cost: currency must be a 3-letter ISO 4217 code")
+		if !IsExpenseCurrency(currency) {
+			return nil, fmt.Errorf("production run cost: currency must be a supported currency or USDT")
 		}
 		amountBase, err := nullDecimalFromPb(c.AmountBase)
 		if err != nil {

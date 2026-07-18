@@ -10,7 +10,7 @@ func TestDecimalPlaces(t *testing.T) {
 	cases := map[string]int32{
 		"JPY": 0, "KRW": 0, "krw": 0, // zero-decimal, case-insensitive
 		"EUR": 2, "USD": 2, "gbp": 2, "CNY": 2, "PLN": 2,
-		"USDT": 2, "usdt": 2, // 4-char accounting currency, two-decimal, case-insensitive
+		"USDT": 2, "usdt": 2, // 4-char accounting currency, two-decimal, case-insensitive (symbol/decimals retained)
 		"KWD": 3, "bhd": 3, // three-decimal
 	}
 	for c, want := range cases {
@@ -33,13 +33,18 @@ func TestValidateMinimumFailsClosed(t *testing.T) {
 	if err := ValidateMinimum(decimal.NewFromFloat(1000), "CHF"); err == nil {
 		t.Error("unsupported currency CHF should be rejected")
 	}
+	// USDT is expense/accounting-only, NOT a selling currency: it has no selling minimum and must be
+	// rejected here just like any other unsupported currency.
+	if err := ValidateMinimum(decimal.NewFromFloat(1000), "USDT"); err == nil {
+		t.Error("USDT is not a selling currency and must be rejected by ValidateMinimum")
+	}
 }
 
-// TestRequiredCurrenciesMatchSupported guards against drift: the "price set is complete" required
-// list (single source of truth for product prices + shipping carriers) must equal the supported
+// TestRequiredCurrenciesMatchSupported guards against drift: the "price set is complete" required list
+// (single source of truth for product prices + shipping carriers) must equal the supported
 // (minimumAmounts) currency set, so a currency can't be required without being priced, or priced
-// without being required. NOTE: "supported/priced" is NOT "Stripe-chargeable" — USDT is in both sets
-// here yet is not chargeable via Stripe (see TestPricedButNotStripeChargeable).
+// without being required. USDT is in NEITHER set — it is an expense/accounting-only currency (see
+// TestIsExpenseCurrency), never sold.
 func TestRequiredCurrenciesMatchSupported(t *testing.T) {
 	required := RequiredCurrencies()
 	if len(required) != len(minimumAmounts) {
@@ -49,10 +54,13 @@ func TestRequiredCurrenciesMatchSupported(t *testing.T) {
 		if !IsSupported(c) {
 			t.Errorf("required currency %q is not in the supported (minimumAmounts) set", c)
 		}
+		if c == "USDT" {
+			t.Error("USDT must NOT be a required/selling currency (it is expense/accounting-only)")
+		}
 	}
-	// MissingRequired reports the canonical-ordered gap. USDT is required too, so it appears last.
+	// MissingRequired reports the canonical-ordered gap. USDT is NOT required, so it never appears.
 	got := MissingRequired(map[string]bool{"EUR": true, "USD": true})
-	want := []string{"GBP", "JPY", "CNY", "KRW", "PLN", "USDT"}
+	want := []string{"GBP", "JPY", "CNY", "KRW", "PLN"}
 	if len(got) != len(want) {
 		t.Fatalf("MissingRequired = %v, want %v", got, want)
 	}
@@ -64,59 +72,86 @@ func TestRequiredCurrenciesMatchSupported(t *testing.T) {
 }
 
 func TestIsSupported(t *testing.T) {
-	// USDT is supported/priced (it has a minimum and is a required currency) even though it is not
-	// Stripe-chargeable.
-	for _, c := range []string{"EUR", "usd", "GBP", "JPY", "KRW", "CNY", "PLN", "USDT", "usdt"} {
+	// The seven SELLING currencies are supported (case-insensitive).
+	for _, c := range []string{"EUR", "usd", "GBP", "JPY", "KRW", "CNY", "PLN"} {
 		if !IsSupported(c) {
 			t.Errorf("IsSupported(%q) = false, want true", c)
 		}
 	}
-	for _, c := range []string{"CHF", "KWD", ""} {
+	// USDT is expense/accounting-only and is NOT supported/sellable; CHF/KWD/"" are unknown.
+	for _, c := range []string{"USDT", "usdt", "CHF", "KWD", ""} {
 		if IsSupported(c) {
 			t.Errorf("IsSupported(%q) = true, want false", c)
 		}
 	}
 }
 
-// TestPricedButNotStripeChargeable pins the priced-vs-chargeable decoupling: USDT is a required,
-// supported, priced currency, yet must NOT be chargeable through Stripe (it is settled manually).
-// Every OTHER required currency must be Stripe-chargeable, so the non-chargeable set stays exactly
-// {USDT} and no future required currency is silently made non-chargeable.
-func TestPricedButNotStripeChargeable(t *testing.T) {
-	// USDT: priced/supported but not Stripe-chargeable.
-	if !IsSupported("USDT") {
-		t.Error("USDT should be supported/priced")
-	}
-	if IsStripeChargeable("USDT") || IsStripeChargeable("usdt") {
-		t.Error("USDT must NOT be Stripe-chargeable (settled manually)")
-	}
-	// Every required currency other than USDT must be Stripe-chargeable.
+// TestIsExpenseCurrency pins the expense-vs-selling split: an EXPENSE currency is any selling currency
+// (IsSupported) PLUS USDT. USDT is accepted as an expense currency yet is NOT a selling currency — the
+// asymmetry this whole change-set enforces. Unknown codes are neither.
+func TestIsExpenseCurrency(t *testing.T) {
+	// Every selling currency is also a valid expense currency.
 	for _, c := range RequiredCurrencies() {
-		wantChargeable := c != "USDT"
-		if got := IsStripeChargeable(c); got != wantChargeable {
-			t.Errorf("IsStripeChargeable(%q) = %v, want %v", c, got, wantChargeable)
+		if !IsExpenseCurrency(c) {
+			t.Errorf("IsExpenseCurrency(%q) = false, want true (every selling currency is an expense currency)", c)
 		}
 	}
-	// An unsupported currency is never chargeable.
-	if IsStripeChargeable("CHF") {
-		t.Error("unsupported CHF must not be Stripe-chargeable")
+	// USDT is a valid EXPENSE currency (case-insensitive) but NOT a selling currency.
+	for _, c := range []string{"USDT", "usdt"} {
+		if !IsExpenseCurrency(c) {
+			t.Errorf("IsExpenseCurrency(%q) = false, want true (USDT is expense-only)", c)
+		}
+		if IsSupported(c) {
+			t.Errorf("IsSupported(%q) = true, want false (USDT must not be a selling currency)", c)
+		}
+	}
+	// Unknown / empty codes are neither expense nor selling currencies.
+	for _, c := range []string{"CHF", "KWD", "XYZ", ""} {
+		if IsExpenseCurrency(c) {
+			t.Errorf("IsExpenseCurrency(%q) = true, want false", c)
+		}
 	}
 }
 
-// TestActiveGateRequiresUSDT mirrors the colourway ->ACTIVE completeness gate
+// TestSellingCurrenciesChargeableUSDTIsNot pins the Stripe surface: every selling/required currency is
+// Stripe-chargeable (nothing priced-yet-unchargeable remains), and USDT — no longer a supported/order
+// currency — is not chargeable. The Stripe-boundary guards on IsStripeChargeable are kept as harmless
+// dead code; this asserts they never wrongly reject a real selling currency.
+func TestSellingCurrenciesChargeableUSDTIsNot(t *testing.T) {
+	for _, c := range RequiredCurrencies() {
+		if !IsStripeChargeable(c) {
+			t.Errorf("IsStripeChargeable(%q) = false, want true (every selling currency must be chargeable)", c)
+		}
+	}
+	// USDT and unsupported currencies are never chargeable.
+	for _, c := range []string{"USDT", "usdt", "CHF"} {
+		if IsStripeChargeable(c) {
+			t.Errorf("IsStripeChargeable(%q) = true, want false", c)
+		}
+	}
+}
+
+// TestActiveGateDoesNotRequireUSDT mirrors the colourway ->ACTIVE completeness gate
 // (store/product/lifecycle.go: checkColorwayRequiredCurrencies), which builds the provided set from a
 // colourway's persisted product_price rows and flags whatever MissingRequired returns. A colourway
-// priced in every PRE-USDT currency but lacking USDT must now be reported as missing exactly USDT, so
-// it cannot go ACTIVE — the consistency this change-set requires.
-func TestActiveGateRequiresUSDT(t *testing.T) {
-	preUSDT := map[string]bool{"EUR": true, "USD": true, "GBP": true, "JPY": true, "CNY": true, "KRW": true, "PLN": true}
-	missing := MissingRequired(preUSDT)
-	if len(missing) != 1 || missing[0] != "USDT" {
-		t.Fatalf("MissingRequired(all-but-USDT) = %v, want [USDT]", missing)
+// priced in every SELLING currency (no USDT) must have NO missing required currency, so it can go
+// ACTIVE without any USDT price — the corrected model (this replaces the old TestActiveGateRequiresUSDT,
+// which wrongly required USDT).
+func TestActiveGateDoesNotRequireUSDT(t *testing.T) {
+	selling := map[string]bool{"EUR": true, "USD": true, "GBP": true, "JPY": true, "CNY": true, "KRW": true, "PLN": true}
+	if missing := MissingRequired(selling); len(missing) != 0 {
+		t.Fatalf("MissingRequired(all selling currencies) = %v, want [] (USDT must NOT be required)", missing)
 	}
-	// With USDT present too, the set is complete (gate passes).
-	preUSDT["USDT"] = true
-	if missing := MissingRequired(preUSDT); len(missing) != 0 {
-		t.Fatalf("MissingRequired(complete incl. USDT) = %v, want []", missing)
+	// Adding a USDT price changes nothing — it is not part of the required set.
+	selling["USDT"] = true
+	if missing := MissingRequired(selling); len(missing) != 0 {
+		t.Fatalf("MissingRequired(selling + USDT) = %v, want []", missing)
+	}
+	// Dropping a genuine selling currency (PLN) is still reported as missing.
+	delete(selling, "PLN")
+	delete(selling, "USDT")
+	missing := MissingRequired(selling)
+	if len(missing) != 1 || missing[0] != "PLN" {
+		t.Fatalf("MissingRequired(missing PLN) = %v, want [PLN]", missing)
 	}
 }

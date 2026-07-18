@@ -416,8 +416,10 @@ func (s *Server) UpsertCostingFxRates(ctx context.Context, req *pb_admin.UpsertC
 	ents := make([]entity.CostingFxRate, 0, len(req.Rates))
 	for _, r := range req.Rates {
 		ccy := strings.ToUpper(strings.TrimSpace(r.Currency))
-		if len(ccy) != 3 {
-			return nil, status.Errorf(codes.InvalidArgument, "currency must be a 3-letter ISO code, got %q", r.Currency)
+		// costing_fx_rate is the accounting FX table used to fold EXPENSE currencies to base, so it
+		// accepts any expense currency (supported selling currencies plus USDT), never a raw 3-letter code.
+		if !dto.IsExpenseCurrency(ccy) {
+			return nil, status.Errorf(codes.InvalidArgument, "currency must be a supported currency or USDT, got %q", r.Currency)
 		}
 		if r.RateToBase == nil {
 			return nil, status.Errorf(codes.InvalidArgument, "rate_to_base is required for %s", ccy)

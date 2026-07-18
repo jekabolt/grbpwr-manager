@@ -152,8 +152,8 @@ func ConvertPbEmployeeToEntity(e *pb_admin.EmployeeInsert) (entity.EmployeeInser
 		}
 	}
 	currency := normalizeCurrency(e.DefaultCurrency)
-	if currency != "" && len(currency) != maxCurrency {
-		return entity.EmployeeInsert{}, fmt.Errorf("employee default_currency must be a 3-letter ISO 4217 code")
+	if currency != "" && !IsExpenseCurrency(currency) {
+		return entity.EmployeeInsert{}, fmt.Errorf("employee default_currency must be a supported currency or USDT")
 	}
 	start, err := parseOptionalDate(e.EmploymentStart, "employment_start")
 	if err != nil {

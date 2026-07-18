@@ -24,7 +24,11 @@ var threeDecimalCurrencies = map[string]bool{
 	"LYD": true, "OMR": true, "TND": true,
 }
 
-// Minimum charge amounts per currency (Stripe minimums for payment processing)
+// minimumAmounts holds the per-currency Stripe minimum charge amount for every currency the shop
+// SELLS in. Its key set is the single source of truth for IsSupported ("is a selling currency") and
+// MUST stay in sync with requiredCurrencies (a test asserts required ⊆ supported and equal size).
+// USDT is deliberately ABSENT: it is an EXPENSE/accounting-only currency (see IsExpenseCurrency),
+// never sold, so it has no selling minimum and is not "supported".
 var minimumAmounts = map[string]decimal.Decimal{
 	"EUR": decimal.NewFromFloat(0.50),
 	"USD": decimal.NewFromFloat(0.50),
@@ -33,12 +37,6 @@ var minimumAmounts = map[string]decimal.Decimal{
 	"KRW": decimal.NewFromInt(100),
 	"CNY": decimal.NewFromFloat(1.00),
 	"PLN": decimal.NewFromFloat(2.00),
-	// USDT is a priced/accounting currency, NOT a Stripe-chargeable one (IsStripeChargeable is
-	// false for it; USDT orders are settled manually off-Stripe). Its entry here is the price floor
-	// used by ValidateMinimum for product prices / order totals, mirroring the USD stablecoin peg — it
-	// never becomes a Stripe charge. Keeping it in this map also keeps the requiredCurrencies⇔
-	// minimumAmounts sync invariant intact (see requiredCurrencies).
-	"USDT": decimal.NewFromFloat(0.50),
 }
 
 // symbols maps ISO 4217 codes to their display symbol for the currencies the
@@ -54,18 +52,16 @@ var symbols = map[string]string{
 	"USDT": "₮",
 }
 
-// requiredCurrencies is the ordered set of currencies that every product price list and every
+// requiredCurrencies is the ordered set of SELLING currencies that every product price list and every
 // shipping-carrier price map MUST provide — the single source of truth for "the price set is
 // complete" checks (previously duplicated as a map in store/product and a slice in
 // apisrv/admin/shipment). It mirrors the keys of minimumAmounts (the supported set); a test asserts
 // the two stay in sync so a currency can't be added to one without the other.
 //
-// USDT is REQUIRED/priced but NOT Stripe-chargeable: every product and carrier must carry a USDT
-// price (so a colourway can go ACTIVE and the storefront can quote USDT), yet a USDT order is settled
-// manually off-Stripe and is rejected at the Stripe boundary (see IsStripeChargeable). "Required to be
-// priced" and "chargeable via Stripe" are therefore distinct sets — the decoupling this currency
-// introduces.
-var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW", "PLN", "USDT"}
+// USDT is deliberately NOT here: it is an EXPENSE/accounting-only currency (see IsExpenseCurrency),
+// never a selling currency. Products, colourways, carriers and orders are never priced in USDT, and
+// the colourway →ACTIVE completeness gate must NOT require it.
+var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW", "PLN"}
 
 // RequiredCurrencies returns, as a fresh slice, the currencies every price list must include.
 func RequiredCurrencies() []string {
@@ -124,13 +120,12 @@ func Minimum(c string) decimal.Decimal {
 	return decimal.Zero
 }
 
-// nonStripeCurrencies are priced/accounting currencies the shop lists prices in and may record
-// orders in, but CANNOT charge through Stripe — they are settled manually off-Stripe. USDT (a USD
-// stablecoin) is the only one today: products carry a USDT price and an order may be booked in USDT,
-// but Stripe cannot charge it. Membership here is what makes a currency "priced but not chargeable".
-var nonStripeCurrencies = map[string]bool{
-	"USDT": true,
-}
+// nonStripeCurrencies WAS the set of priced-but-not-Stripe-chargeable currencies (USDT). Under the
+// corrected model USDT is expense/accounting-only and never a selling/order currency at all, so it is
+// no longer "supported" and nothing is priced-yet-unchargeable: this set is intentionally EMPTY.
+// IsStripeChargeable and the Stripe-boundary guards that call it are kept as harmless defence-in-depth
+// dead code (a USDT order can no longer be created, so the guards never actually fire).
+var nonStripeCurrencies = map[string]bool{}
 
 // IsSupported reports whether the shop recognises and prices this currency — i.e. it is a required/
 // priced currency with a configured minimum. It is NOT the same as "chargeable via Stripe": a
@@ -140,6 +135,16 @@ var nonStripeCurrencies = map[string]bool{
 func IsSupported(c string) bool {
 	_, ok := minimumAmounts[strings.ToUpper(c)]
 	return ok
+}
+
+// IsExpenseCurrency reports whether c may denominate an EXPENSE/accounting amount. It is the single
+// source of truth for expense-currency validation (material price, dev expense, production-run cost,
+// opex, BOM line, material lot, and the tech-card costing / costing-FX-rate surfaces): every SELLING
+// currency (IsSupported) PLUS USDT, the accounting-only stablecoin. USDT is accepted here yet rejected
+// on every selling surface (product/colourway/carrier prices, orders) precisely because it is not
+// IsSupported — that asymmetry is the whole point of the expense-vs-selling split.
+func IsExpenseCurrency(c string) bool {
+	return IsSupported(c) || strings.ToUpper(c) == "USDT"
 }
 
 // IsStripeChargeable reports whether an order in this currency can be charged through Stripe. It is
