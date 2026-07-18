@@ -818,6 +818,11 @@ func (p *Processor) CheckForTransactions(ctx context.Context, orderUUID string, 
 
 // CreatePreOrderPaymentIntent creates a PaymentIntent before order submission
 func (p *Processor) CreatePreOrderPaymentIntent(ctx context.Context, amount decimal.Decimal, currency string, country string, idempotencyKey string) (*stripe.PaymentIntent, error) {
+	// Stripe boundary: a priced-but-not-Stripe-chargeable currency (USDT) is settled manually and must
+	// never reach Stripe. Reject it here so the storefront pre-checkout can never open a USDT PaymentIntent.
+	if !dto.IsStripeChargeable(currency) {
+		return nil, fmt.Errorf("currency %s cannot be charged via Stripe; it is settled manually", currency)
+	}
 	// Validate amount meets Stripe minimum (e.g. KRW >= 100)
 	if err := dto.ValidatePriceMeetsMinimum(amount, currency); err != nil {
 		return nil, fmt.Errorf("amount below currency minimum: %w", err)

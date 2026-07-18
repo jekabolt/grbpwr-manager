@@ -33,18 +33,25 @@ var minimumAmounts = map[string]decimal.Decimal{
 	"KRW": decimal.NewFromInt(100),
 	"CNY": decimal.NewFromFloat(1.00),
 	"PLN": decimal.NewFromFloat(2.00),
+	// USDT is a priced/accounting currency, NOT a Stripe-chargeable one (IsStripeChargeable is
+	// false for it; USDT orders are settled manually off-Stripe). Its entry here is the price floor
+	// used by ValidateMinimum for product prices / order totals, mirroring the USD stablecoin peg — it
+	// never becomes a Stripe charge. Keeping it in this map also keeps the requiredCurrencies⇔
+	// minimumAmounts sync invariant intact (see requiredCurrencies).
+	"USDT": decimal.NewFromFloat(0.50),
 }
 
 // symbols maps ISO 4217 codes to their display symbol for the currencies the
 // shop supports. Unknown codes fall back to the uppercased code itself.
 var symbols = map[string]string{
-	"EUR": "€",
-	"USD": "$",
-	"GBP": "£",
-	"JPY": "¥",
-	"CNY": "¥",
-	"KRW": "₩",
-	"PLN": "zł",
+	"EUR":  "€",
+	"USD":  "$",
+	"GBP":  "£",
+	"JPY":  "¥",
+	"CNY":  "¥",
+	"KRW":  "₩",
+	"PLN":  "zł",
+	"USDT": "₮",
 }
 
 // requiredCurrencies is the ordered set of currencies that every product price list and every
@@ -52,7 +59,13 @@ var symbols = map[string]string{
 // complete" checks (previously duplicated as a map in store/product and a slice in
 // apisrv/admin/shipment). It mirrors the keys of minimumAmounts (the supported set); a test asserts
 // the two stay in sync so a currency can't be added to one without the other.
-var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW", "PLN"}
+//
+// USDT is REQUIRED/priced but NOT Stripe-chargeable: every product and carrier must carry a USDT
+// price (so a colourway can go ACTIVE and the storefront can quote USDT), yet a USDT order is settled
+// manually off-Stripe and is rejected at the Stripe boundary (see IsStripeChargeable). "Required to be
+// priced" and "chargeable via Stripe" are therefore distinct sets — the decoupling this currency
+// introduces.
+var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW", "PLN", "USDT"}
 
 // RequiredCurrencies returns, as a fresh slice, the currencies every price list must include.
 func RequiredCurrencies() []string {
@@ -111,11 +124,31 @@ func Minimum(c string) decimal.Decimal {
 	return decimal.Zero
 }
 
-// IsSupported reports whether the shop can charge in this currency. The set of
-// currencies with a configured Stripe minimum is the source of truth.
+// nonStripeCurrencies are priced/accounting currencies the shop lists prices in and may record
+// orders in, but CANNOT charge through Stripe — they are settled manually off-Stripe. USDT (a USD
+// stablecoin) is the only one today: products carry a USDT price and an order may be booked in USDT,
+// but Stripe cannot charge it. Membership here is what makes a currency "priced but not chargeable".
+var nonStripeCurrencies = map[string]bool{
+	"USDT": true,
+}
+
+// IsSupported reports whether the shop recognises and prices this currency — i.e. it is a required/
+// priced currency with a configured minimum. It is NOT the same as "chargeable via Stripe": a
+// supported currency may be settled manually off-Stripe (USDT). Gate manual order-currency acceptance
+// and price validation on this; gate the Stripe payment path on IsStripeChargeable instead. The set of
+// currencies with a configured minimum (minimumAmounts) is the source of truth.
 func IsSupported(c string) bool {
 	_, ok := minimumAmounts[strings.ToUpper(c)]
 	return ok
+}
+
+// IsStripeChargeable reports whether an order in this currency can be charged through Stripe. It is
+// strictly narrower than IsSupported: the currency must be supported AND not one of the manually-
+// settled nonStripeCurrencies (USDT). The Stripe payment boundary (createPaymentIntent /
+// CreatePreOrderPaymentIntent) MUST gate on this, never on IsSupported, so a USDT order is never sent
+// to Stripe.
+func IsStripeChargeable(c string) bool {
+	return IsSupported(c) && !nonStripeCurrencies[strings.ToUpper(c)]
 }
 
 // ValidateMinimum returns an error if the currency is not one the shop supports,
