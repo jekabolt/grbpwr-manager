@@ -290,6 +290,7 @@ func bindEnvVars() {
 
 	// Mailer
 	viper.BindEnv("mailer.sendgrid_api_key", "MAILER_SENDGRID_API_KEY")
+	viper.BindEnv("mailer.disabled", "MAILER_DISABLED")
 	viper.BindEnv("mailer.from_email", "MAILER_FROM_EMAIL")
 	viper.BindEnv("mailer.from_email_name", "MAILER_FROM_EMAIL_NAME")
 	viper.BindEnv("mailer.reply_to", "MAILER_REPLY_TO")

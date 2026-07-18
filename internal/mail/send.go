@@ -22,15 +22,15 @@ const (
 	PromoCode            templateName = "promo_code.gohtml"
 	BackInStock          templateName = "back_in_stock.gohtml"
 
-	TierUpgrade           templateName = "tier_upgrade.gohtml"
-	TierDowngrade         templateName = "tier_downgrade.gohtml"
-	DowngradeReminder     templateName = "downgrade_reminder.gohtml"
+	TierUpgrade             templateName = "tier_upgrade.gohtml"
+	TierDowngrade           templateName = "tier_downgrade.gohtml"
+	DowngradeReminder       templateName = "downgrade_reminder.gohtml"
 	TierRollbackAfterRefund templateName = "tier_rollback_after_refund.gohtml"
-	FirstPurchaseThanks   templateName = "first_purchase_thanks.gohtml"
+	FirstPurchaseThanks     templateName = "first_purchase_thanks.gohtml"
 	UnsubscribeConfirmation templateName = "unsubscribe_confirmation.gohtml"
-	BirthdayGift          templateName = "birthday_gift.gohtml"
-	EventInvite           templateName = "event_invite.gohtml"
-	HackerInvite          templateName = "hacker_invite.gohtml"
+	BirthdayGift            templateName = "birthday_gift.gohtml"
+	EventInvite             templateName = "event_invite.gohtml"
+	HackerInvite            templateName = "hacker_invite.gohtml"
 )
 
 // Define a map for template names to subjects
@@ -55,6 +55,20 @@ var templateSubjects = map[templateName]string{
 	BirthdayGift:            "A gift from GRBPWR",
 	EventInvite:             "You're invited",
 	HackerInvite:            "Your GRBPWR HACKER invite",
+}
+
+// alwaysSendSubjects lists emails that dispatch even when the mailer is Disabled
+// for bulk suppression (beta seeding). Account sign-in (OTP + magic link) is
+// required to actually log into beta, so it is never suppressed — everything
+// else (order/tier/promo/support/etc.) is.
+var alwaysSendSubjects = map[string]bool{
+	templateSubjects[AccountLogin]: true,
+}
+
+// suppressed reports whether an email with the given subject must be dropped
+// because the mailer is Disabled and the subject is not on the always-send list.
+func (m *Mailer) suppressed(subject string) bool {
+	return m.c.Disabled && !alwaysSendSubjects[subject]
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.
