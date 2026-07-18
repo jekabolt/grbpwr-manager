@@ -408,6 +408,33 @@ func ConvertEntityOrderFullToPbOrderFull(e *entity.OrderFull) (*pb_common.OrderF
 	return out, nil
 }
 
+// stripInternalShipmentCosts blanks the operator-only shipment economics on a converted order:
+// actual_cost (the real carrier invoice) and return_shipping_cost (the reverse-logistics cost of a
+// return). Both are INTERNAL margin data (#62, base-currency EUR) and must NEVER be exposed to
+// storefront customers — only the admin order/fulfillment projections retain them. Nil-safe.
+func stripInternalShipmentCosts(o *pb_common.OrderFull) {
+	if o == nil || o.Shipment == nil {
+		return
+	}
+	o.Shipment.ActualCost = nil
+	o.Shipment.ReturnShippingCost = nil
+}
+
+// ConvertEntityOrderFullToPbOrderFullStorefront builds the CUSTOMER-FACING order projection: identical
+// to ConvertEntityOrderFullToPbOrderFull but with the internal-only shipment costs stripped
+// (stripInternalShipmentCosts). Every storefront (frontend) path that returns an order to a customer
+// MUST use this converter — never the admin one — so actual_cost / return_shipping_cost cannot leak
+// through the embedded shipment. The admin projection keeps ConvertEntityOrderFullToPbOrderFull so the
+// admin order/fulfillment detail still shows them.
+func ConvertEntityOrderFullToPbOrderFullStorefront(e *entity.OrderFull) (*pb_common.OrderFull, error) {
+	pb, err := ConvertEntityOrderFullToPbOrderFull(e)
+	if err != nil {
+		return nil, err
+	}
+	stripInternalShipmentCosts(pb)
+	return pb, nil
+}
+
 // ConvertEntityOrderStatusHistoryToPb converts entity status history to protobuf
 func ConvertEntityOrderStatusHistoryToPb(history []entity.OrderStatusHistoryWithStatus) []*pb_common.OrderStatusHistory {
 	result := make([]*pb_common.OrderStatusHistory, len(history))

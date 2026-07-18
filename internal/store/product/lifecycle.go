@@ -75,26 +75,51 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 	if err != nil {
 		return fmt.Errorf("colourway %d: %w", colorwayID, err)
 	}
+	// The →ACTIVE edge — publish (DRAFT->ACTIVE) or unhide (HIDDEN->ACTIVE) — MUST run as ONE
+	// serializable transaction. checkColorwayRequiredCurrencies reads the PERSISTED prices and the
+	// status flip must be atomic with that read: otherwise a concurrent UpdateColorway — whose price
+	// write is a DELETE-all + re-INSERT of product_price, legal on a DRAFT — can drop a required
+	// currency AFTER the completeness check passes but BEFORE the flip lands, and the flip's
+	// WHERE lifecycle_status = :cur still matches, publishing an ACTIVE colourway with incomplete
+	// required-currency pricing (broken storefront checkout). Wrapping the whole sequence (mint +
+	// publish preconditions + currency completeness + the guarded UPDATE) in s.txFunc — SERIALIZABLE
+	// with deadlock retry (see store/db.go) — closes that window. The other edges (archive/hide/
+	// restore) don't read prices, so they keep the single-statement autocommit path.
+	if next == entity.ColorwayStatusActive {
+		return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			return applyColorwayTransition(ctx, rep.DB(), colorwayID, t, cur, next)
+		})
+	}
+	return applyColorwayTransition(ctx, s.DB, colorwayID, t, cur, next)
+}
+
+// applyColorwayTransition performs a single colourway lifecycle transition on the supplied db handle:
+// mint (publish only) → publish preconditions (publish only) → required-currency completeness (any
+// →ACTIVE edge) → the guarded status UPDATE with its audit stamp. It takes a dependency.DB rather than
+// s.DB so the →ACTIVE edge can pass a transaction (rep.DB()) — making the completeness read and the
+// flip atomic — while archive/hide/restore pass the base handle unchanged (see
+// transitionColorwayLifecycle).
+func applyColorwayTransition(ctx context.Context, db dependency.DB, colorwayID int, t entity.ColorwayTransition, cur, next entity.ColorwayStatus) error {
 	if t == entity.ColorwayTransitionPublish {
 		// Publish must guarantee its own base+variant SKUs: CreateColorway never mints and
 		// CreateVariant's mint is best-effort (the base isn't built yet at that point), so a
 		// colourway published straight after Create+CreateVariant (no UpdateColorway in between)
 		// would otherwise fail the "valid SKU" preconditions below. Mint FIRST so the precondition
 		// check that follows sees the freshly-minted state (R6).
-		if err := MintProductSKUs(ctx, s.DB, colorwayID); err != nil {
+		if err := MintProductSKUs(ctx, db, colorwayID); err != nil {
 			return fmt.Errorf("mint colourway %d SKUs before publish: %w", colorwayID, err)
 		}
-		if err := checkColorwayPublishPreconditions(ctx, s.DB, colorwayID); err != nil {
+		if err := checkColorwayPublishPreconditions(ctx, db, colorwayID); err != nil {
 			return err
 		}
 	}
-	// The →ACTIVE edge — publish (DRAFT->ACTIVE) or unhide (HIDDEN->ACTIVE) — is the SINGLE point that
-	// enforces required-currency completeness. The create/update write path deliberately lets a DRAFT
-	// carry partial prices; a colourway must never become publicly sellable without a valid price in
-	// every required currency. Per-price validity of those prices was already checked when they were
-	// written, so only completeness is (re-)verified here, against the persisted price rows.
+	// The →ACTIVE edge is the SINGLE point that enforces required-currency completeness. The
+	// create/update write path deliberately lets a DRAFT carry partial prices; a colourway must never
+	// become publicly sellable without a valid price in every required currency. Per-price validity was
+	// already checked when the prices were written, so only completeness is (re-)verified here, against
+	// the persisted price rows — read on `db`, which is the enclosing transaction for this edge.
 	if next == entity.ColorwayStatusActive {
-		if err := checkColorwayRequiredCurrencies(ctx, s.DB, colorwayID); err != nil {
+		if err := checkColorwayRequiredCurrencies(ctx, db, colorwayID); err != nil {
 			return err
 		}
 	}
@@ -109,7 +134,7 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 	case entity.ColorwayTransitionRestore:
 		extra = ", deleted_at = NULL"
 	}
-	rows, err := storeutil.ExecNamedRows(ctx, s.DB,
+	rows, err := storeutil.ExecNamedRows(ctx, db,
 		`UPDATE product SET lifecycle_status = :next`+extra+` WHERE id = :id AND lifecycle_status = :cur`,
 		map[string]any{"next": uint8(next), "cur": uint8(cur), "id": colorwayID})
 	if err != nil {

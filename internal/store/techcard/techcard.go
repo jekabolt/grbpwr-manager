@@ -387,6 +387,10 @@ func guardTechCardStageRegression(ctx context.Context, db dependency.DB, id int,
 	if !fromOK || !toOK || toOrd >= fromOrd {
 		return nil // forward, same-stage, or non-comparable: nothing to guard
 	}
+	// An ARCHIVED colourway (soft-deleted; product.lifecycle_status = 4) is retired work, not a live
+	// downstream artifact — it must NOT pin the style's stage. Excluding it lets a style whose only
+	// colourways are archived regress its stage. sample/tech_card_release have no soft-delete/archived
+	// state, so their counts stay unfiltered.
 	counts, err := storeutil.QueryNamedOne[struct {
 		Samples   int `db:"samples"`
 		Releases  int `db:"releases"`
@@ -394,8 +398,9 @@ func guardTechCardStageRegression(ctx context.Context, db dependency.DB, id int,
 	}](ctx, db, `SELECT
 		(SELECT COUNT(*) FROM sample WHERE tech_card_id = :id)            AS samples,
 		(SELECT COUNT(*) FROM tech_card_release WHERE tech_card_id = :id) AS releases,
-		(SELECT COUNT(*) FROM product WHERE style_id = :id)               AS colorways`,
-		map[string]any{"id": id})
+		(SELECT COUNT(*) FROM product WHERE style_id = :id
+			AND lifecycle_status <> :archived)                           AS colorways`,
+		map[string]any{"id": id, "archived": uint8(entity.ColorwayStatusArchived)})
 	if err != nil {
 		return fmt.Errorf("count downstream artifacts for stage-regression guard: %w", err)
 	}
