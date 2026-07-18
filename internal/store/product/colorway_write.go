@@ -65,8 +65,16 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		if err != nil {
 			return fmt.Errorf("can't insert colourway: %w", err)
 		}
-		if err := insertProductTranslations(ctx, rep.DB(), colorwayID, prd.Translations); err != nil {
-			return fmt.Errorf("can't insert colourway translations: %w", err)
+		// A DRAFT may carry zero merch translations at create time — the inline "New Colourway" sends
+		// none (colorCode is its sole required value); they are filled in later from the product manager.
+		// Skip the insert when empty (insertProductTranslations rejects an empty slice), mirroring
+		// UpdateColorway's sparse semantics below. A default-language translation is REQUIRED only to go
+		// ACTIVE, gated on the →ACTIVE edge (checkColorwayPublishPreconditions: "no default-language
+		// translation") — so this relaxation never lets a nameless colourway reach the storefront.
+		if len(prd.Translations) > 0 {
+			if err := insertProductTranslations(ctx, rep.DB(), colorwayID, prd.Translations); err != nil {
+				return fmt.Errorf("can't insert colourway translations: %w", err)
+			}
 		}
 		if err := insertMedia(ctx, rep.DB(), mediaIDs, colorwayID); err != nil {
 			return fmt.Errorf("can't insert colourway media: %w", err)
