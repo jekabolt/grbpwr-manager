@@ -15,6 +15,14 @@ func ValidatePriceMeetsMinimum(price decimal.Decimal, c string) error {
 	return currency.ValidateMinimum(price, c)
 }
 
+// IsStripeChargeable reports whether an order in this currency can be charged through Stripe. It is
+// narrower than "supported/priced": USDT is priced and may be recorded on a manually-settled order,
+// but is never charged via Stripe. The Stripe payment boundary and the storefront checkout surface
+// gate on this so a USDT charge is never attempted.
+func IsStripeChargeable(c string) bool {
+	return currency.IsStripeChargeable(c)
+}
+
 // IsZeroDecimalCurrency returns true for currencies with no decimal places (KRW, JPY, etc.)
 func IsZeroDecimalCurrency(c string) bool {
 	return currency.IsZeroDecimal(c)

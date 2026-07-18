@@ -50,6 +50,14 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		slog.Default().ErrorContext(ctx, "currency is required")
 		return nil, status.Errorf(codes.InvalidArgument, "currency is required")
 	}
+	// Storefront checkout is card-only (Stripe). A priced-but-not-Stripe-chargeable currency (USDT,
+	// settled manually off-Stripe) must not be offered here: reject it up front with a clear error
+	// instead of failing deep inside the pre-order PaymentIntent call.
+	if !dto.IsStripeChargeable(currency) {
+		slog.Default().WarnContext(ctx, "currency not available for storefront checkout",
+			slog.String("currency", currency))
+		return nil, status.Errorf(codes.InvalidArgument, "currency %s is not available for checkout", currency)
+	}
 
 	// Validate with stock reservation awareness
 	oiv, err := s.validateOrderItemsWithReservation(ctx, itemsToInsert, currency, clientSession)

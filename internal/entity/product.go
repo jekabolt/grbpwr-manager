@@ -229,7 +229,7 @@ type ColorwayPrice struct {
 
 // ColorwayPriceInsert for inserting/updating product prices
 type ColorwayPriceInsert struct {
-	Currency string          `db:"currency" valid:"required,length(3|3)"`
+	Currency string          `db:"currency" valid:"required,length(3|4)"` // ISO 4217 (3) or USDT (4)
 	Price    decimal.Decimal `db:"price" valid:"required"`
 }
 

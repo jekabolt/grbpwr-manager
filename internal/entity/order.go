@@ -35,7 +35,7 @@ type OrderNew struct {
 	PaymentMethod      PaymentMethodName `valid:"required"`
 	ShipmentCarrierId  int               `valid:"required"`
 	PromoCode          string            `valid:"-"`
-	Currency           string            `valid:"required,length(3|3)"` // ISO 4217 currency code
+	Currency           string            `valid:"required,length(3|4)"` // ISO 4217 (3) or USDT (4)
 	CustomShipmentCost *decimal.Decimal  `valid:"-"`                    // optional; when set, overrides carrier price (admin custom orders)
 	GAClientID         string            `valid:"-"`                    // GA4 client ID from browser _ga cookie
 }
@@ -126,21 +126,21 @@ type ProductInfoProvider interface {
 
 // OrderItem represents the order_item table
 type OrderItem struct {
-	Id            int                        `db:"id"`
-	OrderId       int                        `db:"order_id"`
-	Thumbnail     string                     `db:"thumbnail"`
-	Translations  []ColorwayTranslationInsert `db:"translations"`
-	BlurHash      string                     `db:"blur_hash"`
-	ProductBrand  string                     `db:"product_brand"`
-	Color         string                     `db:"color"`
-	TopCategoryId int                        `db:"top_category_id"`
-	SubCategoryId sql.NullInt32              `db:"sub_category_id"`
-	TypeId        sql.NullInt32              `db:"type_id"`
-	TargetGender  GenderEnum                 `db:"target_gender"`
-	SKU           string                     `db:"variant_sku_snapshot"` // R2: frozen variant SKU snapshot (was product_sku)
-	ProductBaseSKU string                    `db:"base_sku_snapshot"`    // R2: frozen base SKU snapshot (= variant SKU [:14])
-	Slug          string
-	Preorder      sql.NullTime `db:"preorder"`
+	Id             int                         `db:"id"`
+	OrderId        int                         `db:"order_id"`
+	Thumbnail      string                      `db:"thumbnail"`
+	Translations   []ColorwayTranslationInsert `db:"translations"`
+	BlurHash       string                      `db:"blur_hash"`
+	ProductBrand   string                      `db:"product_brand"`
+	Color          string                      `db:"color"`
+	TopCategoryId  int                         `db:"top_category_id"`
+	SubCategoryId  sql.NullInt32               `db:"sub_category_id"`
+	TypeId         sql.NullInt32               `db:"type_id"`
+	TargetGender   GenderEnum                  `db:"target_gender"`
+	SKU            string                      `db:"variant_sku_snapshot"` // R2: frozen variant SKU snapshot (was product_sku)
+	ProductBaseSKU string                      `db:"base_sku_snapshot"`    // R2: frozen base SKU snapshot (= variant SKU [:14])
+	Slug           string
+	Preorder       sql.NullTime `db:"preorder"`
 	OrderItemInsert
 }
 

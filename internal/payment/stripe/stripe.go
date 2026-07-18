@@ -64,6 +64,11 @@ func amountFromSmallestUnit(amount int64, currency string) decimal.Decimal {
 // createPaymentIntent creates a PaymentIntent with the specified amount, currency, and payment method types.
 // idempotencyKey must be unique per PaymentIntent; use rotation (e.g. orderUUID+"_"+timestamp) when re-creating after expiry.
 func (p *Processor) createPaymentIntent(order entity.OrderFull, idempotencyKey string) (*stripe.PaymentIntent, error) {
+	// Stripe boundary: a currency that is priced/accounted but not Stripe-chargeable (USDT) is settled
+	// manually off-Stripe and must never be sent to Stripe. Reject it here before any Stripe call.
+	if !dto.IsStripeChargeable(order.Order.Currency) {
+		return nil, fmt.Errorf("currency %s cannot be charged via Stripe; it is settled manually", order.Order.Currency)
+	}
 	// Validate order total meets Stripe minimum (e.g. KRW >= 100)
 	if err := dto.ValidatePriceMeetsMinimum(order.Order.TotalPrice, order.Order.Currency); err != nil {
 		return nil, fmt.Errorf("order total below currency minimum: %w", err)
@@ -152,6 +157,12 @@ func (p *Processor) GetPaymentIntentByID(ctx context.Context, paymentIntentID st
 
 // UpdatePaymentIntentAmount updates the amount of an existing PaymentIntent
 func (p *Processor) UpdatePaymentIntentAmount(ctx context.Context, paymentIntentID string, amount decimal.Decimal, currency string) error {
+	// Stripe boundary: never push a priced-but-not-Stripe-chargeable currency (USDT) to Stripe. Such an
+	// order never gets a PaymentIntent (createPaymentIntent/CreatePreOrderPaymentIntent reject it), so
+	// this is defence-in-depth guaranteeing no currency-carrying Stripe call can leak USDT.
+	if !dto.IsStripeChargeable(currency) {
+		return fmt.Errorf("currency %s cannot be charged via Stripe; it is settled manually", currency)
+	}
 	amountCents := AmountToSmallestUnit(amount, currency)
 
 	params := &stripe.PaymentIntentParams{
@@ -223,6 +234,13 @@ func RefundIdempotencyKey(orderUUID string, orderItemIDs []int32, refundShipping
 // RefundIdempotencyKey) so that retries and concurrent identical refunds dedupe at
 // Stripe instead of issuing a second refund.
 func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string, idempotencyKey string) error {
+	// Stripe boundary: never push a priced-but-not-Stripe-chargeable currency (USDT) to Stripe. A USDT
+	// order never has a PaymentIntent (ClientSecret unset, checked below) and so already can't reach
+	// here today, but this is defence-in-depth guaranteeing no currency-carrying Stripe call can leak USDT.
+	if !dto.IsStripeChargeable(currency) {
+		return fmt.Errorf("currency %s cannot be charged via Stripe; it is settled manually", currency)
+	}
+
 	ok := payment.ClientSecret.Valid
 	if !ok {
 		return fmt.Errorf("payment has no client secret (PaymentIntent)")
