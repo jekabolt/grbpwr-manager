@@ -289,8 +289,11 @@ func (p *Colorway) IsPubliclyVisible() bool {
 }
 
 type ColorwayInsert struct {
-	ProductBodyInsert         ColorwayBodyInsert          `valid:"required"`
-	ThumbnailMediaID          int                         `db:"thumbnail_media_id" valid:"required"`
+	ProductBodyInsert ColorwayBodyInsert `valid:"required"`
+	// ThumbnailMediaID is optional at write time: a DRAFT colourway may carry no thumbnail yet (0 => SQL
+	// NULL, product.thumbnail_id nullable since 0151). A thumbnail is required only to go ACTIVE, enforced
+	// on the →ACTIVE lifecycle edge (checkColorwayHasThumbnail), not by struct validation here.
+	ThumbnailMediaID          int                         `db:"thumbnail_media_id" valid:"-"`
 	SecondaryThumbnailMediaID sql.NullInt32               `db:"secondary_thumbnail_media_id" valid:"-"`
 	Translations              []ColorwayTranslationInsert `valid:"required"`
 	Prices                    []ColorwayPriceInsert       `valid:"required"` // At least one price required

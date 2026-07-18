@@ -330,6 +330,18 @@ func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b enti
 		`UPDATE tech_card SET`+styleFieldsSet+` WHERE id = :styleId`, params)
 }
 
+// nullableMediaID maps an unset (<= 0) media id to SQL NULL so a nullable media FK — e.g.
+// product.thumbnail_id (product_ibfk_4 -> media.id) — is satisfied when a DRAFT colourway carries no
+// thumbnail yet. A positive id binds unchanged. Binding a literal 0 would violate the FK (no media row
+// has id 0), which is the colourway-create FK failure this guards against; the column has been nullable
+// since migration 0151.
+func nullableMediaID(id int) sql.NullInt32 {
+	if id <= 0 {
+		return sql.NullInt32{}
+	}
+	return sql.NullInt32{Int32: int32(id), Valid: true}
+}
+
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert, styleId, lifecycleStatus int) (int, error) {
 	// id is AUTO_INCREMENT (omitted). sku starts as '' and is minted by MintProductSKUs once the
 	// sizes exist. color_code is the required dictionary FK and is the sole color identity.
@@ -365,7 +377,7 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 		"colorHexOverride":     product.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
 		"countryCode":          countryCode,
-		"thumbnailId":          product.ThumbnailMediaID,
+		"thumbnailId":          nullableMediaID(product.ThumbnailMediaID),
 		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
 		"salePercentage":       product.ProductBodyInsert.SalePercentage,
 		"minTier":              product.ProductBodyInsert.MinTier,
@@ -741,7 +753,7 @@ func updateColorwayRow(ctx context.Context, db dependency.DB, prd *entity.Colorw
 		"colorHexOverride":     prd.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      prd.ProductBodyInsert.CountryOfOrigin,
 		"countryCode":          countryCode,
-		"thumbnailId":          prd.ThumbnailMediaID,
+		"thumbnailId":          nullableMediaID(prd.ThumbnailMediaID),
 		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
 		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
 		"minTier":              prd.ProductBodyInsert.MinTier,
@@ -1058,19 +1070,23 @@ type productQueryResult struct {
 	MinTier               int16 `db:"min_tier"`
 	HiddenForNonQualified bool  `db:"hidden_for_non_qualified"`
 
-	ThumbnailId                 int                   `db:"thumbnail_id"`
+	// thumbnail_id and the joined m.* columns are NULLABLE: a DRAFT colourway may have no thumbnail yet
+	// (product.thumbnail_id nullable since 0151) and the admin reads LEFT JOIN media, so a missing
+	// thumbnail scans as NULL rather than erroring on a non-nullable Go target. toProduct maps an absent
+	// thumbnail to a zero-valued (empty) MediaFull.
+	ThumbnailId                 sql.NullInt32         `db:"thumbnail_id"`
 	SecondaryThumbnailId        sql.NullInt32         `db:"secondary_thumbnail_id"`
 	SecondaryThumbnailCreatedAt sql.NullTime          `db:"secondary_thumbnail_created_at"`
-	ThumbnailFullSize           string                `db:"full_size"`
-	ThumbnailFullSizeW          int                   `db:"full_size_width"`
-	ThumbnailFullSizeH          int                   `db:"full_size_height"`
-	ThumbnailThumb              string                `db:"thumbnail"`
-	ThumbnailThumbW             int                   `db:"thumbnail_width"`
-	ThumbnailThumbH             int                   `db:"thumbnail_height"`
-	ThumbnailCompressed         string                `db:"compressed"`
-	ThumbnailCompressedW        int                   `db:"compressed_width"`
-	ThumbnailCompressedH        int                   `db:"compressed_height"`
-	ThumbnailBlurHash           string                `db:"blur_hash"`
+	ThumbnailFullSize           sql.NullString        `db:"full_size"`
+	ThumbnailFullSizeW          sql.NullInt32         `db:"full_size_width"`
+	ThumbnailFullSizeH          sql.NullInt32         `db:"full_size_height"`
+	ThumbnailThumb              sql.NullString        `db:"thumbnail"`
+	ThumbnailThumbW             sql.NullInt32         `db:"thumbnail_width"`
+	ThumbnailThumbH             sql.NullInt32         `db:"thumbnail_height"`
+	ThumbnailCompressed         sql.NullString        `db:"compressed"`
+	ThumbnailCompressedW        sql.NullInt32         `db:"compressed_width"`
+	ThumbnailCompressedH        sql.NullInt32         `db:"compressed_height"`
+	ThumbnailBlurHash           sql.NullString        `db:"blur_hash"`
 	SecondaryFullSize           sql.NullString        `db:"secondary_full_size"`
 	SecondaryFullSizeW          sql.NullInt32         `db:"secondary_full_size_width"`
 	SecondaryFullSizeH          sql.NullInt32         `db:"secondary_full_size_height"`
@@ -1162,20 +1178,23 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 				},
 				Translations: translations,
 			},
+			// A DRAFT with no thumbnail (thumbnail_id NULL, LEFT-JOINed media absent) maps to a zero-valued
+			// MediaFull — Id 0, empty URLs — i.e. an absent thumbnail, never a nil-deref (Thumbnail is a
+			// value, not a pointer). A real thumbnail populates every field from the joined media row.
 			Thumbnail: entity.MediaFull{
-				Id:        pqr.ThumbnailId,
+				Id:        int(pqr.ThumbnailId.Int32),
 				CreatedAt: pqr.CreatedAt,
 				MediaItem: entity.MediaItem{
-					FullSizeMediaURL:   pqr.ThumbnailFullSize,
-					FullSizeWidth:      pqr.ThumbnailFullSizeW,
-					FullSizeHeight:     pqr.ThumbnailFullSizeH,
-					ThumbnailMediaURL:  pqr.ThumbnailThumb,
-					ThumbnailWidth:     pqr.ThumbnailThumbW,
-					ThumbnailHeight:    pqr.ThumbnailThumbH,
-					CompressedMediaURL: pqr.ThumbnailCompressed,
-					CompressedWidth:    pqr.ThumbnailCompressedW,
-					CompressedHeight:   pqr.ThumbnailCompressedH,
-					BlurHash:           sql.NullString{String: pqr.ThumbnailBlurHash, Valid: pqr.ThumbnailBlurHash != ""},
+					FullSizeMediaURL:   pqr.ThumbnailFullSize.String,
+					FullSizeWidth:      int(pqr.ThumbnailFullSizeW.Int32),
+					FullSizeHeight:     int(pqr.ThumbnailFullSizeH.Int32),
+					ThumbnailMediaURL:  pqr.ThumbnailThumb.String,
+					ThumbnailWidth:     int(pqr.ThumbnailThumbW.Int32),
+					ThumbnailHeight:    int(pqr.ThumbnailThumbH.Int32),
+					CompressedMediaURL: pqr.ThumbnailCompressed.String,
+					CompressedWidth:    int(pqr.ThumbnailCompressedW.Int32),
+					CompressedHeight:   int(pqr.ThumbnailCompressedH.Int32),
+					BlurHash:           pqr.ThumbnailBlurHash,
 				},
 			},
 			SecondaryThumbnail: secondaryThumbnail,

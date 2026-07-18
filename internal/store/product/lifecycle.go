@@ -113,12 +113,17 @@ func applyColorwayTransition(ctx context.Context, db dependency.DB, colorwayID i
 			return err
 		}
 	}
-	// The →ACTIVE edge is the SINGLE point that enforces required-currency completeness. The
-	// create/update write path deliberately lets a DRAFT carry partial prices; a colourway must never
-	// become publicly sellable without a valid price in every required currency. Per-price validity was
-	// already checked when the prices were written, so only completeness is (re-)verified here, against
-	// the persisted price rows — read on `db`, which is the enclosing transaction for this edge.
+	// The →ACTIVE edge is the SINGLE point that enforces the completeness gates a DRAFT is exempt from:
+	// required-currency pricing AND a thumbnail. The create/update write path deliberately lets a DRAFT
+	// carry partial prices and no thumbnail (thumbnail_id nullable since 0151); a colourway must never
+	// become publicly sellable without a valid price in every required currency or without media to show.
+	// Per-price validity was already checked when the prices were written, so only completeness is
+	// (re-)verified here, against the persisted rows — read on `db`, the enclosing transaction for this
+	// edge. Both publish (DRAFT->ACTIVE) and unhide (HIDDEN->ACTIVE) route through here.
 	if next == entity.ColorwayStatusActive {
+		if err := checkColorwayHasThumbnail(ctx, db, colorwayID); err != nil {
+			return err
+		}
 		if err := checkColorwayRequiredCurrencies(ctx, db, colorwayID); err != nil {
 			return err
 		}
@@ -168,7 +173,9 @@ type publishReadiness struct {
 // Deliberately NOT gated here (documented deviation from the R6 checklist): customs (hs_code /
 // customs_description) is optional by design — it is only required for cross-border shipments and is
 // enforced at label build time (0127), so requiring it at publish would wrongly block EU-only
-// colourways. Media presence is guaranteed structurally (product.thumbnail_id is NOT NULL).
+// colourways. Media presence (a thumbnail) IS required to go ACTIVE, but is enforced on the →ACTIVE edge
+// by checkColorwayHasThumbnail (below), not here: product.thumbnail_id is nullable since 0151 (a DRAFT
+// has no media yet), so it is no longer a structural NOT NULL guarantee and must be checked explicitly.
 func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, colorwayID int) error {
 	r, err := storeutil.QueryNamedOne[publishReadiness](ctx, db, `
 		SELECT
@@ -222,6 +229,25 @@ func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, co
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("cannot publish colourway %d: %s", colorwayID, strings.Join(missing, "; "))
+	}
+	return nil
+}
+
+// checkColorwayHasThumbnail fails the →ACTIVE edge unless the colourway has a thumbnail set. Since 0151
+// product.thumbnail_id is nullable (a DRAFT carries no media yet), so media presence — previously a NOT
+// NULL column invariant — is enforced here at activation, mirroring the required-currency completeness
+// gate. Both publish (DRAFT->ACTIVE) and unhide (HIDDEN->ACTIVE) route through it, so a colourway can
+// never go live without a thumbnail to render on its storefront card.
+func checkColorwayHasThumbnail(ctx context.Context, db dependency.DB, colorwayID int) error {
+	row, err := storeutil.QueryNamedOne[struct {
+		HasThumbnail bool `db:"has_thumbnail"`
+	}](ctx, db, `SELECT thumbnail_id IS NOT NULL AS has_thumbnail FROM product WHERE id = :id`,
+		map[string]any{"id": colorwayID})
+	if err != nil {
+		return fmt.Errorf("load colourway %d thumbnail: %w", colorwayID, err)
+	}
+	if !row.HasThumbnail {
+		return fmt.Errorf("cannot activate colourway %d: no thumbnail is set", colorwayID)
 	}
 	return nil
 }
