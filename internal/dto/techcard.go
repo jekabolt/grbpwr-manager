@@ -24,7 +24,6 @@ const (
 	maxVarchar191  = 191
 	maxVarchar512  = 512
 	maxVarchar1024 = 1024
-	maxCurrency    = 3
 
 	// Decimal bounds mirroring the Phase 2 column types so over-range input fails
 	// as InvalidArgument, not a MySQL out-of-range Internal error.
@@ -1094,8 +1093,8 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 				return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
 			}
 		}
-		if b.Currency != "" && len(b.Currency) != maxCurrency {
-			return nil, fmt.Errorf("bom currency must be a 3-letter ISO 4217 code")
+		if b.Currency != "" && !IsExpenseCurrency(b.Currency) {
+			return nil, fmt.Errorf("bom currency must be a supported currency or USDT")
 		}
 		unitPrice, err := nullDecimalFromPb(b.UnitPrice)
 		if err != nil {

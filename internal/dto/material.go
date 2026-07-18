@@ -360,8 +360,8 @@ func ConvertPbMaterialPriceToEntity(pb *pb_common.MaterialPrice) (entity.Materia
 		return entity.MaterialPrice{}, fmt.Errorf("price must be a non-negative number")
 	}
 	currency := strings.ToUpper(strings.TrimSpace(pb.Currency))
-	if len(currency) != maxCurrency {
-		return entity.MaterialPrice{}, fmt.Errorf("currency must be a 3-letter ISO 4217 code")
+	if !IsExpenseCurrency(currency) {
+		return entity.MaterialPrice{}, fmt.Errorf("currency must be a supported currency or USDT")
 	}
 	if pb.ValidFrom == nil {
 		return entity.MaterialPrice{}, fmt.Errorf("valid_from is required")

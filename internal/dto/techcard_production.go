@@ -311,8 +311,8 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	if pb == nil {
 		return nil, nil
 	}
-	if pb.Currency != "" && len(pb.Currency) != maxCurrency {
-		return nil, fmt.Errorf("costing currency must be a 3-letter ISO 4217 code")
+	if pb.Currency != "" && !IsExpenseCurrency(pb.Currency) {
+		return nil, fmt.Errorf("costing currency must be a supported currency or USDT")
 	}
 	cost := func(d *pb_decimal.Decimal, field string) (decimal.NullDecimal, error) {
 		nd, err := nullDecimalFromPb(d)

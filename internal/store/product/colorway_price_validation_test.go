@@ -48,6 +48,33 @@ func TestValidateColorwayPrices_RejectsInvalidAmounts(t *testing.T) {
 	}
 }
 
+// TestValidateColorwayPrices_RejectsNonSellingCurrency locks the corrected USDT model: USDT is
+// accounting/expense-only and is NEVER a selling currency, so a USDT product price must be REJECTED
+// outright (superseding the old band-aid that silently skipped the minimum check and stored the row).
+// The error must name the offending currency and say it is not a selling currency.
+func TestValidateColorwayPrices_RejectsNonSellingCurrency(t *testing.T) {
+	// A well-formed, above-any-plausible-minimum USDT price is still rejected purely for being USDT.
+	err := validateColorwayPrices([]entity.ColorwayPriceInsert{{Currency: "USDT", Price: decimal.NewFromInt(10000)}})
+	if err == nil {
+		t.Fatal("a USDT product price must be rejected: USDT is not a selling currency")
+	}
+	if !strings.Contains(err.Error(), "USDT") || !strings.Contains(err.Error(), "not a selling currency") {
+		t.Fatalf("error must name USDT and say it is not a selling currency: %v", err)
+	}
+	// Case-insensitive: lowercase usdt is normalised and rejected the same way.
+	if err := validateColorwayPrices([]entity.ColorwayPriceInsert{{Currency: "usdt", Price: decimal.NewFromInt(10000)}}); err == nil {
+		t.Fatal("a lowercase usdt product price must also be rejected")
+	}
+	// A genuine selling currency alongside USDT still fails because of the USDT entry.
+	mixed := []entity.ColorwayPriceInsert{
+		{Currency: "EUR", Price: decimal.NewFromInt(100)},
+		{Currency: "USDT", Price: decimal.NewFromInt(100)},
+	}
+	if err := validateColorwayPrices(mixed); err == nil {
+		t.Fatal("a price set containing USDT must be rejected even when other currencies are valid")
+	}
+}
+
 // TestValidateRequiredCurrenciesPresent_Completeness asserts the completeness gate: the full required
 // set passes, and any missing required currency fails and is named in the error.
 func TestValidateRequiredCurrenciesPresent_Completeness(t *testing.T) {

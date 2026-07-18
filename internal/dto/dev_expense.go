@@ -42,8 +42,8 @@ func ConvertPbDevExpenseInsertToEntity(in *pb_common.TechCardDevExpenseInsert) (
 		return entity.TechCardDevExpense{}, fmt.Errorf("dev expense: amount must be a non-negative number")
 	}
 	currency := strings.ToUpper(strings.TrimSpace(in.Currency))
-	if len(currency) != maxCurrency {
-		return entity.TechCardDevExpense{}, fmt.Errorf("dev expense: currency must be a 3-letter ISO 4217 code")
+	if !IsExpenseCurrency(currency) {
+		return entity.TechCardDevExpense{}, fmt.Errorf("dev expense: currency must be a supported currency or USDT")
 	}
 	e := entity.TechCardDevExpense{
 		TechCardId:  int(in.TechCardId),

@@ -58,17 +58,18 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		return entity.MaterialReceiptInsert{}, fmt.Errorf("unit_cost: %w", err)
 	}
 	currency := strings.ToUpper(strings.TrimSpace(req.GetCurrency()))
-	// A non-empty currency must always be a valid 3-letter code (the store persists it whenever set,
-	// so a junk value would overflow CHAR(3)); a unit cost additionally requires the currency.
-	if currency != "" && len(currency) != maxCurrency {
-		return entity.MaterialReceiptInsert{}, fmt.Errorf("currency must be a 3-letter ISO 4217 code")
+	// A non-empty currency must be a supported (selling) currency or USDT — material lots are an
+	// EXPENSE surface, so USDT is allowed here (the store persists it whenever set, so a junk value
+	// would overflow the column); a unit cost additionally requires the currency.
+	if currency != "" && !IsExpenseCurrency(currency) {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf("currency must be a supported currency or USDT")
 	}
 	if unitCost.Valid {
 		if unitCost.Decimal.IsNegative() {
 			return entity.MaterialReceiptInsert{}, fmt.Errorf("unit_cost must be non-negative")
 		}
-		if len(currency) != maxCurrency {
-			return entity.MaterialReceiptInsert{}, fmt.Errorf("currency must be a 3-letter ISO 4217 code when unit_cost is set")
+		if !IsExpenseCurrency(currency) {
+			return entity.MaterialReceiptInsert{}, fmt.Errorf("currency must be a supported currency or USDT when unit_cost is set")
 		}
 	}
 	occurredAt, err := parseNullDate(req.GetOccurredAt())

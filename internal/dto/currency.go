@@ -15,12 +15,20 @@ func ValidatePriceMeetsMinimum(price decimal.Decimal, c string) error {
 	return currency.ValidateMinimum(price, c)
 }
 
-// IsStripeChargeable reports whether an order in this currency can be charged through Stripe. It is
-// narrower than "supported/priced": USDT is priced and may be recorded on a manually-settled order,
-// but is never charged via Stripe. The Stripe payment boundary and the storefront checkout surface
-// gate on this so a USDT charge is never attempted.
+// IsStripeChargeable reports whether an order in this currency can be charged through Stripe. Kept as
+// a defence-in-depth guard: under the corrected model USDT is expense-only and never a selling/order
+// currency, so this is now equivalent to IsSupported and the Stripe-boundary callers never actually
+// reject on it (harmless dead code).
 func IsStripeChargeable(c string) bool {
 	return currency.IsStripeChargeable(c)
+}
+
+// IsExpenseCurrency reports whether c may denominate an EXPENSE/accounting amount: any selling
+// currency plus USDT (accounting-only). This is the single predicate every expense-currency validator
+// in this package uses. It is exposed as a thin wrapper so the validators can call it by bare name
+// without the local `currency` string variable shadowing the currency package.
+func IsExpenseCurrency(c string) bool {
+	return currency.IsExpenseCurrency(c)
 }
 
 // IsZeroDecimalCurrency returns true for currencies with no decimal places (KRW, JPY, etc.)

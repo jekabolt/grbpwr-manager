@@ -899,26 +899,30 @@ func (s *Store) IsProductLinkedToTechCard(ctx context.Context, productID, techCa
 	return len(rows) > 0, nil
 }
 
-// validateColorwayPrices runs the ALWAYS-ON per-price checks: every price that IS provided must be
-// strictly positive and meet its currency's Stripe minimum. It deliberately does NOT enforce
-// required-currency completeness — that gate moved to the colourway →ACTIVE edge (lifecycle.go), so a
-// DRAFT may carry zero or partial prices while any price it does carry stays individually valid.
+// validateColorwayPrices runs the ALWAYS-ON per-price checks: every price that IS provided must be in
+// a SELLING currency (currency.IsSupported — USDT and any other non-selling currency are rejected as
+// accounting-only), strictly positive, and meet its currency's Stripe minimum. It deliberately does
+// NOT enforce required-currency completeness — that gate moved to the colourway →ACTIVE edge
+// (lifecycle.go), so a DRAFT may carry zero or partial prices while any price it does carry stays
+// individually valid.
 func validateColorwayPrices(prices []entity.ColorwayPriceInsert) error {
+	var nonSellingCurrencies []string
 	var zeroPriceCurrencies []string
 	var belowMinCurrencies []string
 	for _, price := range prices {
 		cur := strings.ToUpper(price.Currency)
-		if price.Price.LessThanOrEqual(decimal.Zero) {
-			zeroPriceCurrencies = append(zeroPriceCurrencies, cur)
+
+		// A product price MUST be in a SELLING currency (currency.IsSupported). USDT is accounting/
+		// expense-only and is never sold, so it must never be stored as a product price — it is
+		// rejected outright here. This SUPERSEDES the earlier band-aid (commit 89b416d), which skipped
+		// the minimum check for USDT via !IsStripeChargeable and silently STORED the row; USDT product
+		// prices are now an error, and migration 0188 removes any that 0186 or the old path created.
+		if !currency.IsSupported(cur) {
+			nonSellingCurrencies = append(nonSellingCurrencies, cur)
 			continue
 		}
-
-		// A priced-but-not-Stripe-chargeable currency (USDT) is accounting-only — settled manually and
-		// never charged through Stripe, so the per-currency Stripe MINIMUM does not apply to it.
-		// ValidatePriceMeetsMinimum has no minimum for such a currency and would reject it as
-		// "unsupported currency", failing every colourway save that carries a USDT price. Skip the
-		// minimum check for it; the strictly-positive check above still applies.
-		if !currency.IsStripeChargeable(cur) {
+		if price.Price.LessThanOrEqual(decimal.Zero) {
+			zeroPriceCurrencies = append(zeroPriceCurrencies, cur)
 			continue
 		}
 
@@ -926,6 +930,10 @@ func validateColorwayPrices(prices []entity.ColorwayPriceInsert) error {
 		if err := dto.ValidatePriceMeetsMinimum(rounded, cur); err != nil {
 			belowMinCurrencies = append(belowMinCurrencies, err.Error())
 		}
+	}
+
+	if len(nonSellingCurrencies) > 0 {
+		return fmt.Errorf("%s is not a selling currency (accounting-only currencies such as USDT cannot be a product price)", strings.Join(nonSellingCurrencies, ", "))
 	}
 
 	if len(zeroPriceCurrencies) > 0 {
