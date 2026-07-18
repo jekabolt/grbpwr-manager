@@ -1128,6 +1128,17 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/pipeline"};
   }
 
+  // GenerateTechCardOperations drafts structured sewing operations from a plain-language
+  // description via OpenRouter, grounded in the card's pieces + BOM + type. It only PROPOSES a
+  // draft for a technologist to review, edit and save through UpdateTechCard — it persists nothing.
+  // Requires OPENROUTER_API_KEY; unconfigured it returns FailedPrecondition (degrades gracefully).
+  rpc GenerateTechCardOperations(GenerateTechCardOperationsRequest) returns (GenerateTechCardOperationsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/operations/generate"
+      body: "*"
+    };
+  }
+
   // Material catalog (task 10): shared nomenclature for BOM lines + append-only price history.
   rpc CreateMaterial(CreateMaterialRequest) returns (CreateMaterialResponse) {
     option (google.api.http) = {
@@ -5056,6 +5067,23 @@ message UpdateTechCardRequest {
 }
 
 message UpdateTechCardResponse {}
+
+// GenerateTechCardOperationsRequest asks the AI to draft sewing operations for a tech card from a
+// free-text description. tech_card_id supplies grounding context (the card's pieces, BOM and type
+// are loaded server-side, read-only); description is the technologist's plain-language brief.
+message GenerateTechCardOperationsRequest {
+  int32 tech_card_id = 1; // context only; the card is loaded to ground the model, never modified
+  string description = 2; // free-text description of how the garment is assembled (required)
+}
+
+// GenerateTechCardOperationsResponse is a PROPOSED draft: operations in the exact shape the card
+// stores (common.TechCardOperation), for the technologist to review, edit and save via
+// UpdateTechCard. This call persists nothing itself.
+message GenerateTechCardOperationsResponse {
+  repeated common.TechCardOperation operations = 1; // drafted operations (unsaved proposal)
+  string model = 2; // the model that produced the draft (provenance)
+  string notes = 3; // optional model notes / assumptions for the reviewer
+}
 
 message DeleteTechCardRequest {
   int32 id = 1;

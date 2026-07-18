@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
@@ -80,6 +81,7 @@ type Config struct {
 	GA4MP             ga4mp.Config             `mapstructure:"ga4mp"`
 	GA4Sync           ga4sync.Config           `mapstructure:"ga4_sync"`
 	BigQuery          bq.Config                `mapstructure:"bigquery"`
+	OpenRouter        openrouter.Config        `mapstructure:"openrouter"`
 }
 
 // LoadConfig loads the configuration from a file and/or environment variables.
@@ -398,4 +400,12 @@ func bindEnvVars() {
 	viper.BindEnv("ga4.circuit_breaker.max_failures", "GA4_CIRCUIT_BREAKER_MAX_FAILURES")
 	viper.BindEnv("ga4.circuit_breaker.open_timeout", "GA4_CIRCUIT_BREAKER_OPEN_TIMEOUT")
 	viper.BindEnv("ga4.circuit_breaker.half_open_max_retries", "GA4_CIRCUIT_BREAKER_HALF_OPEN_MAX_RETRIES")
+
+	// OpenRouter (AI tech-card operation drafting, #66). OPENROUTER_API_KEY is required to
+	// enable the feature; unset => it degrades to a clear "not configured" precondition error.
+	// OPENROUTER_MODEL / BASE_URL / HTTP_TIMEOUT are optional overrides (sane defaults applied).
+	viper.BindEnv("openrouter.api_key", "OPENROUTER_API_KEY")
+	viper.BindEnv("openrouter.model", "OPENROUTER_MODEL")
+	viper.BindEnv("openrouter.base_url", "OPENROUTER_BASE_URL")
+	viper.BindEnv("openrouter.http_timeout", "OPENROUTER_HTTP_TIMEOUT")
 }
