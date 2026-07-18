@@ -25,6 +25,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
@@ -62,6 +63,7 @@ type App struct {
 	tm   *tiermanagement.Worker
 	om   *opexmaterialize.Worker
 	sr   *stripereconcile.Worker
+	fxw  *fxsync.Worker
 	ga4w *ga4sync.Worker
 	bqc  dependency.BQClient
 	re   dependency.RevalidationService
@@ -162,6 +164,19 @@ func (a *App) Start(ctx context.Context) error {
 			slog.String("err", err.Error()),
 		)
 		return err
+	}
+
+	// External FX-rate sync (ECB reference rates → costing_fx_rate). Gated: off unless enabled.
+	// Wired AFTER the base currency is set (above): each fetch expresses rates relative to the
+	// configured base via cache.GetBaseCurrency().
+	if a.c.FxSync.Enabled {
+		a.fxw = fxsync.New(&a.c.FxSync, a.db.TechCards())
+		if err = a.fxw.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start fx sync worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
@@ -497,6 +512,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.om != nil {
 		_ = a.om.Stop()
 	}
+	if a.fxw != nil {
+		_ = a.fxw.Stop()
+	}
 	if a.sr != nil {
 		_ = a.sr.Stop()
 	}
@@ -573,6 +591,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.om != nil {
 		addWorker(a.om)
+	}
+	if a.fxw != nil {
+		addWorker(a.fxw)
 	}
 	if a.sr != nil {
 		addWorker(a.sr)

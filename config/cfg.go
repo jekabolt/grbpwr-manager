@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
+	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
@@ -72,6 +73,7 @@ type Config struct {
 	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
 	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
 	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
+	FxSync            fxsync.Config            `mapstructure:"fx_sync"`
 	Rates             RatesConfig              `mapstructure:"rates"`
 	Security          SecurityConfig           `mapstructure:"security"`
 	StripePayment     stripe.Config            `mapstructure:"stripe_payment"`
@@ -343,6 +345,12 @@ func bindEnvVars() {
 	// Stripe reconcile (orphaned pre-order PaymentIntents)
 	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")
 	viper.BindEnv("stripe_reconcile.pre_order_threshold", "STRIPE_RECONCILE_PRE_ORDER_THRESHOLD")
+
+	// FX sync (external ECB reference rates → costing_fx_rate)
+	viper.BindEnv("fx_sync.enabled", "FX_SYNC_ENABLED")
+	viper.BindEnv("fx_sync.source_url", "FX_SYNC_SOURCE_URL")
+	viper.BindEnv("fx_sync.refresh_interval", "FX_SYNC_REFRESH_INTERVAL")
+	viper.BindEnv("fx_sync.http_timeout", "FX_SYNC_HTTP_TIMEOUT")
 
 	// Rates (base currency only; no exchange rates)
 	viper.BindEnv("rates.base_currency", "RATES_BASE_CURRENCY")

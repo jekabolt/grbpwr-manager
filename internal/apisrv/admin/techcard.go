@@ -17,7 +17,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/stylenumber"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
-	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -393,15 +392,31 @@ func (s *Server) costingFx(ctx context.Context) dto.CostingFx {
 	return dto.CostingFx{ToBase: rates, Base: cache.GetBaseCurrency()}
 }
 
-// GetCostingFxRates returns every stored manual FX rate for the admin management surface.
+// GetCostingFxRates returns the CURRENT effective FX rate per currency (the latest valid_from on or
+// before today), not the full dated history. The rates are auto-maintained by the fxsync ECB worker,
+// so the stored history grows daily and only the effective rate is useful to clients (the admin
+// margin view and the OPEX/dev-cost base-currency previews). Manual entry has been removed:
+// UpsertCostingFxRates is no longer implemented (the RPC falls back to Unimplemented).
 func (s *Server) GetCostingFxRates(ctx context.Context, _ *pb_admin.GetCostingFxRatesRequest) (*pb_admin.GetCostingFxRatesResponse, error) {
 	rates, err := s.repo.TechCards().ListCostingFxRates(ctx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list costing fx rates", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list costing fx rates")
 	}
+	// ListCostingFxRates is ordered by currency, valid_from DESC; keep the first row per currency
+	// effective today, mirroring GetCostingFxRatesToBase's as-of semantics and bounding the payload
+	// to one row per currency regardless of how much history has accumulated.
+	now := time.Now().UTC()
+	seen := make(map[string]struct{}, len(rates))
 	out := make([]*pb_admin.CostingFxRate, 0, len(rates))
 	for _, r := range rates {
+		if _, ok := seen[r.Currency]; ok {
+			continue
+		}
+		if r.ValidFrom.After(now) {
+			continue // not yet effective — look for an earlier row for this currency
+		}
+		seen[r.Currency] = struct{}{}
 		out = append(out, &pb_admin.CostingFxRate{
 			Currency:   r.Currency,
 			RateToBase: &pb_decimal.Decimal{Value: r.RateToBase.String()},
@@ -409,36 +424,6 @@ func (s *Server) GetCostingFxRates(ctx context.Context, _ *pb_admin.GetCostingFx
 		})
 	}
 	return &pb_admin.GetCostingFxRatesResponse{Rates: out}, nil
-}
-
-// UpsertCostingFxRates inserts or updates manual FX rates (by currency + effective date).
-func (s *Server) UpsertCostingFxRates(ctx context.Context, req *pb_admin.UpsertCostingFxRatesRequest) (*pb_admin.UpsertCostingFxRatesResponse, error) {
-	ents := make([]entity.CostingFxRate, 0, len(req.Rates))
-	for _, r := range req.Rates {
-		ccy := strings.ToUpper(strings.TrimSpace(r.Currency))
-		// costing_fx_rate is the accounting FX table used to fold EXPENSE currencies to base, so it
-		// accepts any expense currency (supported selling currencies plus USDT), never a raw 3-letter code.
-		if !dto.IsExpenseCurrency(ccy) {
-			return nil, status.Errorf(codes.InvalidArgument, "currency must be a supported currency or USDT, got %q", r.Currency)
-		}
-		if r.RateToBase == nil {
-			return nil, status.Errorf(codes.InvalidArgument, "rate_to_base is required for %s", ccy)
-		}
-		rate, err := decimal.NewFromString(r.RateToBase.Value)
-		if err != nil || !rate.IsPositive() {
-			return nil, status.Errorf(codes.InvalidArgument, "rate_to_base must be a positive number for %s", ccy)
-		}
-		validFrom := time.Now().UTC().Truncate(24 * time.Hour)
-		if r.ValidFrom != nil {
-			validFrom = r.ValidFrom.AsTime().UTC().Truncate(24 * time.Hour)
-		}
-		ents = append(ents, entity.CostingFxRate{Currency: ccy, RateToBase: rate, ValidFrom: validFrom})
-	}
-	if err := s.repo.TechCards().UpsertCostingFxRates(ctx, ents); err != nil {
-		slog.Default().ErrorContext(ctx, "can't upsert costing fx rates", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't upsert costing fx rates")
-	}
-	return &pb_admin.UpsertCostingFxRatesResponse{}, nil
 }
 
 // DeleteTechCard deletes a tech card by id (nested sections cascade). A readable field-tagged

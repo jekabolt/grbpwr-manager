@@ -263,6 +263,12 @@ envs:
 - key: RATES_BASE_CURRENCY
   scope: RUN_TIME
   value: EUR
+- key: FX_SYNC_ENABLED
+  scope: RUN_TIME
+  value: "true"
+- key: FX_SYNC_REFRESH_INTERVAL
+  scope: RUN_TIME
+  value: 12h
 - key: STRIPE_PAYMENT_SECRET_KEY
   scope: RUN_TIME
   type: SECRET
