@@ -108,6 +108,13 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 	if markerEff.Valid && (markerEff.Decimal.IsNegative() || markerEff.Decimal.GreaterThan(decimal.NewFromInt(100))) {
 		return nil, fmt.Errorf("marker_efficiency_pct must be between 0 and 100")
 	}
+	actualWastage, err := nullDecimalFromPb(pb.ActualWastagePercent)
+	if err != nil {
+		return nil, fmt.Errorf("actual_wastage_percent: %w", err)
+	}
+	if actualWastage.Valid && (actualWastage.Decimal.IsNegative() || actualWastage.Decimal.GreaterThan(decimal.NewFromInt(100))) {
+		return nil, fmt.Errorf("actual_wastage_percent must be between 0 and 100")
+	}
 	lines, err := convertPbProductionRunLines(pb.Lines)
 	if err != nil {
 		return nil, err
@@ -126,10 +133,11 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		Status:              status,
 		StartedAt:           nullTimeFromPbTimestamp(pb.StartedAt),
 		ReceivedAt:          nullTimeFromPbTimestamp(pb.ReceivedAt),
-		MarkerEfficiencyPct: markerEff,
-		MarkerNotes:         nullStringFromPb(pb.MarkerNotes),
-		Notes:               nullStringFromPb(pb.Notes),
-		Lines:               lines,
+		MarkerEfficiencyPct:  markerEff,
+		MarkerNotes:          nullStringFromPb(pb.MarkerNotes),
+		ActualWastagePercent: actualWastage,
+		Notes:                nullStringFromPb(pb.Notes),
+		Lines:                lines,
 		Costs:               costs,
 		Markers:             markers,
 	}, nil
@@ -333,10 +341,11 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 			Status:              productionRunStatusEntityToPb[r.Status],
 			StartedAt:           pbTimestampFromNullTime(r.StartedAt),
 			ReceivedAt:          pbTimestampFromNullTime(r.ReceivedAt),
-			MarkerEfficiencyPct: pbDecimalFromNull(r.MarkerEfficiencyPct),
-			MarkerNotes:         pbStringFromNull(r.MarkerNotes),
-			Notes:               pbStringFromNull(r.Notes),
-			Lines:               productionRunLinesToPb(r.Lines),
+			MarkerEfficiencyPct:  pbDecimalFromNull(r.MarkerEfficiencyPct),
+			MarkerNotes:          pbStringFromNull(r.MarkerNotes),
+			ActualWastagePercent: pbDecimalFromNull(r.ActualWastagePercent),
+			Notes:                pbStringFromNull(r.Notes),
+			Lines:                productionRunLinesToPb(r.Lines),
 			Costs:               productionRunCostsToPb(r.Costs),
 			Markers:             productionRunMarkersToPb(r.Markers),
 		},

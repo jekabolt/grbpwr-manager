@@ -210,7 +210,13 @@ type ProductionRunInsert struct {
 	PlannedCurrency     sql.NullString        `db:"planned_currency"`
 	MarkerEfficiencyPct decimal.NullDecimal   `db:"marker_efficiency_pct"` // % fabric utilisation from the nesting software (NF-06)
 	MarkerNotes         sql.NullString        `db:"marker_notes"`          // free marker/раскладка parameters
-	Notes               sql.NullString        `db:"notes"`
+	// ActualWastagePercent is the run's ACTUAL cutting wastage % (0..100), entered per run once the
+	// marker/lay is known — it varies run to run with how tightly the pieces nest on the fabric. When
+	// set it OVERRIDES the BOM line's estimate wastage_percent in the run's cost calc (the planned-cost
+	// snapshot from the live card + the material plan); NULL falls back to the BOM line's estimate. It
+	// refines the PLAN/estimate side only — the run's ACTUAL cost still comes from real material issues.
+	ActualWastagePercent decimal.NullDecimal `db:"actual_wastage_percent"`
+	Notes                sql.NullString      `db:"notes"`
 	Lines               []ProductionRunLine   `db:"-"`
 	Costs               []ProductionRunCost   `db:"-"`
 	Markers             []ProductionRunMarker `db:"-"` // imported nesting markers (gap-07 v2 E)

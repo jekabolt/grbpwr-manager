@@ -355,7 +355,11 @@ func (s *Server) snapshotPlannedCost(ctx context.Context, ins *entity.Production
 		slog.Default().ErrorContext(ctx, "can't load tech card for planned cost", slog.String("err", err.Error()))
 		return status.Error(codes.Internal, "can't load tech card")
 	}
-	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
+	// Snapshot from the live card, using the run's ACTUAL cutting wastage when set (it overrides every
+	// BOM line's estimate for this run's plan) — unset falls back to each line's BOM estimate. This
+	// keeps plan-vs-actual honest about the run's real marker/lay efficiency (the actuals side is
+	// measured from material issues). The release path above is a frozen scalar and is left as-is.
+	unit, currency := dto.ComputeTechCardUnitCostWithWastage(card, s.costingFx(ctx), ins.ActualWastagePercent)
 	ins.PlannedUnitCost = unit
 	if unit.Valid && currency != "" {
 		ins.PlannedCurrency = sql.NullString{String: currency, Valid: true}
