@@ -24,7 +24,6 @@ import (
 type AnalyticsResult struct {
 	// Part 1 — operator-entry config rows written.
 	VatRateRows         int
-	FxRateRows          int
 	OpexLineRows        int
 	OpexRecurringRows   int
 	EmployeeRows        int
@@ -161,22 +160,9 @@ func (s *Seeder) seedAnalyticsConfig(ctx context.Context, cat []CatalogResult, p
 		s.logf("  vat rates: %d countries", len(vat))
 	}
 
-	// Costing FX rates to base (EUR). Base currency row + the non-EUR seed currencies.
-	fx := []*admin.CostingFxRate{
-		{Currency: "EUR", RateToBase: decv("1.00"), ValidFrom: timestamppb.New(now.AddDate(-1, 0, 0))},
-		{Currency: "USD", RateToBase: decv("0.92"), ValidFrom: timestamppb.New(now.AddDate(-1, 0, 0))},
-		{Currency: "GBP", RateToBase: decv("1.17"), ValidFrom: timestamppb.New(now.AddDate(-1, 0, 0))},
-		{Currency: "PLN", RateToBase: decv("0.23"), ValidFrom: timestamppb.New(now.AddDate(-1, 0, 0))},
-		{Currency: "JPY", RateToBase: decv("0.0062"), ValidFrom: timestamppb.New(now.AddDate(-1, 0, 0))},
-		{Currency: "CNY", RateToBase: decv("0.13"), ValidFrom: timestamppb.New(now.AddDate(-1, 0, 0))},
-		{Currency: "KRW", RateToBase: decv("0.00069"), ValidFrom: timestamppb.New(now.AddDate(-1, 0, 0))},
-	}
-	if _, err := s.C.UpsertCostingFxRates(ctx, &admin.UpsertCostingFxRatesRequest{Rates: fx}); err != nil {
-		r.warn(s, "UpsertCostingFxRates: %v", err)
-	} else {
-		r.FxRateRows = len(fx)
-		s.logf("  fx rates: %d currencies", len(fx))
-	}
+	// Costing FX rates are no longer seeded here: the fxsync worker auto-populates costing_fx_rate
+	// from ECB reference rates on the beta backend (FX_SYNC_ENABLED=true), so a manual seed would be
+	// immediately superseded. Manual FX entry has been removed.
 
 	// One-off opex lines across the last 3 months (feeds operating result / opex_total).
 	var opex []*admin.OpexLineInsert
