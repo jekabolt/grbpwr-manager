@@ -2,9 +2,9 @@ package product
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -503,7 +503,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash
 	FROM product p
 	JOIN tech_card sty ON sty.id = p.style_id
-	JOIN media m ON p.thumbnail_id = m.id
+	LEFT JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id
 	WHERE %s`, strings.Join(whereClauses, " AND "))
 
@@ -520,7 +520,8 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 
 	type productDetailsResult struct {
 		productQueryResult
-		ThumbnailCreatedAt time.Time `db:"thumbnail_created_at"`
+		// NULL when the colourway has no thumbnail (DRAFT, LEFT JOIN media miss) — see the LEFT JOIN above.
+		ThumbnailCreatedAt sql.NullTime `db:"thumbnail_created_at"`
 	}
 
 	prdResult, err := storeutil.QueryNamedOne[productDetailsResult](ctx, s.DB, query, params)
@@ -611,7 +612,9 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	}
 
 	product := prdResult.toProduct(translationMap[pid])
-	product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt
+	if prdResult.ThumbnailCreatedAt.Valid {
+		product.ProductDisplay.Thumbnail.CreatedAt = prdResult.ThumbnailCreatedAt.Time
+	}
 	if product.ProductDisplay.SecondaryThumbnail != nil && prdResult.SecondaryThumbnailCreatedAt.Valid {
 		product.ProductDisplay.SecondaryThumbnail.CreatedAt = prdResult.SecondaryThumbnailCreatedAt.Time
 	}
@@ -661,12 +664,12 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		` + soldOutSelect + `
 	FROM product p
 	JOIN tech_card sty ON sty.id = p.style_id
-	JOIN media m ON p.thumbnail_id = m.id
+	LEFT JOIN media m ON p.thumbnail_id = m.id
 	LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 
 	countQuery := `SELECT COUNT(DISTINCT p.id) FROM product p
-	JOIN tech_card sty ON sty.id = p.style_id 
-		JOIN media m ON p.thumbnail_id = m.id
+	JOIN tech_card sty ON sty.id = p.style_id
+		LEFT JOIN media m ON p.thumbnail_id = m.id
 		LEFT JOIN media sm ON p.secondary_thumbnail_id = sm.id` + priceJoin
 
 	if len(whereClauses) > 0 {
