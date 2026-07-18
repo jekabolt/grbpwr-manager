@@ -93,10 +93,16 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				}
 				continue
 			}
-			// wastage grosses the norm up (e.g. 5% → ×1.05); missing → no wastage.
+			// wastage grosses the norm up (e.g. 5% → ×1.05). The run's ACTUAL cutting wastage overrides
+			// the BOM line's estimate when set (same fallback as the run's planned-cost snapshot); with
+			// neither set there is no wastage.
+			wastage := bom.WastagePercent
+			if run.ActualWastagePercent.Valid {
+				wastage = run.ActualWastagePercent
+			}
 			factor := decimal.NewFromInt(1)
-			if bom.WastagePercent.Valid {
-				factor = factor.Add(bom.WastagePercent.Decimal.Div(decimal.NewFromInt(100)))
+			if wastage.Valid {
+				factor = factor.Add(wastage.Decimal.Div(decimal.NewFromInt(100)))
 			}
 			add := norm.Mul(decimal.NewFromInt(int64(ln.PlannedQty))).Mul(factor)
 

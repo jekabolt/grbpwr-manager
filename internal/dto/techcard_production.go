@@ -757,6 +757,35 @@ func ComputeTechCardUnitCost(tc *entity.TechCard, fx CostingFx) (decimal.NullDec
 	return decimal.NullDecimal{Decimal: v, Valid: true}, pb.Currency
 }
 
+// ComputeTechCardUnitCostWithWastage is ComputeTechCardUnitCost with a production run's ACTUAL
+// cutting wastage substituted for every BOM line's estimate wastage_percent — used to snapshot a
+// run's planned unit cost from the run's real cutting wastage instead of the style's per-line
+// estimate. When override is unset it is identical to ComputeTechCardUnitCost (each line keeps its
+// own BOM estimate), so the "run actual else BOM estimate" fallback is expressed purely by whether
+// override is valid. The override is applied to a shallow copy of the card; the caller's card is
+// untouched.
+func ComputeTechCardUnitCostWithWastage(tc *entity.TechCard, fx CostingFx, override decimal.NullDecimal) (decimal.NullDecimal, string) {
+	return ComputeTechCardUnitCost(cardWithRunWastage(tc, override), fx)
+}
+
+// cardWithRunWastage returns tc unchanged when override is unset; otherwise a shallow copy whose
+// every BOM line's wastage_percent is replaced by override. Only measured/per-size usage is grossed
+// by wastage in the costing math (countable trims ignore it), so overriding every line applies the
+// run's single cutting-wastage figure to all cut materials and is inert for the rest. Only the
+// BomItems slice is cloned — the field the costing reads through the usage→bom index.
+func cardWithRunWastage(tc *entity.TechCard, override decimal.NullDecimal) *entity.TechCard {
+	if tc == nil || !override.Valid {
+		return tc
+	}
+	cp := *tc
+	cp.BomItems = make([]entity.TechCardBomItem, len(tc.BomItems))
+	copy(cp.BomItems, tc.BomItems)
+	for i := range cp.BomItems {
+		cp.BomItems[i].WastagePercent = override
+	}
+	return &cp
+}
+
 // ComputeTechCardCostBreakdownBase decomposes a tech card's per-garment cost into base-currency
 // (EUR) components — the same articles ComputeTechCardUnitCost rolls into one number — so the
 // seed can snapshot them onto product.cost_breakdown for COGS-structure analytics. Components

@@ -144,6 +144,11 @@ message ProductionRunInsert {
   google.type.Decimal marker_efficiency_pct = 10; // % fabric utilisation from the nesting software (NF-06)
   string marker_notes = 11; // free marker / раскладка parameters
   repeated ProductionRunMarker markers = 12; // imported nesting markers (gap-07 v2 E)
+  // Run ACTUAL cutting wastage % (0..100), entered per run once the marker/lay is known. When set it
+  // OVERRIDES the BOM line's estimate wastage_percent in the run's cost calc (planned-cost snapshot +
+  // material plan); unset falls back to the BOM estimate. Refines the plan side only — the run's ACTUAL
+  // cost still derives from real material issues.
+  google.type.Decimal actual_wastage_percent = 13;
   reserved 7; // was `repeated ProductionRunSize sizes` (flat per-size grid; replaced by lines)
 }
 
