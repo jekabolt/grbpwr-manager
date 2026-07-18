@@ -234,6 +234,13 @@ func RefundIdempotencyKey(orderUUID string, orderItemIDs []int32, refundShipping
 // RefundIdempotencyKey) so that retries and concurrent identical refunds dedupe at
 // Stripe instead of issuing a second refund.
 func (p *Processor) Refund(ctx context.Context, payment entity.Payment, orderUUID string, amount *decimal.Decimal, currency string, idempotencyKey string) error {
+	// Stripe boundary: never push a priced-but-not-Stripe-chargeable currency (USDT) to Stripe. A USDT
+	// order never has a PaymentIntent (ClientSecret unset, checked below) and so already can't reach
+	// here today, but this is defence-in-depth guaranteeing no currency-carrying Stripe call can leak USDT.
+	if !dto.IsStripeChargeable(currency) {
+		return fmt.Errorf("currency %s cannot be charged via Stripe; it is settled manually", currency)
+	}
+
 	ok := payment.ClientSecret.Valid
 	if !ok {
 		return fmt.Errorf("payment has no client secret (PaymentIntent)")

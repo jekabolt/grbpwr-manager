@@ -10,6 +10,11 @@
 --   (costing_fx_rate, material_price, material_lot, material_stock_movement, tech_card_bom_item,
 --   tech_card_costing, tech_card_dev_expense, tech_card_release, production_run.planned_currency,
 --   production_run_cost, opex_line, opex_recurring, employee.default_currency).
+-- Two more tech-card-family columns are guarded below (tech_card.currency, tech_card_construction.
+-- labour_rate_currency) even though they are not part of the live surface above: 0079's forward
+-- migration DROPPED both (added 0067/0072, dropped 0079) and nothing re-adds them, so today
+-- COUNT = 0 and their guard is a no-op. They are kept here only because 0079's Down/rollback path
+-- re-adds both as VARCHAR(3), so a widen guard for them costs nothing and closes that edge case.
 -- The three 3-char color-code columns (color.code, product.color_code, migration_0151_merge_conflict.
 -- color_code) are deliberately NOT touched — they are not currency codes.
 --
@@ -119,6 +124,20 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 -- tech_card_release.currency  CHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_release' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE tech_card_release MODIFY COLUMN currency CHAR(4) NULL COMMENT ''currency of unit_cost''', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- tech_card.currency  VARCHAR(3) NULL  (added 0067, DROPPED by 0079's forward migration; not a
+-- live column today — see the file header note. Guarded defensively in case 0079 is ever rolled
+-- back (its Down path re-adds this column as VARCHAR(3)); COUNT = 0 now, so this is a no-op.
+SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
+SET @sql := IF(@need, 'ALTER TABLE tech_card MODIFY COLUMN currency VARCHAR(4) NULL COMMENT ''ISO 4217 for target cost/price and costing''', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- tech_card_construction.labour_rate_currency  VARCHAR(3) NULL  (added 0072, DROPPED by 0079's
+-- forward migration; not live today, guarded for the same rollback-edge-case reason as
+-- tech_card.currency above. COUNT = 0 now, so this is a no-op.
+SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_construction' AND COLUMN_NAME = 'labour_rate_currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
+SET @sql := IF(@need, 'ALTER TABLE tech_card_construction MODIFY COLUMN labour_rate_currency VARCHAR(4) NULL COMMENT ''ISO 4217 for labour_rate''', 'SELECT 1');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 
 -- +migrate Down
