@@ -73,7 +73,14 @@ func (e *HTTPSendError) Error() string {
 }
 
 type Config struct {
-	APIKey            string        `mapstructure:"sendgrid_api_key"`
+	APIKey string `mapstructure:"sendgrid_api_key"`
+	// Disabled, when true, suppresses BULK outbound email at the provider level
+	// (both the inline send and the worker send) — order/tier/promo/support/etc.
+	// Account sign-in emails (OTP + magic link, see alwaysSendSubjects) are the
+	// exception and still dispatch, so beta login keeps working. Suppressed emails
+	// are still built and recorded, just not sent to Resend. Used on beta to avoid
+	// burning the Resend API quota during data seeding. Set via MAILER_DISABLED.
+	Disabled          bool          `mapstructure:"disabled"`
 	FromEmail         string        `mapstructure:"from_email"`
 	FromName          string        `mapstructure:"from_email_name"`
 	ReplyTo           string        `mapstructure:"reply_to"`
@@ -143,6 +150,10 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 	}
 
 	applyMailerRetryDefaults(c)
+
+	if c.Disabled {
+		slog.Default().Warn("mailer is DISABLED (MAILER_DISABLED) — bulk emails suppressed; only account sign-in (OTP/magic link) is still dispatched")
+	}
 
 	// Initialize the resend client with a bounded HTTP timeout so a stalled
 	// Resend connection cannot hang the caller indefinitely.
@@ -408,6 +419,9 @@ func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
 }
 
 func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
+	if m.suppressed(ser.Subject) {
+		return nil // bulk mail suppressed (e.g. beta seeding) — treat as sent, dispatch nothing
+	}
 
 	resp, err := m.cli.PostEmails(ctx, *ser)
 	if resp != nil {
@@ -429,6 +443,9 @@ func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
 }
 
 func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) error {
+	if m.suppressed(ser.Subject) {
+		return nil // bulk mail suppressed (e.g. beta seeding) — treat as sent, dispatch nothing
+	}
 	normalizedTo, err := validateEmailAddress(ser.To)
 	if err != nil {
 		return fmt.Errorf("invalid recipient in stored email: %w", err)
