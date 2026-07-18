@@ -913,6 +913,15 @@ func validateColorwayPrices(prices []entity.ColorwayPriceInsert) error {
 			continue
 		}
 
+		// A priced-but-not-Stripe-chargeable currency (USDT) is accounting-only — settled manually and
+		// never charged through Stripe, so the per-currency Stripe MINIMUM does not apply to it.
+		// ValidatePriceMeetsMinimum has no minimum for such a currency and would reject it as
+		// "unsupported currency", failing every colourway save that carries a USDT price. Skip the
+		// minimum check for it; the strictly-positive check above still applies.
+		if !currency.IsStripeChargeable(cur) {
+			continue
+		}
+
 		rounded := dto.RoundForCurrency(price.Price, cur)
 		if err := dto.ValidatePriceMeetsMinimum(rounded, cur); err != nil {
 			belowMinCurrencies = append(belowMinCurrencies, err.Error())
