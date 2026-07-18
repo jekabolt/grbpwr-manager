@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -29,6 +31,33 @@ func (s *Server) AddPromo(ctx context.Context, req *pb_admin.AddPromoRequest) (*
 		return nil, status.Errorf(codes.Internal, "can't add promo")
 	}
 	return &pb_admin.AddPromoResponse{}, nil
+}
+
+// UpdatePromoCode updates an existing promo code in place (mutable fields incl. toggling `allowed`),
+// identified by req.Promo.Code, instead of the delete-then-recreate that lost the row's identity.
+func (s *Server) UpdatePromoCode(ctx context.Context, req *pb_admin.UpdatePromoCodeRequest) (*pb_admin.UpdatePromoCodeResponse, error) {
+	pi, err := dto.ConvertPbCommonPromoToEntity(req.Promo)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't convert pb promo to entity promo",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.InvalidArgument, "can't convert pb promo to entity promo")
+	}
+	if pi.Code == "" {
+		return nil, status.Error(codes.InvalidArgument, "promo code is required")
+	}
+
+	err = s.repo.Promo().UpdatePromoCode(ctx, pi)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "promo code not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't update promo code",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "can't update promo code")
+	}
+	return &pb_admin.UpdatePromoCodeResponse{}, nil
 }
 
 // delete_promo.go

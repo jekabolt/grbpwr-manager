@@ -49,6 +49,12 @@ message Order {
   string refund_reason = 9;
   string order_comment = 10;
   google.type.Decimal refunded_amount = 11;
+  // Buyer identity for the order-list projection: populated by the paged ListOrders query (which
+  // already joins buyer), so the admin orders list shows who placed the order instead of a raw UUID.
+  // Empty on read paths that don't project the buyer — OrderFull carries a full Buyer message instead.
+  string buyer_email = 12;
+  string buyer_first_name = 13;
+  string buyer_last_name = 14;
 }
 
 message OrderItem {

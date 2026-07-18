@@ -51,6 +51,44 @@ func (s *Store) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) err
 	return nil
 }
 
+// UpdatePromoCode updates an existing promo code in place, identified by promo.Code. It replaces the
+// mutable fields (free_shipping / discount / expiration / start / voucher / allowed — including
+// re-enabling a disabled code via allowed=true) without touching the row's id, so no usage/creation
+// data is lost (the wave-1 delete-then-recreate workaround dropped it). A code that does not exist is
+// reported as sql.ErrNoRows (mapped to NOT_FOUND upstream).
+func (s *Store) UpdatePromoCode(ctx context.Context, promo *entity.PromoCodeInsert) error {
+	expiration := startOfDay(promo.Expiration)
+	rows, err := storeutil.ExecNamedRows(ctx, s.DB, `
+	UPDATE promo_code
+	SET free_shipping = :freeShipping, discount = :discount, expiration = :expiration,
+	    start = :start, voucher = :voucher, allowed = :allowed
+	WHERE code = :code`, map[string]any{
+		"code":         promo.Code,
+		"freeShipping": promo.FreeShipping,
+		"discount":     promo.Discount,
+		"expiration":   expiration,
+		"start":        promo.Start,
+		"voucher":      promo.Voucher,
+		"allowed":      promo.Allowed,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update promo code: %w", err)
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	// Refresh the in-memory cache from DB truth so the row's id and the normalized expiration stay in
+	// sync (the promo cache is keyed by code, so this replaces the existing entry in place).
+	updated, err := storeutil.QueryNamedOne[entity.PromoCode](ctx, s.DB,
+		`SELECT * FROM promo_code WHERE code = :code`, map[string]any{"code": promo.Code})
+	if err != nil {
+		return fmt.Errorf("failed to reload updated promo code: %w", err)
+	}
+	cache.AddPromo(updated)
+
+	return nil
+}
+
 // ListPromos returns a paginated list of promo codes.
 func (s *Store) ListPromos(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.PromoCode, error) {
 	query := fmt.Sprintf(`

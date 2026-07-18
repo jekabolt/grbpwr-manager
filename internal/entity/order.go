@@ -106,6 +106,13 @@ type Order struct {
 	PromoDiscountPct  decimal.NullDecimal `db:"promo_discount_pct"`
 	PromoFreeShipping sql.NullBool        `db:"promo_free_shipping"`
 	PromoCodeSnapshot sql.NullString      `db:"promo_code_snapshot"`
+	// Buyer identity for the admin order-list projection only: populated by
+	// GetOrdersByStatusAndPaymentTypePaged (which joins buyer), and empty on the many SELECT co.* paths
+	// that don't project the buyer (those carry the full Buyer via OrderFull instead). Surfaced on
+	// common.Order so the orders list shows who placed the order rather than a raw UUID.
+	BuyerEmail     string `db:"buyer_email"`
+	BuyerFirstName string `db:"buyer_first_name"`
+	BuyerLastName  string `db:"buyer_last_name"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
