@@ -1213,13 +1213,25 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 	out := make([]*pb_common.AdminColorwayRef, 0, len(cws))
 	for i := range cws {
 		c := &cws[i]
-		out = append(out, &pb_common.AdminColorwayRef{
-			ColorwayId: int32(c.Id),
-			BaseSku:    c.BaseSku.String,
-			ColorCode:  c.ColorCode,
-			Status:     pb_common.ColorwayLifecycleStatus(c.Status),
-			Usages:     ConvertRecipeUsagesToPb(c.Usages, bomItems, orderQtyBySize),
-		})
+		ref := &pb_common.AdminColorwayRef{
+			ColorwayId:         int32(c.Id),
+			BaseSku:            c.BaseSku.String,
+			ColorCode:          c.ColorCode,
+			Status:             pb_common.ColorwayLifecycleStatus(c.Status),
+			Usages:             ConvertRecipeUsagesToPb(c.Usages, bomItems, orderQtyBySize),
+			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
+			LabDipRound:        c.LabDipRound.Int32,
+			LabDipDecidedBy:    c.LabDipDecidedBy.String,
+			LabDipRejectReason: c.LabDipRejectReason.String,
+			LockVersion:        int32(c.LockVersion),
+		}
+		if c.LabDipSubmittedAt.Valid {
+			ref.LabDipSubmittedAt = timestamppb.New(c.LabDipSubmittedAt.Time)
+		}
+		if c.LabDipDecidedAt.Valid {
+			ref.LabDipDecidedAt = timestamppb.New(c.LabDipDecidedAt.Time)
+		}
+		out = append(out, ref)
 	}
 	return out
 }

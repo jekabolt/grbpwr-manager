@@ -123,13 +123,16 @@ func (s *Store) GetOrderByPaymentIntentId(ctx context.Context, paymentIntentId s
 // GetOrdersByStatusAndPaymentTypePaged retrieves orders filtered by status, payment method, email, etc.
 func (s *Store) GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, orderUUID string, statusId, paymentMethodId, orderId, lim, off int, of entity.OrderFactor) ([]entity.Order, error) {
 	query := fmt.Sprintf(`
-		SELECT 
-			co.*
-		FROM 
-			customer_order co 
-		INNER JOIN 
+		SELECT
+			co.*,
+			b.email AS buyer_email,
+			b.first_name AS buyer_first_name,
+			b.last_name AS buyer_last_name
+		FROM
+			customer_order co
+		INNER JOIN
 			payment p ON co.id = p.order_id
-		INNER JOIN 
+		INNER JOIN
 			buyer b ON co.id = b.order_id
 		WHERE 
 			(:status = 0 OR co.order_status_id = :status) 

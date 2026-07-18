@@ -712,7 +712,14 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	for i := range cards {
 		id := cards[i].Id
-		cards[i].Colorways = colorwaysByCard[id]
+		cws := colorwaysByCard[id]
+		for j := range cws {
+			// The colourway's optimistic-lock token is its style's shared tech_card.lock_version (R2/R4);
+			// surface it on each derived AdminColorwayRef so a per-colourway lab-dip edit can be
+			// optimistically locked straight from the ref (UpdateColorway.expected_colorway_version).
+			cws[j].LockVersion = cards[i].LockVersion
+		}
+		cards[i].Colorways = cws
 		cards[i].BomItems = bomByCard[id]
 		cards[i].Details = detailsByCard[id]
 		cards[i].Pieces = piecesByCard[id]

@@ -234,6 +234,9 @@ func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, e
 		RefundedAmount: &pb_decimal.Decimal{Value: eOrder.RefundedAmountDecimal().String()},
 		RefundReason:   eOrder.RefundReason.String,
 		OrderComment:   eOrder.OrderComment.String,
+		BuyerEmail:     eOrder.BuyerEmail,
+		BuyerFirstName: eOrder.BuyerFirstName,
+		BuyerLastName:  eOrder.BuyerLastName,
 	}
 	if eOrder.PromoId.Valid {
 		pbOrder.PromoId = int32(eOrder.PromoId.Int32)

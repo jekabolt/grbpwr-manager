@@ -386,6 +386,17 @@ service AdminService {
     };
   }
 
+  // Updates an existing promotional code in place — the mutable fields (free_shipping, discount,
+  // expiration, start, voucher and the `allowed` on/off toggle), identified by promo.code — without
+  // the delete+recreate that drops the row's identity and history. Re-enables a disabled code by
+  // sending allowed=true.
+  rpc UpdatePromoCode(UpdatePromoCodeRequest) returns (UpdatePromoCodeResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/promo/update"
+      body: "*"
+    };
+  }
+
   // Lists all promotional codes
   rpc ListPromos(ListPromosRequest) returns (ListPromosResponse) {
     option (google.api.http) = {get: "/api/admin/promo/list"};
@@ -2160,6 +2171,13 @@ message AddPromoRequest {
   common.PromoCodeInsert promo = 1;
 }
 message AddPromoResponse {}
+
+message UpdatePromoCodeRequest {
+  // The promo to update, identified by promo.code. The mutable fields are replaced in place; the
+  // row's id and any usage/creation data are preserved (no delete+recreate).
+  common.PromoCodeInsert promo = 1;
+}
+message UpdatePromoCodeResponse {}
 
 message ListPromosRequest {
   int32 limit = 1;

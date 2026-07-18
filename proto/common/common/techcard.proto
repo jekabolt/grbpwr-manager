@@ -224,6 +224,21 @@ message AdminColorwayRef {
   // fields (line_total/size_run_total) are stripped for an account without costing:read, same as
   // the rest of the tech-card read (stripTechCardCosting).
   repeated TechCardColorwayUsage usages = 5;
+  // Lab-dip lifecycle mirrored from the colourway's development submessage (ColorwayDevelopmentInsert),
+  // so the tech-card colourways tab can READ the current lab-dip state inline instead of a second
+  // GetColorwayByID round-trip. These are written through the Colorway write path (UpdateColorway's
+  // development.*), never through the style; here they are output-only.
+  TechCardLabDipStatus lab_dip_status = 6;
+  int32 lab_dip_round = 7;
+  google.protobuf.Timestamp lab_dip_submitted_at = 8;
+  google.protobuf.Timestamp lab_dip_decided_at = 9;
+  string lab_dip_decided_by = 10;
+  string lab_dip_reject_reason = 11;
+  // lock_version is the colourway's optimistic-lock token — its style's shared tech_card.lock_version
+  // (R2/R4). Echo it into UpdateColorwayRequest.expected_colorway_version; a stale value is rejected
+  // (ABORTED). Surfaced on the ref so a per-colourway lab-dip edit is optimistically locked straight
+  // from here, without the caller reaching up to the tech-card's top-level lock_version.
+  int32 lock_version = 12;
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge

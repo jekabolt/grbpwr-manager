@@ -322,6 +322,11 @@ type TechCardColorway struct {
 	// the derived AdminColorwayRef (R1/§3.3). BaseSku is NULL for an unminted draft colourway.
 	BaseSku sql.NullString `db:"sku"`
 	Status  ColorwayStatus `db:"lifecycle_status"`
+	// LockVersion is the colourway's optimistic-lock token surfaced on the derived AdminColorwayRef: it
+	// is the parent style's shared tech_card.lock_version (R2/R4), NOT a product column. It is populated
+	// in enrichMaterials from the owning card and echoed by the admin into
+	// UpdateColorwayRequest.expected_colorway_version for a safe optimistic-locked lab-dip write.
+	LockVersion int `db:"-"`
 	// Usages is the colour's material recipe (in-memory; persisted to
 	// tech_card_colorway_usage). Each entry binds a catalog BOM article to a garment
 	// part, the colour it takes in this colourway, and its consumption.
