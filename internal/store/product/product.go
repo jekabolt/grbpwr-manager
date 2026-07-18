@@ -330,16 +330,40 @@ func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b enti
 		`UPDATE tech_card SET`+styleFieldsSet+` WHERE id = :styleId`, params)
 }
 
-// nullableMediaID maps an unset (<= 0) media id to SQL NULL so a nullable media FK — e.g.
-// product.thumbnail_id (product_ibfk_4 -> media.id) — is satisfied when a DRAFT colourway carries no
-// thumbnail yet. A positive id binds unchanged. Binding a literal 0 would violate the FK (no media row
-// has id 0), which is the colourway-create FK failure this guards against; the column has been nullable
-// since migration 0151.
-func nullableMediaID(id int) sql.NullInt32 {
+// nullableExistingMediaID maps a media id to a bound value that always satisfies the nullable media FK
+// (e.g. product.thumbnail_id / secondary_thumbnail_id -> media.id): an id <= 0, OR a POSITIVE id
+// that no longer resolves to a media row, both bind SQL NULL instead of tripping the FK. A dangling
+// positive id reaches the colourway write path when a client sends a stale media reference — a picker
+// list cached
+// past a media delete, or a Copy of a colourway whose thumbnail media was since removed — and the raw
+// bind would crash the whole create/update with `product_ibfk_4 ... a foreign key constraint fails`.
+// Coercing it to NULL is safe: a colourway may carry no thumbnail until it goes ACTIVE, where
+// checkColorwayHasThumbnail still enforces a real one. The drop is logged so a genuinely wrong id is
+// not lost silently.
+func nullableExistingMediaID(ctx context.Context, db dependency.DB, id int) (sql.NullInt32, error) {
 	if id <= 0 {
-		return sql.NullInt32{}
+		return sql.NullInt32{}, nil
 	}
-	return sql.NullInt32{Int32: int32(id), Valid: true}
+	n, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM media WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return sql.NullInt32{}, fmt.Errorf("check media %d exists: %w", id, err)
+	}
+	if n == 0 {
+		slog.WarnContext(ctx, "colourway write dropped a dangling media reference (bound NULL)",
+			slog.Int("media_id", id))
+		return sql.NullInt32{}, nil
+	}
+	return sql.NullInt32{Int32: int32(id), Valid: true}, nil
+}
+
+// secondaryMediaInput unwraps the optional secondary-thumbnail id to a plain int (0 when unset) so it
+// can share the nullableExistingMediaID existence guard with the primary thumbnail.
+func secondaryMediaInput(v sql.NullInt32) int {
+	if v.Valid {
+		return int(v.Int32)
+	}
+	return 0
 }
 
 func insertProduct(ctx context.Context, db dependency.DB, product *entity.ColorwayInsert, styleId, lifecycleStatus int) (int, error) {
@@ -362,6 +386,17 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 		countryCode = sql.NullString{String: iso2, Valid: true}
 	}
 
+	// Bind media FKs through the existence guard so a stale/deleted thumbnail id becomes NULL rather
+	// than crashing the create on product_ibfk_4 (thumbnail_id -> media.id).
+	thumbnailID, err := nullableExistingMediaID(ctx, db, product.ThumbnailMediaID)
+	if err != nil {
+		return 0, err
+	}
+	secondaryThumbnailID, err := nullableExistingMediaID(ctx, db, secondaryMediaInput(product.SecondaryThumbnailMediaID))
+	if err != nil {
+		return 0, err
+	}
+
 	query := `
 	INSERT INTO product
 	(sku, style_id, preorder, color, color_code, color_hex, country_of_origin, country_code, thumbnail_id, secondary_thumbnail_id, sale_percentage, lifecycle_status, min_tier, cost_price, cost_price_source, cost_price_updated_at)
@@ -377,8 +412,8 @@ func insertProduct(ctx context.Context, db dependency.DB, product *entity.Colorw
 		"colorHexOverride":     product.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      product.ProductBodyInsert.CountryOfOrigin,
 		"countryCode":          countryCode,
-		"thumbnailId":          nullableMediaID(product.ThumbnailMediaID),
-		"secondaryThumbnailId": product.SecondaryThumbnailMediaID,
+		"thumbnailId":          thumbnailID,
+		"secondaryThumbnailId": secondaryThumbnailID,
 		"salePercentage":       product.ProductBodyInsert.SalePercentage,
 		"minTier":              product.ProductBodyInsert.MinTier,
 		"costPrice":            product.CostPrice,
@@ -747,14 +782,23 @@ func updateColorwayRow(ctx context.Context, db dependency.DB, prd *entity.Colorw
 	if iso2, ok := entity.ResolveSeededCountryISO2(prd.ProductBodyInsert.CountryOfOrigin); ok {
 		countryCode = sql.NullString{String: iso2, Valid: true}
 	}
+	// Same dangling-media guard as insertProduct: a stale thumbnail id binds NULL, not an FK crash.
+	thumbnailID, err := nullableExistingMediaID(ctx, db, prd.ThumbnailMediaID)
+	if err != nil {
+		return err
+	}
+	secondaryThumbnailID, err := nullableExistingMediaID(ctx, db, secondaryMediaInput(prd.SecondaryThumbnailMediaID))
+	if err != nil {
+		return err
+	}
 	return storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"preorder":             prd.ProductBodyInsert.Preorder,
 		"colorCode":            prd.ProductBodyInsert.ColorCode,
 		"colorHexOverride":     prd.ProductBodyInsert.ColorHexOverride,
 		"countryOfOrigin":      prd.ProductBodyInsert.CountryOfOrigin,
 		"countryCode":          countryCode,
-		"thumbnailId":          nullableMediaID(prd.ThumbnailMediaID),
-		"secondaryThumbnailId": prd.SecondaryThumbnailMediaID,
+		"thumbnailId":          thumbnailID,
+		"secondaryThumbnailId": secondaryThumbnailID,
 		"salePercentage":       prd.ProductBodyInsert.SalePercentage,
 		"minTier":              prd.ProductBodyInsert.MinTier,
 		"costPrice":            prd.CostPrice,
