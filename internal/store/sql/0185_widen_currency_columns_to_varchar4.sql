@@ -29,116 +29,161 @@
 -- crash + next-boot re-run of the whole file skips every already-widened column, and a column that does
 -- not exist (COUNT = 0) is skipped instead of erroring. ANSI_QUOTES is ON on the managed cluster, so
 -- every string literal is single-quoted and the DEFAULT 'EUR' literal is doubled ('' -> ') inside the
--- dynamic SQL.
+-- dynamic SQL. The PREPARE/EXECUTE/DEALLOCATE trio is ONE STATEMENT PER LINE (never joined on a single
+-- line): sql-migrate splits on ';' at line end, and prod/beta MySQL runs without multiStatements, so a
+-- joined `PREPARE s; EXECUTE s; DEALLOCATE PREPARE s;` is sent as one query and hard-fails with a 1064
+-- syntax error at boot (mirrors the note in 0120/0121; the container test masks it via multiStatements).
 
 -- customer_order.currency  VARCHAR(3) NOT NULL DEFAULT 'EUR'
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'customer_order' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE customer_order MODIFY COLUMN currency VARCHAR(4) NOT NULL DEFAULT ''EUR'' COMMENT ''ISO 4217 currency code (e.g., EUR, USD, JPY, CNY, KRW)''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- product_price.currency  VARCHAR(3) NOT NULL  [UNIQUE (product_id, currency)]
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_price' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE product_price MODIFY COLUMN currency VARCHAR(4) NOT NULL COMMENT ''ISO 4217 currency code (e.g., EUR, USD, JPY, CNY, KRW)''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- shipment_carrier_price.currency  VARCHAR(3) NOT NULL  [UNIQUE (shipment_carrier_id, currency)]
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shipment_carrier_price' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE shipment_carrier_price MODIFY COLUMN currency VARCHAR(4) NOT NULL COMMENT ''ISO 4217 currency code (e.g., EUR, USD, JPY, CNY, KRW, GBP)''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- complimentary_shipping_price.currency  VARCHAR(3) NOT NULL  [UNIQUE (currency)]
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'complimentary_shipping_price' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE complimentary_shipping_price MODIFY COLUMN currency VARCHAR(4) NOT NULL COMMENT ''ISO 4217 currency code (e.g., USD, EUR, JPY, CNY, KRW)''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- product_stock_change_history.paid_currency  VARCHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_stock_change_history' AND COLUMN_NAME = 'paid_currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE product_stock_change_history MODIFY COLUMN paid_currency VARCHAR(4) NULL COMMENT ''ISO 4217 currency code of payment''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- product_stock_change_history.payout_base_currency  VARCHAR(3) NULL DEFAULT 'EUR'
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_stock_change_history' AND COLUMN_NAME = 'payout_base_currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE product_stock_change_history MODIFY COLUMN payout_base_currency VARCHAR(4) NULL DEFAULT ''EUR'' COMMENT ''Base currency for payout (always EUR)''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- costing_fx_rate.currency  CHAR(3) NOT NULL  [PRIMARY KEY (currency, valid_from)]
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'costing_fx_rate' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE costing_fx_rate MODIFY COLUMN currency CHAR(4) NOT NULL COMMENT ''ISO 4217, uppercase''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- material_price.currency  CHAR(3) NOT NULL  [PRIMARY KEY (material_id, valid_from, currency)]
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_price' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE material_price MODIFY COLUMN currency CHAR(4) NOT NULL COMMENT ''ISO 4217, uppercase (fold to base via costing_fx_rate)''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- material_lot.currency  CHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_lot' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE material_lot MODIFY COLUMN currency CHAR(4) NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- material_stock_movement.currency  CHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_stock_movement' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE material_stock_movement MODIFY COLUMN currency CHAR(4) NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- opex_line.currency  CHAR(3) NOT NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'opex_line' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE opex_line MODIFY COLUMN currency CHAR(4) NOT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- opex_recurring.currency  CHAR(3) NOT NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'opex_recurring' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE opex_recurring MODIFY COLUMN currency CHAR(4) NOT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- employee.default_currency  CHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'employee' AND COLUMN_NAME = 'default_currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE employee MODIFY COLUMN default_currency CHAR(4) NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- production_run.planned_currency  CHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'production_run' AND COLUMN_NAME = 'planned_currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE production_run MODIFY COLUMN planned_currency CHAR(4) NULL COMMENT ''currency of planned_unit_cost''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- production_run_cost.currency  CHAR(3) NOT NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'production_run_cost' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE production_run_cost MODIFY COLUMN currency CHAR(4) NOT NULL COMMENT ''ISO 4217, uppercase''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- tech_card_bom_item.currency  VARCHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_bom_item' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE tech_card_bom_item MODIFY COLUMN currency VARCHAR(4) NULL COMMENT ''ISO 4217 for unit_price''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- tech_card_costing.currency  VARCHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_costing' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE tech_card_costing MODIFY COLUMN currency VARCHAR(4) NULL COMMENT ''ISO 4217 for the costing articles''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- tech_card_dev_expense.currency  CHAR(3) NOT NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_dev_expense' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE tech_card_dev_expense MODIFY COLUMN currency CHAR(4) NOT NULL COMMENT ''ISO 4217, uppercase''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- tech_card_release.currency  CHAR(3) NULL
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_release' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE tech_card_release MODIFY COLUMN currency CHAR(4) NULL COMMENT ''currency of unit_cost''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- tech_card.currency  VARCHAR(3) NULL  (added 0067, DROPPED by 0079's forward migration; not a
 -- live column today — see the file header note. Guarded defensively in case 0079 is ever rolled
 -- back (its Down path re-adds this column as VARCHAR(3)); COUNT = 0 now, so this is a no-op.
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card' AND COLUMN_NAME = 'currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE tech_card MODIFY COLUMN currency VARCHAR(4) NULL COMMENT ''ISO 4217 for target cost/price and costing''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- tech_card_construction.labour_rate_currency  VARCHAR(3) NULL  (added 0072, DROPPED by 0079's
 -- forward migration; not live today, guarded for the same rollback-edge-case reason as
 -- tech_card.currency above. COUNT = 0 now, so this is a no-op.
 SET @need := (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_construction' AND COLUMN_NAME = 'labour_rate_currency' AND CHARACTER_MAXIMUM_LENGTH = 3) = 1;
 SET @sql := IF(@need, 'ALTER TABLE tech_card_construction MODIFY COLUMN labour_rate_currency VARCHAR(4) NULL COMMENT ''ISO 4217 for labour_rate''', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 -- Intentionally a no-op. This migration only WIDENS columns (3 -> 4), which is non-destructive: a
