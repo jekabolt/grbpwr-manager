@@ -9,7 +9,7 @@ import (
 func TestDecimalPlaces(t *testing.T) {
 	cases := map[string]int32{
 		"JPY": 0, "KRW": 0, "krw": 0, // zero-decimal, case-insensitive
-		"EUR": 2, "USD": 2, "gbp": 2, "CNY": 2,
+		"EUR": 2, "USD": 2, "gbp": 2, "CNY": 2, "PLN": 2,
 		"KWD": 3, "bhd": 3, // three-decimal
 	}
 	for c, want := range cases {
@@ -50,7 +50,7 @@ func TestRequiredCurrenciesMatchSupported(t *testing.T) {
 	}
 	// MissingRequired reports the canonical-ordered gap.
 	got := MissingRequired(map[string]bool{"EUR": true, "USD": true})
-	want := []string{"GBP", "JPY", "CNY", "KRW"}
+	want := []string{"GBP", "JPY", "CNY", "KRW", "PLN"}
 	if len(got) != len(want) {
 		t.Fatalf("MissingRequired = %v, want %v", got, want)
 	}
@@ -62,7 +62,7 @@ func TestRequiredCurrenciesMatchSupported(t *testing.T) {
 }
 
 func TestIsSupported(t *testing.T) {
-	for _, c := range []string{"EUR", "usd", "GBP", "JPY", "KRW", "CNY"} {
+	for _, c := range []string{"EUR", "usd", "GBP", "JPY", "KRW", "CNY", "PLN"} {
 		if !IsSupported(c) {
 			t.Errorf("IsSupported(%q) = false, want true", c)
 		}

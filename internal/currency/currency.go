@@ -32,6 +32,7 @@ var minimumAmounts = map[string]decimal.Decimal{
 	"JPY": decimal.NewFromInt(50),
 	"KRW": decimal.NewFromInt(100),
 	"CNY": decimal.NewFromFloat(1.00),
+	"PLN": decimal.NewFromFloat(2.00),
 }
 
 // symbols maps ISO 4217 codes to their display symbol for the currencies the
@@ -43,6 +44,7 @@ var symbols = map[string]string{
 	"JPY": "¥",
 	"CNY": "¥",
 	"KRW": "₩",
+	"PLN": "zł",
 }
 
 // requiredCurrencies is the ordered set of currencies that every product price list and every
@@ -50,7 +52,7 @@ var symbols = map[string]string{
 // complete" checks (previously duplicated as a map in store/product and a slice in
 // apisrv/admin/shipment). It mirrors the keys of minimumAmounts (the supported set); a test asserts
 // the two stay in sync so a currency can't be added to one without the other.
-var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW"}
+var requiredCurrencies = []string{"EUR", "USD", "GBP", "JPY", "CNY", "KRW", "PLN"}
 
 // RequiredCurrencies returns, as a fresh slice, the currencies every price list must include.
 func RequiredCurrencies() []string {

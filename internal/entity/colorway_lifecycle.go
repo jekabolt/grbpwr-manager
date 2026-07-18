@@ -32,7 +32,7 @@ const (
 	ColorwayStatusDraft    ColorwayStatus = 1 // created, not yet published; admin-visible, never on the storefront
 	ColorwayStatusActive   ColorwayStatus = 2 // published and publicly visible on the storefront
 	ColorwayStatusHidden   ColorwayStatus = 3 // admin-visible, temporarily hidden from the storefront
-	ColorwayStatusArchived ColorwayStatus = 4 // terminal; soft-deleted (deleted_at set as the archival audit stamp)
+	ColorwayStatusArchived ColorwayStatus = 4 // soft-deleted (deleted_at set as the archival audit stamp); restorable to HIDDEN via 'restore'
 )
 
 // IsValid reports whether s is a writable lifecycle status (Unknown is not). A value read from the DB
@@ -66,21 +66,25 @@ const (
 	ColorwayTransitionPublish ColorwayTransition = "publish" // DRAFT -> ACTIVE (store also enforces publish preconditions)
 	ColorwayTransitionHide    ColorwayTransition = "hide"    // ACTIVE -> HIDDEN
 	ColorwayTransitionUnhide  ColorwayTransition = "unhide"  // HIDDEN -> ACTIVE
-	ColorwayTransitionArchive ColorwayTransition = "archive" // ACTIVE|HIDDEN -> ARCHIVED (terminal)
+	ColorwayTransitionArchive ColorwayTransition = "archive" // ACTIVE|HIDDEN -> ARCHIVED
+	ColorwayTransitionRestore ColorwayTransition = "restore" // ARCHIVED -> HIDDEN (admin unarchive-to-hidden; clears the deleted_at tombstone)
 )
 
-// colorwayTransitionGraph is the allowed lifecycle graph. ARCHIVED is terminal (no outgoing edges);
-// DRAFT can only be published; UNKNOWN has no edges (fail-closed).
+// colorwayTransitionGraph is the allowed lifecycle graph. ARCHIVED is soft-terminal: its ONLY outgoing
+// edge is 'restore' (ARCHIVED -> HIDDEN, admin unarchive-to-hidden) — it can never go straight back to
+// ACTIVE (it must be restored to HIDDEN first, then unhidden). DRAFT can only be published; UNKNOWN has
+// no edges (fail-closed).
 var colorwayTransitionGraph = map[ColorwayStatus]map[ColorwayTransition]ColorwayStatus{
-	ColorwayStatusDraft:  {ColorwayTransitionPublish: ColorwayStatusActive},
-	ColorwayStatusActive: {ColorwayTransitionHide: ColorwayStatusHidden, ColorwayTransitionArchive: ColorwayStatusArchived},
-	ColorwayStatusHidden: {ColorwayTransitionUnhide: ColorwayStatusActive, ColorwayTransitionArchive: ColorwayStatusArchived},
+	ColorwayStatusDraft:    {ColorwayTransitionPublish: ColorwayStatusActive},
+	ColorwayStatusActive:   {ColorwayTransitionHide: ColorwayStatusHidden, ColorwayTransitionArchive: ColorwayStatusArchived},
+	ColorwayStatusHidden:   {ColorwayTransitionUnhide: ColorwayStatusActive, ColorwayTransitionArchive: ColorwayStatusArchived},
+	ColorwayStatusArchived: {ColorwayTransitionRestore: ColorwayStatusHidden},
 }
 
 // NextColorwayStatus validates a lifecycle transition and returns the resulting status. It encodes the
 // R6 state machine and nothing else — the store layer additionally enforces Publish preconditions and
-// applies the write under the style/colourway optimistic lock. An unknown or terminal source, or a
-// command not allowed from the current state, is rejected (fail-closed).
+// applies the write under the style/colourway optimistic lock. An unknown source, or a command not
+// allowed from the current state (e.g. anything but 'restore' out of ARCHIVED), is rejected (fail-closed).
 func NextColorwayStatus(from ColorwayStatus, t ColorwayTransition) (ColorwayStatus, error) {
 	if !from.IsValid() {
 		return ColorwayStatusUnknown, fmt.Errorf("colourway has unknown lifecycle status %d", uint8(from))

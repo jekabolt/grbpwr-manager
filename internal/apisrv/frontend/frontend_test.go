@@ -376,6 +376,7 @@ func TestGetProductsPaged(t *testing.T) {
 		[]entity.SortFactor{entity.Price},
 		entity.Descending,
 		mock.Anything,
+		mock.Anything,
 		false,
 	).Return(
 		mockProducts,

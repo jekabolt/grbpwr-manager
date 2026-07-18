@@ -97,7 +97,8 @@ func (s *Server) GetOrderByUUIDAndEmail(ctx context.Context, req *pb_frontend.Ge
 		}
 	}
 
-	oPb, err := dto.ConvertEntityOrderFullToPbOrderFull(o)
+	// Storefront projection: strips internal shipment costs (actual_cost / return_shipping_cost).
+	oPb, err := dto.ConvertEntityOrderFullToPbOrderFullStorefront(o)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity order full to pb order full",
 			slog.String("err", err.Error()),
@@ -283,7 +284,8 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 			"order can't be cancelled in status: %s", originalStatus)
 	}
 
-	pbOrder, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	// Storefront projection: strips internal shipment costs (actual_cost / return_shipping_cost).
+	pbOrder, err := dto.ConvertEntityOrderFullToPbOrderFullStorefront(orderFull)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert order to protobuf",
 			slog.String("err", err.Error()),

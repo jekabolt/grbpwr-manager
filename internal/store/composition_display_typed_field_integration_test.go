@@ -74,7 +74,7 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", cwID) })
 
 	// --- without structural data: composition is the plain legacy text; composition_entries is empty. ---
-	pf, err := P.GetProductByIdShowHidden(ctx, cwID)
+	pf, err := P.GetProductByIdShowHidden(ctx, cwID, false)
 	require.NoError(t, err)
 	require.True(t, pf.Product.ProductDisplay.ProductBody.ProductBodyInsert.Composition.Valid)
 	require.Equal(t, legacyComposition, pf.Product.ProductDisplay.ProductBody.ProductBodyInsert.Composition.String)
@@ -103,7 +103,7 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 		Composition: sql.NullString{String: apiComposition, Valid: true},
 	}, nil)
 	require.NoError(t, err, "UpdateStyle must accept plain wire text for composition (JSON_QUOTE, not raw)")
-	pfAPI, err := P.GetProductByIdShowHidden(ctx, cwID)
+	pfAPI, err := P.GetProductByIdShowHidden(ctx, cwID, false)
 	require.NoError(t, err)
 	require.Equal(t, apiComposition, pfAPI.Product.ProductDisplay.ProductBody.ProductBodyInsert.Composition.String,
 		"plain wire text round-trips byte-identical through store write+read")
@@ -118,7 +118,7 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 		tcID, tcID)
 	require.NoError(t, err)
 
-	pf2, err := P.GetProductByIdShowHidden(ctx, cwID)
+	pf2, err := P.GetProductByIdShowHidden(ctx, cwID, false)
 	require.NoError(t, err)
 	require.Equal(t, legacyComposition, pf2.Product.ProductDisplay.ProductBody.ProductBodyInsert.Composition.String,
 		"composition must stay legacy plain text even after style_composition gains rows (M1: JSON-in-string overload removed)")

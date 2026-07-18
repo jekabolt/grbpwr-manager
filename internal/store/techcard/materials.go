@@ -540,16 +540,19 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	// Colourways grouped per card (in display order). PR6 R1: tech_card_colorway was merged into
 	// product, so a card's colourways are its products (product.style_id = card). PLM fields live on
-	// product (dev_code/dev_name/dev_comment/dev_hex ← ex code/name/comment/hex). product_id keeps
-	// its "dead SKU → NULL" contract: an archived colourway surfaces product_id = NULL.
+	// product (dev_code/dev_name/dev_comment/dev_hex ← ex code/name/comment/hex). ARCHIVED(4) colourways
+	// are EXCLUDED entirely (WHERE c.lifecycle_status <> 4): they previously surfaced as detached rows
+	// with product_id = NULL — un-openable "ghost" colourways in the tech-card colourways tab — so they
+	// are dropped from the enrichment rather than shown dead. Every returned row is therefore live, so
+	// product_id is simply c.id.
 	cwRows, err := storeutil.QueryListNamed[techCardColorwayRow](ctx, s.DB, `
 		SELECT c.id, c.style_id AS tech_card_id, c.dev_code AS code, COALESCE(c.dev_name, '') AS name,
-		       c.color_code, COALESCE(c.lab_dip_status, 'pending') AS lab_dip_status, IF(c.lifecycle_status <> 4, c.id, NULL) AS product_id,
+		       c.color_code, COALESCE(c.lab_dip_status, 'pending') AS lab_dip_status, c.id AS product_id,
 		       COALESCE(c.sku, '') AS sku, c.lifecycle_status,
 		       c.dev_comment AS comment, c.pantone, c.pantone_system, c.dev_hex AS hex, c.swatch_media_id,
 		       c.lab_dip_round, c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
 		FROM product c
-		WHERE c.style_id IN (:ids)
+		WHERE c.style_id IN (:ids) AND c.lifecycle_status <> 4
 		ORDER BY c.style_id, c.display_order, c.id`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card colorways: %w", err)

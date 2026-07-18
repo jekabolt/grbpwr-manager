@@ -63,21 +63,32 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 	if err != nil {
 		return 0, err
 	}
+	// An operator may leave the internal code blank on create (#68); we then auto-generate a
+	// deterministic, unique code from the row's own auto-increment id right after the insert. An
+	// explicit code is preserved and still range-checked for uniqueness among non-archived materials.
+	explicitCode := m.Code.Valid && strings.TrimSpace(m.Code.String) != ""
 	var id int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		if err := checkMaterialCodeFree(ctx, rep.DB(), m.Code, 0); err != nil {
-			return err
+		if explicitCode {
+			if err := checkMaterialCodeFree(ctx, rep.DB(), m.Code, 0); err != nil {
+				return err
+			}
 		}
 		newID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 			INSERT INTO material (name, section, supplier, supplier_ref, composition, spec, unit,
 				fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes,
-				material_class, other_attrs, created_by, updated_by)
+				image_id, purpose, material_class, other_attrs, created_by, updated_by)
 			VALUES (:name, :section, :supplier, :supplier_ref, :composition, :spec, :unit,
 				:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes,
-				:material_class, :other_attrs, :created_by, :updated_by)`,
+				:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
 			materialParams(m))
 		if err != nil {
 			return fmt.Errorf("create material: %w", err)
+		}
+		if !explicitCode {
+			if err := assignGeneratedMaterialCode(ctx, rep.DB(), newID, m.MaterialClass); err != nil {
+				return fmt.Errorf("create material %d code: %w", newID, err)
+			}
 		}
 		if err := upsertMaterialAttrs(ctx, rep.DB(), newID, m); err != nil {
 			return fmt.Errorf("create material %d attrs: %w", newID, err)
@@ -132,6 +143,7 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 				name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
+				image_id=:image_id, purpose=:purpose,
 				material_class=:material_class, other_attrs=:other_attrs, updated_by=:updated_by
 			WHERE id=:id AND lock_version=:expected_lock_version`, params)
 		if err != nil {
@@ -229,6 +241,9 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 	if err := s.attachMaterialComposition(ctx, []*entity.MaterialWithPrice{&out}); err != nil {
 		return nil, fmt.Errorf("get material %d composition: %w", id, err)
 	}
+	if err := s.attachMaterialImage(ctx, []*entity.MaterialWithPrice{&out}); err != nil {
+		return nil, fmt.Errorf("get material %d image: %w", id, err)
+	}
 	return &out, nil
 }
 
@@ -255,6 +270,9 @@ func (s *Store) ListMaterials(ctx context.Context, section string, includeArchiv
 	}
 	if err := s.attachMaterialComposition(ctx, ptrs); err != nil {
 		return nil, fmt.Errorf("list materials composition: %w", err)
+	}
+	if err := s.attachMaterialImage(ctx, ptrs); err != nil {
+		return nil, fmt.Errorf("list materials images: %w", err)
 	}
 	return out, nil
 }
@@ -313,11 +331,73 @@ func materialParams(m *entity.MaterialInsert) map[string]any {
 		"pantone":           m.Pantone,
 		"min_stock":         nullDecimalParam(m.MinStock),
 		"notes":             m.Notes,
+		"image_id":          m.ImageId,
+		"purpose":           normalizeMaterialPurpose(m.Purpose),
 		"material_class":    normalizeMaterialClass(m.MaterialClass),
 		"other_attrs":       nullJSONParam(m.OtherAttrs),
 		"created_by":        m.CreatedBy,
 		"updated_by":        m.UpdatedBy,
 	}
+}
+
+// normalizeMaterialPurpose lower-cases/trims the purpose and defaults an empty one to 'both' (#40) —
+// a material serves both the sample and production flows unless explicitly narrowed. An out-of-range
+// value is left as-is for the DB CHECK (chk_material_purpose) to reject.
+func normalizeMaterialPurpose(purpose string) string {
+	p := strings.ToLower(strings.TrimSpace(purpose))
+	if p == "" {
+		return string(entity.MaterialPurposeBoth)
+	}
+	return p
+}
+
+// materialCodePrefix is the stable per-type prefix for an auto-generated warehouse code (#68),
+// derived from the material's CTI class. An unclassified/'other' material gets the generic MAT.
+func materialCodePrefix(materialClass string) string {
+	switch normalizeMaterialClass(materialClass) {
+	case string(entity.MaterialClassFabric):
+		return "FAB"
+	case string(entity.MaterialClassHardware):
+		return "HRD"
+	case string(entity.MaterialClassThread):
+		return "THR"
+	case string(entity.MaterialClassPackaging):
+		return "PKG"
+	default:
+		return "MAT"
+	}
+}
+
+// assignGeneratedMaterialCode auto-generates and stores a deterministic, unique warehouse code for a
+// freshly-inserted material whose operator left the code blank (#68). The code is derived from the
+// row's own auto-increment id — globally unique and never reused — so a plain "prefix + zero-padded
+// id" is collision-free by construction against every other generated code. The only way the base
+// form can clash is an operator having manually typed that exact literal on another non-archived
+// material; the bounded retry disambiguates that rare case with a numeric suffix. Runs inside the
+// caller's SERIALIZABLE create transaction, so the uniqueness range-check (checkMaterialCodeFree,
+// non-archived only) is held against concurrent creates — there is deliberately no global DB UNIQUE
+// index (code must stay unique only among non-archived rows; an archived row may keep its code).
+func assignGeneratedMaterialCode(ctx context.Context, db dependency.DB, id int, materialClass string) error {
+	base := fmt.Sprintf("%s-%06d", materialCodePrefix(materialClass), id)
+	for attempt := 0; attempt < 20; attempt++ {
+		candidate := base
+		if attempt > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, attempt+1) // FAB-000042-2, -3, …
+		}
+		err := checkMaterialCodeFree(ctx, db, sql.NullString{String: candidate, Valid: true}, id)
+		if err == nil {
+			if err := storeutil.ExecNamed(ctx, db,
+				`UPDATE material SET code = :code WHERE id = :id`,
+				map[string]any{"code": candidate, "id": id}); err != nil {
+				return fmt.Errorf("assign generated code: %w", err)
+			}
+			return nil
+		}
+		if !errors.Is(err, entity.ErrMaterialCodeTaken) {
+			return err
+		}
+	}
+	return fmt.Errorf("could not generate a unique material code for id %d", id)
 }
 
 // normalizeMaterialClass lower-cases/trims the class and defaults an empty one to 'other'. An
@@ -512,6 +592,51 @@ func (s *Store) attachMaterialComposition(ctx context.Context, mats []*entity.Ma
 		}
 	}
 	return nil
+}
+
+// attachMaterialImage resolves each material's optional catalog image (#39) from ImageId into a
+// MediaFull, mirroring the model thumbnail resolution (one batched media read for the whole slice).
+// Materials with no image keep a nil Image pointer.
+func (s *Store) attachMaterialImage(ctx context.Context, mats []*entity.MaterialWithPrice) error {
+	if len(mats) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(mats))
+	for _, m := range mats {
+		if m.ImageId.Valid {
+			ids = append(ids, int(m.ImageId.Int32))
+		}
+	}
+	media, err := s.mediaByIds(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("load material images: %w", err)
+	}
+	for _, m := range mats {
+		if m.ImageId.Valid {
+			if mf, ok := media[int(m.ImageId.Int32)]; ok {
+				img := mf
+				m.Image = &img
+			}
+		}
+	}
+	return nil
+}
+
+// mediaByIds loads media rows by id into a map, used to resolve material catalog images (#39).
+func (s *Store) mediaByIds(ctx context.Context, ids []int) (map[int]entity.MediaFull, error) {
+	out := make(map[int]entity.MediaFull, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB,
+		`SELECT * FROM media WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("load media: %w", err)
+	}
+	for i := range rows {
+		out[rows[i].Id] = rows[i]
+	}
+	return out, nil
 }
 
 // writeMaterialComposition full-replaces a material's structured fibre composition (S17): it clears

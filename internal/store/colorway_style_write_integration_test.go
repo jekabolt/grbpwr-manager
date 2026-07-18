@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -227,7 +229,7 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 
 	// Entity-level plumbing (fix: PublishColorwayResponse.colorway.published_at): the fresh read back
 	// through the store must also carry published_at, not just the raw DB row.
-	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID)
+	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID, false)
 	require.NoError(t, err)
 	require.True(t, full.Product.PublishedAt.Valid, "entity.Colorway.PublishedAt must be populated from the fresh read")
 
@@ -440,11 +442,179 @@ func TestPublishColorwayResponsePublishedAtPopulated(t *testing.T) {
 	// No UpdateColorway call — PublishColorway alone mints the base + variant SKUs it needs.
 	require.NoError(t, s.Products().PublishColorway(ctx, colorwayID))
 
-	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID)
+	full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID, false)
 	require.NoError(t, err)
 	require.True(t, full.Product.PublishedAt.Valid)
 
 	pbFull, err := dto.ConvertToPbProductFull(full)
 	require.NoError(t, err)
 	require.NotNil(t, pbFull.Colorway.PublishedAt, "PublishColorwayResponse.colorway.published_at must be populated, not left unset")
+}
+
+// TestColorwayActivationRequiresAllRequiredCurrencies locks the moved completeness gate (the P0 fix):
+//
+//	(a) a DRAFT is CREATED with an INCOMPLETE currency set and SUCCEEDS — the "all required currencies"
+//	    check no longer runs at create/update; a draft may be partial;
+//	(b) PUBLISHING that draft (the →ACTIVE edge) FAILS with the required-currency error while a required
+//	    currency is missing, even though every OTHER publish precondition is satisfied (base+variant SKU,
+//	    season, model_no, colour, country, price>=1, default translation — the exact fixture that makes
+//	    TestPublishColorwayResponsePublishedAtPopulated's publish succeed, minus one currency);
+//	(c) once the missing currency is supplied, publish SUCCEEDS and the colourway is ACTIVE.
+//
+// Together these prove the completeness gate sits on the →ACTIVE edge, not on create/update.
+func TestColorwayActivationRequiresAllRequiredCurrencies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	mediaID, langID, fullPrices := commonWriteTestFixtures(ctx, t, s)
+	styleID := insertSeasonedTestStyle(ctx, t, "TCWCUR", "SS", "SS26", 2026)
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET brand = 'ACME', top_category_id = 1, target_gender = 'unisex', collection = 'core' WHERE id = ?", styleID)
+	require.NoError(t, err)
+	var sizeID int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&sizeID))
+
+	// A partial required set: every required currency EXCEPT the last (PLN today), all amounts well above
+	// their minimums so ONLY completeness — never per-price validity — can be what publish rejects.
+	req := currency.RequiredCurrencies()
+	require.Greater(t, len(req), 1)
+	missingCur := req[len(req)-1]
+	var partialPrices []entity.ColorwayPriceInsert
+	for _, c := range req[:len(req)-1] {
+		partialPrices = append(partialPrices, entity.ColorwayPriceInsert{Currency: c, Price: decimal.NewFromInt(10000)})
+	}
+
+	// (a) CreateColorway with an INCOMPLETE currency set succeeds and lands a DRAFT (pre-fix this failed
+	// with "price validation failed: missing required currencies" — the P0 that blocked all creation).
+	prd := newColorwayInsert("BLK", "black", "TCWCUR-BLACK", mediaID, langID, partialPrices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, partialPrices)
+	require.NoError(t, err, "creating a DRAFT with a partial currency set must succeed (gate moved off create)")
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
+
+	var lifecycle, priceCount int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status FROM product WHERE id = ?`, colorwayID).Scan(&lifecycle))
+	require.Equal(t, int(entity.ColorwayStatusDraft), lifecycle)
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_price WHERE product_id = ?`, colorwayID).Scan(&priceCount))
+	require.Equal(t, len(partialPrices), priceCount, "the partial set must persist as-is on a draft")
+
+	// Lay out a variant so publish has a sellable size; PublishColorway mints the base+variant SKU (and
+	// the style model_no) itself, so no UpdateColorway is needed to satisfy the SKU preconditions.
+	_, err = s.Products().CreateVariant(ctx, colorwayID, sizeID)
+	require.NoError(t, err)
+
+	// (b) The →ACTIVE edge refuses to publish while a required currency is missing.
+	err = s.Products().PublishColorway(ctx, colorwayID)
+	require.Error(t, err, "publish must fail while a required currency is missing")
+	require.Contains(t, err.Error(), "missing required currencies")
+	require.Contains(t, err.Error(), missingCur)
+	// The failed edge did not flip lifecycle — still DRAFT.
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status FROM product WHERE id = ?`, colorwayID).Scan(&lifecycle))
+	require.Equal(t, int(entity.ColorwayStatusDraft), lifecycle)
+
+	// Supply the missing currency (now the complete required set) on the still-DRAFT colourway. This is a
+	// price-changing UpdateColorway on a DRAFT — allowed, per-price validity still applies.
+	var v0 int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&v0))
+	updFull := newColorwayInsert("BLK", "black", "TCWCUR-BLACK", mediaID, langID, fullPrices)
+	_, err = s.Products().UpdateColorway(ctx, colorwayID, v0, updFull, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices)
+	require.NoError(t, err)
+
+	// (c) With every required currency present, the →ACTIVE edge admits the colourway.
+	require.NoError(t, s.Products().PublishColorway(ctx, colorwayID), "publish must succeed once all required currencies are present")
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status FROM product WHERE id = ?`, colorwayID).Scan(&lifecycle))
+	require.Equal(t, int(entity.ColorwayStatusActive), lifecycle)
+}
+
+// migrationUpBody reads a migration file and returns its Up section with sql-migrate directive and
+// comment lines stripped — the executable SQL only. Used to exercise a data-migration's real body
+// against seeded rows (the migration itself ran at boot on empty data, a no-op).
+func migrationUpBody(t *testing.T, filename string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("sql", filename))
+	require.NoError(t, err)
+	up, _, found := strings.Cut(string(body), "-- +migrate Down")
+	require.True(t, found, "migration %s must have a Down section marker", filename)
+	up = strings.TrimPrefix(strings.TrimSpace(up), "-- +migrate Up")
+	var sqlLines []string
+	for _, line := range strings.Split(up, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue // comment / directive line
+		}
+		sqlLines = append(sqlLines, line)
+	}
+	return strings.TrimSpace(strings.Join(sqlLines, "\n"))
+}
+
+// TestBackfillPLNProductPricesMigration validates the 0182 data backfill against seeded rows: a legacy
+// ACTIVE colourway with an EUR-but-no-PLN price gets a PLN row mirroring EUR; a DRAFT with the same
+// EUR-only price is left untouched (drafts may be partial); and re-running the backfill is idempotent
+// (the NOT EXISTS guard makes a rerun a no-op). It executes the migration file's real Up SQL — the
+// migration ran at boot on empty data, so its effect is only observable on rows created afterwards.
+func TestBackfillPLNProductPricesMigration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	mediaID, langID, _ := commonWriteTestFixtures(ctx, t, s)
+	styleID := insertSeasonedTestStyle(ctx, t, "TCWPLN", "SS", "SS26", 2026)
+
+	// EUR-only price set — the pre-PLN legacy shape. CreateColorway lands a DRAFT and (post-fix) accepts
+	// the partial set; the per-EUR amount is well above the EUR minimum.
+	eurAmount := decimal.NewFromInt(12345)
+	eurOnly := []entity.ColorwayPriceInsert{{Currency: "EUR", Price: eurAmount}}
+
+	// A legacy ACTIVE colourway: created as a DRAFT with EUR-only, then flipped straight to ACTIVE by raw
+	// UPDATE to simulate a row that predates PLN (the real gate would now refuse such a publish).
+	activePrd := newColorwayInsert("BLK", "black", "TCWPLN-BLACK", mediaID, langID, eurOnly)
+	activeID, err := s.Products().CreateColorway(ctx, styleID, activePrd, []int{mediaID}, []entity.ColorwayTagInsert{}, eurOnly)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", activeID) }()
+	_, err = testDB.ExecContext(ctx, "UPDATE product SET lifecycle_status = ? WHERE id = ?", int(entity.ColorwayStatusActive), activeID)
+	require.NoError(t, err)
+
+	// A DRAFT colourway with the same EUR-only set — must NOT be backfilled.
+	draftPrd := newColorwayInsert("WHT", "white", "TCWPLN-WHITE", mediaID, langID, eurOnly)
+	draftID, err := s.Products().CreateColorway(ctx, styleID, draftPrd, []int{mediaID}, []entity.ColorwayTagInsert{}, eurOnly)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", draftID) }()
+
+	backfill := migrationUpBody(t, "0182_backfill_pln_product_prices.sql")
+	require.Contains(t, backfill, "INSERT INTO product_price")
+
+	// Run the backfill.
+	_, err = testDB.ExecContext(ctx, backfill)
+	require.NoError(t, err)
+
+	// The ACTIVE colourway now has a PLN row equal to its EUR price.
+	var plnCount int
+	var plnPrice decimal.Decimal
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(MAX(price), 0) FROM product_price WHERE product_id = ? AND currency = 'PLN'`, activeID).
+		Scan(&plnCount, &plnPrice))
+	require.Equal(t, 1, plnCount, "ACTIVE colourway with EUR-but-no-PLN must get a backfilled PLN row")
+	require.True(t, eurAmount.Equal(plnPrice), "backfilled PLN price must mirror the EUR amount, got %s", plnPrice)
+
+	// The DRAFT colourway is untouched.
+	var draftPLN int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM product_price WHERE product_id = ? AND currency = 'PLN'`, draftID).Scan(&draftPLN))
+	require.Equal(t, 0, draftPLN, "DRAFT colourway must NOT be backfilled (drafts may be partial)")
+
+	// Idempotent: a rerun (NOT EXISTS guard) adds nothing.
+	_, err = testDB.ExecContext(ctx, backfill)
+	require.NoError(t, err)
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM product_price WHERE product_id = ? AND currency = 'PLN'`, activeID).Scan(&plnCount))
+	require.Equal(t, 1, plnCount, "re-running the backfill must be a no-op (crash-idempotent)")
 }

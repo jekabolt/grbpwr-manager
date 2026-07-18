@@ -150,7 +150,10 @@ func (s *Server) TransitionColorwayStatus(ctx context.Context, req *pb_admin.Tra
 	var fn func(context.Context, int) error
 	switch req.Target {
 	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_HIDDEN:
-		op, fn = "hide", p.HideColorway
+		// Target HIDDEN is reachable by two legal edges: hide (ACTIVE->HIDDEN) or restore/unarchive
+		// (ARCHIVED->HIDDEN). The store router picks the correct one from the colourway's current state
+		// (ARCHIVED->ACTIVE directly is not allowed — restore only ever lands on HIDDEN).
+		op, fn = "hide/restore", p.TransitionColorwayToHidden
 	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_ACTIVE:
 		op, fn = "unhide", p.UnhideColorway // ACTIVE via transition = HIDDEN->ACTIVE (unhide); DRAFT->ACTIVE is PublishColorway
 	case pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_ARCHIVED:
@@ -205,7 +208,10 @@ func (s *Server) afterColorwayLifecycleChange(ctx context.Context, id int) {
 // getPbColorway loads a colourway and projects the admin Colorway (the nested message of ColorwayFull)
 // for a transition response.
 func (s *Server) getPbColorway(ctx context.Context, id int) (*pb_common.Colorway, error) {
-	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, id)
+	// includeArchived=false: post-transition reloads land on a non-archived row (hide/unhide/publish ->
+	// HIDDEN/ACTIVE, restore -> HIDDEN), so the archived-detail capability is not needed here and stays
+	// scoped to GetColorwayByID.
+	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, id, false)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "colourway %d not found", id)
@@ -221,7 +227,10 @@ func (s *Server) getPbColorway(ctx context.Context, id int) (*pb_common.Colorway
 
 func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayByIDRequest) (*pb_admin.GetColorwayByIDResponse, error) {
 
-	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.ColorwayId))
+	// Admin detail: includeArchived=true so an ARCHIVED colourway loads read-only (viewable/restorable in
+	// the admin) instead of surfacing as NotFound. This is the only caller that opts into archived detail;
+	// the storefront never reaches this path.
+	pf, err := s.repo.Products().GetProductByIdShowHidden(ctx, int(req.ColorwayId), true)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "product not found")
@@ -413,12 +422,20 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwa
 		}
 	}
 
-	// R6/§14.6: show_hidden was replaced by an explicit lifecycle-status filter. Map it onto the store's
-	// showHidden capability (include HIDDEN when the caller asks for it); granular status-set filtering
-	// in the store query is a follow-up. Empty statuses preserves the old default (hide HIDDEN).
-	showHidden := slices.Contains(req.Statuses, pb_common.ColorwayLifecycleStatus_COLORWAY_LIFECYCLE_STATUS_HIDDEN)
+	// R6/§14.6: show_hidden was replaced by an explicit lifecycle-status filter, now honoured in full. This
+	// is the ADMIN service, so we always take the admin store path (showHidden=true): the storefront
+	// tier-gating/visibility logic applies ONLY to the storefront (showHidden=false) path and must never
+	// gate the admin catalogue. The status set selects which lifecycle states to return — empty =
+	// ACTIVE-only default; a set may combine DRAFT/ACTIVE/HIDDEN/ARCHIVED and unions. UNKNOWN/invalid
+	// statuses are dropped here (and again, fail-safe, in the store).
+	statuses := make([]entity.ColorwayStatus, 0, len(req.Statuses))
+	for _, st := range req.Statuses {
+		if cs := entity.ColorwayStatus(st); cs.IsValid() {
+			statuses = append(statuses, cs)
+		}
+	}
 	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
-	prds, total, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, showHidden)
+	prds, total, err := s.repo.Products().GetProductsPaged(ctx, limit, offset, sfs, of, fc, statuses, true)
 	if err != nil {
 		if err.Error() == "price sorting requires currency to be specified in filter conditions" {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -777,8 +794,8 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 func (s *Server) notifyWaitlist(ctx context.Context, productId int, sizeId int) {
 	notifyCtx := context.Background() // Use background context to avoid cancellation
 
-	// Get product details
-	product, err := s.repo.Products().GetProductByIdShowHidden(notifyCtx, productId)
+	// Get product details (includeArchived=false: a waitlist notification never targets an archived colourway)
+	product, err := s.repo.Products().GetProductByIdShowHidden(notifyCtx, productId, false)
 	if err != nil {
 		slog.Default().ErrorContext(notifyCtx, "can't get product for waitlist notification",
 			slog.String("err", err.Error()),

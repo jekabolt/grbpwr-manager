@@ -25,7 +25,10 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
 		return 0, fmt.Errorf("can't refresh dictionary before colourway create: %w", err)
 	}
-	if err := validateRequiredCurrencies(prices); err != nil {
+	// CreateColorway always mints a DRAFT (below); a DRAFT may carry zero or partial prices, so only the
+	// always-on per-price checks run here. Required-currency COMPLETENESS is enforced later, on the
+	// →ACTIVE edge (PublishColorway / unhide, lifecycle.go) — a price that IS supplied is still validated.
+	if err := validateColorwayPrices(prices); err != nil {
 		return 0, fmt.Errorf("price validation failed: %w", err)
 	}
 	var colorwayID int
@@ -96,8 +99,12 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 	// Sparse update (update_mask presence semantics): an empty translations/media/tags/prices slice
 	// means "leave unchanged", so an admin panel loading and re-sending the full colourway is the norm
 	// and a partial payload never wipes data. The scalar merch row is always full-replaced.
+	// Per-price validity is always enforced on any supplied price. The required-currency COMPLETENESS
+	// gate, however, is skipped for a DRAFT (it may hold partial prices) and applied only to an
+	// already-published colourway — decided inside the tx below against the persisted lifecycle_status,
+	// so a live/hidden colourway can never have its complete price set replaced with a partial one.
 	if len(prices) > 0 {
-		if err := validateRequiredCurrencies(prices); err != nil {
+		if err := validateColorwayPrices(prices); err != nil {
 			return 0, fmt.Errorf("price validation failed: %w", err)
 		}
 	}
@@ -105,10 +112,11 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// The colourway's optimistic version is its style's shared tech_card.lock_version (R2/R4).
 		cur, err := storeutil.QueryNamedOne[struct {
-			StyleID     int `db:"style_id"`
-			LockVersion int `db:"lock_version"`
+			StyleID         int   `db:"style_id"`
+			LockVersion     int   `db:"lock_version"`
+			LifecycleStatus uint8 `db:"lifecycle_status"`
 		}](ctx, rep.DB(),
-			`SELECT p.style_id, t.lock_version FROM product p JOIN tech_card t ON t.id = p.style_id WHERE p.id = :id`,
+			`SELECT p.style_id, p.lifecycle_status, t.lock_version FROM product p JOIN tech_card t ON t.id = p.style_id WHERE p.id = :id`,
 			map[string]any{"id": colorwayID})
 		if err != nil {
 			return err // sql.ErrNoRows -> NOT_FOUND upstream
@@ -139,6 +147,14 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 			}
 		}
 		if len(prices) > 0 {
+			// A published (non-DRAFT) colourway's price set must stay complete: refuse a partial
+			// replacement that would drop a required currency from a live/hidden colourway. A DRAFT is
+			// exempt — its completeness is enforced when it is published (→ACTIVE edge).
+			if entity.ColorwayStatus(cur.LifecycleStatus) != entity.ColorwayStatusDraft {
+				if err := validateRequiredCurrenciesPresent(prices); err != nil {
+					return fmt.Errorf("price validation failed: %w", err)
+				}
+			}
 			if err := upsertProductPrices(ctx, rep.DB(), colorwayID, prices); err != nil {
 				return fmt.Errorf("can't update colourway %d prices: %w", colorwayID, err)
 			}

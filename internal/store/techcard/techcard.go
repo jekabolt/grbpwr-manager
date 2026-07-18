@@ -239,8 +239,9 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			ApprovedAt    sql.NullTime `db:"approved_at"`
 			ReleasedAt    sql.NullTime `db:"released_at"`
 			Purpose       string       `db:"purpose"`
+			Stage         string       `db:"stage"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state, approved_at, released_at, purpose FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return sql.ErrNoRows
@@ -273,6 +274,15 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			if refs > 0 {
 				return entity.ErrTechCardPurposeLocked
 			}
+		}
+		// A card's stage may advance but must not REGRESS once downstream artifacts exist: a sample, a
+		// release snapshot, or a colourway (product.style_id) is work already committed at the card's
+		// current maturity, so moving the stage back to an earlier ordinal (e.g. proto → idea) would
+		// desync those artifacts from the card's declared stage. Forward and same-stage saves are always
+		// allowed; a backward move is allowed only while nothing downstream exists. This runs inside the
+		// same tx as the write, so a concurrent sample/colourway insert cannot slip past the count.
+		if err := guardTechCardStageRegression(ctx, rep.DB(), id, entity.TechCardStage(cur.Stage), tc.Stage); err != nil {
+			return err
 		}
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
@@ -362,6 +372,55 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		return fmt.Errorf("can't update tech card: %w", err)
 	}
 	return nil
+}
+
+// guardTechCardStageRegression blocks a backward stage move (to an earlier lifecycle ordinal) when
+// the card already has downstream artifacts: ≥1 sample, ≥1 release snapshot, or ≥1 colourway
+// (product.style_id → this card). Forward moves, same-stage saves, and any move on a card with
+// nothing downstream are allowed. It returns a field-tagged *entity.ValidationError on `stage`
+// naming the first blocking artifact kind (the apisrv layer maps a ValidationError to a 400
+// InvalidArgument); an unknown from/to stage is not comparable and is deferred to the schema CHECK,
+// so the guard is a no-op there.
+func guardTechCardStageRegression(ctx context.Context, db dependency.DB, id int, from, to entity.TechCardStage) error {
+	fromOrd, fromOK := entity.TechCardStageOrdinal(from)
+	toOrd, toOK := entity.TechCardStageOrdinal(to)
+	if !fromOK || !toOK || toOrd >= fromOrd {
+		return nil // forward, same-stage, or non-comparable: nothing to guard
+	}
+	// An ARCHIVED colourway (soft-deleted; product.lifecycle_status = 4) is retired work, not a live
+	// downstream artifact — it must NOT pin the style's stage. Excluding it lets a style whose only
+	// colourways are archived regress its stage. sample/tech_card_release have no soft-delete/archived
+	// state, so their counts stay unfiltered.
+	counts, err := storeutil.QueryNamedOne[struct {
+		Samples   int `db:"samples"`
+		Releases  int `db:"releases"`
+		Colorways int `db:"colorways"`
+	}](ctx, db, `SELECT
+		(SELECT COUNT(*) FROM sample WHERE tech_card_id = :id)            AS samples,
+		(SELECT COUNT(*) FROM tech_card_release WHERE tech_card_id = :id) AS releases,
+		(SELECT COUNT(*) FROM product WHERE style_id = :id
+			AND lifecycle_status <> :archived)                           AS colorways`,
+		map[string]any{"id": id, "archived": uint8(entity.ColorwayStatusArchived)})
+	if err != nil {
+		return fmt.Errorf("count downstream artifacts for stage-regression guard: %w", err)
+	}
+	switch {
+	case counts.Samples > 0:
+		return stageRegressionViolation(to, counts.Samples, "sample")
+	case counts.Releases > 0:
+		return stageRegressionViolation(to, counts.Releases, "release")
+	case counts.Colorways > 0:
+		return stageRegressionViolation(to, counts.Colorways, "colourway")
+	}
+	return nil
+}
+
+// stageRegressionViolation builds the field-tagged rejection naming why a card cannot return to an
+// earlier stage (n downstream artifacts of the given kind already exist).
+func stageRegressionViolation(to entity.TechCardStage, n int, artifact string) error {
+	return entity.NewFieldViolation("stage",
+		fmt.Sprintf("cannot return to %s: %d %s(s) already exist", to, n, artifact),
+		"", "advance the stage forward instead, or remove the downstream artifacts first")
 }
 
 // DeleteTechCard deletes a tech card by id (child sections cascade). It refuses when any of the

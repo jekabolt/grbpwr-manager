@@ -50,6 +50,27 @@ func IsValidTechCardStage(s TechCardStage) bool {
 	return ValidTechCardStages[s]
 }
 
+// techCardStageOrder is the lifecycle ordinal of each stage (idea=0 … prod=5): a higher number is a
+// later stage. It is the single source of truth for telling a forward stage move from a backward
+// ("regressing") one — the development-board pipeline (GetStylePipeline) renders its columns in this
+// same order.
+var techCardStageOrder = map[TechCardStage]int{
+	TechCardStageIdea:  0,
+	TechCardStageProto: 1,
+	TechCardStageFit:   2,
+	TechCardStageSMS:   3,
+	TechCardStagePP:    4,
+	TechCardStageProd:  5,
+}
+
+// TechCardStageOrdinal returns the lifecycle position of s (idea=0 … prod=5) and whether s is a
+// known stage. A move to a strictly smaller ordinal is a backward (regressing) transition; a move
+// to an equal-or-greater ordinal is a same-stage or forward transition.
+func TechCardStageOrdinal(s TechCardStage) (int, bool) {
+	o, ok := techCardStageOrder[s]
+	return o, ok
+}
+
 // TechCardPurpose is what a card produces: a sellable product or an auxiliary item (NF-07). It
 // mirrors the common.TechCardPurpose proto enum and is stored as a string in tech_card.purpose.
 type TechCardPurpose string

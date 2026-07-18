@@ -234,7 +234,8 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.Valid
 		return nil, status.Errorf(codes.Internal, "can't validate order by uuid")
 	}
 
-	of, err := dto.ConvertEntityOrderFullToPbOrderFull(orderFull)
+	// Storefront projection: strips internal shipment costs (actual_cost / return_shipping_cost).
+	of, err := dto.ConvertEntityOrderFullToPbOrderFullStorefront(orderFull)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity order to pb common order",
 			slog.String("err", err.Error()),

@@ -32,6 +32,25 @@ func pbMaterialClass(c entity.MaterialClass) pb_common.MaterialClass {
 	return pb_common.MaterialClass_MATERIAL_CLASS_UNKNOWN
 }
 
+// materialPurposePbToEntity maps the proto MaterialPurpose enum to the entity purpose string (#40).
+// It is the entity<->proto leg of the single-source guard (the entity<->DB leg is migrationlint); a
+// missing mapping surfaces in TestMaterialPurposeEnumNoDrift. UNKNOWN is intentionally absent — it
+// yields the empty string, which the store normalises to 'both' on write.
+var materialPurposePbToEntity = map[pb_common.MaterialPurpose]entity.MaterialPurpose{
+	pb_common.MaterialPurpose_MATERIAL_PURPOSE_SAMPLE:     entity.MaterialPurposeSample,
+	pb_common.MaterialPurpose_MATERIAL_PURPOSE_PRODUCTION: entity.MaterialPurposeProduction,
+	pb_common.MaterialPurpose_MATERIAL_PURPOSE_BOTH:       entity.MaterialPurposeBoth,
+}
+
+func pbMaterialPurpose(p entity.MaterialPurpose) pb_common.MaterialPurpose {
+	for k, v := range materialPurposePbToEntity {
+		if v == p {
+			return k
+		}
+	}
+	return pb_common.MaterialPurpose_MATERIAL_PURPOSE_UNKNOWN
+}
+
 // ConvertPbMaterialToEntityInsert validates and converts a common.Material into the editable
 // MaterialInsert (server-managed fields — id, archived, latest_price — are ignored).
 func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialInsert, error) {
@@ -84,6 +103,9 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 	if minStock.Valid && minStock.Decimal.IsNegative() {
 		return nil, fmt.Errorf("material min_stock must be non-negative")
 	}
+	if pb.ImageId < 0 {
+		return nil, fmt.Errorf("material image_id must not be negative")
+	}
 	ins := &entity.MaterialInsert{
 		Name:            name,
 		Section:         string(section),
@@ -99,6 +121,8 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 		Pantone:         nullStringFromPb(pb.Pantone),
 		MinStock:        minStock,
 		Notes:           nullStringFromPb(pb.Notes),
+		ImageId:         nullInt32FromPb(pb.ImageId),
+		Purpose:         string(materialPurposePbToEntity[pb.Purpose]),
 	}
 	if err := applyPbMaterialAttrs(pb, ins); err != nil {
 		return nil, err
@@ -272,6 +296,11 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		MinStock:        pbDecimalFromNull(m.MinStock),
 		Notes:           pbStringFromNull(m.Notes),
 		LockVersion:     int32(m.LockVersion),
+		ImageId:         pbInt32FromNull(m.ImageId),
+		Purpose:         pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
+	}
+	if m.Image != nil {
+		out.Image = ConvertEntityToCommonMedia(m.Image)
 	}
 	if m.LatestPrice != nil {
 		out.LatestPrice = ConvertEntityMaterialPriceToPb(*m.LatestPrice)

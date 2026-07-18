@@ -586,7 +586,8 @@ func (s *Server) ListMyOrders(ctx context.Context, req *pb_frontend.ListMyOrders
 	}
 	out := make([]*pb_common.OrderFull, 0, len(orders))
 	for i := range orders {
-		pbO, err := dto.ConvertEntityOrderFullToPbOrderFull(&orders[i])
+		// Storefront projection: strips internal shipment costs (actual_cost / return_shipping_cost).
+		pbO, err := dto.ConvertEntityOrderFullToPbOrderFullStorefront(&orders[i])
 		if err != nil {
 			return nil, status.Error(codes.Internal, "can't convert order")
 		}
