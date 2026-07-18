@@ -109,18 +109,40 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 		// HIDDEN(3) and ARCHIVED(4). The admin statuses filter is intentionally ignored on this path.
 		whereClauses = append(whereClauses, "p.lifecycle_status = 2")
 
-		// Tier gating: return ONLY products the viewer is eligible to buy for
-		// their tier (resolved from the auth token; 0 for guests). Hacker-only
-		// items (min_tier=99) are shown exclusively to hacker accounts.
 		viewerTier := int16(0)
+		exclusive := false
 		if filterConditions != nil {
 			viewerTier = filterConditions.ViewerTier
+			exclusive = filterConditions.Exclusive
 		}
-		whereClauses = append(whereClauses, `(
-			(p.min_tier <= :viewerTier AND p.min_tier <> 99)
-			OR (p.min_tier = 99 AND :viewerTier = 99)
-		)`)
 		args["viewerTier"] = viewerTier
+
+		// Tier-locked TEASER visibility. Tier-gated rows are NO LONGER filtered out here — they are
+		// RETURNED inline so the storefront can render them as locked teaser cards to everyone (guests
+		// included). The per-viewer `locked` flag is applied later in the DTO projection from the SAME
+		// predicate (entity.TierCanPurchase), so what is displayed as locked and what is enforced can
+		// never diverge.
+		//
+		// The ONE thing still hidden here is hidden_for_non_qualified = TRUE: such a row must NEVER
+		// reach a viewer who does not qualify for it (leak-proofing), so it is excluded in SQL — not in
+		// the projection, which only runs after the row has already been returned. `qualifies` mirrors
+		// TierCanPurchase exactly (hacker=99 requires viewerTier=99; any other min_tier requires
+		// viewerTier >= min_tier). Net effect per row:
+		//   - hidden_for_non_qualified = FALSE → always returned (locked teaser for non-qualifying
+		//     viewers, unlocked for qualifying). This is also the hacker-99 rule: a non-hidden
+		//     min_tier=99 row shows as a locked teaser to lower tiers and unlocked to hackers.
+		//   - hidden_for_non_qualified = TRUE  → returned ONLY to a qualifying viewer; fully hidden
+		//     from everyone else.
+		qualifies := "((p.min_tier <= :viewerTier AND p.min_tier <> 99) OR (p.min_tier = 99 AND :viewerTier = 99))"
+		whereClauses = append(whereClauses, "(p.hidden_for_non_qualified = 0 OR "+qualifies+")")
+
+		// EXCLUSIVE catalogue (server-controlled flag): restrict to tier-gated items only (min_tier > 0)
+		// so the dedicated exclusive listing shows only locked/gated teasers. This can only NARROW the
+		// result set — the hidden_for_non_qualified exclusion above always applies — so it never
+		// bypasses hiding even if the flag is client-triggered (see entity.FilterConditions.Exclusive).
+		if exclusive {
+			whereClauses = append(whereClauses, "p.min_tier > 0")
+		}
 	}
 
 	var priceJoinRequired bool

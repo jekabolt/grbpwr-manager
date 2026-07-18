@@ -504,6 +504,49 @@ func adjustQuantities(maxOrderItemPerSize int, items []entity.OrderItemInsert) (
 	return items, adjustments
 }
 
+// validateOrderItemsTierAccess is the server-authoritative purchase block for tier-gated products.
+// It rejects the order if ANY line resolves to a product whose min_tier the buyer does not satisfy
+// (entity.TierCanPurchase, including the hacker=99 rule). buyerTier is the un-spoofable tier the
+// caller resolved from the authenticated storefront identity (0 for guests); it is INDEPENDENT of
+// whatever the storefront displayed — a locked teaser rendered to a guest is what makes the item
+// visible, this is what makes it unbuyable. Returns a field-tagged *entity.ValidationError (mapped
+// to InvalidArgument by apierr at the RPC boundary); a non-gated cart returns nil.
+//
+// It operates on a COPY of items so resolving variant addressing here does not disturb the caller's
+// slice (CreateOrder re-resolves inside its transaction). Products not returned by getProductsByIds
+// (unknown/inactive) are simply absent and dropped downstream as out-of-stock — the tier gate only
+// concerns products that actually exist and could otherwise be purchased.
+func validateOrderItemsTierAccess(ctx context.Context, rep dependency.Repository, items []entity.OrderItemInsert, buyerTier int16) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	copied := make([]entity.OrderItemInsert, len(items))
+	copy(copied, items)
+	if err := resolveVariantAddressing(ctx, rep.DB(), copied); err != nil {
+		return fmt.Errorf("can't resolve variant addressing for tier gate: %w", err)
+	}
+
+	prdIds := getProductIdsFromItems(copied)
+	prds, err := getProductsByIds(ctx, rep, prdIds)
+	if err != nil {
+		return fmt.Errorf("can't get products for tier gate: %w", err)
+	}
+
+	for i := range prds {
+		prd := &prds[i]
+		if entity.TierCanPurchase(buyerTier, prd.MinTier()) {
+			continue
+		}
+		howToFix := fmt.Sprintf("requires membership tier %d or higher", prd.MinTier())
+		if prd.MinTier() == entity.TierCodeHacker {
+			howToFix = "invite-only product; a hacker-tier account is required"
+		}
+		return entity.NewFieldViolation("items", "tier_locked", prd.SKU, howToFix)
+	}
+	return nil
+}
+
 func (s *Store) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
 	items, capAdjustments := adjustQuantities(cache.GetMaxOrderItems(), items)
 

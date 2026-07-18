@@ -80,7 +80,9 @@ func (s *Server) GetArchive(ctx context.Context, req *pb_frontend.GetArchiveRequ
 	}
 
 	// R3: storefront archive projection (StorefrontColorway product blocks, no ArchiveList.id).
+	// viewerTier drives the embedded colourways' locked teaser flag and keeps hidden_for_non_qualified
+	// colourways from leaking to a non-qualifying viewer via an archive block.
 	return &pb_frontend.GetArchiveResponse{
-		Archive: dto.StorefrontArchiveFullFromEntity(af),
+		Archive: dto.StorefrontArchiveFullFromEntity(af, s.viewerTier(ctx)),
 	}, nil
 }

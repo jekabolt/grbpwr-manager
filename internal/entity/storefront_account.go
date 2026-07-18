@@ -98,6 +98,25 @@ func IsNumericTier(t StorefrontAccountTier) bool {
 	return t == StorefrontAccountTierMember || t == StorefrontAccountTierPlus || t == StorefrontAccountTierPlusPlus
 }
 
+// TierCanPurchase reports whether a buyer holding buyerTier is eligible for a product
+// requiring minTier. It is the SINGLE source of truth for tier gating across the codebase:
+// the server-side purchase block (order path), the storefront `locked` projection, and the
+// inverse of the SQL catalogue visibility predicate all resolve to this exact rule, so display
+// and enforcement can never diverge.
+//
+// The hacker track (99) is invite-only and orthogonal to the numeric progression: a min_tier of
+// 99 is satisfied ONLY by tier 99 (a plus_plus=2 buyer does NOT qualify). Any other min_tier is
+// satisfied by buyerTier >= minTier (so a hacker, being the highest code, also qualifies for every
+// numeric-tier product). The equivalent SQL is:
+//
+//	(p.min_tier <= :viewerTier AND p.min_tier <> 99) OR (p.min_tier = 99 AND :viewerTier = 99)
+func TierCanPurchase(buyerTier, minTier int16) bool {
+	if minTier == TierCodeHacker {
+		return buyerTier == TierCodeHacker
+	}
+	return buyerTier >= minTier
+}
+
 // StorefrontAccountStatus is the lifecycle status of an account.
 type StorefrontAccountStatus string
 

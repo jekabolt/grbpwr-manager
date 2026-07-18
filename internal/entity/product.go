@@ -288,6 +288,21 @@ func (p *Colorway) IsPubliclyVisible() bool {
 	return p.LifecycleStatus == ColorwayStatusActive
 }
 
+// MinTier is the minimum loyalty tier code (0/1/2/99) required to PURCHASE this colourway.
+// It gates purchase and drives the storefront `locked` teaser flag; it does NOT by itself hide
+// the row (HiddenForNonQualified does that). Convenience accessor over the nested body field.
+func (p *Colorway) MinTier() int16 {
+	return p.ProductDisplay.ProductBody.ProductBodyInsert.MinTier
+}
+
+// HiddenForNonQualified reports whether this colourway is hidden ENTIRELY from viewers who do not
+// qualify for its MinTier (as opposed to being shown as a locked teaser). FALSE (default) => show
+// as a locked teaser to everyone; TRUE => never reveal to a non-qualifying viewer anywhere.
+// Convenience accessor over the nested body field.
+func (p *Colorway) HiddenForNonQualified() bool {
+	return p.ProductDisplay.ProductBody.ProductBodyInsert.HiddenForNonQualified
+}
+
 type ColorwayInsert struct {
 	ProductBodyInsert ColorwayBodyInsert `valid:"required"`
 	// ThumbnailMediaID is optional at write time: a DRAFT colourway may carry no thumbnail yet (0 => SQL

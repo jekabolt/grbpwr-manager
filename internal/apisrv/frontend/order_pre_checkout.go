@@ -3,9 +3,11 @@ package frontend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -75,6 +77,16 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		)
 		return nil, status.Errorf(codes.Internal, "can't validate order items insert")
 	}
+
+	// Server-authoritative tier block (defence in depth): reject a cart containing a product the
+	// buyer's tier does not satisfy BEFORE any PaymentIntent is created, so an ineligible buyer can
+	// never obtain a client_secret for a locked item (the SubmitOrder/CreateOrder block is the
+	// authoritative backstop). buyerTier is the un-spoofable token-resolved tier (0 for guests).
+	if verr := s.enforceBuyerTierAccess(ctx, oiv.ValidItems, s.viewerTier(ctx)); verr != nil {
+		slog.Default().WarnContext(ctx, "cart rejected: tier-locked item", slog.String("err", verr.Error()))
+		return nil, verr
+	}
+
 	totalSale := oiv.SubtotalDecimal()
 
 	pbOii := make([]*pb_common.OrderItem, 0, len(oiv.ValidItems))
@@ -263,6 +275,50 @@ func (s *Server) ValidateOrderByUUID(ctx context.Context, req *pb_frontend.Valid
 	return &pb_frontend.ValidateOrderByUUIDResponse{
 		Order: of,
 	}, nil
+}
+
+// enforceBuyerTierAccess is the pre-checkout mirror of the order path's server-authoritative tier
+// block. It rejects a cart that contains a product whose min_tier the buyer does not satisfy
+// (entity.TierCanPurchase, hacker=99 rule included), returning a field-tagged InvalidArgument.
+// items must already carry resolved ProductIds (they do, post-validation); buyerTier is the
+// un-spoofable token-resolved tier (0 for guests). A non-gated cart returns nil.
+func (s *Server) enforceBuyerTierAccess(ctx context.Context, items []entity.OrderItem, buyerTier int16) error {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(items))
+	ids := make([]int, 0, len(items))
+	for i := range items {
+		pid := items[i].ProductId
+		if pid == 0 {
+			continue
+		}
+		if _, ok := seen[pid]; ok {
+			continue
+		}
+		seen[pid] = struct{}{}
+		ids = append(ids, pid)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	prds, err := s.repo.Products().GetProductsByIds(ctx, ids)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load products for tier gate", slog.String("err", err.Error()))
+		return status.Errorf(codes.Internal, "can't verify product eligibility")
+	}
+	for i := range prds {
+		prd := &prds[i]
+		if entity.TierCanPurchase(buyerTier, prd.MinTier()) {
+			continue
+		}
+		howToFix := fmt.Sprintf("requires membership tier %d or higher", prd.MinTier())
+		if prd.MinTier() == entity.TierCodeHacker {
+			howToFix = "invite-only product; a hacker-tier account is required"
+		}
+		return apierr.Invalid(entity.NewFieldViolation("items", "tier_locked", prd.SKU, howToFix))
+	}
+	return nil
 }
 
 // validateOrderItemsWithReservation validates order items while accounting for stock reservations

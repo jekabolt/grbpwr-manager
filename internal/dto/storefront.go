@@ -302,40 +302,49 @@ func storefrontDisplay(c *entity.Colorway) *pb_frontend.StorefrontColorwayDispla
 }
 
 // StorefrontColorwayFromFull projects a full colourway (detail view: variants + media + size chart) for
-// the storefront, with no catalogue primary keys (R3).
-func StorefrontColorwayFromFull(e *entity.ColorwayFull) *pb_frontend.StorefrontColorway {
+// the storefront, with no catalogue primary keys (R3). viewerTier is the requesting customer's
+// un-spoofable loyalty tier (0 for guests); it drives the `locked` teaser flag but never withholds any
+// display field — a locked colourway is fully renderable, it just cannot be purchased (enforced on the
+// order path). Callers that must not reveal a hidden_for_non_qualified colourway to a non-qualifying
+// viewer gate that upstream (the SQL catalogue read / the PDP handler); this projection trusts its input.
+func StorefrontColorwayFromFull(e *entity.ColorwayFull, viewerTier int16) *pb_frontend.StorefrontColorway {
 	if e == nil || e.Product == nil {
 		return nil
 	}
 	c := e.Product
 	return &pb_frontend.StorefrontColorway{
-		BaseSku:   c.SKU,
-		Slug:      slug.ProductPath(canonicalProductName(c.ProductDisplay.ProductBody.Translations), c.SKU),
-		Display:   storefrontDisplay(c),
-		Variants:  storefrontVariants(e.Sizes),
-		Prices:    convertEntityPricesToPb(e.Prices),
-		Media:     ConvertEntityMediaListToPbMedia(e.Media),
-		SizeChart: storefrontSizeChart(e.Sizes, e.Measurements),
-		ColorCode: c.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
-		SoldOut:   entity.SoldOutFromSizes(e.Sizes),
-		Status:    pb_common.ColorwayLifecycleStatus(c.LifecycleStatus),
+		BaseSku:      c.SKU,
+		Slug:         slug.ProductPath(canonicalProductName(c.ProductDisplay.ProductBody.Translations), c.SKU),
+		Display:      storefrontDisplay(c),
+		Variants:     storefrontVariants(e.Sizes),
+		Prices:       convertEntityPricesToPb(e.Prices),
+		Media:        ConvertEntityMediaListToPbMedia(e.Media),
+		SizeChart:    storefrontSizeChart(e.Sizes, e.Measurements),
+		ColorCode:    c.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		SoldOut:      entity.SoldOutFromSizes(e.Sizes),
+		Status:       pb_common.ColorwayLifecycleStatus(c.LifecycleStatus),
+		Locked:       !entity.TierCanPurchase(viewerTier, c.MinTier()),
+		RequiredTier: int32(c.MinTier()),
 	}
 }
 
 // StorefrontColorwayFromColorway projects a colourway header (list/paged view: no variants/media/chart)
-// for the storefront, with no catalogue primary keys (R3).
-func StorefrontColorwayFromColorway(e *entity.Colorway) *pb_frontend.StorefrontColorway {
+// for the storefront, with no catalogue primary keys (R3). viewerTier drives the `locked` teaser flag
+// (see StorefrontColorwayFromFull); it never withholds display fields.
+func StorefrontColorwayFromColorway(e *entity.Colorway, viewerTier int16) *pb_frontend.StorefrontColorway {
 	if e == nil {
 		return nil
 	}
 	return &pb_frontend.StorefrontColorway{
-		BaseSku:   e.SKU,
-		Slug:      slug.ProductPath(canonicalProductName(e.ProductDisplay.ProductBody.Translations), e.SKU),
-		Display:   storefrontDisplay(e),
-		Prices:    convertEntityPricesToPb(e.Prices),
-		ColorCode: e.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
-		SoldOut:   e.SoldOut,
-		Status:    pb_common.ColorwayLifecycleStatus(e.LifecycleStatus),
+		BaseSku:      e.SKU,
+		Slug:         slug.ProductPath(canonicalProductName(e.ProductDisplay.ProductBody.Translations), e.SKU),
+		Display:      storefrontDisplay(e),
+		Prices:       convertEntityPricesToPb(e.Prices),
+		ColorCode:    e.ProductDisplay.ProductBody.ProductBodyInsert.ColorCode,
+		SoldOut:      e.SoldOut,
+		Status:       pb_common.ColorwayLifecycleStatus(e.LifecycleStatus),
+		Locked:       !entity.TierCanPurchase(viewerTier, e.MinTier()),
+		RequiredTier: int32(e.MinTier()),
 	}
 }
 
@@ -365,15 +374,22 @@ func storefrontArchiveList(al *entity.ArchiveList) *pb_frontend.StorefrontArchiv
 	}
 }
 
-func storefrontColorwaysFromList(products []entity.Colorway) []*pb_frontend.StorefrontColorway {
+func storefrontColorwaysFromList(products []entity.Colorway, viewerTier int16) []*pb_frontend.StorefrontColorway {
 	out := make([]*pb_frontend.StorefrontColorway, 0, len(products))
 	for i := range products {
-		out = append(out, StorefrontColorwayFromColorway(&products[i]))
+		p := &products[i]
+		// Leak-proofing: a hidden_for_non_qualified colourway must never be surfaced to a viewer who
+		// does not qualify for it, even when an admin-curated archive tag/manual block pulled it in
+		// (those product reads are not tier-filtered). Non-hidden gated colourways stay as locked teasers.
+		if p.HiddenForNonQualified() && !entity.TierCanPurchase(viewerTier, p.MinTier()) {
+			continue
+		}
+		out = append(out, StorefrontColorwayFromColorway(p, viewerTier))
 	}
 	return out
 }
 
-func storefrontArchiveItem(it *entity.ArchiveItemFull) *pb_frontend.StorefrontArchiveItemFull {
+func storefrontArchiveItem(it *entity.ArchiveItemFull, viewerTier int16) *pb_frontend.StorefrontArchiveItemFull {
 	if it == nil {
 		return nil
 	}
@@ -416,8 +432,10 @@ func storefrontArchiveItem(it *entity.ArchiveItemFull) *pb_frontend.StorefrontAr
 	case entity.ArchiveItemTypeProduct:
 		if b := it.Product; b != nil {
 			pf := &pb_frontend.StorefrontArchiveProductFull{Translations: convertEntityArchiveItemTranslationsToPb(b.Translations)}
-			if b.Product != nil {
-				pf.Colorway = StorefrontColorwayFromColorway(b.Product)
+			// Leak-proofing: drop the embedded colourway if it is hidden_for_non_qualified and this
+			// viewer does not qualify. Non-hidden gated colourways remain as locked teasers.
+			if b.Product != nil && !(b.Product.HiddenForNonQualified() && !entity.TierCanPurchase(viewerTier, b.Product.MinTier())) {
+				pf.Colorway = StorefrontColorwayFromColorway(b.Product, viewerTier)
 			}
 			out.Product = pf
 		}
@@ -425,14 +443,14 @@ func storefrontArchiveItem(it *entity.ArchiveItemFull) *pb_frontend.StorefrontAr
 		if b := it.ProductsTag; b != nil {
 			out.ProductsTag = &pb_frontend.StorefrontArchiveProductsTagFull{
 				Tag:          b.Tag,
-				Colorways:    storefrontColorwaysFromList(b.Products),
+				Colorways:    storefrontColorwaysFromList(b.Products, viewerTier),
 				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
 			}
 		}
 	case entity.ArchiveItemTypeProductsManual:
 		if b := it.ProductsManual; b != nil {
 			out.ProductsManual = &pb_frontend.StorefrontArchiveProductsManualFull{
-				Colorways:    storefrontColorwaysFromList(b.Products),
+				Colorways:    storefrontColorwaysFromList(b.Products, viewerTier),
 				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
 			}
 		}
@@ -441,13 +459,15 @@ func storefrontArchiveItem(it *entity.ArchiveItemFull) *pb_frontend.StorefrontAr
 }
 
 // StorefrontArchiveFullFromEntity projects a full archive for the storefront (no catalogue PKs, R3).
-func StorefrontArchiveFullFromEntity(af *entity.ArchiveFull) *pb_frontend.StorefrontArchiveFull {
+// viewerTier is the requesting customer's un-spoofable tier (0 for guests), threaded to the embedded
+// product blocks so they render locked teasers and never leak hidden_for_non_qualified colourways.
+func StorefrontArchiveFullFromEntity(af *entity.ArchiveFull, viewerTier int16) *pb_frontend.StorefrontArchiveFull {
 	if af == nil {
 		return nil
 	}
 	items := make([]*pb_frontend.StorefrontArchiveItemFull, 0, len(af.Items))
 	for i := range af.Items {
-		items = append(items, storefrontArchiveItem(&af.Items[i]))
+		items = append(items, storefrontArchiveItem(&af.Items[i], viewerTier))
 	}
 	return &pb_frontend.StorefrontArchiveFull{
 		ArchiveList: storefrontArchiveList(&af.ArchiveList),

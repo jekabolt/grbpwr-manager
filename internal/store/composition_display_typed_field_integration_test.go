@@ -80,7 +80,7 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 	require.Equal(t, legacyComposition, pf.Product.ProductDisplay.ProductBody.ProductBodyInsert.Composition.String)
 	require.Empty(t, pf.Product.ProductDisplay.ProductBody.ProductBodyInsert.CompositionEntries)
 
-	sf := dto.StorefrontColorwayFromFull(pf)
+	sf := dto.StorefrontColorwayFromFull(pf, 0)
 	require.Equal(t, legacyComposition, sf.Display.Composition, "storefront composition is legacy plain text with no structural data")
 	require.Empty(t, sf.Display.CompositionEntries)
 
@@ -138,7 +138,7 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 		"list path composition must also stay legacy plain text (M1)")
 	require.Len(t, byIds2[0].ProductDisplay.ProductBody.ProductBodyInsert.CompositionEntries, 2)
 
-	sf2 := dto.StorefrontColorwayFromFull(pf2)
+	sf2 := dto.StorefrontColorwayFromFull(pf2, 0)
 	require.Equal(t, legacyComposition, sf2.Display.Composition, "storefront composition string is STILL legacy plain text (M1)")
 	require.Len(t, sf2.Display.CompositionEntries, 2, "storefront composition_entries carries the structured rows (M1)")
 	var gotCOT bool
