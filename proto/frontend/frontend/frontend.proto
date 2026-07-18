@@ -636,6 +636,13 @@ message StorefrontColorway {
   string color_code = 8;
   bool sold_out = 9;
   common.ColorwayLifecycleStatus status = 10; // only ACTIVE is served publicly
+  // locked is TRUE when the requesting viewer's loyalty tier does not satisfy required_tier: the
+  // colourway is shown as a locked teaser (fully renderable) but cannot be purchased (the purchase
+  // block is enforced server-side on the order path). FALSE for viewers who qualify.
+  bool locked = 11;
+  // required_tier is the minimum loyalty tier code required to purchase (0=member, 1=plus,
+  // 2=plus_plus, 99=hacker/invite-only). 0 for ordinary, ungated products.
+  int32 required_tier = 12;
 }
 
 // ─── Storefront archive projections (R3, §7.6) ──────────────────────────────────────────────────

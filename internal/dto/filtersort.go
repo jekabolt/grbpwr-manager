@@ -169,5 +169,6 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) (*e
 		ByTag:                 fc.ByTag,
 		Collections:           fc.Collections,
 		Seasons:               seasons,
+		Exclusive:             fc.Exclusive,
 	}, nil
 }

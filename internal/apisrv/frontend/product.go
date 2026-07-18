@@ -30,9 +30,19 @@ func (s *Server) GetColorway(ctx context.Context, req *pb_frontend.GetColorwayRe
 		return nil, status.Errorf(codes.Internal, "failed to get product")
 	}
 
+	// PDP is teaser-style: a tier-gated colourway is returned to everyone with locked=true so the
+	// locked product page still renders — purchase is blocked server-side on the order path, never
+	// here. The ONE exception is leak-proofing: a hidden_for_non_qualified colourway must never be
+	// revealed to a viewer who does not qualify for it, so treat it as not found (indistinguishable
+	// from a nonexistent SKU — the PDP-by-SKU analogue of the catalogue's SQL hidden exclusion).
+	viewerTier := s.viewerTier(ctx)
+	if pf.Product != nil && pf.Product.HiddenForNonQualified() && !entity.TierCanPurchase(viewerTier, pf.Product.MinTier()) {
+		return nil, status.Errorf(codes.NotFound, "product not found")
+	}
+
 	// R3: the storefront gets a projection with no catalogue PKs (base_sku/variant_sku identity only).
 	return &pb_frontend.GetColorwayResponse{
-		Colorway: dto.StorefrontColorwayFromFull(pf),
+		Colorway: dto.StorefrontColorwayFromFull(pf, viewerTier),
 	}, nil
 }
 
@@ -110,7 +120,7 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_frontend.GetColo
 
 	prdsPb := make([]*pb_frontend.StorefrontColorway, 0, len(prds))
 	for i := range prds {
-		prdsPb = append(prdsPb, dto.StorefrontColorwayFromColorway(&prds[i]))
+		prdsPb = append(prdsPb, dto.StorefrontColorwayFromColorway(&prds[i], fc.ViewerTier))
 	}
 
 	return &pb_frontend.GetColorwaysPagedResponse{

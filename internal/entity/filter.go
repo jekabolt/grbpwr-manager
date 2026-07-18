@@ -66,6 +66,13 @@ type FilterConditions struct {
 	Collections           []string
 	Seasons               []SeasonEnum
 	// ViewerTier is the loyalty tier code (0/1/2/99) of the requesting customer
-	// (0 for guests). Applied as a visibility gate on public listings.
+	// (0 for guests). Applied as a visibility gate on public listings. SERVER-SET from the
+	// authenticated access token — never populated from the client filter proto, so a viewer
+	// cannot raise their own tier to reveal hidden_for_non_qualified rows.
 	ViewerTier int16
+	// Exclusive, when set, restricts a storefront listing to tier-gated items only (min_tier > 0):
+	// the dedicated "exclusive" catalogue of locked teasers. It can only NARROW results — the
+	// hidden_for_non_qualified exclusion is always applied on top — so it never bypasses hiding and
+	// is safe to trigger from the client (unlike ViewerTier, which must stay server-set).
+	Exclusive bool
 }

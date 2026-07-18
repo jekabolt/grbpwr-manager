@@ -38,6 +38,12 @@ type OrderNew struct {
 	Currency           string            `valid:"required,length(3|4)"` // ISO 4217 (3) or USDT (4)
 	CustomShipmentCost *decimal.Decimal  `valid:"-"`                    // optional; when set, overrides carrier price (admin custom orders)
 	GAClientID         string            `valid:"-"`                    // GA4 client ID from browser _ga cookie
+	// BuyerTier is the loyalty tier code (0/1/2/99) the server resolved for the buyer from the
+	// authenticated storefront access token (0 for guests) — NOT a proto/client field, so it cannot
+	// be spoofed. It drives the server-authoritative purchase block (TierCanPurchase): an order line
+	// whose product min_tier the buyer does not satisfy is rejected regardless of what the storefront
+	// displayed. Left 0 on the admin custom-order path (that path is trusted and not tier-gated).
+	BuyerTier int16 `valid:"-"`
 }
 
 type OrderFull struct {

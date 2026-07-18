@@ -38,4 +38,5 @@ message FilterConditions {
   repeated common.SeasonEnum seasons = 14;
   repeated int32 exclude_top_category_ids = 15; // top category ids to exclude from results (e.g. hide "object" category in men's catalog)
   repeated string color_codes = 16; // canonical Dictionary.colors codes; free-text color filtering is not supported
+  bool exclusive = 17; // storefront-only: restrict results to tier-gated items (min_tier > 0) — the dedicated "exclusive" catalogue of locked teasers. Only narrows results; hidden_for_non_qualified rows stay hidden from non-qualifying viewers regardless.
 }

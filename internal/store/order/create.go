@@ -35,6 +35,14 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 		return nil, false, err
 	}
 
+	// Server-authoritative purchase block: reject any tier-gated line the buyer is not eligible for
+	// (BuyerTier is the un-spoofable token-resolved tier, 0 for guests). Runs BEFORE the transaction
+	// so the field-tagged *entity.ValidationError propagates un-wrapped to the RPC boundary (apierr),
+	// and so a blocked order creates nothing. Enforced independently of what the storefront displayed.
+	if err := validateOrderItemsTierAccess(ctx, s.repFunc(), orderNew.Items, orderNew.BuyerTier); err != nil {
+		return nil, false, err
+	}
+
 	order := &entity.Order{}
 	sendEmail := false
 

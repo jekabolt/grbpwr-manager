@@ -7,6 +7,7 @@ import (
 	"time"
 
 	v "github.com/asaskevich/govalidator"
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -71,6 +72,11 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	orderNew, receivePromo := dto.ConvertCommonOrderNewToEntity(req.Order)
 	orderNew.GAClientID = req.GaClientId
+	// Resolve the buyer's loyalty tier from the authenticated storefront token (0 for guests /
+	// unauthenticated) — the same un-spoofable identity the catalogue display gate uses. This is
+	// SERVER-SET (not from the request), and drives the purchase block in CreateOrder so tier-gated
+	// products can be shown as locked teasers but never actually bought by an ineligible buyer.
+	orderNew.BuyerTier = s.viewerTier(ctx)
 
 	_, err := v.ValidateStruct(orderNew)
 	if err != nil {
@@ -140,6 +146,14 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	order, sendEmail, err := s.repo.Order().CreateOrder(ctx, orderNew, receivePromo, time.Now().UTC().Add(expirationDuration))
 	if err != nil {
+		// A field-tagged validation error (e.g. the tier-locked purchase block) maps to
+		// InvalidArgument with a BadRequest FieldViolation, not an opaque 500.
+		if st, ok := apierr.Status(err); ok {
+			slog.Default().WarnContext(ctx, "order rejected on create",
+				slog.String("err", err.Error()),
+			)
+			return nil, st
+		}
 		slog.Default().ErrorContext(ctx, "can't create order",
 			slog.String("err", err.Error()),
 		)
