@@ -74,9 +74,9 @@ func TestAcctEventProducers(t *testing.T) {
 		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
 		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
 		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
-		// Real uploaded media always carries a blur_hash; order-item fetch scans it into a
-		// non-nullable string (entity.OrderItem.BlurHash), so a NULL here fails the scan.
-		BlurHash: sql.NullString{String: "LEHV6nWB2yk8pyo0adR*.7kCMdnj", Valid: true},
+		// BlurHash intentionally left NULL: order-item fetch COALESCEs m.blur_hash to '' (fetch.go),
+		// so a null-blurhash media item (legacy/edge data) fetches without a scan error. This is the
+		// regression guard for that fix — without the COALESCE this test fails on the NULL scan.
 	})
 	require.NoError(t, err)
 	prices := make([]entity.ColorwayPriceInsert, 0)
