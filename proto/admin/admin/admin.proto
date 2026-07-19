@@ -528,15 +528,6 @@ service AdminService {
     };
   }
 
-  // UpsertOpexEntries records the fixed-cost (OPEX) journal — one amount per month per category,
-  // base currency — feeding the dashboard operating result (task 22). Upserts on (month, category).
-  rpc UpsertOpexEntries(UpsertOpexEntriesRequest) returns (UpsertOpexEntriesResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/metrics/opex/upsert"
-      body: "*"
-    };
-  }
-
   // UpsertOpexLines writes OPEX line items (NF-08) — each with its own currency (folded to base) and
   // a label — upserting on (month, category, label). Requires costing:write.
   rpc UpsertOpexLines(UpsertOpexLinesRequest) returns (UpsertOpexLinesResponse) {
@@ -4607,20 +4598,6 @@ message UpsertChannelSpendRequest {
 }
 
 message UpsertChannelSpendResponse {}
-
-// OpexEntryInsert is one fixed-cost line: an amount for a category in a month, base currency (task 22).
-message OpexEntryInsert {
-  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the first of the month server-side
-  string category = 2; // salaries | rent | software | marketing_other | production_content | other
-  google.type.Decimal amount = 3; // base currency (EUR), >= 0
-  string note = 4;
-}
-
-message UpsertOpexEntriesRequest {
-  repeated OpexEntryInsert entries = 1;
-}
-
-message UpsertOpexEntriesResponse {}
 
 // OpexLineInsert is one operating-expense line item (NF-08). Amount is in `currency`; it is folded
 // to the base currency server-side via the manual costing FX rates (left uncosted, and excluded

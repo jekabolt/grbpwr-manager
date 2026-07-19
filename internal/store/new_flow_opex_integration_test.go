@@ -92,19 +92,6 @@ func TestOpexV2(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, lines, 1)
 
-	// --- legacy aggregate mirrors into opex_line as '(aggregate)' ---
-	require.NoError(t, mtr.UpsertOpexEntries(ctx, []entity.OpexEntry{{
-		Month: opexMonth(2029, time.July), Category: "rent", Amount: decimal.RequireFromString("1200"),
-	}}))
-	agg, err := mtr.ListOpexLines(ctx, entity.OpexLineFilter{
-		MonthFrom: opexMonth(2029, time.July), MonthTo: opexMonth(2029, time.July), Category: "rent",
-	})
-	require.NoError(t, err)
-	require.Len(t, agg, 1)
-	require.Equal(t, "(aggregate)", agg[0].Label)
-	require.True(t, agg[0].AmountBase.Valid)
-	require.Equal(t, "1200", agg[0].AmountBase.Decimal.String())
-
 	// --- recurring template materialisation ---
 	// Materialisation now folds each month at the FX rate effective THAT month, read from
 	// costing_fx_rate (no rates param). Seed test-only currencies so we don't perturb real rates
