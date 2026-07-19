@@ -287,3 +287,249 @@ type AcctLedgerFilter struct {
 	Limit  int
 	Offset int
 }
+
+// =====================================================================================
+// Posting facts — flat, SQL-shaped structs the accounting store reads from OTHER domains'
+// tables (customer_order, material_stock_movement, production_run*, opex_line) and hands to
+// the pure posting-rule builders in internal/accounting. The store reads them directly (the
+// same cross-domain-read precedent as internal/store/metrics/*); SQL sources are in
+// docs/plan-accounting/09-implementation-notes.md §9.2 and 03/04. Base currency is EUR.
+// =====================================================================================
+
+// AcctOrderItemFact is one order line's COGS input for posting (09.2). UnitCost is
+// COALESCE(order_item.cost_price_at_sale, product.cost_price) — the same snapshot-first fallback as
+// metrics/margin.go. NULL when neither is set (a pre-0093 line with no live cost): the builder
+// treats it as uncosted (excluded from COGS, flagged in the entry caveat).
+type AcctOrderItemFact struct {
+	Id        int                 `db:"id"`
+	ProductId int                 `db:"product_id"`
+	Quantity  decimal.Decimal     `db:"quantity"`
+	UnitCost  decimal.NullDecimal `db:"unit_cost"`
+}
+
+// AcctOrderFacts is the flat fact set for posting an order sale (S1) or refund (S2), assembled by
+// GetOrderFactsForPosting from customer_order JOIN payment LEFT JOIN shipment (header) plus the
+// COGS lines (Items). Revenue is taken from TotalSettledBase (never total_price_eur — CLAUDE.md
+// "two EUR figures"); ShipmentCost/FreeShipping are NULL when the order has no shipment row.
+// PaymentMethodName/FeePct/FeeFixed are not read from SQL (db:"-"): GetOrderFactsForPosting fills
+// them in from the payment-method cache (cache.GetPaymentMethodById), keyed by PaymentMethodId,
+// after the header query.
+type AcctOrderFacts struct {
+	Id                int                 `db:"id"`
+	UUID              string              `db:"uuid"`
+	Placed            time.Time           `db:"placed"`
+	TotalPrice        decimal.Decimal     `db:"total_price"`
+	Currency          string              `db:"currency"`
+	TotalSettledBase  decimal.NullDecimal `db:"total_settled_base"`
+	PaymentFee        decimal.NullDecimal `db:"payment_fee"`
+	VatAmount         decimal.NullDecimal `db:"vat_amount"`
+	VatRatePct        decimal.NullDecimal `db:"vat_rate_pct"`
+	PaymentMethodId   int                 `db:"payment_method_id"`
+	PaymentMethodName PaymentMethodName   `db:"-"`
+	FeePct            decimal.Decimal     `db:"-"`
+	FeeFixed          decimal.Decimal     `db:"-"`
+	ShipmentCost      decimal.NullDecimal `db:"shipment_cost"`
+	FreeShipping      sql.NullBool        `db:"free_shipping"`
+	Items             []AcctOrderItemFact `db:"-"`
+}
+
+// AcctMovementFacts is one material_stock_movement joined with its material name — the fact set for
+// the M1–M8 material-movement rules (03 §3.3, 04). UnitCostBase NULL where money is expected means
+// the movement is uncosted: no entry is posted and it surfaces in the reconciliation report.
+type AcctMovementFacts struct {
+	MaterialMovement
+	MaterialName string `db:"material_name"`
+}
+
+// AcctRunIssueFact is one material issue/return movement of a production run (03/04, P1). It carries
+// CreatedAt so the LEDGER_WIP figure can be computed with the pre-cutover exclusion
+// (created_at >= accounting.start_date) by the caller that knows the cutover date (the worker) —
+// GetRunFactsForPosting itself has no start-date argument. UnitCostBase NULL = uncosted issue.
+type AcctRunIssueFact struct {
+	MovementType MaterialMovementType `db:"movement_type"`
+	Quantity     decimal.Decimal      `db:"quantity"`
+	UnitCostBase decimal.NullDecimal  `db:"unit_cost_base"`
+	CreatedAt    time.Time            `db:"created_at"`
+}
+
+// AcctRunFacts is the fact set for posting a production receive (P1, 04): the run's manual cost
+// articles (production_run_cost; amount_base NULL → uncosted, flagged) and its material
+// issue/return movements (Issues). LEDGER_WIP (Σ costed issue_production − return_production, with
+// the cutover filter) is derived from Issues by the caller, not precomputed here, because the
+// pre-cutover exclusion needs accounting.start_date which this store method is not given.
+// TechCardName is joined in by GetRunFactsForPosting (production_run JOIN tech_card) for the
+// journal entry's human-readable description.
+type AcctRunFacts struct {
+	RunID        int
+	ReceivedAt   time.Time
+	TechCardName string
+	Costs        []ProductionRunCost
+	Issues       []AcctRunIssueFact
+}
+
+// AcctOpexCategorySum is one OPEX category's costed total for a month (O1, 04): Σ opex_line.amount_base
+// of that category, NULL-base (unconverted) lines excluded. Category is one of
+// entity.ValidOpexCategories; the builder maps it to a 6xxx account. UncostedLabels is not read from
+// SQL (db:"-"): GetOpexMonthFacts fills it in from a second query over the month's NULL-amount_base
+// rows so the posting caveat can name what was skipped, including categories that are entirely
+// uncosted (a zero-amount entry with only UncostedLabels set).
+type AcctOpexCategorySum struct {
+	Category       string          `db:"category"`
+	AmountBase     decimal.Decimal `db:"amount_base"`
+	UncostedLabels []string        `db:"-"`
+}
+
+// =====================================================================================
+// Report shapes — the read-only contracts of the accounting reports (Trial Balance, P&L,
+// Balance Sheet, account drill-down, reconciliation). Shapes follow docs/plan-accounting/
+// 06-reports.md; the store queries that fill them are implemented in step 7 (reports.go /
+// reconcile.go), so these are the API/return contracts, kept skeletal here.
+// =====================================================================================
+
+// AcctTrialBalanceRow is one account's turnover + closing balance over [From, To). Balance sign is
+// per section: asset/cogs/opex → dr − cr; liability/equity/revenue → cr − dr (06).
+type AcctTrialBalanceRow struct {
+	Code      string          `db:"code"`
+	Name      string          `db:"name"`
+	Section   AcctSection     `db:"section"`
+	Statement string          `db:"statement"`
+	Debit     decimal.Decimal `db:"dr"`
+	Credit    decimal.Decimal `db:"cr"`
+	Balance   decimal.Decimal `db:"-"`
+}
+
+// AcctTrialBalance is GetTrialBalance's result: per-account rows + totals. Balanced (ΣDr == ΣCr) is
+// the system's core smoke invariant — theoretically always true, surfaced so the UI can flag it.
+type AcctTrialBalance struct {
+	From        time.Time
+	To          time.Time
+	Rows        []AcctTrialBalanceRow
+	TotalDebit  decimal.Decimal
+	TotalCredit decimal.Decimal
+	Balanced    bool
+}
+
+// AcctPLRow is one P&L account's values across the month columns plus its row total.
+type AcctPLRow struct {
+	Code   string
+	Name   string
+	Values []decimal.Decimal // per Months column
+	Total  decimal.Decimal
+}
+
+// AcctPLSection groups P&L rows by section (revenue / cogs / opex, in that order).
+type AcctPLSection struct {
+	Section string
+	Rows    []AcctPLRow
+}
+
+// AcctProfitLoss is GetProfitLoss's result (Excel "Income Statement"), monthly columns over the
+// interval. Derived lines are per-month slices aligned to Months (06). Caveats lists phase-1 gaps
+// (pre-tax, no carrier shipping cost) + per-entry caveats aggregated from the period.
+type AcctProfitLoss struct {
+	From            time.Time
+	To              time.Time
+	Months          []time.Time
+	Sections        []AcctPLSection
+	TotalRevenue    []decimal.Decimal
+	NetCogs         []decimal.Decimal
+	GrossProfit     []decimal.Decimal
+	GrossMarginPct  []decimal.Decimal
+	TotalOpex       []decimal.Decimal
+	OperatingProfit []decimal.Decimal
+	NetMarginPct    []decimal.Decimal
+	Caveats         []string
+}
+
+// AcctBalanceSheetRow is one BS account's closing balance as of the report date.
+type AcctBalanceSheetRow struct {
+	Code    string
+	Name    string
+	Balance decimal.Decimal
+}
+
+// AcctBalanceSheetSection is one BS grouping (assets / liabilities / equity) with its rows + total.
+type AcctBalanceSheetSection struct {
+	Section string
+	Rows    []AcctBalanceSheetRow
+	Total   decimal.Decimal
+}
+
+// AcctBalanceSheet is GetBalanceSheet's result (Excel "Balance Sheet"), balances from inception to
+// AsOf. Equity includes the virtual "Current Period Net Profit" row (Σ of all PL accounts over the
+// same span). BalanceCheck = Assets − (Liabilities + Equity); zero under the Dr=Cr invariant, kept
+// as the Excel CHK trust panel.
+type AcctBalanceSheet struct {
+	AsOf             time.Time
+	Assets           AcctBalanceSheetSection
+	Liabilities      AcctBalanceSheetSection
+	Equity           AcctBalanceSheetSection
+	TotalAssets      decimal.Decimal
+	TotalLiabilities decimal.Decimal
+	TotalEquity      decimal.Decimal
+	BalanceCheck     decimal.Decimal
+	Balanced         bool
+	Caveats          []string
+}
+
+// AcctAccountLedgerRow is one drill-down line for an account with its running balance (06).
+type AcctAccountLedgerRow struct {
+	EntryId        int             `db:"id"`
+	OccurredAt     time.Time       `db:"occurred_at"`
+	Description    string          `db:"description"`
+	SourceType     AcctSourceType  `db:"source_type"`
+	SourceKey      string          `db:"source_key"`
+	Side           AcctSide        `db:"side"`
+	Amount         decimal.Decimal `db:"amount"`
+	Note           sql.NullString  `db:"note"`
+	RunningBalance decimal.Decimal `db:"-"`
+}
+
+// AcctAccountLedger is GetAccountLedger's result: a page of drill-down rows for one account with the
+// opening balance (balance before From) and closing balance; Total is the unpaginated row count.
+type AcctAccountLedger struct {
+	Code           string
+	Name           string
+	Section        AcctSection
+	From           time.Time
+	To             time.Time
+	OpeningBalance decimal.Decimal
+	ClosingBalance decimal.Decimal
+	Rows           []AcctAccountLedgerRow
+	Total          int
+}
+
+// AcctReconItem is one row inside a reconciliation block (a top-N sample; TotalCount on the block
+// carries the full count). Ref is the operational identity (order uuid, movement id, run id, month).
+type AcctReconItem struct {
+	Ref    string
+	Label  string
+	Amount decimal.Decimal
+}
+
+// AcctReconBlock is one reconciliation dimension: the ledger figure, the operational figure, their
+// delta, and a bounded item sample. A non-zero delta (outside FG, where drift is expected) is the
+// signal the ledger diverged from operational truth (06).
+type AcctReconBlock struct {
+	Name        string
+	Ledger      decimal.Decimal
+	Operational decimal.Decimal
+	Delta       decimal.Decimal
+	Items       []AcctReconItem
+	TotalCount  int
+}
+
+// AcctReconciliation is GetReconciliation's result: the per-dimension blocks proving the derived
+// ledger matches operational data and surfacing what is deliberately unposted (06). It is both an
+// admin report and the source for the worker's health alerts.
+type AcctReconciliation struct {
+	From              time.Time
+	To                time.Time
+	Revenue           AcctReconBlock
+	Fees              AcctReconBlock
+	COGS              AcctReconBlock
+	Materials         AcctReconBlock
+	FinishedGoods     AcctReconBlock
+	Pending           AcctReconBlock
+	UnpostedMovements AcctReconBlock
+}

@@ -835,6 +835,14 @@ type AlertThresholds struct {
 	ContributionTrustPct   float64 // only trust the contribution-margin sign at/above this coverage
 	GA4CoverageWarnPct     float64 // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
 	ProductionRunStaleDays int     // warn when an open production run is older than this many days (NF-09)
+	// AcctPostingLagHours warns when the accounting module has unprocessed acct_event rows or
+	// material movements stuck behind the acctposting worker's checkpoint older than this many hours
+	// (accounting Step 8 / 07-worker-config.md "Health-алерты"). Unlike ProductionRunStaleDays, <= 0
+	// does NOT disable the check — it falls back to the default (24) — because this field is not yet
+	// carried by the AlertSettings proto/DTO round-trip, so an unrelated settings save would otherwise
+	// silently zero it and go dark with no operator intent behind it (see
+	// metrics.Store.GetAcctPostingLag).
+	AcctPostingLagHours int
 }
 
 // DefaultAlertThresholds returns the built-in defaults (also the seed values of alert_setting).
@@ -846,6 +854,7 @@ func DefaultAlertThresholds() AlertThresholds {
 		ContributionTrustPct:   50,
 		GA4CoverageWarnPct:     80,
 		ProductionRunStaleDays: 60,
+		AcctPostingLagHours:    24,
 	}
 }
 

@@ -65,6 +65,10 @@ const (
 	// SectionAccounts governs the account-management RPCs themselves. Only a
 	// super-admin or an account with accounts:write may create/edit accounts.
 	SectionAccounts = "accounts"
+	// SectionAccounting governs the double-entry ledger: chart of accounts, journal
+	// (incl. manual entries), period close and accounting reports. Reports expose the
+	// same confidential figures as SectionCosting, so grant together in practice.
+	SectionAccounting = "accounting"
 )
 
 // SectionInfo describes a section for the admin UI's permission picker.
@@ -97,6 +101,7 @@ var catalog = []SectionInfo{
 	{SectionSupport, "Support", "Support tickets and reviews."},
 	{SectionMembership, "Membership", "Members, loyalty tiers, hacker invites."},
 	{SectionAccounts, "Accounts", "Admin accounts and their permissions."},
+	{SectionAccounting, "Accounting", "Double-entry ledger: chart of accounts, journal, period close, financial reports."},
 }
 
 // sectionSet is the set of valid section keys, derived from the catalog.
@@ -393,6 +398,24 @@ var methodRequirements = map[string]Requirement{
 	"SetAccountDisabled":       wr(SectionAccounts),
 	"DeleteAccount":            wr(SectionAccounts),
 	"ResetAccountPassword":     wr(SectionAccounts),
+	// accounting (double-entry ledger, docs/plan-accounting/05-admin-api.md): chart of accounts,
+	// journal (incl. manual entries + reversal), period close/reopen and the financial reports.
+	"ListAcctAccounts":       rd(SectionAccounting),
+	"CreateAcctAccount":      wr(SectionAccounting),
+	"UpdateAcctAccount":      wr(SectionAccounting),
+	"ArchiveAcctAccount":     wr(SectionAccounting),
+	"CreateJournalEntry":     wr(SectionAccounting),
+	"ReverseJournalEntry":    wr(SectionAccounting),
+	"ListJournalEntries":     rd(SectionAccounting),
+	"GetJournalEntry":        rd(SectionAccounting),
+	"ListAcctPeriods":        rd(SectionAccounting),
+	"CloseAcctPeriod":        wr(SectionAccounting),
+	"ReopenAcctPeriod":       wr(SectionAccounting),
+	"GetTrialBalance":        rd(SectionAccounting),
+	"GetProfitLossStatement": rd(SectionAccounting),
+	"GetBalanceSheet":        rd(SectionAccounting),
+	"GetAccountLedger":       rd(SectionAccounting),
+	"GetAcctReconciliation":  rd(SectionAccounting),
 }
 
 // allowlist is the set of admin methods any authenticated account may call

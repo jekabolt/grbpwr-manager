@@ -223,7 +223,20 @@ func (s *Store) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew
 		if err = rep.Products().ReduceStockForProductSizes(ctx, validItemsInsert, history); err != nil {
 			return fmt.Errorf("error reducing stock: %w", err)
 		}
-		return insertOrderStatusHistoryEntry(ctx, txDB, order.Id, cache.OrderStatusConfirmed.Status.Id, "admin", "custom order")
+		if err := insertOrderStatusHistoryEntry(ctx, txDB, order.Id, cache.OrderStatusConfirmed.Status.Id, "admin", "custom order"); err != nil {
+			return err
+		}
+
+		// Accounting outbox (push producer, docs/plan-accounting/03): a custom order is born Confirmed
+		// and never passes through OrderPaymentDone, so its order_paid event is emitted here, in the
+		// same tx. order.UUID is populated by insertOrderDetails above (it is also read into the
+		// StockHistoryParams a few lines up). EnqueueEvent is idempotent; a failure rolls the order back.
+		return rep.Accounting().EnqueueEvent(ctx, entity.AcctEventInsert{
+			EventType:  entity.AcctEventOrderPaid,
+			SourceKey:  order.UUID,
+			Payload:    entity.AcctOrderPaidPayload{OrderUUID: order.UUID},
+			OccurredAt: s.Now(),
+		})
 	})
 	if err != nil {
 		return nil, err

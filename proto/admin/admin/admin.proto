@@ -1614,6 +1614,130 @@ service AdminService {
   rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse) {
     option (google.api.http) = {delete: "/api/admin/accounts/{username}"};
   }
+
+  // ACCOUNTING (double-entry ledger, docs/plan-accounting/). Every RPC below requires the
+  // "accounting" RBAC section (internal/rbac/rbac.go SectionAccounting): reads need
+  // accounting:read, journal/account/period writes need accounting:write. Plain dates
+  // (occurred_at, from/to, as_of, month) are YYYY-MM-DD strings, never google.protobuf.Timestamp
+  // — see docs/plan-accounting/05-admin-api.md. Money is google.type.Decimal throughout.
+
+  // --- chart of accounts ---
+
+  rpc ListAcctAccounts(ListAcctAccountsRequest) returns (ListAcctAccountsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/accounts"};
+  }
+
+  rpc CreateAcctAccount(CreateAcctAccountRequest) returns (CreateAcctAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/accounts"
+      body: "*"
+    };
+  }
+
+  // UpdateAcctAccount renames a custom (non-system) account; code and section are immutable.
+  rpc UpdateAcctAccount(UpdateAcctAccountRequest) returns (UpdateAcctAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/accounts/update"
+      body: "*"
+    };
+  }
+
+  // ArchiveAcctAccount archives/unarchives a custom (non-system) account.
+  rpc ArchiveAcctAccount(ArchiveAcctAccountRequest) returns (ArchiveAcctAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/accounts/archive"
+      body: "*"
+    };
+  }
+
+  // --- journal ---
+
+  // CreateJournalEntry posts a manual double-entry entry (source_type='manual'). Each line
+  // carries either a base-currency `amount` or an `amount_src`+`currency_src` pair the server
+  // converts via the costing FX rates; Σdebit == Σcredit is enforced by the store
+  // (ErrAcctUnbalanced), not here.
+  rpc CreateJournalEntry(CreateJournalEntryRequest) returns (CreateJournalEntryResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/journal"
+      body: "*"
+    };
+  }
+
+  // ReverseJournalEntry posts the mirror (sides swapped) of an existing entry and links the two;
+  // the original is never edited or deleted (append-only ledger).
+  rpc ReverseJournalEntry(ReverseJournalEntryRequest) returns (ReverseJournalEntryResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/journal/reverse"
+      body: "*"
+    };
+  }
+
+  // GetJournalEntry returns one entry with its lines. Declared before the bare list route below;
+  // the two don't actually collide (different path-segment counts) but this keeps the file's
+  // usual /{id}-before-list ordering (see the /model/{id} vs /model/list note above).
+  rpc GetJournalEntry(GetJournalEntryRequest) returns (GetJournalEntryResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/journal/{id}"};
+  }
+
+  rpc ListJournalEntries(ListJournalEntriesRequest) returns (ListJournalEntriesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/journal"};
+  }
+
+  // --- periods ---
+
+  rpc ListAcctPeriods(ListAcctPeriodsRequest) returns (ListAcctPeriodsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/periods"};
+  }
+
+  // CloseAcctPeriod closes a fully-past, reconciled month. A failed readiness check is NOT a gRPC
+  // error: the response comes back with closed=false and the reason in not_ready, so the UI can
+  // render a checklist instead of a toast.
+  rpc CloseAcctPeriod(CloseAcctPeriodRequest) returns (CloseAcctPeriodResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/periods/close"
+      body: "*"
+    };
+  }
+
+  rpc ReopenAcctPeriod(ReopenAcctPeriodRequest) returns (ReopenAcctPeriodResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/periods/reopen"
+      body: "*"
+    };
+  }
+
+  // --- reports (docs/plan-accounting/06-reports.md) ---
+
+  // GetTrialBalance returns per-account turnover + closing balance over [from, to) (to exclusive),
+  // with the ΣDr == ΣCr invariant surfaced as `balanced`.
+  rpc GetTrialBalance(GetTrialBalanceRequest) returns (GetTrialBalanceResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/trial-balance"};
+  }
+
+  // GetProfitLossStatement returns the monthly Income Statement (revenue / cogs / opex sections)
+  // over [from, to) (to exclusive), one column per calendar month.
+  rpc GetProfitLossStatement(GetProfitLossStatementRequest) returns (GetProfitLossStatementResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/profit-loss"};
+  }
+
+  // GetBalanceSheet returns assets/liabilities/equity balances from inception through as_of
+  // (inclusive), including the virtual "Current Period Net Profit" equity row.
+  rpc GetBalanceSheet(GetBalanceSheetRequest) returns (GetBalanceSheetResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/balance-sheet"};
+  }
+
+  // GetAccountLedger is the drill-down: a paginated statement for one account with a running
+  // balance, plus the opening balance carried into `from`.
+  rpc GetAccountLedger(GetAccountLedgerRequest) returns (GetAccountLedgerResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/ledger/{code}"};
+  }
+
+  // GetAcctReconciliation proves the derived ledger matches operational truth (revenue, fees,
+  // COGS, materials, finished goods) and lists what is deliberately left unposted, over
+  // [from, to) (to exclusive).
+  rpc GetAcctReconciliation(GetAcctReconciliationRequest) returns (GetAcctReconciliationResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/reconciliation"};
+  }
 }
 
 // DICITONARY
@@ -5679,3 +5803,339 @@ message DeleteAccountRequest {
 }
 
 message DeleteAccountResponse {}
+
+// ACCOUNTING (double-entry ledger, docs/plan-accounting/). The ledger is a DERIVED, append-only
+// projection of operational facts (orders, material movements, production runs, opex) plus manual
+// entries; base currency EUR. Dates are plain YYYY-MM-DD strings throughout (never
+// google.protobuf.Timestamp — 05-admin-api.md's date convention); money is google.type.Decimal.
+
+// --- chart of accounts ---
+
+// AcctAccount is a stored chart-of-accounts row. is_system accounts participate in automated
+// posting rules and cannot be renamed or archived (ErrAcctSystemAccount).
+message AcctAccount {
+  int32 id = 1;
+  string code = 2;
+  string name = 3;
+  string section = 4; // asset | liability | equity | revenue | cogs | opex
+  string statement = 5; // BS | PL
+  bool is_system = 6;
+  bool archived = 7;
+}
+
+message ListAcctAccountsRequest {
+  bool include_archived = 1;
+}
+
+message ListAcctAccountsResponse {
+  repeated AcctAccount accounts = 1;
+}
+
+message CreateAcctAccountRequest {
+  string code = 1;
+  string name = 2;
+  string section = 3; // asset | liability | equity | revenue | cogs | opex
+  string statement = 4; // BS | PL
+}
+
+message CreateAcctAccountResponse {
+  AcctAccount account = 1;
+}
+
+message UpdateAcctAccountRequest {
+  string code = 1;
+  string name = 2;
+}
+
+message UpdateAcctAccountResponse {
+  AcctAccount account = 1;
+}
+
+message ArchiveAcctAccountRequest {
+  string code = 1;
+  bool archived = 2;
+}
+
+message ArchiveAcctAccountResponse {}
+
+// --- journal ---
+
+// AcctJournalLineInput is one side of a manual journal entry being posted. Either `amount` (base
+// currency, EUR) or `amount_src`+`currency_src` (converted to base server-side via the costing FX
+// rates) must be set — never both, never neither.
+message AcctJournalLineInput {
+  string account_code = 1;
+  bool is_debit = 2;
+  google.type.Decimal amount = 3; // EUR; either this or amount_src+currency_src
+  google.type.Decimal amount_src = 4; // amount in currency_src; server converts to EUR
+  string currency_src = 5; // ISO 4217, or USDT (internal/currency.IsExpenseCurrency)
+  string note = 6;
+}
+
+message CreateJournalEntryRequest {
+  string occurred_at = 1; // YYYY-MM-DD; not more than 1 day in the future
+  string description = 2;
+  repeated AcctJournalLineInput lines = 3; // >= 2 lines, Σdebit == Σcredit (enforced by the store)
+}
+
+// AcctJournalLine is a stored journal line (read side), joined to its account's code/name.
+message AcctJournalLine {
+  int32 id = 1;
+  string account_code = 2;
+  string account_name = 3;
+  string side = 4; // debit | credit
+  google.type.Decimal amount = 5; // base currency (EUR), always > 0
+  google.type.Decimal amount_src = 6; // original-currency trace; unset for most automated postings
+  string currency_src = 7;
+  string note = 8;
+}
+
+// AcctJournalEntry is a journal-entry header with its lines. ReversalOf/ReversedBy implement
+// reversal-not-edit: a mistaken entry is never updated or deleted, only mirrored by a new entry
+// that references it. `total` is Σdebit (== Σcredit); unset (nil) on the header-only shape
+// returned by ListJournalEntries ("без lines").
+message AcctJournalEntry {
+  int32 id = 1;
+  string occurred_at = 2;
+  string description = 3;
+  string source_type = 4;
+  string source_key = 5;
+  int32 reversal_of = 6; // 0 = not a reversal
+  int32 reversed_by = 7; // 0 = not yet reversed
+  string created_by = 8;
+  bool has_caveat = 9;
+  string caveat = 10;
+  repeated AcctJournalLine lines = 11; // empty on the ListJournalEntries header-only shape
+  google.type.Decimal total = 12; // unset on the ListJournalEntries header-only shape
+}
+
+message CreateJournalEntryResponse {
+  AcctJournalEntry entry = 1;
+}
+
+message ReverseJournalEntryRequest {
+  int32 entry_id = 1;
+  string reason = 2;
+}
+
+message ReverseJournalEntryResponse {
+  AcctJournalEntry entry = 1; // the new reversal entry (sides swapped), with lines
+}
+
+message ListJournalEntriesRequest {
+  string from = 1; // occurred_at >= from; empty = unbounded
+  string to = 2; // occurred_at < to (exclusive); empty = unbounded
+  string account_code = 3; // filter via lines; empty = any
+  string source_type = 4; // empty = any
+  int32 limit = 5;
+  int32 offset = 6;
+}
+
+message ListJournalEntriesResponse {
+  repeated AcctJournalEntry entries = 1; // without lines/total — see AcctJournalEntry
+  int32 total = 2; // unpaginated match count
+}
+
+message GetJournalEntryRequest {
+  int32 id = 1;
+}
+
+message GetJournalEntryResponse {
+  AcctJournalEntry entry = 1; // with lines
+}
+
+// --- periods ---
+
+// AcctPeriod is one accounting month (period is always the 1st). status gates CreateJournalEntry:
+// posting into a closed period fails (ErrAcctPeriodClosed).
+message AcctPeriod {
+  string period = 1; // YYYY-MM-DD, always the 1st of the month
+  string status = 2; // open | closed
+  string closed_at = 3; // RFC3339; empty when open
+  string closed_by = 4; // admin username; empty when open
+}
+
+message ListAcctPeriodsRequest {}
+
+message ListAcctPeriodsResponse {
+  repeated AcctPeriod periods = 1;
+}
+
+message CloseAcctPeriodRequest {
+  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the 1st
+}
+
+message CloseAcctPeriodResponse {
+  bool closed = 1;
+  repeated string not_ready = 2; // reason the period could not be closed; empty when closed=true
+}
+
+message ReopenAcctPeriodRequest {
+  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the 1st
+}
+
+message ReopenAcctPeriodResponse {}
+
+// --- reports (docs/plan-accounting/06-reports.md) ---
+
+message GetTrialBalanceRequest {
+  string from = 1;
+  string to = 2; // exclusive
+}
+
+// TrialBalanceRow is one account's turnover + closing balance over [from, to). balance's sign
+// follows the account's section: asset/cogs/opex → debit − credit; liability/equity/revenue →
+// credit − debit.
+message TrialBalanceRow {
+  string code = 1;
+  string name = 2;
+  string section = 3;
+  google.type.Decimal debit = 4;
+  google.type.Decimal credit = 5;
+  google.type.Decimal balance = 6;
+}
+
+message GetTrialBalanceResponse {
+  repeated TrialBalanceRow rows = 1;
+  google.type.Decimal total_debit = 2;
+  google.type.Decimal total_credit = 3;
+  bool balanced = 4; // total_debit == total_credit; the ledger's core smoke invariant
+}
+
+message GetProfitLossStatementRequest {
+  string from = 1;
+  string to = 2; // exclusive
+}
+
+// AcctPLRow is one P&L account's values across the response's month columns, plus the row total.
+message AcctPLRow {
+  string code = 1;
+  string name = 2;
+  repeated google.type.Decimal values = 3; // aligned to GetProfitLossStatementResponse.months
+  google.type.Decimal total = 4;
+}
+
+// AcctPLSection groups P&L rows by section, in report order (revenue, cogs, opex).
+message AcctPLSection {
+  string section = 1; // revenue | cogs | opex
+  repeated AcctPLRow rows = 2;
+}
+
+// AcctPLTotals holds the P&L's derived summary rows, one value per response.months column.
+message AcctPLTotals {
+  repeated google.type.Decimal total_revenue = 1;
+  repeated google.type.Decimal net_cogs = 2;
+  repeated google.type.Decimal gross_profit = 3;
+  repeated google.type.Decimal gross_margin_pct = 4;
+  repeated google.type.Decimal total_opex = 5;
+  repeated google.type.Decimal operating_profit = 6;
+  repeated google.type.Decimal net_margin_pct = 7;
+}
+
+message GetProfitLossStatementResponse {
+  repeated string months = 1; // YYYY-MM-DD (1st of month); aligned with rows[].values / totals.*
+  repeated AcctPLSection sections = 2;
+  AcctPLTotals totals = 3;
+  // Phase-1 caveats: always includes "pre-tax profit (no corporate tax accrual)" and "carrier
+  // shipping cost not booked (4110 has no 6030 expense pair yet)", plus a count of entries in the
+  // period flagged has_caveat.
+  repeated string caveats = 4;
+}
+
+message GetBalanceSheetRequest {
+  string as_of = 1; // inclusive
+}
+
+// AcctBalanceSheetRow is one BS account's closing balance as of the report date.
+message AcctBalanceSheetRow {
+  string code = 1;
+  string name = 2;
+  google.type.Decimal balance = 3;
+}
+
+// AcctBalanceSheetSection is one BS grouping (assets / liabilities / equity) with its rows + total.
+message AcctBalanceSheetSection {
+  string section = 1; // asset | liability | equity
+  repeated AcctBalanceSheetRow rows = 2;
+  google.type.Decimal total = 3;
+}
+
+message GetBalanceSheetResponse {
+  string as_of = 1;
+  AcctBalanceSheetSection assets = 2;
+  AcctBalanceSheetSection liabilities = 3;
+  AcctBalanceSheetSection equity = 4; // includes the virtual "Current Period Net Profit" row
+  AcctBalanceSheetRow net_profit_row = 5; // convenience copy of that row; unset if not found by name
+  google.type.Decimal total_assets = 6;
+  google.type.Decimal total_liabilities = 7;
+  google.type.Decimal total_equity = 8;
+  google.type.Decimal balance_check = 9; // total_assets − (total_liabilities + total_equity)
+  bool balanced = 10; // balance_check == 0
+  repeated string caveats = 11;
+}
+
+message GetAccountLedgerRequest {
+  string code = 1;
+  string from = 2; // empty = unbounded (from inception)
+  string to = 3; // exclusive; empty = unbounded
+  int32 limit = 4;
+  int32 offset = 5;
+}
+
+// AcctLedgerRow is one drill-down line for an account with its running balance.
+message AcctLedgerRow {
+  int32 entry_id = 1;
+  string occurred_at = 2;
+  string description = 3;
+  string source_type = 4;
+  string source_key = 5;
+  string side = 6; // debit | credit
+  google.type.Decimal amount = 7;
+  string note = 8;
+  google.type.Decimal running_balance = 9;
+}
+
+message GetAccountLedgerResponse {
+  string code = 1;
+  string name = 2;
+  string section = 3;
+  google.type.Decimal opening_balance = 4; // balance before `from`
+  google.type.Decimal closing_balance = 5;
+  repeated AcctLedgerRow rows = 6;
+  int32 total = 7; // unpaginated match count
+}
+
+message GetAcctReconciliationRequest {
+  string from = 1;
+  string to = 2; // exclusive
+}
+
+// AcctReconItem is one row inside a reconciliation block (a top-N sample; the block's total_count
+// carries the full count). ref is the operational identity (order uuid, movement id, run id, month).
+message AcctReconItem {
+  string ref = 1;
+  string label = 2;
+  google.type.Decimal amount = 3;
+}
+
+// AcctReconBlock is one reconciliation dimension: the ledger figure, the operational figure, their
+// delta, and a bounded item sample. A non-zero delta (outside finished_goods, where drift is
+// expected) signals the ledger diverged from operational truth.
+message AcctReconBlock {
+  string name = 1;
+  google.type.Decimal ledger = 2;
+  google.type.Decimal operational = 3;
+  google.type.Decimal delta = 4;
+  repeated AcctReconItem items = 5;
+  int32 total_count = 6;
+}
+
+message GetAcctReconciliationResponse {
+  AcctReconBlock revenue = 1;
+  AcctReconBlock fees = 2;
+  AcctReconBlock cogs = 3;
+  AcctReconBlock materials = 4;
+  AcctReconBlock finished_goods = 5;
+  AcctReconBlock pending = 6;
+  AcctReconBlock unposted_movements = 7;
+}
