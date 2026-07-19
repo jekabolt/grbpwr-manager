@@ -29,7 +29,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 
 		// Use prices map
 		prices := make(map[string]decimal.Decimal)
-		if sc.Prices != nil && len(sc.Prices) > 0 {
+		if len(sc.Prices) > 0 {
 			// Use the prices map
 			for currency, pbPrice := range sc.Prices {
 				price, err := decimal.NewFromString(pbPrice.Value)
@@ -127,7 +127,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		return nil, status.Errorf(codes.Internal, "failed to set payment mode: %v", err)
 	}
 
-	if req.ComplimentaryShippingPrices != nil && len(req.ComplimentaryShippingPrices) > 0 {
+	if len(req.ComplimentaryShippingPrices) > 0 {
 		prices := make(map[string]decimal.Decimal)
 		for currency, pbPrice := range req.ComplimentaryShippingPrices {
 			price, err := decimal.NewFromString(pbPrice.Value)
