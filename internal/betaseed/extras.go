@@ -509,13 +509,15 @@ func (s *Seeder) updateSettingsConservative(ctx context.Context) error {
 			})
 		}
 	}
+	// Scalar fields are optional (presence) now — echo the current dictionary values as explicit
+	// pointers so this full re-apply is a no-op except SiteAvailable=true (the seeder keeps beta up).
 	if _, err := s.C.UpdateSettings(ctx, &admin.UpdateSettingsRequest{
-		SiteAvailable:               true,
-		MaxOrderItems:               maxItems,
-		BigMenu:                     d.GetBigMenu(),
+		SiteAvailable:               pbool(true),
+		MaxOrderItems:               p32(maxItems),
+		BigMenu:                     pbool(d.GetBigMenu()),
 		Announce:                    announce,
-		OrderExpirationSeconds:      d.GetOrderExpirationSeconds(),
-		IsProd:                      d.GetIsProd(),
+		OrderExpirationSeconds:      p32(d.GetOrderExpirationSeconds()),
+		IsProd:                      pbool(d.GetIsProd()),
 		ComplimentaryShippingPrices: d.GetComplimentaryShippingPrices(),
 	}); err != nil {
 		return fmt.Errorf("UpdateSettings: %w", err)

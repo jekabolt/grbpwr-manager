@@ -74,6 +74,10 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get colors: %w", err)
 	}
 
+	if dict.Tags, err = s.getTags(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get tags: %w", err)
+	}
+
 	if dict.CategorySizeSystems, err = s.getCategorySizeSystems(ctx); err != nil {
 		return nil, fmt.Errorf("failed to get category size systems: %w", err)
 	}
@@ -95,6 +99,19 @@ func (s *Store) getFibers(ctx context.Context) ([]entity.Fiber, error) {
 		return nil, fmt.Errorf("can't get fibers: %w", err)
 	}
 	return fibers, nil
+}
+
+// getTags returns the controlled merchandising tag dictionary (R9) from the `tag` table, ordered by
+// code. Archived entries are included (flagged via archived_at) so the admin tag picker can show/filter
+// them, mirroring getColors/getFibers. This is what makes a freshly created tag (CreateTag) visible in
+// GetDictionary immediately — the usage-derived getProductTags only lists tags on published products.
+func (s *Store) getTags(ctx context.Context) ([]entity.TagDict, error) {
+	query := `SELECT id, code, name, archived_at FROM tag ORDER BY code`
+	tags, err := storeutil.QueryListNamed[entity.TagDict](ctx, s.DB, query, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get tags: %w", err)
+	}
+	return tags, nil
 }
 
 // getCategorySizeSystems returns the category -> permitted size-system(s) mapping (S10/WS5, migration

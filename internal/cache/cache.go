@@ -120,6 +120,10 @@ var (
 
 	entityProductTags = []string{}
 
+	// Tag dictionary (R9): the controlled merchandising tags sourced from the `tag` table, distinct
+	// from the usage-derived entityProductTags.
+	entityTags = []entity.TagDict{}
+
 	entityLanguages = []entity.Language{}
 
 	promoCodes                    = make(map[string]entity.PromoCode)
@@ -207,6 +211,7 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	entitySizes = dInfo.Sizes
 	entityCollections = dInfo.Collections
 	entityProductTags = dInfo.ProductTags
+	entityTags = dInfo.Tags
 	entityMeasurements = dInfo.Measurements
 	entityLanguages = dInfo.Languages
 	announce = dInfo.Announce
@@ -338,6 +343,7 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	entitySizes = dInfo.Sizes
 	entityCollections = dInfo.Collections
 	entityProductTags = dInfo.ProductTags
+	entityTags = dInfo.Tags
 	entityCategorySizeSystems = dInfo.CategorySizeSystems
 	entityFibers = dInfo.Fibers
 	categoryById = make(map[int]entity.Category, len(entityCategories))
@@ -753,6 +759,14 @@ func GetProductTags() []string {
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
 	return entityProductTags
+}
+
+// GetTags returns the controlled merchandising tag dictionary (R9) from the `tag` table — the set an
+// admin creates via CreateTag and reuses by code/name. Distinct from GetProductTags (usage-derived).
+func GetTags() []entity.TagDict {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return entityTags
 }
 
 func GetShipmentCarriers() []entity.ShipmentCarrier {
