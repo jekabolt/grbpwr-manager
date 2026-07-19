@@ -186,6 +186,7 @@ var methodRequirements = map[string]Requirement{
 	"ListPromos":       rd(SectionPromo),
 	"DeletePromoCode":  wr(SectionPromo),
 	"DisablePromoCode": wr(SectionPromo),
+	"UpdatePromoCode":  wr(SectionPromo),
 	// orders
 	"GetOrderByUUID":        rd(SectionOrders),
 	"ListOrders":            rd(SectionOrders),
@@ -267,8 +268,9 @@ var methodRequirements = map[string]Requirement{
 	"DeleteSampleSubstitution": wr(SectionFittings),
 	"ListSampleSubstitutions":  rd(SectionFittings),
 	// tech cards
-	"CreateTechCard":     wr(SectionTechCards),
-	"SuggestStyleNumber": rd(SectionTechCards), // Q1: propose the next style number for a season
+	"CreateTechCard":             wr(SectionTechCards),
+	"GenerateTechCardOperations": wr(SectionTechCards), // AI-assisted authoring (POST); tech-card write
+	"SuggestStyleNumber":         rd(SectionTechCards),  // Q1: propose the next style number for a season
 	// Q5 role assignments + the lightweight admin picker (so a role-assigner needs tech_cards, not accounts).
 	"AssignTechCardRole":           wr(SectionTechCards),
 	"RemoveTechCardRoleAssignment": wr(SectionTechCards),

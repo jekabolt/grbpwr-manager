@@ -46,7 +46,7 @@ func TestTechCardListRouteNotShadowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /tech-card/list: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if stub.lastCall != "List" {
 		t.Fatalf("GET /tech-card/list dispatched to %q (id=%d), want ListTechCards", stub.lastCall, stub.lastID)
 	}
@@ -56,7 +56,7 @@ func TestTechCardListRouteNotShadowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /tech-card/42: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if stub.lastCall != "Get" || stub.lastID != 42 {
 		t.Fatalf("GET /tech-card/42 dispatched to %q (id=%d), want GetTechCard id=42", stub.lastCall, stub.lastID)
 	}

@@ -92,8 +92,8 @@ func (s *Server) ListAdmins(ctx context.Context, _ *pb_admin.ListAdminsRequest) 
 	resp := &pb_admin.ListAdminsResponse{Admins: make([]*pb_admin.AdminRef, 0, len(accounts))}
 	for i := range accounts {
 		resp.Admins = append(resp.Admins, &pb_admin.AdminRef{
-			Id:       int32(accounts[i].Admin.Id),
-			Username: accounts[i].Admin.Username,
+			Id:       int32(accounts[i].Id),
+			Username: accounts[i].Username,
 		})
 	}
 	return resp, nil

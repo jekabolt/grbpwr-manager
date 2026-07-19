@@ -861,7 +861,7 @@ func (s *Seeder) getMetricsSections(ctx context.Context, period string, endAt *t
 	if err != nil {
 		return nil, fmt.Errorf("GET /api/admin/metrics: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &APIError{Method: "GET", Path: "/api/admin/metrics", Code: resp.StatusCode, Body: string(rb)}

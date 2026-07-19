@@ -119,7 +119,7 @@ func (c *Client) call(ctx context.Context, verb, tmpl string, in, out proto.Mess
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", verb, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(resp.Body)
 	if c.LogRPC != nil {
 		c.LogRPC(verb, path, resp.StatusCode)
