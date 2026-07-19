@@ -223,6 +223,31 @@ func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "CategorySizeSystem.size_system", dbValues, mapKeysAsStrings(entity.ValidSizeSKUSystems))
 }
 
+// TestAcctEntrySourceTypeDBCheckNoDrift extends the drift test to the accounting journal entry's
+// source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK (migration 0189,
+// chk_acct_entry_source_type).
+func TestAcctEntrySourceTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0189_accounting_core.sql")
+	dbValues := extractDBEnumValues(t, content, "source_type IN", 400)
+	assertSameSet(t, "AcctSourceType", dbValues, mapKeysAsStrings(entity.ValidAcctSourceTypes))
+}
+
+// TestAcctLineSideDBCheckNoDrift extends the drift test to the accounting journal line's side
+// (entity.AcctSide/ValidAcctSides) <-> DB CHECK (migration 0189, chk_acct_line_side).
+func TestAcctLineSideDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0189_accounting_core.sql")
+	dbValues := extractDBEnumValues(t, content, "side IN", 100)
+	assertSameSet(t, "AcctSide", dbValues, mapKeysAsStrings(entity.ValidAcctSides))
+}
+
+// TestAcctEventTypeDBCheckNoDrift extends the drift test to the accounting outbox event type
+// (entity.AcctEventType/ValidAcctEventTypes) <-> DB CHECK (migration 0189, chk_acct_event_type).
+func TestAcctEventTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0189_accounting_core.sql")
+	dbValues := extractDBEnumValues(t, content, "event_type IN", 100)
+	assertSameSet(t, "AcctEventType", dbValues, mapKeysAsStrings(entity.ValidAcctEventTypes))
+}
+
 // TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
 // matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
 // guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).
