@@ -912,28 +912,11 @@ func (s *Server) UpsertChannelSpend(ctx context.Context, req *pb_admin.UpsertCha
 	return &pb_admin.UpsertChannelSpendResponse{}, nil
 }
 
-// UpsertOpexEntries records the fixed-cost (OPEX) journal that feeds the dashboard operating
-// result (task 22). Month/category/amount are validated and normalised in dto; upsert is on
-// (month, category).
-func (s *Server) UpsertOpexEntries(ctx context.Context, req *pb_admin.UpsertOpexEntriesRequest) (*pb_admin.UpsertOpexEntriesResponse, error) {
-	rows, err := dto.ConvertPbOpexEntriesToEntity(req.GetEntries())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-	if len(rows) == 0 {
-		return &pb_admin.UpsertOpexEntriesResponse{}, nil
-	}
-	if err := s.repo.Metrics().UpsertOpexEntries(ctx, rows); err != nil {
-		slog.Default().ErrorContext(ctx, "can't upsert opex entries", slog.String("err", err.Error()))
-		return nil, status.Errorf(codes.Internal, "can't upsert opex entries")
-	}
-	return &pb_admin.UpsertOpexEntriesResponse{}, nil
-}
-
 // UpsertOpexLines writes OPEX line items (NF-08), folding each amount into base currency via the
 // costing FX before storage. OPEX figures are confidential cost data, so — like dev expenses — the
-// detailed line API is gated by costing:write on top of the analytics section (the legacy aggregate
-// UpsertOpexEntries stays analytics-only for backward compatibility).
+// detailed line API is gated by costing:write on top of the analytics section. It supersedes the
+// removed legacy aggregate UpsertOpexEntries (one lump sum per month/category); the '(aggregate)'
+// rows that API wrote survive in opex_line and are still summed, with the double-count guard intact.
 func (s *Server) UpsertOpexLines(ctx context.Context, req *pb_admin.UpsertOpexLinesRequest) (*pb_admin.UpsertOpexLinesResponse, error) {
 	if _, write := s.costingAccess(ctx); !write {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to edit OPEX lines")

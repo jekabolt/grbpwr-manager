@@ -6,53 +6,16 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 	"strings"
 )
 
-// UpsertOpexEntries writes fixed-cost (OPEX) journal lines, one amount per (month, category),
-// upserting on the UNIQUE (month, category) key (task 22). Callers pass base-currency amounts;
-// category validity is enforced in dto before this point.
-//
-// NF-08: the dashboard now reads opex_line, so each aggregate is mirrored there as a base-currency
-// line labelled '(aggregate)' (the same label migration 0112 backfilled). opex_entry is kept in sync
-// for rollback safety. The '(aggregate)' label keeps this old lump API disjoint from per-item lines
-// entered via UpsertOpexLines — the two never collide on the (month, category, label) key.
-func (s *Store) UpsertOpexEntries(ctx context.Context, rows []entity.OpexEntry) error {
-	lines := make([]entity.OpexLineInsert, 0, len(rows))
-	for _, r := range rows {
-		if err := storeutil.ExecNamed(ctx, s.DB, `
-			INSERT INTO opex_entry (month, category, amount, note)
-			VALUES (:month, :category, :amount, :note)
-			ON DUPLICATE KEY UPDATE amount = VALUES(amount), note = VALUES(note)`,
-			map[string]any{
-				"month":    r.Month.Format("2006-01-02"),
-				"category": r.Category,
-				"amount":   r.Amount,
-				"note":     r.Note,
-			}); err != nil {
-			return fmt.Errorf("upsert opex %s/%s: %w", r.Month.Format("2006-01"), r.Category, err)
-		}
-		lines = append(lines, entity.OpexLineInsert{
-			Month:      r.Month,
-			Category:   r.Category,
-			Label:      opexAggregateLabel,
-			Amount:     r.Amount,
-			Currency:   strings.ToUpper(cache.GetBaseCurrency()),
-			AmountBase: decimal.NullDecimal{Decimal: r.Amount, Valid: true},
-			Note:       r.Note,
-		})
-	}
-	if err := s.UpsertOpexLines(ctx, lines); err != nil {
-		return fmt.Errorf("mirror opex aggregate to opex_line: %w", err)
-	}
-	return nil
-}
-
-// opexAggregateLabel is the reserved label for base-currency aggregates written by the legacy
-// UpsertOpexEntries API (and backfilled from opex_entry by migration 0112).
+// opexAggregateLabel is the reserved label for base-currency aggregates that the (now removed) legacy
+// UpsertOpexEntries API wrote into opex_line, and that migration 0112 backfilled from opex_entry. The
+// write path is gone, but existing '(aggregate)' rows are still read/summed by getOpexForPeriod, and
+// the double-count guard below still flags any (month, category) that carries both an aggregate and
+// itemised NF-08 lines.
 const opexAggregateLabel = "(aggregate)"
 
 // opexPeriod is the OPEX read for a dashboard period: the pro-rated total plus two independent

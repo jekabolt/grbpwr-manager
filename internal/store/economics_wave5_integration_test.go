@@ -213,22 +213,28 @@ func TestOpexOperatingResult(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
-	// April 2027: a distinctive, order-free window. Clean the opex rows we own, then upsert.
+	// April 2027: a distinctive, order-free window. Clean the opex_line rows we own, then upsert via
+	// UpsertOpexLines (the legacy aggregate UpsertOpexEntries API was removed; the dashboard sums
+	// opex_line by amount_base regardless of label).
 	aprStart := time.Date(2027, 4, 1, 0, 0, 0, 0, time.UTC)
 	mayStart := time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)
-	_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_entry WHERE month = ?", aprStart.Format("2006-01-02"))
+	_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_line WHERE month = ?", aprStart.Format("2006-01-02"))
 	defer func() {
-		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_entry WHERE month = ?", aprStart.Format("2006-01-02"))
+		_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_line WHERE month = ?", aprStart.Format("2006-01-02"))
 	}()
 
-	require.NoError(t, s.Metrics().UpsertOpexEntries(ctx, []entity.OpexEntry{
-		{Month: aprStart, Category: "salaries", Amount: decimal.RequireFromString("1000.00")},
-		{Month: aprStart, Category: "rent", Amount: decimal.RequireFromString("500.00")},
+	opexLine := func(cat, amt string) entity.OpexLineInsert {
+		a := decimal.RequireFromString(amt)
+		return entity.OpexLineInsert{
+			Month: aprStart, Category: cat, Label: "test", Amount: a,
+			Currency: cache.GetBaseCurrency(), AmountBase: decimal.NullDecimal{Decimal: a, Valid: true},
+		}
+	}
+	require.NoError(t, s.Metrics().UpsertOpexLines(ctx, []entity.OpexLineInsert{
+		opexLine("salaries", "1000.00"), opexLine("rent", "500.00"),
 	}))
-	// Upsert on (month, category): re-writing salaries changes the amount, not the row count.
-	require.NoError(t, s.Metrics().UpsertOpexEntries(ctx, []entity.OpexEntry{
-		{Month: aprStart, Category: "salaries", Amount: decimal.RequireFromString("1200.00")},
-	}))
+	// Upsert on (month, category, label): re-writing salaries changes the amount, not the row count.
+	require.NoError(t, s.Metrics().UpsertOpexLines(ctx, []entity.OpexLineInsert{opexLine("salaries", "1200.00")}))
 	// April total = 1200 + 500 = 1700.
 
 	// Full April → OPEX fully attributed; no orders → contribution 0; operating result = −1700 − marketing.
@@ -251,7 +257,7 @@ func TestOpexOperatingResult(t *testing.T) {
 	// A month with no OPEX recorded → caveat set, zero OPEX.
 	julStart := time.Date(2027, 7, 1, 0, 0, 0, 0, time.UTC)
 	augStart := time.Date(2027, 8, 1, 0, 0, 0, 0, time.UTC)
-	_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_entry WHERE month = ?", julStart.Format("2006-01-02"))
+	_, _ = testDB.ExecContext(ctx, "DELETE FROM opex_line WHERE month = ?", julStart.Format("2006-01-02"))
 	none, err := s.Metrics().GetDashboard(ctx, julStart, augStart, 10)
 	require.NoError(t, err)
 	require.True(t, none.OpexTotal.IsZero(), "no OPEX rows → zero total")
