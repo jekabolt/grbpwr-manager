@@ -103,9 +103,9 @@ func ParseAcctAsOf(s string) (time.Time, error) {
 	return parseAcctDate(s, "as_of")
 }
 
-// ParseAcctMonth parses a period 'month' field (CloseAcctPeriod/ReopenAcctPeriod): any day in the
-// target month, YYYY-MM-DD, normalised to the 1st — the OPEX firstOfMonth convention (dto/opex.go)
-// that 09-implementation-notes.md §9 points to for accounting's "month" fields.
+// ParseAcctMonth parses a period 'month' field (CloseAcctPeriod/ReopenAcctPeriod): canonical
+// YYYY-MM, or any YYYY-MM-DD date in the month, normalised to the 1st — the OPEX firstOfMonth
+// convention (dto/opex.go) that 09-implementation-notes.md §9 points to for accounting's "month" fields.
 func ParseAcctMonth(s string) (time.Time, error) {
 	return firstOfMonth(s, "month")
 }

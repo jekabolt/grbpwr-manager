@@ -4728,7 +4728,7 @@ message UpsertChannelSpendResponse {}
 // to the base currency server-side via the manual costing FX rates (left uncosted, and excluded
 // from the operating result, when the currency has no rate).
 message OpexLineInsert {
-  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the first of the month
+  string month = 1; // target month, YYYY-MM (a YYYY-MM-DD date in the month is also accepted); normalised to the first of the month
   string category = 2; // salaries | rent | software | marketing_other | production_content | other | taxes | bank_fees | professional_services | logistics_office
   string label = 3; // free text distinguishing lines within a month × category (e.g. «Adobe CC», «швея Мария»)
   google.type.Decimal amount = 4; // in `currency`, >= 0
@@ -5963,7 +5963,7 @@ message ListAcctPeriodsResponse {
 }
 
 message CloseAcctPeriodRequest {
-  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the 1st
+  string month = 1; // target month, YYYY-MM (a YYYY-MM-DD date in the month is also accepted); normalised to the 1st
 }
 
 message CloseAcctPeriodResponse {
@@ -5972,7 +5972,7 @@ message CloseAcctPeriodResponse {
 }
 
 message ReopenAcctPeriodRequest {
-  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the 1st
+  string month = 1; // target month, YYYY-MM (a YYYY-MM-DD date in the month is also accepted); normalised to the 1st
 }
 
 message ReopenAcctPeriodResponse {}
