@@ -69,6 +69,15 @@ func (s *Seeder) PrintCoverage(ctx context.Context) {
 	od, e := s.C.ListOrders(ctx, &admin.ListOrdersRequest{Status: common.OrderStatusEnum_ORDER_STATUS_ENUM_DELIVERED, Limit: 500})
 	count("delivered orders", od, e)
 
+	// Tag dictionary readback: the controlled tags an admin creates (CreateTag) must now surface in
+	// GetDictionary().Tags immediately (backend fix A3). A non-zero count here confirms the created
+	// tags are visible/reusable by name, not just the usage-derived product_tags.
+	if dict, err := s.C.GetDictionary(ctx, &admin.GetDictionaryRequest{}); err != nil {
+		out("  %-28s ERR %v", "dictionary tags", err)
+	} else {
+		out("  %-28s %d", "dictionary tags", len(dict.GetDictionary().GetTags()))
+	}
+
 	out("---- analytics ----")
 	secs := []admin.MetricsSection{
 		admin.MetricsSection_METRICS_SECTION_BUSINESS, admin.MetricsSection_METRICS_SECTION_MARGIN_BY_STYLE,

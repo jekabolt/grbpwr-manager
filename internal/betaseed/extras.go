@@ -95,6 +95,16 @@ func isAlreadyExists(err error) bool {
 	return e.Code == 409 || strings.Contains(e.Body, "Duplicate entry") || strings.Contains(e.Body, "already exists")
 }
 
+// isAlreadyArchived reports whether err is a "row is already archived / not found to archive" response,
+// so an idempotent archive step (a throwaway row archived on a prior run) can treat it as success.
+func isAlreadyArchived(err error) bool {
+	e, ok := AsAPIError(err)
+	if !ok {
+		return false
+	}
+	return strings.Contains(e.Body, "already archived") || strings.Contains(e.Body, "not found or already archived")
+}
+
 // randPassword builds a strong, never-logged admin password (>= 8 chars, mixed
 // classes). It is created, hashed server-side, and discarded here.
 func randPassword() string {
