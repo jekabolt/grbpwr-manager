@@ -105,6 +105,14 @@ func isAlreadyArchived(err error) bool {
 	return strings.Contains(e.Body, "already archived") || strings.Contains(e.Body, "not found or already archived")
 }
 
+// isRateLimited reports whether err is a storefront rate-limit rejection (HTTP 429). These are
+// transient — repeated seeder runs saturate the tight per-IP windows — so a storefront-write step can
+// soft-skip on 429 instead of failing.
+func isRateLimited(err error) bool {
+	e, ok := AsAPIError(err)
+	return ok && e.Code == 429
+}
+
 // randPassword builds a strong, never-logged admin password (>= 8 chars, mixed
 // classes). It is created, hashed server-side, and discarded here.
 func randPassword() string {
@@ -789,6 +797,14 @@ func (s *Seeder) seedReviews(ctx context.Context, r *ExtrasResult) error {
 			},
 			ItemReviews: itemReviews,
 		}); err != nil {
+			// The review endpoint shares the storefront support limiter (5/IP/10min). Repeated seeder
+			// runs saturate that window, so a 429 here is a transient env condition, NOT a regression —
+			// soft-skip the rest instead of failing the whole extras phase.
+			if isRateLimited(err) {
+				s.logf("WARN reviews: rate-limited after %d (storefront 5/IP/10min, shared with tickets); skipping the rest", made)
+				r.Warnings = append(r.Warnings, fmt.Sprintf("reviews: rate-limited after %d review(s) — transient, re-run after the 10-min window", made))
+				return nil
+			}
 			return fmt.Errorf("SFSubmitOrderReview(review %s): %w", uuid, err)
 		}
 		r.ReviewOrderUUIDs = append(r.ReviewOrderUUIDs, uuid)
