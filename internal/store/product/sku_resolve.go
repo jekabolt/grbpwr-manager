@@ -465,7 +465,16 @@ func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID i
 		return fmt.Errorf("load base sku for product %d: %w", productID, err)
 	}
 	if baseRow.SKU == "" {
-		return fmt.Errorf("cannot mint variant sku: product %d has no base sku", productID)
+		// An empty base SKU means the colourway is still a DRAFT — the base SKU is minted on publish
+		// (checkColorwayPublishPreconditions guarantees a published colourway always has one). Surface an
+		// actionable ValidationError so the admin stock path returns InvalidArgument with a clear "publish
+		// first" message instead of an opaque Internal 500. (CreateVariant swallows this as best-effort.)
+		return &entity.ValidationError{
+			Message:  fmt.Sprintf("colourway %d is not published yet — its base SKU is assigned on publish, so stock can only be set after publishing", productID),
+			Field:    "product_id",
+			Reason:   "colorway_not_published",
+			HowToFix: "publish the colourway first (PublishColorway), then set variant stock",
+		}
 	}
 	variant, err := BuildVariantSKU(baseRow.SKU, target.SKUOrd)
 	if err != nil {

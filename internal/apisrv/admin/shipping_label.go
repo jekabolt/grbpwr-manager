@@ -343,6 +343,13 @@ func (s *Server) VoidShippingLabel(ctx context.Context, req *pb_admin.VoidShippi
 		if errors.Is(err, entity.ErrLabelsDisabled) {
 			return nil, status.Error(codes.FailedPrecondition, "shipping labels are not configured")
 		}
+		// A carrier 4xx (e.g. label already collected / not cancellable) is operator-fixable → 400.
+		var ve *entity.CarrierValidationError
+		if errors.As(err, &ve) {
+			slog.Default().WarnContext(ctx, "carrier rejected label void",
+				slog.String("order_uuid", req.OrderUuid), slog.String("err", ve.Error()))
+			return nil, status.Errorf(codes.FailedPrecondition, "carrier rejected the void: %s", ve.Error())
+		}
 		slog.Default().ErrorContext(ctx, "carrier label cancel failed",
 			slog.String("order_uuid", req.OrderUuid), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't cancel label with carrier")
@@ -390,6 +397,15 @@ func (s *Server) SchedulePickup(ctx context.Context, req *pb_admin.SchedulePicku
 	if err != nil {
 		if errors.Is(err, entity.ErrLabelsDisabled) {
 			return nil, status.Error(codes.FailedPrecondition, "shipping labels are not configured")
+		}
+		// A carrier 4xx (no shipping rules configured, bad origin, etc.) is operator-fixable, not an
+		// infrastructure failure — surface it as FailedPrecondition (HTTP 400) with the carrier's detail
+		// instead of a generic Internal (HTTP 500).
+		var ve *entity.CarrierValidationError
+		if errors.As(err, &ve) {
+			slog.Default().WarnContext(ctx, "carrier rejected pickup",
+				slog.String("carrier_code", req.CarrierCode), slog.String("err", ve.Error()))
+			return nil, status.Errorf(codes.FailedPrecondition, "carrier rejected the pickup: %s", ve.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't schedule pickup", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't schedule pickup")

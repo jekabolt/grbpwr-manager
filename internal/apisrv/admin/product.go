@@ -179,18 +179,23 @@ func colorwayTransitionError(ctx context.Context, op string, id int, err error) 
 	if errors.Is(err, sql.ErrNoRows) {
 		return status.Errorf(codes.NotFound, "colourway %d not found", id)
 	}
-	slog.Default().ErrorContext(ctx, "colourway lifecycle transition failed",
-		slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
-	// Domain refusals (invalid edge, unmet publish preconditions, non-draft relink, frozen siblings)
-	// are FailedPrecondition; anything else is infrastructure and must surface as Internal, not a
-	// client-fixable precondition (review finding backend-003).
+	// Domain refusals (invalid edge, unmet publish/sellable preconditions, non-draft relink, frozen
+	// siblings) are client-fixable → FailedPrecondition (HTTP 400) and logged at Warn; anything else is
+	// infrastructure and must surface as Internal (HTTP 500), logged at Error (review finding
+	// backend-003). ErrColorwayNotSellable now types the →ACTIVE completeness gates (missing required
+	// currency, no thumbnail, unmet publish preconditions) that previously fell through to Internal.
 	if errors.Is(err, entity.ErrColorwayNotDraft) ||
 		errors.Is(err, entity.ErrStyleFrozenSiblings) ||
 		errors.Is(err, entity.ErrColorwayColorExists) ||
+		errors.Is(err, entity.ErrColorwayNotSellable) ||
 		strings.Contains(err.Error(), "transition") ||
 		strings.Contains(err.Error(), "precondition") {
+		slog.Default().WarnContext(ctx, "colourway lifecycle transition refused",
+			slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
 		return status.Errorf(codes.FailedPrecondition, "cannot %s colourway %d: %v", op, id, err)
 	}
+	slog.Default().ErrorContext(ctx, "colourway lifecycle transition failed",
+		slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
 	return status.Errorf(codes.Internal, "cannot %s colourway %d: %v", op, id, err)
 }
 
