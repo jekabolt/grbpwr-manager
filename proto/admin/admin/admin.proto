@@ -2685,6 +2685,7 @@ message AlertSettings {
   double contribution_trust_pct = 4; // trust the contribution-margin sign only at/above this coverage
   double ga4_coverage_warn_pct = 5; // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
   int32 production_run_stale_days = 6; // warn when an open production run is older than this many days (NF-09)
+  int32 acct_posting_lag_hours = 7; // warn when the accounting posting backlog (acct_event / material movements behind the acctposting checkpoint) is older than this many hours; <= 0 falls back to the default (24), it does NOT disable the check
 }
 
 message GetAlertSettingsRequest {}

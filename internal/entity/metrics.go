@@ -837,11 +837,11 @@ type AlertThresholds struct {
 	ProductionRunStaleDays int     // warn when an open production run is older than this many days (NF-09)
 	// AcctPostingLagHours warns when the accounting module has unprocessed acct_event rows or
 	// material movements stuck behind the acctposting worker's checkpoint older than this many hours
-	// (accounting Step 8 / 07-worker-config.md "Health-алерты"). Unlike ProductionRunStaleDays, <= 0
-	// does NOT disable the check — it falls back to the default (24) — because this field is not yet
-	// carried by the AlertSettings proto/DTO round-trip, so an unrelated settings save would otherwise
-	// silently zero it and go dark with no operator intent behind it (see
-	// metrics.Store.GetAcctPostingLag).
+	// (accounting Step 8 / 07-worker-config.md "Health-алерты"). It is carried by the AlertSettings
+	// proto/DTO round-trip (field 7). Unlike ProductionRunStaleDays, <= 0 does NOT disable the check —
+	// it falls back to the default (24) — kept as defense because the admin screen does not set this
+	// field yet, so an un-updated client sends 0 on an unrelated settings save, which would otherwise
+	// silently zero it and go dark with no operator intent behind it (see metrics.Store.GetAcctPostingLag).
 	AcctPostingLagHours int
 }
 
