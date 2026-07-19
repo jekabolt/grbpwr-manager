@@ -45,7 +45,7 @@ var (
 
 func init() {
 	seedCmd.Flags().StringVar(&seedVolume, "volume", "dense", "data volume: single | moderate | dense")
-	seedCmd.Flags().StringVar(&seedOnly, "only", "all", "comma list of phases to run: catalog,plm,extras,analytics (or all)")
+	seedCmd.Flags().StringVar(&seedOnly, "only", "all", "comma list of phases to run: catalog,plm,extras,analytics,enrich (or all); 'verify' = read-only coverage")
 	seedCmd.Flags().StringVar(&seedUser, "user", defaultSeedUser, "admin username to log in / bootstrap")
 	seedCmd.Flags().StringVar(&seedPassword, "password", "", "admin password (default: throwaway beta bot pw, or $BETA_SEED_PASSWORD)")
 	seedCmd.Flags().StringVar(&seedMasterYAML, "master-yaml", defaultMasterYAML, "DO app spec YAML to read AUTH_MASTER_PASSWORD from (for first-run bootstrap)")
@@ -72,7 +72,7 @@ func phaseSet(only string) map[string]bool {
 	set := map[string]bool{}
 	only = strings.ToLower(strings.TrimSpace(only))
 	if only == "" || only == "all" {
-		for _, p := range []string{"catalog", "plm", "extras", "analytics"} {
+		for _, p := range []string{"catalog", "plm", "extras", "analytics", "enrich"} {
 			set[p] = true
 		}
 		return set
@@ -81,6 +81,11 @@ func phaseSet(only string) map[string]bool {
 		set[strings.TrimSpace(p)] = true
 	}
 	if set["analytics"] { // analytics orders reference catalog + plm products
+		set["catalog"] = true
+		set["plm"] = true
+	}
+	if set["enrich"] { // enrichment needs catalog + plm entities in-memory; it resolves tasks/members/
+		// invites/orders via List RPCs, so it does NOT require the (rate-limited) extras phase.
 		set["catalog"] = true
 		set["plm"] = true
 	}
@@ -166,6 +171,13 @@ func runSeed(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("analytics: %w", err)
 		}
 		fmt.Println("analytics: config + order volume seeded")
+	}
+	if phases["enrich"] {
+		fmt.Println("\n===== PHASE: enrich =====")
+		if _, err = s.SeedEnrichment(ctx, cat, plm); err != nil {
+			return fmt.Errorf("enrich: %w", err)
+		}
+		fmt.Println("enrich: REST-seedable gaps filled (empty screens + archived/hidden/deleted tabs)")
 	}
 
 	fmt.Println("\n===== COVERAGE =====")

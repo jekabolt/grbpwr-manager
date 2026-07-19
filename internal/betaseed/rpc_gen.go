@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (222 rpc) ----
+// ---- admin (221 rpc) ----
 
 func (c *Client) AddArchive(ctx context.Context, in *admin.AddArchiveRequest) (*admin.AddArchiveResponse, error) {
 	out := new(admin.AddArchiveResponse)
@@ -1712,14 +1712,6 @@ func (c *Client) UpsertEmployee(ctx context.Context, in *admin.UpsertEmployeeReq
 func (c *Client) UpsertInventoryTargets(ctx context.Context, in *admin.UpsertInventoryTargetsRequest) (*admin.UpsertInventoryTargetsResponse, error) {
 	out := new(admin.UpsertInventoryTargetsResponse)
 	if err := c.call(ctx, "POST", "/api/admin/metrics/inventory/targets/upsert", in, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *Client) UpsertOpexEntries(ctx context.Context, in *admin.UpsertOpexEntriesRequest) (*admin.UpsertOpexEntriesResponse, error) {
-	out := new(admin.UpsertOpexEntriesResponse)
-	if err := c.call(ctx, "POST", "/api/admin/metrics/opex/upsert", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

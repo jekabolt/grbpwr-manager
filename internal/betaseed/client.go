@@ -79,7 +79,9 @@ func AsAPIError(err error) (*APIError, bool) {
 var (
 	jsonUnmarshal = protojson.UnmarshalOptions{DiscardUnknown: true}
 	jsonMarshal   = protojson.MarshalOptions{}
-	pathParamRe   = regexp.MustCompile(`\{([a-z_]+)\}`)
+	// Path-token names are proto field names, which may contain digits (e.g. {b64_email}); the
+	// character class MUST include 0-9 or such tokens are left unsubstituted in the URL.
+	pathParamRe = regexp.MustCompile(`\{([a-z0-9_]+)\}`)
 )
 
 // call sends one RPC. For POST/PUT/PATCH the whole message is the JSON body; for

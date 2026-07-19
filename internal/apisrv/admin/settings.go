@@ -66,65 +66,71 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		}
 	}
 
-	err := s.repo.Settings().SetSiteAvailability(ctx, req.SiteAvailable)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set site availability",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "failed to set site availability: %v", err)
+	// Each scalar field is `optional` (proto3 presence): apply a setter ONLY when the field is present,
+	// so a partial request leaves the others untouched. An omitted site_available/announce/etc. must
+	// never fall to the zero value and silently take the storefront offline or wipe the announce banner.
+	if req.SiteAvailable != nil {
+		if err := s.repo.Settings().SetSiteAvailability(ctx, req.GetSiteAvailable()); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set site availability",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "failed to set site availability: %v", err)
+		}
 	}
 
-	err = s.repo.Settings().SetMaxOrderItems(ctx, int(req.MaxOrderItems))
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set max order items",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "failed to set max order items: %v", err)
+	if req.MaxOrderItems != nil {
+		if err := s.repo.Settings().SetMaxOrderItems(ctx, int(req.GetMaxOrderItems())); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set max order items",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "failed to set max order items: %v", err)
+		}
 	}
 
-	err = s.repo.Settings().SetBigMenu(ctx, req.BigMenu)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set big menu",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "failed to set big menu: %v", err)
+	if req.BigMenu != nil {
+		if err := s.repo.Settings().SetBigMenu(ctx, req.GetBigMenu()); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set big menu",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "failed to set big menu: %v", err)
+		}
 	}
 
-	// Convert protobuf announce to entity format
-	var announceLink string
-	var announceTranslations []entity.AnnounceTranslation
+	// Announce has message presence (nil pointer when omitted): only touch it when explicitly sent.
+	// Sending an announce with empty link + no translations is the explicit "clear the banner" signal.
 	if req.Announce != nil {
-		announceLink = req.Announce.Link
+		announceLink := req.Announce.Link
+		var announceTranslations []entity.AnnounceTranslation
 		for _, pbTranslation := range req.Announce.Translations {
 			announceTranslations = append(announceTranslations, entity.AnnounceTranslation{
 				LanguageId: int(pbTranslation.LanguageId),
 				Text:       pbTranslation.Text,
 			})
 		}
+		if err := s.repo.Settings().SetAnnounce(ctx, announceLink, announceTranslations); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set announce",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "failed to set announce: %v", err)
+		}
 	}
 
-	err = s.repo.Settings().SetAnnounce(ctx, announceLink, announceTranslations)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set announce",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "failed to set announce: %v", err)
+	if req.OrderExpirationSeconds != nil {
+		if err := s.repo.Settings().SetOrderExpirationSeconds(ctx, int(req.GetOrderExpirationSeconds())); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set order expiration seconds",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "failed to set order expiration seconds: %v", err)
+		}
 	}
 
-	err = s.repo.Settings().SetOrderExpirationSeconds(ctx, int(req.OrderExpirationSeconds))
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set order expiration seconds",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "failed to set order expiration seconds: %v", err)
-	}
-
-	err = s.repo.Settings().SetPaymentIsProd(ctx, req.IsProd)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't set payment is prod",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Internal, "failed to set payment mode: %v", err)
+	if req.IsProd != nil {
+		if err := s.repo.Settings().SetPaymentIsProd(ctx, req.GetIsProd()); err != nil {
+			slog.Default().ErrorContext(ctx, "can't set payment is prod",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Internal, "failed to set payment mode: %v", err)
+		}
 	}
 
 	if len(req.ComplimentaryShippingPrices) > 0 {
@@ -142,8 +148,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		}
 
 		if len(prices) > 0 {
-			err = s.repo.Settings().SetComplimentaryShippingPrices(ctx, prices)
-			if err != nil {
+			if err := s.repo.Settings().SetComplimentaryShippingPrices(ctx, prices); err != nil {
 				slog.Default().ErrorContext(ctx, "can't set complimentary shipping prices",
 					slog.String("err", err.Error()),
 				)

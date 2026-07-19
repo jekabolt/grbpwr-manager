@@ -1306,15 +1306,6 @@ type ChannelSettledRow struct {
 	NewCustomers   int64           `db:"new_customers"`
 }
 
-// OpexEntry is one fixed-cost (OPEX) line: an amount for a category in a given month, base
-// currency (task 22). Feeds the dashboard operating result (contribution − OPEX − marketing).
-type OpexEntry struct {
-	Month    time.Time       `db:"month"` // first day of the month
-	Category string          `db:"category"`
-	Amount   decimal.Decimal `db:"amount"`
-	Note     sql.NullString  `db:"note"`
-}
-
 // ValidOpexCategories is the closed set of OPEX categories (validated in dto rather than a DB
 // CHECK, so the set can evolve without a migration). marketing spend is deliberately NOT here —
 // it lives in channel_spend and is subtracted separately, so ROAS and the operating result

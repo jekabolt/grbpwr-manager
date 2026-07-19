@@ -204,7 +204,6 @@ var methodRequirements = map[string]Requirement{
 	"GetChannelRoasSettled":  rd(SectionAnalytics),
 	"UpsertInventoryTargets": wr(SectionAnalytics),
 	"UpsertChannelSpend":     wr(SectionAnalytics),
-	"UpsertOpexEntries":      wr(SectionAnalytics),
 	// OPEX v2 detailed line/recurring APIs (NF-08). Classified under analytics like the legacy
 	// aggregate; the handlers additionally gate on costing:* (writes → PermissionDenied, reads →
 	// empty) because the figures are confidential cost data. SectionCosting itself is field-shaping

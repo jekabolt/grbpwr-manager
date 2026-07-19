@@ -528,15 +528,6 @@ service AdminService {
     };
   }
 
-  // UpsertOpexEntries records the fixed-cost (OPEX) journal — one amount per month per category,
-  // base currency — feeding the dashboard operating result (task 22). Upserts on (month, category).
-  rpc UpsertOpexEntries(UpsertOpexEntriesRequest) returns (UpsertOpexEntriesResponse) {
-    option (google.api.http) = {
-      post: "/api/admin/metrics/opex/upsert"
-      body: "*"
-    };
-  }
-
   // UpsertOpexLines writes OPEX line items (NF-08) — each with its own currency (folded to base) and
   // a label — upserting on (month, category, label). Requires costing:write.
   rpc UpsertOpexLines(UpsertOpexLinesRequest) returns (UpsertOpexLinesResponse) {
@@ -3564,16 +3555,22 @@ message SchedulePickupResponse {
 
 // SETTINGS
 
+// UpdateSettingsRequest is a PARTIAL update: every scalar field is `optional` so an omitted field is
+// left untouched (only explicitly-present fields are applied). This prevents a partial/empty request
+// from silently disabling the site or wiping the announce banner. The repeated/map fields
+// (shipment_carriers, payment_methods, complimentary_shipping_prices) are likewise only applied when
+// non-empty. To clear the announce, send an announce message with empty link + no translations; to
+// leave it unchanged, omit the announce field entirely.
 message UpdateSettingsRequest {
   repeated ShipmentCarrierAllowancePrice shipment_carriers = 1;
   repeated PaymentMethodAllowance payment_methods = 2;
-  bool site_available = 3;
-  int32 max_order_items = 4;
-  bool big_menu = 5;
+  optional bool site_available = 3;
+  optional int32 max_order_items = 4;
+  optional bool big_menu = 5;
   common.Announce announce = 6;
-  int32 order_expiration_seconds = 7; // 0 = use payment handler default
+  optional int32 order_expiration_seconds = 7; // 0 = use payment handler default
   map<string, google.type.Decimal> complimentary_shipping_prices = 8; // Map of currency code to complimentary shipping threshold (e.g., "EUR" -> 100.00)
-  bool is_prod = 9; // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
+  optional bool is_prod = 9; // true = prod Stripe (CARD), false = test Stripe (CARD_TEST)
 }
 
 message UpdateSettingsResponse {}
@@ -3621,7 +3618,7 @@ message ShipmentCarrierAllowancePrice {
 
 message AddShipmentCarrierRequest {
   string carrier = 1;
-  map<string, google.type.Decimal> prices = 2; // EUR, USD, GBP, JPY, CNY, KRW required
+  map<string, google.type.Decimal> prices = 2; // EUR, USD, GBP, JPY, CNY, KRW, PLN required (currency.RequiredCurrencies)
   string tracking_url = 3;
   string expected_delivery_time = 4;
   string description = 5;
@@ -4601,20 +4598,6 @@ message UpsertChannelSpendRequest {
 }
 
 message UpsertChannelSpendResponse {}
-
-// OpexEntryInsert is one fixed-cost line: an amount for a category in a month, base currency (task 22).
-message OpexEntryInsert {
-  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the first of the month server-side
-  string category = 2; // salaries | rent | software | marketing_other | production_content | other
-  google.type.Decimal amount = 3; // base currency (EUR), >= 0
-  string note = 4;
-}
-
-message UpsertOpexEntriesRequest {
-  repeated OpexEntryInsert entries = 1;
-}
-
-message UpsertOpexEntriesResponse {}
 
 // OpexLineInsert is one operating-expense line item (NF-08). Amount is in `currency`; it is folded
 // to the base currency server-side via the manual costing FX rates (left uncosted, and excluded

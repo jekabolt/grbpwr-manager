@@ -95,6 +95,24 @@ func isAlreadyExists(err error) bool {
 	return e.Code == 409 || strings.Contains(e.Body, "Duplicate entry") || strings.Contains(e.Body, "already exists")
 }
 
+// isAlreadyArchived reports whether err is a "row is already archived / not found to archive" response,
+// so an idempotent archive step (a throwaway row archived on a prior run) can treat it as success.
+func isAlreadyArchived(err error) bool {
+	e, ok := AsAPIError(err)
+	if !ok {
+		return false
+	}
+	return strings.Contains(e.Body, "already archived") || strings.Contains(e.Body, "not found or already archived")
+}
+
+// isRateLimited reports whether err is a storefront rate-limit rejection (HTTP 429). These are
+// transient — repeated seeder runs saturate the tight per-IP windows — so a storefront-write step can
+// soft-skip on 429 instead of failing.
+func isRateLimited(err error) bool {
+	e, ok := AsAPIError(err)
+	return ok && e.Code == 429
+}
+
 // randPassword builds a strong, never-logged admin password (>= 8 chars, mixed
 // classes). It is created, hashed server-side, and discarded here.
 func randPassword() string {
@@ -509,13 +527,15 @@ func (s *Seeder) updateSettingsConservative(ctx context.Context) error {
 			})
 		}
 	}
+	// Scalar fields are optional (presence) now — echo the current dictionary values as explicit
+	// pointers so this full re-apply is a no-op except SiteAvailable=true (the seeder keeps beta up).
 	if _, err := s.C.UpdateSettings(ctx, &admin.UpdateSettingsRequest{
-		SiteAvailable:               true,
-		MaxOrderItems:               maxItems,
-		BigMenu:                     d.GetBigMenu(),
+		SiteAvailable:               pbool(true),
+		MaxOrderItems:               p32(maxItems),
+		BigMenu:                     pbool(d.GetBigMenu()),
 		Announce:                    announce,
-		OrderExpirationSeconds:      d.GetOrderExpirationSeconds(),
-		IsProd:                      d.GetIsProd(),
+		OrderExpirationSeconds:      p32(d.GetOrderExpirationSeconds()),
+		IsProd:                      pbool(d.GetIsProd()),
 		ComplimentaryShippingPrices: d.GetComplimentaryShippingPrices(),
 	}); err != nil {
 		return fmt.Errorf("UpdateSettings: %w", err)
@@ -777,6 +797,14 @@ func (s *Seeder) seedReviews(ctx context.Context, r *ExtrasResult) error {
 			},
 			ItemReviews: itemReviews,
 		}); err != nil {
+			// The review endpoint shares the storefront support limiter (5/IP/10min). Repeated seeder
+			// runs saturate that window, so a 429 here is a transient env condition, NOT a regression —
+			// soft-skip the rest instead of failing the whole extras phase.
+			if isRateLimited(err) {
+				s.logf("WARN reviews: rate-limited after %d (storefront 5/IP/10min, shared with tickets); skipping the rest", made)
+				r.Warnings = append(r.Warnings, fmt.Sprintf("reviews: rate-limited after %d review(s) — transient, re-run after the 10-min window", made))
+				return nil
+			}
 			return fmt.Errorf("SFSubmitOrderReview(review %s): %w", uuid, err)
 		}
 		r.ReviewOrderUUIDs = append(r.ReviewOrderUUIDs, uuid)

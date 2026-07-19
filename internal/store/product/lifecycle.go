@@ -228,7 +228,7 @@ func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, co
 		missing = append(missing, "no default-language translation")
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("cannot publish colourway %d: %s", colorwayID, strings.Join(missing, "; "))
+		return fmt.Errorf("%w: cannot publish colourway %d: %s", entity.ErrColorwayNotSellable, colorwayID, strings.Join(missing, "; "))
 	}
 	return nil
 }
@@ -247,7 +247,7 @@ func checkColorwayHasThumbnail(ctx context.Context, db dependency.DB, colorwayID
 		return fmt.Errorf("load colourway %d thumbnail: %w", colorwayID, err)
 	}
 	if !row.HasThumbnail {
-		return fmt.Errorf("cannot activate colourway %d: no thumbnail is set", colorwayID)
+		return fmt.Errorf("%w: cannot activate colourway %d: no thumbnail is set", entity.ErrColorwayNotSellable, colorwayID)
 	}
 	return nil
 }
@@ -269,7 +269,7 @@ func checkColorwayRequiredCurrencies(ctx context.Context, db dependency.DB, colo
 		provided[strings.ToUpper(r.Currency)] = true
 	}
 	if missing := currency.MissingRequired(provided); len(missing) > 0 {
-		return fmt.Errorf("cannot activate colourway %d: missing required currencies: %s", colorwayID, strings.Join(missing, ", "))
+		return fmt.Errorf("%w: cannot activate colourway %d: missing required currencies: %s", entity.ErrColorwayNotSellable, colorwayID, strings.Join(missing, ", "))
 	}
 	return nil
 }

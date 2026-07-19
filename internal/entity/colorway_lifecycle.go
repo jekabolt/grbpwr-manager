@@ -20,6 +20,15 @@ var ErrStyleFrozenSiblings = errors.New("style has SKU-frozen colourways; clone 
 // exists (UNIQUE, R1). The API layer maps it to FailedPrecondition.
 var ErrColorwayColorExists = errors.New("a colourway with this colour already exists for the style")
 
+// ErrColorwayNotSellable is the classification sentinel for a failed completeness gate on the →ACTIVE
+// edge (publish DRAFT->ACTIVE / unhide HIDDEN->ACTIVE): an unbuilt base SKU, a variant without a valid
+// SKU, an incomplete sellable style, a missing colour/country/price/default translation, no thumbnail,
+// or a required selling currency absent. Every one of these is an operator-fixable precondition, so the
+// API layer maps it to FailedPrecondition (HTTP 400) — NOT Internal (500). Wrap the descriptive error
+// as `fmt.Errorf("%w: <detail>", ErrColorwayNotSellable, ...)` so errors.Is detects it while the detail
+// stays readable.
+var ErrColorwayNotSellable = errors.New("colourway is not sellable")
+
 // ColorwayStatus is a colourway's (product row's) lifecycle state and the single authoritative source
 // of lifecycle — the legacy (hidden, deleted_at) pair and the generated `status` enum are gone
 // (contract decision R6). It is stored as product.lifecycle_status TINYINT UNSIGNED. The numeric

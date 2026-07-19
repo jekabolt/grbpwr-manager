@@ -385,10 +385,6 @@ type (
 		// thresholds behind the dashboard alerts (alert_setting table).
 		GetAlertThresholds(ctx context.Context) (entity.AlertThresholds, error)
 		UpsertAlertThresholds(ctx context.Context, t entity.AlertThresholds) error
-		// UpsertOpexEntries writes the fixed-cost (OPEX) journal used by the dashboard
-		// operating result (opex_entry table), upserting on (month, category). NF-08: it also
-		// mirrors each aggregate into opex_line as an '(aggregate)' base-currency line.
-		UpsertOpexEntries(ctx context.Context, rows []entity.OpexEntry) error
 		// UpsertOpexLines writes OPEX line items (opex_line, NF-08), upserting on
 		// (month, category, label). AmountBase is folded to base currency by the caller.
 		UpsertOpexLines(ctx context.Context, rows []entity.OpexLineInsert) error

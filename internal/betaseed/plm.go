@@ -1744,6 +1744,8 @@ func decv(v string) *decimal.Decimal { return &decimal.Decimal{Value: v} }
 
 func p32(v int32) *int32 { return &v }
 
+func pbool(v bool) *bool { return &v }
+
 func pstr(v string) *string { return &v }
 
 func ofPtr(v common.OrderFactor) *common.OrderFactor { return &v }

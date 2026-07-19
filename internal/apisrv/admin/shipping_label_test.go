@@ -1,12 +1,66 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// validShipFrom is a minimal ship-from that passes validateShipFrom.
+var validShipFrom = entity.LabelAddress{Street1: "1 Warehouse Rd", City: "Lisbon", PostalCode: "1000-001", CountryISO2: "PT"}
+
+// TestSchedulePickupCarrierRejectionIsClientError locks A4: a Sendcloud 4xx (e.g. no shipping rules
+// configured) surfaces as FailedPrecondition (HTTP 400) with the carrier's detail, NOT a bare
+// Internal (HTTP 500). The client layer types a 4xx as *entity.CarrierValidationError.
+func TestSchedulePickupCarrierRejectionIsClientError(t *testing.T) {
+	lp := mocks.NewMockLabelProvider(t)
+	lp.EXPECT().SchedulePickup(mock.Anything, mock.Anything).
+		Return(nil, &entity.CarrierValidationError{Detail: "no shipping rules configured for this account"})
+
+	s := &Server{labelProvider: lp, shipFrom: validShipFrom}
+	_, err := s.SchedulePickup(context.Background(), &pb_admin.SchedulePickupRequest{
+		CarrierCode: "postnl", Date: "2026-07-20",
+	})
+
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "no shipping rules configured")
+}
+
+// TestSchedulePickupDisabledIsClientError: a fully-disabled provider (no API keys) is also a
+// FailedPrecondition, unchanged by A4.
+func TestSchedulePickupDisabledIsClientError(t *testing.T) {
+	lp := mocks.NewMockLabelProvider(t)
+	lp.EXPECT().SchedulePickup(mock.Anything, mock.Anything).Return(nil, entity.ErrLabelsDisabled)
+
+	s := &Server{labelProvider: lp, shipFrom: validShipFrom}
+	_, err := s.SchedulePickup(context.Background(), &pb_admin.SchedulePickupRequest{
+		CarrierCode: "postnl", Date: "2026-07-20",
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+}
+
+// TestSchedulePickupInfraErrorStaysInternal: a genuine infrastructure failure (not a carrier 4xx)
+// must still be Internal (HTTP 500), so A4 doesn't mislabel real outages as client errors.
+func TestSchedulePickupInfraErrorStaysInternal(t *testing.T) {
+	lp := mocks.NewMockLabelProvider(t)
+	lp.EXPECT().SchedulePickup(mock.Anything, mock.Anything).Return(nil, errors.New("dial tcp: connection reset"))
+
+	s := &Server{labelProvider: lp, shipFrom: validShipFrom}
+	_, err := s.SchedulePickup(context.Background(), &pb_admin.SchedulePickupRequest{
+		CarrierCode: "postnl", Date: "2026-07-20",
+	})
+	require.Equal(t, codes.Internal, status.Code(err))
+}
 
 func wgg(grams int32) sql.NullInt32 {
 	return sql.NullInt32{Int32: grams, Valid: true}
