@@ -75,8 +75,8 @@ const (
 	AcctSideDebit  AcctSide = "debit"
 	AcctSideCredit AcctSide = "credit"
 
-	AcctSourceOrderSale          AcctSourceType = "order_sale"
-	AcctSourceOrderRefund        AcctSourceType = "order_refund"
+	AcctSourceOrderSale   AcctSourceType = "order_sale"
+	AcctSourceOrderRefund AcctSourceType = "order_refund"
 	// Delivered-recognition chain (phase 2, wave 2 — migration 0195). order_prepayment posts at
 	// payment (money in, revenue parked on 2090); order_transit at shipped (1130→1140); and
 	// order_delivered_sale at delivered (2090→revenue, 1140→COGS). See docs/plan-accounting-phase2/
@@ -99,6 +99,12 @@ const (
 	AcctSourceDevExpense     AcctSourceType = "dev_expense"
 	AcctSourceManual         AcctSourceType = "manual"
 	AcctSourceReversal       AcctSourceType = "reversal"
+	// AcctSourceDepreciation is a monthly straight-line depreciation charge on a fixed asset
+	// (Dr 6370 / Cr 1225); source_key "asset:<id>:<YYYY-MM>" gives one-per-asset-per-month idempotency.
+	AcctSourceDepreciation AcctSourceType = "depreciation"
+	// AcctSourceCorpTax is a corporation-tax accrual for a period (Dr 8010 / Cr 2050); source_key
+	// "corp_tax:<from>:<to>" so re-accruing the same period is idempotent.
+	AcctSourceCorpTax AcctSourceType = "corp_tax"
 
 	AcctEventOrderPaid      AcctEventType = "order_paid"
 	AcctEventOrderRefund    AcctEventType = "order_refund"
@@ -790,6 +796,26 @@ type AcctVatReturnPL struct {
 	NetImport        decimal.Decimal
 	NetInputDomestic decimal.Decimal
 	Caveats          []string
+}
+
+// FixedAsset is one capitalised asset in the register, depreciated straight-line over
+// UsefulLifeMonths from AcquiredOn. CostBase is the base-currency cost; DisposedOn stops depreciation.
+type FixedAsset struct {
+	ID               int             `db:"id"`
+	Name             string          `db:"name"`
+	CostBase         decimal.Decimal `db:"cost_base"`
+	AcquiredOn       time.Time       `db:"acquired_on"`
+	UsefulLifeMonths int             `db:"useful_life_months"`
+	DisposedOn       sql.NullTime    `db:"disposed_on"`
+	CreatedAt        time.Time       `db:"created_at"`
+}
+
+// FixedAssetInsert is the create payload for a fixed asset.
+type FixedAssetInsert struct {
+	Name             string
+	CostBase         decimal.Decimal
+	AcquiredOn       time.Time
+	UsefulLifeMonths int
 }
 
 // AcctFrs105Accounts is an FRS 105 micro-entity accounts DRAFT — the Income Statement + Statement of
