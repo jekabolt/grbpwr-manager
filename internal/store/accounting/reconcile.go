@@ -130,7 +130,11 @@ func (s *Store) accountBalanceBefore(ctx context.Context, code string, before ti
 // non-Stripe EUR order). Items are confirmed orders in the period with no order_sale entry, labelled
 // with the outbox last_error (the skip / stuck reason).
 func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, toT time.Time, statusIDs []int) (entity.AcctReconBlock, error) {
-	ledger, err := s.ledgerLineSum(ctx, []string{"4010", "4020", "4110"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
+	// 4310 (B2B / wholesale revenue) belongs here: a B2B sale credits net revenue to 4310, and the
+	// operational side below counts every confirmed order's recognised revenue regardless of channel —
+	// omitting 4310 makes every B2B order a false negative drift. (4050 B2B trade-discount contra is a
+	// debit and is added once discount postings exist.)
+	ledger, err := s.ledgerLineSum(ctx, []string{"4010", "4020", "4110", "4310"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
 	if err != nil {
 		return entity.AcctReconBlock{}, err
 	}
