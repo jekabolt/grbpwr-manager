@@ -66,12 +66,20 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 	if err != nil {
 		return nil, fmt.Errorf("accounting: vat return output by regime %s: %w", fromStr, err)
 	}
+	var extraCaveats []string
 	for _, r := range orderRows {
 		switch entity.VatRegime(r.Regime) {
 		case entity.VatRegimePLDomestic:
 			ret.OutputDomestic = ret.OutputDomestic.Add(r.NetVat)
+		case entity.VatRegimeUKStockDomestic:
+			// UK output VAT — a different jurisdiction; kept out of the Polish domestic total.
+			ret.OutputUkStockDomestic = ret.OutputUkStockDomestic.Add(r.NetVat)
 		case entity.VatRegimeOSS:
 			ret.OssInfoTotal = ret.OssInfoTotal.Add(r.NetVat)
+		default:
+			// export/wdt/none post no 2070 and never reach here; a NULL-regime legacy order (→ 'none')
+			// or an unknown value that DID post 2070 is surfaced, never silently folded into a total.
+			extraCaveats = append(extraCaveats, "order 2070 lines with unclassified vat_regime '"+r.Regime+"' excluded from the return")
 		}
 	}
 
@@ -105,22 +113,33 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 		case entity.InputVatRegimeImport:
 			ret.InputImport = ret.InputImport.Add(r.InputVat)
 			ret.OutputWntSelfCharge = ret.OutputWntSelfCharge.Add(r.OutputSelf)
-		case entity.InputVatRegimeDomesticPL, entity.InputVatRegimeDomesticUK:
+		case entity.InputVatRegimeDomesticPL:
 			ret.InputDomestic = ret.InputDomestic.Add(r.InputVat)
+		case entity.InputVatRegimeDomesticUK:
+			// UK-recoverable input VAT — belongs on the UK return, NOT the Polish NetPayable.
+			ret.InputUkDomestic = ret.InputUkDomestic.Add(r.InputVat)
+		default:
+			extraCaveats = append(extraCaveats, "material 2080 lines with unclassified input_vat_regime '"+r.Regime+"' excluded from the return")
 		}
 	}
 
-	// Net payable = domestic output + reverse-charge output − all input. WNT/import output and input are
-	// equal (net-zero self-charge), so they cancel here; only domestic output − domestic input remains.
-	// OSS is deliberately excluded (declared on the OSS return).
+	// NetPayable is the POLISH liability only: domestic output + reverse-charge self-charge − Polish
+	// input. WNT/import output and input are equal (net-zero self-charge), so they cancel; only domestic
+	// output − domestic input remains. OSS (declared on the OSS return) and every UK figure (declared on
+	// the UK return) are deliberately excluded — folding them in mis-stated the Polish liability.
 	ret.NetPayable = ret.OutputDomestic.Add(ret.OutputWntSelfCharge).
 		Sub(ret.InputDomestic).Sub(ret.InputWnt).Sub(ret.InputImport)
+
+	if ret.OutputUkStockDomestic.IsPositive() || ret.InputUkDomestic.IsPositive() {
+		extraCaveats = append(extraCaveats, "UK VAT present (output "+ret.OutputUkStockDomestic.StringFixed(2)+
+			", input "+ret.InputUkDomestic.StringFixed(2)+") — filed on the UK return, excluded from the PL net payable")
+	}
 
 	caveats, err := s.vatReturnCaveats(ctx, fromStr, toStr)
 	if err != nil {
 		return nil, err
 	}
-	ret.Caveats = caveats
+	ret.Caveats = append(extraCaveats, caveats...)
 	return ret, nil
 }
 

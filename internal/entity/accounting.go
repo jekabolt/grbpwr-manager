@@ -651,7 +651,12 @@ type AcctVatReturnPL struct {
 	InputWnt            decimal.Decimal
 	InputImport         decimal.Decimal
 	NetPayable          decimal.Decimal
-	Caveats             []string
+	// UK figures are a DIFFERENT jurisdiction: they are filed on the UK VAT return, never the Polish
+	// JPK, so they are reported separately and excluded from NetPayable (mixing them understated/
+	// overstated the Polish liability). Surfaced today via a caveat; a dedicated UK return is Phase 3.
+	OutputUkStockDomestic decimal.Decimal // uk_stock_domestic output VAT (2070)
+	InputUkDomestic       decimal.Decimal // domestic_uk purchase input VAT (2080), recoverable in the UK
+	Caveats               []string
 }
 
 // AcctOssRow is one destination country's OSS B2C line: country, applied rate, net and VAT.

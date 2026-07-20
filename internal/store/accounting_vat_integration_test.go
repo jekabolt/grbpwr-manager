@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,6 +152,26 @@ func TestAccountingVatReturns(t *testing.T) {
 		VALUES (?, 'Test', 'Buyer', 'vatint@example.com', '1234567', ?, ?)`, deOrderID, addrID, addrID)
 	require.NoError(t, err)
 
+	// H-4: a UK-stock domestic sale (2070 output) and a domestic_uk material receipt (2080 input) are a
+	// DIFFERENT jurisdiction — they must stay out of the Polish domestic totals and NetPayable.
+	const ukUUID = "vat-int-uk-000000000000000000000003"
+	_, err = testDB.ExecContext(ctx, `INSERT INTO customer_order
+		(uuid, order_status_id, currency, total_price, total_settled_base, vat_amount, vat_regime, placed)
+		VALUES (?, ?, 'EUR', 120, 120, 20, 'uk_stock_domestic', ?)`, ukUUID, confirmedID, occ)
+	require.NoError(t, err)
+
+	res, err = testDB.ExecContext(ctx, "INSERT INTO material (name, section) VALUES ('VATINT-uk-fabric', 'fabric')")
+	require.NoError(t, err)
+	ukMatID, err := res.LastInsertId()
+	require.NoError(t, err)
+	res, err = testDB.ExecContext(ctx, `INSERT INTO material_stock_movement
+		(material_id, movement_type, quantity, on_hand_before, on_hand_after, unit_cost_base,
+		 input_vat_amount, input_vat_regime, occurred_at, admin_username)
+		VALUES (?, 'receipt', 1, 0, 1, 100, 15, 'domestic_uk', ?, 'VATINT')`, ukMatID, occ)
+	require.NoError(t, err)
+	ukMovID, err := res.LastInsertId()
+	require.NoError(t, err)
+
 	var entryIDs []int
 	post := func(entry entity.AcctJournalEntryInsert) {
 		var id int
@@ -167,7 +189,9 @@ func TestAccountingVatReturns(t *testing.T) {
 		}
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM buyer WHERE order_id = ?", deOrderID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM address WHERE id = ?", addrID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE uuid IN (?, ?)", plUUID, deUUID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE uuid IN (?, ?, ?)", plUUID, deUUID, ukUUID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE id = ?", ukMovID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", ukMatID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM acct_period WHERE period = ?", "2035-08-01")
 	}()
 
@@ -189,6 +213,16 @@ func TestAccountingVatReturns(t *testing.T) {
 		OccurredAt: occ, Description: "de sale", SourceType: entity.AcctSourceOrderSale, SourceKey: deUUID, CreatedBy: "system",
 		Lines: []entity.AcctJournalLineInsert{line("1030", entity.AcctSideDebit, "119"), line("4020", entity.AcctSideCredit, "100"), line("2070", entity.AcctSideCredit, "19")},
 	})
+	// UK-stock domestic sale (Cr 2070 20) — output VAT in a different jurisdiction.
+	post(entity.AcctJournalEntryInsert{
+		OccurredAt: occ, Description: "uk sale", SourceType: entity.AcctSourceOrderSale, SourceKey: ukUUID, CreatedBy: "system",
+		Lines: []entity.AcctJournalLineInsert{line("1010", entity.AcctSideDebit, "120"), line("4010", entity.AcctSideCredit, "100"), line("2070", entity.AcctSideCredit, "20")},
+	})
+	// domestic_uk material receipt (Dr 2080 15) — UK-recoverable input VAT.
+	post(entity.AcctJournalEntryInsert{
+		OccurredAt: occ, Description: "uk receipt", SourceType: entity.AcctSourceMaterialReceipt, SourceKey: strconv.FormatInt(ukMovID, 10), CreatedBy: "system",
+		Lines: []entity.AcctJournalLineInsert{line("1110", entity.AcctSideDebit, "100"), line("2080", entity.AcctSideDebit, "15"), line("2010", entity.AcctSideCredit, "115")},
+	})
 
 	// --- JPK_VAT monthly return ---
 	ret, err := s.Accounting().GetVatReturnPL(ctx, month)
@@ -196,7 +230,18 @@ func TestAccountingVatReturns(t *testing.T) {
 	require.Equal(t, "18.00", ret.OutputDomestic.StringFixed(2), "23 sale − 5 refund")
 	require.Equal(t, "19.00", ret.OssInfoTotal.StringFixed(2))
 	require.Equal(t, "0.00", ret.InputDomestic.StringFixed(2))
-	require.Equal(t, "18.00", ret.NetPayable.StringFixed(2), "domestic output only; OSS excluded")
+	require.Equal(t, "18.00", ret.NetPayable.StringFixed(2), "domestic output only; OSS + UK excluded")
+	// H-4: UK output/input are a different jurisdiction — reported separately, never folded into the PL
+	// domestic totals (still 18.00 / 0.00 above) or NetPayable.
+	require.Equal(t, "20.00", ret.OutputUkStockDomestic.StringFixed(2), "UK output reported separately")
+	require.Equal(t, "15.00", ret.InputUkDomestic.StringFixed(2), "UK input reported separately")
+	ukCaveat := false
+	for _, c := range ret.Caveats {
+		if strings.Contains(c, "UK VAT present") {
+			ukCaveat = true
+		}
+	}
+	require.Truef(t, ukCaveat, "UK-VAT caveat expected, got %v", ret.Caveats)
 
 	// --- OSS quarterly return (window starts at the seeded month) ---
 	oss, err := s.Accounting().GetOssReturn(ctx, month)
