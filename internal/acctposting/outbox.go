@@ -158,6 +158,11 @@ func (w *Worker) vatDecisionForRegime(ctx context.Context, regime entity.VatRegi
 	if !ok {
 		return vd, "vat rate missing for " + rateCountry, nil
 	}
+	if !rate.IsPositive() {
+		// A 0 (or negative) rate for a VAT-bearing regime is a config error, not a genuine 0%: posting a
+		// silent 0% VAT would understate the liability. Skip with an alert, same as a missing rate (A-7).
+		return vd, "vat rate is non-positive for " + rateCountry, nil
+	}
 	vd.RatePct = rate
 	return vd, "", nil
 }
