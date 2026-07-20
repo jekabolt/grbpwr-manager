@@ -387,3 +387,36 @@ func mapAcctErr(ctx context.Context, what string, err error) error {
 	slog.Default().ErrorContext(ctx, "can't "+what, slog.String("err", err.Error()))
 	return status.Error(codes.Internal, "can't "+what)
 }
+
+// ListAcctEventsNeedingReview lists posting-outbox events flagged for manual review (H-1/H-2/B-5) —
+// the dead-letter / manual-entry queue an operator must clear before the affected months can close.
+func (s *Server) ListAcctEventsNeedingReview(ctx context.Context, req *pb_admin.ListAcctEventsNeedingReviewRequest) (*pb_admin.ListAcctEventsNeedingReviewResponse, error) {
+	events, err := s.repo.Accounting().ListEventsNeedingReview(ctx, int(req.GetLimit()))
+	if err != nil {
+		return nil, mapAcctErr(ctx, "list events needing review", err)
+	}
+	return &pb_admin.ListAcctEventsNeedingReviewResponse{Events: dto.ConvertAcctEventsToPb(events)}, nil
+}
+
+// ReprocessAcctEvent resets an event so the posting worker re-attempts it from scratch (used after the
+// operator fixed the cause, e.g. added the missing vat_rate).
+func (s *Server) ReprocessAcctEvent(ctx context.Context, req *pb_admin.ReprocessAcctEventRequest) (*pb_admin.ReprocessAcctEventResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Accounting().ReprocessAcctEvent(ctx, req.GetId()); err != nil {
+		return nil, mapAcctErr(ctx, "reprocess acct event", err)
+	}
+	return &pb_admin.ReprocessAcctEventResponse{}, nil
+}
+
+// ResolveAcctEvent clears the review flag on an event handled manually (a manual journal entry posted).
+func (s *Server) ResolveAcctEvent(ctx context.Context, req *pb_admin.ResolveAcctEventRequest) (*pb_admin.ResolveAcctEventResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Accounting().ResolveAcctEvent(ctx, req.GetId()); err != nil {
+		return nil, mapAcctErr(ctx, "resolve acct event", err)
+	}
+	return &pb_admin.ResolveAcctEventResponse{}, nil
+}

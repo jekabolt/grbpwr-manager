@@ -648,3 +648,28 @@ func convertAcctReconBlockToPb(b entity.AcctReconBlock) *pb_admin.AcctReconBlock
 		TotalCount:  int32(b.TotalCount),
 	}
 }
+
+// ConvertAcctEventsToPb converts posting-outbox events (disposition view; the internal JSON payload is
+// omitted) to protobuf. Times are RFC3339; processed_at is empty while pending (H-1/H-2/B-5 queue).
+func ConvertAcctEventsToPb(events []entity.AcctEvent) []*pb_admin.AcctEvent {
+	out := make([]*pb_admin.AcctEvent, 0, len(events))
+	for _, e := range events {
+		pb := &pb_admin.AcctEvent{
+			Id:          e.Id,
+			EventType:   string(e.EventType),
+			SourceKey:   e.SourceKey,
+			OccurredAt:  e.OccurredAt.Format(time.RFC3339),
+			CreatedAt:   e.CreatedAt.Format(time.RFC3339),
+			Attempts:    int32(e.Attempts),
+			NeedsReview: e.NeedsReview,
+		}
+		if e.ProcessedAt.Valid {
+			pb.ProcessedAt = e.ProcessedAt.Time.Format(time.RFC3339)
+		}
+		if e.LastError.Valid {
+			pb.LastError = e.LastError.String
+		}
+		out = append(out, pb)
+	}
+	return out
+}
