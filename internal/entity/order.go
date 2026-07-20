@@ -128,6 +128,10 @@ type Order struct {
 	// uk_stock_domestic / none. NULL until the sale event is posted. Read-only surface for the
 	// invoice reverse-charge note; not written by the order flow.
 	VatRegime sql.NullString `db:"vat_regime"`
+	// BuyerVatID is the B2B buyer's EU VAT identifier snapshotted at order creation
+	// (customer_order.buyer_vat_id); NULL for B2C/storefront orders. Read-only surface for the
+	// invoice; the custom-order flow writes it via entity.OrderNew.BuyerVatID.
+	BuyerVatID sql.NullString `db:"buyer_vat_id"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
