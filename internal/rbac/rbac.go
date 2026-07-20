@@ -226,8 +226,10 @@ var methodRequirements = map[string]Requirement{
 	"ListEmployees":       rd(SectionAnalytics),
 	"GetAlertSettings":    rd(SectionAnalytics),
 	"UpsertAlertSettings": wr(SectionAnalytics),
-	"GetVatRates":         rd(SectionAnalytics),
-	"UpsertVatRates":      wr(SectionAnalytics),
+	// VAT rates feed the tax engine (declarations/JPK), not business metrics — governed by
+	// accounting for segregation of duties (D-5), so a metrics-only operator can't move tax numbers.
+	"GetVatRates":    rd(SectionAccounting),
+	"UpsertVatRates": wr(SectionAccounting),
 	// content / media
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),
