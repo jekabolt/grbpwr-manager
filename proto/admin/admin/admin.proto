@@ -1800,6 +1800,13 @@ service AdminService {
   rpc GetUkVatReturn(GetUkVatReturnRequest) returns (GetUkVatReturnResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/uk-vat-return"};
   }
+
+  // GetFrs105Accounts re-groups the ledger into FRS 105 UK micro-entity line items (Income Statement +
+  // Statement of Financial Position). A base-currency DRAFT: a filing-ready UK Ltd set needs GBP
+  // conversion + isolation of the UK entity's transactions — surfaced in caveats, not done here.
+  rpc GetFrs105Accounts(GetFrs105AccountsRequest) returns (GetFrs105AccountsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/frs105"};
+  }
 }
 
 // DICITONARY
@@ -6334,4 +6341,36 @@ message GetUkVatReturnResponse {
   google.type.Decimal box5_net_vat = 5; // Box 3 − Box 4 (payable if positive)
   google.type.Decimal box6_net_sales = 6; // total sales ex-VAT
   google.type.Decimal box7_net_purchases = 7; // total purchases ex-VAT
+}
+
+message GetFrs105AccountsRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+}
+
+// GetFrs105AccountsResponse is an FRS 105 micro-entity accounts DRAFT: the Income Statement over the
+// period and the Statement of Financial Position as at `to`, re-grouped from the ledger. Figures are
+// in `currency` (the ledger base currency); the caveats flag that a UK Ltd filing needs GBP + entity
+// isolation.
+message GetFrs105AccountsResponse {
+  string from = 1;
+  string to = 2;
+  string currency = 3;
+  google.type.Decimal turnover = 4;
+  google.type.Decimal cost_of_sales = 5;
+  google.type.Decimal gross_profit = 6;
+  google.type.Decimal administrative_expenses = 7;
+  google.type.Decimal depreciation = 8;
+  google.type.Decimal operating_profit = 9;
+  google.type.Decimal tax = 10;
+  google.type.Decimal profit_for_year = 11;
+  google.type.Decimal fixed_assets = 12;
+  google.type.Decimal current_assets = 13;
+  google.type.Decimal creditors_within_year = 14;
+  google.type.Decimal net_current_assets = 15;
+  google.type.Decimal total_assets_less_current_liab = 16;
+  google.type.Decimal creditors_after_year = 17;
+  google.type.Decimal net_assets = 18;
+  google.type.Decimal capital_and_reserves = 19;
+  repeated string caveats = 20;
 }
