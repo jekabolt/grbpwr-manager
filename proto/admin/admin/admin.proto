@@ -1887,6 +1887,30 @@ service AdminService {
   rpc GetReceivables(GetReceivablesRequest) returns (GetReceivablesResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/receivables"};
   }
+  // Fixed-asset register + straight-line depreciation.
+  rpc CreateFixedAsset(CreateFixedAssetRequest) returns (CreateFixedAssetResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/fixed-assets"
+      body: "*"
+    };
+  }
+  rpc ListFixedAssets(ListFixedAssetsRequest) returns (ListFixedAssetsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/fixed-assets"};
+  }
+  // PostDepreciation posts every not-yet-posted monthly depreciation charge up to the given month.
+  rpc PostDepreciation(PostDepreciationRequest) returns (PostDepreciationResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/depreciation/post"
+      body: "*"
+    };
+  }
+  // AccrueCorporationTax posts a corporation-tax accrual (Dr 8010 / Cr 2050) on the period's pre-tax profit.
+  rpc AccrueCorporationTax(AccrueCorporationTaxRequest) returns (AccrueCorporationTaxResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/corporation-tax/accrue"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -6587,4 +6611,54 @@ message GetFrs105AccountsResponse {
   google.type.Decimal net_assets = 18;
   google.type.Decimal capital_and_reserves = 19;
   repeated string caveats = 20;
+}
+
+// FixedAsset is one capitalised asset, depreciated straight-line over useful_life_months from acquired_on.
+message FixedAsset {
+  int32 id = 1;
+  string name = 2;
+  google.type.Decimal cost_base = 3; // base-currency cost
+  string acquired_on = 4; // YYYY-MM-DD
+  int32 useful_life_months = 5;
+  string disposed_on = 6; // YYYY-MM-DD or empty
+}
+
+message CreateFixedAssetRequest {
+  string name = 1;
+  google.type.Decimal cost_base = 2;
+  string acquired_on = 3; // YYYY-MM-DD
+  int32 useful_life_months = 4;
+}
+
+message CreateFixedAssetResponse {
+  int32 id = 1;
+}
+
+message ListFixedAssetsRequest {}
+
+message ListFixedAssetsResponse {
+  repeated FixedAsset assets = 1;
+}
+
+message PostDepreciationRequest {
+  string up_to = 1; // YYYY-MM-DD; posts every un-posted monthly charge up to this month
+}
+
+message PostDepreciationResponse {
+  int32 posted = 1; // number of monthly charges newly posted
+  // Monthly charges NOT posted because their accounting period is already closed. Non-zero means the
+  // run was incomplete (e.g. a back-dated asset whose early months are closed) — reopen the period or
+  // post a manual catch-up; the depreciation is not otherwise recovered.
+  int32 skipped = 2;
+}
+
+message AccrueCorporationTaxRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+  google.type.Decimal rate_pct = 3; // corporation-tax rate, e.g. 19 or 25
+}
+
+message AccrueCorporationTaxResponse {
+  google.type.Decimal corp_tax = 1; // amount accrued (0 for a loss period)
+  bool already_posted = 2; // true if the period was already accrued (no new posting)
 }
