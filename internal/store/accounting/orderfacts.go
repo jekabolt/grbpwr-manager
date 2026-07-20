@@ -38,7 +38,9 @@ func (s *Store) GetOrderFactsForPosting(ctx context.Context, orderUUID string) (
 		LEFT JOIN shipment s ON s.order_id = co.id
 		LEFT JOIN buyer b ON b.order_id = co.id
 		LEFT JOIN address a ON a.id = b.shipping_address_id
-		WHERE co.uuid = :uuid`, map[string]any{"uuid": orderUUID})
+		WHERE co.uuid = :uuid
+		ORDER BY p.id, b.id, a.id
+		LIMIT 1`, map[string]any{"uuid": orderUUID})
 	if err != nil {
 		return nil, fmt.Errorf("accounting: get order facts %s: %w", orderUUID, err)
 	}
