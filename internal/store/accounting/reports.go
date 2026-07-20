@@ -202,9 +202,12 @@ func (s *Store) GetProfitLoss(ctx context.Context, from, to time.Time) (*entity.
 		pl.NetMarginPct[i] = marginPct(op, totalRevenue[i])
 	}
 
+	// C-9: exclude entries that have been reversed (superseded) — counting both the reversed original
+	// and its replacement would double-count one caveat. reversed_by IS NULL keeps only live entries.
 	caveatCount, err := storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM acct_journal_entry
-		WHERE has_caveat = TRUE AND occurred_at >= :from AND occurred_at < :to`,
+		WHERE has_caveat = TRUE AND reversed_by IS NULL
+		  AND occurred_at >= :from AND occurred_at < :to`,
 		map[string]any{
 			"from": from.UTC().Format(dateLayout),
 			"to":   to.UTC().Format(dateLayout),
