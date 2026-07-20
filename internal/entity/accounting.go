@@ -675,6 +675,24 @@ type AcctVatReturnPL struct {
 	Caveats          []string
 }
 
+// AcctUkVatReturn is the quarterly UK VAT return (9-box MTD layout) for the UK-stock domestic regime.
+// GRBPWR sells UK stock domestically (uk_stock_domestic) and reclaims UK input VAT (input_vat_regime =
+// domestic_uk) — a separate jurisdiction from the Polish JPK. Boxes 2/8/9 are intra-EU and always zero
+// post-Brexit for a GB return; Box 3 = Box 1 (no acquisitions), Box 5 = Box 3 − Box 4.
+type AcctUkVatReturn struct {
+	QuarterStart     time.Time
+	Box1OutputVat    decimal.Decimal // VAT due on sales (uk_stock_domestic 2070)
+	Box4InputVat     decimal.Decimal // VAT reclaimed on purchases (domestic_uk 2080)
+	Box6NetSales     decimal.Decimal // total value of sales ex-VAT
+	Box7NetPurchases decimal.Decimal // total value of purchases ex-VAT
+}
+
+// Box3TotalVatDue is Box 1 + Box 2 (Box 2 = 0 for GB).
+func (r AcctUkVatReturn) Box3TotalVatDue() decimal.Decimal { return r.Box1OutputVat }
+
+// Box5NetVat is Box 3 − Box 4: positive = payable to HMRC, negative = reclaimable.
+func (r AcctUkVatReturn) Box5NetVat() decimal.Decimal { return r.Box1OutputVat.Sub(r.Box4InputVat) }
+
 // AcctVatSalesRow is one order's sales figures for the JPK_V7M evidence (Ewidencja/SprzedazWiersz).
 // One row per order for the regimes the Polish register declares — pl_domestic, wdt, export (OSS and
 // uk_stock are filed elsewhere). Orders carrying a BuyerVatID become individual invoice rows; the rest

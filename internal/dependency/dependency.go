@@ -793,6 +793,9 @@ type (
 		// VatSalesEvidence returns per-order sales rows for the JPK_V7M sales register (SprzedazWiersz),
 		// for the regimes the Polish register declares (pl_domestic/wdt/export).
 		VatSalesEvidence(ctx context.Context, month time.Time) ([]entity.AcctVatSalesRow, error)
+		// GetUkVatReturn aggregates the quarter's UK VAT figures (9-box MTD) for the uk_stock_domestic
+		// regime — a separate jurisdiction, never folded into the Polish net payable.
+		GetUkVatReturn(ctx context.Context, quarterStart time.Time) (*entity.AcctUkVatReturn, error)
 
 		// --- fact reads for the posting worker (the accounting store reads other domains' tables
 		//     directly, the internal/store/metrics precedent; SQL in 09-implementation-notes.md §9.2) ---
