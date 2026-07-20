@@ -14,6 +14,19 @@ import (
 const entryColumns = `e.id, e.occurred_at, e.description, e.source_type, e.source_key,
 	e.reversal_of, e.reversed_by, e.created_by, e.has_caveat, e.caveat, e.created_at`
 
+// EntryExistsBySource reports whether a journal entry with the given (source_type, source_key)
+// exists. It is an O(1) lookup on the uniq_acct_entry_source unique index — the point lookup the
+// refund worker's S1 ("has the sale been posted?") check uses instead of paging ListJournalEntries.
+func (s *Store) EntryExistsBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (bool, error) {
+	n, err := storeutil.QueryCountNamed(ctx, s.DB,
+		`SELECT COUNT(*) FROM acct_journal_entry WHERE source_type = :st AND source_key = :sk`,
+		map[string]any{"st": string(sourceType), "sk": sourceKey})
+	if err != nil {
+		return false, fmt.Errorf("accounting: entry exists by source %s/%s: %w", sourceType, sourceKey, err)
+	}
+	return n > 0, nil
+}
+
 // ListJournalEntries returns a page of journal-entry headers matching the filter plus the total
 // match count. From/To bound occurred_at as a half-open interval [From, To); AccountCode filters via
 // a join through acct_journal_line; SourceType is optional. Newest first.

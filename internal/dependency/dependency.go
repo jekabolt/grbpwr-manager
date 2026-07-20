@@ -741,6 +741,9 @@ type (
 
 		ListJournalEntries(ctx context.Context, f entity.AcctEntryFilter) ([]entity.AcctJournalEntry, int, error)
 		GetJournalEntry(ctx context.Context, id int) (*entity.AcctJournalEntryFull, error)
+		// EntryExistsBySource is an O(1) (source_type, source_key) unique-index existence lookup
+		// (uniq_acct_entry_source) — e.g. the refund worker's "has the sale been posted?" check.
+		EntryExistsBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (bool, error)
 
 		// --- periods ---
 		// EnsurePeriodOpen lazily creates the period row for month and returns ErrAcctPeriodClosed if it

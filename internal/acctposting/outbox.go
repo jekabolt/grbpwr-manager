@@ -106,7 +106,7 @@ func (w *Worker) processOrderRefund(ctx context.Context, ev entity.AcctEvent) er
 		return w.skipEvent(ctx, ev.Id, "invalid order_refund payload: "+err.Error())
 	}
 
-	exists, err := w.saleEntryExists(ctx, p.OrderUUID, ev.OccurredAt)
+	exists, err := w.saleEntryExists(ctx, p.OrderUUID)
 	if err != nil {
 		return fmt.Errorf("check sale posted %s: %w", p.OrderUUID, err)
 	}
@@ -207,32 +207,9 @@ func (w *Worker) skipEvent(ctx context.Context, id int64, reason string) error {
 	return nil
 }
 
-// saleEntryExists reports whether the order_sale (S1) entry for orderUUID has been posted. The store
-// interface has no (source_type, source_key) point lookup, so it pages ListJournalEntries filtered to
-// order_sale over [startDate, notAfter+2d] — the sale's occurred_at is on/before the refund's and at
-// or after the cutover — and scans for the matching source_key. Volume in that window is modest
-// (refunds are rare and processed once); the pagination terminates via the reported total.
-func (w *Worker) saleEntryExists(ctx context.Context, orderUUID string, notAfter time.Time) (bool, error) {
-	const pageSize = 500
-	to := notAfter.AddDate(0, 0, 2)
-	for offset := 0; ; offset += pageSize {
-		entries, total, err := w.repo.Accounting().ListJournalEntries(ctx, entity.AcctEntryFilter{
-			From:       w.startDate,
-			To:         to,
-			SourceType: entity.AcctSourceOrderSale,
-			Limit:      pageSize,
-			Offset:     offset,
-		})
-		if err != nil {
-			return false, err
-		}
-		for _, e := range entries {
-			if e.SourceKey == orderUUID {
-				return true, nil
-			}
-		}
-		if len(entries) == 0 || offset+len(entries) >= total {
-			return false, nil
-		}
-	}
+// saleEntryExists reports whether the order_sale (S1) entry for orderUUID has been posted — an O(1)
+// (source_type, source_key) unique-index lookup (uniq_acct_entry_source), so it no longer pages the
+// ledger over a date window.
+func (w *Worker) saleEntryExists(ctx context.Context, orderUUID string) (bool, error) {
+	return w.repo.Accounting().EntryExistsBySource(ctx, entity.AcctSourceOrderSale, orderUUID)
 }
