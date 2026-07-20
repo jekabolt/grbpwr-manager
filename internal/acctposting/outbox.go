@@ -240,6 +240,13 @@ func (w *Worker) skipShippedDelivered(ctx context.Context, ev entity.AcctEvent, 
 	if st.LegacySale {
 		return w.skipEvent(ctx, ev.Id, "pre-policy order")
 	}
+	if w.deliveredRecognitionFrom.IsZero() {
+		// Feature off: this order has no prepayment (skipShippedDelivered is only reached when
+		// !st.Prepayment) and never will, so a shipped/delivered event can never post a transit/delivered
+		// leg. Skip immediately instead of deferring — otherwise a non-EUR/pending order would block
+		// ClosePeriod for ~2h before the cap. Keeps the feature-off path truly inert.
+		return w.skipEvent(ctx, ev.Id, "delivered recognition off")
+	}
 	if ev.Attempts >= maxOrphanRefundAttempts {
 		return w.skipEvent(ctx, ev.Id, "no prepayment posted (pre-policy/manual order)")
 	}
