@@ -1778,6 +1778,28 @@ service AdminService {
   rpc GetOssReturn(GetOssReturnRequest) returns (GetOssReturnResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/oss-return"};
   }
+
+  // ExportJpkV7M generates the official Polish JPK_V7M (JPK_VAT) XML for a month: the taxpayer header,
+  // the VAT-7 declaration, and the sales evidence register. It is the OUTPUT-SIDE filing — the
+  // accountant merges the purchase register (input VAT), so the file's ZakupWiersz is empty. Requires
+  // the JPK_* taxpayer identity to be configured; returns FailedPrecondition otherwise.
+  rpc ExportJpkV7M(ExportJpkV7MRequest) returns (ExportJpkV7MResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/jpk-v7m"};
+  }
+
+  // ExportOssReturn generates the quarterly OSS (Union scheme, VIU-DO) return XML — one row per member
+  // state of consumption with its rate, taxable base and VAT — for the accountant to validate against
+  // the official schema / transcribe into the OSS portal. Requires the JPK_* taxpayer identity.
+  rpc ExportOssReturn(ExportOssReturnRequest) returns (ExportOssReturnResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/oss-export"};
+  }
+
+  // GetUkVatReturn returns the quarterly UK VAT return in 9-box MTD layout for the uk_stock_domestic
+  // regime (a separate jurisdiction from the Polish JPK). Boxes 2/8/9 are zero post-Brexit for a GB
+  // return; the figures are entered into MTD-compatible software / the HMRC bridge to submit.
+  rpc GetUkVatReturn(GetUkVatReturnRequest) returns (GetUkVatReturnResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/uk-vat-return"};
+  }
 }
 
 // DICITONARY
@@ -6274,4 +6296,42 @@ message GetOssReturnResponse {
   repeated AcctOssRow rows = 2;
   google.type.Decimal total_net = 3;
   google.type.Decimal total_vat = 4;
+}
+
+message ExportJpkV7MRequest {
+  // month: YYYY-MM-DD, any day within the target filing month (normalised to the 1st).
+  string month = 1;
+}
+
+message ExportJpkV7MResponse {
+  string filename = 1; // suggested download name, e.g. JPK_V7M_2026-07.xml
+  string xml_content = 2; // the JPK_V7M(2) XML document (UTF-8)
+}
+
+message ExportOssReturnRequest {
+  // quarter: YYYY-MM-DD, any day within the target quarter (snapped to the quarter's first day).
+  string quarter = 1;
+}
+
+message ExportOssReturnResponse {
+  string filename = 1; // suggested download name, e.g. OSS_2026-Q3.xml
+  string xml_content = 2; // the OSS (VIU-DO) return XML (UTF-8)
+}
+
+message GetUkVatReturnRequest {
+  // quarter: YYYY-MM-DD, any day within the target quarter (snapped to the quarter's first day).
+  string quarter = 1;
+}
+
+// GetUkVatReturnResponse is the 9-box UK VAT return. Boxes 2 (EU acquisitions VAT), 8 and 9 (EU
+// supplies/acquisitions) are always zero for a post-Brexit GB return, so they are omitted here; Box 3 =
+// Box 1 and Box 5 = Box 3 − Box 4.
+message GetUkVatReturnResponse {
+  string quarter_start = 1; // YYYY-MM-DD, first day of the quarter
+  google.type.Decimal box1_output_vat = 2; // VAT due on sales
+  google.type.Decimal box3_total_vat_due = 3; // Box 1 + Box 2 (Box 2 = 0)
+  google.type.Decimal box4_input_vat = 4; // VAT reclaimed on purchases
+  google.type.Decimal box5_net_vat = 5; // Box 3 − Box 4 (payable if positive)
+  google.type.Decimal box6_net_sales = 6; // total sales ex-VAT
+  google.type.Decimal box7_net_purchases = 7; // total purchases ex-VAT
 }

@@ -94,3 +94,16 @@ func ConvertAcctOssReturnToPb(r entity.AcctOssReturn) *pb_admin.GetOssReturnResp
 		TotalVat:     pbDecimalFromDecimal(r.TotalVat),
 	}
 }
+
+// ConvertAcctUkVatReturnToPb maps the UK VAT 9-box return; Box 3 and Box 5 are derived on the entity.
+func ConvertAcctUkVatReturnToPb(r entity.AcctUkVatReturn) *pb_admin.GetUkVatReturnResponse {
+	return &pb_admin.GetUkVatReturnResponse{
+		QuarterStart:     r.QuarterStart.Format(acctDateLayout),
+		Box1OutputVat:    pbDecimalFromDecimal(r.Box1OutputVat),
+		Box3TotalVatDue:  pbDecimalFromDecimal(r.Box3TotalVatDue()),
+		Box4InputVat:     pbDecimalFromDecimal(r.Box4InputVat),
+		Box5NetVat:       pbDecimalFromDecimal(r.Box5NetVat()),
+		Box6NetSales:     pbDecimalFromDecimal(r.Box6NetSales),
+		Box7NetPurchases: pbDecimalFromDecimal(r.Box7NetPurchases),
+	}
+}

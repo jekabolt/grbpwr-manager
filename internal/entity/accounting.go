@@ -712,7 +712,46 @@ type AcctVatReturnPL struct {
 	// They carry no VAT so they do not enter NetPayable; they exist for the declaration itself.
 	NetWdt    decimal.Decimal
 	NetExport decimal.Decimal
-	Caveats   []string
+	// NET (tax base) figures the JPK_V7M declaration reports alongside the VAT amounts above — a
+	// declaration line is (net, vat), not vat alone. NetDomestic backs P_19 (domestic 23% sales),
+	// NetWnt P_23, NetImport P_25, NetInputDomestic P_42 (input on other domestic purchases). Sourced
+	// from the same ledger lines the VAT figures come from, so they reconcile exactly.
+	NetDomestic      decimal.Decimal
+	NetWnt           decimal.Decimal
+	NetImport        decimal.Decimal
+	NetInputDomestic decimal.Decimal
+	Caveats          []string
+}
+
+// AcctUkVatReturn is the quarterly UK VAT return (9-box MTD layout) for the UK-stock domestic regime.
+// GRBPWR sells UK stock domestically (uk_stock_domestic) and reclaims UK input VAT (input_vat_regime =
+// domestic_uk) — a separate jurisdiction from the Polish JPK. Boxes 2/8/9 are intra-EU and always zero
+// post-Brexit for a GB return; Box 3 = Box 1 (no acquisitions), Box 5 = Box 3 − Box 4.
+type AcctUkVatReturn struct {
+	QuarterStart     time.Time
+	Box1OutputVat    decimal.Decimal // VAT due on sales (uk_stock_domestic 2070)
+	Box4InputVat     decimal.Decimal // VAT reclaimed on purchases (domestic_uk 2080)
+	Box6NetSales     decimal.Decimal // total value of sales ex-VAT
+	Box7NetPurchases decimal.Decimal // total value of purchases ex-VAT
+}
+
+// Box3TotalVatDue is Box 1 + Box 2 (Box 2 = 0 for GB).
+func (r AcctUkVatReturn) Box3TotalVatDue() decimal.Decimal { return r.Box1OutputVat }
+
+// Box5NetVat is Box 3 − Box 4: positive = payable to HMRC, negative = reclaimable.
+func (r AcctUkVatReturn) Box5NetVat() decimal.Decimal { return r.Box1OutputVat.Sub(r.Box4InputVat) }
+
+// AcctVatSalesRow is one order's sales figures for the JPK_V7M evidence (Ewidencja/SprzedazWiersz).
+// One row per order for the regimes the Polish register declares — pl_domestic, wdt, export (OSS and
+// uk_stock are filed elsewhere). Orders carrying a BuyerVatID become individual invoice rows; the rest
+// (B2C) are aggregated into a single periodic internal row per regime by the JPK builder.
+type AcctVatSalesRow struct {
+	UUID       string          `db:"uuid"`         // order reference → DowodSprzedazy
+	Placed     time.Time       `db:"placed"`       // DataWystawienia / DataSprzedazy
+	BuyerVatID sql.NullString  `db:"buyer_vat_id"` // B2B buyer NIP (NrKontrahenta); empty → B2C aggregate
+	Regime     string          `db:"regime"`       // vat_regime (pl_domestic / wdt / export)
+	Net        decimal.Decimal `db:"net"`          // net revenue (refunds signed negative)
+	Vat        decimal.Decimal `db:"vat"`          // output VAT from 2070 (refunds signed negative)
 }
 
 // AcctOssRow is one destination country's OSS B2C line: country, applied rate, net and VAT.

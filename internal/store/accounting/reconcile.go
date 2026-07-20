@@ -211,7 +211,7 @@ func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, 
 		WHERE co.order_status_id IN (:statusIds)
 		  AND co.placed >= :from AND co.placed < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
-		                  WHERE e.source_type = 'order_sale' AND e.source_key = CAST(co.uuid AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)
+		                  WHERE e.source_type IN ('order_sale','order_prepayment') AND e.source_key = CAST(co.uuid AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)
 		ORDER BY co.placed
 		LIMIT :topN`,
 		map[string]any{"statusIds": statusIDs, "from": fromT, "to": toT, "topN": reconTopN})
@@ -230,7 +230,7 @@ func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, 
 		WHERE co.order_status_id IN (:statusIds)
 		  AND co.placed >= :from AND co.placed < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
-		                  WHERE e.source_type = 'order_sale' AND e.source_key = CAST(co.uuid AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)`,
+		                  WHERE e.source_type IN ('order_sale','order_prepayment') AND e.source_key = CAST(co.uuid AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)`,
 		map[string]any{"statusIds": statusIDs, "from": fromT, "to": toT})
 	if err != nil {
 		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon revenue unposted count: %w", err)
