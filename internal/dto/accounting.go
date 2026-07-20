@@ -38,6 +38,11 @@ const (
 	maxAcctDescription = 512 // acct_journal_entry.description VARCHAR(512)
 	maxAcctNote        = 255 // acct_journal_line.note VARCHAR(255)
 	maxAcctCurrencySrc = 4   // acct_journal_line.currency_src VARCHAR(4) — precedent: USDT (0185)
+	// maxAcctJournalLines caps a single manual entry's line count (D-4). The store inserts the lines
+	// in one bulk statement; a very large array would otherwise blow MySQL's ~65535 placeholder limit
+	// and surface as an opaque driver error instead of a clean InvalidArgument. 1000 lines is far more
+	// than any hand-posted entry needs while staying well under the placeholder ceiling.
+	maxAcctJournalLines = 1000
 )
 
 // validAcctSections / validAcctStatements mirror the acct_account CHECK constraints
@@ -224,6 +229,9 @@ func ConvertPbCreateJournalEntry(req *pb_admin.CreateJournalEntryRequest) (entit
 	}
 	if len(req.GetLines()) < 2 {
 		return entity.AcctJournalEntryInsert{}, fmt.Errorf("a journal entry needs at least 2 lines, got %d", len(req.GetLines()))
+	}
+	if len(req.GetLines()) > maxAcctJournalLines {
+		return entity.AcctJournalEntryInsert{}, fmt.Errorf("a journal entry has at most %d lines, got %d", maxAcctJournalLines, len(req.GetLines()))
 	}
 	lines := make([]entity.AcctJournalLineInsert, 0, len(req.GetLines()))
 	for i, l := range req.GetLines() {
