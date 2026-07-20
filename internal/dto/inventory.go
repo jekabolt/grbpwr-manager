@@ -80,6 +80,18 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 	if err != nil {
 		return entity.MaterialReceiptInsert{}, err
 	}
+	// Soft double-VAT guard (H-5): unit_cost is NET (VAT-exclusive), so the recoverable input VAT cannot
+	// exceed the net line cost times the highest plausible rate. A larger value almost always means
+	// unit_cost was entered GROSS — which double-counts the VAT (inflated inventory/COGS AND a 2080
+	// recovery). Reject with a hint instead of silently booking it. (30% > the EU max standard rate.)
+	if inputVatAmount.Valid && unitCost.Valid {
+		net := unitCost.Decimal.Mul(qty)
+		if inputVatAmount.Decimal.GreaterThan(net.Mul(decimal.RequireFromString("0.30"))) {
+			return entity.MaterialReceiptInsert{}, fmt.Errorf(
+				"input_vat_amount %s exceeds 30%% of the net line cost %s — unit_cost must be NET (VAT-exclusive)",
+				inputVatAmount.Decimal.StringFixed(2), net.StringFixed(2))
+		}
+	}
 	return entity.MaterialReceiptInsert{
 		MaterialId:     int(req.MaterialId),
 		Quantity:       qty,

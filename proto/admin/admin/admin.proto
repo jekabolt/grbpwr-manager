@@ -5502,7 +5502,7 @@ message GetProductionRunMaterialPlanResponse {
 message ReceiveMaterialStockRequest {
   int32 material_id = 1;
   google.type.Decimal quantity = 2; // in the material's unit, > 0
-  google.type.Decimal unit_cost = 3; // price per unit in `currency`; empty = uncosted receipt (average unchanged). Setting a cost requires costing:write.
+  google.type.Decimal unit_cost = 3; // NET (VAT-exclusive) price per unit in `currency`; empty = uncosted receipt (average unchanged). Setting a cost requires costing:write.
   string currency = 4; // ISO 4217
   string lot = 5; // supplier lot / roll (free text, not tracked by lot in v1)
   string supplier_doc = 6;
@@ -5511,7 +5511,9 @@ message ReceiveMaterialStockRequest {
   // input_vat_amount / input_vat_regime record this purchase receipt's recoverable input VAT (base
   // currency EUR) and its treatment, for the extended M1 posting rule (phase 2, wave 1). Both
   // optional; when either is set, both must be set (amount >= 0, regime one of
-  // wnt|import|domestic_pl|domestic_uk).
+  // wnt|import|domestic_pl|domestic_uk). unit_cost stays NET — do NOT also fold this VAT into it, or
+  // it is double-counted (inflated inventory/COGS AND a 2080 recovery); the server rejects an
+  // input_vat_amount above 30% of the net line cost as a likely gross unit_cost.
   google.type.Decimal input_vat_amount = 9;
   string input_vat_regime = 10; // wnt | import | domestic_pl | domestic_uk
 }
