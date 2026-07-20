@@ -87,6 +87,65 @@ const (
 	AcctEventOrderRefund AcctEventType = "order_refund"
 )
 
+// VatRegime classifies an order's VAT treatment (customer_order.vat_regime), resolved at posting from
+// the ship-from / ship-to countries and whether the buyer is B2B (see internal/accounting/vatregime.go
+// and docs/plan-accounting-phase2/01-wave1-vat.md §1.1). It drives which VAT rate (if any) the sale
+// posts and which revenue account (B2C vs B2B/wholesale) it credits. Stored as a plain string; the DB
+// CHECK (chk_customer_order_vat_regime, migration 0191) mirrors ValidVatRegimes.
+type VatRegime string
+
+const (
+	// VatRegimeOSS: EU B2C to a country other than PL — destination-rate VAT under the OSS scheme.
+	VatRegimeOSS VatRegime = "oss"
+	// VatRegimePLDomestic: domestic PL sale — Polish standard rate (23%).
+	VatRegimePLDomestic VatRegime = "pl_domestic"
+	// VatRegimeExport: non-EU B2C (incl. UK shipped from PL) or non-EU B2B — 0% VAT, no VAT line.
+	VatRegimeExport VatRegime = "export"
+	// VatRegimeWDT: EU B2B with a VAT id — intra-community supply, 0% reverse charge, no VAT line.
+	VatRegimeWDT VatRegime = "wdt"
+	// VatRegimeUKStockDomestic: cash / UK-stock popup sale — UK domestic rate (20%).
+	VatRegimeUKStockDomestic VatRegime = "uk_stock_domestic"
+	// VatRegimeNone: no regime resolved (fail-safe placeholder; never posts VAT).
+	VatRegimeNone VatRegime = "none"
+)
+
+// InputVatRegime classifies the input (purchase-side) VAT of a material receipt
+// (material_stock_movement.input_vat_regime), driving the extended M1 posting rule
+// (docs/plan-accounting-phase2/01-wave1-vat.md §1.4). Stored as a plain string; the DB CHECK
+// (chk_material_input_vat_regime, migration 0192) mirrors ValidInputVatRegimes.
+type InputVatRegime string
+
+const (
+	// InputVatRegimeWNT: intra-community acquisition (Art.33a) — net-zero self-charge Dr 2080 / Cr 2070.
+	InputVatRegimeWNT InputVatRegime = "wnt"
+	// InputVatRegimeImport: import (Art.33a) — net-zero self-charge Dr 2080 / Cr 2070.
+	InputVatRegimeImport InputVatRegime = "import"
+	// InputVatRegimeDomesticPL: domestic PL purchase — Dr 1110 NET + Dr 2080 VAT / Cr 2010 GROSS.
+	InputVatRegimeDomesticPL InputVatRegime = "domestic_pl"
+	// InputVatRegimeDomesticUK: domestic UK purchase — Dr 1110 NET + Dr 2080 VAT / Cr 2010 GROSS.
+	InputVatRegimeDomesticUK InputVatRegime = "domestic_uk"
+)
+
+// ValidVatRegimes is the storable set for customer_order.vat_regime — mirrored by the DB CHECK
+// (chk_customer_order_vat_regime, migration 0191) and asserted by migrationlint's enum-drift test.
+var ValidVatRegimes = map[VatRegime]bool{
+	VatRegimeOSS:             true,
+	VatRegimePLDomestic:      true,
+	VatRegimeExport:          true,
+	VatRegimeWDT:             true,
+	VatRegimeUKStockDomestic: true,
+	VatRegimeNone:            true,
+}
+
+// ValidInputVatRegimes is the storable set for material_stock_movement.input_vat_regime — mirrored by
+// the DB CHECK (chk_material_input_vat_regime, migration 0192) and asserted by the enum-drift test.
+var ValidInputVatRegimes = map[InputVatRegime]bool{
+	InputVatRegimeWNT:        true,
+	InputVatRegimeImport:     true,
+	InputVatRegimeDomesticPL: true,
+	InputVatRegimeDomesticUK: true,
+}
+
 // acct_account.statement is a plain string in the schema (not a distinct Go type — mirrors the
 // entity skeleton in docs/plan-accounting/01-db-schema.md): 'BS' (Balance Sheet) or 'PL' (Profit &
 // Loss).
@@ -355,7 +414,17 @@ type AcctOrderFacts struct {
 	FeeFixed          decimal.Decimal     `db:"-"`
 	ShipmentCost      decimal.NullDecimal `db:"shipment_cost"`
 	FreeShipping      sql.NullBool        `db:"free_shipping"`
-	Items             []AcctOrderItemFact `db:"-"`
+	// DestCountry is the ship-to country for VAT resolution: shipping address.country_code with a
+	// fallback to .country (07 §7.4.1). Empty / non-2-letter → export regime + caveat. Filled by the
+	// buyer→address JOIN in GetOrderFactsForPosting (phase 2, wave 1).
+	DestCountry string `db:"dest_country"`
+	// BuyerVatID is the B2B customer's VAT identifier (custom orders only); its presence makes the
+	// order B2B (wdt / 4310 wholesale revenue). NULL for storefront orders.
+	BuyerVatID sql.NullString `db:"buyer_vat_id"`
+	// VatRegime is the previously-snapshotted regime (customer_order.vat_regime), read back for
+	// reconciliation / debugging; the worker recomputes it each tick and does not trust this value.
+	VatRegime sql.NullString      `db:"vat_regime"`
+	Items     []AcctOrderItemFact `db:"-"`
 }
 
 // AcctMovementFacts is one material_stock_movement joined with its material name — the fact set for
@@ -557,4 +626,46 @@ type AcctReconciliation struct {
 	FinishedGoods     AcctReconBlock
 	Pending           AcctReconBlock
 	UnpostedMovements AcctReconBlock
+	// Vat reconciles the 2070 VAT-Payable ledger movement against the VAT the period's orders imply by
+	// regime (phase 2, wave 1). A pointer so pre-phase-2 callers/serialisers see it absent rather than
+	// a zero block; nil until GetReconciliation fills it.
+	Vat *AcctReconBlock
+}
+
+// =====================================================================================
+// VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5). Both are
+// SOURCE-TYPE-AGNOSTIC: they aggregate the 2070 VAT lines of order entries by customer_order.vat_regime
+// over the payment period, so they survive wave 2's prepayment split. Refunds net with a minus sign.
+// Numbers for the accountant's manual JPK_VAT / OSS filing; full XML is phase 3.
+// =====================================================================================
+
+// AcctVatReturnPL is the JPK_VAT monthly aggregate (filed by the 25th). Output VAT split by regime
+// (domestic PL, WNT self-charge, OSS shown for reference), input VAT by type, and the net payable.
+// Caveats surfaces per-entry caveats aggregated over the month.
+type AcctVatReturnPL struct {
+	Month               time.Time
+	OutputDomestic      decimal.Decimal
+	OutputWntSelfCharge decimal.Decimal
+	OssInfoTotal        decimal.Decimal
+	InputDomestic       decimal.Decimal
+	InputWnt            decimal.Decimal
+	InputImport         decimal.Decimal
+	NetPayable          decimal.Decimal
+	Caveats             []string
+}
+
+// AcctOssRow is one destination country's OSS B2C line: country, applied rate, net and VAT.
+type AcctOssRow struct {
+	Country string
+	RatePct decimal.Decimal
+	Net     decimal.Decimal
+	Vat     decimal.Decimal
+}
+
+// AcctOssReturn is the quarterly OSS aggregate: per-country B2C rows plus the quarter totals.
+type AcctOssReturn struct {
+	QuarterStart time.Time
+	Rows         []AcctOssRow
+	TotalNet     decimal.Decimal
+	TotalVat     decimal.Decimal
 }

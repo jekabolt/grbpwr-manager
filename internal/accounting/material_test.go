@@ -126,3 +126,73 @@ func TestBuildMaterialMovementEntry_Description(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "cotton twill — damage — water leak", e.Description)
 }
+
+// inputVAT sets the input-VAT fields on a receipt movement (V = 180.00 from movementFacts).
+func inputVAT(m entity.AcctMovementFacts, amount string, regime entity.InputVatRegime) entity.AcctMovementFacts {
+	m.InputVatAmount = nd(amount)
+	m.InputVatRegime = sql.NullString{String: string(regime), Valid: true}
+	return m
+}
+
+func TestBuildMaterialMovementEntry_InputVAT(t *testing.T) {
+	t.Run("domestic_pl: NET to 1110, VAT to 2080, GROSS to 2010", func(t *testing.T) {
+		m := inputVAT(movementFacts(entity.MaterialMovementReceipt), "41.40", entity.InputVatRegimeDomesticPL)
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assert.Equal(t, entity.AcctSourceMaterialReceipt, e.SourceType)
+		assertAmount(t, e, Acc1110, entity.AcctSideDebit, "180.00")
+		assertAmount(t, e, Acc2080, entity.AcctSideDebit, "41.40")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "221.40")
+		assert.False(t, e.HasCaveat)
+	})
+	t.Run("domestic_uk behaves like domestic_pl", func(t *testing.T) {
+		m := inputVAT(movementFacts(entity.MaterialMovementReceipt), "36.00", entity.InputVatRegimeDomesticUK)
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assertAmount(t, e, Acc2080, entity.AcctSideDebit, "36.00")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "216.00")
+	})
+	t.Run("wnt: net-zero self-charge (Dr 2080 / Cr 2070), material as plain M1", func(t *testing.T) {
+		m := inputVAT(movementFacts(entity.MaterialMovementReceipt), "41.40", entity.InputVatRegimeWNT)
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assertAmount(t, e, Acc1110, entity.AcctSideDebit, "180.00")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "180.00")
+		assertAmount(t, e, Acc2080, entity.AcctSideDebit, "41.40")
+		assertAmount(t, e, Acc2070, entity.AcctSideCredit, "41.40")
+	})
+	t.Run("import behaves like wnt", func(t *testing.T) {
+		m := inputVAT(movementFacts(entity.MaterialMovementReceipt), "10.00", entity.InputVatRegimeImport)
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assertAmount(t, e, Acc2070, entity.AcctSideCredit, "10.00")
+		assertAmount(t, e, Acc2080, entity.AcctSideDebit, "10.00")
+	})
+	t.Run("input VAT amount with an unknown regime posts plain receipt + caveat", func(t *testing.T) {
+		m := movementFacts(entity.MaterialMovementReceipt)
+		m.InputVatAmount = nd("41.40")
+		m.InputVatRegime = sql.NullString{} // NULL
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assertAmount(t, e, Acc1110, entity.AcctSideDebit, "180.00")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "180.00")
+		assert.False(t, hasLine(e, Acc2080, entity.AcctSideDebit))
+		assert.True(t, e.HasCaveat)
+		assert.Contains(t, e.Caveat.String, "input vat")
+	})
+	t.Run("input VAT on a non-receipt movement is ignored (plain rule)", func(t *testing.T) {
+		m := inputVAT(movementFacts(entity.MaterialMovementIssueProduction), "41.40", entity.InputVatRegimeWNT)
+		m.OnHandBefore, m.OnHandAfter = dec("10"), dec("0")
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "180.00")
+		assertAmount(t, e, Acc1110, entity.AcctSideCredit, "180.00")
+		assert.False(t, hasLine(e, Acc2080, entity.AcctSideDebit))
+	})
+}

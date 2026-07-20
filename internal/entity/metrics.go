@@ -838,10 +838,11 @@ type AlertThresholds struct {
 	// AcctPostingLagHours warns when the accounting module has unprocessed acct_event rows or
 	// material movements stuck behind the acctposting worker's checkpoint older than this many hours
 	// (accounting Step 8 / 07-worker-config.md "Health-алерты"). It is carried by the AlertSettings
-	// proto/DTO round-trip (field 7). Unlike ProductionRunStaleDays, <= 0 does NOT disable the check —
-	// it falls back to the default (24) — kept as defense because the admin screen does not set this
-	// field yet, so an un-updated client sends 0 on an unrelated settings save, which would otherwise
-	// silently zero it and go dark with no operator intent behind it (see metrics.Store.GetAcctPostingLag).
+	// proto/DTO round-trip (field 7) and is editable end-to-end via UpsertAlertSettings, the same as
+	// every other threshold in this struct. Unlike ProductionRunStaleDays, <= 0 does NOT disable the
+	// check — it falls back to the default (24) as a guard, so an unset/zeroed value (e.g. a client
+	// build that predates this field) never silently goes dark with no operator intent behind it (see
+	// metrics.Store.GetAcctPostingLag).
 	AcctPostingLagHours int
 }
 

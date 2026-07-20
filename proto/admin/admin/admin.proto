@@ -1738,6 +1738,22 @@ service AdminService {
   rpc GetAcctReconciliation(GetAcctReconciliationRequest) returns (GetAcctReconciliationResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/reconciliation"};
   }
+
+  // --- VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5) ---
+
+  // GetVatReturnPL returns the JPK_VAT monthly aggregate (filed by the 25th): output VAT by regime
+  // (domestic PL, WNT/import self-charge, OSS shown for reference only), input VAT by type, and the
+  // net payable. Source-type-agnostic and aggregated by the payment period, so it survives wave 2's
+  // prepayment split; refunds net with a minus sign.
+  rpc GetVatReturnPL(GetVatReturnPLRequest) returns (GetVatReturnPLResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/vat-return"};
+  }
+
+  // GetOssReturn returns the quarterly OSS aggregate: EU B2C sales (vat_regime=oss) broken down by
+  // destination country with the applied rate, net and VAT.
+  rpc GetOssReturn(GetOssReturnRequest) returns (GetOssReturnResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/oss-return"};
+  }
 }
 
 // DICITONARY
@@ -3164,6 +3180,11 @@ message CreateCustomOrderRequest {
   int32 shipment_carrier_id = 6;
   string currency = 7;
   google.type.Decimal shipment_cost = 8; // optional custom shipment cost
+  // buyer_vat_id is the B2B buyer's EU VAT identifier (optional; phase 2, wave 1). Its presence
+  // drives the wdt / reverse-charge VAT classification (intra-community supply, 0%) and 4310
+  // wholesale revenue instead of the B2C path. Format: 2-letter country prefix + 8..12 alphanumeric
+  // characters (e.g. DE123456789); free-form, VIES lookup is out of scope.
+  string buyer_vat_id = 9;
 }
 
 message CreateCustomOrderResponse {
@@ -5487,6 +5508,12 @@ message ReceiveMaterialStockRequest {
   string supplier_doc = 6;
   string occurred_at = 7; // YYYY-MM-DD; defaults to today
   string comment = 8;
+  // input_vat_amount / input_vat_regime record this purchase receipt's recoverable input VAT (base
+  // currency EUR) and its treatment, for the extended M1 posting rule (phase 2, wave 1). Both
+  // optional; when either is set, both must be set (amount >= 0, regime one of
+  // wnt|import|domestic_pl|domestic_uk).
+  google.type.Decimal input_vat_amount = 9;
+  string input_vat_regime = 10; // wnt | import | domestic_pl | domestic_uk
 }
 
 message ReceiveMaterialStockResponse {
@@ -6139,4 +6166,53 @@ message GetAcctReconciliationResponse {
   AcctReconBlock finished_goods = 5;
   AcctReconBlock pending = 6;
   AcctReconBlock unposted_movements = 7;
+  AcctReconBlock vat = 8; // phase 2 wave 1: 2070 ledger vs regime-classified order sums
+}
+
+// --- VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5).
+// Both reports are SOURCE-TYPE-AGNOSTIC: they aggregate the 2070 VAT ledger lines of order entries
+// by customer_order.vat_regime over the PAYMENT period, so they survive wave 2's prepayment split.
+// Refunds net with a minus sign. Numbers are for the accountant's manual JPK_VAT / OSS filing —
+// full XML export is phase 3. ---
+
+message GetVatReturnPLRequest {
+  // month: YYYY-MM-DD, any day within the target filing month (normalised to the 1st).
+  string month = 1;
+}
+
+// GetVatReturnPLResponse is the JPK_VAT monthly aggregate (filed by the 25th). Output VAT is split
+// by regime (domestic PL, WNT/import self-charge; OSS shown for reference only — OSS is filed via
+// GetOssReturn, not JPK, and is excluded from net_payable), input VAT is split by purchase type, and
+// net_payable is the resulting liability. Caveats aggregates the period's per-entry caveats.
+message GetVatReturnPLResponse {
+  string month = 1; // YYYY-MM-DD, normalised to the 1st of the month
+  google.type.Decimal output_domestic = 2; // pl_domestic sales output VAT (23%)
+  google.type.Decimal output_wnt_self_charge = 3; // WNT/import purchase self-charge output (Art.33a)
+  google.type.Decimal oss_info_total = 4; // OSS B2C output VAT, informational only — NOT in net_payable
+  google.type.Decimal input_domestic = 5; // recoverable input VAT on domestic_pl/domestic_uk purchases
+  google.type.Decimal input_wnt = 6; // recoverable input VAT on WNT purchases (nets against output_wnt_self_charge)
+  google.type.Decimal input_import = 7; // recoverable input VAT on import purchases (nets against output_wnt_self_charge)
+  google.type.Decimal net_payable = 8; // output_domestic + output_wnt_self_charge − input_domestic − input_wnt − input_import
+  repeated string caveats = 9;
+}
+
+message GetOssReturnRequest {
+  // quarter: YYYY-MM-DD, first day of the quarter (any day within the quarter is accepted and
+  // snapped to that quarter's first day — see dto.ParseAcctQuarterStart).
+  string quarter = 1;
+}
+
+// AcctOssRow is one destination country's OSS B2C line: country, applied rate, net taxable base and VAT.
+message AcctOssRow {
+  string country = 1; // ISO alpha-2 ship-to country
+  google.type.Decimal rate_pct = 2;
+  google.type.Decimal net = 3;
+  google.type.Decimal vat = 4;
+}
+
+message GetOssReturnResponse {
+  string quarter_start = 1; // YYYY-MM-DD, first day of the quarter
+  repeated AcctOssRow rows = 2;
+  google.type.Decimal total_net = 3;
+  google.type.Decimal total_vat = 4;
 }

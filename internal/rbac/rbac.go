@@ -274,7 +274,7 @@ var methodRequirements = map[string]Requirement{
 	// tech cards
 	"CreateTechCard":             wr(SectionTechCards),
 	"GenerateTechCardOperations": wr(SectionTechCards), // AI-assisted authoring (POST); tech-card write
-	"SuggestStyleNumber":         rd(SectionTechCards),  // Q1: propose the next style number for a season
+	"SuggestStyleNumber":         rd(SectionTechCards), // Q1: propose the next style number for a season
 	// Q5 role assignments + the lightweight admin picker (so a role-assigner needs tech_cards, not accounts).
 	"AssignTechCardRole":           wr(SectionTechCards),
 	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
@@ -300,8 +300,8 @@ var methodRequirements = map[string]Requirement{
 	"DeleteTechCardDevExpense":     wr(SectionTechCards),
 	"ListTechCardDevExpenses":      rd(SectionTechCards),
 	// style assembly bill: on-garment auxiliary components (labels/tags) — a PLM/style concern (WS7, §2.8)
-	"UpsertStyleAssembly": wr(SectionTechCards),
-	"ListStyleAssembly":   rd(SectionTechCards),
+	"UpsertStyleAssembly":  wr(SectionTechCards),
+	"ListStyleAssembly":    rd(SectionTechCards),
 	"GetStyleCostEstimate": rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":          wr(SectionProduction),
@@ -416,6 +416,8 @@ var methodRequirements = map[string]Requirement{
 	"GetBalanceSheet":        rd(SectionAccounting),
 	"GetAccountLedger":       rd(SectionAccounting),
 	"GetAcctReconciliation":  rd(SectionAccounting),
+	"GetVatReturnPL":         rd(SectionAccounting),
+	"GetOssReturn":           rd(SectionAccounting),
 }
 
 // allowlist is the set of admin methods any authenticated account may call

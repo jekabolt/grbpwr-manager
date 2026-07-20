@@ -617,7 +617,7 @@ func ConvertPbAcctLedgerFilter(req *pb_admin.GetAccountLedgerRequest) (code stri
 
 // ConvertAcctReconciliationToPb converts a reconciliation report to protobuf.
 func ConvertAcctReconciliationToPb(r entity.AcctReconciliation) *pb_admin.GetAcctReconciliationResponse {
-	return &pb_admin.GetAcctReconciliationResponse{
+	resp := &pb_admin.GetAcctReconciliationResponse{
 		Revenue:           convertAcctReconBlockToPb(r.Revenue),
 		Fees:              convertAcctReconBlockToPb(r.Fees),
 		Cogs:              convertAcctReconBlockToPb(r.COGS),
@@ -626,6 +626,12 @@ func ConvertAcctReconciliationToPb(r entity.AcctReconciliation) *pb_admin.GetAcc
 		Pending:           convertAcctReconBlockToPb(r.Pending),
 		UnpostedMovements: convertAcctReconBlockToPb(r.UnpostedMovements),
 	}
+	// Vat is a phase-2 wave-1 addition and a pointer on the entity (older reconciliations
+	// may not carry it); nil stays nil on the wire.
+	if r.Vat != nil {
+		resp.Vat = convertAcctReconBlockToPb(*r.Vat)
+	}
+	return resp
 }
 
 func convertAcctReconBlockToPb(b entity.AcctReconBlock) *pb_admin.AcctReconBlock {

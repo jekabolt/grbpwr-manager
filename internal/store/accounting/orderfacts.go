@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -22,14 +23,21 @@ const defaultScanBatch = 200
 // surfaces as sql.ErrNoRows (wrapped). This reads other domains' tables directly (the
 // internal/store/metrics precedent).
 func (s *Store) GetOrderFactsForPosting(ctx context.Context, orderUUID string) (*entity.AcctOrderFacts, error) {
+	// Phase 2, wave 1: the buyer→shipping-address JOIN supplies the VAT destination (country_code with
+	// a fallback to country, 07 §7.4.1) and buyer_vat_id / vat_regime are read from the order. LEFT
+	// joins keep a buyer-less / address-less order resolvable (dest_country '' → export + caveat).
 	facts, err := storeutil.QueryNamedOne[entity.AcctOrderFacts](ctx, s.DB, `
 		SELECT co.id, co.uuid, co.placed, co.total_price, co.currency,
 		       co.total_settled_base, co.payment_fee, co.vat_amount, co.vat_rate_pct,
+		       co.buyer_vat_id, co.vat_regime,
 		       p.payment_method_id,
-		       s.cost AS shipment_cost, s.free_shipping
+		       s.cost AS shipment_cost, s.free_shipping,
+		       COALESCE(NULLIF(a.country_code, ''), a.country, '') AS dest_country
 		FROM customer_order co
 		JOIN payment p ON p.order_id = co.id
 		LEFT JOIN shipment s ON s.order_id = co.id
+		LEFT JOIN buyer b ON b.order_id = co.id
+		LEFT JOIN address a ON a.id = b.shipping_address_id
 		WHERE co.uuid = :uuid`, map[string]any{"uuid": orderUUID})
 	if err != nil {
 		return nil, fmt.Errorf("accounting: get order facts %s: %w", orderUUID, err)
@@ -52,6 +60,54 @@ func (s *Store) GetOrderFactsForPosting(ctx context.Context, orderUUID string) (
 	}
 	facts.Items = items
 	return &facts, nil
+}
+
+// GetVatRatesFor returns the standard VAT rate (percent) for each of the given ISO alpha-2 country
+// codes present in vat_rate (phase 2, wave 1). Codes are upper-cased and non-2-letter ones dropped;
+// absent countries are simply not in the map, letting the worker skip an order with a "vat rate
+// missing" alert (07 §7.4.14) rather than post a zero rate. An empty input yields an empty map.
+func (s *Store) GetVatRatesFor(ctx context.Context, codes []string) (map[string]decimal.Decimal, error) {
+	out := make(map[string]decimal.Decimal, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	norm := make([]string, 0, len(codes))
+	for _, c := range codes {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if len(c) != 2 {
+			continue
+		}
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		norm = append(norm, c)
+	}
+	if len(norm) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		Code string          `db:"country_code"`
+		Rate decimal.Decimal `db:"rate_pct"`
+	}](ctx, s.DB, `SELECT country_code, rate_pct FROM vat_rate WHERE country_code IN (:codes)`,
+		map[string]any{"codes": norm})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: get vat rates %v: %w", norm, err)
+	}
+	for _, r := range rows {
+		out[strings.ToUpper(strings.TrimSpace(r.Code))] = r.Rate
+	}
+	return out, nil
+}
+
+// SetOrderVatRegime snapshots the resolved VAT regime onto an order (customer_order.vat_regime). The
+// worker calls it in the SAME tx as the order-sale entry (§1.3), so the regime and the posting commit
+// together. Idempotent — re-running with the same regime is a no-op UPDATE.
+func (s *Store) SetOrderVatRegime(ctx context.Context, orderUUID, regime string) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE customer_order SET vat_regime = :regime WHERE uuid = :uuid`,
+		map[string]any{"regime": regime, "uuid": orderUUID}); err != nil {
+		return fmt.Errorf("accounting: set order vat regime %s: %w", orderUUID, err)
+	}
+	return nil
 }
 
 // ListUnpostedMovements returns material_stock_movement rows (joined with the material name) with

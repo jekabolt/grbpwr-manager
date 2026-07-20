@@ -76,16 +76,48 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 	if err != nil {
 		return entity.MaterialReceiptInsert{}, fmt.Errorf("occurred_at: %w", err)
 	}
+	inputVatAmount, inputVatRegime, err := convertInputVat(req.GetInputVatAmount(), req.GetInputVatRegime())
+	if err != nil {
+		return entity.MaterialReceiptInsert{}, err
+	}
 	return entity.MaterialReceiptInsert{
-		MaterialId:  int(req.MaterialId),
-		Quantity:    qty,
-		UnitCost:    unitCost,
-		Currency:    currency,
-		Lot:         nullStringFromPb(req.GetLot()),
-		SupplierDoc: nullStringFromPb(req.GetSupplierDoc()),
-		OccurredAt:  occurredAt,
-		Comment:     nullStringFromPb(req.GetComment()),
+		MaterialId:     int(req.MaterialId),
+		Quantity:       qty,
+		UnitCost:       unitCost,
+		Currency:       currency,
+		Lot:            nullStringFromPb(req.GetLot()),
+		SupplierDoc:    nullStringFromPb(req.GetSupplierDoc()),
+		OccurredAt:     occurredAt,
+		Comment:        nullStringFromPb(req.GetComment()),
+		InputVatAmount: inputVatAmount,
+		InputVatRegime: inputVatRegime,
 	}, nil
+}
+
+// convertInputVat validates and converts a receipt's recoverable input VAT (phase 2, wave 1,
+// docs/plan-accounting-phase2/01-wave1-vat.md §1.4): amount must be non-negative, regime must be one
+// of entity.ValidInputVatRegimes, and the two are all-or-nothing — a receipt either records both or
+// neither (a VAT amount with no treatment, or a treatment with no amount, cannot be posted by the M1
+// rule, so it is rejected here rather than silently dropped).
+func convertInputVat(pbAmount *pb_decimal.Decimal, rawRegime string) (decimal.NullDecimal, sql.NullString, error) {
+	amount, err := nullDecimalFromPb(pbAmount)
+	if err != nil {
+		return decimal.NullDecimal{}, sql.NullString{}, fmt.Errorf("input_vat_amount: %w", err)
+	}
+	if amount.Valid && amount.Decimal.IsNegative() {
+		return decimal.NullDecimal{}, sql.NullString{}, fmt.Errorf("input_vat_amount must be non-negative")
+	}
+	regime := strings.ToLower(strings.TrimSpace(rawRegime))
+	if regime != "" && !entity.ValidInputVatRegimes[entity.InputVatRegime(regime)] {
+		return decimal.NullDecimal{}, sql.NullString{}, fmt.Errorf("invalid input_vat_regime %q", rawRegime)
+	}
+	if amount.Valid != (regime != "") {
+		return decimal.NullDecimal{}, sql.NullString{}, fmt.Errorf("input_vat_amount and input_vat_regime must be set together")
+	}
+	if regime == "" {
+		return decimal.NullDecimal{}, sql.NullString{}, nil
+	}
+	return amount, sql.NullString{String: regime, Valid: true}, nil
 }
 
 // nullInt32Value yields the int32 value of a NullInt32, or 0 when invalid.

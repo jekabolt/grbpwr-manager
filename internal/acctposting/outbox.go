@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"log/slog"
@@ -92,8 +93,52 @@ func (w *Worker) processOrderPaid(ctx context.Context, ev entity.AcctEvent) erro
 		return fmt.Errorf("order facts %s: %w", p.OrderUUID, err)
 	}
 
-	entry, buildErr := accounting.BuildOrderSaleEntry(*facts, ev.OccurredAt)
-	return w.postOrDefer(ctx, ev, entry, buildErr)
+	// Resolve the VAT regime + rate on the pool (not in a Tx). A missing rate for a VAT-bearing regime
+	// skips the event with an alert instead of posting a zero rate (07 §7.4.14).
+	vd, skipReason, err := w.resolveVatDecision(ctx, facts)
+	if err != nil {
+		return fmt.Errorf("resolve vat %s: %w", p.OrderUUID, err)
+	}
+	if skipReason != "" {
+		return w.skipEvent(ctx, ev.Id, skipReason)
+	}
+
+	entry, buildErr := accounting.BuildOrderSaleEntry(*facts, vd, ev.OccurredAt)
+	// The resolved regime is snapshotted onto the order in the same Tx that posts the sale (§1.3).
+	return w.postOrDefer(ctx, ev, entry, buildErr, facts.UUID, string(vd.Regime))
+}
+
+// resolveVatDecision assembles VatFacts from the order facts + the worker's ship-from origin, resolves
+// the regime, and looks up the regime's vat_rate. It returns a non-empty skipReason when a VAT-bearing
+// regime has no rate configured (07 §7.4.14); the error return is reserved for infrastructure failures.
+func (w *Worker) resolveVatDecision(ctx context.Context, facts *entity.AcctOrderFacts) (accounting.VatDecision, string, error) {
+	buyerVatID := ""
+	if facts.BuyerVatID.Valid {
+		buyerVatID = strings.TrimSpace(facts.BuyerVatID.String)
+	}
+	regime, caveats := accounting.ResolveVatRegime(accounting.VatFacts{
+		DestCountry:   facts.DestCountry,
+		OriginCountry: w.c.OriginCountry,
+		IsB2B:         buyerVatID != "",
+		BuyerVatID:    buyerVatID,
+		PaymentMethod: facts.PaymentMethodName,
+	})
+	vd := accounting.VatDecision{Regime: regime, Caveats: caveats}
+	if !accounting.RegimeHasVAT(regime) {
+		return vd, "", nil
+	}
+
+	rateCountry := accounting.RegimeRateCountry(regime, facts.DestCountry, w.c.OriginCountry)
+	rates, err := w.repo.Accounting().GetVatRatesFor(ctx, []string{rateCountry})
+	if err != nil {
+		return vd, "", fmt.Errorf("get vat rate %s: %w", rateCountry, err)
+	}
+	rate, ok := rates[strings.ToUpper(strings.TrimSpace(rateCountry))]
+	if !ok {
+		return vd, "vat rate missing for " + rateCountry, nil
+	}
+	vd.RatePct = rate
+	return vd, "", nil
 }
 
 // processOrderRefund posts an order refund (S2), but only once the sale (S1) for the order exists —
@@ -128,14 +173,15 @@ func (w *Worker) processOrderRefund(ctx context.Context, ev entity.AcctEvent) er
 	// items = facts.Items as-is; the builder takes the refunded quantity per line from
 	// p.RefundedByItem. source_key is the resolved "uuid:seq" assigned at enqueue time.
 	entry, buildErr := accounting.BuildOrderRefundEntry(*facts, p, facts.Items, ev.SourceKey, ev.OccurredAt)
-	return w.postOrDefer(ctx, ev, entry, buildErr)
+	// A refund does not (re)write vat_regime — the sale already snapshotted it.
+	return w.postOrDefer(ctx, ev, entry, buildErr, "", "")
 }
 
 // postOrDefer applies the builder outcome for an order event: sentinel waits defer the event,
 // sentinel skips mark it processed with a disposition note, an unexpected builder error backs it off,
 // and a clean build is written (entry + MarkEventProcessed) in one short Tx. It returns an error only
 // when a mark/Tx write itself fails (infrastructure).
-func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry entity.AcctJournalEntryInsert, buildErr error) error {
+func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry entity.AcctJournalEntryInsert, buildErr error, orderUUID, vatRegime string) error {
 	switch {
 	case errors.Is(buildErr, accounting.ErrNotReady):
 		// Stripe settlement not captured yet — defer; warn if it has waited too long (a stuck capture
@@ -170,11 +216,16 @@ func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry ent
 		return nil
 	}
 
-	// Clean build: create the entry and mark the event processed atomically (FAQ 7 — "entry exists,
-	// event pending" is impossible).
+	// Clean build: create the entry, snapshot the VAT regime onto the order (order_paid only), and mark
+	// the event processed — atomically (FAQ 7 — "entry exists, event pending" is impossible).
 	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		if _, _, e := rep.Accounting().CreateJournalEntry(ctx, entry); e != nil {
 			return e
+		}
+		if vatRegime != "" {
+			if e := rep.Accounting().SetOrderVatRegime(ctx, orderUUID, vatRegime); e != nil {
+				return e
+			}
 		}
 		return rep.Accounting().MarkEventProcessed(ctx, ev.Id)
 	})

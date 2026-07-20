@@ -302,12 +302,14 @@ func insertShipment(ctx context.Context, db dependency.DB, sc *entity.ShipmentCa
 	return nil
 }
 
-func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (int, string, error) {
+func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order, buyerVatID sql.NullString) (int, string, error) {
 	var err error
+	// buyer_vat_id is additive (phase 2, wave 1): the custom-order path passes a B2B VAT id, the
+	// storefront path passes an invalid NullString → NULL.
 	query := `
 	INSERT INTO customer_order
-	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id, vat_rate_pct, vat_amount)
-	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId, :vatRatePct, :vatAmount)
+	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id, vat_rate_pct, vat_amount, buyer_vat_id)
+	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId, :vatRatePct, :vatAmount, :buyerVatId)
 	`
 
 	orderRef, err := generateOrderReference()
@@ -335,6 +337,7 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order) (in
 		"gaClientId":    order.GAClientID,
 		"vatRatePct":    vatRatePct,
 		"vatAmount":     vatAmount,
+		"buyerVatId":    buyerVatID,
 	})
 	if err != nil {
 		return 0, "", fmt.Errorf("can't insert order: %w", err)
@@ -366,7 +369,7 @@ func (s *Store) insertOrderDetails(ctx context.Context, db dependency.DB, order 
 		Decimal: dto.RoundForCurrency(entity.VatFromInclusive(order.TotalPriceDecimal(), vatRate), order.Currency),
 		Valid:   true,
 	}
-	order.Id, order.UUID, err = insertOrder(ctx, db, order)
+	order.Id, order.UUID, err = insertOrder(ctx, db, order, orderNew.BuyerVatID)
 	if err != nil {
 		return fmt.Errorf("error while inserting final order: %w", err)
 	}
