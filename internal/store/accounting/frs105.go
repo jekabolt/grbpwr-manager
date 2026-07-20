@@ -20,8 +20,11 @@ type frs105Row struct {
 
 // GetFrs105Accounts re-groups the ledger into FRS 105 micro-entity line items: the Income Statement
 // over [from, to) (revenue/cogs/opex activity) and the Statement of Financial Position as at `to`
-// (cumulative asset/liability/equity balances). Figures are in the ledger base currency — a DRAFT; a
-// filing-ready UK Ltd set needs GBP conversion + isolation of the UK entity's transactions.
+// (cumulative asset/liability/equity balances). The entity is a single UK Ltd with EUR as its
+// functional currency (the Polish operations are part of it, not a separate company), so the
+// whole-ledger scope and the EUR figures are both correct for the accounts — a functional-currency
+// presentation is permitted for Companies House. It stays a DRAFT for completeness reasons (no tax /
+// depreciation accrual) and accountant review, surfaced in the caveats — not for currency or scope.
 //
 // The SoFP balances by construction: net assets = capital & reserves, where reserves include the
 // period's (not-yet-closed) profit, so Σassets − Σliabilities equals equity + profit for the year.
@@ -100,9 +103,15 @@ func (s *Store) GetFrs105Accounts(ctx context.Context, from, to time.Time) (*ent
 	r.TotalAssetsLessCurrentLiab = r.FixedAssets.Add(r.NetCurrentAssets)
 	r.NetAssets = r.TotalAssetsLessCurrentLiab.Sub(r.CreditorsAfterYear)
 
+	// The entity is a single UK Ltd whose functional currency is EUR (the Polish operations are part of
+	// it, not a separate company), so the whole-ledger scope and the EUR figures are both correct for a
+	// Companies House filing — a functional-currency presentation is permitted. The remaining gaps are
+	// completeness of the ledger, not structure: a UK CT600 tax computation is filed in GBP separately.
 	r.Caveats = []string{
-		"DRAFT — figures are in " + r.Currency + "; a UK Ltd FRS 105 filing must be in GBP",
-		"whole-company view — the single ledger does not isolate the UK entity's transactions",
+		"prepared in the functional currency (" + r.Currency + ") — permitted for Companies House; a UK CT600 tax computation is filed in GBP",
+		"pre-tax — no corporation-tax accrual is posted, so Tax is nil and Profit for the year is stated before tax",
+		"no depreciation charge is posted — fixed assets are shown at cost; set a depreciation policy if assets are held",
+		"draft for accountant finalisation and review",
 	}
 	return r, nil
 }

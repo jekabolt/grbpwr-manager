@@ -676,9 +676,10 @@ type AcctVatReturnPL struct {
 }
 
 // AcctFrs105Accounts is an FRS 105 micro-entity accounts DRAFT — the Income Statement + Statement of
-// Financial Position re-grouped from the ledger into micro-entity line items. Figures are in the
-// ledger base currency (EUR): a filing-ready set for a UK Ltd would need GBP conversion and isolation
-// of the UK entity's transactions (the single ledger mixes entities) — flagged, not done here.
+// Financial Position re-grouped from the ledger into micro-entity line items. The entity is a single
+// UK Ltd with EUR as its functional currency (the Polish operations are part of it), so the figures'
+// currency (EUR) and whole-ledger scope are correct; it is a draft only for completeness (no tax /
+// depreciation accrual) and accountant review — see Caveats.
 type AcctFrs105Accounts struct {
 	From time.Time
 	To   time.Time
