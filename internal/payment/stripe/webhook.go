@@ -2,13 +2,17 @@ package stripe
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 	"github.com/stripe/stripe-go/v79"
 	"github.com/stripe/stripe-go/v79/webhook"
 )
@@ -102,6 +106,20 @@ func (h *WebhookHandler) HandleStripeEvent(w http.ResponseWriter, r *http.Reques
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+	case stripe.EventTypeChargeDisputeCreated, stripe.EventTypeChargeDisputeClosed:
+		// A chargeback: enqueue an order_dispute accounting event (the acctposting worker posts it —
+		// created books Dr 4040 + Dr 6050 / Cr 1030, closed-won reverses). A transient enqueue failure is
+		// a 5xx so Stripe retries; a malformed payload or a dispute whose order can't be resolved is
+		// acknowledged (retrying won't help).
+		closed := event.Type == stripe.EventTypeChargeDisputeClosed
+		if err := proc.recordDisputeFromWebhook(ctx, event.Data.Raw, closed); err != nil {
+			slog.Default().ErrorContext(ctx, "stripe webhook: can't record dispute",
+				slog.String("event_id", event.ID),
+				slog.String("err", err.Error()),
+			)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	default:
 		slog.Default().DebugContext(ctx, "stripe webhook: ignoring event type", slog.String("type", string(event.Type)))
 	}
@@ -145,5 +163,81 @@ func (p *Processor) confirmPaymentFromWebhook(ctx context.Context, pi *stripe.Pa
 
 	// Free the in-process monitor goroutine promptly (best effort).
 	_ = p.CancelMonitorPayment(orderUUID)
+	return nil
+}
+
+// recordDisputeFromWebhook enqueues an order_dispute accounting event for a Stripe chargeback (phase 2,
+// wave 4 — §4.3). It resolves the order from the dispute's PaymentIntent, extracts the disputed amount and
+// dispute fee from the dispute's balance transactions (booked in the Stripe balance currency, EUR — the
+// account settlement currency), and hands both to the outbox. The acctposting worker builds the entry.
+// Producers always enqueue regardless of whether the posting worker is enabled (the queue drains from the
+// cutover); EnqueueEvent is idempotent on (event_type, source_key). Returns an error only for a transient
+// failure (so Stripe retries); a malformed payload or an unresolvable order is a benign ack.
+func (p *Processor) recordDisputeFromWebhook(ctx context.Context, raw json.RawMessage, closed bool) error {
+	var d stripe.Dispute
+	if err := json.Unmarshal(raw, &d); err != nil {
+		slog.Default().ErrorContext(ctx, "stripe webhook: can't parse dispute", slog.String("err", err.Error()))
+		return nil // a malformed payload will not parse on retry — ack it
+	}
+
+	piID := ""
+	if d.PaymentIntent != nil {
+		piID = d.PaymentIntent.ID
+	}
+	if piID == "" {
+		slog.Default().WarnContext(ctx, "stripe webhook: dispute has no payment_intent, ignoring",
+			slog.String("dispute_id", d.ID))
+		return nil
+	}
+
+	orderFull, err := p.rep.Order().GetOrderByPaymentIntentId(ctx, piID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			slog.Default().WarnContext(ctx, "stripe webhook: no order for disputed payment_intent, ignoring",
+				slog.String("dispute_id", d.ID), slog.String("payment_intent_id", piID))
+			return nil
+		}
+		return fmt.Errorf("get order for dispute %s: %w", d.ID, err)
+	}
+
+	// The disputed amount and dispute fee come from the balance transactions (the withdrawal from the
+	// Stripe balance): amount = Σ|amount| of the withdrawal legs, fee = Σ fee. Both are already in the
+	// account settlement currency (EUR). Empty balance transactions (Stripe has not withdrawn yet) leave
+	// amount 0 (the worker falls back to the order's settled base) and fee unknown.
+	feeBase, amountBase := decimal.Zero, decimal.Zero
+	for _, bt := range d.BalanceTransactions {
+		if bt == nil {
+			continue
+		}
+		cur := string(bt.Currency)
+		feeBase = feeBase.Add(AmountFromSmallestUnit(bt.Fee, cur))
+		if bt.Amount < 0 {
+			amountBase = amountBase.Add(AmountFromSmallestUnit(-bt.Amount, cur))
+		}
+	}
+
+	suffix, occurredAt := "open", time.Unix(d.Created, 0).UTC()
+	if closed {
+		suffix, occurredAt = "close", p.rep.Now().UTC()
+	}
+
+	payload := entity.AcctOrderDisputePayload{
+		OrderUUID:  orderFull.Order.UUID,
+		DisputeID:  d.ID,
+		Closed:     closed,
+		Won:        d.Status == stripe.DisputeStatusWon,
+		AmountBase: amountBase,
+		FeeBase:    feeBase,
+		FeeKnown:   len(d.BalanceTransactions) > 0,
+		Currency:   string(d.Currency),
+	}
+	if err := p.rep.Accounting().EnqueueEvent(ctx, entity.AcctEventInsert{
+		EventType:  entity.AcctEventOrderDispute,
+		SourceKey:  fmt.Sprintf("dispute:%s:%s", d.ID, suffix),
+		Payload:    payload,
+		OccurredAt: occurredAt,
+	}); err != nil {
+		return fmt.Errorf("enqueue dispute event %s: %w", d.ID, err)
+	}
 	return nil
 }

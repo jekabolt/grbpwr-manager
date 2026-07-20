@@ -75,8 +75,8 @@ const (
 	AcctSideDebit  AcctSide = "debit"
 	AcctSideCredit AcctSide = "credit"
 
-	AcctSourceOrderSale          AcctSourceType = "order_sale"
-	AcctSourceOrderRefund        AcctSourceType = "order_refund"
+	AcctSourceOrderSale   AcctSourceType = "order_sale"
+	AcctSourceOrderRefund AcctSourceType = "order_refund"
 	// Delivered-recognition chain (phase 2, wave 2 — migration 0195). order_prepayment posts at
 	// payment (money in, revenue parked on 2090); order_transit at shipped (1130→1140); and
 	// order_delivered_sale at delivered (2090→revenue, 1140→COGS). See docs/plan-accounting-phase2/
@@ -97,13 +97,19 @@ const (
 	// reposts (reverse + a versioned source_key), like opex_month.
 	AcctSourceShippingActual AcctSourceType = "shipping_actual"
 	AcctSourceDevExpense     AcctSourceType = "dev_expense"
-	AcctSourceManual         AcctSourceType = "manual"
-	AcctSourceReversal       AcctSourceType = "reversal"
+	// AcctSourceOrderDispute is a Stripe chargeback (phase 2, wave 4 — migration 0197). A created
+	// dispute posts Dr 4040 (disputed amount) + Dr 6050 (dispute fee) / Cr 1030 (money pulled from
+	// Stripe); a closed-won dispute is reversed. COGS is untouched (the goods were not returned). See
+	// docs/plan-accounting-phase2/04-wave4-money.md §4.3.
+	AcctSourceOrderDispute AcctSourceType = "order_dispute"
+	AcctSourceManual       AcctSourceType = "manual"
+	AcctSourceReversal     AcctSourceType = "reversal"
 
 	AcctEventOrderPaid      AcctEventType = "order_paid"
 	AcctEventOrderRefund    AcctEventType = "order_refund"
 	AcctEventOrderShipped   AcctEventType = "order_shipped"   // phase 2, wave 2 — triggers order_transit
 	AcctEventOrderDelivered AcctEventType = "order_delivered" // phase 2, wave 2 — triggers order_delivered_sale
+	AcctEventOrderDispute   AcctEventType = "order_dispute"   // phase 2, wave 4 — Stripe chargeback created/closed
 )
 
 // VatRegime classifies an order's VAT treatment (customer_order.vat_regime), resolved at posting from
@@ -199,6 +205,7 @@ var ValidAcctSourceTypes = map[AcctSourceType]bool{
 	AcctSourceOpexMonth:          true,
 	AcctSourceShippingActual:     true,
 	AcctSourceDevExpense:         true,
+	AcctSourceOrderDispute:       true,
 	AcctSourceManual:             true,
 	AcctSourceReversal:           true,
 }
@@ -229,6 +236,7 @@ var ValidAcctEventTypes = map[AcctEventType]bool{
 	AcctEventOrderRefund:    true,
 	AcctEventOrderShipped:   true,
 	AcctEventOrderDelivered: true,
+	AcctEventOrderDispute:   true,
 }
 
 // AcctAccount is a stored chart-of-accounts row (migration 0190 seeds 34 of these). IsSystem marks
@@ -282,7 +290,11 @@ type AcctJournalEntryInsert struct {
 	CreatedBy   string
 	HasCaveat   bool
 	Caveat      sql.NullString
-	Lines       []AcctJournalLineInsert
+	// SupplierID optionally tags the entry with the supplier it concerns (phase 2, wave 4 — AP by
+	// supplier): a material_receipt (M1) entry inherits its movement's supplier, and a manual AP payment
+	// (Dr 2010) is tagged so GetPayables can net the open balance per supplier. NULL for every other entry.
+	SupplierID sql.NullInt64
+	Lines      []AcctJournalLineInsert
 }
 
 // AcctJournalEntry is a stored journal-entry header (acct_journal_line rows are fetched
@@ -401,6 +413,24 @@ type AcctOrderShippedPayload struct {
 
 type AcctOrderDeliveredPayload struct {
 	OrderUUID string `json:"order_uuid"`
+}
+
+// AcctOrderDisputePayload is the outbox payload for an order_dispute event (phase 2, wave 4 — Stripe
+// chargebacks, §4.3). Unlike the thin order payloads it carries the money figures: the disputed amount
+// and the dispute fee come from Stripe (stripe.Dispute.BalanceTransactions), not customer_order, so the
+// worker cannot re-read them. Both figures are the account's settlement currency (EUR) — the balance
+// transactions are booked in the Stripe balance currency. Closed=false is the created event (open the
+// dispute); Closed=true is the closed event, Won distinguishing a reversal (won → the entry is reversed)
+// from a loss (lost → the money stays gone, the open entry stands).
+type AcctOrderDisputePayload struct {
+	OrderUUID  string          `json:"order_uuid"`
+	DisputeID  string          `json:"dispute_id"`
+	Closed     bool            `json:"closed"`      // false = created/opened, true = closed
+	Won        bool            `json:"won"`         // closed && resolved in the merchant's favour
+	AmountBase decimal.Decimal `json:"amount_base"` // EUR disputed amount (Σ|balance_txn.amount|); zero if unknown
+	FeeBase    decimal.Decimal `json:"fee_base"`    // EUR dispute fee (Σ balance_txn.fee); zero if unknown
+	FeeKnown   bool            `json:"fee_known"`   // balance transactions were present (fee is authoritative even at 0)
+	Currency   string          `json:"currency"`    // dispute presentment currency (description only)
 }
 
 // AcctOrderPostingState is the ledger's current posting state for one order, read by the worker before
@@ -751,6 +781,10 @@ type AcctReconciliation struct {
 	// Prepayments; nil until GetReconciliation fills it. Not yet surfaced on the wire (a UI follow-up,
 	// like Prepayments) — it is available to the worker's health checks.
 	Shipping *AcctReconBlock
+	// Bank reconciles the 1010 Cash-Bank ledger balance as of the period end against Σ posted+matched
+	// Revolut inbox lines (phase 2, wave 4 — §4.1). Pointer for the same reason as Vat/Prepayments/
+	// Shipping; nil until GetReconciliation fills it.
+	Bank *AcctReconBlock
 }
 
 // =====================================================================================
@@ -868,4 +902,120 @@ type AcctOssReturn struct {
 	Rows         []AcctOssRow
 	TotalNet     decimal.Decimal
 	TotalVat     decimal.Decimal
+}
+
+// =====================================================================================
+// Wave 4 — money side (docs/plan-accounting-phase2/04-wave4-money.md). The Revolut bank inbox (4.1)
+// and the AP/AR subledgers (4.4). Base currency is EUR; a non-EUR bank line posts via the phase-1
+// amount_src / currency_src FX mechanic.
+// =====================================================================================
+
+// AcctBankTxnState is the lifecycle of a parsed bank inbox line (acct_bank_txn.state — DB CHECK
+// chk_acct_bank_txn_state, migration 0197): unmatched (needs a decision), matched (linked but not posted
+// — reserved for auto-match), posted (a journal entry was created), ignored (deliberately not booked,
+// e.g. an internal EXCHANGE leg).
+type AcctBankTxnState string
+
+const (
+	AcctBankTxnUnmatched AcctBankTxnState = "unmatched"
+	AcctBankTxnMatched   AcctBankTxnState = "matched"
+	AcctBankTxnPosted    AcctBankTxnState = "posted"
+	AcctBankTxnIgnored   AcctBankTxnState = "ignored"
+)
+
+// ValidAcctBankTxnStates mirrors the DB CHECK chk_acct_bank_txn_state (migration 0197).
+var ValidAcctBankTxnStates = map[AcctBankTxnState]bool{
+	AcctBankTxnUnmatched: true,
+	AcctBankTxnMatched:   true,
+	AcctBankTxnPosted:    true,
+	AcctBankTxnIgnored:   true,
+}
+
+// AcctBankTxnInsert is one parsed bank statement line ready for the inbox (produced by a BankCsvParser).
+// Amount is SIGNED (negative = outflow); Currency is the payment currency (multi-currency Revolut). State
+// is the parser's default disposition (unmatched, or ignored for an internal EXCHANGE leg). Raw is the whole
+// CSV row as JSON. ExternalId is the dedup key (Revolut id + ':' + payment currency).
+type AcctBankTxnInsert struct {
+	Source           string
+	ExternalId       string
+	BookedAt         time.Time
+	Amount           decimal.Decimal
+	Currency         string
+	Fee              decimal.NullDecimal
+	Description      string
+	Counterparty     sql.NullString
+	State            AcctBankTxnState
+	SuggestedAccount sql.NullString
+	Raw              string
+}
+
+// AcctBankTxn is a stored bank inbox line (acct_bank_txn).
+type AcctBankTxn struct {
+	Id               int                 `db:"id"`
+	Source           string              `db:"source"`
+	ExternalId       string              `db:"external_id"`
+	BookedAt         time.Time           `db:"booked_at"`
+	Amount           decimal.Decimal     `db:"amount"`
+	Currency         string              `db:"currency"`
+	Fee              decimal.NullDecimal `db:"fee"`
+	Description      string              `db:"description"`
+	Counterparty     sql.NullString      `db:"counterparty"`
+	State            AcctBankTxnState    `db:"state"`
+	MatchedEntryId   sql.NullInt64       `db:"matched_entry_id"`
+	SuggestedAccount sql.NullString      `db:"suggested_account"`
+	CreatedAt        time.Time           `db:"created_at"`
+}
+
+// AcctBankImportResult is the outcome of ImportBankCsv: how many parsed lines were newly inserted vs
+// skipped as duplicates (a re-imported statement), and the total parsed.
+type AcctBankImportResult struct {
+	Parsed   int
+	Imported int
+	Skipped  int
+}
+
+// AcctBankRule is a substring→account suggestion (acct_bank_rule): a bank line whose counterparty or
+// description contains Pattern (case-insensitive) is suggested AccountCode at import.
+type AcctBankRule struct {
+	Id          int    `db:"id"`
+	Pattern     string `db:"pattern"`
+	AccountCode string `db:"account_code"`
+}
+
+// Supplier is a purchase-side counterparty (supplier table, migration 0197) — the AP catalog (4.4).
+type Supplier struct {
+	Id        int            `db:"id"`
+	Name      string         `db:"name"`
+	VatId     sql.NullString `db:"vat_id"`
+	Notes     sql.NullString `db:"notes"`
+	CreatedAt time.Time      `db:"created_at"`
+}
+
+// SupplierInsert is the writable payload of a new supplier.
+type SupplierInsert struct {
+	Name  string
+	VatId sql.NullString
+	Notes sql.NullString
+}
+
+// AcctPayableRow is one supplier's Accounts-Payable (2010) position (GetPayables, 4.4): Accrued is the Σ
+// 2010 credits of the supplier's tagged entries (material receipts owed), Paid the Σ 2010 debits (payments
+// booked against the supplier), Balance = Accrued − Paid (what is still owed). SupplierId 0 groups entries
+// with a 2010 movement but no supplier tag (legacy / untagged AP).
+type AcctPayableRow struct {
+	SupplierId   int             `db:"supplier_id"`
+	SupplierName string          `db:"supplier_name"`
+	Accrued      decimal.Decimal `db:"accrued"`
+	Paid         decimal.Decimal `db:"paid"`
+	Balance      decimal.Decimal `db:"-"`
+}
+
+// AcctReceivableRow is one bank-invoice order's Accounts-Receivable (1040) position (GetReceivables, 4.4):
+// Invoiced is the Σ 1040 debits for the order (revenue recognised against a receivable), Received the Σ
+// 1040 credits (payment received), Balance = Invoiced − Received (still outstanding). Ref is the order uuid.
+type AcctReceivableRow struct {
+	Ref      string          `db:"ref"`
+	Invoiced decimal.Decimal `db:"invoiced"`
+	Received decimal.Decimal `db:"received"`
+	Balance  decimal.Decimal `db:"-"`
 }

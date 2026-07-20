@@ -826,6 +826,40 @@ type (
 		// ListDevExpensesForPosting returns tech_card_dev_expense rows created on/after startDate, for the
 		// wave-3 6210 dev-expense pull (3.2) — a full reconcile scan (the table has no updated_at).
 		ListDevExpensesForPosting(ctx context.Context, startDate time.Time) ([]entity.AcctDevExpenseFacts, error)
+
+		// --- wave 4: Revolut bank inbox (4.1) ---
+		// ImportBankTxns deduplicates parsed inbox lines into acct_bank_txn (external_id UNIQUE), applies
+		// the acct_bank_rule substring suggestions, and reports parsed/imported/skipped counts.
+		ImportBankTxns(ctx context.Context, txns []entity.AcctBankTxnInsert) (entity.AcctBankImportResult, error)
+		// ListBankTxns returns inbox lines filtered by state ("" = all), newest first, bounded to limit.
+		ListBankTxns(ctx context.Context, state string, limit int) ([]entity.AcctBankTxn, error)
+		// GetBankTxn loads one inbox line (sql.ErrNoRows when absent).
+		GetBankTxn(ctx context.Context, id int) (*entity.AcctBankTxn, error)
+		// SetBankTxnPosted marks a line posted and links it to its journal entry (no-op if already posted).
+		SetBankTxnPosted(ctx context.Context, id, entryID int) error
+		// SetBankTxnIgnored marks a not-yet-posted line ignored.
+		SetBankTxnIgnored(ctx context.Context, id int) error
+		// ListBankRules returns the substring→account suggestion rules.
+		ListBankRules(ctx context.Context) ([]entity.AcctBankRule, error)
+		// CreateBankRule inserts a suggestion rule and returns its id.
+		CreateBankRule(ctx context.Context, pattern, accountCode string) (int, error)
+		// DeleteBankRule removes a suggestion rule (sql.ErrNoRows when absent).
+		DeleteBankRule(ctx context.Context, id int) error
+
+		// --- wave 4: Stripe disputes (4.3) ---
+		// GetEntryBySource returns the journal-entry header for a (source_type, source_key), sql.ErrNoRows
+		// when none — the dispute worker uses it to find the open dispute entry to reverse on a win.
+		GetEntryBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (*entity.AcctJournalEntry, error)
+
+		// --- wave 4: AP/AR subledgers (4.4) ---
+		// CreateSupplier inserts a supplier (unique name) and returns its id.
+		CreateSupplier(ctx context.Context, in entity.SupplierInsert) (int, error)
+		// ListSuppliers returns the supplier catalog, name-ordered.
+		ListSuppliers(ctx context.Context) ([]entity.Supplier, error)
+		// GetPayables returns the open Accounts-Payable (2010) position per supplier (accrued − paid).
+		GetPayables(ctx context.Context) ([]entity.AcctPayableRow, error)
+		// GetReceivables returns the open Accounts-Receivable (1040) position per bank-invoice order.
+		GetReceivables(ctx context.Context) ([]entity.AcctReceivableRow, error)
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.

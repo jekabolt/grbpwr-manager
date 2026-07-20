@@ -81,6 +81,8 @@ func (w *Worker) processEvent(ctx context.Context, ev entity.AcctEvent) error {
 		return w.processOrderShipped(ctx, ev)
 	case entity.AcctEventOrderDelivered:
 		return w.processOrderDelivered(ctx, ev)
+	case entity.AcctEventOrderDispute:
+		return w.processOrderDispute(ctx, ev)
 	case entity.AcctEventOrderRefund:
 		return w.processOrderRefund(ctx, ev)
 	default:
@@ -407,6 +409,83 @@ func (w *Worker) processOrderRefund(ctx context.Context, ev entity.AcctEvent) er
 	// A refund does not (re)write vat_regime — recognition already snapshotted it.
 	return w.postOrDefer(ctx, ev, []entity.AcctJournalEntryInsert{entry}, buildErr, "", "")
 }
+
+// processOrderDispute posts a Stripe chargeback (phase 2, wave 4 — §4.3). The opened event books the
+// dispute (Dr 4040 + Dr 6050 / Cr 1030); a closed-WON event reverses that entry (append-only), a
+// closed-LOST one leaves it standing. The disputed amount and fee come from the payload (Stripe balance
+// transactions, EUR); if Stripe did not report the amount, the order's settled base is used as a fallback.
+func (w *Worker) processOrderDispute(ctx context.Context, ev entity.AcctEvent) error {
+	var p entity.AcctOrderDisputePayload
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		return w.skipEvent(ctx, ev.Id, "invalid order_dispute payload: "+err.Error())
+	}
+
+	if p.Closed {
+		return w.processDisputeClosed(ctx, ev, p)
+	}
+
+	// Opened: book the chargeback. Prefer the balance-transaction EUR amount; fall back to the order's
+	// settled base when Stripe has not (yet) reported it.
+	amount := p.AmountBase
+	fallbackUsed := false
+	if amount.Sign() <= 0 {
+		facts, err := w.repo.Accounting().GetOrderFactsForPosting(ctx, p.OrderUUID)
+		switch {
+		case err == nil && facts.TotalSettledBase.Valid && facts.TotalSettledBase.Decimal.IsPositive():
+			amount = facts.TotalSettledBase.Decimal
+			fallbackUsed = true
+		case err == nil, errors.Is(err, sql.ErrNoRows):
+			// No usable amount from either source — degenerate; postOrDefer flags it for manual review.
+		default:
+			return fmt.Errorf("order facts %s: %w", p.OrderUUID, err)
+		}
+	}
+
+	entry, buildErr := accounting.BuildDisputeEntry(amount, p.FeeBase, p.FeeKnown, p.OrderUUID, p.DisputeID, p.Currency, ev.OccurredAt)
+	if buildErr == nil && fallbackUsed {
+		appendCaveat(&entry, "disputed amount taken from order settled base (Stripe amount unavailable)")
+	}
+	return w.postOrDefer(ctx, ev, []entity.AcctJournalEntryInsert{entry}, buildErr, "", "")
+}
+
+// processDisputeClosed disposes a closed chargeback: a loss leaves the open entry standing (the money
+// stayed gone); a win reverses it in one Tx with the event mark. A missing open entry (the dispute was
+// never booked — pre-start / no amount) or an already-reversed one is a benign skip.
+func (w *Worker) processDisputeClosed(ctx context.Context, ev entity.AcctEvent, p entity.AcctOrderDisputePayload) error {
+	if !p.Won {
+		return w.skipEvent(ctx, ev.Id, "dispute lost; open entry stands")
+	}
+	open, err := w.repo.Accounting().GetEntryBySource(ctx, entity.AcctSourceOrderDispute, "dispute:"+p.DisputeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return w.skipEvent(ctx, ev.Id, "dispute won but no open dispute entry to reverse")
+		}
+		return fmt.Errorf("get open dispute entry %s: %w", p.DisputeID, err)
+	}
+	if open.ReversedBy.Valid {
+		return w.skipEvent(ctx, ev.Id, "dispute won; open entry already reversed")
+	}
+	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if _, e := rep.Accounting().ReverseJournalEntry(ctx, open.Id, "dispute "+p.DisputeID+" won", createdBySystemUser); e != nil {
+			return e
+		}
+		return rep.Accounting().MarkEventProcessed(ctx, ev.Id)
+	})
+	if txErr != nil {
+		if errors.Is(txErr, entity.ErrAcctAlreadyReversed) {
+			return w.skipEvent(ctx, ev.Id, "dispute won; open entry already reversed")
+		}
+		// A closed period (reopen resolves it) or another posting error — retry with backoff.
+		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, txErr.Error(), eventBackoff(ev.Attempts)); err != nil {
+			return fmt.Errorf("mark dispute-close event %d failed: %w", ev.Id, err)
+		}
+		return nil
+	}
+	return nil
+}
+
+// createdBySystemUser stamps automated reversals (matches acct_journal_entry.created_by default).
+const createdBySystemUser = "system"
 
 // postOrDefer applies the builder outcome for an order event: sentinel waits defer the event, sentinel
 // skips mark it processed with a disposition note, an unexpected builder error backs it off, and a clean

@@ -242,11 +242,17 @@ func ConvertPbCreateJournalEntry(req *pb_admin.CreateJournalEntryRequest) (entit
 		}
 		lines = append(lines, ln)
 	}
-	return entity.AcctJournalEntryInsert{
+	ins := entity.AcctJournalEntryInsert{
 		OccurredAt:  occurredAt,
 		Description: description,
 		Lines:       lines,
-	}, nil
+	}
+	// Optional AP supplier tag (phase 2, wave 4): a manual 2010 payment against a supplier so GetPayables
+	// nets it. 0 = untagged.
+	if id := req.GetSupplierId(); id > 0 {
+		ins.SupplierID = sql.NullInt64{Int64: int64(id), Valid: true}
+	}
+	return ins, nil
 }
 
 // convertPbJournalLineInput validates one journal line: account_code is required, and the line
@@ -532,10 +538,10 @@ func ConvertAcctProfitLossToPb(pl entity.AcctProfitLoss) *pb_admin.GetProfitLoss
 		Months:   months,
 		Sections: sections,
 		Totals: &pb_admin.AcctPLTotals{
-			TotalRevenue:    pbDecimalListFromDecimals(pl.TotalRevenue),
-			NetCogs:         pbDecimalListFromDecimals(pl.NetCogs),
-			GrossProfit:     pbDecimalListFromDecimals(pl.GrossProfit),
-			GrossMarginPct:  pbDecimalListFromDecimals(pl.GrossMarginPct),
+			TotalRevenue:      pbDecimalListFromDecimals(pl.TotalRevenue),
+			NetCogs:           pbDecimalListFromDecimals(pl.NetCogs),
+			GrossProfit:       pbDecimalListFromDecimals(pl.GrossProfit),
+			GrossMarginPct:    pbDecimalListFromDecimals(pl.GrossMarginPct),
 			TotalOpex:         pbDecimalListFromDecimals(pl.TotalOpex),
 			OperatingProfit:   pbDecimalListFromDecimals(pl.OperatingProfit),
 			NetMarginPct:      pbDecimalListFromDecimals(pl.NetMarginPct),
@@ -691,6 +697,135 @@ func ConvertAcctEventsToPb(events []entity.AcctEvent) []*pb_admin.AcctEvent {
 			pb.LastError = e.LastError.String
 		}
 		out = append(out, pb)
+	}
+	return out
+}
+
+// =====================================================================================
+// Wave 4 — money side (docs/plan-accounting-phase2/04-wave4-money.md). Revolut bank inbox (4.1) and the
+// AP/AR subledgers (4.4).
+// =====================================================================================
+
+// ConvertAcctBankTxnToPb converts a stored bank inbox line to its proto shape.
+func ConvertAcctBankTxnToPb(t entity.AcctBankTxn) *pb_admin.AcctBankTxn {
+	pb := &pb_admin.AcctBankTxn{
+		Id:          int32(t.Id),
+		Source:      t.Source,
+		ExternalId:  t.ExternalId,
+		BookedAt:    t.BookedAt.Format(time.RFC3339),
+		Amount:      pbDecimalFromDecimal(t.Amount),
+		Currency:    t.Currency,
+		Fee:         pbDecimalFromNull(t.Fee),
+		Description: t.Description,
+		State:       string(t.State),
+		CreatedAt:   t.CreatedAt.Format(time.RFC3339),
+	}
+	if t.Counterparty.Valid {
+		pb.Counterparty = t.Counterparty.String
+	}
+	if t.MatchedEntryId.Valid {
+		pb.MatchedEntryId = int32(t.MatchedEntryId.Int64)
+	}
+	if t.SuggestedAccount.Valid {
+		pb.SuggestedAccount = t.SuggestedAccount.String
+	}
+	return pb
+}
+
+// ConvertAcctBankTxnListToPb converts a page of bank inbox lines.
+func ConvertAcctBankTxnListToPb(list []entity.AcctBankTxn) []*pb_admin.AcctBankTxn {
+	out := make([]*pb_admin.AcctBankTxn, 0, len(list))
+	for _, t := range list {
+		out = append(out, ConvertAcctBankTxnToPb(t))
+	}
+	return out
+}
+
+// ConvertAcctBankImportResultToPb converts an import result.
+func ConvertAcctBankImportResultToPb(r entity.AcctBankImportResult) *pb_admin.ImportBankCsvResponse {
+	return &pb_admin.ImportBankCsvResponse{
+		Parsed:   int32(r.Parsed),
+		Imported: int32(r.Imported),
+		Skipped:  int32(r.Skipped),
+	}
+}
+
+// ConvertAcctBankRuleToPb converts a suggestion rule.
+func ConvertAcctBankRuleToPb(r entity.AcctBankRule) *pb_admin.AcctBankRule {
+	return &pb_admin.AcctBankRule{Id: int32(r.Id), Pattern: r.Pattern, AccountCode: r.AccountCode}
+}
+
+// ConvertAcctBankRuleListToPb converts a rule list.
+func ConvertAcctBankRuleListToPb(list []entity.AcctBankRule) []*pb_admin.AcctBankRule {
+	out := make([]*pb_admin.AcctBankRule, 0, len(list))
+	for _, r := range list {
+		out = append(out, ConvertAcctBankRuleToPb(r))
+	}
+	return out
+}
+
+// ConvertSupplierToPb converts a supplier.
+func ConvertSupplierToPb(s entity.Supplier) *pb_admin.Supplier {
+	pb := &pb_admin.Supplier{Id: int32(s.Id), Name: s.Name, CreatedAt: s.CreatedAt.Format(time.RFC3339)}
+	if s.VatId.Valid {
+		pb.VatId = s.VatId.String
+	}
+	if s.Notes.Valid {
+		pb.Notes = s.Notes.String
+	}
+	return pb
+}
+
+// ConvertSupplierListToPb converts a supplier list.
+func ConvertSupplierListToPb(list []entity.Supplier) []*pb_admin.Supplier {
+	out := make([]*pb_admin.Supplier, 0, len(list))
+	for _, s := range list {
+		out = append(out, ConvertSupplierToPb(s))
+	}
+	return out
+}
+
+// ConvertPbCreateSupplier validates a create-supplier request into an insert payload.
+func ConvertPbCreateSupplier(req *pb_admin.CreateSupplierRequest) (entity.SupplierInsert, error) {
+	name := strings.TrimSpace(req.GetName())
+	if name == "" {
+		return entity.SupplierInsert{}, fmt.Errorf("name is required")
+	}
+	if len(name) > maxAcctName {
+		return entity.SupplierInsert{}, fmt.Errorf("name must be at most %d characters", maxAcctName)
+	}
+	return entity.SupplierInsert{
+		Name:  name,
+		VatId: nullStringFromPb(strings.TrimSpace(req.GetVatId())),
+		Notes: nullStringFromPb(strings.TrimSpace(req.GetNotes())),
+	}, nil
+}
+
+// ConvertAcctPayableListToPb converts the payables view.
+func ConvertAcctPayableListToPb(rows []entity.AcctPayableRow) []*pb_admin.AcctPayableRow {
+	out := make([]*pb_admin.AcctPayableRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &pb_admin.AcctPayableRow{
+			SupplierId:   int32(r.SupplierId),
+			SupplierName: r.SupplierName,
+			Accrued:      pbDecimalFromDecimal(r.Accrued),
+			Paid:         pbDecimalFromDecimal(r.Paid),
+			Balance:      pbDecimalFromDecimal(r.Balance),
+		})
+	}
+	return out
+}
+
+// ConvertAcctReceivableListToPb converts the receivables view.
+func ConvertAcctReceivableListToPb(rows []entity.AcctReceivableRow) []*pb_admin.AcctReceivableRow {
+	out := make([]*pb_admin.AcctReceivableRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &pb_admin.AcctReceivableRow{
+			Ref:      r.Ref,
+			Invoiced: pbDecimalFromDecimal(r.Invoiced),
+			Received: pbDecimalFromDecimal(r.Received),
+			Balance:  pbDecimalFromDecimal(r.Balance),
+		})
 	}
 	return out
 }

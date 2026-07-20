@@ -1807,6 +1807,86 @@ service AdminService {
   rpc GetFrs105Accounts(GetFrs105AccountsRequest) returns (GetFrs105AccountsResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/frs105"};
   }
+
+  // --- wave 4: Revolut bank inbox (docs/plan-accounting-phase2/04-wave4-money.md §4.1) ---
+
+  // ImportBankCsv parses a bank CSV export (Revolut) into the inbox, deduplicating on the bank
+  // transaction id + payment currency; a re-imported statement is a no-op for lines already present.
+  rpc ImportBankCsv(ImportBankCsvRequest) returns (ImportBankCsvResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/import"
+      body: "*"
+    };
+  }
+
+  // ListBankTxns returns inbox lines, optionally filtered by state (unmatched | matched | posted | ignored).
+  rpc ListBankTxns(ListBankTxnsRequest) returns (ListBankTxnsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/bank/txns"};
+  }
+
+  // PostBankTxn books a manual-provenance journal entry for an inbox line (Dr/Cr by the signed amount: an
+  // inflow Dr 1010 / Cr the chosen account, an outflow reversed) and marks the line posted. A non-EUR line
+  // posts via the costing-FX fold (amount_src + currency_src).
+  rpc PostBankTxn(PostBankTxnRequest) returns (PostBankTxnResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/post"
+      body: "*"
+    };
+  }
+
+  // IgnoreBankTxn marks an inbox line deliberately not booked (e.g. an internal EXCHANGE leg).
+  rpc IgnoreBankTxn(IgnoreBankTxnRequest) returns (IgnoreBankTxnResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/ignore"
+      body: "*"
+    };
+  }
+
+  // ListBankRules returns the substring→account suggestion rules applied at import.
+  rpc ListBankRules(ListBankRulesRequest) returns (ListBankRulesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/bank/rules"};
+  }
+
+  // CreateBankRule adds a substring→account suggestion rule.
+  rpc CreateBankRule(CreateBankRuleRequest) returns (CreateBankRuleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/rules"
+      body: "*"
+    };
+  }
+
+  // DeleteBankRule removes a suggestion rule.
+  rpc DeleteBankRule(DeleteBankRuleRequest) returns (DeleteBankRuleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/rules/delete"
+      body: "*"
+    };
+  }
+
+  // --- wave 4: AP/AR subledgers (docs/plan-accounting-phase2/04-wave4-money.md §4.4) ---
+
+  // CreateSupplier adds a purchase-side supplier to the catalog (unique name).
+  rpc CreateSupplier(CreateSupplierRequest) returns (CreateSupplierResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/suppliers"
+      body: "*"
+    };
+  }
+
+  // ListSuppliers returns the supplier catalog.
+  rpc ListSuppliers(ListSuppliersRequest) returns (ListSuppliersResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/suppliers"};
+  }
+
+  // GetPayables returns the open Accounts-Payable (2010) balance per supplier (accrued − paid).
+  rpc GetPayables(GetPayablesRequest) returns (GetPayablesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/payables"};
+  }
+
+  // GetReceivables returns the open Accounts-Receivable (1040) balance per bank-invoice order.
+  rpc GetReceivables(GetReceivablesRequest) returns (GetReceivablesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/receivables"};
+  }
 }
 
 // DICITONARY
@@ -5569,6 +5649,7 @@ message ReceiveMaterialStockRequest {
   // input_vat_amount above 30% of the net line cost as a likely gross unit_cost.
   google.type.Decimal input_vat_amount = 9;
   string input_vat_regime = 10; // wnt | import | domestic_pl | domestic_uk
+  int32 supplier_id = 11; // optional catalogued supplier (phase 2, wave 4 — AP subledger); 0 = none
 }
 
 message ReceiveMaterialStockResponse {
@@ -5959,6 +6040,7 @@ message CreateJournalEntryRequest {
   string occurred_at = 1; // YYYY-MM-DD; not more than 1 day in the future
   string description = 2;
   repeated AcctJournalLineInput lines = 3; // >= 2 lines, Σdebit == Σcredit (enforced by the store)
+  int32 supplier_id = 4; // optional AP tag (phase 2, wave 4): a manual 2010 payment against a supplier; 0 = none
 }
 
 // AcctJournalLine is a stored journal line (read side), joined to its account's code/name.
@@ -6254,6 +6336,133 @@ message GetAcctReconciliationResponse {
   AcctReconBlock pending = 6;
   AcctReconBlock unposted_movements = 7;
   AcctReconBlock vat = 8; // phase 2 wave 1: 2070 ledger vs regime-classified order sums
+}
+
+// --- wave 4: Revolut bank inbox (docs/plan-accounting-phase2/04-wave4-money.md §4.1) ---
+
+// AcctBankTxn is one parsed bank statement line in the inbox. amount is SIGNED (negative = outflow);
+// currency is the payment currency (Revolut is multi-currency). state is unmatched | matched | posted |
+// ignored; matched_entry_id (0 = none) links a posted line to its journal entry; suggested_account (empty
+// = none) is the rule/default hint prefilled in the post modal.
+message AcctBankTxn {
+  int32 id = 1;
+  string source = 2;
+  string external_id = 3;
+  string booked_at = 4; // RFC3339
+  google.type.Decimal amount = 5; // signed
+  string currency = 6;
+  google.type.Decimal fee = 7; // null when absent
+  string description = 8;
+  string counterparty = 9;
+  string state = 10;
+  int32 matched_entry_id = 11;
+  string suggested_account = 12;
+  string created_at = 13; // RFC3339
+}
+
+message ImportBankCsvRequest {
+  string source = 1; // parser to use; empty = revolut
+  string csv_text = 2; // the raw CSV export
+}
+message ImportBankCsvResponse {
+  int32 parsed = 1; // importable lines the parser produced
+  int32 imported = 2; // newly inserted
+  int32 skipped = 3; // duplicates of already-imported lines
+}
+
+message ListBankTxnsRequest {
+  string state = 1; // unmatched | matched | posted | ignored; empty = all
+  int32 limit = 2;
+}
+message ListBankTxnsResponse {
+  repeated AcctBankTxn txns = 1;
+}
+
+message PostBankTxnRequest {
+  int32 id = 1;
+  string account_code = 2; // the other side of the entry (1010 is the money leg)
+  string occurred_at = 3; // YYYY-MM-DD; empty = the line's booked date
+}
+message PostBankTxnResponse {
+  AcctJournalEntry entry = 1;
+}
+
+message IgnoreBankTxnRequest {
+  int32 id = 1;
+  string reason = 2; // advisory (logged, not persisted)
+}
+message IgnoreBankTxnResponse {}
+
+// AcctBankRule is a substring→account suggestion applied at import.
+message AcctBankRule {
+  int32 id = 1;
+  string pattern = 2;
+  string account_code = 3;
+}
+message ListBankRulesRequest {}
+message ListBankRulesResponse {
+  repeated AcctBankRule rules = 1;
+}
+message CreateBankRuleRequest {
+  string pattern = 1;
+  string account_code = 2;
+}
+message CreateBankRuleResponse {
+  AcctBankRule rule = 1;
+}
+message DeleteBankRuleRequest {
+  int32 id = 1;
+}
+message DeleteBankRuleResponse {}
+
+// --- wave 4: AP/AR subledgers (docs/plan-accounting-phase2/04-wave4-money.md §4.4) ---
+
+// Supplier is a purchase-side counterparty (the AP catalog).
+message Supplier {
+  int32 id = 1;
+  string name = 2;
+  string vat_id = 3;
+  string notes = 4;
+  string created_at = 5; // RFC3339
+}
+message CreateSupplierRequest {
+  string name = 1;
+  string vat_id = 2;
+  string notes = 3;
+}
+message CreateSupplierResponse {
+  Supplier supplier = 1;
+}
+message ListSuppliersRequest {}
+message ListSuppliersResponse {
+  repeated Supplier suppliers = 1;
+}
+
+// AcctPayableRow is one supplier's open Accounts-Payable (2010) position. supplier_id 0 = an untagged 2010
+// position (a 2010 entry with no supplier). balance = accrued − paid.
+message AcctPayableRow {
+  int32 supplier_id = 1;
+  string supplier_name = 2;
+  google.type.Decimal accrued = 3;
+  google.type.Decimal paid = 4;
+  google.type.Decimal balance = 5;
+}
+message GetPayablesRequest {}
+message GetPayablesResponse {
+  repeated AcctPayableRow rows = 1;
+}
+
+// AcctReceivableRow is one bank-invoice order's open Accounts-Receivable (1040) position. ref is the order
+// uuid; balance = invoiced − received.
+message AcctReceivableRow {
+  string ref = 1;
+  google.type.Decimal invoiced = 2;
+  google.type.Decimal received = 3;
+  google.type.Decimal balance = 4;
+}
+message GetReceivablesRequest {}
+message GetReceivablesResponse {
+  repeated AcctReceivableRow rows = 1;
 }
 
 // --- VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5).

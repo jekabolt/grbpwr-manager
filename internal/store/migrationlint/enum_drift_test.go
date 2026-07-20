@@ -225,11 +225,11 @@ func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
 
 // TestAcctEntrySourceTypeDBCheckNoDrift extends the drift test to the accounting journal entry's
 // source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK. The CHECK was defined in 0189 and
-// last extended by 0196 (phase 2, wave 3: +shipping_actual/dev_expense; 0195 added the wave-2 delivered
-// types) — the test reads the LATEST migration that redefines the full value set (07 §7.2 extend-CHECK
-// pattern), mirroring TestVatRegimeDBCheckNoDrift reading 0191.
+// last extended by 0197 (phase 2, wave 4: +order_dispute; 0196 added shipping_actual/dev_expense, 0195
+// the wave-2 delivered types) — the test reads the LATEST migration that redefines the full value set
+// (07 §7.2 extend-CHECK pattern), mirroring TestVatRegimeDBCheckNoDrift reading 0191.
 func TestAcctEntrySourceTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0196_accounting_wave3_pnl.sql")
+	content := readMigrationFile(t, "0197_accounting_wave4_money.sql")
 	dbValues := extractDBEnumValues(t, content, "source_type IN", 700)
 	assertSameSet(t, "AcctSourceType", dbValues, mapKeysAsStrings(entity.ValidAcctSourceTypes))
 }
@@ -252,10 +252,11 @@ func TestAcctLineSideDBCheckNoDrift(t *testing.T) {
 }
 
 // TestAcctEventTypeDBCheckNoDrift extends the drift test to the accounting outbox event type
-// (entity.AcctEventType/ValidAcctEventTypes) <-> DB CHECK. Defined in 0189, last extended by 0195
-// (phase 2, wave 2: +order_shipped/order_delivered) — read the latest migration that redefines the set.
+// (entity.AcctEventType/ValidAcctEventTypes) <-> DB CHECK. Defined in 0189, last extended by 0197
+// (phase 2, wave 4: +order_dispute; 0195 added order_shipped/order_delivered) — read the latest
+// migration that redefines the set.
 func TestAcctEventTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0195_accounting_delivered.sql")
+	content := readMigrationFile(t, "0197_accounting_wave4_money.sql")
 	dbValues := extractDBEnumValues(t, content, "event_type IN", 300)
 	assertSameSet(t, "AcctEventType", dbValues, mapKeysAsStrings(entity.ValidAcctEventTypes))
 }

@@ -182,8 +182,8 @@ func (s *Store) CreateJournalEntry(ctx context.Context, in entity.AcctJournalEnt
 	// 4) insert the entry header; on a duplicate (source_type, source_key) return the existing id.
 	entryID, err := storeutil.ExecNamedLastId(ctx, s.DB, `
 		INSERT INTO acct_journal_entry
-			(occurred_at, description, source_type, source_key, created_by, has_caveat, caveat)
-		VALUES (:occurred_at, :description, :source_type, :source_key, :created_by, :has_caveat, :caveat)`,
+			(occurred_at, description, source_type, source_key, created_by, has_caveat, caveat, supplier_id)
+		VALUES (:occurred_at, :description, :source_type, :source_key, :created_by, :has_caveat, :caveat, :supplier_id)`,
 		map[string]any{
 			"occurred_at": firstOfDayUTC(in.OccurredAt),
 			"description": in.Description,
@@ -192,6 +192,7 @@ func (s *Store) CreateJournalEntry(ctx context.Context, in entity.AcctJournalEnt
 			"created_by":  createdByOrSystem(in.CreatedBy),
 			"has_caveat":  in.HasCaveat,
 			"caveat":      nullableCaveat(in),
+			"supplier_id": in.SupplierID,
 		})
 	if err != nil {
 		if s.repo.IsErrUniqueViolation(err) {
