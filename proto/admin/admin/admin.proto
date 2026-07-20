@@ -6189,10 +6189,16 @@ message GetVatReturnPLResponse {
   google.type.Decimal output_domestic = 2; // pl_domestic sales output VAT (23%)
   google.type.Decimal output_wnt_self_charge = 3; // WNT/import purchase self-charge output (Art.33a)
   google.type.Decimal oss_info_total = 4; // OSS B2C output VAT, informational only — NOT in net_payable
-  google.type.Decimal input_domestic = 5; // recoverable input VAT on domestic_pl/domestic_uk purchases
+  google.type.Decimal input_domestic = 5; // recoverable input VAT on domestic_pl purchases
   google.type.Decimal input_wnt = 6; // recoverable input VAT on WNT purchases (nets against output_wnt_self_charge)
   google.type.Decimal input_import = 7; // recoverable input VAT on import purchases (nets against output_wnt_self_charge)
   google.type.Decimal net_payable = 8; // output_domestic + output_wnt_self_charge − input_domestic − input_wnt − input_import
+  // UK is a different jurisdiction — filed on the UK return, deliberately NOT in net_payable.
+  google.type.Decimal output_uk_stock_domestic = 10; // uk_stock_domestic output VAT (2070)
+  google.type.Decimal input_uk_domestic = 11; // domestic_uk purchase input VAT (recoverable in the UK)
+  // Zero-rated NET revenue bases JPK still declares (carry no VAT, not in net_payable).
+  google.type.Decimal net_wdt = 12; // intra-community supply net base (K_21)
+  google.type.Decimal net_export = 13; // export net base (K_22)
   repeated string caveats = 9;
 }
 

@@ -60,15 +60,19 @@ func ParseAcctQuarterStart(s string) (time.Time, error) {
 // ConvertAcctVatReturnPLToPb converts the JPK_VAT monthly aggregate to protobuf.
 func ConvertAcctVatReturnPLToPb(r entity.AcctVatReturnPL) *pb_admin.GetVatReturnPLResponse {
 	return &pb_admin.GetVatReturnPLResponse{
-		Month:               r.Month.Format(acctDateLayout),
-		OutputDomestic:      pbDecimalFromDecimal(r.OutputDomestic),
-		OutputWntSelfCharge: pbDecimalFromDecimal(r.OutputWntSelfCharge),
-		OssInfoTotal:        pbDecimalFromDecimal(r.OssInfoTotal),
-		InputDomestic:       pbDecimalFromDecimal(r.InputDomestic),
-		InputWnt:            pbDecimalFromDecimal(r.InputWnt),
-		InputImport:         pbDecimalFromDecimal(r.InputImport),
-		NetPayable:          pbDecimalFromDecimal(r.NetPayable),
-		Caveats:             r.Caveats,
+		Month:                 r.Month.Format(acctDateLayout),
+		OutputDomestic:        pbDecimalFromDecimal(r.OutputDomestic),
+		OutputWntSelfCharge:   pbDecimalFromDecimal(r.OutputWntSelfCharge),
+		OssInfoTotal:          pbDecimalFromDecimal(r.OssInfoTotal),
+		InputDomestic:         pbDecimalFromDecimal(r.InputDomestic),
+		InputWnt:              pbDecimalFromDecimal(r.InputWnt),
+		InputImport:           pbDecimalFromDecimal(r.InputImport),
+		NetPayable:            pbDecimalFromDecimal(r.NetPayable),
+		OutputUkStockDomestic: pbDecimalFromDecimal(r.OutputUkStockDomestic),
+		InputUkDomestic:       pbDecimalFromDecimal(r.InputUkDomestic),
+		NetWdt:                pbDecimalFromDecimal(r.NetWdt),
+		NetExport:             pbDecimalFromDecimal(r.NetExport),
+		Caveats:               r.Caveats,
 	}
 }
 
