@@ -1739,6 +1739,30 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/accounting/reports/reconciliation"};
   }
 
+  // --- posting-worker event review queue (phase 2 review follow-ups, H-1/H-2/B-5) ---
+
+  // ListAcctEventsNeedingReview lists outbox events that were terminally disposed but need an operator
+  // (a non-EUR/degenerate order needing a manual entry, an orphan refund, or a dead-letter). Their
+  // month cannot close until each is resolved or reprocessed.
+  rpc ListAcctEventsNeedingReview(ListAcctEventsNeedingReviewRequest) returns (ListAcctEventsNeedingReviewResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/events/needs-review"};
+  }
+  // ReprocessAcctEvent resets an event so the worker re-attempts it from scratch (used after the cause
+  // is fixed, e.g. the missing vat_rate was added).
+  rpc ReprocessAcctEvent(ReprocessAcctEventRequest) returns (ReprocessAcctEventResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/events/reprocess"
+      body: "*"
+    };
+  }
+  // ResolveAcctEvent clears the review flag on an event handled manually (a manual journal entry posted).
+  rpc ResolveAcctEvent(ResolveAcctEventRequest) returns (ResolveAcctEventResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/events/resolve"
+      body: "*"
+    };
+  }
+
   // --- VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5) ---
 
   // GetVatReturnPL returns the JPK_VAT monthly aggregate (filed by the 25th): output VAT by regime
@@ -6005,6 +6029,33 @@ message ReopenAcctPeriodRequest {
 }
 
 message ReopenAcctPeriodResponse {}
+
+// AcctEvent is one posting-outbox event's disposition (the internal JSON payload is omitted).
+message AcctEvent {
+  int64 id = 1;
+  string event_type = 2; // order_paid | order_refund
+  string source_key = 3; // order uuid | uuid:refund-seq
+  string occurred_at = 4; // RFC3339
+  string created_at = 5; // RFC3339
+  string processed_at = 6; // RFC3339; empty while still pending
+  int32 attempts = 7;
+  string last_error = 8; // disposition / skip reason
+  bool needs_review = 9;
+}
+message ListAcctEventsNeedingReviewRequest {
+  int32 limit = 1; // default 50
+}
+message ListAcctEventsNeedingReviewResponse {
+  repeated AcctEvent events = 1;
+}
+message ReprocessAcctEventRequest {
+  int64 id = 1;
+}
+message ReprocessAcctEventResponse {}
+message ResolveAcctEventRequest {
+  int64 id = 1;
+}
+message ResolveAcctEventResponse {}
 
 // --- reports (docs/plan-accounting/06-reports.md) ---
 

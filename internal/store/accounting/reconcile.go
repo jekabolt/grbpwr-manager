@@ -129,6 +129,13 @@ func (s *Store) accountBalanceBefore(ctx context.Context, code string, before ti
 // period's confirmed orders (G − VAT share, where G = total_settled_base, or total_price for a
 // non-Stripe EUR order). Items are confirmed orders in the period with no order_sale entry, labelled
 // with the outbox last_error (the skip / stuck reason).
+//
+// C-4: the operational side subtracts the sale-time vat_amount SNAPSHOT (co.vat_amount, the 0094
+// address-based backfill), while the ledger NET reflects the RESOLVED REGIME VAT (phase-2 wave 1). For
+// an order whose regime differs from that snapshot — cash / uk_stock_domestic (20% vs a 23% address
+// snapshot), or wdt / export (0% vs a non-zero snapshot) — a small delta here is EXPECTED and advisory,
+// NOT a ledger error, and this block is not a hard alert. (A fully drift-free recon would recompute the
+// operational VAT from vat_regime + vat_rate, which re-derives the posting; deferred.)
 func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, toT time.Time, statusIDs []int) (entity.AcctReconBlock, error) {
 	// 4310 (B2B / wholesale revenue) belongs here: a B2B sale credits net revenue to 4310, and the
 	// operational side below counts every confirmed order's recognised revenue regardless of channel —

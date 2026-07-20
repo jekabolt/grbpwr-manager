@@ -21,6 +21,14 @@ import (
 // wait, not exponential: the fact is expected to become ready soon.
 const settledRetryInterval = 5 * time.Minute
 
+// maxDeadLetterAttempts / maxOrphanRefundAttempts bound the retry/defer loops so an event that will
+// never post — a deterministic build/post bug (B-5) or a refund whose sale never posts (H-2) — is
+// flagged needs_review after the cap instead of retrying forever and soft-locking ClosePeriod.
+const (
+	maxDeadLetterAttempts   = 12
+	maxOrphanRefundAttempts = 24
+)
+
 // eventBackoff paces the retry of an event that hit an unexpected posting error: min(1m * 2^attempts,
 // 6h). attempts is the count BEFORE this failure (MarkEventFailed increments it).
 func eventBackoff(attempts int) time.Duration {
@@ -100,7 +108,13 @@ func (w *Worker) processOrderPaid(ctx context.Context, ev entity.AcctEvent) erro
 		return fmt.Errorf("resolve vat %s: %w", p.OrderUUID, err)
 	}
 	if skipReason != "" {
-		return w.skipEvent(ctx, ev.Id, skipReason)
+		// H-1: a missing/non-positive vat_rate is RECOVERABLE (the operator adds the rate) — defer
+		// (retryable) instead of a terminal skip, so the order stays pending and blocks ClosePeriod
+		// (gate #2) rather than closing the month with a silent, invisible revenue hole.
+		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, skipReason, settledRetryInterval); err != nil {
+			return fmt.Errorf("defer vat-rate-missing event %d: %w", ev.Id, err)
+		}
+		return nil
 	}
 
 	entry, buildErr := accounting.BuildOrderSaleEntry(*facts, vd, ev.OccurredAt)
@@ -182,6 +196,12 @@ func (w *Worker) processOrderRefund(ctx context.Context, ev entity.AcctEvent) er
 		return fmt.Errorf("check sale posted %s: %w", p.OrderUUID, err)
 	}
 	if !exists {
+		// H-2: a refund whose sale is not posted yet defers — but a sale that will NEVER post
+		// (pre-cutover / non-EUR / needs-review) would defer forever and soft-lock close. After the cap,
+		// flag it for a manual entry instead of deferring indefinitely.
+		if ev.Attempts >= maxOrphanRefundAttempts {
+			return w.needsReview(ctx, ev.Id, "orphan refund: sale not posted, manual entry required")
+		}
 		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, "awaiting sale posting", settledRetryInterval); err != nil {
 			return fmt.Errorf("defer refund event %d: %w", ev.Id, err)
 		}
@@ -239,14 +259,20 @@ func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry ent
 		return nil
 
 	case errors.Is(buildErr, accounting.ErrSkipNonEUR):
-		return w.skipEvent(ctx, ev.Id, "non-eur non-stripe order, manual entry required")
+		// H-1: cannot auto-post (needs a manual entry) — flag for review (visible + blocks close)
+		// instead of a silent terminal skip.
+		return w.needsReview(ctx, ev.Id, "non-eur non-stripe order, manual entry required")
 
 	case errors.Is(buildErr, accounting.ErrDegenerateAmounts):
-		return w.skipEvent(ctx, ev.Id, "degenerate amounts")
+		return w.needsReview(ctx, ev.Id, "degenerate amounts, manual entry required")
 
 	case buildErr != nil:
-		// Unexpected builder error (a bug): record it on the event with exponential backoff so it is
-		// retried and visible, without failing the whole tick.
+		// Unexpected builder error (a bug): retry with exponential backoff so it is visible without
+		// failing the tick. B-5: a deterministic bug that never succeeds would retry forever and block
+		// close, so after the cap flag it for review (dead-letter) instead.
+		if ev.Attempts >= maxDeadLetterAttempts {
+			return w.needsReview(ctx, ev.Id, "dead-letter (build): "+buildErr.Error())
+		}
 		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, buildErr.Error(), eventBackoff(ev.Attempts)); err != nil {
 			return fmt.Errorf("mark event %d failed: %w", ev.Id, err)
 		}
@@ -273,7 +299,11 @@ func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry ent
 	if txErr != nil {
 		// A deterministic posting error (e.g. ErrAcctPeriodClosed on a late event — FAQ 12) is recorded
 		// on the event to retry with backoff; if MarkEventFailed ALSO fails, that is infrastructure and
-		// fails the tick.
+		// fails the tick. B-5: cap the retries so a permanent error dead-letters (flagged for review)
+		// instead of blocking close forever — EXCEPT ErrAcctPeriodClosed, which clears on a reopen.
+		if !errors.Is(txErr, entity.ErrAcctPeriodClosed) && ev.Attempts >= maxDeadLetterAttempts {
+			return w.needsReview(ctx, ev.Id, "dead-letter (post): "+txErr.Error())
+		}
 		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, txErr.Error(), eventBackoff(ev.Attempts)); err != nil {
 			return fmt.Errorf("mark event %d failed after tx: %w", ev.Id, err)
 		}
@@ -295,6 +325,17 @@ func (w *Worker) skipEvent(ctx context.Context, id int64, reason string) error {
 	}
 	if err := w.repo.Accounting().MarkEventProcessed(ctx, id); err != nil {
 		return fmt.Errorf("mark event %d processed: %w", id, err)
+	}
+	return nil
+}
+
+// needsReview terminally disposes an event that cannot post automatically and flags it for an operator
+// (H-1 manual entry, H-2 orphan refund, B-5 dead-letter): MarkEventNeedsReview sets processed_at (out
+// of the pending window, retries stop) + needs_review + the reason. ClosePeriod blocks the event's
+// month until it is reprocessed (after the cause is fixed) or resolved (posted manually).
+func (w *Worker) needsReview(ctx context.Context, id int64, reason string) error {
+	if err := w.repo.Accounting().MarkEventNeedsReview(ctx, id, reason); err != nil {
+		return fmt.Errorf("flag event %d for review: %w", id, err)
 	}
 	return nil
 }

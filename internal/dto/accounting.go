@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -38,6 +39,11 @@ const (
 	maxAcctDescription = 512 // acct_journal_entry.description VARCHAR(512)
 	maxAcctNote        = 255 // acct_journal_line.note VARCHAR(255)
 	maxAcctCurrencySrc = 4   // acct_journal_line.currency_src VARCHAR(4) — precedent: USDT (0185)
+	// maxAcctJournalLines caps a single manual entry's line count (D-4). The store inserts the lines
+	// in one bulk statement; a very large array would otherwise blow MySQL's ~65535 placeholder limit
+	// and surface as an opaque driver error instead of a clean InvalidArgument. 1000 lines is far more
+	// than any hand-posted entry needs while staying well under the placeholder ceiling.
+	maxAcctJournalLines = 1000
 )
 
 // validAcctSections / validAcctStatements mirror the acct_account CHECK constraints
@@ -225,6 +231,9 @@ func ConvertPbCreateJournalEntry(req *pb_admin.CreateJournalEntryRequest) (entit
 	if len(req.GetLines()) < 2 {
 		return entity.AcctJournalEntryInsert{}, fmt.Errorf("a journal entry needs at least 2 lines, got %d", len(req.GetLines()))
 	}
+	if len(req.GetLines()) > maxAcctJournalLines {
+		return entity.AcctJournalEntryInsert{}, fmt.Errorf("a journal entry has at most %d lines, got %d", maxAcctJournalLines, len(req.GetLines()))
+	}
 	lines := make([]entity.AcctJournalLineInsert, 0, len(req.GetLines()))
 	for i, l := range req.GetLines() {
 		ln, err := convertPbJournalLineInput(l)
@@ -328,16 +337,26 @@ func acctLineNote(s string) (sql.NullString, error) {
 	return sql.NullString{String: n, Valid: true}, nil
 }
 
-// FoldJournalLineAmountToBase converts a manual journal line's amount_src/currency_src into the
-// base currency (EUR) via fx, mirroring FoldOpexLinesToBase / FoldProductionRunCostsToBase. ok is
-// false when the currency has no rate — the caller (apisrv) must reject with InvalidArgument
-// (09-implementation-notes.md FAQ 16: "add <CCY> costing fx rate first").
-func FoldJournalLineAmountToBase(fx CostingFx, amountSrc decimal.Decimal, currencySrc string) (decimal.Decimal, bool) {
+// ErrNoFxRate is returned by FoldJournalLineAmountToBase when the source currency has no costing FX
+// rate; the caller (apisrv) maps it to InvalidArgument ("add <CCY> costing fx rate first").
+var ErrNoFxRate = errors.New("no costing fx rate")
+
+// FoldJournalLineAmountToBase converts a manual journal line's amount_src/currency_src into the base
+// currency (EUR) via fx, mirroring FoldOpexLinesToBase / FoldProductionRunCostsToBase. It returns
+// ErrNoFxRate when the currency has no rate. D-3: an amount_src within DECIMAL(12,2) can exceed that
+// column bound once folded to base (rate > 1), so the folded result is re-validated here and an
+// out-of-range fold is returned as an error rather than overflowing the store as an opaque Internal;
+// the caller maps both errors to InvalidArgument.
+func FoldJournalLineAmountToBase(fx CostingFx, amountSrc decimal.Decimal, currencySrc string) (decimal.Decimal, error) {
 	base, ok := fx.toBase(amountSrc, currencySrc)
 	if !ok {
-		return decimal.Decimal{}, false
+		return decimal.Decimal{}, ErrNoFxRate
 	}
-	return roundMoney(base), true
+	base = roundMoney(base)
+	if base.Abs().GreaterThanOrEqual(decimal.NewFromInt(costLimit)) {
+		return decimal.Decimal{}, fmt.Errorf("folded amount %s exceeds the maximum of %d", base, costLimit)
+	}
+	return base, nil
 }
 
 // ConvertAcctJournalLineToPb converts one stored journal line (with its joined account code/name).
@@ -647,4 +666,29 @@ func convertAcctReconBlockToPb(b entity.AcctReconBlock) *pb_admin.AcctReconBlock
 		Items:       items,
 		TotalCount:  int32(b.TotalCount),
 	}
+}
+
+// ConvertAcctEventsToPb converts posting-outbox events (disposition view; the internal JSON payload is
+// omitted) to protobuf. Times are RFC3339; processed_at is empty while pending (H-1/H-2/B-5 queue).
+func ConvertAcctEventsToPb(events []entity.AcctEvent) []*pb_admin.AcctEvent {
+	out := make([]*pb_admin.AcctEvent, 0, len(events))
+	for _, e := range events {
+		pb := &pb_admin.AcctEvent{
+			Id:          e.Id,
+			EventType:   string(e.EventType),
+			SourceKey:   e.SourceKey,
+			OccurredAt:  e.OccurredAt.Format(time.RFC3339),
+			CreatedAt:   e.CreatedAt.Format(time.RFC3339),
+			Attempts:    int32(e.Attempts),
+			NeedsReview: e.NeedsReview,
+		}
+		if e.ProcessedAt.Valid {
+			pb.ProcessedAt = e.ProcessedAt.Time.Format(time.RFC3339)
+		}
+		if e.LastError.Valid {
+			pb.LastError = e.LastError.String
+		}
+		out = append(out, pb)
+	}
+	return out
 }

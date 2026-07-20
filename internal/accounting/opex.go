@@ -18,8 +18,12 @@ import (
 // source_key is 'YYYY-MM', or 'YYYY-MM:vN' when version > 1 (a repost supersedes the prior version
 // — the worker computes the version). occurred_at is the last day of the month. An unknown category
 // is booked to 6390 with a caveat; per-category uncosted (NULL-base) line labels are echoed into
-// caveats. An empty / all-zero month posts nothing (ErrSkipEmpty) — the worker reverses any prior
-// version instead.
+// caveats on the posted entry. A month with no positive lines posts nothing (ErrSkipEmpty) and the
+// worker reverses any prior version instead.
+//
+// A-5: note that a month whose lines are ALL uncosted (caveats collected but no positive amount to
+// post) also takes the ErrSkipEmpty path, so those caveat labels are NOT surfaced here — there is no
+// entry to carry them. Such a month is only visible via the reconciliation's unposted view.
 func BuildOpexMonthEntry(month time.Time, sums []entity.AcctOpexCategorySum, version int) (entity.AcctJournalEntryInsert, error) {
 	var caveats []string
 	var lines []entity.AcctJournalLineInsert

@@ -28,10 +28,13 @@ var buyerVatIDPattern = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{8,12}$`)
 
 // convertBuyerVatID validates and normalises CreateCustomOrderRequest.buyer_vat_id: empty is valid
 // (a B2C custom order — BuyerVatID stays NULL); non-empty must match buyerVatIDPattern once
-// trimmed and upper-cased, else InvalidArgument (surfaced by the caller). Its presence is what makes
-// an order B2B downstream (wdt / 4310 wholesale revenue — see entity.OrderNew.BuyerVatID).
+// whitespace-stripped and upper-cased, else InvalidArgument (surfaced by the caller). Its presence is
+// what makes an order B2B downstream (wdt / 4310 wholesale revenue — see entity.OrderNew.BuyerVatID).
+//
+// D-6: ALL whitespace is removed (not merely trimmed) before matching, so an operator pasting an id
+// with internal spaces — "DE 123 456 789" — normalises to "DE123456789" instead of being rejected.
 func convertBuyerVatID(raw string) (sql.NullString, error) {
-	s := strings.ToUpper(strings.TrimSpace(raw))
+	s := strings.ToUpper(strings.Join(strings.Fields(raw), ""))
 	if s == "" {
 		return sql.NullString{}, nil
 	}

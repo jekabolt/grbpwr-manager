@@ -763,6 +763,17 @@ type (
 		MarkEventProcessed(ctx context.Context, id int64) error
 		// MarkEventFailed bumps attempts, records errMsg and sets next_retry_at = NOW() + retryAfter.
 		MarkEventFailed(ctx context.Context, id int64, errMsg string, retryAfter time.Duration) error
+		// MarkEventNeedsReview terminally disposes an event (processed) but flags it needs_review so
+		// ClosePeriod blocks the month until an operator clears it (H-1/H-2/B-5).
+		MarkEventNeedsReview(ctx context.Context, id int64, reason string) error
+		// ReprocessAcctEvent resets an event (clears processed/needs_review/attempts/backoff) to retry.
+		ReprocessAcctEvent(ctx context.Context, id int64) error
+		// ResolveAcctEvent clears needs_review (handled manually), keeping the processed/audit record.
+		ResolveAcctEvent(ctx context.Context, id int64) error
+		// ListEventsNeedingReview returns needs_review events, oldest first, up to limit.
+		ListEventsNeedingReview(ctx context.Context, limit int) ([]entity.AcctEvent, error)
+		// CountEventsNeedingReviewInPeriod counts needs_review events with occurred_at in [from,to).
+		CountEventsNeedingReviewInPeriod(ctx context.Context, from, to string) (int, error)
 		// GetCheckpoint returns the pull-source cursor; a missing row is NOT an error — it returns the
 		// zero AcctCheckpoint (the worker treats it as last_id=0 / last_ts=accounting.start_date).
 		GetCheckpoint(ctx context.Context, source string) (entity.AcctCheckpoint, error)

@@ -77,6 +77,17 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("%w: %d unprocessed event(s) in %s", entity.ErrAcctPeriodNotReady, pendingEvents, m.Format("2006-01"))
 	}
 
+	// 2b) no events flagged for manual review in the month (H-1/H-2/B-5): a non-EUR/degenerate order,
+	//     an orphan refund, or a dead-lettered event must be posted + resolved before the month closes,
+	//     so a hole that could not post automatically can never be closed over silently.
+	reviewEvents, err := s.CountEventsNeedingReviewInPeriod(ctx, from, to)
+	if err != nil {
+		return fmt.Errorf("accounting: close period review events: %w", err)
+	}
+	if reviewEvents > 0 {
+		return fmt.Errorf("%w: %d event(s) need manual review in %s", entity.ErrAcctPeriodNotReady, reviewEvents, m.Format("2006-01"))
+	}
+
 	// 3a) material movements scanned through the end of the month (checkpoint advanced past every
 	//     movement created before the next month). Uncosted movements advance the checkpoint too, so a
 	//     caught-up worker leaves count == 0.

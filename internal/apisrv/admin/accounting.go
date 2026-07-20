@@ -116,7 +116,7 @@ func (s *Server) CreateJournalEntry(ctx context.Context, req *pb_admin.CreateJou
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.foldJournalLinesToBase(ctx, ins.Lines); err != nil {
-		if errors.Is(err, errAcctNoFxRate) {
+		if errors.Is(err, errAcctNoFxRate) || errors.Is(err, errAcctFoldRange) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't fold journal line amounts to base", slog.String("err", err.Error()))
@@ -324,6 +324,10 @@ func (s *Server) GetAcctReconciliation(ctx context.Context, req *pb_admin.GetAcc
 // genuine failure loading the rate table (Internal) inside foldJournalLinesToBase.
 var errAcctNoFxRate = errors.New("accounting: no costing fx rate")
 
+// errAcctFoldRange flags a folded amount that overflows the DECIMAL(12,2) column bound (D-3): a bad
+// request (InvalidArgument), distinct from a rate-table load failure (Internal).
+var errAcctFoldRange = errors.New("accounting: folded amount out of range")
+
 // acctFxToBase loads the effective manual FX rates (as-of today — 09-implementation-notes.md FAQ
 // 17: not historical as-of occurred_at, a deliberate phase-1 simplification) for converting a
 // manual journal line's amount_src into the base currency. Unlike Server.costingFx (techcard.go),
@@ -353,9 +357,14 @@ func (s *Server) foldJournalLinesToBase(ctx context.Context, lines []entity.Acct
 			}
 			fx = &loaded
 		}
-		base, ok := dto.FoldJournalLineAmountToBase(*fx, lines[i].AmountSrc.Decimal, lines[i].CurrencySrc.String)
-		if !ok {
+		base, ferr := dto.FoldJournalLineAmountToBase(*fx, lines[i].AmountSrc.Decimal, lines[i].CurrencySrc.String)
+		if errors.Is(ferr, dto.ErrNoFxRate) {
 			return fmt.Errorf("%w: add %s costing fx rate first", errAcctNoFxRate, lines[i].CurrencySrc.String)
+		}
+		if ferr != nil {
+			// D-3: an out-of-range folded amount is a bad request, not an Internal — flag it so the
+			// caller returns InvalidArgument with the reason instead of an opaque store overflow.
+			return fmt.Errorf("%w: account %s: %v", errAcctFoldRange, lines[i].AccountCode, ferr)
 		}
 		lines[i].Amount = base
 	}
@@ -386,4 +395,37 @@ func mapAcctErr(ctx context.Context, what string, err error) error {
 	}
 	slog.Default().ErrorContext(ctx, "can't "+what, slog.String("err", err.Error()))
 	return status.Error(codes.Internal, "can't "+what)
+}
+
+// ListAcctEventsNeedingReview lists posting-outbox events flagged for manual review (H-1/H-2/B-5) —
+// the dead-letter / manual-entry queue an operator must clear before the affected months can close.
+func (s *Server) ListAcctEventsNeedingReview(ctx context.Context, req *pb_admin.ListAcctEventsNeedingReviewRequest) (*pb_admin.ListAcctEventsNeedingReviewResponse, error) {
+	events, err := s.repo.Accounting().ListEventsNeedingReview(ctx, int(req.GetLimit()))
+	if err != nil {
+		return nil, mapAcctErr(ctx, "list events needing review", err)
+	}
+	return &pb_admin.ListAcctEventsNeedingReviewResponse{Events: dto.ConvertAcctEventsToPb(events)}, nil
+}
+
+// ReprocessAcctEvent resets an event so the posting worker re-attempts it from scratch (used after the
+// operator fixed the cause, e.g. added the missing vat_rate).
+func (s *Server) ReprocessAcctEvent(ctx context.Context, req *pb_admin.ReprocessAcctEventRequest) (*pb_admin.ReprocessAcctEventResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Accounting().ReprocessAcctEvent(ctx, req.GetId()); err != nil {
+		return nil, mapAcctErr(ctx, "reprocess acct event", err)
+	}
+	return &pb_admin.ReprocessAcctEventResponse{}, nil
+}
+
+// ResolveAcctEvent clears the review flag on an event handled manually (a manual journal entry posted).
+func (s *Server) ResolveAcctEvent(ctx context.Context, req *pb_admin.ResolveAcctEventRequest) (*pb_admin.ResolveAcctEventResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	if err := s.repo.Accounting().ResolveAcctEvent(ctx, req.GetId()); err != nil {
+		return nil, mapAcctErr(ctx, "resolve acct event", err)
+	}
+	return &pb_admin.ResolveAcctEventResponse{}, nil
 }
