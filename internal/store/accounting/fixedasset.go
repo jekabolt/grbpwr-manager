@@ -45,15 +45,22 @@ func (s *Store) ListFixedAssets(ctx context.Context) ([]entity.FixedAsset, error
 // asset, up to and including the month `upTo` falls in. Each month is one entry (Dr 6370 / Cr 1225)
 // keyed "asset:<id>:<YYYY-MM>", so re-running only fills gaps (the posting primitive is idempotent on
 // source_key). Charges use cumulative rounding so the total depreciation equals cost exactly at the
-// end of the useful life. A month whose accounting period is already closed is skipped (not an error)
-// — depreciation is posted before a month is closed. Returns the number of charges newly posted.
-func (s *Store) PostDepreciationDue(ctx context.Context, upTo time.Time) (int, error) {
+// end of the useful life.
+//
+// A month whose accounting period is already closed cannot be posted into; because each charge is
+// computed independently (not from prior posted state) such a month would otherwise be dropped
+// permanently — under-depreciating the asset with no signal. This is realistic when a back-dated
+// asset is added after its early months are closed. So closed months are NOT silently swallowed:
+// `skipped` counts them, and the caller surfaces it ("posted N, skipped M — closed periods") so the
+// operator can reopen the period (or post a manual catch-up) rather than trusting an incomplete run.
+// Returns the number of charges newly posted and the number skipped because their period was closed.
+func (s *Store) PostDepreciationDue(ctx context.Context, upTo time.Time) (int, int, error) {
 	assets, err := s.ListFixedAssets(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	upToMonth := firstOfMonthUTC(upTo)
-	posted := 0
+	posted, skipped := 0, 0
 
 	for _, a := range assets {
 		start := firstOfMonthUTC(a.AcquiredOn)
@@ -86,16 +93,17 @@ func (s *Store) PostDepreciationDue(ctx context.Context, upTo time.Time) (int, e
 			})
 			if perr != nil {
 				if errors.Is(perr, entity.ErrAcctPeriodClosed) {
-					continue // month already closed — skip, not an error
+					skipped++ // month already closed — surfaced to the caller, not silently dropped
+					continue
 				}
-				return posted, fmt.Errorf("accounting: post depreciation asset %d %s: %w", a.ID, key, perr)
+				return posted, skipped, fmt.Errorf("accounting: post depreciation asset %d %s: %w", a.ID, key, perr)
 			}
 			if !dup {
 				posted++
 			}
 		}
 	}
-	return posted, nil
+	return posted, skipped, nil
 }
 
 // cumDepr is the cumulative straight-line depreciation after i months of a life-month asset, rounded to

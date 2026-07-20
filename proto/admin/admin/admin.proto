@@ -6438,6 +6438,10 @@ message PostDepreciationRequest {
 
 message PostDepreciationResponse {
   int32 posted = 1; // number of monthly charges newly posted
+  // Monthly charges NOT posted because their accounting period is already closed. Non-zero means the
+  // run was incomplete (e.g. a back-dated asset whose early months are closed) — reopen the period or
+  // post a manual catch-up; the depreciation is not otherwise recovered.
+  int32 skipped = 2;
 }
 
 message AccrueCorporationTaxRequest {

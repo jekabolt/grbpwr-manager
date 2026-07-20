@@ -807,7 +807,7 @@ type (
 		// Fixed-asset register + straight-line depreciation (posts Dr 6370 / Cr 1225 per asset-month).
 		CreateFixedAsset(ctx context.Context, in entity.FixedAssetInsert) (int, error)
 		ListFixedAssets(ctx context.Context) ([]entity.FixedAsset, error)
-		PostDepreciationDue(ctx context.Context, upTo time.Time) (int, error)
+		PostDepreciationDue(ctx context.Context, upTo time.Time) (posted int, skipped int, err error)
 		// AccrueCorporationTax posts CT on the period's pre-tax profit (Dr 8010 / Cr 2050); idempotent
 		// per period. Returns the CT accrued and whether it already existed.
 		AccrueCorporationTax(ctx context.Context, from, to time.Time, ratePct decimal.Decimal) (decimal.Decimal, bool, error)

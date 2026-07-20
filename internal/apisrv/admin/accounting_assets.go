@@ -48,16 +48,16 @@ func (s *Server) PostDepreciation(ctx context.Context, req *pb_admin.PostDepreci
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	var posted int
+	var posted, skipped int
 	err = s.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var e error
-		posted, e = rep.Accounting().PostDepreciationDue(ctx, upTo)
+		posted, skipped, e = rep.Accounting().PostDepreciationDue(ctx, upTo)
 		return e
 	})
 	if err != nil {
 		return nil, mapAcctErr(ctx, "post depreciation", err)
 	}
-	return &pb_admin.PostDepreciationResponse{Posted: int32(posted)}, nil
+	return &pb_admin.PostDepreciationResponse{Posted: int32(posted), Skipped: int32(skipped)}, nil
 }
 
 // AccrueCorporationTax posts a corporation-tax accrual on the period's pre-tax profit.
