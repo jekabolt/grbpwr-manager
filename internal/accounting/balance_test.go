@@ -62,7 +62,9 @@ func randCents(r *rand.Rand, maxCents int) decimal.Decimal {
 }
 
 // ndDec wraps a decimal as a valid NullDecimal.
-func ndDec(d decimal.Decimal) decimal.NullDecimal { return decimal.NullDecimal{Decimal: d, Valid: true} }
+func ndDec(d decimal.Decimal) decimal.NullDecimal {
+	return decimal.NullDecimal{Decimal: d, Valid: true}
+}
 
 // --- ValidateBalanced unit tests -----------------------------------------------------------------
 

@@ -28,13 +28,13 @@ func movementFacts(mt entity.MaterialMovementType) entity.AcctMovementFacts {
 
 func TestBuildMaterialMovementEntry_Types(t *testing.T) {
 	tests := []struct {
-		name        string
-		mt          entity.MaterialMovementType
-		before      string
-		after       string
-		wantDr      string
-		wantCr      string
-		wantSource  entity.AcctSourceType
+		name       string
+		mt         entity.MaterialMovementType
+		before     string
+		after      string
+		wantDr     string
+		wantCr     string
+		wantSource entity.AcctSourceType
 	}{
 		{"M1 receipt", entity.MaterialMovementReceipt, "0", "10", Acc1110, Acc2010, entity.AcctSourceMaterialReceipt},
 		{"M2 receipt_production", entity.MaterialMovementReceiptProduction, "0", "10", Acc1110, Acc1120, entity.AcctSourceMaterialReceipt},

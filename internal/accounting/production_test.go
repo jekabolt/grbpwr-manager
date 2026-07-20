@@ -117,9 +117,9 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 		e, err := BuildProductionReceiveEntry(r, testStartDate)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
-		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00")  // manual
+		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00") // manual
 		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "50.00")
-		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "70.00")  // FG = 50 manual + 20 ledger WIP, not 350
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "70.00") // FG = 50 manual + 20 ledger WIP, not 350
 		assertAmount(t, e, Acc1120, entity.AcctSideCredit, "70.00")
 		assert.True(t, e.HasCaveat)
 		assert.Contains(t, e.Caveat.String, "pre-cutover WIP excluded")

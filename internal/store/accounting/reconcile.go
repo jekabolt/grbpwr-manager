@@ -354,7 +354,7 @@ func (s *Store) reconPending(ctx context.Context, fromStr, toStr string, fromT, 
 	}
 	for _, ev := range events {
 		block.Items = append(block.Items, entity.AcctReconItem{
-			Ref:   ev.Ref,
+			Ref:    ev.Ref,
 			Label:  ev.EventType + ": " + reasonOrDefault(ev.LastError, "pending, not yet processed"),
 			Amount: decimal.Zero,
 		})
