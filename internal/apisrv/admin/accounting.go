@@ -211,7 +211,14 @@ func (s *Server) CloseAcctPeriod(ctx context.Context, req *pb_admin.CloseAcctPer
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.repo.Accounting().ClosePeriod(ctx, month, authsrv.GetAdminUsername(ctx)); err != nil {
+	// Close in one SERIALIZABLE tx so the readiness gates and the close write are atomic — a concurrent
+	// post landing between a gate check and the close can no longer slip a month shut with unprocessed
+	// activity (D-2, store-contract TOCTOU). ErrAcctPeriodNotReady is a domain (non-retryable) error, so
+	// Tx returns it unwrapped and the errors.Is below still matches.
+	err = s.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		return rep.Accounting().ClosePeriod(ctx, month, authsrv.GetAdminUsername(ctx))
+	})
+	if err != nil {
 		if errors.Is(err, entity.ErrAcctPeriodNotReady) {
 			return &pb_admin.CloseAcctPeriodResponse{Closed: false, NotReady: []string{err.Error()}}, nil
 		}
