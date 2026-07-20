@@ -7,6 +7,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
+	"github.com/jekabolt/grbpwr-manager/internal/oss"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -71,6 +72,32 @@ func (s *Server) ExportJpkV7M(ctx context.Context, req *pb_admin.ExportJpkV7MReq
 	}
 	return &pb_admin.ExportJpkV7MResponse{
 		Filename:   fmt.Sprintf("JPK_V7M_%s.xml", month.Format("2006-01")),
+		XmlContent: string(xmlBytes),
+	}, nil
+}
+
+// ExportOssReturn builds the quarterly OSS (Union scheme, VIU-DO) return XML from the per-country OSS
+// aggregate. Like the JPK export it needs the taxpayer identity configured; the wrapper is a draft to
+// validate against the official schema / transcribe into the OSS portal.
+func (s *Server) ExportOssReturn(ctx context.Context, req *pb_admin.ExportOssReturnRequest) (*pb_admin.ExportOssReturnResponse, error) {
+	quarterStart, err := dto.ParseAcctQuarterStart(req.GetQuarter())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if !s.jpkTaxpayer.Configured() {
+		return nil, status.Error(codes.FailedPrecondition, "OSS export is not configured: set the JPK_NIP / JPK_FULL_NAME / JPK_EMAIL / JPK_TAX_OFFICE taxpayer identity")
+	}
+	ret, err := s.repo.Accounting().GetOssReturn(ctx, quarterStart)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "oss return", err)
+	}
+	xmlBytes, err := oss.Generate(s.jpkTaxpayer, ret, time.Now())
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	q := (int(quarterStart.Month())-1)/3 + 1
+	return &pb_admin.ExportOssReturnResponse{
+		Filename:   fmt.Sprintf("OSS_%d-Q%d.xml", quarterStart.Year(), q),
 		XmlContent: string(xmlBytes),
 	}, nil
 }
