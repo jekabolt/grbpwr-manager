@@ -309,6 +309,10 @@ type AcctEvent struct {
 	Attempts    int             `db:"attempts"`
 	NextRetryAt sql.NullTime    `db:"next_retry_at"`
 	LastError   sql.NullString  `db:"last_error"`
+	// NeedsReview: terminally disposed (processed) but could not post automatically and needs an
+	// operator — a manual entry, an orphan refund, or a dead-letter (H-1/H-2/B-5). ClosePeriod blocks
+	// the month until it is cleared by ReprocessAcctEvent (retry) or ResolveAcctEvent (handled).
+	NeedsReview bool `db:"needs_review"`
 }
 
 // AcctEventInsert is the input to EnqueueEvent. Payload is a typed struct (AcctOrderPaidPayload /

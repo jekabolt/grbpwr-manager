@@ -84,3 +84,76 @@ func (s *Store) MarkEventFailed(ctx context.Context, id int64, errMsg string, re
 	}
 	return nil
 }
+
+// MarkEventNeedsReview terminally disposes an event that cannot post automatically (H-1 non-EUR/
+// degenerate manual entry, H-2 orphan refund, B-5 dead-letter): it sets processed_at (out of the
+// pending window, retries stop) AND needs_review, records the reason, and clears the backoff.
+// ClosePeriod then blocks the event's month until an operator clears it.
+func (s *Store) MarkEventNeedsReview(ctx context.Context, id int64, reason string) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE acct_event
+		SET processed_at = COALESCE(processed_at, NOW()), needs_review = 1,
+		    last_error = :err, next_retry_at = NULL
+		WHERE id = :id`,
+		map[string]any{"id": id, "err": reason}); err != nil {
+		return fmt.Errorf("accounting: mark event %d needs-review: %w", id, err)
+	}
+	return nil
+}
+
+// ReprocessAcctEvent resets an event so the worker re-attempts it from scratch — used after the
+// operator fixed the cause (e.g. added the missing vat_rate). Clears processed_at, needs_review,
+// attempts, last_error and the backoff.
+func (s *Store) ReprocessAcctEvent(ctx context.Context, id int64) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE acct_event
+		SET processed_at = NULL, needs_review = 0, attempts = 0, last_error = NULL, next_retry_at = NULL
+		WHERE id = :id`,
+		map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("accounting: reprocess event %d: %w", id, err)
+	}
+	return nil
+}
+
+// ResolveAcctEvent marks a needs-review event handled manually (the operator posted a manual entry):
+// it clears needs_review but keeps processed_at + last_error as the audit record.
+func (s *Store) ResolveAcctEvent(ctx context.Context, id int64) error {
+	if err := storeutil.ExecNamed(ctx, s.DB,
+		`UPDATE acct_event SET needs_review = 0 WHERE id = :id`,
+		map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("accounting: resolve event %d: %w", id, err)
+	}
+	return nil
+}
+
+// ListEventsNeedingReview returns events flagged needs_review (terminal, awaiting an operator), oldest
+// first, up to limit.
+func (s *Store) ListEventsNeedingReview(ctx context.Context, limit int) ([]entity.AcctEvent, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	events, err := storeutil.QueryListNamed[entity.AcctEvent](ctx, s.DB, `
+		SELECT id, event_type, source_key, payload, occurred_at, created_at,
+		       processed_at, attempts, next_retry_at, last_error, needs_review
+		FROM acct_event
+		WHERE needs_review = 1
+		ORDER BY id
+		LIMIT :limit`, map[string]any{"limit": limit})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: list events needing review: %w", err)
+	}
+	return events, nil
+}
+
+// CountEventsNeedingReviewInPeriod counts needs-review events with occurred_at in [from,to) — the
+// ClosePeriod gate that stops a month closing while it has unresolved manual work.
+func (s *Store) CountEventsNeedingReviewInPeriod(ctx context.Context, from, to string) (int, error) {
+	n, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM acct_event
+		WHERE needs_review = 1 AND occurred_at >= :from AND occurred_at < :to`,
+		map[string]any{"from": from, "to": to})
+	if err != nil {
+		return 0, fmt.Errorf("accounting: count needs-review events: %w", err)
+	}
+	return n, nil
+}
