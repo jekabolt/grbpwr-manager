@@ -799,6 +799,13 @@ type (
 		// GetFrs105Accounts re-groups the ledger into FRS 105 micro-entity line items (Income Statement +
 		// SoFP) over [from, to) — a base-currency DRAFT (not GBP / entity-isolated).
 		GetFrs105Accounts(ctx context.Context, from, to time.Time) (*entity.AcctFrs105Accounts, error)
+		// Fixed-asset register + straight-line depreciation (posts Dr 6370 / Cr 1225 per asset-month).
+		CreateFixedAsset(ctx context.Context, in entity.FixedAssetInsert) (int, error)
+		ListFixedAssets(ctx context.Context) ([]entity.FixedAsset, error)
+		PostDepreciationDue(ctx context.Context, upTo time.Time) (int, error)
+		// AccrueCorporationTax posts CT on the period's pre-tax profit (Dr 6365 / Cr 2075); idempotent
+		// per period. Returns the CT accrued and whether it already existed.
+		AccrueCorporationTax(ctx context.Context, from, to time.Time, ratePct decimal.Decimal) (decimal.Decimal, bool, error)
 
 		// --- fact reads for the posting worker (the accounting store reads other domains' tables
 		//     directly, the internal/store/metrics precedent; SQL in 09-implementation-notes.md §9.2) ---

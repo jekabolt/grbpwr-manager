@@ -72,9 +72,9 @@ func (s *Store) GetFrs105Accounts(ctx context.Context, from, to time.Time) (*ent
 			r.CostOfSales = r.CostOfSales.Add(bal)
 		case row.Code == "6370": // depreciation — shown separately
 			r.Depreciation = r.Depreciation.Add(bal)
-		case row.Code == "6360": // taxes — the FRS 105 tax line
+		case row.Code == "6365": // corporation tax — the FRS 105 tax line (6360 general taxes stay in admin)
 			r.Tax = r.Tax.Add(bal)
-		default: // remaining opex
+		default: // remaining opex (incl. 6360 general taxes)
 			r.AdministrativeExpenses = r.AdministrativeExpenses.Add(bal)
 		}
 	}
@@ -107,11 +107,16 @@ func (s *Store) GetFrs105Accounts(ctx context.Context, from, to time.Time) (*ent
 	// it, not a separate company), so the whole-ledger scope and the EUR figures are both correct for a
 	// Companies House filing — a functional-currency presentation is permitted. The remaining gaps are
 	// completeness of the ledger, not structure: a UK CT600 tax computation is filed in GBP separately.
-	r.Caveats = []string{
+	caveats := []string{
 		"prepared in the functional currency (" + r.Currency + ") — permitted for Companies House; a UK CT600 tax computation is filed in GBP",
-		"pre-tax — no corporation-tax accrual is posted, so Tax is nil and Profit for the year is stated before tax",
-		"no depreciation charge is posted — fixed assets are shown at cost; set a depreciation policy if assets are held",
-		"draft for accountant finalisation and review",
 	}
+	if r.Tax.IsZero() {
+		caveats = append(caveats, "no corporation tax accrued for the period — run Accrue Corporation Tax; Profit for the year is otherwise stated before tax")
+	}
+	if r.Depreciation.IsZero() {
+		caveats = append(caveats, "no depreciation charged in the period — add assets to the register and run Post Depreciation if fixed assets are held")
+	}
+	caveats = append(caveats, "draft for accountant finalisation and review")
+	r.Caveats = caveats
 	return r, nil
 }

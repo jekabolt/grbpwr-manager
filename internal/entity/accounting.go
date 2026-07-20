@@ -82,6 +82,12 @@ const (
 	AcctSourceOpexMonth          AcctSourceType = "opex_month"
 	AcctSourceManual             AcctSourceType = "manual"
 	AcctSourceReversal           AcctSourceType = "reversal"
+	// AcctSourceDepreciation is a monthly straight-line depreciation charge on a fixed asset
+	// (Dr 6370 / Cr 1225); source_key is "asset:<id>:<YYYY-MM>" for one-per-asset-per-month idempotency.
+	AcctSourceDepreciation AcctSourceType = "depreciation"
+	// AcctSourceCorpTax is a corporation-tax accrual for a period (Dr 6365 / Cr 2075); source_key is
+	// "corp_tax:<from>:<to>" so re-accruing the same period is idempotent (returns the existing entry).
+	AcctSourceCorpTax AcctSourceType = "corp_tax"
 
 	AcctEventOrderPaid   AcctEventType = "order_paid"
 	AcctEventOrderRefund AcctEventType = "order_refund"
@@ -673,6 +679,26 @@ type AcctVatReturnPL struct {
 	NetImport        decimal.Decimal
 	NetInputDomestic decimal.Decimal
 	Caveats          []string
+}
+
+// FixedAsset is one capitalised asset in the register, depreciated straight-line over
+// UsefulLifeMonths from AcquiredOn. CostBase is the base-currency cost; DisposedOn stops depreciation.
+type FixedAsset struct {
+	ID               int             `db:"id"`
+	Name             string          `db:"name"`
+	CostBase         decimal.Decimal `db:"cost_base"`
+	AcquiredOn       time.Time       `db:"acquired_on"`
+	UsefulLifeMonths int             `db:"useful_life_months"`
+	DisposedOn       sql.NullTime    `db:"disposed_on"`
+	CreatedAt        time.Time       `db:"created_at"`
+}
+
+// FixedAssetInsert is the create payload for a fixed asset.
+type FixedAssetInsert struct {
+	Name             string
+	CostBase         decimal.Decimal
+	AcquiredOn       time.Time
+	UsefulLifeMonths int
 }
 
 // AcctFrs105Accounts is an FRS 105 micro-entity accounts DRAFT — the Income Statement + Statement of
