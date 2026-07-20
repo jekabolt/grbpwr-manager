@@ -69,33 +69,21 @@ func ptr(v int64) *int64 {
 	return &v
 }
 
-// BuildDeclaration maps the month's VAT-return aggregates onto the VAT-7 boxes. It balances by
-// construction: P_38 (output) − P_48 (input) resolves to P_51 (payable) or P_53 (refund), matching
-// AcctVatReturnPL.NetPayable. WNT/import self-charge is net-zero (output VAT = deductible input), so it
-// nets out of the settlement exactly as the return's NetPayable already models it.
+// BuildDeclaration maps the month's VAT-return aggregates onto the VAT-7 boxes. This is an
+// OUTPUT-SIDE declaration: sales and self-charged output VAT are declared, and the input/deduction
+// side (P_42/P_43/P_48) is left at zero for the accountant to merge from their purchase register — the
+// system does not capture every purchase invoice (nor the supplier NIP each deduction row needs), so
+// the accountant's input side is authoritative. P_48 = 0 keeps the file internally consistent with an
+// empty ZakupWiersz; P_51 therefore reports the output VAT before the accountant's input deduction.
+//
+// WNT/import self-charge is declared on BOTH sides normally, but with the input side deferred we
+// declare only its output leg here (P_24/P_26) — the accountant claims the matching input.
 func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
-	// Output side.
-	pDomesticNet := whole(ret.NetDomestic)
 	pDomesticVat := whole(ret.OutputDomestic)
-	pWnt := whole(ret.NetWnt)
-	pWntVat := whole(ret.InputWnt) // self-charge output VAT equals the reclaimable input VAT
-	pImport := whole(ret.NetImport)
+	pWntVat := whole(ret.InputWnt) // self-charge output VAT equals the (deferred) reclaimable input
 	pImportVat := whole(ret.InputImport)
 
 	totalOutputVat := pDomesticVat + pWntVat + pImportVat
-
-	// Input side: all deductible input on "other purchases" (domestic + the self-charged WNT/import
-	// reclaim). Fixed-asset input (P_40/P_41) is not separated by the ledger, so it folds in here.
-	inputNet := whole(ret.NetInputDomestic) + pWnt + pImport
-	inputVat := whole(ret.InputDomestic) + pWntVat + pImportVat
-
-	settlement := totalOutputVat - inputVat
-	var p51, p53 *int64
-	if settlement >= 0 {
-		p51 = ptr(settlement)
-	} else {
-		p53 = ptr(-settlement)
-	}
 
 	return Deklaracja{
 		Naglowek: DeklNaglowek{
@@ -105,18 +93,16 @@ func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
 		Pozycje: DeklPozycje{
 			P_11: ptr(whole(ret.NetWdt)),
 			P_12: ptr(whole(ret.NetExport)),
-			P_19: ptr(pDomesticNet),
+			P_19: ptr(whole(ret.NetDomestic)),
 			P_20: ptr(pDomesticVat),
-			P_23: ptr(pWnt),
+			P_23: ptr(whole(ret.NetWnt)),
 			P_24: ptr(pWntVat),
-			P_25: ptr(pImport),
+			P_25: ptr(whole(ret.NetImport)),
 			P_26: ptr(pImportVat),
 			P_38: totalOutputVat,
-			P_42: ptr(inputNet),
-			P_43: ptr(inputVat),
-			P_48: inputVat,
-			P_51: p51,
-			P_53: p53,
+			// Input side deferred to the accountant → P_48 = 0, so P_51 = P_38 (output-only).
+			P_48: 0,
+			P_51: ptr(totalOutputVat),
 		},
 		Pouczenia: 1,
 	}

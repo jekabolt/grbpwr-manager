@@ -31,19 +31,15 @@ func TestBuildDeclarationBalances(t *testing.T) {
 	if p.P_38 != 276 {
 		t.Errorf("P_38 (total output VAT) = %d, want 276", p.P_38)
 	}
-	// Input total: 92 (domestic) + 46 (WNT reclaim) + 0 (import) = 138.
-	if p.P_48 != 138 {
-		t.Errorf("P_48 (total input VAT) = %d, want 138", p.P_48)
+	// Output-only: the input/deduction side is deferred to the accountant, so P_48 = 0 and P_51 = P_38.
+	if p.P_48 != 0 {
+		t.Errorf("P_48 (input VAT) = %d, want 0 (accountant merges the input side)", p.P_48)
 	}
-	// Settlement balances and matches NetPayable.
-	if p.P_51 == nil || *p.P_51 != 138 {
-		t.Errorf("P_51 (payable) = %v, want 138", p.P_51)
+	if p.P_51 == nil || *p.P_51 != 276 {
+		t.Errorf("P_51 (payable) = %v, want 276 (= P_38, output-only)", p.P_51)
 	}
-	if p.P_53 != nil {
-		t.Errorf("P_53 (refund) should be nil when there is tax to pay, got %v", p.P_53)
-	}
-	if int64(p.P_38)-int64(p.P_48) != *p.P_51 {
-		t.Errorf("declaration does not balance: P_38-P_48=%d, P_51=%d", p.P_38-p.P_48, *p.P_51)
+	if p.P_42 != nil || p.P_43 != nil || p.P_53 != nil {
+		t.Errorf("input/refund boxes should be unset in an output-only declaration")
 	}
 	// Base fields present.
 	if p.P_11 == nil || *p.P_11 != 500 {
@@ -55,22 +51,7 @@ func TestBuildDeclarationBalances(t *testing.T) {
 	if p.P_19 == nil || *p.P_19 != 1000 {
 		t.Errorf("P_19 (domestic net) = %v, want 1000", p.P_19)
 	}
-}
-
-func TestBuildDeclarationRefundMonth(t *testing.T) {
-	// Input exceeds output → carry-forward/refund on P_53, no P_51.
-	ret := &entity.AcctVatReturnPL{
-		NetDomestic:      d("100"),
-		OutputDomestic:   d("23"),
-		NetInputDomestic: d("500"),
-		InputDomestic:    d("115"),
-		NetPayable:       d("-92"),
-	}
-	p := BuildDeclaration(ret).Pozycje
-	if p.P_51 != nil {
-		t.Errorf("P_51 should be nil in a refund month, got %v", p.P_51)
-	}
-	if p.P_53 == nil || *p.P_53 != 92 {
-		t.Errorf("P_53 (refund) = %v, want 92", p.P_53)
+	if p.P_24 == nil || *p.P_24 != 46 {
+		t.Errorf("P_24 (WNT self-charge output VAT) = %v, want 46", p.P_24)
 	}
 }
