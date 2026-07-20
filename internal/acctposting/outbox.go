@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 )
 
 // settledRetryInterval is the fixed defer for a Stripe order_paid whose settlement has not arrived
@@ -76,6 +77,10 @@ func (w *Worker) processEvent(ctx context.Context, ev entity.AcctEvent) error {
 	switch ev.EventType {
 	case entity.AcctEventOrderPaid:
 		return w.processOrderPaid(ctx, ev)
+	case entity.AcctEventOrderShipped:
+		return w.processOrderShipped(ctx, ev)
+	case entity.AcctEventOrderDelivered:
+		return w.processOrderDelivered(ctx, ev)
 	case entity.AcctEventOrderRefund:
 		return w.processOrderRefund(ctx, ev)
 	default:
@@ -117,9 +122,142 @@ func (w *Worker) processOrderPaid(ctx context.Context, ev entity.AcctEvent) erro
 		return nil
 	}
 
+	// Cutover (phase 2, wave 2): a post-cutover Stripe order recognises revenue on DELIVERY — S1n posts
+	// only the prepayment now (money in, VAT, 2090 liability); sale/COGS land at order_delivered_sale.
+	// Custom/cash and pre-cutover orders keep the old confirmed-time S1. The resolved regime is
+	// snapshotted onto the order in the same Tx that posts the entry (§1.3).
+	if w.usesDeliveredPolicy(facts, ev.OccurredAt) {
+		entry, buildErr := accounting.BuildOrderPrepaymentEntry(*facts, vd, ev.OccurredAt)
+		return w.postOrDefer(ctx, ev, []entity.AcctJournalEntryInsert{entry}, buildErr, facts.UUID, string(vd.Regime))
+	}
 	entry, buildErr := accounting.BuildOrderSaleEntry(*facts, vd, ev.OccurredAt)
-	// The resolved regime is snapshotted onto the order in the same Tx that posts the sale (§1.3).
-	return w.postOrDefer(ctx, ev, entry, buildErr, facts.UUID, string(vd.Regime))
+	return w.postOrDefer(ctx, ev, []entity.AcctJournalEntryInsert{entry}, buildErr, facts.UUID, string(vd.Regime))
+}
+
+// usesDeliveredPolicy decides whether an order recognises revenue on delivery (wave 2): the feature must
+// be armed (accounting.delivered_recognition_from set), the order must be a Stripe/storefront order, and
+// it must have been PAID on or after the cutover (paidAt is the order_paid event's occurred_at). Custom/
+// cash (born-Confirmed) and pre-cutover orders keep the old confirmed-time S1 forever (07 §7.4.4). The
+// boundary matches the phase-1 start-date rule: paid exactly at the cutover instant is new policy.
+func (w *Worker) usesDeliveredPolicy(f *entity.AcctOrderFacts, paidAt time.Time) bool {
+	if w.deliveredRecognitionFrom.IsZero() {
+		return false
+	}
+	if f.PaymentMethodName != entity.CARD && f.PaymentMethodName != entity.CARD_TEST {
+		return false
+	}
+	return !paidAt.Before(w.deliveredRecognitionFrom)
+}
+
+// processOrderShipped posts the order_transit entry (wave 2): finished goods move 1130 → 1140 at
+// order-time cost. It runs only for a new-chain order (order_prepayment posted); an old/custom order is
+// a definitive "pre-policy order" skip, and a new order whose prepayment has not posted yet defers.
+func (w *Worker) processOrderShipped(ctx context.Context, ev entity.AcctEvent) error {
+	var p entity.AcctOrderShippedPayload
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		return w.skipEvent(ctx, ev.Id, "invalid order_shipped payload: "+err.Error())
+	}
+	st, err := w.repo.Accounting().GetOrderPostingState(ctx, p.OrderUUID)
+	if err != nil {
+		return fmt.Errorf("order posting state %s: %w", p.OrderUUID, err)
+	}
+	if !st.Prepayment {
+		return w.skipShippedDelivered(ctx, ev, st)
+	}
+	facts, err := w.repo.Accounting().GetOrderFactsForPosting(ctx, p.OrderUUID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return w.skipEvent(ctx, ev.Id, "order not found for order_shipped")
+		}
+		return fmt.Errorf("order facts %s: %w", p.OrderUUID, err)
+	}
+	entry, buildErr := accounting.BuildOrderTransitEntry(*facts, ev.OccurredAt)
+	return w.postOrDefer(ctx, ev, []entity.AcctJournalEntryInsert{entry}, buildErr, "", "")
+}
+
+// processOrderDelivered posts the order_delivered_sale entry (S1d, wave 2): it drains the prepayment
+// into revenue + 4110 shipping and recognises COGS from the posted transit. It runs only for a new-chain
+// order; if the order was delivered directly from Confirmed (no shipped event, legal at
+// lifecycle.go:393-400), it synthesizes the missing transit entry first — both entries in one Tx — so
+// S1d's exact 1140 drain has its debit (synthesis D2). The EXACT posted 2090 / 1140 balances are passed
+// to the builder so a vat-rate edit or a partial pre-delivery refund cannot leave a residual (D1).
+func (w *Worker) processOrderDelivered(ctx context.Context, ev entity.AcctEvent) error {
+	var p entity.AcctOrderDeliveredPayload
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		return w.skipEvent(ctx, ev.Id, "invalid order_delivered payload: "+err.Error())
+	}
+	st, err := w.repo.Accounting().GetOrderPostingState(ctx, p.OrderUUID)
+	if err != nil {
+		return fmt.Errorf("order posting state %s: %w", p.OrderUUID, err)
+	}
+	if !st.Prepayment {
+		return w.skipShippedDelivered(ctx, ev, st)
+	}
+	if st.DeliveredSale {
+		// Replay after the sale already posted — the CreateJournalEntry idempotency would no-op it anyway;
+		// record the event processed without a second build.
+		return w.skipEvent(ctx, ev.Id, "delivered sale already posted")
+	}
+	facts, err := w.repo.Accounting().GetOrderFactsForPosting(ctx, p.OrderUUID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return w.skipEvent(ctx, ev.Id, "order not found for order_delivered")
+		}
+		return fmt.Errorf("order facts %s: %w", p.OrderUUID, err)
+	}
+
+	var entries []entity.AcctJournalEntryInsert
+	transitCost := st.Remaining1140
+	if !st.Transit {
+		// Confirmed→Delivered direct: synthesize the transit leg so S1d can drain 1140 (D2). Its cost is
+		// the amount S1d then drains.
+		tEntry, tErr := accounting.BuildOrderTransitEntry(*facts, ev.OccurredAt)
+		switch {
+		case tErr == nil:
+			entries = append(entries, tEntry)
+			transitCost = lineAmount(tEntry, accounting.Acc1140, entity.AcctSideDebit)
+		case errors.Is(tErr, accounting.ErrSkipEmpty):
+			transitCost = decimal.Zero // uncosted order — S1d recognises revenue with no COGS (+ caveat)
+		default:
+			return w.postOrDefer(ctx, ev, nil, tErr, "", "") // ErrNotReady / degenerate / bug
+		}
+	}
+
+	sEntry, sErr := accounting.BuildOrderDeliveredSaleEntry(*facts, st.Remaining2090, transitCost, ev.OccurredAt)
+	if sErr != nil {
+		// ErrSkipEmpty (prepayment fully refunded before delivery) → skip; else the standard handler.
+		return w.postOrDefer(ctx, ev, nil, sErr, "", "")
+	}
+	entries = append(entries, sEntry)
+	return w.postOrDefer(ctx, ev, entries, nil, "", "")
+}
+
+// skipShippedDelivered disposes a shipped/delivered event on an order with no prepayment entry: an old
+// chain order (order_sale exists) is a definitive "pre-policy order" skip — its stock and revenue were
+// posted at confirmed; otherwise the order_paid event simply has not posted yet, so defer, and after the
+// cap skip (a pre-policy/manual order that will never post a prepayment).
+func (w *Worker) skipShippedDelivered(ctx context.Context, ev entity.AcctEvent, st entity.AcctOrderPostingState) error {
+	if st.LegacySale {
+		return w.skipEvent(ctx, ev.Id, "pre-policy order")
+	}
+	if ev.Attempts >= maxOrphanRefundAttempts {
+		return w.skipEvent(ctx, ev.Id, "no prepayment posted (pre-policy/manual order)")
+	}
+	if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, "awaiting prepayment posting", settledRetryInterval); err != nil {
+		return fmt.Errorf("defer shipped/delivered event %d: %w", ev.Id, err)
+	}
+	return nil
+}
+
+// lineAmount returns the amount of the first line in entry matching the account code and side (zero if
+// none) — used to read a synthesized transit entry's 1140 debit so the delivered sale drains exactly it.
+func lineAmount(entry entity.AcctJournalEntryInsert, code string, side entity.AcctSide) decimal.Decimal {
+	for _, l := range entry.Lines {
+		if l.AccountCode == code && l.Side == side {
+			return l.Amount
+		}
+	}
+	return decimal.Zero
 }
 
 // resolveVatDecision assembles VatFacts from the order facts + the worker's ship-from origin, resolves
@@ -191,18 +329,38 @@ func (w *Worker) processOrderRefund(ctx context.Context, ev entity.AcctEvent) er
 		return w.skipEvent(ctx, ev.Id, "invalid order_refund payload: "+err.Error())
 	}
 
-	exists, err := w.saleEntryExists(ctx, p.OrderUUID)
+	st, err := w.repo.Accounting().GetOrderPostingState(ctx, p.OrderUUID)
 	if err != nil {
-		return fmt.Errorf("check sale posted %s: %w", p.OrderUUID, err)
+		return fmt.Errorf("order posting state %s: %w", p.OrderUUID, err)
 	}
-	if !exists {
-		// H-2: a refund whose sale is not posted yet defers — but a sale that will NEVER post
-		// (pre-cutover / non-EUR / needs-review) would defer forever and soft-lock close. After the cap,
-		// flag it for a manual entry instead of deferring indefinitely.
+
+	// The paid event posts exactly one recognition entry (old order_sale OR new order_prepayment), so
+	// both existing is an impossible mixed chain — flag rather than guess which to reverse.
+	if st.LegacySale && st.Prepayment {
+		return w.needsReview(ctx, ev.Id, "mixed old+new recognition chain, manual entry required")
+	}
+
+	// Neither recognition entry is posted yet: the refund's EUR share k must match the entry it reverses,
+	// so defer (H-2) — a sale that will NEVER post (pre-cutover / non-EUR) dead-letters after the cap.
+	if !st.LegacySale && !st.Prepayment {
 		if ev.Attempts >= maxOrphanRefundAttempts {
-			return w.needsReview(ctx, ev.Id, "orphan refund: sale not posted, manual entry required")
+			return w.needsReview(ctx, ev.Id, "orphan refund: recognition not posted, manual entry required")
 		}
 		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, "awaiting sale posting", settledRetryInterval); err != nil {
+			return fmt.Errorf("defer refund event %d: %w", ev.Id, err)
+		}
+		return nil
+	}
+
+	// A new-chain order that is operationally delivered (order_delivered event enqueued) but whose S1d has
+	// not posted yet must DEFER, not take the pre-delivery branch — otherwise it would unwind a 2090 that
+	// S1d is about to drain and misclassify a post-delivery return as a prepayment reversal (synthesis
+	// D8). It clears as soon as the delivered event posts S1d.
+	if st.Prepayment && !st.DeliveredSale && st.DeliveredEvent {
+		if ev.Attempts >= maxOrphanRefundAttempts {
+			return w.needsReview(ctx, ev.Id, "refund awaiting delivered sale posting, manual entry required")
+		}
+		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, "awaiting delivered sale posting", settledRetryInterval); err != nil {
 			return fmt.Errorf("defer refund event %d: %w", ev.Id, err)
 		}
 		return nil
@@ -217,32 +375,38 @@ func (w *Worker) processOrderRefund(ctx context.Context, ev entity.AcctEvent) er
 	}
 
 	// Reverse at the SAME VAT regime the sale snapshotted onto the order, so the refund matches exactly
-	// what S1 posted to 2070 (rule S2 mirrors S1), even if the resolver inputs changed after the sale.
+	// what was posted to 2070 (S2/pre-delivery mirror S1/S1n), even if the resolver inputs changed after.
 	vd, skipReason, err := w.refundVatDecision(ctx, facts)
 	if err != nil {
 		return fmt.Errorf("resolve refund vat %s: %w", p.OrderUUID, err)
 	}
 	if skipReason != "" {
-		// The sale posted with this regime's VAT; without its rate we cannot reverse it correctly, so
-		// defer (retryable) rather than post a wrong reversal or leave a 2070 residual.
 		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, skipReason, settledRetryInterval); err != nil {
 			return fmt.Errorf("defer refund event %d: %w", ev.Id, err)
 		}
 		return nil
 	}
 
-	// items = facts.Items as-is; the builder takes the refunded quantity per line from
-	// p.RefundedByItem. source_key is the resolved "uuid:seq" assigned at enqueue time.
-	entry, buildErr := accounting.BuildOrderRefundEntry(*facts, p, facts.Items, vd, ev.SourceKey, ev.OccurredAt)
-	// A refund does not (re)write vat_regime — the sale already snapshotted it.
-	return w.postOrDefer(ctx, ev, entry, buildErr, "", "")
+	// source_key is the resolved "uuid:seq" assigned at enqueue time; RefundedByItem drives COGS return.
+	var entry entity.AcctJournalEntryInsert
+	var buildErr error
+	if st.LegacySale || st.DeliveredSale {
+		// Old chain, or a new chain already delivered (cumulative state == old S1): the existing S2 reversal.
+		entry, buildErr = accounting.BuildOrderRefundEntry(*facts, p, facts.Items, vd, ev.SourceKey, ev.OccurredAt)
+	} else {
+		// New chain, not yet delivered: unwind the 2090 prepayment (+ transit stock if it had shipped).
+		entry, buildErr = accounting.BuildOrderPreDeliveredRefundEntry(*facts, p, facts.Items, vd, st.Transit, ev.SourceKey, ev.OccurredAt)
+	}
+	// A refund does not (re)write vat_regime — recognition already snapshotted it.
+	return w.postOrDefer(ctx, ev, []entity.AcctJournalEntryInsert{entry}, buildErr, "", "")
 }
 
-// postOrDefer applies the builder outcome for an order event: sentinel waits defer the event,
-// sentinel skips mark it processed with a disposition note, an unexpected builder error backs it off,
-// and a clean build is written (entry + MarkEventProcessed) in one short Tx. It returns an error only
-// when a mark/Tx write itself fails (infrastructure).
-func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry entity.AcctJournalEntryInsert, buildErr error, orderUUID, vatRegime string) error {
+// postOrDefer applies the builder outcome for an order event: sentinel waits defer the event, sentinel
+// skips mark it processed with a disposition note, an unexpected builder error backs it off, and a clean
+// build writes ALL entries (a delivered event posts a synthesized transit + the delivered sale) plus
+// MarkEventProcessed in one short Tx. It returns an error only when a mark/Tx write itself fails
+// (infrastructure). buildErr, when set, is the single build error to dispatch on (entries is ignored).
+func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entries []entity.AcctJournalEntryInsert, buildErr error, orderUUID, vatRegime string) error {
 	switch {
 	case errors.Is(buildErr, accounting.ErrNotReady):
 		// Stripe settlement not captured yet — defer; warn if it has waited too long (a stuck capture
@@ -266,6 +430,11 @@ func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry ent
 	case errors.Is(buildErr, accounting.ErrDegenerateAmounts):
 		return w.needsReview(ctx, ev.Id, "degenerate amounts, manual entry required")
 
+	case errors.Is(buildErr, accounting.ErrSkipEmpty):
+		// A transit with nothing costed, or a delivered sale whose prepayment was fully refunded before
+		// delivery — nothing to post; record the event processed with the disposition note.
+		return w.skipEvent(ctx, ev.Id, "nothing to post (uncosted or fully refunded)")
+
 	case buildErr != nil:
 		// Unexpected builder error (a bug): retry with exponential backoff so it is visible without
 		// failing the tick. B-5: a deterministic bug that never succeeds would retry forever and block
@@ -286,8 +455,10 @@ func (w *Worker) postOrDefer(ctx context.Context, ev entity.AcctEvent, entry ent
 	// Clean build: create the entry, snapshot the VAT regime onto the order (order_paid only), and mark
 	// the event processed — atomically (FAQ 7 — "entry exists, event pending" is impossible).
 	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		if _, _, e := rep.Accounting().CreateJournalEntry(ctx, entry); e != nil {
-			return e
+		for i := range entries {
+			if _, _, e := rep.Accounting().CreateJournalEntry(ctx, entries[i]); e != nil {
+				return e
+			}
 		}
 		if vatRegime != "" {
 			if e := rep.Accounting().SetOrderVatRegime(ctx, orderUUID, vatRegime); e != nil {
@@ -338,11 +509,4 @@ func (w *Worker) needsReview(ctx context.Context, id int64, reason string) error
 		return fmt.Errorf("flag event %d for review: %w", id, err)
 	}
 	return nil
-}
-
-// saleEntryExists reports whether the order_sale (S1) entry for orderUUID has been posted — an O(1)
-// (source_type, source_key) unique-index lookup (uniq_acct_entry_source), so it no longer pages the
-// ledger over a date window.
-func (w *Worker) saleEntryExists(ctx context.Context, orderUUID string) (bool, error) {
-	return w.repo.Accounting().EntryExistsBySource(ctx, entity.AcctSourceOrderSale, orderUUID)
 }

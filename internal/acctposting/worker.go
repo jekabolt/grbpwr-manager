@@ -98,6 +98,9 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if w.startDateErr != nil {
 		return w.startDateErr
 	}
+	if w.deliveredRecognitionFromErr != nil {
+		return w.deliveredRecognitionFromErr
+	}
 	if w.startDate.IsZero() {
 		return fmt.Errorf("acctposting: start date not configured")
 	}

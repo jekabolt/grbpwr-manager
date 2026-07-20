@@ -70,6 +70,11 @@ func (s *Store) GetReconciliation(ctx context.Context, from, to time.Time) (*ent
 		return nil, err
 	}
 	rec.Vat = &vat
+	prepayments, err := s.reconPrepayments(ctx, fromT, toT)
+	if err != nil {
+		return nil, err
+	}
+	rec.Prepayments = &prepayments
 	return rec, nil
 }
 
@@ -136,16 +141,31 @@ func (s *Store) accountBalanceBefore(ctx context.Context, code string, before ti
 // snapshot), or wdt / export (0% vs a non-zero snapshot) — a small delta here is EXPECTED and advisory,
 // NOT a ledger error, and this block is not a hard alert. (A fully drift-free recon would recompute the
 // operational VAT from vat_regime + vat_rate, which re-derives the posting; deferred.)
+//
+// WAVE-2 (extends C-4): the ledger credit now also counts order_delivered_sale — new-chain revenue is
+// recognised at DELIVERY, not payment. The operational side still counts every confirmed order's
+// revenue at placement (this pass does not rebase recognition timing), so a new-chain order that is
+// paid-but-not-yet-delivered contributes to Operational while its revenue has not yet reached the
+// ledger — an EXPECTED timing drift, not a ledger error. Its outstanding amount is proved by the
+// prepayments block (2090). Advisory, not a hard alert.
 func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, toT time.Time, statusIDs []int) (entity.AcctReconBlock, error) {
 	// 4310 (B2B / wholesale revenue) belongs here: a B2B sale credits net revenue to 4310, and the
 	// operational side below counts every confirmed order's recognised revenue regardless of channel —
 	// omitting 4310 makes every B2B order a false negative drift. (4050 B2B trade-discount contra is a
 	// debit and is added once discount postings exist.)
-	ledger, err := s.ledgerLineSum(ctx, []string{"4010", "4020", "4110", "4310"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
+	revAccts := []string{"4010", "4020", "4110", "4310"}
+	// Ledger revenue credits from BOTH chains: legacy order_sale (all revenue at payment) plus the wave-2
+	// order_delivered_sale (NET + SHIP recognised at delivery). order_prepayment credits no revenue
+	// account (it parks the net on 2090), so it is deliberately absent here.
+	saleRev, err := s.ledgerLineSum(ctx, revAccts, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
 	if err != nil {
 		return entity.AcctReconBlock{}, err
 	}
-	block := entity.AcctReconBlock{Name: "revenue", Ledger: ledger}
+	deliveredRev, err := s.ledgerLineSum(ctx, revAccts, entity.AcctSideCredit, string(entity.AcctSourceOrderDeliveredSale), fromStr, toStr)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	block := entity.AcctReconBlock{Name: "revenue", Ledger: saleRev.Add(deliveredRev)}
 	if len(statusIDs) == 0 {
 		block.Delta = block.Ledger.Sub(block.Operational)
 		return block, nil
@@ -169,6 +189,15 @@ func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, 
 	}
 	block.Operational = op.V.Round(2)
 	block.Delta = block.Ledger.Sub(block.Operational)
+
+	// Wave-2 advisory: new-chain orders paid-but-not-yet-delivered recognise revenue at delivery
+	// (order_delivered_sale), so their revenue is in Operational (counted at placement) but not yet in
+	// Ledger — an expected timing drift, reconciled by the prepayments block, not a hard alert.
+	block.Items = append(block.Items, entity.AcctReconItem{
+		Ref:    "note",
+		Label:  "new-chain orders paid but not yet delivered recognise revenue at delivery; outstanding amount reconciled by the prepayments block",
+		Amount: decimal.Zero,
+	})
 
 	missing, err := storeutil.QueryListNamed[struct {
 		Ref    string          `db:"ref"`
@@ -237,6 +266,11 @@ func (s *Store) reconFees(ctx context.Context, fromStr, toStr string, fromT, toT
 // reconCOGS: ledger 5010 COGS debits vs Σ COALESCE(cost_price_at_sale, product.cost_price) × qty
 // over the period's confirmed orders (the same snapshot-first cost fallback as metrics/margin.go and
 // the sale builder).
+//
+// WAVE-2: the ledger sum is source-agnostic (sourceType ""), so it ALREADY recognises the delivered
+// chain — the only sources debiting 5010 are order_sale (COGS at payment) and order_delivered_sale
+// (COGS at delivery). As with revenue, the operational side still counts COGS at placement, so a
+// new-chain order paid-but-not-yet-delivered is an expected timing drift here (advisory), not an error.
 func (s *Store) reconCOGS(ctx context.Context, fromStr, toStr string, fromT, toT time.Time, statusIDs []int) (entity.AcctReconBlock, error) {
 	ledger, err := s.ledgerLineSum(ctx, []string{"5010"}, entity.AcctSideDebit, "", fromStr, toStr)
 	if err != nil {
@@ -480,17 +514,26 @@ func (s *Store) reconUnpostedMovements(ctx context.Context, fromT, toT time.Time
 	return block, nil
 }
 
-// reconVat: ledger 2070 output VAT credited by order_sale entries vs the VAT the period's confirmed
-// orders imply from their sale-time snapshot (EUR-scaled the same way reconRevenue scales revenue).
-// The posting now uses the RESOLVED REGIME rate, so a standing delta versus the snapshot is expected
-// where regime and snapshot rate diverge (phase 2, wave 1) — informational, not an error. Items sample
-// the order_sale entries whose builder flagged a "vat snapshot mismatch".
+// reconVat: ledger 2070 output VAT credited by order entries vs the VAT the period's confirmed orders
+// imply from their sale-time snapshot (EUR-scaled the same way reconRevenue scales revenue). The
+// posting now uses the RESOLVED REGIME rate, so a standing delta versus the snapshot is expected where
+// regime and snapshot rate diverge (phase 2, wave 1) — informational, not an error. Items sample the
+// order entries whose builder flagged a "vat snapshot mismatch".
+//
+// WAVE-2: post-cutover VAT is credited on order_prepayment (at payment), NOT order_sale, so the ledger
+// sum reads BOTH sources — mirroring vatreturn.go's 2070 output list and avoiding false drift. The VAT
+// tax point stays at payment, so the operational side (VAT the period's orders imply at payment) is
+// unchanged; order_delivered_sale never touches VAT and is deliberately absent.
 func (s *Store) reconVat(ctx context.Context, fromStr, toStr string, fromT, toT time.Time, statusIDs []int) (entity.AcctReconBlock, error) {
-	ledger, err := s.ledgerLineSum(ctx, []string{"2070"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
+	saleVat, err := s.ledgerLineSum(ctx, []string{"2070"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
 	if err != nil {
 		return entity.AcctReconBlock{}, err
 	}
-	block := entity.AcctReconBlock{Name: "vat", Ledger: ledger}
+	prepayVat, err := s.ledgerLineSum(ctx, []string{"2070"}, entity.AcctSideCredit, string(entity.AcctSourceOrderPrepayment), fromStr, toStr)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	block := entity.AcctReconBlock{Name: "vat", Ledger: saleVat.Add(prepayVat)}
 	if len(statusIDs) > 0 {
 		op, err := storeutil.QueryNamedOne[struct {
 			V decimal.Decimal `db:"v"`
@@ -515,7 +558,7 @@ func (s *Store) reconVat(ctx context.Context, fromStr, toStr string, fromT, toT 
 		Ref string `db:"ref"`
 	}](ctx, s.DB, `
 		SELECT source_key AS ref FROM acct_journal_entry
-		WHERE source_type = 'order_sale' AND has_caveat = TRUE
+		WHERE source_type IN ('order_sale','order_prepayment') AND has_caveat = TRUE
 		  AND caveat LIKE '%vat snapshot mismatch%'
 		  AND occurred_at >= :from AND occurred_at < :to
 		ORDER BY occurred_at LIMIT :topN`,
@@ -532,12 +575,96 @@ func (s *Store) reconVat(ctx context.Context, fromStr, toStr string, fromT, toT 
 	}
 	block.TotalCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM acct_journal_entry
-		WHERE source_type = 'order_sale' AND has_caveat = TRUE
+		WHERE source_type IN ('order_sale','order_prepayment') AND has_caveat = TRUE
 		  AND caveat LIKE '%vat snapshot mismatch%'
 		  AND occurred_at >= :from AND occurred_at < :to`,
 		map[string]any{"from": fromStr, "to": toStr})
 	if err != nil {
 		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon vat mismatch count: %w", err)
+	}
+	return block, nil
+}
+
+// reconPrepayments: ledger 2090 Customer-Prepayments balance AS OF the period end vs the outstanding
+// customer prepayment implied by the delivered chain — orders that are paid (an order_prepayment entry
+// exists) but not yet delivered (no order_delivered_sale entry) as of `to` (phase 2, wave 2). A
+// post-cutover Stripe order parks G−VAT on 2090 at payment and drains the exact remaining balance at
+// delivery, so between those moments 2090 carries the live obligation this block proves. It is an
+// AS-OF balance like reconMaterials / reconFinishedGoods, so it is cumulative (not period-scoped) and
+// keyed off ledger-entry existence, not order status — no status-cache guard is needed.
+//
+// The operational figure sums G − VAT_snapshot·k − refunded·k at k = G/total_price (the ratio the
+// prepayment builder uses; G = total_settled_base, or total_price for a non-Stripe EUR order) — the
+// revenue block's per-order EUR expression, less the refunded share. It subtracts the GROSS
+// refunded_amount while the ledger reduced 2090 by only the refund's NET share, so a small positive
+// delta from partial pre-delivery refunds (and rounding) is EXPECTED and advisory, not a hard error —
+// the same stance as the revenue and finished-goods blocks. `from` is unused (as-of `to` only).
+func (s *Store) reconPrepayments(ctx context.Context, from, to time.Time) (entity.AcctReconBlock, error) {
+	ledger, err := s.accountBalanceBefore(ctx, "2090", to)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	block := entity.AcctReconBlock{Name: "prepayments", Ledger: ledger}
+
+	// toStr uses dateLayout so the operational gate's occurred_at boundary is IDENTICAL to the as-of
+	// ledger balance (accountBalanceBefore formats the same way) — the two sides count the same entries.
+	toStr := to.UTC().Format(dateLayout)
+
+	// gate selects the delivered-chain orders that are paid (order_prepayment) but not yet delivered (no
+	// order_delivered_sale) as of `to`. The CAST/COLLATE lands the utf8mb4 acct source_key in the
+	// operational tables' utf8mb3 collation (prod), exactly as the revenue block joins order uuids; both
+	// source_keys are the bare order uuid, so a plain equality (no SUBSTRING_INDEX) is correct.
+	const gate = `EXISTS (SELECT 1 FROM acct_journal_entry e
+	              WHERE e.source_type = 'order_prepayment' AND e.occurred_at < :to
+	                AND e.source_key = CAST(co.uuid AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)
+	          AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
+	                          WHERE e.source_type = 'order_delivered_sale' AND e.occurred_at < :to
+	                            AND e.source_key = CAST(co.uuid AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)`
+	// outstanding = live customer prepayment on 2090 (G − VAT_snapshot·k − refunded·k).
+	const outstanding = `COALESCE(co.total_settled_base, co.total_price)
+	    - COALESCE(co.vat_amount, 0)      * (COALESCE(co.total_settled_base, co.total_price) / co.total_price)
+	    - COALESCE(co.refunded_amount, 0) * (COALESCE(co.total_settled_base, co.total_price) / co.total_price)`
+
+	op, err := storeutil.QueryNamedOne[struct {
+		V decimal.Decimal `db:"v"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(CASE WHEN co.total_price > 0 THEN `+outstanding+` ELSE 0 END), 0) AS v
+		FROM customer_order co
+		WHERE `+gate,
+		map[string]any{"to": toStr})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon prepayments operational: %w", err)
+	}
+	block.Operational = op.V.Round(2)
+	block.Delta = block.Ledger.Sub(block.Operational)
+
+	items, err := storeutil.QueryListNamed[struct {
+		Ref    string          `db:"ref"`
+		Amount decimal.Decimal `db:"amount"`
+	}](ctx, s.DB, `
+		SELECT co.uuid AS ref, (`+outstanding+`) AS amount
+		FROM customer_order co
+		WHERE co.total_price > 0 AND `+gate+`
+		ORDER BY co.placed
+		LIMIT :topN`,
+		map[string]any{"to": toStr, "topN": reconTopN})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon prepayments items: %w", err)
+	}
+	for _, it := range items {
+		block.Items = append(block.Items, entity.AcctReconItem{
+			Ref:    it.Ref,
+			Label:  "paid on the delivered chain, not yet delivered (outstanding prepayment)",
+			Amount: it.Amount.Round(2),
+		})
+	}
+
+	block.TotalCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM customer_order co
+		WHERE `+gate,
+		map[string]any{"to": toStr})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon prepayments count: %w", err)
 	}
 	return block, nil
 }

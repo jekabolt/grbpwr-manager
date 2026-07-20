@@ -10,12 +10,22 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5). Both are
-// SOURCE-TYPE-AGNOSTIC (07 §7.4.15): they read the 2070/2080 ledger lines of order and material-
-// receipt entries, split by customer_order.vat_regime / material_stock_movement.input_vat_regime, over
-// the PAYMENT period (the entry's occurred_at). A refund's 2070 line is a debit, so summing
-// credit−debit nets refunds with a minus automatically. They survive wave 2's prepayment split
-// because they never filter on source_type beyond "an order / a receipt".
+// VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5). They read
+// the 2070/2080/2090 ledger lines of order and material-receipt entries, split by
+// customer_order.vat_regime / material_stock_movement.input_vat_regime, over the PAYMENT period (the
+// entry's occurred_at). A refund's line is a debit, so summing credit−debit nets refunds with a minus
+// automatically.
+//
+// WAVE-2 (delivered recognition): the VAT tax point stays at PAYMENT (07 §7.4.5, PL advance-payment /
+// zaliczka treatment — confirm with the accountant on rollout). So both the output VAT (2070) and the
+// taxable NET base are declared in the payment period, and the delivered-chain entries are read as:
+//   - output VAT  → source_type IN ('order_sale','order_prepayment','order_refund') on 2070
+//                   (post-cutover VAT is credited on order_prepayment, NOT order_sale).
+//   - taxable NET → the SAME sources, over the revenue accounts PLUS 2090: the old chain carries its
+//                   net on the revenue accounts at order_sale; the new chain carries it on the 2090
+//                   credit (= G − VAT) at order_prepayment. order_delivered_sale is DELIBERATELY
+//                   EXCLUDED — its revenue is recognised in the (later) delivery period, so folding it
+//                   in would double-count the base and shift it out of the tax-point period.
 //
 // The join to customer_order / material_stock_movement casts the entry source_key to the ledger's
 // utf8mb4_unicode_ci collation (the acct_* tables' collation) so it compares cleanly with those
@@ -59,7 +69,7 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 		JOIN acct_account a ON a.id = l.account_id
 		JOIN customer_order co ON `+orderKeyMatch+`
 		WHERE a.code = '2070'
-		  AND e.source_type IN ('order_sale','order_refund')
+		  AND e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
 		GROUP BY COALESCE(co.vat_regime, 'none')`,
 		map[string]any{"from": fromStr, "to": toStr})
@@ -136,8 +146,8 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account a ON a.id = l.account_id
 		JOIN customer_order co ON `+orderKeyMatch+`
-		WHERE a.code IN ('4010','4020','4310','4110','4040')
-		  AND e.source_type IN ('order_sale','order_refund')
+		WHERE a.code IN ('4010','4020','4310','4110','4040','2090')
+		  AND e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
 		  AND co.vat_regime IN ('wdt','export')
 		GROUP BY co.vat_regime`,
@@ -183,7 +193,8 @@ func (s *Store) vatReturnCaveats(ctx context.Context, fromStr, toStr string) ([]
 		SELECT DISTINCT caveat
 		FROM acct_journal_entry
 		WHERE has_caveat = TRUE AND caveat IS NOT NULL AND caveat <> ''
-		  AND source_type IN ('order_sale','order_refund','material_receipt')
+		  AND source_type IN ('order_sale','order_prepayment','order_transit',
+		                      'order_delivered_sale','order_refund','material_receipt')
 		  AND occurred_at >= :from AND occurred_at < :to
 		ORDER BY caveat
 		LIMIT 50`, map[string]any{"from": fromStr, "to": toStr})
@@ -212,7 +223,7 @@ func (s *Store) GetOssReturn(ctx context.Context, quarterStart time.Time) (*enti
 		Vat     decimal.Decimal `db:"vat"`
 	}](ctx, s.DB, `
 		SELECT COALESCE(NULLIF(a.country_code, ''), a.country, '') AS country,
-		       COALESCE(SUM(CASE WHEN acc.code IN ('4010','4020','4310','4110','4040')
+		       COALESCE(SUM(CASE WHEN acc.code IN ('4010','4020','4310','4110','4040','2090')
 		                         THEN (`+signedAmount+`) ELSE 0 END), 0) AS net,
 		       COALESCE(SUM(CASE WHEN acc.code = '2070'
 		                         THEN (`+signedAmount+`) ELSE 0 END), 0) AS vat
@@ -223,9 +234,9 @@ func (s *Store) GetOssReturn(ctx context.Context, quarterStart time.Time) (*enti
 		LEFT JOIN buyer b ON b.order_id = co.id
 		LEFT JOIN address a ON a.id = b.shipping_address_id
 		WHERE co.vat_regime = 'oss'
-		  AND e.source_type IN ('order_sale','order_refund')
+		  AND e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
-		  AND acc.code IN ('4010','4020','4310','4110','4040','2070')
+		  AND acc.code IN ('4010','4020','4310','4110','4040','2070','2090')
 		GROUP BY COALESCE(NULLIF(a.country_code, ''), a.country, '')
 		HAVING net <> 0 OR vat <> 0
 		ORDER BY country`,

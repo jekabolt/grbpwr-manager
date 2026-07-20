@@ -73,6 +73,13 @@ const (
 
 	AcctSourceOrderSale          AcctSourceType = "order_sale"
 	AcctSourceOrderRefund        AcctSourceType = "order_refund"
+	// Delivered-recognition chain (phase 2, wave 2 — migration 0195). order_prepayment posts at
+	// payment (money in, revenue parked on 2090); order_transit at shipped (1130→1140); and
+	// order_delivered_sale at delivered (2090→revenue, 1140→COGS). See docs/plan-accounting-phase2/
+	// 02-wave2-delivered.md.
+	AcctSourceOrderPrepayment    AcctSourceType = "order_prepayment"
+	AcctSourceOrderTransit       AcctSourceType = "order_transit"
+	AcctSourceOrderDeliveredSale AcctSourceType = "order_delivered_sale"
 	AcctSourceMaterialReceipt    AcctSourceType = "material_receipt"
 	AcctSourceMaterialIssue      AcctSourceType = "material_issue"
 	AcctSourceMaterialReturn     AcctSourceType = "material_return"
@@ -83,8 +90,10 @@ const (
 	AcctSourceManual             AcctSourceType = "manual"
 	AcctSourceReversal           AcctSourceType = "reversal"
 
-	AcctEventOrderPaid   AcctEventType = "order_paid"
-	AcctEventOrderRefund AcctEventType = "order_refund"
+	AcctEventOrderPaid      AcctEventType = "order_paid"
+	AcctEventOrderRefund    AcctEventType = "order_refund"
+	AcctEventOrderShipped   AcctEventType = "order_shipped"   // phase 2, wave 2 — triggers order_transit
+	AcctEventOrderDelivered AcctEventType = "order_delivered" // phase 2, wave 2 — triggers order_delivered_sale
 )
 
 // VatRegime classifies an order's VAT treatment (customer_order.vat_regime), resolved at posting from
@@ -162,12 +171,15 @@ const (
 )
 
 // ValidAcctSourceTypes is the storable set for acct_journal_entry.source_type — the single source
-// of truth mirrored by the DB CHECK (chk_acct_entry_source_type, migration 0189) and validated in
-// dto. Map-to-bool (not struct{}), matching entity.ValidMaterialClasses: migrationlint's
+// of truth mirrored by the DB CHECK (chk_acct_entry_source_type, migrations 0189 + 0195) and validated
+// in dto. Map-to-bool (not struct{}), matching entity.ValidMaterialClasses: migrationlint's
 // enum_drift_test.go compares it via mapKeysAsStrings[K ~string](m map[K]bool).
 var ValidAcctSourceTypes = map[AcctSourceType]bool{
 	AcctSourceOrderSale:          true,
 	AcctSourceOrderRefund:        true,
+	AcctSourceOrderPrepayment:    true,
+	AcctSourceOrderTransit:       true,
+	AcctSourceOrderDeliveredSale: true,
 	AcctSourceMaterialReceipt:    true,
 	AcctSourceMaterialIssue:      true,
 	AcctSourceMaterialReturn:     true,
@@ -187,10 +199,12 @@ var ValidAcctSides = map[AcctSide]bool{
 }
 
 // ValidAcctEventTypes is the storable set for acct_event.event_type — mirrors the DB CHECK
-// (chk_acct_event_type, migration 0189).
+// (chk_acct_event_type, migrations 0189 + 0195).
 var ValidAcctEventTypes = map[AcctEventType]bool{
-	AcctEventOrderPaid:   true,
-	AcctEventOrderRefund: true,
+	AcctEventOrderPaid:      true,
+	AcctEventOrderRefund:    true,
+	AcctEventOrderShipped:   true,
+	AcctEventOrderDelivered: true,
 }
 
 // AcctAccount is a stored chart-of-accounts row (migration 0190 seeds 34 of these). IsSystem marks
@@ -351,6 +365,36 @@ type AcctOrderRefundPayload struct {
 	RefundAmount   decimal.Decimal `json:"refund_amount"` // order currency, THIS refund only, shipping included
 	OrderCurrency  string          `json:"order_currency"`
 	RefundedByItem map[int]int64   `json:"refunded_by_item"` // order_item.id -> refunded qty (for COGS)
+}
+
+// AcctOrderShippedPayload / AcctOrderDeliveredPayload are the outbox payloads for the wave-2
+// delivered-recognition events. Thin (just the order UUID), like AcctOrderPaidPayload: the worker
+// re-reads order facts (cost snapshots, settled base, vat_regime) from customer_order at posting time
+// rather than freezing them into the payload.
+type AcctOrderShippedPayload struct {
+	OrderUUID string `json:"order_uuid"`
+}
+
+type AcctOrderDeliveredPayload struct {
+	OrderUUID string `json:"order_uuid"`
+}
+
+// AcctOrderPostingState is the ledger's current posting state for one order, read by the worker before
+// it posts a delivered-chain entry (phase 2, wave 2). The booleans report which of the order's entries
+// already exist (matched across the order's entries incl. refund "uuid:seq" keys). DeliveredEvent is
+// true when an order_delivered event has been enqueued — the order is operationally delivered even if
+// its order_delivered_sale entry has not posted yet (the refund defer-guard, synthesis D8).
+// Remaining2090 / Remaining1140 are the order's outstanding balances on those accounts, signed to their
+// normal side (2090 credit−debit, 1140 debit−credit): the EXACT amounts BuildOrderDeliveredSaleEntry
+// drains, so a vat-rate edit or a partial pre-delivery refund cannot leave a residual (synthesis D1).
+type AcctOrderPostingState struct {
+	LegacySale     bool
+	Prepayment     bool
+	Transit        bool
+	DeliveredSale  bool
+	DeliveredEvent bool
+	Remaining2090  decimal.Decimal
+	Remaining1140  decimal.Decimal
 }
 
 // AcctEntryFilter narrows ListJournalEntries (docs/plan-accounting/02-store-layer.md,
@@ -634,6 +678,10 @@ type AcctReconciliation struct {
 	// regime (phase 2, wave 1). A pointer so pre-phase-2 callers/serialisers see it absent rather than
 	// a zero block; nil until GetReconciliation fills it.
 	Vat *AcctReconBlock
+	// Prepayments reconciles the 2090 Customer-Prepayments ledger balance at period end against the
+	// obligation implied by orders paid on the delivered chain but not yet delivered (phase 2, wave 2).
+	// Pointer for the same reason as Vat; nil until GetReconciliation fills it.
+	Prepayments *AcctReconBlock
 }
 
 // =====================================================================================
