@@ -123,6 +123,11 @@ type Order struct {
 	BuyerEmail     string `db:"buyer_email"`
 	BuyerFirstName string `db:"buyer_first_name"`
 	BuyerLastName  string `db:"buyer_last_name"`
+	// VatRegime is the VAT treatment snapshotted onto the order at accounting-posting time by
+	// SetOrderVatRegime (customer_order.vat_regime): oss / pl_domestic / export / wdt /
+	// uk_stock_domestic / none. NULL until the sale event is posted. Read-only surface for the
+	// invoice reverse-charge note; not written by the order flow.
+	VatRegime sql.NullString `db:"vat_regime"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
