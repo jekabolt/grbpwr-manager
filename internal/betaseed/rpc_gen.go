@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (237 rpc) ----
+// ---- admin (242 rpc) ----
 
 func (c *Client) AddArchive(ctx context.Context, in *admin.AddArchiveRequest) (*admin.AddArchiveResponse, error) {
 	out := new(admin.AddArchiveResponse)
@@ -773,6 +773,14 @@ func (c *Client) GetOrderReviewsPaged(ctx context.Context, in *admin.GetOrderRev
 	return out, nil
 }
 
+func (c *Client) GetOssReturn(ctx context.Context, in *admin.GetOssReturnRequest) (*admin.GetOssReturnResponse, error) {
+	out := new(admin.GetOssReturnResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/oss-return", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetProductReviewsPaged(ctx context.Context, in *admin.GetProductReviewsPagedRequest) (*admin.GetProductReviewsPagedResponse, error) {
 	out := new(admin.GetProductReviewsPagedResponse)
 	if err := c.call(ctx, "GET", "/api/admin/product/{product_id}/reviews", in, out); err != nil {
@@ -949,6 +957,14 @@ func (c *Client) GetVatRates(ctx context.Context, in *admin.GetVatRatesRequest) 
 	return out, nil
 }
 
+func (c *Client) GetVatReturnPL(ctx context.Context, in *admin.GetVatReturnPLRequest) (*admin.GetVatReturnPLResponse, error) {
+	out := new(admin.GetVatReturnPLResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/vat-return", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) HardEraseMember(ctx context.Context, in *admin.HardEraseMemberRequest) (*admin.HardEraseMemberResponse, error) {
 	out := new(admin.HardEraseMemberResponse)
 	if err := c.call(ctx, "POST", "/api/admin/members/{user_id}/erase", in, out); err != nil {
@@ -984,6 +1000,14 @@ func (c *Client) ListAccounts(ctx context.Context, in *admin.ListAccountsRequest
 func (c *Client) ListAcctAccounts(ctx context.Context, in *admin.ListAcctAccountsRequest) (*admin.ListAcctAccountsResponse, error) {
 	out := new(admin.ListAcctAccountsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounting/accounts", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListAcctEventsNeedingReview(ctx context.Context, in *admin.ListAcctEventsNeedingReviewRequest) (*admin.ListAcctEventsNeedingReviewResponse, error) {
+	out := new(admin.ListAcctEventsNeedingReviewResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/events/needs-review", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1381,9 +1405,25 @@ func (c *Client) ReopenAcctPeriod(ctx context.Context, in *admin.ReopenAcctPerio
 	return out, nil
 }
 
+func (c *Client) ReprocessAcctEvent(ctx context.Context, in *admin.ReprocessAcctEventRequest) (*admin.ReprocessAcctEventResponse, error) {
+	out := new(admin.ReprocessAcctEventResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/events/reprocess", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ResetAccountPassword(ctx context.Context, in *admin.ResetAccountPasswordRequest) (*admin.ResetAccountPasswordResponse, error) {
 	out := new(admin.ResetAccountPasswordResponse)
 	if err := c.call(ctx, "PUT", "/api/admin/accounts/{username}/password", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ResolveAcctEvent(ctx context.Context, in *admin.ResolveAcctEventRequest) (*admin.ResolveAcctEventResponse, error) {
+	out := new(admin.ResolveAcctEventResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/events/resolve", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2184,4 +2224,3 @@ func (c *Client) SFVerifyAccountMagicLink(ctx context.Context, in *frontend.Veri
 	}
 	return out, nil
 }
-
