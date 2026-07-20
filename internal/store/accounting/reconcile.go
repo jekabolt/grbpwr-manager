@@ -373,7 +373,7 @@ func (s *Store) reconPending(ctx context.Context, fromStr, toStr string, fromT, 
 		SELECT r.id FROM production_run r
 		WHERE r.received_at >= :from AND r.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
-		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR) COLLATE utf8mb4_unicode_ci)
+		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)
 		ORDER BY r.received_at, r.id
 		LIMIT :topN`,
 		map[string]any{"from": fromT, "to": toT, "topN": reconTopN})
@@ -391,7 +391,7 @@ func (s *Store) reconPending(ctx context.Context, fromStr, toStr string, fromT, 
 		SELECT COUNT(*) FROM production_run r
 		WHERE r.received_at >= :from AND r.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
-		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR) COLLATE utf8mb4_unicode_ci)`,
+		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)`,
 		map[string]any{"from": fromT, "to": toT})
 	if err != nil {
 		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon pending run count: %w", err)

@@ -104,7 +104,7 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		SELECT COUNT(*) FROM production_run r
 		WHERE r.received_at >= :from AND r.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
-		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR) COLLATE utf8mb4_unicode_ci)`,
+		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)`,
 		map[string]any{"from": from, "to": to})
 	if err != nil {
 		return fmt.Errorf("accounting: close period unposted runs: %w", err)
