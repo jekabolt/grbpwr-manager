@@ -50,7 +50,10 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time) (en
 			uncostedIssues = true
 			continue
 		}
-		value := iss.Quantity.Mul(iss.UnitCostBase.Decimal)
+		// Round per issue, exactly as M3/M5 rounded when they posted these to 1120 WIP — summing the
+		// unrounded products here would drift by cents against the posted ledger WIP and leave a
+		// residual on 1120 forever (A-3).
+		value := iss.Quantity.Mul(iss.UnitCostBase.Decimal).Round(2)
 		switch iss.MovementType {
 		case entity.MaterialMovementIssueProduction:
 			ledgerWIP = ledgerWIP.Add(value)
