@@ -81,12 +81,14 @@ func BuildOrderSaleEntry(f entity.AcctOrderFacts, vd VatDecision, occurredAt tim
 	}
 
 	// Acquirer fee: the captured Stripe fee (PaymentFee), or, for non-Stripe methods, an estimate
-	// derived from the payment method's fee model (see orderFee). Booked Dr 6050 / Cr 1030 per the
-	// spec table (fee reduces the processor balance).
+	// derived from the payment method's fee model (see orderFee). Booked Dr 6050 / Cr the SAME money
+	// account the sale debited (the fee reduces that balance): 1030 for Stripe, 1010 cash, 1040
+	// bank-invoice. Always crediting 1030 left a phantom negative on the processor account for a
+	// non-Stripe method that carries an estimated fee (A-2).
 	if fee := orderFee(f, g); fee.IsPositive() {
 		lines = append(lines,
 			entity.AcctJournalLineInsert{AccountCode: Acc6050, Side: entity.AcctSideDebit, Amount: fee},
-			entity.AcctJournalLineInsert{AccountCode: Acc1030, Side: entity.AcctSideCredit, Amount: fee},
+			entity.AcctJournalLineInsert{AccountCode: moneyAccount(f.PaymentMethodName), Side: entity.AcctSideCredit, Amount: fee},
 		)
 		if !isStripe(f.PaymentMethodName) {
 			caveats = append(caveats, "fee estimated from method model")

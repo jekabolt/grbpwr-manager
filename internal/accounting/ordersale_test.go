@@ -288,7 +288,8 @@ func TestBuildOrderSaleEntry_Cases(t *testing.T) {
 				// G = total_price (non-stripe EUR, no settlement) = 100.00; fee = 100*1.90/100 + 0.30 = 2.20.
 				assertAmount(t, e, Acc1040, entity.AcctSideDebit, "100.00") // gross booked to receivable
 				assertAmount(t, e, Acc6050, entity.AcctSideDebit, "2.20")
-				assertAmount(t, e, Acc1030, entity.AcctSideCredit, "2.20") // fee credited to the processor account (phase-1 behaviour)
+				assertAmount(t, e, Acc1040, entity.AcctSideCredit, "2.20") // A-2: fee reduces the SAME money account (1040), not the processor 1030
+				assert.False(t, hasLine(e, Acc1030, entity.AcctSideCredit), "non-stripe fee must not touch the processor account")
 				assert.True(t, e.HasCaveat)
 				assert.Contains(t, e.Caveat.String, "method model")
 			},
