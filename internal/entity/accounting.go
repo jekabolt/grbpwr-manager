@@ -67,6 +67,10 @@ const (
 	AcctSectionRevenue   AcctSection = "revenue"
 	AcctSectionCogs      AcctSection = "cogs"
 	AcctSectionOpex      AcctSection = "opex"
+	// AcctSectionTax is Corporation Tax's own P&L section (phase 2, wave 3 — migration 0196). It is
+	// debit-normal like cogs/opex (a tax charge is a debit to 8010) and drives the P&L's
+	// Net-Profit-after-tax line (OperatingProfit − Σ tax).
+	AcctSectionTax AcctSection = "tax"
 
 	AcctSideDebit  AcctSide = "debit"
 	AcctSideCredit AcctSide = "credit"
@@ -87,8 +91,14 @@ const (
 	AcctSourceMaterialAdjustment AcctSourceType = "material_adjustment"
 	AcctSourceProductionReceive  AcctSourceType = "production_receive"
 	AcctSourceOpexMonth          AcctSourceType = "opex_month"
-	AcctSourceManual             AcctSourceType = "manual"
-	AcctSourceReversal           AcctSourceType = "reversal"
+	// Wave-3 pull sources (phase 2, wave 3 — migration 0196). shipping_actual posts the actual carrier
+	// cost from shipment.actual_cost / return_shipping_cost (Dr 6030 / Cr 2030); dev_expense posts a
+	// tech_card_dev_expense R&D charge (Dr 6210 / Cr 2030). Both are mutable pull sources: a change
+	// reposts (reverse + a versioned source_key), like opex_month.
+	AcctSourceShippingActual AcctSourceType = "shipping_actual"
+	AcctSourceDevExpense     AcctSourceType = "dev_expense"
+	AcctSourceManual         AcctSourceType = "manual"
+	AcctSourceReversal       AcctSourceType = "reversal"
 
 	AcctEventOrderPaid      AcctEventType = "order_paid"
 	AcctEventOrderRefund    AcctEventType = "order_refund"
@@ -187,8 +197,22 @@ var ValidAcctSourceTypes = map[AcctSourceType]bool{
 	AcctSourceMaterialAdjustment: true,
 	AcctSourceProductionReceive:  true,
 	AcctSourceOpexMonth:          true,
+	AcctSourceShippingActual:     true,
+	AcctSourceDevExpense:         true,
 	AcctSourceManual:             true,
 	AcctSourceReversal:           true,
+}
+
+// ValidAcctSections is the storable set for acct_account.section — mirrored by the DB CHECK
+// (chk_acct_account_section, migrations 0189 + 0196) and asserted by migrationlint's enum-drift test.
+var ValidAcctSections = map[AcctSection]bool{
+	AcctSectionAsset:     true,
+	AcctSectionLiability: true,
+	AcctSectionEquity:    true,
+	AcctSectionRevenue:   true,
+	AcctSectionCogs:      true,
+	AcctSectionOpex:      true,
+	AcctSectionTax:       true,
 }
 
 // ValidAcctSides is the storable set for acct_journal_line.side — mirrors the DB CHECK
@@ -471,8 +495,43 @@ type AcctOrderFacts struct {
 	BuyerVatID sql.NullString `db:"buyer_vat_id"`
 	// VatRegime is the previously-snapshotted regime (customer_order.vat_regime), read back for
 	// reconciliation / debugging; the worker recomputes it each tick and does not trust this value.
-	VatRegime sql.NullString      `db:"vat_regime"`
-	Items     []AcctOrderItemFact `db:"-"`
+	VatRegime sql.NullString `db:"vat_regime"`
+	// PromoDiscountPct is the applied promo percentage snapshot (customer_order.promo_discount_pct,
+	// migration 0123; DECIMAL(5,2), NULL when no promo). A DISCOUNT percentage on the goods subtotal —
+	// free-shipping-only promos leave it NULL / 0 and are NOT a discount. The sale builders use it to
+	// split gross revenue into a full-price credit + a 4030 Discounts contra debit (phase 2, wave 3),
+	// analytics only: the P&L total is unchanged and the split is applied only when it reconstructs
+	// cleanly (07 §7.4.11).
+	PromoDiscountPct decimal.NullDecimal `db:"promo_discount_pct"`
+	Items            []AcctOrderItemFact `db:"-"`
+}
+
+// AcctShipmentCostFacts is one shipment's actual carrier cost, the fact set for the wave-3 shipping_actual
+// pull (3.1). ActualCost / ReturnShippingCost are shipment.actual_cost / return_shipping_cost (base EUR,
+// NULL = none, mutable — entered manually with delay). ShippingDate is the posting instant (occurred_at),
+// with UpdatedAt as a fallback when it is NULL. OrderUUID is denormalised for the entry description.
+type AcctShipmentCostFacts struct {
+	ShipmentID         int                 `db:"shipment_id"`
+	OrderUUID          string              `db:"order_uuid"`
+	ActualCost         decimal.NullDecimal `db:"actual_cost"`
+	ReturnShippingCost decimal.NullDecimal `db:"return_shipping_cost"`
+	ShippingDate       sql.NullTime        `db:"shipping_date"`
+	UpdatedAt          time.Time           `db:"updated_at"`
+}
+
+// AcctDevExpenseFacts is one tech_card_dev_expense row, the fact set for the wave-3 dev_expense pull
+// (3.2). AmountBase is the base-EUR amount (tech_card_dev_expense.amount_base; NULL = uncosted → skipped
+// with a caveat, the phase-1 standard). IncurredAt is the posting instant (occurred_at) with CreatedAt as
+// a fallback when it is NULL. TechCardName / Kind / Description are denormalised for the entry description.
+type AcctDevExpenseFacts struct {
+	Id           int                 `db:"id"`
+	TechCardID   int                 `db:"tech_card_id"`
+	TechCardName string              `db:"tech_card_name"`
+	Kind         string              `db:"kind"`
+	Description  sql.NullString      `db:"description"`
+	AmountBase   decimal.NullDecimal `db:"amount_base"`
+	IncurredAt   sql.NullTime        `db:"incurred_at"`
+	CreatedAt    time.Time           `db:"created_at"`
 }
 
 // AcctMovementFacts is one material_stock_movement joined with its material name — the fact set for
@@ -580,7 +639,12 @@ type AcctProfitLoss struct {
 	TotalOpex       []decimal.Decimal
 	OperatingProfit []decimal.Decimal
 	NetMarginPct    []decimal.Decimal
-	Caveats         []string
+	// TotalTax / NetProfitAfterTax are the wave-3 Corporation-Tax lines (per-month, aligned to Months):
+	// TotalTax is the period's Σ 'tax'-section (8010) charge, NetProfitAfterTax = OperatingProfit − TotalTax.
+	// Tax is only ever a manual journal (no auto-accrual), so both are zero until the accountant posts CT.
+	TotalTax          []decimal.Decimal
+	NetProfitAfterTax []decimal.Decimal
+	Caveats           []string
 }
 
 // AcctBalanceSheetRow is one BS account's closing balance as of the report date.
@@ -682,6 +746,11 @@ type AcctReconciliation struct {
 	// obligation implied by orders paid on the delivered chain but not yet delivered (phase 2, wave 2).
 	// Pointer for the same reason as Vat; nil until GetReconciliation fills it.
 	Prepayments *AcctReconBlock
+	// Shipping reconciles the 6030 Shipping & Fulfillment ledger debits against Σ shipment.actual_cost +
+	// return_shipping_cost over the period (phase 2, wave 3). Pointer for the same reason as Vat/
+	// Prepayments; nil until GetReconciliation fills it. Not yet surfaced on the wire (a UI follow-up,
+	// like Prepayments) — it is available to the worker's health checks.
+	Shipping *AcctReconBlock
 }
 
 // =====================================================================================

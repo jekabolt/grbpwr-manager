@@ -820,6 +820,12 @@ type (
 		GetRunFactsForPosting(ctx context.Context, runID int) (*entity.AcctRunFacts, error)
 		ListChangedOpexMonths(ctx context.Context, afterTS time.Time) ([]time.Time, error)
 		GetOpexMonthFacts(ctx context.Context, month time.Time) ([]entity.AcctOpexCategorySum, error)
+		// ListChangedShipmentsForActualCost returns shipments whose actual carrier cost changed after
+		// afterTS (the shipping_actual checkpoint), for the wave-3 6030 pull (3.1). The worker reposts each.
+		ListChangedShipmentsForActualCost(ctx context.Context, afterTS, startDate time.Time) ([]entity.AcctShipmentCostFacts, error)
+		// ListDevExpensesForPosting returns tech_card_dev_expense rows created on/after startDate, for the
+		// wave-3 6210 dev-expense pull (3.2) — a full reconcile scan (the table has no updated_at).
+		ListDevExpensesForPosting(ctx context.Context, startDate time.Time) ([]entity.AcctDevExpenseFacts, error)
 	}
 
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.

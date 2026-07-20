@@ -268,15 +268,55 @@ func (s *Server) GetProfitLossStatement(ctx context.Context, req *pb_admin.GetPr
 	if err != nil {
 		return nil, mapAcctErr(ctx, "get profit and loss statement", err)
 	}
-	// Two permanent phase-1 caveats, injected here so they always head the list regardless of what
-	// the store computed (docs/plan-accounting/06-reports.md; wording mirrors the P&L response's proto
-	// doc-comment). These are the deliberate, structural gaps of the phase-1 P&L — the store's own
-	// caveats (the per-period has_caveat count) follow.
-	pl.Caveats = append([]string{
-		"pre-tax profit (no corporate tax accrual)",
-		"carrier shipping cost not booked (4110 has no 6030 expense pair yet)",
-	}, pl.Caveats...)
+	// Wave-3 CONDITIONAL caveats (replacing the two former permanent phase-1 caveats): the structural
+	// gaps they described are now closed by machinery (8010 Corporation Tax + 6030 actual shipping), so
+	// each is surfaced only when it is actually present in the period (docs/plan-accounting-phase2/
+	// 03-wave3-pnl-completion.md §3.1/§3.4). They still head the list; the store's own per-period
+	// has_caveat count follows.
+	var permanent []string
+	if !acctPLSectionNonZero(pl, string(entity.AcctSectionTax)) {
+		permanent = append(permanent, "pre-tax profit: no corporation tax (8010) posted for this period")
+	}
+	if acctPLAccountNonZero(pl, string(entity.AcctSectionRevenue), "4110") &&
+		!acctPLAccountNonZero(pl, string(entity.AcctSectionOpex), "6030") {
+		permanent = append(permanent, "carrier shipping cost not booked for this period (4110 shipping income has no 6030 expense pair)")
+	}
+	if len(permanent) > 0 {
+		pl.Caveats = append(permanent, pl.Caveats...)
+	}
 	return dto.ConvertAcctProfitLossToPb(*pl), nil
+}
+
+// acctPLSectionNonZero reports whether a P&L section has any account row with a non-zero period total
+// (used to decide whether the period actually carries tax — a wave-3 conditional caveat).
+func acctPLSectionNonZero(pl *entity.AcctProfitLoss, section string) bool {
+	for _, sec := range pl.Sections {
+		if sec.Section != section {
+			continue
+		}
+		for _, r := range sec.Rows {
+			if !r.Total.IsZero() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// acctPLAccountNonZero reports whether a specific account code appears in a P&L section with a non-zero
+// period total (used for the wave-3 conditional shipping caveat: 4110 income present, 6030 expense not).
+func acctPLAccountNonZero(pl *entity.AcctProfitLoss, section, code string) bool {
+	for _, sec := range pl.Sections {
+		if sec.Section != section {
+			continue
+		}
+		for _, r := range sec.Rows {
+			if r.Code == code && !r.Total.IsZero() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // GetBalanceSheet returns assets/liabilities/equity balances from inception through as_of.

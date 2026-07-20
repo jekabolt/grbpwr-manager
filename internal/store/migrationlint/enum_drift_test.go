@@ -225,13 +225,22 @@ func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
 
 // TestAcctEntrySourceTypeDBCheckNoDrift extends the drift test to the accounting journal entry's
 // source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK. The CHECK was defined in 0189 and
-// last extended by 0195 (phase 2, wave 2: +order_prepayment/order_transit/order_delivered_sale) — the
-// test reads the LATEST migration that redefines the full value set (07 §7.2 extend-CHECK pattern),
-// mirroring TestVatRegimeDBCheckNoDrift reading 0191.
+// last extended by 0196 (phase 2, wave 3: +shipping_actual/dev_expense; 0195 added the wave-2 delivered
+// types) — the test reads the LATEST migration that redefines the full value set (07 §7.2 extend-CHECK
+// pattern), mirroring TestVatRegimeDBCheckNoDrift reading 0191.
 func TestAcctEntrySourceTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0195_accounting_delivered.sql")
+	content := readMigrationFile(t, "0196_accounting_wave3_pnl.sql")
 	dbValues := extractDBEnumValues(t, content, "source_type IN", 700)
 	assertSameSet(t, "AcctSourceType", dbValues, mapKeysAsStrings(entity.ValidAcctSourceTypes))
+}
+
+// TestAcctSectionDBCheckNoDrift extends the drift test to the account section (entity.AcctSection/
+// ValidAcctSections) <-> DB CHECK. Defined in 0189 and last extended by 0196 (phase 2, wave 3: +tax) —
+// read the latest migration that redefines the full set (07 §7.2 extend-CHECK pattern).
+func TestAcctSectionDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0196_accounting_wave3_pnl.sql")
+	dbValues := extractDBEnumValues(t, content, "section IN", 300)
+	assertSameSet(t, "AcctSection", dbValues, mapKeysAsStrings(entity.ValidAcctSections))
 }
 
 // TestAcctLineSideDBCheckNoDrift extends the drift test to the accounting journal line's side

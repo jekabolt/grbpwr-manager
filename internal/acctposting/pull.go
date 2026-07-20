@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 const (
 	checkpointMaterialMovement = "material_movement"
 	checkpointOpexLine         = "opex_line"
+	// checkpointShipmentCost is the timestamp cursor for the wave-3 shipping_actual pull (3.1). Dev
+	// expenses (3.2) have no checkpoint — that source is a full reconcile scan each tick.
+	checkpointShipmentCost = "shipment_cost"
 )
 
 // caveatMaxLen bounds the caveat column (VARCHAR(512)) so an appended note cannot overflow it.
@@ -413,4 +417,322 @@ func truncateRunes(s string, maxLen int) string {
 func firstOfMonthUTC(t time.Time) time.Time {
 	y, m, _ := t.UTC().Date()
 	return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+}
+
+// versionListLimit bounds the per-source version lookups (a single shipment / dev expense never
+// accumulates enough reposts to page).
+const versionListLimit = 500
+
+// processShipping is the wave-3 shipping_actual pull (3.1): scan shipments whose actual carrier cost
+// changed after the checkpoint and repost each shipment's 6030 charge. Like OPEX the source is mutable,
+// so the granule is the shipment and any change reposts (reverse + a versioned source_key); the
+// timestamp checkpoint is captured BEFORE the scan so a row changed during the tick is re-seen (deduped
+// to a no-op), never missed. Pre-cutover shipments (shipping_date before the start month) are skipped, as
+// OPEX skips pre-cutover months. An infra error on a shipment fails the phase without advancing the
+// checkpoint (the whole batch retries); a closed period is warned and skipped inside repostShipment.
+func (w *Worker) processShipping(ctx context.Context) error {
+	acc := w.repo.Accounting()
+
+	cp, err := acc.GetCheckpoint(ctx, checkpointShipmentCost)
+	if err != nil {
+		return fmt.Errorf("get shipping checkpoint: %w", err)
+	}
+	lastTS := w.startDate
+	if cp.LastTs.Valid {
+		lastTS = cp.LastTs.Time
+	}
+
+	tickStart := w.repo.Now().UTC()
+
+	ships, err := acc.ListChangedShipmentsForActualCost(ctx, lastTS, w.startDate)
+	if err != nil {
+		return fmt.Errorf("list changed shipments: %w", err)
+	}
+
+	startMonth := firstOfMonthUTC(w.startDate)
+	for _, sh := range ships {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if firstOfMonthUTC(shippingOccurredAt(sh)).Before(startMonth) {
+			continue // pre-cutover shipping date — outside the "start from zero" ledger (like OPEX)
+		}
+		if err := w.repostShipment(ctx, sh); err != nil {
+			// Infra error: do not advance the checkpoint (retry the batch next tick). Shipments already
+			// processed this tick re-process to a no-op.
+			return err
+		}
+	}
+
+	// Store the checkpoint a small margin BEFORE the scan instant (B-4): shipment.updated_at is
+	// second-granular and the scan uses a strict `>`, so an edit landing in the SAME second as tickStart
+	// would be missed forever; the margin re-scans that boundary window next tick, deduped to a no-op.
+	const shippingCheckpointMargin = 2 * time.Second
+	if err := acc.SetCheckpoint(ctx, checkpointShipmentCost, sql.NullInt64{},
+		sql.NullTime{Time: tickStart.Add(-shippingCheckpointMargin), Valid: true}); err != nil {
+		return fmt.Errorf("set shipping checkpoint: %w", err)
+	}
+	return nil
+}
+
+// shippingOccurredAt mirrors the pure builder's rule: the shipment's posting instant is shipping_date
+// when set, else the row's last-update instant. Duplicated here (the builder's copy is unexported) only
+// to make the pre-cutover skip decision.
+func shippingOccurredAt(sh entity.AcctShipmentCostFacts) time.Time {
+	if sh.ShippingDate.Valid {
+		return sh.ShippingDate.Time
+	}
+	return sh.UpdatedAt
+}
+
+// repostShipment reconciles one shipment's 6030 charge with its current actual cost (3.1). It builds the
+// candidate entry, no-ops when it already matches the active version, reverses when the cost dropped to
+// nothing, and otherwise reposts (reverse the prior version + create the next). Returns an error only for
+// infrastructure failures; a closed period is swallowed by commitRepost.
+func (w *Worker) repostShipment(ctx context.Context, sh entity.AcctShipmentCostFacts) error {
+	active, versionCount, err := w.loadShippingVersions(ctx, sh.ShipmentID, shippingOccurredAt(sh))
+	if err != nil {
+		return err
+	}
+	candidate, berr := accounting.BuildShippingActualEntry(sh, versionCount+1)
+	if errors.Is(berr, accounting.ErrSkipEmpty) {
+		// No positive cost left: reverse any active version, create nothing.
+		if active != nil {
+			return w.reverseEntry(ctx, "shipping "+strconv.Itoa(sh.ShipmentID), "shipping cost cleared", active.Id)
+		}
+		return nil
+	}
+	if berr != nil {
+		return fmt.Errorf("build shipping %d: %w", sh.ShipmentID, berr)
+	}
+	if active == nil {
+		return w.commitRepost(ctx, "shipping "+strconv.Itoa(sh.ShipmentID), "", 0, candidate) // candidate is v1
+	}
+	full, err := w.repo.Accounting().GetJournalEntry(ctx, active.Id)
+	if err != nil {
+		return fmt.Errorf("load active shipping entry %d: %w", active.Id, err)
+	}
+	if sameEntryLines(full.Lines, candidate.Lines) {
+		return nil // unchanged — no-op
+	}
+	return w.commitRepost(ctx, "shipping "+strconv.Itoa(sh.ShipmentID), "shipping repost", active.Id, candidate)
+}
+
+// loadShippingVersions returns the active (un-reversed) shipping_actual entry for a shipment, if any, and
+// the total count of that shipment's versions — new version = count+1 (mirrors loadOpexVersions). It
+// windows ListJournalEntries to the occurred_at month (shipping_date is stable across cost-only reposts)
+// and matches the 'ship:<id>' source_key in Go. If shipping_date is later edited into a different month a
+// second version would land in that month; the UNIQUE(source_type, source_key) idempotency makes that a
+// no-op rather than a double-post (the shipping recon block surfaces any residual).
+func (w *Worker) loadShippingVersions(ctx context.Context, shipmentID int, occurredAt time.Time) (*entity.AcctJournalEntry, int, error) {
+	from := firstOfMonthUTC(occurredAt)
+	to := from.AddDate(0, 1, 0)
+	entries, _, err := w.repo.Accounting().ListJournalEntries(ctx, entity.AcctEntryFilter{
+		From:       from,
+		To:         to,
+		SourceType: entity.AcctSourceShippingActual,
+		Limit:      versionListLimit,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return pickActiveVersion(entries, "ship:", shipmentID)
+}
+
+// processDevExpenses is the wave-3 dev_expense pull (3.2). tech_card_dev_expense has no updated_at and a
+// DeleteTechCardDevExpense RPC exists, so this is a FULL reconcile scan each tick (dev expenses are few,
+// like production runs): post new costed rows, repost changed amounts, and reverse rows that were deleted
+// or lost their base cost. Per-row errors are logged and skipped so one bad row neither stalls the others
+// nor fails the tick; only the fact/version reads are phase-level errors.
+func (w *Worker) processDevExpenses(ctx context.Context) error {
+	acc := w.repo.Accounting()
+
+	devs, err := acc.ListDevExpensesForPosting(ctx, w.startDate)
+	if err != nil {
+		return fmt.Errorf("list dev expenses: %w", err)
+	}
+	active, versionCount, err := w.loadDevExpenseVersions(ctx)
+	if err != nil {
+		return fmt.Errorf("load dev expense versions: %w", err)
+	}
+
+	seen := make(map[int]bool, len(devs))
+	for _, d := range devs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		seen[d.Id] = true
+		cur := active[d.Id]
+
+		candidate, berr := accounting.BuildDevExpenseEntry(d, versionCount[d.Id]+1)
+		if errors.Is(berr, accounting.ErrSkipUncosted) || errors.Is(berr, accounting.ErrSkipEmpty) {
+			// Uncosted / zero: reverse a prior version (it lost its cost), else just skip.
+			if cur != nil {
+				if err := w.reverseEntry(ctx, "dev expense "+strconv.Itoa(d.Id), "dev expense uncosted", cur.Id); err != nil {
+					slog.Default().ErrorContext(ctx, "acctposting: reverse uncosted dev expense",
+						slog.Int("dev_expense_id", d.Id), slog.String("err", err.Error()))
+				}
+			} else {
+				slog.Default().DebugContext(ctx, "acctposting: skip uncosted dev expense", slog.Int("dev_expense_id", d.Id))
+			}
+			continue
+		}
+		if berr != nil {
+			slog.Default().ErrorContext(ctx, "acctposting: build dev expense",
+				slog.Int("dev_expense_id", d.Id), slog.String("err", berr.Error()))
+			continue
+		}
+
+		if cur == nil {
+			if err := w.commitRepost(ctx, "dev expense "+strconv.Itoa(d.Id), "", 0, candidate); err != nil { // v1
+				slog.Default().ErrorContext(ctx, "acctposting: post dev expense",
+					slog.Int("dev_expense_id", d.Id), slog.String("err", err.Error()))
+			}
+			continue
+		}
+		full, err := acc.GetJournalEntry(ctx, cur.Id)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "acctposting: load active dev expense entry",
+				slog.Int("dev_expense_id", d.Id), slog.String("err", err.Error()))
+			continue
+		}
+		if sameEntryLines(full.Lines, candidate.Lines) {
+			continue // unchanged — no-op
+		}
+		if err := w.commitRepost(ctx, "dev expense "+strconv.Itoa(d.Id), "dev expense repost", cur.Id, candidate); err != nil {
+			slog.Default().ErrorContext(ctx, "acctposting: repost dev expense",
+				slog.Int("dev_expense_id", d.Id), slog.String("err", err.Error()))
+		}
+	}
+
+	// Deletions: an active entry whose dev expense id no longer exists (row deleted) is reversed.
+	for id, entry := range active {
+		if seen[id] {
+			continue
+		}
+		if err := w.reverseEntry(ctx, "dev expense "+strconv.Itoa(id), "dev expense deleted", entry.Id); err != nil {
+			slog.Default().ErrorContext(ctx, "acctposting: reverse deleted dev expense",
+				slog.Int("dev_expense_id", id), slog.String("err", err.Error()))
+		}
+	}
+	return nil
+}
+
+// loadDevExpenseVersions returns, over ALL dev_expense entries, the active (un-reversed) entry per dev
+// expense id and the version count per id (new version = count+1). Unbounded window (occurred_at =
+// incurred_at can be any date) filtered to source_type dev_expense — few entries, so a single page.
+func (w *Worker) loadDevExpenseVersions(ctx context.Context) (map[int]*entity.AcctJournalEntry, map[int]int, error) {
+	entries, _, err := w.repo.Accounting().ListJournalEntries(ctx, entity.AcctEntryFilter{
+		SourceType: entity.AcctSourceDevExpense,
+		Limit:      versionListLimit,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	active := make(map[int]*entity.AcctJournalEntry)
+	count := make(map[int]int)
+	for i := range entries {
+		e := entries[i]
+		id, ok := parseSourceID(e.SourceKey, "dev:")
+		if !ok {
+			continue
+		}
+		count[id]++
+		if !e.ReversedBy.Valid {
+			ecopy := e
+			active[id] = &ecopy
+		}
+	}
+	return active, count, nil
+}
+
+// pickActiveVersion scans entries whose source_key carries the given prefix + id, returning the
+// un-reversed one (if any) and the total count of that id's versions.
+func pickActiveVersion(entries []entity.AcctJournalEntry, prefix string, id int) (*entity.AcctJournalEntry, int, error) {
+	var active *entity.AcctJournalEntry
+	count := 0
+	for i := range entries {
+		e := entries[i]
+		got, ok := parseSourceID(e.SourceKey, prefix)
+		if !ok || got != id {
+			continue
+		}
+		count++
+		if !e.ReversedBy.Valid {
+			ecopy := e
+			active = &ecopy
+		}
+	}
+	return active, count, nil
+}
+
+// parseSourceID parses the numeric id out of a versioned source_key '<prefix><id>' or
+// '<prefix><id>:vN' (e.g. 'ship:12', 'dev:3:v2'). ok is false when the key lacks the prefix or the id
+// segment is not an integer.
+func parseSourceID(key, prefix string) (int, bool) {
+	if !strings.HasPrefix(key, prefix) {
+		return 0, false
+	}
+	rest := key[len(prefix):]
+	if i := strings.IndexByte(rest, ':'); i >= 0 {
+		rest = rest[:i]
+	}
+	id, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+// commitRepost writes a repost in one short Tx: reverse the prior version (when reverseID != 0), then
+// create the new one. A closed period rolls the whole Tx back and is warned + skipped (the active entry
+// stays in place); any other error is returned. Shared by the shipping and dev_expense pulls (mirrors
+// commitOpex).
+func (w *Worker) commitRepost(ctx context.Context, label, reverseReason string, reverseID int, entry entity.AcctJournalEntryInsert) error {
+	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if reverseID != 0 {
+			if _, e := rep.Accounting().ReverseJournalEntry(ctx, reverseID, reverseReason, "system"); e != nil {
+				return e
+			}
+		}
+		_, _, e := rep.Accounting().CreateJournalEntry(ctx, entry)
+		return e
+	})
+	if txErr != nil {
+		if errors.Is(txErr, entity.ErrAcctPeriodClosed) {
+			slog.Default().WarnContext(ctx, "acctposting: period closed; skipping repost",
+				slog.String("source", label))
+			return nil
+		}
+		return fmt.Errorf("commit %s: %w", label, txErr)
+	}
+	return nil
+}
+
+// reverseEntry reverses an active entry (an emptied / removed source), creating nothing. A closed period
+// or an already-reversed entry is a benign no-op. Shared by the shipping and dev_expense pulls.
+func (w *Worker) reverseEntry(ctx context.Context, label, reason string, reverseID int) error {
+	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		_, e := rep.Accounting().ReverseJournalEntry(ctx, reverseID, reason, "system")
+		return e
+	})
+	if txErr != nil {
+		if errors.Is(txErr, entity.ErrAcctPeriodClosed) {
+			slog.Default().WarnContext(ctx, "acctposting: period closed; skipping reversal",
+				slog.String("source", label))
+			return nil
+		}
+		if errors.Is(txErr, entity.ErrAcctAlreadyReversed) {
+			return nil
+		}
+		return fmt.Errorf("reverse %s: %w", label, txErr)
+	}
+	return nil
+}
+
+// sameEntryLines reports whether an existing entry's lines equal a freshly built candidate's, as
+// multisets of (account code, side, amount). A thin alias of sameOpexLines — the comparison is generic
+// (used by the shipping and dev_expense reposts, not just opex).
+func sameEntryLines(existing []entity.AcctJournalLine, candidate []entity.AcctJournalLineInsert) bool {
+	return sameOpexLines(existing, candidate)
 }

@@ -30,6 +30,7 @@ const (
 	// Liabilities (4).
 	Acc2010 = "2010" // Accounts Payable
 	Acc2030 = "2030" // Accrued Expenses
+	Acc2050 = "2050" // Income Tax Payable — Corporation Tax liability (phase 2, wave 3, manual only)
 	Acc2070 = "2070" // VAT Payable
 	Acc2080 = "2080" // VAT Input (Recoverable) — contra-liability (phase 2, wave 1)
 	Acc2090 = "2090" // Customer Prepayments — delivered-recognition liability (phase 2, wave 2)
@@ -42,6 +43,7 @@ const (
 	// Revenue (6).
 	Acc4010 = "4010" // Sales – Retail / Popup
 	Acc4020 = "4020" // Sales – DTC (Website)
+	Acc4030 = "4030" // Discounts / Promotions — contra-revenue, debit-normal (phase 2, wave 3)
 	Acc4040 = "4040" // Returns & Refunds (contra-revenue, debit-normal)
 	Acc4050 = "4050" // Trade Discounts (B2B) — contra-revenue (phase 2, wave 1)
 	Acc4110 = "4110" // Shipping Income
@@ -66,6 +68,12 @@ const (
 	Acc6350 = "6350" // Professional Services
 	Acc6360 = "6360" // Taxes
 	Acc6390 = "6390" // Other Operating Expenses
+
+	// Shipping & Fulfillment (opex) — actual carrier cost pull (phase 2, wave 3).
+	Acc6030 = "6030" // Shipping & Fulfillment
+
+	// Tax (its own P&L section) — manual Corporation-Tax journal only (phase 2, wave 3).
+	Acc8010 = "8010" // Corporation Tax
 )
 
 // opexCategoryAccounts maps every OPEX category (entity.ValidOpexCategories) to its P&L account
