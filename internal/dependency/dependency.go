@@ -801,6 +801,9 @@ type (
 		// GetUkVatReturn aggregates the quarter's UK VAT figures (9-box MTD) for the uk_stock_domestic
 		// regime — a separate jurisdiction, never folded into the Polish net payable.
 		GetUkVatReturn(ctx context.Context, quarterStart time.Time) (*entity.AcctUkVatReturn, error)
+		// GetFrs105Accounts re-groups the ledger into FRS 105 micro-entity line items (Income Statement +
+		// SoFP) over [from, to) — a base-currency DRAFT (not GBP / entity-isolated).
+		GetFrs105Accounts(ctx context.Context, from, to time.Time) (*entity.AcctFrs105Accounts, error)
 
 		// --- fact reads for the posting worker (the accounting store reads other domains' tables
 		//     directly, the internal/store/metrics precedent; SQL in 09-implementation-notes.md §9.2) ---

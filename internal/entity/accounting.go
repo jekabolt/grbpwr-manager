@@ -792,6 +792,37 @@ type AcctVatReturnPL struct {
 	Caveats          []string
 }
 
+// AcctFrs105Accounts is an FRS 105 micro-entity accounts DRAFT — the Income Statement + Statement of
+// Financial Position re-grouped from the ledger into micro-entity line items. The entity is a single
+// UK Ltd with EUR as its functional currency (the Polish operations are part of it), so the figures'
+// currency (EUR) and whole-ledger scope are correct; it is a draft only for completeness (no tax /
+// depreciation accrual) and accountant review — see Caveats.
+type AcctFrs105Accounts struct {
+	From time.Time
+	To   time.Time
+	// Income statement — each line natural-positive.
+	Turnover               decimal.Decimal
+	CostOfSales            decimal.Decimal
+	GrossProfit            decimal.Decimal
+	AdministrativeExpenses decimal.Decimal // opex excluding depreciation and tax
+	Depreciation           decimal.Decimal // 6370, shown separately per FRS 105
+	OperatingProfit        decimal.Decimal
+	Tax                    decimal.Decimal // 6360
+	ProfitForYear          decimal.Decimal
+	// Statement of financial position — as at To.
+	FixedAssets                decimal.Decimal // 1220 Equipment net of 1225 Accumulated Depreciation
+	CurrentAssets              decimal.Decimal
+	CreditorsWithinYear        decimal.Decimal
+	NetCurrentAssets           decimal.Decimal
+	TotalAssetsLessCurrentLiab decimal.Decimal
+	CreditorsAfterYear         decimal.Decimal
+	NetAssets                  decimal.Decimal
+	CapitalAndReserves         decimal.Decimal
+	// Currency is the ledger base currency the figures are in (EUR); a DRAFT flag for the UI.
+	Currency string
+	Caveats  []string
+}
+
 // AcctUkVatReturn is the quarterly UK VAT return (9-box MTD layout) for the UK-stock domestic regime.
 // GRBPWR sells UK stock domestically (uk_stock_domestic) and reclaims UK input VAT (input_vat_regime =
 // domestic_uk) — a separate jurisdiction from the Polish JPK. Boxes 2/8/9 are intra-EU and always zero

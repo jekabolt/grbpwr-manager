@@ -427,6 +427,7 @@ var methodRequirements = map[string]Requirement{
 	"ExportJpkV7M":                rd(SectionAccounting),
 	"ExportOssReturn":             rd(SectionAccounting),
 	"GetUkVatReturn":              rd(SectionAccounting),
+	"GetFrs105Accounts":           rd(SectionAccounting),
 }
 
 // allowlist is the set of admin methods any authenticated account may call
