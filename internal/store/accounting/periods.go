@@ -12,7 +12,7 @@ import (
 )
 
 // EnsurePeriodOpen lazily creates the period row for month (default status 'open') and returns
-// ErrAcctPeriodClosed if the period exists and is closed. Called by CreateJournalEntry before every
+// entity.ErrAcctPeriodClosed if the period exists and is closed. Called by CreateJournalEntry before every
 // insert.
 func (s *Store) EnsurePeriodOpen(ctx context.Context, month time.Time) error {
 	p := firstOfMonthUTC(month).Format(dateLayout)
@@ -29,7 +29,7 @@ func (s *Store) EnsurePeriodOpen(ctx context.Context, month time.Time) error {
 		return fmt.Errorf("accounting: read period %s: %w", p, err)
 	}
 	if st.Status == entity.AcctPeriodStatusClosed {
-		return fmt.Errorf("%w: %s", ErrAcctPeriodClosed, p)
+		return fmt.Errorf("%w: %s", entity.ErrAcctPeriodClosed, p)
 	}
 	return nil
 }
@@ -53,7 +53,7 @@ func (s *Store) isPeriodClosed(ctx context.Context, month time.Time) (bool, erro
 // ClosePeriod closes a fully-past month after asserting it is reconciled (docs/plan-accounting/02):
 // no pending order events in the month, the pull sources (material movements, production receives,
 // costed opex) are posted through the month, and the month's ledger is balanced. Any failure returns
-// ErrAcctPeriodNotReady with the specific reason. The caller wraps this in repo.Tx.
+// entity.ErrAcctPeriodNotReady with the specific reason. The caller wraps this in repo.Tx.
 func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername string) error {
 	m := firstOfMonthUTC(month)
 	next := m.AddDate(0, 1, 0)
@@ -62,7 +62,7 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 
 	// 1) must be a fully-past month (cannot close the current or a future month).
 	if !m.Before(firstOfMonthUTC(s.Now())) {
-		return fmt.Errorf("%w: cannot close current or future month %s", ErrAcctPeriodNotReady, m.Format("2006-01"))
+		return fmt.Errorf("%w: cannot close current or future month %s", entity.ErrAcctPeriodNotReady, m.Format("2006-01"))
 	}
 
 	// 2) no unprocessed order events occurring in the month.
@@ -74,7 +74,7 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("accounting: close period pending events: %w", err)
 	}
 	if pendingEvents > 0 {
-		return fmt.Errorf("%w: %d unprocessed event(s) in %s", ErrAcctPeriodNotReady, pendingEvents, m.Format("2006-01"))
+		return fmt.Errorf("%w: %d unprocessed event(s) in %s", entity.ErrAcctPeriodNotReady, pendingEvents, m.Format("2006-01"))
 	}
 
 	// 3a) material movements scanned through the end of the month (checkpoint advanced past every
@@ -96,7 +96,7 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("accounting: close period unposted movements: %w", err)
 	}
 	if unpostedMovements > 0 {
-		return fmt.Errorf("%w: %d unposted material movement(s) through %s", ErrAcctPeriodNotReady, unpostedMovements, m.Format("2006-01"))
+		return fmt.Errorf("%w: %d unposted material movement(s) through %s", entity.ErrAcctPeriodNotReady, unpostedMovements, m.Format("2006-01"))
 	}
 
 	// 3b) production receives in the month all posted.
@@ -110,7 +110,7 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("accounting: close period unposted runs: %w", err)
 	}
 	if unpostedRuns > 0 {
-		return fmt.Errorf("%w: %d received production run(s) unposted in %s", ErrAcctPeriodNotReady, unpostedRuns, m.Format("2006-01"))
+		return fmt.Errorf("%w: %d received production run(s) unposted in %s", entity.ErrAcctPeriodNotReady, unpostedRuns, m.Format("2006-01"))
 	}
 
 	// 3c) if the month has costed opex lines, its opex_month entry must exist (and not be reversed).
@@ -129,7 +129,7 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 			return fmt.Errorf("accounting: close period opex entry: %w", err)
 		}
 		if opexEntries == 0 {
-			return fmt.Errorf("%w: opex for %s not posted", ErrAcctPeriodNotReady, m.Format("2006-01"))
+			return fmt.Errorf("%w: opex for %s not posted", entity.ErrAcctPeriodNotReady, m.Format("2006-01"))
 		}
 	}
 
@@ -148,7 +148,7 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("accounting: close period trial balance: %w", err)
 	}
 	if bal.Dr != bal.Cr {
-		return fmt.Errorf("%w: month %s unbalanced (debit %s != credit %s)", ErrAcctPeriodNotReady, m.Format("2006-01"), bal.Dr, bal.Cr)
+		return fmt.Errorf("%w: month %s unbalanced (debit %s != credit %s)", entity.ErrAcctPeriodNotReady, m.Format("2006-01"), bal.Dr, bal.Cr)
 	}
 
 	// All checks passed — close (creating the row if it did not exist yet).

@@ -36,28 +36,9 @@ const (
 	maxListLimit     = 500
 )
 
-// Sentinel errors — apisrv maps these to codes.FailedPrecondition / InvalidArgument (modelled on
-// entity.ErrProductionRunHasOpenIssues). Exported so callers can errors.Is against them.
-var (
-	// ErrAcctUnbalanced is returned when an entry has fewer than two lines, a non-positive amount, or
-	// Σdebit != Σcredit.
-	ErrAcctUnbalanced = errors.New("accounting: journal entry is unbalanced")
-	// ErrAcctPeriodClosed is returned when posting into a closed accounting period.
-	ErrAcctPeriodClosed = errors.New("accounting: period is closed")
-	// ErrAcctPeriodNotReady is returned by ClosePeriod when the month cannot be closed yet (pending
-	// events, unposted pull sources, or an unbalanced month); the reason is in the error text.
-	ErrAcctPeriodNotReady = errors.New("accounting: period not ready to close")
-	// ErrAcctUnknownAccount is returned when a referenced account code does not exist.
-	ErrAcctUnknownAccount = errors.New("accounting: unknown account code")
-	// ErrAcctArchivedAccount is returned when a journal line references an archived account.
-	ErrAcctArchivedAccount = errors.New("accounting: account is archived")
-	// ErrAcctSystemAccount is returned when renaming/archiving a system (is_system) account.
-	ErrAcctSystemAccount = errors.New("accounting: system account cannot be modified")
-	// ErrAcctAlreadyReversed is returned when reversing an entry that was already reversed.
-	ErrAcctAlreadyReversed = errors.New("accounting: entry already reversed")
-	// ErrAcctCannotReverseReversal is returned when reversing a reversal entry (fix with a new entry).
-	ErrAcctCannotReverseReversal = errors.New("accounting: cannot reverse a reversal entry")
-)
+// The accounting sentinel errors (entity.ErrAcctUnbalanced, entity.ErrAcctPeriodClosed, …) live in package entity
+// alongside the other domain sentinels, so the API layer can errors.Is against them without importing
+// this store package. This package returns them via the entity.ErrAcct* names.
 
 // Store implements dependency.Accounting. repo is used for cross-domain reads at posting time and to
 // satisfy ContextStore.Tx (delegated to the repository) — the same shape as metrics.Store.
@@ -105,7 +86,7 @@ func nullableCaveat(in entity.AcctJournalEntryInsert) any {
 }
 
 // resolveAccounts maps a set of account codes to their ids in one query, rejecting archived
-// (ErrAcctArchivedAccount) and unknown (ErrAcctUnknownAccount) codes. Not cached: ~34 accounts, the
+// (entity.ErrAcctArchivedAccount) and unknown (entity.ErrAcctUnknownAccount) codes. Not cached: ~34 accounts, the
 // query is cheap and always fresh (no invalidation to get wrong).
 func (s *Store) resolveAccounts(ctx context.Context, codes []string) (map[string]int, error) {
 	type row struct {
@@ -122,26 +103,26 @@ func (s *Store) resolveAccounts(ctx context.Context, codes []string) (map[string
 	byCode := make(map[string]int, len(rows))
 	for _, r := range rows {
 		if r.Archived {
-			return nil, fmt.Errorf("%w: %s", ErrAcctArchivedAccount, r.Code)
+			return nil, fmt.Errorf("%w: %s", entity.ErrAcctArchivedAccount, r.Code)
 		}
 		byCode[r.Code] = r.Id
 	}
 	for _, c := range codes {
 		if _, ok := byCode[c]; !ok {
-			return nil, fmt.Errorf("%w: %s", ErrAcctUnknownAccount, c)
+			return nil, fmt.Errorf("%w: %s", entity.ErrAcctUnknownAccount, c)
 		}
 	}
 	return byCode, nil
 }
 
-// getAccountByCode loads one account, mapping a missing row to ErrAcctUnknownAccount.
+// getAccountByCode loads one account, mapping a missing row to entity.ErrAcctUnknownAccount.
 func (s *Store) getAccountByCode(ctx context.Context, code string) (entity.AcctAccount, error) {
 	acc, err := storeutil.QueryNamedOne[entity.AcctAccount](ctx, s.DB,
 		`SELECT id, code, name, section, statement, is_system, archived, created_at, updated_at
 		 FROM acct_account WHERE code = :code`, map[string]any{"code": code})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return entity.AcctAccount{}, fmt.Errorf("%w: %s", ErrAcctUnknownAccount, code)
+			return entity.AcctAccount{}, fmt.Errorf("%w: %s", entity.ErrAcctUnknownAccount, code)
 		}
 		return entity.AcctAccount{}, fmt.Errorf("accounting: get account %s: %w", code, err)
 	}
@@ -154,7 +135,7 @@ func (s *Store) getAccountByCode(ctx context.Context, code string) (entity.AcctA
 func (s *Store) CreateJournalEntry(ctx context.Context, in entity.AcctJournalEntryInsert) (int, bool, error) {
 	// 1) validate shape: >= 2 lines, each amount > 0, Σdebit == Σcredit, non-empty source_key.
 	if len(in.Lines) < 2 {
-		return 0, false, fmt.Errorf("%w: need >= 2 lines, got %d", ErrAcctUnbalanced, len(in.Lines))
+		return 0, false, fmt.Errorf("%w: need >= 2 lines, got %d", entity.ErrAcctUnbalanced, len(in.Lines))
 	}
 	if strings.TrimSpace(in.SourceKey) == "" {
 		return 0, false, fmt.Errorf("accounting: empty source_key")
@@ -167,7 +148,7 @@ func (s *Store) CreateJournalEntry(ctx context.Context, in entity.AcctJournalEnt
 		amt := ln.Amount.Round(2)
 		amounts[i] = amt
 		if amt.LessThanOrEqual(decimal.Zero) {
-			return 0, false, fmt.Errorf("%w: line %d amount must be > 0", ErrAcctUnbalanced, i)
+			return 0, false, fmt.Errorf("%w: line %d amount must be > 0", entity.ErrAcctUnbalanced, i)
 		}
 		switch ln.Side {
 		case entity.AcctSideDebit:
@@ -183,7 +164,7 @@ func (s *Store) CreateJournalEntry(ctx context.Context, in entity.AcctJournalEnt
 		}
 	}
 	if !sumDebit.Equal(sumCredit) {
-		return 0, false, fmt.Errorf("%w: debit %s != credit %s", ErrAcctUnbalanced, sumDebit.String(), sumCredit.String())
+		return 0, false, fmt.Errorf("%w: debit %s != credit %s", entity.ErrAcctUnbalanced, sumDebit.String(), sumCredit.String())
 	}
 
 	// 2) resolve account codes to ids (also guards archived / unknown).
@@ -192,7 +173,7 @@ func (s *Store) CreateJournalEntry(ctx context.Context, in entity.AcctJournalEnt
 		return 0, false, err
 	}
 
-	// 3) gate on the period (ErrAcctPeriodClosed) — checked BEFORE insert so a posting into a closed
+	// 3) gate on the period (entity.ErrAcctPeriodClosed) — checked BEFORE insert so a posting into a closed
 	//    period fails loudly and stays queued rather than sneaking in.
 	if err := s.EnsurePeriodOpen(ctx, in.OccurredAt); err != nil {
 		return 0, false, err
@@ -261,15 +242,15 @@ func (s *Store) ReverseJournalEntry(ctx context.Context, entryID int, reason, ad
 	// Guard order matches dependency.Accounting: reject reversing a reversal first, then an already-
 	// reversed entry.
 	if orig.Entry.SourceType == entity.AcctSourceReversal {
-		return 0, ErrAcctCannotReverseReversal
+		return 0, entity.ErrAcctCannotReverseReversal
 	}
 	if orig.Entry.ReversedBy.Valid {
-		return 0, ErrAcctAlreadyReversed
+		return 0, entity.ErrAcctAlreadyReversed
 	}
 
 	// occurred_at of the reversal: the original's date if that period is still open, else today (the
 	// current open period). If today's period is somehow closed, CreateJournalEntry surfaces
-	// ErrAcctPeriodClosed.
+	// entity.ErrAcctPeriodClosed.
 	occurredAt := orig.Entry.OccurredAt
 	origClosed, err := s.isPeriodClosed(ctx, occurredAt)
 	if err != nil {
@@ -360,14 +341,14 @@ func (s *Store) CreateAccount(ctx context.Context, in entity.AcctAccountInsert) 
 }
 
 // UpdateAccountName renames a custom account. Code and section are immutable; a system account
-// cannot be renamed (ErrAcctSystemAccount); an unknown code is ErrAcctUnknownAccount.
+// cannot be renamed (entity.ErrAcctSystemAccount); an unknown code is entity.ErrAcctUnknownAccount.
 func (s *Store) UpdateAccountName(ctx context.Context, code, name string) error {
 	acc, err := s.getAccountByCode(ctx, code)
 	if err != nil {
 		return err
 	}
 	if acc.IsSystem {
-		return fmt.Errorf("%w: %s", ErrAcctSystemAccount, code)
+		return fmt.Errorf("%w: %s", entity.ErrAcctSystemAccount, code)
 	}
 	if err := storeutil.ExecNamed(ctx, s.DB,
 		`UPDATE acct_account SET name = :name WHERE code = :code`,
@@ -378,14 +359,14 @@ func (s *Store) UpdateAccountName(ctx context.Context, code, name string) error 
 }
 
 // SetAccountArchived archives/unarchives a custom account; a system account cannot be archived
-// (ErrAcctSystemAccount); an unknown code is ErrAcctUnknownAccount.
+// (entity.ErrAcctSystemAccount); an unknown code is entity.ErrAcctUnknownAccount.
 func (s *Store) SetAccountArchived(ctx context.Context, code string, archived bool) error {
 	acc, err := s.getAccountByCode(ctx, code)
 	if err != nil {
 		return err
 	}
 	if acc.IsSystem {
-		return fmt.Errorf("%w: %s", ErrAcctSystemAccount, code)
+		return fmt.Errorf("%w: %s", entity.ErrAcctSystemAccount, code)
 	}
 	if err := storeutil.ExecNamed(ctx, s.DB,
 		`UPDATE acct_account SET archived = :archived WHERE code = :code`,

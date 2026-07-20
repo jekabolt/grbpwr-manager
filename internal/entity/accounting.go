@@ -3,9 +3,34 @@ package entity
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/shopspring/decimal"
+)
+
+// Sentinel errors for the accounting module. apisrv maps these to codes.FailedPrecondition /
+// InvalidArgument; they live in entity (like the other domain sentinels here, e.g. the material
+// errors) so the API layer can errors.Is against them without importing the store package.
+var (
+	// ErrAcctUnbalanced is returned when an entry has fewer than two lines, a non-positive amount, or
+	// Σdebit != Σcredit.
+	ErrAcctUnbalanced = errors.New("accounting: journal entry is unbalanced")
+	// ErrAcctPeriodClosed is returned when posting into a closed accounting period.
+	ErrAcctPeriodClosed = errors.New("accounting: period is closed")
+	// ErrAcctPeriodNotReady is returned by ClosePeriod when the month cannot be closed yet (pending
+	// events, unposted pull sources, or an unbalanced month); the reason is in the error text.
+	ErrAcctPeriodNotReady = errors.New("accounting: period not ready to close")
+	// ErrAcctUnknownAccount is returned when a referenced account code does not exist.
+	ErrAcctUnknownAccount = errors.New("accounting: unknown account code")
+	// ErrAcctArchivedAccount is returned when a journal line references an archived account.
+	ErrAcctArchivedAccount = errors.New("accounting: account is archived")
+	// ErrAcctSystemAccount is returned when renaming/archiving a system (is_system) account.
+	ErrAcctSystemAccount = errors.New("accounting: system account cannot be modified")
+	// ErrAcctAlreadyReversed is returned when reversing an entry that was already reversed.
+	ErrAcctAlreadyReversed = errors.New("accounting: entry already reversed")
+	// ErrAcctCannotReverseReversal is returned when reversing a reversal entry (fix with a new entry).
+	ErrAcctCannotReverseReversal = errors.New("accounting: cannot reverse a reversal entry")
 )
 
 // Accounting core (double-entry ledger), phase 1. The ledger is a DERIVED, append-only
@@ -260,7 +285,7 @@ type AcctOrderPaidPayload struct {
 // customer_order.refunded_amount column once further refunds have accumulated on top of it.
 type AcctOrderRefundPayload struct {
 	OrderUUID      string          `json:"order_uuid"`
-	RefundAmount   decimal.Decimal `json:"refund_amount"`    // order currency, THIS refund only, shipping included
+	RefundAmount   decimal.Decimal `json:"refund_amount"` // order currency, THIS refund only, shipping included
 	OrderCurrency  string          `json:"order_currency"`
 	RefundedByItem map[int]int64   `json:"refunded_by_item"` // order_item.id -> refunded qty (for COGS)
 }

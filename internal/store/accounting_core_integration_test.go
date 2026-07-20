@@ -8,7 +8,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/store/accounting"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,7 +75,7 @@ func TestAccountingCore(t *testing.T) {
 		unbalanced := balancedManualEntry("ACCT-TEST-unbalanced", acctDate(2035, 3, 15), "1030", "4020", "100.00")
 		unbalanced.Lines[1].Amount = decimal.RequireFromString("90.00") // credit != debit
 		_, _, err = acc.CreateJournalEntry(ctx, unbalanced)
-		require.ErrorIs(t, err, accounting.ErrAcctUnbalanced)
+		require.ErrorIs(t, err, entity.ErrAcctUnbalanced)
 	})
 
 	// --- duplicate (source_type, source_key) is idempotent: same id, alreadyExists, no doubled lines ---
@@ -99,17 +98,17 @@ func TestAccountingCore(t *testing.T) {
 	// --- unknown / archived account, and system-account guard ---
 	t.Run("account_guards", func(t *testing.T) {
 		_, _, err := acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-unknown", acctDate(2035, 3, 15), "9999", "1010", "10.00"))
-		require.ErrorIs(t, err, accounting.ErrAcctUnknownAccount)
+		require.ErrorIs(t, err, entity.ErrAcctUnknownAccount)
 
 		require.NoError(t, acc.SetAccountArchived(ctx, "1210", true)) // 1210 Prepaid Expenses is non-system
 		_, _, err = acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-archived", acctDate(2035, 3, 15), "1210", "1010", "10.00"))
-		require.ErrorIs(t, err, accounting.ErrAcctArchivedAccount)
+		require.ErrorIs(t, err, entity.ErrAcctArchivedAccount)
 		require.NoError(t, acc.SetAccountArchived(ctx, "1210", false))
 
 		err = acc.SetAccountArchived(ctx, "1030", true) // 1030 is a system account
-		require.ErrorIs(t, err, accounting.ErrAcctSystemAccount)
+		require.ErrorIs(t, err, entity.ErrAcctSystemAccount)
 		err = acc.UpdateAccountName(ctx, "1030", "nope")
-		require.ErrorIs(t, err, accounting.ErrAcctSystemAccount)
+		require.ErrorIs(t, err, entity.ErrAcctSystemAccount)
 	})
 
 	// --- closed-period gate then reopen ---
@@ -118,7 +117,7 @@ func TestAccountingCore(t *testing.T) {
 		require.NoError(t, err)
 
 		_, _, err = acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-closed", acctDate(2020, 1, 15), "1030", "4020", "10.00"))
-		require.ErrorIs(t, err, accounting.ErrAcctPeriodClosed)
+		require.ErrorIs(t, err, entity.ErrAcctPeriodClosed)
 
 		require.NoError(t, acc.ReopenPeriod(ctx, acctDate(2020, 1, 1), "tester"))
 		id, _, err := acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-reopened", acctDate(2020, 1, 15), "1030", "4020", "10.00"))
@@ -158,11 +157,11 @@ func TestAccountingCore(t *testing.T) {
 
 		// second reversal of the original -> already reversed
 		_, err = acc.ReverseJournalEntry(ctx, origID, "again", "tester")
-		require.ErrorIs(t, err, accounting.ErrAcctAlreadyReversed)
+		require.ErrorIs(t, err, entity.ErrAcctAlreadyReversed)
 
 		// reversing a reversal is forbidden
 		_, err = acc.ReverseJournalEntry(ctx, revID, "no", "tester")
-		require.ErrorIs(t, err, accounting.ErrAcctCannotReverseReversal)
+		require.ErrorIs(t, err, entity.ErrAcctCannotReverseReversal)
 	})
 
 	// --- ClosePeriod refuses a month with a pending outbox event ---
@@ -174,7 +173,7 @@ func TestAccountingCore(t *testing.T) {
 			OccurredAt: acctDate(2021, 2, 15),
 		}))
 		err := acc.ClosePeriod(ctx, acctDate(2021, 2, 1), "tester")
-		require.ErrorIs(t, err, accounting.ErrAcctPeriodNotReady)
+		require.ErrorIs(t, err, entity.ErrAcctPeriodNotReady)
 	})
 
 	// --- trial-balance invariant: after several balanced entries, Σdebit == Σcredit for the month ---

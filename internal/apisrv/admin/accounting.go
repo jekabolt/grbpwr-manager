@@ -14,7 +14,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	acctstore "github.com/jekabolt/grbpwr-manager/internal/store/accounting"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -101,7 +100,7 @@ func (s *Server) findAcctAccount(ctx context.Context, code string) (*entity.Acct
 			return &accts[i], nil
 		}
 	}
-	return nil, fmt.Errorf("%w: %s", acctstore.ErrAcctUnknownAccount, code)
+	return nil, fmt.Errorf("%w: %s", entity.ErrAcctUnknownAccount, code)
 }
 
 // --- journal ---
@@ -213,7 +212,7 @@ func (s *Server) CloseAcctPeriod(ctx context.Context, req *pb_admin.CloseAcctPer
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.repo.Accounting().ClosePeriod(ctx, month, authsrv.GetAdminUsername(ctx)); err != nil {
-		if errors.Is(err, acctstore.ErrAcctPeriodNotReady) {
+		if errors.Is(err, entity.ErrAcctPeriodNotReady) {
 			return &pb_admin.CloseAcctPeriodResponse{Closed: false, NotReady: []string{err.Error()}}, nil
 		}
 		return nil, mapAcctErr(ctx, "close accounting period", err)
@@ -365,15 +364,15 @@ func (s *Server) foldJournalLinesToBase(ctx context.Context, lines []entity.Acct
 // logged Internal — deliberately not special-cased, never a fabricated Unimplemented.
 func mapAcctErr(ctx context.Context, what string, err error) error {
 	switch {
-	case errors.Is(err, acctstore.ErrAcctUnbalanced),
-		errors.Is(err, acctstore.ErrAcctUnknownAccount),
-		errors.Is(err, acctstore.ErrAcctArchivedAccount):
+	case errors.Is(err, entity.ErrAcctUnbalanced),
+		errors.Is(err, entity.ErrAcctUnknownAccount),
+		errors.Is(err, entity.ErrAcctArchivedAccount):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, acctstore.ErrAcctPeriodClosed),
-		errors.Is(err, acctstore.ErrAcctPeriodNotReady),
-		errors.Is(err, acctstore.ErrAcctAlreadyReversed),
-		errors.Is(err, acctstore.ErrAcctCannotReverseReversal),
-		errors.Is(err, acctstore.ErrAcctSystemAccount):
+	case errors.Is(err, entity.ErrAcctPeriodClosed),
+		errors.Is(err, entity.ErrAcctPeriodNotReady),
+		errors.Is(err, entity.ErrAcctAlreadyReversed),
+		errors.Is(err, entity.ErrAcctCannotReverseReversal),
+		errors.Is(err, entity.ErrAcctSystemAccount):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, sql.ErrNoRows):
 		return status.Error(codes.NotFound, "accounting: not found")

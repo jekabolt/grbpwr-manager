@@ -13,10 +13,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	// acctstore is the accounting STORE package (its sentinel errors, e.g. ErrAcctPeriodClosed, are
-	// returned by CreateJournalEntry/ReverseJournalEntry). It is distinct from internal/accounting
-	// above, which holds the pure posting-rule builders; both are named package "accounting".
-	acctstore "github.com/jekabolt/grbpwr-manager/internal/store/accounting"
 )
 
 // Pull-source checkpoint names (acct_checkpoint.source).
@@ -105,7 +101,7 @@ func createMovementEntry(ctx context.Context, rep dependency.Repository, entry *
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, acctstore.ErrAcctPeriodClosed) {
+	if !errors.Is(err, entity.ErrAcctPeriodClosed) {
 		return err
 	}
 	entry.OccurredAt = clampTo
@@ -310,7 +306,7 @@ func (w *Worker) commitOpex(ctx context.Context, month time.Time, reverseID int,
 		return e
 	})
 	if txErr != nil {
-		if errors.Is(txErr, acctstore.ErrAcctPeriodClosed) {
+		if errors.Is(txErr, entity.ErrAcctPeriodClosed) {
 			slog.Default().WarnContext(ctx, "acctposting: opex month period closed; skipping repost",
 				slog.String("month", month.Format("2006-01")))
 			return nil
@@ -328,12 +324,12 @@ func (w *Worker) reverseOpex(ctx context.Context, month time.Time, reverseID int
 		return e
 	})
 	if txErr != nil {
-		if errors.Is(txErr, acctstore.ErrAcctPeriodClosed) {
+		if errors.Is(txErr, entity.ErrAcctPeriodClosed) {
 			slog.Default().WarnContext(ctx, "acctposting: opex month period closed; skipping reversal",
 				slog.String("month", month.Format("2006-01")))
 			return nil
 		}
-		if errors.Is(txErr, acctstore.ErrAcctAlreadyReversed) {
+		if errors.Is(txErr, entity.ErrAcctAlreadyReversed) {
 			return nil
 		}
 		return fmt.Errorf("reverse opex %s: %w", month.Format("2006-01"), txErr)
