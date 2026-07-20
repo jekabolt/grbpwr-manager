@@ -13,7 +13,7 @@ import (
 
 // entryColumns is the acct_journal_entry projection shared by the list query.
 const entryColumns = `e.id, e.occurred_at, e.description, e.source_type, e.source_key,
-	e.reversal_of, e.reversed_by, e.created_by, e.has_caveat, e.caveat, e.created_at`
+	e.reversal_of, e.reversed_by, e.created_by, e.has_caveat, e.caveat, e.supplier_id, e.created_at`
 
 // EntryExistsBySource reports whether a journal entry with the given (source_type, source_key)
 // exists. It is an O(1) lookup on the uniq_acct_entry_source unique index — the point lookup the
@@ -147,7 +147,7 @@ func (s *Store) ListJournalEntries(ctx context.Context, f entity.AcctEntryFilter
 func (s *Store) GetJournalEntry(ctx context.Context, id int) (*entity.AcctJournalEntryFull, error) {
 	entry, err := storeutil.QueryNamedOne[entity.AcctJournalEntry](ctx, s.DB,
 		`SELECT id, occurred_at, description, source_type, source_key,
-		        reversal_of, reversed_by, created_by, has_caveat, caveat, created_at
+		        reversal_of, reversed_by, created_by, has_caveat, caveat, supplier_id, created_at
 		 FROM acct_journal_entry WHERE id = :id`, map[string]any{"id": id})
 	if err != nil {
 		return nil, fmt.Errorf("accounting: get journal entry %d: %w", id, err)

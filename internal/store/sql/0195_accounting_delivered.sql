@@ -25,7 +25,9 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry'
       AND CONSTRAINT_NAME = 'chk_acct_entry_source_type') > 0,
     'ALTER TABLE acct_journal_entry DROP CONSTRAINT chk_acct_entry_source_type', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry'
@@ -36,21 +38,27 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
         ''material_receipt'',''material_issue'',''material_return'',
         ''material_writeoff'',''material_adjustment'',
         ''production_receive'',''opex_month'',''manual'',''reversal''))', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- --- extend chk_acct_event_type (+order_shipped, +order_delivered) ---
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_event'
       AND CONSTRAINT_NAME = 'chk_acct_event_type') > 0,
     'ALTER TABLE acct_event DROP CONSTRAINT chk_acct_event_type', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_event'
       AND CONSTRAINT_NAME = 'chk_acct_event_type') = 0,
     'ALTER TABLE acct_event ADD CONSTRAINT chk_acct_event_type CHECK (event_type IN (
         ''order_paid'',''order_refund'',''order_shipped'',''order_delivered''))', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 -- Deliberately irreversible (no-op). Narrowing either CHECK after wave-2 rows exist would reject

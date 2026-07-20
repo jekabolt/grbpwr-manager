@@ -99,6 +99,7 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		Currency:       currency,
 		Lot:            nullStringFromPb(req.GetLot()),
 		SupplierDoc:    nullStringFromPb(req.GetSupplierDoc()),
+		SupplierId:     sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
 		OccurredAt:     occurredAt,
 		Comment:        nullStringFromPb(req.GetComment()),
 		InputVatAmount: inputVatAmount,

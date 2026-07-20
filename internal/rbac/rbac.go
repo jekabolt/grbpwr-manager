@@ -428,10 +428,24 @@ var methodRequirements = map[string]Requirement{
 	"ExportOssReturn":             rd(SectionAccounting),
 	"GetUkVatReturn":              rd(SectionAccounting),
 	"GetFrs105Accounts":           rd(SectionAccounting),
-	"CreateFixedAsset":            wr(SectionAccounting),
-	"ListFixedAssets":             rd(SectionAccounting),
-	"PostDepreciation":            wr(SectionAccounting),
-	"AccrueCorporationTax":        wr(SectionAccounting),
+
+	// Wave 4 — money side: Revolut bank inbox (4.1) + AP/AR subledgers (4.4).
+	"ImportBankCsv":  wr(SectionAccounting),
+	"ListBankTxns":   rd(SectionAccounting),
+	"PostBankTxn":    wr(SectionAccounting),
+	"IgnoreBankTxn":  wr(SectionAccounting),
+	"ListBankRules":  rd(SectionAccounting),
+	"CreateBankRule": wr(SectionAccounting),
+	"DeleteBankRule": wr(SectionAccounting),
+	"CreateSupplier": wr(SectionAccounting),
+	"ListSuppliers":  rd(SectionAccounting),
+	"GetPayables":    rd(SectionAccounting),
+	"GetReceivables": rd(SectionAccounting),
+	// Fixed-asset depreciation + corporation-tax accrual (#71).
+	"CreateFixedAsset":     wr(SectionAccounting),
+	"ListFixedAssets":      rd(SectionAccounting),
+	"PostDepreciation":     wr(SectionAccounting),
+	"AccrueCorporationTax": wr(SectionAccounting),
 }
 
 // allowlist is the set of admin methods any authenticated account may call

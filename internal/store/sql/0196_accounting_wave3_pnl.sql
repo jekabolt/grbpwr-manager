@@ -17,14 +17,18 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_account'
       AND CONSTRAINT_NAME = 'chk_acct_account_section') > 0,
     'ALTER TABLE acct_account DROP CONSTRAINT chk_acct_account_section', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_account'
       AND CONSTRAINT_NAME = 'chk_acct_account_section') = 0,
     'ALTER TABLE acct_account ADD CONSTRAINT chk_acct_account_section CHECK (section IN (
         ''asset'',''liability'',''equity'',''revenue'',''cogs'',''opex'',''tax''))', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- --- seed 6030 / 4030 / 2050 / 8010 (0195 INSERT…SELECT…WHERE NOT EXISTS idempotent seed) ---
 -- 6030: OPEX — actual carrier shipping & fulfilment cost, posted from shipment.actual_cost /
@@ -51,7 +55,9 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry'
       AND CONSTRAINT_NAME = 'chk_acct_entry_source_type') > 0,
     'ALTER TABLE acct_journal_entry DROP CONSTRAINT chk_acct_entry_source_type', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry'
@@ -64,7 +70,9 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
         ''production_receive'',''opex_month'',
         ''shipping_actual'',''dev_expense'',
         ''manual'',''reversal''))', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 -- Deliberately irreversible (no-op). Narrowing either CHECK after wave-3 rows exist would reject

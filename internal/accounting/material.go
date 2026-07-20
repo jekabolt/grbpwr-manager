@@ -1,6 +1,7 @@
 package accounting
 
 import (
+	"database/sql"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +36,11 @@ func BuildMaterialMovementEntry(m entity.AcctMovementFacts, startDate time.Time)
 	// A purchase receipt (M1) that records recoverable input VAT posts the extended rule (phase 2,
 	// wave 1, §1.4) instead of the plain Dr 1110 / Cr 2010; no other movement type carries input VAT.
 	if m.MovementType == entity.MaterialMovementReceipt && m.InputVatAmount.Valid && m.InputVatAmount.Decimal.IsPositive() {
-		return buildMaterialReceiptWithInputVAT(m, v, occ)
+		entry, err := buildMaterialReceiptWithInputVAT(m, v, occ)
+		if err == nil {
+			tagReceiptSupplier(&entry, m)
+		}
+		return entry, err
 	}
 
 	var dr, cr string
@@ -70,7 +75,7 @@ func BuildMaterialMovementEntry(m entity.AcctMovementFacts, startDate time.Time)
 		return entity.AcctJournalEntryInsert{}, ErrUnknownMovementType
 	}
 
-	return entity.AcctJournalEntryInsert{
+	entry := entity.AcctJournalEntryInsert{
 		OccurredAt:  occ,
 		Description: movementDescription(m),
 		SourceType:  sourceType,
@@ -80,7 +85,17 @@ func BuildMaterialMovementEntry(m entity.AcctMovementFacts, startDate time.Time)
 			{AccountCode: dr, Side: entity.AcctSideDebit, Amount: v},
 			{AccountCode: cr, Side: entity.AcctSideCredit, Amount: v},
 		},
-	}, nil
+	}
+	tagReceiptSupplier(&entry, m)
+	return entry, nil
+}
+
+// tagReceiptSupplier copies a purchase receipt's supplier onto its journal entry (phase 2, wave 4 — AP by
+// supplier). Only a material_receipt (M1, Cr 2010) carries the tag; every other movement leaves it NULL.
+func tagReceiptSupplier(entry *entity.AcctJournalEntryInsert, m entity.AcctMovementFacts) {
+	if m.MovementType == entity.MaterialMovementReceipt && m.SupplierId.Valid {
+		entry.SupplierID = sql.NullInt64{Int64: int64(m.SupplierId.Int32), Valid: true}
+	}
 }
 
 // movementOccurredAt is the movement's occurred_at (falling back to created_at), clamped up to the

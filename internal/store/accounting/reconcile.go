@@ -80,7 +80,56 @@ func (s *Store) GetReconciliation(ctx context.Context, from, to time.Time) (*ent
 		return nil, err
 	}
 	rec.Shipping = &shipping
+	bank, err := s.reconBank(ctx, fromT, toT)
+	if err != nil {
+		return nil, err
+	}
+	rec.Bank = &bank
 	return rec, nil
+}
+
+// reconBank: the 1010 Cash-Bank ledger balance as of the period end vs the Revolut inbox that feeds it
+// (phase 2, wave 4 — §4.1). There is no external base-currency bank-balance feed (the inbox is multi-
+// currency and posts via the FX-fold mechanic), so this block does not assert a delta; instead it surfaces
+// the ACTIONABLE backlog — statement lines booked in the period that are still unmatched (awaiting a
+// post/ignore decision) — so 1010 is not trusted while lines remain unposted. Ledger/Operational carry the
+// 1010 balance; Items sample the unposted lines with their signed amounts (own currency, informational).
+func (s *Store) reconBank(ctx context.Context, fromT, toT time.Time) (entity.AcctReconBlock, error) {
+	ledger, err := s.accountBalanceBefore(ctx, "1010", toT)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	block := entity.AcctReconBlock{Name: "bank", Ledger: ledger, Operational: ledger}
+
+	rows, err := storeutil.QueryListNamed[struct {
+		Ref      string          `db:"ref"`
+		Currency string          `db:"currency"`
+		Amount   decimal.Decimal `db:"amount"`
+	}](ctx, s.DB, `
+		SELECT external_id AS ref, currency, amount
+		FROM acct_bank_txn
+		WHERE state = 'unmatched' AND booked_at >= :from AND booked_at < :to
+		ORDER BY booked_at
+		LIMIT :topN`,
+		map[string]any{"from": fromT, "to": toT, "topN": reconTopN})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon bank unmatched: %w", err)
+	}
+	for _, r := range rows {
+		block.Items = append(block.Items, entity.AcctReconItem{
+			Ref:    r.Ref,
+			Label:  "unposted bank line (" + r.Currency + "); post or ignore to reconcile 1010",
+			Amount: r.Amount,
+		})
+	}
+	block.TotalCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM acct_bank_txn
+		WHERE state = 'unmatched' AND booked_at >= :from AND booked_at < :to`,
+		map[string]any{"from": fromT, "to": toT})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon bank unmatched count: %w", err)
+	}
+	return block, nil
 }
 
 // --- shared ledger helpers ---

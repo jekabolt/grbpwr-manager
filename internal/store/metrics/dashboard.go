@@ -431,6 +431,25 @@ func (s *Store) GetAcctManualEntryRequiredCount(ctx context.Context) (int, error
 	return n, nil
 }
 
+// GetAcctOpenDisputeCount counts Stripe chargebacks that are still open — an order_dispute outbox event
+// keyed 'dispute:<id>:open' with no matching 'dispute:<id>:close' event yet (phase 2, wave 4 — §4.3).
+// Feeds the acct_dispute_open dashboard alert: an open dispute has a response deadline, and the funds are
+// already withheld from the Stripe balance, so the operator must act.
+func (s *Store) GetAcctOpenDisputeCount(ctx context.Context) (int, error) {
+	n, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM acct_event o
+		WHERE o.event_type = 'order_dispute'
+		  AND o.source_key LIKE 'dispute:%:open'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM acct_event c
+		      WHERE c.event_type = 'order_dispute'
+		        AND c.source_key = REPLACE(o.source_key, ':open', ':close'))`, nil)
+	if err != nil {
+		return 0, fmt.Errorf("get acct open dispute count: %w", err)
+	}
+	return n, nil
+}
+
 // GetAcctRevenueReconForMonth computes the revenue-block ledger and operational figures for the
 // calendar month containing `now`, trimmed from accounting.Store's reconRevenue
 // (internal/store/accounting/reconcile.go) to the two sums the acct_reconciliation_drift alert needs.
@@ -505,6 +524,7 @@ type acctDashboardAlertInputs struct {
 	// rather than a possibly-stale/zeroed t.AcctPostingLagHours.
 	PostingLagThresholdHours int
 	ManualEntryCount         int
+	OpenDisputeCount         int
 	ReconLedger              decimal.Decimal
 	ReconOperational         decimal.Decimal
 }
@@ -531,6 +551,10 @@ func (s *Store) acctDashboardAlerts(ctx context.Context, t entity.AlertThreshold
 		return nil, fmt.Errorf("acct dashboard alerts: %w", err)
 	}
 	in.ManualEntryCount, err = s.GetAcctManualEntryRequiredCount(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acct dashboard alerts: %w", err)
+	}
+	in.OpenDisputeCount, err = s.GetAcctOpenDisputeCount(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acct dashboard alerts: %w", err)
 	}
@@ -669,6 +693,17 @@ func buildAcctDashboardAlerts(in acctDashboardAlertInputs) []entity.DashboardAle
 			Code:     "acct_manual_entry_required",
 			Title:    "Manual accounting entries required",
 			Detail:   fmt.Sprintf("%d order(s) in the last 30 days need a manual accounting entry (non-EUR, non-Stripe).", in.ManualEntryCount),
+		})
+	}
+	// acct_dispute_open: Stripe chargebacks that are opened but not yet closed (phase 2, wave 4). The
+	// funds are already withheld from the Stripe balance and each dispute has a response deadline, so any
+	// open dispute is actionable.
+	if in.OpenDisputeCount > 0 {
+		out = append(out, entity.DashboardAlert{
+			Severity: entity.AlertSeverityWarning,
+			Code:     "acct_dispute_open",
+			Title:    "Open Stripe disputes",
+			Detail:   fmt.Sprintf("%d Stripe dispute(s) are open — respond before the deadline or the withheld funds are lost.", in.OpenDisputeCount),
 		})
 	}
 	// acct_reconciliation_drift: the ledger's posted revenue for the current month has drifted from
