@@ -664,7 +664,15 @@ type AcctVatReturnPL struct {
 	// They carry no VAT so they do not enter NetPayable; they exist for the declaration itself.
 	NetWdt    decimal.Decimal
 	NetExport decimal.Decimal
-	Caveats   []string
+	// NET (tax base) figures the JPK_V7M declaration reports alongside the VAT amounts above — a
+	// declaration line is (net, vat), not vat alone. NetDomestic backs P_19 (domestic 23% sales),
+	// NetWnt P_23, NetImport P_25, NetInputDomestic P_42 (input on other domestic purchases). Sourced
+	// from the same ledger lines the VAT figures come from, so they reconcile exactly.
+	NetDomestic      decimal.Decimal
+	NetWnt           decimal.Decimal
+	NetImport        decimal.Decimal
+	NetInputDomestic decimal.Decimal
+	Caveats          []string
 }
 
 // AcctOssRow is one destination country's OSS B2C line: country, applied rate, net and VAT.
