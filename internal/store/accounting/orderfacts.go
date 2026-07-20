@@ -29,7 +29,7 @@ func (s *Store) GetOrderFactsForPosting(ctx context.Context, orderUUID string) (
 	facts, err := storeutil.QueryNamedOne[entity.AcctOrderFacts](ctx, s.DB, `
 		SELECT co.id, co.uuid, co.placed, co.total_price, co.currency,
 		       co.total_settled_base, co.payment_fee, co.vat_amount, co.vat_rate_pct,
-		       co.buyer_vat_id, co.vat_regime,
+		       co.buyer_vat_id, co.vat_regime, co.promo_discount_pct,
 		       p.payment_method_id,
 		       s.cost AS shipment_cost, s.free_shipping,
 		       COALESCE(NULLIF(a.country_code, ''), a.country, '') AS dest_country
@@ -276,4 +276,48 @@ func (s *Store) GetOpexMonthFacts(ctx context.Context, month time.Time) ([]entit
 		})
 	}
 	return sums, nil
+}
+
+// ListChangedShipmentsForActualCost returns shipments whose actual carrier cost was set/changed after
+// afterTS (the shipping_actual checkpoint) and that carry a cost value (actual_cost OR
+// return_shipping_cost NOT NULL), oldest change first (phase 2, wave 3, feature 3.1). The worker reposts
+// each per shipment.updated_at (mutable source, like opex) and clamps its checkpoint before the scan;
+// pre-cutover shipments are filtered by the worker on occurred_at, not here. Reading on the pool (not
+// inside a Tx) obeys the lock rule (07). A shipment whose cost is later CLEARED to NULL drops out of this
+// scan; the residual is surfaced by the shipping reconciliation block, not auto-reversed.
+func (s *Store) ListChangedShipmentsForActualCost(ctx context.Context, afterTS, startDate time.Time) ([]entity.AcctShipmentCostFacts, error) {
+	rows, err := storeutil.QueryListNamed[entity.AcctShipmentCostFacts](ctx, s.DB, `
+		SELECT sh.id AS shipment_id, co.uuid AS order_uuid,
+		       sh.actual_cost, sh.return_shipping_cost, sh.shipping_date, sh.updated_at
+		FROM shipment sh
+		JOIN customer_order co ON co.id = sh.order_id
+		WHERE sh.updated_at > :after_ts
+		  AND (sh.actual_cost IS NOT NULL OR sh.return_shipping_cost IS NOT NULL)
+		ORDER BY sh.updated_at, sh.id`,
+		map[string]any{"after_ts": afterTS.UTC()})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: list changed shipments for actual cost: %w", err)
+	}
+	return rows, nil
+}
+
+// ListDevExpensesForPosting returns every tech_card_dev_expense row created on/after startDate (the
+// cutover), joined with its tech card's name (phase 2, wave 3, feature 3.2). tech_card_dev_expense has
+// no updated_at column and a DeleteTechCardDevExpense RPC exists, so the worker reconciles the FULL set
+// each tick (dev expenses are few, like production runs): it posts new costed rows, reposts changed
+// amounts, and reverses rows that vanished (deleted) or lost their costing. Uncosted rows (amount_base
+// NULL) are returned too so the worker can skip them with a caveat.
+func (s *Store) ListDevExpensesForPosting(ctx context.Context, startDate time.Time) ([]entity.AcctDevExpenseFacts, error) {
+	rows, err := storeutil.QueryListNamed[entity.AcctDevExpenseFacts](ctx, s.DB, `
+		SELECT de.id, de.tech_card_id, tc.name AS tech_card_name, de.kind,
+		       de.description, de.amount_base, de.incurred_at, de.created_at
+		FROM tech_card_dev_expense de
+		JOIN tech_card tc ON tc.id = de.tech_card_id
+		WHERE de.created_at >= :start_date
+		ORDER BY de.id`,
+		map[string]any{"start_date": startDate.UTC()})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: list dev expenses for posting: %w", err)
+	}
+	return rows, nil
 }

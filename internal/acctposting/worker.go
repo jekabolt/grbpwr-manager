@@ -120,6 +120,8 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	phase("movements", w.processMovements)
 	phase("runs", w.processRuns)
 	phase("opex", w.processOpex)
+	phase("shipping", w.processShipping)
+	phase("devexpenses", w.processDevExpenses)
 
 	return errors.Join(errs...)
 }

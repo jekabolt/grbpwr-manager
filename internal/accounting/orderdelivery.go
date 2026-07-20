@@ -157,10 +157,18 @@ func BuildOrderDeliveredSaleEntry(f entity.AcctOrderFacts, prepaymentNet, transi
 	// revenue is the balancing remainder of the drained prepayment.
 	revenue := prepaymentNet.Sub(ship)
 
+	// Revenue credit, optionally split into a full-price credit + a 4030 Discounts contra (3.3) — the
+	// SAME shared split as S1, so a delivered-chain promo order also books its discount analytics. The
+	// split preserves the entry balance (2090 still drains exactly prepaymentNet) and the P&L total.
+	revLines, discCaveat := revenueLines(saleRevenueAccount(f), revenue, f.PromoDiscountPct)
+	if discCaveat != "" {
+		caveats = append(caveats, discCaveat)
+	}
+
 	lines := []entity.AcctJournalLineInsert{
 		{AccountCode: Acc2090, Side: entity.AcctSideDebit, Amount: prepaymentNet},
-		{AccountCode: saleRevenueAccount(f), Side: entity.AcctSideCredit, Amount: revenue},
 	}
+	lines = append(lines, revLines...)
 	if ship.IsPositive() {
 		lines = append(lines, entity.AcctJournalLineInsert{AccountCode: Acc4110, Side: entity.AcctSideCredit, Amount: ship})
 	}

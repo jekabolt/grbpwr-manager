@@ -75,6 +75,11 @@ func (s *Store) GetReconciliation(ctx context.Context, from, to time.Time) (*ent
 		return nil, err
 	}
 	rec.Prepayments = &prepayments
+	shipping, err := s.reconShipping(ctx, fromStr, toStr, fromT, toT)
+	if err != nil {
+		return nil, err
+	}
+	rec.Shipping = &shipping
 	return rec, nil
 }
 
@@ -165,7 +170,16 @@ func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, 
 	if err != nil {
 		return entity.AcctReconBlock{}, err
 	}
-	block := entity.AcctReconBlock{Name: "revenue", Ledger: saleRev.Add(deliveredRev)}
+	// 4030 Discounts is a contra-revenue DEBIT (phase 2, wave 3): a promo order credits the full-price
+	// revenue and debits the reconstructed discount to 4030, so net ledger revenue = credits − 4030. The
+	// operational side counts revenue net of the discount (G already reflects the discounted price), so
+	// subtracting 4030 keeps the two sides comparable. Source-agnostic: both order_sale and
+	// order_delivered_sale can carry the split (mirrors the "added once discount postings exist" note).
+	discountDr, err := s.ledgerLineSum(ctx, []string{"4030"}, entity.AcctSideDebit, "", fromStr, toStr)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	block := entity.AcctReconBlock{Name: "revenue", Ledger: saleRev.Add(deliveredRev).Sub(discountDr)}
 	if len(statusIDs) == 0 {
 		block.Delta = block.Ledger.Sub(block.Operational)
 		return block, nil
@@ -665,6 +679,74 @@ func (s *Store) reconPrepayments(ctx context.Context, from, to time.Time) (entit
 		map[string]any{"to": toStr})
 	if err != nil {
 		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon prepayments count: %w", err)
+	}
+	return block, nil
+}
+
+// reconShipping: ledger 6030 Shipping & Fulfillment debits over [from, to) vs Σ shipment.actual_cost +
+// return_shipping_cost of the shipments whose shipping_date falls in the period (phase 2, wave 3, 3.1).
+// The shipping_actual pull posts each shipment's cost to 6030 with occurred_at = shipping_date, so the
+// two sides count the same window. A shipment whose actual_cost was cleared to NULL after posting leaves
+// a positive delta here (the pull does not auto-reverse an un-set cost) — advisory, not a hard error,
+// the same stance as the other as-of/timing blocks. Items sample the period's costed shipments.
+func (s *Store) reconShipping(ctx context.Context, fromStr, toStr string, fromT, toT time.Time) (entity.AcctReconBlock, error) {
+	// NET 6030 (debit − credit), NOT debit-only: an actual-cost correction reposts as reverse v1
+	// (Cr 6030) + create v2 (Dr 6030), so a debit-only sum would double-count the superseded version
+	// (v1 + v2). Netting the reversal credit leaves the active-version total, matching the P&L (which
+	// also nets dr − cr) and the operational figure. Reposts are the expected workflow here.
+	dr, err := s.ledgerLineSum(ctx, []string{"6030"}, entity.AcctSideDebit, "", fromStr, toStr)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	cr, err := s.ledgerLineSum(ctx, []string{"6030"}, entity.AcctSideCredit, "", fromStr, toStr)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	block := entity.AcctReconBlock{Name: "shipping", Ledger: dr.Sub(cr)}
+
+	op, err := storeutil.QueryNamedOne[struct {
+		V decimal.Decimal `db:"v"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(COALESCE(sh.actual_cost, 0) + COALESCE(sh.return_shipping_cost, 0)), 0) AS v
+		FROM shipment sh
+		WHERE sh.shipping_date >= :from AND sh.shipping_date < :to
+		  AND (sh.actual_cost IS NOT NULL OR sh.return_shipping_cost IS NOT NULL)`,
+		map[string]any{"from": fromT, "to": toT})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon shipping operational: %w", err)
+	}
+	block.Operational = op.V.Round(2)
+	block.Delta = block.Ledger.Sub(block.Operational)
+
+	items, err := storeutil.QueryListNamed[struct {
+		Ref    string          `db:"ref"`
+		Amount decimal.Decimal `db:"amount"`
+	}](ctx, s.DB, `
+		SELECT co.uuid AS ref, (COALESCE(sh.actual_cost, 0) + COALESCE(sh.return_shipping_cost, 0)) AS amount
+		FROM shipment sh
+		JOIN customer_order co ON co.id = sh.order_id
+		WHERE sh.shipping_date >= :from AND sh.shipping_date < :to
+		  AND (sh.actual_cost IS NOT NULL OR sh.return_shipping_cost IS NOT NULL)
+		ORDER BY sh.shipping_date
+		LIMIT :topN`,
+		map[string]any{"from": fromT, "to": toT, "topN": reconTopN})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon shipping items: %w", err)
+	}
+	for _, it := range items {
+		block.Items = append(block.Items, entity.AcctReconItem{
+			Ref:    it.Ref,
+			Label:  "actual carrier cost booked to 6030",
+			Amount: it.Amount.Round(2),
+		})
+	}
+	block.TotalCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM shipment sh
+		WHERE sh.shipping_date >= :from AND sh.shipping_date < :to
+		  AND (sh.actual_cost IS NOT NULL OR sh.return_shipping_cost IS NOT NULL)`,
+		map[string]any{"from": fromT, "to": toT})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon shipping count: %w", err)
 	}
 	return block, nil
 }

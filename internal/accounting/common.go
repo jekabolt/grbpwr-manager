@@ -26,6 +26,11 @@ const (
 	caveatMaxLen = 512
 )
 
+// nullStr wraps a non-empty note as a valid sql.NullString (empty → invalid/NULL).
+func nullStr(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
 // isStripe reports whether a payment method settles through the Stripe processor — its money leg is
 // 1030 and it carries a captured payment_fee.
 func isStripe(m entity.PaymentMethodName) bool {
@@ -84,6 +89,47 @@ func saleRevenueAccount(f entity.AcctOrderFacts) string {
 // isBaseCurrency reports whether an order currency equals the book base (EUR), case-insensitively.
 func isBaseCurrency(currency string) bool {
 	return strings.EqualFold(strings.TrimSpace(currency), baseCurrency)
+}
+
+// oneCent is the absolute cent tolerance for the discount-reconstruction guard (07 §7.4.11).
+var oneCent = decimal.NewFromFloat(0.01)
+
+// revenueLines builds the net-revenue credit line(s) for a sale, splitting out a 4030 Discounts contra
+// when a promo discount applies (phase 2, wave 3, feature 3.3). Without a valid, positive discount it
+// returns the single credit of `net` to `revenueAccount` (unchanged phase-1/2 behaviour). With one it
+// reconstructs the full-price net (fullNet = net / (1 − pct/100)) and returns a full-price CREDIT to
+// `revenueAccount` plus a DEBIT of the reconstructed discount to 4030 — the two net to `net`, so the
+// entry balance and the P&L total are unchanged; only the analytics split is new.
+//
+// GUARD (07 §7.4.11 — never break entry balance for analytics): the split is emitted only when the
+// discount reconstructs to a positive cent AND ties back to `net` within a cent; a >=100% or otherwise
+// non-reconstructable percentage falls back to the single credit with a caveat. Free-shipping-only
+// promos carry no discount pct and take the single-credit path silently. `pct` is a percentage 0..100.
+func revenueLines(revenueAccount string, net decimal.Decimal, pct decimal.NullDecimal) ([]entity.AcctJournalLineInsert, string) {
+	single := []entity.AcctJournalLineInsert{
+		{AccountCode: revenueAccount, Side: entity.AcctSideCredit, Amount: net},
+	}
+	if net.Sign() <= 0 || !pct.Valid || pct.Decimal.Sign() <= 0 {
+		return single, ""
+	}
+	d := pct.Decimal
+	if d.GreaterThanOrEqual(oneHundred) {
+		return single, "promo discount >= 100% not reconstructable; 4030 discount line omitted"
+	}
+	factor := oneHundred.Sub(d) // (100 − pct), strictly in (0,100)
+	fullNet := net.Mul(oneHundred).Div(factor).Round(2)
+	discount := fullNet.Sub(net) // balancing difference, not independently rounded
+	if discount.Sign() <= 0 {
+		return single, "" // rounds to nothing — keep the single credit, no caveat
+	}
+	// Reconstruction must tie back to net within a cent (self-consistency at 2dp).
+	if fullNet.Mul(factor).Div(oneHundred).Round(2).Sub(net).Abs().GreaterThan(oneCent) {
+		return single, "promo discount did not reconstruct within a cent; 4030 discount line omitted"
+	}
+	return []entity.AcctJournalLineInsert{
+		{AccountCode: revenueAccount, Side: entity.AcctSideCredit, Amount: fullNet},
+		{AccountCode: Acc4030, Side: entity.AcctSideDebit, Amount: discount},
+	}, ""
 }
 
 // grossEUR derives G, the gross EUR amount of an order (04/S1). Priority: the authoritative Stripe

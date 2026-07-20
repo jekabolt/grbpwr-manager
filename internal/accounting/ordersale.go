@@ -69,10 +69,18 @@ func BuildOrderSaleEntry(f entity.AcctOrderFacts, vd VatDecision, occurredAt tim
 	// NET is the balancing remainder — strictly > 0 after the two guards above.
 	net := g.Sub(vat).Sub(ship)
 
+	// Revenue credit, optionally split into a full-price credit + a 4030 Discounts contra (3.3). The
+	// split preserves the entry balance and the P&L total; a non-reconstructable discount falls back to
+	// the single credit with a caveat.
+	revLines, discCaveat := revenueLines(saleRevenueAccount(f), net, f.PromoDiscountPct)
+	if discCaveat != "" {
+		caveats = append(caveats, discCaveat)
+	}
+
 	lines := []entity.AcctJournalLineInsert{
 		{AccountCode: moneyAccount(f.PaymentMethodName), Side: entity.AcctSideDebit, Amount: g},
-		{AccountCode: saleRevenueAccount(f), Side: entity.AcctSideCredit, Amount: net},
 	}
+	lines = append(lines, revLines...)
 	if ship.IsPositive() {
 		lines = append(lines, entity.AcctJournalLineInsert{AccountCode: Acc4110, Side: entity.AcctSideCredit, Amount: ship})
 	}

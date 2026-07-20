@@ -6118,9 +6118,9 @@ message AcctPLRow {
   google.type.Decimal total = 4;
 }
 
-// AcctPLSection groups P&L rows by section, in report order (revenue, cogs, opex).
+// AcctPLSection groups P&L rows by section, in report order (revenue, cogs, opex, tax).
 message AcctPLSection {
-  string section = 1; // revenue | cogs | opex
+  string section = 1; // revenue | cogs | opex | tax
   repeated AcctPLRow rows = 2;
 }
 
@@ -6133,15 +6133,20 @@ message AcctPLTotals {
   repeated google.type.Decimal total_opex = 5;
   repeated google.type.Decimal operating_profit = 6;
   repeated google.type.Decimal net_margin_pct = 7;
+  // Corporation Tax lines (phase 2, wave 3). total_tax is the period's Σ 8010 charge (manual journal
+  // only — zero until the accountant posts CT); net_profit_after_tax = operating_profit − total_tax.
+  repeated google.type.Decimal total_tax = 8;
+  repeated google.type.Decimal net_profit_after_tax = 9;
 }
 
 message GetProfitLossStatementResponse {
   repeated string months = 1; // YYYY-MM-DD (1st of month); aligned with rows[].values / totals.*
   repeated AcctPLSection sections = 2;
   AcctPLTotals totals = 3;
-  // Phase-1 caveats: always includes "pre-tax profit (no corporate tax accrual)" and "carrier
-  // shipping cost not booked (4110 has no 6030 expense pair yet)", plus a count of entries in the
-  // period flagged has_caveat.
+  // Caveats. As of phase 2 wave 3 the two former permanent caveats are CONDITIONAL: "pre-tax profit"
+  // prints only when the period has no 8010 Corporation-Tax entry, and "carrier shipping cost not
+  // booked" only when the period has 4110 shipping income but no 6030 shipping expense. Followed by a
+  // count of entries in the period flagged has_caveat.
   repeated string caveats = 4;
 }
 

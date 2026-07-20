@@ -26,10 +26,11 @@ var (
 )
 
 // sectionIsDebitNormal reports whether a section's normal balance sits on the debit side
-// (asset/cogs/opex). liability/equity/revenue are credit-normal.
+// (asset/cogs/opex/tax). liability/equity/revenue are credit-normal. tax (8010 Corporation Tax) is
+// debit-normal like cogs/opex — a tax charge is a debit (phase 2, wave 3).
 func sectionIsDebitNormal(section entity.AcctSection) bool {
 	switch section {
-	case entity.AcctSectionAsset, entity.AcctSectionCogs, entity.AcctSectionOpex:
+	case entity.AcctSectionAsset, entity.AcctSectionCogs, entity.AcctSectionOpex, entity.AcctSectionTax:
 		return true
 	default:
 		return false
@@ -141,11 +142,13 @@ func (s *Store) GetProfitLoss(ctx context.Context, from, to time.Time) (*entity.
 		string(entity.AcctSectionRevenue): {byCode: map[string]*entity.AcctPLRow{}},
 		string(entity.AcctSectionCogs):    {byCode: map[string]*entity.AcctPLRow{}},
 		string(entity.AcctSectionOpex):    {byCode: map[string]*entity.AcctPLRow{}},
+		string(entity.AcctSectionTax):     {byCode: map[string]*entity.AcctPLRow{}},
 	}
 	// Per-month derived section subtotals.
 	totalRevenue := zeroDecimals(len(months))
 	netCogs := zeroDecimals(len(months))
 	totalOpex := zeroDecimals(len(months))
+	totalTax := zeroDecimals(len(months))
 
 	for _, r := range rows {
 		idx, ok := monthIdx[r.Month]
@@ -173,6 +176,8 @@ func (s *Store) GetProfitLoss(ctx context.Context, from, to time.Time) (*entity.
 			netCogs[idx] = netCogs[idx].Add(val)
 		case entity.AcctSectionOpex:
 			totalOpex[idx] = totalOpex[idx].Add(val)
+		case entity.AcctSectionTax:
+			totalTax[idx] = totalTax[idx].Add(val)
 		}
 	}
 
@@ -184,14 +189,17 @@ func (s *Store) GetProfitLoss(ctx context.Context, from, to time.Time) (*entity.
 			buildPLSection(entity.AcctSectionRevenue, sections),
 			buildPLSection(entity.AcctSectionCogs, sections),
 			buildPLSection(entity.AcctSectionOpex, sections),
+			buildPLSection(entity.AcctSectionTax, sections),
 		},
-		TotalRevenue:    totalRevenue,
-		NetCogs:         netCogs,
-		TotalOpex:       totalOpex,
-		GrossProfit:     zeroDecimals(len(months)),
-		GrossMarginPct:  zeroDecimals(len(months)),
-		OperatingProfit: zeroDecimals(len(months)),
-		NetMarginPct:    zeroDecimals(len(months)),
+		TotalRevenue:      totalRevenue,
+		NetCogs:           netCogs,
+		TotalOpex:         totalOpex,
+		TotalTax:          totalTax,
+		GrossProfit:       zeroDecimals(len(months)),
+		GrossMarginPct:    zeroDecimals(len(months)),
+		OperatingProfit:   zeroDecimals(len(months)),
+		NetMarginPct:      zeroDecimals(len(months)),
+		NetProfitAfterTax: zeroDecimals(len(months)),
 	}
 	for i := range months {
 		gross := totalRevenue[i].Sub(netCogs[i])
@@ -200,6 +208,9 @@ func (s *Store) GetProfitLoss(ctx context.Context, from, to time.Time) (*entity.
 		pl.OperatingProfit[i] = op
 		pl.GrossMarginPct[i] = marginPct(gross, totalRevenue[i])
 		pl.NetMarginPct[i] = marginPct(op, totalRevenue[i])
+		// Net Profit after tax = Operating Profit − Σ tax (8010). Tax is a manual journal only, so this
+		// equals OperatingProfit until the accountant posts Corporation Tax (phase 2, wave 3).
+		pl.NetProfitAfterTax[i] = op.Sub(totalTax[i])
 	}
 
 	// C-9: exclude entries that have been reversed (superseded) — counting both the reversed original
