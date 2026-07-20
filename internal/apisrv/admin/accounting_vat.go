@@ -2,8 +2,11 @@ package admin
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,4 +43,34 @@ func (s *Server) GetOssReturn(ctx context.Context, req *pb_admin.GetOssReturnReq
 		return nil, mapAcctErr(ctx, "get oss return", err)
 	}
 	return dto.ConvertAcctOssReturnToPb(*ret), nil
+}
+
+// ExportJpkV7M builds the official Polish JPK_V7M (JPK_VAT) XML for a month: the taxpayer header, the
+// VAT-7 output-side declaration, and the sales evidence register. The purchase register is left empty
+// for the accountant to merge. It needs the JPK_* taxpayer identity configured — otherwise it returns
+// FailedPrecondition rather than an invalid filing.
+func (s *Server) ExportJpkV7M(ctx context.Context, req *pb_admin.ExportJpkV7MRequest) (*pb_admin.ExportJpkV7MResponse, error) {
+	month, err := dto.ParseVatReturnMonth(req.GetMonth())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if !s.jpkTaxpayer.Configured() {
+		return nil, status.Error(codes.FailedPrecondition, "JPK export is not configured: set the JPK_NIP / JPK_FULL_NAME / JPK_EMAIL / JPK_TAX_OFFICE taxpayer identity")
+	}
+	ret, err := s.repo.Accounting().GetVatReturnPL(ctx, month)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "jpk vat return", err)
+	}
+	rows, err := s.repo.Accounting().VatSalesEvidence(ctx, month)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "jpk sales evidence", err)
+	}
+	xmlBytes, err := jpk.Generate(s.jpkTaxpayer, ret, rows, month, time.Now())
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return &pb_admin.ExportJpkV7MResponse{
+		Filename:   fmt.Sprintf("JPK_V7M_%s.xml", month.Format("2006-01")),
+		XmlContent: string(xmlBytes),
+	}, nil
 }

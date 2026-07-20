@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -58,6 +59,9 @@ type Server struct {
 	// OpenRouter (#66). It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so
 	// GenerateTechCardOperations degrades to a clear FailedPrecondition instead of failing.
 	aiOps *openrouter.Client
+	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
+	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
+	jpkTaxpayer jpk.Taxpayer
 }
 
 // New creates a new server with admin handlers.
@@ -75,6 +79,7 @@ func New(
 	shipFrom entity.LabelAddress,
 	embedAllowedHosts string,
 	aiOps *openrouter.Client,
+	jpkTaxpayer jpk.Taxpayer,
 ) *Server {
 	revalCtx, revalCancel := context.WithCancel(context.Background())
 	return &Server{
@@ -94,6 +99,7 @@ func New(
 		revalCancel:       revalCancel,
 		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
 		aiOps:             aiOps,
+		jpkTaxpayer:       jpkTaxpayer,
 	}
 }
 
