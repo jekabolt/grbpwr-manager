@@ -36,6 +36,11 @@ FIELD_SAME_NAME|proto/common/common/archive.proto|Field \"1\" on message \"Archi
 FIELD_SAME_NAME|proto/common/common/order.proto|Field \"14\" on message \"OrderItem\" changed name from \"sku\" to \"variant_sku_snapshot\".
 FIELD_SAME_NAME|proto/common/common/product.proto|Field \"2\" on message \"StockChange\" changed name from \"product_id\" to \"colorway_id\".
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"3\" on message \"ListStockChangesRequest\" moved from oneof \"_product_id\" to oneof \"_colorway_id\".
+FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"3\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
+FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"4\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
+FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"5\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
+FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"7\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
+FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"9\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductFull\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductsManualFull\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"2\" on message \"ArchiveProductsTagFull\" changed type from \"common.Product\" to \"common.Colorway\".
@@ -57,6 +62,7 @@ MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"Get
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductCustomsResponse\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductsPagedRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"GetProductsPagedResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"OpexEntryInsert\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"ProductCostInfo\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"ProductCustoms\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"SetProductCustomsRequest\" was deleted from file.
@@ -65,6 +71,8 @@ MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"Syn
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"SyncProductCostFromTechCardResponse\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpdateProductSizeStockRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpdateProductSizeStockResponse\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpsertOpexEntriesRequest\" was deleted from file.
+MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpsertOpexEntriesResponse\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpsertProductRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"UpsertProductResponse\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/language.proto|Previously present message \"ProductInsertTranslation\" was deleted from file.
@@ -99,6 +107,7 @@ RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProducts
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"SetProductCustoms\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"SyncProductCostFromTechCard\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"UpdateProductSizeStock\" on service \"AdminService\" was deleted.
+RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"UpsertOpexEntries\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"UpsertProduct\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present RPC \"GetProduct\" on service \"FrontendService\" was deleted.
 RPC_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present RPC \"GetProductsPaged\" on service \"FrontendService\" was deleted.

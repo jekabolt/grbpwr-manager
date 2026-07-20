@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
@@ -72,6 +73,7 @@ type Config struct {
 	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
 	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
 	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
+	Accounting        acctposting.Config       `mapstructure:"accounting"`
 	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
 	FxSync            fxsync.Config            `mapstructure:"fx_sync"`
 	Rates             RatesConfig              `mapstructure:"rates"`
@@ -223,6 +225,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("auth.jwt_secret is required: set AUTH_JWT_SECRET")
 	}
 
+	// Accounting posting worker: when enabled, its cutover date must parse and not be in the future
+	// (a misconfigured start date would either post pre-cutover history or nothing at all).
+	if err := c.Accounting.Validate(); err != nil {
+		return fmt.Errorf("invalid accounting configuration: %w", err)
+	}
+
 	return nil
 }
 
@@ -341,6 +349,13 @@ func bindEnvVars() {
 
 	// OPEX materialize (book recurring fixed-cost templates into monthly lines)
 	viper.BindEnv("opex_materialize.worker_interval", "OPEX_MATERIALIZE_WORKER_INTERVAL")
+
+	// Accounting posting worker (drain the order outbox + pull sources into the double-entry ledger)
+	viper.BindEnv("accounting.enabled", "ACCOUNTING_ENABLED")
+	viper.BindEnv("accounting.worker_interval", "ACCOUNTING_WORKER_INTERVAL")
+	viper.BindEnv("accounting.batch_size", "ACCOUNTING_BATCH_SIZE")
+	viper.BindEnv("accounting.start_date", "ACCOUNTING_START_DATE")
+	viper.BindEnv("accounting.settled_wait_max", "ACCOUNTING_SETTLED_WAIT_MAX")
 
 	// Stripe reconcile (orphaned pre-order PaymentIntents)
 	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")

@@ -329,7 +329,38 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 			}
 		}
 
-		return updateOrderStatusAndAccumulateRefundedAmount(ctx, rep.DB(), order.Id, targetStatus.Status.Id, refundedAmount, reason, reasonCode)
+		if err := updateOrderStatusAndAccumulateRefundedAmount(ctx, rep.DB(), order.Id, targetStatus.Status.Id, refundedAmount, reason, reasonCode); err != nil {
+			return err
+		}
+
+		// Accounting outbox (push producer, docs/plan-accounting/03): THIS refund's amount cannot be
+		// recovered later from the aggregate customer_order.refunded_amount (further refunds accumulate
+		// on top of it), so it is carried in the payload. An order may be refunded several times
+		// (partially_refunded), so the source_key gets a per-order sequence = count of this order's
+		// existing order_refund events + 1. The count runs in the same tx, under the order's FOR UPDATE
+		// lock taken above, so there is no race (03 / 09 FAQ 11). A failure rolls the refund back.
+		existingRefundEvents, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
+			SELECT COUNT(*) FROM acct_event
+			WHERE event_type = :event_type AND source_key LIKE :prefix`,
+			map[string]any{"event_type": string(entity.AcctEventOrderRefund), "prefix": order.UUID + ":%"})
+		if err != nil {
+			return fmt.Errorf("count acct order_refund events: %w", err)
+		}
+		seq := existingRefundEvents + 1
+		if err := rep.Accounting().EnqueueEvent(ctx, entity.AcctEventInsert{
+			EventType: entity.AcctEventOrderRefund,
+			SourceKey: fmt.Sprintf("%s:%d", order.UUID, seq),
+			Payload: entity.AcctOrderRefundPayload{
+				OrderUUID:      order.UUID,
+				RefundAmount:   refundedAmount,
+				OrderCurrency:  order.Currency,
+				RefundedByItem: refundedByItem,
+			},
+			OccurredAt: s.Now(),
+		}); err != nil {
+			return fmt.Errorf("enqueue acct order_refund event: %w", err)
+		}
+		return nil
 	})
 }
 

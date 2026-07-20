@@ -1,0 +1,143 @@
+package accounting
+
+import (
+	"database/sql"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
+)
+
+const (
+	// baseCurrency is the ledger's book currency. The whole accounting module is EUR-native
+	// (docs/plan-accounting/00-overview.md). A pure builder cannot reach cache.GetBaseCurrency(),
+	// so the base code is a package constant; if the base ever changes it changes here.
+	baseCurrency = "EUR"
+
+	// createdBySystem stamps automated postings (matches the acct_journal_entry.created_by DDL
+	// default).
+	createdBySystem = "system"
+
+	// descMaxLen / caveatMaxLen bound the two free-text columns (VARCHAR(512), counted in
+	// characters under utf8mb4) so a long material name or a pile of caveats cannot overflow them.
+	descMaxLen   = 512
+	caveatMaxLen = 512
+)
+
+// isStripe reports whether a payment method settles through the Stripe processor — its money leg is
+// 1030 and it carries a captured payment_fee.
+func isStripe(m entity.PaymentMethodName) bool {
+	return m == entity.CARD || m == entity.CARD_TEST
+}
+
+// moneyAccount is the account the gross order amount lands on, by payment method (04/S1):
+// Stripe -> 1030 Payment Processor, cash -> 1010 Cash, bank-invoice -> 1040 Accounts Receivable (a
+// custom order is Confirmed before its invoice is paid, so revenue is recognised against a
+// receivable, not cash). Any unexpected method falls back to 1030, the overwhelming common case.
+func moneyAccount(m entity.PaymentMethodName) string {
+	switch m {
+	case entity.CASH:
+		return Acc1010
+	case entity.BANK_INVOICE:
+		return Acc1040
+	default:
+		return Acc1030
+	}
+}
+
+// revenueAccount is the net-revenue account by payment method (04/S1): cash -> 4010 Retail / Popup,
+// everything else -> 4020 DTC (Website).
+func revenueAccount(m entity.PaymentMethodName) string {
+	if m == entity.CASH {
+		return Acc4010
+	}
+	return Acc4020
+}
+
+// isBaseCurrency reports whether an order currency equals the book base (EUR), case-insensitively.
+func isBaseCurrency(currency string) bool {
+	return strings.EqualFold(strings.TrimSpace(currency), baseCurrency)
+}
+
+// grossEUR derives G, the gross EUR amount of an order (04/S1). Priority: the authoritative Stripe
+// settlement (total_settled_base) when present — this is the CLAUDE.md "authoritative revenue
+// figure", used for any currency; otherwise total_price for a non-Stripe EUR order (custom cash /
+// bank-invoice orders never receive a Stripe settlement, and in EUR total_price already is base).
+// A Stripe order whose settlement has not arrived is ErrNotReady (the worker retries); a non-Stripe
+// non-EUR order cannot be converted without FX and is ErrSkipNonEUR (booked manually). The
+// readiness decision is the worker's — this only encodes the amount rule and refuses facts it
+// cannot use, keeping k = G/total_price from ever dividing by a bad G.
+func grossEUR(f entity.AcctOrderFacts) (decimal.Decimal, error) {
+	switch {
+	case f.TotalSettledBase.Valid:
+		return f.TotalSettledBase.Decimal, nil
+	case !isStripe(f.PaymentMethodName) && isBaseCurrency(f.Currency):
+		return f.TotalPrice, nil
+	case isStripe(f.PaymentMethodName):
+		return decimal.Zero, ErrNotReady
+	default:
+		return decimal.Zero, ErrSkipNonEUR
+	}
+}
+
+// orderFee is F, the EUR acquirer fee booked on a sale (04/S1). Stripe methods carry a captured
+// payment_fee (PaymentFee); NULL / non-positive means no fee line. Non-Stripe methods never have a
+// captured fee, so it is estimated from the payment method's fee model (FeePct/FeeFixed, joined
+// into the facts) applied to the gross EUR amount g, floored at zero — see BuildOrderSaleEntry's
+// caveat for when this estimate is used.
+func orderFee(f entity.AcctOrderFacts, g decimal.Decimal) decimal.Decimal {
+	if isStripe(f.PaymentMethodName) {
+		if f.PaymentFee.Valid && f.PaymentFee.Decimal.IsPositive() {
+			return f.PaymentFee.Decimal.Round(2)
+		}
+		return decimal.Zero
+	}
+	estimated := g.Mul(f.FeePct).Div(decimal.NewFromInt(100)).Add(f.FeeFixed)
+	if estimated.IsNegative() {
+		estimated = decimal.Zero
+	}
+	return estimated.Round(2)
+}
+
+// applyCaveats stamps collected caveats onto an entry (has_caveat + joined text, bounded to the
+// column width). No caveats leaves the entry untouched (HasCaveat stays false).
+func applyCaveats(e *entity.AcctJournalEntryInsert, caveats []string) {
+	if len(caveats) == 0 {
+		return
+	}
+	e.HasCaveat = true
+	e.Caveat = sql.NullString{String: truncateRunes(strings.Join(caveats, "; "), caveatMaxLen), Valid: true}
+}
+
+// joinProductIDs renders a de-duplicated, ascending product-id list for a caveat.
+func joinProductIDs(ids []int) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	seen := make(map[int]struct{}, len(ids))
+	uniq := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	sort.Ints(uniq)
+	parts := make([]string, len(uniq))
+	for i, id := range uniq {
+		parts[i] = strconv.Itoa(id)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// truncateRunes caps s to maxLen characters (runes) without splitting a multi-byte rune.
+func truncateRunes(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	return string(r[:maxLen])
+}

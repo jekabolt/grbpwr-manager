@@ -260,6 +260,15 @@ envs:
 - key: OPEX_MATERIALIZE_WORKER_INTERVAL
   scope: RUN_TIME
   value: 24h
+# Accounting posting worker (double-entry ledger). Off on prod until the cutover date is chosen;
+# turned on first on beta. ACCOUNTING_START_DATE (YYYY-MM-DD) is the cutover — facts before it stay
+# out of the ledger ("start from zero"). Required (and validated) once ACCOUNTING_ENABLED=true.
+- key: ACCOUNTING_ENABLED
+  scope: RUN_TIME
+  value: "false"
+- key: ACCOUNTING_START_DATE
+  scope: RUN_TIME
+  value: ""
 - key: RATES_BASE_CURRENCY
   scope: RUN_TIME
   value: EUR

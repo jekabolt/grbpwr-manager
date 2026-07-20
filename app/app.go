@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/config"
+	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
@@ -62,6 +63,7 @@ type App struct {
 	sc   *storefrontcleanup.Worker
 	tm   *tiermanagement.Worker
 	om   *opexmaterialize.Worker
+	ap   *acctposting.Worker
 	sr   *stripereconcile.Worker
 	fxw  *fxsync.Worker
 	ga4w *ga4sync.Worker
@@ -164,6 +166,19 @@ func (a *App) Start(ctx context.Context) error {
 			slog.String("err", err.Error()),
 		)
 		return err
+	}
+
+	// Accounting posting worker. Gated (off unless ACCOUNTING_ENABLED): the outbox producers enqueue
+	// events regardless, so enabling it later just drains the queue from the cutover. Started AFTER the
+	// base currency is set (like opexmaterialize) — the whole ledger is EUR-native.
+	if a.c.Accounting.Enabled {
+		a.ap = acctposting.New(&a.c.Accounting, a.db)
+		if err = a.ap.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start accounting posting worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	// External FX-rate sync (ECB reference rates → costing_fx_rate). Gated: off unless enabled.
@@ -512,6 +527,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.om != nil {
 		_ = a.om.Stop()
 	}
+	if a.ap != nil {
+		_ = a.ap.Stop()
+	}
 	if a.fxw != nil {
 		_ = a.fxw.Stop()
 	}
@@ -591,6 +609,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.om != nil {
 		addWorker(a.om)
+	}
+	if a.ap != nil {
+		addWorker(a.ap)
 	}
 	if a.fxw != nil {
 		addWorker(a.fxw)

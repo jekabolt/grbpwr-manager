@@ -13,11 +13,8 @@ generate: generate-resend-client generate-mocks
 
 generate-mocks:
 	mockery
-	@if [ "$$(uname)" = "Darwin" ]; then \
-		find internal/dependency/mocks -name "*.go" -type f -exec sed -i '' 's/^package dependency$$/package mocks/' {} \; ; \
-	else \
-		find internal/dependency/mocks -name "*.go" -type f -exec sed -i 's/^package dependency$$/package mocks/' {} \; ; \
-	fi
+	find internal/dependency/mocks -name "*.go" -type f -exec sed -i.bak 's/^package dependency$$/package mocks/' {} \;
+	find internal/dependency/mocks -name "*.bak" -type f -delete
 
 proto: format-proto
 	buf generate 

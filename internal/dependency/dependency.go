@@ -707,6 +707,84 @@ type (
 		ListMaterialLots(ctx context.Context, materialID int, includeArchived bool) ([]entity.MaterialLot, error)
 	}
 
+	// Accounting is the double-entry general ledger (docs/plan-accounting/). The ledger is a DERIVED,
+	// append-only projection of existing operational facts (orders, material movements, production
+	// runs, opex) plus manual entries; base currency is EUR (reads total_settled_base, never
+	// total_price_eur — CLAUDE.md "two EUR figures"). CreateJournalEntry is the single write path and
+	// never opens its own transaction — callers (the acctposting worker and the manual-entry admin
+	// handlers) wrap it in repo.Tx so the entry header and its lines commit atomically.
+	Accounting interface {
+		ContextStore
+
+		// --- chart of accounts ---
+		ListAccounts(ctx context.Context, includeArchived bool) ([]entity.AcctAccount, error)
+		CreateAccount(ctx context.Context, in entity.AcctAccountInsert) (int, error)
+		// UpdateAccountName renames a custom account; code and section are immutable, and a system
+		// account cannot be renamed by code (ErrAcctSystemAccount).
+		UpdateAccountName(ctx context.Context, code, name string) error
+		// SetAccountArchived archives/unarchives a custom account; a system account (is_system) cannot
+		// be archived (ErrAcctSystemAccount).
+		SetAccountArchived(ctx context.Context, code string, archived bool) error
+
+		// --- journal ---
+		// CreateJournalEntry is the ONLY write path into the journal (both automated posting and manual
+		// entries). It validates: >= 2 lines, each amount > 0, Σdebit == Σcredit (ErrAcctUnbalanced),
+		// accounts exist and are not archived (ErrAcctUnknownAccount / ErrAcctArchivedAccount), and the
+		// occurred_at period is open (ErrAcctPeriodClosed). Idempotent on (source_type, source_key): a
+		// duplicate returns the existing id with alreadyExists=true and no error (the upsert pattern).
+		CreateJournalEntry(ctx context.Context, in entity.AcctJournalEntryInsert) (id int, alreadyExists bool, err error)
+		// ReverseJournalEntry posts a mirror entry (sides swapped) in the currently open period
+		// (occurred_at = the original's date if still open, else today), source_type='reversal',
+		// source_key='rev:'+<origID>, and sets the original's reversed_by. Reversing an already-reversed
+		// entry → ErrAcctAlreadyReversed; reversing a reversal → ErrAcctCannotReverseReversal.
+		ReverseJournalEntry(ctx context.Context, entryID int, reason, adminUsername string) (int, error)
+
+		ListJournalEntries(ctx context.Context, f entity.AcctEntryFilter) ([]entity.AcctJournalEntry, int, error)
+		GetJournalEntry(ctx context.Context, id int) (*entity.AcctJournalEntryFull, error)
+		// EntryExistsBySource is an O(1) (source_type, source_key) unique-index existence lookup
+		// (uniq_acct_entry_source) — e.g. the refund worker's "has the sale been posted?" check.
+		EntryExistsBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (bool, error)
+
+		// --- periods ---
+		// EnsurePeriodOpen lazily creates the period row for month and returns ErrAcctPeriodClosed if it
+		// exists and is closed.
+		EnsurePeriodOpen(ctx context.Context, month time.Time) error
+		ClosePeriod(ctx context.Context, month time.Time, adminUsername string) error
+		ReopenPeriod(ctx context.Context, month time.Time, adminUsername string) error
+		ListPeriods(ctx context.Context) ([]entity.AcctPeriod, error)
+
+		// --- outbox / checkpoints (used by producers and the posting worker) ---
+		// EnqueueEvent marshals ev.Payload (any → JSON) itself; a marshal error is returned (a producer
+		// in a hot Tx must propagate it). A duplicate (event_type, source_key) is a no-op.
+		EnqueueEvent(ctx context.Context, ev entity.AcctEventInsert) error
+		// ListPendingEvents returns events with processed_at IS NULL AND (next_retry_at IS NULL OR
+		// next_retry_at <= NOW()), ordered by id, up to limit.
+		ListPendingEvents(ctx context.Context, limit int) ([]entity.AcctEvent, error)
+		MarkEventProcessed(ctx context.Context, id int64) error
+		// MarkEventFailed bumps attempts, records errMsg and sets next_retry_at = NOW() + retryAfter.
+		MarkEventFailed(ctx context.Context, id int64, errMsg string, retryAfter time.Duration) error
+		// GetCheckpoint returns the pull-source cursor; a missing row is NOT an error — it returns the
+		// zero AcctCheckpoint (the worker treats it as last_id=0 / last_ts=accounting.start_date).
+		GetCheckpoint(ctx context.Context, source string) (entity.AcctCheckpoint, error)
+		SetCheckpoint(ctx context.Context, source string, lastID sql.NullInt64, lastTS sql.NullTime) error
+
+		// --- reports (contracts in docs/plan-accounting/06-reports.md; filled in step 7) ---
+		GetTrialBalance(ctx context.Context, from, to time.Time) (*entity.AcctTrialBalance, error)
+		GetProfitLoss(ctx context.Context, from, to time.Time) (*entity.AcctProfitLoss, error)
+		GetBalanceSheet(ctx context.Context, asOf time.Time) (*entity.AcctBalanceSheet, error)
+		GetAccountLedger(ctx context.Context, code string, f entity.AcctLedgerFilter) (*entity.AcctAccountLedger, error)
+		GetReconciliation(ctx context.Context, from, to time.Time) (*entity.AcctReconciliation, error)
+
+		// --- fact reads for the posting worker (the accounting store reads other domains' tables
+		//     directly, the internal/store/metrics precedent; SQL in 09-implementation-notes.md §9.2) ---
+		GetOrderFactsForPosting(ctx context.Context, orderUUID string) (*entity.AcctOrderFacts, error)
+		ListUnpostedMovements(ctx context.Context, afterID int64, startDate time.Time, limit int) ([]entity.AcctMovementFacts, error)
+		ListUnpostedReceivedRuns(ctx context.Context, startDate time.Time, limit int) ([]int, error)
+		GetRunFactsForPosting(ctx context.Context, runID int) (*entity.AcctRunFacts, error)
+		ListChangedOpexMonths(ctx context.Context, afterTS time.Time) ([]time.Time, error)
+		GetOpexMonthFacts(ctx context.Context, month time.Time) ([]entity.AcctOpexCategorySum, error)
+	}
+
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
 	BQClient interface {
 		CircuitBreakerState() circuitbreaker.State
@@ -928,6 +1006,7 @@ type (
 		TechCards() TechCards
 		ProductionRuns() ProductionRuns
 		MaterialStock() MaterialStock
+		Accounting() Accounting
 		Samples() Samples
 		Admin() Admin
 		Cache() Cache

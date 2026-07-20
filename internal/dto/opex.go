@@ -15,11 +15,15 @@ import (
 // Amounts arrive in their own currency; AmountBase is folded in the handler via FoldOpexLinesToBase
 // (dto has no FX rates of its own), mirroring FoldProductionRunCostsToBase.
 
-// firstOfMonth parses an any-day-in-month YYYY-MM-DD string and snaps it to the 1st at 00:00 UTC.
+// firstOfMonth parses a month string and snaps it to the 1st at 00:00 UTC. The canonical form is
+// YYYY-MM (a period is a month, per 05-admin-api.md); for backward compatibility any full
+// YYYY-MM-DD date in the month is also accepted and normalised to the 1st.
 func firstOfMonth(s, field string) (time.Time, error) {
-	m, err := time.Parse("2006-01-02", s)
+	m, err := time.Parse("2006-01", s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid %s %q: %w", field, s, err)
+		if m, err = time.Parse("2006-01-02", s); err != nil {
+			return time.Time{}, fmt.Errorf("invalid %s %q: want YYYY-MM: %w", field, s, err)
+		}
 	}
 	return time.Date(m.Year(), m.Month(), 1, 0, 0, 0, 0, time.UTC), nil
 }

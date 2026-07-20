@@ -2,11 +2,13 @@ package metrics
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -181,6 +183,18 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	d.Alerts = buildDashboardAlerts(d, thresholds, refundRatePct, placedOrders, len(reorder), totalItemRev,
 		lowStockNames, lowStockCount, staleRuns)
 
+	// Accounting-module health alerts (Step 8, docs/plan-accounting/07-worker-config.md
+	// "Health-алерты"): posting lag, manual-entry backlog, revenue reconciliation drift. Appended
+	// rather than folded into buildDashboardAlerts' own parameter list so that function's existing
+	// signature — and its unit tests in dashboard_test.go — stay untouched; buildAcctDashboardAlerts
+	// follows the exact same pure-function/precomputed-inputs shape. Silently empty until the
+	// accounting module has posted its first entry (see GetAcctModuleActive).
+	acctAlerts, err := s.acctDashboardAlerts(ctx, thresholds)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard accounting alerts: %w", err)
+	}
+	d.Alerts = append(d.Alerts, acctAlerts...)
+
 	return d, nil
 }
 
@@ -308,6 +322,224 @@ func (s *Store) GetStaleOpenRunCount(ctx context.Context, staleDays int) (int, e
 		})
 }
 
+// --- Accounting module health alerts (Step 8, docs/plan-accounting/07-worker-config.md
+// "Health-алерты") ---
+//
+// The queries below read acct_journal_entry / acct_event / acct_checkpoint / material_stock_movement /
+// customer_order directly via s.DB — this package has no dependency on internal/store/accounting (same
+// cross-domain-read precedent as the rest of this file, and the same tables/formulas the accounting
+// store's own reconcile.go uses, trimmed to what the dashboard needs). They are exported (not on
+// dependency.Metrics) for the same integration-coverage reason as GetLowStockMaterials /
+// GetStaleOpenRunCount: the metrics package has no live-DB test harness of its own (nf09-07).
+
+// acctReconciliationDriftPct is the fractional (not %) revenue-reconciliation drift threshold for the
+// acct_reconciliation_drift alert ("delta above 1% of the ledger value").
+const acctReconciliationDriftPct = 0.01
+
+// acctManualEntryLookbackDays bounds the acct_manual_entry_required alert to recent skips ("over the
+// last 30 days") so a resolved backlog eventually ages out of the dashboard.
+const acctManualEntryLookbackDays = 30
+
+// acctManualEntryWarnFloor is the count at/above which acct_manual_entry_required escalates from info
+// to warning. A handful of non-EUR/non-Stripe orders needing a manual entry is business-as-usual for
+// an international store; a growing pile signals bookkeeping is falling behind.
+const acctManualEntryWarnFloor = 5
+
+// GetAcctModuleActive reports whether the accounting module has posted at least one journal entry — a
+// cheap EXISTS gate so the three acct_* dashboard alerts stay silent until the module is actually in
+// use (compiled in but never enabled, or enabled but not yet ticked once).
+func (s *Store) GetAcctModuleActive(ctx context.Context) (bool, error) {
+	n, err := storeutil.QueryCountNamed(ctx, s.DB, `SELECT EXISTS(SELECT 1 FROM acct_journal_entry) AS active`, nil)
+	if err != nil {
+		return false, fmt.Errorf("get accounting module active: %w", err)
+	}
+	return n > 0, nil
+}
+
+// GetAcctPostingLag returns the count and max age (hours) of the accounting posting backlog:
+// unprocessed acct_event rows (processed_at IS NULL) and material_stock_movement rows stuck past the
+// acctposting worker's material_movement checkpoint, both older than lagHours. lagHours <= 0 falls back
+// to entity.DefaultAlertThresholds().AcctPostingLagHours rather than disabling the check outright
+// (unlike GetStaleOpenRunCount's staleDays <= 0 == off): AlertSettings/UpsertAlertSettings does not yet
+// carry this field through its protobuf round-trip (internal/dto/metrics.go AlertThresholdsFromPb), so
+// saving any OTHER dashboard threshold from the admin panel would otherwise silently zero this one out
+// in alert_setting and go dark with no operator intent behind it. The movements side is INNER JOINed to
+// acct_checkpoint on purpose: a store whose movements phase has never posted anything yet (no
+// checkpoint row) contributes zero rather than mistaking its entire pre-accounting movement history for
+// backlog.
+func (s *Store) GetAcctPostingLag(ctx context.Context, lagHours int) (count int, maxAgeHours float64, err error) {
+	if lagHours <= 0 {
+		lagHours = entity.DefaultAlertThresholds().AcctPostingLagHours
+	}
+	cutoff := s.Now().Add(-time.Duration(lagHours) * time.Hour)
+
+	events, err := storeutil.QueryNamedOne[struct {
+		Cnt    int          `db:"cnt"`
+		Oldest sql.NullTime `db:"oldest"`
+	}](ctx, s.DB, `
+		SELECT COUNT(*) AS cnt, MIN(occurred_at) AS oldest
+		FROM acct_event
+		WHERE processed_at IS NULL AND occurred_at < :cutoff`,
+		map[string]any{"cutoff": cutoff})
+	if err != nil {
+		return 0, 0, fmt.Errorf("acct posting lag events: %w", err)
+	}
+
+	movements, err := storeutil.QueryNamedOne[struct {
+		Cnt    int          `db:"cnt"`
+		Oldest sql.NullTime `db:"oldest"`
+	}](ctx, s.DB, `
+		SELECT COUNT(*) AS cnt, MIN(m.created_at) AS oldest
+		FROM material_stock_movement m
+		JOIN acct_checkpoint cp ON cp.source = 'material_movement'
+		WHERE m.id > cp.last_id AND m.created_at < :cutoff`,
+		map[string]any{"cutoff": cutoff})
+	if err != nil {
+		return 0, 0, fmt.Errorf("acct posting lag movements: %w", err)
+	}
+
+	count = events.Cnt + movements.Cnt
+	if count == 0 {
+		return 0, 0, nil
+	}
+	oldest := events.Oldest
+	if movements.Oldest.Valid && (!oldest.Valid || movements.Oldest.Time.Before(oldest.Time)) {
+		oldest = movements.Oldest
+	}
+	if oldest.Valid {
+		maxAgeHours = s.Now().Sub(oldest.Time).Hours()
+	}
+	return count, maxAgeHours, nil
+}
+
+// GetAcctManualEntryRequiredCount counts acct_event rows the acctposting worker could not post
+// automatically and flagged for manual bookkeeping (last_error LIKE '%manual entry required%' — see
+// accounting.ErrSkipNonEUR and acctposting/outbox.go skipEvent, e.g. "non-eur non-stripe order, manual
+// entry required") whose business date (occurred_at) falls in the last acctManualEntryLookbackDays days.
+func (s *Store) GetAcctManualEntryRequiredCount(ctx context.Context) (int, error) {
+	cutoff := s.Now().AddDate(0, 0, -acctManualEntryLookbackDays)
+	n, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM acct_event
+		WHERE processed_at IS NOT NULL
+		  AND last_error LIKE '%manual entry required%'
+		  AND occurred_at >= :cutoff`,
+		map[string]any{"cutoff": cutoff})
+	if err != nil {
+		return 0, fmt.Errorf("get acct manual entry required count: %w", err)
+	}
+	return n, nil
+}
+
+// GetAcctRevenueReconForMonth computes the revenue-block ledger and operational figures for the
+// calendar month containing `now`, trimmed from accounting.Store's reconRevenue
+// (internal/store/accounting/reconcile.go) to the two sums the acct_reconciliation_drift alert needs.
+// Ledger is Σ acct_journal_line.amount credited to the NET/SHIP/other-revenue accounts (4010/4020/4110)
+// by order_sale entries; operational is Σ(settled − VAT share) over the month's net-revenue-status
+// orders — the same formula reconcile.go uses. Returns (ledger, zero) when the order-status cache is
+// empty (a cache-less harness — production always loads it in app.Start; same guard reconcile.go uses)
+// so an empty `IN ()` never reaches the DB.
+func (s *Store) GetAcctRevenueReconForMonth(ctx context.Context, now time.Time) (ledger, operational decimal.Decimal, err error) {
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
+	ledgerRow, err := storeutil.QueryNamedOne[struct {
+		V decimal.Decimal `db:"v"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(l.amount), 0) AS v
+		FROM acct_journal_line l
+		JOIN acct_journal_entry e ON e.id = l.entry_id
+		JOIN acct_account a ON a.id = l.account_id
+		WHERE a.code IN (:codes)
+		  AND l.side = 'credit'
+		  AND e.source_type = 'order_sale'
+		  AND e.occurred_at >= :from AND e.occurred_at < :to`,
+		map[string]any{
+			"codes": []string{"4010", "4020", "4110"},
+			"from":  monthStart.Format("2006-01-02"),
+			"to":    monthEnd.Format("2006-01-02"),
+		})
+	if err != nil {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("acct revenue recon ledger: %w", err)
+	}
+	ledger = ledgerRow.V
+
+	statusIDs := cache.OrderStatusIDsForNetRevenue()
+	if len(statusIDs) == 0 {
+		return ledger, decimal.Zero, nil
+	}
+	opRow, err := storeutil.QueryNamedOne[struct {
+		V decimal.Decimal `db:"v"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(
+			CASE WHEN co.total_price > 0 THEN
+				COALESCE(co.total_settled_base, co.total_price)
+				- COALESCE(co.vat_amount, 0) * (COALESCE(co.total_settled_base, co.total_price) / co.total_price)
+			ELSE 0 END), 0) AS v
+		FROM customer_order co
+		WHERE co.order_status_id IN (:statusIds)
+		  AND co.placed >= :from AND co.placed < :to
+		  AND (co.total_settled_base IS NOT NULL OR co.currency = :base)`,
+		map[string]any{
+			"statusIds": statusIDs,
+			"from":      monthStart,
+			"to":        monthEnd,
+			"base":      cache.GetBaseCurrency(),
+		})
+	if err != nil {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("acct revenue recon operational: %w", err)
+	}
+	operational = opRow.V.Round(2)
+	return ledger, operational, nil
+}
+
+// acctDashboardAlertInputs bundles the precomputed inputs buildAcctDashboardAlerts needs, mirroring how
+// buildDashboardAlerts takes its own figures as plain parameters — computed once in acctDashboardAlerts
+// so the builder stays a pure function of already-fetched data. The zero value (module inactive, or an
+// individual figure that came back empty) yields no alerts.
+type acctDashboardAlertInputs struct {
+	PostingLagCount       int
+	PostingLagMaxAgeHours float64
+	// PostingLagThresholdHours is the threshold GetAcctPostingLag actually applied (after its own
+	// <= 0 → default fallback), so the alert text always names the cutoff that produced the count
+	// rather than a possibly-stale/zeroed t.AcctPostingLagHours.
+	PostingLagThresholdHours int
+	ManualEntryCount         int
+	ReconLedger              decimal.Decimal
+	ReconOperational         decimal.Decimal
+}
+
+// acctDashboardAlerts assembles acctDashboardAlertInputs and turns them into the accounting-module
+// dashboard alerts, gated on GetAcctModuleActive so a store that has not turned accounting on (no
+// acct_journal_entry row posted yet) sees none of this — "не показываем шум до включения модуля".
+func (s *Store) acctDashboardAlerts(ctx context.Context, t entity.AlertThresholds) ([]entity.DashboardAlert, error) {
+	active, err := s.GetAcctModuleActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acct dashboard alerts: %w", err)
+	}
+	if !active {
+		return nil, nil
+	}
+
+	var in acctDashboardAlertInputs
+	in.PostingLagThresholdHours = t.AcctPostingLagHours
+	if in.PostingLagThresholdHours <= 0 {
+		in.PostingLagThresholdHours = entity.DefaultAlertThresholds().AcctPostingLagHours
+	}
+	in.PostingLagCount, in.PostingLagMaxAgeHours, err = s.GetAcctPostingLag(ctx, in.PostingLagThresholdHours)
+	if err != nil {
+		return nil, fmt.Errorf("acct dashboard alerts: %w", err)
+	}
+	in.ManualEntryCount, err = s.GetAcctManualEntryRequiredCount(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acct dashboard alerts: %w", err)
+	}
+	in.ReconLedger, in.ReconOperational, err = s.GetAcctRevenueReconForMonth(ctx, s.Now())
+	if err != nil {
+		return nil, fmt.Errorf("acct dashboard alerts: %w", err)
+	}
+	return buildAcctDashboardAlerts(in), nil
+}
+
 // buildDashboardAlerts derives the server-side alert list from the headline figures using the
 // operator-tunable thresholds. Rate-based alerts (refund rate) are gated on t.RateFloorN so
 // they never fire on a statistically meaningless handful of orders.
@@ -395,5 +627,65 @@ func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundR
 			Detail:   fmt.Sprintf("%d production run(s) have been open longer than %d days.", staleRunCount, t.ProductionRunStaleDays),
 		})
 	}
+	return out
+}
+
+// buildAcctDashboardAlerts derives the three accounting-module alerts (Step 8) from precomputed
+// inputs, by the same pattern as buildDashboardAlerts (severity + stable code + title + detail with a
+// counter). Kept as a sibling function rather than folded into buildDashboardAlerts itself so that
+// function's existing signature — and its unit tests in dashboard_test.go — are untouched. It takes no
+// entity.AlertThresholds: acctDashboardAlerts already resolves the one configurable figure
+// (PostingLagThresholdHours) into `in`, and the other two alerts' thresholds are fixed constants
+// (acctManualEntryLookbackDays/-WarnFloor, acctReconciliationDriftPct) — see their doc comments for
+// why they are not operator-tunable settings. Callers must only pass it inputs from an
+// acctDashboardAlerts call that already confirmed the module is active (GetAcctModuleActive); on the
+// zero value it correctly yields no alerts either way.
+func buildAcctDashboardAlerts(in acctDashboardAlertInputs) []entity.DashboardAlert {
+	var out []entity.DashboardAlert
+
+	// acct_posting_lag: unprocessed acct_event rows or material movements stuck behind the
+	// acctposting worker's checkpoint, both older than PostingLagThresholdHours — signals the worker
+	// is stalled or falling behind.
+	if in.PostingLagCount > 0 {
+		out = append(out, entity.DashboardAlert{
+			Severity: entity.AlertSeverityWarning,
+			Code:     "acct_posting_lag",
+			Title:    "Accounting posting lag",
+			Detail: fmt.Sprintf("%d accounting event(s)/movement(s) have been unposted for more than %d hours (oldest %.0fh).",
+				in.PostingLagCount, in.PostingLagThresholdHours, in.PostingLagMaxAgeHours),
+		})
+	}
+	// acct_manual_entry_required: orders the worker could not post automatically (non-Stripe, non-EUR
+	// — no FX rate to convert to base) in the last 30 days. A handful is business-as-usual for an
+	// international store; a growing pile means bookkeeping is falling behind on manual entries.
+	if in.ManualEntryCount > 0 {
+		sev := entity.AlertSeverityInfo
+		if in.ManualEntryCount >= acctManualEntryWarnFloor {
+			sev = entity.AlertSeverityWarning
+		}
+		out = append(out, entity.DashboardAlert{
+			Severity: sev,
+			Code:     "acct_manual_entry_required",
+			Title:    "Manual accounting entries required",
+			Detail:   fmt.Sprintf("%d order(s) in the last 30 days need a manual accounting entry (non-EUR, non-Stripe).", in.ManualEntryCount),
+		})
+	}
+	// acct_reconciliation_drift: the ledger's posted revenue for the current month has drifted from
+	// the operational (customer_order) figure by more than acctReconciliationDriftPct. Guarded on
+	// ledger > 0 (a % of zero is meaningless, and there is nothing posted yet to have drifted).
+	if in.ReconLedger.GreaterThan(decimal.Zero) {
+		delta := in.ReconLedger.Sub(in.ReconOperational)
+		driftPct := delta.Abs().Div(in.ReconLedger)
+		if driftPct.GreaterThan(decimal.NewFromFloat(acctReconciliationDriftPct)) {
+			out = append(out, entity.DashboardAlert{
+				Severity: entity.AlertSeverityWarning,
+				Code:     "acct_reconciliation_drift",
+				Title:    "Accounting reconciliation drift",
+				Detail: fmt.Sprintf("Ledger revenue (%s) is %.1f%% off the operational figure (%s) this month — check the reconciliation report.",
+					in.ReconLedger.StringFixed(2), driftPct.Mul(decimal.NewFromInt(100)).InexactFloat64(), in.ReconOperational.StringFixed(2)),
+			})
+		}
+	}
+
 	return out
 }

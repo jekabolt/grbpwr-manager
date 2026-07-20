@@ -525,6 +525,21 @@ func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entit
 		}
 
 		wasUpdated = true
+
+		// Accounting outbox (push producer, docs/plan-accounting/03): record the revenue-recognition
+		// event in the SAME tx as the confirmed transition, only on a real transition (reached only
+		// when wasUpdated is set). EnqueueEvent is idempotent (ON DUPLICATE KEY no-op), so a retried
+		// payment adds no duplicate; a failure here rolls the payment back — a deliberate choice (03
+		// fail-safety): better to reject the payment than confirm it with no accounting trace.
+		if err := rep.Accounting().EnqueueEvent(ctx, entity.AcctEventInsert{
+			EventType:  entity.AcctEventOrderPaid,
+			SourceKey:  orderUUID,
+			Payload:    entity.AcctOrderPaidPayload{OrderUUID: orderUUID},
+			OccurredAt: s.Now(),
+		}); err != nil {
+			return fmt.Errorf("enqueue acct order_paid event: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {
