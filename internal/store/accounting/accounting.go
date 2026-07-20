@@ -289,7 +289,10 @@ func (s *Store) ReverseJournalEntry(ctx context.Context, entryID int, reason, ad
 		SourceType:  entity.AcctSourceReversal,
 		SourceKey:   fmt.Sprintf("rev:%d", entryID),
 		CreatedBy:   createdByOrSystem(adminUsername),
-		Lines:       lines,
+		// Carry the original's supplier tag onto the reversal so a reversed supplier-tagged receipt
+		// nets to zero within its supplier group in GetPayables (MED-2). NULL for untagged entries.
+		SupplierID: orig.Entry.SupplierID,
+		Lines:      lines,
 	})
 	if err != nil {
 		return 0, err

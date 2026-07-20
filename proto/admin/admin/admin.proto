@@ -6360,6 +6360,9 @@ message GetAcctReconciliationResponse {
   AcctReconBlock pending = 6;
   AcctReconBlock unposted_movements = 7;
   AcctReconBlock vat = 8; // phase 2 wave 1: 2070 ledger vs regime-classified order sums
+  AcctReconBlock prepayments = 9; // phase 2 wave 2: 2090 balance vs paid-undelivered orders
+  AcctReconBlock shipping = 10; // phase 2 wave 3: 6030 actual shipping cost booked
+  AcctReconBlock bank = 11; // phase 2 wave 4: 1010 balance + Revolut inbox unposted backlog
 }
 
 // --- wave 4: Revolut bank inbox (docs/plan-accounting-phase2/04-wave4-money.md §4.1) ---

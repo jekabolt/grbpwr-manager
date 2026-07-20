@@ -79,6 +79,10 @@ func (s *Store) GetReceivables(ctx context.Context) ([]entity.AcctReceivableRow,
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account a       ON a.id = l.account_id
 		WHERE a.code = '1040'
+		  -- Only order-keyed 1040 lines (source_key = order uuid) form real receivable rows. Bank-posted
+		  -- entries (source_key 'bank:<id>') and manual payments ('manual:<uuid>') both have source_type
+		  -- 'manual' and would collapse into a phantom ref='bank'/'manual' group (LOW-2), so exclude them.
+		  AND e.source_type <> 'manual'
 		GROUP BY SUBSTRING_INDEX(e.source_key, ':', 1)
 		HAVING invoiced > 0 AND (invoiced - received) <> 0
 		ORDER BY (invoiced - received) DESC`, nil)

@@ -211,6 +211,8 @@ var ValidAcctSourceTypes = map[AcctSourceType]bool{
 	AcctSourceOpexMonth:          true,
 	AcctSourceShippingActual:     true,
 	AcctSourceDevExpense:         true,
+	AcctSourceDepreciation:       true,
+	AcctSourceCorpTax:            true,
 	AcctSourceOrderDispute:       true,
 	AcctSourceManual:             true,
 	AcctSourceReversal:           true,
@@ -317,6 +319,7 @@ type AcctJournalEntry struct {
 	CreatedBy   string         `db:"created_by"`
 	HasCaveat   bool           `db:"has_caveat"`
 	Caveat      sql.NullString `db:"caveat"`
+	SupplierID  sql.NullInt64  `db:"supplier_id"` // AP-by-supplier tag (phase 2, wave 4); NULL when untagged
 	CreatedAt   time.Time      `db:"created_at"`
 }
 

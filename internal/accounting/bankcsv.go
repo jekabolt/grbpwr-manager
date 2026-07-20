@@ -228,15 +228,15 @@ func BuildBankTxnEntry(txn entity.AcctBankTxn, accountCode string, occurredAt ti
 	}
 
 	eur := isBaseCurrency(txn.Currency)
-	mkLine := func(code string, side entity.AcctSide) entity.AcctJournalLineInsert {
+	mkLine := func(code string, side entity.AcctSide, a decimal.Decimal) entity.AcctJournalLineInsert {
 		l := entity.AcctJournalLineInsert{AccountCode: code, Side: side}
 		if eur {
-			l.Amount = amt
+			l.Amount = a
 			return l
 		}
-		// Non-EUR: leave Amount for the FX fold; carry the original as the amount_src trace on BOTH legs
-		// (they fold to the same EUR base, so the entry stays balanced).
-		l.AmountSrc = decimal.NullDecimal{Decimal: amt, Valid: true}
+		// Non-EUR: leave Amount for the FX fold; carry the source amount as the amount_src trace (all
+		// legs fold to the same EUR base at one rate, so the entry stays balanced).
+		l.AmountSrc = decimal.NullDecimal{Decimal: a, Valid: true}
 		l.CurrencySrc = sql.NullString{String: strings.ToUpper(strings.TrimSpace(txn.Currency)), Valid: true}
 		return l
 	}
@@ -246,14 +246,27 @@ func BuildBankTxnEntry(txn entity.AcctBankTxn, accountCode string, occurredAt ti
 		desc = fmt.Sprintf("bank %s — %s", txn.Source, strings.TrimSpace(txn.Counterparty.String))
 	}
 
+	lines := []entity.AcctJournalLineInsert{
+		mkLine(drCode, entity.AcctSideDebit, amt),
+		mkLine(crCode, entity.AcctSideCredit, amt),
+	}
+	// Bank fee (Revolut Fee column): it reduces the 1010 bank balance and is a Bank-Fees expense, so
+	// post Dr 6060 / Cr 1010 for it in the txn currency (MED-3). Without this, 1010 drifts from the real
+	// Revolut balance by Σ fees and bank-fee expense is understated. Zero/NULL fee adds no lines.
+	if txn.Fee.Valid {
+		if fee := txn.Fee.Decimal.Abs().Round(2); fee.Sign() > 0 {
+			lines = append(lines,
+				mkLine(Acc6060, entity.AcctSideDebit, fee),
+				mkLine(Acc1010, entity.AcctSideCredit, fee),
+			)
+		}
+	}
+
 	return entity.AcctJournalEntryInsert{
 		OccurredAt:  occurredAt,
 		Description: truncateRunes(desc, descMaxLen),
 		SourceType:  entity.AcctSourceManual,
 		SourceKey:   fmt.Sprintf("bank:%d", txn.Id),
-		Lines: []entity.AcctJournalLineInsert{
-			mkLine(drCode, entity.AcctSideDebit),
-			mkLine(crCode, entity.AcctSideCredit),
-		},
+		Lines:       lines,
 	}, nil
 }

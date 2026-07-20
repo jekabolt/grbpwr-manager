@@ -12,11 +12,16 @@
 -- =====================================================================================
 
 -- --- extend chk_acct_entry_source_type (+order_dispute) ---
+-- This migration sorts LAST (0198 > #71's 0197_depreciation_corptax_accrual), so it is the FINAL
+-- redefinition of this CHECK — its list MUST be the UNION of every source type, including #71's
+-- 'depreciation'/'corp_tax', or those postings would be rejected. Mirrors entity.ValidAcctSourceTypes.
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry'
       AND CONSTRAINT_NAME = 'chk_acct_entry_source_type') > 0,
     'ALTER TABLE acct_journal_entry DROP CONSTRAINT chk_acct_entry_source_type', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry'
@@ -28,23 +33,30 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
         ''material_writeoff'',''material_adjustment'',
         ''production_receive'',''opex_month'',
         ''shipping_actual'',''dev_expense'',
+        ''depreciation'',''corp_tax'',
         ''order_dispute'',
         ''manual'',''reversal''))', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- --- extend chk_acct_event_type (+order_dispute) ---
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_event'
       AND CONSTRAINT_NAME = 'chk_acct_event_type') > 0,
     'ALTER TABLE acct_event DROP CONSTRAINT chk_acct_event_type', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @sql := IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_event'
       AND CONSTRAINT_NAME = 'chk_acct_event_type') = 0,
     'ALTER TABLE acct_event ADD CONSTRAINT chk_acct_event_type CHECK (event_type IN (
         ''order_paid'',''order_refund'',''order_shipped'',''order_delivered'',''order_dispute''))', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- =====================================================================================
 -- 4.1 Revolut CSV inbox. acct_bank_txn is the parsed, deduplicated inbox of statement lines (external_id
@@ -102,7 +114,9 @@ SET @need_col := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_stock_movement' AND COLUMN_NAME = 'supplier_id');
 SET @sql := IF(@need_col,
     'ALTER TABLE material_stock_movement ADD COLUMN supplier_id INT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_fk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_stock_movement'
@@ -111,20 +125,26 @@ SET @sql := IF(@need_fk,
     'ALTER TABLE material_stock_movement
         ADD CONSTRAINT fk_msm_supplier FOREIGN KEY (supplier_id) REFERENCES supplier(id) ON DELETE SET NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_idx := (SELECT COUNT(*) = 0 FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material_stock_movement' AND INDEX_NAME = 'idx_msm_supplier');
 SET @sql := IF(@need_idx,
     'ALTER TABLE material_stock_movement ADD INDEX idx_msm_supplier (supplier_id)', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- --- acct_journal_entry.supplier_id (nullable FK, guarded — carries the AP supplier tag) ---
 SET @need_col := (SELECT COUNT(*) = 0 FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry' AND COLUMN_NAME = 'supplier_id');
 SET @sql := IF(@need_col,
     'ALTER TABLE acct_journal_entry ADD COLUMN supplier_id INT NULL', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_fk := (SELECT COUNT(*) = 0 FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry'
@@ -133,13 +153,17 @@ SET @sql := IF(@need_fk,
     'ALTER TABLE acct_journal_entry
         ADD CONSTRAINT fk_acct_entry_supplier FOREIGN KEY (supplier_id) REFERENCES supplier(id) ON DELETE SET NULL',
     'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 SET @need_idx := (SELECT COUNT(*) = 0 FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'acct_journal_entry' AND INDEX_NAME = 'idx_acct_entry_supplier');
 SET @sql := IF(@need_idx,
     'ALTER TABLE acct_journal_entry ADD INDEX idx_acct_entry_supplier (supplier_id)', 'SELECT 1');
-PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
 
 -- +migrate Down
 -- Deliberately irreversible (no-op). Narrowing either CHECK after wave-4 rows exist would reject

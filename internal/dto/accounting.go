@@ -653,10 +653,19 @@ func ConvertAcctReconciliationToPb(r entity.AcctReconciliation) *pb_admin.GetAcc
 		Pending:           convertAcctReconBlockToPb(r.Pending),
 		UnpostedMovements: convertAcctReconBlockToPb(r.UnpostedMovements),
 	}
-	// Vat is a phase-2 wave-1 addition and a pointer on the entity (older reconciliations
-	// may not carry it); nil stays nil on the wire.
+	// Vat / Prepayments / Shipping / Bank are pointer blocks added by phases 2 wave 1–4 (older
+	// reconciliations may not carry them); nil stays nil on the wire.
 	if r.Vat != nil {
 		resp.Vat = convertAcctReconBlockToPb(*r.Vat)
+	}
+	if r.Prepayments != nil {
+		resp.Prepayments = convertAcctReconBlockToPb(*r.Prepayments)
+	}
+	if r.Shipping != nil {
+		resp.Shipping = convertAcctReconBlockToPb(*r.Shipping)
+	}
+	if r.Bank != nil {
+		resp.Bank = convertAcctReconBlockToPb(*r.Bank)
 	}
 	return resp
 }

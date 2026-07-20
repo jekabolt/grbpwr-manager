@@ -458,7 +458,17 @@ func (w *Worker) processDisputeClosed(ctx context.Context, ev entity.AcctEvent, 
 	open, err := w.repo.Accounting().GetEntryBySource(ctx, entity.AcctSourceOrderDispute, "dispute:"+p.DisputeID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return w.skipEvent(ctx, ev.Id, "dispute won but no open dispute entry to reverse")
+			// The created event may not have posted the open entry yet — Stripe can deliver dispute.closed
+			// before dispute.created on out-of-order retries. DEFER with backoff so the won reversal
+			// self-heals once the open entry exists; a terminal skip here would leave a recovered
+			// chargeback permanently booked as a contra-revenue + fee loss (MED-1).
+			if ev.Attempts >= maxDeadLetterAttempts {
+				return w.needsReview(ctx, ev.Id, "dispute won but open dispute entry never posted, manual entry required")
+			}
+			if e := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, "dispute won; awaiting open dispute entry", eventBackoff(ev.Attempts)); e != nil {
+				return fmt.Errorf("defer dispute-won event %d: %w", ev.Id, e)
+			}
+			return nil
 		}
 		return fmt.Errorf("get open dispute entry %s: %w", p.DisputeID, err)
 	}
