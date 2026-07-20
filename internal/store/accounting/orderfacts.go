@@ -51,11 +51,15 @@ func (s *Store) GetOrderFactsForPosting(ctx context.Context, orderUUID string) (
 	facts.PaymentMethodName = pm.Method.Name
 	facts.FeePct = pm.Method.FeePct
 	facts.FeeFixed = pm.Method.FeeFixed
+	// C-8: LEFT JOIN so a sold line is never silently dropped if its product row were hard-deleted.
+	// The line keeps its sale-time cost snapshot (cost_price_at_sale) when present; only a legacy line
+	// with no snapshot AND a missing product yields a NULL unit_cost, which the builder already treats
+	// as uncosted (excluded from COGS, named in the entry caveat) rather than vanishing.
 	items, err := storeutil.QueryListNamed[entity.AcctOrderItemFact](ctx, s.DB, `
 		SELECT oi.id, oi.product_id, oi.quantity,
 		       COALESCE(oi.cost_price_at_sale, pr.cost_price) AS unit_cost
 		FROM order_item oi
-		JOIN product pr ON pr.id = oi.product_id
+		LEFT JOIN product pr ON pr.id = oi.product_id
 		WHERE oi.order_id = :order_id`, map[string]any{"order_id": facts.Id})
 	if err != nil {
 		return nil, fmt.Errorf("accounting: get order item facts %s: %w", orderUUID, err)
