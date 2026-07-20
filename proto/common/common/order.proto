@@ -55,6 +55,11 @@ message Order {
   string buyer_email = 12;
   string buyer_first_name = 13;
   string buyer_last_name = 14;
+  // vat_regime is the VAT treatment snapshotted onto the order at accounting-posting time
+  // (customer_order.vat_regime): oss / pl_domestic / export / wdt / uk_stock_domestic / none. Empty
+  // until the order's sale event is posted. Surfaced so the invoice can print the legally-required
+  // note for zero-VAT regimes — notably wdt (intra-community B2B supply → reverse charge).
+  string vat_regime = 15;
 }
 
 message OrderItem {

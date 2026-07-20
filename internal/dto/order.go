@@ -271,6 +271,7 @@ func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, e
 		BuyerEmail:     eOrder.BuyerEmail,
 		BuyerFirstName: eOrder.BuyerFirstName,
 		BuyerLastName:  eOrder.BuyerLastName,
+		VatRegime:      eOrder.VatRegime.String,
 	}
 	if eOrder.PromoId.Valid {
 		pbOrder.PromoId = int32(eOrder.PromoId.Int32)
