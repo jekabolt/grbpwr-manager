@@ -53,41 +53,53 @@ func (w *Worker) processMovements(ctx context.Context) error {
 	// the current or a future month), so the backdated-movement clamp retry below always lands.
 	clampTo := firstOfMonthUTC(w.repo.Now().UTC())
 
-	entries := make([]entity.AcctJournalEntryInsert, 0, len(movements))
-	maxID := lastID
+	// Post each built movement entry in its OWN short Tx (B-3): a single poison movement (a non-period
+	// post error) must not roll back and re-scan the whole batch. The checkpoint advances to the highest
+	// movement id that was either posted OR intentionally skipped at build time, and STOPS at the first
+	// movement that FAILED to post — so that one retries next tick while its later siblings still post
+	// (idempotently), instead of one bad row clogging the queue and every future close. Source tables
+	// are not read inside the Tx (the lock rule); idempotency makes a crash-and-replay a no-op.
+	checkpointID := lastID
+	postFailed := false
 	for _, m := range movements {
-		if int64(m.Id) > maxID {
-			maxID = int64(m.Id)
-		}
+		mid := int64(m.Id)
 		entry, berr := accounting.BuildMaterialMovementEntry(m, w.startDate)
 		if berr != nil {
 			switch {
 			case errors.Is(berr, accounting.ErrSkipUncosted):
 				slog.Default().DebugContext(ctx, "acctposting: skip uncosted movement", slog.Int("movement_id", m.Id))
 			default:
-				// ErrUnknownMovementType or an unexpected builder error: skip but advance the cursor so
-				// the queue behind it is not blocked; the movement is visible via reconciliation.
+				// ErrUnknownMovementType or an unexpected builder error: skip; the movement is surfaced
+				// via reconciliation.
 				slog.Default().ErrorContext(ctx, "acctposting: skip unbuildable movement",
 					slog.Int("movement_id", m.Id), slog.String("err", berr.Error()))
 			}
+			if !postFailed {
+				checkpointID = mid // an intentional skip does not block the cursor
+			}
 			continue
 		}
-		entries = append(entries, entry)
+		e := entry
+		if txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			return createMovementEntry(ctx, rep, &e, clampTo)
+		}); txErr != nil {
+			// Poison movement (non-period post error): log + alert; do NOT advance past it (retried next
+			// tick), but keep posting the rest so one bad row cannot clog the queue and every close.
+			slog.Default().ErrorContext(ctx, "acctposting: skip unpostable movement",
+				slog.Int("movement_id", m.Id), slog.String("err", txErr.Error()))
+			postFailed = true
+			continue
+		}
+		if !postFailed {
+			checkpointID = mid
+		}
 	}
 
-	// One short Tx: post every built entry + advance the checkpoint atomically. Source tables are not
-	// read inside the Tx (the lock rule), and idempotency makes a crash-and-replay a no-op.
-	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		for i := range entries {
-			if e := createMovementEntry(ctx, rep, &entries[i], clampTo); e != nil {
-				return e
-			}
+	if checkpointID > lastID {
+		if err := acc.SetCheckpoint(ctx, checkpointMaterialMovement,
+			sql.NullInt64{Int64: checkpointID, Valid: true}, sql.NullTime{}); err != nil {
+			return fmt.Errorf("advance movement checkpoint: %w", err)
 		}
-		return rep.Accounting().SetCheckpoint(ctx, checkpointMaterialMovement,
-			sql.NullInt64{Int64: maxID, Valid: true}, sql.NullTime{})
-	})
-	if txErr != nil {
-		return fmt.Errorf("post movements batch: %w", txErr)
 	}
 	return nil
 }
