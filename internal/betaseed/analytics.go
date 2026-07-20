@@ -40,6 +40,8 @@ type AnalyticsResult struct {
 	OrdersCancelled         int
 	OrdersTotal             int
 	OrdersOnCostPriced      int            // subset placed on the PLM cost-priced style (MARGIN/COGS)
+	OrdersWdt               int            // B2B EU≠PL orders with a buyer VAT id (wdt / reverse charge)
+	OrdersUkStock           int            // CASH orders (uk_stock_domestic regime)
 	CountriesUsed           map[string]int // shipping country -> net-revenue order count (GEOGRAPHY)
 
 	// Part 3 — fulfillment board.
@@ -483,17 +485,88 @@ func (s *Seeder) seedOrderVolume(ctx context.Context, pool []analyticsProduct, p
 	}
 	s.logf("  cancelled (storefront): %d/%d created", cxMade, cancelledN)
 
-	r.OrdersTotal = r.OrdersDelivered + r.OrdersShipped + r.OrdersConfirmed +
-		r.OrdersPartiallyRefunded + r.OrdersAwaitingPayment + r.OrdersCancelled
-	s.logf("  VOLUME TOTAL: %d orders (delivered=%d shipped=%d confirmed=%d partial_refund=%d awaiting=%d cancelled=%d; cost-priced=%d)",
-		r.OrdersTotal, r.OrdersDelivered, r.OrdersShipped, r.OrdersConfirmed,
-		r.OrdersPartiallyRefunded, r.OrdersAwaitingPayment, r.OrdersCancelled, r.OrdersOnCostPriced)
+	// --- VAT-regime coverage: wdt (B2B EU≠PL, buyer VAT id) + uk_stock_domestic (CASH) ---
+	// The country spread above already exercises oss (B2C EU≠PL), pl_domestic (PL) and export
+	// (US/JP/GB). These two extra buckets close the remaining regimes so the accounting worker posts
+	// order_sale across all five vat_regime values — and so the wdt/reverse-charge invoice path (buyer
+	// VAT id → 4310 wholesale revenue, 0% reverse charge) has real data. Delivered so they settle.
+	wdtN := s.scaleN(1, 2, 4)
+	wdtMade := 0
+	for i := 0; i < wdtN; i++ {
+		p := pickProduct(seq)
+		v := p.variants[seq%len(p.variants)]
+		price := s.orderPrice(p, seq)
+		dest := []string{"DE", "FR"}[seq%2] // EU, ≠PL → wdt when a matching-country VAT id is present
+		seq++
+		uuid, used, err := s.anCreateOrderOpt(ctx, []*common.CustomOrderItemInsert{
+			{Quantity: 1, VariantId: int64(v.VariantID), CustomPrice: price},
+		}, dest, custEmail(), anCreateOrderOpts{buyerVatID: fmt.Sprintf("%s%09d", dest, 100000000+seq)})
+		if err != nil {
+			r.warn(s, "wdt order %d (%s): %v", i, p.label, err)
+			continue
+		}
+		if _, err := s.C.SetTrackingNumber(ctx, &admin.SetTrackingNumberRequest{OrderUuid: uuid, TrackingCode: fmt.Sprintf("AN-%s-wdt-%03d", s.Run, i)}); err != nil {
+			r.warn(s, "wdt SetTrackingNumber(%s): %v", uuid, err)
+		}
+		if _, err := s.C.DeliveredOrder(ctx, &admin.DeliveredOrderRequest{OrderUuid: uuid}); err != nil {
+			r.warn(s, "wdt DeliveredOrder(%s): %v", uuid, err)
+		}
+		r.OrdersWdt++
+		r.CountriesUsed[used]++
+		if p.costPriced {
+			r.OrdersOnCostPriced++
+		}
+		wdtMade++
+	}
+	s.logf("  wdt (B2B reverse-charge): %d/%d created", wdtMade, wdtN)
 
-	netRevenueOrders := r.OrdersDelivered + r.OrdersShipped + r.OrdersConfirmed + r.OrdersPartiallyRefunded
+	ukN := s.scaleN(1, 2, 3)
+	ukMade := 0
+	for i := 0; i < ukN; i++ {
+		p := pickProduct(seq)
+		v := p.variants[seq%len(p.variants)]
+		price := s.orderPrice(p, seq)
+		seq++
+		// CASH → uk_stock_domestic regardless of destination; keep DE for a served region.
+		_, used, err := s.anCreateOrderOpt(ctx, []*common.CustomOrderItemInsert{
+			{Quantity: 1, VariantId: int64(v.VariantID), CustomPrice: price},
+		}, "DE", custEmail(), anCreateOrderOpts{cash: true})
+		if err != nil {
+			r.warn(s, "uk_stock (cash) order %d (%s): %v", i, p.label, err)
+			continue
+		}
+		r.OrdersUkStock++
+		r.CountriesUsed[used]++
+		if p.costPriced {
+			r.OrdersOnCostPriced++
+		}
+		ukMade++
+	}
+	s.logf("  uk_stock_domestic (cash): %d/%d created", ukMade, ukN)
+
+	r.OrdersTotal = r.OrdersDelivered + r.OrdersShipped + r.OrdersConfirmed +
+		r.OrdersPartiallyRefunded + r.OrdersAwaitingPayment + r.OrdersCancelled +
+		r.OrdersWdt + r.OrdersUkStock
+	s.logf("  VOLUME TOTAL: %d orders (delivered=%d shipped=%d confirmed=%d partial_refund=%d awaiting=%d cancelled=%d wdt=%d uk_stock=%d; cost-priced=%d)",
+		r.OrdersTotal, r.OrdersDelivered, r.OrdersShipped, r.OrdersConfirmed,
+		r.OrdersPartiallyRefunded, r.OrdersAwaitingPayment, r.OrdersCancelled,
+		r.OrdersWdt, r.OrdersUkStock, r.OrdersOnCostPriced)
+
+	netRevenueOrders := r.OrdersDelivered + r.OrdersShipped + r.OrdersConfirmed +
+		r.OrdersPartiallyRefunded + r.OrdersWdt + r.OrdersUkStock
 	if netRevenueOrders == 0 {
 		return fmt.Errorf("no net-revenue orders created (delivered/shipped/confirmed/partial-refund all 0)")
 	}
 	return nil
+}
+
+// anCreateOrderOpts carries optional VAT-regime overrides for a seeded custom order. Zero value =
+// the default B2C bank_invoice order. buyerVatID (non-empty) makes the order B2B — for an EU≠PL
+// destination the resolver classifies it wdt (intra-community reverse charge). cash switches the
+// payment method to CASH, which the resolver classifies uk_stock_domestic regardless of destination.
+type anCreateOrderOpts struct {
+	buyerVatID string
+	cash       bool
 }
 
 // anCreateOrder places one admin custom order (bank_invoice -> born Confirmed). It
@@ -501,15 +574,27 @@ func (s *Seeder) seedOrderVolume(ctx context.Context, pool []analyticsProduct, p
 // region, falls back to DE so the order (and its revenue) still lands. Returns the
 // order uuid and the country actually used.
 func (s *Seeder) anCreateOrder(ctx context.Context, items []*common.CustomOrderItemInsert, country, email string) (uuid, used string, err error) {
+	return s.anCreateOrderOpt(ctx, items, country, email, anCreateOrderOpts{})
+}
+
+// anCreateOrderOpt is anCreateOrder with VAT-regime overrides (buyer_vat_id / cash payment). A cash
+// order keeps its requested country (uk_stock_domestic ignores destination); a bank_invoice order
+// still falls back to DE if the carrier does not serve the region, so the order always lands.
+func (s *Seeder) anCreateOrderOpt(ctx context.Context, items []*common.CustomOrderItemInsert, country, email string, o anCreateOrderOpts) (uuid, used string, err error) {
+	pm := common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE
+	if o.cash {
+		pm = common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_CASH
+	}
 	mk := func(cc string) (string, error) {
 		resp, e := s.C.CreateCustomOrder(ctx, &admin.CreateCustomOrderRequest{
 			Items:             items,
 			ShippingAddress:   seedAddrIn(cc),
 			BillingAddress:    seedAddrIn(cc),
 			Buyer:             &common.BuyerInsert{FirstName: "Ana", LastName: "Lytics", Email: email, Phone: "+49301230000"},
-			PaymentMethod:     common.PaymentMethodNameEnum_PAYMENT_METHOD_NAME_ENUM_BANK_INVOICE,
+			PaymentMethod:     pm,
 			ShipmentCarrierId: s.carrierID(),
 			Currency:          "eur",
+			BuyerVatId:        o.buyerVatID,
 		})
 		if e != nil {
 			return "", e

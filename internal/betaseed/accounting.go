@@ -3,6 +3,7 @@ package betaseed
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -94,6 +95,11 @@ func (s *Seeder) SeedAccounting(ctx context.Context) (*AccountingResult, error) 
 	if err := s.proveAccounting(ctx, r); err != nil {
 		return r, err
 	}
+
+	// Best-effort read-back of the WORKER's operational postings + the VAT returns (never fails the
+	// phase — those entries lag a full seed on the ~1m ticker).
+	s.logf("=== SeedAccounting: operational coverage ===")
+	s.verifyOperationalCoverage(ctx, r)
 	return r, nil
 }
 
@@ -302,4 +308,93 @@ func (s *Seeder) proveAccounting(ctx context.Context, r *AccountingResult) error
 	}
 	s.logf("  ACCEPTANCE PASSED: balanced ledger, %d non-zero accounts, %d journal entries in range", nonZero, entries)
 	return nil
+}
+
+// ---------------------------------------------------------------- 6. operational coverage (worker)
+
+// verifyOperationalCoverage is a best-effort read-back of the accounting WORKER's output. The
+// acctposting worker posts order_sale / order_refund / opex_month / material_* / production_receive
+// entries from the operational facts the other phases seed, on its ~1m ticker — so they lag a full
+// seed rather than appearing synchronously with it. This step polls the ledger for a bounded window
+// for the worker's (non-manual) entries, buckets them by source_type, then reads the JPK_VAT + OSS
+// returns and logs per-regime coverage so a full seed leaves a visibly complete accounting picture.
+//
+// It NEVER fails the phase: on a standalone --only=accounting run (no orders) or a still-warming worker
+// it simply logs what is (not yet) covered, with guidance to re-check shortly. The real gate stays the
+// balanced-ledger acceptance above.
+func (s *Seeder) verifyOperationalCoverage(ctx context.Context, r *AccountingResult) {
+	now := time.Now().UTC()
+	from := now.AddDate(0, 0, -60).Format("2006-01-02")
+	to := now.AddDate(0, 0, 1).Format("2006-01-02")
+
+	// Poll up to ~90s (worker interval ~1m) for the worker's first order_sale to land.
+	bySource := map[string]int{}
+	const attempts = 6
+	for a := 0; a < attempts; a++ {
+		lj, err := s.C.ListJournalEntries(ctx, &admin.ListJournalEntriesRequest{From: from, To: to, Limit: 1000})
+		if err != nil {
+			r.warn(s, "coverage: ListJournalEntries: %v", err)
+			return
+		}
+		bySource = map[string]int{}
+		for _, e := range lj.GetEntries() {
+			st := e.GetSourceType()
+			if st == "" {
+				st = "(none)"
+			}
+			bySource[st]++
+		}
+		if bySource["order_sale"] > 0 {
+			break
+		}
+		if a < attempts-1 {
+			s.logf("  coverage: no order_sale posted yet (worker ~1m) — waiting… [%d/%d]", a+1, attempts)
+			time.Sleep(15 * time.Second)
+		}
+	}
+	s.logf("  ledger entries by source_type: %s", fmtCounts(bySource))
+	operational := 0
+	for st, n := range bySource {
+		if st != "manual" && st != "(none)" {
+			operational += n
+		}
+	}
+	if operational == 0 {
+		r.warn(s, "coverage: no worker (operational) entries yet — order_sale/opex/material postings lag the seed (~1m); re-run `--only=accounting` shortly to confirm")
+	}
+
+	// JPK_VAT (this month): output VAT by regime (pl_domestic / uk_stock) + the wdt / export net bases —
+	// non-zero values here prove the worker posted order_sale across the regimes the orders exercise.
+	month := now.Format("2006-01-02")
+	if v, err := s.C.GetVatReturnPL(ctx, &admin.GetVatReturnPLRequest{Month: month}); err != nil {
+		r.warn(s, "coverage: GetVatReturnPL(%s): %v", month, err)
+	} else {
+		s.logf("  JPK_VAT[%s]: output_domestic=%.2f output_uk_stock=%.2f oss_info=%.2f net_wdt=%.2f net_export=%.2f net_payable=%.2f",
+			month, decFloat(v.GetOutputDomestic()), decFloat(v.GetOutputUkStockDomestic()), decFloat(v.GetOssInfoTotal()),
+			decFloat(v.GetNetWdt()), decFloat(v.GetNetExport()), decFloat(v.GetNetPayable()))
+	}
+	// OSS (this quarter): EU B2C destination VAT breakdown (vat_regime=oss).
+	if o, err := s.C.GetOssReturn(ctx, &admin.GetOssReturnRequest{Quarter: month}); err != nil {
+		r.warn(s, "coverage: GetOssReturn(%s): %v", month, err)
+	} else {
+		s.logf("  OSS[quarter of %s]: rows=%d total_net=%.2f total_vat=%.2f",
+			month, len(o.GetRows()), decFloat(o.GetTotalNet()), decFloat(o.GetTotalVat()))
+	}
+}
+
+// fmtCounts renders a source_type -> count map as a stable "k=v" list (sorted by key).
+func fmtCounts(m map[string]int) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, " ")
 }
