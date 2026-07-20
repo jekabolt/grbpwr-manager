@@ -214,7 +214,13 @@ func (w *Worker) processOpex(ctx context.Context) error {
 		}
 	}
 
-	if err := acc.SetCheckpoint(ctx, checkpointOpexLine, sql.NullInt64{}, sql.NullTime{Time: tickStart, Valid: true}); err != nil {
+	// B-4: store the checkpoint a small margin BEFORE the scan instant. opex_line.updated_at is second-
+	// granular and the list query uses a strict `>`, so an edit landing in the SAME second as tickStart
+	// (after the scan ran) would be missed forever; the margin re-scans that boundary window next tick,
+	// deduped to a no-op by repostOpexMonth for an unchanged month.
+	const opexCheckpointMargin = 2 * time.Second
+	if err := acc.SetCheckpoint(ctx, checkpointOpexLine, sql.NullInt64{},
+		sql.NullTime{Time: tickStart.Add(-opexCheckpointMargin), Valid: true}); err != nil {
 		return fmt.Errorf("set opex checkpoint: %w", err)
 	}
 	return nil
