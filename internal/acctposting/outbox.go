@@ -123,12 +123,33 @@ func (w *Worker) resolveVatDecision(ctx context.Context, facts *entity.AcctOrder
 		BuyerVatID:    buyerVatID,
 		PaymentMethod: facts.PaymentMethodName,
 	})
+	return w.vatDecisionForRegime(ctx, regime, caveats, facts.DestCountry)
+}
+
+// refundVatDecision reverses a refund at the SAME regime the sale snapshotted onto the order
+// (customer_order.vat_regime), not a fresh resolution — so a later change to the resolver inputs (the
+// ship-from origin config, or a buyer VAT id added after the sale) cannot make the reversal diverge
+// from what S1 actually posted to 2070 (which would re-introduce the C-1 residual this fixes). It falls
+// back to re-resolution only for a legacy order that predates the regime snapshot (vat_regime NULL).
+// (The rate itself is not persisted, so an operator editing the vat_rate row between sale and refund
+// can still drift; that surfaces as the advisory "vat snapshot mismatch" caveat — tracked separately.)
+func (w *Worker) refundVatDecision(ctx context.Context, facts *entity.AcctOrderFacts) (accounting.VatDecision, string, error) {
+	regime := strings.TrimSpace(facts.VatRegime.String)
+	if !facts.VatRegime.Valid || regime == "" {
+		return w.resolveVatDecision(ctx, facts)
+	}
+	return w.vatDecisionForRegime(ctx, entity.VatRegime(regime), nil, facts.DestCountry)
+}
+
+// vatDecisionForRegime looks up a resolved regime's vat_rate (07 §7.4.14): a VAT-bearing regime with
+// no configured rate returns a non-empty skipReason; the error return is reserved for infra failures.
+func (w *Worker) vatDecisionForRegime(ctx context.Context, regime entity.VatRegime, caveats []string, destCountry string) (accounting.VatDecision, string, error) {
 	vd := accounting.VatDecision{Regime: regime, Caveats: caveats}
 	if !accounting.RegimeHasVAT(regime) {
 		return vd, "", nil
 	}
 
-	rateCountry := accounting.RegimeRateCountry(regime, facts.DestCountry, w.c.OriginCountry)
+	rateCountry := accounting.RegimeRateCountry(regime, destCountry, w.c.OriginCountry)
 	rates, err := w.repo.Accounting().GetVatRatesFor(ctx, []string{rateCountry})
 	if err != nil {
 		return vd, "", fmt.Errorf("get vat rate %s: %w", rateCountry, err)
@@ -170,9 +191,24 @@ func (w *Worker) processOrderRefund(ctx context.Context, ev entity.AcctEvent) er
 		return fmt.Errorf("order facts %s: %w", p.OrderUUID, err)
 	}
 
+	// Reverse at the SAME VAT regime the sale snapshotted onto the order, so the refund matches exactly
+	// what S1 posted to 2070 (rule S2 mirrors S1), even if the resolver inputs changed after the sale.
+	vd, skipReason, err := w.refundVatDecision(ctx, facts)
+	if err != nil {
+		return fmt.Errorf("resolve refund vat %s: %w", p.OrderUUID, err)
+	}
+	if skipReason != "" {
+		// The sale posted with this regime's VAT; without its rate we cannot reverse it correctly, so
+		// defer (retryable) rather than post a wrong reversal or leave a 2070 residual.
+		if err := w.repo.Accounting().MarkEventFailed(ctx, ev.Id, skipReason, settledRetryInterval); err != nil {
+			return fmt.Errorf("defer refund event %d: %w", ev.Id, err)
+		}
+		return nil
+	}
+
 	// items = facts.Items as-is; the builder takes the refunded quantity per line from
 	// p.RefundedByItem. source_key is the resolved "uuid:seq" assigned at enqueue time.
-	entry, buildErr := accounting.BuildOrderRefundEntry(*facts, p, facts.Items, ev.SourceKey, ev.OccurredAt)
+	entry, buildErr := accounting.BuildOrderRefundEntry(*facts, p, facts.Items, vd, ev.SourceKey, ev.OccurredAt)
 	// A refund does not (re)write vat_regime — the sale already snapshotted it.
 	return w.postOrDefer(ctx, ev, entry, buildErr, "", "")
 }

@@ -179,7 +179,7 @@ func TestPropertyRefundBalances(t *testing.T) {
 			OrderCurrency:  f.Currency,
 			RefundedByItem: refundedByItem,
 		}
-		entry, err := BuildOrderRefundEntry(f, refund, f.Items, f.UUID+":1", testOccurred)
+		entry, err := BuildOrderRefundEntry(f, refund, f.Items, randomVatDecision(r), f.UUID+":1", testOccurred)
 		if err != nil {
 			require.Truef(t, isSaleSkip(err), "iter %d unexpected refund error: %v", i, err)
 			continue

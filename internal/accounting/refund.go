@@ -26,6 +26,7 @@ func BuildOrderRefundEntry(
 	f entity.AcctOrderFacts,
 	refund entity.AcctOrderRefundPayload,
 	items []entity.AcctOrderItemFact,
+	vd VatDecision,
 	sourceKey string,
 	occurredAt time.Time,
 ) (entity.AcctJournalEntryInsert, error) {
@@ -45,20 +46,31 @@ func BuildOrderRefundEntry(
 		return entity.AcctJournalEntryInsert{}, ErrDegenerateAmounts
 	}
 
-	var caveats []string
+	// Regime caveats (unknown destination, wdt without vat id, ...) travel onto the refund entry too.
+	caveats := append([]string(nil), vd.Caveats...)
 
-	// VAT portion of the refund, proportional to how much of the order is being refunded. Same
-	// cascading guard as S1: a VAT share >= the refund is not carved out.
+	// VAT portion of the refund, derived from the RESOLVED REGIME rate (mirrors S1's inclusive
+	// extraction) and proportional to the refunded fraction — so a full refund reverses exactly what S1
+	// posted to 2070 and a partial refund a proportional share, leaving no residual. export / wdt / none
+	// post no VAT on the sale, so their refund reverses none — regardless of the sale-time vat_amount
+	// snapshot (which the pre-regime code wrongly reversed, corrupting 2070/JPK/OSS). Same cascading
+	// guard as S1: a VAT share >= the refund is not carved out.
 	vatr := decimal.Zero
-	if f.VatAmount.Valid {
+	if RegimeHasVAT(vd.Regime) && vd.RatePct.IsPositive() {
 		refundRatio := rOrd.Div(f.TotalPrice)
-		vatr = f.VatAmount.Decimal.Mul(refundRatio).Mul(k).Round(2)
-	} else {
-		caveats = append(caveats, "vat_amount is null; VAT portion of refund not separated")
+		vatr = vatInclusive(g, vd.RatePct).Mul(refundRatio).Round(2)
 	}
 	if vatr.GreaterThanOrEqual(r) {
 		vatr = decimal.Zero
 		caveats = append(caveats, "vat exceeds refund; VAT reversal line dropped")
+	}
+	// Advisory cross-check against the sale-time snapshot (scaled to this refund), mirroring S1: a >1%
+	// gap between the regime reversal and the snapshot is flagged, never re-posted.
+	if vatr.IsPositive() && f.VatAmount.Valid {
+		snap := f.VatAmount.Decimal.Mul(rOrd.Div(f.TotalPrice)).Mul(k).Round(2)
+		if vatSnapshotDiffers(vatr, snap) {
+			caveats = append(caveats, "vat snapshot mismatch")
+		}
 	}
 
 	// NETr is the balancing remainder of the money returned.
