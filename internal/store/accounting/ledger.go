@@ -8,6 +8,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // entryColumns is the acct_journal_entry projection shared by the list query.
@@ -25,6 +26,61 @@ func (s *Store) EntryExistsBySource(ctx context.Context, sourceType entity.AcctS
 		return false, fmt.Errorf("accounting: entry exists by source %s/%s: %w", sourceType, sourceKey, err)
 	}
 	return n > 0, nil
+}
+
+// GetOrderPostingState reports the ledger's current posting state for one order (phase 2, wave 2):
+// which delivered-chain entries exist and the exact outstanding 2090 / 1140 balances the delivered
+// sale must drain. The order's entries are matched by source_key — exactly the UUID for
+// prepayment/transit/delivered_sale, or "uuid:seq" for a refund — via an index-friendly (= OR LIKE)
+// predicate on uniq_acct_entry_source, not a non-sargable SUBSTRING_INDEX. Remaining2090 / Remaining1140
+// are signed to each account's normal side (2090 credit−debit, 1140 debit−credit). DeliveredEvent (an
+// enqueued order_delivered event) says the order is operationally delivered even before its sale entry
+// posts — the refund defer-guard (synthesis D8). An order with no entries yields the zero state (the
+// no-GROUP-BY aggregate always returns one row), never sql.ErrNoRows.
+func (s *Store) GetOrderPostingState(ctx context.Context, orderUUID string) (entity.AcctOrderPostingState, error) {
+	row, err := storeutil.QueryNamedOne[struct {
+		LegacySale    int             `db:"legacy_sale"`
+		Prepayment    int             `db:"prepayment"`
+		Transit       int             `db:"transit"`
+		DeliveredSale int             `db:"delivered_sale"`
+		Remaining2090 decimal.Decimal `db:"remaining_2090"`
+		Remaining1140 decimal.Decimal `db:"remaining_1140"`
+	}](ctx, s.DB, `
+		SELECT
+		    COALESCE(MAX(e.source_type = 'order_sale'), 0)           AS legacy_sale,
+		    COALESCE(MAX(e.source_type = 'order_prepayment'), 0)     AS prepayment,
+		    COALESCE(MAX(e.source_type = 'order_transit'), 0)        AS transit,
+		    COALESCE(MAX(e.source_type = 'order_delivered_sale'), 0) AS delivered_sale,
+		    COALESCE(SUM(CASE WHEN a.code = '2090'
+		        THEN CASE WHEN l.side = 'credit' THEN l.amount ELSE -l.amount END ELSE 0 END), 0) AS remaining_2090,
+		    COALESCE(SUM(CASE WHEN a.code = '1140'
+		        THEN CASE WHEN l.side = 'debit' THEN l.amount ELSE -l.amount END ELSE 0 END), 0) AS remaining_1140
+		FROM acct_journal_entry e
+		LEFT JOIN acct_journal_line l ON l.entry_id = e.id
+		LEFT JOIN acct_account a ON a.id = l.account_id
+		WHERE (e.source_key = :uuid OR e.source_key LIKE :uuid_prefix)
+		  AND e.source_type IN ('order_sale','order_prepayment','order_transit','order_delivered_sale','order_refund')`,
+		map[string]any{"uuid": orderUUID, "uuid_prefix": orderUUID + ":%"})
+	if err != nil {
+		return entity.AcctOrderPostingState{}, fmt.Errorf("accounting: get order posting state %s: %w", orderUUID, err)
+	}
+
+	deliveredEvents, err := storeutil.QueryCountNamed(ctx, s.DB,
+		`SELECT COUNT(*) FROM acct_event WHERE event_type = 'order_delivered' AND source_key = :uuid`,
+		map[string]any{"uuid": orderUUID})
+	if err != nil {
+		return entity.AcctOrderPostingState{}, fmt.Errorf("accounting: get order delivered event %s: %w", orderUUID, err)
+	}
+
+	return entity.AcctOrderPostingState{
+		LegacySale:     row.LegacySale > 0,
+		Prepayment:     row.Prepayment > 0,
+		Transit:        row.Transit > 0,
+		DeliveredSale:  row.DeliveredSale > 0,
+		DeliveredEvent: deliveredEvents > 0,
+		Remaining2090:  row.Remaining2090,
+		Remaining1140:  row.Remaining1140,
+	}, nil
 }
 
 // ListJournalEntries returns a page of journal-entry headers matching the filter plus the total

@@ -49,6 +49,10 @@ type Config struct {
 	BatchSize int `mapstructure:"batch_size"`
 	// StartDate is the 'YYYY-MM-DD' cutover; required when Enabled. Parsed in UTC.
 	StartDate string `mapstructure:"start_date"`
+	// DeliveredRecognitionFrom is the 'YYYY-MM-DD' cutover (UTC) for delivered revenue recognition
+	// (phase 2, wave 2): empty ⇒ every order keeps the old order_sale policy; when set, Stripe orders
+	// paid on/after this date use the delivered chain (order_transit / order_delivered_sale).
+	DeliveredRecognitionFrom string `mapstructure:"delivered_recognition_from"`
 	// SettledWaitMax is how long a Stripe order_paid event may sit waiting for total_settled_base
 	// before the worker emits a health warning (default 48h). It never auto-posts by fallback — a
 	// larger gap means a broken capture pipeline, which must be seen, not masked.
@@ -84,6 +88,13 @@ func (c *Config) Validate() error {
 	if sd.After(time.Now().UTC()) {
 		return fmt.Errorf("accounting.start_date %q is in the future", c.StartDate)
 	}
+	drf, err := parseDeliveredRecognitionFrom(c.DeliveredRecognitionFrom)
+	if err != nil {
+		return err
+	}
+	if !drf.IsZero() && drf.Before(sd) {
+		return fmt.Errorf("accounting.delivered_recognition_from %q precedes accounting.start_date %q", c.DeliveredRecognitionFrom, c.StartDate)
+	}
 	return nil
 }
 
@@ -100,6 +111,20 @@ func parseStartDate(s string) (time.Time, error) {
 	return t, nil
 }
 
+// parseDeliveredRecognitionFrom parses the YYYY-MM-DD delivered-recognition cutover as midnight UTC.
+// Empty is valid (feature off) and returns the zero time.
+func parseDeliveredRecognitionFrom(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.ParseInLocation(startDateLayout, s, time.UTC)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("accounting.delivered_recognition_from %q: want YYYY-MM-DD: %w", s, err)
+	}
+	return t, nil
+}
+
 // Worker posts operational facts into the ledger on a ticker. It reads facts on the pool and writes
 // in short transactions (see the package doc).
 type Worker struct {
@@ -110,6 +135,12 @@ type Worker struct {
 	// misconfigured-but-started worker fails every tick loudly instead of posting from the epoch.
 	startDate    time.Time
 	startDateErr error
+
+	// deliveredRecognitionFrom is the parsed delivered-recognition cutover (midnight UTC), zero when
+	// the feature is off. deliveredRecognitionFromErr mirrors startDateErr: a parse failure fails
+	// every tick loudly instead of silently keeping the old policy.
+	deliveredRecognitionFrom    time.Time
+	deliveredRecognitionFromErr error
 
 	ctx     context.Context
 	stop    context.CancelFunc
@@ -145,6 +176,11 @@ func New(c *Config, repo dependency.Repository) *Worker {
 		w.startDateErr = err
 	} else {
 		w.startDate = sd
+	}
+	if drf, err := parseDeliveredRecognitionFrom(c.DeliveredRecognitionFrom); err != nil {
+		w.deliveredRecognitionFromErr = err
+	} else {
+		w.deliveredRecognitionFrom = drf
 	}
 	return w
 }

@@ -745,6 +745,11 @@ type (
 		// (uniq_acct_entry_source) — e.g. the refund worker's "has the sale been posted?" check.
 		EntryExistsBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (bool, error)
 
+		// GetOrderPostingState reports one order's delivered-chain posting state (which entries exist,
+		// whether an order_delivered event was enqueued) and the exact outstanding 2090 / 1140 balances
+		// the delivered sale must drain (phase 2, wave 2).
+		GetOrderPostingState(ctx context.Context, orderUUID string) (entity.AcctOrderPostingState, error)
+
 		// --- periods ---
 		// EnsurePeriodOpen lazily creates the period row for month and returns ErrAcctPeriodClosed if it
 		// exists and is closed.

@@ -23,6 +23,7 @@ const (
 	Acc1110 = "1110" // Materials
 	Acc1120 = "1120" // Work in Progress
 	Acc1130 = "1130" // Finished Goods
+	Acc1140 = "1140" // Inventory in Transit — outbound, shipped-not-delivered (phase 2, wave 2)
 	Acc1210 = "1210" // Prepaid Expenses
 	Acc1220 = "1220" // Equipment
 
@@ -31,6 +32,7 @@ const (
 	Acc2030 = "2030" // Accrued Expenses
 	Acc2070 = "2070" // VAT Payable
 	Acc2080 = "2080" // VAT Input (Recoverable) — contra-liability (phase 2, wave 1)
+	Acc2090 = "2090" // Customer Prepayments — delivered-recognition liability (phase 2, wave 2)
 
 	// Equity (3).
 	Acc3010 = "3010" // Owner's Equity

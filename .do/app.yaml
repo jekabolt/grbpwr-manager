@@ -269,6 +269,11 @@ envs:
 - key: ACCOUNTING_START_DATE
   scope: RUN_TIME
   value: ""
+# ACCOUNTING_DELIVERED_RECOGNITION_FROM (YYYY-MM-DD, phase 2 wave 2): empty keeps the old order_sale
+# policy for every order; once set, Stripe orders paid on/after this date use the delivered chain.
+- key: ACCOUNTING_DELIVERED_RECOGNITION_FROM
+  scope: RUN_TIME
+  value: ""
 - key: RATES_BASE_CURRENCY
   scope: RUN_TIME
   value: EUR

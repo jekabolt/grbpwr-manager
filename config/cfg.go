@@ -368,6 +368,7 @@ func bindEnvVars() {
 	viper.BindEnv("accounting.worker_interval", "ACCOUNTING_WORKER_INTERVAL")
 	viper.BindEnv("accounting.batch_size", "ACCOUNTING_BATCH_SIZE")
 	viper.BindEnv("accounting.start_date", "ACCOUNTING_START_DATE")
+	viper.BindEnv("accounting.delivered_recognition_from", "ACCOUNTING_DELIVERED_RECOGNITION_FROM")
 	viper.BindEnv("jpk.nip", "JPK_NIP")
 	viper.BindEnv("jpk.full_name", "JPK_FULL_NAME")
 	viper.BindEnv("jpk.email", "JPK_EMAIL")

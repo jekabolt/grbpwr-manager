@@ -25,15 +25,17 @@ func (s *Store) GetUkVatReturn(ctx context.Context, quarterStart time.Time) (*en
 		Net decimal.Decimal `db:"net"`
 	}](ctx, s.DB, `
 		SELECT COALESCE(SUM(CASE WHEN a.code = '2070' THEN `+signedAmount+` ELSE 0 END), 0) AS vat,
-		       COALESCE(SUM(CASE WHEN a.code IN ('4010','4020','4310','4110','4040') THEN `+signedAmount+` ELSE 0 END), 0) AS net
+		       COALESCE(SUM(CASE WHEN a.code IN ('4010','4020','4310','4110','4040','2090') THEN `+signedAmount+` ELSE 0 END), 0) AS net
 		FROM acct_journal_line l
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account a ON a.id = l.account_id
 		JOIN customer_order co ON `+orderKeyMatch+`
-		WHERE e.source_type IN ('order_sale','order_refund')
+		-- Wave 2 (delivered recognition): a post-cutover UK-origin Stripe order posts VAT on 2070 and its
+		-- net base on 2090 at order_prepayment (tax point = payment); order_delivered_sale is excluded.
+		WHERE e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
 		  AND co.vat_regime = 'uk_stock_domestic'
-		  AND a.code IN ('2070','4010','4020','4310','4110','4040')`, params)
+		  AND a.code IN ('2070','4010','4020','4310','4110','4040','2090')`, params)
 	if err != nil {
 		return nil, fmt.Errorf("accounting: uk vat sales %s: %w", from.Format(dateLayout), err)
 	}

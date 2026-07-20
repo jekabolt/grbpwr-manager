@@ -26,7 +26,7 @@ func (s *Store) VatSalesEvidence(ctx context.Context, month time.Time) ([]entity
 		       co.placed AS placed,
 		       co.buyer_vat_id AS buyer_vat_id,
 		       co.vat_regime AS regime,
-		       COALESCE(SUM(CASE WHEN a.code IN ('4010','4020','4310','4110','4040')
+		       COALESCE(SUM(CASE WHEN a.code IN ('4010','4020','4310','4110','4040','2090')
 		                         THEN `+signedAmount+` ELSE 0 END), 0) AS net,
 		       COALESCE(SUM(CASE WHEN a.code = '2070'
 		                         THEN `+signedAmount+` ELSE 0 END), 0) AS vat
@@ -34,7 +34,10 @@ func (s *Store) VatSalesEvidence(ctx context.Context, month time.Time) ([]entity
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account a ON a.id = l.account_id
 		JOIN customer_order co ON `+orderKeyMatch+`
-		WHERE e.source_type IN ('order_sale','order_refund')
+		-- Wave 2 (delivered recognition): post-cutover the tax point stays at payment, so the register
+		-- reads order_prepayment (VAT on 2070, net base on 2090); order_delivered_sale is excluded (its
+		-- revenue is a later period). Consistent with GetVatReturnPL.
+		WHERE e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
 		  AND co.vat_regime IN ('pl_domestic','wdt','export')
 		GROUP BY co.uuid, co.placed, co.buyer_vat_id, co.vat_regime

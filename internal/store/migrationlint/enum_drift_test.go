@@ -224,11 +224,13 @@ func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
 }
 
 // TestAcctEntrySourceTypeDBCheckNoDrift extends the drift test to the accounting journal entry's
-// source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK (migration 0189,
-// chk_acct_entry_source_type).
+// source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK. The CHECK was defined in 0189 and
+// last extended by 0195 (phase 2, wave 2: +order_prepayment/order_transit/order_delivered_sale) — the
+// test reads the LATEST migration that redefines the full value set (07 §7.2 extend-CHECK pattern),
+// mirroring TestVatRegimeDBCheckNoDrift reading 0191.
 func TestAcctEntrySourceTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0189_accounting_core.sql")
-	dbValues := extractDBEnumValues(t, content, "source_type IN", 400)
+	content := readMigrationFile(t, "0195_accounting_delivered.sql")
+	dbValues := extractDBEnumValues(t, content, "source_type IN", 700)
 	assertSameSet(t, "AcctSourceType", dbValues, mapKeysAsStrings(entity.ValidAcctSourceTypes))
 }
 
@@ -241,10 +243,11 @@ func TestAcctLineSideDBCheckNoDrift(t *testing.T) {
 }
 
 // TestAcctEventTypeDBCheckNoDrift extends the drift test to the accounting outbox event type
-// (entity.AcctEventType/ValidAcctEventTypes) <-> DB CHECK (migration 0189, chk_acct_event_type).
+// (entity.AcctEventType/ValidAcctEventTypes) <-> DB CHECK. Defined in 0189, last extended by 0195
+// (phase 2, wave 2: +order_shipped/order_delivered) — read the latest migration that redefines the set.
 func TestAcctEventTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0189_accounting_core.sql")
-	dbValues := extractDBEnumValues(t, content, "event_type IN", 100)
+	content := readMigrationFile(t, "0195_accounting_delivered.sql")
+	dbValues := extractDBEnumValues(t, content, "event_type IN", 300)
 	assertSameSet(t, "AcctEventType", dbValues, mapKeysAsStrings(entity.ValidAcctEventTypes))
 }
 
