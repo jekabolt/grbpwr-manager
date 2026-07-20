@@ -101,3 +101,18 @@ func (s *Server) ExportOssReturn(ctx context.Context, req *pb_admin.ExportOssRet
 		XmlContent: string(xmlBytes),
 	}, nil
 }
+
+// GetUkVatReturn returns the quarterly UK VAT return in 9-box MTD layout (uk_stock_domestic regime, a
+// separate jurisdiction from the Polish JPK). A read-only aggregate; the figures are entered into
+// MTD-compatible software for submission to HMRC.
+func (s *Server) GetUkVatReturn(ctx context.Context, req *pb_admin.GetUkVatReturnRequest) (*pb_admin.GetUkVatReturnResponse, error) {
+	quarterStart, err := dto.ParseAcctQuarterStart(req.GetQuarter())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ret, err := s.repo.Accounting().GetUkVatReturn(ctx, quarterStart)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get uk vat return", err)
+	}
+	return dto.ConvertAcctUkVatReturnToPb(*ret), nil
+}
