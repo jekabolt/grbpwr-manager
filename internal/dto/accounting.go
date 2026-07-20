@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -336,16 +337,26 @@ func acctLineNote(s string) (sql.NullString, error) {
 	return sql.NullString{String: n, Valid: true}, nil
 }
 
-// FoldJournalLineAmountToBase converts a manual journal line's amount_src/currency_src into the
-// base currency (EUR) via fx, mirroring FoldOpexLinesToBase / FoldProductionRunCostsToBase. ok is
-// false when the currency has no rate — the caller (apisrv) must reject with InvalidArgument
-// (09-implementation-notes.md FAQ 16: "add <CCY> costing fx rate first").
-func FoldJournalLineAmountToBase(fx CostingFx, amountSrc decimal.Decimal, currencySrc string) (decimal.Decimal, bool) {
+// ErrNoFxRate is returned by FoldJournalLineAmountToBase when the source currency has no costing FX
+// rate; the caller (apisrv) maps it to InvalidArgument ("add <CCY> costing fx rate first").
+var ErrNoFxRate = errors.New("no costing fx rate")
+
+// FoldJournalLineAmountToBase converts a manual journal line's amount_src/currency_src into the base
+// currency (EUR) via fx, mirroring FoldOpexLinesToBase / FoldProductionRunCostsToBase. It returns
+// ErrNoFxRate when the currency has no rate. D-3: an amount_src within DECIMAL(12,2) can exceed that
+// column bound once folded to base (rate > 1), so the folded result is re-validated here and an
+// out-of-range fold is returned as an error rather than overflowing the store as an opaque Internal;
+// the caller maps both errors to InvalidArgument.
+func FoldJournalLineAmountToBase(fx CostingFx, amountSrc decimal.Decimal, currencySrc string) (decimal.Decimal, error) {
 	base, ok := fx.toBase(amountSrc, currencySrc)
 	if !ok {
-		return decimal.Decimal{}, false
+		return decimal.Decimal{}, ErrNoFxRate
 	}
-	return roundMoney(base), true
+	base = roundMoney(base)
+	if base.Abs().GreaterThanOrEqual(decimal.NewFromInt(costLimit)) {
+		return decimal.Decimal{}, fmt.Errorf("folded amount %s exceeds the maximum of %d", base, costLimit)
+	}
+	return base, nil
 }
 
 // ConvertAcctJournalLineToPb converts one stored journal line (with its joined account code/name).

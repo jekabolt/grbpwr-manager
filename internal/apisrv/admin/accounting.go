@@ -116,7 +116,7 @@ func (s *Server) CreateJournalEntry(ctx context.Context, req *pb_admin.CreateJou
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.foldJournalLinesToBase(ctx, ins.Lines); err != nil {
-		if errors.Is(err, errAcctNoFxRate) {
+		if errors.Is(err, errAcctNoFxRate) || errors.Is(err, errAcctFoldRange) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't fold journal line amounts to base", slog.String("err", err.Error()))
@@ -324,6 +324,10 @@ func (s *Server) GetAcctReconciliation(ctx context.Context, req *pb_admin.GetAcc
 // genuine failure loading the rate table (Internal) inside foldJournalLinesToBase.
 var errAcctNoFxRate = errors.New("accounting: no costing fx rate")
 
+// errAcctFoldRange flags a folded amount that overflows the DECIMAL(12,2) column bound (D-3): a bad
+// request (InvalidArgument), distinct from a rate-table load failure (Internal).
+var errAcctFoldRange = errors.New("accounting: folded amount out of range")
+
 // acctFxToBase loads the effective manual FX rates (as-of today — 09-implementation-notes.md FAQ
 // 17: not historical as-of occurred_at, a deliberate phase-1 simplification) for converting a
 // manual journal line's amount_src into the base currency. Unlike Server.costingFx (techcard.go),
@@ -353,9 +357,14 @@ func (s *Server) foldJournalLinesToBase(ctx context.Context, lines []entity.Acct
 			}
 			fx = &loaded
 		}
-		base, ok := dto.FoldJournalLineAmountToBase(*fx, lines[i].AmountSrc.Decimal, lines[i].CurrencySrc.String)
-		if !ok {
+		base, ferr := dto.FoldJournalLineAmountToBase(*fx, lines[i].AmountSrc.Decimal, lines[i].CurrencySrc.String)
+		if errors.Is(ferr, dto.ErrNoFxRate) {
 			return fmt.Errorf("%w: add %s costing fx rate first", errAcctNoFxRate, lines[i].CurrencySrc.String)
+		}
+		if ferr != nil {
+			// D-3: an out-of-range folded amount is a bad request, not an Internal — flag it so the
+			// caller returns InvalidArgument with the reason instead of an opaque store overflow.
+			return fmt.Errorf("%w: account %s: %v", errAcctFoldRange, lines[i].AccountCode, ferr)
 		}
 		lines[i].Amount = base
 	}
