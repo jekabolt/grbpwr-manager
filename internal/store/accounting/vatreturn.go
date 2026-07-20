@@ -123,9 +123,9 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 		}
 	}
 
-	// --- WDT (intra-community, K_21) + export (K_22) NET revenue: zero-rated sales carry no VAT but
-	// JPK_VAT still declares their net base. Sum the same revenue accounts the OSS return uses (4040
-	// nets refunds with a minus via signedAmount), split by the order's regime. ---
+	// --- NET revenue base by regime: WDT (K_21) + export (K_22) are zero-rated but still declared, and
+	// pl_domestic (P_19) is the 23% tax base that pairs with OutputDomestic (P_20). Sum the same revenue
+	// accounts the OSS return uses (4040 nets refunds with a minus via signedAmount), split by regime. ---
 	netRows, err := storeutil.QueryListNamed[struct {
 		Regime string          `db:"regime"`
 		Net    decimal.Decimal `db:"net"`
@@ -139,11 +139,11 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 		WHERE a.code IN ('4010','4020','4310','4110','4040')
 		  AND e.source_type IN ('order_sale','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
-		  AND co.vat_regime IN ('wdt','export')
+		  AND co.vat_regime IN ('wdt','export','pl_domestic')
 		GROUP BY co.vat_regime`,
 		map[string]any{"from": fromStr, "to": toStr})
 	if err != nil {
-		return nil, fmt.Errorf("accounting: vat return wdt/export net %s: %w", fromStr, err)
+		return nil, fmt.Errorf("accounting: vat return net base by regime %s: %w", fromStr, err)
 	}
 	for _, r := range netRows {
 		switch entity.VatRegime(r.Regime) {
@@ -151,6 +151,41 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 			ret.NetWdt = ret.NetWdt.Add(r.Net)
 		case entity.VatRegimeExport:
 			ret.NetExport = ret.NetExport.Add(r.Net)
+		case entity.VatRegimePLDomestic:
+			ret.NetDomestic = ret.NetDomestic.Add(r.Net)
+		}
+	}
+
+	// --- input NET base by regime: the material-receipt debit to 1110 (Materials) is the net purchase
+	// value the input VAT (2080) was charged on. WNT/import back P_23/P_25 (their self-charge net), and
+	// domestic_pl backs P_42 (input on other domestic purchases). Mirrors the input-VAT query above. ---
+	inputNetRows, err := storeutil.QueryListNamed[struct {
+		Regime string          `db:"regime"`
+		Net    decimal.Decimal `db:"net"`
+	}](ctx, s.DB, `
+		SELECT m.input_vat_regime AS regime,
+		       COALESCE(SUM(CASE WHEN a.code = '1110' AND l.side = 'debit' THEN l.amount ELSE 0 END), 0) AS net
+		FROM acct_journal_line l
+		JOIN acct_journal_entry e ON e.id = l.entry_id
+		JOIN acct_account a ON a.id = l.account_id
+		JOIN material_stock_movement m ON `+movementKeyMatch+`
+		WHERE e.source_type = 'material_receipt'
+		  AND e.occurred_at >= :from AND e.occurred_at < :to
+		  AND m.input_vat_regime IS NOT NULL
+		  AND a.code = '1110'
+		GROUP BY m.input_vat_regime`,
+		map[string]any{"from": fromStr, "to": toStr})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: vat return input net base %s: %w", fromStr, err)
+	}
+	for _, r := range inputNetRows {
+		switch entity.InputVatRegime(r.Regime) {
+		case entity.InputVatRegimeWNT:
+			ret.NetWnt = ret.NetWnt.Add(r.Net)
+		case entity.InputVatRegimeImport:
+			ret.NetImport = ret.NetImport.Add(r.Net)
+		case entity.InputVatRegimeDomesticPL:
+			ret.NetInputDomestic = ret.NetInputDomestic.Add(r.Net)
 		}
 	}
 

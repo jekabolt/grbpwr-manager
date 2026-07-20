@@ -664,7 +664,28 @@ type AcctVatReturnPL struct {
 	// They carry no VAT so they do not enter NetPayable; they exist for the declaration itself.
 	NetWdt    decimal.Decimal
 	NetExport decimal.Decimal
-	Caveats   []string
+	// NET (tax base) figures the JPK_V7M declaration reports alongside the VAT amounts above — a
+	// declaration line is (net, vat), not vat alone. NetDomestic backs P_19 (domestic 23% sales),
+	// NetWnt P_23, NetImport P_25, NetInputDomestic P_42 (input on other domestic purchases). Sourced
+	// from the same ledger lines the VAT figures come from, so they reconcile exactly.
+	NetDomestic      decimal.Decimal
+	NetWnt           decimal.Decimal
+	NetImport        decimal.Decimal
+	NetInputDomestic decimal.Decimal
+	Caveats          []string
+}
+
+// AcctVatSalesRow is one order's sales figures for the JPK_V7M evidence (Ewidencja/SprzedazWiersz).
+// One row per order for the regimes the Polish register declares — pl_domestic, wdt, export (OSS and
+// uk_stock are filed elsewhere). Orders carrying a BuyerVatID become individual invoice rows; the rest
+// (B2C) are aggregated into a single periodic internal row per regime by the JPK builder.
+type AcctVatSalesRow struct {
+	UUID       string          `db:"uuid"`         // order reference → DowodSprzedazy
+	Placed     time.Time       `db:"placed"`       // DataWystawienia / DataSprzedazy
+	BuyerVatID sql.NullString  `db:"buyer_vat_id"` // B2B buyer NIP (NrKontrahenta); empty → B2C aggregate
+	Regime     string          `db:"regime"`       // vat_regime (pl_domestic / wdt / export)
+	Net        decimal.Decimal `db:"net"`          // net revenue (refunds signed negative)
+	Vat        decimal.Decimal `db:"vat"`          // output VAT from 2070 (refunds signed negative)
 }
 
 // AcctOssRow is one destination country's OSS B2C line: country, applied rate, net and VAT.

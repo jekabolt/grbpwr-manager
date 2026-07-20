@@ -790,6 +790,9 @@ type (
 		//     the payment period — docs/plan-accounting-phase2/01-wave1-vat.md §1.5) ---
 		GetVatReturnPL(ctx context.Context, month time.Time) (*entity.AcctVatReturnPL, error)
 		GetOssReturn(ctx context.Context, quarterStart time.Time) (*entity.AcctOssReturn, error)
+		// VatSalesEvidence returns per-order sales rows for the JPK_V7M sales register (SprzedazWiersz),
+		// for the regimes the Polish register declares (pl_domestic/wdt/export).
+		VatSalesEvidence(ctx context.Context, month time.Time) ([]entity.AcctVatSalesRow, error)
 
 		// --- fact reads for the posting worker (the accounting store reads other domains' tables
 		//     directly, the internal/store/metrics precedent; SQL in 09-implementation-notes.md §9.2) ---

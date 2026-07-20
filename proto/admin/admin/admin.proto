@@ -1778,6 +1778,14 @@ service AdminService {
   rpc GetOssReturn(GetOssReturnRequest) returns (GetOssReturnResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/oss-return"};
   }
+
+  // ExportJpkV7M generates the official Polish JPK_V7M (JPK_VAT) XML for a month: the taxpayer header,
+  // the VAT-7 declaration, and the sales evidence register. It is the OUTPUT-SIDE filing — the
+  // accountant merges the purchase register (input VAT), so the file's ZakupWiersz is empty. Requires
+  // the JPK_* taxpayer identity to be configured; returns FailedPrecondition otherwise.
+  rpc ExportJpkV7M(ExportJpkV7MRequest) returns (ExportJpkV7MResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/jpk-v7m"};
+  }
 }
 
 // DICITONARY
@@ -6274,4 +6282,14 @@ message GetOssReturnResponse {
   repeated AcctOssRow rows = 2;
   google.type.Decimal total_net = 3;
   google.type.Decimal total_vat = 4;
+}
+
+message ExportJpkV7MRequest {
+  // month: YYYY-MM-DD, any day within the target filing month (normalised to the 1st).
+  string month = 1;
+}
+
+message ExportJpkV7MResponse {
+  string filename = 1; // suggested download name, e.g. JPK_V7M_2026-07.xml
+  string xml_content = 2; // the JPK_V7M(2) XML document (UTF-8)
 }
