@@ -4,6 +4,9 @@ admin-client
 .env
 # beta app spec holds plaintext secrets until DO encrypts them on create
 .do/app-beta.yaml
+.do/app-beta.yaml.plaintext.bak
+# any plaintext secret backup of an app spec (holds unencrypted env vars)
+*.plaintext.bak
 *.db
 bin
 .env-local
