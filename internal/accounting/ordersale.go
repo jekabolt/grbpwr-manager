@@ -9,18 +9,23 @@ import (
 )
 
 // BuildOrderSaleEntry builds the order_sale journal entry for a paid order (rule S1,
-// docs/plan-accounting/04-posting-rules.md). occurredAt is the recognition moment — the order's
-// payment confirmation, taken from the outbox event, not the placed date.
+// docs/plan-accounting/04-posting-rules.md, VAT reworked by phase 2 wave 1
+// docs/plan-accounting-phase2/01-wave1-vat.md §1.3). occurredAt is the recognition moment — the
+// order's payment confirmation, taken from the outbox event, not the placed date.
 //
-// It derives one EUR share k = G/total_price and applies it to VAT and shipping; NET is the
-// balancing remainder, so Σ credit on the revenue side always equals G exactly. COGS is a separate
-// balanced pair from the order-time cost snapshot. Degenerate-amount guards run in the fixed order
-// of the spec (gross -> VAT -> shipping) and each collapses a bad component to zero with a caveat
-// rather than emitting an invalid line.
+// VAT is derived from the RESOLVED REGIME's rate (vd), not the order's snapshot: it is the inclusive
+// extraction G × rate/(100+rate) for the VAT regimes (oss / pl_domestic / uk_stock_domestic) and
+// absent for export / wdt. The snapshot vat_amount is retained only as a cross-check — a regime-vs-
+// snapshot gap over 1% raises a "vat snapshot mismatch" caveat, never a re-post. Revenue for a B2B
+// order (buyer VAT id present, incl. wdt / UK B2B) is credited to 4310 Wholesale instead of 4010/4020.
+//
+// Everything else is unchanged: one EUR share k = G/total_price scales shipping; NET is the balancing
+// remainder, so Σ credit equals G exactly; COGS is a separate balanced pair from the order-time cost
+// snapshot; the phase-1 cascading guards still collapse a bad component to zero with a caveat.
 //
 // Returns ErrNotReady (Stripe settlement pending — retry), ErrSkipNonEUR (non-Stripe non-EUR — book
 // manually) or ErrDegenerateAmounts (non-positive total/gross — skip) when no entry can be built.
-func BuildOrderSaleEntry(f entity.AcctOrderFacts, occurredAt time.Time) (entity.AcctJournalEntryInsert, error) {
+func BuildOrderSaleEntry(f entity.AcctOrderFacts, vd VatDecision, occurredAt time.Time) (entity.AcctJournalEntryInsert, error) {
 	g, err := grossEUR(f)
 	if err != nil {
 		return entity.AcctJournalEntryInsert{}, err
@@ -31,18 +36,23 @@ func BuildOrderSaleEntry(f entity.AcctOrderFacts, occurredAt time.Time) (entity.
 	}
 	k := g.Div(f.TotalPrice)
 
-	var caveats []string
+	// Resolver caveats (unknown destination, wdt without vat id, ...) travel onto the entry.
+	caveats := append([]string(nil), vd.Caveats...)
 
-	// VAT (inclusive), proportional. Guard 2: a snapshot larger than gross is not carved out.
+	// VAT from the regime rate (inclusive from gross), NOT the snapshot proportion. export / wdt / none
+	// post no VAT line. Guard 2 (a VAT >= gross is dropped) is kept though unreachable via the inclusive
+	// formula, as a defence against a pathological rate.
 	vat := decimal.Zero
-	if f.VatAmount.Valid {
-		vat = f.VatAmount.Decimal.Mul(k).Round(2)
-	} else {
-		caveats = append(caveats, "vat_amount is null; VAT not separated from revenue")
+	if RegimeHasVAT(vd.Regime) && vd.RatePct.IsPositive() {
+		vat = vatInclusive(g, vd.RatePct)
 	}
 	if vat.GreaterThanOrEqual(g) {
 		vat = decimal.Zero
 		caveats = append(caveats, "vat exceeds gross; VAT line dropped")
+	}
+	// Cross-check the regime VAT against the sale-time snapshot (scaled by k); a >1% gap is advisory.
+	if vat.IsPositive() && f.VatAmount.Valid && vatSnapshotDiffers(vat, f.VatAmount.Decimal.Mul(k)) {
+		caveats = append(caveats, "vat snapshot mismatch")
 	}
 
 	// Shipping, proportional. shipment.cost only when not free-shipped. Guard 3 applies after VAT
@@ -61,7 +71,7 @@ func BuildOrderSaleEntry(f entity.AcctOrderFacts, occurredAt time.Time) (entity.
 
 	lines := []entity.AcctJournalLineInsert{
 		{AccountCode: moneyAccount(f.PaymentMethodName), Side: entity.AcctSideDebit, Amount: g},
-		{AccountCode: revenueAccount(f.PaymentMethodName), Side: entity.AcctSideCredit, Amount: net},
+		{AccountCode: saleRevenueAccount(f), Side: entity.AcctSideCredit, Amount: net},
 	}
 	if ship.IsPositive() {
 		lines = append(lines, entity.AcctJournalLineInsert{AccountCode: Acc4110, Side: entity.AcctSideCredit, Amount: ship})
@@ -71,12 +81,14 @@ func BuildOrderSaleEntry(f entity.AcctOrderFacts, occurredAt time.Time) (entity.
 	}
 
 	// Acquirer fee: the captured Stripe fee (PaymentFee), or, for non-Stripe methods, an estimate
-	// derived from the payment method's fee model (see orderFee). Booked Dr 6050 / Cr 1030 per the
-	// spec table (fee reduces the processor balance).
+	// derived from the payment method's fee model (see orderFee). Booked Dr 6050 / Cr the SAME money
+	// account the sale debited (the fee reduces that balance): 1030 for Stripe, 1010 cash, 1040
+	// bank-invoice. Always crediting 1030 left a phantom negative on the processor account for a
+	// non-Stripe method that carries an estimated fee (A-2).
 	if fee := orderFee(f, g); fee.IsPositive() {
 		lines = append(lines,
 			entity.AcctJournalLineInsert{AccountCode: Acc6050, Side: entity.AcctSideDebit, Amount: fee},
-			entity.AcctJournalLineInsert{AccountCode: Acc1030, Side: entity.AcctSideCredit, Amount: fee},
+			entity.AcctJournalLineInsert{AccountCode: moneyAccount(f.PaymentMethodName), Side: entity.AcctSideCredit, Amount: fee},
 		)
 		if !isStripe(f.PaymentMethodName) {
 			caveats = append(caveats, "fee estimated from method model")
@@ -107,6 +119,28 @@ func BuildOrderSaleEntry(f entity.AcctOrderFacts, occurredAt time.Time) (entity.
 	}
 	applyCaveats(&entry, caveats)
 	return entry, nil
+}
+
+// oneHundred / vatMismatchTolerance are the inclusive-VAT denominator base and the snapshot-vs-regime
+// tolerance (1%, 07 §7.4.2).
+var (
+	oneHundred           = decimal.NewFromInt(100)
+	vatMismatchTolerance = decimal.NewFromFloat(0.01)
+)
+
+// vatInclusive extracts the VAT contained in a VAT-inclusive gross at rate% : G × rate/(100+rate),
+// rounded to 2dp. It is strictly less than G for any finite non-negative rate.
+func vatInclusive(gross, ratePct decimal.Decimal) decimal.Decimal {
+	return gross.Mul(ratePct).Div(ratePct.Add(oneHundred)).Round(2)
+}
+
+// vatSnapshotDiffers reports whether the regime VAT diverges from the sale-time snapshot VAT by more
+// than the tolerance. A non-positive snapshot cannot be compared (returns false).
+func vatSnapshotDiffers(regimeVat, snapshotVat decimal.Decimal) bool {
+	if snapshotVat.Sign() <= 0 {
+		return false
+	}
+	return regimeVat.Sub(snapshotVat).Abs().Div(snapshotVat).GreaterThan(vatMismatchTolerance)
 }
 
 // saleCOGS sums the costed order lines (UnitCost x Quantity, rounded once) and returns the product

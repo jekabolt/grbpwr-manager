@@ -164,7 +164,10 @@ func TestAcctPostingWorker(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// (a) order_paid (cash, EUR) -> order_sale S1 posted against 1010 Cash / 4010 Retail.
+	// (a) order_paid (cash, EUR) -> order_sale S1 posted against 1010 Cash / 4010 Retail. Phase 2 wave 1:
+	// a cash order resolves to the uk_stock_domestic regime (vatregime.go — cash-first rule), so the
+	// gross splits into net revenue + 20% inclusive UK VAT (2070): 100 -> 83.33 net + 16.67 VAT.
+	// (Requires the GB rate seeded by migration 0193.)
 	t.Run("order_paid_posts_sale", func(t *testing.T) {
 		const uuid = "ACCTW-SALE-1"
 		mkOrder(uuid, cashPM, "100", sql.NullString{})
@@ -180,8 +183,9 @@ func TestAcctPostingWorker(t *testing.T) {
 		full, ok := getEntry(entity.AcctSourceOrderSale, uuid)
 		require.True(t, ok, "order_sale entry must exist")
 		requireBalanced(full)
-		requireLine(full, "1010", entity.AcctSideDebit, "100")  // cash money account
-		requireLine(full, "4010", entity.AcctSideCredit, "100") // cash revenue (net)
+		requireLine(full, "1010", entity.AcctSideDebit, "100")    // cash money account (gross)
+		requireLine(full, "4010", entity.AcctSideCredit, "83.33") // cash revenue (net of 20% UK VAT)
+		requireLine(full, "2070", entity.AcctSideCredit, "16.67") // output VAT (uk_stock_domestic 20%, inclusive)
 
 		processed, _ := eventState(uuid)
 		require.True(t, processed, "the sale event must be marked processed")

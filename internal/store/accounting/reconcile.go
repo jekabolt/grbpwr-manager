@@ -65,6 +65,11 @@ func (s *Store) GetReconciliation(ctx context.Context, from, to time.Time) (*ent
 	if rec.UnpostedMovements, err = s.reconUnpostedMovements(ctx, fromT, toT); err != nil {
 		return nil, err
 	}
+	vat, err := s.reconVat(ctx, fromStr, toStr, fromT, toT, statusIDs)
+	if err != nil {
+		return nil, err
+	}
+	rec.Vat = &vat
 	return rec, nil
 }
 
@@ -125,7 +130,11 @@ func (s *Store) accountBalanceBefore(ctx context.Context, code string, before ti
 // non-Stripe EUR order). Items are confirmed orders in the period with no order_sale entry, labelled
 // with the outbox last_error (the skip / stuck reason).
 func (s *Store) reconRevenue(ctx context.Context, fromStr, toStr string, fromT, toT time.Time, statusIDs []int) (entity.AcctReconBlock, error) {
-	ledger, err := s.ledgerLineSum(ctx, []string{"4010", "4020", "4110"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
+	// 4310 (B2B / wholesale revenue) belongs here: a B2B sale credits net revenue to 4310, and the
+	// operational side below counts every confirmed order's recognised revenue regardless of channel —
+	// omitting 4310 makes every B2B order a false negative drift. (4050 B2B trade-discount contra is a
+	// debit and is added once discount postings exist.)
+	ledger, err := s.ledgerLineSum(ctx, []string{"4010", "4020", "4110", "4310"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
 	if err != nil {
 		return entity.AcctReconBlock{}, err
 	}
@@ -460,6 +469,68 @@ func (s *Store) reconUnpostedMovements(ctx context.Context, fromT, toT time.Time
 		map[string]any{"from": fromT, "to": toT})
 	if err != nil {
 		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon unposted movements count: %w", err)
+	}
+	return block, nil
+}
+
+// reconVat: ledger 2070 output VAT credited by order_sale entries vs the VAT the period's confirmed
+// orders imply from their sale-time snapshot (EUR-scaled the same way reconRevenue scales revenue).
+// The posting now uses the RESOLVED REGIME rate, so a standing delta versus the snapshot is expected
+// where regime and snapshot rate diverge (phase 2, wave 1) — informational, not an error. Items sample
+// the order_sale entries whose builder flagged a "vat snapshot mismatch".
+func (s *Store) reconVat(ctx context.Context, fromStr, toStr string, fromT, toT time.Time, statusIDs []int) (entity.AcctReconBlock, error) {
+	ledger, err := s.ledgerLineSum(ctx, []string{"2070"}, entity.AcctSideCredit, string(entity.AcctSourceOrderSale), fromStr, toStr)
+	if err != nil {
+		return entity.AcctReconBlock{}, err
+	}
+	block := entity.AcctReconBlock{Name: "vat", Ledger: ledger}
+	if len(statusIDs) > 0 {
+		op, err := storeutil.QueryNamedOne[struct {
+			V decimal.Decimal `db:"v"`
+		}](ctx, s.DB, `
+			SELECT COALESCE(SUM(
+				CASE WHEN co.total_price > 0 THEN
+					COALESCE(co.vat_amount, 0) * (COALESCE(co.total_settled_base, co.total_price) / co.total_price)
+				ELSE 0 END), 0) AS v
+			FROM customer_order co
+			WHERE co.order_status_id IN (:statusIds)
+			  AND co.placed >= :from AND co.placed < :to
+			  AND (co.total_settled_base IS NOT NULL OR co.currency = :base)`,
+			map[string]any{"statusIds": statusIDs, "from": fromT, "to": toT, "base": cache.GetBaseCurrency()})
+		if err != nil {
+			return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon vat operational: %w", err)
+		}
+		block.Operational = op.V.Round(2)
+	}
+	block.Delta = block.Ledger.Sub(block.Operational)
+
+	mismatches, err := storeutil.QueryListNamed[struct {
+		Ref string `db:"ref"`
+	}](ctx, s.DB, `
+		SELECT source_key AS ref FROM acct_journal_entry
+		WHERE source_type = 'order_sale' AND has_caveat = TRUE
+		  AND caveat LIKE '%vat snapshot mismatch%'
+		  AND occurred_at >= :from AND occurred_at < :to
+		ORDER BY occurred_at LIMIT :topN`,
+		map[string]any{"from": fromStr, "to": toStr, "topN": reconTopN})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon vat mismatches: %w", err)
+	}
+	for _, m := range mismatches {
+		block.Items = append(block.Items, entity.AcctReconItem{
+			Ref:    m.Ref,
+			Label:  "regime VAT differs from sale-time snapshot",
+			Amount: decimal.Zero,
+		})
+	}
+	block.TotalCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM acct_journal_entry
+		WHERE source_type = 'order_sale' AND has_caveat = TRUE
+		  AND caveat LIKE '%vat snapshot mismatch%'
+		  AND occurred_at >= :from AND occurred_at < :to`,
+		map[string]any{"from": fromStr, "to": toStr})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon vat mismatch count: %w", err)
 	}
 	return block, nil
 }

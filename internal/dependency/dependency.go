@@ -775,9 +775,21 @@ type (
 		GetAccountLedger(ctx context.Context, code string, f entity.AcctLedgerFilter) (*entity.AcctAccountLedger, error)
 		GetReconciliation(ctx context.Context, from, to time.Time) (*entity.AcctReconciliation, error)
 
+		// --- VAT filing exports (phase 2, wave 1; source-type-agnostic, aggregated by vat_regime over
+		//     the payment period — docs/plan-accounting-phase2/01-wave1-vat.md §1.5) ---
+		GetVatReturnPL(ctx context.Context, month time.Time) (*entity.AcctVatReturnPL, error)
+		GetOssReturn(ctx context.Context, quarterStart time.Time) (*entity.AcctOssReturn, error)
+
 		// --- fact reads for the posting worker (the accounting store reads other domains' tables
 		//     directly, the internal/store/metrics precedent; SQL in 09-implementation-notes.md §9.2) ---
 		GetOrderFactsForPosting(ctx context.Context, orderUUID string) (*entity.AcctOrderFacts, error)
+		// GetVatRatesFor returns the vat_rate percent of each present ISO alpha-2 code (phase 2, wave 1);
+		// an absent country is simply missing from the map, so the worker can skip the order with a "vat
+		// rate missing" alert rather than post a zero rate (07 §7.4.14).
+		GetVatRatesFor(ctx context.Context, codes []string) (map[string]decimal.Decimal, error)
+		// SetOrderVatRegime snapshots the resolved VAT regime onto customer_order.vat_regime; the worker
+		// calls it in the same tx as the order-sale entry (§1.3).
+		SetOrderVatRegime(ctx context.Context, orderUUID, regime string) error
 		ListUnpostedMovements(ctx context.Context, afterID int64, startDate time.Time, limit int) ([]entity.AcctMovementFacts, error)
 		ListUnpostedReceivedRuns(ctx context.Context, startDate time.Time, limit int) ([]int, error)
 		GetRunFactsForPosting(ctx context.Context, runID int) (*entity.AcctRunFacts, error)

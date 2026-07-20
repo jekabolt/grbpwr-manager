@@ -136,6 +136,11 @@ type MaterialMovement struct {
 	AdminUsername string         `db:"admin_username"`
 	OccurredAt    sql.NullTime   `db:"occurred_at"`
 	CreatedAt     time.Time      `db:"created_at"`
+	// InputVatAmount / InputVatRegime carry a purchase receipt's recoverable input VAT (base currency)
+	// and its treatment (wnt|import|domestic_pl|domestic_uk) for the extended M1 posting rule (phase 2,
+	// wave 1). Set only on receipts that record VAT; NULL everywhere else.
+	InputVatAmount decimal.NullDecimal `db:"input_vat_amount"`
+	InputVatRegime sql.NullString      `db:"input_vat_regime"`
 }
 
 // MaterialReceiptInsert is the payload of a stock receipt (purchase-in or produced-in). UnitCost is
@@ -155,6 +160,11 @@ type MaterialReceiptInsert struct {
 	// FromProduction marks a receipt_production (auxiliary-run output) rather than a purchase.
 	// UnitCost is then the run's actual per-unit base cost, already in the base currency.
 	FromProduction bool
+	// InputVatAmount / InputVatRegime record a purchase receipt's recoverable input VAT (base currency)
+	// and its treatment (entity.InputVatRegime*); the accounting worker posts them per the M1 input-VAT
+	// rule (phase 2, wave 1). Both NULL for a receipt without VAT.
+	InputVatAmount decimal.NullDecimal
+	InputVatRegime sql.NullString
 }
 
 // MaterialIssueInsert is the payload of an issue to (or return from) a production run or a sample.

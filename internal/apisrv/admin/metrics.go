@@ -1169,6 +1169,13 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 	if t.ProductionRunStaleDays < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "production_run_stale_days must be >= 0 (0 disables the alert)")
 	}
+	// A negative posting-lag threshold would behave identically to 0 today (GetAcctPostingLag falls
+	// back to the 24h default for any lagHours <= 0 — see its doc comment), but rejecting it here keeps
+	// the stored setting an honest reflection of what was submitted, matching the
+	// production_run_stale_days validation immediately above.
+	if t.AcctPostingLagHours < 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "acct_posting_lag_hours must be >= 0 (<= 0 falls back to the default 24h)")
+	}
 	if err := s.repo.Metrics().UpsertAlertThresholds(ctx, t); err != nil {
 		slog.Default().ErrorContext(ctx, "can't upsert alert settings", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't upsert alert settings")

@@ -172,6 +172,9 @@ func (a *App) Start(ctx context.Context) error {
 	// events regardless, so enabling it later just drains the queue from the cutover. Started AFTER the
 	// base currency is set (like opexmaterialize) — the whole ledger is EUR-native.
 	if a.c.Accounting.Enabled {
+		// Ship-from origin for the VAT resolver (phase 2, wave 1); not an accounting.* config key, so it
+		// is derived from the shipping-label config here rather than bound via env (07 §7.1).
+		a.c.Accounting.OriginCountry = a.c.ShippingLabel.ShipFromAddress().CountryISO2
 		a.ap = acctposting.New(&a.c.Accounting, a.db)
 		if err = a.ap.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start accounting posting worker",

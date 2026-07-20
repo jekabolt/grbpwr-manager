@@ -56,6 +56,31 @@ func revenueAccount(m entity.PaymentMethodName) string {
 	return Acc4020
 }
 
+// VatDecision is the resolved VAT treatment BuildOrderSaleEntry posts by (phase 2, wave 1,
+// docs/plan-accounting-phase2/01-wave1-vat.md §1.3). The worker fills it from ResolveVatRegime + the
+// regime's vat_rate: Regime picks whether/how VAT is booked, RatePct is that regime's rate (0 for the
+// no-VAT regimes export/wdt/none), and Caveats carries the resolver's advisory notes onto the entry.
+type VatDecision struct {
+	Regime  entity.VatRegime
+	RatePct decimal.Decimal
+	Caveats []string
+}
+
+// isB2B reports whether an order carries a buyer VAT id — a B2B / wholesale sale, whose revenue is
+// credited to 4310 instead of the B2C 4010/4020 (§1.3). The resolver uses the same signal for wdt.
+func isB2B(f entity.AcctOrderFacts) bool {
+	return f.BuyerVatID.Valid && strings.TrimSpace(f.BuyerVatID.String) != ""
+}
+
+// saleRevenueAccount is the net-revenue account for a sale: B2B (buyer VAT id present) -> 4310
+// Wholesale; otherwise the B2C account by payment method (4010 cash / 4020 DTC).
+func saleRevenueAccount(f entity.AcctOrderFacts) string {
+	if isB2B(f) {
+		return Acc4310
+	}
+	return revenueAccount(f.PaymentMethodName)
+}
+
 // isBaseCurrency reports whether an order currency equals the book base (EUR), case-insensitively.
 func isBaseCurrency(currency string) bool {
 	return strings.EqualFold(strings.TrimSpace(currency), baseCurrency)

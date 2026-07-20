@@ -45,14 +45,15 @@ func TestOpexMappingCoversValidCategories(t *testing.T) {
 	}
 }
 
-// TestAccountCodesUniqueAndComplete checks the full chart of accounts is 34 distinct codes (the
-// seed count in migration 0190: 8 asset + 3 liability + 3 equity + 4 revenue + 5 cogs + 11 opex).
+// TestAccountCodesUniqueAndComplete checks the full chart of accounts is 37 distinct codes (the
+// seed count: migration 0190's 34 + phase-2-wave-1 migration 0191's 2080 / 4310 / 4050 —
+// 8 asset + 4 liability + 3 equity + 6 revenue + 5 cogs + 11 opex).
 func TestAccountCodesUniqueAndComplete(t *testing.T) {
 	codes := []string{
 		Acc1010, Acc1030, Acc1040, Acc1110, Acc1120, Acc1130, Acc1210, Acc1220,
-		Acc2010, Acc2030, Acc2070,
+		Acc2010, Acc2030, Acc2070, Acc2080,
 		Acc3010, Acc3020, Acc3030,
-		Acc4010, Acc4020, Acc4040, Acc4110,
+		Acc4010, Acc4020, Acc4040, Acc4050, Acc4110, Acc4310,
 		Acc5010, Acc5040, Acc5050, Acc5090, Acc6210,
 		Acc6010, Acc6050, Acc6060, Acc6110, Acc6125, Acc6320, Acc6330, Acc6340, Acc6350, Acc6360, Acc6390,
 	}
@@ -62,5 +63,5 @@ func TestAccountCodesUniqueAndComplete(t *testing.T) {
 		assert.Falsef(t, dup, "duplicate account code %q", c)
 		seen[c] = struct{}{}
 	}
-	assert.Len(t, seen, 34)
+	assert.Len(t, seen, 37)
 }

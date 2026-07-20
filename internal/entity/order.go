@@ -44,6 +44,10 @@ type OrderNew struct {
 	// whose product min_tier the buyer does not satisfy is rejected regardless of what the storefront
 	// displayed. Left 0 on the admin custom-order path (that path is trusted and not tier-gated).
 	BuyerTier int16 `valid:"-"`
+	// BuyerVatID is the B2B customer's VAT identifier (custom orders only; the dto fills it from
+	// CreateCustomOrderRequest). Its presence drives the wdt / reverse-charge classification and 4310
+	// wholesale revenue. Empty (invalid) on the storefront path → written as NULL (phase 2, wave 1).
+	BuyerVatID sql.NullString `valid:"-"`
 }
 
 type OrderFull struct {

@@ -248,6 +248,23 @@ func TestAcctEventTypeDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "AcctEventType", dbValues, mapKeysAsStrings(entity.ValidAcctEventTypes))
 }
 
+// TestVatRegimeDBCheckNoDrift extends the drift test to the order VAT regime (entity.VatRegime/
+// ValidVatRegimes) <-> DB CHECK (migration 0191, chk_customer_order_vat_regime). Phase 2, wave 1.
+func TestVatRegimeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0191_accounting_vat_regime.sql")
+	dbValues := extractDBEnumValues(t, content, "vat_regime IN", 200)
+	assertSameSet(t, "VatRegime", dbValues, mapKeysAsStrings(entity.ValidVatRegimes))
+}
+
+// TestInputVatRegimeDBCheckNoDrift extends the drift test to the material input-VAT regime
+// (entity.InputVatRegime/ValidInputVatRegimes) <-> DB CHECK (migration 0192,
+// chk_material_input_vat_regime). Phase 2, wave 1.
+func TestInputVatRegimeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0192_material_input_vat.sql")
+	dbValues := extractDBEnumValues(t, content, "input_vat_regime IN", 200)
+	assertSameSet(t, "InputVatRegime", dbValues, mapKeysAsStrings(entity.ValidInputVatRegimes))
+}
+
 // TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
 // matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
 // guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).

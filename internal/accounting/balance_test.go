@@ -139,12 +139,25 @@ func TestPropertyOrderSaleBalances(t *testing.T) {
 	currencies := []string{"EUR", "USD"}
 	for i := 0; i < 3000; i++ {
 		f := randomOrderFacts(r, methods, currencies)
-		entry, err := BuildOrderSaleEntry(f, testOccurred)
+		entry, err := BuildOrderSaleEntry(f, randomVatDecision(r), testOccurred)
 		if err != nil {
 			require.Truef(t, isSaleSkip(err), "iter %d unexpected sale error: %v", i, err)
 			continue
 		}
 		require.NoErrorf(t, ValidateBalanced(entry), "iter %d unbalanced sale: %+v", i, entry.Lines)
+	}
+}
+
+// randomVatDecision picks a random regime and a random rate (0.00..27.99%) for the property test, so
+// balancing is exercised across every regime and every inclusive extraction.
+func randomVatDecision(r *rand.Rand) VatDecision {
+	regimes := []entity.VatRegime{
+		entity.VatRegimeOSS, entity.VatRegimePLDomestic, entity.VatRegimeExport,
+		entity.VatRegimeWDT, entity.VatRegimeUKStockDomestic, entity.VatRegimeNone,
+	}
+	return VatDecision{
+		Regime:  regimes[r.Intn(len(regimes))],
+		RatePct: decimal.New(int64(r.Intn(2800)), -2),
 	}
 }
 
@@ -166,7 +179,7 @@ func TestPropertyRefundBalances(t *testing.T) {
 			OrderCurrency:  f.Currency,
 			RefundedByItem: refundedByItem,
 		}
-		entry, err := BuildOrderRefundEntry(f, refund, f.Items, f.UUID+":1", testOccurred)
+		entry, err := BuildOrderRefundEntry(f, refund, f.Items, randomVatDecision(r), f.UUID+":1", testOccurred)
 		if err != nil {
 			require.Truef(t, isSaleSkip(err), "iter %d unexpected refund error: %v", i, err)
 			continue
@@ -190,19 +203,27 @@ func TestPropertyMaterialBalances(t *testing.T) {
 		if r.Intn(4) != 0 {
 			cost = ndDec(randCents(r, 5000))
 		}
-		m := entity.AcctMovementFacts{
-			MaterialMovement: entity.MaterialMovement{
-				Id:           i + 1,
-				MaterialId:   i%50 + 1,
-				MovementType: types[r.Intn(len(types))],
-				Quantity:     randCents(r, 5000),
-				UnitCostBase: cost,
-				OnHandBefore: before,
-				OnHandAfter:  after,
-				CreatedAt:    testOccurred,
-			},
-			MaterialName: "material",
+		mt := types[r.Intn(len(types))]
+		mm := entity.MaterialMovement{
+			Id:           i + 1,
+			MaterialId:   i%50 + 1,
+			MovementType: mt,
+			Quantity:     randCents(r, 5000),
+			UnitCostBase: cost,
+			OnHandBefore: before,
+			OnHandAfter:  after,
+			CreatedAt:    testOccurred,
 		}
+		// Occasionally a receipt records input VAT — exercise the extended M1 rule's balance too.
+		if mt == entity.MaterialMovementReceipt && r.Intn(2) == 0 {
+			regimes := []entity.InputVatRegime{
+				entity.InputVatRegimeWNT, entity.InputVatRegimeImport,
+				entity.InputVatRegimeDomesticPL, entity.InputVatRegimeDomesticUK,
+			}
+			mm.InputVatAmount = ndDec(randCents(r, 5000))
+			mm.InputVatRegime = sql.NullString{String: string(regimes[r.Intn(len(regimes))]), Valid: true}
+		}
+		m := entity.AcctMovementFacts{MaterialMovement: mm, MaterialName: "material"}
 		entry, err := BuildMaterialMovementEntry(m, testStartDate)
 		if err != nil {
 			require.Truef(t, errors.Is(err, ErrSkipUncosted), "iter %d unexpected material error: %v", i, err)
@@ -332,6 +353,11 @@ func randomOrderFacts(r *rand.Rand, methods []entity.PaymentMethodName, currenci
 		feePct = decimal.New(int64(r.Intn(300)), -2)  // 0.00 .. 2.99 %
 		feeFixed = decimal.New(int64(r.Intn(50)), -2) // 0.00 .. 0.49
 	}
+	// Occasionally a B2B order (buyer VAT id present) so the 4310 wholesale-revenue routing is exercised.
+	var buyerVatID sql.NullString
+	if r.Intn(3) == 0 {
+		buyerVatID = sql.NullString{String: "VAT123", Valid: true}
+	}
 	return entity.AcctOrderFacts{
 		UUID:              "order-uuid",
 		TotalPrice:        totalPrice,
@@ -344,6 +370,7 @@ func randomOrderFacts(r *rand.Rand, methods []entity.PaymentMethodName, currenci
 		PaymentMethodName: methods[r.Intn(len(methods))],
 		ShipmentCost:      ship,
 		FreeShipping:      sql.NullBool{Bool: r.Intn(2) == 0, Valid: true},
+		BuyerVatID:        buyerVatID,
 		Items:             items,
 	}
 }

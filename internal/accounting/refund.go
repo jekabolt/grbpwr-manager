@@ -26,6 +26,7 @@ func BuildOrderRefundEntry(
 	f entity.AcctOrderFacts,
 	refund entity.AcctOrderRefundPayload,
 	items []entity.AcctOrderItemFact,
+	vd VatDecision,
 	sourceKey string,
 	occurredAt time.Time,
 ) (entity.AcctJournalEntryInsert, error) {
@@ -45,20 +46,31 @@ func BuildOrderRefundEntry(
 		return entity.AcctJournalEntryInsert{}, ErrDegenerateAmounts
 	}
 
-	var caveats []string
+	// Regime caveats (unknown destination, wdt without vat id, ...) travel onto the refund entry too.
+	caveats := append([]string(nil), vd.Caveats...)
 
-	// VAT portion of the refund, proportional to how much of the order is being refunded. Same
-	// cascading guard as S1: a VAT share >= the refund is not carved out.
+	// VAT portion of the refund, derived from the RESOLVED REGIME rate (mirrors S1's inclusive
+	// extraction) and proportional to the refunded fraction — so a full refund reverses exactly what S1
+	// posted to 2070 and a partial refund a proportional share, leaving no residual. export / wdt / none
+	// post no VAT on the sale, so their refund reverses none — regardless of the sale-time vat_amount
+	// snapshot (which the pre-regime code wrongly reversed, corrupting 2070/JPK/OSS). Same cascading
+	// guard as S1: a VAT share >= the refund is not carved out.
 	vatr := decimal.Zero
-	if f.VatAmount.Valid {
+	if RegimeHasVAT(vd.Regime) && vd.RatePct.IsPositive() {
 		refundRatio := rOrd.Div(f.TotalPrice)
-		vatr = f.VatAmount.Decimal.Mul(refundRatio).Mul(k).Round(2)
-	} else {
-		caveats = append(caveats, "vat_amount is null; VAT portion of refund not separated")
+		vatr = vatInclusive(g, vd.RatePct).Mul(refundRatio).Round(2)
 	}
 	if vatr.GreaterThanOrEqual(r) {
 		vatr = decimal.Zero
 		caveats = append(caveats, "vat exceeds refund; VAT reversal line dropped")
+	}
+	// Advisory cross-check against the sale-time snapshot (scaled to this refund), mirroring S1: a >1%
+	// gap between the regime reversal and the snapshot is flagged, never re-posted.
+	if vatr.IsPositive() && f.VatAmount.Valid {
+		snap := f.VatAmount.Decimal.Mul(rOrd.Div(f.TotalPrice)).Mul(k).Round(2)
+		if vatSnapshotDiffers(vatr, snap) {
+			caveats = append(caveats, "vat snapshot mismatch")
+		}
 	}
 
 	// NETr is the balancing remainder of the money returned.
@@ -75,7 +87,7 @@ func BuildOrderRefundEntry(
 
 	// Stock returned to inventory — the ledger mirrors RefundOrder's RestoreStockForProductSizes.
 	// Costed refunded lines only.
-	cogsr, uncosted := refundCOGS(items, refund.RefundedByItem)
+	cogsr, uncosted, unknownItems := refundCOGS(items, refund.RefundedByItem)
 	if cogsr.IsPositive() {
 		lines = append(lines,
 			entity.AcctJournalLineInsert{AccountCode: Acc1130, Side: entity.AcctSideDebit, Amount: cogsr},
@@ -84,6 +96,9 @@ func BuildOrderRefundEntry(
 	}
 	if len(uncosted) > 0 {
 		caveats = append(caveats, "COGS return understated; missing cost for product(s): "+joinProductIDs(uncosted))
+	}
+	if len(unknownItems) > 0 {
+		caveats = append(caveats, "refund references order item(s) not on the order; COGS return understated: "+joinProductIDs(unknownItems))
 	}
 
 	entry := entity.AcctJournalEntryInsert{
@@ -101,12 +116,22 @@ func BuildOrderRefundEntry(
 // refundCOGS sums cost x refunded-quantity over the costed refunded lines and returns the uncosted
 // product ids. refundedByItem maps order_item.id -> refunded quantity; lines absent from it (or
 // with a non-positive quantity) are not part of this refund.
-func refundCOGS(items []entity.AcctOrderItemFact, refundedByItem map[int]int64) (decimal.Decimal, []int) {
+func refundCOGS(items []entity.AcctOrderItemFact, refundedByItem map[int]int64) (decimal.Decimal, []int, []int) {
 	total := decimal.Zero
 	var uncosted []int
+	known := make(map[int]bool, len(items))
 	for _, it := range items {
+		known[it.Id] = true
 		qty, ok := refundedByItem[it.Id]
 		if !ok || qty <= 0 {
+			continue
+		}
+		// Clamp the refunded quantity to what was actually sold on the line: a refund can never return
+		// more units than were sold, so a bad payload cannot over-credit COGS / inventory (A-4).
+		if sold := it.Quantity.IntPart(); qty > sold {
+			qty = sold
+		}
+		if qty <= 0 {
 			continue
 		}
 		if it.UnitCost.Valid {
@@ -115,5 +140,13 @@ func refundCOGS(items []entity.AcctOrderItemFact, refundedByItem map[int]int64) 
 			uncosted = append(uncosted, it.ProductId)
 		}
 	}
-	return total.Round(2), uncosted
+	// Refunded order_item ids that are not on the order's lines cannot be costed — surface them instead
+	// of dropping silently (the COGS return is understated by their cost).
+	var unknownItems []int
+	for id, qty := range refundedByItem {
+		if qty > 0 && !known[id] {
+			unknownItems = append(unknownItems, id)
+		}
+	}
+	return total.Round(2), uncosted, unknownItems
 }

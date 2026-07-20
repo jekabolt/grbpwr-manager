@@ -53,6 +53,11 @@ type Config struct {
 	// before the worker emits a health warning (default 48h). It never auto-posts by fallback — a
 	// larger gap means a broken capture pipeline, which must be seen, not masked.
 	SettledWaitMax time.Duration `mapstructure:"settled_wait_max"`
+	// OriginCountry is the ship-from country (ISO 3166-1 alpha-2) used by the VAT resolver (phase 2,
+	// wave 1). It is NOT read from accounting.* config: app.go sets it from
+	// cfg.ShippingLabel.ShipFromAddress().CountryISO2 before constructing the worker (07 §7.1). Empty is
+	// tolerated — the resolver then classifies purely by destination / payment method.
+	OriginCountry string `mapstructure:"-"`
 }
 
 // DefaultConfig returns the worker defaults (disabled; the cutover must be set explicitly).

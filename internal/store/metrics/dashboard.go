@@ -358,15 +358,16 @@ func (s *Store) GetAcctModuleActive(ctx context.Context) (bool, error) {
 
 // GetAcctPostingLag returns the count and max age (hours) of the accounting posting backlog:
 // unprocessed acct_event rows (processed_at IS NULL) and material_stock_movement rows stuck past the
-// acctposting worker's material_movement checkpoint, both older than lagHours. lagHours <= 0 falls back
-// to entity.DefaultAlertThresholds().AcctPostingLagHours rather than disabling the check outright
-// (unlike GetStaleOpenRunCount's staleDays <= 0 == off): AlertSettings/UpsertAlertSettings does not yet
-// carry this field through its protobuf round-trip (internal/dto/metrics.go AlertThresholdsFromPb), so
-// saving any OTHER dashboard threshold from the admin panel would otherwise silently zero this one out
-// in alert_setting and go dark with no operator intent behind it. The movements side is INNER JOINed to
-// acct_checkpoint on purpose: a store whose movements phase has never posted anything yet (no
-// checkpoint row) contributes zero rather than mistaking its entire pre-accounting movement history for
-// backlog.
+// acctposting worker's material_movement checkpoint, both older than lagHours. lagHours is the
+// operator-tunable AlertSettings.acct_posting_lag_hours (proto field 7; internal/dto/metrics.go
+// AlertThresholdsToPb/FromPb), editable end-to-end via GetAlertSettings/UpsertAlertSettings — a normal
+// saved threshold like ProductionRunStaleDays, not a special case. lagHours <= 0 still falls back to
+// entity.DefaultAlertThresholds().AcctPostingLagHours (24h) rather than disabling the check outright
+// (unlike GetStaleOpenRunCount's staleDays <= 0 == off): that guard exists purely so an unset/zeroed
+// value never goes dark with no operator intent behind it, not to route around a missing wire-up. The
+// movements side is INNER JOINed to acct_checkpoint on purpose: a store whose movements phase has never
+// posted anything yet (no checkpoint row) contributes zero rather than mistaking its entire
+// pre-accounting movement history for backlog.
 func (s *Store) GetAcctPostingLag(ctx context.Context, lagHours int) (count int, maxAgeHours float64, err error) {
 	if lagHours <= 0 {
 		lagHours = entity.DefaultAlertThresholds().AcctPostingLagHours

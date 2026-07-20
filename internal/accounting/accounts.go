@@ -26,21 +26,24 @@ const (
 	Acc1210 = "1210" // Prepaid Expenses
 	Acc1220 = "1220" // Equipment
 
-	// Liabilities (3).
+	// Liabilities (4).
 	Acc2010 = "2010" // Accounts Payable
 	Acc2030 = "2030" // Accrued Expenses
 	Acc2070 = "2070" // VAT Payable
+	Acc2080 = "2080" // VAT Input (Recoverable) — contra-liability (phase 2, wave 1)
 
 	// Equity (3).
 	Acc3010 = "3010" // Owner's Equity
 	Acc3020 = "3020" // Retained Earnings
 	Acc3030 = "3030" // Draws / Distributions
 
-	// Revenue (4).
+	// Revenue (6).
 	Acc4010 = "4010" // Sales – Retail / Popup
 	Acc4020 = "4020" // Sales – DTC (Website)
 	Acc4040 = "4040" // Returns & Refunds (contra-revenue, debit-normal)
+	Acc4050 = "4050" // Trade Discounts (B2B) — contra-revenue (phase 2, wave 1)
 	Acc4110 = "4110" // Shipping Income
+	Acc4310 = "4310" // Sales – B2B / Wholesale (phase 2, wave 1)
 
 	// COGS (5) — includes 6210, seeded in the cogs section so it lands beside production costs.
 	Acc5010 = "5010" // COGS

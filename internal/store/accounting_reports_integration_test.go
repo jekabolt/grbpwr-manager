@@ -7,6 +7,8 @@ import (
 	"time"
 
 	acctrules "github.com/jekabolt/grbpwr-manager/internal/accounting"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/currency"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -123,19 +125,21 @@ func TestAccountingReportsEndToEnd(t *testing.T) {
 	// 84.50). k=1 → NET 193.25, SHIP 10, VAT 46.75.
 	s1, err := acctrules.BuildOrderSaleEntry(entity.AcctOrderFacts{
 		Id: 900200, UUID: orderUUID, Placed: saleDate,
-		TotalPrice:       dec("250"),
-		Currency:         "EUR",
-		TotalSettledBase: decimal.NullDecimal{Decimal: dec("250"), Valid: true},
-		PaymentFee:       decimal.NullDecimal{Decimal: dec("7.55"), Valid: true},
-		VatAmount:        decimal.NullDecimal{Decimal: dec("46.75"), Valid: true},
-		PaymentMethodId:  1,
+		TotalPrice:        dec("250"),
+		Currency:          "EUR",
+		TotalSettledBase:  decimal.NullDecimal{Decimal: dec("250"), Valid: true},
+		PaymentFee:        decimal.NullDecimal{Decimal: dec("7.55"), Valid: true},
+		VatAmount:         decimal.NullDecimal{Decimal: dec("46.75"), Valid: true},
+		PaymentMethodId:   1,
 		PaymentMethodName: entity.CARD,
-		ShipmentCost:     decimal.NullDecimal{Decimal: dec("10"), Valid: true},
-		FreeShipping:     sql.NullBool{Bool: false, Valid: true},
+		ShipmentCost:      decimal.NullDecimal{Decimal: dec("10"), Valid: true},
+		FreeShipping:      sql.NullBool{Bool: false, Valid: true},
 		Items: []entity.AcctOrderItemFact{
 			{Id: 900300, ProductId: 900400, Quantity: dec("1"), UnitCost: decimal.NullDecimal{Decimal: dec("84.50"), Valid: true}},
 		},
-	}, saleDate)
+		// Phase 2: VAT now comes from the resolved regime. OSS 23% inclusive on G=250 → 46.75, matching
+		// the 46.75 snapshot (no mismatch caveat).
+	}, acctrules.VatDecision{Regime: entity.VatRegimeOSS, RatePct: dec("23")}, saleDate)
 	require.NoError(t, err)
 	require.False(t, s1.HasCaveat, "the fully-costed sale should carry no caveat")
 	post(s1)
@@ -243,4 +247,143 @@ func findEquityRow(bs *entity.AcctBalanceSheet, name string) *entity.AcctBalance
 		}
 	}
 	return nil
+}
+
+// TestAccountingReconciliationRevenueDeltaZero is the wave-0 techdebt item
+// (docs/plan-accounting-phase2/06-wave0-techdebt.md #4): TestAccountingReportsEndToEnd's own block
+// comment says its reconciliation assertions exercise "SHAPE and the ledger side only" because that
+// test posts journal entries directly with no customer_order fixture behind them, and NewForTest does
+// not load the order-status cache by itself — so rec.Revenue.Operational reads 0 there and Delta
+// always just echoes the ledger figure. The genuine delta==0 path (ledger and operational actually
+// agreeing) had no coverage. This test closes that gap without touching
+// TestAccountingReportsEndToEnd: it warms the order-status cache the same way
+// TestAcctEventProducers/TestAcctPostingWorker do (NewForTest alone does not populate it — see its own
+// doc comment), seeds a real customer_order/payment/order_item fixture, reads it back with
+// GetOrderFactsForPosting (the exact fact source the acctposting worker itself uses) and posts it
+// through BuildOrderSaleEntry — so the ledger and operational sides are DERIVED FROM THE SAME ROW
+// rather than two independently hand-typed numbers that merely happen to match. It runs in an
+// isolated period (2033-02, grepped clean of every other suite in this package) so it cannot collide
+// with any other test's revenue figures for that month.
+//
+// Per 06-wave0-techdebt.md #4 ("если кэш недоступен в харнессе, сделай сценарий best-effort"): if the
+// order-status cache fails to warm (e.g. a minimal harness with no dictionary/hero seed data), the
+// scenario is skipped rather than failed — GetReconciliation degrades to ledger-only in that case
+// (reconcile.go's own empty-cache guard), which cannot exercise a genuine delta==0.
+func TestAccountingReconciliationRevenueDeltaZero(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	di, err := s.Cache().GetDictionaryInfo(ctx)
+	require.NoError(t, err)
+	hf, err := s.Hero().GetHero(ctx)
+	require.NoError(t, err)
+	require.NoError(t, cache.InitConsts(ctx, di, hf))
+
+	if len(cache.OrderStatusIDsForNetRevenue()) == 0 {
+		t.Skip("order-status cache did not populate a net-revenue status set in this harness; " +
+			"the delta==0 scenario needs it (best-effort per 06-wave0-techdebt.md #4)")
+	}
+
+	const uuid = "acct-report-delta-zero-0001"
+	month := time.Date(2033, 2, 15, 12, 0, 0, 0, time.UTC)
+	from := time.Date(2033, 2, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2033, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	var sizeA int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT id FROM size WHERE sku_ord != 0 ORDER BY id LIMIT 1`).Scan(&sizeA))
+	var langID, pmID, confirmedID int
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM language").Scan(&langID))
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT id FROM payment_method WHERE name = ?", string(entity.CARD)).Scan(&pmID))
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT id FROM order_status WHERE name = ?", string(entity.Confirmed)).Scan(&confirmedID))
+
+	// A real, throwaway product (order_item.variant_id is a NOT NULL FK RESTRICT to product_size —
+	// see migration 0153 — so the operational fixture needs a genuine variant, not a bare id).
+	mediaID, err := s.Media().AddMedia(ctx, &entity.MediaItem{
+		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
+		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
+		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
+	})
+	require.NoError(t, err)
+	prices := make([]entity.ColorwayPriceInsert, 0)
+	for _, c := range currency.RequiredCurrencies() {
+		prices = append(prices, entity.ColorwayPriceInsert{Currency: c, Price: decimal.NewFromInt(10000)})
+	}
+	if len(prices) == 0 {
+		prices = append(prices, entity.ColorwayPriceInsert{Currency: "EUR", Price: decimal.NewFromInt(10000)})
+	}
+	prodID, err := s.Products().AddProduct(ctx, &entity.ColorwayNew{
+		Product: &entity.ColorwayInsert{
+			ProductBodyInsert: entity.ColorwayBodyInsert{
+				Brand: "ACME", Color: "black", ColorCode: "BLK", ColorHexOverride: sql.NullString{String: "#000000", Valid: true}, CountryOfOrigin: "IT",
+				TopCategoryId: 1, TargetGender: entity.Unisex, Season: entity.SeasonSS,
+			},
+			ThumbnailMediaID: mediaID,
+			Translations:     []entity.ColorwayTranslationInsert{{LanguageId: langID, Name: "ACCT-DELTA-ZERO", Description: "d"}},
+			Prices:           prices,
+		},
+		SizeMeasurements: []entity.SizeWithMeasurementInsert{
+			{ProductSize: entity.VariantInsert{SizeId: sizeA, Quantity: decimal.NewFromInt(5)}},
+		},
+		MediaIds: []int{mediaID}, Tags: []entity.ColorwayTagInsert{}, Prices: prices,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", prodID) })
+	var variantID int64
+	var variantSKU string
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT id, sku FROM product_size WHERE product_id = ? AND size_id = ?`, prodID, sizeA).
+		Scan(&variantID, &variantSKU))
+
+	// Operational fixture: total_price 100, total_settled_base 100 (k=1, no FX), vat_amount 20, no
+	// shipment row (ship=0) — so both the ledger builder and the recon SQL reduce to the SAME formula
+	// G - VAT = 80.00, by construction rather than coincidence (see block comment above).
+	res, err := testDB.ExecContext(ctx, `INSERT INTO customer_order
+		(uuid, order_status_id, currency, total_price, total_settled_base, vat_amount, placed)
+		VALUES (?, ?, 'EUR', 100, 100, 20, ?)`, uuid, confirmedID, month)
+	require.NoError(t, err)
+	orderID, err := res.LastInsertId()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM order_item WHERE order_id = ?", orderID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM payment WHERE order_id = ?", orderID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE id = ?", orderID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM acct_journal_entry WHERE source_type = 'order_sale' AND source_key = ?", uuid)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM acct_period WHERE period = '2033-02-01'")
+	})
+	_, err = testDB.ExecContext(ctx,
+		`INSERT INTO payment (order_id, payment_method_id, transaction_amount, transaction_amount_payment_currency, is_transaction_done)
+		 VALUES (?, ?, 100, 100, 1)`, orderID, pmID)
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, `INSERT INTO order_item
+		(order_id, product_id, variant_id, product_price, product_price_base, cost_price_at_sale, product_sale_percentage, quantity, size_id, variant_sku_snapshot)
+		VALUES (?, ?, ?, 100, 100, 40, 0, 1, ?, ?)`, orderID, prodID, variantID, sizeA, variantSKU)
+	require.NoError(t, err)
+
+	// Ledger fixture: post the SAME row's facts (via the worker's own fact-reader) through the sale
+	// builder, so the journal entry is not an independent guess at what the order "should" have been.
+	facts, err := s.Accounting().GetOrderFactsForPosting(ctx, uuid)
+	require.NoError(t, err)
+	// Phase 2: post via an explicit OSS 25% decision so the regime VAT (100*25/125 = 20.00) reproduces
+	// the order's 20.00 snapshot — keeping G − VAT = 80.00 for the revenue reconciliation below. (The
+	// order fixture has no address, so the resolver alone would classify it export; the explicit
+	// decision isolates the reconciliation from destination resolution.)
+	entry, err := acctrules.BuildOrderSaleEntry(*facts, acctrules.VatDecision{Regime: entity.VatRegimeOSS, RatePct: decimal.RequireFromString("25")}, month)
+	require.NoError(t, err)
+	require.False(t, entry.HasCaveat, "settled base present, VAT set, one costed item: no caveat expected")
+	require.NoError(t, s.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		_, _, e := rep.Accounting().CreateJournalEntry(ctx, entry)
+		return e
+	}))
+
+	rec, err := s.Accounting().GetReconciliation(ctx, from, to)
+	require.NoError(t, err)
+	require.Equal(t, "80.00", rec.Revenue.Ledger.StringFixed(2), "ledger = NET credited by the order_sale entry (G 100 - VAT 20)")
+	require.Equal(t, "80.00", rec.Revenue.Operational.StringFixed(2), "operational = settled (100) - VAT share (20) on the Confirmed order")
+	require.True(t, rec.Revenue.Delta.IsZero(), "ledger and operational are derived from the same row: delta must be exactly 0, got %s", rec.Revenue.Delta)
 }
