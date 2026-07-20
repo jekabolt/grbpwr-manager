@@ -107,3 +107,29 @@ func ConvertAcctUkVatReturnToPb(r entity.AcctUkVatReturn) *pb_admin.GetUkVatRetu
 		Box7NetPurchases: pbDecimalFromDecimal(r.Box7NetPurchases),
 	}
 }
+
+// ConvertAcctFrs105AccountsToPb maps the FRS 105 micro-entity accounts draft to protobuf.
+func ConvertAcctFrs105AccountsToPb(r entity.AcctFrs105Accounts) *pb_admin.GetFrs105AccountsResponse {
+	return &pb_admin.GetFrs105AccountsResponse{
+		From:                       r.From.Format(acctDateLayout),
+		To:                         r.To.Format(acctDateLayout),
+		Currency:                   r.Currency,
+		Turnover:                   pbDecimalFromDecimal(r.Turnover),
+		CostOfSales:                pbDecimalFromDecimal(r.CostOfSales),
+		GrossProfit:                pbDecimalFromDecimal(r.GrossProfit),
+		AdministrativeExpenses:     pbDecimalFromDecimal(r.AdministrativeExpenses),
+		Depreciation:               pbDecimalFromDecimal(r.Depreciation),
+		OperatingProfit:            pbDecimalFromDecimal(r.OperatingProfit),
+		Tax:                        pbDecimalFromDecimal(r.Tax),
+		ProfitForYear:              pbDecimalFromDecimal(r.ProfitForYear),
+		FixedAssets:                pbDecimalFromDecimal(r.FixedAssets),
+		CurrentAssets:              pbDecimalFromDecimal(r.CurrentAssets),
+		CreditorsWithinYear:        pbDecimalFromDecimal(r.CreditorsWithinYear),
+		NetCurrentAssets:           pbDecimalFromDecimal(r.NetCurrentAssets),
+		TotalAssetsLessCurrentLiab: pbDecimalFromDecimal(r.TotalAssetsLessCurrentLiab),
+		CreditorsAfterYear:         pbDecimalFromDecimal(r.CreditorsAfterYear),
+		NetAssets:                  pbDecimalFromDecimal(r.NetAssets),
+		CapitalAndReserves:         pbDecimalFromDecimal(r.CapitalAndReserves),
+		Caveats:                    r.Caveats,
+	}
+}

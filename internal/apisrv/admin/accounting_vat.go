@@ -116,3 +116,18 @@ func (s *Server) GetUkVatReturn(ctx context.Context, req *pb_admin.GetUkVatRetur
 	}
 	return dto.ConvertAcctUkVatReturnToPb(*ret), nil
 }
+
+// GetFrs105Accounts returns an FRS 105 UK micro-entity accounts DRAFT (Income Statement + Statement of
+// Financial Position) re-grouped from the ledger over [from, to). Base-currency figures; the response
+// caveats flag that a filing-ready UK Ltd set needs GBP + entity isolation.
+func (s *Server) GetFrs105Accounts(ctx context.Context, req *pb_admin.GetFrs105AccountsRequest) (*pb_admin.GetFrs105AccountsResponse, error) {
+	from, to, err := dto.ParseAcctDateRange(req.GetFrom(), req.GetTo())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	acc, err := s.repo.Accounting().GetFrs105Accounts(ctx, from, to)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get frs105 accounts", err)
+	}
+	return dto.ConvertAcctFrs105AccountsToPb(*acc), nil
+}
