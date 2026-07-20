@@ -1786,6 +1786,13 @@ service AdminService {
   rpc ExportJpkV7M(ExportJpkV7MRequest) returns (ExportJpkV7MResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/jpk-v7m"};
   }
+
+  // ExportOssReturn generates the quarterly OSS (Union scheme, VIU-DO) return XML — one row per member
+  // state of consumption with its rate, taxable base and VAT — for the accountant to validate against
+  // the official schema / transcribe into the OSS portal. Requires the JPK_* taxpayer identity.
+  rpc ExportOssReturn(ExportOssReturnRequest) returns (ExportOssReturnResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/oss-export"};
+  }
 }
 
 // DICITONARY
@@ -6292,4 +6299,14 @@ message ExportJpkV7MRequest {
 message ExportJpkV7MResponse {
   string filename = 1; // suggested download name, e.g. JPK_V7M_2026-07.xml
   string xml_content = 2; // the JPK_V7M(2) XML document (UTF-8)
+}
+
+message ExportOssReturnRequest {
+  // quarter: YYYY-MM-DD, any day within the target quarter (snapped to the quarter's first day).
+  string quarter = 1;
+}
+
+message ExportOssReturnResponse {
+  string filename = 1; // suggested download name, e.g. OSS_2026-Q3.xml
+  string xml_content = 2; // the OSS (VIU-DO) return XML (UTF-8)
 }
