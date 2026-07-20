@@ -656,7 +656,11 @@ type AcctVatReturnPL struct {
 	// overstated the Polish liability). Surfaced today via a caveat; a dedicated UK return is Phase 3.
 	OutputUkStockDomestic decimal.Decimal // uk_stock_domestic output VAT (2070)
 	InputUkDomestic       decimal.Decimal // domestic_uk purchase input VAT (2080), recoverable in the UK
-	Caveats               []string
+	// Zero-rated NET revenue bases that JPK_VAT still declares (K_21 intra-community WDT, K_22 export).
+	// They carry no VAT so they do not enter NetPayable; they exist for the declaration itself.
+	NetWdt    decimal.Decimal
+	NetExport decimal.Decimal
+	Caveats   []string
 }
 
 // AcctOssRow is one destination country's OSS B2C line: country, applied rate, net and VAT.

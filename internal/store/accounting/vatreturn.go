@@ -123,6 +123,37 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 		}
 	}
 
+	// --- WDT (intra-community, K_21) + export (K_22) NET revenue: zero-rated sales carry no VAT but
+	// JPK_VAT still declares their net base. Sum the same revenue accounts the OSS return uses (4040
+	// nets refunds with a minus via signedAmount), split by the order's regime. ---
+	netRows, err := storeutil.QueryListNamed[struct {
+		Regime string          `db:"regime"`
+		Net    decimal.Decimal `db:"net"`
+	}](ctx, s.DB, `
+		SELECT co.vat_regime AS regime,
+		       COALESCE(SUM(`+signedAmount+`), 0) AS net
+		FROM acct_journal_line l
+		JOIN acct_journal_entry e ON e.id = l.entry_id
+		JOIN acct_account a ON a.id = l.account_id
+		JOIN customer_order co ON `+orderKeyMatch+`
+		WHERE a.code IN ('4010','4020','4310','4110','4040')
+		  AND e.source_type IN ('order_sale','order_refund')
+		  AND e.occurred_at >= :from AND e.occurred_at < :to
+		  AND co.vat_regime IN ('wdt','export')
+		GROUP BY co.vat_regime`,
+		map[string]any{"from": fromStr, "to": toStr})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: vat return wdt/export net %s: %w", fromStr, err)
+	}
+	for _, r := range netRows {
+		switch entity.VatRegime(r.Regime) {
+		case entity.VatRegimeWDT:
+			ret.NetWdt = ret.NetWdt.Add(r.Net)
+		case entity.VatRegimeExport:
+			ret.NetExport = ret.NetExport.Add(r.Net)
+		}
+	}
+
 	// NetPayable is the POLISH liability only: domestic output + reverse-charge self-charge − Polish
 	// input. WNT/import output and input are equal (net-zero self-charge), so they cancel; only domestic
 	// output − domestic input remains. OSS (declared on the OSS return) and every UK figure (declared on

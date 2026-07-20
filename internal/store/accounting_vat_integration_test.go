@@ -160,6 +160,18 @@ func TestAccountingVatReturns(t *testing.T) {
 		VALUES (?, ?, 'EUR', 120, 120, 20, 'uk_stock_domestic', ?)`, ukUUID, confirmedID, occ)
 	require.NoError(t, err)
 
+	// C-3: a WDT (intra-community, K_21) and an export (K_22) sale — zero-rated, declared by NET base.
+	const wdtUUID = "vat-int-wdt-00000000000000000000004"
+	const expUUID = "vat-int-exp-00000000000000000000005"
+	_, err = testDB.ExecContext(ctx, `INSERT INTO customer_order
+		(uuid, order_status_id, currency, total_price, total_settled_base, vat_amount, vat_regime, buyer_vat_id, placed)
+		VALUES (?, ?, 'EUR', 100, 100, 0, 'wdt', 'DE123456789', ?)`, wdtUUID, confirmedID, occ)
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, `INSERT INTO customer_order
+		(uuid, order_status_id, currency, total_price, total_settled_base, vat_amount, vat_regime, placed)
+		VALUES (?, ?, 'EUR', 100, 100, 0, 'export', ?)`, expUUID, confirmedID, occ)
+	require.NoError(t, err)
+
 	res, err = testDB.ExecContext(ctx, "INSERT INTO material (name, section) VALUES ('VATINT-uk-fabric', 'fabric')")
 	require.NoError(t, err)
 	ukMatID, err := res.LastInsertId()
@@ -189,7 +201,7 @@ func TestAccountingVatReturns(t *testing.T) {
 		}
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM buyer WHERE order_id = ?", deOrderID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM address WHERE id = ?", addrID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE uuid IN (?, ?, ?)", plUUID, deUUID, ukUUID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM customer_order WHERE uuid IN (?, ?, ?, ?, ?)", plUUID, deUUID, ukUUID, wdtUUID, expUUID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM material_stock_movement WHERE id = ?", ukMovID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM material WHERE id = ?", ukMatID)
 		_, _ = testDB.ExecContext(cctx, "DELETE FROM acct_period WHERE period = ?", "2035-08-01")
@@ -223,6 +235,16 @@ func TestAccountingVatReturns(t *testing.T) {
 		OccurredAt: occ, Description: "uk receipt", SourceType: entity.AcctSourceMaterialReceipt, SourceKey: strconv.FormatInt(ukMovID, 10), CreatedBy: "system",
 		Lines: []entity.AcctJournalLineInsert{line("1110", entity.AcctSideDebit, "100"), line("2080", entity.AcctSideDebit, "15"), line("2010", entity.AcctSideCredit, "115")},
 	})
+	// WDT sale (Cr 4310 100, no VAT) — intra-community NET base.
+	post(entity.AcctJournalEntryInsert{
+		OccurredAt: occ, Description: "wdt sale", SourceType: entity.AcctSourceOrderSale, SourceKey: wdtUUID, CreatedBy: "system",
+		Lines: []entity.AcctJournalLineInsert{line("1040", entity.AcctSideDebit, "100"), line("4310", entity.AcctSideCredit, "100")},
+	})
+	// export sale (Cr 4020 100, no VAT) — export NET base.
+	post(entity.AcctJournalEntryInsert{
+		OccurredAt: occ, Description: "export sale", SourceType: entity.AcctSourceOrderSale, SourceKey: expUUID, CreatedBy: "system",
+		Lines: []entity.AcctJournalLineInsert{line("1030", entity.AcctSideDebit, "100"), line("4020", entity.AcctSideCredit, "100")},
+	})
 
 	// --- JPK_VAT monthly return ---
 	ret, err := s.Accounting().GetVatReturnPL(ctx, month)
@@ -242,6 +264,9 @@ func TestAccountingVatReturns(t *testing.T) {
 		}
 	}
 	require.Truef(t, ukCaveat, "UK-VAT caveat expected, got %v", ret.Caveats)
+	// C-3: zero-rated WDT/export NET bases are declared (K_21/K_22) and never touch NetPayable.
+	require.Equal(t, "100.00", ret.NetWdt.StringFixed(2), "WDT net base declared")
+	require.Equal(t, "100.00", ret.NetExport.StringFixed(2), "export net base declared")
 
 	// --- OSS quarterly return (window starts at the seeded month) ---
 	oss, err := s.Accounting().GetOssReturn(ctx, month)
