@@ -327,11 +327,16 @@ func (s *Seeder) verifyOperationalCoverage(ctx context.Context, r *AccountingRes
 	from := now.AddDate(0, 0, -60).Format("2006-01-02")
 	to := now.AddDate(0, 0, 1).Format("2006-01-02")
 
-	// Poll up to ~90s (worker interval ~1m) for the worker's first order_sale to land.
+	// Poll (worker interval ~1m) until the worker's order_sale count STABILISES rather than breaking on
+	// the first entry — the worker drains the order backlog over a couple of ticks, so an eager break
+	// reports a partial picture and misses the late-created wdt/cash orders (their regimes would read 0).
+	// Break when order_sale is non-zero and unchanged across two consecutive polls (worker drained), or
+	// on the attempt cap (~150s).
 	bySource := map[string]int{}
-	const attempts = 6
+	const attempts = 10
+	prevSales := -1
 	for a := 0; a < attempts; a++ {
-		lj, err := s.C.ListJournalEntries(ctx, &admin.ListJournalEntriesRequest{From: from, To: to, Limit: 1000})
+		lj, err := s.C.ListJournalEntries(ctx, &admin.ListJournalEntriesRequest{From: from, To: to, Limit: 2000})
 		if err != nil {
 			r.warn(s, "coverage: ListJournalEntries: %v", err)
 			return
@@ -344,11 +349,13 @@ func (s *Seeder) verifyOperationalCoverage(ctx context.Context, r *AccountingRes
 			}
 			bySource[st]++
 		}
-		if bySource["order_sale"] > 0 {
-			break
+		sales := bySource["order_sale"]
+		if sales > 0 && sales == prevSales {
+			break // held steady across two consecutive polls → the worker has drained the backlog
 		}
+		prevSales = sales
 		if a < attempts-1 {
-			s.logf("  coverage: no order_sale posted yet (worker ~1m) — waiting… [%d/%d]", a+1, attempts)
+			s.logf("  coverage: order_sale=%d, waiting for the worker to drain… [%d/%d]", sales, a+1, attempts)
 			time.Sleep(15 * time.Second)
 		}
 	}
