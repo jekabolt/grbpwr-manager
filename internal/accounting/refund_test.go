@@ -147,6 +147,34 @@ func TestBuildOrderRefundEntry_Cases(t *testing.T) {
 				assert.Contains(t, e.Caveat.String, "100")
 			},
 		},
+		{
+			// A-4: the payload claims 5 refunded but only 1 was sold — COGS return clamps to 1 unit.
+			name:  "refunded quantity clamped to sold",
+			facts: saleFacts(entity.CARD),
+			vd:    vdOSS23(),
+			refund: entity.AcctOrderRefundPayload{
+				OrderUUID: "order-250", RefundAmount: dec("250.00"), OrderCurrency: "EUR",
+				RefundedByItem: map[int]int64{1: 5},
+			},
+			check: func(t *testing.T, e entity.AcctJournalEntryInsert) {
+				assertAmount(t, e, Acc1130, entity.AcctSideDebit, "84.50") // 1 unit, not 5 * 84.50
+			},
+		},
+		{
+			// A-4: a refunded item id not on the order contributes no COGS and raises a caveat.
+			name:  "refund references unknown item",
+			facts: saleFacts(entity.CARD),
+			vd:    vdOSS23(),
+			refund: entity.AcctOrderRefundPayload{
+				OrderUUID: "order-250", RefundAmount: dec("250.00"), OrderCurrency: "EUR",
+				RefundedByItem: map[int]int64{999: 1},
+			},
+			check: func(t *testing.T, e entity.AcctJournalEntryInsert) {
+				assert.False(t, hasLine(e, Acc1130, entity.AcctSideDebit), "unknown item contributes no COGS")
+				assert.True(t, e.HasCaveat)
+				assert.Contains(t, e.Caveat.String, "not on the order")
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
