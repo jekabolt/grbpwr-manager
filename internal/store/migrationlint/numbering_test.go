@@ -14,6 +14,13 @@ import (
 // prefix, so even the grandfathered collision can't silently grow.
 var knownDuplicateMigrationNumbers = map[string]int{
 	"0003": 2, // 0003_add_announce_translations.sql + 0003_add_product_version.sql
+	// 0195: two phase-2 accounting tracks landed on beta in parallel and both took 0195 —
+	// 0195_accounting_delivered.sql (wave 2) and 0195_frs105_coa_accounts.sql (FRS-105 COA gap-fill).
+	// Both are already applied on beta and both are idempotent, additive, and independent (different
+	// accounts; the FRS-105 seed touches no CHECK). accounting_delivered can't be renumbered (0196's
+	// source_type CHECK extension depends on it applying first), so the collision is grandfathered like
+	// 0003. Neither may be renamed (sql-migrate tracks by full filename); no THIRD 0195 may be added.
+	"0195": 2,
 }
 
 // TestMigrationNumbersUnique asserts migration number prefixes are unique except
