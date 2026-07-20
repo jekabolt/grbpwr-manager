@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (221 rpc) ----
+// ---- admin (237 rpc) ----
 
 func (c *Client) AddArchive(ctx context.Context, in *admin.AddArchiveRequest) (*admin.AddArchiveResponse, error) {
 	out := new(admin.AddArchiveResponse)
@@ -149,6 +149,14 @@ func (c *Client) AdjustMaterialStock(ctx context.Context, in *admin.AdjustMateri
 	return out, nil
 }
 
+func (c *Client) ArchiveAcctAccount(ctx context.Context, in *admin.ArchiveAcctAccountRequest) (*admin.ArchiveAcctAccountResponse, error) {
+	out := new(admin.ArchiveAcctAccountResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/accounts/archive", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ArchiveCollection(ctx context.Context, in *admin.ArchiveCollectionRequest) (*admin.ArchiveCollectionResponse, error) {
 	out := new(admin.ArchiveCollectionResponse)
 	if err := c.call(ctx, "POST", "/api/admin/dictionaries/collections/{id}/archive", in, out); err != nil {
@@ -253,9 +261,25 @@ func (c *Client) CloneStyleForSeason(ctx context.Context, in *admin.CloneStyleFo
 	return out, nil
 }
 
+func (c *Client) CloseAcctPeriod(ctx context.Context, in *admin.CloseAcctPeriodRequest) (*admin.CloseAcctPeriodResponse, error) {
+	out := new(admin.CloseAcctPeriodResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/periods/close", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) CreateAccount(ctx context.Context, in *admin.CreateAccountRequest) (*admin.CreateAccountResponse, error) {
 	out := new(admin.CreateAccountResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounts", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateAcctAccount(ctx context.Context, in *admin.CreateAcctAccountRequest) (*admin.CreateAcctAccountResponse, error) {
+	out := new(admin.CreateAcctAccountResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/accounts", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -296,6 +320,14 @@ func (c *Client) CreateCustomOrder(ctx context.Context, in *admin.CreateCustomOr
 func (c *Client) CreateFiber(ctx context.Context, in *admin.CreateFiberRequest) (*admin.CreateFiberResponse, error) {
 	out := new(admin.CreateFiberResponse)
 	if err := c.call(ctx, "POST", "/api/admin/dictionaries/fibers", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateJournalEntry(ctx context.Context, in *admin.CreateJournalEntryRequest) (*admin.CreateJournalEntryResponse, error) {
+	out := new(admin.CreateJournalEntryResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/journal", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -525,6 +557,22 @@ func (c *Client) GenerateTechCardOperations(ctx context.Context, in *admin.Gener
 	return out, nil
 }
 
+func (c *Client) GetAccountLedger(ctx context.Context, in *admin.GetAccountLedgerRequest) (*admin.GetAccountLedgerResponse, error) {
+	out := new(admin.GetAccountLedgerResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/ledger/{code}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetAcctReconciliation(ctx context.Context, in *admin.GetAcctReconciliationRequest) (*admin.GetAcctReconciliationResponse, error) {
+	out := new(admin.GetAcctReconciliationResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/reconciliation", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetAlertSettings(ctx context.Context, in *admin.GetAlertSettingsRequest) (*admin.GetAlertSettingsResponse, error) {
 	out := new(admin.GetAlertSettingsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/dashboard/alert-settings", in, out); err != nil {
@@ -552,6 +600,14 @@ func (c *Client) GetArchivesPaged(ctx context.Context, in *admin.GetArchivesPage
 func (c *Client) GetBackgroundHeroColor(ctx context.Context, in *admin.GetBackgroundHeroColorRequest) (*admin.GetBackgroundHeroColorResponse, error) {
 	out := new(admin.GetBackgroundHeroColorResponse)
 	if err := c.call(ctx, "GET", "/api/admin/settings/background-hero-color", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetBalanceSheet(ctx context.Context, in *admin.GetBalanceSheetRequest) (*admin.GetBalanceSheetResponse, error) {
+	out := new(admin.GetBalanceSheetResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/balance-sheet", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -645,6 +701,14 @@ func (c *Client) GetFulfillmentCard(ctx context.Context, in *admin.GetFulfillmen
 	return out, nil
 }
 
+func (c *Client) GetJournalEntry(ctx context.Context, in *admin.GetJournalEntryRequest) (*admin.GetJournalEntryResponse, error) {
+	out := new(admin.GetJournalEntryResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/journal/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetMaterial(ctx context.Context, in *admin.GetMaterialRequest) (*admin.GetMaterialResponse, error) {
 	out := new(admin.GetMaterialResponse)
 	if err := c.call(ctx, "GET", "/api/admin/materials/{id}", in, out); err != nil {
@@ -728,6 +792,14 @@ func (c *Client) GetProductionRun(ctx context.Context, in *admin.GetProductionRu
 func (c *Client) GetProductionRunMaterialPlan(ctx context.Context, in *admin.GetProductionRunMaterialPlanRequest) (*admin.GetProductionRunMaterialPlanResponse, error) {
 	out := new(admin.GetProductionRunMaterialPlanResponse)
 	if err := c.call(ctx, "GET", "/api/admin/production-runs/{run_id}/material-plan", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetProfitLossStatement(ctx context.Context, in *admin.GetProfitLossStatementRequest) (*admin.GetProfitLossStatementResponse, error) {
+	out := new(admin.GetProfitLossStatementResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/profit-loss", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -861,6 +933,14 @@ func (c *Client) GetTierHistory(ctx context.Context, in *admin.GetTierHistoryReq
 	return out, nil
 }
 
+func (c *Client) GetTrialBalance(ctx context.Context, in *admin.GetTrialBalanceRequest) (*admin.GetTrialBalanceResponse, error) {
+	out := new(admin.GetTrialBalanceResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/trial-balance", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetVatRates(ctx context.Context, in *admin.GetVatRatesRequest) (*admin.GetVatRatesResponse, error) {
 	out := new(admin.GetVatRatesResponse)
 	if err := c.call(ctx, "GET", "/api/admin/vat-rates", in, out); err != nil {
@@ -896,6 +976,22 @@ func (c *Client) ListAccountSections(ctx context.Context, in *admin.ListAccountS
 func (c *Client) ListAccounts(ctx context.Context, in *admin.ListAccountsRequest) (*admin.ListAccountsResponse, error) {
 	out := new(admin.ListAccountsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounts", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListAcctAccounts(ctx context.Context, in *admin.ListAcctAccountsRequest) (*admin.ListAcctAccountsResponse, error) {
+	out := new(admin.ListAcctAccountsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/accounts", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListAcctPeriods(ctx context.Context, in *admin.ListAcctPeriodsRequest) (*admin.ListAcctPeriodsResponse, error) {
+	out := new(admin.ListAcctPeriodsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/periods", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -960,6 +1056,14 @@ func (c *Client) ListHackerAccounts(ctx context.Context, in *admin.ListHackerAcc
 func (c *Client) ListHackerInvites(ctx context.Context, in *admin.ListHackerInvitesRequest) (*admin.ListHackerInvitesResponse, error) {
 	out := new(admin.ListHackerInvitesResponse)
 	if err := c.call(ctx, "GET", "/api/admin/hacker/invites", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListJournalEntries(ctx context.Context, in *admin.ListJournalEntriesRequest) (*admin.ListJournalEntriesResponse, error) {
+	out := new(admin.ListJournalEntriesResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/journal", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1269,9 +1373,25 @@ func (c *Client) RemoveTechCardRoleAssignment(ctx context.Context, in *admin.Rem
 	return out, nil
 }
 
+func (c *Client) ReopenAcctPeriod(ctx context.Context, in *admin.ReopenAcctPeriodRequest) (*admin.ReopenAcctPeriodResponse, error) {
+	out := new(admin.ReopenAcctPeriodResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/periods/reopen", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ResetAccountPassword(ctx context.Context, in *admin.ResetAccountPasswordRequest) (*admin.ResetAccountPasswordResponse, error) {
 	out := new(admin.ResetAccountPasswordResponse)
 	if err := c.call(ctx, "PUT", "/api/admin/accounts/{username}/password", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ReverseJournalEntry(ctx context.Context, in *admin.ReverseJournalEntryRequest) (*admin.ReverseJournalEntryResponse, error) {
+	out := new(admin.ReverseJournalEntryResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/journal/reverse", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1456,6 +1576,14 @@ func (c *Client) UnarchiveTask(ctx context.Context, in *admin.UnarchiveTaskReque
 func (c *Client) UpdateAccountPermissions(ctx context.Context, in *admin.UpdateAccountPermissionsRequest) (*admin.UpdateAccountPermissionsResponse, error) {
 	out := new(admin.UpdateAccountPermissionsResponse)
 	if err := c.call(ctx, "PUT", "/api/admin/accounts/{username}/permissions", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateAcctAccount(ctx context.Context, in *admin.UpdateAcctAccountRequest) (*admin.UpdateAcctAccountResponse, error) {
+	out := new(admin.UpdateAcctAccountResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/accounts/update", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

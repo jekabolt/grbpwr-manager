@@ -45,7 +45,7 @@ var (
 
 func init() {
 	seedCmd.Flags().StringVar(&seedVolume, "volume", "dense", "data volume: single | moderate | dense")
-	seedCmd.Flags().StringVar(&seedOnly, "only", "all", "comma list of phases to run: catalog,plm,extras,analytics,enrich (or all); 'verify' = read-only coverage")
+	seedCmd.Flags().StringVar(&seedOnly, "only", "all", "comma list of phases to run: catalog,plm,extras,analytics,enrich,accounting (or all); 'verify' = read-only coverage")
 	seedCmd.Flags().StringVar(&seedUser, "user", defaultSeedUser, "admin username to log in / bootstrap")
 	seedCmd.Flags().StringVar(&seedPassword, "password", "", "admin password (default: throwaway beta bot pw, or $BETA_SEED_PASSWORD)")
 	seedCmd.Flags().StringVar(&seedMasterYAML, "master-yaml", defaultMasterYAML, "DO app spec YAML to read AUTH_MASTER_PASSWORD from (for first-run bootstrap)")
@@ -72,7 +72,7 @@ func phaseSet(only string) map[string]bool {
 	set := map[string]bool{}
 	only = strings.ToLower(strings.TrimSpace(only))
 	if only == "" || only == "all" {
-		for _, p := range []string{"catalog", "plm", "extras", "analytics", "enrich"} {
+		for _, p := range []string{"catalog", "plm", "extras", "analytics", "enrich", "accounting"} {
 			set[p] = true
 		}
 		return set
@@ -178,6 +178,15 @@ func runSeed(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("enrich: %w", err)
 		}
 		fmt.Println("enrich: REST-seedable gaps filled (empty screens + archived/hidden/deleted tabs)")
+	}
+	if phases["accounting"] {
+		fmt.Println("\n===== PHASE: accounting =====")
+		// Self-contained (no catalog/plm deps): seeds deterministic manual journal entries + a reversal
+		// + a period-lifecycle touch, then proves the ledger reads back balanced and non-empty.
+		if _, err = s.SeedAccounting(ctx); err != nil {
+			return fmt.Errorf("accounting: %w", err)
+		}
+		fmt.Println("accounting: manual journal entries + reversal + period lifecycle seeded")
 	}
 
 	fmt.Println("\n===== COVERAGE =====")
