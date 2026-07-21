@@ -645,6 +645,13 @@ message TechCardOperation {
   // `placement` above stays the human label (PDF/legacy) and is not a join key.
   repeated string piece_line_keys = 21;
   repeated int64 piece_ids = 22; // OUTPUT: resolved FKs to the cut-pieces, in the order given
+  // bom_line_keys references the BOM lines this operation itself consumes -- the off-part materials
+  // (thread, fusing) it joins with -- by their stable line_key. REPEATED for the same reason
+  // piece_line_keys is: one operation can join several materials. Supersedes the single
+  // bom_line_key = 19, which stays for the transition and is read as the first entry when this is
+  // empty. Distinct from piece_line_keys: those are the parts joined, these are what joins them.
+  repeated string bom_line_keys = 23;
+  repeated int64 bom_item_ids = 24; // OUTPUT: resolved FKs to the BOM lines, in the order given
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
