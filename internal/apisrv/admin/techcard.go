@@ -54,26 +54,30 @@ func validateStyleNumberOverride(tc *entity.TechCardInsert) error {
 	return nil
 }
 
-// validateCategoryLeaf rejects a non-leaf category_id (one that has child categories): a
-// tech card must be filed under a leaf type, not a parent bucket (plan Q5). An unset/zero
-// category is allowed; an unknown id falls through to the FK check on write. The category
-// tree comes from the dictionary cache (the same source the product admin uses).
-func (s *Server) validateCategoryLeaf(ctx context.Context, categoryId sql.NullInt32) error {
-	if !categoryId.Valid || categoryId.Int32 <= 0 {
-		return nil
+// techCardConvertErr maps a pb -> entity conversion failure onto a gRPC status. A field-tagged
+// *entity.ValidationError becomes an InvalidArgument carrying a BadRequest FieldViolation, so the
+// admin client's applyServerFieldErrors can pin the message to the exact input that caused it
+// ("bom_items[3].name") instead of dropping a form-level banner the user has to hunt through.
+// Anything else keeps the previous plain-string InvalidArgument.
+func techCardConvertErr(err error) error {
+	var ve *entity.ValidationError
+	if errors.As(err, &ve) {
+		return apierr.Invalid(ve)
 	}
-	di, err := s.repo.Cache().GetDictionaryInfo(ctx)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't load categories for leaf check", slog.String("err", err.Error()))
-		return status.Error(codes.Internal, "can't validate category")
-	}
-	for _, c := range di.Categories {
-		if c.ParentID != nil && int32(*c.ParentID) == categoryId.Int32 {
-			return status.Error(codes.InvalidArgument, "category_id must be a leaf category (it has sub-categories)")
-		}
-	}
-	return nil
+	return status.Errorf(codes.InvalidArgument, "%v", err)
 }
+
+// The leaf-category check (plan Q5) is deliberately gone. It rejected any category_id that had
+// children, forcing every tech card to be filed under a level-3 type. That is wrong: only the TOP
+// category is conceptually required, and sub-category/type are optional refinements — a style that
+// is simply "tops" is legitimate, and so is one filed at a sub-category. The store now derives
+// top/sub/type from category_id at whatever depth it was picked (syncStyleCategoryTriple), so a
+// shallow pick produces a correct, if less specific, triple rather than an error.
+//
+// Nothing replaces it at write time: the FK on tech_card.category_id already rejects an unknown id,
+// and a category whose tree has no top-level ancestor is caught by the derivation itself. A "a
+// released style must have a top category" rule belongs on a stage transition (where style_number
+// is already gated), not on every save — a card is routinely created before its category is chosen.
 
 // CreateTechCard creates a new tech card with its nested sections.
 func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCardRequest) (*pb_admin.CreateTechCardResponse, error) {
@@ -82,10 +86,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-	if err := s.validateCategoryLeaf(ctx, tc.CategoryId); err != nil {
-		return nil, err
+		return nil, techCardConvertErr(err)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
@@ -167,10 +168,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
-	}
-	if err := s.validateCategoryLeaf(ctx, tc.CategoryId); err != nil {
-		return nil, err
+		return nil, techCardConvertErr(err)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err

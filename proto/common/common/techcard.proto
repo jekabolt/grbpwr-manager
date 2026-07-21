@@ -637,6 +637,21 @@ message TechCardOperation {
   // resolves it to bom_item_id, the real FK on read.
   string bom_line_key = 19;
   int64 bom_item_id = 20; // OUTPUT: resolved FK to the BOM line
+  // piece_line_keys references the cut-pieces this operation works on, by their stable
+  // TechCardPiece.line_key (WS4) — the same durable reference TechCardColorwayUsage.piece_line_key
+  // uses. REPEATED, unlike the usage's single key, because an assembly operation genuinely spans
+  // pieces and there is no useful bound on how many. A consumption norm, by contrast, is about
+  // exactly one piece, which is why that side stays 1:1. Empty = not tied to specific pieces.
+  // `placement` above stays the human label (PDF/legacy) and is not a join key.
+  repeated string piece_line_keys = 21;
+  repeated int64 piece_ids = 22; // OUTPUT: resolved FKs to the cut-pieces, in the order given
+  // bom_line_keys references the BOM lines this operation itself consumes -- the off-part materials
+  // (thread, fusing) it joins with -- by their stable line_key. REPEATED for the same reason
+  // piece_line_keys is: one operation can join several materials. Supersedes the single
+  // bom_line_key = 19, which stays for the transition and is read as the first entry when this is
+  // empty. Distinct from piece_line_keys: those are the parts joined, these are what joins them.
+  repeated string bom_line_keys = 23;
+  repeated int64 bom_item_ids = 24; // OUTPUT: resolved FKs to the BOM lines, in the order given
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.

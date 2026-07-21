@@ -1068,29 +1068,38 @@ func pieceBomRef(v *int32, bomItemCount int, field, pieceName string) (sql.NullI
 
 func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardBomItem, error) {
 	out := make([]entity.TechCardBomItem, 0, len(pbs))
-	for _, b := range pbs {
+	for i, b := range pbs {
 		section, ok := techCardBomSectionPbToEntity[b.Section]
 		if !ok {
-			return nil, fmt.Errorf("bom item section is required and must be valid")
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].section", i),
+				"section is required and must be valid", "", "pick a BOM section for this line")
 		}
-		if b.Name == "" {
-			return nil, fmt.Errorf("bom item name is required")
+		// A LINKED line takes its name from the material it links (resolved on read, see
+		// enrichMaterials), so the client need not send one and an empty name is not an error. Only a
+		// FREE-TEXT line -- one with no material_id -- must name itself, because nothing else can.
+		if b.Name == "" && b.MaterialId == 0 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].name", i),
+				"name is required for a line that is not linked to a material", "",
+				"type a name for this line, or link it to a material in the catalog")
 		}
+		// Field-tagged so the admin client's applyServerFieldErrors can pin the rejection to the exact
+		// BOM row and column instead of showing a form-level string.
 		for _, c := range []struct {
 			field string
 			val   string
 			max   int
 		}{
-			{"bom name", b.Name, maxVarchar255},
-			{"bom supplier", b.Supplier, maxVarchar255},
-			{"bom supplier_ref", b.SupplierRef, maxVarchar255},
-			{"bom color", b.Color, maxVarchar255},
-			{"bom composition", b.Composition, maxVarchar255},
-			{"bom spec", b.Spec, maxVarchar255},
-			{"bom unit", b.Unit, maxVarchar32},
+			{"name", b.Name, maxVarchar255},
+			{"supplier", b.Supplier, maxVarchar255},
+			{"supplier_ref", b.SupplierRef, maxVarchar255},
+			{"color", b.Color, maxVarchar255},
+			{"composition", b.Composition, maxVarchar255},
+			{"spec", b.Spec, maxVarchar255},
+			{"unit", b.Unit, maxVarchar32},
 		} {
 			if len(c.val) > c.max {
-				return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
+				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].%s", i, c.field),
+					fmt.Sprintf("must be at most %d characters", c.max), "", "shorten this value")
 			}
 		}
 		if b.Currency != "" && !IsExpenseCurrency(b.Currency) {

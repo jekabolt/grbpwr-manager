@@ -20,8 +20,12 @@ type CategorySizeSystem struct {
 }
 
 // StyleCategoryPath is the category triple a style (tech_card) carries: top/sub/type. All three are
-// nullable in the DB (a style's category is assigned via UpdateStyle, independently of and possibly
-// after its creation), so a style genuinely can have no category yet.
+// nullable in the DB and a style genuinely can have no category yet (it is not required to create
+// one). The triple is normally DERIVED from the single tech_card.category_id the tech-card UI
+// writes, by classifying that node and its ancestors by level (DeriveStyleCategoryPath); UpdateStyle
+// writes it directly on the product/legacy route and derives category_id back from it, so either
+// writer leaves the row self-consistent. A NULL sub with a SET type is a legitimate shape, not a
+// bug: `dresses` hangs its types directly off the top category with no sub-category level.
 type StyleCategoryPath struct {
 	TopCategoryID sql.NullInt32 `db:"top_category_id"`
 	SubCategoryID sql.NullInt32 `db:"sub_category_id"`
