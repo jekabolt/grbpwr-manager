@@ -721,7 +721,16 @@ type TechCardOperation struct {
 	CalloutNumber sql.NullInt32 `db:"callout_number"`
 	// Placement is the garment part this operation works on; resolves the real material
 	// via the selected colourway's usages (normalized trim+lower match). NULL = unset.
+	// It is a human LABEL, not a join key -- PieceIds below is the real reference.
 	Placement sql.NullString `db:"placement"`
+	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
+	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
+	PieceLineKeys []string `db:"-"`
+	// PieceIds are the resolved tech_card_piece FKs, held in the tech_card_operation_piece join
+	// table (0199) rather than a column: an assembly operation spans as many pieces as it joins.
+	// This is deliberately many-to-many, unlike TechCardColorwayUsage.PieceId, which is 1:1 because
+	// a consumption norm is about exactly one piece. Not persisted on the row itself (db:"-").
+	PieceIds []int `db:"-"`
 }
 
 // TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.

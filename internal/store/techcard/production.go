@@ -77,6 +77,81 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card operations: %w", err)
 	}
+	return insertTechCardOperationPieces(ctx, db, tcID, ops)
+}
+
+// insertTechCardOperationPieces writes the operation -> cut-piece links (0199). Many-to-many, unlike
+// the recipe's single usage.piece_id: an assembly operation spans as many pieces as it joins.
+//
+// It re-reads the operation ids rather than threading them out of the bulk insert, because
+// BulkInsert returns no ids and inserting one-by-one just to collect LastInsertId would cost a
+// round-trip per operation. display_order is unique within a card and is what was just written, so
+// it is a reliable join back. Cut-pieces are upserted BEFORE operations in insertTechCardChildren,
+// so their line_keys already resolve here.
+func insertTechCardOperationPieces(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+	wanted := false
+	for i := range ops {
+		if len(ops[i].PieceLineKeys) > 0 {
+			wanted = true
+			break
+		}
+	}
+	if !wanted {
+		return nil
+	}
+
+	pieceRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, db,
+		`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("load cut-pieces for operation links: %w", err)
+	}
+	pieceByKey := make(map[string]int, len(pieceRows))
+	for _, r := range pieceRows {
+		pieceByKey[r.LineKey] = r.Id
+	}
+
+	opRows, err := storeutil.QueryListNamed[struct {
+		Id           int `db:"id"`
+		DisplayOrder int `db:"display_order"`
+	}](ctx, db,
+		`SELECT id, display_order FROM tech_card_operation WHERE tech_card_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("load operations for piece links: %w", err)
+	}
+	opIDByOrder := make(map[int]int, len(opRows))
+	for _, r := range opRows {
+		opIDByOrder[r.DisplayOrder] = r.Id
+	}
+
+	links := make([]map[string]any, 0)
+	for i, o := range ops {
+		opID, ok := opIDByOrder[i]
+		if !ok {
+			return fmt.Errorf("operation %d missing after insert", i)
+		}
+		for j, key := range o.PieceLineKeys {
+			pieceID, ok := pieceByKey[key]
+			if !ok {
+				// Field-tagged rather than a bare error, so the admin client can pin it to the exact
+				// operation row instead of failing the whole card with an unattributable message.
+				return entity.NewFieldViolation(fmt.Sprintf("operations[%d].piece_line_keys[%d]", i, j),
+					fmt.Sprintf("no cut-piece %q in this style", key), "",
+					"reference an existing cut-piece by its line_key")
+			}
+			links = append(links, map[string]any{
+				"operation_id":  opID,
+				"piece_id":      pieceID,
+				"display_order": j,
+			})
+		}
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_piece", links); err != nil {
+		return fmt.Errorf("failed to insert operation piece links: %w", err)
+	}
 	return nil
 }
 
@@ -279,6 +354,49 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	opsByCard := make(map[int][]entity.TechCardOperation, len(ids))
 	for _, r := range opRows {
 		opsByCard[r.TechCardID] = append(opsByCard[r.TechCardID], r.TechCardOperation)
+	}
+
+	// Operation -> cut-piece links (0199). Read as its own pass, keyed back by (tech_card_id,
+	// display_order) — the same identity the write used — because the operation rows above carry no
+	// id. line_key travels alongside the id so the client gets the durable reference it writes with,
+	// not just the resolved FK.
+	pieceLinkRows, err := storeutil.QueryListNamed[struct {
+		TechCardID  int    `db:"tech_card_id"`
+		OpOrder     int    `db:"op_order"`
+		PieceID     int    `db:"piece_id"`
+		PieceKey    string `db:"line_key"`
+	}](ctx, s.DB, `
+		SELECT o.tech_card_id AS tech_card_id, o.display_order AS op_order,
+		       l.piece_id AS piece_id, p.line_key AS line_key
+		FROM tech_card_operation_piece l
+		JOIN tech_card_operation o ON o.id = l.operation_id
+		JOIN tech_card_piece p ON p.id = l.piece_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.display_order, l.display_order, l.id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card operation piece links: %w", err)
+	}
+	if len(pieceLinkRows) > 0 {
+		// The ORDER BY above matches the ORDER BY that built opsByCard, so position within a card is
+		// the same display_order the links key on.
+		orderIndex := make(map[int]map[int]int, len(ids))
+		for cardID, list := range opsByCard {
+			m := make(map[int]int, len(list))
+			for i := range list {
+				m[i] = i
+			}
+			orderIndex[cardID] = m
+		}
+		for _, l := range pieceLinkRows {
+			list := opsByCard[l.TechCardID]
+			idx, ok := orderIndex[l.TechCardID][l.OpOrder]
+			if !ok || idx >= len(list) {
+				continue
+			}
+			list[idx].PieceIds = append(list[idx].PieceIds, l.PieceID)
+			list[idx].PieceLineKeys = append(list[idx].PieceLineKeys, l.PieceKey)
+		}
 	}
 
 	labelRows, err := storeutil.QueryListNamed[techCardLabelRow](ctx, s.DB, `
