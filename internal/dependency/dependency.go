@@ -804,6 +804,12 @@ type (
 		// GetFrs105Accounts re-groups the ledger into FRS 105 micro-entity line items (Income Statement +
 		// SoFP) over [from, to) — a base-currency DRAFT (not GBP / entity-isolated).
 		GetFrs105Accounts(ctx context.Context, from, to time.Time) (*entity.AcctFrs105Accounts, error)
+		// GetCashFlowStatement is the indirect-method cash-flow statement over [from, to) (wave 5, §5.1):
+		// net profit + non-cash add-backs + balance-sheet deltas, reconciled against the actual cash balance.
+		GetCashFlowStatement(ctx context.Context, from, to time.Time) (*entity.AcctCashFlowStatement, error)
+		// GetFinancialHealth computes the financial-health ratio set over [from, to) (wave 5, §5.2) from the
+		// ledger (money) plus operational unit counts from metrics (labelled by source).
+		GetFinancialHealth(ctx context.Context, from, to time.Time) (*entity.AcctFinancialHealth, error)
 		// Fixed-asset register + straight-line depreciation (posts Dr 6370 / Cr 1225 per asset-month).
 		CreateFixedAsset(ctx context.Context, in entity.FixedAssetInsert) (int, error)
 		ListFixedAssets(ctx context.Context) ([]entity.FixedAsset, error)

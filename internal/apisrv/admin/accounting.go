@@ -358,6 +358,32 @@ func (s *Server) GetAcctReconciliation(ctx context.Context, req *pb_admin.GetAcc
 	return dto.ConvertAcctReconciliationToPb(*rec), nil
 }
 
+// GetCashFlowStatement returns the indirect-method cash-flow statement over [from, to) (wave 5, §5.1).
+func (s *Server) GetCashFlowStatement(ctx context.Context, req *pb_admin.GetCashFlowStatementRequest) (*pb_admin.GetCashFlowStatementResponse, error) {
+	from, to, err := dto.ParseAcctDateRange(req.GetFrom(), req.GetTo())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	cf, err := s.repo.Accounting().GetCashFlowStatement(ctx, from, to)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get cash flow statement", err)
+	}
+	return dto.ConvertAcctCashFlowStatementToPb(*cf), nil
+}
+
+// GetFinancialHealth returns the financial-health ratio set over [from, to) (wave 5, §5.2).
+func (s *Server) GetFinancialHealth(ctx context.Context, req *pb_admin.GetFinancialHealthRequest) (*pb_admin.GetFinancialHealthResponse, error) {
+	from, to, err := dto.ParseAcctDateRange(req.GetFrom(), req.GetTo())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	fh, err := s.repo.Accounting().GetFinancialHealth(ctx, from, to)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get financial health", err)
+	}
+	return dto.ConvertAcctFinancialHealthToPb(*fh), nil
+}
+
 // --- FX folding for manual amount_src lines ---
 
 // errAcctNoFxRate distinguishes "no costing FX rate for this currency" (InvalidArgument) from a

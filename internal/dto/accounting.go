@@ -711,6 +711,60 @@ func ConvertAcctEventsToPb(events []entity.AcctEvent) []*pb_admin.AcctEvent {
 }
 
 // =====================================================================================
+// Wave 5 — reporting (docs/plan-accounting-phase2/05-wave5-reporting.md). Cash Flow (indirect) and the
+// Financial Health ratio set. Money reuses pbDecimalFromDecimal; dates are the plain acctDateLayout.
+// =====================================================================================
+
+// ConvertAcctCashFlowStatementToPb converts the indirect-method cash-flow statement to protobuf.
+func ConvertAcctCashFlowStatementToPb(cf entity.AcctCashFlowStatement) *pb_admin.GetCashFlowStatementResponse {
+	return &pb_admin.GetCashFlowStatementResponse{
+		From:              cf.From.Format(acctDateLayout),
+		To:                cf.To.Format(acctDateLayout),
+		Currency:          cf.Currency,
+		Operating:         convertAcctCashFlowSectionToPb(cf.Operating),
+		Investing:         convertAcctCashFlowSectionToPb(cf.Investing),
+		Financing:         convertAcctCashFlowSectionToPb(cf.Financing),
+		NetChange:         pbDecimalFromDecimal(cf.NetChange),
+		OpeningCash:       pbDecimalFromDecimal(cf.OpeningCash),
+		ClosingCash:       pbDecimalFromDecimal(cf.ClosingCash),
+		ClosingCashActual: pbDecimalFromDecimal(cf.ClosingCashActual),
+		Check:             pbDecimalFromDecimal(cf.Check),
+		Balanced:          cf.Balanced,
+		Caveats:           cf.Caveats,
+	}
+}
+
+func convertAcctCashFlowSectionToPb(sec entity.AcctCashFlowSection) *pb_admin.AcctCashFlowSection {
+	lines := make([]*pb_admin.AcctCashFlowLine, 0, len(sec.Lines))
+	for _, l := range sec.Lines {
+		lines = append(lines, &pb_admin.AcctCashFlowLine{Label: l.Label, Amount: pbDecimalFromDecimal(l.Amount)})
+	}
+	return &pb_admin.AcctCashFlowSection{Name: sec.Name, Lines: lines, Subtotal: pbDecimalFromDecimal(sec.Subtotal)}
+}
+
+// ConvertAcctFinancialHealthToPb converts the financial-health ratio set to protobuf.
+func ConvertAcctFinancialHealthToPb(fh entity.AcctFinancialHealth) *pb_admin.GetFinancialHealthResponse {
+	rows := make([]*pb_admin.AcctFinancialHealthRow, 0, len(fh.Rows))
+	for _, r := range fh.Rows {
+		rows = append(rows, &pb_admin.AcctFinancialHealthRow{
+			Name:      r.Name,
+			Formula:   r.Formula,
+			Value:     pbDecimalFromDecimal(r.Value),
+			Benchmark: r.Benchmark,
+			Status:    r.Status,
+			Unit:      r.Unit,
+		})
+	}
+	return &pb_admin.GetFinancialHealthResponse{
+		From:     fh.From.Format(acctDateLayout),
+		To:       fh.To.Format(acctDateLayout),
+		Currency: fh.Currency,
+		Rows:     rows,
+		Caveats:  fh.Caveats,
+	}
+}
+
+// =====================================================================================
 // Wave 4 — money side (docs/plan-accounting-phase2/04-wave4-money.md). Revolut bank inbox (4.1) and the
 // AP/AR subledgers (4.4).
 // =====================================================================================
