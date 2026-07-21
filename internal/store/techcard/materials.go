@@ -634,8 +634,21 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT bi.id, bi.tech_card_id, bi.material_id, bi.section,
 		       COALESCE(NULLIF(m.name, ''), bi.name) AS name,
-		       bi.supplier, bi.supplier_ref, bi.color, bi.composition, bi.spec,
-		       bi.unit, bi.unit_price, bi.currency, bi.comment,
+		       -- Identity facts resolve from the linked catalog material, same rule as name: the
+		       -- link is the source of truth, the stored column is the fallback for a broken or
+		       -- absent link. unit matters most of the four -- it is the denominator of every
+		       -- consumption figure and multiplies into LineTotal, so a stale copy is a wrong
+		       -- NUMBER, not a cosmetic mismatch.
+		       COALESCE(NULLIF(m.supplier, ''), bi.supplier) AS supplier,
+		       COALESCE(NULLIF(m.supplier_ref, ''), bi.supplier_ref) AS supplier_ref,
+		       bi.color,
+		       COALESCE(NULLIF(m.composition, ''), bi.composition) AS composition,
+		       COALESCE(NULLIF(m.spec, ''), bi.spec) AS spec,
+		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,
+		       -- unit_price / currency deliberately NOT resolved: a cost must stay frozen at the
+		       -- point it was agreed, and the costing ladder (resolvePlanUnitPrice) already treats
+		       -- the stored value as the snapshot with the catalog as an explicit fallback.
+		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
 		       COALESCE(bi.line_key, '') AS line_key, bi.material_snapshot
 		FROM tech_card_bom_item bi
