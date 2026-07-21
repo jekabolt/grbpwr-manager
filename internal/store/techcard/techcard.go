@@ -171,6 +171,12 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card: %w", err)
 		}
+		// Derive the top/sub/type triple from category_id BEFORE the children go in:
+		// insertTechCardChildren validates the size range against the card's category, which it reads
+		// back off this row (validateTechCardSizeIDs -> loadTechCardCategoryPath).
+		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
+			return err
+		}
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
 		}
@@ -297,14 +303,28 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// [season/season_code/season_year], collection, target_gender) moved to UpdateStyle so no fact is
 		// written by two paths — a season change now goes through UpdateStyle's frozen-sibling guard
 		// instead of silently re-minting here. AddTechCard still seeds them at creation. category_id
-		// stays a PLM fact (UpdateStyle does not write it). The unused :brand/:season/... binds remain in
-		// params (sqlx.Named ignores extra keys) so techCardHeaderParams stays shared with the insert.
+		// stays a PLM fact. The unused :brand/:season/... binds remain in params (sqlx.Named ignores
+		// extra keys) so techCardHeaderParams stays shared with the insert.
+		//
+		// category_id is COALESCEd, not assigned: THE TECH-CARD WRITE NEVER UN-SETS A CATEGORY. This
+		// update is a full replace of the header, so a card whose category was never chosen through
+		// this UI — every style predating the category derivation — would otherwise have its category
+		// silently wiped by an unrelated save (a note edit, a stage change). That is the exact "the
+		// category disappears when I save" symptom this change fixes. Changing a category means picking
+		// a different one; there is deliberately no way to clear it back to none.
+		//
+		// This is load-bearing on the bind being SQL NULL, not 0: entity.TechCardInsert.CategoryId is a
+		// sql.NullInt32, and the wire's `0 = unset` is translated at the dto boundary by
+		// nullInt32FromPb (internal/dto/model.go), which maps 0 to Valid:false. If that translation
+		// ever changed to bind Valid:true/Int32:0, this COALESCE would see 0 rather than NULL, treat it
+		// as a real value and write category_id = 0 — tripping fk_tech_card_category. A dto change
+		// there must keep 0 mapping to NULL, or this needs NULLIF(:category_id, 0) instead.
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE tech_card SET
 				lock_version = lock_version + 1,
 				style_number = :style_number, style_number_source = :style_number_source, name = :name,
 				updated_by = :updated_by,
-				category_id = :category_id,
+				category_id = COALESCE(:category_id, category_id),
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_at = :approved_at, released_at = :released_at,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
@@ -318,6 +338,16 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// under us — make the WHERE guard load-bearing, not just the in-Go check.
 		if rows == 0 {
 			return entity.ErrTechCardConflict
+		}
+
+		// Re-derive the top/sub/type triple from the category_id just written, BEFORE the children are
+		// rebuilt: insertTechCardChildren validates the new size range against the card's category,
+		// which it reads back off this row (validateTechCardSizeIDs -> loadTechCardCategoryPath). Sync
+		// any later and a save that changes the category AND the sizes together would validate the new
+		// sizes against the OLD category. A no-op when category_id is unset — see the clobber rule on
+		// syncStyleCategoryTriple.
+		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
+			return err
 		}
 
 		// Capture the style's products before the full-replace so a change to the style's SKU facts
@@ -816,9 +846,13 @@ func validateTechCardSizeIDs(ctx context.Context, db dependency.DB, id int, size
 	return nil
 }
 
-// loadTechCardCategoryPath reads a tech card's CURRENT category triple. category (top/sub/type_id) is
-// written exclusively by UpdateStyle (R4/§14.7), never by Add/UpdateTechCard, so this always reflects
-// the latest assigned category regardless of which RPC is mid-flight in the same transaction.
+// loadTechCardCategoryPath reads a tech card's CURRENT category triple. Two paths write it and both
+// leave the row self-consistent, so this always reflects the latest assigned category regardless of
+// which RPC is mid-flight in the same transaction:
+//   - Add/UpdateTechCard DERIVE the triple from the card's single category_id (syncStyleCategoryTriple),
+//     which runs earlier in this same transaction — so a category change is visible here immediately.
+//   - UpdateStyle (R4/§14.7) writes the triple directly on the product/legacy route and derives
+//     category_id back from it, so the two representations cannot diverge.
 func loadTechCardCategoryPath(ctx context.Context, db dependency.DB, id int) (entity.StyleCategoryPath, error) {
 	return storeutil.QueryNamedOne[entity.StyleCategoryPath](ctx, db,
 		`SELECT top_category_id, sub_category_id, type_id FROM tech_card WHERE id = :id`,

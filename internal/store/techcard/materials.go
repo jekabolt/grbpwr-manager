@@ -615,14 +615,33 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 
 	// BOM lines per card (the article catalog).
+	//
+	// NAME PRECEDENCE: a LINKED line (material_id set) takes the catalog material's name; the stored
+	// bi.name column is only a fallback. A link means "this line IS that material", so its name is
+	// the material's, resolved here on every read rather than copied at write time -- otherwise a
+	// line keeps a stale name forever after the material is renamed, and the same material shows up
+	// under different names on different cards. A FREE-TEXT line (no material_id) has nothing to
+	// resolve from and keeps its own stored name, which is why the dto still requires one there.
+	//
+	// BEHAVIOUR CHANGE: renaming a material in the catalog now changes the displayed name on every
+	// UNRELEASED card that links it. That is the point of a link. Released cards are unaffected --
+	// tech_card_release freezes a whole proto-JSON snapshot of this enriched read model (0096), so a
+	// released spec captures the name as resolved AT RELEASE and never re-resolves.
+	//
+	// The stored column is deliberately still written and still read as the fallback: it costs no
+	// migration and it degrades gracefully if a material row is ever removed or the link is broken,
+	// leaving the last known name rather than a blank line.
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
-		SELECT id, tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec,
-		       unit, unit_price, currency, comment,
-		       fabric_width, fabric_weight_gsm, fabric_direction, wastage_percent,
-		       COALESCE(line_key, '') AS line_key, material_snapshot
-		FROM tech_card_bom_item
-		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
+		SELECT bi.id, bi.tech_card_id, bi.material_id, bi.section,
+		       COALESCE(NULLIF(m.name, ''), bi.name) AS name,
+		       bi.supplier, bi.supplier_ref, bi.color, bi.composition, bi.spec,
+		       bi.unit, bi.unit_price, bi.currency, bi.comment,
+		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
+		       COALESCE(bi.line_key, '') AS line_key, bi.material_snapshot
+		FROM tech_card_bom_item bi
+		LEFT JOIN material m ON m.id = bi.material_id
+		WHERE bi.tech_card_id IN (:ids)
+		ORDER BY bi.tech_card_id, bi.display_order, bi.id`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card bom items: %w", err)
 	}

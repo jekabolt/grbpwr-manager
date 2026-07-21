@@ -183,12 +183,23 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	pbInsert.SkuSeason = req.SkuSeason
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "can't build style clone: %v", err)
+		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
+		// is pointed at the offending line rather than at the clone attempt.
+		return nil, techCardConvertErr(err)
 	}
 	// A clone is a fresh design cycle for the new season — reset the PLM freeze so it is editable.
 	insert.ApprovalState = entity.TechCardApprovalDraft
 	newID, err := s.repo.TechCards().AddTechCard(ctx, insert)
 	if err != nil {
+		// A clone round-trips the source card's category_id and size_ids, so AddTechCard can raise the
+		// same field-tagged rejections a fresh create can (a size outside the category's size systems,
+		// a category whose tree has no top-level ancestor). Surface them as InvalidArgument with the
+		// field attached, exactly as CreateTechCard does — otherwise a bad SOURCE card turns into an
+		// opaque 500 on the clone and the operator has nothing to act on.
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, apierr.Invalid(ve)
+		}
 		if s.repo.IsErrUniqueViolation(err) {
 			return nil, status.Errorf(codes.FailedPrecondition, "a style with this style number already exists for that season")
 		}

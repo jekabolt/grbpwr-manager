@@ -31,6 +31,81 @@ var styleFieldFragments = []struct{ key, frag string }{
 	{"typeid", "type_id = :typeId"},
 }
 
+// styleCategoryIDFragment derives tech_card.category_id back from the top/sub/type triple whenever a
+// writer touches any level of that triple, taking the most specific level supplied.
+//
+// THE INVARIANT: a style's taxonomy has two representations on the row — the single category_id the
+// tech-card UI edits, and the top/sub/type triple that size-system resolution, storefront filters
+// and metrics read. EVERY writer of either representation derives the other, so whichever ran last
+// leaves the row self-consistent and the two cannot drift apart:
+//   - Add/UpdateTechCard write category_id and DERIVE the triple from it (syncStyleCategoryTriple).
+//   - UpdateStyle writes the triple and derives category_id from it — masked paths append this
+//     fragment in styleSetColumns, the unmasked path gets it via styleFieldsSet.
+//   - writeStyleFields (colourway create) and updateProduct (colourway edit) write the triple and
+//     get the derivation from styleFieldsSet.
+//
+// All three must have it. A colourway saved from a stale form re-writes the OLD triple; if that path
+// alone skipped the derivation, category_id would keep the newer tech-card value and the row would
+// be permanently inconsistent with nothing able to notice.
+//
+// The trailing `category_id` in the COALESCE is the same "never un-set a category" rule the
+// tech-card side applies: if every level of the incoming triple is unset, keep the stored
+// category_id rather than blanking it. validateStyleCategoryMask guarantees this fragment only ever
+// runs with ALL THREE levels being written, so the binds and the columns agree by construction and
+// the fallback is reached only for a wholly empty triple — which top_category_id's FK refuses
+// anyway. It is kept as a belt-and-braces guard, so the expression is correct on its own terms
+// rather than only in combination with a constraint declared somewhere else.
+//
+// Bind types make the NULLIFs work (verified against stylePatchParams): topCategoryId is a plain int
+// that is 0 when unset, so NULLIF(0, 0) is NULL; subCategoryId and typeId are sql.NullInt32 that
+// bind SQL NULL when unset, and NULLIF(NULL, 0) is likewise NULL.
+const styleCategoryIDFragment = `category_id = COALESCE(NULLIF(:typeId, 0), NULLIF(:subCategoryId, 0), NULLIF(:topCategoryId, 0), category_id)`
+
+// styleCategoryMaskKeys are the three normalized mask keys that together name ONE path through the
+// category tree. They are not independent facts and may only be masked as a set — see
+// validateStyleCategoryMask.
+var styleCategoryMaskKeys = [...]string{"topcategoryid", "subcategoryid", "typeid"}
+
+// validateStyleCategoryMask rejects a field mask naming SOME but not ALL of the category levels.
+//
+// The triple is a path through a tree, constrained by parent(type) = sub and parent(sub) = top — not
+// three independent columns. A partial mask lets a caller write a path that violates those
+// constraints, and NO derivation can repair it, because the levels that would have to change are
+// exactly the ones the mask excludes from the write. Concretely: a style at
+// {top tops, sub tshirts, type crop} re-pointed to sub `shirts` under a mask naming only
+// subCategoryId leaves type `crop` in place — `crop` is a child of `tshirts`, not of `shirts`, so the
+// row now describes a path that does not exist in the tree. Whatever category_id we then derive is
+// wrong in one direction or the other, and the next UpdateTechCard re-derives the triple from it and
+// silently reverts the edit.
+//
+// So this is refused loudly instead. Blast radius is nil: the admin client's category mask paths are
+// dead code and internal/betaseed sends no mask at all, so every live caller either masks no category
+// level or does a full replace. A caller that genuinely wants to move one level must send all three,
+// which forces it to state the resulting path explicitly — or go through the tech card, which edits
+// category_id and derives the whole triple from it.
+func validateStyleCategoryMask(fields []string) error {
+	if len(fields) == 0 {
+		return nil // full replace: every level is written, so the path is stated in full
+	}
+	want := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		want[normalizeStyleField(f)] = true
+	}
+	named := make([]string, 0, len(styleCategoryMaskKeys))
+	for _, k := range styleCategoryMaskKeys {
+		if want[k] {
+			named = append(named, k)
+		}
+	}
+	if len(named) == 0 || len(named) == len(styleCategoryMaskKeys) {
+		return nil
+	}
+	return entity.NewFieldViolation("update_mask",
+		fmt.Sprintf("partial category mask (%s)", strings.Join(named, ", ")), "",
+		"a style's top/sub/type categories are one path through the category tree and must be updated together; "+
+			"name all three in the mask, or edit the category on the tech card instead")
+}
+
 // normalizeStyleField folds a field-mask path (snake_case from canonical FieldMask, or camelCase as the
 // admin client sends it) to the lowercase, underscore-free key used in styleFieldFragments — so
 // "target_gender", "targetGender" and "targetgender" all match.
@@ -45,27 +120,42 @@ func normalizeStyleField(p string) string {
 // caller still bumps the lock, so a mask naming only unknown fields is a touch, not a silent full write.
 func styleSetColumns(fields []string) (columns string, seasonWritten bool) {
 	if len(fields) == 0 {
+		// Legacy full-replace: the patch carries the whole triple, and styleFieldsSet already ends
+		// with styleCategoryIDFragment, so category_id is derived here too. Do NOT re-append it —
+		// that would assign the same column twice in one SET.
 		return styleFieldsSet, true
 	}
 	want := make(map[string]bool, len(fields))
 	for _, f := range fields {
 		want[normalizeStyleField(f)] = true
 	}
-	frags := make([]string, 0, len(styleFieldFragments))
+	frags := make([]string, 0, len(styleFieldFragments)+1)
+	categoryWritten := false
 	for _, o := range styleFieldFragments {
 		if want[o.key] {
 			frags = append(frags, o.frag)
-			if o.key == "season" {
+			switch o.key {
+			case "season":
 				seasonWritten = true
+			case "topcategoryid", "subcategoryid", "typeid":
+				categoryWritten = true
 			}
 		}
+	}
+	// Emitted ONCE if any level of the triple is being written — not per field, or the same column
+	// would be assigned three times in one SET. A mask that touches no category level (a fit-only or
+	// model-wears-only save) leaves category_id alone entirely.
+	if categoryWritten {
+		frags = append(frags, styleCategoryIDFragment)
 	}
 	return strings.Join(frags, ", "), seasonWritten
 }
 
 // stylePatchParams maps a StylePatch onto the shared styleFieldsSet SQL bind names — the same set the
 // legacy writeStyleFields wrote, now owned solely by UpdateStyle (R4/§14.7). season_year is preserved
-// (COALESCE in styleFieldsSet); category_id stays a PLM/UpdateTechCard fact and is not written here.
+// (COALESCE in styleFieldsSet). category_id is not a member of the patch, but it IS written whenever
+// a category level is — derived from the triple by styleCategoryIDFragment, which binds these same
+// topCategoryId/subCategoryId/typeId names.
 func stylePatchParams(p entity.StylePatch) map[string]any {
 	return map[string]any{
 		"brand":              p.Brand,
@@ -93,6 +183,12 @@ func stylePatchParams(p entity.StylePatch) map[string]any {
 // facts (BOM/POM/ops/lifecycle) remain UpdateTechCard's; no fact is written by both. Returns the new
 // shared lock_version.
 func (s *Store) UpdateStyle(ctx context.Context, styleID, expectedLockVersion int, patch entity.StylePatch, fields []string) (int, error) {
+	// The category levels are one tree path and may only be masked as a set; a partial category mask is
+	// unsatisfiable rather than merely unsupported (see validateStyleCategoryMask). Checked before the
+	// tx opens — it is a pure statement about the request.
+	if err := validateStyleCategoryMask(fields); err != nil {
+		return 0, err
+	}
 	// Honor the field mask: only the named facts are written, the rest keep their stored value (nil/empty
 	// ⇒ legacy full-replace). This lets a partial editor — the tech card's fit/composition/care, the
 	// colourway card's model-wears — save just what it owns without clobbering facts owned elsewhere.

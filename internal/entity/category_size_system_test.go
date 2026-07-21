@@ -184,3 +184,60 @@ func TestStyleCategoryPath_MostSpecificID(t *testing.T) {
 		})
 	}
 }
+
+// The `dresses` shape: level-3 types hang DIRECTLY off the level-1 top category, so a dress style
+// resolves with a SET type and a NULL sub-category (0001_initial_setup.sql, "Dresses types (no
+// sub-category)"). That combination is only produced once tech-card writes derive the triple from
+// category_id, so pin here that resolution handles it -- the sub-category step must be skipped, not
+// treated as an unset category, and the outcome must never degrade to Unrestricted.
+const (
+	catDresses  = 4   // top, has a grid
+	catMiniDres = 400 // type, child of catDresses directly -- no sub-category between them
+	catMeshDres = 401 // type, child of catDresses, deliberately has no rule of its own
+)
+
+func dressRules() []CategorySizeSystem {
+	return []CategorySizeSystem{
+		{ID: 10, CategoryID: validID(catDresses), SkuSystem: SizeSKUSystemApparel},
+		{ID: 11, TypeID: validID(catMiniDres), SkuSystem: SizeSKUSystemCompositeTA},
+	}
+}
+
+func TestResolveSizeSystemPolicy_DressTypeWithNullSub(t *testing.T) {
+	// A type-level rule wins outright even though the sub-category step in between is NULL.
+	path := StyleCategoryPath{TopCategoryID: validID(catDresses), TypeID: validID(catMiniDres)}
+	policy := ResolveSizeSystemPolicy(path, dressRules())
+	if policy.Unrestricted || policy.OSFallback {
+		t.Fatalf("expected a systems policy for a dress type, got %+v", policy)
+	}
+	if !policy.Systems[SizeSKUSystemCompositeTA] {
+		t.Errorf("expected the type rule to win, got %+v", policy.Systems)
+	}
+	if policy.Systems[SizeSKUSystemApparel] {
+		t.Errorf("the top rule must not leak in when a type rule matched, got %+v", policy.Systems)
+	}
+}
+
+func TestResolveSizeSystemPolicy_DressTypeFallsThroughNullSubToTop(t *testing.T) {
+	// No type rule for this dress type: resolution must step OVER the NULL sub-category and land on
+	// the top-category rule rather than stopping or falling back to OS.
+	path := StyleCategoryPath{TopCategoryID: validID(catDresses), TypeID: validID(catMeshDres)}
+	policy := ResolveSizeSystemPolicy(path, dressRules())
+	if policy.Unrestricted {
+		t.Fatalf("a dress with a set top category must never be Unrestricted, got %+v", policy)
+	}
+	if policy.OSFallback {
+		t.Fatalf("expected the top-category rule to match, got OS fallback: %+v", policy)
+	}
+	if !policy.Systems[SizeSKUSystemApparel] {
+		t.Errorf("expected apparel from the dresses top rule, got %+v", policy.Systems)
+	}
+}
+
+func TestStyleCategoryPath_MostSpecificID_DressTypeWithNullSub(t *testing.T) {
+	path := StyleCategoryPath{TopCategoryID: validID(catDresses), TypeID: validID(catMiniDres)}
+	id, ok := path.MostSpecificID()
+	if !ok || id != catMiniDres {
+		t.Errorf("MostSpecificID() = (%d, %v), want (%d, true) — the type must label a dress even with a NULL sub", id, ok, catMiniDres)
+	}
+}

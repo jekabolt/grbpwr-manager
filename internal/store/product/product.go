@@ -307,6 +307,20 @@ func styleFieldParams(b entity.ColorwayBodyInsert) map[string]any {
 	}
 }
 
+// styleFieldsSet is the full-replace SET clause for a style's catalogue facts, shared by all three
+// writers of those facts: writeStyleFields (colourway create), updateProduct (colourway edit) and
+// UpdateStyle's unmasked path (styleSetColumns).
+//
+// It ends with styleCategoryIDFragment so category_id is re-derived from the top/sub/type triple on
+// every one of those paths. Without it the colourway paths would write the triple while leaving
+// category_id at whatever the tech card last set, and the two representations of a style's taxonomy
+// would drift apart permanently: a colourway card saved from a stale form re-writes the OLD triple
+// over a category the tech card has since changed, and nothing on either side can detect it. The
+// derivation must therefore live with the SET clause, not with any one caller.
+//
+// Note styleFieldParams binds the same topCategoryId/subCategoryId/typeId names from
+// entity.ColorwayBodyInsert, whose field types match entity.StylePatch exactly (TopCategoryId is a
+// plain int, sub/type are sql.NullInt32), so the fragment's NULLIF semantics hold identically here.
 const styleFieldsSet = `
 	brand = :brand,
 	season_code = :seasonCode,
@@ -321,7 +335,8 @@ const styleFieldsSet = `
 	model_wears_size_id = :modelWearsSizeId,
 	top_category_id = :topCategoryId,
 	sub_category_id = :subCategoryId,
-	type_id = :typeId`
+	type_id = :typeId,
+	` + styleCategoryIDFragment
 
 func writeStyleFields(ctx context.Context, db dependency.DB, styleId int, b entity.ColorwayBodyInsert) error {
 	params := styleFieldParams(b)

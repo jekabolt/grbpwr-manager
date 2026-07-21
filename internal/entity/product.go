@@ -240,7 +240,10 @@ type ColorwayBody struct {
 
 // StylePatch is the set of catalogue-style facts written ONLY by UpdateStyle (R4/§14.7): the garment
 // facts invariant across a style's colourways. It mirrors the style-owned subset of ColorwayBodyInsert
-// and drives the shared styleFieldsSet SQL. category_id stays a PLM/UpdateTechCard fact and is not here.
+// and drives the shared styleFieldsSet SQL. category_id is deliberately not a field here — it is a
+// PLM/UpdateTechCard fact — but writing any of TopCategoryId/SubCategoryId/TypeId re-derives it from
+// them, so the row's two representations of a style's taxonomy stay consistent whichever path wrote
+// last (see styleCategoryIDFragment in internal/store/product/style.go).
 type StylePatch struct {
 	Brand              string
 	Season             SeasonEnum
