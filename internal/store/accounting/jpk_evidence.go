@@ -21,6 +21,12 @@ func (s *Store) VatSalesEvidence(ctx context.Context, month time.Time) ([]entity
 	from := firstOfMonthUTC(month)
 	to := from.AddDate(0, 1, 0)
 
+	// Wave 2 delivered recognition — post-cutover the tax point stays at payment, so the register reads
+	// order_prepayment (VAT on 2070, net base on 2090); order_delivered_sale is excluded (its revenue is
+	// a later period). Consistent with GetVatReturnPL.
+	// IMPORTANT: keep the ':' character out of the SQL string below (including any '--' comment) — sqlx's
+	// named-param scanner does not skip SQL comments and reads a stray ':' as an empty bind name, failing
+	// the whole query with "could not find name  in map". Keep such notes in Go // comments.
 	rows, err := storeutil.QueryListNamed[entity.AcctVatSalesRow](ctx, s.DB, `
 		SELECT co.uuid AS uuid,
 		       co.placed AS placed,
@@ -34,9 +40,6 @@ func (s *Store) VatSalesEvidence(ctx context.Context, month time.Time) ([]entity
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account a ON a.id = l.account_id
 		JOIN customer_order co ON `+orderKeyMatch+`
-		-- Wave 2 (delivered recognition): post-cutover the tax point stays at payment, so the register
-		-- reads order_prepayment (VAT on 2070, net base on 2090); order_delivered_sale is excluded (its
-		-- revenue is a later period). Consistent with GetVatReturnPL.
 		WHERE e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
 		  AND co.vat_regime IN ('pl_domestic','wdt','export')

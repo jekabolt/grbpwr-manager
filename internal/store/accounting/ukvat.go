@@ -20,6 +20,11 @@ func (s *Store) GetUkVatReturn(ctx context.Context, quarterStart time.Time) (*en
 	params := map[string]any{"from": from.Format(dateLayout), "to": to.Format(dateLayout)}
 
 	// Sales side: output VAT (2070) + net revenue, for uk_stock_domestic orders.
+	// Wave 2 delivered recognition — a post-cutover UK-origin Stripe order posts VAT on 2070 and its
+	// net base on 2090 at order_prepayment (tax point is payment); order_delivered_sale is excluded.
+	// IMPORTANT: keep the ':' character out of the SQL string below (including in any '--' comment) —
+	// sqlx's named-param scanner does not skip SQL comments and reads a stray ':' as an empty bind name,
+	// which fails the whole query with "could not find name  in map". Keep such notes in Go // comments.
 	sale, err := storeutil.QueryNamedOne[struct {
 		Vat decimal.Decimal `db:"vat"`
 		Net decimal.Decimal `db:"net"`
@@ -30,8 +35,6 @@ func (s *Store) GetUkVatReturn(ctx context.Context, quarterStart time.Time) (*en
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account a ON a.id = l.account_id
 		JOIN customer_order co ON `+orderKeyMatch+`
-		-- Wave 2 (delivered recognition): a post-cutover UK-origin Stripe order posts VAT on 2070 and its
-		-- net base on 2090 at order_prepayment (tax point = payment); order_delivered_sale is excluded.
 		WHERE e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
 		  AND co.vat_regime = 'uk_stock_domestic'
