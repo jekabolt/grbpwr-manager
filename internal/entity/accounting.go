@@ -1048,3 +1048,71 @@ type AcctReceivableRow struct {
 	Received decimal.Decimal `db:"received"`
 	Balance  decimal.Decimal `db:"-"`
 }
+
+// =====================================================================================
+// Wave 5 — reporting (docs/plan-accounting-phase2/05-wave5-reporting.md §5.1/§5.2). Two
+// READ-ONLY derived reports over the EUR ledger: the indirect-method Cash Flow statement and
+// the Financial Health ratio set. Both are pure derivations of ledger balances (money is
+// ledger-first); the ratio report additionally borrows operational UNIT counts from metrics
+// (labelled by source). Computed by the pure helpers in internal/accounting (unit-tested), so
+// these are the return contracts only.
+// =====================================================================================
+
+// AcctCashFlowLine is one line of the cash-flow statement: a label and its SIGNED cash impact — a
+// source of cash is positive, a use of cash negative.
+type AcctCashFlowLine struct {
+	Label  string
+	Amount decimal.Decimal
+}
+
+// AcctCashFlowSection groups cash-flow lines (operating / investing / financing) with the section's
+// net cash subtotal (Σ of its line amounts).
+type AcctCashFlowSection struct {
+	Name     string // operating | investing | financing
+	Lines    []AcctCashFlowLine
+	Subtotal decimal.Decimal
+}
+
+// AcctCashFlowStatement is GetCashFlowStatement's result: the indirect-method statement over [From, To).
+// Net profit for the period is add-backed with non-cash depreciation and adjusted by the balance-sheet
+// working-capital / investing / financing deltas. Check is the trust panel (like the Balance Sheet's
+// BalanceCheck): ClosingCashActual − ClosingCash, zero when every non-cash account is bucketed and the
+// depreciation add-back matches its 1225 contra movement.
+type AcctCashFlowStatement struct {
+	From              time.Time
+	To                time.Time
+	Currency          string
+	Operating         AcctCashFlowSection
+	Investing         AcctCashFlowSection
+	Financing         AcctCashFlowSection
+	NetChange         decimal.Decimal // Operating + Investing + Financing subtotals
+	OpeningCash       decimal.Decimal // 1010+1030(+1050) as of From
+	ClosingCash       decimal.Decimal // OpeningCash + NetChange (derived)
+	ClosingCashActual decimal.Decimal // actual 1010+1030(+1050) balance as of To
+	Check             decimal.Decimal // ClosingCashActual − ClosingCash (0 = reconciled)
+	Balanced          bool            // Check == 0
+	Caveats           []string
+}
+
+// AcctFinancialHealthRow is one ratio row of the Financial Health report: its name, the human-readable
+// formula, the computed value, the owner's benchmark string, a status (ok | warn | na | track) and a
+// display unit ("%", "x", "days", the base currency, or ""). A divide-by-zero yields a zero value with
+// status "na" (never NaN/panic); "track" rows carry no pass/fail.
+type AcctFinancialHealthRow struct {
+	Name      string
+	Formula   string
+	Value     decimal.Decimal
+	Benchmark string
+	Status    string
+	Unit      string
+}
+
+// AcctFinancialHealth is GetFinancialHealth's result: the whole ratio set over [From, To) plus caveats
+// (e.g. that unit counts come from operational metrics, not the ledger).
+type AcctFinancialHealth struct {
+	From     time.Time
+	To       time.Time
+	Currency string
+	Rows     []AcctFinancialHealthRow
+	Caveats  []string
+}

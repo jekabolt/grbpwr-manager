@@ -1808,6 +1808,20 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/accounting/reports/frs105"};
   }
 
+  // GetCashFlowStatement returns the indirect-method cash-flow statement over [from, to) (exclusive):
+  // net profit + depreciation add-back + balance-sheet working-capital / investing / financing deltas,
+  // with a Check that reconciles the derived closing cash to the actual 1010/1030 balance.
+  rpc GetCashFlowStatement(GetCashFlowStatementRequest) returns (GetCashFlowStatementResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/cash-flow"};
+  }
+
+  // GetFinancialHealth returns the financial-health ratio set over [from, to) (exclusive): each row a
+  // {name, formula, value, benchmark, status} tuple. Money is ledger-derived; unit counts come from
+  // operational metrics (labelled in caveats).
+  rpc GetFinancialHealth(GetFinancialHealthRequest) returns (GetFinancialHealthResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/financial-health"};
+  }
+
   // --- wave 4: Revolut bank inbox (docs/plan-accounting-phase2/04-wave4-money.md §4.1) ---
 
   // ImportBankCsv parses a bank CSV export (Revolut) into the inbox, deduplicating on the bank
@@ -6614,6 +6628,70 @@ message GetFrs105AccountsResponse {
   google.type.Decimal net_assets = 18;
   google.type.Decimal capital_and_reserves = 19;
   repeated string caveats = 20;
+}
+
+// --- wave 5: cash flow + financial health (docs/plan-accounting-phase2/05-wave5-reporting.md) ---
+
+message GetCashFlowStatementRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+}
+
+// AcctCashFlowLine is one cash-flow line: a label and its SIGNED cash impact (source positive, use
+// negative).
+message AcctCashFlowLine {
+  string label = 1;
+  google.type.Decimal amount = 2;
+}
+
+// AcctCashFlowSection groups cash-flow lines (operating | investing | financing) with the section subtotal.
+message AcctCashFlowSection {
+  string name = 1;
+  repeated AcctCashFlowLine lines = 2;
+  google.type.Decimal subtotal = 3;
+}
+
+// GetCashFlowStatementResponse is the indirect-method statement over [from, to). closing_cash is derived
+// (opening_cash + net_change); closing_cash_actual is the real cash-account balance as at `to`; check =
+// closing_cash_actual − closing_cash (0 when balanced, the trust panel).
+message GetCashFlowStatementResponse {
+  string from = 1;
+  string to = 2;
+  string currency = 3;
+  AcctCashFlowSection operating = 4;
+  AcctCashFlowSection investing = 5;
+  AcctCashFlowSection financing = 6;
+  google.type.Decimal net_change = 7;
+  google.type.Decimal opening_cash = 8;
+  google.type.Decimal closing_cash = 9;
+  google.type.Decimal closing_cash_actual = 10;
+  google.type.Decimal check = 11;
+  bool balanced = 12;
+  repeated string caveats = 13;
+}
+
+message GetFinancialHealthRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+}
+
+// AcctFinancialHealthRow is one ratio row: its value, the owner's benchmark string, a status
+// (ok | warn | na | track) and a display unit ("%", "x", "days", the base currency, or "").
+message AcctFinancialHealthRow {
+  string name = 1;
+  string formula = 2;
+  google.type.Decimal value = 3;
+  string benchmark = 4;
+  string status = 5;
+  string unit = 6;
+}
+
+message GetFinancialHealthResponse {
+  string from = 1;
+  string to = 2;
+  string currency = 3;
+  repeated AcctFinancialHealthRow rows = 4;
+  repeated string caveats = 5;
 }
 
 // FixedAsset is one capitalised asset, depreciated straight-line over useful_life_months from acquired_on.

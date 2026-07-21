@@ -428,6 +428,8 @@ var methodRequirements = map[string]Requirement{
 	"ExportOssReturn":             rd(SectionAccounting),
 	"GetUkVatReturn":              rd(SectionAccounting),
 	"GetFrs105Accounts":           rd(SectionAccounting),
+	"GetCashFlowStatement":        rd(SectionAccounting),
+	"GetFinancialHealth":          rd(SectionAccounting),
 
 	// Wave 4 — money side: Revolut bank inbox (4.1) + AP/AR subledgers (4.4).
 	"ImportBankCsv":  wr(SectionAccounting),
