@@ -2,6 +2,7 @@ package techcard
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -77,7 +78,68 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card operations: %w", err)
 	}
-	return insertTechCardOperationPieces(ctx, db, tcID, ops)
+	if err := insertTechCardOperationPieces(ctx, db, tcID, ops); err != nil {
+		return err
+	}
+	return insertTechCardOperationBoms(ctx, db, tcID, ops, bomRes)
+}
+
+// insertTechCardOperationBoms writes the operation -> BOM-line links (0200): the off-part materials
+// an operation consumes. Many-to-many, mirroring the piece links -- one operation can join several
+// materials. Operation ids are re-read by display_order for the same reason as there.
+func insertTechCardOperationBoms(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation, bomRes bomResolver) error {
+	wanted := false
+	for i := range ops {
+		if len(ops[i].BomLineKeys) > 0 {
+			wanted = true
+			break
+		}
+	}
+	if !wanted {
+		return nil
+	}
+	opRows, err := storeutil.QueryListNamed[struct {
+		Id           int `db:"id"`
+		DisplayOrder int `db:"display_order"`
+	}](ctx, db,
+		`SELECT id, display_order FROM tech_card_operation WHERE tech_card_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("load operations for bom links: %w", err)
+	}
+	opIDByOrder := make(map[int]int, len(opRows))
+	for _, r := range opRows {
+		opIDByOrder[r.DisplayOrder] = r.Id
+	}
+	links := make([]map[string]any, 0)
+	for i, o := range ops {
+		opID, ok := opIDByOrder[i]
+		if !ok {
+			return fmt.Errorf("operation %d missing after insert", i)
+		}
+		for j, key := range o.BomLineKeys {
+			bomID, err := resolveBomRef(bomRes, key, sql.NullInt32{},
+				fmt.Sprintf("operations[%d].bom_line_keys[%d]", i, j))
+			if err != nil {
+				return err
+			}
+			if bomID == nil {
+				continue
+			}
+			links = append(links, map[string]any{
+				"operation_id":  opID,
+				"bom_item_id":   bomID,
+				"display_order": j,
+			})
+		}
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_bom", links); err != nil {
+		return fmt.Errorf("failed to insert operation bom links: %w", err)
+	}
+	return nil
 }
 
 // insertTechCardOperationPieces writes the operation -> cut-piece links (0199). Many-to-many, unlike
@@ -397,6 +459,33 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 			list[idx].PieceIds = append(list[idx].PieceIds, l.PieceID)
 			list[idx].PieceLineKeys = append(list[idx].PieceLineKeys, l.PieceKey)
 		}
+	}
+
+	// Operation -> BOM-line links (0200), same keying as the piece links above.
+	bomLinkRows, err := storeutil.QueryListNamed[struct {
+		TechCardID int    `db:"tech_card_id"`
+		OpOrder    int    `db:"op_order"`
+		BomItemID  int    `db:"bom_item_id"`
+		BomKey     string `db:"line_key"`
+	}](ctx, s.DB, `
+		SELECT o.tech_card_id AS tech_card_id, o.display_order AS op_order,
+		       l.bom_item_id AS bom_item_id, b.line_key AS line_key
+		FROM tech_card_operation_bom l
+		JOIN tech_card_operation o ON o.id = l.operation_id
+		JOIN tech_card_bom_item b ON b.id = l.bom_item_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.display_order, l.display_order, l.id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card operation bom links: %w", err)
+	}
+	for _, l := range bomLinkRows {
+		list := opsByCard[l.TechCardID]
+		if l.OpOrder >= len(list) {
+			continue
+		}
+		list[l.OpOrder].BomIds = append(list[l.OpOrder].BomIds, l.BomItemID)
+		list[l.OpOrder].BomLineKeys = append(list[l.OpOrder].BomLineKeys, l.BomKey)
 	}
 
 	labelRows, err := storeutil.QueryListNamed[techCardLabelRow](ctx, s.DB, `

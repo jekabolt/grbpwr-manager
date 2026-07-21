@@ -731,6 +731,12 @@ type TechCardOperation struct {
 	// This is deliberately many-to-many, unlike TechCardColorwayUsage.PieceId, which is 1:1 because
 	// a consumption norm is about exactly one piece. Not persisted on the row itself (db:"-").
 	PieceIds []int `db:"-"`
+	// BomLineKeys / BomIds are the off-part materials this operation consumes (thread, fusing), held
+	// in tech_card_operation_bom (0200). Many-to-many for the same reason the piece links are: one
+	// operation can join several materials. The legacy single BomLineKey/BomItemId above stays as
+	// the first entry during the transition. Not persisted on the row itself (db:"-").
+	BomLineKeys []string `db:"-"`
+	BomIds      []int    `db:"-"`
 }
 
 // TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.

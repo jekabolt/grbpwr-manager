@@ -225,6 +225,19 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			seenPieceKey[k] = true
 			pieceLineKeys = append(pieceLineKeys, k)
 		}
+		// bom_line_keys (repeated): the materials this operation consumes. Falls back to the legacy
+		// single bom_line_key so an older client keeps working. Blanks dropped, duplicates collapsed
+		// -- UNIQUE(operation_id, bom_item_id) would turn a repeat into a 500.
+		var bomLineKeys []string
+		seenBomKey := make(map[string]bool, len(o.BomLineKeys))
+		for _, k := range append(append([]string{}, o.BomLineKeys...), o.BomLineKey) {
+			k = strings.TrimSpace(k)
+			if k == "" || seenBomKey[k] {
+				continue
+			}
+			seenBomKey[k] = true
+			bomLineKeys = append(bomLineKeys, k)
+		}
 		out = append(out, entity.TechCardOperation{
 			// operation_number is server-assigned = (position+1)*10 («оп. 10, 20, …»);
 			// any client value is ignored (plan §4). Reorder shifts numbers (Q6).
@@ -248,6 +261,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			CalloutNumber:   calloutNumber,
 			Placement:       normalizedPlacementNull(o.Placement),
 			PieceLineKeys:   pieceLineKeys,
+			BomLineKeys:     bomLineKeys,
 		})
 	}
 	return out, nil
@@ -409,6 +423,10 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 		for _, id := range o.PieceIds {
 			pieceIds = append(pieceIds, int64(id))
 		}
+		bomIds := make([]int64, 0, len(o.BomIds))
+		for _, id := range o.BomIds {
+			bomIds = append(bomIds, int64(id))
+		}
 		out = append(out, &pb_common.TechCardOperation{
 			OperationNumber: pbInt32FromNull(o.OperationNumber),
 			Node:            o.Node,
@@ -431,6 +449,8 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Placement:       pbStringFromNull(o.Placement),
 			PieceLineKeys:   o.PieceLineKeys,
 			PieceIds:        pieceIds,
+			BomLineKeys:     o.BomLineKeys,
+			BomItemIds:      bomIds,
 		})
 	}
 	return out
