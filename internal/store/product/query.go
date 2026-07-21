@@ -291,7 +291,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Color
 
 	query := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
@@ -363,7 +363,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 
 	query := `
 	SELECT
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
@@ -434,7 +434,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 
 	query := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
@@ -505,7 +505,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 
 	query := fmt.Sprintf(`
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
@@ -666,7 +666,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 
 	baseQuery := `
 	SELECT 
-		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, sty.brand, COALESCE(p.sku, '') AS sku,
+		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, p.color_hex, p.country_of_origin, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, sty.target_gender,
