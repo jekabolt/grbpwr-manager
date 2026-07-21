@@ -40,6 +40,7 @@ Credentials: logs in as `beta-seed-bot`; on first run the account is bootstrappe
 | plm | `plm.go` | one tech card carried through the full PLM flow A–L: sketches/pieces, materials (4 typed classes) + BOM, 2 colourways + recipe, 2 sample/fitting rounds, spec release, costing (estimate→actual), label/packaging assembly, a production run (sets `cost_price`), publish, reserve→ship→return→release, negative/optimistic-lock checks. |
 | extras | `extras.go` | the otherwise-empty admin sections: promo codes, showroom models, tasks/kanban, admin accounts, colours/tags, platform config (carriers, payment fees, hero colour, settings), members (via storefront newsletter) + tier/status/hacker-invites, support tickets, order reviews. |
 | analytics | `analytics.go` | VAT/FX/opex/employees/channel-spend/inventory-targets/alert-settings, then ~120 net-revenue orders (custom orders born Confirmed, progressed through shipped/delivered/partial-refund across 12 countries, some on the PLM cost-priced style), plus fulfillment-board processing. Then asserts revenue > 0 and every metrics section is populated. |
+| accounting | `accounting.go` | the double-entry ledger: a Volume-scaled spread of **balanced manual journal entries** across revenue + opex + asset/liability (so Trial Balance, P&L and Balance Sheet all show rows), one **reversal** (reversal-not-edit), and a **period-lifecycle** touch. Self-contained (no catalog/plm deps → runs standalone via `--only=accounting`). Then asserts the ledger reads back **balanced** (Σdebit == Σcredit), non-empty and reconciliation-queryable. Chart of accounts is not seeded — the 34 system accounts come from migration `0190`. |
 
 Every run ends with a `PrintCoverage` read-back table.
 
@@ -62,6 +63,15 @@ Every run ends with a `PrintCoverage` read-back table.
 - **GA4/BigQuery panels** (funnel, web-vitals, device/session, campaign attribution, notify-me,
   OOS-impact) stay empty — they are fed by the `ga4sync` worker from real storefront traffic,
   which beta does not have. Marketing spend/ROAS still populate from operator-entered channel spend.
+- **Accounting posts only MANUAL journal entries.** The admin `CreateJournalEntry` RPC forces
+  `source_type=manual`, so `order_sale` / `order_refund` / `opex_month` / `material_*` / `production_receive`
+  entries cannot be fabricated over REST — those are the `acctposting` worker's job, derived from the
+  operational facts the other phases already seed (orders, opex, production runs). Given
+  `ACCOUNTING_ENABLED=true` on beta, the worker posts them asynchronously (on its ticker, ~1 worker
+  interval), so they appear alongside the manual entries a short while after a full seed — not
+  deterministically within one run. **Period close** also soft-skips on beta: `ACCOUNTING_START_DATE`
+  means there is no fully-past in-window month to reconcile-and-close yet, so `CloseAcctPeriod` returns
+  `closed=false` (not an error) and the phase leaves the current period open.
 
 ## Beta data issues surfaced while seeding (not seeder bugs)
 

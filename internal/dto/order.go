@@ -4,6 +4,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -14,6 +15,34 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// buyerVatIDPattern is an approximate EU/UK VAT identifier format check for
+// CreateCustomOrderRequest.buyer_vat_id (phase 2, wave 1): a 2-letter country prefix followed by
+// 8 to 12 alphanumeric characters. VIES verification is explicitly out of scope (07 §7.4.3) — this
+// is a free-form field with format validation only, to catch typos, not to prove the id is real.
+//
+// The length range (8..12 after the prefix) mirrors plan §1.3 ("префикс страны + 8–12 знаков") and
+// real-world EU VAT id lengths (DE 9 digits, PL/IT 10-11, FR 11, NL 12 incl. a literal "B..."
+// suffix). Input is upper-cased before matching, so the pattern only needs [A-Z0-9].
+var buyerVatIDPattern = regexp.MustCompile(`^[A-Z]{2}[A-Z0-9]{8,12}$`)
+
+// convertBuyerVatID validates and normalises CreateCustomOrderRequest.buyer_vat_id: empty is valid
+// (a B2C custom order — BuyerVatID stays NULL); non-empty must match buyerVatIDPattern once
+// whitespace-stripped and upper-cased, else InvalidArgument (surfaced by the caller). Its presence is
+// what makes an order B2B downstream (wdt / 4310 wholesale revenue — see entity.OrderNew.BuyerVatID).
+//
+// D-6: ALL whitespace is removed (not merely trimmed) before matching, so an operator pasting an id
+// with internal spaces — "DE 123 456 789" — normalises to "DE123456789" instead of being rejected.
+func convertBuyerVatID(raw string) (sql.NullString, error) {
+	s := strings.ToUpper(strings.Join(strings.Fields(raw), ""))
+	if s == "" {
+		return sql.NullString{}, nil
+	}
+	if !buyerVatIDPattern.MatchString(s) {
+		return sql.NullString{}, fmt.Errorf("invalid buyer_vat_id %q: expected a 2-letter country prefix followed by 8-12 alphanumeric characters", raw)
+	}
+	return sql.NullString{String: s, Valid: true}, nil
+}
 
 // ConvertPbOrderItemToEntity converts a protobuf OrderItem to an entity OrderItem
 func ConvertPbOrderItemToEntity(pbOrderItem *pb_common.OrderItem) (entity.OrderItemInsert, error) {
@@ -88,6 +117,10 @@ func ConvertCreateCustomOrderRequestToEntity(req *pb_admin.CreateCustomOrderRequ
 		}
 		items = append(items, item)
 	}
+	buyerVatID, err := convertBuyerVatID(req.BuyerVatId)
+	if err != nil {
+		return nil, err
+	}
 	orderNew := &entity.OrderNew{
 		Items:             items,
 		ShippingAddress:   convertAddress(req.ShippingAddress),
@@ -96,6 +129,7 @@ func ConvertCreateCustomOrderRequestToEntity(req *pb_admin.CreateCustomOrderRequ
 		PaymentMethod:     ConvertPbPaymentMethodToEntity(req.PaymentMethod),
 		ShipmentCarrierId: int(req.ShipmentCarrierId),
 		Currency:          req.Currency,
+		BuyerVatID:        buyerVatID,
 	}
 	if req.ShipmentCost != nil && req.ShipmentCost.GetValue() != "" {
 		sc, err := decimal.NewFromString(req.ShipmentCost.GetValue())
@@ -237,6 +271,8 @@ func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, e
 		BuyerEmail:     eOrder.BuyerEmail,
 		BuyerFirstName: eOrder.BuyerFirstName,
 		BuyerLastName:  eOrder.BuyerLastName,
+		VatRegime:      eOrder.VatRegime.String,
+		BuyerVatId:     eOrder.BuyerVatID.String,
 	}
 	if eOrder.PromoId.Valid {
 		pbOrder.PromoId = int32(eOrder.PromoId.Int32)

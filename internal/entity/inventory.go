@@ -129,13 +129,22 @@ type MaterialMovement struct {
 	Lot       sql.NullString `db:"lot"`
 	// LotId is the structured lot (roll / dye-lot) this movement received into or drew from (gap-07 v2
 	// D). NULL when no lot was tracked. The free-text Lot above is kept for backward compatibility.
-	LotId         sql.NullInt32  `db:"lot_id"`
-	SupplierDoc   sql.NullString `db:"supplier_doc"`
+	LotId       sql.NullInt32  `db:"lot_id"`
+	SupplierDoc sql.NullString `db:"supplier_doc"`
+	// SupplierId is the catalogued supplier of a purchase receipt (phase 2, wave 4 — AP subledger). NULL
+	// on non-receipts and on receipts entered without a supplier; the accounting worker copies it onto the
+	// M1 journal entry so GetPayables can group open Accounts-Payable per supplier.
+	SupplierId    sql.NullInt32  `db:"supplier_id"`
 	Reason        sql.NullString `db:"reason"`
 	Comment       sql.NullString `db:"comment"`
 	AdminUsername string         `db:"admin_username"`
 	OccurredAt    sql.NullTime   `db:"occurred_at"`
 	CreatedAt     time.Time      `db:"created_at"`
+	// InputVatAmount / InputVatRegime carry a purchase receipt's recoverable input VAT (base currency)
+	// and its treatment (wnt|import|domestic_pl|domestic_uk) for the extended M1 posting rule (phase 2,
+	// wave 1). Set only on receipts that record VAT; NULL everywhere else.
+	InputVatAmount decimal.NullDecimal `db:"input_vat_amount"`
+	InputVatRegime sql.NullString      `db:"input_vat_regime"`
 }
 
 // MaterialReceiptInsert is the payload of a stock receipt (purchase-in or produced-in). UnitCost is
@@ -149,12 +158,20 @@ type MaterialReceiptInsert struct {
 	ProductionRunId sql.NullInt32
 	Lot             sql.NullString
 	SupplierDoc     sql.NullString
-	OccurredAt      sql.NullTime
-	Comment         sql.NullString
-	AdminUsername   string
+	// SupplierId optionally tags a purchase receipt with a catalogued supplier (phase 2, wave 4 — AP
+	// subledger). NULL for a receipt entered without a supplier; ignored for a receipt_production.
+	SupplierId    sql.NullInt32
+	OccurredAt    sql.NullTime
+	Comment       sql.NullString
+	AdminUsername string
 	// FromProduction marks a receipt_production (auxiliary-run output) rather than a purchase.
 	// UnitCost is then the run's actual per-unit base cost, already in the base currency.
 	FromProduction bool
+	// InputVatAmount / InputVatRegime record a purchase receipt's recoverable input VAT (base currency)
+	// and its treatment (entity.InputVatRegime*); the accounting worker posts them per the M1 input-VAT
+	// rule (phase 2, wave 1). Both NULL for a receipt without VAT.
+	InputVatAmount decimal.NullDecimal
+	InputVatRegime sql.NullString
 }
 
 // MaterialIssueInsert is the payload of an issue to (or return from) a production run or a sample.

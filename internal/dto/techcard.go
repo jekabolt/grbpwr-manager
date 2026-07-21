@@ -972,13 +972,26 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		return nil, nil
 	}
 	out := make([]entity.TechCardPiece, 0, len(pbs))
-	for _, p := range pbs {
+	// Piece names are how a human addresses a part everywhere else on the card -- the operation
+	// picker, the recipe norm, the cut list, the factory sheet. Two pieces sharing a name makes every
+	// one of those references ambiguous to the person reading it (the FKs stay correct, the sheet does
+	// not), so the name is unique per card, compared case-insensitively on the trimmed value.
+	seenName := make(map[string]bool, len(pbs))
+	for i, p := range pbs {
 		if p.Name == "" {
-			return nil, fmt.Errorf("piece name is required")
+			return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].name", i), "piece name is required", "", "")
 		}
 		if len(p.Name) > maxVarchar255 {
-			return nil, fmt.Errorf("piece name must be at most %d characters", maxVarchar255)
+			return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].name", i),
+				fmt.Sprintf("piece name must be at most %d characters", maxVarchar255), "", "")
 		}
+		key := strings.ToLower(strings.TrimSpace(p.Name))
+		if seenName[key] {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].name", i),
+				"another cut piece on this card already has this name", p.Name,
+				"rename one of them so operations and norms point at an unambiguous part")
+		}
+		seenName[key] = true
 		if len(p.Note) > maxVarchar255 {
 			return nil, fmt.Errorf("piece note must be at most %d characters", maxVarchar255)
 		}

@@ -78,6 +78,27 @@ func (s *Seeder) PrintCoverage(ctx context.Context) {
 		out("  %-28s %d", "dictionary tags", len(dict.GetDictionary().GetTags()))
 	}
 
+	out("---- accounting ----")
+	aa, e := s.C.ListAcctAccounts(ctx, &admin.ListAcctAccountsRequest{})
+	count("acct chart accounts", aa, e)
+	// Journal entries + trial balance over a wide window so accumulated seed runs all show. Trial
+	// balance is the ledger's own integrity check — a non-zero row count with balanced=true is the mark.
+	afrom := time.Now().AddDate(0, 0, -365).Format("2006-01-02")
+	ato := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	je, e := s.C.ListJournalEntries(ctx, &admin.ListJournalEntriesRequest{From: afrom, To: ato, Limit: 500})
+	count("journal entries", je, e)
+	if tb, err := s.C.GetTrialBalance(ctx, &admin.GetTrialBalanceRequest{From: afrom, To: ato}); err != nil {
+		out("  %-28s ERR %v", "trial balance", err)
+	} else {
+		out("  %-28s rows=%d balanced=%v debit=%.2f credit=%.2f",
+			"trial balance", len(tb.GetRows()), tb.GetBalanced(), decFloat(tb.GetTotalDebit()), decFloat(tb.GetTotalCredit()))
+	}
+	if _, err := s.C.GetAcctReconciliation(ctx, &admin.GetAcctReconciliationRequest{From: afrom, To: ato}); err != nil {
+		out("  %-28s ERR %v", "reconciliation", err)
+	} else {
+		out("  %-28s OK", "reconciliation")
+	}
+
 	out("---- analytics ----")
 	secs := []admin.MetricsSection{
 		admin.MetricsSection_METRICS_SECTION_BUSINESS, admin.MetricsSection_METRICS_SECTION_MARGIN_BY_STYLE,

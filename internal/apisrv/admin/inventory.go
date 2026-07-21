@@ -18,16 +18,17 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// ReceiveMaterialStock records a purchase-in of a material (new-flow NF-01). Setting a unit cost
-// writes confidential price data, so it requires costing:write; a quantity-only receipt does not.
+// ReceiveMaterialStock records a purchase-in of a material (new-flow NF-01). Setting a unit cost or an
+// input-VAT amount writes confidential price data, so it requires costing:write; a quantity-only
+// receipt does not.
 func (s *Server) ReceiveMaterialStock(ctx context.Context, req *pb_admin.ReceiveMaterialStockRequest) (*pb_admin.ReceiveMaterialStockResponse, error) {
 	ins, err := dto.ConvertPbReceiveMaterialStock(req)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if ins.UnitCost.Valid {
+	if ins.UnitCost.Valid || ins.InputVatAmount.Valid {
 		if _, write := s.costingAccess(ctx); !write {
-			return nil, status.Error(codes.PermissionDenied, "costing:write is required to record a material cost")
+			return nil, status.Error(codes.PermissionDenied, "costing:write is required to record a material cost or input VAT")
 		}
 	}
 	ins.AdminUsername = authsrv.GetAdminUsername(ctx)

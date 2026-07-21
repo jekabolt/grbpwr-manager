@@ -223,6 +223,61 @@ func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "CategorySizeSystem.size_system", dbValues, mapKeysAsStrings(entity.ValidSizeSKUSystems))
 }
 
+// TestAcctEntrySourceTypeDBCheckNoDrift extends the drift test to the accounting journal entry's
+// source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK. The CHECK was defined in 0189 and
+// last extended by 0198 (phase 2, wave 4: +order_dispute, unioning #71's depreciation/corp_tax which its
+// own 0197 added; 0196 added shipping_actual/dev_expense, 0195 the wave-2 delivered types) — the test
+// reads the LATEST migration that redefines the full value set (which sorts last), 07 §7.2 pattern.
+func TestAcctEntrySourceTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0198_accounting_wave4_money.sql")
+	dbValues := extractDBEnumValues(t, content, "source_type IN", 900)
+	assertSameSet(t, "AcctSourceType", dbValues, mapKeysAsStrings(entity.ValidAcctSourceTypes))
+}
+
+// TestAcctSectionDBCheckNoDrift extends the drift test to the account section (entity.AcctSection/
+// ValidAcctSections) <-> DB CHECK. Defined in 0189 and last extended by 0196 (phase 2, wave 3: +tax) —
+// read the latest migration that redefines the full set (07 §7.2 extend-CHECK pattern).
+func TestAcctSectionDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0196_accounting_wave3_pnl.sql")
+	dbValues := extractDBEnumValues(t, content, "section IN", 300)
+	assertSameSet(t, "AcctSection", dbValues, mapKeysAsStrings(entity.ValidAcctSections))
+}
+
+// TestAcctLineSideDBCheckNoDrift extends the drift test to the accounting journal line's side
+// (entity.AcctSide/ValidAcctSides) <-> DB CHECK (migration 0189, chk_acct_line_side).
+func TestAcctLineSideDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0189_accounting_core.sql")
+	dbValues := extractDBEnumValues(t, content, "side IN", 100)
+	assertSameSet(t, "AcctSide", dbValues, mapKeysAsStrings(entity.ValidAcctSides))
+}
+
+// TestAcctEventTypeDBCheckNoDrift extends the drift test to the accounting outbox event type
+// (entity.AcctEventType/ValidAcctEventTypes) <-> DB CHECK. Defined in 0189, last extended by 0198
+// (phase 2, wave 4: +order_dispute; 0195 added order_shipped/order_delivered) — read the latest
+// migration that redefines the set.
+func TestAcctEventTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0198_accounting_wave4_money.sql")
+	dbValues := extractDBEnumValues(t, content, "event_type IN", 300)
+	assertSameSet(t, "AcctEventType", dbValues, mapKeysAsStrings(entity.ValidAcctEventTypes))
+}
+
+// TestVatRegimeDBCheckNoDrift extends the drift test to the order VAT regime (entity.VatRegime/
+// ValidVatRegimes) <-> DB CHECK (migration 0191, chk_customer_order_vat_regime). Phase 2, wave 1.
+func TestVatRegimeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0191_accounting_vat_regime.sql")
+	dbValues := extractDBEnumValues(t, content, "vat_regime IN", 200)
+	assertSameSet(t, "VatRegime", dbValues, mapKeysAsStrings(entity.ValidVatRegimes))
+}
+
+// TestInputVatRegimeDBCheckNoDrift extends the drift test to the material input-VAT regime
+// (entity.InputVatRegime/ValidInputVatRegimes) <-> DB CHECK (migration 0192,
+// chk_material_input_vat_regime). Phase 2, wave 1.
+func TestInputVatRegimeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0192_material_input_vat.sql")
+	dbValues := extractDBEnumValues(t, content, "input_vat_regime IN", 200)
+	assertSameSet(t, "InputVatRegime", dbValues, mapKeysAsStrings(entity.ValidInputVatRegimes))
+}
+
 // TestFabricDirectionFixtureVsDBCheck asserts the material-attributes fixture's fabric_direction set
 // matches the DB CHECK (migration 0157, material_fabric_attr) — the fixture<->DB leg of the CTI drift
 // guard (entity<->DB is TestMaterialClassDBCheckNoDrift; entity<->proto lives in internal/dto).

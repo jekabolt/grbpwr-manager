@@ -707,6 +707,174 @@ type (
 		ListMaterialLots(ctx context.Context, materialID int, includeArchived bool) ([]entity.MaterialLot, error)
 	}
 
+	// Accounting is the double-entry general ledger (docs/plan-accounting/). The ledger is a DERIVED,
+	// append-only projection of existing operational facts (orders, material movements, production
+	// runs, opex) plus manual entries; base currency is EUR (reads total_settled_base, never
+	// total_price_eur — CLAUDE.md "two EUR figures"). CreateJournalEntry is the single write path and
+	// never opens its own transaction — callers (the acctposting worker and the manual-entry admin
+	// handlers) wrap it in repo.Tx so the entry header and its lines commit atomically.
+	Accounting interface {
+		ContextStore
+
+		// --- chart of accounts ---
+		ListAccounts(ctx context.Context, includeArchived bool) ([]entity.AcctAccount, error)
+		CreateAccount(ctx context.Context, in entity.AcctAccountInsert) (int, error)
+		// UpdateAccountName renames a custom account; code and section are immutable, and a system
+		// account cannot be renamed by code (ErrAcctSystemAccount).
+		UpdateAccountName(ctx context.Context, code, name string) error
+		// SetAccountArchived archives/unarchives a custom account; a system account (is_system) cannot
+		// be archived (ErrAcctSystemAccount).
+		SetAccountArchived(ctx context.Context, code string, archived bool) error
+
+		// --- journal ---
+		// CreateJournalEntry is the ONLY write path into the journal (both automated posting and manual
+		// entries). It validates: >= 2 lines, each amount > 0, Σdebit == Σcredit (ErrAcctUnbalanced),
+		// accounts exist and are not archived (ErrAcctUnknownAccount / ErrAcctArchivedAccount), and the
+		// occurred_at period is open (ErrAcctPeriodClosed). Idempotent on (source_type, source_key): a
+		// duplicate returns the existing id with alreadyExists=true and no error (the upsert pattern).
+		CreateJournalEntry(ctx context.Context, in entity.AcctJournalEntryInsert) (id int, alreadyExists bool, err error)
+		// ReverseJournalEntry posts a mirror entry (sides swapped) in the currently open period
+		// (occurred_at = the original's date if still open, else today), source_type='reversal',
+		// source_key='rev:'+<origID>, and sets the original's reversed_by. Reversing an already-reversed
+		// entry → ErrAcctAlreadyReversed; reversing a reversal → ErrAcctCannotReverseReversal.
+		ReverseJournalEntry(ctx context.Context, entryID int, reason, adminUsername string) (int, error)
+
+		ListJournalEntries(ctx context.Context, f entity.AcctEntryFilter) ([]entity.AcctJournalEntry, int, error)
+		GetJournalEntry(ctx context.Context, id int) (*entity.AcctJournalEntryFull, error)
+		// EntryExistsBySource is an O(1) (source_type, source_key) unique-index existence lookup
+		// (uniq_acct_entry_source) — e.g. the refund worker's "has the sale been posted?" check.
+		EntryExistsBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (bool, error)
+
+		// GetOrderPostingState reports one order's delivered-chain posting state (which entries exist,
+		// whether an order_delivered event was enqueued) and the exact outstanding 2090 / 1140 balances
+		// the delivered sale must drain (phase 2, wave 2).
+		GetOrderPostingState(ctx context.Context, orderUUID string) (entity.AcctOrderPostingState, error)
+
+		// --- periods ---
+		// EnsurePeriodOpen lazily creates the period row for month and returns ErrAcctPeriodClosed if it
+		// exists and is closed.
+		EnsurePeriodOpen(ctx context.Context, month time.Time) error
+		ClosePeriod(ctx context.Context, month time.Time, adminUsername string) error
+		ReopenPeriod(ctx context.Context, month time.Time, adminUsername string) error
+		ListPeriods(ctx context.Context) ([]entity.AcctPeriod, error)
+
+		// --- outbox / checkpoints (used by producers and the posting worker) ---
+		// EnqueueEvent marshals ev.Payload (any → JSON) itself; a marshal error is returned (a producer
+		// in a hot Tx must propagate it). A duplicate (event_type, source_key) is a no-op.
+		EnqueueEvent(ctx context.Context, ev entity.AcctEventInsert) error
+		// ListPendingEvents returns events with processed_at IS NULL AND (next_retry_at IS NULL OR
+		// next_retry_at <= NOW()), ordered by id, up to limit.
+		ListPendingEvents(ctx context.Context, limit int) ([]entity.AcctEvent, error)
+		MarkEventProcessed(ctx context.Context, id int64) error
+		// MarkEventFailed bumps attempts, records errMsg and sets next_retry_at = NOW() + retryAfter.
+		MarkEventFailed(ctx context.Context, id int64, errMsg string, retryAfter time.Duration) error
+		// MarkEventNeedsReview terminally disposes an event (processed) but flags it needs_review so
+		// ClosePeriod blocks the month until an operator clears it (H-1/H-2/B-5).
+		MarkEventNeedsReview(ctx context.Context, id int64, reason string) error
+		// ReprocessAcctEvent resets an event (clears processed/needs_review/attempts/backoff) to retry.
+		ReprocessAcctEvent(ctx context.Context, id int64) error
+		// ResolveAcctEvent clears needs_review (handled manually), keeping the processed/audit record.
+		ResolveAcctEvent(ctx context.Context, id int64) error
+		// ListEventsNeedingReview returns needs_review events, oldest first, up to limit.
+		ListEventsNeedingReview(ctx context.Context, limit int) ([]entity.AcctEvent, error)
+		// CountEventsNeedingReviewInPeriod counts needs_review events with occurred_at in [from,to).
+		CountEventsNeedingReviewInPeriod(ctx context.Context, from, to string) (int, error)
+		// GetCheckpoint returns the pull-source cursor; a missing row is NOT an error — it returns the
+		// zero AcctCheckpoint (the worker treats it as last_id=0 / last_ts=accounting.start_date).
+		GetCheckpoint(ctx context.Context, source string) (entity.AcctCheckpoint, error)
+		SetCheckpoint(ctx context.Context, source string, lastID sql.NullInt64, lastTS sql.NullTime) error
+
+		// --- reports (contracts in docs/plan-accounting/06-reports.md; filled in step 7) ---
+		GetTrialBalance(ctx context.Context, from, to time.Time) (*entity.AcctTrialBalance, error)
+		GetProfitLoss(ctx context.Context, from, to time.Time) (*entity.AcctProfitLoss, error)
+		GetBalanceSheet(ctx context.Context, asOf time.Time) (*entity.AcctBalanceSheet, error)
+		GetAccountLedger(ctx context.Context, code string, f entity.AcctLedgerFilter) (*entity.AcctAccountLedger, error)
+		GetReconciliation(ctx context.Context, from, to time.Time) (*entity.AcctReconciliation, error)
+
+		// --- VAT filing exports (phase 2, wave 1; source-type-agnostic, aggregated by vat_regime over
+		//     the payment period — docs/plan-accounting-phase2/01-wave1-vat.md §1.5) ---
+		GetVatReturnPL(ctx context.Context, month time.Time) (*entity.AcctVatReturnPL, error)
+		GetOssReturn(ctx context.Context, quarterStart time.Time) (*entity.AcctOssReturn, error)
+		// VatSalesEvidence returns per-order sales rows for the JPK_V7M sales register (SprzedazWiersz),
+		// for the regimes the Polish register declares (pl_domestic/wdt/export).
+		VatSalesEvidence(ctx context.Context, month time.Time) ([]entity.AcctVatSalesRow, error)
+		// GetUkVatReturn aggregates the quarter's UK VAT figures (9-box MTD) for the uk_stock_domestic
+		// regime — a separate jurisdiction, never folded into the Polish net payable.
+		GetUkVatReturn(ctx context.Context, quarterStart time.Time) (*entity.AcctUkVatReturn, error)
+		// GetFrs105Accounts re-groups the ledger into FRS 105 micro-entity line items (Income Statement +
+		// SoFP) over [from, to) — a base-currency DRAFT (not GBP / entity-isolated).
+		GetFrs105Accounts(ctx context.Context, from, to time.Time) (*entity.AcctFrs105Accounts, error)
+		// GetCashFlowStatement is the indirect-method cash-flow statement over [from, to) (wave 5, §5.1):
+		// net profit + non-cash add-backs + balance-sheet deltas, reconciled against the actual cash balance.
+		GetCashFlowStatement(ctx context.Context, from, to time.Time) (*entity.AcctCashFlowStatement, error)
+		// GetFinancialHealth computes the financial-health ratio set over [from, to) (wave 5, §5.2) from the
+		// ledger (money) plus operational unit counts from metrics (labelled by source).
+		GetFinancialHealth(ctx context.Context, from, to time.Time) (*entity.AcctFinancialHealth, error)
+		// Fixed-asset register + straight-line depreciation (posts Dr 6370 / Cr 1225 per asset-month).
+		CreateFixedAsset(ctx context.Context, in entity.FixedAssetInsert) (int, error)
+		ListFixedAssets(ctx context.Context) ([]entity.FixedAsset, error)
+		PostDepreciationDue(ctx context.Context, upTo time.Time) (posted int, skipped int, err error)
+		// AccrueCorporationTax posts CT on the period's pre-tax profit (Dr 8010 / Cr 2050); idempotent
+		// per period. Returns the CT accrued and whether it already existed.
+		AccrueCorporationTax(ctx context.Context, from, to time.Time, ratePct decimal.Decimal) (decimal.Decimal, bool, error)
+
+		// --- fact reads for the posting worker (the accounting store reads other domains' tables
+		//     directly, the internal/store/metrics precedent; SQL in 09-implementation-notes.md §9.2) ---
+		GetOrderFactsForPosting(ctx context.Context, orderUUID string) (*entity.AcctOrderFacts, error)
+		// GetVatRatesFor returns the vat_rate percent of each present ISO alpha-2 code (phase 2, wave 1);
+		// an absent country is simply missing from the map, so the worker can skip the order with a "vat
+		// rate missing" alert rather than post a zero rate (07 §7.4.14).
+		GetVatRatesFor(ctx context.Context, codes []string) (map[string]decimal.Decimal, error)
+		// SetOrderVatRegime snapshots the resolved VAT regime onto customer_order.vat_regime; the worker
+		// calls it in the same tx as the order-sale entry (§1.3).
+		SetOrderVatRegime(ctx context.Context, orderUUID, regime string) error
+		ListUnpostedMovements(ctx context.Context, afterID int64, startDate time.Time, limit int) ([]entity.AcctMovementFacts, error)
+		ListUnpostedReceivedRuns(ctx context.Context, startDate time.Time, limit int) ([]int, error)
+		GetRunFactsForPosting(ctx context.Context, runID int) (*entity.AcctRunFacts, error)
+		ListChangedOpexMonths(ctx context.Context, afterTS time.Time) ([]time.Time, error)
+		GetOpexMonthFacts(ctx context.Context, month time.Time) ([]entity.AcctOpexCategorySum, error)
+		// ListChangedShipmentsForActualCost returns shipments whose actual carrier cost changed after
+		// afterTS (the shipping_actual checkpoint), for the wave-3 6030 pull (3.1). The worker reposts each.
+		ListChangedShipmentsForActualCost(ctx context.Context, afterTS, startDate time.Time) ([]entity.AcctShipmentCostFacts, error)
+		// ListDevExpensesForPosting returns tech_card_dev_expense rows created on/after startDate, for the
+		// wave-3 6210 dev-expense pull (3.2) — a full reconcile scan (the table has no updated_at).
+		ListDevExpensesForPosting(ctx context.Context, startDate time.Time) ([]entity.AcctDevExpenseFacts, error)
+
+		// --- wave 4: Revolut bank inbox (4.1) ---
+		// ImportBankTxns deduplicates parsed inbox lines into acct_bank_txn (external_id UNIQUE), applies
+		// the acct_bank_rule substring suggestions, and reports parsed/imported/skipped counts.
+		ImportBankTxns(ctx context.Context, txns []entity.AcctBankTxnInsert) (entity.AcctBankImportResult, error)
+		// ListBankTxns returns inbox lines filtered by state ("" = all), newest first, bounded to limit.
+		ListBankTxns(ctx context.Context, state string, limit int) ([]entity.AcctBankTxn, error)
+		// GetBankTxn loads one inbox line (sql.ErrNoRows when absent).
+		GetBankTxn(ctx context.Context, id int) (*entity.AcctBankTxn, error)
+		// SetBankTxnPosted marks a line posted and links it to its journal entry (no-op if already posted).
+		SetBankTxnPosted(ctx context.Context, id, entryID int) error
+		// SetBankTxnIgnored marks a not-yet-posted line ignored.
+		SetBankTxnIgnored(ctx context.Context, id int) error
+		// ListBankRules returns the substring→account suggestion rules.
+		ListBankRules(ctx context.Context) ([]entity.AcctBankRule, error)
+		// CreateBankRule inserts a suggestion rule and returns its id.
+		CreateBankRule(ctx context.Context, pattern, accountCode string) (int, error)
+		// DeleteBankRule removes a suggestion rule (sql.ErrNoRows when absent).
+		DeleteBankRule(ctx context.Context, id int) error
+
+		// --- wave 4: Stripe disputes (4.3) ---
+		// GetEntryBySource returns the journal-entry header for a (source_type, source_key), sql.ErrNoRows
+		// when none — the dispute worker uses it to find the open dispute entry to reverse on a win.
+		GetEntryBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (*entity.AcctJournalEntry, error)
+
+		// --- wave 4: AP/AR subledgers (4.4) ---
+		// CreateSupplier inserts a supplier (unique name) and returns its id.
+		CreateSupplier(ctx context.Context, in entity.SupplierInsert) (int, error)
+		// ListSuppliers returns the supplier catalog, name-ordered.
+		ListSuppliers(ctx context.Context) ([]entity.Supplier, error)
+		// GetPayables returns the open Accounts-Payable (2010) position per supplier (accrued − paid).
+		GetPayables(ctx context.Context) ([]entity.AcctPayableRow, error)
+		// GetReceivables returns the open Accounts-Receivable (1040) position per bank-invoice order.
+		GetReceivables(ctx context.Context) ([]entity.AcctReceivableRow, error)
+	}
+
 	// BQClient is the BigQuery analytics client interface. Implementations can be mocked for testing.
 	BQClient interface {
 		CircuitBreakerState() circuitbreaker.State
@@ -928,6 +1096,7 @@ type (
 		TechCards() TechCards
 		ProductionRuns() ProductionRuns
 		MaterialStock() MaterialStock
+		Accounting() Accounting
 		Samples() Samples
 		Admin() Admin
 		Cache() Cache

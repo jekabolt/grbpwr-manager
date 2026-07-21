@@ -19,6 +19,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/store/account"
+	"github.com/jekabolt/grbpwr-manager/internal/store/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/store/bqcache"
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
@@ -117,6 +118,7 @@ type MYSQLStore struct {
 	productionRunStore *productionrun.Store
 	materialStockStore *inventory.Store
 	sampleStore        *sample.Store
+	accounting         *accounting.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -384,6 +386,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.ga4 = ga4data.New(base, ms.Tx)
 	ms.syncStatus = ga4data.NewSyncStatus(base, ms.Tx)
 	ms.metrics = metrics.New(base, ms)
+	ms.accounting = accounting.New(base, ms)
 	ms.content = content.New(base, ms.Tx, func() dependency.Repository { return ms })
 	ms.orderStore = order.New(base, ms.Tx, func() dependency.Repository { return ms })
 	ms.accountStore = account.New(base, ms.Tx)
@@ -413,6 +416,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.ga4 = ga4data.New(base, outerTx)
 	txStore.syncStatus = ga4data.NewSyncStatus(base, outerTx)
 	txStore.metrics = metrics.New(base, txStore)
+	txStore.accounting = accounting.New(base, txStore)
 	txStore.content = content.New(base, outerTx, func() dependency.Repository { return txStore })
 	txStore.orderStore = order.New(base, outerTx, func() dependency.Repository { return txStore })
 	txStore.accountStore = account.New(base, outerTx)
@@ -498,6 +502,7 @@ func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment       { return ms.ful
 func (ms *MYSQLStore) TechCards() dependency.TechCards           { return ms.techCardStore }
 func (ms *MYSQLStore) ProductionRuns() dependency.ProductionRuns { return ms.productionRunStore }
 func (ms *MYSQLStore) MaterialStock() dependency.MaterialStock   { return ms.materialStockStore }
+func (ms *MYSQLStore) Accounting() dependency.Accounting         { return ms.accounting }
 func (ms *MYSQLStore) Samples() dependency.Samples               { return ms.sampleStore }
 func (ms *MYSQLStore) StorefrontAccount() dependency.StorefrontAccount {
 	return ms.accountStore

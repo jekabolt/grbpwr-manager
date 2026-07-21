@@ -187,6 +187,18 @@ func (s *Store) SetTrackingNumber(ctx context.Context, orderUUID string, trackin
 			return fmt.Errorf("can't update order status: %w", err)
 		}
 
+		// Accounting outbox (push producer, phase 2 wave 2): record the first-ship instant. Keyed by
+		// order UUID like order_paid, so a re-ship / tracking-code correction (shipment.ShippingDate
+		// already set above) re-enqueues the same event — EnqueueEvent is idempotent (no-op).
+		if err := rep.Accounting().EnqueueEvent(ctx, entity.AcctEventInsert{
+			EventType:  entity.AcctEventOrderShipped,
+			SourceKey:  orderUUID,
+			Payload:    entity.AcctOrderShippedPayload{OrderUUID: orderUUID},
+			OccurredAt: shipment.ShippingDate.Time.UTC(),
+		}); err != nil {
+			return fmt.Errorf("enqueue acct order_shipped event: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -329,7 +341,38 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 			}
 		}
 
-		return updateOrderStatusAndAccumulateRefundedAmount(ctx, rep.DB(), order.Id, targetStatus.Status.Id, refundedAmount, reason, reasonCode)
+		if err := updateOrderStatusAndAccumulateRefundedAmount(ctx, rep.DB(), order.Id, targetStatus.Status.Id, refundedAmount, reason, reasonCode); err != nil {
+			return err
+		}
+
+		// Accounting outbox (push producer, docs/plan-accounting/03): THIS refund's amount cannot be
+		// recovered later from the aggregate customer_order.refunded_amount (further refunds accumulate
+		// on top of it), so it is carried in the payload. An order may be refunded several times
+		// (partially_refunded), so the source_key gets a per-order sequence = count of this order's
+		// existing order_refund events + 1. The count runs in the same tx, under the order's FOR UPDATE
+		// lock taken above, so there is no race (03 / 09 FAQ 11). A failure rolls the refund back.
+		existingRefundEvents, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
+			SELECT COUNT(*) FROM acct_event
+			WHERE event_type = :event_type AND source_key LIKE :prefix`,
+			map[string]any{"event_type": string(entity.AcctEventOrderRefund), "prefix": order.UUID + ":%"})
+		if err != nil {
+			return fmt.Errorf("count acct order_refund events: %w", err)
+		}
+		seq := existingRefundEvents + 1
+		if err := rep.Accounting().EnqueueEvent(ctx, entity.AcctEventInsert{
+			EventType: entity.AcctEventOrderRefund,
+			SourceKey: fmt.Sprintf("%s:%d", order.UUID, seq),
+			Payload: entity.AcctOrderRefundPayload{
+				OrderUUID:      order.UUID,
+				RefundAmount:   refundedAmount,
+				OrderCurrency:  order.Currency,
+				RefundedByItem: refundedByItem,
+			},
+			OccurredAt: s.Now(),
+		}); err != nil {
+			return fmt.Errorf("enqueue acct order_refund event: %w", err)
+		}
+		return nil
 	})
 }
 
@@ -391,9 +434,28 @@ func (s *Store) DeliveredOrder(ctx context.Context, orderUUID string) error {
 func (s *Store) DeliverOrderWithSource(ctx context.Context, orderUUID, changedBy, notes string) (bool, error) {
 	var transitioned bool
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		deliveredAt := time.Now().UTC()
 		var err error
-		transitioned, err = deliverOrderTx(ctx, rep.DB(), orderUUID, changedBy, notes, time.Now().UTC())
-		return err
+		transitioned, err = deliverOrderTx(ctx, rep.DB(), orderUUID, changedBy, notes, deliveredAt)
+		if err != nil {
+			return err
+		}
+
+		// Accounting outbox (push producer, phase 2 wave 2): only on a real transition — deliverOrderTx
+		// is idempotent and returns transitioned=false for an already-delivered / ineligible order, so
+		// this stays a no-op on retries (the worker and the AfterShip webhook both call this freely).
+		if transitioned {
+			if err := rep.Accounting().EnqueueEvent(ctx, entity.AcctEventInsert{
+				EventType:  entity.AcctEventOrderDelivered,
+				SourceKey:  orderUUID,
+				Payload:    entity.AcctOrderDeliveredPayload{OrderUUID: orderUUID},
+				OccurredAt: deliveredAt,
+			}); err != nil {
+				return fmt.Errorf("enqueue acct order_delivered event: %w", err)
+			}
+		}
+
+		return nil
 	})
 	if err != nil {
 		return false, fmt.Errorf("can't mark order delivered: %w", err)

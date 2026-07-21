@@ -1614,6 +1614,317 @@ service AdminService {
   rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse) {
     option (google.api.http) = {delete: "/api/admin/accounts/{username}"};
   }
+
+  // ACCOUNTING (double-entry ledger, docs/plan-accounting/). Every RPC below requires the
+  // "accounting" RBAC section (internal/rbac/rbac.go SectionAccounting): reads need
+  // accounting:read, journal/account/period writes need accounting:write. Plain dates
+  // (occurred_at, from/to, as_of, month) are YYYY-MM-DD strings, never google.protobuf.Timestamp
+  // — see docs/plan-accounting/05-admin-api.md. Money is google.type.Decimal throughout.
+
+  // --- chart of accounts ---
+
+  rpc ListAcctAccounts(ListAcctAccountsRequest) returns (ListAcctAccountsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/accounts"};
+  }
+
+  rpc CreateAcctAccount(CreateAcctAccountRequest) returns (CreateAcctAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/accounts"
+      body: "*"
+    };
+  }
+
+  // UpdateAcctAccount renames a custom (non-system) account; code and section are immutable.
+  rpc UpdateAcctAccount(UpdateAcctAccountRequest) returns (UpdateAcctAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/accounts/update"
+      body: "*"
+    };
+  }
+
+  // ArchiveAcctAccount archives/unarchives a custom (non-system) account.
+  rpc ArchiveAcctAccount(ArchiveAcctAccountRequest) returns (ArchiveAcctAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/accounts/archive"
+      body: "*"
+    };
+  }
+
+  // --- journal ---
+
+  // CreateJournalEntry posts a manual double-entry entry (source_type='manual'). Each line
+  // carries either a base-currency `amount` or an `amount_src`+`currency_src` pair the server
+  // converts via the costing FX rates; Σdebit == Σcredit is enforced by the store
+  // (ErrAcctUnbalanced), not here.
+  rpc CreateJournalEntry(CreateJournalEntryRequest) returns (CreateJournalEntryResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/journal"
+      body: "*"
+    };
+  }
+
+  // ReverseJournalEntry posts the mirror (sides swapped) of an existing entry and links the two;
+  // the original is never edited or deleted (append-only ledger).
+  rpc ReverseJournalEntry(ReverseJournalEntryRequest) returns (ReverseJournalEntryResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/journal/reverse"
+      body: "*"
+    };
+  }
+
+  // GetJournalEntry returns one entry with its lines. Declared before the bare list route below;
+  // the two don't actually collide (different path-segment counts) but this keeps the file's
+  // usual /{id}-before-list ordering (see the /model/{id} vs /model/list note above).
+  rpc GetJournalEntry(GetJournalEntryRequest) returns (GetJournalEntryResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/journal/{id}"};
+  }
+
+  rpc ListJournalEntries(ListJournalEntriesRequest) returns (ListJournalEntriesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/journal"};
+  }
+
+  // --- periods ---
+
+  rpc ListAcctPeriods(ListAcctPeriodsRequest) returns (ListAcctPeriodsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/periods"};
+  }
+
+  // CloseAcctPeriod closes a fully-past, reconciled month. A failed readiness check is NOT a gRPC
+  // error: the response comes back with closed=false and the reason in not_ready, so the UI can
+  // render a checklist instead of a toast.
+  rpc CloseAcctPeriod(CloseAcctPeriodRequest) returns (CloseAcctPeriodResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/periods/close"
+      body: "*"
+    };
+  }
+
+  rpc ReopenAcctPeriod(ReopenAcctPeriodRequest) returns (ReopenAcctPeriodResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/periods/reopen"
+      body: "*"
+    };
+  }
+
+  // --- reports (docs/plan-accounting/06-reports.md) ---
+
+  // GetTrialBalance returns per-account turnover + closing balance over [from, to) (to exclusive),
+  // with the ΣDr == ΣCr invariant surfaced as `balanced`.
+  rpc GetTrialBalance(GetTrialBalanceRequest) returns (GetTrialBalanceResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/trial-balance"};
+  }
+
+  // GetProfitLossStatement returns the monthly Income Statement (revenue / cogs / opex sections)
+  // over [from, to) (to exclusive), one column per calendar month.
+  rpc GetProfitLossStatement(GetProfitLossStatementRequest) returns (GetProfitLossStatementResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/profit-loss"};
+  }
+
+  // GetBalanceSheet returns assets/liabilities/equity balances from inception through as_of
+  // (inclusive), including the virtual "Current Period Net Profit" equity row.
+  rpc GetBalanceSheet(GetBalanceSheetRequest) returns (GetBalanceSheetResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/balance-sheet"};
+  }
+
+  // GetAccountLedger is the drill-down: a paginated statement for one account with a running
+  // balance, plus the opening balance carried into `from`.
+  rpc GetAccountLedger(GetAccountLedgerRequest) returns (GetAccountLedgerResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/ledger/{code}"};
+  }
+
+  // GetAcctReconciliation proves the derived ledger matches operational truth (revenue, fees,
+  // COGS, materials, finished goods) and lists what is deliberately left unposted, over
+  // [from, to) (to exclusive).
+  rpc GetAcctReconciliation(GetAcctReconciliationRequest) returns (GetAcctReconciliationResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/reconciliation"};
+  }
+
+  // --- posting-worker event review queue (phase 2 review follow-ups, H-1/H-2/B-5) ---
+
+  // ListAcctEventsNeedingReview lists outbox events that were terminally disposed but need an operator
+  // (a non-EUR/degenerate order needing a manual entry, an orphan refund, or a dead-letter). Their
+  // month cannot close until each is resolved or reprocessed.
+  rpc ListAcctEventsNeedingReview(ListAcctEventsNeedingReviewRequest) returns (ListAcctEventsNeedingReviewResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/events/needs-review"};
+  }
+  // ReprocessAcctEvent resets an event so the worker re-attempts it from scratch (used after the cause
+  // is fixed, e.g. the missing vat_rate was added).
+  rpc ReprocessAcctEvent(ReprocessAcctEventRequest) returns (ReprocessAcctEventResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/events/reprocess"
+      body: "*"
+    };
+  }
+  // ResolveAcctEvent clears the review flag on an event handled manually (a manual journal entry posted).
+  rpc ResolveAcctEvent(ResolveAcctEventRequest) returns (ResolveAcctEventResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/events/resolve"
+      body: "*"
+    };
+  }
+
+  // --- VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5) ---
+
+  // GetVatReturnPL returns the JPK_VAT monthly aggregate (filed by the 25th): output VAT by regime
+  // (domestic PL, WNT/import self-charge, OSS shown for reference only), input VAT by type, and the
+  // net payable. Source-type-agnostic and aggregated by the payment period, so it survives wave 2's
+  // prepayment split; refunds net with a minus sign.
+  rpc GetVatReturnPL(GetVatReturnPLRequest) returns (GetVatReturnPLResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/vat-return"};
+  }
+
+  // GetOssReturn returns the quarterly OSS aggregate: EU B2C sales (vat_regime=oss) broken down by
+  // destination country with the applied rate, net and VAT.
+  rpc GetOssReturn(GetOssReturnRequest) returns (GetOssReturnResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/oss-return"};
+  }
+
+  // ExportJpkV7M generates the official Polish JPK_V7M (JPK_VAT) XML for a month: the taxpayer header,
+  // the VAT-7 declaration, and the sales evidence register. It is the OUTPUT-SIDE filing — the
+  // accountant merges the purchase register (input VAT), so the file's ZakupWiersz is empty. Requires
+  // the JPK_* taxpayer identity to be configured; returns FailedPrecondition otherwise.
+  rpc ExportJpkV7M(ExportJpkV7MRequest) returns (ExportJpkV7MResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/jpk-v7m"};
+  }
+
+  // ExportOssReturn generates the quarterly OSS (Union scheme, VIU-DO) return XML — one row per member
+  // state of consumption with its rate, taxable base and VAT — for the accountant to validate against
+  // the official schema / transcribe into the OSS portal. Requires the JPK_* taxpayer identity.
+  rpc ExportOssReturn(ExportOssReturnRequest) returns (ExportOssReturnResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/oss-export"};
+  }
+
+  // GetUkVatReturn returns the quarterly UK VAT return in 9-box MTD layout for the uk_stock_domestic
+  // regime (a separate jurisdiction from the Polish JPK). Boxes 2/8/9 are zero post-Brexit for a GB
+  // return; the figures are entered into MTD-compatible software / the HMRC bridge to submit.
+  rpc GetUkVatReturn(GetUkVatReturnRequest) returns (GetUkVatReturnResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/uk-vat-return"};
+  }
+
+  // GetFrs105Accounts re-groups the ledger into FRS 105 UK micro-entity line items (Income Statement +
+  // Statement of Financial Position). A base-currency DRAFT: a filing-ready UK Ltd set needs GBP
+  // conversion + isolation of the UK entity's transactions — surfaced in caveats, not done here.
+  rpc GetFrs105Accounts(GetFrs105AccountsRequest) returns (GetFrs105AccountsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/frs105"};
+  }
+
+  // GetCashFlowStatement returns the indirect-method cash-flow statement over [from, to) (exclusive):
+  // net profit + depreciation add-back + balance-sheet working-capital / investing / financing deltas,
+  // with a Check that reconciles the derived closing cash to the actual 1010/1030 balance.
+  rpc GetCashFlowStatement(GetCashFlowStatementRequest) returns (GetCashFlowStatementResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/cash-flow"};
+  }
+
+  // GetFinancialHealth returns the financial-health ratio set over [from, to) (exclusive): each row a
+  // {name, formula, value, benchmark, status} tuple. Money is ledger-derived; unit counts come from
+  // operational metrics (labelled in caveats).
+  rpc GetFinancialHealth(GetFinancialHealthRequest) returns (GetFinancialHealthResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/financial-health"};
+  }
+
+  // --- wave 4: Revolut bank inbox (docs/plan-accounting-phase2/04-wave4-money.md §4.1) ---
+
+  // ImportBankCsv parses a bank CSV export (Revolut) into the inbox, deduplicating on the bank
+  // transaction id + payment currency; a re-imported statement is a no-op for lines already present.
+  rpc ImportBankCsv(ImportBankCsvRequest) returns (ImportBankCsvResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/import"
+      body: "*"
+    };
+  }
+
+  // ListBankTxns returns inbox lines, optionally filtered by state (unmatched | matched | posted | ignored).
+  rpc ListBankTxns(ListBankTxnsRequest) returns (ListBankTxnsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/bank/txns"};
+  }
+
+  // PostBankTxn books a manual-provenance journal entry for an inbox line (Dr/Cr by the signed amount: an
+  // inflow Dr 1010 / Cr the chosen account, an outflow reversed) and marks the line posted. A non-EUR line
+  // posts via the costing-FX fold (amount_src + currency_src).
+  rpc PostBankTxn(PostBankTxnRequest) returns (PostBankTxnResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/post"
+      body: "*"
+    };
+  }
+
+  // IgnoreBankTxn marks an inbox line deliberately not booked (e.g. an internal EXCHANGE leg).
+  rpc IgnoreBankTxn(IgnoreBankTxnRequest) returns (IgnoreBankTxnResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/ignore"
+      body: "*"
+    };
+  }
+
+  // ListBankRules returns the substring→account suggestion rules applied at import.
+  rpc ListBankRules(ListBankRulesRequest) returns (ListBankRulesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/bank/rules"};
+  }
+
+  // CreateBankRule adds a substring→account suggestion rule.
+  rpc CreateBankRule(CreateBankRuleRequest) returns (CreateBankRuleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/rules"
+      body: "*"
+    };
+  }
+
+  // DeleteBankRule removes a suggestion rule.
+  rpc DeleteBankRule(DeleteBankRuleRequest) returns (DeleteBankRuleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/bank/rules/delete"
+      body: "*"
+    };
+  }
+
+  // --- wave 4: AP/AR subledgers (docs/plan-accounting-phase2/04-wave4-money.md §4.4) ---
+
+  // CreateSupplier adds a purchase-side supplier to the catalog (unique name).
+  rpc CreateSupplier(CreateSupplierRequest) returns (CreateSupplierResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/suppliers"
+      body: "*"
+    };
+  }
+
+  // ListSuppliers returns the supplier catalog.
+  rpc ListSuppliers(ListSuppliersRequest) returns (ListSuppliersResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/suppliers"};
+  }
+
+  // GetPayables returns the open Accounts-Payable (2010) balance per supplier (accrued − paid).
+  rpc GetPayables(GetPayablesRequest) returns (GetPayablesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/payables"};
+  }
+
+  // GetReceivables returns the open Accounts-Receivable (1040) balance per bank-invoice order.
+  rpc GetReceivables(GetReceivablesRequest) returns (GetReceivablesResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/receivables"};
+  }
+  // Fixed-asset register + straight-line depreciation.
+  rpc CreateFixedAsset(CreateFixedAssetRequest) returns (CreateFixedAssetResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/fixed-assets"
+      body: "*"
+    };
+  }
+  rpc ListFixedAssets(ListFixedAssetsRequest) returns (ListFixedAssetsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/fixed-assets"};
+  }
+  // PostDepreciation posts every not-yet-posted monthly depreciation charge up to the given month.
+  rpc PostDepreciation(PostDepreciationRequest) returns (PostDepreciationResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/depreciation/post"
+      body: "*"
+    };
+  }
+  // AccrueCorporationTax posts a corporation-tax accrual (Dr 8010 / Cr 2050) on the period's pre-tax profit.
+  rpc AccrueCorporationTax(AccrueCorporationTaxRequest) returns (AccrueCorporationTaxResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/accounting/corporation-tax/accrue"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -2561,6 +2872,7 @@ message AlertSettings {
   double contribution_trust_pct = 4; // trust the contribution-margin sign only at/above this coverage
   double ga4_coverage_warn_pct = 5; // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
   int32 production_run_stale_days = 6; // warn when an open production run is older than this many days (NF-09)
+  int32 acct_posting_lag_hours = 7; // warn when the accounting posting backlog (acct_event / material movements behind the acctposting checkpoint) is older than this many hours; <= 0 falls back to the default (24), it does NOT disable the check
 }
 
 message GetAlertSettingsRequest {}
@@ -3039,6 +3351,11 @@ message CreateCustomOrderRequest {
   int32 shipment_carrier_id = 6;
   string currency = 7;
   google.type.Decimal shipment_cost = 8; // optional custom shipment cost
+  // buyer_vat_id is the B2B buyer's EU VAT identifier (optional; phase 2, wave 1). Its presence
+  // drives the wdt / reverse-charge VAT classification (intra-community supply, 0%) and 4310
+  // wholesale revenue instead of the B2C path. Format: 2-letter country prefix + 8..12 alphanumeric
+  // characters (e.g. DE123456789); free-form, VIES lookup is out of scope.
+  string buyer_vat_id = 9;
 }
 
 message CreateCustomOrderResponse {
@@ -4603,7 +4920,7 @@ message UpsertChannelSpendResponse {}
 // to the base currency server-side via the manual costing FX rates (left uncosted, and excluded
 // from the operating result, when the currency has no rate).
 message OpexLineInsert {
-  string month = 1; // any date in the target month, YYYY-MM-DD; normalised to the first of the month
+  string month = 1; // target month, YYYY-MM (a YYYY-MM-DD date in the month is also accepted); normalised to the first of the month
   string category = 2; // salaries | rent | software | marketing_other | production_content | other | taxes | bank_fees | professional_services | logistics_office
   string label = 3; // free text distinguishing lines within a month × category (e.g. «Adobe CC», «швея Мария»)
   google.type.Decimal amount = 4; // in `currency`, >= 0
@@ -5356,12 +5673,21 @@ message GetProductionRunMaterialPlanResponse {
 message ReceiveMaterialStockRequest {
   int32 material_id = 1;
   google.type.Decimal quantity = 2; // in the material's unit, > 0
-  google.type.Decimal unit_cost = 3; // price per unit in `currency`; empty = uncosted receipt (average unchanged). Setting a cost requires costing:write.
+  google.type.Decimal unit_cost = 3; // NET (VAT-exclusive) price per unit in `currency`; empty = uncosted receipt (average unchanged). Setting a cost requires costing:write.
   string currency = 4; // ISO 4217
   string lot = 5; // supplier lot / roll (free text, not tracked by lot in v1)
   string supplier_doc = 6;
   string occurred_at = 7; // YYYY-MM-DD; defaults to today
   string comment = 8;
+  // input_vat_amount / input_vat_regime record this purchase receipt's recoverable input VAT (base
+  // currency EUR) and its treatment, for the extended M1 posting rule (phase 2, wave 1). Both
+  // optional; when either is set, both must be set (amount >= 0, regime one of
+  // wnt|import|domestic_pl|domestic_uk). unit_cost stays NET — do NOT also fold this VAT into it, or
+  // it is double-counted (inflated inventory/COGS AND a 2080 recovery); the server rejects an
+  // input_vat_amount above 30% of the net line cost as a likely gross unit_cost.
+  google.type.Decimal input_vat_amount = 9;
+  string input_vat_regime = 10; // wnt | import | domestic_pl | domestic_uk
+  int32 supplier_id = 11; // optional catalogued supplier (phase 2, wave 4 — AP subledger); 0 = none
 }
 
 message ReceiveMaterialStockResponse {
@@ -5679,3 +6005,741 @@ message DeleteAccountRequest {
 }
 
 message DeleteAccountResponse {}
+
+// ACCOUNTING (double-entry ledger, docs/plan-accounting/). The ledger is a DERIVED, append-only
+// projection of operational facts (orders, material movements, production runs, opex) plus manual
+// entries; base currency EUR. Dates are plain YYYY-MM-DD strings throughout (never
+// google.protobuf.Timestamp — 05-admin-api.md's date convention); money is google.type.Decimal.
+
+// --- chart of accounts ---
+
+// AcctAccount is a stored chart-of-accounts row. is_system accounts participate in automated
+// posting rules and cannot be renamed or archived (ErrAcctSystemAccount).
+message AcctAccount {
+  int32 id = 1;
+  string code = 2;
+  string name = 3;
+  string section = 4; // asset | liability | equity | revenue | cogs | opex
+  string statement = 5; // BS | PL
+  bool is_system = 6;
+  bool archived = 7;
+}
+
+message ListAcctAccountsRequest {
+  bool include_archived = 1;
+}
+
+message ListAcctAccountsResponse {
+  repeated AcctAccount accounts = 1;
+}
+
+message CreateAcctAccountRequest {
+  string code = 1;
+  string name = 2;
+  string section = 3; // asset | liability | equity | revenue | cogs | opex
+  string statement = 4; // BS | PL
+}
+
+message CreateAcctAccountResponse {
+  AcctAccount account = 1;
+}
+
+message UpdateAcctAccountRequest {
+  string code = 1;
+  string name = 2;
+}
+
+message UpdateAcctAccountResponse {
+  AcctAccount account = 1;
+}
+
+message ArchiveAcctAccountRequest {
+  string code = 1;
+  bool archived = 2;
+}
+
+message ArchiveAcctAccountResponse {}
+
+// --- journal ---
+
+// AcctJournalLineInput is one side of a manual journal entry being posted. Either `amount` (base
+// currency, EUR) or `amount_src`+`currency_src` (converted to base server-side via the costing FX
+// rates) must be set — never both, never neither.
+message AcctJournalLineInput {
+  string account_code = 1;
+  bool is_debit = 2;
+  google.type.Decimal amount = 3; // EUR; either this or amount_src+currency_src
+  google.type.Decimal amount_src = 4; // amount in currency_src; server converts to EUR
+  string currency_src = 5; // ISO 4217, or USDT (internal/currency.IsExpenseCurrency)
+  string note = 6;
+}
+
+message CreateJournalEntryRequest {
+  string occurred_at = 1; // YYYY-MM-DD; not more than 1 day in the future
+  string description = 2;
+  repeated AcctJournalLineInput lines = 3; // >= 2 lines, Σdebit == Σcredit (enforced by the store)
+  int32 supplier_id = 4; // optional AP tag (phase 2, wave 4): a manual 2010 payment against a supplier; 0 = none
+}
+
+// AcctJournalLine is a stored journal line (read side), joined to its account's code/name.
+message AcctJournalLine {
+  int32 id = 1;
+  string account_code = 2;
+  string account_name = 3;
+  string side = 4; // debit | credit
+  google.type.Decimal amount = 5; // base currency (EUR), always > 0
+  google.type.Decimal amount_src = 6; // original-currency trace; unset for most automated postings
+  string currency_src = 7;
+  string note = 8;
+}
+
+// AcctJournalEntry is a journal-entry header with its lines. ReversalOf/ReversedBy implement
+// reversal-not-edit: a mistaken entry is never updated or deleted, only mirrored by a new entry
+// that references it. `total` is Σdebit (== Σcredit); unset (nil) on the header-only shape
+// returned by ListJournalEntries ("без lines").
+message AcctJournalEntry {
+  int32 id = 1;
+  string occurred_at = 2;
+  string description = 3;
+  string source_type = 4;
+  string source_key = 5;
+  int32 reversal_of = 6; // 0 = not a reversal
+  int32 reversed_by = 7; // 0 = not yet reversed
+  string created_by = 8;
+  bool has_caveat = 9;
+  string caveat = 10;
+  repeated AcctJournalLine lines = 11; // empty on the ListJournalEntries header-only shape
+  google.type.Decimal total = 12; // unset on the ListJournalEntries header-only shape
+}
+
+message CreateJournalEntryResponse {
+  AcctJournalEntry entry = 1;
+}
+
+message ReverseJournalEntryRequest {
+  int32 entry_id = 1;
+  string reason = 2;
+}
+
+message ReverseJournalEntryResponse {
+  AcctJournalEntry entry = 1; // the new reversal entry (sides swapped), with lines
+}
+
+message ListJournalEntriesRequest {
+  string from = 1; // occurred_at >= from; empty = unbounded
+  string to = 2; // occurred_at < to (exclusive); empty = unbounded
+  string account_code = 3; // filter via lines; empty = any
+  string source_type = 4; // empty = any
+  int32 limit = 5;
+  int32 offset = 6;
+}
+
+message ListJournalEntriesResponse {
+  repeated AcctJournalEntry entries = 1; // without lines/total — see AcctJournalEntry
+  int32 total = 2; // unpaginated match count
+}
+
+message GetJournalEntryRequest {
+  int32 id = 1;
+}
+
+message GetJournalEntryResponse {
+  AcctJournalEntry entry = 1; // with lines
+}
+
+// --- periods ---
+
+// AcctPeriod is one accounting month (period is always the 1st). status gates CreateJournalEntry:
+// posting into a closed period fails (ErrAcctPeriodClosed).
+message AcctPeriod {
+  string period = 1; // YYYY-MM-DD, always the 1st of the month
+  string status = 2; // open | closed
+  string closed_at = 3; // RFC3339; empty when open
+  string closed_by = 4; // admin username; empty when open
+}
+
+message ListAcctPeriodsRequest {}
+
+message ListAcctPeriodsResponse {
+  repeated AcctPeriod periods = 1;
+}
+
+message CloseAcctPeriodRequest {
+  string month = 1; // target month, YYYY-MM (a YYYY-MM-DD date in the month is also accepted); normalised to the 1st
+}
+
+message CloseAcctPeriodResponse {
+  bool closed = 1;
+  repeated string not_ready = 2; // reason the period could not be closed; empty when closed=true
+}
+
+message ReopenAcctPeriodRequest {
+  string month = 1; // target month, YYYY-MM (a YYYY-MM-DD date in the month is also accepted); normalised to the 1st
+}
+
+message ReopenAcctPeriodResponse {}
+
+// AcctEvent is one posting-outbox event's disposition (the internal JSON payload is omitted).
+message AcctEvent {
+  int64 id = 1;
+  string event_type = 2; // order_paid | order_refund
+  string source_key = 3; // order uuid | uuid:refund-seq
+  string occurred_at = 4; // RFC3339
+  string created_at = 5; // RFC3339
+  string processed_at = 6; // RFC3339; empty while still pending
+  int32 attempts = 7;
+  string last_error = 8; // disposition / skip reason
+  bool needs_review = 9;
+}
+message ListAcctEventsNeedingReviewRequest {
+  int32 limit = 1; // default 50
+}
+message ListAcctEventsNeedingReviewResponse {
+  repeated AcctEvent events = 1;
+}
+message ReprocessAcctEventRequest {
+  int64 id = 1;
+}
+message ReprocessAcctEventResponse {}
+message ResolveAcctEventRequest {
+  int64 id = 1;
+}
+message ResolveAcctEventResponse {}
+
+// --- reports (docs/plan-accounting/06-reports.md) ---
+
+message GetTrialBalanceRequest {
+  string from = 1;
+  string to = 2; // exclusive
+}
+
+// TrialBalanceRow is one account's turnover + closing balance over [from, to). balance's sign
+// follows the account's section: asset/cogs/opex → debit − credit; liability/equity/revenue →
+// credit − debit.
+message TrialBalanceRow {
+  string code = 1;
+  string name = 2;
+  string section = 3;
+  google.type.Decimal debit = 4;
+  google.type.Decimal credit = 5;
+  google.type.Decimal balance = 6;
+}
+
+message GetTrialBalanceResponse {
+  repeated TrialBalanceRow rows = 1;
+  google.type.Decimal total_debit = 2;
+  google.type.Decimal total_credit = 3;
+  bool balanced = 4; // total_debit == total_credit; the ledger's core smoke invariant
+}
+
+message GetProfitLossStatementRequest {
+  string from = 1;
+  string to = 2; // exclusive
+}
+
+// AcctPLRow is one P&L account's values across the response's month columns, plus the row total.
+message AcctPLRow {
+  string code = 1;
+  string name = 2;
+  repeated google.type.Decimal values = 3; // aligned to GetProfitLossStatementResponse.months
+  google.type.Decimal total = 4;
+}
+
+// AcctPLSection groups P&L rows by section, in report order (revenue, cogs, opex, tax).
+message AcctPLSection {
+  string section = 1; // revenue | cogs | opex | tax
+  repeated AcctPLRow rows = 2;
+}
+
+// AcctPLTotals holds the P&L's derived summary rows, one value per response.months column.
+message AcctPLTotals {
+  repeated google.type.Decimal total_revenue = 1;
+  repeated google.type.Decimal net_cogs = 2;
+  repeated google.type.Decimal gross_profit = 3;
+  repeated google.type.Decimal gross_margin_pct = 4;
+  repeated google.type.Decimal total_opex = 5;
+  repeated google.type.Decimal operating_profit = 6;
+  repeated google.type.Decimal net_margin_pct = 7;
+  // Corporation Tax lines (phase 2, wave 3). total_tax is the period's Σ 8010 charge (manual journal
+  // only — zero until the accountant posts CT); net_profit_after_tax = operating_profit − total_tax.
+  repeated google.type.Decimal total_tax = 8;
+  repeated google.type.Decimal net_profit_after_tax = 9;
+}
+
+message GetProfitLossStatementResponse {
+  repeated string months = 1; // YYYY-MM-DD (1st of month); aligned with rows[].values / totals.*
+  repeated AcctPLSection sections = 2;
+  AcctPLTotals totals = 3;
+  // Caveats. As of phase 2 wave 3 the two former permanent caveats are CONDITIONAL: "pre-tax profit"
+  // prints only when the period has no 8010 Corporation-Tax entry, and "carrier shipping cost not
+  // booked" only when the period has 4110 shipping income but no 6030 shipping expense. Followed by a
+  // count of entries in the period flagged has_caveat.
+  repeated string caveats = 4;
+}
+
+message GetBalanceSheetRequest {
+  string as_of = 1; // inclusive
+}
+
+// AcctBalanceSheetRow is one BS account's closing balance as of the report date.
+message AcctBalanceSheetRow {
+  string code = 1;
+  string name = 2;
+  google.type.Decimal balance = 3;
+}
+
+// AcctBalanceSheetSection is one BS grouping (assets / liabilities / equity) with its rows + total.
+message AcctBalanceSheetSection {
+  string section = 1; // asset | liability | equity
+  repeated AcctBalanceSheetRow rows = 2;
+  google.type.Decimal total = 3;
+}
+
+message GetBalanceSheetResponse {
+  string as_of = 1;
+  AcctBalanceSheetSection assets = 2;
+  AcctBalanceSheetSection liabilities = 3;
+  AcctBalanceSheetSection equity = 4; // includes the virtual "Current Period Net Profit" row
+  AcctBalanceSheetRow net_profit_row = 5; // convenience copy of that row; unset if not found by name
+  google.type.Decimal total_assets = 6;
+  google.type.Decimal total_liabilities = 7;
+  google.type.Decimal total_equity = 8;
+  google.type.Decimal balance_check = 9; // total_assets − (total_liabilities + total_equity)
+  bool balanced = 10; // balance_check == 0
+  repeated string caveats = 11;
+}
+
+message GetAccountLedgerRequest {
+  string code = 1;
+  string from = 2; // empty = unbounded (from inception)
+  string to = 3; // exclusive; empty = unbounded
+  int32 limit = 4;
+  int32 offset = 5;
+}
+
+// AcctLedgerRow is one drill-down line for an account with its running balance.
+message AcctLedgerRow {
+  int32 entry_id = 1;
+  string occurred_at = 2;
+  string description = 3;
+  string source_type = 4;
+  string source_key = 5;
+  string side = 6; // debit | credit
+  google.type.Decimal amount = 7;
+  string note = 8;
+  google.type.Decimal running_balance = 9;
+}
+
+message GetAccountLedgerResponse {
+  string code = 1;
+  string name = 2;
+  string section = 3;
+  google.type.Decimal opening_balance = 4; // balance before `from`
+  google.type.Decimal closing_balance = 5;
+  repeated AcctLedgerRow rows = 6;
+  int32 total = 7; // unpaginated match count
+}
+
+message GetAcctReconciliationRequest {
+  string from = 1;
+  string to = 2; // exclusive
+}
+
+// AcctReconItem is one row inside a reconciliation block (a top-N sample; the block's total_count
+// carries the full count). ref is the operational identity (order uuid, movement id, run id, month).
+message AcctReconItem {
+  string ref = 1;
+  string label = 2;
+  google.type.Decimal amount = 3;
+}
+
+// AcctReconBlock is one reconciliation dimension: the ledger figure, the operational figure, their
+// delta, and a bounded item sample. A non-zero delta (outside finished_goods, where drift is
+// expected) signals the ledger diverged from operational truth.
+message AcctReconBlock {
+  string name = 1;
+  google.type.Decimal ledger = 2;
+  google.type.Decimal operational = 3;
+  google.type.Decimal delta = 4;
+  repeated AcctReconItem items = 5;
+  int32 total_count = 6;
+}
+
+message GetAcctReconciliationResponse {
+  AcctReconBlock revenue = 1;
+  AcctReconBlock fees = 2;
+  AcctReconBlock cogs = 3;
+  AcctReconBlock materials = 4;
+  AcctReconBlock finished_goods = 5;
+  AcctReconBlock pending = 6;
+  AcctReconBlock unposted_movements = 7;
+  AcctReconBlock vat = 8; // phase 2 wave 1: 2070 ledger vs regime-classified order sums
+  AcctReconBlock prepayments = 9; // phase 2 wave 2: 2090 balance vs paid-undelivered orders
+  AcctReconBlock shipping = 10; // phase 2 wave 3: 6030 actual shipping cost booked
+  AcctReconBlock bank = 11; // phase 2 wave 4: 1010 balance + Revolut inbox unposted backlog
+}
+
+// --- wave 4: Revolut bank inbox (docs/plan-accounting-phase2/04-wave4-money.md §4.1) ---
+
+// AcctBankTxn is one parsed bank statement line in the inbox. amount is SIGNED (negative = outflow);
+// currency is the payment currency (Revolut is multi-currency). state is unmatched | matched | posted |
+// ignored; matched_entry_id (0 = none) links a posted line to its journal entry; suggested_account (empty
+// = none) is the rule/default hint prefilled in the post modal.
+message AcctBankTxn {
+  int32 id = 1;
+  string source = 2;
+  string external_id = 3;
+  string booked_at = 4; // RFC3339
+  google.type.Decimal amount = 5; // signed
+  string currency = 6;
+  google.type.Decimal fee = 7; // null when absent
+  string description = 8;
+  string counterparty = 9;
+  string state = 10;
+  int32 matched_entry_id = 11;
+  string suggested_account = 12;
+  string created_at = 13; // RFC3339
+}
+
+message ImportBankCsvRequest {
+  string source = 1; // parser to use; empty = revolut
+  string csv_text = 2; // the raw CSV export
+}
+message ImportBankCsvResponse {
+  int32 parsed = 1; // importable lines the parser produced
+  int32 imported = 2; // newly inserted
+  int32 skipped = 3; // duplicates of already-imported lines
+}
+
+message ListBankTxnsRequest {
+  string state = 1; // unmatched | matched | posted | ignored; empty = all
+  int32 limit = 2;
+}
+message ListBankTxnsResponse {
+  repeated AcctBankTxn txns = 1;
+}
+
+message PostBankTxnRequest {
+  int32 id = 1;
+  string account_code = 2; // the other side of the entry (1010 is the money leg)
+  string occurred_at = 3; // YYYY-MM-DD; empty = the line's booked date
+}
+message PostBankTxnResponse {
+  AcctJournalEntry entry = 1;
+}
+
+message IgnoreBankTxnRequest {
+  int32 id = 1;
+  string reason = 2; // advisory (logged, not persisted)
+}
+message IgnoreBankTxnResponse {}
+
+// AcctBankRule is a substring→account suggestion applied at import.
+message AcctBankRule {
+  int32 id = 1;
+  string pattern = 2;
+  string account_code = 3;
+}
+message ListBankRulesRequest {}
+message ListBankRulesResponse {
+  repeated AcctBankRule rules = 1;
+}
+message CreateBankRuleRequest {
+  string pattern = 1;
+  string account_code = 2;
+}
+message CreateBankRuleResponse {
+  AcctBankRule rule = 1;
+}
+message DeleteBankRuleRequest {
+  int32 id = 1;
+}
+message DeleteBankRuleResponse {}
+
+// --- wave 4: AP/AR subledgers (docs/plan-accounting-phase2/04-wave4-money.md §4.4) ---
+
+// Supplier is a purchase-side counterparty (the AP catalog).
+message Supplier {
+  int32 id = 1;
+  string name = 2;
+  string vat_id = 3;
+  string notes = 4;
+  string created_at = 5; // RFC3339
+}
+message CreateSupplierRequest {
+  string name = 1;
+  string vat_id = 2;
+  string notes = 3;
+}
+message CreateSupplierResponse {
+  Supplier supplier = 1;
+}
+message ListSuppliersRequest {}
+message ListSuppliersResponse {
+  repeated Supplier suppliers = 1;
+}
+
+// AcctPayableRow is one supplier's open Accounts-Payable (2010) position. supplier_id 0 = an untagged 2010
+// position (a 2010 entry with no supplier). balance = accrued − paid.
+message AcctPayableRow {
+  int32 supplier_id = 1;
+  string supplier_name = 2;
+  google.type.Decimal accrued = 3;
+  google.type.Decimal paid = 4;
+  google.type.Decimal balance = 5;
+}
+message GetPayablesRequest {}
+message GetPayablesResponse {
+  repeated AcctPayableRow rows = 1;
+}
+
+// AcctReceivableRow is one bank-invoice order's open Accounts-Receivable (1040) position. ref is the order
+// uuid; balance = invoiced − received.
+message AcctReceivableRow {
+  string ref = 1;
+  google.type.Decimal invoiced = 2;
+  google.type.Decimal received = 3;
+  google.type.Decimal balance = 4;
+}
+message GetReceivablesRequest {}
+message GetReceivablesResponse {
+  repeated AcctReceivableRow rows = 1;
+}
+
+// --- VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5).
+// Both reports are SOURCE-TYPE-AGNOSTIC: they aggregate the 2070 VAT ledger lines of order entries
+// by customer_order.vat_regime over the PAYMENT period, so they survive wave 2's prepayment split.
+// Refunds net with a minus sign. Numbers are for the accountant's manual JPK_VAT / OSS filing —
+// full XML export is phase 3. ---
+
+message GetVatReturnPLRequest {
+  // month: YYYY-MM-DD, any day within the target filing month (normalised to the 1st).
+  string month = 1;
+}
+
+// GetVatReturnPLResponse is the JPK_VAT monthly aggregate (filed by the 25th). Output VAT is split
+// by regime (domestic PL, WNT/import self-charge; OSS shown for reference only — OSS is filed via
+// GetOssReturn, not JPK, and is excluded from net_payable), input VAT is split by purchase type, and
+// net_payable is the resulting liability. Caveats aggregates the period's per-entry caveats.
+message GetVatReturnPLResponse {
+  string month = 1; // YYYY-MM-DD, normalised to the 1st of the month
+  google.type.Decimal output_domestic = 2; // pl_domestic sales output VAT (23%)
+  google.type.Decimal output_wnt_self_charge = 3; // WNT/import purchase self-charge output (Art.33a)
+  google.type.Decimal oss_info_total = 4; // OSS B2C output VAT, informational only — NOT in net_payable
+  google.type.Decimal input_domestic = 5; // recoverable input VAT on domestic_pl purchases
+  google.type.Decimal input_wnt = 6; // recoverable input VAT on WNT purchases (nets against output_wnt_self_charge)
+  google.type.Decimal input_import = 7; // recoverable input VAT on import purchases (nets against output_wnt_self_charge)
+  google.type.Decimal net_payable = 8; // output_domestic + output_wnt_self_charge − input_domestic − input_wnt − input_import
+  // UK is a different jurisdiction — filed on the UK return, deliberately NOT in net_payable.
+  google.type.Decimal output_uk_stock_domestic = 10; // uk_stock_domestic output VAT (2070)
+  google.type.Decimal input_uk_domestic = 11; // domestic_uk purchase input VAT (recoverable in the UK)
+  // Zero-rated NET revenue bases JPK still declares (carry no VAT, not in net_payable).
+  google.type.Decimal net_wdt = 12; // intra-community supply net base (K_21)
+  google.type.Decimal net_export = 13; // export net base (K_22)
+  repeated string caveats = 9;
+}
+
+message GetOssReturnRequest {
+  // quarter: YYYY-MM-DD, first day of the quarter (any day within the quarter is accepted and
+  // snapped to that quarter's first day — see dto.ParseAcctQuarterStart).
+  string quarter = 1;
+}
+
+// AcctOssRow is one destination country's OSS B2C line: country, applied rate, net taxable base and VAT.
+message AcctOssRow {
+  string country = 1; // ISO alpha-2 ship-to country
+  google.type.Decimal rate_pct = 2;
+  google.type.Decimal net = 3;
+  google.type.Decimal vat = 4;
+}
+
+message GetOssReturnResponse {
+  string quarter_start = 1; // YYYY-MM-DD, first day of the quarter
+  repeated AcctOssRow rows = 2;
+  google.type.Decimal total_net = 3;
+  google.type.Decimal total_vat = 4;
+}
+
+message ExportJpkV7MRequest {
+  // month: YYYY-MM-DD, any day within the target filing month (normalised to the 1st).
+  string month = 1;
+}
+
+message ExportJpkV7MResponse {
+  string filename = 1; // suggested download name, e.g. JPK_V7M_2026-07.xml
+  string xml_content = 2; // the JPK_V7M(2) XML document (UTF-8)
+}
+
+message ExportOssReturnRequest {
+  // quarter: YYYY-MM-DD, any day within the target quarter (snapped to the quarter's first day).
+  string quarter = 1;
+}
+
+message ExportOssReturnResponse {
+  string filename = 1; // suggested download name, e.g. OSS_2026-Q3.xml
+  string xml_content = 2; // the OSS (VIU-DO) return XML (UTF-8)
+}
+
+message GetUkVatReturnRequest {
+  // quarter: YYYY-MM-DD, any day within the target quarter (snapped to the quarter's first day).
+  string quarter = 1;
+}
+
+// GetUkVatReturnResponse is the 9-box UK VAT return. Boxes 2 (EU acquisitions VAT), 8 and 9 (EU
+// supplies/acquisitions) are always zero for a post-Brexit GB return, so they are omitted here; Box 3 =
+// Box 1 and Box 5 = Box 3 − Box 4.
+message GetUkVatReturnResponse {
+  string quarter_start = 1; // YYYY-MM-DD, first day of the quarter
+  google.type.Decimal box1_output_vat = 2; // VAT due on sales
+  google.type.Decimal box3_total_vat_due = 3; // Box 1 + Box 2 (Box 2 = 0)
+  google.type.Decimal box4_input_vat = 4; // VAT reclaimed on purchases
+  google.type.Decimal box5_net_vat = 5; // Box 3 − Box 4 (payable if positive)
+  google.type.Decimal box6_net_sales = 6; // total sales ex-VAT
+  google.type.Decimal box7_net_purchases = 7; // total purchases ex-VAT
+}
+
+message GetFrs105AccountsRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+}
+
+// GetFrs105AccountsResponse is an FRS 105 micro-entity accounts DRAFT: the Income Statement over the
+// period and the Statement of Financial Position as at `to`, re-grouped from the ledger. Figures are
+// in `currency` (the ledger base currency); the caveats flag that a UK Ltd filing needs GBP + entity
+// isolation.
+message GetFrs105AccountsResponse {
+  string from = 1;
+  string to = 2;
+  string currency = 3;
+  google.type.Decimal turnover = 4;
+  google.type.Decimal cost_of_sales = 5;
+  google.type.Decimal gross_profit = 6;
+  google.type.Decimal administrative_expenses = 7;
+  google.type.Decimal depreciation = 8;
+  google.type.Decimal operating_profit = 9;
+  google.type.Decimal tax = 10;
+  google.type.Decimal profit_for_year = 11;
+  google.type.Decimal fixed_assets = 12;
+  google.type.Decimal current_assets = 13;
+  google.type.Decimal creditors_within_year = 14;
+  google.type.Decimal net_current_assets = 15;
+  google.type.Decimal total_assets_less_current_liab = 16;
+  google.type.Decimal creditors_after_year = 17;
+  google.type.Decimal net_assets = 18;
+  google.type.Decimal capital_and_reserves = 19;
+  repeated string caveats = 20;
+}
+
+// --- wave 5: cash flow + financial health (docs/plan-accounting-phase2/05-wave5-reporting.md) ---
+
+message GetCashFlowStatementRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+}
+
+// AcctCashFlowLine is one cash-flow line: a label and its SIGNED cash impact (source positive, use
+// negative).
+message AcctCashFlowLine {
+  string label = 1;
+  google.type.Decimal amount = 2;
+}
+
+// AcctCashFlowSection groups cash-flow lines (operating | investing | financing) with the section subtotal.
+message AcctCashFlowSection {
+  string name = 1;
+  repeated AcctCashFlowLine lines = 2;
+  google.type.Decimal subtotal = 3;
+}
+
+// GetCashFlowStatementResponse is the indirect-method statement over [from, to). closing_cash is derived
+// (opening_cash + net_change); closing_cash_actual is the real cash-account balance as at `to`; check =
+// closing_cash_actual − closing_cash (0 when balanced, the trust panel).
+message GetCashFlowStatementResponse {
+  string from = 1;
+  string to = 2;
+  string currency = 3;
+  AcctCashFlowSection operating = 4;
+  AcctCashFlowSection investing = 5;
+  AcctCashFlowSection financing = 6;
+  google.type.Decimal net_change = 7;
+  google.type.Decimal opening_cash = 8;
+  google.type.Decimal closing_cash = 9;
+  google.type.Decimal closing_cash_actual = 10;
+  google.type.Decimal check = 11;
+  bool balanced = 12;
+  repeated string caveats = 13;
+}
+
+message GetFinancialHealthRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+}
+
+// AcctFinancialHealthRow is one ratio row: its value, the owner's benchmark string, a status
+// (ok | warn | na | track) and a display unit ("%", "x", "days", the base currency, or "").
+message AcctFinancialHealthRow {
+  string name = 1;
+  string formula = 2;
+  google.type.Decimal value = 3;
+  string benchmark = 4;
+  string status = 5;
+  string unit = 6;
+}
+
+message GetFinancialHealthResponse {
+  string from = 1;
+  string to = 2;
+  string currency = 3;
+  repeated AcctFinancialHealthRow rows = 4;
+  repeated string caveats = 5;
+}
+
+// FixedAsset is one capitalised asset, depreciated straight-line over useful_life_months from acquired_on.
+message FixedAsset {
+  int32 id = 1;
+  string name = 2;
+  google.type.Decimal cost_base = 3; // base-currency cost
+  string acquired_on = 4; // YYYY-MM-DD
+  int32 useful_life_months = 5;
+  string disposed_on = 6; // YYYY-MM-DD or empty
+}
+
+message CreateFixedAssetRequest {
+  string name = 1;
+  google.type.Decimal cost_base = 2;
+  string acquired_on = 3; // YYYY-MM-DD
+  int32 useful_life_months = 4;
+}
+
+message CreateFixedAssetResponse {
+  int32 id = 1;
+}
+
+message ListFixedAssetsRequest {}
+
+message ListFixedAssetsResponse {
+  repeated FixedAsset assets = 1;
+}
+
+message PostDepreciationRequest {
+  string up_to = 1; // YYYY-MM-DD; posts every un-posted monthly charge up to this month
+}
+
+message PostDepreciationResponse {
+  int32 posted = 1; // number of monthly charges newly posted
+  // Monthly charges NOT posted because their accounting period is already closed. Non-zero means the
+  // run was incomplete (e.g. a back-dated asset whose early months are closed) — reopen the period or
+  // post a manual catch-up; the depreciation is not otherwise recovered.
+  int32 skipped = 2;
+}
+
+message AccrueCorporationTaxRequest {
+  string from = 1; // YYYY-MM-DD period start
+  string to = 2; // YYYY-MM-DD period end (exclusive)
+  google.type.Decimal rate_pct = 3; // corporation-tax rate, e.g. 19 or 25
+}
+
+message AccrueCorporationTaxResponse {
+  google.type.Decimal corp_tax = 1; // amount accrued (0 for a loss period)
+  bool already_posted = 2; // true if the period was already accrued (no new posting)
+}

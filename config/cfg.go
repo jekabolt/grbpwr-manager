@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	bq "github.com/jekabolt/grbpwr-manager/internal/analytics/bigquery"
 	"github.com/jekabolt/grbpwr-manager/internal/analytics/ga4"
@@ -35,6 +36,18 @@ import (
 // RatesConfig holds base currency (no exchange rates - metrics use product_price).
 type RatesConfig struct {
 	BaseCurrency string `mapstructure:"base_currency"`
+}
+
+// JPKConfig holds the Polish taxpayer identity written into the JPK_V7M header (Naglowek + Podmiot1).
+// These are legal-registry values with no source in the application, so they are operator-supplied via
+// env (JPK_*) or a config file. An empty NIP disables the JPK_V7M export — it cannot emit a schema-valid
+// file without a taxpayer. NazwaSystemu is stamped by the generator; nothing secret lives here.
+type JPKConfig struct {
+	NIP       string `mapstructure:"nip"`        // 10-digit taxpayer NIP (Podmiot1/OsobaNiefizyczna/NIP)
+	FullName  string `mapstructure:"full_name"`  // full legal name (Podmiot1/OsobaNiefizyczna/PelnaNazwa)
+	Email     string `mapstructure:"email"`      // contact email (Podmiot1/OsobaNiefizyczna/Email)
+	Phone     string `mapstructure:"phone"`      // contact phone, optional (Podmiot1/OsobaNiefizyczna/Telefon)
+	TaxOffice string `mapstructure:"tax_office"` // 4-digit destination tax-office code (Naglowek/KodUrzedu)
 }
 
 // SecurityConfig holds request-handling security settings.
@@ -72,10 +85,12 @@ type Config struct {
 	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
 	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
 	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
+	Accounting        acctposting.Config       `mapstructure:"accounting"`
 	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
 	FxSync            fxsync.Config            `mapstructure:"fx_sync"`
 	Rates             RatesConfig              `mapstructure:"rates"`
 	Security          SecurityConfig           `mapstructure:"security"`
+	JPK               JPKConfig                `mapstructure:"jpk"`
 	StripePayment     stripe.Config            `mapstructure:"stripe_payment"`
 	StripePaymentTest stripe.Config            `mapstructure:"stripe_payment_test"`
 	Revalidation      revalidation.Config      `mapstructure:"revalidation"`
@@ -223,6 +238,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("auth.jwt_secret is required: set AUTH_JWT_SECRET")
 	}
 
+	// Accounting posting worker: when enabled, its cutover date must parse and not be in the future
+	// (a misconfigured start date would either post pre-cutover history or nothing at all).
+	if err := c.Accounting.Validate(); err != nil {
+		return fmt.Errorf("invalid accounting configuration: %w", err)
+	}
+
 	return nil
 }
 
@@ -341,6 +362,19 @@ func bindEnvVars() {
 
 	// OPEX materialize (book recurring fixed-cost templates into monthly lines)
 	viper.BindEnv("opex_materialize.worker_interval", "OPEX_MATERIALIZE_WORKER_INTERVAL")
+
+	// Accounting posting worker (drain the order outbox + pull sources into the double-entry ledger)
+	viper.BindEnv("accounting.enabled", "ACCOUNTING_ENABLED")
+	viper.BindEnv("accounting.worker_interval", "ACCOUNTING_WORKER_INTERVAL")
+	viper.BindEnv("accounting.batch_size", "ACCOUNTING_BATCH_SIZE")
+	viper.BindEnv("accounting.start_date", "ACCOUNTING_START_DATE")
+	viper.BindEnv("accounting.delivered_recognition_from", "ACCOUNTING_DELIVERED_RECOGNITION_FROM")
+	viper.BindEnv("jpk.nip", "JPK_NIP")
+	viper.BindEnv("jpk.full_name", "JPK_FULL_NAME")
+	viper.BindEnv("jpk.email", "JPK_EMAIL")
+	viper.BindEnv("jpk.phone", "JPK_PHONE")
+	viper.BindEnv("jpk.tax_office", "JPK_TAX_OFFICE")
+	viper.BindEnv("accounting.settled_wait_max", "ACCOUNTING_SETTLED_WAIT_MAX")
 
 	// Stripe reconcile (orphaned pre-order PaymentIntents)
 	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")

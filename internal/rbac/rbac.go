@@ -65,6 +65,10 @@ const (
 	// SectionAccounts governs the account-management RPCs themselves. Only a
 	// super-admin or an account with accounts:write may create/edit accounts.
 	SectionAccounts = "accounts"
+	// SectionAccounting governs the double-entry ledger: chart of accounts, journal
+	// (incl. manual entries), period close and accounting reports. Reports expose the
+	// same confidential figures as SectionCosting, so grant together in practice.
+	SectionAccounting = "accounting"
 )
 
 // SectionInfo describes a section for the admin UI's permission picker.
@@ -97,6 +101,7 @@ var catalog = []SectionInfo{
 	{SectionSupport, "Support", "Support tickets and reviews."},
 	{SectionMembership, "Membership", "Members, loyalty tiers, hacker invites."},
 	{SectionAccounts, "Accounts", "Admin accounts and their permissions."},
+	{SectionAccounting, "Accounting", "Double-entry ledger: chart of accounts, journal, period close, financial reports."},
 }
 
 // sectionSet is the set of valid section keys, derived from the catalog.
@@ -221,8 +226,10 @@ var methodRequirements = map[string]Requirement{
 	"ListEmployees":       rd(SectionAnalytics),
 	"GetAlertSettings":    rd(SectionAnalytics),
 	"UpsertAlertSettings": wr(SectionAnalytics),
-	"GetVatRates":         rd(SectionAnalytics),
-	"UpsertVatRates":      wr(SectionAnalytics),
+	// VAT rates feed the tax engine (declarations/JPK), not business metrics — governed by
+	// accounting for segregation of duties (D-5), so a metrics-only operator can't move tax numbers.
+	"GetVatRates":    rd(SectionAccounting),
+	"UpsertVatRates": wr(SectionAccounting),
 	// content / media
 	"UploadContentImage": wr(SectionContent),
 	"UploadContentVideo": wr(SectionContent),
@@ -269,7 +276,7 @@ var methodRequirements = map[string]Requirement{
 	// tech cards
 	"CreateTechCard":             wr(SectionTechCards),
 	"GenerateTechCardOperations": wr(SectionTechCards), // AI-assisted authoring (POST); tech-card write
-	"SuggestStyleNumber":         rd(SectionTechCards),  // Q1: propose the next style number for a season
+	"SuggestStyleNumber":         rd(SectionTechCards), // Q1: propose the next style number for a season
 	// Q5 role assignments + the lightweight admin picker (so a role-assigner needs tech_cards, not accounts).
 	"AssignTechCardRole":           wr(SectionTechCards),
 	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
@@ -295,8 +302,8 @@ var methodRequirements = map[string]Requirement{
 	"DeleteTechCardDevExpense":     wr(SectionTechCards),
 	"ListTechCardDevExpenses":      rd(SectionTechCards),
 	// style assembly bill: on-garment auxiliary components (labels/tags) — a PLM/style concern (WS7, §2.8)
-	"UpsertStyleAssembly": wr(SectionTechCards),
-	"ListStyleAssembly":   rd(SectionTechCards),
+	"UpsertStyleAssembly":  wr(SectionTechCards),
+	"ListStyleAssembly":    rd(SectionTechCards),
 	"GetStyleCostEstimate": rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":          wr(SectionProduction),
@@ -393,6 +400,54 @@ var methodRequirements = map[string]Requirement{
 	"SetAccountDisabled":       wr(SectionAccounts),
 	"DeleteAccount":            wr(SectionAccounts),
 	"ResetAccountPassword":     wr(SectionAccounts),
+	// accounting (double-entry ledger, docs/plan-accounting/05-admin-api.md): chart of accounts,
+	// journal (incl. manual entries + reversal), period close/reopen and the financial reports.
+	"ListAcctAccounts":    rd(SectionAccounting),
+	"CreateAcctAccount":   wr(SectionAccounting),
+	"UpdateAcctAccount":   wr(SectionAccounting),
+	"ArchiveAcctAccount":  wr(SectionAccounting),
+	"CreateJournalEntry":  wr(SectionAccounting),
+	"ReverseJournalEntry": wr(SectionAccounting),
+	"ListJournalEntries":  rd(SectionAccounting),
+	"GetJournalEntry":     rd(SectionAccounting),
+	"ListAcctPeriods":     rd(SectionAccounting),
+	"CloseAcctPeriod":     wr(SectionAccounting),
+	"ReopenAcctPeriod":    wr(SectionAccounting),
+	// posting-worker event review queue (H-1/H-2/B-5): listing is read, reprocess/resolve mutate state.
+	"ListAcctEventsNeedingReview": rd(SectionAccounting),
+	"ReprocessAcctEvent":          wr(SectionAccounting),
+	"ResolveAcctEvent":            wr(SectionAccounting),
+	"GetTrialBalance":             rd(SectionAccounting),
+	"GetProfitLossStatement":      rd(SectionAccounting),
+	"GetBalanceSheet":             rd(SectionAccounting),
+	"GetAccountLedger":            rd(SectionAccounting),
+	"GetAcctReconciliation":       rd(SectionAccounting),
+	"GetVatReturnPL":              rd(SectionAccounting),
+	"GetOssReturn":                rd(SectionAccounting),
+	"ExportJpkV7M":                rd(SectionAccounting),
+	"ExportOssReturn":             rd(SectionAccounting),
+	"GetUkVatReturn":              rd(SectionAccounting),
+	"GetFrs105Accounts":           rd(SectionAccounting),
+	"GetCashFlowStatement":        rd(SectionAccounting),
+	"GetFinancialHealth":          rd(SectionAccounting),
+
+	// Wave 4 — money side: Revolut bank inbox (4.1) + AP/AR subledgers (4.4).
+	"ImportBankCsv":  wr(SectionAccounting),
+	"ListBankTxns":   rd(SectionAccounting),
+	"PostBankTxn":    wr(SectionAccounting),
+	"IgnoreBankTxn":  wr(SectionAccounting),
+	"ListBankRules":  rd(SectionAccounting),
+	"CreateBankRule": wr(SectionAccounting),
+	"DeleteBankRule": wr(SectionAccounting),
+	"CreateSupplier": wr(SectionAccounting),
+	"ListSuppliers":  rd(SectionAccounting),
+	"GetPayables":    rd(SectionAccounting),
+	"GetReceivables": rd(SectionAccounting),
+	// Fixed-asset depreciation + corporation-tax accrual (#71).
+	"CreateFixedAsset":     wr(SectionAccounting),
+	"ListFixedAssets":      rd(SectionAccounting),
+	"PostDepreciation":     wr(SectionAccounting),
+	"AccrueCorporationTax": wr(SectionAccounting),
 }
 
 // allowlist is the set of admin methods any authenticated account may call

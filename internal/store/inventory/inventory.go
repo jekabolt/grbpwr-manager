@@ -83,11 +83,13 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 		INSERT INTO material_stock_movement
 			(material_id, movement_type, quantity, on_hand_before, on_hand_after,
 			 unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
-			 lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at)
+			 lot, lot_id, supplier_doc, supplier_id, reason, comment, admin_username, occurred_at,
+			 input_vat_amount, input_vat_regime)
 		VALUES
 			(:material_id, :movement_type, :quantity, :on_hand_before, :on_hand_after,
 			 :unit_cost, :currency, :unit_cost_base, :production_run_id, :sample_id, :tech_card_id, :product_id,
-			 :lot, :lot_id, :supplier_doc, :reason, :comment, :admin_username, :occurred_at)`,
+			 :lot, :lot_id, :supplier_doc, :supplier_id, :reason, :comment, :admin_username, :occurred_at,
+			 :input_vat_amount, :input_vat_regime)`,
 		map[string]any{
 			"material_id":       m.MaterialId,
 			"movement_type":     string(m.MovementType),
@@ -104,10 +106,13 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 			"lot":               m.Lot,
 			"lot_id":            m.LotId,
 			"supplier_doc":      m.SupplierDoc,
+			"supplier_id":       m.SupplierId,
 			"reason":            m.Reason,
 			"comment":           m.Comment,
 			"admin_username":    m.AdminUsername,
 			"occurred_at":       m.OccurredAt,
+			"input_vat_amount":  nullDecimal(m.InputVatAmount),
+			"input_vat_regime":  m.InputVatRegime,
 		})
 	if err != nil {
 		return entity.MaterialMovement{}, fmt.Errorf("insert material movement: %w", err)
@@ -334,6 +339,13 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 		Comment:         ins.Comment,
 		AdminUsername:   ins.AdminUsername,
 		OccurredAt:      ins.OccurredAt,
+		InputVatAmount:  ins.InputVatAmount,
+		InputVatRegime:  ins.InputVatRegime,
+	}
+	// A catalogued supplier tags a purchase receipt only (an auxiliary-run receipt_production has no
+	// supplier); it flows onto the M1 journal entry for the AP-by-supplier view (phase 2, wave 4).
+	if !ins.FromProduction {
+		m.SupplierId = ins.SupplierId
 	}
 	if currency != "" {
 		m.Currency = sql.NullString{String: currency, Valid: true}

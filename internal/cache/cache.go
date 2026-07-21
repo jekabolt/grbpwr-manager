@@ -292,12 +292,18 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 
 func GetOrderStatusById(id int) (Status, bool) {
 	st, ok := orderStatusesById[id]
-	return *st, ok
+	if !ok {
+		return Status{}, false
+	}
+	return *st, true
 }
 
 func GetOrderStatusByName(n entity.OrderStatusName) (Status, bool) {
 	st, ok := orderStatusesByName[n]
-	return *st, ok
+	if !ok {
+		return Status{}, false
+	}
+	return *st, true
 }
 
 // OrderStatusIDsForNetRevenue returns status IDs for orders contributing to net revenue (confirmed, shipped, delivered, partially_refunded).

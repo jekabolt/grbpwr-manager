@@ -44,6 +44,10 @@ type OrderNew struct {
 	// whose product min_tier the buyer does not satisfy is rejected regardless of what the storefront
 	// displayed. Left 0 on the admin custom-order path (that path is trusted and not tier-gated).
 	BuyerTier int16 `valid:"-"`
+	// BuyerVatID is the B2B customer's VAT identifier (custom orders only; the dto fills it from
+	// CreateCustomOrderRequest). Its presence drives the wdt / reverse-charge classification and 4310
+	// wholesale revenue. Empty (invalid) on the storefront path → written as NULL (phase 2, wave 1).
+	BuyerVatID sql.NullString `valid:"-"`
 }
 
 type OrderFull struct {
@@ -119,6 +123,15 @@ type Order struct {
 	BuyerEmail     string `db:"buyer_email"`
 	BuyerFirstName string `db:"buyer_first_name"`
 	BuyerLastName  string `db:"buyer_last_name"`
+	// VatRegime is the VAT treatment snapshotted onto the order at accounting-posting time by
+	// SetOrderVatRegime (customer_order.vat_regime): oss / pl_domestic / export / wdt /
+	// uk_stock_domestic / none. NULL until the sale event is posted. Read-only surface for the
+	// invoice reverse-charge note; not written by the order flow.
+	VatRegime sql.NullString `db:"vat_regime"`
+	// BuyerVatID is the B2B buyer's EU VAT identifier snapshotted at order creation
+	// (customer_order.buyer_vat_id); NULL for B2C/storefront orders. Read-only surface for the
+	// invoice; the custom-order flow writes it via entity.OrderNew.BuyerVatID.
+	BuyerVatID sql.NullString `db:"buyer_vat_id"`
 }
 
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
