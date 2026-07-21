@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -418,5 +419,17 @@ func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, inco
 // to the same line even though row ids are reassigned on replace.
 func bomNaturalKey(b entity.TechCardBomItem) string {
 	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
-	return norm(string(b.Section)) + "\x1f" + norm(b.Name) + "\x1f" + norm(b.SupplierRef.String)
+	// A LINKED line keys on its material id, never on its name. The name of a linked line is RESOLVED
+	// from the catalog material on read (enrichMaterials), so the STORED side of this comparison
+	// carries the material's name while the INCOMING payload may legitimately carry an empty one --
+	// the admin client sends name:'' for a linked line that never had its own. Keying on the name
+	// would make those two sides fail to match, and because this function drives the anti-erase
+	// restore, a non-costing account's save would then silently blank the purchase price on every
+	// linked BOM line. The material id is present and identical on both sides, so it is the stable
+	// identity. Free-text lines have no material and keep keying on their own name.
+	ident := norm(b.Name)
+	if b.MaterialId.Valid && b.MaterialId.Int64 > 0 {
+		ident = "material#" + strconv.FormatInt(b.MaterialId.Int64, 10)
+	}
+	return norm(string(b.Section)) + "\x1f" + ident + "\x1f" + norm(b.SupplierRef.String)
 }
