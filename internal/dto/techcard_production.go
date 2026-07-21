@@ -211,6 +211,20 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err := validateDecimalScale(timeNorm, "operation time_norm", 3, 10_000); err != nil {
 			return nil, err
 		}
+		// piece_line_keys (WS4): the cut-pieces this operation works on. Repeated because an
+		// assembly operation spans as many pieces as it joins. Blanks are dropped and duplicates
+		// collapsed here so the store's join-table write can stay a straight insert -- the table's
+		// UNIQUE(operation_id, piece_id) would otherwise turn an accidental repeat into a 500.
+		var pieceLineKeys []string
+		seenPieceKey := make(map[string]bool, len(o.PieceLineKeys))
+		for _, k := range o.PieceLineKeys {
+			k = strings.TrimSpace(k)
+			if k == "" || seenPieceKey[k] {
+				continue
+			}
+			seenPieceKey[k] = true
+			pieceLineKeys = append(pieceLineKeys, k)
+		}
 		out = append(out, entity.TechCardOperation{
 			// operation_number is server-assigned = (position+1)*10 («оп. 10, 20, …»);
 			// any client value is ignored (plan §4). Reorder shifts numbers (Q6).
@@ -233,6 +247,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			BomItemIndex:    bomItemIndex,
 			CalloutNumber:   calloutNumber,
 			Placement:       normalizedPlacementNull(o.Placement),
+			PieceLineKeys:   pieceLineKeys,
 		})
 	}
 	return out, nil
@@ -390,6 +405,10 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			v := o.BomItemIndex.Int32
 			bomItemIndex = &v
 		}
+		pieceIds := make([]int64, 0, len(o.PieceIds))
+		for _, id := range o.PieceIds {
+			pieceIds = append(pieceIds, int64(id))
+		}
 		out = append(out, &pb_common.TechCardOperation{
 			OperationNumber: pbInt32FromNull(o.OperationNumber),
 			Node:            o.Node,
@@ -410,6 +429,8 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			BomItemId:       o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
 			CalloutNumber:   pbInt32FromNull(o.CalloutNumber),
 			Placement:       pbStringFromNull(o.Placement),
+			PieceLineKeys:   o.PieceLineKeys,
+			PieceIds:        pieceIds,
 		})
 	}
 	return out
