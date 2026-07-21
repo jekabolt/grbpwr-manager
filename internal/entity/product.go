@@ -84,8 +84,15 @@ type Color struct {
 }
 
 // Collection represents a product collection with counts
+// Collection is the dictionary projection served through GetDictionary: one row per entry in the
+// `collection` table (R9), enriched with the storefront's published-product counts per gender.
+// ID/Code/Archived are 0/""/false for a legacy name that only exists as free text on a style and has
+// no dictionary row yet -- see getCollections.
 type Collection struct {
+	ID         int    `db:"id"`
+	Code       string `db:"code"`
 	Name       string `db:"name"`
+	Archived   bool
 	CountMen   int
 	CountWomen int
 }

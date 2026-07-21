@@ -209,7 +209,10 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 	for _, col := range dict.Collections {
 		commonDict.Collections = append(commonDict.Collections,
 			&pb_common.Collection{
+				Id:         int32(col.ID),
+				Code:       col.Code,
 				Name:       col.Name,
+				Archived:   col.Archived,
 				CountMen:   int32(col.CountMen),
 				CountWomen: int32(col.CountWomen),
 			})

@@ -356,25 +356,44 @@ func (s *Store) getSizeCountsByGender(ctx context.Context, gender entity.GenderE
 	return counts, nil
 }
 
+// getCollections returns the controlled collection dictionary (R9) from the `collection` table,
+// ordered by name, with each entry's published-product counts per gender attached.
+//
+// The dictionary table is the SOURCE of the list, not the products. This used to read
+// SELECT DISTINCT tech_card.collection FROM published products, which meant a collection created in
+// the admin dictionary was invisible everywhere GetDictionary is read -- the dictionary screen that
+// had just created it, and the tech-card collection picker -- until some product shipped under that
+// name. Same bug getTags was fixed for, and the same shape of fix.
+//
+// Archived entries are returned flagged (never filtered here) so a style still holding an archived
+// collection keeps rendering its label; the picker filters them out for NEW selections.
+//
+// Legacy free-text names carried on a style but absent from the dictionary are unioned in, keyed by
+// name with a zero ID -- dropping them would silently break the storefront filters for collections
+// that predate 0154's backfill or were written straight to tech_card.collection.
 func (s *Store) getCollections(ctx context.Context) ([]entity.Collection, error) {
-	query := `
-		SELECT DISTINCT 
-			sty.collection as name
-		FROM product p
-		JOIN tech_card sty ON sty.id = p.style_id
-		WHERE sty.collection IS NOT NULL 
-			AND sty.collection != ''
-			AND p.lifecycle_status = 2
-		ORDER BY sty.collection
-	`
+	dictRows, err := storeutil.QueryListNamed[entity.CollectionDict](ctx, s.DB,
+		`SELECT id, code, name, translations, archived_at FROM collection ORDER BY name`,
+		map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get collections: %w", err)
+	}
 
 	type collectionResult struct {
 		Name string `db:"name"`
 	}
-
-	results, err := storeutil.QueryListNamed[collectionResult](ctx, s.DB, query, map[string]any{})
+	legacy, err := storeutil.QueryListNamed[collectionResult](ctx, s.DB, `
+		SELECT DISTINCT
+			sty.collection as name
+		FROM product p
+		JOIN tech_card sty ON sty.id = p.style_id
+		WHERE sty.collection IS NOT NULL
+			AND sty.collection != ''
+			AND p.lifecycle_status = 2
+		ORDER BY sty.collection
+	`, map[string]any{})
 	if err != nil {
-		return nil, fmt.Errorf("can't get collections: %w", err)
+		return nil, fmt.Errorf("can't get legacy collection names: %w", err)
 	}
 
 	collectionMenCounts, err := s.getCollectionCountsByGender(ctx, entity.Male)
@@ -387,20 +406,28 @@ func (s *Store) getCollections(ctx context.Context) ([]entity.Collection, error)
 		return nil, fmt.Errorf("failed to get women counts: %w", err)
 	}
 
-	collections := make([]entity.Collection, 0, len(results))
-	for _, result := range results {
-		collection := entity.Collection{
-			Name: result.Name,
+	collections := make([]entity.Collection, 0, len(dictRows)+len(legacy))
+	seen := make(map[string]bool, len(dictRows))
+	appendCollection := func(c entity.Collection) {
+		if seen[c.Name] {
+			return
 		}
+		seen[c.Name] = true
+		c.CountMen = collectionMenCounts[c.Name]
+		c.CountWomen = collectionWomenCounts[c.Name]
+		collections = append(collections, c)
+	}
 
-		if count, exists := collectionMenCounts[result.Name]; exists {
-			collection.CountMen = count
-		}
-		if count, exists := collectionWomenCounts[result.Name]; exists {
-			collection.CountWomen = count
-		}
-
-		collections = append(collections, collection)
+	for _, d := range dictRows {
+		appendCollection(entity.Collection{
+			ID:       d.ID,
+			Code:     d.Code,
+			Name:     d.Name,
+			Archived: d.ArchivedAt.Valid,
+		})
+	}
+	for _, l := range legacy {
+		appendCollection(entity.Collection{Name: l.Name})
 	}
 
 	return collections, nil
