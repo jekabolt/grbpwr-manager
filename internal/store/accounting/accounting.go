@@ -131,8 +131,19 @@ func (s *Store) getAccountByCode(ctx context.Context, code string) (entity.AcctA
 
 // CreateJournalEntry is the single write path into the journal. See dependency.Accounting for the
 // full contract. It does not open a transaction — the caller must wrap it in repo.Tx so the entry
-// header and its lines are atomic.
+// header and its lines are atomic. That contract is enforced below, not just documented.
 func (s *Store) CreateJournalEntry(ctx context.Context, in entity.AcctJournalEntryInsert) (int, bool, error) {
+	// 0) atomicity guard: refuse to run outside a transaction instead of silently writing the
+	//    header and lines non-atomically on the pool. Every production caller already wraps in
+	//    repo.Tx (s.repo is the tx-bound repository inside one); the guard turns a future
+	//    unwrapped call from a latent partial-write bug into an immediate, loud error. It also
+	//    closes review finding C-7: inside the (SERIALIZABLE) repo.Tx the duplicate-recovery
+	//    SELECT below is a locking read that sees a row committed after this tx's snapshot began,
+	//    so the ErrNoRows race that existed for pool (REPEATABLE READ snapshot) callers is gone.
+	if !s.repo.InTx() {
+		return 0, false, fmt.Errorf("accounting: CreateJournalEntry called outside repo.Tx — wrap the call so the entry header and its lines commit atomically")
+	}
+
 	// 1) validate shape: >= 2 lines, each amount > 0, Σdebit == Σcredit, non-empty source_key.
 	if len(in.Lines) < 2 {
 		return 0, false, fmt.Errorf("%w: need >= 2 lines, got %d", entity.ErrAcctUnbalanced, len(in.Lines))
