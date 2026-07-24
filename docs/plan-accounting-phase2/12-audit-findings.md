@@ -43,10 +43,37 @@ compiled-by-eye only in this session (no Go toolchain in the sandbox) — run
 | F-10 | INFO | Revolut parser assumes `Amount` is gross-of-fee (fee booked separately to 6060 — MED-3 fix). Standard for Revolut business CSVs; a format change would double-count fees. | Follow-up: parser doc-test asserting the assumption. |
 | F-11 | INFO | Verified OK during audit: cash-flow signs incl. 2080-in-VatDelta and the 1225/6370 exact cancellation; zero/negative-stock issues blocked (`ErrInsufficientMaterialStock` / `ErrSkipUncosted`); S2 refund restock (1130/5050); shipping income-vs-cost disjoint; delivered chain drains 2090/1140 to zero; depreciation/corp-tax rounding; no remaining `':'` hazards in params-carrying accounting SQL. | — |
 
-## 3. Proto/API follow-ups (need buf regen in both repos + mirror bump)
+## 3. Proto/API follow-ups — DONE in this branch (codegen still to run)
 
-1. `ListJournalEntriesRequest`: `string q` (description search) + `string order` (`asc|desc`) — retire the FE fetch-all fallback.
-2. `AcctCashFlowLine`: `repeated string codes` — retire label parsing for drill-down.
-3. `PostBankTxnRequest`: `int32 supplier_id` — tagged supplier payments straight from the bank inbox (then tighten R-3's exemption).
-4. `AcctBankTxn`: `string ignore_reason` + migration (F-7).
-5. Optional: an aggregated `GetAcctAlerts` RPC replacing the FE's 6-query tab-dot hook.
+All five landed: backend proto + implementation here, and the contract mirrored to grbpwr-proto
+branch `mirror/accounting-audit-followups` (commit `e9077ab`, on the beta contract line the
+admin-client submodule already tracks).
+
+1. **`ListJournalEntriesRequest.q` + `.order`** — server-side description/id search and asc|desc
+   ordering (ledger.go filter + dto validation; direction is a two-value constant, injection-free).
+   The FE deliberately stays on its fetch-all fallback for now: the GENERATED GET client
+   enumerates its known query params explicitly, so q/order cannot reach the wire until the client
+   is regenerated. After the FE `make proto`: pass q/order in `useJournalEntries`, delete
+   `useAllJournalEntries` and the client-mode pipeline in journal/page.tsx (marked TODO).
+2. **`AcctCashFlowLine.codes`** — explicit drill-down codes on every line, kept in lockstep with
+   the wave5 delta sets (incl. 1230/1240/2060 that labels never mentioned). FE prefers the runtime
+   field and keeps label parsing only as the fallback for an older backend.
+3. **`PostBankTxnRequest.supplier_id`** — bank payments tag their supplier; the server now
+   REQUIRES it when the counter-account is 2010 (closing R-3's bank exemption). FE shows the
+   required picker; bridged pre-regen — POST bodies serialize the whole request object, so the
+   field already flows.
+4. **`AcctBankTxn.ignore_reason`** + migration `0202_bank_txn_ignore_reason.sql` (F-7) — the
+   reason is validated (≤255 runes), persisted (re-ignore overwrites; empty → NULL) and shown on
+   ignored rows (bridged read off the runtime object pre-regen).
+5. **`GetAcctAlerts`** (`GET /api/admin/accounting/alerts`, RBAC accounting-read) — one call for
+   all tab dots: open AP/AR + anomalies, open past months, current-month non-advisory recon drift,
+   unmatched bank backlog (capped 500), review-queue events. FE stays on its probe hook until
+   regen — a NEW method cannot be bridged (the generated client has no route for it); switch
+   `useAcctTabAlerts` after `make proto` (marked TODO).
+
+Rollout order: backend `make build` first (regenerates pb.go + mocks — note the Accounting
+interface's `SetBankTxnIgnored` gained a `reason` param), then bump the admin-client `proto`
+submodule to mirror commit `e9077ab`, run its `make proto`, drop the three FE bridges (grep
+`TODO(after make proto)`), and `yarn build:check`. Version skew degrades gracefully except one
+edge: a NEW frontend posting a 2010 bank line against an OLD backend gets an unknown-field 400 —
+deploy the backend first.
