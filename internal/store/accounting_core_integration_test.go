@@ -51,6 +51,29 @@ func TestAccountingCore(t *testing.T) {
 
 	acc := s.Accounting()
 
+	// The store enforces its repo.Tx contract (CreateJournalEntry / ReverseJournalEntry refuse to
+	// run on the pool — the InTx guard), so this suite posts the way production does: through
+	// s.Tx. Domain errors pass through Tx unwrapped, so the ErrorIs assertions below still hold.
+	createEntry := func(in entity.AcctJournalEntryInsert) (int, bool, error) {
+		var id int
+		var existed bool
+		err := s.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			var e error
+			id, existed, e = rep.Accounting().CreateJournalEntry(ctx, in)
+			return e
+		})
+		return id, existed, err
+	}
+	reverseEntry := func(entryID int, reason string) (int, error) {
+		var id int
+		err := s.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			var e error
+			id, e = rep.Accounting().ReverseJournalEntry(ctx, entryID, reason, "tester")
+			return e
+		})
+		return id, err
+	}
+
 	t.Cleanup(func() {
 		cctx := context.Background()
 		// Break the self-referential reversal links (ON DELETE RESTRICT) before deleting.
@@ -63,7 +86,7 @@ func TestAccountingCore(t *testing.T) {
 
 	// --- balanced entry created; unbalanced rejected ---
 	t.Run("balanced_and_unbalanced", func(t *testing.T) {
-		id, existed, err := acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-balanced", acctDate(2035, 3, 15), "1030", "4020", "100.00"))
+		id, existed, err := createEntry(balancedManualEntry("ACCT-TEST-balanced", acctDate(2035, 3, 15), "1030", "4020", "100.00"))
 		require.NoError(t, err)
 		require.False(t, existed)
 		require.Positive(t, id)
@@ -74,18 +97,18 @@ func TestAccountingCore(t *testing.T) {
 
 		unbalanced := balancedManualEntry("ACCT-TEST-unbalanced", acctDate(2035, 3, 15), "1030", "4020", "100.00")
 		unbalanced.Lines[1].Amount = decimal.RequireFromString("90.00") // credit != debit
-		_, _, err = acc.CreateJournalEntry(ctx, unbalanced)
+		_, _, err = createEntry(unbalanced)
 		require.ErrorIs(t, err, entity.ErrAcctUnbalanced)
 	})
 
 	// --- duplicate (source_type, source_key) is idempotent: same id, alreadyExists, no doubled lines ---
 	t.Run("idempotent_duplicate", func(t *testing.T) {
 		in := balancedManualEntry("ACCT-TEST-dup", acctDate(2035, 3, 15), "1030", "4020", "42.50")
-		id1, existed1, err := acc.CreateJournalEntry(ctx, in)
+		id1, existed1, err := createEntry(in)
 		require.NoError(t, err)
 		require.False(t, existed1)
 
-		id2, existed2, err := acc.CreateJournalEntry(ctx, in)
+		id2, existed2, err := createEntry(in)
 		require.NoError(t, err)
 		require.True(t, existed2)
 		require.Equal(t, id1, id2)
@@ -97,11 +120,11 @@ func TestAccountingCore(t *testing.T) {
 
 	// --- unknown / archived account, and system-account guard ---
 	t.Run("account_guards", func(t *testing.T) {
-		_, _, err := acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-unknown", acctDate(2035, 3, 15), "9999", "1010", "10.00"))
+		_, _, err := createEntry(balancedManualEntry("ACCT-TEST-unknown", acctDate(2035, 3, 15), "9999", "1010", "10.00"))
 		require.ErrorIs(t, err, entity.ErrAcctUnknownAccount)
 
 		require.NoError(t, acc.SetAccountArchived(ctx, "1210", true)) // 1210 Prepaid Expenses is non-system
-		_, _, err = acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-archived", acctDate(2035, 3, 15), "1210", "1010", "10.00"))
+		_, _, err = createEntry(balancedManualEntry("ACCT-TEST-archived", acctDate(2035, 3, 15), "1210", "1010", "10.00"))
 		require.ErrorIs(t, err, entity.ErrAcctArchivedAccount)
 		require.NoError(t, acc.SetAccountArchived(ctx, "1210", false))
 
@@ -116,21 +139,21 @@ func TestAccountingCore(t *testing.T) {
 		_, err := testDB.ExecContext(ctx, "INSERT INTO acct_period (period, status) VALUES ('2020-01-01','closed') ON DUPLICATE KEY UPDATE status='closed'")
 		require.NoError(t, err)
 
-		_, _, err = acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-closed", acctDate(2020, 1, 15), "1030", "4020", "10.00"))
+		_, _, err = createEntry(balancedManualEntry("ACCT-TEST-closed", acctDate(2020, 1, 15), "1030", "4020", "10.00"))
 		require.ErrorIs(t, err, entity.ErrAcctPeriodClosed)
 
 		require.NoError(t, acc.ReopenPeriod(ctx, acctDate(2020, 1, 1), "tester"))
-		id, _, err := acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-reopened", acctDate(2020, 1, 15), "1030", "4020", "10.00"))
+		id, _, err := createEntry(balancedManualEntry("ACCT-TEST-reopened", acctDate(2020, 1, 15), "1030", "4020", "10.00"))
 		require.NoError(t, err)
 		require.Positive(t, id)
 	})
 
 	// --- reversal: mirror lines, reversed_by set, second reversal + reversing a reversal guarded ---
 	t.Run("reversal", func(t *testing.T) {
-		origID, _, err := acc.CreateJournalEntry(ctx, balancedManualEntry("ACCT-TEST-reversal", acctDate(2035, 3, 15), "1030", "4020", "77.00"))
+		origID, _, err := createEntry(balancedManualEntry("ACCT-TEST-reversal", acctDate(2035, 3, 15), "1030", "4020", "77.00"))
 		require.NoError(t, err)
 
-		revID, err := acc.ReverseJournalEntry(ctx, origID, "wrong amount", "tester")
+		revID, err := reverseEntry(origID, "wrong amount")
 		require.NoError(t, err)
 		require.Positive(t, revID)
 
@@ -156,11 +179,11 @@ func TestAccountingCore(t *testing.T) {
 		require.Equal(t, int32(revID), orig.Entry.ReversedBy.Int32)
 
 		// second reversal of the original -> already reversed
-		_, err = acc.ReverseJournalEntry(ctx, origID, "again", "tester")
+		_, err = reverseEntry(origID, "again")
 		require.ErrorIs(t, err, entity.ErrAcctAlreadyReversed)
 
 		// reversing a reversal is forbidden
-		_, err = acc.ReverseJournalEntry(ctx, revID, "no", "tester")
+		_, err = reverseEntry(revID, "no")
 		require.ErrorIs(t, err, entity.ErrAcctCannotReverseReversal)
 	})
 
@@ -181,7 +204,7 @@ func TestAccountingCore(t *testing.T) {
 		amounts := []string{"12.34", "0.05", "1000.00", "3.33", "58.10"}
 		pairs := [][2]string{{"1030", "4020"}, {"5010", "1130"}, {"6050", "1030"}, {"1030", "4010"}, {"5010", "1130"}}
 		for i, amt := range amounts {
-			_, _, err := acc.CreateJournalEntry(ctx, balancedManualEntry(
+			_, _, err := createEntry(balancedManualEntry(
 				fmt.Sprintf("ACCT-TEST-tb-%d", i), acctDate(2035, 6, 15), pairs[i][0], pairs[i][1], amt))
 			require.NoError(t, err)
 		}
