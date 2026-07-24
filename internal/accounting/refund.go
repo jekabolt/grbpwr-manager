@@ -69,7 +69,7 @@ func BuildOrderRefundEntry(
 	if vatr.IsPositive() && f.VatAmount.Valid {
 		snap := f.VatAmount.Decimal.Mul(rOrd.Div(f.TotalPrice)).Mul(k).Round(2)
 		if vatSnapshotDiffers(vatr, snap) {
-			caveats = append(caveats, "vat snapshot mismatch")
+			caveats = append(caveats, vatSnapshotCaveat(vatr, snap))
 		}
 	}
 

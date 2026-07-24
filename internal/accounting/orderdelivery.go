@@ -51,8 +51,10 @@ func BuildOrderPrepaymentEntry(f entity.AcctOrderFacts, vd VatDecision, occurred
 		vat = decimal.Zero
 		caveats = append(caveats, "vat exceeds gross; VAT line dropped")
 	}
-	if vat.IsPositive() && f.VatAmount.Valid && vatSnapshotDiffers(vat, f.VatAmount.Decimal.Mul(k)) {
-		caveats = append(caveats, "vat snapshot mismatch")
+	if vat.IsPositive() && f.VatAmount.Valid {
+		if snap := f.VatAmount.Decimal.Mul(k); vatSnapshotDiffers(vat, snap) {
+			caveats = append(caveats, vatSnapshotCaveat(vat, snap))
+		}
 	}
 
 	// prepay is the balancing remainder — the amount delivery will drain from 2090 (= NET + SHIP).
@@ -244,7 +246,7 @@ func BuildOrderPreDeliveredRefundEntry(
 	if vatr.IsPositive() && f.VatAmount.Valid {
 		snap := f.VatAmount.Decimal.Mul(rOrd.Div(f.TotalPrice)).Mul(k).Round(2)
 		if vatSnapshotDiffers(vatr, snap) {
-			caveats = append(caveats, "vat snapshot mismatch")
+			caveats = append(caveats, vatSnapshotCaveat(vatr, snap))
 		}
 	}
 

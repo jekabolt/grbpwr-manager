@@ -51,8 +51,10 @@ func BuildOrderSaleEntry(f entity.AcctOrderFacts, vd VatDecision, occurredAt tim
 		caveats = append(caveats, "vat exceeds gross; VAT line dropped")
 	}
 	// Cross-check the regime VAT against the sale-time snapshot (scaled by k); a >1% gap is advisory.
-	if vat.IsPositive() && f.VatAmount.Valid && vatSnapshotDiffers(vat, f.VatAmount.Decimal.Mul(k)) {
-		caveats = append(caveats, "vat snapshot mismatch")
+	if vat.IsPositive() && f.VatAmount.Valid {
+		if snap := f.VatAmount.Decimal.Mul(k); vatSnapshotDiffers(vat, snap) {
+			caveats = append(caveats, vatSnapshotCaveat(vat, snap))
+		}
 	}
 
 	// Shipping, proportional. shipment.cost only when not free-shipped. Guard 3 applies after VAT
@@ -149,6 +151,16 @@ func vatSnapshotDiffers(regimeVat, snapshotVat decimal.Decimal) bool {
 		return false
 	}
 	return regimeVat.Sub(snapshotVat).Abs().Div(snapshotVat).GreaterThan(vatMismatchTolerance)
+}
+
+// vatSnapshotCaveat formats the advisory mismatch caveat with both figures, so the nature and size
+// of the gap is diagnosable from the entry itself. The bare "vat snapshot mismatch" label said a gap
+// existed but not how big or in which direction — investigating meant re-deriving both numbers by
+// hand. The "vat snapshot mismatch" prefix is load-bearing: reconcile.go matches it with LIKE and
+// the builder tests with assert.Contains.
+func vatSnapshotCaveat(regimeVat, snapshotVat decimal.Decimal) string {
+	return fmt.Sprintf("vat snapshot mismatch (regime %s vs snapshot %s)",
+		regimeVat.StringFixed(2), snapshotVat.StringFixed(2))
 }
 
 // saleCOGS sums the costed order lines (UnitCost x Quantity, rounded once) and returns the product
