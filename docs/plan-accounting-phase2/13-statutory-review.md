@@ -121,3 +121,35 @@ two agents' findings were cross-checked against the code cited above, but rates,
 schema versions (JPK_V7M(2), VIU-DO, CT/CIT) change — the accountant owns final correctness of any
 submission. "100% no problems" is reachable only after the P0 list plus a professional's sign-off
 on one real filing cycle.
+
+## 5. Update (same day): the P0 filing layer is IMPLEMENTED
+
+Entity confirmed by the owner: **UK Ltd with a Polish VAT registration (NIP), no Polish company** —
+FRS 105 / UK CT is the right framework; the Polish side is the VAT registration of a foreign
+entity. Landed on this branch (regen `make proto` + mockery, then `go test ./internal/...`):
+
+- **Currency layer**: per-transaction D-1 daily conversion via `costing_fx_rate` (the fxsync ECB
+  feed already stores dated daily rows incl. PLN/GBP). Poland: ECB rates are used under the
+  art. 31a ust. 2a election (12-month binding — CONFIRM the election with the accountant; an NBP
+  source can replace the feed later without touching the report code). Missing rates FAIL the
+  export loudly, listing the dates.
+- **JPK_V7M**: `GetVatReturnPLFiling` (PLN), evidence rows stamped/converted at the tax point with
+  real buyer names, B2B refunds as separate `-KOREKTA` rows, a REAL purchase register
+  (`ZakupWiersz`: domestic material receipts + documented opex invoices), declaration
+  P_42/P_43/P_48 filled and P_51/P_53 = NetPayable math. Undocumented opex VAT stays out of the
+  XML (caveated) so declaration ↔ register always cross-check.
+- **Input VAT on services** (P0-1): `opex_line` carries vat_amount/regime + invoice identity
+  (0203); the monthly accrual books Dr 6xxx net + Dr 2080 VAT / Cr 2030 gross.
+- **UK return**: `GetUkVatReturnFiling` in GBP; Box 4/7 include domestic_uk opex input.
+- **OSS**: refunds of earlier quarters are now correction lines keyed to the original quarter
+  (rows/XML `Korekty`), never netted.
+- **VAT-UE**: new `GetVatUe` RPC (WDT by buyer VAT id / WNT by supplier VAT id, PLN).
+- **Accounts** (0204): 3005 Called-up Share Capital (own FRS105 line), 2045 Payroll Taxes Payable,
+  6335 Employer Social Contributions (opex category `employer_social`), 2060 Loans; FRS105 maps
+  2015/2060 to creditors-after-year. **1030 Stripe recon block** added (informational balance).
+
+Still with the accountant (unchanged): CT600 computation (8010 stays a book provision), PIT-4R/ZUS
+runs (accounts now exist; filings external), Intrastat, invoice numbering (order refs stand in for
+invoice numbers until an invoicing module exists), and the art. 31a ECB election + UK VAT
+registration confirmations. FE screens for the new fields (opex VAT inputs, VAT-UE view, stripe
+recon row) follow after the client regen.

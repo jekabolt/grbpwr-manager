@@ -71,14 +71,42 @@ func ConvertPbOpexLinesToEntity(list []*pb_admin.OpexLineInsert) ([]entity.OpexL
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, entity.OpexLineInsert{
+		line := entity.OpexLineInsert{
 			Month:    month,
 			Category: category,
 			Label:    label,
 			Amount:   amount,
 			Currency: normalizeCurrency(e.Currency),
 			Note:     trimmedNullString(e.Note),
-		})
+		}
+		// Input VAT (migration 0203): optional; when present the regime is required and the
+		// invoice identity is strongly encouraged (a line without doc number+date is deducted in
+		// the app summary but excluded from the generated JPK — no register row possible).
+		if e.VatAmount != nil && strings.TrimSpace(e.VatAmount.Value) != "" {
+			vat, verr := parseOpexAmount(e.VatAmount.Value)
+			if verr != nil {
+				return nil, fmt.Errorf("opex vat_amount: %w", verr)
+			}
+			if vat.IsPositive() {
+				regime := strings.TrimSpace(e.VatRegime)
+				if regime != "domestic_pl" && regime != "domestic_uk" {
+					return nil, fmt.Errorf("opex vat_regime must be domestic_pl or domestic_uk when vat_amount is set")
+				}
+				line.VatAmount = decimal.NullDecimal{Decimal: vat, Valid: true}
+				line.VatRegime = sql.NullString{String: regime, Valid: true}
+				line.DocNumber = trimmedNullString(e.DocNumber)
+				line.SupplierVatId = trimmedNullString(e.SupplierVatId)
+				line.SupplierName = trimmedNullString(e.SupplierName)
+				if d := strings.TrimSpace(e.DocDate); d != "" {
+					dd, derr := time.Parse("2006-01-02", d)
+					if derr != nil {
+						return nil, fmt.Errorf("opex doc_date must be YYYY-MM-DD")
+					}
+					line.DocDate = sql.NullTime{Time: dd, Valid: true}
+				}
+			}
+		}
+		out = append(out, line)
 	}
 	return out, nil
 }
@@ -227,11 +255,16 @@ func EmployeeListToPb(list []entity.Employee) []*pb_admin.Employee {
 // excluded from the operating result, mirroring FoldProductionRunCostsToBase.
 func FoldOpexLinesToBase(lines []entity.OpexLineInsert, fx CostingFx) {
 	for i := range lines {
-		if lines[i].AmountBase.Valid {
-			continue
+		if !lines[i].AmountBase.Valid {
+			if base, ok := fx.toBase(lines[i].Amount, lines[i].Currency); ok {
+				lines[i].AmountBase = decimal.NullDecimal{Decimal: roundMoney(base), Valid: true}
+			}
 		}
-		if base, ok := fx.toBase(lines[i].Amount, lines[i].Currency); ok {
-			lines[i].AmountBase = decimal.NullDecimal{Decimal: roundMoney(base), Valid: true}
+		// Input VAT folds by the same rate as the net (one invoice, one rate).
+		if lines[i].VatAmount.Valid && !lines[i].VatAmountBase.Valid {
+			if base, ok := fx.toBase(lines[i].VatAmount.Decimal, lines[i].Currency); ok {
+				lines[i].VatAmountBase = decimal.NullDecimal{Decimal: roundMoney(base), Valid: true}
+			}
 		}
 	}
 }
@@ -267,6 +300,27 @@ func OpexLineToPb(l entity.OpexLine) *pb_admin.OpexLine {
 	}
 	if l.Note.Valid {
 		pb.Note = l.Note.String
+	}
+	if l.VatAmount.Valid {
+		pb.VatAmount = pbDecimalFromDecimal(l.VatAmount.Decimal)
+	}
+	if l.VatAmountBase.Valid {
+		pb.VatAmountBase = pbDecimalFromDecimal(l.VatAmountBase.Decimal)
+	}
+	if l.VatRegime.Valid {
+		pb.VatRegime = l.VatRegime.String
+	}
+	if l.DocNumber.Valid {
+		pb.DocNumber = l.DocNumber.String
+	}
+	if l.DocDate.Valid {
+		pb.DocDate = l.DocDate.Time.Format("2006-01-02")
+	}
+	if l.SupplierVatId.Valid {
+		pb.SupplierVatId = l.SupplierVatId.String
+	}
+	if l.SupplierName.Valid {
+		pb.SupplierName = l.SupplierName.String
 	}
 	return pb
 }

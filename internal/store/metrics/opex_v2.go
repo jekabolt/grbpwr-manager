@@ -103,21 +103,37 @@ func lastDayOfMonth(firstOfMonth time.Time) time.Time {
 func (s *Store) UpsertOpexLines(ctx context.Context, rows []entity.OpexLineInsert) error {
 	for _, r := range rows {
 		if err := storeutil.ExecNamed(ctx, s.DB, `
-			INSERT INTO opex_line (month, category, label, amount, currency, amount_base, recurring_id, note)
-			VALUES (:month, :category, :label, :amount, :currency, :amount_base, :recurring_id, :note)
+			INSERT INTO opex_line (month, category, label, amount, currency, amount_base, recurring_id, note,
+				vat_amount, vat_amount_base, vat_regime, doc_number, doc_date, supplier_vat_id, supplier_name)
+			VALUES (:month, :category, :label, :amount, :currency, :amount_base, :recurring_id, :note,
+				:vat_amount, :vat_amount_base, :vat_regime, :doc_number, :doc_date, :supplier_vat_id, :supplier_name)
 			ON DUPLICATE KEY UPDATE
 				amount = VALUES(amount),
 				currency = VALUES(currency),
 				amount_base = VALUES(amount_base),
 				recurring_id = VALUES(recurring_id),
-				note = VALUES(note)`,
+				note = VALUES(note),
+				vat_amount = VALUES(vat_amount),
+				vat_amount_base = VALUES(vat_amount_base),
+				vat_regime = VALUES(vat_regime),
+				doc_number = VALUES(doc_number),
+				doc_date = VALUES(doc_date),
+				supplier_vat_id = VALUES(supplier_vat_id),
+				supplier_name = VALUES(supplier_name)`,
 			map[string]any{
-				"month":        firstOfMonthUTC(r.Month).Format("2006-01-02"),
-				"category":     r.Category,
-				"label":        r.Label,
-				"amount":       r.Amount,
-				"currency":     strings.ToUpper(r.Currency),
-				"amount_base":  r.AmountBase,
+				"month":           firstOfMonthUTC(r.Month).Format("2006-01-02"),
+				"category":        r.Category,
+				"label":           r.Label,
+				"amount":          r.Amount,
+				"currency":        strings.ToUpper(r.Currency),
+				"vat_amount":      r.VatAmount,
+				"vat_amount_base": r.VatAmountBase,
+				"vat_regime":      r.VatRegime,
+				"doc_number":      r.DocNumber,
+				"doc_date":        r.DocDate,
+				"supplier_vat_id": r.SupplierVatId,
+				"supplier_name":   r.SupplierName,
+				"amount_base":     r.AmountBase,
 				"recurring_id": r.RecurringId,
 				"note":         r.Note,
 			}); err != nil {
@@ -164,6 +180,7 @@ func (s *Store) ListOpexLines(ctx context.Context, f entity.OpexLineFilter) ([]e
 	}
 	rows, err := storeutil.QueryListNamed[entity.OpexLine](ctx, s.DB, `
 		SELECT id, month, category, label, amount, currency, amount_base, recurring_id, note,
+		       vat_amount, vat_amount_base, vat_regime, doc_number, doc_date, supplier_vat_id, supplier_name,
 		       created_at, updated_at
 		FROM opex_line
 		WHERE month >= :from AND month <= :to`+catClause+`

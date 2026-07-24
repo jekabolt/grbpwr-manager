@@ -55,7 +55,27 @@ func BuildOpexMonthEntry(month time.Time, sums []entity.AcctOpexCategorySum, ver
 		return entity.AcctJournalEntryInsert{}, ErrSkipEmpty
 	}
 
-	// Balancing credit: the whole month accrued.
+	// Recoverable input VAT across the month's lines (migration 0203): one Dr 2080 leg, so the
+	// accrual mirrors a domestic material receipt — Dr 6xxx net + Dr 2080 VAT / Cr 2030 gross.
+	// Without it every service invoice's VAT was silently lost inside the expense (statutory
+	// review 13, P0-1).
+	totalVat := decimal.Zero
+	for _, s := range sums {
+		if v := s.VatBase.Round(2); v.IsPositive() {
+			totalVat = totalVat.Add(v)
+		}
+	}
+	if totalVat.IsPositive() {
+		lines = append(lines, entity.AcctJournalLineInsert{
+			AccountCode: Acc2080,
+			Side:        entity.AcctSideDebit,
+			Amount:      totalVat,
+			Note:        sql.NullString{String: "input VAT", Valid: true},
+		})
+		total = total.Add(totalVat)
+	}
+
+	// Balancing credit: the whole month accrued (net + recoverable VAT = gross owed).
 	lines = append(lines, entity.AcctJournalLineInsert{
 		AccountCode: Acc2030,
 		Side:        entity.AcctSideCredit,

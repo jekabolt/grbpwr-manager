@@ -29,6 +29,18 @@ type OpexLineInsert struct {
 	AmountBase  decimal.NullDecimal `db:"amount_base"`
 	RecurringId sql.NullInt32       `db:"recurring_id"`
 	Note        sql.NullString      `db:"note"`
+	// Input VAT on the invoice behind this line (migration 0203; statutory review 13 P0-1).
+	// VatAmount is in Currency; VatAmountBase is folded alongside AmountBase. VatRegime classifies
+	// the deduction on a VAT return (domestic_pl | domestic_uk). Doc* / Supplier* carry the invoice
+	// identity the JPK purchase register needs — a line with VAT but no doc identity is deducted in
+	// the app summary but excluded from the generated filing (caveated).
+	VatAmount     decimal.NullDecimal `db:"vat_amount"`
+	VatAmountBase decimal.NullDecimal `db:"vat_amount_base"`
+	VatRegime     sql.NullString      `db:"vat_regime"`
+	DocNumber     sql.NullString      `db:"doc_number"`
+	DocDate       sql.NullTime        `db:"doc_date"`
+	SupplierVatId sql.NullString      `db:"supplier_vat_id"`
+	SupplierName  sql.NullString      `db:"supplier_name"`
 }
 
 // OpexLine is a stored operating-expense line.

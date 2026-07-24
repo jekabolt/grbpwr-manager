@@ -58,15 +58,21 @@ func (s *Server) ExportJpkV7M(ctx context.Context, req *pb_admin.ExportJpkV7MReq
 	if !s.jpkTaxpayer.Configured() {
 		return nil, status.Error(codes.FailedPrecondition, "JPK export is not configured: set the JPK_NIP / JPK_FULL_NAME / JPK_EMAIL / JPK_TAX_OFFICE taxpayer identity")
 	}
-	ret, err := s.repo.Accounting().GetVatReturnPL(ctx, month)
+	// Filing variants (statutory review 13): PLN per tax-point day, register-backed input side.
+	// A missing daily rate fails loudly here instead of shipping a misstated filing.
+	ret, err := s.repo.Accounting().GetVatReturnPLFiling(ctx, month)
 	if err != nil {
-		return nil, mapAcctErr(ctx, "jpk vat return", err)
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	rows, err := s.repo.Accounting().VatSalesEvidence(ctx, month)
+	rows, err := s.repo.Accounting().VatSalesEvidenceFiling(ctx, month)
 	if err != nil {
-		return nil, mapAcctErr(ctx, "jpk sales evidence", err)
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	xmlBytes, err := jpk.Generate(s.jpkTaxpayer, ret, rows, month, time.Now())
+	purchases, err := s.repo.Accounting().VatPurchaseEvidenceFiling(ctx, month)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	xmlBytes, err := jpk.Generate(s.jpkTaxpayer, ret, rows, purchases, month, time.Now())
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -110,11 +116,27 @@ func (s *Server) GetUkVatReturn(ctx context.Context, req *pb_admin.GetUkVatRetur
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	ret, err := s.repo.Accounting().GetUkVatReturn(ctx, quarterStart)
+	// GBP filing variant (statutory review 13): per-transaction D-1 conversion; a missing daily
+	// rate fails loudly instead of returning EUR figures as if they were GBP.
+	ret, err := s.repo.Accounting().GetUkVatReturnFiling(ctx, quarterStart)
 	if err != nil {
-		return nil, mapAcctErr(ctx, "get uk vat return", err)
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return dto.ConvertAcctUkVatReturnToPb(*ret), nil
+}
+
+// GetVatUe returns the monthly VAT-UE recapitulative statement rows (WDT by buyer VAT id, WNT by
+// supplier VAT id) in PLN — filed alongside JPK_V7M whenever WDT/WNT occurred in the month.
+func (s *Server) GetVatUe(ctx context.Context, req *pb_admin.GetVatUeRequest) (*pb_admin.GetVatUeResponse, error) {
+	month, err := dto.ParseVatReturnMonth(req.GetMonth())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ue, err := s.repo.Accounting().GetVatUe(ctx, month)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return dto.ConvertAcctVatUeToPb(*ue), nil
 }
 
 // GetFrs105Accounts returns an FRS 105 UK micro-entity accounts DRAFT (Income Statement + Statement of

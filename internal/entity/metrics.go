@@ -1331,5 +1331,6 @@ var ValidOpexCategories = map[string]struct{}{
 	"bank_fees":             {},
 	"professional_services": {}, // accountant / lawyer
 	"logistics_office":      {}, // office/ops logistics (not order shipping)
+	"employer_social":       {}, // employer-side social contributions (ZUS/NI) — 6335, split from salaries
 	"other":                 {},
 }

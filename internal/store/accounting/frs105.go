@@ -92,9 +92,20 @@ func (s *Store) GetFrs105Accounts(ctx context.Context, from, to time.Time) (*ent
 				r.CurrentAssets = r.CurrentAssets.Add(bal)
 			}
 		case entity.AcctSectionLiability:
-			r.CreditorsWithinYear = r.CreditorsWithinYear.Add(bal)
+			// Long-term creditors (FRS 105 "after more than one year"): the director's loan (2015)
+			// and other loans (2060). Everything else is current.
+			if row.Code == "2015" || row.Code == "2060" {
+				r.CreditorsAfterYear = r.CreditorsAfterYear.Add(bal)
+			} else {
+				r.CreditorsWithinYear = r.CreditorsWithinYear.Add(bal)
+			}
 		case entity.AcctSectionEquity:
-			r.CapitalAndReserves = r.CapitalAndReserves.Add(bal)
+			// FRS 105 requires "Called up share capital" (3005, migration 0204) as its own line.
+			if row.Code == "3005" {
+				r.CalledUpShareCapital = r.CalledUpShareCapital.Add(bal)
+			} else {
+				r.CapitalAndReserves = r.CapitalAndReserves.Add(bal)
+			}
 		}
 	}
 	// Reserves include the period's profit, which is not yet closed out of the P&L accounts.

@@ -85,13 +85,33 @@ func BuildSalesEvidence(rows []entity.AcctVatSalesRow, period time.Time) ([]Sprz
 
 	for _, r := range individual {
 		lp++
+		// Filing rows stamp the TAX-POINT date (payment for sales, refund date for korekta) so a
+		// row's date always falls inside the filing period — the placed date was a different day
+		// and could sit outside the month (statutory review 13, §1.4). Legacy rows without
+		// TaxPointAt fall back to Placed. Buyer name comes from the billing company / person;
+		// "-" only when nothing is known. A refund of a B2B invoice is its own corrective row
+		// (negative amounts) marked in DowodSprzedazy — the system has no credit-note register
+		// yet, so the order reference + KOREKTA marker is the document identity (caveated in the
+		// statutory review; the accountant maps it to the actual credit note).
+		day := r.TaxPointAt
+		if day.IsZero() {
+			day = r.Placed
+		}
+		name := strings.TrimSpace(r.BuyerName.String)
+		if name == "" {
+			name = "-"
+		}
+		doc := r.UUID
+		if r.IsRefund {
+			doc = r.UUID + "-KOREKTA"
+		}
 		w := SprzedazWiersz{
 			LpSprzedazy:      lp,
 			NrKontrahenta:    strings.TrimSpace(r.BuyerVatID.String),
-			NazwaKontrahenta: "-",
-			DowodSprzedazy:   r.UUID,
-			DataWystawienia:  r.Placed.Format("2006-01-02"),
-			DataSprzedazy:    r.Placed.Format("2006-01-02"),
+			NazwaKontrahenta: name,
+			DowodSprzedazy:   doc,
+			DataWystawienia:  day.Format("2006-01-02"),
+			DataSprzedazy:    day.Format("2006-01-02"),
 		}
 		applyRegimeAmounts(&w, r.Regime, r.Net, r.Vat)
 		totalVat = totalVat.Add(r.Vat)
@@ -122,4 +142,47 @@ func BuildSalesEvidence(rows []entity.AcctVatSalesRow, period time.Time) ([]Sprz
 	}
 
 	return out, SprzedazCtrl{LiczbaWierszySprzedazy: len(out), PodatekNalezny: totalVat.StringFixed(2)}
+}
+
+// ZakupWiersz is one purchase-register row (ewidencja zakupu): the supplier invoice identity plus
+// the net (K_42) and input VAT (K_43) of "other purchases". Emitted only for register-backed
+// deductions — domestic material receipts and documented OPEX invoices — so the declaration's
+// P_42/P_43 always cross-check with these rows.
+type ZakupWiersz struct {
+	XMLName        xml.Name `xml:"ZakupWiersz"`
+	LpZakupu       int      `xml:"LpZakupu"`
+	NrDostawcy     string   `xml:"NrDostawcy"`
+	NazwaDostawcy  string   `xml:"NazwaDostawcy"`
+	DowodZakupu    string   `xml:"DowodZakupu"`
+	DataZakupu     string   `xml:"DataZakupu"`
+	K_42           string   `xml:"K_42,omitempty"`
+	K_43           string   `xml:"K_43,omitempty"`
+}
+
+// BuildPurchaseEvidence turns the month's register-backed purchase rows into ZakupWiersz rows plus
+// the control totals.
+func BuildPurchaseEvidence(rows []entity.AcctVatPurchaseRow) ([]ZakupWiersz, ZakupCtrl) {
+	out := make([]ZakupWiersz, 0, len(rows))
+	totalVat := decimal.Zero
+	for i, r := range rows {
+		supplier := strings.TrimSpace(r.SupplierVatId)
+		if supplier == "" {
+			supplier = "BRAK"
+		}
+		name := strings.TrimSpace(r.SupplierName)
+		if name == "" {
+			name = "-"
+		}
+		out = append(out, ZakupWiersz{
+			LpZakupu:      i + 1,
+			NrDostawcy:    supplier,
+			NazwaDostawcy: name,
+			DowodZakupu:   r.DocNumber,
+			DataZakupu:    r.DocDate.Format("2006-01-02"),
+			K_42:          r.Net.StringFixed(2),
+			K_43:          r.Vat.StringFixed(2),
+		})
+		totalVat = totalVat.Add(r.Vat)
+	}
+	return out, ZakupCtrl{LiczbaWierszyZakupow: len(out), PodatekNaliczony: totalVat.StringFixed(2)}
 }

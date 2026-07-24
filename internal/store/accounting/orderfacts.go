@@ -235,7 +235,8 @@ func (s *Store) ListChangedOpexMonths(ctx context.Context, afterTS time.Time) ([
 func (s *Store) GetOpexMonthFacts(ctx context.Context, month time.Time) ([]entity.AcctOpexCategorySum, error) {
 	m := firstOfMonthUTC(month).Format(dateLayout)
 	sums, err := storeutil.QueryListNamed[entity.AcctOpexCategorySum](ctx, s.DB, `
-		SELECT category, COALESCE(SUM(amount_base), 0) AS amount_base
+		SELECT category, COALESCE(SUM(amount_base), 0) AS amount_base,
+		       COALESCE(SUM(vat_amount_base), 0) AS vat_base
 		FROM opex_line
 		WHERE month = :m AND amount_base IS NOT NULL
 		GROUP BY category

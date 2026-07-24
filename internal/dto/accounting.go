@@ -675,6 +675,9 @@ func ConvertAcctReconciliationToPb(r entity.AcctReconciliation) *pb_admin.GetAcc
 	if r.Bank != nil {
 		resp.Bank = convertAcctReconBlockToPb(*r.Bank)
 	}
+	if r.Stripe != nil {
+		resp.Stripe = convertAcctReconBlockToPb(*r.Stripe)
+	}
 	return resp
 }
 

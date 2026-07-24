@@ -85,6 +85,22 @@ func (s *Store) GetReconciliation(ctx context.Context, from, to time.Time) (*ent
 		return nil, err
 	}
 	rec.Bank = &bank
+
+	// 1030 Payment Processor (statutory review 13, P0-2): payouts 1030→1010 are manual bank-inbox
+	// posts and there is no Stripe balance feed to assert a delta — surface the balance so it
+	// cannot drift invisibly. Informational: Ledger == Operational, delta zero by construction.
+	stripeBal, err := s.accountBalanceBefore(ctx, "1030", toT)
+	if err != nil {
+		return nil, err
+	}
+	rec.Stripe = &entity.AcctReconBlock{
+		Name:        "stripe",
+		Ledger:      stripeBal,
+		Operational: stripeBal,
+		Items: []entity.AcctReconItem{{
+			Label: "1030 balance per the ledger — compare with the Stripe dashboard balance; a payout that never got posted from the bank inbox (counter-account 1030) shows up as a gap here",
+		}},
+	}
 	return rec, nil
 }
 

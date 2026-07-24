@@ -87,9 +87,19 @@ func ConvertAcctOssReturnToPb(r entity.AcctOssReturn) *pb_admin.GetOssReturnResp
 			Vat:     pbDecimalFromDecimal(row.Vat),
 		})
 	}
+	corrections := make([]*pb_admin.AcctOssCorrection, 0, len(r.Corrections))
+	for _, c := range r.Corrections {
+		corrections = append(corrections, &pb_admin.AcctOssCorrection{
+			Period:  c.Period,
+			Country: c.Country,
+			Net:     pbDecimalFromDecimal(c.Net),
+			Vat:     pbDecimalFromDecimal(c.Vat),
+		})
+	}
 	return &pb_admin.GetOssReturnResponse{
 		QuarterStart: r.QuarterStart.Format(acctDateLayout),
 		Rows:         rows,
+		Corrections:  corrections,
 		TotalNet:     pbDecimalFromDecimal(r.TotalNet),
 		TotalVat:     pbDecimalFromDecimal(r.TotalVat),
 	}
@@ -105,6 +115,30 @@ func ConvertAcctUkVatReturnToPb(r entity.AcctUkVatReturn) *pb_admin.GetUkVatRetu
 		Box5NetVat:       pbDecimalFromDecimal(r.Box5NetVat()),
 		Box6NetSales:     pbDecimalFromDecimal(r.Box6NetSales),
 		Box7NetPurchases: pbDecimalFromDecimal(r.Box7NetPurchases),
+		Currency:         r.Currency,
+		Caveats:          r.Caveats,
+	}
+}
+
+// ConvertAcctVatUeToPb maps the monthly VAT-UE recapitulative statement.
+func ConvertAcctVatUeToPb(r entity.AcctVatUe) *pb_admin.GetVatUeResponse {
+	conv := func(rows []entity.AcctVatUeRow) []*pb_admin.AcctVatUeRow {
+		out := make([]*pb_admin.AcctVatUeRow, 0, len(rows))
+		for _, x := range rows {
+			out = append(out, &pb_admin.AcctVatUeRow{
+				CounterpartyVatId: x.CounterpartyVatId,
+				CounterpartyName:  x.CounterpartyName,
+				Country:           x.Country,
+				NetPln:            pbDecimalFromDecimal(x.NetPln),
+			})
+		}
+		return out
+	}
+	return &pb_admin.GetVatUeResponse{
+		Month:   r.Month.Format("2006-01"),
+		Wdt:     conv(r.Wdt),
+		Wnt:     conv(r.Wnt),
+		Caveats: r.Caveats,
 	}
 }
 
@@ -130,6 +164,7 @@ func ConvertAcctFrs105AccountsToPb(r entity.AcctFrs105Accounts) *pb_admin.GetFrs
 		CreditorsAfterYear:         pbDecimalFromDecimal(r.CreditorsAfterYear),
 		NetAssets:                  pbDecimalFromDecimal(r.NetAssets),
 		CapitalAndReserves:         pbDecimalFromDecimal(r.CapitalAndReserves),
+		CalledUpShareCapital:       pbDecimalFromDecimal(r.CalledUpShareCapital),
 		Caveats:                    r.Caveats,
 	}
 }

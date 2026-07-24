@@ -272,6 +272,11 @@ func (s *Store) GetOssReturn(ctx context.Context, quarterStart time.Time) (*enti
 		  AND e.source_type IN ('order_sale','order_prepayment','order_refund')
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
 		  AND acc.code IN ('4010','4020','4310','4110','4040','2070','2090')
+		  AND NOT (e.source_type = 'order_refund' AND EXISTS (
+		      SELECT 1 FROM acct_journal_entry orig
+		      WHERE orig.source_type IN ('order_sale','order_prepayment')
+		        AND orig.source_key = SUBSTRING_INDEX(e.source_key, CHAR(58), 1)
+		        AND orig.occurred_at < :from))
 		GROUP BY COALESCE(NULLIF(a.country_code, ''), a.country, '')
 		HAVING net <> 0 OR vat <> 0
 		ORDER BY country`,
@@ -294,6 +299,54 @@ func (s *Store) GetOssReturn(ctx context.Context, quarterStart time.Time) (*enti
 		})
 		ret.TotalNet = ret.TotalNet.Add(r.Net)
 		ret.TotalVat = ret.TotalVat.Add(r.Vat)
+	}
+
+	// Post-2021 OSS rules: a refund of a sale made in an EARLIER quarter is not netted into the
+	// current rows (excluded above) — it is reported as a correction line referencing the original
+	// quarter. Grouped by the original sale's quarter + consumption country; amounts are signed
+	// negatives. OSS files in EUR, so no conversion is needed.
+	corr, err := storeutil.QueryListNamed[struct {
+		OrigDay time.Time       `db:"orig_day"`
+		Country string          `db:"country"`
+		Net     decimal.Decimal `db:"net"`
+		Vat     decimal.Decimal `db:"vat"`
+	}](ctx, s.DB, `
+		SELECT MIN(orig.occurred_at) AS orig_day,
+		       COALESCE(NULLIF(a.country_code, ''), a.country, '') AS country,
+		       COALESCE(SUM(CASE WHEN acc.code IN ('4010','4020','4310','4110','4040','2090')
+		                         THEN (`+signedAmount+`) ELSE 0 END), 0) AS net,
+		       COALESCE(SUM(CASE WHEN acc.code = '2070'
+		                         THEN (`+signedAmount+`) ELSE 0 END), 0) AS vat
+		FROM acct_journal_line l
+		JOIN acct_journal_entry e ON e.id = l.entry_id
+		JOIN acct_account acc ON acc.id = l.account_id
+		JOIN customer_order co ON `+orderKeyMatch+`
+		JOIN acct_journal_entry orig
+		  ON orig.source_type IN ('order_sale','order_prepayment')
+		 AND orig.source_key = SUBSTRING_INDEX(e.source_key, CHAR(58), 1)
+		LEFT JOIN buyer b ON b.order_id = co.id
+		LEFT JOIN address a ON a.id = b.shipping_address_id
+		WHERE co.vat_regime = 'oss'
+		  AND e.source_type = 'order_refund'
+		  AND e.occurred_at >= :from AND e.occurred_at < :to
+		  AND orig.occurred_at < :from
+		  AND acc.code IN ('4010','4020','4310','4110','4040','2070','2090')
+		GROUP BY YEAR(orig.occurred_at), QUARTER(orig.occurred_at),
+		         COALESCE(NULLIF(a.country_code, ''), a.country, '')
+		HAVING net <> 0 OR vat <> 0
+		ORDER BY orig_day, country`,
+		map[string]any{"from": fromStr, "to": toStr})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: oss corrections %s: %w", fromStr, err)
+	}
+	for _, c := range corr {
+		period := fmt.Sprintf("%d-Q%d", c.OrigDay.Year(), (int(c.OrigDay.Month())-1)/3+1)
+		ret.Corrections = append(ret.Corrections, entity.AcctOssCorrection{
+			Period:  period,
+			Country: c.Country,
+			Net:     c.Net,
+			Vat:     c.Vat,
+		})
 	}
 	return ret, nil
 }

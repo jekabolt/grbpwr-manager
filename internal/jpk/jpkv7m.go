@@ -63,6 +63,7 @@ type OsobaNiefizyczna struct {
 type Ewidencja struct {
 	SprzedazWiersz []SprzedazWiersz `xml:"SprzedazWiersz"`
 	SprzedazCtrl   SprzedazCtrl     `xml:"SprzedazCtrl"`
+	ZakupWiersz    []ZakupWiersz    `xml:"ZakupWiersz"`
 	ZakupCtrl      ZakupCtrl        `xml:"ZakupCtrl"`
 }
 
@@ -72,11 +73,12 @@ type ZakupCtrl struct {
 	PodatekNaliczony     string `xml:"PodatekNaliczony"`
 }
 
-// Generate builds a complete, output-side JPK_V7M XML document for the month. taxpayer is validated
-// (a mistyped NIP is rejected here), the declaration comes from the VAT-return aggregates, and the
-// sales rows form the evidence. generatedAt stamps DataWytworzeniaJPK. The purchase register is empty
-// per the "accountant merges purchases" decision.
-func Generate(taxpayer Taxpayer, ret *entity.AcctVatReturnPL, salesRows []entity.AcctVatSalesRow, period, generatedAt time.Time) ([]byte, error) {
+// Generate builds a complete JPK_V7M XML document for the month. taxpayer is validated (a mistyped
+// NIP is rejected here), the declaration comes from the PLN filing aggregates, the sales rows form
+// the sales register and purchaseRows the purchase register (register-backed deductions only, so
+// the declaration's P_42/P_43/P_48 always cross-check the emitted rows). generatedAt stamps
+// DataWytworzeniaJPK.
+func Generate(taxpayer Taxpayer, ret *entity.AcctVatReturnPL, salesRows []entity.AcctVatSalesRow, purchaseRows []entity.AcctVatPurchaseRow, period, generatedAt time.Time) ([]byte, error) {
 	if err := taxpayer.Validate(); err != nil {
 		return nil, err
 	}
@@ -85,6 +87,7 @@ func Generate(taxpayer Taxpayer, ret *entity.AcctVatReturnPL, salesRows []entity
 	}
 
 	sales, salesCtrl := BuildSalesEvidence(salesRows, period)
+	purchases, purchCtrl := BuildPurchaseEvidence(purchaseRows)
 
 	doc := JPK{
 		Xmlns: schemaNamespace,
@@ -111,7 +114,8 @@ func Generate(taxpayer Taxpayer, ret *entity.AcctVatReturnPL, salesRows []entity
 		Ewidencja: Ewidencja{
 			SprzedazWiersz: sales,
 			SprzedazCtrl:   salesCtrl,
-			ZakupCtrl:      ZakupCtrl{LiczbaWierszyZakupow: 0, PodatekNaliczony: "0.00"},
+			ZakupWiersz:    purchases,
+			ZakupCtrl:      purchCtrl,
 		},
 	}
 

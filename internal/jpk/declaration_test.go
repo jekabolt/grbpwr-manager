@@ -31,15 +31,23 @@ func TestBuildDeclarationBalances(t *testing.T) {
 	if p.P_38 != 276 {
 		t.Errorf("P_38 (total output VAT) = %d, want 276", p.P_38)
 	}
-	// Output-only: the input/deduction side is deferred to the accountant, so P_48 = 0 and P_51 = P_38.
-	if p.P_48 != 0 {
-		t.Errorf("P_48 (input VAT) = %d, want 0 (accountant merges the input side)", p.P_48)
+	// Input side is now register-backed (statutory review 13): P_43 = 92 (domestic incl. documented
+	// opex) + 46 (WNT) + 0 (import) = 138; P_42 = 400 + 200 + 0 = 600; P_48 = P_43; P_51 = 276 −
+	// 138 = 138 — exactly the store's NetPayable.
+	if p.P_48 != 138 {
+		t.Errorf("P_48 (input VAT) = %d, want 138", p.P_48)
 	}
-	if p.P_51 == nil || *p.P_51 != 276 {
-		t.Errorf("P_51 (payable) = %v, want 276 (= P_38, output-only)", p.P_51)
+	if p.P_43 == nil || *p.P_43 != 138 {
+		t.Errorf("P_43 (input VAT, other purchases) = %v, want 138", p.P_43)
 	}
-	if p.P_42 != nil || p.P_43 != nil || p.P_53 != nil {
-		t.Errorf("input/refund boxes should be unset in an output-only declaration")
+	if p.P_42 == nil || *p.P_42 != 600 {
+		t.Errorf("P_42 (input net, other purchases) = %v, want 600", p.P_42)
+	}
+	if p.P_51 == nil || *p.P_51 != 138 {
+		t.Errorf("P_51 (payable) = %v, want 138 (= P_38 − P_48 = NetPayable)", p.P_51)
+	}
+	if p.P_53 != nil {
+		t.Errorf("P_53 (excess input) = %v, want unset (no excess when P_38 >= P_48)", p.P_53)
 	}
 	// Base fields present.
 	if p.P_11 == nil || *p.P_11 != 500 {

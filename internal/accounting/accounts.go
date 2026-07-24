@@ -72,6 +72,9 @@ const (
 	// Shipping & Fulfillment (opex) — actual carrier cost pull (phase 2, wave 3).
 	Acc6030 = "6030" // Shipping & Fulfillment
 
+	// Employer-side social contributions (ZUS/NI) — statutory review 13, seeded by 0204.
+	Acc6335 = "6335" // Employer Social Contributions
+
 	// Tax (its own P&L section) — manual Corporation-Tax journal only (phase 2, wave 3).
 	Acc8010 = "8010" // Corporation Tax
 )
@@ -90,6 +93,7 @@ var opexCategoryAccounts = map[string]string{
 	"bank_fees":             Acc6060,
 	"professional_services": Acc6350,
 	"logistics_office":      Acc6010,
+	"employer_social":       Acc6335,
 	"other":                 Acc6390,
 }
 

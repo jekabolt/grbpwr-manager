@@ -1801,6 +1801,14 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/accounting/reports/uk-vat-return"};
   }
 
+  // GetVatUe returns the monthly VAT-UE recapitulative statement rows (informacja podsumowująca):
+  // WDT supplies grouped by the buyer's EU VAT id and WNT acquisitions grouped by the supplier's
+  // VAT id, both in PLN converted per transaction at the reference rate of the day preceding the
+  // tax point. Filed alongside JPK_V7M whenever WDT/WNT occurred in the month.
+  rpc GetVatUe(GetVatUeRequest) returns (GetVatUeResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/reports/vat-ue"};
+  }
+
   // GetFrs105Accounts re-groups the ledger into FRS 105 UK micro-entity line items (Income Statement +
   // Statement of Financial Position). A base-currency DRAFT: a filing-ready UK Ltd set needs GBP
   // conversion + isolation of the UK entity's transactions — surfaced in caveats, not done here.
@@ -4929,11 +4937,26 @@ message UpsertChannelSpendResponse {}
 // from the operating result, when the currency has no rate).
 message OpexLineInsert {
   string month = 1; // target month, YYYY-MM (a YYYY-MM-DD date in the month is also accepted); normalised to the first of the month
-  string category = 2; // salaries | rent | software | marketing_other | production_content | other | taxes | bank_fees | professional_services | logistics_office
+  string category = 2; // salaries | rent | software | marketing_other | production_content | other | taxes | bank_fees | professional_services | logistics_office | employer_social
   string label = 3; // free text distinguishing lines within a month × category (e.g. «Adobe CC», «швея Мария»)
-  google.type.Decimal amount = 4; // in `currency`, >= 0
+  google.type.Decimal amount = 4; // in `currency`, NET of VAT, >= 0
   string currency = 5; // ISO 4217; defaults to the base currency when empty
   string note = 6;
+  // Recoverable input VAT on the invoice behind this line (same currency as `amount`), with the
+  // regime classifying it on the VAT return (domestic_pl | domestic_uk). Both optional; when
+  // vat_amount is set the regime is required. The monthly accrual then books Dr 6xxx net +
+  // Dr 2080 VAT / Cr 2030 gross, mirroring material receipts — without it the VAT is silently
+  // lost inside the expense.
+  google.type.Decimal vat_amount = 7;
+  string vat_regime = 8;
+  // Invoice identity for the VAT purchase register (JPK ewidencja zakupu): number, issue date
+  // (YYYY-MM-DD), supplier VAT id and name. A line with vat_amount but no doc identity is still
+  // deducted in the app summary but EXCLUDED from the generated JPK (no register row possible) —
+  // surfaced as a caveat.
+  string doc_number = 9;
+  string doc_date = 10;
+  string supplier_vat_id = 11;
+  string supplier_name = 12;
 }
 
 // OpexLine is a stored OPEX line item.
@@ -4942,12 +4965,19 @@ message OpexLine {
   string month = 2;
   string category = 3;
   string label = 4;
-  google.type.Decimal amount = 5; // in `currency`
+  google.type.Decimal amount = 5; // in `currency`, NET of VAT
   string currency = 6;
   google.type.Decimal amount_base = 7; // base currency; zero when uncosted (see `costed`)
   bool costed = 8; // false = the currency had no FX rate for the month; excluded from the operating result
   int32 recurring_id = 9; // 0 = manual line; else the recurring template it was materialised from
   string note = 10;
+  google.type.Decimal vat_amount = 11; // input VAT in `currency`; zero when none recorded
+  google.type.Decimal vat_amount_base = 12; // input VAT folded to base; zero when uncosted/none
+  string vat_regime = 13; // domestic_pl | domestic_uk | "" when none
+  string doc_number = 14;
+  string doc_date = 15; // YYYY-MM-DD or ""
+  string supplier_vat_id = 16;
+  string supplier_name = 17;
 }
 
 message UpsertOpexLinesRequest {
@@ -6390,6 +6420,9 @@ message GetAcctReconciliationResponse {
   AcctReconBlock prepayments = 9; // phase 2 wave 2: 2090 balance vs paid-undelivered orders
   AcctReconBlock shipping = 10; // phase 2 wave 3: 6030 actual shipping cost booked
   AcctReconBlock bank = 11; // phase 2 wave 4: 1010 balance + Revolut inbox unposted backlog
+  // 1030 Payment Processor (Stripe): informational — no external balance feed asserts a delta,
+  // but the balance is surfaced so a missed payout post cannot drift invisibly.
+  AcctReconBlock stripe = 12;
 }
 
 // --- wave 4: Revolut bank inbox (docs/plan-accounting-phase2/04-wave4-money.md §4.1) ---
@@ -6592,6 +6625,37 @@ message GetOssReturnResponse {
   repeated AcctOssRow rows = 2;
   google.type.Decimal total_net = 3;
   google.type.Decimal total_vat = 4;
+  // Refunds of sales made in EARLIER quarters, grouped by that original quarter + country. OSS
+  // (post-2021) requires these as correction lines referencing the original period, not netted
+  // into the current quarter; rows above contain only current-quarter sales net of SAME-quarter
+  // refunds.
+  repeated AcctOssCorrection corrections = 5;
+}
+
+// AcctOssCorrection is one OSS correction line: the original period being corrected and the
+// (negative) net/vat delta for one consumption country.
+message AcctOssCorrection {
+  string period = 1; // original quarter, e.g. "2026-Q1"
+  string country = 2; // ISO alpha-2 consumption country
+  google.type.Decimal net = 3; // signed (refunds negative)
+  google.type.Decimal vat = 4; // signed
+}
+
+// VAT-UE recapitulative statement (monthly, PLN).
+message GetVatUeRequest {
+  string month = 1; // any day within the target month
+}
+message AcctVatUeRow {
+  string counterparty_vat_id = 1; // EU VAT id (buyer for WDT, supplier for WNT)
+  string counterparty_name = 2; // best-known name; may be empty
+  string country = 3; // 2-letter prefix of the VAT id when derivable
+  google.type.Decimal net_pln = 4; // net base in PLN (signed; refunds subtract)
+}
+message GetVatUeResponse {
+  string month = 1; // YYYY-MM
+  repeated AcctVatUeRow wdt = 2; // intra-community supplies (section C of VAT-UE)
+  repeated AcctVatUeRow wnt = 3; // intra-community acquisitions (section D)
+  repeated string caveats = 4; // e.g. WDT rows missing a buyer VAT id, missing FX rates
 }
 
 message ExportJpkV7MRequest {
@@ -6630,6 +6694,11 @@ message GetUkVatReturnResponse {
   google.type.Decimal box5_net_vat = 5; // Box 3 − Box 4 (payable if positive)
   google.type.Decimal box6_net_sales = 6; // total sales ex-VAT
   google.type.Decimal box7_net_purchases = 7; // total purchases ex-VAT
+  // "GBP" — every figure above is converted per transaction at the daily reference rate effective
+  // on the day preceding its tax point (HMRC filing currency). "EUR" would mean an older backend
+  // that did not convert.
+  string currency = 8;
+  repeated string caveats = 9; // e.g. transactions missing a GBP rate for their date
 }
 
 message GetFrs105AccountsRequest {
@@ -6662,6 +6731,9 @@ message GetFrs105AccountsResponse {
   google.type.Decimal net_assets = 18;
   google.type.Decimal capital_and_reserves = 19;
   repeated string caveats = 20;
+  // FRS 105 SoFP requires "Called up share capital" as its own line (account 3005); the remainder
+  // of equity stays in capital_and_reserves.
+  google.type.Decimal called_up_share_capital = 21;
 }
 
 // --- wave 5: cash flow + financial health (docs/plan-accounting-phase2/05-wave5-reporting.md) ---

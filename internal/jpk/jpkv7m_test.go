@@ -19,7 +19,7 @@ func TestGenerate(t *testing.T) {
 		{UUID: "ORD-A", Placed: period, BuyerVatID: sql.NullString{}, Regime: "pl_domestic", Net: d("1000"), Vat: d("230")},
 	}
 
-	out, err := Generate(tp, ret, rows, period, gen)
+	out, err := Generate(tp, ret, rows, nil, period, gen)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -39,7 +39,6 @@ func TestGenerate(t *testing.T) {
 		"<Rok>2026</Rok>",
 		"<Miesiac>7</Miesiac>",
 		"<P_38>230</P_38>",
-		"<P_48>0</P_48>",
 		"<LiczbaWierszyZakupow>0</LiczbaWierszyZakupow>",
 	} {
 		if !strings.Contains(s, want) {
@@ -48,7 +47,7 @@ func TestGenerate(t *testing.T) {
 	}
 
 	// A bad taxpayer must be rejected, not silently produce a file.
-	if _, err := Generate(Taxpayer{NIP: "bad"}, ret, rows, period, gen); err == nil {
+	if _, err := Generate(Taxpayer{NIP: "bad"}, ret, rows, nil, period, gen); err == nil {
 		t.Error("Generate accepted an invalid taxpayer")
 	}
 }

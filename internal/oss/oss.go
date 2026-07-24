@@ -20,13 +20,23 @@ import (
 
 // OssReturn is the quarterly OSS Union-scheme return envelope.
 type OssReturn struct {
-	XMLName    xml.Name  `xml:"OSSReturn"`
-	Naglowek   Naglowek  `xml:"Naglowek"`
-	Podatnik   Podatnik  `xml:"Podatnik"`
-	Sprzedaz   []KrajRow `xml:"SprzedazWgKraju>Kraj"`
-	SumaNetto  string    `xml:"Podsumowanie>SumaNetto"`
-	SumaVat    string    `xml:"Podsumowanie>SumaVAT"`
-	LiczbaKraj int       `xml:"Podsumowanie>LiczbaKrajow"`
+	XMLName    xml.Name     `xml:"OSSReturn"`
+	Naglowek   Naglowek     `xml:"Naglowek"`
+	Podatnik   Podatnik     `xml:"Podatnik"`
+	Sprzedaz   []KrajRow    `xml:"SprzedazWgKraju>Kraj"`
+	Korekty    []KorektaRow `xml:"Korekty>Korekta,omitempty"`
+	SumaNetto  string       `xml:"Podsumowanie>SumaNetto"`
+	SumaVat    string       `xml:"Podsumowanie>SumaVAT"`
+	LiczbaKraj int          `xml:"Podsumowanie>LiczbaKrajow"`
+}
+
+// KorektaRow is one correction line: a refund of a sale from an EARLIER quarter, reported against
+// that original period (post-2021 OSS rules) — amounts are signed negatives.
+type KorektaRow struct {
+	Okres                 string `xml:"Okres"` // original quarter, e.g. "2026-Q1"
+	KodKraju              string `xml:"KodKraju"`
+	PodstawaOpodatkowania string `xml:"PodstawaOpodatkowania"`
+	KwotaVAT              string `xml:"KwotaVAT"`
 }
 
 type Naglowek struct {
@@ -71,6 +81,18 @@ func Generate(taxpayer jpk.Taxpayer, ret *entity.AcctOssReturn, generatedAt time
 		})
 	}
 
+	// Post-2021 OSS: refunds of earlier quarters are separate correction lines referencing the
+	// original period, never netted into the current rows.
+	korekty := make([]KorektaRow, 0, len(ret.Corrections))
+	for _, c := range ret.Corrections {
+		korekty = append(korekty, KorektaRow{
+			Okres:                 c.Period,
+			KodKraju:              c.Country,
+			PodstawaOpodatkowania: c.Net.StringFixed(2),
+			KwotaVAT:              c.Vat.StringFixed(2),
+		})
+	}
+
 	q := int((ret.QuarterStart.Month()-1)/3) + 1
 	doc := OssReturn{
 		Naglowek: Naglowek{
@@ -86,6 +108,7 @@ func Generate(taxpayer jpk.Taxpayer, ret *entity.AcctOssReturn, generatedAt time
 			Email:      taxpayer.Email,
 		},
 		Sprzedaz:   rows,
+		Korekty:    korekty,
 		SumaNetto:  ret.TotalNet.StringFixed(2),
 		SumaVat:    ret.TotalVat.StringFixed(2),
 		LiczbaKraj: len(rows),

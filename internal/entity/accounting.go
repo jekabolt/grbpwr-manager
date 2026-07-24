@@ -621,6 +621,7 @@ type AcctRunFacts struct {
 type AcctOpexCategorySum struct {
 	Category       string          `db:"category"`
 	AmountBase     decimal.Decimal `db:"amount_base"`
+	VatBase        decimal.Decimal `db:"vat_base"` // Σ recoverable input VAT (vat_amount_base) — posts Dr 2080
 	UncostedLabels []string        `db:"-"`
 }
 
@@ -799,6 +800,11 @@ type AcctReconciliation struct {
 	// Revolut inbox lines (phase 2, wave 4 — §4.1). Pointer for the same reason as Vat/Prepayments/
 	// Shipping; nil until GetReconciliation fills it.
 	Bank *AcctReconBlock
+	// Stripe surfaces the 1030 Payment-Processor balance (statutory review 13, P0-2): payouts
+	// 1030→1010 are manual bank-inbox posts with no external balance feed to assert a delta, so
+	// the block is informational — the balance is visible instead of drifting invisibly. Pointer
+	// for the same reason as the other phase-2 blocks.
+	Stripe *AcctReconBlock
 }
 
 // =====================================================================================
@@ -837,7 +843,46 @@ type AcctVatReturnPL struct {
 	NetWnt           decimal.Decimal
 	NetImport        decimal.Decimal
 	NetInputDomestic decimal.Decimal
-	Caveats          []string
+	// Currency of every figure above: "" / "EUR" for the app's management view (ledger base),
+	// "PLN" for the filing variant (GetVatReturnPLFiling — converted per tax point, art. 31a).
+	Currency string
+	// Input VAT recorded on OPEX lines that lack the invoice identity a JPK purchase-register row
+	// requires. It IS deducted in NetPayable (the deduction is real) but the filing variant
+	// excludes it from the generated XML boxes (no register row possible) and caveats it, so the
+	// declaration and the register always cross-check.
+	InputUnregistered decimal.Decimal
+	Caveats           []string
+}
+
+// AcctVatPurchaseRow is one purchase-register row for the JPK ewidencja zakupu: the supplier
+// invoice identity plus net (K_42) and VAT (K_43). Filing-variant rows are PLN-converted.
+type AcctVatPurchaseRow struct {
+	DocNumber     string          `db:"doc_number"`
+	DocDate       time.Time       `db:"doc_date"`
+	SupplierVatId string          `db:"supplier_vat_id"`
+	SupplierName  string          `db:"supplier_name"`
+	Net           decimal.Decimal `db:"net"`
+	Vat           decimal.Decimal `db:"vat"`
+}
+
+// AcctVatUeRow is one VAT-UE recapitulative row: the counterparty's EU VAT id and the PLN net base
+// (WDT supplies by buyer, WNT acquisitions by supplier).
+type AcctVatUeRow struct {
+	CounterpartyVatId string          `db:"vat_id"`
+	CounterpartyName  string          `db:"name"`
+	Country           string          `db:"-"` // 2-letter prefix of the VAT id when derivable
+	NetPln            decimal.Decimal `db:"-"` // converted per tax point (art. 31a)
+	NetBase           decimal.Decimal `db:"net"`
+	TaxPoint          time.Time       `db:"tax_point"`
+}
+
+// AcctVatUe is the monthly VAT-UE recapitulative statement (informacja podsumowująca): WDT
+// supplies grouped by buyer VAT id and WNT acquisitions grouped by supplier VAT id, in PLN.
+type AcctVatUe struct {
+	Month   time.Time
+	Wdt     []AcctVatUeRow
+	Wnt     []AcctVatUeRow
+	Caveats []string
 }
 
 // FixedAsset is one capitalised asset in the register, depreciated straight-line over
@@ -875,7 +920,7 @@ type AcctFrs105Accounts struct {
 	AdministrativeExpenses decimal.Decimal // opex excluding depreciation and tax
 	Depreciation           decimal.Decimal // 6370, shown separately per FRS 105
 	OperatingProfit        decimal.Decimal
-	Tax                    decimal.Decimal // 6360
+	Tax                    decimal.Decimal // the 'tax' P&L section (8010 Corporation Tax)
 	ProfitForYear          decimal.Decimal
 	// Statement of financial position — as at To.
 	FixedAssets                decimal.Decimal // 1220 Equipment net of 1225 Accumulated Depreciation
@@ -886,6 +931,9 @@ type AcctFrs105Accounts struct {
 	CreditorsAfterYear         decimal.Decimal
 	NetAssets                  decimal.Decimal
 	CapitalAndReserves         decimal.Decimal
+	// FRS 105 SoFP requires "Called up share capital" as its own line (account 3005, migration
+	// 0204); the remainder of equity stays in CapitalAndReserves.
+	CalledUpShareCapital decimal.Decimal
 	// Currency is the ledger base currency the figures are in (EUR); a DRAFT flag for the UI.
 	Currency string
 	Caveats  []string
@@ -898,9 +946,13 @@ type AcctFrs105Accounts struct {
 type AcctUkVatReturn struct {
 	QuarterStart     time.Time
 	Box1OutputVat    decimal.Decimal // VAT due on sales (uk_stock_domestic 2070)
-	Box4InputVat     decimal.Decimal // VAT reclaimed on purchases (domestic_uk 2080)
+	Box4InputVat     decimal.Decimal // VAT reclaimed on purchases (domestic_uk 2080 + opex input)
 	Box6NetSales     decimal.Decimal // total value of sales ex-VAT
 	Box7NetPurchases decimal.Decimal // total value of purchases ex-VAT
+	// "GBP": every box converted per transaction at the daily reference rate effective on the day
+	// preceding its tax point (HMRC filing currency). Caveats list transactions with no GBP rate.
+	Currency string
+	Caveats  []string
 }
 
 // Box3TotalVatDue is Box 1 + Box 2 (Box 2 = 0 for GB).
@@ -915,11 +967,18 @@ func (r AcctUkVatReturn) Box5NetVat() decimal.Decimal { return r.Box1OutputVat.S
 // (B2C) are aggregated into a single periodic internal row per regime by the JPK builder.
 type AcctVatSalesRow struct {
 	UUID       string          `db:"uuid"`         // order reference → DowodSprzedazy
-	Placed     time.Time       `db:"placed"`       // DataWystawienia / DataSprzedazy
+	Placed     time.Time       `db:"placed"`       // order placed date (legacy stamp; filing uses TaxPointAt)
 	BuyerVatID sql.NullString  `db:"buyer_vat_id"` // B2B buyer NIP (NrKontrahenta); empty → B2C aggregate
 	Regime     string          `db:"regime"`       // vat_regime (pl_domestic / wdt / export)
 	Net        decimal.Decimal `db:"net"`          // net revenue (refunds signed negative)
 	Vat        decimal.Decimal `db:"vat"`          // output VAT from 2070 (refunds signed negative)
+	// Filing-variant extras (VatSalesEvidenceFiling): the tax-point date the row's period and FX
+	// conversion follow (payment for sales, refund date for korekta rows), whether the row is a
+	// refund (emitted as its own corrective row for B2B), and the buyer's name (billing company,
+	// else first+last) for NazwaKontrahenta. Zero-values on the legacy query.
+	TaxPointAt time.Time      `db:"tax_point"`
+	IsRefund   bool           `db:"is_refund"`
+	BuyerName  sql.NullString `db:"buyer_name"`
 }
 
 // AcctOssRow is one destination country's OSS B2C line: country, applied rate, net and VAT.
@@ -930,10 +989,22 @@ type AcctOssRow struct {
 	Vat     decimal.Decimal
 }
 
-// AcctOssReturn is the quarterly OSS aggregate: per-country B2C rows plus the quarter totals.
+// AcctOssCorrection is one OSS correction line: a refund of a sale made in an EARLIER quarter,
+// reported against that original period (post-2021 OSS rules) instead of netted into the current
+// quarter's rows.
+type AcctOssCorrection struct {
+	Period  string          // original quarter, e.g. "2026-Q1"
+	Country string          // ISO alpha-2 consumption country
+	Net     decimal.Decimal // signed (refunds negative)
+	Vat     decimal.Decimal // signed
+}
+
+// AcctOssReturn is the quarterly OSS aggregate: per-country B2C rows (current-quarter sales net of
+// SAME-quarter refunds) plus corrections for refunds of earlier quarters and the quarter totals.
 type AcctOssReturn struct {
 	QuarterStart time.Time
 	Rows         []AcctOssRow
+	Corrections  []AcctOssCorrection
 	TotalNet     decimal.Decimal
 	TotalVat     decimal.Decimal
 }
