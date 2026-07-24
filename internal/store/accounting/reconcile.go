@@ -94,6 +94,9 @@ func (s *Store) GetReconciliation(ctx context.Context, from, to time.Time) (*ent
 // the ACTIONABLE backlog — statement lines booked in the period that are still unmatched (awaiting a
 // post/ignore decision) — so 1010 is not trusted while lines remain unposted. Ledger/Operational carry the
 // 1010 balance; Items sample the unposted lines with their signed amounts (own currency, informational).
+// Lines IGNORED in the period are listed too (audit finding 12): ignoring books nothing, so a real
+// expense/income wrongly ignored would otherwise vanish from every report — the sample keeps each
+// deliberate omission reviewable. TotalCount stays the unmatched (actionable) count only.
 func (s *Store) reconBank(ctx context.Context, fromT, toT time.Time) (entity.AcctReconBlock, error) {
 	ledger, err := s.accountBalanceBefore(ctx, "1010", toT)
 	if err != nil {
@@ -122,6 +125,29 @@ func (s *Store) reconBank(ctx context.Context, fromT, toT time.Time) (entity.Acc
 			Amount: r.Amount,
 		})
 	}
+
+	ignored, err := storeutil.QueryListNamed[struct {
+		Ref      string          `db:"ref"`
+		Currency string          `db:"currency"`
+		Amount   decimal.Decimal `db:"amount"`
+	}](ctx, s.DB, `
+		SELECT external_id AS ref, currency, amount
+		FROM acct_bank_txn
+		WHERE state = 'ignored' AND booked_at >= :from AND booked_at < :to
+		ORDER BY booked_at
+		LIMIT :topN`,
+		map[string]any{"from": fromT, "to": toT, "topN": reconTopN})
+	if err != nil {
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon bank ignored: %w", err)
+	}
+	for _, r := range ignored {
+		block.Items = append(block.Items, entity.AcctReconItem{
+			Ref:    r.Ref,
+			Label:  "ignored (" + r.Currency + ") — deliberately not booked; check it isn't a real expense/income",
+			Amount: r.Amount,
+		})
+	}
+
 	block.TotalCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM acct_bank_txn
 		WHERE state = 'unmatched' AND booked_at >= :from AND booked_at < :to`,
