@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	acctrules "github.com/jekabolt/grbpwr-manager/internal/accounting"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -126,6 +127,22 @@ func (s *Server) CreateJournalEntry(ctx context.Context, req *pb_admin.CreateJou
 	ins.SourceKey = "manual:" + uuid.NewString()
 	ins.CreatedBy = authsrv.GetAdminUsername(ctx)
 
+	// AP discipline: a manual line on 2010 (Accounts Payable) must carry the supplier tag —
+	// untagged 2010 movements pile up as an anonymous "(untagged)" row in GetPayables that nobody
+	// can chase or pay down, which is the exact failure the AP-by-supplier subledger exists to
+	// prevent. Automated postings stay exempt: a material receipt tags itself from the movement,
+	// and a production run's 2010 credit has no single supplier to name (it aggregates the run's
+	// manual costs) — those land in "(untagged)" by design until they get their own tagging.
+	if !ins.SupplierID.Valid {
+		for _, ln := range ins.Lines {
+			if ln.AccountCode == acctrules.Acc2010 {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"a line posts to %s Accounts Payable — supplier_id is required so the payable is tracked per supplier (pick one in ap / ar → suppliers, or create it there first)",
+					acctrules.Acc2010)
+			}
+		}
+	}
+
 	var full *entity.AcctJournalEntryFull
 	err = s.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		id, _, txErr := rep.Accounting().CreateJournalEntry(ctx, ins)
@@ -136,6 +153,10 @@ func (s *Server) CreateJournalEntry(ctx context.Context, req *pb_admin.CreateJou
 		return txErr
 	})
 	if err != nil {
+		// A dangling supplier_id trips the FK on insert — that is a bad request, not a server fault.
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Errorf(codes.InvalidArgument, "supplier_id %d does not exist", ins.SupplierID.Int64)
+		}
 		return nil, mapAcctErr(ctx, "create journal entry", err)
 	}
 	return &pb_admin.CreateJournalEntryResponse{Entry: dto.ConvertAcctJournalEntryFullToPb(*full)}, nil
