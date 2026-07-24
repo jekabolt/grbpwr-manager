@@ -9,8 +9,16 @@ import (
 )
 
 func makeQuery(query string, params map[string]any) (string, []any, error) {
-	if params == nil {
-		params = map[string]any{}
+	// A parameterless query goes to the driver untouched. sqlx's named-param scanner does not skip
+	// SQL string literals or '--' comments: a stray ':' (a SUBSTRING_INDEX ':' separator, a
+	// "bank:<id>" example in a comment) is read as an empty bind name and the whole query fails
+	// with `could not find name  in map` — that is how tech-card reads (afbdcf0), JPK evidence
+	// (dfb69b4) and accounting GetReceivables all shipped broken. With no params there is nothing
+	// to bind, so the scanner (and sqlx.In) have no work to do; skipping them removes the entire
+	// failure class for parameterless reads. Queries WITH params must still keep ':' out of SQL
+	// text — use CHAR(58) and Go-side comments (see internal/store/accounting/vatreturn.go).
+	if len(params) == 0 {
+		return query, nil, nil
 	}
 	q, args, err := sqlx.Named(query, params)
 	if err != nil {

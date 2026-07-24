@@ -70,20 +70,28 @@ func (s *Store) GetPayables(ctx context.Context) ([]entity.AcctPayableRow, error
 // source_key, so an order_refund 'uuid:seq' nets with its 'uuid' invoice, and a payment keyed to the order
 // nets too). Requiring Invoiced > 0 keeps only real invoices (a stray untagged 1040 credit forms no row).
 // Only non-zero balances are returned, largest first.
+//
+// Only order-keyed 1040 lines (source_key = order uuid) form real receivable rows. Bank-posted entries
+// (source_key "bank:<id>") and manual payments ("manual:<uuid>") both have source_type 'manual' and would
+// collapse into a phantom ref='bank'/'manual' group (LOW-2), so they are excluded.
+//
+// NB: that rationale lives HERE and not in a SQL '--' comment, and the SUBSTRING_INDEX separator is
+// CHAR(58) (ASCII ':') rather than a ':' literal — sqlx's named-param scanner does not skip SQL comments
+// or string literals, reads a stray ':' as an empty bind name, and fails the whole query with "could not
+// find name in map". That is exactly how this query shipped broken: every /reports/receivables call
+// returned Internal "can't get receivables". Same trap as the tech-card (afbdcf0) and JPK evidence
+// (dfb69b4) incidents; see also the parameterless-query guard in storeutil.makeQuery.
 func (s *Store) GetReceivables(ctx context.Context) ([]entity.AcctReceivableRow, error) {
 	rows, err := storeutil.QueryListNamed[entity.AcctReceivableRow](ctx, s.DB, `
-		SELECT SUBSTRING_INDEX(e.source_key, ':', 1) AS ref,
+		SELECT SUBSTRING_INDEX(e.source_key, CHAR(58), 1) AS ref,
 		       COALESCE(SUM(CASE WHEN l.side = 'debit'  THEN l.amount ELSE 0 END), 0) AS invoiced,
 		       COALESCE(SUM(CASE WHEN l.side = 'credit' THEN l.amount ELSE 0 END), 0) AS received
 		FROM acct_journal_line l
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account a       ON a.id = l.account_id
 		WHERE a.code = '1040'
-		  -- Only order-keyed 1040 lines (source_key = order uuid) form real receivable rows. Bank-posted
-		  -- entries (source_key 'bank:<id>') and manual payments ('manual:<uuid>') both have source_type
-		  -- 'manual' and would collapse into a phantom ref='bank'/'manual' group (LOW-2), so exclude them.
 		  AND e.source_type <> 'manual'
-		GROUP BY SUBSTRING_INDEX(e.source_key, ':', 1)
+		GROUP BY SUBSTRING_INDEX(e.source_key, CHAR(58), 1)
 		HAVING invoiced > 0 AND (invoiced - received) <> 0
 		ORDER BY (invoiced - received) DESC`, nil)
 	if err != nil {
