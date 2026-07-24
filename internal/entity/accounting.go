@@ -469,8 +469,13 @@ type AcctEntryFilter struct {
 	To          time.Time
 	AccountCode string
 	SourceType  AcctSourceType
-	Limit       int
-	Offset      int
+	// Q is a free-text filter: a case-insensitive substring of description, or a bare entry id.
+	// "" = no text filter.
+	Q string
+	// OrderAsc flips the listing to oldest-first (the default is newest-first).
+	OrderAsc bool
+	Limit    int
+	Offset   int
 }
 
 // AcctLedgerFilter narrows GetAccountLedger's drill-down rows for one account (the account itself
@@ -992,6 +997,7 @@ type AcctBankTxn struct {
 	State            AcctBankTxnState    `db:"state"`
 	MatchedEntryId   sql.NullInt64       `db:"matched_entry_id"`
 	SuggestedAccount sql.NullString      `db:"suggested_account"`
+	IgnoreReason     sql.NullString      `db:"ignore_reason"` // why the line was deliberately not booked (migration 0202)
 	CreatedAt        time.Time           `db:"created_at"`
 }
 
@@ -1049,6 +1055,20 @@ type AcctReceivableRow struct {
 	Balance  decimal.Decimal `db:"-"`
 }
 
+// AcctAlerts is GetAcctAlerts' result — the accounting section's attention flags (the UI tab
+// dots), aggregated in one call: open AP/AR counts (+ anomalies: untagged / negative payable
+// rows), fully-past months still open ("YYYY-MM"), current-month non-advisory reconciliation
+// mismatches (block names), the unmatched bank-inbox backlog and the dead-letter review queue.
+type AcctAlerts struct {
+	OpenPayables     int
+	OpenReceivables  int
+	ApAnomalies      int
+	OpenPastMonths   []string
+	ReconMismatch    []string
+	BankUnmatched    int
+	EventsNeedReview int
+}
+
 // =====================================================================================
 // Wave 5 — reporting (docs/plan-accounting-phase2/05-wave5-reporting.md §5.1/§5.2). Two
 // READ-ONLY derived reports over the EUR ledger: the indirect-method Cash Flow statement and
@@ -1059,10 +1079,12 @@ type AcctReceivableRow struct {
 // =====================================================================================
 
 // AcctCashFlowLine is one line of the cash-flow statement: a label and its SIGNED cash impact — a
-// source of cash is positive, a use of cash negative.
+// source of cash is positive, a use of cash negative. Codes lists the chart-of-accounts codes the
+// line aggregates so the UI can drill each into its ledger; empty for derived lines (net profit).
 type AcctCashFlowLine struct {
 	Label  string
 	Amount decimal.Decimal
+	Codes  []string
 }
 
 // AcctCashFlowSection groups cash-flow lines (operating / investing / financing) with the section's

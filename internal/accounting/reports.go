@@ -81,29 +81,32 @@ type CashFlowInputs struct {
 func ComputeCashFlow(in CashFlowInputs) *entity.AcctCashFlowStatement {
 	neg := func(d decimal.Decimal) decimal.Decimal { return d.Neg() }
 
+	// Codes name the chart-of-accounts set behind each line so the UI can drill into the ledgers —
+	// keep them in lockstep with the delta sets in wave5_reports.go (GetCashFlowStatement). Net
+	// profit carries none: its story is the whole P&L, not one ledger.
 	operating := entity.AcctCashFlowSection{Name: CashFlowOperating, Lines: []entity.AcctCashFlowLine{
 		{Label: "Net profit for the period", Amount: in.NetProfit},
-		{Label: "Add back: depreciation (6370)", Amount: in.Depreciation},
-		{Label: "Change in accounts receivable (1040)", Amount: neg(in.ARDelta)},
-		{Label: "Change in inventory (1110–1140)", Amount: neg(in.InventoryDelta)},
-		{Label: "Change in prepaid expenses (1210)", Amount: neg(in.PrepaidDelta)},
-		{Label: "Change in accounts payable (2010)", Amount: in.APDelta},
-		{Label: "Change in accrued expenses (2030)", Amount: in.AccruedDelta},
-		{Label: "Change in income tax payable (2050)", Amount: in.IncomeTaxDelta},
-		{Label: "Change in VAT (2070/2080)", Amount: in.VatDelta},
-		{Label: "Change in customer prepayments (2090)", Amount: in.PrepaymentsDelta},
+		{Label: "Add back: depreciation (6370)", Amount: in.Depreciation, Codes: []string{"6370"}},
+		{Label: "Change in accounts receivable (1040)", Amount: neg(in.ARDelta), Codes: []string{"1040"}},
+		{Label: "Change in inventory (1110–1140)", Amount: neg(in.InventoryDelta), Codes: []string{"1110", "1120", "1130", "1140"}},
+		{Label: "Change in prepaid expenses (1210)", Amount: neg(in.PrepaidDelta), Codes: []string{"1210"}},
+		{Label: "Change in accounts payable (2010)", Amount: in.APDelta, Codes: []string{"2010"}},
+		{Label: "Change in accrued expenses (2030)", Amount: in.AccruedDelta, Codes: []string{"2030"}},
+		{Label: "Change in income tax payable (2050)", Amount: in.IncomeTaxDelta, Codes: []string{"2050"}},
+		{Label: "Change in VAT (2070/2080)", Amount: in.VatDelta, Codes: []string{"2070", "2080"}},
+		{Label: "Change in customer prepayments (2090)", Amount: in.PrepaymentsDelta, Codes: []string{"2090"}},
 	}}
 	operating.Subtotal = sumCashFlowLines(operating.Lines)
 
 	investing := entity.AcctCashFlowSection{Name: CashFlowInvesting, Lines: []entity.AcctCashFlowLine{
-		{Label: "Purchase of non-current assets (1220)", Amount: neg(in.CapexDelta)},
+		{Label: "Purchase of non-current assets (1220)", Amount: neg(in.CapexDelta), Codes: []string{"1220", "1230", "1240"}},
 	}}
 	investing.Subtotal = sumCashFlowLines(investing.Lines)
 
 	financing := entity.AcctCashFlowSection{Name: CashFlowFinancing, Lines: []entity.AcctCashFlowLine{
-		{Label: "Owner equity contributions (3010/3020)", Amount: in.EquityDelta},
-		{Label: "Owner draws / distributions (3030)", Amount: in.DrawsDelta},
-		{Label: "Loans (2015)", Amount: in.LoansDelta},
+		{Label: "Owner equity contributions (3010/3020)", Amount: in.EquityDelta, Codes: []string{"3010", "3020"}},
+		{Label: "Owner draws / distributions (3030)", Amount: in.DrawsDelta, Codes: []string{"3030"}},
+		{Label: "Loans (2015)", Amount: in.LoansDelta, Codes: []string{"2015", "2060"}},
 	}}
 	financing.Subtotal = sumCashFlowLines(financing.Lines)
 

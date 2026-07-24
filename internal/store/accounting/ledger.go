@@ -110,6 +110,15 @@ func (s *Store) ListJournalEntries(ctx context.Context, f entity.AcctEntryFilter
 		conds = append(conds, "e.source_type = :source_type")
 		params["source_type"] = string(f.SourceType)
 	}
+	if q := strings.TrimSpace(f.Q); q != "" {
+		// Substring match on description (case-insensitive via the column's _ci collation); a bare
+		// number also matches the entry id exactly, so pasting "123" from a toast finds #123. The
+		// value is a bind parameter — LIKE metacharacters in q widen the match, which is fine for
+		// a human search box.
+		conds = append(conds, "(e.description LIKE :q OR CAST(e.id AS CHAR) = :q_id)")
+		params["q"] = "%" + q + "%"
+		params["q_id"] = q
+	}
 	where := " WHERE " + strings.Join(conds, " AND ")
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
@@ -132,9 +141,15 @@ func (s *Store) ListJournalEntries(ctx context.Context, f entity.AcctEntryFilter
 	params["limit"] = limit
 	params["offset"] = offset
 
+	// Direction is a two-value constant chosen here (never user text), so the concatenation below
+	// cannot inject; the default stays newest-first.
+	dir := "DESC"
+	if f.OrderAsc {
+		dir = "ASC"
+	}
 	entries, err := storeutil.QueryListNamed[entity.AcctJournalEntry](ctx, s.DB,
 		`SELECT DISTINCT `+entryColumns+` FROM acct_journal_entry e`+join+where+`
-		 ORDER BY e.occurred_at DESC, e.id DESC
+		 ORDER BY e.occurred_at `+dir+`, e.id `+dir+`
 		 LIMIT :limit OFFSET :offset`, params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("accounting: list journal entries: %w", err)

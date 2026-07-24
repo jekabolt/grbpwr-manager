@@ -446,11 +446,19 @@ func ConvertPbAcctEntryFilter(req *pb_admin.ListJournalEntriesRequest) (entity.A
 	if !from.IsZero() && !to.IsZero() && to.Before(from) {
 		return entity.AcctEntryFilter{}, fmt.Errorf("to precedes from")
 	}
+	order := strings.ToLower(strings.TrimSpace(req.GetOrder()))
+	switch order {
+	case "", "asc", "desc":
+	default:
+		return entity.AcctEntryFilter{}, fmt.Errorf("order must be asc or desc")
+	}
 	return entity.AcctEntryFilter{
 		From:        from,
 		To:          to,
 		AccountCode: strings.ToUpper(strings.TrimSpace(req.GetAccountCode())),
 		SourceType:  entity.AcctSourceType(strings.TrimSpace(req.GetSourceType())),
+		Q:           strings.TrimSpace(req.GetQ()),
+		OrderAsc:    order == "asc",
 		Limit:       int(req.GetLimit()),
 		Offset:      int(req.GetOffset()),
 	}, nil
@@ -737,7 +745,7 @@ func ConvertAcctCashFlowStatementToPb(cf entity.AcctCashFlowStatement) *pb_admin
 func convertAcctCashFlowSectionToPb(sec entity.AcctCashFlowSection) *pb_admin.AcctCashFlowSection {
 	lines := make([]*pb_admin.AcctCashFlowLine, 0, len(sec.Lines))
 	for _, l := range sec.Lines {
-		lines = append(lines, &pb_admin.AcctCashFlowLine{Label: l.Label, Amount: pbDecimalFromDecimal(l.Amount)})
+		lines = append(lines, &pb_admin.AcctCashFlowLine{Label: l.Label, Amount: pbDecimalFromDecimal(l.Amount), Codes: l.Codes})
 	}
 	return &pb_admin.AcctCashFlowSection{Name: sec.Name, Lines: lines, Subtotal: pbDecimalFromDecimal(sec.Subtotal)}
 }
@@ -792,7 +800,23 @@ func ConvertAcctBankTxnToPb(t entity.AcctBankTxn) *pb_admin.AcctBankTxn {
 	if t.SuggestedAccount.Valid {
 		pb.SuggestedAccount = t.SuggestedAccount.String
 	}
+	if t.IgnoreReason.Valid {
+		pb.IgnoreReason = t.IgnoreReason.String
+	}
 	return pb
+}
+
+// ConvertAcctAlertsToPb converts the aggregated tab-dot flags.
+func ConvertAcctAlertsToPb(a entity.AcctAlerts) *pb_admin.GetAcctAlertsResponse {
+	return &pb_admin.GetAcctAlertsResponse{
+		OpenPayables:     int32(a.OpenPayables),
+		OpenReceivables:  int32(a.OpenReceivables),
+		ApAnomalies:      int32(a.ApAnomalies),
+		OpenPastMonths:   a.OpenPastMonths,
+		ReconMismatch:    a.ReconMismatch,
+		BankUnmatched:    int32(a.BankUnmatched),
+		EventsNeedReview: int32(a.EventsNeedReview),
+	}
 }
 
 // ConvertAcctBankTxnListToPb converts a page of bank inbox lines.
