@@ -134,8 +134,8 @@ func (s *Store) UpsertOpexLines(ctx context.Context, rows []entity.OpexLineInser
 				"supplier_vat_id": r.SupplierVatId,
 				"supplier_name":   r.SupplierName,
 				"amount_base":     r.AmountBase,
-				"recurring_id": r.RecurringId,
-				"note":         r.Note,
+				"recurring_id":    r.RecurringId,
+				"note":            r.Note,
 			}); err != nil {
 			return fmt.Errorf("upsert opex line %s/%s/%s: %w",
 				r.Month.Format("2006-01"), r.Category, r.Label, err)

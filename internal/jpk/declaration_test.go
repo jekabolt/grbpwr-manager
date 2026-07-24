@@ -62,7 +62,6 @@ func TestBuildDeclarationBalances(t *testing.T) {
 	if p.P_19 == nil || *p.P_19 != 1000 {
 		t.Errorf("P_19 (domestic net) = %v, want 1000", p.P_19)
 	}
-	if p.P_24 == nil || *p.P_24 != 46 {
-		t.Errorf("P_24 (WNT self-charge output VAT) = %v, want 46", p.P_24)
-	}
+	// P_24 (WNT self-charge) is deliberately unset now — asserted with the other WNT/import boxes
+	// above (H-1: un-evidenced boxes are not declared).
 }
