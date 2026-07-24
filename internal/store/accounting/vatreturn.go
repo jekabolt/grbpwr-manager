@@ -321,9 +321,12 @@ func (s *Store) GetOssReturn(ctx context.Context, quarterStart time.Time) (*enti
 		JOIN acct_journal_entry e ON e.id = l.entry_id
 		JOIN acct_account acc ON acc.id = l.account_id
 		JOIN customer_order co ON `+orderKeyMatch+`
-		JOIN acct_journal_entry orig
-		  ON orig.source_type IN ('order_sale','order_prepayment')
-		 AND orig.source_key = SUBSTRING_INDEX(e.source_key, CHAR(58), 1)
+		JOIN (
+		  SELECT source_key AS sk, MIN(occurred_at) AS occurred_at
+		  FROM acct_journal_entry
+		  WHERE source_type IN ('order_sale','order_prepayment')
+		  GROUP BY source_key
+		) orig ON orig.sk = SUBSTRING_INDEX(e.source_key, CHAR(58), 1)
 		LEFT JOIN buyer b ON b.order_id = co.id
 		LEFT JOIN address a ON a.id = b.shipping_address_id
 		WHERE co.vat_regime = 'oss'

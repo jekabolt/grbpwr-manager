@@ -264,6 +264,16 @@ func (s *Store) GetVatReturnPLFiling(ctx context.Context, month time.Time) (*ent
 			"%s PLN of opex input VAT has no invoice number/date — excluded from the generated JPK (no register row possible); add doc identity to deduct it in the filing",
 			ret.InputUnregistered.StringFixed(2)))
 	}
+	// WNT/import self-charge is measured here (and in NetPayable, where its two legs cancel) but
+	// deliberately NOT placed into the generated declaration/registers — the file carries no
+	// K_23..K_26 evidence rows for it, and un-evidenced boxes fail the MF cross-check. The
+	// accountant merges these rows into the filing (review pass 1, H-1).
+	if ret.InputWnt.IsPositive() || ret.InputImport.IsPositive() {
+		ret.Caveats = append(ret.Caveats, fmt.Sprintf(
+			"WNT/import self-charge is NOT in the generated JPK boxes/registers — merge manually: WNT net %s / VAT %s, import net %s / VAT %s (PLN)",
+			ret.NetWnt.StringFixed(2), ret.InputWnt.StringFixed(2),
+			ret.NetImport.StringFixed(2), ret.InputImport.StringFixed(2)))
+	}
 
 	ret.NetPayable = ret.OutputDomestic.Add(ret.OutputWntSelfCharge).
 		Sub(ret.InputDomestic).Sub(ret.InputWnt).Sub(ret.InputImport)

@@ -52,13 +52,12 @@ type DeklPozycje struct {
 	P_53 *int64 `xml:"P_53,omitempty"` // excess input to carry forward / refund (P_48 − P_38, if > 0)
 }
 
-// whole rounds a base-currency amount to whole złoty (declaration granularity) and clamps a small
-// negative (a refund-heavy month) to zero for a base field — a negative base is declared via the
-// paired refund/carry-forward line, not a negative in the box.
+// whole rounds an amount to whole złoty (declaration granularity). Negatives are KEPT: in a
+// refund-heavy month a regime's net/VAT box is legitimately negative (in-period corrections), and
+// clamping it to zero both under-declared the reduction and broke the declaration↔evidence tie
+// (the signed KOREKTA evidence rows still summed negative). P_51/P_53 derive from the signed
+// payable, so the settlement side was always correct (review pass 1, M-1).
 func whole(d decimal.Decimal) int64 {
-	if d.IsNegative() {
-		return 0
-	}
 	return d.Round(0).IntPart()
 }
 
@@ -80,10 +79,13 @@ func ptr(v int64) *int64 {
 // declare only its output leg here (P_24/P_26) — the accountant claims the matching input.
 func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
 	pDomesticVat := whole(ret.OutputDomestic)
-	pWntVat := whole(ret.InputWnt) // self-charge output VAT equals the reclaimable input
-	pImportVat := whole(ret.InputImport)
 
-	totalOutputVat := pDomesticVat + pWntVat + pImportVat
+	// WNT/import self-charge is deliberately NOT declared here: the emitted registers carry no
+	// K_23..K_26 rows for it (VatPurchaseEvidenceFiling filters domestic_pl only), and a
+	// declaration box the file's own ewidencja cannot evidence fails the MF deklaracja↔ewidencja
+	// cross-check. Its output and input legs are equal, so P_51 is unaffected; the filing caveats
+	// name the amounts for the accountant to merge (review pass 1, H-1).
+	totalOutputVat := pDomesticVat
 
 	// Input side (statutory review 13): the system now captures register-backed input VAT —
 	// domestic material receipts + documented OPEX invoices (ret.InputDomestic /
@@ -93,8 +95,8 @@ func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
 	// app's NetPayable formula exactly (output − all inputs). Undocumented opex input VAT is
 	// deliberately NOT here (ret.InputUnregistered, caveated) so the declaration always
 	// cross-checks with the register rows.
-	inputVat := whole(ret.InputDomestic) + whole(ret.InputWnt) + whole(ret.InputImport)
-	inputNet := whole(ret.NetInputDomestic) + whole(ret.NetWnt) + whole(ret.NetImport)
+	inputVat := whole(ret.InputDomestic)
+	inputNet := whole(ret.NetInputDomestic)
 	payable := totalOutputVat - inputVat
 	var p51, p53 int64
 	if payable >= 0 {
@@ -113,10 +115,6 @@ func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
 			P_12: ptr(whole(ret.NetExport)),
 			P_19: ptr(whole(ret.NetDomestic)),
 			P_20: ptr(pDomesticVat),
-			P_23: ptr(whole(ret.NetWnt)),
-			P_24: ptr(pWntVat),
-			P_25: ptr(whole(ret.NetImport)),
-			P_26: ptr(pImportVat),
 			P_38: totalOutputVat,
 			P_42: ptr(inputNet),
 			P_43: ptr(inputVat),

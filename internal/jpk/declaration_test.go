@@ -27,21 +27,24 @@ func TestBuildDeclarationBalances(t *testing.T) {
 	dec := BuildDeclaration(ret)
 	p := dec.Pozycje
 
-	// Output total: 230 (domestic) + 46 (WNT self-charge) + 0 (import) = 276.
-	if p.P_38 != 276 {
-		t.Errorf("P_38 (total output VAT) = %d, want 276", p.P_38)
+	// Output: domestic only — WNT/import self-charge is deliberately NOT declared (the file
+	// carries no K_23..K_26 evidence for it; its legs cancel, so P_51 is unchanged — H-1).
+	if p.P_38 != 230 {
+		t.Errorf("P_38 (total output VAT) = %d, want 230 (domestic only)", p.P_38)
 	}
-	// Input side is now register-backed (statutory review 13): P_43 = 92 (domestic incl. documented
-	// opex) + 46 (WNT) + 0 (import) = 138; P_42 = 400 + 200 + 0 = 600; P_48 = P_43; P_51 = 276 −
-	// 138 = 138 — exactly the store's NetPayable.
-	if p.P_48 != 138 {
-		t.Errorf("P_48 (input VAT) = %d, want 138", p.P_48)
+	if p.P_23 != nil || p.P_24 != nil || p.P_25 != nil || p.P_26 != nil {
+		t.Errorf("WNT/import boxes must be unset (un-evidenced): P_23=%v P_24=%v P_25=%v P_26=%v", p.P_23, p.P_24, p.P_25, p.P_26)
 	}
-	if p.P_43 == nil || *p.P_43 != 138 {
-		t.Errorf("P_43 (input VAT, other purchases) = %v, want 138", p.P_43)
+	// Input side is register-backed only: P_43 = 92 (domestic incl. documented opex), P_42 = 400;
+	// P_48 = P_43; P_51 = 230 − 92 = 138 — exactly the store's NetPayable (the WNT legs cancel).
+	if p.P_48 != 92 {
+		t.Errorf("P_48 (input VAT) = %d, want 92", p.P_48)
 	}
-	if p.P_42 == nil || *p.P_42 != 600 {
-		t.Errorf("P_42 (input net, other purchases) = %v, want 600", p.P_42)
+	if p.P_43 == nil || *p.P_43 != 92 {
+		t.Errorf("P_43 (input VAT, other purchases) = %v, want 92", p.P_43)
+	}
+	if p.P_42 == nil || *p.P_42 != 400 {
+		t.Errorf("P_42 (input net, other purchases) = %v, want 400", p.P_42)
 	}
 	if p.P_51 == nil || *p.P_51 != 138 {
 		t.Errorf("P_51 (payable) = %v, want 138 (= P_38 − P_48 = NetPayable)", p.P_51)
