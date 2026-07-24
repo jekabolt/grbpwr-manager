@@ -203,6 +203,33 @@ func (s *Store) GetVatReturnPL(ctx context.Context, month time.Time) (*entity.Ac
 	// input. WNT/import output and input are equal (net-zero self-charge), so they cancel; only domestic
 	// output − domestic input remains. OSS (declared on the OSS return) and every UK figure (declared on
 	// the UK return) are deliberately excluded — folding them in mis-stated the Polish liability.
+	// OPEX input VAT (migration 0203) — the management view reads the folded base values
+	// directly (no FX): documented or not, the deduction is economically real here; the FILING
+	// variant separately excludes undocumented lines from the XML (review pass 2, M-1 — without
+	// this the on-screen NetPayable overstated the liability vs the generated JPK).
+	opexIn, err := storeutil.QueryListNamed[struct {
+		Regime string          `db:"vat_regime"`
+		Net    decimal.Decimal `db:"net"`
+		Vat    decimal.Decimal `db:"vat"`
+	}](ctx, s.DB, `
+		SELECT vat_regime, COALESCE(SUM(amount_base), 0) AS net, COALESCE(SUM(vat_amount_base), 0) AS vat
+		FROM opex_line
+		WHERE month = :from AND vat_amount_base IS NOT NULL AND vat_regime IS NOT NULL
+		GROUP BY vat_regime`,
+		map[string]any{"from": from.Format(dateLayout)})
+	if err != nil {
+		return nil, fmt.Errorf("accounting: vat return opex input: %w", err)
+	}
+	for _, r := range opexIn {
+		switch r.Regime {
+		case "domestic_pl":
+			ret.InputDomestic = ret.InputDomestic.Add(r.Vat)
+			ret.NetInputDomestic = ret.NetInputDomestic.Add(r.Net)
+		case "domestic_uk":
+			ret.InputUkDomestic = ret.InputUkDomestic.Add(r.Vat)
+		}
+	}
+
 	ret.NetPayable = ret.OutputDomestic.Add(ret.OutputWntSelfCharge).
 		Sub(ret.InputDomestic).Sub(ret.InputWnt).Sub(ret.InputImport)
 

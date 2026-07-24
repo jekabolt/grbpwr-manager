@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -157,6 +159,52 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 	}
 	if unmatchedBank > 0 {
 		return fmt.Errorf("%w: %d unmatched bank line(s) in %s — post or ignore each in the bank inbox", entity.ErrAcctPeriodNotReady, unmatchedBank, m.Format("2006-01"))
+	}
+
+	// 3e) opex VAT must be filable: a line with VAT but no invoice number/date books recoverable
+	//     2080 the JPK register can never evidence — the ledger would stay permanently more
+	//     optimistic than any filing (review pass 2, M-2a). Fix the line or clear its VAT.
+	undocVat, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM opex_line
+		WHERE month = :from AND vat_amount IS NOT NULL
+		  AND (doc_number IS NULL OR doc_number = '' OR doc_date IS NULL)`,
+		map[string]any{"from": from})
+	if err != nil {
+		return fmt.Errorf("accounting: close period undocumented opex vat: %w", err)
+	}
+	if undocVat > 0 {
+		return fmt.Errorf("%w: %d opex line(s) in %s carry VAT without an invoice number/date — add the doc identity (or clear the VAT) so the JPK register can evidence the deduction", entity.ErrAcctPeriodNotReady, undocVat, m.Format("2006-01"))
+	}
+
+	// 3f) every tax-point day in the month needs a PLN D-1 reference rate, so a CLOSED month is
+	//     guaranteed filable (the exports fail loudly on missing rates — better to learn at close
+	//     than at the filing deadline; review pass 2, M-2b).
+	taxDays, err := storeutil.QueryListNamed[struct {
+		Day time.Time `db:"day"`
+	}](ctx, s.DB, `
+		SELECT DISTINCT DATE(occurred_at) AS day
+		FROM acct_journal_entry
+		WHERE occurred_at >= :from AND occurred_at < :to
+		  AND source_type IN ('order_sale','order_prepayment','order_refund','material_receipt')`,
+		map[string]any{"from": from, "to": to})
+	if err != nil {
+		return fmt.Errorf("accounting: close period tax days: %w", err)
+	}
+	if len(taxDays) > 0 {
+		pln, fxErr := s.loadFxSeries(ctx, "PLN")
+		if fxErr != nil {
+			return fxErr
+		}
+		var missingDays []string
+		for _, d := range taxDays {
+			if _, ok := pln.rateBefore(d.Day); !ok {
+				missingDays = append(missingDays, d.Day.Format(dateLayout))
+			}
+		}
+		if len(missingDays) > 0 {
+			sort.Strings(missingDays)
+			return fmt.Errorf("%w: no PLN reference rate stored for tax-point day(s) %s in %s — enable/backfill fxsync (costing_fx_rate) so the month stays filable", entity.ErrAcctPeriodNotReady, strings.Join(missingDays, ", "), m.Format("2006-01"))
+		}
 	}
 
 	// 4) the month's ledger is balanced (an invariant, but verified — it is the trust check).

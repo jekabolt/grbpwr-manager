@@ -92,6 +92,11 @@ func ConvertPbOpexLinesToEntity(list []*pb_admin.OpexLineInsert) ([]entity.OpexL
 				if regime != "domestic_pl" && regime != "domestic_uk" {
 					return nil, fmt.Errorf("opex vat_regime must be domestic_pl or domestic_uk when vat_amount is set")
 				}
+				// No PL/UK rate makes VAT exceed the net; a larger value is a typo (gross in one
+				// field, VAT in the other) that would over-debit 2080 (review pass 2, L-3).
+				if vat.GreaterThan(amount) {
+					return nil, fmt.Errorf("opex vat_amount exceeds the net amount — enter the NET in amount and the VAT separately")
+				}
 				line.VatAmount = decimal.NullDecimal{Decimal: vat, Valid: true}
 				line.VatRegime = sql.NullString{String: regime, Valid: true}
 				line.DocNumber = trimmedNullString(e.DocNumber)

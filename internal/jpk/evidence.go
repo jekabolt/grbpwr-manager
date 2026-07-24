@@ -103,7 +103,9 @@ func BuildSalesEvidence(rows []entity.AcctVatSalesRow, period time.Time) ([]Sprz
 		}
 		doc := r.UUID
 		if r.IsRefund {
-			doc = r.UUID + "-KOREKTA"
+			// Dated suffix so an order refunded twice on different days never emits two register
+			// rows with an identical document id (review pass 2, L-1).
+			doc = r.UUID + "-KOREKTA-" + day.Format("20060102")
 		}
 		w := SprzedazWiersz{
 			LpSprzedazy:      lp,

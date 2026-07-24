@@ -285,7 +285,48 @@ func (s *Store) GetVatReturnPLFiling(ctx context.Context, month time.Time) (*ent
 	if cErr == nil {
 		ret.Caveats = append(ret.Caveats, caveats...)
 	}
+	if cv, dErr := s.opexAccrualDriftCaveat(ctx, from); dErr == nil && cv != "" {
+		ret.Caveats = append(ret.Caveats, cv)
+	}
 	return ret, nil
+}
+
+// opexAccrualDriftCaveat compares the month's opex_line VAT total (what the filings read) against
+// the posted, non-reversed opex_month 2080 accrual (what the ledger holds). They diverge when a
+// line is edited after the period closed (commitOpex warns + skips the repost) or just before the
+// worker's next tick — the filing would then silently disagree with the books (review pass 2,
+// H-1). Both sides are base-currency EUR, so the comparison needs no FX.
+func (s *Store) opexAccrualDriftCaveat(ctx context.Context, month time.Time) (string, error) {
+	m := firstOfMonthUTC(month)
+	table, err := storeutil.QueryNamedOne[struct {
+		V decimal.Decimal `db:"v"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(vat_amount_base), 0) AS v
+		FROM opex_line WHERE month = :m AND vat_amount_base IS NOT NULL`,
+		map[string]any{"m": m.Format(dateLayout)})
+	if err != nil {
+		return "", fmt.Errorf("accounting: opex drift table sum: %w", err)
+	}
+	ledger, err := storeutil.QueryNamedOne[struct {
+		V decimal.Decimal `db:"v"`
+	}](ctx, s.DB, `
+		SELECT COALESCE(SUM(l.amount), 0) AS v
+		FROM acct_journal_line l
+		JOIN acct_journal_entry e ON e.id = l.entry_id
+		JOIN acct_account a ON a.id = l.account_id
+		WHERE e.source_type = 'opex_month' AND e.reversed_by IS NULL
+		  AND e.source_key LIKE :prefix
+		  AND a.code = '2080' AND l.side = 'debit'`,
+		map[string]any{"prefix": m.Format("2006-01") + "%"})
+	if err != nil {
+		return "", fmt.Errorf("accounting: opex drift ledger sum: %w", err)
+	}
+	if table.V.Sub(ledger.V).Abs().Cmp(decimal.NewFromFloat(0.01)) < 0 {
+		return "", nil
+	}
+	return fmt.Sprintf(
+		"opex input VAT drift %s: opex lines carry %s EUR but the posted 2080 accrual holds %s EUR — a line changed after close or before the worker's tick; reopen the period and let it repost before filing",
+		m.Format("2006-01"), table.V.StringFixed(2), ledger.V.StringFixed(2)), nil
 }
 
 // VatSalesEvidenceFiling returns the JPK sales-register rows in PLN with filing semantics: rows
@@ -661,6 +702,12 @@ func (s *Store) GetUkVatReturnFiling(ctx context.Context, quarterStart time.Time
 
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("accounting: %s", missingRateCaveat("GBP", missing))
+	}
+	// Same table-vs-ledger drift guard as the PL filing, month by month over the quarter.
+	for i := 0; i < 3; i++ {
+		if cv, dErr := s.opexAccrualDriftCaveat(ctx, from.AddDate(0, i, 0)); dErr == nil && cv != "" {
+			ret.Caveats = append(ret.Caveats, cv)
+		}
 	}
 	return ret, nil
 }
