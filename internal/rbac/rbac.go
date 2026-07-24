@@ -443,6 +443,7 @@ var methodRequirements = map[string]Requirement{
 	"ListSuppliers":  rd(SectionAccounting),
 	"GetPayables":    rd(SectionAccounting),
 	"GetReceivables": rd(SectionAccounting),
+	"GetAcctAlerts":  rd(SectionAccounting),
 	// Fixed-asset depreciation + corporation-tax accrual (#71).
 	"CreateFixedAsset":     wr(SectionAccounting),
 	"ListFixedAssets":      rd(SectionAccounting),
