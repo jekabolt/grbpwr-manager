@@ -1901,6 +1901,14 @@ service AdminService {
   rpc GetReceivables(GetReceivablesRequest) returns (GetReceivablesResponse) {
     option (google.api.http) = {get: "/api/admin/accounting/reports/receivables"};
   }
+
+  // GetAcctAlerts returns the accounting section's attention flags in one call — the red tab dots:
+  // open AP/AR (+ untagged/negative anomalies), past months still open, current-month
+  // reconciliation drift (non-advisory blocks only), unmatched bank inbox lines and dead-letter
+  // events. Aggregates existing reads server-side so the UI needs one request instead of six.
+  rpc GetAcctAlerts(GetAcctAlertsRequest) returns (GetAcctAlertsResponse) {
+    option (google.api.http) = {get: "/api/admin/accounting/alerts"};
+  }
   // Fixed-asset register + straight-line depreciation.
   rpc CreateFixedAsset(CreateFixedAssetRequest) returns (CreateFixedAssetResponse) {
     option (google.api.http) = {
@@ -6132,6 +6140,11 @@ message ListJournalEntriesRequest {
   string source_type = 4; // empty = any
   int32 limit = 5;
   int32 offset = 6;
+  // Free-text filter: a case-insensitive substring of description, or a bare entry id ("123").
+  // Empty = no text filter.
+  string q = 7;
+  // occurred_at ordering: "desc" (default, newest first) | "asc" (oldest first).
+  string order = 8;
 }
 
 message ListJournalEntriesResponse {
@@ -6398,6 +6411,10 @@ message AcctBankTxn {
   string state = 10;
   int32 matched_entry_id = 11;
   string suggested_account = 12;
+  // Why the line was deliberately not booked (set by IgnoreBankTxn); empty when none. Keeps every
+  // deliberate omission reviewable — an ignored line books NOTHING, so the reason is its only trace.
+  // 14: created_at already holds 13.
+  string ignore_reason = 14;
   string created_at = 13; // RFC3339
 }
 
@@ -6423,6 +6440,9 @@ message PostBankTxnRequest {
   int32 id = 1;
   string account_code = 2; // the other side of the entry (1010 is the money leg)
   string occurred_at = 3; // YYYY-MM-DD; empty = the line's booked date
+  // Tags the entry with the supplier it settles, so a 2010 Accounts-Payable payment lands in
+  // GetPayables under that supplier instead of the anonymous "(untagged)" row. 0 = untagged.
+  int32 supplier_id = 4;
 }
 message PostBankTxnResponse {
   AcctJournalEntry entry = 1;
@@ -6430,7 +6450,7 @@ message PostBankTxnResponse {
 
 message IgnoreBankTxnRequest {
   int32 id = 1;
-  string reason = 2; // advisory (logged, not persisted)
+  string reason = 2; // persisted on the line (acct_bank_txn.ignore_reason); <= 255 chars
 }
 message IgnoreBankTxnResponse {}
 
@@ -6504,6 +6524,20 @@ message AcctReceivableRow {
 message GetReceivablesRequest {}
 message GetReceivablesResponse {
   repeated AcctReceivableRow rows = 1;
+}
+
+// GetAcctAlerts: the section's attention flags (the tab dots), aggregated server-side.
+message GetAcctAlertsRequest {}
+message GetAcctAlertsResponse {
+  int32 open_payables = 1; // suppliers with a non-zero open AP balance
+  int32 open_receivables = 2; // orders with a non-zero open AR balance
+  int32 ap_anomalies = 3; // untagged or negative payable rows (need a human)
+  repeated string open_past_months = 4; // "YYYY-MM" fully-past months still open
+  // Current-month reconciliation blocks off by >= 0.01, non-advisory only (finished-goods drift,
+  // pending and unposted-movement backlogs have their own signals).
+  repeated string recon_mismatch = 5;
+  int32 bank_unmatched = 6; // unmatched bank inbox lines (capped at the list page size)
+  int32 events_need_review = 7; // dead-letter postings awaiting review (block period close)
 }
 
 // --- VAT filing exports (phase 2, wave 1 — docs/plan-accounting-phase2/01-wave1-vat.md §1.5).
@@ -6642,6 +6676,10 @@ message GetCashFlowStatementRequest {
 message AcctCashFlowLine {
   string label = 1;
   google.type.Decimal amount = 2;
+  // Chart-of-accounts codes the line aggregates, for drill-down into the ledger (e.g. the
+  // inventory delta carries 1110/1120/1130/1140). Empty for derived lines (net profit), whose
+  // story is the P&L, not one ledger.
+  repeated string codes = 3;
 }
 
 // AcctCashFlowSection groups cash-flow lines (operating | investing | financing) with the section subtotal.
