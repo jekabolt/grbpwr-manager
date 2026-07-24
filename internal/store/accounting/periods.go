@@ -144,6 +144,21 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		}
 	}
 
+	// 3d) no unmatched bank inbox lines booked in the month. An unmatched line is real money that
+	//     moved on the bank account but sits in NO journal entry at all, so gate 4's Dr==Cr check
+	//     cannot see it — the ledger balances perfectly while 1010 quietly disagrees with the real
+	//     bank. Post each line (or deliberately ignore an internal transfer leg) before closing.
+	unmatchedBank, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM acct_bank_txn
+		WHERE state = 'unmatched' AND booked_at >= :from AND booked_at < :to`,
+		map[string]any{"from": from, "to": to})
+	if err != nil {
+		return fmt.Errorf("accounting: close period unmatched bank lines: %w", err)
+	}
+	if unmatchedBank > 0 {
+		return fmt.Errorf("%w: %d unmatched bank line(s) in %s — post or ignore each in the bank inbox", entity.ErrAcctPeriodNotReady, unmatchedBank, m.Format("2006-01"))
+	}
+
 	// 4) the month's ledger is balanced (an invariant, but verified — it is the trust check).
 	bal, err := storeutil.QueryNamedOne[struct {
 		Dr string `db:"dr"`
