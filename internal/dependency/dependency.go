@@ -850,8 +850,9 @@ type (
 		GetBankTxn(ctx context.Context, id int) (*entity.AcctBankTxn, error)
 		// SetBankTxnPosted marks a line posted and links it to its journal entry (no-op if already posted).
 		SetBankTxnPosted(ctx context.Context, id, entryID int) error
-		// SetBankTxnIgnored marks a not-yet-posted line ignored.
-		SetBankTxnIgnored(ctx context.Context, id int) error
+		// SetBankTxnIgnored marks a not-yet-posted line ignored and persists the operator's reason
+		// (an ignored line books nothing, so the reason is its only trace).
+		SetBankTxnIgnored(ctx context.Context, id int, reason string) error
 		// ListBankRules returns the substring→account suggestion rules.
 		ListBankRules(ctx context.Context) ([]entity.AcctBankRule, error)
 		// CreateBankRule inserts a suggestion rule and returns its id.

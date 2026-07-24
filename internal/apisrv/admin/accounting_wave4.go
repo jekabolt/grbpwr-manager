@@ -2,8 +2,11 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"sort"
 	"strings"
+	"time"
 
 	acctrules "github.com/jekabolt/grbpwr-manager/internal/accounting"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -11,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -94,6 +98,17 @@ func (s *Server) PostBankTxn(ctx context.Context, req *pb_admin.PostBankTxnReque
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	entry.CreatedBy = authsrv.GetAdminUsername(ctx)
+	// AP-by-supplier: tag the entry so a 2010 payment lands under its supplier in GetPayables
+	// instead of the anonymous "(untagged)" row. Optional (0 = untagged) — but when the
+	// counter-account IS 2010, an untagged post is exactly the anonymous-AP failure the subledger
+	// exists to prevent, so require the tag there (mirrors CreateJournalEntry's manual-2010 rule).
+	if sid := req.GetSupplierId(); sid > 0 {
+		entry.SupplierID = sql.NullInt64{Int64: int64(sid), Valid: true}
+	} else if accountCode == acctrules.Acc2010 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"posting to %s Accounts Payable — supplier_id is required so the payable is tracked per supplier (pick one in ap / ar → suppliers)",
+			acctrules.Acc2010)
+	}
 
 	// Fold any non-EUR amount_src legs to EUR base on the pool before the write (the store never does FX).
 	if err := s.foldJournalLinesToBase(ctx, entry.Lines); err != nil {
@@ -116,17 +131,26 @@ func (s *Server) PostBankTxn(ctx context.Context, req *pb_admin.PostBankTxnReque
 		return txErr
 	})
 	if err != nil {
+		// A dangling supplier_id trips the FK on insert — a bad request, not a server fault.
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Errorf(codes.InvalidArgument, "supplier_id %d does not exist", req.GetSupplierId())
+		}
 		return nil, mapAcctErr(ctx, "post bank txn", err)
 	}
 	return &pb_admin.PostBankTxnResponse{Entry: dto.ConvertAcctJournalEntryFullToPb(*full)}, nil
 }
 
-// IgnoreBankTxn marks a not-yet-posted inbox line ignored.
+// IgnoreBankTxn marks a not-yet-posted inbox line ignored and persists the operator's reason —
+// an ignored line books nothing, so the reason is its only trace (audit F-7).
 func (s *Server) IgnoreBankTxn(ctx context.Context, req *pb_admin.IgnoreBankTxnRequest) (*pb_admin.IgnoreBankTxnResponse, error) {
 	if req.GetId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	if err := s.repo.Accounting().SetBankTxnIgnored(ctx, int(req.GetId())); err != nil {
+	reason := strings.TrimSpace(req.GetReason())
+	if len([]rune(reason)) > 255 { // rune count — the column is VARCHAR(255) characters, not bytes
+		return nil, status.Error(codes.InvalidArgument, "reason must be at most 255 characters")
+	}
+	if err := s.repo.Accounting().SetBankTxnIgnored(ctx, int(req.GetId()), reason); err != nil {
 		return nil, mapAcctErr(ctx, "ignore bank txn", err)
 	}
 	return &pb_admin.IgnoreBankTxnResponse{}, nil
@@ -212,4 +236,88 @@ func (s *Server) GetReceivables(ctx context.Context, _ *pb_admin.GetReceivablesR
 		return nil, mapAcctErr(ctx, "get receivables", err)
 	}
 	return &pb_admin.GetReceivablesResponse{Rows: dto.ConvertAcctReceivableListToPb(rows)}, nil
+}
+
+// acctAlertCentTolerance mirrors the reconciliation UI's "within a cent reads as matched" rule.
+var acctAlertCentTolerance = decimal.NewFromFloat(0.01)
+
+// GetAcctAlerts aggregates the accounting section's attention flags (the UI tab dots) from the
+// same reads the individual tabs run — one request instead of six. Reads only. The bank backlog is
+// capped at the list page size (500): the dot needs zero-vs-some, not an exact census.
+func (s *Server) GetAcctAlerts(ctx context.Context, _ *pb_admin.GetAcctAlertsRequest) (*pb_admin.GetAcctAlertsResponse, error) {
+	acc := s.repo.Accounting()
+	var a entity.AcctAlerts
+
+	pay, err := acc.GetPayables(ctx)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get acct alerts (payables)", err)
+	}
+	a.OpenPayables = len(pay)
+	for _, r := range pay {
+		if r.SupplierId == 0 || r.Balance.IsNegative() {
+			a.ApAnomalies++
+		}
+	}
+
+	rec, err := acc.GetReceivables(ctx)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get acct alerts (receivables)", err)
+	}
+	a.OpenReceivables = len(rec)
+
+	periods, err := acc.ListPeriods(ctx)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get acct alerts (periods)", err)
+	}
+	now := time.Now().UTC()
+	curMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	for _, p := range periods {
+		if p.Status == "open" && p.Period.Before(curMonth) {
+			a.OpenPastMonths = append(a.OpenPastMonths, p.Period.Format("2006-01"))
+		}
+	}
+	sort.Strings(a.OpenPastMonths)
+
+	txns, err := acc.ListBankTxns(ctx, string(entity.AcctBankTxnUnmatched), 500)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get acct alerts (bank)", err)
+	}
+	a.BankUnmatched = len(txns)
+
+	events, err := acc.ListEventsNeedingReview(ctx, 100)
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get acct alerts (events)", err)
+	}
+	a.EventsNeedReview = len(events)
+
+	// Current-month reconciliation, non-advisory blocks only: finished-goods drift is expected
+	// (live cost vs sale-time snapshots) and pending / unposted movements have their own signals
+	// (events dot, close checklist) — same legend the reconciliation tab uses.
+	recon, err := acc.GetReconciliation(ctx, curMonth, curMonth.AddDate(0, 1, 0))
+	if err != nil {
+		return nil, mapAcctErr(ctx, "get acct alerts (reconciliation)", err)
+	}
+	watched := []struct {
+		name  string
+		block *entity.AcctReconBlock
+	}{
+		{"revenue", &recon.Revenue},
+		{"fees", &recon.Fees},
+		{"cogs", &recon.COGS},
+		{"materials", &recon.Materials},
+		{"vat", recon.Vat},
+		{"prepayments", recon.Prepayments},
+		{"shipping", recon.Shipping},
+		{"bank", recon.Bank},
+	}
+	for _, w := range watched {
+		if w.block == nil {
+			continue
+		}
+		if w.block.Delta.Abs().Cmp(acctAlertCentTolerance) >= 0 {
+			a.ReconMismatch = append(a.ReconMismatch, w.name)
+		}
+	}
+
+	return dto.ConvertAcctAlertsToPb(a), nil
 }

@@ -19,7 +19,7 @@ import (
 
 // bankTxnColumns is the acct_bank_txn read projection.
 const bankTxnColumns = `id, source, external_id, booked_at, amount, currency, fee, description,
-	counterparty, state, matched_entry_id, suggested_account, created_at`
+	counterparty, state, matched_entry_id, suggested_account, ignore_reason, created_at`
 
 // ImportBankTxns inserts parsed inbox lines, deduplicating on external_id (a re-imported statement is a
 // no-op for lines already present). Before insert it applies the acct_bank_rule substring suggestions to
@@ -153,13 +153,19 @@ func (s *Store) SetBankTxnPosted(ctx context.Context, id, entryID int) error {
 	return nil
 }
 
-// SetBankTxnIgnored marks a not-yet-posted line ignored (deliberately not booked). A posted line is left
-// untouched (its entry stands). The reason is advisory (logged by the caller); acct_bank_txn has no
-// reason column, so it is not persisted.
-func (s *Store) SetBankTxnIgnored(ctx context.Context, id int) error {
+// SetBankTxnIgnored marks a not-yet-posted line ignored (deliberately not booked) and records why
+// (migration 0202). A posted line is left untouched (its entry stands). An ignored line books
+// NOTHING, so the reason is its only trace — re-ignoring overwrites it; an empty reason stores
+// NULL rather than "".
+func (s *Store) SetBankTxnIgnored(ctx context.Context, id int, reason string) error {
+	var r any
+	if t := strings.TrimSpace(reason); t != "" {
+		r = t
+	}
 	if err := storeutil.ExecNamed(ctx, s.DB, `
-		UPDATE acct_bank_txn SET state = 'ignored' WHERE id = :id AND state <> 'posted'`,
-		map[string]any{"id": id}); err != nil {
+		UPDATE acct_bank_txn SET state = 'ignored', ignore_reason = :reason
+		WHERE id = :id AND state <> 'posted'`,
+		map[string]any{"id": id, "reason": r}); err != nil {
 		return fmt.Errorf("accounting: set bank txn %d ignored: %w", id, err)
 	}
 	return nil
