@@ -10,11 +10,8 @@
 --   2060 Loans (other)          — referenced by the cash-flow/financing code sets since wave 5 but
 --        never seeded; loans other than the 2015 director's loan.
 -- Idempotent: INSERT … WHERE NOT EXISTS per code (same pattern as 0195_frs105_coa_accounts).
--- is_system=TRUE: these are statutory/autoposting targets (6335 is the employer_social OPEX
--- accrual account) — archiving one from the UI would make resolveAccounts reject the next
--- automated posting and poison the queue (review pass 2, M-3).
 INSERT INTO acct_account (code, name, section, statement, is_system, archived)
-SELECT seed.code, seed.name, seed.section, seed.statement, TRUE, FALSE
+SELECT seed.code, seed.name, seed.section, seed.statement, FALSE, FALSE
 FROM (
     SELECT '3005' AS code, 'Called-up Share Capital' AS name, 'equity' AS section, 'BS' AS statement
     UNION ALL SELECT '2045', 'Payroll Taxes Payable (PIT/ZUS)', 'liability', 'BS'
@@ -22,11 +19,6 @@ FROM (
     UNION ALL SELECT '2060', 'Loans (other)', 'liability', 'BS'
 ) seed
 WHERE NOT EXISTS (SELECT 1 FROM acct_account a WHERE a.code = seed.code);
-
--- Same protection for the pre-existing autoposting targets seeded is_system=FALSE by
--- 0195_frs105 (1225/6370 — depreciation) and 2015 (director's loan, wizard/report target).
-UPDATE acct_account SET is_system = TRUE
-WHERE code IN ('1225', '6370', '2015') AND is_system = FALSE;
 
 -- +migrate Down
 -- No-op: removing seeded accounts that may already carry journal lines is destructive.
