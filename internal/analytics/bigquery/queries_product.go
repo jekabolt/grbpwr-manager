@@ -121,7 +121,7 @@ func (c *Client) getProductEngagement(
 					) AS rn
 				FROM %[1]s
 				WHERE %[2]s
-					AND event_name = 'time_on_page'
+					AND event_name IN ('time_on_page', 'time_on_page_final')
 					AND REGEXP_CONTAINS(
 						IFNULL(%[5]s, ''),
 						r'/p/'
