@@ -30,5 +30,24 @@
   "account.login.heading": "SIGN IN",
   "account.login.body": "USE THE CODE BELOW, OR THE BUTTON, TO FINISH SIGNING IN. DIDN'T REQUEST THIS? IGNORE THIS EMAIL — NOTHING HAPPENS.",
   "account.login.code_label": "VERIFICATION CODE",
-  "account.login.cta": "SIGN IN"
+  "account.login.cta": "SIGN IN",
+
+  "common.footer.help": "NEED HELP?",
+  "common.footer.faq": "FAQ",
+  "common.footer.aftersale": "AFTER-SALE SERVICES",
+  "common.footer.unsub_pre": "if you no longer wish to receive email updates,",
+  "common.footer.unsub_word": "unsubscribe",
+
+  "common.order.items.label": "ITEMS",
+  "common.order.items.size": "SIZE",
+  "common.order.items.qty": "QTY",
+  "common.order.totals.subtotal": "SUBTOTAL",
+  "common.order.totals.shipping": "SHIPPING",
+  "common.order.totals.free": "FREE",
+  "common.order.totals.discount": "DISCOUNT",
+  "common.order.totals.total": "TOTAL",
+  "common.order.meta.order": "ORDER",
+  "common.order.meta.status": "STATUS",
+  "common.order.meta.buyer": "BUYER",
+  "common.order.track.label": "TRACK YOUR ORDER"
 }

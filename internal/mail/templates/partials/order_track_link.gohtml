@@ -1,3 +1,3 @@
 {{define "order_track_link"}}
-              {{template "cta_button" (dict "url" (printf "https://grbpwr.com/order/%s/%s" .OrderUUID .EmailB64) "label" "TRACK YOUR ORDER" "variant" "outline")}}
+              {{template "cta_button" (dict "url" (printf "https://grbpwr.com/order/%s/%s" .OrderUUID .EmailB64) "label" (t "common.order.track.label") "variant" "outline")}}
 {{end}}

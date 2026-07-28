@@ -5,8 +5,8 @@
 
               <!-- Footer -->
               <div style="font-size:11px; line-height:19px; color:#9a978c; letter-spacing:0.3px;">
-                NEED HELP? <a href="mailto:customer@grbpwr.com" style="color:#0E0E0C; text-decoration:none;">customer@grbpwr.com</a><br>
-                <a href="https://grbpwr.com/faq" style="color:#9a978c; text-decoration:underline;">FAQ</a> &middot; <a href="https://grbpwr.com/aftersale-services" style="color:#9a978c; text-decoration:underline;">AFTER-SALE SERVICES</a>
+                {{ t "common.footer.help" }} <a href="mailto:customer@grbpwr.com" style="color:#0E0E0C; text-decoration:none;">customer@grbpwr.com</a><br>
+                <a href="https://grbpwr.com/faq" style="color:#9a978c; text-decoration:underline;">{{ t "common.footer.faq" }}</a> &middot; <a href="https://grbpwr.com/aftersale-services" style="color:#9a978c; text-decoration:underline;">{{ t "common.footer.aftersale" }}</a>
               </div>
 
               {{template "spacer_12"}}
@@ -20,7 +20,7 @@
               {{if and .EmailB64 (ne .EmailB64 "") (ne .EmailB64 " ")}}
               {{template "spacer_12"}}
               <div style="font-size:10px; line-height:16px; color:#b3aea2;">
-                if you no longer wish to receive email updates, <a href="https://grbpwr.com/unsubscribe/{{.EmailB64}}" style="color:#b3aea2; text-decoration:underline;">unsubscribe</a>.
+                {{ t "common.footer.unsub_pre" }} <a href="https://grbpwr.com/unsubscribe/{{.EmailB64}}" style="color:#b3aea2; text-decoration:underline;">{{ t "common.footer.unsub_word" }}</a>.
               </div>
               {{end}}
 

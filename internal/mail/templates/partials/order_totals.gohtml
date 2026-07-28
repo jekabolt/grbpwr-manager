@@ -1,21 +1,21 @@
 {{define "order_totals"}}
               <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="width:100%; font-size:13px; line-height:24px;">
                 <tr>
-                  <td style="color:#9a978c;">SUBTOTAL</td>
+                  <td style="color:#9a978c;">{{ t "common.order.totals.subtotal" }}</td>
                   <td align="right">{{.CurrencySymbol}} {{.SubtotalPrice}}</td>
                 </tr>
                 <tr>
-                  <td style="color:#9a978c;">SHIPPING</td>
-                  {{if .HasFreeShipping}}<td align="right">FREE</td>{{else}}<td align="right">{{.CurrencySymbol}} {{.ShippingPrice}}</td>{{end}}
+                  <td style="color:#9a978c;">{{ t "common.order.totals.shipping" }}</td>
+                  {{if .HasFreeShipping}}<td align="right">{{ t "common.order.totals.free" }}</td>{{else}}<td align="right">{{.CurrencySymbol}} {{.ShippingPrice}}</td>{{end}}
                 </tr>
                 {{if .PromoExist}}
                 <tr>
-                  <td style="color:#9a978c;">DISCOUNT</td>
+                  <td style="color:#9a978c;">{{ t "common.order.totals.discount" }}</td>
                   <td align="right">-{{.PromoDiscountAmount}}%</td>
                 </tr>
                 {{end}}
                 <tr>
-                  <td style="padding-top:8px; font-weight:700;">TOTAL</td>
+                  <td style="padding-top:8px; font-weight:700;">{{ t "common.order.totals.total" }}</td>
                   <td align="right" style="padding-top:8px; font-weight:700;">{{.CurrencySymbol}} {{.TotalPrice}}</td>
                 </tr>
               </table>

@@ -1,5 +1,5 @@
 {{define "order_items_list"}}
-              <div style="font-size:10px; letter-spacing:2px; color:#9a978c;">&mdash; ITEMS [{{printf "%02d" (len .OrderItems)}}]</div>
+              <div style="font-size:10px; letter-spacing:2px; color:#9a978c;">&mdash; {{ t "common.order.items.label" }} [{{printf "%02d" (len .OrderItems)}}]</div>
               {{template "spacer_10"}}
               {{template "rule"}}
               <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="width:100%; table-layout:fixed; font-size:13px;">
@@ -8,7 +8,7 @@
                 <tr>
                   <td valign="top" width="30" style="width:30px; padding:16px 0; color:#9a978c;">{{printf "%02d" (add $i 1)}}</td>
                   <td valign="top" style="padding:16px 8px 16px 0; line-height:20px; word-break:break-word; overflow-wrap:break-word; text-transform:uppercase;">
-                    {{$item.Name}}<br><span style="color:#9a978c;">SIZE {{$item.Size}} &middot; QTY {{$item.Quantity}}</span>
+                    {{$item.Name}}<br><span style="color:#9a978c;">{{ t "common.order.items.size" }} {{$item.Size}} &middot; {{ t "common.order.items.qty" }} {{$item.Quantity}}</span>
                   </td>
                   <td valign="top" width="78" align="right" style="width:78px; padding:16px 0; white-space:nowrap;">{{$.CurrencySymbol}} {{$item.Price}}</td>
                 </tr>
