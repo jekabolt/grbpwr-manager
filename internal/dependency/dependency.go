@@ -172,6 +172,9 @@ type (
 		GetEmailSegmentByID(ctx context.Context, id int) (*entity.EmailSegment, error)
 		ListEmailSegments(ctx context.Context) ([]entity.EmailSegment, error)
 		DeleteEmailSegment(ctx context.Context, id int) error
+		RefreshMarketingAggregate(ctx context.Context) (int64, error)
+		PreviewSegmentCount(ctx context.Context, pred entity.SegmentPredicate) (int, error)
+		SaveSegmentCount(ctx context.Context, segmentID, count int) error
 	}
 
 	Mail interface {

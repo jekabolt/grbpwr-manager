@@ -17,6 +17,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
@@ -71,34 +72,35 @@ const defaultTrustProxyHops = 1
 
 // Config represents the global configuration for the service.
 type Config struct {
-	DB                store.Config             `mapstructure:"mysql"`
-	Logger            log.Config               `mapstructure:"logger"`
-	HTTP              httpapi.Config           `mapstructure:"http"`
-	Auth              auth.Config              `mapstructure:"auth"`
-	StorefrontAuth    storefront.Config        `mapstructure:"storefront_auth"`
-	Bucket            bucket.Config            `mapstructure:"bucket"`
-	Mailer            mail.Config              `mapstructure:"mailer"`
-	OrderCleanup      ordercleanup.Config      `mapstructure:"order_cleanup"`
-	DeliverySync      deliverysync.Config      `mapstructure:"delivery_sync"`
-	AfterShip         aftership.Config         `mapstructure:"aftership"`
-	ShippingLabel     shippinglabel.Config     `mapstructure:"shipping_label"`
-	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
-	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
-	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
-	Accounting        acctposting.Config       `mapstructure:"accounting"`
-	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
-	FxSync            fxsync.Config            `mapstructure:"fx_sync"`
-	Rates             RatesConfig              `mapstructure:"rates"`
-	Security          SecurityConfig           `mapstructure:"security"`
-	JPK               JPKConfig                `mapstructure:"jpk"`
-	StripePayment     stripe.Config            `mapstructure:"stripe_payment"`
-	StripePaymentTest stripe.Config            `mapstructure:"stripe_payment_test"`
-	Revalidation      revalidation.Config      `mapstructure:"revalidation"`
-	GA4               ga4.Config               `mapstructure:"ga4"`
-	GA4MP             ga4mp.Config             `mapstructure:"ga4mp"`
-	GA4Sync           ga4sync.Config           `mapstructure:"ga4_sync"`
-	BigQuery          bq.Config                `mapstructure:"bigquery"`
-	OpenRouter        openrouter.Config        `mapstructure:"openrouter"`
+	DB                 store.Config              `mapstructure:"mysql"`
+	Logger             log.Config                `mapstructure:"logger"`
+	HTTP               httpapi.Config            `mapstructure:"http"`
+	Auth               auth.Config               `mapstructure:"auth"`
+	StorefrontAuth     storefront.Config         `mapstructure:"storefront_auth"`
+	Bucket             bucket.Config             `mapstructure:"bucket"`
+	Mailer             mail.Config               `mapstructure:"mailer"`
+	OrderCleanup       ordercleanup.Config       `mapstructure:"order_cleanup"`
+	DeliverySync       deliverysync.Config       `mapstructure:"delivery_sync"`
+	AfterShip          aftership.Config          `mapstructure:"aftership"`
+	ShippingLabel      shippinglabel.Config      `mapstructure:"shipping_label"`
+	StorefrontCleanup  storefrontcleanup.Config  `mapstructure:"storefront_cleanup"`
+	TierManagement     tiermanagement.Config     `mapstructure:"tier_management"`
+	MarketingAggregate marketingaggregate.Config `mapstructure:"marketing_aggregate"`
+	OpexMaterialize    opexmaterialize.Config    `mapstructure:"opex_materialize"`
+	Accounting         acctposting.Config        `mapstructure:"accounting"`
+	StripeReconcile    stripereconcile.Config    `mapstructure:"stripe_reconcile"`
+	FxSync             fxsync.Config             `mapstructure:"fx_sync"`
+	Rates              RatesConfig               `mapstructure:"rates"`
+	Security           SecurityConfig            `mapstructure:"security"`
+	JPK                JPKConfig                 `mapstructure:"jpk"`
+	StripePayment      stripe.Config             `mapstructure:"stripe_payment"`
+	StripePaymentTest  stripe.Config             `mapstructure:"stripe_payment_test"`
+	Revalidation       revalidation.Config       `mapstructure:"revalidation"`
+	GA4                ga4.Config                `mapstructure:"ga4"`
+	GA4MP              ga4mp.Config              `mapstructure:"ga4mp"`
+	GA4Sync            ga4sync.Config            `mapstructure:"ga4_sync"`
+	BigQuery           bq.Config                 `mapstructure:"bigquery"`
+	OpenRouter         openrouter.Config         `mapstructure:"openrouter"`
 }
 
 // LoadConfig loads the configuration from a file and/or environment variables.
@@ -360,6 +362,9 @@ func bindEnvVars() {
 
 	// Storefront cleanup (expired JTI denylist, login challenges, refresh tokens)
 	viper.BindEnv("storefront_cleanup.worker_interval", "STOREFRONT_CLEANUP_WORKER_INTERVAL")
+
+	// Marketing account aggregate (email segmentation behavioral fields)
+	viper.BindEnv("marketing_aggregate.worker_interval", "MARKETING_AGGREGATE_WORKER_INTERVAL")
 
 	// OPEX materialize (book recurring fixed-cost templates into monthly lines)
 	viper.BindEnv("opex_materialize.worker_interval", "OPEX_MATERIALIZE_WORKER_INTERVAL")

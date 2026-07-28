@@ -664,6 +664,13 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/email-segments"};
   }
 
+  rpc PreviewEmailSegment(PreviewEmailSegmentRequest) returns (PreviewEmailSegmentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-segments/preview"
+      body: "*"
+    };
+  }
+
   rpc UpsertEmailCampaign(UpsertEmailCampaignRequest) returns (UpsertEmailCampaignResponse) {
     option (google.api.http) = {
       post: "/api/admin/email-campaigns"
@@ -3473,6 +3480,14 @@ message DeleteEmailSegmentRequest {
 }
 
 message DeleteEmailSegmentResponse {}
+
+message PreviewEmailSegmentRequest {
+  common.EmailSegment segment = 1;
+}
+
+message PreviewEmailSegmentResponse {
+  int32 count = 1;
+}
 
 message UpsertEmailCampaignRequest {
   int32 id = 1;

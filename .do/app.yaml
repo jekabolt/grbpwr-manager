@@ -251,6 +251,9 @@ envs:
 - key: STOREFRONT_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 1h
+- key: MARKETING_AGGREGATE_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 1h
 - key: STRIPE_RECONCILE_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m

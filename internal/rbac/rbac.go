@@ -253,6 +253,7 @@ var methodRequirements = map[string]Requirement{
 	"GetEmailSegment":         rd(SectionCampaigns),
 	"ListEmailSegments":       rd(SectionCampaigns),
 	"DeleteEmailSegment":      wr(SectionCampaigns),
+	"PreviewEmailSegment":     rd(SectionCampaigns),
 	"UpsertEmailCampaign":     wr(SectionCampaigns),
 	"GetEmailCampaign":        rd(SectionCampaigns),
 	"ListEmailCampaignsPaged": rd(SectionCampaigns),

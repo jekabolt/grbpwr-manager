@@ -10,6 +10,7 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
+	"github.com/jekabolt/grbpwr-manager/internal/segment"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -127,6 +128,64 @@ func (s *Server) DeleteEmailSegment(ctx context.Context, req *pb_admin.DeleteEma
 		return nil, status.Error(codes.Internal, "can't delete email segment")
 	}
 	return &pb_admin.DeleteEmailSegmentResponse{}, nil
+}
+
+func isSegmentPredicateError(err error) bool {
+	for _, target := range []error{
+		segment.ErrMalformedNode,
+		segment.ErrEmptyGroup,
+		segment.ErrUnknownField,
+		segment.ErrUnknownOperator,
+		segment.ErrBadValue,
+		segment.ErrArity,
+		segment.ErrTooDeep,
+		segment.ErrTooManyNodes,
+		segment.ErrTooManyInValues,
+		segment.ErrUnknownTopic,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// PreviewEmailSegment counts the compliant audience for the supplied predicate,
+// including unsaved editor state. Saved segments also cache the latest count.
+func (s *Server) PreviewEmailSegment(
+	ctx context.Context,
+	req *pb_admin.PreviewEmailSegmentRequest,
+) (*pb_admin.PreviewEmailSegmentResponse, error) {
+	if req == nil || req.Segment == nil {
+		return nil, status.Error(codes.InvalidArgument, "segment is required")
+	}
+	if req.Segment.Id < 0 {
+		return nil, status.Error(codes.InvalidArgument, "segment id must be non-negative")
+	}
+	emailSegment, err := dto.ConvertPbEmailSegmentToEntity(req.Segment)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+
+	campaignStore := s.repo.Campaigns()
+	count, err := campaignStore.PreviewSegmentCount(ctx, emailSegment.Predicate)
+	if err != nil {
+		if isSegmentPredicateError(err) {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid segment predicate: %v", err)
+		}
+		slog.ErrorContext(ctx, "can't preview email segment", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't preview email segment")
+	}
+	if emailSegment.ID > 0 {
+		if err := campaignStore.SaveSegmentCount(ctx, emailSegment.ID, count); err != nil {
+			slog.ErrorContext(ctx, "can't save email segment preview count",
+				slog.Int("segment_id", emailSegment.ID),
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Error(codes.Internal, "can't save email segment preview count")
+		}
+	}
+	return &pb_admin.PreviewEmailSegmentResponse{Count: int32(count)}, nil
 }
 
 func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {

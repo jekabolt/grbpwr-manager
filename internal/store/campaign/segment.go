@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/segment"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
@@ -148,6 +149,47 @@ func (s *Store) DeleteEmailSegment(ctx context.Context, id int) error {
 	}
 	if affected == 0 {
 		return fmt.Errorf("email segment %d not found: %w", id, sql.ErrNoRows)
+	}
+	return nil
+}
+
+// PreviewSegmentCount counts the topic-independent compliant audience for an
+// authored predicate. The fixed aliases below are part of segment's compiler
+// contract; every preview excludes inactive and suppressed accounts.
+func (s *Store) PreviewSegmentCount(ctx context.Context, pred entity.SegmentPredicate) (int, error) {
+	compiled, err := segment.Compile(pred)
+	if err != nil {
+		return 0, fmt.Errorf("compile email segment predicate: %w", err)
+	}
+	where, params, err := segment.BuildAudiencePredicate(compiled, segment.ComplianceOpts{Topic: nil})
+	if err != nil {
+		return 0, fmt.Errorf("build email segment audience predicate: %w", err)
+	}
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM storefront_account sa
+		LEFT JOIN marketing_account_aggregate maa ON maa.account_id = sa.id
+		LEFT JOIN email_suppression es ON es.email = sa.email
+		WHERE %s`, where)
+	count, err := storeutil.QueryCountNamed(ctx, s.DB, query, params)
+	if err != nil {
+		return 0, fmt.Errorf("preview email segment count: %w", err)
+	}
+	return count, nil
+}
+
+// SaveSegmentCount caches the latest topic-independent preview for a saved
+// segment. Unsaved segments are previewed without calling this method.
+func (s *Store) SaveSegmentCount(ctx context.Context, segmentID, count int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE email_segment
+		SET last_count = :c,
+		    last_count_at = CURRENT_TIMESTAMP
+		WHERE id = :id`, map[string]any{
+		"c":  count,
+		"id": segmentID,
+	}); err != nil {
+		return fmt.Errorf("save email segment %d count: %w", segmentID, err)
 	}
 	return nil
 }

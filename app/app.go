@@ -30,6 +30,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
@@ -63,6 +64,7 @@ type App struct {
 	dsw  *deliverysync.Worker
 	sc   *storefrontcleanup.Worker
 	tm   *tiermanagement.Worker
+	maw  *marketingaggregate.Worker
 	om   *opexmaterialize.Worker
 	ap   *acctposting.Worker
 	sr   *stripereconcile.Worker
@@ -117,6 +119,14 @@ func (a *App) Start(ctx context.Context) error {
 	// country change made on any instance. ctx is app-lifetime, so it stops on shutdown.
 	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
 		go cache.PollDictionaryRevisions(ctx, mysqlStore.Dictionary(), mysqlStore.Cache(), cache.DefaultDictionaryPollInterval)
+	}
+
+	a.maw = marketingaggregate.New(&a.c.MarketingAggregate, a.db)
+	if err = a.maw.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start marketing aggregate worker",
+			slog.String("err", err.Error()),
+		)
+		return err
 	}
 
 	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail())
@@ -540,6 +550,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.tm != nil {
 		_ = a.tm.Stop()
 	}
+	if a.maw != nil {
+		_ = a.maw.Stop()
+	}
 	if a.om != nil {
 		_ = a.om.Stop()
 	}
@@ -622,6 +635,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.tm != nil {
 		addWorker(a.tm)
+	}
+	if a.maw != nil {
+		addWorker(a.maw)
 	}
 	if a.om != nil {
 		addWorker(a.om)
