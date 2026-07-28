@@ -4,6 +4,8 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"html"
+	"html/template"
 	"strings"
 
 	"github.com/nicksnyder/go-i18n/v2/i18n"
@@ -121,14 +123,34 @@ func pairsToMap(kv ...any) map[string]any {
 	return m
 }
 
+// emph wraps a value in the brand emphasis span, HTML-escaping the value first so
+// untrusted content cannot inject markup. Use it inside a tHTML message that carries a
+// matching {{.Var}} placeholder, e.g.
+//
+//	{{ tHTML "tier.thanks.body" "Tier" (emph .TierDisplay) }}
+//
+// with the catalog value "... WELCOME TO {{.Tier}} ...".
+func emph(v any) template.HTML {
+	return template.HTML(`<span style="color:#0E0E0C;">` + html.EscapeString(fmt.Sprint(v)) + `</span>`)
+}
+
 // localeFuncMap returns the per-render, locale-bound overrides for the i18n template
 // funcs. Registered onto a cloned template just before execution so the shared parsed
 // templates are never mutated.
+//
+// t returns an auto-escaped string (for plain copy). tHTML returns template.HTML for
+// catalog messages that contain trusted inline markup (e.g. an emphasis span around an
+// interpolated value); its interpolated values must be pre-escaped (see emph) — no
+// user-controlled free text is ever passed to a tHTML message.
 func localeFuncMap(loc *Loc) map[string]any {
 	return map[string]any{
 		"t": func(key string, kv ...any) string {
 			return loc.S(key, pairsToMap(kv...))
 		},
+		"tHTML": func(key string, kv ...any) template.HTML {
+			return template.HTML(loc.S(key, pairsToMap(kv...)))
+		},
+		"emph": emph,
 		"plural": func(key string, n int, kv ...any) string {
 			return loc.Plural(key, n, pairsToMap(kv...))
 		},

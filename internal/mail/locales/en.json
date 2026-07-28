@@ -72,5 +72,16 @@
 
   "order.return.tag": "RETURN",
   "order.return.heading": "RETURN REQUESTED",
-  "order.return.body": "SEND THE PARCEL BACK TO US. ONCE IT ARRIVES AND WE'VE CHECKED THE ITEMS, WE'LL PROCESS YOUR REFUND."
+  "order.return.body": "SEND THE PARCEL BACK TO US. ONCE IT ARRIVES AND WE'VE CHECKED THE ITEMS, WE'LL PROCESS YOUR REFUND.",
+
+  "common.cta.view_account": "VIEW ACCOUNT",
+
+  "tier.thanks.tag": "THANKS",
+  "tier.thanks.heading": "THANK YOU",
+  "tier.thanks.body": "YOUR FIRST ORDER WITH GRBPWR IS IN. WELCOME TO {{.Tier}} — THE START OF AN OPEN, ONGOING PROCESS.",
+
+  "tier.downgrade.tag": "TIER",
+  "tier.downgrade.heading": "TIER UPDATE",
+  "tier.downgrade.body": "YOUR MEMBERSHIP HAS MOVED FROM {{.From}} TO {{.To}} AS THE QUALIFYING SPEND FOR THE PAST 12 MONTHS DIDN'T MEET THE THRESHOLD.",
+  "tier.downgrade.body2": "SPEND OVER THE NEXT CYCLE TO MOVE BACK UP. NOTHING ELSE CHANGES."
 }

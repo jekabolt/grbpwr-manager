@@ -240,6 +240,8 @@ func templateFuncs() template.FuncMap {
 		"t":       func(key string, _ ...any) string { return key },
 		"plural":  func(key string, _ int, _ ...any) string { return key },
 		"curLang": func() string { return defaultLocale },
+		"tHTML":   func(key string, _ ...any) template.HTML { return template.HTML(key) },
+		"emph":    func(v any) template.HTML { return template.HTML(fmt.Sprint(v)) },
 	}
 }
 
