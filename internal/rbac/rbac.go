@@ -257,6 +257,8 @@ var methodRequirements = map[string]Requirement{
 	"GetEmailCampaign":        rd(SectionCampaigns),
 	"ListEmailCampaignsPaged": rd(SectionCampaigns),
 	"DeleteEmailCampaign":     wr(SectionCampaigns),
+	"RenderCampaignPreview":   rd(SectionCampaigns),
+	"SendTestEmail":           wr(SectionCampaigns),
 	// models
 	"AddModel":    wr(SectionModels),
 	"GetModel":    rd(SectionModels),

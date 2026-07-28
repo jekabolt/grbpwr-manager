@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -68,7 +69,9 @@ var alwaysSendSubjects = map[string]bool{
 // suppressed reports whether an email with the given subject must be dropped
 // because the mailer is Disabled and the subject is not on the always-send list.
 func (m *Mailer) suppressed(subject string) bool {
-	return m.c.Disabled && !alwaysSendSubjects[subject]
+	return m.c.Disabled &&
+		!alwaysSendSubjects[subject] &&
+		!strings.HasPrefix(subject, campaignTestSubjectPrefix)
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.

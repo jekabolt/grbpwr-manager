@@ -227,3 +227,8 @@ message EmailSegment {
   int32 last_count = 5;
   int64 last_count_at = 6;
 }
+
+message RenderWarning {
+  int32 block_index = 1;
+  string reason = 2;
+}

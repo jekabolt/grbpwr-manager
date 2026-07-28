@@ -17,6 +17,9 @@ func TestSuppressed(t *testing.T) {
 	if disabled.suppressed(loginSubj) {
 		t.Errorf("account sign-in (%q) must NOT be suppressed when disabled — login would break", loginSubj)
 	}
+	if disabled.suppressed("[TEST] Campaign subject") {
+		t.Error("admin campaign test sends must NOT be suppressed when disabled")
+	}
 	for _, tn := range []templateName{OrderConfirmed, NewSubscriber, OrderShipped, PromoCode, HackerInvite, TierUpgrade} {
 		if !disabled.suppressed(templateSubjects[tn]) {
 			t.Errorf("bulk email %q (%q) must be suppressed when disabled", tn, templateSubjects[tn])

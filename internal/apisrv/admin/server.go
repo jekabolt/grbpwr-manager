@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
+	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -23,6 +25,7 @@ import (
 // goroutine per request; a burst during a Vercel slowdown could spawn unbounded
 // goroutines. The counting semaphore caps concurrency and queues the excess instead.
 const maxConcurrentRevalidations = 4
+const maxConcurrentCampaignTestSends = 2
 
 // Server implements handlers for admin.
 type Server struct {
@@ -30,6 +33,8 @@ type Server struct {
 	repo              dependency.Repository
 	bucket            dependency.FileStore
 	mailer            dependency.Mailer
+	renderer          *campaignrender.Renderer
+	campaignTestSem   chan struct{}
 	stripePayment     dependency.Invoicer
 	stripePaymentTest dependency.Invoicer
 	re                dependency.RevalidationService
@@ -80,12 +85,18 @@ func New(
 	embedAllowedHosts string,
 	aiOps *openrouter.Client,
 	jpkTaxpayer jpk.Taxpayer,
-) *Server {
+) (*Server, error) {
+	renderer, err := campaignrender.New()
+	if err != nil {
+		return nil, fmt.Errorf("create campaign renderer: %w", err)
+	}
 	revalCtx, revalCancel := context.WithCancel(context.Background())
 	return &Server{
 		repo:              r,
 		bucket:            b,
 		mailer:            m,
+		renderer:          renderer,
+		campaignTestSem:   make(chan struct{}, maxConcurrentCampaignTestSends),
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
@@ -100,7 +111,7 @@ func New(
 		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
 		aiOps:             aiOps,
 		jpkTaxpayer:       jpkTaxpayer,
-	}
+	}, nil
 }
 
 const (

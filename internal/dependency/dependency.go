@@ -1252,6 +1252,7 @@ type (
 	}
 
 	Mailer interface {
+		SendCampaignTest(ctx context.Context, rep Repository, to, subject, htmlBody, textBody string) error
 		SendNewSubscriber(ctx context.Context, rep Repository, to string) error
 		QueueNewSubscriber(ctx context.Context, rep Repository, to string) error
 		SendOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error

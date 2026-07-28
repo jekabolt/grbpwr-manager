@@ -684,6 +684,20 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/email-campaigns/paged"};
   }
 
+  rpc RenderCampaignPreview(RenderCampaignPreviewRequest) returns (RenderCampaignPreviewResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/render-preview"
+      body: "*"
+    };
+  }
+
+  rpc SendTestEmail(SendTestEmailRequest) returns (SendTestEmailResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/test-send"
+      body: "*"
+    };
+  }
+
   // ARCHIVE MANAGER
 
   // AddArchive creates a new archive.
@@ -3494,6 +3508,35 @@ message DeleteEmailCampaignRequest {
 }
 
 message DeleteEmailCampaignResponse {}
+
+message RenderCampaignPreviewRequest {
+  oneof source {
+    int32 campaign_id = 1;
+    common.EmailCampaignInsert draft = 2;
+  }
+  int32 language_id = 3;
+  int32 variant_id = 4;
+  string device = 5;
+}
+
+message RenderCampaignPreviewResponse {
+  string html = 1;
+  string text = 2;
+  string subject = 3;
+  repeated common.RenderWarning warnings = 4;
+}
+
+message SendTestEmailRequest {
+  oneof source {
+    int32 campaign_id = 1;
+    common.EmailCampaignInsert draft = 2;
+  }
+  int32 language_id = 3;
+  int32 variant_id = 4;
+  repeated string to_emails = 5;
+}
+
+message SendTestEmailResponse {}
 
 // ARCHIVE MANAGER
 

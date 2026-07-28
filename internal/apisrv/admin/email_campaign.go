@@ -9,6 +9,7 @@ import (
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -149,6 +150,10 @@ func (s *Server) UpsertEmailCampaign(ctx context.Context, req *pb_admin.UpsertEm
 	}
 	campaign.Name = strings.TrimSpace(campaign.Name)
 	campaign.CreatedBy = authsrv.GetAdminUsername(ctx)
+	campaignrender.SanitizeBlocks(campaign.Body)
+	for i := range campaign.Variants {
+		campaignrender.SanitizeBlocks(campaign.Variants[i].Body)
+	}
 
 	id, err := s.repo.Campaigns().UpsertEmailCampaign(ctx, int(req.Id), campaign)
 	if err != nil {
