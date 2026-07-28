@@ -30,16 +30,20 @@ const maxConcurrentCampaignTestSends = 2
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
-	repo              dependency.Repository
-	bucket            dependency.FileStore
-	mailer            dependency.Mailer
-	renderer          *campaignrender.Renderer
-	campaignTestSem   chan struct{}
-	stripePayment     dependency.Invoicer
-	stripePaymentTest dependency.Invoicer
-	re                dependency.RevalidationService
-	reservationMgr    dependency.StockReservationManager
-	ga4mp             *ga4mp.Client
+	repo            dependency.Repository
+	bucket          dependency.FileStore
+	mailer          dependency.Mailer
+	renderer        *campaignrender.Renderer
+	campaignTestSem chan struct{}
+	// campaignTestRecipientAllowlist contains lower-cased, trimmed addresses
+	// permitted for admin campaign test sends. Empty preserves the fail-open
+	// configuration default; suppression-list checks remain mandatory.
+	campaignTestRecipientAllowlist map[string]struct{}
+	stripePayment                  dependency.Invoicer
+	stripePaymentTest              dependency.Invoicer
+	re                             dependency.RevalidationService
+	reservationMgr                 dependency.StockReservationManager
+	ga4mp                          *ga4mp.Client
 	// labelProvider generates carrier shipping labels (AfterShip Shipping); a disabled no-op
 	// when unconfigured, so GenerateShippingLabel reports labels-not-configured. shipFrom is the
 	// warehouse origin address (from config) stamped on every generated label.
@@ -83,6 +87,7 @@ func New(
 	labelProvider dependency.LabelProvider,
 	shipFrom entity.LabelAddress,
 	embedAllowedHosts string,
+	campaignTestRecipients string,
 	aiOps *openrouter.Client,
 	jpkTaxpayer jpk.Taxpayer,
 ) (*Server, error) {
@@ -92,11 +97,14 @@ func New(
 	}
 	revalCtx, revalCancel := context.WithCancel(context.Background())
 	return &Server{
-		repo:              r,
-		bucket:            b,
-		mailer:            m,
-		renderer:          renderer,
-		campaignTestSem:   make(chan struct{}, maxConcurrentCampaignTestSends),
+		repo:            r,
+		bucket:          b,
+		mailer:          m,
+		renderer:        renderer,
+		campaignTestSem: make(chan struct{}, maxConcurrentCampaignTestSends),
+		campaignTestRecipientAllowlist: parseCampaignTestRecipientAllowlist(
+			campaignTestRecipients,
+		),
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,

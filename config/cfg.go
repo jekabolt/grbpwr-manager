@@ -317,6 +317,7 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.from_email", "MAILER_FROM_EMAIL")
 	viper.BindEnv("mailer.from_email_name", "MAILER_FROM_EMAIL_NAME")
 	viper.BindEnv("mailer.reply_to", "MAILER_REPLY_TO")
+	viper.BindEnv("mailer.test_recipients", "MAILER_TEST_RECIPIENTS")
 	viper.BindEnv("mailer.worker_interval", "MAILER_WORKER_INTERVAL")
 	viper.BindEnv("mailer.max_send_attempts", "MAILER_MAX_SEND_ATTEMPTS")
 	viper.BindEnv("mailer.retry_base_interval", "MAILER_RETRY_BASE_INTERVAL")

@@ -16,6 +16,49 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const maxEmailCampaignBlockDepth = 6
+
+func emailCampaignBlocksExceedMaxDepth(blocks []*pb_common.EmailBlock, depth int) bool {
+	for _, block := range blocks {
+		if block == nil {
+			continue
+		}
+		if depth > maxEmailCampaignBlockDepth {
+			return true
+		}
+		if block.TwoColumn != nil &&
+			(emailCampaignBlocksExceedMaxDepth(block.TwoColumn.Left, depth+1) ||
+				emailCampaignBlocksExceedMaxDepth(block.TwoColumn.Right, depth+1)) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateEmailCampaignBlockDepth(in *pb_common.EmailCampaignInsert) error {
+	if in == nil {
+		return status.Error(codes.InvalidArgument, "campaign is required")
+	}
+	if emailCampaignBlocksExceedMaxDepth(in.Body, 1) {
+		return status.Errorf(
+			codes.InvalidArgument,
+			"campaign body exceeds maximum block nesting depth of %d",
+			maxEmailCampaignBlockDepth,
+		)
+	}
+	for i, variant := range in.Variants {
+		if variant != nil && emailCampaignBlocksExceedMaxDepth(variant.Body, 1) {
+			return status.Errorf(
+				codes.InvalidArgument,
+				"variant %d body exceeds maximum block nesting depth of %d",
+				i,
+				maxEmailCampaignBlockDepth,
+			)
+		}
+	}
+	return nil
+}
+
 func (s *Server) UpsertEmailSegment(ctx context.Context, req *pb_admin.UpsertEmailSegmentRequest) (*pb_admin.UpsertEmailSegmentResponse, error) {
 	if req.Id < 0 {
 		return nil, status.Error(codes.InvalidArgument, "segment id must be non-negative")
@@ -89,6 +132,9 @@ func (s *Server) DeleteEmailSegment(ctx context.Context, req *pb_admin.DeleteEma
 func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {
 	if in == nil {
 		return status.Error(codes.InvalidArgument, "campaign is required")
+	}
+	if err := validateEmailCampaignBlockDepth(in); err != nil {
+		return err
 	}
 	if strings.TrimSpace(in.Name) == "" {
 		return status.Error(codes.InvalidArgument, "campaign name is required")

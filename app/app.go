@@ -371,7 +371,7 @@ func (a *App) Start(ctx context.Context) error {
 	// OPENROUTER_API_KEY is unset — GenerateTechCardOperations then reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
 
-	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, aiOpsClient, jpk.Taxpayer{
+	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, aiOpsClient, jpk.Taxpayer{
 		NIP:       a.c.JPK.NIP,
 		FullName:  a.c.JPK.FullName,
 		Email:     a.c.JPK.Email,

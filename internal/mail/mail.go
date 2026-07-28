@@ -62,6 +62,13 @@ func validateEmailAddress(to string) (string, error) {
 	return addr.Address, nil
 }
 
+// NormalizeEmailAddress validates an email address and returns its normalized
+// local@domain form. Callers that perform recipient-policy checks should use the
+// same normalization as the final send path.
+func NormalizeEmailAddress(to string) (string, error) {
+	return validateEmailAddress(to)
+}
+
 // HTTPSendError is returned when the Resend API responds with a non-success HTTP status.
 type HTTPSendError struct {
 	StatusCode int
@@ -80,10 +87,14 @@ type Config struct {
 	// exception and still dispatch, so beta login keeps working. Suppressed emails
 	// are still built and recorded, just not sent to Resend. Used on beta to avoid
 	// burning the Resend API quota during data seeding. Set via MAILER_DISABLED.
-	Disabled          bool          `mapstructure:"disabled"`
-	FromEmail         string        `mapstructure:"from_email"`
-	FromName          string        `mapstructure:"from_email_name"`
-	ReplyTo           string        `mapstructure:"reply_to"`
+	Disabled  bool   `mapstructure:"disabled"`
+	FromEmail string `mapstructure:"from_email"`
+	FromName  string `mapstructure:"from_email_name"`
+	ReplyTo   string `mapstructure:"reply_to"`
+	// TestRecipients is a comma-separated allowlist for admin campaign test
+	// sends. Empty intentionally permits any valid recipient for backwards
+	// compatibility; suppression-list checks still apply.
+	TestRecipients    string        `mapstructure:"test_recipients"`
 	WorkerInterval    time.Duration `mapstructure:"worker_interval"`
 	MaxSendAttempts   int           `mapstructure:"max_send_attempts"`
 	RetryBaseInterval time.Duration `mapstructure:"retry_base_interval"`
@@ -418,8 +429,16 @@ func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
 	return &h
 }
 
+type sendOptions struct {
+	exemptDisabledSuppression bool
+}
+
 func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
-	if m.suppressed(ser.Subject) {
+	return m.sendWithOptions(ctx, ser, sendOptions{})
+}
+
+func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailRequest, opts sendOptions) error {
+	if !opts.exemptDisabledSuppression && m.suppressed(ser.Subject) {
 		return nil // bulk mail suppressed (e.g. beta seeding) — treat as sent, dispatch nothing
 	}
 

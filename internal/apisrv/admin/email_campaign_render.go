@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -19,12 +20,60 @@ import (
 
 const maxCampaignTestRecipients = 10
 
+func parseCampaignTestRecipientAllowlist(value string) map[string]struct{} {
+	allowlist := make(map[string]struct{})
+	for _, recipient := range strings.Split(value, ",") {
+		recipient = strings.TrimSpace(recipient)
+		if recipient != "" {
+			allowlist[strings.ToLower(recipient)] = struct{}{}
+		}
+	}
+	return allowlist
+}
+
+func validateCampaignTestRecipients(
+	recipients []string,
+	allowlist map[string]struct{},
+) ([]string, error) {
+	seen := make(map[string]struct{}, len(recipients))
+	out := make([]string, 0, len(recipients))
+	for _, recipient := range recipients {
+		offendingAddress := strings.TrimSpace(recipient)
+		if offendingAddress == "" {
+			return nil, status.Error(codes.InvalidArgument, "test recipient must not be empty")
+		}
+		normalized, err := mail.NormalizeEmailAddress(offendingAddress)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid test recipient %q: %v", offendingAddress, err)
+		}
+		key := strings.ToLower(normalized)
+		if len(allowlist) > 0 {
+			if _, ok := allowlist[key]; !ok {
+				return nil, status.Errorf(
+					codes.PermissionDenied,
+					"test recipient %q is not allowlisted",
+					offendingAddress,
+				)
+			}
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out, nil
+}
+
 func (s *Server) campaignForRender(
 	ctx context.Context,
 	campaignID int32,
 	draft *pb_common.EmailCampaignInsert,
 ) (*entity.EmailCampaignInsert, error) {
 	if draft != nil {
+		if err := validateEmailCampaignBlockDepth(draft); err != nil {
+			return nil, err
+		}
 		campaign, err := dto.ConvertPbEmailCampaignInsertToEntity(draft)
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid campaign draft: %v", err)
@@ -119,6 +168,40 @@ func campaignWarningsToPB(in []campaignrender.Warning) []*pb_common.RenderWarnin
 	return out
 }
 
+func (s *Server) sendCampaignTestRecipients(
+	ctx context.Context,
+	recipients []string,
+	subject, htmlBody, textBody string,
+) error {
+	mailRepository := s.repo.Mail()
+	for _, recipient := range recipients {
+		suppressed, err := mailRepository.IsSuppressed(ctx, recipient)
+		if err != nil {
+			slog.ErrorContext(ctx, "can't check email campaign test suppression",
+				slog.String("recipient", recipient),
+				slog.String("err", err.Error()),
+			)
+			return status.Error(codes.Internal, "can't check email campaign test recipient")
+		}
+		if suppressed {
+			slog.InfoContext(ctx, "skipping suppressed email campaign test recipient",
+				slog.String("recipient", recipient),
+			)
+			continue
+		}
+		if err := s.mailer.SendCampaignTest(
+			ctx, s.repo, recipient, subject, htmlBody, textBody,
+		); err != nil {
+			slog.ErrorContext(ctx, "can't send email campaign test",
+				slog.String("recipient", recipient),
+				slog.String("err", err.Error()),
+			)
+			return status.Error(codes.Internal, "can't send email campaign test")
+		}
+	}
+	return nil
+}
+
 // RenderCampaignPreview renders either a saved campaign or an unsaved draft.
 // It is deliberately read-only and omits the recipient-specific unsubscribe URL.
 func (s *Server) RenderCampaignPreview(
@@ -169,6 +252,13 @@ func (s *Server) SendTestEmail(
 			maxCampaignTestRecipients,
 		)
 	}
+	recipients, err := validateCampaignTestRecipients(
+		req.ToEmails,
+		s.campaignTestRecipientAllowlist,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	select {
 	case s.campaignTestSem <- struct{}{}:
@@ -196,26 +286,10 @@ func (s *Server) SendTestEmail(
 	}
 	subject = "[TEST] " + strings.TrimSpace(subject)
 
-	seen := make(map[string]struct{}, len(req.ToEmails))
-	for _, recipient := range req.ToEmails {
-		recipient = strings.TrimSpace(recipient)
-		if recipient == "" {
-			return nil, status.Error(codes.InvalidArgument, "test recipient must not be empty")
-		}
-		key := strings.ToLower(recipient)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		if err := s.mailer.SendCampaignTest(
-			ctx, s.repo, recipient, subject, rendered.HTML, rendered.Text,
-		); err != nil {
-			slog.ErrorContext(ctx, "can't send email campaign test",
-				slog.String("recipient", recipient),
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Error(codes.Internal, "can't send email campaign test")
-		}
+	if err := s.sendCampaignTestRecipients(
+		ctx, recipients, subject, rendered.HTML, rendered.Text,
+	); err != nil {
+		return nil, err
 	}
 	return &pb_admin.SendTestEmailResponse{}, nil
 }
