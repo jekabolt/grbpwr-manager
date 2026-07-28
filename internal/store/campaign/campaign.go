@@ -45,6 +45,13 @@ type campaignRow struct {
 	ABWinnerVariantID      sql.NullInt64  `db:"ab_winner_variant_id"`
 	SendingStartedAt       sql.NullTime   `db:"sending_started_at"`
 	SentAt                 sql.NullTime   `db:"sent_at"`
+	AudiencePredicate      []byte         `db:"audience_predicate"`
+	AudienceSnapshotAt     sql.NullTime   `db:"audience_snapshot_at"`
+	FanoutMaxAccountID     int            `db:"fanout_max_account_id"`
+	FanoutCursorAccountID  int            `db:"fanout_cursor_account_id"`
+	AudienceMaterializedAt sql.NullTime   `db:"audience_materialized_at"`
+	RecipientCount         sql.NullInt64  `db:"recipient_count"`
+	DispatchError          sql.NullString `db:"dispatch_error"`
 	CreatedBy              string         `db:"created_by"`
 	CreatedAt              sql.NullTime   `db:"created_at"`
 	UpdatedAt              sql.NullTime   `db:"updated_at"`
@@ -66,6 +73,8 @@ const campaignColumns = `
 	from_name, from_email, reply_to, schedule_at,
 	ab_enabled, ab_dimension, ab_test_pct, ab_decision_after_minutes,
 	ab_winner_variant_id, sending_started_at, sent_at,
+	audience_predicate, audience_snapshot_at, fanout_max_account_id,
+	fanout_cursor_account_id, audience_materialized_at, recipient_count, dispatch_error,
 	created_by, created_at, updated_at`
 
 func marshalEmailBlocks(blocks []entity.EmailBlock) ([]byte, error) {
@@ -104,7 +113,7 @@ func campaignParams(campaign *entity.EmailCampaignInsert, body []byte) map[strin
 	}
 	return map[string]any{
 		"name":                      campaign.Name,
-		"status":                    string(campaign.Status),
+		"status":                    string(entity.EmailCampaignStatusDraft),
 		"segment_id":                segmentID,
 		"topic":                     string(campaign.Topic),
 		"body":                      body,
@@ -112,7 +121,7 @@ func campaignParams(campaign *entity.EmailCampaignInsert, body []byte) map[strin
 		"from_name":                 nullableCampaignString(campaign.FromName),
 		"from_email":                nullableCampaignString(campaign.FromEmail),
 		"reply_to":                  nullableCampaignString(campaign.ReplyTo),
-		"schedule_at":               campaign.ScheduleAt,
+		"schedule_at":               nil,
 		"ab_enabled":                campaign.ABConfig.Enabled,
 		"ab_dimension":              abDimension,
 		"ab_test_pct":               campaign.ABConfig.TestPct,
@@ -154,7 +163,7 @@ func (s *Store) UpsertEmailCampaign(ctx context.Context, id int, campaign *entit
 			}
 		} else {
 			count, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-				`SELECT COUNT(*) FROM email_campaign WHERE id = :id`,
+				`SELECT COUNT(*) FROM email_campaign WHERE id = :id AND status = 'draft'`,
 				map[string]any{"id": campaignID})
 			if err != nil {
 				return fmt.Errorf("check email campaign exists: %w", err)
@@ -166,7 +175,6 @@ func (s *Store) UpsertEmailCampaign(ctx context.Context, id int, campaign *entit
 			if _, err := rep.DB().NamedExecContext(ctx, `
 				UPDATE email_campaign SET
 					name = :name,
-					status = :status,
 					segment_id = :segment_id,
 					topic = :topic,
 					body = :body,
@@ -174,13 +182,12 @@ func (s *Store) UpsertEmailCampaign(ctx context.Context, id int, campaign *entit
 					from_name = :from_name,
 					from_email = :from_email,
 					reply_to = :reply_to,
-					schedule_at = :schedule_at,
 					ab_enabled = :ab_enabled,
 					ab_dimension = :ab_dimension,
 					ab_test_pct = :ab_test_pct,
 					ab_decision_after_minutes = :ab_decision_after_minutes,
 					ab_winner_variant_id = :ab_winner_variant_id
-				WHERE id = :id`, params); err != nil {
+				WHERE id = :id AND status = 'draft'`, params); err != nil {
 				return fmt.Errorf("update email campaign %d: %w", campaignID, err)
 			}
 		}
@@ -329,6 +336,31 @@ func campaignRowToEntity(row campaignRow) (*entity.EmailCampaignFull, error) {
 		value := row.SentAt.Time
 		out.SentAt = &value
 	}
+	if len(row.AudiencePredicate) > 0 {
+		var value entity.SegmentPredicate
+		if err := json.Unmarshal(row.AudiencePredicate, &value); err != nil {
+			return nil, fmt.Errorf("unmarshal campaign %d audience predicate: %w", row.ID, err)
+		}
+		out.AudiencePredicate = &value
+	}
+	if row.AudienceSnapshotAt.Valid {
+		value := row.AudienceSnapshotAt.Time
+		out.AudienceSnapshotAt = &value
+	}
+	out.FanoutMaxAccountID = row.FanoutMaxAccountID
+	out.FanoutCursorAccountID = row.FanoutCursorAccountID
+	if row.AudienceMaterializedAt.Valid {
+		value := row.AudienceMaterializedAt.Time
+		out.AudienceMaterializedAt = &value
+	}
+	if row.RecipientCount.Valid {
+		value := int(row.RecipientCount.Int64)
+		out.RecipientCount = &value
+	}
+	if row.DispatchError.Valid {
+		value := row.DispatchError.String
+		out.DispatchError = &value
+	}
 	return out, nil
 }
 
@@ -431,7 +463,7 @@ func (s *Store) ListEmailCampaignsPaged(
 
 func (s *Store) DeleteEmailCampaign(ctx context.Context, id int) error {
 	result, err := s.DB.NamedExecContext(ctx,
-		`DELETE FROM email_campaign WHERE id = :id`, map[string]any{"id": id})
+		`DELETE FROM email_campaign WHERE id = :id AND status = 'draft'`, map[string]any{"id": id})
 	if err != nil {
 		return fmt.Errorf("delete email campaign %d: %w", id, err)
 	}

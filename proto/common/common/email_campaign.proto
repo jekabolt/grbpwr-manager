@@ -198,6 +198,60 @@ message EmailCampaignFull {
   int64 updated_at = 16;
   int64 sending_started_at = 17;
   int64 sent_at = 18;
+  int64 audience_snapshot_at = 19;
+  int32 fanout_max_account_id = 20;
+  int32 fanout_cursor_account_id = 21;
+  int64 audience_materialized_at = 22;
+  int32 recipient_count = 23;
+  string dispatch_error = 24;
+}
+
+enum EmailCampaignRecipientStatus {
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_UNKNOWN = 0;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_PENDING = 1;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_SENT = 2;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_FAILED = 3;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_SKIPPED = 4;
+}
+
+enum EmailCampaignCohort {
+  EMAIL_CAMPAIGN_COHORT_UNKNOWN = 0;
+  EMAIL_CAMPAIGN_COHORT_AB = 1;
+  EMAIL_CAMPAIGN_COHORT_REMAINDER = 2;
+}
+
+message EmailCampaignDispatchStatus {
+  int32 campaign_id = 1;
+  EmailCampaignStatus status = 2;
+  int64 audience_materialized_at = 3;
+  string dispatch_error = 4;
+  int32 recipient_count = 5;
+  int32 pending = 6;
+  int32 accepted = 7;
+  int32 failed = 8;
+  int32 skipped = 9;
+}
+
+// Public admin ledger projection. Provider idempotency/claim/hash/render
+// internals are deliberately absent.
+message EmailCampaignRecipient {
+  uint64 id = 1;
+  int32 campaign_id = 2;
+  int32 account_id = 3;
+  string email = 4;
+  int32 language_id = 5;
+  int32 variant_id = 6;
+  EmailCampaignCohort cohort = 7;
+  EmailCampaignRecipientStatus status = 8;
+  int32 attempt_count = 9;
+  string resend_email_id = 10;
+  string error_code = 11;
+  string last_error = 12;
+  int64 next_attempt_at = 13;
+  int64 sent_at = 14;
+  int64 completed_at = 15;
+  int64 created_at = 16;
+  int64 updated_at = 17;
 }
 
 enum SegmentOp {

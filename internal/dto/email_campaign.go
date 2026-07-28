@@ -473,13 +473,17 @@ func ConvertEntityEmailCampaignFullToPb(in *entity.EmailCampaignFull) *pb_common
 			TestPct:              int32(in.ABConfig.TestPct),
 			DecisionAfterMinutes: int32(in.ABConfig.DecisionAfterMinutes),
 		},
-		Variants:         convertEntityEmailCampaignVariantsToPB(in.Variants),
-		Status:           convertEntityEmailCampaignStatus(in.Status),
-		CreatedBy:        in.CreatedBy,
-		CreatedAt:        in.CreatedAt.Unix(),
-		UpdatedAt:        in.UpdatedAt.Unix(),
-		SendingStartedAt: campaignUnix(in.SendingStartedAt),
-		SentAt:           campaignUnix(in.SentAt),
+		Variants:               convertEntityEmailCampaignVariantsToPB(in.Variants),
+		Status:                 convertEntityEmailCampaignStatus(in.Status),
+		CreatedBy:              in.CreatedBy,
+		CreatedAt:              in.CreatedAt.Unix(),
+		UpdatedAt:              in.UpdatedAt.Unix(),
+		SendingStartedAt:       campaignUnix(in.SendingStartedAt),
+		SentAt:                 campaignUnix(in.SentAt),
+		AudienceSnapshotAt:     campaignUnix(in.AudienceSnapshotAt),
+		FanoutMaxAccountId:     int32(in.FanoutMaxAccountID),
+		FanoutCursorAccountId:  int32(in.FanoutCursorAccountID),
+		AudienceMaterializedAt: campaignUnix(in.AudienceMaterializedAt),
 	}
 	if in.FromName != nil {
 		out.FromName = *in.FromName
@@ -495,6 +499,100 @@ func ConvertEntityEmailCampaignFullToPb(in *entity.EmailCampaignFull) *pb_common
 	}
 	if in.ABConfig.WinnerVariantID != nil {
 		out.AbConfig.WinnerVariantId = int32(*in.ABConfig.WinnerVariantID)
+	}
+	if in.RecipientCount != nil {
+		out.RecipientCount = int32(*in.RecipientCount)
+	}
+	if in.DispatchError != nil {
+		out.DispatchError = *in.DispatchError
+	}
+	return out
+}
+
+func convertRecipientStatusToPB(
+	in entity.EmailCampaignRecipientStatus,
+) pb_common.EmailCampaignRecipientStatus {
+	switch in {
+	case entity.EmailCampaignRecipientStatusPending:
+		return pb_common.EmailCampaignRecipientStatus_EMAIL_CAMPAIGN_RECIPIENT_STATUS_PENDING
+	case entity.EmailCampaignRecipientStatusSent:
+		return pb_common.EmailCampaignRecipientStatus_EMAIL_CAMPAIGN_RECIPIENT_STATUS_SENT
+	case entity.EmailCampaignRecipientStatusFailed:
+		return pb_common.EmailCampaignRecipientStatus_EMAIL_CAMPAIGN_RECIPIENT_STATUS_FAILED
+	case entity.EmailCampaignRecipientStatusSkipped:
+		return pb_common.EmailCampaignRecipientStatus_EMAIL_CAMPAIGN_RECIPIENT_STATUS_SKIPPED
+	default:
+		return pb_common.EmailCampaignRecipientStatus_EMAIL_CAMPAIGN_RECIPIENT_STATUS_UNKNOWN
+	}
+}
+
+func convertCampaignCohortToPB(in entity.EmailCampaignCohort) pb_common.EmailCampaignCohort {
+	switch in {
+	case entity.EmailCampaignCohortAB:
+		return pb_common.EmailCampaignCohort_EMAIL_CAMPAIGN_COHORT_AB
+	case entity.EmailCampaignCohortRemainder:
+		return pb_common.EmailCampaignCohort_EMAIL_CAMPAIGN_COHORT_REMAINDER
+	default:
+		return pb_common.EmailCampaignCohort_EMAIL_CAMPAIGN_COHORT_UNKNOWN
+	}
+}
+
+func ConvertEntityEmailCampaignDispatchStatusToPB(
+	in *entity.EmailCampaignDispatchStatus,
+) *pb_common.EmailCampaignDispatchStatus {
+	if in == nil {
+		return nil
+	}
+	out := &pb_common.EmailCampaignDispatchStatus{
+		CampaignId:             int32(in.CampaignID),
+		Status:                 convertEntityEmailCampaignStatus(in.Status),
+		AudienceMaterializedAt: campaignUnix(in.AudienceMaterializedAt),
+		RecipientCount:         int32(in.Counts.RecipientCount),
+		Pending:                int32(in.Counts.Pending),
+		Accepted:               int32(in.Counts.Accepted),
+		Failed:                 int32(in.Counts.Failed),
+		Skipped:                int32(in.Counts.Skipped),
+	}
+	if in.DispatchError != nil {
+		out.DispatchError = *in.DispatchError
+	}
+	return out
+}
+
+func ConvertEntityEmailCampaignRecipientToPB(
+	in *entity.EmailCampaignRecipient,
+) *pb_common.EmailCampaignRecipient {
+	if in == nil {
+		return nil
+	}
+	out := &pb_common.EmailCampaignRecipient{
+		Id:            in.ID,
+		CampaignId:    int32(in.CampaignID),
+		Email:         in.Email,
+		LanguageId:    int32(in.LanguageID),
+		Cohort:        convertCampaignCohortToPB(in.Cohort),
+		Status:        convertRecipientStatusToPB(in.Status),
+		AttemptCount:  int32(in.AttemptCount),
+		NextAttemptAt: campaignUnix(in.NextAttemptAt),
+		SentAt:        campaignUnix(in.SentAt),
+		CompletedAt:   campaignUnix(in.CompletedAt),
+		CreatedAt:     in.CreatedAt.Unix(),
+		UpdatedAt:     in.UpdatedAt.Unix(),
+	}
+	if in.AccountID != nil {
+		out.AccountId = int32(*in.AccountID)
+	}
+	if in.VariantID != nil {
+		out.VariantId = int32(*in.VariantID)
+	}
+	if in.ResendEmailID != nil {
+		out.ResendEmailId = *in.ResendEmailID
+	}
+	if in.ErrorCode != nil {
+		out.ErrorCode = *in.ErrorCode
+	}
+	if in.LastError != nil {
+		out.LastError = *in.LastError
 	}
 	return out
 }

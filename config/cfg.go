@@ -14,6 +14,7 @@ import (
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/campaigndispatch"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
@@ -79,6 +80,7 @@ type Config struct {
 	StorefrontAuth     storefront.Config         `mapstructure:"storefront_auth"`
 	Bucket             bucket.Config             `mapstructure:"bucket"`
 	Mailer             mail.Config               `mapstructure:"mailer"`
+	CampaignDispatch   campaigndispatch.Config   `mapstructure:"campaign_dispatch"`
 	OrderCleanup       ordercleanup.Config       `mapstructure:"order_cleanup"`
 	DeliverySync       deliverysync.Config       `mapstructure:"delivery_sync"`
 	AfterShip          aftership.Config          `mapstructure:"aftership"`
@@ -328,6 +330,18 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.webhook_secret", "MAILER_WEBHOOK_SECRET")
 	viper.BindEnv("mailer.unsubscribe_base_url", "MAILER_UNSUBSCRIBE_BASE_URL")
 	viper.BindEnv("mailer.unsubscribe_pepper", "MAILER_UNSUBSCRIBE_PEPPER")
+	viper.BindEnv("mailer.resend_requests_per_second", "MAILER_RESEND_REQUESTS_PER_SECOND")
+	viper.BindEnv("mailer.resend_burst", "MAILER_RESEND_BURST")
+	viper.BindEnv("mailer.transactional_reserve_tokens", "MAILER_TRANSACTIONAL_RESERVE_TOKENS")
+
+	// Email campaign dispatcher
+	viper.BindEnv("campaign_dispatch.worker_interval", "CAMPAIGN_DISPATCH_WORKER_INTERVAL")
+	viper.BindEnv("campaign_dispatch.fanout_page_size", "CAMPAIGN_DISPATCH_FANOUT_PAGE_SIZE")
+	viper.BindEnv("campaign_dispatch.batch_size", "CAMPAIGN_DISPATCH_BATCH_SIZE")
+	viper.BindEnv("campaign_dispatch.claim_lease", "CAMPAIGN_DISPATCH_CLAIM_LEASE")
+	viper.BindEnv("campaign_dispatch.max_attempts", "CAMPAIGN_DISPATCH_MAX_ATTEMPTS")
+	viper.BindEnv("campaign_dispatch.retry_base", "CAMPAIGN_DISPATCH_RETRY_BASE")
+	viper.BindEnv("campaign_dispatch.retry_max", "CAMPAIGN_DISPATCH_RETRY_MAX")
 
 	// Order cleanup (stuck Placed orders)
 	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")

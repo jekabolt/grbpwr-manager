@@ -111,7 +111,10 @@ type Config struct {
 	// one-click unsubscribe token embedded in the List-Unsubscribe URL (RFC 8058:
 	// the URL must be unique and unguessable per recipient). Without it no
 	// List-Unsubscribe header is emitted and the unsubscribe endpoint fails closed.
-	UnsubscribePepper string `mapstructure:"unsubscribe_pepper"`
+	UnsubscribePepper          string  `mapstructure:"unsubscribe_pepper"`
+	ResendRequestsPerSecond    float64 `mapstructure:"resend_requests_per_second"`
+	ResendBurst                int     `mapstructure:"resend_burst"`
+	TransactionalReserveTokens int     `mapstructure:"transactional_reserve_tokens"`
 }
 
 type Mailer struct {
@@ -124,6 +127,7 @@ type Mailer struct {
 	templates      map[templateName]*template.Template
 	wg             sync.WaitGroup
 	tracker        health.Tracker
+	budget         *ResendBudget
 }
 
 // Name implements health.Reporter.
@@ -185,6 +189,11 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 		from:           mail.NewEmail(c.FromName, c.FromEmail),
 		c:              c,
 		templates:      make(map[templateName]*template.Template),
+		budget: NewResendBudget(
+			c.ResendRequestsPerSecond,
+			c.ResendBurst,
+			c.TransactionalReserveTokens,
+		),
 	}
 
 	// Parse email templates
@@ -431,6 +440,7 @@ func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
 
 type sendOptions struct {
 	exemptDisabledSuppression bool
+	campaignLane              bool
 }
 
 func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
@@ -440,6 +450,13 @@ func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
 func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailRequest, opts sendOptions) error {
 	if !opts.exemptDisabledSuppression && m.suppressed(ser.Subject) {
 		return nil // bulk mail suppressed (e.g. beta seeding) — treat as sent, dispatch nothing
+	}
+	if opts.campaignLane {
+		if !m.budget.TryCampaign() {
+			return ErrCampaignBudgetUnavailable
+		}
+	} else if err := m.budget.WaitTransactional(ctx); err != nil {
+		return fmt.Errorf("wait for transactional Resend budget: %w", err)
 	}
 
 	resp, err := m.cli.PostEmails(ctx, *ser)
@@ -453,9 +470,42 @@ func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailReque
 	}
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+			if retryAfter <= 0 {
+				retryAfter = time.Second
+			}
+			if opts.campaignLane {
+				m.budget.CooldownCampaign(retryAfter)
+			} else {
+				m.budget.CooldownGlobal(retryAfter)
+			}
 			return mailApiLimitReached
 		}
 		return fmt.Errorf("error sending email: %w", err)
+	}
+	if resp == nil {
+		// dependency.Sender test doubles historically return (nil, nil). The
+		// production generated client always returns a response here.
+		return nil
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if retryAfter <= 0 {
+			retryAfter = time.Second
+		}
+		if opts.campaignLane {
+			m.budget.CooldownCampaign(retryAfter)
+		} else {
+			m.budget.CooldownGlobal(retryAfter)
+		}
+		return mailApiLimitReached
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if readErr != nil {
+			return &HTTPSendError{StatusCode: resp.StatusCode}
+		}
+		return &HTTPSendError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	return nil
@@ -478,6 +528,9 @@ func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) erro
 
 	// Attach List-Unsubscribe headers when sending queued emails from the worker.
 	req.Headers = m.listUnsubscribeHeaders(normalizedTo)
+	if err := m.budget.WaitTransactional(ctx); err != nil {
+		return fmt.Errorf("wait for transactional Resend budget: %w", err)
+	}
 
 	resp, err := m.cli.PostEmails(ctx, *req)
 	if err != nil {
@@ -486,6 +539,11 @@ func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) erro
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if retryAfter <= 0 {
+			retryAfter = time.Second
+		}
+		m.budget.CooldownGlobal(retryAfter)
 		return mailApiLimitReached
 	}
 	if resp.StatusCode != http.StatusOK {

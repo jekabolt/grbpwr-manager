@@ -164,6 +164,36 @@ envs:
 - key: MAILER_UNSUBSCRIBE_BASE_URL
   scope: RUN_TIME
   value: https://backend.grbpwr.com
+- key: MAILER_RESEND_REQUESTS_PER_SECOND
+  scope: RUN_TIME
+  value: "2"
+- key: MAILER_RESEND_BURST
+  scope: RUN_TIME
+  value: "2"
+- key: MAILER_TRANSACTIONAL_RESERVE_TOKENS
+  scope: RUN_TIME
+  value: "1"
+- key: CAMPAIGN_DISPATCH_WORKER_INTERVAL
+  scope: RUN_TIME
+  value: 2s
+- key: CAMPAIGN_DISPATCH_FANOUT_PAGE_SIZE
+  scope: RUN_TIME
+  value: "5000"
+- key: CAMPAIGN_DISPATCH_BATCH_SIZE
+  scope: RUN_TIME
+  value: "100"
+- key: CAMPAIGN_DISPATCH_CLAIM_LEASE
+  scope: RUN_TIME
+  value: 2m
+- key: CAMPAIGN_DISPATCH_MAX_ATTEMPTS
+  scope: RUN_TIME
+  value: "8"
+- key: CAMPAIGN_DISPATCH_RETRY_BASE
+  scope: RUN_TIME
+  value: 30s
+- key: CAMPAIGN_DISPATCH_RETRY_MAX
+  scope: RUN_TIME
+  value: 30m
 - key: MAILER_WEBHOOK_SECRET
   scope: RUN_TIME
   type: SECRET

@@ -188,10 +188,17 @@ type EmailCampaignInsert struct {
 type EmailCampaignFull struct {
 	ID int
 	EmailCampaignInsert
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	SendingStartedAt *time.Time
-	SentAt           *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	SendingStartedAt       *time.Time
+	SentAt                 *time.Time
+	AudiencePredicate      *SegmentPredicate
+	AudienceSnapshotAt     *time.Time
+	FanoutMaxAccountID     int
+	FanoutCursorAccountID  int
+	AudienceMaterializedAt *time.Time
+	RecipientCount         *int
+	DispatchError          *string
 }
 
 type SegmentOp int32

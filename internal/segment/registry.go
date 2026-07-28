@@ -186,17 +186,25 @@ var opTemplates = map[string]opSpec{
 
 // topicColumn maps a validated topic enum to its opt-in column. The topic is a
 // closed enum so the column choice is code-controlled and never bound.
-func topicColumn(t entity.EmailCampaignTopic) (string, error) {
+func TopicSubscriptionColumn(t entity.EmailCampaignTopic) (string, error) {
 	switch t {
 	case entity.EmailCampaignTopicNewsletter:
-		return "sa.subscribe_newsletter", nil
+		return "subscribe_newsletter", nil
 	case entity.EmailCampaignTopicNewArrivals:
-		return "sa.subscribe_new_arrivals", nil
+		return "subscribe_new_arrivals", nil
 	case entity.EmailCampaignTopicEvents:
-		return "sa.subscribe_events", nil
+		return "subscribe_events", nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrUnknownTopic, string(t))
 	}
+}
+
+func topicColumn(t entity.EmailCampaignTopic) (string, error) {
+	column, err := TopicSubscriptionColumn(t)
+	if err != nil {
+		return "", err
+	}
+	return "sa." + column, nil
 }
 
 // parseValue converts one raw string into a bound-parameter value according to

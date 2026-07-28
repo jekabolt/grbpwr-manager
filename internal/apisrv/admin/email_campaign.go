@@ -9,6 +9,7 @@ import (
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/segment"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -206,14 +207,10 @@ func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {
 		return status.Error(codes.InvalidArgument, "campaign topic is required")
 	}
 	switch in.Status {
-	case pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_DRAFT,
-		pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_SCHEDULED,
-		pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_SENDING,
-		pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_PAUSED,
-		pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_SENT,
-		pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_CANCELLED:
+	case pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_UNKNOWN,
+		pb_common.EmailCampaignStatus_EMAIL_CAMPAIGN_STATUS_DRAFT:
 	default:
-		return status.Error(codes.InvalidArgument, "campaign status is required")
+		return status.Error(codes.InvalidArgument, "campaign status is server-owned; drafts only")
 	}
 	abEnabled := in.AbConfig != nil && in.AbConfig.Enabled
 	if !abEnabled && len(in.Variants) != 1 {
@@ -254,6 +251,8 @@ func (s *Server) UpsertEmailCampaign(ctx context.Context, req *pb_admin.UpsertEm
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	campaign.Name = strings.TrimSpace(campaign.Name)
+	campaign.Status = entity.EmailCampaignStatusDraft
+	campaign.ScheduleAt = nil
 	campaign.CreatedBy = authsrv.GetAdminUsername(ctx)
 	campaignrender.SanitizeBlocks(campaign.Body)
 	for i := range campaign.Variants {

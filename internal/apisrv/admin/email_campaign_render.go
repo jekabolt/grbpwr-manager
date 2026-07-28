@@ -121,7 +121,9 @@ func selectCampaignVariant(
 	}
 
 	blocks := campaign.Body
-	if campaign.ABConfig.Enabled && len(variant.Body) > 0 {
+	if campaign.ABConfig.Enabled &&
+		campaign.ABConfig.Dimension == entity.ABDimensionContent &&
+		len(variant.Body) > 0 {
 		blocks = variant.Body
 	}
 	return blocks, variant.SubjectI18n, nil

@@ -42,7 +42,10 @@ func (m *Mailer) SendCampaignTest(
 		ReplyTo: &replyTo,
 		Headers: m.listUnsubscribeHeaders(normalizedTo),
 	}
-	if err := m.sendWithOptions(ctx, req, sendOptions{exemptDisabledSuppression: true}); err != nil {
+	if err := m.sendWithOptions(ctx, req, sendOptions{
+		exemptDisabledSuppression: true,
+		campaignLane:              true,
+	}); err != nil {
 		return fmt.Errorf("send campaign test: %w", err)
 	}
 	return nil

@@ -705,6 +705,49 @@ service AdminService {
     };
   }
 
+  rpc SendCampaignNow(SendCampaignNowRequest) returns (SendCampaignNowResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/send"
+      body: "*"
+    };
+  }
+
+  rpc ScheduleCampaign(ScheduleCampaignRequest) returns (ScheduleCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/schedule"
+      body: "*"
+    };
+  }
+
+  rpc PauseCampaign(PauseCampaignRequest) returns (PauseCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/pause"
+      body: "*"
+    };
+  }
+
+  rpc ResumeCampaign(ResumeCampaignRequest) returns (ResumeCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/resume"
+      body: "*"
+    };
+  }
+
+  rpc CancelCampaign(CancelCampaignRequest) returns (CancelCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/cancel"
+      body: "*"
+    };
+  }
+
+  rpc GetCampaignDispatchStatus(GetCampaignDispatchStatusRequest) returns (GetCampaignDispatchStatusResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{id}/dispatch-status"};
+  }
+
+  rpc GetCampaignRecipients(GetCampaignRecipientsRequest) returns (GetCampaignRecipientsResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{id}/recipients"};
+  }
+
   // ARCHIVE MANAGER
 
   // AddArchive creates a new archive.
@@ -3552,6 +3595,56 @@ message SendTestEmailRequest {
 }
 
 message SendTestEmailResponse {}
+
+message SendCampaignNowRequest {
+  int32 id = 1;
+}
+
+message SendCampaignNowResponse {}
+
+message ScheduleCampaignRequest {
+  int32 id = 1;
+  int64 schedule_at = 2;
+}
+
+message ScheduleCampaignResponse {}
+
+message PauseCampaignRequest {
+  int32 id = 1;
+}
+
+message PauseCampaignResponse {}
+
+message ResumeCampaignRequest {
+  int32 id = 1;
+}
+
+message ResumeCampaignResponse {}
+
+message CancelCampaignRequest {
+  int32 id = 1;
+}
+
+message CancelCampaignResponse {}
+
+message GetCampaignDispatchStatusRequest {
+  int32 id = 1;
+}
+
+message GetCampaignDispatchStatusResponse {
+  common.EmailCampaignDispatchStatus status = 1;
+}
+
+message GetCampaignRecipientsRequest {
+  int32 id = 1;
+  uint64 after_id = 2;
+  int32 limit = 3;
+}
+
+message GetCampaignRecipientsResponse {
+  repeated common.EmailCampaignRecipient recipients = 1;
+  uint64 next_id = 2;
+}
 
 // ARCHIVE MANAGER
 

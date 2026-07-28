@@ -8,12 +8,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	svix "github.com/svix/svix-webhooks/go"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/segment"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront/tokenhash"
 )
 
@@ -29,14 +31,14 @@ func unsubscribeTokenValue(email string) string {
 type resendEventType string
 
 const (
-	eventEmailBounced        resendEventType = "email.bounced"
-	eventEmailComplained     resendEventType = "email.complained"
-	eventEmailDelivered      resendEventType = "email.delivered"
-	eventEmailSuppressed     resendEventType = "email.suppressed"
-	eventEmailFailed         resendEventType = "email.failed"
+	eventEmailBounced         resendEventType = "email.bounced"
+	eventEmailComplained      resendEventType = "email.complained"
+	eventEmailDelivered       resendEventType = "email.delivered"
+	eventEmailSuppressed      resendEventType = "email.suppressed"
+	eventEmailFailed          resendEventType = "email.failed"
 	eventEmailDeliveryDelayed resendEventType = "email.delivery_delayed"
-	eventEmailOpened         resendEventType = "email.opened"
-	eventEmailClicked        resendEventType = "email.clicked"
+	eventEmailOpened          resendEventType = "email.opened"
+	eventEmailClicked         resendEventType = "email.clicked"
 )
 
 // resendBounce contains bounce-specific metadata.
@@ -48,8 +50,8 @@ type resendBounce struct {
 
 // resendWebhookData is the data field common to all Resend webhook events.
 type resendWebhookData struct {
-	EmailID string       `json:"email_id"`
-	To      []string     `json:"to"`
+	EmailID string        `json:"email_id"`
+	To      []string      `json:"to"`
 	Bounce  *resendBounce `json:"bounce,omitempty"`
 }
 
@@ -289,6 +291,52 @@ func (h *WebhookHandler) HandleListUnsubscribe(w http.ResponseWriter, r *http.Re
 	}
 
 	slog.Default().InfoContext(ctx, "list-unsubscribe: one-click unsubscribe processed",
+		slog.String("email", email))
+	w.WriteHeader(http.StatusOK)
+}
+
+// HandleCampaignListUnsubscribe processes the topic-scoped RFC 8058 route.
+// Unlike the legacy generic endpoint it clears only the campaign topic opt-in.
+func (h *WebhookHandler) HandleCampaignListUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if h.unsubPepper == "" {
+		http.Error(w, "unsubscribe not configured", http.StatusServiceUnavailable)
+		return
+	}
+	topic := entity.EmailCampaignTopic(r.PathValue("topic"))
+	if _, err := segment.TopicSubscriptionColumn(topic); err != nil {
+		http.Error(w, "invalid topic", http.StatusBadRequest)
+		return
+	}
+	emailBytes, err := base64.RawURLEncoding.DecodeString(r.PathValue("email_b64"))
+	if err != nil {
+		http.Error(w, "invalid email encoding", http.StatusBadRequest)
+		return
+	}
+	email, err := validateEmailAddress(string(emailBytes))
+	if err != nil {
+		http.Error(w, "invalid email", http.StatusBadRequest)
+		return
+	}
+	email = strings.ToLower(email)
+	want := tokenhash.Hash(
+		h.unsubPepper,
+		campaignUnsubscribeTokenValue(topic, email),
+	)
+	if !tokenhash.Equal(want, r.PathValue("token")) {
+		http.Error(w, "invalid token", http.StatusForbidden)
+		return
+	}
+	if err := unsubscribeCampaignTopic(ctx, h.repo, topic, email); err != nil {
+		slog.Default().ErrorContext(ctx, "campaign list-unsubscribe failed",
+			slog.String("topic", string(topic)),
+			slog.String("email", email),
+			slog.String("err", err.Error()))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	slog.Default().InfoContext(ctx, "campaign one-click unsubscribe processed",
+		slog.String("topic", string(topic)),
 		slog.String("email", email))
 	w.WriteHeader(http.StatusOK)
 }
