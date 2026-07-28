@@ -22,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/store/bqcache"
+	"github.com/jekabolt/grbpwr-manager/internal/store/campaign"
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
 	"github.com/jekabolt/grbpwr-manager/internal/store/content"
 	"github.com/jekabolt/grbpwr-manager/internal/store/dictionary"
@@ -101,6 +102,7 @@ type MYSQLStore struct {
 	syncStatus         *ga4data.SyncStatusStore
 	metrics            *metrics.Store
 	content            *content.Store
+	campaignStore      *campaign.Store
 	settingsStore      *settings.Store
 	dictionaryStore    *dictionary.Store
 	comm               *communication.Store
@@ -388,6 +390,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.metrics = metrics.New(base, ms)
 	ms.accounting = accounting.New(base, ms)
 	ms.content = content.New(base, ms.Tx, func() dependency.Repository { return ms })
+	ms.campaignStore = campaign.New(base, ms.Tx)
 	ms.orderStore = order.New(base, ms.Tx, func() dependency.Repository { return ms })
 	ms.accountStore = account.New(base, ms.Tx)
 	ms.membershipStore = membership.New(base, ms.Tx)
@@ -418,6 +421,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.metrics = metrics.New(base, txStore)
 	txStore.accounting = accounting.New(base, txStore)
 	txStore.content = content.New(base, outerTx, func() dependency.Repository { return txStore })
+	txStore.campaignStore = campaign.New(base, outerTx)
 	txStore.orderStore = order.New(base, outerTx, func() dependency.Repository { return txStore })
 	txStore.accountStore = account.New(base, outerTx)
 	txStore.membershipStore = membership.New(base, outerTx)
@@ -483,6 +487,7 @@ func (ms *MYSQLStore) Retention() dependency.Retention           { return ms.met
 func (ms *MYSQLStore) Inventory() dependency.Inventory           { return ms.metrics }
 func (ms *MYSQLStore) Analytics() dependency.Analytics           { return ms.metrics }
 func (ms *MYSQLStore) Hero() dependency.Hero                     { return ms.content }
+func (ms *MYSQLStore) Campaigns() dependency.Campaigns           { return ms.campaignStore }
 func (ms *MYSQLStore) Archive() dependency.Archive               { return ms.content }
 func (ms *MYSQLStore) Media() dependency.Media                   { return ms.content }
 func (ms *MYSQLStore) Settings() dependency.Settings             { return ms.settingsStore }

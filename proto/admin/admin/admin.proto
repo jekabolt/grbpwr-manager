@@ -5,6 +5,7 @@ package admin;
 import "common/archive.proto";
 import "common/buyer.proto";
 import "common/dict.proto";
+import "common/email_campaign.proto";
 import "common/filter.proto";
 import "common/fitting.proto";
 import "common/fulfillment.proto";
@@ -639,6 +640,48 @@ service AdminService {
       post: "/api/admin/hero/add"
       body: "*"
     };
+  }
+
+  // EMAIL CAMPAIGN MANAGER (Phase 0 CRUD only)
+
+  rpc UpsertEmailSegment(UpsertEmailSegmentRequest) returns (UpsertEmailSegmentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-segments"
+      body: "*"
+    };
+  }
+
+  rpc GetEmailSegment(GetEmailSegmentRequest) returns (GetEmailSegmentResponse) {
+    option (google.api.http) = {get: "/api/admin/email-segments/{id}"};
+  }
+
+  rpc DeleteEmailSegment(DeleteEmailSegmentRequest) returns (DeleteEmailSegmentResponse) {
+    option (google.api.http) = {delete: "/api/admin/email-segments/{id}"};
+  }
+
+  // Declared after the /{id} GET so grpc-gateway gives the literal route priority.
+  rpc ListEmailSegments(ListEmailSegmentsRequest) returns (ListEmailSegmentsResponse) {
+    option (google.api.http) = {get: "/api/admin/email-segments"};
+  }
+
+  rpc UpsertEmailCampaign(UpsertEmailCampaignRequest) returns (UpsertEmailCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns"
+      body: "*"
+    };
+  }
+
+  rpc GetEmailCampaign(GetEmailCampaignRequest) returns (GetEmailCampaignResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{id}"};
+  }
+
+  rpc DeleteEmailCampaign(DeleteEmailCampaignRequest) returns (DeleteEmailCampaignResponse) {
+    option (google.api.http) = {delete: "/api/admin/email-campaigns/{id}"};
+  }
+
+  // Declared after the /{id} GET so grpc-gateway gives the literal route priority.
+  rpc ListEmailCampaignsPaged(ListEmailCampaignsPagedRequest) returns (ListEmailCampaignsPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/paged"};
   }
 
   // ARCHIVE MANAGER
@@ -3385,6 +3428,72 @@ message AddHeroRequest {
 }
 
 message AddHeroResponse {}
+
+// EMAIL CAMPAIGN MANAGER
+
+message UpsertEmailSegmentRequest {
+  int32 id = 1;
+  common.EmailSegment segment = 2;
+}
+
+message UpsertEmailSegmentResponse {
+  int32 id = 1;
+}
+
+message GetEmailSegmentRequest {
+  int32 id = 1;
+}
+
+message GetEmailSegmentResponse {
+  common.EmailSegment segment = 1;
+}
+
+message ListEmailSegmentsRequest {}
+
+message ListEmailSegmentsResponse {
+  repeated common.EmailSegment segments = 1;
+}
+
+message DeleteEmailSegmentRequest {
+  int32 id = 1;
+}
+
+message DeleteEmailSegmentResponse {}
+
+message UpsertEmailCampaignRequest {
+  int32 id = 1;
+  common.EmailCampaignInsert campaign = 2;
+}
+
+message UpsertEmailCampaignResponse {
+  int32 id = 1;
+}
+
+message GetEmailCampaignRequest {
+  int32 id = 1;
+}
+
+message GetEmailCampaignResponse {
+  common.EmailCampaignFull campaign = 1;
+}
+
+message ListEmailCampaignsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.EmailCampaignStatus status = 3;
+  common.EmailCampaignTopic topic = 4;
+}
+
+message ListEmailCampaignsPagedResponse {
+  repeated common.EmailCampaignFull campaigns = 1;
+  int32 total = 2;
+}
+
+message DeleteEmailCampaignRequest {
+  int32 id = 1;
+}
+
+message DeleteEmailCampaignResponse {}
 
 // ARCHIVE MANAGER
 

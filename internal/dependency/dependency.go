@@ -163,6 +163,17 @@ type (
 		GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, error)
 	}
 
+	Campaigns interface {
+		UpsertEmailCampaign(ctx context.Context, id int, campaign *entity.EmailCampaignInsert) (int, error)
+		GetEmailCampaignByID(ctx context.Context, id int) (*entity.EmailCampaignFull, error)
+		ListEmailCampaignsPaged(ctx context.Context, limit, offset int, status entity.EmailCampaignStatus, topic entity.EmailCampaignTopic) ([]entity.EmailCampaignFull, int, error)
+		DeleteEmailCampaign(ctx context.Context, id int) error
+		UpsertEmailSegment(ctx context.Context, id int, segment *entity.EmailSegment) (int, error)
+		GetEmailSegmentByID(ctx context.Context, id int) (*entity.EmailSegment, error)
+		ListEmailSegments(ctx context.Context) ([]entity.EmailSegment, error)
+		DeleteEmailSegment(ctx context.Context, id int) error
+	}
+
 	Mail interface {
 		AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int, error)
 		// GetAllUnsent returns unsent rows. withError false limits to worker-eligible rows (attempts and next_retry_at).
@@ -1094,6 +1105,7 @@ type (
 	Repository interface {
 		Products() Products
 		Hero() Hero
+		Campaigns() Campaigns
 		Order() Order
 		StorefrontAccount() StorefrontAccount
 		Membership() Membership

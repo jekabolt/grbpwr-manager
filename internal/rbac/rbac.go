@@ -33,6 +33,7 @@ const (
 	SectionContent     = "content"
 	SectionHero        = "hero"
 	SectionArchive     = "archive"
+	SectionCampaigns   = "email_campaigns"
 	SectionModels      = "models"
 	SectionFittings    = "fittings"
 	// SectionDictionaries governs the controlled merch dictionaries (R9): collection, colour, tag
@@ -89,6 +90,7 @@ var catalog = []SectionInfo{
 	{SectionContent, "Content / media", "Media library: images, videos, patterns."},
 	{SectionHero, "Hero", "Homepage hero and background."},
 	{SectionArchive, "Archive", "Archive entries."},
+	{SectionCampaigns, "Email campaigns", "Email campaign and audience-segment definitions."},
 	{SectionModels, "Models", "Fit models."},
 	{SectionFittings, "Fittings", "Fitting sessions."},
 	{SectionDictionaries, "Dictionaries", "Controlled merch dictionaries: collections, colours, tags, countries. Managing them is separate from editing the catalog that uses them."},
@@ -246,6 +248,15 @@ var methodRequirements = map[string]Requirement{
 	"DeleteArchiveById": wr(SectionArchive),
 	"GetArchiveByID":    rd(SectionArchive),
 	"GetArchivesPaged":  rd(SectionArchive),
+	// email campaigns and saved audience predicates
+	"UpsertEmailSegment":      wr(SectionCampaigns),
+	"GetEmailSegment":         rd(SectionCampaigns),
+	"ListEmailSegments":       rd(SectionCampaigns),
+	"DeleteEmailSegment":      wr(SectionCampaigns),
+	"UpsertEmailCampaign":     wr(SectionCampaigns),
+	"GetEmailCampaign":        rd(SectionCampaigns),
+	"ListEmailCampaignsPaged": rd(SectionCampaigns),
+	"DeleteEmailCampaign":     wr(SectionCampaigns),
 	// models
 	"AddModel":    wr(SectionModels),
 	"GetModel":    rd(SectionModels),
