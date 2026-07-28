@@ -1,17 +1,17 @@
-{{template "email_header" (dict "tag" "AUTH" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "account.login.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">SIGN IN</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "account.login.heading" }}</div>
               {{template "spacer_18"}}
-              <div style="font-size:13px; line-height:21px; color:#5d5a51;">USE THE CODE BELOW, OR THE BUTTON, TO FINISH SIGNING IN. DIDN'T REQUEST THIS? IGNORE THIS EMAIL — NOTHING HAPPENS.</div>
+              <div style="font-size:13px; line-height:21px; color:#5d5a51;">{{ t "account.login.body" }}</div>
 
               {{template "spacer_26"}}
               <div style="border:1px solid #DBD8CE; padding:22px; text-align:center;">
-                <div style="font-size:10px; letter-spacing:2px; color:#9a978c;">VERIFICATION CODE</div>
+                <div style="font-size:10px; letter-spacing:2px; color:#9a978c;">{{ t "account.login.code_label" }}</div>
                 {{template "spacer_10"}}
                 <div style="font-size:34px; letter-spacing:10px; font-weight:700; color:#0E0E0C;">{{.OTPCode}}</div>
               </div>
 
               {{template "spacer_26"}}
-              {{template "cta_button" (dict "url" .MagicLinkURL "label" "SIGN IN" "variant" "solid")}}
+              {{template "cta_button" (dict "url" .MagicLinkURL "label" (t "account.login.cta") "variant" "solid")}}
 
 {{template "email_footer" .}}

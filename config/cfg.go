@@ -325,6 +325,7 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.webhook_secret", "MAILER_WEBHOOK_SECRET")
 	viper.BindEnv("mailer.unsubscribe_base_url", "MAILER_UNSUBSCRIBE_BASE_URL")
 	viper.BindEnv("mailer.unsubscribe_pepper", "MAILER_UNSUBSCRIBE_PEPPER")
+	viper.BindEnv("mailer.localization_enabled", "MAILER_LOCALIZATION_ENABLED")
 
 	// Order cleanup (stuck Placed orders)
 	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")

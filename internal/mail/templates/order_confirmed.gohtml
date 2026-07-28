@@ -1,10 +1,10 @@
-{{template "email_header" (dict "tag" "ORDER" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "order.confirmed.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">ORDER CONFIRMED</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "order.confirmed.heading" }}</div>
               {{template "spacer_16"}}
-              <div style="font-size:12px; line-height:20px; color:#5d5a51;">WE'VE GOT YOUR ORDER AND WE'RE PREPARING IT. YOU'LL HEAR FROM US WHEN IT SHIPS.</div>
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">{{ t "order.confirmed.body" }}</div>
               {{template "spacer_22"}}
-              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "CONFIRMED" "buyer" .BuyerName)}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" (t "order.confirmed.status") "buyer" .BuyerName)}}
 
               {{template "spacer_24"}}
               {{template "order_items_list" .}}

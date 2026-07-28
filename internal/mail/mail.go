@@ -101,6 +101,10 @@ type Config struct {
 	// the URL must be unique and unguessable per recipient). Without it no
 	// List-Unsubscribe header is emitted and the unsubscribe endpoint fails closed.
 	UnsubscribePepper string `mapstructure:"unsubscribe_pepper"`
+	// LocalizationEnabled turns on per-recipient email language resolution. When false
+	// (default, and on prod until sign-off) every email renders in the default locale
+	// (en) — byte-for-byte the pre-feature behavior. Set via MAILER_LOCALIZATION_ENABLED.
+	LocalizationEnabled bool `mapstructure:"localization_enabled"`
 }
 
 type Mailer struct {
@@ -111,6 +115,7 @@ type Mailer struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	templates      map[templateName]*template.Template
+	catalog        *Catalog
 	wg             sync.WaitGroup
 	tracker        health.Tracker
 }
@@ -167,6 +172,12 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 		return nil, fmt.Errorf("error creating resend client: %w", err)
 	}
 
+	// Build the i18n catalog from the embedded locale files.
+	catalog, err := newCatalog()
+	if err != nil {
+		return nil, fmt.Errorf("error building i18n catalog: %w", err)
+	}
+
 	// Initialize the Mailer struct
 	m := &Mailer{
 		cli:            cli,
@@ -174,6 +185,7 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 		from:           mail.NewEmail(c.FromName, c.FromEmail),
 		c:              c,
 		templates:      make(map[templateName]*template.Template),
+		catalog:        catalog,
 	}
 
 	// Parse email templates
@@ -221,6 +233,13 @@ func templateFuncs() template.FuncMap {
 		"unixNow": func() int64 { return time.Now().Unix() },
 		// season returns the current fashion-calendar season label, e.g. "SS26".
 		"season": func() string { return currentSeason(time.Now()) },
+		// i18n stubs — registered so templates using {{ t }} / {{ plural }} / {{ curLang }}
+		// parse at startup. They are overridden per-render with locale-bound implementations
+		// via localeFuncMap (see buildSendMailRequest); a template executed without the
+		// override degrades to the key/default rather than failing to parse.
+		"t":       func(key string, _ ...any) string { return key },
+		"plural":  func(key string, _ int, _ ...any) string { return key },
+		"curLang": func() string { return defaultLocale },
 	}
 }
 
@@ -276,20 +295,27 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 		return nil, fmt.Errorf("invalid recipient: %w", err)
 	}
 
-	tmpl, ok := m.templates[tn]
+	baseTmpl, ok := m.templates[tn]
 	if !ok {
 		return nil, fmt.Errorf("template not found: %v", tn)
 	}
 
-	subject, ok := templateSubjects[tn]
-	if !ok {
-		return nil, fmt.Errorf("subject not found for template: %v", tn)
+	// Resolve the recipient locale and bind a localizer. With localization disabled
+	// (the default) this is always the default locale, so output matches pre-feature EN.
+	loc := m.catalog.Localizer(m.resolveLocale(normalizedTo))
+
+	subject, err := m.subject(tn, loc, data)
+	if err != nil {
+		return nil, err
 	}
-	// Order-related emails get a more scannable subject that includes the
-	// human-readable order id (e.g. "Order ord-ab12 confirmed").
-	if dynamic := orderSubject(tn, data); dynamic != "" {
-		subject = dynamic
+
+	// Clone the shared template and attach the locale-bound i18n funcs for this render,
+	// so the parsed templates are never mutated across concurrent sends.
+	tmpl, err := baseTmpl.Clone()
+	if err != nil {
+		return nil, fmt.Errorf("clone template: %w", err)
 	}
+	tmpl = tmpl.Funcs(localeFuncMap(loc))
 
 	body := &strings.Builder{}
 	// Execute the template by its filename
@@ -319,9 +345,33 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 	return &sr, nil
 }
 
-// orderSubject returns a scannable subject line that embeds the human-readable
-// order id for order-related emails, or "" when the template/data is unrelated.
-func orderSubject(tn templateName, data interface{}) string {
+// subjectKey maps each template to its catalog subject key. Order templates use a
+// key that interpolates {{.OrderID}} (the uppercased order UUID); the rest are static.
+var subjectKey = map[templateName]string{
+	AccountLogin:            "account.login.subject",
+	NewSubscriber:           "subscriber.welcome.subject",
+	OrderConfirmed:          "order.confirmed.subject",
+	OrderShipped:            "order.shipped.subject",
+	OrderDelivered:          "order.delivered.subject",
+	OrderCancelled:          "order.cancelled.subject",
+	OrderRefundInitiated:    "order.refund.subject",
+	OrderPendingReturn:      "order.return.subject",
+	PromoCode:               "promo.code.subject",
+	BackInStock:             "stock.back.subject",
+	TierUpgrade:             "tier.upgrade.subject",
+	TierDowngrade:           "tier.downgrade.subject",
+	DowngradeReminder:       "tier.reminder.subject",
+	TierRollbackAfterRefund: "tier.rollback.subject",
+	FirstPurchaseThanks:     "tier.firstpurchase.subject",
+	UnsubscribeConfirmation: "unsubscribe.confirm.subject",
+	BirthdayGift:            "birthday.subject",
+	EventInvite:             "event.invite.subject",
+	HackerInvite:            "hacker.invite.subject",
+}
+
+// orderSubjectID extracts the uppercased order UUID from order-email data, or "" for
+// non-order emails, so an order subject key can interpolate {{.OrderID}}.
+func orderSubjectID(data interface{}) string {
 	id := ""
 	switch d := data.(type) {
 	case *dto.OrderConfirmed:
@@ -337,25 +387,18 @@ func orderSubject(tn templateName, data interface{}) string {
 	case *dto.OrderPendingReturn:
 		id = d.OrderUUID
 	}
-	if id == "" {
-		return ""
+	return strings.ToUpper(id)
+}
+
+// subject returns the localized subject line for tn. Order emails interpolate the
+// human-readable order id (e.g. "Order ORD-AB12 confirmed"); the {{.OrderID}} data is
+// harmlessly ignored by the static (non-order) subject messages.
+func (m *Mailer) subject(tn templateName, loc *Loc, data interface{}) (string, error) {
+	key, ok := subjectKey[tn]
+	if !ok {
+		return "", fmt.Errorf("subject not found for template: %v", tn)
 	}
-	id = strings.ToUpper(id)
-	switch tn {
-	case OrderConfirmed:
-		return fmt.Sprintf("Order %s confirmed", id)
-	case OrderShipped:
-		return fmt.Sprintf("Order %s shipped", id)
-	case OrderDelivered:
-		return fmt.Sprintf("Order %s delivered", id)
-	case OrderCancelled:
-		return fmt.Sprintf("Order %s cancelled", id)
-	case OrderRefundInitiated:
-		return fmt.Sprintf("Order %s — refund initiated", id)
-	case OrderPendingReturn:
-		return fmt.Sprintf("Order %s — return requested", id)
-	}
-	return ""
+	return loc.S(key, map[string]any{"OrderID": orderSubjectID(data)}), nil
 }
 
 var (

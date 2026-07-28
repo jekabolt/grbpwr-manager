@@ -1,0 +1,34 @@
+{
+  "order.confirmed.subject": "Order {{.OrderID}} confirmed",
+  "order.shipped.subject": "Order {{.OrderID}} shipped",
+  "order.delivered.subject": "Order {{.OrderID}} delivered",
+  "order.cancelled.subject": "Order {{.OrderID}} cancelled",
+  "order.refund.subject": "Order {{.OrderID}} — refund initiated",
+  "order.return.subject": "Order {{.OrderID}} — return requested",
+
+  "account.login.subject": "Your sign-in code",
+  "subscriber.welcome.subject": "Welcome to GRBPWR",
+  "stock.back.subject": "Your waitlist item is back in stock",
+  "promo.code.subject": "Your promo code",
+
+  "tier.upgrade.subject": "Your GRBPWR tier",
+  "tier.downgrade.subject": "Your GRBPWR tier",
+  "tier.reminder.subject": "Keep your GRBPWR tier",
+  "tier.rollback.subject": "Your GRBPWR tier was adjusted",
+  "tier.firstpurchase.subject": "Thank you from GRBPWR",
+  "unsubscribe.confirm.subject": "You've been unsubscribed",
+  "birthday.subject": "A gift from GRBPWR",
+  "event.invite.subject": "You're invited",
+  "hacker.invite.subject": "Your GRBPWR HACKER invite",
+
+  "order.confirmed.tag": "ORDER",
+  "order.confirmed.heading": "ORDER CONFIRMED",
+  "order.confirmed.body": "WE'VE GOT YOUR ORDER AND WE'RE PREPARING IT. YOU'LL HEAR FROM US WHEN IT SHIPS.",
+  "order.confirmed.status": "CONFIRMED",
+
+  "account.login.tag": "AUTH",
+  "account.login.heading": "SIGN IN",
+  "account.login.body": "USE THE CODE BELOW, OR THE BUTTON, TO FINISH SIGNING IN. DIDN'T REQUEST THIS? IGNORE THIS EMAIL — NOTHING HAPPENS.",
+  "account.login.code_label": "VERIFICATION CODE",
+  "account.login.cta": "SIGN IN"
+}

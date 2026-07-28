@@ -20,6 +20,7 @@ require (
 	github.com/kolesa-team/go-webp v1.0.4
 	github.com/lestrrat-go/jwx v1.2.6
 	github.com/minio/minio-go/v7 v7.0.62
+	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/oapi-codegen/runtime v1.1.0
 	github.com/rubenv/sql-migrate v1.4.0
 	github.com/sendgrid/sendgrid-go v3.14.0+incompatible
