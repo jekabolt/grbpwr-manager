@@ -1,14 +1,14 @@
-{{template "email_header" (dict "tag" "REFUND" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "order.refund.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">REFUND INITIATED</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "order.refund.heading" }}</div>
               {{template "spacer_18"}}
-              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "REFUND INITIATED" "buyer" .BuyerName)}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" (t "order.refund.heading") "buyer" .BuyerName)}}
 
               {{template "spacer_20"}}
               {{template "hairline"}}
               {{template "spacer_18"}}
-              <div style="font-size:13px; line-height:22px; color:#5d5a51;">YOUR REFUND IS ON ITS WAY. HOW LONG IT TAKES TO LAND DEPENDS ON YOUR BANK.</div>
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{ t "order.refund.body" }}</div>
               {{template "spacer_18"}}
-              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">THANK YOU FOR YOUR PATIENCE — GRBPWR</div>
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">{{ t "common.signoff.patience" }}</div>
 
 {{template "email_footer" .}}

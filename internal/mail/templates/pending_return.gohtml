@@ -1,14 +1,14 @@
-{{template "email_header" (dict "tag" "RETURN" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "order.return.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">RETURN REQUESTED</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "order.return.heading" }}</div>
               {{template "spacer_18"}}
-              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "RETURN REQUESTED" "buyer" .BuyerName)}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" (t "order.return.heading") "buyer" .BuyerName)}}
 
               {{template "spacer_20"}}
               {{template "hairline"}}
               {{template "spacer_18"}}
-              <div style="font-size:13px; line-height:22px; color:#5d5a51;">SEND THE PARCEL BACK TO US. ONCE IT ARRIVES AND WE'VE CHECKED THE ITEMS, WE'LL PROCESS YOUR REFUND.</div>
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{ t "order.return.body" }}</div>
               {{template "spacer_18"}}
-              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">THANK YOU FOR YOUR PATIENCE — GRBPWR</div>
+              <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">{{ t "common.signoff.patience" }}</div>
 
 {{template "email_footer" .}}

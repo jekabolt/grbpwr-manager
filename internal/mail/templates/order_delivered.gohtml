@@ -1,10 +1,10 @@
-{{template "email_header" (dict "tag" "DELIVERY" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "order.delivered.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">DELIVERED</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "order.delivered.heading" }}</div>
               {{template "spacer_16"}}
-              <div style="font-size:12px; line-height:20px; color:#5d5a51;">YOUR ORDER HAS ARRIVED.</div>
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">{{ t "order.delivered.body" }}</div>
               {{template "spacer_22"}}
-              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "DELIVERED" "buyer" .BuyerName)}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" (t "order.delivered.heading") "buyer" .BuyerName)}}
 
               {{template "spacer_24"}}
               {{template "order_items_list" .}}
@@ -12,8 +12,8 @@
               {{template "order_totals" .}}
 
               {{template "spacer_28"}}
-              <div style="font-size:12px; line-height:20px; color:#5d5a51;">HOW DID WE DO? LEAVE A REVIEW.</div>
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">{{ t "order.delivered.review_body" }}</div>
               {{template "spacer_16"}}
-              {{template "cta_button" (dict "url" (printf "https://grbpwr.com/order/%s/%s" .OrderUUID .EmailB64) "label" "LEAVE A REVIEW" "variant" "solid")}}
+              {{template "cta_button" (dict "url" (printf "https://grbpwr.com/order/%s/%s" .OrderUUID .EmailB64) "label" (t "order.delivered.review_cta") "variant" "solid")}}
 
 {{template "email_footer" .}}

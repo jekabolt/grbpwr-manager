@@ -49,5 +49,28 @@
   "common.order.meta.order": "ORDER",
   "common.order.meta.status": "STATUS",
   "common.order.meta.buyer": "BUYER",
-  "common.order.track.label": "TRACK YOUR ORDER"
+  "common.order.track.label": "TRACK YOUR ORDER",
+  "common.signoff.patience": "THANK YOU FOR YOUR PATIENCE — GRBPWR",
+
+  "order.shipped.tag": "SHIPMENT",
+  "order.shipped.heading": "SHIPPED",
+  "order.shipped.body": "ON ITS WAY TO YOU.",
+
+  "order.delivered.tag": "DELIVERY",
+  "order.delivered.heading": "DELIVERED",
+  "order.delivered.body": "YOUR ORDER HAS ARRIVED.",
+  "order.delivered.review_body": "HOW DID WE DO? LEAVE A REVIEW.",
+  "order.delivered.review_cta": "LEAVE A REVIEW",
+
+  "order.cancelled.tag": "ORDER",
+  "order.cancelled.heading": "CANCELLED",
+  "order.cancelled.body": "IF YOU'VE PAID, YOUR REFUND IS ON ITS WAY. ANYTHING UNCLEAR? REACH US BELOW.",
+
+  "order.refund.tag": "REFUND",
+  "order.refund.heading": "REFUND INITIATED",
+  "order.refund.body": "YOUR REFUND IS ON ITS WAY. HOW LONG IT TAKES TO LAND DEPENDS ON YOUR BANK.",
+
+  "order.return.tag": "RETURN",
+  "order.return.heading": "RETURN REQUESTED",
+  "order.return.body": "SEND THE PARCEL BACK TO US. ONCE IT ARRIVES AND WE'VE CHECKED THE ITEMS, WE'LL PROCESS YOUR REFUND."
 }

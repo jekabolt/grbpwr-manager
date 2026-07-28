@@ -1,10 +1,10 @@
-{{template "email_header" (dict "tag" "SHIPMENT" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "order.shipped.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">SHIPPED</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "order.shipped.heading" }}</div>
               {{template "spacer_16"}}
-              <div style="font-size:12px; line-height:20px; color:#5d5a51;">ON ITS WAY TO YOU.</div>
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">{{ t "order.shipped.body" }}</div>
               {{template "spacer_22"}}
-              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "SHIPPED" "buyer" .BuyerName)}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" (t "order.shipped.heading") "buyer" .BuyerName)}}
 
               {{template "spacer_24"}}
               {{template "order_items_list" .}}

@@ -1,12 +1,12 @@
-{{template "email_header" (dict "tag" "ORDER" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "order.cancelled.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">CANCELLED</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "order.cancelled.heading" }}</div>
               {{template "spacer_18"}}
-              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" "CANCELLED" "buyer" .BuyerName)}}
+              {{template "order_meta" (dict "uuid" .OrderUUID "email" .EmailB64 "status" (t "order.cancelled.heading") "buyer" .BuyerName)}}
 
               {{template "spacer_20"}}
               {{template "hairline"}}
               {{template "spacer_18"}}
-              <div style="font-size:13px; line-height:22px; color:#5d5a51;">IF YOU'VE PAID, YOUR REFUND IS ON ITS WAY. ANYTHING UNCLEAR? REACH US BELOW.</div>
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{ t "order.cancelled.body" }}</div>
 
 {{template "email_footer" .}}
