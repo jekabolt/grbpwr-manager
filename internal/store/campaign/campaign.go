@@ -204,14 +204,25 @@ func (s *Store) UpsertEmailCampaign(ctx context.Context, id int, campaign *entit
 }
 
 func syncCampaignVariants(ctx context.Context, db dependency.DB, campaignID int, variants []entity.EmailCampaignVariant) error {
-	var existingIDs []int
-	if err := db.SelectContext(ctx, &existingIDs,
-		`SELECT id FROM email_campaign_variant WHERE campaign_id = ?`, campaignID); err != nil {
+	var existingRows []struct {
+		ID    int    `db:"id"`
+		Label string `db:"label"`
+	}
+	if err := db.SelectContext(ctx, &existingRows,
+		`SELECT id, label FROM email_campaign_variant WHERE campaign_id = ?`, campaignID); err != nil {
 		return fmt.Errorf("list existing campaign variants: %w", err)
 	}
-	existing := make(map[int]struct{}, len(existingIDs))
-	for _, id := range existingIDs {
-		existing[id] = struct{}{}
+	existingIDs := make([]int, 0, len(existingRows))
+	existing := make(map[int]struct{}, len(existingRows))
+	// Variant labels are UNIQUE per campaign, so they are a stable identity. The builder saves a
+	// draft without round-tripping variant ids (every variant arrives with ID==0), so match an
+	// id-less variant to the existing row with the same label and UPDATE it — otherwise a second
+	// save would INSERT a duplicate label and hit the unique constraint.
+	existingByLabel := make(map[string]int, len(existingRows))
+	for _, r := range existingRows {
+		existingIDs = append(existingIDs, r.ID)
+		existing[r.ID] = struct{}{}
+		existingByLabel[r.Label] = r.ID
 	}
 	kept := make(map[int]struct{}, len(variants))
 
@@ -237,7 +248,16 @@ func syncCampaignVariants(ctx context.Context, db dependency.DB, campaignID int,
 			"is_winner":   variant.IsWinner,
 		}
 
-		if variant.ID == 0 {
+		// Resolve the target row: an explicit id, else an existing row with the same (unique)
+		// label, else a fresh insert.
+		targetID := variant.ID
+		if targetID == 0 {
+			if eid, ok := existingByLabel[variant.Label]; ok {
+				targetID = eid
+			}
+		}
+
+		if targetID == 0 {
 			id, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO email_campaign_variant
 					(campaign_id, label, subject_i18n, body, is_winner)
@@ -247,14 +267,15 @@ func syncCampaignVariants(ctx context.Context, db dependency.DB, campaignID int,
 				return fmt.Errorf("insert campaign variant %d: %w", i, err)
 			}
 			kept[id] = struct{}{}
+			existingByLabel[variant.Label] = id
 			continue
 		}
 
-		if _, ok := existing[variant.ID]; !ok {
+		if _, ok := existing[targetID]; !ok {
 			return fmt.Errorf("email campaign variant %d not found on campaign %d: %w",
-				variant.ID, campaignID, sql.ErrNoRows)
+				targetID, campaignID, sql.ErrNoRows)
 		}
-		params["id"] = variant.ID
+		params["id"] = targetID
 		if _, err := db.NamedExecContext(ctx, `
 			UPDATE email_campaign_variant SET
 				label = :label,
@@ -262,9 +283,9 @@ func syncCampaignVariants(ctx context.Context, db dependency.DB, campaignID int,
 				body = :body,
 				is_winner = :is_winner
 			WHERE id = :id AND campaign_id = :campaign_id`, params); err != nil {
-			return fmt.Errorf("update campaign variant %d: %w", variant.ID, err)
+			return fmt.Errorf("update campaign variant %d: %w", targetID, err)
 		}
-		kept[variant.ID] = struct{}{}
+		kept[targetID] = struct{}{}
 	}
 
 	for _, existingID := range existingIDs {
