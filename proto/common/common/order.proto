@@ -21,6 +21,10 @@ message OrderNew {
   int32 shipment_carrier_id = 6;
   string promo_code = 7;
   string currency = 8; // ISO 4217 currency code (e.g., USD, EUR, JPY, CNY, KRW)
+  // locale is the storefront site locale at purchase time (ISO-639-1: en/fr/de/it/ja/zh/ko).
+  // Used to localize the order's transactional emails when the buyer has no explicit account
+  // language. Empty on the admin custom-order path.
+  string locale = 9;
 }
 
 message OrderFull {
@@ -64,6 +68,9 @@ message Order {
   // custom orders only; empty for B2C/storefront orders. Surfaced so a reverse-charge invoice can
   // print the buyer's VAT number, which substantiates the zero-rated intra-community supply.
   string buyer_vat_id = 16;
+  // locale is the storefront site locale captured at purchase (ISO-639-1). Surfaced for the
+  // admin order view. Empty on pre-feature orders and admin custom orders.
+  string locale = 17;
 }
 
 message OrderItem {

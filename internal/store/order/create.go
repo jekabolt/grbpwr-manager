@@ -99,6 +99,7 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 			PromoId:       prId,
 			OrderStatusId: cache.OrderStatusPlaced.Status.Id,
 			GAClientID:    sql.NullString{String: orderNew.GAClientID, Valid: orderNew.GAClientID != ""},
+			Locale:        sql.NullString{String: orderNew.Locale, Valid: orderNew.Locale != ""},
 		}
 
 		err = txStore.insertOrderDetails(ctx, txDB, order, validItemsInsert, shipmentCarrier, shipmentPrice, freeShipping, orderNew)

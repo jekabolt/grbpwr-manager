@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -227,6 +228,7 @@ func ConvertCommonOrderNewToEntity(commonOrder *pb_common.OrderNew) (*entity.Ord
 		ShipmentCarrierId: int(commonOrder.ShipmentCarrierId),
 		PromoCode:         commonOrder.PromoCode,
 		Currency:          commonOrder.Currency,
+		Locale:            localeutil.Canonical(commonOrder.Locale),
 	}, receivePromo
 }
 
@@ -273,6 +275,7 @@ func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, e
 		BuyerLastName:  eOrder.BuyerLastName,
 		VatRegime:      eOrder.VatRegime.String,
 		BuyerVatId:     eOrder.BuyerVatID.String,
+		Locale:         eOrder.Locale.String,
 	}
 	if eOrder.PromoId.Valid {
 		pbOrder.PromoId = int32(eOrder.PromoId.Int32)

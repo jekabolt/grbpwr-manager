@@ -308,8 +308,8 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order, buy
 	// storefront path passes an invalid NullString → NULL.
 	query := `
 	INSERT INTO customer_order
-	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id, vat_rate_pct, vat_amount, buyer_vat_id)
-	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId, :vatRatePct, :vatAmount, :buyerVatId)
+	 (uuid, total_price, total_price_eur, currency, order_status_id, promo_id, ga_client_id, vat_rate_pct, vat_amount, buyer_vat_id, locale)
+	 VALUES (:uuid, :totalPrice, :totalPriceEur, :currency, :orderStatusId, :promoId, :gaClientId, :vatRatePct, :vatAmount, :buyerVatId, :locale)
 	`
 
 	orderRef, err := generateOrderReference()
@@ -338,6 +338,7 @@ func insertOrder(ctx context.Context, db dependency.DB, order *entity.Order, buy
 		"vatRatePct":    vatRatePct,
 		"vatAmount":     vatAmount,
 		"buyerVatId":    buyerVatID,
+		"locale":        order.Locale,
 	})
 	if err != nil {
 		return 0, "", fmt.Errorf("can't insert order: %w", err)

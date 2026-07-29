@@ -38,6 +38,7 @@ type OrderNew struct {
 	Currency           string            `valid:"required,length(3|4)"` // ISO 4217 (3) or USDT (4)
 	CustomShipmentCost *decimal.Decimal  `valid:"-"`                    // optional; when set, overrides carrier price (admin custom orders)
 	GAClientID         string            `valid:"-"`                    // GA4 client ID from browser _ga cookie
+	Locale             string            `valid:"-"`                    // storefront site locale at purchase (ISO-639-1), for email localization
 	// BuyerTier is the loyalty tier code (0/1/2/99) the server resolved for the buyer from the
 	// authenticated storefront access token (0 for guests) — NOT a proto/client field, so it cannot
 	// be spoofed. It drives the server-authoritative purchase block (TierCanPurchase): an order line
@@ -84,6 +85,7 @@ type Order struct {
 	// refunded_amount (and the Stripe charge) twice.
 	ShippingRefunded bool           `db:"shipping_refunded"`
 	GAClientID       sql.NullString `db:"ga_client_id"`
+	Locale           sql.NullString `db:"locale"`
 	// TotalPriceEUR is the order total converted to EUR at ORDER time (order-time FX,
 	// gross of any refund), used ONLY for loyalty qualifying-spend accumulation. It is a
 	// spend snapshot for tier accrual, NOT a financial figure — do not use it in revenue/
