@@ -3,7 +3,7 @@
               <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "tier.rollback.heading" }}</div>
               {{template "spacer_18"}}
               {{if .Name}}<div style="font-size:13px; line-height:22px; color:#0E0E0C;">{{.Name}},</div>{{template "spacer_12"}}{{end}}
-              <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{ tHTML "tier.rollback.body" "Spend" .SpendEUR "Tier" (emph .TierDisplay) }}</div>
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{ tHTML "tier.rollback.body" "Spend" (esc .SpendEUR) "Tier" (emph .TierDisplay) }}</div>
               {{template "spacer_18"}}
               <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{ t "tier.rollback.body2" }}</div>
               {{template "spacer_26"}}

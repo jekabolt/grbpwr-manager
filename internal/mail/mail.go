@@ -264,6 +264,10 @@ func templateFuncs() template.FuncMap {
 		"curLang": func() string { return defaultLocale },
 		"tHTML":   func(key string, _ ...any) template.HTML { return template.HTML(key) },
 		"emph":    func(v any) template.HTML { return template.HTML(fmt.Sprint(v)) },
+		// esc HTML-escapes a value for safe interpolation into a tHTML message WITHOUT the
+		// emphasis span. Every value fed to a tHTML message must go through emph or esc, so a
+		// tHTML message can never inject markup even if a field ever carries HTML metacharacters.
+		"esc": func(v any) template.HTML { return template.HTML(html.EscapeString(fmt.Sprint(v))) },
 	}
 }
 
