@@ -14,9 +14,11 @@ import (
 	httpapi "github.com/jekabolt/grbpwr-manager/internal/api/http"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/campaigndispatch"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
@@ -71,34 +73,36 @@ const defaultTrustProxyHops = 1
 
 // Config represents the global configuration for the service.
 type Config struct {
-	DB                store.Config             `mapstructure:"mysql"`
-	Logger            log.Config               `mapstructure:"logger"`
-	HTTP              httpapi.Config           `mapstructure:"http"`
-	Auth              auth.Config              `mapstructure:"auth"`
-	StorefrontAuth    storefront.Config        `mapstructure:"storefront_auth"`
-	Bucket            bucket.Config            `mapstructure:"bucket"`
-	Mailer            mail.Config              `mapstructure:"mailer"`
-	OrderCleanup      ordercleanup.Config      `mapstructure:"order_cleanup"`
-	DeliverySync      deliverysync.Config      `mapstructure:"delivery_sync"`
-	AfterShip         aftership.Config         `mapstructure:"aftership"`
-	ShippingLabel     shippinglabel.Config     `mapstructure:"shipping_label"`
-	StorefrontCleanup storefrontcleanup.Config `mapstructure:"storefront_cleanup"`
-	TierManagement    tiermanagement.Config    `mapstructure:"tier_management"`
-	OpexMaterialize   opexmaterialize.Config   `mapstructure:"opex_materialize"`
-	Accounting        acctposting.Config       `mapstructure:"accounting"`
-	StripeReconcile   stripereconcile.Config   `mapstructure:"stripe_reconcile"`
-	FxSync            fxsync.Config            `mapstructure:"fx_sync"`
-	Rates             RatesConfig              `mapstructure:"rates"`
-	Security          SecurityConfig           `mapstructure:"security"`
-	JPK               JPKConfig                `mapstructure:"jpk"`
-	StripePayment     stripe.Config            `mapstructure:"stripe_payment"`
-	StripePaymentTest stripe.Config            `mapstructure:"stripe_payment_test"`
-	Revalidation      revalidation.Config      `mapstructure:"revalidation"`
-	GA4               ga4.Config               `mapstructure:"ga4"`
-	GA4MP             ga4mp.Config             `mapstructure:"ga4mp"`
-	GA4Sync           ga4sync.Config           `mapstructure:"ga4_sync"`
-	BigQuery          bq.Config                `mapstructure:"bigquery"`
-	OpenRouter        openrouter.Config        `mapstructure:"openrouter"`
+	DB                 store.Config              `mapstructure:"mysql"`
+	Logger             log.Config                `mapstructure:"logger"`
+	HTTP               httpapi.Config            `mapstructure:"http"`
+	Auth               auth.Config               `mapstructure:"auth"`
+	StorefrontAuth     storefront.Config         `mapstructure:"storefront_auth"`
+	Bucket             bucket.Config             `mapstructure:"bucket"`
+	Mailer             mail.Config               `mapstructure:"mailer"`
+	CampaignDispatch   campaigndispatch.Config   `mapstructure:"campaign_dispatch"`
+	OrderCleanup       ordercleanup.Config       `mapstructure:"order_cleanup"`
+	DeliverySync       deliverysync.Config       `mapstructure:"delivery_sync"`
+	AfterShip          aftership.Config          `mapstructure:"aftership"`
+	ShippingLabel      shippinglabel.Config      `mapstructure:"shipping_label"`
+	StorefrontCleanup  storefrontcleanup.Config  `mapstructure:"storefront_cleanup"`
+	TierManagement     tiermanagement.Config     `mapstructure:"tier_management"`
+	MarketingAggregate marketingaggregate.Config `mapstructure:"marketing_aggregate"`
+	OpexMaterialize    opexmaterialize.Config    `mapstructure:"opex_materialize"`
+	Accounting         acctposting.Config        `mapstructure:"accounting"`
+	StripeReconcile    stripereconcile.Config    `mapstructure:"stripe_reconcile"`
+	FxSync             fxsync.Config             `mapstructure:"fx_sync"`
+	Rates              RatesConfig               `mapstructure:"rates"`
+	Security           SecurityConfig            `mapstructure:"security"`
+	JPK                JPKConfig                 `mapstructure:"jpk"`
+	StripePayment      stripe.Config             `mapstructure:"stripe_payment"`
+	StripePaymentTest  stripe.Config             `mapstructure:"stripe_payment_test"`
+	Revalidation       revalidation.Config       `mapstructure:"revalidation"`
+	GA4                ga4.Config                `mapstructure:"ga4"`
+	GA4MP              ga4mp.Config              `mapstructure:"ga4mp"`
+	GA4Sync            ga4sync.Config            `mapstructure:"ga4_sync"`
+	BigQuery           bq.Config                 `mapstructure:"bigquery"`
+	OpenRouter         openrouter.Config         `mapstructure:"openrouter"`
 }
 
 // LoadConfig loads the configuration from a file and/or environment variables.
@@ -317,6 +321,7 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.from_email", "MAILER_FROM_EMAIL")
 	viper.BindEnv("mailer.from_email_name", "MAILER_FROM_EMAIL_NAME")
 	viper.BindEnv("mailer.reply_to", "MAILER_REPLY_TO")
+	viper.BindEnv("mailer.test_recipients", "MAILER_TEST_RECIPIENTS")
 	viper.BindEnv("mailer.worker_interval", "MAILER_WORKER_INTERVAL")
 	viper.BindEnv("mailer.max_send_attempts", "MAILER_MAX_SEND_ATTEMPTS")
 	viper.BindEnv("mailer.retry_base_interval", "MAILER_RETRY_BASE_INTERVAL")
@@ -325,6 +330,18 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.webhook_secret", "MAILER_WEBHOOK_SECRET")
 	viper.BindEnv("mailer.unsubscribe_base_url", "MAILER_UNSUBSCRIBE_BASE_URL")
 	viper.BindEnv("mailer.unsubscribe_pepper", "MAILER_UNSUBSCRIBE_PEPPER")
+	viper.BindEnv("mailer.resend_requests_per_second", "MAILER_RESEND_REQUESTS_PER_SECOND")
+	viper.BindEnv("mailer.resend_burst", "MAILER_RESEND_BURST")
+	viper.BindEnv("mailer.transactional_reserve_tokens", "MAILER_TRANSACTIONAL_RESERVE_TOKENS")
+
+	// Email campaign dispatcher
+	viper.BindEnv("campaign_dispatch.worker_interval", "CAMPAIGN_DISPATCH_WORKER_INTERVAL")
+	viper.BindEnv("campaign_dispatch.fanout_page_size", "CAMPAIGN_DISPATCH_FANOUT_PAGE_SIZE")
+	viper.BindEnv("campaign_dispatch.batch_size", "CAMPAIGN_DISPATCH_BATCH_SIZE")
+	viper.BindEnv("campaign_dispatch.claim_lease", "CAMPAIGN_DISPATCH_CLAIM_LEASE")
+	viper.BindEnv("campaign_dispatch.max_attempts", "CAMPAIGN_DISPATCH_MAX_ATTEMPTS")
+	viper.BindEnv("campaign_dispatch.retry_base", "CAMPAIGN_DISPATCH_RETRY_BASE")
+	viper.BindEnv("campaign_dispatch.retry_max", "CAMPAIGN_DISPATCH_RETRY_MAX")
 
 	// Order cleanup (stuck Placed orders)
 	viper.BindEnv("order_cleanup.worker_interval", "ORDER_CLEANUP_WORKER_INTERVAL")
@@ -359,6 +376,9 @@ func bindEnvVars() {
 
 	// Storefront cleanup (expired JTI denylist, login challenges, refresh tokens)
 	viper.BindEnv("storefront_cleanup.worker_interval", "STOREFRONT_CLEANUP_WORKER_INTERVAL")
+
+	// Marketing account aggregate (email segmentation behavioral fields)
+	viper.BindEnv("marketing_aggregate.worker_interval", "MARKETING_AGGREGATE_WORKER_INTERVAL")
 
 	// OPEX materialize (book recurring fixed-cost templates into monthly lines)
 	viper.BindEnv("opex_materialize.worker_interval", "OPEX_MATERIALIZE_WORKER_INTERVAL")

@@ -1,0 +1,328 @@
+syntax = "proto3";
+
+package common;
+
+option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
+
+// EmailBlockType identifies the payload carried by an EmailBlock.
+enum EmailBlockType {
+  EMAIL_BLOCK_TYPE_UNKNOWN = 0;
+  EMAIL_BLOCK_TYPE_HEADER = 1;
+  EMAIL_BLOCK_TYPE_IMAGE_LINK = 2;
+  EMAIL_BLOCK_TYPE_RICH_TEXT = 3;
+  EMAIL_BLOCK_TYPE_PRODUCT_CARD = 4;
+  EMAIL_BLOCK_TYPE_PRODUCT_GRID = 5;
+  EMAIL_BLOCK_TYPE_CTA_BUTTON = 6;
+  EMAIL_BLOCK_TYPE_DIVIDER = 7;
+  EMAIL_BLOCK_TYPE_SPACER = 8;
+  EMAIL_BLOCK_TYPE_TWO_COLUMN = 9;
+  EMAIL_BLOCK_TYPE_SOCIAL_LINKS = 10;
+  EMAIL_BLOCK_TYPE_COUNTDOWN = 11;
+  EMAIL_BLOCK_TYPE_VIDEO_THUMB = 12;
+}
+
+// EmailLink is localized link copy used by header-style blocks.
+message EmailLink {
+  string label = 1;
+  string url = 2;
+}
+
+// EmailBlockTranslation is the shared translation superset for every block.
+// Each block type consumes only the fields it needs.
+message EmailBlockTranslation {
+  int32 language_id = 1;
+  string heading = 2;
+  string subheading = 3;
+  string body = 4;
+  string caption = 5;
+  string cta_label = 6;
+  string cta_url = 7;
+  string alt_text = 8;
+  string preheader = 9;
+  repeated EmailLink links = 10;
+}
+
+message EmailHeaderBlock {
+  int32 logo_media_id = 1;
+}
+
+message EmailImageLinkBlock {
+  int32 media_id = 1;
+  string url = 2;
+}
+
+message EmailRichTextBlock {}
+
+message EmailProductCardBlock {
+  int32 product_id = 1;
+}
+
+message EmailProductGridBlock {
+  repeated int32 product_ids = 1;
+  int32 columns = 2;
+}
+
+message EmailCTAButtonBlock {
+  string style = 1;
+  string alignment = 2;
+}
+
+message EmailDividerBlock {
+  string color = 1;
+  int32 height = 2;
+}
+
+message EmailSpacerBlock {
+  int32 height = 1;
+}
+
+message EmailTwoColumnBlock {
+  repeated EmailBlock left = 1;
+  repeated EmailBlock right = 2;
+}
+
+message EmailSocialLink {
+  string network = 1;
+  string url = 2;
+}
+
+message EmailSocialLinksBlock {
+  repeated EmailSocialLink links = 1;
+}
+
+message EmailCountdownBlock {
+  int64 ends_at = 1;
+}
+
+message EmailVideoThumbBlock {
+  int32 media_id = 1;
+  string video_url = 2;
+}
+
+// EmailBlock is an ordered, typed campaign-body block. Exactly the payload that
+// corresponds to type should be populated.
+message EmailBlock {
+  EmailBlockType type = 1;
+  EmailHeaderBlock header = 2;
+  EmailImageLinkBlock image_link = 3;
+  EmailRichTextBlock rich_text = 4;
+  EmailProductCardBlock product_card = 5;
+  EmailProductGridBlock product_grid = 6;
+  EmailCTAButtonBlock cta_button = 7;
+  EmailDividerBlock divider = 8;
+  EmailSpacerBlock spacer = 9;
+  EmailTwoColumnBlock two_column = 10;
+  EmailSocialLinksBlock social_links = 11;
+  EmailCountdownBlock countdown = 12;
+  EmailVideoThumbBlock video_thumb = 13;
+  string background_color = 20;
+  repeated EmailBlockTranslation translations = 21;
+}
+
+enum EmailCampaignTopic {
+  EMAIL_CAMPAIGN_TOPIC_UNKNOWN = 0;
+  EMAIL_CAMPAIGN_TOPIC_NEWSLETTER = 1;
+  EMAIL_CAMPAIGN_TOPIC_NEW_ARRIVALS = 2;
+  EMAIL_CAMPAIGN_TOPIC_EVENTS = 3;
+}
+
+enum EmailCampaignStatus {
+  EMAIL_CAMPAIGN_STATUS_UNKNOWN = 0;
+  EMAIL_CAMPAIGN_STATUS_DRAFT = 1;
+  EMAIL_CAMPAIGN_STATUS_SCHEDULED = 2;
+  EMAIL_CAMPAIGN_STATUS_SENDING = 3;
+  EMAIL_CAMPAIGN_STATUS_PAUSED = 4;
+  EMAIL_CAMPAIGN_STATUS_SENT = 5;
+  EMAIL_CAMPAIGN_STATUS_CANCELLED = 6;
+}
+
+enum ABDimension {
+  AB_DIMENSION_UNKNOWN = 0;
+  AB_DIMENSION_SUBJECT = 1;
+  AB_DIMENSION_CONTENT = 2;
+}
+
+message ABConfig {
+  bool enabled = 1;
+  ABDimension dimension = 2;
+  int32 test_pct = 3;
+  int32 decision_after_minutes = 4;
+  int32 winner_variant_id = 5;
+}
+
+message SubjectTranslation {
+  int32 language_id = 1;
+  string subject = 2;
+}
+
+message EmailCampaignVariant {
+  int32 id = 1;
+  string label = 2;
+  repeated SubjectTranslation subject_i18n = 3;
+  // Empty means inherit the campaign-level body.
+  repeated EmailBlock body = 4;
+  bool is_winner = 5;
+}
+
+message EmailCampaignInsert {
+  string name = 1;
+  EmailCampaignTopic topic = 2;
+  repeated EmailBlock body = 3;
+  string background_color = 4;
+  string from_name = 5;
+  string from_email = 6;
+  string reply_to = 7;
+  int64 schedule_at = 8;
+  ABConfig ab_config = 9;
+  repeated EmailCampaignVariant variants = 10;
+  EmailCampaignStatus status = 11;
+  int32 segment_id = 12;
+}
+
+message EmailCampaignFull {
+  int32 id = 1;
+  string name = 2;
+  EmailCampaignTopic topic = 3;
+  repeated EmailBlock body = 4;
+  string background_color = 5;
+  string from_name = 6;
+  string from_email = 7;
+  string reply_to = 8;
+  int64 schedule_at = 9;
+  ABConfig ab_config = 10;
+  repeated EmailCampaignVariant variants = 11;
+  EmailCampaignStatus status = 12;
+  int32 segment_id = 13;
+  string created_by = 14;
+  int64 created_at = 15;
+  int64 updated_at = 16;
+  int64 sending_started_at = 17;
+  int64 sent_at = 18;
+  int64 audience_snapshot_at = 19;
+  int32 fanout_max_account_id = 20;
+  int32 fanout_cursor_account_id = 21;
+  int64 audience_materialized_at = 22;
+  int32 recipient_count = 23;
+  string dispatch_error = 24;
+}
+
+enum EmailCampaignRecipientStatus {
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_UNKNOWN = 0;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_PENDING = 1;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_SENT = 2;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_FAILED = 3;
+  EMAIL_CAMPAIGN_RECIPIENT_STATUS_SKIPPED = 4;
+}
+
+enum EmailCampaignCohort {
+  EMAIL_CAMPAIGN_COHORT_UNKNOWN = 0;
+  EMAIL_CAMPAIGN_COHORT_AB = 1;
+  EMAIL_CAMPAIGN_COHORT_REMAINDER = 2;
+}
+
+message EmailCampaignDispatchStatus {
+  int32 campaign_id = 1;
+  EmailCampaignStatus status = 2;
+  int64 audience_materialized_at = 3;
+  string dispatch_error = 4;
+  int32 recipient_count = 5;
+  int32 pending = 6;
+  int32 accepted = 7;
+  int32 failed = 8;
+  int32 skipped = 9;
+}
+
+message CampaignMetricCounts {
+  int64 total = 1;
+  int64 pending = 2;
+  int64 sent = 3;
+  int64 failed = 4;
+  int64 skipped = 5;
+  int64 delivered = 6;
+  int64 unique_opened = 7;
+  int64 total_opens = 8;
+  int64 unique_clicked = 9;
+  int64 total_clicks = 10;
+  int64 bounced = 11;
+  int64 complained = 12;
+  int64 unsubscribed = 13;
+}
+
+message CampaignMetricRates {
+  double delivery_rate = 1;
+  double open_rate = 2;
+  double click_rate = 3;
+  double click_to_open_rate = 4;
+  double bounce_rate = 5;
+  double complaint_rate = 6;
+}
+
+message CampaignVariantMetrics {
+  int32 variant_id = 1;
+  string label = 2;
+  CampaignMetricCounts counts = 3;
+  CampaignMetricRates rates = 4;
+}
+
+// Read-only compute-on-read aggregates over email_campaign_recipient.
+message CampaignMetrics {
+  int32 campaign_id = 1;
+  CampaignMetricCounts counts = 2;
+  CampaignMetricRates rates = 3;
+  repeated CampaignVariantMetrics variants = 4;
+}
+
+// Public admin ledger projection. Provider idempotency/claim/hash/render
+// internals are deliberately absent.
+message EmailCampaignRecipient {
+  uint64 id = 1;
+  int32 campaign_id = 2;
+  int32 account_id = 3;
+  string email = 4;
+  int32 language_id = 5;
+  int32 variant_id = 6;
+  EmailCampaignCohort cohort = 7;
+  EmailCampaignRecipientStatus status = 8;
+  int32 attempt_count = 9;
+  string resend_email_id = 10;
+  string error_code = 11;
+  string last_error = 12;
+  int64 next_attempt_at = 13;
+  int64 sent_at = 14;
+  int64 completed_at = 15;
+  int64 created_at = 16;
+  int64 updated_at = 17;
+}
+
+enum SegmentOp {
+  SEGMENT_OP_UNKNOWN = 0;
+  SEGMENT_OP_AND = 1;
+  SEGMENT_OP_OR = 2;
+}
+
+// SegmentNode is either a branch (op + children) or a leaf (field/operator/values).
+message SegmentNode {
+  SegmentOp op = 1;
+  repeated SegmentNode children = 2;
+  string field = 3;
+  string operator = 4;
+  repeated string values = 5;
+}
+
+message SegmentPredicate {
+  SegmentNode root = 1;
+}
+
+message EmailSegment {
+  int32 id = 1;
+  string name = 2;
+  string description = 3;
+  SegmentPredicate predicate = 4;
+  int32 last_count = 5;
+  int64 last_count_at = 6;
+}
+
+message RenderWarning {
+  int32 block_index = 1;
+  string reason = 2;
+}

@@ -641,7 +641,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 		// Lab-dip round journal per colourway (oldest first). The LabDip* scalars on the colourway are
 		// the LATEST round; these are the rounds before it, which the scalars overwrote and which the
-		// journal (0208) is there to keep.
+		// journal (0212) is there to keep.
 		roundRows, err := storeutil.QueryListNamed[entity.ColorwayLabDipRound](ctx, s.DB, `
 			SELECT product_id, round_number, status, submitted_at, decided_at, decided_by,
 			       reject_reason, comment, swatch_media_id, created_at

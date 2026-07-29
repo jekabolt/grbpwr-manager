@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <meta name="x-apple-disable-message-reformatting">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
+  <title>GRBPWR</title>
+  <style>
+    html,body{margin:0!important;padding:0!important;width:100%!important;background-color:#f4f2ec}
+    *{-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%}
+    table,td{border-collapse:collapse!important;mso-table-lspace:0pt!important;mso-table-rspace:0pt!important}
+    img{border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;height:auto;line-height:100%}
+    a{text-decoration:none}
+    a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important}
+    @media only screen and (max-width:600px){
+      .gp-shell{width:100%!important;max-width:100%!important}
+      .gp-stack{display:block!important;width:100%!important;max-width:100%!important}
+      .gp-grid-cell{display:block!important;width:100%!important;max-width:100%!important}
+      .gp-pad{padding-left:24px!important;padding-right:24px!important}
+      .gp-h{font-size:22px!important;line-height:28px!important}
+    }
+    @media (prefers-color-scheme: dark){
+      body,.gp-bg{background-color:#f4f2ec!important}
+      .gp-shell{background-color:#f4f2ec!important}
+    }
+  </style>
+</head>
+<body class="gp-bg" bgcolor="#f4f2ec" style="margin:0;padding:0;width:100%;background-color:#f4f2ec;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;">
+  <div style="display:none!important;visibility:hidden;mso-hide:all;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;color:transparent;"></div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="gp-bg" bgcolor="#f4f2ec" style="width:100%;background-color:#f4f2ec;">
+    <tr>
+      <td align="center" style="padding:24px 0;">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" class="gp-shell" bgcolor="#f4f2ec" style="width:560px;max-width:560px;background-color:#f4f2ec;">
+          <tr><td bgcolor="#ffffff" style="background-color:#ffffff;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr>
+    <td class="gp-pad" align="center" style="padding:22px 40px;">
+      
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center">
+  <tr>
+    <td align="center" bgcolor="#0e0e0c" style="border:1px solid #0e0e0c;background-color:#0e0e0c;mso-padding-alt:13px 24px;">
+      <!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="https://grbpwr.com/archive" style="height:42px;v-text-anchor:middle;width:220px;" arcsize="0%" strokecolor="#0e0e0c" fillcolor="#0e0e0c"><w:anchorlock xmlns:w="urn:schemas-microsoft-com:office:word"/><center style="color:#ffffff;font-family:Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;">EXPLORE</center></v:roundrect><![endif]-->
+      <a href="https://grbpwr.com/archive" style="display:inline-block;padding:13px 24px;color:#ffffff;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;line-height:16px;text-transform:uppercase;">[ EXPLORE &rarr; ]</a>
+    </td>
+  </tr>
+</table>
+
+    </td>
+  </tr>
+</table>
+</td></tr>
+          <tr>
+            <td align="center" bgcolor="#f4f2ec" style="padding:0 24px 28px;background-color:#f4f2ec;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;">
+              
+              <div style="height:36px;line-height:36px;font-size:0;">&nbsp;</div>
+              <div style="border-top:1px solid #DBD8CE;font-size:0;line-height:0;">&nbsp;</div>
+              <div style="height:16px;line-height:16px;font-size:0;">&nbsp;</div>
+
+              <div style="font-size:11px;line-height:19px;color:#9a978c;letter-spacing:0.3px;">
+                NEED HELP? <a href="mailto:customer@grbpwr.com" style="color:#0E0E0C;text-decoration:none;">customer@grbpwr.com</a><br>
+                <a href="https://grbpwr.com/faq" style="color:#9a978c;text-decoration:underline;">FAQ</a> &middot; <a href="https://grbpwr.com/aftersale-services" style="color:#9a978c;text-decoration:underline;">AFTER-SALE SERVICES</a>
+              </div>
+
+              <div style="height:12px;line-height:12px;font-size:0;">&nbsp;</div>
+              <div style="font-size:11px;line-height:18px;color:#0E0E0C;letter-spacing:1px;">
+                <a href="https://substack.com/@grbpwr" style="color:#0E0E0C;text-decoration:none;">SS</a> &middot;
+                <a href="https://github.com/grbpwr/" style="color:#0E0E0C;text-decoration:none;">GH</a> &middot;
+                <a href="https://www.instagram.com/grbpwr_/" style="color:#0E0E0C;text-decoration:none;">IG</a> &middot;
+                <a href="https://t.me/grbpwr/" style="color:#0E0E0C;text-decoration:none;">TG</a>
+              </div>
+
+              
+              <div style="height:12px;line-height:12px;font-size:0;">&nbsp;</div>
+              <div style="font-size:10px;line-height:16px;color:#b3aea2;">
+                if you no longer wish to receive email updates, <a href="https://grbpwr.com/unsubscribe/golden" style="color:#b3aea2;text-decoration:underline;">unsubscribe</a>.
+              </div>
+              
+
+              <div style="height:16px;line-height:16px;font-size:0;">&nbsp;</div>
+              <div style="font-size:10px;line-height:16px;color:#b3aea2;letter-spacing:0.3px;">
+                GRBPWR LIMITED &middot; 167&ndash;169 GREAT PORTLAND STREET, LONDON W1W 5PF &middot; NO.17015705
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

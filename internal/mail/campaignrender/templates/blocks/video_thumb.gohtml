@@ -1,0 +1,15 @@
+{{define "block_video_thumb"}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr>
+    <td align="center" style="padding:0;">
+      {{if .VideoThumb.URL}}<a href="{{.VideoThumb.URL}}" style="display:block;position:relative;color:#ffffff;">{{end}}
+      <div style="position:relative;display:block;">
+        <img src="{{.VideoThumb.Poster.URL}}" width="{{.VideoThumb.Poster.Width}}" height="{{.VideoThumb.Poster.Height}}" alt="{{.Copy.AltText}}" style="display:block;width:100%;max-width:560px;height:auto;border:0;">
+        <span style="position:absolute;left:50%;top:50%;margin-left:-26px;margin-top:-26px;width:52px;height:52px;border-radius:26px;background-color:#0E0E0C;color:#FFFFFF;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:22px;line-height:52px;text-align:center;">&#9654;</span>
+      </div>
+      {{if .VideoThumb.URL}}</a>{{end}}
+    </td>
+  </tr>
+  {{if .Copy.Caption}}<tr><td class="gp-pad" style="padding:10px 40px 20px;color:#9a978c;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:11px;line-height:17px;text-align:center;">{{.Copy.Caption}}</td></tr>{{end}}
+</table>
+{{end}}

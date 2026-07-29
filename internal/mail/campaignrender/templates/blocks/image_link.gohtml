@@ -1,0 +1,12 @@
+{{define "block_image_link"}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr>
+    <td align="center">
+      {{if .ImageLink.URL}}<a href="{{.ImageLink.URL}}" style="display:block;">{{end}}
+      <img src="{{.ImageLink.Media.URL}}" width="{{.ImageLink.Media.Width}}" height="{{.ImageLink.Media.Height}}" alt="{{.Copy.AltText}}" style="display:block;width:100%;max-width:560px;height:auto;border:0;">
+      {{if .ImageLink.URL}}</a>{{end}}
+    </td>
+  </tr>
+  {{if .Copy.Caption}}<tr><td class="gp-pad" style="padding:10px 40px 20px;color:#9a978c;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:11px;line-height:17px;text-align:center;">{{.Copy.Caption}}</td></tr>{{end}}
+</table>
+{{end}}
