@@ -10,6 +10,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/segment"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
@@ -25,9 +26,68 @@ type fanoutCampaignRow struct {
 }
 
 type fanoutCandidateRow struct {
-	AccountID  int    `db:"account_id"`
-	Email      string `db:"email"`
-	LanguageID int    `db:"language_id"`
+	AccountID       int            `db:"account_id"`
+	Email           string         `db:"email"`
+	EmailLanguage   sql.NullString `db:"email_language"`
+	DefaultLanguage sql.NullString `db:"default_language"`
+}
+
+// resolveFanoutLanguageID picks a recipient's campaign language_id with the SAME precedence as
+// the transactional mailer: explicit account email_language → default_language → the default
+// language. Codes are canonicalized before lookup (localeutil maps admin-side cn/kr and the
+// stored zh/ko to the same key) so those recipients resolve to their language instead of
+// silently falling back — the pre-feature SQL join (l.code = sa.default_language) never matched
+// zh/ko and ignored email_language entirely.
+func resolveFanoutLanguageID(
+	row fanoutCandidateRow,
+	byCanonical map[string]int,
+	defaultID int,
+) int {
+	if row.EmailLanguage.Valid {
+		if id, ok := byCanonical[localeutil.Canonical(row.EmailLanguage.String)]; ok {
+			return id
+		}
+	}
+	if row.DefaultLanguage.Valid {
+		if id, ok := byCanonical[localeutil.Canonical(row.DefaultLanguage.String)]; ok {
+			return id
+		}
+	}
+	return defaultID
+}
+
+// loadCampaignLanguageMap builds canonical-locale-code → language_id (cn→zh/kr→ko folded in) plus
+// the default language id (smallest is_default, else smallest id so language_id is never NULL —
+// the recipient column is NOT NULL).
+func loadCampaignLanguageMap(ctx context.Context, db dependency.DB) (map[string]int, int, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		ID        int    `db:"id"`
+		Code      string `db:"code"`
+		IsDefault bool   `db:"is_default"`
+	}](ctx, db, `SELECT id, code, is_default FROM language`, map[string]any{})
+	if err != nil {
+		return nil, 0, err
+	}
+	byCanonical := make(map[string]int, len(rows))
+	defaultID, minID := 0, 0
+	for _, r := range rows {
+		if c := localeutil.Canonical(r.Code); c != "" {
+			byCanonical[c] = r.ID
+		}
+		if r.IsDefault && (defaultID == 0 || r.ID < defaultID) {
+			defaultID = r.ID
+		}
+		if minID == 0 || r.ID < minID {
+			minID = r.ID
+		}
+	}
+	if defaultID == 0 {
+		defaultID = minID
+	}
+	if defaultID == 0 {
+		return nil, 0, errors.New("no languages configured for campaign fanout")
+	}
+	return byCanonical, defaultID, nil
 }
 
 // AdvanceEmailCampaignFanout materializes one keyset page and advances its
@@ -86,20 +146,24 @@ func (s *Store) AdvanceEmailCampaignFanout(
 		candidates, err := storeutil.QueryListNamed[fanoutCandidateRow](ctx, rep.DB(), `
 			SELECT sa.id AS account_id,
 			       sa.email,
-			       COALESCE(l.id, (
-			           SELECT dl.id FROM language dl
-			           WHERE dl.is_default = 1 ORDER BY dl.id LIMIT 1
-			       )) AS language_id
+			       sa.email_language,
+			       sa.default_language
 			FROM storefront_account sa
 			LEFT JOIN marketing_account_aggregate maa ON maa.account_id = sa.id
 			LEFT JOIN email_suppression es ON es.email = sa.email
-			LEFT JOIN language l ON l.code = sa.default_language
 			WHERE `+where+`
 			  AND sa.id > :cursor AND sa.id <= :max_account_id
 			ORDER BY sa.id
 			LIMIT :limit`, params)
 		if err != nil {
 			return fmt.Errorf("select campaign %d audience page: %w", campaign.ID, err)
+		}
+
+		// Resolve each recipient's language_id in Go (email_language → default_language →
+		// default), so the explicit sticky choice wins and cn/kr↔zh/ko map correctly.
+		langByCanonical, defaultLangID, err := loadCampaignLanguageMap(ctx, rep.DB())
+		if err != nil {
+			return fmt.Errorf("load languages for campaign %d fanout: %w", campaign.ID, err)
 		}
 
 		variantRows, err := storeutil.QueryListNamed[struct {
@@ -134,7 +198,7 @@ func (s *Store) AdvanceEmailCampaignFanout(
 				campaign.ID,
 				candidate.AccountID,
 				email,
-				candidate.LanguageID,
+				resolveFanoutLanguageID(candidate, langByCanonical, defaultLangID),
 				assignment.VariantID,
 				string(assignment.Cohort),
 			})
