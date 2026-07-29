@@ -131,7 +131,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail())
+	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail(), a.db.StorefrontAccount())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't connect to mailer",
 			slog.String("err", err.Error()),

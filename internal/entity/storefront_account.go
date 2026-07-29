@@ -13,8 +13,8 @@ import (
 type StorefrontShoppingPreference string
 
 const (
-	StorefrontShoppingMale   = StorefrontShoppingPreference(Male)
-	StorefrontShoppingFemale = StorefrontShoppingPreference(Female)
+	StorefrontShoppingMale                                = StorefrontShoppingPreference(Male)
+	StorefrontShoppingFemale                              = StorefrontShoppingPreference(Female)
 	StorefrontShoppingAll    StorefrontShoppingPreference = "all"
 )
 
@@ -155,12 +155,15 @@ type StorefrontAccount struct {
 	SubscribeEvents      bool                         `db:"subscribe_events"`
 	DefaultCountry       sql.NullString               `db:"default_country"`
 	DefaultLanguage      sql.NullString               `db:"default_language"`
-	Status               StorefrontAccountStatus      `db:"status"`
-	TierUpgradeDate      sql.NullTime                 `db:"tier_upgrade_date"`
-	NextReviewDate       sql.NullTime                 `db:"next_review_date"`
-	DeletedAt            sql.NullTime                 `db:"deleted_at"`
-	CreatedAt            time.Time                    `db:"created_at"`
-	UpdatedAt            time.Time                    `db:"updated_at"`
+	// EmailLanguage is the explicit, sticky email-language preference (ISO-639-1), set only
+	// by a deliberate user choice — distinct from DefaultLanguage (auto-derived from locale).
+	EmailLanguage   sql.NullString          `db:"email_language"`
+	Status          StorefrontAccountStatus `db:"status"`
+	TierUpgradeDate sql.NullTime            `db:"tier_upgrade_date"`
+	NextReviewDate  sql.NullTime            `db:"next_review_date"`
+	DeletedAt       sql.NullTime            `db:"deleted_at"`
+	CreatedAt       time.Time               `db:"created_at"`
+	UpdatedAt       time.Time               `db:"updated_at"`
 }
 
 // Tier returns the account_tier as a typed value.

@@ -185,6 +185,24 @@ func (s *Store) GetAccountByEmail(ctx context.Context, email string) (*entity.St
 	return &a, nil
 }
 
+// GetRecipientLanguage returns the (email_language, default_language) for the account with
+// this email — both empty when unset or the account does not exist. Used by the mailer to
+// resolve the recipient's email language without loading the full account row.
+func (s *Store) GetRecipientLanguage(ctx context.Context, email string) (emailLang, defaultLang string, err error) {
+	q := `SELECT COALESCE(email_language, '') AS email_language, COALESCE(default_language, '') AS default_language FROM storefront_account WHERE email = :email`
+	row, err := storeutil.QueryNamedOne[struct {
+		EmailLang   string `db:"email_language"`
+		DefaultLang string `db:"default_language"`
+	}](ctx, s.DB, q, map[string]any{"email": email})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("get recipient language: %w", err)
+	}
+	return row.EmailLang, row.DefaultLang, nil
+}
+
 // GetOrCreateAccountByEmail returns an account row, creating a shell row if needed.
 func (s *Store) GetOrCreateAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error) {
 	a, err := s.GetAccountByEmail(ctx, email)

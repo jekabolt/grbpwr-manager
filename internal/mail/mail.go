@@ -130,6 +130,7 @@ type Mailer struct {
 	cancel         context.CancelFunc
 	templates      map[templateName]*template.Template
 	catalog        *Catalog
+	langRepo       dependency.RecipientLanguage
 	wg             sync.WaitGroup
 	tracker        health.Tracker
 	budget         *ResendBudget
@@ -149,11 +150,11 @@ func addAuthHeader(token string) resend.RequestEditorFn {
 	}
 }
 
-func New(c *Config, mailRepository dependency.Mail) (dependency.Mailer, error) {
-	return new(c, mailRepository)
+func New(c *Config, mailRepository dependency.Mail, langRepo dependency.RecipientLanguage) (dependency.Mailer, error) {
+	return new(c, mailRepository, langRepo)
 }
 
-func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
+func new(c *Config, mailRepository dependency.Mail, langRepo dependency.RecipientLanguage) (*Mailer, error) {
 	// Validate the configuration
 	if c.APIKey == "" || c.FromEmail == "" || c.FromName == "" {
 		var missing []string
@@ -201,6 +202,7 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 		c:              c,
 		templates:      make(map[templateName]*template.Template),
 		catalog:        catalog,
+		langRepo:       langRepo,
 		budget: NewResendBudget(
 			c.ResendRequestsPerSecond,
 			c.ResendBurst,
@@ -324,7 +326,7 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 
 	// Resolve the recipient locale and bind a localizer. With localization disabled
 	// (the default) this is always the default locale, so output matches pre-feature EN.
-	loc := m.catalog.Localizer(m.resolveLocale(normalizedTo))
+	loc := m.catalog.Localizer(m.resolveLocale(context.Background(), normalizedTo, ""))
 
 	subject, err := m.subject(tn, loc, data)
 	if err != nil {

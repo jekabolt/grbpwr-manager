@@ -280,6 +280,12 @@ type (
 		ListOrdersFullByBuyerEmailPaged(ctx context.Context, email string, limit, offset int) ([]entity.OrderFull, int, error)
 	}
 
+	// RecipientLanguage is the narrow read the mailer uses to resolve a recipient's email
+	// language. Satisfied by StorefrontAccount.
+	RecipientLanguage interface {
+		GetRecipientLanguage(ctx context.Context, email string) (emailLang, defaultLang string, err error)
+	}
+
 	// StorefrontAccount handles customer account login, sessions, and saved addresses.
 	StorefrontAccount interface {
 		InsertLoginChallenge(ctx context.Context, email, otpHash, magicHash string, expiresAt time.Time) error
@@ -287,6 +293,9 @@ type (
 		ConsumeLoginChallengeMagic(ctx context.Context, magicPlain, magicPepper string) (string, error)
 		GetOrCreateAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error)
 		GetAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error)
+		// GetRecipientLanguage returns (email_language, default_language) for the account with
+		// this email — both empty when unset or absent. Used by the mailer's language resolver.
+		GetRecipientLanguage(ctx context.Context, email string) (emailLang, defaultLang string, err error)
 		UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference entity.StorefrontShoppingPreference, phone sql.NullString, subscribeNewsletter, subscribeNewArrivals, subscribeEvents bool, defaultCountry, defaultLanguage sql.NullString) error
 		InsertRefreshToken(ctx context.Context, accountID int, tokenHash, familyID string, expiresAt time.Time) (int64, error)
 		// RotateRefreshToken validates the current refresh token, revokes it, inserts a new one in the same family, and returns the new raw token and account email.

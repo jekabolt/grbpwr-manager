@@ -22,7 +22,7 @@ func createTestMailer(t *testing.T) *Mailer {
 	}
 
 	mailDBMock := mocks.NewMockMail(t)
-	mailer, err := new(config, mailDBMock)
+	mailer, err := new(config, mailDBMock, nil)
 	require.NoError(t, err)
 
 	return mailer
@@ -38,7 +38,7 @@ func TestNew(t *testing.T) {
 		}
 
 		mailDBMock := mocks.NewMockMail(t)
-		mailer, err := New(config, mailDBMock)
+		mailer, err := New(config, mailDBMock, nil)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, mailer)
@@ -52,7 +52,7 @@ func TestNew(t *testing.T) {
 		}
 
 		mailDBMock := mocks.NewMockMail(t)
-		mailer, err := New(config, mailDBMock)
+		mailer, err := New(config, mailDBMock, nil)
 
 		assert.Error(t, err)
 		assert.Nil(t, mailer)
@@ -67,7 +67,7 @@ func TestNew(t *testing.T) {
 		}
 
 		mailDBMock := mocks.NewMockMail(t)
-		mailer, err := New(config, mailDBMock)
+		mailer, err := New(config, mailDBMock, nil)
 
 		assert.Error(t, err)
 		assert.Nil(t, mailer)
