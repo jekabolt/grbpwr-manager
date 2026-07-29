@@ -49,6 +49,7 @@ func normalizeLocale(code string) string {
 type Catalog struct {
 	bundle *i18n.Bundle
 	locs   map[string]*i18n.Localizer
+	en     *i18n.Localizer // explicit en fallback (see Loc.localize)
 }
 
 func newCatalog() (*Catalog, error) {
@@ -61,37 +62,49 @@ func newCatalog() (*Catalog, error) {
 	}
 	c := &Catalog{bundle: bundle, locs: make(map[string]*i18n.Localizer, len(supportedLocales))}
 	for _, code := range supportedLocales {
-		// Fallback chain: requested locale → en. go-i18n tries tags left→right.
 		c.locs[code] = i18n.NewLocalizer(bundle, code, defaultLocale)
 	}
+	c.en = c.locs[defaultLocale]
 	return c, nil
 }
 
 // Localizer returns a locale-bound translator, clamping code to a supported locale.
 func (c *Catalog) Localizer(code string) *Loc {
 	code = normalizeLocale(code)
-	return &Loc{code: code, l: c.locs[code]}
+	return &Loc{code: code, l: c.locs[code], en: c.en}
 }
 
 // Loc is a locale-bound translator handed to templates and the subject builder.
 type Loc struct {
 	code string
 	l    *i18n.Localizer
+	en   *i18n.Localizer // explicit en fallback
 }
 
 // Code returns the resolved locale code (e.g. "ja").
 func (t *Loc) Code() string { return t.code }
 
-// S returns the localized string for key, interpolating data (a map or struct).
-// A missing key falls back to en (via the localizer chain) and finally to the key
-// itself — never empty, never a hard error — so a missing translation degrades to
-// English rather than breaking the email.
-func (t *Loc) S(key string, data any) string {
-	s, err := t.l.Localize(&i18n.LocalizeConfig{MessageID: key, TemplateData: data})
-	if err != nil || s == "" {
-		return key
+// localize renders cfg in the bound locale, then falls back to en, then to the message id.
+// The explicit en fallback is load-bearing: go-i18n's built-in tag fallback does NOT resolve
+// from en when a key is missing in an empty/partial non-en locale file (it errors instead),
+// so without this a non-en email would leak raw keys. This makes any untranslated key degrade
+// to English.
+func (t *Loc) localize(cfg *i18n.LocalizeConfig) string {
+	if s, err := t.l.Localize(cfg); err == nil && s != "" {
+		return s
 	}
-	return s
+	if t.en != nil && t.en != t.l {
+		if s, err := t.en.Localize(cfg); err == nil && s != "" {
+			return s
+		}
+	}
+	return cfg.MessageID
+}
+
+// S returns the localized string for key, interpolating data (a map or struct). A missing
+// key degrades to en, then to the key itself — never empty, never a hard error.
+func (t *Loc) S(key string, data any) string {
+	return t.localize(&i18n.LocalizeConfig{MessageID: key, TemplateData: data})
 }
 
 // Plural returns the localized CLDR-pluralized string for key given count n.
@@ -101,11 +114,7 @@ func (t *Loc) Plural(key string, n int, data map[string]any) string {
 		data = map[string]any{}
 	}
 	data["Count"] = n
-	s, err := t.l.Localize(&i18n.LocalizeConfig{MessageID: key, TemplateData: data, PluralCount: n})
-	if err != nil || s == "" {
-		return key
-	}
-	return s
+	return t.localize(&i18n.LocalizeConfig{MessageID: key, TemplateData: data, PluralCount: n})
 }
 
 // pairsToMap turns alternating key/value template args into a map, mirroring the
