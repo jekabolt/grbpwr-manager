@@ -48,9 +48,15 @@ var darkPalette = palette{
 }
 
 // darkBackgroundLuminance is the WCAG relative-luminance threshold below which a
-// background is treated as dark. ~0.4 sits comfortably between mid greys:
-// #808080 (~0.22) is dark, #f4f2ec (~0.89) is light.
-const darkBackgroundLuminance = 0.4
+// background is treated as dark (→ light text). It is the crossover point where the
+// two palettes' Text colors give equal contrast: solving
+// (L+0.05)/(Lᵈᵃʳᵏ+0.05) = (Lˡⁱᵍʰᵗ+0.05)/(L+0.05) for the light Text #0E0E0C
+// (lum ≈ 0.0033) and dark Text #f4f2ec (lum ≈ 0.887) yields L ≈ 0.173. Above it, dark
+// text is the more legible choice — so a mid grey like #999 (lum ≈ 0.318) correctly
+// gets dark text (~6.9:1) instead of light text (~2.5:1). A higher cutoff (the old 0.4)
+// pushed that whole mid-tone band to unreadable light text. (palette_test.go sweeps the
+// grey range to prove newPalette always picks the higher-contrast text at this value.)
+const darkBackgroundLuminance = 0.176
 
 // newPalette selects the foreground token set for a resolved background color.
 // bg is expected to be a #rgb or #rrggbb string (safeColor guarantees this);

@@ -218,10 +218,11 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 
 // uploadRawImageObj stores an image whose bytes must survive verbatim — an animated GIF —
 // instead of re-encoding it to WebP, which would flatten the animation to a single frame.
-// The raw payload is uploaded once and all three media variants (full / compressed / thumbnail)
-// point at that one object, so the animation plays everywhere the media is shown, including
-// campaign emails (which read the compressed URL). Dimensions come from the GIF header; the
-// blurhash placeholder is derived from the first frame and is best-effort.
+// The raw payload is uploaded once and used for BOTH the full-size and compressed variants
+// (campaign emails read the compressed URL, so the animation is preserved there). The list
+// thumbnail is a re-encoded, resized STATIC first frame so the media library doesn't fetch a
+// multi-MB animation per grid cell. Dimensions come from the GIF header; the blurhash is
+// derived from that first frame and is best-effort.
 func (b *Bucket) uploadRawImageObj(ctx context.Context, raw []byte, ct ContentType, folder, imageName string) (*pb_common.MediaFull, error) {
 	cfg, err := gif.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
@@ -230,19 +231,32 @@ func (b *Bucket) uploadRawImageObj(ctx context.Context, raw []byte, ct ContentTy
 	if cfg.Width > maxImageDimension || cfg.Height > maxImageDimension {
 		return nil, fmt.Errorf("image dimensions %dx%d exceed maximum allowed %dpx", cfg.Width, cfg.Height, maxImageDimension)
 	}
+	// Enforce the same decompression-bomb budget as the WebP path (checkImagePixelBudget):
+	// a small, highly-compressed GIF can declare a huge canvas and force gif.Decode to
+	// allocate a first-frame buffer of Width×Height bytes.
+	if int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return nil, fmt.Errorf("image too large: %dx%d exceeds %d-pixel limit", cfg.Width, cfg.Height, maxImagePixels)
+	}
 
 	firstFrame, err := gif.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode GIF: %w", err)
 	}
 
-	url, err := b.uploadImageToBucket(ctx, bytes.NewReader(raw), folder, fmt.Sprintf("%s-%s", imageName, "og"), ct)
+	rawURL, err := b.uploadImageToBucket(ctx, bytes.NewReader(raw), folder, fmt.Sprintf("%s-%s", imageName, "og"), ct)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload GIF to bucket: %w", err)
 	}
-	info := &pb_common.MediaInfo{MediaUrl: url, Width: int32(cfg.Width), Height: int32(cfg.Height)}
+	full := &pb_common.MediaInfo{MediaUrl: rawURL, Width: int32(cfg.Width), Height: int32(cfg.Height)}
 
-	h, err := getBlurHash(resizeImage(firstFrame, 1080))
+	thumbImg := resizeImage(firstFrame, 1080)
+	thumbnail, err := b.uploadSingleImage(ctx, thumbImg, 90, folder, fmt.Sprintf("%s-%s", imageName, "thumb"))
+	if err != nil {
+		b.cleanupUploadedVariants(full)
+		return nil, fmt.Errorf("failed to upload GIF thumbnail: %w", err)
+	}
+
+	h, err := getBlurHash(thumbImg)
 	if err != nil {
 		// The blurhash is a decorative placeholder; a GIF whose first frame won't
 		// blur-hash should still upload. Store an empty hash rather than failing.
@@ -252,29 +266,29 @@ func (b *Bucket) uploadRawImageObj(ctx context.Context, raw []byte, ct ContentTy
 	}
 
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
-		FullSizeMediaURL:   url,
+		FullSizeMediaURL:   rawURL,
 		FullSizeWidth:      cfg.Width,
 		FullSizeHeight:     cfg.Height,
-		CompressedMediaURL: url,
+		CompressedMediaURL: rawURL,
 		CompressedWidth:    cfg.Width,
 		CompressedHeight:   cfg.Height,
-		ThumbnailMediaURL:  url,
-		ThumbnailWidth:     cfg.Width,
-		ThumbnailHeight:    cfg.Height,
+		ThumbnailMediaURL:  thumbnail.MediaUrl,
+		ThumbnailWidth:     int(thumbnail.Width),
+		ThumbnailHeight:    int(thumbnail.Height),
 		BlurHash:           sql.NullString{String: h, Valid: h != ""},
 	})
 	if err != nil {
-		// The object is in S3 but no row references it: clean it up.
-		b.cleanupUploadedVariants(info)
+		// The objects are in S3 but no row references them: clean them up.
+		b.cleanupUploadedVariants(full, thumbnail)
 		return nil, fmt.Errorf("failed to add media to db: %w", err)
 	}
 
 	return &pb_common.MediaFull{
 		Id: int32(mediaId),
 		Media: &pb_common.MediaItem{
-			FullSize:   info,
-			Compressed: info,
-			Thumbnail:  info,
+			FullSize:   full,
+			Compressed: full,
+			Thumbnail:  thumbnail,
 			Blurhash:   h,
 		},
 	}, nil

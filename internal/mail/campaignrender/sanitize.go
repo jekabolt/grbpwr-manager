@@ -60,7 +60,12 @@ func safeURL(value string) string {
 	if value == "" {
 		return ""
 	}
-	if parsed, err := url.Parse(value); err != nil || parsed.Scheme == "" {
+	// Decide whether the admin typed a scheme. A "scheme" containing a dot is not a real
+	// URL scheme (https/mailto/… have none) — it's a host:port the admin typed without a
+	// scheme, e.g. "grbpwr.com:8443/sale", which url.Parse otherwise reads as scheme
+	// "grbpwr.com" and we'd drop. javascript:/data: have no dot, so they still fall
+	// through unchanged and are rejected by the switch below.
+	if parsed, err := url.Parse(value); err != nil || parsed.Scheme == "" || strings.Contains(parsed.Scheme, ".") {
 		if strings.Contains(value, "@") && !strings.ContainsAny(value, "/ :") {
 			value = "mailto:" + value
 		} else {

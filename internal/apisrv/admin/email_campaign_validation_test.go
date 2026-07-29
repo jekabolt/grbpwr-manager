@@ -62,3 +62,61 @@ func TestValidateEmailCampaignABDecisionDelay(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateEmailCampaignVariantLabelsUnique guards the fix for the silent-data-loss
+// path: two variants sharing a label would both resolve to one row in the store's id-less
+// "resolve by label" sync (last-writer-wins), and the DB unique constraint never fires
+// because the two UPDATEs touch the same row. Validation must reject duplicates up front.
+func TestValidateEmailCampaignVariantLabelsUnique(t *testing.T) {
+	campaign := func(labels ...string) *pb_common.EmailCampaignInsert {
+		vs := make([]*pb_common.EmailCampaignVariant, 0, len(labels))
+		for _, l := range labels {
+			vs = append(vs, &pb_common.EmailCampaignVariant{Label: l})
+		}
+		c := &pb_common.EmailCampaignInsert{
+			Name:     "Label uniqueness",
+			Topic:    pb_common.EmailCampaignTopic_EMAIL_CAMPAIGN_TOPIC_EVENTS,
+			Variants: vs,
+		}
+		// Multiple variants require an A/B config (a non-A/B campaign is capped at one
+		// variant by an earlier rule). CONTENT dimension avoids the distinct-subjects
+		// check so the label check is what we exercise.
+		if len(labels) > 1 {
+			c.AbConfig = &pb_common.ABConfig{
+				Enabled:              true,
+				Dimension:            pb_common.ABDimension_AB_DIMENSION_CONTENT,
+				TestPct:              20,
+				DecisionAfterMinutes: 30,
+			}
+		}
+		return c
+	}
+	tests := []struct {
+		name   string
+		labels []string
+		valid  bool
+	}{
+		{name: "distinct", labels: []string{"A", "B"}, valid: true},
+		{name: "single", labels: []string{"A"}, valid: true},
+		{name: "duplicate", labels: []string{"A", "A"}},
+		// Trimmed collision: " A" and "A" are the same label after TrimSpace.
+		{name: "duplicate after trim", labels: []string{"A", " A"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateEmailCampaign(campaign(tt.labels...))
+			if tt.valid {
+				if err != nil {
+					t.Fatalf("labels %v rejected: %v", tt.labels, err)
+				}
+				return
+			}
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("labels %v status = %v, want InvalidArgument: %v", tt.labels, status.Code(err), err)
+			}
+			if !strings.Contains(status.Convert(err).Message(), "unique") {
+				t.Fatalf("labels %v message = %v, want a uniqueness message", tt.labels, err)
+			}
+		})
+	}
+}

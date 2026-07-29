@@ -246,13 +246,23 @@ func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {
 			}
 		}
 	}
+	seenLabels := make(map[string]struct{}, len(in.Variants))
 	for i, variant := range in.Variants {
 		if variant == nil {
 			return status.Errorf(codes.InvalidArgument, "variant %d is required", i)
 		}
-		if strings.TrimSpace(variant.Label) == "" || len(variant.Label) > 8 {
+		label := strings.TrimSpace(variant.Label)
+		if label == "" || len(variant.Label) > 8 {
 			return status.Errorf(codes.InvalidArgument, "variant %d label must be 1..8 characters", i)
 		}
+		// Labels must be unique within a campaign (enforced by the DB unique index too).
+		// Reject duplicates here so the store's id-less "resolve by label" never silently
+		// collapses two same-labelled variants onto one row (last-writer-wins data loss),
+		// and so the client gets a clear message instead of the store's opaque error.
+		if _, dup := seenLabels[label]; dup {
+			return status.Errorf(codes.InvalidArgument, "variant labels must be unique: %q is used more than once", label)
+		}
+		seenLabels[label] = struct{}{}
 	}
 	return nil
 }
