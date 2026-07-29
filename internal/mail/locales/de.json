@@ -1,1 +1,151 @@
-{}
+{
+  "order.confirmed.subject": "Bestellung {{.OrderID}} bestätigt",
+  "order.shipped.subject": "Bestellung {{.OrderID}} versandt",
+  "order.delivered.subject": "Bestellung {{.OrderID}} zugestellt",
+  "order.cancelled.subject": "Bestellung {{.OrderID}} storniert",
+  "order.refund.subject": "Bestellung {{.OrderID}} — Rückerstattung eingeleitet",
+  "order.return.subject": "Bestellung {{.OrderID}} — Rückgabe angefordert",
+
+  "account.login.subject": "Ihr Anmeldecode",
+  "subscriber.welcome.subject": "Willkommen bei GRBPWR",
+  "stock.back.subject": "Ihr Artikel von der Warteliste ist wieder verfügbar",
+  "promo.code.subject": "Ihr Promo-Code",
+
+  "tier.upgrade.subject": "Ihre GRBPWR-Stufe",
+  "tier.downgrade.subject": "Ihre GRBPWR-Stufe",
+  "tier.reminder.subject": "Behalten Sie Ihre GRBPWR-Stufe",
+  "tier.rollback.subject": "Ihre GRBPWR-Stufe wurde angepasst",
+  "tier.firstpurchase.subject": "Danke von GRBPWR",
+  "unsubscribe.confirm.subject": "Sie wurden abgemeldet",
+  "birthday.subject": "Ein Geschenk von GRBPWR",
+  "event.invite.subject": "Sie sind eingeladen",
+  "hacker.invite.subject": "Ihre GRBPWR HACKER Einladung",
+
+  "order.confirmed.tag": "BESTELLUNG",
+  "order.confirmed.heading": "BESTELLUNG BESTÄTIGT",
+  "order.confirmed.body": "WIR HABEN IHRE BESTELLUNG ERHALTEN UND BEREITEN SIE VOR. WIR MELDEN UNS, SOBALD SIE VERSANDT WIRD.",
+  "order.confirmed.status": "BESTÄTIGT",
+
+  "account.login.tag": "ANMELDUNG",
+  "account.login.heading": "ANMELDEN",
+  "account.login.body": "VERWENDEN SIE DEN CODE UNTEN ODER DEN BUTTON, UM DIE ANMELDUNG ABZUSCHLIESSEN. NICHT ANGEFORDERT? IGNORIEREN SIE DIESE E-MAIL — ES PASSIERT NICHTS.",
+  "account.login.code_label": "BESTÄTIGUNGSCODE",
+  "account.login.cta": "ANMELDEN",
+
+  "common.footer.help": "HILFE BENÖTIGT?",
+  "common.footer.faq": "FAQ",
+  "common.footer.aftersale": "KUNDENDIENST",
+  "common.footer.unsub_pre": "wenn Sie keine E-Mail-Updates mehr erhalten möchten,",
+  "common.footer.unsub_word": "abmelden",
+
+  "common.order.items.label": "ARTIKEL",
+  "common.order.items.size": "GRÖSSE",
+  "common.order.items.qty": "MENGE",
+  "common.order.totals.subtotal": "ZWISCHENSUMME",
+  "common.order.totals.shipping": "VERSAND",
+  "common.order.totals.free": "KOSTENLOS",
+  "common.order.totals.discount": "RABATT",
+  "common.order.totals.total": "GESAMT",
+  "common.order.meta.order": "BESTELLUNG",
+  "common.order.meta.status": "STATUS",
+  "common.order.meta.buyer": "KÄUFER",
+  "common.order.track.label": "BESTELLUNG VERFOLGEN",
+  "common.signoff.patience": "DANKE FÜR IHRE GEDULD — GRBPWR",
+
+  "order.shipped.tag": "VERSAND",
+  "order.shipped.heading": "VERSANDT",
+  "order.shipped.body": "AUF DEM WEG ZU IHNEN.",
+
+  "order.delivered.tag": "ZUSTELLUNG",
+  "order.delivered.heading": "ZUGESTELLT",
+  "order.delivered.body": "IHRE BESTELLUNG IST ANGEKOMMEN.",
+  "order.delivered.review_body": "WIE WAR ES? HINTERLASSEN SIE EINE BEWERTUNG.",
+  "order.delivered.review_cta": "BEWERTUNG ABGEBEN",
+
+  "order.cancelled.tag": "BESTELLUNG",
+  "order.cancelled.heading": "STORNIERT",
+  "order.cancelled.body": "FALLS SIE BEZAHLT HABEN, IST IHRE RÜCKERSTATTUNG UNTERWEGS. ETWAS UNKLAR? KONTAKTIEREN SIE UNS UNTEN.",
+
+  "order.refund.tag": "RÜCKERSTATTUNG",
+  "order.refund.heading": "RÜCKERSTATTUNG EINGELEITET",
+  "order.refund.body": "IHRE RÜCKERSTATTUNG IST UNTERWEGS. WIE LANGE SIE DAUERT, HÄNGT VON IHRER BANK AB.",
+
+  "order.return.tag": "RÜCKGABE",
+  "order.return.heading": "RÜCKGABE ANGEFORDERT",
+  "order.return.body": "SENDEN SIE DAS PAKET AN UNS ZURÜCK. SOBALD ES EINTRIFFT UND WIR DIE ARTIKEL GEPRÜFT HABEN, BEARBEITEN WIR IHRE RÜCKERSTATTUNG.",
+
+  "common.cta.view_account": "KONTO ANZEIGEN",
+
+  "tier.thanks.tag": "DANKE",
+  "tier.thanks.heading": "DANKE",
+  "tier.thanks.body": "IHRE ERSTE BESTELLUNG BEI GRBPWR IST DA. WILLKOMMEN BEI {{.Tier}} — DER BEGINN EINES OFFENEN, FORTLAUFENDEN PROZESSES.",
+
+  "tier.downgrade.tag": "STUFE",
+  "tier.downgrade.heading": "STUFEN-UPDATE",
+  "tier.downgrade.body": "IHRE MITGLIEDSCHAFT WURDE VON {{.From}} AUF {{.To}} GEÄNDERT, DA DIE ANRECHENBAREN AUSGABEN DER LETZTEN 12 MONATE DIE SCHWELLE NICHT ERREICHT HABEN.",
+  "tier.downgrade.body2": "GEBEN SIE IM NÄCHSTEN ZYKLUS AUS, UM WIEDER AUFZUSTEIGEN. SONST ÄNDERT SICH NICHTS.",
+
+  "common.cta.shop": "SHOP",
+
+  "tier.upgrade.tag": "STUFE",
+  "tier.upgrade.heading": "STUFE FREIGESCHALTET",
+  "tier.upgrade.heading_backfill": "IHRE STUFE",
+  "tier.upgrade.body_reached": "SIE HABEN {{.Tier}} ERREICHT.",
+  "tier.upgrade.body_backfill": "IM RAHMEN DES STARTS UNSERES MITGLIEDSCHAFTSPROGRAMMS WURDE IHR KONTO AUF {{.Tier}} EINGESTUFT.",
+  "tier.upgrade.spend_label": "ANRECHENBARE AUSGABEN (12 MON.)",
+  "tier.upgrade.maintain_label": "ZU HALTEN BIS",
+
+  "tier.reminder.tag": "ERINNERUNG",
+  "tier.reminder.heading": "STUFE BEHALTEN",
+  "tier.reminder.body": "IHRE {{.Tier}}-MITGLIEDSCHAFT WIRD AM {{.Date}} ÜBERPRÜFT.",
+  "tier.reminder.body2_threshold": "IHRE AKTUELLEN ANRECHENBAREN AUSGABEN BETRAGEN €{{.Spend}}. HALTEN SIE SIE BEI €{{.Threshold}} ODER DARÜBER, UM DIESE STUFE ZU BEHALTEN.",
+  "tier.reminder.body2": "IHRE AKTUELLEN ANRECHENBAREN AUSGABEN BETRAGEN €{{.Spend}}.",
+
+  "tier.rollback.tag": "STUFE",
+  "tier.rollback.heading": "STUFE ANGEPASST",
+  "tier.rollback.body": "NACH EINER RÜCKERSTATTUNG WURDEN IHRE ANRECHENBAREN AUSGABEN DER LETZTEN 12 MONATE AUF €{{.Spend}} NEU BERECHNET. IHRE MITGLIEDSCHAFT IST JETZT {{.Tier}}.",
+  "tier.rollback.body2": "DIES IST EINE AUTOMATISCHE ANPASSUNG, UM IHRE STUFE KORREKT ZU HALTEN. MELDEN SIE SICH JEDERZEIT, FALLS ETWAS NICHT STIMMT.",
+
+  "common.cta.shop_now": "JETZT SHOPPEN",
+  "common.cta.view_product": "PRODUKT ANSEHEN",
+  "common.cta.email_preferences": "E-MAIL-EINSTELLUNGEN",
+
+  "subscriber.welcome.tag": "NEWSLETTER",
+  "subscriber.welcome.heading": "WILLKOMMEN",
+  "subscriber.welcome.body": "SIE STEHEN AUF DER LISTE. WIR MELDEN UNS, WENN ES SICH LOHNT — NEUE RELEASES, KOLLABORATIONEN UND NOTIZEN AUS UNSEREM OFFENEN PROZESS. SONST NICHTS.",
+
+  "promo.code.tag": "GESCHENKKARTE",
+  "promo.code.heading": "GESCHENKKARTE",
+  "promo.code.body": "DANKE FÜR IHREN EINKAUF.",
+  "promo.code.card_label": "KARTENNUMMER",
+  "promo.code.value_label": "WERT",
+  "promo.code.redeem": "LÖSEN SIE SIE AN DER KASSE EIN — GEBEN SIE DIE KARTENNUMMER IM PROMO-FELD EIN.",
+
+  "stock.back.tag": "NACHSCHUB",
+  "stock.back.heading": "WIEDER VERFÜGBAR",
+  "stock.back.status_line": "STATUS: VERFÜGBAR → DAS TEIL VON IHRER WARTELISTE",
+  "stock.back.item_label": "ARTIKEL",
+  "stock.back.size_label": "GRÖSSE",
+  "stock.back.scarcity": "DER BESTAND IST BEGRENZT UND WIR RESERVIEREN IHN NICHT — WER ZUERST KOMMT, MAHLT ZUERST.",
+
+  "unsubscribe.confirm.tag": "E-MAIL",
+  "unsubscribe.confirm.heading": "ABGEMELDET",
+  "unsubscribe.confirm.body": "SIE WURDEN VON UNSEREN MARKETING-E-MAILS ABGEMELDET. TRANSAKTIONSNACHRICHTEN ZU IHREN BESTELLUNGEN UND IHREM KONTO ERHALTEN SIE WEITERHIN.",
+  "unsubscribe.confirm.body2": "MEINUNG GEÄNDERT? AKTUALISIEREN SIE IHRE EINSTELLUNGEN JEDERZEIT IN IHREM KONTO.",
+
+  "birthday.tag": "GESCHENK",
+  "birthday.heading": "ALLES GUTE ZUM GEBURTSTAG",
+  "birthday.body": "EINE KLEINE AUFMERKSAMKEIT VON UNS ZUM EHRENTAG.",
+  "birthday.code_label": "IHR CODE",
+
+  "event.invite.tag": "EINLADUNG",
+  "event.invite.heading_default": "SIE SIND EINGELADEN",
+  "event.invite.cta_default": "RSVP",
+
+  "hacker.invite.tag": "ZUGANG",
+  "hacker.invite.heading": "GRBPWR HACKER",
+  "hacker.invite.body": "SIE WURDEN ZU <span style=\"color:#0E0E0C;\">GRBPWR HACKER</span> EINGELADEN — EXKLUSIVER ZUGANG AUF EINLADUNG ZU RELEASES UND STÜCKEN, DIE NICHT IM ÖFFENTLICHEN KATALOG ERSCHEINEN.",
+  "hacker.invite.body2": "DIESER LINK IST EINMALIG UND LÄUFT AM {{.Date}} AB.",
+  "hacker.invite.cta": "ZUGANG SICHERN",
+  "hacker.invite.fallback_link": "FALLS DER BUTTON NICHT FUNKTIONIERT, ÖFFNEN SIE DIESEN LINK:"
+}

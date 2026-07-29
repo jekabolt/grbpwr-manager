@@ -1,1 +1,151 @@
-{}
+{
+  "order.confirmed.subject": "订单 {{.OrderID}} 已确认",
+  "order.shipped.subject": "订单 {{.OrderID}} 已发货",
+  "order.delivered.subject": "订单 {{.OrderID}} 已送达",
+  "order.cancelled.subject": "订单 {{.OrderID}} 已取消",
+  "order.refund.subject": "订单 {{.OrderID}} — 退款已启动",
+  "order.return.subject": "订单 {{.OrderID}} — 已申请退货",
+
+  "account.login.subject": "你的登录验证码",
+  "subscriber.welcome.subject": "欢迎加入 GRBPWR",
+  "stock.back.subject": "你候补的单品已重新到货",
+  "promo.code.subject": "你的优惠码",
+
+  "tier.upgrade.subject": "你的 GRBPWR 会员等级",
+  "tier.downgrade.subject": "你的 GRBPWR 会员等级",
+  "tier.reminder.subject": "保住你的 GRBPWR 会员等级",
+  "tier.rollback.subject": "你的 GRBPWR 会员等级已调整",
+  "tier.firstpurchase.subject": "来自 GRBPWR 的感谢",
+  "unsubscribe.confirm.subject": "你已取消订阅",
+  "birthday.subject": "来自 GRBPWR 的礼物",
+  "event.invite.subject": "诚邀你的到来",
+  "hacker.invite.subject": "你的 GRBPWR HACKER 邀请",
+
+  "order.confirmed.tag": "订单",
+  "order.confirmed.heading": "订单已确认",
+  "order.confirmed.body": "我们已收到你的订单，正在为你备货。发货时会通知你。",
+  "order.confirmed.status": "已确认",
+
+  "account.login.tag": "验证",
+  "account.login.heading": "登录",
+  "account.login.body": "使用下方验证码或按钮完成登录。并非你本人操作？忽略这封邮件即可 — 不会有任何影响。",
+  "account.login.code_label": "验证码",
+  "account.login.cta": "登录",
+
+  "common.footer.help": "需要帮助？",
+  "common.footer.faq": "FAQ",
+  "common.footer.aftersale": "售后服务",
+  "common.footer.unsub_pre": "如果你不想再收到邮件更新，",
+  "common.footer.unsub_word": "取消订阅",
+
+  "common.order.items.label": "商品",
+  "common.order.items.size": "尺码",
+  "common.order.items.qty": "数量",
+  "common.order.totals.subtotal": "小计",
+  "common.order.totals.shipping": "运费",
+  "common.order.totals.free": "免费",
+  "common.order.totals.discount": "折扣",
+  "common.order.totals.total": "合计",
+  "common.order.meta.order": "订单",
+  "common.order.meta.status": "状态",
+  "common.order.meta.buyer": "买家",
+  "common.order.track.label": "查询订单物流",
+  "common.signoff.patience": "感谢你的耐心等待 — GRBPWR",
+
+  "order.shipped.tag": "物流",
+  "order.shipped.heading": "已发货",
+  "order.shipped.body": "正在送往你的路上。",
+
+  "order.delivered.tag": "配送",
+  "order.delivered.heading": "已送达",
+  "order.delivered.body": "你的订单已送达。",
+  "order.delivered.review_body": "体验如何？留下你的评价。",
+  "order.delivered.review_cta": "写评价",
+
+  "order.cancelled.tag": "订单",
+  "order.cancelled.heading": "已取消",
+  "order.cancelled.body": "如你已付款，退款正在处理中。有任何疑问？通过下方联系我们。",
+
+  "order.refund.tag": "退款",
+  "order.refund.heading": "退款已启动",
+  "order.refund.body": "退款正在处理中。到账时间取决于你的银行。",
+
+  "order.return.tag": "退货",
+  "order.return.heading": "退货已申请",
+  "order.return.body": "请将包裹寄回给我们。收到并完成验货后，我们将为你处理退款。",
+
+  "common.cta.view_account": "查看账户",
+
+  "tier.thanks.tag": "感谢",
+  "tier.thanks.heading": "谢谢你",
+  "tier.thanks.body": "你在 GRBPWR 的首笔订单已确认。欢迎来到 {{.Tier}} — 一段开放且持续的旅程由此开始。",
+
+  "tier.downgrade.tag": "会员等级",
+  "tier.downgrade.heading": "等级更新",
+  "tier.downgrade.body": "由于过去 12 个月的有效消费未达到门槛，你的会员等级已从 {{.From}} 调整为 {{.To}}。",
+  "tier.downgrade.body2": "在下个周期继续消费即可回到原等级。其他一切保持不变。",
+
+  "common.cta.shop": "选购",
+
+  "tier.upgrade.tag": "会员等级",
+  "tier.upgrade.heading": "等级已解锁",
+  "tier.upgrade.heading_backfill": "你的等级",
+  "tier.upgrade.body_reached": "你已达到 {{.Tier}}。",
+  "tier.upgrade.body_backfill": "作为会员计划上线的一部分，你的账户已被设定为 {{.Tier}}。",
+  "tier.upgrade.spend_label": "有效消费（12 个月）",
+  "tier.upgrade.maintain_label": "维持期限",
+
+  "tier.reminder.tag": "提醒",
+  "tier.reminder.heading": "保住你的等级",
+  "tier.reminder.body": "你的 {{.Tier}} 会员资格将于 {{.Date}} 进行审核。",
+  "tier.reminder.body2_threshold": "当前有效消费为 €{{.Spend}}。保持在 €{{.Threshold}} 或以上即可维持当前等级。",
+  "tier.reminder.body2": "当前有效消费为 €{{.Spend}}。",
+
+  "tier.rollback.tag": "会员等级",
+  "tier.rollback.heading": "等级已调整",
+  "tier.rollback.body": "退款后，你过去 12 个月的有效消费已重新核算为 €{{.Spend}}。你当前的会员等级为 {{.Tier}}。",
+  "tier.rollback.body2": "这是为确保等级准确而进行的自动调整。如有任何疑问，随时联系我们。",
+
+  "common.cta.shop_now": "立即选购",
+  "common.cta.view_product": "查看单品",
+  "common.cta.email_preferences": "邮件偏好设置",
+
+  "subscriber.welcome.tag": "订阅",
+  "subscriber.welcome.heading": "欢迎",
+  "subscriber.welcome.body": "你已加入名单。只有值得你关注的消息我们才会联系你 — 新品发售、联名合作，以及来自我们开放过程的记录。仅此而已。",
+
+  "promo.code.tag": "礼品卡",
+  "promo.code.heading": "礼品卡",
+  "promo.code.body": "感谢你的购买。",
+  "promo.code.card_label": "卡号",
+  "promo.code.value_label": "面值",
+  "promo.code.redeem": "结账时使用 — 在优惠码栏中输入卡号即可。",
+
+  "stock.back.tag": "补货",
+  "stock.back.heading": "重新到货",
+  "stock.back.status_line": "状态：有货 → 你候补的单品",
+  "stock.back.item_label": "单品",
+  "stock.back.size_label": "尺码",
+  "stock.back.scarcity": "库存有限且不作保留 — 先到先得。",
+
+  "unsubscribe.confirm.tag": "邮件",
+  "unsubscribe.confirm.heading": "已取消订阅",
+  "unsubscribe.confirm.body": "你已从我们的营销邮件名单中移除。你仍会收到与订单和账户相关的通知邮件。",
+  "unsubscribe.confirm.body2": "改变主意了？随时可在账户中更新你的偏好设置。",
+
+  "birthday.tag": "礼物",
+  "birthday.heading": "生日快乐",
+  "birthday.body": "一份小心意，为你庆祝这一天。",
+  "birthday.code_label": "你的优惠码",
+
+  "event.invite.tag": "邀请",
+  "event.invite.heading_default": "诚邀你的到来",
+  "event.invite.cta_default": "回复出席",
+
+  "hacker.invite.tag": "专属权限",
+  "hacker.invite.heading": "GRBPWR HACKER",
+  "hacker.invite.body": "你受邀加入 <span style=\"color:#0E0E0C;\">GRBPWR HACKER</span> — 通过邀请才能进入，独享不会出现在公开目录中的发售与单品。",
+  "hacker.invite.body2": "此链接仅可使用一次，将于 {{.Date}} 失效。",
+  "hacker.invite.cta": "领取权限",
+  "hacker.invite.fallback_link": "如果按钮无法使用，请打开此链接："
+}

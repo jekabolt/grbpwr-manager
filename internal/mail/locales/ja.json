@@ -1,1 +1,151 @@
-{}
+{
+  "order.confirmed.subject": "ご注文 {{.OrderID}} を承りました",
+  "order.shipped.subject": "ご注文 {{.OrderID}} を発送しました",
+  "order.delivered.subject": "ご注文 {{.OrderID}} をお届けしました",
+  "order.cancelled.subject": "ご注文 {{.OrderID}} をキャンセルしました",
+  "order.refund.subject": "ご注文 {{.OrderID}} — 返金手続きを開始しました",
+  "order.return.subject": "ご注文 {{.OrderID}} — 返品を受け付けました",
+
+  "account.login.subject": "サインインコード",
+  "subscriber.welcome.subject": "GRBPWR へようこそ",
+  "stock.back.subject": "お待ちのアイテムが再入荷しました",
+  "promo.code.subject": "プロモコードのご案内",
+
+  "tier.upgrade.subject": "GRBPWR ティア",
+  "tier.downgrade.subject": "GRBPWR ティア",
+  "tier.reminder.subject": "GRBPWR ティアの維持について",
+  "tier.rollback.subject": "GRBPWR ティアを調整しました",
+  "tier.firstpurchase.subject": "GRBPWR より感謝を込めて",
+  "unsubscribe.confirm.subject": "配信を停止しました",
+  "birthday.subject": "GRBPWR からの贈り物",
+  "event.invite.subject": "ご招待",
+  "hacker.invite.subject": "GRBPWR HACKER へのご招待",
+
+  "order.confirmed.tag": "注文",
+  "order.confirmed.heading": "注文確定",
+  "order.confirmed.body": "ご注文を承り、準備を進めています。発送の際に改めてお知らせします。",
+  "order.confirmed.status": "確定",
+
+  "account.login.tag": "認証",
+  "account.login.heading": "サインイン",
+  "account.login.body": "以下のコード、またはボタンからサインインを完了してください。お心当たりがない場合は、このメールを無視してください。何も起こりません。",
+  "account.login.code_label": "認証コード",
+  "account.login.cta": "サインイン",
+
+  "common.footer.help": "お困りですか？",
+  "common.footer.faq": "FAQ",
+  "common.footer.aftersale": "アフターサービス",
+  "common.footer.unsub_pre": "今後メールの配信をご希望でない場合は、",
+  "common.footer.unsub_word": "配信停止",
+
+  "common.order.items.label": "商品",
+  "common.order.items.size": "サイズ",
+  "common.order.items.qty": "数量",
+  "common.order.totals.subtotal": "小計",
+  "common.order.totals.shipping": "配送料",
+  "common.order.totals.free": "無料",
+  "common.order.totals.discount": "割引",
+  "common.order.totals.total": "合計",
+  "common.order.meta.order": "注文番号",
+  "common.order.meta.status": "ステータス",
+  "common.order.meta.buyer": "ご購入者",
+  "common.order.track.label": "配送状況を確認",
+  "common.signoff.patience": "お待ちいただきありがとうございます — GRBPWR",
+
+  "order.shipped.tag": "発送",
+  "order.shipped.heading": "発送完了",
+  "order.shipped.body": "お客様のもとへ向かっています。",
+
+  "order.delivered.tag": "配達",
+  "order.delivered.heading": "お届け完了",
+  "order.delivered.body": "ご注文の品が届きました。",
+  "order.delivered.review_body": "いかがでしたか？レビューをお寄せください。",
+  "order.delivered.review_cta": "レビューを書く",
+
+  "order.cancelled.tag": "注文",
+  "order.cancelled.heading": "キャンセル済み",
+  "order.cancelled.body": "お支払い済みの場合、返金手続きを進めています。ご不明な点は下記よりお問い合わせください。",
+
+  "order.refund.tag": "返金",
+  "order.refund.heading": "返金手続き開始",
+  "order.refund.body": "返金手続きを進めています。着金までの日数はご利用の金融機関により異なります。",
+
+  "order.return.tag": "返品",
+  "order.return.heading": "返品受付",
+  "order.return.body": "商品を弊社までご返送ください。到着後、内容を確認のうえ返金手続きを行います。",
+
+  "common.cta.view_account": "アカウントを見る",
+
+  "tier.thanks.tag": "感謝",
+  "tier.thanks.heading": "ありがとうございます",
+  "tier.thanks.body": "GRBPWR での初めてのご注文を承りました。{{.Tier}} へようこそ — オープンで続いていくプロセスの始まりです。",
+
+  "tier.downgrade.tag": "ティア",
+  "tier.downgrade.heading": "ティア更新",
+  "tier.downgrade.body": "過去12か月の対象購入額が基準に達しなかったため、メンバーシップが {{.From}} から {{.To}} へ変更されました。",
+  "tier.downgrade.body2": "次のサイクルで購入額を重ねれば、再び上位ティアに戻れます。その他に変更はありません。",
+
+  "common.cta.shop": "ショップへ",
+
+  "tier.upgrade.tag": "ティア",
+  "tier.upgrade.heading": "ティア解放",
+  "tier.upgrade.heading_backfill": "あなたのティア",
+  "tier.upgrade.body_reached": "{{.Tier}} に到達しました。",
+  "tier.upgrade.body_backfill": "メンバーシッププログラムの開始にあたり、お客様のアカウントは {{.Tier}} に設定されました。",
+  "tier.upgrade.spend_label": "対象購入額（12か月）",
+  "tier.upgrade.maintain_label": "維持期限",
+
+  "tier.reminder.tag": "リマインダー",
+  "tier.reminder.heading": "ティアの維持",
+  "tier.reminder.body": "{{.Tier}} メンバーシップは {{.Date}} に見直しの対象となります。",
+  "tier.reminder.body2_threshold": "現在の対象購入額は €{{.Spend}} です。このティアを維持するには €{{.Threshold}} 以上を保ってください。",
+  "tier.reminder.body2": "現在の対象購入額は €{{.Spend}} です。",
+
+  "tier.rollback.tag": "ティア",
+  "tier.rollback.heading": "ティア調整",
+  "tier.rollback.body": "返金に伴い、過去12か月の対象購入額を €{{.Spend}} に再計算しました。現在のメンバーシップは {{.Tier}} です。",
+  "tier.rollback.body2": "これはティアを正確に保つための自動調整です。ご不明な点があればいつでもお問い合わせください。",
+
+  "common.cta.shop_now": "今すぐ購入",
+  "common.cta.view_product": "商品を見る",
+  "common.cta.email_preferences": "メール設定",
+
+  "subscriber.welcome.tag": "購読",
+  "subscriber.welcome.heading": "ようこそ",
+  "subscriber.welcome.body": "リストへの登録が完了しました。新作、コラボレーション、オープンなプロセスからのお知らせなど、価値ある情報がある時だけご連絡します。それ以外はお送りしません。",
+
+  "promo.code.tag": "ギフトカード",
+  "promo.code.heading": "ギフトカード",
+  "promo.code.body": "ご購入ありがとうございます。",
+  "promo.code.card_label": "カード番号",
+  "promo.code.value_label": "金額",
+  "promo.code.redeem": "お会計時にご利用いただけます — プロモ欄にカード番号をご入力ください。",
+
+  "stock.back.tag": "再入荷",
+  "stock.back.heading": "再入荷",
+  "stock.back.status_line": "ステータス：入荷済 → お待ちのアイテム",
+  "stock.back.item_label": "アイテム",
+  "stock.back.size_label": "サイズ",
+  "stock.back.scarcity": "在庫は限られており、お取り置きはできません — 先着順です。",
+
+  "unsubscribe.confirm.tag": "メール",
+  "unsubscribe.confirm.heading": "配信停止済み",
+  "unsubscribe.confirm.body": "マーケティングメールの配信を停止しました。ご注文やアカウントに関する取引メールは引き続きお送りします。",
+  "unsubscribe.confirm.body2": "お気持ちが変わりましたか？アカウントからいつでも設定を変更できます。",
+
+  "birthday.tag": "ギフト",
+  "birthday.heading": "お誕生日おめでとうございます",
+  "birthday.body": "特別な日に、ささやかな贈り物を。",
+  "birthday.code_label": "あなたのコード",
+
+  "event.invite.tag": "招待",
+  "event.invite.heading_default": "ご招待",
+  "event.invite.cta_default": "出欠を回答",
+
+  "hacker.invite.tag": "アクセス",
+  "hacker.invite.heading": "GRBPWR HACKER",
+  "hacker.invite.body": "<span style=\"color:#0E0E0C;\">GRBPWR HACKER</span> にご招待します — 一般カタログには載らないリリースやアイテムへの、招待制アクセスです。",
+  "hacker.invite.body2": "このリンクは一度きりで、{{.Date}} に有効期限が切れます。",
+  "hacker.invite.cta": "アクセスを取得",
+  "hacker.invite.fallback_link": "ボタンが機能しない場合は、こちらのリンクを開いてください："
+}

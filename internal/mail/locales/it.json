@@ -1,1 +1,151 @@
-{}
+{
+  "order.confirmed.subject": "Ordine {{.OrderID}} confermato",
+  "order.shipped.subject": "Ordine {{.OrderID}} spedito",
+  "order.delivered.subject": "Ordine {{.OrderID}} consegnato",
+  "order.cancelled.subject": "Ordine {{.OrderID}} annullato",
+  "order.refund.subject": "Ordine {{.OrderID}} — rimborso avviato",
+  "order.return.subject": "Ordine {{.OrderID}} — reso richiesto",
+
+  "account.login.subject": "Il tuo codice di accesso",
+  "subscriber.welcome.subject": "Benvenuto in GRBPWR",
+  "stock.back.subject": "L'articolo della tua lista d'attesa è di nuovo disponibile",
+  "promo.code.subject": "Il tuo codice promozionale",
+
+  "tier.upgrade.subject": "Il tuo livello GRBPWR",
+  "tier.downgrade.subject": "Il tuo livello GRBPWR",
+  "tier.reminder.subject": "Mantieni il tuo livello GRBPWR",
+  "tier.rollback.subject": "Il tuo livello GRBPWR è stato modificato",
+  "tier.firstpurchase.subject": "Grazie da GRBPWR",
+  "unsubscribe.confirm.subject": "La tua iscrizione è stata annullata",
+  "birthday.subject": "Un regalo da GRBPWR",
+  "event.invite.subject": "Sei invitato",
+  "hacker.invite.subject": "Il tuo invito GRBPWR HACKER",
+
+  "order.confirmed.tag": "ORDINE",
+  "order.confirmed.heading": "ORDINE CONFERMATO",
+  "order.confirmed.body": "ABBIAMO RICEVUTO IL TUO ORDINE E LO STIAMO PREPARANDO. TI SCRIVEREMO QUANDO VERRÀ SPEDITO.",
+  "order.confirmed.status": "CONFERMATO",
+
+  "account.login.tag": "ACCESSO",
+  "account.login.heading": "ACCEDI",
+  "account.login.body": "USA IL CODICE QUI SOTTO, O IL PULSANTE, PER COMPLETARE L'ACCESSO. NON HAI RICHIESTO TU? IGNORA QUESTA EMAIL — NON SUCCEDE NULLA.",
+  "account.login.code_label": "CODICE DI VERIFICA",
+  "account.login.cta": "ACCEDI",
+
+  "common.footer.help": "SERVE AIUTO?",
+  "common.footer.faq": "FAQ",
+  "common.footer.aftersale": "SERVIZI POST-VENDITA",
+  "common.footer.unsub_pre": "se non desideri più ricevere aggiornamenti via email,",
+  "common.footer.unsub_word": "annulla l'iscrizione",
+
+  "common.order.items.label": "ARTICOLI",
+  "common.order.items.size": "TAGLIA",
+  "common.order.items.qty": "QTÀ",
+  "common.order.totals.subtotal": "SUBTOTALE",
+  "common.order.totals.shipping": "SPEDIZIONE",
+  "common.order.totals.free": "GRATIS",
+  "common.order.totals.discount": "SCONTO",
+  "common.order.totals.total": "TOTALE",
+  "common.order.meta.order": "ORDINE",
+  "common.order.meta.status": "STATO",
+  "common.order.meta.buyer": "ACQUIRENTE",
+  "common.order.track.label": "TRACCIA IL TUO ORDINE",
+  "common.signoff.patience": "GRAZIE PER LA TUA PAZIENZA — GRBPWR",
+
+  "order.shipped.tag": "SPEDIZIONE",
+  "order.shipped.heading": "SPEDITO",
+  "order.shipped.body": "IN VIAGGIO VERSO DI TE.",
+
+  "order.delivered.tag": "CONSEGNA",
+  "order.delivered.heading": "CONSEGNATO",
+  "order.delivered.body": "IL TUO ORDINE È ARRIVATO.",
+  "order.delivered.review_body": "COM'È ANDATA? LASCIA UNA RECENSIONE.",
+  "order.delivered.review_cta": "LASCIA UNA RECENSIONE",
+
+  "order.cancelled.tag": "ORDINE",
+  "order.cancelled.heading": "ANNULLATO",
+  "order.cancelled.body": "SE HAI PAGATO, IL TUO RIMBORSO È IN ARRIVO. QUALCOSA NON È CHIARO? CONTATTACI QUI SOTTO.",
+
+  "order.refund.tag": "RIMBORSO",
+  "order.refund.heading": "RIMBORSO AVVIATO",
+  "order.refund.body": "IL TUO RIMBORSO È IN ARRIVO. I TEMPI DI ACCREDITO DIPENDONO DALLA TUA BANCA.",
+
+  "order.return.tag": "RESO",
+  "order.return.heading": "RESO RICHIESTO",
+  "order.return.body": "RISPEDISCICI IL PACCO. UNA VOLTA ARRIVATO E CONTROLLATI GLI ARTICOLI, PROCEDEREMO CON IL TUO RIMBORSO.",
+
+  "common.cta.view_account": "VISUALIZZA ACCOUNT",
+
+  "tier.thanks.tag": "GRAZIE",
+  "tier.thanks.heading": "GRAZIE",
+  "tier.thanks.body": "IL TUO PRIMO ORDINE CON GRBPWR È ARRIVATO. BENVENUTO IN {{.Tier}} — L'INIZIO DI UN PROCESSO APERTO E CONTINUO.",
+
+  "tier.downgrade.tag": "LIVELLO",
+  "tier.downgrade.heading": "AGGIORNAMENTO LIVELLO",
+  "tier.downgrade.body": "LA TUA MEMBERSHIP È PASSATA DA {{.From}} A {{.To}} POICHÉ LA SPESA VALIDA DEGLI ULTIMI 12 MESI NON HA RAGGIUNTO LA SOGLIA.",
+  "tier.downgrade.body2": "SPENDI NEL PROSSIMO CICLO PER RISALIRE. NIENT'ALTRO CAMBIA.",
+
+  "common.cta.shop": "ACQUISTA",
+
+  "tier.upgrade.tag": "LIVELLO",
+  "tier.upgrade.heading": "LIVELLO SBLOCCATO",
+  "tier.upgrade.heading_backfill": "IL TUO LIVELLO",
+  "tier.upgrade.body_reached": "HAI RAGGIUNTO {{.Tier}}.",
+  "tier.upgrade.body_backfill": "NELL'AMBITO DEL LANCIO DEL NOSTRO PROGRAMMA MEMBERSHIP, IL TUO ACCOUNT È STATO ASSEGNATO A {{.Tier}}.",
+  "tier.upgrade.spend_label": "SPESA VALIDA (12 MESI)",
+  "tier.upgrade.maintain_label": "MANTIENI ENTRO",
+
+  "tier.reminder.tag": "PROMEMORIA",
+  "tier.reminder.heading": "MANTIENI IL TUO LIVELLO",
+  "tier.reminder.body": "LA TUA MEMBERSHIP {{.Tier}} SARÀ RIVISTA IL {{.Date}}.",
+  "tier.reminder.body2_threshold": "LA SPESA VALIDA ATTUALE È €{{.Spend}}. MANTIENILA PARI O SUPERIORE A €{{.Threshold}} PER RESTARE A QUESTO LIVELLO.",
+  "tier.reminder.body2": "LA SPESA VALIDA ATTUALE È €{{.Spend}}.",
+
+  "tier.rollback.tag": "LIVELLO",
+  "tier.rollback.heading": "LIVELLO MODIFICATO",
+  "tier.rollback.body": "A SEGUITO DI UN RIMBORSO, LA TUA SPESA VALIDA DEGLI ULTIMI 12 MESI È STATA RICALCOLATA A €{{.Spend}}. LA TUA MEMBERSHIP ORA È {{.Tier}}.",
+  "tier.rollback.body2": "QUESTA È UNA MODIFICA AUTOMATICA PER MANTENERE ACCURATO IL TUO LIVELLO. CONTATTACI IN QUALSIASI MOMENTO SE QUALCOSA NON TORNA.",
+
+  "common.cta.shop_now": "ACQUISTA ORA",
+  "common.cta.view_product": "VISUALIZZA PRODOTTO",
+  "common.cta.email_preferences": "PREFERENZE EMAIL",
+
+  "subscriber.welcome.tag": "ISCRIZIONE",
+  "subscriber.welcome.heading": "BENVENUTO",
+  "subscriber.welcome.body": "SEI NELLA LISTA. TI SCRIVEREMO QUANDO CI SARÀ QUALCOSA CHE VALE IL TUO TEMPO — NUOVE USCITE, COLLABORAZIONI E NOTE DAL NOSTRO PROCESSO APERTO. NIENT'ALTRO.",
+
+  "promo.code.tag": "CARTA REGALO",
+  "promo.code.heading": "CARTA REGALO",
+  "promo.code.body": "GRAZIE PER IL TUO ACQUISTO.",
+  "promo.code.card_label": "NUMERO CARTA",
+  "promo.code.value_label": "VALORE",
+  "promo.code.redeem": "RISCATTALA AL CHECKOUT — INSERISCI IL NUMERO CARTA NEL CAMPO PROMO.",
+
+  "stock.back.tag": "RIFORNIMENTO",
+  "stock.back.heading": "DI NUOVO DISPONIBILE",
+  "stock.back.status_line": "STATO: DISPONIBILE → IL PEZZO CHE HAI MESSO IN LISTA D'ATTESA",
+  "stock.back.item_label": "ARTICOLO",
+  "stock.back.size_label": "TAGLIA",
+  "stock.back.scarcity": "LE SCORTE SONO LIMITATE E NON LE TRATTENIAMO — CHI PRIMA ARRIVA, PRIMA SERVITO.",
+
+  "unsubscribe.confirm.tag": "EMAIL",
+  "unsubscribe.confirm.heading": "ISCRIZIONE ANNULLATA",
+  "unsubscribe.confirm.body": "SEI STATO RIMOSSO DALLE NOSTRE EMAIL DI MARKETING. CONTINUERAI A RICEVERE MESSAGGI TRANSAZIONALI SUI TUOI ORDINI E SUL TUO ACCOUNT.",
+  "unsubscribe.confirm.body2": "HAI CAMBIATO IDEA? AGGIORNA LE TUE PREFERENZE IN QUALSIASI MOMENTO DAL TUO ACCOUNT.",
+
+  "birthday.tag": "REGALO",
+  "birthday.heading": "BUON COMPLEANNO",
+  "birthday.body": "UN PICCOLO PENSIERO DA PARTE NOSTRA PER FESTEGGIARE LA GIORNATA.",
+  "birthday.code_label": "IL TUO CODICE",
+
+  "event.invite.tag": "INVITO",
+  "event.invite.heading_default": "SEI INVITATO",
+  "event.invite.cta_default": "CONFERMA PRESENZA",
+
+  "hacker.invite.tag": "ACCESSO",
+  "hacker.invite.heading": "GRBPWR HACKER",
+  "hacker.invite.body": "SEI STATO INVITATO A <span style=\"color:#0E0E0C;\">GRBPWR HACKER</span> — ACCESSO SU INVITO A USCITE E PEZZI CHE NON COMPAIONO NEL CATALOGO PUBBLICO.",
+  "hacker.invite.body2": "QUESTO LINK È MONOUSO E SCADE IL {{.Date}}.",
+  "hacker.invite.cta": "OTTIENI L'ACCESSO",
+  "hacker.invite.fallback_link": "SE IL PULSANTE NON FUNZIONA, APRI QUESTO LINK:"
+}
