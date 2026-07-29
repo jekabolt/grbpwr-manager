@@ -276,19 +276,20 @@ func insertTechCardCosting(ctx context.Context, db dependency.DB, tcID int, c *e
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_costing
 			(tech_card_id, cmt_cost, hardware_cost, packaging_cost, logistics_cost, overhead_cost,
-			 defect_percent, currency, notes)
+			 defect_percent, currency, notes, target_margin_pct)
 		VALUES (:tech_card_id, :cmt_cost, :hardware_cost, :packaging_cost, :logistics_cost, :overhead_cost,
-			 :defect_percent, :currency, :notes)`,
+			 :defect_percent, :currency, :notes, :target_margin_pct)`,
 		map[string]any{
-			"tech_card_id":   tcID,
-			"cmt_cost":       c.CmtCost,
-			"hardware_cost":  c.HardwareCost,
-			"packaging_cost": c.PackagingCost,
-			"logistics_cost": c.LogisticsCost,
-			"overhead_cost":  c.OverheadCost,
-			"defect_percent": c.DefectPercent,
-			"currency":       c.Currency,
-			"notes":          c.Notes,
+			"tech_card_id":      tcID,
+			"cmt_cost":          c.CmtCost,
+			"hardware_cost":     c.HardwareCost,
+			"packaging_cost":    c.PackagingCost,
+			"logistics_cost":    c.LogisticsCost,
+			"overhead_cost":     c.OverheadCost,
+			"defect_percent":    c.DefectPercent,
+			"currency":          c.Currency,
+			"notes":             c.Notes,
+			"target_margin_pct": c.TargetMarginPct,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card costing: %w", err)
 	}
@@ -332,6 +333,7 @@ func insertTechCardSignoffs(ctx context.Context, db dependency.DB, tcID int, sig
 			"signed_by":     s.SignedBy,
 			"signed_at":     s.SignedAt,
 			"note":          s.Note,
+			"signed_digest": s.SignedDigest,
 			"display_order": i,
 		})
 	}
@@ -423,10 +425,10 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	// id. line_key travels alongside the id so the client gets the durable reference it writes with,
 	// not just the resolved FK.
 	pieceLinkRows, err := storeutil.QueryListNamed[struct {
-		TechCardID  int    `db:"tech_card_id"`
-		OpOrder     int    `db:"op_order"`
-		PieceID     int    `db:"piece_id"`
-		PieceKey    string `db:"line_key"`
+		TechCardID int    `db:"tech_card_id"`
+		OpOrder    int    `db:"op_order"`
+		PieceID    int    `db:"piece_id"`
+		PieceKey   string `db:"line_key"`
 	}](ctx, s.DB, `
 		SELECT o.tech_card_id AS tech_card_id, o.display_order AS op_order,
 		       l.piece_id AS piece_id, p.line_key AS line_key
@@ -542,7 +544,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	}
 
 	signoffRows, err := storeutil.QueryListNamed[techCardSignoffRow](ctx, s.DB, `
-		SELECT tech_card_id, section, state, signed_by, signed_at, note
+		SELECT tech_card_id, section, state, signed_by, signed_at, note, signed_digest
 		FROM tech_card_signoff
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})

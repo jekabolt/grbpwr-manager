@@ -403,130 +403,135 @@ func (s *Store) IssueMaterialStock(ctx context.Context, ins entity.MaterialIssue
 	}
 	var out entity.MaterialMovement
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		db := rep.DB()
-		meta, err := readMaterialMeta(ctx, db, ins.MaterialId)
-		if err != nil {
-			return err
-		}
-		if !ins.IsReturn && meta.Archived {
-			return entity.ErrMaterialArchived
-		}
-		// Denormalise the owning style onto the movement (tech_card_id) so the movement journal can be
-		// filtered by style directly, instead of joining through the run/sample every time (gap-06 —
-		// the column existed but no write path filled it). Derived, never a free-standing target.
-		var ownerTC sql.NullInt32
-		if ins.ProductionRunId.Valid {
-			if err := checkRunOpen(ctx, db, int(ins.ProductionRunId.Int32)); err != nil {
-				return err
-			}
-			ownerTC, err = techCardIdOfTarget(ctx, db, "production_run", int(ins.ProductionRunId.Int32))
-		} else {
-			if err := checkSampleOpen(ctx, db, int(ins.SampleId.Int32)); err != nil {
-				return err
-			}
-			ownerTC, err = techCardIdOfTarget(ctx, db, "sample", int(ins.SampleId.Int32))
-		}
-		if err != nil {
-			return err
-		}
-		// A colourway attribution must name one of the run's own products (g25-03) — a typo'd or
-		// foreign product would show up as another style's colourway in the run's cost breakdown.
-		if attributed := productAttribution(ins); attributed.Valid {
-			if err := checkRunProduct(ctx, db, int(ins.ProductionRunId.Int32), ownerTC, int(attributed.Int32)); err != nil {
-				return err
-			}
-		}
-
-		before, err := readStockForUpdate(ctx, db, ins.MaterialId)
-		if err != nil {
-			return err
-		}
-
-		var newOnHand decimal.Decimal
-		var newAvg, movementCost decimal.NullDecimal
-		var mvType entity.MaterialMovementType
-		if ins.IsReturn {
-			// Cap the return at what is still outstanding on the target and price it at the average of
-			// those outstanding COSTED issues (what these units left stock at), not the drifted current
-			// average — else a return after a price move would book out more than went in (WIP drift)
-			// or a return over-issue would mint phantom stock. A colourway-attributed return caps and
-			// prices against that colourway's own movements (g25-04). Fold the returned value back into
-			// the moving average so raw-stock value stays consistent (NF-01).
-			outQty, costedQty, costedVal, err := outstandingIssued(ctx, db, ins.MaterialId, ins.ProductionRunId, ins.SampleId, productAttribution(ins))
-			if err != nil {
-				return err
-			}
-			if ins.Quantity.GreaterThan(outQty) {
-				if attributed := productAttribution(ins); attributed.Valid {
-					return fmt.Errorf("%w: colourway %d has %s of material %d outstanding on this run", entity.ErrExcessiveMaterialReturn, attributed.Int32, outQty.String(), ins.MaterialId)
-				}
-				return fmt.Errorf("%w: material %d has %s outstanding on this target", entity.ErrExcessiveMaterialReturn, ins.MaterialId, outQty.String())
-			}
-			// Price the return at the costed outstanding average — but only when the returned quantity
-			// is covered by costed issues. A return that includes units which left UNPRICED cannot be
-			// honestly priced: valuing them at the costed average would mint stock value out of thin
-			// air, so such a return books uncosted (conservative — the average stays put).
-			if costedQty.GreaterThanOrEqual(ins.Quantity) && costedVal.GreaterThan(decimal.Zero) {
-				movementCost = decimal.NullDecimal{Decimal: costedVal.Div(costedQty).Round(avgScale), Valid: true}
-			}
-			newOnHand = before.OnHand.Add(ins.Quantity)
-			newAvg = blendIntoAvg(before, ins.Quantity, movementCost)
-			mvType = entity.MaterialMovementReturnProduction
-			if ins.SampleId.Valid {
-				mvType = entity.MaterialMovementReturnSample
-			}
-		} else {
-			if before.OnHand.LessThan(ins.Quantity) {
-				return fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
-			}
-			newOnHand = before.OnHand.Sub(ins.Quantity)
-			// An issue does not change the average; the movement freezes it as the issue cost.
-			newAvg = before.Avg
-			movementCost = before.Avg
-			mvType = entity.MaterialMovementIssueProduction
-			if ins.SampleId.Valid {
-				mvType = entity.MaterialMovementIssueSample
-			}
-		}
-
-		if err := upsertStock(ctx, db, ins.MaterialId, newOnHand, newAvg); err != nil {
-			return err
-		}
-		// gap-07 v2 D: draw from (issue) or return to a specific structured lot, if named. Guards the
-		// lot's remaining and validates it belongs to this material; aborts the issue on mismatch.
-		if ins.LotId.Valid {
-			if err := drawFromLot(ctx, db, int(ins.LotId.Int32), ins.MaterialId, ins.Quantity, ins.IsReturn); err != nil {
-				return err
-			}
-		}
-		m := entity.MaterialMovement{
-			MaterialId:      ins.MaterialId,
-			MovementType:    mvType,
-			Quantity:        ins.Quantity,
-			OnHandBefore:    before.OnHand,
-			OnHandAfter:     newOnHand,
-			UnitCostBase:    movementCost,
-			ProductionRunId: ins.ProductionRunId,
-			SampleId:        ins.SampleId,
-			TechCardId:      ownerTC,
-			// Per-colourway attribution (gap-07 v2 C): only meaningful for a run issue; ignored for a
-			// sample. Carried onto returns too so a return nets against the same colourway.
-			ProductId:     productAttribution(ins),
-			LotId:         ins.LotId,
-			Comment:       ins.Comment,
-			AdminUsername: ins.AdminUsername,
-			OccurredAt:    ins.OccurredAt,
-		}
-		if movementCost.Valid {
-			m.Currency = sql.NullString{String: strings.ToUpper(cache.GetBaseCurrency()), Valid: true}
-		}
-		out, err = insertMovement(ctx, db, m)
+		var err error
+		out, err = issueInTx(ctx, rep.DB(), ins, s.Now())
 		return err
 	})
 	if err != nil {
 		return entity.MaterialMovement{}, err
 	}
 	return out, nil
+}
+
+// issueInTx is the shared issue body used when one or several materials must commit together.
+func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueInsert, now time.Time) (entity.MaterialMovement, error) {
+	meta, err := readMaterialMeta(ctx, db, ins.MaterialId)
+	if err != nil {
+		return entity.MaterialMovement{}, err
+	}
+	if !ins.IsReturn && meta.Archived {
+		return entity.MaterialMovement{}, entity.ErrMaterialArchived
+	}
+	// Denormalise the owning style onto the movement (tech_card_id) so the movement journal can be
+	// filtered by style directly, instead of joining through the run/sample every time (gap-06 —
+	// the column existed but no write path filled it). Derived, never a free-standing target.
+	var ownerTC sql.NullInt32
+	if ins.ProductionRunId.Valid {
+		if err := checkRunOpen(ctx, db, int(ins.ProductionRunId.Int32)); err != nil {
+			return entity.MaterialMovement{}, err
+		}
+		ownerTC, err = techCardIdOfTarget(ctx, db, "production_run", int(ins.ProductionRunId.Int32))
+	} else {
+		if err := checkSampleOpen(ctx, db, int(ins.SampleId.Int32)); err != nil {
+			return entity.MaterialMovement{}, err
+		}
+		ownerTC, err = techCardIdOfTarget(ctx, db, "sample", int(ins.SampleId.Int32))
+	}
+	if err != nil {
+		return entity.MaterialMovement{}, err
+	}
+	// A colourway attribution must name one of the run's own products (g25-03) — a typo'd or
+	// foreign product would show up as another style's colourway in the run's cost breakdown.
+	if attributed := productAttribution(ins); attributed.Valid {
+		if err := checkRunProduct(ctx, db, int(ins.ProductionRunId.Int32), ownerTC, int(attributed.Int32)); err != nil {
+			return entity.MaterialMovement{}, err
+		}
+	}
+
+	before, err := readStockForUpdate(ctx, db, ins.MaterialId)
+	if err != nil {
+		return entity.MaterialMovement{}, err
+	}
+
+	var newOnHand decimal.Decimal
+	var newAvg, movementCost decimal.NullDecimal
+	var mvType entity.MaterialMovementType
+	if ins.IsReturn {
+		// Cap the return at what is still outstanding on the target and price it at the average of
+		// those outstanding COSTED issues (what these units left stock at), not the drifted current
+		// average — else a return after a price move would book out more than went in (WIP drift)
+		// or a return over-issue would mint phantom stock. A colourway-attributed return caps and
+		// prices against that colourway's own movements (g25-04). Fold the returned value back into
+		// the moving average so raw-stock value stays consistent (NF-01).
+		outQty, costedQty, costedVal, err := outstandingIssued(ctx, db, ins.MaterialId, ins.ProductionRunId, ins.SampleId, productAttribution(ins))
+		if err != nil {
+			return entity.MaterialMovement{}, err
+		}
+		if ins.Quantity.GreaterThan(outQty) {
+			if attributed := productAttribution(ins); attributed.Valid {
+				return entity.MaterialMovement{}, fmt.Errorf("%w: colourway %d has %s of material %d outstanding on this run", entity.ErrExcessiveMaterialReturn, attributed.Int32, outQty.String(), ins.MaterialId)
+			}
+			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s outstanding on this target", entity.ErrExcessiveMaterialReturn, ins.MaterialId, outQty.String())
+		}
+		// Price the return at the costed outstanding average — but only when the returned quantity
+		// is covered by costed issues. A return that includes units which left UNPRICED cannot be
+		// honestly priced: valuing them at the costed average would mint stock value out of thin
+		// air, so such a return books uncosted (conservative — the average stays put).
+		if costedQty.GreaterThanOrEqual(ins.Quantity) && costedVal.GreaterThan(decimal.Zero) {
+			movementCost = decimal.NullDecimal{Decimal: costedVal.Div(costedQty).Round(avgScale), Valid: true}
+		}
+		newOnHand = before.OnHand.Add(ins.Quantity)
+		newAvg = blendIntoAvg(before, ins.Quantity, movementCost)
+		mvType = entity.MaterialMovementReturnProduction
+		if ins.SampleId.Valid {
+			mvType = entity.MaterialMovementReturnSample
+		}
+	} else {
+		if before.OnHand.LessThan(ins.Quantity) {
+			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
+		}
+		newOnHand = before.OnHand.Sub(ins.Quantity)
+		// An issue does not change the average; the movement freezes it as the issue cost.
+		newAvg = before.Avg
+		movementCost = before.Avg
+		mvType = entity.MaterialMovementIssueProduction
+		if ins.SampleId.Valid {
+			mvType = entity.MaterialMovementIssueSample
+		}
+	}
+
+	if err := upsertStock(ctx, db, ins.MaterialId, newOnHand, newAvg); err != nil {
+		return entity.MaterialMovement{}, err
+	}
+	// gap-07 v2 D: draw from (issue) or return to a specific structured lot, if named. Guards the
+	// lot's remaining and validates it belongs to this material; aborts the issue on mismatch.
+	if ins.LotId.Valid {
+		if err := drawFromLot(ctx, db, int(ins.LotId.Int32), ins.MaterialId, ins.Quantity, ins.IsReturn); err != nil {
+			return entity.MaterialMovement{}, err
+		}
+	}
+	m := entity.MaterialMovement{
+		MaterialId:      ins.MaterialId,
+		MovementType:    mvType,
+		Quantity:        ins.Quantity,
+		OnHandBefore:    before.OnHand,
+		OnHandAfter:     newOnHand,
+		UnitCostBase:    movementCost,
+		ProductionRunId: ins.ProductionRunId,
+		SampleId:        ins.SampleId,
+		TechCardId:      ownerTC,
+		// Per-colourway attribution (gap-07 v2 C): only meaningful for a run issue; ignored for a
+		// sample. Carried onto returns too so a return nets against the same colourway.
+		ProductId:     productAttribution(ins),
+		LotId:         ins.LotId,
+		Comment:       ins.Comment,
+		AdminUsername: ins.AdminUsername,
+		OccurredAt:    ins.OccurredAt,
+	}
+	if movementCost.Valid {
+		m.Currency = sql.NullString{String: strings.ToUpper(cache.GetBaseCurrency()), Valid: true}
+	}
+	return insertMovement(ctx, db, m)
 }
 
 // productAttribution returns the colourway (product) an issue is attributed to (gap-07 v2 C). It is

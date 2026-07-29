@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -17,6 +18,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/stylenumber"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -150,7 +152,7 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 		)
 		return nil, status.Errorf(codes.Internal, "can't get tech card")
 	}
-	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFx(ctx))
+	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, req.GetVatCountryCode()))
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)
 	}
@@ -387,7 +389,51 @@ func (s *Server) costingFx(ctx context.Context) dto.CostingFx {
 		slog.Default().ErrorContext(ctx, "can't load costing fx rates", slog.String("err", err.Error()))
 		rates = nil
 	}
-	return dto.CostingFx{ToBase: rates, Base: cache.GetBaseCurrency()}
+	fx := dto.CostingFx{ToBase: rates, Base: cache.GetBaseCurrency()}
+	// The house margin target rides along: it is a costing constant every tech-card read needs. Read
+	// from the in-memory cache (loaded at boot, refreshed by UpsertAlertSettings) rather than the
+	// settings table — this runs on every tech-card read, and a per-read query for a single number
+	// that changes a few times a year would be a poor trade.
+	if house := cache.GetTargetMarginPct(); house > 0 {
+		fx.HouseTargetMarginPct = decimal.NullDecimal{Decimal: decimal.NewFromFloat(house), Valid: true}
+	}
+	return fx
+}
+
+// costingFxForVatCountry is costingFx plus the VAT scenario a margin on this read is drawn for.
+//
+// Catalogue prices are VAT-inclusive throughout this system — the order snapshot extracts VAT out of
+// them, the accounting engine derives output VAT from them, and the margin-by-style report divides
+// them by (1+rate) before comparing to cost. The tech-card costing tab did not, so the two admin
+// screens showed the same style at margins a whole VAT rate apart. Netting here closes that.
+//
+// Country: the caller's if it names one (modelling another market), else the company's domestic VAT
+// country — what a studio pricing a style means by "the margin" unless it says otherwise. The rate
+// comes from the same `vat_rate` table everything else reads; a country with no rate on file nets
+// nothing (an export destination has no VAT to remove) and the tab is told so via vat_country_code
+// with an absent vat_rate_pct.
+func (s *Server) costingFxForVatCountry(ctx context.Context, requested string) dto.CostingFx {
+	fx := s.costingFx(ctx)
+	country := strings.ToUpper(strings.TrimSpace(requested))
+	if country == "" {
+		country = accounting.RegimeRateCountry(entity.VatRegimePLDomestic, "", "")
+	}
+	fx.VatCountry = country
+	if country == "" {
+		return fx
+	}
+	rates, err := s.repo.Accounting().GetVatRatesFor(ctx, []string{country})
+	if err != nil {
+		// Same degradation as the FX rates above: report the country, net nothing, never fail the read
+		// over a missing rate — a costing tab that says "no rate" beats one that will not open.
+		slog.Default().ErrorContext(ctx, "can't load vat rate for costing margin",
+			slog.String("country", country), slog.String("err", err.Error()))
+		return fx
+	}
+	if r, ok := rates[country]; ok && r.IsPositive() {
+		fx.VatRatePct = decimal.NullDecimal{Decimal: r, Valid: true}
+	}
+	return fx
 }
 
 // GetCostingFxRates returns the CURRENT effective FX rate per currency (the latest valid_from on or
@@ -473,15 +519,23 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season filter: %v", err)
 	}
 
+	categoryIDs := make([]int, 0, len(req.GetCategoryIds()))
+	for _, id := range req.GetCategoryIds() {
+		if id <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "category_ids must be positive")
+		}
+		categoryIDs = append(categoryIDs, int(id))
+	}
 	filter := entity.TechCardListFilter{
-		Stage:      stage,
-		Gender:     gender,
-		Brand:      strings.TrimSpace(req.Brand),
-		SeasonCode: seasonCode,
-		SeasonYear: seasonYear,
-		Name:       strings.TrimSpace(req.Name),
-		ProductId:  int(req.ProductId),
-		Purpose:    purpose,
+		Stage:       stage,
+		Gender:      gender,
+		Brand:       strings.TrimSpace(req.Brand),
+		SeasonCode:  seasonCode,
+		SeasonYear:  seasonYear,
+		Name:        strings.TrimSpace(req.Name),
+		ProductId:   int(req.ProductId),
+		Purpose:     purpose,
+		CategoryIds: categoryIDs,
 	}
 
 	cards, total, err := s.repo.TechCards().ListTechCards(ctx, int(req.Limit), int(req.Offset),

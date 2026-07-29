@@ -19,7 +19,7 @@ import (
 // are UpdateStyle's, R4/§14.7), creates NO variants (CreateVariant) and touches NO size chart
 // (UpdateStyleSizeChart). The style must exist (sql.ErrNoRows otherwise -> NOT_FOUND) and the
 // (style_id, color_code) pair must be free (entity.ErrColorwayColorExists on a duplicate, UNIQUE R1).
-func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error) {
+func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error) {
 	// R9: verify the in-memory dictionary is current before this dictionary-dependent write (the color
 	// name/SKU segment resolves color_code, the label reads country).
 	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
@@ -85,7 +85,10 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		if err := insertProductPrices(ctx, rep.DB(), colorwayID, prices); err != nil {
 			return fmt.Errorf("can't insert colourway prices: %w", err)
 		}
-		return nil
+		// PLM/lab-dip block, if the caller supplied one. A colourway is usually created before any dye
+		// work starts, so this is normally nil — but the same call creates draft colourways from a
+		// colour plan, and those arrive with a dev code and a pending lab dip already attached.
+		return applyColorwayDevelopment(ctx, rep.DB(), colorwayID, dev)
 	})
 	if err != nil {
 		return 0, err
@@ -100,7 +103,7 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 // stale expected version (or a concurrent bump) is entity.ErrTechCardConflict (ABORTED); an absent
 // colourway is sql.ErrNoRows (NOT_FOUND). Lifecycle is never changed here (R6). Returns the new
 // shared lock_version.
-func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error) {
+func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error) {
 	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
 		return 0, fmt.Errorf("can't refresh dictionary before colourway update: %w", err)
 	}
@@ -138,6 +141,12 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 		// Colourway-owned columns only — never style facts, variants or the chart.
 		if err := updateColorwayRow(ctx, rep.DB(), prd, colorwayID); err != nil {
 			return fmt.Errorf("can't update colourway %d: %w", colorwayID, err)
+		}
+		// PLM/lab-dip block (dev_* / lab_dip_*), merged rather than replaced — see
+		// applyColorwayDevelopment. Same transaction and same lock bump as the merch row: a lab-dip
+		// decision is a mutation of the style aggregate like any other colourway edit.
+		if err := applyColorwayDevelopment(ctx, rep.DB(), colorwayID, dev); err != nil {
+			return err
 		}
 		if len(prd.Translations) > 0 {
 			if err := insertProductTranslations(ctx, rep.DB(), colorwayID, prd.Translations); err != nil {

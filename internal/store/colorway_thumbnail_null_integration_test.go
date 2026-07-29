@@ -45,7 +45,7 @@ func TestCreateColorwayDraftWithoutThumbnail(t *testing.T) {
 	//    thumbnail_id = 0 and aborted on FK product_ibfk_4; now it binds NULL and succeeds.
 	prd := newColorwayInsert("BLK", "black", "TCTN1-BLK", mediaID, langID, fullPrices)
 	prd.ThumbnailMediaID = 0
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices, nil)
 	require.NoError(t, err, "creating a DRAFT colourway with no thumbnail must succeed (no FK error)")
 	t.Cleanup(func() {
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", colorwayID)
@@ -80,7 +80,7 @@ func TestCreateColorwayDraftWithoutThumbnail(t *testing.T) {
 	var lockV int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&lockV))
 	upd := newColorwayInsert("BLK", "black", "TCTN1-BLK", mediaID, langID, fullPrices)
-	_, err = s.Products().UpdateColorway(ctx, colorwayID, lockV, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices)
+	_, err = s.Products().UpdateColorway(ctx, colorwayID, lockV, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, s.Products().PublishColorway(ctx, colorwayID), "publish must succeed once a valid thumbnail is set")

@@ -192,9 +192,30 @@ message ColorwayDevelopmentInsert {
   int32 display_order = 15;
 }
 
+// ColorwayLabDipRound is ONE round of the lab-dip approval loop, as it actually happens: a dyehouse
+// submits a swatch, the studio approves or rejects it, and a rejection starts the next round. The flat
+// lab_dip_* scalars on ColorwayDevelopmentInsert describe only the CURRENT round; this is the history
+// behind them, so a timeline can show R1 rejected → R2 rejected → R3 approved instead of one row.
+//
+// OUTPUT-ONLY. Rounds are not written directly: the server derives them from the lab-dip write path
+// (UpdateColorway's development.*), keyed by round_number — writing round 2 leaves round 1 intact.
+// That keeps one source of truth (the current round is still the scalars) and cannot drift from it.
+message ColorwayLabDipRound {
+  int32 round_number = 1; // 1-based; the round the scalars describe is the highest
+  TechCardLabDipStatus status = 2;
+  google.protobuf.Timestamp submitted_at = 3;
+  google.protobuf.Timestamp decided_at = 4;
+  string decided_by = 5;
+  string reject_reason = 6;
+  string comment = 7;
+  int32 swatch_media_id = 8; // the swatch this round was judged on; 0 = none
+  google.protobuf.Timestamp created_at = 9; // when the server first recorded the round
+}
+
 message ColorwayDevelopment {
   ColorwayDevelopmentInsert development = 1;
   Color dictionary_color = 2; // output-only resolved dictionary colour
+  repeated ColorwayLabDipRound lab_dip_rounds = 3; // OUTPUT-ONLY history, oldest first
 }
 
 // StyleSizeChart is the style-owned size chart (R5). Written full-replace under the shared
@@ -205,10 +226,28 @@ message StyleSizeChartCell {
   google.type.Decimal value = 3;
 }
 
+// StyleSizeChartGradeStep is one measurement's grade increment — the per-size-position step the
+// expanded chart was authored from (PLM gap 4). See StyleSizeChart.grade_steps.
+message StyleSizeChartGradeStep {
+  int32 measurement_name_id = 1; // FK measurement_name(id)
+  google.type.Decimal step = 2; // increment per size position; may be negative
+}
+
 message StyleSizeChart {
   int32 style_id = 1;
   int32 lock_version = 2;
   repeated StyleSizeChartCell cells = 3;
+  // The GRADE RULE the expanded `cells` grid was authored from:
+  //
+  //     value(size) = base + step × (position(size) − position(base))
+  //
+  // `cells` stays the source of truth — the factory reads the expanded grid, and a cell the grader
+  // overtyped keeps its typed value. The rule is stored so reopening a card can show WHICH cells
+  // still follow it (recompute and compare: a cell that differs was overtyped) instead of
+  // presenting 40 numbers with no structure. Both fields are optional: an unset rule (base 0 /
+  // empty steps) means the chart was typed cell by cell, which is what every pre-existing chart is.
+  int32 grade_base_size_id = 4; // FK size(id); 0 = no rule authored
+  repeated StyleSizeChartGradeStep grade_steps = 5; // one per graded measurement; absent = ungraded
 }
 
 // AdminColorwayRef is a derived, output-only reference to a colourway from its style (R1: GetStyle may
@@ -239,6 +278,37 @@ message AdminColorwayRef {
   // (ABORTED). Surfaced on the ref so a per-colourway lab-dip edit is optimistically locked straight
   // from here, without the caller reaching up to the tech-card's top-level lock_version.
   int32 lock_version = 12;
+  // lab_dip_rounds is the full round history behind the scalars above (oldest first), so the
+  // colourways tab can draw the real timeline instead of the single current round. OUTPUT-ONLY.
+  repeated ColorwayLabDipRound lab_dip_rounds = 13;
+  // Per-colourway COGS (product.cost_price) and its provenance. Costing is otherwise style-level, so
+  // without this the tab could not say that the black colourway costs more than the ecru one. Money:
+  // stripped for an account without costing:read, like the rest of the tech-card read.
+  google.type.Decimal cost_price = 14;
+  string cost_price_source = 15; // manual | production_run | tech_card; empty = never set
+  google.protobuf.Timestamp cost_price_updated_at = 16;
+  // prices is this colourway's retail price list (product_price), one entry per currency. Pricing
+  // lives on the published product, so the costing tab used to reconstruct a retail figure by fanning
+  // out GetColorwayByID over every linked colourway and only trusting it when all of them agreed.
+  // Surfaced here so a margin can be drawn from one read, per colourway, without that guesswork.
+  //
+  // These are the catalogue prices AS ENTERED, and the whole system already treats those as
+  // VAT-INCLUSIVE: the order snapshot extracts vat_amount = total × rate/(100+rate) (migration 0094),
+  // accounting derives output VAT the same way, and the realised sales margin divides revenue by
+  // (1 + rate) before comparing it to cost. A margin drawn against `prices` therefore overstates
+  // itself by roughly the VAT rate — which is exactly what the costing tab was doing while the
+  // margin-by-style report next to it did not. Use net_prices below.
+  repeated ColorwayPrice prices = 17;
+  // net_prices is `prices` with VAT removed at the rate of the read's VAT country (see
+  // TechCardCosting.vat_country_code / vat_rate_pct), paired by currency. This is the figure a margin
+  // must be drawn against, because unit_cost carries no VAT.
+  //
+  // It is a SCENARIO, not a fact: one gross price is sold into as many rates as there are
+  // destinations, so "the" net retail does not exist until someone names a market. The server nets at
+  // the company's domestic rate by default and honours GetTechCardRequest.vat_country_code to model
+  // another. Empty when no rate is known for that country (an export destination nets to itself, and
+  // silently returning the gross price under a "net" name would be the same lie in a new place).
+  repeated ColorwayPrice net_prices = 18;
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge
@@ -549,6 +619,14 @@ message TechCardSizePattern {
   string url = 2; // CDN url of the uploaded PDF (required)
   string filename = 3; // original filename, for display / download
   int64 size_bytes = 4; // file size in bytes (0 = unknown)
+  // version is the sheet's revision within its (style, size) — the "v3" the admin used to scrape out
+  // of the filename. Send 0 and the server assigns MAX+1 for a url it has not seen on this card
+  // before, and preserves the number for one it has; send a number to pin the factory's own.
+  int32 version = 5;
+  // uploaded_at is when this PDF was first attached to the card. SERVER-OWNED (ignored on write):
+  // patterns are a full-replace child, so the row is deleted and reinserted on every card save — the
+  // server carries the original timestamp forward by matching the url rather than resetting it.
+  google.protobuf.Timestamp uploaded_at = 6;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).
@@ -755,6 +833,11 @@ message TechCardCosting {
   google.type.Decimal defect_percent = 6; // брак / запас (%), 0..100
   string currency = 10; // ISO 4217 — the single currency for every article and total
   string notes = 11;
+  // target_margin_pct is the gross margin this STYLE is expected to make, 0..100. It is the number
+  // the costing waterfall measures the achieved margin against; without it the admin had to carry a
+  // hard-coded house constant. 0 / unset = fall back to the house default (alert_setting
+  // `target_margin_pct`), which is what effective_target_margin_pct below resolves to.
+  google.type.Decimal target_margin_pct = 26;
 
   // OUTPUT-ONLY computed rollup (ignored on write). Root figures are the PRIMARY colourway
   // (colorways index 0); per-colourway figures are in colorway_costs. Materials come from the
@@ -778,6 +861,21 @@ message TechCardCosting {
   google.type.Decimal unit_cost_base = 23; // unit_cost converted to base_currency
   google.type.Decimal order_cost_base = 24; // unit_cost_base × order_qty
   string base_currency = 25; // the base currency the *_base figures are in
+
+  // OUTPUT-ONLY: the target margin actually in force for this style — target_margin_pct above when
+  // set, otherwise the house default from alert_setting. Resolved here so the costing tab needs one
+  // read (already gated by costing:read) instead of a second, analytics-gated settings call.
+  google.type.Decimal effective_target_margin_pct = 27;
+
+  // OUTPUT-ONLY VAT context for the margin on this read: which country's rate the colourway
+  // net_prices were computed at, and what that rate is. Surfaced so the tab can SAY which market it
+  // is showing a margin for instead of presenting one number as if it were universal.
+  //
+  // The rate comes from the same `vat_rate` table the order snapshot, the accounting VAT engine and
+  // the margin-by-style report read — deliberately not a second, costing-owned copy that could drift
+  // from them. vat_rate_pct is unset when the country has no rate on file (export: nothing to net).
+  string vat_country_code = 28;
+  google.type.Decimal vat_rate_pct = 29;
 
   reserved 7, 8, 9; // pricing removed (markup_multiplier, wholesale_price, retail_price — moved to product)
   reserved 13, 14, 17; // was materials_cost, total_cost, labour_cost (superseded / removed)
@@ -814,6 +912,31 @@ message TechCardSignoff {
   string signed_by = 3; // who signed (free text / role name)
   google.protobuf.Timestamp signed_at = 4;
   string note = 5;
+  // signed_digest is the fingerprint of THIS SECTION's content at the moment it was signed, so
+  // "changed since sign-off" survives a page reload. Compare it against the matching entry in
+  // TechCard.section_digests: equal = the sheet still says what was approved; different = it was
+  // edited afterwards and the sign-off is stale.
+  //
+  // Server-COMPUTED, but the caller controls WHEN. Send it back as you read it on an ordinary save
+  // and it is carried through untouched, so an approval keeps pointing at the content it actually
+  // covered. Send it EMPTY to mean "I am approving this now" — the server then fingerprints the
+  // payload being written, which is the only moment it can be sure the digest describes what the
+  // approver looked at. That is also how a re-approval after review clears a stale flag.
+  //
+  // The server never simply re-stamps on every save: doing so would let a save that edits the BOM
+  // silently re-bless the materials sign-off against its own new content, which is precisely the
+  // failure this field exists to catch. A pending or rejected section carries no digest.
+  //
+  // Deliberately per-section, not the card's lock_version: a costing edit must not invalidate the
+  // design sign-off, and a lock_version comparison cannot tell those apart.
+  string signed_digest = 6;
+}
+
+// TechCardSectionDigest is the current fingerprint of one sign-off section's content (see
+// TechCardSignoff.signed_digest). OUTPUT-ONLY, recomputed on every read.
+message TechCardSectionDigest {
+  TechCardSignoffSection section = 1;
+  string digest = 2;
 }
 
 // TechCardPieceColorwayMaterial maps ONE cut-piece to its fabric (and optional fusing) for ONE
@@ -1015,6 +1138,10 @@ message TechCard {
   string fit = 15;
   string composition = 16;
   string care_instructions = 17;
+  // section_digests is the CURRENT fingerprint of each sign-off section's content, recomputed on
+  // every read. Compare an entry against the matching TechCardSignoff.signed_digest to tell whether
+  // an approved section has been edited since it was signed. OUTPUT-ONLY.
+  repeated TechCardSectionDigest section_digests = 18;
   reserved 5; // was resolved_media (single combined list; now split)
 }
 
@@ -1043,4 +1170,22 @@ message TechCardListItem {
   SkuSeason sku_season = 15;
   // WS7: auxiliary sub-type badge for list views (UNKNOWN=unset), mirroring purpose above.
   TechCardAuxSubtype aux_subtype = 16;
+  // Category of the style, so a list/board can group and label by category without an N+1
+  // GetTechCard. category_id is the leaf tag; the top/sub/type triple is the derived taxonomy path
+  // (0 = unset) — the same columns ListTechCardsRequest.category_ids filters on.
+  int32 category_id = 17;
+  int32 top_category_id = 18;
+  int32 sub_category_id = 19;
+  int32 type_id = 20;
+  // colorway_count is how many LIVE (non-archived) colourways the style has — the number a list row
+  // shows next to a style. Resolved server-side in one batched query for the page, never N+1.
+  // NOTE: unrelated to MarginByStyleRow.colorway_count, which counts SKUs that SOLD.
+  int32 colorway_count = 21;
+  // Auxiliary output material (NF-07): the warehouse material an auxiliary card's run receipts into,
+  // plus its name and on-hand balance. Zero/empty for a sellable card. Present so an aux picker can
+  // show "820 on hand" beside a dust bag from the list alone — it previously needed one GetTechCard
+  // per card plus a warehouse read.
+  int32 output_material_id = 22;
+  string output_material_name = 23;
+  google.type.Decimal output_material_on_hand = 24; // unset when the card has no output material
 }

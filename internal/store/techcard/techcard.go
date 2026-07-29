@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -16,6 +17,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // Pagination bounds for list endpoints.
@@ -375,7 +377,6 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 			"tech_card_callout", "tech_card_detail",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
-			"tech_card_size_pattern",
 		} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
@@ -566,6 +567,14 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 		where += " AND purpose = :purpose"
 		params["purpose"] = filter.Purpose
 	}
+	if len(filter.CategoryIds) > 0 {
+		// Matched at every level, so one id works whichever node the operator picked: the leaf tag
+		// (category_id) and the derived taxonomy triple are all compared against the same set. The
+		// triple is maintained by syncStyleCategoryTriple on every write, so this needs no join.
+		where += ` AND (category_id IN (:categoryIds) OR top_category_id IN (:categoryIds)
+			OR sub_category_id IN (:categoryIds) OR type_id IN (:categoryIds))`
+		params["categoryIds"] = filter.CategoryIds
+	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
 		fmt.Sprintf(`SELECT COUNT(*) FROM tech_card WHERE 1=1%s`, where), params)
@@ -599,7 +608,83 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 			cards[i].PreviewURL = pickTechCardPreviewURL(cards[i].Stage, full[cards[i].Id])
 		}
 	}
+	// Colourway counts and auxiliary output stock, batched for the page like the previews above and
+	// degrading the same way: a list must still render when a secondary fact cannot be resolved.
+	if err := s.enrichListFacts(ctx, cards); err != nil {
+		slog.Default().WarnContext(ctx, "can't resolve tech card list facts; counts omitted",
+			slog.String("err", err.Error()))
+	}
 	return cards, total, nil
+}
+
+// enrichListFacts fills the per-row facts a list/board row shows but the tech_card row does not
+// carry: how many live colourways the style has, and (for an auxiliary card) the name and on-hand
+// balance of the material its runs receipt into.
+//
+// Two batched queries for the whole page. Both were previously N+1 in the client — the aux picker
+// ran one GetTechCard per card plus a warehouse read, capped at 40 cards to stop it fanning out.
+func (s *Store) enrichListFacts(ctx context.Context, cards []entity.TechCard) error {
+	if len(cards) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(cards))
+	for i := range cards {
+		ids = append(ids, cards[i].Id)
+	}
+	counts, err := storeutil.QueryListNamed[struct {
+		StyleID int `db:"style_id"`
+		N       int `db:"n"`
+	}](ctx, s.DB, `
+		SELECT style_id, COUNT(*) AS n FROM product
+		WHERE style_id IN (:ids) AND lifecycle_status <> :archived
+		GROUP BY style_id`,
+		map[string]any{"ids": ids, "archived": uint8(entity.ColorwayStatusArchived)})
+	if err != nil {
+		return fmt.Errorf("count colourways for tech card list: %w", err)
+	}
+	countByStyle := make(map[int]int, len(counts))
+	for _, c := range counts {
+		countByStyle[c.StyleID] = c.N
+	}
+
+	// Only auxiliary cards have an output material; asking for the others' would join for nothing.
+	auxIDs := make([]int, 0, len(cards))
+	for i := range cards {
+		if cards[i].OutputMaterialId.Valid && cards[i].OutputMaterialId.Int64 > 0 {
+			auxIDs = append(auxIDs, cards[i].Id)
+		}
+	}
+	type auxRow struct {
+		TechCardID int                 `db:"tech_card_id"`
+		Name       string              `db:"name"`
+		OnHand     decimal.NullDecimal `db:"on_hand"`
+	}
+	outputByCard := make(map[int]auxRow, len(auxIDs))
+	if len(auxIDs) > 0 {
+		// LEFT JOIN on material_stock: a material with no movements yet has no stock row at all, and
+		// that must read as "no balance recorded", not as an absent material.
+		rows, err := storeutil.QueryListNamed[auxRow](ctx, s.DB, `
+			SELECT t.id AS tech_card_id, m.name AS name, ms.on_hand AS on_hand
+			FROM tech_card t
+			JOIN material m ON m.id = t.output_material_id
+			LEFT JOIN material_stock ms ON ms.material_id = m.id
+			WHERE t.id IN (:ids)`, map[string]any{"ids": auxIDs})
+		if err != nil {
+			return fmt.Errorf("load auxiliary output materials for tech card list: %w", err)
+		}
+		for _, r := range rows {
+			outputByCard[r.TechCardID] = r
+		}
+	}
+
+	for i := range cards {
+		cards[i].ColorwayCount = countByStyle[cards[i].Id]
+		if out, ok := outputByCard[cards[i].Id]; ok {
+			cards[i].OutputMaterialName = out.Name
+			cards[i].OutputMaterialOnHand = out.OnHand
+		}
+	}
+	return nil
 }
 
 // pickTechCardPreviewURL chooses the thumbnail URL for a list/gallery card (B-9). `media` is ordered
@@ -713,6 +798,15 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 				cols[ci].Cards[i].PreviewURL = pickTechCardPreviewURL(cols[ci].Cards[i].Stage, full[cols[ci].Cards[i].Id])
 			}
 		}
+		// The board renders the same list-item message as ListTechCards, so its cards need the same
+		// per-row facts — otherwise a colourway count that is real in the list reads as 0 on the board.
+		for ci := range cols {
+			if err := s.enrichListFacts(ctx, cols[ci].Cards); err != nil {
+				slog.Default().WarnContext(ctx, "can't resolve pipeline list facts; counts omitted",
+					slog.String("err", err.Error()))
+				break
+			}
+		}
 	}
 	return cols, nil
 }
@@ -795,18 +889,80 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	return insertTechCardPatterns(ctx, db, id, tc.Patterns)
 }
 
+// patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
+// when its PDF first arrived. Keyed by url, which identifies the uploaded object (bucket.GetMediaName
+// embeds a timestamp plus a random suffix, so two uploads never collide).
+type patternHistoryRow struct {
+	URL        string       `db:"url"`
+	SizeId     int          `db:"size_id"`
+	Version    int          `db:"version"`
+	UploadedAt sql.NullTime `db:"uploaded_at"`
+}
+
+// insertTechCardPatterns replaces a card's pattern rows, CARRYING FORWARD each sheet's revision and
+// upload time.
+//
+// Patterns are a full-replace child: every card save deletes and reinserts them. That is fine for the
+// url/filename/bytes the client round-trips, but it destroys anything the SERVER knows and the client
+// does not — which is why "when did this PDF arrive" and "which revision is it" did not exist before,
+// and the admin scraped a version out of the filename instead. So this does not delete blindly: it
+// reads the rows it is about to drop, keys them by url, and gives a returning url back its number and
+// its original timestamp. A url the card has not carried before is genuinely new — it takes MAX+1
+// within its size and is stamped now.
+//
+// Unlike the other full-replace children this owns its own DELETE (it is excluded from the blind
+// delete loop in UpdateTechCard) precisely because it has to read before it deletes.
 func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern) error {
+	prior, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
+		`SELECT url, size_id, version, uploaded_at FROM tech_card_size_pattern WHERE tech_card_id = :id`,
+		map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("failed to read tech card patterns: %w", err)
+	}
+	known := make(map[string]patternHistoryRow, len(prior))
+	maxVersionBySize := make(map[int]int, len(prior))
+	for _, r := range prior {
+		known[r.URL] = r
+		if r.Version > maxVersionBySize[r.SizeId] {
+			maxVersionBySize[r.SizeId] = r.Version
+		}
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM tech_card_size_pattern WHERE tech_card_id = :id`, map[string]any{"id": id}); err != nil {
+		return fmt.Errorf("failed to clear tech_card_size_pattern: %w", err)
+	}
 	if len(patterns) == 0 {
 		return nil
 	}
+	now := time.Now().UTC()
 	rows := make([]map[string]any, 0, len(patterns))
 	for i, p := range patterns {
+		version, uploadedAt := p.Version, p.UploadedAt
+		if seen, ok := known[p.URL]; ok {
+			// A sheet already on this card keeps its identity: the client never owns these.
+			if version <= 0 {
+				version = seen.Version
+			}
+			uploadedAt = seen.UploadedAt
+		} else {
+			uploadedAt = sql.NullTime{Time: now, Valid: true}
+		}
+		if version <= 0 {
+			maxVersionBySize[p.SizeId]++
+			version = maxVersionBySize[p.SizeId]
+		} else if version > maxVersionBySize[p.SizeId] {
+			// A client-pinned number still moves the high-water mark, or the next auto-assigned
+			// revision for that size would collide with it.
+			maxVersionBySize[p.SizeId] = version
+		}
 		rows = append(rows, map[string]any{
 			"tech_card_id":  id,
 			"size_id":       p.SizeId,
 			"url":           p.URL,
 			"filename":      p.Filename,
 			"size_bytes":    p.SizeBytes,
+			"version":       version,
+			"uploaded_at":   uploadedAt,
 			"display_order": i,
 		})
 	}

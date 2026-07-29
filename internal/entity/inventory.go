@@ -193,6 +193,25 @@ type MaterialIssueInsert struct {
 	AdminUsername string
 }
 
+// MaterialBatchIssueLine is one material in an atomic issue or return.
+type MaterialBatchIssueLine struct {
+	MaterialId int
+	Quantity   decimal.Decimal
+	LotId      sql.NullInt32
+	Comment    sql.NullString
+}
+
+// MaterialBatchIssueInsert applies several material issues or returns to one shared target.
+type MaterialBatchIssueInsert struct {
+	ProductionRunId sql.NullInt32
+	SampleId        sql.NullInt32
+	ProductId       sql.NullInt32
+	IsReturn        bool
+	OccurredAt      sql.NullTime
+	AdminUsername   string
+	Lines           []MaterialBatchIssueLine
+}
+
 // MaterialAdjustMode selects how AdjustMaterialStock changes the balance.
 type MaterialAdjustMode string
 

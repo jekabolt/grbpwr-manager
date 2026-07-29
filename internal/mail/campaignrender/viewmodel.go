@@ -112,6 +112,7 @@ type blockView struct {
 	Type            entity.EmailBlockType
 	BlockIndex      int
 	BackgroundColor string
+	Palette         palette
 	Translations    []entity.EmailBlockTranslation
 	Copy            entity.EmailBlockTranslation
 	RichHTML        template.HTML
@@ -131,6 +132,7 @@ type blockView struct {
 
 type documentView struct {
 	BackgroundColor string
+	Palette         palette
 	Preheader       string
 	Body            template.HTML
 	UnsubscribeURL  string

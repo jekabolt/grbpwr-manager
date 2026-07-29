@@ -1,0 +1,94 @@
+package techcard
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+)
+
+// techCardReadinessQuery gathers every readiness fact as correlated subselects hanging off the card
+// row — the same single-round-trip shape as guardTechCardStageRegression. The checklist is advisory
+// UI that a board can request for any card the operator opens, so it must not cost twenty queries.
+//
+// Notes that cannot live in the SQL text (a ':' inside a SQL comment breaks sqlx named binding):
+//   - lab_dip_status is NULLable on product and the rest of the codebase reads NULL as 'pending'
+//     (see materials.go), so COALESCE here keeps a never-submitted colourway counted as outstanding.
+//   - a fitting may belong to a product only (tech_card_id NULL); the equality filters those out.
+//   - the pattern subselect intersects with the live size range: a sheet left behind for a size that
+//     has since been dropped from the grade must not count towards coverage.
+const techCardReadinessQuery = `SELECT
+	tc.stage                                                                  AS stage,
+	tc.approval_state                                                         AS approval_state,
+	(tc.style_number IS NOT NULL AND tc.style_number <> '')                   AS has_style_number,
+	(tc.category_id IS NOT NULL)                                              AS has_category,
+	(tc.base_sample_size_id IS NOT NULL)                                      AS has_base_sample_size,
+	(SELECT COUNT(*) FROM tech_card_size z WHERE z.tech_card_id = tc.id)       AS sizes,
+	(SELECT COUNT(*) FROM tech_card_piece p WHERE p.tech_card_id = tc.id)      AS pieces,
+	(SELECT COUNT(*) FROM tech_card_operation o WHERE o.tech_card_id = tc.id)  AS operations,
+	(SELECT COUNT(*) FROM tech_card_bom_item b WHERE b.tech_card_id = tc.id)   AS bom_lines,
+	(SELECT COUNT(*) FROM tech_card_bom_item b
+		WHERE b.tech_card_id = tc.id AND b.section = 'fabric')                AS bom_fabric_lines,
+	(SELECT COUNT(*) FROM tech_card_bom_item b
+		WHERE b.tech_card_id = tc.id AND b.material_id IS NOT NULL)           AS bom_linked_lines,
+	(SELECT COUNT(*) FROM sample s
+		WHERE s.tech_card_id = tc.id AND s.status <> 'scrapped')              AS samples,
+	(SELECT COUNT(*) FROM sample s
+		WHERE s.tech_card_id = tc.id AND s.status <> 'scrapped'
+		  AND s.purpose = 'proto')                                            AS proto_samples,
+	(SELECT COUNT(*) FROM sample s
+		WHERE s.tech_card_id = tc.id AND s.status <> 'scrapped'
+		  AND s.purpose = 'fit')                                              AS fit_samples,
+	(SELECT COUNT(*) FROM sample s
+		WHERE s.tech_card_id = tc.id AND s.status <> 'scrapped'
+		  AND s.purpose = 'sms')                                              AS sms_samples,
+	(SELECT COUNT(*) FROM sample s
+		WHERE s.tech_card_id = tc.id AND s.status <> 'scrapped'
+		  AND s.purpose = 'pp')                                               AS pp_samples,
+	(SELECT COUNT(*) FROM fitting f WHERE f.tech_card_id = tc.id)              AS fittings,
+	(SELECT COUNT(*) FROM fitting f
+		WHERE f.tech_card_id = tc.id AND f.verdict = 'approved')              AS fittings_approved,
+	(SELECT COUNT(*) FROM fitting_change_request cr
+		JOIN fitting f ON f.id = cr.fitting_id
+		WHERE f.tech_card_id = tc.id AND cr.status = 'open')                  AS open_change_requests,
+	(SELECT COUNT(*) FROM product pr
+		WHERE pr.style_id = tc.id AND pr.lifecycle_status <> :archived)       AS live_colorways,
+	(SELECT COUNT(*) FROM product pr
+		WHERE pr.style_id = tc.id AND pr.lifecycle_status <> :archived
+		  AND COALESCE(pr.lab_dip_status, 'pending') <> 'approved')           AS lab_dip_pending_colorways,
+	(SELECT COUNT(*) FROM production_run r WHERE r.tech_card_id = tc.id)       AS production_runs,
+	(SELECT COUNT(*) FROM production_run r
+		WHERE r.tech_card_id = tc.id AND r.status = 'received')               AS production_runs_received,
+	(SELECT COUNT(DISTINCT sp.size_id) FROM tech_card_size_pattern sp
+		WHERE sp.tech_card_id = tc.id
+		  AND sp.size_id IN (SELECT z.size_id FROM tech_card_size z
+		                     WHERE z.tech_card_id = tc.id))                   AS pattern_sizes,
+	EXISTS(SELECT 1 FROM tech_card_costing c WHERE c.tech_card_id = tc.id)     AS has_costing,
+	EXISTS(SELECT 1 FROM tech_card_costing c
+		WHERE c.tech_card_id = tc.id
+		  AND c.currency IS NOT NULL AND c.currency <> '')                    AS has_costing_currency,
+	(SELECT COUNT(*) FROM tech_card_signoff g WHERE g.tech_card_id = tc.id)    AS signoffs,
+	(SELECT COUNT(*) FROM tech_card_signoff g
+		WHERE g.tech_card_id = tc.id AND g.state = 'approved')                AS signoffs_approved
+FROM tech_card tc
+WHERE tc.id = :id`
+
+// GetTechCardReadiness returns the raw counts a style's stage/release checklist is scored against.
+// sql.ErrNoRows when the card is absent (NOT_FOUND upstream).
+//
+// It deliberately stops at counting: interpreting a count ("an sms sample exists, therefore the card
+// may enter pp") is the studio's rule, and lives in the apisrv layer with the labels it produces.
+func (s *Store) GetTechCardReadiness(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, error) {
+	f, err := storeutil.QueryNamedOne[entity.TechCardReadinessFacts](ctx, s.DB, techCardReadinessQuery,
+		map[string]any{"id": techCardID, "archived": uint8(entity.ColorwayStatusArchived)})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return entity.TechCardReadinessFacts{}, sql.ErrNoRows
+		}
+		return entity.TechCardReadinessFacts{}, fmt.Errorf("can't gather readiness facts for tech card %d: %w", techCardID, err)
+	}
+	return f, nil
+}

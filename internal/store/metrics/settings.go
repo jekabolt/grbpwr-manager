@@ -17,6 +17,7 @@ const (
 	alertKeyGA4CoverageWarnPct     = "ga4_coverage_warn_pct"
 	alertKeyProductionRunStaleDays = "production_run_stale_days"
 	alertKeyAcctPostingLagHours    = "acct_posting_lag_hours"
+	alertKeyTargetMarginPct        = "target_margin_pct"
 )
 
 // GetAlertThresholds loads the dashboard alert thresholds from alert_setting, falling back to
@@ -47,6 +48,8 @@ func (s *Store) GetAlertThresholds(ctx context.Context) (entity.AlertThresholds,
 			t.ProductionRunStaleDays = int(r.Value.IntPart())
 		case alertKeyAcctPostingLagHours:
 			t.AcctPostingLagHours = int(r.Value.IntPart())
+		case alertKeyTargetMarginPct:
+			t.TargetMarginPct = r.Value.InexactFloat64()
 		}
 	}
 	return t, nil
@@ -63,6 +66,7 @@ func (s *Store) UpsertAlertThresholds(ctx context.Context, t entity.AlertThresho
 		{alertKeyRateFloorN, decimal.NewFromInt(int64(t.RateFloorN))},
 		{alertKeyContributionTrustPct, decimal.NewFromFloat(t.ContributionTrustPct)},
 		{alertKeyGA4CoverageWarnPct, decimal.NewFromFloat(t.GA4CoverageWarnPct)},
+		{alertKeyTargetMarginPct, decimal.NewFromFloat(t.TargetMarginPct)},
 		{alertKeyProductionRunStaleDays, decimal.NewFromInt(int64(t.ProductionRunStaleDays))},
 		{alertKeyAcctPostingLagHours, decimal.NewFromInt(int64(t.AcctPostingLagHours))},
 	}
