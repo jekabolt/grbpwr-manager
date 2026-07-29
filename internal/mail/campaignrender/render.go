@@ -268,11 +268,12 @@ func (r *Renderer) Render(
 		Preheader:       preheader,
 		Body:            template.HTML(body),
 		UnsubscribeURL:  unsubscribeURL,
+		Footer:          in.Footer,
 	}); err != nil {
 		return Rendered{}, warnings, fmt.Errorf("execute campaign document: %w", err)
 	}
 	return Rendered{
 		HTML: document.String(),
-		Text: renderPlaintext(blocks, unsubscribeURL),
+		Text: renderPlaintext(blocks, unsubscribeURL, in.Footer),
 	}, warnings, nil
 }

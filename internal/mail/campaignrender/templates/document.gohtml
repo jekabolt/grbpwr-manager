@@ -43,8 +43,8 @@
               <div style="height:16px;line-height:16px;font-size:0;">&nbsp;</div>
 
               <div style="font-size:11px;line-height:19px;color:{{.Palette.Muted}};letter-spacing:0.3px;">
-                NEED HELP? <a href="mailto:customer@grbpwr.com" style="color:{{.Palette.Text}};text-decoration:none;">customer@grbpwr.com</a><br>
-                <a href="https://grbpwr.com/faq" style="color:{{.Palette.Muted}};text-decoration:underline;">FAQ</a> &middot; <a href="https://grbpwr.com/aftersale-services" style="color:{{.Palette.Muted}};text-decoration:underline;">AFTER-SALE SERVICES</a>
+                {{if .Footer.Help}}{{.Footer.Help}}{{else}}NEED HELP?{{end}} <a href="mailto:customer@grbpwr.com" style="color:{{.Palette.Text}};text-decoration:none;">customer@grbpwr.com</a><br>
+                <a href="https://grbpwr.com/faq" style="color:{{.Palette.Muted}};text-decoration:underline;">{{if .Footer.Faq}}{{.Footer.Faq}}{{else}}FAQ{{end}}</a> &middot; <a href="https://grbpwr.com/aftersale-services" style="color:{{.Palette.Muted}};text-decoration:underline;">{{if .Footer.Aftersale}}{{.Footer.Aftersale}}{{else}}AFTER-SALE SERVICES{{end}}</a>
               </div>
 
               <div style="height:12px;line-height:12px;font-size:0;">&nbsp;</div>
@@ -58,7 +58,7 @@
               {{if .UnsubscribeURL}}
               <div style="height:12px;line-height:12px;font-size:0;">&nbsp;</div>
               <div style="font-size:10px;line-height:16px;color:{{.Palette.Faint}};">
-                if you no longer wish to receive email updates, <a href="{{.UnsubscribeURL}}" style="color:{{.Palette.Faint}};text-decoration:underline;">unsubscribe</a>.
+                {{if .Footer.UnsubPre}}{{.Footer.UnsubPre}}{{else}}if you no longer wish to receive email updates,{{end}} <a href="{{.UnsubscribeURL}}" style="color:{{.Palette.Faint}};text-decoration:underline;">{{if .Footer.UnsubWord}}{{.Footer.UnsubWord}}{{else}}unsubscribe{{end}}</a>.
               </div>
               {{end}}
 

@@ -1301,6 +1301,9 @@ type (
 		CampaignSendingDisabled() bool
 		CampaignEnvelope(campaign *entity.EmailCampaignFull) (string, *string, error)
 		CampaignUnsubscribeURL(topic entity.EmailCampaignTopic, email string) (string, error)
+		// CampaignFooterStrings resolves the localized campaign-footer labels for a recipient's
+		// language (from the transactional catalog) so campaign emails aren't hardcoded English.
+		CampaignFooterStrings(languageID int, langs []entity.Language) entity.EmailFooterStrings
 		BuildCampaignSendRequest(to string, snapshot entity.EmailCampaignRenderSnapshot, htmlBody, textBody, unsubscribeURL string) (resend.SendEmailRequest, error)
 		SendCampaignBatch(ctx context.Context, requests []resend.SendEmailRequest, idempotencyKey string, beforePost func() error) ([]string, error)
 		SendNewSubscriber(ctx context.Context, rep Repository, to string) error

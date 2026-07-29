@@ -25,6 +25,18 @@ type EmailLink struct {
 	URL   string `json:"url"`
 }
 
+// EmailFooterStrings are the localized campaign-footer labels, resolved per recipient locale
+// from the shared transactional i18n catalog (common.footer.* keys) and passed into the campaign
+// renderer. A neutral type (not campaignrender's) so the mailer can return it without importing
+// the renderer, which itself imports dependency. Empty fields fall back to the template's English.
+type EmailFooterStrings struct {
+	Help      string // "NEED HELP?"
+	Faq       string // "FAQ"
+	Aftersale string // "AFTER-SALE SERVICES"
+	UnsubPre  string // "if you no longer wish to receive email updates,"
+	UnsubWord string // "unsubscribe"
+}
+
 // EmailBlockTranslation is the shared translation superset for all block types.
 type EmailBlockTranslation struct {
 	LanguageID int         `json:"language_id"`

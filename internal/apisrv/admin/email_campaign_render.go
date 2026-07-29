@@ -150,6 +150,7 @@ func (s *Server) renderCampaign(
 		LanguageID:      int(languageID),
 		Langs:           langs,
 		UnsubscribeURL:  "",
+		Footer:          s.mailer.CampaignFooterStrings(int(languageID), langs),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "can't render email campaign", slog.String("err", err.Error()))

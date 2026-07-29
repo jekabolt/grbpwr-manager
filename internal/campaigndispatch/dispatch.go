@@ -351,6 +351,7 @@ func (w *Worker) ensureSnapshot(
 			LanguageID:      languageID,
 			Langs:           langs,
 			UnsubscribeURL:  unsubscribeURL,
+			Footer:          w.mailer.CampaignFooterStrings(languageID, langs),
 		})
 	})
 	if err != nil {

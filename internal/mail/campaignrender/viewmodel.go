@@ -19,6 +19,9 @@ type Input struct {
 	LanguageID      int
 	Langs           []entity.Language
 	UnsubscribeURL  string
+	// Footer carries the localized footer labels for this render's language (resolved by the
+	// caller from the transactional catalog). Empty fields fall back to the template's English.
+	Footer entity.EmailFooterStrings
 }
 
 type Rendered struct {
@@ -136,4 +139,5 @@ type documentView struct {
 	Preheader       string
 	Body            template.HTML
 	UnsubscribeURL  string
+	Footer          entity.EmailFooterStrings
 }

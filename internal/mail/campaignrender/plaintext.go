@@ -8,6 +8,15 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 )
 
+// plaintextFooter returns the localized footer label, falling back to the English literal when
+// the localized value is empty.
+func plaintextFooter(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
+}
+
 func appendTextLine(lines *[]string, value string) {
 	value = strings.TrimSpace(value)
 	if value != "" {
@@ -101,15 +110,21 @@ func collapsePlaintext(lines []string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-func renderPlaintext(blocks []blockView, unsubscribeURL string) string {
+func renderPlaintext(blocks []blockView, unsubscribeURL string, footer entity.EmailFooterStrings) string {
 	var lines []string
 	walkPlaintext(blocks, &lines)
-	// Footer — mirrors the transactional email footer (partials/email_footer.gohtml).
+	// Footer — mirrors the transactional email footer (partials/email_footer.gohtml), localized
+	// per recipient (empty fields fall back to the English literal).
+	help := plaintextFooter(footer.Help, "NEED HELP?")
+	faq := plaintextFooter(footer.Faq, "FAQ")
+	aftersale := plaintextFooter(footer.Aftersale, "AFTER-SALE SERVICES")
 	appendTextLine(&lines, "—")
-	appendTextLine(&lines, "NEED HELP? customer@grbpwr.com")
-	appendTextLine(&lines, "FAQ: https://grbpwr.com/faq · AFTER-SALE SERVICES: https://grbpwr.com/aftersale-services")
+	appendTextLine(&lines, help+" customer@grbpwr.com")
+	appendTextLine(&lines, faq+": https://grbpwr.com/faq · "+aftersale+": https://grbpwr.com/aftersale-services")
 	if unsubscribeURL != "" {
-		appendTextLine(&lines, "If you no longer wish to receive email updates, unsubscribe: "+unsubscribeURL)
+		unsubPre := plaintextFooter(footer.UnsubPre, "If you no longer wish to receive email updates,")
+		unsubWord := plaintextFooter(footer.UnsubWord, "unsubscribe")
+		appendTextLine(&lines, unsubPre+" "+unsubWord+": "+unsubscribeURL)
 	}
 	appendTextLine(&lines, "GRBPWR LIMITED · 167–169 GREAT PORTLAND STREET, LONDON W1W 5PF · NO.17015705")
 	return collapsePlaintext(lines)
