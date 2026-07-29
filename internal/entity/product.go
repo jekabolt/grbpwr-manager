@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -111,6 +112,27 @@ const (
 	Unisex GenderEnum = "unisex"
 )
 
+// Scan lets a NULL column read as the empty (unset) gender instead of failing the whole query.
+//
+// tech_card.target_gender is `VARCHAR(16) NULL COMMENT 'NULL = unset'` — a style with no target
+// gender is a legal, expected state, and the read path downstream already treats an empty gender as
+// GENDER_ENUM_UNKNOWN (dto.ConvertEntityGenderToPbGenderEnum). Without this, one such style made
+// EVERY multi-row product read fail with "converting NULL to string is unsupported" — the admin
+// catalogue returned 500 for the whole page because of one row.
+func (ge *GenderEnum) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*ge = ""
+	case string:
+		*ge = GenderEnum(v)
+	case []byte:
+		*ge = GenderEnum(v)
+	default:
+		return fmt.Errorf("cannot scan %T into GenderEnum", src)
+	}
+	return nil
+}
+
 // ColorwayStatus (the stored product.lifecycle_status) and its lifecycle state machine live in
 // colorway_lifecycle.go. It is ORTHOGONAL to preorder, sold_out and hidden_for_non_qualified
 // (availability window / derived stock / tier gating), which are not lifecycle states.
@@ -139,6 +161,22 @@ const (
 	SeasonPF SeasonEnum = "PF" // Pre-Fall
 	SeasonRC SeasonEnum = "RC" // Resort/Cruise
 )
+
+// Scan mirrors GenderEnum.Scan: tech_card.season_code is `CHAR(2) NULL` (0134 — "NULL allowed for
+// unset/legacy"), so an unset season must read as empty, not blow up the row.
+func (se *SeasonEnum) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*se = ""
+	case string:
+		*se = SeasonEnum(v)
+	case []byte:
+		*se = SeasonEnum(v)
+	default:
+		return fmt.Errorf("cannot scan %T into SeasonEnum", src)
+	}
+	return nil
+}
 
 func (se SeasonEnum) String() string {
 	switch se {
