@@ -30,4 +30,9 @@ type DictionaryInfo struct {
 	// Fibers is the controlled fibre vocabulary (S17/P0.4) surfaced to the admin so a composition
 	// editor can pick a fibre by code; archived entries are included, flagged via ArchivedAt.
 	Fibers []Fiber
+	// CareSymbols is the controlled ISO 3758 care vocabulary, in canonical print order, with its
+	// per-language customer wording. It is what a stored care code string resolves against — the
+	// admin picker reads names and categories from it, the storefront reads ShortProse. Archived
+	// entries are included, flagged via ArchivedAt.
+	CareSymbols []CareSymbol
 }

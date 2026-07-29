@@ -365,6 +365,7 @@ func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.Colorway
 			TargetGender:       tg,
 			Season:             sn,
 			CareInstructions:   bi.CareInstructions.String,
+			CareEntries:        CareEntriesToPb(cache.GetCareIndex().Resolve(bi.CareInstructions.String, 0)),
 			Composition:        bi.Composition.String,
 			Collection:         bi.Collection,
 			Fit:                bi.Fit.String,

@@ -50,6 +50,10 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 			IsProd:                      cache.GetPaymentIsProd(),
 			BackgroundHeroColor:         cache.GetBackgroundHeroColor(),
 			ProductTags:                 cache.GetProductTags(),
+			// The care vocabulary travels with the storefront dictionary so a PDP can render a
+			// colourway's care_entries in the buyer's language: the entries carry the codes and the
+			// order, this carries the wording for every language.
+			CareSymbols:                 cache.GetCareSymbols(),
 		}),
 	}, nil
 }

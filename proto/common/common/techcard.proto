@@ -1138,6 +1138,11 @@ message TechCard {
   string fit = 15;
   string composition = 16;
   string care_instructions = 17;
+  // care_entries is the STRUCTURED projection of care_instructions above, resolved against the
+  // care_symbol dictionary and always in canonical print order. care_instructions keeps holding the
+  // raw comma-joined codes; render entries when present and fall back to the string for rows that
+  // still hold pre-ISO free text. OUTPUT-ONLY — care is written as the code string.
+  repeated CareEntry care_entries = 19;
   // section_digests is the CURRENT fingerprint of each sign-off section's content, recomputed on
   // every read. Compare an entry against the matching TechCardSignoff.signed_digest to tell whether
   // an approved section has been edited since it was signed. OUTPUT-ONLY.
