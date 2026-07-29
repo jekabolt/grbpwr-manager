@@ -127,6 +127,11 @@ type TaskListFilter struct {
 	Assignee        string     // "" = any assignee
 	TechCardId      int        // 0 = no filter
 	ProductId       int        // 0 = no filter
+	OrderUuid       string     // "" = no filter
+	ArchiveId       int        // 0 = no filter
+	FittingId       int        // 0 = no filter
+	ProductionRunId int        // 0 = no filter
+	SampleId        int        // 0 = no filter
 	IncludeArchived bool       // false = active only (default); true = include archived
 	Limit           int
 	Offset          int

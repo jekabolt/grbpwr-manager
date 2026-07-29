@@ -197,6 +197,8 @@ var methodRequirements = map[string]Requirement{
 	// orders
 	"GetOrderByUUID":        rd(SectionOrders),
 	"ListOrders":            rd(SectionOrders),
+	"GetOrdersOverview":     rd(SectionOrders),
+	"ListOrderComments":     rd(SectionOrders),
 	"SetTrackingNumber":     wr(SectionOrders),
 	"SetShipmentActualCost": wr(SectionOrders),
 	"RefundOrder":           wr(SectionOrders),
