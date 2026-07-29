@@ -54,7 +54,7 @@ func TestPublishColorwayEnforcesRequiredCurrencyCompleteness(t *testing.T) {
 	partial := requiredPricesExcept("PLN")
 	require.NotEmpty(t, partial)
 	prd := newColorwayInsert("BLK", "black", "TPAC1-BLK", mediaID, langID, partial)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, partial)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, partial, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", colorwayID) })
 	_, err = s.Products().CreateVariant(ctx, colorwayID, sizeID)
@@ -81,7 +81,7 @@ func TestPublishColorwayEnforcesRequiredCurrencyCompleteness(t *testing.T) {
 	var lockV int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&lockV))
 	upd := newColorwayInsert("BLK", "black", "TPAC1-BLK", mediaID, langID, fullPrices)
-	_, err = s.Products().UpdateColorway(ctx, colorwayID, lockV, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices)
+	_, err = s.Products().UpdateColorway(ctx, colorwayID, lockV, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, s.Products().PublishColorway(ctx, colorwayID))
@@ -121,7 +121,7 @@ func TestPublishColorwayActivationIsAtomicUnderConcurrentPriceReduction(t *testi
 		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&sizeID))
 
 	prd := newColorwayInsert("BLK", "black", "TPAC2-BLK", mediaID, langID, fullPrices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", colorwayID) })
 	_, err = s.Products().CreateVariant(ctx, colorwayID, sizeID)
@@ -160,7 +160,7 @@ func TestPublishColorwayActivationIsAtomicUnderConcurrentPriceReduction(t *testi
 		go func() {
 			defer wg.Done()
 			upd := newColorwayInsert("BLK", "black", "TPAC2-BLK", mediaID, langID, partial)
-			_, _ = s.Products().UpdateColorway(ctx, colorwayID, lockV, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, partial)
+			_, _ = s.Products().UpdateColorway(ctx, colorwayID, lockV, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, partial, nil)
 		}()
 		wg.Wait()
 

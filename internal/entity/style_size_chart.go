@@ -11,10 +11,24 @@ type StyleSizeChartCell struct {
 	Value             decimal.Decimal `db:"measurement_value"`
 }
 
+// StyleSizeChartGradeStep is one measurement's grade increment — the per-size-position step the
+// expanded chart was authored from. Persisted to tech_card_grade_rule, keyed by the style.
+type StyleSizeChartGradeStep struct {
+	MeasurementNameID int             `db:"measurement_name_id"`
+	Step              decimal.Decimal `db:"step"`
+}
+
 // StyleSizeChart is a style's full size chart plus the shared optimistic-lock token (R5). It is written
 // full-replace under tech_card.lock_version; there is no separate chart version.
+//
+// GradeBaseSizeID + GradeSteps are the authoring rule the expanded Cells grid came from
+// (value = base + step × position delta). Cells stays the source of truth: a cell the grader
+// overtyped keeps its typed value, and whether a cell still follows the rule is derived by
+// recomputing it, never stored. Zero base + empty steps = no rule (a hand-typed chart).
 type StyleSizeChart struct {
-	StyleID     int
-	LockVersion int
-	Cells       []StyleSizeChartCell
+	StyleID         int
+	LockVersion     int
+	Cells           []StyleSizeChartCell
+	GradeBaseSizeID int
+	GradeSteps      []StyleSizeChartGradeStep
 }

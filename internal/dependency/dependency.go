@@ -29,11 +29,14 @@ type (
 		// decomposition): colourway-owned data only (merch row, translations, media, tags, prices), no
 		// style facts, variants or size chart. sql.ErrNoRows when the style is absent;
 		// entity.ErrColorwayColorExists on a duplicate (style_id, color_code). Returns the colourway id.
-		CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error)
+		CreateColorway(ctx context.Context, styleID int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error)
 		// UpdateColorway patches a colourway's own fields under an optimistic guard on the shared
 		// tech_card.lock_version (entity.ErrTechCardConflict on a stale value; sql.ErrNoRows when absent).
 		// Never touches style facts, variants, stock or the chart. Returns the new shared lock_version.
-		UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert) (int, error)
+		UpdateColorway(ctx context.Context, colorwayID, expectedVersion int, prd *entity.ColorwayInsert, mediaIDs []int, tags []entity.ColorwayTagInsert, prices []entity.ColorwayPriceInsert, dev *entity.ColorwayDevelopmentPatch) (int, error)
+		// LabDipRoundsByStyleID returns the lab-dip round journal of every colourway of a style,
+		// grouped by colourway id and oldest first (one query for the whole style).
+		LabDipRoundsByStyleID(ctx context.Context, styleID int) (map[int][]entity.ColorwayLabDipRound, error)
 		// UpdateStyle is the sole writer of a style's catalogue facts (R4/§14.7), optimistically locked on
 		// the shared tech_card.lock_version. A SKU-fact (season) change re-mints unfrozen siblings, or is
 		// refused (entity.ErrStyleFrozenSiblings) if any sibling is SKU-frozen. Returns the new lock_version.
@@ -628,12 +631,17 @@ type (
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
 		// and up to cardsPerStage light preview cards (gap-01).
 		GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error)
+		// GetTechCardReadiness returns the raw counts a style's advance/release checklist is scored
+		// against, in one round trip. sql.ErrNoRows when the card is absent.
+		GetTechCardReadiness(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, error)
 		// GetStyleSizeChart returns a style's full size chart + the shared tech_card.lock_version (R5).
 		// sql.ErrNoRows when the style is absent.
 		GetStyleSizeChart(ctx context.Context, styleID int) (entity.StyleSizeChart, error)
 		// UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5,
 		// full-replace) under the shared optimistic lock; entity.ErrTechCardConflict on a stale version.
-		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell) (entity.StyleSizeChart, error)
+		// gradeBaseSizeID + gradeSteps are the authoring grade rule behind the expanded cells and are
+		// replaced in the same transaction (0 / empty clears the rule).
+		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell, gradeBaseSizeID int, gradeSteps []entity.StyleSizeChartGradeStep) (entity.StyleSizeChart, error)
 		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
 		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
 		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
@@ -710,6 +718,7 @@ type (
 	MaterialStock interface {
 		ReceiveMaterialStock(ctx context.Context, ins entity.MaterialReceiptInsert) (entity.MaterialMovement, error)
 		IssueMaterialStock(ctx context.Context, ins entity.MaterialIssueInsert) (entity.MaterialMovement, error)
+		BatchIssueMaterialStock(ctx context.Context, ins entity.MaterialBatchIssueInsert) ([]entity.MaterialMovement, error)
 		AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdjustInsert) (entity.MaterialMovement, error)
 		GetMaterialStock(ctx context.Context, materialID int) (*entity.MaterialStock, error)
 		ListMaterialStock(ctx context.Context, filter entity.MaterialStockFilter) ([]entity.MaterialStockRow, error)

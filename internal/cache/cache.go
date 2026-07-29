@@ -613,6 +613,30 @@ func GetBaseCurrency() string {
 	return defaultCurrency
 }
 
+// targetMarginPct is the HOUSE gross-margin target (alert_setting `target_margin_pct`), cached
+// because every tech-card costing read resolves an effective target and none of them should pay for
+// a settings query to do it. Seeded from the built-in default so a read before the first load — or
+// after a failed one — still reports the same number the admin used to hard-code, never 0.
+var targetMarginPct = entity.DefaultAlertThresholds().TargetMarginPct
+
+// SetTargetMarginPct updates the cached house margin target. Called once at boot and again whenever
+// UpsertAlertSettings changes it; a non-positive value is ignored so a partial write cannot silently
+// turn every style's target into 0%.
+func SetTargetMarginPct(v float64) {
+	if v <= 0 {
+		return
+	}
+	cacheMu.Lock()
+	targetMarginPct = v
+	cacheMu.Unlock()
+}
+
+func GetTargetMarginPct() float64 {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return targetMarginPct
+}
+
 func GetBigMenu() bool {
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()

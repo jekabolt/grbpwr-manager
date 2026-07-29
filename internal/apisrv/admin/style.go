@@ -113,7 +113,26 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
-	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion), cells)
+	steps, err := dto.StyleSizeChartGradeStepsFromPb(req.GradeSteps)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	// A step for a measurement the chart does not carry cannot be applied to anything, and would
+	// resurface as a phantom column the next time the grid is opened. Reject it here rather than
+	// storing a rule that grades nothing.
+	if len(steps) > 0 {
+		charted := make(map[int]bool, len(cells))
+		for _, c := range cells {
+			charted[c.MeasurementNameID] = true
+		}
+		for _, st := range steps {
+			if !charted[st.MeasurementNameID] {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"grade step for measurement %d, which the chart has no cells for", st.MeasurementNameID)
+			}
+		}
+	}
+	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion), cells, int(req.GradeBaseSizeId), steps)
 	if err != nil {
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -121,7 +140,7 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 		case errors.Is(err, entity.ErrTechCardConflict):
 			return nil, status.Error(codes.Aborted, "style was modified concurrently; reload the chart and retry")
 		case s.repo.IsErrForeignKeyViolation(err):
-			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size or measurement name")
+			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size, measurement name or grade base size")
 		default:
 			slog.Default().ErrorContext(ctx, "can't update style size chart", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't update style size chart: %v", err)

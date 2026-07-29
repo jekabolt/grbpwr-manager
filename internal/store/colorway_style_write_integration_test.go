@@ -104,7 +104,7 @@ func TestCreateColorway(t *testing.T) {
 	styleID := insertSeasonedTestStyle(ctx, t, "TCW1", "SS", "SS26", 2026)
 
 	prd := newColorwayInsert("BLK", "black", "TCW1-BLACK", mediaID, langID, prices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
@@ -118,7 +118,7 @@ func TestCreateColorway(t *testing.T) {
 
 	// UNIQUE(style_id, color_code) (R1): a duplicate colour for the same style is refused.
 	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)
-	_, err = s.Products().CreateColorway(ctx, styleID, dup, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	_, err = s.Products().CreateColorway(ctx, styleID, dup, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.ErrorIs(t, err, entity.ErrColorwayColorExists)
 
 	// Mint the first colourway's SKU before creating a second one. product.sku is `VARCHAR(255) NOT
@@ -134,18 +134,18 @@ func TestCreateColorway(t *testing.T) {
 	var styleLV int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&styleLV))
 	firstMint := newColorwayInsert("BLK", "black", "TCW1-BLACK", mediaID, langID, prices)
-	_, err = s.Products().UpdateColorway(ctx, colorwayID, styleLV, firstMint, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	_, err = s.Products().UpdateColorway(ctx, colorwayID, styleLV, firstMint, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 
 	// A different colour on the same style is fine — proves the guard is scoped to (style, colour).
 	second := newColorwayInsert("WHT", "white", "TCW1-WHITE", mediaID, langID, prices)
-	secondID, err := s.Products().CreateColorway(ctx, styleID, second, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	secondID, err := s.Products().CreateColorway(ctx, styleID, second, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", secondID) }()
 
 	// An unknown style is sql.ErrNoRows (NOT_FOUND upstream) — checked before the colour-uniqueness query.
 	unknown := newColorwayInsert("BLK", "black", "TCW1-UNKNOWN", mediaID, langID, prices)
-	_, err = s.Products().CreateColorway(ctx, 999999999, unknown, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	_, err = s.Products().CreateColorway(ctx, 999999999, unknown, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.ErrorIs(t, err, sql.ErrNoRows)
 }
 
@@ -179,7 +179,7 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&sizeID))
 
 	prd := newColorwayInsert("BLK", "black", "TCW2-BLACK", mediaID, langID, prices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
@@ -197,7 +197,7 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 
 	// UpdateColorway under the correct (shared) version mints the base + variant SKU and bumps the lock.
 	upd := newColorwayInsert("BLK", "black", "TCW2-BLACK-UPD", mediaID, langID, prices)
-	newVersion, err := s.Products().UpdateColorway(ctx, colorwayID, v0, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	newVersion, err := s.Products().UpdateColorway(ctx, colorwayID, v0, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	require.Equal(t, v0+1, newVersion)
 
@@ -211,11 +211,11 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 	require.Regexp(t, `^SS26-[0-9]{5}-BLK-[0-9]{2}$`, variantSKU.String)
 
 	// A stale expected version is a conflict — the shared lock already moved.
-	_, err = s.Products().UpdateColorway(ctx, colorwayID, v0, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	_, err = s.Products().UpdateColorway(ctx, colorwayID, v0, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.ErrorIs(t, err, entity.ErrTechCardConflict)
 
 	// An absent colourway is sql.ErrNoRows.
-	_, err = s.Products().UpdateColorway(ctx, 999999999, v0, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	_, err = s.Products().UpdateColorway(ctx, 999999999, v0, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// Every precondition is now satisfied: publish succeeds and stamps published_at.
@@ -264,7 +264,7 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	// UpdateStyle's re-mint.
 	mintedColorway := func(colorCode, colorName, tag string) int {
 		prd := newColorwayInsert(colorCode, colorName, tag, mediaID, langID, prices)
-		id, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+		id, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", id) })
 		_, err = s.Products().CreateVariant(ctx, id, sizeID)
@@ -272,7 +272,7 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 		var v int
 		require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&v))
 		upd := newColorwayInsert(colorCode, colorName, tag, mediaID, langID, prices)
-		_, err = s.Products().UpdateColorway(ctx, id, v, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+		_, err = s.Products().UpdateColorway(ctx, id, v, upd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 		require.NoError(t, err)
 		return id
 	}
@@ -373,7 +373,7 @@ func TestPublishColorwayMintsSKUsWithoutPriorUpdateColorway(t *testing.T) {
 		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1 OFFSET 1`).Scan(&sizeID2))
 
 	prd := newColorwayInsert("BLK", "black", "TPCM-BLACK", mediaID, langID, prices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
@@ -432,7 +432,7 @@ func TestPublishColorwayResponsePublishedAtPopulated(t *testing.T) {
 		`SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 1`).Scan(&sizeID))
 
 	prd := newColorwayInsert("BLK", "black", "TPAP-BLACK", mediaID, langID, prices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
@@ -493,7 +493,7 @@ func TestColorwayActivationRequiresAllRequiredCurrencies(t *testing.T) {
 	// (a) CreateColorway with an INCOMPLETE currency set succeeds and lands a DRAFT (pre-fix this failed
 	// with "price validation failed: missing required currencies" — the P0 that blocked all creation).
 	prd := newColorwayInsert("BLK", "black", "TCWCUR-BLACK", mediaID, langID, partialPrices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, partialPrices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, partialPrices, nil)
 	require.NoError(t, err, "creating a DRAFT with a partial currency set must succeed (gate moved off create)")
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
@@ -522,7 +522,7 @@ func TestColorwayActivationRequiresAllRequiredCurrencies(t *testing.T) {
 	var v0 int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&v0))
 	updFull := newColorwayInsert("BLK", "black", "TCWCUR-BLACK", mediaID, langID, fullPrices)
-	_, err = s.Products().UpdateColorway(ctx, colorwayID, v0, updFull, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices)
+	_, err = s.Products().UpdateColorway(ctx, colorwayID, v0, updFull, []int{mediaID}, []entity.ColorwayTagInsert{}, fullPrices, nil)
 	require.NoError(t, err)
 
 	// (c) With every required currency present, the →ACTIVE edge admits the colourway.
@@ -577,7 +577,7 @@ func TestBackfillPLNProductPricesMigration(t *testing.T) {
 	// A legacy ACTIVE colourway: created as a DRAFT with EUR-only, then flipped straight to ACTIVE by raw
 	// UPDATE to simulate a row that predates PLN (the real gate would now refuse such a publish).
 	activePrd := newColorwayInsert("BLK", "black", "TCWPLN-BLACK", mediaID, langID, eurOnly)
-	activeID, err := s.Products().CreateColorway(ctx, styleID, activePrd, []int{mediaID}, []entity.ColorwayTagInsert{}, eurOnly)
+	activeID, err := s.Products().CreateColorway(ctx, styleID, activePrd, []int{mediaID}, []entity.ColorwayTagInsert{}, eurOnly, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", activeID) }()
 	_, err = testDB.ExecContext(ctx, "UPDATE product SET lifecycle_status = ? WHERE id = ?", int(entity.ColorwayStatusActive), activeID)
@@ -585,7 +585,7 @@ func TestBackfillPLNProductPricesMigration(t *testing.T) {
 
 	// A DRAFT colourway with the same EUR-only set — must NOT be backfilled.
 	draftPrd := newColorwayInsert("WHT", "white", "TCWPLN-WHITE", mediaID, langID, eurOnly)
-	draftID, err := s.Products().CreateColorway(ctx, styleID, draftPrd, []int{mediaID}, []entity.ColorwayTagInsert{}, eurOnly)
+	draftID, err := s.Products().CreateColorway(ctx, styleID, draftPrd, []int{mediaID}, []entity.ColorwayTagInsert{}, eurOnly, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", draftID) }()
 

@@ -102,13 +102,13 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 		{SizeID: sizeA, MeasurementNameID: measA, Value: decimal.NewFromInt(50)},
 		{SizeID: sizeB, MeasurementNameID: measB, Value: decimal.RequireFromString("51.5")},
 	}
-	updated, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells)
+	updated, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil)
 	require.NoError(t, err)
 	require.Equal(t, v0+1, updated.LockVersion)
 	require.Len(t, updated.Cells, 2)
 
 	// A stale version is a conflict (ABORTED upstream).
-	_, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells)
+	_, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil)
 	require.ErrorIs(t, err, entity.ErrTechCardConflict)
 
 	// Re-read returns the stored cells at the bumped version.
@@ -118,7 +118,7 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 	require.Len(t, chart1.Cells, 2)
 
 	// An empty full-replace clears the chart (full-replace semantics, not upsert).
-	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+1, nil)
+	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+1, nil, 0, nil)
 	require.NoError(t, err)
 	require.Empty(t, cleared.Cells)
 	require.Equal(t, v0+2, cleared.LockVersion)

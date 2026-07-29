@@ -75,6 +75,15 @@ func stripTechCardCosting(tc *pb_common.TechCard) {
 			continue
 		}
 		stripTechCardColorwayUsageCosting(c.Usages)
+		// The colourway ref now also carries its own COGS and its retail price list. Both are money
+		// and both go: cost_price is confidential by the same rule as BOM unit prices, and the retail
+		// list is only on the ref so a margin can be drawn from it — which is exactly the figure
+		// costing:read gates. The lab-dip state next to them is not money and stays.
+		c.CostPrice = nil
+		c.CostPriceSource = ""
+		c.CostPriceUpdatedAt = nil
+		c.Prices = nil
+		c.NetPrices = nil
 	}
 }
 

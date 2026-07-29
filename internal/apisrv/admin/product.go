@@ -37,7 +37,8 @@ func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwa
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 	}
 	id, err := s.repo.Products().CreateColorway(ctx, int(req.GetStyleId()), prd,
-		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()))
+		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
+		dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), nil))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "create", 0, err)
 	}
@@ -57,7 +58,8 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 	}
 	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
-		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()))
+		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
+		dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask()))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
 	}
