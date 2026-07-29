@@ -86,6 +86,45 @@ func safeURL(value string) string {
 	return value
 }
 
+// normalizeLogoPosition constrains the header logo alignment to the three supported
+// values, defaulting to center for anything unset or unrecognized.
+func normalizeLogoPosition(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "left":
+		return "left"
+	case "right":
+		return "right"
+	default:
+		return "center"
+	}
+}
+
+// normalizeAspect constrains an image block's display aspect ratio to the supported
+// set, defaulting to 16:9 (horizontal) for anything unset or unrecognized.
+func normalizeAspect(value string) string {
+	switch strings.TrimSpace(value) {
+	case "1:1":
+		return "1:1"
+	case "4:5":
+		return "4:5"
+	default:
+		return "16:9"
+	}
+}
+
+// imageMaxWidthPx caps how wide an image block renders so vertical/square crops
+// don't span the full body width. Horizontal images fill the 560px content column.
+func imageMaxWidthPx(aspect string) int {
+	switch normalizeAspect(aspect) {
+	case "1:1":
+		return 440
+	case "4:5":
+		return 380
+	default:
+		return 560
+	}
+}
+
 func safeColor(value, fallback string) string {
 	if emailColorPattern.MatchString(value) {
 		return value

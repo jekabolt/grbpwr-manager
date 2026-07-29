@@ -99,7 +99,18 @@ func campaignTemplateFuncs() template.FuncMap {
 		},
 		"rows":      productRows,
 		"gridWidth": func(columns int) string { return fmt.Sprintf("%d%%", 100/clamp(columns, 1, 3)) },
-		"vmlButton": vmlButton,
+		"vmlButton":     vmlButton,
+		"imageMaxWidth": imageMaxWidthPx,
+		"logoMargin": func(position string) string {
+			switch normalizeLogoPosition(position) {
+			case "left":
+				return "0"
+			case "right":
+				return "0 0 0 auto"
+			default:
+				return "0 auto"
+			}
+		},
 	}
 }
 

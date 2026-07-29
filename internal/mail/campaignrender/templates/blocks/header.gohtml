@@ -1,8 +1,8 @@
 {{define "block_header"}}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
-    <td align="center" class="gp-pad" style="padding:34px 40px 26px;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;color:{{.Palette.Text}};">
-      <img src="{{.Header.Logo.URL}}" width="{{.Header.Logo.Width}}" height="{{.Header.Logo.Height}}" alt="{{.Header.Logo.Alt}}" style="display:block;width:54px;max-width:54px;height:auto;margin:0 auto;border:0;">
+    <td align="{{.Header.Position}}" class="gp-pad" style="padding:34px 40px 26px;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;color:{{.Palette.Text}};">
+      <img src="{{.Header.Logo.URL}}" width="{{.Header.Logo.Width}}" height="{{.Header.Logo.Height}}" alt="{{.Header.Logo.Alt}}" style="display:block;width:54px;max-width:54px;height:auto;margin:{{logoMargin .Header.Position}};border:0;">
       {{if .Copy.Heading}}<h1 class="gp-h" style="margin:24px 0 0;font-size:26px;line-height:32px;font-weight:600;letter-spacing:1px;">{{.Copy.Heading}}</h1>{{end}}
       {{if .Copy.Subheading}}<p style="margin:10px 0 0;font-size:13px;line-height:21px;color:{{.Palette.Subhead}};">{{.Copy.Subheading}}</p>{{end}}
       {{if .Copy.Links}}

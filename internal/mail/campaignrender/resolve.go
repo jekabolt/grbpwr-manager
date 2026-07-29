@@ -305,14 +305,18 @@ func resolveBlock(
 	switch block.Type {
 	case entity.EmailBlockTypeHeader:
 		logo := mediaView{URL: defaultLogoURL, Width: 54, Height: 54, Alt: "GRBPWR"}
-		if block.Header != nil && block.Header.LogoMediaID > 0 {
-			media, ok := r.getMedia(ctx, block.Header.LogoMediaID)
-			if !ok {
-				return warn(fmt.Sprintf("header logo media %d is missing", block.Header.LogoMediaID))
+		position := "center"
+		if block.Header != nil {
+			if block.Header.LogoMediaID > 0 {
+				media, ok := r.getMedia(ctx, block.Header.LogoMediaID)
+				if !ok {
+					return warn(fmt.Sprintf("header logo media %d is missing", block.Header.LogoMediaID))
+				}
+				logo = mediaToView(media, "GRBPWR")
 			}
-			logo = mediaToView(media, "GRBPWR")
+			position = normalizeLogoPosition(block.Header.LogoPosition)
 		}
-		view.Header = &headerView{Logo: logo}
+		view.Header = &headerView{Logo: logo, Position: position}
 	case entity.EmailBlockTypeImageLink:
 		if block.ImageLink == nil {
 			return warn("image_link payload is missing")
@@ -321,7 +325,7 @@ func resolveBlock(
 		if !ok {
 			return warn(fmt.Sprintf("image_link media %d is missing", block.ImageLink.MediaID))
 		}
-		view.ImageLink = &imageLinkView{Media: mediaToView(media, ""), URL: safeURL(block.ImageLink.URL)}
+		view.ImageLink = &imageLinkView{Media: mediaToView(media, ""), URL: safeURL(block.ImageLink.URL), Aspect: normalizeAspect(block.ImageLink.Aspect)}
 	case entity.EmailBlockTypeRichText:
 		view.RichHTML = ""
 	case entity.EmailBlockTypeProductCard:
