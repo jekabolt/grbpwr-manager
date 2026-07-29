@@ -104,8 +104,13 @@ func collapsePlaintext(lines []string) string {
 func renderPlaintext(blocks []blockView, unsubscribeURL string) string {
 	var lines []string
 	walkPlaintext(blocks, &lines)
+	// Footer — mirrors the transactional email footer (partials/email_footer.gohtml).
+	appendTextLine(&lines, "—")
+	appendTextLine(&lines, "NEED HELP? customer@grbpwr.com")
+	appendTextLine(&lines, "FAQ: https://grbpwr.com/faq · AFTER-SALE SERVICES: https://grbpwr.com/aftersale-services")
 	if unsubscribeURL != "" {
-		appendTextLine(&lines, "Unsubscribe: "+unsubscribeURL)
+		appendTextLine(&lines, "If you no longer wish to receive email updates, unsubscribe: "+unsubscribeURL)
 	}
+	appendTextLine(&lines, "GRBPWR LIMITED · 167–169 GREAT PORTLAND STREET, LONDON W1W 5PF · NO.17015705")
 	return collapsePlaintext(lines)
 }

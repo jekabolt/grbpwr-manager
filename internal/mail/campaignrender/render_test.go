@@ -210,7 +210,7 @@ func TestRenderGoldenRepresentativeBlocks(t *testing.T) {
 	if strings.Contains(strings.ToLower(rendered.HTML), "<video") {
 		t.Fatal("rendered HTML contains a video element")
 	}
-	for _, required := range []string{"THE NEW SYSTEM", "SYSTEM JACKET", "€240.00", "ENDS 12 AUG 2026", "Unsubscribe"} {
+	for _, required := range []string{"THE NEW SYSTEM", "SYSTEM JACKET", "€240.00", "ENDS 12 AUG 2026", "https://grbpwr.com/unsubscribe/golden"} {
 		if !strings.Contains(rendered.HTML, required) {
 			t.Fatalf("rendered HTML does not contain %q", required)
 		}

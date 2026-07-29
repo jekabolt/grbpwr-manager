@@ -68,7 +68,7 @@ func vmlButton(block blockView) template.HTML {
 	url := html.EscapeString(safeURL(block.CTAButton.URL))
 	label := html.EscapeString(block.Copy.CTALabel)
 	return template.HTML(fmt.Sprintf(
-		`<!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="%s" style="height:42px;v-text-anchor:middle;width:220px;" arcsize="0%%" strokecolor="#0e0e0c" fillcolor="%s"><w:anchorlock xmlns:w="urn:schemas-microsoft-com:office:word"/><center style="color:%s;font-family:Arial,sans-serif;font-size:12px;font-weight:bold;">%s</center></v:roundrect><![endif]-->`,
+		`<!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="%s" style="height:42px;v-text-anchor:middle;width:220px;" arcsize="0%%" strokecolor="#0e0e0c" fillcolor="%s"><w:anchorlock xmlns:w="urn:schemas-microsoft-com:office:word"/><center style="color:%s;font-family:Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;">%s</center></v:roundrect><![endif]-->`,
 		url, fill, textColor, label,
 	))
 }

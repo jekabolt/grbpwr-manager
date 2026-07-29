@@ -2,14 +2,14 @@
 
 {{define "spacer"}}<div style="height:{{.}}px;line-height:{{.}}px;font-size:0;mso-line-height-rule:exactly;">&nbsp;</div>{{end}}
 
-{{define "hairline"}}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-top:1px solid #d8d4ca;font-size:0;line-height:0;">&nbsp;</td></tr></table>{{end}}
+{{define "hairline"}}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-top:1px solid #DBD8CE;font-size:0;line-height:0;">&nbsp;</td></tr></table>{{end}}
 
 {{define "bulletproof_button"}}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="{{.CTAButton.Alignment}}">
   <tr>
-    <td align="center" bgcolor="{{if eq .CTAButton.Style "outline"}}#ffffff{{else}}#0e0e0c{{end}}" style="border:1px solid #0e0e0c;background-color:{{if eq .CTAButton.Style "outline"}}#ffffff{{else}}#0e0e0c{{end}};mso-padding-alt:13px 26px;">
+    <td align="center" bgcolor="{{if eq .CTAButton.Style "outline"}}#ffffff{{else}}#0e0e0c{{end}}" style="border:1px solid #0e0e0c;background-color:{{if eq .CTAButton.Style "outline"}}#ffffff{{else}}#0e0e0c{{end}};mso-padding-alt:13px 24px;">
       {{vmlButton .}}
-      <a href="{{.CTAButton.URL}}" style="display:inline-block;padding:13px 26px;color:{{if eq .CTAButton.Style "outline"}}#0e0e0c{{else}}#ffffff{{end}};font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;letter-spacing:1px;line-height:16px;text-transform:uppercase;">{{.Copy.CTALabel}}</a>
+      <a href="{{.CTAButton.URL}}" style="display:inline-block;padding:13px 24px;color:{{if eq .CTAButton.Style "outline"}}#0e0e0c{{else}}#ffffff{{end}};font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;line-height:16px;text-transform:uppercase;">[ {{.Copy.CTALabel}} &rarr; ]</a>
     </td>
   </tr>
 </table>
