@@ -291,9 +291,24 @@ message AdminColorwayRef {
   // lives on the published product, so the costing tab used to reconstruct a retail figure by fanning
   // out GetColorwayByID over every linked colourway and only trusting it when all of them agreed.
   // Surfaced here so a margin can be drawn from one read, per colourway, without that guesswork.
-  // NOTE: these are the catalogue prices as entered — no VAT/tax model exists anywhere in this
-  // contract, so a margin computed against them is gross of whatever tax applies at the till.
+  //
+  // These are the catalogue prices AS ENTERED, and the whole system already treats those as
+  // VAT-INCLUSIVE: the order snapshot extracts vat_amount = total × rate/(100+rate) (migration 0094),
+  // accounting derives output VAT the same way, and the realised sales margin divides revenue by
+  // (1 + rate) before comparing it to cost. A margin drawn against `prices` therefore overstates
+  // itself by roughly the VAT rate — which is exactly what the costing tab was doing while the
+  // margin-by-style report next to it did not. Use net_prices below.
   repeated ColorwayPrice prices = 17;
+  // net_prices is `prices` with VAT removed at the rate of the read's VAT country (see
+  // TechCardCosting.vat_country_code / vat_rate_pct), paired by currency. This is the figure a margin
+  // must be drawn against, because unit_cost carries no VAT.
+  //
+  // It is a SCENARIO, not a fact: one gross price is sold into as many rates as there are
+  // destinations, so "the" net retail does not exist until someone names a market. The server nets at
+  // the company's domestic rate by default and honours GetTechCardRequest.vat_country_code to model
+  // another. Empty when no rate is known for that country (an export destination nets to itself, and
+  // silently returning the gross price under a "net" name would be the same lie in a new place).
+  repeated ColorwayPrice net_prices = 18;
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge
@@ -851,6 +866,16 @@ message TechCardCosting {
   // set, otherwise the house default from alert_setting. Resolved here so the costing tab needs one
   // read (already gated by costing:read) instead of a second, analytics-gated settings call.
   google.type.Decimal effective_target_margin_pct = 27;
+
+  // OUTPUT-ONLY VAT context for the margin on this read: which country's rate the colourway
+  // net_prices were computed at, and what that rate is. Surfaced so the tab can SAY which market it
+  // is showing a margin for instead of presenting one number as if it were universal.
+  //
+  // The rate comes from the same `vat_rate` table the order snapshot, the accounting VAT engine and
+  // the margin-by-style report read — deliberately not a second, costing-owned copy that could drift
+  // from them. vat_rate_pct is unset when the country has no rate on file (export: nothing to net).
+  string vat_country_code = 28;
+  google.type.Decimal vat_rate_pct = 29;
 
   reserved 7, 8, 9; // pricing removed (markup_multiplier, wholesale_price, retail_price — moved to product)
   reserved 13, 14, 17; // was materials_cost, total_cost, labour_cost (superseded / removed)

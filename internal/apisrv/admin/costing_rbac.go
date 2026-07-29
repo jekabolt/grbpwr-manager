@@ -83,6 +83,7 @@ func stripTechCardCosting(tc *pb_common.TechCard) {
 		c.CostPriceSource = ""
 		c.CostPriceUpdatedAt = nil
 		c.Prices = nil
+		c.NetPrices = nil
 	}
 }
 

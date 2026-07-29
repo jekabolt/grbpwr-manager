@@ -705,7 +705,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		ResolvedTechnicalMedia: resolvedTechnical,
 		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
 		// recipe (H1 fix) resolved against this style's own BOM items.
-		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, orderQtyBySize),
+		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, orderQtyBySize, fx),
 		// Structured fibre composition (S17/M1 fix), alongside — never instead of — the legacy
 		// free-text Composition below.
 		CompositionEntries: compositionEntriesToPb(tc.CompositionEntries),
@@ -1257,7 +1257,7 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 // (UpdateColorwayRecipe persisted usages that no read path surfaced, A3.4). bomItems/orderQtyBySize
 // resolve each usage's line_total/size_run_total against the style's BOM (caller strips money for an
 // account without costing:read, same as the rest of the tech-card read).
-func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.AdminColorwayRef {
+func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int, fx CostingFx) []*pb_common.AdminColorwayRef {
 	if len(cws) == 0 {
 		return nil
 	}
@@ -1291,7 +1291,29 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 			ref.CostPriceUpdatedAt = timestamppb.New(c.CostPriceUpdatedAt.Time)
 		}
 		ref.Prices = convertEntityPricesToPb(c.Prices)
+		ref.NetPrices = netColorwayPricesToPb(c.Prices, fx)
 		out = append(out, ref)
+	}
+	return out
+}
+
+// netColorwayPricesToPb removes VAT from each catalogue price at the read's VAT rate. Returns nil when
+// there is no rate to apply — an export destination has nothing to net, and echoing the gross list
+// back under the name `net_prices` would reintroduce the very confusion this field exists to end.
+func netColorwayPricesToPb(prices []entity.ColorwayPrice, fx CostingFx) []*pb_common.ColorwayPrice {
+	if len(prices) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.ColorwayPrice, 0, len(prices))
+	for _, p := range prices {
+		net, ok := fx.netOfVat(p.Price)
+		if !ok {
+			return nil
+		}
+		out = append(out, &pb_common.ColorwayPrice{
+			Currency: p.Currency,
+			Price:    &pb_decimal.Decimal{Value: net.StringFixed(2)},
+		})
 	}
 	return out
 }

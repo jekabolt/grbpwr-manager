@@ -5417,6 +5417,11 @@ message ListAdminsResponse {
 
 message GetTechCardRequest {
   int32 id = 1;
+  // vat_country_code models the margin for a specific market: the colourway net_prices and the
+  // costing VAT context are computed at THAT country's rate. Empty = the company's domestic VAT
+  // country, which is what a studio pricing a style means by "the margin" unless it says otherwise.
+  // An ISO 3166-1 alpha-2 code with no rate on file nets nothing (export) rather than erroring.
+  string vat_country_code = 2;
 }
 
 message GetTechCardResponse {
