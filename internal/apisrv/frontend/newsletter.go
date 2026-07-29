@@ -9,6 +9,7 @@ import (
 
 	v "github.com/asaskevich/govalidator"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
@@ -51,10 +52,20 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 		firstName = name
 	}
 
+	// Seed the account language from the signup site locale when it has none yet, so the
+	// welcome email (resolved by recipient email → account) goes out in the language the user
+	// subscribed in. Don't override an existing value (returning subscriber keeps theirs).
+	defaultLanguage := acc.DefaultLanguage
+	if !defaultLanguage.Valid || defaultLanguage.String == "" {
+		if canon := localeutil.Canonical(req.Language); canon != "" {
+			defaultLanguage = sql.NullString{String: canon, Valid: true}
+		}
+	}
+
 	if err := s.repo.StorefrontAccount().UpdateAccountProfile(ctx, email,
 		firstName, acc.LastName, acc.BirthDate, shoppingPref, acc.Phone,
 		req.SubscribeNewsletter, req.SubscribeNewArrivals, req.SubscribeEvents,
-		acc.DefaultCountry, acc.DefaultLanguage, acc.EmailLanguage,
+		acc.DefaultCountry, defaultLanguage, acc.EmailLanguage,
 	); err != nil {
 		slog.Default().ErrorContext(ctx, "can't update subscription preferences", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't subscribe")

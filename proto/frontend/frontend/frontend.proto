@@ -350,6 +350,10 @@ message SubscribeNewsletterRequest {
   bool subscribe_newsletter = 4;
   bool subscribe_new_arrivals = 5;
   bool subscribe_events = 6;
+  // language is the active site locale at signup (ISO-639-1). Seeds the account's language
+  // so the welcome (and future account-based emails) go out in the language the user
+  // subscribed in.
+  string language = 7;
 }
 
 message SubscribeNewsletterResponse {}
