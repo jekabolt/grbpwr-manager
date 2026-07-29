@@ -326,7 +326,7 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 
 	// Resolve the recipient locale and bind a localizer. With localization disabled
 	// (the default) this is always the default locale, so output matches pre-feature EN.
-	loc := m.catalog.Localizer(m.resolveLocale(context.Background(), normalizedTo, ""))
+	loc := m.catalog.Localizer(m.resolveLocale(context.Background(), normalizedTo, localeHint(data)))
 
 	subject, err := m.subject(tn, loc, data)
 	if err != nil {
@@ -391,6 +391,27 @@ var subjectKey = map[templateName]string{
 	BirthdayGift:            "birthday.subject",
 	EventInvite:             "event.invite.subject",
 	HackerInvite:            "hacker.invite.subject",
+}
+
+// localeHint extracts the event locale carried on the email data — the site locale captured
+// at purchase on order emails — or "" when the data carries none. It is the resolver's step-2
+// hint, used when the recipient has no explicit account email_language (e.g. guests).
+func localeHint(data interface{}) string {
+	switch d := data.(type) {
+	case *dto.OrderConfirmed:
+		return d.Locale
+	case *dto.OrderShipment:
+		return d.Locale
+	case *dto.OrderDelivered:
+		return d.Locale
+	case *dto.OrderCancelled:
+		return d.Locale
+	case *dto.OrderRefundInitiated:
+		return d.Locale
+	case *dto.OrderPendingReturn:
+		return d.Locale
+	}
+	return ""
 }
 
 // orderSubjectID extracts the uppercased order UUID from order-email data, or "" for

@@ -38,6 +38,7 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 	}
 
 	return &OrderConfirmed{
+		Locale:              of.Order.Locale.String,
 		Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
 		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
@@ -79,6 +80,7 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 	}
 
 	return &OrderShipment{
+		Locale:              of.Order.Locale.String,
 		Preheader:           "YOUR GRBPWR ORDER HAS BEEN SHIPPED",
 		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
@@ -99,6 +101,7 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 func OrderFullToOrderDelivered(of *entity.OrderFull) *OrderDelivered {
 	s := OrderFullToOrderShipment(of)
 	return &OrderDelivered{
+		Locale:              of.Order.Locale.String,
 		Preheader:           "YOUR GRBPWR ORDER HAS BEEN DELIVERED",
 		BuyerName:           s.BuyerName,
 		OrderUUID:           s.OrderUUID,
@@ -122,6 +125,7 @@ func OrderFullToOrderCancelled(of *entity.OrderFull) *OrderCancelled {
 	}
 
 	return &OrderCancelled{
+		Locale:    of.Order.Locale.String,
 		Preheader: "YOUR GRBPWR ORDER HAS BEEN CANCELLED",
 		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
@@ -137,6 +141,7 @@ func OrderFullToOrderRefundInitiated(of *entity.OrderFull) *OrderRefundInitiated
 	}
 
 	return &OrderRefundInitiated{
+		Locale:    of.Order.Locale.String,
 		Preheader: "YOUR GRBPWR REFUND HAS BEEN INITIATED",
 		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
@@ -151,6 +156,7 @@ func OrderFullToOrderPendingReturn(of *entity.OrderFull) *OrderPendingReturn {
 	}
 
 	return &OrderPendingReturn{
+		Locale:    of.Order.Locale.String,
 		Preheader: "YOUR GRBPWR RETURN HAS BEEN REQUESTED",
 		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
@@ -203,6 +209,7 @@ func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderIte
 }
 
 type OrderConfirmed struct {
+	Locale              string // recipient-locale hint captured at purchase (order.locale)
 	Preheader           string
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
@@ -226,6 +233,7 @@ type OrderItem struct {
 }
 
 type OrderCancelled struct {
+	Locale    string // recipient-locale hint captured at purchase (order.locale)
 	Preheader string
 	BuyerName string // First name or full name if available
 	OrderUUID string
@@ -233,6 +241,7 @@ type OrderCancelled struct {
 }
 
 type OrderShipment struct {
+	Locale              string // recipient-locale hint captured at purchase (order.locale)
 	Preheader           string
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
@@ -250,6 +259,7 @@ type OrderShipment struct {
 // OrderDelivered carries the data for the "order delivered" email. It mirrors OrderShipment (same
 // item/total layout) but is a distinct type so the subject line and template resolve correctly.
 type OrderDelivered struct {
+	Locale              string // recipient-locale hint captured at purchase (order.locale)
 	Preheader           string
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
@@ -265,6 +275,7 @@ type OrderDelivered struct {
 }
 
 type OrderRefundInitiated struct {
+	Locale    string // recipient-locale hint captured at purchase (order.locale)
 	Preheader string
 	BuyerName string // First name or full name if available
 	OrderUUID string
@@ -272,6 +283,7 @@ type OrderRefundInitiated struct {
 }
 
 type OrderPendingReturn struct {
+	Locale    string // recipient-locale hint captured at purchase (order.locale)
 	Preheader string
 	BuyerName string
 	OrderUUID string
