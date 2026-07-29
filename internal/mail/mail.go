@@ -273,6 +273,10 @@ func templateFuncs() template.FuncMap {
 		"curLang": func() string { return defaultLocale },
 		"tHTML":   func(key string, _ ...any) template.HTML { return template.HTML(key) },
 		"emph":    func(v any) template.HTML { return template.HTML(fmt.Sprint(v)) },
+		// localName picks the localized "Brand Name" for the current render locale,
+		// falling back to def. This stub (default-locale render) always returns def; the
+		// locale-bound override is attached per render via localeFuncMap.
+		"localName": func(_ map[string]string, def string) string { return def },
 		// esc HTML-escapes a value for safe interpolation into a tHTML message WITHOUT the
 		// emphasis span. Every value fed to a tHTML message must go through emph or esc, so a
 		// tHTML message can never inject markup even if a field ever carries HTML metacharacters.

@@ -150,5 +150,16 @@ func localeFuncMap(loc *Loc) map[string]any {
 			return loc.Plural(key, n, pairsToMap(kv...))
 		},
 		"curLang": loc.Code,
+		// localName renders order-line product names in the recipient's resolved locale,
+		// falling back to def (the default-language "Brand Name") when this locale has no
+		// translation. Selection happens here, at render time, so the product name matches the
+		// rest of the email even when an explicit account email_language overrides the purchase
+		// locale.
+		"localName": func(names map[string]string, def string) string {
+			if n, ok := names[loc.Code()]; ok && n != "" {
+				return n
+			}
+			return def
+		},
 	}
 }

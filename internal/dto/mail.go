@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/canonical"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	"github.com/shopspring/decimal"
 )
@@ -182,6 +184,16 @@ func FormatSizeName(name string) string {
 }
 
 func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderItem {
+	langs := cache.GetLanguages()
+	// languageId -> canonical email locale (cn->zh, kr->ko); languages that don't map to a
+	// supported email locale drop out, so they never key a LocalizedNames entry.
+	localeByLangID := make(map[int]string, len(langs))
+	for _, l := range langs {
+		if code := localeutil.Canonical(l.Code); code != "" {
+			localeByLangID[l.Id] = code
+		}
+	}
+
 	oi := make([]OrderItem, len(items))
 	for i, item := range items {
 		size, found := cache.GetSizeById(item.SizeId)
@@ -190,18 +202,35 @@ func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderIte
 				Name: "unknown",
 			}
 		}
-		// Get product name from first translation or use default
+		// Default-language product name (deterministic canonical pick) — the fallback used
+		// for English renders and for any recipient locale that has no translation.
 		productName := "Product"
-		if len(item.Translations) > 0 {
-			productName = item.Translations[0].Name
+		if name, ok := canonical.ProductName(item.Translations, langs); ok {
+			productName = name
+		}
+
+		// Per-locale "Brand Name" so the mailer can render each order line in the recipient's
+		// resolved email locale (see the localName template func); locales absent from this map
+		// fall back to Name above.
+		var localizedNames map[string]string
+		for _, tr := range item.Translations {
+			code, ok := localeByLangID[tr.LanguageId]
+			if !ok {
+				continue
+			}
+			if localizedNames == nil {
+				localizedNames = make(map[string]string, len(item.Translations))
+			}
+			localizedNames[code] = fmt.Sprintf("%s %s", item.ProductBrand, tr.Name)
 		}
 
 		oi[i] = OrderItem{
-			Name:      fmt.Sprintf("%s %s", item.ProductBrand, productName),
-			Thumbnail: item.Thumbnail,
-			Size:      FormatSizeName(size.Name),
-			Quantity:  int(item.Quantity.IntPart()),
-			Price:     RoundForCurrency(item.OrderItemInsert.ProductPriceWithSale, currency).String(),
+			Name:           fmt.Sprintf("%s %s", item.ProductBrand, productName),
+			LocalizedNames: localizedNames,
+			Thumbnail:      item.Thumbnail,
+			Size:           FormatSizeName(size.Name),
+			Quantity:       int(item.Quantity.IntPart()),
+			Price:          RoundForCurrency(item.OrderItemInsert.ProductPriceWithSale, currency).String(),
 		}
 	}
 
@@ -225,11 +254,15 @@ type OrderConfirmed struct {
 }
 
 type OrderItem struct {
-	Name      string
-	Thumbnail string
-	Size      string
-	Quantity  int
-	Price     string
+	Name string
+	// LocalizedNames maps a canonical email locale (en,fr,de,it,ja,zh,ko) to the
+	// "Brand Name" for that locale. The mailer picks the recipient's resolved-locale
+	// entry at render time (localName func); a missing locale falls back to Name.
+	LocalizedNames map[string]string
+	Thumbnail      string
+	Size           string
+	Quantity       int
+	Price          string
 }
 
 type OrderCancelled struct {
