@@ -44,11 +44,15 @@ message EmailBlockTranslation {
 
 message EmailHeaderBlock {
   int32 logo_media_id = 1;
+  // logo_position controls the brand logo alignment: left | center | right (default center).
+  string logo_position = 2;
 }
 
 message EmailImageLinkBlock {
   int32 media_id = 1;
   string url = 2;
+  // aspect is the display aspect ratio: 16:9 | 1:1 | 4:5 (default 16:9).
+  string aspect = 3;
 }
 
 message EmailRichTextBlock {}

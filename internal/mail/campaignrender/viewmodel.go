@@ -52,12 +52,14 @@ type productView struct {
 }
 
 type headerView struct {
-	Logo mediaView
+	Logo     mediaView
+	Position string
 }
 
 type imageLinkView struct {
-	Media mediaView
-	URL   string
+	Media  mediaView
+	URL    string
+	Aspect string
 }
 
 type productCardView struct {

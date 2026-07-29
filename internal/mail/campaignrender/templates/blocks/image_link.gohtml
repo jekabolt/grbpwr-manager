@@ -3,7 +3,7 @@
   <tr>
     <td align="center">
       {{if .ImageLink.URL}}<a href="{{.ImageLink.URL}}" style="display:block;">{{end}}
-      <img src="{{.ImageLink.Media.URL}}" width="{{.ImageLink.Media.Width}}" height="{{.ImageLink.Media.Height}}" alt="{{.Copy.AltText}}" style="display:block;width:100%;max-width:560px;height:auto;border:0;">
+      <img src="{{.ImageLink.Media.URL}}" width="{{.ImageLink.Media.Width}}" height="{{.ImageLink.Media.Height}}" alt="{{.Copy.AltText}}" style="display:block;width:100%;max-width:{{imageMaxWidth .ImageLink.Aspect}}px;height:auto;margin:0 auto;border:0;">
       {{if .ImageLink.URL}}</a>{{end}}
     </td>
   </tr>

@@ -51,9 +51,22 @@ func SanitizeBlocks(blocks []entity.EmailBlock) {
 	}
 }
 
-// safeURL admits only absolute HTTPS URLs and mailto links.
+// safeURL admits only absolute HTTPS URLs and mailto links. A scheme-less value the admin typed
+// (e.g. "grbpwr.com/sale" or "hi@grbpwr.com") is coerced to https:// (or mailto:) first — otherwise
+// a CTA/link with no scheme was silently dropped and the button never rendered. A value that DOES
+// carry a scheme (including javascript:/data:) is left as-is and rejected below.
 func safeURL(value string) string {
 	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(value); err != nil || parsed.Scheme == "" {
+		if strings.Contains(value, "@") && !strings.ContainsAny(value, "/ :") {
+			value = "mailto:" + value
+		} else {
+			value = "https://" + value
+		}
+	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" {
 		return ""
@@ -71,6 +84,45 @@ func safeURL(value string) string {
 		return ""
 	}
 	return value
+}
+
+// normalizeLogoPosition constrains the header logo alignment to the three supported
+// values, defaulting to center for anything unset or unrecognized.
+func normalizeLogoPosition(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "left":
+		return "left"
+	case "right":
+		return "right"
+	default:
+		return "center"
+	}
+}
+
+// normalizeAspect constrains an image block's display aspect ratio to the supported
+// set, defaulting to 16:9 (horizontal) for anything unset or unrecognized.
+func normalizeAspect(value string) string {
+	switch strings.TrimSpace(value) {
+	case "1:1":
+		return "1:1"
+	case "4:5":
+		return "4:5"
+	default:
+		return "16:9"
+	}
+}
+
+// imageMaxWidthPx caps how wide an image block renders so vertical/square crops
+// don't span the full body width. Horizontal images fill the 560px content column.
+func imageMaxWidthPx(aspect string) int {
+	switch normalizeAspect(aspect) {
+	case "1:1":
+		return 440
+	case "4:5":
+		return 380
+	default:
+		return 560
+	}
 }
 
 func safeColor(value, fallback string) string {

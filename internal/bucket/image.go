@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"image/gif"
 	"io"
 	"log/slog"
 	"math"
@@ -79,18 +80,28 @@ func getB64ImageFromString(rawB64Image string) (*B64Image, error) {
 	}, nil
 }
 
-func imageFromString(rawB64Image string) (image.Image, error) {
+// rawImageFromString parses a "data:[mediatype];base64,[data]" string into its raw
+// (base64-decoded) bytes plus the declared content type, without decoding the raster.
+// Callers that must preserve the original bytes (animated GIF) use this; the WebP
+// re-encode path decodes further via decodeImage.
+func rawImageFromString(rawB64Image string) ([]byte, ContentType, error) {
 	b64Img, err := getB64ImageFromString(rawB64Image)
+	if err != nil {
+		return nil, "", err
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b64Img.content)))
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid base64 payload: %w", err)
+	}
+	return raw, b64Img.contentType, nil
+}
+
+func imageFromString(rawB64Image string) (image.Image, error) {
+	raw, ct, err := rawImageFromString(rawB64Image)
 	if err != nil {
 		return nil, err
 	}
-
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b64Img.content)))
-	if err != nil {
-		return nil, fmt.Errorf("invalid base64 payload: %w", err)
-	}
-
-	return decodeImage(raw, b64Img.contentType)
+	return decodeImage(raw, ct)
 }
 
 // upload single image with defined quality and prefix to bucket
@@ -200,6 +211,70 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 			FullSize:   fullSize,
 			Compressed: compressed,
 			Thumbnail:  thumbnail,
+			Blurhash:   h,
+		},
+	}, nil
+}
+
+// uploadRawImageObj stores an image whose bytes must survive verbatim — an animated GIF —
+// instead of re-encoding it to WebP, which would flatten the animation to a single frame.
+// The raw payload is uploaded once and all three media variants (full / compressed / thumbnail)
+// point at that one object, so the animation plays everywhere the media is shown, including
+// campaign emails (which read the compressed URL). Dimensions come from the GIF header; the
+// blurhash placeholder is derived from the first frame and is best-effort.
+func (b *Bucket) uploadRawImageObj(ctx context.Context, raw []byte, ct ContentType, folder, imageName string) (*pb_common.MediaFull, error) {
+	cfg, err := gif.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read GIF header: %w", err)
+	}
+	if cfg.Width > maxImageDimension || cfg.Height > maxImageDimension {
+		return nil, fmt.Errorf("image dimensions %dx%d exceed maximum allowed %dpx", cfg.Width, cfg.Height, maxImageDimension)
+	}
+
+	firstFrame, err := gif.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode GIF: %w", err)
+	}
+
+	url, err := b.uploadImageToBucket(ctx, bytes.NewReader(raw), folder, fmt.Sprintf("%s-%s", imageName, "og"), ct)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload GIF to bucket: %w", err)
+	}
+	info := &pb_common.MediaInfo{MediaUrl: url, Width: int32(cfg.Width), Height: int32(cfg.Height)}
+
+	h, err := getBlurHash(resizeImage(firstFrame, 1080))
+	if err != nil {
+		// The blurhash is a decorative placeholder; a GIF whose first frame won't
+		// blur-hash should still upload. Store an empty hash rather than failing.
+		slog.Default().WarnContext(ctx, "gif blurhash failed; storing empty",
+			slog.String("err", err.Error()))
+		h = ""
+	}
+
+	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
+		FullSizeMediaURL:   url,
+		FullSizeWidth:      cfg.Width,
+		FullSizeHeight:     cfg.Height,
+		CompressedMediaURL: url,
+		CompressedWidth:    cfg.Width,
+		CompressedHeight:   cfg.Height,
+		ThumbnailMediaURL:  url,
+		ThumbnailWidth:     cfg.Width,
+		ThumbnailHeight:    cfg.Height,
+		BlurHash:           sql.NullString{String: h, Valid: h != ""},
+	})
+	if err != nil {
+		// The object is in S3 but no row references it: clean it up.
+		b.cleanupUploadedVariants(info)
+		return nil, fmt.Errorf("failed to add media to db: %w", err)
+	}
+
+	return &pb_common.MediaFull{
+		Id: int32(mediaId),
+		Media: &pb_common.MediaItem{
+			FullSize:   info,
+			Compressed: info,
+			Thumbnail:  info,
 			Blurhash:   h,
 		},
 	}, nil

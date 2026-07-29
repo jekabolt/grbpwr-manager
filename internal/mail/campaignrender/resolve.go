@@ -259,6 +259,7 @@ func resolveBlocks(
 	blocks []entity.EmailBlock,
 	languageID int,
 	langs []entity.Language,
+	sectionBg string,
 	depth int,
 	rootIndex int,
 ) ([]blockView, []Warning) {
@@ -269,7 +270,7 @@ func resolveBlocks(
 		if depth == 0 {
 			index = i
 		}
-		resolved, blockWarnings, ok := resolveBlock(ctx, r, &blocks[i], languageID, langs, depth, index)
+		resolved, blockWarnings, ok := resolveBlock(ctx, r, &blocks[i], languageID, langs, sectionBg, depth, index)
 		warnings = append(warnings, blockWarnings...)
 		if ok {
 			out = append(out, resolved)
@@ -284,12 +285,17 @@ func resolveBlock(
 	block *entity.EmailBlock,
 	languageID int,
 	langs []entity.Language,
+	sectionBg string,
 	depth, blockIndex int,
 ) (blockView, []Warning, bool) {
 	view := blockView{
-		Type:            block.Type,
-		BlockIndex:      blockIndex,
-		BackgroundColor: safeColor(block.BackgroundColor, defaultSectionBackground),
+		Type: block.Type,
+		BlockIndex: blockIndex,
+		// A block with no explicit background inherits the campaign (document) background instead
+		// of forcing white — so setting the campaign background applies to every block and changing
+		// it propagates automatically. Its palette (text color) is derived from this in
+		// setBlockPalette, keeping text readable on any background.
+		BackgroundColor: safeColor(block.BackgroundColor, sectionBg),
 		Translations:    append([]entity.EmailBlockTranslation(nil), block.Translations...),
 	}
 	warn := func(reason string) (blockView, []Warning, bool) {
@@ -299,14 +305,18 @@ func resolveBlock(
 	switch block.Type {
 	case entity.EmailBlockTypeHeader:
 		logo := mediaView{URL: defaultLogoURL, Width: 54, Height: 54, Alt: "GRBPWR"}
-		if block.Header != nil && block.Header.LogoMediaID > 0 {
-			media, ok := r.getMedia(ctx, block.Header.LogoMediaID)
-			if !ok {
-				return warn(fmt.Sprintf("header logo media %d is missing", block.Header.LogoMediaID))
+		position := "center"
+		if block.Header != nil {
+			if block.Header.LogoMediaID > 0 {
+				media, ok := r.getMedia(ctx, block.Header.LogoMediaID)
+				if !ok {
+					return warn(fmt.Sprintf("header logo media %d is missing", block.Header.LogoMediaID))
+				}
+				logo = mediaToView(media, "GRBPWR")
 			}
-			logo = mediaToView(media, "GRBPWR")
+			position = normalizeLogoPosition(block.Header.LogoPosition)
 		}
-		view.Header = &headerView{Logo: logo}
+		view.Header = &headerView{Logo: logo, Position: position}
 	case entity.EmailBlockTypeImageLink:
 		if block.ImageLink == nil {
 			return warn("image_link payload is missing")
@@ -315,7 +325,7 @@ func resolveBlock(
 		if !ok {
 			return warn(fmt.Sprintf("image_link media %d is missing", block.ImageLink.MediaID))
 		}
-		view.ImageLink = &imageLinkView{Media: mediaToView(media, ""), URL: safeURL(block.ImageLink.URL)}
+		view.ImageLink = &imageLinkView{Media: mediaToView(media, ""), URL: safeURL(block.ImageLink.URL), Aspect: normalizeAspect(block.ImageLink.Aspect)}
 	case entity.EmailBlockTypeRichText:
 		view.RichHTML = ""
 	case entity.EmailBlockTypeProductCard:
@@ -356,7 +366,13 @@ func resolveBlock(
 			}
 			return blockView{}, warnings, false
 		}
-		columns := clamp(block.ProductGrid.Columns, 1, 3)
+		// An unset columns count (0) must not collapse the grid into a single-column list — default
+		// to 2 so a product grid actually reads as a grid.
+		gridCols := block.ProductGrid.Columns
+		if gridCols <= 0 {
+			gridCols = 2
+		}
+		columns := clamp(gridCols, 1, 3)
 		view.ProductGrid = &productGridView{
 			Products:  products,
 			Columns:   columns,
@@ -397,8 +413,8 @@ func resolveBlock(
 		if block.TwoColumn == nil {
 			return warn("two_column payload is missing")
 		}
-		left, leftWarnings := resolveBlocks(ctx, r, block.TwoColumn.Left, languageID, langs, depth+1, blockIndex)
-		right, rightWarnings := resolveBlocks(ctx, r, block.TwoColumn.Right, languageID, langs, depth+1, blockIndex)
+		left, leftWarnings := resolveBlocks(ctx, r, block.TwoColumn.Left, languageID, langs, view.BackgroundColor, depth+1, blockIndex)
+		right, rightWarnings := resolveBlocks(ctx, r, block.TwoColumn.Right, languageID, langs, view.BackgroundColor, depth+1, blockIndex)
 		view.TwoColumn = &twoColumnView{Left: left, Right: right}
 		return view, append(leftWarnings, rightWarnings...), true
 	case entity.EmailBlockTypeSocialLinks:

@@ -45,4 +45,19 @@ func TestCampaignFooterStrings(t *testing.T) {
 	if unknown.Help != en.Help {
 		t.Errorf("unknown language id should default to en: got %q", unknown.Help)
 	}
+
+	// The bug: an EMPTY language cache (beta dictionary unseeded) must still localize via the
+	// stable id→code fallback, not silently render en for every language.
+	jaEmpty := m.CampaignFooterStrings(5, nil)
+	if jaEmpty.Help != ja.Help {
+		t.Errorf("empty langs: id 5 should fall back to ja footer %q, got %q", ja.Help, jaEmpty.Help)
+	}
+	if jaEmpty.Help == en.Help {
+		t.Errorf("empty langs footer must not collapse to en")
+	}
+	// id 6 (zh) via fallback with empty langs.
+	zhEmpty := m.CampaignFooterStrings(6, nil)
+	if want := m.catalog.Localizer("zh").S("common.footer.help", nil); zhEmpty.Help != want {
+		t.Errorf("empty langs: id 6 should fall back to zh footer %q, got %q", want, zhEmpty.Help)
+	}
 }

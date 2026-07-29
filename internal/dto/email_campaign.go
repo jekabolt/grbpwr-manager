@@ -123,11 +123,11 @@ func convertPBEmailBlockToEntity(in *pb_common.EmailBlock) (entity.EmailBlock, e
 	switch in.Type {
 	case pb_common.EmailBlockType_EMAIL_BLOCK_TYPE_HEADER:
 		if in.Header != nil {
-			out.Header = &entity.EmailHeaderBlock{LogoMediaID: int(in.Header.LogoMediaId)}
+			out.Header = &entity.EmailHeaderBlock{LogoMediaID: int(in.Header.LogoMediaId), LogoPosition: in.Header.LogoPosition}
 		}
 	case pb_common.EmailBlockType_EMAIL_BLOCK_TYPE_IMAGE_LINK:
 		if in.ImageLink != nil {
-			out.ImageLink = &entity.EmailImageLinkBlock{MediaID: int(in.ImageLink.MediaId), URL: in.ImageLink.Url}
+			out.ImageLink = &entity.EmailImageLinkBlock{MediaID: int(in.ImageLink.MediaId), URL: in.ImageLink.Url, Aspect: in.ImageLink.Aspect}
 		}
 	case pb_common.EmailBlockType_EMAIL_BLOCK_TYPE_RICH_TEXT:
 		out.RichText = &entity.EmailRichTextBlock{}
@@ -213,10 +213,10 @@ func convertEntityEmailBlockToPB(in *entity.EmailBlock) *pb_common.EmailBlock {
 		Translations:    convertEntityEmailBlockTranslationsToPB(in.Translations),
 	}
 	if in.Header != nil {
-		out.Header = &pb_common.EmailHeaderBlock{LogoMediaId: int32(in.Header.LogoMediaID)}
+		out.Header = &pb_common.EmailHeaderBlock{LogoMediaId: int32(in.Header.LogoMediaID), LogoPosition: in.Header.LogoPosition}
 	}
 	if in.ImageLink != nil {
-		out.ImageLink = &pb_common.EmailImageLinkBlock{MediaId: int32(in.ImageLink.MediaID), Url: in.ImageLink.URL}
+		out.ImageLink = &pb_common.EmailImageLinkBlock{MediaId: int32(in.ImageLink.MediaID), Url: in.ImageLink.URL, Aspect: in.ImageLink.Aspect}
 	}
 	if in.RichText != nil {
 		out.RichText = &pb_common.EmailRichTextBlock{}

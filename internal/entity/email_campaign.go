@@ -52,12 +52,14 @@ type EmailBlockTranslation struct {
 }
 
 type EmailHeaderBlock struct {
-	LogoMediaID int `json:"logo_media_id"`
+	LogoMediaID  int    `json:"logo_media_id"`
+	LogoPosition string `json:"logo_position"`
 }
 
 type EmailImageLinkBlock struct {
 	MediaID int    `json:"media_id"`
 	URL     string `json:"url"`
+	Aspect  string `json:"aspect"`
 }
 
 type EmailRichTextBlock struct{}
