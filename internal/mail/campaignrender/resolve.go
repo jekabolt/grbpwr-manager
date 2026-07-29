@@ -356,7 +356,13 @@ func resolveBlock(
 			}
 			return blockView{}, warnings, false
 		}
-		columns := clamp(block.ProductGrid.Columns, 1, 3)
+		// An unset columns count (0) must not collapse the grid into a single-column list — default
+		// to 2 so a product grid actually reads as a grid.
+		gridCols := block.ProductGrid.Columns
+		if gridCols <= 0 {
+			gridCols = 2
+		}
+		columns := clamp(gridCols, 1, 3)
 		view.ProductGrid = &productGridView{
 			Products:  products,
 			Columns:   columns,

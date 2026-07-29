@@ -51,9 +51,22 @@ func SanitizeBlocks(blocks []entity.EmailBlock) {
 	}
 }
 
-// safeURL admits only absolute HTTPS URLs and mailto links.
+// safeURL admits only absolute HTTPS URLs and mailto links. A scheme-less value the admin typed
+// (e.g. "grbpwr.com/sale" or "hi@grbpwr.com") is coerced to https:// (or mailto:) first — otherwise
+// a CTA/link with no scheme was silently dropped and the button never rendered. A value that DOES
+// carry a scheme (including javascript:/data:) is left as-is and rejected below.
 func safeURL(value string) string {
 	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(value); err != nil || parsed.Scheme == "" {
+		if strings.Contains(value, "@") && !strings.ContainsAny(value, "/ :") {
+			value = "mailto:" + value
+		} else {
+			value = "https://" + value
+		}
+	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" {
 		return ""
