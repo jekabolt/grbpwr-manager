@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	defaultEmailBackground   = "#f4f2ec"
+	defaultEmailBackground   = "#ffffff"
 	defaultSectionBackground = "#ffffff"
 	defaultTextColor         = "#0e0e0c"
 	defaultLogoURL           = "https://files.grbpwr.com/grbpwr-com/mail/mail-logo.png"

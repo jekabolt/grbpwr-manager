@@ -1,7 +1,7 @@
 {{define "block_cta_button"}}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
-    <td class="gp-pad" align="{{.CTAButton.Alignment}}" style="padding:22px 32px;">
+    <td class="gp-pad" align="{{.CTAButton.Alignment}}" style="padding:22px 40px;">
       {{if and .CTAButton.URL .Copy.CTALabel}}{{template "bulletproof_button" .}}{{end}}
     </td>
   </tr>
