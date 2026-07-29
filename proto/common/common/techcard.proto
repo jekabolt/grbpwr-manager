@@ -917,9 +917,15 @@ message TechCardSignoff {
   // TechCard.section_digests: equal = the sheet still says what was approved; different = it was
   // edited afterwards and the sign-off is stale.
   //
-  // SERVER-OWNED (ignored on write). The server stamps it when a section's state ARRIVES at
-  // APPROVED, computing it from the payload being saved, and carries it forward untouched while the
-  // section stays approved. A section that is pending or rejected has no digest.
+  // Server-COMPUTED, but the caller controls WHEN. Send it back as you read it on an ordinary save
+  // and it is carried through untouched, so an approval keeps pointing at the content it actually
+  // covered. Send it EMPTY to mean "I am approving this now" — the server then fingerprints the
+  // payload being written, which is the only moment it can be sure the digest describes what the
+  // approver looked at. That is also how a re-approval after review clears a stale flag.
+  //
+  // The server never simply re-stamps on every save: doing so would let a save that edits the BOM
+  // silently re-bless the materials sign-off against its own new content, which is precisely the
+  // failure this field exists to catch. A pending or rejected section carries no digest.
   //
   // Deliberately per-section, not the card's lock_version: a costing edit must not invalidate the
   // design sign-off, and a lock_version comparison cannot tell those apart.

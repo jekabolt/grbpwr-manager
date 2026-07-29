@@ -637,12 +637,19 @@ func parseTechCardSignoffs(pbs []*pb_common.TechCardSignoff) ([]entity.TechCardS
 			}
 			state = v
 		}
+		if len(s.SignedDigest) > 64 {
+			return nil, fmt.Errorf("signoff signed_digest must be at most 64 characters")
+		}
 		out = append(out, entity.TechCardSignoff{
 			Section:  section,
 			State:    state,
 			SignedBy: nullStringFromPb(s.SignedBy),
 			SignedAt: nullTimeFromPbTimestamp(s.SignedAt),
 			Note:     nullStringFromPb(s.Note),
+			// Echoed back as-is: a present digest means "not re-approving, just saving" and is carried
+			// through; an empty one asks the server to fingerprint what is being written. See
+			// StampTechCardSignoffDigests, which is what actually decides.
+			SignedDigest: nullStringFromPb(s.SignedDigest),
 		})
 	}
 	return out, nil

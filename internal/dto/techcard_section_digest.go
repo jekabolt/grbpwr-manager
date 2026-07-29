@@ -2,6 +2,7 @@ package dto
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -68,14 +69,24 @@ func TechCardSectionDigestsToPb(tc *entity.TechCardInsert) []*pb_common.TechCard
 	return out
 }
 
-// StampTechCardSignoffDigests fills in signed_digest for every section that is APPROVED in this
-// payload, and clears it for every section that is not.
+// StampTechCardSignoffDigests records, for each APPROVED section, the fingerprint of the content that
+// was approved — and, crucially, does NOT move it afterwards.
 //
-// The stamp happens on the way IN, from the payload being written, rather than after the fact: it is
-// the only moment the server can be certain the digest describes exactly the content the approver
-// looked at. A section that stays approved across an unrelated save is re-stamped with the same
-// value (its content did not change, so neither does its fingerprint); a section whose content DID
-// change gets a new digest and the client's comparison starts failing, which is the point.
+// The subtle part is when to stamp. Re-stamping on every save would be worse than useless: a save
+// that edits the BOM would hand the materials sign-off a fresh digest matching the NEW content, so
+// the section would silently re-bless itself and the staleness check could never fire. That is the
+// exact failure this whole mechanism exists to prevent.
+//
+// So the stamp is driven by the caller's intent, expressed by what it sends back:
+//
+//	empty  → "I am approving this now" (a new sign-off, or a re-approval after review). The server
+//	         fingerprints the payload it is about to write — the only moment it can be certain the
+//	         digest describes precisely the content the approver was looking at.
+//	present→ "I am not re-approving, I am just saving." Carried through verbatim, so an approval
+//	         made three edits ago keeps pointing at the content it actually covered.
+//
+// A section that is not approved carries no digest at all: pending and rejected have nothing to be
+// stale against.
 func StampTechCardSignoffDigests(tc *entity.TechCardInsert) {
 	if tc == nil || len(tc.Signoffs) == 0 {
 		return
@@ -83,8 +94,11 @@ func StampTechCardSignoffDigests(tc *entity.TechCardInsert) {
 	digests := TechCardSectionDigests(tc)
 	for i := range tc.Signoffs {
 		if tc.Signoffs[i].State != entity.SignoffStateApproved {
-			tc.Signoffs[i].SignedDigest = nullStringFromPb("")
+			tc.Signoffs[i].SignedDigest = sql.NullString{}
 			continue
+		}
+		if tc.Signoffs[i].SignedDigest.Valid && tc.Signoffs[i].SignedDigest.String != "" {
+			continue // an unrelated save: the approval still covers what it covered
 		}
 		tc.Signoffs[i].SignedDigest = nullStringFromPb(digests[tc.Signoffs[i].Section])
 	}
