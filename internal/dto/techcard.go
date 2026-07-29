@@ -476,7 +476,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		}
 	}
 
-	return &entity.TechCardInsert{
+	insert := &entity.TechCardInsert{
 		StyleNumber:       nullStringFromPb(styleNumber),
 		StyleNumberSource: styleNumberSourceFromPb(pb.StyleNumberSource),
 		Purpose:           purpose,
@@ -514,7 +514,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Signoffs:          signoffs,
 		Patterns:          patterns,
 		Pieces:            pieces,
-	}, nil
+	}
+	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
+	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
+	// it needs every child section already parsed onto the insert.
+	StampTechCardSignoffDigests(insert)
+	return insert, nil
 }
 
 // parseTechCardDetails parses the construction-description aspects, validating the key
@@ -572,11 +577,17 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		if p.SizeBytes < 0 {
 			return nil, fmt.Errorf("pattern size_bytes must not be negative")
 		}
+		if p.Version < 0 {
+			return nil, fmt.Errorf("pattern version must not be negative")
+		}
+		// uploaded_at is server-owned and deliberately dropped here: the store carries the original
+		// forward by url, so accepting a client value would only let a save rewrite history.
 		out = append(out, entity.TechCardSizePattern{
 			SizeId:    sid,
 			URL:       url,
 			Filename:  nullStringFromPb(p.Filename),
 			SizeBytes: nullInt64FromPb(p.SizeBytes),
+			Version:   int(p.Version),
 		})
 	}
 	return out, nil
@@ -704,6 +715,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		Fit:              pbStringFromNull(tc.Fit),
 		Composition:      pbStringFromNull(tc.Composition),
 		CareInstructions: pbStringFromNull(tc.CareInstructions),
+		// Current fingerprint per sign-off section: compare against each signoff's signed_digest to
+		// tell an approval that still holds from one whose sheet moved underneath it.
+		SectionDigests: TechCardSectionDigestsToPb(&tc.TechCardInsert),
 	}
 }
 
@@ -742,10 +756,12 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 	out := make([]*pb_common.TechCardSizePattern, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, &pb_common.TechCardSizePattern{
-			SizeId:    int32(p.SizeId),
-			Url:       p.URL,
-			Filename:  pbStringFromNull(p.Filename),
-			SizeBytes: p.SizeBytes.Int64,
+			SizeId:     int32(p.SizeId),
+			Url:        p.URL,
+			Filename:   pbStringFromNull(p.Filename),
+			SizeBytes:  p.SizeBytes.Int64,
+			Version:    int32(p.Version),
+			UploadedAt: pbTimestampFromNullTime(p.UploadedAt),
 		})
 	}
 	return out
@@ -773,6 +789,18 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		PreviewUrl:    tc.PreviewURL,
 		Purpose:       techCardPurposeToPb(tc.Purpose),
 		AuxSubtype:    techCardAuxSubtypeToPb(tc.AuxSubtype),
+		// Category (leaf tag + the derived taxonomy path) so a list can group and label without an
+		// N+1 GetTechCard, and the same columns ListTechCardsRequest.category_ids filters on.
+		CategoryId:    tc.CategoryId.Int32,
+		TopCategoryId: tc.TopCategoryId.Int32,
+		SubCategoryId: tc.SubCategoryId.Int32,
+		TypeId:        tc.TypeId.Int32,
+		ColorwayCount: int32(tc.ColorwayCount),
+		// Auxiliary output: zero/empty for a sellable card. on_hand is left unset (not zero) when the
+		// material has no stock row — "no balance recorded" is not the same as "none left".
+		OutputMaterialId:     int32(tc.OutputMaterialId.Int64),
+		OutputMaterialName:   tc.OutputMaterialName,
+		OutputMaterialOnHand: pbDecimalFromNull(tc.OutputMaterialOnHand),
 	}
 }
 
@@ -1220,8 +1248,10 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 // --- materials (Phase 2): emit entity -> pb ---
 
 // techCardColorwayRefsToPb emits a style's colourways as derived, output-only AdminColorwayRef
-// (R1/§3.3): a style's colourways are its products, not writable through the style. Full colourway
-// merchandising detail (dev/lab-dip, media, prices) is read via the Colorway RPCs, not here. The
+// (R1/§3.3): a style's colourways are its products, not writable through the style. Merchandising
+// detail (media, tags, translations) is read via the Colorway RPCs; the lab-dip state and history,
+// the COGS and the retail prices ARE here, because the constructor judges a colour and its margin
+// from the style view and fanning GetColorwayByID out per colourway to get them was an N+1. The
 // recipe (usages) IS included (H1 fix, WS3/S2-S3): the constructor view of a style shows each
 // colourway's material recipe alongside its identity — the recipe used to be write-only
 // (UpdateColorwayRecipe persisted usages that no read path surfaced, A3.4). bomItems/orderQtyBySize
@@ -1252,6 +1282,15 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 		if c.LabDipDecidedAt.Valid {
 			ref.LabDipDecidedAt = timestamppb.New(c.LabDipDecidedAt.Time)
 		}
+		ref.LabDipRounds = ColorwayLabDipRoundsToPb(c.LabDipRounds)
+		if c.CostPrice.Valid {
+			ref.CostPrice = &pb_decimal.Decimal{Value: c.CostPrice.Decimal.StringFixed(2)}
+		}
+		ref.CostPriceSource = c.CostPriceSource.String
+		if c.CostPriceUpdatedAt.Valid {
+			ref.CostPriceUpdatedAt = timestamppb.New(c.CostPriceUpdatedAt.Time)
+		}
+		ref.Prices = convertEntityPricesToPb(c.Prices)
 		out = append(out, ref)
 	}
 	return out
@@ -1418,25 +1457,25 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
-			Id:              int64(b.Id),
-			LineKey:         b.LineKey,
+			Id:               int64(b.Id),
+			LineKey:          b.LineKey,
 			MaterialSnapshot: string(b.MaterialSnapshot),
-			MaterialId:      b.MaterialId.Int64,
-			Section:         pbBomSection(b.Section),
-			Name:            b.Name,
-			Supplier:        pbStringFromNull(b.Supplier),
-			SupplierRef:     pbStringFromNull(b.SupplierRef),
-			Color:           pbStringFromNull(b.Color),
-			Composition:     pbStringFromNull(b.Composition),
-			Spec:            pbStringFromNull(b.Spec),
-			Unit:            pbStringFromNull(b.Unit),
-			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
-			Currency:        pbStringFromNull(b.Currency),
-			Comment:         pbStringFromNull(b.Comment),
-			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
-			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
-			FabricDirection: pbFabricDirection(b.FabricDirection),
-			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
+			MaterialId:       b.MaterialId.Int64,
+			Section:          pbBomSection(b.Section),
+			Name:             b.Name,
+			Supplier:         pbStringFromNull(b.Supplier),
+			SupplierRef:      pbStringFromNull(b.SupplierRef),
+			Color:            pbStringFromNull(b.Color),
+			Composition:      pbStringFromNull(b.Composition),
+			Spec:             pbStringFromNull(b.Spec),
+			Unit:             pbStringFromNull(b.Unit),
+			UnitPrice:        pbDecimalFromNull(b.UnitPrice),
+			Currency:         pbStringFromNull(b.Currency),
+			Comment:          pbStringFromNull(b.Comment),
+			FabricWidth:      pbDecimalFromNull(b.FabricWidth),
+			FabricWeightGsm:  pbDecimalFromNull(b.FabricWeightGsm),
+			FabricDirection:  pbFabricDirection(b.FabricDirection),
+			WastagePercent:   pbDecimalFromNull(b.WastagePercent),
 		})
 	}
 	return out

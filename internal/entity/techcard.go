@@ -318,6 +318,18 @@ type TechCardColorway struct {
 	LabDipDecidedAt    sql.NullTime         `db:"lab_dip_decided_at"`
 	LabDipDecidedBy    sql.NullString       `db:"lab_dip_decided_by"`
 	LabDipRejectReason sql.NullString       `db:"lab_dip_reject_reason"`
+	// CostPrice is the colourway's own COGS (product.cost_price) with its provenance. Costing is
+	// otherwise style-level, so this is the only place the tech-card read can say that one colourway
+	// costs more than another. Money: stripped without costing:read, like the rest of the read.
+	CostPrice          decimal.NullDecimal `db:"cost_price"`
+	CostPriceSource    sql.NullString      `db:"cost_price_source"`
+	CostPriceUpdatedAt sql.NullTime        `db:"cost_price_updated_at"`
+	// Prices is the colourway's retail price list (product_price), loaded alongside the colourway so a
+	// margin can be drawn without fanning GetColorwayByID out over every colourway of the style.
+	Prices []ColorwayPrice `db:"-"`
+	// LabDipRounds is the colourway's lab-dip round journal (product_lab_dip_round), oldest first. The
+	// LabDip* scalars above are its latest entry.
+	LabDipRounds []ColorwayLabDipRound `db:"-"`
 	// BaseSku and Status are populated on the style read path (enrichMaterials) so GetStyle can emit
 	// the derived AdminColorwayRef (R1/§3.3). BaseSku is NULL for an unminted draft colourway.
 	BaseSku sql.NullString `db:"sku"`
@@ -512,6 +524,13 @@ type TechCardSizePattern struct {
 	URL       string         `db:"url"`
 	Filename  sql.NullString `db:"filename"`
 	SizeBytes sql.NullInt64  `db:"size_bytes"`
+	// Version is the sheet's revision within its (style, size). 0 on the wire means "assign one":
+	// patterns are a full-replace child, so the store re-derives this on every save from the rows it
+	// is about to delete — a url it has seen keeps its number, a new one takes MAX+1.
+	Version int `db:"version"`
+	// UploadedAt is when the PDF was first attached. Server-owned: carried across the full-replace by
+	// matching the url, so it means what it says instead of drifting to "last card save".
+	UploadedAt sql.NullTime `db:"uploaded_at"`
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower
@@ -812,6 +831,11 @@ type TechCardSignoff struct {
 	SignedBy sql.NullString         `db:"signed_by"`
 	SignedAt sql.NullTime           `db:"signed_at"`
 	Note     sql.NullString         `db:"note"`
+	// SignedDigest fingerprints the section's content at the moment it was approved, so a stale
+	// approval survives a reload (dto.TechCardSectionDigests). Server-owned: stamped on the way in,
+	// never accepted from the wire. NULL for a pending/rejected section and for rows signed before
+	// the digest existed — "cannot tell", which the read side must not report as "changed".
+	SignedDigest sql.NullString `db:"signed_digest"`
 }
 
 // TechCardLabel is one label/tag spec (Sheet «Этикетки и упаковка»).
@@ -857,6 +881,9 @@ type TechCardCosting struct {
 	DefectPercent decimal.NullDecimal `db:"defect_percent"`
 	Currency      sql.NullString      `db:"currency"`
 	Notes         sql.NullString      `db:"notes"`
+	// TargetMarginPct is the gross margin THIS style is expected to make (0..100). Unset falls back to
+	// the house default in alert_setting, resolved onto the read as effective_target_margin_pct.
+	TargetMarginPct decimal.NullDecimal `db:"target_margin_pct"`
 }
 
 // TechCardDevExpense is one row of a style's development (R&D) cost journal (task 14): a one-off
@@ -1053,8 +1080,67 @@ type TechCardListFilter struct {
 	Name       string // case-insensitive substring on name or style_number
 	ProductId  int    // only cards linked to this product
 	Purpose    string // tech_card.purpose exact match (sellable|auxiliary); "" = no filter.
+	// CategoryIds narrows to cards under ANY of these category nodes, matched at ANY level of the
+	// taxonomy (category_id / top / sub / type). One id, whichever level the operator picked in a
+	// category browser, is enough — the client does not have to expand the tree itself. Empty = no
+	// filter.
+	CategoryIds []int
 	// A product-linking picker passes "sellable" so auxiliary (packaging) cards, which can never
 	// produce a SKU, do not clutter the choice (PR5-E).
+}
+
+// TechCardReadinessFacts is the raw state a style's readiness checklist is scored against: plain
+// counts and presence flags, gathered in one round trip.
+//
+// It carries NO judgement on purpose. WHICH counts gate WHICH transition is studio policy that gets
+// re-tuned (today "an SMS sample before pp", tomorrow maybe two), so the rules live in the apisrv
+// layer and this struct stays a stable set of facts — a rule change is then a Go edit, never a
+// rewrite of a twenty-subselect query.
+type TechCardReadinessFacts struct {
+	Stage         TechCardStage         `db:"stage"`
+	ApprovalState TechCardApprovalState `db:"approval_state"`
+
+	HasStyleNumber    bool `db:"has_style_number"` // set AND non-empty (idea-stage cards have none)
+	HasCategory       bool `db:"has_category"`
+	HasBaseSampleSize bool `db:"has_base_sample_size"`
+
+	Sizes      int `db:"sizes"`
+	Pieces     int `db:"pieces"`
+	Operations int `db:"operations"`
+
+	BomLines       int `db:"bom_lines"`
+	BomFabricLines int `db:"bom_fabric_lines"`
+	BomLinkedLines int `db:"bom_linked_lines"` // lines resolved to a catalog material
+
+	// Sample counts EXCLUDE scrapped samples: a binned prototype is not evidence that the stage it
+	// belongs to actually happened.
+	Samples      int `db:"samples"`
+	ProtoSamples int `db:"proto_samples"`
+	FitSamples   int `db:"fit_samples"`
+	SmsSamples   int `db:"sms_samples"`
+	PpSamples    int `db:"pp_samples"`
+
+	Fittings           int `db:"fittings"`
+	FittingsApproved   int `db:"fittings_approved"`
+	OpenChangeRequests int `db:"open_change_requests"` // fitting_change_request.status = 'open' (S26)
+
+	// Colourways are this style's products minus the archived (soft-deleted) ones — a retired
+	// colourway is not something the factory will be asked to make, so it must not gate a release.
+	LiveColorways          int `db:"live_colorways"`
+	LabDipPendingColorways int `db:"lab_dip_pending_colorways"`
+
+	ProductionRuns         int `db:"production_runs"`
+	ProductionRunsReceived int `db:"production_runs_received"`
+
+	// PatternSizes counts sizes OF THE CURRENT RANGE that carry at least one pattern sheet, so a
+	// leftover sheet for a size since dropped from the grade cannot fake full coverage.
+	PatternSizes int `db:"pattern_sizes"`
+
+	HasCosting         bool `db:"has_costing"`
+	HasCostingCurrency bool `db:"has_costing_currency"`
+
+	Signoffs         int `db:"signoffs"`
+	SignoffsApproved int `db:"signoffs_approved"`
 }
 
 // TechCardRole is a responsible-account role on a tech card (Q5). Mirrors the common.TechCardRole
@@ -1115,6 +1201,14 @@ type TechCard struct {
 	// IDEA card, else the PREVIEW-kind sketch (fallback first technical, then any). Populated only by
 	// ListTechCards; empty elsewhere.
 	PreviewURL string `db:"-"`
+	// ColorwayCount is the style's LIVE (non-archived) colourway count, resolved for list/board views
+	// in one batched query per page. Populated only by the list paths; 0 elsewhere.
+	ColorwayCount int `db:"-"`
+	// OutputMaterialName / OutputMaterialOnHand describe an AUXILIARY card's warehouse output (its
+	// run receipts into OutputMaterialId), so an aux picker can show "820 on hand" from the list
+	// alone instead of one GetTechCard plus a warehouse read per card. List paths only.
+	OutputMaterialName   string              `db:"-"`
+	OutputMaterialOnHand decimal.NullDecimal `db:"-"`
 }
 
 // LinkedProductIDs returns the style's live (non-archived) colourway product ids. PR6 R1: a style's

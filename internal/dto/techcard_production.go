@@ -18,6 +18,11 @@ import (
 type CostingFx struct {
 	ToBase map[string]decimal.Decimal
 	Base   string
+	// HouseTargetMarginPct is the house gross-margin target (alert_setting `target_margin_pct`), used
+	// when a style names no target of its own. It rides along with the FX rates because it is the same
+	// shape of thing: a global costing constant every tech-card read needs and no caller should have
+	// to fetch separately. Invalid = no house default configured.
+	HouseTargetMarginPct decimal.NullDecimal
 }
 
 // toBase converts amount from ccy into the base currency. An empty ccy is treated as the base
@@ -380,15 +385,32 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	if defect.Valid && defect.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 		return nil, fmt.Errorf("costing defect_percent must be between 0 and 100")
 	}
+	targetMargin, err := nullDecimalFromPb(pb.TargetMarginPct)
+	if err != nil {
+		return nil, fmt.Errorf("costing target_margin_pct: %w", err)
+	}
+	if err := validateDecimalScale(targetMargin, "costing target_margin_pct", costMaxFrac, 1_000); err != nil {
+		return nil, err
+	}
+	if targetMargin.Valid && (targetMargin.Decimal.IsNegative() || targetMargin.Decimal.GreaterThan(decimal.NewFromInt(100))) {
+		return nil, fmt.Errorf("costing target_margin_pct must be between 0 and 100")
+	}
+	// 0 is "no style target" rather than "target a 0% margin" — nobody sets the latter, and treating
+	// it as a real target would silently switch the house default off for any client that sends a
+	// zero-valued decimal instead of omitting the field.
+	if targetMargin.Valid && targetMargin.Decimal.IsZero() {
+		targetMargin = decimal.NullDecimal{}
+	}
 	return &entity.TechCardCosting{
-		CmtCost:       cmt,
-		HardwareCost:  hardware,
-		PackagingCost: packaging,
-		LogisticsCost: logistics,
-		OverheadCost:  overhead,
-		DefectPercent: defect,
-		Currency:      nullStringFromPb(pb.Currency),
-		Notes:         nullStringFromPb(pb.Notes),
+		CmtCost:         cmt,
+		HardwareCost:    hardware,
+		PackagingCost:   packaging,
+		LogisticsCost:   logistics,
+		OverheadCost:    overhead,
+		DefectPercent:   defect,
+		Currency:        nullStringFromPb(pb.Currency),
+		Notes:           nullStringFromPb(pb.Notes),
+		TargetMarginPct: targetMargin,
 	}, nil
 }
 
@@ -611,11 +633,12 @@ func techCardSignoffsToPb(signoffs []entity.TechCardSignoff) []*pb_common.TechCa
 	out := make([]*pb_common.TechCardSignoff, 0, len(signoffs))
 	for _, s := range signoffs {
 		out = append(out, &pb_common.TechCardSignoff{
-			Section:  techCardSignoffSectionEntityToPb[s.Section],
-			State:    techCardSignoffStateEntityToPb[s.State],
-			SignedBy: pbStringFromNull(s.SignedBy),
-			SignedAt: pbTimestampFromNullTime(s.SignedAt),
-			Note:     pbStringFromNull(s.Note),
+			Section:      techCardSignoffSectionEntityToPb[s.Section],
+			State:        techCardSignoffStateEntityToPb[s.State],
+			SignedBy:     pbStringFromNull(s.SignedBy),
+			SignedAt:     pbTimestampFromNullTime(s.SignedAt),
+			Note:         pbStringFromNull(s.Note),
+			SignedDigest: pbStringFromNull(s.SignedDigest),
 		})
 	}
 	return out
@@ -763,6 +786,16 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 	}
 	if totalSam.IsPositive() {
 		out.TotalSam = pbDecimalFromDecimal(totalSam.Round(3))
+	}
+
+	// The target this style's margin is judged against: its own if it names one, the house default
+	// otherwise. Resolved here so the costing tab reads one already-authorised response instead of
+	// making a second call into the analytics section just to learn a percentage.
+	if c.TargetMarginPct.Valid {
+		out.TargetMarginPct = pbDecimalFromDecimal(c.TargetMarginPct.Decimal)
+		out.EffectiveTargetMarginPct = pbDecimalFromDecimal(c.TargetMarginPct.Decimal)
+	} else if fx.HouseTargetMarginPct.Valid {
+		out.EffectiveTargetMarginPct = pbDecimalFromDecimal(fx.HouseTargetMarginPct.Decimal)
 	}
 	return out
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/stylenumber"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -387,7 +388,15 @@ func (s *Server) costingFx(ctx context.Context) dto.CostingFx {
 		slog.Default().ErrorContext(ctx, "can't load costing fx rates", slog.String("err", err.Error()))
 		rates = nil
 	}
-	return dto.CostingFx{ToBase: rates, Base: cache.GetBaseCurrency()}
+	fx := dto.CostingFx{ToBase: rates, Base: cache.GetBaseCurrency()}
+	// The house margin target rides along: it is a costing constant every tech-card read needs. Read
+	// from the in-memory cache (loaded at boot, refreshed by UpsertAlertSettings) rather than the
+	// settings table — this runs on every tech-card read, and a per-read query for a single number
+	// that changes a few times a year would be a poor trade.
+	if house := cache.GetTargetMarginPct(); house > 0 {
+		fx.HouseTargetMarginPct = decimal.NullDecimal{Decimal: decimal.NewFromFloat(house), Valid: true}
+	}
+	return fx
 }
 
 // GetCostingFxRates returns the CURRENT effective FX rate per currency (the latest valid_from on or
@@ -473,15 +482,23 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season filter: %v", err)
 	}
 
+	categoryIDs := make([]int, 0, len(req.GetCategoryIds()))
+	for _, id := range req.GetCategoryIds() {
+		if id <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "category_ids must be positive")
+		}
+		categoryIDs = append(categoryIDs, int(id))
+	}
 	filter := entity.TechCardListFilter{
-		Stage:      stage,
-		Gender:     gender,
-		Brand:      strings.TrimSpace(req.Brand),
-		SeasonCode: seasonCode,
-		SeasonYear: seasonYear,
-		Name:       strings.TrimSpace(req.Name),
-		ProductId:  int(req.ProductId),
-		Purpose:    purpose,
+		Stage:       stage,
+		Gender:      gender,
+		Brand:       strings.TrimSpace(req.Brand),
+		SeasonCode:  seasonCode,
+		SeasonYear:  seasonYear,
+		Name:        strings.TrimSpace(req.Name),
+		ProductId:   int(req.ProductId),
+		Purpose:     purpose,
+		CategoryIds: categoryIDs,
 	}
 
 	cards, total, err := s.repo.TechCards().ListTechCards(ctx, int(req.Limit), int(req.Offset),

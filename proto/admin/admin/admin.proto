@@ -1115,6 +1115,12 @@ service AdminService {
 
   // GetStylePipeline returns the development board: per-stage counts + a few light cards per column
   // (gap-01), so the idea→prod pipeline loads in one call.
+  // GetTechCardReadiness reports what is missing before a style can advance a stage or be released.
+  // Advisory only — it never blocks a write. Declared before /tech-card/{id} for the same
+  // first-match-wins mux reason as ListTechCards.
+  rpc GetTechCardReadiness(GetTechCardReadinessRequest) returns (GetTechCardReadinessResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/readiness/{tech_card_id}"};
+  }
   rpc GetStylePipeline(GetStylePipelineRequest) returns (GetStylePipelineResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/pipeline"};
   }
@@ -1244,6 +1250,15 @@ service AdminService {
   rpc AdjustMaterialStock(AdjustMaterialStockRequest) returns (AdjustMaterialStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/inventory/adjust"
+      body: "*"
+    };
+  }
+  // BatchIssueMaterialStock issues (or returns) SEVERAL materials to one target in ONE transaction.
+  // Sewing a sample takes the whole BOM out of the warehouse at once; looping IssueMaterialStock
+  // per line meant a mid-loop shortage left the stock half-drawn with no way back. All or nothing.
+  rpc BatchIssueMaterialStock(BatchIssueMaterialStockRequest) returns (BatchIssueMaterialStockResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/issue-batch"
       body: "*"
     };
   }
@@ -2251,6 +2266,12 @@ message UpdateStyleSizeChartRequest {
   int32 style_id = 1;
   uint64 expected_lock_version = 2;
   repeated common.StyleSizeChartCell cells = 3; // the WHOLE chart; anything omitted is deleted
+  // The grade rule the grid was authored from (PLM gap 4). Full-replace like `cells`: sending
+  // grade_base_size_id = 0 with no grade_steps clears the rule and leaves the expanded chart alone.
+  // grade_base_size_id must be one of the style's size_ids; every grade step's measurement must
+  // appear in `cells` (a step for a measurement the chart does not carry is meaningless).
+  int32 grade_base_size_id = 4;
+  repeated common.StyleSizeChartGradeStep grade_steps = 5;
 }
 
 message UpdateStyleSizeChartResponse {
@@ -2889,6 +2910,10 @@ message AlertSettings {
   double ga4_coverage_warn_pct = 5; // warn when GA4 tracking coverage (% of DB revenue GA4 sees) is below this (task 20)
   int32 production_run_stale_days = 6; // warn when an open production run is older than this many days (NF-09)
   int32 acct_posting_lag_hours = 7; // warn when the accounting posting backlog (acct_event / material movements behind the acctposting checkpoint) is older than this many hours; <= 0 falls back to the default (24), it does NOT disable the check
+  // House gross-margin target, 0..100 — the default a style's costing measures itself against when
+  // it sets no target of its own (common.TechCardCosting.target_margin_pct). Read back resolved on
+  // TechCardCosting.effective_target_margin_pct, so the costing tab does not need this RPC.
+  double target_margin_pct = 8;
 }
 
 message GetAlertSettingsRequest {}
@@ -5443,11 +5468,48 @@ message ListTechCardsRequest {
   string purpose = 10; // optional exact match: "sellable" | "auxiliary" ("" = no filter). A
   // product-linking picker passes "sellable" to hide auxiliary/packaging cards.
   common.SkuSeason sku_season = 11; // optional exact normalized pair; no free-text matching
+  // category_ids narrows to styles under ANY of the given category nodes, at any level: an id
+  // matches a card whose category_id, top_category_id, sub_category_id or type_id equals it. So a
+  // category browser can pass whichever node the operator picked — "outerwear" (a top category) or
+  // "parka" (a type) — without the client having to expand the tree itself. Empty = no filter.
+  repeated int32 category_ids = 12;
 }
 
 message ListTechCardsResponse {
   repeated common.TechCardListItem tech_cards = 1;
   int32 total = 2;
+}
+
+// TechCardReadinessRequirement is ONE condition on a style's progress, evaluated server-side against
+// the real data. `key` is the stable machine name (switch on it); `label` is the sentence to show.
+message TechCardReadinessRequirement {
+  string key = 1; // style_number | size_range | bom_fabric | bom_linked | pieces | operations | first_sample | fitting_recorded | fittings_resolved | fit_approved | sms_sample | pp_sample | colorway_linked | lab_dip | run_planned | run_received | costing | patterns | signoffs
+  string label = 2; // human sentence, e.g. "a fitting has been recorded"
+  bool met = 3;
+  string detail = 4; // the actual state when unmet, e.g. "no fabric line in the BOM"
+}
+
+// GetTechCardReadiness answers "what is missing before this style can move on" — the checklist the
+// admin used to keep as a client-side table with no way to know if it matched the backend.
+//
+// ADVISORY, NOT A GATE. Stage and approval_state remain free-standing fields on UpdateTechCard: this
+// RPC reports, it does not authorise, and nothing here blocks a save. The only stage rule the server
+// ENFORCES is still the backward one (a style with samples/releases/colourways cannot regress).
+message GetTechCardReadinessRequest {
+  int32 tech_card_id = 1;
+}
+
+message GetTechCardReadinessResponse {
+  common.TechCardStage current_stage = 1;
+  common.TechCardStage next_stage = 2; // UNKNOWN when already at the last stage (prod)
+  // Conditions for entering next_stage, in the order they should be shown. Empty when there is no
+  // next stage.
+  repeated TechCardReadinessRequirement next_stage_requirements = 3;
+  bool next_stage_ready = 4; // every next_stage_requirements entry is met
+  // Conditions for releasing the card to the factory (approval_state = RELEASED). Independent of the
+  // stage checklist: a card can be sampling-complete and still un-releasable.
+  repeated TechCardReadinessRequirement release_requirements = 5;
+  bool release_ready = 6;
 }
 
 // GetStylePipeline is the development board: one column per lifecycle stage
@@ -5759,6 +5821,33 @@ message AdjustMaterialStockRequest {
 
 message AdjustMaterialStockResponse {
   common.MaterialMovement movement = 1;
+}
+
+// BatchIssueMaterialStockLine is one material of a batch issue. The target, direction and date are on
+// the request — a batch is one act ("this sample was cut"), not a bag of unrelated movements.
+message BatchIssueMaterialStockLine {
+  int32 material_id = 1;
+  google.type.Decimal quantity = 2; // > 0
+  int32 lot_id = 3; // optional structured lot to draw from / return to; 0 = none
+  string comment = 4; // per-line note; falls back to the request comment when empty
+}
+
+message BatchIssueMaterialStockRequest {
+  repeated BatchIssueMaterialStockLine lines = 1; // at least one; one line per material
+  // exactly one target must be set (> 0) — the same rule as IssueMaterialStock
+  int32 production_run_id = 2;
+  int32 sample_id = 3;
+  bool is_return = 4; // true → return_* instead of issue_*
+  string occurred_at = 5; // YYYY-MM-DD
+  string comment = 6; // applied to every line that has none of its own
+  int32 product_id = 7; // optional colour-model for a run issue; 0 = shared/unattributed
+}
+
+// BatchIssueMaterialStockResponse returns the movements in the order the lines were sent. The call is
+// ATOMIC: on any failure NOTHING is written and the error names the offending line, so a caller never
+// has to reconcile a half-applied write-off.
+message BatchIssueMaterialStockResponse {
+  repeated common.MaterialMovement movements = 1;
 }
 
 message GetMaterialStockRequest {

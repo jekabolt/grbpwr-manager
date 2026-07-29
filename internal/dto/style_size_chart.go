@@ -20,11 +20,50 @@ func StyleSizeChartToPb(c entity.StyleSizeChart) *pb_common.StyleSizeChart {
 			Value:             &pb_decimal.Decimal{Value: cell.Value.String()},
 		})
 	}
-	return &pb_common.StyleSizeChart{
-		StyleId:     int32(c.StyleID),
-		LockVersion: int32(c.LockVersion),
-		Cells:       cells,
+	steps := make([]*pb_common.StyleSizeChartGradeStep, 0, len(c.GradeSteps))
+	for _, s := range c.GradeSteps {
+		steps = append(steps, &pb_common.StyleSizeChartGradeStep{
+			MeasurementNameId: int32(s.MeasurementNameID),
+			Step:              &pb_decimal.Decimal{Value: s.Step.String()},
+		})
 	}
+	return &pb_common.StyleSizeChart{
+		StyleId:          int32(c.StyleID),
+		LockVersion:      int32(c.LockVersion),
+		Cells:            cells,
+		GradeBaseSizeId:  int32(c.GradeBaseSizeID),
+		GradeSteps:       steps,
+	}
+}
+
+// StyleSizeChartGradeStepsFromPb parses the grade rule of a full-replace size-chart request. A step is
+// dropped when its measurement is not named — a rule that grades nothing is the same as no rule.
+func StyleSizeChartGradeStepsFromPb(steps []*pb_common.StyleSizeChartGradeStep) ([]entity.StyleSizeChartGradeStep, error) {
+	out := make([]entity.StyleSizeChartGradeStep, 0, len(steps))
+	seen := make(map[int]bool, len(steps))
+	for _, s := range steps {
+		if s == nil {
+			continue
+		}
+		nameID := int(s.GetMeasurementNameId())
+		if nameID == 0 {
+			return nil, fmt.Errorf("grade step: measurement_name_id is required")
+		}
+		if seen[nameID] {
+			return nil, fmt.Errorf("duplicate grade step for measurement %d", nameID)
+		}
+		seen[nameID] = true
+		v := decimal.Zero
+		if raw := s.GetStep().GetValue(); raw != "" {
+			parsed, err := decimal.NewFromString(raw)
+			if err != nil {
+				return nil, fmt.Errorf("invalid grade step %q: %w", raw, err)
+			}
+			v = parsed
+		}
+		out = append(out, entity.StyleSizeChartGradeStep{MeasurementNameID: nameID, Step: v})
+	}
+	return out, nil
 }
 
 // StyleSizeChartCellsFromPb parses the cells of a full-replace size-chart request into entity cells (R5).

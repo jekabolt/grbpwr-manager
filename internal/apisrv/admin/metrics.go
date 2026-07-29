@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -1176,10 +1177,16 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 	if t.AcctPostingLagHours < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "acct_posting_lag_hours must be >= 0 (<= 0 falls back to the default 24h)")
 	}
+	if t.TargetMarginPct < 0 || t.TargetMarginPct > 100 {
+		return nil, status.Errorf(codes.InvalidArgument, "target_margin_pct must be within [0,100]")
+	}
 	if err := s.repo.Metrics().UpsertAlertThresholds(ctx, t); err != nil {
 		slog.Default().ErrorContext(ctx, "can't upsert alert settings", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't upsert alert settings")
 	}
+	// Every tech-card costing read resolves its effective target against the cached house value, so
+	// refresh it here or the change would not show up until the next restart.
+	cache.SetTargetMarginPct(t.TargetMarginPct)
 	return &pb_admin.UpsertAlertSettingsResponse{}, nil
 }
 
