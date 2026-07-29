@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"html"
 	"html/template"
-	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"golang.org/x/text/language"
 )
@@ -15,33 +15,19 @@ import (
 //go:embed locales/*.json
 var localesFS embed.FS
 
-// supportedLocales is the canonical email locale set = the 7 storefront locales.
-// en is the default and the per-key fallback for every other locale.
-var supportedLocales = []string{"en", "fr", "de", "it", "ja", "zh", "ko"}
+// supportedLocales / defaultLocale are the canonical email locale set, single-sourced from
+// internal/localeutil so the mailer and the request boundary (order/newsletter/account
+// capture) can never disagree on what a valid locale is. en is the default and the per-key
+// fallback for every other locale.
+var supportedLocales = localeutil.Supported
 
-const defaultLocale = "en"
+const defaultLocale = localeutil.Default
 
-// normalizeLocale lowercases, strips any region subtag, maps the admin-side
-// cn/kr codes to their ISO zh/ko equivalents, and clamps to a supported locale.
-// Unknown or empty input → defaultLocale. This is the single place locale strings
-// are sanitized before a Localizer is chosen.
+// normalizeLocale clamps a code to a supported locale (lowercase, strip region subtag,
+// cn→zh, kr→ko), returning defaultLocale for unknown/empty input. It is where locale
+// strings are sanitized before a Localizer is chosen.
 func normalizeLocale(code string) string {
-	c := strings.ToLower(strings.TrimSpace(code))
-	if i := strings.IndexAny(c, "-_"); i > 0 {
-		c = c[:i]
-	}
-	switch c {
-	case "cn":
-		c = "zh"
-	case "kr":
-		c = "ko"
-	}
-	for _, s := range supportedLocales {
-		if c == s {
-			return c
-		}
-	}
-	return defaultLocale
+	return localeutil.CanonicalOrDefault(code)
 }
 
 // Catalog holds the parsed go-i18n bundle and a Localizer per supported locale.
