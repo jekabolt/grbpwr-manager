@@ -1336,6 +1336,14 @@ type (
 		PostEmailsBatch(ctx context.Context, body resend.PostEmailsBatchJSONRequestBody, reqEditors ...resend.RequestEditorFn) (*http.Response, error)
 	}
 
+	// Translator localizes short marketing/UI strings between locales via an LLM (OpenRouter).
+	// Backs the admin auto-translate-campaign action. Enabled reports whether it is configured;
+	// Translate returns a same-length, same-order slice, degrading a broken-markup item to source.
+	Translator interface {
+		Enabled() bool
+		Translate(ctx context.Context, sourceLocale, targetLocale string, items []string) ([]string, error)
+	}
+
 	PaymentPool interface {
 		AddPaymentExpiration(ctx context.Context, poid entity.PaymentOrderUUID) error
 		RemovePaymentExpiration(orderId int) error

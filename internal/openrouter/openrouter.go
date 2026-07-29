@@ -227,7 +227,7 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 		return nil, fmt.Errorf("openrouter: description is required")
 	}
 
-	reqBody := chatRequest{
+	content, err := c.chat(ctx, chatRequest{
 		Model: c.cfg.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
@@ -235,51 +235,9 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 		},
 		Temperature:    generationTemperature,
 		ResponseFormat: &responseFormat{Type: "json_object"},
-	}
-	payload, err := json.Marshal(reqBody)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("openrouter: marshal request: %w", err)
-	}
-
-	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("openrouter: build request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.cfg.APIKey))
-	// Optional OpenRouter attribution headers (used for their dashboards/rankings).
-	httpReq.Header.Set("X-Title", "grbpwr-products-manager")
-	httpReq.Header.Set("HTTP-Referer", "https://admin.grbpwr.com")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("openrouter: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return nil, fmt.Errorf("openrouter: read response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openrouter: API error (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
-	}
-
-	var cr chatResponse
-	if err := json.Unmarshal(body, &cr); err != nil {
-		return nil, fmt.Errorf("openrouter: could not decode API response envelope: %w", err)
-	}
-	if cr.Error != nil && strings.TrimSpace(cr.Error.Message) != "" {
-		return nil, fmt.Errorf("openrouter: API error: %s", cr.Error.Message)
-	}
-	if len(cr.Choices) == 0 {
-		return nil, fmt.Errorf("openrouter: API response contained no choices")
-	}
-	content := strings.TrimSpace(cr.Choices[0].Message.Content)
-	if content == "" {
-		return nil, fmt.Errorf("openrouter: model returned an empty message")
+		return nil, err
 	}
 
 	result, err := parseResult(content)
@@ -290,6 +248,74 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 		result.Operations = result.Operations[:maxOperations]
 	}
 	return result, nil
+}
+
+// Complete runs a single chat completion and returns the assistant's raw message content. It is
+// the generic primitive behind feature-specific methods (e.g. translation). jsonMode requests a
+// JSON-object response from the model. Returns ErrNotConfigured when no API key is set.
+func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool) (string, error) {
+	if !c.Enabled() {
+		return "", ErrNotConfigured
+	}
+	req := chatRequest{
+		Model: c.cfg.Model,
+		Messages: []chatMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		Temperature: generationTemperature,
+	}
+	if jsonMode {
+		req.ResponseFormat = &responseFormat{Type: "json_object"}
+	}
+	return c.chat(ctx, req)
+}
+
+// chat performs one chat/completions request and returns the assistant message content, or a
+// clear error on transport failure, non-2xx status, or an empty/malformed envelope.
+func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, error) {
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("openrouter: marshal request: %w", err)
+	}
+	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("openrouter: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.cfg.APIKey))
+	httpReq.Header.Set("X-Title", "grbpwr-products-manager")
+	httpReq.Header.Set("HTTP-Referer", "https://admin.grbpwr.com")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("openrouter: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return "", fmt.Errorf("openrouter: read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("openrouter: API error (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
+	}
+	var cr chatResponse
+	if err := json.Unmarshal(body, &cr); err != nil {
+		return "", fmt.Errorf("openrouter: could not decode API response envelope: %w", err)
+	}
+	if cr.Error != nil && strings.TrimSpace(cr.Error.Message) != "" {
+		return "", fmt.Errorf("openrouter: API error: %s", cr.Error.Message)
+	}
+	if len(cr.Choices) == 0 {
+		return "", fmt.Errorf("openrouter: API response contained no choices")
+	}
+	content := strings.TrimSpace(cr.Choices[0].Message.Content)
+	if content == "" {
+		return "", fmt.Errorf("openrouter: model returned an empty message")
+	}
+	return content, nil
 }
 
 // parseResult extracts the JSON object from the model content (tolerating a ```json
