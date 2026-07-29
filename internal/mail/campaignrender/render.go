@@ -59,18 +59,33 @@ func vmlButton(block blockView) template.HTML {
 	if block.CTAButton == nil || block.CTAButton.URL == "" || block.Copy.CTALabel == "" {
 		return ""
 	}
-	fill := "#0e0e0c"
-	textColor := "#ffffff"
+	// The CTA "ink" is the palette Rule; a solid button fills with it and prints
+	// the OnRule label, an outline button fills with the background and prints Rule.
+	stroke := block.Palette.Rule
+	fill := block.Palette.Rule
+	textColor := block.Palette.OnRule
 	if block.CTAButton.Style == "outline" {
-		fill = "#ffffff"
-		textColor = "#0e0e0c"
+		fill = safeColor(block.BackgroundColor, defaultSectionBackground)
+		textColor = block.Palette.Rule
 	}
 	url := html.EscapeString(safeURL(block.CTAButton.URL))
 	label := html.EscapeString(block.Copy.CTALabel)
 	return template.HTML(fmt.Sprintf(
-		`<!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="%s" style="height:42px;v-text-anchor:middle;width:220px;" arcsize="0%%" strokecolor="#0e0e0c" fillcolor="%s"><w:anchorlock xmlns:w="urn:schemas-microsoft-com:office:word"/><center style="color:%s;font-family:Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;">%s</center></v:roundrect><![endif]-->`,
-		url, fill, textColor, label,
+		`<!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="%s" style="height:42px;v-text-anchor:middle;width:220px;" arcsize="0%%" strokecolor="%s" fillcolor="%s"><w:anchorlock xmlns:w="urn:schemas-microsoft-com:office:word"/><center style="color:%s;font-family:Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;">%s</center></v:roundrect><![endif]-->`,
+		url, stroke, fill, textColor, label,
 	))
+}
+
+// setBlockPalette assigns the resolved palette to every block, recursing into
+// two-column children so nested blocks pick up the same foreground tokens.
+func setBlockPalette(blocks []blockView, pal palette) {
+	for i := range blocks {
+		blocks[i].Palette = pal
+		if blocks[i].TwoColumn != nil {
+			setBlockPalette(blocks[i].TwoColumn.Left, pal)
+			setBlockPalette(blocks[i].TwoColumn.Right, pal)
+		}
+	}
 }
 
 func campaignTemplateFuncs() template.FuncMap {
@@ -228,12 +243,16 @@ func (r *Renderer) Render(
 	if rep == nil {
 		return Rendered{}, nil, fmt.Errorf("repository is required")
 	}
+	background := safeColor(in.BackgroundColor, defaultEmailBackground)
+	pal := newPalette(background)
+
 	resolver := newResolver(rep)
 	resolver.prime(ctx, collectMediaIDs(in.Blocks), collectProductIDs(in.Blocks))
 	blocks, warnings := resolveBlocks(ctx, resolver, in.Blocks, in.Langs, 0, 0)
 	for i := range blocks {
 		applyTranslation(&blocks[i], in.LanguageID, in.Langs)
 	}
+	setBlockPalette(blocks, pal)
 
 	preheader, _ := firstHeaderPreheader(blocks)
 	body, err := r.renderRows(blocks)
@@ -244,7 +263,8 @@ func (r *Renderer) Render(
 	unsubscribeURL := safeURL(in.UnsubscribeURL)
 	var document bytes.Buffer
 	if err := r.templates.ExecuteTemplate(&document, "document", documentView{
-		BackgroundColor: safeColor(in.BackgroundColor, defaultEmailBackground),
+		BackgroundColor: background,
+		Palette:         pal,
 		Preheader:       preheader,
 		Body:            template.HTML(body),
 		UnsubscribeURL:  unsubscribeURL,

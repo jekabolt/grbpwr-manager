@@ -1,10 +1,10 @@
 {{define "block_countdown"}}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
-    <td align="center" class="gp-pad" style="padding:28px 40px;color:#0E0E0C;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;">
+    <td align="center" class="gp-pad" style="padding:28px 40px;color:{{.Palette.Text}};font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;">
       {{if .Copy.Heading}}<div style="font-size:16px;line-height:22px;font-weight:600;letter-spacing:1px;">{{.Copy.Heading}}</div>{{end}}
       <div style="margin-top:8px;font-size:12px;line-height:18px;letter-spacing:1.2px;">{{.Countdown.EndsAt}}</div>
-      {{if .Copy.Caption}}<div style="margin-top:8px;color:#9a978c;font-size:11px;line-height:17px;">{{.Copy.Caption}}</div>{{end}}
+      {{if .Copy.Caption}}<div style="margin-top:8px;color:{{.Palette.Muted}};font-size:11px;line-height:17px;">{{.Copy.Caption}}</div>{{end}}
     </td>
   </tr>
 </table>

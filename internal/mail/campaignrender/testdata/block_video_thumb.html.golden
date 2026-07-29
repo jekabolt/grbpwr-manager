@@ -38,10 +38,10 @@
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
     <td align="center" style="padding:0;">
-      <a href="https://vimeo.com/123" style="display:block;position:relative;color:#ffffff;">
+      <a href="https://vimeo.com/123" style="display:block;position:relative;color:#0E0E0C;">
       <div style="position:relative;display:block;">
         <img src="https://files.grbpwr.com/campaign/video.webp" width="1200" height="675" alt="PROCESS FILM image" style="display:block;width:100%;max-width:560px;height:auto;border:0;">
-        <span style="position:absolute;left:50%;top:50%;margin-left:-26px;margin-top:-26px;width:52px;height:52px;border-radius:26px;background-color:#0E0E0C;color:#FFFFFF;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:22px;line-height:52px;text-align:center;">&#9654;</span>
+        <span style="position:absolute;left:50%;top:50%;margin-left:-26px;margin-top:-26px;width:52px;height:52px;border-radius:26px;background-color:#0E0E0C;color:#ffffff;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:22px;line-height:52px;text-align:center;">&#9654;</span>
       </div>
       </a>
     </td>

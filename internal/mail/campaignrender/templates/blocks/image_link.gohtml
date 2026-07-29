@@ -7,6 +7,6 @@
       {{if .ImageLink.URL}}</a>{{end}}
     </td>
   </tr>
-  {{if .Copy.Caption}}<tr><td class="gp-pad" style="padding:10px 40px 20px;color:#9a978c;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:11px;line-height:17px;text-align:center;">{{.Copy.Caption}}</td></tr>{{end}}
+  {{if .Copy.Caption}}<tr><td class="gp-pad" style="padding:10px 40px 20px;color:{{.Palette.Muted}};font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:11px;line-height:17px;text-align:center;">{{.Copy.Caption}}</td></tr>{{end}}
 </table>
 {{end}}
