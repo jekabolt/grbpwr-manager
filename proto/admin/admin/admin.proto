@@ -712,6 +712,16 @@ service AdminService {
     };
   }
 
+  // AutoTranslateEmailCampaign fills the non-English locales' subject + block translations from
+  // the English source via an LLM, for the admin to review before launch. overwrite=false only
+  // fills what's missing; true re-translates everything.
+  rpc AutoTranslateEmailCampaign(AutoTranslateEmailCampaignRequest) returns (AutoTranslateEmailCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/auto-translate"
+      body: "*"
+    };
+  }
+
   rpc ScheduleCampaign(ScheduleCampaignRequest) returns (ScheduleCampaignResponse) {
     option (google.api.http) = {
       post: "/api/admin/email-campaigns/{id}/schedule"
@@ -3630,6 +3640,17 @@ message SendCampaignNowRequest {
 }
 
 message SendCampaignNowResponse {}
+
+message AutoTranslateEmailCampaignRequest {
+  int32 id = 1;
+  // overwrite re-translates all locales/fields; false (default) fills only what's missing.
+  bool overwrite = 2;
+}
+
+message AutoTranslateEmailCampaignResponse {
+  // translated_count is the number of strings translated across all locales.
+  int32 translated_count = 1;
+}
 
 message ScheduleCampaignRequest {
   int32 id = 1;
