@@ -5,6 +5,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 )
 
+// fallbackLanguageIDToCode maps the seeded language ids (migration 0002) to canonical ISO codes,
+// used when the runtime language cache is empty so footer localization still works.
+var fallbackLanguageIDToCode = map[int]string{1: "en", 2: "fr", 3: "de", 4: "it", 5: "ja", 6: "zh", 7: "ko"}
+
 // CampaignFooterStrings resolves the localized campaign-footer labels for a recipient's language,
 // reusing the transactional i18n catalog (common.footer.* keys) so campaign emails carry the same
 // footer copy as transactional ones. The recipient language_id is mapped to a locale code via the
@@ -15,14 +19,22 @@ import (
 // unconditionally), so the footer must match. Missing catalog keys degrade to en (Loc.S), and an
 // empty result would fall back to the template's English literal.
 func (m *Mailer) CampaignFooterStrings(languageID int, langs []entity.Language) entity.EmailFooterStrings {
-	code := defaultLocale
+	code := ""
 	for _, l := range langs {
 		if l.Id == languageID {
-			if c := localeutil.Canonical(l.Code); c != "" {
-				code = c
-			}
+			code = localeutil.Canonical(l.Code)
 			break
 		}
+	}
+	// Fall back to a stable language_id → ISO code map (matching the 0002 seed, the storefront's
+	// LANGUAGE_ID_TO_LOCALE and the admin LANGUAGES) when the runtime language cache is empty — on
+	// beta the dictionary can be unseeded, which would otherwise force every locale's footer to en
+	// even though the id→locale mapping is well-known. Then default to en.
+	if code == "" {
+		code = localeutil.Canonical(fallbackLanguageIDToCode[languageID])
+	}
+	if code == "" {
+		code = defaultLocale
 	}
 	loc := m.catalog.Localizer(code)
 	return entity.EmailFooterStrings{
