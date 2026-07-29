@@ -1,20 +1,20 @@
-{{template "email_header" (dict "tag" "GIFT CARD" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "promo.code.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">GIFT CARD</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "promo.code.heading" }}</div>
               {{template "spacer_16"}}
-              <div style="font-size:12px; line-height:20px; color:#5d5a51;">THANK YOU FOR YOUR PURCHASE.</div>
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">{{ t "promo.code.body" }}</div>
 
               {{template "spacer_24"}}
               <div style="border:1px solid #0E0E0C; padding:24px;">
                 <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="width:100%; font-size:13px; line-height:26px;">
-                  <tr><td style="color:#9a978c;">CARD NUMBER</td><td align="right" style="letter-spacing:1px; font-weight:700;">{{.PromoCode}}</td></tr>
-                  <tr><td style="color:#9a978c;">VALUE</td><td align="right" style="font-weight:700;">{{.DiscountAmount}}%</td></tr>
+                  <tr><td style="color:#9a978c;">{{ t "promo.code.card_label" }}</td><td align="right" style="letter-spacing:1px; font-weight:700;">{{.PromoCode}}</td></tr>
+                  <tr><td style="color:#9a978c;">{{ t "promo.code.value_label" }}</td><td align="right" style="font-weight:700;">{{.DiscountAmount}}%</td></tr>
                 </table>
               </div>
               {{template "spacer_18"}}
-              <div style="font-size:12px; line-height:20px; color:#5d5a51;">REDEEM IT AT CHECKOUT — ENTER THE CARD NUMBER IN THE PROMO FIELD.</div>
+              <div style="font-size:12px; line-height:20px; color:#5d5a51;">{{ t "promo.code.redeem" }}</div>
 
               {{template "spacer_24"}}
-              {{template "cta_button" (dict "url" "https://grbpwr.com" "label" "SHOP NOW" "variant" "solid")}}
+              {{template "cta_button" (dict "url" "https://grbpwr.com" "label" (t "common.cta.shop_now") "variant" "solid")}}
 
 {{template "email_footer" .}}

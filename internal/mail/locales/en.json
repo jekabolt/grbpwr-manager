@@ -104,5 +104,48 @@
   "tier.rollback.tag": "TIER",
   "tier.rollback.heading": "TIER ADJUSTED",
   "tier.rollback.body": "FOLLOWING A REFUND, YOUR QUALIFYING SPEND OVER THE PAST 12 MONTHS WAS RECALCULATED TO €{{.Spend}}. YOUR MEMBERSHIP IS NOW {{.Tier}}.",
-  "tier.rollback.body2": "THIS IS AN AUTOMATIC ADJUSTMENT TO KEEP YOUR TIER ACCURATE. REACH OUT ANY TIME IF SOMETHING LOOKS OFF."
+  "tier.rollback.body2": "THIS IS AN AUTOMATIC ADJUSTMENT TO KEEP YOUR TIER ACCURATE. REACH OUT ANY TIME IF SOMETHING LOOKS OFF.",
+
+  "common.cta.shop_now": "SHOP NOW",
+  "common.cta.view_product": "VIEW PRODUCT",
+  "common.cta.email_preferences": "EMAIL PREFERENCES",
+
+  "subscriber.welcome.tag": "SUBSCRIBE",
+  "subscriber.welcome.heading": "WELCOME",
+  "subscriber.welcome.body": "YOU'RE ON THE LIST. WE'LL REACH OUT WHEN THERE'S SOMETHING WORTH YOUR TIME — NEW RELEASES, COLLABORATIONS, AND NOTES FROM OUR OPEN PROCESS. NOTHING ELSE.",
+
+  "promo.code.tag": "GIFT CARD",
+  "promo.code.heading": "GIFT CARD",
+  "promo.code.body": "THANK YOU FOR YOUR PURCHASE.",
+  "promo.code.card_label": "CARD NUMBER",
+  "promo.code.value_label": "VALUE",
+  "promo.code.redeem": "REDEEM IT AT CHECKOUT — ENTER THE CARD NUMBER IN THE PROMO FIELD.",
+
+  "stock.back.tag": "RESTOCK",
+  "stock.back.heading": "BACK IN STOCK",
+  "stock.back.status_line": "STATUS: AVAILABLE → THE PIECE YOU WAITLISTED",
+  "stock.back.item_label": "ITEM",
+  "stock.back.size_label": "SIZE",
+  "stock.back.scarcity": "STOCK IS LIMITED AND WE DON'T HOLD IT — FIRST COME, FIRST SERVED.",
+
+  "unsubscribe.confirm.tag": "EMAIL",
+  "unsubscribe.confirm.heading": "UNSUBSCRIBED",
+  "unsubscribe.confirm.body": "YOU'VE BEEN REMOVED FROM OUR MARKETING EMAILS. YOU'LL STILL RECEIVE TRANSACTIONAL MESSAGES ABOUT YOUR ORDERS AND ACCOUNT.",
+  "unsubscribe.confirm.body2": "CHANGED YOUR MIND? UPDATE YOUR PREFERENCES ANY TIME IN YOUR ACCOUNT.",
+
+  "birthday.tag": "GIFT",
+  "birthday.heading": "HAPPY BIRTHDAY",
+  "birthday.body": "A SMALL SOMETHING FROM US TO MARK THE DAY.",
+  "birthday.code_label": "YOUR CODE",
+
+  "event.invite.tag": "INVITE",
+  "event.invite.heading_default": "YOU'RE INVITED",
+  "event.invite.cta_default": "RSVP",
+
+  "hacker.invite.tag": "ACCESS",
+  "hacker.invite.heading": "GRBPWR HACKER",
+  "hacker.invite.body": "YOU'VE BEEN INVITED TO <span style=\"color:#0E0E0C;\">GRBPWR HACKER</span> — INVITE-ONLY ACCESS TO RELEASES AND PIECES THAT DON'T APPEAR IN THE PUBLIC CATALOG.",
+  "hacker.invite.body2": "THIS LINK IS ONE-TIME AND EXPIRES ON {{.Date}}.",
+  "hacker.invite.cta": "CLAIM ACCESS",
+  "hacker.invite.fallback_link": "IF THE BUTTON DOESN'T WORK, OPEN THIS LINK:"
 }

@@ -1,8 +1,8 @@
-{{template "email_header" (dict "tag" "SUBSCRIBE" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "subscriber.welcome.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">WELCOME</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "subscriber.welcome.heading" }}</div>
               {{template "spacer_18"}}
-              <div style="font-size:13px; line-height:22px; color:#5d5a51;">YOU'RE ON THE LIST. WE'LL REACH OUT WHEN THERE'S SOMETHING WORTH YOUR TIME — NEW RELEASES, COLLABORATIONS, AND NOTES FROM OUR OPEN PROCESS. NOTHING ELSE.</div>
+              <div style="font-size:13px; line-height:22px; color:#5d5a51;">{{ t "subscriber.welcome.body" }}</div>
               {{template "spacer_22"}}
               <div style="font-size:12px; letter-spacing:1px; color:#9a978c;">— GRBPWR</div>
 

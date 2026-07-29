@@ -1,21 +1,21 @@
-{{template "email_header" (dict "tag" "RESTOCK" "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "stock.back.tag") "preheader" .Preheader)}}
 
-              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">BACK IN STOCK</div>
+              <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{ t "stock.back.heading" }}</div>
               {{template "spacer_8"}}
-              <div style="font-size:12px; color:#9a978c;">STATUS: AVAILABLE → THE PIECE YOU WAITLISTED</div>
+              <div style="font-size:12px; color:#9a978c;">{{ t "stock.back.status_line" }}</div>
 
               {{template "spacer_24"}}
               <img src="{{.Thumbnail}}" width="480" alt="{{.Brand}} {{.ProductName}}" style="width:100%; max-width:480px; height:auto; display:block; border:0;">
 
               {{template "spacer_24"}}
               <table role="presentation" border="0" cellspacing="0" cellpadding="0" style="font-size:13px; line-height:24px;">
-                <tr><td valign="top" style="color:#9a978c; padding-right:24px;">ITEM</td><td valign="top" style="text-transform:uppercase; word-break:break-word;">{{.Brand}} {{.ProductName}}</td></tr>
-                <tr><td valign="top" style="color:#9a978c; padding-right:24px;">SIZE</td><td valign="top">{{.Size}}</td></tr>
+                <tr><td valign="top" style="color:#9a978c; padding-right:24px;">{{ t "stock.back.item_label" }}</td><td valign="top" style="text-transform:uppercase; word-break:break-word;">{{.Brand}} {{.ProductName}}</td></tr>
+                <tr><td valign="top" style="color:#9a978c; padding-right:24px;">{{ t "stock.back.size_label" }}</td><td valign="top">{{.Size}}</td></tr>
               </table>
               {{template "spacer_16"}}
-              <div style="font-size:12px; line-height:19px; color:#9a978c;">STOCK IS LIMITED AND WE DON'T HOLD IT — FIRST COME, FIRST SERVED.</div>
+              <div style="font-size:12px; line-height:19px; color:#9a978c;">{{ t "stock.back.scarcity" }}</div>
 
               {{template "spacer_24"}}
-              {{template "cta_button" (dict "url" .ProductURL "label" "VIEW PRODUCT" "variant" "solid")}}
+              {{template "cta_button" (dict "url" .ProductURL "label" (t "common.cta.view_product") "variant" "solid")}}
 
 {{template "email_footer" .}}
