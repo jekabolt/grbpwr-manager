@@ -68,7 +68,8 @@ var alwaysSendSubjects = map[string]bool{
 // suppressed reports whether an email with the given subject must be dropped
 // because the mailer is Disabled and the subject is not on the always-send list.
 func (m *Mailer) suppressed(subject string) bool {
-	return m.c.Disabled && !alwaysSendSubjects[subject]
+	return m.c.Disabled &&
+		!alwaysSendSubjects[subject]
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.

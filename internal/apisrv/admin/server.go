@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
+	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -23,18 +25,25 @@ import (
 // goroutine per request; a burst during a Vercel slowdown could spawn unbounded
 // goroutines. The counting semaphore caps concurrency and queues the excess instead.
 const maxConcurrentRevalidations = 4
+const maxConcurrentCampaignTestSends = 2
 
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
-	repo              dependency.Repository
-	bucket            dependency.FileStore
-	mailer            dependency.Mailer
-	stripePayment     dependency.Invoicer
-	stripePaymentTest dependency.Invoicer
-	re                dependency.RevalidationService
-	reservationMgr    dependency.StockReservationManager
-	ga4mp             *ga4mp.Client
+	repo            dependency.Repository
+	bucket          dependency.FileStore
+	mailer          dependency.Mailer
+	renderer        *campaignrender.Renderer
+	campaignTestSem chan struct{}
+	// campaignTestRecipientAllowlist contains lower-cased, trimmed addresses
+	// permitted for admin campaign test sends. Empty preserves the fail-open
+	// configuration default; suppression-list checks remain mandatory.
+	campaignTestRecipientAllowlist map[string]struct{}
+	stripePayment                  dependency.Invoicer
+	stripePaymentTest              dependency.Invoicer
+	re                             dependency.RevalidationService
+	reservationMgr                 dependency.StockReservationManager
+	ga4mp                          *ga4mp.Client
 	// labelProvider generates carrier shipping labels (AfterShip Shipping); a disabled no-op
 	// when unconfigured, so GenerateShippingLabel reports labels-not-configured. shipFrom is the
 	// warehouse origin address (from config) stamped on every generated label.
@@ -78,14 +87,24 @@ func New(
 	labelProvider dependency.LabelProvider,
 	shipFrom entity.LabelAddress,
 	embedAllowedHosts string,
+	campaignTestRecipients string,
 	aiOps *openrouter.Client,
 	jpkTaxpayer jpk.Taxpayer,
-) *Server {
+) (*Server, error) {
+	renderer, err := campaignrender.New()
+	if err != nil {
+		return nil, fmt.Errorf("create campaign renderer: %w", err)
+	}
 	revalCtx, revalCancel := context.WithCancel(context.Background())
 	return &Server{
-		repo:              r,
-		bucket:            b,
-		mailer:            m,
+		repo:            r,
+		bucket:          b,
+		mailer:          m,
+		renderer:        renderer,
+		campaignTestSem: make(chan struct{}, maxConcurrentCampaignTestSends),
+		campaignTestRecipientAllowlist: parseCampaignTestRecipientAllowlist(
+			campaignTestRecipients,
+		),
 		stripePayment:     stripePayment,
 		stripePaymentTest: stripePaymentTest,
 		re:                re,
@@ -100,7 +119,7 @@ func New(
 		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
 		aiOps:             aiOps,
 		jpkTaxpayer:       jpkTaxpayer,
-	}
+	}, nil
 }
 
 const (

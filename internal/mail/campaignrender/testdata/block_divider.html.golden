@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>GRBPWR</title>
+  <style>
+    html,body{margin:0!important;padding:0!important;width:100%!important}
+    table,td{border-collapse:collapse!important;mso-table-lspace:0pt!important;mso-table-rspace:0pt!important}
+    img{border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic}
+    a{text-decoration:none}
+    @media only screen and (max-width:620px){
+      .gp-shell{width:100%!important}
+      .gp-stack{display:block!important;width:100%!important;max-width:100%!important}
+      .gp-grid-cell{display:block!important;width:100%!important;max-width:100%!important}
+      .gp-pad{padding-left:20px!important;padding-right:20px!important}
+    }
+  </style>
+</head>
+<body bgcolor="#f4f2ec" style="margin:0;padding:0;background-color:#f4f2ec;">
+  <div style="display:none!important;visibility:hidden;mso-hide:all;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;color:transparent;"></div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f4f2ec" style="width:100%;background-color:#f4f2ec;">
+    <tr>
+      <td align="center" style="padding:24px 10px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" class="gp-shell" style="width:600px;max-width:600px;">
+          <tr><td bgcolor="#ffffff" style="background-color:#ffffff;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr><td style="padding:18px 32px;"><div style="border-top:2px solid #0e0e0c;font-size:0;line-height:0;">&nbsp;</div></td></tr>
+</table>
+</td></tr>
+          <tr>
+            <td align="center" bgcolor="#f4f2ec" style="padding:28px 24px;background-color:#f4f2ec;color:#77746b;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:18px;">
+              GRBPWR · customer@grbpwr.com<br>
+              <a href="https://grbpwr.com/unsubscribe/golden" style="color:#77746b;text-decoration:underline;">Unsubscribe with one click</a>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

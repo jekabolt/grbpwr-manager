@@ -163,6 +163,43 @@ type (
 		GetHero(ctx context.Context) (*entity.HeroFullWithTranslations, error)
 	}
 
+	Campaigns interface {
+		UpsertEmailCampaign(ctx context.Context, id int, campaign *entity.EmailCampaignInsert) (int, error)
+		GetEmailCampaignByID(ctx context.Context, id int) (*entity.EmailCampaignFull, error)
+		ListEmailCampaignsPaged(ctx context.Context, limit, offset int, status entity.EmailCampaignStatus, topic entity.EmailCampaignTopic) ([]entity.EmailCampaignFull, int, error)
+		DeleteEmailCampaign(ctx context.Context, id int) error
+		UpsertEmailSegment(ctx context.Context, id int, segment *entity.EmailSegment) (int, error)
+		GetEmailSegmentByID(ctx context.Context, id int) (*entity.EmailSegment, error)
+		ListEmailSegments(ctx context.Context) ([]entity.EmailSegment, error)
+		DeleteEmailSegment(ctx context.Context, id int) error
+		RefreshMarketingAggregate(ctx context.Context) (int64, error)
+		PreviewSegmentCount(ctx context.Context, pred entity.SegmentPredicate) (int, error)
+		SaveSegmentCount(ctx context.Context, segmentID, count int) error
+		ScheduleEmailCampaign(ctx context.Context, campaignID int, at time.Time) error
+		SendEmailCampaignNow(ctx context.Context, campaignID int) error
+		PauseEmailCampaign(ctx context.Context, campaignID int, dispatchError *string) error
+		ResumeEmailCampaign(ctx context.Context, campaignID int) error
+		CancelEmailCampaign(ctx context.Context, campaignID int) error
+		PromoteDueEmailCampaign(ctx context.Context) (int, error)
+		PromoteEmailCampaignABWinners(ctx context.Context, selectWinner entity.EmailCampaignABWinnerSelector) (int, error)
+		AdvanceEmailCampaignFanout(ctx context.Context, pageSize int, assign entity.EmailCampaignVariantAssigner) (*entity.EmailCampaignFanoutPageResult, error)
+		ClaimEmailCampaignBatch(ctx context.Context, batchSize int, lease time.Duration) (*entity.EmailCampaignBatch, error)
+		SaveEmailCampaignRecipientPayload(ctx context.Context, recipientID uint64, batchID, claimToken, unsubscribeURL string, payloadSHA256 []byte) error
+		VerifyEmailCampaignRecipientPayload(ctx context.Context, recipientID uint64, payloadSHA256 []byte) (bool, error)
+		MarkEmailCampaignBatchProviderAttempt(ctx context.Context, batchID, claimToken string) error
+		ReleaseEmailCampaignBatch(ctx context.Context, batchID, claimToken string, nextAttemptAt *time.Time, errorCode, lastError *string) error
+		CompleteEmailCampaignBatch(ctx context.Context, batchID, claimToken string, status entity.EmailCampaignRecipientStatus, errorCode string, lastError *string) error
+		RecordEmailCampaignBatchAccepted(ctx context.Context, batchID, claimToken string, providerIDs []string) error
+		QuarantineEmailCampaignRecipient(ctx context.Context, recipientID uint64, batchID, claimToken, errorCode, message string) error
+		PutEmailCampaignRenderSnapshot(ctx context.Context, snapshot entity.EmailCampaignRenderSnapshot) error
+		GetEmailCampaignRenderSnapshot(ctx context.Context, campaignID, variantID, languageID int) (*entity.EmailCampaignRenderSnapshot, error)
+		FinalizeEmailCampaigns(ctx context.Context) (int64, error)
+		GetEmailCampaignDispatchStatus(ctx context.Context, campaignID int) (*entity.EmailCampaignDispatchStatus, error)
+		GetEmailCampaignRecipients(ctx context.Context, campaignID int, afterID uint64, limit int) (*entity.EmailCampaignRecipientPage, error)
+		RecordRecipientEngagement(ctx context.Context, resendEmailID string, kind entity.EmailCampaignEngagementKind, at time.Time) error
+		GetCampaignMetrics(ctx context.Context, campaignID int) (entity.CampaignMetrics, error)
+	}
+
 	Mail interface {
 		AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int, error)
 		// GetAllUnsent returns unsent rows. withError false limits to worker-eligible rows (attempts and next_retry_at).
@@ -1094,6 +1131,7 @@ type (
 	Repository interface {
 		Products() Products
 		Hero() Hero
+		Campaigns() Campaigns
 		Order() Order
 		StorefrontAccount() StorefrontAccount
 		Membership() Membership
@@ -1240,6 +1278,13 @@ type (
 	}
 
 	Mailer interface {
+		SendCampaignTest(ctx context.Context, rep Repository, to, subject, htmlBody, textBody string) error
+		CampaignDispatchConfigured() error
+		CampaignSendingDisabled() bool
+		CampaignEnvelope(campaign *entity.EmailCampaignFull) (string, *string, error)
+		CampaignUnsubscribeURL(topic entity.EmailCampaignTopic, email string) (string, error)
+		BuildCampaignSendRequest(to string, snapshot entity.EmailCampaignRenderSnapshot, htmlBody, textBody, unsubscribeURL string) (resend.SendEmailRequest, error)
+		SendCampaignBatch(ctx context.Context, requests []resend.SendEmailRequest, idempotencyKey string, beforePost func() error) ([]string, error)
 		SendNewSubscriber(ctx context.Context, rep Repository, to string) error
 		QueueNewSubscriber(ctx context.Context, rep Repository, to string) error
 		SendOrderConfirmation(ctx context.Context, rep Repository, to string, orderDetails *dto.OrderConfirmed) error
@@ -1267,6 +1312,7 @@ type (
 
 	Sender interface {
 		PostEmails(ctx context.Context, body resend.SendEmailRequest, reqEditors ...resend.RequestEditorFn) (*http.Response, error)
+		PostEmailsBatch(ctx context.Context, body resend.PostEmailsBatchJSONRequestBody, reqEditors ...resend.RequestEditorFn) (*http.Response, error)
 	}
 
 	PaymentPool interface {

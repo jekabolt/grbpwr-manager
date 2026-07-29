@@ -5,6 +5,7 @@ package admin;
 import "common/archive.proto";
 import "common/buyer.proto";
 import "common/dict.proto";
+import "common/email_campaign.proto";
 import "common/filter.proto";
 import "common/fitting.proto";
 import "common/fulfillment.proto";
@@ -639,6 +640,116 @@ service AdminService {
       post: "/api/admin/hero/add"
       body: "*"
     };
+  }
+
+  // EMAIL CAMPAIGN MANAGER (Phase 0 CRUD only)
+
+  rpc UpsertEmailSegment(UpsertEmailSegmentRequest) returns (UpsertEmailSegmentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-segments"
+      body: "*"
+    };
+  }
+
+  rpc GetEmailSegment(GetEmailSegmentRequest) returns (GetEmailSegmentResponse) {
+    option (google.api.http) = {get: "/api/admin/email-segments/{id}"};
+  }
+
+  rpc DeleteEmailSegment(DeleteEmailSegmentRequest) returns (DeleteEmailSegmentResponse) {
+    option (google.api.http) = {delete: "/api/admin/email-segments/{id}"};
+  }
+
+  // Declared after the /{id} GET so grpc-gateway gives the literal route priority.
+  rpc ListEmailSegments(ListEmailSegmentsRequest) returns (ListEmailSegmentsResponse) {
+    option (google.api.http) = {get: "/api/admin/email-segments"};
+  }
+
+  rpc PreviewEmailSegment(PreviewEmailSegmentRequest) returns (PreviewEmailSegmentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-segments/preview"
+      body: "*"
+    };
+  }
+
+  rpc UpsertEmailCampaign(UpsertEmailCampaignRequest) returns (UpsertEmailCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns"
+      body: "*"
+    };
+  }
+
+  rpc GetEmailCampaign(GetEmailCampaignRequest) returns (GetEmailCampaignResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{id}"};
+  }
+
+  rpc DeleteEmailCampaign(DeleteEmailCampaignRequest) returns (DeleteEmailCampaignResponse) {
+    option (google.api.http) = {delete: "/api/admin/email-campaigns/{id}"};
+  }
+
+  // Declared after the /{id} GET so grpc-gateway gives the literal route priority.
+  rpc ListEmailCampaignsPaged(ListEmailCampaignsPagedRequest) returns (ListEmailCampaignsPagedResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/paged"};
+  }
+
+  rpc RenderCampaignPreview(RenderCampaignPreviewRequest) returns (RenderCampaignPreviewResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/render-preview"
+      body: "*"
+    };
+  }
+
+  rpc SendTestEmail(SendTestEmailRequest) returns (SendTestEmailResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/test-send"
+      body: "*"
+    };
+  }
+
+  rpc SendCampaignNow(SendCampaignNowRequest) returns (SendCampaignNowResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/send"
+      body: "*"
+    };
+  }
+
+  rpc ScheduleCampaign(ScheduleCampaignRequest) returns (ScheduleCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/schedule"
+      body: "*"
+    };
+  }
+
+  rpc PauseCampaign(PauseCampaignRequest) returns (PauseCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/pause"
+      body: "*"
+    };
+  }
+
+  rpc ResumeCampaign(ResumeCampaignRequest) returns (ResumeCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/resume"
+      body: "*"
+    };
+  }
+
+  rpc CancelCampaign(CancelCampaignRequest) returns (CancelCampaignResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/email-campaigns/{id}/cancel"
+      body: "*"
+    };
+  }
+
+  rpc GetCampaignDispatchStatus(GetCampaignDispatchStatusRequest) returns (GetCampaignDispatchStatusResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{id}/dispatch-status"};
+  }
+
+  rpc GetCampaignMetrics(GetCampaignMetricsRequest) returns (GetCampaignMetricsResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{campaign_id}/metrics"};
+  }
+
+  rpc GetCampaignRecipients(GetCampaignRecipientsRequest) returns (GetCampaignRecipientsResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{id}/recipients"};
   }
 
   // ARCHIVE MANAGER
@@ -3385,6 +3496,167 @@ message AddHeroRequest {
 }
 
 message AddHeroResponse {}
+
+// EMAIL CAMPAIGN MANAGER
+
+message UpsertEmailSegmentRequest {
+  int32 id = 1;
+  common.EmailSegment segment = 2;
+}
+
+message UpsertEmailSegmentResponse {
+  int32 id = 1;
+}
+
+message GetEmailSegmentRequest {
+  int32 id = 1;
+}
+
+message GetEmailSegmentResponse {
+  common.EmailSegment segment = 1;
+}
+
+message ListEmailSegmentsRequest {}
+
+message ListEmailSegmentsResponse {
+  repeated common.EmailSegment segments = 1;
+}
+
+message DeleteEmailSegmentRequest {
+  int32 id = 1;
+}
+
+message DeleteEmailSegmentResponse {}
+
+message PreviewEmailSegmentRequest {
+  common.EmailSegment segment = 1;
+}
+
+message PreviewEmailSegmentResponse {
+  int32 count = 1;
+}
+
+message UpsertEmailCampaignRequest {
+  int32 id = 1;
+  common.EmailCampaignInsert campaign = 2;
+}
+
+message UpsertEmailCampaignResponse {
+  int32 id = 1;
+}
+
+message GetEmailCampaignRequest {
+  int32 id = 1;
+}
+
+message GetEmailCampaignResponse {
+  common.EmailCampaignFull campaign = 1;
+}
+
+message ListEmailCampaignsPagedRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  common.EmailCampaignStatus status = 3;
+  common.EmailCampaignTopic topic = 4;
+}
+
+message ListEmailCampaignsPagedResponse {
+  repeated common.EmailCampaignFull campaigns = 1;
+  int32 total = 2;
+}
+
+message DeleteEmailCampaignRequest {
+  int32 id = 1;
+}
+
+message DeleteEmailCampaignResponse {}
+
+message RenderCampaignPreviewRequest {
+  oneof source {
+    int32 campaign_id = 1;
+    common.EmailCampaignInsert draft = 2;
+  }
+  int32 language_id = 3;
+  int32 variant_id = 4;
+  string device = 5;
+}
+
+message RenderCampaignPreviewResponse {
+  string html = 1;
+  string text = 2;
+  string subject = 3;
+  repeated common.RenderWarning warnings = 4;
+}
+
+message SendTestEmailRequest {
+  oneof source {
+    int32 campaign_id = 1;
+    common.EmailCampaignInsert draft = 2;
+  }
+  int32 language_id = 3;
+  int32 variant_id = 4;
+  repeated string to_emails = 5;
+}
+
+message SendTestEmailResponse {}
+
+message SendCampaignNowRequest {
+  int32 id = 1;
+}
+
+message SendCampaignNowResponse {}
+
+message ScheduleCampaignRequest {
+  int32 id = 1;
+  int64 schedule_at = 2;
+}
+
+message ScheduleCampaignResponse {}
+
+message PauseCampaignRequest {
+  int32 id = 1;
+}
+
+message PauseCampaignResponse {}
+
+message ResumeCampaignRequest {
+  int32 id = 1;
+}
+
+message ResumeCampaignResponse {}
+
+message CancelCampaignRequest {
+  int32 id = 1;
+}
+
+message CancelCampaignResponse {}
+
+message GetCampaignDispatchStatusRequest {
+  int32 id = 1;
+}
+
+message GetCampaignDispatchStatusResponse {
+  common.EmailCampaignDispatchStatus status = 1;
+}
+
+message GetCampaignMetricsRequest {
+  int32 campaign_id = 1;
+}
+
+message GetCampaignMetricsResponse {
+  common.CampaignMetrics metrics = 1;
+}
+
+message GetCampaignRecipientsRequest {
+  int32 id = 1;
+  uint64 after_id = 2;
+  int32 limit = 3;
+}
+
+message GetCampaignRecipientsResponse {
+  repeated common.EmailCampaignRecipient recipients = 1;
+  uint64 next_id = 2;
+}
 
 // ARCHIVE MANAGER
 

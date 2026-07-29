@@ -22,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/campaigndispatch"
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -30,6 +31,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
@@ -59,10 +61,12 @@ type App struct {
 	db   dependency.Repository
 	b    dependency.FileStore
 	ma   dependency.Mailer
+	cdw  *campaigndispatch.Worker
 	oc   *ordercleanup.Worker
 	dsw  *deliverysync.Worker
 	sc   *storefrontcleanup.Worker
 	tm   *tiermanagement.Worker
+	maw  *marketingaggregate.Worker
 	om   *opexmaterialize.Worker
 	ap   *acctposting.Worker
 	sr   *stripereconcile.Worker
@@ -119,6 +123,14 @@ func (a *App) Start(ctx context.Context) error {
 		go cache.PollDictionaryRevisions(ctx, mysqlStore.Dictionary(), mysqlStore.Cache(), cache.DefaultDictionaryPollInterval)
 	}
 
+	a.maw = marketingaggregate.New(&a.c.MarketingAggregate, a.db)
+	if err = a.maw.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start marketing aggregate worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
 	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't connect to mailer",
@@ -129,6 +141,20 @@ func (a *App) Start(ctx context.Context) error {
 	err = a.ma.Start(ctx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start mailer worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	a.cdw, err = campaigndispatch.New(&a.c.CampaignDispatch, a.db, a.ma)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't construct campaign dispatch worker",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	if err = a.cdw.Start(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start campaign dispatch worker",
 			slog.String("err", err.Error()),
 		)
 		return err
@@ -371,13 +397,19 @@ func (a *App) Start(ctx context.Context) error {
 	// OPENROUTER_API_KEY is unset — GenerateTechCardOperations then reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
 
-	adminS := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, aiOpsClient, jpk.Taxpayer{
+	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, aiOpsClient, jpk.Taxpayer{
 		NIP:       a.c.JPK.NIP,
 		FullName:  a.c.JPK.FullName,
 		Email:     a.c.JPK.Email,
 		Phone:     a.c.JPK.Phone,
 		TaxOffice: a.c.JPK.TaxOffice,
 	})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to create admin server",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
 	a.adminS = adminS
 
 	var frontendS *frontend.Server
@@ -519,6 +551,9 @@ func (a *App) Stop(ctx context.Context) {
 
 	// Stop workers before closing DB — avoids panics and error storms from workers
 	// hitting a closed connection. In-flight emails remain in DB and will be retried on next run.
+	if a.cdw != nil {
+		_ = a.cdw.Stop()
+	}
 	if a.ma != nil {
 		_ = a.ma.Stop()
 	}
@@ -533,6 +568,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	if a.tm != nil {
 		_ = a.tm.Stop()
+	}
+	if a.maw != nil {
+		_ = a.maw.Stop()
 	}
 	if a.om != nil {
 		_ = a.om.Stop()
@@ -605,6 +643,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 			addWorker(r)
 		}
 	}
+	if a.cdw != nil {
+		addWorker(a.cdw)
+	}
 	if a.oc != nil {
 		addWorker(a.oc)
 	}
@@ -616,6 +657,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.tm != nil {
 		addWorker(a.tm)
+	}
+	if a.maw != nil {
+		addWorker(a.maw)
 	}
 	if a.om != nil {
 		addWorker(a.om)

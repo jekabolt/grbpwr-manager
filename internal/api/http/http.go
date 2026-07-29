@@ -146,6 +146,7 @@ const (
 type WebhookHandler interface {
 	HandleResendEvent(w http.ResponseWriter, r *http.Request)
 	HandleListUnsubscribe(w http.ResponseWriter, r *http.Request)
+	HandleCampaignListUnsubscribe(w http.ResponseWriter, r *http.Request)
 }
 
 // StripeWebhookHandler handles inbound Stripe webhook events (signature-verified).
@@ -449,6 +450,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	if s.webhookHandler != nil {
 		r.Post("/api/webhooks/resend", s.webhookHandler.HandleResendEvent)
 		r.Post("/api/webhooks/list-unsubscribe/{email_b64}/{token}", s.webhookHandler.HandleListUnsubscribe)
+		r.Post("/api/webhooks/list-unsubscribe/{topic}/{email_b64}/{token}", s.webhookHandler.HandleCampaignListUnsubscribe)
 	}
 	if s.stripeWebhookHandler != nil {
 		r.Post("/api/webhooks/stripe", s.stripeWebhookHandler.HandleStripeEvent)

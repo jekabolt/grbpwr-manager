@@ -16,6 +16,7 @@ PACKAGE_VERSION_SUFFIX|proto/auth/auth/auth.proto|Package name \"auth\" should b
 PACKAGE_VERSION_SUFFIX|proto/common/common/archive.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
 PACKAGE_VERSION_SUFFIX|proto/common/common/buyer.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
 PACKAGE_VERSION_SUFFIX|proto/common/common/dict.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
+PACKAGE_VERSION_SUFFIX|proto/common/common/email_campaign.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
 PACKAGE_VERSION_SUFFIX|proto/common/common/filter.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
 PACKAGE_VERSION_SUFFIX|proto/common/common/fitting.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".
 PACKAGE_VERSION_SUFFIX|proto/common/common/fulfillment.proto|Package name \"common\" should be suffixed with a correctly formed version, such as \"common.v1\".

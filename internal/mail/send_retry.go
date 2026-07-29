@@ -65,4 +65,13 @@ func applyMailerRetryDefaults(c *Config) {
 	if c.InlineSendLease <= 0 {
 		c.InlineSendLease = 10 * time.Minute
 	}
+	if c.ResendRequestsPerSecond <= 0 {
+		c.ResendRequestsPerSecond = 2
+	}
+	if c.ResendBurst <= 0 {
+		c.ResendBurst = 2
+	}
+	if c.TransactionalReserveTokens <= 0 {
+		c.TransactionalReserveTokens = 1
+	}
 }

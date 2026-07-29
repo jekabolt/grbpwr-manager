@@ -43,6 +43,21 @@ var qualifyingStatuses = []entity.OrderStatusName{
 	"partially_refunded",
 }
 
+// NetEURSpendExpr is the shared qualifying-spend expression used by both
+// per-account membership calculations and the marketing aggregate refresh.
+const NetEURSpendExpr = "co.total_price_eur * (1 - (co.refunded_amount / NULLIF(co.total_price, 0)))"
+
+const computeQualifyingSpendEURQuery = `
+		SELECT COALESCE(SUM(
+			` + NetEURSpendExpr + `
+		), 0) AS total
+		FROM customer_order co
+		JOIN buyer b ON b.order_id = co.id
+		WHERE b.email = :email
+		  AND co.order_status_id IN (:statusIDs)
+		  AND co.total_price_eur IS NOT NULL
+		  AND co.placed >= :windowStart`
+
 // qualifyingStatusIDs resolves the qualifying status names to ids via cache.
 func qualifyingStatusIDs() []int {
 	ids := make([]int, 0, len(qualifyingStatuses))
@@ -52,6 +67,12 @@ func qualifyingStatusIDs() []int {
 		}
 	}
 	return ids
+}
+
+// QualifyingStatusIDs exposes the loyalty qualifying-status ids for consumers
+// that must remain exactly aligned with membership spend calculations.
+func QualifyingStatusIDs() []int {
+	return qualifyingStatusIDs()
 }
 
 // ComputeQualifyingSpendEUR sums the EUR-equivalent net (after refunds) of all
@@ -68,17 +89,7 @@ func (s *Store) ComputeQualifyingSpendEUR(ctx context.Context, email string, win
 	type sumRow struct {
 		Total decimal.NullDecimal `db:"total"`
 	}
-	q := `
-		SELECT COALESCE(SUM(
-			co.total_price_eur * (1 - (co.refunded_amount / NULLIF(co.total_price, 0)))
-		), 0) AS total
-		FROM customer_order co
-		JOIN buyer b ON b.order_id = co.id
-		WHERE b.email = :email
-		  AND co.order_status_id IN (:statusIDs)
-		  AND co.total_price_eur IS NOT NULL
-		  AND co.placed >= :windowStart`
-	r, err := storeutil.QueryNamedOne[sumRow](ctx, s.DB, q, map[string]any{
+	r, err := storeutil.QueryNamedOne[sumRow](ctx, s.DB, computeQualifyingSpendEURQuery, map[string]any{
 		"email":       email,
 		"statusIDs":   statusIDs,
 		"windowStart": windowStart,

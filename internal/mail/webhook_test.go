@@ -28,8 +28,17 @@ const testUnsubPepper = "test-unsubscribe-pepper-value"
 
 func newTestWebhookHandler(t *testing.T, mailMock *mocks.MockMail) *WebhookHandler {
 	t.Helper()
+	campaigns := mocks.NewMockCampaigns(t)
+	campaigns.On(
+		"RecordRecipientEngagement",
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.AnythingOfType("time.Time"),
+	).Return(nil).Maybe()
 	repoMock := mocks.NewMockRepository(t)
 	repoMock.On("Mail").Return(mailMock).Maybe()
+	repoMock.On("Campaigns").Return(campaigns).Maybe()
 	h, err := NewWebhookHandler(repoMock, testWebhookSecret, testUnsubPepper)
 	require.NoError(t, err)
 	return h
@@ -260,6 +269,100 @@ func TestHandleResendEvent_ClickedIncrementsMetric(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	mailMock.AssertExpectations(t)
+}
+
+func TestHandleResendEvent_RedeliveryKeepsAttributionTimestampAndRepeatsCounters(t *testing.T) {
+	eventAt := time.Date(2024, time.May, 10, 14, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		eventType  resendEventType
+		metric     string
+		engagement entity.EmailCampaignEngagementKind
+	}{
+		{
+			name:       "delivered timestamp",
+			eventType:  eventEmailDelivered,
+			metric:     "delivered",
+			engagement: entity.EmailCampaignEngagementDelivered,
+		},
+		{
+			name:       "open counter",
+			eventType:  eventEmailOpened,
+			metric:     "opened",
+			engagement: entity.EmailCampaignEngagementOpened,
+		},
+		{
+			name:       "click counter",
+			eventType:  eventEmailClicked,
+			metric:     "clicked",
+			engagement: entity.EmailCampaignEngagementClicked,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mailMock := mocks.NewMockMail(t)
+			mailMock.EXPECT().
+				IncrementEmailMetric(mock.Anything, tt.metric, eventAt).
+				Return(nil).
+				Twice()
+			campaigns := mocks.NewMockCampaigns(t)
+			campaigns.EXPECT().
+				RecordRecipientEngagement(
+					mock.Anything,
+					"campaign-email-123",
+					tt.engagement,
+					eventAt,
+				).
+				Return(nil).
+				Twice()
+			repo := mocks.NewMockRepository(t)
+			repo.EXPECT().Mail().Return(mailMock).Twice()
+			repo.EXPECT().Campaigns().Return(campaigns).Twice()
+			h, err := NewWebhookHandler(repo, testWebhookSecret, testUnsubPepper)
+			require.NoError(t, err)
+			body := `{"type":"` + string(tt.eventType) +
+				`","created_at":"2024-05-10T14:30:00Z","data":{"email_id":"campaign-email-123"}}`
+
+			for range 2 {
+				rr := httptest.NewRecorder()
+				h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
+				require.Equal(t, http.StatusOK, rr.Code)
+			}
+		})
+	}
+}
+
+func TestHandleResendEvent_UnknownCampaignResendIDIsNoOp(t *testing.T) {
+	eventAt := time.Date(2024, time.May, 10, 14, 30, 0, 0, time.UTC)
+	mailMock := mocks.NewMockMail(t)
+	mailMock.EXPECT().
+		IncrementEmailMetric(mock.Anything, "delivered", eventAt).
+		Return(nil).
+		Once()
+	campaigns := mocks.NewMockCampaigns(t)
+	// The store represents a transactional/non-campaign Resend id as a
+	// successful zero-row update, so existing webhook behavior continues.
+	campaigns.EXPECT().
+		RecordRecipientEngagement(
+			mock.Anything,
+			"transactional-email-123",
+			entity.EmailCampaignEngagementDelivered,
+			eventAt,
+		).
+		Return(nil).
+		Once()
+	repo := mocks.NewMockRepository(t)
+	repo.EXPECT().Mail().Return(mailMock).Once()
+	repo.EXPECT().Campaigns().Return(campaigns).Once()
+	h, err := NewWebhookHandler(repo, testWebhookSecret, testUnsubPepper)
+	require.NoError(t, err)
+	body := `{"type":"email.delivered","created_at":"2024-05-10T14:30:00Z",` +
+		`"data":{"email_id":"transactional-email-123"}}`
+	rr := httptest.NewRecorder()
+
+	h.HandleResendEvent(rr, newSignedResendRequest(t, h, body))
+
+	require.Equal(t, http.StatusOK, rr.Code)
 }
 
 func TestHandleResendEvent_DelayedNoMetric(t *testing.T) {

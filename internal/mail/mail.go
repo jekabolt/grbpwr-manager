@@ -62,6 +62,13 @@ func validateEmailAddress(to string) (string, error) {
 	return addr.Address, nil
 }
 
+// NormalizeEmailAddress validates an email address and returns its normalized
+// local@domain form. Callers that perform recipient-policy checks should use the
+// same normalization as the final send path.
+func NormalizeEmailAddress(to string) (string, error) {
+	return validateEmailAddress(to)
+}
+
 // HTTPSendError is returned when the Resend API responds with a non-success HTTP status.
 type HTTPSendError struct {
 	StatusCode int
@@ -80,10 +87,14 @@ type Config struct {
 	// exception and still dispatch, so beta login keeps working. Suppressed emails
 	// are still built and recorded, just not sent to Resend. Used on beta to avoid
 	// burning the Resend API quota during data seeding. Set via MAILER_DISABLED.
-	Disabled          bool          `mapstructure:"disabled"`
-	FromEmail         string        `mapstructure:"from_email"`
-	FromName          string        `mapstructure:"from_email_name"`
-	ReplyTo           string        `mapstructure:"reply_to"`
+	Disabled  bool   `mapstructure:"disabled"`
+	FromEmail string `mapstructure:"from_email"`
+	FromName  string `mapstructure:"from_email_name"`
+	ReplyTo   string `mapstructure:"reply_to"`
+	// TestRecipients is a comma-separated allowlist for admin campaign test
+	// sends. Empty intentionally permits any valid recipient for backwards
+	// compatibility; suppression-list checks still apply.
+	TestRecipients    string        `mapstructure:"test_recipients"`
 	WorkerInterval    time.Duration `mapstructure:"worker_interval"`
 	MaxSendAttempts   int           `mapstructure:"max_send_attempts"`
 	RetryBaseInterval time.Duration `mapstructure:"retry_base_interval"`
@@ -100,7 +111,10 @@ type Config struct {
 	// one-click unsubscribe token embedded in the List-Unsubscribe URL (RFC 8058:
 	// the URL must be unique and unguessable per recipient). Without it no
 	// List-Unsubscribe header is emitted and the unsubscribe endpoint fails closed.
-	UnsubscribePepper string `mapstructure:"unsubscribe_pepper"`
+	UnsubscribePepper          string  `mapstructure:"unsubscribe_pepper"`
+	ResendRequestsPerSecond    float64 `mapstructure:"resend_requests_per_second"`
+	ResendBurst                int     `mapstructure:"resend_burst"`
+	TransactionalReserveTokens int     `mapstructure:"transactional_reserve_tokens"`
 	// LocalizationEnabled turns on per-recipient email language resolution. When false
 	// (default, and on prod until sign-off) every email renders in the default locale
 	// (en) — byte-for-byte the pre-feature behavior. Set via MAILER_LOCALIZATION_ENABLED.
@@ -118,6 +132,7 @@ type Mailer struct {
 	catalog        *Catalog
 	wg             sync.WaitGroup
 	tracker        health.Tracker
+	budget         *ResendBudget
 }
 
 // Name implements health.Reporter.
@@ -186,6 +201,11 @@ func new(c *Config, mailRepository dependency.Mail) (*Mailer, error) {
 		c:              c,
 		templates:      make(map[templateName]*template.Template),
 		catalog:        catalog,
+		budget: NewResendBudget(
+			c.ResendRequestsPerSecond,
+			c.ResendBurst,
+			c.TransactionalReserveTokens,
+		),
 	}
 
 	// Parse email templates
@@ -463,9 +483,25 @@ func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
 	return &h
 }
 
+type sendOptions struct {
+	exemptDisabledSuppression bool
+	campaignLane              bool
+}
+
 func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
-	if m.suppressed(ser.Subject) {
+	return m.sendWithOptions(ctx, ser, sendOptions{})
+}
+
+func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailRequest, opts sendOptions) error {
+	if !opts.exemptDisabledSuppression && m.suppressed(ser.Subject) {
 		return nil // bulk mail suppressed (e.g. beta seeding) — treat as sent, dispatch nothing
+	}
+	if opts.campaignLane {
+		if !m.budget.TryCampaign() {
+			return ErrCampaignBudgetUnavailable
+		}
+	} else if err := m.budget.WaitTransactional(ctx); err != nil {
+		return fmt.Errorf("wait for transactional Resend budget: %w", err)
 	}
 
 	resp, err := m.cli.PostEmails(ctx, *ser)
@@ -479,9 +515,42 @@ func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
 	}
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+			if retryAfter <= 0 {
+				retryAfter = time.Second
+			}
+			if opts.campaignLane {
+				m.budget.CooldownCampaign(retryAfter)
+			} else {
+				m.budget.CooldownGlobal(retryAfter)
+			}
 			return mailApiLimitReached
 		}
 		return fmt.Errorf("error sending email: %w", err)
+	}
+	if resp == nil {
+		// dependency.Sender test doubles historically return (nil, nil). The
+		// production generated client always returns a response here.
+		return nil
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if retryAfter <= 0 {
+			retryAfter = time.Second
+		}
+		if opts.campaignLane {
+			m.budget.CooldownCampaign(retryAfter)
+		} else {
+			m.budget.CooldownGlobal(retryAfter)
+		}
+		return mailApiLimitReached
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if readErr != nil {
+			return &HTTPSendError{StatusCode: resp.StatusCode}
+		}
+		return &HTTPSendError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	return nil
@@ -504,6 +573,9 @@ func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) erro
 
 	// Attach List-Unsubscribe headers when sending queued emails from the worker.
 	req.Headers = m.listUnsubscribeHeaders(normalizedTo)
+	if err := m.budget.WaitTransactional(ctx); err != nil {
+		return fmt.Errorf("wait for transactional Resend budget: %w", err)
+	}
 
 	resp, err := m.cli.PostEmails(ctx, *req)
 	if err != nil {
@@ -512,6 +584,11 @@ func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) erro
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if retryAfter <= 0 {
+			retryAfter = time.Second
+		}
+		m.budget.CooldownGlobal(retryAfter)
 		return mailApiLimitReached
 	}
 	if resp.StatusCode != http.StatusOK {
