@@ -40,6 +40,7 @@ message Dictionary {
   string sku_contract_version = 22; // R7: canonical SKU contract version, e.g. "grbpwr-sku-v1"
   repeated DictionaryRevision revisions = 23; // R9: per-namespace revision snapshot for cache invalidation
   repeated CategorySizeSystem category_size_systems = 24; // S10/WS5: category -> permitted size-system(s)
+  repeated CareSymbol care_symbols = 26; // controlled ISO 3758 care vocabulary, in canonical print order
 }
 
 message Collection {
@@ -66,6 +67,39 @@ message Fiber {
   string code = 1; // stable short key (public), e.g. COT
   string name = 2; // display name, e.g. Cotton
   bool archived = 3;
+}
+
+// CareSymbol is one entry of the controlled ISO 3758 care vocabulary — the dictionary a style's
+// stored care code string resolves against, exactly as Fiber backs the composition model.
+//
+// The CODE is what is stored on the style, what the label generator consumes and what prints on the
+// sewn tag; everything else here is display data. name is the admin picker's label; short_prose is
+// the customer-facing wording ("machine wash 30°"). Both arrive in the caller's language when a
+// translation exists, falling back to English otherwise.
+//
+// Symbol ARTWORK is deliberately not here: it is a client asset keyed by code, so a renderer picks
+// its own drawing. These are not the trademarked GINETEX glyphs.
+message CareSymbol {
+  string code = 1; // stable key, e.g. MW30
+  string category = 2; // Washing / Bleaching / Drying / Ironing / Professional Care
+  string sub_category = 3; // only Professional Care nests: Dry Cleaning / Wet Cleaning
+  string name = 4; // admin picker label, e.g. "Machine Wash Cold (30°C)"
+  string short_prose = 5; // storefront wording, e.g. "machine wash 30°"
+  int32 sort_order = 6; // canonical print order: wash, bleach, dry, iron, professional
+  bool archived = 7; // retired: still rendered where referenced, no longer offered
+  // Customer wording per language, for the storefront to render care in the buyer's language. The
+  // full set travels with the dictionary and the client picks, exactly as ColorwayInsertTranslation
+  // does -- rather than the server resolving one language per read.
+  repeated CareSymbolTranslation translations = 8;
+}
+
+// CareSymbolTranslation is one language's customer-facing wording for a care symbol. name is
+// optional: the admin picker is English-only, so most rows carry prose alone and fall back to
+// CareSymbol.name.
+message CareSymbolTranslation {
+  int32 language_id = 1;
+  string name = 2; // empty falls back to CareSymbol.name
+  string short_prose = 3;
 }
 
 // Tag is a controlled merchandising tag dictionary (R9). Storefront receives tags by code/name; id is

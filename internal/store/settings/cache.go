@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -86,7 +87,69 @@ func (s *Store) GetDictionaryInfo(ctx context.Context) (*entity.DictionaryInfo, 
 		return nil, fmt.Errorf("failed to get fibers: %w", err)
 	}
 
+	if dict.CareSymbols, err = s.getCareSymbols(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get care symbols: %w", err)
+	}
+
 	return &dict, nil
+}
+
+// getCareSymbols returns the controlled ISO 3758 care vocabulary with its per-language wording,
+// ordered canonically (wash, bleach, dry, iron, professional) so every consumer inherits the print
+// order without re-deriving it.
+//
+// Two queries rather than one aggregate: the translation set is small (39 codes x active languages)
+// and stitching in Go keeps the row type flat, which is what lets the cache hand out
+// entity.CareIndex directly. Archived entries are included and flagged — a style that already
+// references a retired symbol must keep rendering it; archiving only removes it from the picker.
+func (s *Store) getCareSymbols(ctx context.Context) ([]entity.CareSymbol, error) {
+	const symbolsQuery = `
+		SELECT code, category, sub_category, name, short_prose, sort_order, archived_at
+		  FROM care_symbol
+		 ORDER BY sort_order`
+	symbols, err := storeutil.QueryListNamed[entity.CareSymbol](ctx, s.DB, symbolsQuery, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get care symbols: %w", err)
+	}
+	if len(symbols) == 0 {
+		return symbols, nil
+	}
+
+	// Only ACTIVE languages: an inactive language must not reach the storefront payload, and the
+	// resolver falls back to the English columns for anything missing here.
+	const translationsQuery = `
+		SELECT t.care_code, t.language_id, t.name, t.short_prose
+		  FROM care_symbol_translation t
+		  JOIN language l ON l.id = t.language_id AND l.is_active = TRUE`
+	type careTranslationRow struct {
+		CareCode   string         `db:"care_code"`
+		LanguageID int            `db:"language_id"`
+		Name       sql.NullString `db:"name"`
+		ShortProse string         `db:"short_prose"`
+	}
+	rows, err := storeutil.QueryListNamed[careTranslationRow](ctx, s.DB, translationsQuery, map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("can't get care symbol translations: %w", err)
+	}
+
+	byCode := make(map[string]int, len(symbols))
+	for i := range symbols {
+		byCode[symbols[i].Code] = i
+	}
+	for _, r := range rows {
+		i, ok := byCode[r.CareCode]
+		if !ok {
+			continue
+		}
+		if symbols[i].Translations == nil {
+			symbols[i].Translations = make(map[int]entity.CareTranslation, 4)
+		}
+		symbols[i].Translations[r.LanguageID] = entity.CareTranslation{
+			Name:       r.Name.String,
+			ShortProse: r.ShortProse,
+		}
+	}
+	return symbols, nil
 }
 
 // getFibers returns the controlled fibre vocabulary (S17/P0.4), ordered by code. Archived entries are

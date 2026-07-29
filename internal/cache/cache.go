@@ -116,6 +116,12 @@ var (
 	// Fibre dictionary (S17/P0.4): the controlled vocabulary material composition references by code.
 	entityFibers = []entity.Fiber{}
 
+	// Care dictionary: the controlled ISO 3758 vocabulary a style's stored care codes resolve
+	// against. careIndex is derived from it on every load so read paths resolve a code string
+	// without touching the database, and write paths validate against the same set.
+	entityCareSymbols = []entity.CareSymbol{}
+	careIndex         = entity.CareIndex{}
+
 	entityCollections = []entity.Collection{}
 
 	entityProductTags = []string{}
@@ -217,6 +223,8 @@ func InitConsts(ctx context.Context, dInfo *entity.DictionaryInfo, h *entity.Her
 	announce = dInfo.Announce
 	entityCategorySizeSystems = dInfo.CategorySizeSystems
 	entityFibers = dInfo.Fibers
+	entityCareSymbols = dInfo.CareSymbols
+	careIndex = entity.BuildCareIndex(dInfo.CareSymbols)
 
 	for _, c := range entityCategories {
 		categoryById[c.ID] = c
@@ -352,6 +360,8 @@ func RefreshDictionary(dInfo *entity.DictionaryInfo) {
 	entityTags = dInfo.Tags
 	entityCategorySizeSystems = dInfo.CategorySizeSystems
 	entityFibers = dInfo.Fibers
+	entityCareSymbols = dInfo.CareSymbols
+	careIndex = entity.BuildCareIndex(dInfo.CareSymbols)
 	categoryById = make(map[int]entity.Category, len(entityCategories))
 	for _, c := range entityCategories {
 		categoryById[c.ID] = c
@@ -783,6 +793,22 @@ func GetFibers() []entity.Fiber {
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
 	return entityFibers
+}
+
+// GetCareSymbols returns the controlled ISO 3758 care vocabulary in canonical print order.
+func GetCareSymbols() []entity.CareSymbol {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return entityCareSymbols
+}
+
+// GetCareIndex returns the care dictionary keyed by code, for resolving a stored care string on a
+// read path or validating one on a write. It is rebuilt on every dictionary refresh, so callers
+// should take it per request rather than holding it.
+func GetCareIndex() entity.CareIndex {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return careIndex
 }
 
 func GetProductTags() []string {

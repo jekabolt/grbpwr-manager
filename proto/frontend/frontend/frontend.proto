@@ -618,6 +618,11 @@ message StorefrontColorwayDisplay {
   string fit = 6;
   string composition = 7; // legacy free-text ONLY (M1 fix) — never a JSON encoding of composition_entries
   string care_instructions = 8;
+  // care_entries is the STRUCTURED projection of care_instructions above, resolved against the
+  // care_symbol dictionary, in the buyer's language and always in canonical print order. care_instructions keeps holding the
+  // raw comma-joined codes; render entries when present and fall back to the string for rows that
+  // still hold pre-ISO free text. Storefront-facing: short_prose is what a PDP renders.
+  repeated common.CareEntry care_entries = 17;
   repeated common.ColorwayInsertTranslation translations = 9; // resolved: override -> style -> default
   // Merchandising facts the PDP/cards render (S-final finding: the lean projection had no source for
   // sale %, preorder, model-wears, category labels and freshness dates — all public, none are PKs).

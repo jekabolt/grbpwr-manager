@@ -36,6 +36,7 @@ func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) 
 			Colors:                      cache.GetColors(),
 			CategorySizeSystems:         cache.GetCategorySizeSystems(),
 			Fibers:                      cache.GetFibers(),
+			CareSymbols:                 cache.GetCareSymbols(),
 		}),
 	}, nil
 }

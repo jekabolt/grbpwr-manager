@@ -268,6 +268,15 @@ func storefrontDisplay(c *entity.Colorway) *pb_frontend.StorefrontColorwayDispla
 		Fit:              bi.Fit.String,
 		Composition:      bi.Composition.String, // legacy plain text ONLY (M1 fix) — see composition_entries below
 		CareInstructions: bi.CareInstructions.String,
+		// Structured care, alongside — never instead of — CareInstructions above. This is what lets a
+		// PDP render care at all: until the vocabulary moved server-side the storefront received
+		// "MW30,DNB" and had nothing to resolve it with.
+		//
+		// English base wording. Localised copy is not resolved per read because the storefront already
+		// receives the whole care dictionary (GetHero -> Dictionary.care_symbols) with every
+		// translation on it, and picks its language client-side the same way it does for colourway
+		// translations. Threading a language through here would resolve it twice.
+		CareEntries: CareEntriesToPb(cache.GetCareIndex().Resolve(bi.CareInstructions.String, 0)),
 		Translations:     translations,
 		UpdatedAt:        timestamppb.New(c.UpdatedAt),
 		// Structured fibre composition (S17/M1 fix), alongside — never instead of — Composition above.

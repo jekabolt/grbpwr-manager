@@ -55,8 +55,36 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 			gender = pb_common.GenderEnum_GENDER_ENUM_UNISEX // placeholder; excluded from the write by the mask
 		}
 	}
+	// Care is validated and canonicalised HERE rather than in the store, because this is the only
+	// place that knows whether the caller actually MEANT to write it.
+	//
+	// Strict only when the mask names care. An unmasked full replace carries whatever care string the
+	// client happened to have loaded — for a style that still holds pre-ISO free text that is a
+	// carry-over, not an authored choice, and rejecting it would make "edit the fit and save"
+	// impossible until someone re-picked care. So an unmasked write canonicalises when the value
+	// resolves and passes it through untouched when it does not.
+	//
+	// A masked write is the opposite: the caller is writing care, so it has to land real codes, or
+	// the column never converges and the storefront can never rely on it. Canonicalising also means
+	// the same picks always store the same string, which is what makes the value comparable and the
+	// printed label stable.
+	careInstructions := p.GetCareInstructions()
+	if careMasked := styleMaskHas(mask, "careInstructions"); careMasked || len(mask) == 0 {
+		canonical, cerr := cache.GetCareIndex().Normalize(careInstructions)
+		switch {
+		case cerr == nil:
+			careInstructions = canonical
+		case careMasked:
+			var ve *entity.ValidationError
+			if errors.As(cerr, &ve) {
+				return nil, apierr.Invalid(ve)
+			}
+			return nil, status.Errorf(codes.InvalidArgument, "invalid care instructions: %v", cerr)
+		}
+	}
+
 	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), season, p.GetCollection(), gender,
-		p.GetFit(), p.GetComposition(), p.GetCareInstructions(),
+		p.GetFit(), p.GetComposition(), careInstructions,
 		p.GetModelWearsHeightCm(), p.GetModelWearsSizeId(), p.GetTopCategoryId(), p.GetSubCategoryId(), p.GetTypeId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid style patch: %v", err)

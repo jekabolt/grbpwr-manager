@@ -715,6 +715,11 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		Fit:              pbStringFromNull(tc.Fit),
 		Composition:      pbStringFromNull(tc.Composition),
 		CareInstructions: pbStringFromNull(tc.CareInstructions),
+		// Resolved against the care dictionary so the constructor renders symbols and names without
+		// shipping its own copy of the vocabulary. Language 0 = the English base: the admin is
+		// English-only. Empty for a row still holding pre-ISO free text, which is the client's cue to
+		// fall back to CareInstructions above.
+		CareEntries: CareEntriesToPb(cache.GetCareIndex().Resolve(tc.CareInstructions.String, 0)),
 		// Current fingerprint per sign-off section: compare against each signoff's signed_digest to
 		// tell an approval that still holds from one whose sheet moved underneath it.
 		SectionDigests: TechCardSectionDigestsToPb(&tc.TechCardInsert),
@@ -1877,4 +1882,24 @@ func techCardAuxSubtypeFromPb(p pb_common.TechCardAuxSubtype) entity.TechCardAux
 		}
 	}
 	return ""
+}
+
+// CareEntriesToPb projects resolved care symbols onto the wire. Nil in, nil out — an empty list is
+// the client's cue that the stored care value did not resolve (pre-ISO free text) and that it should
+// render the raw care_instructions string instead.
+func CareEntriesToPb(entries []entity.CareEntry) []*pb_common.CareEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.CareEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, &pb_common.CareEntry{
+			Code:        e.Code,
+			Category:    e.Category,
+			SubCategory: e.SubCategory,
+			Name:        e.Name,
+			ShortProse:  e.ShortProse,
+		})
+	}
+	return out
 }

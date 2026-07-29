@@ -204,6 +204,11 @@ message ColorwayMerchandising {
   int32 model_wears_size_id = 11;
   string care_instructions = 12;
   string composition = 13;
+  // care_entries is the STRUCTURED projection of care_instructions above, resolved against the
+  // care_symbol dictionary and always in canonical print order. care_instructions keeps holding the
+  // raw comma-joined codes; render entries when present and fall back to the string for rows that
+  // still hold pre-ISO free text. OUTPUT-ONLY — care is written as the code string.
+  repeated CareEntry care_entries = 24;
   GenderEnum target_gender = 15;
   SeasonEnum season = 19;
   string collection = 17;
@@ -266,6 +271,26 @@ message CompositionEntry {
   string fiber_code = 1;
   string name = 2;
   google.type.Decimal percent = 3;
+}
+
+// CareEntry is one resolved care symbol — the TYPED projection of the stored care code string, and
+// the direct analogue of CompositionEntry above.
+//
+// Same contract, for the same reason: `care_instructions` on the wire stays the raw comma-joined
+// code string ALWAYS ("MW30,DNB,DNTD,IL"), because that is what the label generator consumes and
+// what prints on the tag; care_entries is the structured projection resolved against the care_symbol
+// dictionary. A client renders care_entries when present and falls back to the plain string
+// otherwise, which is what keeps rows written before the vocabulary existed — free text like
+// "Machine wash cold at 30, do not tumble dry" — readable rather than blank.
+//
+// Entries always arrive in canonical print order (wash, bleach, dry, iron, professional), whatever
+// order the codes were stored in, so the same selection always reads the same way.
+message CareEntry {
+  string code = 1; // e.g. MW30 — the authoritative value; everything else is display
+  string category = 2;
+  string sub_category = 3; // only Professional Care nests
+  string name = 4; // admin label
+  string short_prose = 5; // customer wording, in the caller's language when translated
 }
 
 enum StockChangeSource {

@@ -1,6 +1,8 @@
 package dto
 
 import (
+	"sort"
+
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -33,6 +35,7 @@ type Dict struct {
 	Colors                      []entity.Color
 	CategorySizeSystems         []entity.CategorySizeSystem
 	Fibers                      []entity.Fiber
+	CareSymbols                 []entity.CareSymbol
 }
 
 var (
@@ -302,6 +305,38 @@ func ConvertToCommonDictionary(dict Dict) *pb_common.Dictionary {
 			Code:     f.Code,
 			Name:     f.Name,
 			Archived: f.ArchivedAt.Valid,
+		})
+	}
+
+	// The care vocabulary, in canonical print order, with every language's wording attached. Both
+	// consumers read it from here: the admin picker takes names and categories (so it no longer
+	// ships its own copy of the taxonomy), and the storefront takes short_prose in the buyer's
+	// language. Sorted by language id so the payload is byte-stable across dictionary reloads —
+	// map iteration order is not.
+	for _, c := range dict.CareSymbols {
+		langIDs := make([]int, 0, len(c.Translations))
+		for id := range c.Translations {
+			langIDs = append(langIDs, id)
+		}
+		sort.Ints(langIDs)
+		translations := make([]*pb_common.CareSymbolTranslation, 0, len(langIDs))
+		for _, id := range langIDs {
+			t := c.Translations[id]
+			translations = append(translations, &pb_common.CareSymbolTranslation{
+				LanguageId: int32(id),
+				Name:       t.Name,
+				ShortProse: t.ShortProse,
+			})
+		}
+		commonDict.CareSymbols = append(commonDict.CareSymbols, &pb_common.CareSymbol{
+			Code:         c.Code,
+			Category:     c.Category,
+			SubCategory:  c.SubCategory.String,
+			Name:         c.Name,
+			ShortProse:   c.ShortProse,
+			SortOrder:    int32(c.SortOrder),
+			Archived:     c.ArchivedAt.Valid,
+			Translations: translations,
 		})
 	}
 
