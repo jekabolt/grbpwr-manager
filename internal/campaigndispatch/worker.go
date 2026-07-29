@@ -115,20 +115,35 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 	if _, err := w.advanceFanout(ctx); err != nil {
 		return w.failed(ctx, "advance campaign fanout", err)
 	}
-	for ctx.Err() == nil {
-		didWork, err := w.dispatchOne(ctx)
-		if err != nil {
-			return w.failed(ctx, "dispatch campaign batch", err)
-		}
-		if !didWork {
-			break
-		}
+	if err := w.drainDispatch(ctx); err != nil {
+		return w.failed(ctx, "dispatch campaign batch", err)
+	}
+	if _, err := w.repo.Campaigns().PromoteEmailCampaignABWinners(ctx, SelectABWinner); err != nil {
+		return w.failed(ctx, "promote A/B campaign winners", err)
+	}
+	// Winner promotion assigns held remainder rows a non-NULL variant_id, making
+	// them claimable immediately in the same tick.
+	if err := w.drainDispatch(ctx); err != nil {
+		return w.failed(ctx, "dispatch promoted A/B campaign remainder", err)
 	}
 	if _, err := w.repo.Campaigns().FinalizeEmailCampaigns(ctx); err != nil {
 		return w.failed(ctx, "finalize campaigns", err)
 	}
 	w.tracker.MarkSuccess()
 	return true
+}
+
+func (w *Worker) drainDispatch(ctx context.Context) error {
+	for ctx.Err() == nil {
+		didWork, err := w.dispatchOne(ctx)
+		if err != nil {
+			return err
+		}
+		if !didWork {
+			break
+		}
+	}
+	return ctx.Err()
 }
 
 func (w *Worker) failed(ctx context.Context, action string, err error) bool {

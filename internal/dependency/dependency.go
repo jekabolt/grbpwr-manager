@@ -181,6 +181,7 @@ type (
 		ResumeEmailCampaign(ctx context.Context, campaignID int) error
 		CancelEmailCampaign(ctx context.Context, campaignID int) error
 		PromoteDueEmailCampaign(ctx context.Context) (int, error)
+		PromoteEmailCampaignABWinners(ctx context.Context, selectWinner entity.EmailCampaignABWinnerSelector) (int, error)
 		AdvanceEmailCampaignFanout(ctx context.Context, pageSize int, assign entity.EmailCampaignVariantAssigner) (*entity.EmailCampaignFanoutPageResult, error)
 		ClaimEmailCampaignBatch(ctx context.Context, batchSize int, lease time.Duration) (*entity.EmailCampaignBatch, error)
 		SaveEmailCampaignRecipientPayload(ctx context.Context, recipientID uint64, batchID, claimToken, unsubscribeURL string, payloadSHA256 []byte) error
@@ -195,6 +196,8 @@ type (
 		FinalizeEmailCampaigns(ctx context.Context) (int64, error)
 		GetEmailCampaignDispatchStatus(ctx context.Context, campaignID int) (*entity.EmailCampaignDispatchStatus, error)
 		GetEmailCampaignRecipients(ctx context.Context, campaignID int, afterID uint64, limit int) (*entity.EmailCampaignRecipientPage, error)
+		RecordRecipientEngagement(ctx context.Context, resendEmailID string, kind entity.EmailCampaignEngagementKind, at time.Time) error
+		GetCampaignMetrics(ctx context.Context, campaignID int) (entity.CampaignMetrics, error)
 	}
 
 	Mail interface {

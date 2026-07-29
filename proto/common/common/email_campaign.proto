@@ -232,6 +232,46 @@ message EmailCampaignDispatchStatus {
   int32 skipped = 9;
 }
 
+message CampaignMetricCounts {
+  int64 total = 1;
+  int64 pending = 2;
+  int64 sent = 3;
+  int64 failed = 4;
+  int64 skipped = 5;
+  int64 delivered = 6;
+  int64 unique_opened = 7;
+  int64 total_opens = 8;
+  int64 unique_clicked = 9;
+  int64 total_clicks = 10;
+  int64 bounced = 11;
+  int64 complained = 12;
+  int64 unsubscribed = 13;
+}
+
+message CampaignMetricRates {
+  double delivery_rate = 1;
+  double open_rate = 2;
+  double click_rate = 3;
+  double click_to_open_rate = 4;
+  double bounce_rate = 5;
+  double complaint_rate = 6;
+}
+
+message CampaignVariantMetrics {
+  int32 variant_id = 1;
+  string label = 2;
+  CampaignMetricCounts counts = 3;
+  CampaignMetricRates rates = 4;
+}
+
+// Read-only compute-on-read aggregates over email_campaign_recipient.
+message CampaignMetrics {
+  int32 campaign_id = 1;
+  CampaignMetricCounts counts = 2;
+  CampaignMetricRates rates = 3;
+  repeated CampaignVariantMetrics variants = 4;
+}
+
 // Public admin ledger projection. Provider idempotency/claim/hash/render
 // internals are deliberately absent.
 message EmailCampaignRecipient {

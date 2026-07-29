@@ -40,6 +40,17 @@ type recipientRow struct {
 	LastError              sql.NullString `db:"last_error"`
 	SentAt                 sql.NullTime   `db:"sent_at"`
 	CompletedAt            sql.NullTime   `db:"completed_at"`
+	DeliveredAt            sql.NullTime   `db:"delivered_at"`
+	FirstOpenedAt          sql.NullTime   `db:"first_opened_at"`
+	LastOpenedAt           sql.NullTime   `db:"last_opened_at"`
+	OpenCount              int            `db:"open_count"`
+	FirstClickedAt         sql.NullTime   `db:"first_clicked_at"`
+	LastClickedAt          sql.NullTime   `db:"last_clicked_at"`
+	ClickCount             int            `db:"click_count"`
+	BouncedAt              sql.NullTime   `db:"bounced_at"`
+	ComplainedAt           sql.NullTime   `db:"complained_at"`
+	UnsubscribedAt         sql.NullTime   `db:"unsubscribed_at"`
+	HardFailedAt           sql.NullTime   `db:"hard_failed_at"`
 	CreatedAt              sql.NullTime   `db:"created_at"`
 	UpdatedAt              sql.NullTime   `db:"updated_at"`
 }
@@ -49,7 +60,38 @@ const recipientColumns = `
 	unsubscribe_url, dispatch_batch_id, batch_ordinal, resend_idempotency_key,
 	claim_token, claim_expires_at, payload_sha256, resend_email_id, attempt_count,
 	next_attempt_at, first_provider_attempt_at, last_attempt_at, error_code,
-	last_error, sent_at, completed_at, created_at, updated_at`
+	last_error, sent_at, completed_at, delivered_at, first_opened_at,
+	last_opened_at, open_count, first_clicked_at, last_clicked_at, click_count,
+	bounced_at, complained_at, unsubscribed_at, hard_failed_at, created_at, updated_at`
+
+const campaignRecipientFreshClaimableSQL = `
+	ecr.variant_id IS NOT NULL
+	AND ecr.dispatch_batch_id IS NULL
+	AND ecr.next_attempt_at <= UTC_TIMESTAMP(6)`
+
+const campaignRecipientReclaimableSQL = `
+	ecr.dispatch_batch_id IS NOT NULL
+	AND ecr.next_attempt_at <= UTC_TIMESTAMP(6)
+	AND (ecr.claim_token IS NULL OR ecr.claim_expires_at < UTC_TIMESTAMP(6))`
+
+const dispatchCampaignPickerSQL = `
+	SELECT ec.id, ec.topic
+	FROM email_campaign ec
+	WHERE ec.status = 'sending'
+	  AND ec.audience_materialized_at IS NOT NULL
+	  AND EXISTS (
+	      SELECT 1
+	      FROM email_campaign_recipient ecr
+	      WHERE ecr.campaign_id = ec.id
+	        AND ecr.status = 'pending'
+	        AND (
+	            (` + campaignRecipientFreshClaimableSQL + `)
+	            OR (` + campaignRecipientReclaimableSQL + `)
+	        )
+	  )
+	ORDER BY ec.id
+	LIMIT 1
+	FOR UPDATE SKIP LOCKED`
 
 func recipientRowToEntity(row recipientRow) entity.EmailCampaignRecipient {
 	out := entity.EmailCampaignRecipient{
@@ -61,6 +103,8 @@ func recipientRowToEntity(row recipientRow) entity.EmailCampaignRecipient {
 		Status:        entity.EmailCampaignRecipientStatus(row.Status),
 		PayloadSHA256: append([]byte(nil), row.PayloadSHA256...),
 		AttemptCount:  row.AttemptCount,
+		OpenCount:     row.OpenCount,
+		ClickCount:    row.ClickCount,
 		CreatedAt:     row.CreatedAt.Time,
 		UpdatedAt:     row.UpdatedAt.Time,
 	}
@@ -128,6 +172,42 @@ func recipientRowToEntity(row recipientRow) entity.EmailCampaignRecipient {
 		value := row.CompletedAt.Time
 		out.CompletedAt = &value
 	}
+	if row.DeliveredAt.Valid {
+		value := row.DeliveredAt.Time
+		out.DeliveredAt = &value
+	}
+	if row.FirstOpenedAt.Valid {
+		value := row.FirstOpenedAt.Time
+		out.FirstOpenedAt = &value
+	}
+	if row.LastOpenedAt.Valid {
+		value := row.LastOpenedAt.Time
+		out.LastOpenedAt = &value
+	}
+	if row.FirstClickedAt.Valid {
+		value := row.FirstClickedAt.Time
+		out.FirstClickedAt = &value
+	}
+	if row.LastClickedAt.Valid {
+		value := row.LastClickedAt.Time
+		out.LastClickedAt = &value
+	}
+	if row.BouncedAt.Valid {
+		value := row.BouncedAt.Time
+		out.BouncedAt = &value
+	}
+	if row.ComplainedAt.Valid {
+		value := row.ComplainedAt.Time
+		out.ComplainedAt = &value
+	}
+	if row.UnsubscribedAt.Valid {
+		value := row.UnsubscribedAt.Time
+		out.UnsubscribedAt = &value
+	}
+	if row.HardFailedAt.Valid {
+		value := row.HardFailedAt.Time
+		out.HardFailedAt = &value
+	}
 	return out
 }
 
@@ -167,9 +247,7 @@ func (s *Store) ClaimEmailCampaignBatch(
 			    SELECT 1 FROM email_campaign_recipient ecr
 			    WHERE ecr.campaign_id = ec.id
 			      AND ecr.status = 'pending'
-			      AND ecr.dispatch_batch_id IS NOT NULL
-			      AND ecr.next_attempt_at <= UTC_TIMESTAMP(6)
-			      AND (ecr.claim_token IS NULL OR ecr.claim_expires_at < UTC_TIMESTAMP(6))
+			      AND `+campaignRecipientReclaimableSQL+`
 			      AND (
 			          ec.status = 'sending'
 			          OR ec.status = 'cancelled'
@@ -228,13 +306,7 @@ func (s *Store) ClaimEmailCampaignBatch(
 		campaign, err := storeutil.QueryNamedOne[struct {
 			ID    int    `db:"id"`
 			Topic string `db:"topic"`
-		}](ctx, rep.DB(), `
-			SELECT id, topic
-			FROM email_campaign
-			WHERE status = 'sending' AND audience_materialized_at IS NOT NULL
-			ORDER BY id
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED`, map[string]any{})
+		}](ctx, rep.DB(), dispatchCampaignPickerSQL, map[string]any{})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -263,9 +335,7 @@ func (s *Store) ClaimEmailCampaignBatch(
 			LEFT JOIN email_suppression es ON es.email = sa.email
 			WHERE ecr.campaign_id = :campaign_id
 			  AND ecr.status = 'pending'
-			  AND ecr.variant_id IS NOT NULL
-			  AND ecr.dispatch_batch_id IS NULL
-			  AND ecr.next_attempt_at <= UTC_TIMESTAMP(6)
+			  AND `+campaignRecipientFreshClaimableSQL+`
 			  AND `+where+`
 			ORDER BY ecr.id
 			LIMIT :limit

@@ -744,6 +744,10 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/email-campaigns/{id}/dispatch-status"};
   }
 
+  rpc GetCampaignMetrics(GetCampaignMetricsRequest) returns (GetCampaignMetricsResponse) {
+    option (google.api.http) = {get: "/api/admin/email-campaigns/{campaign_id}/metrics"};
+  }
+
   rpc GetCampaignRecipients(GetCampaignRecipientsRequest) returns (GetCampaignRecipientsResponse) {
     option (google.api.http) = {get: "/api/admin/email-campaigns/{id}/recipients"};
   }
@@ -3633,6 +3637,14 @@ message GetCampaignDispatchStatusRequest {
 
 message GetCampaignDispatchStatusResponse {
   common.EmailCampaignDispatchStatus status = 1;
+}
+
+message GetCampaignMetricsRequest {
+  int32 campaign_id = 1;
+}
+
+message GetCampaignMetricsResponse {
+  common.CampaignMetrics metrics = 1;
 }
 
 message GetCampaignRecipientsRequest {

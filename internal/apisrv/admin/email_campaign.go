@@ -227,6 +227,24 @@ func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {
 		if in.AbConfig.TestPct < 1 || in.AbConfig.TestPct > 100 {
 			return status.Error(codes.InvalidArgument, "A/B test percentage must be between 1 and 100")
 		}
+		if in.AbConfig.DecisionAfterMinutes < 30 || in.AbConfig.DecisionAfterMinutes > 10080 {
+			return status.Error(
+				codes.InvalidArgument,
+				"A/B decision_after_minutes must be between 30 and 10080",
+			)
+		}
+		if in.AbConfig.Dimension == pb_common.ABDimension_AB_DIMENSION_SUBJECT {
+			for i := 0; i < len(in.Variants); i++ {
+				for j := i + 1; j < len(in.Variants); j++ {
+					if emailCampaignSubjectsEqual(in.Variants[i], in.Variants[j]) {
+						return status.Error(
+							codes.InvalidArgument,
+							"subject A/B variants must have distinct subjects",
+						)
+					}
+				}
+			}
+		}
 	}
 	for i, variant := range in.Variants {
 		if variant == nil {
@@ -237,6 +255,30 @@ func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {
 		}
 	}
 	return nil
+}
+
+func emailCampaignSubjectsEqual(left, right *pb_common.EmailCampaignVariant) bool {
+	if left == nil || right == nil || len(left.SubjectI18N) != len(right.SubjectI18N) {
+		return false
+	}
+	subjects := make(map[int32]string, len(left.SubjectI18N))
+	for _, translation := range left.SubjectI18N {
+		if translation != nil {
+			subjects[translation.LanguageId] = strings.TrimSpace(translation.Subject)
+		}
+	}
+	if len(subjects) != len(right.SubjectI18N) {
+		return false
+	}
+	for _, translation := range right.SubjectI18N {
+		if translation == nil {
+			return false
+		}
+		if subjects[translation.LanguageId] != strings.TrimSpace(translation.Subject) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) UpsertEmailCampaign(ctx context.Context, req *pb_admin.UpsertEmailCampaignRequest) (*pb_admin.UpsertEmailCampaignResponse, error) {

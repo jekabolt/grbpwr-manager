@@ -266,6 +266,7 @@ var methodRequirements = map[string]Requirement{
 	"ResumeCampaign":            wr(SectionCampaigns),
 	"CancelCampaign":            wr(SectionCampaigns),
 	"GetCampaignDispatchStatus": rd(SectionCampaigns),
+	"GetCampaignMetrics":        rd(SectionCampaigns),
 	"GetCampaignRecipients":     rd(SectionCampaigns),
 	// models
 	"AddModel":    wr(SectionModels),

@@ -559,6 +559,62 @@ func ConvertEntityEmailCampaignDispatchStatusToPB(
 	return out
 }
 
+func convertCampaignMetricCountsToPB(
+	in entity.CampaignMetricCounts,
+) *pb_common.CampaignMetricCounts {
+	return &pb_common.CampaignMetricCounts{
+		Total:         in.Total,
+		Pending:       in.Pending,
+		Sent:          in.Sent,
+		Failed:        in.Failed,
+		Skipped:       in.Skipped,
+		Delivered:     in.Delivered,
+		UniqueOpened:  in.UniqueOpened,
+		TotalOpens:    in.TotalOpens,
+		UniqueClicked: in.UniqueClicked,
+		TotalClicks:   in.TotalClicks,
+		Bounced:       in.Bounced,
+		Complained:    in.Complained,
+		Unsubscribed:  in.Unsubscribed,
+	}
+}
+
+func convertCampaignMetricRatesToPB(
+	in entity.CampaignMetricRates,
+) *pb_common.CampaignMetricRates {
+	return &pb_common.CampaignMetricRates{
+		DeliveryRate:    in.DeliveryRate,
+		OpenRate:        in.OpenRate,
+		ClickRate:       in.ClickRate,
+		ClickToOpenRate: in.ClickToOpenRate,
+		BounceRate:      in.BounceRate,
+		ComplaintRate:   in.ComplaintRate,
+	}
+}
+
+func ConvertEntityCampaignMetricsToPB(
+	in *entity.CampaignMetrics,
+) *pb_common.CampaignMetrics {
+	if in == nil {
+		return nil
+	}
+	out := &pb_common.CampaignMetrics{
+		CampaignId: int32(in.CampaignID),
+		Counts:     convertCampaignMetricCountsToPB(in.Counts),
+		Rates:      convertCampaignMetricRatesToPB(in.Rates),
+		Variants:   make([]*pb_common.CampaignVariantMetrics, len(in.Variants)),
+	}
+	for i := range in.Variants {
+		out.Variants[i] = &pb_common.CampaignVariantMetrics{
+			VariantId: int32(in.Variants[i].VariantID),
+			Label:     in.Variants[i].Label,
+			Counts:    convertCampaignMetricCountsToPB(in.Variants[i].Counts),
+			Rates:     convertCampaignMetricRatesToPB(in.Variants[i].Rates),
+		}
+	}
+	return out
+}
+
 func ConvertEntityEmailCampaignRecipientToPB(
 	in *entity.EmailCampaignRecipient,
 ) *pb_common.EmailCampaignRecipient {

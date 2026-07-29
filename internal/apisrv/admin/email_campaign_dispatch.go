@@ -48,12 +48,6 @@ func validateEmailCampaignLaunchPreconditions(
 	if campaign == nil {
 		return status.Error(codes.Internal, "can't validate email campaign launch")
 	}
-	if campaign.ABConfig.Enabled {
-		return status.Error(
-			codes.FailedPrecondition,
-			"A/B campaigns cannot be launched yet — automatic winner selection ships in a later phase",
-		)
-	}
 	for i := range languages {
 		if languages[i].IsDefault {
 			return nil
@@ -184,6 +178,26 @@ func (s *Server) GetCampaignDispatchStatus(
 	}
 	return &pb_admin.GetCampaignDispatchStatusResponse{
 		Status: dto.ConvertEntityEmailCampaignDispatchStatusToPB(value),
+	}, nil
+}
+
+func (s *Server) GetCampaignMetrics(
+	ctx context.Context,
+	req *pb_admin.GetCampaignMetricsRequest,
+) (*pb_admin.GetCampaignMetricsResponse, error) {
+	if req.CampaignId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "campaign_id is required")
+	}
+	value, err := s.repo.Campaigns().GetCampaignMetrics(ctx, int(req.CampaignId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "email campaign not found")
+		}
+		slog.ErrorContext(ctx, "get campaign metrics failed", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get campaign metrics")
+	}
+	return &pb_admin.GetCampaignMetricsResponse{
+		Metrics: dto.ConvertEntityCampaignMetricsToPB(&value),
 	}, nil
 }
 

@@ -134,6 +134,9 @@ func (h *WebhookHandler) HandleResendEvent(w http.ResponseWriter, r *http.Reques
 
 	switch event.Type {
 	case eventEmailBounced:
+		h.recordCampaignEngagement(
+			ctx, event.Data.EmailID, entity.EmailCampaignEngagementBounced, eventDate,
+		)
 		h.incrementMetric(ctx, "bounced", eventDate)
 		for _, to := range event.Data.To {
 			if err := h.repo.Mail().AddSuppression(ctx, to, entity.SuppressionReasonBounce); err != nil {
@@ -148,6 +151,9 @@ func (h *WebhookHandler) HandleResendEvent(w http.ResponseWriter, r *http.Reques
 		}
 
 	case eventEmailComplained:
+		h.recordCampaignEngagement(
+			ctx, event.Data.EmailID, entity.EmailCampaignEngagementComplained, eventDate,
+		)
 		for _, to := range event.Data.To {
 			if err := h.repo.Mail().AddSuppression(ctx, to, entity.SuppressionReasonComplaint); err != nil {
 				slog.Default().ErrorContext(ctx, "resend webhook: failed to add complaint suppression",
@@ -174,6 +180,9 @@ func (h *WebhookHandler) HandleResendEvent(w http.ResponseWriter, r *http.Reques
 		}
 
 	case eventEmailFailed:
+		h.recordCampaignEngagement(
+			ctx, event.Data.EmailID, entity.EmailCampaignEngagementHardFailed, eventDate,
+		)
 		h.incrementMetric(ctx, "bounced", eventDate)
 		for _, to := range event.Data.To {
 			if err := h.repo.Mail().AddSuppression(ctx, to, entity.SuppressionReasonBounce); err != nil {
@@ -188,16 +197,25 @@ func (h *WebhookHandler) HandleResendEvent(w http.ResponseWriter, r *http.Reques
 		}
 
 	case eventEmailDelivered:
+		h.recordCampaignEngagement(
+			ctx, event.Data.EmailID, entity.EmailCampaignEngagementDelivered, eventDate,
+		)
 		h.incrementMetric(ctx, "delivered", eventDate)
 		slog.Default().InfoContext(ctx, "resend webhook: email delivered",
 			slog.String("emailId", event.Data.EmailID))
 
 	case eventEmailOpened:
+		h.recordCampaignEngagement(
+			ctx, event.Data.EmailID, entity.EmailCampaignEngagementOpened, eventDate,
+		)
 		h.incrementMetric(ctx, "opened", eventDate)
 		slog.Default().InfoContext(ctx, "resend webhook: email opened",
 			slog.String("emailId", event.Data.EmailID))
 
 	case eventEmailClicked:
+		h.recordCampaignEngagement(
+			ctx, event.Data.EmailID, entity.EmailCampaignEngagementClicked, eventDate,
+		)
 		h.incrementMetric(ctx, "clicked", eventDate)
 		slog.Default().InfoContext(ctx, "resend webhook: email clicked",
 			slog.String("emailId", event.Data.EmailID))
@@ -212,6 +230,27 @@ func (h *WebhookHandler) HandleResendEvent(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// recordCampaignEngagement is best-effort with respect to the webhook response:
+// an unknown provider id is a normal no-op for transactional mail, while a
+// campaign-ledger failure is logged without disturbing the existing
+// suppression and daily-metric behavior.
+func (h *WebhookHandler) recordCampaignEngagement(
+	ctx context.Context,
+	resendEmailID string,
+	kind entity.EmailCampaignEngagementKind,
+	at time.Time,
+) {
+	if resendEmailID == "" {
+		return
+	}
+	if err := h.repo.Campaigns().RecordRecipientEngagement(ctx, resendEmailID, kind, at); err != nil {
+		slog.Default().ErrorContext(ctx, "resend webhook: failed to attribute campaign engagement",
+			slog.String("emailId", resendEmailID),
+			slog.String("kind", string(kind)),
+			slog.String("err", err.Error()))
+	}
 }
 
 // parseEventDate parses the RFC3339 created_at string from a Resend webhook event.
