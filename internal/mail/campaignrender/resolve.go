@@ -202,11 +202,14 @@ func formatCampaignMoney(amount decimal.Decimal, code string) string {
 	return currency.Symbol(code) + amount.StringFixed(currency.DecimalPlaces(code))
 }
 
-func productToView(product *entity.Colorway, langs []entity.Language) (productView, bool) {
+func productToView(product *entity.Colorway, languageID int, langs []entity.Language) (productView, bool) {
 	if product == nil || !product.IsPubliclyVisible() {
 		return productView{}, false
 	}
-	name, ok := canonical.ProductName(product.ProductDisplay.ProductBody.Translations, langs)
+	// Localize the card name to the recipient's resolved language (falls back to the
+	// canonical default-language name). The URL slug stays on the default name below so
+	// public product links remain stable across locales.
+	name, ok := canonical.ProductNameForLanguageID(product.ProductDisplay.ProductBody.Translations, languageID, langs)
 	if !ok || strings.TrimSpace(name) == "" {
 		return productView{}, false
 	}
@@ -223,6 +226,12 @@ func productToView(product *entity.Colorway, langs []entity.Language) (productVi
 		display = formatCampaignMoney(price.Price.Mul(multiplier), price.Currency)
 		onSale = true
 	}
+	// The public product URL uses the canonical (default-language) name so the campaign link
+	// matches the storefront's actual slug regardless of the recipient's locale.
+	slugName := name
+	if canonicalName, ok := canonical.ProductName(product.ProductDisplay.ProductBody.Translations, langs); ok && strings.TrimSpace(canonicalName) != "" {
+		slugName = canonicalName
+	}
 	return productView{
 		Brand:         product.ProductDisplay.ProductBody.ProductBodyInsert.Brand,
 		Name:          name,
@@ -230,7 +239,7 @@ func productToView(product *entity.Colorway, langs []entity.Language) (productVi
 		OriginalPrice: original,
 		OnSale:        onSale,
 		Thumbnail:     mediaToView(&product.ProductDisplay.Thumbnail, name),
-		URL:           safeURL("https://grbpwr.com" + slug.ProductPath(name, product.SKU)),
+		URL:           safeURL("https://grbpwr.com" + slug.ProductPath(slugName, product.SKU)),
 	}, true
 }
 
@@ -248,6 +257,7 @@ func resolveBlocks(
 	ctx context.Context,
 	r *resolver,
 	blocks []entity.EmailBlock,
+	languageID int,
 	langs []entity.Language,
 	depth int,
 	rootIndex int,
@@ -259,7 +269,7 @@ func resolveBlocks(
 		if depth == 0 {
 			index = i
 		}
-		resolved, blockWarnings, ok := resolveBlock(ctx, r, &blocks[i], langs, depth, index)
+		resolved, blockWarnings, ok := resolveBlock(ctx, r, &blocks[i], languageID, langs, depth, index)
 		warnings = append(warnings, blockWarnings...)
 		if ok {
 			out = append(out, resolved)
@@ -272,6 +282,7 @@ func resolveBlock(
 	ctx context.Context,
 	r *resolver,
 	block *entity.EmailBlock,
+	languageID int,
 	langs []entity.Language,
 	depth, blockIndex int,
 ) (blockView, []Warning, bool) {
@@ -315,7 +326,7 @@ func resolveBlock(
 		if !ok {
 			return warn(fmt.Sprintf("product %d is missing or hidden", block.ProductCard.ProductID))
 		}
-		productSnapshot, ok := productToView(product, langs)
+		productSnapshot, ok := productToView(product, languageID, langs)
 		if !ok {
 			return warn(fmt.Sprintf("product %d cannot be rendered", block.ProductCard.ProductID))
 		}
@@ -332,7 +343,7 @@ func resolveBlock(
 				warnings = append(warnings, Warning{BlockIndex: blockIndex, Reason: fmt.Sprintf("product %d is missing or hidden", id)})
 				continue
 			}
-			snapshot, ok := productToView(product, langs)
+			snapshot, ok := productToView(product, languageID, langs)
 			if !ok {
 				warnings = append(warnings, Warning{BlockIndex: blockIndex, Reason: fmt.Sprintf("product %d cannot be rendered", id)})
 				continue
@@ -386,8 +397,8 @@ func resolveBlock(
 		if block.TwoColumn == nil {
 			return warn("two_column payload is missing")
 		}
-		left, leftWarnings := resolveBlocks(ctx, r, block.TwoColumn.Left, langs, depth+1, blockIndex)
-		right, rightWarnings := resolveBlocks(ctx, r, block.TwoColumn.Right, langs, depth+1, blockIndex)
+		left, leftWarnings := resolveBlocks(ctx, r, block.TwoColumn.Left, languageID, langs, depth+1, blockIndex)
+		right, rightWarnings := resolveBlocks(ctx, r, block.TwoColumn.Right, languageID, langs, depth+1, blockIndex)
 		view.TwoColumn = &twoColumnView{Left: left, Right: right}
 		return view, append(leftWarnings, rightWarnings...), true
 	case entity.EmailBlockTypeSocialLinks:

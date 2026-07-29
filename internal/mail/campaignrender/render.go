@@ -248,7 +248,7 @@ func (r *Renderer) Render(
 
 	resolver := newResolver(rep)
 	resolver.prime(ctx, collectMediaIDs(in.Blocks), collectProductIDs(in.Blocks))
-	blocks, warnings := resolveBlocks(ctx, resolver, in.Blocks, in.Langs, 0, 0)
+	blocks, warnings := resolveBlocks(ctx, resolver, in.Blocks, in.LanguageID, in.Langs, 0, 0)
 	for i := range blocks {
 		applyTranslation(&blocks[i], in.LanguageID, in.Langs)
 	}

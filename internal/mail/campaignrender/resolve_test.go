@@ -34,7 +34,7 @@ func TestResolveMissingProductSkipsBlockAndWarns(t *testing.T) {
 	}
 	r := newResolver(rep)
 	r.prime(ctx, collectMediaIDs(blocks), collectProductIDs(blocks))
-	resolved, warnings := resolveBlocks(ctx, r, blocks, nil, 0, 0)
+	resolved, warnings := resolveBlocks(ctx, r, blocks, 1, nil, 0, 0)
 
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %#v, want exactly one", warnings)

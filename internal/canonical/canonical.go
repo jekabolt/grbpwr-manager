@@ -3,7 +3,11 @@
 // order the translations arrive in or which languages happen to exist.
 package canonical
 
-import "github.com/jekabolt/grbpwr-manager/internal/entity"
+import (
+	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+)
 
 // IsDefaultFunc returns a predicate reporting whether a language id is a default language, built from
 // the supplied language set (typically cache.GetLanguages()). When the set is empty or has no default,
@@ -58,6 +62,19 @@ func ProductName(items []entity.ColorwayTranslationInsert, langs []entity.Langua
 		return "", false
 	}
 	return tr.Name, true
+}
+
+// ProductNameForLanguageID returns the product name in the given language (matched by language
+// id), falling back to the canonical default-language name (ProductName) when that language has
+// no non-empty translation. Used to localize product cards in campaign emails to the recipient's
+// resolved language while staying deterministic for the fallback.
+func ProductNameForLanguageID(items []entity.ColorwayTranslationInsert, languageID int, langs []entity.Language) (string, bool) {
+	for i := range items {
+		if items[i].LanguageId == languageID && strings.TrimSpace(items[i].Name) != "" {
+			return items[i].Name, true
+		}
+	}
+	return ProductName(items, langs)
 }
 
 // ArchiveHeading applies the same policy to archive translations.
