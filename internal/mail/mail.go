@@ -131,6 +131,7 @@ type Mailer struct {
 	templates      map[templateName]*template.Template
 	catalog        *Catalog
 	langRepo       dependency.RecipientLanguage
+	loginSubjects  map[string]bool
 	wg             sync.WaitGroup
 	tracker        health.Tracker
 	budget         *ResendBudget
@@ -208,6 +209,14 @@ func new(c *Config, mailRepository dependency.Mail, langRepo dependency.Recipien
 			c.ResendBurst,
 			c.TransactionalReserveTokens,
 		),
+	}
+
+	// Build the sign-in subject allow-list across every locale so those emails still
+	// dispatch when the mailer is Disabled (bulk suppression) even after the subject is
+	// localized. Keyed by the rendered subject string, matching suppressed().
+	m.loginSubjects = make(map[string]bool, len(supportedLocales))
+	for _, code := range supportedLocales {
+		m.loginSubjects[m.catalog.Localizer(code).S(subjectKey[AccountLogin], nil)] = true
 	}
 
 	// Parse email templates

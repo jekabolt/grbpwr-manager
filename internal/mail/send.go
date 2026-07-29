@@ -65,11 +65,17 @@ var alwaysSendSubjects = map[string]bool{
 	templateSubjects[AccountLogin]: true,
 }
 
-// suppressed reports whether an email with the given subject must be dropped
-// because the mailer is Disabled and the subject is not on the always-send list.
+// suppressed reports whether an email with the given subject must be dropped because the
+// mailer is Disabled and the subject is not a sign-in email. Account sign-in (OTP + magic
+// link) always dispatches so beta login keeps working; the allow-list is the EN baseline
+// subject (alwaysSendSubjects, which also satisfies the bare-literal unit test) OR — for a
+// real mailer — the sign-in subject in every locale (m.loginSubjects, built from the
+// catalog), so suppression stays correct once the sign-in subject is localized.
 func (m *Mailer) suppressed(subject string) bool {
-	return m.c.Disabled &&
-		!alwaysSendSubjects[subject]
+	if !m.c.Disabled {
+		return false
+	}
+	return !alwaysSendSubjects[subject] && !m.loginSubjects[subject]
 }
 
 // SendNewSubscriber sends a welcome email to a new subscriber.
