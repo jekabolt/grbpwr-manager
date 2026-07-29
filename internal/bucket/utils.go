@@ -38,6 +38,7 @@ var mimeTypeToFileExtension = map[ContentType]string{
 	contentTypeWEBM: "webm",
 	contentTypeWEBP: "webp",
 	contentTypePDF:  "pdf",
+	contentTypeGIF:  "gif",
 }
 
 func fileExtensionFromContentType(contentType ContentType) (string, error) {

@@ -26,7 +26,18 @@ func (b *Bucket) UploadContentImage(ctx context.Context, rawB64Image, folder, im
 		return nil, fmt.Errorf("image payload too large: %d bytes, max %d bytes", len(rawB64Image), maxImagePayloadBytes)
 	}
 
-	img, err := imageFromString(rawB64Image)
+	raw, declaredCT, err := rawImageFromString(rawB64Image)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64 image: %v", err)
+	}
+
+	// Animated GIFs are stored verbatim: the WebP re-encode path below would flatten
+	// them to a single frame, so they'd stop animating in emails and the media library.
+	if sniffImageType(raw) == contentTypeGIF {
+		return b.uploadRawImageObj(ctx, raw, contentTypeGIF, folder, imageName)
+	}
+
+	img, err := decodeImage(raw, declaredCT)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode base64 image: %v", err)
 	}
