@@ -229,7 +229,7 @@ func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
 // own 0197 added; 0196 added shipping_actual/dev_expense, 0195 the wave-2 delivered types) — the test
 // reads the LATEST migration that redefines the full value set (which sorts last), 07 §7.2 pattern.
 func TestAcctEntrySourceTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0198_accounting_wave4_money.sql")
+	content := readMigrationFile(t, "0201_accounting_wave4_money.sql")
 	dbValues := extractDBEnumValues(t, content, "source_type IN", 900)
 	assertSameSet(t, "AcctSourceType", dbValues, mapKeysAsStrings(entity.ValidAcctSourceTypes))
 }
@@ -256,7 +256,7 @@ func TestAcctLineSideDBCheckNoDrift(t *testing.T) {
 // (phase 2, wave 4: +order_dispute; 0195 added order_shipped/order_delivered) — read the latest
 // migration that redefines the set.
 func TestAcctEventTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0198_accounting_wave4_money.sql")
+	content := readMigrationFile(t, "0201_accounting_wave4_money.sql")
 	dbValues := extractDBEnumValues(t, content, "event_type IN", 300)
 	assertSameSet(t, "AcctEventType", dbValues, mapKeysAsStrings(entity.ValidAcctEventTypes))
 }

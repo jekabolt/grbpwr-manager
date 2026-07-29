@@ -53,6 +53,24 @@ func (s *Server) IssueMaterialStock(ctx context.Context, req *pb_admin.IssueMate
 	return &pb_admin.IssueMaterialStockResponse{Movement: s.movementToPb(ctx, m)}, nil
 }
 
+// BatchIssueMaterialStock issues (or returns) several materials to one target atomically.
+func (s *Server) BatchIssueMaterialStock(ctx context.Context, req *pb_admin.BatchIssueMaterialStockRequest) (*pb_admin.BatchIssueMaterialStockResponse, error) {
+	ins, err := dto.ConvertPbBatchIssueMaterialStock(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ins.AdminUsername = authsrv.GetAdminUsername(ctx)
+	movements, err := s.repo.MaterialStock().BatchIssueMaterialStock(ctx, ins)
+	if err != nil {
+		return nil, mapInventoryErr(ctx, "batch issue material stock", err)
+	}
+	out := make([]*pb_common.MaterialMovement, 0, len(movements))
+	for _, movement := range movements {
+		out = append(out, s.movementToPb(ctx, movement))
+	}
+	return &pb_admin.BatchIssueMaterialStockResponse{Movements: out}, nil
+}
+
 // AdjustMaterialStock records a stock count (set/adjust) or a write-off.
 func (s *Server) AdjustMaterialStock(ctx context.Context, req *pb_admin.AdjustMaterialStockRequest) (*pb_admin.AdjustMaterialStockResponse, error) {
 	ins, err := dto.ConvertPbAdjustMaterialStock(req)

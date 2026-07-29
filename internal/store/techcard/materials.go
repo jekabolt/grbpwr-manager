@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // --- inserts (called within the AddTechCard / UpdateTechCard transaction) ---
@@ -521,6 +522,13 @@ type techCardPieceMaterialRow struct {
 	entity.TechCardPieceMaterial
 }
 
+// techCardColorwayPriceRow is one product_price row, keyed back to its colourway.
+type techCardColorwayPriceRow struct {
+	ProductID int             `db:"product_id"`
+	Currency  string          `db:"currency"`
+	Price     decimal.Decimal `db:"price"`
+}
+
 // techCardPieceColorwayIDRow carries a colourway id when validating that a piece material's explicit
 // colorway_id belongs to the owning style (product.style_id = card).
 type techCardPieceColorwayIDRow struct {
@@ -550,7 +558,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       c.color_code, COALESCE(c.lab_dip_status, 'pending') AS lab_dip_status, c.id AS product_id,
 		       COALESCE(c.sku, '') AS sku, c.lifecycle_status,
 		       c.dev_comment AS comment, c.pantone, c.pantone_system, c.dev_hex AS hex, c.swatch_media_id,
-		       c.lab_dip_round, c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason
+		       c.lab_dip_round, c.lab_dip_submitted_at, c.lab_dip_decided_at, c.lab_dip_decided_by, c.lab_dip_reject_reason,
+		       c.cost_price, c.cost_price_source, c.cost_price_updated_at
 		FROM product c
 		WHERE c.style_id IN (:ids) AND c.lifecycle_status <> 4
 		ORDER BY c.style_id, c.display_order, c.id`, map[string]any{"ids": ids})
@@ -610,6 +619,41 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 				if u, ok := usageByID[c.UsageID]; ok {
 					u.SizeConsumptions = append(u.SizeConsumptions, c.TechCardBomSizeConsumption)
 				}
+			}
+		}
+
+		// Retail prices per colourway. The costing tab needs a price to measure a margin against, and
+		// the only alternative was fanning GetColorwayByID out over every colourway of the style and
+		// hoping they agreed. One batched query for the whole page keeps that N+1 out of the client.
+		priceRows, err := storeutil.QueryListNamed[techCardColorwayPriceRow](ctx, s.DB, `
+			SELECT product_id, currency, price
+			FROM product_price
+			WHERE product_id IN (:ids)
+			ORDER BY product_id, currency`, map[string]any{"ids": colorwayIDs})
+		if err != nil {
+			return fmt.Errorf("can't load tech card colorway prices: %w", err)
+		}
+		for _, r := range priceRows {
+			if cw, ok := colorwayByID[r.ProductID]; ok {
+				cw.Prices = append(cw.Prices, entity.ColorwayPrice{Currency: r.Currency, Price: r.Price})
+			}
+		}
+
+		// Lab-dip round journal per colourway (oldest first). The LabDip* scalars on the colourway are
+		// the LATEST round; these are the rounds before it, which the scalars overwrote and which the
+		// journal (0212) is there to keep.
+		roundRows, err := storeutil.QueryListNamed[entity.ColorwayLabDipRound](ctx, s.DB, `
+			SELECT product_id, round_number, status, submitted_at, decided_at, decided_by,
+			       reject_reason, comment, swatch_media_id, created_at
+			FROM product_lab_dip_round
+			WHERE product_id IN (:ids)
+			ORDER BY product_id, round_number`, map[string]any{"ids": colorwayIDs})
+		if err != nil {
+			return fmt.Errorf("can't load tech card colorway lab dip rounds: %w", err)
+		}
+		for _, r := range roundRows {
+			if cw, ok := colorwayByID[r.ProductId]; ok {
+				cw.LabDipRounds = append(cw.LabDipRounds, r)
 			}
 		}
 	}

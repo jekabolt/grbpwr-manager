@@ -18,6 +18,30 @@ import (
 type CostingFx struct {
 	ToBase map[string]decimal.Decimal
 	Base   string
+	// HouseTargetMarginPct is the house gross-margin target (alert_setting `target_margin_pct`), used
+	// when a style names no target of its own. It rides along with the FX rates because it is the same
+	// shape of thing: a global costing constant every tech-card read needs and no caller should have
+	// to fetch separately. Invalid = no house default configured.
+	HouseTargetMarginPct decimal.NullDecimal
+	// VatCountry / VatRatePct are the market a margin on this read is being drawn for. Catalogue
+	// prices are VAT-inclusive everywhere else in this system (the order snapshot, the accounting VAT
+	// engine and the margin-by-style report all extract VAT out of them), so a costing margin that
+	// compares them to a VAT-free unit cost overstates itself by the rate. These net them.
+	// VatRatePct invalid = no rate on file for the country: nothing to net, and net_prices stays empty
+	// rather than echoing the gross price back under a different name.
+	VatCountry string
+	VatRatePct decimal.NullDecimal
+}
+
+// netOfVat removes the VAT contained in a VAT-inclusive gross amount: net = gross × 100/(100+rate).
+// Mirrors internal/store/metrics.netOfVat, which the realised-sales margin uses — the two figures
+// must be derived identically or the two admin screens disagree again in the other direction.
+func (fx CostingFx) netOfVat(gross decimal.Decimal) (decimal.Decimal, bool) {
+	if !fx.VatRatePct.Valid || !fx.VatRatePct.Decimal.IsPositive() {
+		return decimal.Zero, false
+	}
+	hundred := decimal.NewFromInt(100)
+	return gross.Mul(hundred).Div(hundred.Add(fx.VatRatePct.Decimal)), true
 }
 
 // toBase converts amount from ccy into the base currency. An empty ccy is treated as the base
@@ -380,15 +404,32 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	if defect.Valid && defect.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 		return nil, fmt.Errorf("costing defect_percent must be between 0 and 100")
 	}
+	targetMargin, err := nullDecimalFromPb(pb.TargetMarginPct)
+	if err != nil {
+		return nil, fmt.Errorf("costing target_margin_pct: %w", err)
+	}
+	if err := validateDecimalScale(targetMargin, "costing target_margin_pct", costMaxFrac, 1_000); err != nil {
+		return nil, err
+	}
+	if targetMargin.Valid && (targetMargin.Decimal.IsNegative() || targetMargin.Decimal.GreaterThan(decimal.NewFromInt(100))) {
+		return nil, fmt.Errorf("costing target_margin_pct must be between 0 and 100")
+	}
+	// 0 is "no style target" rather than "target a 0% margin" — nobody sets the latter, and treating
+	// it as a real target would silently switch the house default off for any client that sends a
+	// zero-valued decimal instead of omitting the field.
+	if targetMargin.Valid && targetMargin.Decimal.IsZero() {
+		targetMargin = decimal.NullDecimal{}
+	}
 	return &entity.TechCardCosting{
-		CmtCost:       cmt,
-		HardwareCost:  hardware,
-		PackagingCost: packaging,
-		LogisticsCost: logistics,
-		OverheadCost:  overhead,
-		DefectPercent: defect,
-		Currency:      nullStringFromPb(pb.Currency),
-		Notes:         nullStringFromPb(pb.Notes),
+		CmtCost:         cmt,
+		HardwareCost:    hardware,
+		PackagingCost:   packaging,
+		LogisticsCost:   logistics,
+		OverheadCost:    overhead,
+		DefectPercent:   defect,
+		Currency:        nullStringFromPb(pb.Currency),
+		Notes:           nullStringFromPb(pb.Notes),
+		TargetMarginPct: targetMargin,
 	}, nil
 }
 
@@ -596,12 +637,19 @@ func parseTechCardSignoffs(pbs []*pb_common.TechCardSignoff) ([]entity.TechCardS
 			}
 			state = v
 		}
+		if len(s.SignedDigest) > 64 {
+			return nil, fmt.Errorf("signoff signed_digest must be at most 64 characters")
+		}
 		out = append(out, entity.TechCardSignoff{
 			Section:  section,
 			State:    state,
 			SignedBy: nullStringFromPb(s.SignedBy),
 			SignedAt: nullTimeFromPbTimestamp(s.SignedAt),
 			Note:     nullStringFromPb(s.Note),
+			// Echoed back as-is: a present digest means "not re-approving, just saving" and is carried
+			// through; an empty one asks the server to fingerprint what is being written. See
+			// StampTechCardSignoffDigests, which is what actually decides.
+			SignedDigest: nullStringFromPb(s.SignedDigest),
 		})
 	}
 	return out, nil
@@ -611,11 +659,12 @@ func techCardSignoffsToPb(signoffs []entity.TechCardSignoff) []*pb_common.TechCa
 	out := make([]*pb_common.TechCardSignoff, 0, len(signoffs))
 	for _, s := range signoffs {
 		out = append(out, &pb_common.TechCardSignoff{
-			Section:  techCardSignoffSectionEntityToPb[s.Section],
-			State:    techCardSignoffStateEntityToPb[s.State],
-			SignedBy: pbStringFromNull(s.SignedBy),
-			SignedAt: pbTimestampFromNullTime(s.SignedAt),
-			Note:     pbStringFromNull(s.Note),
+			Section:      techCardSignoffSectionEntityToPb[s.Section],
+			State:        techCardSignoffStateEntityToPb[s.State],
+			SignedBy:     pbStringFromNull(s.SignedBy),
+			SignedAt:     pbTimestampFromNullTime(s.SignedAt),
+			Note:         pbStringFromNull(s.Note),
+			SignedDigest: pbStringFromNull(s.SignedDigest),
 		})
 	}
 	return out
@@ -763,6 +812,23 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 	}
 	if totalSam.IsPositive() {
 		out.TotalSam = pbDecimalFromDecimal(totalSam.Round(3))
+	}
+
+	// The target this style's margin is judged against: its own if it names one, the house default
+	// otherwise. Resolved here so the costing tab reads one already-authorised response instead of
+	// making a second call into the analytics section just to learn a percentage.
+	if c.TargetMarginPct.Valid {
+		out.TargetMarginPct = pbDecimalFromDecimal(c.TargetMarginPct.Decimal)
+		out.EffectiveTargetMarginPct = pbDecimalFromDecimal(c.TargetMarginPct.Decimal)
+	} else if fx.HouseTargetMarginPct.Valid {
+		out.EffectiveTargetMarginPct = pbDecimalFromDecimal(fx.HouseTargetMarginPct.Decimal)
+	}
+
+	// Which market the colourway net_prices beside this were netted for. Reported even when the rate
+	// is unknown, so the tab can say "GB, no rate on file" instead of quietly showing gross figures.
+	out.VatCountryCode = fx.VatCountry
+	if fx.VatRatePct.Valid {
+		out.VatRatePct = pbDecimalFromDecimal(fx.VatRatePct.Decimal)
 	}
 	return out
 }

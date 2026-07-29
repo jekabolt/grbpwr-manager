@@ -28,6 +28,12 @@ func (s *routeStubServer) ListTechCards(ctx context.Context, req *pb_admin.ListT
 	return &pb_admin.ListTechCardsResponse{}, nil
 }
 
+func (s *routeStubServer) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTechCardReadinessRequest) (*pb_admin.GetTechCardReadinessResponse, error) {
+	s.lastCall = "Readiness"
+	s.lastID = req.TechCardId
+	return &pb_admin.GetTechCardReadinessResponse{}, nil
+}
+
 // TestTechCardListRouteNotShadowed pins the grpc-gateway route-ordering invariant
 // documented on the proto: GET /tech-card/list must reach ListTechCards, not
 // GetTechCard with id="list". The mux prepends handlers and first-match wins, so
@@ -49,6 +55,18 @@ func TestTechCardListRouteNotShadowed(t *testing.T) {
 	_ = resp.Body.Close()
 	if stub.lastCall != "List" {
 		t.Fatalf("GET /tech-card/list dispatched to %q (id=%d), want ListTechCards", stub.lastCall, stub.lastID)
+	}
+
+	// /tech-card/readiness/{id} carries an extra segment, so /{id} cannot swallow it — but the same
+	// prepend-and-first-match ordering decides it, so pin it here rather than trusting the shape.
+	stub.lastCall, stub.lastID = "", 0
+	respR, err := http.Get(ts.URL + "/api/admin/tech-card/readiness/7")
+	if err != nil {
+		t.Fatalf("GET /tech-card/readiness/7: %v", err)
+	}
+	_ = respR.Body.Close()
+	if stub.lastCall != "Readiness" || stub.lastID != 7 {
+		t.Fatalf("GET /tech-card/readiness/7 dispatched to %q (id=%d), want GetTechCardReadiness id=7", stub.lastCall, stub.lastID)
 	}
 
 	stub.lastCall, stub.lastID = "", 0

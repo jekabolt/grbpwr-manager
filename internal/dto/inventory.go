@@ -182,6 +182,67 @@ func ConvertPbIssueMaterialStock(req *pb_admin.IssueMaterialStockRequest) (entit
 	return ins, nil
 }
 
+// ConvertPbBatchIssueMaterialStock validates and converts an atomic issue/return request.
+func ConvertPbBatchIssueMaterialStock(req *pb_admin.BatchIssueMaterialStockRequest) (entity.MaterialBatchIssueInsert, error) {
+	if req == nil || len(req.GetLines()) == 0 {
+		return entity.MaterialBatchIssueInsert{}, fmt.Errorf("at least one line is required")
+	}
+	hasRun := req.GetProductionRunId() > 0
+	hasSample := req.GetSampleId() > 0
+	if hasRun == hasSample {
+		return entity.MaterialBatchIssueInsert{}, fmt.Errorf("exactly one of production_run_id / sample_id must be set")
+	}
+	occurredAt, err := parseNullDate(req.GetOccurredAt())
+	if err != nil {
+		return entity.MaterialBatchIssueInsert{}, fmt.Errorf("occurred_at: %w", err)
+	}
+
+	ins := entity.MaterialBatchIssueInsert{
+		IsReturn:   req.GetIsReturn(),
+		OccurredAt: occurredAt,
+		Lines:      make([]entity.MaterialBatchIssueLine, 0, len(req.GetLines())),
+	}
+	if hasRun {
+		ins.ProductionRunId = nullInt32FromPb(req.GetProductionRunId())
+		if req.GetProductId() > 0 {
+			ins.ProductId = nullInt32FromPb(req.GetProductId())
+		}
+	} else {
+		ins.SampleId = nullInt32FromPb(req.GetSampleId())
+	}
+
+	seen := make(map[int32]int, len(req.GetLines()))
+	for i, line := range req.GetLines() {
+		materialID := line.GetMaterialId()
+		if materialID <= 0 {
+			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d: material_id is required", i+1)
+		}
+		if first, ok := seen[materialID]; ok {
+			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d (material %d): duplicate material_id (first used on line %d)", i+1, materialID, first)
+		}
+		seen[materialID] = i + 1
+
+		qty, err := positiveDecimal(line.GetQuantity().GetValue(), "quantity")
+		if err != nil {
+			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d (material %d): %w", i+1, materialID, err)
+		}
+		comment := line.GetComment()
+		if comment == "" {
+			comment = req.GetComment()
+		}
+		entityLine := entity.MaterialBatchIssueLine{
+			MaterialId: int(materialID),
+			Quantity:   qty,
+			Comment:    nullStringFromPb(comment),
+		}
+		if line.GetLotId() > 0 {
+			entityLine.LotId = nullInt32FromPb(line.GetLotId())
+		}
+		ins.Lines = append(ins.Lines, entityLine)
+	}
+	return ins, nil
+}
+
 // ConvertPbAdjustMaterialStock validates and converts a stock-count / write-off request.
 func ConvertPbAdjustMaterialStock(req *pb_admin.AdjustMaterialStockRequest) (entity.MaterialAdjustInsert, error) {
 	if req == nil || req.MaterialId <= 0 {

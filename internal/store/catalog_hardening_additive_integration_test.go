@@ -153,7 +153,7 @@ func TestAdminColorwayRefLockVersionAndLabDip(t *testing.T) {
 	styleID := insertSeasonedTestStyle(ctx, t, "HARDLV", "SS", "SS26", 2026)
 
 	prd := newColorwayInsert("BLK", "black", "HARDLV-BLACK", mediaID, langID, prices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 

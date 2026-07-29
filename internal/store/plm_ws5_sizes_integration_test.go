@@ -84,7 +84,7 @@ func TestCategorySizeSystem_CreateVariant(t *testing.T) {
 	assignStyleCategory(ctx, t, s, styleID, shoesCategoryID)
 
 	prd := newColorwayInsert("BLK", "black", "WS5CV-BLACK", mediaID, langID, prices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
@@ -198,7 +198,7 @@ func TestCategorySizeSystem_OSFallback(t *testing.T) {
 	assignStyleCategory(ctx, t, s, styleID, bagsCategoryID)
 
 	prd := newColorwayInsert("BLK", "black", "WS5OS-BLACK", mediaID, langID, prices)
-	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 

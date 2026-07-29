@@ -1301,6 +1301,7 @@ func AlertThresholdsToPb(t entity.AlertThresholds) *pb_admin.AlertSettings {
 		Ga4CoverageWarnPct:     t.GA4CoverageWarnPct,
 		ProductionRunStaleDays: int32(t.ProductionRunStaleDays),
 		AcctPostingLagHours:    int32(t.AcctPostingLagHours),
+		TargetMarginPct:        t.TargetMarginPct,
 	}
 }
 
@@ -1316,6 +1317,7 @@ func AlertThresholdsFromPb(s *pb_admin.AlertSettings) entity.AlertThresholds {
 		GA4CoverageWarnPct:     s.Ga4CoverageWarnPct,
 		ProductionRunStaleDays: int(s.ProductionRunStaleDays),
 		AcctPostingLagHours:    int(s.AcctPostingLagHours),
+		TargetMarginPct:        s.TargetMarginPct,
 	}
 }
 

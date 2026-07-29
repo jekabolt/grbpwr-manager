@@ -123,6 +123,17 @@ func (a *App) Start(ctx context.Context) error {
 		go cache.PollDictionaryRevisions(ctx, mysqlStore.Dictionary(), mysqlStore.Cache(), cache.DefaultDictionaryPollInterval)
 	}
 
+	// House gross-margin target into the cache: every tech-card costing read resolves an effective
+	// target against it, so it is loaded once here rather than queried per read (UpsertAlertSettings
+	// refreshes it). A failure leaves the built-in default in place — a costing tab that shows the
+	// default target is fine; refusing to boot over it is not.
+	if t, err := a.db.Metrics().GetAlertThresholds(ctx); err != nil {
+		slog.Default().WarnContext(ctx, "can't load house target margin; using the built-in default",
+			slog.String("err", err.Error()))
+	} else {
+		cache.SetTargetMarginPct(t.TargetMarginPct)
+	}
+
 	a.maw = marketingaggregate.New(&a.c.MarketingAggregate, a.db)
 	if err = a.maw.Start(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't start marketing aggregate worker",

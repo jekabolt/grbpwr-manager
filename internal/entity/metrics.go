@@ -844,6 +844,11 @@ type AlertThresholds struct {
 	// build that predates this field) never silently goes dark with no operator intent behind it (see
 	// metrics.Store.GetAcctPostingLag).
 	AcctPostingLagHours int
+	// TargetMarginPct is the HOUSE gross-margin target (0..100) a style's costing is measured against
+	// when it sets no target of its own (tech_card_costing.target_margin_pct). It lives here because
+	// alert_setting is the generic numeric settings table and "margin below target" is the same kind
+	// of operator-tunable threshold as the rest.
+	TargetMarginPct float64
 }
 
 // DefaultAlertThresholds returns the built-in defaults (also the seed values of alert_setting).
@@ -856,6 +861,7 @@ func DefaultAlertThresholds() AlertThresholds {
 		GA4CoverageWarnPct:     80,
 		ProductionRunStaleDays: 60,
 		AcctPostingLagHours:    24,
+		TargetMarginPct:        65,
 	}
 }
 
