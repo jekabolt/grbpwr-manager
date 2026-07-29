@@ -2,19 +2,19 @@
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
     <td class="gp-pad" align="center" style="padding:24px 40px;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;">
-      <!-- Borderless storefront catalog card: fixed 3/4 portrait box, image contained
-           (letterboxed on the section background), name + price below. -->
+      <!-- Borderless storefront catalog card: full-width portrait thumbnail with the
+           name + price left-aligned beneath it (the catalog look). -->
       <a href="{{.ProductCard.Product.URL}}" style="display:inline-block;text-decoration:none;color:#0E0E0C;">
         <table role="presentation" width="360" cellpadding="0" cellspacing="0" border="0" style="width:360px;max-width:100%;">
           <tr>
-            <td align="center" valign="middle" height="480" bgcolor="{{cssColor .BackgroundColor "#FFFFFF"}}" style="width:360px;height:480px;background-color:{{cssColor .BackgroundColor "#FFFFFF"}};text-align:center;">
-              <img src="{{.ProductCard.Product.Thumbnail.URL}}" width="360" alt="{{.ProductCard.Product.Name}}" style="display:inline-block;width:auto;height:auto;max-width:360px;max-height:480px;border:0;vertical-align:middle;">
+            <td style="padding:0;font-size:0;line-height:0;">
+              <img src="{{.ProductCard.Product.Thumbnail.URL}}" width="360" alt="{{.ProductCard.Product.Name}}" style="display:block;width:100%;max-width:360px;height:auto;border:0;">
             </td>
           </tr>
           <tr>
-            <td style="padding-top:8px;">
-              <div style="font-size:12px;line-height:14px;letter-spacing:1px;text-transform:uppercase;color:#0E0E0C;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{.ProductCard.Product.Name}}</div>
-              <div style="padding-top:8px;font-size:12px;line-height:14px;color:#0E0E0C;">{{if .ProductCard.Product.OnSale}}<span style="text-decoration:line-through;color:#9a978c;">{{.ProductCard.Product.OriginalPrice}}</span>&nbsp;{{.ProductCard.Product.Price}}{{else}}{{.ProductCard.Product.Price}}{{end}}</div>
+            <td align="left" style="padding-top:10px;text-align:left;">
+              <div style="font-size:12px;line-height:16px;letter-spacing:1px;text-transform:uppercase;color:#0E0E0C;">{{.ProductCard.Product.Name}}</div>
+              <div style="padding-top:6px;font-size:12px;line-height:16px;color:#0E0E0C;">{{if .ProductCard.Product.OnSale}}<span style="text-decoration:line-through;color:#9a978c;">{{.ProductCard.Product.OriginalPrice}}</span>&nbsp;{{.ProductCard.Product.Price}}{{else}}{{.ProductCard.Product.Price}}{{end}}</div>
             </td>
           </tr>
         </table>
