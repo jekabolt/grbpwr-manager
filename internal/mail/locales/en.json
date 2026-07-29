@@ -83,5 +83,26 @@
   "tier.downgrade.tag": "TIER",
   "tier.downgrade.heading": "TIER UPDATE",
   "tier.downgrade.body": "YOUR MEMBERSHIP HAS MOVED FROM {{.From}} TO {{.To}} AS THE QUALIFYING SPEND FOR THE PAST 12 MONTHS DIDN'T MEET THE THRESHOLD.",
-  "tier.downgrade.body2": "SPEND OVER THE NEXT CYCLE TO MOVE BACK UP. NOTHING ELSE CHANGES."
+  "tier.downgrade.body2": "SPEND OVER THE NEXT CYCLE TO MOVE BACK UP. NOTHING ELSE CHANGES.",
+
+  "common.cta.shop": "SHOP",
+
+  "tier.upgrade.tag": "TIER",
+  "tier.upgrade.heading": "TIER UNLOCKED",
+  "tier.upgrade.heading_backfill": "YOUR TIER",
+  "tier.upgrade.body_reached": "YOU'VE REACHED {{.Tier}}.",
+  "tier.upgrade.body_backfill": "AS PART OF THE LAUNCH OF OUR MEMBERSHIP PROGRAM, YOUR ACCOUNT HAS BEEN PLACED AT {{.Tier}}.",
+  "tier.upgrade.spend_label": "QUALIFYING SPEND (12 MO)",
+  "tier.upgrade.maintain_label": "MAINTAIN BY",
+
+  "tier.reminder.tag": "REMINDER",
+  "tier.reminder.heading": "KEEP YOUR TIER",
+  "tier.reminder.body": "YOUR {{.Tier}} MEMBERSHIP IS UP FOR REVIEW ON {{.Date}}.",
+  "tier.reminder.body2_threshold": "CURRENT QUALIFYING SPEND IS €{{.Spend}}. KEEP IT AT OR ABOVE €{{.Threshold}} TO STAY AT THIS TIER.",
+  "tier.reminder.body2": "CURRENT QUALIFYING SPEND IS €{{.Spend}}.",
+
+  "tier.rollback.tag": "TIER",
+  "tier.rollback.heading": "TIER ADJUSTED",
+  "tier.rollback.body": "FOLLOWING A REFUND, YOUR QUALIFYING SPEND OVER THE PAST 12 MONTHS WAS RECALCULATED TO €{{.Spend}}. YOUR MEMBERSHIP IS NOW {{.Tier}}.",
+  "tier.rollback.body2": "THIS IS AN AUTOMATIC ADJUSTMENT TO KEEP YOUR TIER ACCURATE. REACH OUT ANY TIME IF SOMETHING LOOKS OFF."
 }
