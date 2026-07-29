@@ -439,6 +439,11 @@ service AdminService {
     };
   }
 
+  // Returns whole-table order status counts plus today's order and revenue totals.
+  rpc GetOrdersOverview(GetOrdersOverviewRequest) returns (GetOrdersOverviewResponse) {
+    option (google.api.http) = {get: "/api/admin/orders/overview"};
+  }
+
   // Processes a refund for an order
   rpc RefundOrder(RefundOrderRequest) returns (RefundOrderResponse) {
     option (google.api.http) = {
@@ -622,6 +627,11 @@ service AdminService {
       post: "/api/admin/orders/{order_uuid}/comment"
       body: "*"
     };
+  }
+
+  // Lists an order's append-only admin comment thread, oldest first.
+  rpc ListOrderComments(ListOrderCommentsRequest) returns (ListOrderCommentsResponse) {
+    option (google.api.http) = {get: "/api/admin/orders/{order_uuid}/comments"};
   }
 
   // Creates a custom order with bank_invoice or cash payment (admin-only, supports custom prices).
@@ -2703,6 +2713,20 @@ message ListOrdersRequest {
 
 message ListOrdersResponse {
   repeated common.Order orders = 1;
+  int32 total = 2;
+}
+
+message GetOrdersOverviewRequest {}
+
+message GetOrdersOverviewResponse {
+  map<string, int32> status_counts = 1; // order_status.name -> count, across the whole table
+  int32 today_orders = 2;
+  repeated MoneyByCurrency today_revenue = 3; // per currency; never summed across currencies
+}
+
+message MoneyByCurrency {
+  string currency = 1;
+  google.type.Decimal amount = 2;
 }
 
 enum MetricsGranularity {
@@ -3502,7 +3526,25 @@ message AddOrderCommentRequest {
   string comment = 2;
 }
 
-message AddOrderCommentResponse {}
+message OrderComment {
+  int64 id = 1;
+  string order_uuid = 2;
+  string author = 3;
+  string body = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message AddOrderCommentResponse {
+  OrderComment comment = 1;
+}
+
+message ListOrderCommentsRequest {
+  string order_uuid = 1;
+}
+
+message ListOrderCommentsResponse {
+  repeated OrderComment comments = 1;
+}
 
 message CreateCustomOrderRequest {
   repeated common.CustomOrderItemInsert items = 1;
@@ -3994,6 +4036,11 @@ message ListTasksRequest {
   int32 tech_card_id = 7; // optional filter; 0 = no filter ("tasks for this техкарта")
   int32 product_id = 8; // optional filter; 0 = no filter ("tasks for this product")
   bool include_archived = 9; // false (default) = active only; true = include archived tasks
+  string order_uuid = 10; // optional filter; "" = no filter
+  int32 archive_id = 11; // optional filter; 0 = no filter
+  int32 fitting_id = 12; // optional filter; 0 = no filter
+  int32 production_run_id = 13; // optional filter; 0 = no filter
+  int32 sample_id = 14; // optional filter; 0 = no filter
 }
 
 message ListTasksResponse {

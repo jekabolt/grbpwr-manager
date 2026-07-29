@@ -252,7 +252,8 @@ type (
 		GetOrderByUUIDAndEmail(ctx context.Context, orderUUID string, email string) (*entity.OrderFull, error)
 		GetOrderByUUID(ctx context.Context, orderUUID string) (*entity.Order, error)
 		GetOrderByPaymentIntentId(ctx context.Context, paymentIntentId string) (*entity.OrderFull, error)
-		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, orderUUID string, statusId, paymentMethodId, orderId, lim int, off int, of entity.OrderFactor) ([]entity.Order, error)
+		GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, orderUUID string, statusId, paymentMethodId, orderId, lim int, off int, of entity.OrderFactor) ([]entity.Order, int, error)
+		GetOrdersOverview(ctx context.Context, todayStart time.Time) (*entity.OrdersOverview, error)
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (wasUpdated bool, err error)
@@ -273,6 +274,8 @@ type (
 		CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error)
 		SetOrderStatusToPendingReturn(ctx context.Context, orderUUID string, changedBy string) error
 		AddOrderComment(ctx context.Context, orderUUID string, comment string) error
+		AddOrderThreadComment(ctx context.Context, orderUUID, author, body string) (*entity.OrderComment, error)
+		ListOrderComments(ctx context.Context, orderUUID string) ([]entity.OrderComment, error)
 		// Reviews (internal statistics)
 		AddOrderReview(ctx context.Context, orderUUID string, email string, orderReview *entity.OrderReviewInsert, itemReviews []entity.OrderItemReviewInsert) error
 		GetOrderReviewsPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.OrderReviewFull, int, error)

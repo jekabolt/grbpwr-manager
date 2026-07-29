@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	v "github.com/asaskevich/govalidator"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -169,7 +171,7 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 	}
 
 	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
-	orders, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
+	orders, total, err := s.repo.Order().GetOrdersByStatusAndPaymentTypePaged(ctx,
 		req.Email,
 		req.OrderUuid,
 		int(req.Status),
@@ -199,6 +201,35 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 	}
 	return &pb_admin.ListOrdersResponse{
 		Orders: ordersPb,
+		Total:  int32(total),
+	}, nil
+}
+
+// GetOrdersOverview returns whole-table status counts and UTC-today order totals.
+func (s *Server) GetOrdersOverview(ctx context.Context, _ *pb_admin.GetOrdersOverviewRequest) (*pb_admin.GetOrdersOverviewResponse, error) {
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	overview, err := s.repo.Order().GetOrdersOverview(ctx, todayStart)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get orders overview", slog.String("err", err.Error()))
+		return nil, status.Errorf(codes.Internal, "can't get orders overview")
+	}
+
+	statusCounts := make(map[string]int32, len(overview.StatusCounts))
+	for name, count := range overview.StatusCounts {
+		statusCounts[name] = int32(count)
+	}
+	revenue := make([]*pb_admin.MoneyByCurrency, 0, len(overview.TodayRevenue))
+	for _, amount := range overview.TodayRevenue {
+		revenue = append(revenue, &pb_admin.MoneyByCurrency{
+			Currency: amount.Currency,
+			Amount:   &pb_decimal.Decimal{Value: amount.Amount.String()},
+		})
+	}
+	return &pb_admin.GetOrdersOverviewResponse{
+		StatusCounts: statusCounts,
+		TodayOrders:  int32(overview.TodayOrders),
+		TodayRevenue: revenue,
 	}, nil
 }
 
@@ -348,27 +379,56 @@ func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderReque
 }
 
 func (s *Server) AddOrderComment(ctx context.Context, req *pb_admin.AddOrderCommentRequest) (*pb_admin.AddOrderCommentResponse, error) {
-	// Validate comment
-	if req.Comment == "" {
+	orderUUID := strings.TrimSpace(req.OrderUuid)
+	if orderUUID == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "order_uuid is required")
+	}
+	body := strings.TrimSpace(req.Comment)
+	if body == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "comment is required")
 	}
+	if len(body) > 60000 {
+		return nil, status.Errorf(codes.InvalidArgument, "comment must be at most 60000 characters")
+	}
 
-	err := s.repo.Order().AddOrderComment(ctx, req.OrderUuid, req.Comment)
+	comment, err := s.repo.Order().AddOrderThreadComment(ctx, orderUUID, authsrv.GetAdminUsername(ctx), body)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "order not found")
+		}
 		slog.Default().ErrorContext(ctx, "can't add order comment",
 			slog.String("err", err.Error()),
-			slog.String("orderUuid", req.OrderUuid),
-			slog.String("comment", req.Comment),
+			slog.String("orderUuid", orderUUID),
 		)
-		return nil, status.Errorf(codes.Internal, "can't add order comment: %v", err)
+		return nil, status.Errorf(codes.Internal, "can't add order comment")
 	}
 
 	slog.Default().InfoContext(ctx, "order comment added",
-		slog.String("orderUuid", req.OrderUuid),
-		slog.String("comment", req.Comment),
+		slog.String("orderUuid", orderUUID),
 	)
 
-	return &pb_admin.AddOrderCommentResponse{}, nil
+	return &pb_admin.AddOrderCommentResponse{Comment: dto.ConvertEntityOrderCommentToPb(comment)}, nil
+}
+
+// ListOrderComments returns an order's append-only admin comment thread, oldest first.
+func (s *Server) ListOrderComments(ctx context.Context, req *pb_admin.ListOrderCommentsRequest) (*pb_admin.ListOrderCommentsResponse, error) {
+	orderUUID := strings.TrimSpace(req.OrderUuid)
+	if orderUUID == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "order_uuid is required")
+	}
+	comments, err := s.repo.Order().ListOrderComments(ctx, orderUUID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list order comments",
+			slog.String("err", err.Error()),
+			slog.String("orderUuid", orderUUID),
+		)
+		return nil, status.Errorf(codes.Internal, "can't list order comments")
+	}
+	pbComments := make([]*pb_admin.OrderComment, 0, len(comments))
+	for i := range comments {
+		pbComments = append(pbComments, dto.ConvertEntityOrderCommentToPb(&comments[i]))
+	}
+	return &pb_admin.ListOrderCommentsResponse{Comments: pbComments}, nil
 }
 
 func (s *Server) CreateCustomOrder(ctx context.Context, req *pb_admin.CreateCustomOrderRequest) (*pb_admin.CreateCustomOrderResponse, error) {

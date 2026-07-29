@@ -120,53 +120,62 @@ func (s *Store) GetOrderByPaymentIntentId(ctx context.Context, paymentIntentId s
 	return &ofs[0], nil
 }
 
-// GetOrdersByStatusAndPaymentTypePaged retrieves orders filtered by status, payment method, email, etc.
-func (s *Store) GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, orderUUID string, statusId, paymentMethodId, orderId, lim, off int, of entity.OrderFactor) ([]entity.Order, error) {
-	query := fmt.Sprintf(`
-		SELECT
-			co.*,
-			b.email AS buyer_email,
-			b.first_name AS buyer_first_name,
-			b.last_name AS buyer_last_name
+// GetOrdersByStatusAndPaymentTypePaged retrieves orders filtered by status, payment method, email,
+// etc., plus the total number matching the same filters before pagination.
+func (s *Store) GetOrdersByStatusAndPaymentTypePaged(ctx context.Context, email string, orderUUID string, statusId, paymentMethodId, orderId, lim, off int, of entity.OrderFactor) ([]entity.Order, int, error) {
+	const fromWhere = `
 		FROM
 			customer_order co
 		INNER JOIN
 			payment p ON co.id = p.order_id
 		INNER JOIN
 			buyer b ON co.id = b.order_id
-		WHERE 
-			(:status = 0 OR co.order_status_id = :status) 
+		WHERE
+			(:status = 0 OR co.order_status_id = :status)
 			AND (:paymentMethod = 0 OR p.payment_method_id = :paymentMethod)
 			AND (:email = '' OR LOWER(b.email) = LOWER(:email))
 			AND (:orderId = 0 OR co.id = :orderId)
-			AND (:orderUUID = '' OR co.uuid = :orderUUID)
+			AND (:orderUUID = '' OR co.uuid = :orderUUID)`
+
+	query := fmt.Sprintf(`
+		SELECT
+			co.*,
+			b.email AS buyer_email,
+			b.first_name AS buyer_first_name,
+			b.last_name AS buyer_last_name
+		%s
 		ORDER BY 
 			co.modified %s
 		LIMIT 
 			:limit
 		OFFSET 
 			:offset
-		`, of.String())
+		`, fromWhere, of.String())
 
-	params := map[string]interface{}{
+	filterParams := map[string]interface{}{
 		"email":         email,
 		"status":        statusId,
 		"paymentMethod": paymentMethodId,
 		"orderId":       orderId,
 		"orderUUID":     orderUUID,
-		"limit":         lim,
-		"offset":        off,
 	}
 
-	orders, err := storeutil.QueryListNamed[entity.Order](ctx, s.DB, query, params)
+	total, err := storeutil.QueryCountNamed(ctx, s.DB, `SELECT COUNT(*)`+fromWhere, filterParams)
+	if err != nil {
+		return nil, 0, fmt.Errorf("can't count orders by status and payment method: %w", err)
+	}
+
+	filterParams["limit"] = lim
+	filterParams["offset"] = off
+	orders, err := storeutil.QueryListNamed[entity.Order](ctx, s.DB, query, filterParams)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return []entity.Order{}, nil
+			return []entity.Order{}, total, nil
 		}
-		return nil, fmt.Errorf("can't get orders by status and payment method: %w", err)
+		return nil, 0, fmt.Errorf("can't get orders by status and payment method: %w", err)
 	}
 
-	return orders, nil
+	return orders, total, nil
 }
 
 // GetStuckPlacedOrders returns orders in Placed status older than the given time.

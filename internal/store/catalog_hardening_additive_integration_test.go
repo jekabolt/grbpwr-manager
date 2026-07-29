@@ -127,8 +127,9 @@ func TestListOrdersBuyerIdentityProjection(t *testing.T) {
 		SELECT ?, id, 100.00, 100.00 FROM payment_method LIMIT 1`, orderID)
 	require.NoError(t, err)
 
-	orders, err := s.Order().GetOrdersByStatusAndPaymentTypePaged(ctx, "", "", 0, 0, orderID, 10, 0, entity.Descending)
+	orders, total, err := s.Order().GetOrdersByStatusAndPaymentTypePaged(ctx, "", "", 0, 0, orderID, 10, 0, entity.Descending)
 	require.NoError(t, err)
+	require.Equal(t, 1, total)
 	require.Len(t, orders, 1)
 	require.Equal(t, "ada@example.com", orders[0].BuyerEmail)
 	require.Equal(t, "Ada", orders[0].BuyerFirstName)

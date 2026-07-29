@@ -377,13 +377,33 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		where += " AND assignee = :assignee"
 		filterParams["assignee"] = f.Assignee
 	}
-	if f.TechCardId != 0 {
+	if f.TechCardId > 0 {
 		where += " AND tech_card_id = :techCardId"
 		filterParams["techCardId"] = f.TechCardId
 	}
-	if f.ProductId != 0 {
+	if f.ProductId > 0 {
 		where += " AND product_id = :productId"
 		filterParams["productId"] = f.ProductId
+	}
+	if f.OrderUuid != "" {
+		where += " AND order_uuid = :orderUuid"
+		filterParams["orderUuid"] = f.OrderUuid
+	}
+	if f.ArchiveId > 0 {
+		where += " AND archive_id = :archiveId"
+		filterParams["archiveId"] = f.ArchiveId
+	}
+	if f.FittingId > 0 {
+		where += " AND fitting_id = :fittingId"
+		filterParams["fittingId"] = f.FittingId
+	}
+	if f.ProductionRunId > 0 {
+		where += " AND production_run_id = :productionRunId"
+		filterParams["productionRunId"] = f.ProductionRunId
+	}
+	if f.SampleId > 0 {
+		where += " AND sample_id = :sampleId"
+		filterParams["sampleId"] = f.SampleId
 	}
 	// Active-only by default: archived tasks are hidden from the board unless
 	// explicitly requested.

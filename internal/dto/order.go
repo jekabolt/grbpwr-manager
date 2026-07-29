@@ -283,6 +283,20 @@ func ConvertEntityOrderToPbCommonOrder(eOrder entity.Order) (*pb_common.Order, e
 	return pbOrder, nil
 }
 
+// ConvertEntityOrderCommentToPb converts one stored order-thread comment.
+func ConvertEntityOrderCommentToPb(c *entity.OrderComment) *pb_admin.OrderComment {
+	if c == nil {
+		return nil
+	}
+	return &pb_admin.OrderComment{
+		Id:        c.Id,
+		OrderUuid: c.OrderUUID,
+		Author:    c.Author,
+		Body:      c.Body,
+		CreatedAt: timestamppb.New(c.CreatedAt),
+	}
+}
+
 func ConvertPbOrderItemInsertToEntity(pbOrderItem *pb_common.OrderItemInsert) (*entity.OrderItemInsert, error) {
 	if pbOrderItem == nil {
 		return nil, fmt.Errorf("pbOrderItem is nil")

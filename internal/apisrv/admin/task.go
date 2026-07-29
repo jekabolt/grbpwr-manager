@@ -171,12 +171,17 @@ func (s *Server) ListTaskComments(ctx context.Context, req *pb_admin.ListTaskCom
 	return &pb_admin.ListTaskCommentsResponse{Comments: pbComments}, nil
 }
 
-// ListTasks lists tasks with optional board/status/assignee/tech-card/product filters.
+// ListTasks lists tasks with optional placement and linked-entity filters.
 func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) (*pb_admin.ListTasksResponse, error) {
 	filter := entity.TaskListFilter{
 		Assignee:        req.Assignee,
 		TechCardId:      int(req.TechCardId),
 		ProductId:       int(req.ProductId),
+		OrderUuid:       req.OrderUuid,
+		ArchiveId:       int(req.ArchiveId),
+		FittingId:       int(req.FittingId),
+		ProductionRunId: int(req.ProductionRunId),
+		SampleId:        int(req.SampleId),
 		IncludeArchived: req.IncludeArchived,
 		Limit:           int(req.Limit),
 		Offset:          int(req.Offset),

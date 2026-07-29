@@ -136,6 +136,29 @@ type Order struct {
 	BuyerVatID sql.NullString `db:"buyer_vat_id"`
 }
 
+// OrdersOverview is the orders dashboard aggregate. Revenue remains separated by
+// the order's booked currency so unlike currencies are never summed together.
+type OrdersOverview struct {
+	StatusCounts map[string]int
+	TodayOrders  int
+	TodayRevenue []MoneyByCurrency
+}
+
+// MoneyByCurrency is one aggregate amount in its booked order currency.
+type MoneyByCurrency struct {
+	Currency string          `db:"currency"`
+	Amount   decimal.Decimal `db:"amount"`
+}
+
+// OrderComment is one append-only admin comment on an order.
+type OrderComment struct {
+	Id        int64     `db:"id"`
+	OrderUUID string    `db:"order_uuid"`
+	Author    string    `db:"author"`
+	Body      string    `db:"body"`
+	CreatedAt time.Time `db:"created_at"`
+}
+
 func (o *Order) TotalPriceDecimal() decimal.Decimal {
 	return currency.Round(o.TotalPrice, o.Currency)
 }
