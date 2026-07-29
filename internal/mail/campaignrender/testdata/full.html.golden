@@ -167,7 +167,7 @@
 </td></tr><tr><td bgcolor="#ffffff" style="background-color:#ffffff;"><div style="height:24px;line-height:24px;font-size:0;mso-line-height-rule:exactly;">&nbsp;</div></td></tr><tr><td bgcolor="#f4f2ec" style="background-color:#f4f2ec;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
-    <td class="gp-stack" width="50%" valign="top" style="width:50%;max-width:300px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#ffffff" style="background-color:#ffffff;">
+    <td class="gp-stack" width="50%" valign="top" style="width:50%;max-width:300px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#f4f2ec" style="background-color:#f4f2ec;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
     <td class="gp-pad" style="padding:26px 40px;color:#0E0E0C;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:15px;line-height:24px;">
@@ -176,15 +176,15 @@
   </tr>
 </table>
 </td></tr></table></td>
-    <td class="gp-stack" width="50%" valign="top" style="width:50%;max-width:300px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#ffffff" style="background-color:#ffffff;">
+    <td class="gp-stack" width="50%" valign="top" style="width:50%;max-width:300px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td bgcolor="#f4f2ec" style="background-color:#f4f2ec;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
     <td class="gp-pad" align="center" style="padding:22px 40px;">
       
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center">
   <tr>
-    <td align="center" bgcolor="#ffffff" style="border:1px solid #0E0E0C;background-color:#ffffff;mso-padding-alt:13px 24px;">
-      <!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="https://grbpwr.com/archive" style="height:42px;v-text-anchor:middle;width:220px;" arcsize="0%" strokecolor="#0E0E0C" fillcolor="#ffffff"><w:anchorlock xmlns:w="urn:schemas-microsoft-com:office:word"/><center style="color:#0E0E0C;font-family:Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;">EXPLORE</center></v:roundrect><![endif]-->
+    <td align="center" bgcolor="#f4f2ec" style="border:1px solid #0E0E0C;background-color:#f4f2ec;mso-padding-alt:13px 24px;">
+      <!--[if mso]><v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="https://grbpwr.com/archive" style="height:42px;v-text-anchor:middle;width:220px;" arcsize="0%" strokecolor="#0E0E0C" fillcolor="#f4f2ec"><w:anchorlock xmlns:w="urn:schemas-microsoft-com:office:word"/><center style="color:#0E0E0C;font-family:Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;">EXPLORE</center></v:roundrect><![endif]-->
       <a href="https://grbpwr.com/archive" style="display:inline-block;padding:13px 24px;color:#0E0E0C;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:13px;letter-spacing:1px;line-height:16px;text-transform:uppercase;">[ EXPLORE &rarr; ]</a>
     </td>
   </tr>
@@ -218,15 +218,15 @@
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
     <td align="center" style="padding:0;">
-      <a href="https://vimeo.com/123" style="display:block;position:relative;color:#0E0E0C;">
+      <a href="https://vimeo.com/123" style="display:block;position:relative;color:#f4f2ec;">
       <div style="position:relative;display:block;">
         <img src="https://files.grbpwr.com/campaign/video.webp" width="1200" height="675" alt="PROCESS FILM image" style="display:block;width:100%;max-width:560px;height:auto;border:0;">
-        <span style="position:absolute;left:50%;top:50%;margin-left:-26px;margin-top:-26px;width:52px;height:52px;border-radius:26px;background-color:#0E0E0C;color:#ffffff;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:22px;line-height:52px;text-align:center;">&#9654;</span>
+        <span style="position:absolute;left:50%;top:50%;margin-left:-26px;margin-top:-26px;width:52px;height:52px;border-radius:26px;background-color:#f4f2ec;color:#0E0E0C;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:22px;line-height:52px;text-align:center;">&#9654;</span>
       </div>
       </a>
     </td>
   </tr>
-  <tr><td class="gp-pad" style="padding:10px 40px 20px;color:#9a978c;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:11px;line-height:17px;text-align:center;">A deterministic caption</td></tr>
+  <tr><td class="gp-pad" style="padding:10px 40px 20px;color:#b3aea2;font-family:'SF Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,'Courier New',monospace;font-size:11px;line-height:17px;text-align:center;">A deterministic caption</td></tr>
 </table>
 </td></tr>
           <tr>

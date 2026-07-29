@@ -76,14 +76,16 @@ func vmlButton(block blockView) template.HTML {
 	))
 }
 
-// setBlockPalette assigns the resolved palette to every block, recursing into
-// two-column children so nested blocks pick up the same foreground tokens.
-func setBlockPalette(blocks []blockView, pal palette) {
+// setBlockPalette derives each block's foreground palette from ITS OWN background (already resolved
+// to inherit the document background when unset), so text stays readable on any block — light text
+// on a dark block, dark text on a light one — even when a block overrides the campaign background.
+// The doc-level pal is retained for the document chrome (footer etc.).
+func setBlockPalette(blocks []blockView, docPal palette) {
 	for i := range blocks {
-		blocks[i].Palette = pal
+		blocks[i].Palette = newPalette(blocks[i].BackgroundColor)
 		if blocks[i].TwoColumn != nil {
-			setBlockPalette(blocks[i].TwoColumn.Left, pal)
-			setBlockPalette(blocks[i].TwoColumn.Right, pal)
+			setBlockPalette(blocks[i].TwoColumn.Left, docPal)
+			setBlockPalette(blocks[i].TwoColumn.Right, docPal)
 		}
 	}
 }
@@ -248,7 +250,7 @@ func (r *Renderer) Render(
 
 	resolver := newResolver(rep)
 	resolver.prime(ctx, collectMediaIDs(in.Blocks), collectProductIDs(in.Blocks))
-	blocks, warnings := resolveBlocks(ctx, resolver, in.Blocks, in.LanguageID, in.Langs, 0, 0)
+	blocks, warnings := resolveBlocks(ctx, resolver, in.Blocks, in.LanguageID, in.Langs, background, 0, 0)
 	for i := range blocks {
 		applyTranslation(&blocks[i], in.LanguageID, in.Langs)
 	}

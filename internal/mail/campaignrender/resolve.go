@@ -259,6 +259,7 @@ func resolveBlocks(
 	blocks []entity.EmailBlock,
 	languageID int,
 	langs []entity.Language,
+	sectionBg string,
 	depth int,
 	rootIndex int,
 ) ([]blockView, []Warning) {
@@ -269,7 +270,7 @@ func resolveBlocks(
 		if depth == 0 {
 			index = i
 		}
-		resolved, blockWarnings, ok := resolveBlock(ctx, r, &blocks[i], languageID, langs, depth, index)
+		resolved, blockWarnings, ok := resolveBlock(ctx, r, &blocks[i], languageID, langs, sectionBg, depth, index)
 		warnings = append(warnings, blockWarnings...)
 		if ok {
 			out = append(out, resolved)
@@ -284,12 +285,17 @@ func resolveBlock(
 	block *entity.EmailBlock,
 	languageID int,
 	langs []entity.Language,
+	sectionBg string,
 	depth, blockIndex int,
 ) (blockView, []Warning, bool) {
 	view := blockView{
-		Type:            block.Type,
-		BlockIndex:      blockIndex,
-		BackgroundColor: safeColor(block.BackgroundColor, defaultSectionBackground),
+		Type: block.Type,
+		BlockIndex: blockIndex,
+		// A block with no explicit background inherits the campaign (document) background instead
+		// of forcing white — so setting the campaign background applies to every block and changing
+		// it propagates automatically. Its palette (text color) is derived from this in
+		// setBlockPalette, keeping text readable on any background.
+		BackgroundColor: safeColor(block.BackgroundColor, sectionBg),
 		Translations:    append([]entity.EmailBlockTranslation(nil), block.Translations...),
 	}
 	warn := func(reason string) (blockView, []Warning, bool) {
@@ -403,8 +409,8 @@ func resolveBlock(
 		if block.TwoColumn == nil {
 			return warn("two_column payload is missing")
 		}
-		left, leftWarnings := resolveBlocks(ctx, r, block.TwoColumn.Left, languageID, langs, depth+1, blockIndex)
-		right, rightWarnings := resolveBlocks(ctx, r, block.TwoColumn.Right, languageID, langs, depth+1, blockIndex)
+		left, leftWarnings := resolveBlocks(ctx, r, block.TwoColumn.Left, languageID, langs, view.BackgroundColor, depth+1, blockIndex)
+		right, rightWarnings := resolveBlocks(ctx, r, block.TwoColumn.Right, languageID, langs, view.BackgroundColor, depth+1, blockIndex)
 		view.TwoColumn = &twoColumnView{Left: left, Right: right}
 		return view, append(leftWarnings, rightWarnings...), true
 	case entity.EmailBlockTypeSocialLinks:
