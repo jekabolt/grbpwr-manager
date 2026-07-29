@@ -489,6 +489,10 @@ message StorefrontAccount {
   repeated StorefrontSavedAddress addresses = 11;
   string default_country = 12;
   string default_language = 13;
+  // email_language is the explicit, sticky preference for transactional email language
+  // (ISO-639-1). Empty = not chosen (mailer falls back to purchase locale then
+  // default_language then en). Distinct from default_language (auto-derived from site locale).
+  string email_language = 14;
 }
 
 message GetAccountRequest {}
@@ -508,6 +512,7 @@ message UpdateAccountRequest {
   optional bool subscribe_events = 8;
   optional string default_country = 9;
   optional string default_language = 10;
+  optional string email_language = 11;
 }
 
 message UpdateAccountResponse {

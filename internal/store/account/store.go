@@ -228,13 +228,13 @@ func (s *Store) GetOrCreateAccountByEmail(ctx context.Context, email string) (*e
 }
 
 // UpdateAccountProfile updates profile fields for the given email.
-func (s *Store) UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference entity.StorefrontShoppingPreference, phone sql.NullString, subscribeNewsletter, subscribeNewArrivals, subscribeEvents bool, defaultCountry, defaultLanguage sql.NullString) error {
+func (s *Store) UpdateAccountProfile(ctx context.Context, email string, firstName, lastName string, birthDate sql.NullTime, shoppingPreference entity.StorefrontShoppingPreference, phone sql.NullString, subscribeNewsletter, subscribeNewArrivals, subscribeEvents bool, defaultCountry, defaultLanguage, emailLanguage sql.NullString) error {
 	if !entity.IsValidStorefrontShoppingPreference(string(shoppingPreference)) {
 		return fmt.Errorf("invalid storefront shopping preference: %q", shoppingPreference)
 	}
 	q := `
 		UPDATE storefront_account
-		SET first_name = :fn, last_name = :ln, birth_date = :bd, shopping_preference = :shoppingPreference, phone = :phone, subscribe_newsletter = :subscribeNewsletter, subscribe_new_arrivals = :subscribeNewArrivals, subscribe_events = :subscribeEvents, default_country = :defaultCountry, default_language = :defaultLanguage, updated_at = CURRENT_TIMESTAMP
+		SET first_name = :fn, last_name = :ln, birth_date = :bd, shopping_preference = :shoppingPreference, phone = :phone, subscribe_newsletter = :subscribeNewsletter, subscribe_new_arrivals = :subscribeNewArrivals, subscribe_events = :subscribeEvents, default_country = :defaultCountry, default_language = :defaultLanguage, email_language = :emailLanguage, updated_at = CURRENT_TIMESTAMP
 		WHERE email = :email`
 	return storeutil.ExecNamed(ctx, s.DB, q, map[string]any{
 		"fn":                   firstName,
@@ -247,6 +247,7 @@ func (s *Store) UpdateAccountProfile(ctx context.Context, email string, firstNam
 		"subscribeEvents":      subscribeEvents,
 		"defaultCountry":       defaultCountry,
 		"defaultLanguage":      defaultLanguage,
+		"emailLanguage":        emailLanguage,
 		"email":                email,
 	})
 }

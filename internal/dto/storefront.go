@@ -98,6 +98,10 @@ func EntityStorefrontAccountToPb(a *entity.StorefrontAccount, addresses []*pb_fr
 	if a.DefaultLanguage.Valid {
 		defaultLanguage = a.DefaultLanguage.String
 	}
+	emailLanguage := ""
+	if a.EmailLanguage.Valid {
+		emailLanguage = a.EmailLanguage.String
+	}
 	accountTier := ConvertEntityAccountTierToPb(entity.StorefrontAccountTier(a.AccountTier))
 	return &pb_frontend.StorefrontAccount{
 		Email:                a.Email,
@@ -113,6 +117,7 @@ func EntityStorefrontAccountToPb(a *entity.StorefrontAccount, addresses []*pb_fr
 		Addresses:            addresses,
 		DefaultCountry:       defaultCountry,
 		DefaultLanguage:      defaultLanguage,
+		EmailLanguage:        emailLanguage,
 	}, nil
 }
 

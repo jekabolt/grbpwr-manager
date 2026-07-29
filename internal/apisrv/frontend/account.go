@@ -20,6 +20,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront/tokenhash"
@@ -424,7 +425,19 @@ func (s *Server) UpdateAccount(ctx context.Context, req *pb_frontend.UpdateAccou
 			defaultLanguage = sql.NullString{String: langVal, Valid: true}
 		}
 	}
-	if err := s.repo.StorefrontAccount().UpdateAccountProfile(ctx, email, fn, ln, bd, shoppingPref, phone, subscribeNewsletter, subscribeNewArrivals, subscribeEvents, defaultCountry, defaultLanguage); err != nil {
+	// email_language is the EXPLICIT, sticky email-language preference. Only overwrite it when
+	// the request carries it (the storefront sends it only when the user changes the toggle), so
+	// an unrelated profile save never clobbers a deliberate choice. Clamp to a supported locale;
+	// anything unrecognized clears it (unset → resolver falls back to purchase/default/en).
+	emailLanguage := acc.EmailLanguage
+	if req.EmailLanguage != nil {
+		if canon := localeutil.Canonical(*req.EmailLanguage); canon != "" {
+			emailLanguage = sql.NullString{String: canon, Valid: true}
+		} else {
+			emailLanguage = sql.NullString{}
+		}
+	}
+	if err := s.repo.StorefrontAccount().UpdateAccountProfile(ctx, email, fn, ln, bd, shoppingPref, phone, subscribeNewsletter, subscribeNewArrivals, subscribeEvents, defaultCountry, defaultLanguage, emailLanguage); err != nil {
 		return nil, status.Error(codes.Internal, "can't update account")
 	}
 	if req.SubscribeNewsletter != nil {

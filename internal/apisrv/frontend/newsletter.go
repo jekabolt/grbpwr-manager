@@ -54,7 +54,7 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 	if err := s.repo.StorefrontAccount().UpdateAccountProfile(ctx, email,
 		firstName, acc.LastName, acc.BirthDate, shoppingPref, acc.Phone,
 		req.SubscribeNewsletter, req.SubscribeNewArrivals, req.SubscribeEvents,
-		acc.DefaultCountry, acc.DefaultLanguage,
+		acc.DefaultCountry, acc.DefaultLanguage, acc.EmailLanguage,
 	); err != nil {
 		slog.Default().ErrorContext(ctx, "can't update subscription preferences", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't subscribe")
@@ -111,7 +111,7 @@ func (s *Server) UnsubscribeNewsletter(ctx context.Context, req *pb_frontend.Uns
 			acc.SubscribeNewsletter && !offNewsletter,
 			acc.SubscribeNewArrivals && !offNewArrivals,
 			acc.SubscribeEvents && !offEvents,
-			acc.DefaultCountry, acc.DefaultLanguage,
+			acc.DefaultCountry, acc.DefaultLanguage, acc.EmailLanguage,
 		); uerr != nil {
 			slog.Default().ErrorContext(ctx, "can't update unsubscribe preferences", slog.String("err", uerr.Error()))
 			return nil, status.Error(codes.Internal, "can't unsubscribe")
