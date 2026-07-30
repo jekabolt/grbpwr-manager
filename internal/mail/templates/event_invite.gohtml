@@ -1,4 +1,4 @@
-{{template "email_header" (dict "tag" (t "event.invite.tag") "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "event.invite.tag") "preheader" (or .Preheader (t "event.invite.preheader")))}}
 
               <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{if .Heading}}{{.Heading}}{{else}}{{ t "event.invite.heading_default" }}{{end}}</div>
               {{template "spacer_18"}}

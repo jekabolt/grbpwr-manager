@@ -21,6 +21,28 @@
   "event.invite.subject": "诚邀你的到来",
   "hacker.invite.subject": "你的 GRBPWR HACKER 邀请",
 
+  "order.confirmed.preheader": "你的 GRBPWR 订单已确认",
+  "order.shipped.preheader": "你的 GRBPWR 订单已发货",
+  "order.delivered.preheader": "你的 GRBPWR 订单已送达",
+  "order.cancelled.preheader": "你的 GRBPWR 订单已取消",
+  "order.refund.preheader": "你的 GRBPWR 退款已启动",
+  "order.return.preheader": "你的 GRBPWR 退货已受理",
+
+  "account.login.preheader": "你的 GRBPWR 登录验证码",
+  "subscriber.welcome.preheader": "欢迎加入 GRBPWR",
+  "stock.back.preheader": "你候补的单品已重新到货",
+  "promo.code.preheader": "你的 GRBPWR 优惠码",
+
+  "tier.upgrade.preheader": "你的 GRBPWR 会员资格",
+  "tier.downgrade.preheader": "你的 GRBPWR 会员资格",
+  "tier.reminder.preheader": "你的 GRBPWR 会员等级即将复核",
+  "tier.rollback.preheader": "你的 GRBPWR 会员资格",
+  "tier.thanks.preheader": "感谢你的首次下单",
+  "unsubscribe.confirm.preheader": "你已取消订阅",
+  "birthday.preheader": "来自 GRBPWR 的一点心意",
+  "event.invite.preheader": "诚邀你的到来",
+  "hacker.invite.preheader": "你的 GRBPWR HACKER 邀请",
+
   "order.confirmed.tag": "订单",
   "order.confirmed.heading": "订单已确认",
   "order.confirmed.body": "我们已收到你的订单，正在为你备货。发货时会通知你。",

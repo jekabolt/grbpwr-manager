@@ -21,6 +21,28 @@
   "event.invite.subject": "You're invited",
   "hacker.invite.subject": "Your GRBPWR HACKER invite",
 
+  "order.confirmed.preheader": "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
+  "order.shipped.preheader": "YOUR GRBPWR ORDER HAS BEEN SHIPPED",
+  "order.delivered.preheader": "YOUR GRBPWR ORDER HAS BEEN DELIVERED",
+  "order.cancelled.preheader": "YOUR GRBPWR ORDER HAS BEEN CANCELLED",
+  "order.refund.preheader": "YOUR GRBPWR REFUND HAS BEEN INITIATED",
+  "order.return.preheader": "YOUR GRBPWR RETURN HAS BEEN REQUESTED",
+
+  "account.login.preheader": "Your GRBPWR sign-in code",
+  "subscriber.welcome.preheader": "WELCOME TO GRBPWR",
+  "stock.back.preheader": "YOUR WAITLIST ITEM IS BACK IN STOCK",
+  "promo.code.preheader": "YOUR GRBPWR PROMO CODE",
+
+  "tier.upgrade.preheader": "Your GRBPWR membership",
+  "tier.downgrade.preheader": "Your GRBPWR membership",
+  "tier.reminder.preheader": "Your GRBPWR tier is up for review",
+  "tier.rollback.preheader": "Your GRBPWR membership",
+  "tier.thanks.preheader": "Thank you for your first order",
+  "unsubscribe.confirm.preheader": "You've been unsubscribed",
+  "birthday.preheader": "A little something from GRBPWR",
+  "event.invite.preheader": "You're invited",
+  "hacker.invite.preheader": "Your GRBPWR HACKER invite",
+
   "order.confirmed.tag": "ORDER",
   "order.confirmed.heading": "ORDER CONFIRMED",
   "order.confirmed.body": "WE'VE GOT YOUR ORDER AND WE'RE PREPARING IT. YOU'LL HEAR FROM US WHEN IT SHIPS.",

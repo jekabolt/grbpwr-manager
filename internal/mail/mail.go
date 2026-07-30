@@ -343,6 +343,8 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 
 	// Resolve the recipient locale and bind a localizer. With localization disabled
 	// (the default) this is always the default locale, so output matches pre-feature EN.
+	// The recipient lookup inside resolveLocale is bounded by recipientLanguageTimeout, so
+	// the Background context here cannot hang an inline (payment-path) send.
 	loc := m.catalog.Localizer(m.resolveLocale(context.Background(), normalizedTo, localeHint(data)))
 
 	subject, err := m.subject(tn, loc, data)

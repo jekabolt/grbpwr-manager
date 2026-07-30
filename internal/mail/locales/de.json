@@ -21,6 +21,28 @@
   "event.invite.subject": "Sie sind eingeladen",
   "hacker.invite.subject": "Ihre GRBPWR HACKER Einladung",
 
+  "order.confirmed.preheader": "IHRE GRBPWR BESTELLUNG IST BESTÄTIGT",
+  "order.shipped.preheader": "IHRE GRBPWR BESTELLUNG IST VERSANDT",
+  "order.delivered.preheader": "IHRE GRBPWR BESTELLUNG IST ZUGESTELLT",
+  "order.cancelled.preheader": "IHRE GRBPWR BESTELLUNG IST STORNIERT",
+  "order.refund.preheader": "IHRE GRBPWR RÜCKERSTATTUNG IST EINGELEITET",
+  "order.return.preheader": "IHRE GRBPWR RÜCKGABE IST ANGEFORDERT",
+
+  "account.login.preheader": "Ihr GRBPWR Anmeldecode",
+  "subscriber.welcome.preheader": "WILLKOMMEN BEI GRBPWR",
+  "stock.back.preheader": "IHR ARTIKEL VON DER WARTELISTE IST WIEDER VERFÜGBAR",
+  "promo.code.preheader": "IHR GRBPWR PROMO-CODE",
+
+  "tier.upgrade.preheader": "Ihre GRBPWR-Mitgliedschaft",
+  "tier.downgrade.preheader": "Ihre GRBPWR-Mitgliedschaft",
+  "tier.reminder.preheader": "Ihre GRBPWR-Stufe wird überprüft",
+  "tier.rollback.preheader": "Ihre GRBPWR-Mitgliedschaft",
+  "tier.thanks.preheader": "Danke für Ihre erste Bestellung",
+  "unsubscribe.confirm.preheader": "Sie wurden abgemeldet",
+  "birthday.preheader": "Eine kleine Aufmerksamkeit von GRBPWR",
+  "event.invite.preheader": "Sie sind eingeladen",
+  "hacker.invite.preheader": "Ihre GRBPWR HACKER Einladung",
+
   "order.confirmed.tag": "BESTELLUNG",
   "order.confirmed.heading": "BESTELLUNG BESTÄTIGT",
   "order.confirmed.body": "WIR HABEN IHRE BESTELLUNG ERHALTEN UND BEREITEN SIE VOR. WIR MELDEN UNS, SOBALD SIE VERSANDT WIRD.",

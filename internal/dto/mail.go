@@ -41,7 +41,6 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 
 	return &OrderConfirmed{
 		Locale:              of.Order.Locale.String,
-		Preheader:           "YOUR GRBPWR ORDER HAS BEEN CONFIRMED",
 		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
 		CurrencySymbol:      CurrencySymbol(of.Order.Currency),
@@ -83,7 +82,6 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 
 	return &OrderShipment{
 		Locale:              of.Order.Locale.String,
-		Preheader:           "YOUR GRBPWR ORDER HAS BEEN SHIPPED",
 		BuyerName:           buyerName,
 		OrderUUID:           of.Order.UUID,
 		CurrencySymbol:      CurrencySymbol(of.Order.Currency),
@@ -99,12 +97,11 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 }
 
 // OrderFullToOrderDelivered builds the delivered-email data. It reuses the shipment builder (same
-// item/total layout) and only changes the preheader.
+// item/total layout); the distinct type is what selects the delivered subject and template.
 func OrderFullToOrderDelivered(of *entity.OrderFull) *OrderDelivered {
 	s := OrderFullToOrderShipment(of)
 	return &OrderDelivered{
 		Locale:              of.Order.Locale.String,
-		Preheader:           "YOUR GRBPWR ORDER HAS BEEN DELIVERED",
 		BuyerName:           s.BuyerName,
 		OrderUUID:           s.OrderUUID,
 		CurrencySymbol:      s.CurrencySymbol,
@@ -128,7 +125,6 @@ func OrderFullToOrderCancelled(of *entity.OrderFull) *OrderCancelled {
 
 	return &OrderCancelled{
 		Locale:    of.Order.Locale.String,
-		Preheader: "YOUR GRBPWR ORDER HAS BEEN CANCELLED",
 		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
@@ -144,7 +140,6 @@ func OrderFullToOrderRefundInitiated(of *entity.OrderFull) *OrderRefundInitiated
 
 	return &OrderRefundInitiated{
 		Locale:    of.Order.Locale.String,
-		Preheader: "YOUR GRBPWR REFUND HAS BEEN INITIATED",
 		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
@@ -159,7 +154,6 @@ func OrderFullToOrderPendingReturn(of *entity.OrderFull) *OrderPendingReturn {
 
 	return &OrderPendingReturn{
 		Locale:    of.Order.Locale.String,
-		Preheader: "YOUR GRBPWR RETURN HAS BEEN REQUESTED",
 		BuyerName: buyerName,
 		OrderUUID: of.Order.UUID,
 		EmailB64:  base64.StdEncoding.EncodeToString([]byte(of.Buyer.Email)),
@@ -239,7 +233,7 @@ func EntityOrderItemsToDto(items []entity.OrderItem, currency string) []OrderIte
 
 type OrderConfirmed struct {
 	Locale              string // recipient-locale hint captured at purchase (order.locale)
-	Preheader           string
+	Preheader           string // unused: the preview line is localized in the template, from <template>.preheader
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
 	CurrencySymbol      string
@@ -267,7 +261,7 @@ type OrderItem struct {
 
 type OrderCancelled struct {
 	Locale    string // recipient-locale hint captured at purchase (order.locale)
-	Preheader string
+	Preheader string // unused, see OrderConfirmed.Preheader
 	BuyerName string // First name or full name if available
 	OrderUUID string
 	EmailB64  string
@@ -275,7 +269,7 @@ type OrderCancelled struct {
 
 type OrderShipment struct {
 	Locale              string // recipient-locale hint captured at purchase (order.locale)
-	Preheader           string
+	Preheader           string // unused, see OrderConfirmed.Preheader
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
 	CurrencySymbol      string
@@ -293,7 +287,7 @@ type OrderShipment struct {
 // item/total layout) but is a distinct type so the subject line and template resolve correctly.
 type OrderDelivered struct {
 	Locale              string // recipient-locale hint captured at purchase (order.locale)
-	Preheader           string
+	Preheader           string // unused, see OrderConfirmed.Preheader
 	BuyerName           string // First name or full name if available
 	OrderUUID           string
 	CurrencySymbol      string
@@ -309,7 +303,7 @@ type OrderDelivered struct {
 
 type OrderRefundInitiated struct {
 	Locale    string // recipient-locale hint captured at purchase (order.locale)
-	Preheader string
+	Preheader string // unused, see OrderConfirmed.Preheader
 	BuyerName string // First name or full name if available
 	OrderUUID string
 	EmailB64  string
@@ -317,14 +311,14 @@ type OrderRefundInitiated struct {
 
 type OrderPendingReturn struct {
 	Locale    string // recipient-locale hint captured at purchase (order.locale)
-	Preheader string
+	Preheader string // unused, see OrderConfirmed.Preheader
 	BuyerName string
 	OrderUUID string
 	EmailB64  string
 }
 
 type PromoCodeDetails struct {
-	Preheader      string
+	Preheader      string // unused, see OrderConfirmed.Preheader
 	BuyerName      string // First name or full name if available
 	PromoCode      string
 	DiscountAmount int

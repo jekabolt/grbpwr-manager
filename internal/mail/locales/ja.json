@@ -21,6 +21,28 @@
   "event.invite.subject": "ご招待",
   "hacker.invite.subject": "GRBPWR HACKER へのご招待",
 
+  "order.confirmed.preheader": "GRBPWR のご注文を承りました",
+  "order.shipped.preheader": "GRBPWR のご注文を発送しました",
+  "order.delivered.preheader": "GRBPWR のご注文をお届けしました",
+  "order.cancelled.preheader": "GRBPWR のご注文をキャンセルしました",
+  "order.refund.preheader": "GRBPWR の返金手続きを開始しました",
+  "order.return.preheader": "GRBPWR の返品を受け付けました",
+
+  "account.login.preheader": "GRBPWR のサインインコード",
+  "subscriber.welcome.preheader": "GRBPWR へようこそ",
+  "stock.back.preheader": "お待ちのアイテムが再入荷しました",
+  "promo.code.preheader": "GRBPWR のプロモコード",
+
+  "tier.upgrade.preheader": "GRBPWR メンバーシップについて",
+  "tier.downgrade.preheader": "GRBPWR メンバーシップについて",
+  "tier.reminder.preheader": "GRBPWR ティアが見直しの対象です",
+  "tier.rollback.preheader": "GRBPWR メンバーシップについて",
+  "tier.thanks.preheader": "初めてのご注文ありがとうございます",
+  "unsubscribe.confirm.preheader": "配信を停止しました",
+  "birthday.preheader": "GRBPWR からのささやかな贈り物",
+  "event.invite.preheader": "ご招待",
+  "hacker.invite.preheader": "GRBPWR HACKER へのご招待",
+
   "order.confirmed.tag": "注文",
   "order.confirmed.heading": "注文確定",
   "order.confirmed.body": "ご注文を承り、準備を進めています。発送の際に改めてお知らせします。",

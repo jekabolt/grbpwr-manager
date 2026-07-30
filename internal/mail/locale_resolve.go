@@ -2,9 +2,16 @@ package mail
 
 import (
 	"context"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 )
+
+// recipientLanguageTimeout bounds the per-send account language lookup. The lookup is a
+// nice-to-have (a failure degrades to the hint/default locale), so it must never hold an
+// inline send — e.g. the order confirmation on the payment path — behind a stalled query
+// or an exhausted connection pool.
+const recipientLanguageTimeout = 1500 * time.Millisecond
 
 // resolveLocale picks the recipient's email language code. Precedence:
 //
@@ -18,8 +25,12 @@ import (
 // candidate is clamped to the supported locale set; an unrecognized one falls through
 // rather than masquerading as "en", so a lower-priority but valid signal still wins.
 //
+// The lookup is always bounded by recipientLanguageTimeout, so a stalled query degrades to
+// the hint/default locale instead of blocking the send indefinitely.
+//
 // TODO: thread the caller's context once buildSendMailRequest carries one; the per-send
-// account lookup currently uses context.Background().
+// account lookup currently starts from context.Background(), so the caller's cancellation
+// is not observed (its deadline is bounded by recipientLanguageTimeout regardless).
 func (m *Mailer) resolveLocale(ctx context.Context, email, hint string) string {
 	if !m.c.LocalizationEnabled {
 		return defaultLocale
@@ -27,10 +38,14 @@ func (m *Mailer) resolveLocale(ctx context.Context, email, hint string) string {
 
 	var emailLang, defaultLang string
 	if m.langRepo != nil && email != "" {
-		if el, dl, err := m.langRepo.GetRecipientLanguage(ctx, email); err == nil {
+		lookupCtx, cancel := context.WithTimeout(ctx, recipientLanguageTimeout)
+		el, dl, err := m.langRepo.GetRecipientLanguage(lookupCtx, email)
+		cancel()
+		if err == nil {
 			emailLang, defaultLang = el, dl
 		}
-		// On error: fall through to hint/default — a failed lookup must never block a send.
+		// On error (including the timeout): fall through to hint/default — a failed or slow
+		// lookup must never block a send.
 	}
 
 	if v := localeutil.Canonical(emailLang); v != "" {

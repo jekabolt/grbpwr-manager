@@ -40,6 +40,16 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 		return nil, status.Error(codes.InvalidArgument, "invalid shopping preference")
 	}
 
+	// Was this address already known before this request? This endpoint is unauthenticated,
+	// so only a brand-new address may have its language seeded from the form (see below) —
+	// an existing account's mail language must never be settable by a stranger.
+	_, probeErr := s.repo.StorefrontAccount().GetAccountByEmail(ctx, email)
+	if probeErr != nil && !errors.Is(probeErr, sql.ErrNoRows) {
+		slog.Default().ErrorContext(ctx, "can't load account for subscription", slog.String("err", probeErr.Error()))
+		return nil, status.Error(codes.Internal, "can't subscribe")
+	}
+	isNewAccount := errors.Is(probeErr, sql.ErrNoRows)
+
 	// Store on the storefront account (create a shell account if none exists).
 	acc, err := s.repo.StorefrontAccount().GetOrCreateAccountByEmail(ctx, email)
 	if err != nil {
@@ -52,11 +62,14 @@ func (s *Server) SubscribeNewsletter(ctx context.Context, req *pb_frontend.Subsc
 		firstName = name
 	}
 
-	// Seed the account language from the signup site locale when it has none yet, so the
-	// welcome email (resolved by recipient email → account) goes out in the language the user
-	// subscribed in. Don't override an existing value (returning subscriber keeps theirs).
+	// Seed the account language from the signup site locale, so the welcome email (resolved by
+	// recipient email → account) goes out in the language the user subscribed in. Only for an
+	// account this request just created: the form is unauthenticated, and default_language
+	// drives the language of transactional mail, so seeding a pre-existing account would let
+	// anyone change another person's mail language by submitting their address. A returning
+	// subscriber keeps whatever they have (empty included — they can set it in the account).
 	defaultLanguage := acc.DefaultLanguage
-	if !defaultLanguage.Valid || defaultLanguage.String == "" {
+	if isNewAccount && (!defaultLanguage.Valid || defaultLanguage.String == "") {
 		if canon := localeutil.Canonical(req.Language); canon != "" {
 			defaultLanguage = sql.NullString{String: canon, Valid: true}
 		}

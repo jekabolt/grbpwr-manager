@@ -1,4 +1,4 @@
-{{template "email_header" (dict "tag" (t "tier.upgrade.tag") "preheader" .Preheader)}}
+{{template "email_header" (dict "tag" (t "tier.upgrade.tag") "preheader" (t "tier.upgrade.preheader"))}}
 
               <div class="gp-h" style="font-size:26px; line-height:32px; letter-spacing:1px;">{{if .IsBackfill}}{{ t "tier.upgrade.heading_backfill" }}{{else}}{{ t "tier.upgrade.heading" }}{{end}}</div>
               {{template "spacer_18"}}

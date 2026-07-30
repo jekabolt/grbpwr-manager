@@ -176,8 +176,13 @@ func execNamedExpectOneRow(ctx context.Context, db dependency.DB, query string, 
 }
 
 // GetAccountByEmail loads a storefront account by email.
+//
+// Every column UpdateAccountProfile writes MUST be selected here: the profile/newsletter
+// handlers do a read-modify-write of this struct, so a column missing from this list is
+// scanned as its zero value and written back as NULL, silently wiping the stored value
+// (email_language was lost this way).
 func (s *Store) GetAccountByEmail(ctx context.Context, email string) (*entity.StorefrontAccount, error) {
-	q := `SELECT id, email, first_name, last_name, birth_date, shopping_preference, phone, account_tier, subscribe_newsletter, subscribe_new_arrivals, subscribe_events, default_country, default_language, created_at, updated_at FROM storefront_account WHERE email = :email`
+	q := `SELECT id, email, first_name, last_name, birth_date, shopping_preference, phone, account_tier, subscribe_newsletter, subscribe_new_arrivals, subscribe_events, default_country, default_language, email_language, created_at, updated_at FROM storefront_account WHERE email = :email`
 	a, err := storeutil.QueryNamedOne[entity.StorefrontAccount](ctx, s.DB, q, map[string]any{"email": email})
 	if err != nil {
 		return nil, err
