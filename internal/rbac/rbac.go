@@ -255,7 +255,8 @@ var methodRequirements = map[string]Requirement{
 	"GetEmailSegment":            rd(SectionCampaigns),
 	"ListEmailSegments":          rd(SectionCampaigns),
 	"DeleteEmailSegment":         wr(SectionCampaigns),
-	"PreviewEmailSegment":        rd(SectionCampaigns),
+	// wr, not rd: PreviewEmailSegment persists the cached audience count for a saved segment.
+	"PreviewEmailSegment":        wr(SectionCampaigns),
 	"UpsertEmailCampaign":        wr(SectionCampaigns),
 	"GetEmailCampaign":           rd(SectionCampaigns),
 	"ListEmailCampaignsPaged":    rd(SectionCampaigns),
