@@ -96,6 +96,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
+	// A card can be created with sections already approved, and a linked BOM line reads back enriched
+	// here exactly as it does on update — so the same correction applies. Nothing mutates the payload
+	// between the parse and the write on this path, so the parse-time digests ARE the "as parsed" set.
+	s.restampFreshSignoffDigests(ctx, tc, dto.TechCardSectionDigests(tc))
 
 	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
 	if err != nil {
@@ -176,10 +180,15 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, err
 	}
 	tc.UpdatedBy = authsrv.GetAdminUsername(ctx) // server-stamp; created_by is preserved (not in SET)
+	// Snapshot the fingerprints of the payload AS PARSED — that is what dto stamped a fresh approval
+	// with, and the only way to tell this save's approvals from ones carried back verbatim. Taken
+	// before the costing restore below changes the priced sections underneath it.
+	asParsed := dto.TechCardSectionDigests(tc)
 	// A cost-stripped account's full-replace save must not blank the costing it never saw.
 	if !canWriteCosting {
 		s.preserveStoredCosting(ctx, int(req.Id), tc)
 	}
+	s.restampFreshSignoffDigests(ctx, tc, asParsed)
 	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
@@ -211,6 +220,100 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	s.seedProductCostsFromTechCard(ctx, int(req.Id))
 	s.snapshotReleaseIfReleased(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
+}
+
+// restampFreshSignoffDigests re-fingerprints the sections THIS save is approving from the content the
+// card will PRESENT ON THE NEXT READ, which is not the same thing as the payload that arrived.
+//
+// dto.ConvertPbTechCardInsertToEntity stamps a fresh approval's signed_digest at parse time — the only
+// moment it is certain which sections are being approved (an empty digest on the wire), but too early to
+// know the value, for two reasons:
+//
+//  1. LINKED BOM LINES (every account). The read query resolves a linked line's name, supplier,
+//     supplier_ref, composition, spec and unit from the catalog material, while the payload legitimately
+//     carries an empty string for them. Those fields are hashed by the MATERIALS projection, so a digest
+//     taken from the raw payload can never equal the one a later read reports.
+//  2. THE COSTING RESTORE (accounts without costing:write). Such a payload carries no prices at all (its
+//     read was cost-stripped, and a payload that does carry costing data is refused outright), and
+//     preserveStoredCosting puts the stored costing block and BOM purchase prices back afterwards —
+//     content that feeds the MATERIALS and COSTING projections.
+//
+// Either way the brand-new approval would read "changed since sign-off" immediately and forever, which
+// is the exact failure the digest mechanism exists to prevent. So the digest is re-taken here, from the
+// final payload in its read-model form.
+//
+// Only the sections stamped by THIS save move. A digest the client carried back verbatim ("I am not
+// re-approving, just saving") was computed from the read model, so it does not match asParsed and is left
+// exactly where the approver put it. The one case where a carried-back digest does match asParsed is a
+// section whose content has not moved since it was approved — pointing that approval at the read-model
+// fingerprint of the very same content re-blesses nothing, and it self-heals the rows stamped before
+// this correction existed.
+func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, asParsed map[entity.TechCardSignoffSection]string) {
+	if tc == nil || len(tc.Signoffs) == 0 {
+		return
+	}
+	fresh := make([]*entity.TechCardSignoff, 0, len(tc.Signoffs))
+	for i := range tc.Signoffs {
+		so := &tc.Signoffs[i]
+		if so.State != entity.SignoffStateApproved || !so.SignedDigest.Valid {
+			continue
+		}
+		if so.SignedDigest.String != asParsed[so.Section] {
+			continue // carried back verbatim: an older approval, not this save's
+		}
+		fresh = append(fresh, so)
+	}
+	if len(fresh) == 0 {
+		return // nothing is being approved: no digest may move, and no catalog read is owed
+	}
+	final := dto.TechCardSectionDigestsAsRead(tc, s.linkedBomMaterialIdentities(ctx, tc))
+	for _, so := range fresh {
+		d := final[so.Section]
+		so.SignedDigest = sql.NullString{String: d, Valid: d != ""}
+	}
+}
+
+// linkedBomMaterialIdentities loads the catalog identity of every material the payload's BOM links, so a
+// digest can be taken in the read model's terms. Nil when the BOM links nothing — the common case, which
+// then costs no query at all.
+//
+// Best-effort, like preserveStoredCosting: a catalog read failure falls back to fingerprinting the
+// payload as sent (today's behaviour) rather than failing the save — a logged, self-correcting stale flag
+// beats refusing to persist an approval.
+func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.TechCardInsert) map[int64]dto.BomMaterialIdentity {
+	linked := make(map[int64]bool, len(tc.BomItems))
+	for _, b := range tc.BomItems {
+		if b.MaterialId.Valid && b.MaterialId.Int64 > 0 {
+			linked[b.MaterialId.Int64] = true
+		}
+	}
+	if len(linked) == 0 {
+		return nil
+	}
+	// includeArchived: the read query LEFT JOINs material unconditionally, so an archived material still
+	// resolves the lines that link it. One list beats N GetMaterial round trips.
+	mats, err := s.repo.TechCards().ListMaterials(ctx, "", true)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "signoff digest: can't load material catalog; fingerprinting the payload as sent",
+			slog.String("err", err.Error()))
+		return nil
+	}
+	out := make(map[int64]dto.BomMaterialIdentity, len(linked))
+	for i := range mats {
+		m := &mats[i]
+		if !linked[int64(m.Id)] {
+			continue
+		}
+		out[int64(m.Id)] = dto.BomMaterialIdentity{
+			Name:        m.Name,
+			Supplier:    m.Supplier.String,
+			SupplierRef: m.SupplierRef.String,
+			Composition: m.Composition.String,
+			Spec:        m.Spec.String,
+			Unit:        m.Unit.String,
+		}
+	}
+	return out
 }
 
 // snapshotReleaseIfReleased captures an immutable release snapshot (task 11) when a card is in

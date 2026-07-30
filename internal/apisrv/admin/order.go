@@ -205,7 +205,10 @@ func (s *Server) ListOrders(ctx context.Context, req *pb_admin.ListOrdersRequest
 	}, nil
 }
 
-// GetOrdersOverview returns whole-table status counts and UTC-today order totals.
+// GetOrdersOverview returns whole-table status counts and UTC-today order totals. today_orders /
+// today_revenue count PAID orders only — the same status set the dashboard's revenue queries use, so
+// the two screens agree; abandoned checkouts (status `placed`, never paid) and cancelled orders are
+// excluded. status_counts stays whole-table. See store/order/overview.go for the reasoning.
 func (s *Server) GetOrdersOverview(ctx context.Context, _ *pb_admin.GetOrdersOverviewRequest) (*pb_admin.GetOrdersOverviewResponse, error) {
 	now := time.Now().UTC()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
@@ -378,6 +381,14 @@ func (s *Server) CancelOrder(ctx context.Context, req *pb_admin.CancelOrderReque
 	return &pb_admin.CancelOrderResponse{}, nil
 }
 
+// maxOrderCommentBytes is the comment budget, in BYTES — which is what the storage limit is too:
+// order_comment.body and the legacy customer_order.order_comment projection are both TEXT, i.e. 65535
+// BYTES regardless of charset, and each holds this one body (the projection is overwritten, not
+// appended to). len(body) counts bytes in Go, so the check below cannot pass anything the columns
+// reject, whatever the script. Do NOT restate this as a character limit: 60000 CJK characters are
+// ~180KB and would come back as an opaque MySQL error 1406 instead of an InvalidArgument.
+const maxOrderCommentBytes = 60000
+
 func (s *Server) AddOrderComment(ctx context.Context, req *pb_admin.AddOrderCommentRequest) (*pb_admin.AddOrderCommentResponse, error) {
 	orderUUID := strings.TrimSpace(req.OrderUuid)
 	if orderUUID == "" {
@@ -387,8 +398,10 @@ func (s *Server) AddOrderComment(ctx context.Context, req *pb_admin.AddOrderComm
 	if body == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "comment is required")
 	}
-	if len(body) > 60000 {
-		return nil, status.Errorf(codes.InvalidArgument, "comment must be at most 60000 characters")
+	if len(body) > maxOrderCommentBytes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"comment must be at most %d bytes of UTF-8 (got %d); a non-latin character costs 2-4 bytes",
+			maxOrderCommentBytes, len(body))
 	}
 
 	comment, err := s.repo.Order().AddOrderThreadComment(ctx, orderUUID, authsrv.GetAdminUsername(ctx), body)

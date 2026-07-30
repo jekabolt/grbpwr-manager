@@ -1180,6 +1180,15 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 	if t.TargetMarginPct < 0 || t.TargetMarginPct > 100 {
 		return nil, status.Errorf(codes.InvalidArgument, "target_margin_pct must be within [0,100]")
 	}
+	// An admin build that predates target_margin_pct sends no value at all, which arrives here as the
+	// proto scalar zero — indistinguishable from "set it to 0". Persisting that during deploy skew would
+	// clobber the configured house target AND desync it from the effective one: cache.SetTargetMarginPct
+	// ignores <= 0, so every costing tab would keep resolving against the previous target while the
+	// settings screen reported 0. Absent/0 therefore means "keep the house target as it is" — and there
+	// is nothing to lose by that reading, because 0 is not a representable target anywhere downstream.
+	if t.TargetMarginPct <= 0 {
+		t.TargetMarginPct = s.currentTargetMarginPct(ctx)
+	}
 	if err := s.repo.Metrics().UpsertAlertThresholds(ctx, t); err != nil {
 		slog.Default().ErrorContext(ctx, "can't upsert alert settings", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't upsert alert settings")
@@ -1188,6 +1197,17 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 	// refresh it here or the change would not show up until the next restart.
 	cache.SetTargetMarginPct(t.TargetMarginPct)
 	return &pb_admin.UpsertAlertSettingsResponse{}, nil
+}
+
+// currentTargetMarginPct resolves the house margin target already in force, so a write that omits it
+// can carry it forward instead of zeroing it. The stored value is authoritative (another writer may
+// have moved it since this process booted); the cached one is the fallback and is never 0 — it is
+// seeded from entity.DefaultAlertThresholds and only ever replaced by a positive value.
+func (s *Server) currentTargetMarginPct(ctx context.Context) float64 {
+	if cur, err := s.repo.Metrics().GetAlertThresholds(ctx); err == nil && cur.TargetMarginPct > 0 {
+		return cur.TargetMarginPct
+	}
+	return cache.GetTargetMarginPct()
 }
 
 // enrichCampaignSpend fills Spend and ROAS on the attribution rows from channel_spend,

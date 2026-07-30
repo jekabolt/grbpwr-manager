@@ -29,6 +29,16 @@ import (
 // make every COLOUR digest differ between write and read and mark every colour sign-off permanently
 // stale. What the COLOUR section does cover is the card-owned colour decision: which BOM fabric each
 // cut-piece is made from, per colourway.
+//
+// THE ONE PLACE THE TWO SIDES DO NOT AGREE BY THEMSELVES — LINKED BOM LINES: the BOM read query
+// resolves a linked line's identity (name / supplier / supplier_ref / composition / spec / unit) from
+// the catalog material it links, while the write payload legitimately carries an empty string for those
+// fields (the admin client sends no name for a linked line that never had one — see
+// parseTechCardBomItems and bomNaturalKey). materialsProjection hashes exactly those fields, so a
+// MATERIALS approval stamped from the raw payload could never match the fingerprint the next read
+// reports — a permanent, un-clearable "changed since sign-off". The write side therefore stamps through
+// TechCardSectionDigestsAsRead, which resolves the link the same way the query does; the read side
+// needs no help, the store enriched it already.
 func TechCardSectionDigests(tc *entity.TechCardInsert) map[entity.TechCardSignoffSection]string {
 	if tc == nil {
 		return nil
@@ -87,6 +97,11 @@ func TechCardSectionDigestsToPb(tc *entity.TechCardInsert) []*pb_common.TechCard
 //
 // A section that is not approved carries no digest at all: pending and rejected have nothing to be
 // stale against.
+//
+// This runs at parse time, with no DB in reach, so what it stamps is the payload AS SENT. The RPC layer
+// re-stamps exactly the sections stamped here from the read-model form of the same payload
+// (TechCardSectionDigestsAsRead) before the write — see restampFreshSignoffDigests. Keep this function
+// the one that decides WHICH sections get stamped; the re-stamp only corrects the VALUE.
 func StampTechCardSignoffDigests(tc *entity.TechCardInsert) {
 	if tc == nil || len(tc.Signoffs) == 0 {
 		return
@@ -102,6 +117,78 @@ func StampTechCardSignoffDigests(tc *entity.TechCardInsert) {
 		}
 		tc.Signoffs[i].SignedDigest = nullStringFromPb(digests[tc.Signoffs[i].Section])
 	}
+}
+
+// BomMaterialIdentity is the identity a LINKED BOM line inherits from the catalog material it links:
+// exactly the fields the BOM read query resolves THROUGH the link (internal/store/techcard/materials.go,
+// enrichMaterials). unit_price / currency are deliberately absent — the read path does not resolve them
+// (an agreed cost stays frozen on the line), and colour is the line's own.
+type BomMaterialIdentity struct {
+	Name        string
+	Supplier    string
+	SupplierRef string
+	Composition string
+	Spec        string
+	Unit        string
+}
+
+// TechCardSectionDigestsAsRead fingerprints a WRITE payload as the card will READ BACK: linked BOM
+// lines take their identity from the catalog, the way the read query resolves it. catalog maps
+// material_id → identity and only needs the materials the payload's BOM actually links; a missing id
+// (or a nil map) leaves the line exactly as sent, which is also what the read query's LEFT JOIN does
+// for a broken link.
+//
+// This is what the write side must stamp an approval with. TechCardSectionDigests on the raw payload
+// answers a different question — "what did the client send" — and for a linked line that is not what
+// any later read reports.
+func TechCardSectionDigestsAsRead(tc *entity.TechCardInsert, catalog map[int64]BomMaterialIdentity) map[entity.TechCardSignoffSection]string {
+	return TechCardSectionDigests(withResolvedBomIdentity(tc, catalog))
+}
+
+// withResolvedBomIdentity returns a copy of the insert whose linked BOM lines carry the identity the
+// read query resolves for them. The copy is shallow apart from BomItems — nothing else is touched, and
+// the caller's payload is never mutated: the enriched form is for hashing only, the stored columns keep
+// the client's values (the read path re-resolves them on every read, which is the point of a link).
+func withResolvedBomIdentity(tc *entity.TechCardInsert, catalog map[int64]BomMaterialIdentity) *entity.TechCardInsert {
+	if tc == nil || len(catalog) == 0 || len(tc.BomItems) == 0 {
+		return tc
+	}
+	out := *tc
+	out.BomItems = make([]entity.TechCardBomItem, len(tc.BomItems))
+	copy(out.BomItems, tc.BomItems)
+	for i := range out.BomItems {
+		b := &out.BomItems[i]
+		if !b.MaterialId.Valid || b.MaterialId.Int64 <= 0 {
+			continue // a free-text line has nothing to resolve from and keeps its own values
+		}
+		m, ok := catalog[b.MaterialId.Int64]
+		if !ok {
+			continue // link to a material we could not load: the stored value stands, as in the LEFT JOIN
+		}
+		b.Name = resolvedThroughLink(m.Name, b.Name)
+		b.Supplier = resolvedNullThroughLink(m.Supplier, b.Supplier)
+		b.SupplierRef = resolvedNullThroughLink(m.SupplierRef, b.SupplierRef)
+		b.Composition = resolvedNullThroughLink(m.Composition, b.Composition)
+		b.Spec = resolvedNullThroughLink(m.Spec, b.Spec)
+		b.Unit = resolvedNullThroughLink(m.Unit, b.Unit)
+	}
+	return &out
+}
+
+// resolvedThroughLink mirrors the read query's COALESCE(NULLIF(m.x, empty), bi.x) rule: the catalog
+// value wins whenever it is non-empty, otherwise the line's own value stands.
+func resolvedThroughLink(catalog, stored string) string {
+	if catalog != "" {
+		return catalog
+	}
+	return stored
+}
+
+func resolvedNullThroughLink(catalog string, stored sql.NullString) sql.NullString {
+	if catalog != "" {
+		return sql.NullString{String: catalog, Valid: true}
+	}
+	return stored
 }
 
 func digestOf(v any) string {

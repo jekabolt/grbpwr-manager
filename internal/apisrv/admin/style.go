@@ -160,6 +160,24 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 			}
 		}
 	}
+	// Same reasoning for the rule's BASE size. value(size) = base + step × (position(size) −
+	// position(base)) is anchored on the base size's own cells, so a base the chart has no column for
+	// leaves every derived value pointing at a cell that does not exist: the grid re-opens with an
+	// unusable rule and the "derived vs overtyped" comparison misreads every cell. The store's FK
+	// (fk_tech_card_grade_base_size) only proves the size exists GLOBALLY, not that it is charted.
+	if req.GradeBaseSizeId > 0 && len(cells) > 0 {
+		chartedSize := false
+		for _, c := range cells {
+			if c.SizeID == int(req.GradeBaseSizeId) {
+				chartedSize = true
+				break
+			}
+		}
+		if !chartedSize {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"grade_base_size_id %d is not one of the chart's sizes", req.GradeBaseSizeId)
+		}
+	}
 	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion), cells, int(req.GradeBaseSizeId), steps)
 	if err != nil {
 		switch {

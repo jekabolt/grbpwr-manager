@@ -890,8 +890,14 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 }
 
 // patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
-// when its PDF first arrived. Keyed by url, which identifies the uploaded object (bucket.GetMediaName
-// embeds a timestamp plus a random suffix, so two uploads never collide).
+// when its PDF first arrived.
+//
+// A ROW is identified by (size_id, url), not by url alone. The url does identify the uploaded object
+// (bucket.GetMediaName embeds a timestamp plus a random suffix, so two uploads never collide), but the
+// same object is legitimately attached under several sizes — the factory sends one combined sheet and
+// the operator hangs it on XS and S — while `version` is numbered per (tech_card_id, size_id). Keying
+// the carry-forward on url alone let one size's sheet inherit the OTHER size's Rev number, and the
+// per-size MAX+1 numbering then skipped or duplicated revisions on later saves.
 type patternHistoryRow struct {
 	URL        string       `db:"url"`
 	SizeId     int          `db:"size_id"`
@@ -919,10 +925,19 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
 	}
+	// version carries forward per (size, url) — see patternHistoryRow. uploaded_at carries forward per
+	// URL: it answers "when did this PDF arrive", and the object behind a url is immutable, so the
+	// earliest timestamp any size recorded for it stays true when the same sheet turns up under another
+	// size.
 	known := make(map[string]patternHistoryRow, len(prior))
+	firstUploadByURL := make(map[string]sql.NullTime, len(prior))
 	maxVersionBySize := make(map[int]int, len(prior))
 	for _, r := range prior {
-		known[r.URL] = r
+		known[patternHistoryKey(r.SizeId, r.URL)] = r
+		if prev, seen := firstUploadByURL[r.URL]; !seen ||
+			(r.UploadedAt.Valid && (!prev.Valid || r.UploadedAt.Time.Before(prev.Time))) {
+			firstUploadByURL[r.URL] = r.UploadedAt
+		}
 		if r.Version > maxVersionBySize[r.SizeId] {
 			maxVersionBySize[r.SizeId] = r.Version
 		}
@@ -938,12 +953,17 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	rows := make([]map[string]any, 0, len(patterns))
 	for i, p := range patterns {
 		version, uploadedAt := p.Version, p.UploadedAt
-		if seen, ok := known[p.URL]; ok {
-			// A sheet already on this card keeps its identity: the client never owns these.
+		if seen, ok := known[patternHistoryKey(p.SizeId, p.URL)]; ok {
+			// This exact sheet is already on this size: it keeps its identity, the client never owns these.
 			if version <= 0 {
 				version = seen.Version
 			}
 			uploadedAt = seen.UploadedAt
+		} else if first, ok := firstUploadByURL[p.URL]; ok {
+			// The same PDF, but under a different size (a combined sheet spread across the range, or a
+			// sheet moved between sizes). Its arrival time carries over; its revision number does NOT —
+			// numbering is per size, so within THIS size the sheet is new and takes MAX+1 below.
+			uploadedAt = first
 		} else {
 			uploadedAt = sql.NullTime{Time: now, Valid: true}
 		}
@@ -970,6 +990,12 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		return fmt.Errorf("failed to insert tech card patterns: %w", err)
 	}
 	return nil
+}
+
+// patternHistoryKey identifies one pattern row across a full-replace: the sheet (url) AND the size it
+// hangs on, because `version` is numbered within a size (see patternHistoryRow).
+func patternHistoryKey(sizeID int, url string) string {
+	return fmt.Sprintf("%d|%s", sizeID, url)
 }
 
 // validateTechCardSizeIDs enforces S10/WS5's server-side size-write guard on the style's OWN size
