@@ -264,15 +264,25 @@ func (s *Store) GetVatReturnPLFiling(ctx context.Context, month time.Time) (*ent
 			"%s PLN of opex input VAT has no invoice number/date — excluded from the generated JPK (no register row possible); add doc identity to deduct it in the filing",
 			ret.InputUnregistered.StringFixed(2)))
 	}
-	// WNT/import self-charge is measured here (and in NetPayable, where its two legs cancel) but
-	// deliberately NOT placed into the generated declaration/registers — the file carries no
-	// K_23..K_26 evidence rows for it, and un-evidenced boxes fail the MF cross-check. The
-	// accountant merges these rows into the filing (review pass 1, H-1).
+	// WNT/import self-charge IS in the generated filing now (declaration P_23..P_26 + K_23..K_26
+	// sales rows for the self-charged output, K_42/K_43 purchase rows for the deduction), so it no
+	// longer needs a merge-manually caveat — a JPK that omitted it while the generated VAT-UE
+	// declared the same acquisitions was an automatic MF cross-check mismatch (review pass 3,
+	// superseding review pass 1 H-1). What still needs flagging is an acquisition whose supplier has
+	// no VAT id: the JPK row falls back to BRAK and the VAT-UE cannot declare it at all.
 	if ret.InputWnt.IsPositive() || ret.InputImport.IsPositive() {
-		ret.Caveats = append(ret.Caveats, fmt.Sprintf(
-			"WNT/import self-charge is NOT in the generated JPK boxes/registers — merge manually: WNT net %s / VAT %s, import net %s / VAT %s (PLN)",
-			ret.NetWnt.StringFixed(2), ret.InputWnt.StringFixed(2),
-			ret.NetImport.StringFixed(2), ret.InputImport.StringFixed(2)))
+		untagged, uErr := storeutil.QueryCountNamed(ctx, s.DB, `
+			SELECT COUNT(DISTINCT m.id)
+			FROM material_stock_movement m
+			LEFT JOIN supplier sup ON sup.id = m.supplier_id
+			JOIN acct_journal_entry e ON e.source_type = 'material_receipt' AND `+movementKeyMatch+`
+			WHERE e.occurred_at >= :from AND e.occurred_at < :to
+			  AND m.input_vat_regime IN ('wnt', 'import')
+			  AND (sup.vat_id IS NULL OR sup.vat_id = '')`, params)
+		if uErr == nil && untagged > 0 {
+			ret.Caveats = append(ret.Caveats, fmt.Sprintf(
+				"%d WNT/import receipt(s) have no supplier VAT id — the JPK row reports BRAK and the VAT-UE statement cannot declare them; tag the supplier before filing", untagged))
+		}
 	}
 
 	ret.NetPayable = ret.OutputDomestic.Add(ret.OutputWntSelfCharge).
@@ -291,21 +301,42 @@ func (s *Store) GetVatReturnPLFiling(ctx context.Context, month time.Time) (*ent
 	return ret, nil
 }
 
-// opexAccrualDriftCaveat compares the month's opex_line VAT total (what the filings read) against
-// the posted, non-reversed opex_month 2080 accrual (what the ledger holds). They diverge when a
-// line is edited after the period closed (commitOpex warns + skips the repost) or just before the
-// worker's next tick — the filing would then silently disagree with the books (review pass 2,
-// H-1). Both sides are base-currency EUR, so the comparison needs no FX.
+// opexAccrualDriftCaveat compares the 2080 input VAT the month's opex_line rows WOULD accrue (the
+// posting rule applied to the table the filings read) against the posted, non-reversed opex_month
+// 2080 accrual (what the ledger holds). They diverge when a line is edited after the period closed
+// (commitOpex warns + skips the repost) or just before the worker's next tick — the filing would then
+// silently disagree with the books (review pass 2, H-1). Both sides are base-currency EUR, so the
+// comparison needs no FX.
 func (s *Store) opexAccrualDriftCaveat(ctx context.Context, month time.Time) (string, error) {
 	m := firstOfMonthUTC(month)
+	// The table side must mirror the POSTING rule (BuildOpexMonthEntry + GetOpexMonthFacts), not just
+	// sum the column: the accrual groups by category over costed lines (amount_base NOT NULL), rounds
+	// to 2dp, and posts a category's VAT only when it is POSITIVE — a category netting negative (a
+	// credit note) is dropped rather than credited back. A plain signed SUM therefore reported drift
+	// that NO repost could ever clear, so the one caveat that matters cried wolf on every filing of
+	// such a month (review pass 3).
 	table, err := storeutil.QueryNamedOne[struct {
-		V decimal.Decimal `db:"v"`
+		Vat decimal.Decimal `db:"vat"`
+		Amt decimal.Decimal `db:"amt"`
 	}](ctx, s.DB, `
-		SELECT COALESCE(SUM(vat_amount_base), 0) AS v
-		FROM opex_line WHERE month = :m AND vat_amount_base IS NOT NULL`,
+		SELECT COALESCE(SUM(GREATEST(ROUND(vat_sum, 2), 0)), 0) AS vat,
+		       COALESCE(SUM(GREATEST(ROUND(amt_sum, 2), 0)), 0) AS amt
+		FROM (
+			SELECT COALESCE(SUM(amount_base), 0) AS amt_sum,
+			       COALESCE(SUM(vat_amount_base), 0) AS vat_sum
+			FROM opex_line
+			WHERE month = :m AND amount_base IS NOT NULL
+			GROUP BY category
+		) c`,
 		map[string]any{"m": m.Format(dateLayout)})
 	if err != nil {
 		return "", fmt.Errorf("accounting: opex drift table sum: %w", err)
+	}
+	// A month with no positive category amount posts NOTHING (ErrSkipEmpty), VAT included — so the
+	// ledger holding zero is the correct outcome there, not drift.
+	expectedVat := table.Vat
+	if !table.Amt.IsPositive() {
+		expectedVat = decimal.Zero
 	}
 	ledger, err := storeutil.QueryNamedOne[struct {
 		V decimal.Decimal `db:"v"`
@@ -321,21 +352,25 @@ func (s *Store) opexAccrualDriftCaveat(ctx context.Context, month time.Time) (st
 	if err != nil {
 		return "", fmt.Errorf("accounting: opex drift ledger sum: %w", err)
 	}
-	if table.V.Sub(ledger.V).Abs().Cmp(decimal.NewFromFloat(0.01)) < 0 {
+	if expectedVat.Sub(ledger.V).Abs().Cmp(decimal.NewFromFloat(0.01)) < 0 {
 		return "", nil
 	}
 	return fmt.Sprintf(
-		"opex input VAT drift %s: opex lines carry %s EUR but the posted 2080 accrual holds %s EUR — a line changed after close or before the worker's tick; reopen the period and let it repost before filing",
-		m.Format("2006-01"), table.V.StringFixed(2), ledger.V.StringFixed(2)), nil
+		"opex input VAT drift %s: the month's opex lines imply %s EUR of recoverable input VAT but the posted 2080 accrual holds %s EUR — a line changed after close or before the worker's tick; reopen the period and let it repost before filing",
+		m.Format("2006-01"), expectedVat.StringFixed(2), ledger.V.StringFixed(2)), nil
 }
 
 // VatSalesEvidenceFiling returns the JPK sales-register rows in PLN with filing semantics: rows
 // split sale vs refund (a B2B refund becomes its own corrective row), stamped and converted at the
 // tax-point day (payment for sales, refund date for refunds), and carrying the buyer's name
-// (billing company, else first+last name).
+// (billing company, else first+last name). It also returns the month's WNT / import self-charge rows
+// (regime = entity.InputVatRegime wnt / import): a reverse charge is declared on the OUTPUT side of
+// the register (K_23..K_26), and without those rows the JPK contradicted the VAT-UE statement, which
+// declares the same WNT acquisitions.
 func (s *Store) VatSalesEvidenceFiling(ctx context.Context, month time.Time) ([]entity.AcctVatSalesRow, error) {
 	from := firstOfMonthUTC(month)
 	to := from.AddDate(0, 1, 0)
+	params := map[string]any{"from": from.Format(dateLayout), "to": to.Format(dateLayout)}
 
 	pln, err := s.loadFxSeries(ctx, "PLN")
 	if err != nil {
@@ -366,11 +401,43 @@ func (s *Store) VatSalesEvidenceFiling(ctx context.Context, month time.Time) ([]
 		  AND co.vat_regime IN ('pl_domestic','wdt','export')
 		GROUP BY co.uuid, co.placed, co.buyer_vat_id, co.vat_regime,
 		         DATE(e.occurred_at), (e.source_type = 'order_refund'), buyer_name
-		ORDER BY tax_point, co.uuid`,
-		map[string]any{"from": from.Format(dateLayout), "to": to.Format(dateLayout)})
+		ORDER BY tax_point, co.uuid`, params)
 	if err != nil {
 		return nil, fmt.Errorf("accounting: filing sales evidence: %w", err)
 	}
+
+	// WNT / import (art. 33a) self-charge: the reverse-charge OUTPUT leg (2070 credit) against the
+	// material's net base (1110 debit), per receipt document. It belongs in the sales register
+	// (K_23/K_24, K_25/K_26) with the SUPPLIER as counterparty, while its deductible leg is a
+	// purchase row — that is how the declaration's P_23..P_26 stay evidenced and how the JPK agrees
+	// with the VAT-UE statement built from the same movements. The self-charge posts Dr 2080 / Cr
+	// 2070 with one amount (rule M1), so this VAT equals the input claimed on the purchase side.
+	// domestic_uk is NOT here: it is a different jurisdiction (UK return).
+	selfCharge, err := storeutil.QueryListNamed[entity.AcctVatSalesRow](ctx, s.DB, `
+		SELECT COALESCE(NULLIF(m.supplier_doc, ''), CONCAT('MOV-', m.id)) AS uuid,
+		       DATE(e.occurred_at) AS placed,
+		       NULLIF(COALESCE(sup.vat_id, ''), '') AS buyer_vat_id,
+		       m.input_vat_regime AS regime,
+		       DATE(e.occurred_at) AS tax_point,
+		       FALSE AS is_refund,
+		       NULLIF(COALESCE(sup.name, ''), '') AS buyer_name,
+		       COALESCE(SUM(CASE WHEN a.code = '1110' AND l.side = 'debit' THEN l.amount ELSE 0 END), 0) AS net,
+		       COALESCE(SUM(CASE WHEN a.code = '2070' AND l.side = 'credit' THEN l.amount ELSE 0 END), 0) AS vat
+		FROM acct_journal_line l
+		JOIN acct_journal_entry e ON e.id = l.entry_id
+		JOIN acct_account a ON a.id = l.account_id
+		JOIN material_stock_movement m ON `+movementKeyMatch+`
+		LEFT JOIN supplier sup ON sup.id = m.supplier_id
+		WHERE e.source_type = 'material_receipt'
+		  AND e.occurred_at >= :from AND e.occurred_at < :to
+		  AND m.input_vat_regime IN ('wnt', 'import')
+		GROUP BY uuid, DATE(e.occurred_at), buyer_vat_id, m.input_vat_regime, buyer_name
+		ORDER BY tax_point, uuid`, params)
+	if err != nil {
+		return nil, fmt.Errorf("accounting: filing self-charge evidence: %w", err)
+	}
+	rows = append(rows, selfCharge...)
+
 	for i := range rows {
 		day := rows[i].TaxPointAt
 		net, ok1 := pln.fromEUR(rows[i].Net, day)
@@ -389,9 +456,11 @@ func (s *Store) VatSalesEvidenceFiling(ctx context.Context, month time.Time) ([]
 }
 
 // VatPurchaseEvidenceFiling returns the JPK purchase-register rows (ewidencja zakupu) in PLN:
-// material receipts with an input VAT regime of domestic_pl (supplier + supplier_doc identity) and
-// register-backed OPEX lines. WNT/import self-charge purchases are deliberately NOT emitted here —
-// their input deduction pairs the self-charged output inside the declaration boxes.
+// material receipts whose input VAT is deductible in Poland — domestic_pl plus the WNT / import
+// (art. 33a) self-charge input legs, all with the supplier + supplier_doc identity a register row
+// needs — and register-backed OPEX lines. Every row lands in K_42/K_43 ("other purchases"), so the
+// rows sum to the declaration's P_42/P_43/P_48; the self-charge's OUTPUT leg is a sales-register row
+// (K_23..K_26). domestic_uk is excluded: it is reclaimed on the UK return, not the JPK.
 func (s *Store) VatPurchaseEvidenceFiling(ctx context.Context, month time.Time) ([]entity.AcctVatPurchaseRow, error) {
 	from := firstOfMonthUTC(month)
 	to := from.AddDate(0, 1, 0)
@@ -425,7 +494,7 @@ func (s *Store) VatPurchaseEvidenceFiling(ctx context.Context, month time.Time) 
 		LEFT JOIN supplier sup ON sup.id = m.supplier_id
 		WHERE e.source_type = 'material_receipt'
 		  AND e.occurred_at >= :from AND e.occurred_at < :to
-		  AND m.input_vat_regime = 'domestic_pl'
+		  AND m.input_vat_regime IN ('domestic_pl', 'wnt', 'import')
 		GROUP BY day, doc_no, sup_vat, sup_name`, params)
 	if err != nil {
 		return nil, fmt.Errorf("accounting: filing purchase receipts: %w", err)

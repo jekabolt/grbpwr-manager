@@ -33,7 +33,7 @@ type KodFormularza struct {
 
 // DeklPozycje are the VAT-7 boxes we can populate from the ledger. GRBPWR's regimes touch: domestic
 // 23% (P_19/P_20), intra-community supply / WDT (P_11), export (P_12), intra-community acquisition /
-// WNT self-charge (P_23/P_24), import of goods (P_25), and deductible input on other purchases
+// WNT self-charge (P_23/P_24), import of goods art. 33a (P_25/P_26), and deductible input on other purchases
 // (P_42/P_43). OSS and every UK figure are filed on their own returns and never appear here.
 type DeklPozycje struct {
 	P_11 *int64 `xml:"P_11,omitempty"` // WDT (intra-community supply) — net
@@ -68,24 +68,34 @@ func ptr(v int64) *int64 {
 	return &v
 }
 
-// BuildDeclaration maps the month's VAT-return aggregates onto the VAT-7 boxes. This is an
-// OUTPUT-SIDE declaration: sales and self-charged output VAT are declared, and the input/deduction
-// side (P_42/P_43/P_48) is left at zero for the accountant to merge from their purchase register — the
-// system does not capture every purchase invoice (nor the supplier NIP each deduction row needs), so
-// the accountant's input side is authoritative. P_48 = 0 keeps the file internally consistent with an
-// empty ZakupWiersz; P_51 therefore reports the output VAT before the accountant's input deduction.
+// BuildDeclaration maps the month's VAT-return aggregates onto the VAT-7 boxes. Every declared box is
+// backed by the evidence rows the same file carries: the output side from the sales register, the
+// deduction side (P_42/P_43/P_48) from the register-backed purchases only — domestic material
+// receipts, documented OPEX invoices and the WNT/import self-charge inputs. Input VAT the system
+// cannot evidence with a register row (ret.InputUnregistered) is deliberately left out and caveated,
+// so the declaration never claims more than the ewidencja proves.
 //
-// WNT/import self-charge is declared on BOTH sides normally, but with the input side deferred we
-// declare only its output leg here (P_24/P_26) — the accountant claims the matching input.
+// WNT/import self-charge is declared on BOTH sides: P_23/P_24 and P_25/P_26 for the self-charged
+// output, and its deductible leg inside P_42/P_43.
 func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
 	pDomesticVat := whole(ret.OutputDomestic)
 
-	// WNT/import self-charge is deliberately NOT declared here: the emitted registers carry no
-	// K_23..K_26 rows for it (VatPurchaseEvidenceFiling filters domestic_pl only), and a
-	// declaration box the file's own ewidencja cannot evidence fails the MF deklaracja↔ewidencja
-	// cross-check. Its output and input legs are equal, so P_51 is unaffected; the filing caveats
-	// name the amounts for the accountant to merge (review pass 1, H-1).
-	totalOutputVat := pDomesticVat
+	// WNT / import (art. 33a) self-charge IS declared: the file's own ewidencja now evidences it on
+	// both sides — VatSalesEvidenceFiling emits the K_23/K_24 and K_25/K_26 output rows and
+	// VatPurchaseEvidenceFiling the matching K_42/K_43 input rows — so the MF deklaracja↔ewidencja
+	// cross-check ties, and the JPK no longer contradicts the VAT-UE recapitulative statement,
+	// which declares the same WNT acquisitions (review pass 3; supersedes review pass 1 H-1, which
+	// dropped the boxes while the registers were still output-only).
+	//
+	// The self-charge posting is Dr 2080 / Cr 2070 with ONE amount (rule M1, internal/accounting/
+	// material.go), so each regime's self-charged output VAT equals its reclaimable input — which is
+	// why the output boxes are read off the input figures.
+	pWntVat := whole(ret.InputWnt)
+	pImportVat := whole(ret.InputImport)
+
+	// P_38 is the sum of the DECLARED boxes (the MF arithmetic check on the declaration), so it adds
+	// the already-rounded boxes instead of rounding the total.
+	totalOutputVat := pDomesticVat + pWntVat + pImportVat
 
 	// Input side (statutory review 13): the system now captures register-backed input VAT —
 	// domestic material receipts + documented OPEX invoices (ret.InputDomestic /
@@ -95,8 +105,13 @@ func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
 	// app's NetPayable formula exactly (output − all inputs). Undocumented opex input VAT is
 	// deliberately NOT here (ret.InputUnregistered, caveated) so the declaration always
 	// cross-checks with the register rows.
-	inputVat := whole(ret.InputDomestic)
-	inputNet := whole(ret.NetInputDomestic)
+	//
+	// Each component is rounded separately (rather than the combined figure) so the self-charge's two
+	// legs cancel EXACTLY: P_51 = whole(OutputDomestic) − whole(InputDomestic), the domestic payable,
+	// regardless of the WNT/import amounts. Rounding the sum instead could drift the payable by up to
+	// a złoty purely because a net-zero reverse charge happened in the month.
+	inputVat := whole(ret.InputDomestic) + pWntVat + pImportVat
+	inputNet := whole(ret.NetInputDomestic) + whole(ret.NetWnt) + whole(ret.NetImport)
 	payable := totalOutputVat - inputVat
 	var p51, p53 int64
 	if payable >= 0 {
@@ -115,6 +130,10 @@ func BuildDeclaration(ret *entity.AcctVatReturnPL) Deklaracja {
 			P_12: ptr(whole(ret.NetExport)),
 			P_19: ptr(whole(ret.NetDomestic)),
 			P_20: ptr(pDomesticVat),
+			P_23: ptr(whole(ret.NetWnt)),
+			P_24: ptr(pWntVat),
+			P_25: ptr(whole(ret.NetImport)),
+			P_26: ptr(pImportVat),
 			P_38: totalOutputVat,
 			P_42: ptr(inputNet),
 			P_43: ptr(inputVat),

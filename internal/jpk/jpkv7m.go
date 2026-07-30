@@ -16,8 +16,8 @@ const schemaNamespace = "http://crd.gov.pl/wzor/2021/12/27/11148/"
 const nazwaSystemu = "GRBPWR"
 
 // JPK is the JPK_V7M filing envelope: header, taxpayer, the VAT-7 declaration, and the sales/purchase
-// evidence. GRBPWR files an output-side register (sales); the purchase register is left empty for the
-// accountant to merge, so ZakupCtrl reports zero rows.
+// evidence. Both registers are emitted; the purchase side carries only register-backed deductions, so
+// ZakupCtrl's PodatekNaliczony always equals the declaration's P_48.
 type JPK struct {
 	XMLName    xml.Name   `xml:"JPK"`
 	Xmlns      string     `xml:"xmlns,attr"`
@@ -57,9 +57,9 @@ type OsobaNiefizyczna struct {
 	Telefon    string `xml:"Telefon,omitempty"`
 }
 
-// Ewidencja holds the evidence rows and their control totals. The purchase side is intentionally empty
-// (the accountant merges it); ZakupCtrl still reports zero rows / zero input VAT so the file is valid
-// and internally consistent with the output-only declaration (P_48 = 0).
+// Ewidencja holds the evidence rows and their control totals. Both control blocks tie to the
+// declaration: SprzedazCtrl.PodatekNalezny to P_38 and ZakupCtrl.PodatekNaliczony to P_48. A month
+// with no purchases legitimately reports zero rows / zero input VAT.
 type Ewidencja struct {
 	SprzedazWiersz []SprzedazWiersz `xml:"SprzedazWiersz"`
 	SprzedazCtrl   SprzedazCtrl     `xml:"SprzedazCtrl"`
@@ -67,7 +67,7 @@ type Ewidencja struct {
 	ZakupCtrl      ZakupCtrl        `xml:"ZakupCtrl"`
 }
 
-// ZakupCtrl is the purchase-register control block. Zero here (output-only filing).
+// ZakupCtrl is the purchase-register control block: row count + total deductible input VAT (= P_48).
 type ZakupCtrl struct {
 	LiczbaWierszyZakupow int    `xml:"LiczbaWierszyZakupow"`
 	PodatekNaliczony     string `xml:"PodatekNaliczony"`

@@ -17,7 +17,9 @@ func TestBuildDeclarationBalances(t *testing.T) {
 		NetExport:           d("300"),
 		NetWnt:              d("200"),
 		InputWnt:            d("46"), // WNT self-charge: output VAT == input VAT
-		OutputWntSelfCharge: d("46"),
+		NetImport:           d("100"),
+		InputImport:         d("23"), // import art. 33a self-charge, same identity
+		OutputWntSelfCharge: d("69"),
 		NetInputDomestic:    d("400"),
 		InputDomestic:       d("92"),
 		// NetPayable as the store computes it: output + self-charge − all input.
@@ -27,24 +29,29 @@ func TestBuildDeclarationBalances(t *testing.T) {
 	dec := BuildDeclaration(ret)
 	p := dec.Pozycje
 
-	// Output: domestic only — WNT/import self-charge is deliberately NOT declared (the file
-	// carries no K_23..K_26 evidence for it; its legs cancel, so P_51 is unchanged — H-1).
-	if p.P_38 != 230 {
-		t.Errorf("P_38 (total output VAT) = %d, want 230 (domestic only)", p.P_38)
+	// Output: domestic 23% + both reverse-charge self-assessments. P_38 is the sum of the declared
+	// boxes (P_20 + P_24 + P_26), and each of those is evidenced by a sales-register row, so the
+	// declaration matches the ewidencja AND the VAT-UE statement built from the same acquisitions.
+	if p.P_38 != 299 {
+		t.Errorf("P_38 (total output VAT) = %d, want 299 (230 domestic + 46 WNT + 23 import)", p.P_38)
 	}
-	if p.P_23 != nil || p.P_24 != nil || p.P_25 != nil || p.P_26 != nil {
-		t.Errorf("WNT/import boxes must be unset (un-evidenced): P_23=%v P_24=%v P_25=%v P_26=%v", p.P_23, p.P_24, p.P_25, p.P_26)
+	if p.P_23 == nil || *p.P_23 != 200 || p.P_24 == nil || *p.P_24 != 46 {
+		t.Errorf("WNT boxes = P_23:%v P_24:%v, want 200 / 46", p.P_23, p.P_24)
 	}
-	// Input side is register-backed only: P_43 = 92 (domestic incl. documented opex), P_42 = 400;
-	// P_48 = P_43; P_51 = 230 − 92 = 138 — exactly the store's NetPayable (the WNT legs cancel).
-	if p.P_48 != 92 {
-		t.Errorf("P_48 (input VAT) = %d, want 92", p.P_48)
+	if p.P_25 == nil || *p.P_25 != 100 || p.P_26 == nil || *p.P_26 != 23 {
+		t.Errorf("import boxes = P_25:%v P_26:%v, want 100 / 23", p.P_25, p.P_26)
 	}
-	if p.P_43 == nil || *p.P_43 != 92 {
-		t.Errorf("P_43 (input VAT, other purchases) = %v, want 92", p.P_43)
+	// Input side is register-backed: P_43 = 92 domestic (incl. documented opex) + 46 WNT + 23 import;
+	// P_42 = 400 + 200 + 100; P_48 = P_43. P_51 = 299 − 161 = 138 — the store's NetPayable, i.e. the
+	// self-charge legs cancel EXACTLY and never move the payable.
+	if p.P_48 != 161 {
+		t.Errorf("P_48 (input VAT) = %d, want 161", p.P_48)
 	}
-	if p.P_42 == nil || *p.P_42 != 400 {
-		t.Errorf("P_42 (input net, other purchases) = %v, want 400", p.P_42)
+	if p.P_43 == nil || *p.P_43 != 161 {
+		t.Errorf("P_43 (input VAT, other purchases) = %v, want 161", p.P_43)
+	}
+	if p.P_42 == nil || *p.P_42 != 700 {
+		t.Errorf("P_42 (input net, other purchases) = %v, want 700", p.P_42)
 	}
 	if p.P_51 == nil || *p.P_51 != 138 {
 		t.Errorf("P_51 (payable) = %v, want 138 (= P_38 − P_48 = NetPayable)", p.P_51)
@@ -62,6 +69,19 @@ func TestBuildDeclarationBalances(t *testing.T) {
 	if p.P_19 == nil || *p.P_19 != 1000 {
 		t.Errorf("P_19 (domestic net) = %v, want 1000", p.P_19)
 	}
-	// P_24 (WNT self-charge) is deliberately unset now — asserted with the other WNT/import boxes
-	// above (H-1: un-evidenced boxes are not declared).
+}
+
+// A month with no reverse charge must leave P_23..P_26 unset (omitempty) — the boxes are declared
+// only when there is something to declare.
+func TestBuildDeclarationNoSelfCharge(t *testing.T) {
+	p := BuildDeclaration(&entity.AcctVatReturnPL{
+		NetDomestic: d("1000"), OutputDomestic: d("230"),
+		NetInputDomestic: d("400"), InputDomestic: d("92"),
+	}).Pozycje
+	if p.P_23 != nil || p.P_24 != nil || p.P_25 != nil || p.P_26 != nil {
+		t.Errorf("no WNT/import in the month, boxes must stay unset: P_23=%v P_24=%v P_25=%v P_26=%v", p.P_23, p.P_24, p.P_25, p.P_26)
+	}
+	if p.P_38 != 230 || p.P_48 != 92 {
+		t.Errorf("P_38/P_48 = %d/%d, want 230/92", p.P_38, p.P_48)
+	}
 }

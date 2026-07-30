@@ -91,6 +91,7 @@ func EntityMemberToPb(m *entity.Member, displayName string) *pb_admin.Member {
 		CreatedAt:               timestamppb.New(a.CreatedAt),
 		BirthDate:               nullTimeToPb(a.BirthDate),
 		LastOrderDate:           nullTimeToPb(m.LastOrderDate),
+		EmailLanguage:           emailLang,
 	}
 	if a.Phone.Valid {
 		pb.Phone = a.Phone.String

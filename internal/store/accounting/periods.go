@@ -176,35 +176,67 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("%w: %d opex line(s) in %s carry VAT without an invoice number/date — add the doc identity (or clear the VAT) so the JPK register can evidence the deduction", entity.ErrAcctPeriodNotReady, undocVat, m.Format("2006-01"))
 	}
 
-	// 3f) every tax-point day in the month needs a PLN D-1 reference rate, so a CLOSED month is
+	// 3f) every day a filing converts on needs a stored D-1 reference rate, so a CLOSED month is
 	//     guaranteed filable (the exports fail loudly on missing rates — better to learn at close
-	//     than at the filing deadline; review pass 2, M-2b).
-	taxDays, err := storeutil.QueryListNamed[struct {
-		Day time.Time `db:"day"`
-	}](ctx, s.DB, `
+	//     than at the filing deadline; review pass 2, M-2b). Two currencies, two day sets:
+	//
+	//     PLN (JPK_V7M) — the order/material tax points PLUS the conversion day of every non-PLN opex
+	//       line the PL filing converts, COALESCE(doc_date, month-end) exactly as
+	//       GetVatReturnPLFiling reads it: a doc_date can fall on a day with no journal entry at all
+	//       (a service invoice), or even outside the month for a late-dated invoice, which the
+	//       journal-only day set never saw. An uncosted line (no base figures) is skipped by the
+	//       filing itself, so it is not a rate dependency here either.
+	//     GBP (UK return) — only the UK-relevant days (uk_stock_domestic sales, domestic_uk receipts,
+	//       non-GBP domestic_uk opex), so a month with no UK activity is never blocked on GBP. Every
+	//       month of a quarter closing clean therefore means the quarterly return can be built.
+	//
+	//     (review pass 3: the gate used to check PLN journal days only, so a late-dated opex invoice
+	//     or a missing GBP series still surfaced at the filing deadline.)
+	plnDays, err := s.fxRequiredDays(ctx, `
 		SELECT DISTINCT DATE(occurred_at) AS day
 		FROM acct_journal_entry
 		WHERE occurred_at >= :from AND occurred_at < :to
-		  AND source_type IN ('order_sale','order_prepayment','order_refund','material_receipt')`,
+		  AND source_type IN ('order_sale','order_prepayment','order_refund','material_receipt')
+		UNION
+		SELECT DISTINCT COALESCE(doc_date, LAST_DAY(:from)) AS day
+		FROM opex_line
+		WHERE month = :from AND vat_amount IS NOT NULL AND vat_regime = 'domestic_pl'
+		  AND UPPER(currency) <> 'PLN'
+		  AND amount_base IS NOT NULL AND vat_amount_base IS NOT NULL`,
 		map[string]any{"from": from, "to": to})
 	if err != nil {
-		return fmt.Errorf("accounting: close period tax days: %w", err)
+		return fmt.Errorf("accounting: close period PLN tax days: %w", err)
 	}
-	if len(taxDays) > 0 {
-		pln, fxErr := s.loadFxSeries(ctx, "PLN")
-		if fxErr != nil {
-			return fxErr
-		}
-		var missingDays []string
-		for _, d := range taxDays {
-			if _, ok := pln.rateBefore(d.Day); !ok {
-				missingDays = append(missingDays, d.Day.Format(dateLayout))
-			}
-		}
-		if len(missingDays) > 0 {
-			sort.Strings(missingDays)
-			return fmt.Errorf("%w: no PLN reference rate stored for tax-point day(s) %s in %s — enable/backfill fxsync (costing_fx_rate) so the month stays filable", entity.ErrAcctPeriodNotReady, strings.Join(missingDays, ", "), m.Format("2006-01"))
-		}
+	if err := s.requireFxRates(ctx, "PLN", plnDays, m); err != nil {
+		return err
+	}
+
+	gbpDays, err := s.fxRequiredDays(ctx, `
+		SELECT DISTINCT DATE(e.occurred_at) AS day
+		FROM acct_journal_entry e
+		JOIN customer_order co ON `+orderKeyMatch+`
+		WHERE e.occurred_at >= :from AND e.occurred_at < :to
+		  AND e.source_type IN ('order_sale','order_prepayment','order_refund')
+		  AND co.vat_regime = 'uk_stock_domestic'
+		UNION
+		SELECT DISTINCT DATE(e.occurred_at) AS day
+		FROM acct_journal_entry e
+		JOIN material_stock_movement m ON `+movementKeyMatch+`
+		WHERE e.occurred_at >= :from AND e.occurred_at < :to
+		  AND e.source_type = 'material_receipt'
+		  AND m.input_vat_regime = 'domestic_uk'
+		UNION
+		SELECT DISTINCT COALESCE(doc_date, LAST_DAY(:from)) AS day
+		FROM opex_line
+		WHERE month = :from AND vat_amount IS NOT NULL AND vat_regime = 'domestic_uk'
+		  AND UPPER(currency) <> 'GBP'
+		  AND amount_base IS NOT NULL AND vat_amount_base IS NOT NULL`,
+		map[string]any{"from": from, "to": to})
+	if err != nil {
+		return fmt.Errorf("accounting: close period GBP tax days: %w", err)
+	}
+	if err := s.requireFxRates(ctx, "GBP", gbpDays, m); err != nil {
+		return err
 	}
 
 	// 4) the month's ledger is balanced (an invariant, but verified — it is the trust check).
@@ -234,6 +266,48 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("accounting: close period %s: %w", from, err)
 	}
 	return nil
+}
+
+// fxRequiredDays runs a day-set query for gate 3f. The query must return a single DATE column named
+// day; duplicates are harmless (the callers UNION distinct sets).
+func (s *Store) fxRequiredDays(ctx context.Context, query string, params map[string]any) ([]time.Time, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		Day time.Time `db:"day"`
+	}](ctx, s.DB, query, params)
+	if err != nil {
+		return nil, err
+	}
+	days := make([]time.Time, 0, len(rows))
+	for _, r := range rows {
+		days = append(days, r.Day)
+	}
+	return days, nil
+}
+
+// requireFxRates fails the close (entity.ErrAcctPeriodNotReady, naming the days) when any day in the
+// set has no stored D-1 reference rate for currency — the same lookup the filing exports do, so a
+// month that passes here cannot fail its export on a missing rate. An empty day set means the
+// currency is not needed for this month and is never checked.
+func (s *Store) requireFxRates(ctx context.Context, currency string, days []time.Time, month time.Time) error {
+	if len(days) == 0 {
+		return nil
+	}
+	series, err := s.loadFxSeries(ctx, currency)
+	if err != nil {
+		return err
+	}
+	var missingDays []string
+	for _, d := range days {
+		if _, ok := series.rateBefore(d); !ok {
+			missingDays = append(missingDays, d.Format(dateLayout))
+		}
+	}
+	if len(missingDays) == 0 {
+		return nil
+	}
+	sort.Strings(missingDays)
+	return fmt.Errorf("%w: no %s reference rate stored for tax-point day(s) %s in %s — enable/backfill fxsync (costing_fx_rate) so the month stays filable",
+		entity.ErrAcctPeriodNotReady, currency, strings.Join(missingDays, ", "), month.Format("2006-01"))
 }
 
 // ReopenPeriod re-opens a closed month (creating the row open if it did not exist), clearing the
