@@ -173,6 +173,20 @@ envs:
 - key: MAILER_TRANSACTIONAL_RESERVE_TOKENS
   scope: RUN_TIME
   value: "1"
+# Allowlist for admin campaign test sends (comma-separated, matched case-insensitively against the
+# normalized address; no wildcards). MUST stay non-empty: validateCampaignTestRecipients only enforces
+# the allowlist when it has entries, so an empty/absent value is fail-OPEN and lets an admin fire test
+# sends at arbitrary external addresses from the production Resend sending domain.
+- key: MAILER_TEST_RECIPIENTS
+  scope: RUN_TIME
+  value: jekabolt2@gmail.com
+# Per-recipient transactional email localization (email_language -> order locale -> default_language
+# -> en), backed by migrations 0215/0216. When false the mailer short-circuits to "en" and every mail
+# renders English regardless of the stored preference. Set to "false" and redeploy to roll the feature
+# back without a code change.
+- key: MAILER_LOCALIZATION_ENABLED
+  scope: RUN_TIME
+  value: "true"
 - key: CAMPAIGN_DISPATCH_WORKER_INTERVAL
   scope: RUN_TIME
   value: 2s
@@ -199,10 +213,31 @@ envs:
   type: SECRET
   value: EV[1:LGACthmLZ9j7dxcDNHm0Qb5TCzq1c2Ry:tOJ+iArxiTSu120LFts+Ndv03UyvjS1JRPUgEElDM/HvzsCzq5om5cbu3K6yxyQasQ3opcxq]
 # MAILER_UNSUBSCRIBE_PEPPER keys the per-recipient one-click List-Unsubscribe
-# token. Set it as a SECRET in the DO dashboard with a strong random value (it will
-# be stored encrypted as EV[...]). It is intentionally NOT committed with a value:
-# a placeholder would be a publicly-known pepper. Until set, the app fails closed —
-# no List-Unsubscribe header is emitted and the unsubscribe endpoint returns 503.
+# token. Declared here so the requirement is visible, but intentionally committed
+# EMPTY: a placeholder would be a publicly-known pepper. Set the real value as a
+# SECRET in the DO dashboard with a strong random string (DO stores it encrypted as
+# EV[...]) BEFORE the campaign feature is used on prod. Until it is set the app fails
+# closed — CampaignDispatchConfigured is false, so SendCampaignNow / ScheduleCampaign /
+# ResumeCampaign return FailedPrecondition, no List-Unsubscribe header is emitted and
+# the list-unsubscribe webhook returns 503.
+# CAUTION: because the committed value is empty, `doctl apps update --spec .do/app.yaml`
+# would overwrite a dashboard-set pepper with an empty string and invalidate every
+# unsubscribe link already mailed. Paste the EV[...] ciphertext back into this file
+# before ever applying the spec, or deploy with `doctl apps create-deployment` only.
+- key: MAILER_UNSUBSCRIBE_PEPPER
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
+# OpenRouter powers two AI features: AutoTranslateEmailCampaign (campaign builder) and
+# GenerateTechCardOperations (tech-card drafting). Both hard-fail with FailedPrecondition
+# "translation is not configured (OPENROUTER_API_KEY unset)" while the key is blank; boot is
+# unaffected (app.go builds a nil-key-tolerant client). MODEL / BASE_URL / HTTP_TIMEOUT are
+# optional overrides and are deliberately left to the code defaults. Same empty-SECRET caveat
+# as above applies when applying this spec with `doctl apps update`.
+- key: OPENROUTER_API_KEY
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
 - key: ORDER_CLEANUP_WORKER_INTERVAL
   scope: RUN_TIME
   value: 15m
