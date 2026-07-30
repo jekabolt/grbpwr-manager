@@ -5511,6 +5511,10 @@ message Member {
   google.protobuf.Timestamp birth_date = 14;
   google.protobuf.Timestamp created_at = 15;
   google.protobuf.Timestamp last_order_date = 16;
+  // email_language is the recipient locale this member's emails render in — the
+  // effective value (explicit email_language, else default_language), canonicalized
+  // (cn→zh, kr→ko). Empty means the account has no preference and falls back to en.
+  string email_language = 17;
 }
 
 message ListMembersRequest {

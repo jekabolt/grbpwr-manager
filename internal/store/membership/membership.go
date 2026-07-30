@@ -232,7 +232,7 @@ func (s *Store) UpdateTierConfig(ctx context.Context, upd entity.TierConfigUpdat
 const memberSelectCols = `
 	sa.id, sa.email, sa.first_name, sa.last_name, sa.birth_date, sa.shopping_preference,
 	sa.phone, sa.account_tier, sa.subscribe_newsletter, sa.subscribe_new_arrivals, sa.subscribe_events,
-	sa.default_country, sa.default_language, sa.status, sa.tier_upgrade_date, sa.next_review_date,
+	sa.default_country, sa.default_language, sa.email_language, sa.status, sa.tier_upgrade_date, sa.next_review_date,
 	sa.deleted_at, sa.created_at, sa.updated_at`
 
 type memberRow struct {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/shopspring/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -62,6 +63,17 @@ func EntityMemberToPb(m *entity.Member, displayName string) *pb_admin.Member {
 			name += " "
 		}
 		name += a.LastName
+	}
+	// Effective email locale (explicit email_language, else default_language),
+	// canonicalized (cn→zh, kr→ko) to match what the mailer actually renders.
+	emailLang := ""
+	if a.EmailLanguage.Valid && a.EmailLanguage.String != "" {
+		emailLang = a.EmailLanguage.String
+	} else if a.DefaultLanguage.Valid {
+		emailLang = a.DefaultLanguage.String
+	}
+	if emailLang != "" {
+		emailLang = localeutil.Canonical(emailLang)
 	}
 	pb := &pb_admin.Member{
 		UserId:                  int64(a.ID),
