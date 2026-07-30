@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/store/campaign"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -24,6 +26,9 @@ func campaignTransitionError(err error) error {
 		return status.Error(codes.NotFound, "email campaign not found")
 	case errors.Is(err, campaign.ErrInvalidCampaignTransition):
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
+	// The launch freeze compiles the attached segment; say so instead of a bare 500.
+	case isSegmentPredicateError(err):
+		return status.Errorf(codes.FailedPrecondition, "campaign audience segment is invalid: %v", err)
 	default:
 		return status.Error(codes.Internal, "email campaign transition failed")
 	}
@@ -38,7 +43,15 @@ func (s *Server) validateEmailCampaignLaunch(ctx context.Context, campaignID int
 		}
 		return status.Error(codes.Internal, "can't validate email campaign launch")
 	}
-	return validateEmailCampaignLaunchPreconditions(value, cache.GetLanguages())
+	if err := validateEmailCampaignLaunchPreconditions(value, cache.GetLanguages()); err != nil {
+		return err
+	}
+	// The dispatcher builds this envelope once per batch and cannot make progress
+	// without it, so an unusable sender must block the launch, not the queue.
+	if _, _, err := s.mailer.CampaignEnvelope(value); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%v", err)
+	}
+	return nil
 }
 
 func validateEmailCampaignLaunchPreconditions(
@@ -48,15 +61,41 @@ func validateEmailCampaignLaunchPreconditions(
 	if campaign == nil {
 		return status.Error(codes.Internal, "can't validate email campaign launch")
 	}
+	hasDefault := false
 	for i := range languages {
 		if languages[i].IsDefault {
-			return nil
+			hasDefault = true
+			break
 		}
 	}
-	return status.Error(
-		codes.FailedPrecondition,
-		"email campaigns cannot be launched because no default language is configured",
-	)
+	if !hasDefault {
+		return status.Error(
+			codes.FailedPrecondition,
+			"email campaigns cannot be launched because no default language is configured",
+		)
+	}
+	// The dispatcher resolves the subject per recipient language and a recipient whose
+	// subject comes out empty is quarantined as failed, so a launch with an unresolvable
+	// subject would burn the audience and still report the campaign as sent.
+	for i := range campaign.Variants {
+		variant := &campaign.Variants[i]
+		for j := range languages {
+			if strings.TrimSpace(campaignrender.SelectSubject(
+				variant.SubjectI18n,
+				languages[j].Id,
+				languages,
+			)) != "" {
+				continue
+			}
+			return status.Errorf(
+				codes.FailedPrecondition,
+				"campaign variant %q has no subject for language %q",
+				variant.Label,
+				languages[j].Code,
+			)
+		}
+	}
+	return nil
 }
 
 // auditCampaignTransition emits a durable platform log entry for every manual

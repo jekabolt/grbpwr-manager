@@ -58,11 +58,25 @@ Rules:
 - Match the source casing convention: if the source is ALL-CAPS, output ALL-CAPS where the target script has letter case (CJK has no case).
 - Do not add explanations. Return ONLY the requested JSON object — no prose, no markdown code fences.`
 
+// maxItemsPerRequest bounds how many strings travel in one model request. A single unbounded
+// request is the difference between "flaky" and "always fails": provider output limits and the
+// 60s HTTP timeout make a large batch fail deterministically, so long campaigns could never be
+// translated at all.
+const maxItemsPerRequest = 25
+
+// item is one string queued for translation, paired with its index in the caller's slice.
+type item struct {
+	idx  int
+	text string
+}
+
 // Translate translates each item from sourceLocale to targetLocale, returning a slice of the same
 // length and order. Empty items and a same-locale request pass through unchanged. Preserves inline
 // HTML, URLs, {{...}} placeholders and brand terms; if the model returns markup whose tag multiset
-// differs from the source (or drops a placeholder), that item degrades to the SOURCE text rather
-// than shipping broken HTML. All items are sent in one JSON-in/JSON-out call.
+// differs from the source (or omits/drops an item), that item degrades to the SOURCE text rather
+// than shipping broken HTML or voiding the batch. Items are sent in chunks of maxItemsPerRequest;
+// on error the partially translated slice is returned alongside it, so a caller may keep the
+// chunks that did land.
 func (s *Service) Translate(ctx context.Context, sourceLocale, targetLocale string, items []string) ([]string, error) {
 	if !s.Enabled() {
 		return nil, openrouter.ErrNotConfigured
@@ -71,27 +85,39 @@ func (s *Service) Translate(ctx context.Context, sourceLocale, targetLocale stri
 	if strings.EqualFold(sourceLocale, targetLocale) {
 		return out, nil
 	}
-	type pair struct {
-		idx  int
-		text string
-	}
-	var todo []pair
+	var todo []item
 	for i, it := range items {
 		if strings.TrimSpace(it) != "" {
-			todo = append(todo, pair{i, it})
+			todo = append(todo, item{i, it})
 		}
 	}
 	if len(todo) == 0 {
 		return out, nil
 	}
+	for start := 0; start < len(todo); start += maxItemsPerRequest {
+		end := min(start+maxItemsPerRequest, len(todo))
+		if err := s.translateChunk(ctx, sourceLocale, targetLocale, todo[start:end], out); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
 
-	inItems := make([]map[string]any, len(todo))
-	for i, p := range todo {
+// translateChunk translates one bounded chunk in a single JSON-in/JSON-out call and writes the
+// accepted results into out at each item's original index.
+func (s *Service) translateChunk(
+	ctx context.Context,
+	sourceLocale, targetLocale string,
+	chunk []item,
+	out []string,
+) error {
+	inItems := make([]map[string]any, len(chunk))
+	for i, p := range chunk {
 		inItems[i] = map[string]any{"id": i, "text": p.text}
 	}
 	inJSON, err := json.Marshal(map[string]any{"items": inItems})
 	if err != nil {
-		return nil, fmt.Errorf("translate: marshal items: %w", err)
+		return fmt.Errorf("translate: marshal items: %w", err)
 	}
 	user := fmt.Sprintf(
 		"Translate the \"text\" of each item from %s to %s.\nReturn ONLY a JSON object of the form {\"items\":[{\"id\":<same id>,\"text\":\"<translation>\"}]} containing EVERY id.\n\n%s",
@@ -100,24 +126,26 @@ func (s *Service) Translate(ctx context.Context, sourceLocale, targetLocale stri
 
 	content, err := s.client.Complete(ctx, systemPrompt, user, true)
 	if err != nil {
-		return nil, fmt.Errorf("translate %s→%s: %w", sourceLocale, targetLocale, err)
+		return fmt.Errorf("translate %s→%s: %w", sourceLocale, targetLocale, err)
 	}
-	translated, err := parseItems(content, len(todo))
+	translated, err := parseItems(content, len(chunk))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	for i, p := range todo {
+	for i, p := range chunk {
 		candidate := strings.TrimSpace(translated[i])
 		if candidate == "" || !preservesMarkup(p.text, translated[i]) {
 			continue // keep source text for this field (safe degrade)
 		}
 		out[p.idx] = translated[i]
 	}
-	return out, nil
+	return nil
 }
 
-// parseItems extracts the JSON object from model content and maps id→text, requiring every id in
-// [0,n) to be present.
+// parseItems extracts the JSON object from model content and maps id→text. An id the model omitted
+// comes back empty, which the caller degrades to the source text for that one string — dropping a
+// single id must not void a whole (already paid for) batch. Output holding none of the requested
+// ids is a broken response and is an error.
 func parseItems(content string, n int) ([]string, error) {
 	js := extractJSONObject(content)
 	if js == "" {
@@ -133,18 +161,16 @@ func parseItems(content string, n int) ([]string, error) {
 		return nil, fmt.Errorf("translate: model output not valid JSON: %w", err)
 	}
 	out := make([]string, n)
-	seen := make([]bool, n)
+	seen := 0
 	for _, it := range parsed.Items {
-		if it.ID < 0 || it.ID >= n {
+		if it.ID < 0 || it.ID >= n || out[it.ID] != "" {
 			continue
 		}
 		out[it.ID] = it.Text
-		seen[it.ID] = true
+		seen++
 	}
-	for i := range seen {
-		if !seen[i] {
-			return nil, fmt.Errorf("translate: model output missing item id %d of %d", i, n)
-		}
+	if seen == 0 {
+		return nil, fmt.Errorf("translate: model output contained none of the %d requested item ids", n)
 	}
 	return out, nil
 }

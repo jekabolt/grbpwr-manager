@@ -432,12 +432,15 @@ func ConvertPbEmailCampaignInsertToEntity(in *pb_common.EmailCampaignInsert) (*e
 	}
 	var ab entity.ABConfig
 	if in.AbConfig != nil {
+		// WinnerVariantID is deliberately not copied: it is server-owned (only A/B
+		// promotion writes it) and the read shape round-trips it, so accepting it here
+		// would let a "duplicate this campaign" flow bake a stale winner into a draft
+		// and stall its promotion permanently.
 		ab = entity.ABConfig{
 			Enabled:              in.AbConfig.Enabled,
 			Dimension:            convertPBABDimension(in.AbConfig.Dimension),
 			TestPct:              int(in.AbConfig.TestPct),
 			DecisionAfterMinutes: int(in.AbConfig.DecisionAfterMinutes),
-			WinnerVariantID:      campaignIntPtr(in.AbConfig.WinnerVariantId),
 		}
 	}
 	return &entity.EmailCampaignInsert{

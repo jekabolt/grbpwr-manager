@@ -30,13 +30,13 @@ func TestValidateCampaignTestRecipientsAllowlist(t *testing.T) {
 		require.Contains(t, err.Error(), "outside@example.com")
 	})
 
-	t.Run("empty allowlist fails open", func(t *testing.T) {
-		recipients, err := validateCampaignTestRecipients(
+	t.Run("unconfigured allowlist fails closed", func(t *testing.T) {
+		_, err := validateCampaignTestRecipients(
 			[]string{" outside@example.com "},
 			parseCampaignTestRecipientAllowlist(""),
 		)
-		require.NoError(t, err)
-		require.Equal(t, []string{"outside@example.com"}, recipients)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		require.Contains(t, err.Error(), "MAILER_TEST_RECIPIENTS")
 	})
 }
 

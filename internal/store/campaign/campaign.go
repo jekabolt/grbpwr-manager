@@ -107,10 +107,6 @@ func campaignParams(campaign *entity.EmailCampaignInsert, body []byte) map[strin
 	if campaign.SegmentID != nil {
 		segmentID = *campaign.SegmentID
 	}
-	var winnerVariantID any
-	if campaign.ABConfig.WinnerVariantID != nil {
-		winnerVariantID = *campaign.ABConfig.WinnerVariantID
-	}
 	return map[string]any{
 		"name":                      campaign.Name,
 		"status":                    string(entity.EmailCampaignStatusDraft),
@@ -126,8 +122,10 @@ func campaignParams(campaign *entity.EmailCampaignInsert, body []byte) map[strin
 		"ab_dimension":              abDimension,
 		"ab_test_pct":               campaign.ABConfig.TestPct,
 		"ab_decision_after_minutes": campaign.ABConfig.DecisionAfterMinutes,
-		"ab_winner_variant_id":      winnerVariantID,
-		"created_by":                campaign.CreatedBy,
+		// status, schedule_at and ab_winner_variant_id are server-owned: an upsert only
+		// ever writes a draft, and a draft has no winner (promotion is the only writer).
+		"ab_winner_variant_id": nil,
+		"created_by":           campaign.CreatedBy,
 	}
 }
 
@@ -245,7 +243,8 @@ func syncCampaignVariants(ctx context.Context, db dependency.DB, campaignID int,
 			"label":       variant.Label,
 			"subject":     subjectJSON,
 			"body":        bodyJSON,
-			"is_winner":   variant.IsWinner,
+			// Server-owned, like ab_winner_variant_id: only A/B promotion marks a winner.
+			"is_winner": false,
 		}
 
 		// Resolve the target row: an explicit id, else an existing row with the same (unique)

@@ -301,6 +301,20 @@ func resolveBlock(
 	warn := func(reason string) (blockView, []Warning, bool) {
 		return blockView{}, []Warning{{BlockIndex: blockIndex, Reason: reason}}, false
 	}
+	// Non-fatal warnings: the block still renders, but something authored was dropped.
+	var warnings []Warning
+	// rejectedURL reports an authored URL the sanitizer refused. Left unreported these vanish
+	// silently — a social icon disappears, an image loses its link — and the campaign ships to the
+	// whole segment with dead links that preview showed as a gap.
+	rejectedURL := func(field, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		warnings = append(warnings, Warning{
+			BlockIndex: blockIndex,
+			Reason:     fmt.Sprintf("%s URL %q is not a usable https/mailto link and was dropped", field, value),
+		})
+	}
 
 	switch block.Type {
 	case entity.EmailBlockTypeHeader:
@@ -325,7 +339,11 @@ func resolveBlock(
 		if !ok {
 			return warn(fmt.Sprintf("image_link media %d is missing", block.ImageLink.MediaID))
 		}
-		view.ImageLink = &imageLinkView{Media: mediaToView(media, ""), URL: safeURL(block.ImageLink.URL), Aspect: normalizeAspect(block.ImageLink.Aspect)}
+		imageURL := safeURL(block.ImageLink.URL)
+		if imageURL == "" {
+			rejectedURL("image_link", block.ImageLink.URL)
+		}
+		view.ImageLink = &imageLinkView{Media: mediaToView(media, ""), URL: imageURL, Aspect: normalizeAspect(block.ImageLink.Aspect)}
 	case entity.EmailBlockTypeRichText:
 		view.RichHTML = ""
 	case entity.EmailBlockTypeProductCard:
@@ -346,7 +364,6 @@ func resolveBlock(
 			return warn("product_grid payload is missing")
 		}
 		var products []productView
-		var warnings []Warning
 		for _, id := range block.ProductGrid.ProductIDs {
 			product, ok := r.getProduct(ctx, id)
 			if !ok {
@@ -416,7 +433,9 @@ func resolveBlock(
 		left, leftWarnings := resolveBlocks(ctx, r, block.TwoColumn.Left, languageID, langs, view.BackgroundColor, depth+1, blockIndex)
 		right, rightWarnings := resolveBlocks(ctx, r, block.TwoColumn.Right, languageID, langs, view.BackgroundColor, depth+1, blockIndex)
 		view.TwoColumn = &twoColumnView{Left: left, Right: right}
-		return view, append(leftWarnings, rightWarnings...), true
+		warnings = append(warnings, leftWarnings...)
+		warnings = append(warnings, rightWarnings...)
+		return view, warnings, true
 	case entity.EmailBlockTypeSocialLinks:
 		if block.SocialLinks == nil {
 			return warn("social_links payload is missing")
@@ -425,6 +444,7 @@ func resolveBlock(
 		for _, link := range block.SocialLinks.Links {
 			url := safeURL(link.URL)
 			if url == "" {
+				rejectedURL("social_links "+link.Network, link.URL)
 				continue
 			}
 			label := strings.ToUpper(strings.TrimSpace(link.Network))
@@ -448,12 +468,16 @@ func resolveBlock(
 		if !ok {
 			return warn(fmt.Sprintf("video_thumb media %d is missing", block.VideoThumb.MediaID))
 		}
+		videoURL := safeURL(block.VideoThumb.VideoURL)
+		if videoURL == "" {
+			rejectedURL("video_thumb", block.VideoThumb.VideoURL)
+		}
 		view.VideoThumb = &videoThumbView{
 			Poster: mediaToView(media, ""),
-			URL:    safeURL(block.VideoThumb.VideoURL),
+			URL:    videoURL,
 		}
 	default:
 		return warn(fmt.Sprintf("unsupported email block type %d", block.Type))
 	}
-	return view, nil, true
+	return view, warnings, true
 }

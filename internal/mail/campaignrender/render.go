@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -127,7 +128,22 @@ func New() (*Renderer, error) {
 	return &Renderer{templates: templates, policy: richTextPolicy}, nil
 }
 
-func applyTranslation(block *blockView, languageID int, langs []entity.Language) {
+// applyTranslation selects the block's copy for one language and resolves the URLs that copy
+// carries. It reports a warning for every authored URL the sanitizer rejects: those used to
+// disappear silently (the CTA collapsed into an empty padded row, a link lost its anchor), so the
+// preview looked like a spacing quirk and the whole segment received a campaign with no
+// clickthrough.
+func applyTranslation(block *blockView, languageID int, langs []entity.Language) []Warning {
+	var warnings []Warning
+	rejected := func(field, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		warnings = append(warnings, Warning{
+			BlockIndex: block.BlockIndex,
+			Reason:     fmt.Sprintf("%s URL %q is not a usable https/mailto link and was dropped", field, value),
+		})
+	}
 	block.Copy = pickTranslation(block.Translations, languageID, langs)
 	if block.Type == entity.EmailBlockTypeRichText {
 		block.RichHTML = template.HTML(SanitizeRichText(block.Copy.Body))
@@ -142,23 +158,30 @@ func applyTranslation(block *blockView, languageID int, langs []entity.Language)
 	}
 	if block.CTAButton != nil {
 		block.CTAButton.URL = safeURL(block.Copy.CTAURL)
+		if block.CTAButton.URL == "" {
+			rejected("cta_button", block.Copy.CTAURL)
+		}
 	}
 	links := make([]entity.EmailLink, 0, len(block.Copy.Links))
 	for _, link := range block.Copy.Links {
-		if url := safeURL(link.URL); url != "" {
-			link.URL = url
-			links = append(links, link)
+		url := safeURL(link.URL)
+		if url == "" {
+			rejected("link "+link.Label, link.URL)
+			continue
 		}
+		link.URL = url
+		links = append(links, link)
 	}
 	block.Copy.Links = links
 	if block.TwoColumn != nil {
 		for i := range block.TwoColumn.Left {
-			applyTranslation(&block.TwoColumn.Left[i], languageID, langs)
+			warnings = append(warnings, applyTranslation(&block.TwoColumn.Left[i], languageID, langs)...)
 		}
 		for i := range block.TwoColumn.Right {
-			applyTranslation(&block.TwoColumn.Right[i], languageID, langs)
+			warnings = append(warnings, applyTranslation(&block.TwoColumn.Right[i], languageID, langs)...)
 		}
 	}
+	return warnings
 }
 
 func blockTemplateName(blockType entity.EmailBlockType) (string, error) {
@@ -263,7 +286,7 @@ func (r *Renderer) Render(
 	resolver.prime(ctx, collectMediaIDs(in.Blocks), collectProductIDs(in.Blocks))
 	blocks, warnings := resolveBlocks(ctx, resolver, in.Blocks, in.LanguageID, in.Langs, background, 0, 0)
 	for i := range blocks {
-		applyTranslation(&blocks[i], in.LanguageID, in.Langs)
+		warnings = append(warnings, applyTranslation(&blocks[i], in.LanguageID, in.Langs)...)
 	}
 	setBlockPalette(blocks, pal)
 

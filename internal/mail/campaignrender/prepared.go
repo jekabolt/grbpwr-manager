@@ -10,7 +10,25 @@ import (
 const (
 	UnsubscribePlaceholder = "{{UNSUB_URL}}"
 	preparedUnsubscribeURL = "https://campaign-unsubscribe.invalid/one-click"
+	// neutralizedUnsubscribePlaceholder is what authored copy containing the reserved
+	// placeholder is rewritten to: visible to the admin, impossible to mistake for the
+	// real placeholder.
+	neutralizedUnsubscribePlaceholder = "[UNSUB_URL]"
 )
+
+// NeutralizeUnsubscribePlaceholder rewrites copy that literally contains the reserved
+// {{UNSUB_URL}} snapshot placeholder. Prepare injects exactly one placeholder and
+// ResolvePrepared rejects any snapshot holding a different count, so a literal typed into a
+// heading or rich text used to fail every dispatch batch as payload_hash_mismatch — which
+// terminally fails the whole audience with an error pointing at payload hashing instead of at
+// the copy. Applied on write (SanitizeBlocks) and again on the rendered snapshot (Prepare), so
+// campaigns saved before this guard cannot poison a send either.
+func NeutralizeUnsubscribePlaceholder(value string) string {
+	if !strings.Contains(value, UnsubscribePlaceholder) {
+		return value
+	}
+	return strings.ReplaceAll(value, UnsubscribePlaceholder, neutralizedUnsubscribePlaceholder)
+}
 
 // Prepare renders with a valid sentinel URL, then replaces that resolved
 // literal with one immutable placeholder in each representation. This keeps the
@@ -26,11 +44,19 @@ func (r *Renderer) Prepare(
 	if err != nil {
 		return Rendered{}, warnings, err
 	}
+	// Authored copy may itself contain the reserved placeholder literal; neutralize it before
+	// injecting ours so the snapshot can never hold two.
+	rendered.HTML = NeutralizeUnsubscribePlaceholder(rendered.HTML)
+	rendered.Text = NeutralizeUnsubscribePlaceholder(rendered.Text)
 	if strings.Count(rendered.HTML, preparedUnsubscribeURL) != 1 {
-		return Rendered{}, warnings, fmt.Errorf("campaign HTML must contain exactly one unsubscribe URL")
+		return Rendered{}, warnings, fmt.Errorf(
+			"campaign HTML must contain exactly one unsubscribe URL (authored copy must not contain %s)",
+			preparedUnsubscribeURL)
 	}
 	if strings.Count(rendered.Text, preparedUnsubscribeURL) != 1 {
-		return Rendered{}, warnings, fmt.Errorf("campaign text must contain exactly one unsubscribe URL")
+		return Rendered{}, warnings, fmt.Errorf(
+			"campaign text must contain exactly one unsubscribe URL (authored copy must not contain %s)",
+			preparedUnsubscribeURL)
 	}
 	rendered.HTML = strings.Replace(rendered.HTML, preparedUnsubscribeURL, UnsubscribePlaceholder, 1)
 	rendered.Text = strings.Replace(rendered.Text, preparedUnsubscribeURL, UnsubscribePlaceholder, 1)

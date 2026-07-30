@@ -31,10 +31,20 @@ func parseCampaignTestRecipientAllowlist(value string) map[string]struct{} {
 	return allowlist
 }
 
+// validateCampaignTestRecipients normalizes and de-duplicates the requested test recipients and
+// enforces the configured allowlist. It is deliberately fail-CLOSED: an unset
+// MAILER_TEST_RECIPIENTS used to mean "any address", which turned this RPC into a way to send
+// brand-domain mail to arbitrary external addresses with no ledger row.
 func validateCampaignTestRecipients(
 	recipients []string,
 	allowlist map[string]struct{},
 ) ([]string, error) {
+	if len(allowlist) == 0 {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"campaign test recipients are not configured: set MAILER_TEST_RECIPIENTS to the allowed addresses",
+		)
+	}
 	seen := make(map[string]struct{}, len(recipients))
 	out := make([]string, 0, len(recipients))
 	for _, recipient := range recipients {
@@ -47,14 +57,12 @@ func validateCampaignTestRecipients(
 			return nil, status.Errorf(codes.InvalidArgument, "invalid test recipient %q: %v", offendingAddress, err)
 		}
 		key := strings.ToLower(normalized)
-		if len(allowlist) > 0 {
-			if _, ok := allowlist[key]; !ok {
-				return nil, status.Errorf(
-					codes.PermissionDenied,
-					"test recipient %q is not allowlisted",
-					offendingAddress,
-				)
-			}
+		if _, ok := allowlist[key]; !ok {
+			return nil, status.Errorf(
+				codes.PermissionDenied,
+				"test recipient %q is not allowlisted",
+				offendingAddress,
+			)
 		}
 		if _, ok := seen[key]; ok {
 			continue

@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,10 +12,31 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
+	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/translate"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+)
+
+const (
+	// campaignTranslateChunkSize bounds how many strings ride in a single translator call. One
+	// unbounded request per locale failed deterministically on large campaigns (provider output
+	// limits, 60s HTTP timeout) and discarded every locale already paid for.
+	campaignTranslateChunkSize = 25
+	// maxCampaignTranslateStrings caps the strings auto-translate will spend on for one target
+	// locale, so an absurdly large campaign is refused up front instead of firing dozens of
+	// sequential model requests inside one RPC.
+	maxCampaignTranslateStrings = 300
+)
+
+var (
+	// errCampaignNotDraft marks the precondition failure that used to surface as a generic 500
+	// AFTER every LLM call had been paid for: the store only updates draft rows.
+	errCampaignNotDraft = errors.New("only draft campaigns can be auto-translated")
+	// errCampaignChangedDuringTranslate marks a concurrent edit landing while the model round-trips
+	// were in flight; saving the pre-translation snapshot would silently revert that edit.
+	errCampaignChangedDuringTranslate = errors.New("campaign changed while it was being translated")
 )
 
 // AutoTranslateEmailCampaign fills the non-English locales of a campaign (subject + block
@@ -33,6 +56,16 @@ func (s *Server) AutoTranslateEmailCampaign(
 	n, err := autoTranslateCampaign(ctx, s.repo, translator, cache.GetLanguages(), int(req.GetId()), req.GetOverwrite())
 	if err != nil {
 		slog.ErrorContext(ctx, "auto-translate campaign failed", slog.String("err", err.Error()))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, status.Error(codes.NotFound, "email campaign not found")
+		case errors.Is(err, errCampaignNotDraft):
+			return nil, status.Error(codes.FailedPrecondition,
+				"only draft campaigns can be auto-translated; pause or cancel it back to draft first")
+		case errors.Is(err, errCampaignChangedDuringTranslate):
+			return nil, status.Error(codes.Aborted,
+				"campaign was edited during translation; re-run auto-translate")
+		}
 		return nil, status.Error(codes.Internal, "can't auto-translate campaign")
 	}
 	return &pb_admin.AutoTranslateEmailCampaignResponse{TranslatedCount: int32(n)}, nil
@@ -89,34 +122,126 @@ func ensureBlockTr(trs *[]entity.EmailBlockTranslation, langID int) int {
 	return len(*trs) - 1
 }
 
+// translateBatch accumulates one target locale's work: the source strings queued for the model and
+// the setters that write each answer back into the campaign. Setters materialize the target
+// translation row lazily, so a locale with nothing to translate never gets an empty row (which the
+// renderer would prefer over the default-language copy, blanking the block for that locale).
+type translateBatch struct {
+	srcs    []string
+	setters []func(string)
+	cleared int
+}
+
+func (b *translateBatch) add(src string, set func(string)) {
+	if strings.TrimSpace(src) == "" {
+		return
+	}
+	b.srcs = append(b.srcs, src)
+	b.setters = append(b.setters, set)
+}
+
+// clear blanks a target field whose source has since been emptied (overwrite runs only), so the
+// locale stays a faithful projection of the source instead of keeping copy the English version no
+// longer has.
+func (b *translateBatch) clear(set func(string)) {
+	set("")
+	b.cleared++
+}
+
 // collectBlockFields queues the source block-translation fields (that are non-empty) for
-// translation into the target language, ensuring exactly one target EmailBlockTranslation per
-// block. URLs (CTAURL) and Links are copied from source, never translated.
-func collectBlockFields(b *entity.EmailBlock, srcID, tgtID int, overwrite bool, collect func(src string, set func(string))) {
+// translation into the target language. It recurses into two_column children first: their copy
+// lives on the child blocks and the container itself usually carries no translations at all, so
+// everything nested inside a two-column section used to stay in English. URLs (CTAURL) and Links
+// are copied from the source, never translated, and hand-authored target values are kept
+// field-by-field unless overwrite is set.
+func collectBlockFields(b *entity.EmailBlock, srcID, tgtID int, overwrite bool, batch *translateBatch) {
+	if b.TwoColumn != nil {
+		for i := range b.TwoColumn.Left {
+			collectBlockFields(&b.TwoColumn.Left[i], srcID, tgtID, overwrite, batch)
+		}
+		for i := range b.TwoColumn.Right {
+			collectBlockFields(&b.TwoColumn.Right[i], srcID, tgtID, overwrite, batch)
+		}
+	}
 	si := findBlockTrIdx(b.Translations, srcID)
 	if si < 0 {
 		return
 	}
-	if !overwrite && findBlockTrIdx(b.Translations, tgtID) >= 0 {
-		return // keep the existing (possibly hand-edited) target translation
+	src := b.Translations[si] // value copy — safe across the appends below
+	var tgt entity.EmailBlockTranslation
+	if ti := findBlockTrIdx(b.Translations, tgtID); ti >= 0 {
+		tgt = b.Translations[ti]
 	}
-	src := b.Translations[si] // value copy — safe across the append below
-	ti := ensureBlockTr(&b.Translations, tgtID)
-	b.Translations[ti].CTAURL = src.CTAURL // URLs are not translated
-	b.Translations[ti].Links = src.Links
-	collect(src.Heading, func(t string) { b.Translations[ti].Heading = t })
-	collect(src.Subheading, func(t string) { b.Translations[ti].Subheading = t })
-	collect(src.Body, func(t string) { b.Translations[ti].Body = t })
-	collect(src.Caption, func(t string) { b.Translations[ti].Caption = t })
-	collect(src.CTALabel, func(t string) { b.Translations[ti].CTALabel = t })
-	collect(src.AltText, func(t string) { b.Translations[ti].AltText = t })
-	collect(src.Preheader, func(t string) { b.Translations[ti].Preheader = t })
+	// target materializes the target row on first write and re-copies the untranslatable fields.
+	target := func() *entity.EmailBlockTranslation {
+		ti := ensureBlockTr(&b.Translations, tgtID)
+		row := &b.Translations[ti]
+		if overwrite || strings.TrimSpace(row.CTAURL) == "" {
+			row.CTAURL = src.CTAURL // URLs are not translated
+		}
+		if overwrite || len(row.Links) == 0 {
+			row.Links = append([]entity.EmailLink(nil), src.Links...)
+		}
+		return row
+	}
+	field := func(srcValue, tgtValue string, assign func(*entity.EmailBlockTranslation, string)) {
+		if !overwrite && strings.TrimSpace(tgtValue) != "" {
+			return // keep the existing (possibly hand-edited) target field
+		}
+		if strings.TrimSpace(srcValue) == "" {
+			if strings.TrimSpace(tgtValue) != "" { // reachable only with overwrite
+				batch.clear(func(v string) { assign(target(), v) })
+			}
+			return
+		}
+		batch.add(srcValue, func(v string) { assign(target(), v) })
+	}
+	field(src.Heading, tgt.Heading, func(t *entity.EmailBlockTranslation, v string) { t.Heading = v })
+	field(src.Subheading, tgt.Subheading, func(t *entity.EmailBlockTranslation, v string) { t.Subheading = v })
+	field(src.Body, tgt.Body, func(t *entity.EmailBlockTranslation, v string) { t.Body = v })
+	field(src.Caption, tgt.Caption, func(t *entity.EmailBlockTranslation, v string) { t.Caption = v })
+	field(src.CTALabel, tgt.CTALabel, func(t *entity.EmailBlockTranslation, v string) { t.CTALabel = v })
+	field(src.AltText, tgt.AltText, func(t *entity.EmailBlockTranslation, v string) { t.AltText = v })
+	field(src.Preheader, tgt.Preheader, func(t *entity.EmailBlockTranslation, v string) { t.Preheader = v })
+}
+
+// collectSubject queues a variant's subject for one target locale under the same per-field rules as
+// block copy (lazy target row, keep hand-authored text unless overwrite).
+func collectSubject(v *entity.EmailCampaignVariant, srcID, tgtID int, overwrite bool, batch *translateBatch) {
+	si := findSubjectIdx(v.SubjectI18n, srcID)
+	if si < 0 {
+		return
+	}
+	srcSubject := v.SubjectI18n[si].Subject
+	tgtSubject := ""
+	if ti := findSubjectIdx(v.SubjectI18n, tgtID); ti >= 0 {
+		tgtSubject = v.SubjectI18n[ti].Subject
+	}
+	if !overwrite && strings.TrimSpace(tgtSubject) != "" {
+		return
+	}
+	set := func(value string) {
+		ti := ensureSubject(&v.SubjectI18n, tgtID)
+		v.SubjectI18n[ti].Subject = value
+	}
+	if strings.TrimSpace(srcSubject) == "" {
+		if strings.TrimSpace(tgtSubject) != "" { // reachable only with overwrite
+			batch.clear(set)
+		}
+		return
+	}
+	batch.add(srcSubject, set)
 }
 
 // autoTranslateCampaign fills every non-source locale's subject + block translations from the
 // English source via the LLM translator, then re-persists the campaign. With overwrite=false it
 // only fills locales/fields the admin hasn't authored; with true it re-translates all. Returns the
-// number of translated strings. One LLM call per target locale (all strings batched).
+// number of translated strings.
+//
+// Failures are per-locale, never all-or-nothing: a locale whose model call fails is logged and
+// skipped, the locales that did translate are still saved (their strings were already paid for),
+// and fields left empty fall back to the default language at render time. Strings are sent in
+// chunks of campaignTranslateChunkSize.
 func autoTranslateCampaign(
 	ctx context.Context,
 	repo dependency.Repository,
@@ -135,10 +260,16 @@ func autoTranslateCampaign(
 	if err != nil {
 		return 0, fmt.Errorf("load campaign %d: %w", campaignID, err)
 	}
+	// The store only updates draft rows, so translating anything else burns the whole LLM spend
+	// and then fails at save. Refuse before the first request.
+	if full.Status != entity.EmailCampaignStatusDraft {
+		return 0, fmt.Errorf("campaign %d is %q: %w", campaignID, full.Status, errCampaignNotDraft)
+	}
 	srcID, srcCode := defaultCampaignLanguage(langs)
 	insert := full.EmailCampaignInsert
 
-	total := 0
+	total, mutated := 0, 0
+	var failures []string
 	for _, lang := range langs {
 		if lang.Id == srcID {
 			continue
@@ -147,53 +278,93 @@ func autoTranslateCampaign(
 		if tgtCode == "" || tgtCode == srcCode {
 			continue
 		}
-
-		var srcs []string
-		var setters []func(string)
-		collect := func(src string, set func(string)) {
-			if strings.TrimSpace(src) == "" {
-				return
-			}
-			srcs = append(srcs, src)
-			setters = append(setters, set)
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", tgtCode, err))
+			break
 		}
 
+		batch := &translateBatch{}
 		for vi := range insert.Variants {
 			v := &insert.Variants[vi]
-			if si := findSubjectIdx(v.SubjectI18n, srcID); si >= 0 {
-				srcSubject := v.SubjectI18n[si].Subject
-				if overwrite || findSubjectIdx(v.SubjectI18n, lang.Id) < 0 {
-					ti := ensureSubject(&v.SubjectI18n, lang.Id)
-					collect(srcSubject, func(t string) { v.SubjectI18n[ti].Subject = t })
-				}
-			}
+			collectSubject(v, srcID, lang.Id, overwrite, batch)
 			for bi := range v.Body {
-				collectBlockFields(&v.Body[bi], srcID, lang.Id, overwrite, collect)
+				collectBlockFields(&v.Body[bi], srcID, lang.Id, overwrite, batch)
 			}
 		}
 		for bi := range insert.Body {
-			collectBlockFields(&insert.Body[bi], srcID, lang.Id, overwrite, collect)
+			collectBlockFields(&insert.Body[bi], srcID, lang.Id, overwrite, batch)
 		}
+		mutated += batch.cleared
 
-		if len(srcs) == 0 {
+		if len(batch.srcs) == 0 {
 			continue
 		}
-		translated, err := translator.Translate(ctx, srcCode, tgtCode, srcs)
-		if err != nil {
-			return total, fmt.Errorf("translate campaign %d to %s: %w", campaignID, tgtCode, err)
+		if len(batch.srcs) > maxCampaignTranslateStrings {
+			failures = append(failures, fmt.Sprintf("%s: %d translatable strings exceed the %d limit",
+				tgtCode, len(batch.srcs), maxCampaignTranslateStrings))
+			continue
 		}
-		if len(translated) != len(setters) {
-			return total, fmt.Errorf("translate campaign %d to %s: got %d results for %d inputs",
-				campaignID, tgtCode, len(translated), len(setters))
+
+		translatedForLocale := 0
+		for start := 0; start < len(batch.srcs); start += campaignTranslateChunkSize {
+			end := min(start+campaignTranslateChunkSize, len(batch.srcs))
+			chunk := batch.srcs[start:end]
+			translated, err := translator.Translate(ctx, srcCode, tgtCode, chunk)
+			if err == nil && len(translated) != len(chunk) {
+				err = fmt.Errorf("got %d results for %d inputs", len(translated), len(chunk))
+			}
+			if err != nil {
+				slog.ErrorContext(ctx, "campaign auto-translate locale failed",
+					slog.Int("campaign_id", campaignID),
+					slog.String("locale", tgtCode),
+					slog.String("err", err.Error()),
+				)
+				failures = append(failures, fmt.Sprintf("%s: %v", tgtCode, err))
+				break // keep the locales/chunks already translated
+			}
+			for i, value := range translated {
+				batch.setters[start+i](value)
+			}
+			translatedForLocale += len(chunk)
 		}
-		for i, set := range setters {
-			set(translated[i])
-		}
-		total += len(srcs)
+		total += translatedForLocale
+		mutated += translatedForLocale
 	}
 
+	if mutated == 0 {
+		if len(failures) > 0 {
+			return 0, fmt.Errorf("auto-translate campaign %d: %s", campaignID, strings.Join(failures, "; "))
+		}
+		return 0, nil
+	}
+
+	// Model output is untrusted input on the write side exactly like admin-authored copy, so it
+	// passes the same sanitizer UpsertEmailCampaign applies before it reaches the DB (and from
+	// there the admin's rich-text editor, which does not sanitize on read).
+	campaignrender.SanitizeBlocks(insert.Body)
+	for i := range insert.Variants {
+		campaignrender.SanitizeBlocks(insert.Variants[i].Body)
+	}
+
+	// The model round-trips take seconds to minutes; re-read before writing the whole aggregate so
+	// a concurrent edit is reported instead of silently reverted.
+	fresh, err := repo.Campaigns().GetEmailCampaignByID(ctx, campaignID)
+	if err != nil {
+		return 0, fmt.Errorf("reload campaign %d: %w", campaignID, err)
+	}
+	if !fresh.UpdatedAt.Equal(full.UpdatedAt) {
+		return 0, fmt.Errorf("campaign %d changed at %s (loaded %s): %w",
+			campaignID, fresh.UpdatedAt, full.UpdatedAt, errCampaignChangedDuringTranslate)
+	}
 	if _, err := repo.Campaigns().UpsertEmailCampaign(ctx, campaignID, &insert); err != nil {
-		return total, fmt.Errorf("save translated campaign %d: %w", campaignID, err)
+		return 0, fmt.Errorf("save translated campaign %d: %w", campaignID, err)
+	}
+	if len(failures) > 0 {
+		slog.ErrorContext(ctx, "campaign auto-translate saved with locale failures",
+			slog.Int("campaign_id", campaignID),
+			slog.Int("translated", total),
+			slog.String("failures", strings.Join(failures, "; ")),
+		)
 	}
 	return total, nil
 }

@@ -94,6 +94,7 @@ func (s *Store) freezeCampaign(
 			    fanout_cursor_account_id = 0,
 			    audience_materialized_at = NULL,
 			    recipient_count = NULL,
+			    ab_winner_variant_id = NULL,
 			    dispatch_error = NULL,
 			    sending_started_at = CASE
 			        WHEN :status = 'sending' THEN UTC_TIMESTAMP(6)
@@ -110,6 +111,16 @@ func (s *Store) freezeCampaign(
 		if affected != 1 {
 			return fmt.Errorf("%w: campaign %d changed during launch",
 				ErrInvalidCampaignTransition, campaignID)
+		}
+		// A launch always starts from a clean A/B state. Promotion is gated on
+		// ab_winner_variant_id IS NULL, so a stale winner (from an older build that let
+		// clients write it) would hold the remainder cohort unclaimable forever.
+		if _, err := rep.DB().NamedExecContext(ctx, `
+			UPDATE email_campaign_variant
+			SET is_winner = FALSE
+			WHERE campaign_id = :id AND is_winner = TRUE`,
+			map[string]any{"id": campaignID}); err != nil {
+			return fmt.Errorf("clear email campaign winner variant: %w", err)
 		}
 		return nil
 	})

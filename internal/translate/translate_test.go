@@ -114,12 +114,98 @@ func TestTranslateDegradesOnBrokenMarkup(t *testing.T) {
 	}
 }
 
-func TestTranslateMissingIDErrors(t *testing.T) {
+func TestTranslateMissingIDDegradesToSource(t *testing.T) {
 	f := &fakeCompleter{enabled: true, respond: func(string) (string, error) {
 		return `{"items":[{"id":0,"text":"only one"}]}`, nil // 2 requested, 1 returned
 	}}
-	_, err := svc(f).Translate(context.Background(), "en", "ja", []string{"a", "b"})
-	if err == nil || !strings.Contains(err.Error(), "missing item id") {
-		t.Fatalf("want missing-id error, got %v", err)
+	got, err := svc(f).Translate(context.Background(), "en", "ja", []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
 	}
+	if got[0] != "only one" || got[1] != "b" {
+		t.Fatalf("an omitted id must keep its source text, got %#v", got)
+	}
+}
+
+func TestTranslateUnusableOutputErrors(t *testing.T) {
+	f := &fakeCompleter{enabled: true, respond: func(string) (string, error) {
+		return `{"items":[]}`, nil
+	}}
+	_, err := svc(f).Translate(context.Background(), "en", "ja", []string{"a", "b"})
+	if err == nil || !strings.Contains(err.Error(), "none of the") {
+		t.Fatalf("want unusable-output error, got %v", err)
+	}
+}
+
+func TestTranslateChunksLargeBatches(t *testing.T) {
+	var perRequest []int
+	echo := echoResponse(func(_ int, text string) string { return "FR:" + text })
+	f := &fakeCompleter{enabled: true}
+	f.respond = func(user string) (string, error) {
+		perRequest = append(perRequest, requestedItemCount(t, user))
+		return echo(user)
+	}
+
+	items := make([]string, maxItemsPerRequest*2+3)
+	for i := range items {
+		items[i] = "ITEM"
+	}
+	got, err := svc(f).Translate(context.Background(), "en", "fr", items)
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if len(perRequest) != 3 {
+		t.Fatalf("want 3 chunked requests, got %d (%v)", len(perRequest), perRequest)
+	}
+	for _, count := range perRequest {
+		if count > maxItemsPerRequest {
+			t.Fatalf("request carried %d items, over the %d cap (%v)", count, maxItemsPerRequest, perRequest)
+		}
+	}
+	for i, value := range got {
+		if value != "FR:ITEM" {
+			t.Fatalf("item %d not translated: %q", i, value)
+		}
+	}
+}
+
+func TestTranslateKeepsSucceededChunksOnFailure(t *testing.T) {
+	echo := echoResponse(func(_ int, text string) string { return "FR:" + text })
+	calls := 0
+	f := &fakeCompleter{enabled: true}
+	f.respond = func(user string) (string, error) {
+		calls++
+		if calls == 2 {
+			return "", errors.New("provider timeout")
+		}
+		return echo(user)
+	}
+
+	items := make([]string, maxItemsPerRequest+2)
+	for i := range items {
+		items[i] = "ITEM"
+	}
+	got, err := svc(f).Translate(context.Background(), "en", "fr", items)
+	if err == nil {
+		t.Fatal("want the chunk failure reported")
+	}
+	if got[0] != "FR:ITEM" {
+		t.Fatalf("first chunk should still be translated, got %q", got[0])
+	}
+	if got[len(got)-1] != "ITEM" {
+		t.Fatalf("failed chunk should keep its source text, got %q", got[len(got)-1])
+	}
+}
+
+// requestedItemCount counts the items embedded in the user prompt's trailing input JSON.
+func requestedItemCount(t *testing.T, user string) int {
+	t.Helper()
+	start := strings.LastIndex(user, `{"items"`)
+	var in struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(user[start:]), &in); err != nil {
+		t.Fatalf("parse request items: %v", err)
+	}
+	return len(in.Items)
 }

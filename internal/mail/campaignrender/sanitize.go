@@ -34,14 +34,29 @@ func SanitizeRichText(value string) string {
 	return richTextPolicy.Sanitize(value)
 }
 
-// SanitizeBlocks applies the write-side sanitizer recursively. It mutates only
-// rich-text translation bodies and preserves all other authored fields.
+// SanitizeBlocks applies the write-side sanitizer recursively. It reduces rich-text
+// translation bodies to the email-safe subset and neutralizes the reserved unsubscribe
+// placeholder in every translated copy field (a literal {{UNSUB_URL}} typed into copy
+// would otherwise collide with the one placeholder Prepare injects and fail every
+// dispatch batch); all other authored fields are preserved.
 func SanitizeBlocks(blocks []entity.EmailBlock) {
 	for i := range blocks {
 		block := &blocks[i]
-		if block.Type == entity.EmailBlockTypeRichText {
-			for j := range block.Translations {
-				block.Translations[j].Body = SanitizeRichText(block.Translations[j].Body)
+		for j := range block.Translations {
+			translation := &block.Translations[j]
+			if block.Type == entity.EmailBlockTypeRichText {
+				translation.Body = SanitizeRichText(translation.Body)
+			}
+			for _, field := range []*string{
+				&translation.Heading,
+				&translation.Subheading,
+				&translation.Body,
+				&translation.Caption,
+				&translation.CTALabel,
+				&translation.AltText,
+				&translation.Preheader,
+			} {
+				*field = NeutralizeUnsubscribePlaceholder(*field)
 			}
 		}
 		if block.Type == entity.EmailBlockTypeTwoColumn && block.TwoColumn != nil {
@@ -53,8 +68,10 @@ func SanitizeBlocks(blocks []entity.EmailBlock) {
 
 // safeURL admits only absolute HTTPS URLs and mailto links. A scheme-less value the admin typed
 // (e.g. "grbpwr.com/sale" or "hi@grbpwr.com") is coerced to https:// (or mailto:) first — otherwise
-// a CTA/link with no scheme was silently dropped and the button never rendered. A value that DOES
-// carry a scheme (including javascript:/data:) is left as-is and rejected below.
+// a CTA/link with no scheme was silently dropped and the button never rendered. A plain http:// URL
+// is UPGRADED to https:// for the same reason: rejecting it deleted the CTA button / social icon
+// from the sent email with only a gap left in the preview. A value carrying any other scheme
+// (javascript:/data:/tel:…) is left as-is and rejected below.
 func safeURL(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -77,9 +94,13 @@ func safeURL(value string) string {
 		return ""
 	}
 	switch strings.ToLower(parsed.Scheme) {
-	case "https":
+	case "https", "http":
 		if parsed.Host == "" {
 			return ""
+		}
+		if !strings.EqualFold(parsed.Scheme, "https") {
+			parsed.Scheme = "https"
+			return parsed.String()
 		}
 	case "mailto":
 		if parsed.Opaque == "" && parsed.Path == "" {

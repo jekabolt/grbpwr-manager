@@ -10,6 +10,7 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/segment"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -65,17 +66,20 @@ func (s *Server) UpsertEmailSegment(ctx context.Context, req *pb_admin.UpsertEma
 	if req.Id < 0 {
 		return nil, status.Error(codes.InvalidArgument, "segment id must be non-negative")
 	}
-	segment, err := dto.ConvertPbEmailSegmentToEntity(req.Segment)
+	emailSegment, err := dto.ConvertPbEmailSegmentToEntity(req.Segment)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
-	segment.Name = strings.TrimSpace(segment.Name)
-	if segment.Name == "" {
+	emailSegment.Name = strings.TrimSpace(emailSegment.Name)
+	if emailSegment.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "segment name is required")
 	}
-	segment.CreatedBy = authsrv.GetAdminUsername(ctx)
+	if err := validateEmailSegmentPredicate(emailSegment.Predicate); err != nil {
+		return nil, err
+	}
+	emailSegment.CreatedBy = authsrv.GetAdminUsername(ctx)
 
-	id, err := s.repo.Campaigns().UpsertEmailSegment(ctx, int(req.Id), segment)
+	id, err := s.repo.Campaigns().UpsertEmailSegment(ctx, int(req.Id), emailSegment)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "email segment not found")
@@ -129,6 +133,23 @@ func (s *Server) DeleteEmailSegment(ctx context.Context, req *pb_admin.DeleteEma
 		return nil, status.Error(codes.Internal, "can't delete email segment")
 	}
 	return &pb_admin.DeleteEmailSegmentResponse{}, nil
+}
+
+// validateEmailSegmentPredicate compiles the predicate at save time. Compile and
+// BuildAudiencePredicate are pure functions of the predicate, so any failure here
+// is caused by the submitted definition; without this check an invalid predicate is
+// stored happily and only surfaces as an opaque failure when a campaign attached to
+// it is launched. The topic is unknown until launch, so compliance is built
+// topic-independently, exactly like the preview path.
+func validateEmailSegmentPredicate(predicate entity.SegmentPredicate) error {
+	compiled, err := segment.Compile(predicate)
+	if err == nil {
+		_, _, err = segment.BuildAudiencePredicate(compiled, segment.ComplianceOpts{Topic: nil})
+	}
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid segment predicate: %v", err)
+	}
+	return nil
 }
 
 func isSegmentPredicateError(err error) bool {
@@ -189,6 +210,27 @@ func (s *Server) PreviewEmailSegment(
 	return &pb_admin.PreviewEmailSegmentResponse{Count: int32(count)}, nil
 }
 
+// validateEmailCampaignEnvelope rejects sender fields the dispatcher cannot turn
+// into a provider envelope. Empty means "use the configured mailer default"; a
+// malformed value would otherwise be accepted, then fail deterministically on every
+// dispatch tick. Blank fields fall back to the mailer defaults.
+func validateEmailCampaignEnvelope(in *pb_common.EmailCampaignInsert) error {
+	if strings.ContainsAny(in.FromName, "\r\n") {
+		return status.Error(codes.InvalidArgument, "campaign from_name must not contain line breaks")
+	}
+	if from := strings.TrimSpace(in.FromEmail); from != "" {
+		if _, err := mail.NormalizeEmailAddress(from); err != nil {
+			return status.Errorf(codes.InvalidArgument, "campaign from_email is invalid: %v", err)
+		}
+	}
+	if replyTo := strings.TrimSpace(in.ReplyTo); replyTo != "" {
+		if _, err := mail.NormalizeEmailAddress(replyTo); err != nil {
+			return status.Errorf(codes.InvalidArgument, "campaign reply_to is invalid: %v", err)
+		}
+	}
+	return nil
+}
+
 func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {
 	if in == nil {
 		return status.Error(codes.InvalidArgument, "campaign is required")
@@ -198,6 +240,9 @@ func validateEmailCampaign(in *pb_common.EmailCampaignInsert) error {
 	}
 	if strings.TrimSpace(in.Name) == "" {
 		return status.Error(codes.InvalidArgument, "campaign name is required")
+	}
+	if err := validateEmailCampaignEnvelope(in); err != nil {
+		return err
 	}
 	switch in.Topic {
 	case pb_common.EmailCampaignTopic_EMAIL_CAMPAIGN_TOPIC_NEWSLETTER,

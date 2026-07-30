@@ -31,10 +31,15 @@ func TestSanitizeSafeURLAndColor(t *testing.T) {
 	urlTests := map[string]string{
 		"https://grbpwr.com/p/test": "https://grbpwr.com/p/test",
 		"mailto:test@example.com":   "mailto:test@example.com",
-		"http://grbpwr.com":         "",
-		"javascript:alert(1)":       "",
-		"data:text/plain,no":        "",
-		"/relative":                 "",
+		// http is upgraded, not dropped: dropping it deleted the CTA/social icon from the
+		// delivered email with nothing visible in the preview.
+		"http://grbpwr.com":            "https://grbpwr.com",
+		"http://grbpwr.com/sale?x=1#y": "https://grbpwr.com/sale?x=1#y",
+		"grbpwr.com/sale":              "https://grbpwr.com/sale",
+		"javascript:alert(1)":          "",
+		"data:text/plain,no":           "",
+		"tel:+123456":                  "",
+		"/relative":                    "",
 	}
 	for input, want := range urlTests {
 		if got := safeURL(input); got != want {

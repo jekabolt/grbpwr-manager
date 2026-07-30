@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -34,6 +35,30 @@ type payloadMismatchError struct {
 
 func (e *payloadMismatchError) Error() string { return e.message }
 
+// campaignConfigError marks a deterministic, campaign-wide preparation failure
+// (unusable envelope, missing variant, unbuildable unsubscribe URL, empty or
+// oversized subject). Every retry reproduces it, so the campaign is paused with
+// the reason instead of being released for an endless re-claim.
+type campaignConfigError struct {
+	message string
+}
+
+func (e *campaignConfigError) Error() string { return e.message }
+
+// deterministicPrepareFailure reports the admin-visible reason for a prepare
+// error that cannot succeed on retry.
+func deterministicPrepareFailure(err error) (string, bool) {
+	var warningErr *renderWarningError
+	if errors.As(err, &warningErr) {
+		return warningErr.Error(), true
+	}
+	var configErr *campaignConfigError
+	if errors.As(err, &configErr) {
+		return configErr.Error(), true
+	}
+	return "", false
+}
+
 func (w *Worker) dispatchOne(ctx context.Context) (bool, error) {
 	batch, err := w.repo.Campaigns().ClaimEmailCampaignBatch(
 		ctx,
@@ -44,20 +69,6 @@ func (w *Worker) dispatchOne(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	store := w.repo.Campaigns()
-
-	if w.mailer.CampaignSendingDisabled() {
-		if err := store.CompleteEmailCampaignBatch(
-			ctx,
-			batch.BatchID,
-			batch.ClaimToken,
-			entity.EmailCampaignRecipientStatusSkipped,
-			"mailer_disabled",
-			nil,
-		); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
 
 	campaign, err := store.GetEmailCampaignByID(ctx, batch.CampaignID)
 	if err != nil {
@@ -81,6 +92,9 @@ func (w *Worker) dispatchOne(ctx context.Context) (bool, error) {
 			)
 			return true, err
 		}
+	}
+	if w.mailer.CampaignSendingDisabled() {
+		return w.holdBatchForDisabledMailer(ctx, campaign, batch, providerMayHaveAccepted)
 	}
 	if providerMayHaveAccepted &&
 		(time.Since(oldestProviderAttempt) >= automaticRetryHorizon ||
@@ -120,15 +134,29 @@ func (w *Worker) dispatchOne(ctx context.Context) (bool, error) {
 			)
 			return true, completeErr
 		}
-		var warningErr *renderWarningError
-		if errors.As(err, &warningErr) {
-			message := warningErr.Error()
-			if pauseErr := store.PauseEmailCampaign(ctx, campaign.ID, &message); pauseErr != nil &&
-				!errors.Is(pauseErr, context.Canceled) {
-				err = fmt.Errorf("%v; pause campaign: %w", err, pauseErr)
+		message, deterministic := deterministicPrepareFailure(err)
+		paused := false
+		if deterministic {
+			if pauseErr := store.PauseEmailCampaign(ctx, campaign.ID, &message); pauseErr != nil {
+				if !errors.Is(pauseErr, context.Canceled) {
+					err = fmt.Errorf("%v; pause campaign: %w", err, pauseErr)
+				}
+			} else {
+				paused = true
 			}
 		}
 		_ = store.ReleaseEmailCampaignBatch(ctx, batch.BatchID, batch.ClaimToken, nil, nil, nil)
+		if paused {
+			// The released batch keeps its dispatch_batch_id and the recovery picker
+			// claims it before any fresh batch of any campaign, so returning an error
+			// here would starve every other campaign's dispatch, A/B promotion and
+			// finalization. The campaign is out of rotation with the reason in
+			// dispatch_error: keep draining the rest of the tick.
+			slog.ErrorContext(ctx, "email campaign paused by dispatcher",
+				slog.Int("campaign_id", campaign.ID),
+				slog.String("err", message))
+			return true, nil
+		}
 		return false, err
 	}
 	if len(requests) == 0 {
@@ -169,15 +197,9 @@ func (w *Worker) dispatchOne(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	if errors.Is(err, mail.ErrSuppressedDisabled) {
-		completeErr := store.CompleteEmailCampaignBatch(
-			ctx,
-			batch.BatchID,
-			batch.ClaimToken,
-			entity.EmailCampaignRecipientStatusSkipped,
-			"mailer_disabled",
-			nil,
-		)
-		return true, completeErr
+		// The kill switch flipped after the pre-flight check above: no POST happened,
+		// so hold the batch exactly like the pre-flight path instead of skipping it.
+		return w.holdBatchForDisabledMailer(ctx, campaign, batch, providerMayHaveAccepted)
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		// Leave the persisted claim/batch untouched; lease recovery owns it.
@@ -196,6 +218,48 @@ func (w *Worker) dispatchOne(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return false, w.classifyBatchFailure(ctx, batch, err)
+}
+
+// holdBatchForDisabledMailer keeps a claimed batch replayable while the mailer
+// kill switch is on. Completing it as skipped would be terminal and lossy: rows
+// whose first POST may already have been accepted would never get their
+// resend_email_id (engagement webhooks are attributed by that id alone, so their
+// delivery facts would be unattributable), and rows that were never attempted
+// could not be resumed once sending is re-enabled. The campaign is paused so the
+// hold is visible and an operator re-arms the send explicitly.
+func (w *Worker) holdBatchForDisabledMailer(
+	ctx context.Context,
+	campaign *entity.EmailCampaignFull,
+	batch *entity.EmailCampaignBatch,
+	providerMayHaveAccepted bool,
+) (bool, error) {
+	store := w.repo.Campaigns()
+	code := "mailer_disabled"
+	message := "campaign sending is disabled: batch held pending"
+	if providerMayHaveAccepted {
+		message = "campaign sending is disabled: batch held for provider acknowledgement replay"
+	}
+	if campaign.Status == entity.EmailCampaignStatusSending {
+		if err := store.PauseEmailCampaign(ctx, campaign.ID, &message); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return false, err
+			}
+			slog.ErrorContext(ctx, "can't pause campaign while sending is disabled",
+				slog.Int("campaign_id", campaign.ID),
+				slog.String("err", err.Error()))
+		}
+	}
+	if err := store.ReleaseEmailCampaignBatch(
+		ctx,
+		batch.BatchID,
+		batch.ClaimToken,
+		nil,
+		&code,
+		&message,
+	); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func batchProviderAttemptState(batch *entity.EmailCampaignBatch) (time.Time, int, bool) {
@@ -225,12 +289,32 @@ func (w *Worker) prepareBatch(
 	}
 	fromValue, replyTo, err := w.mailer.CampaignEnvelope(campaign)
 	if err != nil {
-		return nil, err
+		return nil, &campaignConfigError{message: err.Error()}
 	}
 	requests := make([]resend.SendEmailRequest, 0, len(batch.Recipients))
 	for i := range batch.Recipients {
 		recipient := &batch.Recipients[i]
 		if recipient.VariantID == nil {
+			continue
+		}
+		// The only recipient-scoped payload defect is an unusable address: every
+		// other BuildCampaignSendRequest rejection below is campaign-wide, so it
+		// must pause the campaign instead of burning the audience batch by batch.
+		if _, addrErr := mail.NormalizeEmailAddress(recipient.Email); addrErr != nil {
+			message := fmt.Sprintf("invalid campaign recipient: %v", addrErr)
+			if recipient.FirstProviderAttemptAt != nil {
+				return nil, &payloadMismatchError{message: message}
+			}
+			if quarantineErr := w.repo.Campaigns().QuarantineEmailCampaignRecipient(
+				ctx,
+				recipient.ID,
+				batch.BatchID,
+				batch.ClaimToken,
+				"invalid_recipient_payload",
+				message,
+			); quarantineErr != nil {
+				return nil, quarantineErr
+			}
 			continue
 		}
 		snapshot, err := w.ensureSnapshot(
@@ -251,7 +335,9 @@ func (w *Worker) prepareBatch(
 		} else {
 			unsubscribeURL, err = w.mailer.CampaignUnsubscribeURL(batch.Topic, recipient.Email)
 			if err != nil {
-				return nil, fmt.Errorf("build campaign unsubscribe URL: %w", err)
+				return nil, &campaignConfigError{
+					message: fmt.Sprintf("build campaign unsubscribe URL: %v", err),
+				}
 			}
 		}
 		rendered, err := campaignrender.ResolvePrepared(campaignrender.Rendered{
@@ -272,17 +358,7 @@ func (w *Worker) prepareBatch(
 			if recipient.FirstProviderAttemptAt != nil {
 				return nil, &payloadMismatchError{message: err.Error()}
 			}
-			if quarantineErr := w.repo.Campaigns().QuarantineEmailCampaignRecipient(
-				ctx,
-				recipient.ID,
-				batch.BatchID,
-				batch.ClaimToken,
-				"invalid_recipient_payload",
-				err.Error(),
-			); quarantineErr != nil {
-				return nil, quarantineErr
-			}
-			continue
+			return nil, &campaignConfigError{message: err.Error()}
 		}
 		payload, err := json.Marshal(request)
 		if err != nil {
@@ -332,7 +408,9 @@ func (w *Worker) ensureSnapshot(
 	}
 	variant := campaignVariant(campaign.Variants, variantID)
 	if variant == nil {
-		return nil, fmt.Errorf("campaign %d variant %d is missing", campaign.ID, variantID)
+		return nil, &campaignConfigError{
+			message: fmt.Sprintf("campaign %d variant %d is missing", campaign.ID, variantID),
+		}
 	}
 	blocks := campaign.Body
 	if campaign.ABConfig.Enabled &&

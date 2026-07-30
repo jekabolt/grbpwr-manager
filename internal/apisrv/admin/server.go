@@ -36,8 +36,9 @@ type Server struct {
 	renderer        *campaignrender.Renderer
 	campaignTestSem chan struct{}
 	// campaignTestRecipientAllowlist contains lower-cased, trimmed addresses
-	// permitted for admin campaign test sends. Empty preserves the fail-open
-	// configuration default; suppression-list checks remain mandatory.
+	// permitted for admin campaign test sends (MAILER_TEST_RECIPIENTS). Empty is
+	// fail-closed: test sends are refused until it is configured. Suppression-list
+	// checks remain mandatory on top.
 	campaignTestRecipientAllowlist map[string]struct{}
 	stripePayment                  dependency.Invoicer
 	stripePaymentTest              dependency.Invoicer

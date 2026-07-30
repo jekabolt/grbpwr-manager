@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -152,6 +153,42 @@ func unsubscribeCampaignTopic(
 				return fmt.Errorf("clear legacy newsletter subscription: %w", err)
 			}
 		}
-		return nil
+		return stampCampaignUnsubscribed(ctx, tx, topic, email)
 	})
+}
+
+// stampCampaignUnsubscribed records the opt-out on the campaign ledger so the
+// per-campaign Unsubscribed metric is populated. The RFC 8058 route is scoped to a
+// topic, not to a campaign, so the opt-out is attributed to the recipient's most
+// recent send of that topic (last touch) instead of every past campaign, which
+// would count one click many times. Driving the lookup from email_campaign keeps
+// it on uq_ecr_campaign_email; the recipient table has no index on email alone.
+func stampCampaignUnsubscribed(
+	ctx context.Context,
+	tx dependency.Repository,
+	topic entity.EmailCampaignTopic,
+	email string,
+) error {
+	var recipientID uint64
+	err := tx.DB().GetContext(ctx, &recipientID, `
+		SELECT ecr.id
+		FROM email_campaign ec
+		JOIN email_campaign_recipient ecr
+		  ON ecr.campaign_id = ec.id AND ecr.email = ?
+		WHERE ec.topic = ? AND ecr.status = 'sent'
+		ORDER BY ecr.sent_at DESC, ecr.id DESC
+		LIMIT 1`, strings.ToLower(email), string(topic))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find campaign recipient to mark unsubscribed: %w", err)
+	}
+	if _, err := tx.DB().ExecContext(ctx, `
+		UPDATE email_campaign_recipient
+		SET unsubscribed_at = UTC_TIMESTAMP(6)
+		WHERE id = ? AND unsubscribed_at IS NULL`, recipientID); err != nil {
+		return fmt.Errorf("mark campaign recipient unsubscribed: %w", err)
+	}
+	return nil
 }

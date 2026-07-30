@@ -42,6 +42,50 @@ func TestTranslateFallbackMatrix(t *testing.T) {
 	}
 }
 
+func TestTranslateFillsEmptyFieldsFromDefaultLanguage(t *testing.T) {
+	t.Parallel()
+	langs := []entity.Language{{Id: 1, Code: "en", IsDefault: true}, {Id: 2, Code: "fr"}}
+	translations := []entity.EmailBlockTranslation{
+		{
+			LanguageID: 1,
+			Heading:    "EN HEADING",
+			Body:       "<p>EN body</p>",
+			CTALabel:   "SHOP",
+			CTAURL:     "https://grbpwr.com/en",
+			Links:      []entity.EmailLink{{Label: "EN", URL: "https://grbpwr.com/en"}},
+		},
+		// A partly authored / partly auto-translated locale: heading only.
+		{LanguageID: 2, Heading: "FR HEADING"},
+	}
+
+	got := pickTranslation(translations, 2, langs)
+	if got.Heading != "FR HEADING" {
+		t.Fatalf("localized heading was overwritten: %q", got.Heading)
+	}
+	if got.Body != "<p>EN body</p>" || got.CTALabel != "SHOP" || got.CTAURL != "https://grbpwr.com/en" {
+		t.Fatalf("empty fields did not fall back to the default language: %#v", got)
+	}
+	if len(got.Links) != 1 {
+		t.Fatalf("links did not fall back to the default language: %#v", got.Links)
+	}
+	// The default-language row must not be mutated by the merge.
+	if translations[0].Heading != "EN HEADING" || translations[1].Body != "" {
+		t.Fatalf("pickTranslation mutated the stored translations: %#v", translations)
+	}
+}
+
+func TestSelectSubjectTreatsEmptyRowAsAbsent(t *testing.T) {
+	t.Parallel()
+	langs := []entity.Language{{Id: 1, IsDefault: true}, {Id: 2}}
+	subjects := []entity.SubjectTranslation{
+		{LanguageID: 1, Subject: "EN subject"},
+		{LanguageID: 2, Subject: "   "},
+	}
+	if got := SelectSubject(subjects, 2, langs); got != "EN subject" {
+		t.Fatalf("empty localized subject should fall back, got %q", got)
+	}
+}
+
 func TestTranslateSubjectUsesSameFallback(t *testing.T) {
 	t.Parallel()
 	subjects := []entity.SubjectTranslation{
