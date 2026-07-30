@@ -63,6 +63,7 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"needle":           o.Needle,
 			"attachment":       o.Attachment,
 			"time_norm":        o.TimeNorm,
+			"smv":              o.SMV,
 			"note":             o.Note,
 			"operation_type":   string(o.OperationType),
 			"zone":             string(o.Zone),
@@ -407,7 +408,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	// stable tiebreaker within each group.
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
 		SELECT tech_card_id, operation_number, node, description, seam_type, machine, stitches_per_cm,
-		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, note,
+		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, smv, note,
 		       operation_type, zone, bom_item_id, bom_item_index, callout_number, placement
 		FROM tech_card_operation
 		WHERE tech_card_id IN (:ids)

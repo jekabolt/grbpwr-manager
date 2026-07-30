@@ -235,6 +235,13 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err := validateDecimalScale(timeNorm, "operation time_norm", 3, 10_000); err != nil {
 			return nil, err
 		}
+		smv, err := nullDecimalFromPb(o.Smv)
+		if err != nil {
+			return nil, fmt.Errorf("operation smv: %w", err)
+		}
+		if err := validateDecimalScale(smv, "operation smv", 3, 10_000); err != nil {
+			return nil, err
+		}
 		// piece_line_keys (WS4): the cut-pieces this operation works on. Repeated because an
 		// assembly operation spans as many pieces as it joins. Blanks are dropped and duplicates
 		// collapsed here so the store's join-table write can stay a straight insert -- the table's
@@ -277,6 +284,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Needle:          nullStringFromPb(o.Needle),
 			Attachment:      nullStringFromPb(o.Attachment),
 			TimeNorm:        timeNorm,
+			SMV:             smv,
 			Note:            nullStringFromPb(o.Note),
 			OperationType:   opType,
 			Zone:            zone,
@@ -481,6 +489,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Needle:          pbStringFromNull(o.Needle),
 			Attachment:      pbStringFromNull(o.Attachment),
 			TimeNorm:        pbDecimalFromNull(o.TimeNorm),
+			Smv:             pbDecimalFromNull(o.SMV),
 			Note:            pbStringFromNull(o.Note),
 			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
 			Zone:            techCardConstructionZoneEntityToPb[o.Zone],

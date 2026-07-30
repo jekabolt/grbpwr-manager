@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/materialcode"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -64,9 +65,15 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 		return 0, err
 	}
 	// An operator may leave the internal code blank on create (#68); we then auto-generate a
-	// deterministic, unique code from the row's own auto-increment id right after the insert. An
-	// explicit code is preserved and still range-checked for uniqueness among non-archived materials.
+	// deterministic, self-describing code from the material's attributes. An explicit code is
+	// preserved and still range-checked for uniqueness among non-archived materials.
 	explicitCode := m.Code.Valid && strings.TrimSpace(m.Code.String) != ""
+	generatedCode := ""
+	if !explicitCode {
+		codeMaterial := *m
+		codeMaterial.CompositionEntries = composition
+		generatedCode = materialcode.ComposeArticle(&codeMaterial)
+	}
 	var id int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		if explicitCode {
@@ -86,7 +93,7 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 			return fmt.Errorf("create material: %w", err)
 		}
 		if !explicitCode {
-			if err := assignGeneratedMaterialCode(ctx, rep.DB(), newID, m.MaterialClass); err != nil {
+			if err := assignGeneratedMaterialCode(ctx, rep.DB(), newID, generatedCode); err != nil {
 				return fmt.Errorf("create material %d code: %w", newID, err)
 			}
 		}
@@ -351,38 +358,17 @@ func normalizeMaterialPurpose(purpose string) string {
 	return p
 }
 
-// materialCodePrefix is the stable per-type prefix for an auto-generated warehouse code (#68),
-// derived from the material's CTI class. An unclassified/'other' material gets the generic MAT.
-func materialCodePrefix(materialClass string) string {
-	switch normalizeMaterialClass(materialClass) {
-	case string(entity.MaterialClassFabric):
-		return "FAB"
-	case string(entity.MaterialClassHardware):
-		return "HRD"
-	case string(entity.MaterialClassThread):
-		return "THR"
-	case string(entity.MaterialClassPackaging):
-		return "PKG"
-	default:
-		return "MAT"
-	}
-}
-
 // assignGeneratedMaterialCode auto-generates and stores a deterministic, unique warehouse code for a
-// freshly-inserted material whose operator left the code blank (#68). The code is derived from the
-// row's own auto-increment id — globally unique and never reused — so a plain "prefix + zero-padded
-// id" is collision-free by construction against every other generated code. The only way the base
-// form can clash is an operator having manually typed that exact literal on another non-archived
-// material; the bounded retry disambiguates that rare case with a numeric suffix. Runs inside the
-// caller's SERIALIZABLE create transaction, so the uniqueness range-check (checkMaterialCodeFree,
-// non-archived only) is held against concurrent creates — there is deliberately no global DB UNIQUE
-// index (code must stay unique only among non-archived rows; an archived row may keep its code).
-func assignGeneratedMaterialCode(ctx context.Context, db dependency.DB, id int, materialClass string) error {
-	base := fmt.Sprintf("%s-%06d", materialCodePrefix(materialClass), id)
-	for attempt := 0; attempt < 20; attempt++ {
+// freshly-inserted material whose operator left the code blank (#68). The base is composed from the
+// material's attributes; collisions append -2, -3, and so on. Runs inside the caller's SERIALIZABLE
+// create transaction, so the uniqueness range-check (checkMaterialCodeFree, non-archived only) is
+// held against concurrent creates — there is deliberately no global DB UNIQUE index (code must stay
+// unique only among non-archived rows; an archived row may keep its code).
+func assignGeneratedMaterialCode(ctx context.Context, db dependency.DB, id int, base string) error {
+	for suffix := int64(1); ; suffix++ {
 		candidate := base
-		if attempt > 0 {
-			candidate = fmt.Sprintf("%s-%d", base, attempt+1) // FAB-000042-2, -3, …
+		if suffix > 1 {
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
 		}
 		err := checkMaterialCodeFree(ctx, db, sql.NullString{String: candidate, Valid: true}, id)
 		if err == nil {
@@ -397,7 +383,6 @@ func assignGeneratedMaterialCode(ctx context.Context, db dependency.DB, id int, 
 			return err
 		}
 	}
-	return fmt.Errorf("could not generate a unique material code for id %d", id)
 }
 
 // normalizeMaterialClass lower-cases/trims the class and defaults an empty one to 'other'. An

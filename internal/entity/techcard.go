@@ -721,6 +721,7 @@ type TechCardOperation struct {
 	Needle          sql.NullString      `db:"needle"`
 	Attachment      sql.NullString      `db:"attachment"`
 	TimeNorm        decimal.NullDecimal `db:"time_norm"`
+	SMV             decimal.NullDecimal `db:"smv"` // standard minute value; NULL = unset
 	Note            sql.NullString      `db:"note"`
 	// classification + links (Phase 3.5d)
 	OperationType TechCardOperationType    `db:"operation_type"` // machine/stitch class; "unknown" = unset

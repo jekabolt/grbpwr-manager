@@ -32,7 +32,7 @@ func TestMaterialCatalogHardening(t *testing.T) {
 	m1, err := tc.GetMaterial(ctx, id1)
 	require.NoError(t, err)
 	require.True(t, m1.Code.Valid, "a blank code must be auto-generated")
-	require.Regexp(t, regexp.MustCompile(`^FAB-\d{6,}$`), m1.Code.String, "auto code carries the type prefix + zero-padded id")
+	require.Regexp(t, regexp.MustCompile(`^FAB(?:-\d+)?$`), m1.Code.String, "empty attributes collapse to the class token, with a collision suffix when needed")
 	require.Equal(t, string(entity.MaterialPurposeBoth), m1.Purpose, "purpose must default to both")
 
 	// A second blank-code material gets a DISTINCT auto code (uniqueness by construction from the id).

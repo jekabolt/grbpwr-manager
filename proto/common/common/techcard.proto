@@ -730,6 +730,7 @@ message TechCardOperation {
   // empty. Distinct from piece_line_keys: those are the parts joined, these are what joins them.
   repeated string bom_line_keys = 23;
   repeated int64 bom_item_ids = 24; // OUTPUT: resolved FKs to the BOM lines, in the order given
+  google.type.Decimal smv = 25; // standard minute value; absent = unset
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
