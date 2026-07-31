@@ -897,6 +897,7 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 			}
 			pieceIndex = sql.NullInt32{Int32: idx, Valid: true}
 		}
+		materialID, materialIDSet := parseUsageMaterialID(u.MaterialId)
 		if len(u.Placement) > maxVarchar255 {
 			return nil, fmt.Errorf("usage placement must be at most %d characters", maxVarchar255)
 		}
@@ -923,6 +924,8 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 		}
 		out = append(out, entity.TechCardColorwayUsage{
 			BomItemIndex:     bomItemIndex,
+			MaterialId:       materialID,
+			MaterialIdSet:    materialIDSet,
 			Placement:        normalizedPlacementNull(u.Placement),
 			Color:            nullStringFromPb(u.Color),
 			Pantone:          nullStringFromPb(u.Pantone),
@@ -980,11 +983,14 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 		if u.PieceIndex != nil {
 			pieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
 		}
+		materialID, materialIDSet := parseUsageMaterialID(u.MaterialId)
 		out = append(out, entity.TechCardColorwayUsage{
 			BomLineKey:       strings.TrimSpace(u.BomLineKey),
 			PieceLineKey:     strings.TrimSpace(u.PieceLineKey),
 			BomItemIndex:     bomItemIndex,
 			PieceIndex:       pieceIndex,
+			MaterialId:       materialID,
+			MaterialIdSet:    materialIDSet,
 			Placement:        normalizedPlacementNull(u.Placement),
 			Color:            nullStringFromPb(u.Color),
 			Pantone:          nullStringFromPb(u.Pantone),
@@ -994,6 +1000,19 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 		})
 	}
 	return out, nil
+}
+
+// parseUsageMaterialID keeps proto3 optional presence separate from the nullable pin value. An
+// omitted field belongs to an older client and must be preserved by the store; an explicit zero (or
+// negative value) is an authoritative clear and therefore has presence without a valid SQL value.
+func parseUsageMaterialID(id *int64) (sql.NullInt64, bool) {
+	if id == nil {
+		return sql.NullInt64{}, false
+	}
+	if *id <= 0 {
+		return sql.NullInt64{}, true
+	}
+	return sql.NullInt64{Int64: *id, Valid: true}, true
 }
 
 // parseTechCardPieces parses the structural cut-pieces (NF-05). Each piece's per-colourway fabric
@@ -1394,6 +1413,11 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			v := u.PieceIndex.Int32
 			pieceIndex = &v
 		}
+		var materialID *int64
+		if u.MaterialId.Valid {
+			v := u.MaterialId.Int64
+			materialID = &v
+		}
 		sizeCons := make([]*pb_common.TechCardBomSizeConsumption, 0, len(u.SizeConsumptions))
 		for _, sc := range u.SizeConsumptions {
 			sizeCons = append(sizeCons, &pb_common.TechCardBomSizeConsumption{
@@ -1404,6 +1428,7 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 		out = append(out, &pb_common.TechCardColorwayUsage{
 			BomItemIndex:     bomItemIndex,
 			BomItemId:        u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
+			MaterialId:       materialID,
 			Placement:        pbStringFromNull(u.Placement),
 			Color:            pbStringFromNull(u.Color),
 			Pantone:          pbStringFromNull(u.Pantone),

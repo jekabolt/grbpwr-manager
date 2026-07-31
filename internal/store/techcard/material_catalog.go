@@ -231,6 +231,35 @@ func (s *Store) ArchiveMaterial(ctx context.Context, id int, archived bool) erro
 	return nil
 }
 
+// getMaterialsByIDs returns the given catalog materials (archived included — a card may still
+// reference one) with their current prices and typed attributes, keyed by id. Missing ids are
+// simply absent from the map. Used to attach a tech card's LinkedMaterials — the article
+// identities its costing prices pins through and its production plan labels rollup rows with.
+func (s *Store) getMaterialsByIDs(ctx context.Context, ids []int) (map[int]entity.MaterialWithPrice, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := storeutil.QueryListNamed[materialRow](ctx, s.DB,
+		materialWithPriceSelect+` WHERE m.id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("get materials by ids: %w", err)
+	}
+	out := make([]entity.MaterialWithPrice, len(rows))
+	ptrs := make([]*entity.MaterialWithPrice, len(rows))
+	for i, r := range rows {
+		out[i] = r.toEntity()
+		ptrs[i] = &out[i]
+	}
+	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {
+		return nil, fmt.Errorf("get materials by ids attrs: %w", err)
+	}
+	m := make(map[int]entity.MaterialWithPrice, len(out))
+	for _, mw := range out {
+		m[mw.Id] = mw
+	}
+	return m, nil
+}
+
 // GetMaterial returns a material with its current price, or an error if not found.
 func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPrice, error) {
 	rows, err := storeutil.QueryListNamed[materialRow](ctx, s.DB,

@@ -33,7 +33,16 @@ const techCardReadinessQuery = `SELECT
 	(SELECT COUNT(*) FROM tech_card_bom_item b
 		WHERE b.tech_card_id = tc.id AND b.section = 'fabric')                AS bom_fabric_lines,
 	(SELECT COUNT(*) FROM tech_card_bom_item b
-		WHERE b.tech_card_id = tc.id AND b.material_id IS NOT NULL)           AS bom_linked_lines,
+		WHERE b.tech_card_id = tc.id AND (b.material_id IS NOT NULL
+		  -- Slots: a line with no default article still counts as covered when EVERY live
+		  -- colourway pins one for it (usage.material_id) — pin-or-default, per colourway.
+		  OR (EXISTS (SELECT 1 FROM product pr2
+		        WHERE pr2.style_id = tc.id AND pr2.lifecycle_status <> :archived)
+		      AND NOT EXISTS (SELECT 1 FROM product pr3
+		        WHERE pr3.style_id = tc.id AND pr3.lifecycle_status <> :archived
+		          AND NOT EXISTS (SELECT 1 FROM tech_card_colorway_usage u2
+		            WHERE u2.colorway_id = pr3.id AND u2.bom_item_id = b.id
+		              AND u2.material_id IS NOT NULL)))))                     AS bom_linked_lines,
 	(SELECT COUNT(*) FROM sample s
 		WHERE s.tech_card_id = tc.id AND s.status <> 'scrapped')              AS samples,
 	(SELECT COUNT(*) FROM sample s

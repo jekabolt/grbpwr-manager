@@ -387,6 +387,19 @@ type TechCardColorwayUsage struct {
 	MaterialIdSet bool `db:"-"`
 }
 
+// EffectiveMaterialId resolves the article this usage actually consumes: the colourway's pin
+// when set, else the slot default carried by the resolved BOM line. 0 = no article at all
+// (an unfilled slot — the caller must surface it, not skip it silently).
+func (u *TechCardColorwayUsage) EffectiveMaterialId(bom *TechCardBomItem) (id int, pinned bool) {
+	if u.MaterialId.Valid && u.MaterialId.Int64 > 0 {
+		return int(u.MaterialId.Int64), true
+	}
+	if bom != nil && bom.MaterialId.Valid {
+		return int(bom.MaterialId.Int64), false
+	}
+	return 0, false
+}
+
 // LineTotal is the usage's per-garment material cost, resolved against its catalog
 // article (bom). It is INVALID (the cost moves to SizeRunTotal) when the usage has
 // per-size consumption. A countable trim (Quantity, no Consumption) is Quantity ×
@@ -1220,6 +1233,12 @@ type TechCard struct {
 	// alone instead of one GetTechCard plus a warehouse read per card. List paths only.
 	OutputMaterialName   string              `db:"-"`
 	OutputMaterialOnHand decimal.NullDecimal `db:"-"`
+	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
+	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
+	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned
+	// article, and the production plan labels/converts its rollup rows, from this one map. Nil on
+	// list views and writes; every consumer must degrade to the BOM line's own snapshot fields.
+	LinkedMaterials map[int]MaterialWithPrice `db:"-"`
 }
 
 // LinkedProductIDs returns the style's live (non-archived) colourway product ids. PR6 R1: a style's

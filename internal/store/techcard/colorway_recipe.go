@@ -13,6 +13,31 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
+type recipeUsageSlot struct {
+	BomItemID      int64
+	BomItemIDValid bool
+	PieceID        int64
+	PieceIDValid   bool
+}
+
+type recipeUsagePinRow struct {
+	BomItemID  sql.NullInt64 `db:"bom_item_id"`
+	PieceID    sql.NullInt64 `db:"piece_id"`
+	MaterialID sql.NullInt64 `db:"material_id"`
+}
+
+type materialPinStateRow struct {
+	ID       int64 `db:"id"`
+	Archived bool  `db:"archived"`
+}
+
+type resolvedRecipeUsage struct {
+	usage      *entity.TechCardColorwayUsage
+	bomItemID  sql.NullInt64
+	pieceID    sql.NullInt64
+	materialID sql.NullInt64
+}
+
 // UpdateColorwayRecipe replaces a colourway's material recipe (usages), restoring the write-path cut
 // in the R1 merge — ColorwayDevelopmentInsert.usages was accepted on the wire but never written (the
 // silent no-op, A3.4). The recipe is a colourway-owned sub-aggregate (R2/R4): it is optimistically
@@ -66,11 +91,29 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			pieceOrdered = append(pieceOrdered, r.Id)
 		}
 
-		// Full-replace this colourway's usages (per-size consumptions cascade on delete).
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			`DELETE FROM tech_card_colorway_usage WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
-			return fmt.Errorf("clear colourway %d usages: %w", colorwayID, err)
+		// Capture the old pins before the full replace. Presence-less writes come from clients that
+		// predate material_id, so an unambiguous logical usage retains its pin. The logical identity is
+		// the resolved (bom_item_id, piece_id) pair, not either legacy positional index.
+		priorRows, err := storeutil.QueryListNamed[recipeUsagePinRow](ctx, rep.DB(), `
+			SELECT bom_item_id, piece_id, material_id
+			FROM tech_card_colorway_usage
+			WHERE colorway_id = :id`, map[string]any{"id": colorwayID})
+		if err != nil {
+			return fmt.Errorf("load colourway %d existing recipe pins: %w", colorwayID, err)
 		}
+		priorBySlot := make(map[recipeUsageSlot][]sql.NullInt64, len(priorRows))
+		for _, row := range priorRows {
+			slot := newRecipeUsageSlot(row.BomItemID, row.PieceID)
+			priorBySlot[slot] = append(priorBySlot[slot], row.MaterialID)
+		}
+
+		// Resolve and validate the entire replacement before its first write. In particular, MySQL
+		// cannot enforce uniqueness when piece_id is NULL, and the material FK alone would turn a
+		// missing article into an internal error instead of an actionable field violation.
+		resolved := make([]resolvedRecipeUsage, 0, len(usages))
+		seen := make(map[recipeUsageSlot]int, len(usages))
+		materialIDs := make([]int64, 0, len(usages))
+		seenMaterialIDs := make(map[int64]bool, len(usages))
 		for i := range usages {
 			u := &usages[i]
 			bomItemID, err := resolveUsageBom(u, byKey, ordered, i)
@@ -81,21 +124,87 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			if err != nil {
 				return err
 			}
+			slot := newRecipeUsageSlot(bomItemID, pieceID)
+			if previous, exists := seen[slot]; exists {
+				return entity.NewFieldViolation(fmt.Sprintf("usages[%d]", i), "duplicate_slot",
+					fmt.Sprintf("%s (already used by usages[%d])", recipeUsageSlotName(u, slot), previous),
+					"keep only one usage for each BOM-line and cut-piece pair")
+			}
+			seen[slot] = i
+
+			materialID := sql.NullInt64{}
+			if u.MaterialIdSet {
+				// Any explicitly-present non-positive value clears the pin, even for direct store
+				// callers that did not pass through the DTO normaliser.
+				if u.MaterialId.Valid && u.MaterialId.Int64 > 0 {
+					materialID = u.MaterialId
+					if !seenMaterialIDs[materialID.Int64] {
+						seenMaterialIDs[materialID.Int64] = true
+						materialIDs = append(materialIDs, materialID.Int64)
+					}
+				}
+			} else if oldPins := priorBySlot[slot]; len(oldPins) == 1 {
+				// Multiple old rows for one slot are ambiguous legacy data: do not guess which pin
+				// belongs to the replacement usage. A single NULL is preserved as inheritance.
+				materialID = oldPins[0]
+			}
+			resolved = append(resolved, resolvedRecipeUsage{
+				usage: u, bomItemID: bomItemID, pieceID: pieceID, materialID: materialID,
+			})
+		}
+
+		materialStates := make(map[int64]bool, len(materialIDs))
+		if len(materialIDs) > 0 {
+			rows, err := storeutil.QueryListNamed[materialPinStateRow](ctx, rep.DB(), `
+				SELECT id, archived FROM material WHERE id IN (:ids)`, map[string]any{"ids": materialIDs})
+			if err != nil {
+				return fmt.Errorf("validate colourway recipe material pins: %w", err)
+			}
+			for _, row := range rows {
+				materialStates[row.ID] = row.Archived
+			}
+		}
+		for i := range resolved {
+			u := resolved[i].usage
+			if !u.MaterialIdSet || !resolved[i].materialID.Valid {
+				continue
+			}
+			id := resolved[i].materialID.Int64
+			archived, exists := materialStates[id]
+			if !exists {
+				return entity.NewFieldViolation(fmt.Sprintf("usages[%d].material_id", i), "material_not_found",
+					fmt.Sprintf("material %d", id), "choose an existing active material or clear the pin")
+			}
+			if archived {
+				return entity.NewFieldViolation(fmt.Sprintf("usages[%d].material_id", i), "material_archived",
+					fmt.Sprintf("material %d", id), "choose an active material or clear the pin")
+			}
+		}
+
+		// Full-replace this colourway's usages (per-size consumptions cascade on delete).
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM tech_card_colorway_usage WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
+			return fmt.Errorf("clear colourway %d usages: %w", colorwayID, err)
+		}
+		for i := range resolved {
+			r := &resolved[i]
+			u := r.usage
 			usageID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 				INSERT INTO tech_card_colorway_usage
-					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_id, piece_index, display_order)
-				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_id, :piece_index, :display_order)`,
+					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_id, piece_index, material_id, display_order)
+				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_id, :piece_index, :material_id, :display_order)`,
 				map[string]any{
 					"colorway_id":    colorwayID,
-					"bom_item_id":    bomItemID,
+					"bom_item_id":    r.bomItemID,
 					"bom_item_index": u.BomItemIndex,
 					"placement":      u.Placement,
 					"color":          u.Color,
 					"pantone":        u.Pantone,
 					"consumption":    u.Consumption,
 					"quantity":       u.Quantity,
-					"piece_id":       pieceID,
+					"piece_id":       r.pieceID,
 					"piece_index":    u.PieceIndex,
+					"material_id":    r.materialID,
 					"display_order":  i,
 				})
 			if err != nil {
@@ -152,7 +261,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 // colourway has no recipe yet.
 func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity.TechCardColorwayUsage, error) {
 	usages, err := storeutil.QueryListNamed[entity.TechCardColorwayUsage](ctx, s.DB, `
-		SELECT id, bom_item_id, piece_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+		SELECT id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
 		FROM tech_card_colorway_usage
 		WHERE colorway_id = :id
 		ORDER BY display_order`, map[string]any{"id": colorwayID})
@@ -186,37 +295,60 @@ func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity
 
 // resolveUsageBom resolves a usage's BOM reference to a real bom_item id: by stable line_key
 // (preferred), else the legacy positional index, else SQL NULL. An unknown line_key is field-tagged.
-func resolveUsageBom(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (any, error) {
+func resolveUsageBom(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (sql.NullInt64, error) {
 	if key := strings.TrimSpace(u.BomLineKey); key != "" {
 		if id, ok := byKey[key]; ok {
-			return id, nil
+			return sql.NullInt64{Int64: int64(id), Valid: true}, nil
 		}
-		return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].bom_line_key", i),
+		return sql.NullInt64{}, entity.NewFieldViolation(fmt.Sprintf("usages[%d].bom_line_key", i),
 			fmt.Sprintf("no BOM line %q in this style", key), "", "reference an existing BOM line by its line_key")
 	}
 	if u.BomItemIndex.Valid {
 		if idx := int(u.BomItemIndex.Int32); idx >= 0 && idx < len(ordered) {
-			return ordered[idx], nil
+			return sql.NullInt64{Int64: int64(ordered[idx]), Valid: true}, nil
 		}
 	}
-	return nil, nil
+	return sql.NullInt64{}, nil
 }
 
 // resolveUsagePiece turns a usage's cut-piece reference into a real tech_card_piece id for the
 // usage.piece_id FK (WS4): by stable piece line_key (preferred; unknown → field-tagged) or the legacy
 // positional piece_index, else SQL NULL (the norm is about the whole garment, not a specific piece).
-func resolveUsagePiece(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (any, error) {
+func resolveUsagePiece(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (sql.NullInt64, error) {
 	if key := strings.TrimSpace(u.PieceLineKey); key != "" {
 		if id, ok := byKey[key]; ok {
-			return id, nil
+			return sql.NullInt64{Int64: int64(id), Valid: true}, nil
 		}
-		return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].piece_line_key", i),
+		return sql.NullInt64{}, entity.NewFieldViolation(fmt.Sprintf("usages[%d].piece_line_key", i),
 			fmt.Sprintf("no cut-piece %q in this style", key), "", "reference an existing cut-piece by its line_key")
 	}
 	if u.PieceIndex.Valid {
 		if idx := int(u.PieceIndex.Int32); idx >= 0 && idx < len(ordered) {
-			return ordered[idx], nil
+			return sql.NullInt64{Int64: int64(ordered[idx]), Valid: true}, nil
 		}
 	}
-	return nil, nil
+	return sql.NullInt64{}, nil
+}
+
+func newRecipeUsageSlot(bomItemID, pieceID sql.NullInt64) recipeUsageSlot {
+	return recipeUsageSlot{
+		BomItemID: bomItemID.Int64, BomItemIDValid: bomItemID.Valid,
+		PieceID: pieceID.Int64, PieceIDValid: pieceID.Valid,
+	}
+}
+
+func recipeUsageSlotName(u *entity.TechCardColorwayUsage, slot recipeUsageSlot) string {
+	bom := "no BOM line"
+	if key := strings.TrimSpace(u.BomLineKey); key != "" {
+		bom = fmt.Sprintf("BOM line %q", key)
+	} else if slot.BomItemIDValid {
+		bom = fmt.Sprintf("BOM item %d", slot.BomItemID)
+	}
+	piece := "whole garment"
+	if key := strings.TrimSpace(u.PieceLineKey); key != "" {
+		piece = fmt.Sprintf("cut-piece %q", key)
+	} else if slot.PieceIDValid {
+		piece = fmt.Sprintf("cut-piece %d", slot.PieceID)
+	}
+	return bom + " / " + piece
 }

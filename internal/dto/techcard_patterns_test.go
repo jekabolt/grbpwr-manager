@@ -87,7 +87,7 @@ func TestColorwayCostRollup(t *testing.T) {
 		{BomItemIndex: idx(1), Quantity: ndFrom("1")}, // 3 USD
 		{BomItemIndex: idx(2), Quantity: ndFrom("4")}, // 20 currency-less
 	}}
-	res := colorwayCost(&cw, bomItems, "EUR", map[int]int{}, 0, CostingFx{})
+	res := colorwayCost(&cw, bomItems, nil, "EUR", map[int]int{}, 0, CostingFx{})
 	// materials_per_unit = EUR(20) + currency-less(20) = 40; USD excluded. All usages are
 	// per-garment (countable Quantity), so totalOrderQty is irrelevant here.
 	if !res.materialsPerUnit.Equal(decimal.RequireFromString("40")) {

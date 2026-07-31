@@ -93,7 +93,7 @@ func nextStageRequirements(target entity.TechCardStage, f entity.TechCardReadine
 		return []*pb_admin.TechCardReadinessRequirement{
 			readinessReq("sms_sample", "a salesman sample exists", f.SmsSamples > 0, "no sms sample recorded"),
 			readinessReq("colorway_linked", "at least one live colourway", f.LiveColorways > 0, "no live colourway"),
-			readinessReq("bom_linked", "every BOM line is linked to a catalog material",
+			readinessReq("bom_linked", "every BOM slot has an article (a default, or a pin in every live colourway)",
 				f.BomLines > 0 && f.BomLinkedLines == f.BomLines, bomLinkedDetail(f)),
 		}
 	case entity.TechCardStageProd:
@@ -158,7 +158,7 @@ func bomLinkedDetail(f entity.TechCardReadinessFacts) string {
 	if f.BomLines == 0 {
 		return "the BOM is empty"
 	}
-	return fmt.Sprintf("%d of %d BOM lines have no catalog material", f.BomLines-f.BomLinkedLines, f.BomLines)
+	return fmt.Sprintf("%d of %d BOM slots have no article (no default and not pinned by every live colourway)", f.BomLines-f.BomLinkedLines, f.BomLines)
 }
 
 // patternsDetail likewise: an empty grade cannot be "fully covered" by patterns, and the prod

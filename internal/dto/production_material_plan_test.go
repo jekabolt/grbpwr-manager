@@ -50,7 +50,7 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 	onHand := map[int]decimal.Decimal{100: d("5")}
 	issued := map[int]decimal.Decimal{100: d("10")}
 
-	resp := ComputeProductionRunMaterialPlan(run, card, onHand, issued)
+	resp := ComputeProductionRunMaterialPlan(run, card, onHand, issued, nil)
 	require.Len(t, resp.Rows, 2, "materials 100 (index-keyed) and 200 (FK-keyed) are countable")
 	fkRow := resp.Rows[1]
 	require.Equal(t, int32(200), fkRow.MaterialId, "the FK-only usage resolves via bom_item_id")
@@ -67,8 +67,15 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 	require.Equal(t, "-53", row.IssuedVariance.Value, "issued 10 − required 63 (under-issued so far)")
 	require.False(t, row.HasSizeNorms, "per-garment norm, not size-graded")
 
-	// caveats: free-text BOM line + the product with no colourway
-	require.GreaterOrEqual(t, len(resp.Caveats), 2)
+	// The free-text BOM line (no pin, no slot default) is now a BLOCKER — slot × colourway with
+	// the uncounted garment qty — not a caveat lost in prose. The product with no colourway
+	// stays a caveat (it has no slot to anchor a blocker to).
+	require.GreaterOrEqual(t, len(resp.Caveats), 1)
+	require.Len(t, resp.Blockers, 1)
+	require.Equal(t, "no article (no pin, no slot default)", resp.Blockers[0].Reason)
+	require.Equal(t, int32(55), resp.Blockers[0].ColorwayId)
+	require.Equal(t, int32(10), resp.Blockers[0].PlannedQty)
+	require.Equal(t, "Free-text trim", resp.Blockers[0].SlotName)
 }
 
 // materials-from-stock is folded into the run actuals; a manual materials cost alongside stock

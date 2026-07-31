@@ -303,16 +303,41 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 		slog.Default().ErrorContext(ctx, "can't load tech card for material plan", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load tech card")
 	}
-	// on-hand for every catalog material referenced by the card's BOM (a bounded, small set).
-	onHand := make(map[int]decimal.Decimal)
-	for i := range card.BomItems {
-		b := &card.BomItems[i]
-		if !b.MaterialId.Valid {
-			continue
+	// on-hand + identity for the UNION of articles the plan may resolve: BOM slot defaults AND
+	// colourway pins (a bounded, small set). A pinned article that is not also some slot's
+	// default previously had no on-hand key, so the plan reported 100% shortage on it while the
+	// shelf held plenty.
+	matIDs := make([]int, 0, len(card.BomItems))
+	seen := map[int]bool{}
+	addID := func(id int) {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			matIDs = append(matIDs, id)
 		}
-		mid := int(b.MaterialId.Int64)
-		if _, done := onHand[mid]; done {
-			continue
+	}
+	for i := range card.BomItems {
+		if card.BomItems[i].MaterialId.Valid {
+			addID(int(card.BomItems[i].MaterialId.Int64))
+		}
+	}
+	for i := range card.Colorways {
+		for j := range card.Colorways[i].Usages {
+			if u := &card.Colorways[i].Usages[j]; u.MaterialId.Valid {
+				addID(int(u.MaterialId.Int64))
+			}
+		}
+	}
+	linked := card.LinkedMaterials
+	if linked == nil {
+		linked = make(map[int]entity.MaterialWithPrice, len(matIDs))
+	}
+	onHand := make(map[int]decimal.Decimal, len(matIDs))
+	for _, mid := range matIDs {
+		if _, ok := linked[mid]; !ok {
+			// Best-effort identity fetch for labels/units; a miss degrades to slot snapshots.
+			if m, merr := s.repo.TechCards().GetMaterial(ctx, mid); merr == nil && m != nil {
+				linked[mid] = *m
+			}
 		}
 		st, err := s.repo.MaterialStock().GetMaterialStock(ctx, mid)
 		if err != nil {
@@ -326,7 +351,7 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 		onHand[mid] = st.OnHand
 	}
 	issued := dto.AggregateRunMaterialIssues(run.MaterialMovements)
-	return dto.ComputeProductionRunMaterialPlan(run, card, onHand, issued), nil
+	return dto.ComputeProductionRunMaterialPlan(run, card, onHand, issued, linked), nil
 }
 
 // snapshotPlannedCost freezes the run's planned unit cost at plan time: from the linked
