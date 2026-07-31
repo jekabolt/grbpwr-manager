@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"sort"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -303,11 +304,13 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 		slog.Default().ErrorContext(ctx, "can't load tech card for material plan", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load tech card")
 	}
-	// on-hand + identity for the UNION of articles the plan may resolve: BOM slot defaults AND
-	// colourway pins (a bounded, small set). A pinned article that is not also some slot's
-	// default previously had no on-hand key, so the plan reported 100% shortage on it while the
-	// shelf held plenty.
-	matIDs := make([]int, 0, len(card.BomItems))
+	// on-hand + identity for the UNION of articles the plan may resolve: BOM slot defaults,
+	// colourway pins, AND materials already issued to the run (a bounded, small set). A pinned
+	// article that is not also some slot's default previously had no on-hand key, so the plan
+	// reported 100% shortage on it while the shelf held plenty; an issued-but-no-longer-required
+	// material without identity rendered as "material #id" with a false zero on hand.
+	issued := dto.AggregateRunMaterialIssues(run.MaterialMovements)
+	matIDs := make([]int, 0, len(card.BomItems)+len(issued))
 	seen := map[int]bool{}
 	addID := func(id int) {
 		if id > 0 && !seen[id] {
@@ -326,6 +329,14 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 				addID(int(u.MaterialId.Int64))
 			}
 		}
+	}
+	issuedIDs := make([]int, 0, len(issued))
+	for mid := range issued {
+		issuedIDs = append(issuedIDs, mid)
+	}
+	sort.Ints(issuedIDs)
+	for _, mid := range issuedIDs {
+		addID(mid)
 	}
 	linked := card.LinkedMaterials
 	if linked == nil {
@@ -350,7 +361,6 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 		}
 		onHand[mid] = st.OnHand
 	}
-	issued := dto.AggregateRunMaterialIssues(run.MaterialMovements)
 	return dto.ComputeProductionRunMaterialPlan(run, card, onHand, issued, linked), nil
 }
 

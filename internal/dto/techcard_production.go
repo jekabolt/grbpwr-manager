@@ -894,6 +894,14 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	if cw == nil {
 		return decimal.NullDecimal{}, ""
 	}
+	// A colourway with NO recipe at all inherits the STYLE figure (the primary colourway's),
+	// exactly as before per-colourway seeding: computing it "own materials" would mean manual
+	// articles only — a silent price DROP by the whole material component on every legacy
+	// multi-colourway style whose recipes were never authored. An authored recipe, however
+	// sparse, stands on its own.
+	if len(cw.Usages) == 0 {
+		return ComputeTechCardUnitCost(tc, fx)
+	}
 	c := tc.Costing
 	costingCcy := ""
 	if c.Currency.Valid {
@@ -1069,8 +1077,16 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 	sh.UnitPrice = decimal.NullDecimal{}
 	sh.Currency = sql.NullString{}
 	if m, ok := linked[int(u.MaterialId.Int64)]; ok && m.LatestPrice != nil {
-		sh.UnitPrice = decimal.NullDecimal{Decimal: m.LatestPrice.Price, Valid: true}
-		sh.Currency = sql.NullString{String: m.LatestPrice.Currency, Valid: m.LatestPrice.Currency != ""}
+		// A catalog price is per the MATERIAL's unit; the usage's norm is in the SLOT's unit.
+		// When the two disagree (slot metres, article priced per cone), norm × price is off by
+		// the whole conversion factor — leave the line unpriced instead, same rule as an
+		// unpriced pin: never a silently wrong number into product.cost_price.
+		slotUnit := strings.TrimSpace(bom.Unit.String)
+		stockUnit := strings.TrimSpace(m.Unit.String)
+		if slotUnit == "" || stockUnit == "" || strings.EqualFold(slotUnit, stockUnit) {
+			sh.UnitPrice = decimal.NullDecimal{Decimal: m.LatestPrice.Price, Valid: true}
+			sh.Currency = sql.NullString{String: m.LatestPrice.Currency, Valid: m.LatestPrice.Currency != ""}
+		}
 	}
 	return &sh
 }

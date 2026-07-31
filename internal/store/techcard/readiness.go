@@ -20,6 +20,10 @@ import (
 //   - a fitting may belong to a product only (tech_card_id NULL); the equality filters those out.
 //   - the pattern subselect intersects with the live size range: a sheet left behind for a size that
 //     has since been dropped from the grade must not count towards coverage.
+//   - bom_linked_lines is pin-or-default (slots, 0221): a line with no default article still counts
+//     as covered when there is at least one live colourway AND every live colourway both pins an
+//     article for it and carries no unpinned usage of it — one pinned usage next to an unpinned one
+//     would pass a weaker check while the production plan still blocks the unpinned row.
 const techCardReadinessQuery = `SELECT
 	tc.stage                                                                  AS stage,
 	tc.approval_state                                                         AS approval_state,
@@ -34,15 +38,16 @@ const techCardReadinessQuery = `SELECT
 		WHERE b.tech_card_id = tc.id AND b.section = 'fabric')                AS bom_fabric_lines,
 	(SELECT COUNT(*) FROM tech_card_bom_item b
 		WHERE b.tech_card_id = tc.id AND (b.material_id IS NOT NULL
-		  -- Slots: a line with no default article still counts as covered when EVERY live
-		  -- colourway pins one for it (usage.material_id) — pin-or-default, per colourway.
 		  OR (EXISTS (SELECT 1 FROM product pr2
 		        WHERE pr2.style_id = tc.id AND pr2.lifecycle_status <> :archived)
 		      AND NOT EXISTS (SELECT 1 FROM product pr3
 		        WHERE pr3.style_id = tc.id AND pr3.lifecycle_status <> :archived
-		          AND NOT EXISTS (SELECT 1 FROM tech_card_colorway_usage u2
+		          AND (NOT EXISTS (SELECT 1 FROM tech_card_colorway_usage u2
 		            WHERE u2.colorway_id = pr3.id AND u2.bom_item_id = b.id
-		              AND u2.material_id IS NOT NULL)))))                     AS bom_linked_lines,
+		              AND u2.material_id IS NOT NULL)
+		            OR EXISTS (SELECT 1 FROM tech_card_colorway_usage u3
+		              WHERE u3.colorway_id = pr3.id AND u3.bom_item_id = b.id
+		                AND u3.material_id IS NULL))))))                     AS bom_linked_lines,
 	(SELECT COUNT(*) FROM sample s
 		WHERE s.tech_card_id = tc.id AND s.status <> 'scrapped')              AS samples,
 	(SELECT COUNT(*) FROM sample s

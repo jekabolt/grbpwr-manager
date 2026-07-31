@@ -3,12 +3,21 @@ package dto
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 )
+
+// planLengthUnits are the slot units the metres→cones thread conversion may start FROM. The
+// division is only meaningful length ÷ length-per-cone; converting from any other unit (a slot
+// authored in cones against metre stock, pcs vs cone) would divide in the wrong direction and
+// report a phantom zero shortage.
+var planLengthUnits = map[string]bool{
+	"m": true, "м": true, "meter": true, "meters": true, "metre": true, "metres": true,
+}
 
 // planSlotSections are the BOM sections a colourway recipe is expected to cover — the garment's
 // own materials. A slot in one of these with NO norm for a produced colourway is a blocker (the
@@ -68,7 +77,6 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		hasSizeNorms bool
 		name         string
 		unit         string
-		converted    bool // metres → cones conversion applied
 	}
 	req := make(map[int]*matAcc)
 	order := make([]int, 0) // material ids, in first-seen order (then sorted for a stable response)
@@ -205,37 +213,45 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				c.hasSizeNorms = false
 			}
 
-			// Rollup in the material's STOCK unit. The one conversion we know is thread: a slot
-			// specified in metres against an article stocked in cones (length_per_cone_m). Any
-			// other unit mismatch is surfaced once and compared as-is — a wrong-looking number
-			// beats a silently wrong one.
+			// Rollup unit discipline: the number and its label must always agree. The one
+			// conversion we know is thread — a slot specified in a LENGTH unit against an
+			// article stocked in cones (length_per_cone_m metres each) divides metres by cone
+			// length; only that direction, only from a length unit. Any other mismatch keeps the
+			// number AND the label in the slot's unit (comparing it against stock is noted once
+			// as a caveat) — a slot-unit number under the stock unit's label was a purchase
+			// order for 18 000 cones.
 			stockAdd := add
+			rowUnit := bom.Unit.String
 			if m, ok := linked[mid]; ok {
-				slotUnit := bom.Unit.String
-				stockUnit := m.Unit.String
-				if m.Unit.Valid && stockUnit != "" && slotUnit != "" && stockUnit != slotUnit {
-					if m.ThreadAttr != nil && m.ThreadAttr.LengthPerConeM.Valid && m.ThreadAttr.LengthPerConeM.Decimal.IsPositive() {
-						stockAdd = add.Div(m.ThreadAttr.LengthPerConeM.Decimal)
-						if !unitNoted[mid] {
-							caveats = append(caveats, fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
-								matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
-							unitNoted[mid] = true
-						}
-					} else if !unitNoted[mid] {
-						caveats = append(caveats, fmt.Sprintf("%s: slot unit %q vs stock unit %q — compared without conversion",
-							matName(mid, bom), slotUnit, stockUnit))
+				slotUnit := strings.TrimSpace(bom.Unit.String)
+				stockUnit := strings.TrimSpace(m.Unit.String)
+				switch {
+				case stockUnit == "" || slotUnit == "" || stockUnit == slotUnit:
+					rowUnit = matUnit(mid, bom)
+				case planLengthUnits[strings.ToLower(slotUnit)] &&
+					m.ThreadAttr != nil && m.ThreadAttr.LengthPerConeM.Valid && m.ThreadAttr.LengthPerConeM.Decimal.IsPositive():
+					stockAdd = add.Div(m.ThreadAttr.LengthPerConeM.Decimal)
+					rowUnit = stockUnit
+					if !unitNoted[mid] {
+						caveats = append(caveats, fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
+							matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
+						unitNoted[mid] = true
+					}
+				default:
+					if !unitNoted[mid] {
+						caveats = append(caveats, fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
+							matName(mid, bom), slotUnit, stockUnit, slotUnit))
 						unitNoted[mid] = true
 					}
 				}
 			}
 			a := req[mid]
 			if a == nil {
-				a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: matUnit(mid, bom)}
+				a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: rowUnit}
 				req[mid] = a
 				order = append(order, mid)
 			}
 			a.required = a.required.Add(stockAdd)
-			a.converted = a.converted || !stockAdd.Equal(add)
 			if !sizeGraded {
 				a.hasSizeNorms = false
 			}

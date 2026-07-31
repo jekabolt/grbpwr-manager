@@ -453,27 +453,41 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 	for _, pid := range linkedProducts {
 		unit, currency := dto.ComputeColorwayUnitCost(card, pid, fx)
 		if !unit.Valid {
+			// Defensive only: a linked product the card's colourway list misses. A colourway
+			// with an EMPTY recipe already inherits the style figure inside
+			// ComputeColorwayUnitCost, so this fallback is not the per-colourway erasure it
+			// looks like.
 			unit, currency = rootUnit, rootCcy
 		}
 		if !unit.Valid || !strings.EqualFold(currency, base) {
 			continue
 		}
-		ci, cerr := s.repo.Products().GetProductCostInfo(ctx, pid)
-		if cerr != nil || ci == nil {
-			continue
-		}
-		if !ci.PrimaryTechCardID.Valid || int(ci.PrimaryTechCardID.Int32) != techCardID {
-			continue // another card is authoritative for this product's cost
-		}
-		if ci.CostPriceSource.Valid && ci.CostPriceSource.String != "" && ci.CostPriceSource.String != "tech_card" {
-			continue // manual / production_run provenance wins
-		}
-		if err := s.repo.Products().ForceSetProductCostPriceFromTechCard(ctx, pid, techCardID, unit.Decimal); err != nil {
+		// Provenance + primary-card ownership are enforced ATOMICALLY in the UPDATE's predicate —
+		// a read-then-force here would let a concurrent manual edit or run receipt be overwritten
+		// between the read and the write.
+		updated, uerr := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, pid, techCardID, unit.Decimal)
+		if uerr != nil {
 			slog.Default().ErrorContext(ctx, "can't seed product cost_price from tech card",
-				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", err.Error()))
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", uerr.Error()))
 			continue
+		}
+		if !updated {
+			continue // another card is authoritative, or manual/run provenance wins
 		}
 		seeded++
+		// The COGS decomposition rides the same per-colourway figure (its materials component is
+		// THIS colourway's, pins included) under the same predicate, so cost_price and
+		// cost_breakdown can never describe two different colourways. NULL clears a stale one.
+		breakdownJSON := sql.NullString{}
+		if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, pid, fx); ok {
+			if b, merr := json.Marshal(bd); merr == nil {
+				breakdownJSON = sql.NullString{String: string(b), Valid: true}
+			}
+		}
+		if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, pid, techCardID, breakdownJSON); berr != nil {
+			slog.Default().ErrorContext(ctx, "can't seed product cost_breakdown from tech card",
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", berr.Error()))
+		}
 	}
 	if seeded == 0 {
 		slog.Default().InfoContext(ctx, "no product cost seeded from tech card (no base-convertible cost, or provenance elsewhere)",

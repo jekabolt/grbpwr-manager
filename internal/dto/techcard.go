@@ -705,7 +705,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		ResolvedTechnicalMedia: resolvedTechnical,
 		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
 		// recipe (H1 fix) resolved against this style's own BOM items.
-		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, orderQtyBySize, fx),
+		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, tc.Pieces, orderQtyBySize, fx),
 		// Structured fibre composition (S17/M1 fix), alongside — never instead of — the legacy
 		// free-text Composition below.
 		CompositionEntries: compositionEntriesToPb(tc.CompositionEntries),
@@ -1281,7 +1281,7 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 // (UpdateColorwayRecipe persisted usages that no read path surfaced, A3.4). bomItems/orderQtyBySize
 // resolve each usage's line_total/size_run_total against the style's BOM (caller strips money for an
 // account without costing:read, same as the rest of the tech-card read).
-func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int, fx CostingFx) []*pb_common.AdminColorwayRef {
+func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int, fx CostingFx) []*pb_common.AdminColorwayRef {
 	if len(cws) == 0 {
 		return nil
 	}
@@ -1293,7 +1293,7 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 			BaseSku:            c.BaseSku.String,
 			ColorCode:          c.ColorCode,
 			Status:             pb_common.ColorwayLifecycleStatus(c.Status),
-			Usages:             ConvertRecipeUsagesToPb(c.Usages, bomItems, orderQtyBySize),
+			Usages:             ConvertRecipeUsagesToPb(c.Usages, bomItems, pieces, orderQtyBySize),
 			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
 			LabDipRound:        c.LabDipRound.Int32,
 			LabDipDecidedBy:    c.LabDipDecidedBy.String,
@@ -1394,7 +1394,16 @@ func optionalStringFromNull(value sql.NullString) *string {
 // (techCardColorwayRefsToPb, for the constructor view) and directly by GetColorwayByID (H1 fix —
 // recipe is colourway-owned, 01-DOMAIN-MODEL §2.3, so GetColorwayByID is the minimum surface that
 // must return it).
-func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
+func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
+	// piece_id → line_key: the write-path accepts piece_line_key and resolves it to the FK, but
+	// the read previously emitted ONLY the resolved id — the editor keys piece binding by
+	// line_key, so every piece-bound usage read back as unbound.
+	pieceKeyByID := make(map[int64]string, len(pieces))
+	for i := range pieces {
+		if pieces[i].Id > 0 && pieces[i].LineKey != "" {
+			pieceKeyByID[int64(pieces[i].Id)] = pieces[i].LineKey
+		}
+	}
 	out := make([]*pb_common.TechCardColorwayUsage, 0, len(usages))
 	for i := range usages {
 		u := &usages[i]
@@ -1437,6 +1446,7 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			SizeConsumptions: sizeCons,
 			PieceIndex:       pieceIndex,
 			PieceId:          u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
+			PieceLineKey:     pieceKeyByID[u.PieceId.Int64],
 			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
 			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
 		})

@@ -125,12 +125,20 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				return err
 			}
 			slot := newRecipeUsageSlot(bomItemID, pieceID)
-			if previous, exists := seen[slot]; exists {
-				return entity.NewFieldViolation(fmt.Sprintf("usages[%d]", i), "duplicate_slot",
-					fmt.Sprintf("%s (already used by usages[%d])", recipeUsageSlotName(u, slot), previous),
-					"keep only one usage for each BOM-line and cut-piece pair")
+			// The one-usage-per-(slot, piece) invariant is enforced only for fully-resolved
+			// PIECE-BOUND rows. Two carve-outs, both for legacy data that must stay savable:
+			// a usage with no resolvable BOM line hashes to the same (NULL, NULL) slot as every
+			// other such row, and whole-garment rows (piece NULL) legitimately repeat a slot at
+			// different placements ("buttons — front placket" / "buttons — cuff"). Pin
+			// preservation for those stays safe: an ambiguous prior match preserves nothing.
+			if bomItemID.Valid && pieceID.Valid {
+				if previous, exists := seen[slot]; exists {
+					return entity.NewFieldViolation(fmt.Sprintf("usages[%d]", i), "duplicate_slot",
+						fmt.Sprintf("%s (already used by usages[%d])", recipeUsageSlotName(u, slot), previous),
+						"keep only one usage for each BOM-line and cut-piece pair")
+				}
+				seen[slot] = i
 			}
-			seen[slot] = i
 
 			materialID := sql.NullInt64{}
 			if u.MaterialIdSet {
@@ -176,6 +184,14 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 					fmt.Sprintf("material %d", id), "choose an existing active material or clear the pin")
 			}
 			if archived {
+				// An UNCHANGED round-trip of an already-stored pin is allowed even when the
+				// article was archived after pinning — the client deliberately re-sends what it
+				// read, and rejecting it would block every unrelated consumption edit on the
+				// recipe. Only ASSIGNING an archived article is refused.
+				slot := newRecipeUsageSlot(resolved[i].bomItemID, resolved[i].pieceID)
+				if prior := priorBySlot[slot]; len(prior) == 1 && prior[0].Valid && prior[0].Int64 == id {
+					continue
+				}
 				return entity.NewFieldViolation(fmt.Sprintf("usages[%d].material_id", i), "material_archived",
 					fmt.Sprintf("material %d", id), "choose an active material or clear the pin")
 			}

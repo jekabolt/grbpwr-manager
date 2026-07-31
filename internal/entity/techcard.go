@@ -389,9 +389,14 @@ type TechCardColorwayUsage struct {
 
 // EffectiveMaterialId resolves the article this usage actually consumes: the colourway's pin
 // when set, else the slot default carried by the resolved BOM line. 0 = no article at all
-// (an unfilled slot — the caller must surface it, not skip it silently).
+// (an unfilled slot — the caller must surface it, not skip it silently). A pin EQUAL to the
+// slot default reports pinned=false: it behaves as the default everywhere (snapshot pricing,
+// no "(pinned)" marker), matching pinShadowBom — one rule, not two.
 func (u *TechCardColorwayUsage) EffectiveMaterialId(bom *TechCardBomItem) (id int, pinned bool) {
 	if u.MaterialId.Valid && u.MaterialId.Int64 > 0 {
+		if bom != nil && bom.MaterialId.Valid && bom.MaterialId.Int64 == u.MaterialId.Int64 {
+			return int(u.MaterialId.Int64), false
+		}
 		return int(u.MaterialId.Int64), true
 	}
 	if bom != nil && bom.MaterialId.Valid {

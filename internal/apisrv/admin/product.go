@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -106,20 +107,37 @@ func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID i
 	if err != nil || ci == nil || !ci.PrimaryTechCardID.Valid {
 		return
 	}
-	if ci.CostPriceSource.Valid && ci.CostPriceSource.String != "" && ci.CostPriceSource.String != "tech_card" {
-		return
-	}
-	card, err := s.repo.TechCards().GetTechCardById(ctx, int(ci.PrimaryTechCardID.Int32))
+	techCardID := int(ci.PrimaryTechCardID.Int32)
+	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
 	if err != nil || card == nil {
 		return
 	}
-	unit, currency := dto.ComputeColorwayUnitCost(card, colorwayID, s.costingFx(ctx))
+	fx := s.costingFx(ctx)
+	unit, currency := dto.ComputeColorwayUnitCost(card, colorwayID, fx)
 	if !unit.Valid || !strings.EqualFold(currency, cache.GetBaseCurrency()) {
 		return
 	}
-	if err := s.repo.Products().ForceSetProductCostPriceFromTechCard(ctx, colorwayID, int(ci.PrimaryTechCardID.Int32), unit.Decimal); err != nil {
+	// The provenance guard lives in the UPDATE's own predicate (atomic), not in a
+	// read-then-force — a run receipt landing between a read and a force would be overwritten.
+	updated, err := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, colorwayID, techCardID, unit.Decimal)
+	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't reseed colourway cost after recipe write",
 			slog.Int("colorway_id", colorwayID), slog.String("err", err.Error()))
+		return
+	}
+	if !updated {
+		return // manual / production_run provenance wins, or another card is authoritative
+	}
+	// Keep the COGS decomposition on the same figure (same colourway, same predicate).
+	breakdownJSON := sql.NullString{}
+	if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, colorwayID, fx); ok {
+		if b, merr := json.Marshal(bd); merr == nil {
+			breakdownJSON = sql.NullString{String: string(b), Valid: true}
+		}
+	}
+	if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, colorwayID, techCardID, breakdownJSON); berr != nil {
+		slog.Default().ErrorContext(ctx, "can't reseed colourway cost_breakdown after recipe write",
+			slog.Int("colorway_id", colorwayID), slog.String("err", berr.Error()))
 	}
 }
 
@@ -309,6 +327,7 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 		return nil, status.Errorf(codes.Internal, "can't get colourway recipe")
 	}
 	var bomItems []entity.TechCardBomItem
+	var pieces []entity.TechCardPiece
 	orderQtyBySize := map[int]int{}
 	if len(usages) > 0 {
 		if styleTC, terr := s.repo.TechCards().GetTechCardById(ctx, pf.Product.StyleId); terr != nil {
@@ -316,12 +335,13 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 				slog.Int("colorway_id", int(req.ColorwayId)), slog.String("err", terr.Error()))
 		} else {
 			bomItems = styleTC.BomItems
+			pieces = styleTC.Pieces
 			for _, q := range styleTC.SizeQuantities {
 				orderQtyBySize[q.SizeId] = q.OrderQty
 			}
 		}
 	}
-	usagesPb := dto.ConvertRecipeUsagesToPb(usages, bomItems, orderQtyBySize)
+	usagesPb := dto.ConvertRecipeUsagesToPb(usages, bomItems, pieces, orderQtyBySize)
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardColorwayUsageCosting(usagesPb)
 	}
