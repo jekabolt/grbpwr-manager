@@ -248,7 +248,7 @@ func ConvertColorwayMediaIDs(ids []int32) []int {
 
 // ConvertPbStylePatchToEntity converts the admin StylePatch write message into entity.StylePatch — the
 // catalogue-style facts owned solely by UpdateStyle (R4/§14.7).
-func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, collection string, targetGender pb_common.GenderEnum, fit, composition, careInstructions string, modelWearsHeightCm, modelWearsSizeID, topCategoryID, subCategoryID, typeID int32) (entity.StylePatch, error) {
+func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, seasonYear int32, collection string, targetGender pb_common.GenderEnum, fit, composition, careInstructions string, modelWearsHeightCm, modelWearsSizeID, topCategoryID, subCategoryID, typeID int32) (entity.StylePatch, error) {
 	tg, err := ConvertPbGenderEnumToEntityGenderEnum(targetGender)
 	if err != nil {
 		return entity.StylePatch{}, err
@@ -257,9 +257,17 @@ func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, coll
 	if err != nil {
 		return entity.StylePatch{}, err
 	}
+	// 0 is "keep the stored year" and passes through untouched. A non-zero year is bounded: the
+	// value lands in the SKU every colourway of the style carries, so a typo'd 202 or 20026 would
+	// re-mint the whole style under a nonsense season and, past the frozen check, be unrecoverable
+	// without another re-mint.
+	if seasonYear != 0 && (seasonYear < 2000 || seasonYear > 2100) {
+		return entity.StylePatch{}, fmt.Errorf("season_year %d is out of range (2000-2100)", seasonYear)
+	}
 	return entity.StylePatch{
 		Brand:              brand,
 		Season:             sn,
+		SeasonYear:         int(seasonYear),
 		Collection:         collection,
 		TargetGender:       tg,
 		Fit:                sql.NullString{String: fit, Valid: fit != ""},

@@ -18,7 +18,12 @@ import (
 // fit/composition/care, the colourway card's model-wears) never clobbers a fact it doesn't own.
 var styleFieldFragments = []struct{ key, frag string }{
 	{"brand", "brand = :brand"},
-	{"season", "season_code = :seasonCode, season_year = COALESCE(season_year, YEAR(CURRENT_DATE)), season = CONCAT(:seasonCode, LPAD(MOD(COALESCE(season_year, YEAR(CURRENT_DATE)), 100), 2, '0'))"},
+	// sku_season is one fact in three columns and the tech_card_season_atomic CHECK (0146) requires
+	// them written as a set. :seasonYear = 0 means "keep the stored year" — the shape every caller
+	// predating the field sends — so the COALESCE chain is repeated verbatim in the label rather
+	// than reading season_year back mid-UPDATE, which would depend on MySQL's left-to-right SET
+	// evaluation to be correct.
+	{"season", "season_code = :seasonCode, season_year = COALESCE(NULLIF(:seasonYear, 0), season_year, YEAR(CURRENT_DATE)), season = CONCAT(:seasonCode, LPAD(MOD(COALESCE(NULLIF(:seasonYear, 0), season_year, YEAR(CURRENT_DATE)), 100), 2, '0'))"},
 	{"collection", "collection = :collection"},
 	{"targetgender", "target_gender = :targetGender"},
 	{"fit", "fit = :fit"},
@@ -160,6 +165,7 @@ func stylePatchParams(p entity.StylePatch) map[string]any {
 	return map[string]any{
 		"brand":              p.Brand,
 		"seasonCode":         string(p.Season),
+		"seasonYear":         p.SeasonYear,
 		"collection":         p.Collection,
 		"targetGender":       string(p.TargetGender),
 		"fit":                p.Fit,
@@ -198,8 +204,9 @@ func (s *Store) UpdateStyle(ctx context.Context, styleID, expectedLockVersion in
 		cur, err := storeutil.QueryNamedOne[struct {
 			LockVersion int            `db:"lock_version"`
 			SeasonCode  sql.NullString `db:"season_code"`
+			SeasonYear  sql.NullInt32  `db:"season_year"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, season_code FROM tech_card WHERE id = :id`, map[string]any{"id": styleID})
+			`SELECT lock_version, season_code, season_year FROM tech_card WHERE id = :id`, map[string]any{"id": styleID})
 		if err != nil {
 			return err // sql.ErrNoRows -> NOT_FOUND upstream
 		}
@@ -208,7 +215,10 @@ func (s *Store) UpdateStyle(ctx context.Context, styleID, expectedLockVersion in
 		}
 		// The season is the only SKU fact UpdateStyle can change; when it moves (and is actually being
 		// written this call), the frozen policy applies. A mask that doesn't touch season never re-mints.
-		skuFactsChanged := seasonWritten && cur.SeasonCode.String != string(patch.Season)
+		// The YEAR counts as much as the code: SS25 → SS26 changes every sibling's SKU exactly as
+		// SS25 → FW25 does. A zero year is "keep what is stored", so it is never a change.
+		yearChanged := patch.SeasonYear != 0 && int32(patch.SeasonYear) != cur.SeasonYear.Int32
+		skuFactsChanged := seasonWritten && (cur.SeasonCode.String != string(patch.Season) || yearChanged)
 		if skuFactsChanged {
 			frozen, err := storeutil.QueryNamedOne[struct {
 				N int `db:"n"`
