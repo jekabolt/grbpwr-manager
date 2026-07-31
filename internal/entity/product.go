@@ -290,8 +290,12 @@ type ColorwayBody struct {
 // them, so the row's two representations of a style's taxonomy stay consistent whichever path wrote
 // last (see styleCategoryIDFragment in internal/store/product/style.go).
 type StylePatch struct {
-	Brand              string
-	Season             SeasonEnum
+	Brand  string
+	Season SeasonEnum
+	// SeasonYear pairs with Season — sku_season is one fact (code + year + the derived label), so
+	// both move under the same "season" mask path. 0 means "keep the stored year": every caller
+	// written before the field existed sends that, and a code-only change must stay one.
+	SeasonYear         int
 	Collection         string
 	TargetGender       GenderEnum
 	Fit                sql.NullString

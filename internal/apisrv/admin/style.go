@@ -47,9 +47,13 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 	// omitted, unmasked enum arrives as UNKNOWN, which the converter rejects, yet it is never written.
 	mask := req.GetUpdateMask().GetPaths()
 	season, gender := p.GetSeason(), p.GetTargetGender()
+	seasonYear := p.GetSeasonYear()
 	if len(mask) > 0 {
 		if !styleMaskHas(mask, "season") {
 			season = pb_common.SeasonEnum_SEASON_ENUM_SS // placeholder; excluded from the write by the mask
+			// The year rides the same mask path, so it is equally excluded — zero it rather than let
+			// a stale value from an untouched field fail the converter's range check.
+			seasonYear = 0
 		}
 		if !styleMaskHas(mask, "targetGender") {
 			gender = pb_common.GenderEnum_GENDER_ENUM_UNISEX // placeholder; excluded from the write by the mask
@@ -83,7 +87,7 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 		}
 	}
 
-	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), season, p.GetCollection(), gender,
+	patch, err := dto.ConvertPbStylePatchToEntity(p.GetBrand(), season, seasonYear, p.GetCollection(), gender,
 		p.GetFit(), p.GetComposition(), careInstructions,
 		p.GetModelWearsHeightCm(), p.GetModelWearsSizeId(), p.GetTopCategoryId(), p.GetSubCategoryId(), p.GetTypeId())
 	if err != nil {

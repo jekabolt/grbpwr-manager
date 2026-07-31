@@ -2208,7 +2208,7 @@ message UpdateColorwayRecipeResponse {
 // await a dedicated style_translation table (deferred).
 message StylePatch {
   string brand = 1;
-  common.SeasonEnum season = 2; // sku_season code (the SKU-facing season); the year is preserved
+  common.SeasonEnum season = 2; // sku_season code (the SKU-facing season); pairs with season_year
   string collection = 3;
   common.GenderEnum target_gender = 4;
   string fit = 5;
@@ -2219,6 +2219,13 @@ message StylePatch {
   int32 top_category_id = 10;
   int32 sub_category_id = 11;
   int32 type_id = 12;
+  // sku_season YEAR, written together with `season` — the two are one fact (the
+  // tech_card_season_atomic CHECK stores code, year and the derived "SS26" label as a set) and are
+  // masked as one under the "season" path. 0 = keep the stored year, which is what every caller
+  // predating this field sends, so a code-only change stays a code-only change. A year that moves
+  // is a SKU fact like the code: it re-mints every unfrozen sibling colourway and is refused
+  // outright when any sibling is SKU-frozen.
+  int32 season_year = 13;
 }
 
 message UpdateStyleRequest {
