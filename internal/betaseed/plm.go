@@ -752,16 +752,23 @@ func (s *Seeder) plmColorways(ctx context.Context, st *plmState) error {
 	}
 	s.pass(st, "D.12 variants (m,l) created on both colourways")
 
-	// recipe (usages) per colourway, keyed by bom/piece line_key.
+	// recipe (usages) per colourway, keyed by bom/piece line_key. Slots: cw1 inherits the slot
+	// defaults; cw2 PINS the alt shell fabric (usage.material_id) — the divergence the whole
+	// slots model exists for, so beta always carries one pinned colourway to exercise the
+	// pin-first resolution in costing and the material plan.
 	for _, cw := range []int32{cw1, cw2} {
 		cwCopy := cw
+		var shellPin *int64
+		if cw == cw2 {
+			shellPin = p64(st.res.MaterialIDs.FabricAlt)
+		}
 		if err := s.withLock(ctx, sid, func(lv uint64) error {
 			_, e := s.C.UpdateColorwayRecipe(ctx, &admin.UpdateColorwayRecipeRequest{
 				ColorwayId:              cwCopy,
 				ExpectedColorwayVersion: int32(lv),
 				Usages: []*common.TechCardColorwayUsage{
-					{BomLineKey: st.bomFabricKey, Placement: "outer shell", Color: "as dictionary", Consumption: decv("1.4"), PieceLineKey: st.pieceFrontKey},
-					{BomLineKey: st.bomFabricKey, Placement: "outer shell", Color: "as dictionary", Consumption: decv("1.1"), PieceLineKey: st.pieceBackKey},
+					{BomLineKey: st.bomFabricKey, Placement: "outer shell", Color: "as dictionary", Consumption: decv("1.4"), PieceLineKey: st.pieceFrontKey, MaterialId: shellPin},
+					{BomLineKey: st.bomFabricKey, Placement: "outer shell", Color: "as dictionary", Consumption: decv("1.1"), PieceLineKey: st.pieceBackKey, MaterialId: shellPin},
 					{BomLineKey: st.bomHardwareKey, Placement: "front placket", Color: "gunmetal", Quantity: decv("1")},
 				},
 			})
@@ -770,7 +777,7 @@ func (s *Seeder) plmColorways(ctx context.Context, st *plmState) error {
 			return fmt.Errorf("UpdateColorwayRecipe(cw=%d): %w", cw, err)
 		}
 	}
-	s.pass(st, "D.12 recipe written for both colourways")
+	s.pass(st, "D.12 recipe written for both colourways (cw2 pins alt shell fabric %d)", st.res.MaterialIDs.FabricAlt)
 
 	// D.12b map cut-piece -> fabric per colourway.
 	s.step(st, "D.12b map cut-piece fabric per colourway -> cut-list fabrics[] resolves both")
@@ -1217,6 +1224,40 @@ func (s *Seeder) plmProduction(ctx context.Context, st *plmState) error {
 	if err != nil {
 		return fmt.Errorf("GetProductionRunMaterialPlan: %w", err)
 	}
+
+	// Slots acceptance: a run of the PINNED colourway (cw2 pins the alt shell fabric in D.12)
+	// must resolve that pin — the plan's rollup carries the alt article, and its contribution is
+	// marked pinned. Before slots this run would silently request the DEFAULT fabric for cw2 —
+	// the exact mixed-run bug the model exists to close. The run stays PLANNED (seed showcase).
+	crPin, err := s.C.CreateProductionRun(ctx, &admin.CreateProductionRunRequest{Run: &common.ProductionRunInsert{
+		TechCardId: sid, Status: common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED, Notes: "PLM seed slots pin run (cw2 → alt shell)",
+		Lines: []*common.ProductionRunLine{{ProductId: st.res.Colorway2ID, SizeId: st.mID, PlannedQty: 4}},
+	}})
+	if err != nil {
+		return fmt.Errorf("CreateProductionRun(pin run): %w", err)
+	}
+	mpPin, err := s.C.GetProductionRunMaterialPlan(ctx, &admin.GetProductionRunMaterialPlanRequest{RunId: crPin.GetId()})
+	if err != nil {
+		return fmt.Errorf("GetProductionRunMaterialPlan(pin run): %w", err)
+	}
+	pinInRows := false
+	for _, r := range mpPin.GetRows() {
+		if int64(r.GetMaterialId()) == st.res.MaterialIDs.FabricAlt {
+			pinInRows = true
+		}
+	}
+	pinInContribs := false
+	for _, c := range mpPin.GetContributions() {
+		if int64(c.GetMaterialId()) == st.res.MaterialIDs.FabricAlt && c.GetPinned() {
+			pinInContribs = true
+		}
+	}
+	if !pinInRows || !pinInContribs {
+		return fmt.Errorf("slots: cw2 pin run must resolve alt fabric %d (rows=%v contribs=%v)",
+			st.res.MaterialIDs.FabricAlt, pinInRows, pinInContribs)
+	}
+	s.pass(st, "H.22b-slots pin run=%d resolves alt fabric %d (rows+contribution pinned=true, blockers=%d)",
+		crPin.GetId(), st.res.MaterialIDs.FabricAlt, len(mpPin.GetBlockers()))
 	if _, err := s.C.IssueMaterialStock(ctx, &admin.IssueMaterialStockRequest{
 		MaterialId: int32(m.Fabric), Quantity: decv("14"), ProductionRunId: st.res.ProductionRunID,
 		OccurredAt: time.Now().Format("2006-01-02"), Comment: "PLM seed cutting issue",
@@ -1743,6 +1784,8 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 func decv(v string) *decimal.Decimal { return &decimal.Decimal{Value: v} }
 
 func p32(v int32) *int32 { return &v }
+
+func p64(v int64) *int64 { return &v }
 
 func pbool(v bool) *bool { return &v }
 

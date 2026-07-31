@@ -883,6 +883,39 @@ func (s *Store) SeedProductsCostBreakdownFromTechCard(ctx context.Context, techC
 		map[string]any{"tc": techCardID, "breakdown": breakdown})
 }
 
+// SeedProductCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced cost of
+// ONE product — the per-colourway seed (slots: each colourway gets its OWN figure). The guard is
+// in the SQL, not a read-then-write: the product must have techCardID as its primary card and a
+// non-manual provenance, so a concurrent manual edit or production-run receipt can never be
+// overwritten by this best-effort hook. Returns whether the row was updated.
+func (s *Store) SeedProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) (bool, error) {
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
+		UPDATE product
+		SET cost_price = :cost,
+			cost_price_source = 'tech_card',
+			cost_price_tech_card_id = :tc,
+			cost_price_updated_at = NOW()
+		WHERE id = :id
+			AND primary_tech_card_id = :tc
+			AND (cost_price_source IS NULL OR cost_price_source = 'tech_card')`,
+		map[string]any{"id": productID, "tc": techCardID, "cost": cost})
+	return n > 0, err
+}
+
+// SeedProductCostBreakdownFromTechCard writes ONE product's per-unit COGS decomposition JSON,
+// under the same atomic predicate as SeedProductCostPriceFromTechCard so cost_price and
+// cost_breakdown always describe the same (colourway-scoped) figure. A NULL breakdown clears a
+// stale decomposition.
+func (s *Store) SeedProductCostBreakdownFromTechCard(ctx context.Context, productID, techCardID int, breakdown sql.NullString) error {
+	return storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE product
+		SET cost_breakdown = :breakdown
+		WHERE id = :id
+			AND primary_tech_card_id = :tc
+			AND (cost_price_source IS NULL OR cost_price_source = 'tech_card')`,
+		map[string]any{"id": productID, "tc": techCardID, "breakdown": breakdown})
+}
+
 // ForceSetProductCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced
 // cost of a single product, overriding any manual value. Used by the explicit
 // SyncProductCostFromTechCard admin action.

@@ -67,6 +67,15 @@ func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard
 			need[b.MaterialId.Int64] = true
 		}
 	}
+	// A colourway PIN is always priced from the catalog — the slot's snapshot price describes
+	// the default article — so pinned ids are needed even when their line has a snapshot price.
+	for i := range card.Colorways {
+		for j := range card.Colorways[i].Usages {
+			if u := &card.Colorways[i].Usages[j]; u.MaterialId.Valid && u.MaterialId.Int64 > 0 {
+				need[u.MaterialId.Int64] = true
+			}
+		}
+	}
 	if len(need) == 0 {
 		return nil
 	}

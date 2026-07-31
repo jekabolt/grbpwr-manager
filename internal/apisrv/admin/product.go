@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -91,7 +92,53 @@ func (s *Server) UpdateColorwayRecipe(ctx context.Context, req *pb_admin.UpdateC
 			slog.Int("colorway_id", int(req.GetColorwayId())), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't update colourway recipe")
 	}
+	// The recipe IS the material-cost input: leaving cost_price stale until the next card save
+	// made pin/norm edits invisible in margins. Best-effort — the write above already succeeded.
+	s.reseedColorwayCostAfterRecipe(ctx, int(req.GetColorwayId()))
 	return &pb_admin.UpdateColorwayRecipeResponse{LockVersion: int32(newVersion)}, nil
+}
+
+// reseedColorwayCostAfterRecipe re-seeds ONE colourway's tech-card-sourced cost_price after its
+// recipe changed. Mirrors the card-save seed's provenance predicate (NULL or 'tech_card' only) —
+// a manual or production-run cost is never clobbered by a recipe edit. Base currency only, like
+// every other seed; anything unseedable just leaves the previous figure.
+func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID int) {
+	ci, err := s.repo.Products().GetProductCostInfo(ctx, colorwayID)
+	if err != nil || ci == nil || !ci.PrimaryTechCardID.Valid {
+		return
+	}
+	techCardID := int(ci.PrimaryTechCardID.Int32)
+	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	if err != nil || card == nil {
+		return
+	}
+	fx := s.costingFx(ctx)
+	unit, currency := dto.ComputeColorwayUnitCost(card, colorwayID, fx)
+	if !unit.Valid || !strings.EqualFold(currency, cache.GetBaseCurrency()) {
+		return
+	}
+	// The provenance guard lives in the UPDATE's own predicate (atomic), not in a
+	// read-then-force — a run receipt landing between a read and a force would be overwritten.
+	updated, err := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, colorwayID, techCardID, unit.Decimal)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't reseed colourway cost after recipe write",
+			slog.Int("colorway_id", colorwayID), slog.String("err", err.Error()))
+		return
+	}
+	if !updated {
+		return // manual / production_run provenance wins, or another card is authoritative
+	}
+	// Keep the COGS decomposition on the same figure (same colourway, same predicate).
+	breakdownJSON := sql.NullString{}
+	if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, colorwayID, fx); ok {
+		if b, merr := json.Marshal(bd); merr == nil {
+			breakdownJSON = sql.NullString{String: string(b), Valid: true}
+		}
+	}
+	if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, colorwayID, techCardID, breakdownJSON); berr != nil {
+		slog.Default().ErrorContext(ctx, "can't reseed colourway cost_breakdown after recipe write",
+			slog.Int("colorway_id", colorwayID), slog.String("err", berr.Error()))
+	}
 }
 
 // colorwayWriteError maps a store colourway-write error to a gRPC status: absent style/colourway ->
@@ -280,6 +327,7 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 		return nil, status.Errorf(codes.Internal, "can't get colourway recipe")
 	}
 	var bomItems []entity.TechCardBomItem
+	var pieces []entity.TechCardPiece
 	orderQtyBySize := map[int]int{}
 	if len(usages) > 0 {
 		if styleTC, terr := s.repo.TechCards().GetTechCardById(ctx, pf.Product.StyleId); terr != nil {
@@ -287,12 +335,13 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 				slog.Int("colorway_id", int(req.ColorwayId)), slog.String("err", terr.Error()))
 		} else {
 			bomItems = styleTC.BomItems
+			pieces = styleTC.Pieces
 			for _, q := range styleTC.SizeQuantities {
 				orderQtyBySize[q.SizeId] = q.OrderQty
 			}
 		}
 	}
-	usagesPb := dto.ConvertRecipeUsagesToPb(usages, bomItems, orderQtyBySize)
+	usagesPb := dto.ConvertRecipeUsagesToPb(usages, bomItems, pieces, orderQtyBySize)
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardColorwayUsageCosting(usagesPb)
 	}
@@ -337,10 +386,12 @@ func (s *Server) SyncColorwayCostFromOwningStyle(ctx context.Context, req *pb_ad
 	if err != nil || card == nil {
 		return nil, status.Error(codes.NotFound, "owning style not found")
 	}
-	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
+	// THIS colourway's own cost (its pins, its norms) — not the card-level figure, which is the
+	// PRIMARY colourway's and would erase exactly the per-colourway divergence pinning creates.
+	unit, currency := dto.ComputeColorwayUnitCost(card, colorwayID, s.costingFx(ctx))
 	if !unit.Valid {
 		return nil, status.Error(codes.FailedPrecondition,
-			"owning style has no base-currency unit cost — check the costing and its FX rates")
+			"owning style has no base-currency unit cost for this colourway — check the costing, its FX rates and the colourway recipe")
 	}
 	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
 		return nil, status.Errorf(codes.FailedPrecondition,

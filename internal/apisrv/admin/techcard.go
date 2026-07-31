@@ -440,29 +440,62 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 		return
 	}
-	// ComputeTechCardUnitCost returns the base-currency unit cost when the costing can be folded
-	// into the base currency via the FX rates (so a non-base costing seeds too); it returns an
-	// invalid value when the cost cannot be expressed in base (missing rate), in which case we
-	// skip rather than write a wrong-currency number.
-	unit, currency := dto.ComputeTechCardUnitCost(card, s.costingFx(ctx))
-	if !unit.Valid {
-		slog.Default().InfoContext(ctx, "skip seeding product cost from tech card: no base-currency unit cost (check FX rates)",
+	// Each colourway is seeded its OWN unit cost (its pins, its norms) — one shared figure was
+	// the primary colourway's number written over every product, erasing exactly the divergence
+	// per-colourway pinning creates. The card-level figure stays as the fallback for a linked
+	// product the card's colourway list somehow misses. Base currency only, as before; a product
+	// whose cost is manually set (or run-sourced) is never overwritten — the same provenance
+	// predicate SeedProductsCostPriceFromTechCard enforced in SQL.
+	fx := s.costingFx(ctx)
+	base := cache.GetBaseCurrency()
+	rootUnit, rootCcy := dto.ComputeTechCardUnitCost(card, fx)
+	var seeded int64
+	for _, pid := range linkedProducts {
+		unit, currency := dto.ComputeColorwayUnitCost(card, pid, fx)
+		if !unit.Valid {
+			// Defensive only: a linked product the card's colourway list misses. A colourway
+			// with an EMPTY recipe already inherits the style figure inside
+			// ComputeColorwayUnitCost, so this fallback is not the per-colourway erasure it
+			// looks like.
+			unit, currency = rootUnit, rootCcy
+		}
+		if !unit.Valid || !strings.EqualFold(currency, base) {
+			continue
+		}
+		// Provenance + primary-card ownership are enforced ATOMICALLY in the UPDATE's predicate —
+		// a read-then-force here would let a concurrent manual edit or run receipt be overwritten
+		// between the read and the write.
+		updated, uerr := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, pid, techCardID, unit.Decimal)
+		if uerr != nil {
+			slog.Default().ErrorContext(ctx, "can't seed product cost_price from tech card",
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", uerr.Error()))
+			continue
+		}
+		if !updated {
+			continue // another card is authoritative, or manual/run provenance wins
+		}
+		seeded++
+		// The COGS decomposition rides the same per-colourway figure (its materials component is
+		// THIS colourway's, pins included) under the same predicate, so cost_price and
+		// cost_breakdown can never describe two different colourways. NULL clears a stale one.
+		breakdownJSON := sql.NullString{}
+		if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, pid, fx); ok {
+			if b, merr := json.Marshal(bd); merr == nil {
+				breakdownJSON = sql.NullString{String: string(b), Valid: true}
+			}
+		}
+		if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, pid, techCardID, breakdownJSON); berr != nil {
+			slog.Default().ErrorContext(ctx, "can't seed product cost_breakdown from tech card",
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", berr.Error()))
+		}
+	}
+	if seeded == 0 {
+		slog.Default().InfoContext(ctx, "no product cost seeded from tech card (no base-convertible cost, or provenance elsewhere)",
 			slog.Int("tech_card_id", techCardID))
-		return
+	} else {
+		slog.Default().InfoContext(ctx, "seeded product cost_price from tech card",
+			slog.Int("tech_card_id", techCardID), slog.Int64("products_updated", seeded))
 	}
-	if !strings.EqualFold(currency, cache.GetBaseCurrency()) {
-		slog.Default().InfoContext(ctx, "skip seeding product cost from tech card: unit cost not in base currency",
-			slog.Int("tech_card_id", techCardID), slog.String("currency", currency))
-		return
-	}
-	n, err := s.repo.Products().SeedProductsCostPriceFromTechCard(ctx, techCardID, unit.Decimal)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't seed product cost_price from tech card",
-			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
-		return
-	}
-	slog.Default().InfoContext(ctx, "seeded product cost_price from tech card",
-		slog.Int("tech_card_id", techCardID), slog.Int64("products_updated", n))
 
 	// Snapshot the COGS decomposition (task 15) onto the same products, so the COGS-structure
 	// report can attribute a period's cost to materials vs CMT vs …. Best-effort and non-fatal:

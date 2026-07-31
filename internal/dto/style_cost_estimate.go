@@ -98,7 +98,7 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				line.Consumption = pbDecimalFromDecimal(qty)
 			}
 
-			price, ccy, source, priceDate := resolvePlanUnitPrice(bom, catalog)
+			price, ccy, source, priceDate := resolvePlanUnitPrice(u, bom, catalog)
 			line.PriceSource = source
 			line.Currency = ccy
 			if source == pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST {
@@ -239,11 +239,25 @@ func usagePerGarmentQty(u *entity.TechCardColorwayUsage, orderQtyBySize map[int]
 	return runQty.Div(decimal.NewFromInt(int64(totalOrderQty))), true, true
 }
 
-// resolvePlanUnitPrice applies the Q4 price ladder for one BOM line: the line's own snapshot price
-// wins; else the latest catalog price for the linked material; else none. Returns the price, its
-// currency, the provenance, and (for a catalog price) its effective date.
-func resolvePlanUnitPrice(bom *entity.TechCardBomItem, catalog map[int64]*entity.MaterialPrice) (decimal.NullDecimal, string, pb_admin.StyleCostPriceSource, sql.NullTime) {
+// resolvePlanUnitPrice applies the Q4 price ladder for one usage line. A colourway that PINS a
+// different article than the slot default is priced from the PINNED article's catalog price
+// alone — the slot's snapshot price describes the default article, so falling back to it would
+// silently cost the wrong article; an unpriced pin surfaces as an unpriced line instead. An
+// unpinned usage keeps the original ladder: the line's own snapshot price wins; else the latest
+// catalog price for the linked material; else none. Returns the price, its currency, the
+// provenance, and (for a catalog price) its effective date.
+func resolvePlanUnitPrice(u *entity.TechCardColorwayUsage, bom *entity.TechCardBomItem, catalog map[int64]*entity.MaterialPrice) (decimal.NullDecimal, string, pb_admin.StyleCostPriceSource, sql.NullTime) {
 	if bom == nil {
+		return decimal.NullDecimal{}, "", pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_NONE, sql.NullTime{}
+	}
+	if u != nil && u.MaterialId.Valid && u.MaterialId.Int64 > 0 &&
+		!(bom.MaterialId.Valid && bom.MaterialId.Int64 == u.MaterialId.Int64) {
+		if mp, ok := catalog[u.MaterialId.Int64]; ok && mp != nil {
+			return decimal.NullDecimal{Decimal: mp.Price, Valid: true},
+				mp.Currency,
+				pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST,
+				sql.NullTime{Time: mp.ValidFrom, Valid: true}
+		}
 		return decimal.NullDecimal{}, "", pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_NONE, sql.NullTime{}
 	}
 	if bom.UnitPrice.Valid {

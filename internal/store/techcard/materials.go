@@ -297,6 +297,12 @@ type bomExistingRow struct {
 	LineKey string `db:"line_key"`
 }
 
+type colorwayBomUsageRefRow struct {
+	Id   int    `db:"id"`
+	Name string `db:"name"`
+	SKU  string `db:"sku"`
+}
+
 // upsertTechCardBom reconciles a card's BOM lines by line_key in one transaction instead of the old
 // delete-all + reinsert (S2/S3 root): a line_key already in the DB is UPDATEd in place (its id is
 // stable, which is what lets referrers hold a real FK), a new line_key is INSERTed, and a line_key
@@ -373,14 +379,50 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			`DELETE FROM tech_card_bom_item WHERE id = :id`, map[string]any{"id": id}); err != nil {
 			var me *mysql.MySQLError
 			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2
+				conflicting := "an operation, piece or colourway recipe"
+				howToFix := "remove that reference before deleting the BOM line"
+				if refs, refErr := colorwayRecipeRefsForBom(ctx, db, id); refErr == nil && len(refs) > 0 {
+					conflicting = "an operation or piece, and/or colourway recipes: " + strings.Join(refs, ", ")
+					howToFix = "remove or move the listed colourway usages (and any operation/piece reference) before deleting the BOM line"
+				}
 				return res, entity.NewFieldViolation("bom_items",
-					fmt.Sprintf("BOM line %q is still referenced", key), "an operation, piece or colourway recipe",
-					"remove that reference before deleting the BOM line")
+					fmt.Sprintf("BOM line %q is still referenced", key), conflicting, howToFix)
 			}
 			return res, fmt.Errorf("failed to delete bom line: %w", err)
 		}
 	}
 	return res, nil
+}
+
+// colorwayRecipeRefsForBom names the colourways that keep a BOM slot alive through
+// tech_card_colorway_usage.bom_item_id. It is called only after the RESTRICT error, so the operator
+// sees which recipes must be adjusted instead of a generic foreign-key failure.
+func colorwayRecipeRefsForBom(ctx context.Context, db dependency.DB, bomItemID int) ([]string, error) {
+	rows, err := storeutil.QueryListNamed[colorwayBomUsageRefRow](ctx, db, `
+		SELECT DISTINCT p.id, COALESCE(NULLIF(p.dev_name, ''), '') AS name, COALESCE(p.sku, '') AS sku
+		FROM tech_card_colorway_usage u
+		JOIN product p ON p.id = u.colorway_id
+		WHERE u.bom_item_id = :id
+		ORDER BY name, sku, p.id`, map[string]any{"id": bomItemID})
+	if err != nil {
+		return nil, fmt.Errorf("load colourway recipe references for BOM item %d: %w", bomItemID, err)
+	}
+	refs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		name := strings.TrimSpace(row.Name)
+		sku := strings.TrimSpace(row.SKU)
+		switch {
+		case name != "" && sku != "":
+			refs = append(refs, fmt.Sprintf("colourway %q (SKU %s)", name, sku))
+		case name != "":
+			refs = append(refs, fmt.Sprintf("colourway %q", name))
+		case sku != "":
+			refs = append(refs, fmt.Sprintf("colourway SKU %s", sku))
+		default:
+			refs = append(refs, fmt.Sprintf("colourway #%d", row.Id))
+		}
+	}
+	return refs, nil
 }
 
 // bomItemParams maps a BOM line to named params for the upsert.
@@ -582,7 +624,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	if len(colorwayIDs) > 0 {
 		usageRows, err := storeutil.QueryListNamed[techCardColorwayUsageRow](ctx, s.DB, `
-			SELECT id, colorway_id, bom_item_id, piece_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+			SELECT id, colorway_id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
 			FROM tech_card_colorway_usage
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})
@@ -660,24 +702,14 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	// BOM lines per card (the article catalog).
 	//
-	// NAME PRECEDENCE: a LINKED line (material_id set) takes the catalog material's name; the stored
-	// bi.name column is only a fallback. A link means "this line IS that material", so its name is
-	// the material's, resolved here on every read rather than copied at write time -- otherwise a
-	// line keeps a stale name forever after the material is renamed, and the same material shows up
-	// under different names on different cards. A FREE-TEXT line (no material_id) has nothing to
-	// resolve from and keeps its own stored name, which is why the dto still requires one there.
+	// NAME PRECEDENCE: bi.name is the SLOT ROLE (for example, "main zip") and must win even when the
+	// slot has a default catalog article. The linked material's name describes that concrete article,
+	// not the role; it is only a fallback for legacy/blank role names. Released cards remain frozen by
+	// their whole proto-JSON snapshot (0096).
 	//
-	// BEHAVIOUR CHANGE: renaming a material in the catalog now changes the displayed name on every
-	// UNRELEASED card that links it. That is the point of a link. Released cards are unaffected --
-	// tech_card_release freezes a whole proto-JSON snapshot of this enriched read model (0096), so a
-	// released spec captures the name as resolved AT RELEASE and never re-resolves.
-	//
-	// The stored column is deliberately still written and still read as the fallback: it costs no
-	// migration and it degrades gracefully if a material row is ever removed or the link is broken,
-	// leaving the last known name rather than a blank line.
 	// Identity facts (supplier / supplier_ref / composition / spec / unit) resolve from the linked
-	// catalog material, the same rule as name: the link is the source of truth, the stored column is
-	// the fallback for a broken or absent link. unit matters most of the five — it is the denominator
+	// catalog material: unlike the role name, these describe the concrete article. The stored column
+	// is the fallback for a broken or absent link. unit matters most of the five — it is the denominator
 	// of every consumption figure and multiplies into LineTotal, so a stale copy is a wrong NUMBER,
 	// not a cosmetic mismatch. unit_price / currency are deliberately NOT resolved: a cost must stay
 	// frozen at the point it was agreed, and resolvePlanUnitPrice already treats the stored value as
@@ -688,7 +720,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// query shipped broken and took every tech-card read down with it.
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT bi.id, bi.tech_card_id, bi.material_id, bi.section,
-		       COALESCE(NULLIF(m.name, ''), bi.name) AS name,
+		       COALESCE(NULLIF(bi.name, ''), m.name) AS name,
 		       COALESCE(NULLIF(m.supplier, ''), bi.supplier) AS supplier,
 		       COALESCE(NULLIF(m.supplier_ref, ''), bi.supplier_ref) AS supplier_ref,
 		       bi.color,

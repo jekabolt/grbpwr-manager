@@ -528,6 +528,30 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 	if err := loadStructuredComposition(ctx, s.DB, &cards[0]); err != nil {
 		return nil, err
 	}
+	// Slots: attach the identity + latest price of every catalog article the card references —
+	// BOM slot defaults AND colourway pins — so the costing can price a pinned article and the
+	// production plan can label/convert its rollup rows without N extra reads per caller.
+	ids := make([]int, 0, len(cards[0].BomItems))
+	seenIDs := map[int]bool{}
+	addID := func(v sql.NullInt64) {
+		if v.Valid && v.Int64 > 0 && !seenIDs[int(v.Int64)] {
+			seenIDs[int(v.Int64)] = true
+			ids = append(ids, int(v.Int64))
+		}
+	}
+	for i := range cards[0].BomItems {
+		addID(cards[0].BomItems[i].MaterialId)
+	}
+	for i := range cards[0].Colorways {
+		for j := range cards[0].Colorways[i].Usages {
+			addID(cards[0].Colorways[i].Usages[j].MaterialId)
+		}
+	}
+	linked, err := s.getMaterialsByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].LinkedMaterials = linked
 	return &cards[0], nil
 }
 
