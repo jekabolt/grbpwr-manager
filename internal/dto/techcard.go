@@ -1498,7 +1498,13 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 				FusingBomItemIndex: fusingIdx,
 				BomItemId:          m.BomItemId.Int64,       // OUTPUT: resolved FK (S2/S3); 0 = unset
 				FusingBomItemId:    m.FusingBomItemId.Int64, // OUTPUT: resolved FK; 0 = unset
-				Note:               pbStringFromNull(m.Note),
+				// The durable refs the wire actually speaks. The message has carried these fields
+				// since WS3 but the emit never set them, so a client that reads a piece's fabric
+				// mapping by line_key saw it as unmapped — and the mapping is a full replace on
+				// every card save, which turned "unmapped on read" into "cleared on write".
+				BomLineKey:       m.BomLineKey,
+				FusingBomLineKey: m.FusingBomLineKey,
+				Note:             pbStringFromNull(m.Note),
 			})
 		}
 		out = append(out, &pb_common.TechCardPiece{
