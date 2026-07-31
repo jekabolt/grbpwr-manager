@@ -73,7 +73,8 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			p.id AS product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', p.id)
 			) AS product_name,
 			COALESCE(ps.revenue, 0) AS revenue,
 			COALESCE(ps.units_sold, 0) AS units_sold,
@@ -183,7 +184,8 @@ func (as *analyticsStore) GetReturnByProduct(ctx context.Context, from, to time.
 			p.id AS product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', p.id)
 			) AS product_name,
 			COALESCE(r.refund_reason, '') AS refund_reason,
 			COALESCE(r.refund_reason_code, '') AS refund_reason_code,
@@ -336,7 +338,8 @@ func (as *analyticsStore) GetSizeAnalytics(ctx context.Context, from, to time.Ti
 			ss.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', p.id)
 			) AS product_name,
 			ss.size_id,
 			s.name AS size_name,
@@ -411,7 +414,8 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 			ps.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', p.id)
 			) AS product_name,
 			ps.size_id,
 			s.name AS size_name,
@@ -478,10 +482,9 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 		SELECT
 			COALESCE(c.product_id, pr.product_id) AS product_id,
 			COALESCE(
-				(SELECT pt.name FROM product_translation pt
-				 WHERE pt.product_id = COALESCE(c.product_id, pr.product_id)
-				 ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = COALESCE(c.product_id, pr.product_id) ORDER BY pt.language_id LIMIT 1),
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', COALESCE(c.product_id, pr.product_id))
 			) AS product_name,
 			COALESCE(c.revenue, 0) AS current_revenue,
 			COALESCE(pr.revenue, 0) AS previous_revenue,
@@ -503,7 +506,8 @@ func (as *analyticsStore) GetProductTrend(ctx context.Context, from, to time.Tim
 			pr.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = pr.product_id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', pr.product_id)
 			),
 			0, pr.revenue,
 			-100, 0, pr.units

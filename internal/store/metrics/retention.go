@@ -230,7 +230,8 @@ func (rs *retentionStore) GetEntryProducts(ctx context.Context, from, to time.Ti
 			oi.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', p.id)
 			) AS product_name,
 			COUNT(*) AS purchase_count,
 			SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity) AS total_revenue
@@ -269,7 +270,8 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 				oi.product_id,
 				COALESCE(
 					(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-					sty.brand
+					NULLIF(sty.brand, ''),
+					CONCAT('product #', p.id)
 				) AS product_name,
 				SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity) AS revenue,
 				MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,

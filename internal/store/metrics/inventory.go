@@ -44,7 +44,8 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 			ps.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', p.id)
 			) AS product_name,
 			ps.size_id,
 			s.name AS size_name,
@@ -320,7 +321,8 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 			sa.product_id,
 			COALESCE(
 				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
-				sty.brand
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', p.id)
 			) AS product_name,
 			COUNT(*) AS total_sizes,
 			SUM(CASE WHEN sa.sell_through_pct > 0 THEN 1 ELSE 0 END) AS sold_through_sizes,

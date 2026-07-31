@@ -134,8 +134,12 @@ func (s *Store) getTopProductsByRevenue(ctx context.Context, from, to time.Time,
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
 		WITH %s
-		SELECT oi.product_id, sty.brand,
-			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
+		SELECT oi.product_id, COALESCE(sty.brand, '') AS brand,
+			COALESCE(
+				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', oi.product_id)
+			) AS product_name,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			SUM(oi.quantity) AS cnt,
 			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
@@ -177,8 +181,12 @@ func (s *Store) getTopProductsByQuantity(ctx context.Context, from, to time.Time
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
 		WITH %s
-		SELECT oi.product_id, sty.brand,
-			(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1) AS product_name,
+		SELECT oi.product_id, COALESCE(sty.brand, '') AS brand,
+			COALESCE(
+				(SELECT pt.name FROM product_translation pt WHERE pt.product_id = p.id ORDER BY pt.language_id LIMIT 1),
+				NULLIF(sty.brand, ''),
+				CONCAT('product #', oi.product_id)
+			) AS product_name,
 			SUM(oi.quantity) AS cnt,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS value,
 			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
