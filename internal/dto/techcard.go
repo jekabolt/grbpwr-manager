@@ -1404,6 +1404,17 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			pieceKeyByID[int64(pieces[i].Id)] = pieces[i].LineKey
 		}
 	}
+	// bom_item_id → line_key, for exactly the same reason one line up. The write-path takes
+	// bom_line_key as the preferred durable ref but the read emitted only the resolved id, so a
+	// consumer that keys a usage by bom_line_key — with no id fallback — saw every usage as
+	// unbound. The production cut list is one: it therefore reported "no fabric required" for every
+	// style, under a caption promising the primary colourway's recipe.
+	bomKeyByID := make(map[int64]string, len(bomItems))
+	for i := range bomItems {
+		if bomItems[i].Id > 0 && bomItems[i].LineKey != "" {
+			bomKeyByID[int64(bomItems[i].Id)] = bomItems[i].LineKey
+		}
+	}
 	out := make([]*pb_common.TechCardColorwayUsage, 0, len(usages))
 	for i := range usages {
 		u := &usages[i]
@@ -1447,6 +1458,7 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			PieceIndex:       pieceIndex,
 			PieceId:          u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
 			PieceLineKey:     pieceKeyByID[u.PieceId.Int64],
+			BomLineKey:       bomKeyByID[u.BomItemId.Int64],
 			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
 			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
 		})
