@@ -985,7 +985,9 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 	hasUnconverted := false
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
-		bom := bomItemAtIndex(bomItems, u.BomItemIndex)
+		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
+		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
+		bom := resolveUsageBom(bomItems, u)
 		ut := u.UnitTotal(bom, orderQtyBySize, totalOrderQty)
 		if !ut.Valid {
 			continue
