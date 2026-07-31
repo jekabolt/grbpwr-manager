@@ -6112,9 +6112,41 @@ message MaterialPlanRow {
   google.type.Decimal issued_variance = 9; // issued − required: >0 over-issued vs plan (scrap/overuse), <0 under-issued/leftover (gap-04). Meaningful after issuing/receive.
 }
 
+// MaterialPlanContribution is one slot × colourway share of the plan — the factory-spec breakdown
+// of a rollup row's `required`. Stock figures (on_hand / issued / shortage) live ONLY on the
+// material-keyed rows above: two contributions resolving to the same article share ONE pile of
+// stock, so repeating stock here would double-count it.
+message MaterialPlanContribution {
+  int64 bom_item_id = 1; // the slot (BOM line)
+  string slot_name = 2; // the role: «основная молния»
+  common.TechCardBomSection section = 3;
+  int32 colorway_id = 4; // product id of the colourway
+  string colorway_name = 5;
+  int32 material_id = 6; // resolved article: the colourway's pin, else the slot default
+  string material_name = 7;
+  bool pinned = 8; // true = the colourway pinned this article; false = inherited slot default
+  string unit = 9; // the slot's spec unit (rollup rows may convert to the stock unit)
+  google.type.Decimal required = 10; // in `unit`; wastage applied to measured norms only
+  bool has_size_norms = 11;
+}
+
+// MaterialPlanBlocker is a slot × colourway the plan could NOT count — a missing article (no pin,
+// no slot default) or a colourway with no norm for the slot. A separate list, not a sentinel row:
+// it has no material_id to key stock or an issue action on.
+message MaterialPlanBlocker {
+  int64 bom_item_id = 1;
+  string slot_name = 2;
+  int32 colorway_id = 3;
+  string colorway_name = 4;
+  int32 planned_qty = 5; // garments whose need for this slot is NOT in the plan
+  string reason = 6; // human-readable: "no article (no pin, no slot default)" / "no consumption norm"
+}
+
 message GetProductionRunMaterialPlanResponse {
   repeated MaterialPlanRow rows = 1;
   repeated string caveats = 2; // BOM lines without material_id, colourways without norms, lines without a product
+  repeated MaterialPlanContribution contributions = 3; // slot × colourway breakdown of rows' required
+  repeated MaterialPlanBlocker blockers = 4; // slot × colourway the plan could not count
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

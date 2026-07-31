@@ -375,6 +375,16 @@ type TechCardColorwayUsage struct {
 	// SizeConsumptions is the per-size material rate (in-memory; persisted to
 	// tech_card_colorway_usage_consumption). When non-empty it grades usage per size.
 	SizeConsumptions []TechCardBomSizeConsumption `db:"-"`
+	// MaterialId pins the CONCRETE catalog article this colourway takes for the slot (the BOM
+	// line is the role; the pin is the article). NULL = inherit the slot default
+	// (bom_item.material_id), so a later default change keeps propagating to colourways that
+	// never diverged. FK material(id) ON DELETE RESTRICT (0221).
+	MaterialId sql.NullInt64 `db:"material_id"`
+	// MaterialIdSet mirrors the wire field's presence (proto3 `optional`): false = the client
+	// did not send material_id at all — an old client's full-replace recipe write must PRESERVE
+	// the existing pin; true = MaterialId is authoritative (invalid/0 explicitly clears the pin).
+	// Not persisted.
+	MaterialIdSet bool `db:"-"`
 }
 
 // LineTotal is the usage's per-garment material cost, resolved against its catalog
