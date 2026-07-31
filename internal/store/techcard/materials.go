@@ -561,6 +561,12 @@ type techCardPieceRow struct {
 
 type techCardPieceMaterialRow struct {
 	PieceID int `db:"piece_id"`
+	// The line_keys behind bom_item_id / fusing_bom_item_id, joined in on read. They live here
+	// rather than on the entity because the entity's own BomLineKey/FusingBomLineKey are db:"-" —
+	// wire-only INPUT the store resolves to the FKs — and giving them column tags would make every
+	// other SELECT that scans a TechCardPieceMaterial demand columns it does not have.
+	BomLineKeyJoined       sql.NullString `db:"bom_line_key"`
+	FusingBomLineKeyJoined sql.NullString `db:"fusing_bom_line_key"`
 	entity.TechCardPieceMaterial
 }
 
@@ -804,11 +810,20 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		}
 	}
 	if len(pieceIDs) > 0 {
+		// The line_keys are joined in, not merely the FKs: the durable reference is what the wire
+		// speaks and what the COLOUR section digest hashes. Emitting only the resolved id meant the
+		// read hashed "" where the write had hashed real keys, so the digest could never match its
+		// signed value and the COLOUR sign-off read "changed since approved" forever — re-approving
+		// just re-stamped the same non-matching hash.
 		pmRows, err := storeutil.QueryListNamed[techCardPieceMaterialRow](ctx, s.DB, `
-			SELECT id, piece_id, colorway_id, bom_item_id, fusing_bom_item_id, bom_item_index, fusing_bom_item_index, note
-			FROM tech_card_piece_material
-			WHERE piece_id IN (:ids)
-			ORDER BY piece_id, display_order, id`, map[string]any{"ids": pieceIDs})
+			SELECT pm.id, pm.piece_id, pm.colorway_id, pm.bom_item_id, pm.fusing_bom_item_id,
+			       pm.bom_item_index, pm.fusing_bom_item_index, pm.note,
+			       b.line_key AS bom_line_key, fb.line_key AS fusing_bom_line_key
+			FROM tech_card_piece_material pm
+			LEFT JOIN tech_card_bom_item b ON b.id = pm.bom_item_id
+			LEFT JOIN tech_card_bom_item fb ON fb.id = pm.fusing_bom_item_id
+			WHERE pm.piece_id IN (:ids)
+			ORDER BY pm.piece_id, pm.display_order, pm.id`, map[string]any{"ids": pieceIDs})
 		if err != nil {
 			return fmt.Errorf("can't load tech card piece materials: %w", err)
 		}
@@ -817,7 +832,10 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			if !ok {
 				continue
 			}
-			p.Materials = append(p.Materials, r.TechCardPieceMaterial)
+			m := r.TechCardPieceMaterial
+			m.BomLineKey = r.BomLineKeyJoined.String
+			m.FusingBomLineKey = r.FusingBomLineKeyJoined.String
+			p.Materials = append(p.Materials, m)
 		}
 	}
 
