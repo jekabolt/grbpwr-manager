@@ -22,7 +22,7 @@ func (s *Server) UpsertStyleAssembly(ctx context.Context, req *pb_admin.UpsertSt
 	}
 	items, err := dto.ConvertPbStyleAssemblyToEntity(req.GetItems())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, techCardConvertErr(err)
 	}
 	if err := s.repo.TechCards().UpsertStyleAssembly(ctx, int(req.GetStyleId()), items, authsrv.GetAdminUsername(ctx)); err != nil {
 		if st, ok := apierr.Status(err); ok {

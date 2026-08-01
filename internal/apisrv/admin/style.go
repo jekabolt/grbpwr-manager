@@ -144,11 +144,11 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	}
 	cells, err := dto.StyleSizeChartCellsFromPb(req.Cells)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, techCardConvertErr(err)
 	}
 	steps, err := dto.StyleSizeChartGradeStepsFromPb(req.GradeSteps)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, techCardConvertErr(err)
 	}
 	// A step for a measurement the chart does not carry cannot be applied to anything, and would
 	// resurface as a phantom column the next time the grid is opened. Reject it here rather than
@@ -185,7 +185,11 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	}
 	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion), cells, int(req.GradeBaseSizeId), steps)
 	if err != nil {
+		var ve *entity.ValidationError
 		switch {
+		case errors.As(err, &ve):
+			// Field-tagged store rejections (a size outside the style's range) pin to the cell.
+			return nil, apierr.Invalid(ve)
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
 		case errors.Is(err, entity.ErrTechCardConflict):
@@ -194,6 +198,12 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 		case s.repo.IsErrForeignKeyViolation(err):
 			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size, measurement name or grade base size")
+		case s.repo.IsErrUniqueViolation(err):
+			// Backstop for uniq_tech_card_size_measurement / uniq_tcgr_card_name. The parsers reject a
+			// repeated cell or grade step first, so reaching here means a direct/legacy caller — still
+			// the client's mistake, not ours, so InvalidArgument rather than an opaque Internal.
+			return nil, status.Error(codes.InvalidArgument,
+				"the chart lists the same size and point of measure (or the same graded measurement) twice")
 		default:
 			slog.Default().ErrorContext(ctx, "can't update style size chart", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't update style size chart: %v", err)

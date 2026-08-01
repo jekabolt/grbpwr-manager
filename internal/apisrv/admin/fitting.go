@@ -27,6 +27,10 @@ func (s *Server) AddFitting(ctx context.Context, req *pb_admin.AddFittingRequest
 
 	id, err := s.repo.Fittings().AddFitting(ctx, fi)
 	if err != nil {
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, apierr.Invalid(ve)
+		}
 		if errors.Is(err, entity.ErrSampleForeignToCard) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
@@ -99,6 +103,10 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 	}
 	fi.UpdatedBy = authsrv.GetAdminUsername(ctx)
 	if err := s.repo.Fittings().UpdateFitting(ctx, int(req.Id), fi, int(req.GetExpectedLockVersion())); err != nil {
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, apierr.Invalid(ve)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "fitting not found")
 		}

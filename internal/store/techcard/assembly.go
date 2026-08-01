@@ -64,6 +64,18 @@ func (s *Store) UpsertStyleAssembly(ctx context.Context, styleID int, items []en
 		if err := storeutil.RequireMutableTechCard(ctx, db, styleID); err != nil {
 			return err
 		}
+		// A size-scoped line must name a size the style makes; the FK only proves the size exists in
+		// the dictionary, so an XL label line could sit on an XS/S style and never apply to anything.
+		// NULL (all sizes) is not size-scoped and always passes.
+		rng, err := storeutil.LoadTechCardSizeRange(ctx, db, styleID)
+		if err != nil {
+			return err
+		}
+		for i, it := range items {
+			if err := rng.Require(fmt.Sprintf("items[%d].size_id", i), sizeKey(it)); err != nil {
+				return err
+			}
+		}
 		// Every referenced component must be an auxiliary card. One query, checked in Go for a clean
 		// field-tagged error (the FK only guarantees the row exists, not its purpose).
 		if len(componentIDs) > 0 {

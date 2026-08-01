@@ -250,14 +250,16 @@ func remintCardProducts(ctx context.Context, db dependency.DB, tcID int, previou
 func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
-			LockVersion   int          `db:"lock_version"`
-			ApprovalState string       `db:"approval_state"`
-			ApprovedAt    sql.NullTime `db:"approved_at"`
-			ReleasedAt    sql.NullTime `db:"released_at"`
-			Purpose       string       `db:"purpose"`
-			Stage         string       `db:"stage"`
+			LockVersion     int          `db:"lock_version"`
+			ApprovalState   string       `db:"approval_state"`
+			ApprovedAt      sql.NullTime `db:"approved_at"`
+			ReleasedAt      sql.NullTime `db:"released_at"`
+			Purpose         string       `db:"purpose"`
+			Stage           string       `db:"stage"`
+			MeasurementUnit string       `db:"measurement_unit"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit
+			 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return sql.ErrNoRows
@@ -300,6 +302,31 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := guardTechCardStageRegression(ctx, rep.DB(), id, entity.TechCardStage(cur.Stage), tc.Stage); err != nil {
 			return err
 		}
+		// The measurement unit is a FACT ABOUT the values already on file, not an instruction to
+		// convert them: tech_card_size_measurement.measurement_value is a bare DECIMAL(10,2) carrying
+		// no unit of its own, and the storefront serves it without one either. Flipping cm↔mm on a
+		// charted card therefore re-reads every point of measure as 10× or 1/10 of what was measured,
+		// silently, all the way to the buyer.
+		//
+		// Two rules keep that impossible. An ABSENT unit preserves the stored one (a save that never
+		// mentioned the unit must not re-unit the chart via the create-time default). An EXPLICIT flip
+		// is refused while any measurement exists — the author has to clear the chart and re-enter it
+		// in the new unit, which is the only conversion this code can perform reliably.
+		if !tc.MeasurementUnitSet {
+			tc.MeasurementUnit = entity.TechCardMeasurementUnit(cur.MeasurementUnit)
+		} else if string(tc.MeasurementUnit) != cur.MeasurementUnit {
+			charted, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COUNT(*) FROM tech_card_size_measurement WHERE tech_card_id = :id`, map[string]any{"id": id})
+			if err != nil {
+				return fmt.Errorf("count tech card %d measurements: %w", id, err)
+			}
+			if charted > 0 {
+				return entity.NewFieldViolation("measurement_unit", "chart_already_measured",
+					fmt.Sprintf("%d values recorded in %s", charted, cur.MeasurementUnit),
+					fmt.Sprintf("clear the size chart, then re-enter the measurements in %s — the stored numbers carry no unit, so switching it would re-read every one of them", tc.MeasurementUnit))
+			}
+		}
+
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
@@ -885,6 +912,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
 		return err
 	}
+	if err := pruneSizeScopedDataOutsideRange(ctx, db, id, tc.SizeIds); err != nil {
+		return err
+	}
 	// PR6 R1/R4: the product↔style link is derived from product.style_id (single source), never
 	// client-supplied. Keep tech_card_product (the denormalised link every cost/margin/inventory
 	// consumer still reads) in sync with the canonical set on every save. On create it is empty
@@ -1139,6 +1169,37 @@ func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs 
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_size", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card sizes: %w", err)
+	}
+	return nil
+}
+
+// pruneSizeScopedDataOutsideRange drops the size-scoped style data a save leaves stranded when it
+// NARROWS the size range. It runs immediately after the new range is written, in the same transaction.
+//
+// Nothing does this by itself: tech_card_size_measurement hangs off size(id) with RESTRICT (0149), not
+// off tech_card_size, so dropping L from the range used to leave the L column on file — and the
+// storefront then served it to buyers as current measurements for a colourway that still has a live L
+// variant, which is the actual harm. The grade rule's base size is the same shape of leak: it is a
+// plain FK to size(id), so a narrowed range could keep grading from a size the style no longer makes.
+//
+// An EMPTY range is deliberately left alone. It means "no grid declared", the early-stage state every
+// other size guard treats as permissive (storeutil.TechCardSizeRange, the sample writer) — reading it
+// as "delete the chart" would let one save with no size_ids wipe authored measurements.
+func pruneSizeScopedDataOutsideRange(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
+	if len(sizeIDs) == 0 {
+		return nil
+	}
+	params := map[string]any{"id": id, "sizes": sizeIDs}
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_size_measurement
+		WHERE tech_card_id = :id AND size_id NOT IN (:sizes)`, params); err != nil {
+		return fmt.Errorf("prune style %d measurements outside its size range: %w", id, err)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE tech_card SET grade_base_size_id = NULL
+		WHERE id = :id AND grade_base_size_id IS NOT NULL AND grade_base_size_id NOT IN (:sizes)`,
+		params); err != nil {
+		return fmt.Errorf("clear style %d grade base outside its size range: %w", id, err)
 	}
 	return nil
 }

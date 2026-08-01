@@ -273,9 +273,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	// The brand works in mm: an unset measurement_unit defaults to mm (clients have
-	// stopped sending cm, though the enum keeps cm for back-compat reads).
+	// stopped sending cm, though the enum keeps cm for back-compat reads). Presence is carried
+	// alongside the value so an UPDATE can preserve a card's stored unit instead of defaulting it
+	// — the default is a create-time choice, not a licence to re-unit an existing chart.
 	unit := entity.TechCardUnitMm
-	if pb.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
+	unitSet := pb.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN
+	if unitSet {
 		u, ok := techCardUnitPbToEntity[pb.MeasurementUnit]
 		if !ok {
 			return nil, fmt.Errorf("unknown tech card measurement unit: %v", pb.MeasurementUnit)
@@ -477,43 +480,44 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	insert := &entity.TechCardInsert{
-		StyleNumber:       nullStringFromPb(styleNumber),
-		StyleNumberSource: styleNumberSourceFromPb(pb.StyleNumberSource),
-		Purpose:           purpose,
-		OutputMaterialId:  outputMaterialId,
-		AuxSubtype:        auxSubtype,
-		Name:              pb.Name,
-		Brand:             nullStringFromPb(pb.Brand),
-		SeasonCode:        sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
-		SeasonYear:        sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
-		Collection:        nullStringFromPb(pb.Collection),
-		CategoryId:        nullInt32FromPb(pb.CategoryId),
-		TargetGender:      gender,
-		Stage:             stage,
-		Status:            nullStringFromPb(pb.Status),
-		ApprovalState:     approvalState,
-		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
-		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
-		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
-		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
-		MeasurementUnit:   unit,
-		Concept:           nullStringFromPb(pb.Concept),
-		Notes:             nullStringFromPb(pb.Notes),
-		SizeIds:           sizeIds,
-		Media:             media,
-		Callouts:          callouts,
-		Details:           details,
-		BomItems:          bomItems,
-		Construction:      construction,
-		Operations:        operations,
-		Labels:            labels,
-		Packaging:         packaging,
-		Costing:           costing,
-		Issues:            issues,
-		SizeQuantities:    sizeQuantities,
-		Signoffs:          signoffs,
-		Patterns:          patterns,
-		Pieces:            pieces,
+		StyleNumber:        nullStringFromPb(styleNumber),
+		StyleNumberSource:  styleNumberSourceFromPb(pb.StyleNumberSource),
+		Purpose:            purpose,
+		OutputMaterialId:   outputMaterialId,
+		AuxSubtype:         auxSubtype,
+		Name:               pb.Name,
+		Brand:              nullStringFromPb(pb.Brand),
+		SeasonCode:         sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
+		SeasonYear:         sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
+		Collection:         nullStringFromPb(pb.Collection),
+		CategoryId:         nullInt32FromPb(pb.CategoryId),
+		TargetGender:       gender,
+		Stage:              stage,
+		Status:             nullStringFromPb(pb.Status),
+		ApprovalState:      approvalState,
+		ApprovedAt:         nullTimeFromPbTimestamp(pb.ApprovedAt),
+		ReleasedAt:         nullTimeFromPbTimestamp(pb.ReleasedAt),
+		BaseModelId:        nullInt32FromPb(pb.BaseModelId),
+		BaseSampleSizeId:   nullInt32FromPb(pb.BaseSampleSizeId),
+		MeasurementUnit:    unit,
+		MeasurementUnitSet: unitSet,
+		Concept:            nullStringFromPb(pb.Concept),
+		Notes:              nullStringFromPb(pb.Notes),
+		SizeIds:            sizeIds,
+		Media:              media,
+		Callouts:           callouts,
+		Details:            details,
+		BomItems:           bomItems,
+		Construction:       construction,
+		Operations:         operations,
+		Labels:             labels,
+		Packaging:          packaging,
+		Costing:            costing,
+		Issues:             issues,
+		SizeQuantities:     sizeQuantities,
+		Signoffs:           signoffs,
+		Patterns:           patterns,
+		Pieces:             pieces,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
@@ -941,7 +945,8 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 // ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
 // parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
 // the store, S2/S3), so there is no positional range check here. size_id membership in the style's
-// range is enforced by the FK / store, not here.
+// range is checked by the store inside the write transaction (the request carries no size range to
+// check against, and the FK is on the global size dictionary, not on tech_card_size).
 func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
 	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
 	for i, u := range pbs {
@@ -1754,6 +1759,29 @@ func validateDecimalScale(nd decimal.NullDecimal, field string, maxFrac int, lim
 	}
 	if nd.Decimal.Abs().GreaterThanOrEqual(decimal.NewFromInt(limit)) {
 		return fmt.Errorf("%s must be less than %d", field, limit)
+	}
+	return nil
+}
+
+// validateDecimalFits is the FIELD-TAGGED sibling of validateDecimalScale: same three column rules
+// (sign, fraction digits, magnitude) but it names the offending input path, so the admin grid can pin
+// the rejection to the exact cell/row instead of showing a form-level banner. `signed` allows a
+// negative value — a grade step legitimately grades downwards, a measurement or a quantity does not.
+//
+// The point is that MySQL does NOT reject an over-precise value: DECIMAL(10,2) silently rounds 10.005
+// to 10.01 and hands it back on the next read, so a chart the author typed and a chart the factory
+// gets differ with nothing anywhere saying so. Rejecting is the only way the two stay equal.
+func validateDecimalFits(field string, d decimal.Decimal, maxFrac int, limit int64, signed bool) error {
+	if !signed && d.IsNegative() {
+		return entity.NewFieldViolation(field, "must_not_be_negative", d.String(), "enter a value of 0 or more")
+	}
+	if d.Exponent() < int32(-maxFrac) {
+		return entity.NewFieldViolation(field, "too_many_decimal_places", d.String(),
+			fmt.Sprintf("round to at most %d decimal places — the column stores no more, so the extra digits would be lost silently", maxFrac))
+	}
+	if d.Abs().GreaterThanOrEqual(decimal.NewFromInt(limit)) {
+		return entity.NewFieldViolation(field, "out_of_range", d.String(),
+			fmt.Sprintf("enter a value smaller than %d", limit))
 	}
 	return nil
 }

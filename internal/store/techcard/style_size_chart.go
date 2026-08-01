@@ -51,6 +51,22 @@ func (s *Store) UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockV
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}
+		// Every cell must measure a size the style actually makes. The FK is on size(id), the global
+		// dictionary, so without this an XL column persists on an XS/S style: a phantom the grid keeps
+		// re-showing and the grade rule keeps expanding from. Read inside the tx so a concurrent
+		// size-range save cannot land between the check and the insert.
+		rng, err := storeutil.LoadTechCardSizeRange(ctx, rep.DB(), styleID)
+		if err != nil {
+			return err
+		}
+		for i, c := range cells {
+			if err := rng.Require(fmt.Sprintf("cells[%d].size_id", i), c.SizeID); err != nil {
+				return err
+			}
+		}
+		if err := rng.Require("grade_base_size_id", gradeBaseSizeID); err != nil {
+			return err
+		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM tech_card_size_measurement WHERE tech_card_id = :id`, map[string]any{"id": styleID}); err != nil {
 			return fmt.Errorf("clear style %d size chart: %w", styleID, err)
@@ -121,9 +137,18 @@ func loadStyleSizeChart(ctx context.Context, db dependency.DB, styleID int) (ent
 	if err != nil {
 		return entity.StyleSizeChart{}, err
 	}
+	// Cells for sizes the style no longer makes are not returned — same rule as the storefront read.
+	// A save is a full replace of what it is handed, so serving a stranded cell would have the editor
+	// write it straight back (and, with the size-range check on the write, be refused for a column it
+	// never showed the author). A style with no declared range keeps every cell: the grid is simply
+	// not picked yet.
 	cells, err := storeutil.QueryListNamed[entity.StyleSizeChartCell](ctx, db,
-		`SELECT size_id, measurement_name_id, measurement_value FROM tech_card_size_measurement
-		 WHERE tech_card_id = :id ORDER BY size_id, measurement_name_id`, map[string]any{"id": styleID})
+		`SELECT size_id, measurement_name_id, measurement_value FROM tech_card_size_measurement m
+		 WHERE m.tech_card_id = :id
+		   AND (EXISTS (SELECT 1 FROM tech_card_size z
+		                WHERE z.tech_card_id = m.tech_card_id AND z.size_id = m.size_id)
+		        OR NOT EXISTS (SELECT 1 FROM tech_card_size z WHERE z.tech_card_id = m.tech_card_id))
+		 ORDER BY size_id, measurement_name_id`, map[string]any{"id": styleID})
 	if err != nil {
 		return entity.StyleSizeChart{}, fmt.Errorf("load style %d size chart cells: %w", styleID, err)
 	}
