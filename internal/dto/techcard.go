@@ -447,6 +447,11 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	// hardware_cost is "hardware if OUTSIDE the BOM" — a cross-section rule, so it is checked here
+	// where both halves of the full-replace payload are parsed, not inside the costing parser.
+	if err := validateHardwareCostAgainstBom(costing, bomItems); err != nil {
+		return nil, err
+	}
 	issues, err := parseTechCardIssues(pb.Issues, len(operations), calloutNumbers)
 	if err != nil {
 		return nil, err
@@ -727,6 +732,15 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Current fingerprint per sign-off section: compare against each signoff's signed_digest to
 		// tell an approval that still holds from one whose sheet moved underneath it.
 		SectionDigests: TechCardSectionDigestsToPb(&tc.TechCardInsert),
+		// The fit reference the studio shoots against — written through UpdateStyle like the catalogue
+		// facts above, and until now readable only off the product/storefront messages.
+		ModelWearsHeightCm: tc.ModelWearsHeightCm.Int32,
+		ModelWearsSizeId:   tc.ModelWearsSizeId.Int32,
+		// The taxonomy path the store derives from category_id. TechCardListItem has always carried it;
+		// a card opened directly had to infer its own category path from the leaf tag alone.
+		TopCategoryId: tc.TopCategoryId.Int32,
+		SubCategoryId: tc.SubCategoryId.Int32,
+		TypeId:        tc.TypeId.Int32,
 	}
 }
 
@@ -1294,8 +1308,10 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 
 // techCardColorwayRefsToPb emits a style's colourways as derived, output-only AdminColorwayRef
 // (R1/§3.3): a style's colourways are its products, not writable through the style. Merchandising
-// detail (media, tags, translations) is read via the Colorway RPCs; the lab-dip state and history,
-// the COGS and the retail prices ARE here, because the constructor judges a colour and its margin
+// detail (media, tags, translations) is read via the Colorway RPCs; the development block (the
+// colour's own code/label/pantone/hex/swatch — write-only until this fix, persisted by
+// UpdateColorway and returned by nothing), the lab-dip state and history, the COGS and the retail
+// prices ARE here, because the constructor judges a colour and its margin
 // from the style view and fanning GetColorwayByID out per colourway to get them was an N+1. The
 // recipe (usages) IS included (H1 fix, WS3/S2-S3): the constructor view of a style shows each
 // colourway's material recipe alongside its identity — the recipe used to be write-only
@@ -1320,6 +1336,17 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 			LabDipDecidedBy:    c.LabDipDecidedBy.String,
 			LabDipRejectReason: c.LabDipRejectReason.String,
 			LockVersion:        int32(c.LockVersion),
+			// The rest of the development block, flattened the same way the lab-dip scalars above are.
+			// Written by the Colorway RPCs, output-only here — and unread anywhere until now: the colour's
+			// own identity (code/label), the pantone the dyehouse matches, the screen hex and the approved
+			// swatch were persisted and never returned by any RPC.
+			DevCode:       c.Code.String,
+			DevName:       c.Name,
+			DevComment:    c.Comment.String,
+			Pantone:       c.Pantone.String,
+			PantoneSystem: c.PantoneSystem.String,
+			DevHex:        c.Hex.String,
+			SwatchMediaId: c.SwatchMediaId.Int32,
 		}
 		if c.LabDipSubmittedAt.Valid {
 			ref.LabDipSubmittedAt = timestamppb.New(c.LabDipSubmittedAt.Time)

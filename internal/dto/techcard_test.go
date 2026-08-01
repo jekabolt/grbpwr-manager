@@ -365,6 +365,9 @@ func TestConvertTechCardCosting(t *testing.T) {
 		Operations: []*pb_common.TechCardOperation{
 			{Node: "collar", TimeNorm: dec("2")},
 			{Node: "side", TimeNorm: dec("3")},
+			// smv supersedes time_norm (0219): a re-timed operation rolls up by its smv, and the stale
+			// time_norm beside it is ignored rather than added on top.
+			{Node: "hem", TimeNorm: dec("9"), Smv: dec("1.5")},
 		},
 		SizeQuantities: []*pb_common.TechCardSizeQuantity{{SizeId: 4, OrderQty: 100}},
 		Costing:        &pb_common.TechCardCosting{CmtCost: dec("10"), DefectPercent: dec("10"), Currency: "EUR"},
@@ -420,8 +423,8 @@ func TestConvertTechCardCosting(t *testing.T) {
 	if byCcy["EUR"] != "20" || byCcy["USD"] != "3" {
 		t.Errorf("root materials_total buckets mismatch: %+v", byCcy)
 	}
-	// total_sam = 2 + 3 = 5.
-	if cost.TotalSam == nil || cost.TotalSam.Value != "5" {
+	// total_sam = 2 + 3 + 1.5 (the third op's smv, NOT its time_norm of 9) = 6.5.
+	if cost.TotalSam == nil || cost.TotalSam.Value != "6.5" {
 		t.Errorf("total_sam mismatch: %+v", cost.TotalSam)
 	}
 

@@ -446,6 +446,32 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	}, nil
 }
 
+// validateHardwareCostAgainstBom enforces the one condition hardware_cost has always been documented
+// with and never checked: it is the hardware that sits OUTSIDE the BOM. Hardware is also a first-class
+// BOM section, priced per colourway through the recipe, so a card carrying both a hardware BOM line
+// and a non-zero hardware_cost pays for its zips twice — silently, in every rollup that folds the
+// manual articles into a unit cost (unit_cost, order_cost, the base-currency fold, the style cost
+// estimate, and the product COGS seeded from them).
+//
+// WRITE ONLY. A card already saved with both still reads back exactly as it was — the figures would
+// only get worse if a read started rewriting them — and the next save is what asks for a side to be
+// picked. bomItems is the full-replace payload, so it IS the card's BOM after this write.
+func validateHardwareCostAgainstBom(c *entity.TechCardCosting, bomItems []entity.TechCardBomItem) error {
+	if c == nil || !c.HardwareCost.Valid || c.HardwareCost.Decimal.IsZero() {
+		return nil
+	}
+	for i := range bomItems {
+		if bomItems[i].Section != entity.BomSectionHardware {
+			continue
+		}
+		return entity.NewFieldViolation("costing.hardware_cost",
+			"hardware is already priced as a BOM line, so this amount would be counted twice",
+			fmt.Sprintf("BOM line %q", bomItems[i].Name),
+			"price hardware in ONE place: keep the BOM lines and clear hardware_cost, or keep hardware_cost for hardware that is not in the BOM and remove the hardware lines")
+	}
+	return nil
+}
+
 // --- emit entity -> pb ---
 
 func techCardConstructionToPb(c *entity.TechCardConstruction) *pb_common.TechCardConstruction {
@@ -747,6 +773,20 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 	}
 }
 
+// operationMinutes is the minute figure one operation contributes to a minute rollup: its standard
+// minute value (smv, 0219) when set, the legacy time_norm otherwise. smv was added as time_norm's
+// successor — the two columns describe the same quantity, and an operation that has been properly
+// timed carries that number in smv while time_norm keeps whatever the sheet was first authored with.
+// Preferring smv is therefore what makes the newer measurement the one that counts; the fallback
+// keeps every card authored before 0219 rolling up exactly as it did. Invalid = the operation is
+// untimed in both columns and contributes nothing.
+func operationMinutes(o *entity.TechCardOperation) decimal.NullDecimal {
+	if o.SMV.Valid {
+		return o.SMV
+	}
+	return o.TimeNorm
+}
+
 // techCardCostingToPb emits the stored per-unit cost articles plus the computed per-colourway
 // costs and the root rollup. Root figures are the PRIMARY colourway = index 0. Cost is built
 // per GARMENT (unit_cost = materials_per_unit + shared manual articles, × (1 + defect%)), then
@@ -846,11 +886,11 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 		out.BaseCurrency = fx.Base
 	}
 
-	// total_sam = Σ(operation time_norm); informative, pricing-independent.
+	// total_sam = Σ(operation minutes); informative, pricing-independent.
 	totalSam := decimal.Zero
 	for i := range tc.Operations {
-		if tc.Operations[i].TimeNorm.Valid {
-			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
+		if m := operationMinutes(&tc.Operations[i]); m.Valid {
+			totalSam = totalSam.Add(m.Decimal)
 		}
 	}
 	if totalSam.IsPositive() {

@@ -309,6 +309,21 @@ message AdminColorwayRef {
   // another. Empty when no rate is known for that country (an export destination nets to itself, and
   // silently returning the gross price under a "net" name would be the same lie in a new place).
   repeated ColorwayPrice net_prices = 18;
+
+  // The rest of the development block (ColorwayDevelopmentInsert), flattened onto the ref exactly as
+  // the lab_dip_* scalars above already are. These describe the COLOUR ITSELF — the internal code and
+  // label it is developed under, the pantone reference the dyehouse matches, the screen approximation
+  // and the physical swatch — and they were write-only until now: UpdateColorway persisted them and no
+  // read path returned them, so the tab could show which round a lab dip was on but not which pantone
+  // that round was chasing. Written through the Colorway write path (UpdateColorway's development.*),
+  // never through the style; here they are OUTPUT-ONLY.
+  string dev_code = 19; // internal article code for the colour (ex TechCardColorway.code)
+  string dev_name = 20; // internal colourway label (ex TechCardColorway.name)
+  string dev_comment = 21; // development notes
+  string pantone = 22; // pantone reference the dyehouse matches
+  string pantone_system = 23; // which pantone book that reference is in (TCX/TPG/…)
+  string dev_hex = 24; // screen approximation #RRGGBB (ex hex)
+  int32 swatch_media_id = 25; // the approved physical swatch; 0 = none
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge
@@ -703,7 +718,7 @@ message TechCardOperation {
   string machine = 9; // machine / equipment
   string seam_allowance = 10; // seam allowance for this узел
   string needle = 11; // needle size / type
-  google.type.Decimal time_norm = 12; // SAM / норма времени, minutes
+  google.type.Decimal time_norm = 12; // SAM / норма времени, minutes; superseded by smv below
   string attachment = 13; // folder / binder / guide / hemmer / presser-foot (приспособление)
   TechCardOperationType operation_type = 14; // machine / stitch class; UNKNOWN = unset
   // 0-based index into TechCardInsert.bom_items of the material this operation
@@ -736,7 +751,10 @@ message TechCardOperation {
   // empty. Distinct from piece_line_keys: those are the parts joined, these are what joins them.
   repeated string bom_line_keys = 23;
   repeated int64 bom_item_ids = 24; // OUTPUT: resolved FKs to the BOM lines, in the order given
-  google.type.Decimal smv = 25; // standard minute value; absent = unset
+  // smv is the standard minute value and supersedes time_norm above: minute rollups
+  // (TechCardCosting.total_sam) take smv when it is set and fall back to time_norm when it is not,
+  // so re-timing an operation means writing smv, not rewriting the legacy column. Absent = unset.
+  google.type.Decimal smv = 25;
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
@@ -833,7 +851,11 @@ message TechCardColorwayCost {
 message TechCardCosting {
   // manual per-unit cost articles (per ONE garment), all in `currency`.
   google.type.Decimal cmt_cost = 1; // пошив / работа (CMT) за 1 изделие
-  google.type.Decimal hardware_cost = 2; // фурнитура вне BOM, за 1 изделие
+  // фурнитура ВНЕ BOM, за 1 изделие. Hardware is also a first-class BOM section priced through the
+  // recipe, so this article and a hardware BOM line are mutually exclusive: a write carrying both is
+  // rejected (costing.hardware_cost FieldViolation) because it would double-count in every unit-cost
+  // rollup. Enforced on WRITE only — a card saved with both before the rule existed still reads back.
+  google.type.Decimal hardware_cost = 2;
   google.type.Decimal packaging_cost = 3; // упаковка и маркировка, за 1 изделие
   google.type.Decimal logistics_cost = 4; // логистика / доставка, за 1 изделие
   google.type.Decimal overhead_cost = 5; // накладные расходы, за 1 изделие
@@ -858,7 +880,7 @@ message TechCardCosting {
   int32 order_qty = 21; // Σ size_quantities.order_qty (the whole production run)
   google.type.Decimal order_cost = 22; // unit_cost × order_qty
   bool has_unconverted_currencies = 15; // a material line (colourway 0) is in a currency other than `currency`
-  google.type.Decimal total_sam = 16; // Σ operation time_norm (minutes); informative
+  google.type.Decimal total_sam = 16; // Σ operation smv, time_norm where smv is unset (minutes); informative
   repeated TechCardColorwayCost colorway_costs = 18; // OUTPUT-ONLY, per colourway
 
   // OUTPUT-ONLY base-currency rollup. The unit/order cost of the primary colourway folded into
@@ -1154,6 +1176,20 @@ message TechCard {
   // every read. Compare an entry against the matching TechCardSignoff.signed_digest to tell whether
   // an approved section has been edited since it was signed. OUTPUT-ONLY.
   repeated TechCardSectionDigest section_digests = 18;
+
+  // model_wears_* is the fit reference the studio shoots against: the height of the model in the
+  // lookbook and the size worn. Like fit/composition/care_instructions above it is a style catalogue
+  // fact WRITTEN via UpdateStyle and read-only here — it was previously visible only on the product /
+  // storefront messages, so the style view could set it and never read it back.
+  int32 model_wears_height_cm = 20; // 0 = unknown
+  int32 model_wears_size_id = 21; // FK size(id); 0 = unset
+  // The derived taxonomy path behind the card's category_id (TechCardInsert.category_id): the same
+  // triple ListTechCardsRequest.category_ids filters on and TechCardListItem already emits. Present
+  // here too so a card opened directly, rather than through a list, knows its own category path.
+  // Server-derived on write (syncStyleCategoryTriple), read-only here; 0 = unset.
+  int32 top_category_id = 22;
+  int32 sub_category_id = 23;
+  int32 type_id = 24;
   reserved 5; // was resolved_media (single combined list; now split)
 }
 
