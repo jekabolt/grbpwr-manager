@@ -69,6 +69,10 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
 			return err
 		}
+		// After the sample resolution, because that is what may supply the tech card to check against.
+		if err := validateFittingSizes(ctx, rep.DB(), f); err != nil {
+			return err
+		}
 		params := fittingParams(f)
 		// Auto-assign the round number within the tx when it is not set and the fitting is
 		// anchored to a tech card, so a style's try-ons number themselves 1, 2, 3, …. A manual
@@ -132,6 +136,9 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 			return entity.ErrFittingConflict
 		}
 		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
+			return err
+		}
+		if err := validateFittingSizes(ctx, rep.DB(), f); err != nil {
 			return err
 		}
 		params := fittingParams(f)
@@ -363,6 +370,27 @@ func changeRequestParams(cr *entity.FittingChangeRequest) map[string]any {
 		"carried_from_id": cr.CarriedFromId,
 		"created_by":      cr.CreatedBy,
 	}
+}
+
+// validateFittingSizes rejects fit-sample sizes that the fitting's style does not make. Samples have
+// enforced this since NF-04 (store/sample validateSampleRefs) but fittings never did, so a try-on
+// could be recorded — and carried into the next round's change requests — against a size that only
+// exists in the global dictionary. A fitting with no style, or a style with no declared range, is
+// left permissive (see storeutil.TechCardSizeRange).
+func validateFittingSizes(ctx context.Context, db dependency.DB, f *entity.FittingInsert) error {
+	if !f.TechCardId.Valid || len(f.Sizes) == 0 {
+		return nil
+	}
+	rng, err := storeutil.LoadTechCardSizeRange(ctx, db, int(f.TechCardId.Int32))
+	if err != nil {
+		return err
+	}
+	for i, sz := range f.Sizes {
+		if err := rng.Require(fmt.Sprintf("sizes[%d].size_id", i), sz.SizeId); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func insertFittingSizes(ctx context.Context, db dependency.DB, fittingID int, sizes []entity.FittingSize) error {
