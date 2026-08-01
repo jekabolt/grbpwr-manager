@@ -367,6 +367,35 @@ func techCardInsertHasCostingData(ins *pb_common.TechCardInsert) bool {
 	return false
 }
 
+// productionRunInsertHasCostingData reports whether a run write payload carries confidential cost
+// input: an actual cost article (CMT, freight, …). The planned unit cost is not client-supplied (the
+// service snapshots it) and quantities/markers are not money, so the cost articles are the only cost
+// input on this payload. Mirrors techCardInsertHasCostingData.
+func productionRunInsertHasCostingData(ins *pb_common.ProductionRunInsert) bool {
+	return ins != nil && len(ins.Costs) > 0
+}
+
+// preserveStoredProductionRunCosts restores a run's stored cost articles onto an incoming update
+// from an account WITHOUT costing:write, the production-run twin of preserveStoredCosting. The store
+// full-replaces production_run_cost (DELETE + reinsert), and the read path blanks Run.Costs for such
+// an account (stripProductionRunCosting), so its resave would otherwise carry none and silently erase
+// every manual cost article it never saw. The rows are carried through VERBATIM — including
+// amount_base — so a stale FX rate cannot re-value them behind the operator's back; the store ignores
+// their ids on reinsert. Best-effort: a reload failure leaves the payload as-is (the write still
+// proceeds) — logged, never fatal. Only call this after confirming the payload carries no cost
+// articles (productionRunInsertHasCostingData is false): this path is purely anti-erase.
+func (s *Server) preserveStoredProductionRunCosts(ctx context.Context, runID int, incoming *entity.ProductionRunInsert) {
+	stored, err := s.repo.ProductionRuns().GetProductionRun(ctx, runID)
+	if err != nil || stored == nil {
+		if err != nil {
+			slog.Default().WarnContext(ctx, "costing preserve: can't reload stored production run; leaving payload as-is",
+				slog.Int("production_run_id", runID), slog.String("err", err.Error()))
+		}
+		return
+	}
+	incoming.Costs = stored.Costs
+}
+
 // costPriceProvided reports whether a colourway write payload is trying to SET a product cost_price (a
 // confidential figure). An absent/empty value means "leave the stored cost unchanged" (see
 // nullDecimalFromPb) — not a cost write — so it is not gated. Because cost_price is write-only (never

@@ -20,8 +20,14 @@ import (
 // productionRunFKMsg is returned when a run references a missing tech card, release or size.
 const productionRunFKMsg = "production run references a non-existent tech card, release or size"
 
+// productionRunCostWriteMsg is returned when a run write carries cost articles without costing:write.
+const productionRunCostWriteMsg = "costing:write is required to set production run cost articles"
+
 // CreateProductionRun creates a run and snapshots its planned unit cost.
 func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreateProductionRunRequest) (*pb_admin.CreateProductionRunResponse, error) {
+	if _, write := s.costingAccess(ctx); !write && productionRunInsertHasCostingData(req.GetRun()) {
+		return nil, status.Error(codes.PermissionDenied, productionRunCostWriteMsg)
+	}
 	ins, err := dto.ConvertPbProductionRunInsertToEntity(req.GetRun())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -56,12 +62,22 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "production run id is required")
 	}
+	_, costingWrite := s.costingAccess(ctx)
+	if !costingWrite && productionRunInsertHasCostingData(req.GetRun()) {
+		return nil, status.Error(codes.PermissionDenied, productionRunCostWriteMsg)
+	}
 	ins, err := dto.ConvertPbProductionRunInsertToEntity(req.GetRun())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if len(ins.Costs) > 0 {
 		dto.FoldProductionRunCostsToBase(ins.Costs, s.costingFx(ctx))
+	}
+	// The update full-replaces production_run_cost, so a cost-blind account — whose read blanked the
+	// articles — would erase them by simply resaving the run's quantities. Carry the stored ones
+	// through (after the fold, so their amount_base is preserved verbatim).
+	if !costingWrite {
+		s.preserveStoredProductionRunCosts(ctx, int(req.Id), ins)
 	}
 	if err := s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
