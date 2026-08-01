@@ -6,6 +6,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -112,6 +113,7 @@ func (s *Server) GetOrderPackingSpec(ctx context.Context, req *pb_admin.GetOrder
 			StyleId:     styleID,
 			StyleName:   styleNames[styleID],
 			SKU:         it.SKU,
+			SizeName:    sizeName(it.SizeId),
 			Quantity:    it.Quantity,
 			Assembly:    assemblyForSize(assemblyByStyle[styleID], it.SizeId),
 		})
@@ -123,6 +125,15 @@ func (s *Server) GetOrderPackingSpec(ctx context.Context, req *pb_admin.GetOrder
 	}
 	spec.Packaging = pkg
 	return dto.OrderPackingSpecToPb(spec), nil
+}
+
+// sizeName resolves an order line's size to its display code from the size dictionary cache. Empty when
+// the size is unknown — the packer sees a blank rather than a raw id.
+func sizeName(sizeID int) string {
+	if sz, ok := cache.GetSizeById(sizeID); ok {
+		return sz.Name
+	}
+	return ""
 }
 
 // assemblyForSize keeps the assembly lines that apply to a given garment size: the ACTIVE all-sizes
