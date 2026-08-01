@@ -33,3 +33,6 @@ SET @sql := IF(@old_fk IS NOT NULL AND @is_cascade = 1,
 PREPARE s FROM @sql;
 EXECUTE s;
 DEALLOCATE PREPARE s;
+
+-- +migrate Down
+SELECT 1;

@@ -28,11 +28,11 @@ func StyleSizeChartToPb(c entity.StyleSizeChart) *pb_common.StyleSizeChart {
 		})
 	}
 	return &pb_common.StyleSizeChart{
-		StyleId:          int32(c.StyleID),
-		LockVersion:      int32(c.LockVersion),
-		Cells:            cells,
-		GradeBaseSizeId:  int32(c.GradeBaseSizeID),
-		GradeSteps:       steps,
+		StyleId:         int32(c.StyleID),
+		LockVersion:     int32(c.LockVersion),
+		Cells:           cells,
+		GradeBaseSizeId: int32(c.GradeBaseSizeID),
+		GradeSteps:      steps,
 	}
 }
 
