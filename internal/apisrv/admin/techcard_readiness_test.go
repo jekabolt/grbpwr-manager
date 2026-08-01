@@ -120,7 +120,7 @@ func TestGetTechCardReadiness(t *testing.T) {
 			wantNextDetail: map[string]string{
 				"sms_sample":      "no sms sample recorded",
 				"colorway_linked": "no live colourway",
-				"bom_linked":      "2 of 5 BOM lines have no catalog material",
+				"bom_linked":      "2 of 5 BOM slots have no article (no default and not pinned by every live colourway)",
 			},
 			wantNextReady: false,
 			wantReleaseOK: false,
