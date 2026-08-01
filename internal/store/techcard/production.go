@@ -218,12 +218,20 @@ func insertTechCardOperationPieces(ctx context.Context, db dependency.DB, tcID i
 	return nil
 }
 
-func insertTechCardLabels(ctx context.Context, db dependency.DB, tcID int, labels []entity.TechCardLabel) error {
+func insertTechCardLabels(ctx context.Context, db dependency.DB, tcID int, labels []entity.TechCardLabel, bomRes bomResolver) error {
 	if len(labels) == 0 {
 		return nil
 	}
 	rows := make([]map[string]any, 0, len(labels))
 	for i, l := range labels {
+		bomItemID := l.BomItemId
+		if bomItemID.Valid && bomItemID.Int32 == 0 {
+			bomItemID = sql.NullInt32{}
+		}
+		if bomItemID.Valid && !bomRes.containsID(int(bomItemID.Int32)) {
+			return entity.NewFieldViolation(fmt.Sprintf("labels[%d].bom_item_id", i), "not_in_tech_card",
+				fmt.Sprintf("BOM line %d", bomItemID.Int32), "select a BOM line from this tech card")
+		}
 		rows = append(rows, map[string]any{
 			"tech_card_id":  tcID,
 			"label_type":    string(l.LabelType),
@@ -232,7 +240,7 @@ func insertTechCardLabels(ctx context.Context, db dependency.DB, tcID int, label
 			"attachment":    l.Attachment,
 			"size":          l.Size,
 			"note":          l.Note,
-			"bom_item_id":   l.BomItemId,
+			"bom_item_id":   bomItemID,
 			"display_order": i,
 		})
 	}

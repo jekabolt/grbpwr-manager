@@ -261,6 +261,17 @@ func (r bomResolver) idForIndex(idx int) (int, bool) {
 	return r.ordered[idx], true
 }
 
+// containsID reports whether id belongs to the BOM reconciled for this card. ordered includes both
+// retained rows and rows created by the current save, so referrers can be validated before insert.
+func (r bomResolver) containsID(id int) bool {
+	for _, candidate := range r.ordered {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveBomID turns a legacy positional bom_item_index (NULL-able) into a real bom_item id for a
 // referrer's FK column, or SQL NULL when unset or out of range (a dangling ref).
 func resolveBomID(res bomResolver, idx sql.NullInt32) any {
