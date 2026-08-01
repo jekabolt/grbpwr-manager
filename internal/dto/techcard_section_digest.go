@@ -254,7 +254,7 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 			o.Node, o.Description.String, o.SeamType.String, digestDecimal(o.StitchesPerCm),
 			o.TopstitchWidth.String, o.Thread.String, o.Note.String, o.OperationNumber.Int32,
 			o.Machine.String, o.SeamAllowance.String, o.Needle.String, digestDecimal(o.TimeNorm),
-			o.Attachment.String, string(o.OperationType), o.CalloutNumber.Int32,
+			digestDecimal(o.SMV), o.Attachment.String, string(o.OperationType), o.CalloutNumber.Int32,
 			string(o.Zone), o.Placement.String, o.BomLineKeys, o.PieceLineKeys,
 		})
 	}
