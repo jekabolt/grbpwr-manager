@@ -1758,6 +1758,29 @@ func validateDecimalScale(nd decimal.NullDecimal, field string, maxFrac int, lim
 	return nil
 }
 
+// validateDecimalFits is the FIELD-TAGGED sibling of validateDecimalScale: same three column rules
+// (sign, fraction digits, magnitude) but it names the offending input path, so the admin grid can pin
+// the rejection to the exact cell/row instead of showing a form-level banner. `signed` allows a
+// negative value — a grade step legitimately grades downwards, a measurement or a quantity does not.
+//
+// The point is that MySQL does NOT reject an over-precise value: DECIMAL(10,2) silently rounds 10.005
+// to 10.01 and hands it back on the next read, so a chart the author typed and a chart the factory
+// gets differ with nothing anywhere saying so. Rejecting is the only way the two stay equal.
+func validateDecimalFits(field string, d decimal.Decimal, maxFrac int, limit int64, signed bool) error {
+	if !signed && d.IsNegative() {
+		return entity.NewFieldViolation(field, "must_not_be_negative", d.String(), "enter a value of 0 or more")
+	}
+	if d.Exponent() < int32(-maxFrac) {
+		return entity.NewFieldViolation(field, "too_many_decimal_places", d.String(),
+			fmt.Sprintf("round to at most %d decimal places — the column stores no more, so the extra digits would be lost silently", maxFrac))
+	}
+	if d.Abs().GreaterThanOrEqual(decimal.NewFromInt(limit)) {
+		return entity.NewFieldViolation(field, "out_of_range", d.String(),
+			fmt.Sprintf("enter a value smaller than %d", limit))
+	}
+	return nil
+}
+
 // requiredDecimalFromPb parses a required decimal column (NOT NULL), erroring when
 // absent or out of range.
 func requiredDecimalFromPb(d *pb_decimal.Decimal, field string, maxFrac int, limit int64) (decimal.Decimal, error) {

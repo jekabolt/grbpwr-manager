@@ -143,11 +143,11 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	}
 	cells, err := dto.StyleSizeChartCellsFromPb(req.Cells)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, techCardConvertErr(err)
 	}
 	steps, err := dto.StyleSizeChartGradeStepsFromPb(req.GradeSteps)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, techCardConvertErr(err)
 	}
 	// A step for a measurement the chart does not carry cannot be applied to anything, and would
 	// resurface as a phantom column the next time the grid is opened. Reject it here rather than

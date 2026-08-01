@@ -7,6 +7,12 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
 
+const (
+	// style_assembly.qty is DECIMAL(12,3) (0174): at most 3 fraction digits and 9 integer digits.
+	assemblyQtyMaxFrac = 3
+	assemblyQtyLimit   = 1_000_000_000
+)
+
 // ConvertPbStyleAssemblyToEntity validates and converts writable assembly lines (WS7, §2.8). qty must be
 // > 0; size_id is optional (0 = all sizes). Duplicate (component, size) pairs are rejected here for a
 // clean InvalidArgument; the store re-checks and also enforces the auxiliary-component invariant.
@@ -25,17 +31,24 @@ func ConvertPbStyleAssemblyToEntity(items []*pb_admin.StyleAssemblyItem) ([]enti
 			return nil, fmt.Errorf("items[%d]: duplicate component_tech_card_id %d for the same size", i, it.ComponentTechCardId)
 		}
 		seen[key] = true
-		qty, err := parseNonNegDecimal(it.Qty, fmt.Sprintf("items[%d].qty", i))
+		// Parsed WITHOUT the rounding parseNonNegDecimal applies: style_assembly.qty is
+		// DECIMAL(12,3), so a finer value has to be rejected rather than quietly rounded into the
+		// column (0.0005 → 0.001 is a 2× error on a per-garment component count).
+		qty, err := nullDecimalFromPb(it.Qty)
 		if err != nil {
-			return nil, err
+			return nil, entity.NewFieldViolation(fmt.Sprintf("items[%d].qty", i), "not_a_number", "", "enter a number")
 		}
-		if !qty.IsPositive() {
+		if !qty.Valid || !qty.Decimal.IsPositive() {
 			return nil, fmt.Errorf("items[%d].qty must be > 0", i)
+		}
+		if err := validateDecimalFits(fmt.Sprintf("items[%d].qty", i), qty.Decimal,
+			assemblyQtyMaxFrac, assemblyQtyLimit, false); err != nil {
+			return nil, err
 		}
 		out = append(out, entity.StyleAssemblyInsert{
 			ComponentTechCardId: int(it.ComponentTechCardId),
 			SizeId:              nullInt32FromPb(it.SizeId),
-			Qty:                 qty,
+			Qty:                 qty.Decimal,
 			PrintNote:           nullStringFromPb(it.PrintNote),
 			PositionNote:        nullStringFromPb(it.PositionNote),
 			Active:              it.Active,

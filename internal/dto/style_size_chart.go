@@ -36,12 +36,19 @@ func StyleSizeChartToPb(c entity.StyleSizeChart) *pb_common.StyleSizeChart {
 	}
 }
 
+const (
+	// tech_card_size_measurement.measurement_value and tech_card_grade_rule.step are both
+	// DECIMAL(10,2) (0141, 0210): at most 2 fraction digits and 8 integer digits.
+	chartDecimalMaxFrac = 2
+	chartDecimalLimit   = 100_000_000
+)
+
 // StyleSizeChartGradeStepsFromPb parses the grade rule of a full-replace size-chart request. A step is
 // dropped when its measurement is not named — a rule that grades nothing is the same as no rule.
 func StyleSizeChartGradeStepsFromPb(steps []*pb_common.StyleSizeChartGradeStep) ([]entity.StyleSizeChartGradeStep, error) {
 	out := make([]entity.StyleSizeChartGradeStep, 0, len(steps))
 	seen := make(map[int]bool, len(steps))
-	for _, s := range steps {
+	for i, s := range steps {
 		if s == nil {
 			continue
 		}
@@ -61,6 +68,12 @@ func StyleSizeChartGradeStepsFromPb(steps []*pb_common.StyleSizeChartGradeStep) 
 			}
 			v = parsed
 		}
+		// A step is signed (a measurement may shrink across the run), so only scale and magnitude
+		// are checked — 0.125 must not be silently stored as 0.13 and then graded from.
+		if err := validateDecimalFits(fmt.Sprintf("grade_steps[%d].step", i), v,
+			chartDecimalMaxFrac, chartDecimalLimit, true); err != nil {
+			return nil, err
+		}
 		out = append(out, entity.StyleSizeChartGradeStep{MeasurementNameID: nameID, Step: v})
 	}
 	return out, nil
@@ -69,7 +82,7 @@ func StyleSizeChartGradeStepsFromPb(steps []*pb_common.StyleSizeChartGradeStep) 
 // StyleSizeChartCellsFromPb parses the cells of a full-replace size-chart request into entity cells (R5).
 func StyleSizeChartCellsFromPb(cells []*pb_common.StyleSizeChartCell) ([]entity.StyleSizeChartCell, error) {
 	out := make([]entity.StyleSizeChartCell, 0, len(cells))
-	for _, c := range cells {
+	for i, c := range cells {
 		if c == nil {
 			continue
 		}
@@ -80,6 +93,11 @@ func StyleSizeChartCellsFromPb(cells []*pb_common.StyleSizeChartCell) ([]entity.
 				return nil, fmt.Errorf("invalid measurement value %q: %w", raw, err)
 			}
 			v = parsed
+		}
+		// A point of measure is a length: never negative, and never finer than the column stores.
+		if err := validateDecimalFits(fmt.Sprintf("cells[%d].value", i), v,
+			chartDecimalMaxFrac, chartDecimalLimit, false); err != nil {
+			return nil, err
 		}
 		out = append(out, entity.StyleSizeChartCell{
 			SizeID:            int(c.GetSizeId()),
