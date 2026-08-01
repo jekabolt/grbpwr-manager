@@ -725,13 +725,25 @@ func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVar
 	// Waitlist notification from the REAL committed transition (0 -> >0), using the store's locked
 	// before/after — not a pre-read value that a concurrent adjustment could have invalidated.
 	if previousQuantity.LessThanOrEqual(decimal.Zero) && newQuantityDecimal.GreaterThan(decimal.Zero) {
-		// Trigger waitlist notifications asynchronously. This is a detached,
-		// best-effort side effect; a panic inside it (DB, DTO render, mail) must
-		// be logged with a stack and swallowed, never crash the single-process
-		// backend that also serves payments and webhooks.
+		// Trigger waitlist notifications asynchronously. This is a detached, best-effort side
+		// effect; a panic inside it (DB, DTO render, mail) must be logged with a stack and
+		// swallowed, never crash the single-process backend that also serves payments and
+		// webhooks.
+		//
+		// The goroutine must NOT run on the request context: that context is cancelled the
+		// moment this RPC returns, which would kill the notification mid-flight. It runs on
+		// context.WithoutCancel instead, which keeps the request's values (trace/log
+		// correlation) while dropping its cancellation — and unlike revalidateAsync's
+		// s.revalCtx it is deliberately not cancelled at shutdown, because this 0 -> >0
+		// transition fires exactly once: an aborted notification is never retried and those
+		// customers simply never hear that their size is back. It is registered in revalWG
+		// like revalidateAsync so shutdown still bounded-waits for it before the DB closes.
+		notifyCtx := context.WithoutCancel(ctx)
+		s.revalWG.Add(1)
 		go func() {
-			defer saferun.Recover(context.Background(), "notify-waitlist")
-			s.notifyWaitlist(ctx, productId, sizeId)
+			defer s.revalWG.Done()
+			defer saferun.Recover(notifyCtx, "notify-waitlist")
+			s.notifyWaitlist(notifyCtx, productId, sizeId)
 		}()
 	}
 
@@ -876,10 +888,10 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 	}, nil
 }
 
-// notifyWaitlist processes waitlist entries and sends back-in-stock notifications
-func (s *Server) notifyWaitlist(ctx context.Context, productId int, sizeId int) {
-	notifyCtx := context.Background() // Use background context to avoid cancellation
-
+// notifyWaitlist processes waitlist entries and sends back-in-stock notifications. It must be
+// handed an uncancellable context (see the caller): it used to substitute context.Background()
+// for whatever it was given, which hid the fact that its caller was passing a request context.
+func (s *Server) notifyWaitlist(notifyCtx context.Context, productId int, sizeId int) {
 	// Get product details (includeArchived=false: a waitlist notification never targets an archived colourway)
 	product, err := s.repo.Products().GetProductByIdShowHidden(notifyCtx, productId, false)
 	if err != nil {

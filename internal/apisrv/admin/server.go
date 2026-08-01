@@ -58,7 +58,8 @@ type Server struct {
 	// revalCtx is the server-scoped lifecycle context for async revalidations. It
 	// is cancelled by StopRevalidation (from App.Stop) so in-flight best-effort
 	// Vercel calls stop retrying at shutdown instead of outliving the process;
-	// revalWG tracks those goroutines so shutdown can wait for them (bounded).
+	// revalWG tracks the detached admin side effects — revalidations plus waitlist
+	// notification, which runs uncancelled — so shutdown can wait for them (bounded).
 	revalCtx    context.Context
 	revalCancel context.CancelFunc
 	revalWG     sync.WaitGroup
@@ -181,10 +182,11 @@ func (s *Server) revalidateAsync(data *dto.RevalidationData) {
 }
 
 // StopRevalidation cancels the server-scoped revalidation context and waits, bounded
-// by ctx, for in-flight async revalidations to return. App.Stop calls it after the
+// by ctx, for in-flight detached admin work to return. App.Stop calls it after the
 // HTTP listener has drained — so no new revalidateAsync can be spawned — ensuring
 // best-effort Vercel ISR calls don't keep retrying after the process is meant to be
-// down. RevalidateAll touches no DB, so this is ordering-independent of the DB close.
+// down. RevalidateAll touches no DB, but revalWG also tracks waitlist notification,
+// which does — so calling this before the DB closes lets those mails finish queueing.
 func (s *Server) StopRevalidation(ctx context.Context) {
 	if s.revalCancel != nil {
 		s.revalCancel()
