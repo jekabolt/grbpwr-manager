@@ -347,13 +347,13 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 }
 
 // ListMaterials returns catalog materials with their current price, optionally filtered by
-// section, excluding archived unless includeArchived is set. Ordered by section then name.
+// section, excluding archived unless includeArchived is set. Ordered by section, name, then id.
 func (s *Store) ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error) {
 	rows, err := storeutil.QueryListNamed[materialRow](ctx, s.DB,
 		materialWithPriceSelect+`
 		WHERE (:section = '' OR m.section = :section)
 		AND (:includeArchived OR m.archived = FALSE)
-		ORDER BY m.section, m.name`,
+		ORDER BY m.section, m.name, m.id`,
 		map[string]any{"section": strings.ToLower(strings.TrimSpace(section)), "includeArchived": includeArchived})
 	if err != nil {
 		return nil, fmt.Errorf("list materials: %w", err)

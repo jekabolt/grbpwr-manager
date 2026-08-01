@@ -174,8 +174,10 @@ func TestColorwayLabDipRoundsJournal(t *testing.T) {
 		st := status
 		r := round
 		rr := reason
+		generalComment := "colourway-level development note"
 		patch := &entity.ColorwayDevelopmentPatch{
-			LabDipStatus: &st, LabDipRound: &r, LabDipRejectReason: &rr, Actor: "lab-tech",
+			LabDipStatus: &st, LabDipRound: &r, LabDipRejectReason: &rr,
+			Comment: &generalComment, Actor: "lab-tech",
 		}
 		next, err := s.Products().UpdateColorway(ctx, f.productID, version, merch, nil, nil, nil, patch)
 		require.NoError(t, err)
@@ -210,6 +212,8 @@ func TestColorwayLabDipRoundsJournal(t *testing.T) {
 	require.True(t, rounds[f.productID][0].SubmittedAt.Valid)
 	require.Equal(t, "lab-tech", rounds[f.productID][0].DecidedBy.String)
 	require.True(t, rounds[f.productID][0].DecidedAt.Valid)
+	require.False(t, rounds[f.productID][0].Comment.Valid,
+		"general dev_comment must not be copied into each round's commentary")
 	require.Equal(t, 3, rounds[f.productID][2].RoundNumber)
 	require.Equal(t, entity.LabDipApproved, rounds[f.productID][2].Status)
 	require.Equal(t, "lab-tech", rounds[f.productID][2].DecidedBy.String)
