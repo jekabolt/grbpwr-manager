@@ -125,11 +125,16 @@ func (s *Server) GetOrderPackingSpec(ctx context.Context, req *pb_admin.GetOrder
 	return dto.OrderPackingSpecToPb(spec), nil
 }
 
-// assemblyForSize keeps the assembly lines that apply to a given garment size: the all-sizes lines
-// (SizeId NULL) plus any line scoped to exactly that size.
+// assemblyForSize keeps the assembly lines that apply to a given garment size: the ACTIVE all-sizes
+// lines (SizeId NULL) plus any active line scoped to exactly that size. ListStyleAssembly deliberately
+// returns deactivated lines too (the style editor has to show and re-enable them), but a deactivated
+// care label / hangtag must never reach the packer's spec.
 func assemblyForSize(all []entity.StyleAssembly, sizeID int) []entity.StyleAssembly {
 	out := make([]entity.StyleAssembly, 0, len(all))
 	for _, a := range all {
+		if !a.Active {
+			continue
+		}
 		if !a.SizeId.Valid || int(a.SizeId.Int32) == sizeID {
 			out = append(out, a)
 		}
