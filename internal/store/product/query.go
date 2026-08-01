@@ -604,12 +604,21 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		var e error
 		// The size chart lives on the style now (PR6 P3): reconstruct the per-colourway view by joining
 		// the style's chart to this product's sizes, preserving the product_size_id the frontend keys on.
+		//
+		// Only sizes the style still MAKES are served. The write path prunes measurements when a size
+		// range narrows, but a chart cell is a plain FK to size(id) and pre-dates that prune, so any
+		// row already stranded by a historical narrowing would otherwise keep reaching buyers as the
+		// current measurements of a live variant. A style with no declared range keeps the whole chart
+		// — an undeclared grid means "not chosen yet", not "makes nothing" (storeutil.TechCardSizeRange).
 		measurementQuery := `
 			SELECT ssm.id AS id, p.id AS product_id, ps.id AS product_size_id,
 			       ssm.measurement_name_id, ssm.measurement_value
 			FROM tech_card_size_measurement ssm
 			JOIN product p ON p.id = :id AND ssm.tech_card_id = p.style_id
-			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id`
+			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id
+			WHERE EXISTS (SELECT 1 FROM tech_card_size z
+			              WHERE z.tech_card_id = ssm.tech_card_id AND z.size_id = ssm.size_id)
+			   OR NOT EXISTS (SELECT 1 FROM tech_card_size z WHERE z.tech_card_id = ssm.tech_card_id)`
 		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, measurementQuery, idParams); e != nil {
 			return fmt.Errorf("can't get measurements: %w", e)
 		}

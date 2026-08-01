@@ -912,6 +912,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
 		return err
 	}
+	if err := pruneSizeScopedDataOutsideRange(ctx, db, id, tc.SizeIds); err != nil {
+		return err
+	}
 	// PR6 R1/R4: the product↔style link is derived from product.style_id (single source), never
 	// client-supplied. Keep tech_card_product (the denormalised link every cost/margin/inventory
 	// consumer still reads) in sync with the canonical set on every save. On create it is empty
@@ -1166,6 +1169,37 @@ func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs 
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_size", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card sizes: %w", err)
+	}
+	return nil
+}
+
+// pruneSizeScopedDataOutsideRange drops the size-scoped style data a save leaves stranded when it
+// NARROWS the size range. It runs immediately after the new range is written, in the same transaction.
+//
+// Nothing does this by itself: tech_card_size_measurement hangs off size(id) with RESTRICT (0149), not
+// off tech_card_size, so dropping L from the range used to leave the L column on file — and the
+// storefront then served it to buyers as current measurements for a colourway that still has a live L
+// variant, which is the actual harm. The grade rule's base size is the same shape of leak: it is a
+// plain FK to size(id), so a narrowed range could keep grading from a size the style no longer makes.
+//
+// An EMPTY range is deliberately left alone. It means "no grid declared", the early-stage state every
+// other size guard treats as permissive (storeutil.TechCardSizeRange, the sample writer) — reading it
+// as "delete the chart" would let one save with no size_ids wipe authored measurements.
+func pruneSizeScopedDataOutsideRange(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
+	if len(sizeIDs) == 0 {
+		return nil
+	}
+	params := map[string]any{"id": id, "sizes": sizeIDs}
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_size_measurement
+		WHERE tech_card_id = :id AND size_id NOT IN (:sizes)`, params); err != nil {
+		return fmt.Errorf("prune style %d measurements outside its size range: %w", id, err)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE tech_card SET grade_base_size_id = NULL
+		WHERE id = :id AND grade_base_size_id IS NOT NULL AND grade_base_size_id NOT IN (:sizes)`,
+		params); err != nil {
+		return fmt.Errorf("clear style %d grade base outside its size range: %w", id, err)
 	}
 	return nil
 }
