@@ -108,13 +108,18 @@ func TestCreateColorway(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
-	var lifecycleStatus, gotStyleID int
+	var lifecycleStatus, gotStyleID, primaryStyleID int
 	var sku sql.NullString
-	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status, sku, style_id FROM product WHERE id = ?`, colorwayID).
-		Scan(&lifecycleStatus, &sku, &gotStyleID))
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status, sku, style_id, primary_tech_card_id FROM product WHERE id = ?`, colorwayID).
+		Scan(&lifecycleStatus, &sku, &gotStyleID, &primaryStyleID))
 	require.Equal(t, int(entity.ColorwayStatusDraft), lifecycleStatus, "CreateColorway must mint a DRAFT, never ACTIVE")
 	require.False(t, sku.Valid, "CreateColorway must write NULL sku — publish mints; NULL (not '') so two unminted drafts never collide on UNIQUE (T-E-5 finding)")
 	require.Equal(t, styleID, gotStyleID)
+	require.Equal(t, styleID, primaryStyleID)
+	var mirrorCount int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = ? AND product_id = ?`, styleID, colorwayID).Scan(&mirrorCount))
+	require.Equal(t, 1, mirrorCount)
 
 	// UNIQUE(style_id, color_code) (R1): a duplicate colour for the same style is refused.
 	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)

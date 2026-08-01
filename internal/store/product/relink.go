@@ -80,6 +80,9 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		if rows != 1 {
 			return entity.ErrTechCardConflict
 		}
+		if err := moveColorwayOwnershipMirrors(ctx, rep.DB(), cw.StyleID, targetStyleID, colorwayID); err != nil {
+			return err
+		}
 		// Re-mint the colourway's SKU from the target style's facts (a no-op if it is SKU-frozen — but a
 		// draft never is). The base/variant SKUs now reflect the target season/model.
 		if err := MintProductSKUs(ctx, rep.DB(), colorwayID); err != nil {

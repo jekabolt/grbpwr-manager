@@ -65,6 +65,9 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		if err != nil {
 			return fmt.Errorf("can't insert colourway: %w", err)
 		}
+		if err := initializeColorwayOwnershipMirrors(ctx, rep.DB(), styleID, colorwayID); err != nil {
+			return err
+		}
 		// A DRAFT may carry zero merch translations at create time — the inline "New Colourway" sends
 		// none (colorCode is its sole required value); they are filled in later from the product manager.
 		// Skip the insert when empty (insertProductTranslations rejects an empty slice), mirroring
