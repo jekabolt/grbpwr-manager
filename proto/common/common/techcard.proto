@@ -309,6 +309,21 @@ message AdminColorwayRef {
   // another. Empty when no rate is known for that country (an export destination nets to itself, and
   // silently returning the gross price under a "net" name would be the same lie in a new place).
   repeated ColorwayPrice net_prices = 18;
+
+  // The rest of the development block (ColorwayDevelopmentInsert), flattened onto the ref exactly as
+  // the lab_dip_* scalars above already are. These describe the COLOUR ITSELF — the internal code and
+  // label it is developed under, the pantone reference the dyehouse matches, the screen approximation
+  // and the physical swatch — and they were write-only until now: UpdateColorway persisted them and no
+  // read path returned them, so the tab could show which round a lab dip was on but not which pantone
+  // that round was chasing. Written through the Colorway write path (UpdateColorway's development.*),
+  // never through the style; here they are OUTPUT-ONLY.
+  string dev_code = 19; // internal article code for the colour (ex TechCardColorway.code)
+  string dev_name = 20; // internal colourway label (ex TechCardColorway.name)
+  string dev_comment = 21; // development notes
+  string pantone = 22; // pantone reference the dyehouse matches
+  string pantone_system = 23; // which pantone book that reference is in (TCX/TPG/…)
+  string dev_hex = 24; // screen approximation #RRGGBB (ex hex)
+  int32 swatch_media_id = 25; // the approved physical swatch; 0 = none
 }
 
 // TechCardColorway was the development-colourway child of a style. Removed in the R1 merge

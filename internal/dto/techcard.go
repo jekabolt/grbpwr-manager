@@ -1294,8 +1294,10 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 
 // techCardColorwayRefsToPb emits a style's colourways as derived, output-only AdminColorwayRef
 // (R1/§3.3): a style's colourways are its products, not writable through the style. Merchandising
-// detail (media, tags, translations) is read via the Colorway RPCs; the lab-dip state and history,
-// the COGS and the retail prices ARE here, because the constructor judges a colour and its margin
+// detail (media, tags, translations) is read via the Colorway RPCs; the development block (the
+// colour's own code/label/pantone/hex/swatch — write-only until this fix, persisted by
+// UpdateColorway and returned by nothing), the lab-dip state and history, the COGS and the retail
+// prices ARE here, because the constructor judges a colour and its margin
 // from the style view and fanning GetColorwayByID out per colourway to get them was an N+1. The
 // recipe (usages) IS included (H1 fix, WS3/S2-S3): the constructor view of a style shows each
 // colourway's material recipe alongside its identity — the recipe used to be write-only
@@ -1320,6 +1322,17 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 			LabDipDecidedBy:    c.LabDipDecidedBy.String,
 			LabDipRejectReason: c.LabDipRejectReason.String,
 			LockVersion:        int32(c.LockVersion),
+			// The rest of the development block, flattened the same way the lab-dip scalars above are.
+			// Written by the Colorway RPCs, output-only here — and unread anywhere until now: the colour's
+			// own identity (code/label), the pantone the dyehouse matches, the screen hex and the approved
+			// swatch were persisted and never returned by any RPC.
+			DevCode:       c.Code.String,
+			DevName:       c.Name,
+			DevComment:    c.Comment.String,
+			Pantone:       c.Pantone.String,
+			PantoneSystem: c.PantoneSystem.String,
+			DevHex:        c.Hex.String,
+			SwatchMediaId: c.SwatchMediaId.Int32,
 		}
 		if c.LabDipSubmittedAt.Valid {
 			ref.LabDipSubmittedAt = timestamppb.New(c.LabDipSubmittedAt.Time)
