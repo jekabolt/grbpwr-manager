@@ -2,6 +2,7 @@ package product
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -14,9 +15,10 @@ import (
 // CreateVariant adds a new variant (a size) to a colourway at zero stock and mints its variant SKU
 // (R2). The size is immutable and the variant is created ACTIVE. It is rejected if the colourway does
 // not exist (sql.ErrNoRows), is archived (ErrColorwayArchived), or already carries that size
-// (ErrVariantExists). The SKU mint is best-effort: a DRAFT colourway whose base SKU is not yet built
-// keeps a NULL variant SKU (publish preconditions enforce a valid SKU before it can go live), so a
-// variant can still be laid out on a not-fully-specified draft.
+// (ErrVariantExists). SKU minting runs in the same transaction and a genuine mint failure rolls the
+// insert back — with one deliberate exception: a DRAFT colourway whose base SKU is not yet built
+// (minted on publish) keeps a NULL variant SKU so sizes can be laid out on a not-fully-specified
+// draft; publish preconditions enforce a valid SKU before it can go live.
 func (s *Store) CreateVariant(ctx context.Context, colorwayID, sizeID int) (entity.Variant, error) {
 	sz, ok := cache.GetSizeById(sizeID)
 	if !ok {
@@ -56,10 +58,15 @@ func (s *Store) CreateVariant(ctx context.Context, colorwayID, sizeID int) (enti
 		if err != nil {
 			return fmt.Errorf("insert variant (colourway %d size %d): %w", colorwayID, sz.Id, err)
 		}
-		// Best-effort mint: a draft without a built base SKU keeps a NULL variant SKU until publish.
 		if err := ensureVariantSKU(ctx, rep.DB(), colorwayID, sz.Id); err != nil {
-			slog.Default().WarnContext(ctx, "created variant without a minted SKU (base not built yet)",
-				slog.Int("colorway_id", colorwayID), slog.Int("size_id", sz.Id), slog.String("err", err.Error()))
+			var verr *entity.ValidationError
+			if errors.As(err, &verr) && verr.Reason == "colorway_not_published" {
+				// The one legitimate NULL-SKU case: an unpublished draft has no base SKU yet.
+				slog.Default().InfoContext(ctx, "created variant without a minted SKU (draft base not built yet)",
+					slog.Int("colorway_id", colorwayID), slog.Int("size_id", sz.Id))
+			} else {
+				return fmt.Errorf("mint variant SKU (colourway %d size %d): %w", colorwayID, sz.Id, err)
+			}
 		}
 		out, err = getVariantByID(ctx, rep.DB(), id)
 		return err

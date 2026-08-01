@@ -964,8 +964,8 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 		for ci := range cols {
 			if err := s.enrichListFacts(ctx, cols[ci].Cards); err != nil {
 				slog.Default().WarnContext(ctx, "can't resolve pipeline list facts; counts omitted",
-					slog.String("err", err.Error()))
-				break
+					slog.String("stage", string(cols[ci].Stage)), slog.String("err", err.Error()))
+				continue
 			}
 		}
 	}
