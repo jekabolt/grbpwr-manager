@@ -167,6 +167,8 @@ func colorwayWriteError(ctx context.Context, op string, id int, err error) error
 		return status.Errorf(codes.Aborted, "colourway %d was modified concurrently; reload and retry", id)
 	case errors.Is(err, entity.ErrColorwayColorExists):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, entity.ErrTechCardReleased):
+		return status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 	}
 	slog.Default().ErrorContext(ctx, "colourway write failed", slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
 	return status.Errorf(codes.Internal, "can't %s colourway: %v", op, err)

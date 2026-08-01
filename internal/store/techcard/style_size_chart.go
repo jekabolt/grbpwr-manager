@@ -45,6 +45,9 @@ func (s *Store) UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockV
 		if err != nil {
 			return err // sql.ErrNoRows -> NOT_FOUND upstream
 		}
+		if err := storeutil.RequireMutableTechCard(ctx, rep.DB(), styleID); err != nil {
+			return err
+		}
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}

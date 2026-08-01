@@ -189,6 +189,8 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
 		case errors.Is(err, entity.ErrTechCardConflict):
 			return nil, status.Error(codes.Aborted, "style was modified concurrently; reload the chart and retry")
+		case errors.Is(err, entity.ErrTechCardReleased):
+			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 		case s.repo.IsErrForeignKeyViolation(err):
 			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size, measurement name or grade base size")
 		default:

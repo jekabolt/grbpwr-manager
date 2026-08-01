@@ -57,6 +57,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		if err != nil {
 			return fmt.Errorf("load colourway %d recipe lock: %w", colorwayID, err) // sql.ErrNoRows -> NotFound upstream
 		}
+		if err := storeutil.RequireMutableTechCard(ctx, rep.DB(), cur.StyleID); err != nil {
+			return err
+		}
 		if cur.LockVersion != expectedVersion {
 			return entity.ErrTechCardConflict
 		}
@@ -258,7 +261,8 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, entity.ErrTechCardConflict) {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, entity.ErrTechCardConflict) ||
+			errors.Is(err, entity.ErrTechCardReleased) {
 			return 0, err
 		}
 		var ve *entity.ValidationError

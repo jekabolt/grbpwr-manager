@@ -61,6 +61,9 @@ func (s *Store) UpsertStyleAssembly(ctx context.Context, styleID int, items []en
 
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		if err := storeutil.RequireMutableTechCard(ctx, db, styleID); err != nil {
+			return err
+		}
 		// Every referenced component must be an auxiliary card. One query, checked in Go for a clean
 		// field-tagged error (the FK only guarantees the row exists, not its purpose).
 		if len(componentIDs) > 0 {
