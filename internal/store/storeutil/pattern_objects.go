@@ -11,66 +11,72 @@ import (
 
 const patternObjectPathSegment = "tech-card-patterns"
 
-// UnreferencedPatternObjectURLs returns candidate pattern URLs that no tech card or fitting row
-// references after the caller's mutation. It is intended to run inside the same write transaction
-// that removed the references, so rolled-back mutations never produce cleanup candidates. The caller
-// performs the external object deletion only after commit.
+// UnreferencedPatternObjectURLs returns candidate pattern URLs whose canonical object key no tech
+// card or fitting row references after the caller's mutation. It is intended to run inside the same
+// write transaction that removed the references, so rolled-back mutations never produce cleanup
+// candidates. The caller performs the external object deletion only after commit.
 //
-// Only URLs whose path contains the bucket-owned tech-card-patterns segment are eligible. Pattern
-// fields historically accepted arbitrary URLs, and object cleanup must never turn one of those into
-// a deletion request against an unrelated bucket key.
+// Stored URLs may use either the Spaces origin host or the CDN host. Both encode the same object key
+// in their path, so raw-URL comparison is unsafe: removing one form must not delete an object still
+// referenced through the other. Configured-host ownership is enforced at the bucket deletion
+// boundary, which owns that configuration; this layer only recognizes the dedicated pattern path.
 func UnreferencedPatternObjectURLs(ctx context.Context, db dependency.DB, candidates []string) ([]string, error) {
-	eligible := make([]string, 0, len(candidates))
-	seen := make(map[string]struct{}, len(candidates))
+	candidateByKey := make(map[string]string, len(candidates))
+	candidateKeys := make([]string, 0, len(candidates))
 	for _, raw := range candidates {
-		if !isManagedPatternObjectURL(raw) {
+		key, ok := PatternObjectKey(raw)
+		if !ok {
 			continue
 		}
-		if _, ok := seen[raw]; ok {
+		if _, seen := candidateByKey[key]; seen {
 			continue
 		}
-		seen[raw] = struct{}{}
-		eligible = append(eligible, raw)
+		candidateByKey[key] = raw
+		candidateKeys = append(candidateKeys, key)
 	}
-	if len(eligible) == 0 {
+	if len(candidateKeys) == 0 {
 		return nil, nil
 	}
 
 	refs, err := QueryListNamed[struct {
 		URL string `db:"url"`
 	}](ctx, db, `
-		SELECT DISTINCT url FROM (
-			SELECT url FROM tech_card_size_pattern WHERE url IN (:urls)
-			UNION ALL
-			SELECT url FROM fitting_pattern WHERE url IN (:urls)
-		) pattern_refs`, map[string]any{"urls": eligible})
+		SELECT url FROM tech_card_size_pattern
+		UNION
+		SELECT url FROM fitting_pattern`, nil)
 	if err != nil {
 		return nil, fmt.Errorf("check remaining pattern object references: %w", err)
 	}
-	referenced := make(map[string]struct{}, len(refs))
+	referencedKeys := make(map[string]struct{}, len(refs))
 	for _, ref := range refs {
-		referenced[ref.URL] = struct{}{}
+		if key, ok := PatternObjectKey(ref.URL); ok {
+			referencedKeys[key] = struct{}{}
+		}
 	}
 
-	orphaned := make([]string, 0, len(eligible))
-	for _, raw := range eligible {
-		if _, ok := referenced[raw]; !ok {
-			orphaned = append(orphaned, raw)
+	orphaned := make([]string, 0, len(candidateKeys))
+	for _, key := range candidateKeys {
+		if _, ok := referencedKeys[key]; !ok {
+			orphaned = append(orphaned, candidateByKey[key])
 		}
 	}
 	return orphaned, nil
 }
 
-func isManagedPatternObjectURL(raw string) bool {
+// PatternObjectKey extracts the canonical S3 key from a syntactically valid pattern URL. It does
+// not decide whether the host belongs to this deployment because storeutil deliberately has no
+// bucket configuration; Bucket.DeleteObjects performs that ownership check before any side effect.
+func PatternObjectKey(raw string) (string, bool) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return false
+		return "", false
 	}
-	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	key := strings.Trim(u.Path, "/")
+	segments := strings.Split(key, "/")
 	for i, segment := range segments {
 		if segment == patternObjectPathSegment && i < len(segments)-1 {
-			return true
+			return key, true
 		}
 	}
-	return false
+	return "", false
 }

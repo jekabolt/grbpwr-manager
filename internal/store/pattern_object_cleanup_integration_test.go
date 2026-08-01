@@ -26,19 +26,20 @@ func TestPatternObjectCleanupCandidates(t *testing.T) {
 	var sizeID int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT id FROM size ORDER BY id LIMIT 1`).Scan(&sizeID))
 
-	sharedURL := "https://cdn.example/base/tech-card-patterns/2026/august/shared.pdf"
+	sharedOriginURL := "https://patterns.fra1.digitaloceanspaces.com/base/tech-card-patterns/2026/august/shared.pdf"
+	sharedCDNURL := "https://cdn.example/base/tech-card-patterns/2026/august/shared.pdf"
 	externalURL := "https://files.example/not-managed.pdf"
 	_, err = testDB.ExecContext(ctx, `
 		INSERT INTO tech_card_size_pattern (tech_card_id, size_id, url, display_order)
 		VALUES (?, ?, ?, 0), (?, ?, ?, 1)`,
-		styleID, sizeID, sharedURL, styleID, sizeID, externalURL)
+		styleID, sizeID, sharedOriginURL, styleID, sizeID, externalURL)
 	require.NoError(t, err)
 
 	fittingID, err := s.Fittings().AddFitting(ctx, &entity.FittingInsert{
 		FittingDate: time.Now().UTC(),
 		Status:      entity.FittingPlanned,
 		Verdict:     entity.FittingPending,
-		Patterns:    []entity.FittingPattern{{URL: sharedURL}},
+		Patterns:    []entity.FittingPattern{{URL: sharedCDNURL}},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), `DELETE FROM fitting WHERE id = ?`, fittingID) })
@@ -54,7 +55,7 @@ func TestPatternObjectCleanupCandidates(t *testing.T) {
 		FittingDate: time.Now().UTC(), Status: entity.FittingDone, Verdict: entity.FittingApproved,
 	}, 0)
 	require.NoError(t, err)
-	require.Equal(t, []string{sharedURL}, orphaned)
+	require.Equal(t, []string{sharedCDNURL}, orphaned)
 
 	// The fitting CASCADE path follows the same contract.
 	deleteURL := "https://cdn.example/base/tech-card-patterns/2026/august/delete.pdf"
