@@ -542,8 +542,8 @@ func (a *App) Stop(ctx context.Context) {
 
 	// The HTTP listener has drained, so no new admin RPC can spawn a revalidation.
 	// Cancel and wait (bounded) for any in-flight ones so best-effort Vercel ISR
-	// calls don't keep retrying after shutdown. Independent of the DB close
-	// (RevalidateAll makes no DB calls), so ordering here is not load-bearing.
+	// calls don't keep retrying after shutdown. It also drains detached waitlist
+	// notifications, which DO touch the DB — so keep this before the DB close.
 	if a.adminS != nil {
 		revalStopCtx, revalStopCancel := context.WithTimeout(ctx, 10*time.Second)
 		a.adminS.StopRevalidation(revalStopCtx)
