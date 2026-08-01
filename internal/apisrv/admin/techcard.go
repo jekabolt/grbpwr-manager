@@ -434,7 +434,14 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 // products with no primary yet adopt this card as their primary.
 func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, expectedMinLockVersion int) {
 	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
-	if err != nil || card == nil {
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't reload tech card for product cost seed",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		return
+	}
+	if card == nil {
+		slog.Default().ErrorContext(ctx, "can't seed product costs: tech card reload returned nil",
+			slog.Int("tech_card_id", techCardID))
 		return
 	}
 	if card.LockVersion < expectedMinLockVersion {
@@ -450,7 +457,7 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 	}
 	if err := s.repo.Products().AssignPrimaryTechCardIfUnset(ctx, techCardID, linkedProducts); err != nil {
 		slog.Default().ErrorContext(ctx, "can't assign primary tech card to products",
-			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+			slog.Int("tech_card_id", techCardID), slog.Any("product_ids", linkedProducts), slog.String("err", err.Error()))
 		return
 	}
 	// Each colourway is seeded its OWN unit cost (its pins, its norms) — one shared figure was
@@ -490,12 +497,17 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 		seeded++
 		// The COGS decomposition rides the same per-colourway figure (its materials component is
 		// THIS colourway's, pins included) under the same predicate, so cost_price and
-		// cost_breakdown can never describe two different colourways. NULL clears a stale one.
+		// cost_breakdown can never describe two different colourways. A non-convertible breakdown
+		// intentionally stays NULL to clear a stale one; a marshal failure must retain the stored value.
 		breakdownJSON := sql.NullString{}
 		if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, pid, fx); ok {
-			if b, merr := json.Marshal(bd); merr == nil {
-				breakdownJSON = sql.NullString{String: string(b), Valid: true}
+			b, merr := json.Marshal(bd)
+			if merr != nil {
+				slog.Default().ErrorContext(ctx, "can't marshal product cost_breakdown from tech card",
+					slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", merr.Error()))
+				continue
 			}
+			breakdownJSON = sql.NullString{String: string(b), Valid: true}
 		}
 		if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, pid, techCardID, breakdownJSON); berr != nil {
 			slog.Default().ErrorContext(ctx, "can't seed product cost_breakdown from tech card",
