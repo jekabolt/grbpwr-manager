@@ -732,6 +732,15 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Current fingerprint per sign-off section: compare against each signoff's signed_digest to
 		// tell an approval that still holds from one whose sheet moved underneath it.
 		SectionDigests: TechCardSectionDigestsToPb(&tc.TechCardInsert),
+		// The fit reference the studio shoots against — written through UpdateStyle like the catalogue
+		// facts above, and until now readable only off the product/storefront messages.
+		ModelWearsHeightCm: tc.ModelWearsHeightCm.Int32,
+		ModelWearsSizeId:   tc.ModelWearsSizeId.Int32,
+		// The taxonomy path the store derives from category_id. TechCardListItem has always carried it;
+		// a card opened directly had to infer its own category path from the leaf tag alone.
+		TopCategoryId: tc.TopCategoryId.Int32,
+		SubCategoryId: tc.SubCategoryId.Int32,
+		TypeId:        tc.TypeId.Int32,
 	}
 }
 
