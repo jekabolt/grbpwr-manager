@@ -205,7 +205,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
 	}
-	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
+	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
+		ctx, int(req.Id), tc, int(req.ExpectedLockVersion))
+	if err != nil {
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
 			return nil, apierr.Invalid(ve)
@@ -233,6 +235,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't update tech card")
 	}
+	s.deleteOrphanedPatternObjects(ctx, "tech_card", int(req.Id), orphanedPatternURLs)
 	s.seedProductCostsFromTechCard(ctx, int(req.Id), int(req.ExpectedLockVersion)+1)
 	s.snapshotReleaseIfReleased(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
@@ -668,7 +671,8 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
-	if err := s.repo.TechCards().DeleteTechCard(ctx, int(req.Id)); err != nil {
+	orphanedPatternURLs, err := s.repo.TechCards().DeleteTechCardAndListOrphanedPatternURLs(ctx, int(req.Id))
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "tech card not found")
 		}
@@ -684,6 +688,7 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete tech card")
 	}
+	s.deleteOrphanedPatternObjects(ctx, "tech_card", int(req.Id), orphanedPatternURLs)
 	return &pb_admin.DeleteTechCardResponse{}, nil
 }
 

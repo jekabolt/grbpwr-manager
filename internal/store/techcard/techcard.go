@@ -263,10 +263,24 @@ func remintCardProducts(ctx context.Context, db dependency.DB, tcID int, previou
 // mismatch), refuses to mutate a RELEASED card unless it is re-opened to DRAFT
 // (entity.ErrTechCardReleased), and returns sql.ErrNoRows when no card exists.
 func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error {
+	_, err := s.updateTechCardAndListOrphanedPatternURLs(ctx, id, tc, expectedLockVersion)
+	return err
+}
+
+// UpdateTechCardAndListOrphanedPatternURLs updates a card and returns pattern-object URLs that the
+// committed full-replace made globally unreferenced. The caller may remove those objects post-commit.
+func (s *Store) UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
+	return s.updateTechCardAndListOrphanedPatternURLs(ctx, id, tc, expectedLockVersion)
+}
+
+func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
 	if err := s.ensureDictionaryFresh(ctx, "update"); err != nil {
-		return err
+		return nil, err
 	}
+	var orphanedPatternURLs []string
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// txFunc may retry the callback after a deadlock; never carry candidates from an aborted attempt.
+		orphanedPatternURLs = nil
 		cur, err := storeutil.QueryNamedOne[struct {
 			LockVersion     int          `db:"lock_version"`
 			ApprovalState   string       `db:"approval_state"`
@@ -403,6 +417,10 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
 			return err
 		}
+		priorPatternURLs, err := techCardPatternURLs(ctx, rep.DB(), id)
+		if err != nil {
+			return err
+		}
 
 		// Capture the style's products before the full-replace so a change to the style's SKU facts
 		// re-mints every (unfrozen) sibling. PR6 R1: colourways are products (product.style_id), so
@@ -463,20 +481,24 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		}
 		// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
 		action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
-		return appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary)
+		if err := appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary); err != nil {
+			return err
+		}
+		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), priorPatternURLs)
+		return err
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, entity.ErrTechCardConflict) ||
 			errors.Is(err, entity.ErrTechCardReleased) || errors.Is(err, entity.ErrTechCardPurposeLocked) {
-			return err
+			return nil, err
 		}
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
-			return ve
+			return nil, ve
 		}
-		return fmt.Errorf("can't update tech card: %w", err)
+		return nil, fmt.Errorf("can't update tech card: %w", err)
 	}
-	return nil
+	return orphanedPatternURLs, nil
 }
 
 // guardTechCardStageRegression blocks a backward stage move (to an earlier lifecycle ordinal) when
@@ -545,7 +567,20 @@ func stageRegressionViolation(to entity.TechCardStage, n int, artifact string) e
 // tech_card RESTRICT, 0138 — a style with live colourway products) still raises 1451; the caller
 // (apisrv/admin) maps that residual case to a field-tagged FailedPrecondition rather than Internal.
 func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
-	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	_, err := s.deleteTechCardAndListOrphanedPatternURLs(ctx, id)
+	return err
+}
+
+// DeleteTechCardAndListOrphanedPatternURLs deletes a card and returns pattern-object URLs that no
+// remaining card or fitting references. Candidate URLs are captured before the cascading delete.
+func (s *Store) DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error) {
+	return s.deleteTechCardAndListOrphanedPatternURLs(ctx, id)
+}
+
+func (s *Store) deleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error) {
+	var orphanedPatternURLs []string
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		orphanedPatternURLs = nil
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
 			SELECT COUNT(*) FROM material_stock_movement m
 			JOIN sample s ON s.id = m.sample_id WHERE s.tech_card_id = :id`, map[string]any{"id": id})
@@ -565,6 +600,10 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 				fmt.Sprintf("used as an assembly component in %d style(s)", asmCount),
 				"style_assembly", "remove it from those assembly bills first")
 		}
+		priorPatternURLs, err := techCardPatternURLs(ctx, rep.DB(), id)
+		if err != nil {
+			return err
+		}
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
 			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
@@ -578,8 +617,13 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 		if rows == 0 {
 			return sql.ErrNoRows
 		}
-		return nil
+		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), priorPatternURLs)
+		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return orphanedPatternURLs, nil
 }
 
 // GetTechCardById returns a tech card with its child sections and resolved media.
@@ -1023,6 +1067,21 @@ type patternHistoryRow struct {
 	SizeId     int          `db:"size_id"`
 	Version    int          `db:"version"`
 	UploadedAt sql.NullTime `db:"uploaded_at"`
+}
+
+func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) ([]string, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		URL string `db:"url"`
+	}](ctx, db, `SELECT url FROM tech_card_size_pattern WHERE tech_card_id = :id`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load tech card pattern URLs: %w", err)
+	}
+	urls := make([]string, 0, len(rows))
+	for _, row := range rows {
+		urls = append(urls, row.URL)
+	}
+	return urls, nil
 }
 
 // insertTechCardPatterns replaces a card's pattern rows, CARRYING FORWARD each sheet's revision and

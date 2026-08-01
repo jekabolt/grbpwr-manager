@@ -567,7 +567,13 @@ type (
 	Fittings interface {
 		AddFitting(ctx context.Context, f *entity.FittingInsert) (int, error)
 		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) error
+		// UpdateFittingAndListOrphanedPatternURLs performs the same mutation and returns bucket-owned
+		// pattern URLs that became globally unreferenced when the transaction committed.
+		UpdateFittingAndListOrphanedPatternURLs(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) ([]string, error)
 		DeleteFitting(ctx context.Context, id int) error
+		// DeleteFittingAndListOrphanedPatternURLs collects pattern URLs before the cascading delete and
+		// returns only those no other card/fitting references after the transaction.
+		DeleteFittingAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetFittingById(ctx context.Context, id int) (*entity.Fitting, error)
 		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID, techCardID int) ([]entity.Fitting, int, error)
 		// Structured change requests (S26): individually managed so carried_from_id / carry-over hold.
@@ -624,6 +630,9 @@ type (
 		// (size chart, grade rule and assembly) in one transaction, under a source-version guard.
 		CloneTechCardForSeason(ctx context.Context, sourceID, expectedSourceVersion int, tc *entity.TechCardInsert) (int, error)
 		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
+		// UpdateTechCardAndListOrphanedPatternURLs performs the same mutation and returns bucket-owned
+		// pattern URLs that became globally unreferenced when the transaction committed.
+		UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error)
 		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
 		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).
 		UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVersion int, usages []entity.TechCardColorwayUsage) (int, error)
@@ -648,6 +657,9 @@ type (
 		// the packing spec to label garment styles without an N+1 GetTechCardById).
 		GetTechCardNames(ctx context.Context, ids []int) (map[int]string, error)
 		DeleteTechCard(ctx context.Context, id int) error
+		// DeleteTechCardAndListOrphanedPatternURLs collects pattern URLs before the cascading delete and
+		// returns only those no other card/fitting references after the transaction.
+		DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error)
 		GetTechCardLockVersion(ctx context.Context, id int) (int, error)

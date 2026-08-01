@@ -102,7 +102,9 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	fi.UpdatedBy = authsrv.GetAdminUsername(ctx)
-	if err := s.repo.Fittings().UpdateFitting(ctx, int(req.Id), fi, int(req.GetExpectedLockVersion())); err != nil {
+	orphanedPatternURLs, err := s.repo.Fittings().UpdateFittingAndListOrphanedPatternURLs(
+		ctx, int(req.Id), fi, int(req.GetExpectedLockVersion()))
+	if err != nil {
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
 			return nil, apierr.Invalid(ve)
@@ -124,6 +126,7 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 		)
 		return nil, status.Errorf(codes.Internal, "can't update fitting")
 	}
+	s.deleteOrphanedPatternObjects(ctx, "fitting", int(req.Id), orphanedPatternURLs)
 	return &pb_admin.UpdateFittingResponse{}, nil
 }
 
@@ -132,12 +135,14 @@ func (s *Server) DeleteFitting(ctx context.Context, req *pb_admin.DeleteFittingR
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "fitting id is required")
 	}
-	if err := s.repo.Fittings().DeleteFitting(ctx, int(req.Id)); err != nil {
+	orphanedPatternURLs, err := s.repo.Fittings().DeleteFittingAndListOrphanedPatternURLs(ctx, int(req.Id))
+	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't delete fitting",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete fitting")
 	}
+	s.deleteOrphanedPatternObjects(ctx, "fitting", int(req.Id), orphanedPatternURLs)
 	return &pb_admin.DeleteFittingResponse{}, nil
 }
 

@@ -18,7 +18,8 @@ func TestDeleteTechCardNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	techCards := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(techCards)
-	techCards.EXPECT().DeleteTechCard(mock.Anything, 404).Return(fmt.Errorf("delete tech card: %w", sql.ErrNoRows))
+	techCards.EXPECT().DeleteTechCardAndListOrphanedPatternURLs(mock.Anything, 404).
+		Return(nil, fmt.Errorf("delete tech card: %w", sql.ErrNoRows))
 
 	s := &Server{repo: repo}
 	_, err := s.DeleteTechCard(context.Background(), &pb_admin.DeleteTechCardRequest{Id: 404})

@@ -42,7 +42,7 @@ func TestUpdateFittingAllowsEmptyChangeRequests(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	f := mocks.NewMockFittings(t)
 	repo.EXPECT().Fittings().Return(f)
-	f.EXPECT().UpdateFitting(mock.Anything, 1, mock.Anything, 0).Return(nil)
+	f.EXPECT().UpdateFittingAndListOrphanedPatternURLs(mock.Anything, 1, mock.Anything, 0).Return(nil, nil)
 
 	s := &Server{repo: repo}
 	_, err := s.UpdateFitting(context.Background(), &pb_admin.UpdateFittingRequest{
