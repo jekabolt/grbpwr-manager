@@ -118,7 +118,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't add tech card")
 	}
-	s.seedProductCostsFromTechCard(ctx, id)
+	s.seedProductCostsFromTechCard(ctx, id, 0)
 	s.snapshotReleaseIfReleased(ctx, id)
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
 }
@@ -217,7 +217,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't update tech card")
 	}
-	s.seedProductCostsFromTechCard(ctx, int(req.Id))
+	s.seedProductCostsFromTechCard(ctx, int(req.Id), int(req.ExpectedLockVersion)+1)
 	s.snapshotReleaseIfReleased(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
 }
@@ -426,9 +426,16 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 // converted. Only products whose PRIMARY card is this one are seeded, and a manually-set
 // cost is never overwritten (use SyncProductCostFromTechCard to force). Newly-linked
 // products with no primary yet adopt this card as their primary.
-func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID int) {
+func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, expectedMinLockVersion int) {
 	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
 	if err != nil || card == nil {
+		return
+	}
+	if card.LockVersion < expectedMinLockVersion {
+		slog.Default().WarnContext(ctx, "skipping product cost seed from stale tech card read",
+			slog.Int("tech_card_id", techCardID),
+			slog.Int("lock_version", card.LockVersion),
+			slog.Int("expected_min_lock_version", expectedMinLockVersion))
 		return
 	}
 	linkedProducts := card.LinkedProductIDs()
