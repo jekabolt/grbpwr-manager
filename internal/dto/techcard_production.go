@@ -499,13 +499,20 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
 			Zone:            techCardConstructionZoneEntityToPb[o.Zone],
 			BomItemIndex:    bomItemIndex,
-			BomItemId:       o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
-			CalloutNumber:   pbInt32FromNull(o.CalloutNumber),
-			Placement:       pbStringFromNull(o.Placement),
-			PieceLineKeys:   o.PieceLineKeys,
-			PieceIds:        pieceIds,
-			BomLineKeys:     o.BomLineKeys,
-			BomItemIds:      bomIds,
+			// The singular pair: the durable line_key and the FK it resolved to. Emitting the key is
+			// what makes the operation round-trippable — a client that speaks line_keys used to read
+			// bom_line_key back empty and, on its next save, wrote NULL over bom_item_id. parse folds
+			// it into bom_line_keys (deduped), so a card written through that path already carries it
+			// in the plural list; constructionProjection hashes the plural list only, so section
+			// digests are byte-identical before and after this change.
+			BomLineKey:    o.BomLineKey,
+			BomItemId:     o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
+			CalloutNumber: pbInt32FromNull(o.CalloutNumber),
+			Placement:     pbStringFromNull(o.Placement),
+			PieceLineKeys: o.PieceLineKeys,
+			PieceIds:      pieceIds,
+			BomLineKeys:   o.BomLineKeys,
+			BomItemIds:    bomIds,
 		})
 	}
 	return out

@@ -376,6 +376,10 @@ type techCardOperationRow struct {
 	// entity.TechCardOperation and never reaches the wire (the wire identity of an operation is its
 	// operation_number).
 	Id int `db:"id"`
+	// BomLineKey is the stable wire reference of the single BOM line the operation's bom_item_id
+	// column points at, resolved through a LEFT JOIN because the column itself holds only the FK.
+	// It lands on entity.TechCardOperation.BomLineKey (db:"-", so it cannot be scanned there).
+	BomLineKey sql.NullString `db:"bom_line_key"`
 	entity.TechCardOperation
 }
 
@@ -426,13 +430,20 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	// Operations are returned sorted ascending by operation_number (the addressable
 	// «оп. 10, 20, …»); unnumbered operations sort last, with display_order as a
 	// stable tiebreaker within each group.
+	// b.line_key resolves o.bom_item_id back to the durable reference the client writes with. Without
+	// it the read emitted only the resolved FK (bom_item_id), so a read-modify-write client that
+	// speaks line_keys sent bom_line_key back empty and degraded the column to NULL on its next save.
+	// LEFT JOIN on the BOM line's primary key: at most one match, no row multiplication.
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
-		SELECT id, tech_card_id, operation_number, node, description, seam_type, machine, stitches_per_cm,
-		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, smv, note,
-		       operation_type, zone, bom_item_id, bom_item_index, callout_number, placement
-		FROM tech_card_operation
-		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, operation_number IS NULL, operation_number, display_order`, map[string]any{"ids": ids})
+		SELECT o.id, o.tech_card_id, o.operation_number, o.node, o.description, o.seam_type, o.machine,
+		       o.stitches_per_cm, o.topstitch_width, o.seam_allowance, o.thread, o.needle, o.attachment,
+		       o.time_norm, o.smv, o.note, o.operation_type, o.zone, o.bom_item_id, o.bom_item_index,
+		       o.callout_number, o.placement, b.line_key AS bom_line_key
+		FROM tech_card_operation o
+		LEFT JOIN tech_card_bom_item b ON b.id = o.bom_item_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`,
+		map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card operations: %w", err)
 	}
@@ -444,7 +455,9 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	// pieces/materials to the wrong operation on exactly those cards.
 	posByOpID := make(map[int]operationPos, len(opRows))
 	for _, r := range opRows {
-		opsByCard[r.TechCardID] = append(opsByCard[r.TechCardID], r.TechCardOperation)
+		op := r.TechCardOperation
+		op.BomLineKey = r.BomLineKey.String // "" when bom_item_id is NULL, matching the write side
+		opsByCard[r.TechCardID] = append(opsByCard[r.TechCardID], op)
 		posByOpID[r.Id] = operationPos{cardID: r.TechCardID, index: len(opsByCard[r.TechCardID]) - 1}
 	}
 
