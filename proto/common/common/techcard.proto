@@ -703,7 +703,7 @@ message TechCardOperation {
   string machine = 9; // machine / equipment
   string seam_allowance = 10; // seam allowance for this узел
   string needle = 11; // needle size / type
-  google.type.Decimal time_norm = 12; // SAM / норма времени, minutes
+  google.type.Decimal time_norm = 12; // SAM / норма времени, minutes; superseded by smv below
   string attachment = 13; // folder / binder / guide / hemmer / presser-foot (приспособление)
   TechCardOperationType operation_type = 14; // machine / stitch class; UNKNOWN = unset
   // 0-based index into TechCardInsert.bom_items of the material this operation
@@ -736,7 +736,10 @@ message TechCardOperation {
   // empty. Distinct from piece_line_keys: those are the parts joined, these are what joins them.
   repeated string bom_line_keys = 23;
   repeated int64 bom_item_ids = 24; // OUTPUT: resolved FKs to the BOM lines, in the order given
-  google.type.Decimal smv = 25; // standard minute value; absent = unset
+  // smv is the standard minute value and supersedes time_norm above: minute rollups
+  // (TechCardCosting.total_sam) take smv when it is set and fall back to time_norm when it is not,
+  // so re-timing an operation means writing smv, not rewriting the legacy column. Absent = unset.
+  google.type.Decimal smv = 25;
 }
 
 // TechCardIssueSeverity ranks a flagged construction issue.
@@ -858,7 +861,7 @@ message TechCardCosting {
   int32 order_qty = 21; // Σ size_quantities.order_qty (the whole production run)
   google.type.Decimal order_cost = 22; // unit_cost × order_qty
   bool has_unconverted_currencies = 15; // a material line (colourway 0) is in a currency other than `currency`
-  google.type.Decimal total_sam = 16; // Σ operation time_norm (minutes); informative
+  google.type.Decimal total_sam = 16; // Σ operation smv, time_norm where smv is unset (minutes); informative
   repeated TechCardColorwayCost colorway_costs = 18; // OUTPUT-ONLY, per colourway
 
   // OUTPUT-ONLY base-currency rollup. The unit/order cost of the primary colourway folded into

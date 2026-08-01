@@ -747,6 +747,20 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 	}
 }
 
+// operationMinutes is the minute figure one operation contributes to a minute rollup: its standard
+// minute value (smv, 0219) when set, the legacy time_norm otherwise. smv was added as time_norm's
+// successor — the two columns describe the same quantity, and an operation that has been properly
+// timed carries that number in smv while time_norm keeps whatever the sheet was first authored with.
+// Preferring smv is therefore what makes the newer measurement the one that counts; the fallback
+// keeps every card authored before 0219 rolling up exactly as it did. Invalid = the operation is
+// untimed in both columns and contributes nothing.
+func operationMinutes(o *entity.TechCardOperation) decimal.NullDecimal {
+	if o.SMV.Valid {
+		return o.SMV
+	}
+	return o.TimeNorm
+}
+
 // techCardCostingToPb emits the stored per-unit cost articles plus the computed per-colourway
 // costs and the root rollup. Root figures are the PRIMARY colourway = index 0. Cost is built
 // per GARMENT (unit_cost = materials_per_unit + shared manual articles, × (1 + defect%)), then
@@ -846,11 +860,11 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 		out.BaseCurrency = fx.Base
 	}
 
-	// total_sam = Σ(operation time_norm); informative, pricing-independent.
+	// total_sam = Σ(operation minutes); informative, pricing-independent.
 	totalSam := decimal.Zero
 	for i := range tc.Operations {
-		if tc.Operations[i].TimeNorm.Valid {
-			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
+		if m := operationMinutes(&tc.Operations[i]); m.Valid {
+			totalSam = totalSam.Add(m.Decimal)
 		}
 	}
 	if totalSam.IsPositive() {
