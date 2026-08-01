@@ -20,7 +20,7 @@ import (
 // every style is backfilled.
 func loadStructuredComposition(ctx context.Context, db dependency.DB, tc *entity.TechCard) error {
 	rows, err := storeutil.QueryListNamed[entity.CompositionEntry](ctx, db, `
-		SELECT sc.fiber_code, COALESCE(f.name, sc.fiber_code) AS name, sc.percent
+		SELECT sc.fiber_code, COALESCE(f.name, sc.fiber_code) AS name, sc.percent, sc.source
 		FROM style_composition sc LEFT JOIN fiber f ON f.code = sc.fiber_code
 		WHERE sc.tech_card_id = :id
 		ORDER BY sc.percent DESC, sc.fiber_code`,

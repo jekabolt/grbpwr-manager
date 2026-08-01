@@ -130,6 +130,8 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 	}
 	require.Equal(t, "60", byCode["COT"].Percent.String())
 	require.Equal(t, "40", byCode["POL"].Percent.String())
+	require.Equal(t, entity.CompositionSourceManual, byCode["COT"].Source)
+	require.Equal(t, entity.CompositionSourceManual, byCode["POL"].Source)
 
 	byIds2, err := P.GetProductsByIds(ctx, []int{cwID})
 	require.NoError(t, err)
@@ -146,6 +148,7 @@ func TestColorwayCompositionDisplay_TypedFieldNotJSONOverload(t *testing.T) {
 		if ce.FiberCode == "COT" {
 			gotCOT = true
 			require.Equal(t, "60", ce.Percent.GetValue())
+			require.Equal(t, entity.CompositionSourceManual, ce.Source)
 		}
 	}
 	require.True(t, gotCOT)

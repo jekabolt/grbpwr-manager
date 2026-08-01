@@ -271,6 +271,7 @@ message CompositionEntry {
   string fiber_code = 1;
   string name = 2;
   google.type.Decimal percent = 3;
+  string source = 4; // style rows are auto-derived or a manual override; empty for material composition
 }
 
 // CareEntry is one resolved care symbol — the TYPED projection of the stored care code string, and

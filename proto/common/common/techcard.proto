@@ -83,8 +83,8 @@ message TechCardCallout {
 // which section, by whom). This is NOT fit history — fitting verdicts and
 // measurements live in the separate fitting feature.
 message TechCardRevision {
-  string version = 1; // DEPRECATED legacy label (kept for old rows); the auto-journal does not set it
-  google.protobuf.Timestamp revision_date = 2; // DEPRECATED; use created_at
+  reserved 1, 2;
+  reserved "version", "revision_date";
   string author = 3; // server-stamped acting admin username (GetAdminUsername)
   string section = 4; // раздел (header|sketch|bom|colorway|pieces|construction|labels|packaging|costing|signoff|other)
   string change_note = 5; // human summary of what changed

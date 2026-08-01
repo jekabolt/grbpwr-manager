@@ -68,7 +68,7 @@ func TestRelinkDraftColorway(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, prodID).Scan(&srcStyleID))
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, srcStyleID).Scan(&srcLV))
 	_, err = testDB.ExecContext(ctx, `
-		INSERT INTO tech_card_product (tech_card_id, product_id, display_order) VALUES (?, ?, 0)`, srcStyleID, prodID)
+		INSERT INTO tech_card_product (tech_card_id, product_id) VALUES (?, ?)`, srcStyleID, prodID)
 	require.NoError(t, err)
 	_, err = testDB.ExecContext(ctx, `UPDATE product SET primary_tech_card_id = ? WHERE id = ?`, srcStyleID, prodID)
 	require.NoError(t, err)

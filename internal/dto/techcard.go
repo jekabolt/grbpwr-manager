@@ -749,13 +749,11 @@ func techCardRevisionsToPb(revs []entity.TechCardRevision) []*pb_common.TechCard
 	out := make([]*pb_common.TechCardRevision, 0, len(revs))
 	for _, r := range revs {
 		out = append(out, &pb_common.TechCardRevision{
-			Version:      pbStringFromNull(r.Version),
-			RevisionDate: pbTimestampFromNullTime(r.RevisionDate),
-			Author:       pbStringFromNull(r.Author),
-			Section:      pbStringFromNull(r.Section),
-			Action:       pbStringFromNull(r.Action),
-			ChangeNote:   pbStringFromNull(r.ChangeNote),
-			CreatedAt:    pbTimestampFromNullTime(r.CreatedAt),
+			Author:     pbStringFromNull(r.Author),
+			Section:    pbStringFromNull(r.Section),
+			Action:     pbStringFromNull(r.Action),
+			ChangeNote: pbStringFromNull(r.ChangeNote),
+			CreatedAt:  pbTimestampFromNullTime(r.CreatedAt),
 		})
 	}
 	return out
@@ -1407,6 +1405,7 @@ func compositionEntriesToPb(entries []entity.CompositionEntry) []*pb_common.Comp
 			FiberCode: e.FiberCode,
 			Name:      e.Name,
 			Percent:   pbDecimalFromDecimal(e.Percent),
+			Source:    e.Source,
 		})
 	}
 	return out

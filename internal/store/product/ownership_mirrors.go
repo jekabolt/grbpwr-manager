@@ -10,9 +10,8 @@ import (
 
 func insertColorwayStyleMirror(ctx context.Context, db dependency.DB, styleID, colorwayID int) error {
 	if err := storeutil.ExecNamed(ctx, db, `
-		INSERT INTO tech_card_product (tech_card_id, product_id, display_order)
-		SELECT :style, :colorway, COALESCE(MAX(display_order), -1) + 1
-		FROM tech_card_product WHERE tech_card_id = :style`, map[string]any{
+		INSERT INTO tech_card_product (tech_card_id, product_id)
+		VALUES (:style, :colorway)`, map[string]any{
 		"style":    styleID,
 		"colorway": colorwayID,
 	}); err != nil {

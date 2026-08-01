@@ -35,12 +35,12 @@ const soldOutSelect = productStockExpr + ` <= 0 AS sold_out`
 const styleCompositionSelect = `JSON_UNQUOTE(sty.composition)`
 
 // styleCompositionEntriesSelect projects a style's structured fibre composition (S17/WS3-Ф5) as a JSON
-// array of {fiber_code,name,percent} objects, for the typed composition_entries wire field (M1 fix) —
+// array of {fiber_code,name,percent,source} objects, for the typed composition_entries wire field (M1 fix) —
 // the replacement for the JSON-in-string overload removed from styleCompositionSelect above. Selected
 // alongside (never instead of) styleCompositionSelect. JSON_ARRAYAGG returns NULL over zero rows (a
 // style with no derived/manual composition yet); the caller unmarshals a NULL/empty result into an
 // empty slice.
-const styleCompositionEntriesSelect = `(SELECT JSON_ARRAYAGG(JSON_OBJECT('fiber_code', sc.fiber_code, 'name', COALESCE(f.name, sc.fiber_code), 'percent', sc.percent))
+const styleCompositionEntriesSelect = `(SELECT JSON_ARRAYAGG(JSON_OBJECT('fiber_code', sc.fiber_code, 'name', COALESCE(f.name, sc.fiber_code), 'percent', sc.percent, 'source', sc.source))
 		FROM style_composition sc LEFT JOIN fiber f ON f.code = sc.fiber_code
 		WHERE sc.tech_card_id = sty.id)`
 

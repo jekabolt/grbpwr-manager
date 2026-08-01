@@ -19,8 +19,10 @@ func i32(v int32) *int32               { return &v }
 // entity-side helpers: after the R1 merge, colourways are not part of the tech-card WRITE payload
 // (they are products, created via the Colorway RPCs). Per-colourway costing still reads the enriched
 // entity.Colorways, so the costing tests build them directly instead of through the pb parse.
-func ndd(s string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true} }
-func sni(v int32) sql.NullInt32        { return sql.NullInt32{Int32: v, Valid: true} }
+func ndd(s string) decimal.NullDecimal {
+	return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true}
+}
+func sni(v int32) sql.NullInt32 { return sql.NullInt32{Int32: v, Valid: true} }
 
 func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	revDate := timestamppb.New(time.Date(2026, 6, 19, 15, 30, 0, 0, time.UTC))
@@ -217,11 +219,14 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 				{MediaId: 20, Category: entity.TechCardMediaCategoryMoodboard, Kind: entity.TechCardMediaReference},
 			},
 			Callouts:  []entity.TechCardCallout{{Number: 1, MediaId: nullInt32FromPb(11)}},
-			Revisions: []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
+			Revisions: []entity.TechCardRevision{{Author: nullStringFromPb("alice")}},
 			Details:   []entity.TechCardDetail{{Key: nullStringFromPb("collar"), Text: nullStringFromPb("two-piece"), MediaIds: []int{11}}},
 		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		CompositionEntries: []entity.CompositionEntry{{
+			FiberCode: "COT", Name: "Cotton", Percent: decimal.NewFromInt(100), Source: entity.CompositionSourceManual,
+		}},
 		ResolvedMedia: []entity.TechCardMediaFull{
 			{Media: entity.MediaFull{Id: 11}, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront},
 			{Media: entity.MediaFull{Id: 20}, Category: entity.TechCardMediaCategoryMoodboard, Kind: entity.TechCardMediaReference, Caption: nullStringFromPb("mood")},
@@ -245,6 +250,9 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	}
 	if len(pb.TechCard.Details) != 1 || pb.TechCard.Details[0].Key != "collar" || len(pb.TechCard.Details[0].MediaIds) != 1 {
 		t.Errorf("details round-trip mismatch: %+v", pb.TechCard.Details)
+	}
+	if len(pb.CompositionEntries) != 1 || pb.CompositionEntries[0].Source != entity.CompositionSourceManual {
+		t.Errorf("composition source mismatch: %+v", pb.CompositionEntries)
 	}
 	// writable media splits into the two lists by category.
 	if len(pb.TechCard.TechnicalMedia) != 1 || pb.TechCard.TechnicalMedia[0].MediaId != 11 ||

@@ -1294,8 +1294,8 @@ func insertTechCardProducts(ctx context.Context, db dependency.DB, id int, produ
 		return nil
 	}
 	rows := make([]map[string]any, 0, len(productIDs))
-	for i, pid := range productIDs {
-		rows = append(rows, map[string]any{"tech_card_id": id, "product_id": pid, "display_order": i})
+	for _, pid := range productIDs {
+		rows = append(rows, map[string]any{"tech_card_id": id, "product_id": pid})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_product", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card products: %w", err)

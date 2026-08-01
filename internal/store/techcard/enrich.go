@@ -203,7 +203,7 @@ func (s *Store) revisionsByTechCardIds(ctx context.Context, ids []int) (map[int]
 		return map[int][]entity.TechCardRevision{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardRevisionRow](ctx, s.DB, `
-		SELECT tech_card_id, version, revision_date, author, section, action, change_note, created_at
+		SELECT tech_card_id, author, section, action, change_note, created_at
 		FROM tech_card_revision
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, created_at, id`, map[string]any{"ids": ids})
