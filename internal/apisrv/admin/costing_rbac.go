@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"database/sql"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
-	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -435,12 +433,12 @@ func costPriceProvided(cost *pb_decimal.Decimal) bool {
 // preserveStoredCosting restores confidential cost fields onto an incoming tech-card update
 // from the stored card, so a full-replace save by an account WITHOUT costing:write (whose read
 // was cost-stripped, so the payload carries no costing) cannot blank the costing block or BOM
-// purchase prices it never saw. The costing block is preserved wholesale; BOM prices are matched
-// back by the article's natural key (section+name+supplier_ref), so an unchanged line keeps its
-// price and a genuinely new line simply has none. Best-effort: a reload failure leaves the payload
-// as-is (the write still proceeds) — logged, never fatal. Only call this after confirming the
-// payload carries no costing data (techCardInsertHasCostingData is false), i.e. the caller isn't
-// trying to set costs — this path is purely anti-erase, not a way to smuggle changes.
+// purchase prices it never saw. The costing block is preserved wholesale; BOM prices follow the
+// stable line_key, with the old natural-key FIFO retained only for legacy pairs where either side
+// has no line_key. Best-effort: a reload failure leaves the payload as-is (the write still proceeds)
+// — logged, never fatal. Only call this after confirming the payload carries no costing data
+// (techCardInsertHasCostingData is false), i.e. the caller isn't trying to set costs — this path is
+// purely anti-erase, not a way to smuggle changes.
 func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, incoming *entity.TechCardInsert) {
 	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil || stored == nil {
@@ -454,34 +452,63 @@ func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, inco
 	if len(stored.BomItems) == 0 || len(incoming.BomItems) == 0 {
 		return
 	}
-	type bomPrice struct {
-		unit decimal.NullDecimal
-		cur  sql.NullString
+	preservePrice := func(dst *entity.TechCardBomItem, src entity.TechCardBomItem) {
+		dst.UnitPrice = src.UnitPrice
+		dst.Currency = src.Currency
 	}
-	// Natural keys are not guaranteed unique (a card may carry two lines with the same
-	// section+name+supplier_ref — e.g. the same fabric in two colours). Keep a FIFO queue per key
-	// and consume it in order so N stored lines feed N incoming lines with that key, instead of a
-	// last-wins map that would stamp every colliding line with a single price.
-	byKey := make(map[string][]bomPrice, len(stored.BomItems))
-	for _, b := range stored.BomItems {
-		k := bomNaturalKey(b)
-		byKey[k] = append(byKey[k], bomPrice{b.UnitPrice, b.Currency})
+
+	// Match every modern line by its stable identity before constructing the legacy pool. This makes
+	// the match order-insensitive and keeps a keyed line's price attached through renames or supplier
+	// edits. Marking both sides also ensures the fallback cannot steal a keyed match.
+	matchedStored := make([]bool, len(stored.BomItems))
+	matchedIncoming := make([]bool, len(incoming.BomItems))
+	byLineKey := make(map[string]int, len(stored.BomItems))
+	for i := range stored.BomItems {
+		if key := stored.BomItems[i].LineKey; key != "" {
+			byLineKey[key] = i
+		}
 	}
 	for i := range incoming.BomItems {
-		k := bomNaturalKey(incoming.BomItems[i])
-		q := byKey[k]
-		if len(q) == 0 {
-			continue // a genuinely new line (or more duplicates than stored) simply has no price
+		key := incoming.BomItems[i].LineKey
+		storedIndex, ok := byLineKey[key]
+		if key == "" || !ok || matchedStored[storedIndex] {
+			continue
 		}
-		incoming.BomItems[i].UnitPrice = q[0].unit
-		incoming.BomItems[i].Currency = q[0].cur
-		byKey[k] = q[1:]
+		preservePrice(&incoming.BomItems[i], stored.BomItems[storedIndex])
+		matchedStored[storedIndex] = true
+		matchedIncoming[i] = true
+	}
+
+	// Natural keys are not guaranteed unique, so unmatched legacy candidates remain FIFO. A fallback
+	// pair is legal only when at least one side lacks line_key; two different modern keys must never
+	// match merely because their editable descriptive fields happen to agree.
+	byNaturalKey := make(map[string][]int, len(stored.BomItems))
+	for i := range stored.BomItems {
+		if !matchedStored[i] {
+			key := bomNaturalKey(stored.BomItems[i])
+			byNaturalKey[key] = append(byNaturalKey[key], i)
+		}
+	}
+	for i := range incoming.BomItems {
+		if matchedIncoming[i] {
+			continue
+		}
+		key := bomNaturalKey(incoming.BomItems[i])
+		candidates := byNaturalKey[key]
+		for candidateIndex, storedIndex := range candidates {
+			if incoming.BomItems[i].LineKey != "" && stored.BomItems[storedIndex].LineKey != "" {
+				continue
+			}
+			preservePrice(&incoming.BomItems[i], stored.BomItems[storedIndex])
+			byNaturalKey[key] = append(candidates[:candidateIndex], candidates[candidateIndex+1:]...)
+			break
+		}
 	}
 }
 
-// bomNaturalKey identifies a BOM article across a full-replace by its human identity
-// (section + name + supplier ref), case/space-insensitive, so a preserved price re-attaches
-// to the same line even though row ids are reassigned on replace.
+// bomNaturalKey identifies a legacy BOM article across a full-replace by its human identity
+// (section + name + supplier ref), case/space-insensitive. It is used only when the stored or
+// incoming line lacks the stable line_key.
 func bomNaturalKey(b entity.TechCardBomItem) string {
 	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	// A LINKED line keys on its material id, never on its name. The name of a linked line is RESOLVED

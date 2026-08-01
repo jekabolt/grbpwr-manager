@@ -2,13 +2,17 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
@@ -371,6 +375,81 @@ func TestCostingWriteDetectors(t *testing.T) {
 	require.False(t, costPriceProvided(nil))
 	require.False(t, costPriceProvided(dec("")), "empty = leave unchanged")
 	require.True(t, costPriceProvided(dec("9.99")))
+}
+
+func TestPreserveStoredCostingMatchesBomPricesByLineKey(t *testing.T) {
+	bomLine := func(lineKey, name, supplierRef, amount, currency string) entity.TechCardBomItem {
+		line := entity.TechCardBomItem{
+			LineKey:     lineKey,
+			Section:     entity.BomSectionFabric,
+			Name:        name,
+			SupplierRef: sql.NullString{String: supplierRef, Valid: supplierRef != ""},
+		}
+		if amount != "" {
+			line.UnitPrice = decimal.NullDecimal{Decimal: decimal.RequireFromString(amount), Valid: true}
+			line.Currency = sql.NullString{String: currency, Valid: currency != ""}
+		}
+		return line
+	}
+	preserve := func(t *testing.T, stored []entity.TechCardBomItem, incoming *entity.TechCardInsert) {
+		t.Helper()
+		repo := mocks.NewMockRepository(t)
+		cards := mocks.NewMockTechCards(t)
+		repo.EXPECT().TechCards().Return(cards)
+		cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+			TechCardInsert: entity.TechCardInsert{BomItems: stored},
+		}, nil)
+		s := &Server{repo: repo}
+		s.preserveStoredCosting(context.Background(), 7, incoming)
+	}
+
+	t.Run("stable keys survive edits and reordering", func(t *testing.T) {
+		stored := []entity.TechCardBomItem{
+			bomLine("line-a", "old name", "old-ref", "10", "EUR"),
+			bomLine("line-b", "duplicate", "same-ref", "20", "USD"),
+			bomLine("line-c", "duplicate", "same-ref", "30", "GBP"),
+		}
+		incoming := &entity.TechCardInsert{BomItems: []entity.TechCardBomItem{
+			bomLine("line-c", "duplicate", "same-ref", "", ""),
+			bomLine("line-a", "renamed", "new-ref", "", ""),
+			bomLine("line-b", "duplicate", "same-ref", "", ""),
+		}}
+
+		preserve(t, stored, incoming)
+
+		require.Equal(t, "30", incoming.BomItems[0].UnitPrice.Decimal.String())
+		require.Equal(t, "GBP", incoming.BomItems[0].Currency.String)
+		require.Equal(t, "10", incoming.BomItems[1].UnitPrice.Decimal.String())
+		require.Equal(t, "EUR", incoming.BomItems[1].Currency.String)
+		require.Equal(t, "20", incoming.BomItems[2].UnitPrice.Decimal.String())
+		require.Equal(t, "USD", incoming.BomItems[2].Currency.String)
+	})
+
+	t.Run("legacy fallback cannot steal a keyed match", func(t *testing.T) {
+		stored := []entity.TechCardBomItem{
+			bomLine("protected", "same identity", "", "40", "EUR"),
+			bomLine("", "same identity", "", "50", "USD"),
+			bomLine("", "stored legacy", "", "60", "PLN"),
+			bomLine("modern-stored", "incoming legacy", "", "70", "GBP"),
+			bomLine("old-key", "modern mismatch", "", "80", "EUR"),
+		}
+		incoming := &entity.TechCardInsert{BomItems: []entity.TechCardBomItem{
+			bomLine("", "same identity", "", "", ""),
+			bomLine("protected", "same identity", "", "", ""),
+			bomLine("new-from-legacy", "stored legacy", "", "", ""),
+			bomLine("", "incoming legacy", "", "", ""),
+			bomLine("new-key", "modern mismatch", "", "", ""),
+		}}
+
+		preserve(t, stored, incoming)
+
+		require.Equal(t, "50", incoming.BomItems[0].UnitPrice.Decimal.String(), "legacy fallback must use the unmatched legacy row")
+		require.Equal(t, "40", incoming.BomItems[1].UnitPrice.Decimal.String(), "exact line_key match must win before fallback")
+		require.Equal(t, "60", incoming.BomItems[2].UnitPrice.Decimal.String(), "stored legacy line may fall back")
+		require.Equal(t, "70", incoming.BomItems[3].UnitPrice.Decimal.String(), "incoming legacy line may fall back")
+		require.False(t, incoming.BomItems[4].UnitPrice.Valid, "different non-empty line keys must not fall back")
+		require.False(t, incoming.BomItems[4].Currency.Valid)
+	})
 }
 
 // TestStripProductionRunCosting pins the Q5 costing symmetry (A3.2-#3): a run's actual money is
