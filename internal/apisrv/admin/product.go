@@ -134,7 +134,7 @@ func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID i
 		return
 	}
 	techCardID := int(ci.PrimaryTechCardID.Int32)
-	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil || card == nil {
 		return
 	}
@@ -143,27 +143,28 @@ func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID i
 	if !unit.Valid || !strings.EqualFold(currency, cache.GetBaseCurrency()) {
 		return
 	}
-	// The provenance guard lives in the UPDATE's own predicate (atomic), not in a
-	// read-then-force — a run receipt landing between a read and a force would be overwritten.
-	updated, err := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, colorwayID, techCardID, unit.Decimal)
+	breakdownJSON := sql.NullString{}
+	if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, colorwayID, fx); ok {
+		b, merr := json.Marshal(bd)
+		if merr != nil {
+			slog.Default().ErrorContext(ctx, "can't marshal colourway cost breakdown after recipe write",
+				slog.Int("colorway_id", colorwayID), slog.String("err", merr.Error()))
+			return
+		}
+		breakdownJSON = sql.NullString{String: string(b), Valid: true}
+	}
+	updated, err := s.repo.Products().SeedProductCostFromTechCard(
+		ctx, colorwayID, techCardID, card.LockVersion, unit.Decimal, breakdownJSON)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't reseed colourway cost after recipe write",
-			slog.Int("colorway_id", colorwayID), slog.String("err", err.Error()))
+			slog.Int("colorway_id", colorwayID), slog.Int("tech_card_id", techCardID),
+			slog.Int("tech_card_lock_version", card.LockVersion), slog.String("err", err.Error()))
 		return
 	}
 	if !updated {
-		return // manual / production_run provenance wins, or another card is authoritative
-	}
-	// Keep the COGS decomposition on the same figure (same colourway, same predicate).
-	breakdownJSON := sql.NullString{}
-	if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, colorwayID, fx); ok {
-		if b, merr := json.Marshal(bd); merr == nil {
-			breakdownJSON = sql.NullString{String: string(b), Valid: true}
-		}
-	}
-	if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, colorwayID, techCardID, breakdownJSON); berr != nil {
-		slog.Default().ErrorContext(ctx, "can't reseed colourway cost_breakdown after recipe write",
-			slog.Int("colorway_id", colorwayID), slog.String("err", berr.Error()))
+		slog.Default().WarnContext(ctx, "colourway cost seed predicate rejected the observed tech card snapshot",
+			slog.Int("colorway_id", colorwayID), slog.Int("tech_card_id", techCardID),
+			slog.Int("tech_card_lock_version", card.LockVersion))
 	}
 }
 

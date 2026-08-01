@@ -53,13 +53,10 @@ type (
 		// product whose primary card is techCardID (and cost is not manual, and the card links
 		// it), never overwriting a manual cost. Returns the number of products updated.
 		SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error)
-		// SeedProductCostPriceFromTechCard is the per-colourway (single-product) seed: same
-		// provenance predicate as the bulk seed, enforced atomically in the SQL so a concurrent
-		// manual edit or run receipt is never overwritten. Returns whether the row was updated.
-		SeedProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) (bool, error)
-		// SeedProductCostBreakdownFromTechCard writes one product's COGS decomposition under the
-		// same predicate, so cost_price and cost_breakdown never drift apart.
-		SeedProductCostBreakdownFromTechCard(ctx context.Context, productID, techCardID int, breakdown sql.NullString) error
+		// SeedProductCostFromTechCard atomically writes one colourway's price + breakdown only while
+		// the source tech-card version and product provenance/ownership still match the observed read.
+		SeedProductCostFromTechCard(ctx context.Context, productID, techCardID, techCardLockVersion int,
+			cost decimal.Decimal, breakdown sql.NullString) (bool, error)
 		// SeedProductsCostBreakdownFromTechCard writes the per-unit COGS decomposition JSON onto the
 		// same (primary, non-manual) products as SeedProductsCostPriceFromTechCard, so cost_price and
 		// cost_breakdown stay in sync; a NULL breakdown clears any stale one. Returns rows updated.
@@ -714,6 +711,9 @@ type (
 	ProductionRuns interface {
 		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
 		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
+		// UpdateProductionRunPreservingCosts performs the same update but reloads and carries stored
+		// cost articles under the run's FOR UPDATE lock, for callers without costing write access.
+		UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)

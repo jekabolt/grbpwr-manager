@@ -121,6 +121,28 @@ func TestCreateColorway(t *testing.T) {
 		`SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = ? AND product_id = ?`, styleID, colorwayID).Scan(&mirrorCount))
 	require.Equal(t, 1, mirrorCount)
 
+	// The post-save cost hook writes price + breakdown together and only from the exact card version
+	// it observed. Once the card version moves, the stale seed is a no-op rather than an overwrite.
+	var seedVersion int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&seedVersion))
+	breakdown := sql.NullString{String: `{"materials":4,"cmt":5}`, Valid: true}
+	updated, err := s.Products().SeedProductCostFromTechCard(
+		ctx, colorwayID, styleID, seedVersion, decimal.NewFromInt(9), breakdown)
+	require.NoError(t, err)
+	require.True(t, updated)
+	_, err = testDB.ExecContext(ctx, `UPDATE tech_card SET lock_version = lock_version + 1 WHERE id = ?`, styleID)
+	require.NoError(t, err)
+	updated, err = s.Products().SeedProductCostFromTechCard(
+		ctx, colorwayID, styleID, seedVersion, decimal.NewFromInt(99), sql.NullString{})
+	require.NoError(t, err)
+	require.False(t, updated, "superseded card snapshot must not seed")
+	var seededCost decimal.NullDecimal
+	var seededBreakdown sql.NullString
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT cost_price, cost_breakdown FROM product WHERE id = ?`, colorwayID).Scan(&seededCost, &seededBreakdown))
+	require.True(t, seededCost.Valid && seededCost.Decimal.Equal(decimal.NewFromInt(9)))
+	require.Equal(t, breakdown, seededBreakdown)
+
 	// UNIQUE(style_id, color_code) (R1): a duplicate colour for the same style is refused.
 	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)
 	_, err = s.Products().CreateColorway(ctx, styleID, dup, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)

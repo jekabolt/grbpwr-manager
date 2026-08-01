@@ -649,8 +649,8 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 	// the primary colourway's number written over every product, erasing exactly the divergence
 	// per-colourway pinning creates. The card-level figure stays as the fallback for a linked
 	// product the card's colourway list somehow misses. Base currency only, as before; a product
-	// whose cost is manually set (or run-sourced) is never overwritten — the same provenance
-	// predicate SeedProductsCostPriceFromTechCard enforced in SQL.
+	// whose cost is manually set (or run-sourced) is never overwritten — the combined seed enforces
+	// provenance, ownership, and the observed card version atomically in SQL.
 	fx := s.costingFx(ctx)
 	base := cache.GetBaseCurrency()
 	rootUnit, rootCcy := dto.ComputeTechCardUnitCost(card, fx)
@@ -667,23 +667,9 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 		if !unit.Valid || !strings.EqualFold(currency, base) {
 			continue
 		}
-		// Provenance + primary-card ownership are enforced ATOMICALLY in the UPDATE's predicate —
-		// a read-then-force here would let a concurrent manual edit or run receipt be overwritten
-		// between the read and the write.
-		updated, uerr := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, pid, techCardID, unit.Decimal)
-		if uerr != nil {
-			slog.Default().ErrorContext(ctx, "can't seed product cost_price from tech card",
-				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", uerr.Error()))
-			continue
-		}
-		if !updated {
-			continue // another card is authoritative, or manual/run provenance wins
-		}
-		seeded++
 		// The COGS decomposition rides the same per-colourway figure (its materials component is
-		// THIS colourway's, pins included) under the same predicate, so cost_price and
-		// cost_breakdown can never describe two different colourways. A non-convertible breakdown
-		// intentionally stays NULL to clear a stale one; a marshal failure must retain the stored value.
+		// THIS colourway's, pins included). A non-convertible breakdown intentionally stays NULL to
+		// clear a stale one; a marshal failure skips the combined write and retains both stored fields.
 		breakdownJSON := sql.NullString{}
 		if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, pid, fx); ok {
 			b, merr := json.Marshal(bd)
@@ -694,10 +680,21 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 			}
 			breakdownJSON = sql.NullString{String: string(b), Valid: true}
 		}
-		if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, pid, techCardID, breakdownJSON); berr != nil {
-			slog.Default().ErrorContext(ctx, "can't seed product cost_breakdown from tech card",
-				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", berr.Error()))
+		updated, uerr := s.repo.Products().SeedProductCostFromTechCard(
+			ctx, pid, techCardID, card.LockVersion, unit.Decimal, breakdownJSON)
+		if uerr != nil {
+			slog.Default().ErrorContext(ctx, "can't seed product cost from tech card",
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid),
+				slog.Int("tech_card_lock_version", card.LockVersion), slog.String("err", uerr.Error()))
+			continue
 		}
+		if !updated {
+			slog.Default().WarnContext(ctx, "product cost seed predicate rejected the observed tech card snapshot",
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid),
+				slog.Int("tech_card_lock_version", card.LockVersion))
+			continue
+		}
+		seeded++
 	}
 	if seeded == 0 {
 		slog.Default().InfoContext(ctx, "no product cost seeded from tech card (no base-convertible cost, or provenance elsewhere)",

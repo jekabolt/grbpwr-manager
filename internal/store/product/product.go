@@ -853,7 +853,8 @@ func (s *Store) AssignPrimaryTechCardIfUnset(ctx context.Context, techCardID int
 // SeedProductsCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced cost
 // of every product whose PRIMARY card is techCardID and whose cost is not manually set, and
 // which the card currently links. It never overwrites a manual cost. Returns the number of
-// products updated. Used by the best-effort seed on tech-card save.
+// products updated. Retained for explicit bulk callers; the save hook uses the version-guarded,
+// per-colourway SeedProductCostFromTechCard path below.
 func (s *Store) SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error) {
 	return storeutil.ExecNamedRows(ctx, s.DB, `
 		UPDATE product p
@@ -883,37 +884,28 @@ func (s *Store) SeedProductsCostBreakdownFromTechCard(ctx context.Context, techC
 		map[string]any{"tc": techCardID, "breakdown": breakdown})
 }
 
-// SeedProductCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced cost of
-// ONE product — the per-colourway seed (slots: each colourway gets its OWN figure). The guard is
-// in the SQL, not a read-then-write: the product must have techCardID as its primary card and a
-// non-manual provenance, so a concurrent manual edit or production-run receipt can never be
-// overwritten by this best-effort hook. Returns whether the row was updated.
-func (s *Store) SeedProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) (bool, error) {
+// SeedProductCostFromTechCard atomically writes one product's tech-card-sourced cost and its COGS
+// decomposition. The source card must still be at the exact version the caller computed from, and
+// product ownership/provenance must still permit an automatic seed. One statement prevents a newer
+// card save, manual edit, or production receipt from leaving price and breakdown from different facts.
+func (s *Store) SeedProductCostFromTechCard(ctx context.Context, productID, techCardID, techCardLockVersion int,
+	cost decimal.Decimal, breakdown sql.NullString) (bool, error) {
 	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
-		UPDATE product
-		SET cost_price = :cost,
-			cost_price_source = 'tech_card',
-			cost_price_tech_card_id = :tc,
-			cost_price_updated_at = NOW()
-		WHERE id = :id
-			AND primary_tech_card_id = :tc
-			AND (cost_price_source IS NULL OR cost_price_source = 'tech_card')`,
-		map[string]any{"id": productID, "tc": techCardID, "cost": cost})
+		UPDATE product p
+		JOIN tech_card tc ON tc.id = :tc AND tc.lock_version = :tc_lock_version
+		SET p.cost_price = :cost,
+			p.cost_price_source = 'tech_card',
+			p.cost_price_tech_card_id = :tc,
+			p.cost_price_updated_at = NOW(),
+			p.cost_breakdown = :breakdown
+		WHERE p.id = :id
+			AND p.primary_tech_card_id = :tc
+			AND (p.cost_price_source IS NULL OR p.cost_price_source = 'tech_card')`,
+		map[string]any{
+			"id": productID, "tc": techCardID, "tc_lock_version": techCardLockVersion,
+			"cost": cost, "breakdown": breakdown,
+		})
 	return n > 0, err
-}
-
-// SeedProductCostBreakdownFromTechCard writes ONE product's per-unit COGS decomposition JSON,
-// under the same atomic predicate as SeedProductCostPriceFromTechCard so cost_price and
-// cost_breakdown always describe the same (colourway-scoped) figure. A NULL breakdown clears a
-// stale decomposition.
-func (s *Store) SeedProductCostBreakdownFromTechCard(ctx context.Context, productID, techCardID int, breakdown sql.NullString) error {
-	return storeutil.ExecNamed(ctx, s.DB, `
-		UPDATE product
-		SET cost_breakdown = :breakdown
-		WHERE id = :id
-			AND primary_tech_card_id = :tc
-			AND (cost_price_source IS NULL OR cost_price_source = 'tech_card')`,
-		map[string]any{"id": productID, "tc": techCardID, "breakdown": breakdown})
 }
 
 // ForceSetProductCostPriceFromTechCard writes cost (base currency) as the tech-card-sourced
