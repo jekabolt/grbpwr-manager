@@ -278,13 +278,15 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}
-		// NF-07: purpose is a one-way commitment once the card has runs or products — flipping
-		// sellable↔auxiliary afterwards would strand a batch's stock destination or a product link.
+		// NF-07: purpose is a one-way commitment once the card has runs, products, or is used as an
+		// assembly component — flipping sellable↔auxiliary afterwards would strand a batch's stock
+		// destination/product link or turn a packing-spec component into a garment.
 		if cur.Purpose != string(tc.Purpose) {
 			var refs int
 			refs, err = storeutil.QueryCountNamed(ctx, rep.DB(),
 				`SELECT (SELECT COUNT(*) FROM production_run WHERE tech_card_id = :id)
-				      + (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id)`,
+				      + (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id)
+				      + (SELECT COUNT(*) FROM style_assembly WHERE component_tech_card_id = :id)`,
 				map[string]any{"id": id})
 			if err != nil {
 				return fmt.Errorf("failed to check tech card purpose change: %w", err)

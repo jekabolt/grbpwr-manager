@@ -18,9 +18,9 @@ var ErrTechCardConflict = errors.New("tech card was modified concurrently")
 var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
 // ErrTechCardPurposeLocked is returned by UpdateTechCard when the caller tries to change a card's
-// purpose (sellable↔auxiliary) after it already has production runs or linked products — the switch
-// would strand a batch's stock destination or a product link (NF-07).
-var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change once it has runs or products")
+// purpose (sellable↔auxiliary) after it already has production runs, linked products, or assembly
+// usage — the switch would strand a batch/product link or invalidate a packing-spec component (NF-07).
+var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change once it has runs, products, or is used as an assembly component")
 
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
