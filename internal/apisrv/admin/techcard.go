@@ -325,7 +325,7 @@ func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.Tec
 // the frozen content means an identical snapshot can be regenerated on a later re-release — so a
 // failure here is logged, never surfaced as a failed release.
 func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) {
-	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "release snapshot: can't reload tech card",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
@@ -427,7 +427,7 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 // cost is never overwritten (use SyncProductCostFromTechCard to force). Newly-linked
 // products with no primary yet adopt this card as their primary.
 func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, expectedMinLockVersion int) {
-	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil || card == nil {
 		return
 	}

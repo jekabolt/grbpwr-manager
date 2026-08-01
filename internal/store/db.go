@@ -60,16 +60,26 @@ const (
 // order for retry handling to work, the function should return Handler errors
 // unchanged, or wrap them using %w.
 func (ms *MYSQLStore) Tx(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+	return ms.tx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable}, f)
+}
+
+// readTx runs f in a read-only transaction at the database's default isolation level
+// (REPEATABLE READ on MySQL), giving multi-query loaders one consistent snapshot.
+func (ms *MYSQLStore) readTx(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
+	return ms.tx(ctx, &sql.TxOptions{ReadOnly: true}, f)
+}
+
+func (ms *MYSQLStore) tx(ctx context.Context, opts *sql.TxOptions, f func(context.Context, dependency.Repository) error) error {
 	// runAttempt executes a single transaction attempt. The rollback is deferred and
 	// guarded by a committed flag so it runs on every non-commit exit — crucially
 	// including a panic inside the callback. An inline rollback (the previous form)
 	// was skipped when f panicked, leaking the pooled connection together with its
-	// SERIALIZABLE row/gap locks until the context cancelled or ConnMaxLifetime
+	// transaction locks/snapshot until the context cancelled or ConnMaxLifetime
 	// recycled it; repeated panics could exhaust MaxOpenConns while the process, whose
 	// gRPC interceptor recovers the panic, still looked healthy. The deferred func does
 	// not recover, so the panic still propagates to that interceptor after rollback.
 	runAttempt := func() error {
-		pst, err := ms.TxBegin(ctx)
+		pst, err := ms.txBegin(ctx, opts)
 		if err != nil {
 			return err
 		}
@@ -152,9 +162,11 @@ func (ms *MYSQLStore) InTx() bool {
 }
 
 func (ms *MYSQLStore) TxBegin(ctx context.Context) (dependency.Repository, error) {
-	tx, err := ms.DB().BeginTxx(ctx, &sql.TxOptions{
-		Isolation: sql.LevelSerializable,
-	})
+	return ms.txBegin(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+}
+
+func (ms *MYSQLStore) txBegin(ctx context.Context, opts *sql.TxOptions) (dependency.Repository, error) {
+	tx, err := ms.DB().BeginTxx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}

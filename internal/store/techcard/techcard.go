@@ -32,12 +32,13 @@ type TxFunc func(ctx context.Context, f func(context.Context, dependency.Reposit
 // Store implements dependency.TechCards.
 type Store struct {
 	storeutil.Base
-	txFunc TxFunc
+	txFunc     TxFunc
+	readTxFunc TxFunc
 }
 
 // New creates a new tech card store.
-func New(base storeutil.Base, txFunc TxFunc) *Store {
-	return &Store{Base: base, txFunc: txFunc}
+func New(base storeutil.Base, txFunc, readTxFunc TxFunc) *Store {
+	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc}
 }
 
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard). Cost
@@ -553,6 +554,21 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 	}
 	cards[0].LinkedMaterials = linked
 	return &cards[0], nil
+}
+
+// GetTechCardByIdConsistent returns the same enriched card as GetTechCardById, with every
+// query participating in one REPEATABLE READ snapshot.
+func (s *Store) GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error) {
+	var card *entity.TechCard
+	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		card, err = rep.TechCards().GetTechCardById(ctx, id)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get consistent tech card: %w", err)
+	}
+	return card, nil
 }
 
 // ListTechCards returns a paged, header-only list of tech cards (no child

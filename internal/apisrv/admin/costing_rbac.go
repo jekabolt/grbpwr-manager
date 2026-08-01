@@ -386,7 +386,7 @@ func costPriceProvided(cost *pb_decimal.Decimal) bool {
 // payload carries no costing data (techCardInsertHasCostingData is false), i.e. the caller isn't
 // trying to set costs — this path is purely anti-erase, not a way to smuggle changes.
 func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, incoming *entity.TechCardInsert) {
-	stored, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil || stored == nil {
 		if err != nil {
 			slog.Default().WarnContext(ctx, "costing preserve: can't reload stored tech card; leaving payload as-is",

@@ -236,7 +236,7 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	if req.SkuSeason == nil || req.SkuSeason.Code == pb_common.SeasonEnum_SEASON_ENUM_UNKNOWN || req.SkuSeason.Year == 0 {
 		return nil, status.Error(codes.InvalidArgument, "sku_season (code and year) is required")
 	}
-	card, err := s.repo.TechCards().GetTechCardById(ctx, int(req.SourceStyleId))
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, int(req.SourceStyleId))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.SourceStyleId)
