@@ -951,7 +951,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err
 	}
-	return insertTechCardPatterns(ctx, db, id, tc.Patterns)
+	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds)
 }
 
 // patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
@@ -982,8 +982,10 @@ type patternHistoryRow struct {
 // within its size and is stamped now.
 //
 // Unlike the other full-replace children this owns its own DELETE (it is excluded from the blind
-// delete loop in UpdateTechCard) precisely because it has to read before it deletes.
-func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern) error {
+// delete loop in UpdateTechCard) precisely because it has to read before it deletes. Rows outside
+// the current size range are dropped during narrowing; duplicate (size, url) payload rows keep their
+// first occurrence.
+func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int) error {
 	prior, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
 		`SELECT url, size_id, version, uploaded_at FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": id})
@@ -1016,9 +1018,22 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	}
 	now := time.Now().UTC()
 	rows := make([]map[string]any, 0, len(patterns))
-	for i, p := range patterns {
+	liveSizes := make(map[int]struct{}, len(sizeIDs))
+	for _, sizeID := range sizeIDs {
+		liveSizes[sizeID] = struct{}{}
+	}
+	seenPayload := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if _, ok := liveSizes[p.SizeId]; !ok {
+			continue
+		}
+		key := patternHistoryKey(p.SizeId, p.URL)
+		if _, duplicate := seenPayload[key]; duplicate {
+			continue
+		}
+		seenPayload[key] = struct{}{}
 		version, uploadedAt := p.Version, p.UploadedAt
-		if seen, ok := known[patternHistoryKey(p.SizeId, p.URL)]; ok {
+		if seen, ok := known[key]; ok {
 			// This exact sheet is already on this size: it keeps its identity, the client never owns these.
 			if version <= 0 {
 				version = seen.Version
@@ -1048,7 +1063,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			"size_bytes":    p.SizeBytes,
 			"version":       version,
 			"uploaded_at":   uploadedAt,
-			"display_order": i,
+			"display_order": len(rows),
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_size_pattern", rows); err != nil {
