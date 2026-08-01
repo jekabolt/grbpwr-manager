@@ -3,6 +3,7 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -59,7 +60,7 @@ func (s *Store) GetTechCardRelease(ctx context.Context, id int) (*entity.TechCar
 		FROM tech_card_release WHERE id = :id`,
 		map[string]any{"id": id})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
 		}
 		return nil, fmt.Errorf("can't get tech card release: %w", err)

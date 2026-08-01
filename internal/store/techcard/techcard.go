@@ -259,7 +259,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		}](ctx, rep.DB(),
 			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return sql.ErrNoRows
 			}
 			return fmt.Errorf("failed to load tech card for update: %w", err)
@@ -414,9 +414,13 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		return appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary)
 	})
 	if err != nil {
-		switch err {
-		case sql.ErrNoRows, entity.ErrTechCardConflict, entity.ErrTechCardReleased:
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, entity.ErrTechCardConflict) ||
+			errors.Is(err, entity.ErrTechCardReleased) || errors.Is(err, entity.ErrTechCardPurposeLocked) {
 			return err
+		}
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return ve
 		}
 		return fmt.Errorf("can't update tech card: %w", err)
 	}
