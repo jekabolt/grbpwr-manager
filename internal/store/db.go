@@ -63,10 +63,10 @@ func (ms *MYSQLStore) Tx(ctx context.Context, f func(context.Context, dependency
 	return ms.tx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable}, f)
 }
 
-// readTx runs f in a read-only transaction at the database's default isolation level
-// (REPEATABLE READ on MySQL), giving multi-query loaders one consistent snapshot.
+// readTx runs f in an explicitly REPEATABLE READ, read-only transaction, giving multi-query
+// loaders one consistent snapshot independently of the connection/session default.
 func (ms *MYSQLStore) readTx(ctx context.Context, f func(context.Context, dependency.Repository) error) error {
-	return ms.tx(ctx, &sql.TxOptions{ReadOnly: true}, f)
+	return ms.tx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, f)
 }
 
 func (ms *MYSQLStore) tx(ctx context.Context, opts *sql.TxOptions, f func(context.Context, dependency.Repository) error) error {
