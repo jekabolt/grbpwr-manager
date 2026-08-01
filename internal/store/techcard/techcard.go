@@ -432,6 +432,11 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
 		}
+		// UpdateTechCard is the BOM's write owner, so refresh the auto-derived style composition from
+		// the just-upserted fabric lines before committing. Manual composition remains untouched.
+		if err := product.ReconcileStyleCompositionTx(ctx, rep.DB(), id); err != nil {
+			return err
+		}
 		// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
 		if err := remintCardProducts(ctx, rep.DB(), id, prevProductLinks); err != nil {
 			return err
