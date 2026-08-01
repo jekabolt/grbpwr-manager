@@ -1103,10 +1103,18 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 				Note:               nullStringFromPb(m.Note),
 			})
 		}
+		lineKey := strings.TrimSpace(p.LineKey)
+		if lineKey == "" {
+			mintedLineKey, err := mintTechCardLineKey()
+			if err != nil {
+				return nil, fmt.Errorf("pieces[%d].line_key: %w", i, err)
+			}
+			lineKey = mintedLineKey
+		}
 
 		out = append(out, entity.TechCardPiece{
 			Name:             p.Name,
-			LineKey:          strings.TrimSpace(p.LineKey), // stable wire identity (WS4); empty → store mints one
+			LineKey:          lineKey,
 			PiecesPerGarment: perGarment,
 			Mirrored:         p.Mirrored,
 			Grainline:        grainline,
@@ -1216,11 +1224,19 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if b.MaterialId != 0 {
 			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
 		}
+		lineKey := strings.TrimSpace(b.LineKey)
+		if lineKey == "" {
+			mintedLineKey, err := mintTechCardLineKey()
+			if err != nil {
+				return nil, fmt.Errorf("bom_items[%d].line_key: %w", i, err)
+			}
+			lineKey = mintedLineKey
+		}
 
 		out = append(out, entity.TechCardBomItem{
-			// LineKey is the stable client token the server keyed-reconciles by (S2/S3); empty on a
-			// legacy payload, in which case the store mints one. id/material_snapshot are read-only.
-			LineKey:         strings.TrimSpace(b.LineKey),
+			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
+			// unchanged positional index. id/material_snapshot are read-only.
+			LineKey:         lineKey,
 			MaterialId:      materialID,
 			Section:         section,
 			Name:            b.Name,
