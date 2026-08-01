@@ -862,8 +862,8 @@ type TechCardSignoff struct {
 	Note     sql.NullString         `db:"note"`
 	// SignedDigest fingerprints the section's content at the moment it was approved, so a stale
 	// approval survives a reload (dto.TechCardSectionDigests). Server-owned: stamped on the way in,
-	// never accepted from the wire. NULL for a pending/rejected section and for rows signed before
-	// the digest existed — "cannot tell", which the read side must not report as "changed".
+	// never accepted from the wire. NULL for a pending/rejected section; an approved legacy row with
+	// no digest is unverifiable and therefore stale for release-readiness purposes.
 	SignedDigest sql.NullString `db:"signed_digest"`
 }
 

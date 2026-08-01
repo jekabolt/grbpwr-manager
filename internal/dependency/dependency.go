@@ -658,6 +658,9 @@ type (
 		// GetTechCardReadiness returns the raw counts a style's advance/release checklist is scored
 		// against, in one round trip. sql.ErrNoRows when the card is absent.
 		GetTechCardReadiness(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, error)
+		// GetTechCardReadinessSnapshot returns the facts and enriched card from one read snapshot so
+		// callers can compare signed section digests with the exact content those facts describe.
+		GetTechCardReadinessSnapshot(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, *entity.TechCard, error)
 		// GetStyleSizeChart returns a style's full size chart + the shared tech_card.lock_version (R5).
 		// sql.ErrNoRows when the style is absent.
 		GetStyleSizeChart(ctx context.Context, styleID int) (entity.StyleSizeChart, error)

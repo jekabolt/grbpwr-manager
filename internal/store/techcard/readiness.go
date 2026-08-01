@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
@@ -96,7 +97,32 @@ WHERE tc.id = :id`
 // It deliberately stops at counting: interpreting a count ("an sms sample exists, therefore the card
 // may enter pp") is the studio's rule, and lives in the apisrv layer with the labels it produces.
 func (s *Store) GetTechCardReadiness(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, error) {
-	f, err := storeutil.QueryNamedOne[entity.TechCardReadinessFacts](ctx, s.DB, techCardReadinessQuery,
+	return loadTechCardReadiness(ctx, s.DB, techCardID)
+}
+
+// GetTechCardReadinessSnapshot loads the raw readiness facts and the card whose current section
+// digests the API compares with signed_digest in one REPEATABLE READ transaction. Keeping both reads
+// in one snapshot prevents a concurrent save from pairing pre-save counts with post-save content.
+func (s *Store) GetTechCardReadinessSnapshot(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, *entity.TechCard, error) {
+	var facts entity.TechCardReadinessFacts
+	var card *entity.TechCard
+	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		facts, err = loadTechCardReadiness(ctx, rep.DB(), techCardID)
+		if err != nil {
+			return err
+		}
+		card, err = rep.TechCards().GetTechCardById(ctx, techCardID)
+		return err
+	})
+	if err != nil {
+		return entity.TechCardReadinessFacts{}, nil, fmt.Errorf("can't load readiness snapshot for tech card %d: %w", techCardID, err)
+	}
+	return facts, card, nil
+}
+
+func loadTechCardReadiness(ctx context.Context, db dependency.DB, techCardID int) (entity.TechCardReadinessFacts, error) {
+	f, err := storeutil.QueryNamedOne[entity.TechCardReadinessFacts](ctx, db, techCardReadinessQuery,
 		map[string]any{"id": techCardID, "archived": uint8(entity.ColorwayStatusArchived)})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
