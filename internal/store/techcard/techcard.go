@@ -373,12 +373,25 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// colourway usage — the intended cross-aggregate guard.
 		// tech_card_revision is intentionally ABSENT as well: it is the append-only auto-journal
 		// (Q1), not a client-replaced child, so a save must never wipe the history.
+		//
+		// The three 1:1 message sections are presence-aware: nil means the protobuf field was absent,
+		// so preserve its stored row; non-nil means replace it. A present-but-empty message parses to
+		// a non-nil all-zero entity and deliberately takes the replace path, clearing every value by
+		// inserting an all-NULL row (valid for all three schemas). Lists remain full-replace.
+		preserveAbsentSection := map[string]bool{
+			"tech_card_construction": tc.Construction == nil,
+			"tech_card_packaging":    tc.Packaging == nil,
+			"tech_card_costing":      tc.Costing == nil,
+		}
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_detail",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 		} {
+			if preserveAbsentSection[table] {
+				continue
+			}
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
 				map[string]any{"id": id}); err != nil {
