@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -171,6 +172,105 @@ func TestCategorySizeSystem_StyleSizeRange(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM tech_card_size WHERE tech_card_id = ? AND size_id = ?`, id, shoeSizeID).Scan(&sizeRangeCount))
 	require.Equal(t, 1, sizeRangeCount)
+}
+
+// TestTechCardSizeRangeRefreshesDictionary covers the cross-instance cache edge: a size committed by
+// another instance is present in MySQL but absent from this process until its revision check reloads
+// the dictionary. Both AddTechCard and UpdateTechCard must refresh before validating; once refreshed,
+// an id still absent from the dictionary is a field-tagged validation error rather than an FK fallback.
+func TestTechCardSizeRangeRefreshesDictionary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	revisions, err := s.Dictionary().GetDictionaryRevisions(ctx)
+	require.NoError(t, err)
+	cache.SetDictionaryRevisions(revisions)
+
+	used := map[int]bool{}
+	rows, err := testDB.QueryContext(ctx, `SELECT sku_ord FROM size WHERE sku_system = 'apparel'`)
+	require.NoError(t, err)
+	for rows.Next() {
+		var ord int
+		require.NoError(t, rows.Scan(&ord))
+		used[ord] = true
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	free := make([]int, 0, 2)
+	for ord := 1; ord <= 99 && len(free) < 2; ord++ {
+		if !used[ord] {
+			free = append(free, ord)
+		}
+	}
+	require.Len(t, free, 2, "test needs two free apparel ordinals")
+
+	insertRemoteSize := func(suffix string, ord int) int {
+		res, err := testDB.ExecContext(ctx,
+			`INSERT INTO size (name, sku_ord, sku_system) VALUES (?, ?, 'apparel')`,
+			fmt.Sprintf("a63%s%d", suffix, ord), ord)
+		require.NoError(t, err)
+		id64, err := res.LastInsertId()
+		require.NoError(t, err)
+		_, err = testDB.ExecContext(ctx,
+			`UPDATE dictionary_revision SET revision = revision + 1 WHERE namespace = 'size'`)
+		require.NoError(t, err)
+		return int(id64)
+	}
+
+	var cardID int
+	remoteSizeIDs := make([]int, 0, 2)
+	defer func() {
+		if cardID > 0 {
+			_, _ = testDB.ExecContext(context.Background(), `DELETE FROM tech_card WHERE id = ?`, cardID)
+		}
+		for _, id := range remoteSizeIDs {
+			_, _ = testDB.ExecContext(context.Background(), `DELETE FROM size WHERE id = ?`, id)
+		}
+		_, _ = testDB.ExecContext(context.Background(),
+			`UPDATE dictionary_revision SET revision = revision + 1 WHERE namespace = 'size'`)
+		_, _ = cache.EnsureDictionaryFresh(context.Background(), s.Dictionary(), s.Cache())
+	}()
+
+	outerwearID := categoryIDByName(ctx, t, "outerwear")
+	createSizeID := insertRemoteSize("c", free[0])
+	remoteSizeIDs = append(remoteSizeIDs, createSizeID)
+	_, cachedBeforeCreate := cache.GetSizeById(createSizeID)
+	require.False(t, cachedBeforeCreate, "precondition: this instance has not polled the remote size")
+
+	tc := &entity.TechCardInsert{
+		StyleNumber:     sql.NullString{String: fmt.Sprintf("A63-REFRESH-%d", createSizeID), Valid: true},
+		Name:            "audit 63 dictionary refresh",
+		CategoryId:      sql.NullInt32{Int32: int32(outerwearID), Valid: true},
+		Stage:           entity.TechCardStageProto,
+		ApprovalState:   entity.TechCardApprovalDraft,
+		MeasurementUnit: entity.TechCardUnitMm,
+		Purpose:         entity.TechCardPurposeSellable,
+		SizeIds:         []int{createSizeID},
+	}
+	cardID, err = s.TechCards().AddTechCard(ctx, tc)
+	require.NoError(t, err)
+	_, cachedAfterCreate := cache.GetSizeById(createSizeID)
+	require.True(t, cachedAfterCreate, "AddTechCard must reload the revisioned dictionary before validation")
+
+	updateSizeID := insertRemoteSize("u", free[1])
+	remoteSizeIDs = append(remoteSizeIDs, updateSizeID)
+	_, cachedBeforeUpdate := cache.GetSizeById(updateSizeID)
+	require.False(t, cachedBeforeUpdate, "precondition: update size is absent from this instance's cache")
+	tc.SizeIds = []int{updateSizeID}
+	require.NoError(t, s.TechCards().UpdateTechCard(ctx, cardID, tc, 0))
+	_, cachedAfterUpdate := cache.GetSizeById(updateSizeID)
+	require.True(t, cachedAfterUpdate, "UpdateTechCard must reload the revisioned dictionary before validation")
+
+	// The cache is now fresh. A still-unknown id is genuinely invalid and must fail before the FK.
+	tc.SizeIds = []int{2_000_000_000}
+	err = s.TechCards().UpdateTechCard(ctx, cardID, tc, 1)
+	requireCategorySizeSystemViolation(t, err, "size_ids[0]", "size_not_found")
 }
 
 // TestCategorySizeSystem_OSFallback covers the "category without a grid" fallback (bags/objects,

@@ -15,6 +15,9 @@ import (
 // row lock in the same transaction as the insert, so a successful clone cannot be based on a source
 // version that committed before this write began.
 func (s *Store) CloneTechCardForSeason(ctx context.Context, sourceID, expectedSourceVersion int, tc *entity.TechCardInsert) (int, error) {
+	if err := s.ensureDictionaryFresh(ctx, "season clone"); err != nil {
+		return 0, err
+	}
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {

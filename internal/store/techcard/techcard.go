@@ -29,16 +29,28 @@ const (
 // TxFunc is a function that executes f within a transaction.
 type TxFunc func(ctx context.Context, f func(context.Context, dependency.Repository) error) error
 
+// RepFunc returns the current repository so dictionary-dependent writes can refresh the shared
+// in-memory dictionary before opening their transaction.
+type RepFunc func() dependency.Repository
+
 // Store implements dependency.TechCards.
 type Store struct {
 	storeutil.Base
 	txFunc     TxFunc
 	readTxFunc TxFunc
+	repFunc    RepFunc
 }
 
 // New creates a new tech card store.
-func New(base storeutil.Base, txFunc, readTxFunc TxFunc) *Store {
-	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc}
+func New(base storeutil.Base, txFunc, readTxFunc TxFunc, repFunc RepFunc) *Store {
+	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc, repFunc: repFunc}
+}
+
+func (s *Store) ensureDictionaryFresh(ctx context.Context, action string) error {
+	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
+		return fmt.Errorf("can't refresh dictionary before tech card %s: %w", action, err)
+	}
+	return nil
 }
 
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard). Cost
@@ -168,6 +180,9 @@ func (s *Store) stampApprovalTimes(tc *entity.TechCardInsert, prevState entity.T
 
 // AddTechCard inserts a tech card and its child sections, returning the new id.
 func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error) {
+	if err := s.ensureDictionaryFresh(ctx, "create"); err != nil {
+		return 0, err
+	}
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -248,6 +263,9 @@ func remintCardProducts(ctx context.Context, db dependency.DB, tcID int, previou
 // mismatch), refuses to mutate a RELEASED card unless it is re-opened to DRAFT
 // (entity.ErrTechCardReleased), and returns sql.ErrNoRows when no card exists.
 func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error {
+	if err := s.ensureDictionaryFresh(ctx, "update"); err != nil {
+		return err
+	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
 			LockVersion     int          `db:"lock_version"`
@@ -1120,9 +1138,9 @@ func patternHistoryKey(sizeID int, url string) string {
 // permitted for the card's CURRENT category (top/sub/type_id, owned solely by UpdateStyle -- see
 // product/style.go -- so it is read fresh from the row here rather than trusted from tc, which never
 // carries a category on this write path). Returns a field-tagged *entity.ValidationError naming the
-// first offending size ("size_ids[i]") for the caller to surface as InvalidArgument. An id the
-// dictionary cache does not recognise is skipped here -- the existing FK on tech_card_size.size_id
-// already turns that into a clear foreign-key error at insert time.
+// first offending size ("size_ids[i]") for the caller to surface as InvalidArgument. Add/Update
+// refresh the revisioned dictionary before entering their transaction, so an unknown id here is a
+// genuine invalid input rather than another instance's recently-created size.
 func validateTechCardSizeIDs(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
 	if len(sizeIDs) == 0 {
 		return nil
@@ -1136,7 +1154,8 @@ func validateTechCardSizeIDs(ctx context.Context, db dependency.DB, id int, size
 	for i, sid := range sizeIDs {
 		sz, ok := cache.GetSizeById(sid)
 		if !ok {
-			continue
+			return entity.NewFieldViolation(fmt.Sprintf("size_ids[%d]", i), "size_not_found", "",
+				fmt.Sprintf("choose an existing size from the refreshed dictionary; size id %d does not exist", sid))
 		}
 		if verr := entity.ValidateSizeAgainstCategory(fmt.Sprintf("size_ids[%d]", i), path, label, rules, sz); verr != nil {
 			return verr
