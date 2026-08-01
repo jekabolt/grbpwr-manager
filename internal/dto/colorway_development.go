@@ -1,7 +1,6 @@
 package dto
 
 import (
-	"database/sql"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -124,18 +123,10 @@ func ColorwayDevelopmentPatchFromPb(dev *pb_common.ColorwayDevelopmentInsert, ma
 		v := int(dev.GetLabDipRound())
 		p.LabDipRound = &v
 	}
-	if sel.has("lab_dip_submitted_at") {
-		v := nullTimeFromPb(dev.GetLabDipSubmittedAt())
-		p.LabDipSubmittedAt = &v
-	}
-	if sel.has("lab_dip_decided_at") {
-		v := nullTimeFromPb(dev.GetLabDipDecidedAt())
-		p.LabDipDecidedAt = &v
-	}
-	if sel.has("lab_dip_decided_by") {
-		v := dev.GetLabDipDecidedBy()
-		p.LabDipDecidedBy = &v
-	}
+	// lab_dip_submitted_at / lab_dip_decided_at / lab_dip_decided_by are read-only audit
+	// fields. The store stamps fresh lifecycle transitions from database time plus the actor the
+	// authenticated handler attaches; accepting these wire values would make both current state and
+	// the round journal forgeable.
 	if sel.has("lab_dip_reject_reason") {
 		v := dev.GetLabDipRejectReason()
 		p.LabDipRejectReason = &v
@@ -148,15 +139,6 @@ func ColorwayDevelopmentPatchFromPb(dev *pb_common.ColorwayDevelopmentInsert, ma
 		return nil
 	}
 	return p
-}
-
-// nullTimeFromPb maps an absent/zero timestamp to SQL NULL, so clearing a lab-dip date is expressed
-// by sending no timestamp rather than by an epoch date nobody meant.
-func nullTimeFromPb(ts *timestamppb.Timestamp) sql.NullTime {
-	if ts == nil || !ts.IsValid() || ts.AsTime().IsZero() {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: ts.AsTime(), Valid: true}
 }
 
 // ColorwayLabDipRoundsToPb projects a colourway's round journal to the wire, oldest first.

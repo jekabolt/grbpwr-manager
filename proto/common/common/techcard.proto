@@ -184,9 +184,9 @@ message ColorwayDevelopmentInsert {
   string dev_hex = 7; // ex hex; screen approximation #RRGGBB
   int32 swatch_media_id = 8;
   int32 lab_dip_round = 9;
-  google.protobuf.Timestamp lab_dip_submitted_at = 10;
-  google.protobuf.Timestamp lab_dip_decided_at = 11;
-  string lab_dip_decided_by = 12;
+  google.protobuf.Timestamp lab_dip_submitted_at = 10; // READ-ONLY: server-stamped on submission
+  google.protobuf.Timestamp lab_dip_decided_at = 11; // READ-ONLY: server-stamped on approval/rejection
+  string lab_dip_decided_by = 12; // READ-ONLY: authenticated deciding admin
   string lab_dip_reject_reason = 13;
   repeated TechCardColorwayUsage usages = 14; // material recipe (bom_item_index into the owning style's BOM)
   int32 display_order = 15;

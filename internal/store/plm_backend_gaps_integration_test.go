@@ -174,12 +174,15 @@ func TestColorwayLabDipRoundsJournal(t *testing.T) {
 		st := status
 		r := round
 		rr := reason
-		patch := &entity.ColorwayDevelopmentPatch{LabDipStatus: &st, LabDipRound: &r, LabDipRejectReason: &rr}
+		patch := &entity.ColorwayDevelopmentPatch{
+			LabDipStatus: &st, LabDipRound: &r, LabDipRejectReason: &rr, Actor: "lab-tech",
+		}
 		next, err := s.Products().UpdateColorway(ctx, f.productID, version, merch, nil, nil, nil, patch)
 		require.NoError(t, err)
 		return next
 	}
 
+	lockVersion = submit(1, entity.LabDipSubmitted, "", lockVersion)
 	lockVersion = submit(1, entity.LabDipRejected, "too warm", lockVersion)
 	lockVersion = submit(2, entity.LabDipRejected, "still warm", lockVersion)
 	_ = submit(3, entity.LabDipApproved, "", lockVersion)
@@ -187,10 +190,15 @@ func TestColorwayLabDipRoundsJournal(t *testing.T) {
 	// The scalars on the colourway are the LATEST round...
 	var curRound int
 	var curStatus string
+	var curDecidedAt time.Time
+	var curDecidedBy string
 	require.NoError(t, testDB.QueryRowContext(ctx,
-		`SELECT lab_dip_round, lab_dip_status FROM product WHERE id = ?`, f.productID).Scan(&curRound, &curStatus))
+		`SELECT lab_dip_round, lab_dip_status, lab_dip_decided_at, lab_dip_decided_by
+		 FROM product WHERE id = ?`, f.productID).Scan(&curRound, &curStatus, &curDecidedAt, &curDecidedBy))
 	require.Equal(t, 3, curRound)
 	require.Equal(t, string(entity.LabDipApproved), curStatus)
+	require.False(t, curDecidedAt.IsZero())
+	require.Equal(t, "lab-tech", curDecidedBy)
 
 	// ...and every earlier round survives underneath them, which is the gap this closes.
 	rounds, err := s.Products().LabDipRoundsByStyleID(ctx, f.styleID)
@@ -199,8 +207,13 @@ func TestColorwayLabDipRoundsJournal(t *testing.T) {
 	require.Equal(t, 1, rounds[f.productID][0].RoundNumber)
 	require.Equal(t, entity.LabDipRejected, rounds[f.productID][0].Status)
 	require.Equal(t, "too warm", rounds[f.productID][0].RejectReason.String)
+	require.True(t, rounds[f.productID][0].SubmittedAt.Valid)
+	require.Equal(t, "lab-tech", rounds[f.productID][0].DecidedBy.String)
+	require.True(t, rounds[f.productID][0].DecidedAt.Valid)
 	require.Equal(t, 3, rounds[f.productID][2].RoundNumber)
 	require.Equal(t, entity.LabDipApproved, rounds[f.productID][2].Status)
+	require.Equal(t, "lab-tech", rounds[f.productID][2].DecidedBy.String)
+	require.True(t, rounds[f.productID][2].DecidedAt.Valid)
 
 	// Re-deciding the SAME round corrects it in place rather than opening a fourth.
 	var v int
@@ -211,6 +224,25 @@ func TestColorwayLabDipRoundsJournal(t *testing.T) {
 	require.Len(t, rounds[f.productID], 3)
 	require.Equal(t, entity.LabDipRejected, rounds[f.productID][2].Status)
 	require.Equal(t, "reopened", rounds[f.productID][2].RejectReason.String)
+	require.Equal(t, "lab-tech", rounds[f.productID][2].DecidedBy.String)
+	require.True(t, rounds[f.productID][2].DecidedAt.Valid)
+
+	// Re-sending the already persisted decision is not a new decision: even a different trusted
+	// direct-store actor cannot rewrite its author/time. RPC callers cannot supply Actor at all.
+	decidedAt := rounds[f.productID][2].DecidedAt
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, f.styleID).Scan(&v))
+	st := entity.LabDipRejected
+	r := 3
+	rr := "reopened"
+	_, err = s.Products().UpdateColorway(ctx, f.productID, v, merch, nil, nil, nil,
+		&entity.ColorwayDevelopmentPatch{
+			LabDipStatus: &st, LabDipRound: &r, LabDipRejectReason: &rr, Actor: "different-admin",
+		})
+	require.NoError(t, err)
+	rounds, err = s.Products().LabDipRoundsByStyleID(ctx, f.styleID)
+	require.NoError(t, err)
+	require.Equal(t, "lab-tech", rounds[f.productID][2].DecidedBy.String)
+	require.Equal(t, decidedAt, rounds[f.productID][2].DecidedAt)
 }
 
 // TestColorwayRefCarriesCostAndPrices covers PLM gaps 2 and 3: the style read now exposes each

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -42,7 +43,7 @@ func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwa
 	}
 	id, err := s.repo.Products().CreateColorway(ctx, int(req.GetStyleId()), prd,
 		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
-		dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), nil))
+		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), nil)))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "create", 0, err)
 	}
@@ -66,12 +67,22 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	}
 	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
 		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
-		dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask()))
+		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask())))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
 	}
 	s.afterColorwayWrite(ctx, int(req.GetColorwayId()))
 	return &pb_admin.UpdateColorwayResponse{LockVersion: int32(lockVersion)}, nil
+}
+
+// stampColorwayDevelopmentActor threads the authenticated admin identity into the store-owned
+// lab-dip audit path. The actor has no wire representation on the writable patch, so a request
+// cannot substitute another username.
+func stampColorwayDevelopmentActor(ctx context.Context, patch *entity.ColorwayDevelopmentPatch) *entity.ColorwayDevelopmentPatch {
+	if patch != nil {
+		patch.Actor = authsrv.GetAdminUsername(ctx)
+	}
+	return patch
 }
 
 func rejectEmbeddedColorwayUsages(dev *pb_common.ColorwayDevelopmentInsert) error {
