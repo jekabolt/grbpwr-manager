@@ -193,6 +193,12 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 		case s.repo.IsErrForeignKeyViolation(err):
 			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size, measurement name or grade base size")
+		case s.repo.IsErrUniqueViolation(err):
+			// Backstop for uniq_tech_card_size_measurement / uniq_tcgr_card_name. The parsers reject a
+			// repeated cell or grade step first, so reaching here means a direct/legacy caller — still
+			// the client's mistake, not ours, so InvalidArgument rather than an opaque Internal.
+			return nil, status.Error(codes.InvalidArgument,
+				"the chart lists the same size and point of measure (or the same graded measurement) twice")
 		default:
 			slog.Default().ErrorContext(ctx, "can't update style size chart", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't update style size chart: %v", err)
