@@ -20,10 +20,24 @@ type recipeUsageSlot struct {
 	PieceIDValid   bool
 }
 
+type recipeUsagePinSlot struct {
+	recipeUsageSlot
+	Placement string
+}
+
 type recipeUsagePinRow struct {
-	BomItemID  sql.NullInt64 `db:"bom_item_id"`
-	PieceID    sql.NullInt64 `db:"piece_id"`
-	MaterialID sql.NullInt64 `db:"material_id"`
+	BomItemID  sql.NullInt64  `db:"bom_item_id"`
+	PieceID    sql.NullInt64  `db:"piece_id"`
+	Placement  sql.NullString `db:"placement"`
+	MaterialID sql.NullInt64  `db:"material_id"`
+}
+
+func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
+	normalizedPlacement := ""
+	if placement.Valid {
+		normalizedPlacement = strings.ToLower(strings.TrimSpace(placement.String))
+	}
+	return recipeUsagePinSlot{recipeUsageSlot: slot, Placement: normalizedPlacement}
 }
 
 type materialPinStateRow struct {
@@ -96,17 +110,18 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 
 		// Capture the old pins before the full replace. Presence-less writes come from clients that
 		// predate material_id, so an unambiguous logical usage retains its pin. The logical identity is
-		// the resolved (bom_item_id, piece_id) pair, not either legacy positional index.
+		// the resolved (bom_item_id, piece_id, normalized placement) tuple, not either legacy positional
+		// index. Placement distinguishes repeatable whole-garment rows on the same BOM slot.
 		priorRows, err := storeutil.QueryListNamed[recipeUsagePinRow](ctx, rep.DB(), `
-			SELECT bom_item_id, piece_id, material_id
+			SELECT bom_item_id, piece_id, placement, material_id
 			FROM tech_card_colorway_usage
 			WHERE colorway_id = :id`, map[string]any{"id": colorwayID})
 		if err != nil {
 			return fmt.Errorf("load colourway %d existing recipe pins: %w", colorwayID, err)
 		}
-		priorBySlot := make(map[recipeUsageSlot][]sql.NullInt64, len(priorRows))
+		priorBySlot := make(map[recipeUsagePinSlot][]sql.NullInt64, len(priorRows))
 		for _, row := range priorRows {
-			slot := newRecipeUsageSlot(row.BomItemID, row.PieceID)
+			slot := newRecipeUsagePinSlot(newRecipeUsageSlot(row.BomItemID, row.PieceID), row.Placement)
 			priorBySlot[slot] = append(priorBySlot[slot], row.MaterialID)
 		}
 
@@ -142,6 +157,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				}
 				seen[slot] = i
 			}
+			pinSlot := newRecipeUsagePinSlot(slot, u.Placement)
 
 			materialID := sql.NullInt64{}
 			if u.MaterialIdSet {
@@ -154,7 +170,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 						materialIDs = append(materialIDs, materialID.Int64)
 					}
 				}
-			} else if oldPins := priorBySlot[slot]; len(oldPins) == 1 {
+			} else if oldPins := priorBySlot[pinSlot]; len(oldPins) == 1 {
 				// Multiple old rows for one slot are ambiguous legacy data: do not guess which pin
 				// belongs to the replacement usage. A single NULL is preserved as inheritance.
 				materialID = oldPins[0]
@@ -191,7 +207,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				// article was archived after pinning — the client deliberately re-sends what it
 				// read, and rejecting it would block every unrelated consumption edit on the
 				// recipe. Only ASSIGNING an archived article is refused.
-				slot := newRecipeUsageSlot(resolved[i].bomItemID, resolved[i].pieceID)
+				slot := newRecipeUsagePinSlot(
+					newRecipeUsageSlot(resolved[i].bomItemID, resolved[i].pieceID), u.Placement,
+				)
 				if prior := priorBySlot[slot]; len(prior) == 1 && prior[0].Valid && prior[0].Int64 == id {
 					continue
 				}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,14 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID) })
 
+	pinnedMaterialID, err := T.CreateMaterial(ctx, &entity.MaterialInsert{
+		Name: "Pinned Recipe Fabric", Section: "fabric", Unit: ns("m"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM material WHERE id = ?", pinnedMaterialID)
+	})
+
 	// A colourway is a product under the style (post-R1 merge).
 	res, err := testDB.ExecContext(ctx, `INSERT INTO product
 		(sku, color, color_code, color_hex, country_of_origin, thumbnail_id, style_id)
@@ -65,7 +74,8 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 	// Write a recipe referencing the fabric BOM line by its stable line_key.
 	newVer, err := T.UpdateColorwayRecipe(ctx, cwID, card.LockVersion, []entity.TechCardColorwayUsage{
 		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
-			Consumption: decimal.NewNullDecimal(decimal.RequireFromString("1.5"))},
+			Consumption: decimal.NewNullDecimal(decimal.RequireFromString("1.5")),
+			MaterialId:  sql.NullInt64{Int64: int64(pinnedMaterialID), Valid: true}, MaterialIdSet: true},
 	})
 	require.NoError(t, err)
 	require.Equal(t, card.LockVersion+1, newVer, "recipe write bumps the shared lock")
@@ -83,9 +93,34 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 	require.NotNil(t, found, "recipe usage must read back")
 	require.True(t, found.BomItemId.Valid, "usage resolved line_key -> real bom_item_id")
 	require.Equal(t, "outer", found.Placement.String)
+	require.True(t, found.MaterialId.Valid, "explicit material pin must remain set")
+	require.Equal(t, int64(pinnedMaterialID), found.MaterialId.Int64, "explicit material pin must round-trip")
+
+	// An older client omits material_id while adding another whole-garment usage of the same BOM
+	// line. Only the matching placement inherits the old pin; a genuinely new placement stays
+	// unpinned and follows the BOM slot default.
+	latestVer, err := T.UpdateColorwayRecipe(ctx, cwID, newVer, []entity.TechCardColorwayUsage{
+		{BomLineKey: "RK1", Placement: ns(" OUTER "), Color: ns("black")},
+		{BomLineKey: "RK1", Placement: ns("lining"), Color: ns("black")},
+	})
+	require.NoError(t, err)
+	require.Equal(t, newVer+1, latestVer)
+	recipe, err := T.GetColorwayRecipe(ctx, cwID)
+	require.NoError(t, err)
+	require.Len(t, recipe, 2)
+	byPlacement := make(map[string]entity.TechCardColorwayUsage, len(recipe))
+	for _, usage := range recipe {
+		byPlacement[strings.ToLower(strings.TrimSpace(usage.Placement.String))] = usage
+	}
+	require.True(t, byPlacement["outer"].MaterialId.Valid,
+		"same normalized placement retains a material pin")
+	require.Equal(t, int64(pinnedMaterialID), byPlacement["outer"].MaterialId.Int64,
+		"same normalized placement inherits its one prior pin")
+	require.False(t, byPlacement["lining"].MaterialId.Valid,
+		"new placement must not inherit another whole-garment usage's pin")
 
 	// A stale shared version is rejected (optimistic lock).
-	_, err = T.UpdateColorwayRecipe(ctx, cwID, card.LockVersion, nil)
+	_, err = T.UpdateColorwayRecipe(ctx, cwID, newVer, nil)
 	require.ErrorIs(t, err, entity.ErrTechCardConflict)
 }
 
