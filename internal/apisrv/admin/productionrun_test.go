@@ -128,7 +128,7 @@ func TestReceiveProductionRunHappyPath(t *testing.T) {
 		})
 
 	s := &Server{repo: repo}
-	resp, err := s.ReceiveProductionRun(context.Background(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, UpdateCostPrice: true})
+	resp, err := s.ReceiveProductionRun(fullAccessCtx(), &pb_admin.ReceiveProductionRunRequest{RunId: 4, UpdateCostPrice: true})
 	require.NoError(t, err)
 	require.True(t, resp.CostPriceUpdated)
 	require.True(t, gotUpdateCostPrice, "update-cost-price flag passed through")

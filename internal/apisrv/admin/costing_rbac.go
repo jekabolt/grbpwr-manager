@@ -28,13 +28,18 @@ import (
 // costingAccessFor is the pure access decision, split out so it is unit-testable
 // without a request context. present is whether an AdminAuthz was found in context.
 //
-// A missing authz (present=false) means the call did not pass the RBAC interceptor —
-// an internal/test call, never a real scoped account (the interceptor populates authz
-// for every admin RPC in production) — so it is treated as full access, matching how a
-// pre-RBAC legacy token is treated. Super/legacy tokens are full access. A scoped
-// account gets exactly what its costing grant covers; no grant → no cost access.
+// A missing authz (present=false) means the call did not pass the RBAC interceptor, and it FAILS
+// CLOSED: no cost access. The interceptor populates authz for every admin RPC, so in production
+// nothing reaches these handlers without it — the case is unreachable rather than benign, and
+// treating it as full access (as it used to) meant any future path that skipped the interceptor —
+// an in-process caller, a background job reusing a handler — would silently publish costing.
+// Super/legacy tokens are full access. A scoped account gets exactly what its costing grant covers;
+// no grant → no cost access.
 func costingAccessFor(az authsrv.AdminAuthz, present bool) (read, write bool) {
-	if !present || az.FullAccess() {
+	if !present {
+		return false, false
+	}
+	if az.FullAccess() {
 		return true, true
 	}
 	lvl, ok := az.Perms[rbac.SectionCosting]

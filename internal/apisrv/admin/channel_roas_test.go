@@ -34,7 +34,7 @@ func TestGetChannelRoasSettled(t *testing.T) {
 	}, nil)
 
 	s := &Server{repo: repo}
-	resp, err := s.GetChannelRoasSettled(context.Background(), &pb_admin.GetChannelRoasSettledRequest{Period: "30d"})
+	resp, err := s.GetChannelRoasSettled(fullAccessCtx(), &pb_admin.GetChannelRoasSettledRequest{Period: "30d"})
 	require.NoError(t, err)
 	require.Len(t, resp.Rows, 2)
 

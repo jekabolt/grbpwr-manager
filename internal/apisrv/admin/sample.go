@@ -124,8 +124,15 @@ func (s *Server) ListSamples(ctx context.Context, req *pb_admin.ListSamplesReque
 		return nil, status.Error(codes.Internal, "can't list samples")
 	}
 	resp := &pb_admin.ListSamplesResponse{Total: int32(total)}
+	// The list query does not load the composed cost today, but GetSample strips it defensively and
+	// so does this — a later change to the list projection must not become a costing leak.
+	read, _ := s.costingAccess(ctx)
 	for _, sm := range samples {
-		resp.Samples = append(resp.Samples, dto.ConvertEntitySampleToPb(sm))
+		pb := dto.ConvertEntitySampleToPb(sm)
+		if !read {
+			pb.Cost = nil
+		}
+		resp.Samples = append(resp.Samples, pb)
 	}
 	return resp, nil
 }

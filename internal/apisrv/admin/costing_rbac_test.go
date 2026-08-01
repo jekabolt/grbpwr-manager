@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"testing"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -12,8 +13,16 @@ import (
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
-// TestCostingAccessFor pins the access decision (task 19): missing authz and super/legacy
-// tokens are full access; a scoped account gets exactly what its costing grant covers.
+// fullAccessCtx is what the interceptor stashes for a super token: full costing access. Handlers
+// fail CLOSED on a context with no authorization, so a test exercising the costing-visible path
+// has to say so explicitly.
+func fullAccessCtx() context.Context {
+	return authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{Super: true})
+}
+
+// TestCostingAccessFor pins the access decision (task 19): super/legacy tokens are full access,
+// a scoped account gets exactly what its costing grant covers, and a context that never passed
+// the interceptor gets nothing (fail closed).
 func TestCostingAccessFor(t *testing.T) {
 	scoped := func(sec string, lvl entity.AccessLevel) authsrv.AdminAuthz {
 		return authsrv.AdminAuthz{Perms: map[string]entity.AccessLevel{sec: lvl}}
@@ -24,7 +33,7 @@ func TestCostingAccessFor(t *testing.T) {
 		present            bool
 		wantRead, wantWrit bool
 	}{
-		{"missing authz → full", authsrv.AdminAuthz{}, false, true, true},
+		{"missing authz → none (fail closed)", authsrv.AdminAuthz{}, false, false, false},
 		{"super → full", authsrv.AdminAuthz{Super: true}, true, true, true},
 		{"legacy → full", authsrv.AdminAuthz{Legacy: true}, true, true, true},
 		{"costing:read → read only", scoped(rbac.SectionCosting, entity.AccessRead), true, true, false},

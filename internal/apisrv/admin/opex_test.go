@@ -33,7 +33,7 @@ func TestUpsertOpexLinesHandler(t *testing.T) {
 		Return(nil)
 
 	s := &Server{repo: repo}
-	_, err := s.UpsertOpexLines(context.Background(), &pb_admin.UpsertOpexLinesRequest{
+	_, err := s.UpsertOpexLines(fullAccessCtx(), &pb_admin.UpsertOpexLinesRequest{
 		Lines: []*pb_admin.OpexLineInsert{
 			{Month: "2029-06-15", Category: "software", Label: "Adobe", Amount: &pb_decimal.Decimal{Value: "60"}, Currency: "USD"},
 			{Month: "2029-06-01", Category: "software", Label: "Figma", Amount: &pb_decimal.Decimal{Value: "15"}, Currency: "GBP"},
@@ -57,7 +57,7 @@ func TestUpsertOpexLinesHandler(t *testing.T) {
 func TestUpsertOpexLinesHandler_Validation(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	s := &Server{repo: repo}
-	_, err := s.UpsertOpexLines(context.Background(), &pb_admin.UpsertOpexLinesRequest{
+	_, err := s.UpsertOpexLines(fullAccessCtx(), &pb_admin.UpsertOpexLinesRequest{
 		Lines: []*pb_admin.OpexLineInsert{
 			{Month: "2029-06-01", Category: "not_a_category", Label: "x", Amount: &pb_decimal.Decimal{Value: "1"}},
 		},
@@ -88,7 +88,7 @@ func TestListOpexLinesHandler(t *testing.T) {
 	}, nil)
 
 	s := &Server{repo: repo}
-	resp, err := s.ListOpexLines(context.Background(), &pb_admin.ListOpexLinesRequest{
+	resp, err := s.ListOpexLines(fullAccessCtx(), &pb_admin.ListOpexLinesRequest{
 		MonthFrom: "2029-06-01", MonthTo: "2029-06-01",
 	})
 	require.NoError(t, err)
@@ -113,7 +113,7 @@ func TestUpsertOpexRecurringHandler(t *testing.T) {
 	mtr.EXPECT().UpsertOpexRecurring(mock.Anything, mock.Anything, 0).Return(42, nil)
 
 	s := &Server{repo: repo}
-	resp, err := s.UpsertOpexRecurring(context.Background(), &pb_admin.UpsertOpexRecurringRequest{
+	resp, err := s.UpsertOpexRecurring(fullAccessCtx(), &pb_admin.UpsertOpexRecurringRequest{
 		Recurring: &pb_admin.OpexRecurringInsert{
 			Label: "Maria", Category: "salaries", Amount: &pb_decimal.Decimal{Value: "1000"},
 			Currency: "USD", ActiveFrom: "2029-01-01",
