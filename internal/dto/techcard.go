@@ -449,7 +449,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 	// hardware_cost is "hardware if OUTSIDE the BOM" — a cross-section rule, so it is checked here
 	// where both halves of the full-replace payload are parsed, not inside the costing parser.
-	if err := validateHardwareCostAgainstBom(costing, bomItems); err != nil {
+	if err := ValidateHardwareCostAgainstBom(costing, bomItems); err != nil {
 		return nil, err
 	}
 	issues, err := parseTechCardIssues(pb.Issues, len(operations), calloutNumbers)

@@ -217,6 +217,16 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			return nil, status.Error(codes.Internal, "can't preserve stored costing; try again")
 		}
 	}
+	// The DTO can validate only a costing block present on the wire. On update, an absent block is
+	// presence-preserved by the store, so validate the effective stored costing after any cost-blind
+	// hydration as well. The violation names the double-pricing condition without exposing its amount.
+	effectiveCosting := tc.Costing
+	if effectiveCosting == nil {
+		effectiveCosting = stored.Costing
+	}
+	if err := dto.ValidateHardwareCostAgainstBom(effectiveCosting, tc.BomItems); err != nil {
+		return nil, techCardConvertErr(err)
+	}
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}

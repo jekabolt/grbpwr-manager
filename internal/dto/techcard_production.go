@@ -446,7 +446,7 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	}, nil
 }
 
-// validateHardwareCostAgainstBom enforces the one condition hardware_cost has always been documented
+// ValidateHardwareCostAgainstBom enforces the one condition hardware_cost has always been documented
 // with and never checked: it is the hardware that sits OUTSIDE the BOM. Hardware is also a first-class
 // BOM section, priced per colourway through the recipe, so a card carrying both a hardware BOM line
 // and a non-zero hardware_cost pays for its zips twice — silently, in every rollup that folds the
@@ -456,7 +456,7 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 // WRITE ONLY. A card already saved with both still reads back exactly as it was — the figures would
 // only get worse if a read started rewriting them — and the next save is what asks for a side to be
 // picked. bomItems is the full-replace payload, so it IS the card's BOM after this write.
-func validateHardwareCostAgainstBom(c *entity.TechCardCosting, bomItems []entity.TechCardBomItem) error {
+func ValidateHardwareCostAgainstBom(c *entity.TechCardCosting, bomItems []entity.TechCardBomItem) error {
 	if c == nil || !c.HardwareCost.Valid || c.HardwareCost.Decimal.IsZero() {
 		return nil
 	}
