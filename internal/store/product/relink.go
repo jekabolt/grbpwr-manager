@@ -85,6 +85,9 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		if err := MintProductSKUs(ctx, rep.DB(), colorwayID); err != nil {
 			return fmt.Errorf("re-mint colourway %d after relink: %w", colorwayID, err)
 		}
+		if err := bumpRelinkStyleVersions(ctx, rep.DB(), cw.StyleID, targetStyleID); err != nil {
+			return err
+		}
 		return nil
 	})
 }
@@ -99,4 +102,19 @@ func styleLockVersion(ctx context.Context, db dependency.DB, styleID int) (int, 
 		return 0, err
 	}
 	return row.LockVersion, nil
+}
+
+func bumpRelinkStyleVersions(ctx context.Context, db dependency.DB, sourceStyleID, targetStyleID int) error {
+	rows, err := storeutil.ExecNamedRows(ctx, db, `
+		UPDATE tech_card SET lock_version = lock_version + 1 WHERE id IN (:source, :target)`, map[string]any{
+		"source": sourceStyleID,
+		"target": targetStyleID,
+	})
+	if err != nil {
+		return fmt.Errorf("bump source and target style versions after relink: %w", err)
+	}
+	if rows != 2 {
+		return fmt.Errorf("bump source and target style versions after relink: %w", entity.ErrTechCardConflict)
+	}
+	return nil
 }

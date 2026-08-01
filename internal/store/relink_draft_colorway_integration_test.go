@@ -98,13 +98,16 @@ func TestRelinkDraftColorway(t *testing.T) {
 	var newStyleID int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, prodID).Scan(&newStyleID))
 	require.Equal(t, tgtStyleID, newStyleID)
+	var srcLVAfter, tgtLVAfter int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, srcStyleID).Scan(&srcLVAfter))
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, tgtStyleID).Scan(&tgtLVAfter))
+	require.Equal(t, srcLV+1, srcLVAfter)
+	require.Equal(t, tgtLV+1, tgtLVAfter)
 
 	// An unknown target style is sql.ErrNoRows. prodID now lives on tgtStyleID (the happy path above), and
-	// RelinkDraftColorway never bumps tech_card.lock_version itself (only UPDATE product.style_id + re-mint;
-	// see relink.go's styleLockVersion, a plain SELECT) — so the expected version for prodID's current style
-	// is still the unchanged tgtLV, not tgtLV+1. Passing +1 here would fail the version guard first and
-	// surface entity.ErrTechCardConflict before the unknown-target lookup is ever reached.
+	// the successful relink bumped both the old and new styles. Use the new target version so the request
+	// reaches the unknown-target lookup rather than failing the current-style version guard first.
 	_, err = testDB.ExecContext(ctx, `UPDATE product SET lifecycle_status = 1 WHERE id = ?`, prodID)
 	require.NoError(t, err)
-	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, 999999999, tgtLV, 0), sql.ErrNoRows)
+	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, 999999999, tgtLVAfter, 0), sql.ErrNoRows)
 }
