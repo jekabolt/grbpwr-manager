@@ -8,10 +8,10 @@ import (
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
-	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -92,6 +92,31 @@ func TestGetStyleCostEstimateBadRequest(t *testing.T) {
 	s := &Server{repo: mocks.NewMockRepository(t)}
 	_, err := s.GetStyleCostEstimate(context.Background(), &pb_admin.GetStyleCostEstimateRequest{TechCardId: 0})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+func TestBuildCatalogFallbackSelectsCostingCurrency(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+
+	eur := &entity.MaterialPrice{MaterialId: 9, Price: decimal.RequireFromString("30"), Currency: "EUR"}
+	usd := &entity.MaterialPrice{MaterialId: 9, Price: decimal.RequireFromString("20"), Currency: "USD"}
+	tc.EXPECT().GetMaterial(mock.Anything, 9).Return(&entity.MaterialWithPrice{
+		LatestPrice: eur,
+		LatestPrices: map[string]*entity.MaterialPrice{
+			"EUR": eur,
+			"USD": usd,
+		},
+	}, nil)
+
+	card := &entity.TechCard{
+		TechCardInsert: entity.TechCardInsert{
+			BomItems: []entity.TechCardBomItem{{MaterialId: sql.NullInt64{Int64: 9, Valid: true}}},
+			Costing:  &entity.TechCardCosting{Currency: nsStr("USD")},
+		},
+	}
+	got := (&Server{repo: repo}).buildCatalogFallback(context.Background(), card, "EUR")
+	require.Same(t, usd, got[9], "the estimate must use its costing currency, not the singular/base quote")
 }
 
 // TestStripStyleCostEstimate: without costing:read every money figure is cleared while the material/

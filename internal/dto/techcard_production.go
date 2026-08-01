@@ -1100,7 +1100,7 @@ type colorwayCostResult struct {
 // article fills it. A pin that cannot be resolved in linked (nil map on list reads, or a missing
 // id) or that has no price yields a shadow with NO price, so UnitTotal skips the line exactly
 // like an unpriced BOM line — never silently costed at the wrong (default) article's price.
-func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, linked map[int]entity.MaterialWithPrice) *entity.TechCardBomItem {
+func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, linked map[int]entity.MaterialWithPrice, costingCurrency, baseCurrency string) *entity.TechCardBomItem {
 	if bom == nil || !u.MaterialId.Valid || u.MaterialId.Int64 <= 0 {
 		return bom
 	}
@@ -1110,16 +1110,17 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 	sh := *bom
 	sh.UnitPrice = decimal.NullDecimal{}
 	sh.Currency = sql.NullString{}
-	if m, ok := linked[int(u.MaterialId.Int64)]; ok && m.LatestPrice != nil {
+	if m, ok := linked[int(u.MaterialId.Int64)]; ok {
+		price := m.LatestPriceForCurrencies(costingCurrency, baseCurrency)
 		// A catalog price is per the MATERIAL's unit; the usage's norm is in the SLOT's unit.
 		// When the two disagree (slot metres, article priced per cone), norm × price is off by
 		// the whole conversion factor — leave the line unpriced instead, same rule as an
 		// unpriced pin: never a silently wrong number into product.cost_price.
 		slotUnit := strings.TrimSpace(bom.Unit.String)
 		stockUnit := strings.TrimSpace(m.Unit.String)
-		if slotUnit == "" || stockUnit == "" || strings.EqualFold(slotUnit, stockUnit) {
-			sh.UnitPrice = decimal.NullDecimal{Decimal: m.LatestPrice.Price, Valid: true}
-			sh.Currency = sql.NullString{String: m.LatestPrice.Currency, Valid: m.LatestPrice.Currency != ""}
+		if price != nil && (slotUnit == "" || stockUnit == "" || strings.EqualFold(slotUnit, stockUnit)) {
+			sh.UnitPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
+			sh.Currency = sql.NullString{String: price.Currency, Valid: price.Currency != ""}
 		}
 	}
 	return &sh
@@ -1140,7 +1141,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		u := &cw.Usages[i]
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
-		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked)
+		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
 		ut := u.UnitTotal(bom, orderQtyBySize, totalOrderQty)
 		if !ut.Valid {
 			continue

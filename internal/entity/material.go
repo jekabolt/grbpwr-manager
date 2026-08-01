@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -174,9 +175,40 @@ type MaterialPrice struct {
 	Note       sql.NullString  `db:"note"`
 }
 
-// MaterialWithPrice is a catalog material plus its current (latest-effective) price, if any.
-// The list/detail read joins the most recent price so the admin UI can show and pre-fill it.
+// MaterialWithPrice is a catalog material plus its current (latest-effective) prices. LatestPrices
+// keeps one current row per currency for costing; LatestPrice is the backwards-compatible singular
+// admin projection (the base-currency row when present, otherwise the sole unambiguous row).
 type MaterialWithPrice struct {
 	Material
-	LatestPrice *MaterialPrice
+	LatestPrice  *MaterialPrice
+	LatestPrices map[string]*MaterialPrice
+}
+
+// LatestPriceForCurrencies returns the first current price matching the supplied currency priority.
+// If none matches, a sole available currency is unambiguous and is returned. Multiple unmatched
+// currencies deliberately return nil: silently choosing one would make costing depend on row order.
+// LatestPrice remains a fallback for older in-memory callers/tests that construct only the legacy
+// singular field.
+func (m MaterialWithPrice) LatestPriceForCurrencies(currencies ...string) *MaterialPrice {
+	for _, currency := range currencies {
+		currency = strings.ToUpper(strings.TrimSpace(currency))
+		if currency == "" {
+			continue
+		}
+		if price := m.LatestPrices[currency]; price != nil {
+			return price
+		}
+		if m.LatestPrice != nil && strings.EqualFold(m.LatestPrice.Currency, currency) {
+			return m.LatestPrice
+		}
+	}
+	if len(m.LatestPrices) == 1 {
+		for _, price := range m.LatestPrices {
+			return price
+		}
+	}
+	if len(m.LatestPrices) == 0 {
+		return m.LatestPrice
+	}
+	return nil
 }

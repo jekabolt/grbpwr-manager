@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/materialcode"
@@ -24,10 +25,9 @@ type materialRow struct {
 	LpNote      sql.NullString      `db:"lp_note"`
 }
 
-func (r materialRow) toEntity() entity.MaterialWithPrice {
-	out := entity.MaterialWithPrice{Material: r.Material}
+func (r materialRow) latestPrice() *entity.MaterialPrice {
 	if r.LpPrice.Valid && r.LpCurrency.Valid {
-		out.LatestPrice = &entity.MaterialPrice{
+		return &entity.MaterialPrice{
 			MaterialId: r.Material.Id,
 			Price:      r.LpPrice.Decimal,
 			Currency:   r.LpCurrency.String,
@@ -36,16 +36,42 @@ func (r materialRow) toEntity() entity.MaterialWithPrice {
 			Note:       r.LpNote,
 		}
 	}
+	return nil
+}
+
+// materialsFromPriceRows collapses the latest-per-currency query back to one catalog entity per
+// material. The backwards-compatible singular price is base-currency when available, otherwise it
+// is populated only when exactly one currency exists; costing consumers use LatestPrices directly.
+func materialsFromPriceRows(rows []materialRow) []entity.MaterialWithPrice {
+	out := make([]entity.MaterialWithPrice, 0, len(rows))
+	positions := make(map[int]int, len(rows))
+	for _, row := range rows {
+		pos, exists := positions[row.Id]
+		if !exists {
+			pos = len(out)
+			positions[row.Id] = pos
+			out = append(out, entity.MaterialWithPrice{Material: row.Material})
+		}
+		if price := row.latestPrice(); price != nil {
+			if out[pos].LatestPrices == nil {
+				out[pos].LatestPrices = make(map[string]*entity.MaterialPrice)
+			}
+			out[pos].LatestPrices[strings.ToUpper(price.Currency)] = price
+		}
+	}
+	for i := range out {
+		out[i].LatestPrice = out[i].LatestPriceForCurrencies(cache.GetBaseCurrency())
+	}
 	return out
 }
 
-// materialWithPriceSelect is the shared SELECT that joins each material to its current price —
-// the latest row with valid_from <= today, tie-broken by currency. WHERE/ORDER are appended by
-// the caller.
+// materialWithPriceSelect is the shared SELECT that joins each material to its current price in
+// EVERY currency. Callers collapse the rows to one MaterialWithPrice; partitioning by currency is
+// essential because two same-day quotes are peers, not candidates for an alphabetical winner.
 const materialWithPriceSelect = `
 	WITH latest AS (
 		SELECT material_id, price, currency, valid_from, source, note,
-			ROW_NUMBER() OVER (PARTITION BY material_id ORDER BY valid_from DESC, currency ASC) AS rn
+			ROW_NUMBER() OVER (PARTITION BY material_id, currency ORDER BY valid_from DESC) AS rn
 		FROM material_price
 		WHERE valid_from <= CURDATE()
 	)
@@ -263,10 +289,9 @@ func (s *Store) getMaterialsByIDs(ctx context.Context, ids []int) (map[int]entit
 	if err != nil {
 		return nil, fmt.Errorf("get materials by ids: %w", err)
 	}
-	out := make([]entity.MaterialWithPrice, len(rows))
-	ptrs := make([]*entity.MaterialWithPrice, len(rows))
-	for i, r := range rows {
-		out[i] = r.toEntity()
+	out := materialsFromPriceRows(rows)
+	ptrs := make([]*entity.MaterialWithPrice, len(out))
+	for i := range out {
 		ptrs[i] = &out[i]
 	}
 	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {
@@ -289,7 +314,8 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("get material %d: %w", id, entity.ErrMaterialNotFound)
 	}
-	out := rows[0].toEntity()
+	materials := materialsFromPriceRows(rows)
+	out := materials[0]
 	if err := s.attachMaterialAttrs(ctx, []*entity.MaterialWithPrice{&out}); err != nil {
 		return nil, fmt.Errorf("get material %d attrs: %w", id, err)
 	}
@@ -314,10 +340,9 @@ func (s *Store) ListMaterials(ctx context.Context, section string, includeArchiv
 	if err != nil {
 		return nil, fmt.Errorf("list materials: %w", err)
 	}
-	out := make([]entity.MaterialWithPrice, len(rows))
-	ptrs := make([]*entity.MaterialWithPrice, len(rows))
-	for i, r := range rows {
-		out[i] = r.toEntity()
+	out := materialsFromPriceRows(rows)
+	ptrs := make([]*entity.MaterialWithPrice, len(out))
+	for i := range out {
 		ptrs[i] = &out[i]
 	}
 	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {

@@ -61,11 +61,22 @@ func TestMaterialCatalog(t *testing.T) {
 	require.NotNil(t, m.LatestPrice)
 	require.True(t, m.LatestPrice.Price.Equal(d("14.00")), "current price is the latest effective, not the future one: got %s", m.LatestPrice.Price)
 
+	// A same-day quote in another currency is another current price, not a tie that EUR wins by
+	// alphabet. The singular projection stays the configured base currency for wire compatibility;
+	// costing can select USD from LatestPrices.
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: matID, Price: d("20.00"), Currency: "USD", ValidFrom: day(2026, 6, 1)}))
+	m, err = T.GetMaterial(ctx, matID)
+	require.NoError(t, err)
+	require.Len(t, m.LatestPrices, 2)
+	require.True(t, m.LatestPrices["EUR"].Price.Equal(d("14.00")))
+	require.True(t, m.LatestPrices["USD"].Price.Equal(d("20.00")))
+	require.Equal(t, "EUR", m.LatestPrice.Currency, "singular projection prefers configured base currency")
+
 	// same-day correction upserts (not duplicates)
 	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: matID, Price: d("14.25"), Currency: "EUR", ValidFrom: day(2026, 6, 1)}))
 	hist, err := T.ListMaterialPrices(ctx, matID)
 	require.NoError(t, err)
-	require.Len(t, hist, 3, "same (date,currency) upserts rather than appends")
+	require.Len(t, hist, 4, "same (date,currency) upserts rather than appends")
 	require.True(t, hist[0].ValidFrom.Equal(day(2099, 1, 1)), "history is newest-first")
 
 	// list by section (current price attached)
