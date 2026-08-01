@@ -332,7 +332,8 @@ func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity
 }
 
 // resolveUsageBom resolves a usage's BOM reference to a real bom_item id: by stable line_key
-// (preferred), else the legacy positional index, else SQL NULL. An unknown line_key is field-tagged.
+// (preferred), else the legacy positional index, else SQL NULL. Unknown keys and explicit invalid
+// indexes are field-tagged; an absent reference remains NULL.
 func resolveUsageBom(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (sql.NullInt64, error) {
 	if key := strings.TrimSpace(u.BomLineKey); key != "" {
 		if id, ok := byKey[key]; ok {
@@ -342,16 +343,24 @@ func resolveUsageBom(u *entity.TechCardColorwayUsage, byKey map[string]int, orde
 			fmt.Sprintf("no BOM line %q in this style", key), "", "reference an existing BOM line by its line_key")
 	}
 	if u.BomItemIndex.Valid {
-		if idx := int(u.BomItemIndex.Int32); idx >= 0 && idx < len(ordered) {
+		idx := int(u.BomItemIndex.Int32)
+		if idx >= 0 && idx < len(ordered) {
 			return sql.NullInt64{Int64: int64(ordered[idx]), Valid: true}, nil
 		}
+		reason := "cannot be set because this style has no BOM lines"
+		if len(ordered) > 0 {
+			reason = fmt.Sprintf("must be in the valid range [0, %d]", len(ordered)-1)
+		}
+		return sql.NullInt64{}, entity.NewFieldViolation(fmt.Sprintf("usages[%d].bom_item_index", i),
+			reason, fmt.Sprintf("index %d", idx), "reference an existing BOM line or omit the index")
 	}
 	return sql.NullInt64{}, nil
 }
 
 // resolveUsagePiece turns a usage's cut-piece reference into a real tech_card_piece id for the
 // usage.piece_id FK (WS4): by stable piece line_key (preferred; unknown → field-tagged) or the legacy
-// positional piece_index, else SQL NULL (the norm is about the whole garment, not a specific piece).
+// positional piece_index. An explicit invalid index is field-tagged; an absent reference remains SQL
+// NULL (the norm is about the whole garment, not a specific piece).
 func resolveUsagePiece(u *entity.TechCardColorwayUsage, byKey map[string]int, ordered []int, i int) (sql.NullInt64, error) {
 	if key := strings.TrimSpace(u.PieceLineKey); key != "" {
 		if id, ok := byKey[key]; ok {
@@ -361,9 +370,16 @@ func resolveUsagePiece(u *entity.TechCardColorwayUsage, byKey map[string]int, or
 			fmt.Sprintf("no cut-piece %q in this style", key), "", "reference an existing cut-piece by its line_key")
 	}
 	if u.PieceIndex.Valid {
-		if idx := int(u.PieceIndex.Int32); idx >= 0 && idx < len(ordered) {
+		idx := int(u.PieceIndex.Int32)
+		if idx >= 0 && idx < len(ordered) {
 			return sql.NullInt64{Int64: int64(ordered[idx]), Valid: true}, nil
 		}
+		reason := "cannot be set because this style has no cut-pieces"
+		if len(ordered) > 0 {
+			reason = fmt.Sprintf("must be in the valid range [0, %d]", len(ordered)-1)
+		}
+		return sql.NullInt64{}, entity.NewFieldViolation(fmt.Sprintf("usages[%d].piece_index", i),
+			reason, fmt.Sprintf("index %d", idx), "reference an existing cut-piece or omit the index")
 	}
 	return sql.NullInt64{}, nil
 }
