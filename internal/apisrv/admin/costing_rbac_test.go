@@ -86,11 +86,11 @@ func TestStripTechCardCosting(t *testing.T) {
 
 // TestStripReleaseMetaCosting clears the planned unit cost on a release header.
 func TestStripReleaseMetaCosting(t *testing.T) {
-	m := &pb_common.TechCardReleaseMeta{Version: "v3", UnitCost: dec("40.00"), Currency: "EUR"}
+	m := &pb_common.TechCardReleaseMeta{ReleaseNumber: 3, UnitCost: dec("40.00"), Currency: "EUR"}
 	stripReleaseMetaCosting(m)
 	require.Nil(t, m.UnitCost)
 	require.Empty(t, m.Currency)
-	require.Equal(t, "v3", m.Version, "non-cost field kept")
+	require.Equal(t, int32(3), m.ReleaseNumber, "non-cost field kept")
 	stripReleaseMetaCosting(nil) // no panic
 }
 

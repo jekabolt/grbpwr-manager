@@ -540,7 +540,8 @@ message MaterialPrice {
 message TechCardReleaseMeta {
   int32 id = 1;
   int32 tech_card_id = 2;
-  string version = 3; // DEPRECATED: legacy free-text label at release time; use release_number (Rev.N)
+  reserved 3;
+  reserved "version";
   int32 release_number = 8; // user-facing "Rev.N" the factory reads (Q1): auto MAX+1 per card
   string released_by = 4; // acting admin username at release time
   google.type.Decimal unit_cost = 5; // base-currency planned unit cost, if foldable
@@ -1053,7 +1054,7 @@ message TechCardInsert {
   // not a free-text name. version (10) / revision_date (11) removed (Q1): the card's version is the
   // sequence of named releases (Rev.N) + the auto-journal, not a free-text string. designer (14) /
   // constructor (15) / technologist (16) removed (Q5): roles are admin-account assignments now (see
-  // the role-assignment RPCs). All are dropped from tech_card in M3.
+  // the role-assignment RPCs). Migration 0223 drops all six retired columns from tech_card.
   google.protobuf.Timestamp released_at = 37; // when released to manufacture
   TechCardMeasurementUnit measurement_unit = 38; // UNKNOWN defaults to MM
   int32 base_model_id = 12; // FK model(id); 0 = unset

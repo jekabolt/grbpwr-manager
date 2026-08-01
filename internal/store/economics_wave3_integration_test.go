@@ -315,7 +315,7 @@ func TestTechCardRelease(t *testing.T) {
 	blob1 := `{"id":1,"name":"Release Coat v1"}`
 	require.NoError(t, T.SaveTechCardRelease(ctx, entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
-			TechCardId: tcID, Version: ns("1.0"), ReleasedBy: ns("alice"),
+			TechCardId: tcID, ReleasedBy: ns("alice"),
 			UnitCost: nd("12.34"), Currency: ns("EUR"),
 		},
 		Snapshot: blob1,
@@ -324,7 +324,7 @@ func TestTechCardRelease(t *testing.T) {
 	list, err := T.ListTechCardReleases(ctx, tcID)
 	require.NoError(t, err)
 	require.Len(t, list, 1)
-	require.Equal(t, "1.0", list[0].Version.String)
+	require.Equal(t, 1, list[0].ReleaseNumber)
 	require.Equal(t, "alice", list[0].ReleasedBy.String)
 	require.True(t, list[0].UnitCost.Decimal.Equal(decimal.RequireFromString("12.34")))
 	require.Equal(t, "EUR", list[0].Currency.String)
@@ -338,17 +338,17 @@ func TestTechCardRelease(t *testing.T) {
 	// second release episode (re-open → re-release): newest-first, both retained.
 	require.NoError(t, T.SaveTechCardRelease(ctx, entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
-			TechCardId: tcID, Version: ns("2.0"), ReleasedBy: ns("bob"),
+			TechCardId: tcID, ReleasedBy: ns("bob"),
 		},
 		Snapshot: `{"id":1,"name":"Release Coat v2"}`,
 	}))
 	list, err = T.ListTechCardReleases(ctx, tcID)
 	require.NoError(t, err)
 	require.Len(t, list, 2)
-	require.Equal(t, "2.0", list[0].Version.String, "newest-first")
-	require.False(t, list[0].UnitCost.Valid, "v2.0 was released without a foldable unit cost")
-	require.Equal(t, "1.0", list[1].Version.String)
-	require.True(t, list[1].UnitCost.Valid, "v1.0 kept its frozen unit cost")
+	require.Equal(t, 2, list[0].ReleaseNumber, "newest-first")
+	require.False(t, list[0].UnitCost.Valid, "Rev.2 was released without a foldable unit cost")
+	require.Equal(t, 1, list[1].ReleaseNumber)
+	require.True(t, list[1].UnitCost.Valid, "Rev.1 kept its frozen unit cost")
 
 	// missing id → sql.ErrNoRows (so the handler can map to NotFound).
 	_, err = T.GetTechCardRelease(ctx, 0)

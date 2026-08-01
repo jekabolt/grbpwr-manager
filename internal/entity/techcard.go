@@ -1063,16 +1063,10 @@ type TechCardInsert struct {
 	Stage              TechCardStage           `db:"stage"`
 	Status             sql.NullString          `db:"status"`
 	ApprovalState      TechCardApprovalState   `db:"approval_state"`
-	ApprovedBy         sql.NullString          `db:"approved_by"`
 	ApprovedAt         sql.NullTime            `db:"approved_at"`
 	ReleasedAt         sql.NullTime            `db:"released_at"`
-	Version            sql.NullString          `db:"version"`
-	RevisionDate       sql.NullTime            `db:"revision_date"`
 	BaseModelId        sql.NullInt32           `db:"base_model_id"`
 	BaseSampleSizeId   sql.NullInt32           `db:"base_sample_size_id"`
-	Designer           sql.NullString          `db:"designer"`
-	Constructor        sql.NullString          `db:"constructor"`
-	Technologist       sql.NullString          `db:"technologist"`
 	MeasurementUnit    TechCardMeasurementUnit `db:"measurement_unit"`
 	// MeasurementUnitSet separates "the client chose a unit" from "the field was absent". The unit is a
 	// fact ABOUT the numbers already in tech_card_size_measurement (a bare DECIMAL with no unit of its
@@ -1283,7 +1277,6 @@ type TechCardReleaseMeta struct {
 	// assigned by the store on save. This is the tech card's real "version" — the free-text `version`
 	// string it replaces is retired.
 	ReleaseNumber int                 `db:"release_number"`
-	Version       sql.NullString      `db:"version"`
 	ReleasedBy    sql.NullString      `db:"released_by"`
 	UnitCost      decimal.NullDecimal `db:"unit_cost"`
 	Currency      sql.NullString      `db:"currency"`

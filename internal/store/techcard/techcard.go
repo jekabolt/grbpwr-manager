@@ -60,8 +60,8 @@ func (s *Store) ensureDictionaryFresh(ctx context.Context, action string) error 
 // column remains only as a canonical derived label for the existing UNIQUE key/read models.
 // Q1/Q5: version/revision_date and the free-text roles designer/constructor/technologist/approved_by
 // are no longer written — the card's version is its named releases (Rev.N) + the auto-journal, and
-// roles are admin-account assignments. The columns stay until M3; the write path just stops touching
-// them. approved_at/released_at are server-owned timestamps and remain.
+// roles are admin-account assignments. Migration 0223 removes the retired columns;
+// approved_at/released_at are server-owned timestamps and remain.
 // normalizeLegacyComposition maps the stored JSON-scalar form of tech_card.composition to plain
 // wire text (M1) on the `SELECT *` read paths — the SQL projections do this via JSON_UNQUOTE in
 // styleCompositionSelect, these scans must match (see entity.UnquoteLegacyComposition).

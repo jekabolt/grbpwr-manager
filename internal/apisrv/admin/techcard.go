@@ -448,7 +448,7 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 		stripReleaseMetaCosting(resp.Release)
 	}
 	var snap pb_common.TechCard
-	if err := protojson.Unmarshal([]byte(rel.Snapshot), &snap); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(rel.Snapshot), &snap); err != nil {
 		// The parser error quotes the offending field (and can quote its value) straight out of the
 		// frozen snapshot — which embeds the costing block and BOM prices — so a cost-blind caller
 		// gets the generic sentence only. The full detail is logged server-side either way.
