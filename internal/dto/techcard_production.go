@@ -402,6 +402,11 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	if err != nil {
 		return nil, err
 	}
+	if pb.Currency == "" && (cmt.Valid || hardware.Valid || packaging.Valid || logistics.Valid || overhead.Valid) {
+		return nil, entity.NewFieldViolation("costing.currency",
+			"currency is required when a monetary costing amount is set", "",
+			"select the currency used by these costing amounts")
+	}
 	defect, err := nullDecimalFromPb(pb.DefectPercent)
 	if err != nil {
 		return nil, fmt.Errorf("costing defect_percent: %w", err)
