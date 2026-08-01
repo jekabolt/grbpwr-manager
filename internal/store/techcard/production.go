@@ -371,7 +371,23 @@ type techCardSignoffRow struct {
 
 type techCardOperationRow struct {
 	TechCardID int `db:"tech_card_id"`
+	// Id is the operation's primary key. It is read purely so the link passes below can join on the
+	// real row identity instead of guessing it from display_order; it is deliberately NOT part of
+	// entity.TechCardOperation and never reaches the wire (the wire identity of an operation is its
+	// operation_number).
+	Id int `db:"id"`
+	// BomLineKey is the stable wire reference of the single BOM line the operation's bom_item_id
+	// column points at, resolved through a LEFT JOIN because the column itself holds only the FK.
+	// It lands on entity.TechCardOperation.BomLineKey (db:"-", so it cannot be scanned there).
+	BomLineKey sql.NullString `db:"bom_line_key"`
 	entity.TechCardOperation
+}
+
+// operationPos locates one operation inside the per-card slice enrichProduction builds, so a link row
+// carrying only operation_id can be attached to the right element.
+type operationPos struct {
+	cardID int
+	index  int
 }
 
 type techCardLabelRow struct {
@@ -414,33 +430,46 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	// Operations are returned sorted ascending by operation_number (the addressable
 	// «оп. 10, 20, …»); unnumbered operations sort last, with display_order as a
 	// stable tiebreaker within each group.
+	// b.line_key resolves o.bom_item_id back to the durable reference the client writes with. Without
+	// it the read emitted only the resolved FK (bom_item_id), so a read-modify-write client that
+	// speaks line_keys sent bom_line_key back empty and degraded the column to NULL on its next save.
+	// LEFT JOIN on the BOM line's primary key: at most one match, no row multiplication.
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
-		SELECT tech_card_id, operation_number, node, description, seam_type, machine, stitches_per_cm,
-		       topstitch_width, seam_allowance, thread, needle, attachment, time_norm, smv, note,
-		       operation_type, zone, bom_item_id, bom_item_index, callout_number, placement
-		FROM tech_card_operation
-		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, operation_number IS NULL, operation_number, display_order`, map[string]any{"ids": ids})
+		SELECT o.id, o.tech_card_id, o.operation_number, o.node, o.description, o.seam_type, o.machine,
+		       o.stitches_per_cm, o.topstitch_width, o.seam_allowance, o.thread, o.needle, o.attachment,
+		       o.time_norm, o.smv, o.note, o.operation_type, o.zone, o.bom_item_id, o.bom_item_index,
+		       o.callout_number, o.placement, b.line_key AS bom_line_key
+		FROM tech_card_operation o
+		LEFT JOIN tech_card_bom_item b ON b.id = o.bom_item_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`,
+		map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card operations: %w", err)
 	}
 	opsByCard := make(map[int][]entity.TechCardOperation, len(ids))
+	// posByOpID is the only thing that may be used to attach a link row to an operation. The rows are
+	// ordered by operation_number first, so an operation's POSITION in the slice below is not its
+	// display_order whenever the card holds legacy rows with a NULL or non-canonical operation_number
+	// (those sort last). Keying the link passes on display_order-as-index therefore silently attached
+	// pieces/materials to the wrong operation on exactly those cards.
+	posByOpID := make(map[int]operationPos, len(opRows))
 	for _, r := range opRows {
-		opsByCard[r.TechCardID] = append(opsByCard[r.TechCardID], r.TechCardOperation)
+		op := r.TechCardOperation
+		op.BomLineKey = r.BomLineKey.String // "" when bom_item_id is NULL, matching the write side
+		opsByCard[r.TechCardID] = append(opsByCard[r.TechCardID], op)
+		posByOpID[r.Id] = operationPos{cardID: r.TechCardID, index: len(opsByCard[r.TechCardID]) - 1}
 	}
 
-	// Operation -> cut-piece links (0199). Read as its own pass, keyed back by (tech_card_id,
-	// display_order) — the same identity the write used — because the operation rows above carry no
-	// id. line_key travels alongside the id so the client gets the durable reference it writes with,
-	// not just the resolved FK.
+	// Operation -> cut-piece links (0199). Read as its own pass and joined back by operation_id — the
+	// row identity, not a positional proxy for it. line_key travels alongside the id so the client
+	// gets the durable reference it writes with, not just the resolved FK.
 	pieceLinkRows, err := storeutil.QueryListNamed[struct {
-		TechCardID int    `db:"tech_card_id"`
-		OpOrder    int    `db:"op_order"`
-		PieceID    int    `db:"piece_id"`
-		PieceKey   string `db:"line_key"`
+		OpID     int    `db:"op_id"`
+		PieceID  int    `db:"piece_id"`
+		PieceKey string `db:"line_key"`
 	}](ctx, s.DB, `
-		SELECT o.tech_card_id AS tech_card_id, o.display_order AS op_order,
-		       l.piece_id AS piece_id, p.line_key AS line_key
+		SELECT o.id AS op_id, l.piece_id AS piece_id, p.line_key AS line_key
 		FROM tech_card_operation_piece l
 		JOIN tech_card_operation o ON o.id = l.operation_id
 		JOIN tech_card_piece p ON p.id = l.piece_id
@@ -450,37 +479,23 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	if err != nil {
 		return fmt.Errorf("can't load tech card operation piece links: %w", err)
 	}
-	if len(pieceLinkRows) > 0 {
-		// The ORDER BY above matches the ORDER BY that built opsByCard, so position within a card is
-		// the same display_order the links key on.
-		orderIndex := make(map[int]map[int]int, len(ids))
-		for cardID, list := range opsByCard {
-			m := make(map[int]int, len(list))
-			for i := range list {
-				m[i] = i
-			}
-			orderIndex[cardID] = m
+	for _, l := range pieceLinkRows {
+		pos, ok := posByOpID[l.OpID]
+		if !ok {
+			continue
 		}
-		for _, l := range pieceLinkRows {
-			list := opsByCard[l.TechCardID]
-			idx, ok := orderIndex[l.TechCardID][l.OpOrder]
-			if !ok || idx >= len(list) {
-				continue
-			}
-			list[idx].PieceIds = append(list[idx].PieceIds, l.PieceID)
-			list[idx].PieceLineKeys = append(list[idx].PieceLineKeys, l.PieceKey)
-		}
+		list := opsByCard[pos.cardID]
+		list[pos.index].PieceIds = append(list[pos.index].PieceIds, l.PieceID)
+		list[pos.index].PieceLineKeys = append(list[pos.index].PieceLineKeys, l.PieceKey)
 	}
 
 	// Operation -> BOM-line links (0200), same keying as the piece links above.
 	bomLinkRows, err := storeutil.QueryListNamed[struct {
-		TechCardID int    `db:"tech_card_id"`
-		OpOrder    int    `db:"op_order"`
-		BomItemID  int    `db:"bom_item_id"`
-		BomKey     string `db:"line_key"`
+		OpID      int    `db:"op_id"`
+		BomItemID int    `db:"bom_item_id"`
+		BomKey    string `db:"line_key"`
 	}](ctx, s.DB, `
-		SELECT o.tech_card_id AS tech_card_id, o.display_order AS op_order,
-		       l.bom_item_id AS bom_item_id, b.line_key AS line_key
+		SELECT o.id AS op_id, l.bom_item_id AS bom_item_id, b.line_key AS line_key
 		FROM tech_card_operation_bom l
 		JOIN tech_card_operation o ON o.id = l.operation_id
 		JOIN tech_card_bom_item b ON b.id = l.bom_item_id
@@ -491,12 +506,13 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		return fmt.Errorf("can't load tech card operation bom links: %w", err)
 	}
 	for _, l := range bomLinkRows {
-		list := opsByCard[l.TechCardID]
-		if l.OpOrder >= len(list) {
+		pos, ok := posByOpID[l.OpID]
+		if !ok {
 			continue
 		}
-		list[l.OpOrder].BomIds = append(list[l.OpOrder].BomIds, l.BomItemID)
-		list[l.OpOrder].BomLineKeys = append(list[l.OpOrder].BomLineKeys, l.BomKey)
+		list := opsByCard[pos.cardID]
+		list[pos.index].BomIds = append(list[pos.index].BomIds, l.BomItemID)
+		list[pos.index].BomLineKeys = append(list[pos.index].BomLineKeys, l.BomKey)
 	}
 
 	labelRows, err := storeutil.QueryListNamed[techCardLabelRow](ctx, s.DB, `
