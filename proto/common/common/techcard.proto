@@ -851,7 +851,11 @@ message TechCardColorwayCost {
 message TechCardCosting {
   // manual per-unit cost articles (per ONE garment), all in `currency`.
   google.type.Decimal cmt_cost = 1; // пошив / работа (CMT) за 1 изделие
-  google.type.Decimal hardware_cost = 2; // фурнитура вне BOM, за 1 изделие
+  // фурнитура ВНЕ BOM, за 1 изделие. Hardware is also a first-class BOM section priced through the
+  // recipe, so this article and a hardware BOM line are mutually exclusive: a write carrying both is
+  // rejected (costing.hardware_cost FieldViolation) because it would double-count in every unit-cost
+  // rollup. Enforced on WRITE only — a card saved with both before the rule existed still reads back.
+  google.type.Decimal hardware_cost = 2;
   google.type.Decimal packaging_cost = 3; // упаковка и маркировка, за 1 изделие
   google.type.Decimal logistics_cost = 4; // логистика / доставка, за 1 изделие
   google.type.Decimal overhead_cost = 5; // накладные расходы, за 1 изделие
