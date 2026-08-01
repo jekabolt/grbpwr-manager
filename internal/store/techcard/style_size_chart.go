@@ -51,6 +51,22 @@ func (s *Store) UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockV
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}
+		// Every cell must measure a size the style actually makes. The FK is on size(id), the global
+		// dictionary, so without this an XL column persists on an XS/S style: a phantom the grid keeps
+		// re-showing and the grade rule keeps expanding from. Read inside the tx so a concurrent
+		// size-range save cannot land between the check and the insert.
+		rng, err := storeutil.LoadTechCardSizeRange(ctx, rep.DB(), styleID)
+		if err != nil {
+			return err
+		}
+		for i, c := range cells {
+			if err := rng.Require(fmt.Sprintf("cells[%d].size_id", i), c.SizeID); err != nil {
+				return err
+			}
+		}
+		if err := rng.Require("grade_base_size_id", gradeBaseSizeID); err != nil {
+			return err
+		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM tech_card_size_measurement WHERE tech_card_id = :id`, map[string]any{"id": styleID}); err != nil {
 			return fmt.Errorf("clear style %d size chart: %w", styleID, err)

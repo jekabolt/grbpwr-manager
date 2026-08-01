@@ -78,6 +78,21 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			return entity.ErrTechCardConflict
 		}
 
+		// Per-size consumption may only be stated for sizes the STYLE makes. The parser cannot check
+		// this (it never sees the style) and the FK is on size(id), so an off-range norm used to
+		// persist as a rule no production run can ever apply.
+		rng, err := storeutil.LoadTechCardSizeRange(ctx, rep.DB(), cur.StyleID)
+		if err != nil {
+			return err
+		}
+		for i := range usages {
+			for j, sc := range usages[i].SizeConsumptions {
+				if err := rng.Require(fmt.Sprintf("usages[%d].size_consumptions[%d].size_id", i, j), sc.SizeId); err != nil {
+					return err
+				}
+			}
+		}
+
 		// Resolve the style's BOM: by stable line_key (preferred) and ordered for the legacy index ref.
 		bomRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, rep.DB(),
 			`SELECT id, line_key FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,

@@ -184,7 +184,11 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	}
 	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion), cells, int(req.GradeBaseSizeId), steps)
 	if err != nil {
+		var ve *entity.ValidationError
 		switch {
+		case errors.As(err, &ve):
+			// Field-tagged store rejections (a size outside the style's range) pin to the cell.
+			return nil, apierr.Invalid(ve)
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
 		case errors.Is(err, entity.ErrTechCardConflict):

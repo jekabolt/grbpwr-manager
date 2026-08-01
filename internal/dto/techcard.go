@@ -945,7 +945,8 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 // ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
 // parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
 // the store, S2/S3), so there is no positional range check here. size_id membership in the style's
-// range is enforced by the FK / store, not here.
+// range is checked by the store inside the write transaction (the request carries no size range to
+// check against, and the FK is on the global size dictionary, not on tech_card_size).
 func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
 	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
 	for i, u := range pbs {
