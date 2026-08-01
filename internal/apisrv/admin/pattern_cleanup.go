@@ -12,8 +12,9 @@ func (s *Server) deleteOrphanedPatternObjects(ctx context.Context, owner string,
 	if len(urls) == 0 {
 		return
 	}
-	if err := s.bucket.DeleteObjects(ctx, urls...); err != nil {
-		slog.Default().ErrorContext(ctx, "pattern references removed but bucket objects may be orphaned",
+	cleanupCtx := context.WithoutCancel(ctx)
+	if err := s.bucket.DeleteObjects(cleanupCtx, urls...); err != nil {
+		slog.Default().ErrorContext(cleanupCtx, "pattern references removed but bucket objects may be orphaned",
 			slog.String("owner", owner),
 			slog.Int("owner_id", ownerID),
 			slog.Int("url_count", len(urls)),

@@ -16,6 +16,8 @@ import (
 
 const testPatternURL = "https://cdn.example/base/tech-card-patterns/2026/august/pattern.pdf"
 
+type patternCleanupContextKey struct{}
+
 func TestDeleteTechCardRemovesCommittedPatternOrphans(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	techCards := mocks.NewMockTechCards(t)
@@ -63,4 +65,16 @@ func TestDeleteFittingRemovesCommittedPatternOrphans(t *testing.T) {
 	_, err := (&Server{repo: repo, bucket: files}).DeleteFitting(
 		context.Background(), &pb_admin.DeleteFittingRequest{Id: 11})
 	require.NoError(t, err)
+}
+
+func TestPatternCleanupOutlivesRequestCancellation(t *testing.T) {
+	files := mocks.NewMockFileStore(t)
+	ctx := context.WithValue(context.Background(), patternCleanupContextKey{}, "kept")
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	files.On("DeleteObjects", mock.MatchedBy(func(cleanupCtx context.Context) bool {
+		return cleanupCtx.Err() == nil && cleanupCtx.Value(patternCleanupContextKey{}) == "kept"
+	}), []string{testPatternURL}).Return(nil).Once()
+
+	(&Server{bucket: files}).deleteOrphanedPatternObjects(ctx, "tech_card", 7, []string{testPatternURL})
 }
