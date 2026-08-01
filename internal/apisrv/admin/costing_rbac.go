@@ -286,6 +286,28 @@ func stripDashboardCosting(resp *pb_admin.GetDashboardResponse) {
 	redactCostingFieldsDeep(resp.ProtoReflect())
 }
 
+// stripChannelRoasCosting redacts the media-spend side of the settled-ROAS report for an account
+// without costing:read. Spend and the figures DERIVED from it (roas, cac) are the same class the
+// dashboard redacts by name via costingRedactedFieldNames (marketing_spend, blended_cac, cpo) — the
+// per-channel report is simply not routed through that denylist, since its fields are named `spend`
+// / `roas` / `cac`. has_spend goes with them (its "N/A" meaning is exactly what a blanked row
+// should read as, and leaving it true would render a spend flag with no number, cf. the has_base /
+// has_actuals precedent above). Settled revenue, orders and new customers are revenue-side and stay.
+func stripChannelRoasCosting(resp *pb_admin.GetChannelRoasSettledResponse) {
+	if resp == nil {
+		return
+	}
+	for _, r := range resp.Rows {
+		if r == nil {
+			continue
+		}
+		r.Spend = nil
+		r.Roas = 0
+		r.Cac = 0
+		r.HasSpend = false
+	}
+}
+
 // stripStyleEconomicsCosting redacts confidential cost/margin from a style-economics card for an
 // account without costing:read (task 19): the dev-cost roll-up, production costs, the net result,
 // and the cost/margin fields on the sales row. Identity, revenue, units, colourway count, fitting
