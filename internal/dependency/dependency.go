@@ -620,6 +620,9 @@ type (
 	// linked products, sketch media, callouts and revision log.
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
+		// CloneTechCardForSeason inserts the converted card and its non-TechCardInsert carry-over
+		// (size chart, grade rule and assembly) in one transaction, under a source-version guard.
+		CloneTechCardForSeason(ctx context.Context, sourceID, expectedSourceVersion int, tc *entity.TechCardInsert) (int, error)
 		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
 		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
 		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).

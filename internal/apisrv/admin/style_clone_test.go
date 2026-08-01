@@ -31,6 +31,11 @@ func cloneSourceCard() *entity.TechCard {
 			ApprovalState:     entity.TechCardApprovalReleased,
 			MeasurementUnit:   entity.TechCardUnitMm,
 			Purpose:           entity.TechCardPurposeSellable,
+			Signoffs: []entity.TechCardSignoff{{
+				Section:      entity.SignoffConstruction,
+				State:        entity.SignoffStateApproved,
+				SignedDigest: sql.NullString{String: "source-construction-digest", Valid: true},
+			}},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -48,16 +53,15 @@ func cloneRequest() *pb_admin.CloneStyleForSeasonRequest {
 	}
 }
 
-func TestCloneStyleForSeasonUsesGeneratedNumberAndRechecksSource(t *testing.T) {
+func TestCloneStyleForSeasonUsesGeneratedNumberAndTransactionalSourceGuard(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(tc)
 	tc.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(cloneSourceCard(), nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
 	tc.EXPECT().SuggestStyleNumber(mock.Anything, "FW", 2026).Return("FW26-0007", nil)
-	tc.EXPECT().GetTechCardLockVersion(mock.Anything, 7).Return(4, nil)
-	tc.EXPECT().AddTechCard(mock.Anything, mock.AnythingOfType("*entity.TechCardInsert")).
-		Run(func(_ context.Context, insert *entity.TechCardInsert) {
+	tc.EXPECT().CloneTechCardForSeason(mock.Anything, 7, 4, mock.AnythingOfType("*entity.TechCardInsert")).
+		Run(func(_ context.Context, _, _ int, insert *entity.TechCardInsert) {
 			require.Equal(t, "FW26-0007", insert.StyleNumber.String)
 			require.True(t, insert.StyleNumber.Valid)
 			require.Equal(t, entity.StyleNumberSourceGenerated, insert.StyleNumberSource)
@@ -65,6 +69,7 @@ func TestCloneStyleForSeasonUsesGeneratedNumberAndRechecksSource(t *testing.T) {
 			require.Equal(t, entity.TechCardStageProto, insert.Stage, "clone preserves the source stage")
 			require.Equal(t, "FW", insert.SeasonCode.String)
 			require.Equal(t, int32(2026), insert.SeasonYear.Int32)
+			require.Empty(t, insert.Signoffs, "a clone must not inherit source approvals")
 		}).Return(11, nil)
 
 	resp, err := (&Server{repo: repo}).CloneStyleForSeason(fullAccessCtx(), cloneRequest())
@@ -79,7 +84,8 @@ func TestCloneStyleForSeasonRejectsSourceChangedBeforeInsert(t *testing.T) {
 	tc.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(cloneSourceCard(), nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
 	tc.EXPECT().SuggestStyleNumber(mock.Anything, "FW", 2026).Return("FW26-0007", nil)
-	tc.EXPECT().GetTechCardLockVersion(mock.Anything, 7).Return(5, nil)
+	tc.EXPECT().CloneTechCardForSeason(mock.Anything, 7, 4, mock.AnythingOfType("*entity.TechCardInsert")).
+		Return(0, entity.ErrTechCardConflict)
 
 	_, err := (&Server{repo: repo}).CloneStyleForSeason(fullAccessCtx(), cloneRequest())
 	require.Equal(t, codes.Aborted, status.Code(err))

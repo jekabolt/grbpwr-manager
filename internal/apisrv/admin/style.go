@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -227,8 +228,8 @@ func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDr
 }
 
 // CloneStyleForSeason deep-clones a style (tech card header + ALL children) under a new sku_season
-// (R4). It reuses the proven tech-card converters for a faithful copy and AddTechCard's child
-// insertion; the clone starts as a fresh DRAFT with no colourways. A stale expected_source_version is
+// (R4). It reuses the proven tech-card converters and child-insertion path for a faithful copy; the
+// clone starts as a fresh DRAFT with no colourways. A stale expected_source_version is
 // ABORTED; an unknown source is NotFound; the clone receives a fresh generated style number for its
 // target season.
 func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneStyleForSeasonRequest) (*pb_admin.CloneStyleForSeasonResponse, error) {
@@ -278,25 +279,16 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		// is pointed at the offending line rather than at the clone attempt.
 		return nil, techCardConvertErr(err)
 	}
-	// A clone is a fresh design cycle for the new season — reset the PLM freeze so it is editable.
+	// A clone is a fresh design cycle for the new season — reset the PLM freeze and every section
+	// approval so it is editable and starts unapproved. The store stamps the clone actor on its new
+	// rows; source audit authorship is never carried into the new design cycle.
 	insert.ApprovalState = entity.TechCardApprovalDraft
-	// The full read/convert above is intentionally outside AddTechCard's transaction. Narrow the
-	// remaining race window with one cheap header read immediately before the insert; a fully
-	// transaction-scoped deep clone is a separate change.
-	currentVersion, err := s.repo.TechCards().GetTechCardLockVersion(ctx, int(req.SourceStyleId))
+	insert.Signoffs = nil
+	insert.CreatedBy = authsrv.GetAdminUsername(ctx)
+	insert.UpdatedBy = insert.CreatedBy
+	newID, err := s.repo.TechCards().CloneTechCardForSeason(ctx, int(req.SourceStyleId), int(req.ExpectedSourceVersion), insert)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.NotFound, "style %d not found", req.SourceStyleId)
-		}
-		slog.Default().ErrorContext(ctx, "can't recheck source style for clone", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't recheck source style before cloning")
-	}
-	if currentVersion != int(req.ExpectedSourceVersion) {
-		return nil, status.Error(codes.Aborted, "source style was modified concurrently; reload and retry")
-	}
-	newID, err := s.repo.TechCards().AddTechCard(ctx, insert)
-	if err != nil {
-		// A clone round-trips the source card's category_id and size_ids, so AddTechCard can raise the
+		// A clone round-trips the source card's category_id and size_ids, so the insert can raise the
 		// same field-tagged rejections a fresh create can (a size outside the category's size systems,
 		// a category whose tree has no top-level ancestor). Surface them as InvalidArgument with the
 		// field attached, exactly as CreateTechCard does — otherwise a bad SOURCE card turns into an
@@ -304,6 +296,12 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
 			return nil, apierr.Invalid(ve)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "style %d not found", req.SourceStyleId)
+		}
+		if errors.Is(err, entity.ErrTechCardConflict) {
+			return nil, status.Error(codes.Aborted, "source style was modified concurrently; reload and retry")
 		}
 		if s.repo.IsErrUniqueViolation(err) {
 			return nil, status.Error(codes.FailedPrecondition, "the generated style number was claimed concurrently; retry the clone")
