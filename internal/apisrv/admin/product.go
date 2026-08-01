@@ -30,6 +30,9 @@ import (
 // facts (UpdateStyle), no variants (CreateVariant), no size chart (UpdateStyleSizeChart). The colourway
 // starts DRAFT and goes live through PublishColorway.
 func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwayRequest) (*pb_admin.CreateColorwayResponse, error) {
+	if err := rejectEmbeddedColorwayUsages(req.GetDevelopment()); err != nil {
+		return nil, err
+	}
 	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
@@ -50,6 +53,9 @@ func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwa
 // UpdateColorway patches a colourway's own merchandising fields under an optimistic lock (R2/R4). It
 // never touches style facts, variants, stock or the size chart.
 func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwayRequest) (*pb_admin.UpdateColorwayResponse, error) {
+	if err := rejectEmbeddedColorwayUsages(req.GetDevelopment()); err != nil {
+		return nil, err
+	}
 	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
@@ -66,6 +72,15 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	}
 	s.afterColorwayWrite(ctx, int(req.GetColorwayId()))
 	return &pb_admin.UpdateColorwayResponse{LockVersion: int32(lockVersion)}, nil
+}
+
+func rejectEmbeddedColorwayUsages(dev *pb_common.ColorwayDevelopmentInsert) error {
+	if len(dev.GetUsages()) == 0 {
+		return nil
+	}
+	return apierr.Invalid(entity.NewFieldViolation("development.usages",
+		"the recipe is written via UpdateColorwayRecipe", "",
+		"remove development.usages from this request and call UpdateColorwayRecipe separately"))
 }
 
 // UpdateColorwayRecipe replaces a colourway's material recipe (usages) — the write-path cut in the R1
