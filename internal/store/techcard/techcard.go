@@ -513,14 +513,18 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 				fmt.Sprintf("used as an assembly component in %d style(s)", asmCount),
 				"style_assembly", "remove it from those assembly bills first")
 		}
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id}); err != nil {
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
 			var me *mysql.MySQLError
 			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2: an un-enumerated RESTRICT
 				return entity.NewFieldViolation("tech_card_id",
 					"still referenced by another record", "", "remove the referencing record first")
 			}
 			return fmt.Errorf("failed to delete tech card: %w", err)
+		}
+		if rows == 0 {
+			return sql.ErrNoRows
 		}
 		return nil
 	})

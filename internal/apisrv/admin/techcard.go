@@ -651,6 +651,9 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
 	if err := s.repo.TechCards().DeleteTechCard(ctx, int(req.Id)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "tech card not found")
+		}
 		if errors.Is(err, entity.ErrSampleHasMovements) {
 			return nil, status.Error(codes.FailedPrecondition, "a sample of this tech card has material movements; delete/return them first")
 		}
