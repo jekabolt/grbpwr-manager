@@ -10,6 +10,22 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
+// detachRelinkedColorwayReferences keeps the recipe slots but removes their identities against the
+// source style. Piece-material mappings belong to source-card pieces and cannot follow the colourway.
+func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, colorwayID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE tech_card_colorway_usage
+		SET bom_item_id = NULL, piece_id = NULL, bom_item_index = NULL, piece_index = NULL
+		WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
+		return fmt.Errorf("detach recipe references for colourway %d: %w", colorwayID, err)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_piece_material WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
+		return fmt.Errorf("delete source piece-material mappings for colourway %d: %w", colorwayID, err)
+	}
+	return nil
+}
+
 // RelinkDraftColorway moves a DRAFT colourway onto a different style (R4 official workaround for the
 // frozen-sibling problem: CloneStyleForSeason a style under a new season, then relink the draft rather
 // than re-minting frozen siblings). Only a DRAFT may be relinked — an ACTIVE/HIDDEN/ARCHIVED colourway
@@ -50,6 +66,9 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		}
 		if tgtLV != expectedTargetStyleVersion {
 			return entity.ErrTechCardConflict
+		}
+		if err := detachRelinkedColorwayReferences(ctx, rep.DB(), colorwayID); err != nil {
+			return err
 		}
 		// Relink under a source-membership + still-draft guard, so a concurrent relink/publish is rejected.
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
