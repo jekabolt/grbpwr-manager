@@ -41,7 +41,8 @@ func (r materialRow) latestPrice() *entity.MaterialPrice {
 
 // materialsFromPriceRows collapses the latest-per-currency query back to one catalog entity per
 // material. The backwards-compatible singular price is base-currency when available, otherwise it
-// is populated only when exactly one currency exists; costing consumers use LatestPrices directly.
+// is the newest current quote across currencies (currency ASC breaks same-date ties). Costing
+// consumers use LatestPrices/LatestPriceForCurrencies directly and never consume this fallback.
 func materialsFromPriceRows(rows []materialRow) []entity.MaterialWithPrice {
 	out := make([]entity.MaterialWithPrice, 0, len(rows))
 	positions := make(map[int]int, len(rows))
@@ -60,9 +61,26 @@ func materialsFromPriceRows(rows []materialRow) []entity.MaterialWithPrice {
 		}
 	}
 	for i := range out {
-		out[i].LatestPrice = out[i].LatestPriceForCurrencies(cache.GetBaseCurrency())
+		out[i].LatestPrice = singularMaterialPrice(out[i].LatestPrices, cache.GetBaseCurrency())
 	}
 	return out
+}
+
+func singularMaterialPrice(prices map[string]*entity.MaterialPrice, baseCurrency string) *entity.MaterialPrice {
+	if base := prices[strings.ToUpper(strings.TrimSpace(baseCurrency))]; base != nil {
+		return base
+	}
+	var newest *entity.MaterialPrice
+	for _, price := range prices {
+		if price == nil {
+			continue
+		}
+		if newest == nil || price.ValidFrom.After(newest.ValidFrom) ||
+			(price.ValidFrom.Equal(newest.ValidFrom) && strings.ToUpper(price.Currency) < strings.ToUpper(newest.Currency)) {
+			newest = price
+		}
+	}
+	return newest
 }
 
 // materialWithPriceSelect is the shared SELECT that joins each material to its current price in

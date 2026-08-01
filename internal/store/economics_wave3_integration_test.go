@@ -30,10 +30,13 @@ func TestMaterialCatalog(t *testing.T) {
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 	day := func(y int, m time.Month, dd int) time.Time { return time.Date(y, m, dd, 0, 0, 0, 0, time.UTC) }
 
-	var matID int
+	var matID, fallbackMatID int
 	defer func() {
 		if matID != 0 {
 			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID) // material_price cascades
+		}
+		if fallbackMatID != 0 {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", fallbackMatID)
 		}
 	}()
 
@@ -71,6 +74,20 @@ func TestMaterialCatalog(t *testing.T) {
 	require.True(t, m.LatestPrices["EUR"].Price.Equal(d("14.00")))
 	require.True(t, m.LatestPrices["USD"].Price.Equal(d("20.00")))
 	require.Equal(t, "EUR", m.LatestPrice.Currency, "singular projection prefers configured base currency")
+
+	// With no base-currency quote, the singular admin projection remains populated from the newest
+	// current quote. Same-date currencies use alphabetical order only as a deterministic tiebreaker;
+	// costing still selects explicitly from LatestPrices and never consumes this fallback.
+	fallbackMatID, err = T.CreateMaterial(ctx, &entity.MaterialInsert{Name: "Fallback-priced trim", Section: "hardware"})
+	require.NoError(t, err)
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: fallbackMatID, Price: d("8.00"), Currency: "USD", ValidFrom: day(2026, 5, 1)}))
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: fallbackMatID, Price: d("9.00"), Currency: "GBP", ValidFrom: day(2026, 6, 2)}))
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: fallbackMatID, Price: d("10.00"), Currency: "CAD", ValidFrom: day(2026, 6, 2)}))
+	fallback, err := T.GetMaterial(ctx, fallbackMatID)
+	require.NoError(t, err)
+	require.Len(t, fallback.LatestPrices, 3)
+	require.NotNil(t, fallback.LatestPrice)
+	require.Equal(t, "CAD", fallback.LatestPrice.Currency, "same-date fallback uses currency ASC")
 
 	// same-day correction upserts (not duplicates)
 	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: matID, Price: d("14.25"), Currency: "EUR", ValidFrom: day(2026, 6, 1)}))
@@ -197,6 +214,18 @@ func TestProductionRun(t *testing.T) {
 	require.EqualValues(t, 58, got.Lines[0].ReceivedQty.Int64)
 	require.EqualValues(t, 2, got.Lines[0].DefectQty.Int64)
 	require.Len(t, got.Costs, 1, "costs full-replaced")
+	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
+
+	// A cost-blind update preserves the stored articles under the same FOR UPDATE lock; an empty
+	// incoming slice is not allowed to erase them.
+	require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &entity.ProductionRunInsert{
+		TechCardId: tcID,
+		Status:     entity.ProductionRunInProgress,
+		Lines:      got.Lines,
+	}, 0))
+	got, err = P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Len(t, got.Costs, 1)
 	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
 
 	// update of a missing run → ErrNoRows

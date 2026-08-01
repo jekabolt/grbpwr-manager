@@ -177,7 +177,7 @@ type MaterialPrice struct {
 
 // MaterialWithPrice is a catalog material plus its current (latest-effective) prices. LatestPrices
 // keeps one current row per currency for costing; LatestPrice is the backwards-compatible singular
-// admin projection (the base-currency row when present, otherwise the sole unambiguous row).
+// admin projection (the base-currency row when present, otherwise the newest cross-currency quote).
 type MaterialWithPrice struct {
 	Material
 	LatestPrice  *MaterialPrice
