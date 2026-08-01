@@ -562,6 +562,7 @@ func TestConvertTechCardIssuesAndRelease(t *testing.T) {
 	in := &pb_common.TechCardInsert{
 		StyleNumber: "ST-035",
 		Name:        "Jacket",
+		Operations:  []*pb_common.TechCardOperation{{Node: "sew collar"}},
 		Issues: []*pb_common.TechCardIssue{
 			{OperationNumber: 10, Severity: pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_HIGH, Description: "collar too tight to turn"},
 		},

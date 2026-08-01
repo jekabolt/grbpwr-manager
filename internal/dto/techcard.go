@@ -444,7 +444,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	issues, err := parseTechCardIssues(pb.Issues)
+	issues, err := parseTechCardIssues(pb.Issues, len(operations), calloutNumbers)
 	if err != nil {
 		return nil, err
 	}

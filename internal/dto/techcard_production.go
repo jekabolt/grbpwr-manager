@@ -539,14 +539,36 @@ var techCardIssueStatusEntityToPb = func() map[entity.TechCardIssueStatus]pb_com
 	return m
 }()
 
-func parseTechCardIssues(pbs []*pb_common.TechCardIssue) ([]entity.TechCardIssue, error) {
+func parseTechCardIssues(pbs []*pb_common.TechCardIssue, operationCount int, calloutNumbers map[int]bool) ([]entity.TechCardIssue, error) {
 	out := make([]entity.TechCardIssue, 0, len(pbs))
-	for _, i := range pbs {
+	for issueIndex, i := range pbs {
 		if i.Description == "" {
 			return nil, fmt.Errorf("issue description is required")
 		}
-		if i.OperationNumber < 0 || i.CalloutNumber < 0 {
-			return nil, fmt.Errorf("issue operation_number/callout_number must not be negative")
+		operationField := fmt.Sprintf("issues[%d].operation_number", issueIndex)
+		if i.OperationNumber < 0 {
+			return nil, entity.NewFieldViolation(operationField, "must not be negative", "", "use 0 for no operation")
+		}
+		if i.OperationNumber > 0 {
+			maxOperationNumber := operationCount * 10
+			if i.OperationNumber%10 != 0 || int(i.OperationNumber) > maxOperationNumber {
+				if operationCount == 0 {
+					return nil, entity.NewFieldViolation(operationField,
+						"must be 0 because the payload contains no operations", "", "add an operation or clear this reference")
+				}
+				return nil, entity.NewFieldViolation(operationField,
+					fmt.Sprintf("must be 0 or an exact multiple of 10 in [10, %d]", maxOperationNumber), "",
+					fmt.Sprintf("use one of the server-assigned operation numbers 10, 20, …, %d", maxOperationNumber))
+			}
+		}
+		calloutField := fmt.Sprintf("issues[%d].callout_number", issueIndex)
+		if i.CalloutNumber < 0 {
+			return nil, entity.NewFieldViolation(calloutField, "must not be negative", "", "use 0 for no callout")
+		}
+		if i.CalloutNumber > 0 && !calloutNumbers[int(i.CalloutNumber)] {
+			return nil, entity.NewFieldViolation(calloutField,
+				"does not reference a callout in this payload", "",
+				"use 0 for no callout, or reference an existing callout number")
 		}
 		if len(i.RaisedBy) > maxVarchar255 {
 			return nil, fmt.Errorf("issue raised_by must be at most %d characters", maxVarchar255)
