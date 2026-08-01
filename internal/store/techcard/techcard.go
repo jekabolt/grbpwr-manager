@@ -472,16 +472,16 @@ func guardTechCardStageRegression(ctx context.Context, db dependency.DB, id int,
 	if !fromOK || !toOK || toOrd >= fromOrd {
 		return nil // forward, same-stage, or non-comparable: nothing to guard
 	}
-	// An ARCHIVED colourway (soft-deleted; product.lifecycle_status = 4) is retired work, not a live
-	// downstream artifact — it must NOT pin the style's stage. Excluding it lets a style whose only
-	// colourways are archived regress its stage. sample/tech_card_release have no soft-delete/archived
-	// state, so their counts stay unfiltered.
+	// An ARCHIVED colourway (soft-deleted; product.lifecycle_status = 4) and a SCRAPPED sample are
+	// retired work, not live downstream artifacts — neither pins the style's stage. Release snapshots
+	// are immutable history and have no soft-delete state, so only their count stays unfiltered.
 	counts, err := storeutil.QueryNamedOne[struct {
 		Samples   int `db:"samples"`
 		Releases  int `db:"releases"`
 		Colorways int `db:"colorways"`
 	}](ctx, db, `SELECT
-		(SELECT COUNT(*) FROM sample WHERE tech_card_id = :id)            AS samples,
+		(SELECT COUNT(*) FROM sample WHERE tech_card_id = :id
+			AND status <> 'scrapped')                                       AS samples,
 		(SELECT COUNT(*) FROM tech_card_release WHERE tech_card_id = :id) AS releases,
 		(SELECT COUNT(*) FROM product WHERE style_id = :id
 			AND lifecycle_status <> :archived)                           AS colorways`,

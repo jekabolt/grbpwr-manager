@@ -15,8 +15,8 @@ import (
 // tech-card stage-regression guard (guardTechCardStageRegression) counts a style's colourways to decide
 // whether the stage may move backward, but it must NOT count ARCHIVED (soft-deleted,
 // product.lifecycle_status = 4) colourways — those are retired work, not live downstream artifacts.
-// With the `AND lifecycle_status <> 4` filter, a style whose only colourway is archived can regress its
-// stage (proto → idea); a style with a NON-archived (e.g. DRAFT) colourway still cannot.
+// With the retirement filters, a style whose only colourway is archived OR whose only sample is
+// scrapped can regress its stage (proto → idea); live colourways and non-scrapped samples still block.
 func TestStageRegressionAllowedWhenOnlyArchivedColorways(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -84,6 +84,14 @@ func TestStageRegressionAllowedWhenOnlyArchivedColorways(t *testing.T) {
 	var stage string
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT stage FROM tech_card WHERE id = ?`, archivedOnly).Scan(&stage))
 	require.Equal(t, string(entity.TechCardStageIdea), stage, "the stage must actually have regressed to idea")
+
+	// --- Positive: a SCRAPPED sample is retired too, matching readiness's sample counters. ---
+	scrappedOnly := mkProtoCard("Scrapped-sample style", "SR-SCRAPPED")
+	_, err = testDB.ExecContext(ctx, `INSERT INTO sample (tech_card_id, number, purpose, status)
+		VALUES (?, 1, 'proto', 'scrapped')`, scrappedOnly)
+	require.NoError(t, err)
+	require.NoError(t, regressToIdea(scrappedOnly),
+		"a style whose only sample is scrapped must be allowed to regress its stage")
 
 	// --- Negative control: a non-archived (DRAFT) colourway -> regression still blocked ---
 	withDraft := mkProtoCard("Draft-colourway style", "SR-DRAFT")
