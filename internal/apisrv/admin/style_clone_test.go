@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -89,4 +90,68 @@ func TestCloneStyleForSeasonRejectsSourceChangedBeforeInsert(t *testing.T) {
 
 	_, err := (&Server{repo: repo}).CloneStyleForSeason(fullAccessCtx(), cloneRequest())
 	require.Equal(t, codes.Aborted, status.Code(err))
+}
+
+func TestCloneStyleForSeasonNormalizesLegacyIssueRefsAndCurrencylessCosting(t *testing.T) {
+	source := cloneSourceCard()
+	source.Operations = []entity.TechCardOperation{{
+		OperationNumber: sql.NullInt32{Int32: 10, Valid: true},
+		Node:            "legacy operation",
+	}}
+	source.Callouts = []entity.TechCardCallout{{Number: 1}}
+	source.Issues = []entity.TechCardIssue{{
+		OperationNumber: sql.NullInt32{Int32: 7, Valid: true},
+		CalloutNumber:   sql.NullInt32{Int32: 99, Valid: true},
+		Description:     "legacy references",
+		Severity:        entity.IssueSeverityMedium,
+		Status:          entity.IssueStatusOpen,
+	}}
+	source.Costing = &entity.TechCardCosting{
+		CmtCost: decimal.NullDecimal{Decimal: decimal.NewFromInt(12), Valid: true},
+	}
+
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(source, nil)
+	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
+	tc.EXPECT().SuggestStyleNumber(mock.Anything, "FW", 2026).Return("FW26-0007", nil)
+	tc.EXPECT().CloneTechCardForSeason(mock.Anything, 7, 4, mock.AnythingOfType("*entity.TechCardInsert")).
+		Run(func(_ context.Context, _, _ int, insert *entity.TechCardInsert) {
+			require.Nil(t, insert.Costing, "ambiguous currencyless costing is not copied")
+			require.Len(t, insert.Issues, 1)
+			require.False(t, insert.Issues[0].OperationNumber.Valid)
+			require.False(t, insert.Issues[0].CalloutNumber.Valid)
+		}).Return(11, nil)
+
+	_, err := (&Server{repo: repo}).CloneStyleForSeason(fullAccessCtx(), cloneRequest())
+	require.NoError(t, err)
+}
+
+func TestCloneStyleForSeasonPreservesLegacyHardwareDoublePricing(t *testing.T) {
+	source := cloneSourceCard()
+	source.BomItems = []entity.TechCardBomItem{{
+		LineKey: "hardware-line", Section: entity.BomSectionHardware, Name: "zip",
+	}}
+	source.Costing = &entity.TechCardCosting{
+		HardwareCost: decimal.NullDecimal{Decimal: decimal.NewFromInt(9), Valid: true},
+		Currency:     sql.NullString{String: "EUR", Valid: true},
+	}
+
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(source, nil)
+	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
+	tc.EXPECT().SuggestStyleNumber(mock.Anything, "FW", 2026).Return("FW26-0007", nil)
+	tc.EXPECT().CloneTechCardForSeason(mock.Anything, 7, 4, mock.AnythingOfType("*entity.TechCardInsert")).
+		Run(func(_ context.Context, _, _ int, insert *entity.TechCardInsert) {
+			require.NotNil(t, insert.Costing)
+			require.True(t, insert.Costing.HardwareCost.Valid)
+			require.True(t, insert.Costing.HardwareCost.Decimal.Equal(decimal.NewFromInt(9)))
+			require.Len(t, insert.BomItems, 1)
+		}).Return(11, nil)
+
+	_, err := (&Server{repo: repo}).CloneStyleForSeason(fullAccessCtx(), cloneRequest())
+	require.NoError(t, err)
 }
