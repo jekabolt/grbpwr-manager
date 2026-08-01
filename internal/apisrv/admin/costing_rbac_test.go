@@ -476,6 +476,81 @@ func TestUpdateTechCardCostBlindFailsWhenCostingReloadFails(t *testing.T) {
 	require.Contains(t, status.Convert(err).Message(), "try again")
 }
 
+func TestUpdateTechCardCostBlindCannotChangeCostingSignoff(t *testing.T) {
+	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{rbac.SectionTechCards: entity.AccessWrite},
+	})
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+		TechCardInsert: entity.TechCardInsert{
+			Costing: &entity.TechCardCosting{Currency: sql.NullString{String: "EUR", Valid: true}},
+		},
+	}, nil)
+
+	_, err := (&Server{repo: repo}).UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-COST-SIGNOFF",
+			Name:        "costing approval guard",
+			Signoffs: []*pb_common.TechCardSignoff{{
+				Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING,
+				State:   pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+			}},
+		},
+	})
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "costing:read")
+}
+
+func TestCostingSignoffChangedDistinguishesCarryFromTransition(t *testing.T) {
+	approved := []entity.TechCardSignoff{{Section: entity.SignoffCosting, State: entity.SignoffStateApproved}}
+	rejected := []entity.TechCardSignoff{{Section: entity.SignoffCosting, State: entity.SignoffStateRejected}}
+	require.False(t, costingSignoffChanged(approved, approved, nil), "unchanged carried approval passes")
+	require.True(t, costingSignoffChanged(approved, approved,
+		map[entity.TechCardSignoffSection]bool{entity.SignoffCosting: true}), "fresh re-approval is a change")
+	require.True(t, costingSignoffChanged(approved, rejected, nil), "approved to rejected is a change")
+	require.True(t, costingSignoffChanged(approved, nil, nil), "omitting the stored row deletes its state")
+}
+
+func TestUpdateTechCardCostReadCanApproveHydratedCosting(t *testing.T) {
+	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{
+			rbac.SectionTechCards: entity.AccessWrite,
+			rbac.SectionCosting:   entity.AccessRead,
+		},
+	})
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	storedCosting := &entity.TechCardCosting{Currency: sql.NullString{String: "EUR", Valid: true}}
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+		TechCardInsert: entity.TechCardInsert{Costing: storedCosting},
+	}, nil)
+	var written *entity.TechCardInsert
+	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
+		mock.AnythingOfType("*entity.TechCardInsert"), 2).
+		Run(func(args mock.Arguments) { written = args.Get(2).(*entity.TechCardInsert) }).
+		Return(nil, entity.ErrTechCardConflict)
+
+	_, err := (&Server{repo: repo}).UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7, ExpectedLockVersion: 2,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-COST-READ",
+			Name:        "costing read approval",
+			Signoffs: []*pb_common.TechCardSignoff{{
+				Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING,
+				State:   pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+			}},
+		},
+	})
+	require.Equal(t, codes.Aborted, status.Code(err))
+	require.NotNil(t, written)
+	require.Same(t, storedCosting, written.Costing, "costing is hydrated before presence validation and restamping")
+	require.True(t, written.Signoffs[0].SignedDigest.Valid)
+}
+
 // TestStripProductionRunCosting pins the Q5 costing symmetry (A3.2-#3): a run's actual money is
 // redacted for a non-costing account while its quantities and provenance flags survive.
 func TestStripProductionRunCosting(t *testing.T) {

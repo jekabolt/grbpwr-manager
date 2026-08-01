@@ -84,7 +84,8 @@ func techCardConvertErr(err error) error {
 
 // CreateTechCard creates a new tech card with its nested sections.
 func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCardRequest) (*pb_admin.CreateTechCardResponse, error) {
-	if _, write := s.costingAccess(ctx); !write && techCardInsertHasCostingData(req.TechCard) {
+	canReadCosting, canWriteCosting := s.costingAccess(ctx)
+	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set cost data (costing block or BOM prices)")
 	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
@@ -97,11 +98,13 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
-	stampFreshTechCardSignoffAudit(tc, req.TechCard.Signoffs, username, time.Now().UTC())
+	freshSignoffs := prepareCreateTechCardSignoffs(tc, username, time.Now().UTC())
+	if costingSignoffChanged(nil, tc.Signoffs, freshSignoffs) && !canReadCosting {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to change the costing sign-off")
+	}
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
-	// here exactly as it does on update — so the same correction applies. Nothing mutates the payload
-	// between the parse and the write on this path, so the parse-time digests ARE the "as parsed" set.
-	if err := s.restampFreshSignoffDigests(ctx, tc, dto.TechCardSectionDigests(tc)); err != nil {
+	// here exactly as it does on update — so the same correction applies.
+	if err := s.restampFreshSignoffDigests(ctx, tc, freshSignoffs); err != nil {
 		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
 			slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
@@ -174,7 +177,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
-	_, canWriteCosting := s.costingAccess(ctx)
+	canReadCosting, canWriteCosting := s.costingAccess(ctx)
 	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
 	}
@@ -185,22 +188,39 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
+	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, int(req.Id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "tech card not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
+			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load tech card; try again")
+	}
+	if stored == nil {
+		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
+			slog.Int("tech_card_id", int(req.Id)))
+		return nil, status.Error(codes.Internal, "can't load tech card; try again")
+	}
 	username := authsrv.GetAdminUsername(ctx)
 	tc.UpdatedBy = username // server-stamp; created_by is preserved (not in SET)
-	stampFreshTechCardSignoffAudit(tc, req.TechCard.Signoffs, username, time.Now().UTC())
-	// Snapshot the fingerprints of the payload AS PARSED — that is what dto stamped a fresh approval
-	// with, and the only way to tell this save's approvals from ones carried back verbatim. Taken
-	// before the costing restore below changes the priced sections underneath it.
-	asParsed := dto.TechCardSectionDigests(tc)
+	freshSignoffs := reconcileUpdateTechCardSignoffs(tc, req.TechCard.Signoffs, stored.Signoffs,
+		username, time.Now().UTC())
+	if costingSignoffChanged(stored.Signoffs, tc.Signoffs, freshSignoffs) && !canReadCosting {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to change the costing sign-off")
+	}
 	// A cost-stripped account's full-replace save must not blank the costing it never saw.
 	if !canWriteCosting {
-		if err := s.preserveStoredCosting(ctx, int(req.Id), tc); err != nil {
+		if err := preserveStoredCostingFrom(stored, tc); err != nil {
 			slog.Default().ErrorContext(ctx, "can't preserve stored tech card costing",
 				slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
 			return nil, status.Error(codes.Internal, "can't preserve stored costing; try again")
 		}
 	}
-	if err := s.restampFreshSignoffDigests(ctx, tc, asParsed); err != nil {
+	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	if err := s.restampFreshSignoffDigests(ctx, tc, freshSignoffs); err != nil {
 		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
 			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
@@ -244,9 +264,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 // restampFreshSignoffDigests re-fingerprints the sections THIS save is approving from the content the
 // card will PRESENT ON THE NEXT READ, which is not the same thing as the payload that arrived.
 //
-// dto.ConvertPbTechCardInsertToEntity stamps a fresh approval's signed_digest at parse time — the only
-// moment it is certain which sections are being approved (an empty digest on the wire), but too early to
-// know the value, for two reasons:
+// dto.ConvertPbTechCardInsertToEntity stamps a fresh approval's signed_digest at parse time, but the
+// admin layer first verifies the request's carry/fresh claim against storage. An explicit fresh-section
+// set is then passed here because digest equality cannot prove provenance. The final value cannot be
+// known at parse time for two reasons:
 //
 //  1. LINKED BOM LINES (every account). The read query resolves a linked line's name, supplier,
 //     supplier_ref, composition, spec and unit from the catalog material, while the payload legitimately
@@ -261,24 +282,17 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 // is the exact failure the digest mechanism exists to prevent. So the digest is re-taken here, from the
 // final payload in its read-model form.
 //
-// Only the sections stamped by THIS save move. A digest the client carried back verbatim ("I am not
-// re-approving, just saving") was computed from the read model, so it does not match asParsed and is left
-// exactly where the approver put it. The one case where a carried-back digest does match asParsed is a
-// section whose content has not moved since it was approved — pointing that approval at the read-model
-// fingerprint of the very same content re-blesses nothing, and it self-heals the rows stamped before
-// this correction existed.
-func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, asParsed map[entity.TechCardSignoffSection]string) error {
+// Only sections explicitly classified as fresh by prepareCreateTechCardSignoffs or
+// reconcileUpdateTechCardSignoffs move. A carried approval is copied from storage and never restamped.
+func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, freshSignoffs map[entity.TechCardSignoffSection]bool) error {
 	if tc == nil || len(tc.Signoffs) == 0 {
 		return nil
 	}
 	fresh := make([]*entity.TechCardSignoff, 0, len(tc.Signoffs))
 	for i := range tc.Signoffs {
 		so := &tc.Signoffs[i]
-		if so.State != entity.SignoffStateApproved || !so.SignedDigest.Valid {
+		if so.State != entity.SignoffStateApproved || !freshSignoffs[so.Section] {
 			continue
-		}
-		if so.SignedDigest.String != asParsed[so.Section] {
-			continue // carried back verbatim: an older approval, not this save's
 		}
 		fresh = append(fresh, so)
 	}
@@ -298,22 +312,140 @@ func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.Tech
 }
 
 // stampFreshTechCardSignoffAudit owns the author and timestamp of an approval made by this request.
-// The parsed entity's digest is already populated, so freshness must come from the original wire
-// intent: APPROVED with an empty incoming digest. Carried-back approvals keep their stored audit
-// fields verbatim. parseTechCardSignoffs preserves order and rejects duplicates, so the two slices
-// correspond index-for-index after a successful conversion.
-func stampFreshTechCardSignoffAudit(tc *entity.TechCardInsert, incoming []*pb_common.TechCardSignoff, username string, now time.Time) {
+// Freshness has already been verified against storage; carried approvals are never selected here.
+func stampFreshTechCardSignoffAudit(tc *entity.TechCardInsert, freshSignoffs map[entity.TechCardSignoffSection]bool, username string, now time.Time) {
 	if tc == nil {
 		return
 	}
 	for i := range tc.Signoffs {
-		if i >= len(incoming) || incoming[i] == nil ||
-			tc.Signoffs[i].State != entity.SignoffStateApproved || incoming[i].SignedDigest != "" {
+		if tc.Signoffs[i].State != entity.SignoffStateApproved || !freshSignoffs[tc.Signoffs[i].Section] {
 			continue
 		}
 		tc.Signoffs[i].SignedBy = sql.NullString{String: username, Valid: username != ""}
 		tc.Signoffs[i].SignedAt = sql.NullTime{Time: now.UTC(), Valid: true}
 	}
+}
+
+// prepareCreateTechCardSignoffs makes every approval on a new card fresh. There is no stored row a
+// client can legitimately carry, so any supplied digest or audit identity is untrusted and discarded.
+func prepareCreateTechCardSignoffs(tc *entity.TechCardInsert, username string, now time.Time) map[entity.TechCardSignoffSection]bool {
+	fresh := make(map[entity.TechCardSignoffSection]bool)
+	if tc == nil {
+		return fresh
+	}
+	for i := range tc.Signoffs {
+		if tc.Signoffs[i].State != entity.SignoffStateApproved {
+			continue
+		}
+		tc.Signoffs[i].SignedDigest = sql.NullString{}
+		fresh[tc.Signoffs[i].Section] = true
+	}
+	dto.StampTechCardSignoffDigests(tc)
+	stampFreshTechCardSignoffAudit(tc, fresh, username, now)
+	return fresh
+}
+
+// reconcileUpdateTechCardSignoffs makes storage authoritative for a carried approval. A non-empty
+// wire digest is only a carry request; when storage has an approved row for the same section its audit
+// fields and digest replace the request values. Without such a row the approval is fresh and receives
+// a new server-owned digest, author and timestamp.
+func reconcileUpdateTechCardSignoffs(tc *entity.TechCardInsert, incoming []*pb_common.TechCardSignoff,
+	stored []entity.TechCardSignoff, username string, now time.Time) map[entity.TechCardSignoffSection]bool {
+	fresh := make(map[entity.TechCardSignoffSection]bool)
+	if tc == nil {
+		return fresh
+	}
+	storedBySection := make(map[entity.TechCardSignoffSection]entity.TechCardSignoff, len(stored))
+	carried := make(map[entity.TechCardSignoffSection]entity.TechCardSignoff)
+	for i := range stored {
+		storedBySection[stored[i].Section] = stored[i]
+	}
+	for i := range tc.Signoffs {
+		so := &tc.Signoffs[i]
+		if so.State != entity.SignoffStateApproved {
+			continue
+		}
+		wireDigest := ""
+		if i < len(incoming) && incoming[i] != nil {
+			wireDigest = incoming[i].GetSignedDigest()
+		}
+		storedSignoff, canCarry := storedBySection[so.Section]
+		if wireDigest != "" && canCarry && storedSignoff.State == entity.SignoffStateApproved {
+			so.SignedBy = storedSignoff.SignedBy
+			so.SignedAt = storedSignoff.SignedAt
+			so.SignedDigest = storedSignoff.SignedDigest
+			carried[so.Section] = storedSignoff
+			continue
+		}
+		so.SignedDigest = sql.NullString{}
+		fresh[so.Section] = true
+	}
+	dto.StampTechCardSignoffDigests(tc)
+	// StampTechCardSignoffDigests also fills an approved row whose digest is NULL. Re-apply carried
+	// storage afterwards so an unverifiable legacy approval remains stale instead of being silently
+	// blessed with the current content merely because the client sent a non-empty carry claim.
+	for i := range tc.Signoffs {
+		storedSignoff, ok := carried[tc.Signoffs[i].Section]
+		if !ok {
+			continue
+		}
+		tc.Signoffs[i].SignedBy = storedSignoff.SignedBy
+		tc.Signoffs[i].SignedAt = storedSignoff.SignedAt
+		tc.Signoffs[i].SignedDigest = storedSignoff.SignedDigest
+	}
+	stampFreshTechCardSignoffAudit(tc, fresh, username, now)
+	return fresh
+}
+
+// costingSignoffChanged reports a costing-signoff state transition. A fresh re-approval is a change
+// even when the stored and requested states are both approved; an unchanged carried approval is not.
+func costingSignoffChanged(stored, incoming []entity.TechCardSignoff,
+	fresh map[entity.TechCardSignoffSection]bool) bool {
+	if fresh[entity.SignoffCosting] {
+		return true
+	}
+	find := func(signoffs []entity.TechCardSignoff) (entity.TechCardSignoffState, bool) {
+		for i := range signoffs {
+			if signoffs[i].Section == entity.SignoffCosting {
+				return signoffs[i].State, true
+			}
+		}
+		return "", false
+	}
+	storedState, storedOK := find(stored)
+	incomingState, incomingOK := find(incoming)
+	return storedOK != incomingOK || (storedOK && storedState != incomingState)
+}
+
+// validateFreshSignoffSectionPresence rejects an approval over a presence-preserved section the
+// update did not carry. Costing restoration runs before this check, so a read-only costing approver's
+// hydrated stored block is present; a costing-capable caller who omitted it must include it to approve.
+func validateFreshSignoffSectionPresence(tc *entity.TechCardInsert,
+	fresh map[entity.TechCardSignoffSection]bool) *entity.ValidationError {
+	if tc == nil {
+		return nil
+	}
+	for i := range tc.Signoffs {
+		so := tc.Signoffs[i]
+		if so.State != entity.SignoffStateApproved || !fresh[so.Section] {
+			continue
+		}
+		present := true
+		switch so.Section {
+		case entity.SignoffConstruction:
+			present = tc.Construction != nil
+		case entity.SignoffPackaging:
+			present = tc.Packaging != nil
+		case entity.SignoffCosting:
+			present = tc.Costing != nil
+		}
+		if !present {
+			return entity.NewFieldViolation(fmt.Sprintf("signoffs[%d].section", i),
+				fmt.Sprintf("cannot approve %s because this save does not carry that section", so.Section), "",
+				"include the section or drop the approval")
+		}
+	}
+	return nil
 }
 
 // linkedBomMaterialIdentities loads the catalog identity of every material the payload's BOM links, so a

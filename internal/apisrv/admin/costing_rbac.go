@@ -445,8 +445,21 @@ func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, inco
 	if err != nil {
 		return fmt.Errorf("reload stored tech card %d for costing preservation: %w", techCardID, err)
 	}
+	if err := preserveStoredCostingFrom(stored, incoming); err != nil {
+		return fmt.Errorf("reload stored tech card %d for costing preservation: %w", techCardID, err)
+	}
+	return nil
+}
+
+// preserveStoredCostingFrom applies the anti-erase restore from an already-consistent card reload.
+// UpdateTechCard shares that reload with sign-off reconciliation so both security decisions observe
+// the same stored snapshot; preserveStoredCosting remains as the standalone wrapper used elsewhere.
+func preserveStoredCostingFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) error {
 	if stored == nil {
-		return fmt.Errorf("reload stored tech card %d for costing preservation: empty result", techCardID)
+		return fmt.Errorf("empty stored card")
+	}
+	if incoming == nil {
+		return fmt.Errorf("empty incoming card")
 	}
 	incoming.Costing = stored.Costing
 	if len(stored.BomItems) == 0 || len(incoming.BomItems) == 0 {

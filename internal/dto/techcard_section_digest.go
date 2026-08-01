@@ -92,8 +92,9 @@ func TechCardSectionDigestsToPb(tc *entity.TechCardInsert) []*pb_common.TechCard
 //	empty  → "I am approving this now" (a new sign-off, or a re-approval after review). The server
 //	         fingerprints the payload it is about to write — the only moment it can be certain the
 //	         digest describes precisely the content the approver was looking at.
-//	present→ "I am not re-approving, I am just saving." Carried through verbatim, so an approval
-//	         made three edits ago keeps pointing at the content it actually covered.
+//	present→ "I am not re-approving, I am just saving." The admin layer treats this only as a carry
+//	         request and replaces the digest and audit fields from the stored approved row. Create has
+//	         no stored row and coerces every approval to fresh.
 //
 // A section that is not approved carries no digest at all: pending and rejected have nothing to be
 // stale against.
@@ -113,7 +114,7 @@ func StampTechCardSignoffDigests(tc *entity.TechCardInsert) {
 			continue
 		}
 		if tc.Signoffs[i].SignedDigest.Valid && tc.Signoffs[i].SignedDigest.String != "" {
-			continue // an unrelated save: the approval still covers what it covered
+			continue // carry request; the admin layer verifies it against storage before persistence
 		}
 		tc.Signoffs[i].SignedDigest = nullStringFromPb(digests[tc.Signoffs[i].Section])
 	}

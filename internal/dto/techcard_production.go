@@ -715,9 +715,9 @@ func parseTechCardSignoffs(pbs []*pb_common.TechCardSignoff) ([]entity.TechCardS
 			SignedBy: nullStringFromPb(s.SignedBy),
 			SignedAt: nullTimeFromPbTimestamp(s.SignedAt),
 			Note:     nullStringFromPb(s.Note),
-			// Echoed back as-is: a present digest means "not re-approving, just saving" and is carried
-			// through; an empty one asks the server to fingerprint what is being written. See
-			// StampTechCardSignoffDigests, which is what actually decides.
+			// A present digest is only a REQUEST to carry the approval. The admin update layer verifies
+			// it against the stored sign-off and replaces all server-owned audit fields from storage;
+			// create discards it. An empty digest asks the server to approve what is being written.
 			SignedDigest: nullStringFromPb(s.SignedDigest),
 		})
 	}

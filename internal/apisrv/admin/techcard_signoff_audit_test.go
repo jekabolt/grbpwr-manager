@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -15,47 +16,124 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestStampFreshTechCardSignoffAudit(t *testing.T) {
+func TestPrepareCreateTechCardSignoffsDiscardsClientAuditAndDigest(t *testing.T) {
 	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
 	oldTime := now.Add(-24 * time.Hour)
-	tc := &entity.TechCardInsert{Signoffs: []entity.TechCardSignoff{
-		{
+	tc := &entity.TechCardInsert{Signoffs: []entity.TechCardSignoff{{
+		Section:      entity.SignoffDesign,
+		State:        entity.SignoffStateApproved,
+		SignedBy:     sql.NullString{String: "forged", Valid: true},
+		SignedAt:     sql.NullTime{Time: oldTime, Valid: true},
+		SignedDigest: sql.NullString{String: "client-supplied-digest", Valid: true},
+	}}}
+
+	fresh := prepareCreateTechCardSignoffs(tc, "alice", now)
+
+	require.True(t, fresh[entity.SignoffDesign])
+	got := tc.Signoffs[0]
+	require.Equal(t, "alice", got.SignedBy.String)
+	require.True(t, got.SignedAt.Valid)
+	require.True(t, got.SignedAt.Time.Equal(now))
+	require.True(t, got.SignedDigest.Valid)
+	require.NotEqual(t, "client-supplied-digest", got.SignedDigest.String)
+}
+
+func TestUpdateTechCardCarriedApprovalUsesStoredAuditFields(t *testing.T) {
+	storedAt := time.Date(2026, time.July, 1, 9, 0, 0, 0, time.UTC)
+	forgedAt := storedAt.Add(-365 * 24 * time.Hour)
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+		TechCardInsert: entity.TechCardInsert{Signoffs: []entity.TechCardSignoff{{
+			Section:      entity.SignoffMaterials,
 			State:        entity.SignoffStateApproved,
-			SignedBy:     sql.NullString{String: "forged", Valid: true},
-			SignedAt:     sql.NullTime{Time: oldTime, Valid: true},
-			SignedDigest: sql.NullString{String: "freshly-stamped-digest", Valid: true},
+			SignedBy:     sql.NullString{String: "original-approver", Valid: true},
+			SignedAt:     sql.NullTime{Time: storedAt, Valid: true},
+			SignedDigest: sql.NullString{String: "stored-digest", Valid: true},
+		}}},
+	}, nil)
+	var written *entity.TechCardInsert
+	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
+		mock.AnythingOfType("*entity.TechCardInsert"), 3).
+		Run(func(args mock.Arguments) {
+			tc := args.Get(2).(*entity.TechCardInsert)
+			copy := *tc
+			copy.Signoffs = append([]entity.TechCardSignoff(nil), tc.Signoffs...)
+			written = &copy
+		}).Return(nil, entity.ErrTechCardConflict)
+
+	ctx := authsrv.PutAdminUsername(fullAccessCtx(), "authenticated-admin")
+	_, err := (&Server{repo: repo}).UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7, ExpectedLockVersion: 3,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-SIGNOFF",
+			Name:        "signoff forgery guard",
+			Signoffs: []*pb_common.TechCardSignoff{{
+				Section:      pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_MATERIALS,
+				State:        pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+				SignedBy:     "boss",
+				SignedAt:     timestamppb.New(forgedAt),
+				SignedDigest: "digest-copied-from-current-read",
+			}},
 		},
-		{
-			State:        entity.SignoffStateApproved,
-			SignedBy:     sql.NullString{String: "original", Valid: true},
-			SignedAt:     sql.NullTime{Time: oldTime, Valid: true},
-			SignedDigest: sql.NullString{String: "carried-digest", Valid: true},
-		},
-		{
-			State:    entity.SignoffStatePending,
-			SignedBy: sql.NullString{String: "untouched", Valid: true},
-			SignedAt: sql.NullTime{Time: oldTime, Valid: true},
-		},
+	})
+	require.Equal(t, codes.Aborted, status.Code(err))
+	require.NotNil(t, written)
+	require.Len(t, written.Signoffs, 1)
+	got := written.Signoffs[0]
+	require.Equal(t, "original-approver", got.SignedBy.String)
+	require.True(t, got.SignedAt.Time.Equal(storedAt))
+	require.Equal(t, "stored-digest", got.SignedDigest.String)
+}
+
+func TestReconcileUpdateTechCardSignoffsMakesUnknownCarryFresh(t *testing.T) {
+	now := time.Date(2026, time.August, 2, 10, 0, 0, 0, time.UTC)
+	tc := &entity.TechCardInsert{Signoffs: []entity.TechCardSignoff{{
+		Section:      entity.SignoffDesign,
+		State:        entity.SignoffStateApproved,
+		SignedBy:     sql.NullString{String: "boss", Valid: true},
+		SignedDigest: sql.NullString{String: "forged-current-digest", Valid: true},
+	}}}
+	incoming := []*pb_common.TechCardSignoff{{
+		Section:      pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_DESIGN,
+		State:        pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+		SignedDigest: "forged-current-digest",
 	}}
-	incoming := []*pb_common.TechCardSignoff{
-		{State: pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED},
-		{State: pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED, SignedDigest: "carried-digest"},
-		{State: pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_PENDING},
-	}
 
-	stampFreshTechCardSignoffAudit(tc, incoming, "alice", now)
+	fresh := reconcileUpdateTechCardSignoffs(tc, incoming, nil, "authenticated-admin", now)
 
-	if got := tc.Signoffs[0]; got.SignedBy.String != "alice" || !got.SignedBy.Valid || !got.SignedAt.Valid || !got.SignedAt.Time.Equal(now) {
-		t.Errorf("fresh approval audit was not server-stamped: %+v", got)
-	}
-	if got := tc.Signoffs[1]; got.SignedBy.String != "original" || !got.SignedAt.Time.Equal(oldTime) {
-		t.Errorf("carried approval audit must remain unchanged: %+v", got)
-	}
-	if got := tc.Signoffs[2]; got.SignedBy.String != "untouched" || !got.SignedAt.Time.Equal(oldTime) {
-		t.Errorf("non-approved signoff audit must remain unchanged: %+v", got)
-	}
+	require.True(t, fresh[entity.SignoffDesign])
+	require.Equal(t, "authenticated-admin", tc.Signoffs[0].SignedBy.String)
+	require.True(t, tc.Signoffs[0].SignedAt.Time.Equal(now))
+	require.NotEqual(t, "forged-current-digest", tc.Signoffs[0].SignedDigest.String)
+}
+
+func TestReconcileUpdateTechCardSignoffsKeepsLegacyCarryUnverifiable(t *testing.T) {
+	tc := &entity.TechCardInsert{Signoffs: []entity.TechCardSignoff{{
+		Section:      entity.SignoffDesign,
+		State:        entity.SignoffStateApproved,
+		SignedDigest: sql.NullString{String: "wire-carry-claim", Valid: true},
+	}}}
+	incoming := []*pb_common.TechCardSignoff{{
+		Section:      pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_DESIGN,
+		State:        pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+		SignedDigest: "wire-carry-claim",
+	}}
+	stored := []entity.TechCardSignoff{{
+		Section:  entity.SignoffDesign,
+		State:    entity.SignoffStateApproved,
+		SignedBy: sql.NullString{String: "legacy-approver", Valid: true},
+	}}
+
+	fresh := reconcileUpdateTechCardSignoffs(tc, incoming, stored, "attacker", time.Now())
+
+	require.False(t, fresh[entity.SignoffDesign])
+	require.Equal(t, "legacy-approver", tc.Signoffs[0].SignedBy.String)
+	require.False(t, tc.Signoffs[0].SignedDigest.Valid, "a stored legacy approval must remain stale")
 }
 
 func TestCreateTechCardFreshSignoffFailsWhenCatalogLoadFails(t *testing.T) {
@@ -90,7 +168,40 @@ func TestRestampFreshSignoffDigestsSkipsCatalogWithoutFreshApproval(t *testing.T
 			SignedDigest: sql.NullString{String: "carried", Valid: true},
 		}},
 	}
-	err := (&Server{}).restampFreshSignoffDigests(context.Background(), tc,
-		map[entity.TechCardSignoffSection]string{entity.SignoffMaterials: "payload"})
+	err := (&Server{}).restampFreshSignoffDigests(context.Background(), tc, nil)
 	require.NoError(t, err)
+}
+
+func TestUpdateTechCardRejectsFreshApprovalForAbsentPreservedSection(t *testing.T) {
+	tests := []struct {
+		name    string
+		section pb_common.TechCardSignoffSection
+	}{
+		{"construction", pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_CONSTRUCTION},
+		{"packaging", pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_PACKAGING},
+		{"costing", pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := mocks.NewMockRepository(t)
+			techCards := mocks.NewMockTechCards(t)
+			repo.EXPECT().TechCards().Return(techCards)
+			techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{}, nil)
+
+			_, err := (&Server{repo: repo}).UpdateTechCard(fullAccessCtx(), &pb_admin.UpdateTechCardRequest{
+				Id: 7,
+				TechCard: &pb_common.TechCardInsert{
+					StyleNumber: "TC-ABSENT",
+					Name:        "absent section guard",
+					Signoffs: []*pb_common.TechCardSignoff{{
+						Section: tt.section,
+						State:   pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+					}},
+				},
+			})
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			require.Contains(t, status.Convert(err).Message(), "cannot approve "+tt.name)
+			require.Contains(t, status.Convert(err).Message(), "include the section or drop the approval")
+		})
+	}
 }
