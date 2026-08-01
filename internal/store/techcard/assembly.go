@@ -15,7 +15,7 @@ import (
 func (s *Store) ListStyleAssembly(ctx context.Context, styleID int) ([]entity.StyleAssembly, error) {
 	rows, err := storeutil.QueryListNamed[entity.StyleAssembly](ctx, s.DB, `
 		SELECT sa.id, sa.style_id, sa.component_tech_card_id, sa.size_id, sa.qty,
-		       sa.print_note, sa.position_note, sa.active, sa.lock_version, sa.created_by, sa.updated_by,
+		       sa.print_note, sa.position_note, sa.active, sa.created_by, sa.updated_by,
 		       c.name AS component_name, c.aux_subtype AS component_aux_subtype, c.output_material_id,
 		       m.name AS output_material_name, sz.name AS size_name
 		FROM style_assembly sa

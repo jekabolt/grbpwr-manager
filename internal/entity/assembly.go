@@ -26,15 +26,14 @@ type StyleAssembly struct {
 	PrintNote           sql.NullString  `db:"print_note"`
 	PositionNote        sql.NullString  `db:"position_note"`
 	Active              bool            `db:"active"`
-	LockVersion         int             `db:"lock_version"`
 	CreatedBy           string          `db:"created_by"`
 	UpdatedBy           string          `db:"updated_by"`
 	// Resolved on read for display (List / packing spec):
-	ComponentName       string         `db:"component_name"`         // auxiliary card name
-	ComponentAuxSubtype sql.NullString `db:"component_aux_subtype"`  // auxiliary card aux_subtype
-	OutputMaterialId    sql.NullInt32  `db:"output_material_id"`     // component's warehouse material (COGS link)
-	OutputMaterialName  sql.NullString `db:"output_material_name"`   // resolved material name
-	SizeName            sql.NullString `db:"size_name"`              // resolved when SizeId set
+	ComponentName       string         `db:"component_name"`        // auxiliary card name
+	ComponentAuxSubtype sql.NullString `db:"component_aux_subtype"` // auxiliary card aux_subtype
+	OutputMaterialId    sql.NullInt32  `db:"output_material_id"`    // component's warehouse material (COGS link)
+	OutputMaterialName  sql.NullString `db:"output_material_name"`  // resolved material name
+	SizeName            sql.NullString `db:"size_name"`             // resolved when SizeId set
 }
 
 // StyleAssemblyInsert is one writable assembly line (full-replace per style; the style is carried by the

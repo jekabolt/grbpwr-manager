@@ -102,9 +102,9 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO style_assembly
 			(style_id, component_tech_card_id, size_id, qty, print_note, position_note,
-			 active, lock_version, created_by, updated_by)
+			 active, created_by, updated_by)
 		SELECT :target, src.component_tech_card_id, src.size_id, src.qty, src.print_note,
-		       src.position_note, src.active, 0, :actor, :actor
+		       src.position_note, src.active, :actor, :actor
 		FROM style_assembly src
 		WHERE src.style_id = :source
 		  AND (src.size_id IS NULL OR EXISTS (

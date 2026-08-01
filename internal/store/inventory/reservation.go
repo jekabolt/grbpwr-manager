@@ -407,7 +407,7 @@ func (s *Store) ListPackagingRecipe(ctx context.Context) ([]entity.PackagingReci
 	rows, err := storeutil.QueryListNamed[entity.PackagingRecipe](ctx, s.DB, `
 		SELECT pr.id, pr.scope, pr.tech_card_id, pr.product_id, pr.material_id,
 		       m.name AS material_name, m.unit AS material_unit,
-		       pr.qty_per_order, pr.qty_per_item, pr.active, pr.lock_version, pr.created_by, pr.updated_by
+		       pr.qty_per_order, pr.qty_per_item, pr.active, pr.created_by, pr.updated_by
 		FROM packaging_recipe pr JOIN material m ON m.id = pr.material_id
 		ORDER BY pr.scope, m.name, pr.id`, map[string]any{})
 	if err != nil {

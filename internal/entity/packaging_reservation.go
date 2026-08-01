@@ -51,7 +51,6 @@ type PackagingRecipe struct {
 	QtyPerOrder  decimal.Decimal      `db:"qty_per_order"`
 	QtyPerItem   decimal.Decimal      `db:"qty_per_item"`
 	Active       bool                 `db:"active"`
-	LockVersion  int                  `db:"lock_version"`
 	CreatedBy    string               `db:"created_by"`
 	UpdatedBy    string               `db:"updated_by"`
 }
