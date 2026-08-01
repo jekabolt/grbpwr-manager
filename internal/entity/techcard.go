@@ -1074,8 +1074,13 @@ type TechCardInsert struct {
 	Constructor        sql.NullString          `db:"constructor"`
 	Technologist       sql.NullString          `db:"technologist"`
 	MeasurementUnit    TechCardMeasurementUnit `db:"measurement_unit"`
-	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
-	Notes              sql.NullString          `db:"notes"`
+	// MeasurementUnitSet separates "the client chose a unit" from "the field was absent". The unit is a
+	// fact ABOUT the numbers already in tech_card_size_measurement (a bare DECIMAL with no unit of its
+	// own), so an absent field must preserve the stored unit rather than fall back to the create-time
+	// default — otherwise an old cm card is re-read as mm, 10× off, by any save that omits the field.
+	MeasurementUnitSet bool           `db:"-"`
+	Concept            sql.NullString `db:"concept"` // design concept / intent (designer)
+	Notes              sql.NullString `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
 	SizeIds   []int               `db:"-"`
 	Media     []TechCardMediaItem `db:"-"`

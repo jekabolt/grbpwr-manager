@@ -250,14 +250,16 @@ func remintCardProducts(ctx context.Context, db dependency.DB, tcID int, previou
 func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
-			LockVersion   int          `db:"lock_version"`
-			ApprovalState string       `db:"approval_state"`
-			ApprovedAt    sql.NullTime `db:"approved_at"`
-			ReleasedAt    sql.NullTime `db:"released_at"`
-			Purpose       string       `db:"purpose"`
-			Stage         string       `db:"stage"`
+			LockVersion     int          `db:"lock_version"`
+			ApprovalState   string       `db:"approval_state"`
+			ApprovedAt      sql.NullTime `db:"approved_at"`
+			ReleasedAt      sql.NullTime `db:"released_at"`
+			Purpose         string       `db:"purpose"`
+			Stage           string       `db:"stage"`
+			MeasurementUnit string       `db:"measurement_unit"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit
+			 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return sql.ErrNoRows
@@ -300,6 +302,31 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := guardTechCardStageRegression(ctx, rep.DB(), id, entity.TechCardStage(cur.Stage), tc.Stage); err != nil {
 			return err
 		}
+		// The measurement unit is a FACT ABOUT the values already on file, not an instruction to
+		// convert them: tech_card_size_measurement.measurement_value is a bare DECIMAL(10,2) carrying
+		// no unit of its own, and the storefront serves it without one either. Flipping cm↔mm on a
+		// charted card therefore re-reads every point of measure as 10× or 1/10 of what was measured,
+		// silently, all the way to the buyer.
+		//
+		// Two rules keep that impossible. An ABSENT unit preserves the stored one (a save that never
+		// mentioned the unit must not re-unit the chart via the create-time default). An EXPLICIT flip
+		// is refused while any measurement exists — the author has to clear the chart and re-enter it
+		// in the new unit, which is the only conversion this code can perform reliably.
+		if !tc.MeasurementUnitSet {
+			tc.MeasurementUnit = entity.TechCardMeasurementUnit(cur.MeasurementUnit)
+		} else if string(tc.MeasurementUnit) != cur.MeasurementUnit {
+			charted, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COUNT(*) FROM tech_card_size_measurement WHERE tech_card_id = :id`, map[string]any{"id": id})
+			if err != nil {
+				return fmt.Errorf("count tech card %d measurements: %w", id, err)
+			}
+			if charted > 0 {
+				return entity.NewFieldViolation("measurement_unit", "chart_already_measured",
+					fmt.Sprintf("%d values recorded in %s", charted, cur.MeasurementUnit),
+					fmt.Sprintf("clear the size chart, then re-enter the measurements in %s — the stored numbers carry no unit, so switching it would re-read every one of them", tc.MeasurementUnit))
+			}
+		}
+
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
