@@ -73,13 +73,16 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	if len(ins.Costs) > 0 {
 		dto.FoldProductionRunCostsToBase(ins.Costs, s.costingFx(ctx))
 	}
-	// The update full-replaces production_run_cost, so a cost-blind account — whose read blanked the
-	// articles — would erase them by simply resaving the run's quantities. Carry the stored ones
-	// through (after the fold, so their amount_base is preserved verbatim).
-	if !costingWrite {
-		s.preserveStoredProductionRunCosts(ctx, int(req.Id), ins)
+	// The cost-blind path reloads and preserves stored articles under the run's FOR UPDATE lock. Its
+	// read is load-bearing: any failure aborts before the store's full-replace can delete cost rows.
+	var updateErr error
+	if costingWrite {
+		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion))
+	} else {
+		updateErr = s.repo.ProductionRuns().UpdateProductionRunPreservingCosts(
+			ctx, int(req.Id), ins, int(req.ExpectedLockVersion))
 	}
-	if err := s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion)); err != nil {
+	if err := updateErr; err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
 		}

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -76,6 +77,25 @@ func TestCreateProductionRunValidation(t *testing.T) {
 		Run: &pb_common.ProductionRunInsert{Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED},
 	})
 	require.Equal(t, codes.InvalidArgument, status.Code(err), "missing tech_card_id")
+}
+
+func TestUpdateProductionRunCostBlindPreservationFailureIsFatal(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	pr := mocks.NewMockProductionRuns(t)
+	repo.EXPECT().ProductionRuns().Return(pr)
+	pr.EXPECT().UpdateProductionRunPreservingCosts(mock.Anything, 7, mock.AnythingOfType("*entity.ProductionRunInsert"), 3).
+		Return(errors.New("preservation read failed"))
+	repo.EXPECT().IsErrForeignKeyViolation(mock.Anything).Return(false)
+
+	_, err := (&Server{repo: repo}).UpdateProductionRun(context.Background(), &pb_admin.UpdateProductionRunRequest{
+		Id:                  7,
+		ExpectedLockVersion: 3,
+		Run: &pb_common.ProductionRunInsert{
+			TechCardId: 9,
+			Status:     pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+		},
+	})
+	require.Equal(t, codes.Internal, status.Code(err))
 }
 
 // receiveRun builds a mock repo whose run/card are fixed, wiring the ProductionRuns + TechCards
