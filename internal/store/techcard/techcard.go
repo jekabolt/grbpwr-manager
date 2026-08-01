@@ -69,7 +69,7 @@ const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand
 	:base_model_id, :base_sample_size_id,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
-func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
+func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
 	// chk_tech_card_purpose CHECK — the dto already defaults it, this covers store-level callers.
 	purpose := tc.Purpose
@@ -82,6 +82,39 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	if styleNumberSource == "" {
 		styleNumberSource = entity.StyleNumberSourceGenerated
 	}
+	return map[string]any{
+		"style_number":        tc.StyleNumber,
+		"style_number_source": string(styleNumberSource),
+		"created_by":          tc.CreatedBy,
+		"updated_by":          tc.UpdatedBy,
+		"purpose":             string(purpose),
+		"output_material_id":  tc.OutputMaterialId,
+		"aux_subtype":         tc.AuxSubtype,
+		"name":                tc.Name,
+		"brand":               tc.Brand,
+		"season":              tc.SeasonLabel,
+		"season_code":         tc.SeasonCode,
+		"season_year":         tc.SeasonYear,
+		"collection":          tc.Collection,
+		"category_id":         tc.CategoryId,
+		"target_gender":       tc.TargetGender,
+		"stage":               string(tc.Stage),
+		"status":              tc.Status,
+		"approval_state":      string(tc.ApprovalState),
+		"approved_at":         tc.ApprovedAt,
+		"released_at":         tc.ReleasedAt,
+		"base_model_id":       tc.BaseModelId,
+		"base_sample_size_id": tc.BaseSampleSizeId,
+		"measurement_unit":    string(tc.MeasurementUnit),
+		"concept":             tc.Concept,
+		"notes":               tc.Notes,
+	}
+}
+
+// techCardInsertHeaderParams validates and derives the season fields that AddTechCard owns. Update
+// deliberately skips this step because its SET list does not persist any season column; UpdateStyle
+// is the sole write owner after creation.
+func techCardInsertHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	if tc.SeasonCode.Valid != tc.SeasonYear.Valid {
 		return nil, fmt.Errorf("sku_season code and year must be set or omitted together")
 	}
@@ -101,33 +134,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	}
 	// Never trust a caller-provided display label: keep it a projection of the typed pair.
 	tc.SeasonLabel = seasonLabel
-	return map[string]any{
-		"style_number":        tc.StyleNumber,
-		"style_number_source": string(styleNumberSource),
-		"created_by":          tc.CreatedBy,
-		"updated_by":          tc.UpdatedBy,
-		"purpose":             string(purpose),
-		"output_material_id":  tc.OutputMaterialId,
-		"aux_subtype":         tc.AuxSubtype,
-		"name":                tc.Name,
-		"brand":               tc.Brand,
-		"season":              seasonLabel,
-		"season_code":         tc.SeasonCode,
-		"season_year":         tc.SeasonYear,
-		"collection":          tc.Collection,
-		"category_id":         tc.CategoryId,
-		"target_gender":       tc.TargetGender,
-		"stage":               string(tc.Stage),
-		"status":              tc.Status,
-		"approval_state":      string(tc.ApprovalState),
-		"approved_at":         tc.ApprovedAt,
-		"released_at":         tc.ReleasedAt,
-		"base_model_id":       tc.BaseModelId,
-		"base_sample_size_id": tc.BaseSampleSizeId,
-		"measurement_unit":    string(tc.MeasurementUnit),
-		"concept":             tc.Concept,
-		"notes":               tc.Notes,
-	}, nil
+	return techCardHeaderParams(tc), nil
 }
 
 // stampApprovalTimes makes the server authoritative for approved_at/released_at,
@@ -164,7 +171,7 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		params, err := techCardHeaderParams(tc)
+		params, err := techCardInsertHeaderParams(tc)
 		if err != nil {
 			return err
 		}
@@ -296,10 +303,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
-		params, err := techCardHeaderParams(tc)
-		if err != nil {
-			return err
-		}
+		params := techCardHeaderParams(tc)
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
 		// R4/§14.7: UpdateTechCard writes PLM facts ONLY. The catalogue-style facts (brand, sku_season
@@ -307,7 +311,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// written by two paths — a season change now goes through UpdateStyle's frozen-sibling guard
 		// instead of silently re-minting here. AddTechCard still seeds them at creation. category_id
 		// stays a PLM fact. The unused :brand/:season/... binds remain in params (sqlx.Named ignores
-		// extra keys) so techCardHeaderParams stays shared with the insert.
+		// extra keys) so the base header parameter map stays shared with the insert.
 		//
 		// category_id is COALESCEd, not assigned: THE TECH-CARD WRITE NEVER UN-SETS A CATEGORY. This
 		// update is a full replace of the header, so a card whose category was never chosen through
@@ -924,7 +928,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
 		return err
 	}
-	if err := insertTechCardLabels(ctx, db, id, tc.Labels); err != nil {
+	if err := insertTechCardLabels(ctx, db, id, tc.Labels, bomRes); err != nil {
 		return err
 	}
 	if err := insertTechCardPackaging(ctx, db, id, tc.Packaging); err != nil {
