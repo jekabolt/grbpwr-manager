@@ -141,7 +141,9 @@ func TestCreateColorway(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx,
 		`SELECT cost_price, cost_breakdown FROM product WHERE id = ?`, colorwayID).Scan(&seededCost, &seededBreakdown))
 	require.True(t, seededCost.Valid && seededCost.Decimal.Equal(decimal.NewFromInt(9)))
-	require.Equal(t, breakdown, seededBreakdown)
+	// The JSON column normalizes key order and spacing — compare semantically, not byte-for-byte.
+	require.True(t, seededBreakdown.Valid)
+	require.JSONEq(t, breakdown.String, seededBreakdown.String)
 
 	// UNIQUE(style_id, color_code) (R1): a duplicate colour for the same style is refused.
 	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)
