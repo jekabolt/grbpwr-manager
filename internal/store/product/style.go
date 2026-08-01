@@ -201,6 +201,9 @@ func (s *Store) UpdateStyle(ctx context.Context, styleID, expectedLockVersion in
 	setColumns, seasonWritten := styleSetColumns(fields)
 	var newLockVersion int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if err := storeutil.RequireMutableTechCard(ctx, rep.DB(), styleID); err != nil {
+			return err
+		}
 		cur, err := storeutil.QueryNamedOne[struct {
 			LockVersion int            `db:"lock_version"`
 			SeasonCode  sql.NullString `db:"season_code"`

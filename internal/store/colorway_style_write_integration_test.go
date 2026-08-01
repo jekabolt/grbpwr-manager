@@ -247,7 +247,7 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 // tech_card.lock_version. A season (SKU-fact) change re-mints every sibling colourway's SKU in place;
 // it is refused (entity.ErrStyleFrozenSiblings) atomically when any sibling is SKU-frozen, but a
 // non-SKU-fact patch still succeeds even with a frozen sibling present (skuFactsChanged gates the
-// frozen check, not the whole write).
+// frozen check, not the whole write). Once the card is RELEASED, every catalogue-fact write is frozen.
 func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -346,6 +346,12 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	var collection string
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT collection FROM tech_card WHERE id = ?`, styleID).Scan(&collection))
 	require.Equal(t, "core-v2", collection)
+
+	// Released cards are immutable through UpdateStyle just like every sibling content writer.
+	_, err = testDB.ExecContext(ctx, `UPDATE tech_card SET approval_state = 'released' WHERE id = ?`, styleID)
+	require.NoError(t, err)
+	_, err = s.Products().UpdateStyle(ctx, styleID, newVersion2, collectionPatch, nil)
+	require.ErrorIs(t, err, entity.ErrTechCardReleased)
 
 	// An unknown style is sql.ErrNoRows.
 	_, err = s.Products().UpdateStyle(ctx, 999999999, 0, basePatch, nil)

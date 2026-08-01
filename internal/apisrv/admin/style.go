@@ -104,6 +104,8 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
 		case errors.Is(err, entity.ErrTechCardConflict):
 			return nil, status.Error(codes.Aborted, "style was modified concurrently; reload and retry")
+		case errors.Is(err, entity.ErrTechCardReleased):
+			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 		case errors.Is(err, entity.ErrStyleFrozenSiblings):
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		default:
