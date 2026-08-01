@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -15,6 +16,31 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+func TestSnapshotReleaseUsesReleaseNumberNotLegacyVersion(t *testing.T) {
+	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().GetTechCardByIdConsistent(mock.Anything, 5).Return(&entity.TechCard{
+		Id: 5,
+		TechCardInsert: entity.TechCardInsert{
+			Name:          "Release Coat",
+			ApprovalState: entity.TechCardApprovalReleased,
+			Version:       sql.NullString{String: "dead legacy version", Valid: true},
+			ReleasedAt:    sql.NullTime{Time: now, Valid: true},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil)
+	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
+	tc.EXPECT().SaveTechCardRelease(mock.Anything, mock.AnythingOfType("entity.TechCardRelease")).
+		Run(func(_ context.Context, rel entity.TechCardRelease) {
+			require.False(t, rel.Version.Valid, "release_number, not the retired card.version, identifies the snapshot")
+		}).Return(nil)
+
+	(&Server{repo: repo}).snapshotReleaseIfReleased(context.Background(), 5)
+}
 
 // GetTechCardRelease parses the stored proto-JSON blob back into a contract TechCard and returns
 // it alongside the metadata — the round-trip that keeps a frozen snapshot readable.

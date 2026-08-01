@@ -358,9 +358,9 @@ func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.Tec
 // rejects any non-draft edit — a successful save that ends in `released` is always a genuine
 // release transition (an already-released card can only move to draft), so this fires exactly
 // once per release episode. The snapshot is the enriched read-model as proto-JSON plus the
-// computed base-currency unit cost. It is best-effort: the release itself already committed, and
-// the frozen content means an identical snapshot can be regenerated on a later re-release — so a
-// failure here is logged, never surfaced as a failed release.
+// computed base-currency unit cost. It is best-effort because the release itself already committed;
+// a persistence failure is logged loudly with the exact release episode, never surfaced as a failed
+// release RPC.
 func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) {
 	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil {
@@ -380,10 +380,13 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 	}
 	unit, currency := dto.ComputeTechCardUnitCost(card, fx)
 	username := authsrv.GetAdminUsername(ctx)
+	releaseEpisode := "unknown"
+	if card.ReleasedAt.Valid {
+		releaseEpisode = card.ReleasedAt.Time.UTC().Format(time.RFC3339Nano)
+	}
 	rel := entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
 			TechCardId: techCardID,
-			Version:    card.Version,
 			ReleasedBy: sql.NullString{String: username, Valid: username != ""},
 			UnitCost:   unit,
 			Currency:   sql.NullString{String: currency, Valid: unit.Valid && currency != ""},
@@ -391,12 +394,12 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 		Snapshot: string(blob),
 	}
 	if err := s.repo.TechCards().SaveTechCardRelease(ctx, rel); err != nil {
-		slog.Default().ErrorContext(ctx, "release snapshot: can't save (card is released; a later re-release will re-snapshot)",
-			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "RELEASE SNAPSHOT LOST: released card has no immutable snapshot",
+			slog.Int("tech_card_id", techCardID), slog.String("release_episode", releaseEpisode), slog.String("err", err.Error()))
 		return
 	}
 	slog.Default().InfoContext(ctx, "captured tech card release snapshot",
-		slog.Int("tech_card_id", techCardID), slog.String("version", card.Version.String))
+		slog.Int("tech_card_id", techCardID), slog.String("release_episode", releaseEpisode))
 }
 
 // ListTechCardReleases returns a card's release history (newest-first, metadata only).
