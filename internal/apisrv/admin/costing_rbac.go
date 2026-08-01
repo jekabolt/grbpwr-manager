@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -435,22 +436,21 @@ func costPriceProvided(cost *pb_decimal.Decimal) bool {
 // was cost-stripped, so the payload carries no costing) cannot blank the costing block or BOM
 // purchase prices it never saw. The costing block is preserved wholesale; BOM prices follow the
 // stable line_key, with the old natural-key FIFO retained only for legacy pairs where either side
-// has no line_key. Best-effort: a reload failure leaves the payload as-is (the write still proceeds)
-// — logged, never fatal. Only call this after confirming the payload carries no costing data
+// has no line_key. A reload failure is fatal to the update: proceeding would full-replace confidential
+// prices with the cost-blind payload. Only call this after confirming the payload carries no costing data
 // (techCardInsertHasCostingData is false), i.e. the caller isn't trying to set costs — this path is
 // purely anti-erase, not a way to smuggle changes.
-func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, incoming *entity.TechCardInsert) {
+func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, incoming *entity.TechCardInsert) error {
 	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
-	if err != nil || stored == nil {
-		if err != nil {
-			slog.Default().WarnContext(ctx, "costing preserve: can't reload stored tech card; leaving payload as-is",
-				slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
-		}
-		return
+	if err != nil {
+		return fmt.Errorf("reload stored tech card %d for costing preservation: %w", techCardID, err)
+	}
+	if stored == nil {
+		return fmt.Errorf("reload stored tech card %d for costing preservation: empty result", techCardID)
 	}
 	incoming.Costing = stored.Costing
 	if len(stored.BomItems) == 0 || len(incoming.BomItems) == 0 {
-		return
+		return nil
 	}
 	preservePrice := func(dst *entity.TechCardBomItem, src entity.TechCardBomItem) {
 		dst.UnitPrice = src.UnitPrice
@@ -504,6 +504,7 @@ func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, inco
 			break
 		}
 	}
+	return nil
 }
 
 // bomNaturalKey identifies a legacy BOM article across a full-replace by its human identity

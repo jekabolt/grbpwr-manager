@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -100,7 +101,11 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
 	// here exactly as it does on update — so the same correction applies. Nothing mutates the payload
 	// between the parse and the write on this path, so the parse-time digests ARE the "as parsed" set.
-	s.restampFreshSignoffDigests(ctx, tc, dto.TechCardSectionDigests(tc))
+	if err := s.restampFreshSignoffDigests(ctx, tc, dto.TechCardSectionDigests(tc)); err != nil {
+		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
+			slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
+	}
 
 	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
 	if err != nil {
@@ -189,9 +194,17 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	asParsed := dto.TechCardSectionDigests(tc)
 	// A cost-stripped account's full-replace save must not blank the costing it never saw.
 	if !canWriteCosting {
-		s.preserveStoredCosting(ctx, int(req.Id), tc)
+		if err := s.preserveStoredCosting(ctx, int(req.Id), tc); err != nil {
+			slog.Default().ErrorContext(ctx, "can't preserve stored tech card costing",
+				slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't preserve stored costing; try again")
+		}
 	}
-	s.restampFreshSignoffDigests(ctx, tc, asParsed)
+	if err := s.restampFreshSignoffDigests(ctx, tc, asParsed); err != nil {
+		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
+			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
+	}
 	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
@@ -251,9 +264,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 // section whose content has not moved since it was approved — pointing that approval at the read-model
 // fingerprint of the very same content re-blesses nothing, and it self-heals the rows stamped before
 // this correction existed.
-func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, asParsed map[entity.TechCardSignoffSection]string) {
+func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, asParsed map[entity.TechCardSignoffSection]string) error {
 	if tc == nil || len(tc.Signoffs) == 0 {
-		return
+		return nil
 	}
 	fresh := make([]*entity.TechCardSignoff, 0, len(tc.Signoffs))
 	for i := range tc.Signoffs {
@@ -267,13 +280,18 @@ func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.Tech
 		fresh = append(fresh, so)
 	}
 	if len(fresh) == 0 {
-		return // nothing is being approved: no digest may move, and no catalog read is owed
+		return nil // nothing is being approved: no digest may move, and no catalog read is owed
 	}
-	final := dto.TechCardSectionDigestsAsRead(tc, s.linkedBomMaterialIdentities(ctx, tc))
+	identities, err := s.linkedBomMaterialIdentities(ctx, tc)
+	if err != nil {
+		return err
+	}
+	final := dto.TechCardSectionDigestsAsRead(tc, identities)
 	for _, so := range fresh {
 		d := final[so.Section]
 		so.SignedDigest = sql.NullString{String: d, Valid: d != ""}
 	}
+	return nil
 }
 
 // stampFreshTechCardSignoffAudit owns the author and timestamp of an approval made by this request.
@@ -299,10 +317,9 @@ func stampFreshTechCardSignoffAudit(tc *entity.TechCardInsert, incoming []*pb_co
 // digest can be taken in the read model's terms. Nil when the BOM links nothing — the common case, which
 // then costs no query at all.
 //
-// Best-effort, like preserveStoredCosting: a catalog read failure falls back to fingerprinting the
-// payload as sent (today's behaviour) rather than failing the save — a logged, self-correcting stale flag
-// beats refusing to persist an approval.
-func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.TechCardInsert) map[int64]dto.BomMaterialIdentity {
+// A catalog failure is returned to the fresh-approval path: hashing the raw linked line would create
+// an approval that can never match the resolved read model.
+func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.TechCardInsert) (map[int64]dto.BomMaterialIdentity, error) {
 	linked := make(map[int64]bool, len(tc.BomItems))
 	for _, b := range tc.BomItems {
 		if b.MaterialId.Valid && b.MaterialId.Int64 > 0 {
@@ -310,15 +327,13 @@ func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.Tec
 		}
 	}
 	if len(linked) == 0 {
-		return nil
+		return nil, nil
 	}
 	// includeArchived: the read query LEFT JOINs material unconditionally, so an archived material still
 	// resolves the lines that link it. One list beats N GetMaterial round trips.
 	mats, err := s.repo.TechCards().ListMaterials(ctx, "", true)
 	if err != nil {
-		slog.Default().WarnContext(ctx, "signoff digest: can't load material catalog; fingerprinting the payload as sent",
-			slog.String("err", err.Error()))
-		return nil
+		return nil, fmt.Errorf("load material catalog for sign-off digest: %w", err)
 	}
 	out := make(map[int64]dto.BomMaterialIdentity, len(linked))
 	for i := range mats {
@@ -335,7 +350,7 @@ func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.Tec
 			Unit:        m.Unit.String,
 		}
 	}
-	return out
+	return out, nil
 }
 
 // snapshotReleaseIfReleased captures an immutable release snapshot (task 11) when a card is in

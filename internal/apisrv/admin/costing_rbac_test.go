@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -15,6 +16,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // fullAccessCtx is what the interceptor stashes for a super token: full costing access. Handlers
@@ -400,7 +403,7 @@ func TestPreserveStoredCostingMatchesBomPricesByLineKey(t *testing.T) {
 			TechCardInsert: entity.TechCardInsert{BomItems: stored},
 		}, nil)
 		s := &Server{repo: repo}
-		s.preserveStoredCosting(context.Background(), 7, incoming)
+		require.NoError(t, s.preserveStoredCosting(context.Background(), 7, incoming))
 	}
 
 	t.Run("stable keys survive edits and reordering", func(t *testing.T) {
@@ -452,10 +455,31 @@ func TestPreserveStoredCostingMatchesBomPricesByLineKey(t *testing.T) {
 	})
 }
 
+func TestUpdateTechCardCostBlindFailsWhenCostingReloadFails(t *testing.T) {
+	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{rbac.SectionTechCards: entity.AccessWrite},
+	})
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(nil, errors.New("reload unavailable"))
+
+	s := &Server{repo: repo}
+	_, err := s.UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-80B-B",
+			Name:        "cost preserve failure guard",
+		},
+	})
+	require.Equal(t, codes.Internal, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "try again")
+}
+
 // TestStripProductionRunCosting pins the Q5 costing symmetry (A3.2-#3): a run's actual money is
 // redacted for a non-costing account while its quantities and provenance flags survive.
 func TestStripProductionRunCosting(t *testing.T) {
-	stripProductionRunCosting(nil)                       // no panic
+	stripProductionRunCosting(nil)                        // no panic
 	stripProductionRunCosting(&pb_common.ProductionRun{}) // no panic on nil nested
 
 	r := &pb_common.ProductionRun{
