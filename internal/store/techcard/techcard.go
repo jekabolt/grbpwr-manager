@@ -417,10 +417,11 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
 			return err
 		}
-		priorPatternURLs, err := techCardPatternURLs(ctx, rep.DB(), id)
+		priorPatterns, err := techCardPatternRows(ctx, rep.DB(), id)
 		if err != nil {
 			return err
 		}
+		patternCleanupCandidates := patternURLsRemovedByPayload(priorPatterns, tc.Patterns)
 
 		// Capture the style's products before the full-replace so a change to the style's SKU facts
 		// re-mints every (unfrozen) sibling. PR6 R1: colourways are products (product.style_id), so
@@ -484,7 +485,7 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		if err := appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary); err != nil {
 			return err
 		}
-		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), priorPatternURLs)
+		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), patternCleanupCandidates)
 		return err
 	})
 	if err != nil {
@@ -1070,18 +1071,57 @@ type patternHistoryRow struct {
 }
 
 func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) ([]string, error) {
-	rows, err := storeutil.QueryListNamed[struct {
-		URL string `db:"url"`
-	}](ctx, db, `SELECT url FROM tech_card_size_pattern WHERE tech_card_id = :id`,
-		map[string]any{"id": techCardID})
+	rows, err := techCardPatternRows(ctx, db, techCardID)
 	if err != nil {
-		return nil, fmt.Errorf("load tech card pattern URLs: %w", err)
+		return nil, err
 	}
 	urls := make([]string, 0, len(rows))
 	for _, row := range rows {
 		urls = append(urls, row.URL)
 	}
 	return urls, nil
+}
+
+func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) ([]patternHistoryRow, error) {
+	rows, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
+		`SELECT url, size_id, version, uploaded_at FROM tech_card_size_pattern WHERE tech_card_id = :id`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load tech card patterns: %w", err)
+	}
+	return rows, nil
+}
+
+// patternURLsRemovedByPayload limits cleanup to object identities the user actually removed. The
+// size-range filter in insertTechCardPatterns is a server-side projection: a pattern the request
+// still carries must not have its object deleted merely because its size is not currently live.
+// Comparing canonical keys also treats origin/CDN forms of the same object as the same intent.
+func patternURLsRemovedByPayload(prior []patternHistoryRow, payload []entity.TechCardSizePattern) []string {
+	payloadObjects := make(map[string]struct{}, len(payload))
+	for _, pattern := range payload {
+		payloadObjects[patternObjectIdentity(pattern.URL)] = struct{}{}
+	}
+	candidates := make([]string, 0, len(prior))
+	seen := make(map[string]struct{}, len(prior))
+	for _, pattern := range prior {
+		identity := patternObjectIdentity(pattern.URL)
+		if _, carried := payloadObjects[identity]; carried {
+			continue
+		}
+		if _, duplicate := seen[identity]; duplicate {
+			continue
+		}
+		seen[identity] = struct{}{}
+		candidates = append(candidates, pattern.URL)
+	}
+	return candidates
+}
+
+func patternObjectIdentity(raw string) string {
+	if key, ok := storeutil.PatternObjectKey(raw); ok {
+		return "key:" + key
+	}
+	return "url:" + raw
 }
 
 // insertTechCardPatterns replaces a card's pattern rows, CARRYING FORWARD each sheet's revision and
