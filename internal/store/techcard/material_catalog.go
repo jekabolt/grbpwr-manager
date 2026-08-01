@@ -119,9 +119,13 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 // internal code unique among non-archived materials. The lock load, both guards and the update run
 // in one transaction so a concurrent movement/create/update cannot slip past the checks.
 func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert, expectedLockVersion int) error {
-	composition, err := entity.NormalizeMaterialComposition(m.CompositionEntries)
-	if err != nil {
-		return err
+	var composition []entity.CompositionEntry
+	if len(m.CompositionEntries) > 0 {
+		var err error
+		composition, err = entity.NormalizeMaterialComposition(m.CompositionEntries)
+		if err != nil {
+			return err
+		}
 	}
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
@@ -143,6 +147,10 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 			return err
 		}
 		params := materialParams(m)
+		// UNKNOWN/empty is the update-presence marker: older clients do not carry CTI fields, so keep
+		// both the stored discriminant and its JSON escape-hatch. CreateMaterial still defaults an
+		// empty class to `other` through materialParams.
+		params["material_class"] = strings.ToLower(strings.TrimSpace(m.MaterialClass))
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
@@ -151,7 +159,9 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
 				image_id=:image_id, purpose=:purpose,
-				material_class=:material_class, other_attrs=:other_attrs, updated_by=:updated_by
+				material_class=CASE WHEN :material_class = '' THEN material_class ELSE :material_class END,
+				other_attrs=CASE WHEN :material_class = '' THEN other_attrs ELSE :other_attrs END,
+				updated_by=:updated_by
 			WHERE id=:id AND lock_version=:expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("update material %d: %w", id, err)
@@ -161,11 +171,20 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		if rows == 0 {
 			return entity.ErrMaterialConflict
 		}
-		if err := upsertMaterialAttrs(ctx, rep.DB(), id, m); err != nil {
-			return fmt.Errorf("update material %d attrs: %w", id, err)
+		// An absent attributes oneof means preserve the stored CTI side-table rows. A present, even
+		// all-empty, message remains an explicit replacement and takes the full-replace helper below.
+		if materialTypedAttrsPresent(m) {
+			if err := upsertMaterialAttrs(ctx, rep.DB(), id, m); err != nil {
+				return fmt.Errorf("update material %d attrs: %w", id, err)
+			}
 		}
-		if err := writeMaterialComposition(ctx, rep.DB(), id, composition); err != nil {
-			return err
+		// Proto repeated fields cannot distinguish absent from an explicit empty list. The admin sends
+		// the full non-empty composition when editing it and has no clear-composition action, so empty
+		// means preserve on update. A future explicit clear needs a presence-bearing field/RPC.
+		if len(m.CompositionEntries) > 0 {
+			if err := writeMaterialComposition(ctx, rep.DB(), id, composition); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -435,6 +454,10 @@ func nullJSONParam(b []byte) any {
 // materialAttrTables are the four CTI side-tables, in a stable order for the full-replace clear.
 var materialAttrTables = []string{
 	"material_fabric_attr", "material_hardware_attr", "material_thread_attr", "material_packaging_attr",
+}
+
+func materialTypedAttrsPresent(m *entity.MaterialInsert) bool {
+	return m.FabricAttr != nil || m.HardwareAttr != nil || m.ThreadAttr != nil || m.PackagingAttr != nil
 }
 
 // upsertMaterialAttrs full-replaces a material's typed side-tables: it clears all four (so a class

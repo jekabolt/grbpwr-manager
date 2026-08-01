@@ -112,7 +112,8 @@ type MaterialInsert struct {
 	// CTI typing (S15). MaterialClass is the discriminant; exactly the matching typed attribute
 	// pointer is populated (the rest nil); OtherAttrs is the JSON escape-hatch for class 'other'.
 	// The attribute pointers are not base columns (db:"-") — they are loaded from / written to the
-	// side-tables separately. An empty MaterialClass is normalised to 'other' on write.
+	// side-tables separately. An empty MaterialClass defaults to 'other' on create and means
+	// "preserve the stored class" on update.
 	MaterialClass string                 `db:"material_class" valid:"-"`
 	FabricAttr    *MaterialFabricAttr    `db:"-" valid:"-"`
 	HardwareAttr  *MaterialHardwareAttr  `db:"-" valid:"-"`
@@ -121,7 +122,8 @@ type MaterialInsert struct {
 	OtherAttrs    []byte                 `db:"other_attrs" valid:"-"` // JSON; only for class 'other'
 	// CompositionEntries is the material's structured fibre composition (S17, material_composition):
 	// each fibre's percent share, summing to 100 when set. Not a base column (db:"-") — it is written
-	// to / read from the material_composition side-table separately. Empty means "no composition".
+	// to / read from the material_composition side-table separately. Empty means no composition on
+	// create and "preserve stored composition" on update (the proto repeated field has no presence).
 	CompositionEntries []CompositionEntry `db:"-" valid:"-"`
 	// Username audit stamps (server-set from the JWT, no FK). CreatedBy is written once on create;
 	// UpdatedBy on every write.
