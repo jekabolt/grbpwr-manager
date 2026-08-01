@@ -96,6 +96,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
+	stampFreshTechCardSignoffAudit(tc, req.TechCard.Signoffs, username, time.Now().UTC())
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
 	// here exactly as it does on update — so the same correction applies. Nothing mutates the payload
 	// between the parse and the write on this path, so the parse-time digests ARE the "as parsed" set.
@@ -179,7 +180,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
-	tc.UpdatedBy = authsrv.GetAdminUsername(ctx) // server-stamp; created_by is preserved (not in SET)
+	username := authsrv.GetAdminUsername(ctx)
+	tc.UpdatedBy = username // server-stamp; created_by is preserved (not in SET)
+	stampFreshTechCardSignoffAudit(tc, req.TechCard.Signoffs, username, time.Now().UTC())
 	// Snapshot the fingerprints of the payload AS PARSED — that is what dto stamped a fresh approval
 	// with, and the only way to tell this save's approvals from ones carried back verbatim. Taken
 	// before the costing restore below changes the priced sections underneath it.
@@ -270,6 +273,25 @@ func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.Tech
 	for _, so := range fresh {
 		d := final[so.Section]
 		so.SignedDigest = sql.NullString{String: d, Valid: d != ""}
+	}
+}
+
+// stampFreshTechCardSignoffAudit owns the author and timestamp of an approval made by this request.
+// The parsed entity's digest is already populated, so freshness must come from the original wire
+// intent: APPROVED with an empty incoming digest. Carried-back approvals keep their stored audit
+// fields verbatim. parseTechCardSignoffs preserves order and rejects duplicates, so the two slices
+// correspond index-for-index after a successful conversion.
+func stampFreshTechCardSignoffAudit(tc *entity.TechCardInsert, incoming []*pb_common.TechCardSignoff, username string, now time.Time) {
+	if tc == nil {
+		return
+	}
+	for i := range tc.Signoffs {
+		if i >= len(incoming) || incoming[i] == nil ||
+			tc.Signoffs[i].State != entity.SignoffStateApproved || incoming[i].SignedDigest != "" {
+			continue
+		}
+		tc.Signoffs[i].SignedBy = sql.NullString{String: username, Valid: username != ""}
+		tc.Signoffs[i].SignedAt = sql.NullTime{Time: now.UTC(), Valid: true}
 	}
 }
 
