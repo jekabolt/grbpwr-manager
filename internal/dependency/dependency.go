@@ -647,6 +647,7 @@ type (
 		DeleteTechCard(ctx context.Context, id int) error
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error)
+		GetTechCardLockVersion(ctx context.Context, id int) (int, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
 		// and up to cardsPerStage light preview cards (gap-01).

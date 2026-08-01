@@ -229,13 +229,17 @@ func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDr
 // CloneStyleForSeason deep-clones a style (tech card header + ALL children) under a new sku_season
 // (R4). It reuses the proven tech-card converters for a faithful copy and AddTechCard's child
 // insertion; the clone starts as a fresh DRAFT with no colourways. A stale expected_source_version is
-// ABORTED; an unknown source is NotFound; a (style_number, season) collision (a same-season clone) is
-// FailedPrecondition.
+// ABORTED; an unknown source is NotFound; the clone receives a fresh generated style number for its
+// target season.
 func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneStyleForSeasonRequest) (*pb_admin.CloneStyleForSeasonResponse, error) {
 	if req.SourceStyleId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "source_style_id is required")
 	}
-	if req.SkuSeason == nil || req.SkuSeason.Code == pb_common.SeasonEnum_SEASON_ENUM_UNKNOWN || req.SkuSeason.Year == 0 {
+	seasonCode, seasonYear, err := dto.ConvertPbSkuSeasonToEntity(req.SkuSeason)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season: %v", err)
+	}
+	if seasonCode == "" {
 		return nil, status.Error(codes.InvalidArgument, "sku_season (code and year) is required")
 	}
 	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, int(req.SourceStyleId))
@@ -261,6 +265,13 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	}
 	pbInsert := full.GetTechCard()
 	pbInsert.SkuSeason = req.SkuSeason
+	styleNumber, err := s.repo.TechCards().SuggestStyleNumber(ctx, string(seasonCode), seasonYear)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't suggest style number for clone", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't generate a style number for the clone")
+	}
+	pbInsert.StyleNumber = styleNumber
+	pbInsert.StyleNumberSource = pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_GENERATED
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
@@ -269,6 +280,20 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	}
 	// A clone is a fresh design cycle for the new season — reset the PLM freeze so it is editable.
 	insert.ApprovalState = entity.TechCardApprovalDraft
+	// The full read/convert above is intentionally outside AddTechCard's transaction. Narrow the
+	// remaining race window with one cheap header read immediately before the insert; a fully
+	// transaction-scoped deep clone is a separate change.
+	currentVersion, err := s.repo.TechCards().GetTechCardLockVersion(ctx, int(req.SourceStyleId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "style %d not found", req.SourceStyleId)
+		}
+		slog.Default().ErrorContext(ctx, "can't recheck source style for clone", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't recheck source style before cloning")
+	}
+	if currentVersion != int(req.ExpectedSourceVersion) {
+		return nil, status.Error(codes.Aborted, "source style was modified concurrently; reload and retry")
+	}
 	newID, err := s.repo.TechCards().AddTechCard(ctx, insert)
 	if err != nil {
 		// A clone round-trips the source card's category_id and size_ids, so AddTechCard can raise the
@@ -281,7 +306,7 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 			return nil, apierr.Invalid(ve)
 		}
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, status.Errorf(codes.FailedPrecondition, "a style with this style number already exists for that season")
+			return nil, status.Error(codes.FailedPrecondition, "the generated style number was claimed concurrently; retry the clone")
 		}
 		slog.Default().ErrorContext(ctx, "can't create style clone", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't create style clone: %v", err)
