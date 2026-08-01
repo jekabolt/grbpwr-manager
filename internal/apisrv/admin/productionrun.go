@@ -177,6 +177,13 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 	if req.RunId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
+	// update_cost_price seeds every received product's cost_price from the run's actual unit cost —
+	// a confidential figure written into the margin chain, so it needs costing:write on top of
+	// production:write. Rejected rather than silently ignored, exactly as Create/UpdateColorway
+	// reject a cost_price they may not set; receiving without the flag stays open to a warehouse role.
+	if _, write := s.costingAccess(ctx); !write && req.GetUpdateCostPrice() {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to seed product cost_price from a run; receive with update_cost_price=false")
+	}
 	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
