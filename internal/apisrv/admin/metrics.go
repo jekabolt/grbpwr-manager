@@ -897,8 +897,14 @@ func (s *Server) UpsertInventoryTargets(ctx context.Context, req *pb_admin.Upser
 	return &pb_admin.UpsertInventoryTargetsResponse{}, nil
 }
 
-// UpsertChannelSpend records operator-entered marketing spend per channel per day.
+// UpsertChannelSpend records operator-entered marketing spend per channel per day. Marketing spend
+// is confidential cost data — it is what GetDashboard redacts as marketing_spend and what feeds
+// blended_cac/ROAS — so, like the OPEX journal next door, the write needs costing:write on top of
+// the analytics section.
 func (s *Server) UpsertChannelSpend(ctx context.Context, req *pb_admin.UpsertChannelSpendRequest) (*pb_admin.UpsertChannelSpendResponse, error) {
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to record marketing spend")
+	}
 	rows, err := dto.ConvertPbChannelSpendToEntity(req.GetSpend())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)

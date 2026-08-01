@@ -406,7 +406,13 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 	}
 	var snap pb_common.TechCard
 	if err := protojson.Unmarshal([]byte(rel.Snapshot), &snap); err != nil {
-		resp.SnapshotError = "stored snapshot is incompatible with the current schema: " + err.Error()
+		// The parser error quotes the offending field (and can quote its value) straight out of the
+		// frozen snapshot — which embeds the costing block and BOM prices — so a cost-blind caller
+		// gets the generic sentence only. The full detail is logged server-side either way.
+		resp.SnapshotError = "stored snapshot is incompatible with the current schema"
+		if read {
+			resp.SnapshotError += ": " + err.Error()
+		}
 		slog.Default().WarnContext(ctx, "tech card release snapshot won't parse",
 			slog.Int("release_id", int(req.Id)), slog.String("err", err.Error()))
 	} else {
@@ -567,6 +573,13 @@ func (s *Server) costingFxForVatCountry(ctx context.Context, requested string) d
 // margin view and the OPEX/dev-cost base-currency previews). Manual entry has been removed:
 // UpsertCostingFxRates is no longer implemented (the RPC falls back to Unimplemented).
 func (s *Server) GetCostingFxRates(ctx context.Context, _ *pb_admin.GetCostingFxRatesRequest) (*pb_admin.GetCostingFxRatesResponse, error) {
+	// The whole response exists to serve the costing surfaces (margin view, OPEX/dev-cost base
+	// previews), so without costing:read it is denied outright like ListOpexLines — there is no
+	// non-money structure left to shape, which is the only reason GetStyleCostEstimate can strip
+	// instead. The RPC map only requires tech_cards:read, so a cost-blind constructor reached it.
+	if read, _ := s.costingAccess(ctx); !read {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view costing FX rates")
+	}
 	rates, err := s.repo.TechCards().ListCostingFxRates(ctx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list costing fx rates", slog.String("err", err.Error()))

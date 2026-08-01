@@ -248,7 +248,16 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		return nil, status.Error(codes.Aborted, "source style was modified concurrently; reload and retry")
 	}
 	// Round-trip through the tech-card converters (header + every child) then override the season.
-	pbInsert := dto.ConvertEntityTechCardToPb(card, s.costingFx(ctx)).GetTechCard()
+	full := dto.ConvertEntityTechCardToPb(card, s.costingFx(ctx))
+	// The round-trip carries the SOURCE card's costing block and BOM purchase prices into the new
+	// card, so a products:write account could mint itself a copy of confidential costs it can neither
+	// read nor write — CreateTechCard's techCardInsertHasCostingData gate never sees this path because
+	// the payload is server-built, not client-sent. Strip the money before the insert (same helper the
+	// read path uses): the clone then starts costing-free and a costing role fills it in.
+	if _, write := s.costingAccess(ctx); !write {
+		stripTechCardCosting(full)
+	}
+	pbInsert := full.GetTechCard()
 	pbInsert.SkuSeason = req.SkuSeason
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {

@@ -28,13 +28,18 @@ import (
 // costingAccessFor is the pure access decision, split out so it is unit-testable
 // without a request context. present is whether an AdminAuthz was found in context.
 //
-// A missing authz (present=false) means the call did not pass the RBAC interceptor —
-// an internal/test call, never a real scoped account (the interceptor populates authz
-// for every admin RPC in production) — so it is treated as full access, matching how a
-// pre-RBAC legacy token is treated. Super/legacy tokens are full access. A scoped
-// account gets exactly what its costing grant covers; no grant → no cost access.
+// A missing authz (present=false) means the call did not pass the RBAC interceptor, and it FAILS
+// CLOSED: no cost access. The interceptor populates authz for every admin RPC, so in production
+// nothing reaches these handlers without it — the case is unreachable rather than benign, and
+// treating it as full access (as it used to) meant any future path that skipped the interceptor —
+// an in-process caller, a background job reusing a handler — would silently publish costing.
+// Super/legacy tokens are full access. A scoped account gets exactly what its costing grant covers;
+// no grant → no cost access.
 func costingAccessFor(az authsrv.AdminAuthz, present bool) (read, write bool) {
-	if !present || az.FullAccess() {
+	if !present {
+		return false, false
+	}
+	if az.FullAccess() {
 		return true, true
 	}
 	lvl, ok := az.Perms[rbac.SectionCosting]
@@ -286,6 +291,28 @@ func stripDashboardCosting(resp *pb_admin.GetDashboardResponse) {
 	redactCostingFieldsDeep(resp.ProtoReflect())
 }
 
+// stripChannelRoasCosting redacts the media-spend side of the settled-ROAS report for an account
+// without costing:read. Spend and the figures DERIVED from it (roas, cac) are the same class the
+// dashboard redacts by name via costingRedactedFieldNames (marketing_spend, blended_cac, cpo) — the
+// per-channel report is simply not routed through that denylist, since its fields are named `spend`
+// / `roas` / `cac`. has_spend goes with them (its "N/A" meaning is exactly what a blanked row
+// should read as, and leaving it true would render a spend flag with no number, cf. the has_base /
+// has_actuals precedent above). Settled revenue, orders and new customers are revenue-side and stay.
+func stripChannelRoasCosting(resp *pb_admin.GetChannelRoasSettledResponse) {
+	if resp == nil {
+		return
+	}
+	for _, r := range resp.Rows {
+		if r == nil {
+			continue
+		}
+		r.Spend = nil
+		r.Roas = 0
+		r.Cac = 0
+		r.HasSpend = false
+	}
+}
+
 // stripStyleEconomicsCosting redacts confidential cost/margin from a style-economics card for an
 // account without costing:read (task 19): the dev-cost roll-up, production costs, the net result,
 // and the cost/margin fields on the sales row. Identity, revenue, units, colourway count, fitting
@@ -365,6 +392,35 @@ func techCardInsertHasCostingData(ins *pb_common.TechCardInsert) bool {
 		}
 	}
 	return false
+}
+
+// productionRunInsertHasCostingData reports whether a run write payload carries confidential cost
+// input: an actual cost article (CMT, freight, …). The planned unit cost is not client-supplied (the
+// service snapshots it) and quantities/markers are not money, so the cost articles are the only cost
+// input on this payload. Mirrors techCardInsertHasCostingData.
+func productionRunInsertHasCostingData(ins *pb_common.ProductionRunInsert) bool {
+	return ins != nil && len(ins.Costs) > 0
+}
+
+// preserveStoredProductionRunCosts restores a run's stored cost articles onto an incoming update
+// from an account WITHOUT costing:write, the production-run twin of preserveStoredCosting. The store
+// full-replaces production_run_cost (DELETE + reinsert), and the read path blanks Run.Costs for such
+// an account (stripProductionRunCosting), so its resave would otherwise carry none and silently erase
+// every manual cost article it never saw. The rows are carried through VERBATIM — including
+// amount_base — so a stale FX rate cannot re-value them behind the operator's back; the store ignores
+// their ids on reinsert. Best-effort: a reload failure leaves the payload as-is (the write still
+// proceeds) — logged, never fatal. Only call this after confirming the payload carries no cost
+// articles (productionRunInsertHasCostingData is false): this path is purely anti-erase.
+func (s *Server) preserveStoredProductionRunCosts(ctx context.Context, runID int, incoming *entity.ProductionRunInsert) {
+	stored, err := s.repo.ProductionRuns().GetProductionRun(ctx, runID)
+	if err != nil || stored == nil {
+		if err != nil {
+			slog.Default().WarnContext(ctx, "costing preserve: can't reload stored production run; leaving payload as-is",
+				slog.Int("production_run_id", runID), slog.String("err", err.Error()))
+		}
+		return
+	}
+	incoming.Costs = stored.Costs
 }
 
 // costPriceProvided reports whether a colourway write payload is trying to SET a product cost_price (a

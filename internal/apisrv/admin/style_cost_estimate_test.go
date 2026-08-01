@@ -58,7 +58,7 @@ func TestGetStyleCostEstimateHappyPath(t *testing.T) {
 	}, nil)
 
 	s := &Server{repo: repo}
-	resp, err := s.GetStyleCostEstimate(context.Background(), &pb_admin.GetStyleCostEstimateRequest{TechCardId: 7})
+	resp, err := s.GetStyleCostEstimate(fullAccessCtx(), &pb_admin.GetStyleCostEstimateRequest{TechCardId: 7})
 	require.NoError(t, err)
 	e := resp.Estimate
 	// materials 2×10 = 20 ; + cmt 5 ; defect 0 → unit 25.00
