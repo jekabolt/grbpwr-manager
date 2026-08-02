@@ -167,6 +167,9 @@ enum TechCardAuxSubtype {
   TECH_CARD_AUX_SUBTYPE_INSERT = 8;
   TECH_CARD_AUX_SUBTYPE_HANGER = 9;
   TECH_CARD_AUX_SUBTYPE_OTHER = 10;
+  // кофр — the carrier a garment travels/hangs in. Its own sub-type rather than a dust bag: it is
+  // cut, sewn and costed as its own item, and an assembly bill names which of the two ships.
+  TECH_CARD_AUX_SUBTYPE_GARMENT_CASE = 11;
 }
 
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway

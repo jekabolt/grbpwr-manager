@@ -18,11 +18,13 @@ var ErrTechCardConflict = errors.New("tech card was modified concurrently")
 var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
 // ErrTechCardPurposeLocked is returned by UpdateTechCard when the caller tries to change a card's
-// purpose (sellable↔auxiliary) after it already has production runs, linked products, or assembly
-// usage — the switch would strand a batch/product link or invalidate a packing-spec component (NF-07).
-// The store WRAPS this sentinel with the references that actually pin the card ("...: 2 linked
-// colourways"), because the bare three-way rule made an operator whose card has no runs at all read
-// the message as wrong rather than as "clear the colourways first".
+// purpose (sellable↔auxiliary) after something downstream has committed to the old answer: a SOLD
+// colourway (final), a non-cancelled production run, a still-live colourway, or use as an assembly
+// component (NF-07). Until the first sale the flip stays open — mis-filing a dust bag as a garment
+// is a data-entry mistake the operator must be able to correct. The store WRAPS this sentinel with
+// the references that actually pin the card ("...: 1 live colourway linked to it"), because the bare
+// rule made an operator whose card has no runs at all read the message as wrong rather than as
+// "archive the colourway first".
 var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change while the card is still referenced")
 
 // TechCardStage is the development stage of a tech card. It mirrors the
@@ -616,7 +618,11 @@ const (
 	AuxSubtypeHangtag    TechCardAuxSubtype = "hangtag"
 	AuxSubtypeSticker    TechCardAuxSubtype = "sticker"
 	AuxSubtypeDustBag    TechCardAuxSubtype = "dust_bag"
-	AuxSubtypeBox        TechCardAuxSubtype = "box"
+	// AuxSubtypeGarmentCase is a кофр — the carrier a garment travels/hangs in. Distinct from a dust
+	// bag: it is cut, sewn and costed as its own item, and an assembly bill has to name which of the
+	// two a style ships with (migration 0227).
+	AuxSubtypeGarmentCase TechCardAuxSubtype = "garment_case"
+	AuxSubtypeBox         TechCardAuxSubtype = "box"
 	AuxSubtypeInsert     TechCardAuxSubtype = "insert"
 	AuxSubtypeHanger     TechCardAuxSubtype = "hanger"
 	AuxSubtypeOther      TechCardAuxSubtype = "other"
@@ -630,8 +636,9 @@ var ValidTechCardAuxSubtypes = map[TechCardAuxSubtype]bool{
 	AuxSubtypeSizeLabel:  true,
 	AuxSubtypeHangtag:    true,
 	AuxSubtypeSticker:    true,
-	AuxSubtypeDustBag:    true,
-	AuxSubtypeBox:        true,
+	AuxSubtypeDustBag:     true,
+	AuxSubtypeGarmentCase: true,
+	AuxSubtypeBox:         true,
 	AuxSubtypeInsert:     true,
 	AuxSubtypeHanger:     true,
 	AuxSubtypeOther:      true,

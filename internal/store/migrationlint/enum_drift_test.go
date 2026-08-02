@@ -121,11 +121,13 @@ func TestTechCardPurposeDBCheckNoDrift(t *testing.T) {
 }
 
 // TestTechCardAuxSubtypeDBCheckNoDrift is the WS7 drift guard: entity (TechCardAuxSubtype/
-// ValidTechCardAuxSubtypes) <-> DB CHECK (migration 0173, chk_tech_card_aux_subtype). The value set must
-// stay identical on both sides, and identical again in migration 0173's backfill CASE and
-// entity.AuxSubtypeFromName (that lockstep is asserted in the entity unit test, not here).
+// ValidTechCardAuxSubtypes) <-> DB CHECK (chk_tech_card_aux_subtype). The value set must stay
+// identical on both sides. It reads the migration that LAST redefined the constraint — 0173 created
+// it, 0227 widened it with garment_case — so a further widening must point this at its own file.
+// Migration 0173's backfill CASE stays pinned to entity.AuxSubtypeFromName instead (asserted in the
+// entity unit test): that heuristic is frozen history, not the live value set.
 func TestTechCardAuxSubtypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0173_tech_card_aux_subtype.sql")
+	content := readMigrationFile(t, "0227_tech_card_aux_subtype_garment_case.sql")
 	dbValues := extractDBEnumValues(t, content, "aux_subtype REGEXP", 200)
 	assertSameSet(t, "TechCardAuxSubtype", dbValues, mapKeysAsStrings(entity.ValidTechCardAuxSubtypes))
 }
