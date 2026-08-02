@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -30,6 +31,9 @@ import (
 // facts (UpdateStyle), no variants (CreateVariant), no size chart (UpdateStyleSizeChart). The colourway
 // starts DRAFT and goes live through PublishColorway.
 func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwayRequest) (*pb_admin.CreateColorwayResponse, error) {
+	if err := rejectEmbeddedColorwayUsages(req.GetDevelopment()); err != nil {
+		return nil, err
+	}
 	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
@@ -39,7 +43,7 @@ func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwa
 	}
 	id, err := s.repo.Products().CreateColorway(ctx, int(req.GetStyleId()), prd,
 		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
-		dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), nil))
+		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), nil)))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "create", 0, err)
 	}
@@ -50,6 +54,9 @@ func (s *Server) CreateColorway(ctx context.Context, req *pb_admin.CreateColorwa
 // UpdateColorway patches a colourway's own merchandising fields under an optimistic lock (R2/R4). It
 // never touches style facts, variants, stock or the size chart.
 func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwayRequest) (*pb_admin.UpdateColorwayResponse, error) {
+	if err := rejectEmbeddedColorwayUsages(req.GetDevelopment()); err != nil {
+		return nil, err
+	}
 	if _, write := s.costingAccess(ctx); !write && costPriceProvided(req.GetCostPrice()) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set a colourway cost_price")
 	}
@@ -60,12 +67,31 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	}
 	lockVersion, err := s.repo.Products().UpdateColorway(ctx, int(req.GetColorwayId()), int(req.GetExpectedColorwayVersion()), prd,
 		dto.ConvertColorwayMediaIDs(req.GetMediaIds()), dto.ConvertColorwayTags(req.GetTags()), dto.ConvertColorwayPrices(req.GetPrices()),
-		dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask()))
+		stampColorwayDevelopmentActor(ctx, dto.ColorwayDevelopmentPatchFromPb(req.GetDevelopment(), req.GetUpdateMask())))
 	if err != nil {
 		return nil, colorwayWriteError(ctx, "update", int(req.GetColorwayId()), err)
 	}
 	s.afterColorwayWrite(ctx, int(req.GetColorwayId()))
 	return &pb_admin.UpdateColorwayResponse{LockVersion: int32(lockVersion)}, nil
+}
+
+// stampColorwayDevelopmentActor threads the authenticated admin identity into the store-owned
+// lab-dip audit path. The actor has no wire representation on the writable patch, so a request
+// cannot substitute another username.
+func stampColorwayDevelopmentActor(ctx context.Context, patch *entity.ColorwayDevelopmentPatch) *entity.ColorwayDevelopmentPatch {
+	if patch != nil {
+		patch.Actor = authsrv.GetAdminUsername(ctx)
+	}
+	return patch
+}
+
+func rejectEmbeddedColorwayUsages(dev *pb_common.ColorwayDevelopmentInsert) error {
+	if len(dev.GetUsages()) == 0 {
+		return nil
+	}
+	return apierr.Invalid(entity.NewFieldViolation("development.usages",
+		"the recipe is written via UpdateColorwayRecipe", "",
+		"remove development.usages from this request and call UpdateColorwayRecipe separately"))
 }
 
 // UpdateColorwayRecipe replaces a colourway's material recipe (usages) — the write-path cut in the R1
@@ -108,7 +134,7 @@ func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID i
 		return
 	}
 	techCardID := int(ci.PrimaryTechCardID.Int32)
-	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil || card == nil {
 		return
 	}
@@ -117,27 +143,28 @@ func (s *Server) reseedColorwayCostAfterRecipe(ctx context.Context, colorwayID i
 	if !unit.Valid || !strings.EqualFold(currency, cache.GetBaseCurrency()) {
 		return
 	}
-	// The provenance guard lives in the UPDATE's own predicate (atomic), not in a
-	// read-then-force — a run receipt landing between a read and a force would be overwritten.
-	updated, err := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, colorwayID, techCardID, unit.Decimal)
+	breakdownJSON := sql.NullString{}
+	if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, colorwayID, fx); ok {
+		b, merr := json.Marshal(bd)
+		if merr != nil {
+			slog.Default().ErrorContext(ctx, "can't marshal colourway cost breakdown after recipe write",
+				slog.Int("colorway_id", colorwayID), slog.String("err", merr.Error()))
+			return
+		}
+		breakdownJSON = sql.NullString{String: string(b), Valid: true}
+	}
+	updated, err := s.repo.Products().SeedProductCostFromTechCard(
+		ctx, colorwayID, techCardID, card.LockVersion, unit.Decimal, breakdownJSON)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't reseed colourway cost after recipe write",
-			slog.Int("colorway_id", colorwayID), slog.String("err", err.Error()))
+			slog.Int("colorway_id", colorwayID), slog.Int("tech_card_id", techCardID),
+			slog.Int("tech_card_lock_version", card.LockVersion), slog.String("err", err.Error()))
 		return
 	}
 	if !updated {
-		return // manual / production_run provenance wins, or another card is authoritative
-	}
-	// Keep the COGS decomposition on the same figure (same colourway, same predicate).
-	breakdownJSON := sql.NullString{}
-	if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, colorwayID, fx); ok {
-		if b, merr := json.Marshal(bd); merr == nil {
-			breakdownJSON = sql.NullString{String: string(b), Valid: true}
-		}
-	}
-	if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, colorwayID, techCardID, breakdownJSON); berr != nil {
-		slog.Default().ErrorContext(ctx, "can't reseed colourway cost_breakdown after recipe write",
-			slog.Int("colorway_id", colorwayID), slog.String("err", berr.Error()))
+		slog.Default().WarnContext(ctx, "colourway cost seed predicate rejected the observed tech card snapshot",
+			slog.Int("colorway_id", colorwayID), slog.Int("tech_card_id", techCardID),
+			slog.Int("tech_card_lock_version", card.LockVersion))
 	}
 }
 
@@ -152,6 +179,8 @@ func colorwayWriteError(ctx context.Context, op string, id int, err error) error
 		return status.Errorf(codes.Aborted, "colourway %d was modified concurrently; reload and retry", id)
 	case errors.Is(err, entity.ErrColorwayColorExists):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, entity.ErrTechCardReleased):
+		return status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 	}
 	slog.Default().ErrorContext(ctx, "colourway write failed", slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
 	return status.Errorf(codes.Internal, "can't %s colourway: %v", op, err)
@@ -697,13 +726,25 @@ func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVar
 	// Waitlist notification from the REAL committed transition (0 -> >0), using the store's locked
 	// before/after — not a pre-read value that a concurrent adjustment could have invalidated.
 	if previousQuantity.LessThanOrEqual(decimal.Zero) && newQuantityDecimal.GreaterThan(decimal.Zero) {
-		// Trigger waitlist notifications asynchronously. This is a detached,
-		// best-effort side effect; a panic inside it (DB, DTO render, mail) must
-		// be logged with a stack and swallowed, never crash the single-process
-		// backend that also serves payments and webhooks.
+		// Trigger waitlist notifications asynchronously. This is a detached, best-effort side
+		// effect; a panic inside it (DB, DTO render, mail) must be logged with a stack and
+		// swallowed, never crash the single-process backend that also serves payments and
+		// webhooks.
+		//
+		// The goroutine must NOT run on the request context: that context is cancelled the
+		// moment this RPC returns, which would kill the notification mid-flight. It runs on
+		// context.WithoutCancel instead, which keeps the request's values (trace/log
+		// correlation) while dropping its cancellation — and unlike revalidateAsync's
+		// s.revalCtx it is deliberately not cancelled at shutdown, because this 0 -> >0
+		// transition fires exactly once: an aborted notification is never retried and those
+		// customers simply never hear that their size is back. It is registered in revalWG
+		// like revalidateAsync so shutdown still bounded-waits for it before the DB closes.
+		notifyCtx := context.WithoutCancel(ctx)
+		s.revalWG.Add(1)
 		go func() {
-			defer saferun.Recover(context.Background(), "notify-waitlist")
-			s.notifyWaitlist(ctx, productId, sizeId)
+			defer s.revalWG.Done()
+			defer saferun.Recover(notifyCtx, "notify-waitlist")
+			s.notifyWaitlist(notifyCtx, productId, sizeId)
 		}()
 	}
 
@@ -848,10 +889,10 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 	}, nil
 }
 
-// notifyWaitlist processes waitlist entries and sends back-in-stock notifications
-func (s *Server) notifyWaitlist(ctx context.Context, productId int, sizeId int) {
-	notifyCtx := context.Background() // Use background context to avoid cancellation
-
+// notifyWaitlist processes waitlist entries and sends back-in-stock notifications. It must be
+// handed an uncancellable context (see the caller): it used to substitute context.Background()
+// for whatever it was given, which hid the fact that its caller was passing a request context.
+func (s *Server) notifyWaitlist(notifyCtx context.Context, productId int, sizeId int) {
 	// Get product details (includeArchived=false: a waitlist notification never targets an archived colourway)
 	product, err := s.repo.Products().GetProductByIdShowHidden(notifyCtx, productId, false)
 	if err != nil {

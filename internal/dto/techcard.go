@@ -273,9 +273,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	// The brand works in mm: an unset measurement_unit defaults to mm (clients have
-	// stopped sending cm, though the enum keeps cm for back-compat reads).
+	// stopped sending cm, though the enum keeps cm for back-compat reads). Presence is carried
+	// alongside the value so an UPDATE can preserve a card's stored unit instead of defaulting it
+	// — the default is a create-time choice, not a licence to re-unit an existing chart.
 	unit := entity.TechCardUnitMm
-	if pb.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
+	unitSet := pb.MeasurementUnit != pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN
+	if unitSet {
 		u, ok := techCardUnitPbToEntity[pb.MeasurementUnit]
 		if !ok {
 			return nil, fmt.Errorf("unknown tech card measurement unit: %v", pb.MeasurementUnit)
@@ -444,7 +447,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	issues, err := parseTechCardIssues(pb.Issues)
+	// hardware_cost is "hardware if OUTSIDE the BOM" — a cross-section rule, so it is checked here
+	// where both halves of the full-replace payload are parsed, not inside the costing parser.
+	if err := ValidateHardwareCostAgainstBom(costing, bomItems); err != nil {
+		return nil, err
+	}
+	issues, err := parseTechCardIssues(pb.Issues, len(operations), calloutNumbers)
 	if err != nil {
 		return nil, err
 	}
@@ -477,43 +485,44 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	}
 
 	insert := &entity.TechCardInsert{
-		StyleNumber:       nullStringFromPb(styleNumber),
-		StyleNumberSource: styleNumberSourceFromPb(pb.StyleNumberSource),
-		Purpose:           purpose,
-		OutputMaterialId:  outputMaterialId,
-		AuxSubtype:        auxSubtype,
-		Name:              pb.Name,
-		Brand:             nullStringFromPb(pb.Brand),
-		SeasonCode:        sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
-		SeasonYear:        sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
-		Collection:        nullStringFromPb(pb.Collection),
-		CategoryId:        nullInt32FromPb(pb.CategoryId),
-		TargetGender:      gender,
-		Stage:             stage,
-		Status:            nullStringFromPb(pb.Status),
-		ApprovalState:     approvalState,
-		ApprovedAt:        nullTimeFromPbTimestamp(pb.ApprovedAt),
-		ReleasedAt:        nullTimeFromPbTimestamp(pb.ReleasedAt),
-		BaseModelId:       nullInt32FromPb(pb.BaseModelId),
-		BaseSampleSizeId:  nullInt32FromPb(pb.BaseSampleSizeId),
-		MeasurementUnit:   unit,
-		Concept:           nullStringFromPb(pb.Concept),
-		Notes:             nullStringFromPb(pb.Notes),
-		SizeIds:           sizeIds,
-		Media:             media,
-		Callouts:          callouts,
-		Details:           details,
-		BomItems:          bomItems,
-		Construction:      construction,
-		Operations:        operations,
-		Labels:            labels,
-		Packaging:         packaging,
-		Costing:           costing,
-		Issues:            issues,
-		SizeQuantities:    sizeQuantities,
-		Signoffs:          signoffs,
-		Patterns:          patterns,
-		Pieces:            pieces,
+		StyleNumber:        nullStringFromPb(styleNumber),
+		StyleNumberSource:  styleNumberSourceFromPb(pb.StyleNumberSource),
+		Purpose:            purpose,
+		OutputMaterialId:   outputMaterialId,
+		AuxSubtype:         auxSubtype,
+		Name:               pb.Name,
+		Brand:              nullStringFromPb(pb.Brand),
+		SeasonCode:         sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
+		SeasonYear:         sql.NullInt32{Int32: int32(seasonYear), Valid: seasonCode != ""},
+		Collection:         nullStringFromPb(pb.Collection),
+		CategoryId:         nullInt32FromPb(pb.CategoryId),
+		TargetGender:       gender,
+		Stage:              stage,
+		Status:             nullStringFromPb(pb.Status),
+		ApprovalState:      approvalState,
+		ApprovedAt:         nullTimeFromPbTimestamp(pb.ApprovedAt),
+		ReleasedAt:         nullTimeFromPbTimestamp(pb.ReleasedAt),
+		BaseModelId:        nullInt32FromPb(pb.BaseModelId),
+		BaseSampleSizeId:   nullInt32FromPb(pb.BaseSampleSizeId),
+		MeasurementUnit:    unit,
+		MeasurementUnitSet: unitSet,
+		Concept:            nullStringFromPb(pb.Concept),
+		Notes:              nullStringFromPb(pb.Notes),
+		SizeIds:            sizeIds,
+		Media:              media,
+		Callouts:           callouts,
+		Details:            details,
+		BomItems:           bomItems,
+		Construction:       construction,
+		Operations:         operations,
+		Labels:             labels,
+		Packaging:          packaging,
+		Costing:            costing,
+		Issues:             issues,
+		SizeQuantities:     sizeQuantities,
+		Signoffs:           signoffs,
+		Patterns:           patterns,
+		Pieces:             pieces,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
@@ -723,6 +732,15 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Current fingerprint per sign-off section: compare against each signoff's signed_digest to
 		// tell an approval that still holds from one whose sheet moved underneath it.
 		SectionDigests: TechCardSectionDigestsToPb(&tc.TechCardInsert),
+		// The fit reference the studio shoots against — written through UpdateStyle like the catalogue
+		// facts above, and until now readable only off the product/storefront messages.
+		ModelWearsHeightCm: tc.ModelWearsHeightCm.Int32,
+		ModelWearsSizeId:   tc.ModelWearsSizeId.Int32,
+		// The taxonomy path the store derives from category_id. TechCardListItem has always carried it;
+		// a card opened directly had to infer its own category path from the leaf tag alone.
+		TopCategoryId: tc.TopCategoryId.Int32,
+		SubCategoryId: tc.SubCategoryId.Int32,
+		TypeId:        tc.TypeId.Int32,
 	}
 }
 
@@ -731,13 +749,11 @@ func techCardRevisionsToPb(revs []entity.TechCardRevision) []*pb_common.TechCard
 	out := make([]*pb_common.TechCardRevision, 0, len(revs))
 	for _, r := range revs {
 		out = append(out, &pb_common.TechCardRevision{
-			Version:      pbStringFromNull(r.Version),
-			RevisionDate: pbTimestampFromNullTime(r.RevisionDate),
-			Author:       pbStringFromNull(r.Author),
-			Section:      pbStringFromNull(r.Section),
-			Action:       pbStringFromNull(r.Action),
-			ChangeNote:   pbStringFromNull(r.ChangeNote),
-			CreatedAt:    pbTimestampFromNullTime(r.CreatedAt),
+			Author:     pbStringFromNull(r.Author),
+			Section:    pbStringFromNull(r.Section),
+			Action:     pbStringFromNull(r.Action),
+			ChangeNote: pbStringFromNull(r.ChangeNote),
+			CreatedAt:  pbTimestampFromNullTime(r.CreatedAt),
 		})
 	}
 	return out
@@ -941,7 +957,8 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 // ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
 // parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
 // the store, S2/S3), so there is no positional range check here. size_id membership in the style's
-// range is enforced by the FK / store, not here.
+// range is checked by the store inside the write transaction (the request carries no size range to
+// check against, and the FK is on the global size dictionary, not on tech_card_size).
 func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
 	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
 	for i, u := range pbs {
@@ -1103,10 +1120,18 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 				Note:               nullStringFromPb(m.Note),
 			})
 		}
+		lineKey := strings.TrimSpace(p.LineKey)
+		if lineKey == "" {
+			mintedLineKey, err := mintTechCardLineKey()
+			if err != nil {
+				return nil, fmt.Errorf("pieces[%d].line_key: %w", i, err)
+			}
+			lineKey = mintedLineKey
+		}
 
 		out = append(out, entity.TechCardPiece{
 			Name:             p.Name,
-			LineKey:          strings.TrimSpace(p.LineKey), // stable wire identity (WS4); empty → store mints one
+			LineKey:          lineKey,
 			PiecesPerGarment: perGarment,
 			Mirrored:         p.Mirrored,
 			Grainline:        grainline,
@@ -1216,11 +1241,19 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if b.MaterialId != 0 {
 			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
 		}
+		lineKey := strings.TrimSpace(b.LineKey)
+		if lineKey == "" {
+			mintedLineKey, err := mintTechCardLineKey()
+			if err != nil {
+				return nil, fmt.Errorf("bom_items[%d].line_key: %w", i, err)
+			}
+			lineKey = mintedLineKey
+		}
 
 		out = append(out, entity.TechCardBomItem{
-			// LineKey is the stable client token the server keyed-reconciles by (S2/S3); empty on a
-			// legacy payload, in which case the store mints one. id/material_snapshot are read-only.
-			LineKey:         strings.TrimSpace(b.LineKey),
+			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
+			// unchanged positional index. id/material_snapshot are read-only.
+			LineKey:         lineKey,
 			MaterialId:      materialID,
 			Section:         section,
 			Name:            b.Name,
@@ -1273,8 +1306,10 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 
 // techCardColorwayRefsToPb emits a style's colourways as derived, output-only AdminColorwayRef
 // (R1/§3.3): a style's colourways are its products, not writable through the style. Merchandising
-// detail (media, tags, translations) is read via the Colorway RPCs; the lab-dip state and history,
-// the COGS and the retail prices ARE here, because the constructor judges a colour and its margin
+// detail (media, tags, translations) is read via the Colorway RPCs; the development block (the
+// colour's own code/label/pantone/hex/swatch — write-only until this fix, persisted by
+// UpdateColorway and returned by nothing), the lab-dip state and history, the COGS and the retail
+// prices ARE here, because the constructor judges a colour and its margin
 // from the style view and fanning GetColorwayByID out per colourway to get them was an N+1. The
 // recipe (usages) IS included (H1 fix, WS3/S2-S3): the constructor view of a style shows each
 // colourway's material recipe alongside its identity — the recipe used to be write-only
@@ -1299,6 +1334,17 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 			LabDipDecidedBy:    c.LabDipDecidedBy.String,
 			LabDipRejectReason: c.LabDipRejectReason.String,
 			LockVersion:        int32(c.LockVersion),
+			// The rest of the development block, flattened the same way the lab-dip scalars above are.
+			// Written by the Colorway RPCs, output-only here — and unread anywhere until now: the colour's
+			// own identity (code/label), the pantone the dyehouse matches, the screen hex and the approved
+			// swatch were persisted and never returned by any RPC.
+			DevCode:       c.Code.String,
+			DevName:       c.Name,
+			DevComment:    c.Comment.String,
+			Pantone:       c.Pantone.String,
+			PantoneSystem: c.PantoneSystem.String,
+			DevHex:        c.Hex.String,
+			SwatchMediaId: c.SwatchMediaId.Int32,
 		}
 		if c.LabDipSubmittedAt.Valid {
 			ref.LabDipSubmittedAt = timestamppb.New(c.LabDipSubmittedAt.Time)
@@ -1359,6 +1405,7 @@ func compositionEntriesToPb(entries []entity.CompositionEntry) []*pb_common.Comp
 			FiberCode: e.FiberCode,
 			Name:      e.Name,
 			Percent:   pbDecimalFromDecimal(e.Percent),
+			Source:    e.Source,
 		})
 	}
 	return out
@@ -1742,6 +1789,29 @@ func validateDecimalScale(nd decimal.NullDecimal, field string, maxFrac int, lim
 	return nil
 }
 
+// validateDecimalFits is the FIELD-TAGGED sibling of validateDecimalScale: same three column rules
+// (sign, fraction digits, magnitude) but it names the offending input path, so the admin grid can pin
+// the rejection to the exact cell/row instead of showing a form-level banner. `signed` allows a
+// negative value — a grade step legitimately grades downwards, a measurement or a quantity does not.
+//
+// The point is that MySQL does NOT reject an over-precise value: DECIMAL(10,2) silently rounds 10.005
+// to 10.01 and hands it back on the next read, so a chart the author typed and a chart the factory
+// gets differ with nothing anywhere saying so. Rejecting is the only way the two stay equal.
+func validateDecimalFits(field string, d decimal.Decimal, maxFrac int, limit int64, signed bool) error {
+	if !signed && d.IsNegative() {
+		return entity.NewFieldViolation(field, "must_not_be_negative", d.String(), "enter a value of 0 or more")
+	}
+	if d.Exponent() < int32(-maxFrac) {
+		return entity.NewFieldViolation(field, "too_many_decimal_places", d.String(),
+			fmt.Sprintf("round to at most %d decimal places — the column stores no more, so the extra digits would be lost silently", maxFrac))
+	}
+	if d.Abs().GreaterThanOrEqual(decimal.NewFromInt(limit)) {
+		return entity.NewFieldViolation(field, "out_of_range", d.String(),
+			fmt.Sprintf("enter a value smaller than %d", limit))
+	}
+	return nil
+}
+
 // requiredDecimalFromPb parses a required decimal column (NOT NULL), erroring when
 // absent or out of range.
 func requiredDecimalFromPb(d *pb_decimal.Decimal, field string, maxFrac int, limit int64) (decimal.Decimal, error) {
@@ -1802,7 +1872,6 @@ func ConvertTechCardReleaseMetaToPb(m entity.TechCardReleaseMeta) *pb_common.Tec
 		Id:            int32(m.Id),
 		TechCardId:    int32(m.TechCardId),
 		ReleaseNumber: int32(m.ReleaseNumber),
-		Version:       pbStringFromNull(m.Version),
 		ReleasedBy:    pbStringFromNull(m.ReleasedBy),
 		UnitCost:      pbDecimalFromNull(m.UnitCost),
 		Currency:      pbStringFromNull(m.Currency),

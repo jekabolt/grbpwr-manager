@@ -86,10 +86,9 @@ func (b *Bucket) GetBaseFolder() string {
 	return b.BaseFolder
 }
 
-// objectKeyFromURL derives the S3 object key from a stored media URL. Stored URLs
-// come from getCDNURL (https://<subdomain>/<key>) or getOriginEndpoint
-// (https://<bucket>.<endpoint>/<key>); both carry the key in the path, so trimming
-// the leading slash yields the key.
+// objectKeyFromURL derives the S3 object key encoded in a URL path. Ownership is deliberately not
+// decided here; managedObjectKeyFromURL additionally verifies the configured CDN/origin host before
+// DeleteObjects performs an external side effect.
 func objectKeyFromURL(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -102,10 +101,46 @@ func objectKeyFromURL(rawURL string) (string, error) {
 	return key, nil
 }
 
-// DeleteObjects best-effort removes the S3 objects behind the given media URLs.
-// Empty and duplicate URLs are skipped (a video row stores the same URL in all
-// three variant fields). It attempts every distinct key and returns the first
-// error, so a transient failure on one object does not skip the others.
+func (b *Bucket) managedObjectKeyFromURL(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse media url %q: %w", rawURL, err)
+	}
+	if u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("media url %q is not a managed https url", rawURL)
+	}
+	cdnHost := configuredURLHost(b.SubdomainEndpoint)
+	endpointHost := configuredURLHost(b.S3Endpoint)
+	originHost := ""
+	if b.S3BucketName != "" && endpointHost != "" {
+		originHost = strings.ToLower(b.S3BucketName + "." + endpointHost)
+	}
+	requestHost := strings.ToLower(u.Host)
+	if requestHost != cdnHost && requestHost != originHost {
+		return "", fmt.Errorf("media url host %q is not a configured bucket host", u.Host)
+	}
+	return objectKeyFromURL(rawURL)
+}
+
+func configuredURLHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Host)
+}
+
+// DeleteObjects best-effort removes the S3 objects behind the given media URLs. Only URLs on the
+// configured CDN or bucket-origin host are eligible. Empty and duplicate URLs are skipped (a video
+// row stores the same URL in all three variant fields). It attempts every distinct key and returns
+// the first error, so a transient failure on one object does not skip the others.
 func (b *Bucket) DeleteObjects(ctx context.Context, urls ...string) error {
 	seen := make(map[string]struct{}, len(urls))
 	var firstErr error
@@ -113,9 +148,9 @@ func (b *Bucket) DeleteObjects(ctx context.Context, urls ...string) error {
 		if raw == "" {
 			continue
 		}
-		key, err := objectKeyFromURL(raw)
+		key, err := b.managedObjectKeyFromURL(raw)
 		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't derive object key from media url",
+			slog.Default().ErrorContext(ctx, "refusing to delete object for unmanaged media url",
 				slog.String("url", raw), slog.String("err", err.Error()))
 			if firstErr == nil {
 				firstErr = err

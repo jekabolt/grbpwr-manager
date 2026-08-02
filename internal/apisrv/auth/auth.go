@@ -504,6 +504,14 @@ func putAdminAuthz(ctx context.Context, a AdminAuthz) context.Context {
 	return context.WithValue(ctx, adminAuthzKey, a)
 }
 
+// PutAdminAuthz stashes an authorization in ctx. The interceptor is the only production caller; it
+// is exported so anything invoking an admin handler OUTSIDE the gRPC path (an in-process caller, a
+// test) states its access explicitly — the handlers' costing checks fail closed on a context with
+// no authorization, so a bare context is deliberately no longer full access.
+func PutAdminAuthz(ctx context.Context, a AdminAuthz) context.Context {
+	return putAdminAuthz(ctx, a)
+}
+
 const adminServicePrefix = rbac.MethodPrefix
 
 // UnaryAdminAuthInterceptor returns an interceptor that authenticates every admin

@@ -37,9 +37,9 @@ func readStyleComposition(t *testing.T, ctx context.Context, techCardID int) []s
 // TestReconcileStyleCompositionOnUpdateStyle is the acceptance test for P4-flyover M1 / acceptance
 // flow C.11 (99-VERIFICATION.md, flow C step 11): a single shell-fabric BOM line's composition derives
 // at 100%, two shell-fabric lines divide equally, and a manual override survives a re-save (auto never
-// overwrites manual, S17 defect 2). Exercises the real wiring path — UpdateStyle calling
-// product.ReconcileStyleCompositionTx — end to end against bom_item_composition, not the pure
-// entity.DeriveStyleComposition unit tests alone.
+// overwrites manual, S17 defect 2). Exercises both real wiring paths — UpdateStyle and the BOM-owning
+// UpdateTechCard calling product.ReconcileStyleCompositionTx — end to end against
+// bom_item_composition, not the pure entity.DeriveStyleComposition unit tests alone.
 func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -113,14 +113,22 @@ func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 	require.Len(t, cardAfter.CompositionEntries, 1)
 	require.Equal(t, "COT", cardAfter.CompositionEntries[0].FiberCode)
 
-	// --- Step 2: a second shell-fabric line gets its own composition -> the style re-derives to an
-	// equal 50/50 split on the next save (re-derived every save, not cached).
+	// --- Step 2: a second shell-fabric line gets its own composition and that BOM line is edited via
+	// UpdateTechCard -> the style re-derives to an equal 50/50 split in the SAME transaction. This is
+	// the load-bearing path: UpdateTechCard is the only owner of tech_card_bom_item writes.
 	_, err = testDB.ExecContext(ctx,
 		"INSERT INTO bom_item_composition (bom_item_id, fiber_code, percent) VALUES (?, 'POL', 100.00)", fab2ID)
 	require.NoError(t, err)
 
-	newVer, err = P.UpdateStyle(ctx, tcID, newVer, patch, nil)
+	cardForBomEdit, err := T.GetTechCardById(ctx, tcID)
 	require.NoError(t, err)
+	for i := range cardForBomEdit.BomItems {
+		if cardForBomEdit.BomItems[i].LineKey == "FAB2" {
+			cardForBomEdit.BomItems[i].Name = "Contrast Fabric (updated)"
+		}
+	}
+	require.NoError(t, T.UpdateTechCard(ctx, tcID, &cardForBomEdit.TechCardInsert, cardForBomEdit.LockVersion))
+	newVer = cardForBomEdit.LockVersion + 1
 
 	rows = readStyleComposition(t, ctx, tcID)
 	require.Len(t, rows, 2, "two fabrics -> two fibre rows")

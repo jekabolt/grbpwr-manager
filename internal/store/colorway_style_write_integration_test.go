@@ -108,13 +108,42 @@ func TestCreateColorway(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
 
-	var lifecycleStatus, gotStyleID int
+	var lifecycleStatus, gotStyleID, primaryStyleID int
 	var sku sql.NullString
-	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status, sku, style_id FROM product WHERE id = ?`, colorwayID).
-		Scan(&lifecycleStatus, &sku, &gotStyleID))
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lifecycle_status, sku, style_id, primary_tech_card_id FROM product WHERE id = ?`, colorwayID).
+		Scan(&lifecycleStatus, &sku, &gotStyleID, &primaryStyleID))
 	require.Equal(t, int(entity.ColorwayStatusDraft), lifecycleStatus, "CreateColorway must mint a DRAFT, never ACTIVE")
 	require.False(t, sku.Valid, "CreateColorway must write NULL sku — publish mints; NULL (not '') so two unminted drafts never collide on UNIQUE (T-E-5 finding)")
 	require.Equal(t, styleID, gotStyleID)
+	require.Equal(t, styleID, primaryStyleID)
+	var mirrorCount int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = ? AND product_id = ?`, styleID, colorwayID).Scan(&mirrorCount))
+	require.Equal(t, 1, mirrorCount)
+
+	// The post-save cost hook writes price + breakdown together and only from the exact card version
+	// it observed. Once the card version moves, the stale seed is a no-op rather than an overwrite.
+	var seedVersion int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&seedVersion))
+	breakdown := sql.NullString{String: `{"materials":4,"cmt":5}`, Valid: true}
+	updated, err := s.Products().SeedProductCostFromTechCard(
+		ctx, colorwayID, styleID, seedVersion, decimal.NewFromInt(9), breakdown)
+	require.NoError(t, err)
+	require.True(t, updated)
+	_, err = testDB.ExecContext(ctx, `UPDATE tech_card SET lock_version = lock_version + 1 WHERE id = ?`, styleID)
+	require.NoError(t, err)
+	updated, err = s.Products().SeedProductCostFromTechCard(
+		ctx, colorwayID, styleID, seedVersion, decimal.NewFromInt(99), sql.NullString{})
+	require.NoError(t, err)
+	require.False(t, updated, "superseded card snapshot must not seed")
+	var seededCost decimal.NullDecimal
+	var seededBreakdown sql.NullString
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT cost_price, cost_breakdown FROM product WHERE id = ?`, colorwayID).Scan(&seededCost, &seededBreakdown))
+	require.True(t, seededCost.Valid && seededCost.Decimal.Equal(decimal.NewFromInt(9)))
+	// The JSON column normalizes key order and spacing — compare semantically, not byte-for-byte.
+	require.True(t, seededBreakdown.Valid)
+	require.JSONEq(t, breakdown.String, seededBreakdown.String)
 
 	// UNIQUE(style_id, color_code) (R1): a duplicate colour for the same style is refused.
 	dup := newColorwayInsert("BLK", "black", "TCW1-BLACK-2", mediaID, langID, prices)
@@ -242,7 +271,7 @@ func TestCreateColorwayPublishPreconditionsAndUpdateVersionGuard(t *testing.T) {
 // tech_card.lock_version. A season (SKU-fact) change re-mints every sibling colourway's SKU in place;
 // it is refused (entity.ErrStyleFrozenSiblings) atomically when any sibling is SKU-frozen, but a
 // non-SKU-fact patch still succeeds even with a frozen sibling present (skuFactsChanged gates the
-// frozen check, not the whole write).
+// frozen check, not the whole write). Once the card is RELEASED, every catalogue-fact write is frozen.
 func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -341,6 +370,12 @@ func TestUpdateStyleRemintAndFrozenSiblingRefusal(t *testing.T) {
 	var collection string
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT collection FROM tech_card WHERE id = ?`, styleID).Scan(&collection))
 	require.Equal(t, "core-v2", collection)
+
+	// Released cards are immutable through UpdateStyle just like every sibling content writer.
+	_, err = testDB.ExecContext(ctx, `UPDATE tech_card SET approval_state = 'released' WHERE id = ?`, styleID)
+	require.NoError(t, err)
+	_, err = s.Products().UpdateStyle(ctx, styleID, newVersion2, collectionPatch, nil)
+	require.ErrorIs(t, err, entity.ErrTechCardReleased)
 
 	// An unknown style is sql.ErrNoRows.
 	_, err = s.Products().UpdateStyle(ctx, 999999999, 0, basePatch, nil)

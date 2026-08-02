@@ -15,7 +15,7 @@ import (
 func (s *Store) ListStyleAssembly(ctx context.Context, styleID int) ([]entity.StyleAssembly, error) {
 	rows, err := storeutil.QueryListNamed[entity.StyleAssembly](ctx, s.DB, `
 		SELECT sa.id, sa.style_id, sa.component_tech_card_id, sa.size_id, sa.qty,
-		       sa.print_note, sa.position_note, sa.active, sa.lock_version, sa.created_by, sa.updated_by,
+		       sa.print_note, sa.position_note, sa.active, sa.created_by, sa.updated_by,
 		       c.name AS component_name, c.aux_subtype AS component_aux_subtype, c.output_material_id,
 		       m.name AS output_material_name, sz.name AS size_name
 		FROM style_assembly sa
@@ -61,6 +61,21 @@ func (s *Store) UpsertStyleAssembly(ctx context.Context, styleID int, items []en
 
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		if err := storeutil.RequireMutableTechCard(ctx, db, styleID); err != nil {
+			return err
+		}
+		// A size-scoped line must name a size the style makes; the FK only proves the size exists in
+		// the dictionary, so an XL label line could sit on an XS/S style and never apply to anything.
+		// NULL (all sizes) is not size-scoped and always passes.
+		rng, err := storeutil.LoadTechCardSizeRange(ctx, db, styleID)
+		if err != nil {
+			return err
+		}
+		for i, it := range items {
+			if err := rng.Require(fmt.Sprintf("items[%d].size_id", i), sizeKey(it)); err != nil {
+				return err
+			}
+		}
 		// Every referenced component must be an auxiliary card. One query, checked in Go for a clean
 		// field-tagged error (the FK only guarantees the row exists, not its purpose).
 		if len(componentIDs) > 0 {

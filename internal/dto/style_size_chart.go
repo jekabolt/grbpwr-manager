@@ -28,20 +28,27 @@ func StyleSizeChartToPb(c entity.StyleSizeChart) *pb_common.StyleSizeChart {
 		})
 	}
 	return &pb_common.StyleSizeChart{
-		StyleId:          int32(c.StyleID),
-		LockVersion:      int32(c.LockVersion),
-		Cells:            cells,
-		GradeBaseSizeId:  int32(c.GradeBaseSizeID),
-		GradeSteps:       steps,
+		StyleId:         int32(c.StyleID),
+		LockVersion:     int32(c.LockVersion),
+		Cells:           cells,
+		GradeBaseSizeId: int32(c.GradeBaseSizeID),
+		GradeSteps:      steps,
 	}
 }
+
+const (
+	// tech_card_size_measurement.measurement_value and tech_card_grade_rule.step are both
+	// DECIMAL(10,2) (0141, 0210): at most 2 fraction digits and 8 integer digits.
+	chartDecimalMaxFrac = 2
+	chartDecimalLimit   = 100_000_000
+)
 
 // StyleSizeChartGradeStepsFromPb parses the grade rule of a full-replace size-chart request. A step is
 // dropped when its measurement is not named — a rule that grades nothing is the same as no rule.
 func StyleSizeChartGradeStepsFromPb(steps []*pb_common.StyleSizeChartGradeStep) ([]entity.StyleSizeChartGradeStep, error) {
 	out := make([]entity.StyleSizeChartGradeStep, 0, len(steps))
 	seen := make(map[int]bool, len(steps))
-	for _, s := range steps {
+	for i, s := range steps {
 		if s == nil {
 			continue
 		}
@@ -61,18 +68,44 @@ func StyleSizeChartGradeStepsFromPb(steps []*pb_common.StyleSizeChartGradeStep) 
 			}
 			v = parsed
 		}
+		// A step is signed (a measurement may shrink across the run), so only scale and magnitude
+		// are checked — 0.125 must not be silently stored as 0.13 and then graded from.
+		if err := validateDecimalFits(fmt.Sprintf("grade_steps[%d].step", i), v,
+			chartDecimalMaxFrac, chartDecimalLimit, true); err != nil {
+			return nil, err
+		}
 		out = append(out, entity.StyleSizeChartGradeStep{MeasurementNameID: nameID, Step: v})
 	}
 	return out, nil
 }
 
 // StyleSizeChartCellsFromPb parses the cells of a full-replace size-chart request into entity cells (R5).
+//
+// A cell is identified by (size_id, measurement_name_id) — that pair is uniq_tech_card_size_measurement
+// in the schema. Repeating it in one payload is a client bug with no sane resolution (which of the two
+// values is the measurement?), so it is rejected here: letting it through hit the unique index and came
+// back as an opaque Internal, which told the author nothing about which cell to fix.
 func StyleSizeChartCellsFromPb(cells []*pb_common.StyleSizeChartCell) ([]entity.StyleSizeChartCell, error) {
 	out := make([]entity.StyleSizeChartCell, 0, len(cells))
-	for _, c := range cells {
+	seen := make(map[[2]int]int, len(cells))
+	for i, c := range cells {
 		if c == nil {
 			continue
 		}
+		sizeID, nameID := int(c.GetSizeId()), int(c.GetMeasurementNameId())
+		if sizeID <= 0 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("cells[%d].size_id", i), "required", "", "every cell names the size it measures")
+		}
+		if nameID <= 0 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("cells[%d].measurement_name_id", i), "required", "", "every cell names the point of measure it records")
+		}
+		key := [2]int{sizeID, nameID}
+		if prev, dup := seen[key]; dup {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("cells[%d]", i), "duplicate_cell",
+				fmt.Sprintf("size %d / measurement %d (already set by cells[%d])", sizeID, nameID, prev),
+				"keep one value per size and point of measure")
+		}
+		seen[key] = i
 		v := decimal.Zero
 		if raw := c.GetValue().GetValue(); raw != "" {
 			parsed, err := decimal.NewFromString(raw)
@@ -81,9 +114,14 @@ func StyleSizeChartCellsFromPb(cells []*pb_common.StyleSizeChartCell) ([]entity.
 			}
 			v = parsed
 		}
+		// A point of measure is a length: never negative, and never finer than the column stores.
+		if err := validateDecimalFits(fmt.Sprintf("cells[%d].value", i), v,
+			chartDecimalMaxFrac, chartDecimalLimit, false); err != nil {
+			return nil, err
+		}
 		out = append(out, entity.StyleSizeChartCell{
-			SizeID:            int(c.GetSizeId()),
-			MeasurementNameID: int(c.GetMeasurementNameId()),
+			SizeID:            sizeID,
+			MeasurementNameID: nameID,
 			Value:             v,
 		})
 	}

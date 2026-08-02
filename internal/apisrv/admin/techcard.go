@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -83,7 +84,8 @@ func techCardConvertErr(err error) error {
 
 // CreateTechCard creates a new tech card with its nested sections.
 func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCardRequest) (*pb_admin.CreateTechCardResponse, error) {
-	if _, write := s.costingAccess(ctx); !write && techCardInsertHasCostingData(req.TechCard) {
+	canReadCosting, canWriteCosting := s.costingAccess(ctx)
+	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set cost data (costing block or BOM prices)")
 	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
@@ -96,10 +98,17 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
+	freshSignoffs := prepareCreateTechCardSignoffs(tc, username, time.Now().UTC())
+	if costingSignoffChanged(nil, tc.Signoffs, freshSignoffs) && !canReadCosting {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to change the costing sign-off")
+	}
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
-	// here exactly as it does on update — so the same correction applies. Nothing mutates the payload
-	// between the parse and the write on this path, so the parse-time digests ARE the "as parsed" set.
-	s.restampFreshSignoffDigests(ctx, tc, dto.TechCardSectionDigests(tc))
+	// here exactly as it does on update — so the same correction applies.
+	if err := s.restampFreshSignoffDigests(ctx, tc, freshSignoffs); err != nil {
+		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
+			slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
+	}
 
 	id, err := s.repo.TechCards().AddTechCard(ctx, tc)
 	if err != nil {
@@ -118,7 +127,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't add tech card")
 	}
-	s.seedProductCostsFromTechCard(ctx, id)
+	s.seedProductCostsFromTechCard(ctx, id, 0)
 	s.snapshotReleaseIfReleased(ctx, id)
 	return &pb_admin.CreateTechCardResponse{Id: int32(id)}, nil
 }
@@ -168,7 +177,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
-	_, canWriteCosting := s.costingAccess(ctx)
+	canReadCosting, canWriteCosting := s.costingAccess(ctx)
 	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
 	}
@@ -179,17 +188,56 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
-	tc.UpdatedBy = authsrv.GetAdminUsername(ctx) // server-stamp; created_by is preserved (not in SET)
-	// Snapshot the fingerprints of the payload AS PARSED — that is what dto stamped a fresh approval
-	// with, and the only way to tell this save's approvals from ones carried back verbatim. Taken
-	// before the costing restore below changes the priced sections underneath it.
-	asParsed := dto.TechCardSectionDigests(tc)
+	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, int(req.Id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "tech card not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
+			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load tech card; try again")
+	}
+	if stored == nil {
+		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
+			slog.Int("tech_card_id", int(req.Id)))
+		return nil, status.Error(codes.Internal, "can't load tech card; try again")
+	}
+	username := authsrv.GetAdminUsername(ctx)
+	tc.UpdatedBy = username // server-stamp; created_by is preserved (not in SET)
+	freshSignoffs := reconcileUpdateTechCardSignoffs(tc, req.TechCard.Signoffs, stored.Signoffs,
+		username, time.Now().UTC())
+	if costingSignoffChanged(stored.Signoffs, tc.Signoffs, freshSignoffs) && !canReadCosting {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to change the costing sign-off")
+	}
 	// A cost-stripped account's full-replace save must not blank the costing it never saw.
 	if !canWriteCosting {
-		s.preserveStoredCosting(ctx, int(req.Id), tc)
+		if err := preserveStoredCostingFrom(stored, tc); err != nil {
+			slog.Default().ErrorContext(ctx, "can't preserve stored tech card costing",
+				slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't preserve stored costing; try again")
+		}
 	}
-	s.restampFreshSignoffDigests(ctx, tc, asParsed)
-	if err := s.repo.TechCards().UpdateTechCard(ctx, int(req.Id), tc, int(req.ExpectedLockVersion)); err != nil {
+	// The DTO can validate only a costing block present on the wire. On update, an absent block is
+	// presence-preserved by the store, so validate the effective stored costing after any cost-blind
+	// hydration as well. The violation names the double-pricing condition without exposing its amount.
+	effectiveCosting := tc.Costing
+	if effectiveCosting == nil {
+		effectiveCosting = stored.Costing
+	}
+	if err := dto.ValidateHardwareCostAgainstBom(effectiveCosting, tc.BomItems); err != nil {
+		return nil, techCardConvertErr(err)
+	}
+	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	if err := s.restampFreshSignoffDigests(ctx, tc, freshSignoffs); err != nil {
+		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
+			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
+	}
+	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
+		ctx, int(req.Id), tc, int(req.ExpectedLockVersion))
+	if err != nil {
 		var ve *entity.ValidationError
 		if errors.As(err, &ve) {
 			return nil, apierr.Invalid(ve)
@@ -217,7 +265,8 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't update tech card")
 	}
-	s.seedProductCostsFromTechCard(ctx, int(req.Id))
+	s.deleteOrphanedPatternObjects(ctx, "tech_card", int(req.Id), orphanedPatternURLs)
+	s.seedProductCostsFromTechCard(ctx, int(req.Id), int(req.ExpectedLockVersion)+1)
 	s.snapshotReleaseIfReleased(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
 }
@@ -225,9 +274,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 // restampFreshSignoffDigests re-fingerprints the sections THIS save is approving from the content the
 // card will PRESENT ON THE NEXT READ, which is not the same thing as the payload that arrived.
 //
-// dto.ConvertPbTechCardInsertToEntity stamps a fresh approval's signed_digest at parse time — the only
-// moment it is certain which sections are being approved (an empty digest on the wire), but too early to
-// know the value, for two reasons:
+// dto.ConvertPbTechCardInsertToEntity stamps a fresh approval's signed_digest at parse time, but the
+// admin layer first verifies the request's carry/fresh claim against storage. An explicit fresh-section
+// set is then passed here because digest equality cannot prove provenance. The final value cannot be
+// known at parse time for two reasons:
 //
 //  1. LINKED BOM LINES (every account). The read query resolves a linked line's name, supplier,
 //     supplier_ref, composition, spec and unit from the catalog material, while the payload legitimately
@@ -242,45 +292,179 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 // is the exact failure the digest mechanism exists to prevent. So the digest is re-taken here, from the
 // final payload in its read-model form.
 //
-// Only the sections stamped by THIS save move. A digest the client carried back verbatim ("I am not
-// re-approving, just saving") was computed from the read model, so it does not match asParsed and is left
-// exactly where the approver put it. The one case where a carried-back digest does match asParsed is a
-// section whose content has not moved since it was approved — pointing that approval at the read-model
-// fingerprint of the very same content re-blesses nothing, and it self-heals the rows stamped before
-// this correction existed.
-func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, asParsed map[entity.TechCardSignoffSection]string) {
+// Only sections explicitly classified as fresh by prepareCreateTechCardSignoffs or
+// reconcileUpdateTechCardSignoffs move. A carried approval is copied from storage and never restamped.
+func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, freshSignoffs map[entity.TechCardSignoffSection]bool) error {
 	if tc == nil || len(tc.Signoffs) == 0 {
-		return
+		return nil
 	}
 	fresh := make([]*entity.TechCardSignoff, 0, len(tc.Signoffs))
 	for i := range tc.Signoffs {
 		so := &tc.Signoffs[i]
-		if so.State != entity.SignoffStateApproved || !so.SignedDigest.Valid {
+		if so.State != entity.SignoffStateApproved || !freshSignoffs[so.Section] {
 			continue
-		}
-		if so.SignedDigest.String != asParsed[so.Section] {
-			continue // carried back verbatim: an older approval, not this save's
 		}
 		fresh = append(fresh, so)
 	}
 	if len(fresh) == 0 {
-		return // nothing is being approved: no digest may move, and no catalog read is owed
+		return nil // nothing is being approved: no digest may move, and no catalog read is owed
 	}
-	final := dto.TechCardSectionDigestsAsRead(tc, s.linkedBomMaterialIdentities(ctx, tc))
+	identities, err := s.linkedBomMaterialIdentities(ctx, tc)
+	if err != nil {
+		return err
+	}
+	final := dto.TechCardSectionDigestsAsRead(tc, identities)
 	for _, so := range fresh {
 		d := final[so.Section]
 		so.SignedDigest = sql.NullString{String: d, Valid: d != ""}
 	}
+	return nil
+}
+
+// stampFreshTechCardSignoffAudit owns the author and timestamp of an approval made by this request.
+// Freshness has already been verified against storage; carried approvals are never selected here.
+func stampFreshTechCardSignoffAudit(tc *entity.TechCardInsert, freshSignoffs map[entity.TechCardSignoffSection]bool, username string, now time.Time) {
+	if tc == nil {
+		return
+	}
+	for i := range tc.Signoffs {
+		if tc.Signoffs[i].State != entity.SignoffStateApproved || !freshSignoffs[tc.Signoffs[i].Section] {
+			continue
+		}
+		tc.Signoffs[i].SignedBy = sql.NullString{String: username, Valid: username != ""}
+		tc.Signoffs[i].SignedAt = sql.NullTime{Time: now.UTC(), Valid: true}
+	}
+}
+
+// prepareCreateTechCardSignoffs makes every approval on a new card fresh. There is no stored row a
+// client can legitimately carry, so any supplied digest or audit identity is untrusted and discarded.
+func prepareCreateTechCardSignoffs(tc *entity.TechCardInsert, username string, now time.Time) map[entity.TechCardSignoffSection]bool {
+	fresh := make(map[entity.TechCardSignoffSection]bool)
+	if tc == nil {
+		return fresh
+	}
+	for i := range tc.Signoffs {
+		if tc.Signoffs[i].State != entity.SignoffStateApproved {
+			continue
+		}
+		tc.Signoffs[i].SignedDigest = sql.NullString{}
+		fresh[tc.Signoffs[i].Section] = true
+	}
+	dto.StampTechCardSignoffDigests(tc)
+	stampFreshTechCardSignoffAudit(tc, fresh, username, now)
+	return fresh
+}
+
+// reconcileUpdateTechCardSignoffs makes storage authoritative for a carried approval. A non-empty
+// wire digest is only a carry request; when storage has an approved row for the same section its audit
+// fields and digest replace the request values. Without such a row the approval is fresh and receives
+// a new server-owned digest, author and timestamp.
+func reconcileUpdateTechCardSignoffs(tc *entity.TechCardInsert, incoming []*pb_common.TechCardSignoff,
+	stored []entity.TechCardSignoff, username string, now time.Time) map[entity.TechCardSignoffSection]bool {
+	fresh := make(map[entity.TechCardSignoffSection]bool)
+	if tc == nil {
+		return fresh
+	}
+	storedBySection := make(map[entity.TechCardSignoffSection]entity.TechCardSignoff, len(stored))
+	carried := make(map[entity.TechCardSignoffSection]entity.TechCardSignoff)
+	for i := range stored {
+		storedBySection[stored[i].Section] = stored[i]
+	}
+	for i := range tc.Signoffs {
+		so := &tc.Signoffs[i]
+		if so.State != entity.SignoffStateApproved {
+			continue
+		}
+		wireDigest := ""
+		if i < len(incoming) && incoming[i] != nil {
+			wireDigest = incoming[i].GetSignedDigest()
+		}
+		storedSignoff, canCarry := storedBySection[so.Section]
+		if wireDigest != "" && canCarry && storedSignoff.State == entity.SignoffStateApproved {
+			so.SignedBy = storedSignoff.SignedBy
+			so.SignedAt = storedSignoff.SignedAt
+			so.SignedDigest = storedSignoff.SignedDigest
+			carried[so.Section] = storedSignoff
+			continue
+		}
+		so.SignedDigest = sql.NullString{}
+		fresh[so.Section] = true
+	}
+	dto.StampTechCardSignoffDigests(tc)
+	// StampTechCardSignoffDigests also fills an approved row whose digest is NULL. Re-apply carried
+	// storage afterwards so an unverifiable legacy approval remains stale instead of being silently
+	// blessed with the current content merely because the client sent a non-empty carry claim.
+	for i := range tc.Signoffs {
+		storedSignoff, ok := carried[tc.Signoffs[i].Section]
+		if !ok {
+			continue
+		}
+		tc.Signoffs[i].SignedBy = storedSignoff.SignedBy
+		tc.Signoffs[i].SignedAt = storedSignoff.SignedAt
+		tc.Signoffs[i].SignedDigest = storedSignoff.SignedDigest
+	}
+	stampFreshTechCardSignoffAudit(tc, fresh, username, now)
+	return fresh
+}
+
+// costingSignoffChanged reports a costing-signoff state transition. A fresh re-approval is a change
+// even when the stored and requested states are both approved; an unchanged carried approval is not.
+func costingSignoffChanged(stored, incoming []entity.TechCardSignoff,
+	fresh map[entity.TechCardSignoffSection]bool) bool {
+	if fresh[entity.SignoffCosting] {
+		return true
+	}
+	find := func(signoffs []entity.TechCardSignoff) (entity.TechCardSignoffState, bool) {
+		for i := range signoffs {
+			if signoffs[i].Section == entity.SignoffCosting {
+				return signoffs[i].State, true
+			}
+		}
+		return "", false
+	}
+	storedState, storedOK := find(stored)
+	incomingState, incomingOK := find(incoming)
+	return storedOK != incomingOK || (storedOK && storedState != incomingState)
+}
+
+// validateFreshSignoffSectionPresence rejects an approval over a presence-preserved section the
+// update did not carry. Costing restoration runs before this check, so a read-only costing approver's
+// hydrated stored block is present; a costing-capable caller who omitted it must include it to approve.
+func validateFreshSignoffSectionPresence(tc *entity.TechCardInsert,
+	fresh map[entity.TechCardSignoffSection]bool) *entity.ValidationError {
+	if tc == nil {
+		return nil
+	}
+	for i := range tc.Signoffs {
+		so := tc.Signoffs[i]
+		if so.State != entity.SignoffStateApproved || !fresh[so.Section] {
+			continue
+		}
+		present := true
+		switch so.Section {
+		case entity.SignoffConstruction:
+			present = tc.Construction != nil
+		case entity.SignoffPackaging:
+			present = tc.Packaging != nil
+		case entity.SignoffCosting:
+			present = tc.Costing != nil
+		}
+		if !present {
+			return entity.NewFieldViolation(fmt.Sprintf("signoffs[%d].section", i),
+				fmt.Sprintf("cannot approve %s because this save does not carry that section", so.Section), "",
+				"include the section or drop the approval")
+		}
+	}
+	return nil
 }
 
 // linkedBomMaterialIdentities loads the catalog identity of every material the payload's BOM links, so a
 // digest can be taken in the read model's terms. Nil when the BOM links nothing — the common case, which
 // then costs no query at all.
 //
-// Best-effort, like preserveStoredCosting: a catalog read failure falls back to fingerprinting the
-// payload as sent (today's behaviour) rather than failing the save — a logged, self-correcting stale flag
-// beats refusing to persist an approval.
-func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.TechCardInsert) map[int64]dto.BomMaterialIdentity {
+// A catalog failure is returned to the fresh-approval path: hashing the raw linked line would create
+// an approval that can never match the resolved read model.
+func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.TechCardInsert) (map[int64]dto.BomMaterialIdentity, error) {
 	linked := make(map[int64]bool, len(tc.BomItems))
 	for _, b := range tc.BomItems {
 		if b.MaterialId.Valid && b.MaterialId.Int64 > 0 {
@@ -288,15 +472,13 @@ func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.Tec
 		}
 	}
 	if len(linked) == 0 {
-		return nil
+		return nil, nil
 	}
 	// includeArchived: the read query LEFT JOINs material unconditionally, so an archived material still
 	// resolves the lines that link it. One list beats N GetMaterial round trips.
 	mats, err := s.repo.TechCards().ListMaterials(ctx, "", true)
 	if err != nil {
-		slog.Default().WarnContext(ctx, "signoff digest: can't load material catalog; fingerprinting the payload as sent",
-			slog.String("err", err.Error()))
-		return nil
+		return nil, fmt.Errorf("load material catalog for sign-off digest: %w", err)
 	}
 	out := make(map[int64]dto.BomMaterialIdentity, len(linked))
 	for i := range mats {
@@ -313,7 +495,7 @@ func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.Tec
 			Unit:        m.Unit.String,
 		}
 	}
-	return out
+	return out, nil
 }
 
 // snapshotReleaseIfReleased captures an immutable release snapshot (task 11) when a card is in
@@ -321,11 +503,11 @@ func (s *Server) linkedBomMaterialIdentities(ctx context.Context, tc *entity.Tec
 // rejects any non-draft edit — a successful save that ends in `released` is always a genuine
 // release transition (an already-released card can only move to draft), so this fires exactly
 // once per release episode. The snapshot is the enriched read-model as proto-JSON plus the
-// computed base-currency unit cost. It is best-effort: the release itself already committed, and
-// the frozen content means an identical snapshot can be regenerated on a later re-release — so a
-// failure here is logged, never surfaced as a failed release.
+// computed base-currency unit cost. It is best-effort because the release itself already committed;
+// a persistence failure is logged loudly with the exact release episode, never surfaced as a failed
+// release RPC.
 func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) {
-	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "release snapshot: can't reload tech card",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
@@ -343,10 +525,13 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 	}
 	unit, currency := dto.ComputeTechCardUnitCost(card, fx)
 	username := authsrv.GetAdminUsername(ctx)
+	releaseEpisode := "unknown"
+	if card.ReleasedAt.Valid {
+		releaseEpisode = card.ReleasedAt.Time.UTC().Format(time.RFC3339Nano)
+	}
 	rel := entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
 			TechCardId: techCardID,
-			Version:    card.Version,
 			ReleasedBy: sql.NullString{String: username, Valid: username != ""},
 			UnitCost:   unit,
 			Currency:   sql.NullString{String: currency, Valid: unit.Valid && currency != ""},
@@ -354,12 +539,12 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 		Snapshot: string(blob),
 	}
 	if err := s.repo.TechCards().SaveTechCardRelease(ctx, rel); err != nil {
-		slog.Default().ErrorContext(ctx, "release snapshot: can't save (card is released; a later re-release will re-snapshot)",
-			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "RELEASE SNAPSHOT LOST: released card has no immutable snapshot",
+			slog.Int("tech_card_id", techCardID), slog.String("release_episode", releaseEpisode), slog.String("err", err.Error()))
 		return
 	}
 	slog.Default().InfoContext(ctx, "captured tech card release snapshot",
-		slog.Int("tech_card_id", techCardID), slog.String("version", card.Version.String))
+		slog.Int("tech_card_id", techCardID), slog.String("release_episode", releaseEpisode))
 }
 
 // ListTechCardReleases returns a card's release history (newest-first, metadata only).
@@ -405,8 +590,14 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 		stripReleaseMetaCosting(resp.Release)
 	}
 	var snap pb_common.TechCard
-	if err := protojson.Unmarshal([]byte(rel.Snapshot), &snap); err != nil {
-		resp.SnapshotError = "stored snapshot is incompatible with the current schema: " + err.Error()
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(rel.Snapshot), &snap); err != nil {
+		// The parser error quotes the offending field (and can quote its value) straight out of the
+		// frozen snapshot — which embeds the costing block and BOM prices — so a cost-blind caller
+		// gets the generic sentence only. The full detail is logged server-side either way.
+		resp.SnapshotError = "stored snapshot is incompatible with the current schema"
+		if read {
+			resp.SnapshotError += ": " + err.Error()
+		}
 		slog.Default().WarnContext(ctx, "tech card release snapshot won't parse",
 			slog.Int("release_id", int(req.Id)), slog.String("err", err.Error()))
 	} else {
@@ -426,9 +617,23 @@ func (s *Server) GetTechCardRelease(ctx context.Context, req *pb_admin.GetTechCa
 // converted. Only products whose PRIMARY card is this one are seeded, and a manually-set
 // cost is never overwritten (use SyncProductCostFromTechCard to force). Newly-linked
 // products with no primary yet adopt this card as their primary.
-func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID int) {
-	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
-	if err != nil || card == nil {
+func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, expectedMinLockVersion int) {
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't reload tech card for product cost seed",
+			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+		return
+	}
+	if card == nil {
+		slog.Default().ErrorContext(ctx, "can't seed product costs: tech card reload returned nil",
+			slog.Int("tech_card_id", techCardID))
+		return
+	}
+	if card.LockVersion < expectedMinLockVersion {
+		slog.Default().WarnContext(ctx, "skipping product cost seed from stale tech card read",
+			slog.Int("tech_card_id", techCardID),
+			slog.Int("lock_version", card.LockVersion),
+			slog.Int("expected_min_lock_version", expectedMinLockVersion))
 		return
 	}
 	linkedProducts := card.LinkedProductIDs()
@@ -437,15 +642,15 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 	}
 	if err := s.repo.Products().AssignPrimaryTechCardIfUnset(ctx, techCardID, linkedProducts); err != nil {
 		slog.Default().ErrorContext(ctx, "can't assign primary tech card to products",
-			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+			slog.Int("tech_card_id", techCardID), slog.Any("product_ids", linkedProducts), slog.String("err", err.Error()))
 		return
 	}
 	// Each colourway is seeded its OWN unit cost (its pins, its norms) — one shared figure was
 	// the primary colourway's number written over every product, erasing exactly the divergence
 	// per-colourway pinning creates. The card-level figure stays as the fallback for a linked
 	// product the card's colourway list somehow misses. Base currency only, as before; a product
-	// whose cost is manually set (or run-sourced) is never overwritten — the same provenance
-	// predicate SeedProductsCostPriceFromTechCard enforced in SQL.
+	// whose cost is manually set (or run-sourced) is never overwritten — the combined seed enforces
+	// provenance, ownership, and the observed card version atomically in SQL.
 	fx := s.costingFx(ctx)
 	base := cache.GetBaseCurrency()
 	rootUnit, rootCcy := dto.ComputeTechCardUnitCost(card, fx)
@@ -462,32 +667,34 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 		if !unit.Valid || !strings.EqualFold(currency, base) {
 			continue
 		}
-		// Provenance + primary-card ownership are enforced ATOMICALLY in the UPDATE's predicate —
-		// a read-then-force here would let a concurrent manual edit or run receipt be overwritten
-		// between the read and the write.
-		updated, uerr := s.repo.Products().SeedProductCostPriceFromTechCard(ctx, pid, techCardID, unit.Decimal)
+		// The COGS decomposition rides the same per-colourway figure (its materials component is
+		// THIS colourway's, pins included). A non-convertible breakdown intentionally stays NULL to
+		// clear a stale one; a marshal failure skips the combined write and retains both stored fields.
+		breakdownJSON := sql.NullString{}
+		if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, pid, fx); ok {
+			b, merr := json.Marshal(bd)
+			if merr != nil {
+				slog.Default().ErrorContext(ctx, "can't marshal product cost_breakdown from tech card",
+					slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", merr.Error()))
+				continue
+			}
+			breakdownJSON = sql.NullString{String: string(b), Valid: true}
+		}
+		updated, uerr := s.repo.Products().SeedProductCostFromTechCard(
+			ctx, pid, techCardID, card.LockVersion, unit.Decimal, breakdownJSON)
 		if uerr != nil {
-			slog.Default().ErrorContext(ctx, "can't seed product cost_price from tech card",
-				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", uerr.Error()))
+			slog.Default().ErrorContext(ctx, "can't seed product cost from tech card",
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid),
+				slog.Int("tech_card_lock_version", card.LockVersion), slog.String("err", uerr.Error()))
 			continue
 		}
 		if !updated {
-			continue // another card is authoritative, or manual/run provenance wins
+			slog.Default().WarnContext(ctx, "product cost seed predicate rejected the observed tech card snapshot",
+				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid),
+				slog.Int("tech_card_lock_version", card.LockVersion))
+			continue
 		}
 		seeded++
-		// The COGS decomposition rides the same per-colourway figure (its materials component is
-		// THIS colourway's, pins included) under the same predicate, so cost_price and
-		// cost_breakdown can never describe two different colourways. NULL clears a stale one.
-		breakdownJSON := sql.NullString{}
-		if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, pid, fx); ok {
-			if b, merr := json.Marshal(bd); merr == nil {
-				breakdownJSON = sql.NullString{String: string(b), Valid: true}
-			}
-		}
-		if berr := s.repo.Products().SeedProductCostBreakdownFromTechCard(ctx, pid, techCardID, breakdownJSON); berr != nil {
-			slog.Default().ErrorContext(ctx, "can't seed product cost_breakdown from tech card",
-				slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid), slog.String("err", berr.Error()))
-		}
 	}
 	if seeded == 0 {
 		slog.Default().InfoContext(ctx, "no product cost seeded from tech card (no base-convertible cost, or provenance elsewhere)",
@@ -495,24 +702,6 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID in
 	} else {
 		slog.Default().InfoContext(ctx, "seeded product cost_price from tech card",
 			slog.Int("tech_card_id", techCardID), slog.Int64("products_updated", seeded))
-	}
-
-	// Snapshot the COGS decomposition (task 15) onto the same products, so the COGS-structure
-	// report can attribute a period's cost to materials vs CMT vs …. Best-effort and non-fatal:
-	// a NULL breakdown (not base-convertible) clears any stale one, keeping it in sync with
-	// cost_price. Uses the same FX as the unit-cost fold above.
-	breakdownJSON := sql.NullString{}
-	if bd, ok := dto.ComputeTechCardCostBreakdownBase(card, s.costingFx(ctx)); ok {
-		if b, err := json.Marshal(bd); err == nil {
-			breakdownJSON = sql.NullString{String: string(b), Valid: true}
-		} else {
-			slog.Default().ErrorContext(ctx, "can't marshal cost breakdown",
-				slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
-		}
-	}
-	if _, err := s.repo.Products().SeedProductsCostBreakdownFromTechCard(ctx, techCardID, breakdownJSON); err != nil {
-		slog.Default().ErrorContext(ctx, "can't seed product cost_breakdown from tech card",
-			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 	}
 }
 
@@ -578,6 +767,13 @@ func (s *Server) costingFxForVatCountry(ctx context.Context, requested string) d
 // margin view and the OPEX/dev-cost base-currency previews). Manual entry has been removed:
 // UpsertCostingFxRates is no longer implemented (the RPC falls back to Unimplemented).
 func (s *Server) GetCostingFxRates(ctx context.Context, _ *pb_admin.GetCostingFxRatesRequest) (*pb_admin.GetCostingFxRatesResponse, error) {
+	// The whole response exists to serve the costing surfaces (margin view, OPEX/dev-cost base
+	// previews), so without costing:read it is denied outright like ListOpexLines — there is no
+	// non-money structure left to shape, which is the only reason GetStyleCostEstimate can strip
+	// instead. The RPC map only requires tech_cards:read, so a cost-blind constructor reached it.
+	if read, _ := s.costingAccess(ctx); !read {
+		return nil, status.Error(codes.PermissionDenied, "costing:read is required to view costing FX rates")
+	}
 	rates, err := s.repo.TechCards().ListCostingFxRates(ctx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list costing fx rates", slog.String("err", err.Error()))
@@ -614,7 +810,11 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
-	if err := s.repo.TechCards().DeleteTechCard(ctx, int(req.Id)); err != nil {
+	orphanedPatternURLs, err := s.repo.TechCards().DeleteTechCardAndListOrphanedPatternURLs(ctx, int(req.Id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "tech card not found")
+		}
 		if errors.Is(err, entity.ErrSampleHasMovements) {
 			return nil, status.Error(codes.FailedPrecondition, "a sample of this tech card has material movements; delete/return them first")
 		}
@@ -627,6 +827,7 @@ func (s *Server) DeleteTechCard(ctx context.Context, req *pb_admin.DeleteTechCar
 		)
 		return nil, status.Errorf(codes.Internal, "can't delete tech card")
 	}
+	s.deleteOrphanedPatternObjects(ctx, "tech_card", int(req.Id), orphanedPatternURLs)
 	return &pb_admin.DeleteTechCardResponse{}, nil
 }
 

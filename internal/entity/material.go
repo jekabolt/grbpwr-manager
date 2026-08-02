@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -112,7 +113,8 @@ type MaterialInsert struct {
 	// CTI typing (S15). MaterialClass is the discriminant; exactly the matching typed attribute
 	// pointer is populated (the rest nil); OtherAttrs is the JSON escape-hatch for class 'other'.
 	// The attribute pointers are not base columns (db:"-") — they are loaded from / written to the
-	// side-tables separately. An empty MaterialClass is normalised to 'other' on write.
+	// side-tables separately. An empty MaterialClass defaults to 'other' on create and means
+	// "preserve the stored class" on update.
 	MaterialClass string                 `db:"material_class" valid:"-"`
 	FabricAttr    *MaterialFabricAttr    `db:"-" valid:"-"`
 	HardwareAttr  *MaterialHardwareAttr  `db:"-" valid:"-"`
@@ -121,7 +123,8 @@ type MaterialInsert struct {
 	OtherAttrs    []byte                 `db:"other_attrs" valid:"-"` // JSON; only for class 'other'
 	// CompositionEntries is the material's structured fibre composition (S17, material_composition):
 	// each fibre's percent share, summing to 100 when set. Not a base column (db:"-") — it is written
-	// to / read from the material_composition side-table separately. Empty means "no composition".
+	// to / read from the material_composition side-table separately. Empty means no composition on
+	// create and "preserve stored composition" on update (the proto repeated field has no presence).
 	CompositionEntries []CompositionEntry `db:"-" valid:"-"`
 	// Username audit stamps (server-set from the JWT, no FK). CreatedBy is written once on create;
 	// UpdatedBy on every write.
@@ -172,9 +175,40 @@ type MaterialPrice struct {
 	Note       sql.NullString  `db:"note"`
 }
 
-// MaterialWithPrice is a catalog material plus its current (latest-effective) price, if any.
-// The list/detail read joins the most recent price so the admin UI can show and pre-fill it.
+// MaterialWithPrice is a catalog material plus its current (latest-effective) prices. LatestPrices
+// keeps one current row per currency for costing; LatestPrice is the backwards-compatible singular
+// admin projection (the base-currency row when present, otherwise the newest cross-currency quote).
 type MaterialWithPrice struct {
 	Material
-	LatestPrice *MaterialPrice
+	LatestPrice  *MaterialPrice
+	LatestPrices map[string]*MaterialPrice
+}
+
+// LatestPriceForCurrencies returns the first current price matching the supplied currency priority.
+// If none matches, a sole available currency is unambiguous and is returned. Multiple unmatched
+// currencies deliberately return nil: silently choosing one would make costing depend on row order.
+// LatestPrice remains a fallback for older in-memory callers/tests that construct only the legacy
+// singular field.
+func (m MaterialWithPrice) LatestPriceForCurrencies(currencies ...string) *MaterialPrice {
+	for _, currency := range currencies {
+		currency = strings.ToUpper(strings.TrimSpace(currency))
+		if currency == "" {
+			continue
+		}
+		if price := m.LatestPrices[currency]; price != nil {
+			return price
+		}
+		if m.LatestPrice != nil && strings.EqualFold(m.LatestPrice.Currency, currency) {
+			return m.LatestPrice
+		}
+	}
+	if len(m.LatestPrices) == 1 {
+		for _, price := range m.LatestPrices {
+			return price
+		}
+	}
+	if len(m.LatestPrices) == 0 {
+		return m.LatestPrice
+	}
+	return nil
 }

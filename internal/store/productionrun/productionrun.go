@@ -98,6 +98,18 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 // header edit and would spuriously read as NotFound — the receive-v2 flow only touches line rows).
 // Returns sql.ErrNoRows when no run exists.
 func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
+	return s.updateProductionRun(ctx, id, r, expectedLockVersion, false)
+}
+
+// UpdateProductionRunPreservingCosts reloads the stored cost articles after locking the run and
+// carries them through the full-replace. It is the cost-blind update path: any preservation read
+// failure aborts the same transaction before destructive child deletes can run.
+func (s *Store) UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
+	return s.updateProductionRun(ctx, id, r, expectedLockVersion, true)
+}
+
+func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert,
+	expectedLockVersion int, preserveCosts bool) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
 			Status      string `db:"status"`
@@ -128,6 +140,13 @@ func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.Produ
 		// tech_card_id and the style roll-ups are all anchored to it (g25-13).
 		if r.TechCardId != cur.TechCardId {
 			return entity.ErrProductionRunCardChange
+		}
+		if preserveCosts {
+			storedCosts, err := loadRunCosts(ctx, rep.DB(), id)
+			if err != nil {
+				return fmt.Errorf("preserve stored production run %d costs: %w", id, err)
+			}
+			r.Costs = storedCosts
 		}
 		if r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed {
 			net, err := netIssuedToRun(ctx, rep.DB(), id)

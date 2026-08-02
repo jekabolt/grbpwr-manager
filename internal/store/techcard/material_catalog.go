@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/materialcode"
@@ -24,10 +25,9 @@ type materialRow struct {
 	LpNote      sql.NullString      `db:"lp_note"`
 }
 
-func (r materialRow) toEntity() entity.MaterialWithPrice {
-	out := entity.MaterialWithPrice{Material: r.Material}
+func (r materialRow) latestPrice() *entity.MaterialPrice {
 	if r.LpPrice.Valid && r.LpCurrency.Valid {
-		out.LatestPrice = &entity.MaterialPrice{
+		return &entity.MaterialPrice{
 			MaterialId: r.Material.Id,
 			Price:      r.LpPrice.Decimal,
 			Currency:   r.LpCurrency.String,
@@ -36,16 +36,60 @@ func (r materialRow) toEntity() entity.MaterialWithPrice {
 			Note:       r.LpNote,
 		}
 	}
+	return nil
+}
+
+// materialsFromPriceRows collapses the latest-per-currency query back to one catalog entity per
+// material. The backwards-compatible singular price is base-currency when available, otherwise it
+// is the newest current quote across currencies (currency ASC breaks same-date ties). Costing
+// consumers use LatestPrices/LatestPriceForCurrencies directly and never consume this fallback.
+func materialsFromPriceRows(rows []materialRow) []entity.MaterialWithPrice {
+	out := make([]entity.MaterialWithPrice, 0, len(rows))
+	positions := make(map[int]int, len(rows))
+	for _, row := range rows {
+		pos, exists := positions[row.Id]
+		if !exists {
+			pos = len(out)
+			positions[row.Id] = pos
+			out = append(out, entity.MaterialWithPrice{Material: row.Material})
+		}
+		if price := row.latestPrice(); price != nil {
+			if out[pos].LatestPrices == nil {
+				out[pos].LatestPrices = make(map[string]*entity.MaterialPrice)
+			}
+			out[pos].LatestPrices[strings.ToUpper(price.Currency)] = price
+		}
+	}
+	for i := range out {
+		out[i].LatestPrice = singularMaterialPrice(out[i].LatestPrices, cache.GetBaseCurrency())
+	}
 	return out
 }
 
-// materialWithPriceSelect is the shared SELECT that joins each material to its current price —
-// the latest row with valid_from <= today, tie-broken by currency. WHERE/ORDER are appended by
-// the caller.
+func singularMaterialPrice(prices map[string]*entity.MaterialPrice, baseCurrency string) *entity.MaterialPrice {
+	if base := prices[strings.ToUpper(strings.TrimSpace(baseCurrency))]; base != nil {
+		return base
+	}
+	var newest *entity.MaterialPrice
+	for _, price := range prices {
+		if price == nil {
+			continue
+		}
+		if newest == nil || price.ValidFrom.After(newest.ValidFrom) ||
+			(price.ValidFrom.Equal(newest.ValidFrom) && strings.ToUpper(price.Currency) < strings.ToUpper(newest.Currency)) {
+			newest = price
+		}
+	}
+	return newest
+}
+
+// materialWithPriceSelect is the shared SELECT that joins each material to its current price in
+// EVERY currency. Callers collapse the rows to one MaterialWithPrice; partitioning by currency is
+// essential because two same-day quotes are peers, not candidates for an alphabetical winner.
 const materialWithPriceSelect = `
 	WITH latest AS (
 		SELECT material_id, price, currency, valid_from, source, note,
-			ROW_NUMBER() OVER (PARTITION BY material_id ORDER BY valid_from DESC, currency ASC) AS rn
+			ROW_NUMBER() OVER (PARTITION BY material_id, currency ORDER BY valid_from DESC) AS rn
 		FROM material_price
 		WHERE valid_from <= CURDATE()
 	)
@@ -119,9 +163,13 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 // internal code unique among non-archived materials. The lock load, both guards and the update run
 // in one transaction so a concurrent movement/create/update cannot slip past the checks.
 func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert, expectedLockVersion int) error {
-	composition, err := entity.NormalizeMaterialComposition(m.CompositionEntries)
-	if err != nil {
-		return err
+	var composition []entity.CompositionEntry
+	if len(m.CompositionEntries) > 0 {
+		var err error
+		composition, err = entity.NormalizeMaterialComposition(m.CompositionEntries)
+		if err != nil {
+			return err
+		}
 	}
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
@@ -143,6 +191,10 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 			return err
 		}
 		params := materialParams(m)
+		// UNKNOWN/empty is the update-presence marker: older clients do not carry CTI fields, so keep
+		// both the stored discriminant and its JSON escape-hatch. CreateMaterial still defaults an
+		// empty class to `other` through materialParams.
+		params["material_class"] = strings.ToLower(strings.TrimSpace(m.MaterialClass))
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
@@ -151,7 +203,9 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
 				image_id=:image_id, purpose=:purpose,
-				material_class=:material_class, other_attrs=:other_attrs, updated_by=:updated_by
+				material_class=CASE WHEN :material_class = '' THEN material_class ELSE :material_class END,
+				other_attrs=CASE WHEN :material_class = '' THEN other_attrs ELSE :other_attrs END,
+				updated_by=:updated_by
 			WHERE id=:id AND lock_version=:expected_lock_version`, params)
 		if err != nil {
 			return fmt.Errorf("update material %d: %w", id, err)
@@ -161,11 +215,20 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		if rows == 0 {
 			return entity.ErrMaterialConflict
 		}
-		if err := upsertMaterialAttrs(ctx, rep.DB(), id, m); err != nil {
-			return fmt.Errorf("update material %d attrs: %w", id, err)
+		// An absent attributes oneof means preserve the stored CTI side-table rows. A present, even
+		// all-empty, message remains an explicit replacement and takes the full-replace helper below.
+		if materialTypedAttrsPresent(m) {
+			if err := upsertMaterialAttrs(ctx, rep.DB(), id, m); err != nil {
+				return fmt.Errorf("update material %d attrs: %w", id, err)
+			}
 		}
-		if err := writeMaterialComposition(ctx, rep.DB(), id, composition); err != nil {
-			return err
+		// Proto repeated fields cannot distinguish absent from an explicit empty list. The admin sends
+		// the full non-empty composition when editing it and has no clear-composition action, so empty
+		// means preserve on update. A future explicit clear needs a presence-bearing field/RPC.
+		if len(m.CompositionEntries) > 0 {
+			if err := writeMaterialComposition(ctx, rep.DB(), id, composition); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -244,10 +307,9 @@ func (s *Store) getMaterialsByIDs(ctx context.Context, ids []int) (map[int]entit
 	if err != nil {
 		return nil, fmt.Errorf("get materials by ids: %w", err)
 	}
-	out := make([]entity.MaterialWithPrice, len(rows))
-	ptrs := make([]*entity.MaterialWithPrice, len(rows))
-	for i, r := range rows {
-		out[i] = r.toEntity()
+	out := materialsFromPriceRows(rows)
+	ptrs := make([]*entity.MaterialWithPrice, len(out))
+	for i := range out {
 		ptrs[i] = &out[i]
 	}
 	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {
@@ -270,7 +332,8 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("get material %d: %w", id, entity.ErrMaterialNotFound)
 	}
-	out := rows[0].toEntity()
+	materials := materialsFromPriceRows(rows)
+	out := materials[0]
 	if err := s.attachMaterialAttrs(ctx, []*entity.MaterialWithPrice{&out}); err != nil {
 		return nil, fmt.Errorf("get material %d attrs: %w", id, err)
 	}
@@ -284,21 +347,20 @@ func (s *Store) GetMaterial(ctx context.Context, id int) (*entity.MaterialWithPr
 }
 
 // ListMaterials returns catalog materials with their current price, optionally filtered by
-// section, excluding archived unless includeArchived is set. Ordered by section then name.
+// section, excluding archived unless includeArchived is set. Ordered by section, name, then id.
 func (s *Store) ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error) {
 	rows, err := storeutil.QueryListNamed[materialRow](ctx, s.DB,
 		materialWithPriceSelect+`
 		WHERE (:section = '' OR m.section = :section)
 		AND (:includeArchived OR m.archived = FALSE)
-		ORDER BY m.section, m.name`,
+		ORDER BY m.section, m.name, m.id`,
 		map[string]any{"section": strings.ToLower(strings.TrimSpace(section)), "includeArchived": includeArchived})
 	if err != nil {
 		return nil, fmt.Errorf("list materials: %w", err)
 	}
-	out := make([]entity.MaterialWithPrice, len(rows))
-	ptrs := make([]*entity.MaterialWithPrice, len(rows))
-	for i, r := range rows {
-		out[i] = r.toEntity()
+	out := materialsFromPriceRows(rows)
+	ptrs := make([]*entity.MaterialWithPrice, len(out))
+	for i := range out {
 		ptrs[i] = &out[i]
 	}
 	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {
@@ -435,6 +497,10 @@ func nullJSONParam(b []byte) any {
 // materialAttrTables are the four CTI side-tables, in a stable order for the full-replace clear.
 var materialAttrTables = []string{
 	"material_fabric_attr", "material_hardware_attr", "material_thread_attr", "material_packaging_attr",
+}
+
+func materialTypedAttrsPresent(m *entity.MaterialInsert) bool {
+	return m.FabricAttr != nil || m.HardwareAttr != nil || m.ThreadAttr != nil || m.PackagingAttr != nil
 }
 
 // upsertMaterialAttrs full-replaces a material's typed side-tables: it clears all four (so a class

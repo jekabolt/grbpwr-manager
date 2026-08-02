@@ -599,16 +599,28 @@ func TestTechCardDevExpenseCRUD(t *testing.T) {
 	labour, err := T.AddTechCardDevExpense(ctx, mk("labour", "60", "60"))
 	require.NoError(t, err)
 
+	// A re-submitted identical expense (client retry / double-clicked Add) is refused instead of
+	// doubling the journal and inflating net_after_dev — while a deliberate second expense stays
+	// recordable by telling it apart with a note (audit #77).
+	_, err = T.AddTechCardDevExpense(ctx, mk("labour", "60", "60"))
+	require.ErrorIs(t, err, entity.ErrDuplicateDevExpense, "identical re-submit must not append a second row")
+
+	noted := mk("labour", "60", "60")
+	noted.Description = sql.NullString{String: "second fitting round", Valid: true}
+	notedRow, err := T.AddTechCardDevExpense(ctx, noted)
+	require.NoError(t, err, "a distinguishable repeat expense is still recordable")
+
 	list, err := T.ListTechCardDevExpenses(ctx, techCardID)
 	require.NoError(t, err)
-	require.Len(t, list, 2)
+	require.Len(t, list, 3)
 
-	// delete one → list shrinks to the other.
+	// delete one → list shrinks (newest first, so the noted row leads and labour follows).
 	require.NoError(t, T.DeleteTechCardDevExpense(ctx, sample.Id))
 	list, err = T.ListTechCardDevExpenses(ctx, techCardID)
 	require.NoError(t, err)
-	require.Len(t, list, 1)
-	require.Equal(t, labour.Id, list[0].Id)
+	require.Len(t, list, 2)
+	require.Equal(t, notedRow.Id, list[0].Id)
+	require.Equal(t, labour.Id, list[1].Id)
 }
 
 // TestFittingRoundAndChangeRequests exercises task-13: round_number auto-assignment per tech

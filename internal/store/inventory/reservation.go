@@ -103,18 +103,14 @@ func resolvePackagingRequirement(ctx context.Context, db dependency.DB, orderID 
 //  3. the flat global recipe × itemCount — an order with no persisted lines (a synthetic/legacy order),
 //     preserving the pre-ledger behaviour.
 func resolveConsumeRequirement(ctx context.Context, db dependency.DB, orderID, itemCount int) (map[int]decimal.Decimal, error) {
-	claims, err := openClaimsForOrder(ctx, db, orderID)
+	req, err := claimedRequirement(ctx, db, orderID)
 	if err != nil {
 		return nil, err
 	}
-	if len(claims) > 0 {
-		req := make(map[int]decimal.Decimal, len(claims))
-		for _, c := range claims {
-			req[c.MaterialId] = req[c.MaterialId].Add(c.Qty) // one open claim per material (claim_key = order:material)
-		}
+	if len(req) > 0 {
 		return req, nil
 	}
-	req, err := resolvePackagingRequirement(ctx, db, orderID)
+	req, err = resolvePackagingRequirement(ctx, db, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +118,26 @@ func resolveConsumeRequirement(ctx context.Context, db dependency.DB, orderID, i
 		return req, nil
 	}
 	return globalRequirementByItemCount(ctx, db, itemCount)
+}
+
+// claimedRequirement folds an order's OPEN reservation claims into a per-material requirement — what
+// placement actually reserved, immune to a later recipe edit. There is exactly one open claim per
+// material (claim_key = order:material), so the fold is a straight copy. nil when nothing is claimed.
+// Shared by the ship-time consume and by the packer's spec so the two can never tell a different story
+// about the same order.
+func claimedRequirement(ctx context.Context, db dependency.DB, orderID int) (map[int]decimal.Decimal, error) {
+	claims, err := openClaimsForOrder(ctx, db, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if len(claims) == 0 {
+		return nil, nil
+	}
+	req := make(map[int]decimal.Decimal, len(claims))
+	for _, c := range claims {
+		req[c.MaterialId] = req[c.MaterialId].Add(c.Qty)
+	}
+	return req, nil
 }
 
 // globalRequirementByItemCount is the legacy flat computation over the global recipe: qty_per_order
@@ -329,13 +345,22 @@ func scopePredicate(scope entity.PackagingRecipeScope, techCardID, productID sql
 }
 
 // ResolveOrderPackaging returns, for the packer/QC packing spec (WS7 scope 3), the packaging materials an
-// order needs — resolved product → style → global (the same read the ship-time consume uses) and joined
-// with material name/unit, ordered by material id. READ-ONLY: it neither reserves nor consumes anything
-// (WS2 owns the reservation ledger), so it can never move on_hand or cross the sales/warehouse streams.
+// order needs, joined with material name/unit and ordered by material id. It follows the SAME precedence
+// as the ship-time consume (resolveConsumeRequirement): the order's OPEN reservation claims win, and only
+// an order with no claim left is resolved fresh (product → style → global). Otherwise an order reserved
+// under recipe v1 whose recipe then changed would tell the packer to put in the new box while the ledger
+// consumes the old one — physical and accounting reality diverging with no error anywhere.
+// READ-ONLY: it neither reserves nor consumes anything (WS2 owns the reservation ledger), so it can never
+// move on_hand or cross the sales/warehouse streams.
 func (s *Store) ResolveOrderPackaging(ctx context.Context, orderID int) ([]entity.OrderPackingSpecPackaging, error) {
-	req, err := resolvePackagingRequirement(ctx, s.DB, orderID)
+	req, err := claimedRequirement(ctx, s.DB, orderID)
 	if err != nil {
 		return nil, err
+	}
+	if len(req) == 0 {
+		if req, err = resolvePackagingRequirement(ctx, s.DB, orderID); err != nil {
+			return nil, err
+		}
 	}
 	if len(req) == 0 {
 		return nil, nil
@@ -382,7 +407,7 @@ func (s *Store) ListPackagingRecipe(ctx context.Context) ([]entity.PackagingReci
 	rows, err := storeutil.QueryListNamed[entity.PackagingRecipe](ctx, s.DB, `
 		SELECT pr.id, pr.scope, pr.tech_card_id, pr.product_id, pr.material_id,
 		       m.name AS material_name, m.unit AS material_unit,
-		       pr.qty_per_order, pr.qty_per_item, pr.active, pr.lock_version, pr.created_by, pr.updated_by
+		       pr.qty_per_order, pr.qty_per_item, pr.active, pr.created_by, pr.updated_by
 		FROM packaging_recipe pr JOIN material m ON m.id = pr.material_id
 		ORDER BY pr.scope, m.name, pr.id`, map[string]any{})
 	if err != nil {

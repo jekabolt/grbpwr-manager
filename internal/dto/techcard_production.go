@@ -402,6 +402,11 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 	if err != nil {
 		return nil, err
 	}
+	if pb.Currency == "" && (cmt.Valid || hardware.Valid || packaging.Valid || logistics.Valid || overhead.Valid) {
+		return nil, entity.NewFieldViolation("costing.currency",
+			"currency is required when a monetary costing amount is set", "",
+			"select the currency used by these costing amounts")
+	}
 	defect, err := nullDecimalFromPb(pb.DefectPercent)
 	if err != nil {
 		return nil, fmt.Errorf("costing defect_percent: %w", err)
@@ -439,6 +444,32 @@ func parseTechCardCosting(pb *pb_common.TechCardCosting) (*entity.TechCardCostin
 		Notes:           nullStringFromPb(pb.Notes),
 		TargetMarginPct: targetMargin,
 	}, nil
+}
+
+// ValidateHardwareCostAgainstBom enforces the one condition hardware_cost has always been documented
+// with and never checked: it is the hardware that sits OUTSIDE the BOM. Hardware is also a first-class
+// BOM section, priced per colourway through the recipe, so a card carrying both a hardware BOM line
+// and a non-zero hardware_cost pays for its zips twice — silently, in every rollup that folds the
+// manual articles into a unit cost (unit_cost, order_cost, the base-currency fold, the style cost
+// estimate, and the product COGS seeded from them).
+//
+// WRITE ONLY. A card already saved with both still reads back exactly as it was — the figures would
+// only get worse if a read started rewriting them — and the next save is what asks for a side to be
+// picked. bomItems is the full-replace payload, so it IS the card's BOM after this write.
+func ValidateHardwareCostAgainstBom(c *entity.TechCardCosting, bomItems []entity.TechCardBomItem) error {
+	if c == nil || !c.HardwareCost.Valid || c.HardwareCost.Decimal.IsZero() {
+		return nil
+	}
+	for i := range bomItems {
+		if bomItems[i].Section != entity.BomSectionHardware {
+			continue
+		}
+		return entity.NewFieldViolation("costing.hardware_cost",
+			"hardware is already priced as a BOM line, so this amount would be counted twice",
+			fmt.Sprintf("BOM line %q", bomItems[i].Name),
+			"price hardware in ONE place: keep the BOM lines and clear hardware_cost, or keep hardware_cost for hardware that is not in the BOM and remove the hardware lines")
+	}
+	return nil
 }
 
 // --- emit entity -> pb ---
@@ -494,13 +525,20 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
 			Zone:            techCardConstructionZoneEntityToPb[o.Zone],
 			BomItemIndex:    bomItemIndex,
-			BomItemId:       o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
-			CalloutNumber:   pbInt32FromNull(o.CalloutNumber),
-			Placement:       pbStringFromNull(o.Placement),
-			PieceLineKeys:   o.PieceLineKeys,
-			PieceIds:        pieceIds,
-			BomLineKeys:     o.BomLineKeys,
-			BomItemIds:      bomIds,
+			// The singular pair: the durable line_key and the FK it resolved to. Emitting the key is
+			// what makes the operation round-trippable — a client that speaks line_keys used to read
+			// bom_line_key back empty and, on its next save, wrote NULL over bom_item_id. parse folds
+			// it into bom_line_keys (deduped), so a card written through that path already carries it
+			// in the plural list; constructionProjection hashes the plural list only, so section
+			// digests are byte-identical before and after this change.
+			BomLineKey:    o.BomLineKey,
+			BomItemId:     o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
+			CalloutNumber: pbInt32FromNull(o.CalloutNumber),
+			Placement:     pbStringFromNull(o.Placement),
+			PieceLineKeys: o.PieceLineKeys,
+			PieceIds:      pieceIds,
+			BomLineKeys:   o.BomLineKeys,
+			BomItemIds:    bomIds,
 		})
 	}
 	return out
@@ -534,14 +572,36 @@ var techCardIssueStatusEntityToPb = func() map[entity.TechCardIssueStatus]pb_com
 	return m
 }()
 
-func parseTechCardIssues(pbs []*pb_common.TechCardIssue) ([]entity.TechCardIssue, error) {
+func parseTechCardIssues(pbs []*pb_common.TechCardIssue, operationCount int, calloutNumbers map[int]bool) ([]entity.TechCardIssue, error) {
 	out := make([]entity.TechCardIssue, 0, len(pbs))
-	for _, i := range pbs {
+	for issueIndex, i := range pbs {
 		if i.Description == "" {
 			return nil, fmt.Errorf("issue description is required")
 		}
-		if i.OperationNumber < 0 || i.CalloutNumber < 0 {
-			return nil, fmt.Errorf("issue operation_number/callout_number must not be negative")
+		operationField := fmt.Sprintf("issues[%d].operation_number", issueIndex)
+		if i.OperationNumber < 0 {
+			return nil, entity.NewFieldViolation(operationField, "must not be negative", "", "use 0 for no operation")
+		}
+		if i.OperationNumber > 0 {
+			maxOperationNumber := operationCount * 10
+			if i.OperationNumber%10 != 0 || int(i.OperationNumber) > maxOperationNumber {
+				if operationCount == 0 {
+					return nil, entity.NewFieldViolation(operationField,
+						"must be 0 because the payload contains no operations", "", "add an operation or clear this reference")
+				}
+				return nil, entity.NewFieldViolation(operationField,
+					fmt.Sprintf("must be 0 or an exact multiple of 10 in [10, %d]", maxOperationNumber), "",
+					fmt.Sprintf("use one of the server-assigned operation numbers 10, 20, …, %d", maxOperationNumber))
+			}
+		}
+		calloutField := fmt.Sprintf("issues[%d].callout_number", issueIndex)
+		if i.CalloutNumber < 0 {
+			return nil, entity.NewFieldViolation(calloutField, "must not be negative", "", "use 0 for no callout")
+		}
+		if i.CalloutNumber > 0 && !calloutNumbers[int(i.CalloutNumber)] {
+			return nil, entity.NewFieldViolation(calloutField,
+				"does not reference a callout in this payload", "",
+				"use 0 for no callout, or reference an existing callout number")
 		}
 		if len(i.RaisedBy) > maxVarchar255 {
 			return nil, fmt.Errorf("issue raised_by must be at most %d characters", maxVarchar255)
@@ -655,9 +715,9 @@ func parseTechCardSignoffs(pbs []*pb_common.TechCardSignoff) ([]entity.TechCardS
 			SignedBy: nullStringFromPb(s.SignedBy),
 			SignedAt: nullTimeFromPbTimestamp(s.SignedAt),
 			Note:     nullStringFromPb(s.Note),
-			// Echoed back as-is: a present digest means "not re-approving, just saving" and is carried
-			// through; an empty one asks the server to fingerprint what is being written. See
-			// StampTechCardSignoffDigests, which is what actually decides.
+			// A present digest is only a REQUEST to carry the approval. The admin update layer verifies
+			// it against the stored sign-off and replaces all server-owned audit fields from storage;
+			// create discards it. An empty digest asks the server to approve what is being written.
 			SignedDigest: nullStringFromPb(s.SignedDigest),
 		})
 	}
@@ -711,6 +771,20 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 		WeightGrossGrams: pbInt32FromNull(p.WeightGrossGrams),
 		Notes:            pbStringFromNull(p.Notes),
 	}
+}
+
+// operationMinutes is the minute figure one operation contributes to a minute rollup: its standard
+// minute value (smv, 0219) when set, the legacy time_norm otherwise. smv was added as time_norm's
+// successor — the two columns describe the same quantity, and an operation that has been properly
+// timed carries that number in smv while time_norm keeps whatever the sheet was first authored with.
+// Preferring smv is therefore what makes the newer measurement the one that counts; the fallback
+// keeps every card authored before 0219 rolling up exactly as it did. Invalid = the operation is
+// untimed in both columns and contributes nothing.
+func operationMinutes(o *entity.TechCardOperation) decimal.NullDecimal {
+	if o.SMV.Valid {
+		return o.SMV
+	}
+	return o.TimeNorm
 }
 
 // techCardCostingToPb emits the stored per-unit cost articles plus the computed per-colourway
@@ -812,11 +886,11 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 		out.BaseCurrency = fx.Base
 	}
 
-	// total_sam = Σ(operation time_norm); informative, pricing-independent.
+	// total_sam = Σ(operation minutes); informative, pricing-independent.
 	totalSam := decimal.Zero
 	for i := range tc.Operations {
-		if tc.Operations[i].TimeNorm.Valid {
-			totalSam = totalSam.Add(tc.Operations[i].TimeNorm.Decimal)
+		if m := operationMinutes(&tc.Operations[i]); m.Valid {
+			totalSam = totalSam.Add(m.Decimal)
 		}
 	}
 	if totalSam.IsPositive() {
@@ -1066,7 +1140,7 @@ type colorwayCostResult struct {
 // article fills it. A pin that cannot be resolved in linked (nil map on list reads, or a missing
 // id) or that has no price yields a shadow with NO price, so UnitTotal skips the line exactly
 // like an unpriced BOM line — never silently costed at the wrong (default) article's price.
-func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, linked map[int]entity.MaterialWithPrice) *entity.TechCardBomItem {
+func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, linked map[int]entity.MaterialWithPrice, costingCurrency, baseCurrency string) *entity.TechCardBomItem {
 	if bom == nil || !u.MaterialId.Valid || u.MaterialId.Int64 <= 0 {
 		return bom
 	}
@@ -1076,16 +1150,17 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 	sh := *bom
 	sh.UnitPrice = decimal.NullDecimal{}
 	sh.Currency = sql.NullString{}
-	if m, ok := linked[int(u.MaterialId.Int64)]; ok && m.LatestPrice != nil {
+	if m, ok := linked[int(u.MaterialId.Int64)]; ok {
+		price := m.LatestPriceForCurrencies(costingCurrency, baseCurrency)
 		// A catalog price is per the MATERIAL's unit; the usage's norm is in the SLOT's unit.
 		// When the two disagree (slot metres, article priced per cone), norm × price is off by
 		// the whole conversion factor — leave the line unpriced instead, same rule as an
 		// unpriced pin: never a silently wrong number into product.cost_price.
 		slotUnit := strings.TrimSpace(bom.Unit.String)
 		stockUnit := strings.TrimSpace(m.Unit.String)
-		if slotUnit == "" || stockUnit == "" || strings.EqualFold(slotUnit, stockUnit) {
-			sh.UnitPrice = decimal.NullDecimal{Decimal: m.LatestPrice.Price, Valid: true}
-			sh.Currency = sql.NullString{String: m.LatestPrice.Currency, Valid: m.LatestPrice.Currency != ""}
+		if price != nil && (slotUnit == "" || stockUnit == "" || strings.EqualFold(slotUnit, stockUnit)) {
+			sh.UnitPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
+			sh.Currency = sql.NullString{String: price.Currency, Valid: price.Currency != ""}
 		}
 	}
 	return &sh
@@ -1106,7 +1181,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		u := &cw.Usages[i]
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
-		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked)
+		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
 		ut := u.UnitTotal(bom, orderQtyBySize, totalOrderQty)
 		if !ut.Valid {
 			continue

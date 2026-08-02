@@ -67,6 +67,11 @@ func TestRelinkDraftColorway(t *testing.T) {
 	var srcStyleID, srcLV int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, prodID).Scan(&srcStyleID))
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, srcStyleID).Scan(&srcLV))
+	_, err = testDB.ExecContext(ctx, `
+		INSERT INTO tech_card_product (tech_card_id, product_id) VALUES (?, ?)`, srcStyleID, prodID)
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, `UPDATE product SET primary_tech_card_id = ? WHERE id = ?`, srcStyleID, prodID)
+	require.NoError(t, err)
 
 	// Target style: a bare tech_card with a complete season so the re-mint can build the base SKU.
 	// season_code/season_year alone are not enough: 0146's tech_card_season_atomic CHECK also requires
@@ -98,13 +103,25 @@ func TestRelinkDraftColorway(t *testing.T) {
 	var newStyleID int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, prodID).Scan(&newStyleID))
 	require.Equal(t, tgtStyleID, newStyleID)
+	var primaryStyleID, sourceMirrorCount, targetMirrorCount int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT primary_tech_card_id FROM product WHERE id = ?`, prodID).Scan(&primaryStyleID))
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = ? AND product_id = ?`, srcStyleID, prodID).Scan(&sourceMirrorCount))
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = ? AND product_id = ?`, tgtStyleID, prodID).Scan(&targetMirrorCount))
+	require.Equal(t, tgtStyleID, primaryStyleID)
+	require.Zero(t, sourceMirrorCount)
+	require.Equal(t, 1, targetMirrorCount)
+	var srcLVAfter, tgtLVAfter int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, srcStyleID).Scan(&srcLVAfter))
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, tgtStyleID).Scan(&tgtLVAfter))
+	require.Equal(t, srcLV+1, srcLVAfter)
+	require.Equal(t, tgtLV+1, tgtLVAfter)
 
 	// An unknown target style is sql.ErrNoRows. prodID now lives on tgtStyleID (the happy path above), and
-	// RelinkDraftColorway never bumps tech_card.lock_version itself (only UPDATE product.style_id + re-mint;
-	// see relink.go's styleLockVersion, a plain SELECT) — so the expected version for prodID's current style
-	// is still the unchanged tgtLV, not tgtLV+1. Passing +1 here would fail the version guard first and
-	// surface entity.ErrTechCardConflict before the unknown-target lookup is ever reached.
+	// the successful relink bumped both the old and new styles. Use the new target version so the request
+	// reaches the unknown-target lookup rather than failing the current-style version guard first.
 	_, err = testDB.ExecContext(ctx, `UPDATE product SET lifecycle_status = 1 WHERE id = ?`, prodID)
 	require.NoError(t, err)
-	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, 999999999, tgtLV, 0), sql.ErrNoRows)
+	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, 999999999, tgtLVAfter, 0), sql.ErrNoRows)
 }

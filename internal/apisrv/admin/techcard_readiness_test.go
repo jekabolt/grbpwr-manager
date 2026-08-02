@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -25,6 +26,28 @@ func readinessByKey(rows []*pb_admin.TechCardReadinessRequirement) map[string]*p
 	return m
 }
 
+func readinessCardForFacts(f entity.TechCardReadinessFacts, staleSection entity.TechCardSignoffSection) *entity.TechCard {
+	card := &entity.TechCard{}
+	sections := []entity.TechCardSignoffSection{
+		entity.SignoffDesign, entity.SignoffConstruction, entity.SignoffMaterials,
+		entity.SignoffColour, entity.SignoffLabels, entity.SignoffPackaging, entity.SignoffCosting,
+	}
+	current := dto.TechCardSectionDigests(&card.TechCardInsert)
+	for i := 0; i < f.Signoffs && i < len(sections); i++ {
+		signoff := entity.TechCardSignoff{Section: sections[i], State: entity.SignoffStatePending}
+		if i < f.SignoffsApproved {
+			signoff.State = entity.SignoffStateApproved
+			digest := current[signoff.Section]
+			if signoff.Section == staleSection {
+				digest = "digest-of-older-content"
+			}
+			signoff.SignedDigest = sql.NullString{String: digest, Valid: true}
+		}
+		card.Signoffs = append(card.Signoffs, signoff)
+	}
+	return card
+}
+
 // TestGetTechCardReadiness drives the same facts→checklist function the RPC uses, one row per
 // interesting state. Each case names the stage checklist it exercises plus the release list, which
 // is computed for every card regardless of stage.
@@ -42,6 +65,7 @@ func TestGetTechCardReadiness(t *testing.T) {
 		wantReleaseMet  map[string]bool
 		wantReleaseDetl map[string]string
 		wantReleaseOK   bool
+		staleSection    entity.TechCardSignoffSection
 	}{
 		{
 			name:         "idea to proto: an empty card fails every entry condition",
@@ -120,7 +144,7 @@ func TestGetTechCardReadiness(t *testing.T) {
 			wantNextDetail: map[string]string{
 				"sms_sample":      "no sms sample recorded",
 				"colorway_linked": "no live colourway",
-				"bom_linked":      "2 of 5 BOM lines have no catalog material",
+				"bom_linked":      "2 of 5 BOM slots have no article (no default and not pinned by every live colourway)",
 			},
 			wantNextReady: false,
 			wantReleaseOK: false,
@@ -200,6 +224,23 @@ func TestGetTechCardReadiness(t *testing.T) {
 			},
 			wantReleaseOK: false,
 		},
+		{
+			name: "release: an approved construction sign-off with an old digest is stale",
+			facts: entity.TechCardReadinessFacts{
+				Stage: entity.TechCardStageProd, HasStyleNumber: true, Sizes: 3, BomFabricLines: 1,
+				HasCosting: true, HasCostingCurrency: true, LiveColorways: 1,
+				Signoffs: 2, SignoffsApproved: 2,
+			},
+			staleSection:   entity.SignoffConstruction,
+			wantNext:       pb_common.TechCardStage_TECH_CARD_STAGE_UNKNOWN,
+			wantNextKeys:   []string{},
+			wantNextReady:  true,
+			wantReleaseMet: map[string]bool{"signoffs": false},
+			wantReleaseDetl: map[string]string{
+				"signoffs": "construction approval is stale",
+			},
+			wantReleaseOK: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -207,7 +248,8 @@ func TestGetTechCardReadiness(t *testing.T) {
 			repo := mocks.NewMockRepository(t)
 			tc := mocks.NewMockTechCards(t)
 			repo.EXPECT().TechCards().Return(tc)
-			tc.EXPECT().GetTechCardReadiness(mock.Anything, 7).Return(tt.facts, nil)
+			tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 7).
+				Return(tt.facts, readinessCardForFacts(tt.facts, tt.staleSection), nil)
 
 			s := &Server{repo: repo}
 			resp, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 7})
@@ -266,8 +308,9 @@ func TestGetTechCardReadinessReleaseListIsStable(t *testing.T) {
 		repo := mocks.NewMockRepository(t)
 		tc := mocks.NewMockTechCards(t)
 		repo.EXPECT().TechCards().Return(tc)
-		tc.EXPECT().GetTechCardReadiness(mock.Anything, 3).
-			Return(entity.TechCardReadinessFacts{Stage: stage}, nil)
+		facts := entity.TechCardReadinessFacts{Stage: stage}
+		tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 3).
+			Return(facts, readinessCardForFacts(facts, ""), nil)
 
 		s := &Server{repo: repo}
 		resp, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 3})
@@ -287,8 +330,8 @@ func TestGetTechCardReadinessNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(tc)
-	tc.EXPECT().GetTechCardReadiness(mock.Anything, 7).
-		Return(entity.TechCardReadinessFacts{}, sql.ErrNoRows)
+	tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 7).
+		Return(entity.TechCardReadinessFacts{}, nil, sql.ErrNoRows)
 
 	s := &Server{repo: repo}
 	_, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 7})

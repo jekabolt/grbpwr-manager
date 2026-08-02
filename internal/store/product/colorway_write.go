@@ -2,7 +2,6 @@ package product
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -33,16 +32,10 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 	}
 	var colorwayID int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// The style must already exist; a colourway attaches to it (R4 — no synthetic style from the
-		// colourway payload, unlike the legacy AddProduct).
-		style, err := storeutil.QueryNamedOne[struct {
-			N int `db:"n"`
-		}](ctx, rep.DB(), `SELECT COUNT(*) AS n FROM tech_card WHERE id = :id`, map[string]any{"id": styleID})
-		if err != nil {
-			return fmt.Errorf("check style %d: %w", styleID, err)
-		}
-		if style.N == 0 {
-			return fmt.Errorf("style %d not found: %w", styleID, sql.ErrNoRows)
+		// The style must already exist and remain authorable; adding colourway content to a released
+		// card is frozen just like editing an existing colourway.
+		if err := storeutil.RequireMutableTechCard(ctx, rep.DB(), styleID); err != nil {
+			return err
 		}
 		// UNIQUE(style_id, color_code) (R1): reject a duplicate colour with a clean precondition error
 		// rather than surfacing a raw driver constraint violation.
@@ -64,6 +57,9 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		colorwayID, err = insertProduct(ctx, rep.DB(), prd, styleID, int(entity.ColorwayStatusDraft))
 		if err != nil {
 			return fmt.Errorf("can't insert colourway: %w", err)
+		}
+		if err := initializeColorwayOwnershipMirrors(ctx, rep.DB(), styleID, colorwayID); err != nil {
+			return err
 		}
 		// A DRAFT may carry zero merch translations at create time — the inline "New Colourway" sends
 		// none (colorCode is its sole required value); they are filled in later from the product manager.
@@ -131,6 +127,9 @@ func (s *Store) UpdateColorway(ctx context.Context, colorwayID, expectedVersion 
 			map[string]any{"id": colorwayID})
 		if err != nil {
 			return err // sql.ErrNoRows -> NOT_FOUND upstream
+		}
+		if err := storeutil.RequireMutableTechCard(ctx, rep.DB(), cur.StyleID); err != nil {
+			return err
 		}
 		if cur.LockVersion != expectedVersion {
 			return entity.ErrTechCardConflict

@@ -20,8 +20,14 @@ import (
 // productionRunFKMsg is returned when a run references a missing tech card, release or size.
 const productionRunFKMsg = "production run references a non-existent tech card, release or size"
 
+// productionRunCostWriteMsg is returned when a run write carries cost articles without costing:write.
+const productionRunCostWriteMsg = "costing:write is required to set production run cost articles"
+
 // CreateProductionRun creates a run and snapshots its planned unit cost.
 func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreateProductionRunRequest) (*pb_admin.CreateProductionRunResponse, error) {
+	if _, write := s.costingAccess(ctx); !write && productionRunInsertHasCostingData(req.GetRun()) {
+		return nil, status.Error(codes.PermissionDenied, productionRunCostWriteMsg)
+	}
 	ins, err := dto.ConvertPbProductionRunInsertToEntity(req.GetRun())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -56,6 +62,10 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "production run id is required")
 	}
+	_, costingWrite := s.costingAccess(ctx)
+	if !costingWrite && productionRunInsertHasCostingData(req.GetRun()) {
+		return nil, status.Error(codes.PermissionDenied, productionRunCostWriteMsg)
+	}
 	ins, err := dto.ConvertPbProductionRunInsertToEntity(req.GetRun())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -63,7 +73,16 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	if len(ins.Costs) > 0 {
 		dto.FoldProductionRunCostsToBase(ins.Costs, s.costingFx(ctx))
 	}
-	if err := s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion)); err != nil {
+	// The cost-blind path reloads and preserves stored articles under the run's FOR UPDATE lock. Its
+	// read is load-bearing: any failure aborts before the store's full-replace can delete cost rows.
+	var updateErr error
+	if costingWrite {
+		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion))
+	} else {
+		updateErr = s.repo.ProductionRuns().UpdateProductionRunPreservingCosts(
+			ctx, int(req.Id), ins, int(req.ExpectedLockVersion))
+	}
+	if err := updateErr; err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
 		}
@@ -160,6 +179,13 @@ func (s *Server) ListProductionRuns(ctx context.Context, req *pb_admin.ListProdu
 func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.ReceiveProductionRunRequest) (*pb_admin.ReceiveProductionRunResponse, error) {
 	if req.RunId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
+	}
+	// update_cost_price seeds every received product's cost_price from the run's actual unit cost —
+	// a confidential figure written into the margin chain, so it needs costing:write on top of
+	// production:write. Rejected rather than silently ignored, exactly as Create/UpdateColorway
+	// reject a cost_price they may not set; receiving without the flag stays open to a warehouse role.
+	if _, write := s.costingAccess(ctx); !write && req.GetUpdateCostPrice() {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to seed product cost_price from a run; receive with update_cost_price=false")
 	}
 	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
 	if err != nil {

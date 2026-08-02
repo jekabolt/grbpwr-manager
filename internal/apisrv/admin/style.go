@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -103,6 +104,8 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
 		case errors.Is(err, entity.ErrTechCardConflict):
 			return nil, status.Error(codes.Aborted, "style was modified concurrently; reload and retry")
+		case errors.Is(err, entity.ErrTechCardReleased):
+			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 		case errors.Is(err, entity.ErrStyleFrozenSiblings):
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		default:
@@ -111,7 +114,10 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 		}
 	}
 	// A style change re-resolves every colourway of the style; revalidate the storefront broadly.
-	if di, err := s.repo.Cache().GetDictionaryInfo(ctx); err == nil {
+	if di, err := s.repo.Cache().GetDictionaryInfo(ctx); err != nil {
+		slog.Default().WarnContext(ctx, "style updated but dictionary cache refresh failed",
+			slog.Int("style_id", int(req.StyleId)), slog.String("err", err.Error()))
+	} else {
 		cache.RefreshDictionary(di)
 	}
 	s.revalidateAsync(&dto.RevalidationData{Hero: true})
@@ -143,11 +149,11 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	}
 	cells, err := dto.StyleSizeChartCellsFromPb(req.Cells)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, techCardConvertErr(err)
 	}
 	steps, err := dto.StyleSizeChartGradeStepsFromPb(req.GradeSteps)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, techCardConvertErr(err)
 	}
 	// A step for a measurement the chart does not carry cannot be applied to anything, and would
 	// resurface as a phantom column the next time the grid is opened. Reject it here rather than
@@ -184,13 +190,25 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	}
 	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion), cells, int(req.GradeBaseSizeId), steps)
 	if err != nil {
+		var ve *entity.ValidationError
 		switch {
+		case errors.As(err, &ve):
+			// Field-tagged store rejections (a size outside the style's range) pin to the cell.
+			return nil, apierr.Invalid(ve)
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.StyleId)
 		case errors.Is(err, entity.ErrTechCardConflict):
 			return nil, status.Error(codes.Aborted, "style was modified concurrently; reload the chart and retry")
+		case errors.Is(err, entity.ErrTechCardReleased):
+			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 		case s.repo.IsErrForeignKeyViolation(err):
 			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size, measurement name or grade base size")
+		case s.repo.IsErrUniqueViolation(err):
+			// Backstop for uniq_tech_card_size_measurement / uniq_tcgr_card_name. The parsers reject a
+			// repeated cell or grade step first, so reaching here means a direct/legacy caller — still
+			// the client's mistake, not ours, so InvalidArgument rather than an opaque Internal.
+			return nil, status.Error(codes.InvalidArgument,
+				"the chart lists the same size and point of measure (or the same graded measurement) twice")
 		default:
 			slog.Default().ErrorContext(ctx, "can't update style size chart", slog.String("err", err.Error()))
 			return nil, status.Errorf(codes.Internal, "can't update style size chart: %v", err)
@@ -225,18 +243,22 @@ func (s *Server) RelinkDraftColorway(ctx context.Context, req *pb_admin.RelinkDr
 }
 
 // CloneStyleForSeason deep-clones a style (tech card header + ALL children) under a new sku_season
-// (R4). It reuses the proven tech-card converters for a faithful copy and AddTechCard's child
-// insertion; the clone starts as a fresh DRAFT with no colourways. A stale expected_source_version is
-// ABORTED; an unknown source is NotFound; a (style_number, season) collision (a same-season clone) is
-// FailedPrecondition.
+// (R4). It reuses the proven tech-card converters and child-insertion path for a faithful copy; the
+// clone starts as a fresh DRAFT with no colourways. A stale expected_source_version is
+// ABORTED; an unknown source is NotFound; the clone receives a fresh generated style number for its
+// target season.
 func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneStyleForSeasonRequest) (*pb_admin.CloneStyleForSeasonResponse, error) {
 	if req.SourceStyleId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "source_style_id is required")
 	}
-	if req.SkuSeason == nil || req.SkuSeason.Code == pb_common.SeasonEnum_SEASON_ENUM_UNKNOWN || req.SkuSeason.Year == 0 {
+	seasonCode, seasonYear, err := dto.ConvertPbSkuSeasonToEntity(req.SkuSeason)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid sku_season: %v", err)
+	}
+	if seasonCode == "" {
 		return nil, status.Error(codes.InvalidArgument, "sku_season (code and year) is required")
 	}
-	card, err := s.repo.TechCards().GetTechCardById(ctx, int(req.SourceStyleId))
+	card, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, int(req.SourceStyleId))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "style %d not found", req.SourceStyleId)
@@ -248,19 +270,44 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		return nil, status.Error(codes.Aborted, "source style was modified concurrently; reload and retry")
 	}
 	// Round-trip through the tech-card converters (header + every child) then override the season.
-	pbInsert := dto.ConvertEntityTechCardToPb(card, s.costingFx(ctx)).GetTechCard()
+	full := dto.ConvertEntityTechCardToPb(card, s.costingFx(ctx))
+	// The round-trip carries the SOURCE card's costing block and BOM purchase prices into the new
+	// card, so a products:write account could mint itself a copy of confidential costs it can neither
+	// read nor write — CreateTechCard's techCardInsertHasCostingData gate never sees this path because
+	// the payload is server-built, not client-sent. Strip the money before the insert (same helper the
+	// read path uses): the clone then starts costing-free and a costing role fills it in.
+	if _, write := s.costingAccess(ctx); !write {
+		stripTechCardCosting(full)
+	}
+	pbInsert := full.GetTechCard()
 	pbInsert.SkuSeason = req.SkuSeason
+	restoreLegacyHardwareCost := normalizeLegacyClonePayload(ctx, int(req.SourceStyleId), card, pbInsert)
+	styleNumber, err := s.repo.TechCards().SuggestStyleNumber(ctx, string(seasonCode), seasonYear)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't suggest style number for clone", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't generate a style number for the clone")
+	}
+	pbInsert.StyleNumber = styleNumber
+	pbInsert.StyleNumberSource = pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_GENERATED
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
 		// is pointed at the offending line rather than at the clone attempt.
 		return nil, techCardConvertErr(err)
 	}
-	// A clone is a fresh design cycle for the new season — reset the PLM freeze so it is editable.
+	if restoreLegacyHardwareCost && insert.Costing != nil && card.Costing != nil {
+		insert.Costing.HardwareCost = card.Costing.HardwareCost
+	}
+	// A clone is a fresh design cycle for the new season — reset the PLM freeze and every section
+	// approval so it is editable and starts unapproved. The store stamps the clone actor on its new
+	// rows; source audit authorship is never carried into the new design cycle.
 	insert.ApprovalState = entity.TechCardApprovalDraft
-	newID, err := s.repo.TechCards().AddTechCard(ctx, insert)
+	insert.Signoffs = nil
+	insert.CreatedBy = authsrv.GetAdminUsername(ctx)
+	insert.UpdatedBy = insert.CreatedBy
+	newID, err := s.repo.TechCards().CloneTechCardForSeason(ctx, int(req.SourceStyleId), int(req.ExpectedSourceVersion), insert)
 	if err != nil {
-		// A clone round-trips the source card's category_id and size_ids, so AddTechCard can raise the
+		// A clone round-trips the source card's category_id and size_ids, so the insert can raise the
 		// same field-tagged rejections a fresh create can (a size outside the category's size systems,
 		// a category whose tree has no top-level ancestor). Surface them as InvalidArgument with the
 		// field attached, exactly as CreateTechCard does — otherwise a bad SOURCE card turns into an
@@ -269,11 +316,92 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		if errors.As(err, &ve) {
 			return nil, apierr.Invalid(ve)
 		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "style %d not found", req.SourceStyleId)
+		}
+		if errors.Is(err, entity.ErrTechCardConflict) {
+			return nil, status.Error(codes.Aborted, "source style was modified concurrently; reload and retry")
+		}
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, status.Errorf(codes.FailedPrecondition, "a style with this style number already exists for that season")
+			return nil, status.Error(codes.FailedPrecondition, "the generated style number was claimed concurrently; retry the clone")
 		}
 		slog.Default().ErrorContext(ctx, "can't create style clone", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't create style clone: %v", err)
 	}
 	return &pb_admin.CloneStyleForSeasonResponse{NewStyleId: int32(newID)}, nil
+}
+
+// normalizeLegacyClonePayload detaches source references that predate current write validation and
+// handles the two costing invariants that cannot be inferred safely. It mutates only the server-built
+// clone payload; the source card remains untouched.
+func normalizeLegacyClonePayload(ctx context.Context, sourceStyleID int, source *entity.TechCard,
+	insert *pb_common.TechCardInsert) (restoreLegacyHardwareCost bool) {
+	if insert == nil {
+		return false
+	}
+	maxOperationNumber := len(insert.Operations) * 10
+	calloutNumbers := make(map[int32]struct{}, len(insert.Callouts))
+	for _, callout := range insert.Callouts {
+		if callout != nil && callout.Number > 0 {
+			calloutNumbers[callout.Number] = struct{}{}
+		}
+	}
+	for i, issue := range insert.Issues {
+		if issue == nil {
+			continue
+		}
+		if n := int(issue.OperationNumber); n != 0 && (n < 0 || n%10 != 0 || n > maxOperationNumber) {
+			slog.Default().WarnContext(ctx, "clone detached non-canonical legacy issue operation reference",
+				slog.Int("source_style_id", sourceStyleID), slog.Int("issue_index", i),
+				slog.Int("operation_number", n), slog.Int("max_operation_number", maxOperationNumber))
+			issue.OperationNumber = 0
+		}
+		if issue.CalloutNumber != 0 {
+			_, exists := calloutNumbers[issue.CalloutNumber]
+			if issue.CalloutNumber < 0 || !exists {
+				slog.Default().WarnContext(ctx, "clone detached dangling legacy issue callout reference",
+					slog.Int("source_style_id", sourceStyleID), slog.Int("issue_index", i),
+					slog.Int("callout_number", int(issue.CalloutNumber)))
+				issue.CalloutNumber = 0
+			}
+		}
+	}
+
+	if insert.Costing == nil || source == nil || source.Costing == nil {
+		return false
+	}
+	if (!source.Costing.Currency.Valid || strings.TrimSpace(source.Costing.Currency.String) == "") &&
+		legacyCloneCostingHasMonetaryAmounts(source.Costing) {
+		slog.Default().WarnContext(ctx, "clone omitted ambiguous legacy currencyless costing section",
+			slog.Int("source_style_id", sourceStyleID))
+		insert.Costing = nil
+		return false
+	}
+	if source.Costing.HardwareCost.Valid && !source.Costing.HardwareCost.Decimal.IsZero() &&
+		clonePayloadHasHardwareBOM(insert.BomItems) {
+		// Convert without this one value so the create-time mutual-exclusion validation does not reject
+		// legacy source data. The exact stored value is restored onto the entity immediately afterwards.
+		slog.Default().WarnContext(ctx, "clone preserved legacy hardware cost alongside hardware BOM lines",
+			slog.Int("source_style_id", sourceStyleID))
+		insert.Costing.HardwareCost = nil
+		return true
+	}
+	return false
+}
+
+func legacyCloneCostingHasMonetaryAmounts(costing *entity.TechCardCosting) bool {
+	if costing == nil {
+		return false
+	}
+	return costing.CmtCost.Valid || costing.HardwareCost.Valid || costing.PackagingCost.Valid ||
+		costing.LogisticsCost.Valid || costing.OverheadCost.Valid
+}
+
+func clonePayloadHasHardwareBOM(items []*pb_common.TechCardBomItem) bool {
+	for _, item := range items {
+		if item != nil && item.Section == pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE {
+			return true
+		}
+	}
+	return false
 }

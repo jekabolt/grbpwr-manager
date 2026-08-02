@@ -30,6 +30,12 @@ func (s *Server) AddTechCardDevExpense(ctx context.Context, req *pb_admin.AddTec
 		if errors.Is(err, entity.ErrSampleForeignToCard) || errors.Is(err, entity.ErrFittingForeignToCard) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
+		// AlreadyExists (HTTP 409 through the gateway), not Internal: the expense IS recorded — this
+		// is the retry arriving second — so the client must refresh the journal, not resend. The
+		// message carries the blocking row and how to record a genuinely repeated expense.
+		if errors.Is(err, entity.ErrDuplicateDevExpense) {
+			return nil, status.Error(codes.AlreadyExists, err.Error())
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, "tech_card_id, fitting_id or sample_id does not reference an existing record")
 		}

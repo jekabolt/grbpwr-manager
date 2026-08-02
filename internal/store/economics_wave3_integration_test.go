@@ -30,10 +30,13 @@ func TestMaterialCatalog(t *testing.T) {
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 	day := func(y int, m time.Month, dd int) time.Time { return time.Date(y, m, dd, 0, 0, 0, 0, time.UTC) }
 
-	var matID int
+	var matID, fallbackMatID int
 	defer func() {
 		if matID != 0 {
 			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", matID) // material_price cascades
+		}
+		if fallbackMatID != 0 {
+			_, _ = testDB.ExecContext(ctx, "DELETE FROM material WHERE id = ?", fallbackMatID)
 		}
 	}()
 
@@ -61,11 +64,36 @@ func TestMaterialCatalog(t *testing.T) {
 	require.NotNil(t, m.LatestPrice)
 	require.True(t, m.LatestPrice.Price.Equal(d("14.00")), "current price is the latest effective, not the future one: got %s", m.LatestPrice.Price)
 
+	// A same-day quote in another currency is another current price, not a tie that EUR wins by
+	// alphabet. The singular projection stays the configured base currency for wire compatibility;
+	// costing can select USD from LatestPrices.
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: matID, Price: d("20.00"), Currency: "USD", ValidFrom: day(2026, 6, 1)}))
+	m, err = T.GetMaterial(ctx, matID)
+	require.NoError(t, err)
+	require.Len(t, m.LatestPrices, 2)
+	require.True(t, m.LatestPrices["EUR"].Price.Equal(d("14.00")))
+	require.True(t, m.LatestPrices["USD"].Price.Equal(d("20.00")))
+	require.Equal(t, "EUR", m.LatestPrice.Currency, "singular projection prefers configured base currency")
+
+	// With no base-currency quote, the singular admin projection remains populated from the newest
+	// current quote. Same-date currencies use alphabetical order only as a deterministic tiebreaker;
+	// costing still selects explicitly from LatestPrices and never consumes this fallback.
+	fallbackMatID, err = T.CreateMaterial(ctx, &entity.MaterialInsert{Name: "Fallback-priced trim", Section: "hardware"})
+	require.NoError(t, err)
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: fallbackMatID, Price: d("8.00"), Currency: "USD", ValidFrom: day(2026, 5, 1)}))
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: fallbackMatID, Price: d("9.00"), Currency: "GBP", ValidFrom: day(2026, 6, 2)}))
+	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: fallbackMatID, Price: d("10.00"), Currency: "CAD", ValidFrom: day(2026, 6, 2)}))
+	fallback, err := T.GetMaterial(ctx, fallbackMatID)
+	require.NoError(t, err)
+	require.Len(t, fallback.LatestPrices, 3)
+	require.NotNil(t, fallback.LatestPrice)
+	require.Equal(t, "CAD", fallback.LatestPrice.Currency, "same-date fallback uses currency ASC")
+
 	// same-day correction upserts (not duplicates)
 	require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{MaterialId: matID, Price: d("14.25"), Currency: "EUR", ValidFrom: day(2026, 6, 1)}))
 	hist, err := T.ListMaterialPrices(ctx, matID)
 	require.NoError(t, err)
-	require.Len(t, hist, 3, "same (date,currency) upserts rather than appends")
+	require.Len(t, hist, 4, "same (date,currency) upserts rather than appends")
 	require.True(t, hist[0].ValidFrom.Equal(day(2099, 1, 1)), "history is newest-first")
 
 	// list by section (current price attached)
@@ -188,6 +216,18 @@ func TestProductionRun(t *testing.T) {
 	require.Len(t, got.Costs, 1, "costs full-replaced")
 	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
 
+	// A cost-blind update preserves the stored articles under the same FOR UPDATE lock; an empty
+	// incoming slice is not allowed to erase them.
+	require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &entity.ProductionRunInsert{
+		TechCardId: tcID,
+		Status:     entity.ProductionRunInProgress,
+		Lines:      got.Lines,
+	}, 0))
+	got, err = P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Len(t, got.Costs, 1)
+	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
+
 	// update of a missing run → ErrNoRows
 	err = P.UpdateProductionRun(ctx, 0, &entity.ProductionRunInsert{TechCardId: tcID, Status: entity.ProductionRunPlanned}, 0)
 	require.ErrorIs(t, err, sql.ErrNoRows)
@@ -304,7 +344,7 @@ func TestTechCardRelease(t *testing.T) {
 	blob1 := `{"id":1,"name":"Release Coat v1"}`
 	require.NoError(t, T.SaveTechCardRelease(ctx, entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
-			TechCardId: tcID, Version: ns("1.0"), ReleasedBy: ns("alice"),
+			TechCardId: tcID, ReleasedBy: ns("alice"),
 			UnitCost: nd("12.34"), Currency: ns("EUR"),
 		},
 		Snapshot: blob1,
@@ -313,7 +353,7 @@ func TestTechCardRelease(t *testing.T) {
 	list, err := T.ListTechCardReleases(ctx, tcID)
 	require.NoError(t, err)
 	require.Len(t, list, 1)
-	require.Equal(t, "1.0", list[0].Version.String)
+	require.Equal(t, 1, list[0].ReleaseNumber)
 	require.Equal(t, "alice", list[0].ReleasedBy.String)
 	require.True(t, list[0].UnitCost.Decimal.Equal(decimal.RequireFromString("12.34")))
 	require.Equal(t, "EUR", list[0].Currency.String)
@@ -327,17 +367,17 @@ func TestTechCardRelease(t *testing.T) {
 	// second release episode (re-open → re-release): newest-first, both retained.
 	require.NoError(t, T.SaveTechCardRelease(ctx, entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
-			TechCardId: tcID, Version: ns("2.0"), ReleasedBy: ns("bob"),
+			TechCardId: tcID, ReleasedBy: ns("bob"),
 		},
 		Snapshot: `{"id":1,"name":"Release Coat v2"}`,
 	}))
 	list, err = T.ListTechCardReleases(ctx, tcID)
 	require.NoError(t, err)
 	require.Len(t, list, 2)
-	require.Equal(t, "2.0", list[0].Version.String, "newest-first")
-	require.False(t, list[0].UnitCost.Valid, "v2.0 was released without a foldable unit cost")
-	require.Equal(t, "1.0", list[1].Version.String)
-	require.True(t, list[1].UnitCost.Valid, "v1.0 kept its frozen unit cost")
+	require.Equal(t, 2, list[0].ReleaseNumber, "newest-first")
+	require.False(t, list[0].UnitCost.Valid, "Rev.2 was released without a foldable unit cost")
+	require.Equal(t, 1, list[1].ReleaseNumber)
+	require.True(t, list[1].UnitCost.Valid, "Rev.1 kept its frozen unit cost")
 
 	// missing id → sql.ErrNoRows (so the handler can map to NotFound).
 	_, err = T.GetTechCardRelease(ctx, 0)

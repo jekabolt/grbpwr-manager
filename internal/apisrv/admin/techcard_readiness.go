@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -31,7 +32,7 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 	if tcID <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
 	}
-	facts, err := s.repo.TechCards().GetTechCardReadiness(ctx, tcID)
+	facts, card, err := s.repo.TechCards().GetTechCardReadinessSnapshot(ctx, tcID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "tech card not found")
@@ -39,6 +40,11 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 		slog.Default().ErrorContext(ctx, "can't get tech card readiness", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get tech card readiness")
 	}
+	if card == nil {
+		slog.Default().ErrorContext(ctx, "readiness snapshot returned a nil tech card", slog.Int("tech_card_id", tcID))
+		return nil, status.Error(codes.Internal, "can't get tech card readiness")
+	}
+	staleSignoffs := staleApprovedSignoffSections(card)
 
 	resp := &pb_admin.GetTechCardReadinessResponse{
 		CurrentStage: dto.ConvertEntityTechCardStageToPb(facts.Stage),
@@ -51,7 +57,7 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 	// An empty checklist (prod, or an unrecognised stage) reads as ready, per the field's contract
 	// "every next_stage_requirements entry is met"; a client gates on next_stage != UNKNOWN.
 	resp.NextStageReady = allReadinessMet(resp.NextStageRequirements)
-	resp.ReleaseRequirements = releaseRequirements(facts)
+	resp.ReleaseRequirements = releaseRequirements(facts, staleSignoffs)
 	resp.ReleaseReady = allReadinessMet(resp.ReleaseRequirements)
 	return resp, nil
 }
@@ -110,7 +116,7 @@ func nextStageRequirements(target entity.TechCardStage, f entity.TechCardReadine
 // releaseRequirements is what a card needs before approval_state may go RELEASED — the spec the
 // factory is handed. Independent of the stage checklist: a sampling-complete style can still be
 // un-releasable (no costing currency, a colourway whose lab dip nobody signed).
-func releaseRequirements(f entity.TechCardReadinessFacts) []*pb_admin.TechCardReadinessRequirement {
+func releaseRequirements(f entity.TechCardReadinessFacts, staleSignoffs []entity.TechCardSignoffSection) []*pb_admin.TechCardReadinessRequirement {
 	return []*pb_admin.TechCardReadinessRequirement{
 		readinessReq("style_number", "the style has a style number", f.HasStyleNumber, "no style number set"),
 		readinessReq("size_range", "the size range is not empty", f.Sizes > 0, "no sizes in the range"),
@@ -123,7 +129,8 @@ func releaseRequirements(f entity.TechCardReadinessFacts) []*pb_admin.TechCardRe
 		readinessReq("lab_dip", "every live colourway has an approved lab dip",
 			f.LabDipPendingColorways == 0, labDipDetail(f)),
 		readinessReq("signoffs", "every recorded sign-off is approved",
-			f.Signoffs > 0 && f.SignoffsApproved == f.Signoffs, signoffsDetail(f)),
+			f.Signoffs > 0 && f.SignoffsApproved == f.Signoffs && len(staleSignoffs) == 0,
+			signoffsDetail(f, staleSignoffs)),
 	}
 }
 
@@ -181,9 +188,50 @@ func labDipDetail(f entity.TechCardReadinessFacts) string {
 	return fmt.Sprintf("%d of %d colourways have no approved lab dip", f.LabDipPendingColorways, f.LiveColorways)
 }
 
-func signoffsDetail(f entity.TechCardReadinessFacts) string {
+func signoffsDetail(f entity.TechCardReadinessFacts, stale []entity.TechCardSignoffSection) string {
 	if f.Signoffs == 0 {
 		return "no sign-off recorded"
 	}
+	if len(stale) == 1 {
+		return fmt.Sprintf("%s approval is stale", stale[0])
+	}
+	if len(stale) > 1 {
+		sections := make([]string, 0, len(stale))
+		for _, section := range stale {
+			sections = append(sections, string(section))
+		}
+		return fmt.Sprintf("approvals are stale: %s", strings.Join(sections, ", "))
+	}
 	return fmt.Sprintf("%d of %d sign-offs are not approved", f.Signoffs-f.SignoffsApproved, f.Signoffs)
+}
+
+// staleApprovedSignoffSections compares server-owned signed digests with the current enriched card
+// using the exact projection used when an approval is stamped. Empty legacy digests are unverifiable
+// and therefore stale: release readiness must never treat an approval of unknown content as current.
+func staleApprovedSignoffSections(card *entity.TechCard) []entity.TechCardSignoffSection {
+	if card == nil {
+		return nil
+	}
+	current := dto.TechCardSectionDigests(&card.TechCardInsert)
+	stale := make(map[entity.TechCardSignoffSection]bool)
+	for _, signoff := range card.Signoffs {
+		if signoff.State != entity.SignoffStateApproved {
+			continue
+		}
+		if !signoff.SignedDigest.Valid || signoff.SignedDigest.String == "" ||
+			signoff.SignedDigest.String != current[signoff.Section] {
+			stale[signoff.Section] = true
+		}
+	}
+	order := []entity.TechCardSignoffSection{
+		entity.SignoffDesign, entity.SignoffConstruction, entity.SignoffMaterials,
+		entity.SignoffColour, entity.SignoffLabels, entity.SignoffPackaging, entity.SignoffCosting,
+	}
+	out := make([]entity.TechCardSignoffSection, 0, len(stale))
+	for _, section := range order {
+		if stale[section] {
+			out = append(out, section)
+		}
+	}
+	return out
 }

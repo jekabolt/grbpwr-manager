@@ -18,9 +18,9 @@ var ErrTechCardConflict = errors.New("tech card was modified concurrently")
 var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open to draft to edit")
 
 // ErrTechCardPurposeLocked is returned by UpdateTechCard when the caller tries to change a card's
-// purpose (sellable↔auxiliary) after it already has production runs or linked products — the switch
-// would strand a batch's stock destination or a product link (NF-07).
-var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change once it has runs or products")
+// purpose (sellable↔auxiliary) after it already has production runs, linked products, or assembly
+// usage — the switch would strand a batch/product link or invalidate a packing-spec component (NF-07).
+var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change once it has runs, products, or is used as an assembly component")
 
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
@@ -226,16 +226,13 @@ type TechCardCallout struct {
 }
 
 // TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
-// card's significant transitions. Author/Action/Section/ChangeNote/CreatedAt are set by the server;
-// the legacy Version/RevisionDate columns are kept for old rows and dropped in M3.
+// card's significant transitions. Author/Action/Section/ChangeNote/CreatedAt are set by the server.
 type TechCardRevision struct {
-	Version      sql.NullString `db:"version"`       // DEPRECATED legacy label
-	RevisionDate sql.NullTime   `db:"revision_date"` // DEPRECATED; use CreatedAt
-	Author       sql.NullString `db:"author"`        // server-stamped acting admin username
-	Section      sql.NullString `db:"section"`       // header|sketch|bom|... (enum-valued)
-	Action       sql.NullString `db:"action"`        // created|updated|approved|released|reverted|role_assigned|other
-	ChangeNote   sql.NullString `db:"change_note"`   // human summary
-	CreatedAt    sql.NullTime   `db:"created_at"`    // when the server stamped this entry
+	Author     sql.NullString `db:"author"`      // server-stamped acting admin username
+	Section    sql.NullString `db:"section"`     // header|sketch|bom|... (enum-valued)
+	Action     sql.NullString `db:"action"`      // created|updated|approved|released|reverted|role_assigned|other
+	ChangeNote sql.NullString `db:"change_note"` // human summary
+	CreatedAt  sql.NullTime   `db:"created_at"`  // when the server stamped this entry
 }
 
 // TechCardBomSection groups a BOM line by material family. Mirrors the
@@ -862,8 +859,8 @@ type TechCardSignoff struct {
 	Note     sql.NullString         `db:"note"`
 	// SignedDigest fingerprints the section's content at the moment it was approved, so a stale
 	// approval survives a reload (dto.TechCardSectionDigests). Server-owned: stamped on the way in,
-	// never accepted from the wire. NULL for a pending/rejected section and for rows signed before
-	// the digest existed — "cannot tell", which the read side must not report as "changed".
+	// never accepted from the wire. NULL for a pending/rejected section; an approved legacy row with
+	// no digest is unverifiable and therefore stale for release-readiness purposes.
 	SignedDigest sql.NullString `db:"signed_digest"`
 }
 
@@ -1063,19 +1060,18 @@ type TechCardInsert struct {
 	Stage              TechCardStage           `db:"stage"`
 	Status             sql.NullString          `db:"status"`
 	ApprovalState      TechCardApprovalState   `db:"approval_state"`
-	ApprovedBy         sql.NullString          `db:"approved_by"`
 	ApprovedAt         sql.NullTime            `db:"approved_at"`
 	ReleasedAt         sql.NullTime            `db:"released_at"`
-	Version            sql.NullString          `db:"version"`
-	RevisionDate       sql.NullTime            `db:"revision_date"`
 	BaseModelId        sql.NullInt32           `db:"base_model_id"`
 	BaseSampleSizeId   sql.NullInt32           `db:"base_sample_size_id"`
-	Designer           sql.NullString          `db:"designer"`
-	Constructor        sql.NullString          `db:"constructor"`
-	Technologist       sql.NullString          `db:"technologist"`
 	MeasurementUnit    TechCardMeasurementUnit `db:"measurement_unit"`
-	Concept            sql.NullString          `db:"concept"` // design concept / intent (designer)
-	Notes              sql.NullString          `db:"notes"`
+	// MeasurementUnitSet separates "the client chose a unit" from "the field was absent". The unit is a
+	// fact ABOUT the numbers already in tech_card_size_measurement (a bare DECIMAL with no unit of its
+	// own), so an absent field must preserve the stored unit rather than fall back to the create-time
+	// default — otherwise an old cm card is re-read as mm, 10× off, by any save that omits the field.
+	MeasurementUnitSet bool           `db:"-"`
+	Concept            sql.NullString `db:"concept"` // design concept / intent (designer)
+	Notes              sql.NullString `db:"notes"`
 	// child sections (in-memory only; persisted to their own tables)
 	SizeIds   []int               `db:"-"`
 	Media     []TechCardMediaItem `db:"-"`
@@ -1278,7 +1274,6 @@ type TechCardReleaseMeta struct {
 	// assigned by the store on save. This is the tech card's real "version" — the free-text `version`
 	// string it replaces is retired.
 	ReleaseNumber int                 `db:"release_number"`
-	Version       sql.NullString      `db:"version"`
 	ReleasedBy    sql.NullString      `db:"released_by"`
 	UnitCost      decimal.NullDecimal `db:"unit_cost"`
 	Currency      sql.NullString      `db:"currency"`

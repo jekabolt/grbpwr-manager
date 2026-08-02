@@ -2,8 +2,7 @@ package admin
 
 import (
 	"context"
-	"database/sql"
-	"log/slog"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
-	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -28,13 +26,18 @@ import (
 // costingAccessFor is the pure access decision, split out so it is unit-testable
 // without a request context. present is whether an AdminAuthz was found in context.
 //
-// A missing authz (present=false) means the call did not pass the RBAC interceptor —
-// an internal/test call, never a real scoped account (the interceptor populates authz
-// for every admin RPC in production) — so it is treated as full access, matching how a
-// pre-RBAC legacy token is treated. Super/legacy tokens are full access. A scoped
-// account gets exactly what its costing grant covers; no grant → no cost access.
+// A missing authz (present=false) means the call did not pass the RBAC interceptor, and it FAILS
+// CLOSED: no cost access. The interceptor populates authz for every admin RPC, so in production
+// nothing reaches these handlers without it — the case is unreachable rather than benign, and
+// treating it as full access (as it used to) meant any future path that skipped the interceptor —
+// an in-process caller, a background job reusing a handler — would silently publish costing.
+// Super/legacy tokens are full access. A scoped account gets exactly what its costing grant covers;
+// no grant → no cost access.
 func costingAccessFor(az authsrv.AdminAuthz, present bool) (read, write bool) {
-	if !present || az.FullAccess() {
+	if !present {
+		return false, false
+	}
+	if az.FullAccess() {
 		return true, true
 	}
 	lvl, ok := az.Perms[rbac.SectionCosting]
@@ -286,6 +289,28 @@ func stripDashboardCosting(resp *pb_admin.GetDashboardResponse) {
 	redactCostingFieldsDeep(resp.ProtoReflect())
 }
 
+// stripChannelRoasCosting redacts the media-spend side of the settled-ROAS report for an account
+// without costing:read. Spend and the figures DERIVED from it (roas, cac) are the same class the
+// dashboard redacts by name via costingRedactedFieldNames (marketing_spend, blended_cac, cpo) — the
+// per-channel report is simply not routed through that denylist, since its fields are named `spend`
+// / `roas` / `cac`. has_spend goes with them (its "N/A" meaning is exactly what a blanked row
+// should read as, and leaving it true would render a spend flag with no number, cf. the has_base /
+// has_actuals precedent above). Settled revenue, orders and new customers are revenue-side and stay.
+func stripChannelRoasCosting(resp *pb_admin.GetChannelRoasSettledResponse) {
+	if resp == nil {
+		return
+	}
+	for _, r := range resp.Rows {
+		if r == nil {
+			continue
+		}
+		r.Spend = nil
+		r.Roas = 0
+		r.Cac = 0
+		r.HasSpend = false
+	}
+}
+
 // stripStyleEconomicsCosting redacts confidential cost/margin from a style-economics card for an
 // account without costing:read (task 19): the dev-cost roll-up, production costs, the net result,
 // and the cost/margin fields on the sales row. Identity, revenue, units, colourway count, fitting
@@ -367,6 +392,14 @@ func techCardInsertHasCostingData(ins *pb_common.TechCardInsert) bool {
 	return false
 }
 
+// productionRunInsertHasCostingData reports whether a run write payload carries confidential cost
+// input: an actual cost article (CMT, freight, …). The planned unit cost is not client-supplied (the
+// service snapshots it) and quantities/markers are not money, so the cost articles are the only cost
+// input on this payload. Mirrors techCardInsertHasCostingData.
+func productionRunInsertHasCostingData(ins *pb_common.ProductionRunInsert) bool {
+	return ins != nil && len(ins.Costs) > 0
+}
+
 // costPriceProvided reports whether a colourway write payload is trying to SET a product cost_price (a
 // confidential figure). An absent/empty value means "leave the stored cost unchanged" (see
 // nullDecimalFromPb) — not a cost write — so it is not gated. Because cost_price is write-only (never
@@ -379,53 +412,95 @@ func costPriceProvided(cost *pb_decimal.Decimal) bool {
 // preserveStoredCosting restores confidential cost fields onto an incoming tech-card update
 // from the stored card, so a full-replace save by an account WITHOUT costing:write (whose read
 // was cost-stripped, so the payload carries no costing) cannot blank the costing block or BOM
-// purchase prices it never saw. The costing block is preserved wholesale; BOM prices are matched
-// back by the article's natural key (section+name+supplier_ref), so an unchanged line keeps its
-// price and a genuinely new line simply has none. Best-effort: a reload failure leaves the payload
-// as-is (the write still proceeds) — logged, never fatal. Only call this after confirming the
-// payload carries no costing data (techCardInsertHasCostingData is false), i.e. the caller isn't
-// trying to set costs — this path is purely anti-erase, not a way to smuggle changes.
-func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, incoming *entity.TechCardInsert) {
-	stored, err := s.repo.TechCards().GetTechCardById(ctx, techCardID)
-	if err != nil || stored == nil {
-		if err != nil {
-			slog.Default().WarnContext(ctx, "costing preserve: can't reload stored tech card; leaving payload as-is",
-				slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
-		}
-		return
+// purchase prices it never saw. The costing block is preserved wholesale; BOM prices follow the
+// stable line_key, with the old natural-key FIFO retained only for legacy pairs where either side
+// has no line_key. A reload failure is fatal to the update: proceeding would full-replace confidential
+// prices with the cost-blind payload. Only call this after confirming the payload carries no costing data
+// (techCardInsertHasCostingData is false), i.e. the caller isn't trying to set costs — this path is
+// purely anti-erase, not a way to smuggle changes.
+func (s *Server) preserveStoredCosting(ctx context.Context, techCardID int, incoming *entity.TechCardInsert) error {
+	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, techCardID)
+	if err != nil {
+		return fmt.Errorf("reload stored tech card %d for costing preservation: %w", techCardID, err)
+	}
+	if err := preserveStoredCostingFrom(stored, incoming); err != nil {
+		return fmt.Errorf("reload stored tech card %d for costing preservation: %w", techCardID, err)
+	}
+	return nil
+}
+
+// preserveStoredCostingFrom applies the anti-erase restore from an already-consistent card reload.
+// UpdateTechCard shares that reload with sign-off reconciliation so both security decisions observe
+// the same stored snapshot; preserveStoredCosting remains as the standalone wrapper used elsewhere.
+func preserveStoredCostingFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) error {
+	if stored == nil {
+		return fmt.Errorf("empty stored card")
+	}
+	if incoming == nil {
+		return fmt.Errorf("empty incoming card")
 	}
 	incoming.Costing = stored.Costing
 	if len(stored.BomItems) == 0 || len(incoming.BomItems) == 0 {
-		return
+		return nil
 	}
-	type bomPrice struct {
-		unit decimal.NullDecimal
-		cur  sql.NullString
+	preservePrice := func(dst *entity.TechCardBomItem, src entity.TechCardBomItem) {
+		dst.UnitPrice = src.UnitPrice
+		dst.Currency = src.Currency
 	}
-	// Natural keys are not guaranteed unique (a card may carry two lines with the same
-	// section+name+supplier_ref — e.g. the same fabric in two colours). Keep a FIFO queue per key
-	// and consume it in order so N stored lines feed N incoming lines with that key, instead of a
-	// last-wins map that would stamp every colliding line with a single price.
-	byKey := make(map[string][]bomPrice, len(stored.BomItems))
-	for _, b := range stored.BomItems {
-		k := bomNaturalKey(b)
-		byKey[k] = append(byKey[k], bomPrice{b.UnitPrice, b.Currency})
+
+	// Match every modern line by its stable identity before constructing the legacy pool. This makes
+	// the match order-insensitive and keeps a keyed line's price attached through renames or supplier
+	// edits. Marking both sides also ensures the fallback cannot steal a keyed match.
+	matchedStored := make([]bool, len(stored.BomItems))
+	matchedIncoming := make([]bool, len(incoming.BomItems))
+	byLineKey := make(map[string]int, len(stored.BomItems))
+	for i := range stored.BomItems {
+		if key := stored.BomItems[i].LineKey; key != "" {
+			byLineKey[key] = i
+		}
 	}
 	for i := range incoming.BomItems {
-		k := bomNaturalKey(incoming.BomItems[i])
-		q := byKey[k]
-		if len(q) == 0 {
-			continue // a genuinely new line (or more duplicates than stored) simply has no price
+		key := incoming.BomItems[i].LineKey
+		storedIndex, ok := byLineKey[key]
+		if key == "" || !ok || matchedStored[storedIndex] {
+			continue
 		}
-		incoming.BomItems[i].UnitPrice = q[0].unit
-		incoming.BomItems[i].Currency = q[0].cur
-		byKey[k] = q[1:]
+		preservePrice(&incoming.BomItems[i], stored.BomItems[storedIndex])
+		matchedStored[storedIndex] = true
+		matchedIncoming[i] = true
 	}
+
+	// Natural keys are not guaranteed unique, so unmatched legacy candidates remain FIFO. A fallback
+	// pair is legal only when at least one side lacks line_key; two different modern keys must never
+	// match merely because their editable descriptive fields happen to agree.
+	byNaturalKey := make(map[string][]int, len(stored.BomItems))
+	for i := range stored.BomItems {
+		if !matchedStored[i] {
+			key := bomNaturalKey(stored.BomItems[i])
+			byNaturalKey[key] = append(byNaturalKey[key], i)
+		}
+	}
+	for i := range incoming.BomItems {
+		if matchedIncoming[i] {
+			continue
+		}
+		key := bomNaturalKey(incoming.BomItems[i])
+		candidates := byNaturalKey[key]
+		for candidateIndex, storedIndex := range candidates {
+			if incoming.BomItems[i].LineKey != "" && stored.BomItems[storedIndex].LineKey != "" {
+				continue
+			}
+			preservePrice(&incoming.BomItems[i], stored.BomItems[storedIndex])
+			byNaturalKey[key] = append(candidates[:candidateIndex], candidates[candidateIndex+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
-// bomNaturalKey identifies a BOM article across a full-replace by its human identity
-// (section + name + supplier ref), case/space-insensitive, so a preserved price re-attaches
-// to the same line even though row ids are reassigned on replace.
+// bomNaturalKey identifies a legacy BOM article across a full-replace by its human identity
+// (section + name + supplier ref), case/space-insensitive. It is used only when the stored or
+// incoming line lacks the stable line_key.
 func bomNaturalKey(b entity.TechCardBomItem) string {
 	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 	// A LINKED line keys on its material id, never on its name. The name of a linked line is RESOLVED

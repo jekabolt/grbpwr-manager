@@ -37,6 +37,7 @@ type CompositionEntry struct {
 	FiberCode string          `db:"fiber_code" json:"fiber_code"`
 	Name      string          `db:"name" json:"name"`
 	Percent   decimal.Decimal `db:"percent" json:"percent"`
+	Source    string          `db:"source" json:"source"`
 }
 
 // materialCompositionTolerance bounds how far a directly-authored material composition may sum from

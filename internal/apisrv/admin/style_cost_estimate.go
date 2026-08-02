@@ -39,7 +39,7 @@ func (s *Server) GetStyleCostEstimate(ctx context.Context, req *pb_admin.GetStyl
 	}
 
 	fx := s.costingFx(ctx)
-	catalog := s.buildCatalogFallback(ctx, card)
+	catalog := s.buildCatalogFallback(ctx, card, fx.Base)
 	est := dto.ComputeStyleCostEstimate(card, int(req.GetColorwayId()), catalog, fx)
 	if est == nil {
 		return nil, status.Error(codes.Internal, "can't compute estimate")
@@ -57,9 +57,11 @@ func (s *Server) GetStyleCostEstimate(ctx context.Context, req *pb_admin.GetStyl
 }
 
 // buildCatalogFallback fetches the latest catalog price for every BOM material whose line carries no
-// plan snapshot (plan-1 empty → plan-2 fallback). Best-effort: a material that can't be loaded simply
-// leaves its line unpriced (flagged in the estimate), never fails the request. Deduped by material id.
-func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard) map[int64]*entity.MaterialPrice {
+// plan snapshot (plan-1 empty → plan-2 fallback). Price selection is explicit: the card's costing
+// currency, then base currency, then a sole unambiguous catalog currency. Best-effort: a material that
+// can't be loaded or has multiple unmatched currencies simply leaves its line unpriced (flagged in
+// the estimate), never fails the request. Deduped by material id.
+func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard, baseCurrency string) map[int64]*entity.MaterialPrice {
 	need := map[int64]bool{}
 	for i := range card.BomItems {
 		b := &card.BomItems[i]
@@ -79,6 +81,10 @@ func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard
 	if len(need) == 0 {
 		return nil
 	}
+	costingCurrency := ""
+	if card.Costing != nil && card.Costing.Currency.Valid {
+		costingCurrency = card.Costing.Currency.String
+	}
 	out := make(map[int64]*entity.MaterialPrice, len(need))
 	for id := range need {
 		m, err := s.repo.TechCards().GetMaterial(ctx, int(id))
@@ -87,8 +93,10 @@ func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard
 				slog.Int64("material_id", id), slog.String("err", err.Error()))
 			continue
 		}
-		if m != nil && m.LatestPrice != nil {
-			out[id] = m.LatestPrice
+		if m != nil {
+			if price := m.LatestPriceForCurrencies(costingCurrency, baseCurrency); price != nil {
+				out[id] = price
+			}
 		}
 	}
 	return out

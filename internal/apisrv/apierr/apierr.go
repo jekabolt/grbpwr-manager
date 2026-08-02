@@ -80,6 +80,8 @@ func Status(err error) (error, bool) {
 		return status.Error(codes.Aborted, err.Error()), true
 	case errors.Is(err, entity.ErrMaterialCodeTaken), errors.Is(err, entity.ErrMaterialUnitLocked):
 		return status.Error(codes.FailedPrecondition, err.Error()), true
+	case errors.Is(err, entity.ErrTechCardReleased):
+		return status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error()), true
 	case errors.Is(err, entity.ErrMaterialNotFound), errors.Is(err, sql.ErrNoRows):
 		return status.Error(codes.NotFound, err.Error()), true
 	}

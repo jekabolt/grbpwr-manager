@@ -167,8 +167,8 @@ func pbCompositionEntriesToEntity(pbEntries []*pb_common.CompositionEntry) ([]en
 }
 
 // applyPbMaterialAttrs maps the proto CTI class + typed attribute oneof (or the other_attrs JSON
-// escape-hatch) onto the entity insert. An UNKNOWN class leaves MaterialClass empty (the store
-// normalises it to 'other').
+// escape-hatch) onto the entity insert. An UNKNOWN class leaves MaterialClass empty: create defaults
+// it to 'other', while update treats it as absent and preserves the stored class.
 func applyPbMaterialAttrs(pb *pb_common.Material, ins *entity.MaterialInsert) error {
 	if mc, ok := materialClassPbToEntity[pb.MaterialClass]; ok {
 		ins.MaterialClass = string(mc)

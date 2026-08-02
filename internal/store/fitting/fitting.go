@@ -69,6 +69,10 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
 			return err
 		}
+		// After the sample resolution, because that is what may supply the tech card to check against.
+		if err := validateFittingSizes(ctx, rep.DB(), f); err != nil {
+			return err
+		}
 		params := fittingParams(f)
 		// Auto-assign the round number within the tx when it is not set and the fitting is
 		// anchored to a tech card, so a style's try-ons number themselves 1, 2, 3, …. A manual
@@ -115,7 +119,20 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 // UpdateFitting updates a fitting and replaces its sizes and media. Returns
 // sql.ErrNoRows when no fitting with the given id exists.
 func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) error {
+	_, err := s.updateFittingAndListOrphanedPatternURLs(ctx, id, f, expectedLockVersion)
+	return err
+}
+
+// UpdateFittingAndListOrphanedPatternURLs updates a fitting and returns pattern-object URLs that the
+// committed full-replace made globally unreferenced. The caller may remove those objects post-commit.
+func (s *Store) UpdateFittingAndListOrphanedPatternURLs(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) ([]string, error) {
+	return s.updateFittingAndListOrphanedPatternURLs(ctx, id, f, expectedLockVersion)
+}
+
+func (s *Store) updateFittingAndListOrphanedPatternURLs(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) ([]string, error) {
+	var orphanedPatternURLs []string
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		orphanedPatternURLs = nil
 		// Load the lock version (also the existence check: a bare UPDATE reports 0 rows for both a
 		// missing id and a no-op, so we can't rely on it).
 		cur, err := storeutil.QueryNamedOne[struct {
@@ -131,7 +148,14 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrFittingConflict
 		}
+		priorPatternURLs, err := fittingPatternURLs(ctx, rep.DB(), id)
+		if err != nil {
+			return err
+		}
 		if err := resolveFittingSample(ctx, rep.DB(), f); err != nil {
+			return err
+		}
+		if err := validateFittingSizes(ctx, rep.DB(), f); err != nil {
 			return err
 		}
 		params := fittingParams(f)
@@ -187,21 +211,49 @@ func (s *Store) UpdateFitting(ctx context.Context, id int, f *entity.FittingInse
 		if err := insertFittingPatterns(ctx, rep.DB(), id, f.Patterns); err != nil {
 			return err
 		}
-		return insertFittingCallouts(ctx, rep.DB(), id, f.Callouts)
+		if err := insertFittingCallouts(ctx, rep.DB(), id, f.Callouts); err != nil {
+			return err
+		}
+		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), priorPatternURLs)
+		return err
 	})
 	if err != nil {
-		return fmt.Errorf("can't update fitting: %w", err)
+		return nil, fmt.Errorf("can't update fitting: %w", err)
 	}
-	return nil
+	return orphanedPatternURLs, nil
 }
 
 // DeleteFitting deletes a fitting by id (sizes and media cascade).
 func (s *Store) DeleteFitting(ctx context.Context, id int) error {
-	if err := storeutil.ExecNamed(ctx, s.DB,
-		`DELETE FROM fitting WHERE id = :id`, map[string]any{"id": id}); err != nil {
-		return fmt.Errorf("failed to delete fitting: %w", err)
+	_, err := s.deleteFittingAndListOrphanedPatternURLs(ctx, id)
+	return err
+}
+
+// DeleteFittingAndListOrphanedPatternURLs deletes a fitting and returns pattern-object URLs that no
+// remaining card or fitting references. Candidate URLs are captured before the cascading delete.
+func (s *Store) DeleteFittingAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error) {
+	return s.deleteFittingAndListOrphanedPatternURLs(ctx, id)
+}
+
+func (s *Store) deleteFittingAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error) {
+	var orphanedPatternURLs []string
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		orphanedPatternURLs = nil
+		priorPatternURLs, err := fittingPatternURLs(ctx, rep.DB(), id)
+		if err != nil {
+			return err
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM fitting WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to delete fitting: %w", err)
+		}
+		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), priorPatternURLs)
+		return err
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return orphanedPatternURLs, nil
 }
 
 // GetFittingById returns a fitting with its sizes and resolved media.
@@ -365,6 +417,27 @@ func changeRequestParams(cr *entity.FittingChangeRequest) map[string]any {
 	}
 }
 
+// validateFittingSizes rejects fit-sample sizes that the fitting's style does not make. Samples have
+// enforced this since NF-04 (store/sample validateSampleRefs) but fittings never did, so a try-on
+// could be recorded — and carried into the next round's change requests — against a size that only
+// exists in the global dictionary. A fitting with no style, or a style with no declared range, is
+// left permissive (see storeutil.TechCardSizeRange).
+func validateFittingSizes(ctx context.Context, db dependency.DB, f *entity.FittingInsert) error {
+	if !f.TechCardId.Valid || len(f.Sizes) == 0 {
+		return nil
+	}
+	rng, err := storeutil.LoadTechCardSizeRange(ctx, db, int(f.TechCardId.Int32))
+	if err != nil {
+		return err
+	}
+	for i, sz := range f.Sizes {
+		if err := rng.Require(fmt.Sprintf("sizes[%d].size_id", i), sz.SizeId); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func insertFittingSizes(ctx context.Context, db dependency.DB, fittingID int, sizes []entity.FittingSize) error {
 	if len(sizes) == 0 {
 		return nil
@@ -402,6 +475,20 @@ func insertFittingPatterns(ctx context.Context, db dependency.DB, fittingID int,
 		return fmt.Errorf("failed to insert fitting patterns: %w", err)
 	}
 	return nil
+}
+
+func fittingPatternURLs(ctx context.Context, db dependency.DB, fittingID int) ([]string, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		URL string `db:"url"`
+	}](ctx, db, `SELECT url FROM fitting_pattern WHERE fitting_id = :id`, map[string]any{"id": fittingID})
+	if err != nil {
+		return nil, fmt.Errorf("load fitting pattern URLs: %w", err)
+	}
+	urls := make([]string, 0, len(rows))
+	for _, row := range rows {
+		urls = append(urls, row.URL)
+	}
+	return urls, nil
 }
 
 func insertFittingCallouts(ctx context.Context, db dependency.DB, fittingID int, callouts []entity.FittingCallout) error {

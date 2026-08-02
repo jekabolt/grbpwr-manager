@@ -27,6 +27,7 @@ type colorwayDevRow struct {
 	LabDipDecidedBy    sql.NullString `db:"lab_dip_decided_by"`
 	LabDipRejectReason sql.NullString `db:"lab_dip_reject_reason"`
 	DisplayOrder       int            `db:"display_order"`
+	ServerNow          sql.NullTime   `db:"server_now"`
 }
 
 // applyColorwayDevelopment merges a patch into the stored development block and writes it back,
@@ -43,7 +44,7 @@ func applyColorwayDevelopment(ctx context.Context, db dependency.DB, colorwayID 
 	cur, err := storeutil.QueryNamedOne[colorwayDevRow](ctx, db, `
 		SELECT dev_code, dev_name, lab_dip_status, dev_comment, pantone, pantone_system, dev_hex,
 		       swatch_media_id, lab_dip_round, lab_dip_submitted_at, lab_dip_decided_at,
-		       lab_dip_decided_by, lab_dip_reject_reason, display_order
+		       lab_dip_decided_by, lab_dip_reject_reason, display_order, NOW() AS server_now
 		FROM product WHERE id = :id`, map[string]any{"id": colorwayID})
 	if err != nil {
 		return err // sql.ErrNoRows -> NOT_FOUND upstream
@@ -80,21 +81,13 @@ func applyColorwayDevelopment(ctx context.Context, db dependency.DB, colorwayID 
 	if patch.LabDipRound != nil {
 		next.LabDipRound = nullableInt32(*patch.LabDipRound)
 	}
-	if patch.LabDipSubmittedAt != nil {
-		next.LabDipSubmittedAt = *patch.LabDipSubmittedAt
-	}
-	if patch.LabDipDecidedAt != nil {
-		next.LabDipDecidedAt = *patch.LabDipDecidedAt
-	}
-	if patch.LabDipDecidedBy != nil {
-		next.LabDipDecidedBy = nullableString(*patch.LabDipDecidedBy)
-	}
 	if patch.LabDipRejectReason != nil {
 		next.LabDipRejectReason = nullableString(*patch.LabDipRejectReason)
 	}
 	if patch.DisplayOrder != nil {
 		next.DisplayOrder = *patch.DisplayOrder
 	}
+	next = stampLabDipTransitionAudit(cur, next, patch.Actor)
 
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE product SET
@@ -130,6 +123,49 @@ func applyColorwayDevelopment(ctx context.Context, db dependency.DB, colorwayID 
 	return recordLabDipRound(ctx, db, colorwayID, next)
 }
 
+// stampLabDipTransitionAudit owns the audit fields for the current state and, consequently, the
+// journal row written from it below. A round/status that merely comes back unchanged preserves the
+// stored values. A genuinely new submission gets database time; a genuinely new decision gets the
+// same database time plus the authenticated actor. Starting/reopening a non-decided state clears a
+// prior decision rather than carrying its author onto the new state.
+func stampLabDipTransitionAudit(cur, next colorwayDevRow, actor string) colorwayDevRow {
+	curRound := labDipRoundNumber(cur.LabDipRound)
+	nextRound := labDipRoundNumber(next.LabDipRound)
+	curStatus := entity.TechCardLabDipStatus(cur.LabDipStatus.String)
+	nextStatus := entity.TechCardLabDipStatus(next.LabDipStatus.String)
+	freshState := curRound != nextRound || curStatus != nextStatus
+	if !freshState {
+		return next
+	}
+
+	if curRound != nextRound {
+		next.LabDipSubmittedAt = sql.NullTime{}
+		next.LabDipDecidedAt = sql.NullTime{}
+		next.LabDipDecidedBy = sql.NullString{}
+	}
+	switch nextStatus {
+	case entity.LabDipPending:
+		next.LabDipSubmittedAt = sql.NullTime{}
+		next.LabDipDecidedAt = sql.NullTime{}
+		next.LabDipDecidedBy = sql.NullString{}
+	case entity.LabDipSubmitted:
+		next.LabDipSubmittedAt = next.ServerNow
+		next.LabDipDecidedAt = sql.NullTime{}
+		next.LabDipDecidedBy = sql.NullString{}
+	case entity.LabDipApproved, entity.LabDipRejected:
+		next.LabDipDecidedAt = next.ServerNow
+		next.LabDipDecidedBy = nullableString(actor)
+	}
+	return next
+}
+
+func labDipRoundNumber(round sql.NullInt32) int {
+	if !round.Valid || round.Int32 < 1 {
+		return 1
+	}
+	return int(round.Int32)
+}
+
 // recordLabDipRound writes the merged lab-dip state into the round journal, keyed by round number.
 // Re-deciding the SAME round updates that row (a rejection corrected to an approval is not a new
 // round); moving to a higher round leaves the previous one exactly as it was, which is the whole
@@ -152,22 +188,24 @@ func recordLabDipRound(ctx context.Context, db dependency.DB, colorwayID int, de
 	return storeutil.ExecNamed(ctx, db, `
 		INSERT INTO product_lab_dip_round
 			(product_id, round_number, status, submitted_at, decided_at, decided_by, reject_reason,
-			 comment, swatch_media_id)
+			 swatch_media_id)
 		VALUES (:product_id, :round_number, :status, :submitted_at, :decided_at, :decided_by,
-			:reject_reason, :comment, :swatch_media_id)
+			:reject_reason, :swatch_media_id)
 		ON DUPLICATE KEY UPDATE
 			status = VALUES(status), submitted_at = VALUES(submitted_at), decided_at = VALUES(decided_at),
 			decided_by = VALUES(decided_by), reject_reason = VALUES(reject_reason),
-			comment = VALUES(comment), swatch_media_id = VALUES(swatch_media_id)`,
+			swatch_media_id = VALUES(swatch_media_id)`,
 		map[string]any{
-			"product_id":      colorwayID,
-			"round_number":    round,
-			"status":          status,
-			"submitted_at":    dev.LabDipSubmittedAt,
-			"decided_at":      dev.LabDipDecidedAt,
-			"decided_by":      dev.LabDipDecidedBy,
-			"reject_reason":   dev.LabDipRejectReason,
-			"comment":         dev.DevComment,
+			"product_id":    colorwayID,
+			"round_number":  round,
+			"status":        status,
+			"submitted_at":  dev.LabDipSubmittedAt,
+			"decided_at":    dev.LabDipDecidedAt,
+			"decided_by":    dev.LabDipDecidedBy,
+			"reject_reason": dev.LabDipRejectReason,
+			// dev_comment is a colourway-level development note, not commentary on this round. There is
+			// no round-comment write field yet, so new rows leave the journal comment NULL and updates
+			// preserve any round-specific comment populated through another path.
 			"swatch_media_id": dev.SwatchMediaId,
 		})
 }

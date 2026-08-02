@@ -75,13 +75,15 @@ func TestMaterialComposition(t *testing.T) {
 	require.Equal(t, "COT", m.CompositionEntries[0].FiberCode)
 	require.True(t, m.CompositionEntries[0].Percent.Equal(dec("100")))
 
-	// An empty composition unsets it (valid — not every material has a fibre breakdown).
+	// The proto repeated field has no presence, so an empty composition on update PRESERVES the
+	// stored breakdown instead of clearing it (audit #35 — the old full-replace wipe was data loss).
 	require.NoError(t, tc.UpdateMaterial(ctx, id, &entity.MaterialInsert{
 		Name: "Composition Fabric", Section: "fabric", MaterialClass: "fabric",
 	}, 1))
 	m, err = tc.GetMaterial(ctx, id)
 	require.NoError(t, err)
-	require.Empty(t, m.CompositionEntries, "empty composition is unset")
+	require.Len(t, m.CompositionEntries, 1, "absent composition on update preserves the stored one")
+	require.Equal(t, "COT", m.CompositionEntries[0].FiberCode)
 
 	// A composition that does not sum to 100 is rejected (field-tagged validation).
 	_, err = tc.CreateMaterial(ctx, &entity.MaterialInsert{

@@ -35,12 +35,12 @@ const soldOutSelect = productStockExpr + ` <= 0 AS sold_out`
 const styleCompositionSelect = `JSON_UNQUOTE(sty.composition)`
 
 // styleCompositionEntriesSelect projects a style's structured fibre composition (S17/WS3-Ф5) as a JSON
-// array of {fiber_code,name,percent} objects, for the typed composition_entries wire field (M1 fix) —
+// array of {fiber_code,name,percent,source} objects, for the typed composition_entries wire field (M1 fix) —
 // the replacement for the JSON-in-string overload removed from styleCompositionSelect above. Selected
 // alongside (never instead of) styleCompositionSelect. JSON_ARRAYAGG returns NULL over zero rows (a
 // style with no derived/manual composition yet); the caller unmarshals a NULL/empty result into an
 // empty slice.
-const styleCompositionEntriesSelect = `(SELECT JSON_ARRAYAGG(JSON_OBJECT('fiber_code', sc.fiber_code, 'name', COALESCE(f.name, sc.fiber_code), 'percent', sc.percent))
+const styleCompositionEntriesSelect = `(SELECT JSON_ARRAYAGG(JSON_OBJECT('fiber_code', sc.fiber_code, 'name', COALESCE(f.name, sc.fiber_code), 'percent', sc.percent, 'source', sc.source))
 		FROM style_composition sc LEFT JOIN fiber f ON f.code = sc.fiber_code
 		WHERE sc.tech_card_id = sty.id)`
 
@@ -604,12 +604,21 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		var e error
 		// The size chart lives on the style now (PR6 P3): reconstruct the per-colourway view by joining
 		// the style's chart to this product's sizes, preserving the product_size_id the frontend keys on.
+		//
+		// Only sizes the style still MAKES are served. The write path prunes measurements when a size
+		// range narrows, but a chart cell is a plain FK to size(id) and pre-dates that prune, so any
+		// row already stranded by a historical narrowing would otherwise keep reaching buyers as the
+		// current measurements of a live variant. A style with no declared range keeps the whole chart
+		// — an undeclared grid means "not chosen yet", not "makes nothing" (storeutil.TechCardSizeRange).
 		measurementQuery := `
 			SELECT ssm.id AS id, p.id AS product_id, ps.id AS product_size_id,
 			       ssm.measurement_name_id, ssm.measurement_value
 			FROM tech_card_size_measurement ssm
 			JOIN product p ON p.id = :id AND ssm.tech_card_id = p.style_id
-			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id`
+			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id
+			WHERE EXISTS (SELECT 1 FROM tech_card_size z
+			              WHERE z.tech_card_id = ssm.tech_card_id AND z.size_id = ssm.size_id)
+			   OR NOT EXISTS (SELECT 1 FROM tech_card_size z WHERE z.tech_card_id = ssm.tech_card_id)`
 		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, measurementQuery, idParams); e != nil {
 			return fmt.Errorf("can't get measurements: %w", e)
 		}

@@ -93,3 +93,31 @@ func TestConvertMaterialImageAndPurpose(t *testing.T) {
 		t.Errorf("out.Image = %+v, want id 42", out.Image)
 	}
 }
+
+func TestConvertMaterialPreservesUpdatePresenceMarkers(t *testing.T) {
+	base := ConvertEntityMaterialToPb(entity.MaterialWithPrice{Material: entity.Material{
+		MaterialInsert: entity.MaterialInsert{Name: "legacy", Section: "fabric"},
+	}})
+	base.MaterialClass = pb_common.MaterialClass_MATERIAL_CLASS_UNKNOWN
+	base.Attributes = nil
+	base.CompositionEntries = nil
+
+	ins, err := ConvertPbMaterialToEntityInsert(base)
+	if err != nil {
+		t.Fatalf("convert absent fields: %v", err)
+	}
+	if ins.MaterialClass != "" || ins.FabricAttr != nil || ins.HardwareAttr != nil ||
+		ins.ThreadAttr != nil || ins.PackagingAttr != nil || ins.CompositionEntries != nil {
+		t.Fatalf("absence markers were not preserved: %+v", ins)
+	}
+
+	base.MaterialClass = pb_common.MaterialClass_MATERIAL_CLASS_FABRIC
+	base.Attributes = &pb_common.Material_FabricAttrs{FabricAttrs: &pb_common.MaterialFabricAttrs{}}
+	ins, err = ConvertPbMaterialToEntityInsert(base)
+	if err != nil {
+		t.Fatalf("convert present empty attrs: %v", err)
+	}
+	if ins.FabricAttr == nil {
+		t.Fatal("a present empty attrs message must remain distinguishable from absence")
+	}
+}

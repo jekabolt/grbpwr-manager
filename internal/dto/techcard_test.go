@@ -19,8 +19,10 @@ func i32(v int32) *int32               { return &v }
 // entity-side helpers: after the R1 merge, colourways are not part of the tech-card WRITE payload
 // (they are products, created via the Colorway RPCs). Per-colourway costing still reads the enriched
 // entity.Colorways, so the costing tests build them directly instead of through the pb parse.
-func ndd(s string) decimal.NullDecimal { return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true} }
-func sni(v int32) sql.NullInt32        { return sql.NullInt32{Int32: v, Valid: true} }
+func ndd(s string) decimal.NullDecimal {
+	return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true}
+}
+func sni(v int32) sql.NullInt32 { return sql.NullInt32{Int32: v, Valid: true} }
 
 func TestConvertPbTechCardInsertToEntity(t *testing.T) {
 	revDate := timestamppb.New(time.Date(2026, 6, 19, 15, 30, 0, 0, time.UTC))
@@ -217,11 +219,14 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 				{MediaId: 20, Category: entity.TechCardMediaCategoryMoodboard, Kind: entity.TechCardMediaReference},
 			},
 			Callouts:  []entity.TechCardCallout{{Number: 1, MediaId: nullInt32FromPb(11)}},
-			Revisions: []entity.TechCardRevision{{Version: nullStringFromPb("v1")}},
+			Revisions: []entity.TechCardRevision{{Author: nullStringFromPb("alice")}},
 			Details:   []entity.TechCardDetail{{Key: nullStringFromPb("collar"), Text: nullStringFromPb("two-piece"), MediaIds: []int{11}}},
 		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		CompositionEntries: []entity.CompositionEntry{{
+			FiberCode: "COT", Name: "Cotton", Percent: decimal.NewFromInt(100), Source: entity.CompositionSourceManual,
+		}},
 		ResolvedMedia: []entity.TechCardMediaFull{
 			{Media: entity.MediaFull{Id: 11}, Category: entity.TechCardMediaCategoryTechnical, Kind: entity.TechCardMediaFront},
 			{Media: entity.MediaFull{Id: 20}, Category: entity.TechCardMediaCategoryMoodboard, Kind: entity.TechCardMediaReference, Caption: nullStringFromPb("mood")},
@@ -245,6 +250,9 @@ func TestConvertEntityTechCardToPb(t *testing.T) {
 	}
 	if len(pb.TechCard.Details) != 1 || pb.TechCard.Details[0].Key != "collar" || len(pb.TechCard.Details[0].MediaIds) != 1 {
 		t.Errorf("details round-trip mismatch: %+v", pb.TechCard.Details)
+	}
+	if len(pb.CompositionEntries) != 1 || pb.CompositionEntries[0].Source != entity.CompositionSourceManual {
+		t.Errorf("composition source mismatch: %+v", pb.CompositionEntries)
 	}
 	// writable media splits into the two lists by category.
 	if len(pb.TechCard.TechnicalMedia) != 1 || pb.TechCard.TechnicalMedia[0].MediaId != 11 ||
@@ -365,6 +373,9 @@ func TestConvertTechCardCosting(t *testing.T) {
 		Operations: []*pb_common.TechCardOperation{
 			{Node: "collar", TimeNorm: dec("2")},
 			{Node: "side", TimeNorm: dec("3")},
+			// smv supersedes time_norm (0219): a re-timed operation rolls up by its smv, and the stale
+			// time_norm beside it is ignored rather than added on top.
+			{Node: "hem", TimeNorm: dec("9"), Smv: dec("1.5")},
 		},
 		SizeQuantities: []*pb_common.TechCardSizeQuantity{{SizeId: 4, OrderQty: 100}},
 		Costing:        &pb_common.TechCardCosting{CmtCost: dec("10"), DefectPercent: dec("10"), Currency: "EUR"},
@@ -420,8 +431,8 @@ func TestConvertTechCardCosting(t *testing.T) {
 	if byCcy["EUR"] != "20" || byCcy["USD"] != "3" {
 		t.Errorf("root materials_total buckets mismatch: %+v", byCcy)
 	}
-	// total_sam = 2 + 3 = 5.
-	if cost.TotalSam == nil || cost.TotalSam.Value != "5" {
+	// total_sam = 2 + 3 + 1.5 (the third op's smv, NOT its time_norm of 9) = 6.5.
+	if cost.TotalSam == nil || cost.TotalSam.Value != "6.5" {
 		t.Errorf("total_sam mismatch: %+v", cost.TotalSam)
 	}
 
@@ -562,6 +573,7 @@ func TestConvertTechCardIssuesAndRelease(t *testing.T) {
 	in := &pb_common.TechCardInsert{
 		StyleNumber: "ST-035",
 		Name:        "Jacket",
+		Operations:  []*pb_common.TechCardOperation{{Node: "sew collar"}},
 		Issues: []*pb_common.TechCardIssue{
 			{OperationNumber: 10, Severity: pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_HIGH, Description: "collar too tight to turn"},
 		},

@@ -70,6 +70,16 @@ func TestStyleAssembly(t *testing.T) {
 	require.Equal(t, "Woven logo, black on white", lines[0].PrintNote.String)
 	require.True(t, lines[0].Active)
 
+	// An auxiliary card used by an assembly bill cannot flip purpose: doing so would leave this
+	// packing-spec component pointing at a sellable garment. The purpose guard runs before mutation.
+	componentCard, err := T.GetTechCardById(ctx, compID)
+	require.NoError(t, err)
+	componentCard.Purpose = entity.TechCardPurposeSellable
+	componentCard.AuxSubtype = sql.NullString{}
+	err = T.UpdateTechCard(ctx, compID, &componentCard.TechCardInsert, componentCard.LockVersion)
+	require.ErrorIs(t, err, entity.ErrTechCardPurposeLocked)
+	require.Contains(t, err.Error(), "assembly component")
+
 	// Full-replace with an empty list clears the bill.
 	require.NoError(t, T.UpsertStyleAssembly(ctx, styleID, nil, "tester"))
 	lines, err = T.ListStyleAssembly(ctx, styleID)

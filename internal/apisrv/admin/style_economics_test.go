@@ -63,7 +63,7 @@ func TestGetStyleEconomics(t *testing.T) {
 	}, nil)
 
 	s := &Server{repo: repo}
-	resp, err := s.GetStyleEconomics(context.Background(), &pb_admin.GetStyleEconomicsRequest{TechCardId: 7})
+	resp, err := s.GetStyleEconomics(fullAccessCtx(), &pb_admin.GetStyleEconomicsRequest{TechCardId: 7})
 	require.NoError(t, err)
 	e := resp.Economics
 	require.Equal(t, int32(7), e.TechCardId)

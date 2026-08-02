@@ -4,30 +4,53 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
-	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// GetTechCardRelease parses the stored proto-JSON blob back into a contract TechCard and returns
-// it alongside the metadata — the round-trip that keeps a frozen snapshot readable.
-func TestGetTechCardReleaseParsesSnapshot(t *testing.T) {
-	blob, err := protojson.Marshal(&pb_common.TechCard{Id: 5, TechCard: &pb_common.TechCardInsert{Name: "Release Coat"}})
-	require.NoError(t, err)
+func TestSnapshotReleaseBuildsStoreNumberedMetadata(t *testing.T) {
+	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().GetTechCardByIdConsistent(mock.Anything, 5).Return(&entity.TechCard{
+		Id: 5,
+		TechCardInsert: entity.TechCardInsert{
+			Name:          "Release Coat",
+			ApprovalState: entity.TechCardApprovalReleased,
+			ReleasedAt:    sql.NullTime{Time: now, Valid: true},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil)
+	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
+	tc.EXPECT().SaveTechCardRelease(mock.Anything, mock.AnythingOfType("entity.TechCardRelease")).
+		Run(func(_ context.Context, rel entity.TechCardRelease) {
+			require.Equal(t, 5, rel.TechCardId)
+			require.Zero(t, rel.ReleaseNumber, "the store assigns release_number atomically")
+		}).Return(nil)
+
+	(&Server{repo: repo}).snapshotReleaseIfReleased(context.Background(), 5)
+}
+
+// GetTechCardRelease ignores retired fields in old proto-JSON snapshots so removing a dead wire field
+// does not make an otherwise-readable frozen release degrade to snapshot_error.
+func TestGetTechCardReleaseParsesSnapshotWithRetiredFields(t *testing.T) {
+	blob := `{"id":5,"techCard":{"name":"Release Coat"},"revisions":[{"version":"1.0","revisionDate":"2025-01-02T00:00:00Z","author":"alice"}]}`
 
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(tc)
 	tc.EXPECT().GetTechCardRelease(mock.Anything, 9).Return(&entity.TechCardRelease{
-		TechCardReleaseMeta: entity.TechCardReleaseMeta{Id: 9, TechCardId: 5, Version: sql.NullString{String: "1.0", Valid: true}},
-		Snapshot:            string(blob),
+		TechCardReleaseMeta: entity.TechCardReleaseMeta{Id: 9, TechCardId: 5, ReleaseNumber: 1},
+		Snapshot:            blob,
 	}, nil)
 
 	s := &Server{repo: repo}
@@ -38,7 +61,7 @@ func TestGetTechCardReleaseParsesSnapshot(t *testing.T) {
 	require.Equal(t, int32(5), resp.Snapshot.Id)
 	require.NotNil(t, resp.Snapshot.TechCard)
 	require.Equal(t, "Release Coat", resp.Snapshot.TechCard.Name)
-	require.Equal(t, "1.0", resp.Release.Version)
+	require.Equal(t, int32(1), resp.Release.ReleaseNumber)
 }
 
 // A stored blob that no longer parses must degrade to metadata + snapshot_error, never a 500
@@ -82,16 +105,16 @@ func TestListTechCardReleases(t *testing.T) {
 	tc := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(tc)
 	tc.EXPECT().ListTechCardReleases(mock.Anything, 5).Return([]entity.TechCardReleaseMeta{
-		{Id: 2, TechCardId: 5, Version: sql.NullString{String: "2.0", Valid: true}},
-		{Id: 1, TechCardId: 5, Version: sql.NullString{String: "1.0", Valid: true}},
+		{Id: 2, TechCardId: 5, ReleaseNumber: 2},
+		{Id: 1, TechCardId: 5, ReleaseNumber: 1},
 	}, nil)
 
 	s := &Server{repo: repo}
 	resp, err := s.ListTechCardReleases(context.Background(), &pb_admin.ListTechCardReleasesRequest{TechCardId: 5})
 	require.NoError(t, err)
 	require.Len(t, resp.Releases, 2)
-	require.Equal(t, "2.0", resp.Releases[0].Version)
-	require.Equal(t, "1.0", resp.Releases[1].Version)
+	require.Equal(t, int32(2), resp.Releases[0].ReleaseNumber)
+	require.Equal(t, int32(1), resp.Releases[1].ReleaseNumber)
 
 	// zero id → InvalidArgument
 	s2 := &Server{repo: mocks.NewMockRepository(t)}

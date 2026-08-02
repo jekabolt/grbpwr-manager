@@ -53,13 +53,10 @@ type (
 		// product whose primary card is techCardID (and cost is not manual, and the card links
 		// it), never overwriting a manual cost. Returns the number of products updated.
 		SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error)
-		// SeedProductCostPriceFromTechCard is the per-colourway (single-product) seed: same
-		// provenance predicate as the bulk seed, enforced atomically in the SQL so a concurrent
-		// manual edit or run receipt is never overwritten. Returns whether the row was updated.
-		SeedProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) (bool, error)
-		// SeedProductCostBreakdownFromTechCard writes one product's COGS decomposition under the
-		// same predicate, so cost_price and cost_breakdown never drift apart.
-		SeedProductCostBreakdownFromTechCard(ctx context.Context, productID, techCardID int, breakdown sql.NullString) error
+		// SeedProductCostFromTechCard atomically writes one colourway's price + breakdown only while
+		// the source tech-card version and product provenance/ownership still match the observed read.
+		SeedProductCostFromTechCard(ctx context.Context, productID, techCardID, techCardLockVersion int,
+			cost decimal.Decimal, breakdown sql.NullString) (bool, error)
 		// SeedProductsCostBreakdownFromTechCard writes the per-unit COGS decomposition JSON onto the
 		// same (primary, non-manual) products as SeedProductsCostPriceFromTechCard, so cost_price and
 		// cost_breakdown stay in sync; a NULL breakdown clears any stale one. Returns rows updated.
@@ -567,7 +564,13 @@ type (
 	Fittings interface {
 		AddFitting(ctx context.Context, f *entity.FittingInsert) (int, error)
 		UpdateFitting(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) error
+		// UpdateFittingAndListOrphanedPatternURLs performs the same mutation and returns bucket-owned
+		// pattern URLs that became globally unreferenced when the transaction committed.
+		UpdateFittingAndListOrphanedPatternURLs(ctx context.Context, id int, f *entity.FittingInsert, expectedLockVersion int) ([]string, error)
 		DeleteFitting(ctx context.Context, id int) error
+		// DeleteFittingAndListOrphanedPatternURLs collects pattern URLs before the cascading delete and
+		// returns only those no other card/fitting references after the transaction.
+		DeleteFittingAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetFittingById(ctx context.Context, id int) (*entity.Fitting, error)
 		ListFittings(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, productID, modelID, techCardID int) ([]entity.Fitting, int, error)
 		// Structured change requests (S26): individually managed so carried_from_id / carry-over hold.
@@ -620,7 +623,13 @@ type (
 	// linked products, sketch media, callouts and revision log.
 	TechCards interface {
 		AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error)
+		// CloneTechCardForSeason inserts the converted card and its non-TechCardInsert carry-over
+		// (size chart, grade rule and assembly) in one transaction, under a source-version guard.
+		CloneTechCardForSeason(ctx context.Context, sourceID, expectedSourceVersion int, tc *entity.TechCardInsert) (int, error)
 		UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error
+		// UpdateTechCardAndListOrphanedPatternURLs performs the same mutation and returns bucket-owned
+		// pattern URLs that became globally unreferenced when the transaction committed.
+		UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error)
 		// UpdateColorwayRecipe replaces a colourway's material recipe (usages), optimistically locked
 		// on the shared tech_card.lock_version; returns the bumped version (S2/S3 recipe write-path).
 		UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVersion int, usages []entity.TechCardColorwayUsage) (int, error)
@@ -645,7 +654,12 @@ type (
 		// the packing spec to label garment styles without an N+1 GetTechCardById).
 		GetTechCardNames(ctx context.Context, ids []int) (map[int]string, error)
 		DeleteTechCard(ctx context.Context, id int) error
+		// DeleteTechCardAndListOrphanedPatternURLs collects pattern URLs before the cascading delete and
+		// returns only those no other card/fitting references after the transaction.
+		DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
+		GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error)
+		GetTechCardLockVersion(ctx context.Context, id int) (int, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
 		// and up to cardsPerStage light preview cards (gap-01).
@@ -653,6 +667,9 @@ type (
 		// GetTechCardReadiness returns the raw counts a style's advance/release checklist is scored
 		// against, in one round trip. sql.ErrNoRows when the card is absent.
 		GetTechCardReadiness(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, error)
+		// GetTechCardReadinessSnapshot returns the facts and enriched card from one read snapshot so
+		// callers can compare signed section digests with the exact content those facts describe.
+		GetTechCardReadinessSnapshot(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, *entity.TechCard, error)
 		// GetStyleSizeChart returns a style's full size chart + the shared tech_card.lock_version (R5).
 		// sql.ErrNoRows when the style is absent.
 		GetStyleSizeChart(ctx context.Context, styleID int) (entity.StyleSizeChart, error)
@@ -694,6 +711,9 @@ type (
 	ProductionRuns interface {
 		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
 		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
+		// UpdateProductionRunPreservingCosts performs the same update but reloads and carries stored
+		// cost articles under the run's FOR UPDATE lock, for callers without costing write access.
+		UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)

@@ -74,6 +74,7 @@ func TestStatus_SentinelMapping(t *testing.T) {
 		{"wrapped material conflict", fmt.Errorf("update: %w", entity.ErrMaterialConflict), codes.Aborted, true},
 		{"code taken", entity.ErrMaterialCodeTaken, codes.FailedPrecondition, true},
 		{"unit locked", entity.ErrMaterialUnitLocked, codes.FailedPrecondition, true},
+		{"released tech card", fmt.Errorf("content write: %w", entity.ErrTechCardReleased), codes.FailedPrecondition, true},
 		{"material not found", entity.ErrMaterialNotFound, codes.NotFound, true},
 		{"sql no rows", sql.ErrNoRows, codes.NotFound, true},
 		{"field-tagged", entity.NewFieldViolation("f", "r", "", ""), codes.InvalidArgument, true},
@@ -97,4 +98,3 @@ func TestStatus_SentinelMapping(t *testing.T) {
 		})
 	}
 }
-

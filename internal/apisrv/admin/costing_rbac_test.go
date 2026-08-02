@@ -1,19 +1,35 @@
 package admin
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"testing"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-// TestCostingAccessFor pins the access decision (task 19): missing authz and super/legacy
-// tokens are full access; a scoped account gets exactly what its costing grant covers.
+// fullAccessCtx is what the interceptor stashes for a super token: full costing access. Handlers
+// fail CLOSED on a context with no authorization, so a test exercising the costing-visible path
+// has to say so explicitly.
+func fullAccessCtx() context.Context {
+	return authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{Super: true})
+}
+
+// TestCostingAccessFor pins the access decision (task 19): super/legacy tokens are full access,
+// a scoped account gets exactly what its costing grant covers, and a context that never passed
+// the interceptor gets nothing (fail closed).
 func TestCostingAccessFor(t *testing.T) {
 	scoped := func(sec string, lvl entity.AccessLevel) authsrv.AdminAuthz {
 		return authsrv.AdminAuthz{Perms: map[string]entity.AccessLevel{sec: lvl}}
@@ -24,7 +40,7 @@ func TestCostingAccessFor(t *testing.T) {
 		present            bool
 		wantRead, wantWrit bool
 	}{
-		{"missing authz → full", authsrv.AdminAuthz{}, false, true, true},
+		{"missing authz → none (fail closed)", authsrv.AdminAuthz{}, false, false, false},
 		{"super → full", authsrv.AdminAuthz{Super: true}, true, true, true},
 		{"legacy → full", authsrv.AdminAuthz{Legacy: true}, true, true, true},
 		{"costing:read → read only", scoped(rbac.SectionCosting, entity.AccessRead), true, true, false},
@@ -70,11 +86,11 @@ func TestStripTechCardCosting(t *testing.T) {
 
 // TestStripReleaseMetaCosting clears the planned unit cost on a release header.
 func TestStripReleaseMetaCosting(t *testing.T) {
-	m := &pb_common.TechCardReleaseMeta{Version: "v3", UnitCost: dec("40.00"), Currency: "EUR"}
+	m := &pb_common.TechCardReleaseMeta{ReleaseNumber: 3, UnitCost: dec("40.00"), Currency: "EUR"}
 	stripReleaseMetaCosting(m)
 	require.Nil(t, m.UnitCost)
 	require.Empty(t, m.Currency)
-	require.Equal(t, "v3", m.Version, "non-cost field kept")
+	require.Equal(t, int32(3), m.ReleaseNumber, "non-cost field kept")
 	stripReleaseMetaCosting(nil) // no panic
 }
 
@@ -364,10 +380,212 @@ func TestCostingWriteDetectors(t *testing.T) {
 	require.True(t, costPriceProvided(dec("9.99")))
 }
 
+func TestPreserveStoredCostingMatchesBomPricesByLineKey(t *testing.T) {
+	bomLine := func(lineKey, name, supplierRef, amount, currency string) entity.TechCardBomItem {
+		line := entity.TechCardBomItem{
+			LineKey:     lineKey,
+			Section:     entity.BomSectionFabric,
+			Name:        name,
+			SupplierRef: sql.NullString{String: supplierRef, Valid: supplierRef != ""},
+		}
+		if amount != "" {
+			line.UnitPrice = decimal.NullDecimal{Decimal: decimal.RequireFromString(amount), Valid: true}
+			line.Currency = sql.NullString{String: currency, Valid: currency != ""}
+		}
+		return line
+	}
+	preserve := func(t *testing.T, stored []entity.TechCardBomItem, incoming *entity.TechCardInsert) {
+		t.Helper()
+		repo := mocks.NewMockRepository(t)
+		cards := mocks.NewMockTechCards(t)
+		repo.EXPECT().TechCards().Return(cards)
+		cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+			TechCardInsert: entity.TechCardInsert{BomItems: stored},
+		}, nil)
+		s := &Server{repo: repo}
+		require.NoError(t, s.preserveStoredCosting(context.Background(), 7, incoming))
+	}
+
+	t.Run("stable keys survive edits and reordering", func(t *testing.T) {
+		stored := []entity.TechCardBomItem{
+			bomLine("line-a", "old name", "old-ref", "10", "EUR"),
+			bomLine("line-b", "duplicate", "same-ref", "20", "USD"),
+			bomLine("line-c", "duplicate", "same-ref", "30", "GBP"),
+		}
+		incoming := &entity.TechCardInsert{BomItems: []entity.TechCardBomItem{
+			bomLine("line-c", "duplicate", "same-ref", "", ""),
+			bomLine("line-a", "renamed", "new-ref", "", ""),
+			bomLine("line-b", "duplicate", "same-ref", "", ""),
+		}}
+
+		preserve(t, stored, incoming)
+
+		require.Equal(t, "30", incoming.BomItems[0].UnitPrice.Decimal.String())
+		require.Equal(t, "GBP", incoming.BomItems[0].Currency.String)
+		require.Equal(t, "10", incoming.BomItems[1].UnitPrice.Decimal.String())
+		require.Equal(t, "EUR", incoming.BomItems[1].Currency.String)
+		require.Equal(t, "20", incoming.BomItems[2].UnitPrice.Decimal.String())
+		require.Equal(t, "USD", incoming.BomItems[2].Currency.String)
+	})
+
+	t.Run("legacy fallback cannot steal a keyed match", func(t *testing.T) {
+		stored := []entity.TechCardBomItem{
+			bomLine("protected", "same identity", "", "40", "EUR"),
+			bomLine("", "same identity", "", "50", "USD"),
+			bomLine("", "stored legacy", "", "60", "PLN"),
+			bomLine("modern-stored", "incoming legacy", "", "70", "GBP"),
+			bomLine("old-key", "modern mismatch", "", "80", "EUR"),
+		}
+		incoming := &entity.TechCardInsert{BomItems: []entity.TechCardBomItem{
+			bomLine("", "same identity", "", "", ""),
+			bomLine("protected", "same identity", "", "", ""),
+			bomLine("new-from-legacy", "stored legacy", "", "", ""),
+			bomLine("", "incoming legacy", "", "", ""),
+			bomLine("new-key", "modern mismatch", "", "", ""),
+		}}
+
+		preserve(t, stored, incoming)
+
+		require.Equal(t, "50", incoming.BomItems[0].UnitPrice.Decimal.String(), "legacy fallback must use the unmatched legacy row")
+		require.Equal(t, "40", incoming.BomItems[1].UnitPrice.Decimal.String(), "exact line_key match must win before fallback")
+		require.Equal(t, "60", incoming.BomItems[2].UnitPrice.Decimal.String(), "stored legacy line may fall back")
+		require.Equal(t, "70", incoming.BomItems[3].UnitPrice.Decimal.String(), "incoming legacy line may fall back")
+		require.False(t, incoming.BomItems[4].UnitPrice.Valid, "different non-empty line keys must not fall back")
+		require.False(t, incoming.BomItems[4].Currency.Valid)
+	})
+}
+
+func TestUpdateTechCardCostBlindFailsWhenCostingReloadFails(t *testing.T) {
+	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{rbac.SectionTechCards: entity.AccessWrite},
+	})
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(nil, errors.New("reload unavailable"))
+
+	s := &Server{repo: repo}
+	_, err := s.UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-80B-B",
+			Name:        "cost preserve failure guard",
+		},
+	})
+	require.Equal(t, codes.Internal, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "try again")
+}
+
+func TestUpdateTechCardCostBlindCannotChangeCostingSignoff(t *testing.T) {
+	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{rbac.SectionTechCards: entity.AccessWrite},
+	})
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+		TechCardInsert: entity.TechCardInsert{
+			Costing: &entity.TechCardCosting{Currency: sql.NullString{String: "EUR", Valid: true}},
+		},
+	}, nil)
+
+	_, err := (&Server{repo: repo}).UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-COST-SIGNOFF",
+			Name:        "costing approval guard",
+			Signoffs: []*pb_common.TechCardSignoff{{
+				Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING,
+				State:   pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+			}},
+		},
+	})
+	require.Equal(t, codes.PermissionDenied, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "costing:read")
+}
+
+func TestCostingSignoffChangedDistinguishesCarryFromTransition(t *testing.T) {
+	approved := []entity.TechCardSignoff{{Section: entity.SignoffCosting, State: entity.SignoffStateApproved}}
+	rejected := []entity.TechCardSignoff{{Section: entity.SignoffCosting, State: entity.SignoffStateRejected}}
+	require.False(t, costingSignoffChanged(approved, approved, nil), "unchanged carried approval passes")
+	require.True(t, costingSignoffChanged(approved, approved,
+		map[entity.TechCardSignoffSection]bool{entity.SignoffCosting: true}), "fresh re-approval is a change")
+	require.True(t, costingSignoffChanged(approved, rejected, nil), "approved to rejected is a change")
+	require.True(t, costingSignoffChanged(approved, nil, nil), "omitting the stored row deletes its state")
+}
+
+func TestUpdateTechCardCostReadCanApproveHydratedCosting(t *testing.T) {
+	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{
+			rbac.SectionTechCards: entity.AccessWrite,
+			rbac.SectionCosting:   entity.AccessRead,
+		},
+	})
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	storedCosting := &entity.TechCardCosting{Currency: sql.NullString{String: "EUR", Valid: true}}
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+		TechCardInsert: entity.TechCardInsert{Costing: storedCosting},
+	}, nil)
+	var written *entity.TechCardInsert
+	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
+		mock.AnythingOfType("*entity.TechCardInsert"), 2).
+		Run(func(args mock.Arguments) { written = args.Get(2).(*entity.TechCardInsert) }).
+		Return(nil, entity.ErrTechCardConflict)
+
+	_, err := (&Server{repo: repo}).UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7, ExpectedLockVersion: 2,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-COST-READ",
+			Name:        "costing read approval",
+			Signoffs: []*pb_common.TechCardSignoff{{
+				Section: pb_common.TechCardSignoffSection_TECH_CARD_SIGNOFF_SECTION_COSTING,
+				State:   pb_common.TechCardSignoffState_TECH_CARD_SIGNOFF_STATE_APPROVED,
+			}},
+		},
+	})
+	require.Equal(t, codes.Aborted, status.Code(err))
+	require.NotNil(t, written)
+	require.Same(t, storedCosting, written.Costing, "costing is hydrated before presence validation and restamping")
+	require.True(t, written.Signoffs[0].SignedDigest.Valid)
+}
+
+func TestUpdateTechCardCostBlindCannotAddHardwareBomBesideHiddenHardwareCost(t *testing.T) {
+	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{rbac.SectionTechCards: entity.AccessWrite},
+	})
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
+		TechCardInsert: entity.TechCardInsert{Costing: &entity.TechCardCosting{
+			HardwareCost: decimal.NullDecimal{Decimal: decimal.NewFromInt(17), Valid: true},
+			Currency:     sql.NullString{String: "EUR", Valid: true},
+		}},
+	}, nil)
+
+	_, err := (&Server{repo: repo}).UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
+		Id: 7,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "TC-HIDDEN-HARDWARE",
+			Name:        "hidden hardware guard",
+			BomItems: []*pb_common.TechCardBomItem{{
+				LineKey: "hardware-line",
+				Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE,
+				Name:    "zip",
+			}},
+		},
+	})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "costing.hardware_cost")
+	require.NotContains(t, status.Convert(err).Message(), "17", "the hidden amount must not leak")
+}
+
 // TestStripProductionRunCosting pins the Q5 costing symmetry (A3.2-#3): a run's actual money is
 // redacted for a non-costing account while its quantities and provenance flags survive.
 func TestStripProductionRunCosting(t *testing.T) {
-	stripProductionRunCosting(nil)                       // no panic
+	stripProductionRunCosting(nil)                        // no panic
 	stripProductionRunCosting(&pb_common.ProductionRun{}) // no panic on nil nested
 
 	r := &pb_common.ProductionRun{

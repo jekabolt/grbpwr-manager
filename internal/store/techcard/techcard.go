@@ -29,15 +29,28 @@ const (
 // TxFunc is a function that executes f within a transaction.
 type TxFunc func(ctx context.Context, f func(context.Context, dependency.Repository) error) error
 
+// RepFunc returns the current repository so dictionary-dependent writes can refresh the shared
+// in-memory dictionary before opening their transaction.
+type RepFunc func() dependency.Repository
+
 // Store implements dependency.TechCards.
 type Store struct {
 	storeutil.Base
-	txFunc TxFunc
+	txFunc     TxFunc
+	readTxFunc TxFunc
+	repFunc    RepFunc
 }
 
 // New creates a new tech card store.
-func New(base storeutil.Base, txFunc TxFunc) *Store {
-	return &Store{Base: base, txFunc: txFunc}
+func New(base storeutil.Base, txFunc, readTxFunc TxFunc, repFunc RepFunc) *Store {
+	return &Store{Base: base, txFunc: txFunc, readTxFunc: readTxFunc, repFunc: repFunc}
+}
+
+func (s *Store) ensureDictionaryFresh(ctx context.Context, action string) error {
+	if _, err := cache.EnsureDictionaryFresh(ctx, s.repFunc().Dictionary(), s.repFunc().Cache()); err != nil {
+		return fmt.Errorf("can't refresh dictionary before tech card %s: %w", action, err)
+	}
+	return nil
 }
 
 // header columns shared by INSERT (AddTechCard) and UPDATE (UpdateTechCard). Cost
@@ -47,8 +60,8 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // column remains only as a canonical derived label for the existing UNIQUE key/read models.
 // Q1/Q5: version/revision_date and the free-text roles designer/constructor/technologist/approved_by
 // are no longer written — the card's version is its named releases (Rev.N) + the auto-journal, and
-// roles are admin-account assignments. The columns stay until M3; the write path just stops touching
-// them. approved_at/released_at are server-owned timestamps and remain.
+// roles are admin-account assignments. Migration 0223 removes the retired columns;
+// approved_at/released_at are server-owned timestamps and remain.
 // normalizeLegacyComposition maps the stored JSON-scalar form of tech_card.composition to plain
 // wire text (M1) on the `SELECT *` read paths — the SQL projections do this via JSON_UNQUOTE in
 // styleCompositionSelect, these scans must match (see entity.UnquoteLegacyComposition).
@@ -68,7 +81,7 @@ const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand
 	:base_model_id, :base_sample_size_id,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
-func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
+func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 	// Default an unset purpose to sellable so a direct entity insert (not via dto) satisfies the
 	// chk_tech_card_purpose CHECK — the dto already defaults it, this covers store-level callers.
 	purpose := tc.Purpose
@@ -81,6 +94,39 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	if styleNumberSource == "" {
 		styleNumberSource = entity.StyleNumberSourceGenerated
 	}
+	return map[string]any{
+		"style_number":        tc.StyleNumber,
+		"style_number_source": string(styleNumberSource),
+		"created_by":          tc.CreatedBy,
+		"updated_by":          tc.UpdatedBy,
+		"purpose":             string(purpose),
+		"output_material_id":  tc.OutputMaterialId,
+		"aux_subtype":         tc.AuxSubtype,
+		"name":                tc.Name,
+		"brand":               tc.Brand,
+		"season":              tc.SeasonLabel,
+		"season_code":         tc.SeasonCode,
+		"season_year":         tc.SeasonYear,
+		"collection":          tc.Collection,
+		"category_id":         tc.CategoryId,
+		"target_gender":       tc.TargetGender,
+		"stage":               string(tc.Stage),
+		"status":              tc.Status,
+		"approval_state":      string(tc.ApprovalState),
+		"approved_at":         tc.ApprovedAt,
+		"released_at":         tc.ReleasedAt,
+		"base_model_id":       tc.BaseModelId,
+		"base_sample_size_id": tc.BaseSampleSizeId,
+		"measurement_unit":    string(tc.MeasurementUnit),
+		"concept":             tc.Concept,
+		"notes":               tc.Notes,
+	}
+}
+
+// techCardInsertHeaderParams validates and derives the season fields that AddTechCard owns. Update
+// deliberately skips this step because its SET list does not persist any season column; UpdateStyle
+// is the sole write owner after creation.
+func techCardInsertHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	if tc.SeasonCode.Valid != tc.SeasonYear.Valid {
 		return nil, fmt.Errorf("sku_season code and year must be set or omitted together")
 	}
@@ -100,33 +146,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) (map[string]any, error) {
 	}
 	// Never trust a caller-provided display label: keep it a projection of the typed pair.
 	tc.SeasonLabel = seasonLabel
-	return map[string]any{
-		"style_number":        tc.StyleNumber,
-		"style_number_source": string(styleNumberSource),
-		"created_by":          tc.CreatedBy,
-		"updated_by":          tc.UpdatedBy,
-		"purpose":             string(purpose),
-		"output_material_id":  tc.OutputMaterialId,
-		"aux_subtype":         tc.AuxSubtype,
-		"name":                tc.Name,
-		"brand":               tc.Brand,
-		"season":              seasonLabel,
-		"season_code":         tc.SeasonCode,
-		"season_year":         tc.SeasonYear,
-		"collection":          tc.Collection,
-		"category_id":         tc.CategoryId,
-		"target_gender":       tc.TargetGender,
-		"stage":               string(tc.Stage),
-		"status":              tc.Status,
-		"approval_state":      string(tc.ApprovalState),
-		"approved_at":         tc.ApprovedAt,
-		"released_at":         tc.ReleasedAt,
-		"base_model_id":       tc.BaseModelId,
-		"base_sample_size_id": tc.BaseSampleSizeId,
-		"measurement_unit":    string(tc.MeasurementUnit),
-		"concept":             tc.Concept,
-		"notes":               tc.Notes,
-	}, nil
+	return techCardHeaderParams(tc), nil
 }
 
 // stampApprovalTimes makes the server authoritative for approved_at/released_at,
@@ -160,10 +180,13 @@ func (s *Store) stampApprovalTimes(tc *entity.TechCardInsert, prevState entity.T
 
 // AddTechCard inserts a tech card and its child sections, returning the new id.
 func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int, error) {
+	if err := s.ensureDictionaryFresh(ctx, "create"); err != nil {
+		return 0, err
+	}
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		params, err := techCardHeaderParams(tc)
+		params, err := techCardInsertHeaderParams(tc)
 		if err != nil {
 			return err
 		}
@@ -240,18 +263,37 @@ func remintCardProducts(ctx context.Context, db dependency.DB, tcID int, previou
 // mismatch), refuses to mutate a RELEASED card unless it is re-opened to DRAFT
 // (entity.ErrTechCardReleased), and returns sql.ErrNoRows when no card exists.
 func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) error {
+	_, err := s.updateTechCardAndListOrphanedPatternURLs(ctx, id, tc, expectedLockVersion)
+	return err
+}
+
+// UpdateTechCardAndListOrphanedPatternURLs updates a card and returns pattern-object URLs that the
+// committed full-replace made globally unreferenced. The caller may remove those objects post-commit.
+func (s *Store) UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
+	return s.updateTechCardAndListOrphanedPatternURLs(ctx, id, tc, expectedLockVersion)
+}
+
+func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
+	if err := s.ensureDictionaryFresh(ctx, "update"); err != nil {
+		return nil, err
+	}
+	var orphanedPatternURLs []string
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// txFunc may retry the callback after a deadlock; never carry candidates from an aborted attempt.
+		orphanedPatternURLs = nil
 		cur, err := storeutil.QueryNamedOne[struct {
-			LockVersion   int          `db:"lock_version"`
-			ApprovalState string       `db:"approval_state"`
-			ApprovedAt    sql.NullTime `db:"approved_at"`
-			ReleasedAt    sql.NullTime `db:"released_at"`
-			Purpose       string       `db:"purpose"`
-			Stage         string       `db:"stage"`
+			LockVersion     int          `db:"lock_version"`
+			ApprovalState   string       `db:"approval_state"`
+			ApprovedAt      sql.NullTime `db:"approved_at"`
+			ReleasedAt      sql.NullTime `db:"released_at"`
+			Purpose         string       `db:"purpose"`
+			Stage           string       `db:"stage"`
+			MeasurementUnit string       `db:"measurement_unit"`
 		}](ctx, rep.DB(),
-			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit
+			 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return sql.ErrNoRows
 			}
 			return fmt.Errorf("failed to load tech card for update: %w", err)
@@ -268,13 +310,15 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}
-		// NF-07: purpose is a one-way commitment once the card has runs or products — flipping
-		// sellable↔auxiliary afterwards would strand a batch's stock destination or a product link.
+		// NF-07: purpose is a one-way commitment once the card has runs, products, or is used as an
+		// assembly component — flipping sellable↔auxiliary afterwards would strand a batch's stock
+		// destination/product link or turn a packing-spec component into a garment.
 		if cur.Purpose != string(tc.Purpose) {
 			var refs int
 			refs, err = storeutil.QueryCountNamed(ctx, rep.DB(),
 				`SELECT (SELECT COUNT(*) FROM production_run WHERE tech_card_id = :id)
-				      + (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id)`,
+				      + (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id)
+				      + (SELECT COUNT(*) FROM style_assembly WHERE component_tech_card_id = :id)`,
 				map[string]any{"id": id})
 			if err != nil {
 				return fmt.Errorf("failed to check tech card purpose change: %w", err)
@@ -292,13 +336,35 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := guardTechCardStageRegression(ctx, rep.DB(), id, entity.TechCardStage(cur.Stage), tc.Stage); err != nil {
 			return err
 		}
+		// The measurement unit is a FACT ABOUT the values already on file, not an instruction to
+		// convert them: tech_card_size_measurement.measurement_value is a bare DECIMAL(10,2) carrying
+		// no unit of its own, and the storefront serves it without one either. Flipping cm↔mm on a
+		// charted card therefore re-reads every point of measure as 10× or 1/10 of what was measured,
+		// silently, all the way to the buyer.
+		//
+		// Two rules keep that impossible. An ABSENT unit preserves the stored one (a save that never
+		// mentioned the unit must not re-unit the chart via the create-time default). An EXPLICIT flip
+		// is refused while any measurement exists — the author has to clear the chart and re-enter it
+		// in the new unit, which is the only conversion this code can perform reliably.
+		if !tc.MeasurementUnitSet {
+			tc.MeasurementUnit = entity.TechCardMeasurementUnit(cur.MeasurementUnit)
+		} else if string(tc.MeasurementUnit) != cur.MeasurementUnit {
+			charted, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COUNT(*) FROM tech_card_size_measurement WHERE tech_card_id = :id`, map[string]any{"id": id})
+			if err != nil {
+				return fmt.Errorf("count tech card %d measurements: %w", id, err)
+			}
+			if charted > 0 {
+				return entity.NewFieldViolation("measurement_unit", "chart_already_measured",
+					fmt.Sprintf("%d values recorded in %s", charted, cur.MeasurementUnit),
+					fmt.Sprintf("clear the size chart, then re-enter the measurements in %s — the stored numbers carry no unit, so switching it would re-read every one of them", tc.MeasurementUnit))
+			}
+		}
+
 		// Server owns the lifecycle stamps (set on enter, cleared on re-open).
 		s.stampApprovalTimes(tc, entity.TechCardApprovalState(cur.ApprovalState), cur.ApprovedAt, cur.ReleasedAt)
 
-		params, err := techCardHeaderParams(tc)
-		if err != nil {
-			return err
-		}
+		params := techCardHeaderParams(tc)
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
 		// R4/§14.7: UpdateTechCard writes PLM facts ONLY. The catalogue-style facts (brand, sku_season
@@ -306,7 +372,7 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// written by two paths — a season change now goes through UpdateStyle's frozen-sibling guard
 		// instead of silently re-minting here. AddTechCard still seeds them at creation. category_id
 		// stays a PLM fact. The unused :brand/:season/... binds remain in params (sqlx.Named ignores
-		// extra keys) so techCardHeaderParams stays shared with the insert.
+		// extra keys) so the base header parameter map stays shared with the insert.
 		//
 		// category_id is COALESCEd, not assigned: THE TECH-CARD WRITE NEVER UN-SETS A CATEGORY. This
 		// update is a full replace of the header, so a card whose category was never chosen through
@@ -351,6 +417,11 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
 			return err
 		}
+		priorPatterns, err := techCardPatternRows(ctx, rep.DB(), id)
+		if err != nil {
+			return err
+		}
+		patternCleanupCandidates := patternURLsRemovedByPayload(priorPatterns, tc.Patterns)
 
 		// Capture the style's products before the full-replace so a change to the style's SKU facts
 		// re-mints every (unfrozen) sibling. PR6 R1: colourways are products (product.style_id), so
@@ -372,12 +443,25 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		// colourway usage — the intended cross-aggregate guard.
 		// tech_card_revision is intentionally ABSENT as well: it is the append-only auto-journal
 		// (Q1), not a client-replaced child, so a save must never wipe the history.
+		//
+		// The three 1:1 message sections are presence-aware: nil means the protobuf field was absent,
+		// so preserve its stored row; non-nil means replace it. A present-but-empty message parses to
+		// a non-nil all-zero entity and deliberately takes the replace path, clearing every value by
+		// inserting an all-NULL row (valid for all three schemas). Lists remain full-replace.
+		preserveAbsentSection := map[string]bool{
+			"tech_card_construction": tc.Construction == nil,
+			"tech_card_packaging":    tc.Packaging == nil,
+			"tech_card_costing":      tc.Costing == nil,
+		}
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_detail",
 			"tech_card_construction", "tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 		} {
+			if preserveAbsentSection[table] {
+				continue
+			}
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :id`, table),
 				map[string]any{"id": id}); err != nil {
@@ -387,22 +471,35 @@ func (s *Store) UpdateTechCard(ctx context.Context, id int, tc *entity.TechCardI
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
 		}
+		// UpdateTechCard is the BOM's write owner, so refresh the auto-derived style composition from
+		// the just-upserted fabric lines before committing. Manual composition remains untouched.
+		if err := product.ReconcileStyleCompositionTx(ctx, rep.DB(), id); err != nil {
+			return err
+		}
 		// Re-mint SKUs for the style's products (a style SKU-fact change re-mints unfrozen siblings).
 		if err := remintCardProducts(ctx, rep.DB(), id, prevProductLinks); err != nil {
 			return err
 		}
 		// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
 		action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
-		return appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary)
-	})
-	if err != nil {
-		switch err {
-		case sql.ErrNoRows, entity.ErrTechCardConflict, entity.ErrTechCardReleased:
+		if err := appendTechCardRevision(ctx, rep.DB(), id, tc.UpdatedBy, section, action, summary); err != nil {
 			return err
 		}
-		return fmt.Errorf("can't update tech card: %w", err)
+		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), patternCleanupCandidates)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, entity.ErrTechCardConflict) ||
+			errors.Is(err, entity.ErrTechCardReleased) || errors.Is(err, entity.ErrTechCardPurposeLocked) {
+			return nil, err
+		}
+		var ve *entity.ValidationError
+		if errors.As(err, &ve) {
+			return nil, ve
+		}
+		return nil, fmt.Errorf("can't update tech card: %w", err)
 	}
-	return nil
+	return orphanedPatternURLs, nil
 }
 
 // guardTechCardStageRegression blocks a backward stage move (to an earlier lifecycle ordinal) when
@@ -418,16 +515,16 @@ func guardTechCardStageRegression(ctx context.Context, db dependency.DB, id int,
 	if !fromOK || !toOK || toOrd >= fromOrd {
 		return nil // forward, same-stage, or non-comparable: nothing to guard
 	}
-	// An ARCHIVED colourway (soft-deleted; product.lifecycle_status = 4) is retired work, not a live
-	// downstream artifact — it must NOT pin the style's stage. Excluding it lets a style whose only
-	// colourways are archived regress its stage. sample/tech_card_release have no soft-delete/archived
-	// state, so their counts stay unfiltered.
+	// An ARCHIVED colourway (soft-deleted; product.lifecycle_status = 4) and a SCRAPPED sample are
+	// retired work, not live downstream artifacts — neither pins the style's stage. Release snapshots
+	// are immutable history and have no soft-delete state, so only their count stays unfiltered.
 	counts, err := storeutil.QueryNamedOne[struct {
 		Samples   int `db:"samples"`
 		Releases  int `db:"releases"`
 		Colorways int `db:"colorways"`
 	}](ctx, db, `SELECT
-		(SELECT COUNT(*) FROM sample WHERE tech_card_id = :id)            AS samples,
+		(SELECT COUNT(*) FROM sample WHERE tech_card_id = :id
+			AND status <> 'scrapped')                                       AS samples,
 		(SELECT COUNT(*) FROM tech_card_release WHERE tech_card_id = :id) AS releases,
 		(SELECT COUNT(*) FROM product WHERE style_id = :id
 			AND lifecycle_status <> :archived)                           AS colorways`,
@@ -471,7 +568,20 @@ func stageRegressionViolation(to entity.TechCardStage, n int, artifact string) e
 // tech_card RESTRICT, 0138 — a style with live colourway products) still raises 1451; the caller
 // (apisrv/admin) maps that residual case to a field-tagged FailedPrecondition rather than Internal.
 func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
-	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	_, err := s.deleteTechCardAndListOrphanedPatternURLs(ctx, id)
+	return err
+}
+
+// DeleteTechCardAndListOrphanedPatternURLs deletes a card and returns pattern-object URLs that no
+// remaining card or fitting references. Candidate URLs are captured before the cascading delete.
+func (s *Store) DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error) {
+	return s.deleteTechCardAndListOrphanedPatternURLs(ctx, id)
+}
+
+func (s *Store) deleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error) {
+	var orphanedPatternURLs []string
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		orphanedPatternURLs = nil
 		n, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
 			SELECT COUNT(*) FROM material_stock_movement m
 			JOIN sample s ON s.id = m.sample_id WHERE s.tech_card_id = :id`, map[string]any{"id": id})
@@ -491,8 +601,13 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 				fmt.Sprintf("used as an assembly component in %d style(s)", asmCount),
 				"style_assembly", "remove it from those assembly bills first")
 		}
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id}); err != nil {
+		priorPatternURLs, err := techCardPatternURLs(ctx, rep.DB(), id)
+		if err != nil {
+			return err
+		}
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+			`DELETE FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
 			var me *mysql.MySQLError
 			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2: an un-enumerated RESTRICT
 				return entity.NewFieldViolation("tech_card_id",
@@ -500,8 +615,16 @@ func (s *Store) DeleteTechCard(ctx context.Context, id int) error {
 			}
 			return fmt.Errorf("failed to delete tech card: %w", err)
 		}
-		return nil
+		if rows == 0 {
+			return sql.ErrNoRows
+		}
+		orphanedPatternURLs, err = storeutil.UnreferencedPatternObjectURLs(ctx, rep.DB(), priorPatternURLs)
+		return err
 	})
+	if err != nil {
+		return nil, err
+	}
+	return orphanedPatternURLs, nil
 }
 
 // GetTechCardById returns a tech card with its child sections and resolved media.
@@ -553,6 +676,21 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 	}
 	cards[0].LinkedMaterials = linked
 	return &cards[0], nil
+}
+
+// GetTechCardByIdConsistent returns the same enriched card as GetTechCardById, with every
+// query participating in one REPEATABLE READ snapshot.
+func (s *Store) GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error) {
+	var card *entity.TechCard
+	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		card, err = rep.TechCards().GetTechCardById(ctx, id)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get consistent tech card: %w", err)
+	}
+	return card, nil
 }
 
 // ListTechCards returns a paged, header-only list of tech cards (no child
@@ -827,8 +965,8 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 		for ci := range cols {
 			if err := s.enrichListFacts(ctx, cols[ci].Cards); err != nil {
 				slog.Default().WarnContext(ctx, "can't resolve pipeline list facts; counts omitted",
-					slog.String("err", err.Error()))
-				break
+					slog.String("stage", string(cols[ci].Stage)), slog.String("err", err.Error()))
+				continue
 			}
 		}
 	}
@@ -842,6 +980,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	if err := insertTechCardSizes(ctx, db, id, tc.SizeIds, tc.SizeQuantities); err != nil {
+		return err
+	}
+	if err := pruneSizeScopedDataOutsideRange(ctx, db, id, tc.SizeIds); err != nil {
 		return err
 	}
 	// PR6 R1/R4: the product↔style link is derived from product.style_id (single source), never
@@ -895,7 +1036,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
 		return err
 	}
-	if err := insertTechCardLabels(ctx, db, id, tc.Labels); err != nil {
+	if err := insertTechCardLabels(ctx, db, id, tc.Labels, bomRes); err != nil {
 		return err
 	}
 	if err := insertTechCardPackaging(ctx, db, id, tc.Packaging); err != nil {
@@ -910,7 +1051,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err
 	}
-	return insertTechCardPatterns(ctx, db, id, tc.Patterns)
+	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds)
 }
 
 // patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
@@ -929,6 +1070,60 @@ type patternHistoryRow struct {
 	UploadedAt sql.NullTime `db:"uploaded_at"`
 }
 
+func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) ([]string, error) {
+	rows, err := techCardPatternRows(ctx, db, techCardID)
+	if err != nil {
+		return nil, err
+	}
+	urls := make([]string, 0, len(rows))
+	for _, row := range rows {
+		urls = append(urls, row.URL)
+	}
+	return urls, nil
+}
+
+func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) ([]patternHistoryRow, error) {
+	rows, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
+		`SELECT url, size_id, version, uploaded_at FROM tech_card_size_pattern WHERE tech_card_id = :id`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load tech card patterns: %w", err)
+	}
+	return rows, nil
+}
+
+// patternURLsRemovedByPayload limits cleanup to object identities the user actually removed. The
+// size-range filter in insertTechCardPatterns is a server-side projection: a pattern the request
+// still carries must not have its object deleted merely because its size is not currently live.
+// Comparing canonical keys also treats origin/CDN forms of the same object as the same intent.
+func patternURLsRemovedByPayload(prior []patternHistoryRow, payload []entity.TechCardSizePattern) []string {
+	payloadObjects := make(map[string]struct{}, len(payload))
+	for _, pattern := range payload {
+		payloadObjects[patternObjectIdentity(pattern.URL)] = struct{}{}
+	}
+	candidates := make([]string, 0, len(prior))
+	seen := make(map[string]struct{}, len(prior))
+	for _, pattern := range prior {
+		identity := patternObjectIdentity(pattern.URL)
+		if _, carried := payloadObjects[identity]; carried {
+			continue
+		}
+		if _, duplicate := seen[identity]; duplicate {
+			continue
+		}
+		seen[identity] = struct{}{}
+		candidates = append(candidates, pattern.URL)
+	}
+	return candidates
+}
+
+func patternObjectIdentity(raw string) string {
+	if key, ok := storeutil.PatternObjectKey(raw); ok {
+		return "key:" + key
+	}
+	return "url:" + raw
+}
+
 // insertTechCardPatterns replaces a card's pattern rows, CARRYING FORWARD each sheet's revision and
 // upload time.
 //
@@ -941,8 +1136,10 @@ type patternHistoryRow struct {
 // within its size and is stamped now.
 //
 // Unlike the other full-replace children this owns its own DELETE (it is excluded from the blind
-// delete loop in UpdateTechCard) precisely because it has to read before it deletes.
-func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern) error {
+// delete loop in UpdateTechCard) precisely because it has to read before it deletes. Rows outside
+// the current size range are dropped during narrowing; duplicate (size, url) payload rows keep their
+// first occurrence.
+func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int) error {
 	prior, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
 		`SELECT url, size_id, version, uploaded_at FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": id})
@@ -975,9 +1172,22 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	}
 	now := time.Now().UTC()
 	rows := make([]map[string]any, 0, len(patterns))
-	for i, p := range patterns {
+	liveSizes := make(map[int]struct{}, len(sizeIDs))
+	for _, sizeID := range sizeIDs {
+		liveSizes[sizeID] = struct{}{}
+	}
+	seenPayload := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if _, ok := liveSizes[p.SizeId]; !ok {
+			continue
+		}
+		key := patternHistoryKey(p.SizeId, p.URL)
+		if _, duplicate := seenPayload[key]; duplicate {
+			continue
+		}
+		seenPayload[key] = struct{}{}
 		version, uploadedAt := p.Version, p.UploadedAt
-		if seen, ok := known[patternHistoryKey(p.SizeId, p.URL)]; ok {
+		if seen, ok := known[key]; ok {
 			// This exact sheet is already on this size: it keeps its identity, the client never owns these.
 			if version <= 0 {
 				version = seen.Version
@@ -1007,7 +1217,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			"size_bytes":    p.SizeBytes,
 			"version":       version,
 			"uploaded_at":   uploadedAt,
-			"display_order": i,
+			"display_order": len(rows),
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_size_pattern", rows); err != nil {
@@ -1027,9 +1237,9 @@ func patternHistoryKey(sizeID int, url string) string {
 // permitted for the card's CURRENT category (top/sub/type_id, owned solely by UpdateStyle -- see
 // product/style.go -- so it is read fresh from the row here rather than trusted from tc, which never
 // carries a category on this write path). Returns a field-tagged *entity.ValidationError naming the
-// first offending size ("size_ids[i]") for the caller to surface as InvalidArgument. An id the
-// dictionary cache does not recognise is skipped here -- the existing FK on tech_card_size.size_id
-// already turns that into a clear foreign-key error at insert time.
+// first offending size ("size_ids[i]") for the caller to surface as InvalidArgument. Add/Update
+// refresh the revisioned dictionary before entering their transaction, so an unknown id here is a
+// genuine invalid input rather than another instance's recently-created size.
 func validateTechCardSizeIDs(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
 	if len(sizeIDs) == 0 {
 		return nil
@@ -1043,7 +1253,8 @@ func validateTechCardSizeIDs(ctx context.Context, db dependency.DB, id int, size
 	for i, sid := range sizeIDs {
 		sz, ok := cache.GetSizeById(sid)
 		if !ok {
-			continue
+			return entity.NewFieldViolation(fmt.Sprintf("size_ids[%d]", i), "size_not_found", "",
+				fmt.Sprintf("choose an existing size from the refreshed dictionary; size id %d does not exist", sid))
 		}
 		if verr := entity.ValidateSizeAgainstCategory(fmt.Sprintf("size_ids[%d]", i), path, label, rules, sz); verr != nil {
 			return verr
@@ -1087,13 +1298,44 @@ func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs 
 	return nil
 }
 
+// pruneSizeScopedDataOutsideRange drops the size-scoped style data a save leaves stranded when it
+// NARROWS the size range. It runs immediately after the new range is written, in the same transaction.
+//
+// Nothing does this by itself: tech_card_size_measurement hangs off size(id) with RESTRICT (0149), not
+// off tech_card_size, so dropping L from the range used to leave the L column on file — and the
+// storefront then served it to buyers as current measurements for a colourway that still has a live L
+// variant, which is the actual harm. The grade rule's base size is the same shape of leak: it is a
+// plain FK to size(id), so a narrowed range could keep grading from a size the style no longer makes.
+//
+// An EMPTY range is deliberately left alone. It means "no grid declared", the early-stage state every
+// other size guard treats as permissive (storeutil.TechCardSizeRange, the sample writer) — reading it
+// as "delete the chart" would let one save with no size_ids wipe authored measurements.
+func pruneSizeScopedDataOutsideRange(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
+	if len(sizeIDs) == 0 {
+		return nil
+	}
+	params := map[string]any{"id": id, "sizes": sizeIDs}
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_size_measurement
+		WHERE tech_card_id = :id AND size_id NOT IN (:sizes)`, params); err != nil {
+		return fmt.Errorf("prune style %d measurements outside its size range: %w", id, err)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE tech_card SET grade_base_size_id = NULL
+		WHERE id = :id AND grade_base_size_id IS NOT NULL AND grade_base_size_id NOT IN (:sizes)`,
+		params); err != nil {
+		return fmt.Errorf("clear style %d grade base outside its size range: %w", id, err)
+	}
+	return nil
+}
+
 func insertTechCardProducts(ctx context.Context, db dependency.DB, id int, productIDs []int) error {
 	if len(productIDs) == 0 {
 		return nil
 	}
 	rows := make([]map[string]any, 0, len(productIDs))
-	for i, pid := range productIDs {
-		rows = append(rows, map[string]any{"tech_card_id": id, "product_id": pid, "display_order": i})
+	for _, pid := range productIDs {
+		rows = append(rows, map[string]any{"tech_card_id": id, "product_id": pid})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_product", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card products: %w", err)

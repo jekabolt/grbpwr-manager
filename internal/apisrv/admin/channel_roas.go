@@ -46,12 +46,19 @@ func (s *Server) GetChannelRoasSettled(ctx context.Context, req *pb_admin.GetCha
 	// Layer operator spend → ROAS/CAC (base currency), matched by the UTM triple. Missing spend
 	// leaves roas/cac at 0 with has_spend=false (N/A, not a real zero) — a channel without entered
 	// spend still shows its settled revenue and customers.
+	//
+	// Spend/ROAS/CAC are confidential cost data — the same class GetDashboard/GetMetrics redact as
+	// marketing_spend/blended_cac — so an account without costing:read never gets them: the lookup is
+	// skipped outright and the response is stripped defensively on the way out.
+	costingRead, _ := s.costingAccess(ctx)
 	spendByChannel := map[string]decimal.Decimal{}
-	if spend, serr := s.repo.BQCache().GetChannelSpendByCampaign(ctx, from, to); serr != nil {
-		slog.Default().WarnContext(ctx, "channel roas: spend lookup failed; showing revenue only", slog.String("err", serr.Error()))
-	} else {
-		for _, sp := range spend {
-			spendByChannel[channelKey(sp.UTMSource, sp.UTMMedium, sp.UTMCampaign)] = sp.Spend
+	if costingRead {
+		if spend, serr := s.repo.BQCache().GetChannelSpendByCampaign(ctx, from, to); serr != nil {
+			slog.Default().WarnContext(ctx, "channel roas: spend lookup failed; showing revenue only", slog.String("err", serr.Error()))
+		} else {
+			for _, sp := range spend {
+				spendByChannel[channelKey(sp.UTMSource, sp.UTMMedium, sp.UTMCampaign)] = sp.Spend
+			}
 		}
 	}
 
@@ -75,5 +82,9 @@ func (s *Server) GetChannelRoasSettled(ctx context.Context, req *pb_admin.GetCha
 		}
 		out = append(out, row)
 	}
-	return &pb_admin.GetChannelRoasSettledResponse{Rows: out, BaseCurrency: cache.GetBaseCurrency()}, nil
+	resp := &pb_admin.GetChannelRoasSettledResponse{Rows: out, BaseCurrency: cache.GetBaseCurrency()}
+	if !costingRead {
+		stripChannelRoasCosting(resp)
+	}
+	return resp, nil
 }

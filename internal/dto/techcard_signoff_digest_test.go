@@ -101,3 +101,45 @@ func TestTechCardSectionDigestsAreSectionScoped(t *testing.T) {
 		}
 	}
 }
+
+func TestConstructionDigestCoversOperationCostingInputs(t *testing.T) {
+	base := entity.TechCardInsert{Operations: []entity.TechCardOperation{{
+		Node:          "join side seam",
+		Machine:       sql.NullString{String: "lockstitch", Valid: true},
+		OperationType: entity.OpTypeLockstitch,
+		TimeNorm:      decimal.NullDecimal{Decimal: decimal.RequireFromString("1.20"), Valid: true},
+		SMV:           decimal.NullDecimal{Decimal: decimal.RequireFromString("1.10"), Valid: true},
+	}}}
+	wantDifferent := func(t *testing.T, mutate func(*entity.TechCardOperation)) {
+		t.Helper()
+		before := TechCardSectionDigests(&base)[entity.SignoffConstruction]
+		changed := base
+		changed.Operations = append([]entity.TechCardOperation(nil), base.Operations...)
+		mutate(&changed.Operations[0])
+		after := TechCardSectionDigests(&changed)[entity.SignoffConstruction]
+		if after == before {
+			t.Fatal("costing-relevant operation change did not invalidate construction approval")
+		}
+	}
+
+	t.Run("smv", func(t *testing.T) {
+		wantDifferent(t, func(op *entity.TechCardOperation) {
+			op.SMV = decimal.NullDecimal{Decimal: decimal.RequireFromString("1.15"), Valid: true}
+		})
+	})
+	t.Run("time norm", func(t *testing.T) {
+		wantDifferent(t, func(op *entity.TechCardOperation) {
+			op.TimeNorm = decimal.NullDecimal{Decimal: decimal.RequireFromString("1.25"), Valid: true}
+		})
+	})
+	t.Run("machine", func(t *testing.T) {
+		wantDifferent(t, func(op *entity.TechCardOperation) {
+			op.Machine = sql.NullString{String: "overlock", Valid: true}
+		})
+	})
+	t.Run("operation type", func(t *testing.T) {
+		wantDifferent(t, func(op *entity.TechCardOperation) {
+			op.OperationType = entity.OpTypeHandwork
+		})
+	})
+}
