@@ -75,19 +75,37 @@ const (
 	ColorwayTransitionPublish ColorwayTransition = "publish" // DRAFT -> ACTIVE (store also enforces publish preconditions)
 	ColorwayTransitionHide    ColorwayTransition = "hide"    // ACTIVE -> HIDDEN
 	ColorwayTransitionUnhide  ColorwayTransition = "unhide"  // HIDDEN -> ACTIVE
-	ColorwayTransitionArchive ColorwayTransition = "archive" // ACTIVE|HIDDEN -> ARCHIVED
-	ColorwayTransitionRestore ColorwayTransition = "restore" // ARCHIVED -> HIDDEN (admin unarchive-to-hidden; clears the deleted_at tombstone)
+	ColorwayTransitionArchive ColorwayTransition = "archive" // DRAFT|ACTIVE|HIDDEN -> ARCHIVED
+	ColorwayTransitionRestore ColorwayTransition = "restore" // ARCHIVED -> HIDDEN, or -> DRAFT if never published (see RestoreTargetStatus)
 )
 
 // colorwayTransitionGraph is the allowed lifecycle graph. ARCHIVED is soft-terminal: its ONLY outgoing
-// edge is 'restore' (ARCHIVED -> HIDDEN, admin unarchive-to-hidden) — it can never go straight back to
-// ACTIVE (it must be restored to HIDDEN first, then unhidden). DRAFT can only be published; UNKNOWN has
-// no edges (fail-closed).
+// edge is 'restore' — it can never go straight back to ACTIVE (it must be restored first, then
+// unhidden). UNKNOWN has no edges (fail-closed).
+//
+// DRAFT may also be ARCHIVED: that is how a mistaken colourway is discarded. Without it a draft was a
+// dead end — publish or nothing — which left a never-published colourway pinning its style forever
+// (it is what a tech card's purpose lock counts, and there is no delete RPC). Archiving a draft is
+// strictly safer than archiving a live one: nothing was ever public. The way BACK is what needs care —
+// see RestoreTargetStatus.
 var colorwayTransitionGraph = map[ColorwayStatus]map[ColorwayTransition]ColorwayStatus{
-	ColorwayStatusDraft:    {ColorwayTransitionPublish: ColorwayStatusActive},
+	ColorwayStatusDraft:    {ColorwayTransitionPublish: ColorwayStatusActive, ColorwayTransitionArchive: ColorwayStatusArchived},
 	ColorwayStatusActive:   {ColorwayTransitionHide: ColorwayStatusHidden, ColorwayTransitionArchive: ColorwayStatusArchived},
 	ColorwayStatusHidden:   {ColorwayTransitionUnhide: ColorwayStatusActive, ColorwayTransitionArchive: ColorwayStatusArchived},
 	ColorwayStatusArchived: {ColorwayTransitionRestore: ColorwayStatusHidden},
+}
+
+// RestoreTargetStatus is where an ARCHIVED colourway lands when it is restored. A colourway that was
+// published before it was archived goes back to HIDDEN (admin unarchive-to-hidden). One that was
+// NEVER published — a discarded draft — goes back to DRAFT, because HIDDEN is a post-publication
+// state: from HIDDEN the only way to ACTIVE is 'unhide', which checks completeness but NOT the full
+// DRAFT->ACTIVE publish preconditions (SKUs, variants, translations). Routing a discarded draft
+// through HIDDEN would hand it a publication it never earned.
+func RestoreTargetStatus(publishedEver bool) ColorwayStatus {
+	if publishedEver {
+		return ColorwayStatusHidden
+	}
+	return ColorwayStatusDraft
 }
 
 // NextColorwayStatus validates a lifecycle transition and returns the resulting status. It encodes the

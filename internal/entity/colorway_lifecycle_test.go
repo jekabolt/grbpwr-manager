@@ -60,7 +60,9 @@ func TestNextColorwayStatus(t *testing.T) {
 	}
 	// allowed[from][transition] = expected target
 	allowed := map[ColorwayStatus]map[ColorwayTransition]ColorwayStatus{
-		ColorwayStatusDraft:  {ColorwayTransitionPublish: ColorwayStatusActive},
+		// A draft may be published or DISCARDED (archived). Without the discard edge a mistaken
+		// colourway was unremovable — there is no delete RPC — and it pinned its style's purpose.
+		ColorwayStatusDraft:  {ColorwayTransitionPublish: ColorwayStatusActive, ColorwayTransitionArchive: ColorwayStatusArchived},
 		ColorwayStatusActive: {ColorwayTransitionHide: ColorwayStatusHidden, ColorwayTransitionArchive: ColorwayStatusArchived},
 		ColorwayStatusHidden: {ColorwayTransitionUnhide: ColorwayStatusActive, ColorwayTransitionArchive: ColorwayStatusArchived},
 		// Archived: soft-terminal — its only edge is restore -> HIDDEN (admin unarchive-to-hidden). It
@@ -86,5 +88,18 @@ func TestNextColorwayStatus(t *testing.T) {
 				t.Errorf("%s --%s--> should be rejected, got %s", from, tr, to)
 			}
 		}
+	}
+}
+
+// TestRestoreTargetStatus pins where an unarchive lands. A published colourway returns to HIDDEN; a
+// discarded draft returns to DRAFT, because HIDDEN's exit to ACTIVE ('unhide') skips the DRAFT->ACTIVE
+// publish preconditions — restoring through HIDDEN would hand a never-published colourway a shortcut
+// past the gates it never passed.
+func TestRestoreTargetStatus(t *testing.T) {
+	if got := RestoreTargetStatus(true); got != ColorwayStatusHidden {
+		t.Errorf("RestoreTargetStatus(published) = %s, want hidden", got)
+	}
+	if got := RestoreTargetStatus(false); got != ColorwayStatusDraft {
+		t.Errorf("RestoreTargetStatus(never published) = %s, want draft", got)
 	}
 }
