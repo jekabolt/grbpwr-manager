@@ -314,17 +314,23 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		// assembly component — flipping sellable↔auxiliary afterwards would strand a batch's stock
 		// destination/product link or turn a packing-spec component into a garment.
 		if cur.Purpose != string(tc.Purpose) {
-			var refs int
-			refs, err = storeutil.QueryCountNamed(ctx, rep.DB(),
-				`SELECT (SELECT COUNT(*) FROM production_run WHERE tech_card_id = :id)
-				      + (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id)
-				      + (SELECT COUNT(*) FROM style_assembly WHERE component_tech_card_id = :id)`,
+			refs, err := storeutil.QueryNamedOne[struct {
+				Runs       int `db:"runs"`
+				Products   int `db:"products"`
+				Assemblies int `db:"assemblies"`
+			}](ctx, rep.DB(),
+				`SELECT (SELECT COUNT(*) FROM production_run WHERE tech_card_id = :id) AS runs,
+				        (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id) AS products,
+				        (SELECT COUNT(*) FROM style_assembly WHERE component_tech_card_id = :id) AS assemblies`,
 				map[string]any{"id": id})
 			if err != nil {
 				return fmt.Errorf("failed to check tech card purpose change: %w", err)
 			}
-			if refs > 0 {
-				return entity.ErrTechCardPurposeLocked
+			// Name the references that actually pin the purpose. The rule has three independent
+			// arms and a card usually trips exactly one of them, so reporting all three reads as a
+			// false positive ("but it has no runs") and hides the one thing to clear.
+			if reason := purposeLockReason(refs.Runs, refs.Products, refs.Assemblies); reason != "" {
+				return fmt.Errorf("%w: %s", entity.ErrTechCardPurposeLocked, reason)
 			}
 		}
 		// A card's stage may advance but must not REGRESS once downstream artifacts exist: a sample, a
@@ -500,6 +506,32 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		return nil, fmt.Errorf("can't update tech card: %w", err)
 	}
 	return orphanedPatternURLs, nil
+}
+
+// purposeLockReason renders the references that pin a card's purpose as an operator-readable list,
+// or "" when nothing does. Each arm names both what is referencing the card and what to clear, so
+// the message is a next step rather than a restatement of the rule.
+func purposeLockReason(runs, products, assemblies int) string {
+	var parts []string
+	if runs > 0 {
+		parts = append(parts, plural(runs, "production run", "production runs")+" already produced against it")
+	}
+	if products > 0 {
+		parts = append(parts, plural(products, "colourway", "colourways")+" linked to it (unlink or archive them first)")
+	}
+	if assemblies > 0 {
+		parts = append(parts, "used as a component in "+plural(assemblies, "style assembly", "style assemblies")+" (remove it there first)")
+	}
+	return strings.Join(parts, "; ")
+}
+
+// plural renders "1 colourway" / "2 colourways" — spelled out per word because the -s rule gets
+// "style assemblies" wrong.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // guardTechCardStageRegression blocks a backward stage move (to an earlier lifecycle ordinal) when
