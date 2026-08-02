@@ -57,23 +57,37 @@ func (s *Store) TransitionColorwayToHidden(ctx context.Context, colorwayID int) 
 }
 
 func loadColorwayLifecycle(ctx context.Context, db dependency.DB, colorwayID int) (entity.ColorwayStatus, error) {
+	cur, _, err := loadColorwayLifecycleState(ctx, db, colorwayID)
+	return cur, err
+}
+
+// loadColorwayLifecycleState reads the status together with "was this ever published", which the
+// restore edge needs to pick its target (entity.RestoreTargetStatus).
+func loadColorwayLifecycleState(ctx context.Context, db dependency.DB, colorwayID int) (entity.ColorwayStatus, bool, error) {
 	row, err := storeutil.QueryNamedOne[struct {
-		Status uint8 `db:"lifecycle_status"`
-	}](ctx, db, `SELECT lifecycle_status FROM product WHERE id = :id`, map[string]any{"id": colorwayID})
+		Status      uint8        `db:"lifecycle_status"`
+		PublishedAt sql.NullTime `db:"published_at"`
+	}](ctx, db, `SELECT lifecycle_status, published_at FROM product WHERE id = :id`,
+		map[string]any{"id": colorwayID})
 	if err != nil {
-		return entity.ColorwayStatusUnknown, fmt.Errorf("load colourway %d lifecycle: %w", colorwayID, err)
+		return entity.ColorwayStatusUnknown, false, fmt.Errorf("load colourway %d lifecycle: %w", colorwayID, err)
 	}
-	return entity.ColorwayStatus(row.Status), nil
+	return entity.ColorwayStatus(row.Status), row.PublishedAt.Valid, nil
 }
 
 func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int, t entity.ColorwayTransition) error {
-	cur, err := loadColorwayLifecycle(ctx, s.DB, colorwayID)
+	cur, publishedEver, err := loadColorwayLifecycleState(ctx, s.DB, colorwayID)
 	if err != nil {
 		return err
 	}
 	next, err := entity.NextColorwayStatus(cur, t)
 	if err != nil {
 		return fmt.Errorf("colourway %d: %w", colorwayID, err)
+	}
+	// The graph's restore edge is "back where it came from", which is only HIDDEN for something that
+	// was published. A discarded draft returns to DRAFT so it still has to pass the publish gates.
+	if t == entity.ColorwayTransitionRestore {
+		next = entity.RestoreTargetStatus(publishedEver)
 	}
 	// The →ACTIVE edge — publish (DRAFT->ACTIVE) or unhide (HIDDEN->ACTIVE) — MUST run as ONE
 	// serializable transaction. checkColorwayRequiredCurrencies reads the PERSISTED prices and the
