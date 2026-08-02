@@ -3,6 +3,7 @@ package product
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -89,6 +90,16 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 	if t == entity.ColorwayTransitionRestore {
 		next = entity.RestoreTargetStatus(publishedEver)
 	}
+	// A colourway belongs only to a SELLABLE style — CreateColorway refuses an auxiliary one. Every
+	// edge that brings a colourway back out of the archive has to re-check that, because the style's
+	// purpose can move AFTER the colourway was created: a card whose colourways are all archived may
+	// now flip to auxiliary (the purpose lock counts only live ones), and un-archiving one afterwards
+	// would reconstruct exactly the pairing the create path forbids.
+	if t != entity.ColorwayTransitionArchive {
+		if err := checkOwningStyleSellable(ctx, s.DB, colorwayID); err != nil {
+			return err
+		}
+	}
 	// The →ACTIVE edge — publish (DRAFT->ACTIVE) or unhide (HIDDEN->ACTIVE) — MUST run as ONE
 	// serializable transaction. checkColorwayRequiredCurrencies reads the PERSISTED prices and the
 	// status flip must be atomic with that read: otherwise a concurrent UpdateColorway — whose price
@@ -105,6 +116,28 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 		})
 	}
 	return applyColorwayTransition(ctx, s.DB, colorwayID, t, cur, next)
+}
+
+// checkOwningStyleSellable refuses a lifecycle edge that would make a colourway live again under an
+// AUXILIARY style. An auxiliary card produces a material, not a product: its output is consumed by an
+// assembly bill, and a colourway there would be a storefront SKU for something that is never sold.
+// A colourway with no style (style_id NULL) has no purpose to violate and is left alone.
+func checkOwningStyleSellable(ctx context.Context, db dependency.DB, colorwayID int) error {
+	row, err := storeutil.QueryNamedOne[struct {
+		Purpose string `db:"purpose"`
+	}](ctx, db, `SELECT t.purpose FROM product p JOIN tech_card t ON t.id = p.style_id WHERE p.id = :id`,
+		map[string]any{"id": colorwayID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("load owning style of colourway %d: %w", colorwayID, err)
+	}
+	if entity.TechCardPurpose(row.Purpose) == entity.TechCardPurposeAuxiliary {
+		return fmt.Errorf("%w: colourway %d belongs to an auxiliary style, which produces a material rather than a product; make the style sellable again first",
+			entity.ErrColorwayNotSellable, colorwayID)
+	}
+	return nil
 }
 
 // applyColorwayTransition performs a single colourway lifecycle transition on the supplied db handle:
