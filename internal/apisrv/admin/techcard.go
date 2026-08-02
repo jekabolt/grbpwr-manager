@@ -252,7 +252,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			return nil, status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
 		}
 		if errors.Is(err, entity.ErrTechCardPurposeLocked) {
-			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardPurposeLocked.Error())
+			// err, not the bare sentinel: the store appends the references that actually pin the
+			// purpose, and that list is the only actionable part of the message.
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 		if s.repo.IsErrUniqueViolation(err) {
 			return nil, styleNumberTaken()

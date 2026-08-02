@@ -20,7 +20,10 @@ var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open 
 // ErrTechCardPurposeLocked is returned by UpdateTechCard when the caller tries to change a card's
 // purpose (sellable↔auxiliary) after it already has production runs, linked products, or assembly
 // usage — the switch would strand a batch/product link or invalidate a packing-spec component (NF-07).
-var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change once it has runs, products, or is used as an assembly component")
+// The store WRAPS this sentinel with the references that actually pin the card ("...: 2 linked
+// colourways"), because the bare three-way rule made an operator whose card has no runs at all read
+// the message as wrong rather than as "clear the colourways first".
+var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change while the card is still referenced")
 
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
