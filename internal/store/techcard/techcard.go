@@ -310,26 +310,50 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		if cur.LockVersion != expectedLockVersion {
 			return entity.ErrTechCardConflict
 		}
-		// NF-07: purpose is a one-way commitment once the card has runs, products, or is used as an
-		// assembly component — flipping sellable↔auxiliary afterwards would strand a batch's stock
-		// destination/product link or turn a packing-spec component into a garment.
+		// NF-07: purpose is a commitment to what the card PRODUCES, so it may only move while nothing
+		// downstream has committed to the old answer. The line is the first sale: until a colourway of
+		// this style has actually been bought, mis-filing a dust bag as a garment is a correctable data
+		// entry mistake, and the operator has to be able to correct it. Past that line the flip would
+		// rewrite what a customer already bought, strand a batch's stock destination, or turn a
+		// packing-spec component into a garment.
+		//
+		// A merely EXISTING colourway is not such a commitment — it is archivable, and an archived one
+		// is retired work exactly as it is for the stage-regression guard below. That is why this reads
+		// product.style_id (the single source, PR6 R1) rather than the tech_card_product mirror: the
+		// mirror keeps its row for an archived colourway, so counting it left the operator with a lock
+		// no admin action could clear.
 		if cur.Purpose != string(tc.Purpose) {
 			refs, err := storeutil.QueryNamedOne[struct {
-				Runs       int `db:"runs"`
-				Products   int `db:"products"`
-				Assemblies int `db:"assemblies"`
+				Runs          int `db:"runs"`
+				LiveColorways int `db:"live_colorways"`
+				SoldColorways int `db:"sold_colorways"`
+				Assemblies    int `db:"assemblies"`
 			}](ctx, rep.DB(),
-				`SELECT (SELECT COUNT(*) FROM production_run WHERE tech_card_id = :id) AS runs,
-				        (SELECT COUNT(*) FROM tech_card_product WHERE tech_card_id = :id) AS products,
-				        (SELECT COUNT(*) FROM style_assembly WHERE component_tech_card_id = :id) AS assemblies`,
-				map[string]any{"id": id})
+				// A CANCELLED run produced nothing, so it pins nothing. "Sold" is any order that got
+				// past payment — a refunded sale still happened, and the placed/awaiting_payment/
+				// cancelled carts the ordercleanup worker sweeps are not sales at all.
+				`SELECT (SELECT COUNT(*) FROM production_run
+				           WHERE tech_card_id = :id AND status <> 'cancelled')       AS runs,
+				        (SELECT COUNT(*) FROM product
+				           WHERE style_id = :id AND lifecycle_status <> :archived)   AS live_colorways,
+				        (SELECT COUNT(DISTINCT oi.product_id)
+				           FROM order_item oi
+				           JOIN product p ON p.id = oi.product_id
+				           JOIN customer_order co ON co.id = oi.order_id
+				           JOIN order_status os ON os.id = co.order_status_id
+				          WHERE p.style_id = :id
+				            AND os.name NOT IN ('placed', 'awaiting_payment', 'cancelled')
+				        )                                                            AS sold_colorways,
+				        (SELECT COUNT(*) FROM style_assembly
+				           WHERE component_tech_card_id = :id)                       AS assemblies`,
+				map[string]any{"id": id, "archived": uint8(entity.ColorwayStatusArchived)})
 			if err != nil {
 				return fmt.Errorf("failed to check tech card purpose change: %w", err)
 			}
-			// Name the references that actually pin the purpose. The rule has three independent
-			// arms and a card usually trips exactly one of them, so reporting all three reads as a
-			// false positive ("but it has no runs") and hides the one thing to clear.
-			if reason := purposeLockReason(refs.Runs, refs.Products, refs.Assemblies); reason != "" {
+			// Name the references that actually pin the purpose. The rule has independent arms and a
+			// card usually trips exactly one of them, so reporting all of them reads as a false
+			// positive ("but it has no runs") and hides the one thing to clear.
+			if reason := purposeLockReason(refs.Runs, refs.LiveColorways, refs.SoldColorways, refs.Assemblies); reason != "" {
 				return fmt.Errorf("%w: %s", entity.ErrTechCardPurposeLocked, reason)
 			}
 		}
@@ -511,13 +535,18 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 // purposeLockReason renders the references that pin a card's purpose as an operator-readable list,
 // or "" when nothing does. Each arm names both what is referencing the card and what to clear, so
 // the message is a next step rather than a restatement of the rule.
-func purposeLockReason(runs, products, assemblies int) string {
+func purposeLockReason(runs, liveColorways, soldColorways, assemblies int) string {
 	var parts []string
+	// Sold first: it is the only arm with no way out, so it must not read as one more chore in a
+	// list of things to clear.
+	if soldColorways > 0 {
+		parts = append(parts, plural(soldColorways, "colourway", "colourways")+" already sold — the purpose is fixed once a customer has bought the style")
+	}
 	if runs > 0 {
 		parts = append(parts, plural(runs, "production run", "production runs")+" already produced against it")
 	}
-	if products > 0 {
-		parts = append(parts, plural(products, "colourway", "colourways")+" linked to it (unlink or archive them first)")
+	if liveColorways > 0 {
+		parts = append(parts, plural(liveColorways, "live colourway", "live colourways")+" linked to it (archive them first — an archived colourway no longer pins the purpose)")
 	}
 	if assemblies > 0 {
 		parts = append(parts, "used as a component in "+plural(assemblies, "style assembly", "style assemblies")+" (remove it there first)")
