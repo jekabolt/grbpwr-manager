@@ -36,10 +36,12 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc}
 }
 
-const runColumns = `tech_card_id, release_id, status, started_at, received_at,
+// received_at is deliberately absent from the write columns: it is stamped only by the receive flow,
+// in the same transaction as the stock it books, and nothing else may set or clear it.
+const runColumns = `tech_card_id, release_id, status, started_at,
 	planned_unit_cost, planned_currency, marker_efficiency_pct, marker_notes, actual_wastage_percent, notes`
 
-const runValues = `:tech_card_id, :release_id, :status, :started_at, :received_at,
+const runValues = `:tech_card_id, :release_id, :status, :started_at,
 	:planned_unit_cost, :planned_currency, :marker_efficiency_pct, :marker_notes, :actual_wastage_percent, :notes`
 
 func runParams(r *entity.ProductionRunInsert) map[string]any {
@@ -48,7 +50,6 @@ func runParams(r *entity.ProductionRunInsert) map[string]any {
 		"release_id":             r.ReleaseId,
 		"status":                 string(r.Status),
 		"started_at":             r.StartedAt,
-		"received_at":            r.ReceivedAt,
 		"planned_unit_cost":      r.PlannedUnitCost,
 		"planned_currency":       r.PlannedCurrency,
 		"marker_efficiency_pct":  r.MarkerEfficiencyPct,
@@ -169,7 +170,7 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			UPDATE production_run SET
 				lock_version = lock_version + 1,
 				tech_card_id = :tech_card_id, release_id = :release_id, status = :status,
-				started_at = :started_at, received_at = :received_at,
+				started_at = :started_at,
 				marker_efficiency_pct = :marker_efficiency_pct, marker_notes = :marker_notes,
 				actual_wastage_percent = :actual_wastage_percent, notes = :notes
 			WHERE id = :id`+lockGuard, params)

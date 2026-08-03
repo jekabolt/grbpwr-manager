@@ -140,7 +140,9 @@ func (s *Store) ListUnpostedMovements(ctx context.Context, afterID int64, startD
 
 // ListUnpostedReceivedRuns returns ids of production runs received on/after startDate that have no
 // production_receive journal entry yet (idempotency IS the checkpoint here — runs are few), oldest
-// receive first, up to limit.
+// receive first, up to limit. The status predicate is part of the definition of received, not a
+// redundancy: received_at used to be client-writable, so any open run could carry one without ever
+// having booked stock, and this scan capitalises a run's costs on the strength of it.
 func (s *Store) ListUnpostedReceivedRuns(ctx context.Context, startDate time.Time, limit int) ([]int, error) {
 	if limit <= 0 {
 		limit = defaultScanBatch
@@ -149,7 +151,7 @@ func (s *Store) ListUnpostedReceivedRuns(ctx context.Context, startDate time.Tim
 		Id int `db:"id"`
 	}](ctx, s.DB, `
 		SELECT r.id FROM production_run r
-		WHERE r.received_at IS NOT NULL AND r.received_at >= :start_date
+		WHERE r.status IN ('received', 'closed') AND r.received_at IS NOT NULL AND r.received_at >= :start_date
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)
 		ORDER BY r.received_at, r.id

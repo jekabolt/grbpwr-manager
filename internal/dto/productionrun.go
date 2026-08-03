@@ -83,7 +83,10 @@ var productionMarkerSourceEntityToPb = map[entity.ProductionMarkerSource]pb_comm
 }
 
 // ConvertPbProductionRunInsertToEntity validates and converts a writable production run. The
-// planned-cost snapshot is NOT taken from the client — the service layer sets it separately.
+// planned-cost snapshot is NOT taken from the client — the service layer sets it separately. Neither
+// is received_at: it is the timestamp of a physical receipt, stamped only by the receive flow beside
+// the stock it books. A client-writable received_at let an open run be back-dated into the
+// accounting scan (which reads received_at, not status) with no stock movement behind it.
 func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*entity.ProductionRunInsert, error) {
 	if pb == nil {
 		return nil, fmt.Errorf("production run is required")
@@ -132,7 +135,6 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		ReleaseId:           nullInt64FromPb(int64(pb.ReleaseId)),
 		Status:              status,
 		StartedAt:           nullTimeFromPbTimestamp(pb.StartedAt),
-		ReceivedAt:          nullTimeFromPbTimestamp(pb.ReceivedAt),
 		MarkerEfficiencyPct:  markerEff,
 		MarkerNotes:          nullStringFromPb(pb.MarkerNotes),
 		ActualWastagePercent: actualWastage,
