@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -624,12 +625,15 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 	}
 	// Overdue filter (production cockpit): still-open runs whose promised delivery date has passed.
 	// A run with no promised_at was never promised anything, so it is never overdue — the IS NOT NULL
-	// is load-bearing, not decorative. The cutoff is the store clock (s.Now), not SQL NOW(), so the
-	// filter and the client's "опаздывает N дн" badge agree on what "today" means.
+	// is load-bearing, not decorative. The cutoff is TODAY'S UTC MIDNIGHT, not the current instant:
+	// promised_at is entered as a calendar date and stored at UTC midnight, and a batch promised
+	// TODAY is not late yet — the client's overdueDays predicate counts whole UTC days the same way,
+	// so the filter and the "опаздывает N дн" badge agree for the entire promised day.
 	if filter.OverdueOnly {
+		now := s.Now().UTC()
 		where += " AND promised_at IS NOT NULL AND promised_at < :overdueCutoff" +
 			" AND status IN (:overduePlanned, :overdueInProgress)"
-		params["overdueCutoff"] = s.Now()
+		params["overdueCutoff"] = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		params["overduePlanned"] = string(entity.ProductionRunPlanned)
 		params["overdueInProgress"] = string(entity.ProductionRunInProgress)
 	}
