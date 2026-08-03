@@ -25,7 +25,7 @@ func TestBuildProductionReceiveEntry_Walkthrough(t *testing.T) {
 			{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nd("12.50"), CreatedAt: testOccurred},
 		},
 	}
-	e, err := BuildProductionReceiveEntry(r, testStartDate)
+	e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
 	require.NoError(t, err)
 	require.NoError(t, ValidateBalanced(e))
 
@@ -48,7 +48,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nd("100.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assert.False(t, hasLine(e, Acc2010, entity.AcctSideCredit))
@@ -58,7 +58,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 
 	t.Run("nothing costed skips", func(t *testing.T) {
 		r := entity.AcctRunFacts{RunID: 2, ReceivedAt: testOccurred}
-		_, err := BuildProductionReceiveEntry(r, testStartDate)
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
 		assert.ErrorIs(t, err, ErrSkipEmpty)
 	})
 
@@ -76,7 +76,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nullDec(), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assert.True(t, e.HasCaveat)
@@ -93,7 +93,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementReturnProduction, Quantity: dec("1"), UnitCostBase: nd("200.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00")
@@ -114,7 +114,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nd("20.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00") // manual

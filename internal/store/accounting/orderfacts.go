@@ -153,7 +153,9 @@ func (s *Store) ListUnpostedReceivedRuns(ctx context.Context, startDate time.Tim
 		SELECT r.id FROM production_run r
 		WHERE r.status IN ('received', 'closed') AND r.received_at IS NOT NULL AND r.received_at >= :start_date
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
-		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                  WHERE e.source_type = 'production_receive'
+		                    AND (e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT(CAST(r.id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci)
 		                    AND e.reversed_by IS NULL)
 		ORDER BY r.received_at, r.id
 		LIMIT :limit`, map[string]any{"start_date": startDate.UTC(), "limit": limit})
