@@ -137,7 +137,10 @@ message ProductionRunInsert {
   int32 release_id = 2; // optional tech_card_release to plan from (0 = none / plan from live card)
   ProductionRunStatus status = 3; // required
   google.protobuf.Timestamp started_at = 4;
-  google.protobuf.Timestamp received_at = 5;
+  // server-owned since Phase 0a; a client-sent value is ignored. received_at is the timestamp of a
+  // physical receipt, stamped only by the receive flow beside the stock it books — a client-writable
+  // one let an open run be back-dated into the accounting scan with no stock movement behind it.
+  google.protobuf.Timestamp received_at = 5 [deprecated = true];
   string notes = 6;
   repeated ProductionRunLine lines = 9; // colour-model × size grid (NF-06, replaces sizes)
   repeated ProductionRunCost costs = 8; // actual cost articles (phase 2)

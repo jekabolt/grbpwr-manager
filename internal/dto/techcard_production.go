@@ -798,9 +798,9 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 }
 
 // techCardCostingWithRoot is techCardCostingToPb's body, additionally handing back the PRIMARY
-// colourway's raw cost result. The pb carries only the flags the proto declares; the seed paths need
-// the completeness flags that do not (yet) travel on the wire, and recomputing them beside the pb
-// would be a second, drift-prone copy of the same math.
+// colourway's raw cost result. Both completeness flags now travel on the wire (has_unconverted_currencies,
+// has_unpriced), but the seed paths need the whole result — the base-currency rollup and its
+// convertibility — and recomputing that beside the pb would be a second, drift-prone copy of the same math.
 func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.TechCardCosting, colorwayCostResult) {
 	if tc.Costing == nil {
 		return nil, colorwayCostResult{}
@@ -851,6 +851,7 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 			OrderQty:                 int32(totalOrderQty),
 			OrderCost:                pbDecimalFromDecimal(roundMoney(order)),
 			HasUnconvertedCurrencies: cc.hasUnconverted,
+			HasUnpriced:              cc.hasUnpriced,
 		})
 		if ci == 0 {
 			root = cc
@@ -876,6 +877,7 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 		OrderQty:                 int32(totalOrderQty),
 		OrderCost:                pbDecimalFromDecimal(roundMoney(rootOrder)),
 		HasUnconvertedCurrencies: root.hasUnconverted,
+		HasUnpriced:              root.hasUnpriced,
 		ColorwayCosts:            colorwayCosts,
 	}
 
