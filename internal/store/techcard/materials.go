@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -305,6 +306,29 @@ func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32, keyField 
 type bomExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
+	// Price + provenance as stored, so the upsert can tell an edited price (restamp 'manual') from a
+	// round-tripped one (keep the existing provenance, including the reprice action's 'catalog').
+	UnitPrice       decimal.NullDecimal `db:"unit_price"`
+	Currency        sql.NullString      `db:"currency"`
+	PriceSource     sql.NullString      `db:"price_source"`
+	PriceSnapshotAt sql.NullTime        `db:"price_snapshot_at"`
+}
+
+// bomPriceProvenance decides what price_source/price_snapshot_at a line carries after this save.
+// The save path is a human act: a NEW priced line or a CHANGED price/currency is 'manual' as of now;
+// an unchanged price keeps whatever provenance it had ('catalog' from a reprice, 'manual' from an
+// earlier edit, or NULL on a pre-provenance row — an unchanged value's history must not be
+// rewritten by a save that merely round-tripped it). A cleared price clears the provenance with it.
+func bomPriceProvenance(existing *bomExistingRow, b *entity.TechCardBomItem, now time.Time) (sql.NullString, sql.NullTime) {
+	if !b.UnitPrice.Valid {
+		return sql.NullString{}, sql.NullTime{}
+	}
+	if existing != nil && existing.UnitPrice.Valid &&
+		existing.UnitPrice.Decimal.Equal(b.UnitPrice.Decimal) &&
+		strings.TrimSpace(existing.Currency.String) == strings.TrimSpace(b.Currency.String) {
+		return existing.PriceSource, existing.PriceSnapshotAt
+	}
+	return sql.NullString{String: entity.BomPriceSourceManual, Valid: true}, sql.NullTime{Time: now, Valid: true}
 }
 
 type colorwayBomUsageRefRow struct {
@@ -323,14 +347,18 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 	res := bomResolver{byLineKey: make(map[string]int, len(items)), ordered: make([]int, 0, len(items))}
 
 	existingRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, db,
-		`SELECT id, line_key FROM tech_card_bom_item WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+		`SELECT id, line_key, unit_price, currency, price_source, price_snapshot_at
+		 FROM tech_card_bom_item WHERE tech_card_id = :id`, map[string]any{"id": tcID})
 	if err != nil {
 		return res, fmt.Errorf("failed to load existing bom lines: %w", err)
 	}
 	existingByKey := make(map[string]int, len(existingRows))
-	for _, r := range existingRows {
-		existingByKey[r.LineKey] = r.Id
+	existingRowByKey := make(map[string]*bomExistingRow, len(existingRows))
+	for i := range existingRows {
+		existingByKey[existingRows[i].LineKey] = existingRows[i].Id
+		existingRowByKey[existingRows[i].LineKey] = &existingRows[i]
 	}
+	now := time.Now().UTC()
 
 	seen := make(map[string]bool, len(items))
 	for i := range items {
@@ -344,6 +372,8 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 				"duplicate line_key within the payload", "", "each BOM line needs a unique line_key")
 		}
 		params := bomItemParams(tcID, b, i, key)
+		src, at := bomPriceProvenance(existingRowByKey[key], b, now)
+		params["price_source"], params["price_snapshot_at"] = src, at
 		if id, ok := existingByKey[key]; ok {
 			params["id"] = id
 			if err := storeutil.ExecNamed(ctx, db, `
@@ -351,7 +381,8 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 					material_id=:material_id, section=:section, name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
 					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
 					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
-					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent
+					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent,
+					price_source=:price_source, price_snapshot_at=:price_snapshot_at
 				WHERE id=:id`, params); err != nil {
 				return res, fmt.Errorf("failed to update bom line: %w", err)
 			}
@@ -362,10 +393,10 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 				INSERT INTO tech_card_bom_item
 					(tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec, unit,
 					 unit_price, currency, comment, display_order, fabric_width, fabric_weight_gsm, fabric_direction,
-					 wastage_percent, line_key)
+					 wastage_percent, line_key, price_source, price_snapshot_at)
 				VALUES (:tech_card_id, :material_id, :section, :name, :supplier, :supplier_ref, :color, :composition, :spec, :unit,
 					 :unit_price, :currency, :comment, :display_order, :fabric_width, :fabric_weight_gsm, :fabric_direction,
-					 :wastage_percent, :line_key)`, params)
+					 :wastage_percent, :line_key, :price_source, :price_snapshot_at)`, params)
 			if err != nil {
 				return res, fmt.Errorf("failed to insert bom line: %w", err)
 			}
@@ -711,7 +742,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,
 		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
-		       COALESCE(bi.line_key, '') AS line_key
+		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
 		WHERE bi.tech_card_id IN (:ids)

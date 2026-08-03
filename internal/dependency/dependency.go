@@ -694,6 +694,13 @@ type (
 		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
 		AddMaterialPrice(ctx context.Context, p entity.MaterialPrice) error
 		ListMaterialPrices(ctx context.Context, materialID int) ([]entity.MaterialPrice, error)
+		// RepriceTechCardBom pulls the current catalog price into every catalog-linked BOM line of a
+		// DRAFT card, stamping price_source='catalog' (production-costing Phase 3). Returns the
+		// visited lines + the count of unlinked lines it could not touch.
+		RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency string) ([]entity.RepricedBomLine, int, error)
+		// ListCostingMigrationExceptions reads the Phase 2 scalar→BOM migration exception report;
+		// techCardID 0 = all cards.
+		ListCostingMigrationExceptions(ctx context.Context, techCardID int) ([]entity.CostingMigrationException, error)
 		// Immutable release snapshots (task 11): a full JSON snapshot of the enriched read-model
 		// frozen at each release, so a card's prior spec + planned cost survive re-open/re-release.
 		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error

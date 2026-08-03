@@ -418,6 +418,12 @@ message TechCardBomItem {
   // contract migration once no serving binary references it (expand/contract).
   reserved 26;
   reserved "material_snapshot";
+  // Stored price provenance (production-costing Phase 3, plan 11). READ-ONLY — the server stamps
+  // both on write and ignores anything a client sends here. price_source is 'manual' (the operator
+  // typed/edited unit_price through a card save), 'catalog' (the reprice action pulled it from the
+  // material catalog), or '' for a pre-provenance row whose origin is honestly unknown.
+  string price_source = 27;
+  google.protobuf.Timestamp price_snapshot_at = 28; // when price_source stamped unit_price
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;

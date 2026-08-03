@@ -251,10 +251,10 @@ var methodRequirements = map[string]Requirement{
 	"GetArchiveByID":    rd(SectionArchive),
 	"GetArchivesPaged":  rd(SectionArchive),
 	// email campaigns and saved audience predicates
-	"UpsertEmailSegment":         wr(SectionCampaigns),
-	"GetEmailSegment":            rd(SectionCampaigns),
-	"ListEmailSegments":          rd(SectionCampaigns),
-	"DeleteEmailSegment":         wr(SectionCampaigns),
+	"UpsertEmailSegment": wr(SectionCampaigns),
+	"GetEmailSegment":    rd(SectionCampaigns),
+	"ListEmailSegments":  rd(SectionCampaigns),
+	"DeleteEmailSegment": wr(SectionCampaigns),
 	// wr, not rd: PreviewEmailSegment persists the cached audience count for a saved segment.
 	"PreviewEmailSegment":        wr(SectionCampaigns),
 	"UpsertEmailCampaign":        wr(SectionCampaigns),
@@ -323,22 +323,27 @@ var methodRequirements = map[string]Requirement{
 	"ListMaterials":                rd(SectionTechCards),
 	"AddMaterialPrice":             wr(SectionTechCards),
 	"ListMaterialPrices":           rd(SectionTechCards),
-	"ListTechCardReleases":         rd(SectionTechCards),
-	"GetTechCardRelease":           rd(SectionTechCards),
-	"AddTechCardDevExpense":        wr(SectionTechCards),
-	"DeleteTechCardDevExpense":     wr(SectionTechCards),
-	"ListTechCardDevExpenses":      rd(SectionTechCards),
+	// Phase 3: reprice rewrites BOM money → tech-card write PLUS costing:write (checked in-handler).
+	"RepriceTechCardBom": wr(SectionTechCards),
+	// Phase 2 migration exception report: read surface; amounts additionally need costing:read
+	// (stripped in-handler otherwise, same rule as every cost figure).
+	"ListCostingMigrationExceptions": rd(SectionTechCards),
+	"ListTechCardReleases":           rd(SectionTechCards),
+	"GetTechCardRelease":             rd(SectionTechCards),
+	"AddTechCardDevExpense":          wr(SectionTechCards),
+	"DeleteTechCardDevExpense":       wr(SectionTechCards),
+	"ListTechCardDevExpenses":        rd(SectionTechCards),
 	// style assembly bill: on-garment auxiliary components (labels/tags) — a PLM/style concern (WS7, §2.8)
 	"UpsertStyleAssembly":  wr(SectionTechCards),
 	"ListStyleAssembly":    rd(SectionTechCards),
 	"GetStyleCostEstimate": rd(SectionTechCards),
 	// production runs (партии)
-	"CreateProductionRun":          wr(SectionProduction),
-	"UpdateProductionRun":          wr(SectionProduction),
-	"DeleteProductionRun":          wr(SectionProduction),
-	"GetProductionRun":             rd(SectionProduction),
-	"ListProductionRuns":           rd(SectionProduction),
-	"ReceiveProductionRun":         wr(SectionProduction),
+	"CreateProductionRun":  wr(SectionProduction),
+	"UpdateProductionRun":  wr(SectionProduction),
+	"DeleteProductionRun":  wr(SectionProduction),
+	"GetProductionRun":     rd(SectionProduction),
+	"ListProductionRuns":   rd(SectionProduction),
+	"ReceiveProductionRun": wr(SectionProduction),
 	// the atomic receipt command additionally requires products:write, enforced in-handler
 	// (it moves sellable stock); the interceptor gate stays the production section.
 	"PostProductionRunReceipt":     wr(SectionProduction),
