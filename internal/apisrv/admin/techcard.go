@@ -669,6 +669,13 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 			unit, currency = rootUnit, rootCcy
 		}
 		if !unit.Valid || !strings.EqualFold(currency, base) {
+			// Say WHICH colourway was withheld and why: the aggregate warning below fires only
+			// when the whole card seeded nothing, so a card with 1 of 3 colourways gated would
+			// otherwise skip silently while the tab still shows a unit cost.
+			if !unit.Valid && dto.HasColorwayForProduct(card, pid) {
+				slog.Default().InfoContext(ctx, "colorway cost not seeded: recipe incomplete or not computable",
+					slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid))
+			}
 			continue
 		}
 		// The COGS decomposition rides the same per-colourway figure (its materials component is

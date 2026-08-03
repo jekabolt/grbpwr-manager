@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -227,18 +228,28 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 // connection so it participates in the caller's transaction (ReceiveProductionRun) — do not open a
 // new transaction here. Sizes with a non-positive quantity are skipped.
 //
-// Each variant's quantity is read FOR UPDATE and the incremented value written under that lock: the
-// run lock ReceiveProductionRun holds guards production_run, not product_size, so an unlocked read
-// followed by an absolute write would resurrect a unit a sale removed in between (10 → receive reads
-// 10 → sale writes 9 → receive writes 60 instead of 59). The journal's before/after are the locked
-// values, so the history sums to the real stock.
+// Each variant's quantity is read FOR UPDATE and the incremented value written under that lock. The
+// run lock ReceiveProductionRun holds guards production_run, not product_size; under a weaker
+// isolation level an unlocked read followed by this absolute write would resurrect a unit a sale
+// removed in between (10 → receive reads 10 → sale writes 9 → receive writes 60 instead of 59).
+// Today's transactions run SERIALIZABLE (internal/store/db.go), where a plain SELECT already takes a
+// shared lock — the explicit X lock makes correctness independent of that configuration and avoids
+// the S→X upgrade deadlock shape. The journal's before/after are the locked values, so the history
+// sums to the real stock. Sizes are visited in ascending order so two concurrent receives over
+// overlapping variants take their row locks in the same order.
 func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error {
 	ref := sql.NullString{String: fmt.Sprintf("production_run:%d", runID), Valid: true}
 	var adminUser sql.NullString
 	if username != "" {
 		adminUser = sql.NullString{String: username, Valid: true}
 	}
-	for sizeID, qty := range perSize {
+	sizeIDs := make([]int, 0, len(perSize))
+	for sizeID := range perSize {
+		sizeIDs = append(sizeIDs, sizeID)
+	}
+	sort.Ints(sizeIDs)
+	for _, sizeID := range sizeIDs {
+		qty := perSize[sizeID]
 		if qty <= 0 {
 			continue
 		}
