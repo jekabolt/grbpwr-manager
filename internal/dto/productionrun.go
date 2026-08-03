@@ -331,6 +331,9 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 	// on the API is a client mistake worth rejecting early).
 	type key struct{ product, size int }
 	seen := make(map[key]struct{}, len(pbs))
+	// line_key is the row's stable identity (migration 0230): it must be unique within the payload,
+	// or the store's keyed diff would silently collapse two submitted lines onto one row.
+	seenKeys := make(map[string]struct{}, len(pbs))
 	out := make([]entity.ProductionRunLine, 0, len(pbs))
 	for _, ln := range pbs {
 		if ln == nil {
@@ -350,7 +353,24 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 		if ln.PlannedQty < 0 {
 			return nil, fmt.Errorf("production run line: planned_qty must be non-negative")
 		}
-		e := entity.ProductionRunLine{SizeId: int(ln.SizeId), PlannedQty: int(ln.PlannedQty)}
+		// A keyless line is a new line (or a client that predates 0230): mint its identity here, so
+		// the run reads back with a key on every line and the NEXT save can be diffed by it.
+		lineKey := strings.TrimSpace(ln.LineKey)
+		if lineKey == "" {
+			minted, err := entity.MintProductionRunLineKey()
+			if err != nil {
+				return nil, fmt.Errorf("production run line: %w", err)
+			}
+			lineKey = minted
+		} else if !entity.IsValidProductionRunLineKey(lineKey) {
+			return nil, fmt.Errorf("production run line: line_key must be %d uppercase alphanumeric characters, got %q",
+				entity.ProductionRunLineKeyLen, ln.LineKey)
+		}
+		if _, dup := seenKeys[lineKey]; dup {
+			return nil, fmt.Errorf("production run line: duplicate line_key %q", lineKey)
+		}
+		seenKeys[lineKey] = struct{}{}
+		e := entity.ProductionRunLine{LineKey: lineKey, SizeId: int(ln.SizeId), PlannedQty: int(ln.PlannedQty)}
 		if ln.ProductId > 0 {
 			e.ProductId = sql.NullInt32{Int32: ln.ProductId, Valid: true}
 		}
@@ -609,7 +629,8 @@ func productionRunMarkersToPb(markers []entity.ProductionRunMarker) []*pb_common
 func productionRunLinesToPb(lines []entity.ProductionRunLine) []*pb_common.ProductionRunLine {
 	out := make([]*pb_common.ProductionRunLine, 0, len(lines))
 	for _, ln := range lines {
-		pb := &pb_common.ProductionRunLine{SizeId: int32(ln.SizeId), PlannedQty: int32(ln.PlannedQty)}
+		pb := &pb_common.ProductionRunLine{
+			LineKey: ln.LineKey, SizeId: int32(ln.SizeId), PlannedQty: int32(ln.PlannedQty)}
 		if ln.ProductId.Valid {
 			pb.ProductId = ln.ProductId.Int32
 		}

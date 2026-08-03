@@ -1,8 +1,11 @@
 package entity
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/base32"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -97,12 +100,58 @@ func IsValidProductionRunStatus(s ProductionRunStatus) bool { return ValidProduc
 // time. This replaces the old flat per-size grid so one marker (раскладка) can yield several
 // colour-models in a single batch (NF-06).
 type ProductionRunLine struct {
-	Id          int           `db:"id"`
+	Id int `db:"id"`
+	// LineKey is the line's stable identity on the wire (migration 0230, the 0159/0168 pattern): the
+	// store diffs a submitted grid by it and UPDATEs the matched row in place, so Id survives an edit
+	// and a receipt line can hold a real FK to it. Client-minted; empty means "new line".
+	LineKey     string        `db:"line_key"`
 	ProductId   sql.NullInt32 `db:"product_id"`
 	SizeId      int           `db:"size_id"`
 	PlannedQty  int           `db:"planned_qty"`
 	ReceivedQty sql.NullInt64 `db:"received_qty"`
 	DefectQty   sql.NullInt64 `db:"defect_qty"`
+}
+
+// ProductionRunLineKeyLen is the exact length of a production-run line key. It matches the CHAR(26)
+// column and the 26-character ULID the admin client mints (and the 'LEGACY'+id keys migration 0230
+// backfilled onto pre-existing rows).
+const ProductionRunLineKeyLen = 26
+
+// IsValidProductionRunLineKey reports whether k is an acceptable line key: exactly 26 uppercase
+// base32-alphanumeric characters. The charset is deliberately WIDER than Crockford base32 (which the
+// client's ulid() uses): the keys migration 0230 backfilled start with "LEGACY" (an 'L' Crockford
+// excludes) and the server-side fallback mints standard base32, so a strict Crockford check would
+// reject the store's own keys the moment a client echoed one back.
+func IsValidProductionRunLineKey(k string) bool {
+	if len(k) != ProductionRunLineKeyLen {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// MintProductionRunLineKey creates the stable identity of a production-run plan line (migration
+// 0230) for a payload that arrived without one: standard base32 of 128 random bits — 26 characters
+// of [A-Z2-7], inside IsValidProductionRunLineKey's charset, unique for all practical purposes, and
+// never colliding with the 'LEGACY'-prefixed keys the migration backfilled. The admin client
+// normally mints a Crockford ULID instead; this is the single server-side fallback, shared by the
+// DTO layer (RPC payloads) and the store (direct callers), so the two encoders can never drift.
+func MintProductionRunLineKey() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("read randomness for production run line key: %w", err)
+	}
+	key := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw[:])
+	if !IsValidProductionRunLineKey(key) { // unreachable; guards a future encoder swap
+		return "", fmt.Errorf("minted production run line key %q is not a valid key", key)
+	}
+	return key, nil
 }
 
 // ProductionRunCostKind is the article category of an actual production-run cost. It mirrors the
