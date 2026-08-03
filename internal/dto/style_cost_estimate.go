@@ -105,9 +105,12 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			line.Currency = ccy
 			if source == pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST {
 				usedCatalogFallback = true
-				if priceDate.Valid {
-					line.PriceDate = timestamppb.New(priceDate.Time)
-				}
+			}
+			// Whatever the source resolved to: BOM_SNAPSHOT rows carry the stored provenance date
+			// (when the price was typed or last repriced — Phase 3), CATALOG_LATEST rows the quote's
+			// valid_from. Assigning only on the catalog branch discarded the snapshot date entirely.
+			if priceDate.Valid {
+				line.PriceDate = timestamppb.New(priceDate.Time)
 			}
 			if price.Valid {
 				line.UnitPrice = pbDecimalFromDecimal(price.Decimal)

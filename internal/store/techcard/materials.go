@@ -325,7 +325,9 @@ func bomPriceProvenance(existing *bomExistingRow, b *entity.TechCardBomItem, now
 	}
 	if existing != nil && existing.UnitPrice.Valid &&
 		existing.UnitPrice.Decimal.Equal(b.UnitPrice.Decimal) &&
-		strings.TrimSpace(existing.Currency.String) == strings.TrimSpace(b.Currency.String) {
+		strings.EqualFold(strings.TrimSpace(existing.Currency.String), strings.TrimSpace(b.Currency.String)) {
+		// EqualFold to match the reprice action's own Changed test: a payload echoing 'eur' for a
+		// stored 'EUR' is a round-trip, not an edit.
 		return existing.PriceSource, existing.PriceSnapshotAt
 	}
 	return sql.NullString{String: entity.BomPriceSourceManual, Valid: true}, sql.NullTime{Time: now, Valid: true}

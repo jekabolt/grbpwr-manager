@@ -783,7 +783,7 @@ func nullDecimalParam(d decimal.NullDecimal) any {
 }
 
 // RepriceTechCardBom re-pulls the current material-catalog price into every catalog-linked BOM line
-// of a DRAFT card (production-costing Phase 3, plan 11). Price resolution is the SAME ladder the
+// of a MUTABLE (non-released) card (production-costing Phase 3, plan 11). Price resolution is the SAME ladder the
 // style cost estimate's catalog fallback uses — LatestPriceForCurrencies(costing currency, base
 // currency), so a repriced line equals what the estimate already reports as CATALOG_LATEST. Every
 // visited line is restamped price_source='catalog' / price_snapshot_at=now, whether or not the
@@ -795,6 +795,12 @@ func (s *Store) RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency s
 	var out []entity.RepricedBomLine
 	skippedUnlinked := 0
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// txFunc may retry the callback after a deadlock; never carry results from an aborted
+		// attempt (the reprice FOR UPDATE below vs the save path's shared-lock read is exactly the
+		// S→X pair that deadlocks under SERIALIZABLE).
+		out = out[:0]
+		skippedUnlinked = 0
+		touched := 0
 		card, err := storeutil.QueryNamedOne[struct {
 			ApprovalState string `db:"approval_state"`
 		}](ctx, rep.DB(), `SELECT approval_state FROM tech_card WHERE id = :id FOR UPDATE`,
@@ -802,7 +808,10 @@ func (s *Store) RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency s
 		if err != nil {
 			return fmt.Errorf("load tech card %d for reprice: %w", tcID, err)
 		}
-		if card.ApprovalState != string(entity.TechCardApprovalDraft) {
+		// Same mutability rule as every other content write (storeutil.RequireMutableTechCard):
+		// only a RELEASED card is frozen — in_review/approved cards are freely price-editable
+		// through a normal save, so they reprice too. Kept inline to preserve the FOR UPDATE.
+		if card.ApprovalState == string(entity.TechCardApprovalReleased) {
 			return entity.ErrTechCardReleased
 		}
 
@@ -896,7 +905,20 @@ func (s *Store) RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency s
 			}); err != nil {
 				return fmt.Errorf("reprice bom line %d: %w", l.Id, err)
 			}
+			touched++
 			out = append(out, res)
+		}
+		if touched > 0 {
+			// The reprice changed card CONTENT, so it must move the same optimistic-lock fence a
+			// save moves — otherwise a form opened before the reprice still carries a passing
+			// lock_version and its save writes the stale prices back (restamped 'manual': the
+			// provenance would lie about a value nobody typed). With the bump such a save gets the
+			// regular ErrTechCardConflict path instead.
+			if err := storeutil.ExecNamed(ctx, rep.DB(), `
+				UPDATE tech_card SET lock_version = lock_version + 1, updated_at = NOW()
+				WHERE id = :id`, map[string]any{"id": tcID}); err != nil {
+				return fmt.Errorf("bump tech card lock after reprice: %w", err)
+			}
 		}
 		return nil
 	})

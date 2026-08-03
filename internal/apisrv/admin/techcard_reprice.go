@@ -15,7 +15,7 @@ import (
 )
 
 // RepriceTechCardBom re-pulls the current material-catalog price into every catalog-linked BOM line
-// of a DRAFT card (production-costing Phase 3, plan 11). The store applies the estimate's own
+// of a MUTABLE (non-released) card (production-costing Phase 3, plan 11). The store applies the estimate's own
 // CATALOG_LATEST resolution (costing currency → base currency → sole unambiguous currency), so the
 // repriced document equals what the estimate already reported as the catalog fallback. Repricing
 // rewrites BOM money, so beyond the interceptor's tech-card write it demands costing:write — the
@@ -36,8 +36,9 @@ func (s *Server) RepriceTechCardBom(ctx context.Context, req *pb_admin.RepriceTe
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Error(codes.NotFound, "tech card not found")
 		case errors.Is(err, entity.ErrTechCardReleased):
+			// Only RELEASED blocks (same rule as every content write); in_review/approved reprice fine.
 			return nil, status.Error(codes.FailedPrecondition,
-				"tech card is released and frozen; re-open to draft (or re-release) to reprice")
+				"tech card is released and frozen; re-releasing it is how a frozen card reprices")
 		}
 		slog.Default().ErrorContext(ctx, "can't reprice tech card bom",
 			slog.Int("tech_card_id", int(req.GetTechCardId())), slog.String("err", err.Error()))

@@ -81,8 +81,21 @@ func TestBomPriceProvenanceAndReprice(t *testing.T) {
 	manualStamp := at.Time
 
 	// 2. Reprice pulls the catalog price into the linked line and counts the free-text one.
+	// It also moves the optimistic-lock fence: a form opened BEFORE the reprice must not be able
+	// to save the stale prices back over it (adversarial #4).
+	staleCard, err := s.TechCards().GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	var lockBefore int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT lock_version FROM tech_card WHERE id = ?", tcID).Scan(&lockBefore))
 	lines, skippedUnlinked, err := s.TechCards().RepriceTechCardBom(ctx, tcID, "EUR")
 	require.NoError(t, err)
+	var lockAfter int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT lock_version FROM tech_card WHERE id = ?", tcID).Scan(&lockAfter))
+	require.Equal(t, lockBefore+1, lockAfter, "reprice changes content, so it must bump lock_version")
+	require.ErrorIs(t, s.TechCards().UpdateTechCard(ctx, tcID, &staleCard.TechCardInsert, staleCard.LockVersion),
+		entity.ErrTechCardConflict, "a pre-reprice form must conflict, not silently revert the reprice")
 	require.Equal(t, 1, skippedUnlinked)
 	require.Len(t, lines, 1)
 	require.Equal(t, linkedKey, lines[0].LineKey)
@@ -127,7 +140,12 @@ func TestBomPriceProvenanceAndReprice(t *testing.T) {
 	require.Equal(t, "11.5000", price)
 	_ = manualStamp
 
-	// 5. A released card is frozen for reprice.
+	// 5. Only RELEASED freezes the reprice — an in_review card is price-editable through a normal
+	// save (storeutil.RequireMutableTechCard), so it reprices too (adversarial #7).
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET approval_state = 'in_review' WHERE id = ?", tcID)
+	require.NoError(t, err)
+	_, _, err = s.TechCards().RepriceTechCardBom(ctx, tcID, "EUR")
+	require.NoError(t, err, "in_review must reprice like any other mutable state")
 	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET approval_state = 'released' WHERE id = ?", tcID)
 	require.NoError(t, err)
 	_, _, err = s.TechCards().RepriceTechCardBom(ctx, tcID, "EUR")
