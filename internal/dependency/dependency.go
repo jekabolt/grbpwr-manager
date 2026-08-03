@@ -140,8 +140,6 @@ type (
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
-		// RestoreStockSilently restores stock without recording history (for expired orders).
-		RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// UpdateProductSizeStockWithHistory applies a stock change (mode Set=absolute, Adjust=signed

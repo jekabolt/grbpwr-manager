@@ -42,19 +42,19 @@ type stockRestoreMode int
 
 const (
 	stockRestoreNone    stockRestoreMode = iota // status never reduced stock (e.g. Placed)
-	stockRestoreSilent                          // reduced at invoice time; restore without history
-	stockRestoreHistory                         // reduced for a confirmed+ order; restore with history
+	stockRestoreHistory                         // status reduced stock — restore it AND journal the restore
 )
 
+// stockRestoreModeForCancel: every status past Placed had its stock reduced by InsertFiatInvoice,
+// which journalled that reduction as order_paid. AwaitingPayment used to restore SILENTLY, leaving
+// the order_paid decrement in the journal with nothing against it — the stock report showed units
+// permanently sold that are back on the shelf, and its per-source totals stopped summing to on-hand.
+// A cancel is a real stock event and is journalled like every other one.
 func stockRestoreModeForCancel(st entity.OrderStatusName) stockRestoreMode {
-	switch st {
-	case entity.Placed:
+	if st == entity.Placed {
 		return stockRestoreNone
-	case entity.AwaitingPayment:
-		return stockRestoreSilent
-	default:
-		return stockRestoreHistory
 	}
+	return stockRestoreHistory
 }
 
 func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert, source entity.StockChangeSource, refundReason string) error {
@@ -78,10 +78,6 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	switch stockRestoreModeForCancel(st) {
 	case stockRestoreNone:
 		// Stock was never reduced for this status; nothing to restore.
-	case stockRestoreSilent:
-		if err := rep.Products().RestoreStockSilently(ctx, orderItems); err != nil {
-			return fmt.Errorf("can't restore stock for product sizes: %w", err)
-		}
 	case stockRestoreHistory:
 		history := &entity.StockHistoryParams{
 			Source:    source,

@@ -390,7 +390,16 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 			return fmt.Errorf("can't update order payment: %w", err)
 		}
 
-		if err := rep.Products().RestoreStockSilently(ctx, orderItems); err != nil {
+		// An expiry restores the units InsertFiatInvoice reduced and journalled as order_paid, so the
+		// restore is journalled too (order_cancelled — the order ends Cancelled below). Restoring
+		// silently left that decrement standing alone: the stock report showed units permanently sold
+		// that are back on the shelf.
+		expiryHistory := &entity.StockHistoryParams{
+			Source:    entity.StockChangeSourceOrderCancelled,
+			OrderId:   order.Id,
+			OrderUUID: order.UUID,
+		}
+		if err := rep.Products().RestoreStockForProductSizes(ctx, orderItems, expiryHistory); err != nil {
 			return fmt.Errorf("can't restore stock: %w", err)
 		}
 

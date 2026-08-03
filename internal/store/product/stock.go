@@ -149,22 +149,6 @@ func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.
 	return nil
 }
 
-// RestoreStockSilently restores stock without recording history.
-func (s *Store) RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error {
-	for _, item := range items {
-		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
-		err := storeutil.ExecNamed(ctx, s.DB, updateQuery, map[string]any{
-			"quantity":  item.QuantityDecimal(),
-			"productId": item.ProductId,
-			"sizeId":    item.SizeId,
-		})
-		if err != nil {
-			return fmt.Errorf("can't restore product quantity for sizes: %w", err)
-		}
-	}
-	return nil
-}
-
 // GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 func (s *Store) GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error) {
 	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
