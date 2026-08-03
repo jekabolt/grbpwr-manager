@@ -483,8 +483,9 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 		out.DefectPctActual = pbDecimalFromDecimal(pct.Round(2))
 	}
 
-	// plan/fact against the run's frozen planned unit cost, scaled to the received quantity.
-	if r.PlannedUnitCost.Valid && receivedQty > 0 {
+	// plan/fact against the run's frozen planned unit cost, scaled to the received quantity — only
+	// when that snapshot is in the base currency the actuals are measured in (plannedCostInBase).
+	if plannedCostInBase(r) && receivedQty > 0 {
 		plannedTotal := r.PlannedUnitCost.Decimal.Mul(recv)
 		out.PlannedTotalBase = pbDecimalFromDecimal(roundMoney(plannedTotal))
 		out.TotalVariance = pbDecimalFromDecimal(roundMoney(totalBase.Sub(plannedTotal)))
@@ -574,6 +575,18 @@ func productionRunLinesToPb(lines []entity.ProductionRunLine) []*pb_common.Produ
 		out = append(out, pb)
 	}
 	return out
+}
+
+// plannedCostInBase reports whether a run's frozen planned unit cost may be subtracted from its
+// actuals. Actual cost is ALWAYS in the base currency (every article is folded on write), while
+// planned_unit_cost is a snapshot of the tech-card costing and can be in the costing currency —
+// planned_currency records which. Nothing read it, so a PLN 142.50 plan against a EUR 30 actual
+// reported a −112.50 "saving" that was pure FX. A snapshot in any other currency (or with no
+// currency recorded at all, which is unverifiable) yields no variance rather than a fictional one;
+// planned_unit_cost / planned_currency still travel on the wire, so the client can say why.
+func plannedCostInBase(r *entity.ProductionRun) bool {
+	return r.PlannedUnitCost.Valid && r.PlannedCurrency.Valid &&
+		strings.EqualFold(strings.TrimSpace(r.PlannedCurrency.String), cache.GetBaseCurrency())
 }
 
 // ProductionRunActualUnitCostBase returns the run's actual unit cost in the base currency, valid

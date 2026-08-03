@@ -6,8 +6,10 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -394,6 +396,10 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 // tech_card_release (task 11) when one is given, otherwise from the live tech card's computed
 // costing. A missing tech card is rejected up front (rather than surfacing as an FK error); a
 // costing that cannot be folded to base leaves the snapshot null (the run still saves).
+//
+// The snapshot is stored ONLY when it is in the base currency. Actual cost is always base, so a
+// costing-currency plan beside it produces a variance that is pure FX; NULL is the honest value and
+// every read path already tolerates it (a run with no plan simply reports no variance).
 func (s *Server) snapshotPlannedCost(ctx context.Context, ins *entity.ProductionRunInsert) error {
 	if ins.ReleaseId.Valid {
 		rel, err := s.repo.TechCards().GetTechCardRelease(ctx, int(ins.ReleaseId.Int64))
@@ -404,8 +410,7 @@ func (s *Server) snapshotPlannedCost(ctx context.Context, ins *entity.Production
 			slog.Default().ErrorContext(ctx, "can't load release for planned cost", slog.String("err", err.Error()))
 			return status.Error(codes.Internal, "can't load release")
 		}
-		ins.PlannedUnitCost = rel.UnitCost
-		ins.PlannedCurrency = rel.Currency
+		setPlannedCostIfBase(ins, rel.UnitCost, rel.Currency.String)
 		return nil
 	}
 	card, err := s.repo.TechCards().GetTechCardById(ctx, ins.TechCardId)
@@ -421,9 +426,18 @@ func (s *Server) snapshotPlannedCost(ctx context.Context, ins *entity.Production
 	// keeps plan-vs-actual honest about the run's real marker/lay efficiency (the actuals side is
 	// measured from material issues). The release path above is a frozen scalar and is left as-is.
 	unit, currency := dto.ComputeTechCardUnitCostWithWastage(card, s.costingFx(ctx), ins.ActualWastagePercent)
-	ins.PlannedUnitCost = unit
-	if unit.Valid && currency != "" {
-		ins.PlannedCurrency = sql.NullString{String: currency, Valid: true}
-	}
+	setPlannedCostIfBase(ins, unit, currency)
 	return nil
+}
+
+// setPlannedCostIfBase writes the planned-cost snapshot only when it is denominated in the base
+// currency; anything else (including a figure with no currency recorded) leaves both columns NULL.
+func setPlannedCostIfBase(ins *entity.ProductionRunInsert, unit decimal.NullDecimal, currency string) {
+	if !unit.Valid || !strings.EqualFold(strings.TrimSpace(currency), cache.GetBaseCurrency()) {
+		ins.PlannedUnitCost = decimal.NullDecimal{}
+		ins.PlannedCurrency = sql.NullString{}
+		return
+	}
+	ins.PlannedUnitCost = unit
+	ins.PlannedCurrency = sql.NullString{String: currency, Valid: true}
 }

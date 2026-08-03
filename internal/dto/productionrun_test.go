@@ -38,6 +38,7 @@ func TestComputeProductionRunActuals(t *testing.T) {
 	run := &entity.ProductionRun{
 		ProductionRunInsert: entity.ProductionRunInsert{
 			PlannedUnitCost: nd2("10.00"),
+			PlannedCurrency: sql.NullString{String: "EUR", Valid: true}, // base — the plan is comparable
 			Lines: []entity.ProductionRunLine{
 				{ProductId: ni32(11), SizeId: 1, PlannedQty: 60, ReceivedQty: ni(54), DefectQty: ni(6)},
 				{ProductId: ni32(11), SizeId: 2, PlannedQty: 40, ReceivedQty: ni(36), DefectQty: ni(4)},
