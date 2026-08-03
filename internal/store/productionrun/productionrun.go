@@ -520,18 +520,52 @@ func (s *Store) runMaterialMovements(ctx context.Context, runID int) ([]entity.M
 	return loadRunMovements(ctx, s.DB, runID)
 }
 
+const movementColumns = `id, material_id, movement_type, quantity, on_hand_before, on_hand_after,
+	unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
+	lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at, created_at`
+
 // loadRunMovements loads a run's material movement ledger on the given db (pool or tx).
 func loadRunMovements(ctx context.Context, db dependency.DB, runID int) ([]entity.MaterialMovement, error) {
-	mv, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, db, `
-		SELECT id, material_id, movement_type, quantity, on_hand_before, on_hand_after,
-		       unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
-		       lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at, created_at
-		FROM material_stock_movement WHERE production_run_id = :run_id ORDER BY id`,
+	mv, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, db,
+		fmt.Sprintf(`SELECT %s FROM material_stock_movement WHERE production_run_id = :run_id ORDER BY id`, movementColumns),
 		map[string]any{"run_id": runID})
 	if err != nil {
 		return nil, fmt.Errorf("can't load production run material movements: %w", err)
 	}
 	return mv, nil
+}
+
+// attachMovements loads the material movements for a page of runs in one query and attaches them.
+// The list must carry the same movements the detail does: materials_from_stock_base, the actual
+// total (and therefore actual cost per unit), mixed_materials_sources and has_uncosted_issues are
+// ALL derived from them. Without them a warehouse-sourced run listed a fabric-free cost per unit and
+// reported both provenance flags as false — the list and the detail disagreed about the same run.
+func (s *Store) attachMovements(ctx context.Context, runs []entity.ProductionRun) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	ids := make([]int, len(runs))
+	idx := make(map[int]int, len(runs))
+	for i := range runs {
+		ids[i] = runs[i].Id
+		idx[runs[i].Id] = i
+	}
+	rows, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB,
+		fmt.Sprintf(`SELECT %s FROM material_stock_movement WHERE production_run_id IN (:ids)
+		 ORDER BY production_run_id, id`, movementColumns),
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load production run material movements: %w", err)
+	}
+	for _, m := range rows {
+		if !m.ProductionRunId.Valid {
+			continue
+		}
+		if i, ok := idx[int(m.ProductionRunId.Int32)]; ok {
+			runs[i].MaterialMovements = append(runs[i].MaterialMovements, m)
+		}
+	}
+	return nil
 }
 
 // ListProductionRuns returns runs (header + size grid) matching the filter, newest-first, with
@@ -582,6 +616,9 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 		return nil, 0, err
 	}
 	if err := s.attachMarkers(ctx, runs); err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachMovements(ctx, runs); err != nil {
 		return nil, 0, err
 	}
 	return runs, total, nil
