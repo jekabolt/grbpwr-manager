@@ -237,11 +237,13 @@ func TestPostProductionRunReceipt(t *testing.T) {
 		require.Equal(t, want, status.Code(err), "store error %v", storeErr)
 	}
 
-	// shape validation: a malformed idempotency key and an empty line set never reach the store.
+	// shape validation: a malformed idempotency key and an empty PARTIAL line set never reach the
+	// store. (An empty FINAL is legal — the short-close of a partially received run — and is pinned
+	// with real schema in TestProductionReceiptPartialFlow.)
 	sBad := &Server{repo: mocks.NewMockRepository(t)}
 	_, err = sBad.PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{RunId: 4, Lines: lines, IdempotencyKey: "lowercase-not-ok"})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	_, err = sBad.PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{RunId: 4, IdempotencyKey: key})
+	_, err = sBad.PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{RunId: 4, IdempotencyKey: key, Partial: true})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 

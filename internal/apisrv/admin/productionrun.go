@@ -270,6 +270,13 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 		slog.Default().ErrorContext(ctx, "can't load production run for receive", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load production run")
 	}
+	// A partially received run's line counters are CUMULATIVE rollups over already-booked receipts
+	// (Phase 5) — synthesizing "one final receipt" from them would book every already-received unit
+	// a second time. Only the receipt command knows how to close such a series.
+	if run.Status == entity.ProductionRunPartiallyReceived {
+		return nil, status.Error(codes.FailedPrecondition,
+			"this run has partial receipts; finish it through PostProductionRunReceipt (the new receive flow)")
+	}
 	// Synthesize the receipt lines from the stored counts (the old client's step-1 update wrote
 	// them). Lines with no count carry no receipt fact.
 	lines := make([]entity.ProductionRunReceiptLineInput, 0, len(run.Lines))
