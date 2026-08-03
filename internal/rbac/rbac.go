@@ -339,6 +339,9 @@ var methodRequirements = map[string]Requirement{
 	"GetProductionRun":             rd(SectionProduction),
 	"ListProductionRuns":           rd(SectionProduction),
 	"ReceiveProductionRun":         wr(SectionProduction),
+	// the atomic receipt command additionally requires products:write, enforced in-handler
+	// (it moves sellable stock); the interceptor gate stays the production section.
+	"PostProductionRunReceipt":     wr(SectionProduction),
 	"GetProductionRunMaterialPlan": rd(SectionProduction),
 	// material warehouse (new-flow NF-01)
 	"ReceiveMaterialStock":    wr(SectionInventory),

@@ -285,9 +285,12 @@ type ProductionRun struct {
 	Id int `db:"id"`
 	ProductionRunInsert
 	MaterialMovements []MaterialMovement `db:"-"`
-	CreatedAt         time.Time          `db:"created_at"`
-	UpdatedAt         time.Time          `db:"updated_at"`
-	LockVersion       int                `db:"lock_version"` // optimistic-lock token, bumped on every update (#9)
+	// Receipts are the run's immutable receiving events (Phase 4, receipt v1), oldest first. Loaded
+	// on the single-run read only; list reads leave it nil to stay light.
+	Receipts    []ProductionRunReceipt `db:"-"`
+	CreatedAt   time.Time              `db:"created_at"`
+	UpdatedAt   time.Time              `db:"updated_at"`
+	LockVersion int                    `db:"lock_version"` // optimistic-lock token, bumped on every update (#9)
 }
 
 // ProductionRunListFilter narrows ListProductionRuns. Zero-value fields mean "no filter".

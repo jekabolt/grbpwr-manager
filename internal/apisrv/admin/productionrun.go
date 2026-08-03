@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -179,20 +180,85 @@ func (s *Server) ListProductionRuns(ctx context.Context, req *pb_admin.ListProdu
 	return &pb_admin.ListProductionRunsResponse{Runs: out, Total: int32(total)}, nil
 }
 
-// ReceiveProductionRun receives a multi-colourway run into stock and transitions it to `received`,
-// optionally seeding each received product's cost_price from the run's actual unit cost. The run is
-// multi-product now: every line's received_qty is booked into that line's own product. Each such
-// product must be linked to the run's tech card and at least one line must carry a received qty.
-func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.ReceiveProductionRunRequest) (*pb_admin.ReceiveProductionRunResponse, error) {
+// productsWriteAccess reports whether the caller may move sellable product stock (products:write).
+// The receipt command books units straight into product_size — the same surface UpsertProduct's
+// stock edits gate behind the products section — so production:write alone is not enough (plan 05
+// amendment 6). Fails closed without an authz in context, mirroring costingAccessFor.
+func productsWriteAccess(ctx context.Context) bool {
+	az, ok := authsrv.GetAdminAuthz(ctx)
+	if !ok {
+		return false
+	}
+	if az.FullAccess() {
+		return true
+	}
+	lvl, ok := az.Perms[rbac.SectionProducts]
+	return ok && lvl.Covers(entity.AccessWrite)
+}
+
+// PostProductionRunReceipt is the atomic receiving command (Phase 4, receipt v1). See the proto
+// contract for semantics; this handler validates shape + permissions + tech-card linkage and hands
+// the store one transaction to execute.
+func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.PostProductionRunReceiptRequest) (*pb_admin.PostProductionRunReceiptResponse, error) {
 	if req.RunId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
-	// update_cost_price seeds every received product's cost_price from the run's actual unit cost —
-	// a confidential figure written into the margin chain, so it needs costing:write on top of
-	// production:write. Rejected rather than silently ignored, exactly as Create/UpdateColorway
-	// reject a cost_price they may not set; receiving without the flag stays open to a warehouse role.
-	if _, write := s.costingAccess(ctx); !write && req.GetUpdateCostPrice() {
-		return nil, status.Error(codes.PermissionDenied, "costing:write is required to seed product cost_price from a run; receive with update_cost_price=false")
+	key := strings.TrimSpace(req.IdempotencyKey)
+	if !entity.IsValidProductionRunLineKey(key) {
+		return nil, status.Error(codes.InvalidArgument, "idempotency_key must be exactly 26 characters of [0-9A-Z] (mint an uppercase ULID per user intent)")
+	}
+	// The LEGACY prefix is reserved for migration backfills (0231 keys legacy receipts LEGACY<id>
+	// and re-runs graft plan-grid lines onto receipts under that family). A Crockford ULID can
+	// never start with 'L', so no real client is affected — only a crafted key is refused.
+	if strings.HasPrefix(key, "LEGACY") {
+		return nil, status.Error(codes.InvalidArgument, "idempotency_key prefix LEGACY is reserved for migration backfills")
+	}
+	lines, err := dto.ConvertPbReceiptLinesToEntity(req.Lines)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if len(lines) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one receipt line is required")
+	}
+	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load production run for receipt", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load production run")
+	}
+	result, st := s.executeRunReceipt(ctx, run, lines, key, int(req.ExpectedLockVersion),
+		strings.TrimSpace(req.Note), req.UpdateCostPrice)
+	if st != nil {
+		return nil, st
+	}
+	resp := &pb_admin.PostProductionRunReceiptResponse{
+		ReceiptId:        int32(result.ReceiptID),
+		CostPriceUpdated: result.CostPriceUpdated,
+		Replayed:         result.Replayed,
+	}
+	// Echo the post-command run so the client renders the received state without a second round
+	// trip. Best-effort: the receipt is committed; a read failure here must not fail the command.
+	if run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId)); err == nil {
+		pb := dto.ConvertEntityProductionRunToPb(run)
+		if read, _ := s.costingAccess(ctx); !read {
+			stripProductionRunCosting(pb)
+		}
+		resp.Run = pb
+	} else {
+		slog.Default().ErrorContext(ctx, "can't reload production run after receipt", slog.String("err", err.Error()))
+	}
+	return resp, nil
+}
+
+// ReceiveProductionRun receives a run using its STORED received_qty/defect_qty counts. DEPRECATED
+// (Phase 4): a thin shim over the receipt command, kept one release for old clients that stamp
+// counts via UpdateProductionRun first. It mints a server-side idempotency key per call — replay
+// protection degrades to the run's own already-received guard, exactly the old behaviour.
+func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.ReceiveProductionRunRequest) (*pb_admin.ReceiveProductionRunResponse, error) {
+	if req.RunId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
 	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
 	if err != nil {
@@ -202,117 +268,117 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 		slog.Default().ErrorContext(ctx, "can't load production run for receive", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load production run")
 	}
-	if run.Status == entity.ProductionRunReceived || run.Status == entity.ProductionRunClosed {
-		return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
+	// Synthesize the receipt lines from the stored counts (the old client's step-1 update wrote
+	// them). Lines with no count carry no receipt fact.
+	lines := make([]entity.ProductionRunReceiptLineInput, 0, len(run.Lines))
+	for _, ln := range run.Lines {
+		good := int(ln.ReceivedQty.Int64)
+		defect := int(ln.DefectQty.Int64)
+		if good <= 0 && defect <= 0 {
+			continue
+		}
+		lines = append(lines, entity.ProductionRunReceiptLineInput{
+			LineKey: ln.LineKey, GoodQty: good, DefectQty: defect,
+		})
 	}
-	// every received product must be linked to the run's tech card.
+	if len(lines) == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
+	}
+	key, err := entity.MintProductionRunLineKey()
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't mint receipt idempotency key", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't receive production run")
+	}
+	result, st := s.executeRunReceipt(ctx, run, lines, key, 0, "", req.UpdateCostPrice)
+	if st != nil {
+		return nil, st
+	}
+	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: result.CostPriceUpdated}, nil
+}
+
+// executeRunReceipt is the shared core of both receive RPCs: permission gates, tech-card linkage
+// validation (aux detection included), and the store command. Returns a gRPC status error mapped
+// from the command's outcome.
+func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRun, lines []entity.ProductionRunReceiptLineInput,
+	idempotencyKey string, expectedLockVersion int, note string, updateCostPrice bool) (*entity.PostProductionRunReceiptResult, error) {
+	runID := run.Id
+	// Moving sellable stock needs products:write on top of production:write (the RBAC interceptor
+	// gate). An account granted the permission after login must re-login — permissions ride in the JWT.
+	if !productsWriteAccess(ctx) {
+		return nil, status.Error(codes.PermissionDenied, "products:write is required to book production stock (re-login if the permission was just granted)")
+	}
+	// update_cost_price seeds every received product's cost_price from the run's actual unit cost —
+	// a confidential figure written into the margin chain, so it needs costing:write on top.
+	// Rejected rather than silently ignored; receiving without the flag stays open to a warehouse role.
+	if _, write := s.costingAccess(ctx); !write && updateCostPrice {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to seed product cost_price from a run; receive with update_cost_price=false")
+	}
 	card, err := s.repo.TechCards().GetTechCardById(ctx, run.TechCardId)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't load tech card for receive", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load tech card")
 	}
+	params := entity.PostProductionRunReceiptParams{
+		RunID:               runID,
+		Lines:               lines,
+		IdempotencyKey:      idempotencyKey,
+		RequestHash:         dto.HashProductionRunReceiptPayload(runID, lines, note, updateCostPrice),
+		ExpectedLockVersion: expectedLockVersion,
+		Note:                note,
+		UpdateCostPrice:     updateCostPrice,
+		Username:            authsrv.GetAdminUsername(ctx),
+		BaseCurrency:        cache.GetBaseCurrency(),
+	}
 	// NF-07: an auxiliary card's output is received into the material warehouse, not product stock.
 	if card.Purpose == entity.TechCardPurposeAuxiliary {
-		return s.receiveAuxiliaryRun(ctx, run, card)
-	}
-	// group each line's received quantity by product → size, validating each against the card's
-	// products and size grid. (run_id, product_id, size_id) is unique so no accumulation collisions.
-	// A received line without a product, with a product not in the card, or with a size outside the
-	// card's grid is rejected. This is the friendly early check; the store re-validates the grid
-	// against freshly-read lines under the run lock (concurrency), and recomputes cost_price there.
-	linkedProducts := card.LinkedProductIDs()
-	validProduct := make(map[int]bool, len(linkedProducts))
-	for _, id := range linkedProducts {
-		validProduct[id] = true
-	}
-	validSize := make(map[int]bool, len(card.SizeIds))
-	for _, id := range card.SizeIds {
-		validSize[id] = true
-	}
-	perProduct := make(map[int]map[int]int)
-	for _, ln := range run.Lines {
-		if !ln.ReceivedQty.Valid || ln.ReceivedQty.Int64 <= 0 {
-			continue
+		if !card.OutputMaterialId.Valid {
+			return nil, status.Error(codes.FailedPrecondition, "auxiliary card has no output material set; set it before receiving")
 		}
-		if !ln.ProductId.Valid {
-			return nil, status.Error(codes.FailedPrecondition, entity.ErrProductionRunLineProductMissing.Error())
+		params.Aux = true
+		params.OutputMaterialID = int(card.OutputMaterialId.Int64)
+	} else {
+		// The card's product/size linkage travels INTO the transaction: the store re-validates the
+		// fresh plan lines against these sets under the run lock, so a racing line edit cannot book
+		// stock into a product this handler never saw.
+		linkedProducts := card.LinkedProductIDs()
+		validProduct := make(map[int]bool, len(linkedProducts))
+		for _, id := range linkedProducts {
+			validProduct[id] = true
 		}
-		pid := int(ln.ProductId.Int32)
-		if !validProduct[pid] {
-			return nil, status.Error(codes.InvalidArgument, entity.ErrProductionRunLineProductUnlinked.Error())
+		validSize := make(map[int]bool, len(card.SizeIds))
+		for _, id := range card.SizeIds {
+			validSize[id] = true
 		}
-		if len(validSize) > 0 && !validSize[ln.SizeId] {
-			return nil, status.Error(codes.InvalidArgument, entity.ErrProductionRunLineSizeUnlinked.Error())
-		}
-		if perProduct[pid] == nil {
-			perProduct[pid] = make(map[int]int)
-		}
-		perProduct[pid][ln.SizeId] = int(ln.ReceivedQty.Int64)
+		params.ValidProducts = validProduct
+		params.ValidSizes = validSize
 	}
-	if len(perProduct) == 0 {
-		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
-	}
-	// The store books stock and (when asked) seeds each product's cost_price from the run's actual
-	// unit cost, recomputed inside the transaction so a material issue racing the receive is included.
-	costPriceUpdated, err := s.repo.ProductionRuns().ReceiveProductionRun(ctx, int(req.RunId), perProduct, req.UpdateCostPrice, authsrv.GetAdminUsername(ctx))
+	result, err := s.repo.ProductionRuns().PostProductionRunReceipt(ctx, params)
 	if err != nil {
 		switch {
 		case errors.Is(err, entity.ErrProductionRunAlreadyReceived):
 			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
-		case errors.Is(err, entity.ErrProductionRunConcurrentModification):
+		case errors.Is(err, entity.ErrProductionRunCancelledReceive),
+			errors.Is(err, entity.ErrProductionRunLineProductMissing),
+			errors.Is(err, entity.ErrProductionRunNothingReceived):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		case errors.Is(err, entity.ErrProductionRunConflict),
+			errors.Is(err, entity.ErrProductionRunConcurrentModification):
 			return nil, status.Error(codes.Aborted, err.Error())
+		case errors.Is(err, entity.ErrProductionRunReceiptLineUnknown),
+			errors.Is(err, entity.ErrProductionRunLineProductUnlinked),
+			errors.Is(err, entity.ErrProductionRunLineSizeUnlinked):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		case errors.Is(err, entity.ErrIdempotencyConflict):
+			return nil, status.Error(codes.AlreadyExists, err.Error())
 		case errors.Is(err, sql.ErrNoRows):
 			return nil, status.Error(codes.NotFound, "production run not found")
 		case s.repo.IsErrForeignKeyViolation(err):
 			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
 		}
-		slog.Default().ErrorContext(ctx, "can't receive production run", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't receive production run")
+		slog.Default().ErrorContext(ctx, "can't post production run receipt", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't post production run receipt")
 	}
-	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: costPriceUpdated}, nil
-}
-
-// receiveAuxiliaryRun receives an auxiliary card's run output into its output material (NF-07): the
-// finished item (dust bag, shopper) lands in the warehouse as a receipt_production whose unit cost
-// is the run's actual per-unit base cost, so the packaging's stock value reflects real production
-// cost. Auxiliary lines must not link products, and the card must have declared an output material.
-// This is the friendly early check; the store re-reads the lines and recomputes the quantity and
-// unit cost under the run lock (g25-07), so a racing edit/issue is either included or aborts.
-func (s *Server) receiveAuxiliaryRun(ctx context.Context, run *entity.ProductionRun, card *entity.TechCard) (*pb_admin.ReceiveProductionRunResponse, error) {
-	if !card.OutputMaterialId.Valid {
-		return nil, status.Error(codes.FailedPrecondition, "auxiliary card has no output material set; set it before receiving")
-	}
-	var total int64
-	for _, ln := range run.Lines {
-		if ln.ProductId.Valid {
-			return nil, status.Error(codes.InvalidArgument, "auxiliary run lines cannot link products")
-		}
-		if ln.ReceivedQty.Valid && ln.ReceivedQty.Int64 > 0 {
-			total += ln.ReceivedQty.Int64
-		}
-	}
-	if total == 0 {
-		return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
-	}
-	if err := s.repo.ProductionRuns().ReceiveAuxiliaryProductionRun(ctx, run.Id, int(card.OutputMaterialId.Int64),
-		authsrv.GetAdminUsername(ctx)); err != nil {
-		switch {
-		case errors.Is(err, entity.ErrProductionRunAlreadyReceived):
-			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
-		case errors.Is(err, entity.ErrProductionRunConcurrentModification):
-			return nil, status.Error(codes.Aborted, err.Error())
-		case errors.Is(err, entity.ErrProductionRunNothingReceived):
-			return nil, status.Error(codes.FailedPrecondition, "run has no received quantities; set received_qty on the lines first")
-		case errors.Is(err, sql.ErrNoRows):
-			return nil, status.Error(codes.NotFound, "production run not found")
-		case s.repo.IsErrForeignKeyViolation(err):
-			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
-		}
-		slog.Default().ErrorContext(ctx, "can't receive auxiliary production run", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't receive auxiliary production run")
-	}
-	// no product cost_price for an auxiliary run (the material average moved instead).
-	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: false}, nil
+	return result, nil
 }
 
 // GetProductionRunMaterialPlan estimates the run's material requirement from its lines' colourway

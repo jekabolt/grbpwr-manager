@@ -118,7 +118,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 
 	phase("outbox", w.processOutbox)
 	phase("movements", w.processMovements)
-	phase("runs", w.processRuns)
+	phase("receipts", w.processReceipts)
 	phase("opex", w.processOpex)
 	phase("shipping", w.processShipping)
 	phase("devexpenses", w.processDevExpenses)

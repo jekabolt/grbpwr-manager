@@ -522,40 +522,55 @@ func (s *Store) reconPending(ctx context.Context, fromStr, toStr string, fromT, 
 		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon pending event count: %w", err)
 	}
 
+	// Phase 4: the pending unit is the RECEIPT (0231 backfilled one per legacy received run). The
+	// legacy '<run_id>' key family is matched beside 'receipt:<id>'; every ':' is CHAR(58) because a
+	// literal colon inside a quoted string breaks sqlx's named scan for the whole query — the
+	// previous ':v%' version of this predicate shipped broken and errored the recon block.
 	runs, err := storeutil.QueryListNamed[struct {
-		Id int `db:"id"`
+		Id     int    `db:"receipt_id"`
+		Status string `db:"posting_status"`
 	}](ctx, s.DB, `
-		SELECT r.id FROM production_run r
-		WHERE r.status IN ('received', 'closed') AND r.received_at >= :from AND r.received_at < :to
+		SELECT pr.id AS receipt_id, pr.posting_status FROM production_run_receipt pr
+		WHERE pr.reversal_of IS NULL AND pr.reversed_by IS NULL
+		  AND pr.received_at >= :from AND pr.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                  WHERE e.source_type = 'production_receive'
-		                    AND (e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key LIKE CONCAT(CAST(r.id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci)
+		                    AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)
 		                    AND e.reversed_by IS NULL)
-		ORDER BY r.received_at, r.id
+		ORDER BY pr.received_at, pr.id
 		LIMIT :topN`,
 		map[string]any{"from": fromT, "to": toT, "topN": reconTopN})
 	if err != nil {
-		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon pending runs: %w", err)
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon pending receipts: %w", err)
 	}
 	for _, r := range runs {
+		label := "production receipt not posted"
+		if r.Status == entity.ReceiptPostingDeadLetter {
+			label = "production receipt DEAD-LETTERED; fix and reset posting_status to pending"
+		}
 		block.Items = append(block.Items, entity.AcctReconItem{
-			Ref:    strconv.Itoa(r.Id),
-			Label:  "production run received but not posted",
+			Ref:    "receipt " + strconv.Itoa(r.Id),
+			Label:  label,
 			Amount: decimal.Zero,
 		})
 	}
 	runCount, err := storeutil.QueryCountNamed(ctx, s.DB, `
-		SELECT COUNT(*) FROM production_run r
-		WHERE r.status IN ('received', 'closed') AND r.received_at >= :from AND r.received_at < :to
+		SELECT COUNT(*) FROM production_run_receipt pr
+		WHERE pr.reversal_of IS NULL AND pr.reversed_by IS NULL
+		  AND pr.received_at >= :from AND pr.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                  WHERE e.source_type = 'production_receive'
-		                    AND (e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key LIKE CONCAT(CAST(r.id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci)
+		                    AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)
 		                    AND e.reversed_by IS NULL)`,
 		map[string]any{"from": fromT, "to": toT})
 	if err != nil {
-		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon pending run count: %w", err)
+		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon pending receipt count: %w", err)
 	}
 
 	months, err := storeutil.QueryListNamed[struct {

@@ -110,6 +110,35 @@ message ProductionRunColorwayCost {
   bool has_uncosted = 5; // an issue for this product had no average cost, so its figure understates
 }
 
+// ProductionRunReceiptLine is one counted plan line of a receipt: which line (by its stable
+// line_key), what was booked as good stock and what was counted as defect. product_id/size_id are
+// snapshots of the plan line at receipt time; size_id 0 means the line has no size (auxiliary runs).
+message ProductionRunReceiptLine {
+  string line_key = 1; // the plan line's stable identity (ProductionRunLine.line_key)
+  int32 product_id = 2; // snapshot; 0 = product-less line (aux output / defect-only planning line)
+  int32 size_id = 3; // snapshot; 0 = size-less line (aux output)
+  int32 good_qty = 4; // units posted to stock (or the material warehouse for aux)
+  int32 defect_qty = 5; // units counted as defect — recorded, never stocked
+}
+
+// ProductionRunReceipt is one immutable receiving event of a run (Phase 4, receipt v1): who
+// received what and when, at what frozen valuation. v1 is final-only (one receipt closes the run);
+// partial receipts are a later phase on this same shape. unit_cost_base/base_currency are money and
+// are stripped without costing:read; has_base false means the valuation was not computable at
+// receipt time (uncosted issues / unfolded cost articles) and unit_cost_base is unset.
+message ProductionRunReceipt {
+  int32 id = 1;
+  int32 run_id = 2;
+  google.protobuf.Timestamp received_at = 3;
+  string admin_username = 4;
+  string note = 5;
+  google.type.Decimal unit_cost_base = 6; // frozen actual unit cost at receipt time (money)
+  string base_currency = 7;
+  bool has_base = 8;
+  repeated ProductionRunReceiptLine lines = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
 // ProductionMarkerSource is the CAD/nesting software (or hand entry) a marker record came from.
 enum ProductionMarkerSource {
   PRODUCTION_MARKER_SOURCE_UNKNOWN = 0;
@@ -187,4 +216,8 @@ message ProductionRun {
   // UpdateProductionRunRequest.expected_lock_version so a list→edit needs no extra GET (mirrors
   // TechCard.lock_version).
   int32 lock_version = 8;
+  // The run's receiving events (Phase 4, receipt v1), oldest first. Populated on the single-run
+  // read (GetProductionRun); list reads leave it empty to keep them light. Money on each receipt is
+  // stripped without costing:read.
+  repeated ProductionRunReceipt receipts = 9;
 }

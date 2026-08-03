@@ -206,8 +206,11 @@ func TestConvertPbProductionRunInsertValidation(t *testing.T) {
 		"unknown status":       {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_UNKNOWN},
 		"duplicate product/size": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
 			Lines: []*pb_common.ProductionRunLine{{ProductId: 11, SizeId: 1, PlannedQty: 1}, {ProductId: 11, SizeId: 1, PlannedQty: 2}}},
-		"zero size_id": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
-			Lines: []*pb_common.ProductionRunLine{{SizeId: 0, PlannedQty: 1}}},
+		// Phase 4: a size is required exactly when the line names a product (a garment line books
+		// into product_size). A product-less size-less line is the AUX output line and is legal —
+		// requiring a size there is what made aux planning unsavable since it shipped.
+		"zero size_id with product": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{ProductId: 11, SizeId: 0, PlannedQty: 1}}},
 		// NOTE: a received line without a product is NOT a dto error — an auxiliary run's output has
 		// no product (it goes to the material warehouse). Product-presence is enforced per card
 		// purpose in the receive handlers, not here.
@@ -231,4 +234,17 @@ func TestNormalizeProductionRunStatusFilter(t *testing.T) {
 
 	_, err = NormalizeProductionRunStatusFilter("bogus")
 	require.Error(t, err)
+}
+
+// The aux output line (no product, no size) must convert cleanly — its rejection was the bug that
+// made auxiliary run planning unsavable from the day it shipped (Phase 4 fix, migration 0236).
+func TestConvertPbProductionRunInsertAllowsSizelessProductlessLine(t *testing.T) {
+	e, err := ConvertPbProductionRunInsertToEntity(&pb_common.ProductionRunInsert{
+		TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+		Lines: []*pb_common.ProductionRunLine{{SizeId: 0, PlannedQty: 100}},
+	})
+	require.NoError(t, err)
+	require.Len(t, e.Lines, 1)
+	require.Equal(t, 0, e.Lines[0].SizeId, "0 size = NULL at the store boundary")
+	require.False(t, e.Lines[0].ProductId.Valid)
 }

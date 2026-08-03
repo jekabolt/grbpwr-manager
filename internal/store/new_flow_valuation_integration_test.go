@@ -279,7 +279,8 @@ func TestInventoryValuationReceiveLeavesWip(t *testing.T) {
 	// receive the aux run's output → run received, output raw. The store derives the receipt's unit
 	// cost from the run's ACTUALS (g25-07): only the 20-base material issue → 20/100 = 0.2/unit, so
 	// the hand-off is value-conserving — exactly the WIP consumed lands as raw.
-	require.NoError(t, s.ProductionRuns().ReceiveAuxiliaryProductionRun(ctx, auxRun, outMatID, "tester"))
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, auxRun, true, outMatID)
+	require.NoError(t, err)
 
 	afterReceive, err := mtr.GetInventoryValuation(ctx, from, to, 50)
 	require.NoError(t, err)

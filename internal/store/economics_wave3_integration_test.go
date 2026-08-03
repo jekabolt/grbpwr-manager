@@ -274,8 +274,12 @@ func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = P.DeleteProductionRun(ctx, runID) }()
 
-	// receive with empty perProduct + no cost-price only exercises the guard + status transition.
-	_, err = P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, false, "tester")
+	// a defect-only count on the product-less planning line exercises the status transition without
+	// booking stock (receipt v1: counts travel in the command; all-scrap is representable).
+	preRun, err := P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	preRun.Lines[0].DefectQty = sql.NullInt64{Int64: 1, Valid: true}
+	_, err = P.PostProductionRunReceipt(ctx, receiptParamsFromStored(t, preRun, false, false, 0))
 	require.NoError(t, err)
 	got, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
@@ -283,11 +287,11 @@ func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
 	require.True(t, got.ReceivedAt.Valid, "received_at stamped")
 
 	// a second receive is refused (guards double-counting)
-	_, err = P.ReceiveProductionRun(ctx, runID, map[int]map[int]int{}, false, "tester")
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, false, 0)
 	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
 
 	// receiving a missing run → ErrNoRows
-	_, err = P.ReceiveProductionRun(ctx, 0, map[int]map[int]int{}, false, "tester")
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, 0, false, 0)
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// task.production_run_id typed link round-trips (FK to the run).

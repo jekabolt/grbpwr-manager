@@ -616,7 +616,8 @@ func TestAuxiliaryProductionRun(t *testing.T) {
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", runID)
 	})
 
-	require.NoError(t, P.ReceiveAuxiliaryProductionRun(ctx, runID, outMatID, "tester"))
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, true, outMatID)
+	require.NoError(t, err)
 
 	// the material warehouse now holds 100 @ avg 2.
 	st, err := s.MaterialStock().GetMaterialStock(ctx, outMatID)
@@ -634,7 +635,8 @@ func TestAuxiliaryProductionRun(t *testing.T) {
 	got, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Equal(t, entity.ProductionRunReceived, got.Status)
-	require.ErrorIs(t, P.ReceiveAuxiliaryProductionRun(ctx, runID, outMatID, "tester"), entity.ErrProductionRunAlreadyReceived)
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, true, outMatID)
+	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
 }
 
 // TestMaterialIssueConcurrentShortage exercises NF-01's negative-stock guard under contention
