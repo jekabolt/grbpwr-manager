@@ -282,17 +282,18 @@ func insertTechCardCosting(ctx context.Context, db dependency.DB, tcID int, c *e
 	if c == nil {
 		return nil
 	}
+	// hardware_cost / packaging_cost are deliberately absent (Phase 2): the columns still exist —
+	// they hold the pre-migration values 0237's exception report points at — but the application
+	// writes NULL rows only; hardware/packaging money lives in the BOM.
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_costing
-			(tech_card_id, cmt_cost, hardware_cost, packaging_cost, logistics_cost, overhead_cost,
+			(tech_card_id, cmt_cost, logistics_cost, overhead_cost,
 			 defect_percent, currency, notes, target_margin_pct)
-		VALUES (:tech_card_id, :cmt_cost, :hardware_cost, :packaging_cost, :logistics_cost, :overhead_cost,
+		VALUES (:tech_card_id, :cmt_cost, :logistics_cost, :overhead_cost,
 			 :defect_percent, :currency, :notes, :target_margin_pct)`,
 		map[string]any{
 			"tech_card_id":      tcID,
 			"cmt_cost":          c.CmtCost,
-			"hardware_cost":     c.HardwareCost,
-			"packaging_cost":    c.PackagingCost,
 			"logistics_cost":    c.LogisticsCost,
 			"overhead_cost":     c.OverheadCost,
 			"defect_percent":    c.DefectPercent,
@@ -545,7 +546,9 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	}
 
 	costRows, err := storeutil.QueryListNamed[techCardCostingRow](ctx, s.DB,
-		`SELECT * FROM tech_card_costing WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
+		`SELECT tech_card_id, cmt_cost, logistics_cost, overhead_cost, defect_percent, currency, notes,
+		        target_margin_pct
+		 FROM tech_card_costing WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card costing: %w", err)
 	}

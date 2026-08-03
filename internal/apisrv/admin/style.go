@@ -281,7 +281,7 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	}
 	pbInsert := full.GetTechCard()
 	pbInsert.SkuSeason = req.SkuSeason
-	restoreLegacyHardwareCost := normalizeLegacyClonePayload(ctx, int(req.SourceStyleId), card, pbInsert)
+	normalizeLegacyClonePayload(ctx, int(req.SourceStyleId), card, pbInsert)
 	styleNumber, err := s.repo.TechCards().SuggestStyleNumber(ctx, string(seasonCode), seasonYear)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't suggest style number for clone", slog.String("err", err.Error()))
@@ -294,9 +294,6 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
 		// is pointed at the offending line rather than at the clone attempt.
 		return nil, techCardConvertErr(err)
-	}
-	if restoreLegacyHardwareCost && insert.Costing != nil && card.Costing != nil {
-		insert.Costing.HardwareCost = card.Costing.HardwareCost
 	}
 	// A clone is a fresh design cycle for the new season — reset the PLM freeze and every section
 	// approval so it is editable and starts unapproved. The store stamps the clone actor on its new
@@ -339,9 +336,9 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 // handles the two costing invariants that cannot be inferred safely. It mutates only the server-built
 // clone payload; the source card remains untouched.
 func normalizeLegacyClonePayload(ctx context.Context, sourceStyleID int, source *entity.TechCard,
-	insert *pb_common.TechCardInsert) (restoreLegacyHardwareCost bool) {
+	insert *pb_common.TechCardInsert) {
 	if insert == nil {
-		return false
+		return
 	}
 	maxOperationNumber := len(insert.Operations) * 10
 	calloutNumbers := make(map[int32]struct{}, len(insert.Callouts))
@@ -372,40 +369,19 @@ func normalizeLegacyClonePayload(ctx context.Context, sourceStyleID int, source 
 	}
 
 	if insert.Costing == nil || source == nil || source.Costing == nil {
-		return false
+		return
 	}
 	if (!source.Costing.Currency.Valid || strings.TrimSpace(source.Costing.Currency.String) == "") &&
 		legacyCloneCostingHasMonetaryAmounts(source.Costing) {
 		slog.Default().WarnContext(ctx, "clone omitted ambiguous legacy currencyless costing section",
 			slog.Int("source_style_id", sourceStyleID))
 		insert.Costing = nil
-		return false
 	}
-	if source.Costing.HardwareCost.Valid && !source.Costing.HardwareCost.Decimal.IsZero() &&
-		clonePayloadHasHardwareBOM(insert.BomItems) {
-		// Convert without this one value so the create-time mutual-exclusion validation does not reject
-		// legacy source data. The exact stored value is restored onto the entity immediately afterwards.
-		slog.Default().WarnContext(ctx, "clone preserved legacy hardware cost alongside hardware BOM lines",
-			slog.Int("source_style_id", sourceStyleID))
-		insert.Costing.HardwareCost = nil
-		return true
-	}
-	return false
 }
 
 func legacyCloneCostingHasMonetaryAmounts(costing *entity.TechCardCosting) bool {
 	if costing == nil {
 		return false
 	}
-	return costing.CmtCost.Valid || costing.HardwareCost.Valid || costing.PackagingCost.Valid ||
-		costing.LogisticsCost.Valid || costing.OverheadCost.Valid
-}
-
-func clonePayloadHasHardwareBOM(items []*pb_common.TechCardBomItem) bool {
-	for _, item := range items {
-		if item != nil && item.Section == pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE {
-			return true
-		}
-	}
-	return false
+	return costing.CmtCost.Valid || costing.LogisticsCost.Valid || costing.OverheadCost.Valid
 }

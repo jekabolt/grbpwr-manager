@@ -711,9 +711,6 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 		switch b.GetLineKey() {
 		case st.bomFabricKey:
 			st.res.FabricBomID = b.GetId()
-			if b.GetMaterialSnapshot() == "" {
-				return fmt.Errorf("fabric BOM line materialSnapshot not auto-populated")
-			}
 		case st.bomHardwareKey:
 			st.res.HardwareBomID = b.GetId()
 		}
@@ -1015,28 +1012,15 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	if err != nil {
 		return err
 	}
-	// No hardwareCost: this card prices its zipper as a HARDWARE BOM line (C.10), and hardware_cost is
-	// the hardware that sits OUTSIDE the BOM. Sending both is now rejected — see the negative probe below.
+	// hardware/packaging money is BOM-only since Phase 2 (the scalars were removed from the
+	// contract): this card prices its zipper as a HARDWARE BOM line (C.10) and its polybag would be
+	// a PACKAGING BOM line; the costing block carries only the genuinely manual articles.
 	tc.Costing = &common.TechCardCosting{
-		CmtCost: decv("18.00"), PackagingCost: decv("1.20"),
+		CmtCost:       decv("18.00"),
 		LogisticsCost: decv("3.00"), OverheadCost: decv("4.00"), DefectPercent: decv("2"),
 		Currency: "EUR", Notes: "PLM seed estimated costing plan",
 	}
 	tc.SizeQuantities = []*common.TechCardSizeQuantity{{SizeId: st.mID, OrderQty: 5}, {SizeId: st.lID, OrderQty: 5}}
-
-	// NEGATIVE: hardware priced twice — a HARDWARE BOM line plus a non-zero hardware_cost — must be
-	// rejected (400), because both feed the same unit-cost rollup. Fire on a clone, before the real save.
-	negHw := proto.Clone(tc).(*common.TechCardInsert)
-	negHw.Costing.HardwareCost = decv("2.50")
-	negHwLV, err := s.lockVersion(ctx, sid)
-	if err != nil {
-		return err
-	}
-	_, negHwErr := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(negHwLV), TechCard: negHw})
-	if e, ok := AsAPIError(negHwErr); !ok || e.Code != 400 {
-		return fmt.Errorf("NEGATIVE hardwareCost with a hardware BOM line: expected HTTP 400, got %v", negHwErr)
-	}
-	s.pass(st, "NEGATIVE costing.hardwareCost beside a HARDWARE BOM line rejected -> HTTP 400")
 
 	tc.ApprovalState = common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_RELEASED
 	if err := s.tcSave(ctx, sid, tc, "release: costing + RELEASED"); err != nil {

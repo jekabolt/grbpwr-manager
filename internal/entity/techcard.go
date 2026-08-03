@@ -495,10 +495,6 @@ type TechCardBomItem struct {
 	// operations/pieces/colorway-usages hold a real FK instead of a fragile positional index. Empty
 	// on a legacy payload; the store then generates one on insert.
 	LineKey string `db:"line_key"`
-	// MaterialSnapshot is a read-only JSON snapshot of the linked catalog material's descriptive
-	// fields at save time (S23), so the document is self-contained without copying fields into
-	// editable inputs. NULL for a free-text line with no material link.
-	MaterialSnapshot []byte `db:"material_snapshot"`
 	// MaterialId optionally links this BOM line to a catalog material (task 10). The line still
 	// keeps its own snapshot fields, so the card is self-contained and unaffected if the
 	// catalog entry later changes; the link only powers reverse lookups (which cards use a
@@ -909,9 +905,11 @@ type TechCardPackaging struct {
 // totals are computed on read (see dto), not stored. Pricing (markup/wholesale/retail)
 // was removed — it lives on the published product.
 type TechCardCosting struct {
+	// hardware_cost / packaging_cost were removed in production-costing Phase 2: both duplicated
+	// first-class BOM sections priced through the per-colourway recipe (migration 0237 moved draft
+	// cards' scalars into synthetic BOM lines; the columns are retained for the exception report but
+	// are dead to the application).
 	CmtCost       decimal.NullDecimal `db:"cmt_cost"`
-	HardwareCost  decimal.NullDecimal `db:"hardware_cost"`
-	PackagingCost decimal.NullDecimal `db:"packaging_cost"`
 	LogisticsCost decimal.NullDecimal `db:"logistics_cost"`
 	OverheadCost  decimal.NullDecimal `db:"overhead_cost"`
 	DefectPercent decimal.NullDecimal `db:"defect_percent"`
