@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -143,12 +144,17 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		if r.TechCardId != cur.TechCardId {
 			return entity.ErrProductionRunCardChange
 		}
+		// The stored articles are read under the run lock either way: the cost-blind path carries them
+		// through wholesale, the cost-writing path uses them to keep each unchanged article's already
+		// folded amount_base instead of re-folding it at today's FX rate.
+		storedCosts, err := loadRunCosts(ctx, rep.DB(), id)
+		if err != nil {
+			return fmt.Errorf("load stored production run %d costs: %w", id, err)
+		}
 		if preserveCosts {
-			storedCosts, err := loadRunCosts(ctx, rep.DB(), id)
-			if err != nil {
-				return fmt.Errorf("preserve stored production run %d costs: %w", id, err)
-			}
 			r.Costs = storedCosts
+		} else {
+			dto.PreserveProductionRunCostBases(r.Costs, storedCosts)
 		}
 		if r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed {
 			net, err := netIssuedToRun(ctx, rep.DB(), id)
