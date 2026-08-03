@@ -63,28 +63,6 @@ var productionRunCostKindOrder = []entity.ProductionRunCostKind{
 	entity.ProductionRunCostOther,
 }
 
-// productionMarkerSourcePbToEntity maps the proto marker-source enum to the stored string. An unset
-// (UNKNOWN) source defaults to manual — a hand-entered marker with no CAD provenance.
-var productionMarkerSourcePbToEntity = map[pb_common.ProductionMarkerSource]entity.ProductionMarkerSource{
-	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_UNKNOWN: entity.ProductionMarkerSourceManual,
-	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_GERBER:  entity.ProductionMarkerSourceGerber,
-	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OPTITEX: entity.ProductionMarkerSourceOptitex,
-	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_LECTRA:  entity.ProductionMarkerSourceLectra,
-	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_AUDACES: entity.ProductionMarkerSourceAudaces,
-	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_MANUAL:  entity.ProductionMarkerSourceManual,
-	pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OTHER:   entity.ProductionMarkerSourceOther,
-}
-
-// productionMarkerSourceEntityToPb is the reverse map.
-var productionMarkerSourceEntityToPb = map[entity.ProductionMarkerSource]pb_common.ProductionMarkerSource{
-	entity.ProductionMarkerSourceGerber:  pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_GERBER,
-	entity.ProductionMarkerSourceOptitex: pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OPTITEX,
-	entity.ProductionMarkerSourceLectra:  pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_LECTRA,
-	entity.ProductionMarkerSourceAudaces: pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_AUDACES,
-	entity.ProductionMarkerSourceManual:  pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_MANUAL,
-	entity.ProductionMarkerSourceOther:   pb_common.ProductionMarkerSource_PRODUCTION_MARKER_SOURCE_OTHER,
-}
-
 // ConvertPbProductionRunInsertToEntity validates and converts a writable production run. The
 // planned-cost snapshot is NOT taken from the client — the service layer sets it separately. Neither
 // is received_at: it is the timestamp of a physical receipt, stamped only by the receive flow beside
@@ -129,10 +107,6 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 	if err != nil {
 		return nil, err
 	}
-	markers, err := convertPbProductionRunMarkers(pb.Markers)
-	if err != nil {
-		return nil, err
-	}
 	return &entity.ProductionRunInsert{
 		TechCardId: int(pb.TechCardId),
 		ReleaseId:  nullInt64FromPb(int64(pb.ReleaseId)),
@@ -148,67 +122,7 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		Notes:                nullStringFromPb(pb.Notes),
 		Lines:                lines,
 		Costs:                costs,
-		Markers:              markers,
 	}, nil
-}
-
-// convertPbProductionRunMarkers validates and converts the imported nesting markers (gap-07 v2 E).
-// Marker fields are optional metadata; the only hard rules are non-negative dimensions and a
-// 0..100 efficiency. An unset source defaults to manual.
-func convertPbProductionRunMarkers(pbs []*pb_common.ProductionRunMarker) ([]entity.ProductionRunMarker, error) {
-	if len(pbs) == 0 {
-		return nil, nil
-	}
-	out := make([]entity.ProductionRunMarker, 0, len(pbs))
-	for _, m := range pbs {
-		if m == nil {
-			continue
-		}
-		source, ok := productionMarkerSourcePbToEntity[m.Source]
-		if !ok {
-			return nil, fmt.Errorf("production run marker: source is invalid")
-		}
-		if len(m.MarkerName) > maxVarchar191 {
-			return nil, fmt.Errorf("production run marker: marker_name must be at most %d characters", maxVarchar191)
-		}
-		if len(m.MarkerFileUrl) > maxVarchar512 {
-			return nil, fmt.Errorf("production run marker: marker_file_url must be at most %d characters", maxVarchar512)
-		}
-		if len(m.Notes) > maxVarchar1024 {
-			return nil, fmt.Errorf("production run marker: notes must be at most %d characters", maxVarchar1024)
-		}
-		width, err := nonNegNullDecimal(m.MarkerWidth, "production run marker: marker_width")
-		if err != nil {
-			return nil, err
-		}
-		length, err := nonNegNullDecimal(m.LayLength, "production run marker: lay_length")
-		if err != nil {
-			return nil, err
-		}
-		eff, err := nullDecimalFromPb(m.EfficiencyPct)
-		if err != nil {
-			return nil, fmt.Errorf("production run marker: efficiency_pct: %w", err)
-		}
-		if eff.Valid && (eff.Decimal.IsNegative() || eff.Decimal.GreaterThan(decimal.NewFromInt(100))) {
-			return nil, fmt.Errorf("production run marker: efficiency_pct must be between 0 and 100")
-		}
-		if m.UnitsPerMarker < 0 {
-			return nil, fmt.Errorf("production run marker: units_per_marker must be non-negative")
-		}
-		out = append(out, entity.ProductionRunMarker{
-			Source:         source,
-			MarkerName:     nullStringFromPb(m.MarkerName),
-			SizeId:         nullInt32FromPb(m.SizeId),
-			MaterialId:     nullInt32FromPb(m.MaterialId),
-			MarkerWidth:    width,
-			LayLength:      length,
-			UnitsPerMarker: nullInt32FromPb(m.UnitsPerMarker),
-			EfficiencyPct:  eff,
-			MarkerFileUrl:  nullStringFromPb(m.MarkerFileUrl),
-			Notes:          nullStringFromPb(m.Notes),
-		})
-	}
-	return out, nil
 }
 
 // nonNegNullDecimal converts an optional pb decimal, rejecting a negative value.
@@ -426,7 +340,6 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 			Notes:                pbStringFromNull(r.Notes),
 			Lines:                productionRunLinesToPb(r.Lines),
 			Costs:                productionRunCostsToPb(r.Costs),
-			Markers:              productionRunMarkersToPb(r.Markers),
 		},
 		PlannedUnitCost: pbDecimalFromNull(r.PlannedUnitCost),
 		PlannedCurrency: pbStringFromNull(r.PlannedCurrency),
@@ -691,28 +604,6 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 			cw.MaterialsUnitCost = pbDecimalFromDecimal(roundMoney(mat.Div(decimal.NewFromInt(rq))))
 		}
 		out.ByColorway = append(out.ByColorway, cw)
-	}
-	return out
-}
-
-func productionRunMarkersToPb(markers []entity.ProductionRunMarker) []*pb_common.ProductionRunMarker {
-	if len(markers) == 0 {
-		return nil
-	}
-	out := make([]*pb_common.ProductionRunMarker, 0, len(markers))
-	for _, m := range markers {
-		out = append(out, &pb_common.ProductionRunMarker{
-			Source:         productionMarkerSourceEntityToPb[m.Source],
-			MarkerName:     pbStringFromNull(m.MarkerName),
-			SizeId:         m.SizeId.Int32,
-			MaterialId:     m.MaterialId.Int32,
-			MarkerWidth:    pbDecimalFromNull(m.MarkerWidth),
-			LayLength:      pbDecimalFromNull(m.LayLength),
-			UnitsPerMarker: m.UnitsPerMarker.Int32,
-			EfficiencyPct:  pbDecimalFromNull(m.EfficiencyPct),
-			MarkerFileUrl:  pbStringFromNull(m.MarkerFileUrl),
-			Notes:          pbStringFromNull(m.Notes),
-		})
 	}
 	return out
 }

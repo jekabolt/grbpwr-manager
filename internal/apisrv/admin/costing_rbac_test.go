@@ -551,37 +551,6 @@ func TestUpdateTechCardCostReadCanApproveHydratedCosting(t *testing.T) {
 	require.True(t, written.Signoffs[0].SignedDigest.Valid)
 }
 
-func TestUpdateTechCardCostBlindCannotAddHardwareBomBesideHiddenHardwareCost(t *testing.T) {
-	ctx := authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
-		Perms: map[string]entity.AccessLevel{rbac.SectionTechCards: entity.AccessWrite},
-	})
-	repo := mocks.NewMockRepository(t)
-	techCards := mocks.NewMockTechCards(t)
-	repo.EXPECT().TechCards().Return(techCards)
-	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
-		TechCardInsert: entity.TechCardInsert{Costing: &entity.TechCardCosting{
-			HardwareCost: decimal.NullDecimal{Decimal: decimal.NewFromInt(17), Valid: true},
-			Currency:     sql.NullString{String: "EUR", Valid: true},
-		}},
-	}, nil)
-
-	_, err := (&Server{repo: repo}).UpdateTechCard(ctx, &pb_admin.UpdateTechCardRequest{
-		Id: 7,
-		TechCard: &pb_common.TechCardInsert{
-			StyleNumber: "TC-HIDDEN-HARDWARE",
-			Name:        "hidden hardware guard",
-			BomItems: []*pb_common.TechCardBomItem{{
-				LineKey: "hardware-line",
-				Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE,
-				Name:    "zip",
-			}},
-		},
-	})
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, status.Convert(err).Message(), "costing.hardware_cost")
-	require.NotContains(t, status.Convert(err).Message(), "17", "the hidden amount must not leak")
-}
-
 // TestStripProductionRunCosting pins the Q5 costing symmetry (A3.2-#3): a run's actual money is
 // redacted for a non-costing account while its quantities and provenance flags survive.
 func TestStripProductionRunCosting(t *testing.T) {

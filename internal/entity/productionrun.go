@@ -198,52 +198,6 @@ type ProductionRunCost struct {
 	IncurredAt  sql.NullTime          `db:"incurred_at"`
 }
 
-// ProductionMarkerSource is the CAD/nesting software (or hand entry) a marker record came from. It
-// mirrors the common.ProductionMarkerSource proto enum and is stored as its lowercase string.
-type ProductionMarkerSource string
-
-const (
-	ProductionMarkerSourceGerber  ProductionMarkerSource = "gerber"
-	ProductionMarkerSourceOptitex ProductionMarkerSource = "optitex"
-	ProductionMarkerSourceLectra  ProductionMarkerSource = "lectra"
-	ProductionMarkerSourceAudaces ProductionMarkerSource = "audaces"
-	ProductionMarkerSourceManual  ProductionMarkerSource = "manual"
-	ProductionMarkerSourceOther   ProductionMarkerSource = "other"
-)
-
-// ValidProductionMarkerSources is the set of accepted marker sources.
-var ValidProductionMarkerSources = map[ProductionMarkerSource]bool{
-	ProductionMarkerSourceGerber:  true,
-	ProductionMarkerSourceOptitex: true,
-	ProductionMarkerSourceLectra:  true,
-	ProductionMarkerSourceAudaces: true,
-	ProductionMarkerSourceManual:  true,
-	ProductionMarkerSourceOther:   true,
-}
-
-// IsValidProductionMarkerSource reports whether s is an accepted marker source.
-func IsValidProductionMarkerSource(s ProductionMarkerSource) bool {
-	return ValidProductionMarkerSources[s]
-}
-
-// ProductionRunMarker is one imported nesting marker (раскладка / lay) of a run (gap-07 v2 E): the
-// CAD source, the fabric width and lay length it was nested on, the units it yields, its
-// fabric-utilisation %, an optional fabric/size, and a reference URL to the exported marker file.
-// It is planning/traceability data — nothing here feeds the run's actual cost or cost_price.
-type ProductionRunMarker struct {
-	Id             int                    `db:"id"`
-	Source         ProductionMarkerSource `db:"source"`
-	MarkerName     sql.NullString         `db:"marker_name"`
-	SizeId         sql.NullInt32          `db:"size_id"` // single-size marker; NULL = mixed-size lay
-	MaterialId     sql.NullInt32          `db:"material_id"`
-	MarkerWidth    decimal.NullDecimal    `db:"marker_width"`     // fabric width the marker was made for (cm)
-	LayLength      decimal.NullDecimal    `db:"lay_length"`       // marker / lay length (cm)
-	UnitsPerMarker sql.NullInt32          `db:"units_per_marker"` // garments yielded by one marker
-	EfficiencyPct  decimal.NullDecimal    `db:"efficiency_pct"`   // fabric utilisation % (per-marker)
-	MarkerFileUrl  sql.NullString         `db:"marker_file_url"`  // bare URL of the exported marker file
-	Notes          sql.NullString         `db:"notes"`
-}
-
 // ProductionRunInsert is the writable payload for a run (header + size grid + actual costs).
 // PlannedUnitCost and PlannedCurrency are server-snapshotted at plan time (from the linked
 // tech_card_release or the live card's computed costing) — they are set by the service layer,
@@ -271,11 +225,10 @@ type ProductionRunInsert struct {
 	// stock or accrues cost from them. PromisedAt is the date the batch is committed to — an open
 	// run (planned/in_progress) past it is overdue, which is the whole definition of
 	// ProductionRunListFilter.OverdueOnly.
-	PlannedStartAt sql.NullTime          `db:"planned_start_at"`
-	PromisedAt     sql.NullTime          `db:"promised_at"`
-	Lines          []ProductionRunLine   `db:"-"`
-	Costs          []ProductionRunCost   `db:"-"`
-	Markers        []ProductionRunMarker `db:"-"` // imported nesting markers (gap-07 v2 E)
+	PlannedStartAt sql.NullTime        `db:"planned_start_at"`
+	PromisedAt     sql.NullTime        `db:"promised_at"`
+	Lines          []ProductionRunLine `db:"-"`
+	Costs          []ProductionRunCost `db:"-"`
 }
 
 // ProductionRun is a stored production run (production_run row + its line grid). MaterialMovements

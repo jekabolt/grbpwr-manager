@@ -326,8 +326,13 @@ func packagingProjection(tc *entity.TechCardInsert) any {
 func costingProjection(tc *entity.TechCardInsert) any {
 	var costing any
 	if c := tc.Costing; c != nil {
+		// Positions 2 and 3 held hardware_cost / packaging_cost until Phase 2 removed them. They stay
+		// as the canonical empty placeholder ("" = digestDecimal of an unset decimal) so the digest of
+		// a card that never had those scalars is BYTE-IDENTICAL to what its approver signed — the
+		// removal must not mass-stale every approved costing sign-off (review S1, digest-rebase). A
+		// card whose scalar WAS migrated changes digest legitimately: its costing content moved.
 		costing = []any{
-			digestDecimal(c.CmtCost), digestDecimal(c.HardwareCost), digestDecimal(c.PackagingCost), digestDecimal(c.LogisticsCost),
+			digestDecimal(c.CmtCost), "", "", digestDecimal(c.LogisticsCost),
 			digestDecimal(c.OverheadCost), digestDecimal(c.DefectPercent), c.Currency.String, c.Notes.String,
 			digestDecimal(c.TargetMarginPct),
 		}

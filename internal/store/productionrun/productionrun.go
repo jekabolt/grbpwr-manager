@@ -80,10 +80,7 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 		if err := insertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
-		if err := insertRunCosts(ctx, rep.DB(), id, r.Costs); err != nil {
-			return err
-		}
-		return insertRunMarkers(ctx, rep.DB(), id, r.Markers)
+		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't create production run: %w", err)
@@ -202,22 +199,17 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		if expectedLockVersion > 0 && rows == 0 {
 			return entity.ErrProductionRunConflict
 		}
-		// Costs and markers are still full-replaced: neither has a wire identity yet (costs get one
-		// with receipt v1, which rewrites the table anyway; markers are slated for removal). Lines do
-		// NOT get replaced — they are diffed by line_key so their ids survive (0230).
-		for _, tbl := range []string{"production_run_cost", "production_run_marker"} {
-			if err := storeutil.ExecNamed(ctx, rep.DB(),
-				fmt.Sprintf(`DELETE FROM %s WHERE run_id = :id`, tbl), map[string]any{"id": id}); err != nil {
-				return fmt.Errorf("failed to clear %s: %w", tbl, err)
-			}
+		// Costs are still full-replaced: they have no wire identity yet (Phase 5 gives receipts the
+		// durable money records). Lines are NOT replaced — they are diffed by line_key so their ids
+		// survive (0230). Markers are gone entirely (Phase 2 review cut: the surface was write-only).
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM production_run_cost WHERE run_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear production_run_cost: %w", err)
 		}
 		if err := upsertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
-		if err := insertRunCosts(ctx, rep.DB(), id, r.Costs); err != nil {
-			return err
-		}
-		return insertRunMarkers(ctx, rep.DB(), id, r.Markers)
+		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
 	})
 	if err != nil {
 		switch err {
@@ -303,11 +295,6 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 		return nil, err
 	}
 	run.Costs = costs
-	markers, err := s.runMarkers(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	run.Markers = markers
 	movements, err := s.runMaterialMovements(ctx, id)
 	if err != nil {
 		return nil, err
@@ -437,9 +424,6 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 	if err := s.attachCosts(ctx, runs); err != nil {
 		return nil, 0, err
 	}
-	if err := s.attachMarkers(ctx, runs); err != nil {
-		return nil, 0, err
-	}
 	if err := s.attachMovements(ctx, runs); err != nil {
 		return nil, 0, err
 	}
@@ -557,82 +541,6 @@ func insertRunCosts(ctx context.Context, db dependency.DB, runID int, costs []en
 	}
 	if err := storeutil.BulkInsert(ctx, db, "production_run_cost", rows); err != nil {
 		return fmt.Errorf("failed to insert production run costs: %w", err)
-	}
-	return nil
-}
-
-// runMarkers loads one run's imported nesting markers ordered by id (insertion order).
-func (s *Store) runMarkers(ctx context.Context, runID int) ([]entity.ProductionRunMarker, error) {
-	return loadRunMarkers(ctx, s.DB, runID)
-}
-
-const markerColumns = `id, source, marker_name, size_id, material_id, marker_width, lay_length,
-	units_per_marker, efficiency_pct, marker_file_url, notes`
-
-// loadRunMarkers loads a run's marker records on the given db (pool or tx).
-func loadRunMarkers(ctx context.Context, db dependency.DB, runID int) ([]entity.ProductionRunMarker, error) {
-	markers, err := storeutil.QueryListNamed[entity.ProductionRunMarker](ctx, db,
-		fmt.Sprintf(`SELECT %s FROM production_run_marker WHERE run_id = :run_id ORDER BY id`, markerColumns),
-		map[string]any{"run_id": runID})
-	if err != nil {
-		return nil, fmt.Errorf("can't load production run markers: %w", err)
-	}
-	return markers, nil
-}
-
-// markerRow scans a marker together with its run_id for the batched list attach.
-type markerRow struct {
-	RunID int `db:"run_id"`
-	entity.ProductionRunMarker
-}
-
-// attachMarkers loads the markers for a page of runs in one query and attaches them.
-func (s *Store) attachMarkers(ctx context.Context, runs []entity.ProductionRun) error {
-	if len(runs) == 0 {
-		return nil
-	}
-	ids := make([]int, len(runs))
-	idx := make(map[int]int, len(runs))
-	for i := range runs {
-		ids[i] = runs[i].Id
-		idx[runs[i].Id] = i
-	}
-	rows, err := storeutil.QueryListNamed[markerRow](ctx, s.DB,
-		fmt.Sprintf(`SELECT run_id, %s FROM production_run_marker WHERE run_id IN (:ids) ORDER BY run_id, id`, markerColumns),
-		map[string]any{"ids": ids})
-	if err != nil {
-		return fmt.Errorf("can't load production run markers: %w", err)
-	}
-	for _, r := range rows {
-		if i, ok := idx[r.RunID]; ok {
-			runs[i].Markers = append(runs[i].Markers, r.ProductionRunMarker)
-		}
-	}
-	return nil
-}
-
-func insertRunMarkers(ctx context.Context, db dependency.DB, runID int, markers []entity.ProductionRunMarker) error {
-	if len(markers) == 0 {
-		return nil
-	}
-	rows := make([]map[string]any, 0, len(markers))
-	for _, m := range markers {
-		rows = append(rows, map[string]any{
-			"run_id":           runID,
-			"source":           string(m.Source),
-			"marker_name":      m.MarkerName,
-			"size_id":          m.SizeId,
-			"material_id":      m.MaterialId,
-			"marker_width":     m.MarkerWidth,
-			"lay_length":       m.LayLength,
-			"units_per_marker": m.UnitsPerMarker,
-			"efficiency_pct":   m.EfficiencyPct,
-			"marker_file_url":  m.MarkerFileUrl,
-			"notes":            m.Notes,
-		})
-	}
-	if err := storeutil.BulkInsert(ctx, db, "production_run_marker", rows); err != nil {
-		return fmt.Errorf("failed to insert production run markers: %w", err)
 	}
 	return nil
 }

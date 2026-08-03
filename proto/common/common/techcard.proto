@@ -412,9 +412,12 @@ message TechCardBomItem {
   // a real FK instead of a fragile positional index.
   int64 id = 24;
   string line_key = 25;
-  // material_snapshot is a read-only JSON snapshot of the linked material's descriptive fields at
-  // save time (S23), so the document is self-contained.
-  string material_snapshot = 26;
+  // material_snapshot was REMOVED (production-costing Phase 2): the JSON snapshot was written on
+  // every save but never read back by any consumer — the line's own columns carry the identity and
+  // the admin client stripped the field from payloads. The column is dropped by a follow-up
+  // contract migration once no serving binary references it (expand/contract).
+  reserved 26;
+  reserved "material_snapshot";
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -858,14 +861,18 @@ message TechCardColorwayCost {
 // scaled to the whole order by order_qty. There is NO pricing here — markup/wholesale/retail
 // were removed; pricing lives on the published product.
 message TechCardCosting {
+  // hardware_cost / packaging_cost were REMOVED (production-costing Phase 2, plan 01 §1.1): both
+  // duplicated first-class BOM sections priced through the per-colourway recipe — a flat per-unit
+  // scalar cannot express a colourway that swaps a metal zip for nylon, and the packaging scalar
+  // had no double-count guard at all. Migration 0237 moved draft cards' scalars into synthetic BOM
+  // lines (consumption 1 per colourway); exceptions (double-counted / zero-colourway / non-draft
+  // cards) are recorded in tech_card_costing_migration_exception for manual review. Hardware and
+  // packaging money now flows ONLY through the BOM into the computed materials figures below.
+  reserved 2, 3;
+  reserved "hardware_cost", "packaging_cost";
+
   // manual per-unit cost articles (per ONE garment), all in `currency`.
   google.type.Decimal cmt_cost = 1; // пошив / работа (CMT) за 1 изделие
-  // фурнитура ВНЕ BOM, за 1 изделие. Hardware is also a first-class BOM section priced through the
-  // recipe, so this article and a hardware BOM line are mutually exclusive: a write carrying both is
-  // rejected (costing.hardware_cost FieldViolation) because it would double-count in every unit-cost
-  // rollup. Enforced on WRITE only — a card saved with both before the rule existed still reads back.
-  google.type.Decimal hardware_cost = 2;
-  google.type.Decimal packaging_cost = 3; // упаковка и маркировка, за 1 изделие
   google.type.Decimal logistics_cost = 4; // логистика / доставка, за 1 изделие
   google.type.Decimal overhead_cost = 5; // накладные расходы, за 1 изделие
   google.type.Decimal defect_percent = 6; // брак / запас (%), 0..100
@@ -885,7 +892,7 @@ message TechCardCosting {
   // (it still appears in materials_total under its own currency, never silently dropped).
   repeated TechCardCostLine materials_total = 12; // per-unit material cost (colourway 0) grouped by article currency
   google.type.Decimal materials_per_unit = 19; // Σ per-garment material cost (colourway 0) in `currency`
-  google.type.Decimal unit_cost = 20; // (materials_per_unit + cmt + hardware + packaging + logistics + overhead) × (1 + defect/100)
+  google.type.Decimal unit_cost = 20; // (materials_per_unit + cmt + logistics + overhead) × (1 + defect/100); hardware/packaging ride inside materials via the BOM
   int32 order_qty = 21; // Σ size_quantities.order_qty (the whole production run)
   google.type.Decimal order_cost = 22; // unit_cost × order_qty
   bool has_unconverted_currencies = 15; // a material line (colourway 0) is in a currency other than `currency`

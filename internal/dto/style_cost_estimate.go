@@ -22,7 +22,9 @@ func money2(d decimal.Decimal) *pb_decimal.Decimal {
 // estimate (labour = cmt; overhead is a structural field, never free-form). Their sum + materials,
 // grossed by defect%, is the estimated unit cost — the same decomposition
 // ComputeTechCardCostBreakdownBase produces, now line-by-line with provenance (Q4).
-var estimateArticleKinds = []string{"cmt", "hardware", "packaging", "logistics", "overhead"}
+// hardware/packaging left this list in Phase 2: those articles are BOM-priced per colourway now,
+// so the estimate carries them inside its materials section instead of as flat manual kinds.
+var estimateArticleKinds = []string{"cmt", "logistics", "overhead"}
 
 // ComputeStyleCostEstimate builds the transparent estimated (plan) cost of one colourway (Q4). Each
 // material line resolves its plan unit price via the ladder bom_item.unit_price → latest
@@ -279,10 +281,6 @@ func articleAmount(c *entity.TechCardCosting, kind string) decimal.NullDecimal {
 	switch kind {
 	case "cmt":
 		return c.CmtCost
-	case "hardware":
-		return c.HardwareCost
-	case "packaging":
-		return c.PackagingCost
 	case "logistics":
 		return c.LogisticsCost
 	case "overhead":

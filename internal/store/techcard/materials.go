@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base32"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -344,11 +343,7 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			return res, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].line_key", i),
 				"duplicate line_key within the payload", "", "each BOM line needs a unique line_key")
 		}
-		snapshot, err := bomMaterialSnapshot(b)
-		if err != nil {
-			return res, fmt.Errorf("bom line %q snapshot: %w", b.Name, err)
-		}
-		params := bomItemParams(tcID, b, i, key, snapshot)
+		params := bomItemParams(tcID, b, i, key)
 		if id, ok := existingByKey[key]; ok {
 			params["id"] = id
 			if err := storeutil.ExecNamed(ctx, db, `
@@ -356,7 +351,7 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 					material_id=:material_id, section=:section, name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
 					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
 					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
-					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent, material_snapshot=:material_snapshot
+					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent
 				WHERE id=:id`, params); err != nil {
 				return res, fmt.Errorf("failed to update bom line: %w", err)
 			}
@@ -367,10 +362,10 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 				INSERT INTO tech_card_bom_item
 					(tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec, unit,
 					 unit_price, currency, comment, display_order, fabric_width, fabric_weight_gsm, fabric_direction,
-					 wastage_percent, line_key, material_snapshot)
+					 wastage_percent, line_key)
 				VALUES (:tech_card_id, :material_id, :section, :name, :supplier, :supplier_ref, :color, :composition, :spec, :unit,
 					 :unit_price, :currency, :comment, :display_order, :fabric_width, :fabric_weight_gsm, :fabric_direction,
-					 :wastage_percent, :line_key, :material_snapshot)`, params)
+					 :wastage_percent, :line_key)`, params)
 			if err != nil {
 				return res, fmt.Errorf("failed to insert bom line: %w", err)
 			}
@@ -437,7 +432,7 @@ func colorwayRecipeRefsForBom(ctx context.Context, db dependency.DB, bomItemID i
 }
 
 // bomItemParams maps a BOM line to named params for the upsert.
-func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKey string, snapshot []byte) map[string]any {
+func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKey string) map[string]any {
 	return map[string]any{
 		"tech_card_id":      tcID,
 		"material_id":       b.MaterialId,
@@ -458,29 +453,7 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		"fabric_direction":  b.FabricDirection,
 		"wastage_percent":   b.WastagePercent,
 		"line_key":          lineKey,
-		"material_snapshot": nullBytesParam(snapshot),
 	}
-}
-
-// bomMaterialSnapshot is the read-only JSON snapshot frozen on the BOM line at save (S23): the line's
-// descriptive state, so the document stays self-contained. NULL for an empty line.
-func bomMaterialSnapshot(b *entity.TechCardBomItem) ([]byte, error) {
-	if b.Name == "" && !b.MaterialId.Valid {
-		return nil, nil
-	}
-	snap := map[string]any{"name": b.Name}
-	if b.MaterialId.Valid {
-		snap["material_id"] = b.MaterialId.Int64
-	}
-	for k, v := range map[string]sql.NullString{
-		"supplier": b.Supplier, "supplier_ref": b.SupplierRef, "composition": b.Composition,
-		"spec": b.Spec, "unit": b.Unit, "color": b.Color,
-	} {
-		if v.Valid && v.String != "" {
-			snap[k] = v.String
-		}
-	}
-	return json.Marshal(snap)
 }
 
 // newLineKey mints a stable 26-char CHAR(26) key (ULID-shaped: base32 of 128 random bits) for a
@@ -489,14 +462,6 @@ func newLineKey() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])
-}
-
-// nullBytesParam yields nil (SQL NULL) for empty JSON so an unset snapshot is not stored as "".
-func nullBytesParam(b []byte) any {
-	if len(b) == 0 {
-		return nil
-	}
-	return b
 }
 
 // insertTechCardDetails inserts the construction-description aspects and, for each, its
@@ -746,7 +711,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,
 		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
-		       COALESCE(bi.line_key, '') AS line_key, bi.material_snapshot
+		       COALESCE(bi.line_key, '') AS line_key
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
 		WHERE bi.tech_card_id IN (:ids)

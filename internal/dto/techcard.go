@@ -447,11 +447,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
-	// hardware_cost is "hardware if OUTSIDE the BOM" — a cross-section rule, so it is checked here
-	// where both halves of the full-replace payload are parsed, not inside the costing parser.
-	if err := ValidateHardwareCostAgainstBom(costing, bomItems); err != nil {
-		return nil, err
-	}
 	issues, err := parseTechCardIssues(pb.Issues, len(operations), calloutNumbers)
 	if err != nil {
 		return nil, err
@@ -1254,7 +1249,7 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 
 		out = append(out, entity.TechCardBomItem{
 			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
-			// unchanged positional index. id/material_snapshot are read-only.
+			// unchanged positional index. id is read-only.
 			LineKey:         lineKey,
 			MaterialId:      materialID,
 			Section:         section,
@@ -1586,25 +1581,24 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
-			Id:               int64(b.Id),
-			LineKey:          b.LineKey,
-			MaterialSnapshot: string(b.MaterialSnapshot),
-			MaterialId:       b.MaterialId.Int64,
-			Section:          pbBomSection(b.Section),
-			Name:             b.Name,
-			Supplier:         pbStringFromNull(b.Supplier),
-			SupplierRef:      pbStringFromNull(b.SupplierRef),
-			Color:            pbStringFromNull(b.Color),
-			Composition:      pbStringFromNull(b.Composition),
-			Spec:             pbStringFromNull(b.Spec),
-			Unit:             pbStringFromNull(b.Unit),
-			UnitPrice:        pbDecimalFromNull(b.UnitPrice),
-			Currency:         pbStringFromNull(b.Currency),
-			Comment:          pbStringFromNull(b.Comment),
-			FabricWidth:      pbDecimalFromNull(b.FabricWidth),
-			FabricWeightGsm:  pbDecimalFromNull(b.FabricWeightGsm),
-			FabricDirection:  pbFabricDirection(b.FabricDirection),
-			WastagePercent:   pbDecimalFromNull(b.WastagePercent),
+			Id:              int64(b.Id),
+			LineKey:         b.LineKey,
+			MaterialId:      b.MaterialId.Int64,
+			Section:         pbBomSection(b.Section),
+			Name:            b.Name,
+			Supplier:        pbStringFromNull(b.Supplier),
+			SupplierRef:     pbStringFromNull(b.SupplierRef),
+			Color:           pbStringFromNull(b.Color),
+			Composition:     pbStringFromNull(b.Composition),
+			Spec:            pbStringFromNull(b.Spec),
+			Unit:            pbStringFromNull(b.Unit),
+			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
+			Currency:        pbStringFromNull(b.Currency),
+			Comment:         pbStringFromNull(b.Comment),
+			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
+			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
+			FabricDirection: pbFabricDirection(b.FabricDirection),
+			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
 		})
 	}
 	return out

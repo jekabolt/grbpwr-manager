@@ -14,8 +14,6 @@ func TestConvertTechCardCostingRequiresCurrencyForMoney(t *testing.T) {
 		set  func(*pb_common.TechCardCosting)
 	}{
 		{"cmt_cost", func(c *pb_common.TechCardCosting) { c.CmtCost = dec("0") }},
-		{"hardware_cost", func(c *pb_common.TechCardCosting) { c.HardwareCost = dec("1") }},
-		{"packaging_cost", func(c *pb_common.TechCardCosting) { c.PackagingCost = dec("1") }},
 		{"logistics_cost", func(c *pb_common.TechCardCosting) { c.LogisticsCost = dec("1") }},
 		{"overhead_cost", func(c *pb_common.TechCardCosting) { c.OverheadCost = dec("1") }},
 	}
