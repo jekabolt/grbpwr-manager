@@ -1,3 +1,4 @@
+ENUM_NO_DELETE|proto/common/common/production.proto|Previously present enum \"ProductionMarkerSource\" was deleted from file.
 FIELD_NO_DELETE|proto/admin/admin/admin.proto|Previously present field \"7\" with name \"season\" on message \"ListTechCardsRequest\" was deleted.
 FIELD_NO_DELETE|proto/common/common/filter.proto|Previously present field \"6\" with name \"color\" on message \"FilterConditions\" was deleted.
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"1\" with name \"product_id\" on message \"CustomOrderItemInsert\" was deleted.
@@ -6,6 +7,7 @@ FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"1\" w
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"2\" with name \"size_id\" on message \"OrderItemAdjustment\" was deleted.
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"CustomOrderItemInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"OrderItemInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/production.proto|Previously present field \"12\" with name \"markers\" on message \"ProductionRunInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"10\" with name \"version\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"11\" with name \"revision_date\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"14\" with name \"designer\" on message \"TechCardInsert\" was deleted.
@@ -14,10 +16,12 @@ FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"16
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardColorwayCost\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardPieceColorwayMaterial\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"version\" on message \"TechCardRevision\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"2\" with name \"hardware_cost\" on message \"TechCardCosting\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"2\" with name \"revision_date\" on message \"TechCardRevision\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"31\" with name \"product_ids\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"34\" with name \"revisions\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"36\" with name \"approved_by\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"3\" with name \"packaging_cost\" on message \"TechCardCosting\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"3\" with name \"version\" on message \"TechCardReleaseMeta\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"41\" with name \"colorways\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"season\" on message \"TechCardInsert\" was deleted.
@@ -97,6 +101,7 @@ MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"Product\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"SizeWithMeasurementInsert\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/product.proto|Previously present message \"SizeWithMeasurement\" was deleted from file.
+MESSAGE_NO_DELETE|proto/common/common/production.proto|Previously present message \"ProductionRunMarker\" was deleted from file.
 MESSAGE_NO_DELETE|proto/common/common/techcard.proto|Previously present message \"TechCardColorway\" was deleted from file.
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductResponse\" was deleted from file.

@@ -139,33 +139,10 @@ message ProductionRunReceipt {
   google.protobuf.Timestamp created_at = 10;
 }
 
-// ProductionMarkerSource is the CAD/nesting software (or hand entry) a marker record came from.
-enum ProductionMarkerSource {
-  PRODUCTION_MARKER_SOURCE_UNKNOWN = 0;
-  PRODUCTION_MARKER_SOURCE_GERBER = 1;
-  PRODUCTION_MARKER_SOURCE_OPTITEX = 2;
-  PRODUCTION_MARKER_SOURCE_LECTRA = 3;
-  PRODUCTION_MARKER_SOURCE_AUDACES = 4;
-  PRODUCTION_MARKER_SOURCE_MANUAL = 5;
-  PRODUCTION_MARKER_SOURCE_OTHER = 6;
-}
-
-// ProductionRunMarker is one imported nesting marker (раскладка / lay) of a run (gap-07 v2 E): the
-// CAD source, the fabric width and lay length it was nested on, the units it yields, its
-// fabric-utilisation %, an optional fabric/size, and a reference URL to the exported marker file.
-// It is planning / traceability data — nothing here feeds the run's actual cost or cost_price.
-message ProductionRunMarker {
-  ProductionMarkerSource source = 1;
-  string marker_name = 2; // marker / lay identifier from the software
-  int32 size_id = 3; // single-size marker; 0 = mixed-size lay
-  int32 material_id = 4; // fabric the marker was nested on; 0 = unset
-  google.type.Decimal marker_width = 5; // fabric width the marker was made for (cm)
-  google.type.Decimal lay_length = 6; // marker / lay length (cm)
-  int32 units_per_marker = 7; // garments yielded by one marker; 0 = unset
-  google.type.Decimal efficiency_pct = 8; // fabric utilisation % (per-marker), 0..100
-  string marker_file_url = 9; // bare URL of the exported marker file (UploadPattern convention)
-  string notes = 10;
-}
+// ProductionMarkerSource / ProductionRunMarker were REMOVED (production-costing Phase 2, review
+// cut): the marker import surface shipped write-only — no editor ever existed and the admin client
+// always sent an empty list, so the table held nothing. The run-level marker facts that ARE used
+// (marker_efficiency_pct / marker_notes on ProductionRunInsert) stay. Table dropped by 0243.
 
 // ProductionRunInsert is the writable payload for a run (header + colour-model × size lines).
 // planned_unit_cost / planned_currency are NOT here — they are server-snapshotted at plan time
@@ -184,7 +161,9 @@ message ProductionRunInsert {
   repeated ProductionRunCost costs = 8; // actual cost articles (phase 2)
   google.type.Decimal marker_efficiency_pct = 10; // % fabric utilisation from the nesting software (NF-06)
   string marker_notes = 11; // free marker / раскладка parameters
-  repeated ProductionRunMarker markers = 12; // imported nesting markers (gap-07 v2 E)
+  // markers (the ProductionRunMarker list) removed — see the tombstone above ProductionRunInsert.
+  reserved 12;
+  reserved "markers";
   // Run ACTUAL cutting wastage % (0..100), entered per run once the marker/lay is known. When set it
   // OVERRIDES the BOM line's estimate wastage_percent in the run's cost calc (planned-cost snapshot +
   // material plan); unset falls back to the BOM estimate. Refines the plan side only — the run's ACTUAL
