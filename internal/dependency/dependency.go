@@ -69,8 +69,10 @@ type (
 		// the caller's connection (no new transaction) so it composes into ReceiveProductionRun.
 		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error
 		// SetProductCostPriceFromProductionRun writes cost (base) as the production-run-sourced
-		// cost_price of a product, recording provenance (source + run id + timestamp).
-		SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) error
+		// cost_price of a product, recording provenance (source + run id + timestamp) and clearing
+		// the tech-card cost_breakdown. A manually set cost is never overwritten — the returned bool
+		// is false for such a product (the receipt itself still succeeds).
+		SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) (bool, error)
 		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
 		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
 		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).

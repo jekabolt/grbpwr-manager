@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -228,7 +229,9 @@ func netIssuedToRun(ctx context.Context, db dependency.DB, runID int) (decimal.D
 // against a double count), then for each product in perProduct increments that product's per-size
 // stock (production_received source) and — when costPrice is set — seeds that product's cost_price
 // from the run's actual unit cost (one style-level figure applied to every colour-model of the
-// batch; colourways are not costed apart in v1). Finally it stamps status/received_at. perProduct
+// batch; colourways are not costed apart in v1), skipping any product whose cost was set manually.
+// The returned flag reports whether ANY product's cost was actually written, not merely that a
+// figure was computed. Finally it stamps status/received_at. perProduct
 // maps product_id → (size_id → qty), already validated by the caller (every product ∈ the card's
 // products, at least one positive qty). Returns entity.ErrProductionRunAlreadyReceived on a repeat
 // receipt and sql.ErrNoRows when the run does not exist.
@@ -278,6 +281,7 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 			}
 			costPrice = run.ActualUnitCostBase()
 		}
+		var costPriceWrites int
 		for productID, perSize := range perProduct {
 			if len(perSize) == 0 {
 				continue
@@ -286,8 +290,15 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 				return err
 			}
 			if costPrice.Valid {
-				if err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal); err != nil {
+				written, err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal)
+				if err != nil {
 					return err
+				}
+				if written {
+					costPriceWrites++
+				} else {
+					slog.Default().InfoContext(ctx, "production receipt left a manually set cost_price untouched",
+						slog.Int("run_id", runID), slog.Int("product_id", productID))
 				}
 			}
 		}
@@ -296,7 +307,7 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 			map[string]any{"id": runID, "status": string(entity.ProductionRunReceived), "received_at": s.Now()}); err != nil {
 			return err
 		}
-		costPriceUpdated = costPrice.Valid
+		costPriceUpdated = costPriceWrites > 0
 		return nil
 	})
 	if err != nil {

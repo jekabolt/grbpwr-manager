@@ -283,17 +283,27 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 }
 
 // SetProductCostPriceFromProductionRun writes cost (base currency) as the production-run-sourced
-// cost_price of a product, recording the provenance (source + run id + timestamp).
-func (s *Store) SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) error {
-	return storeutil.ExecNamed(ctx, s.DB, `
+// cost_price of a product, recording the provenance (source + run id + timestamp). It returns
+// whether the product was actually written.
+//
+// The write is gated on provenance, exactly like the tech-card seeds (SeedProductCostFromTechCard):
+// a MANUALLY set cost is the owner's deliberate figure and a receipt must never overwrite it, so
+// only an unset, tech-card- or run-sourced cost is claimed. cost_breakdown is cleared in the same
+// statement: it decomposes the tech-card ESTIMATE, and leaving it beside a run actual makes the
+// COGS-structure report split the actual by the old plan's proportions.
+func (s *Store) SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) (bool, error) {
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 		UPDATE product
 		SET cost_price = :cost,
 			cost_price_source = 'production_run',
 			cost_price_production_run_id = :run,
 			cost_price_tech_card_id = NULL,
-			cost_price_updated_at = NOW()
-		WHERE id = :id`,
+			cost_price_updated_at = NOW(),
+			cost_breakdown = NULL
+		WHERE id = :id
+			AND (cost_price_source IS NULL OR cost_price_source IN ('tech_card', 'production_run'))`,
 		map[string]any{"id": productID, "run": runID, "cost": cost})
+	return n > 0, err
 }
 
 // UpdateProductSizeStockWithHistory applies a stock change and records it to
