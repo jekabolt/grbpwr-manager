@@ -242,6 +242,12 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 // `production_received` source (the run id in reference_id). It operates on the store's current
 // connection so it participates in the caller's transaction (ReceiveProductionRun) — do not open a
 // new transaction here. Sizes with a non-positive quantity are skipped.
+//
+// Each variant's quantity is read FOR UPDATE and the incremented value written under that lock: the
+// run lock ReceiveProductionRun holds guards production_run, not product_size, so an unlocked read
+// followed by an absolute write would resurrect a unit a sale removed in between (10 → receive reads
+// 10 → sale writes 9 → receive writes 60 instead of 59). The journal's before/after are the locked
+// values, so the history sums to the real stock.
 func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error {
 	ref := sql.NullString{String: fmt.Sprintf("production_run:%d", runID), Valid: true}
 	var adminUser sql.NullString
@@ -252,9 +258,9 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 		if qty <= 0 {
 			continue
 		}
-		before, _, err := s.GetProductSizeStock(ctx, productID, sizeID)
+		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID)
 		if err != nil {
-			return fmt.Errorf("can't read stock for product %d size %d: %w", productID, sizeID, err)
+			return fmt.Errorf("can't lock stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		after := before.Add(decimal.NewFromInt(int64(qty)))
 		if err := s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart())); err != nil {
