@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +55,7 @@ func TestProductionRunOptimisticLock(t *testing.T) {
 		return PR.UpdateProductionRun(ctx, runID, &entity.ProductionRunInsert{
 			TechCardId: tcID, Status: entity.ProductionRunInProgress,
 			Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 20}},
-		}, expected)
+		}, expected, dto.CostingFx{})
 	}
 
 	// fresh run starts at lock_version 0.

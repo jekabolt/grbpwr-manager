@@ -149,7 +149,19 @@ func (w *Worker) processRuns(ctx context.Context) error {
 				slog.Int("run_id", id), slog.String("err", err.Error()))
 			continue
 		}
-		entry, berr := accounting.BuildProductionReceiveEntry(*facts, w.startDate)
+		// The scan only returns runs with no LIVE entry, but a REVERSED prior version may exist and
+		// its key is never freed — the new post takes the next version number (mirrors opex/shipping).
+		active, versionCount, err := w.loadProductionReceiveVersions(ctx, id, facts.ReceivedAt)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "acctposting: load run entry versions",
+				slog.Int("run_id", id), slog.String("err", err.Error()))
+			continue
+		}
+		if active != nil {
+			// A live entry raced the scan; nothing to do.
+			continue
+		}
+		entry, berr := accounting.BuildProductionReceiveEntry(*facts, w.startDate, versionCount+1)
 		if berr != nil {
 			if errors.Is(berr, accounting.ErrSkipEmpty) {
 				slog.Default().DebugContext(ctx, "acctposting: production run has nothing to post", slog.Int("run_id", id))
@@ -159,8 +171,10 @@ func (w *Worker) processRuns(ctx context.Context) error {
 				slog.Int("run_id", id), slog.String("err", berr.Error()))
 			continue
 		}
+		var existed bool
 		txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-			_, _, e := rep.Accounting().CreateJournalEntry(ctx, entry)
+			_, ex, e := rep.Accounting().CreateJournalEntry(ctx, entry)
+			existed = ex
 			return e
 		})
 		if txErr != nil {
@@ -169,6 +183,12 @@ func (w *Worker) processRuns(ctx context.Context) error {
 			slog.Default().ErrorContext(ctx, "acctposting: post run receive",
 				slog.Int("run_id", id), slog.String("err", txErr.Error()))
 			continue
+		}
+		// With versioned keys a collapse means two workers raced on the same fresh key — harmless
+		// (the entry exists), but worth a note because it should be rare.
+		if existed {
+			slog.Default().WarnContext(ctx, "acctposting: production receive entry already existed for its version key",
+				slog.Int("run_id", id))
 		}
 	}
 	return nil
@@ -648,6 +668,26 @@ func (w *Worker) loadDevExpenseVersions(ctx context.Context) (map[int]*entity.Ac
 
 // pickActiveVersion scans entries whose source_key carries the given prefix + id, returning the
 // un-reversed one (if any) and the total count of that id's versions.
+// loadProductionReceiveVersions returns the active (un-reversed) production_receive entry for a run,
+// if any, and the total count of that run's versions (reversed or not) — new version = count+1
+// (mirrors loadOpexVersions/loadShippingVersions). It windows ListJournalEntries to the received_at
+// month (a run's occurred_at is its received_at, stable across re-posts) and matches the bare
+// '<id>' / '<id>:vN' source_key in Go.
+func (w *Worker) loadProductionReceiveVersions(ctx context.Context, runID int, receivedAt time.Time) (*entity.AcctJournalEntry, int, error) {
+	from := firstOfMonthUTC(receivedAt)
+	to := from.AddDate(0, 1, 0)
+	entries, _, err := w.repo.Accounting().ListJournalEntries(ctx, entity.AcctEntryFilter{
+		From:       from,
+		To:         to,
+		SourceType: entity.AcctSourceProductionReceive,
+		Limit:      versionListLimit,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return pickActiveVersion(entries, "", runID)
+}
+
 func pickActiveVersion(entries []entity.AcctJournalEntry, prefix string, id int) (*entity.AcctJournalEntry, int, error) {
 	var active *entity.AcctJournalEntry
 	count := 0

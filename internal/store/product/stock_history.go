@@ -12,12 +12,22 @@ import (
 )
 
 // RecordStockChange inserts stock change history entries.
+//
+// Every entry is validated against the source/reason/sign vocabulary first. That vocabulary existed
+// (ValidReasonsForSource / AllowedSignForSource / IsValidReasonForSource) with no caller and no
+// CHECK constraint behind it, so nothing stopped a caller writing a reason belonging to another
+// source, or an increase under a source that only ever removes stock — and the stock report reads
+// this journal as the record of what happened. A violation is a programming error, so it fails the
+// write rather than being logged: a wrong journal row is worse than a failed one.
 func (s *Store) RecordStockChange(ctx context.Context, entries []entity.StockChangeInsert) error {
 	if len(entries) == 0 {
 		return nil
 	}
 	rows := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
+		if err := entity.ValidateStockChange(e.Source, e.Reason, e.QuantityDelta); err != nil {
+			return fmt.Errorf("can't record stock change: %w", err)
+		}
 		row := map[string]any{
 			"quantity_delta":  e.QuantityDelta,
 			"quantity_before": e.QuantityBefore,

@@ -7,8 +7,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -35,10 +38,12 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc}
 }
 
-const runColumns = `tech_card_id, release_id, status, started_at, received_at,
+// received_at is deliberately absent from the write columns: it is stamped only by the receive flow,
+// in the same transaction as the stock it books, and nothing else may set or clear it.
+const runColumns = `tech_card_id, release_id, status, started_at,
 	planned_unit_cost, planned_currency, marker_efficiency_pct, marker_notes, actual_wastage_percent, notes`
 
-const runValues = `:tech_card_id, :release_id, :status, :started_at, :received_at,
+const runValues = `:tech_card_id, :release_id, :status, :started_at,
 	:planned_unit_cost, :planned_currency, :marker_efficiency_pct, :marker_notes, :actual_wastage_percent, :notes`
 
 func runParams(r *entity.ProductionRunInsert) map[string]any {
@@ -47,7 +52,6 @@ func runParams(r *entity.ProductionRunInsert) map[string]any {
 		"release_id":             r.ReleaseId,
 		"status":                 string(r.Status),
 		"started_at":             r.StartedAt,
-		"received_at":            r.ReceivedAt,
 		"planned_unit_cost":      r.PlannedUnitCost,
 		"planned_currency":       r.PlannedCurrency,
 		"marker_efficiency_pct":  r.MarkerEfficiencyPct,
@@ -97,19 +101,23 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 // Existence is established by the FOR UPDATE read (not by rows-affected, which is 0 for a no-op
 // header edit and would spuriously read as NotFound — the receive-v2 flow only touches line rows).
 // Returns sql.ErrNoRows when no run exists.
-func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
-	return s.updateProductionRun(ctx, id, r, expectedLockVersion, false)
+// The incoming cost articles must arrive UNFOLDED (amount_base unset unless the client supplied a
+// deliberate override): folding happens inside the transaction, after the stored bases have been
+// carried over, so an unchanged article keeps the base it was booked at instead of being re-valued
+// at today's rate. fx is the rate set to fold the genuinely new/changed articles with.
+func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int, fx dto.CostingFx) error {
+	return s.updateProductionRun(ctx, id, r, expectedLockVersion, false, fx)
 }
 
 // UpdateProductionRunPreservingCosts reloads the stored cost articles after locking the run and
 // carries them through the full-replace. It is the cost-blind update path: any preservation read
 // failure aborts the same transaction before destructive child deletes can run.
 func (s *Store) UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
-	return s.updateProductionRun(ctx, id, r, expectedLockVersion, true)
+	return s.updateProductionRun(ctx, id, r, expectedLockVersion, true, dto.CostingFx{})
 }
 
 func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert,
-	expectedLockVersion int, preserveCosts bool) error {
+	expectedLockVersion int, preserveCosts bool, fx dto.CostingFx) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
 			Status      string `db:"status"`
@@ -141,12 +149,20 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		if r.TechCardId != cur.TechCardId {
 			return entity.ErrProductionRunCardChange
 		}
+		// The stored articles are read under the run lock either way: the cost-blind path carries them
+		// through wholesale, the cost-writing path uses them to keep each unchanged article's already
+		// folded amount_base instead of re-folding it at today's FX rate. Preserve MUST run before the
+		// fold: folding first marks every incoming base Valid and leaves Preserve nothing to fill —
+		// which is exactly how the handler-side fold made this whole mechanism inert.
+		storedCosts, err := loadRunCosts(ctx, rep.DB(), id)
+		if err != nil {
+			return fmt.Errorf("load stored production run %d costs: %w", id, err)
+		}
 		if preserveCosts {
-			storedCosts, err := loadRunCosts(ctx, rep.DB(), id)
-			if err != nil {
-				return fmt.Errorf("preserve stored production run %d costs: %w", id, err)
-			}
 			r.Costs = storedCosts
+		} else {
+			dto.PreserveProductionRunCostBases(r.Costs, storedCosts)
+			dto.FoldProductionRunCostsToBase(r.Costs, fx)
 		}
 		if r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed {
 			net, err := netIssuedToRun(ctx, rep.DB(), id)
@@ -168,7 +184,7 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			UPDATE production_run SET
 				lock_version = lock_version + 1,
 				tech_card_id = :tech_card_id, release_id = :release_id, status = :status,
-				started_at = :started_at, received_at = :received_at,
+				started_at = :started_at,
 				marker_efficiency_pct = :marker_efficiency_pct, marker_notes = :marker_notes,
 				actual_wastage_percent = :actual_wastage_percent, notes = :notes
 			WHERE id = :id`+lockGuard, params)
@@ -228,7 +244,9 @@ func netIssuedToRun(ctx context.Context, db dependency.DB, runID int) (decimal.D
 // against a double count), then for each product in perProduct increments that product's per-size
 // stock (production_received source) and — when costPrice is set — seeds that product's cost_price
 // from the run's actual unit cost (one style-level figure applied to every colour-model of the
-// batch; colourways are not costed apart in v1). Finally it stamps status/received_at. perProduct
+// batch; colourways are not costed apart in v1), skipping any product whose cost was set manually.
+// The returned flag reports whether ANY product's cost was actually written, not merely that a
+// figure was computed. Finally it stamps status/received_at. perProduct
 // maps product_id → (size_id → qty), already validated by the caller (every product ∈ the card's
 // products, at least one positive qty). Returns entity.ErrProductionRunAlreadyReceived on a repeat
 // receipt and sql.ErrNoRows when the run does not exist.
@@ -278,7 +296,16 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 			}
 			costPrice = run.ActualUnitCostBase()
 		}
-		for productID, perSize := range perProduct {
+		var costPriceWrites int
+		// Products in ascending order → deterministic product_size lock order across concurrent
+		// receives (perProduct is a map; range order would differ per call).
+		productIDs := make([]int, 0, len(perProduct))
+		for productID := range perProduct {
+			productIDs = append(productIDs, productID)
+		}
+		sort.Ints(productIDs)
+		for _, productID := range productIDs {
+			perSize := perProduct[productID]
 			if len(perSize) == 0 {
 				continue
 			}
@@ -286,8 +313,17 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 				return err
 			}
 			if costPrice.Valid {
-				if err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal); err != nil {
+				written, err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal)
+				if err != nil {
 					return err
+				}
+				if written {
+					costPriceWrites++
+				} else {
+					// Changed-rows semantics: false = manual source, a missing product row, or a
+					// no-op write — the receipt does not distinguish, it only reports "not claimed".
+					slog.Default().InfoContext(ctx, "production receipt did not claim cost_price (manual source, missing product, or unchanged)",
+						slog.Int("run_id", runID), slog.Int("product_id", productID))
 				}
 			}
 		}
@@ -296,7 +332,7 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 			map[string]any{"id": runID, "status": string(entity.ProductionRunReceived), "received_at": s.Now()}); err != nil {
 			return err
 		}
-		costPriceUpdated = costPrice.Valid
+		costPriceUpdated = costPriceWrites > 0
 		return nil
 	})
 	if err != nil {
@@ -509,18 +545,52 @@ func (s *Store) runMaterialMovements(ctx context.Context, runID int) ([]entity.M
 	return loadRunMovements(ctx, s.DB, runID)
 }
 
+const movementColumns = `id, material_id, movement_type, quantity, on_hand_before, on_hand_after,
+	unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
+	lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at, created_at`
+
 // loadRunMovements loads a run's material movement ledger on the given db (pool or tx).
 func loadRunMovements(ctx context.Context, db dependency.DB, runID int) ([]entity.MaterialMovement, error) {
-	mv, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, db, `
-		SELECT id, material_id, movement_type, quantity, on_hand_before, on_hand_after,
-		       unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
-		       lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at, created_at
-		FROM material_stock_movement WHERE production_run_id = :run_id ORDER BY id`,
+	mv, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, db,
+		fmt.Sprintf(`SELECT %s FROM material_stock_movement WHERE production_run_id = :run_id ORDER BY id`, movementColumns),
 		map[string]any{"run_id": runID})
 	if err != nil {
 		return nil, fmt.Errorf("can't load production run material movements: %w", err)
 	}
 	return mv, nil
+}
+
+// attachMovements loads the material movements for a page of runs in one query and attaches them.
+// The list must carry the same movements the detail does: materials_from_stock_base, the actual
+// total (and therefore actual cost per unit), mixed_materials_sources and has_uncosted_issues are
+// ALL derived from them. Without them a warehouse-sourced run listed a fabric-free cost per unit and
+// reported both provenance flags as false — the list and the detail disagreed about the same run.
+func (s *Store) attachMovements(ctx context.Context, runs []entity.ProductionRun) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	ids := make([]int, len(runs))
+	idx := make(map[int]int, len(runs))
+	for i := range runs {
+		ids[i] = runs[i].Id
+		idx[runs[i].Id] = i
+	}
+	rows, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB,
+		fmt.Sprintf(`SELECT %s FROM material_stock_movement WHERE production_run_id IN (:ids)
+		 ORDER BY production_run_id, id`, movementColumns),
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load production run material movements: %w", err)
+	}
+	for _, m := range rows {
+		if !m.ProductionRunId.Valid {
+			continue
+		}
+		if i, ok := idx[int(m.ProductionRunId.Int32)]; ok {
+			runs[i].MaterialMovements = append(runs[i].MaterialMovements, m)
+		}
+	}
+	return nil
 }
 
 // ListProductionRuns returns runs (header + size grid) matching the filter, newest-first, with
@@ -571,6 +641,9 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 		return nil, 0, err
 	}
 	if err := s.attachMarkers(ctx, runs); err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachMovements(ctx, runs); err != nil {
 		return nil, 0, err
 	}
 	return runs, total, nil

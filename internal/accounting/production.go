@@ -10,8 +10,12 @@ import (
 )
 
 // BuildProductionReceiveEntry builds the production_receive journal entry when a run is received
-// (rule P1, docs/plan-accounting/04-posting-rules.md). source_key = run id; occurred_at =
-// received_at.
+// (rule P1, docs/plan-accounting/04-posting-rules.md). source_key = productionReceiveSourceKey(run,
+// version) — '<id>' for the first post, '<id>:vN' for a re-post after a reversal, mirroring
+// opex/shipping. Without the version a reversed entry kept the bare key forever and, with
+// (source_type, source_key) UNIQUE, every re-post collapsed onto it: the run could never be posted
+// again, permanently failing period close and heading the posting worker's batch each tick.
+// occurred_at = received_at.
 //
 // By receive time the run's material issues (M3/M5) are already on 1120 WIP. What is not yet in the
 // ledger is the run's manual costs (CMT, logistics, duty...) — booked now into WIP against AP — and
@@ -27,7 +31,7 @@ import (
 // likewise excluded from their respective totals and flagged, never invented at a made-up cost.
 //
 // Returns ErrSkipEmpty when there is nothing positive to post (all uncosted, no manual cost).
-func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time) (entity.AcctJournalEntryInsert, error) {
+func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, version int) (entity.AcctJournalEntryInsert, error) {
 	manualCost := decimal.Zero
 	manualUncostedCount := 0
 	for _, c := range r.Costs {
@@ -105,10 +109,20 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time) (en
 		OccurredAt:  r.ReceivedAt,
 		Description: fmt.Sprintf("production run %d received: %s", r.RunID, r.TechCardName),
 		SourceType:  entity.AcctSourceProductionReceive,
-		SourceKey:   strconv.Itoa(r.RunID),
+		SourceKey:   productionReceiveSourceKey(r.RunID, version),
 		CreatedBy:   createdBySystem,
 		Lines:       lines,
 	}
 	applyCaveats(&entry, caveats)
 	return entry, nil
+}
+
+// productionReceiveSourceKey is '<run id>' for the first version, '<run id>:vN' for a re-post
+// (N > 1) — the same scheme as opexSourceKey, so 'reversed_by IS NULL' predicates can match the
+// whole family with source_key = '<id>' OR source_key LIKE '<id>:v%'.
+func productionReceiveSourceKey(runID, version int) string {
+	if version > 1 {
+		return fmt.Sprintf("%d:v%d", runID, version)
+	}
+	return strconv.Itoa(runID)
 }

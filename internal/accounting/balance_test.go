@@ -276,7 +276,7 @@ func TestPropertyProductionBalances(t *testing.T) {
 			Costs:        costs,
 			Issues:       issues,
 		}
-		entry, err := BuildProductionReceiveEntry(run, testStartDate)
+		entry, err := BuildProductionReceiveEntry(run, testStartDate, 1)
 		if err != nil {
 			require.Truef(t, errors.Is(err, ErrSkipEmpty), "iter %d unexpected production error: %v", i, err)
 			continue

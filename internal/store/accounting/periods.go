@@ -112,12 +112,16 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("%w: %d unposted material movement(s) through %s", entity.ErrAcctPeriodNotReady, unpostedMovements, m.Format("2006-01"))
 	}
 
-	// 3b) production receives in the month all posted.
+	// 3b) production receives in the month all posted. Only a run whose status says it was received
+	// counts — a legacy client-written received_at on an open run is not a receipt.
 	unpostedRuns, err := storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM production_run r
-		WHERE r.received_at >= :from AND r.received_at < :to
+		WHERE r.status IN ('received', 'closed') AND r.received_at >= :from AND r.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
-		                  WHERE e.source_type = 'production_receive' AND e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)`,
+		                  WHERE e.source_type = 'production_receive'
+		                    AND (e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT(CAST(r.id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci)
+		                    AND e.reversed_by IS NULL)`,
 		map[string]any{"from": from, "to": to})
 	if err != nil {
 		return fmt.Errorf("accounting: close period unposted runs: %w", err)

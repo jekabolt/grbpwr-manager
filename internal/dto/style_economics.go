@@ -38,7 +38,9 @@ func ComputeStyleProductionSummary(runs []entity.ProductionRun, materialsFromSto
 			}
 		}
 		plannedQty += runPlannedQty
-		if r.PlannedUnitCost.Valid {
+		// Same currency guard as the run-level actuals: actual is always base, a planned snapshot in
+		// the costing currency would make the roll-up's variance an FX artefact (plannedCostInBase).
+		if plannedCostInBase(r) {
 			hasPlan = true
 			planned = planned.Add(r.PlannedUnitCost.Decimal.Mul(decimal.NewFromInt(runPlannedQty)))
 		}

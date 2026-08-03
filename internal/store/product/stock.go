@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -149,22 +150,6 @@ func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.
 	return nil
 }
 
-// RestoreStockSilently restores stock without recording history.
-func (s *Store) RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error {
-	for _, item := range items {
-		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
-		err := storeutil.ExecNamed(ctx, s.DB, updateQuery, map[string]any{
-			"quantity":  item.QuantityDecimal(),
-			"productId": item.ProductId,
-			"sizeId":    item.SizeId,
-		})
-		if err != nil {
-			return fmt.Errorf("can't restore product quantity for sizes: %w", err)
-		}
-	}
-	return nil
-}
-
 // GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 func (s *Store) GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error) {
 	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
@@ -242,19 +227,35 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 // `production_received` source (the run id in reference_id). It operates on the store's current
 // connection so it participates in the caller's transaction (ReceiveProductionRun) — do not open a
 // new transaction here. Sizes with a non-positive quantity are skipped.
+//
+// Each variant's quantity is read FOR UPDATE and the incremented value written under that lock. The
+// run lock ReceiveProductionRun holds guards production_run, not product_size; under a weaker
+// isolation level an unlocked read followed by this absolute write would resurrect a unit a sale
+// removed in between (10 → receive reads 10 → sale writes 9 → receive writes 60 instead of 59).
+// Today's transactions run SERIALIZABLE (internal/store/db.go), where a plain SELECT already takes a
+// shared lock — the explicit X lock makes correctness independent of that configuration and avoids
+// the S→X upgrade deadlock shape. The journal's before/after are the locked values, so the history
+// sums to the real stock. Sizes are visited in ascending order so two concurrent receives over
+// overlapping variants take their row locks in the same order.
 func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error {
 	ref := sql.NullString{String: fmt.Sprintf("production_run:%d", runID), Valid: true}
 	var adminUser sql.NullString
 	if username != "" {
 		adminUser = sql.NullString{String: username, Valid: true}
 	}
-	for sizeID, qty := range perSize {
+	sizeIDs := make([]int, 0, len(perSize))
+	for sizeID := range perSize {
+		sizeIDs = append(sizeIDs, sizeID)
+	}
+	sort.Ints(sizeIDs)
+	for _, sizeID := range sizeIDs {
+		qty := perSize[sizeID]
 		if qty <= 0 {
 			continue
 		}
-		before, _, err := s.GetProductSizeStock(ctx, productID, sizeID)
+		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID)
 		if err != nil {
-			return fmt.Errorf("can't read stock for product %d size %d: %w", productID, sizeID, err)
+			return fmt.Errorf("can't lock stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		after := before.Add(decimal.NewFromInt(int64(qty)))
 		if err := s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart())); err != nil {
@@ -277,17 +278,27 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 }
 
 // SetProductCostPriceFromProductionRun writes cost (base currency) as the production-run-sourced
-// cost_price of a product, recording the provenance (source + run id + timestamp).
-func (s *Store) SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) error {
-	return storeutil.ExecNamed(ctx, s.DB, `
+// cost_price of a product, recording the provenance (source + run id + timestamp). It returns
+// whether the product was actually written.
+//
+// The write is gated on provenance, exactly like the tech-card seeds (SeedProductCostFromTechCard):
+// a MANUALLY set cost is the owner's deliberate figure and a receipt must never overwrite it, so
+// only an unset, tech-card- or run-sourced cost is claimed. cost_breakdown is cleared in the same
+// statement: it decomposes the tech-card ESTIMATE, and leaving it beside a run actual makes the
+// COGS-structure report split the actual by the old plan's proportions.
+func (s *Store) SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) (bool, error) {
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 		UPDATE product
 		SET cost_price = :cost,
 			cost_price_source = 'production_run',
 			cost_price_production_run_id = :run,
 			cost_price_tech_card_id = NULL,
-			cost_price_updated_at = NOW()
-		WHERE id = :id`,
+			cost_price_updated_at = NOW(),
+			cost_breakdown = NULL
+		WHERE id = :id
+			AND (cost_price_source IS NULL OR cost_price_source IN ('tech_card', 'production_run'))`,
 		map[string]any{"id": productID, "run": runID, "cost": cost})
+	return n > 0, err
 }
 
 // UpdateProductSizeStockWithHistory applies a stock change and records it to

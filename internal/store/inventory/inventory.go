@@ -785,10 +785,19 @@ func (s *Store) ListMaterialStock(ctx context.Context, filter entity.MaterialSto
 
 // checkRunOpen verifies a production run exists and is open (planned/in_progress) — the only
 // states that accept material movement.
+//
+// The status is read FOR UPDATE, inside the issue's transaction: ReceiveProductionRun takes the same
+// row lock and computes the run's actual unit cost from the movements it can see. Under a weaker
+// isolation level a plain read would let an issue pass the open check and commit AFTER the receipt
+// had frozen cost_price — the material's value excluded from the goods it went into, stranded in WIP
+// on a run that can never be received again. Today's transactions run SERIALIZABLE
+// (internal/store/db.go), where the plain SELECT already blocked that; the explicit X lock makes the
+// serialisation independent of that configuration and avoids the S→X upgrade deadlock shape. The
+// issue either lands before the receipt (and is costed into it) or fails the check.
 func checkRunOpen(ctx context.Context, db dependency.DB, runID int) error {
 	cur, err := storeutil.QueryNamedOne[struct {
 		Status string `db:"status"`
-	}](ctx, db, `SELECT status FROM production_run WHERE id = :id`, map[string]any{"id": runID})
+	}](ctx, db, `SELECT status FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: production run %d not found", entity.ErrMaterialIssueTargetInvalid, runID)

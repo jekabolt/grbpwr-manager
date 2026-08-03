@@ -83,7 +83,10 @@ var productionMarkerSourceEntityToPb = map[entity.ProductionMarkerSource]pb_comm
 }
 
 // ConvertPbProductionRunInsertToEntity validates and converts a writable production run. The
-// planned-cost snapshot is NOT taken from the client — the service layer sets it separately.
+// planned-cost snapshot is NOT taken from the client — the service layer sets it separately. Neither
+// is received_at: it is the timestamp of a physical receipt, stamped only by the receive flow beside
+// the stock it books. A client-writable received_at let an open run be back-dated into the
+// accounting scan (which reads received_at, not status) with no stock movement behind it.
 func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*entity.ProductionRunInsert, error) {
 	if pb == nil {
 		return nil, fmt.Errorf("production run is required")
@@ -132,7 +135,6 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		ReleaseId:           nullInt64FromPb(int64(pb.ReleaseId)),
 		Status:              status,
 		StartedAt:           nullTimeFromPbTimestamp(pb.StartedAt),
-		ReceivedAt:          nullTimeFromPbTimestamp(pb.ReceivedAt),
 		MarkerEfficiencyPct:  markerEff,
 		MarkerNotes:          nullStringFromPb(pb.MarkerNotes),
 		ActualWastagePercent: actualWastage,
@@ -271,6 +273,47 @@ func FoldProductionRunCostsToBase(costs []entity.ProductionRunCost, fx CostingFx
 		}
 		if base, ok := fx.toBase(costs[i].Amount, costs[i].Currency); ok {
 			costs[i].AmountBase = decimal.NullDecimal{Decimal: roundMoney(base), Valid: true}
+		}
+	}
+}
+
+// PreserveProductionRunCostBases carries each STORED article's amount_base onto the incoming article
+// that replaces it, whenever kind, amount and currency are all unchanged. An update full-replaces a
+// run's cost rows, so an article the client re-sent without its amount_base was re-folded at TODAY's
+// rate: an expense of USD 1000 booked in March at 0.92 quietly became a different euro number in
+// June, moving the run's actual cost and the variance against it long after the money was spent.
+// amount_base is a FACT about a payment, not a live conversion.
+//
+// Only an unset incoming base is filled — a caller-supplied one is a deliberate manual override and
+// FoldProductionRunCostsToBase already respects it. A changed amount or currency is a different
+// payment and is re-folded as before. Rows are matched as a multiset (each stored base is handed out
+// once), because production_run_cost has no natural key to join on.
+func PreserveProductionRunCostBases(incoming, stored []entity.ProductionRunCost) {
+	if len(incoming) == 0 || len(stored) == 0 {
+		return
+	}
+	type key struct {
+		kind     entity.ProductionRunCostKind
+		currency string
+		amount   string
+	}
+	k := func(c entity.ProductionRunCost) key {
+		return key{kind: c.Kind, currency: strings.ToUpper(strings.TrimSpace(c.Currency)), amount: c.Amount.String()}
+	}
+	bases := make(map[key][]decimal.Decimal, len(stored))
+	for _, c := range stored {
+		if c.AmountBase.Valid {
+			bases[k(c)] = append(bases[k(c)], c.AmountBase.Decimal)
+		}
+	}
+	for i := range incoming {
+		if incoming[i].AmountBase.Valid {
+			continue
+		}
+		kk := k(incoming[i])
+		if avail := bases[kk]; len(avail) > 0 {
+			incoming[i].AmountBase = decimal.NullDecimal{Decimal: avail[0], Valid: true}
+			bases[kk] = avail[1:]
 		}
 	}
 }
@@ -483,8 +526,9 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 		out.DefectPctActual = pbDecimalFromDecimal(pct.Round(2))
 	}
 
-	// plan/fact against the run's frozen planned unit cost, scaled to the received quantity.
-	if r.PlannedUnitCost.Valid && receivedQty > 0 {
+	// plan/fact against the run's frozen planned unit cost, scaled to the received quantity — only
+	// when that snapshot is in the base currency the actuals are measured in (plannedCostInBase).
+	if plannedCostInBase(r) && receivedQty > 0 {
 		plannedTotal := r.PlannedUnitCost.Decimal.Mul(recv)
 		out.PlannedTotalBase = pbDecimalFromDecimal(roundMoney(plannedTotal))
 		out.TotalVariance = pbDecimalFromDecimal(roundMoney(totalBase.Sub(plannedTotal)))
@@ -574,6 +618,18 @@ func productionRunLinesToPb(lines []entity.ProductionRunLine) []*pb_common.Produ
 		out = append(out, pb)
 	}
 	return out
+}
+
+// plannedCostInBase reports whether a run's frozen planned unit cost may be subtracted from its
+// actuals. Actual cost is ALWAYS in the base currency (every article is folded on write), while
+// planned_unit_cost is a snapshot of the tech-card costing and can be in the costing currency —
+// planned_currency records which. Nothing read it, so a PLN 142.50 plan against a EUR 30 actual
+// reported a −112.50 "saving" that was pure FX. A snapshot in any other currency (or with no
+// currency recorded at all, which is unverifiable) yields no variance rather than a fictional one;
+// planned_unit_cost / planned_currency still travel on the wire, so the client can say why.
+func plannedCostInBase(r *entity.ProductionRun) bool {
+	return r.PlannedUnitCost.Valid && r.PlannedCurrency.Valid &&
+		strings.EqualFold(strings.TrimSpace(r.PlannedCurrency.String), cache.GetBaseCurrency())
 }
 
 // ProductionRunActualUnitCostBase returns the run's actual unit cost in the base currency, valid

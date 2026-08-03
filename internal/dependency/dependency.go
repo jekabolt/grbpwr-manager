@@ -69,8 +69,10 @@ type (
 		// the caller's connection (no new transaction) so it composes into ReceiveProductionRun.
 		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error
 		// SetProductCostPriceFromProductionRun writes cost (base) as the production-run-sourced
-		// cost_price of a product, recording provenance (source + run id + timestamp).
-		SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) error
+		// cost_price of a product, recording provenance (source + run id + timestamp) and clearing
+		// the tech-card cost_breakdown. A manually set cost is never overwritten — the returned bool
+		// is false for such a product (the receipt itself still succeeds).
+		SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) (bool, error)
 		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
 		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
 		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
@@ -138,8 +140,6 @@ type (
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
-		// RestoreStockSilently restores stock without recording history (for expired orders).
-		RestoreStockSilently(ctx context.Context, items []entity.OrderItemInsert) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// UpdateProductSizeStockWithHistory applies a stock change (mode Set=absolute, Adjust=signed
@@ -710,7 +710,9 @@ type (
 	// planned/received/defect grid, with the planned unit cost snapshotted at plan time.
 	ProductionRuns interface {
 		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
-		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
+		// UpdateProductionRun expects the incoming cost articles UNFOLDED: it preserves each
+		// unchanged article's stored amount_base under the run lock, then folds the rest with fx.
+		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int, fx dto.CostingFx) error
 		// UpdateProductionRunPreservingCosts performs the same update but reloads and carries stored
 		// cost articles under the run's FOR UPDATE lock, for callers without costing write access.
 		UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error

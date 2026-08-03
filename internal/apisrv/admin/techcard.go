@@ -659,14 +659,23 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 	var seeded int64
 	for _, pid := range linkedProducts {
 		unit, currency := dto.ComputeColorwayUnitCost(card, pid, fx)
-		if !unit.Valid {
+		if !unit.Valid && !dto.HasColorwayForProduct(card, pid) {
 			// Defensive only: a linked product the card's colourway list misses. A colourway
 			// with an EMPTY recipe already inherits the style figure inside
 			// ComputeColorwayUnitCost, so this fallback is not the per-colourway erasure it
-			// looks like.
+			// looks like. A colourway that EXISTS but cannot be costed completely (an unpriced
+			// or unconvertible line) must NOT borrow the style number — that would publish the
+			// primary colourway's cost as this one's and hide the very gap the gate exists for.
 			unit, currency = rootUnit, rootCcy
 		}
 		if !unit.Valid || !strings.EqualFold(currency, base) {
+			// Say WHICH colourway was withheld and why: the aggregate warning below fires only
+			// when the whole card seeded nothing, so a card with 1 of 3 colourways gated would
+			// otherwise skip silently while the tab still shows a unit cost.
+			if !unit.Valid && dto.HasColorwayForProduct(card, pid) {
+				slog.Default().InfoContext(ctx, "colorway cost not seeded: recipe incomplete or not computable",
+					slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid))
+			}
 			continue
 		}
 		// The COGS decomposition rides the same per-colourway figure (its materials component is
