@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -535,7 +536,10 @@ const (
 	StockChangeReasonOrderCancelled StockChangeReason = "order_cancelled"
 )
 
-// ValidReasonsForSource maps each source to its allowed reasons.
+// ValidReasonsForSource maps each source to its allowed reasons. A source present with an EMPTY list
+// carries no reason at all — its provenance is the reference_id, not a reason code. Every source that
+// may be journalled must appear here (and in AllowedSignForSource): RecordStockChange rejects a row
+// whose source is unknown to these maps.
 var ValidReasonsForSource = map[StockChangeSource][]StockChangeReason{
 	StockChangeSourceAdminNewProduct:  {StockChangeReasonInitialStock},
 	StockChangeSourceManualAdjustment: {StockChangeReasonStockCount, StockChangeReasonDamage, StockChangeReasonLoss, StockChangeReasonFound, StockChangeReasonCorrection, StockChangeReasonReservedRelease, StockChangeReasonOther},
@@ -543,6 +547,9 @@ var ValidReasonsForSource = map[StockChangeSource][]StockChangeReason{
 	StockChangeSourceOrderCustom:      {StockChangeReasonCustomOrder},
 	StockChangeSourceOrderReturned:    {StockChangeReasonReturnToStock},
 	StockChangeSourceOrderCancelled:   {StockChangeReasonOrderCancelled},
+	// A production receipt has no reason code: what happened is fully described by the run it came
+	// from, which the receive path writes into reference_id as production_run:<id>.
+	StockChangeSourceProductionReceived: {},
 }
 
 // StockChangeSignPositive means the source only allows positive deltas.
@@ -558,12 +565,13 @@ const (
 
 // AllowedSignForSource maps each source to its allowed sign direction.
 var AllowedSignForSource = map[StockChangeSource]StockChangeSign{
-	StockChangeSourceAdminNewProduct:  StockChangeSignPositive,
-	StockChangeSourceManualAdjustment: StockChangeSignBoth,
-	StockChangeSourceOrderPaid:        StockChangeSignNegative,
-	StockChangeSourceOrderCustom:      StockChangeSignNegative,
-	StockChangeSourceOrderReturned:    StockChangeSignPositive,
-	StockChangeSourceOrderCancelled:   StockChangeSignPositive,
+	StockChangeSourceAdminNewProduct:    StockChangeSignPositive,
+	StockChangeSourceManualAdjustment:   StockChangeSignBoth,
+	StockChangeSourceOrderPaid:          StockChangeSignNegative,
+	StockChangeSourceOrderCustom:        StockChangeSignNegative,
+	StockChangeSourceOrderReturned:      StockChangeSignPositive,
+	StockChangeSourceOrderCancelled:     StockChangeSignPositive,
+	StockChangeSourceProductionReceived: StockChangeSignPositive,
 }
 
 // IsValidReasonForSource checks if a reason is valid for a given source.
@@ -578,6 +586,31 @@ func IsValidReasonForSource(source StockChangeSource, reason StockChangeReason) 
 		}
 	}
 	return false
+}
+
+// ValidateStockChange checks one journal row against the source/reason/sign vocabulary above: the
+// source must be known, a reason (when present) must be one this source may carry, and the delta must
+// run in the source's direction. A ZERO delta is exempt from the direction check — such a row records
+// context beside an order (shipping cost) rather than a movement. Returns nil when the row is sound.
+func ValidateStockChange(source string, reason sql.NullString, quantityDelta decimal.Decimal) error {
+	src := StockChangeSource(source)
+	sign, known := AllowedSignForSource[src]
+	if !known {
+		return fmt.Errorf("stock change source %q is not a known source", source)
+	}
+	if r := strings.TrimSpace(reason.String); reason.Valid && r != "" && !IsValidReasonForSource(src, StockChangeReason(r)) {
+		return fmt.Errorf("stock change reason %q is not valid for source %q", r, source)
+	}
+	if quantityDelta.IsZero() {
+		return nil
+	}
+	if sign == StockChangeSignPositive && quantityDelta.IsNegative() {
+		return fmt.Errorf("stock change source %q only adds stock, got delta %s", source, quantityDelta.String())
+	}
+	if sign == StockChangeSignNegative && quantityDelta.IsPositive() {
+		return fmt.Errorf("stock change source %q only removes stock, got delta %s", source, quantityDelta.String())
+	}
+	return nil
 }
 
 // StockAdjustmentMode represents the mode of stock adjustment.
