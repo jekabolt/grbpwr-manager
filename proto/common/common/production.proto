@@ -30,6 +30,13 @@ message ProductionRunLine {
   int32 planned_qty = 3;
   optional int32 received_qty = 4; // unset until the run is received
   optional int32 defect_qty = 5; // unset until the run is received
+  // Stable identity of this line, minted by the client (a 26-character Crockford ULID, exactly like
+  // a tech-card BOM line's line_key) and echoed back on read. The store diffs the submitted grid by
+  // it instead of delete+reinserting the whole grid, so the row's database id survives an edit —
+  // which is what lets receipt lines hold a real foreign key to it. Empty on the way in means "new
+  // line, mint me one"; a legacy row backfilled by migration 0230 reads back as a non-ULID key,
+  // so echo whatever arrives rather than validating its shape.
+  string line_key = 6;
 }
 
 // ProductionRunCostKind is the article category of an actual production-run cost.

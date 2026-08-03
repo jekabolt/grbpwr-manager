@@ -5,10 +5,13 @@ package productionrun
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base32"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -92,10 +95,11 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 	return id, nil
 }
 
-// UpdateProductionRun updates a run's header and full-replaces its line grid + cost articles. The
-// planned-cost snapshot (planned_unit_cost/planned_currency) is intentionally NOT written here — it
-// is frozen at plan time. It first locks the run FOR UPDATE and enforces the status invariants that
-// keep received facts and warehouse WIP honest:
+// UpdateProductionRun updates a run's header, diffs its line grid by line_key (0230 — matched rows
+// are updated in place so their ids survive; see upsertRunLines) and full-replaces its cost
+// articles. The planned-cost snapshot (planned_unit_cost/planned_currency) is intentionally NOT
+// written here — it is frozen at plan time. It first locks the run FOR UPDATE and enforces the
+// status invariants that keep received facts and warehouse WIP honest:
 //   - a received/closed run is immutable (its booked stock and seeded cost_price are applied facts,
 //     exactly as DeleteProductionRun refuses) → ErrProductionRunReceivedImmutable;
 //   - status=received cannot be set here (only ReceiveProductionRun books the stock behind it) →
@@ -202,13 +206,16 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		if expectedLockVersion > 0 && rows == 0 {
 			return entity.ErrProductionRunConflict
 		}
-		for _, tbl := range []string{"production_run_line", "production_run_cost", "production_run_marker"} {
+		// Costs and markers are still full-replaced: neither has a wire identity yet (costs get one
+		// with receipt v1, which rewrites the table anyway; markers are slated for removal). Lines do
+		// NOT get replaced — they are diffed by line_key so their ids survive (0230).
+		for _, tbl := range []string{"production_run_cost", "production_run_marker"} {
 			if err := storeutil.ExecNamed(ctx, rep.DB(),
 				fmt.Sprintf(`DELETE FROM %s WHERE run_id = :id`, tbl), map[string]any{"id": id}); err != nil {
 				return fmt.Errorf("failed to clear %s: %w", tbl, err)
 			}
 		}
-		if err := insertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
+		if err := upsertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
 		if err := insertRunCosts(ctx, rep.DB(), id, r.Costs); err != nil {
@@ -678,7 +685,7 @@ func (s *Store) runLines(ctx context.Context, runID int) ([]entity.ProductionRun
 // loadRunLines loads a run's colour-model × size lines on the given db (pool or tx).
 func loadRunLines(ctx context.Context, db dependency.DB, runID int) ([]entity.ProductionRunLine, error) {
 	lines, err := storeutil.QueryListNamed[entity.ProductionRunLine](ctx, db,
-		`SELECT id, product_id, size_id, planned_qty, received_qty, defect_qty
+		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, size_id, planned_qty, received_qty, defect_qty
 		 FROM production_run_line WHERE run_id = :run_id ORDER BY product_id IS NOT NULL, product_id, size_id`,
 		map[string]any{"run_id": runID})
 	if err != nil {
@@ -705,7 +712,7 @@ func (s *Store) attachLines(ctx context.Context, runs []entity.ProductionRun) er
 		idx[runs[i].Id] = i
 	}
 	rows, err := storeutil.QueryListNamed[lineRow](ctx, s.DB,
-		`SELECT run_id, id, product_id, size_id, planned_qty, received_qty, defect_qty
+		`SELECT run_id, id, COALESCE(line_key, '') AS line_key, product_id, size_id, planned_qty, received_qty, defect_qty
 		 FROM production_run_line WHERE run_id IN (:ids) ORDER BY run_id, product_id IS NOT NULL, product_id, size_id`,
 		map[string]any{"ids": ids})
 	if err != nil {
@@ -864,21 +871,216 @@ func insertRunLines(ctx context.Context, db dependency.DB, runID int, lines []en
 	if len(lines) == 0 {
 		return nil
 	}
+	keys, err := resolveRunLineKeys(lines)
+	if err != nil {
+		return err
+	}
 	rows := make([]map[string]any, 0, len(lines))
-	for _, ln := range lines {
-		rows = append(rows, map[string]any{
-			"run_id":       runID,
-			"product_id":   ln.ProductId,
-			"size_id":      ln.SizeId,
-			"planned_qty":  ln.PlannedQty,
-			"received_qty": ln.ReceivedQty,
-			"defect_qty":   ln.DefectQty,
-		})
+	for i := range lines {
+		rows = append(rows, runLineParams(runID, &lines[i], keys[i]))
 	}
 	if err := storeutil.BulkInsert(ctx, db, "production_run_line", rows); err != nil {
 		return fmt.Errorf("failed to insert production run lines: %w", err)
 	}
 	return nil
+}
+
+// runLineParams maps a plan line to the named params of both the insert and the keyed update. It is
+// the single definition of the line's column set, so the diff cannot silently drop a column the way
+// a hand-written UPDATE list would (received_qty/defect_qty in particular: the receive modal writes
+// counted quantities through an ordinary section save, and losing them would erase counted facts).
+func runLineParams(runID int, ln *entity.ProductionRunLine, lineKey string) map[string]any {
+	return map[string]any{
+		"run_id":       runID,
+		"line_key":     lineKey,
+		"product_id":   ln.ProductId,
+		"size_id":      ln.SizeId,
+		"planned_qty":  ln.PlannedQty,
+		"received_qty": ln.ReceivedQty,
+		"defect_qty":   ln.DefectQty,
+	}
+}
+
+// resolveRunLineKeys returns the stable identity of each submitted line, minting one for a keyless
+// line and rejecting a payload that names the same identity twice (which the keyed diff would
+// otherwise collapse onto a single row, silently losing a line).
+func resolveRunLineKeys(lines []entity.ProductionRunLine) ([]string, error) {
+	keys := make([]string, len(lines))
+	seen := make(map[string]bool, len(lines))
+	for i := range lines {
+		key := strings.TrimSpace(lines[i].LineKey)
+		if key == "" {
+			// The DTO layer mints keys for every RPC payload; this covers direct callers (seeders,
+			// tests) so a line always reaches the table with a durable handle.
+			key = newRunLineKey()
+		}
+		if seen[key] {
+			return nil, fmt.Errorf("production run line: duplicate line_key %q in the payload", key)
+		}
+		seen[key] = true
+		keys[i] = key
+	}
+	return keys, nil
+}
+
+// newRunLineKey mints a 26-character key ([A-Z2-7], standard base32 of 128 random bits) for a
+// keyless line. Mirrors the tech-card BOM fallback; entity.IsValidProductionRunLineKey accepts it.
+func newRunLineKey() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])
+}
+
+// runLineIdentity is a stored line as the keyed diff needs it: the identity to match on, the id that
+// must survive the match, and the uniq_prl slot the row currently occupies.
+type runLineIdentity struct {
+	Id        int           `db:"id"`
+	LineKey   string        `db:"line_key"`
+	ProductId sql.NullInt32 `db:"product_id"`
+	SizeId    int           `db:"size_id"`
+}
+
+// upsertRunLines reconciles a run's plan grid by line_key instead of the old delete-all + reinsert
+// (production-costing pre-PR, adversarial review B3) — the same keyed upsert-diff the tech-card BOM
+// has used since 0159: a line_key already stored is UPDATEd in place, so its id survives, which is
+// the entire point (receipt lines will hold a foreign key to that id, and the old full-replace would
+// have either dangled them or cascade-deleted the received history on the next edit of the run); a
+// new key is INSERTed; a key that vanished from the payload is DELETEd.
+//
+// The order of the four steps is load-bearing, because production_run_line carries a SECOND unique
+// key the diff must not trip over: uniq_prl (run_id, product_id, size_id). A line may legitimately
+// move — a size is corrected, or the colour-model that was unpublished at planning time is finally
+// attached — and two lines may even swap slots in one save, so "UPDATE every matched row" would
+// collide with a row that has not moved out of the way yet. Instead:
+//
+//  1. DELETE the vanished keys, freeing the slots they held;
+//  2. UPDATE every matched row, PARKING the ones that move at product_id = NULL. MySQL never treats
+//     a unique-index entry containing NULL as a duplicate, so a parked row occupies no slot and no
+//     intermediate state can collide (a row whose final product is NULL needs no parking at all —
+//     it is already slot-less);
+//  3. INSERT the new keys — every slot they can want is free, held by a row that is staying put, or
+//     duplicated in the payload itself (which the DTO rejects);
+//  4. UN-PARK: restore the parked rows' product_id, now that every other row sits at its final slot
+//     or is slot-less.
+func upsertRunLines(ctx context.Context, db dependency.DB, runID int, lines []entity.ProductionRunLine) error {
+	stored, err := storeutil.QueryListNamed[runLineIdentity](ctx, db,
+		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, size_id
+		 FROM production_run_line WHERE run_id = :run_id`, map[string]any{"run_id": runID})
+	if err != nil {
+		return fmt.Errorf("failed to load existing production run lines: %w", err)
+	}
+	// Resolve identities before writing anything: the delete set has to be known up front.
+	keys, err := resolveRunLineKeys(lines)
+	if err != nil {
+		return err
+	}
+	plan := planRunLineDiff(stored, lines, keys)
+
+	// 1. keys that vanished from the payload.
+	for _, id := range plan.deletes {
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM production_run_line WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to delete production run line: %w", err)
+		}
+	}
+
+	// 2. matched keys: UPDATE in place (id survives), parking slot movers.
+	for _, u := range plan.updates {
+		params := runLineParams(runID, &lines[u.index], keys[u.index])
+		params["id"] = u.id
+		if u.park {
+			params["product_id"] = nil
+		}
+		if err := storeutil.ExecNamed(ctx, db, `
+			UPDATE production_run_line SET
+				product_id = :product_id, size_id = :size_id, planned_qty = :planned_qty,
+				received_qty = :received_qty, defect_qty = :defect_qty
+			WHERE id = :id`, params); err != nil {
+			return fmt.Errorf("failed to update production run line: %w", err)
+		}
+	}
+
+	// 3. new keys.
+	inserts := make([]map[string]any, 0, len(plan.inserts))
+	for _, i := range plan.inserts {
+		inserts = append(inserts, runLineParams(runID, &lines[i], keys[i]))
+	}
+	if len(inserts) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "production_run_line", inserts); err != nil {
+			return fmt.Errorf("failed to insert production run lines: %w", err)
+		}
+	}
+
+	// 4. un-park.
+	for _, u := range plan.updates {
+		if !u.park {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE production_run_line SET product_id = :product_id WHERE id = :id`,
+			map[string]any{"product_id": lines[u.index].ProductId, "id": u.id}); err != nil {
+			return fmt.Errorf("failed to restore production run line product: %w", err)
+		}
+	}
+	return nil
+}
+
+// runLineUpdate is one matched line: the payload line (index) that keeps a stored row's id, and
+// whether its product_id must be parked at NULL for the duration of the diff because the row changes
+// the uniq_prl slot it occupies.
+type runLineUpdate struct {
+	index int
+	id    int
+	park  bool
+}
+
+// runLineDiff is the whole write plan of upsertRunLines, decided before a single statement runs so
+// the ordering argument (see upsertRunLines) can be unit-tested without a database.
+type runLineDiff struct {
+	deletes []int           // stored ids whose key vanished, ascending
+	updates []runLineUpdate // matched rows, in payload order
+	inserts []int           // payload indexes with no stored row, in payload order
+}
+
+// planRunLineDiff decides delete/update/park/insert for one save. Pure: no DB, no ordering surprises
+// (the delete set is sorted, everything else follows payload order), so the parking rules that make
+// the diff safe against uniq_prl (run_id, product_id, size_id) are directly testable.
+func planRunLineDiff(stored []runLineIdentity, lines []entity.ProductionRunLine, keys []string) runLineDiff {
+	existing := make(map[string]runLineIdentity, len(stored))
+	for _, row := range stored {
+		if row.LineKey == "" {
+			continue // pre-0230 row the backfill missed: it has no identity, so it can only be replaced
+		}
+		existing[row.LineKey] = row
+	}
+	submitted := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		submitted[k] = true
+	}
+
+	plan := runLineDiff{}
+	for _, row := range stored {
+		if row.LineKey != "" && submitted[row.LineKey] {
+			continue
+		}
+		plan.deletes = append(plan.deletes, row.Id)
+	}
+	sort.Ints(plan.deletes)
+
+	for i := range lines {
+		row, ok := existing[keys[i]]
+		if !ok {
+			plan.inserts = append(plan.inserts, i)
+			continue
+		}
+		// Park only when the row both moves to another uniq_prl slot AND is landing on a real one: a
+		// line whose final product_id is NULL occupies no slot at all (MySQL never counts a unique
+		// entry containing NULL as a duplicate), so it can move freely in a single statement.
+		park := lines[i].ProductId.Valid &&
+			(row.SizeId != lines[i].SizeId || row.ProductId != lines[i].ProductId)
+		plan.updates = append(plan.updates, runLineUpdate{index: i, id: row.Id, park: park})
+	}
+	return plan
 }
 
 func clampPagination(limit, offset int) (int, int) {
