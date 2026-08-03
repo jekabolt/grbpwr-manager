@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -81,7 +82,7 @@ func TestProductionRunActualWastagePersists(t *testing.T) {
 	require.NoError(t, PR.UpdateProductionRun(ctx, nullID, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
 		ActualWastagePercent: nd("12.00"), Lines: line,
-	}, 0))
+	}, 0, dto.CostingFx{}))
 	updated, err := PR.GetProductionRun(ctx, nullID)
 	require.NoError(t, err)
 	require.True(t, updated.ActualWastagePercent.Valid)
@@ -90,7 +91,7 @@ func TestProductionRunActualWastagePersists(t *testing.T) {
 	// and clearable back to NULL via update (fall back to the BOM estimate again).
 	require.NoError(t, PR.UpdateProductionRun(ctx, setID, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress, Lines: line,
-	}, 0))
+	}, 0, dto.CostingFx{}))
 	cleared, err := PR.GetProductionRun(ctx, setID)
 	require.NoError(t, err)
 	require.False(t, cleared.ActualWastagePercent.Valid, "update can clear the actual wastage back to NULL")

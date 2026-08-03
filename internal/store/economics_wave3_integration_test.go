@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -204,7 +205,7 @@ func TestProductionRun(t *testing.T) {
 		Costs: []entity.ProductionRunCost{
 			{Kind: entity.ProductionRunCostCMT, Amount: decimal.RequireFromString("400"), Currency: "EUR", AmountBase: nd("400")},
 		},
-	}, 0))
+	}, 0, dto.CostingFx{}))
 	got, err = P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Equal(t, entity.ProductionRunInProgress, got.Status)
@@ -229,7 +230,7 @@ func TestProductionRun(t *testing.T) {
 	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
 
 	// update of a missing run → ErrNoRows
-	err = P.UpdateProductionRun(ctx, 0, &entity.ProductionRunInsert{TechCardId: tcID, Status: entity.ProductionRunPlanned}, 0)
+	err = P.UpdateProductionRun(ctx, 0, &entity.ProductionRunInsert{TechCardId: tcID, Status: entity.ProductionRunPlanned}, 0, dto.CostingFx{})
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// delete: run gone, grid cascades

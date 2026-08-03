@@ -710,7 +710,9 @@ type (
 	// planned/received/defect grid, with the planned unit cost snapshotted at plan time.
 	ProductionRuns interface {
 		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
-		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
+		// UpdateProductionRun expects the incoming cost articles UNFOLDED: it preserves each
+		// unchanged article's stored amount_base under the run lock, then folds the rest with fx.
+		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int, fx dto.CostingFx) error
 		// UpdateProductionRunPreservingCosts performs the same update but reloads and carries stored
 		// cost articles under the run's FOR UPDATE lock, for callers without costing write access.
 		UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error

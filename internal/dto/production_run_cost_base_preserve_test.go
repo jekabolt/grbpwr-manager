@@ -52,6 +52,28 @@ func TestPreserveProductionRunCostBasesRefoldsChangedArticles(t *testing.T) {
 	require.Equal(t, "99", incoming[3].AmountBase.Decimal.String(), "manual override untouched")
 }
 
+// TestPreserveProductionRunCostBasesOrderMatters pins the regression that made this mechanism inert
+// on first shipping: folding BEFORE preserving marks every incoming base Valid, so Preserve finds
+// nothing to fill and the stored March base is re-valued at today's rate. The store must always run
+// Preserve first (updateProductionRun), which is why the handler no longer folds and
+// UpdateProductionRun takes the fx itself.
+func TestPreserveProductionRunCostBasesOrderMatters(t *testing.T) {
+	stored := []entity.ProductionRunCost{
+		{Kind: entity.ProductionRunCostMaterials, Amount: d("1000"), Currency: "USD", AmountBase: nd2("920")},
+	}
+	fx := CostingFx{Base: "EUR", ToBase: map[string]decimal.Decimal{"USD": d("0.5")}}
+
+	wrong := []entity.ProductionRunCost{{Kind: entity.ProductionRunCostMaterials, Amount: d("1000"), Currency: "USD"}}
+	FoldProductionRunCostsToBase(wrong, fx)
+	PreserveProductionRunCostBases(wrong, stored)
+	require.Equal(t, "500", wrong[0].AmountBase.Decimal.String(), "inverted order re-values history — the defect")
+
+	right := []entity.ProductionRunCost{{Kind: entity.ProductionRunCostMaterials, Amount: d("1000"), Currency: "USD"}}
+	PreserveProductionRunCostBases(right, stored)
+	FoldProductionRunCostsToBase(right, fx)
+	require.Equal(t, "920", right[0].AmountBase.Decimal.String(), "store order keeps the booked base")
+}
+
 // TestPreserveProductionRunCostBasesMatchesAsMultiset: production_run_cost has no natural key, so
 // two identical articles must consume two stored bases, not the same one twice.
 func TestPreserveProductionRunCostBasesMatchesAsMultiset(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -100,19 +101,23 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 // Existence is established by the FOR UPDATE read (not by rows-affected, which is 0 for a no-op
 // header edit and would spuriously read as NotFound — the receive-v2 flow only touches line rows).
 // Returns sql.ErrNoRows when no run exists.
-func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
-	return s.updateProductionRun(ctx, id, r, expectedLockVersion, false)
+// The incoming cost articles must arrive UNFOLDED (amount_base unset unless the client supplied a
+// deliberate override): folding happens inside the transaction, after the stored bases have been
+// carried over, so an unchanged article keeps the base it was booked at instead of being re-valued
+// at today's rate. fx is the rate set to fold the genuinely new/changed articles with.
+func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int, fx dto.CostingFx) error {
+	return s.updateProductionRun(ctx, id, r, expectedLockVersion, false, fx)
 }
 
 // UpdateProductionRunPreservingCosts reloads the stored cost articles after locking the run and
 // carries them through the full-replace. It is the cost-blind update path: any preservation read
 // failure aborts the same transaction before destructive child deletes can run.
 func (s *Store) UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
-	return s.updateProductionRun(ctx, id, r, expectedLockVersion, true)
+	return s.updateProductionRun(ctx, id, r, expectedLockVersion, true, dto.CostingFx{})
 }
 
 func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert,
-	expectedLockVersion int, preserveCosts bool) error {
+	expectedLockVersion int, preserveCosts bool, fx dto.CostingFx) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
 			Status      string `db:"status"`
@@ -146,7 +151,9 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		}
 		// The stored articles are read under the run lock either way: the cost-blind path carries them
 		// through wholesale, the cost-writing path uses them to keep each unchanged article's already
-		// folded amount_base instead of re-folding it at today's FX rate.
+		// folded amount_base instead of re-folding it at today's FX rate. Preserve MUST run before the
+		// fold: folding first marks every incoming base Valid and leaves Preserve nothing to fill —
+		// which is exactly how the handler-side fold made this whole mechanism inert.
 		storedCosts, err := loadRunCosts(ctx, rep.DB(), id)
 		if err != nil {
 			return fmt.Errorf("load stored production run %d costs: %w", id, err)
@@ -155,6 +162,7 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			r.Costs = storedCosts
 		} else {
 			dto.PreserveProductionRunCostBases(r.Costs, storedCosts)
+			dto.FoldProductionRunCostsToBase(r.Costs, fx)
 		}
 		if r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed {
 			net, err := netIssuedToRun(ctx, rep.DB(), id)
@@ -289,7 +297,15 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 			costPrice = run.ActualUnitCostBase()
 		}
 		var costPriceWrites int
-		for productID, perSize := range perProduct {
+		// Products in ascending order → deterministic product_size lock order across concurrent
+		// receives (perProduct is a map; range order would differ per call).
+		productIDs := make([]int, 0, len(perProduct))
+		for productID := range perProduct {
+			productIDs = append(productIDs, productID)
+		}
+		sort.Ints(productIDs)
+		for _, productID := range productIDs {
+			perSize := perProduct[productID]
 			if len(perSize) == 0 {
 				continue
 			}
@@ -304,7 +320,9 @@ func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct 
 				if written {
 					costPriceWrites++
 				} else {
-					slog.Default().InfoContext(ctx, "production receipt left a manually set cost_price untouched",
+					// Changed-rows semantics: false = manual source, a missing product row, or a
+					// no-op write — the receipt does not distinguish, it only reports "not claimed".
+					slog.Default().InfoContext(ctx, "production receipt did not claim cost_price (manual source, missing product, or unchanged)",
 						slog.Int("run_id", runID), slog.Int("product_id", productID))
 				}
 			}

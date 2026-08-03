@@ -72,14 +72,14 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if len(ins.Costs) > 0 {
-		dto.FoldProductionRunCostsToBase(ins.Costs, s.costingFx(ctx))
-	}
+	// Costs are handed to the store UNFOLDED: the store first carries each unchanged article's stored
+	// amount_base over (under the run lock), then folds only what is genuinely new or changed. Folding
+	// here would mark every base Valid and turn that preservation into a no-op.
 	// The cost-blind path reloads and preserves stored articles under the run's FOR UPDATE lock. Its
 	// read is load-bearing: any failure aborts before the store's full-replace can delete cost rows.
 	var updateErr error
 	if costingWrite {
-		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion))
+		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion), s.costingFx(ctx))
 	} else {
 		updateErr = s.repo.ProductionRuns().UpdateProductionRunPreservingCosts(
 			ctx, int(req.Id), ins, int(req.ExpectedLockVersion))
