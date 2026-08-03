@@ -516,6 +516,48 @@ type TechCardBomItem struct {
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
 	FabricDirection sql.NullString      `db:"fabric_direction"`
 	WastagePercent  decimal.NullDecimal `db:"wastage_percent"`
+	// Stored price provenance (production-costing Phase 3): where unit_price came from and when it
+	// was stamped. Server-owned — set by the save path ('manual' when the price changes hands
+	// through UpdateTechCard) and by the reprice action ('catalog'); NULL on pre-provenance rows.
+	// Deliberately NOT part of the signed MATERIALS digest projection: metadata about a value must
+	// not stale a sign-off whose value did not change.
+	PriceSource     sql.NullString `db:"price_source"`
+	PriceSnapshotAt sql.NullTime   `db:"price_snapshot_at"`
+}
+
+// BOM price provenance values (tech_card_bom_item.price_source).
+const (
+	BomPriceSourceManual  = "manual"  // typed/edited through a card save
+	BomPriceSourceCatalog = "catalog" // pulled from the material catalog by RepriceTechCardBom
+)
+
+// RepricedBomLine is one catalog-linked BOM line the reprice action visited: the price it had, the
+// price the catalog resolves to now (invalid when the catalog has no usable current price), and
+// whether the stored line actually changed.
+type RepricedBomLine struct {
+	LineKey     string
+	Name        string
+	Section     TechCardBomSection
+	OldPrice    decimal.NullDecimal
+	OldCurrency string
+	NewPrice    decimal.NullDecimal
+	NewCurrency string
+	Changed     bool
+}
+
+// CostingMigrationException is one row of the Phase 2 scalar→BOM migration's exception report —
+// hardware/packaging money migration 0237 refused to move mechanically, waiting for a manual
+// transfer into the BOM (read-only; the table is populated by the migration alone).
+type CostingMigrationException struct {
+	TechCardId    int             `db:"tech_card_id"`
+	StyleNumber   sql.NullString  `db:"style_number"`
+	TechCardName  string          `db:"tech_card_name"`
+	Article       string          `db:"article"`
+	Kind          string          `db:"kind"`
+	Amount        decimal.Decimal `db:"amount"`
+	Currency      sql.NullString  `db:"currency"`
+	ApprovalState string          `db:"approval_state"`
+	CreatedAt     time.Time       `db:"created_at"`
 }
 
 // TechCardBomSizeConsumption is the per-size consumption (норма расхода) of a BOM

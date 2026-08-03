@@ -105,9 +105,12 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			line.Currency = ccy
 			if source == pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST {
 				usedCatalogFallback = true
-				if priceDate.Valid {
-					line.PriceDate = timestamppb.New(priceDate.Time)
-				}
+			}
+			// Whatever the source resolved to: BOM_SNAPSHOT rows carry the stored provenance date
+			// (when the price was typed or last repriced — Phase 3), CATALOG_LATEST rows the quote's
+			// valid_from. Assigning only on the catalog branch discarded the snapshot date entirely.
+			if priceDate.Valid {
+				line.PriceDate = timestamppb.New(priceDate.Time)
 			}
 			if price.Valid {
 				line.UnitPrice = pbDecimalFromDecimal(price.Decimal)
@@ -263,7 +266,10 @@ func resolvePlanUnitPrice(u *entity.TechCardColorwayUsage, bom *entity.TechCardB
 		return decimal.NullDecimal{}, "", pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_NONE, sql.NullTime{}
 	}
 	if bom.UnitPrice.Valid {
-		return bom.UnitPrice, bom.Currency.String, pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_BOM_SNAPSHOT, sql.NullTime{}
+		// The snapshot's own stored provenance date (Phase 3): when this price was typed or last
+		// repriced from the catalog — the "snapshot / дата" evidence plan 11 promised. NULL on a
+		// pre-provenance row, and the table then shows the badge alone, exactly as before.
+		return bom.UnitPrice, bom.Currency.String, pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_BOM_SNAPSHOT, bom.PriceSnapshotAt
 	}
 	if bom.MaterialId.Valid {
 		if mp, ok := catalog[bom.MaterialId.Int64]; ok && mp != nil {

@@ -1599,6 +1599,9 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
 			FabricDirection: pbFabricDirection(b.FabricDirection),
 			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
+			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
+			PriceSource:     b.PriceSource.String,
+			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),
 		})
 	}
 	return out

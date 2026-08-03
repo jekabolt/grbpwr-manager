@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -779,4 +780,172 @@ func nullDecimalParam(d decimal.NullDecimal) any {
 		return nil
 	}
 	return d.Decimal
+}
+
+// RepriceTechCardBom re-pulls the current material-catalog price into every catalog-linked BOM line
+// of a MUTABLE (non-released) card (production-costing Phase 3, plan 11). Price resolution is the SAME ladder the
+// style cost estimate's catalog fallback uses — LatestPriceForCurrencies(costing currency, base
+// currency), so a repriced line equals what the estimate already reports as CATALOG_LATEST. Every
+// visited line is restamped price_source='catalog' / price_snapshot_at=now, whether or not the
+// number moved (the price is now provably the catalog's). A released card is frozen
+// (entity.ErrTechCardReleased): re-release is the path that reprices it. Lines with no material link
+// are counted, never touched; a linked material with no resolvable current price leaves its line
+// unchanged and is reported with an unset new price.
+func (s *Store) RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency string) ([]entity.RepricedBomLine, int, error) {
+	var out []entity.RepricedBomLine
+	skippedUnlinked := 0
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// txFunc may retry the callback after a deadlock; never carry results from an aborted
+		// attempt (the reprice FOR UPDATE below vs the save path's shared-lock read is exactly the
+		// S→X pair that deadlocks under SERIALIZABLE).
+		out = out[:0]
+		skippedUnlinked = 0
+		touched := 0
+		card, err := storeutil.QueryNamedOne[struct {
+			ApprovalState string `db:"approval_state"`
+		}](ctx, rep.DB(), `SELECT approval_state FROM tech_card WHERE id = :id FOR UPDATE`,
+			map[string]any{"id": tcID})
+		if err != nil {
+			return fmt.Errorf("load tech card %d for reprice: %w", tcID, err)
+		}
+		// Same mutability rule as every other content write (storeutil.RequireMutableTechCard):
+		// only a RELEASED card is frozen — in_review/approved cards are freely price-editable
+		// through a normal save, so they reprice too. Kept inline to preserve the FOR UPDATE.
+		if card.ApprovalState == string(entity.TechCardApprovalReleased) {
+			return entity.ErrTechCardReleased
+		}
+
+		costingCurrency := ""
+		costingRows, err := storeutil.QueryListNamed[struct {
+			Currency sql.NullString `db:"currency"`
+		}](ctx, rep.DB(), `SELECT currency FROM tech_card_costing WHERE tech_card_id = :id`,
+			map[string]any{"id": tcID})
+		if err != nil {
+			return fmt.Errorf("load costing currency for reprice: %w", err)
+		}
+		if len(costingRows) > 0 {
+			costingCurrency = strings.TrimSpace(costingRows[0].Currency.String)
+		}
+
+		lines, err := storeutil.QueryListNamed[struct {
+			Id         int                 `db:"id"`
+			LineKey    string              `db:"line_key"`
+			Name       string              `db:"name"`
+			Section    string              `db:"section"`
+			MaterialId sql.NullInt64       `db:"material_id"`
+			UnitPrice  decimal.NullDecimal `db:"unit_price"`
+			Currency   sql.NullString      `db:"currency"`
+		}](ctx, rep.DB(), `
+			SELECT id, COALESCE(line_key, '') AS line_key, name, section, material_id, unit_price, currency
+			FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
+			map[string]any{"id": tcID})
+		if err != nil {
+			return fmt.Errorf("load bom lines for reprice: %w", err)
+		}
+
+		ids := make([]int, 0, len(lines))
+		seen := map[int]bool{}
+		for i := range lines {
+			if !lines[i].MaterialId.Valid {
+				skippedUnlinked++
+				continue
+			}
+			id := int(lines[i].MaterialId.Int64)
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+		materials := map[int]entity.MaterialWithPrice{}
+		if len(ids) > 0 {
+			rows, err := storeutil.QueryListNamed[materialRow](ctx, rep.DB(),
+				materialWithPriceSelect+` WHERE m.id IN (:ids)`, map[string]any{"ids": ids})
+			if err != nil {
+				return fmt.Errorf("load catalog prices for reprice: %w", err)
+			}
+			for _, mw := range materialsFromPriceRows(rows) {
+				materials[mw.Id] = mw
+			}
+		}
+
+		now := time.Now().UTC()
+		for i := range lines {
+			l := &lines[i]
+			if !l.MaterialId.Valid {
+				continue
+			}
+			res := entity.RepricedBomLine{
+				LineKey:     l.LineKey,
+				Name:        l.Name,
+				Section:     entity.TechCardBomSection(l.Section),
+				OldPrice:    l.UnitPrice,
+				OldCurrency: strings.TrimSpace(l.Currency.String),
+			}
+			mw, ok := materials[int(l.MaterialId.Int64)]
+			var price *entity.MaterialPrice
+			if ok {
+				price = mw.LatestPriceForCurrencies(costingCurrency, baseCurrency)
+			}
+			if price == nil {
+				// No current catalog price in a resolvable currency — the line keeps its number
+				// (and its provenance: nothing was pulled, so nothing may claim 'catalog').
+				out = append(out, res)
+				continue
+			}
+			res.NewPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
+			res.NewCurrency = price.Currency
+			res.Changed = !(l.UnitPrice.Valid && l.UnitPrice.Decimal.Equal(price.Price) &&
+				strings.EqualFold(res.OldCurrency, price.Currency))
+			if err := storeutil.ExecNamed(ctx, rep.DB(), `
+				UPDATE tech_card_bom_item SET unit_price = :price, currency = :currency,
+					price_source = :source, price_snapshot_at = :at
+				WHERE id = :id`, map[string]any{
+				"id": l.Id, "price": price.Price, "currency": price.Currency,
+				"source": entity.BomPriceSourceCatalog, "at": now,
+			}); err != nil {
+				return fmt.Errorf("reprice bom line %d: %w", l.Id, err)
+			}
+			touched++
+			out = append(out, res)
+		}
+		if touched > 0 {
+			// The reprice changed card CONTENT, so it must move the same optimistic-lock fence a
+			// save moves — otherwise a form opened before the reprice still carries a passing
+			// lock_version and its save writes the stale prices back (restamped 'manual': the
+			// provenance would lie about a value nobody typed). With the bump such a save gets the
+			// regular ErrTechCardConflict path instead.
+			if err := storeutil.ExecNamed(ctx, rep.DB(), `
+				UPDATE tech_card SET lock_version = lock_version + 1, updated_at = NOW()
+				WHERE id = :id`, map[string]any{"id": tcID}); err != nil {
+				return fmt.Errorf("bump tech card lock after reprice: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, skippedUnlinked, nil
+}
+
+// ListCostingMigrationExceptions reads the Phase 2 scalar→BOM migration's exception report.
+// techCardID 0 lists every card's rows; the report is append-only migration output, so this is a
+// plain read with the card's identity joined on for display.
+func (s *Store) ListCostingMigrationExceptions(ctx context.Context, techCardID int) ([]entity.CostingMigrationException, error) {
+	q := `
+		SELECT e.tech_card_id, tc.style_number, tc.name AS tech_card_name, e.article, e.kind,
+		       e.amount, e.currency, e.approval_state, e.created_at
+		FROM tech_card_costing_migration_exception e
+		JOIN tech_card tc ON tc.id = e.tech_card_id`
+	params := map[string]any{}
+	if techCardID > 0 {
+		q += ` WHERE e.tech_card_id = :tech_card_id`
+		params["tech_card_id"] = techCardID
+	}
+	q += ` ORDER BY e.tech_card_id, e.article, e.kind`
+	rows, err := storeutil.QueryListNamed[entity.CostingMigrationException](ctx, s.DB, q, params)
+	if err != nil {
+		return nil, fmt.Errorf("list costing migration exceptions: %w", err)
+	}
+	return rows, nil
 }

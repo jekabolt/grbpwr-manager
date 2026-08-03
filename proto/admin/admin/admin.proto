@@ -1302,6 +1302,30 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/materials/{material_id}/prices"};
   }
 
+  // RepriceTechCardBom re-pulls the current material-catalog price into every catalog-linked BOM
+  // line of a mutable (non-released) card (production-costing Phase 3, plan 11): unit_price/currency are overwritten
+  // with the same CATALOG_LATEST resolution the style cost estimate uses (costing currency, else
+  // base currency, else a sole unambiguous catalog currency), and price_source/price_snapshot_at
+  // are stamped 'catalog'/now. Released cards are frozen (FAILED_PRECONDITION) — re-release is the
+  // path that reprices them. Changing prices legitimately stales an approved MATERIALS sign-off.
+  // Requires tech-card write + costing:write.
+  rpc RepriceTechCardBom(RepriceTechCardBomRequest) returns (RepriceTechCardBomResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/bom/reprice"
+      body: "*"
+    };
+  }
+
+  // ListCostingMigrationExceptions reads the Phase 2 scalar→BOM migration's exception report
+  // (tech_card_costing_migration_exception): hardware/packaging money the migration refused to move
+  // mechanically (double-counted / zero-colourway / non-draft cards), waiting for manual transfer
+  // into the BOM. Read-only; tech_card_id 0 lists all cards. Requires tech-cards read; the AMOUNT
+  // additionally needs costing:read and comes back stripped without it (structure — card, article,
+  // kind, currency — is visible to any tech-cards reader).
+  rpc ListCostingMigrationExceptions(ListCostingMigrationExceptionsRequest) returns (ListCostingMigrationExceptionsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/costing-migration-exceptions"};
+  }
+
   // Tech-card release snapshots (task 11): the immutable frozen spec + planned cost per release.
   rpc ListTechCardReleases(ListTechCardReleasesRequest) returns (ListTechCardReleasesResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/releases"};
@@ -6003,6 +6027,51 @@ message ListMaterialPricesRequest {
 
 message ListMaterialPricesResponse {
   repeated common.MaterialPrice prices = 1;
+}
+
+// RepriceTechCardBom (production-costing Phase 3, plan 11).
+message RepriceTechCardBomRequest {
+  int32 tech_card_id = 1;
+}
+
+// One catalog-linked BOM line the reprice action visited. `changed` is false when the catalog price
+// already matched the line (provenance still restamped 'catalog' — the price is now provably the
+// catalog's). A line with no resolvable catalog price is reported with new_price unset.
+message RepricedBomLine {
+  string line_key = 1;
+  string name = 2;
+  string section = 3;
+  google.type.Decimal old_price = 4;
+  string old_currency = 5;
+  google.type.Decimal new_price = 6; // unset = no current catalog price in a resolvable currency
+  string new_currency = 7;
+  bool changed = 8;
+}
+
+message RepriceTechCardBomResponse {
+  repeated RepricedBomLine lines = 1; // every catalog-linked line, in BOM order
+  int32 skipped_unlinked = 2; // BOM lines with no material_id — reprice cannot touch them
+}
+
+// Phase 2 scalar→BOM migration exception report (read-only).
+message CostingMigrationException {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string tech_card_name = 3;
+  string article = 4; // hardware | packaging
+  string kind = 5; // double_counted | zero_colorways | not_draft
+  google.type.Decimal amount = 6;
+  string currency = 7;
+  string approval_state = 8; // the card's state when the migration ran
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message ListCostingMigrationExceptionsRequest {
+  int32 tech_card_id = 1; // 0 = all cards
+}
+
+message ListCostingMigrationExceptionsResponse {
+  repeated CostingMigrationException exceptions = 1;
 }
 
 // Tech-card release snapshots (task 11).
