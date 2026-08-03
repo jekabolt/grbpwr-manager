@@ -793,8 +793,17 @@ func operationMinutes(o *entity.TechCardOperation) decimal.NullDecimal {
 // scaled to the whole run (order_cost = unit_cost × order_qty, order_qty = Σ size_quantities).
 // Returns nil when no costing row exists.
 func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardCosting {
+	pb, _ := techCardCostingWithRoot(tc, fx)
+	return pb
+}
+
+// techCardCostingWithRoot is techCardCostingToPb's body, additionally handing back the PRIMARY
+// colourway's raw cost result. The pb carries only the flags the proto declares; the seed paths need
+// the completeness flags that do not (yet) travel on the wire, and recomputing them beside the pb
+// would be a second, drift-prone copy of the same math.
+func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.TechCardCosting, colorwayCostResult) {
 	if tc.Costing == nil {
-		return nil
+		return nil, colorwayCostResult{}
 	}
 	c := tc.Costing
 	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
@@ -830,11 +839,7 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 
 	// Per-colourway cost (OUTPUT-ONLY). The root rollup is the primary colourway (index 0).
 	colorwayCosts := make([]*pb_common.TechCardColorwayCost, 0, len(tc.Colorways))
-	var rootMaterialsTotal []*pb_common.TechCardCostLine
-	rootMaterialsPerUnit := decimal.Zero
-	rootHasUnconverted := false
-	rootMaterialsPerUnitBase := decimal.Zero
-	rootBaseConvertible := false
+	root := colorwayCostResult{}
 	for ci := range tc.Colorways {
 		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, tc.LinkedMaterials, costingCcy, orderQtyBySize, totalOrderQty, fx)
 		unit, order := unitAndOrder(cc.materialsPerUnit)
@@ -848,13 +853,12 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 			HasUnconvertedCurrencies: cc.hasUnconverted,
 		})
 		if ci == 0 {
-			rootMaterialsTotal = cc.materialsTotal
-			rootMaterialsPerUnit = cc.materialsPerUnit
-			rootHasUnconverted = cc.hasUnconverted
-			rootMaterialsPerUnitBase = cc.materialsPerUnitBase
-			rootBaseConvertible = cc.baseConvertible
+			root = cc
 		}
 	}
+	rootMaterialsPerUnit := root.materialsPerUnit
+	rootMaterialsPerUnitBase := root.materialsPerUnitBase
+	rootBaseConvertible := root.baseConvertible
 
 	rootUnit, rootOrder := unitAndOrder(rootMaterialsPerUnit)
 	out := &pb_common.TechCardCosting{
@@ -866,12 +870,12 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 		DefectPercent:            pbDecimalFromNull(c.DefectPercent),
 		Currency:                 pbStringFromNull(c.Currency),
 		Notes:                    pbStringFromNull(c.Notes),
-		MaterialsTotal:           rootMaterialsTotal,
+		MaterialsTotal:           root.materialsTotal,
 		MaterialsPerUnit:         pbDecimalFromDecimal(roundMoney(rootMaterialsPerUnit)),
 		UnitCost:                 pbDecimalFromDecimal(roundMoney(rootUnit)),
 		OrderQty:                 int32(totalOrderQty),
 		OrderCost:                pbDecimalFromDecimal(roundMoney(rootOrder)),
-		HasUnconvertedCurrencies: rootHasUnconverted,
+		HasUnconvertedCurrencies: root.hasUnconverted,
 		ColorwayCosts:            colorwayCosts,
 	}
 
@@ -913,31 +917,31 @@ func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardC
 	if fx.VatRatePct.Valid {
 		out.VatRatePct = pbDecimalFromDecimal(fx.VatRatePct.Decimal)
 	}
-	return out
+	return out, root
 }
 
 // ComputeTechCardUnitCost returns a tech card's per-garment unit cost and its currency,
 // computed exactly as the read path renders unit_cost — it reuses techCardCostingToPb so
 // there is a single source of truth for the math. Returns an invalid NullDecimal when there
-// is no costing row or the computed unit cost is not positive.
+// is no costing row, the computed unit cost is not positive, or the figure is INCOMPLETE
+// (see completeForSeed) — this is the cost-seeding entry point, and an incomplete number
+// here becomes product.cost_price, the margin chain and every downstream report.
 func ComputeTechCardUnitCost(tc *entity.TechCard, fx CostingFx) (decimal.NullDecimal, string) {
 	if tc == nil {
 		return decimal.NullDecimal{}, ""
 	}
-	pb := techCardCostingToPb(tc, fx)
+	pb, root := techCardCostingWithRoot(tc, fx)
 	if pb == nil {
 		return decimal.NullDecimal{}, ""
 	}
 	// Prefer the base-currency rollup so a non-base costing can still seed the product cost;
-	// it is set only when every currency involved has an FX rate. Fall back to the costing-
-	// currency unit_cost when no base figure is available (e.g. no rates configured) AND the
-	// costing is already in the base currency, so an all-base card still seeds without rates.
-	if pb.UnitCostBase != nil {
+	// it is set only when every currency involved has an FX rate.
+	if pb.UnitCostBase != nil && !root.hasUnpriced {
 		if v, err := decimal.NewFromString(pb.UnitCostBase.Value); err == nil && v.IsPositive() {
 			return decimal.NullDecimal{Decimal: v, Valid: true}, pb.BaseCurrency
 		}
 	}
-	if pb.UnitCost == nil {
+	if pb.UnitCost == nil || !completeForSeed(root) {
 		return decimal.NullDecimal{}, ""
 	}
 	v, err := decimal.NewFromString(pb.UnitCost.Value)
@@ -947,24 +951,39 @@ func ComputeTechCardUnitCost(tc *entity.TechCard, fx CostingFx) (decimal.NullDec
 	return decimal.NullDecimal{Decimal: v, Valid: true}, pb.Currency
 }
 
+// completeForSeed reports whether a colourway's costing-currency material figure is the WHOLE
+// recipe. The costing-currency bucket is only the lines already in that currency: a line in another
+// currency is excluded from it (hasUnconverted) and an uncostable line contributes to no bucket at
+// all (hasUnpriced). Falling back to that bucket when either is set publishes a cost with a material
+// silently missing — a BDT fabric on an EUR (== base) costing came out as trims+CMT and, because the
+// currency then reads as base, sailed straight through the seed's base-currency guard into
+// product.cost_price, to be rewritten with the same wrong number on every save.
+func completeForSeed(cc colorwayCostResult) bool {
+	return !cc.hasUnconverted && !cc.hasUnpriced
+}
+
+// HasColorwayForProduct reports whether the card carries a colourway bound to productID. The seed
+// uses it to tell "this product is not one of the card's colourways" (fall back to the style figure)
+// apart from "this colourway's own cost cannot be computed" (seed nothing) — ComputeColorwayUnitCost
+// returns the same invalid result for both.
+func HasColorwayForProduct(tc *entity.TechCard, productID int) bool {
+	return tc != nil && colorwayForProduct(tc, productID) != nil
+}
+
 // ComputeColorwayUnitCost returns ONE colourway's per-garment unit cost and its currency — the
 // colourway's own materials (pins priced via LinkedMaterials) plus the card's shared manual
 // articles, grossed by defect%. This is what a per-colourway cost seed must use:
 // ComputeTechCardUnitCost is the PRIMARY colourway's figure, and writing it to every product
 // erases exactly the divergence pinning exists to create. Mirrors ComputeTechCardUnitCost's
-// preference order: the base-currency rollup first, else the costing-currency figure.
+// preference order: the base-currency rollup first, else the costing-currency figure — and its
+// completeness rule: an uncostable line invalidates BOTH, an unconvertible one invalidates the
+// fallback (see completeForSeed).
 // colorwayProductID is the colourway's product id; unknown id / no costing → invalid.
 func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx CostingFx) (decimal.NullDecimal, string) {
 	if tc == nil || tc.Costing == nil {
 		return decimal.NullDecimal{}, ""
 	}
-	var cw *entity.TechCardColorway
-	for i := range tc.Colorways {
-		if tc.Colorways[i].ProductId.Valid && int(tc.Colorways[i].ProductId.Int32) == colorwayProductID {
-			cw = &tc.Colorways[i]
-			break
-		}
-	}
+	cw := colorwayForProduct(tc, colorwayProductID)
 	if cw == nil {
 		return decimal.NullDecimal{}, ""
 	}
@@ -1000,15 +1019,31 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 		defectMul = defectMul.Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100)))
 	}
 	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, orderQtyBySize, totalOrderQty, fx)
+	if cc.hasUnpriced {
+		return decimal.NullDecimal{}, ""
+	}
 	if manualBase, ok := fx.toBase(manualPerUnit, costingCcy); ok && cc.baseConvertible {
 		if unit := roundMoney(cc.materialsPerUnitBase.Add(manualBase).Mul(defectMul)); unit.IsPositive() {
 			return decimal.NullDecimal{Decimal: unit, Valid: true}, fx.Base
 		}
 	}
+	if !completeForSeed(cc) {
+		return decimal.NullDecimal{}, ""
+	}
 	if unit := roundMoney(cc.materialsPerUnit.Add(manualPerUnit).Mul(defectMul)); unit.IsPositive() {
 		return decimal.NullDecimal{Decimal: unit, Valid: true}, costingCcy
 	}
 	return decimal.NullDecimal{}, ""
+}
+
+// colorwayForProduct returns the card's colourway bound to productID, or nil.
+func colorwayForProduct(tc *entity.TechCard, productID int) *entity.TechCardColorway {
+	for i := range tc.Colorways {
+		if tc.Colorways[i].ProductId.Valid && int(tc.Colorways[i].ProductId.Int32) == productID {
+			return &tc.Colorways[i]
+		}
+	}
+	return nil
 }
 
 // ComputeColorwayCostBreakdownBase is ComputeTechCardCostBreakdownBase for ONE colourway: its
@@ -1019,10 +1054,8 @@ func ComputeColorwayCostBreakdownBase(tc *entity.TechCard, colorwayProductID int
 	if tc == nil || tc.Costing == nil {
 		return entity.CostBreakdown{}, false
 	}
-	for i := range tc.Colorways {
-		if tc.Colorways[i].ProductId.Valid && int(tc.Colorways[i].ProductId.Int32) == colorwayProductID {
-			return techCardCostBreakdownBase(tc, &tc.Colorways[i], fx)
-		}
+	if cw := colorwayForProduct(tc, colorwayProductID); cw != nil {
+		return techCardCostBreakdownBase(tc, cw, fx)
 	}
 	return entity.CostBreakdown{}, false
 }
@@ -1087,9 +1120,11 @@ func techCardCostBreakdownBase(tc *entity.TechCard, cw *entity.TechCardColorway,
 			totalOrderQty += q.OrderQty
 		}
 	}
-	// The chosen colourway's materials, folded to base — the rollup's basis.
+	// The chosen colourway's materials, folded to base — the rollup's basis. An uncostable line
+	// blocks the decomposition for the same reason it blocks the unit cost: the Materials component
+	// would be short by that material while the report presents it as the whole recipe.
 	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, orderQtyBySize, totalOrderQty, fx)
-	if !cc.baseConvertible {
+	if !cc.baseConvertible || cc.hasUnpriced {
 		return entity.CostBreakdown{}, false
 	}
 	// Each manual article is in the costing currency; fold individually. An absent (invalid)
@@ -1128,6 +1163,12 @@ type colorwayCostResult struct {
 	materialsTotal   []*pb_common.TechCardCostLine // per-unit material cost grouped by article currency
 	materialsPerUnit decimal.Decimal               // Σ per-garment usage cost in costingCcy (and currency-less)
 	hasUnconverted   bool                          // a usage currency ≠ costingCcy (excluded from materialsPerUnit)
+	// hasUnpriced is true when at least one authored usage could not be costed at all — its article
+	// carries no price, its pin does not resolve (or its unit disagrees with the slot's), it points
+	// at no BOM line, it has no norm, or it is graded per size with no order quantities. Such a line
+	// contributes NOTHING to any bucket, so no currency flag catches it and every rollup silently
+	// understates the recipe by that material. It blocks the cost seed, never the display figures.
+	hasUnpriced bool
 	// baseConvertible is true when every usage currency could be folded into the base currency
 	// via the FX rates; materialsPerUnitBase is that Σ in base currency (valid only when true).
 	baseConvertible      bool
@@ -1177,6 +1218,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
 	hasUnconverted := false
+	hasUnpriced := false
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
@@ -1184,6 +1226,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
 		ut := u.UnitTotal(bom, orderQtyBySize, totalOrderQty)
 		if !ut.Valid {
+			hasUnpriced = true
 			continue
 		}
 		ccy := ""
@@ -1239,6 +1282,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		materialsTotal:       lines,
 		materialsPerUnit:     materialsPerUnit,
 		hasUnconverted:       hasUnconverted,
+		hasUnpriced:          hasUnpriced,
 		baseConvertible:      baseConvertible,
 		materialsPerUnitBase: baseSum,
 	}
