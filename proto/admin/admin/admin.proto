@@ -1351,9 +1351,30 @@ service AdminService {
   // ReceiveProductionRun receives a run into a linked product's stock (by received_qty per size),
   // transitions the run to `received`, and optionally sets the product's cost_price from the run's
   // actual unit cost. It is guarded against a double receipt.
+  //
+  // DEPRECATED (Phase 4, receipt v1): a thin shim over PostProductionRunReceipt that synthesizes
+  // the receipt from the run's STORED received_qty/defect_qty counts — kept for one release so an
+  // old client (which stamps counts via UpdateProductionRun first) keeps working. New callers use
+  // PostProductionRunReceipt: quantities travel IN the command, one atomic transaction, idempotent.
   rpc ReceiveProductionRun(ReceiveProductionRunRequest) returns (ReceiveProductionRunResponse) {
     option (google.api.http) = {
       post: "/api/admin/production-runs/{run_id}/receive"
+      body: "*"
+    };
+  }
+  // PostProductionRunReceipt is the atomic receiving command (Phase 4, receipt v1, final-only): in
+  // ONE transaction it records the immutable receipt (with per-line counts referenced by the plan
+  // lines' line_key), books the good units into each line's product stock (or the output material
+  // for an auxiliary run), freezes the run's actual unit cost on the receipt, optionally seeds each
+  // product's cost_price, transitions the run to `received`, and writes the idempotency record the
+  // accounting worker posts from. Идемпотентность = replay: a retry with the same idempotency_key
+  // and identical payload returns the original success (replayed=true); the same key with a
+  // DIFFERENT payload is rejected with AlreadyExists. An all-scrap receipt (0 good, >0 defect) is
+  // valid: nothing is stocked, the run still closes with the defect recorded.
+  // Requires production:write AND products:write (it moves sellable stock).
+  rpc PostProductionRunReceipt(PostProductionRunReceiptRequest) returns (PostProductionRunReceiptResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/production-runs/{run_id}/receipts"
       body: "*"
     };
   }
@@ -6105,6 +6126,39 @@ message ReceiveProductionRunRequest {
 
 message ReceiveProductionRunResponse {
   bool cost_price_updated = 1; // true when update_cost_price was requested and applied
+}
+
+// PostProductionRunReceiptLineInput is one counted line of the receipt command, addressed by the
+// plan line's stable line_key (never by (product, size) — the whole point of 0230). good_qty is
+// what gets POSTED TO STOCK; defect_qty is a disjoint count that is recorded, never stocked.
+message PostProductionRunReceiptLineInput {
+  string line_key = 1; // required; must name an existing plan line of the run
+  int32 good_qty = 2; // >= 0
+  int32 defect_qty = 3; // >= 0
+}
+
+message PostProductionRunReceiptRequest {
+  int32 run_id = 1;
+  repeated PostProductionRunReceiptLineInput lines = 2;
+  // Client-minted command identity: exactly 26 characters of [0-9A-Z] (an uppercase Crockford ULID
+  // fits), minted once per user intent (per modal open, NOT per attempt) so a network retry replays
+  // instead of double-booking.
+  string idempotency_key = 3;
+  // The lock_version the operator counted against (from the run read). >0 and stale → Aborted:
+  // someone edited the run between the count and the post. 0 opts out (legacy shim path).
+  int32 expected_lock_version = 4;
+  string note = 5; // optional free note stored on the receipt
+  // Seed every received product's cost_price from the frozen actual unit cost (costing:write).
+  bool update_cost_price = 6;
+}
+
+message PostProductionRunReceiptResponse {
+  int32 receipt_id = 1;
+  bool cost_price_updated = 2;
+  // true when this response was replayed from the idempotency record (the command had already
+  // executed) rather than executed now.
+  bool replayed = 3;
+  common.ProductionRun run = 4; // the run after the receipt (fresh read; costing-stripped per RBAC)
 }
 
 message GetProductionRunMaterialPlanRequest {
