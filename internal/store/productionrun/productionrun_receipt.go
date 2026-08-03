@@ -18,12 +18,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// PostProductionRunReceipt executes the atomic receiving command (Phase 4, receipt v1, final-only):
-// in ONE transaction it records the immutable receipt + its counted lines, stamps the counts onto
-// the plan grid, books the good units into product stock (or the output material for an auxiliary
-// run), freezes the run's actual unit cost on the receipt, optionally seeds cost_price, transitions
-// the run to received, and writes the idempotency record. The receipt row doubles as the accounting
-// outbox: the posting worker scans receipts without a live journal entry and posts by receipt id.
+// PostProductionRunReceipt executes the atomic receiving command (Phase 4 receipt v1; Phase 5 adds
+// partials): in ONE transaction it records the immutable receipt + its counted lines, accumulates
+// the counts onto the plan-grid rollups, books the good units into product stock (or the output
+// material for an auxiliary run), freezes the run's actual unit cost on the receipt, optionally
+// seeds cost_price, transitions the run (partial → partially_received; final → received), and
+// writes the idempotency record. The receipt row doubles as the accounting outbox: the posting
+// worker scans receipts without a live journal entry and posts by receipt id.
 //
 // Ordering inside the transaction is load-bearing:
 //  1. the run lock comes FIRST, so two concurrent commands with the same idempotency key serialize
@@ -141,25 +142,52 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			totalDefect += in.DefectQty
 		}
 		if totalGood == 0 && totalDefect == 0 {
-			return entity.ErrProductionRunNothingReceived
+			// The one legal empty receipt is a FINAL on a partially received run: the operator
+			// declares the series complete without a last delivery ("short-close" — the remainder
+			// simply never arrived). Its posting is the true-up carrier. Anything else counted
+			// nothing and books nothing — refuse.
+			if !(p.Final && cur.Status == string(entity.ProductionRunPartiallyReceived)) {
+				return entity.ErrProductionRunNothingReceived
+			}
 		}
 
-		// Stamp the counts onto the plan grid. Final-only semantics: a submitted count is the line's
-		// final fact; a line NOT submitted (or submitted at 0/0) received nothing — an explicit 0,
-		// not an unknowable NULL.
+		// Maintain the plan-grid rollups: received_qty/defect_qty are Σ over the run's receipts
+		// (Phase 5), so a counted line ACCUMULATES this delivery on top of what earlier receipts
+		// booked. On the FINAL receipt every never-counted line is stamped to an explicit 0 — the
+		// run is declared complete, so "nothing ever arrived" is a final fact, not an unknowable
+		// NULL (the Phase 4 rule, now scoped to the close of the receipt series).
 		countsByID := make(map[int]entity.ProductionRunReceiptLineInput, len(counted))
 		for _, c := range counted {
 			countsByID[c.line.Id] = c.in
 		}
 		for i := range lines {
-			in := countsByID[lines[i].Id] // zero value for unsubmitted lines
-			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE production_run_line SET received_qty = :g, defect_qty = :d WHERE id = :id`,
-				map[string]any{"g": in.GoodQty, "d": in.DefectQty, "id": lines[i].Id}); err != nil {
-				return fmt.Errorf("failed to stamp receipt counts on run line %d: %w", lines[i].Id, err)
+			in, countedNow := countsByID[lines[i].Id]
+			switch {
+			case countedNow:
+				if err := storeutil.ExecNamed(ctx, db, `
+					UPDATE production_run_line
+					SET received_qty = COALESCE(received_qty, 0) + :g,
+					    defect_qty = COALESCE(defect_qty, 0) + :d
+					WHERE id = :id`,
+					map[string]any{"g": in.GoodQty, "d": in.DefectQty, "id": lines[i].Id}); err != nil {
+					return fmt.Errorf("failed to stamp receipt counts on run line %d: %w", lines[i].Id, err)
+				}
+				lines[i].ReceivedQty = sql.NullInt64{Int64: lines[i].ReceivedQty.Int64 + int64(in.GoodQty), Valid: true}
+				lines[i].DefectQty = sql.NullInt64{Int64: lines[i].DefectQty.Int64 + int64(in.DefectQty), Valid: true}
+			case p.Final:
+				if err := storeutil.ExecNamed(ctx, db, `
+					UPDATE production_run_line
+					SET received_qty = COALESCE(received_qty, 0), defect_qty = COALESCE(defect_qty, 0)
+					WHERE id = :id`, map[string]any{"id": lines[i].Id}); err != nil {
+					return fmt.Errorf("failed to finalize receipt counts on run line %d: %w", lines[i].Id, err)
+				}
+				if !lines[i].ReceivedQty.Valid {
+					lines[i].ReceivedQty = sql.NullInt64{Int64: 0, Valid: true}
+				}
+				if !lines[i].DefectQty.Valid {
+					lines[i].DefectQty = sql.NullInt64{Int64: 0, Valid: true}
+				}
 			}
-			lines[i].ReceivedQty = sql.NullInt64{Int64: int64(in.GoodQty), Valid: true}
-			lines[i].DefectQty = sql.NullInt64{Int64: int64(in.DefectQty), Valid: true}
 		}
 
 		// Freeze the valuation: the run's actual unit cost over THIS receipt's good units, computed
@@ -194,8 +222,8 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		}
 		receiptID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO production_run_receipt
-				(run_id, received_at, admin_username, note, idempotency_key, unit_cost_base, base_currency, has_base, posting_status)
-			VALUES (:run_id, :received_at, :admin_username, :note, :idempotency_key, :unit_cost_base, :base_currency, :has_base, 'pending')`,
+				(run_id, received_at, admin_username, note, idempotency_key, unit_cost_base, base_currency, has_base, posting_status, final)
+			VALUES (:run_id, :received_at, :admin_username, :note, :idempotency_key, :unit_cost_base, :base_currency, :has_base, 'pending', :final)`,
 			map[string]any{
 				"run_id":          p.RunID,
 				"received_at":     now,
@@ -205,6 +233,7 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 				"unit_cost_base":  unitCost,
 				"base_currency":   baseCurrency,
 				"has_base":        unitCost.Valid,
+				"final":           p.Final,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert production run receipt: %w", err)
@@ -278,10 +307,22 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			}
 		}
 
-		if err := storeutil.ExecNamed(ctx, db, `
-			UPDATE production_run SET status = :status, received_at = :received_at WHERE id = :id`,
-			map[string]any{"id": p.RunID, "status": string(entity.ProductionRunReceived), "received_at": now}); err != nil {
-			return err
+		// The FINAL receipt declares the run complete: status=received + received_at. A partial
+		// moves the run to partially_received and leaves received_at NULL — the run is not received
+		// yet, and downstream consumers of received_at (accounting occurred_at is the RECEIPT's own
+		// received_at, not the run's) must not see a half-done run as done.
+		if p.Final {
+			if err := storeutil.ExecNamed(ctx, db, `
+				UPDATE production_run SET status = :status, received_at = :received_at WHERE id = :id`,
+				map[string]any{"id": p.RunID, "status": string(entity.ProductionRunReceived), "received_at": now}); err != nil {
+				return err
+			}
+		} else {
+			if err := storeutil.ExecNamed(ctx, db, `
+				UPDATE production_run SET status = :status WHERE id = :id`,
+				map[string]any{"id": p.RunID, "status": string(entity.ProductionRunPartiallyReceived)}); err != nil {
+				return err
+			}
 		}
 
 		result := &entity.PostProductionRunReceiptResult{ReceiptID: receiptID, CostPriceUpdated: costPriceWrites > 0}
@@ -389,7 +430,7 @@ func nullIfZero(v int) any {
 func loadRunReceipts(ctx context.Context, db dependency.DB, runID int) ([]entity.ProductionRunReceipt, error) {
 	receipts, err := storeutil.QueryListNamed[entity.ProductionRunReceipt](ctx, db, `
 		SELECT id, run_id, received_at, admin_username, note, idempotency_key, unit_cost_base,
-		       base_currency, has_base, reversal_of, reversed_by, posting_status, created_at
+		       base_currency, has_base, reversal_of, reversed_by, posting_status, final, created_at
 		FROM production_run_receipt WHERE run_id = :run_id ORDER BY received_at, id`,
 		map[string]any{"run_id": runID})
 	if err != nil {

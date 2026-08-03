@@ -6219,6 +6219,12 @@ message PostProductionRunReceiptRequest {
   string note = 5; // optional free note stored on the receipt
   // Seed every received product's cost_price from the frozen actual unit cost (costing:write).
   bool update_cost_price = 6;
+  // Phase 5: true books THIS delivery's counts without declaring the run complete — the run moves
+  // to PARTIALLY_RECEIVED and further receipts stay possible. False (the default, and what every
+  // pre-Phase-5 client sends implicitly) is a FINAL receipt: it declares the run complete and
+  // flips it to RECEIVED. The flag is part of the idempotency request hash — the same key with a
+  // flipped flag is a different intent and is rejected, never replayed.
+  bool partial = 7;
 }
 
 message PostProductionRunReceiptResponse {

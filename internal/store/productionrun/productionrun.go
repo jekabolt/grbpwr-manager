@@ -133,10 +133,41 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			return fmt.Errorf("failed to load production run for update: %w", err)
 		}
 		if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
+			// received → closed is the ONE legal edit of a received run (plan 05: closing was a dead
+			// end). Status-only by construction: nothing else of the immutable run is written.
+			if cur.Status == string(entity.ProductionRunReceived) && r.Status == entity.ProductionRunClosed {
+				if expectedLockVersion > 0 && cur.LockVersion != expectedLockVersion {
+					return entity.ErrProductionRunConflict
+				}
+				net, err := netIssuedToRun(ctx, rep.DB(), id)
+				if err != nil {
+					return err
+				}
+				if net.GreaterThan(decimal.Zero) {
+					return entity.ErrProductionRunHasOpenIssues
+				}
+				if err := storeutil.ExecNamed(ctx, rep.DB(), `
+					UPDATE production_run SET status = :status, lock_version = lock_version + 1
+					WHERE id = :id`, map[string]any{"id": id, "status": string(entity.ProductionRunClosed)}); err != nil {
+					return fmt.Errorf("failed to close production run: %w", err)
+				}
+				return nil
+			}
 			return entity.ErrProductionRunReceivedImmutable
 		}
 		if r.Status == entity.ProductionRunReceived {
 			return entity.ErrProductionRunReceiveViaUpdate
+		}
+		// partially_received is receipt-owned exactly like received: an update may only ECHO it (a
+		// round-tripping form), never introduce it — and a partially received run cannot jump to a
+		// terminal state either: its receipts booked real stock; post the final receipt (or reverse
+		// in Phase 6) instead of cancelling the facts away.
+		if r.Status == entity.ProductionRunPartiallyReceived && cur.Status != string(entity.ProductionRunPartiallyReceived) {
+			return entity.ErrProductionRunReceiveViaUpdate
+		}
+		if cur.Status == string(entity.ProductionRunPartiallyReceived) &&
+			(r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed) {
+			return entity.ErrProductionRunPartialTerminal
 		}
 		// Optimistic lock (#9): a positive expected version that no longer matches means the run was
 		// edited concurrently — reject rather than clobber the other writer's full-replace. 0 opts out
@@ -165,6 +196,36 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		} else {
 			dto.PreserveProductionRunCostBases(r.Costs, storedCosts)
 			dto.FoldProductionRunCostsToBase(r.Costs, fx)
+		}
+		// Receipt-owned counters (Phase 5): once the run has a live receipt, received_qty/defect_qty
+		// are Σ over receipts, maintained by the receipt command — a form echo (possibly read before
+		// another delivery landed) must not clobber them. Overlay the STORED counters by line_key;
+		// a line new to this payload has no stored fact and keeps whatever the payload says (the DTO
+		// zeroes counts on new lines anyway).
+		receiptProbe, err := storeutil.QueryNamedOne[struct {
+			E bool `db:"e"`
+		}](ctx, rep.DB(), `
+			SELECT EXISTS(SELECT 1 FROM production_run_receipt
+			              WHERE run_id = :id AND reversed_by IS NULL) AS e`,
+			map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to probe run receipts: %w", err)
+		}
+		if receiptProbe.E {
+			stored, err := loadRunLines(ctx, rep.DB(), id)
+			if err != nil {
+				return err
+			}
+			counters := make(map[string]entity.ProductionRunLine, len(stored))
+			for i := range stored {
+				counters[stored[i].LineKey] = stored[i]
+			}
+			for i := range r.Lines {
+				if st, ok := counters[strings.TrimSpace(r.Lines[i].LineKey)]; ok {
+					r.Lines[i].ReceivedQty = st.ReceivedQty
+					r.Lines[i].DefectQty = st.DefectQty
+				}
+			}
 		}
 		if r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed {
 			net, err := netIssuedToRun(ctx, rep.DB(), id)
@@ -215,7 +276,8 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		switch err {
 		case sql.ErrNoRows, entity.ErrProductionRunReceivedImmutable,
 			entity.ErrProductionRunReceiveViaUpdate, entity.ErrProductionRunHasOpenIssues,
-			entity.ErrProductionRunCardChange, entity.ErrProductionRunConflict:
+			entity.ErrProductionRunCardChange, entity.ErrProductionRunConflict,
+			entity.ErrProductionRunPartialTerminal:
 			return err
 		}
 		return fmt.Errorf("can't update production run: %w", err)
@@ -255,7 +317,8 @@ func (s *Store) DeleteProductionRun(ctx context.Context, id int) error {
 		}
 		return fmt.Errorf("failed to load production run for delete: %w", err)
 	}
-	if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
+	if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) ||
+		cur.Status == string(entity.ProductionRunPartiallyReceived) {
 		return entity.ErrProductionRunReceivedImmutable
 	}
 	// Refuse if material was issued to the run — those movements are applied stock facts (the FK is

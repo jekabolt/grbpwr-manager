@@ -18,10 +18,19 @@ import (
 // occurred_at = received_at.
 //
 // By receive time the run's material issues (M3/M5) are already on 1120 WIP. What is not yet in the
-// ledger is the run's manual costs (CMT, logistics, duty...) — booked now into WIP against AP — and
-// the same event moves the whole run's WIP to Finished Goods:
+// ledger is the run's manual costs (CMT, logistics, duty...) — the entry capitalises the
+// still-uncapitalised DELTA into WIP against AP ("capitalize once", Phase 5) — and the same event
+// relieves WIP into Finished Goods by the GOOD-unit share:
 //
-//	FG = MANUAL + LEDGER_WIP   (LEDGER_WIP = the costed, post-cutover issues actually posted by M3/M5)
+//	TOTAL_WIP = LEDGER_WIP + MANUAL_ALL     (LEDGER_WIP = costed post-cutover issues posted by M3/M5)
+//	TARGET    = TOTAL_WIP × allGood ÷ allReceived    (full TOTAL_WIP when nothing was ever counted)
+//	final:    FG = TARGET − Σ siblings' posted FG    (true-up: rounding never strands money on 1120)
+//	partial:  FG = min( (TOTAL_WIP − Σ posted FG) × good ÷ max(planned − priorUnits, thisUnits),
+//	                    TARGET − Σ posted FG )
+//
+// The defect share deliberately STAYS on 1120 pending the defect write-off phase; sibling
+// aggregates come from posted_manual_base/posted_fg_base, written in the same tx as each entry, so
+// the arithmetic is exact under any posting order.
 //
 // startDate is accounting.start_date (the cutover). LEDGER_WIP is derived here from r.Issues,
 // counting only costed issue_production/return_production movements with CreatedAt >= startDate —
@@ -66,8 +75,7 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 		}
 	}
 
-	manual := manualCost.Round(2)
-	fg := manual.Add(ledgerWIP).Round(2)
+	manualNow := manualCost.Round(2)
 
 	var caveats []string
 	if uncostedIssues {
@@ -80,13 +88,67 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 		caveats = append(caveats, "pre-cutover WIP excluded")
 	}
 
-	// An all-scrap receipt (zero good units, POSITIVE defect count) produced NO finished goods —
-	// transferring the run's cost to 1130 would value an FG balance with nothing behind it. The
-	// manual costs still capitalise (the CMT invoice is owed either way); the accumulated WIP stays
-	// on 1120 until the defect write-off phase disposes of it. The defect count must be positive:
-	// a receipt with NO counted lines at all (a 0231 legacy backfill of a grid edited back to
-	// NULLs) is not scrap — it posts the WIP→FG transfer exactly as the run did before receipts.
-	allScrap := r.ReceiptID > 0 && r.GoodQtyTotal == 0 && r.DefectQtyTotal > 0
+	// Capitalize ONCE (Phase 5): this receipt's entry books only the manual money no sibling entry
+	// has capitalised yet — the delta between the run's costed manual total as of now and what the
+	// other receipts' live entries already put on 1120/2010. On a single-receipt run the delta is
+	// the whole total, byte-identical to the Phase 4 rule. A negative delta (a cost row deleted
+	// after a sibling posted it) is not compensatable here — flag it, post nothing negative.
+	manual := manualNow.Sub(r.OtherPostedManualBase)
+	if manual.IsNegative() {
+		caveats = append(caveats, "manual costs shrank below the already-capitalised total; nothing further capitalised")
+		manual = decimal.Zero
+	}
+
+	// The good-unit share (Phase 5): of everything that ever entered this run's WIP
+	// (posted material issues + ALL capitalised manual, including this delta), finished goods may
+	// carry only the share earned by GOOD units — the defect share stays on 1120 for the write-off
+	// phase. A receipt set with NO counted units at all (the 0231 legacy backfill of a grid edited
+	// back to NULLs) is not scrap: it transfers everything, exactly as the run did before receipts.
+	totalWIPGross := ledgerWIP.Round(2).Add(manualNow)
+	// Single-receipt facts (Phase 4 loaders, legacy-shaped tests) carry no All* aggregates — this
+	// receipt IS the run's whole receipt set then.
+	allGood, allReceived := r.AllGoodQty, r.AllReceivedQty
+	if allReceived == 0 {
+		allGood, allReceived = r.GoodQtyTotal, r.GoodQtyTotal+r.DefectQtyTotal
+	}
+	// No units counted ANYWHERE (the 0231 zero-line legacy backfill) is the pre-receipt world:
+	// final semantics, full transfer — a partial with zero counts cannot exist (the command
+	// refuses it), so this can only be legacy data.
+	isFinal := r.IsFinal || r.ReceiptID == 0 || allReceived == 0
+	goodShareTarget := totalWIPGross
+	if allReceived > 0 {
+		goodShareTarget = totalWIPGross.
+			Mul(decimal.NewFromInt(int64(allGood))).
+			Div(decimal.NewFromInt(int64(allReceived))).Round(2)
+	}
+
+	var fg decimal.Decimal
+	if isFinal {
+		// True-up: transfer exactly what is missing from the run's good-unit share. Intermediate
+		// roundings cancel out here — the ledger's Σ FG over the run's receipts lands on the target
+		// to the cent, nothing strands on 1120 beyond the defect share.
+		fg = goodShareTarget.Sub(r.OtherPostedFGBase)
+	} else {
+		// A partial delivery relieves the CURRENT WIP balance pro-rata against the units still
+		// expected (plan floor: never less than this receipt's own units, so the ratio is ≤ 1 even
+		// on an over-plan delivery), and never beyond the good-unit share siblings have left over.
+		thisUnits := r.GoodQtyTotal + r.DefectQtyTotal
+		remaining := r.PlannedQtyTotal - (allReceived - thisUnits)
+		if remaining < thisUnits {
+			remaining = thisUnits
+		}
+		wipBalance := totalWIPGross.Sub(r.OtherPostedFGBase)
+		if remaining > 0 {
+			fg = wipBalance.
+				Mul(decimal.NewFromInt(int64(r.GoodQtyTotal))).
+				Div(decimal.NewFromInt(int64(remaining))).Round(2)
+		}
+		if cap := goodShareTarget.Sub(r.OtherPostedFGBase); fg.GreaterThan(cap) {
+			fg = cap
+		}
+	}
+
+	allScrap := r.ReceiptID > 0 && allGood == 0 && allReceived > 0
 
 	var lines []entity.AcctJournalLineInsert
 	// Manual production costs capitalised into WIP against AP.
@@ -99,7 +161,7 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 	// WIP -> Finished Goods.
 	switch {
 	case allScrap:
-		if !fg.IsZero() {
+		if totalWIPGross.IsPositive() {
 			caveats = append(caveats, "all-scrap receipt: cost left in WIP pending defect write-off")
 		}
 	case fg.IsPositive():
@@ -107,9 +169,10 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 			entity.AcctJournalLineInsert{AccountCode: Acc1130, Side: entity.AcctSideDebit, Amount: fg},
 			entity.AcctJournalLineInsert{AccountCode: Acc1120, Side: entity.AcctSideCredit, Amount: fg},
 		)
-	case !fg.IsZero():
-		// Negative FG (post-cutover returns outran issues in the costed set) — a negative
-		// finished-goods transfer is not representable; leave WIP as-is and flag it.
+	case fg.IsNegative():
+		// Negative FG (post-cutover returns shrank WIP below what siblings already transferred, or
+		// a late partial after the final trued up) — a negative finished-goods transfer is not
+		// representable; leave the ledger as-is and flag it.
 		caveats = append(caveats, "non-positive finished-goods amount; FG transfer skipped")
 	}
 

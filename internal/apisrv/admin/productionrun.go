@@ -217,8 +217,10 @@ func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.Pos
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if len(lines) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "at least one receipt line is required")
+	// An empty FINAL is the short-close of a partially received run (the store validates the
+	// status); an empty PARTIAL books nothing and means nothing.
+	if len(lines) == 0 && req.Partial {
+		return nil, status.Error(codes.InvalidArgument, "at least one receipt line is required for a partial receipt")
 	}
 	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
 	if err != nil {
@@ -229,7 +231,7 @@ func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.Pos
 		return nil, status.Error(codes.Internal, "can't load production run")
 	}
 	result, st := s.executeRunReceipt(ctx, run, lines, key, int(req.ExpectedLockVersion),
-		strings.TrimSpace(req.Note), req.UpdateCostPrice)
+		strings.TrimSpace(req.Note), req.UpdateCostPrice, !req.Partial)
 	if st != nil {
 		return nil, st
 	}
@@ -289,7 +291,8 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 		slog.Default().ErrorContext(ctx, "can't mint receipt idempotency key", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't receive production run")
 	}
-	result, st := s.executeRunReceipt(ctx, run, lines, key, 0, "", req.UpdateCostPrice)
+	// The shim always synthesizes a FINAL receipt — the pre-receipt flow had no partial concept.
+	result, st := s.executeRunReceipt(ctx, run, lines, key, 0, "", req.UpdateCostPrice, true)
 	if st != nil {
 		return nil, st
 	}
@@ -300,7 +303,7 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 // validation (aux detection included), and the store command. Returns a gRPC status error mapped
 // from the command's outcome.
 func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRun, lines []entity.ProductionRunReceiptLineInput,
-	idempotencyKey string, expectedLockVersion int, note string, updateCostPrice bool) (*entity.PostProductionRunReceiptResult, error) {
+	idempotencyKey string, expectedLockVersion int, note string, updateCostPrice, final bool) (*entity.PostProductionRunReceiptResult, error) {
 	runID := run.Id
 	// Moving sellable stock needs products:write on top of production:write (the RBAC interceptor
 	// gate). An account granted the permission after login must re-login — permissions ride in the JWT.
@@ -322,12 +325,13 @@ func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRu
 		RunID:               runID,
 		Lines:               lines,
 		IdempotencyKey:      idempotencyKey,
-		RequestHash:         dto.HashProductionRunReceiptPayload(runID, lines, note, updateCostPrice),
+		RequestHash:         dto.HashProductionRunReceiptPayload(runID, lines, note, updateCostPrice, final),
 		ExpectedLockVersion: expectedLockVersion,
 		Note:                note,
 		UpdateCostPrice:     updateCostPrice,
 		Username:            authsrv.GetAdminUsername(ctx),
 		BaseCurrency:        cache.GetBaseCurrency(),
+		Final:               final,
 	}
 	// NF-07: an auxiliary card's output is received into the material warehouse, not product stock.
 	if card.Purpose == entity.TechCardPurposeAuxiliary {

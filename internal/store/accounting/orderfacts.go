@@ -175,22 +175,41 @@ func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, l
 }
 
 // GetReceiptFactsForPosting assembles the production-receive fact set for one receipt (P1): the
-// receipt's own received_at and good-quantity total, plus the RUN's manual cost articles and
-// material issue/return movements (v1 receipts are final-only, so run scope == receipt scope).
+// receipt's own received_at and quantity totals, the RUN's manual cost articles and material
+// issue/return movements, and the Phase 5 pro-rata basis — run-wide unit aggregates over
+// non-reversed receipts, the plan total, and what sibling receipts' live entries already
+// capitalised/relieved (posted_manual_base / posted_fg_base, written in the same tx as each entry).
 // LEDGER_WIP (Σ costed issue_production − return_production, with the pre-cutover exclusion) is
 // derived from Issues by the caller, which knows accounting.start_date.
 func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*entity.AcctRunFacts, error) {
 	hdr, err := storeutil.QueryNamedOne[struct {
-		Id           int       `db:"id"`
-		RunId        int       `db:"run_id"`
-		ReceivedAt   time.Time `db:"received_at"`
-		TechCardName string    `db:"tech_card_name"`
-		GoodQty      int       `db:"good_qty"`
-		DefectQty    int       `db:"defect_qty"`
+		Id           int             `db:"id"`
+		RunId        int             `db:"run_id"`
+		ReceivedAt   time.Time       `db:"received_at"`
+		Final        bool            `db:"final"`
+		TechCardName string          `db:"tech_card_name"`
+		GoodQty      int             `db:"good_qty"`
+		DefectQty    int             `db:"defect_qty"`
+		AllGood      int             `db:"all_good"`
+		AllReceived  int             `db:"all_received"`
+		PlannedTotal int             `db:"planned_total"`
+		OtherManual  decimal.Decimal `db:"other_manual"`
+		OtherFG      decimal.Decimal `db:"other_fg"`
 	}](ctx, s.DB, `
-		SELECT pr.id, pr.run_id, pr.received_at, tc.name AS tech_card_name,
+		SELECT pr.id, pr.run_id, pr.received_at, pr.final, tc.name AS tech_card_name,
 		       COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS good_qty,
-		       COALESCE((SELECT SUM(rl.defect_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS defect_qty
+		       COALESCE((SELECT SUM(rl.defect_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS defect_qty,
+		       COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt s
+		                 JOIN production_run_receipt_line rl ON rl.receipt_id = s.id
+		                 WHERE s.run_id = pr.run_id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS all_good,
+		       COALESCE((SELECT SUM(rl.good_qty + rl.defect_qty) FROM production_run_receipt s
+		                 JOIN production_run_receipt_line rl ON rl.receipt_id = s.id
+		                 WHERE s.run_id = pr.run_id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS all_received,
+		       COALESCE((SELECT SUM(l.planned_qty) FROM production_run_line l WHERE l.run_id = pr.run_id), 0) AS planned_total,
+		       COALESCE((SELECT SUM(s.posted_manual_base) FROM production_run_receipt s
+		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL), 0) AS other_manual,
+		       COALESCE((SELECT SUM(s.posted_fg_base) FROM production_run_receipt s
+		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL), 0) AS other_fg
 		FROM production_run_receipt pr
 		JOIN production_run r ON r.id = pr.run_id
 		JOIN tech_card tc ON tc.id = r.tech_card_id
@@ -214,25 +233,55 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		return nil, fmt.Errorf("accounting: get run issues %d: %w", hdr.RunId, err)
 	}
 	rf := &entity.AcctRunFacts{
-		RunID:          hdr.RunId,
-		ReceivedAt:     hdr.ReceivedAt,
-		TechCardName:   hdr.TechCardName,
-		Costs:          costs,
-		Issues:         issues,
-		ReceiptID:      hdr.Id,
-		GoodQtyTotal:   hdr.GoodQty,
-		DefectQtyTotal: hdr.DefectQty,
+		RunID:                 hdr.RunId,
+		ReceivedAt:            hdr.ReceivedAt,
+		TechCardName:          hdr.TechCardName,
+		Costs:                 costs,
+		Issues:                issues,
+		ReceiptID:             hdr.Id,
+		GoodQtyTotal:          hdr.GoodQty,
+		DefectQtyTotal:        hdr.DefectQty,
+		IsFinal:               hdr.Final,
+		AllGoodQty:            hdr.AllGood,
+		AllReceivedQty:        hdr.AllReceived,
+		PlannedQtyTotal:       hdr.PlannedTotal,
+		OtherPostedManualBase: hdr.OtherManual,
+		OtherPostedFGBase:     hdr.OtherFG,
 	}
 	return rf, nil
 }
 
-// MarkReceiptPosted stamps a receipt's posting_status='posted'. Called in the same transaction as
-// the journal-entry insert so "entry exists" and "receipt posted" are one fact.
-func (s *Store) MarkReceiptPosted(ctx context.Context, receiptID int) error {
+// MarkReceiptPosted stamps a receipt's posting_status='posted' together with what its live entry
+// actually capitalised (Cr 2010) and relieved (Dr 1130) — the sibling aggregates Phase 5's
+// pro-rata/true-up arithmetic reads. Called in the same transaction as the journal-entry insert so
+// "entry exists", "receipt posted" and the amounts are one fact.
+func (s *Store) MarkReceiptPosted(ctx context.Context, receiptID int, manualBase, fgBase decimal.Decimal) error {
 	if err := storeutil.ExecNamed(ctx, s.DB, `
-		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL
-		WHERE id = :id`, map[string]any{"id": receiptID}); err != nil {
+		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL,
+			posted_manual_base = :manual_base, posted_fg_base = :fg_base
+		WHERE id = :id`, map[string]any{
+		"id": receiptID, "manual_base": manualBase, "fg_base": fgBase,
+	}); err != nil {
 		return fmt.Errorf("accounting: mark receipt %d posted: %w", receiptID, err)
+	}
+	return nil
+}
+
+// MarkReceiptPostedFromEntry marks a receipt posted with amounts RECOVERED from an existing live
+// entry's lines — the worker's raced path (an entry exists but the receipt row was never marked,
+// e.g. the mark crashed after the entry committed in an older binary). One statement so the
+// recovery is atomic with the mark.
+func (s *Store) MarkReceiptPostedFromEntry(ctx context.Context, receiptID, entryID int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL,
+			posted_manual_base = COALESCE((SELECT SUM(l.amount) FROM acct_journal_line l
+			                               JOIN acct_account a ON a.id = l.account_id
+			                               WHERE l.entry_id = :entry_id AND a.code = '2010' AND l.side = 'credit'), 0),
+			posted_fg_base = COALESCE((SELECT SUM(l.amount) FROM acct_journal_line l
+			                           JOIN acct_account a ON a.id = l.account_id
+			                           WHERE l.entry_id = :entry_id AND a.code = '1130' AND l.side = 'debit'), 0)
+		WHERE id = :id`, map[string]any{"id": receiptID, "entry_id": entryID}); err != nil {
+		return fmt.Errorf("accounting: mark receipt %d posted from entry %d: %w", receiptID, entryID, err)
 	}
 	return nil
 }

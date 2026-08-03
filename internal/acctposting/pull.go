@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 )
 
 // Pull-source checkpoint names (acct_checkpoint.source).
@@ -189,8 +190,9 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 		return fmt.Errorf("load receipt entry versions: %w", err)
 	}
 	if active != nil {
-		// A live entry raced the scan — mark the receipt posted so the scan stops re-seeing it.
-		if err := acc.MarkReceiptPosted(ctx, ref.ReceiptID); err != nil {
+		// A live entry raced the scan — mark the receipt posted, recovering the amounts the entry
+		// actually booked from its own lines (the sibling aggregates Phase 5 arithmetic reads).
+		if err := acc.MarkReceiptPostedFromEntry(ctx, ref.ReceiptID, active.Id); err != nil {
 			return err
 		}
 		return nil
@@ -205,6 +207,17 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 		}
 		return fmt.Errorf("build receipt entry: %w", berr)
 	}
+	// What THIS entry capitalises (Cr 2010) and relieves into FG (Dr 1130) — stored on the receipt
+	// row so sibling postings can read exact aggregates (Phase 5 pro-rata/true-up).
+	manualAmt, fgAmt := decimal.Zero, decimal.Zero
+	for _, l := range entry.Lines {
+		switch {
+		case l.AccountCode == accounting.Acc2010 && l.Side == entity.AcctSideCredit:
+			manualAmt = manualAmt.Add(l.Amount)
+		case l.AccountCode == accounting.Acc1130 && l.Side == entity.AcctSideDebit:
+			fgAmt = fgAmt.Add(l.Amount)
+		}
+	}
 	var existed bool
 	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		_, ex, e := rep.Accounting().CreateJournalEntry(ctx, entry)
@@ -212,8 +225,8 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 		if e != nil {
 			return e
 		}
-		// Same Tx: "entry exists" and "receipt posted" commit together.
-		return rep.Accounting().MarkReceiptPosted(ctx, ref.ReceiptID)
+		// Same Tx: "entry exists", "receipt posted" and the posted amounts commit together.
+		return rep.Accounting().MarkReceiptPosted(ctx, ref.ReceiptID, manualAmt, fgAmt)
 	})
 	if txErr != nil {
 		// A closed period (rare — received_at is ~now) or any other posting error.

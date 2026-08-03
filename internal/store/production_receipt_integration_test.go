@@ -37,8 +37,9 @@ func receiptParamsFromStored(t *testing.T, run *entity.ProductionRun, updateCost
 		RunID:            run.Id,
 		Lines:            lines,
 		IdempotencyKey:   key,
-		RequestHash:      dto.HashProductionRunReceiptPayload(run.Id, lines, "", updateCostPrice),
+		RequestHash:      dto.HashProductionRunReceiptPayload(run.Id, lines, "", updateCostPrice, true),
 		UpdateCostPrice:  updateCostPrice,
+		Final:            true,
 		Username:         "tester",
 		BaseCurrency:     "EUR",
 		Aux:              aux,
@@ -106,7 +107,8 @@ func TestProductionReceiptCommand(t *testing.T) {
 		lines := []entity.ProductionRunReceiptLineInput{{LineKey: lineKey, GoodQty: 0, DefectQty: 8}}
 		params := entity.PostProductionRunReceiptParams{
 			RunID: runID, Lines: lines, IdempotencyKey: key,
-			RequestHash:  dto.HashProductionRunReceiptPayload(runID, lines, "", false),
+			RequestHash:  dto.HashProductionRunReceiptPayload(runID, lines, "", false, true),
+			Final:        true,
 			Username:     "tester",
 			BaseCurrency: "EUR",
 		}
@@ -141,7 +143,7 @@ func TestProductionReceiptCommand(t *testing.T) {
 		// Same key, different payload → conflict, nothing merged.
 		bad := params
 		bad.Lines = []entity.ProductionRunReceiptLineInput{{LineKey: lineKey, GoodQty: 1, DefectQty: 7}}
-		bad.RequestHash = dto.HashProductionRunReceiptPayload(runID, bad.Lines, "", false)
+		bad.RequestHash = dto.HashProductionRunReceiptPayload(runID, bad.Lines, "", false, true)
 		_, err = P.PostProductionRunReceipt(ctx, bad)
 		require.ErrorIs(t, err, entity.ErrIdempotencyConflict)
 
@@ -166,7 +168,7 @@ func TestProductionReceiptCommand(t *testing.T) {
 		ghost := []entity.ProductionRunReceiptLineInput{{LineKey: "GHOST0000000000000000000000"[:26], GoodQty: 1}}
 		_, err = P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
 			RunID: runID, Lines: ghost, IdempotencyKey: key,
-			RequestHash: dto.HashProductionRunReceiptPayload(runID, ghost, "", false), Username: "tester",
+			RequestHash: dto.HashProductionRunReceiptPayload(runID, ghost, "", false, true), Username: "tester", Final: true,
 		})
 		require.ErrorIs(t, err, entity.ErrProductionRunReceiptLineUnknown)
 
@@ -184,7 +186,7 @@ func TestProductionReceiptCommand(t *testing.T) {
 		require.NoError(t, err)
 		_, err = P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
 			RunID: 0, Lines: ghost, IdempotencyKey: key2,
-			RequestHash: dto.HashProductionRunReceiptPayload(0, ghost, "", false), Username: "tester",
+			RequestHash: dto.HashProductionRunReceiptPayload(0, ghost, "", false, true), Username: "tester", Final: true,
 		})
 		require.ErrorIs(t, err, sql.ErrNoRows)
 	})
@@ -379,7 +381,7 @@ func TestProductionReceiptPostingScan(t *testing.T) {
 		if _, _, e := rep.Accounting().CreateJournalEntry(ctx, entry); e != nil {
 			return e
 		}
-		return rep.Accounting().MarkReceiptPosted(ctx, res.ReceiptID)
+		return rep.Accounting().MarkReceiptPosted(ctx, res.ReceiptID, decimal.Zero, decimal.Zero)
 	}))
 	require.False(t, inScan(), "a posted receipt is done")
 
@@ -589,10 +591,11 @@ func TestProductionReceiptGoodUnitsBookStockAndCostPrice(t *testing.T) {
 	lines := []entity.ProductionRunReceiptLineInput{{LineKey: lineKey, GoodQty: 6, DefectQty: 3}}
 	res, err := P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
 		RunID: runID, Lines: lines, IdempotencyKey: key,
-		RequestHash:     dto.HashProductionRunReceiptPayload(runID, lines, "", true),
+		RequestHash:     dto.HashProductionRunReceiptPayload(runID, lines, "", true, true),
 		UpdateCostPrice: true,
 		Username:        "tester",
 		BaseCurrency:    "EUR",
+		Final:           true,
 	})
 	require.NoError(t, err)
 	require.True(t, res.CostPriceUpdated, "cost_price seeded from the frozen actual")
@@ -631,4 +634,219 @@ func TestProductionReceiptGoodUnitsBookStockAndCostPrice(t *testing.T) {
 	require.True(t, costPrice.Decimal.Equal(decimal.NewFromInt(15)), "cost_price = frozen actual, got %s", costPrice.Decimal)
 	require.True(t, srcRun.Valid)
 	require.EqualValues(t, runID, srcRun.Int32)
+}
+
+// TestProductionReceiptPartialFlow pins the Phase 5 command semantics end-to-end on real schema:
+// a partial receipt books its delivery and moves the run to partially_received (received_at stays
+// NULL), rollups ACCUMULATE across receipts, each receipt books its own stock increment, the final
+// receipt zero-stamps never-counted lines and flips the run to received, an empty FINAL short-closes
+// a partially received run, and the facts loader assembles the exact pro-rata basis (all-units
+// aggregates + sibling posted amounts written by MarkReceiptPosted).
+func TestProductionReceiptPartialFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	var sizeA int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT id FROM size WHERE sku_ord != 0 ORDER BY id LIMIT 1`).Scan(&sizeA))
+	var sizeB int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT id FROM size WHERE sku_ord != 0 AND id <> ? ORDER BY id LIMIT 1`, sizeA).Scan(&sizeB))
+	var langID int
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM language").Scan(&langID))
+
+	mediaID, err := s.Media().AddMedia(ctx, &entity.MediaItem{
+		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 100, FullSizeHeight: 100,
+		ThumbnailMediaURL: "https://x/t.jpg", ThumbnailWidth: 10, ThumbnailHeight: 10,
+		CompressedMediaURL: "https://x/c.jpg", CompressedWidth: 50, CompressedHeight: 50,
+	})
+	require.NoError(t, err)
+	prices := make([]entity.ColorwayPriceInsert, 0)
+	for _, c := range currency.RequiredCurrencies() {
+		prices = append(prices, entity.ColorwayPriceInsert{Currency: c, Price: decimal.NewFromInt(150)})
+	}
+	if len(prices) == 0 {
+		prices = append(prices, entity.ColorwayPriceInsert{Currency: "EUR", Price: decimal.NewFromInt(150)})
+	}
+	prodID, err := s.Products().AddProduct(ctx, &entity.ColorwayNew{
+		Product: &entity.ColorwayInsert{
+			ProductBodyInsert: entity.ColorwayBodyInsert{
+				Brand: "ACME", Color: "black", ColorCode: "BLK", CountryOfOrigin: "IT",
+				TopCategoryId: 1, TargetGender: entity.Unisex, Season: entity.SeasonSS,
+			},
+			ThumbnailMediaID: mediaID,
+			Translations:     []entity.ColorwayTranslationInsert{{LanguageId: langID, Name: "RCPT-PART", Description: "d"}},
+			Prices:           prices,
+		},
+		SizeMeasurements: []entity.SizeWithMeasurementInsert{
+			{ProductSize: entity.VariantInsert{SizeId: sizeA, Quantity: decimal.NewFromInt(0)}},
+			{ProductSize: entity.VariantInsert{SizeId: sizeB, Quantity: decimal.NewFromInt(0)}},
+		},
+		MediaIds: []int{mediaID}, Tags: []entity.ColorwayTagInsert{}, Prices: prices,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", prodID) })
+
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber: sql.NullString{String: "PRUN-PART", Valid: true}, Name: "Partial Coat", Stage: entity.TechCardStageProto,
+		ApprovalState: entity.TechCardApprovalDraft, MeasurementUnit: entity.TechCardUnitMm,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.TechCards().DeleteTechCard(context.Background(), tcID) })
+
+	P := s.ProductionRuns()
+	runID, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId: tcID, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{
+			{ProductId: sql.NullInt32{Int32: int32(prodID), Valid: true}, SizeId: sizeA, PlannedQty: 6},
+			{ProductId: sql.NullInt32{Int32: int32(prodID), Valid: true}, SizeId: sizeB, PlannedQty: 4},
+		},
+		Costs: []entity.ProductionRunCost{{
+			Kind: entity.ProductionRunCostCMT, Amount: decimal.NewFromInt(100), Currency: "EUR",
+			AmountBase: decimal.NullDecimal{Decimal: decimal.NewFromInt(100), Valid: true},
+		}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM production_run_receipt WHERE run_id = ?", runID)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM product_stock_change_history WHERE reference_id = ?", "production_run:"+strconv.Itoa(runID))
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM production_run WHERE id = ?", runID)
+	})
+
+	run, err := P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	keyA, keyB := run.Lines[0].LineKey, run.Lines[1].LineKey
+
+	postReceipt := func(lines []entity.ProductionRunReceiptLineInput, final bool) *entity.PostProductionRunReceiptResult {
+		t.Helper()
+		key, err := entity.MintProductionRunLineKey()
+		require.NoError(t, err)
+		res, err := P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
+			RunID: runID, Lines: lines, IdempotencyKey: key,
+			RequestHash:  dto.HashProductionRunReceiptPayload(runID, lines, "", false, final),
+			Username:     "tester",
+			BaseCurrency: "EUR",
+			Final:        final,
+		})
+		require.NoError(t, err)
+		return res
+	}
+	stockOf := func(sizeID int) int64 {
+		t.Helper()
+		var q decimal.Decimal
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT quantity FROM product_size WHERE product_id = ? AND size_id = ?", prodID, sizeID).Scan(&q))
+		return q.IntPart()
+	}
+
+	// Partial 1: 3 good on line A. Run → partially_received, received_at stays NULL, stock +3.
+	r1 := postReceipt([]entity.ProductionRunReceiptLineInput{{LineKey: keyA, GoodQty: 3}}, false)
+	got, err := P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Equal(t, entity.ProductionRunPartiallyReceived, got.Status)
+	require.False(t, got.ReceivedAt.Valid, "a half-done run is not received")
+	require.EqualValues(t, 3, got.Lines[0].ReceivedQty.Int64)
+	require.False(t, got.Lines[1].ReceivedQty.Valid, "an untouched line stays unknowable until the final")
+	require.EqualValues(t, 3, stockOf(sizeA))
+	require.Len(t, got.Receipts, 1)
+	require.False(t, got.Receipts[0].Final)
+
+	// A partial with nothing counted is refused even mid-series.
+	key, err := entity.MintProductionRunLineKey()
+	require.NoError(t, err)
+	empty := []entity.ProductionRunReceiptLineInput{}
+	_, err = P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
+		RunID: runID, Lines: empty, IdempotencyKey: key,
+		RequestHash: dto.HashProductionRunReceiptPayload(runID, empty, "", false, false),
+		Username:    "tester", BaseCurrency: "EUR", Final: false,
+	})
+	require.ErrorIs(t, err, entity.ErrProductionRunNothingReceived)
+
+	// Partial 2: 2 good + 1 defect on line A — the rollup ACCUMULATES, stock adds the delta only.
+	r2 := postReceipt([]entity.ProductionRunReceiptLineInput{{LineKey: keyA, GoodQty: 2, DefectQty: 1}}, false)
+	got, err = P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.EqualValues(t, 5, got.Lines[0].ReceivedQty.Int64, "3 + 2 accumulated")
+	require.EqualValues(t, 1, got.Lines[0].DefectQty.Int64)
+	require.EqualValues(t, 5, stockOf(sizeA))
+
+	// Final: 2 good on line B. Run → received; line A keeps its accumulated counts; line B books.
+	r3 := postReceipt([]entity.ProductionRunReceiptLineInput{{LineKey: keyB, GoodQty: 2}}, true)
+	got, err = P.GetProductionRun(ctx, runID)
+	require.NoError(t, err)
+	require.Equal(t, entity.ProductionRunReceived, got.Status)
+	require.True(t, got.ReceivedAt.Valid)
+	require.EqualValues(t, 5, got.Lines[0].ReceivedQty.Int64)
+	require.EqualValues(t, 2, got.Lines[1].ReceivedQty.Int64)
+	require.EqualValues(t, 2, stockOf(sizeB))
+	require.Len(t, got.Receipts, 3)
+	require.True(t, got.Receipts[2].Final)
+
+	// After the final: no further receipts.
+	_, err = P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
+		RunID: runID, Lines: []entity.ProductionRunReceiptLineInput{{LineKey: keyA, GoodQty: 1}},
+		IdempotencyKey: mustMintKey(t),
+		RequestHash:    dto.HashProductionRunReceiptPayload(runID, []entity.ProductionRunReceiptLineInput{{LineKey: keyA, GoodQty: 1}}, "", false, false),
+		Username:       "tester", BaseCurrency: "EUR",
+	})
+	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
+
+	// Facts loader: the pro-rata basis for the FINAL receipt sees the whole run's units and the
+	// siblings' posted amounts once MarkReceiptPosted stamps them.
+	require.NoError(t, s.Accounting().MarkReceiptPosted(ctx, r1.ReceiptID, decimal.RequireFromString("100.00"), decimal.RequireFromString("30.00")))
+	require.NoError(t, s.Accounting().MarkReceiptPosted(ctx, r2.ReceiptID, decimal.Zero, decimal.RequireFromString("20.00")))
+	facts, err := s.Accounting().GetReceiptFactsForPosting(ctx, r3.ReceiptID)
+	require.NoError(t, err)
+	require.True(t, facts.IsFinal)
+	require.Equal(t, 7, facts.AllGoodQty)
+	require.Equal(t, 8, facts.AllReceivedQty)
+	require.Equal(t, 10, facts.PlannedQtyTotal)
+	require.Equal(t, "100", facts.OtherPostedManualBase.String())
+	require.Equal(t, "50", facts.OtherPostedFGBase.String())
+
+	// Short-close: a second run takes one partial, then an EMPTY final declares it complete.
+	runID2, err := P.CreateProductionRun(ctx, &entity.ProductionRunInsert{
+		TechCardId: tcID, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{{ProductId: sql.NullInt32{Int32: int32(prodID), Valid: true}, SizeId: sizeA, PlannedQty: 5}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cctx := context.Background()
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM production_run_receipt WHERE run_id = ?", runID2)
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM product_stock_change_history WHERE reference_id = ?", "production_run:"+strconv.Itoa(runID2))
+		_, _ = testDB.ExecContext(cctx, "DELETE FROM production_run WHERE id = ?", runID2)
+	})
+	run2, err := P.GetProductionRun(ctx, runID2)
+	require.NoError(t, err)
+	lk := run2.Lines[0].LineKey
+	partial := []entity.ProductionRunReceiptLineInput{{LineKey: lk, GoodQty: 2}}
+	_, err = P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
+		RunID: runID2, Lines: partial, IdempotencyKey: mustMintKey(t),
+		RequestHash: dto.HashProductionRunReceiptPayload(runID2, partial, "", false, false),
+		Username:    "tester", BaseCurrency: "EUR",
+	})
+	require.NoError(t, err)
+	shortClose := []entity.ProductionRunReceiptLineInput{}
+	_, err = P.PostProductionRunReceipt(ctx, entity.PostProductionRunReceiptParams{
+		RunID: runID2, Lines: shortClose, IdempotencyKey: mustMintKey(t),
+		RequestHash: dto.HashProductionRunReceiptPayload(runID2, shortClose, "", false, true),
+		Username:    "tester", BaseCurrency: "EUR", Final: true,
+	})
+	require.NoError(t, err)
+	got2, err := P.GetProductionRun(ctx, runID2)
+	require.NoError(t, err)
+	require.Equal(t, entity.ProductionRunReceived, got2.Status)
+	require.EqualValues(t, 2, got2.Lines[0].ReceivedQty.Int64, "the short-close keeps the counted fact")
+}
+
+func mustMintKey(t *testing.T) string {
+	t.Helper()
+	key, err := entity.MintProductionRunLineKey()
+	require.NoError(t, err)
+	return key
 }

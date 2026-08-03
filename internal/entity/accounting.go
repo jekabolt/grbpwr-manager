@@ -613,7 +613,7 @@ type AcctRunFacts struct {
 	// ReceiptID is the receipt these facts post under (Phase 4: source_key 'receipt:<id>'); 0 only
 	// in legacy-shaped tests.
 	ReceiptID int
-	// GoodQtyTotal / DefectQtyTotal are Σ good_qty / Σ defect_qty of the receipt's lines. Zero good
+	// GoodQtyTotal / DefectQtyTotal are Σ good_qty / Σ defect_qty of THIS receipt's lines. Zero good
 	// with a POSITIVE defect count marks an all-scrap receipt: no finished goods exist, so the
 	// builder must NOT transfer WIP→FG (the cost stays in WIP pending the defect write-off phase).
 	// Both zero means the receipt has no counted lines at all — a 0231 legacy backfill of a run
@@ -621,6 +621,26 @@ type AcctRunFacts struct {
 	// receipts existed.
 	GoodQtyTotal   int
 	DefectQtyTotal int
+
+	// --- Phase 5 (partial receipts) — the pro-rata / true-up basis. All aggregates are over the
+	// run's OTHER non-reversed receipts, so the arithmetic is correct under any posting order.
+	//
+	// IsFinal: this receipt declared the run complete (its posting trues the run's good-unit share
+	// up exactly, so rounding never strands money on 1120). Pre-Phase-5 facts (ReceiptID 0) are
+	// treated as final by the builder.
+	IsFinal bool
+	// AllGoodQty / AllReceivedQty are Σ good and Σ good+defect over ALL the run's non-reversed
+	// receipts (including this one) — the denominator basis of the good-unit share.
+	AllGoodQty     int
+	AllReceivedQty int
+	// PlannedQtyTotal is Σ planned_qty over the run's lines — the expected-units basis a PARTIAL
+	// receipt relieves against (the final receipt ignores it and trues up to actuals).
+	PlannedQtyTotal int
+	// OtherPostedManualBase / OtherPostedFGBase are Σ posted_manual_base / posted_fg_base over the
+	// run's other receipts — what sibling postings have already capitalised (Dr1120/Cr2010) and
+	// relieved (Dr1130/Cr1120). Written by the worker in the same tx as each entry.
+	OtherPostedManualBase decimal.Decimal
+	OtherPostedFGBase     decimal.Decimal
 }
 
 // AcctReceiptRef identifies one unposted production receipt for the posting worker's scan.

@@ -17,6 +17,10 @@ enum ProductionRunStatus {
   PRODUCTION_RUN_STATUS_RECEIVED = 3;
   PRODUCTION_RUN_STATUS_CLOSED = 4;
   PRODUCTION_RUN_STATUS_CANCELLED = 5;
+  // At least one partial receipt is booked and the operator has not yet declared the run complete
+  // (production-costing Phase 5). Receipt commands own this state and RECEIVED — neither is
+  // writable through UpdateProductionRun.
+  PRODUCTION_RUN_STATUS_PARTIALLY_RECEIVED = 6;
 }
 
 // ProductionRunLine is one colour-model × size line of a run: which product (colourway) at which
@@ -121,11 +125,11 @@ message ProductionRunReceiptLine {
   int32 defect_qty = 5; // units counted as defect — recorded, never stocked
 }
 
-// ProductionRunReceipt is one immutable receiving event of a run (Phase 4, receipt v1): who
-// received what and when, at what frozen valuation. v1 is final-only (one receipt closes the run);
-// partial receipts are a later phase on this same shape. unit_cost_base/base_currency are money and
-// are stripped without costing:read; has_base false means the valuation was not computable at
-// receipt time (uncosted issues / unfolded cost articles) and unit_cost_base is unset.
+// ProductionRunReceipt is one immutable receiving event of a run (Phase 4, receipt v1; Phase 5
+// allows several per run): who received what and when, at what frozen valuation.
+// unit_cost_base/base_currency are money and are stripped without costing:read; has_base false
+// means the valuation was not computable at receipt time (uncosted issues / unfolded cost
+// articles) and unit_cost_base is unset.
 message ProductionRunReceipt {
   int32 id = 1;
   int32 run_id = 2;
@@ -137,6 +141,13 @@ message ProductionRunReceipt {
   bool has_base = 8;
   repeated ProductionRunReceiptLine lines = 9;
   google.protobuf.Timestamp created_at = 10;
+  // The receipt that declared the run complete and flipped it to RECEIVED (Phase 5). Every
+  // pre-Phase-5 receipt is final by construction.
+  bool final = 11;
+  // Accounting outbox state of this receipt: 'pending' | 'posted' | 'dead_letter'. Read-only
+  // operational fact (the posting worker owns it); visible without costing:read — it carries no
+  // amounts.
+  string posting_status = 12;
 }
 
 // ProductionMarkerSource / ProductionRunMarker were REMOVED (production-costing Phase 2, review

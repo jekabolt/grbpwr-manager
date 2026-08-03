@@ -38,6 +38,11 @@ var ErrProductionRunHasMovements = errors.New("production run has material movem
 // stock and seeds cost_price. Flipping it via a plain update would mark a run received with no stock.
 var ErrProductionRunReceiveViaUpdate = errors.New("a production run is marked received only by receiving it")
 
+// ErrProductionRunPartialTerminal is returned by UpdateProductionRun when a partially received run
+// is asked to jump to a terminal state: its receipts booked real stock, so the honest paths are the
+// final receipt (→ received) or a Phase 6 reversal — never cancelling the facts away.
+var ErrProductionRunPartialTerminal = errors.New("a partially received run cannot be cancelled or closed; post the final receipt first")
+
 // ErrProductionRunHasOpenIssues is returned by UpdateProductionRun when moving an open run to a
 // terminal state (cancelled/closed) while material is still issued to it (net issues > 0): that
 // material would silently drop out of WIP without being received or written off. Return or write off
@@ -76,18 +81,22 @@ type ProductionRunStatus string
 const (
 	ProductionRunPlanned    ProductionRunStatus = "planned"
 	ProductionRunInProgress ProductionRunStatus = "in_progress"
-	ProductionRunReceived   ProductionRunStatus = "received"
-	ProductionRunClosed     ProductionRunStatus = "closed"
-	ProductionRunCancelled  ProductionRunStatus = "cancelled"
+	// ProductionRunPartiallyReceived: at least one partial receipt is booked and the run is not yet
+	// declared complete (Phase 5). Owned by the receipt command — never writable via UpdateProductionRun.
+	ProductionRunPartiallyReceived ProductionRunStatus = "partially_received"
+	ProductionRunReceived          ProductionRunStatus = "received"
+	ProductionRunClosed            ProductionRunStatus = "closed"
+	ProductionRunCancelled         ProductionRunStatus = "cancelled"
 )
 
 // ValidProductionRunStatuses is the set of accepted run statuses.
 var ValidProductionRunStatuses = map[ProductionRunStatus]bool{
-	ProductionRunPlanned:    true,
-	ProductionRunInProgress: true,
-	ProductionRunReceived:   true,
-	ProductionRunClosed:     true,
-	ProductionRunCancelled:  true,
+	ProductionRunPlanned:           true,
+	ProductionRunInProgress:        true,
+	ProductionRunPartiallyReceived: true,
+	ProductionRunReceived:          true,
+	ProductionRunClosed:            true,
+	ProductionRunCancelled:         true,
 }
 
 // IsValidProductionRunStatus reports whether s is an accepted run status.

@@ -195,3 +195,103 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 		assert.True(t, hasLine(e, Acc1130, entity.AcctSideDebit), "WIP→FG posts for a zero-line legacy receipt")
 	})
 }
+
+// TestBuildProductionReceiveEntry_PartialReceipts pins the Phase 5 arithmetic: manual capitalises
+// once (delta vs siblings), each partial relieves the current WIP balance pro-rata against the
+// units still expected, and the FINAL receipt trues the run's good-unit share up exactly — Σ FG
+// over the receipts lands on TOTAL_WIP × good ÷ received to the cent, rounding residue never
+// strands on 1120, and the defect share deliberately stays there.
+func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
+	wip100 := []entity.AcctRunIssueFact{
+		{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nd("100.00"), CreatedAt: testOccurred},
+	}
+
+	t.Run("three equal partial-partial-final receipts split 100.00 exactly", func(t *testing.T) {
+		r1 := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 51, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 1, AllGoodQty: 1, AllReceivedQty: 1, PlannedQtyTotal: 3,
+		}
+		e1, err := BuildProductionReceiveEntry(r1, testStartDate, 1)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e1))
+		assertAmount(t, e1, Acc1130, entity.AcctSideDebit, "33.33") // 100 × 1/3
+
+		r2 := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 52, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 1, AllGoodQty: 2, AllReceivedQty: 2, PlannedQtyTotal: 3,
+			OtherPostedFGBase: dec("33.33"),
+		}
+		e2, err := BuildProductionReceiveEntry(r2, testStartDate, 1)
+		require.NoError(t, err)
+		assertAmount(t, e2, Acc1130, entity.AcctSideDebit, "33.34") // (100−33.33) × 1/2
+
+		r3 := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 53, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
+			GoodQtyTotal: 1, AllGoodQty: 3, AllReceivedQty: 3, PlannedQtyTotal: 3,
+			OtherPostedFGBase: dec("66.67"),
+		}
+		e3, err := BuildProductionReceiveEntry(r3, testStartDate, 1)
+		require.NoError(t, err)
+		assertAmount(t, e3, Acc1130, entity.AcctSideDebit, "33.33") // true-up: 100.00 − 66.67
+	})
+
+	t.Run("mixed FINAL leaves the defect share in WIP", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 60, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
+			GoodQtyTotal: 8, DefectQtyTotal: 2, AllGoodQty: 8, AllReceivedQty: 10, PlannedQtyTotal: 10,
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "80.00")
+		assert.True(t, e.HasCaveat == false, "good-share transfer is the rule, not a caveat")
+	})
+
+	t.Run("all-scrap partial capitalises the manual delta only", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 61, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 0, DefectQtyTotal: 5, AllGoodQty: 0, AllReceivedQty: 5, PlannedQtyTotal: 10,
+			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("50.00")}},
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "50.00")
+		assert.False(t, hasLine(e, Acc1130, entity.AcctSideDebit), "no finished goods exist")
+	})
+
+	t.Run("manual capitalises once: the sibling-posted total is never re-booked", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 62, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
+			GoodQtyTotal: 2, AllGoodQty: 3, AllReceivedQty: 3, PlannedQtyTotal: 3,
+			Costs:                 []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("100.00")}},
+			OtherPostedManualBase: dec("100.00"),
+			OtherPostedFGBase:     dec("66.66"),
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		assert.False(t, hasLine(e, Acc1120, entity.AcctSideDebit), "manual already capitalised by a sibling")
+		// TOTAL_WIP = 100 issues + 100 manual = 200; target = 200 × 3/3 = 200; true-up = 200 − 66.66.
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "133.34")
+	})
+
+	t.Run("a late partial after the final trued up posts nothing", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 63, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 1, AllGoodQty: 3, AllReceivedQty: 3, PlannedQtyTotal: 3,
+			OtherPostedFGBase: dec("100.00"),
+		}
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.ErrorIs(t, err, ErrSkipEmpty)
+	})
+
+	t.Run("over-plan delivery keeps the ratio at one, never above", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 64, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 5, AllGoodQty: 5, AllReceivedQty: 5, PlannedQtyTotal: 3,
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		// remaining = max(3−0, 5) = 5 → fg = 100 × 5/5, capped by the good-share target (100).
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "100.00")
+	})
+}

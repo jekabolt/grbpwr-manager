@@ -67,8 +67,11 @@ type ProductionRunReceipt struct {
 	ReversalOf     sql.NullInt32       `db:"reversal_of"`
 	ReversedBy     sql.NullInt32       `db:"reversed_by"`
 	PostingStatus  string              `db:"posting_status"`
-	CreatedAt      time.Time           `db:"created_at"`
-	Lines          []ProductionRunReceiptLine
+	// Final marks the receipt that declared the run complete and flipped it to received (Phase 5).
+	// Every pre-Phase-5 receipt is final by construction (0246 backfill).
+	Final     bool      `db:"final"`
+	CreatedAt time.Time `db:"created_at"`
+	Lines     []ProductionRunReceiptLine
 }
 
 // ProductionRunReceiptLineInput is one line of the receipt command as submitted: the plan line's
@@ -96,14 +99,18 @@ type PostProductionRunReceiptParams struct {
 	Username            string
 	// BaseCurrency labels the frozen valuation (the handler passes the configured base currency —
 	// the store does not read config/cache).
-	BaseCurrency string
-	ValidProducts       map[int]bool
-	ValidSizes          map[int]bool
+	BaseCurrency  string
+	ValidProducts map[int]bool
+	ValidSizes    map[int]bool
 	// Aux marks an auxiliary run (tech card purpose=auxiliary): good units are booked into
 	// OutputMaterialID in the material warehouse instead of product stock, and every line must be
 	// product-less.
 	Aux              bool
 	OutputMaterialID int
+	// Final declares the run complete: the run flips to received and further receipts are refused.
+	// False books a partial delivery and moves the run to partially_received (Phase 5). Part of the
+	// request hash — the same idempotency key with a flipped flag is a different intent.
+	Final bool
 }
 
 // PostProductionRunReceiptResult is what the receipt command returns — and what a replayed retry

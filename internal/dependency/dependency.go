@@ -935,8 +935,12 @@ type (
 		// run's costs and material issues (P1, run-scoped — v1 receipts are final-only) plus the
 		// receipt's own received_at and good-quantity total.
 		GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*entity.AcctRunFacts, error)
-		// MarkReceiptPosted stamps posting_status='posted'; called in the same tx as the entry insert.
-		MarkReceiptPosted(ctx context.Context, receiptID int) error
+		// MarkReceiptPosted stamps posting_status='posted' plus what the live entry capitalised
+		// (Cr 2010) and relieved (Dr 1130); called in the same tx as the entry insert.
+		MarkReceiptPosted(ctx context.Context, receiptID int, manualBase, fgBase decimal.Decimal) error
+		// MarkReceiptPostedFromEntry marks posted with amounts recovered from an existing live
+		// entry's lines (the worker's raced path).
+		MarkReceiptPostedFromEntry(ctx context.Context, receiptID, entryID int) error
 		// RecordReceiptPostingFailure increments posting_attempts, stores the error, and flips the
 		// receipt to dead_letter once attempts reach maxAttempts — reporting whether it did.
 		RecordReceiptPostingFailure(ctx context.Context, receiptID int, errMsg string, maxAttempts int) (deadLettered bool, err error)

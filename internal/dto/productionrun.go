@@ -19,11 +19,12 @@ import (
 
 // productionRunStatusPbToEntity maps the proto status enum to the stored string.
 var productionRunStatusPbToEntity = map[pb_common.ProductionRunStatus]entity.ProductionRunStatus{
-	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED:     entity.ProductionRunPlanned,
-	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_IN_PROGRESS: entity.ProductionRunInProgress,
-	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_RECEIVED:    entity.ProductionRunReceived,
-	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_CLOSED:      entity.ProductionRunClosed,
-	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_CANCELLED:   entity.ProductionRunCancelled,
+	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED:            entity.ProductionRunPlanned,
+	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_IN_PROGRESS:        entity.ProductionRunInProgress,
+	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_RECEIVED:           entity.ProductionRunReceived,
+	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_CLOSED:             entity.ProductionRunClosed,
+	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_CANCELLED:          entity.ProductionRunCancelled,
+	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PARTIALLY_RECEIVED: entity.ProductionRunPartiallyReceived,
 }
 
 // productionRunStatusEntityToPb is the reverse map.
@@ -378,6 +379,8 @@ func productionRunReceiptsToPb(receipts []entity.ProductionRunReceipt) []*pb_com
 			HasBase:       r.HasBase,
 			Lines:         lines,
 			CreatedAt:     timestamppb.New(r.CreatedAt),
+			Final:         r.Final,
+			PostingStatus: r.PostingStatus,
 		})
 	}
 	return out
@@ -415,16 +418,18 @@ func ConvertPbReceiptLinesToEntity(pbs []*pb_admin.PostProductionRunReceiptLineI
 }
 
 // HashProductionRunReceiptPayload is the canonical request hash of the receipt command: SHA-256
-// over the run, the SORTED counted lines, the note and the cost_price flag. expected_lock_version
-// is deliberately EXCLUDED — the idempotency key identifies the operator's intent ("receive these
-// counts"), and the lock version is a concurrency token, not intent: a retry of the same count
-// after a refetch must replay, not die on AlreadyExists.
-func HashProductionRunReceiptPayload(runID int, lines []entity.ProductionRunReceiptLineInput, note string, updateCostPrice bool) string {
+// over the run, the SORTED counted lines, the note, the cost_price flag and the FINAL flag (a
+// partial and a final with the same counts are different intents — replaying one as the other
+// would silently close or reopen the receipt series). expected_lock_version is deliberately
+// EXCLUDED — the idempotency key identifies the operator's intent ("receive these counts"), and
+// the lock version is a concurrency token, not intent: a retry of the same count after a refetch
+// must replay, not die on AlreadyExists.
+func HashProductionRunReceiptPayload(runID int, lines []entity.ProductionRunReceiptLineInput, note string, updateCostPrice, final bool) string {
 	sorted := make([]entity.ProductionRunReceiptLineInput, len(lines))
 	copy(sorted, lines)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].LineKey < sorted[j].LineKey })
 	h := sha256.New()
-	fmt.Fprintf(h, "run=%d;note=%q;cost=%t", runID, note, updateCostPrice)
+	fmt.Fprintf(h, "run=%d;note=%q;cost=%t;final=%t", runID, note, updateCostPrice, final)
 	for _, l := range sorted {
 		fmt.Fprintf(h, ";%s=%d/%d", l.LineKey, l.GoodQty, l.DefectQty)
 	}

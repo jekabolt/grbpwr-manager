@@ -200,7 +200,7 @@ func TestPostProductionRunReceipt(t *testing.T) {
 	require.Equal(t, 3, got.ExpectedLockVersion)
 	require.Equal(t, "final", got.Note)
 	require.Equal(t, key, got.IdempotencyKey)
-	require.Equal(t, dto.HashProductionRunReceiptPayload(4, got.Lines, "final", false), got.RequestHash)
+	require.Equal(t, dto.HashProductionRunReceiptPayload(4, got.Lines, "final", false, true), got.RequestHash)
 
 	// replay: the stored result comes back marked replayed.
 	repo2, pr2, _ := receiveMocks(t, mkRun(), card)
