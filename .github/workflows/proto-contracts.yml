@@ -1,0 +1,52 @@
+name: Proto contracts
+
+on:
+  pull_request:
+    paths:
+      - "proto/**"
+      - "scripts/check-proto-contracts.sh"
+      - "Makefile"
+      - ".github/workflows/proto-contracts.yml"
+  push:
+    branches:
+      - master
+      - beta
+    paths:
+      - "proto/**"
+      - "scripts/check-proto-contracts.sh"
+      - "Makefile"
+      - ".github/workflows/proto-contracts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out backend with release history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The mirror SHA comes from the repo's own pin file, so bumping the pin is one commit and the
+      # gate can never drift from it — the original workflow hardcoded the SHA here, drifted, and
+      # was at some point emptied to 0 bytes instead of fixed (which silently disabled the gate).
+      - name: Read pinned mirror ref
+        id: mirror
+        run: echo "ref=$(cat proto/contracts/mirror-git-ref.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out pinned public proto mirror
+        uses: actions/checkout@v4
+        with:
+          repository: jekabolt/grbpwr-proto
+          ref: ${{ steps.mirror.outputs.ref }}
+          path: proto-mirror
+
+      - name: Install Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.28.0
+
+      - name: Verify format, build, lint, breaking and mirror parity
+        run: make check-proto-contracts PROTO_MIRROR_DIR="$GITHUB_WORKSPACE/proto-mirror"
