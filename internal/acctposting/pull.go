@@ -159,8 +159,10 @@ func (w *Worker) processRuns(ctx context.Context) error {
 				slog.Int("run_id", id), slog.String("err", berr.Error()))
 			continue
 		}
+		var existed bool
 		txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-			_, _, e := rep.Accounting().CreateJournalEntry(ctx, entry)
+			_, ex, e := rep.Accounting().CreateJournalEntry(ctx, entry)
+			existed = ex
 			return e
 		})
 		if txErr != nil {
@@ -169,6 +171,13 @@ func (w *Worker) processRuns(ctx context.Context) error {
 			slog.Default().ErrorContext(ctx, "acctposting: post run receive",
 				slog.Int("run_id", id), slog.String("err", txErr.Error()))
 			continue
+		}
+		// The scan skips a REVERSED entry, but (source_type, source_key) is unique, so the re-post
+		// collapses onto the reversed original: nothing is written and the run stays in the scan
+		// (and blocks its period close) until a human re-posts it. Say so instead of looping mutely.
+		if existed {
+			slog.Default().WarnContext(ctx, "acctposting: production receive entry exists but is reversed; run needs a manual re-post",
+				slog.Int("run_id", id))
 		}
 	}
 	return nil
