@@ -1,8 +1,11 @@
 package entity
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/base32"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -131,6 +134,24 @@ func IsValidProductionRunLineKey(k string) bool {
 		return false
 	}
 	return true
+}
+
+// MintProductionRunLineKey creates the stable identity of a production-run plan line (migration
+// 0230) for a payload that arrived without one: standard base32 of 128 random bits — 26 characters
+// of [A-Z2-7], inside IsValidProductionRunLineKey's charset, unique for all practical purposes, and
+// never colliding with the 'LEGACY'-prefixed keys the migration backfilled. The admin client
+// normally mints a Crockford ULID instead; this is the single server-side fallback, shared by the
+// DTO layer (RPC payloads) and the store (direct callers), so the two encoders can never drift.
+func MintProductionRunLineKey() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("read randomness for production run line key: %w", err)
+	}
+	key := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw[:])
+	if !IsValidProductionRunLineKey(key) { // unreachable; guards a future encoder swap
+		return "", fmt.Errorf("minted production run line key %q is not a valid key", key)
+	}
+	return key, nil
 }
 
 // ProductionRunCostKind is the article category of an actual production-run cost. It mirrors the

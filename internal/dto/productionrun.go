@@ -357,7 +357,7 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 		// the run reads back with a key on every line and the NEXT save can be diffed by it.
 		lineKey := strings.TrimSpace(ln.LineKey)
 		if lineKey == "" {
-			minted, err := mintProductionRunLineKey()
+			minted, err := entity.MintProductionRunLineKey()
 			if err != nil {
 				return nil, fmt.Errorf("production run line: %w", err)
 			}

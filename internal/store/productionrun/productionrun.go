@@ -5,9 +5,7 @@ package productionrun
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/base32"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -912,7 +910,15 @@ func resolveRunLineKeys(lines []entity.ProductionRunLine) ([]string, error) {
 		if key == "" {
 			// The DTO layer mints keys for every RPC payload; this covers direct callers (seeders,
 			// tests) so a line always reaches the table with a durable handle.
-			key = newRunLineKey()
+			minted, err := entity.MintProductionRunLineKey()
+			if err != nil {
+				return nil, fmt.Errorf("production run line: %w", err)
+			}
+			key = minted
+		} else if !entity.IsValidProductionRunLineKey(key) {
+			// The DTO validates RPC payloads; re-checking here keeps a direct caller's bad key from
+			// dying in the driver as a CHAR(26) truncation error that never names the real problem.
+			return nil, fmt.Errorf("production run line: invalid line_key %q", key)
 		}
 		if seen[key] {
 			return nil, fmt.Errorf("production run line: duplicate line_key %q in the payload", key)
@@ -921,14 +927,6 @@ func resolveRunLineKeys(lines []entity.ProductionRunLine) ([]string, error) {
 		keys[i] = key
 	}
 	return keys, nil
-}
-
-// newRunLineKey mints a 26-character key ([A-Z2-7], standard base32 of 128 random bits) for a
-// keyless line. Mirrors the tech-card BOM fallback; entity.IsValidProductionRunLineKey accepts it.
-func newRunLineKey() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])
 }
 
 // runLineIdentity is a stored line as the keyed diff needs it: the identity to match on, the id that
@@ -976,11 +974,13 @@ func upsertRunLines(ctx context.Context, db dependency.DB, runID int, lines []en
 	}
 	plan := planRunLineDiff(stored, lines, keys)
 
-	// 1. keys that vanished from the payload.
-	for _, id := range plan.deletes {
+	// 1. keys that vanished from the payload — one statement: an old client that predates line_key
+	// sends every key blank, which retires the WHOLE stored grid here (full churn, as before 0230).
+	if len(plan.deletes) > 0 {
 		if err := storeutil.ExecNamed(ctx, db,
-			`DELETE FROM production_run_line WHERE id = :id`, map[string]any{"id": id}); err != nil {
-			return fmt.Errorf("failed to delete production run line: %w", err)
+			`DELETE FROM production_run_line WHERE id IN (:ids)`,
+			map[string]any{"ids": plan.deletes}); err != nil {
+			return fmt.Errorf("failed to delete production run lines: %w", err)
 		}
 	}
 

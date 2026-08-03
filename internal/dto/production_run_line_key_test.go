@@ -77,7 +77,7 @@ func TestProductionRunLineKeyAcceptsTheKeysTheStoreItselfMints(t *testing.T) {
 	require.True(t, entity.IsValidProductionRunLineKey("LEGACY00000000000000000123"),
 		"migration 0230's backfilled key must round-trip through the API")
 
-	minted, err := mintProductionRunLineKey()
+	minted, err := entity.MintProductionRunLineKey()
 	require.NoError(t, err)
 	require.Len(t, minted, entity.ProductionRunLineKeyLen)
 	require.True(t, entity.IsValidProductionRunLineKey(minted))
