@@ -121,6 +121,37 @@ func TestUnitCostGateRejectsUnresolvablePin(t *testing.T) {
 	require.False(t, unit.Valid, "an unresolvable pin must not fall back to the slot default's price")
 }
 
+// TestUnitCostFlagsTravelOnTheWire pins the read side of the same gate: the admin cannot explain WHY a
+// cost stopped seeding unless the reason reaches it, so has_unpriced must be set on BOTH the root
+// rollup (primary colourway) and the colourway's own entry — and stay false for a complete recipe.
+func TestUnitCostFlagsTravelOnTheWire(t *testing.T) {
+	fx := CostingFx{Base: "EUR"}
+
+	complete := techCardCostingToPb(gateCard(gateND("3"), "EUR"), fx)
+	require.NotNil(t, complete)
+	require.False(t, complete.HasUnpriced, "a fully priced recipe must not raise the blocking flag")
+	require.False(t, complete.HasUnconvertedCurrencies)
+	require.Len(t, complete.ColorwayCosts, 1)
+	require.False(t, complete.ColorwayCosts[0].HasUnpriced)
+
+	// An unpriced fabric contributes to no bucket: the figures still render (11 = trim+cmt), which is
+	// exactly why the flag has to travel — the number looks plausible and is silently incomplete.
+	unpriced := techCardCostingToPb(gateCard(decimal.NullDecimal{}, "EUR"), fx)
+	require.NotNil(t, unpriced)
+	require.True(t, unpriced.HasUnpriced, "an uncostable line must be visible on the root rollup")
+	require.False(t, unpriced.HasUnconvertedCurrencies, "no currency flag catches an unpriced line")
+	require.Len(t, unpriced.ColorwayCosts, 1)
+	require.True(t, unpriced.ColorwayCosts[0].HasUnpriced)
+	require.Equal(t, "11", unpriced.UnitCost.Value)
+
+	// An unresolvable pin lands in the same state, via pinShadowBom stripping the price.
+	pinned := gateCard(gateND("3"), "EUR")
+	pinned.Colorways[0].Usages[0].MaterialId = sql.NullInt64{Int64: 99, Valid: true}
+	pinnedPb := techCardCostingToPb(pinned, fx)
+	require.True(t, pinnedPb.HasUnpriced, "an unresolvable pin must raise the flag too")
+	require.True(t, pinnedPb.ColorwayCosts[0].HasUnpriced)
+}
+
 // TestUnitCostGateKeepsMissingColorwayDistinguishable proves the seed can still tell "this product is
 // not one of the card's colourways" (fall back to the style figure) from "this colourway cannot be
 // costed" (seed nothing) — both return an invalid cost.

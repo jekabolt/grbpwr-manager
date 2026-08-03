@@ -844,6 +844,11 @@ message TechCardColorwayCost {
   int32 order_qty = 8; // Σ size_quantities.order_qty (same whole-run qty for every colourway)
   google.type.Decimal order_cost = 9; // unit_cost × order_qty
   bool has_unconverted_currencies = 5; // a usage currency ≠ costing.currency → excluded from materials_per_unit
+  // OUTPUT-ONLY: set when at least one authored usage of THIS colourway could not be costed at all
+  // (no price / unresolvable pin / no norm / per-size norms without order qty); such a line
+  // contributes to NO currency bucket, so unit_cost is withheld from cost seeding for this
+  // colourway and should not be trusted as complete.
+  bool has_unpriced = 11;
   reserved 3, 4; // was materials_cost, size_run_total (superseded by the per-unit / per-order model)
 }
 
@@ -884,6 +889,11 @@ message TechCardCosting {
   int32 order_qty = 21; // Σ size_quantities.order_qty (the whole production run)
   google.type.Decimal order_cost = 22; // unit_cost × order_qty
   bool has_unconverted_currencies = 15; // a material line (colourway 0) is in a currency other than `currency`
+  // OUTPUT-ONLY: set when at least one authored usage of the PRIMARY colourway could not be costed
+  // at all (no price / unresolvable pin / no norm / per-size norms without order qty); such a line
+  // contributes to NO currency bucket, so unit_cost/unit_cost_base are withheld from cost seeding
+  // and should not be trusted as complete.
+  bool has_unpriced = 30;
   google.type.Decimal total_sam = 16; // Σ operation smv, time_norm where smv is unset (minutes); informative
   repeated TechCardColorwayCost colorway_costs = 18; // OUTPUT-ONLY, per colourway
 
