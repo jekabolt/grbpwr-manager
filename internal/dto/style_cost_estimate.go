@@ -263,7 +263,10 @@ func resolvePlanUnitPrice(u *entity.TechCardColorwayUsage, bom *entity.TechCardB
 		return decimal.NullDecimal{}, "", pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_NONE, sql.NullTime{}
 	}
 	if bom.UnitPrice.Valid {
-		return bom.UnitPrice, bom.Currency.String, pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_BOM_SNAPSHOT, sql.NullTime{}
+		// The snapshot's own stored provenance date (Phase 3): when this price was typed or last
+		// repriced from the catalog — the "snapshot / дата" evidence plan 11 promised. NULL on a
+		// pre-provenance row, and the table then shows the badge alone, exactly as before.
+		return bom.UnitPrice, bom.Currency.String, pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_BOM_SNAPSHOT, bom.PriceSnapshotAt
 	}
 	if bom.MaterialId.Valid {
 		if mp, ok := catalog[bom.MaterialId.Int64]; ok && mp != nil {
