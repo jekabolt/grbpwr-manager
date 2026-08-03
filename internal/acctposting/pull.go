@@ -126,72 +126,126 @@ func createMovementEntry(ctx context.Context, rep dependency.Repository, entry *
 	return err
 }
 
-// processRuns is phase 3: scan received production runs without a receive entry (idempotency IS the
-// checkpoint) and post each (P1) in its own short Tx. A run with nothing costed to post (ErrSkipEmpty)
-// is left unposted and re-seen each tick — accepted, runs are few (docs/plan-accounting/07). Per-run
-// errors are logged and skipped so one bad run neither stalls the others nor fails the tick; only the
-// list read is a phase-level error.
-func (w *Worker) processRuns(ctx context.Context) error {
+// receiptDeadLetterAttempts is how many failed posting attempts a receipt gets before it is
+// dead-lettered: alerted, excluded from the scan (so one poison receipt stops eating the tick), but
+// still counted by ClosePeriod and the recon block — the money cannot silently vanish. Recover by
+// fixing the cause and resetting posting_status to 'pending'.
+const receiptDeadLetterAttempts = 10
+
+// receiptBacklogAge is how old a still-pending receipt must be before the end-of-phase backlog
+// check calls it stuck (a healthy worker drains a receipt within a tick or two).
+const receiptBacklogAge = time.Hour
+
+// processReceipts is phase 3 (Phase 4 rewrite: the RECEIPT is the accounting unit): scan pending
+// receipts without a live receive entry and post each (P1) in its own short Tx, marking the receipt
+// posted in that same Tx. A receipt with nothing costed to post (ErrSkipEmpty) stays pending and is
+// re-seen each tick — accepted, receipts are few. A build/post failure records an attempt on the
+// receipt and dead-letters it after receiptDeadLetterAttempts with an ALERT log line — no more
+// silent skip. The tick ends with a backlog gauge (stuck-pending + dead-lettered counts).
+func (w *Worker) processReceipts(ctx context.Context) error {
 	acc := w.repo.Accounting()
 
-	ids, err := acc.ListUnpostedReceivedRuns(ctx, w.startDate, w.c.BatchSize)
+	refs, err := acc.ListUnpostedReceipts(ctx, w.startDate, w.c.BatchSize)
 	if err != nil {
-		return fmt.Errorf("list unposted received runs: %w", err)
+		return fmt.Errorf("list unposted receipts: %w", err)
 	}
 
-	for _, id := range ids {
+	for _, ref := range refs {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		facts, err := acc.GetRunFactsForPosting(ctx, id)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "acctposting: get run facts",
-				slog.Int("run_id", id), slog.String("err", err.Error()))
-			continue
-		}
-		// The scan only returns runs with no LIVE entry, but a REVERSED prior version may exist and
-		// its key is never freed — the new post takes the next version number (mirrors opex/shipping).
-		active, versionCount, err := w.loadProductionReceiveVersions(ctx, id, facts.ReceivedAt)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "acctposting: load run entry versions",
-				slog.Int("run_id", id), slog.String("err", err.Error()))
-			continue
-		}
-		if active != nil {
-			// A live entry raced the scan; nothing to do.
-			continue
-		}
-		entry, berr := accounting.BuildProductionReceiveEntry(*facts, w.startDate, versionCount+1)
-		if berr != nil {
-			if errors.Is(berr, accounting.ErrSkipEmpty) {
-				slog.Default().DebugContext(ctx, "acctposting: production run has nothing to post", slog.Int("run_id", id))
-				continue
-			}
-			slog.Default().ErrorContext(ctx, "acctposting: build run receive",
-				slog.Int("run_id", id), slog.String("err", berr.Error()))
-			continue
-		}
-		var existed bool
-		txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-			_, ex, e := rep.Accounting().CreateJournalEntry(ctx, entry)
-			existed = ex
-			return e
-		})
-		if txErr != nil {
-			// A closed period (rare — received_at is ~now) or any other posting error: log and continue.
-			// The run stays unposted (NOT EXISTS) and retries on the next tick / after a reopen.
-			slog.Default().ErrorContext(ctx, "acctposting: post run receive",
-				slog.Int("run_id", id), slog.String("err", txErr.Error()))
-			continue
-		}
-		// With versioned keys a collapse means two workers raced on the same fresh key — harmless
-		// (the entry exists), but worth a note because it should be rare.
-		if existed {
-			slog.Default().WarnContext(ctx, "acctposting: production receive entry already existed for its version key",
-				slog.Int("run_id", id))
+		if err := w.postReceipt(ctx, ref); err != nil {
+			w.recordReceiptFailure(ctx, ref, err)
 		}
 	}
+
+	// Backlog gauge: pending receipts older than an hour mean the queue is stuck (poison receipt
+	// short of dead-letter, phase erroring, worker starved); dead-lettered ones need an operator.
+	pending, dead, err := acc.CountReceiptPostingBacklog(ctx, w.repo.Now().UTC().Add(-receiptBacklogAge))
+	if err != nil {
+		return fmt.Errorf("count receipt backlog: %w", err)
+	}
+	if pending > 0 || dead > 0 {
+		slog.Default().WarnContext(ctx, "acctposting: production receipt backlog",
+			slog.Int("stuck_pending", pending), slog.Int("dead_lettered", dead))
+	}
 	return nil
+}
+
+// postReceipt builds and posts one receipt's entry. A nil return means the receipt needs no further
+// attempts (posted, raced, or legitimately empty); an error means the attempt failed and should be
+// recorded against the receipt.
+func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) error {
+	acc := w.repo.Accounting()
+
+	facts, err := acc.GetReceiptFactsForPosting(ctx, ref.ReceiptID)
+	if err != nil {
+		return fmt.Errorf("get receipt facts: %w", err)
+	}
+	// The scan only returns receipts with no LIVE entry, but a REVERSED prior version may exist and
+	// its key is never freed — the new post takes the next version number (mirrors opex/shipping).
+	active, versionCount, err := w.loadProductionReceiveVersions(ctx, facts, facts.ReceivedAt)
+	if err != nil {
+		return fmt.Errorf("load receipt entry versions: %w", err)
+	}
+	if active != nil {
+		// A live entry raced the scan — mark the receipt posted so the scan stops re-seeing it.
+		if err := acc.MarkReceiptPosted(ctx, ref.ReceiptID); err != nil {
+			return err
+		}
+		return nil
+	}
+	entry, berr := accounting.BuildProductionReceiveEntry(*facts, w.startDate, versionCount+1)
+	if berr != nil {
+		if errors.Is(berr, accounting.ErrSkipEmpty) {
+			// Nothing costed to post — stays pending, re-seen each tick (NOT a failure).
+			slog.Default().DebugContext(ctx, "acctposting: production receipt has nothing to post",
+				slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID))
+			return nil
+		}
+		return fmt.Errorf("build receipt entry: %w", berr)
+	}
+	var existed bool
+	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		_, ex, e := rep.Accounting().CreateJournalEntry(ctx, entry)
+		existed = ex
+		if e != nil {
+			return e
+		}
+		// Same Tx: "entry exists" and "receipt posted" commit together.
+		return rep.Accounting().MarkReceiptPosted(ctx, ref.ReceiptID)
+	})
+	if txErr != nil {
+		// A closed period (rare — received_at is ~now) or any other posting error.
+		return fmt.Errorf("post receipt entry: %w", txErr)
+	}
+	// With versioned keys a collapse means two workers raced on the same fresh key — harmless
+	// (the entry exists), but worth a note because it should be rare.
+	if existed {
+		slog.Default().WarnContext(ctx, "acctposting: production receive entry already existed for its version key",
+			slog.Int("receipt_id", ref.ReceiptID))
+	}
+	return nil
+}
+
+// recordReceiptFailure logs one failed attempt against the receipt and raises the dead-letter ALERT
+// when the attempt budget runs out. Recording failures must not fail the phase — the error is the
+// news, the bookkeeping around it is best-effort.
+func (w *Worker) recordReceiptFailure(ctx context.Context, ref entity.AcctReceiptRef, cause error) {
+	slog.Default().ErrorContext(ctx, "acctposting: production receipt attempt failed",
+		slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID),
+		slog.String("err", cause.Error()))
+	deadLettered, err := w.repo.Accounting().RecordReceiptPostingFailure(ctx, ref.ReceiptID, cause.Error(), receiptDeadLetterAttempts)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "acctposting: record receipt posting failure",
+			slog.Int("receipt_id", ref.ReceiptID), slog.String("err", err.Error()))
+		return
+	}
+	if deadLettered {
+		slog.Default().ErrorContext(ctx, "ALERT acctposting: production receipt DEAD-LETTERED — money is not in the ledger; fix the cause and reset posting_status to pending",
+			slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID),
+			slog.String("last_error", cause.Error()))
+	}
 }
 
 // processOpex is phase 4: OPEX is mutable (upsert/edit/delete), so the granule is the month and any
@@ -666,14 +720,14 @@ func (w *Worker) loadDevExpenseVersions(ctx context.Context) (map[int]*entity.Ac
 	return active, count, nil
 }
 
-// pickActiveVersion scans entries whose source_key carries the given prefix + id, returning the
-// un-reversed one (if any) and the total count of that id's versions.
-// loadProductionReceiveVersions returns the active (un-reversed) production_receive entry for a run,
-// if any, and the total count of that run's versions (reversed or not) — new version = count+1
+// loadProductionReceiveVersions returns the active (un-reversed) production_receive entry for a
+// receipt, if any, and the total count of its versions (reversed or not) — new version = count+1
 // (mirrors loadOpexVersions/loadShippingVersions). It windows ListJournalEntries to the received_at
-// month (a run's occurred_at is its received_at, stable across re-posts) and matches the bare
-// '<id>' / '<id>:vN' source_key in Go.
-func (w *Worker) loadProductionReceiveVersions(ctx context.Context, runID int, receivedAt time.Time) (*entity.AcctJournalEntry, int, error) {
+// month (occurred_at is received_at, stable across re-posts) and matches BOTH key families in Go:
+// 'receipt:<receipt id>' (current) and the legacy bare '<run id>' (an entry 0235 could not rewrite)
+// — versions are summed across the families so a re-post after a legacy reversal still picks a
+// fresh version number.
+func (w *Worker) loadProductionReceiveVersions(ctx context.Context, facts *entity.AcctRunFacts, receivedAt time.Time) (*entity.AcctJournalEntry, int, error) {
 	from := firstOfMonthUTC(receivedAt)
 	to := from.AddDate(0, 1, 0)
 	entries, _, err := w.repo.Accounting().ListJournalEntries(ctx, entity.AcctEntryFilter{
@@ -685,7 +739,19 @@ func (w *Worker) loadProductionReceiveVersions(ctx context.Context, runID int, r
 	if err != nil {
 		return nil, 0, err
 	}
-	return pickActiveVersion(entries, "", runID)
+	activeReceipt, receiptCount, err := pickActiveVersion(entries, "receipt:", facts.ReceiptID)
+	if err != nil {
+		return nil, 0, err
+	}
+	activeLegacy, legacyCount, err := pickActiveVersion(entries, "", facts.RunID)
+	if err != nil {
+		return nil, 0, err
+	}
+	active := activeReceipt
+	if active == nil {
+		active = activeLegacy
+	}
+	return active, receiptCount + legacyCount, nil
 }
 
 func pickActiveVersion(entries []entity.AcctJournalEntry, prefix string, id int) (*entity.AcctJournalEntry, int, error) {

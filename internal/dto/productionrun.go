@@ -1,13 +1,16 @@
 package dto
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
@@ -339,8 +342,15 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 		if ln == nil {
 			continue
 		}
-		if ln.SizeId <= 0 {
-			return nil, fmt.Errorf("production run line: size_id is required")
+		if ln.SizeId < 0 {
+			return nil, fmt.Errorf("production run line: size_id must not be negative")
+		}
+		// A size is required exactly when the line names a product: a garment line books into
+		// product_size stock, so it must say which size. A product-less line may omit the size —
+		// that is the auxiliary run's single output line (a dust bag has no size grade), whose save
+		// this check used to 400 unconditionally, making aux planning unusable since it shipped.
+		if ln.SizeId == 0 && ln.ProductId > 0 {
+			return nil, fmt.Errorf("production run line: size_id is required on a line with a product")
 		}
 		if ln.ProductId < 0 {
 			return nil, fmt.Errorf("production run line: product_id must not be negative")
@@ -424,7 +434,88 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),
 		Actuals:         computeProductionRunActuals(r),
 		LockVersion:     int32(r.LockVersion),
+		Receipts:        productionRunReceiptsToPb(r.Receipts),
 	}
+}
+
+// productionRunReceiptsToPb maps a run's receiving events onto the wire. Money (the frozen
+// valuation) rides here and is stripped by stripProductionRunCosting without costing:read.
+func productionRunReceiptsToPb(receipts []entity.ProductionRunReceipt) []*pb_common.ProductionRunReceipt {
+	out := make([]*pb_common.ProductionRunReceipt, 0, len(receipts))
+	for i := range receipts {
+		r := &receipts[i]
+		lines := make([]*pb_common.ProductionRunReceiptLine, 0, len(r.Lines))
+		for _, l := range r.Lines {
+			lines = append(lines, &pb_common.ProductionRunReceiptLine{
+				LineKey:   l.LineKey,
+				ProductId: l.ProductId.Int32,
+				SizeId:    l.SizeId.Int32,
+				GoodQty:   int32(l.GoodQty),
+				DefectQty: int32(l.DefectQty),
+			})
+		}
+		out = append(out, &pb_common.ProductionRunReceipt{
+			Id:            int32(r.Id),
+			RunId:         int32(r.RunId),
+			ReceivedAt:    timestamppb.New(r.ReceivedAt),
+			AdminUsername: pbStringFromNull(r.AdminUsername),
+			Note:          pbStringFromNull(r.Note),
+			UnitCostBase:  pbDecimalFromNull(r.UnitCostBase),
+			BaseCurrency:  pbStringFromNull(r.BaseCurrency),
+			HasBase:       r.HasBase,
+			Lines:         lines,
+			CreatedAt:     timestamppb.New(r.CreatedAt),
+		})
+	}
+	return out
+}
+
+// ConvertPbReceiptLinesToEntity validates and converts the receipt command's line inputs: every
+// line_key must be shaped like a real line key, unique within the payload, and the counts
+// non-negative. (Whether the key names a real plan line is the store's decision, under the lock.)
+func ConvertPbReceiptLinesToEntity(pbs []*pb_admin.PostProductionRunReceiptLineInput) ([]entity.ProductionRunReceiptLineInput, error) {
+	out := make([]entity.ProductionRunReceiptLineInput, 0, len(pbs))
+	seen := make(map[string]struct{}, len(pbs))
+	for _, ln := range pbs {
+		if ln == nil {
+			continue
+		}
+		key := strings.TrimSpace(ln.LineKey)
+		if !entity.IsValidProductionRunLineKey(key) {
+			return nil, fmt.Errorf("receipt line: line_key must be %d uppercase alphanumeric characters, got %q",
+				entity.ProductionRunLineKeyLen, ln.LineKey)
+		}
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("receipt line: line_key %q submitted twice", key)
+		}
+		seen[key] = struct{}{}
+		if ln.GoodQty < 0 || ln.DefectQty < 0 {
+			return nil, fmt.Errorf("receipt line %q: quantities must be non-negative", key)
+		}
+		out = append(out, entity.ProductionRunReceiptLineInput{
+			LineKey:   key,
+			GoodQty:   int(ln.GoodQty),
+			DefectQty: int(ln.DefectQty),
+		})
+	}
+	return out, nil
+}
+
+// HashProductionRunReceiptPayload is the canonical request hash of the receipt command: SHA-256
+// over the run, the SORTED counted lines, the note and the cost_price flag. expected_lock_version
+// is deliberately EXCLUDED — the idempotency key identifies the operator's intent ("receive these
+// counts"), and the lock version is a concurrency token, not intent: a retry of the same count
+// after a refetch must replay, not die on AlreadyExists.
+func HashProductionRunReceiptPayload(runID int, lines []entity.ProductionRunReceiptLineInput, note string, updateCostPrice bool) string {
+	sorted := make([]entity.ProductionRunReceiptLineInput, len(lines))
+	copy(sorted, lines)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].LineKey < sorted[j].LineKey })
+	h := sha256.New()
+	fmt.Fprintf(h, "run=%d;note=%q;cost=%t", runID, note, updateCostPrice)
+	for _, l := range sorted {
+		fmt.Fprintf(h, ";%s=%d/%d", l.LineKey, l.GoodQty, l.DefectQty)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func productionRunCostsToPb(costs []entity.ProductionRunCost) []*pb_common.ProductionRunCost {

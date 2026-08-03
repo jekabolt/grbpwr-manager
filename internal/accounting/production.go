@@ -80,6 +80,12 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 		caveats = append(caveats, "pre-cutover WIP excluded")
 	}
 
+	// An all-scrap receipt (facts carry a receipt with zero good units and a positive defect count)
+	// produced NO finished goods — transferring the run's cost to 1130 would value an FG balance
+	// with nothing behind it. The manual costs still capitalise (the CMT invoice is owed either
+	// way); the accumulated WIP stays on 1120 until the defect write-off phase disposes of it.
+	allScrap := r.ReceiptID > 0 && r.GoodQtyTotal == 0
+
 	var lines []entity.AcctJournalLineInsert
 	// Manual production costs capitalised into WIP against AP.
 	if manual.IsPositive() {
@@ -90,6 +96,10 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 	}
 	// WIP -> Finished Goods.
 	switch {
+	case allScrap:
+		if !fg.IsZero() {
+			caveats = append(caveats, "all-scrap receipt: cost left in WIP pending defect write-off")
+		}
 	case fg.IsPositive():
 		lines = append(lines,
 			entity.AcctJournalLineInsert{AccountCode: Acc1130, Side: entity.AcctSideDebit, Amount: fg},
@@ -109,7 +119,7 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 		OccurredAt:  r.ReceivedAt,
 		Description: fmt.Sprintf("production run %d received: %s", r.RunID, r.TechCardName),
 		SourceType:  entity.AcctSourceProductionReceive,
-		SourceKey:   productionReceiveSourceKey(r.RunID, version),
+		SourceKey:   productionReceiveSourceKey(r, version),
 		CreatedBy:   createdBySystem,
 		Lines:       lines,
 	}
@@ -117,12 +127,17 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 	return entry, nil
 }
 
-// productionReceiveSourceKey is '<run id>' for the first version, '<run id>:vN' for a re-post
-// (N > 1) — the same scheme as opexSourceKey, so 'reversed_by IS NULL' predicates can match the
-// whole family with source_key = '<id>' OR source_key LIKE '<id>:v%'.
-func productionReceiveSourceKey(runID, version int) string {
-	if version > 1 {
-		return fmt.Sprintf("%d:v%d", runID, version)
+// productionReceiveSourceKey is 'receipt:<receipt id>' for the first version, ':vN'-suffixed for a
+// re-post (N > 1) — the receipt became the accounting unit in Phase 4 (0235 rewrote the legacy
+// '<run id>' keys). Facts without a receipt id (legacy-shaped tests) fall back to the old run-id
+// family so the scheme stays one function.
+func productionReceiveSourceKey(r entity.AcctRunFacts, version int) string {
+	key := strconv.Itoa(r.RunID)
+	if r.ReceiptID > 0 {
+		key = "receipt:" + strconv.Itoa(r.ReceiptID)
 	}
-	return strconv.Itoa(runID)
+	if version > 1 {
+		return fmt.Sprintf("%s:v%d", key, version)
+	}
+	return key
 }

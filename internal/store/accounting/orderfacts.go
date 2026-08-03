@@ -2,7 +2,6 @@ package accounting
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -138,80 +137,139 @@ func (s *Store) ListUnpostedMovements(ctx context.Context, afterID int64, startD
 	return movements, nil
 }
 
-// ListUnpostedReceivedRuns returns ids of production runs received on/after startDate that have no
-// production_receive journal entry yet (idempotency IS the checkpoint here — runs are few), oldest
-// receive first, up to limit. The status predicate is part of the definition of received, not a
-// redundancy: received_at used to be client-writable, so any open run could carry one without ever
-// having booked stock, and this scan capitalises a run's costs on the strength of it.
-func (s *Store) ListUnpostedReceivedRuns(ctx context.Context, startDate time.Time, limit int) ([]int, error) {
+// ListUnpostedReceipts returns production receipts (Phase 4: the receipt is the accounting unit of
+// a receive) received on/after startDate with posting_status='pending' and no reversal linkage that
+// have no live production_receive journal entry under EITHER key family — 'receipt:<id>' (current)
+// or the legacy '<run_id>' (pre-0235 entries; belt-and-suspenders after the migration rewrote them).
+// Oldest first, up to limit. Dead-lettered receipts are deliberately excluded: they already alerted,
+// and re-scanning them every tick is exactly the queue-clogging the dead-letter state exists to
+// stop — ClosePeriod still counts them, so the money cannot silently vanish.
+func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, limit int) ([]entity.AcctReceiptRef, error) {
 	if limit <= 0 {
 		limit = defaultScanBatch
 	}
-	rows, err := storeutil.QueryListNamed[struct {
-		Id int `db:"id"`
-	}](ctx, s.DB, `
-		SELECT r.id FROM production_run r
-		WHERE r.status IN ('received', 'closed') AND r.received_at IS NOT NULL AND r.received_at >= :start_date
+	rows, err := storeutil.QueryListNamed[entity.AcctReceiptRef](ctx, s.DB, `
+		SELECT pr.id AS receipt_id, pr.run_id AS run_id FROM production_run_receipt pr
+		WHERE pr.posting_status = 'pending' AND pr.reversal_of IS NULL AND pr.reversed_by IS NULL
+		  AND pr.received_at >= :start_date
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                  WHERE e.source_type = 'production_receive'
-		                    AND (e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key LIKE CONCAT(CAST(r.id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci)
+		                    AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)
 		                    AND e.reversed_by IS NULL)
-		ORDER BY r.received_at, r.id
+		ORDER BY pr.received_at, pr.id
 		LIMIT :limit`, map[string]any{"start_date": startDate.UTC(), "limit": limit})
 	if err != nil {
-		return nil, fmt.Errorf("accounting: list unposted received runs: %w", err)
+		return nil, fmt.Errorf("accounting: list unposted receipts: %w", err)
 	}
-	ids := make([]int, 0, len(rows))
-	for _, r := range rows {
-		ids = append(ids, r.Id)
-	}
-	return ids, nil
+	return rows, nil
 }
 
-// GetRunFactsForPosting assembles the production-receive fact set (P1): the run's received_at, its
-// manual cost articles (production_run_cost), and its material issue/return movements. LEDGER_WIP
-// (Σ costed issue_production − return_production, with the pre-cutover exclusion) is derived from
-// Issues by the caller, which knows accounting.start_date — this method has no start-date argument.
-func (s *Store) GetRunFactsForPosting(ctx context.Context, runID int) (*entity.AcctRunFacts, error) {
+// GetReceiptFactsForPosting assembles the production-receive fact set for one receipt (P1): the
+// receipt's own received_at and good-quantity total, plus the RUN's manual cost articles and
+// material issue/return movements (v1 receipts are final-only, so run scope == receipt scope).
+// LEDGER_WIP (Σ costed issue_production − return_production, with the pre-cutover exclusion) is
+// derived from Issues by the caller, which knows accounting.start_date.
+func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*entity.AcctRunFacts, error) {
 	hdr, err := storeutil.QueryNamedOne[struct {
-		Id           int          `db:"id"`
-		ReceivedAt   sql.NullTime `db:"received_at"`
-		TechCardName string       `db:"tech_card_name"`
+		Id           int       `db:"id"`
+		RunId        int       `db:"run_id"`
+		ReceivedAt   time.Time `db:"received_at"`
+		TechCardName string    `db:"tech_card_name"`
+		GoodQty      int       `db:"good_qty"`
 	}](ctx, s.DB, `
-		SELECT r.id, r.received_at, tc.name AS tech_card_name
-		FROM production_run r
+		SELECT pr.id, pr.run_id, pr.received_at, tc.name AS tech_card_name,
+		       COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS good_qty
+		FROM production_run_receipt pr
+		JOIN production_run r ON r.id = pr.run_id
 		JOIN tech_card tc ON tc.id = r.tech_card_id
-		WHERE r.id = :id`, map[string]any{"id": runID})
+		WHERE pr.id = :id`, map[string]any{"id": receiptID})
 	if err != nil {
-		return nil, fmt.Errorf("accounting: get run header %d: %w", runID, err)
-	}
-	if !hdr.ReceivedAt.Valid {
-		return nil, fmt.Errorf("accounting: run %d is not received (received_at is null)", runID)
+		return nil, fmt.Errorf("accounting: get receipt header %d: %w", receiptID, err)
 	}
 	costs, err := storeutil.QueryListNamed[entity.ProductionRunCost](ctx, s.DB, `
 		SELECT id, run_id, kind, description, amount, currency, amount_base, incurred_at
-		FROM production_run_cost WHERE run_id = :id ORDER BY id`, map[string]any{"id": runID})
+		FROM production_run_cost WHERE run_id = :id ORDER BY id`, map[string]any{"id": hdr.RunId})
 	if err != nil {
-		return nil, fmt.Errorf("accounting: get run costs %d: %w", runID, err)
+		return nil, fmt.Errorf("accounting: get run costs %d: %w", hdr.RunId, err)
 	}
 	issues, err := storeutil.QueryListNamed[entity.AcctRunIssueFact](ctx, s.DB, `
 		SELECT movement_type, quantity, unit_cost_base, created_at
 		FROM material_stock_movement
 		WHERE production_run_id = :id
 		  AND movement_type IN ('issue_production','return_production')
-		ORDER BY id`, map[string]any{"id": runID})
+		ORDER BY id`, map[string]any{"id": hdr.RunId})
 	if err != nil {
-		return nil, fmt.Errorf("accounting: get run issues %d: %w", runID, err)
+		return nil, fmt.Errorf("accounting: get run issues %d: %w", hdr.RunId, err)
 	}
 	rf := &entity.AcctRunFacts{
-		RunID:        runID,
-		ReceivedAt:   hdr.ReceivedAt.Time,
+		RunID:        hdr.RunId,
+		ReceivedAt:   hdr.ReceivedAt,
 		TechCardName: hdr.TechCardName,
 		Costs:        costs,
 		Issues:       issues,
+		ReceiptID:    hdr.Id,
+		GoodQtyTotal: hdr.GoodQty,
 	}
 	return rf, nil
+}
+
+// MarkReceiptPosted stamps a receipt's posting_status='posted'. Called in the same transaction as
+// the journal-entry insert so "entry exists" and "receipt posted" are one fact.
+func (s *Store) MarkReceiptPosted(ctx context.Context, receiptID int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL
+		WHERE id = :id`, map[string]any{"id": receiptID}); err != nil {
+		return fmt.Errorf("accounting: mark receipt %d posted: %w", receiptID, err)
+	}
+	return nil
+}
+
+// RecordReceiptPostingFailure increments the receipt's attempt counter, stores the error text, and
+// dead-letters it once attempts reach maxAttempts. Runs on the pool (NOT in the failed tx — that
+// rolled back). The error text is bounded to the column width.
+func (s *Store) RecordReceiptPostingFailure(ctx context.Context, receiptID int, errMsg string, maxAttempts int) (bool, error) {
+	msg := []rune(errMsg)
+	if len(msg) > 512 {
+		msg = msg[:512]
+	}
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE production_run_receipt SET
+			posting_attempts = posting_attempts + 1,
+			last_posting_error = :msg,
+			posting_status = IF(posting_attempts >= :max_attempts, 'dead_letter', posting_status)
+		WHERE id = :id AND posting_status = 'pending'`,
+		map[string]any{"id": receiptID, "msg": string(msg), "max_attempts": maxAttempts}); err != nil {
+		return false, fmt.Errorf("accounting: record receipt %d posting failure: %w", receiptID, err)
+	}
+	row, err := storeutil.QueryNamedOne[struct {
+		Status string `db:"posting_status"`
+	}](ctx, s.DB, `SELECT posting_status FROM production_run_receipt WHERE id = :id`,
+		map[string]any{"id": receiptID})
+	if err != nil {
+		return false, fmt.Errorf("accounting: read receipt %d posting status: %w", receiptID, err)
+	}
+	return row.Status == entity.ReceiptPostingDeadLetter, nil
+}
+
+// CountReceiptPostingBacklog reports how many pending receipts were received before olderThan (work
+// the worker should long have drained) and how many receipts are dead-lettered.
+func (s *Store) CountReceiptPostingBacklog(ctx context.Context, olderThan time.Time) (int, int, error) {
+	pending, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM production_run_receipt
+		WHERE posting_status = 'pending' AND reversal_of IS NULL AND reversed_by IS NULL
+		  AND received_at < :older_than`, map[string]any{"older_than": olderThan.UTC()})
+	if err != nil {
+		return 0, 0, fmt.Errorf("accounting: count pending receipts: %w", err)
+	}
+	dead, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM production_run_receipt WHERE posting_status = 'dead_letter'`, map[string]any{})
+	if err != nil {
+		return 0, 0, fmt.Errorf("accounting: count dead-lettered receipts: %w", err)
+	}
+	return pending, dead, nil
 }
 
 // ListChangedOpexMonths returns the distinct opex_line months whose rows changed after afterTS

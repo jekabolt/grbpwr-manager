@@ -610,6 +610,19 @@ type AcctRunFacts struct {
 	TechCardName string
 	Costs        []ProductionRunCost
 	Issues       []AcctRunIssueFact
+	// ReceiptID is the receipt these facts post under (Phase 4: source_key 'receipt:<id>'); 0 only
+	// in legacy-shaped tests.
+	ReceiptID int
+	// GoodQtyTotal is Σ good_qty of the receipt's lines. 0 with a positive defect count marks an
+	// all-scrap receipt: no finished goods exist, so the builder must NOT transfer WIP→FG (the cost
+	// stays in WIP pending the defect write-off phase).
+	GoodQtyTotal int
+}
+
+// AcctReceiptRef identifies one unposted production receipt for the posting worker's scan.
+type AcctReceiptRef struct {
+	ReceiptID int `db:"receipt_id"`
+	RunID     int `db:"run_id"`
 }
 
 // AcctOpexCategorySum is one OPEX category's costed total for a month (O1, 04): Σ opex_line.amount_base

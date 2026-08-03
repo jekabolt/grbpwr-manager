@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -250,237 +248,6 @@ func netIssuedToRun(ctx context.Context, db dependency.DB, runID int) (decimal.D
 	return net.Net, nil
 }
 
-// ReceiveProductionRun receives a multi-colourway run into stock and transitions it to `received`,
-// in one transaction: it locks the run and refuses if it is already received/closed (guarding
-// against a double count), then for each product in perProduct increments that product's per-size
-// stock (production_received source) and — when costPrice is set — seeds that product's cost_price
-// from the run's actual unit cost (one style-level figure applied to every colour-model of the
-// batch; colourways are not costed apart in v1), skipping any product whose cost was set manually.
-// The returned flag reports whether ANY product's cost was actually written, not merely that a
-// figure was computed. Finally it stamps status/received_at. perProduct
-// maps product_id → (size_id → qty), already validated by the caller (every product ∈ the card's
-// products, at least one positive qty). Returns entity.ErrProductionRunAlreadyReceived on a repeat
-// receipt and sql.ErrNoRows when the run does not exist.
-func (s *Store) ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, updateCostPrice bool, username string) (bool, error) {
-	var costPriceUpdated bool
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		db := rep.DB()
-		cur, err := storeutil.QueryNamedOne[struct {
-			Status string `db:"status"`
-		}](ctx, db, `SELECT status FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return sql.ErrNoRows
-			}
-			return fmt.Errorf("failed to load production run for receive: %w", err)
-		}
-		if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
-			return entity.ErrProductionRunAlreadyReceived
-		}
-		// Re-read the lines under the run lock and confirm the received grid the caller validated is
-		// still current — a concurrent UpdateProductionRun (also lock-serialised) could have changed
-		// it between the caller's read and this transaction. If it diverges, abort so the caller
-		// reloads and revalidates rather than booking a stale grid.
-		lines, err := loadRunLines(ctx, db, runID)
-		if err != nil {
-			return err
-		}
-		fresh, missingProduct := receivedMapFromLines(lines)
-		if missingProduct || !sameReceivedMap(fresh, perProduct) {
-			return entity.ErrProductionRunConcurrentModification
-		}
-		// Recompute the actual unit cost from the freshly-read costs + movements INSIDE the lock, so a
-		// material issue that committed after the caller's read is included in cost_price.
-		var costPrice decimal.NullDecimal
-		if updateCostPrice {
-			costs, err := loadRunCosts(ctx, db, runID)
-			if err != nil {
-				return err
-			}
-			movements, err := loadRunMovements(ctx, db, runID)
-			if err != nil {
-				return err
-			}
-			run := &entity.ProductionRun{
-				ProductionRunInsert: entity.ProductionRunInsert{Lines: lines, Costs: costs},
-				MaterialMovements:   movements,
-			}
-			costPrice = run.ActualUnitCostBase()
-		}
-		var costPriceWrites int
-		// Products in ascending order → deterministic product_size lock order across concurrent
-		// receives (perProduct is a map; range order would differ per call).
-		productIDs := make([]int, 0, len(perProduct))
-		for productID := range perProduct {
-			productIDs = append(productIDs, productID)
-		}
-		sort.Ints(productIDs)
-		for _, productID := range productIDs {
-			perSize := perProduct[productID]
-			if len(perSize) == 0 {
-				continue
-			}
-			if err := rep.Products().ReceiveProductionStock(ctx, productID, perSize, runID, username); err != nil {
-				return err
-			}
-			if costPrice.Valid {
-				written, err := rep.Products().SetProductCostPriceFromProductionRun(ctx, productID, runID, costPrice.Decimal)
-				if err != nil {
-					return err
-				}
-				if written {
-					costPriceWrites++
-				} else {
-					// Changed-rows semantics: false = manual source, a missing product row, or a
-					// no-op write — the receipt does not distinguish, it only reports "not claimed".
-					slog.Default().InfoContext(ctx, "production receipt did not claim cost_price (manual source, missing product, or unchanged)",
-						slog.Int("run_id", runID), slog.Int("product_id", productID))
-				}
-			}
-		}
-		if err := storeutil.ExecNamed(ctx, db, `
-			UPDATE production_run SET status = :status, received_at = :received_at WHERE id = :id`,
-			map[string]any{"id": runID, "status": string(entity.ProductionRunReceived), "received_at": s.Now()}); err != nil {
-			return err
-		}
-		costPriceUpdated = costPriceWrites > 0
-		return nil
-	})
-	if err != nil {
-		switch err {
-		case sql.ErrNoRows, entity.ErrProductionRunAlreadyReceived, entity.ErrProductionRunConcurrentModification:
-			return false, err
-		}
-		return false, fmt.Errorf("can't receive production run: %w", err)
-	}
-	return costPriceUpdated, nil
-}
-
-// receivedMapFromLines builds the product_id → (size_id → received qty) map from a run's lines,
-// counting only lines with a positive received quantity. missingProduct is true when some received
-// line has no product to book into (an inconsistent grid).
-func receivedMapFromLines(lines []entity.ProductionRunLine) (perProduct map[int]map[int]int, missingProduct bool) {
-	perProduct = make(map[int]map[int]int)
-	for _, ln := range lines {
-		if !ln.ReceivedQty.Valid || ln.ReceivedQty.Int64 <= 0 {
-			continue
-		}
-		if !ln.ProductId.Valid {
-			missingProduct = true
-			continue
-		}
-		pid := int(ln.ProductId.Int32)
-		if perProduct[pid] == nil {
-			perProduct[pid] = make(map[int]int)
-		}
-		perProduct[pid][ln.SizeId] = int(ln.ReceivedQty.Int64)
-	}
-	return perProduct, missingProduct
-}
-
-// sameReceivedMap reports whether two product→size→qty maps are identical.
-func sameReceivedMap(a, b map[int]map[int]int) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for pid, as := range a {
-		bs, ok := b[pid]
-		if !ok || len(as) != len(bs) {
-			return false
-		}
-		for sz, q := range as {
-			if bs[sz] != q {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// ReceiveAuxiliaryProductionRun receives an AUXILIARY run's output into the material warehouse
-// (NF-07) and transitions it to `received`, in one transaction: it locks the run, refuses a repeat
-// receipt, re-reads the lines and the actual costs UNDER THE LOCK (so a material issue or line edit
-// racing the receive is included — g25-07, mirroring ReceiveProductionRun), books a
-// receipt_production of Σ received_qty into outputMaterialID at the run's actual per-unit base cost
-// (moving that material's average and appending a production_run price point), then stamps
-// status/received_at. The unit cost may be uncosted (the run's actuals had no base) — the receipt
-// then does not move the average. A line that gained a product, or a grid whose received total
-// dropped to zero, means the run changed since the caller validated it →
-// ErrProductionRunConcurrentModification / ErrProductionRunNothingReceived. Returns
-// entity.ErrProductionRunAlreadyReceived / sql.ErrNoRows.
-func (s *Store) ReceiveAuxiliaryProductionRun(ctx context.Context, runID, outputMaterialID int, username string) error {
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		db := rep.DB()
-		cur, err := storeutil.QueryNamedOne[struct {
-			Status string `db:"status"`
-		}](ctx, db, `SELECT status FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return sql.ErrNoRows
-			}
-			return fmt.Errorf("failed to load production run for auxiliary receive: %w", err)
-		}
-		if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) {
-			return entity.ErrProductionRunAlreadyReceived
-		}
-		lines, err := loadRunLines(ctx, db, runID)
-		if err != nil {
-			return err
-		}
-		var qty int64
-		for _, ln := range lines {
-			if ln.ProductId.Valid {
-				// the caller validated a product-free grid; a product appeared since → stale read.
-				return entity.ErrProductionRunConcurrentModification
-			}
-			if ln.ReceivedQty.Valid && ln.ReceivedQty.Int64 > 0 {
-				qty += ln.ReceivedQty.Int64
-			}
-		}
-		if qty == 0 {
-			return entity.ErrProductionRunNothingReceived
-		}
-		costs, err := loadRunCosts(ctx, db, runID)
-		if err != nil {
-			return err
-		}
-		movements, err := loadRunMovements(ctx, db, runID)
-		if err != nil {
-			return err
-		}
-		run := &entity.ProductionRun{
-			ProductionRunInsert: entity.ProductionRunInsert{Lines: lines, Costs: costs},
-			MaterialMovements:   movements,
-		}
-		unitCostBase := run.ActualUnitCostBase()
-		// Book the receipt in THIS transaction (not via ReceiveMaterialStock, which opens its own):
-		// the movement's FK back to production_run needs a shared lock on the run row we hold FOR
-		// UPDATE, so a separate transaction would deadlock. ReceiveInTx participates in rep's tx.
-		if _, err := inventory.ReceiveInTx(ctx, rep, entity.MaterialReceiptInsert{
-			MaterialId:      outputMaterialID,
-			Quantity:        decimal.NewFromInt(qty),
-			UnitCost:        unitCostBase, // base-currency actual unit cost (or invalid → uncosted)
-			ProductionRunId: sql.NullInt32{Int32: int32(runID), Valid: true},
-			FromProduction:  true,
-			AdminUsername:   username,
-		}, s.Now()); err != nil {
-			return err
-		}
-		return storeutil.ExecNamed(ctx, db, `
-			UPDATE production_run SET status = :status, received_at = :received_at WHERE id = :id`,
-			map[string]any{"id": runID, "status": string(entity.ProductionRunReceived), "received_at": s.Now()})
-	})
-	if err != nil {
-		switch err {
-		case sql.ErrNoRows, entity.ErrProductionRunAlreadyReceived,
-			entity.ErrProductionRunConcurrentModification, entity.ErrProductionRunNothingReceived:
-			return err
-		}
-		return fmt.Errorf("can't receive auxiliary production run: %w", err)
-	}
-	return nil
-}
-
 // DeleteProductionRun deletes a run by id (size grid cascades). It refuses to delete a run that has
 // already been received/closed: that run's stock increment and any cost_price it seeded are applied
 // facts, and dropping the run would orphan them. Returns entity.ErrProductionRunReceivedImmutable in
@@ -546,6 +313,11 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 		return nil, err
 	}
 	run.MaterialMovements = movements
+	receipts, err := loadRunReceipts(ctx, s.DB, id)
+	if err != nil {
+		return nil, err
+	}
+	run.Receipts = receipts
 	return &run, nil
 }
 
@@ -683,7 +455,7 @@ func (s *Store) runLines(ctx context.Context, runID int) ([]entity.ProductionRun
 // loadRunLines loads a run's colour-model × size lines on the given db (pool or tx).
 func loadRunLines(ctx context.Context, db dependency.DB, runID int) ([]entity.ProductionRunLine, error) {
 	lines, err := storeutil.QueryListNamed[entity.ProductionRunLine](ctx, db,
-		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, size_id, planned_qty, received_qty, defect_qty
+		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, COALESCE(size_id, 0) AS size_id, planned_qty, received_qty, defect_qty
 		 FROM production_run_line WHERE run_id = :run_id ORDER BY product_id IS NOT NULL, product_id, size_id`,
 		map[string]any{"run_id": runID})
 	if err != nil {
@@ -710,7 +482,7 @@ func (s *Store) attachLines(ctx context.Context, runs []entity.ProductionRun) er
 		idx[runs[i].Id] = i
 	}
 	rows, err := storeutil.QueryListNamed[lineRow](ctx, s.DB,
-		`SELECT run_id, id, COALESCE(line_key, '') AS line_key, product_id, size_id, planned_qty, received_qty, defect_qty
+		`SELECT run_id, id, COALESCE(line_key, '') AS line_key, product_id, COALESCE(size_id, 0) AS size_id, planned_qty, received_qty, defect_qty
 		 FROM production_run_line WHERE run_id IN (:ids) ORDER BY run_id, product_id IS NOT NULL, product_id, size_id`,
 		map[string]any{"ids": ids})
 	if err != nil {
@@ -892,7 +664,7 @@ func runLineParams(runID int, ln *entity.ProductionRunLine, lineKey string) map[
 		"run_id":       runID,
 		"line_key":     lineKey,
 		"product_id":   ln.ProductId,
-		"size_id":      ln.SizeId,
+		"size_id":      nullIfZero(ln.SizeId),
 		"planned_qty":  ln.PlannedQty,
 		"received_qty": ln.ReceivedQty,
 		"defect_qty":   ln.DefectQty,
@@ -962,7 +734,7 @@ type runLineIdentity struct {
 //     or is slot-less.
 func upsertRunLines(ctx context.Context, db dependency.DB, runID int, lines []entity.ProductionRunLine) error {
 	stored, err := storeutil.QueryListNamed[runLineIdentity](ctx, db,
-		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, size_id
+		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, COALESCE(size_id, 0) AS size_id
 		 FROM production_run_line WHERE run_id = :run_id`, map[string]any{"run_id": runID})
 	if err != nil {
 		return fmt.Errorf("failed to load existing production run lines: %w", err)

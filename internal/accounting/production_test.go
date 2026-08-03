@@ -127,3 +127,55 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 		assert.NotContains(t, e.Caveat.String, "manual cost line")
 	})
 }
+
+// Phase 4 (receipt v1): the receipt is the accounting unit — its id keys the entry — and an
+// all-scrap receipt (zero good units) must NOT transfer WIP to finished goods.
+func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
+	t.Run("receipt id keys the entry, versioned on re-post", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 42, GoodQtyTotal: 10, ReceivedAt: testOccurred,
+			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("100.00")}},
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		assert.Equal(t, "receipt:42", e.SourceKey)
+		e2, err := BuildProductionReceiveEntry(r, testStartDate, 3)
+		require.NoError(t, err)
+		assert.Equal(t, "receipt:42:v3", e2.SourceKey)
+	})
+
+	t.Run("legacy facts without a receipt keep the run-id family", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceivedAt: testOccurred,
+			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("100.00")}},
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 2)
+		require.NoError(t, err)
+		assert.Equal(t, "7:v2", e.SourceKey)
+	})
+
+	t.Run("all-scrap capitalises manual cost but leaves WIP in place", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, ReceivedAt: testOccurred,
+			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("100.00")}},
+			Issues: []entity.AcctRunIssueFact{
+				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("2"), UnitCostBase: nd("50.00"), CreatedAt: testOccurred},
+			},
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		// The CMT invoice is owed either way: Dr WIP / Cr AP stays.
+		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "100.00")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "100.00")
+		// But nothing moved to finished goods — there are no finished goods.
+		assert.False(t, hasLine(e, Acc1130, entity.AcctSideDebit), "no FG transfer on all-scrap")
+		assert.True(t, e.HasCaveat, "the stranded WIP is flagged for the write-off phase")
+	})
+
+	t.Run("all-scrap with nothing costed still skips", func(t *testing.T) {
+		r := entity.AcctRunFacts{RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, ReceivedAt: testOccurred}
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.ErrorIs(t, err, ErrSkipEmpty)
+	})
+}

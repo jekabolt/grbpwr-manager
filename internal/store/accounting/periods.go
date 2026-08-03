@@ -112,22 +112,30 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		return fmt.Errorf("%w: %d unposted material movement(s) through %s", entity.ErrAcctPeriodNotReady, unpostedMovements, m.Format("2006-01"))
 	}
 
-	// 3b) production receives in the month all posted. Only a run whose status says it was received
-	// counts — a legacy client-written received_at on an open run is not a receipt.
-	unpostedRuns, err := storeutil.QueryCountNamed(ctx, s.DB, `
-		SELECT COUNT(*) FROM production_run r
-		WHERE r.status IN ('received', 'closed') AND r.received_at >= :from AND r.received_at < :to
+	// 3b) production receipts in the month all posted (Phase 4: the receipt is the accounting unit;
+	// 0231 guarantees every received run has one, so this covers legacy receives too). Dead-lettered
+	// receipts still count — a close must not slide past money the worker gave up on. The legacy
+	// '<run_id>' key family is matched beside 'receipt:<id>' for entries 0235 could not rewrite.
+	// The ':' is CHAR(58): a literal colon inside a quoted SQL string breaks sqlx's named-parameter
+	// scan for the WHOLE query ("could not find name v in map") — which is exactly how the previous
+	// version of this predicate (':v%') shipped broken and made every ClosePeriod error out.
+	unpostedReceipts, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM production_run_receipt pr
+		WHERE pr.reversal_of IS NULL AND pr.reversed_by IS NULL
+		  AND pr.received_at >= :from AND pr.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                  WHERE e.source_type = 'production_receive'
-		                    AND (e.source_key = CAST(r.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key LIKE CONCAT(CAST(r.id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci)
+		                    AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                         OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)
 		                    AND e.reversed_by IS NULL)`,
 		map[string]any{"from": from, "to": to})
 	if err != nil {
-		return fmt.Errorf("accounting: close period unposted runs: %w", err)
+		return fmt.Errorf("accounting: close period unposted receipts: %w", err)
 	}
-	if unpostedRuns > 0 {
-		return fmt.Errorf("%w: %d received production run(s) unposted in %s", entity.ErrAcctPeriodNotReady, unpostedRuns, m.Format("2006-01"))
+	if unpostedReceipts > 0 {
+		return fmt.Errorf("%w: %d production receipt(s) unposted in %s", entity.ErrAcctPeriodNotReady, unpostedReceipts, m.Format("2006-01"))
 	}
 
 	// 3c) if the month has costed opex lines, its opex_month entry must exist (and not be reversed).

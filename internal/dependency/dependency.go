@@ -719,22 +719,16 @@ type (
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
-		// ReceiveProductionRun receives a multi-colourway run into stock (NF-06): perProduct maps each
-		// product_id → (size_id → qty), pre-validated by the caller against the run's tech card. Inside
-		// one transaction it locks the run, re-reads its lines to confirm perProduct is still current
-		// (else ErrProductionRunConcurrentModification), increments every product's stock, and — when
-		// updateCostPrice is set — seeds each product's cost_price from the run's actual unit cost
-		// recomputed from the freshly-read costs/movements (so a material issue racing the receive is
-		// not missed). It transitions the run to received, guarded against a double receipt, and reports
-		// whether cost_price was seeded.
-		ReceiveProductionRun(ctx context.Context, runID int, perProduct map[int]map[int]int, updateCostPrice bool, username string) (bool, error)
-		// ReceiveAuxiliaryProductionRun receives an auxiliary run's output into the material warehouse
-		// (NF-07): under the run lock it re-reads the lines (product-free, Σ received_qty > 0 — else
-		// ErrProductionRunConcurrentModification / ErrProductionRunNothingReceived) and recomputes the
-		// actual per-unit base cost from the freshly-read costs+movements (g25-07), books a
-		// receipt_production of that quantity into outputMaterialID (moving the average when costed)
-		// and transitions the run to received — guarded against a double receipt.
-		ReceiveAuxiliaryProductionRun(ctx context.Context, runID, outputMaterialID int, username string) error
+		// PostProductionRunReceipt is the atomic receiving command (Phase 4, receipt v1, final-only):
+		// one transaction records the immutable receipt + counted lines (addressed by the plan lines'
+		// line_key, resolved under the run lock), stamps the counts onto the plan grid, books good
+		// units into product stock (or params.OutputMaterialID's warehouse for an auxiliary run),
+		// freezes the run's actual unit cost on the receipt, optionally seeds cost_price, transitions
+		// the run to received, and writes the idempotency record. A retry with the same key and hash
+		// replays the original result (Replayed=true); the same key with a different hash returns
+		// entity.ErrIdempotencyConflict. The receipt row is the accounting outbox the posting worker
+		// consumes.
+		PostProductionRunReceipt(ctx context.Context, params entity.PostProductionRunReceiptParams) (*entity.PostProductionRunReceiptResult, error)
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with
@@ -924,8 +918,24 @@ type (
 		// calls it in the same tx as the order-sale entry (§1.3).
 		SetOrderVatRegime(ctx context.Context, orderUUID, regime string) error
 		ListUnpostedMovements(ctx context.Context, afterID int64, startDate time.Time, limit int) ([]entity.AcctMovementFacts, error)
-		ListUnpostedReceivedRuns(ctx context.Context, startDate time.Time, limit int) ([]int, error)
-		GetRunFactsForPosting(ctx context.Context, runID int) (*entity.AcctRunFacts, error)
+		// ListUnpostedReceipts returns production receipts (Phase 4: the accounting unit of a receive)
+		// received on/after startDate with posting_status='pending', no reversal linkage, and no live
+		// production_receive entry under either the 'receipt:<id>' family or the legacy '<run_id>'
+		// family. Oldest first. Dead-lettered receipts are excluded (they alerted; period close still
+		// sees them).
+		ListUnpostedReceipts(ctx context.Context, startDate time.Time, limit int) ([]entity.AcctReceiptRef, error)
+		// GetReceiptFactsForPosting assembles the production-receive fact set for one receipt: the
+		// run's costs and material issues (P1, run-scoped — v1 receipts are final-only) plus the
+		// receipt's own received_at and good-quantity total.
+		GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*entity.AcctRunFacts, error)
+		// MarkReceiptPosted stamps posting_status='posted'; called in the same tx as the entry insert.
+		MarkReceiptPosted(ctx context.Context, receiptID int) error
+		// RecordReceiptPostingFailure increments posting_attempts, stores the error, and flips the
+		// receipt to dead_letter once attempts reach maxAttempts — reporting whether it did.
+		RecordReceiptPostingFailure(ctx context.Context, receiptID int, errMsg string, maxAttempts int) (deadLettered bool, err error)
+		// CountReceiptPostingBacklog reports pending receipts received before olderThan (stuck work)
+		// and the number of dead-lettered receipts (operator attention required).
+		CountReceiptPostingBacklog(ctx context.Context, olderThan time.Time) (pending int, deadLettered int, err error)
 		ListChangedOpexMonths(ctx context.Context, afterTS time.Time) ([]time.Time, error)
 		GetOpexMonthFacts(ctx context.Context, month time.Time) ([]entity.AcctOpexCategorySum, error)
 		// ListChangedShipmentsForActualCost returns shipments whose actual carrier cost changed after

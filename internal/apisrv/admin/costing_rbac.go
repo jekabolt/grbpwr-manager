@@ -173,6 +173,16 @@ func stripProductionRunCosting(r *pb_common.ProductionRun) {
 		r.Run.Costs = nil // actual cost articles (amount / amount_base) are confidential
 	}
 	stripProductionRunActualsCosting(r.Actuals)
+	// Receipts (Phase 4): the frozen valuation is money; the receiving facts (who/when/quantities
+	// per line) stay — that is exactly what a warehouse role needs from a receipt. has_base is a
+	// provenance bool and stays, matching the actuals above.
+	for _, rc := range r.Receipts {
+		if rc == nil {
+			continue
+		}
+		rc.UnitCostBase = nil
+		rc.BaseCurrency = ""
+	}
 }
 
 // stripProductionRunActualsCosting clears the money-bearing figures of a run's computed plan/fact
