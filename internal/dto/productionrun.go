@@ -131,17 +131,21 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		return nil, err
 	}
 	return &entity.ProductionRunInsert{
-		TechCardId:          int(pb.TechCardId),
-		ReleaseId:           nullInt64FromPb(int64(pb.ReleaseId)),
-		Status:              status,
-		StartedAt:           nullTimeFromPbTimestamp(pb.StartedAt),
+		TechCardId: int(pb.TechCardId),
+		ReleaseId:  nullInt64FromPb(int64(pb.ReleaseId)),
+		Status:     status,
+		StartedAt:  nullTimeFromPbTimestamp(pb.StartedAt),
+		// Planning dates ARE taken from the client, unlike received_at above: they express what the
+		// operator intends, and nothing books stock or accrues cost from them.
+		PlannedStartAt:       nullTimeFromPbTimestamp(pb.PlannedStartAt),
+		PromisedAt:           nullTimeFromPbTimestamp(pb.PromisedAt),
 		MarkerEfficiencyPct:  markerEff,
 		MarkerNotes:          nullStringFromPb(pb.MarkerNotes),
 		ActualWastagePercent: actualWastage,
 		Notes:                nullStringFromPb(pb.Notes),
 		Lines:                lines,
-		Costs:               costs,
-		Markers:             markers,
+		Costs:                costs,
+		Markers:              markers,
 	}, nil
 }
 
@@ -379,18 +383,20 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 	return &pb_common.ProductionRun{
 		Id: int32(r.Id),
 		Run: &pb_common.ProductionRunInsert{
-			TechCardId:          int32(r.TechCardId),
-			ReleaseId:           int32(r.ReleaseId.Int64),
-			Status:              productionRunStatusEntityToPb[r.Status],
-			StartedAt:           pbTimestampFromNullTime(r.StartedAt),
-			ReceivedAt:          pbTimestampFromNullTime(r.ReceivedAt),
+			TechCardId:           int32(r.TechCardId),
+			ReleaseId:            int32(r.ReleaseId.Int64),
+			Status:               productionRunStatusEntityToPb[r.Status],
+			StartedAt:            pbTimestampFromNullTime(r.StartedAt),
+			ReceivedAt:           pbTimestampFromNullTime(r.ReceivedAt),
+			PlannedStartAt:       pbTimestampFromNullTime(r.PlannedStartAt),
+			PromisedAt:           pbTimestampFromNullTime(r.PromisedAt),
 			MarkerEfficiencyPct:  pbDecimalFromNull(r.MarkerEfficiencyPct),
 			MarkerNotes:          pbStringFromNull(r.MarkerNotes),
 			ActualWastagePercent: pbDecimalFromNull(r.ActualWastagePercent),
 			Notes:                pbStringFromNull(r.Notes),
 			Lines:                productionRunLinesToPb(r.Lines),
-			Costs:               productionRunCostsToPb(r.Costs),
-			Markers:             productionRunMarkersToPb(r.Markers),
+			Costs:                productionRunCostsToPb(r.Costs),
+			Markers:              productionRunMarkersToPb(r.Markers),
 		},
 		PlannedUnitCost: pbDecimalFromNull(r.PlannedUnitCost),
 		PlannedCurrency: pbStringFromNull(r.PlannedCurrency),

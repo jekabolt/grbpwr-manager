@@ -157,7 +157,12 @@ func (s *Server) ListProductionRuns(ctx context.Context, req *pb_admin.ListProdu
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	runs, total, err := s.repo.ProductionRuns().ListProductionRuns(ctx, int(req.Limit), int(req.Offset),
-		entity.ProductionRunListFilter{TechCardId: int(req.TechCardId), Status: st, StaleDays: int(req.StaleDays)})
+		entity.ProductionRunListFilter{
+			TechCardId:  int(req.TechCardId),
+			Status:      st,
+			StaleDays:   int(req.StaleDays),
+			OverdueOnly: req.OverdueOnly,
+		})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list production runs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list production runs")

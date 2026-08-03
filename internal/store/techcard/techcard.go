@@ -72,12 +72,12 @@ func normalizeLegacyComposition(cards []entity.TechCard) {
 }
 
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
-	target_gender, stage, status, approval_state, approved_at, released_at,
+	target_gender, stage, status, approval_state, approved_at, released_at, target_drop_date,
 	base_model_id, base_sample_size_id,
 	measurement_unit, concept, notes, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
-	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at,
+	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at, :target_drop_date,
 	:base_model_id, :base_sample_size_id,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
@@ -115,6 +115,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"approval_state":      string(tc.ApprovalState),
 		"approved_at":         tc.ApprovedAt,
 		"released_at":         tc.ReleasedAt,
+		"target_drop_date":    tc.TargetDropDate,
 		"base_model_id":       tc.BaseModelId,
 		"base_sample_size_id": tc.BaseSampleSizeId,
 		"measurement_unit":    string(tc.MeasurementUnit),
@@ -425,6 +426,7 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 				category_id = COALESCE(:category_id, category_id),
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_at = :approved_at, released_at = :released_at,
+				target_drop_date = :target_drop_date,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
 					purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype

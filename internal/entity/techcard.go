@@ -623,25 +623,25 @@ const (
 	// two a style ships with (migration 0227).
 	AuxSubtypeGarmentCase TechCardAuxSubtype = "garment_case"
 	AuxSubtypeBox         TechCardAuxSubtype = "box"
-	AuxSubtypeInsert     TechCardAuxSubtype = "insert"
-	AuxSubtypeHanger     TechCardAuxSubtype = "hanger"
-	AuxSubtypeOther      TechCardAuxSubtype = "other"
+	AuxSubtypeInsert      TechCardAuxSubtype = "insert"
+	AuxSubtypeHanger      TechCardAuxSubtype = "hanger"
+	AuxSubtypeOther       TechCardAuxSubtype = "other"
 )
 
 // ValidTechCardAuxSubtypes is the closed set enforced by the DB CHECK; it backs the entity<->DB drift
 // test (internal/store/migrationlint) against migration 0173's chk_tech_card_aux_subtype.
 var ValidTechCardAuxSubtypes = map[TechCardAuxSubtype]bool{
-	AuxSubtypeBrandLabel: true,
-	AuxSubtypeCareLabel:  true,
-	AuxSubtypeSizeLabel:  true,
-	AuxSubtypeHangtag:    true,
-	AuxSubtypeSticker:    true,
+	AuxSubtypeBrandLabel:  true,
+	AuxSubtypeCareLabel:   true,
+	AuxSubtypeSizeLabel:   true,
+	AuxSubtypeHangtag:     true,
+	AuxSubtypeSticker:     true,
 	AuxSubtypeDustBag:     true,
 	AuxSubtypeGarmentCase: true,
 	AuxSubtypeBox:         true,
-	AuxSubtypeInsert:     true,
-	AuxSubtypeHanger:     true,
-	AuxSubtypeOther:      true,
+	AuxSubtypeInsert:      true,
+	AuxSubtypeHanger:      true,
+	AuxSubtypeOther:       true,
 }
 
 // IsValidTechCardAuxSubtype reports whether s is an accepted auxiliary sub-type.
@@ -1060,21 +1060,25 @@ type TechCardInsert struct {
 	Fit sql.NullString `db:"fit"`
 	// Composition is the legacy free-text column (e.g. "100% Cotton"). M1 fix: always plain text on
 	// the wire — never overloaded with the structured composition, which is TechCard.CompositionEntries.
-	Composition        sql.NullString          `db:"composition"`
-	CareInstructions   sql.NullString          `db:"care_instructions"`
-	ModelWearsHeightCm sql.NullInt32           `db:"model_wears_height_cm"`
-	ModelWearsSizeId   sql.NullInt32           `db:"model_wears_size_id"`
-	TopCategoryId      sql.NullInt32           `db:"top_category_id"`
-	SubCategoryId      sql.NullInt32           `db:"sub_category_id"`
-	TypeId             sql.NullInt32           `db:"type_id"`
-	Stage              TechCardStage           `db:"stage"`
-	Status             sql.NullString          `db:"status"`
-	ApprovalState      TechCardApprovalState   `db:"approval_state"`
-	ApprovedAt         sql.NullTime            `db:"approved_at"`
-	ReleasedAt         sql.NullTime            `db:"released_at"`
-	BaseModelId        sql.NullInt32           `db:"base_model_id"`
-	BaseSampleSizeId   sql.NullInt32           `db:"base_sample_size_id"`
-	MeasurementUnit    TechCardMeasurementUnit `db:"measurement_unit"`
+	Composition        sql.NullString        `db:"composition"`
+	CareInstructions   sql.NullString        `db:"care_instructions"`
+	ModelWearsHeightCm sql.NullInt32         `db:"model_wears_height_cm"`
+	ModelWearsSizeId   sql.NullInt32         `db:"model_wears_size_id"`
+	TopCategoryId      sql.NullInt32         `db:"top_category_id"`
+	SubCategoryId      sql.NullInt32         `db:"sub_category_id"`
+	TypeId             sql.NullInt32         `db:"type_id"`
+	Stage              TechCardStage         `db:"stage"`
+	Status             sql.NullString        `db:"status"`
+	ApprovalState      TechCardApprovalState `db:"approval_state"`
+	ApprovedAt         sql.NullTime          `db:"approved_at"`
+	ReleasedAt         sql.NullTime          `db:"released_at"`
+	// TargetDropDate is the calendar day this style is planned to drop (production cockpit): owner-set
+	// planning intent, the anchor a run's PromisedAt is judged against. Unlike ApprovedAt/ReleasedAt
+	// it is client-writable, and it is a DATE column — the time of day is dropped at the dto boundary.
+	TargetDropDate   sql.NullTime            `db:"target_drop_date"`
+	BaseModelId      sql.NullInt32           `db:"base_model_id"`
+	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`
+	MeasurementUnit  TechCardMeasurementUnit `db:"measurement_unit"`
 	// MeasurementUnitSet separates "the client chose a unit" from "the field was absent". The unit is a
 	// fact ABOUT the numbers already in tech_card_size_measurement (a bare DECIMAL with no unit of its
 	// own), so an absent field must preserve the stored unit rather than fall back to the create-time

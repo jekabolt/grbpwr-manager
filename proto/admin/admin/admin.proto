@@ -6073,6 +6073,11 @@ message ListProductionRunsRequest {
   // (the same rule as the stale_open_production_run dashboard alert). Server-side so the attention
   // filter/strip does not client-scan the two status pages (#10). 0 = no staleness filter.
   int32 stale_days = 5;
+  // true: return only OVERDUE runs — still open (planned/in_progress) with a promised_at that has
+  // already passed. Server-side so the production cockpit's «опаздывает» filter does not page the
+  // whole list to count. Runs with no promised_at are never overdue. Combined with an explicit
+  // status filter it just intersects (e.g. status=received + overdue_only yields nothing).
+  bool overdue_only = 6;
 }
 
 message ListProductionRunsResponse {

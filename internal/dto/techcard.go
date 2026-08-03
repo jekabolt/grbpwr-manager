@@ -502,6 +502,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		ApprovalState:      approvalState,
 		ApprovedAt:         nullTimeFromPbTimestamp(pb.ApprovedAt),
 		ReleasedAt:         nullTimeFromPbTimestamp(pb.ReleasedAt),
+		TargetDropDate:     nullDateFromPbTimestamp(pb.TargetDropDate),
 		BaseModelId:        nullInt32FromPb(pb.BaseModelId),
 		BaseSampleSizeId:   nullInt32FromPb(pb.BaseSampleSizeId),
 		MeasurementUnit:    unit,
@@ -688,6 +689,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			ApprovalState:     pbTechCardApprovalState(tc.ApprovalState),
 			ApprovedAt:        pbTimestampFromNullTime(tc.ApprovedAt),
 			ReleasedAt:        pbTimestampFromNullTime(tc.ReleasedAt),
+			TargetDropDate:    pbTimestampFromNullTime(tc.TargetDropDate),
 			BaseModelId:       pbInt32FromNull(tc.BaseModelId),
 			BaseSampleSizeId:  pbInt32FromNull(tc.BaseSampleSizeId),
 			MeasurementUnit:   pbTechCardMeasurementUnit(tc.MeasurementUnit),
@@ -1972,17 +1974,17 @@ func techCardPurposeFromPb(p pb_common.TechCardPurpose) entity.TechCardPurpose {
 // auxSubtypePbByEntity is the single source for the aux_subtype enum<->string mapping, so the two
 // direction helpers below can never drift from each other.
 var auxSubtypePbByEntity = map[entity.TechCardAuxSubtype]pb_common.TechCardAuxSubtype{
-	entity.AuxSubtypeBrandLabel: pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BRAND_LABEL,
-	entity.AuxSubtypeCareLabel:  pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_CARE_LABEL,
-	entity.AuxSubtypeSizeLabel:  pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_SIZE_LABEL,
-	entity.AuxSubtypeHangtag:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGTAG,
-	entity.AuxSubtypeSticker:    pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_STICKER,
+	entity.AuxSubtypeBrandLabel:  pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BRAND_LABEL,
+	entity.AuxSubtypeCareLabel:   pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_CARE_LABEL,
+	entity.AuxSubtypeSizeLabel:   pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_SIZE_LABEL,
+	entity.AuxSubtypeHangtag:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGTAG,
+	entity.AuxSubtypeSticker:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_STICKER,
 	entity.AuxSubtypeDustBag:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_DUST_BAG,
 	entity.AuxSubtypeGarmentCase: pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_GARMENT_CASE,
 	entity.AuxSubtypeBox:         pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BOX,
-	entity.AuxSubtypeInsert:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_INSERT,
-	entity.AuxSubtypeHanger:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGER,
-	entity.AuxSubtypeOther:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_OTHER,
+	entity.AuxSubtypeInsert:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_INSERT,
+	entity.AuxSubtypeHanger:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGER,
+	entity.AuxSubtypeOther:       pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_OTHER,
 }
 
 // techCardAuxSubtypeToPb maps the nullable stored aux_subtype to the proto enum (UNKNOWN when NULL/unset).

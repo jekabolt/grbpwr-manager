@@ -303,6 +303,10 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// rows; source audit authorship is never carried into the new design cycle.
 	insert.ApprovalState = entity.TechCardApprovalDraft
 	insert.Signoffs = nil
+	// The target drop date belongs to the season the SOURCE card was made for. A clone into a new
+	// season would inherit a date that is already in the past and read as «просрочен» the moment the
+	// new card is opened — reset it with the rest of the design cycle and let the owner set the new one.
+	insert.TargetDropDate = sql.NullTime{}
 	insert.CreatedBy = authsrv.GetAdminUsername(ctx)
 	insert.UpdatedBy = insert.CreatedBy
 	newID, err := s.repo.TechCards().CloneTechCardForSeason(ctx, int(req.SourceStyleId), int(req.ExpectedSourceVersion), insert)

@@ -1139,6 +1139,14 @@ message TechCardInsert {
   // WS7: sub-classifies an auxiliary card (UNKNOWN=unset). Ignored / must be UNKNOWN for a sellable card.
   TechCardAuxSubtype aux_subtype = 105;
 
+  // Planning date for the overdue view (production cockpit): the calendar day this style is planned
+  // to drop, the anchor a run's promised_at is judged against ("до дропа N дней / просрочен"). Owner-
+  // set intent, not a workflow stamp like approved_at/released_at — unset means no drop planned.
+  // Only the DATE part is persisted (tech_card.target_drop_date is a DATE column); any time of day
+  // sent on the wire is dropped. NOTE: a RELEASED card is frozen for edits (ErrTechCardReleased), so
+  // this planning date is only settable while the card is draft/approved — see the store's freeze check.
+  google.protobuf.Timestamp target_drop_date = 106;
+
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.
