@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/rubenv/sql-migrate/sqlparse"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -373,4 +375,106 @@ func TestProductionReceiptPostingScan(t *testing.T) {
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM acct_journal_line WHERE entry_id IN (SELECT id FROM acct_journal_entry WHERE source_type='production_receive' AND source_key = ?)", entry.SourceKey)
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM acct_journal_entry WHERE source_type='production_receive' AND source_key = ?", entry.SourceKey)
 	})
+}
+
+// TestProductionReceiptLegacyRemapMigration replays the Up statements of the REAL 0231 + 0235
+// migration files over a legacy-shaped world (received runs with stamped counts, one with a live
+// '<run_id>'-keyed journal entry, one with no entry) and pins the beta-recovery semantics: the
+// entry is remapped onto the receipt key family, the receipt whose money is already in the ledger
+// comes out 'posted' (NOT stuck-pending — the scan's NOT-EXISTS would never drain it and the
+// backlog gauge would cry wolf every tick), and the entry-less receipt stays 'pending' for the
+// worker. The statements come from the files, not a copy, so the test fails if the migration
+// drifts from what it proves.
+func TestProductionReceiptLegacyRemapMigration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	tcID, err := s.TechCards().AddTechCard(ctx, &entity.TechCardInsert{
+		StyleNumber: sql.NullString{String: "PRUN-REMAP", Valid: true}, Name: "Remap Coat", Stage: entity.TechCardStageProto,
+		ApprovalState: entity.TechCardApprovalDraft, MeasurementUnit: entity.TechCardUnitMm,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.TechCards().DeleteTechCard(context.Background(), tcID) })
+
+	// Two legacy-received runs: counts stamped straight onto the plan grid, status flipped by SQL —
+	// the pre-receipt world, where no receipt row exists.
+	mkLegacyReceived := func(t *testing.T) int {
+		runID, err := s.ProductionRuns().CreateProductionRun(ctx, &entity.ProductionRunInsert{
+			TechCardId: tcID, Status: entity.ProductionRunInProgress,
+			Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10}},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run_receipt WHERE run_id = ?", runID)
+			_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", runID)
+		})
+		_, err = testDB.ExecContext(ctx, "UPDATE production_run_line SET received_qty = 7, defect_qty = 1 WHERE run_id = ?", runID)
+		require.NoError(t, err)
+		_, err = testDB.ExecContext(ctx, "UPDATE production_run SET status = 'received', received_at = NOW() WHERE id = ?", runID)
+		require.NoError(t, err)
+		return runID
+	}
+	runPosted := mkLegacyReceived(t)
+	runUnposted := mkLegacyReceived(t)
+
+	legacyKey := strconv.Itoa(runPosted)
+	_, err = testDB.ExecContext(ctx, `
+		INSERT INTO acct_journal_entry (occurred_at, description, source_type, source_key, created_by)
+		VALUES (CURDATE(), 'legacy remap probe', 'production_receive', ?, 'system')`, legacyKey)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(),
+			"DELETE FROM acct_journal_entry WHERE source_type='production_receive' AND description='legacy remap probe'")
+	})
+
+	// Replay the real migrations' Up statements (both are idempotent by design — this is exactly
+	// the mid-file-crash re-run path they must survive).
+	for _, file := range []string{"sql/0231_production_run_receipt.sql", "sql/0235_production_receive_source_key_receipts.sql"} {
+		f, err := os.Open(file)
+		require.NoError(t, err)
+		parsed, err := sqlparse.ParseMigration(f)
+		require.NoError(t, f.Close())
+		require.NoError(t, err)
+		for i, stmt := range parsed.UpStatements {
+			_, err := testDB.ExecContext(ctx, stmt)
+			require.NoError(t, err, "%s statement %d", file, i)
+		}
+	}
+
+	// The entry moved to the receipt family, suffix-free (it had no :vN).
+	var receiptPosted, receiptUnposted struct {
+		Id     int
+		Status string
+	}
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT id, posting_status FROM production_run_receipt WHERE run_id = ?", runPosted).
+		Scan(&receiptPosted.Id, &receiptPosted.Status))
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT id, posting_status FROM production_run_receipt WHERE run_id = ?", runUnposted).
+		Scan(&receiptUnposted.Id, &receiptUnposted.Status))
+
+	var remappedKey string
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT source_key FROM acct_journal_entry WHERE source_type='production_receive' AND description='legacy remap probe'").
+		Scan(&remappedKey))
+	require.Equal(t, "receipt:"+strconv.Itoa(receiptPosted.Id), remappedKey, "legacy key rewritten onto the receipt family")
+
+	require.Equal(t, entity.ReceiptPostingPosted, receiptPosted.Status,
+		"a receipt whose money is already in the ledger must not sit pending forever")
+	require.Equal(t, entity.ReceiptPostingPending, receiptUnposted.Status,
+		"an entry-less receipt stays pending for the worker")
+
+	// And the backfilled lines mirror the stamped counts.
+	var good, defect int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT good_qty, defect_qty FROM production_run_receipt_line WHERE receipt_id = ?", receiptPosted.Id).
+		Scan(&good, &defect))
+	require.Equal(t, 7, good)
+	require.Equal(t, 1, defect)
 }

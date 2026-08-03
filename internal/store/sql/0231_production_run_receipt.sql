@@ -82,7 +82,7 @@ INSERT INTO production_run_receipt_line (receipt_id, run_line_id, product_id, si
 SELECT pr.id, l.id, l.product_id, l.size_id, COALESCE(l.received_qty, 0), COALESCE(l.defect_qty, 0)
 FROM production_run_receipt pr
 JOIN production_run_line l ON l.run_id = pr.run_id
-WHERE pr.note = 'backfilled from pre-receipt receive flow'
+WHERE pr.idempotency_key LIKE 'LEGACY%'
   AND (COALESCE(l.received_qty, 0) > 0 OR COALESCE(l.defect_qty, 0) > 0)
   AND NOT EXISTS (SELECT 1 FROM production_run_receipt_line e WHERE e.receipt_id = pr.id AND e.run_line_id = l.id);
 

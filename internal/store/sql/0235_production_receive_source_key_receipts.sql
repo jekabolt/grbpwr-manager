@@ -18,6 +18,23 @@ WHERE e.source_type = 'production_receive'
   AND e.source_key NOT LIKE 'receipt:%'
   AND e.source_key REGEXP '^[0-9]+(:v[0-9]+)?$';
 
+-- A receipt whose entry ALREADY exists (0231 backfilled the receipt, the rewrite above just gave
+-- the entry its receipt key) is already posted — mark it so. Without this, such receipts sit at
+-- 'pending' forever: the scan's NOT-EXISTS skips them (the entry exists), so the worker never
+-- touches them, and the backlog gauge WARN-alerts about a queue no one can drain on every tick.
+-- The legacy run-id family is matched beside the receipt family for an entry the rewrite could not
+-- reach (no receipt for its run) — same belt-and-suspenders as the worker's predicates.
+UPDATE production_run_receipt pr
+SET pr.posting_status = 'posted'
+WHERE pr.posting_status = 'pending'
+  AND EXISTS (SELECT 1 FROM acct_journal_entry e
+              WHERE e.source_type = 'production_receive'
+                AND (e.source_key = CONCAT('receipt:', CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+                     OR e.source_key LIKE CONCAT('receipt:', CAST(pr.id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci
+                     OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+                     OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), ':v%') COLLATE utf8mb4_unicode_ci)
+                AND e.reversed_by IS NULL);
+
 -- +migrate Down
 
 -- Reverse mapping: strip the receipt prefix back to the run id, keeping the version suffix.
