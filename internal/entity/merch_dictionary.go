@@ -32,7 +32,8 @@ const (
 )
 
 // CollectionDict is a controlled collection dictionary entry (R9). Code is a stable unique slug; an
-// in-use code is archived, never renamed or deleted. tech_card.collection_id references it.
+// in-use code is archived, never renamed or deleted. The tech-card form stores the collection NAME
+// string (the tech_card.collection_id FK was an unread orphan, dropped by 0240).
 // It is distinct from entity.Collection, which is the storefront projection (name + gender counts).
 type CollectionDict struct {
 	ID           int            `db:"id"`

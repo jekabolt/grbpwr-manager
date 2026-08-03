@@ -464,7 +464,6 @@ func newLineKey() string {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])
 }
 
-
 // insertTechCardDetails inserts the construction-description aspects and, for each, its
 // reference media.
 func insertTechCardDetails(ctx context.Context, db dependency.DB, tcID int, details []entity.TechCardDetail) error {

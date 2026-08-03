@@ -54,21 +54,31 @@ func TestCostingHardwarePackagingBackfillMigration(t *testing.T) {
 
 	cardMigrate := mkCard("P2-MIGRATE", "draft")
 	cardDouble := mkCard("P2-DOUBLE", "draft")
+	cardUnwired := mkCard("P2-UNWIRED", "draft")
 	cardZeroCw := mkCard("P2-ZEROCW", "draft")
 	cardFrozen := mkCard("P2-FROZEN", "released")
 
 	seedScalar(cardMigrate, "hardware_cost", "5.00")
 	seedScalar(cardDouble, "packaging_cost", "2.00")
+	seedScalar(cardUnwired, "packaging_cost", "1.20")
 	seedScalar(cardZeroCw, "hardware_cost", "3.00")
 	seedScalar(cardFrozen, "hardware_cost", "7.00")
 
-	// cardDouble's authored packaging row (the double-count the exception must record).
+	// cardDouble's authored packaging row — WIRED below (priced + carried by a usage), so it really
+	// contributes money and the scalar really double-counts.
 	_, err = testDB.ExecContext(ctx, `
 		INSERT INTO tech_card_bom_item (tech_card_id, section, name, unit_price, currency, line_key)
 		VALUES (?, 'packaging', 'authored polybag', 0.80, 'EUR', 'AUTHOREDPOLYBAG00000000001')`, cardDouble)
 	require.NoError(t, err)
 
-	// cardMigrate's colourway: post-R1 that is a product with style_id = the card.
+	// cardUnwired's authored packaging row: priced but carried by NO usage — it contributes nothing
+	// to any colourway cost (the live-beta shape), so the scalar is the section's only money.
+	_, err = testDB.ExecContext(ctx, `
+		INSERT INTO tech_card_bom_item (tech_card_id, section, name, unit_price, currency, line_key)
+		VALUES (?, 'packaging', 'unwired shipping box', 0.60, 'EUR', 'UNWIREDBOX0000000000000001')`, cardUnwired)
+	require.NoError(t, err)
+
+	// Colourways: post-R1 a colourway is a product with style_id = the card.
 	var sizeA int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT id FROM size WHERE sku_ord != 0 ORDER BY id LIMIT 1`).Scan(&sizeA))
 	var langID int
@@ -86,24 +96,38 @@ func TestCostingHardwarePackagingBackfillMigration(t *testing.T) {
 	if len(prices) == 0 {
 		prices = append(prices, entity.ColorwayPriceInsert{Currency: "EUR", Price: decimal.NewFromInt(100)})
 	}
-	prodID, err := s.Products().AddProduct(ctx, &entity.ColorwayNew{
-		Product: &entity.ColorwayInsert{
-			ProductBodyInsert: entity.ColorwayBodyInsert{
-				Brand: "ACME", Color: "black", ColorCode: "BLK", CountryOfOrigin: "IT",
-				TopCategoryId: 1, TargetGender: entity.Unisex, Season: entity.SeasonSS,
+	// "BLK" is the one color code the seed guarantees — the colour identity is irrelevant here.
+	mkColorway := func(cardID int, tag string) int {
+		id, err := s.Products().AddProduct(ctx, &entity.ColorwayNew{
+			Product: &entity.ColorwayInsert{
+				ProductBodyInsert: entity.ColorwayBodyInsert{
+					Brand: "ACME", Color: "black", ColorCode: "BLK", CountryOfOrigin: "IT",
+					TopCategoryId: 1, TargetGender: entity.Unisex, Season: entity.SeasonSS,
+				},
+				ThumbnailMediaID: mediaID,
+				Translations:     []entity.ColorwayTranslationInsert{{LanguageId: langID, Name: "P2-CW-" + tag, Description: "d"}},
+				Prices:           prices,
 			},
-			ThumbnailMediaID: mediaID,
-			Translations:     []entity.ColorwayTranslationInsert{{LanguageId: langID, Name: "P2-CW", Description: "d"}},
-			Prices:           prices,
-		},
-		SizeMeasurements: []entity.SizeWithMeasurementInsert{
-			{ProductSize: entity.VariantInsert{SizeId: sizeA, Quantity: decimal.NewFromInt(1)}},
-		},
-		MediaIds: []int{mediaID}, Tags: []entity.ColorwayTagInsert{}, Prices: prices,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", prodID) })
-	_, err = testDB.ExecContext(ctx, "UPDATE product SET style_id = ? WHERE id = ?", cardMigrate, prodID)
+			SizeMeasurements: []entity.SizeWithMeasurementInsert{
+				{ProductSize: entity.VariantInsert{SizeId: sizeA, Quantity: decimal.NewFromInt(1)}},
+			},
+			MediaIds: []int{mediaID}, Tags: []entity.ColorwayTagInsert{}, Prices: prices,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", id) })
+		_, err = testDB.ExecContext(ctx, "UPDATE product SET style_id = ? WHERE id = ?", cardID, id)
+		require.NoError(t, err)
+		return id
+	}
+	prodID := mkColorway(cardMigrate, "MIG")
+	cwDouble := mkColorway(cardDouble, "DBL")
+	mkColorway(cardUnwired, "UNW")
+
+	// Wire cardDouble's authored row into its colourway recipe: this is what makes it MONEY.
+	_, err = testDB.ExecContext(ctx, `
+		INSERT INTO tech_card_colorway_usage (colorway_id, bom_item_id, consumption, display_order)
+		SELECT ?, id, 1, 0 FROM tech_card_bom_item WHERE tech_card_id = ? AND line_key = 'AUTHOREDPOLYBAG00000000001'`,
+		cwDouble, cardDouble)
 	require.NoError(t, err)
 
 	replay := func() {
@@ -158,6 +182,43 @@ func TestCostingHardwarePackagingBackfillMigration(t *testing.T) {
 			SELECT amount FROM tech_card_costing_migration_exception
 			WHERE tech_card_id = ? AND article='packaging' AND kind='double_counted'`, cardDouble).Scan(&amount))
 		require.True(t, amount.Equal(decimal.RequireFromString("2.00")), "the double-counted value is preserved in the report")
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tech_card_colorway_usage u
+			JOIN tech_card_bom_item b ON b.id = u.bom_item_id
+			WHERE b.tech_card_id = ?`, cardDouble).Scan(&cnt))
+		require.Equal(t, 1, cnt, "the authored wired usage is untouched and nothing new is attached")
+
+		// cardUnwired (the live-beta shape): the authored row is priced but carried by no usage, so
+		// it contributes nothing — the scalar is the section's only money and migrates into a
+		// synthetic row BESIDE the descriptive authored one. No exception: nothing double-counted.
+		var synthID int
+		var synthKey string
+		var synthPrice decimal.Decimal
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT id, COALESCE(line_key,''), unit_price FROM tech_card_bom_item
+			WHERE tech_card_id = ? AND section = 'packaging' AND name = 'Packaging (migrated from costing)'`,
+			cardUnwired).Scan(&synthID, &synthKey, &synthPrice))
+		require.Regexp(t, `^LEGACY[0-9]{20}$`, synthKey)
+		require.True(t, synthPrice.Equal(decimal.RequireFromString("1.20")), "the scalar's money lives on the synthetic row")
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tech_card_bom_item WHERE tech_card_id = ? AND section = 'packaging'`,
+			cardUnwired).Scan(&cnt))
+		require.Equal(t, 2, cnt, "authored descriptive row + synthetic row")
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tech_card_colorway_usage WHERE bom_item_id = ?`, synthID).Scan(&cnt))
+		require.Equal(t, 1, cnt, "one usage per colourway on the synthetic row")
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tech_card_colorway_usage u
+			JOIN tech_card_bom_item b ON b.id = u.bom_item_id
+			WHERE b.tech_card_id = ? AND b.id <> ?`, cardUnwired, synthID).Scan(&cnt))
+		require.Zero(t, cnt, "no usage hung on the authored unwired row")
+		var upk sql.NullString
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT packaging_cost FROM tech_card_costing WHERE tech_card_id = ?", cardUnwired).Scan(&upk))
+		require.False(t, upk.Valid, "migrated scalar cleared")
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM tech_card_costing_migration_exception WHERE tech_card_id = ?`, cardUnwired).Scan(&cnt))
+		require.Zero(t, cnt, "an unwired authored row is not a double-count")
 
 		// cardZeroCw: nothing migrated, scalar kept, zero_colorways recorded.
 		require.NoError(t, testDB.QueryRowContext(ctx, `

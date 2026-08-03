@@ -414,7 +414,8 @@ message TechCardBomItem {
   string line_key = 25;
   // material_snapshot was REMOVED (production-costing Phase 2): the JSON snapshot was written on
   // every save but never read back by any consumer — the line's own columns carry the identity and
-  // the admin client stripped the field from payloads. Column dropped by migration 0241.
+  // the admin client stripped the field from payloads. The column is dropped by a follow-up
+  // contract migration once no serving binary references it (expand/contract).
   reserved 26;
   reserved "material_snapshot";
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,

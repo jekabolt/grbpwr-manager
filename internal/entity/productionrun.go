@@ -225,10 +225,10 @@ type ProductionRunInsert struct {
 	// stock or accrues cost from them. PromisedAt is the date the batch is committed to — an open
 	// run (planned/in_progress) past it is overdue, which is the whole definition of
 	// ProductionRunListFilter.OverdueOnly.
-	PlannedStartAt sql.NullTime          `db:"planned_start_at"`
-	PromisedAt     sql.NullTime          `db:"promised_at"`
-	Lines          []ProductionRunLine   `db:"-"`
-	Costs          []ProductionRunCost   `db:"-"`
+	PlannedStartAt sql.NullTime        `db:"planned_start_at"`
+	PromisedAt     sql.NullTime        `db:"promised_at"`
+	Lines          []ProductionRunLine `db:"-"`
+	Costs          []ProductionRunCost `db:"-"`
 }
 
 // ProductionRun is a stored production run (production_run row + its line grid). MaterialMovements

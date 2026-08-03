@@ -127,4 +127,3 @@ func TestCloneStyleForSeasonNormalizesLegacyIssueRefsAndCurrencylessCosting(t *t
 	_, err := (&Server{repo: repo}).CloneStyleForSeason(fullAccessCtx(), cloneRequest())
 	require.NoError(t, err)
 }
-

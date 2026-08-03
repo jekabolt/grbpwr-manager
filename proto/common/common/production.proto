@@ -142,7 +142,8 @@ message ProductionRunReceipt {
 // ProductionMarkerSource / ProductionRunMarker were REMOVED (production-costing Phase 2, review
 // cut): the marker import surface shipped write-only — no editor ever existed and the admin client
 // always sent an empty list, so the table held nothing. The run-level marker facts that ARE used
-// (marker_efficiency_pct / marker_notes on ProductionRunInsert) stay. Table dropped by 0243.
+// (marker_efficiency_pct / marker_notes on ProductionRunInsert) stay. The table is dropped by a
+// follow-up contract migration once no serving binary references it (expand/contract).
 
 // ProductionRunInsert is the writable payload for a run (header + colour-model × size lines).
 // planned_unit_cost / planned_currency are NOT here — they are server-snapshotted at plan time

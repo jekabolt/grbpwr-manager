@@ -551,7 +551,6 @@ func TestUpdateTechCardCostReadCanApproveHydratedCosting(t *testing.T) {
 	require.True(t, written.Signoffs[0].SignedDigest.Valid)
 }
 
-
 // TestStripProductionRunCosting pins the Q5 costing symmetry (A3.2-#3): a run's actual money is
 // redacted for a non-costing account while its quantities and provenance flags survive.
 func TestStripProductionRunCosting(t *testing.T) {
