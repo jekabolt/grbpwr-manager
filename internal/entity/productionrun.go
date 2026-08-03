@@ -201,15 +201,15 @@ type ProductionRunMarker struct {
 // never taken from the client, and are frozen once set so the run's plan does not drift when the
 // card is edited afterwards.
 type ProductionRunInsert struct {
-	TechCardId          int                   `db:"tech_card_id"`
-	ReleaseId           sql.NullInt64         `db:"release_id"`
-	Status              ProductionRunStatus   `db:"status"`
-	StartedAt           sql.NullTime          `db:"started_at"`
-	ReceivedAt          sql.NullTime          `db:"received_at"`
-	PlannedUnitCost     decimal.NullDecimal   `db:"planned_unit_cost"`
-	PlannedCurrency     sql.NullString        `db:"planned_currency"`
-	MarkerEfficiencyPct decimal.NullDecimal   `db:"marker_efficiency_pct"` // % fabric utilisation from the nesting software (NF-06)
-	MarkerNotes         sql.NullString        `db:"marker_notes"`          // free marker/раскладка parameters
+	TechCardId          int                 `db:"tech_card_id"`
+	ReleaseId           sql.NullInt64       `db:"release_id"`
+	Status              ProductionRunStatus `db:"status"`
+	StartedAt           sql.NullTime        `db:"started_at"`
+	ReceivedAt          sql.NullTime        `db:"received_at"`
+	PlannedUnitCost     decimal.NullDecimal `db:"planned_unit_cost"`
+	PlannedCurrency     sql.NullString      `db:"planned_currency"`
+	MarkerEfficiencyPct decimal.NullDecimal `db:"marker_efficiency_pct"` // % fabric utilisation from the nesting software (NF-06)
+	MarkerNotes         sql.NullString      `db:"marker_notes"`          // free marker/раскладка parameters
 	// ActualWastagePercent is the run's ACTUAL cutting wastage % (0..100), entered per run once the
 	// marker/lay is known — it varies run to run with how tightly the pieces nest on the fabric. When
 	// set it OVERRIDES the BOM line's estimate wastage_percent in the run's cost calc (the planned-cost
@@ -217,9 +217,16 @@ type ProductionRunInsert struct {
 	// refines the PLAN/estimate side only — the run's ACTUAL cost still comes from real material issues.
 	ActualWastagePercent decimal.NullDecimal `db:"actual_wastage_percent"`
 	Notes                sql.NullString      `db:"notes"`
-	Lines               []ProductionRunLine   `db:"-"`
-	Costs               []ProductionRunCost   `db:"-"`
-	Markers             []ProductionRunMarker `db:"-"` // imported nesting markers (gap-07 v2 E)
+	// PlannedStartAt / PromisedAt are the run's PLANNING dates (production cockpit). Unlike
+	// ReceivedAt they are client-writable: they carry intent, not a stamped fact, so nothing books
+	// stock or accrues cost from them. PromisedAt is the date the batch is committed to — an open
+	// run (planned/in_progress) past it is overdue, which is the whole definition of
+	// ProductionRunListFilter.OverdueOnly.
+	PlannedStartAt sql.NullTime          `db:"planned_start_at"`
+	PromisedAt     sql.NullTime          `db:"promised_at"`
+	Lines          []ProductionRunLine   `db:"-"`
+	Costs          []ProductionRunCost   `db:"-"`
+	Markers        []ProductionRunMarker `db:"-"` // imported nesting markers (gap-07 v2 E)
 }
 
 // ProductionRun is a stored production run (production_run row + its line grid). MaterialMovements
@@ -241,6 +248,10 @@ type ProductionRunListFilter struct {
 	// StaleDays > 0 restricts the result to "stale" runs — still open (planned/in_progress) and
 	// created more than StaleDays days ago, matching the stale_open_production_run dashboard alert (#10).
 	StaleDays int
+	// OverdueOnly restricts the result to runs that are still open (planned/in_progress) and whose
+	// PromisedAt has already passed. A run with no PromisedAt was never promised anything and is
+	// therefore never overdue.
+	OverdueOnly bool
 }
 
 // NetReceivedQty sums received quantities across all lines.

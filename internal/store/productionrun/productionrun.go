@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -40,10 +41,12 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 
 // received_at is deliberately absent from the write columns: it is stamped only by the receive flow,
 // in the same transaction as the stock it books, and nothing else may set or clear it.
-const runColumns = `tech_card_id, release_id, status, started_at,
+// planned_start_at / promised_at ARE written here, unlike received_at: they are planning intent
+// the operator owns, not a stamped fact behind which stock moved.
+const runColumns = `tech_card_id, release_id, status, started_at, planned_start_at, promised_at,
 	planned_unit_cost, planned_currency, marker_efficiency_pct, marker_notes, actual_wastage_percent, notes`
 
-const runValues = `:tech_card_id, :release_id, :status, :started_at,
+const runValues = `:tech_card_id, :release_id, :status, :started_at, :planned_start_at, :promised_at,
 	:planned_unit_cost, :planned_currency, :marker_efficiency_pct, :marker_notes, :actual_wastage_percent, :notes`
 
 func runParams(r *entity.ProductionRunInsert) map[string]any {
@@ -52,6 +55,8 @@ func runParams(r *entity.ProductionRunInsert) map[string]any {
 		"release_id":             r.ReleaseId,
 		"status":                 string(r.Status),
 		"started_at":             r.StartedAt,
+		"planned_start_at":       r.PlannedStartAt,
+		"promised_at":            r.PromisedAt,
 		"planned_unit_cost":      r.PlannedUnitCost,
 		"planned_currency":       r.PlannedCurrency,
 		"marker_efficiency_pct":  r.MarkerEfficiencyPct,
@@ -185,6 +190,7 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 				lock_version = lock_version + 1,
 				tech_card_id = :tech_card_id, release_id = :release_id, status = :status,
 				started_at = :started_at,
+				planned_start_at = :planned_start_at, promised_at = :promised_at,
 				marker_efficiency_pct = :marker_efficiency_pct, marker_notes = :marker_notes,
 				actual_wastage_percent = :actual_wastage_percent, notes = :notes
 			WHERE id = :id`+lockGuard, params)
@@ -616,6 +622,20 @@ func (s *Store) ListProductionRuns(ctx context.Context, limit, offset int, filte
 		params["staleOpenPlanned"] = string(entity.ProductionRunPlanned)
 		params["staleOpenInProgress"] = string(entity.ProductionRunInProgress)
 		params["staleCutoff"] = s.Now().AddDate(0, 0, -filter.StaleDays)
+	}
+	// Overdue filter (production cockpit): still-open runs whose promised delivery date has passed.
+	// A run with no promised_at was never promised anything, so it is never overdue — the IS NOT NULL
+	// is load-bearing, not decorative. The cutoff is TODAY'S UTC MIDNIGHT, not the current instant:
+	// promised_at is entered as a calendar date and stored at UTC midnight, and a batch promised
+	// TODAY is not late yet — the client's overdueDays predicate counts whole UTC days the same way,
+	// so the filter and the "опаздывает N дн" badge agree for the entire promised day.
+	if filter.OverdueOnly {
+		now := s.Now().UTC()
+		where += " AND promised_at IS NOT NULL AND promised_at < :overdueCutoff" +
+			" AND status IN (:overduePlanned, :overdueInProgress)"
+		params["overdueCutoff"] = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		params["overduePlanned"] = string(entity.ProductionRunPlanned)
+		params["overdueInProgress"] = string(entity.ProductionRunInProgress)
 	}
 
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,

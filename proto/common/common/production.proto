@@ -152,6 +152,15 @@ message ProductionRunInsert {
   // material plan); unset falls back to the BOM estimate. Refines the plan side only — the run's ACTUAL
   // cost still derives from real material issues.
   google.type.Decimal actual_wastage_percent = 13;
+  // Planning dates for the overdue view (production cockpit). Client-writable, unlike started_at's
+  // sibling received_at: they are INTENT, not a stamped fact, so nothing downstream books stock or
+  // accrues cost from them.
+  //   planned_start_at — when the batch is planned to go into work (started_at is the real transition).
+  //   promised_at      — дата, к которой партия обещана. An open run (planned/in_progress) whose
+  //                      promised_at is in the past is overdue; that is exactly what
+  //                      ListProductionRunsRequest.overdue_only filters on.
+  google.protobuf.Timestamp planned_start_at = 14;
+  google.protobuf.Timestamp promised_at = 15;
   reserved 7; // was `repeated ProductionRunSize sizes` (flat per-size grid; replaced by lines)
 }
 
