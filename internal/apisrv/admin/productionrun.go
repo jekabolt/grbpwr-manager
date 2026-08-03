@@ -207,6 +207,12 @@ func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.Pos
 	if !entity.IsValidProductionRunLineKey(key) {
 		return nil, status.Error(codes.InvalidArgument, "idempotency_key must be exactly 26 characters of [0-9A-Z] (mint an uppercase ULID per user intent)")
 	}
+	// The LEGACY prefix is reserved for migration backfills (0231 keys legacy receipts LEGACY<id>
+	// and re-runs graft plan-grid lines onto receipts under that family). A Crockford ULID can
+	// never start with 'L', so no real client is affected — only a crafted key is refused.
+	if strings.HasPrefix(key, "LEGACY") {
+		return nil, status.Error(codes.InvalidArgument, "idempotency_key prefix LEGACY is reserved for migration backfills")
+	}
 	lines, err := dto.ConvertPbReceiptLinesToEntity(req.Lines)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())

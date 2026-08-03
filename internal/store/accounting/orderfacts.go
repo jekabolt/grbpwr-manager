@@ -138,19 +138,26 @@ func (s *Store) ListUnpostedMovements(ctx context.Context, afterID int64, startD
 }
 
 // ListUnpostedReceipts returns production receipts (Phase 4: the receipt is the accounting unit of
-// a receive) received on/after startDate with posting_status='pending' and no reversal linkage that
+// a receive) received on/after startDate, not dead-lettered and with no reversal linkage, that
 // have no live production_receive journal entry under EITHER key family — 'receipt:<id>' (current)
 // or the legacy '<run_id>' (pre-0235 entries; belt-and-suspenders after the migration rewrote them).
 // Oldest first, up to limit. Dead-lettered receipts are deliberately excluded: they already alerted,
 // and re-scanning them every tick is exactly the queue-clogging the dead-letter state exists to
 // stop — ClosePeriod still counts them, so the money cannot silently vanish.
+//
+// The status filter is <> 'dead_letter', NOT = 'pending': the live-entry NOT EXISTS is the real
+// gate, exactly as on ClosePeriod and the recon block. A 'pending' filter would wedge the ledger
+// the day an operator reverses a posted receipt's entry (a normal accounting operation): the
+// receipt stays 'posted', the scan never re-sees it, yet ClosePeriod counts its missing live entry
+// forever. With the entry-existence gate the worker re-posts the next version (':vN', exactly what
+// loadProductionReceiveVersions exists for) and re-marks the receipt — self-healing, as before.
 func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, limit int) ([]entity.AcctReceiptRef, error) {
 	if limit <= 0 {
 		limit = defaultScanBatch
 	}
 	rows, err := storeutil.QueryListNamed[entity.AcctReceiptRef](ctx, s.DB, `
 		SELECT pr.id AS receipt_id, pr.run_id AS run_id FROM production_run_receipt pr
-		WHERE pr.posting_status = 'pending' AND pr.reversal_of IS NULL AND pr.reversed_by IS NULL
+		WHERE pr.posting_status <> 'dead_letter' AND pr.reversal_of IS NULL AND pr.reversed_by IS NULL
 		  AND pr.received_at >= :start_date
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                  WHERE e.source_type = 'production_receive'
@@ -179,9 +186,11 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		ReceivedAt   time.Time `db:"received_at"`
 		TechCardName string    `db:"tech_card_name"`
 		GoodQty      int       `db:"good_qty"`
+		DefectQty    int       `db:"defect_qty"`
 	}](ctx, s.DB, `
 		SELECT pr.id, pr.run_id, pr.received_at, tc.name AS tech_card_name,
-		       COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS good_qty
+		       COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS good_qty,
+		       COALESCE((SELECT SUM(rl.defect_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS defect_qty
 		FROM production_run_receipt pr
 		JOIN production_run r ON r.id = pr.run_id
 		JOIN tech_card tc ON tc.id = r.tech_card_id
@@ -205,13 +214,14 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		return nil, fmt.Errorf("accounting: get run issues %d: %w", hdr.RunId, err)
 	}
 	rf := &entity.AcctRunFacts{
-		RunID:        hdr.RunId,
-		ReceivedAt:   hdr.ReceivedAt,
-		TechCardName: hdr.TechCardName,
-		Costs:        costs,
-		Issues:       issues,
-		ReceiptID:    hdr.Id,
-		GoodQtyTotal: hdr.GoodQty,
+		RunID:          hdr.RunId,
+		ReceivedAt:     hdr.ReceivedAt,
+		TechCardName:   hdr.TechCardName,
+		Costs:          costs,
+		Issues:         issues,
+		ReceiptID:      hdr.Id,
+		GoodQtyTotal:   hdr.GoodQty,
+		DefectQtyTotal: hdr.DefectQty,
 	}
 	return rf, nil
 }
@@ -254,13 +264,17 @@ func (s *Store) RecordReceiptPostingFailure(ctx context.Context, receiptID int, 
 	return row.Status == entity.ReceiptPostingDeadLetter, nil
 }
 
-// CountReceiptPostingBacklog reports how many pending receipts were received before olderThan (work
-// the worker should long have drained) and how many receipts are dead-lettered.
-func (s *Store) CountReceiptPostingBacklog(ctx context.Context, olderThan time.Time) (int, int, error) {
+// CountReceiptPostingBacklog reports how many pending receipts received in [startDate, olderThan)
+// exist (work the worker should long have drained) and how many receipts are dead-lettered. The
+// startDate bound matters: 0231 backfills a 'pending' receipt for every pre-cutover legacy receive,
+// and the scan (bounded by the same startDate) is designed never to touch those — counting them
+// would WARN about a backlog no one can drain, every tick, forever.
+func (s *Store) CountReceiptPostingBacklog(ctx context.Context, startDate, olderThan time.Time) (int, int, error) {
 	pending, err := storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM production_run_receipt
 		WHERE posting_status = 'pending' AND reversal_of IS NULL AND reversed_by IS NULL
-		  AND received_at < :older_than`, map[string]any{"older_than": olderThan.UTC()})
+		  AND received_at >= :start_date AND received_at < :older_than`,
+		map[string]any{"start_date": startDate.UTC(), "older_than": olderThan.UTC()})
 	if err != nil {
 		return 0, 0, fmt.Errorf("accounting: count pending receipts: %w", err)
 	}

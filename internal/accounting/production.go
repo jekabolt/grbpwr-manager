@@ -80,11 +80,13 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 		caveats = append(caveats, "pre-cutover WIP excluded")
 	}
 
-	// An all-scrap receipt (facts carry a receipt with zero good units and a positive defect count)
-	// produced NO finished goods — transferring the run's cost to 1130 would value an FG balance
-	// with nothing behind it. The manual costs still capitalise (the CMT invoice is owed either
-	// way); the accumulated WIP stays on 1120 until the defect write-off phase disposes of it.
-	allScrap := r.ReceiptID > 0 && r.GoodQtyTotal == 0
+	// An all-scrap receipt (zero good units, POSITIVE defect count) produced NO finished goods —
+	// transferring the run's cost to 1130 would value an FG balance with nothing behind it. The
+	// manual costs still capitalise (the CMT invoice is owed either way); the accumulated WIP stays
+	// on 1120 until the defect write-off phase disposes of it. The defect count must be positive:
+	// a receipt with NO counted lines at all (a 0231 legacy backfill of a grid edited back to
+	// NULLs) is not scrap — it posts the WIP→FG transfer exactly as the run did before receipts.
+	allScrap := r.ReceiptID > 0 && r.GoodQtyTotal == 0 && r.DefectQtyTotal > 0
 
 	var lines []entity.AcctJournalLineInsert
 	// Manual production costs capitalised into WIP against AP.

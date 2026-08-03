@@ -933,9 +933,10 @@ type (
 		// RecordReceiptPostingFailure increments posting_attempts, stores the error, and flips the
 		// receipt to dead_letter once attempts reach maxAttempts — reporting whether it did.
 		RecordReceiptPostingFailure(ctx context.Context, receiptID int, errMsg string, maxAttempts int) (deadLettered bool, err error)
-		// CountReceiptPostingBacklog reports pending receipts received before olderThan (stuck work)
+		// CountReceiptPostingBacklog reports pending receipts received in [startDate, olderThan) —
+		// stuck work; the lower bound excludes 0231's legacy backfills, which the scan never drains —
 		// and the number of dead-lettered receipts (operator attention required).
-		CountReceiptPostingBacklog(ctx context.Context, olderThan time.Time) (pending int, deadLettered int, err error)
+		CountReceiptPostingBacklog(ctx context.Context, startDate, olderThan time.Time) (pending int, deadLettered int, err error)
 		ListChangedOpexMonths(ctx context.Context, afterTS time.Time) ([]time.Time, error)
 		GetOpexMonthFacts(ctx context.Context, month time.Time) ([]entity.AcctOpexCategorySum, error)
 		// ListChangedShipmentsForActualCost returns shipments whose actual carrier cost changed after

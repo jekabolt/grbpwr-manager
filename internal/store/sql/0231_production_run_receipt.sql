@@ -66,14 +66,17 @@ CREATE TABLE IF NOT EXISTS production_run_receipt_line (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Backfill: one synthetic receipt per already-received run, so "every received run has >= 1
--- receipt" is an invariant the scanner, ClosePeriod and Phase 6 can rely on. received_at is the
--- run's stamp; the valuation is NOT retro-frozen (NULL — inventing a figure the receipt was never
--- booked at would be worse than admitting it is unknown). idempotency_key mirrors 0230's LEGACY
--- padding: unique because run id is, never colliding with client-minted Crockford ULIDs ('L').
+-- receipt" is an invariant the scanner, ClosePeriod and Phase 6 can rely on — which is why the
+-- timestamp falls back COALESCE(received_at, updated_at, created_at) instead of skipping a run
+-- whose received_at was never stamped (client-writable before Phase 0a): skipping would break the
+-- invariant for exactly the runs whose history is already the murkiest. The valuation is NOT
+-- retro-frozen (NULL — inventing a figure the receipt was never booked at would be worse than
+-- admitting it is unknown). idempotency_key mirrors 0230's LEGACY padding: unique because run id
+-- is, never colliding with client-minted Crockford ULIDs ('L').
 INSERT INTO production_run_receipt (run_id, received_at, admin_username, note, idempotency_key, posting_status)
-SELECT r.id, r.received_at, NULL, 'backfilled from pre-receipt receive flow', CONCAT('LEGACY', LPAD(r.id, 20, '0')), 'pending'
+SELECT r.id, COALESCE(r.received_at, r.updated_at, r.created_at), NULL, 'backfilled from pre-receipt receive flow', CONCAT('LEGACY', LPAD(r.id, 20, '0')), 'pending'
 FROM production_run r
-WHERE r.status IN ('received', 'closed') AND r.received_at IS NOT NULL
+WHERE r.status IN ('received', 'closed')
   AND NOT EXISTS (SELECT 1 FROM production_run_receipt x WHERE x.run_id = r.id);
 
 -- Backfill lines from the plan grid's counted rows (received_qty/defect_qty were the only receive

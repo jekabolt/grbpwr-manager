@@ -613,10 +613,14 @@ type AcctRunFacts struct {
 	// ReceiptID is the receipt these facts post under (Phase 4: source_key 'receipt:<id>'); 0 only
 	// in legacy-shaped tests.
 	ReceiptID int
-	// GoodQtyTotal is Σ good_qty of the receipt's lines. 0 with a positive defect count marks an
-	// all-scrap receipt: no finished goods exist, so the builder must NOT transfer WIP→FG (the cost
-	// stays in WIP pending the defect write-off phase).
-	GoodQtyTotal int
+	// GoodQtyTotal / DefectQtyTotal are Σ good_qty / Σ defect_qty of the receipt's lines. Zero good
+	// with a POSITIVE defect count marks an all-scrap receipt: no finished goods exist, so the
+	// builder must NOT transfer WIP→FG (the cost stays in WIP pending the defect write-off phase).
+	// Both zero means the receipt has no counted lines at all — a 0231 legacy backfill of a run
+	// whose grid was edited back to NULLs — and posts normally, exactly as the run did before
+	// receipts existed.
+	GoodQtyTotal   int
+	DefectQtyTotal int
 }
 
 // AcctReceiptRef identifies one unposted production receipt for the posting worker's scan.

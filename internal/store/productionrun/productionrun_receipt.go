@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"sort"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
@@ -49,11 +51,11 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			return fmt.Errorf("failed to load production run for receipt: %w", err)
 		}
 
-		stored, err := loadIdempotencyRecord(ctx, db, entity.CommandTypeProductionRunReceipt, p.IdempotencyKey)
+		claimed, stored, err := claimIdempotency(ctx, db, entity.CommandTypeProductionRunReceipt, p.IdempotencyKey, p.RequestHash)
 		if err != nil {
 			return err
 		}
-		if stored != nil {
+		if !claimed {
 			if stored.RequestHash != p.RequestHash {
 				return entity.ErrIdempotencyConflict
 			}
@@ -288,12 +290,11 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			return fmt.Errorf("failed to marshal receipt result: %w", err)
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
-			INSERT INTO command_idempotency (command_type, idempotency_key, request_hash, status, result_ids, response)
-			VALUES (:command_type, :idempotency_key, :request_hash, 'succeeded', :result_ids, :response)`,
+			UPDATE command_idempotency SET status = 'succeeded', result_ids = :result_ids, response = :response
+			WHERE command_type = :command_type AND idempotency_key = :idempotency_key`,
 			map[string]any{
 				"command_type":    entity.CommandTypeProductionRunReceipt,
 				"idempotency_key": p.IdempotencyKey,
-				"request_hash":    p.RequestHash,
 				"result_ids":      fmt.Sprintf("receipt:%d", receiptID),
 				"response":        string(response),
 			}); err != nil {
@@ -318,25 +319,51 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 
 // idempotencyRecord is the replay-relevant slice of a command_idempotency row.
 type idempotencyRecord struct {
+	Status      string `db:"status"`
 	RequestHash string `db:"request_hash"`
 	Response    string `db:"response"`
 }
 
-// loadIdempotencyRecord returns the stored record for (commandType, key), or nil when the command
-// has not executed. A plain read: rows are immutable once written, and the caller holds the run
-// lock, which serializes the only writers of this key family.
-func loadIdempotencyRecord(ctx context.Context, db dependency.DB, commandType, key string) (*idempotencyRecord, error) {
+// claimIdempotency is the CLAIM-FIRST replay check: it INSERTs the command's 'in_progress' marker
+// and reports claimed=true for a fresh command (the caller executes and later flips the row to
+// 'succeeded' — or rolls the whole claim back with the failed transaction, leaving no trace). A
+// duplicate key (1062) means the command already ran: the stored row comes back for replay/conflict.
+//
+// Insert-first is not a style choice. The previous shape — a plain SELECT probing for the key, then
+// an INSERT at commit time — takes a shared GAP lock on uq_cmdidem under SERIALIZABLE, and two
+// concurrent commands of DIFFERENT runs (which share no run lock) both upgrade that gap to an
+// insert intention: the classic S→X deadlock storm (measured: 13 of 16 concurrent receives
+// deadlocked at least once). An INSERT's intention lock conflicts only with gap locks, and this
+// function is now the only toucher of the index — different keys in the same gap no longer block
+// each other, and the same key serializes on the winner's record lock (the loser blocks in the
+// uniqueness check until the winner commits, then reads the committed row).
+func claimIdempotency(ctx context.Context, db dependency.DB, commandType, key, requestHash string) (bool, *idempotencyRecord, error) {
+	err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO command_idempotency (command_type, idempotency_key, request_hash, status)
+		VALUES (:command_type, :idempotency_key, :request_hash, 'in_progress')`,
+		map[string]any{"command_type": commandType, "idempotency_key": key, "request_hash": requestHash})
+	if err == nil {
+		return true, nil, nil
+	}
+	var me *mysql.MySQLError
+	if !errors.As(err, &me) || me.Number != 1062 {
+		return false, nil, fmt.Errorf("failed to claim idempotency record: %w", err)
+	}
 	rec, err := storeutil.QueryNamedOne[idempotencyRecord](ctx, db, `
-		SELECT request_hash, COALESCE(response, '') AS response
+		SELECT status, request_hash, COALESCE(response, '') AS response
 		FROM command_idempotency WHERE command_type = :t AND idempotency_key = :k`,
 		map[string]any{"t": commandType, "k": key})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to load idempotency record: %w", err)
+		return false, nil, fmt.Errorf("failed to load idempotency record after duplicate claim: %w", err)
 	}
-	return &rec, nil
+	if rec.Status != "succeeded" {
+		// Unreachable for a well-behaved retry: a failed command rolls its claim back, and a
+		// concurrent same-key command commits 'succeeded' before its row is visible. A non-succeeded
+		// row therefore means the key was reused across distinct intents (or a crashed manual edit) —
+		// refuse rather than replay a response that does not exist.
+		return false, nil, entity.ErrIdempotencyConflict
+	}
+	return false, &rec, nil
 }
 
 // replayReceiptResult reconstructs the original command result from the stored response JSON.

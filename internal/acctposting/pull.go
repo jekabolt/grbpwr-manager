@@ -161,7 +161,7 @@ func (w *Worker) processReceipts(ctx context.Context) error {
 
 	// Backlog gauge: pending receipts older than an hour mean the queue is stuck (poison receipt
 	// short of dead-letter, phase erroring, worker starved); dead-lettered ones need an operator.
-	pending, dead, err := acc.CountReceiptPostingBacklog(ctx, w.repo.Now().UTC().Add(-receiptBacklogAge))
+	pending, dead, err := acc.CountReceiptPostingBacklog(ctx, w.startDate, w.repo.Now().UTC().Add(-receiptBacklogAge))
 	if err != nil {
 		return fmt.Errorf("count receipt backlog: %w", err)
 	}

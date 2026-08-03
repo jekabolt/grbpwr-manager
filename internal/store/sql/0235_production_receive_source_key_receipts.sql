@@ -9,7 +9,11 @@
 --
 -- The worker and every predicate still match the legacy family as belt-and-suspenders, so an entry
 -- that somehow escapes this rewrite (or a mid-deploy read) resolves identically.
-UPDATE acct_journal_entry e
+-- IGNORE: if a re-application races a new-binary post that already claimed 'receipt:<id>' for this
+-- run, the rewrite of the stray legacy key would violate uniq_acct_entry_source (1062); IGNORE
+-- leaves that row legacy-keyed instead of failing the boot, and every predicate matches the legacy
+-- family anyway (belt-and-suspenders below).
+UPDATE IGNORE acct_journal_entry e
 JOIN production_run_receipt pr
     ON pr.run_id = CAST(SUBSTRING_INDEX(e.source_key, ':', 1) AS UNSIGNED)
 SET e.source_key = CONCAT('receipt:', pr.id,

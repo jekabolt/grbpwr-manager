@@ -156,7 +156,7 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 
 	t.Run("all-scrap capitalises manual cost but leaves WIP in place", func(t *testing.T) {
 		r := entity.AcctRunFacts{
-			RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, ReceivedAt: testOccurred,
+			RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, DefectQtyTotal: 9, ReceivedAt: testOccurred,
 			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("100.00")}},
 			Issues: []entity.AcctRunIssueFact{
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("2"), UnitCostBase: nd("50.00"), CreatedAt: testOccurred},
@@ -174,8 +174,24 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 	})
 
 	t.Run("all-scrap with nothing costed still skips", func(t *testing.T) {
-		r := entity.AcctRunFacts{RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, ReceivedAt: testOccurred}
+		r := entity.AcctRunFacts{RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, DefectQtyTotal: 9, ReceivedAt: testOccurred}
 		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
 		require.ErrorIs(t, err, ErrSkipEmpty)
+	})
+
+	t.Run("zero-line legacy backfill is NOT scrap: FG transfer posts as before receipts", func(t *testing.T) {
+		// A 0231 backfill of a run whose grid was edited back to NULLs: a receipt with no counted
+		// lines at all. Base (pre-receipt) posting transferred WIP→FG for that run; treating the
+		// missing counts as "all scrap" would silently strand the cost in WIP.
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, DefectQtyTotal: 0, ReceivedAt: testOccurred,
+			Issues: []entity.AcctRunIssueFact{
+				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("2"), UnitCostBase: nd("50.00"), CreatedAt: testOccurred},
+			},
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assert.True(t, hasLine(e, Acc1130, entity.AcctSideDebit), "WIP→FG posts for a zero-line legacy receipt")
 	})
 }
