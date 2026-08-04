@@ -200,9 +200,30 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 	entry, berr := accounting.BuildProductionReceiveEntry(*facts, w.startDate, versionCount+1)
 	if berr != nil {
 		if errors.Is(berr, accounting.ErrSkipEmpty) {
-			// Nothing costed to post — stays pending, re-seen each tick (NOT a failure).
-			slog.Default().DebugContext(ctx, "acctposting: production receipt has nothing to post",
-				slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID))
+			// Nothing to post — stays pending, re-seen each tick (NOT a failure): Phase 5 empties can
+			// be permanent (a defect-only partial after manual was capitalised) OR transient (costs or
+			// material-issue entries arrive later), and only re-building tells them apart. The skip
+			// stamp pushes the receipt behind never-skipped ones in the scan order and out of the
+			// backlog gauge, so a structurally-empty receipt can neither starve the batch nor WARN
+			// forever (adversarial #2).
+			var emptyErr *accounting.EmptyReceiptError
+			if errors.As(berr, &emptyErr) {
+				// An empty outcome that carries caveats is ledger NEWS with no entry to pin it on —
+				// e.g. "FG already over-transferred, clawback not representable". WARN is the only
+				// durable trace (adversarial #3).
+				slog.Default().WarnContext(ctx, "acctposting: production receipt empty with caveats",
+					slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID),
+					slog.String("caveats", strings.Join(emptyErr.Caveats, "; ")))
+			} else {
+				slog.Default().DebugContext(ctx, "acctposting: production receipt has nothing to post",
+					slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID))
+			}
+			// Best-effort: a failed stamp only costs this receipt its scan-order demotion until the
+			// next tick's skip — it must never burn a posting attempt toward dead-letter.
+			if err := acc.MarkReceiptSkipped(ctx, ref.ReceiptID); err != nil {
+				slog.Default().WarnContext(ctx, "acctposting: can't stamp receipt skip",
+					slog.Int("receipt_id", ref.ReceiptID), slog.String("err", err.Error()))
+			}
 			return nil
 		}
 		return fmt.Errorf("build receipt entry: %w", berr)

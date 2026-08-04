@@ -151,6 +151,12 @@ func (s *Store) ListUnpostedMovements(ctx context.Context, afterID int64, startD
 // receipt stays 'posted', the scan never re-sees it, yet ClosePeriod counts its missing live entry
 // forever. With the entry-existence gate the worker re-posts the next version (':vN', exactly what
 // loadProductionReceiveVersions exists for) and re-marks the receipt — self-healing, as before.
+//
+// Never-skipped receipts come FIRST: a receipt whose build cleanly produced nothing (a defect-only
+// partial after manual was capitalised — structurally empty forever) stays in the scan so a
+// transient empty (costs arrive later) can still self-heal, but it must not occupy the head of
+// every batch — once `limit` such rows accumulated ahead of the oldest fresh receipt, nothing new
+// would ever post again (adversarial #2).
 func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, limit int) ([]entity.AcctReceiptRef, error) {
 	if limit <= 0 {
 		limit = defaultScanBatch
@@ -166,7 +172,7 @@ func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, l
 		                         OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
 		                         OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)
 		                    AND e.reversed_by IS NULL)
-		ORDER BY pr.received_at, pr.id
+		ORDER BY (pr.last_skipped_at IS NOT NULL), pr.received_at, pr.id
 		LIMIT :limit`, map[string]any{"start_date": startDate.UTC(), "limit": limit})
 	if err != nil {
 		return nil, fmt.Errorf("accounting: list unposted receipts: %w", err)
@@ -207,9 +213,9 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		                 WHERE s.run_id = pr.run_id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS all_received,
 		       COALESCE((SELECT SUM(l.planned_qty) FROM production_run_line l WHERE l.run_id = pr.run_id), 0) AS planned_total,
 		       COALESCE((SELECT SUM(s.posted_manual_base) FROM production_run_receipt s
-		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL), 0) AS other_manual,
+		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS other_manual,
 		       COALESCE((SELECT SUM(s.posted_fg_base) FROM production_run_receipt s
-		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL), 0) AS other_fg
+		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS other_fg
 		FROM production_run_receipt pr
 		JOIN production_run r ON r.id = pr.run_id
 		JOIN tech_card tc ON tc.id = r.tech_card_id
@@ -258,11 +264,26 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 func (s *Store) MarkReceiptPosted(ctx context.Context, receiptID int, manualBase, fgBase decimal.Decimal) error {
 	if err := storeutil.ExecNamed(ctx, s.DB, `
 		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL,
+			last_skipped_at = NULL,
 			posted_manual_base = :manual_base, posted_fg_base = :fg_base
 		WHERE id = :id`, map[string]any{
 		"id": receiptID, "manual_base": manualBase, "fg_base": fgBase,
 	}); err != nil {
 		return fmt.Errorf("accounting: mark receipt %d posted: %w", receiptID, err)
+	}
+	return nil
+}
+
+// MarkReceiptSkipped stamps the moment the worker last rebuilt this receipt and got a clean
+// "nothing to post". The receipt STAYS pending (a transient empty self-heals when costs or
+// material-issue entries arrive), but the stamp sends it behind never-skipped receipts in the scan
+// order and keeps it out of the stuck-pending gauge while the stamp is fresh — a structurally-empty
+// receipt must neither starve the batch nor WARN forever (adversarial #2).
+func (s *Store) MarkReceiptSkipped(ctx context.Context, receiptID int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE production_run_receipt SET last_skipped_at = UTC_TIMESTAMP() WHERE id = :id`,
+		map[string]any{"id": receiptID}); err != nil {
+		return fmt.Errorf("accounting: mark receipt %d skipped: %w", receiptID, err)
 	}
 	return nil
 }
@@ -274,6 +295,7 @@ func (s *Store) MarkReceiptPosted(ctx context.Context, receiptID int, manualBase
 func (s *Store) MarkReceiptPostedFromEntry(ctx context.Context, receiptID, entryID int) error {
 	if err := storeutil.ExecNamed(ctx, s.DB, `
 		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL,
+			last_skipped_at = NULL,
 			posted_manual_base = COALESCE((SELECT SUM(l.amount) FROM acct_journal_line l
 			                               JOIN acct_account a ON a.id = l.account_id
 			                               WHERE l.entry_id = :entry_id AND a.code = '2010' AND l.side = 'credit'), 0),
@@ -318,11 +340,18 @@ func (s *Store) RecordReceiptPostingFailure(ctx context.Context, receiptID int, 
 // startDate bound matters: 0231 backfills a 'pending' receipt for every pre-cutover legacy receive,
 // and the scan (bounded by the same startDate) is designed never to touch those — counting them
 // would WARN about a backlog no one can drain, every tick, forever.
+//
+// A receipt the worker RECENTLY rebuilt and cleanly skipped (last_skipped_at >= olderThan, i.e.
+// fresher than the same 1h bound) is not stuck — it was just reconsidered and found empty; counting
+// structurally-empty receipts (a defect-only partial) would WARN forever, which is exactly the
+// alert fatigue this gauge exists to avoid. A receipt whose skip stamp went stale IS counted again:
+// the worker stopped even reaching its build (erroring or starved), and that is real news.
 func (s *Store) CountReceiptPostingBacklog(ctx context.Context, startDate, olderThan time.Time) (int, int, error) {
 	pending, err := storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM production_run_receipt
 		WHERE posting_status = 'pending' AND reversal_of IS NULL AND reversed_by IS NULL
-		  AND received_at >= :start_date AND received_at < :older_than`,
+		  AND received_at >= :start_date AND received_at < :older_than
+		  AND (last_skipped_at IS NULL OR last_skipped_at < :older_than)`,
 		map[string]any{"start_date": startDate.UTC(), "older_than": olderThan.UTC()})
 	if err != nil {
 		return 0, 0, fmt.Errorf("accounting: count pending receipts: %w", err)

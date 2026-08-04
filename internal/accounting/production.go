@@ -104,7 +104,11 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 	// carry only the share earned by GOOD units — the defect share stays on 1120 for the write-off
 	// phase. A receipt set with NO counted units at all (the 0231 legacy backfill of a grid edited
 	// back to NULLs) is not scrap: it transfers everything, exactly as the run did before receipts.
-	totalWIPGross := ledgerWIP.Round(2).Add(manualNow)
+	// The distributable total is what the ledger actually HOLDS, not what the cost table says now:
+	// after a clamped negative delta (costs shrank below the already-capitalised total) 1120 still
+	// carries the siblings' larger figure, and distributing only manualNow would strand the
+	// difference on 1120 past the final true-up (adversarial #5).
+	totalWIPGross := ledgerWIP.Round(2).Add(decimal.Max(manualNow, r.OtherPostedManualBase))
 	// Single-receipt facts (Phase 4 loaders, legacy-shaped tests) carry no All* aggregates — this
 	// receipt IS the run's whole receipt set then.
 	allGood, allReceived := r.AllGoodQty, r.AllReceivedQty
@@ -177,6 +181,9 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 	}
 
 	if len(lines) == 0 {
+		if len(caveats) > 0 {
+			return entity.AcctJournalEntryInsert{}, &EmptyReceiptError{Caveats: caveats}
+		}
 		return entity.AcctJournalEntryInsert{}, ErrSkipEmpty
 	}
 

@@ -1,6 +1,9 @@
 package accounting
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // Sentinel outcomes returned by the builders. They are not failures of the builder — they tell the
 // worker how to treat a fact it cannot (or should not) post. The worker matches them with
@@ -36,3 +39,16 @@ var (
 	// data or schema drift the builder refuses to guess at.
 	ErrUnknownMovementType = errors.New("accounting: unknown material movement type")
 )
+
+// EmptyReceiptError is ErrSkipEmpty (errors.Is-compatible via Unwrap) that carries the caveats the
+// empty build accumulated. An empty production-receive outcome can still be ledger-relevant news —
+// "FG already over-transferred, the clawback is not representable", "manual costs shrank below the
+// capitalised total" — and with no entry to pin a caveat on, this error is the only carrier; the
+// worker must log it, not discard it (adversarial #3).
+type EmptyReceiptError struct{ Caveats []string }
+
+func (e *EmptyReceiptError) Error() string {
+	return "accounting: nothing to post; caveats: " + strings.Join(e.Caveats, "; ")
+}
+
+func (e *EmptyReceiptError) Unwrap() error { return ErrSkipEmpty }

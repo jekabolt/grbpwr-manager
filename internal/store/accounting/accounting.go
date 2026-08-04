@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -318,7 +319,50 @@ func (s *Store) ReverseJournalEntry(ctx context.Context, entryID int, reason, ad
 		map[string]any{"new": newID, "orig": entryID}); err != nil {
 		return 0, fmt.Errorf("accounting: set reversed_by: %w", err)
 	}
+	// A reversed production-receive entry invalidates the posted_manual_base/posted_fg_base claim
+	// its receipt row carries — those sums feed Phase 5's sibling aggregates. Normally the worker
+	// re-posts the next version and re-stamps them; clearing here (same caller tx) keeps the
+	// aggregates truthful even when the re-post can never succeed (closed period → dead-letter) —
+	// otherwise the final receipt under-relieves by the stale figure forever (adversarial #4).
+	if orig.Entry.SourceType == entity.AcctSourceProductionReceive {
+		if err := s.clearReceiptPostedAmounts(ctx, orig.Entry.SourceKey); err != nil {
+			return 0, err
+		}
+	}
 	return newID, nil
+}
+
+// clearReceiptPostedAmounts NULLs the posting bookkeeping of the receipt a production-receive
+// source_key points at. Key families mirror ListUnpostedReceipts: 'receipt:<id>[:vN]' (current) and
+// the legacy '<run_id>[:vN]' (pre-0235) — a legacy key cannot name one receipt, but it can only
+// exist on a single-receipt (pre-Phase-5) run, so clearing the run's receipts is exact there.
+func (s *Store) clearReceiptPostedAmounts(ctx context.Context, sourceKey string) error {
+	parts := strings.Split(sourceKey, ":")
+	if parts[0] == "receipt" {
+		if len(parts) < 2 {
+			return nil // malformed — nothing identifiable to clear
+		}
+		id, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return nil
+		}
+		if err := storeutil.ExecNamed(ctx, s.DB, `
+			UPDATE production_run_receipt SET posted_manual_base = NULL, posted_fg_base = NULL
+			WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("accounting: clear receipt %d posted amounts: %w", id, err)
+		}
+		return nil
+	}
+	runID, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return nil // not a production-receive key shape we know
+	}
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE production_run_receipt SET posted_manual_base = NULL, posted_fg_base = NULL
+		WHERE run_id = :run_id`, map[string]any{"run_id": runID}); err != nil {
+		return fmt.Errorf("accounting: clear run %d receipt posted amounts: %w", runID, err)
+	}
+	return nil
 }
 
 // ListAccounts returns the chart of accounts ordered by code; archived accounts are included only

@@ -294,4 +294,42 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 		// remaining = max(3−0, 5) = 5 → fg = 100 × 5/5, capped by the good-share target (100).
 		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "100.00")
 	})
+
+	t.Run("shrunken manual distributes what the ledger holds, not the shrunken total", func(t *testing.T) {
+		// A sibling capitalised 300 of manual; a 100 cost row was then deleted (manualNow = 200).
+		// 1120 physically holds 700 issues + 300 manual = 1000 — the final true-up must relieve all
+		// of it, not 900 (adversarial #5: the difference would strand on 1120 past run close).
+		wip700 := []entity.AcctRunIssueFact{
+			{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("7"), UnitCostBase: nd("100.00"), CreatedAt: testOccurred},
+		}
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 65, ReceivedAt: testOccurred, Issues: wip700, IsFinal: true,
+			GoodQtyTotal: 5, AllGoodQty: 10, AllReceivedQty: 10, PlannedQtyTotal: 10,
+			Costs:                 []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("200.00")}},
+			OtherPostedManualBase: dec("300.00"),
+			OtherPostedFGBase:     dec("500.00"),
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.NoError(t, err)
+		assert.False(t, hasLine(e, Acc2010, entity.AcctSideCredit), "negative delta must not book anything")
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "500.00") // 1000 − 500, not 900 − 500
+		assert.True(t, e.HasCaveat, "shrunken manual is flagged")
+	})
+
+	t.Run("an empty outcome carries its caveats instead of discarding them", func(t *testing.T) {
+		// Over-plan defects after the whole plan was already delivered good and fully transferred:
+		// the good share shrank below what siblings posted, the clawback is not representable, and
+		// nothing else is postable — the ONLY trace is the caveat on the error (adversarial #3).
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 66, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 0, DefectQtyTotal: 5, AllGoodQty: 10, AllReceivedQty: 15, PlannedQtyTotal: 10,
+			OtherPostedFGBase: dec("100.00"),
+		}
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		require.ErrorIs(t, err, ErrSkipEmpty)
+		var emptyErr *EmptyReceiptError
+		require.ErrorAs(t, err, &emptyErr)
+		require.Len(t, emptyErr.Caveats, 1)
+		assert.Contains(t, emptyErr.Caveats[0], "non-positive finished-goods")
+	})
 }

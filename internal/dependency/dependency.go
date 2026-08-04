@@ -941,6 +941,11 @@ type (
 		// MarkReceiptPostedFromEntry marks posted with amounts recovered from an existing live
 		// entry's lines (the worker's raced path).
 		MarkReceiptPostedFromEntry(ctx context.Context, receiptID, entryID int) error
+		// MarkReceiptSkipped stamps last_skipped_at = now: the worker rebuilt the receipt and got a
+		// clean "nothing to post". The receipt stays pending (transient empties self-heal) but drops
+		// behind never-skipped receipts in the scan order and out of the stuck-pending gauge while
+		// the stamp is fresh.
+		MarkReceiptSkipped(ctx context.Context, receiptID int) error
 		// RecordReceiptPostingFailure increments posting_attempts, stores the error, and flips the
 		// receipt to dead_letter once attempts reach maxAttempts — reporting whether it did.
 		RecordReceiptPostingFailure(ctx context.Context, receiptID int, errMsg string, maxAttempts int) (deadLettered bool, err error)
