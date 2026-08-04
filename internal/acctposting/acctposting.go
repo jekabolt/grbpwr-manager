@@ -88,6 +88,11 @@ func DefaultConfig() Config {
 // or the default when unset (viper's zero) or out-of-range (a negative or ≥1 rate is a
 // misconfiguration, not a policy — 1.0 would absorb every defect silently). A deliberately
 // zero-allowance policy is expressed as a tiny positive rate (e.g. 0.0001).
+// NormalLossRate exposes the validated threshold to the OTHER consumer of the same policy: the
+// receipt command's final valuation (final-review fix — cost_price must subtract the abnormal
+// share the ledger writes off, or the loss is expensed twice: once on 5040 and once inside COGS).
+func (c *Config) NormalLossRate() decimal.Decimal { return c.normalLossRate() }
+
 func (c *Config) normalLossRate() decimal.Decimal {
 	r := c.DefectNormalLossRate
 	if r <= 0 || r >= 1 {

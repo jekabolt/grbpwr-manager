@@ -853,7 +853,6 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 		runFilter = &rid
 	}
 
-
 	// Convert source enum to string (empty string for UNSPECIFIED = no filter)
 	source := dto.StockChangeSourceToFilterString(req.Source)
 
@@ -976,17 +975,25 @@ func (s *Server) ListProductWaitlist(ctx context.Context, req *pb_admin.ListProd
 		slog.Default().ErrorContext(ctx, "can't list product waitlist", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list product waitlist")
 	}
+	// Customer identity is ORDERS-side PII: a products-only role sees the demand signal
+	// (which product/size, when) with the identity masked (final-review MEDIUM).
+	showPII := ordersReadAccess(ctx)
 	out := make([]*pb_admin.ProductWaitlistEntry, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, &pb_admin.ProductWaitlistEntry{
+		pe := &pb_admin.ProductWaitlistEntry{
 			Id:        int32(e.Id),
 			ProductId: int32(e.ProductId),
 			SizeId:    int32(e.SizeId),
-			Email:     e.Email,
-			FirstName: e.FirstName.String,
-			LastName:  e.LastName.String,
 			CreatedAt: timestamppb.New(e.CreatedAt),
-		})
+		}
+		if showPII {
+			pe.Email = e.Email
+			pe.FirstName = e.FirstName.String
+			pe.LastName = e.LastName.String
+		} else {
+			pe.Email = maskWaitlistEmail(e.Email)
+		}
+		out = append(out, pe)
 	}
 	return &pb_admin.ListProductWaitlistResponse{Entries: out, Total: int32(total)}, nil
 }

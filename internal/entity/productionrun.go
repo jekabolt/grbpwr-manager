@@ -15,6 +15,11 @@ import (
 // been received (or closed) — receiving again would double-count stock.
 var ErrProductionRunAlreadyReceived = errors.New("production run has already been received")
 
+// ErrProductionRunAuxPartial refuses partial receipts on auxiliary runs: their output is valued
+// into the material warehouse at total-cost ÷ units, and partial deliveries against front-loaded
+// costs would over-relieve WIP irreparably (aux receipts cannot be reversed).
+var ErrProductionRunAuxPartial = errors.New("an auxiliary run receives in one final receipt; partial deliveries are not supported")
+
 // ErrProductionRunReceivedImmutable is returned by DeleteProductionRun when the run has already
 // been received (or closed): its stock increment and any cost_price it seeded are already applied,
 // so deleting the run would orphan those side effects. Cancel/adjust the run instead of deleting.
@@ -345,18 +350,31 @@ func (r *ProductionRun) NetReceivedQty() int64 {
 // rounded to money scale (2). This lives on the entity so both the dto (display) and the store
 // (seeding cost_price inside the receive transaction) compute it identically.
 func (r *ProductionRun) ActualUnitCostBase() decimal.NullDecimal {
-	if r == nil {
+	total, ok := r.ActualTotalCostBase()
+	if !ok {
 		return decimal.NullDecimal{}
 	}
 	received := r.NetReceivedQty()
 	if received == 0 {
 		return decimal.NullDecimal{}
 	}
+	return decimal.NullDecimal{Decimal: total.Div(decimal.NewFromInt(received)).RoundBank(2), Valid: true}
+}
+
+// ActualTotalCostBase returns the run's TOTAL actual cost in base (manual articles + costed
+// material issues net of returns), ok=false when any component is untrustworthy (an unfolded
+// manual article, an uncosted issue, or no cost source at all) — the same trust rules
+// ActualUnitCostBase always applied. Split out so the receipt command can apply the final-receipt
+// abnormal-scrap adjustment to the TOTAL before dividing (final-review fix).
+func (r *ProductionRun) ActualTotalCostBase() (decimal.Decimal, bool) {
+	if r == nil {
+		return decimal.Decimal{}, false
+	}
 	total := decimal.Zero
 	haveManual := len(r.Costs) > 0
 	for _, c := range r.Costs {
 		if !c.AmountBase.Valid {
-			return decimal.NullDecimal{} // partial fold → not trustworthy for cost_price
+			return decimal.Decimal{}, false // partial fold → not trustworthy for cost_price
 		}
 		total = total.Add(c.AmountBase.Decimal)
 	}
@@ -366,7 +384,7 @@ func (r *ProductionRun) ActualUnitCostBase() decimal.NullDecimal {
 		case MaterialMovementIssueProduction:
 			haveStock = true
 			if !m.UnitCostBase.Valid {
-				return decimal.NullDecimal{} // an uncosted issue understates the total
+				return decimal.Decimal{}, false // an uncosted issue understates the total
 			}
 			total = total.Add(m.Quantity.Mul(m.UnitCostBase.Decimal))
 		case MaterialMovementReturnProduction:
@@ -376,7 +394,7 @@ func (r *ProductionRun) ActualUnitCostBase() decimal.NullDecimal {
 		}
 	}
 	if !haveManual && !haveStock {
-		return decimal.NullDecimal{} // no cost source at all
+		return decimal.Decimal{}, false // no cost source at all
 	}
-	return decimal.NullDecimal{Decimal: total.Div(decimal.NewFromInt(received)).RoundBank(2), Valid: true}
+	return total, true
 }

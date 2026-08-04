@@ -414,7 +414,7 @@ func (a *App) Start(ctx context.Context) error {
 		Email:     a.c.JPK.Email,
 		Phone:     a.c.JPK.Phone,
 		TaxOffice: a.c.JPK.TaxOffice,
-	})
+	}, a.c.Accounting.NormalLossRate())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create admin server",
 			slog.String("err", err.Error()),

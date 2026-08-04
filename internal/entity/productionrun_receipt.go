@@ -137,6 +137,10 @@ type PostProductionRunReceiptParams struct {
 	// stored totals plus themselves), halving the frozen unit cost. Command-API receipts always
 	// carry deltas and never set this.
 	LegacyTotals bool
+	// NormalLossRate is the same expected-waste threshold the posting rule P1 uses (config
+	// accounting.defect_normal_loss_rate): the FINAL receipt's valuation subtracts the abnormal
+	// scrap share the ledger writes off, keeping cost_price and the FG balance on one truth.
+	NormalLossRate decimal.Decimal
 }
 
 // PostProductionRunReceiptResult is what the receipt command returns — and what a replayed retry

@@ -281,8 +281,8 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 			return fmt.Errorf("failed to mint reversal receipt key: %w", err)
 		}
 		note := p.Reason
-		if len(note) > 512 {
-			note = note[:512]
+		if r := []rune(note); len(r) > 512 {
+			note = string(r[:512]) // rune-safe: a byte cut can split UTF-8 and hard-fail the insert
 		}
 		var adminUser sql.NullString
 		if p.Username != "" {

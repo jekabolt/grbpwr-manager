@@ -200,6 +200,31 @@ func productsWriteAccess(ctx context.Context) bool {
 	return ok && lvl.Covers(entity.AccessWrite)
 }
 
+// ordersReadAccess reports whether the caller may see orders-side data (customer identity on the
+// waitlist rides with orders, not products). Mirrors productsWriteAccess.
+func ordersReadAccess(ctx context.Context) bool {
+	az, ok := authsrv.GetAdminAuthz(ctx)
+	if !ok {
+		return false
+	}
+	if az.FullAccess() {
+		return true
+	}
+	lvl, ok := az.Perms[rbac.SectionOrders]
+	return ok && lvl.Covers(entity.AccessRead)
+}
+
+// maskWaitlistEmail keeps just enough of the address to distinguish repeat signals (first rune +
+// domain) while withholding the identity itself.
+func maskWaitlistEmail(email string) string {
+	at := strings.IndexByte(email, '@')
+	if at <= 0 {
+		return "***"
+	}
+	r := []rune(email[:at])
+	return string(r[0]) + "***" + email[at:]
+}
+
 // PostProductionRunReceipt is the atomic receiving command (Phase 4, receipt v1). See the proto
 // contract for semantics; this handler validates shape + permissions + tech-card linkage and hands
 // the store one transaction to execute.
@@ -447,6 +472,7 @@ func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRu
 		BaseCurrency:        cache.GetBaseCurrency(),
 		Final:               final,
 		LegacyTotals:        legacyTotals,
+		NormalLossRate:      s.defectNormalLossRate,
 	}
 	// NF-07: an auxiliary card's output is received into the material warehouse, not product stock.
 	if card.Purpose == entity.TechCardPurposeAuxiliary {
@@ -478,6 +504,7 @@ func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRu
 			return nil, status.Error(codes.FailedPrecondition, "production run has already been received")
 		case errors.Is(err, entity.ErrProductionRunCancelledReceive),
 			errors.Is(err, entity.ErrProductionRunLineProductMissing),
+			errors.Is(err, entity.ErrProductionRunAuxPartial),
 			errors.Is(err, entity.ErrProductionRunNothingReceived):
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		case errors.Is(err, entity.ErrProductionRunConflict),

@@ -77,6 +77,14 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		if p.ExpectedLockVersion > 0 && cur.LockVersion != p.ExpectedLockVersion {
 			return entity.ErrProductionRunConflict
 		}
+		// An AUX run receives in ONE final receipt (final-review BLOCKER): its output is valued
+		// into the material warehouse at unit cost = run total ÷ received units, and partial
+		// deliveries against a front-loaded cost would over-relieve WIP on every early receipt
+		// (Σ thisGood × total/cumulative > total) — irreparably, since aux receipts cannot be
+		// reversed. Mirrors ReverseProductionRunReceipt's aux refusal.
+		if p.Aux && !p.Final {
+			return entity.ErrProductionRunAuxPartial
+		}
 
 		// Resolve the submitted counts against the FRESH plan lines under the lock — by line_key,
 		// never by (product, size). The plan line's product/size are re-validated here against the
@@ -240,7 +248,81 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			ProductionRunInsert: entity.ProductionRunInsert{Lines: lines, Costs: costs},
 			MaterialMovements:   movements,
 		}
-		unitCost := runShape.ActualUnitCostBase()
+		// Valuation happens ONLY when the series closes (final-review BLOCKER): a partial receipt's
+		// "run total ÷ units so far" is inflated whenever costs are front-loaded (materials are
+		// issued before the first delivery), and that figure fed cost_price → order_item COGS. A
+		// partial receipt therefore freezes NO unit cost and seeds nothing; the FINAL receipt values
+		// the whole series at once — minus the abnormal-scrap share the ledger writes off to 5040
+		// (final-review HIGH: otherwise the loss is expensed twice, once on 5040 and once inside
+		// COGS, and 1130 drains negative).
+		var unitCost decimal.NullDecimal
+		if p.Final {
+			unitCost = runShape.ActualUnitCostBase()
+			if unitCost.Valid {
+				goodUnits := runShape.NetReceivedQty()
+				allReceived := 0
+				for i := range lines {
+					allReceived += int(lines[i].ReceivedQty.Int64) + int(lines[i].DefectQty.Int64)
+				}
+				priorScrap, err := storeutil.QueryCountNamed(ctx, db, `
+					SELECT COALESCE(SUM(rl.defect_qty), 0) FROM production_run_receipt pr
+					JOIN production_run_receipt_line rl ON rl.receipt_id = pr.id
+					WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL
+					  AND rl.defect_disposition = 'scrap'`, map[string]any{"id": p.RunID})
+				if err != nil {
+					return fmt.Errorf("failed to sum prior scrap for valuation: %w", err)
+				}
+				allScrap := priorScrap
+				for _, c := range counted {
+					if c.in.DefectQty > 0 && c.in.DefectDisposition != entity.DefectDispositionSeconds {
+						allScrap += c.in.DefectQty
+					}
+				}
+				// Aux runs post NO write-off in the ledger (their P1 has no FG side at all), so
+				// their valuation must NOT subtract one — M2 relieves the FULL run cost into the
+				// output material, defects included, exactly as before.
+				rate := p.NormalLossRate
+				if rate.LessThanOrEqual(decimal.Zero) || rate.GreaterThanOrEqual(decimal.NewFromInt(1)) {
+					rate = decimal.NewFromFloat(0.05) // mirror acctposting's default clamp
+				}
+				if total, ok := runShape.ActualTotalCostBase(); ok && !p.Aux && goodUnits > 0 && allReceived > 0 && allScrap > 0 {
+					// Mirror of BuildProductionReceiveEntry's split: allowance = floor(received ×
+					// rate); the abnormal excess share leaves the run's value via the write-off —
+					// CAPPED at what is still on WIP after the partials' FG relief, exactly as the
+					// builder caps writeOff at `remaining` (fix-verify F2: an over-delivered run's
+					// partials may have relieved everything; the ledger then writes off nothing and
+					// the valuation must not subtract either).
+					fgRow, err := storeutil.QueryNamedOne[struct {
+						V decimal.Decimal `db:"v"`
+					}](ctx, db, `
+						SELECT COALESCE(SUM(posted_fg_base), 0) AS v FROM production_run_receipt
+						WHERE run_id = :id`, map[string]any{"id": p.RunID})
+					if err != nil {
+						return fmt.Errorf("failed to sum posted fg for valuation cap: %w", err)
+					}
+					allowance := decimal.NewFromInt(int64(allReceived)).Mul(rate).Floor()
+					abnormal := decimal.NewFromInt(int64(allScrap)).Sub(allowance)
+					if abnormal.IsPositive() {
+						writeOffShare := total.Mul(abnormal).Div(decimal.NewFromInt(int64(allReceived)))
+						remaining := total.Sub(fgRow.V)
+						if remaining.IsNegative() {
+							remaining = decimal.Zero
+						}
+						if writeOffShare.GreaterThan(remaining) {
+							writeOffShare = remaining
+						}
+						adjusted := total.Sub(writeOffShare)
+						if adjusted.IsNegative() {
+							adjusted = decimal.Zero
+						}
+						unitCost = decimal.NullDecimal{
+							Decimal: adjusted.Div(decimal.NewFromInt(int64(goodUnits))).RoundBank(2),
+							Valid:   true,
+						}
+					}
+				}
+			}
+		}
 
 		now := s.Now()
 		var baseCurrency sql.NullString
@@ -378,7 +460,27 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProduct[pid], p.RunID, p.Username, entity.VariantGradeA); err != nil {
 					return err
 				}
-				if p.UpdateCostPrice && unitCost.Valid {
+			}
+			// cost_price seeds on the FINAL for EVERY product the whole SERIES delivered (the
+			// cumulative rollups), not just this receipt's lines — a short-close final counts
+			// nothing itself, and a multi-product run may have delivered product A entirely in an
+			// earlier partial (fix-verify F1: seeding only `counted` left those products uncosted,
+			// so their sales posted NO COGS at all).
+			if p.Final && p.UpdateCostPrice && unitCost.Valid {
+				seedIDs := make([]int, 0, len(lines))
+				seenPid := make(map[int]bool)
+				for i := range lines {
+					if !lines[i].ProductId.Valid || lines[i].ReceivedQty.Int64 <= 0 {
+						continue
+					}
+					pid := int(lines[i].ProductId.Int32)
+					if !seenPid[pid] {
+						seenPid[pid] = true
+						seedIDs = append(seedIDs, pid)
+					}
+				}
+				sort.Ints(seedIDs)
+				for _, pid := range seedIDs {
 					written, err := rep.Products().SetProductCostPriceFromProductionRun(ctx, pid, p.RunID, unitCost.Decimal)
 					if err != nil {
 						return err
@@ -410,15 +512,20 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		// moves the run to partially_received and leaves received_at NULL — the run is not received
 		// yet, and downstream consumers of received_at (accounting occurred_at is the RECEIPT's own
 		// received_at, not the run's) must not see a half-done run as done.
+		// lock_version bumps on BOTH branches (final-review HIGH): a run-edit form opened before
+		// this receipt must CONFLICT, not win — a stale save could flip partially_received back to
+		// in_progress and re-arm the legacy shim against the cumulative rollups (double booking).
 		if p.Final {
 			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE production_run SET status = :status, received_at = :received_at WHERE id = :id`,
+				UPDATE production_run SET status = :status, received_at = :received_at,
+					lock_version = lock_version + 1 WHERE id = :id`,
 				map[string]any{"id": p.RunID, "status": string(entity.ProductionRunReceived), "received_at": now}); err != nil {
 				return err
 			}
 		} else {
 			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE production_run SET status = :status WHERE id = :id`,
+				UPDATE production_run SET status = :status,
+					lock_version = lock_version + 1 WHERE id = :id`,
 				map[string]any{"id": p.RunID, "status": string(entity.ProductionRunPartiallyReceived)}); err != nil {
 				return err
 			}
@@ -459,7 +566,8 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			entity.ErrProductionRunConflict, entity.ErrProductionRunReceiptLineUnknown,
 			entity.ErrProductionRunConcurrentModification, entity.ErrProductionRunLineProductMissing,
 			entity.ErrProductionRunLineProductUnlinked, entity.ErrProductionRunLineSizeUnlinked,
-			entity.ErrProductionRunNothingReceived, entity.ErrIdempotencyConflict:
+			entity.ErrProductionRunNothingReceived, entity.ErrIdempotencyConflict,
+			entity.ErrProductionRunAuxPartial:
 			return nil, err
 		}
 		return nil, fmt.Errorf("can't post production run receipt: %w", err)

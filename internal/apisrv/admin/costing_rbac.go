@@ -183,6 +183,29 @@ func stripProductionRunCosting(r *pb_common.ProductionRun) {
 		rc.UnitCostBase = nil
 		rc.BaseCurrency = ""
 	}
+	// Recon checks (Phase 8): the units check is quantities and stays; the money checks carry the
+	// run's capitalised totals in expected/actual — confidential (final-review HIGH: they leaked
+	// the full actual cost to production:read).
+	if len(r.Recon) > 0 {
+		kept := r.Recon[:0]
+		for _, c := range r.Recon {
+			if c == nil {
+				continue
+			}
+			if c.Key == "units_receipts_vs_stock_journal" {
+				kept = append(kept, c)
+			}
+		}
+		r.Recon = kept
+	}
+	// Event payloads (Phase 8): they can carry money (compensated_fg_base, absorbed cost
+	// estimates). The event stream itself (who/what/when/reason) stays; the JSON payload goes.
+	for _, ev := range r.Events {
+		if ev == nil {
+			continue
+		}
+		ev.Payload = ""
+	}
 }
 
 // stripProductionRunActualsCosting clears the money-bearing figures of a run's computed plan/fact

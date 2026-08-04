@@ -806,7 +806,8 @@ func checkRunOpen(ctx context.Context, db dependency.DB, runID int) error {
 		}
 		return fmt.Errorf("read production run %d: %w", runID, err)
 	}
-	if cur.Status != string(entity.ProductionRunPlanned) && cur.Status != string(entity.ProductionRunInProgress) {
+	if cur.Status != string(entity.ProductionRunPlanned) && cur.Status != string(entity.ProductionRunInProgress) &&
+		cur.Status != string(entity.ProductionRunPartiallyReceived) {
 		return fmt.Errorf("%w: production run %d is %s (not open)", entity.ErrMaterialIssueTargetInvalid, runID, cur.Status)
 	}
 	return nil

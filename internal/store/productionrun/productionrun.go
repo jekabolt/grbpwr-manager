@@ -494,7 +494,7 @@ func (s *Store) runReconciliation(ctx context.Context, run *entity.ProductionRun
 		                                         FROM production_run_receipt r2 WHERE r2.run_id = :id))), 0) AS journal_net,
 		  COALESCE((SELECT COUNT(*) FROM production_run_receipt pr
 		            WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL
-		              AND pr.posting_status = 'posted'
+		              AND pr.posting_status IN ('posted', 'dead_letter')
 		              AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                              WHERE e.source_type = 'production_receive' AND e.reversed_by IS NULL
 		                                AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci

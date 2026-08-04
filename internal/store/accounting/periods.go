@@ -121,9 +121,14 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 	// The ':' is CHAR(58): a literal colon inside a quoted SQL string breaks sqlx's named-parameter
 	// scan for the WHOLE query ("could not find name v in map") — which is exactly how the previous
 	// version of this predicate (':v%') shipped broken and made every ClosePeriod error out.
+	// A receipt the worker RECENTLY rebuilt and cleanly skipped (fresh last_skipped_at) has
+	// NOTHING to post — it must not block the close forever (final-review: beta's structurally
+	// empty receipt froze 2026-08). A STALE stamp still blocks: the worker stopped re-confirming
+	// emptiness, so the money may simply be unposted.
 	unpostedReceipts, err := storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM production_run_receipt pr
 		WHERE pr.reversal_of IS NULL AND pr.reversed_by IS NULL
+		  AND (pr.last_skipped_at IS NULL OR pr.last_skipped_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR))
 		  AND pr.received_at >= :from AND pr.received_at < :to
 		  AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                  WHERE e.source_type = 'production_receive'

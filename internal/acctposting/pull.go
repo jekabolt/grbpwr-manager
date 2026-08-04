@@ -218,6 +218,12 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 				slog.Default().DebugContext(ctx, "acctposting: production receipt has nothing to post",
 					slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID))
 			}
+			if emptyErr != nil {
+				// A CAVEATED empty is ledger news ("FG over-transferred", "manual shrank") — it
+				// must keep blocking ClosePeriod, so it gets NO skip stamp (fix-verify F3); the
+				// WARN above is its trace and the stale-pending gauge its alarm.
+				return nil
+			}
 			// Best-effort: a failed stamp only costs this receipt its scan-order demotion until the
 			// next tick's skip — it must never burn a posting attempt toward dead-letter.
 			if err := acc.MarkReceiptSkipped(ctx, ref.ReceiptID); err != nil {

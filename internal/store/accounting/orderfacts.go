@@ -316,7 +316,7 @@ func (s *Store) LockReceiptForPosting(ctx context.Context, receiptID int) (bool,
 func (s *Store) MarkReceiptPosted(ctx context.Context, receiptID int, manualBase, fgBase decimal.Decimal) error {
 	if err := storeutil.ExecNamed(ctx, s.DB, `
 		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL,
-			last_skipped_at = NULL,
+			last_skipped_at = NULL, posting_attempts = 0,
 			posted_manual_base = :manual_base, posted_fg_base = :fg_base
 		WHERE id = :id AND reversed_by IS NULL AND reversal_of IS NULL`, map[string]any{
 		"id": receiptID, "manual_base": manualBase, "fg_base": fgBase,
@@ -347,7 +347,7 @@ func (s *Store) MarkReceiptSkipped(ctx context.Context, receiptID int) error {
 func (s *Store) MarkReceiptPostedFromEntry(ctx context.Context, receiptID, entryID int) error {
 	if err := storeutil.ExecNamed(ctx, s.DB, `
 		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL,
-			last_skipped_at = NULL,
+			last_skipped_at = NULL, posting_attempts = 0,
 			posted_manual_base = COALESCE((SELECT SUM(l.amount) FROM acct_journal_line l
 			                               JOIN acct_account a ON a.id = l.account_id
 			                               WHERE l.entry_id = :entry_id AND a.code = :manual_code AND l.side = 'credit'), 0),
@@ -405,7 +405,7 @@ func (s *Store) RecordReceiptPostingFailure(ctx context.Context, receiptID int, 
 			posting_attempts = posting_attempts + 1,
 			last_posting_error = :msg,
 			posting_status = IF(posting_attempts >= :max_attempts, 'dead_letter', posting_status)
-		WHERE id = :id AND posting_status = 'pending'`,
+		WHERE id = :id AND posting_status IN ('pending', 'posted')`,
 		map[string]any{"id": receiptID, "msg": string(msg), "max_attempts": maxAttempts}); err != nil {
 		return false, fmt.Errorf("accounting: record receipt %d posting failure: %w", receiptID, err)
 	}

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"github.com/shopspring/decimal"
 	"log/slog"
 	"sync"
 
@@ -62,7 +63,10 @@ type Server struct {
 	// notification, which runs uncancelled — so shutdown can wait for them (bounded).
 	revalCtx    context.Context
 	revalCancel context.CancelFunc
-	revalWG     sync.WaitGroup
+	// defectNormalLossRate is the P1 expected-waste threshold (config accounting), used by the
+	// receipt command's final valuation so cost_price mirrors the ledger's abnormal write-off.
+	defectNormalLossRate decimal.Decimal
+	revalWG              sync.WaitGroup
 	// embedAllowedHosts restricts the hosts allowed as hero EMBED iframe sources.
 	// Empty means any https host is accepted (scheme/format validation still applies).
 	embedAllowedHosts []string
@@ -92,6 +96,7 @@ func New(
 	campaignTestRecipients string,
 	aiOps *openrouter.Client,
 	jpkTaxpayer jpk.Taxpayer,
+	defectNormalLossRate decimal.Decimal,
 ) (*Server, error) {
 	renderer, err := campaignrender.New()
 	if err != nil {
@@ -107,20 +112,21 @@ func New(
 		campaignTestRecipientAllowlist: parseCampaignTestRecipientAllowlist(
 			campaignTestRecipients,
 		),
-		stripePayment:     stripePayment,
-		stripePaymentTest: stripePaymentTest,
-		re:                re,
-		reservationMgr:    reservationMgr,
-		ga4mp:             ga4mpClient,
-		pwhash:            ph,
-		labelProvider:     labelProvider,
-		shipFrom:          shipFrom,
-		revalidateSem:     make(chan struct{}, maxConcurrentRevalidations),
-		revalCtx:          revalCtx,
-		revalCancel:       revalCancel,
-		embedAllowedHosts: parseEmbedAllowedHosts(embedAllowedHosts),
-		aiOps:             aiOps,
-		jpkTaxpayer:       jpkTaxpayer,
+		stripePayment:        stripePayment,
+		stripePaymentTest:    stripePaymentTest,
+		re:                   re,
+		reservationMgr:       reservationMgr,
+		ga4mp:                ga4mpClient,
+		pwhash:               ph,
+		labelProvider:        labelProvider,
+		shipFrom:             shipFrom,
+		revalidateSem:        make(chan struct{}, maxConcurrentRevalidations),
+		revalCtx:             revalCtx,
+		revalCancel:          revalCancel,
+		defectNormalLossRate: defectNormalLossRate,
+		embedAllowedHosts:    parseEmbedAllowedHosts(embedAllowedHosts),
+		aiOps:                aiOps,
+		jpkTaxpayer:          jpkTaxpayer,
 	}, nil
 }
 

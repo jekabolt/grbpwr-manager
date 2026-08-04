@@ -614,15 +614,18 @@ func TestProductionReceiptGoodUnitsBookStockAndCostPrice(t *testing.T) {
 		prodID, "production_run:"+strconv.Itoa(runID)).Scan(&journaled))
 	require.Equal(t, 1, journaled, "stock increment journaled")
 
-	// Valuation frozen on the receipt: 90 EUR manual costs over 6 good units = 15.00.
+	// Valuation frozen on the receipt mirrors what the ledger capitalises into FG (final-review
+	// fix): 90 EUR over 9 received (6 good, 3 scrap), allowance floor(9×0.05)=0 → the abnormal
+	// share 90×3/9=30 is written off, 60 is capitalised → unit = 60/6 = 10.00. The old 90/6=15
+	// figure double-expensed the loss (once on 5040, once inside COGS).
 	got, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Len(t, got.Receipts, 1)
 	rc := got.Receipts[0]
 	require.True(t, rc.HasBase)
 	require.True(t, rc.UnitCostBase.Valid)
-	require.True(t, rc.UnitCostBase.Decimal.Equal(decimal.NewFromInt(15)),
-		"unit_cost_base = 90/6, got %s", rc.UnitCostBase.Decimal)
+	require.True(t, rc.UnitCostBase.Decimal.Equal(decimal.NewFromInt(10)),
+		"unit_cost_base = (90-30)/6, got %s", rc.UnitCostBase.Decimal)
 	require.Equal(t, "EUR", rc.BaseCurrency.String)
 
 	// cost_price carries the same figure with production_run provenance.
@@ -632,7 +635,7 @@ func TestProductionReceiptGoodUnitsBookStockAndCostPrice(t *testing.T) {
 		"SELECT cost_price, cost_price_production_run_id FROM product WHERE id = ?", prodID).
 		Scan(&costPrice, &srcRun))
 	require.True(t, costPrice.Valid)
-	require.True(t, costPrice.Decimal.Equal(decimal.NewFromInt(15)), "cost_price = frozen actual, got %s", costPrice.Decimal)
+	require.True(t, costPrice.Decimal.Equal(decimal.NewFromInt(10)), "cost_price = frozen actual net of write-off, got %s", costPrice.Decimal)
 	require.True(t, srcRun.Valid)
 	require.EqualValues(t, runID, srcRun.Int32)
 }
