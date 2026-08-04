@@ -179,7 +179,7 @@ func (s *Store) GetProductSizeStock(ctx context.Context, productId int, sizeId i
 // never implicitly creates a variant (R2/p012).
 func (s *Store) GetVariantByID(ctx context.Context, variantID int) (entity.Variant, error) {
 	return storeutil.QueryNamedOne[entity.Variant](ctx, s.DB,
-		`SELECT id, quantity, product_id, size_id, sku, status FROM product_size WHERE id = :id`,
+		`SELECT id, quantity, product_id, size_id, sku, status FROM product_size WHERE id = :id AND grade = 'A'`,
 		map[string]any{"id": variantID})
 }
 
@@ -188,7 +188,7 @@ func (s *Store) GetVariantByID(ctx context.Context, variantID int) (entity.Varia
 // variant_sku is UNIQUE, so this resolves to exactly one variant.
 func (s *Store) GetVariantBySKU(ctx context.Context, variantSKU string) (entity.Variant, error) {
 	return storeutil.QueryNamedOne[entity.Variant](ctx, s.DB,
-		`SELECT id, quantity, product_id, size_id, sku, status FROM product_size WHERE sku = :sku`,
+		`SELECT id, quantity, product_id, size_id, sku, status FROM product_size WHERE sku = :sku AND grade = 'A'`,
 		map[string]any{"sku": variantSKU})
 }
 

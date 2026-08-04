@@ -93,7 +93,7 @@ type resolvedVariantRow struct {
 // resolveVariantAddressing fills each line's canonical variant fields (VariantID, ProductId, SizeId,
 // VariantSKU) from whichever addressing the caller supplied: the public variant_sku (storefront submit),
 // the internal variant_id (admin custom order), or an already-resolved (product_id, size_id) pair (order
-// re-validation loaded from the DB). (product_id, size_id) is UNIQUE on product_size, so the pair path is
+// re-validation loaded from the DB). (product_id, size_id, grade) is UNIQUE on product_size and this path pins grade A, so the pair path is
 // unambiguous. It is idempotent (re-resolving a resolved line reproduces the same fields). Lines that map
 // to no live product_size are left with ProductId==0 so the availability check downstream drops them as
 // an out-of-stock adjustment, identified by the retained VariantSKU. Read-only: variants are archived,

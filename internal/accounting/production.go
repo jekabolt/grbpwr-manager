@@ -148,9 +148,17 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 		if remaining.IsPositive() {
 			if allGood == 0 && allReceived > 0 && r.ReceiptID > 0 {
 				// A run that produced NO good units has nothing to absorb the loss into — the
-				// whole remainder is the loss event, normal allowance or not.
+				// whole remainder is the loss event, normal allowance or not. That includes a
+				// seconds-only run: its physical output exists as B stock, but B carries ZERO cost
+				// in v1 (unpriced, unsellable), so its production cost is expensed, not
+				// capitalised into inventory nobody valued (adversarial #4 — distinct caption so
+				// the operator sees which case fired).
 				writeOff = remaining
-				caveats = append(caveats, "all-scrap run closed: entire remaining WIP written off")
+				if r.AllScrapQty == 0 {
+					caveats = append(caveats, "seconds-only run closed: remaining WIP written off (B stock carries zero cost v1)")
+				} else {
+					caveats = append(caveats, "all-scrap run closed: entire remaining WIP written off")
+				}
 			} else {
 				allowance := decimal.NewFromInt(int64(allReceived)).Mul(normalLossRate).Floor()
 				abnormal := decimal.NewFromInt(int64(r.AllScrapQty)).Sub(allowance)
@@ -159,11 +167,18 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 						Mul(abnormal).
 						Div(decimal.NewFromInt(int64(allReceived))).Round(2)
 					if writeOff.GreaterThan(remaining) {
+						// The pro-rata figure exceeds what is still on 1120 (partials already
+						// relieved most of it) — the excess stays capitalised in the good units,
+						// and the caveat must say what was ACTUALLY expensed (adversarial #7).
+						caveats = append(caveats, fmt.Sprintf(
+							"abnormal defect loss: %s unit(s) beyond the %s-unit allowance; write-off capped at the remaining WIP %s (the excess stays capitalised)",
+							abnormal.String(), allowance.String(), remaining.String()))
 						writeOff = remaining
+					} else {
+						caveats = append(caveats, fmt.Sprintf(
+							"abnormal defect loss: %s unit(s) beyond the %s-unit normal allowance written off",
+							abnormal.String(), allowance.String()))
 					}
-					caveats = append(caveats, fmt.Sprintf(
-						"abnormal defect loss: %s unit(s) beyond the %s-unit normal allowance written off",
-						abnormal.String(), allowance.String()))
 				}
 				// True-up: the good units carry everything that is not written off — their own
 				// share, the normal-loss share and the seconds share (B stock is zero-cost v1).

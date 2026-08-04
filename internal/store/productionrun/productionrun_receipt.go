@@ -135,10 +135,14 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 					return entity.ErrProductionRunConcurrentModification
 				}
 			} else {
-				// Good units are posted to sellable stock, so they need a product linked to the run's
-				// card and a size from its grid. A defect-only count is a recorded fact, not stock —
-				// it may land on a still-unpublished (product-less) planning line.
-				if in.GoodQty > 0 {
+				// Anything that BOOKS stock needs a product linked to the run's card and a size from
+				// its grid: good units (A stock) and seconds-dispositioned defects (B stock) alike.
+				// A scrap-defect-only count is a recorded fact, not stock — it may land on a
+				// still-unpublished (product-less) planning line (adversarial #3: without this,
+				// seconds slipped past the link/size gates good units go through).
+				booksStock := in.GoodQty > 0 ||
+					(in.DefectQty > 0 && in.DefectDisposition == entity.DefectDispositionSeconds)
+				if booksStock {
 					if !ln.ProductId.Valid {
 						return entity.ErrProductionRunLineProductMissing
 					}
@@ -149,7 +153,7 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 						return entity.ErrProductionRunLineSizeUnlinked
 					}
 					if ln.SizeId == 0 {
-						// A garment line without a size cannot be booked as product_size stock.
+						// A line without a size cannot be booked as product_size stock.
 						return entity.ErrProductionRunLineSizeUnlinked
 					}
 				}
@@ -362,19 +366,9 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 					perProductSeconds[pid][c.line.SizeId] += c.in.DefectQty
 				}
 			}
-			// Seconds land in the B-grade variant of the SAME (product, size) — journalled exactly
-			// like good units, at zero carried cost v1 (the run's whole cost stays with the A units;
-			// the B variant is not sellable until its discount pricing is decided).
-			secondsIDs := make([]int, 0, len(perProductSeconds))
-			for pid := range perProductSeconds {
-				secondsIDs = append(secondsIDs, pid)
-			}
-			sort.Ints(secondsIDs)
-			for _, pid := range secondsIDs {
-				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProductSeconds[pid], p.RunID, p.Username, entity.VariantGradeB); err != nil {
-					return err
-				}
-			}
+			// A stock first, then B — the SAME order the reversal un-books in (A rows, then B rows):
+			// two concurrent commands touching one product from different runs would otherwise take
+			// (B,A) vs (A,B) and deadlock (adversarial #6; the Tx retry would mask it as latency).
 			productIDs := make([]int, 0, len(perProduct))
 			for pid := range perProduct {
 				productIDs = append(productIDs, pid)
@@ -395,6 +389,19 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 						slog.Default().InfoContext(ctx, "production receipt did not claim cost_price (manual source, missing product, or unchanged)",
 							slog.Int("run_id", p.RunID), slog.Int("product_id", pid))
 					}
+				}
+			}
+			// Seconds land in the B-grade variant of the SAME (product, size) — journalled exactly
+			// like good units, at zero carried cost v1 (the run's whole cost stays with the A units;
+			// the B variant is not sellable until its discount pricing is decided).
+			secondsIDs := make([]int, 0, len(perProductSeconds))
+			for pid := range perProductSeconds {
+				secondsIDs = append(secondsIDs, pid)
+			}
+			sort.Ints(secondsIDs)
+			for _, pid := range secondsIDs {
+				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProductSeconds[pid], p.RunID, p.Username, entity.VariantGradeB); err != nil {
+					return err
 				}
 			}
 		}

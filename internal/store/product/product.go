@@ -496,7 +496,7 @@ func reconcileVariants(ctx context.Context, db dependency.DB, sizeMeasurements [
 	for _, sm := range sizeMeasurements {
 		if have[sm.ProductSize.SizeId] {
 			if err := storeutil.ExecNamed(ctx, db,
-				`UPDATE product_size SET quantity = :quantity WHERE product_id = :productId AND size_id = :sizeId`,
+				`UPDATE product_size SET quantity = :quantity WHERE product_id = :productId AND size_id = :sizeId AND grade = 'A'`,
 				map[string]any{"productId": productID, "sizeId": sm.ProductSize.SizeId, "quantity": sm.ProductSize.QuantityDecimal()}); err != nil {
 				return fmt.Errorf("can't update variant (size %d): %w", sm.ProductSize.SizeId, err)
 			}

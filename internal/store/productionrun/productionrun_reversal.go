@@ -207,7 +207,9 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 		if entry != nil {
 			// Plan 05 v2 semantics: the compensation posts at Now() into the CURRENT open period,
 			// referencing the original via source_key — the original's (possibly closed) period is
-			// untouched, both accounts are balance-sheet, so no closed-month figure moves. Today's
+			// untouched. The FG leg moves between balance-sheet accounts; the write-off recovery
+			// (Cr 5040) DOES move P&L across months when the original expensed in a closed one —
+			// accepted v1 behaviour (a standard current-period adjustment), noted, not hidden. Today's
 			// period being closed is the only refusal, surfaced by CreateJournalEntry below —
 			// gating on the ORIGINAL's period would make every receipt permanently un-reversible
 			// the day its month closes (adversarial #4).

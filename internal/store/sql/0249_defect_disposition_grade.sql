@@ -76,6 +76,24 @@ PREPARE s FROM @sql;
 EXECUTE s;
 DEALLOCATE PREPARE s;
 
+-- FAIL CLOSED: if any 2-column UNIQUE(product_id, size_id) survived (a shape this locator did not
+-- anticipate), the B-grade upsert's ON DUPLICATE KEY would silently collide with the A row and
+-- overwrite its quantity — halt the migration instead of shipping that time bomb.
+SET @leftover := (SELECT COUNT(*) FROM (
+    SELECT INDEX_NAME FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_size' AND NON_UNIQUE = 0
+      AND INDEX_NAME <> 'PRIMARY' AND INDEX_NAME <> 'uq_product_size_variant'
+      AND INDEX_NAME <> 'uniq_product_size_sku'
+    GROUP BY INDEX_NAME
+    HAVING COUNT(*) = 2
+       AND SUM(SEQ_IN_INDEX = 1 AND COLUMN_NAME = 'product_id') = 1
+       AND SUM(SEQ_IN_INDEX = 2 AND COLUMN_NAME = 'size_id') = 1) leftover);
+SET @sql := IF(@leftover = 0, 'SELECT 1',
+    'SIGNAL SQLSTATE ''45000'' SET MESSAGE_TEXT = ''0249 post-condition failed, a 2-column unique index on product_size survived the variant-key rebuild''');
+PREPARE s FROM @sql;
+EXECUTE s;
+DEALLOCATE PREPARE s;
+
 -- 3. product_stock_change_history.grade — which grade row a journalled movement touched. The A/B
 --    stocks are separate quantities, so quantity_before/after are per-grade facts; without the
 --    marker a B movement would corrupt the (product, size) journal stream's continuity.

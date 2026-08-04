@@ -429,7 +429,7 @@ func mintMissingVariantSKUs(ctx context.Context, db dependency.DB, productID int
 			return fmt.Errorf("mint frozen variant sku (product %d size %d): %w", productID, fact.SizeID, err)
 		}
 		if err := storeutil.ExecNamed(ctx, db,
-			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
+			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid AND grade = 'A'`,
 			map[string]any{"sku": variant, "pid": productID, "sid": fact.SizeID}); err != nil {
 			return fmt.Errorf("set frozen variant sku (size %d): %w", fact.SizeID, err)
 		}
@@ -483,7 +483,7 @@ func ensureVariantSKU(ctx context.Context, db dependency.DB, productID, sizeID i
 		return fmt.Errorf("mint variant sku (product %d size %d): %w", productID, sizeID, err)
 	}
 	if err := storeutil.ExecNamed(ctx, db,
-		`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
+		`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid AND grade = 'A'`,
 		map[string]any{"sku": variant, "pid": productID, "sid": sizeID}); err != nil {
 		return fmt.Errorf("set variant sku (product %d size %d): %w", productID, sizeID, err)
 	}

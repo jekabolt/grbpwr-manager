@@ -64,7 +64,11 @@ type ProductionRunReversalShortfallError struct {
 func (e *ProductionRunReversalShortfallError) Error() string {
 	parts := make([]string, 0, len(e.Items))
 	for _, it := range e.Items {
-		parts = append(parts, fmt.Sprintf("product %d size %d needs %d, on hand %d", it.ProductID, it.SizeID, it.Requested, it.OnHand))
+		grade := ""
+		if it.Grade != "" && it.Grade != VariantGradeA {
+			grade = " grade " + it.Grade
+		}
+		parts = append(parts, fmt.Sprintf("product %d size %d%s needs %d, on hand %d", it.ProductID, it.SizeID, grade, it.Requested, it.OnHand))
 	}
 	return "insufficient stock to reverse the receipt (units were sold or moved); " + strings.Join(parts, "; ")
 }
