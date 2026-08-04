@@ -80,6 +80,10 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 	if err != nil {
 		return entity.MaterialReceiptInsert{}, err
 	}
+	expectedAt, err := parseNullDate(req.GetExpectedAt())
+	if err != nil {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf("expected_at: %w", err)
+	}
 	// Soft double-VAT guard (H-5): unit_cost is NET (VAT-exclusive), so the recoverable input VAT cannot
 	// exceed the net line cost times the highest plausible rate. A larger value almost always means
 	// unit_cost was entered GROSS — which double-counts the VAT (inflated inventory/COGS AND a 2080
@@ -100,6 +104,7 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		Lot:            nullStringFromPb(req.GetLot()),
 		SupplierDoc:    nullStringFromPb(req.GetSupplierDoc()),
 		SupplierId:     sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
+		ExpectedAt:     expectedAt,
 		OccurredAt:     occurredAt,
 		Comment:        nullStringFromPb(req.GetComment()),
 		InputVatAmount: inputVatAmount,
@@ -299,6 +304,9 @@ func ConvertEntityMaterialMovementToPb(m entity.MaterialMovement) *pb_common.Mat
 	}
 	if m.OccurredAt.Valid {
 		out.OccurredAt = timestamppb.New(m.OccurredAt.Time)
+	}
+	if m.ExpectedAt.Valid {
+		out.ExpectedAt = timestamppb.New(m.ExpectedAt.Time)
 	}
 	return out
 }

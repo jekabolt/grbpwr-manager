@@ -6,6 +6,7 @@ package productionrun
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -43,10 +44,10 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 // planned_start_at / promised_at ARE written here, unlike received_at: they are planning intent
 // the operator owns, not a stamped fact behind which stock moved.
 const runColumns = `tech_card_id, release_id, status, started_at, planned_start_at, promised_at,
-	planned_unit_cost, planned_currency, marker_efficiency_pct, marker_notes, actual_wastage_percent, notes`
+	planned_unit_cost, planned_currency, marker_efficiency_pct, marker_notes, actual_wastage_percent, notes, supplier_id`
 
 const runValues = `:tech_card_id, :release_id, :status, :started_at, :planned_start_at, :promised_at,
-	:planned_unit_cost, :planned_currency, :marker_efficiency_pct, :marker_notes, :actual_wastage_percent, :notes`
+	:planned_unit_cost, :planned_currency, :marker_efficiency_pct, :marker_notes, :actual_wastage_percent, :notes, :supplier_id`
 
 func runParams(r *entity.ProductionRunInsert) map[string]any {
 	return map[string]any{
@@ -62,7 +63,35 @@ func runParams(r *entity.ProductionRunInsert) map[string]any {
 		"marker_notes":           r.MarkerNotes,
 		"actual_wastage_percent": r.ActualWastagePercent,
 		"notes":                  r.Notes,
+		"supplier_id":            r.SupplierId,
 	}
+}
+
+// recordRunEvent appends one row to the run's audit trail (production_run_event, Phase 8) on the
+// caller's connection/tx. payload may be nil; it is marshalled here so writers stay one-liners.
+func recordRunEvent(ctx context.Context, db dependency.DB, runID int, eventType, actor, reason string, payload map[string]any) error {
+	var pj sql.NullString
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal %s event payload: %w", eventType, err)
+		}
+		pj = sql.NullString{String: string(b), Valid: true}
+	}
+	var actorNS, reasonNS sql.NullString
+	if actor != "" {
+		actorNS = sql.NullString{String: actor, Valid: true}
+	}
+	if reason != "" {
+		reasonNS = sql.NullString{String: reason, Valid: true}
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO production_run_event (run_id, event_type, actor, reason, payload)
+		VALUES (:run_id, :event_type, :actor, :reason, :payload)`,
+		map[string]any{"run_id": runID, "event_type": eventType, "actor": actorNS, "reason": reasonNS, "payload": pj}); err != nil {
+		return fmt.Errorf("failed to record %s run event: %w", eventType, err)
+	}
+	return nil
 }
 
 // CreateProductionRun inserts a run and its size grid, returning the new id. PlannedUnitCost/
@@ -80,7 +109,11 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 		if err := insertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
-		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
+		if err := insertRunCosts(ctx, rep.DB(), id, r.Costs); err != nil {
+			return err
+		}
+		return recordRunEvent(ctx, rep.DB(), id, entity.ProductionRunEventCreated, r.Actor, "",
+			map[string]any{"status": string(r.Status)})
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't create production run: %w", err)
@@ -151,7 +184,8 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 					WHERE id = :id`, map[string]any{"id": id, "status": string(entity.ProductionRunClosed)}); err != nil {
 					return fmt.Errorf("failed to close production run: %w", err)
 				}
-				return nil
+				return recordRunEvent(ctx, rep.DB(), id, entity.ProductionRunEventClosed, r.Actor, "",
+					map[string]any{"from": cur.Status, "to": string(entity.ProductionRunClosed), "lock_version_after": cur.LockVersion + 1})
 			}
 			return entity.ErrProductionRunReceivedImmutable
 		}
@@ -259,6 +293,25 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		// moved under us — make the WHERE guard load-bearing, not just the in-Go check.
 		if expectedLockVersion > 0 && rows == 0 {
 			return entity.ErrProductionRunConflict
+		}
+		// Status transitions leave an attributed audit fact (Phase 8): started (→ in_progress),
+		// cancelled, closed. received/partially_received never pass this path (receipt-owned).
+		if string(r.Status) != cur.Status {
+			var evType string
+			switch r.Status {
+			case entity.ProductionRunInProgress:
+				evType = entity.ProductionRunEventStarted
+			case entity.ProductionRunCancelled:
+				evType = entity.ProductionRunEventCancelled
+			case entity.ProductionRunClosed:
+				evType = entity.ProductionRunEventClosed
+			}
+			if evType != "" {
+				if err := recordRunEvent(ctx, rep.DB(), id, evType, r.Actor, "",
+					map[string]any{"from": cur.Status, "to": string(r.Status), "lock_version_after": cur.LockVersion + 1}); err != nil {
+					return err
+				}
+			}
 		}
 		// Costs are still full-replaced: they have no wire identity yet (Phase 5 gives receipts the
 		// durable money records). Lines are NOT replaced — they are diffed by line_key so their ids
@@ -379,7 +432,112 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 		return nil, err
 	}
 	run.Receipts = receipts
+	events, err := storeutil.QueryListNamed[entity.ProductionRunEvent](ctx, s.DB, `
+		SELECT id, run_id, event_type, actor, reason, payload, created_at
+		FROM production_run_event WHERE run_id = :id ORDER BY id`, map[string]any{"id": id})
+	if err != nil {
+		return nil, fmt.Errorf("can't load production run events: %w", err)
+	}
+	run.Events = events
+	recon, err := s.runReconciliation(ctx, &run)
+	if err != nil {
+		return nil, err
+	}
+	run.Recon = recon
 	return &run, nil
+}
+
+// runReconciliation cross-checks the run's derived state against its journals (plan 04 §4.2 /
+// 12.5): every figure on the run screen must trace to a journal row, and the checks below say OUT
+// LOUD when they do not. Three typed checks, computed on read, nothing stored:
+//
+//  1. units_receipts_vs_stock_journal — Σ good units over live receipts == net product-stock
+//     journal for this run's reference family (production_received − production_reversed, A grade;
+//     B seconds are checked within the same sums via their own journalled rows).
+//  2. money_posted_vs_entries — every live receipt marked 'posted' still has a LIVE
+//     production_receive entry (a reversed-entry receipt is re-posted by the worker; 'posted' with
+//     no live entry and no pending re-post means the ledger lost money).
+//  3. costs_capitalised — Σ costed manual articles vs Σ live posted_manual_base claims: a shortfall
+//     is pending capitalisation (worker lag or skip), an excess means costs shrank after posting.
+func (s *Store) runReconciliation(ctx context.Context, run *entity.ProductionRun) ([]entity.ProductionRunReconCheck, error) {
+	id := run.Id
+	row, err := storeutil.QueryNamedOne[struct {
+		ReceiptGood    int             `db:"receipt_good"`
+		ReceiptSeconds int             `db:"receipt_seconds"`
+		JournalNet     decimal.Decimal `db:"journal_net"`
+		PostedNoEntry  int             `db:"posted_no_entry"`
+		LiveReceipts   int             `db:"live_receipts"`
+		ManualCosted   decimal.Decimal `db:"manual_costed"`
+		ManualClaimed  decimal.Decimal `db:"manual_claimed"`
+	}](ctx, s.DB, `
+		SELECT
+		  COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt pr
+		            JOIN production_run_receipt_line rl ON rl.receipt_id = pr.id
+		            WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL), 0) AS receipt_good,
+		  COALESCE((SELECT SUM(rl.defect_qty) FROM production_run_receipt pr
+		            JOIN production_run_receipt_line rl ON rl.receipt_id = pr.id
+		            WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL
+		              AND rl.defect_disposition = 'seconds'), 0) AS receipt_seconds,
+		  COALESCE((SELECT SUM(h.quantity_delta) FROM product_stock_change_history h
+		            WHERE h.source IN ('production_received', 'production_reversed')
+		              AND (h.reference_id = CONCAT('production_run', CHAR(58), CAST(:id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		                   OR h.reference_id IN (SELECT CONCAT('receipt', CHAR(58), CAST(r2.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		                                         FROM production_run_receipt r2 WHERE r2.run_id = :id))), 0) AS journal_net,
+		  COALESCE((SELECT COUNT(*) FROM production_run_receipt pr
+		            WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL
+		              AND pr.posting_status = 'posted'
+		              AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
+		                              WHERE e.source_type = 'production_receive' AND e.reversed_by IS NULL
+		                                AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		                                     OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci))), 0) AS posted_no_entry,
+		  COALESCE((SELECT COUNT(*) FROM production_run_receipt pr
+		            WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL), 0) AS live_receipts,
+		  COALESCE((SELECT SUM(c.amount_base) FROM production_run_cost c
+		            WHERE c.run_id = :id AND c.amount_base IS NOT NULL), 0) AS manual_costed,
+		  COALESCE((SELECT SUM(pr.posted_manual_base) FROM production_run_receipt pr
+		            WHERE pr.run_id = :id), 0) AS manual_claimed`,
+		map[string]any{"id": id})
+	if err != nil {
+		return nil, fmt.Errorf("can't compute run %d reconciliation: %w", id, err)
+	}
+	// Units: journal net counts BOTH grades (A good units + B seconds rows) — the receipts side
+	// must therefore include seconds too.
+	expectedUnits := row.ReceiptGood + row.ReceiptSeconds
+	units := entity.ProductionRunReconCheck{
+		Key:      "units_receipts_vs_stock_journal",
+		Expected: fmt.Sprintf("%d", expectedUnits),
+		Actual:   row.JournalNet.String(),
+		Ok:       row.JournalNet.Equal(decimal.NewFromInt(int64(expectedUnits))),
+	}
+	if !units.Ok {
+		units.Detail = "live receipts and the product-stock journal disagree on units for this run — check reversed receipts and manual stock edits"
+	}
+	entries := entity.ProductionRunReconCheck{
+		Key:      "money_posted_vs_entries",
+		Expected: "0",
+		Actual:   fmt.Sprintf("%d", row.PostedNoEntry),
+		Ok:       row.PostedNoEntry == 0,
+	}
+	if !entries.Ok {
+		entries.Detail = "receipt(s) marked posted have no live ledger entry — the worker will re-post; if this persists, see the accounting dead-letter queue"
+	}
+	costs := entity.ProductionRunReconCheck{
+		Key:      "costs_capitalised",
+		Expected: row.ManualCosted.Round(2).String(),
+		Actual:   row.ManualClaimed.Round(2).String(),
+		Ok:       row.ManualCosted.Round(2).Equal(row.ManualClaimed.Round(2)),
+	}
+	if !costs.Ok {
+		if row.LiveReceipts == 0 {
+			costs.Detail = "manual costs exist but nothing was received yet — they capitalise with the first receipt"
+			costs.Ok = true // not a discrepancy: capitalisation simply has not started
+		} else if row.ManualClaimed.LessThan(row.ManualCosted) {
+			costs.Detail = "costed articles exceed what receipts capitalised — the delta posts with the next receipt or worker tick"
+		} else {
+			costs.Detail = "capitalised total exceeds the current cost articles — costs shrank after posting (see the shrunken-manual caveat on the ledger entry)"
+		}
+	}
+	return []entity.ProductionRunReconCheck{units, entries, costs}, nil
 }
 
 // runMaterialMovements loads the material stock ledger rows booked to this run (issues/returns to
@@ -391,7 +549,7 @@ func (s *Store) runMaterialMovements(ctx context.Context, runID int) ([]entity.M
 
 const movementColumns = `id, material_id, movement_type, quantity, on_hand_before, on_hand_after,
 	unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
-	lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at, created_at`
+	lot, lot_id, supplier_doc, expected_at, reason, comment, admin_username, occurred_at, created_at`
 
 // loadRunMovements loads a run's material movement ledger on the given db (pool or tx).
 func loadRunMovements(ctx context.Context, db dependency.DB, runID int) ([]entity.MaterialMovement, error) {
@@ -562,7 +720,8 @@ func (s *Store) runCosts(ctx context.Context, runID int) ([]entity.ProductionRun
 // loadRunCosts loads a run's actual cost articles on the given db (pool or tx).
 func loadRunCosts(ctx context.Context, db dependency.DB, runID int) ([]entity.ProductionRunCost, error) {
 	costs, err := storeutil.QueryListNamed[entity.ProductionRunCost](ctx, db,
-		`SELECT id, run_id, kind, description, amount, currency, amount_base, incurred_at
+		`SELECT id, run_id, kind, description, amount, currency, amount_base, incurred_at,
+		        supplier_id, document_ref, vat_rate, vat_amount, ap_status
 		 FROM production_run_cost WHERE run_id = :run_id ORDER BY id`,
 		map[string]any{"run_id": runID})
 	if err != nil {
@@ -583,7 +742,8 @@ func (s *Store) attachCosts(ctx context.Context, runs []entity.ProductionRun) er
 		idx[runs[i].Id] = i
 	}
 	costs, err := storeutil.QueryListNamed[entity.ProductionRunCost](ctx, s.DB,
-		`SELECT id, run_id, kind, description, amount, currency, amount_base, incurred_at
+		`SELECT id, run_id, kind, description, amount, currency, amount_base, incurred_at,
+		        supplier_id, document_ref, vat_rate, vat_amount, ap_status
 		 FROM production_run_cost WHERE run_id IN (:ids) ORDER BY run_id, id`,
 		map[string]any{"ids": ids})
 	if err != nil {
@@ -611,6 +771,12 @@ func insertRunCosts(ctx context.Context, db dependency.DB, runID int, costs []en
 			"currency":    c.Currency,
 			"amount_base": c.AmountBase,
 			"incurred_at": c.IncurredAt,
+			// Cost-document fields (0234 → Phase 9 read/write): honest AP provenance per article.
+			"supplier_id":  c.SupplierId,
+			"document_ref": c.DocumentRef,
+			"vat_rate":     c.VatRate,
+			"vat_amount":   c.VatAmount,
+			"ap_status":    c.ApStatus,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "production_run_cost", rows); err != nil {

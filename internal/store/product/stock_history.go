@@ -159,7 +159,7 @@ func (s *Store) GetStockChangeHistory(ctx context.Context, productId, sizeId *in
 const stockHistoryHardCap = 50000
 
 // GetStockChanges returns simplified stock changes for reporting API.
-func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, productId *int, sizeId *int, source string, limit, offset int, sortByDirection entity.StockAdjustmentDirection, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error) {
+func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, productId *int, sizeId *int, source string, productionRunID *int, limit, offset int, sortByDirection entity.StockAdjustmentDirection, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error) {
 	baseQuery := `
 		FROM product_stock_change_history psch
 		LEFT JOIN product p ON p.id = psch.product_id
@@ -187,6 +187,15 @@ func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time,
 	if source != "" {
 		baseQuery += ` AND psch.source = :source`
 		params["source"] = source
+	}
+	if productionRunID != nil {
+		// The run's whole reference family (Phase 8, plan 04 §4.3): receive/reverse rows carry
+		// either the run itself or one of its receipts in reference_id. Literal colons are CHAR(58)
+		// — an ASCII ':' inside the SQL string would break sqlx's named-parameter scan.
+		baseQuery += ` AND (psch.reference_id = CONCAT('production_run', CHAR(58), CAST(:runId AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+			OR psch.reference_id IN (SELECT CONCAT('receipt', CHAR(58), CAST(prr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+			                         FROM production_run_receipt prr WHERE prr.run_id = :runId))`
+		params["runId"] = *productionRunID
 	}
 	if sortByDirection == entity.StockAdjustmentDirectionIncrease {
 		baseQuery += ` AND psch.quantity_delta > 0`

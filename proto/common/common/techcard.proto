@@ -533,6 +533,11 @@ message Material {
   // purpose (#40) marks whether the material is used for samples, production, or both. Defaults to
   // BOTH on write when UNKNOWN, so the admin can mark and filter materials.
   MaterialPurpose purpose = 28;
+  // Procurement quick wins (Phase 9, plan 13 §1 — the PO entity was cut): supplier_id links to the
+  // supplier CATALOG (the free-text `supplier` field stays legacy), lead_time_days is the typical
+  // order-to-door time. 0 = unset for both.
+  int32 supplier_id = 29;
+  int32 lead_time_days = 30;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the
@@ -638,10 +643,13 @@ enum TechCardFabricDirection {
   TECH_CARD_FABRIC_DIRECTION_TWO_WAY = 3; // two-way
 }
 
-// TechCardSizeQuantity is the production order quantity for a size (size run).
+// TechCardSizeQuantity is the TYPICAL calculation batch for a size — «типовой тираж для
+// калькуляции» (plan 13 §2). It amortises development cost and prefills a new run's grid; it is
+// NOT a real production batch — the run's own plan lines are the batch (a run may be bigger,
+// smaller, or split differently, and the UI must warn instead of silently multiplying).
 message TechCardSizeQuantity {
   int32 size_id = 1; // FK size(id); must be one of size_ids
-  int32 order_qty = 2;
+  int32 order_qty = 2; // typical calculation quantity, not an order
 }
 
 // TechCardSizePattern is a downloadable PDF выкройка (cut pattern) for one size of a

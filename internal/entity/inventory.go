@@ -134,9 +134,12 @@ type MaterialMovement struct {
 	// SupplierId is the catalogued supplier of a purchase receipt (phase 2, wave 4 — AP subledger). NULL
 	// on non-receipts and on receipts entered without a supplier; the accounting worker copies it onto the
 	// M1 journal entry so GetPayables can group open Accounts-Payable per supplier.
-	SupplierId    sql.NullInt32  `db:"supplier_id"`
-	Reason        sql.NullString `db:"reason"`
-	Comment       sql.NullString `db:"comment"`
+	SupplierId sql.NullInt32 `db:"supplier_id"`
+	// ExpectedAt is when a purchase receipt was promised to arrive (Phase 9) — lateness becomes a
+	// queryable fact (occurred_at vs expected_at) without a PO entity.
+	ExpectedAt sql.NullTime   `db:"expected_at"`
+	Reason     sql.NullString `db:"reason"`
+	Comment    sql.NullString `db:"comment"`
 	AdminUsername string         `db:"admin_username"`
 	OccurredAt    sql.NullTime   `db:"occurred_at"`
 	CreatedAt     time.Time      `db:"created_at"`
@@ -160,7 +163,10 @@ type MaterialReceiptInsert struct {
 	SupplierDoc     sql.NullString
 	// SupplierId optionally tags a purchase receipt with a catalogued supplier (phase 2, wave 4 — AP
 	// subledger). NULL for a receipt entered without a supplier; ignored for a receipt_production.
-	SupplierId    sql.NullInt32
+	SupplierId sql.NullInt32
+	// ExpectedAt is when this delivery was promised to arrive (Phase 9, plan 13 §1) — recorded
+	// against the receipt so lateness is a queryable fact without a PO entity.
+	ExpectedAt    sql.NullTime
 	OccurredAt    sql.NullTime
 	Comment       sql.NullString
 	AdminUsername string

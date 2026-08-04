@@ -422,6 +422,11 @@ type AcctOrderRefundPayload struct {
 	RefundAmount   decimal.Decimal `json:"refund_amount"` // order currency, THIS refund only, shipping included
 	OrderCurrency  string          `json:"order_currency"`
 	RefundedByItem map[int]int64   `json:"refunded_by_item"` // order_item.id -> refunded qty (for COGS)
+	// Disposition is what happened to the returned units (Phase 8): "" / restock — back to A stock,
+	// S2 books the inventory return; writeoff / seconds — nothing returned to costed inventory, S2
+	// books NO Dr 1130 / Cr 5050 pair (the goods are consumed, or live as zero-cost B stock).
+	// Pre-Phase-8 payloads have no field → restock semantics, byte-compatible.
+	Disposition string `json:"disposition,omitempty"`
 }
 
 // AcctOrderShippedPayload / AcctOrderDeliveredPayload are the outbox payloads for the wave-2

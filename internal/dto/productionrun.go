@@ -121,6 +121,7 @@ func ConvertPbProductionRunInsertToEntity(pb *pb_common.ProductionRunInsert) (*e
 		MarkerNotes:          nullStringFromPb(pb.MarkerNotes),
 		ActualWastagePercent: actualWastage,
 		Notes:                nullStringFromPb(pb.Notes),
+		SupplierId:           nullInt64FromPb(int64(pb.SupplierId)),
 		Lines:                lines,
 		Costs:                costs,
 	}, nil
@@ -172,6 +173,21 @@ func convertPbProductionRunCosts(pbs []*pb_common.ProductionRunCost) ([]entity.P
 		if amountBase.Valid && amountBase.Decimal.IsNegative() {
 			return nil, fmt.Errorf("production run cost: amount_base must be non-negative")
 		}
+		vatRate, err := nonNegNullDecimal(c.VatRate, "production run cost vat_rate")
+		if err != nil {
+			return nil, err
+		}
+		vatAmount, err := nonNegNullDecimal(c.VatAmount, "production run cost vat_amount")
+		if err != nil {
+			return nil, err
+		}
+		apStatus := strings.ToLower(strings.TrimSpace(c.ApStatus))
+		if apStatus != "" && !entity.ValidApStatuses[apStatus] {
+			return nil, fmt.Errorf("production run cost: ap_status must be accrued, invoiced or paid")
+		}
+		if len(c.DocumentRef) > 128 {
+			return nil, fmt.Errorf("production run cost: document_ref must be at most 128 characters")
+		}
 		out = append(out, entity.ProductionRunCost{
 			Kind:        kind,
 			Description: nullStringFromPb(c.Description),
@@ -179,6 +195,11 @@ func convertPbProductionRunCosts(pbs []*pb_common.ProductionRunCost) ([]entity.P
 			Currency:    currency,
 			AmountBase:  amountBase,
 			IncurredAt:  nullDateFromPbTimestamp(c.IncurredAt),
+			SupplierId:  nullInt64FromPb(int64(c.SupplierId)),
+			DocumentRef: nullStringFromPb(c.DocumentRef),
+			VatRate:     vatRate,
+			VatAmount:   vatAmount,
+			ApStatus:    nullStringFromPb(apStatus),
 		})
 	}
 	return out, nil
@@ -339,6 +360,7 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 			MarkerNotes:          pbStringFromNull(r.MarkerNotes),
 			ActualWastagePercent: pbDecimalFromNull(r.ActualWastagePercent),
 			Notes:                pbStringFromNull(r.Notes),
+			SupplierId:           int32(r.SupplierId.Int64),
 			Lines:                productionRunLinesToPb(r.Lines),
 			Costs:                productionRunCostsToPb(r.Costs),
 		},
@@ -349,7 +371,41 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 		Actuals:         computeProductionRunActuals(r),
 		LockVersion:     int32(r.LockVersion),
 		Receipts:        productionRunReceiptsToPb(r.Receipts),
+		Events:          productionRunEventsToPb(r.Events),
+		Recon:           productionRunReconToPb(r.Recon),
 	}
+}
+
+// productionRunEventsToPb maps the run's audit trail onto the wire (Phase 8).
+func productionRunEventsToPb(events []entity.ProductionRunEvent) []*pb_common.ProductionRunEvent {
+	out := make([]*pb_common.ProductionRunEvent, 0, len(events))
+	for i := range events {
+		e := &events[i]
+		out = append(out, &pb_common.ProductionRunEvent{
+			Id:        int32(e.Id),
+			EventType: e.EventType,
+			Actor:     e.Actor.String,
+			Reason:    e.Reason.String,
+			Payload:   e.Payload.String,
+			CreatedAt: timestamppb.New(e.CreatedAt),
+		})
+	}
+	return out
+}
+
+// productionRunReconToPb maps the server-side cross-checks onto the wire (Phase 8).
+func productionRunReconToPb(checks []entity.ProductionRunReconCheck) []*pb_common.ProductionRunReconCheck {
+	out := make([]*pb_common.ProductionRunReconCheck, 0, len(checks))
+	for _, c := range checks {
+		out = append(out, &pb_common.ProductionRunReconCheck{
+			Key:      c.Key,
+			Expected: c.Expected,
+			Actual:   c.Actual,
+			Ok:       c.Ok,
+			Detail:   c.Detail,
+		})
+	}
+	return out
 }
 
 // productionRunReceiptsToPb maps a run's receiving events onto the wire. Money (the frozen
@@ -456,6 +512,11 @@ func productionRunCostsToPb(costs []entity.ProductionRunCost) []*pb_common.Produ
 			Currency:    c.Currency,
 			AmountBase:  pbDecimalFromNull(c.AmountBase),
 			IncurredAt:  pbTimestampFromNullTime(c.IncurredAt),
+			SupplierId:  int32(c.SupplierId.Int64),
+			DocumentRef: pbStringFromNull(c.DocumentRef),
+			VatRate:     pbDecimalFromNull(c.VatRate),
+			VatAmount:   pbDecimalFromNull(c.VatAmount),
+			ApStatus:    pbStringFromNull(c.ApStatus),
 		})
 	}
 	return out

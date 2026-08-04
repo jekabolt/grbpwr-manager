@@ -243,8 +243,15 @@ func (s *Store) SetShipmentActualCost(ctx context.Context, orderUUID string, act
 	return nil
 }
 
-// RefundOrder processes a full or partial refund for an order.
-func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool) error {
+// RefundOrder processes a full or partial refund. disposition (Phase 8, plan 13 §5) says what
+// physically happens to the returned units: ""/restock — back to sellable A stock (pre-Phase-8
+// behaviour); writeoff — worn/damaged, nothing restocks (the sale's COGS stays expensed); seconds —
+// back as a zero-cost B-grade variant. The disposition rides into the accounting outbox payload so
+// the S2 entry mirrors the stock decision exactly.
+func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool, disposition string) error {
+	if !entity.ValidRefundDispositions[disposition] {
+		return fmt.Errorf("unknown refund disposition %q", disposition)
+	}
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		order, err := getOrderByUUIDForUpdate(ctx, rep.DB(), orderUUID)
 		if err != nil {
@@ -303,8 +310,19 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 			OrderId:   order.Id,
 			OrderUUID: order.UUID,
 		}
-		if err := rep.Products().RestoreStockForProductSizes(ctx, itemsForStock, history); err != nil {
-			return fmt.Errorf("restore stock: %w", err)
+		switch disposition {
+		case entity.RefundDispositionWriteoff:
+			// Worn/damaged: the units are consumed — nothing restocks, no stock journal row (a
+			// zero-delta phantom would corrupt the journal). The refund record and the S2 entry's
+			// caveat are the trace.
+		case entity.RefundDispositionSeconds:
+			if err := rep.Products().RestoreStockForProductSizesSeconds(ctx, itemsForStock, history); err != nil {
+				return fmt.Errorf("restore seconds stock: %w", err)
+			}
+		default: // "" / restock
+			if err := rep.Products().RestoreStockForProductSizes(ctx, itemsForStock, history); err != nil {
+				return fmt.Errorf("restore stock: %w", err)
+			}
 		}
 
 		// A Confirmed-order full refund restores stock without passing through cancelOrder —
@@ -367,6 +385,7 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 				RefundAmount:   refundedAmount,
 				OrderCurrency:  order.Currency,
 				RefundedByItem: refundedByItem,
+				Disposition:    disposition,
 			},
 			OccurredAt: s.Now(),
 		}); err != nil {

@@ -168,6 +168,8 @@ var methodRequirements = map[string]Requirement{
 	"SetColorwayCustoms":              wr(SectionProducts),
 	"ListStockChangeHistory":          rd(SectionProducts),
 	"ListStockChanges":                rd(SectionProducts),
+	// the waitlist is a demand signal on products (Phase 9) — same read section as the catalog.
+	"ListProductWaitlist": rd(SectionProducts),
 	// controlled merch dictionaries (R9): colour / collection / tag + closed ISO country. Q5: curating
 	// a dictionary is a right separate from editing the catalog that consumes it, so their dedicated
 	// management RPCs live in SectionDictionaries (reads + writes), not products. Catalog pickers read

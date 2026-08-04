@@ -317,7 +317,11 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 		}
 	}
 
-	err = s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds, req.Reason, dto.RefundReasonKey(req.ReasonCode), refundShipping)
+	disposition := strings.TrimSpace(req.Disposition)
+	if !entity.ValidRefundDispositions[disposition] {
+		return nil, status.Error(codes.InvalidArgument, "disposition must be empty, restock, writeoff or seconds")
+	}
+	err = s.repo.Order().RefundOrder(ctx, req.OrderUuid, req.OrderItemIds, req.Reason, dto.RefundReasonKey(req.ReasonCode), refundShipping, disposition)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't refund order",
 			slog.String("err", err.Error()),

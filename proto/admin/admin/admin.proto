@@ -281,6 +281,13 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/stock-changes"};
   }
 
+  // ListProductWaitlist reads the back-in-stock waitlist the storefront has been writing since
+  // 0010 (Phase 9, plan 13 §6 — until now no admin surface read it). Optional product filter,
+  // newest first, capped pagination. Demand signal only — it drives no automation.
+  rpc ListProductWaitlist(ListProductWaitlistRequest) returns (ListProductWaitlistResponse) {
+    option (google.api.http) = {get: "/api/admin/waitlist"};
+  }
+
   // DICTIONARY MANAGER (R9)
   // Controlled merch dictionaries: colour / collection / tag, plus the closed ISO country dictionary.
   // Every mutation carries expected_version (optimistic concurrency on the namespace's
@@ -2691,6 +2698,30 @@ message ListStockChangesRequest {
   optional common.OrderFactor order_factor = 7; // Optional: default DESC (newest first)
   optional int32 size_id = 8; // Optional: filter by size ID
   optional common.StockAdjustmentDirection sort_by_direction = 9; // Optional: sort by stock adjustment direction (increase/decrease)
+  // Optional (Phase 8, plan 04 §4.3): narrow to one production run's whole reference family — the
+  // run itself plus every one of its receipts (receive AND reversal rows).
+  optional int32 production_run_id = 10;
+}
+
+message ListProductWaitlistRequest {
+  optional int32 product_id = 1; // narrow to one colourway
+  int32 limit = 2; // 0 = default 50, max 200
+  int32 offset = 3;
+}
+
+message ProductWaitlistEntry {
+  int32 id = 1;
+  int32 product_id = 2;
+  int32 size_id = 3;
+  string email = 4;
+  string first_name = 5; // resolved from the buyer record when the email is a known customer
+  string last_name = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message ListProductWaitlistResponse {
+  repeated ProductWaitlistEntry entries = 1;
+  int32 total = 2;
 }
 
 message StockChangeRow {
@@ -3583,6 +3614,12 @@ message RefundOrderRequest {
   // Optional structured reason. When set, it drives the return-analysis breakdown exactly
   // (the free-text reason is only bucketed heuristically). Additive to reason (field 3).
   RefundReason reason_code = 5;
+  // What physically happens to the returned units (Phase 8, plan 13 §5). Empty = restock.
+  //   restock  — inspected fine: back to sellable A stock (previous unconditional behaviour);
+  //   writeoff — worn/damaged: nothing restocks, the sale's COGS stays expensed;
+  //   seconds  — sellable as a discounted second: restocked into the product's B-grade variant
+  //              at zero carried cost (not sellable until B pricing lands).
+  string disposition = 6;
 }
 
 message RefundOrderResponse {}
@@ -6357,6 +6394,9 @@ message ReceiveMaterialStockRequest {
   google.type.Decimal input_vat_amount = 9;
   string input_vat_regime = 10; // wnt | import | domestic_pl | domestic_uk
   int32 supplier_id = 11; // optional catalogued supplier (phase 2, wave 4 — AP subledger); 0 = none
+  // When this delivery was promised to arrive (Phase 9), YYYY-MM-DD; empty = not tracked. Recorded
+  // on the receipt so lateness (occurred_at vs expected_at) is a queryable fact without a PO.
+  string expected_at = 12;
 }
 
 message ReceiveMaterialStockResponse {

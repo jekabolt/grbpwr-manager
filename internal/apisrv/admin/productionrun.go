@@ -43,6 +43,7 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 	if ins.Status != entity.ProductionRunPlanned && ins.Status != entity.ProductionRunInProgress {
 		return nil, status.Error(codes.InvalidArgument, "a production run is created as planned or in_progress; received/closed/cancelled are reached through their flows")
 	}
+	ins.Actor = authsrv.GetAdminUsername(ctx)
 	if err := s.snapshotPlannedCost(ctx, ins); err != nil {
 		return nil, err
 	}
@@ -79,6 +80,7 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	// here would mark every base Valid and turn that preservation into a no-op.
 	// The cost-blind path reloads and preserves stored articles under the run's FOR UPDATE lock. Its
 	// read is load-bearing: any failure aborts before the store's full-replace can delete cost rows.
+	ins.Actor = authsrv.GetAdminUsername(ctx)
 	var updateErr error
 	if costingWrite {
 		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion), s.costingFx(ctx))

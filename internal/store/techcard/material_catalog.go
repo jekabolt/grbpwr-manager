@@ -127,10 +127,12 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 			}
 		}
 		newID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO material (name, section, supplier, supplier_ref, composition, spec, unit,
+			INSERT INTO material (name, section, supplier, supplier_ref, supplier_id, lead_time_days,
+				composition, spec, unit,
 				fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes,
 				image_id, purpose, material_class, other_attrs, created_by, updated_by)
-			VALUES (:name, :section, :supplier, :supplier_ref, :composition, :spec, :unit,
+			VALUES (:name, :section, :supplier, :supplier_ref, :supplier_id, :lead_time_days,
+				:composition, :spec, :unit,
 				:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes,
 				:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
 			materialParams(m))
@@ -201,6 +203,7 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE material SET lock_version = lock_version + 1,
 				name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
+				supplier_id=:supplier_id, lead_time_days=:lead_time_days,
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
 				image_id=:image_id, purpose=:purpose,
@@ -420,6 +423,8 @@ func materialParams(m *entity.MaterialInsert) map[string]any {
 		"section":           strings.ToLower(strings.TrimSpace(m.Section)),
 		"supplier":          m.Supplier,
 		"supplier_ref":      m.SupplierRef,
+		"supplier_id":       m.SupplierId,
+		"lead_time_days":    m.LeadTimeDays,
 		"composition":       m.Composition,
 		"spec":              m.Spec,
 		"unit":              m.Unit,

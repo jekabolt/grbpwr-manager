@@ -67,6 +67,14 @@ message ProductionRunCost {
   string currency = 4; // ISO 4217
   google.type.Decimal amount_base = 5; // base-currency amount (server-folded when unset)
   google.protobuf.Timestamp incurred_at = 6;
+  // Cost-document fields (plan 12.3, columns landed in 0234): who invoices this article, under
+  // which document, with what VAT, and where the payable stands. They are what lets the UI say
+  // "оплачено" instead of only "начислено". All optional.
+  int32 supplier_id = 7; // supplier catalog FK; 0 = none
+  string document_ref = 8; // invoice / proforma number
+  google.type.Decimal vat_rate = 9; // %, e.g. 23
+  google.type.Decimal vat_amount = 10; // document VAT amount, in `currency`
+  string ap_status = 11; // accrued (default) | invoiced | paid
 }
 
 // ProductionRunCostByKind is the base-currency total of actual costs of one kind.
@@ -198,6 +206,9 @@ message ProductionRunInsert {
   //                      ListProductionRunsRequest.overdue_only filters on.
   google.protobuf.Timestamp planned_start_at = 14;
   google.protobuf.Timestamp promised_at = 15;
+  // The factory running the batch (Phase 9, plan 12.1): FK to the supplier catalog; 0 = none.
+  // Unlocks per-vendor variance/defect reporting.
+  int32 supplier_id = 16;
   reserved 7; // was `repeated ProductionRunSize sizes` (flat per-size grid; replaced by lines)
 }
 
@@ -219,4 +230,32 @@ message ProductionRun {
   // read (GetProductionRun); list reads leave it empty to keep them light. Money on each receipt is
   // stripped without costing:read.
   repeated ProductionRunReceipt receipts = 9;
+  // The run's append-only lifecycle audit trail (Phase 8), oldest first. Single-run read only.
+  // receipt_posted / receipt_reversed events REFERENCE their receipt in the JSON payload — they
+  // never duplicate its data.
+  repeated ProductionRunEvent events = 10;
+  // Server-side "expected vs booked" cross-checks over the run's journals (plan 04 §4.2 / 12.5).
+  // Single-run read only; every failed check carries an operator-facing detail sentence.
+  repeated ProductionRunReconCheck recon = 11;
+}
+
+// ProductionRunEvent is one row of the run's append-only audit trail: who did what to the run,
+// when, why, with a JSON payload describing the effects (references, never duplicated data).
+message ProductionRunEvent {
+  int32 id = 1;
+  string event_type = 2; // created | started | receipt_posted | receipt_reversed | units_scrapped | closed | cancelled
+  string actor = 3; // admin username; empty = system
+  string reason = 4;
+  string payload = 5; // JSON object; shape depends on event_type
+  google.protobuf.Timestamp created_at = 6;
+}
+
+// ProductionRunReconCheck is one typed cross-check of the run's derived state against its
+// journals. ok=false means the two disagree; detail says what to look at.
+message ProductionRunReconCheck {
+  string key = 1; // stable identifier, e.g. units_receipts_vs_stock_journal
+  string expected = 2;
+  string actual = 3;
+  bool ok = 4;
+  string detail = 5;
 }

@@ -149,6 +149,9 @@ type (
 		// RestoreStockForProductSizes restores the stock for a product by its ID.
 		// When history is not nil, records each change to product_stock_change_history.
 		RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
+		// RestoreStockForProductSizesSeconds restocks a refund's returned units into the product's
+		// B-GRADE variant (seconds disposition, Phase 8) — created on first touch, zero carried cost.
+		RestoreStockForProductSizesSeconds(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error
 		// UpdateProductSizeStock adds a new available size for a product.
 		UpdateProductSizeStock(ctx context.Context, productId int, sizeId int, quantity int) error
 		// UpdateProductSizeStockWithHistory applies a stock change (mode Set=absolute, Adjust=signed
@@ -166,12 +169,18 @@ type (
 		RemoveFromWaitlistBatch(ctx context.Context, productId int, sizeId int) error
 		// GetWaitlistEntriesWithBuyerNames retrieves waitlist entries with buyer names in a single query.
 		GetWaitlistEntriesWithBuyerNames(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntryWithBuyer, error)
+		// ListWaitlist is the admin read over the waitlist (Phase 9): optional product filter,
+		// newest first, capped pagination. CountWaitlistForProduct is the per-colourway counter.
+		ListWaitlist(ctx context.Context, productId *int, limit, offset int) ([]entity.WaitlistEntryWithBuyer, int, error)
+		CountWaitlistForProduct(ctx context.Context, productId int) (int, error)
 		// RecordStockChange inserts stock change history entries.
 		RecordStockChange(ctx context.Context, entries []entity.StockChangeInsert) error
 		// GetStockChangeHistory returns paginated stock change history with optional filters.
 		GetStockChangeHistory(ctx context.Context, productId, sizeId *int, dateFrom, dateTo *time.Time, source string, limit, offset int, orderFactor entity.OrderFactor) ([]entity.StockChange, int, error)
 		// GetStockChanges returns simplified stock changes for reporting API.
-		GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, productId *int, sizeId *int, source string, limit, offset int, sortByDirection entity.StockAdjustmentDirection, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error)
+		// GetStockChanges reads the stock journal; productionRunID (Phase 8) narrows to one run's
+		// whole reference family (the run itself + its receipts).
+		GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time, productId *int, sizeId *int, source string, productionRunID *int, limit, offset int, sortByDirection entity.StockAdjustmentDirection, orderFactor entity.OrderFactor) ([]entity.StockChangeRow, int, error)
 	}
 	Hero interface {
 		RefreshHero(ctx context.Context) error
@@ -270,7 +279,7 @@ type (
 		GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error)
 		ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error)
 		OrderPaymentDone(ctx context.Context, orderUUID string, p *entity.Payment) (wasUpdated bool, err error)
-		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool) error
+		RefundOrder(ctx context.Context, orderUUID string, orderItemIDs []int32, reason, reasonCode string, refundShipping bool, disposition string) error
 		DeliveredOrder(ctx context.Context, orderUUID string) error
 		// DeliverOrderWithSource marks an order delivered attributed to changedBy/notes and
 		// reports whether this call performed the transition (used by the delivery-sync worker

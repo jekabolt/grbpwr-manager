@@ -330,6 +330,27 @@ const (
 	PartiallyRefunded OrderStatusName = "partially_refunded"
 )
 
+// Refund dispositions (Phase 8, plan 13 §5): what physically happens to the returned units. Before
+// this, every refund restocked unconditionally — a worn or damaged return silently became sellable
+// A stock. The disposition applies to the WHOLE refund call (per-line granularity is a v2 concern).
+const (
+	// RefundDispositionRestock — inspected fine: back to sellable A stock (the pre-Phase-8
+	// behaviour, and what an empty value normalises to).
+	RefundDispositionRestock = "restock"
+	// RefundDispositionWriteoff — worn/damaged: nothing restocks; the sale's COGS stays expensed
+	// (the goods are consumed), so the S2 refund entry books NO inventory return.
+	RefundDispositionWriteoff = "writeoff"
+	// RefundDispositionSeconds — sellable as a discounted second: restocks into the product's
+	// B-grade variant (Phase 7 mechanism) at zero carried cost, so S2 books no inventory return
+	// either.
+	RefundDispositionSeconds = "seconds"
+)
+
+// ValidRefundDispositions is the accepted wire set ("" = restock).
+var ValidRefundDispositions = map[string]bool{
+	"": true, RefundDispositionRestock: true, RefundDispositionWriteoff: true, RefundDispositionSeconds: true,
+}
+
 // ValidOrderStatusNames is a set of valid order status names
 var ValidOrderStatusNames = map[OrderStatusName]bool{
 	Placed:            true,

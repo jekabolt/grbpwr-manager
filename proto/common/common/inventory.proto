@@ -55,6 +55,9 @@ message MaterialMovement {
   google.protobuf.Timestamp created_at = 19;
   int32 product_id = 20; // colour-model an issue to a run was cut for (gap-07 v2 C); 0 = shared/unattributed
   int32 lot_id = 21; // structured lot (roll / dye-lot) this movement received into or drew from (gap-07 v2 D); 0 = none
+  // When a purchase receipt was promised to arrive (Phase 9); unset = not tracked. Lateness =
+  // occurred_at vs expected_at, no PO entity needed.
+  google.protobuf.Timestamp expected_at = 22;
 }
 
 // MaterialLot is a received batch (roll / dye-lot) of a material (gap-07 v2 D): a supplier lot code

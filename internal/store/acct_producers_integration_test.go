@@ -261,7 +261,7 @@ func TestAcctEventProducers(t *testing.T) {
 		itemB := insItem(prodB, 50)
 
 		// First refund: item B (50) -> delivered becomes partially_refunded, event uuid:1.
-		require.NoError(t, s.Order().RefundOrder(ctx, uuid, []int32{int32(itemB)}, "reason-1", "code-1", false))
+		require.NoError(t, s.Order().RefundOrder(ctx, uuid, []int32{int32(itemB)}, "reason-1", "code-1", false, ""))
 		require.Equal(t, 1, countEvents("order_refund", uuid+":1"), "first refund enqueues event uuid:1")
 		p1 := readRefundPayload(uuid + ":1")
 		require.Equal(t, uuid, p1.OrderUUID)
@@ -271,7 +271,7 @@ func TestAcctEventProducers(t *testing.T) {
 		require.NotContains(t, p1.RefundedByItem, itemA, "refund uuid:1 must not mention item A")
 
 		// Second refund: item A (100) -> covers the remaining order, becomes refunded, event uuid:2.
-		require.NoError(t, s.Order().RefundOrder(ctx, uuid, []int32{int32(itemA)}, "reason-2", "code-2", false))
+		require.NoError(t, s.Order().RefundOrder(ctx, uuid, []int32{int32(itemA)}, "reason-2", "code-2", false, ""))
 		require.Equal(t, 1, countEvents("order_refund", uuid+":2"), "second refund enqueues event uuid:2")
 		p2 := readRefundPayload(uuid + ":2")
 		require.True(t, p2.RefundAmount.Equal(decimal.NewFromInt(100)), "refund uuid:2 amount = 100, got %s", p2.RefundAmount)

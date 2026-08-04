@@ -847,6 +847,12 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 		sid := int(*req.SizeId)
 		sizeId = &sid
 	}
+	var runFilter *int
+	if req.ProductionRunId != nil && *req.ProductionRunId > 0 {
+		rid := int(*req.ProductionRunId)
+		runFilter = &rid
+	}
+
 
 	// Convert source enum to string (empty string for UNSPECIFIED = no filter)
 	source := dto.StockChangeSourceToFilterString(req.Source)
@@ -869,7 +875,7 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 	}
 
 	// Get data from repository
-	changes, total, err := s.repo.Products().GetStockChanges(ctx, dateFrom, dateTo, productId, sizeId, source, limit, offset, sortByDirection, orderFactor)
+	changes, total, err := s.repo.Products().GetStockChanges(ctx, dateFrom, dateTo, productId, sizeId, source, runFilter, limit, offset, sortByDirection, orderFactor)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't get stock changes",
 			slog.String("err", err.Error()),
@@ -954,4 +960,33 @@ func (s *Server) notifyWaitlist(notifyCtx context.Context, productId int, sizeId
 			}
 		}
 	}
+}
+
+// ListProductWaitlist reads the storefront's back-in-stock waitlist (Phase 9, plan 13 §6) — a
+// demand signal that was written since 0010 but never admin-readable. Optional product filter,
+// newest first; emails are customer PII, gated by the products:read section via the interceptor.
+func (s *Server) ListProductWaitlist(ctx context.Context, req *pb_admin.ListProductWaitlistRequest) (*pb_admin.ListProductWaitlistResponse, error) {
+	var productID *int
+	if req.ProductId != nil && *req.ProductId > 0 {
+		pid := int(*req.ProductId)
+		productID = &pid
+	}
+	entries, total, err := s.repo.Products().ListWaitlist(ctx, productID, int(req.Limit), int(req.Offset))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list product waitlist", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list product waitlist")
+	}
+	out := make([]*pb_admin.ProductWaitlistEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, &pb_admin.ProductWaitlistEntry{
+			Id:        int32(e.Id),
+			ProductId: int32(e.ProductId),
+			SizeId:    int32(e.SizeId),
+			Email:     e.Email,
+			FirstName: e.FirstName.String,
+			LastName:  e.LastName.String,
+			CreatedAt: timestamppb.New(e.CreatedAt),
+		})
+	}
+	return &pb_admin.ListProductWaitlistResponse{Entries: out, Total: int32(total)}, nil
 }

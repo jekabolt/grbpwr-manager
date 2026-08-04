@@ -130,3 +130,43 @@ func (s *Store) IsOnWaitlist(ctx context.Context, productId int, sizeId int, ema
 
 	return true, nil
 }
+
+// ListWaitlist is the admin read over the whole waitlist (Phase 9, plan 13 §6 — the storefront has
+// written product_waitlist since 0010, but no admin surface ever read it: "9 people wait for M" was
+// invisible). productId narrows to one colourway when set; newest first; capped pagination.
+func (s *Store) ListWaitlist(ctx context.Context, productId *int, limit, offset int) ([]entity.WaitlistEntryWithBuyer, int, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	base := ` FROM product_waitlist pw`
+	params := map[string]any{"limit": limit, "offset": offset}
+	if productId != nil {
+		base += ` WHERE pw.product_id = :productId`
+		params["productId"] = *productId
+	}
+	total, err := storeutil.QueryCountNamed(ctx, s.DB, `SELECT COUNT(*)`+base, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count waitlist entries: %w", err)
+	}
+	entries, err := storeutil.QueryListNamed[entity.WaitlistEntryWithBuyer](ctx, s.DB, `
+		SELECT pw.*,
+			(SELECT first_name FROM buyer WHERE email = pw.email ORDER BY id DESC LIMIT 1) AS first_name,
+			(SELECT last_name FROM buyer WHERE email = pw.email ORDER BY id DESC LIMIT 1) AS last_name`+
+		base+` ORDER BY pw.created_at DESC, pw.id DESC LIMIT :limit OFFSET :offset`, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list waitlist entries: %w", err)
+	}
+	return entries, total, nil
+}
+
+// CountWaitlistForProduct returns how many people wait for any size of one colourway — the cheap
+// per-product counter the admin product detail shows.
+func (s *Store) CountWaitlistForProduct(ctx context.Context, productId int) (int, error) {
+	n, err := storeutil.QueryCountNamed(ctx, s.DB,
+		`SELECT COUNT(*) FROM product_waitlist WHERE product_id = :productId`,
+		map[string]any{"productId": productId})
+	if err != nil {
+		return 0, fmt.Errorf("failed to count waitlist for product %d: %w", productId, err)
+	}
+	return n, nil
+}

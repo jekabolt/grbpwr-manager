@@ -93,6 +93,11 @@ type MaterialInsert struct {
 	Section         string              `db:"section" valid:"required"`
 	Supplier        sql.NullString      `db:"supplier" valid:"-"`
 	SupplierRef     sql.NullString      `db:"supplier_ref" valid:"-"`
+	// SupplierId links the material to the supplier CATALOG (0201) — the FK the free-text Supplier
+	// field never was (plan 13 §1; the PO entity was cut, so v1 is one blended supplier per
+	// material). LeadTimeDays is its typical order-to-door time, feeding "when can a run start".
+	SupplierId   sql.NullInt64 `db:"supplier_id" valid:"-"`
+	LeadTimeDays sql.NullInt64 `db:"lead_time_days" valid:"-"`
 	Composition     sql.NullString      `db:"composition" valid:"-"`
 	Spec            sql.NullString      `db:"spec" valid:"-"`
 	Unit            sql.NullString      `db:"unit" valid:"-"`

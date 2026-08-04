@@ -423,6 +423,16 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 				return err
 			}
 		}
+		// The audit trail references the receipt — it never duplicates its data (plan 04: dual
+		// truth is the failure mode the event table must not reintroduce).
+		statusAfter := string(entity.ProductionRunPartiallyReceived)
+		if p.Final {
+			statusAfter = string(entity.ProductionRunReceived)
+		}
+		if err := recordRunEvent(ctx, db, p.RunID, entity.ProductionRunEventReceiptPosted, p.Username, "",
+			map[string]any{"receipt_id": receiptID, "final": p.Final, "status_after": statusAfter}); err != nil {
+			return err
+		}
 
 		result := &entity.PostProductionRunReceiptResult{ReceiptID: receiptID, CostPriceUpdated: costPriceWrites > 0}
 		response, err := json.Marshal(result)

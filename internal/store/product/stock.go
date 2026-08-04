@@ -151,6 +151,44 @@ func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.
 	return nil
 }
 
+// RestoreStockForProductSizesSeconds is the seconds-disposition counterpart of
+// RestoreStockForProductSizes (Phase 8, plan 13 §5): a worn-but-sellable return goes back to the
+// product's B-GRADE variant (Phase 7 mechanism — the row and its '-B' SKU are created on first
+// touch), never to sellable A stock. Journalled per unit with the same order_returned source, the
+// grade marker separating the streams. B stock carries zero cost, so the refund's ledger entry
+// books NO inventory return for these units — see BuildOrderRefundEntry.
+func (s *Store) RestoreStockForProductSizesSeconds(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error {
+	var historyEntries []entity.StockChangeInsert
+	for _, item := range items {
+		before, err := lockProductSizeQuantity(ctx, s.DB, item.ProductId, item.SizeId, entity.VariantGradeB)
+		if err != nil {
+			return fmt.Errorf("can't lock B stock for product %d size %d: %w", item.ProductId, item.SizeId, err)
+		}
+		after := before.Add(item.QuantityDecimal())
+		if err := s.updateSecondsStock(ctx, item.ProductId, item.SizeId, int(after.IntPart())); err != nil {
+			return fmt.Errorf("can't restore seconds stock for product %d size %d: %w", item.ProductId, item.SizeId, err)
+		}
+		if history != nil {
+			historyEntries = append(historyEntries, entity.StockChangeInsert{
+				ProductId:      sql.NullInt32{Int32: int32(item.ProductId), Valid: true},
+				SizeId:         sql.NullInt32{Int32: int32(item.SizeId), Valid: true},
+				Grade:          entity.VariantGradeB,
+				QuantityDelta:  item.QuantityDecimal(),
+				QuantityBefore: before,
+				QuantityAfter:  after,
+				Source:         string(history.Source),
+				OrderId:        sql.NullInt32{Int32: int32(history.OrderId), Valid: history.OrderId != 0},
+				OrderUUID:      sql.NullString{String: history.OrderUUID, Valid: history.OrderUUID != ""},
+				Reason:         sql.NullString{String: string(entity.StockChangeReasonReturnToStock), Valid: true},
+			})
+		}
+	}
+	if len(historyEntries) > 0 {
+		return s.RecordStockChange(ctx, historyEntries)
+	}
+	return nil
+}
+
 // GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 func (s *Store) GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error) {
 	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId AND grade = 'A'`
@@ -389,6 +427,16 @@ func (s *Store) ReverseProductionStock(ctx context.Context, productID int, perSi
 // facts. Returns whether the product row was actually written.
 func (s *Store) ClearProductCostPriceClaimOfRun(ctx context.Context, productID, runID, techCardID int, est entity.ProductCostReseed) (bool, error) {
 	if est.Cost.Valid {
+		if err := storeutil.ExecNamed(ctx, s.DB, `
+			INSERT INTO product_cost_event (product_id, cost_before, cost_after, source, source_ref)
+			SELECT p.id, p.cost_price, :cost, 'production_run_reversal_reseed',
+			       CONCAT('production_run', CHAR(58), CAST(:run AS CHAR CHARACTER SET utf8mb4))
+			FROM product p
+			WHERE p.id = :id AND p.cost_price_source = 'production_run'
+			  AND p.cost_price_production_run_id = :run AND NOT (p.cost_price <=> :cost)`,
+			map[string]any{"id": productID, "run": runID, "cost": est.Cost.Decimal}); err != nil {
+			return false, fmt.Errorf("can't record cost event (reversal reseed): %w", err)
+		}
 		n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 			UPDATE product
 			SET cost_price = :cost,
@@ -403,6 +451,16 @@ func (s *Store) ClearProductCostPriceClaimOfRun(ctx context.Context, productID, 
 			map[string]any{"id": productID, "run": runID, "tc": techCardID,
 				"cost": est.Cost.Decimal, "breakdown": est.Breakdown})
 		return n > 0, err
+	}
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO product_cost_event (product_id, cost_before, cost_after, source, source_ref)
+		SELECT p.id, p.cost_price, NULL, 'production_run_reversal_clear',
+		       CONCAT('production_run', CHAR(58), CAST(:run AS CHAR CHARACTER SET utf8mb4))
+		FROM product p
+		WHERE p.id = :id AND p.cost_price_source = 'production_run'
+		  AND p.cost_price_production_run_id = :run AND p.cost_price IS NOT NULL`,
+		map[string]any{"id": productID, "run": runID}); err != nil {
+		return false, fmt.Errorf("can't record cost event (reversal clear): %w", err)
 	}
 	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 		UPDATE product
@@ -429,6 +487,17 @@ func (s *Store) ClearProductCostPriceClaimOfRun(ctx context.Context, productID, 
 // statement: it decomposes the tech-card ESTIMATE, and leaving it beside a run actual makes the
 // COGS-structure report split the actual by the old plan's proportions.
 func (s *Store) SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) (bool, error) {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO product_cost_event (product_id, cost_before, cost_after, source, source_ref)
+		SELECT p.id, p.cost_price, :cost, 'production_run_receive',
+		       CONCAT('production_run', CHAR(58), CAST(:run AS CHAR CHARACTER SET utf8mb4))
+		FROM product p
+		WHERE p.id = :id
+		  AND (p.cost_price_source IS NULL OR p.cost_price_source IN ('tech_card', 'production_run'))
+		  AND NOT (p.cost_price <=> :cost)`,
+		map[string]any{"id": productID, "run": runID, "cost": cost}); err != nil {
+		return false, fmt.Errorf("can't record cost event (run receive): %w", err)
+	}
 	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 		UPDATE product
 		SET cost_price = :cost,

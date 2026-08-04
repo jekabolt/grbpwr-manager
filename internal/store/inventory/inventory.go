@@ -83,12 +83,12 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 		INSERT INTO material_stock_movement
 			(material_id, movement_type, quantity, on_hand_before, on_hand_after,
 			 unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
-			 lot, lot_id, supplier_doc, supplier_id, reason, comment, admin_username, occurred_at,
+			 lot, lot_id, supplier_doc, supplier_id, expected_at, reason, comment, admin_username, occurred_at,
 			 input_vat_amount, input_vat_regime)
 		VALUES
 			(:material_id, :movement_type, :quantity, :on_hand_before, :on_hand_after,
 			 :unit_cost, :currency, :unit_cost_base, :production_run_id, :sample_id, :tech_card_id, :product_id,
-			 :lot, :lot_id, :supplier_doc, :supplier_id, :reason, :comment, :admin_username, :occurred_at,
+			 :lot, :lot_id, :supplier_doc, :supplier_id, :expected_at, :reason, :comment, :admin_username, :occurred_at,
 			 :input_vat_amount, :input_vat_regime)`,
 		map[string]any{
 			"material_id":       m.MaterialId,
@@ -107,6 +107,7 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 			"lot_id":            m.LotId,
 			"supplier_doc":      m.SupplierDoc,
 			"supplier_id":       m.SupplierId,
+			"expected_at":       m.ExpectedAt,
 			"reason":            m.Reason,
 			"comment":           m.Comment,
 			"admin_username":    m.AdminUsername,
@@ -336,6 +337,7 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 		ProductionRunId: ins.ProductionRunId,
 		Lot:             ins.Lot,
 		SupplierDoc:     ins.SupplierDoc,
+		ExpectedAt:      ins.ExpectedAt,
 		Comment:         ins.Comment,
 		AdminUsername:   ins.AdminUsername,
 		OccurredAt:      ins.OccurredAt,

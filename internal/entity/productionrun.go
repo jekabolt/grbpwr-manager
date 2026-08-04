@@ -205,7 +205,20 @@ type ProductionRunCost struct {
 	Currency    string                `db:"currency"`
 	AmountBase  decimal.NullDecimal   `db:"amount_base"`
 	IncurredAt  sql.NullTime          `db:"incurred_at"`
+	// Cost-document fields (0234, plan 12.3 — read/write surfaced in Phase 9): who invoices this
+	// article, under which document, with what VAT, and where the payable stands. They upgrade the
+	// UI's honest "начислено" toward "оплачено" without a second ledger; ap_status is one of
+	// ValidApStatuses (accrued default / invoiced / paid).
+	SupplierId  sql.NullInt64       `db:"supplier_id"`
+	DocumentRef sql.NullString      `db:"document_ref"`
+	VatRate     decimal.NullDecimal `db:"vat_rate"`
+	VatAmount   decimal.NullDecimal `db:"vat_amount"`
+	ApStatus    sql.NullString      `db:"ap_status"`
 }
+
+// ValidApStatuses is the storable set for production_run_cost.ap_status (0234's comment contract:
+// accrued — booked, no document yet; invoiced — the supplier's document arrived; paid — settled).
+var ValidApStatuses = map[string]bool{"accrued": true, "invoiced": true, "paid": true}
 
 // ProductionRunInsert is the writable payload for a run (header + size grid + actual costs).
 // PlannedUnitCost and PlannedCurrency are server-snapshotted at plan time (from the linked
@@ -235,6 +248,12 @@ type ProductionRunInsert struct {
 	// run (planned/in_progress) past it is overdue, which is the whole definition of
 	// ProductionRunListFilter.OverdueOnly.
 	PlannedStartAt sql.NullTime        `db:"planned_start_at"`
+	// SupplierId is the factory running the batch (plan 12.1, nullable FK to supplier) — the key
+	// that unlocks per-vendor variance/defect reporting.
+	SupplierId sql.NullInt64 `db:"supplier_id"`
+	// Actor is the admin performing the write — carried for the production_run_event audit trail
+	// (Phase 8), never stored on the run row itself.
+	Actor string `db:"-"`
 	PromisedAt     sql.NullTime        `db:"promised_at"`
 	Lines          []ProductionRunLine `db:"-"`
 	Costs          []ProductionRunCost `db:"-"`
@@ -249,10 +268,49 @@ type ProductionRun struct {
 	MaterialMovements []MaterialMovement `db:"-"`
 	// Receipts are the run's immutable receiving events (Phase 4, receipt v1), oldest first. Loaded
 	// on the single-run read only; list reads leave it nil to stay light.
-	Receipts    []ProductionRunReceipt `db:"-"`
-	CreatedAt   time.Time              `db:"created_at"`
-	UpdatedAt   time.Time              `db:"updated_at"`
-	LockVersion int                    `db:"lock_version"` // optimistic-lock token, bumped on every update (#9)
+	Receipts []ProductionRunReceipt `db:"-"`
+	// Events is the run's append-only lifecycle audit trail (production_run_event, Phase 8),
+	// oldest first. Single-run read only, like Receipts.
+	Events []ProductionRunEvent `db:"-"`
+	// Recon is the server-side "expected vs booked" cross-check over the run's journals (plan 04
+	// §4.2 / 12.5): receipts vs the stock journal vs the posted ledger claims. Single-run read only.
+	Recon       []ProductionRunReconCheck `db:"-"`
+	CreatedAt   time.Time                 `db:"created_at"`
+	UpdatedAt   time.Time                 `db:"updated_at"`
+	LockVersion int                       `db:"lock_version"` // optimistic-lock token, bumped on every update (#9)
+}
+
+// ProductionRunEvent is one row of the run's append-only audit trail (production_run_event).
+// receipt_posted/receipt_reversed events REFERENCE their receipt in the payload — they never
+// duplicate its data (dual truth is the failure mode plan 04 exists to prevent).
+type ProductionRunEvent struct {
+	Id        int            `db:"id"`
+	RunId     int            `db:"run_id"`
+	EventType string         `db:"event_type"`
+	Actor     sql.NullString `db:"actor"`
+	Reason    sql.NullString `db:"reason"`
+	Payload   sql.NullString `db:"payload"`
+	CreatedAt time.Time      `db:"created_at"`
+}
+
+// Lifecycle event types (Phase 8; receipt_reversed and units_scrapped are declared beside their
+// writers in productionrun_reversal.go / the receipt command).
+const (
+	ProductionRunEventCreated       = "created"
+	ProductionRunEventStarted       = "started"
+	ProductionRunEventClosed        = "closed"
+	ProductionRunEventCancelled     = "cancelled"
+	ProductionRunEventReceiptPosted = "receipt_posted"
+)
+
+// ProductionRunReconCheck is one typed cross-check of the run's derived state against its journals.
+// Expected/Actual are rendered as strings so unit checks and money checks share one shape.
+type ProductionRunReconCheck struct {
+	Key      string // stable identifier, e.g. units_receipts_vs_stock_journal
+	Expected string
+	Actual   string
+	Ok       bool
+	Detail   string // one operator-facing sentence on what disagrees and where to look
 }
 
 // ProductionRunListFilter narrows ListProductionRuns. Zero-value fields mean "no filter".

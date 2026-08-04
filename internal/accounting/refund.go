@@ -85,20 +85,29 @@ func BuildOrderRefundEntry(
 	// Money back to the same account S1 debited (1030 / 1010 / 1040).
 	lines = append(lines, entity.AcctJournalLineInsert{AccountCode: moneyAccount(f.PaymentMethodName), Side: entity.AcctSideCredit, Amount: r})
 
-	// Stock returned to inventory — the ledger mirrors RefundOrder's RestoreStockForProductSizes.
-	// Costed refunded lines only.
-	cogsr, uncosted, unknownItems := refundCOGS(items, refund.RefundedByItem)
-	if cogsr.IsPositive() {
-		lines = append(lines,
-			entity.AcctJournalLineInsert{AccountCode: Acc1130, Side: entity.AcctSideDebit, Amount: cogsr},
-			entity.AcctJournalLineInsert{AccountCode: Acc5050, Side: entity.AcctSideCredit, Amount: cogsr},
-		)
-	}
-	if len(uncosted) > 0 {
-		caveats = append(caveats, "COGS return understated; missing cost for product(s): "+joinProductIDs(uncosted))
-	}
-	if len(unknownItems) > 0 {
-		caveats = append(caveats, "refund references order item(s) not on the order; COGS return understated: "+joinProductIDs(unknownItems))
+	// Stock returned to inventory — the ledger mirrors RefundOrder's stock decision exactly
+	// (Phase 8): restock returns the costed units to 1130; writeoff and seconds return NOTHING to
+	// costed inventory — the units are consumed, or live on as zero-cost B-grade stock — so the
+	// sale's COGS deliberately stays expensed and no Dr 1130 / Cr 5050 pair is booked.
+	switch refund.Disposition {
+	case entity.RefundDispositionWriteoff:
+		caveats = append(caveats, "refund dispositioned writeoff: goods not restocked, sale COGS stays expensed")
+	case entity.RefundDispositionSeconds:
+		caveats = append(caveats, "refund dispositioned seconds: goods restocked as zero-cost B grade, sale COGS stays expensed")
+	default:
+		cogsr, uncosted, unknownItems := refundCOGS(items, refund.RefundedByItem)
+		if cogsr.IsPositive() {
+			lines = append(lines,
+				entity.AcctJournalLineInsert{AccountCode: Acc1130, Side: entity.AcctSideDebit, Amount: cogsr},
+				entity.AcctJournalLineInsert{AccountCode: Acc5050, Side: entity.AcctSideCredit, Amount: cogsr},
+			)
+		}
+		if len(uncosted) > 0 {
+			caveats = append(caveats, "COGS return understated; missing cost for product(s): "+joinProductIDs(uncosted))
+		}
+		if len(unknownItems) > 0 {
+			caveats = append(caveats, "refund references order item(s) not on the order; COGS return understated: "+joinProductIDs(unknownItems))
+		}
 	}
 
 	entry := entity.AcctJournalEntryInsert{

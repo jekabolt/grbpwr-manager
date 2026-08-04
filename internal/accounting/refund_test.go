@@ -256,3 +256,51 @@ func TestRefundReversesSaleVATToZero(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildOrderRefundEntry_Dispositions(t *testing.T) {
+	// Phase 8: the S2 entry mirrors the refund's stock decision. writeoff/seconds return NOTHING
+	// to costed inventory — the sale's COGS stays expensed — so the money side (revenue/VAT/cash)
+	// must be identical to restock while the Dr 1130 / Cr 5050 pair disappears.
+	base := func(disposition string) entity.AcctOrderRefundPayload {
+		return entity.AcctOrderRefundPayload{
+			OrderUUID:      "order-250",
+			RefundAmount:   dec("250.00"),
+			OrderCurrency:  "EUR",
+			RefundedByItem: map[int]int64{1: 1},
+			Disposition:    disposition,
+		}
+	}
+
+	t.Run("restock keeps the inventory return", func(t *testing.T) {
+		f := saleFacts(entity.CARD)
+		e, err := BuildOrderRefundEntry(f, base(entity.RefundDispositionRestock), f.Items, vdOSS23(), "order-250:1", testOccurred)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "84.50")
+		assertAmount(t, e, Acc5050, entity.AcctSideCredit, "84.50")
+		assert.False(t, e.HasCaveat)
+	})
+
+	t.Run("writeoff books no inventory return and says so", func(t *testing.T) {
+		f := saleFacts(entity.CARD)
+		e, err := BuildOrderRefundEntry(f, base(entity.RefundDispositionWriteoff), f.Items, vdOSS23(), "order-250:2", testOccurred)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assert.False(t, hasLine(e, Acc1130, entity.AcctSideDebit), "no stock returned")
+		assert.False(t, hasLine(e, Acc5050, entity.AcctSideCredit), "COGS stays expensed")
+		// The money side is untouched by the disposition.
+		assertAmount(t, e, Acc4040, entity.AcctSideDebit, "203.25")
+		assertAmount(t, e, Acc1030, entity.AcctSideCredit, "250.00")
+		assert.True(t, e.HasCaveat)
+	})
+
+	t.Run("seconds books no inventory return either (B stock is zero-cost)", func(t *testing.T) {
+		f := saleFacts(entity.CARD)
+		e, err := BuildOrderRefundEntry(f, base(entity.RefundDispositionSeconds), f.Items, vdOSS23(), "order-250:3", testOccurred)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assert.False(t, hasLine(e, Acc1130, entity.AcctSideDebit))
+		assert.False(t, hasLine(e, Acc5050, entity.AcctSideCredit))
+		assert.True(t, e.HasCaveat)
+	})
+}

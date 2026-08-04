@@ -806,6 +806,15 @@ func updateColorwayRow(ctx context.Context, db dependency.DB, prd *entity.Colorw
 	if err != nil {
 		return err
 	}
+	// Manual cost audit (plan 12.2): a supplied cost is manual admin input — record the transition
+	// before the write, change-guarded, so no-op echoes leave no event.
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO product_cost_event (product_id, cost_before, cost_after, source)
+		SELECT p.id, p.cost_price, :costPrice, 'manual'
+		FROM product p WHERE p.id = :id AND :costPrice IS NOT NULL AND NOT (p.cost_price <=> :costPrice)`,
+		map[string]any{"id": id, "costPrice": prd.CostPrice}); err != nil {
+		return fmt.Errorf("can't record cost event (manual): %w", err)
+	}
 	return storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"preorder":             prd.ProductBodyInsert.Preorder,
 		"colorCode":            prd.ProductBodyInsert.ColorCode,
@@ -856,6 +865,20 @@ func (s *Store) AssignPrimaryTechCardIfUnset(ctx context.Context, techCardID int
 // products updated. Retained for explicit bulk callers; the save hook uses the version-guarded,
 // per-colourway SeedProductCostFromTechCard path below.
 func (s *Store) SeedProductsCostPriceFromTechCard(ctx context.Context, techCardID int, cost decimal.Decimal) (int64, error) {
+	// Audit first (plan 12.2): same predicate as the UPDATE below, change-guarded, so the event
+	// stream records exactly the rows the seed touches.
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO product_cost_event (product_id, cost_before, cost_after, source, source_ref)
+		SELECT p.id, p.cost_price, :cost, 'tech_card_seed',
+		       CONCAT('tech_card', CHAR(58), CAST(:tc AS CHAR CHARACTER SET utf8mb4))
+		FROM product p
+		JOIN tech_card_product tcp ON tcp.product_id = p.id AND tcp.tech_card_id = :tc
+		WHERE p.primary_tech_card_id = :tc
+			AND (p.cost_price_source IS NULL OR p.cost_price_source = 'tech_card')
+			AND NOT (p.cost_price <=> :cost)`,
+		map[string]any{"tc": techCardID, "cost": cost}); err != nil {
+		return 0, fmt.Errorf("can't record cost events (bulk seed): %w", err)
+	}
 	return storeutil.ExecNamedRows(ctx, s.DB, `
 		UPDATE product p
 		JOIN tech_card_product tcp ON tcp.product_id = p.id AND tcp.tech_card_id = :tc
@@ -890,6 +913,19 @@ func (s *Store) SeedProductsCostBreakdownFromTechCard(ctx context.Context, techC
 // card save, manual edit, or production receipt from leaving price and breakdown from different facts.
 func (s *Store) SeedProductCostFromTechCard(ctx context.Context, productID, techCardID, techCardLockVersion int,
 	cost decimal.Decimal, breakdown sql.NullString) (bool, error) {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO product_cost_event (product_id, cost_before, cost_after, source, source_ref)
+		SELECT p.id, p.cost_price, :cost, 'tech_card_seed',
+		       CONCAT('tech_card', CHAR(58), CAST(:tc AS CHAR CHARACTER SET utf8mb4))
+		FROM product p
+		JOIN tech_card tc ON tc.id = :tc AND tc.lock_version = :tc_lock_version
+		WHERE p.id = :id
+			AND p.primary_tech_card_id = :tc
+			AND (p.cost_price_source IS NULL OR p.cost_price_source = 'tech_card')
+			AND NOT (p.cost_price <=> :cost)`,
+		map[string]any{"id": productID, "tc": techCardID, "tc_lock_version": techCardLockVersion, "cost": cost}); err != nil {
+		return false, fmt.Errorf("can't record cost event (seed): %w", err)
+	}
 	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 		UPDATE product p
 		JOIN tech_card tc ON tc.id = :tc AND tc.lock_version = :tc_lock_version
@@ -912,6 +948,14 @@ func (s *Store) SeedProductCostFromTechCard(ctx context.Context, productID, tech
 // cost of a single product, overriding any manual value. Used by the explicit
 // SyncProductCostFromTechCard admin action.
 func (s *Store) ForceSetProductCostPriceFromTechCard(ctx context.Context, productID, techCardID int, cost decimal.Decimal) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO product_cost_event (product_id, cost_before, cost_after, source, source_ref)
+		SELECT p.id, p.cost_price, :cost, 'tech_card_sync',
+		       CONCAT('tech_card', CHAR(58), CAST(:tc AS CHAR CHARACTER SET utf8mb4))
+		FROM product p WHERE p.id = :id AND NOT (p.cost_price <=> :cost)`,
+		map[string]any{"id": productID, "tc": techCardID, "cost": cost}); err != nil {
+		return fmt.Errorf("can't record cost event (sync): %w", err)
+	}
 	return storeutil.ExecNamed(ctx, s.DB, `
 		UPDATE product
 		SET cost_price = :cost,
