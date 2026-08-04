@@ -25,6 +25,15 @@ var ErrProductionRunReversalOfReversal = errors.New("a reversal row cannot be re
 // is deliberately not supported (v1).
 var ErrProductionRunReversalClosedRun = errors.New("a closed run's receipts cannot be reversed")
 
+// ErrProductionRunHasReceiptHistory is returned when deleting a run whose receipt history (live,
+// reversed or reversal rows) still exists — the history is an audit fact the FK protects.
+var ErrProductionRunHasReceiptHistory = errors.New("the run has receipt history; a run with receipts cannot be deleted")
+
+// ErrProductionRunReversalFinalFirst is returned when a PARTIAL receipt is targeted while a live
+// FINAL exists: reversals unwind newest-first, otherwise the partial's FG share strands on WIP
+// under a run no receipt can ever post to again (adversarial #3).
+var ErrProductionRunReversalFinalFirst = errors.New("reverse the final receipt first: while it stands, reversing a partial would strand its cost in WIP forever")
+
 // ErrProductionRunReversalAux is returned for receipts of auxiliary runs (v1): their output landed
 // in the material warehouse and compounded its moving average — adjust or write off the material
 // instead of reversing the receipt.
@@ -75,11 +84,12 @@ type ReverseProductionRunReceiptParams struct {
 	Reason              string
 	ExpectedLockVersion int
 	Username            string
-	// Tech-card reseed inputs (plan 05 item 5): per-product estimate from the run's card at the
-	// version the handler read. Products absent from the map clear to NULL when this run claims them.
-	CardID          int
-	CardLockVersion int
-	Reseed          map[int]ProductCostReseed
+	// Tech-card reseed inputs (plan 05 item 5): per-product estimate from the run's card as the
+	// handler read it — deliberately NOT lock-version-fenced (removing the dead run claim beats
+	// losing the reversal to a concurrent card edit; a stale estimate is the card's own history).
+	// Products absent from the map clear to NULL when this run claims them.
+	CardID int
+	Reseed map[int]ProductCostReseed
 }
 
 // ReverseProductionRunReceiptResult reports what the reversal actually did.

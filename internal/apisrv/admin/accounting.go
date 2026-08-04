@@ -475,6 +475,7 @@ func mapAcctErr(ctx context.Context, what string, err error) error {
 		errors.Is(err, entity.ErrAcctPeriodNotReady),
 		errors.Is(err, entity.ErrAcctAlreadyReversed),
 		errors.Is(err, entity.ErrAcctCannotReverseReversal),
+		errors.Is(err, entity.ErrAcctReceiptScopeReversed),
 		errors.Is(err, entity.ErrAcctSystemAccount):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, sql.ErrNoRows):

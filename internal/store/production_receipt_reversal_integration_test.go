@@ -104,7 +104,7 @@ func postReceiptForReversal(ctx context.Context, t *testing.T, s *MYSQLStore, ru
 
 // postLiveReceiveEntry simulates the posting worker: a live production_receive entry for the
 // receipt (Dr 1120/Cr 2010 manual + Dr 1130/Cr 1120 fg) and the same-tx posted-amount stamps.
-func postLiveReceiveEntry(ctx context.Context, t *testing.T, s *MYSQLStore, receiptID int, manual, fg decimal.Decimal) {
+func postLiveReceiveEntry(ctx context.Context, t *testing.T, s *MYSQLStore, receiptID int, manual, fg decimal.Decimal) int {
 	t.Helper()
 	lines := []entity.AcctJournalLineInsert{}
 	if manual.IsPositive() {
@@ -119,8 +119,9 @@ func postLiveReceiveEntry(ctx context.Context, t *testing.T, s *MYSQLStore, rece
 			entity.AcctJournalLineInsert{AccountCode: "1120", Side: entity.AcctSideCredit, Amount: fg},
 		)
 	}
+	var entryID int
 	require.NoError(t, s.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		_, existed, err := rep.Accounting().CreateJournalEntry(ctx, entity.AcctJournalEntryInsert{
+		id, existed, err := rep.Accounting().CreateJournalEntry(ctx, entity.AcctJournalEntryInsert{
 			OccurredAt:  time.Now().UTC(),
 			Description: "test receive",
 			SourceType:  entity.AcctSourceProductionReceive,
@@ -132,8 +133,10 @@ func postLiveReceiveEntry(ctx context.Context, t *testing.T, s *MYSQLStore, rece
 			return err
 		}
 		require.False(t, existed)
+		entryID = id
 		return rep.Accounting().MarkReceiptPosted(ctx, receiptID, manual, fg)
 	}))
+	return entryID
 }
 
 // TestProductionReceiptReversal pins the Phase 6 command end-to-end on real schema: stock back out
@@ -356,20 +359,85 @@ func TestProductionReceiptReversal(t *testing.T) {
 		require.Equal(t, string(entity.ProductionRunReceived), status)
 	})
 
-	t.Run("reversing a partial keeps a live final untouched and the run received", func(t *testing.T) {
+	t.Run("a partial under a live final refuses; final-first unwinds cleanly", func(t *testing.T) {
+		// Reversals unwind newest-first (adversarial #3): while the final stands, reversing the
+		// partial would strand its FG share on WIP under a run no receipt can ever post to again.
 		_, _, _, runID := seedReversalFixture(ctx, t, s, "E", 0)
 		r1 := postReceiptForReversal(ctx, t, s, runID, 2, 0, false)
-		_ = postReceiptForReversal(ctx, t, s, runID, 3, 0, true)
+		rFinal := postReceiptForReversal(ctx, t, s, runID, 3, 0, true)
 
 		_, err := P.ReverseProductionRunReceipt(ctx, entity.ReverseProductionRunReceiptParams{
 			RunID: runID, ReceiptID: r1, Reason: "partial was wrong", Username: "tester",
 		})
-		require.NoError(t, err)
+		require.ErrorIs(t, err, entity.ErrProductionRunReversalFinalFirst)
 		var status string
 		var receivedAt sql.NullTime
 		require.NoError(t, testDB.QueryRowContext(ctx,
 			"SELECT status, received_at FROM production_run WHERE id = ?", runID).Scan(&status, &receivedAt))
-		require.Equal(t, string(entity.ProductionRunReceived), status, "a live final keeps the run received")
+		require.Equal(t, string(entity.ProductionRunReceived), status, "refusal leaves the run untouched")
 		require.True(t, receivedAt.Valid)
+
+		// Final first — the run reopens to partially_received; then the partial reverses too and
+		// the run is back in progress with a clean WIP.
+		_, err = P.ReverseProductionRunReceipt(ctx, entity.ReverseProductionRunReceiptParams{
+			RunID: runID, ReceiptID: rFinal, Reason: "unwind final", Username: "tester",
+		})
+		require.NoError(t, err)
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT status FROM production_run WHERE id = ?", runID).Scan(&status))
+		require.Equal(t, string(entity.ProductionRunPartiallyReceived), status)
+
+		_, err = P.ReverseProductionRunReceipt(ctx, entity.ReverseProductionRunReceiptParams{
+			RunID: runID, ReceiptID: r1, Reason: "partial was wrong", Username: "tester",
+		})
+		require.NoError(t, err)
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT status FROM production_run WHERE id = ?", runID).Scan(&status))
+		require.Equal(t, string(entity.ProductionRunInProgress), status)
+	})
+
+	t.Run("generic whole-entry reversal refuses on a scope-reversed receipt", func(t *testing.T) {
+		// Adversarial #1: the scoped reversal leaves the production_receive entry LIVE (its AP
+		// capitalisation remains payable, its FG transfer is already compensated) — flipping the
+		// whole entry afterwards would credit FG a second time.
+		_, _, _, runID := seedReversalFixture(ctx, t, s, "G", 30)
+		receiptID := postReceiptForReversal(ctx, t, s, runID, 2, 0, true)
+		entryID := postLiveReceiveEntry(ctx, t, s, receiptID, decimal.NewFromInt(30), decimal.RequireFromString("15.00"))
+
+		_, err := P.ReverseProductionRunReceipt(ctx, entity.ReverseProductionRunReceiptParams{
+			RunID: runID, ReceiptID: receiptID, Reason: "undo", Username: "tester",
+		})
+		require.NoError(t, err)
+
+		err = s.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			_, e := rep.Accounting().ReverseJournalEntry(ctx, entryID, "flip it", "tester")
+			return e
+		})
+		require.ErrorIs(t, err, entity.ErrAcctReceiptScopeReversed)
+	})
+
+	t.Run("posting marks are no-ops on a scope-reversed receipt", func(t *testing.T) {
+		// Adversarial #2 backstop: the worker's stamp must never resurrect posted amounts on a
+		// reversed receipt (the plain-SUM money aggregates would feed them to the siblings).
+		_, _, _, runID := seedReversalFixture(ctx, t, s, "H", 25)
+		receiptID := postReceiptForReversal(ctx, t, s, runID, 2, 0, true)
+		entryID := postLiveReceiveEntry(ctx, t, s, receiptID, decimal.NewFromInt(25), decimal.RequireFromString("10.00"))
+
+		_, err := P.ReverseProductionRunReceipt(ctx, entity.ReverseProductionRunReceiptParams{
+			RunID: runID, ReceiptID: receiptID, Reason: "undo", Username: "tester",
+		})
+		require.NoError(t, err)
+
+		reversed, err := s.Accounting().LockReceiptForPosting(ctx, receiptID)
+		require.NoError(t, err)
+		require.True(t, reversed, "the worker's in-tx lock must report the reversal")
+
+		require.NoError(t, s.Accounting().MarkReceiptPosted(ctx, receiptID, decimal.NewFromInt(25), decimal.NewFromInt(10)))
+		require.NoError(t, s.Accounting().MarkReceiptPostedFromEntry(ctx, receiptID, entryID))
+		var manual, fg sql.NullString
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT posted_manual_base, posted_fg_base FROM production_run_receipt WHERE id = ?", receiptID).Scan(&manual, &fg))
+		require.True(t, manual.Valid, "the live manual claim survives the reversal")
+		require.False(t, fg.Valid, "no stamp may resurrect the compensated fg claim")
 	})
 }

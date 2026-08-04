@@ -956,8 +956,13 @@ type (
 		// run's costs and material issues (P1, run-scoped — v1 receipts are final-only) plus the
 		// receipt's own received_at and good-quantity total.
 		GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*entity.AcctRunFacts, error)
+		// LockReceiptForPosting takes the receipt's row lock inside the worker's posting tx and
+		// reports whether the receipt was scope-reversed meanwhile — posting must then be skipped
+		// (the reversal already took the goods out of stock).
+		LockReceiptForPosting(ctx context.Context, receiptID int) (reversed bool, err error)
 		// MarkReceiptPosted stamps posting_status='posted' plus what the live entry capitalised
-		// (Cr 2010) and relieved (Dr 1130); called in the same tx as the entry insert.
+		// (Cr 2010) and relieved (Dr 1130); called in the same tx as the entry insert. A no-op on
+		// a scope-reversed receipt (backstop to LockReceiptForPosting).
 		MarkReceiptPosted(ctx context.Context, receiptID int, manualBase, fgBase decimal.Decimal) error
 		// MarkReceiptPostedFromEntry marks posted with amounts recovered from an existing live
 		// entry's lines (the worker's raced path).

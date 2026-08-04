@@ -280,6 +280,26 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 	return rf, nil
 }
 
+// LockReceiptForPosting takes the receipt's row lock inside the WORKER's posting transaction and
+// reports whether the receipt was scope-reversed meanwhile. The scan and the facts load run on the
+// pool, so a reversal can commit between them and the posting tx — without this lock the worker
+// would insert a live production_receive entry (Dr FG) for goods the reversal already took OUT of
+// stock, uncompensatable forever because a receipt reverses exactly once (adversarial #2). The
+// FOR UPDATE serializes against ReverseProductionRunReceipt's own receipt lock: whichever commits
+// second sees the other's fact and behaves (worker skips / reversal compensates the live entry).
+func (s *Store) LockReceiptForPosting(ctx context.Context, receiptID int) (bool, error) {
+	row, err := storeutil.QueryNamedOne[struct {
+		Reversed int `db:"reversed"`
+	}](ctx, s.DB, `
+		SELECT (reversed_by IS NOT NULL OR reversal_of IS NOT NULL) AS reversed
+		FROM production_run_receipt WHERE id = :id FOR UPDATE`,
+		map[string]any{"id": receiptID})
+	if err != nil {
+		return false, fmt.Errorf("accounting: lock receipt %d for posting: %w", receiptID, err)
+	}
+	return row.Reversed == 1, nil
+}
+
 // MarkReceiptPosted stamps a receipt's posting_status='posted' together with what its live entry
 // actually capitalised (Cr 2010) and relieved (Dr 1130) — the sibling aggregates Phase 5's
 // pro-rata/true-up arithmetic reads. Called in the same transaction as the journal-entry insert so
@@ -289,7 +309,7 @@ func (s *Store) MarkReceiptPosted(ctx context.Context, receiptID int, manualBase
 		UPDATE production_run_receipt SET posting_status = 'posted', last_posting_error = NULL,
 			last_skipped_at = NULL,
 			posted_manual_base = :manual_base, posted_fg_base = :fg_base
-		WHERE id = :id`, map[string]any{
+		WHERE id = :id AND reversed_by IS NULL AND reversal_of IS NULL`, map[string]any{
 		"id": receiptID, "manual_base": manualBase, "fg_base": fgBase,
 	}); err != nil {
 		return fmt.Errorf("accounting: mark receipt %d posted: %w", receiptID, err)
@@ -325,7 +345,7 @@ func (s *Store) MarkReceiptPostedFromEntry(ctx context.Context, receiptID, entry
 			posted_fg_base = COALESCE((SELECT SUM(l.amount) FROM acct_journal_line l
 			                           JOIN acct_account a ON a.id = l.account_id
 			                           WHERE l.entry_id = :entry_id AND a.code = :fg_code AND l.side = 'debit'), 0)
-		WHERE id = :id`, map[string]any{
+		WHERE id = :id AND reversed_by IS NULL AND reversal_of IS NULL`, map[string]any{
 		"id": receiptID, "entry_id": entryID,
 		// The builder's own account constants (internal/accounting), not string literals — one
 		// source of truth with BuildProductionReceiveEntry and the worker's line recovery.

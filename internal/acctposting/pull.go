@@ -239,8 +239,19 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 			fgAmt = fgAmt.Add(l.Amount)
 		}
 	}
-	var existed bool
+	var existed, reversedMidFlight bool
 	txErr := w.repo.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// The scan and the facts load ran on the pool — a reversal can have committed since. Lock
+		// the receipt row FIRST: posting an entry for a scope-reversed receipt would debit FG for
+		// goods the reversal already took out of stock, uncompensatable forever (adversarial #2).
+		reversed, e := rep.Accounting().LockReceiptForPosting(ctx, ref.ReceiptID)
+		if e != nil {
+			return e
+		}
+		if reversed {
+			reversedMidFlight = true
+			return nil // commit nothing — the closure wrote nothing yet
+		}
 		_, ex, e := rep.Accounting().CreateJournalEntry(ctx, entry)
 		existed = ex
 		if e != nil {
@@ -252,6 +263,11 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 	if txErr != nil {
 		// A closed period (rare — received_at is ~now) or any other posting error.
 		return fmt.Errorf("post receipt entry: %w", txErr)
+	}
+	if reversedMidFlight {
+		slog.Default().InfoContext(ctx, "acctposting: receipt was reversed before its posting tx; nothing posted",
+			slog.Int("receipt_id", ref.ReceiptID), slog.Int("run_id", ref.RunID))
+		return nil
 	}
 	// With versioned keys a collapse means two workers raced on the same fresh key — harmless
 	// (the entry exists), but worth a note because it should be rare.

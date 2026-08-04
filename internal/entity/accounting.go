@@ -29,6 +29,11 @@ var (
 	ErrAcctSystemAccount = errors.New("accounting: system account cannot be modified")
 	// ErrAcctAlreadyReversed is returned when reversing an entry that was already reversed.
 	ErrAcctAlreadyReversed = errors.New("accounting: entry already reversed")
+	// ErrAcctReceiptScopeReversed is returned when generically reversing a production_receive entry
+	// whose RECEIPT was scope-reversed: the entry stays live as the record of the still-payable AP
+	// capitalisation (its FG transfer was already compensated), and flipping all its lines would
+	// credit FG a second time. Cancelling the invoice itself is a cost-document operation.
+	ErrAcctReceiptScopeReversed = errors.New("accounting: this entry's receipt was reversed; its FG transfer is already compensated and the AP capitalisation remains payable — the entry cannot be flipped whole")
 	// ErrAcctCannotReverseReversal is returned when reversing a reversal entry (fix with a new entry).
 	ErrAcctCannotReverseReversal = errors.New("accounting: cannot reverse a reversal entry")
 )

@@ -115,7 +115,9 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 	// 3b) production receipts in the month all posted (Phase 4: the receipt is the accounting unit;
 	// 0231 guarantees every received run has one, so this covers legacy receives too). Dead-lettered
 	// receipts still count — a close must not slide past money the worker gave up on. The legacy
-	// '<run_id>' key family is matched beside 'receipt:<id>' for entries 0235 could not rewrite.
+	// '<run_id>' key family is matched beside 'receipt:<id>' for entries 0235 could not rewrite,
+	// restricted to SINGLE-receipt runs exactly as in ListUnpostedReceipts — the two predicates
+	// must agree, or the scan posts receipts this gate already considers covered (and vice versa).
 	// The ':' is CHAR(58): a literal colon inside a quoted SQL string breaks sqlx's named-parameter
 	// scan for the WHOLE query ("could not find name v in map") — which is exactly how the previous
 	// version of this predicate (':v%') shipped broken and made every ClosePeriod error out.
@@ -127,8 +129,9 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 		                  WHERE e.source_type = 'production_receive'
 		                    AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
 		                         OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)
+		                         OR ((SELECT COUNT(*) FROM production_run_receipt c WHERE c.run_id = pr.run_id) = 1
+		                             AND (e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                                  OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)))
 		                    AND e.reversed_by IS NULL)`,
 		map[string]any{"from": from, "to": to})
 	if err != nil {

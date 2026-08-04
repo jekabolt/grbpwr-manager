@@ -123,7 +123,8 @@ func (s *Server) DeleteProductionRun(ctx context.Context, req *pb_admin.DeletePr
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
 		}
-		if errors.Is(err, entity.ErrProductionRunReceivedImmutable) || errors.Is(err, entity.ErrProductionRunHasMovements) {
+		if errors.Is(err, entity.ErrProductionRunReceivedImmutable) || errors.Is(err, entity.ErrProductionRunHasMovements) ||
+			errors.Is(err, entity.ErrProductionRunHasReceiptHistory) {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't delete production run", slog.String("err", err.Error()))
@@ -319,7 +320,6 @@ func (s *Server) ReverseProductionRunReceipt(ctx context.Context, req *pb_admin.
 		ExpectedLockVersion: int(req.ExpectedLockVersion),
 		Username:            authsrv.GetAdminUsername(ctx),
 		CardID:              card.Id,
-		CardLockVersion:     card.LockVersion,
 		Reseed:              reseed,
 	})
 	if err != nil {
@@ -330,7 +330,8 @@ func (s *Server) ReverseProductionRunReceipt(ctx context.Context, req *pb_admin.
 		case errors.Is(err, entity.ErrProductionRunReceiptAlreadyReversed),
 			errors.Is(err, entity.ErrProductionRunReversalOfReversal),
 			errors.Is(err, entity.ErrProductionRunReversalClosedRun),
-			errors.Is(err, entity.ErrProductionRunReversalPeriodClosed):
+			errors.Is(err, entity.ErrProductionRunReversalPeriodClosed),
+			errors.Is(err, entity.ErrProductionRunReversalFinalFirst):
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		case errors.Is(err, entity.ErrProductionRunReceiptNotFound):
 			return nil, status.Error(codes.NotFound, err.Error())

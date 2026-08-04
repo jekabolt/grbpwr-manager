@@ -206,7 +206,7 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			E bool `db:"e"`
 		}](ctx, rep.DB(), `
 			SELECT EXISTS(SELECT 1 FROM production_run_receipt
-			              WHERE run_id = :id AND reversed_by IS NULL) AS e`,
+			              WHERE run_id = :id AND reversed_by IS NULL AND reversal_of IS NULL) AS e`,
 			map[string]any{"id": id})
 		if err != nil {
 			return fmt.Errorf("failed to probe run receipts: %w", err)
@@ -320,6 +320,17 @@ func (s *Store) DeleteProductionRun(ctx context.Context, id int) error {
 	if cur.Status == string(entity.ProductionRunReceived) || cur.Status == string(entity.ProductionRunClosed) ||
 		cur.Status == string(entity.ProductionRunPartiallyReceived) {
 		return entity.ErrProductionRunReceivedImmutable
+	}
+	// A fully-reversed run is back to in_progress, but its receipt HISTORY (reversed originals +
+	// reversal rows) remains and the receipt FK is RESTRICT by design — refuse with the real
+	// reason instead of surfacing an opaque FK error (adversarial #8).
+	receipts, err := storeutil.QueryCountNamed(ctx, s.DB,
+		`SELECT COUNT(*) FROM production_run_receipt WHERE run_id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("failed to count run receipts for delete: %w", err)
+	}
+	if receipts > 0 {
+		return entity.ErrProductionRunHasReceiptHistory
 	}
 	// Refuse if material was issued to the run — those movements are applied stock facts (the FK is
 	// ON DELETE SET NULL, so a delete would orphan them). Return the material first.

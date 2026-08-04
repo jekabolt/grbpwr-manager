@@ -260,6 +260,20 @@ func (s *Store) ReverseJournalEntry(ctx context.Context, entryID int, reason, ad
 	if orig.Entry.ReversedBy.Valid {
 		return 0, entity.ErrAcctAlreadyReversed
 	}
+	// A production_receive entry whose RECEIPT was scope-reversed stays live on purpose — the
+	// scoped compensation already put its FG transfer back to WIP, and the entry remains the
+	// record of the still-payable AP capitalisation. Flipping ALL its lines here would credit FG a
+	// SECOND time (adversarial #1: FG −X, phantom WIP +X, silently, with no detector). If the
+	// invoice itself must go, that is a cost-document reversal, not a whole-entry flip.
+	if orig.Entry.SourceType == entity.AcctSourceProductionReceive {
+		scopeReversed, err := s.receiptScopeReversed(ctx, orig.Entry.SourceKey)
+		if err != nil {
+			return 0, err
+		}
+		if scopeReversed {
+			return 0, entity.ErrAcctReceiptScopeReversed
+		}
+	}
 
 	// occurred_at of the reversal: the original's date if that period is still open, else today (the
 	// current open period). If today's period is somehow closed, CreateJournalEntry surfaces
@@ -330,6 +344,39 @@ func (s *Store) ReverseJournalEntry(ctx context.Context, entryID int, reason, ad
 		}
 	}
 	return newID, nil
+}
+
+// receiptScopeReversed reports whether the receipt a production-receive source_key points at has
+// been scope-reversed (reversed_by set by ReverseProductionRunReceipt). Key families mirror
+// clearReceiptPostedAmounts below; an unparseable key reports false (nothing identifiable to
+// protect — the generic guards still apply).
+func (s *Store) receiptScopeReversed(ctx context.Context, sourceKey string) (bool, error) {
+	parts := strings.Split(sourceKey, ":")
+	var q string
+	arg := map[string]any{}
+	if parts[0] == "receipt" {
+		if len(parts) < 2 {
+			return false, nil
+		}
+		id, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return false, nil
+		}
+		q = `SELECT COUNT(*) FROM production_run_receipt WHERE id = :id AND reversed_by IS NOT NULL`
+		arg["id"] = id
+	} else {
+		runID, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return false, nil
+		}
+		q = `SELECT COUNT(*) FROM production_run_receipt WHERE run_id = :run_id AND reversed_by IS NOT NULL`
+		arg["run_id"] = runID
+	}
+	n, err := storeutil.QueryCountNamed(ctx, s.DB, q, arg)
+	if err != nil {
+		return false, fmt.Errorf("accounting: check scope-reversal of %q: %w", sourceKey, err)
+	}
+	return n > 0, nil
 }
 
 // clearReceiptPostedAmounts NULLs the posting bookkeeping of the receipt a production-receive

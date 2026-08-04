@@ -90,6 +90,23 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 		if rcpt.ReversedBy.Valid {
 			return entity.ErrProductionRunReceiptAlreadyReversed
 		}
+		// Reversals unwind newest-first: while a live FINAL exists, reversing a PARTIAL would strand
+		// its FG share back on WIP forever — the run stays received, no receipt can ever post again,
+		// and no true-up can sweep 1120 (adversarial #3). Reverse the final first; the run returns
+		// to partially_received and the partial (and a corrected re-receive) become possible.
+		if !rcpt.Final {
+			finals, err := storeutil.QueryCountNamed(ctx, db, `
+				SELECT COUNT(*) FROM production_run_receipt
+				WHERE run_id = :run_id AND id <> :id AND final = 1
+				  AND reversal_of IS NULL AND reversed_by IS NULL`,
+				map[string]any{"run_id": p.RunID, "id": p.ReceiptID})
+			if err != nil {
+				return fmt.Errorf("failed to check live final receipts: %w", err)
+			}
+			if finals > 0 {
+				return entity.ErrProductionRunReversalFinalFirst
+			}
+		}
 
 		lines, err := storeutil.QueryListNamed[entity.ProductionRunReceiptLine](ctx, db, `
 			SELECT rl.id, rl.receipt_id, rl.run_line_id, rl.product_id, rl.size_id, rl.good_qty,
@@ -159,12 +176,12 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 			return err
 		}
 		if entry != nil {
-			if err := rep.Accounting().EnsurePeriodOpen(ctx, entry.Entry.OccurredAt); err != nil {
-				if errors.Is(err, entity.ErrAcctPeriodClosed) {
-					return entity.ErrProductionRunReversalPeriodClosed
-				}
-				return err
-			}
+			// Plan 05 v2 semantics: the compensation posts at Now() into the CURRENT open period,
+			// referencing the original via source_key — the original's (possibly closed) period is
+			// untouched, both accounts are balance-sheet, so no closed-month figure moves. Today's
+			// period being closed is the only refusal, surfaced by CreateJournalEntry below —
+			// gating on the ORIGINAL's period would make every receipt permanently un-reversible
+			// the day its month closes (adversarial #4).
 			fg, manual := decimal.Zero, decimal.Zero
 			for _, l := range entry.Lines {
 				switch {
@@ -174,10 +191,11 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 					manual = manual.Add(l.Amount)
 				}
 			}
-			if rcpt.PostedFG.Valid {
-				// The stamped claim is the figure the sibling arithmetic has been reading — prefer
-				// it; the entry-line sum is its recovery path (they only diverge if an operator
-				// hand-edited lines, which CreateJournalEntry does not allow).
+			if rcpt.PostedFG.Valid && rcpt.PostedFG.Decimal.LessThan(fg) {
+				// The stamped claim is what the sibling arithmetic has been reading — never credit
+				// 1130 beyond what the LIVE entry actually debited, and never beyond the claim: a
+				// version-key collapse can stamp figures the stored entry never booked
+				// (adversarial #5). min() of the two is the safe compensation either way.
 				fg = rcpt.PostedFG.Decimal
 			}
 			if fg.IsPositive() {
