@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -283,6 +284,7 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 				tech_card_id = :tech_card_id, release_id = :release_id, status = :status,
 				started_at = :started_at,
 				planned_start_at = :planned_start_at, promised_at = :promised_at,
+				supplier_id = :supplier_id,
 				marker_efficiency_pct = :marker_efficiency_pct, marker_notes = :marker_notes,
 				actual_wastage_percent = :actual_wastage_percent, notes = :notes
 			WHERE id = :id`+lockGuard, params)
@@ -439,11 +441,15 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 		return nil, fmt.Errorf("can't load production run events: %w", err)
 	}
 	run.Events = events
+	// The recon checks are advisory: a failure to COMPUTE them must degrade to "checks
+	// unavailable", never 500 the whole run screen (adversarial #5).
 	recon, err := s.runReconciliation(ctx, &run)
 	if err != nil {
-		return nil, err
+		slog.Default().WarnContext(ctx, "can't compute run reconciliation; run served without checks",
+			slog.Int("run_id", id), slog.String("err", err.Error()))
+	} else {
+		run.Recon = recon
 	}
-	run.Recon = recon
 	return &run, nil
 }
 
@@ -462,6 +468,7 @@ func (s *Store) GetProductionRun(ctx context.Context, id int) (*entity.Productio
 func (s *Store) runReconciliation(ctx context.Context, run *entity.ProductionRun) ([]entity.ProductionRunReconCheck, error) {
 	id := run.Id
 	row, err := storeutil.QueryNamedOne[struct {
+		IsAux          bool            `db:"is_aux"`
 		ReceiptGood    int             `db:"receipt_good"`
 		ReceiptSeconds int             `db:"receipt_seconds"`
 		JournalNet     decimal.Decimal `db:"journal_net"`
@@ -471,6 +478,8 @@ func (s *Store) runReconciliation(ctx context.Context, run *entity.ProductionRun
 		ManualClaimed  decimal.Decimal `db:"manual_claimed"`
 	}](ctx, s.DB, `
 		SELECT
+		  COALESCE((SELECT tc.purpose = 'auxiliary' FROM production_run r
+		            JOIN tech_card tc ON tc.id = r.tech_card_id WHERE r.id = :id), FALSE) AS is_aux,
 		  COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt pr
 		            JOIN production_run_receipt_line rl ON rl.receipt_id = pr.id
 		            WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL), 0) AS receipt_good,
@@ -480,7 +489,7 @@ func (s *Store) runReconciliation(ctx context.Context, run *entity.ProductionRun
 		              AND rl.defect_disposition = 'seconds'), 0) AS receipt_seconds,
 		  COALESCE((SELECT SUM(h.quantity_delta) FROM product_stock_change_history h
 		            WHERE h.source IN ('production_received', 'production_reversed')
-		              AND (h.reference_id = CONCAT('production_run', CHAR(58), CAST(:id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		              AND (h.reference_id = :run_ref
 		                   OR h.reference_id IN (SELECT CONCAT('receipt', CHAR(58), CAST(r2.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
 		                                         FROM production_run_receipt r2 WHERE r2.run_id = :id))), 0) AS journal_net,
 		  COALESCE((SELECT COUNT(*) FROM production_run_receipt pr
@@ -489,14 +498,19 @@ func (s *Store) runReconciliation(ctx context.Context, run *entity.ProductionRun
 		              AND NOT EXISTS (SELECT 1 FROM acct_journal_entry e
 		                              WHERE e.source_type = 'production_receive' AND e.reversed_by IS NULL
 		                                AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
-		                                     OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci))), 0) AS posted_no_entry,
+		                                     OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
+		                                     OR ((SELECT COUNT(*) FROM production_run_receipt c WHERE c.run_id = pr.run_id) = 1
+		                                         AND (e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                                              OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci))))), 0) AS posted_no_entry,
 		  COALESCE((SELECT COUNT(*) FROM production_run_receipt pr
 		            WHERE pr.run_id = :id AND pr.reversed_by IS NULL AND pr.reversal_of IS NULL), 0) AS live_receipts,
 		  COALESCE((SELECT SUM(c.amount_base) FROM production_run_cost c
 		            WHERE c.run_id = :id AND c.amount_base IS NOT NULL), 0) AS manual_costed,
 		  COALESCE((SELECT SUM(pr.posted_manual_base) FROM production_run_receipt pr
 		            WHERE pr.run_id = :id), 0) AS manual_claimed`,
-		map[string]any{"id": id})
+		// run_ref is bound from Go so the common arm stays sargable on idx_reference_id and no
+		// colon ever enters the SQL text (adversarial #5) — bound VALUES may contain colons freely.
+		map[string]any{"id": id, "run_ref": fmt.Sprintf("production_run:%d", id)})
 	if err != nil {
 		return nil, fmt.Errorf("can't compute run %d reconciliation: %w", id, err)
 	}
@@ -509,7 +523,14 @@ func (s *Store) runReconciliation(ctx context.Context, run *entity.ProductionRun
 		Actual:   row.JournalNet.String(),
 		Ok:       row.JournalNet.Equal(decimal.NewFromInt(int64(expectedUnits))),
 	}
-	if !units.Ok {
+	if row.IsAux {
+		// An auxiliary run's good units land in the MATERIAL warehouse (M2), never in the
+		// product-stock journal — comparing against it would be red on every aux run forever,
+		// training the operator to ignore the panel (adversarial #2).
+		units.Ok = true
+		units.Actual = units.Expected
+		units.Detail = "auxiliary run: output units live in the material warehouse, not product stock"
+	} else if !units.Ok {
 		units.Detail = "live receipts and the product-stock journal disagree on units for this run — check reversed receipts and manual stock edits"
 	}
 	entries := entity.ProductionRunReconCheck{

@@ -264,6 +264,13 @@ func (s *Store) RefundOrder(ctx context.Context, orderUUID string, orderItemIDs 
 		}
 		os := orderStatus.Status.Name
 
+		// writeoff/seconds describe the state of goods that CAME BACK — a Confirmed order's units
+		// never left the warehouse (its refund restores what payment reserved), so a non-restock
+		// disposition would silently destroy units that are physically on the shelf with no
+		// compensating movement (adversarial #10).
+		if disposition != entity.RefundDispositionRestock && disposition != "" && os == entity.Confirmed {
+			return fmt.Errorf("refund disposition %q needs shipped goods; a confirmed order's units never left the warehouse — use restock", disposition)
+		}
 		allowed := os == entity.RefundInProgress || os == entity.PendingReturn || os == entity.Delivered || os == entity.Confirmed || os == entity.PartiallyRefunded
 		if !allowed {
 			return fmt.Errorf("order status must be refund_in_progress, pending_return, delivered, confirmed or partially_refunded, got %s", orderStatus.Status.Name)

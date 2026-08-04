@@ -261,15 +261,32 @@ func BuildOrderPreDeliveredRefundEntry(
 	}
 	lines = append(lines, entity.AcctJournalLineInsert{AccountCode: moneyAccount(f.PaymentMethodName), Side: entity.AcctSideCredit, Amount: r})
 
-	// Return transit stock to finished goods only if it had shipped (stock sits in 1140). If it never
-	// shipped, S1n moved no stock, so there is nothing to return.
+	// Unwind transit stock only if it had shipped (the cost sits on 1140). If it never shipped, S1n
+	// moved no stock, so there is nothing to unwind. WHERE the cost goes mirrors RefundOrder's stock
+	// decision (Phase 8, adversarial #1 — this builder must not diverge from the patched S2):
+	// restock — back to finished goods (Dr 1130); writeoff/seconds — the units are consumed or live
+	// on as zero-cost B grade, so the transit cost is EXPENSED (Dr 5040 write-off), never parked on
+	// 1130 for units that do not exist there and never stranded on 1140.
 	if transitPosted {
 		cogsr, uncosted, unknownItems := refundCOGS(items, refund.RefundedByItem)
 		if cogsr.IsPositive() {
-			lines = append(lines,
-				entity.AcctJournalLineInsert{AccountCode: Acc1130, Side: entity.AcctSideDebit, Amount: cogsr},
-				entity.AcctJournalLineInsert{AccountCode: Acc1140, Side: entity.AcctSideCredit, Amount: cogsr},
-			)
+			switch refund.Disposition {
+			case entity.RefundDispositionWriteoff, entity.RefundDispositionSeconds:
+				lines = append(lines,
+					entity.AcctJournalLineInsert{AccountCode: Acc5040, Side: entity.AcctSideDebit, Amount: cogsr},
+					entity.AcctJournalLineInsert{AccountCode: Acc1140, Side: entity.AcctSideCredit, Amount: cogsr},
+				)
+				if refund.Disposition == entity.RefundDispositionSeconds {
+					caveats = append(caveats, "refund dispositioned seconds pre-delivery: goods restocked as zero-cost B grade, transit cost written off")
+				} else {
+					caveats = append(caveats, "refund dispositioned writeoff pre-delivery: goods not restocked, transit cost written off")
+				}
+			default:
+				lines = append(lines,
+					entity.AcctJournalLineInsert{AccountCode: Acc1130, Side: entity.AcctSideDebit, Amount: cogsr},
+					entity.AcctJournalLineInsert{AccountCode: Acc1140, Side: entity.AcctSideCredit, Amount: cogsr},
+				)
+			}
 		}
 		if len(uncosted) > 0 {
 			caveats = append(caveats, "transit return understated; missing cost for product(s): "+joinProductIDs(uncosted))
