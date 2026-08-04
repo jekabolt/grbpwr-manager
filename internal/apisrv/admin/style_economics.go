@@ -130,7 +130,7 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 	} else if salesRow == nil {
 		caveats = append(caveats, "no sales yet for this style — margin and net result unavailable")
 	} else {
-		caveats = append(caveats, "no product cost set for this style — margin and net result unavailable")
+		caveats = append(caveats, "no cost snapshots on this style's sales (uncosted at sale time) — margin and net result unavailable")
 	}
 	if materialsUncosted {
 		caveats = append(caveats, "some material issues have no unit cost — sample/production material figures understate")

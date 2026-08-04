@@ -38,22 +38,26 @@ func computeRowMargin(revenue decimal.Decimal, unitCost decimal.NullDecimal, rev
 	return rm
 }
 
-// applyProductMargin fills the margin fields of a product breakdown row from its current
-// cost. When the product has no cost set the fields stay zero and HasCost is false, so the
-// API can render "N/A" rather than a misleading 100% margin. revenueCost is Σ(cost × net
-// qty); the caller's Value is the matched net revenue.
-func applyProductMargin(pm *entity.ProductMetric, unitCost decimal.NullDecimal, revenueCost decimal.Decimal) {
-	rm := computeRowMargin(pm.Value, unitCost, revenueCost)
+// applyProductMargin fills the margin fields of a product breakdown row from its sale-time
+// cost. When the sold lines carry no cost the fields stay zero and HasCost is false, so the
+// API can render "N/A" rather than a misleading 100% margin. The margin is computed over the
+// COSTED SUBSET (costedRevenue − revenueCost), never the row's full Value: with snapshot-only
+// costing a product routinely mixes pre-costing (uncosted) and costed lines, and matching the
+// full revenue against the partial cost would inflate margin exactly on the least-costed rows.
+// pm.Value keeps the full revenue for display.
+func applyProductMargin(pm *entity.ProductMetric, costedRevenue decimal.Decimal, unitCost decimal.NullDecimal, revenueCost decimal.Decimal) {
+	rm := computeRowMargin(costedRevenue, unitCost, revenueCost)
 	pm.HasCost, pm.UnitCost, pm.RevenueCost = rm.HasCost, rm.UnitCost, rm.RevenueCost
 	pm.GrossMargin, pm.GrossMarginPct = rm.GrossMargin, rm.GrossMarginPct
 }
 
 // getMarginMetrics computes cost of goods (COGS) and the revenue it is matched against,
 // in base currency, for net-revenue orders in [from, to). Each line item's cost is its
-// sale-time snapshot (order_item.cost_price_at_sale), falling back to the product's current
-// cost_price for rows placed before the snapshot column existed. Because not every product
-// has a cost set, it returns three sums so
-// the caller can report an honest margin plus its coverage:
+// sale-time snapshot (order_item.cost_price_at_sale) and nothing else — the product's live
+// cost_price is deliberately NOT consulted (owner decision 2026-08-04): lines placed before
+// the snapshot column existed, or before the product was costed, count as uncosted forever
+// rather than drifting with today's cost. Because not every sold line carries a snapshot,
+// it returns three sums so the caller can report an honest margin plus its coverage:
 //
 //   - costedRevenue: net product revenue of items that HAVE a cost (the margin denominator)
 //   - cogs:          Σ(cost × qty), refund-adjusted, for those same items
@@ -74,11 +78,11 @@ func (s *Store) getMarginMetrics(ctx context.Context, from, to time.Time) (coste
 	query := fmt.Sprintf(`
 		WITH %s
 		SELECT
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
 				THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s
 				ELSE 0 END), 0) AS costed_revenue,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
-				THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
+				THEN oi.cost_price_at_sale * oi.quantity * %s
 				ELSE 0 END), 0) AS cogs,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS total_revenue
 		FROM order_item oi
@@ -95,12 +99,13 @@ func (s *Store) getMarginMetrics(ctx context.Context, from, to time.Time) (coste
 	return r.CostedRevenue.Round(2), r.Cogs.Round(2), r.TotalRevenue.Round(2), nil
 }
 
-// getUncostedSoldProductIDs returns the IDs of products that sold in [from, to) over the
-// net-revenue statuses but have NO cost_price set, ordered by their period revenue
-// descending. These are exactly the products darkening the margin coverage figure — the
-// operator should set a cost (via a tech card) for the top entries first. Products that
-// already have a cost, or that had no sales in the window, are excluded, so the slice is
-// empty when cost coverage is 100%.
+// getUncostedSoldProductIDs returns the IDs of products whose [from, to) net-revenue sales
+// include lines with no sale-time cost snapshot AND that still have no cost_price today,
+// ordered by their period revenue descending. These are the products darkening the margin
+// coverage figure that the operator can still act on — setting a cost (via a tech card)
+// makes their future sales costed. Products whose cost has since been set are excluded
+// even if their historical uncosted lines keep the window's coverage below 100%: those
+// lines are frozen facts (snapshot-only COGS, no live fallback) and no action fixes them.
 func (s *Store) getUncostedSoldProductIDs(ctx context.Context, from, to time.Time) ([]int, error) {
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
 	query := fmt.Sprintf(`
@@ -110,7 +115,7 @@ func (s *Store) getUncostedSoldProductIDs(ctx context.Context, from, to time.Tim
 		JOIN product p ON p.id = oi.product_id
 		JOIN order_factors ofac ON ofac.order_id = oi.order_id
 		LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
-		WHERE p.cost_price IS NULL AND p.lifecycle_status <> 4
+		WHERE oi.cost_price_at_sale IS NULL AND p.cost_price IS NULL AND p.lifecycle_status <> 4
 		GROUP BY oi.product_id
 		ORDER BY COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) DESC
 	`, orderFactorsCTE, itemAdjExpr)

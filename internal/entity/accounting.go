@@ -514,9 +514,10 @@ type AcctLedgerFilter struct {
 // =====================================================================================
 
 // AcctOrderItemFact is one order line's COGS input for posting (09.2). UnitCost is
-// COALESCE(order_item.cost_price_at_sale, product.cost_price) — the same snapshot-first fallback as
-// metrics/margin.go. NULL when neither is set (a pre-0093 line with no live cost): the builder
-// treats it as uncosted (excluded from COGS, flagged in the entry caveat).
+// COALESCE(order_item.cost_price_at_sale, product.cost_price) — the snapshot-first fallback the
+// LEDGER deliberately keeps (posted entries used it; recon mirrors it) even though metrics went
+// snapshot-only (owner decision 2026-08-04). NULL when neither is set (a pre-0093 line with no
+// live cost): the builder treats it as uncosted (excluded from COGS, flagged in the entry caveat).
 type AcctOrderItemFact struct {
 	Id        int                 `db:"id"`
 	ProductId int                 `db:"product_id"`

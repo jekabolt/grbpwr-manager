@@ -369,8 +369,10 @@ func (s *Store) reconFees(ctx context.Context, fromStr, toStr string, fromT, toT
 }
 
 // reconCOGS: ledger 5010 COGS debits vs Σ COALESCE(cost_price_at_sale, product.cost_price) × qty
-// over the period's confirmed orders (the same snapshot-first cost fallback as metrics/margin.go and
-// the sale builder).
+// over the period's confirmed orders — the same snapshot-first cost fallback as the sale builder,
+// which is what the posted entries were built from. NOTE the LEDGER deliberately keeps this
+// fallback while metrics dropped it (owner decision 2026-08-04, snapshot-only there): recon must
+// mirror what was posted, so do NOT "align" this with metrics/margin.go.
 //
 // WAVE-2: the ledger sum is source-agnostic (sourceType ""), so it ALREADY recognises the delivered
 // chain — the only sources debiting 5010 are order_sale (COGS at payment) and order_delivered_sale

@@ -89,11 +89,11 @@ func (s *Store) getCountryMargin(ctx context.Context, from, to time.Time) (map[s
 	query := fmt.Sprintf(`
 		WITH %s
 		SELECT a.country AS country,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
 				THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s
 				ELSE 0 END), 0) AS costed_revenue,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
-				THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL AND COALESCE(oi.product_price_base, pp_base.price) IS NOT NULL
+				THEN oi.cost_price_at_sale * oi.quantity * %s
 				ELSE 0 END), 0) AS cogs,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS total_revenue
 		FROM order_item oi

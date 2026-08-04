@@ -124,8 +124,8 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	// Snapshot each line's COGS (base currency) from the product's current cost_price so
 	// historical margins stay reproducible when a product is later re-costed. cost_price is
 	// confidential and deliberately not loaded on the order-validation product read, so fetch
-	// it here directly. A product with no cost stays NULL; metrics fall back to the live
-	// product cost for such legacy/uncosted lines.
+	// it here directly. A product with no cost stays NULL and the line counts as uncosted
+	// forever — metrics read this snapshot only, never the live product cost.
 	costByProduct, err := fetchProductCostPrices(ctx, db, items)
 	if err != nil {
 		return fmt.Errorf("can't fetch product costs for order-item snapshot: %w", err)

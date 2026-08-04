@@ -704,7 +704,7 @@ func (s *Store) GetBusinessMetrics(ctx context.Context, period, comparePeriod en
 	m.AvgShippingCost.Value = avgShipCost
 	m.TotalShippingCost.Value = totalShipCost
 
-	// Margin metrics (COGS from product.cost_price over the costed revenue subset).
+	// Margin metrics (COGS from the sale-time cost snapshot over the costed revenue subset).
 	grossMargin := costedRev.Sub(cogs)
 	m.RevenueCost.Value = cogs
 	m.GrossMargin.Value = grossMargin

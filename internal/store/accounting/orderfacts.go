@@ -21,9 +21,10 @@ const defaultScanBatch = 200
 
 // GetOrderFactsForPosting assembles the flat fact set for an order sale/refund (09.2). The header
 // comes from customer_order JOIN payment LEFT JOIN shipment; Items are the COGS lines with the
-// snapshot-first cost fallback (COALESCE(oi.cost_price_at_sale, product.cost_price)). A missing order
-// surfaces as sql.ErrNoRows (wrapped). This reads other domains' tables directly (the
-// internal/store/metrics precedent).
+// snapshot-first cost fallback (COALESCE(oi.cost_price_at_sale, product.cost_price)) — kept HERE
+// on purpose while metrics are snapshot-only (owner decision 2026-08-04): the ledger posted with
+// this formula and recon must keep mirroring it. A missing order surfaces as sql.ErrNoRows
+// (wrapped). This reads other domains' tables directly (the internal/store/metrics precedent).
 func (s *Store) GetOrderFactsForPosting(ctx context.Context, orderUUID string) (*entity.AcctOrderFacts, error) {
 	// Phase 2, wave 1: the buyer→shipping-address JOIN supplies the VAT destination (country_code with
 	// a fallback to country, 07 §7.4.1) and buyer_vat_id / vat_regime are read from the order. LEFT

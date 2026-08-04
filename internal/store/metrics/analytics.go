@@ -42,9 +42,11 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 	// itemAdjExpr); all order currencies are included (no co.currency filter) and prices
 	// come from product_price in base currency rather than the order-currency snapshot.
 	// revenue_cost mirrors the product breakdowns: Σ(cost × qty) prorated by the same
-	// refund ratio as revenue (costAdj), so a refunded unit drops out of both. unit_cost is
-	// the product's current per-unit cost_price. computeRowMargin turns these into the
-	// margin fields after the query (leaving them N/A when the product has no cost).
+	// refund ratio as revenue (costAdj), so a refunded unit drops out of both. Cost is the
+	// sale-time snapshot only (no live cost_price fallback — owner decision 2026-08-04);
+	// products that sold uncosted lines stay N/A rather than showing a phantom 100% margin.
+	// Zero-sales rows have no snapshot to show, so their unit_cost falls back to the live
+	// cost_price purely as assortment info (their margin fields are all zero anyway).
 	query := fmt.Sprintf(`
 		WITH %s,
 		product_sales AS (
@@ -53,11 +55,11 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 				COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
 				SUM(oi.quantity)     AS units_sold,
 				MAX(ofac.placed)     AS last_sale_date,
-				MAX(COALESCE(oi.cost_price_at_sale, cp.cost_price)) AS unit_cost,
-				COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, cp.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, cp.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+				MAX(oi.cost_price_at_sale) AS unit_cost,
+				COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s ELSE 0 END), 0) AS costed_revenue,
+				COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN oi.cost_price_at_sale * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 			FROM order_item oi
 			JOIN order_factors ofac ON ofac.order_id = oi.order_id
-			JOIN product cp ON cp.id = oi.product_id
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			GROUP BY oi.product_id
 		),
@@ -82,7 +84,8 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 			ps.last_sale_date,
 			(p.lifecycle_status = 3) AS product_hidden,
 			COALESCE(gv.total_views, 0) AS total_views,
-			COALESCE(ps.unit_cost, p.cost_price) AS unit_cost,
+			CASE WHEN ps.product_id IS NULL THEN p.cost_price ELSE ps.unit_cost END AS unit_cost,
+			COALESCE(ps.costed_revenue, 0) AS costed_revenue,
 			COALESCE(ps.revenue_cost, 0) AS revenue_cost
 		FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id
@@ -90,12 +93,13 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 		LEFT JOIN ga4_views gv ON gv.product_id = p.id
 		ORDER BY revenue ASC, days_in_stock DESC
 		LIMIT :limit
-	`, orderFactorsCTE, itemAdjExpr, costAdjExpr)
+	`, orderFactorsCTE, itemAdjExpr, itemAdjExpr, costAdjExpr)
 
 	rows, err := storeutil.QueryListNamed[struct {
 		entity.SlowMoverRow
-		UnitCostRaw    decimal.NullDecimal `db:"unit_cost"`
-		RevenueCostRaw decimal.Decimal     `db:"revenue_cost"`
+		UnitCostRaw      decimal.NullDecimal `db:"unit_cost"`
+		CostedRevenueRaw decimal.Decimal     `db:"costed_revenue"`
+		RevenueCostRaw   decimal.Decimal     `db:"revenue_cost"`
 	}](ctx, as.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
 		"statusIds":    cache.OrderStatusIDsForNetRevenue(),
@@ -111,7 +115,9 @@ func (as *analyticsStore) GetSlowMovers(ctx context.Context, from, to time.Time,
 	result := make([]entity.SlowMoverRow, len(rows))
 	for i, r := range rows {
 		row := r.SlowMoverRow
-		rm := computeRowMargin(row.Revenue, r.UnitCostRaw, r.RevenueCostRaw)
+		// Margin over the costed subset only — matching full revenue against the partial
+		// snapshot cost would inflate margin on rows mixing pre-costing and costed lines.
+		rm := computeRowMargin(r.CostedRevenueRaw, r.UnitCostRaw, r.RevenueCostRaw)
 		row.HasCost, row.UnitCost, row.RevenueCost = rm.HasCost, rm.UnitCost, rm.RevenueCost
 		row.GrossMargin, row.GrossMarginPct = rm.GrossMargin, rm.GrossMarginPct
 		result[i] = row

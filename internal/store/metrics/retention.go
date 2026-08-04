@@ -274,8 +274,9 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 					CONCAT('product #', p.id)
 				) AS product_name,
 				SUM(COALESCE(oi.product_price_base, pp_base.price) * oi.quantity) AS revenue,
-				MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
-				COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity ELSE 0 END), 0) AS revenue_cost
+				MAX(oi.cost_price_at_sale) AS unit_cost,
+				COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * oi.quantity ELSE 0 END), 0) AS costed_revenue,
+				COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN oi.cost_price_at_sale * oi.quantity ELSE 0 END), 0) AS revenue_cost
 			FROM order_item oi
 			JOIN customer_order co ON oi.order_id = co.id
 			JOIN product p ON p.id = oi.product_id
@@ -292,6 +293,7 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 				product_name,
 				revenue,
 				unit_cost,
+				costed_revenue,
 				revenue_cost,
 				ROW_NUMBER() OVER (ORDER BY revenue DESC) AS rank_num
 			FROM product_revenue
@@ -305,6 +307,7 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 			r.product_name,
 			r.revenue,
 			r.unit_cost,
+			r.costed_revenue,
 			r.revenue_cost,
 			SUM(r.revenue) OVER (ORDER BY r.rank_num ROWS UNBOUNDED PRECEDING) / t.total_revenue * 100 AS cumulative_pct
 		FROM ranked r
@@ -314,12 +317,15 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 	`, statusIDs)
 
 	// Pareto revenue is gross list revenue (Σ price×qty, no refund/discount adjustment), so
-	// revenue_cost is Σ(cost×qty) on the same un-adjusted basis — the margin ties out to this
-	// row's own `revenue`. computeRowMargin leaves the fields N/A when there is no cost_price.
+	// revenue_cost is Σ(cost×qty) on the same un-adjusted basis. The margin is computed over
+	// the COSTED SUBSET (costed_revenue, same lines that contribute revenue_cost) — matching
+	// the full revenue against a partial snapshot cost would inflate margin on products whose
+	// window mixes pre-costing and costed lines. Live cost_price is never consulted.
 	rows, err := storeutil.QueryListNamed[struct {
 		entity.RevenueParetoRow
-		UnitCostRaw    decimal.NullDecimal `db:"unit_cost"`
-		RevenueCostRaw decimal.Decimal     `db:"revenue_cost"`
+		UnitCostRaw      decimal.NullDecimal `db:"unit_cost"`
+		CostedRevenueRaw decimal.Decimal     `db:"costed_revenue"`
+		RevenueCostRaw   decimal.Decimal     `db:"revenue_cost"`
 	}](ctx, rs.DB, query, map[string]any{
 		"baseCurrency": baseCurrency,
 		"from":         from,
@@ -332,7 +338,7 @@ func (rs *retentionStore) GetRevenuePareto(ctx context.Context, from, to time.Ti
 	result := make([]entity.RevenueParetoRow, len(rows))
 	for i, r := range rows {
 		row := r.RevenueParetoRow
-		rm := computeRowMargin(row.Revenue, r.UnitCostRaw, r.RevenueCostRaw)
+		rm := computeRowMargin(r.CostedRevenueRaw, r.UnitCostRaw, r.RevenueCostRaw)
 		row.HasCost, row.UnitCost, row.RevenueCost = rm.HasCost, rm.UnitCost, rm.RevenueCost
 		row.GrossMargin, row.GrossMarginPct = rm.GrossMargin, rm.GrossMarginPct
 		result[i] = row

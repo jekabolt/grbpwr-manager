@@ -28,11 +28,11 @@ func (s *Store) GetMarginByStyle(ctx context.Context, from, to time.Time, limit 
 			COALESCE(tc.style_number, '') AS style_number,
 			COALESCE(tc.name, '') AS name,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s ELSE 0 END), 0) AS costed_revenue,
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s ELSE 0 END), 0) AS costed_revenue,
 			SUM(oi.quantity) AS units_sold,
 			COUNT(DISTINCT oi.product_id) AS colorway_count,
-			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+			MAX(oi.cost_price_at_sale) AS unit_cost,
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN oi.cost_price_at_sale * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON p.id = oi.product_id
 		LEFT JOIN tech_card tc ON tc.id = p.primary_tech_card_id
@@ -96,11 +96,11 @@ func (s *Store) GetStyleMargin(ctx context.Context, techCardID int) (*entity.Mar
 			COALESCE(tc.style_number, '') AS style_number,
 			COALESCE(tc.name, '') AS name,
 			COALESCE(SUM(COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s), 0) AS revenue,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s ELSE 0 END), 0) AS costed_revenue,
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN COALESCE(oi.product_price_base, pp_base.price) * (1 - COALESCE(oi.product_sale_percentage, 0) / 100.0) * oi.quantity * %s ELSE 0 END), 0) AS costed_revenue,
 			SUM(oi.quantity) AS units_sold,
 			COUNT(DISTINCT oi.product_id) AS colorway_count,
-			MAX(COALESCE(oi.cost_price_at_sale, p.cost_price)) AS unit_cost,
-			COALESCE(SUM(CASE WHEN COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL THEN COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
+			MAX(oi.cost_price_at_sale) AS unit_cost,
+			COALESCE(SUM(CASE WHEN oi.cost_price_at_sale IS NOT NULL THEN oi.cost_price_at_sale * oi.quantity * %s ELSE 0 END), 0) AS revenue_cost
 		FROM order_item oi
 		JOIN product p ON p.id = oi.product_id
 		LEFT JOIN tech_card tc ON tc.id = p.primary_tech_card_id
@@ -170,7 +170,7 @@ func (s *Store) GetCogsStructure(ctx context.Context, from, to time.Time) ([]ent
 			COALESCE(SUM(CASE WHEN x.cb IS NULL OR x.comp_sum <= 0 THEN x.cogs ELSE 0 END), 0) AS unattributed
 		FROM (
 			SELECT
-				COALESCE(oi.cost_price_at_sale, p.cost_price) * oi.quantity * %s AS cogs,
+				oi.cost_price_at_sale * oi.quantity * %s AS cogs,
 				p.cost_breakdown AS cb,
 				CAST(JSON_EXTRACT(p.cost_breakdown, '$.materials') AS DECIMAL(20, 6)) AS mat,
 				CAST(JSON_EXTRACT(p.cost_breakdown, '$.cmt')       AS DECIMAL(20, 6)) AS cmt,
@@ -187,7 +187,7 @@ func (s *Store) GetCogsStructure(ctx context.Context, from, to time.Time) ([]ent
 			FROM order_item oi
 			JOIN product p ON p.id = oi.product_id
 			JOIN order_factors ofac ON ofac.order_id = oi.order_id
-			WHERE COALESCE(oi.cost_price_at_sale, p.cost_price) IS NOT NULL
+			WHERE oi.cost_price_at_sale IS NOT NULL
 		) x
 	`, orderFactorsCTE, costAdjExpr)
 

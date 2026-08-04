@@ -139,7 +139,13 @@ func (s *Store) GetDashboard(ctx context.Context, from, to time.Time, limit int)
 	if d.CostCoveragePct > 0 && d.CostCoveragePct < 99.5 {
 		d.Caveat = fmt.Sprintf("Margins cover %.0f%% of product revenue (only items with a cost set).", d.CostCoveragePct)
 	} else if totalItemRev.GreaterThan(decimal.Zero) && costedRev.LessThanOrEqual(decimal.Zero) {
-		d.Caveat = "No product cost data in this period — set product cost_price to compute margins."
+		if len(d.UncostedProductIds) > 0 {
+			d.Caveat = "No product cost data in this period — set product cost_price to compute margins."
+		} else {
+			// Every sold product is costed today, but these lines predate costing: their
+			// snapshots are frozen NULL and no action recovers this window's margins.
+			d.Caveat = "No cost snapshots in this period — the sales predate product costing; margins for this window cannot be reconstructed."
+		}
 	}
 
 	// Top by margin €: the highest-revenue products re-ranked by gross margin €, keeping only
@@ -580,11 +586,19 @@ func buildDashboardAlerts(d *entity.Dashboard, t entity.AlertThresholds, refundR
 		})
 	}
 	if totalItemRev.GreaterThan(decimal.Zero) && d.CostCoveragePct > 0 && d.CostCoveragePct < t.CoverageWarnPct {
+		// Coverage counts sale-time cost snapshots only (no live-cost fallback), so a window can
+		// stay below the threshold even after every product is costed: lines sold before costing
+		// are frozen facts no action can fix. Only tell the operator to "set costs" while there
+		// are still uncosted products to set them on.
+		detail := fmt.Sprintf("Margins cover only %.0f%% of product revenue; set costs to see true margin.", d.CostCoveragePct)
+		if len(d.UncostedProductIds) == 0 {
+			detail = fmt.Sprintf("Margins cover only %.0f%% of product revenue; the uncosted remainder was sold before its products were costed and is frozen (sale-time snapshots only).", d.CostCoveragePct)
+		}
 		out = append(out, entity.DashboardAlert{
 			Severity: entity.AlertSeverityWarning,
 			Code:     "low_cost_coverage",
 			Title:    "Low cost coverage",
-			Detail:   fmt.Sprintf("Margins cover only %.0f%% of product revenue; set costs to see true margin.", d.CostCoveragePct),
+			Detail:   detail,
 		})
 	}
 	if n := len(d.UncostedProductIds); n > 0 {
