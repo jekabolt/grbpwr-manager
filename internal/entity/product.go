@@ -510,6 +510,10 @@ const (
 	StockChangeSourceOrderCancelled   StockChangeSource = "order_cancelled"
 	// StockChangeSourceProductionReceived is stock added by receiving a production run (task 09).
 	StockChangeSourceProductionReceived StockChangeSource = "production_received"
+	// StockChangeSourceProductionReversed is stock taken back OUT by reversing a receipt of a
+	// production run (Phase 6). reference_id carries the reversed receipt as receipt<id>; the
+	// operator's reason rides in comment.
+	StockChangeSourceProductionReversed StockChangeSource = "production_reversed"
 )
 
 // StockChangeReason represents the reason for a stock change.
@@ -534,6 +538,8 @@ const (
 	StockChangeReasonReturnToStock StockChangeReason = "return_to_stock"
 	// order_cancelled reasons
 	StockChangeReasonOrderCancelled StockChangeReason = "order_cancelled"
+	// production_reversed reasons
+	StockChangeReasonReceiptReversed StockChangeReason = "receipt_reversed"
 )
 
 // ValidReasonsForSource maps each source to its allowed reasons. A source present with an EMPTY list
@@ -550,6 +556,9 @@ var ValidReasonsForSource = map[StockChangeSource][]StockChangeReason{
 	// A production receipt has no reason code: what happened is fully described by the run it came
 	// from, which the receive path writes into reference_id as production_run:<id>.
 	StockChangeSourceProductionReceived: {},
+	// A reversal decrement always carries the fixed reason code; the operator's free-text reason
+	// rides in comment and the reversed receipt in reference_id.
+	StockChangeSourceProductionReversed: {StockChangeReasonReceiptReversed},
 }
 
 // StockChangeSignPositive means the source only allows positive deltas.
@@ -572,6 +581,7 @@ var AllowedSignForSource = map[StockChangeSource]StockChangeSign{
 	StockChangeSourceOrderReturned:      StockChangeSignPositive,
 	StockChangeSourceOrderCancelled:     StockChangeSignPositive,
 	StockChangeSourceProductionReceived: StockChangeSignPositive,
+	StockChangeSourceProductionReversed: StockChangeSignNegative,
 }
 
 // IsValidReasonForSource checks if a reason is valid for a given source.

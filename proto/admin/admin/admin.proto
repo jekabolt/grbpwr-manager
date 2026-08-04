@@ -1402,6 +1402,32 @@ service AdminService {
       body: "*"
     };
   }
+  // ReverseProductionRunReceipt undoes ONE receipt of a run (Phase 6, plan 05): in one transaction
+  // it takes the receipt's good units back OUT of each line's product stock (refused with the exact
+  // per-variant shortfall when any unit was already sold — stock never goes negative and sold units
+  // are never silently stolen from another batch; sold-but-unshipped units already left the
+  // quantity at payment, so they block the same way), subtracts the receipt's counts from the
+  // plan-grid rollups, books the scoped accounting compensation (Dr WIP / Cr FG for what the
+  // receipt's live entry transferred — the manual/AP capitalisation deliberately stays: the
+  // supplier invoice remains payable), rolls each affected product's cost_price back to the
+  // tech-card estimate when THIS run still claims it and no live sibling receipt still stocks the
+  // product (a later manual/run source is left untouched and reported as skipped), marks the
+  // receipt reversed (a linked reversal row appears in the receipt history), recomputes the run
+  // status (a live FINAL keeps it received; otherwise partially_received while live receipts
+  // remain, in_progress when none) and records a production_run_event. Auxiliary-run receipts are
+  // refused in v1 (their output landed in the material warehouse and compounded its moving
+  // average; adjust or write off the material instead). A closed accounting period on the original
+  // entry is refused (v1). Materials issued to the run are NOT returned — reversal un-receives
+  // garments, it does not un-cut fabric. Requires production:write + products:write +
+  // costing:write and a non-empty reason. Reversing an already-reversed receipt (or a reversal
+  // row) fails with FailedPrecondition — the precondition runs under the run lock, which is also
+  // the idempotency guard.
+  rpc ReverseProductionRunReceipt(ReverseProductionRunReceiptRequest) returns (ReverseProductionRunReceiptResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/production-runs/{run_id}/receipts/{receipt_id}/reverse"
+      body: "*"
+    };
+  }
   // GetProductionRunMaterialPlan estimates the fabric/notion requirement of a run from its lines'
   // colourway norms × planned qty × (1 + wastage), against on-hand and already-issued stock (NF-06).
   // It is a plan-estimate before the marker; the real consumption comes from stock issues.
@@ -6234,6 +6260,23 @@ message PostProductionRunReceiptResponse {
   // executed) rather than executed now.
   bool replayed = 3;
   common.ProductionRun run = 4; // the run after the receipt (fresh read; costing-stripped per RBAC)
+}
+
+message ReverseProductionRunReceiptRequest {
+  int32 run_id = 1;
+  int32 receipt_id = 2; // must be a receipt of run_id
+  // Required, non-empty. Stored on the reversal row (note), every stock-journal decrement
+  // (comment) and the production_run_event.
+  string reason = 3;
+  // The lock_version the operator saw on the run. >0 and stale → Aborted (reload and retry).
+  int32 expected_lock_version = 4;
+}
+
+message ReverseProductionRunReceiptResponse {
+  // The reversal row linked to the reversed receipt (reversal_of/reversed_by pair in the
+  // receipt history).
+  int32 reversal_receipt_id = 1;
+  common.ProductionRun run = 2; // the run after the reversal (fresh read; costing-stripped per RBAC)
 }
 
 message GetProductionRunMaterialPlanRequest {

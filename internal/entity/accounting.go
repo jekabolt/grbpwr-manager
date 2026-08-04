@@ -90,7 +90,13 @@ const (
 	AcctSourceMaterialWriteoff   AcctSourceType = "material_writeoff"
 	AcctSourceMaterialAdjustment AcctSourceType = "material_adjustment"
 	AcctSourceProductionReceive  AcctSourceType = "production_receive"
-	AcctSourceOpexMonth          AcctSourceType = "opex_month"
+	// AcctSourceProductionReceiveReversal is the SCOPED compensation a receipt reversal books
+	// (Phase 6): Dr 1120 WIP / Cr 1130 FG for exactly what the receipt's live production_receive
+	// entry transferred. It is deliberately NOT the generic 'reversal' of the whole entry — the
+	// manual/AP capitalisation stays payable (the supplier invoice does not vanish because the
+	// goods went back to WIP). source_key 'receipt:<id>' — one reversal per receipt, ever.
+	AcctSourceProductionReceiveReversal AcctSourceType = "production_receive_reversal"
+	AcctSourceOpexMonth                 AcctSourceType = "opex_month"
 	// Wave-3 pull sources (phase 2, wave 3 — migration 0196). shipping_actual posts the actual carrier
 	// cost from shipment.actual_cost / return_shipping_cost (Dr 6030 / Cr 2030); dev_expense posts a
 	// tech_card_dev_expense R&D charge (Dr 6210 / Cr 2030). Both are mutable pull sources: a change
@@ -207,8 +213,9 @@ var ValidAcctSourceTypes = map[AcctSourceType]bool{
 	AcctSourceMaterialReturn:     true,
 	AcctSourceMaterialWriteoff:   true,
 	AcctSourceMaterialAdjustment: true,
-	AcctSourceProductionReceive:  true,
-	AcctSourceOpexMonth:          true,
+	AcctSourceProductionReceive:         true,
+	AcctSourceProductionReceiveReversal: true,
+	AcctSourceOpexMonth:                 true,
 	AcctSourceShippingActual:     true,
 	AcctSourceDevExpense:         true,
 	AcctSourceDepreciation:       true,

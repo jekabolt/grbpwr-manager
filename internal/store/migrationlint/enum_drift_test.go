@@ -226,12 +226,12 @@ func TestCategorySizeSystemDBCheckNoDrift(t *testing.T) {
 }
 
 // TestAcctEntrySourceTypeDBCheckNoDrift extends the drift test to the accounting journal entry's
-// source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK. The CHECK was defined in 0189 and
-// last extended by 0198 (phase 2, wave 4: +order_dispute, unioning #71's depreciation/corp_tax which its
-// own 0197 added; 0196 added shipping_actual/dev_expense, 0195 the wave-2 delivered types) — the test
-// reads the LATEST migration that redefines the full value set (which sorts last), 07 §7.2 pattern.
+// source (entity.AcctSourceType/ValidAcctSourceTypes) <-> DB CHECK. The CHECK was defined in 0189,
+// extended through 0195/0196/0197/0201 (wave 2 delivered types, wave 3 pulls, depreciation/corp_tax,
+// order_dispute) and last redefined by 0248 (Phase 6: +production_receive_reversal) — the test reads
+// the LATEST migration that redefines the full value set (which sorts last), 07 §7.2 pattern.
 func TestAcctEntrySourceTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0201_accounting_wave4_money.sql")
+	content := readMigrationFile(t, "0248_receipt_reversal.sql")
 	dbValues := extractDBEnumValues(t, content, "source_type IN", 900)
 	assertSameSet(t, "AcctSourceType", dbValues, mapKeysAsStrings(entity.ValidAcctSourceTypes))
 }

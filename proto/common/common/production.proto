@@ -148,6 +148,11 @@ message ProductionRunReceipt {
   // operational fact (the posting worker owns it); visible without costing:read — it carries no
   // amounts.
   string posting_status = 12;
+  // Phase 6 reversal linkage. On a reversal row, reversal_of names the receipt it reversed; on a
+  // reversed receipt, reversed_by names its reversal row. 0 = not set. A reversed receipt's units
+  // and money are excluded from every rollup; the pair stays in the history for the audit trail.
+  int32 reversal_of = 13;
+  int32 reversed_by = 14;
 }
 
 // ProductionMarkerSource / ProductionRunMarker were REMOVED (production-costing Phase 2, review

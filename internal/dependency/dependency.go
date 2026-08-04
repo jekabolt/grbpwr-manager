@@ -73,6 +73,15 @@ type (
 		// the tech-card cost_breakdown. A manually set cost is never overwritten — the returned bool
 		// is false for such a product (the receipt itself still succeeds).
 		SetProductCostPriceFromProductionRun(ctx context.Context, productID, runID int, cost decimal.Decimal) (bool, error)
+		// ReverseProductionStock is the receive mirror (Phase 6): it takes a reversed receipt's
+		// good units back OUT of per-size stock on the caller's connection, journalling each
+		// decrement with the production_reversed source. Never writes below zero — short variants
+		// come back in the list (with ANY shortfall the caller aborts its transaction).
+		ReverseProductionStock(ctx context.Context, productID int, perSize map[int]int, receiptID int, username, reason string) ([]entity.ProductionRunReversalShortfallItem, error)
+		// ClearProductCostPriceClaimOfRun rolls a product's cost_price back off a reversed run's
+		// claim: to the tech-card estimate when one is computable, to NULL otherwise. Only a cost
+		// the run actually claims is touched (returned bool false = superseded, left alone).
+		ClearProductCostPriceClaimOfRun(ctx context.Context, productID, runID, techCardID int, est entity.ProductCostReseed) (bool, error)
 		// SetPrimaryTechCard repoints a product's authoritative-for-costing card.
 		SetPrimaryTechCard(ctx context.Context, productID, techCardID int) error
 		// GetProductCostInfo returns a product's confidential COGS/provenance fields (admin only).
@@ -736,6 +745,14 @@ type (
 		// entity.ErrIdempotencyConflict. The receipt row is the accounting outbox the posting worker
 		// consumes.
 		PostProductionRunReceipt(ctx context.Context, params entity.PostProductionRunReceiptParams) (*entity.PostProductionRunReceiptResult, error)
+		// ReverseProductionRunReceipt undoes ONE receipt in a single transaction (Phase 6): stock
+		// back out (full shortfall list on refusal — never negative, sold units never stolen),
+		// rollups subtracted, scoped accounting compensation (Dr WIP / Cr FG; the manual/AP
+		// capitalisation stays), reversal linkage in the receipt history, cost_price rollback for
+		// products the run still claims, run status recomputed, production_run_event recorded.
+		// The run lock is the idempotency guard: an already-reversed receipt returns
+		// entity.ErrProductionRunReceiptAlreadyReversed.
+		ReverseProductionRunReceipt(ctx context.Context, params entity.ReverseProductionRunReceiptParams) (*entity.ReverseProductionRunReceiptResult, error)
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with
@@ -829,6 +846,10 @@ type (
 
 		ListJournalEntries(ctx context.Context, f entity.AcctEntryFilter) ([]entity.AcctJournalEntry, int, error)
 		GetJournalEntry(ctx context.Context, id int) (*entity.AcctJournalEntryFull, error)
+		// GetLiveProductionReceiveEntry returns the receipt's live (un-reversed) production_receive
+		// entry with lines, or nil when none exists. Key families mirror ListUnpostedReceipts. The
+		// reversal command sizes its scoped compensation from it.
+		GetLiveProductionReceiveEntry(ctx context.Context, receiptID, runID int) (*entity.AcctJournalEntryFull, error)
 		// EntryExistsBySource is an O(1) (source_type, source_key) unique-index existence lookup
 		// (uniq_acct_entry_source) — e.g. the refund worker's "has the sale been posted?" check.
 		EntryExistsBySource(ctx context.Context, sourceType entity.AcctSourceType, sourceKey string) (bool, error)

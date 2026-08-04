@@ -2,10 +2,13 @@ package accounting
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	acctrules "github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -161,6 +164,16 @@ func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, l
 	if limit <= 0 {
 		limit = defaultScanBatch
 	}
+	// Reversal linkage (Phase 6): a REVERSED receipt and its reversal row are both excluded here on
+	// purpose, even though the reversed receipt's production_receive entry stays LIVE — the scoped
+	// compensation reversed only its FG transfer, the manual/AP capitalisation remains payable and
+	// its entry remains the record of it. Do not "fix" this by re-scanning reversed receipts: the
+	// worker would re-post the whole receipt beside its live original.
+	//
+	// The legacy '<run_id>' key family is recognised only for SINGLE-receipt runs: 0235 rewrote
+	// those keys, so the arm is belt-and-suspenders for an entry it could not rewrite — but on a
+	// multi-receipt run one run-keyed entry would satisfy this NOT EXISTS for EVERY receipt and
+	// blind the scan to all of them.
 	rows, err := storeutil.QueryListNamed[entity.AcctReceiptRef](ctx, s.DB, `
 		SELECT pr.id AS receipt_id, pr.run_id AS run_id FROM production_run_receipt pr
 		WHERE pr.posting_status <> 'dead_letter' AND pr.reversal_of IS NULL AND pr.reversed_by IS NULL
@@ -169,8 +182,9 @@ func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, l
 		                  WHERE e.source_type = 'production_receive'
 		                    AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
 		                         OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(pr.id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
-		                         OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)
+		                         OR ((SELECT COUNT(*) FROM production_run_receipt c WHERE c.run_id = pr.run_id) = 1
+		                             AND (e.source_key = CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                                  OR e.source_key LIKE CONCAT(CAST(pr.run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)))
 		                    AND e.reversed_by IS NULL)
 		ORDER BY (pr.last_skipped_at IS NOT NULL), pr.received_at, pr.id
 		LIMIT :limit`, map[string]any{"start_date": startDate.UTC(), "limit": limit})
@@ -187,6 +201,15 @@ func (s *Store) ListUnpostedReceipts(ctx context.Context, startDate time.Time, l
 // capitalised/relieved (posted_manual_base / posted_fg_base, written in the same tx as each entry).
 // LEDGER_WIP (Σ costed issue_production − return_production, with the pre-cutover exclusion) is
 // derived from Issues by the caller, which knows accounting.start_date.
+//
+// FILTER ASYMMETRY (Phase 6, deliberate — do not "make them match"): the UNIT aggregates exclude
+// reversed receipts and reversal rows (those units left the run), but the MONEY aggregates are
+// plain SUMs with NO reversal filter — posted_manual_base/posted_fg_base are LIVE CLAIMS, kept
+// truthful at their source. A scoped reversal NULLs only posted_fg_base (its compensation put the
+// FG money back to WIP) while the manual capitalisation stays live on the ledger — a reversed
+// receipt with live manual MUST stay in other_manual, or the next receipt would capitalise the
+// same invoice a second time (double AP). A generic ReverseJournalEntry of the whole entry NULLs
+// both claims. NULL drops out of SUM by itself.
 func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*entity.AcctRunFacts, error) {
 	hdr, err := storeutil.QueryNamedOne[struct {
 		Id           int             `db:"id"`
@@ -213,9 +236,9 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		                 WHERE s.run_id = pr.run_id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS all_received,
 		       COALESCE((SELECT SUM(l.planned_qty) FROM production_run_line l WHERE l.run_id = pr.run_id), 0) AS planned_total,
 		       COALESCE((SELECT SUM(s.posted_manual_base) FROM production_run_receipt s
-		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS other_manual,
+		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id), 0) AS other_manual,
 		       COALESCE((SELECT SUM(s.posted_fg_base) FROM production_run_receipt s
-		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS other_fg
+		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id), 0) AS other_fg
 		FROM production_run_receipt pr
 		JOIN production_run r ON r.id = pr.run_id
 		JOIN tech_card tc ON tc.id = r.tech_card_id
@@ -298,14 +321,46 @@ func (s *Store) MarkReceiptPostedFromEntry(ctx context.Context, receiptID, entry
 			last_skipped_at = NULL,
 			posted_manual_base = COALESCE((SELECT SUM(l.amount) FROM acct_journal_line l
 			                               JOIN acct_account a ON a.id = l.account_id
-			                               WHERE l.entry_id = :entry_id AND a.code = '2010' AND l.side = 'credit'), 0),
+			                               WHERE l.entry_id = :entry_id AND a.code = :manual_code AND l.side = 'credit'), 0),
 			posted_fg_base = COALESCE((SELECT SUM(l.amount) FROM acct_journal_line l
 			                           JOIN acct_account a ON a.id = l.account_id
-			                           WHERE l.entry_id = :entry_id AND a.code = '1130' AND l.side = 'debit'), 0)
-		WHERE id = :id`, map[string]any{"id": receiptID, "entry_id": entryID}); err != nil {
+			                           WHERE l.entry_id = :entry_id AND a.code = :fg_code AND l.side = 'debit'), 0)
+		WHERE id = :id`, map[string]any{
+		"id": receiptID, "entry_id": entryID,
+		// The builder's own account constants (internal/accounting), not string literals — one
+		// source of truth with BuildProductionReceiveEntry and the worker's line recovery.
+		"manual_code": acctrules.Acc2010, "fg_code": acctrules.Acc1130,
+	}); err != nil {
 		return fmt.Errorf("accounting: mark receipt %d posted from entry %d: %w", receiptID, entryID, err)
 	}
 	return nil
+}
+
+// GetLiveProductionReceiveEntry returns the receipt's live (un-reversed) production_receive entry
+// with its lines, or nil when none exists (never posted / accounting disabled / generically
+// reversed). Key families mirror ListUnpostedReceipts — 'receipt:<id>[:vN]' plus the legacy
+// '<run_id>[:vN]' restricted to single-receipt runs. The reversal command reads it under the run
+// lock to size its scoped compensation.
+func (s *Store) GetLiveProductionReceiveEntry(ctx context.Context, receiptID, runID int) (*entity.AcctJournalEntryFull, error) {
+	row, err := storeutil.QueryNamedOne[struct {
+		Id int `db:"id"`
+	}](ctx, s.DB, `
+		SELECT e.id FROM acct_journal_entry e
+		WHERE e.source_type = 'production_receive' AND e.reversed_by IS NULL
+		  AND (e.source_key = CONCAT('receipt', CHAR(58), CAST(:rid AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+		       OR e.source_key LIKE CONCAT('receipt', CHAR(58), CAST(:rid AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci
+		       OR ((SELECT COUNT(*) FROM production_run_receipt c WHERE c.run_id = :run_id) = 1
+		           AND (e.source_key = CAST(:run_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+		                OR e.source_key LIKE CONCAT(CAST(:run_id AS CHAR CHARACTER SET utf8mb4), CHAR(58), 'v%') COLLATE utf8mb4_unicode_ci)))
+		ORDER BY e.id DESC LIMIT 1`,
+		map[string]any{"rid": receiptID, "run_id": runID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("accounting: find live production receive entry for receipt %d: %w", receiptID, err)
+	}
+	return s.GetJournalEntry(ctx, row.Id)
 }
 
 // RecordReceiptPostingFailure increments the receipt's attempt counter, stores the error text, and

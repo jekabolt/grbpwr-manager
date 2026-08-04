@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sort"
@@ -250,6 +251,107 @@ func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.Pos
 		resp.Run = pb
 	} else {
 		slog.Default().ErrorContext(ctx, "can't reload production run after receipt", slog.String("err", err.Error()))
+	}
+	return resp, nil
+}
+
+// ReverseProductionRunReceipt undoes one receipt of a run (Phase 6, plan 05). The handler owns
+// RBAC (production:write via the interceptor, products:write and costing:write here), the aux
+// refusal, and the tech-card reseed figures; every stateful precondition lives in the store under
+// the run lock. See the proto contract for full semantics.
+func (s *Server) ReverseProductionRunReceipt(ctx context.Context, req *pb_admin.ReverseProductionRunReceiptRequest) (*pb_admin.ReverseProductionRunReceiptResponse, error) {
+	if req.RunId <= 0 || req.ReceiptId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "run_id and receipt_id are required")
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		return nil, status.Error(codes.InvalidArgument, "a non-empty reason is required to reverse a receipt")
+	}
+	if !productsWriteAccess(ctx) {
+		return nil, status.Error(codes.PermissionDenied, "products:write is required to reverse booked production stock (re-login if the permission was just granted)")
+	}
+	// The reversal can rewrite cost_price (rolling the run's claim back to the card estimate), so
+	// costing:write is unconditional — unlike receive, there is no flag to opt out of the money side.
+	if _, write := s.costingAccess(ctx); !write {
+		return nil, status.Error(codes.PermissionDenied, "costing:write is required to reverse a receipt (it rolls back cost_price)")
+	}
+	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load production run for reversal", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load production run")
+	}
+	card, err := s.repo.TechCards().GetTechCardById(ctx, run.TechCardId)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load tech card for reversal", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load tech card")
+	}
+	if card.Purpose == entity.TechCardPurposeAuxiliary {
+		return nil, status.Error(codes.FailedPrecondition, entity.ErrProductionRunReversalAux.Error())
+	}
+	// Tech-card estimates for every product the receipt might have stocked (the card's linked
+	// set is small and bounded) — the store applies them only to products whose cost_price this
+	// run still claims. Same per-colourway computation as the receive-time seed; a colourway that
+	// cannot be costed (or is not in base currency) stays absent from the map → the claim clears
+	// to honestly-unknown NULL instead of borrowing a wrong figure.
+	fx := s.costingFx(ctx)
+	base := cache.GetBaseCurrency()
+	reseed := make(map[int]entity.ProductCostReseed)
+	for _, pid := range card.LinkedProductIDs() {
+		unit, currency := dto.ComputeColorwayUnitCost(card, pid, fx)
+		if !unit.Valid || !strings.EqualFold(currency, base) {
+			continue
+		}
+		est := entity.ProductCostReseed{Cost: decimal.NullDecimal{Decimal: unit.Decimal, Valid: true}}
+		if bd, ok := dto.ComputeColorwayCostBreakdownBase(card, pid, fx); ok {
+			if b, merr := json.Marshal(bd); merr == nil {
+				est.Breakdown = sql.NullString{String: string(b), Valid: true}
+			}
+		}
+		reseed[pid] = est
+	}
+	result, err := s.repo.ProductionRuns().ReverseProductionRunReceipt(ctx, entity.ReverseProductionRunReceiptParams{
+		RunID:               int(req.RunId),
+		ReceiptID:           int(req.ReceiptId),
+		Reason:              reason,
+		ExpectedLockVersion: int(req.ExpectedLockVersion),
+		Username:            authsrv.GetAdminUsername(ctx),
+		CardID:              card.Id,
+		CardLockVersion:     card.LockVersion,
+		Reseed:              reseed,
+	})
+	if err != nil {
+		var shortErr *entity.ProductionRunReversalShortfallError
+		switch {
+		case errors.As(err, &shortErr):
+			return nil, status.Error(codes.FailedPrecondition, shortErr.Error())
+		case errors.Is(err, entity.ErrProductionRunReceiptAlreadyReversed),
+			errors.Is(err, entity.ErrProductionRunReversalOfReversal),
+			errors.Is(err, entity.ErrProductionRunReversalClosedRun),
+			errors.Is(err, entity.ErrProductionRunReversalPeriodClosed):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		case errors.Is(err, entity.ErrProductionRunReceiptNotFound):
+			return nil, status.Error(codes.NotFound, err.Error())
+		case errors.Is(err, entity.ErrProductionRunConflict):
+			return nil, status.Error(codes.Aborted, err.Error())
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't reverse production run receipt", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't reverse production run receipt")
+	}
+	resp := &pb_admin.ReverseProductionRunReceiptResponse{ReversalReceiptId: int32(result.ReversalReceiptID)}
+	// Echo the post-command run, same best-effort contract as the receipt command.
+	if run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId)); err == nil {
+		pb := dto.ConvertEntityProductionRunToPb(run)
+		if read, _ := s.costingAccess(ctx); !read {
+			stripProductionRunCosting(pb)
+		}
+		resp.Run = pb
+	} else {
+		slog.Default().ErrorContext(ctx, "can't reload production run after reversal", slog.String("err", err.Error()))
 	}
 	return resp, nil
 }

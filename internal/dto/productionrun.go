@@ -381,6 +381,8 @@ func productionRunReceiptsToPb(receipts []entity.ProductionRunReceipt) []*pb_com
 			CreatedAt:     timestamppb.New(r.CreatedAt),
 			Final:         r.Final,
 			PostingStatus: r.PostingStatus,
+			ReversalOf:    r.ReversalOf.Int32,
+			ReversedBy:    r.ReversedBy.Int32,
 		})
 	}
 	return out

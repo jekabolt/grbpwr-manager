@@ -277,6 +277,106 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 	return nil
 }
 
+// ReverseProductionStock is the mirror of ReceiveProductionStock (Phase 6): it takes a reversed
+// receipt's good units back OUT of the product's per-size stock, journalling each decrement with
+// the `production_reversed` source (reversed receipt in reference_id, operator's reason in
+// comment). It runs on the caller's transaction and NEVER writes a negative quantity: every size
+// whose locked on-hand is short is collected into the returned shortfall list and nothing further
+// is decided here — with ANY shortfall the caller aborts the whole transaction, so partial writes
+// roll back. Sold-but-unshipped units already left `quantity` at payment, so they produce the same
+// shortfall — a reversal can never steal a unit a sale claimed. Sizes are visited ascending,
+// matching the receive path's deterministic lock order.
+func (s *Store) ReverseProductionStock(ctx context.Context, productID int, perSize map[int]int, receiptID int, username, reason string) ([]entity.ProductionRunReversalShortfallItem, error) {
+	ref := sql.NullString{String: fmt.Sprintf("receipt:%d", receiptID), Valid: true}
+	var adminUser sql.NullString
+	if username != "" {
+		adminUser = sql.NullString{String: username, Valid: true}
+	}
+	var comment sql.NullString
+	if reason != "" {
+		comment = sql.NullString{String: reason, Valid: true}
+	}
+	sizeIDs := make([]int, 0, len(perSize))
+	for sizeID := range perSize {
+		sizeIDs = append(sizeIDs, sizeID)
+	}
+	sort.Ints(sizeIDs)
+	var short []entity.ProductionRunReversalShortfallItem
+	for _, sizeID := range sizeIDs {
+		qty := perSize[sizeID]
+		if qty <= 0 {
+			continue
+		}
+		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID)
+		if err != nil {
+			return nil, fmt.Errorf("can't lock stock for product %d size %d: %w", productID, sizeID, err)
+		}
+		after := before.Sub(decimal.NewFromInt(int64(qty)))
+		if after.IsNegative() {
+			short = append(short, entity.ProductionRunReversalShortfallItem{
+				ProductID: productID, SizeID: sizeID, Requested: qty, OnHand: int(before.IntPart()),
+			})
+			continue
+		}
+		if err := s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart())); err != nil {
+			return nil, fmt.Errorf("can't decrement stock for product %d size %d: %w", productID, sizeID, err)
+		}
+		if err := s.RecordStockChange(ctx, []entity.StockChangeInsert{{
+			ProductId:      sql.NullInt32{Int32: int32(productID), Valid: true},
+			SizeId:         sql.NullInt32{Int32: int32(sizeID), Valid: true},
+			QuantityDelta:  decimal.NewFromInt(int64(qty)).Neg(),
+			QuantityBefore: before,
+			QuantityAfter:  after,
+			Source:         string(entity.StockChangeSourceProductionReversed),
+			Reason:         sql.NullString{String: string(entity.StockChangeReasonReceiptReversed), Valid: true},
+			Comment:        comment,
+			ReferenceId:    ref,
+			AdminUsername:  adminUser,
+		}}); err != nil {
+			return nil, fmt.Errorf("can't record production-reversed stock change: %w", err)
+		}
+	}
+	return short, nil
+}
+
+// ClearProductCostPriceClaimOfRun is the reversal's cost_price rollback (Phase 6, plan 05 item 5).
+// Guarded on the exact claim — only a cost THIS run seeded is touched; a manual figure or a later
+// run/card source stays (the caller reports it as skipped). With a computable card estimate the
+// cost transfers back to tech_card provenance; without one it clears to honestly-unknown NULL.
+// cost_breakdown rides the same statement so price and decomposition never come from different
+// facts. Returns whether the product row was actually written.
+func (s *Store) ClearProductCostPriceClaimOfRun(ctx context.Context, productID, runID, techCardID int, est entity.ProductCostReseed) (bool, error) {
+	if est.Cost.Valid {
+		n, err := storeutil.ExecNamedRows(ctx, s.DB, `
+			UPDATE product
+			SET cost_price = :cost,
+				cost_price_source = 'tech_card',
+				cost_price_tech_card_id = :tc,
+				cost_price_production_run_id = NULL,
+				cost_price_updated_at = NOW(),
+				cost_breakdown = :breakdown
+			WHERE id = :id
+				AND cost_price_source = 'production_run'
+				AND cost_price_production_run_id = :run`,
+			map[string]any{"id": productID, "run": runID, "tc": techCardID,
+				"cost": est.Cost.Decimal, "breakdown": est.Breakdown})
+		return n > 0, err
+	}
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
+		UPDATE product
+		SET cost_price = NULL,
+			cost_price_source = NULL,
+			cost_price_tech_card_id = NULL,
+			cost_price_production_run_id = NULL,
+			cost_price_updated_at = NOW(),
+			cost_breakdown = NULL
+		WHERE id = :id
+			AND cost_price_source = 'production_run'
+			AND cost_price_production_run_id = :run`,
+		map[string]any{"id": productID, "run": runID})
+	return n > 0, err
+}
+
 // SetProductCostPriceFromProductionRun writes cost (base currency) as the production-run-sourced
 // cost_price of a product, recording the provenance (source + run id + timestamp). It returns
 // whether the product was actually written.
