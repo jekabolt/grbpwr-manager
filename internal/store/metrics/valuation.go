@@ -37,7 +37,7 @@ func (s *Store) GetInventoryValuation(ctx context.Context, from, to time.Time, l
 			COALESCE(MAX(sold.units), 0) AS sold_units
 		FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id
-		JOIN product_size ps ON ps.product_id = p.id
+		JOIN product_size ps ON ps.product_id = p.id AND ps.grade = 'A'
 		LEFT JOIN sold ON sold.product_id = p.id
 		WHERE p.lifecycle_status <> 4
 		GROUP BY p.id, product_name, p.cost_price

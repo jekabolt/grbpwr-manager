@@ -197,7 +197,7 @@ func (w *Worker) postReceipt(ctx context.Context, ref entity.AcctReceiptRef) err
 		}
 		return nil
 	}
-	entry, berr := accounting.BuildProductionReceiveEntry(*facts, w.startDate, versionCount+1)
+	entry, berr := accounting.BuildProductionReceiveEntry(*facts, w.startDate, versionCount+1, w.c.normalLossRate())
 	if berr != nil {
 		if errors.Is(berr, accounting.ErrSkipEmpty) {
 			// Nothing to post — stays pending, re-seen each tick (NOT a failure): Phase 5 empties can

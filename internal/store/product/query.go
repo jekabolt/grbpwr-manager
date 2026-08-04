@@ -16,7 +16,7 @@ import (
 // sizes' quantities (0 when it has none), correlated on p.id. soldOutSelect derives the sold_out
 // flag from it. Both are reused across every product list/detail/low-stock query so the definition
 // can't drift; the Go equivalent for locally-loaded sizes is entity.SoldOutFromSizes (PR5-B).
-const productStockExpr = `COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id), 0)`
+const productStockExpr = `COALESCE((SELECT SUM(COALESCE(ps.quantity, 0)) FROM product_size ps WHERE ps.product_id = p.id AND ps.grade = 'A'), 0)`
 
 // soldOutSelect is the sold_out projection: a product is sold out when its total stock is <= 0 (50-B).
 // Uses <=, not just = 0, to agree with entity.SoldOutFromSizes: anomalous data (e.g. a negative total
@@ -219,7 +219,7 @@ func (s *Store) GetProductsPaged(ctx context.Context, limit int, offset int, sor
 			args["typeIds"] = filterConditions.TypeIds
 		}
 		if len(filterConditions.SizesIds) > 0 {
-			whereClauses = append(whereClauses, "p.id IN (SELECT ps.product_id FROM product_size ps WHERE ps.size_id IN (:sizes))")
+			whereClauses = append(whereClauses, "p.id IN (SELECT ps.product_id FROM product_size ps WHERE ps.size_id IN (:sizes) AND ps.grade = 'A')")
 			args["sizes"] = filterConditions.SizesIds
 		}
 		if filterConditions.Preorder {
@@ -595,7 +595,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	})
 	g.Go(func() error {
 		var e error
-		if sizes, e = storeutil.QueryListNamed[entity.Variant](gctx, s.DB, `SELECT * FROM product_size WHERE product_id = :id`, idParams); e != nil {
+		if sizes, e = storeutil.QueryListNamed[entity.Variant](gctx, s.DB, `SELECT * FROM product_size WHERE product_id = :id AND grade = 'A'`, idParams); e != nil {
 			return fmt.Errorf("can't get sizes: %w", e)
 		}
 		return nil
@@ -615,7 +615,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 			       ssm.measurement_name_id, ssm.measurement_value
 			FROM tech_card_size_measurement ssm
 			JOIN product p ON p.id = :id AND ssm.tech_card_id = p.style_id
-			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id
+			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id AND ps.grade = 'A'
 			WHERE EXISTS (SELECT 1 FROM tech_card_size z
 			              WHERE z.tech_card_id = ssm.tech_card_id AND z.size_id = ssm.size_id)
 			   OR NOT EXISTS (SELECT 1 FROM tech_card_size z WHERE z.tech_card_id = ssm.tech_card_id)`

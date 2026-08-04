@@ -6230,6 +6230,10 @@ message PostProductionRunReceiptLineInput {
   string line_key = 1; // required; must name an existing plan line of the run
   int32 good_qty = 2; // >= 0
   int32 defect_qty = 3; // >= 0
+  // Where this line's defect units go (Phase 7): "scrap" (default when empty — recorded fact, no
+  // stock; cost resolved by the posting rule) or "seconds" (booked into the product's B-grade
+  // variant stock at zero carried cost; needs a published product+size on the line).
+  string defect_disposition = 4;
 }
 
 message PostProductionRunReceiptRequest {

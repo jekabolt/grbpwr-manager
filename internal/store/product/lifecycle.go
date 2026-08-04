@@ -233,7 +233,7 @@ func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, co
 		  sty.season_year    AS season_year,
 		  sty.model_no       AS model_no,
 		  (SELECT COUNT(*) FROM product_size ps
-		     WHERE ps.product_id = p.id AND ps.sku IS NOT NULL
+		     WHERE ps.product_id = p.id AND ps.grade = 'A' AND ps.sku IS NOT NULL
 		       AND REGEXP_LIKE(ps.sku, :variant_pattern, 'c')) AS valid_variants,
 		  (SELECT COUNT(*) FROM product_price pp WHERE pp.product_id = p.id) AS price_count,
 		  (SELECT COUNT(*) FROM product_translation pt JOIN language l ON l.id = pt.language_id

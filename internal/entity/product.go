@@ -423,6 +423,7 @@ type Variant struct {
 	SizeId    int             `db:"size_id"`
 	SKU       sql.NullString  `db:"sku"`    // first-class variant SKU (SS26-00021-BLK-04)
 	Status    uint8           `db:"status"` // VariantStatus: 1=active, 2=archived (R2, migration 0155)
+	Grade     string          `db:"grade"`  // variant quality grade: A (default) or B = factory seconds (Phase 7)
 }
 
 func (ps *Variant) QuantityDecimal() decimal.Decimal {
@@ -651,9 +652,21 @@ const (
 )
 
 // StockChangeInsert represents a row to insert into product_stock_change_history.
+// Variant quality grades (Phase 7): A is the sellable default; B is a factory-seconds row of the
+// SAME (product, size) with its own stock and '-B'-suffixed SKU. B variants are NOT sellable in v1
+// (their discount price is an open owner decision) — every storefront/order/metrics read pins
+// grade = 'A'; only the production receive/reverse paths touch B rows.
+const (
+	VariantGradeA = "A"
+	VariantGradeB = "B"
+)
+
 type StockChangeInsert struct {
-	ProductId           sql.NullInt32       `db:"product_id"`
-	SizeId              sql.NullInt32       `db:"size_id"`
+	ProductId sql.NullInt32 `db:"product_id"`
+	SizeId    sql.NullInt32 `db:"size_id"`
+	// Grade is which grade stock the movement touched (Phase 7); empty means A (the store
+	// normalises on write so pre-Phase-7 callers stay valid).
+	Grade               string              `db:"grade"`
 	QuantityDelta       decimal.Decimal     `db:"quantity_delta"`
 	QuantityBefore      decimal.Decimal     `db:"quantity_before"`
 	QuantityAfter       decimal.Decimal     `db:"quantity_after"`

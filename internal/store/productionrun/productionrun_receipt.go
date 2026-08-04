@@ -105,12 +105,29 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 				return fmt.Errorf("receipt line %q submitted twice", in.LineKey)
 			}
 			seen[in.LineKey] = true
+			if !entity.ValidDefectDisposition(in.DefectDisposition) {
+				return fmt.Errorf("receipt line %q: unknown defect disposition %q", in.LineKey, in.DefectDisposition)
+			}
+			if in.DefectDisposition == "" {
+				in.DefectDisposition = entity.DefectDispositionScrap
+			}
 			ln, ok := byKey[in.LineKey]
 			if !ok {
 				return entity.ErrProductionRunReceiptLineUnknown
 			}
 			if in.GoodQty == 0 && in.DefectQty == 0 {
 				continue // an uncounted line carries no receipt fact
+			}
+			if in.DefectDisposition == entity.DefectDispositionSeconds && in.DefectQty > 0 {
+				// Seconds land in the product's B-grade variant stock — that needs the same product
+				// and size a good unit needs, and never exists on an auxiliary run (its output is a
+				// material; a failed batch is scrap or an adjustment, not "B-grade fabric").
+				if p.Aux {
+					return fmt.Errorf("receipt line %q: an auxiliary run cannot receive seconds", in.LineKey)
+				}
+				if !ln.ProductId.Valid || ln.SizeId == 0 {
+					return fmt.Errorf("receipt line %q: seconds need a published product and size to book B-grade stock", in.LineKey)
+				}
 			}
 			if p.Aux {
 				if ln.ProductId.Valid {
@@ -164,16 +181,30 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			in, countedNow := countsByID[lines[i].Id]
 			switch {
 			case countedNow:
-				if err := storeutil.ExecNamed(ctx, db, `
+				// The shim's counts ARE the stored rollups (old-client totals) — accumulating would
+				// add them to themselves; the command API always carries deltas.
+				rollupSQL := `
 					UPDATE production_run_line
 					SET received_qty = COALESCE(received_qty, 0) + :g,
 					    defect_qty = COALESCE(defect_qty, 0) + :d
-					WHERE id = :id`,
+					WHERE id = :id`
+				if p.LegacyTotals {
+					rollupSQL = `
+					UPDATE production_run_line
+					SET received_qty = :g, defect_qty = :d
+					WHERE id = :id`
+				}
+				if err := storeutil.ExecNamed(ctx, db, rollupSQL,
 					map[string]any{"g": in.GoodQty, "d": in.DefectQty, "id": lines[i].Id}); err != nil {
 					return fmt.Errorf("failed to stamp receipt counts on run line %d: %w", lines[i].Id, err)
 				}
-				lines[i].ReceivedQty = sql.NullInt64{Int64: lines[i].ReceivedQty.Int64 + int64(in.GoodQty), Valid: true}
-				lines[i].DefectQty = sql.NullInt64{Int64: lines[i].DefectQty.Int64 + int64(in.DefectQty), Valid: true}
+				if p.LegacyTotals {
+					lines[i].ReceivedQty = sql.NullInt64{Int64: int64(in.GoodQty), Valid: true}
+					lines[i].DefectQty = sql.NullInt64{Int64: int64(in.DefectQty), Valid: true}
+				} else {
+					lines[i].ReceivedQty = sql.NullInt64{Int64: lines[i].ReceivedQty.Int64 + int64(in.GoodQty), Valid: true}
+					lines[i].DefectQty = sql.NullInt64{Int64: lines[i].DefectQty.Int64 + int64(in.DefectQty), Valid: true}
+				}
 			case p.Final:
 				if err := storeutil.ExecNamed(ctx, db, `
 					UPDATE production_run_line
@@ -241,17 +272,59 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		for _, c := range counted {
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO production_run_receipt_line
-					(receipt_id, run_line_id, product_id, size_id, good_qty, defect_qty)
-				VALUES (:receipt_id, :run_line_id, :product_id, :size_id, :good_qty, :defect_qty)`,
+					(receipt_id, run_line_id, product_id, size_id, good_qty, defect_qty, defect_disposition)
+				VALUES (:receipt_id, :run_line_id, :product_id, :size_id, :good_qty, :defect_qty, :defect_disposition)`,
 				map[string]any{
-					"receipt_id":  receiptID,
-					"run_line_id": c.line.Id,
-					"product_id":  c.line.ProductId,
-					"size_id":     nullIfZero(c.line.SizeId),
-					"good_qty":    c.in.GoodQty,
-					"defect_qty":  c.in.DefectQty,
+					"receipt_id":         receiptID,
+					"run_line_id":        c.line.Id,
+					"product_id":         c.line.ProductId,
+					"size_id":            nullIfZero(c.line.SizeId),
+					"good_qty":           c.in.GoodQty,
+					"defect_qty":         c.in.DefectQty,
+					"defect_disposition": c.in.DefectDisposition,
 				}); err != nil {
 				return fmt.Errorf("failed to insert production run receipt line: %w", err)
+			}
+		}
+
+		// The defect trace (Phase 7, plan 09): every defected unit leaves an auditable event — how
+		// many scrapped (their cost is resolved by the posting rule: normal loss absorbed into the
+		// good units, abnormal excess written off) and how many went to B-grade seconds. NO phantom
+		// stock movement is written for scrap — this event and the ledger entry ARE its trace. The
+		// absorbed-cost figure is the receipt's frozen per-unit valuation × scrapped units — an
+		// estimate stamped for the operator; the ledger's split is exact at posting time.
+		scrapQty, secondsQty := 0, 0
+		for _, c := range counted {
+			if c.in.DefectQty == 0 {
+				continue
+			}
+			if c.in.DefectDisposition == entity.DefectDispositionSeconds {
+				secondsQty += c.in.DefectQty
+			} else {
+				scrapQty += c.in.DefectQty
+			}
+		}
+		if scrapQty > 0 || secondsQty > 0 {
+			payload := map[string]any{
+				"receipt_id":  receiptID,
+				"scrap_qty":   scrapQty,
+				"seconds_qty": secondsQty,
+			}
+			if unitCost.Valid && scrapQty > 0 {
+				payload["absorbed_cost_base_estimate"] = unitCost.Decimal.Mul(decimal.NewFromInt(int64(scrapQty))).Round(2).String()
+			}
+			pj, err := json.Marshal(payload)
+			if err != nil {
+				return fmt.Errorf("failed to marshal units_scrapped payload: %w", err)
+			}
+			if err := storeutil.ExecNamed(ctx, db, `
+				INSERT INTO production_run_event (run_id, event_type, actor, reason, payload)
+				VALUES (:run_id, :event_type, :actor, NULL, :payload)`,
+				map[string]any{
+					"run_id": p.RunID, "event_type": entity.ProductionRunEventUnitsScrapped,
+					"actor": adminUser, "payload": string(pj),
+				}); err != nil {
+				return fmt.Errorf("failed to record units_scrapped event: %w", err)
 			}
 		}
 
@@ -273,15 +346,34 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			}
 		} else {
 			perProduct := make(map[int]map[int]int)
+			perProductSeconds := make(map[int]map[int]int)
 			for _, c := range counted {
-				if c.in.GoodQty == 0 {
-					continue
-				}
 				pid := int(c.line.ProductId.Int32)
-				if perProduct[pid] == nil {
-					perProduct[pid] = make(map[int]int)
+				if c.in.GoodQty > 0 {
+					if perProduct[pid] == nil {
+						perProduct[pid] = make(map[int]int)
+					}
+					perProduct[pid][c.line.SizeId] += c.in.GoodQty
 				}
-				perProduct[pid][c.line.SizeId] += c.in.GoodQty
+				if c.in.DefectQty > 0 && c.in.DefectDisposition == entity.DefectDispositionSeconds {
+					if perProductSeconds[pid] == nil {
+						perProductSeconds[pid] = make(map[int]int)
+					}
+					perProductSeconds[pid][c.line.SizeId] += c.in.DefectQty
+				}
+			}
+			// Seconds land in the B-grade variant of the SAME (product, size) — journalled exactly
+			// like good units, at zero carried cost v1 (the run's whole cost stays with the A units;
+			// the B variant is not sellable until its discount pricing is decided).
+			secondsIDs := make([]int, 0, len(perProductSeconds))
+			for pid := range perProductSeconds {
+				secondsIDs = append(secondsIDs, pid)
+			}
+			sort.Ints(secondsIDs)
+			for _, pid := range secondsIDs {
+				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProductSeconds[pid], p.RunID, p.Username, entity.VariantGradeB); err != nil {
+					return err
+				}
 			}
 			productIDs := make([]int, 0, len(perProduct))
 			for pid := range perProduct {
@@ -289,7 +381,7 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			}
 			sort.Ints(productIDs)
 			for _, pid := range productIDs {
-				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProduct[pid], p.RunID, p.Username); err != nil {
+				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProduct[pid], p.RunID, p.Username, entity.VariantGradeA); err != nil {
 					return err
 				}
 				if p.UpdateCostPrice && unitCost.Valid {
@@ -439,7 +531,7 @@ func loadRunReceipts(ctx context.Context, db dependency.DB, runID int) ([]entity
 	for i := range receipts {
 		lines, err := storeutil.QueryListNamed[entity.ProductionRunReceiptLine](ctx, db, `
 			SELECT rl.id, rl.receipt_id, rl.run_line_id, rl.product_id, rl.size_id, rl.good_qty,
-			       rl.defect_qty, COALESCE(l.line_key, '') AS line_key
+			       rl.defect_qty, rl.defect_disposition, COALESCE(l.line_key, '') AS line_key
 			FROM production_run_receipt_line rl
 			JOIN production_run_line l ON l.id = rl.run_line_id
 			WHERE rl.receipt_id = :id ORDER BY rl.id`,

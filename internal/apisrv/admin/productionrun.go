@@ -233,7 +233,7 @@ func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.Pos
 		return nil, status.Error(codes.Internal, "can't load production run")
 	}
 	result, st := s.executeRunReceipt(ctx, run, lines, key, int(req.ExpectedLockVersion),
-		strings.TrimSpace(req.Note), req.UpdateCostPrice, !req.Partial)
+		strings.TrimSpace(req.Note), req.UpdateCostPrice, !req.Partial, false)
 	if st != nil {
 		return nil, st
 	}
@@ -402,7 +402,9 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 		return nil, status.Error(codes.Internal, "can't receive production run")
 	}
 	// The shim always synthesizes a FINAL receipt — the pre-receipt flow had no partial concept.
-	result, st := s.executeRunReceipt(ctx, run, lines, key, 0, "", req.UpdateCostPrice, true)
+	// The shim's lines ARE the stored totals — LegacyTotals stops the rollup write from adding
+	// them to themselves (the Phase 5 accumulate regression halved every shim unit cost).
+	result, st := s.executeRunReceipt(ctx, run, lines, key, 0, "", req.UpdateCostPrice, true, true)
 	if st != nil {
 		return nil, st
 	}
@@ -413,7 +415,7 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 // validation (aux detection included), and the store command. Returns a gRPC status error mapped
 // from the command's outcome.
 func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRun, lines []entity.ProductionRunReceiptLineInput,
-	idempotencyKey string, expectedLockVersion int, note string, updateCostPrice, final bool) (*entity.PostProductionRunReceiptResult, error) {
+	idempotencyKey string, expectedLockVersion int, note string, updateCostPrice, final, legacyTotals bool) (*entity.PostProductionRunReceiptResult, error) {
 	runID := run.Id
 	// Moving sellable stock needs products:write on top of production:write (the RBAC interceptor
 	// gate). An account granted the permission after login must re-login — permissions ride in the JWT.
@@ -442,6 +444,7 @@ func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRu
 		Username:            authsrv.GetAdminUsername(ctx),
 		BaseCurrency:        cache.GetBaseCurrency(),
 		Final:               final,
+		LegacyTotals:        legacyTotals,
 	}
 	// NF-07: an auxiliary card's output is received into the material warehouse, not product stock.
 	if card.Purpose == entity.TechCardPurposeAuxiliary {

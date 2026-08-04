@@ -78,7 +78,8 @@ func TestStyleAssembly(t *testing.T) {
 	componentCard.AuxSubtype = sql.NullString{}
 	err = T.UpdateTechCard(ctx, compID, &componentCard.TechCardInsert, componentCard.LockVersion)
 	require.ErrorIs(t, err, entity.ErrTechCardPurposeLocked)
-	require.Contains(t, err.Error(), "assembly component")
+	// The wording was reworked ("used as a component in N style assembly") — pin the stable part.
+	require.Contains(t, err.Error(), "style assembly")
 
 	// Full-replace with an empty list clears the bill.
 	require.NoError(t, T.UpsertStyleAssembly(ctx, styleID, nil, "tester"))

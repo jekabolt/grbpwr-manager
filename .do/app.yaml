@@ -342,6 +342,13 @@ envs:
 - key: ACCOUNTING_DELIVERED_RECOGNITION_FROM
   scope: RUN_TIME
   value: ""
+# ACCOUNTING_DEFECT_NORMAL_LOSS_RATE (fraction, Phase 7): scrap units up to rate × received units of
+# a closed run are normal production loss absorbed by the good units; the excess is written off
+# Dr 5040 / Cr 1120 on the final receipt. A float is required here (an empty string would fail the
+# config unmarshal) — 0.05 = the built-in 5% default.
+- key: ACCOUNTING_DEFECT_NORMAL_LOSS_RATE
+  scope: RUN_TIME
+  value: "0.05"
 - key: RATES_BASE_CURRENCY
   scope: RUN_TIME
   value: EUR

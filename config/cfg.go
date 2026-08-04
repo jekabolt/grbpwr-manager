@@ -396,6 +396,7 @@ func bindEnvVars() {
 	viper.BindEnv("jpk.phone", "JPK_PHONE")
 	viper.BindEnv("jpk.tax_office", "JPK_TAX_OFFICE")
 	viper.BindEnv("accounting.settled_wait_max", "ACCOUNTING_SETTLED_WAIT_MAX")
+	viper.BindEnv("accounting.defect_normal_loss_rate", "ACCOUNTING_DEFECT_NORMAL_LOSS_RATE")
 
 	// Stripe reconcile (orphaned pre-order PaymentIntents)
 	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")

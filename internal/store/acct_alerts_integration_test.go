@@ -120,7 +120,9 @@ func TestAcctDashboardAlertQueries(t *testing.T) {
 		afterCount, maxAgeHours, err := mtr.GetAcctPostingLag(ctx, lagHours)
 		require.NoError(t, err)
 		require.Equal(t, beforeCount+1, afterCount, "one stale unprocessed event joins the backlog count")
-		require.GreaterOrEqual(t, maxAgeHours, float64(lagHours+6),
+		// Minus a small tolerance: the fixture is aged EXACTLY lagHours+6 at insert time, so the
+		// measured age is that minus the insert-to-query latency (observed flake: 29.9999 < 30).
+		require.GreaterOrEqual(t, maxAgeHours, float64(lagHours+6)-0.01,
 			"the oldest-event age reflects this stale fixture (or an even older pre-existing backlog item)")
 	})
 

@@ -202,7 +202,7 @@ func fetchVariantSnapshots(ctx context.Context, db dependency.DB, items []entity
 	rows, err := storeutil.QueryListNamed[variantSnapshot](ctx, db,
 		`SELECT ps.id, ps.product_id, ps.size_id, ps.sku AS variant_sku, COALESCE(p.sku, '') AS base_sku
 		 FROM product_size ps JOIN product p ON p.id = ps.product_id
-		 WHERE ps.product_id IN (:ids) AND ps.sku IS NOT NULL AND ps.sku != ''`,
+		 WHERE ps.product_id IN (:ids) AND ps.grade = 'A' AND ps.sku IS NOT NULL AND ps.sku != ''`,
 		map[string]any{"ids": ids})
 	if err != nil {
 		return nil, err

@@ -43,11 +43,13 @@ var ErrProductionRunReversalAux = errors.New("an auxiliary run's receipt cannot 
 // sits in a closed period (v1 refuses; a compensating cross-period entry is v2).
 var ErrProductionRunReversalPeriodClosed = errors.New("the receipt's accounting period is closed; reopen it or correct via a manual entry")
 
-// ProductionRunReversalShortfallItem is one (product, size) whose on-hand stock cannot give the
-// receipt's units back — they were sold (or already left the shelf some other way).
+// ProductionRunReversalShortfallItem is one (product, size, grade) whose on-hand stock cannot give
+// the receipt's units back — they were sold (or already left the shelf some other way). Grade 'B'
+// marks the seconds stock of the pair (Phase 7).
 type ProductionRunReversalShortfallItem struct {
 	ProductID int
 	SizeID    int
+	Grade     string
 	Requested int
 	OnHand    int
 }
@@ -107,3 +109,8 @@ type ReverseProductionRunReceiptResult struct {
 
 // ProductionRunEventReceiptReversed is the production_run_event.event_type of a receipt reversal.
 const ProductionRunEventReceiptReversed = "receipt_reversed"
+
+// ProductionRunEventUnitsScrapped is the production_run_event.event_type recording a receipt's
+// defected units (Phase 7): scrap counts (cost resolved by the posting rule) and seconds counts
+// (booked into B-grade stock). The event is the scrap trace — scrap writes NO stock movement.
+const ProductionRunEventUnitsScrapped = "units_scrapped"

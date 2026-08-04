@@ -40,6 +40,7 @@ func receiptParamsFromStored(t *testing.T, run *entity.ProductionRun, updateCost
 		RequestHash:      dto.HashProductionRunReceiptPayload(run.Id, lines, "", updateCostPrice, true),
 		UpdateCostPrice:  updateCostPrice,
 		Final:            true,
+		LegacyTotals:     true,
 		Username:         "tester",
 		BaseCurrency:     "EUR",
 		Aux:              aux,
@@ -374,7 +375,7 @@ func TestProductionReceiptPostingScan(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, inScan(), "reset receipt is scannable again")
 
-	entry, err := accounting.BuildProductionReceiveEntry(*facts, startDate, 1)
+	entry, err := accounting.BuildProductionReceiveEntry(*facts, startDate, 1, decimal.RequireFromString("0.05"))
 	require.NoError(t, err)
 	require.Equal(t, "receipt:"+strconv.Itoa(res.ReceiptID), entry.SourceKey)
 	require.NoError(t, s.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {

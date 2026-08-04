@@ -122,7 +122,10 @@ message ProductionRunReceiptLine {
   int32 product_id = 2; // snapshot; 0 = product-less line (aux output / defect-only planning line)
   int32 size_id = 3; // snapshot; 0 = size-less line (aux output)
   int32 good_qty = 4; // units posted to stock (or the material warehouse for aux)
-  int32 defect_qty = 5; // units counted as defect — recorded, never stocked
+  int32 defect_qty = 5; // units counted as defect — never A-grade stock
+  // Where the defect units went (Phase 7): "scrap" (recorded fact + posting-rule resolution) or
+  // "seconds" (booked into the product's B-grade variant stock).
+  string defect_disposition = 6;
 }
 
 // ProductionRunReceipt is one immutable receiving event of a run (Phase 4, receipt v1; Phase 5

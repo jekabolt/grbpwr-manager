@@ -21,7 +21,7 @@ import (
 type productSKUFacts struct {
 	ID         int            `db:"id"`
 	StyleID    int            `db:"style_id"`
-	ColorCode  string         `db:"color_code"`    // colourway's dictionary code (on the product)
+	ColorCode  string         `db:"color_code"` // colourway's dictionary code (on the product)
 	LockedAt   sql.NullTime   `db:"sku_locked_at"`
 	SeasonCode sql.NullString `db:"season_code"` // style sku_season code (SS/FW/PF/RC)
 	SeasonYear sql.NullInt32  `db:"season_year"` // style sku_season year
@@ -189,6 +189,7 @@ func findSKUInvariantViolations(ctx context.Context, db dependency.DB) ([]skuInv
 			JOIN product p ON p.id = ps.product_id
 			JOIN size s ON s.id = ps.size_id
 			WHERE p.lifecycle_status <> 1
+			  AND ps.grade = 'A'
 			  AND (ps.sku IS NULL
 			   OR ps.sku = ''
 			   OR NOT REGEXP_LIKE(ps.sku, :variant_pattern, 'c')
@@ -229,6 +230,7 @@ func (s *Store) BackfillSKUs(ctx context.Context) error {
 		          FROM product_size ps
 		          JOIN size s ON s.id = ps.size_id
 		          WHERE ps.product_id = p.id
+		            AND ps.grade = 'A'
 		            AND (
 		                 ps.sku IS NULL
 		              OR ps.sku = ''
@@ -369,7 +371,7 @@ func loadValidatedSizeOrdinalFacts(ctx context.Context, db dependency.DB, produc
 		SELECT ps.size_id, s.sku_ord, s.sku_system, ps.sku
 		FROM product_size ps
 		JOIN size s ON s.id = ps.size_id
-		WHERE ps.product_id = :id
+		WHERE ps.product_id = :id AND ps.grade = 'A'
 		ORDER BY ps.size_id`, map[string]any{"id": productID})
 	if err != nil {
 		return nil, fmt.Errorf("list product size SKU facts: %w", err)
@@ -392,7 +394,7 @@ func mintVariantSKUs(ctx context.Context, db dependency.DB, productID int, base 
 			return fmt.Errorf("mint variant sku (product %d size %d): %w", productID, fact.SizeID, err)
 		}
 		if err := storeutil.ExecNamed(ctx, db,
-			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid`,
+			`UPDATE product_size SET sku = :sku WHERE product_id = :pid AND size_id = :sid AND grade = 'A'`,
 			map[string]any{"sku": variant, "pid": productID, "sid": fact.SizeID}); err != nil {
 			return fmt.Errorf("set product_size.sku (size %d): %w", fact.SizeID, err)
 		}

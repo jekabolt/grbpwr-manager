@@ -44,7 +44,7 @@ func (s *Store) CreateVariant(ctx context.Context, colorwayID, sizeID int) (enti
 		}
 		exists, err := storeutil.QueryNamedOne[struct {
 			N int `db:"n"`
-		}](ctx, rep.DB(), `SELECT COUNT(*) AS n FROM product_size WHERE product_id = :pid AND size_id = :sid`,
+		}](ctx, rep.DB(), `SELECT COUNT(*) AS n FROM product_size WHERE product_id = :pid AND size_id = :sid AND grade = 'A'`,
 			map[string]any{"pid": colorwayID, "sid": sz.Id})
 		if err != nil {
 			return fmt.Errorf("check existing variant (colourway %d size %d): %w", colorwayID, sz.Id, err)

@@ -57,7 +57,7 @@ func getProductsSizesByIdsWithLock(ctx context.Context, db dependency.DB, items 
 	query := fmt.Sprintf(`
 		SELECT product_id, size_id, quantity
 		FROM product_size
-		WHERE status = 1 AND (%s)`, joinConditions(conditions))
+		WHERE status = 1 AND grade = 'A' AND (%s)`, joinConditions(conditions))
 
 	if forUpdate {
 		query += " FOR UPDATE"
@@ -118,7 +118,7 @@ func resolveVariantAddressing(ctx context.Context, db dependency.DB, items []ent
 	if len(conds) == 0 {
 		return nil
 	}
-	query := `SELECT id, product_id, size_id, COALESCE(sku, '') AS sku FROM product_size WHERE ` + joinConditions(conds)
+	query := `SELECT id, product_id, size_id, COALESCE(sku, '') AS sku FROM product_size WHERE grade = 'A' AND ` + joinConditions(conds)
 	var rows []resolvedVariantRow
 	if err := db.SelectContext(ctx, &rows, query, params...); err != nil {
 		return fmt.Errorf("resolve variant addressing: %w", err)

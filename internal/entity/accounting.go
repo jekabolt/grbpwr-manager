@@ -208,26 +208,26 @@ const (
 // in dto. Map-to-bool (not struct{}), matching entity.ValidMaterialClasses: migrationlint's
 // enum_drift_test.go compares it via mapKeysAsStrings[K ~string](m map[K]bool).
 var ValidAcctSourceTypes = map[AcctSourceType]bool{
-	AcctSourceOrderSale:          true,
-	AcctSourceOrderRefund:        true,
-	AcctSourceOrderPrepayment:    true,
-	AcctSourceOrderTransit:       true,
-	AcctSourceOrderDeliveredSale: true,
-	AcctSourceMaterialReceipt:    true,
-	AcctSourceMaterialIssue:      true,
-	AcctSourceMaterialReturn:     true,
-	AcctSourceMaterialWriteoff:   true,
-	AcctSourceMaterialAdjustment: true,
+	AcctSourceOrderSale:                 true,
+	AcctSourceOrderRefund:               true,
+	AcctSourceOrderPrepayment:           true,
+	AcctSourceOrderTransit:              true,
+	AcctSourceOrderDeliveredSale:        true,
+	AcctSourceMaterialReceipt:           true,
+	AcctSourceMaterialIssue:             true,
+	AcctSourceMaterialReturn:            true,
+	AcctSourceMaterialWriteoff:          true,
+	AcctSourceMaterialAdjustment:        true,
 	AcctSourceProductionReceive:         true,
 	AcctSourceProductionReceiveReversal: true,
 	AcctSourceOpexMonth:                 true,
-	AcctSourceShippingActual:     true,
-	AcctSourceDevExpense:         true,
-	AcctSourceDepreciation:       true,
-	AcctSourceCorpTax:            true,
-	AcctSourceOrderDispute:       true,
-	AcctSourceManual:             true,
-	AcctSourceReversal:           true,
+	AcctSourceShippingActual:            true,
+	AcctSourceDevExpense:                true,
+	AcctSourceDepreciation:              true,
+	AcctSourceCorpTax:                   true,
+	AcctSourceOrderDispute:              true,
+	AcctSourceManual:                    true,
+	AcctSourceReversal:                  true,
 }
 
 // ValidAcctSections is the storable set for acct_account.section — mirrored by the DB CHECK
@@ -653,6 +653,18 @@ type AcctRunFacts struct {
 	// relieved (Dr1130/Cr1120). Written by the worker in the same tx as each entry.
 	OtherPostedManualBase decimal.Decimal
 	OtherPostedFGBase     decimal.Decimal
+
+	// --- Phase 7 (defect disposition).
+	//
+	// IsAux: the run's tech card is auxiliary — its output is a MATERIAL, booked by M2
+	// (receipt_production: Dr 1110 / Cr 1120) at receive time. The builder must then post NO
+	// finished-goods transfer at all (the latent Phase-4 bug double-relieved 1120: M2 AND the P1
+	// FG side both fired); only the manual-cost capitalisation remains its job.
+	IsAux bool
+	// AllScrapQty is Σ defect_qty of scrap-dispositioned lines over ALL the run's non-reversed
+	// receipts (including this one) — the basis of the final receipt's normal/abnormal loss split.
+	// Seconds-dispositioned defects are recovered value, never written off, and are excluded here.
+	AllScrapQty int
 }
 
 // AcctReceiptRef identifies one unposted production receipt for the posting worker's scan.

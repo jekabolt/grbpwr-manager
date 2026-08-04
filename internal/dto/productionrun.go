@@ -361,11 +361,12 @@ func productionRunReceiptsToPb(receipts []entity.ProductionRunReceipt) []*pb_com
 		lines := make([]*pb_common.ProductionRunReceiptLine, 0, len(r.Lines))
 		for _, l := range r.Lines {
 			lines = append(lines, &pb_common.ProductionRunReceiptLine{
-				LineKey:   l.LineKey,
-				ProductId: l.ProductId.Int32,
-				SizeId:    l.SizeId.Int32,
-				GoodQty:   int32(l.GoodQty),
-				DefectQty: int32(l.DefectQty),
+				LineKey:           l.LineKey,
+				ProductId:         l.ProductId.Int32,
+				SizeId:            l.SizeId.Int32,
+				GoodQty:           int32(l.GoodQty),
+				DefectQty:         int32(l.DefectQty),
+				DefectDisposition: l.DefectDisposition,
 			})
 		}
 		out = append(out, &pb_common.ProductionRunReceipt{
@@ -411,9 +412,10 @@ func ConvertPbReceiptLinesToEntity(pbs []*pb_admin.PostProductionRunReceiptLineI
 			return nil, fmt.Errorf("receipt line %q: quantities must be non-negative", key)
 		}
 		out = append(out, entity.ProductionRunReceiptLineInput{
-			LineKey:   key,
-			GoodQty:   int(ln.GoodQty),
-			DefectQty: int(ln.DefectQty),
+			LineKey:           key,
+			GoodQty:           int(ln.GoodQty),
+			DefectQty:         int(ln.DefectQty),
+			DefectDisposition: ln.DefectDisposition,
 		})
 	}
 	return out, nil
@@ -434,6 +436,12 @@ func HashProductionRunReceiptPayload(runID int, lines []entity.ProductionRunRece
 	fmt.Fprintf(h, "run=%d;note=%q;cost=%t;final=%t", runID, note, updateCostPrice, final)
 	for _, l := range sorted {
 		fmt.Fprintf(h, ";%s=%d/%d", l.LineKey, l.GoodQty, l.DefectQty)
+		if l.DefectDisposition == entity.DefectDispositionSeconds {
+			// Only the non-default disposition joins the hash: the default-scrap shape stays
+			// byte-identical to every pre-Phase-7 payload, so a cross-deploy retry of an old
+			// command still replays instead of dying on a hash conflict.
+			fmt.Fprintf(h, "/seconds")
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

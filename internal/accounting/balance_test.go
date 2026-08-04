@@ -18,6 +18,8 @@ import (
 var (
 	testOccurred  = time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
 	testStartDate = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// testNormalLoss mirrors the worker's default defect_normal_loss_rate (5%).
+	testNormalLoss = decimal.RequireFromString("0.05")
 )
 
 // dec parses a decimal literal (panics on bad input — test-only).
@@ -276,7 +278,7 @@ func TestPropertyProductionBalances(t *testing.T) {
 			Costs:        costs,
 			Issues:       issues,
 		}
-		entry, err := BuildProductionReceiveEntry(run, testStartDate, 1)
+		entry, err := BuildProductionReceiveEntry(run, testStartDate, 1, testNormalLoss)
 		if err != nil {
 			require.Truef(t, errors.Is(err, ErrSkipEmpty), "iter %d unexpected production error: %v", i, err)
 			continue

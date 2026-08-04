@@ -25,6 +25,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
+	"github.com/shopspring/decimal"
 )
 
 // Defaults applied by New when a field is unset (docs/plan-accounting/07).
@@ -32,6 +33,10 @@ const (
 	defaultWorkerInterval = time.Minute
 	defaultBatchSize      = 200
 	defaultSettledWaitMax = 48 * time.Hour
+	// defaultDefectNormalLossRate is the expected-waste threshold of the P1 defect split: 5% of a
+	// closed run's received units may scrap as NORMAL loss (absorbed by the good units) before the
+	// excess is written off (Phase 7, plan 09).
+	defaultDefectNormalLossRate = 0.05
 
 	// startDateLayout is the ACCOUNTING_START_DATE format: a UTC calendar date (the cutover); every
 	// fact before it stays out of the ledger ("start from zero").
@@ -62,16 +67,33 @@ type Config struct {
 	// cfg.ShippingLabel.ShipFromAddress().CountryISO2 before constructing the worker (07 §7.1). Empty is
 	// tolerated — the resolver then classifies purely by destination / payment method.
 	OriginCountry string `mapstructure:"-"`
+	// DefectNormalLossRate is the expected-waste threshold of the P1 defect split (Phase 7): scrap
+	// units up to rate × allReceived are normal loss absorbed by the good units; the excess is
+	// written off Dr 5040 / Cr 1120 on the final receipt. Fraction, e.g. 0.05 = 5% (the default).
+	DefectNormalLossRate float64 `mapstructure:"defect_normal_loss_rate"`
 }
 
 // DefaultConfig returns the worker defaults (disabled; the cutover must be set explicitly).
 func DefaultConfig() Config {
 	return Config{
-		Enabled:        false,
-		WorkerInterval: defaultWorkerInterval,
-		BatchSize:      defaultBatchSize,
-		SettledWaitMax: defaultSettledWaitMax,
+		Enabled:              false,
+		WorkerInterval:       defaultWorkerInterval,
+		BatchSize:            defaultBatchSize,
+		SettledWaitMax:       defaultSettledWaitMax,
+		DefectNormalLossRate: defaultDefectNormalLossRate,
 	}
+}
+
+// normalLossRate is the validated threshold the receipt builder receives: the configured fraction,
+// or the default when unset (viper's zero) or out-of-range (a negative or ≥1 rate is a
+// misconfiguration, not a policy — 1.0 would absorb every defect silently). A deliberately
+// zero-allowance policy is expressed as a tiny positive rate (e.g. 0.0001).
+func (c *Config) normalLossRate() decimal.Decimal {
+	r := c.DefectNormalLossRate
+	if r <= 0 || r >= 1 {
+		r = defaultDefectNormalLossRate
+	}
+	return decimal.NewFromFloat(r)
 }
 
 // Validate checks the config when the worker is enabled: StartDate must parse as YYYY-MM-DD and not

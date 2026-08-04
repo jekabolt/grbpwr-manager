@@ -28,7 +28,13 @@ import (
 //	partial:  FG = min( (TOTAL_WIP − Σ posted FG) × good ÷ max(planned − priorUnits, thisUnits),
 //	                    TARGET − Σ posted FG )
 //
-// The defect share deliberately STAYS on 1120 pending the defect write-off phase; sibling
+// Phase 7 resolves the defect share ON THE FINAL receipt (partials leave it in WIP — only the
+// closed series knows the real defect rate): scrap units up to normalLossRate × allReceived are
+// NORMAL loss, absorbed into the good units' FG value; the abnormal excess is written off
+// Dr 5040 / Cr 1120. Seconds-dispositioned units are recovered value (B-grade stock at zero cost
+// v1) — their share also rides with the good units, never written off. An AUXILIARY run posts NO
+// FG side at all: its output is a material, already moved off 1120 by M2 (receipt_production) at
+// receive time — posting FG too double-relieved WIP (latent Phase-4 defect, fixed here). Sibling
 // aggregates come from posted_manual_base/posted_fg_base, written in the same tx as each entry, so
 // the arithmetic is exact under any posting order.
 //
@@ -40,7 +46,9 @@ import (
 // likewise excluded from their respective totals and flagged, never invented at a made-up cost.
 //
 // Returns ErrSkipEmpty when there is nothing positive to post (all uncosted, no manual cost).
-func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, version int) (entity.AcctJournalEntryInsert, error) {
+// normalLossRate is the expected-waste threshold (config accounting.defect_normal_loss_rate, e.g.
+// 0.05 = 5% of all received units) — the boundary between absorbed and written-off scrap.
+func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, version int, normalLossRate decimal.Decimal) (entity.AcctJournalEntryInsert, error) {
 	manualCost := decimal.Zero
 	manualUncostedCount := 0
 	for _, c := range r.Costs {
@@ -126,13 +134,46 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 			Div(decimal.NewFromInt(int64(allReceived))).Round(2)
 	}
 
-	var fg decimal.Decimal
-	if isFinal {
-		// True-up: transfer exactly what is missing from the run's good-unit share. Intermediate
-		// roundings cancel out here — the ledger's Σ FG over the run's receipts lands on the target
-		// to the cent, nothing strands on 1120 beyond the defect share.
-		fg = goodShareTarget.Sub(r.OtherPostedFGBase)
-	} else {
+	// The defect write-off (Phase 7): only the FINAL receipt splits the run's scrap into normal
+	// (absorbed by the good units) and abnormal (expensed) — partials cannot know the closed
+	// series' defect rate and keep the Phase 5 behaviour (the defect share waits on 1120).
+	var fg, writeOff decimal.Decimal
+	switch {
+	case r.IsAux:
+		// M2 already relieved 1120 into 1110 for the output material at receive time — the FG side
+		// (and any write-off) must not exist here at all, or WIP is relieved twice.
+	case isFinal:
+		// What is still on 1120 for this run — the outer bound of everything this entry may move.
+		remaining := totalWIPGross.Sub(r.OtherPostedFGBase)
+		if remaining.IsPositive() {
+			if allGood == 0 && allReceived > 0 && r.ReceiptID > 0 {
+				// A run that produced NO good units has nothing to absorb the loss into — the
+				// whole remainder is the loss event, normal allowance or not.
+				writeOff = remaining
+				caveats = append(caveats, "all-scrap run closed: entire remaining WIP written off")
+			} else {
+				allowance := decimal.NewFromInt(int64(allReceived)).Mul(normalLossRate).Floor()
+				abnormal := decimal.NewFromInt(int64(r.AllScrapQty)).Sub(allowance)
+				if abnormal.IsPositive() && allReceived > 0 {
+					writeOff = totalWIPGross.
+						Mul(abnormal).
+						Div(decimal.NewFromInt(int64(allReceived))).Round(2)
+					if writeOff.GreaterThan(remaining) {
+						writeOff = remaining
+					}
+					caveats = append(caveats, fmt.Sprintf(
+						"abnormal defect loss: %s unit(s) beyond the %s-unit normal allowance written off",
+						abnormal.String(), allowance.String()))
+				}
+				// True-up: the good units carry everything that is not written off — their own
+				// share, the normal-loss share and the seconds share (B stock is zero-cost v1).
+				// Intermediate roundings cancel out here; nothing strands on 1120.
+				fg = remaining.Sub(writeOff)
+			}
+		} else if remaining.IsNegative() {
+			fg = remaining // surfaces through the negative-FG caveat below
+		}
+	default:
 		// A partial delivery relieves the CURRENT WIP balance pro-rata against the units still
 		// expected (plan floor: never less than this receipt's own units, so the ratio is ≤ 1 even
 		// on an over-plan delivery), and never beyond the good-unit share siblings have left over.
@@ -164,9 +205,9 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 	}
 	// WIP -> Finished Goods.
 	switch {
-	case allScrap:
+	case allScrap && !isFinal:
 		if totalWIPGross.IsPositive() {
-			caveats = append(caveats, "all-scrap receipt: cost left in WIP pending defect write-off")
+			caveats = append(caveats, "all-scrap receipt: cost left in WIP pending the series close")
 		}
 	case fg.IsPositive():
 		lines = append(lines,
@@ -178,6 +219,13 @@ func BuildProductionReceiveEntry(r entity.AcctRunFacts, startDate time.Time, ver
 		// a late partial after the final trued up) — a negative finished-goods transfer is not
 		// representable; leave the ledger as-is and flag it.
 		caveats = append(caveats, "non-positive finished-goods amount; FG transfer skipped")
+	}
+	// Abnormal defect loss out of WIP into the write-off expense.
+	if writeOff.IsPositive() {
+		lines = append(lines,
+			entity.AcctJournalLineInsert{AccountCode: Acc5040, Side: entity.AcctSideDebit, Amount: writeOff},
+			entity.AcctJournalLineInsert{AccountCode: Acc1120, Side: entity.AcctSideCredit, Amount: writeOff},
+		)
 	}
 
 	if len(lines) == 0 {

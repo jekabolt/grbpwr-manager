@@ -392,7 +392,7 @@ func (s *Store) getSizeCountsByGender(ctx context.Context, gender entity.GenderE
 		FROM (
 			SELECT DISTINCT ps.size_id, p.id as product_id
 			FROM product_size ps
-			JOIN product p ON ps.product_id = p.id
+			JOIN product p ON ps.product_id = p.id AND ps.grade = 'A'
 		JOIN tech_card sty ON sty.id = p.style_id
 			WHERE p.lifecycle_status = 2 AND sty.target_gender IN (:gender, 'unisex')
 		) AS size_products

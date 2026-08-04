@@ -217,15 +217,18 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		ReceivedAt   time.Time       `db:"received_at"`
 		Final        bool            `db:"final"`
 		TechCardName string          `db:"tech_card_name"`
+		IsAux        bool            `db:"is_aux"`
 		GoodQty      int             `db:"good_qty"`
 		DefectQty    int             `db:"defect_qty"`
 		AllGood      int             `db:"all_good"`
 		AllReceived  int             `db:"all_received"`
+		AllScrap     int             `db:"all_scrap"`
 		PlannedTotal int             `db:"planned_total"`
 		OtherManual  decimal.Decimal `db:"other_manual"`
 		OtherFG      decimal.Decimal `db:"other_fg"`
 	}](ctx, s.DB, `
 		SELECT pr.id, pr.run_id, pr.received_at, pr.final, tc.name AS tech_card_name,
+		       (tc.purpose = 'auxiliary') AS is_aux,
 		       COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS good_qty,
 		       COALESCE((SELECT SUM(rl.defect_qty) FROM production_run_receipt_line rl WHERE rl.receipt_id = pr.id), 0) AS defect_qty,
 		       COALESCE((SELECT SUM(rl.good_qty) FROM production_run_receipt s
@@ -234,6 +237,10 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		       COALESCE((SELECT SUM(rl.good_qty + rl.defect_qty) FROM production_run_receipt s
 		                 JOIN production_run_receipt_line rl ON rl.receipt_id = s.id
 		                 WHERE s.run_id = pr.run_id AND s.reversed_by IS NULL AND s.reversal_of IS NULL), 0) AS all_received,
+		       COALESCE((SELECT SUM(rl.defect_qty) FROM production_run_receipt s
+		                 JOIN production_run_receipt_line rl ON rl.receipt_id = s.id
+		                 WHERE s.run_id = pr.run_id AND s.reversed_by IS NULL AND s.reversal_of IS NULL
+		                   AND rl.defect_disposition = 'scrap'), 0) AS all_scrap,
 		       COALESCE((SELECT SUM(l.planned_qty) FROM production_run_line l WHERE l.run_id = pr.run_id), 0) AS planned_total,
 		       COALESCE((SELECT SUM(s.posted_manual_base) FROM production_run_receipt s
 		                 WHERE s.run_id = pr.run_id AND s.id <> pr.id), 0) AS other_manual,
@@ -276,6 +283,8 @@ func (s *Store) GetReceiptFactsForPosting(ctx context.Context, receiptID int) (*
 		PlannedQtyTotal:       hdr.PlannedTotal,
 		OtherPostedManualBase: hdr.OtherManual,
 		OtherPostedFGBase:     hdr.OtherFG,
+		IsAux:                 hdr.IsAux,
+		AllScrapQty:           hdr.AllScrap,
 	}
 	return rf, nil
 }

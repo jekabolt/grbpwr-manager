@@ -117,7 +117,7 @@ func TestAccountingReportsEndToEnd(t *testing.T) {
 			{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: decimal.NullDecimal{Decimal: dec("180"), Valid: true}, CreatedAt: movDate},
 			{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: decimal.NullDecimal{Decimal: dec("12.50"), Valid: true}, CreatedAt: movDate},
 		},
-	}, startDate, 1)
+	}, startDate, 1, dec("0.05"))
 	require.NoError(t, err)
 	post(p1)
 

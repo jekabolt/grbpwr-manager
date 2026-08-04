@@ -67,7 +67,7 @@ type (
 		// ReceiveProductionStock increments a product's per-size stock from a production run's
 		// received quantities, recording each change with the production_received source. Runs on
 		// the caller's connection (no new transaction) so it composes into ReceiveProductionRun.
-		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error
+		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username, grade string) error
 		// SetProductCostPriceFromProductionRun writes cost (base) as the production-run-sourced
 		// cost_price of a product, recording provenance (source + run id + timestamp) and clearing
 		// the tech-card cost_breakdown. A manually set cost is never overwritten — the returned bool
@@ -77,7 +77,7 @@ type (
 		// good units back OUT of per-size stock on the caller's connection, journalling each
 		// decrement with the production_reversed source. Never writes below zero — short variants
 		// come back in the list (with ANY shortfall the caller aborts its transaction).
-		ReverseProductionStock(ctx context.Context, productID int, perSize map[int]int, receiptID int, username, reason string) ([]entity.ProductionRunReversalShortfallItem, error)
+		ReverseProductionStock(ctx context.Context, productID int, perSize map[int]int, receiptID int, username, reason, grade string) ([]entity.ProductionRunReversalShortfallItem, error)
 		// ClearProductCostPriceClaimOfRun rolls a product's cost_price back off a reversed run's
 		// claim: to the tech-card estimate when one is computable, to NULL otherwise. Only a cost
 		// the run actually claims is touched (returned bool false = superseded, left alone).

@@ -110,7 +110,7 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 
 		lines, err := storeutil.QueryListNamed[entity.ProductionRunReceiptLine](ctx, db, `
 			SELECT rl.id, rl.receipt_id, rl.run_line_id, rl.product_id, rl.size_id, rl.good_qty,
-			       rl.defect_qty, '' AS line_key
+			       rl.defect_qty, rl.defect_disposition, '' AS line_key
 			FROM production_run_receipt_line rl WHERE rl.receipt_id = :id ORDER BY rl.id`,
 			map[string]any{"id": p.ReceiptID})
 		if err != nil {
@@ -120,17 +120,31 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 		// 2. Stock back out, products ascending (the receive path's lock order), collecting EVERY
 		// short variant before refusing — the operator fixes the whole problem in one pass.
 		perProduct := make(map[int]map[int]int)
-		type stockDelta struct{ ProductID, SizeID, Qty int }
+		perProductSeconds := make(map[int]map[int]int)
+		type stockDelta struct {
+			ProductID, SizeID, Qty int
+			Grade                  string `json:",omitempty"`
+		}
 		var stock []stockDelta
 		for _, ln := range lines {
-			if ln.GoodQty == 0 || !ln.ProductId.Valid {
+			if !ln.ProductId.Valid {
 				continue
 			}
 			pid := int(ln.ProductId.Int32)
-			if perProduct[pid] == nil {
-				perProduct[pid] = make(map[int]int)
+			if ln.GoodQty > 0 {
+				if perProduct[pid] == nil {
+					perProduct[pid] = make(map[int]int)
+				}
+				perProduct[pid][int(ln.SizeId.Int32)] += ln.GoodQty
 			}
-			perProduct[pid][int(ln.SizeId.Int32)] += ln.GoodQty
+			// Seconds went into B-grade stock at receive — the reversal takes them back out under
+			// the same never-negative shortfall discipline (a sold B unit blocks identically).
+			if ln.DefectQty > 0 && ln.DefectDisposition == entity.DefectDispositionSeconds {
+				if perProductSeconds[pid] == nil {
+					perProductSeconds[pid] = make(map[int]int)
+				}
+				perProductSeconds[pid][int(ln.SizeId.Int32)] += ln.DefectQty
+			}
 		}
 		productIDs := make([]int, 0, len(perProduct))
 		for pid := range perProduct {
@@ -139,13 +153,28 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 		sort.Ints(productIDs)
 		var short []entity.ProductionRunReversalShortfallItem
 		for _, pid := range productIDs {
-			sh, err := rep.Products().ReverseProductionStock(ctx, pid, perProduct[pid], p.ReceiptID, p.Username, p.Reason)
+			sh, err := rep.Products().ReverseProductionStock(ctx, pid, perProduct[pid], p.ReceiptID, p.Username, p.Reason, entity.VariantGradeA)
 			if err != nil {
 				return err
 			}
 			short = append(short, sh...)
 			for sizeID, qty := range perProduct[pid] {
 				stock = append(stock, stockDelta{ProductID: pid, SizeID: sizeID, Qty: qty})
+			}
+		}
+		secondsIDs := make([]int, 0, len(perProductSeconds))
+		for pid := range perProductSeconds {
+			secondsIDs = append(secondsIDs, pid)
+		}
+		sort.Ints(secondsIDs)
+		for _, pid := range secondsIDs {
+			sh, err := rep.Products().ReverseProductionStock(ctx, pid, perProductSeconds[pid], p.ReceiptID, p.Username, p.Reason, entity.VariantGradeB)
+			if err != nil {
+				return err
+			}
+			short = append(short, sh...)
+			for sizeID, qty := range perProductSeconds[pid] {
+				stock = append(stock, stockDelta{ProductID: pid, SizeID: sizeID, Qty: qty, Grade: entity.VariantGradeB})
 			}
 		}
 		if len(short) > 0 {
@@ -182,13 +211,17 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 			// period being closed is the only refusal, surfaced by CreateJournalEntry below —
 			// gating on the ORIGINAL's period would make every receipt permanently un-reversible
 			// the day its month closes (adversarial #4).
-			fg, manual := decimal.Zero, decimal.Zero
+			fg, manual, writeOff := decimal.Zero, decimal.Zero, decimal.Zero
 			for _, l := range entry.Lines {
 				switch {
 				case l.AccountCode == acctrules.Acc1130 && l.Side == entity.AcctSideDebit:
 					fg = fg.Add(l.Amount)
 				case l.AccountCode == acctrules.Acc2010 && l.Side == entity.AcctSideCredit:
 					manual = manual.Add(l.Amount)
+				case l.AccountCode == acctrules.Acc5040 && l.Side == entity.AcctSideDebit:
+					// The final receipt's abnormal defect write-off (Phase 7): un-receiving the goods
+					// un-does the loss event too — the cost goes back to WIP with the rest.
+					writeOff = writeOff.Add(l.Amount)
 				}
 			}
 			if rcpt.PostedFG.Valid && rcpt.PostedFG.Decimal.LessThan(fg) {
@@ -198,10 +231,19 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 				// (adversarial #5). min() of the two is the safe compensation either way.
 				fg = rcpt.PostedFG.Decimal
 			}
-			if fg.IsPositive() {
+			if fg.IsPositive() || writeOff.IsPositive() {
 				desc := fmt.Sprintf("reversal of production receipt %d (run %d)", p.ReceiptID, p.RunID)
 				if p.Reason != "" {
 					desc = desc + " — " + p.Reason
+				}
+				compLines := []entity.AcctJournalLineInsert{
+					{AccountCode: acctrules.Acc1120, Side: entity.AcctSideDebit, Amount: fg.Add(writeOff)},
+				}
+				if fg.IsPositive() {
+					compLines = append(compLines, entity.AcctJournalLineInsert{AccountCode: acctrules.Acc1130, Side: entity.AcctSideCredit, Amount: fg})
+				}
+				if writeOff.IsPositive() {
+					compLines = append(compLines, entity.AcctJournalLineInsert{AccountCode: acctrules.Acc5040, Side: entity.AcctSideCredit, Amount: writeOff})
 				}
 				if _, _, err := rep.Accounting().CreateJournalEntry(ctx, entity.AcctJournalEntryInsert{
 					OccurredAt:  s.Now(),
@@ -209,10 +251,7 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 					SourceType:  entity.AcctSourceProductionReceiveReversal,
 					SourceKey:   fmt.Sprintf("receipt:%d", p.ReceiptID),
 					CreatedBy:   createdByOrSystem(p.Username),
-					Lines: []entity.AcctJournalLineInsert{
-						{AccountCode: acctrules.Acc1120, Side: entity.AcctSideDebit, Amount: fg},
-						{AccountCode: acctrules.Acc1130, Side: entity.AcctSideCredit, Amount: fg},
-					},
+					Lines:       compLines,
 				}); err != nil {
 					if errors.Is(err, entity.ErrAcctPeriodClosed) {
 						return entity.ErrProductionRunReversalPeriodClosed

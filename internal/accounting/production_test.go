@@ -25,7 +25,7 @@ func TestBuildProductionReceiveEntry_Walkthrough(t *testing.T) {
 			{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nd("12.50"), CreatedAt: testOccurred},
 		},
 	}
-	e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+	e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 	require.NoError(t, err)
 	require.NoError(t, ValidateBalanced(e))
 
@@ -48,7 +48,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nd("100.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assert.False(t, hasLine(e, Acc2010, entity.AcctSideCredit))
@@ -58,7 +58,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 
 	t.Run("nothing costed skips", func(t *testing.T) {
 		r := entity.AcctRunFacts{RunID: 2, ReceivedAt: testOccurred}
-		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		assert.ErrorIs(t, err, ErrSkipEmpty)
 	})
 
@@ -76,7 +76,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nullDec(), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assert.True(t, e.HasCaveat)
@@ -93,7 +93,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementReturnProduction, Quantity: dec("1"), UnitCostBase: nd("200.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00")
@@ -114,7 +114,7 @@ func TestBuildProductionReceiveEntry_Cases(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("1"), UnitCostBase: nd("20.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00") // manual
@@ -136,10 +136,10 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 			RunID: 7, ReceiptID: 42, GoodQtyTotal: 10, ReceivedAt: testOccurred,
 			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("100.00")}},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		assert.Equal(t, "receipt:42", e.SourceKey)
-		e2, err := BuildProductionReceiveEntry(r, testStartDate, 3)
+		e2, err := BuildProductionReceiveEntry(r, testStartDate, 3, testNormalLoss)
 		require.NoError(t, err)
 		assert.Equal(t, "receipt:42:v3", e2.SourceKey)
 	})
@@ -149,7 +149,7 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 			RunID: 7, ReceivedAt: testOccurred,
 			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("100.00")}},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 2)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 2, testNormalLoss)
 		require.NoError(t, err)
 		assert.Equal(t, "7:v2", e.SourceKey)
 	})
@@ -162,7 +162,7 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("2"), UnitCostBase: nd("50.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		// The CMT invoice is owed either way: Dr WIP / Cr AP stays.
@@ -175,7 +175,7 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 
 	t.Run("all-scrap with nothing costed still skips", func(t *testing.T) {
 		r := entity.AcctRunFacts{RunID: 7, ReceiptID: 42, GoodQtyTotal: 0, DefectQtyTotal: 9, ReceivedAt: testOccurred}
-		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.ErrorIs(t, err, ErrSkipEmpty)
 	})
 
@@ -189,7 +189,7 @@ func TestBuildProductionReceiveEntry_ReceiptKeysAndAllScrap(t *testing.T) {
 				{MovementType: entity.MaterialMovementIssueProduction, Quantity: dec("2"), UnitCostBase: nd("50.00"), CreatedAt: testOccurred},
 			},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e))
 		assert.True(t, hasLine(e, Acc1130, entity.AcctSideDebit), "WIP→FG posts for a zero-line legacy receipt")
@@ -211,7 +211,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			RunID: 7, ReceiptID: 51, ReceivedAt: testOccurred, Issues: wip100,
 			GoodQtyTotal: 1, AllGoodQty: 1, AllReceivedQty: 1, PlannedQtyTotal: 3,
 		}
-		e1, err := BuildProductionReceiveEntry(r1, testStartDate, 1)
+		e1, err := BuildProductionReceiveEntry(r1, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		require.NoError(t, ValidateBalanced(e1))
 		assertAmount(t, e1, Acc1130, entity.AcctSideDebit, "33.33") // 100 × 1/3
@@ -221,7 +221,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			GoodQtyTotal: 1, AllGoodQty: 2, AllReceivedQty: 2, PlannedQtyTotal: 3,
 			OtherPostedFGBase: dec("33.33"),
 		}
-		e2, err := BuildProductionReceiveEntry(r2, testStartDate, 1)
+		e2, err := BuildProductionReceiveEntry(r2, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		assertAmount(t, e2, Acc1130, entity.AcctSideDebit, "33.34") // (100−33.33) × 1/2
 
@@ -230,20 +230,125 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			GoodQtyTotal: 1, AllGoodQty: 3, AllReceivedQty: 3, PlannedQtyTotal: 3,
 			OtherPostedFGBase: dec("66.67"),
 		}
-		e3, err := BuildProductionReceiveEntry(r3, testStartDate, 1)
+		e3, err := BuildProductionReceiveEntry(r3, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		assertAmount(t, e3, Acc1130, entity.AcctSideDebit, "33.33") // true-up: 100.00 − 66.67
 	})
 
-	t.Run("mixed FINAL leaves the defect share in WIP", func(t *testing.T) {
+	t.Run("mixed FINAL splits scrap into normal absorb and abnormal write-off", func(t *testing.T) {
+		// 8 good / 2 scrap of 10 received, allowance floor(10×5%) = 0 → both scrap units are
+		// abnormal: their share (20.00) is written off, the good units carry the rest (80.00) —
+		// nothing stays in WIP after the series closes (Phase 7 resolves what Phase 5 parked).
 		r := entity.AcctRunFacts{
 			RunID: 7, ReceiptID: 60, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
 			GoodQtyTotal: 8, DefectQtyTotal: 2, AllGoodQty: 8, AllReceivedQty: 10, PlannedQtyTotal: 10,
+			AllScrapQty: 2,
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "80.00")
-		assert.True(t, e.HasCaveat == false, "good-share transfer is the rule, not a caveat")
+		assertAmount(t, e, Acc5040, entity.AcctSideDebit, "20.00")
+		require.NoError(t, ValidateBalanced(e))
+		assert.True(t, e.HasCaveat, "the abnormal write-off is flagged")
+	})
+
+	t.Run("scrap inside the normal allowance is absorbed by the good units", func(t *testing.T) {
+		// 1 scrap of 40 received with a 5% allowance (floor(40×0.05) = 2) — normal loss: the FULL
+		// WIP transfers to FG, no write-off, no caveat. The good units' unit cost silently carries
+		// the expected waste, exactly as plan 09 prescribes.
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 67, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
+			GoodQtyTotal: 39, DefectQtyTotal: 1, AllGoodQty: 39, AllReceivedQty: 40, PlannedQtyTotal: 40,
+			AllScrapQty: 1,
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
+		require.NoError(t, err)
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "100.00")
+		assert.False(t, hasLine(e, Acc5040, entity.AcctSideDebit), "normal loss is never written off")
+		assert.False(t, e.HasCaveat)
+	})
+
+	t.Run("seconds are recovered value, never written off", func(t *testing.T) {
+		// 8 good / 2 seconds — B-grade stock at zero carried cost v1: the whole WIP rides with the
+		// good units; AllScrapQty is zero, so no write-off despite two defect units.
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 68, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
+			GoodQtyTotal: 8, DefectQtyTotal: 2, AllGoodQty: 8, AllReceivedQty: 10, PlannedQtyTotal: 10,
+			AllScrapQty: 0,
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
+		require.NoError(t, err)
+		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "100.00")
+		assert.False(t, hasLine(e, Acc5040, entity.AcctSideDebit))
+	})
+
+	t.Run("all-scrap FINAL writes off the entire remaining WIP", func(t *testing.T) {
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 69, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
+			GoodQtyTotal: 0, DefectQtyTotal: 10, AllGoodQty: 0, AllReceivedQty: 10, PlannedQtyTotal: 10,
+			AllScrapQty: 10,
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
+		require.NoError(t, err)
+		assertAmount(t, e, Acc5040, entity.AcctSideDebit, "100.00")
+		assert.False(t, hasLine(e, Acc1130, entity.AcctSideDebit), "no goods exist to carry FG value")
+		assert.True(t, e.HasCaveat)
+	})
+
+	t.Run("auxiliary run posts no FG side at all", func(t *testing.T) {
+		// M2 already relieved WIP into the material account at receive — the latent Phase-4 bug
+		// posted FG on top of it, double-relieving 1120. The aux receipt's only ledger job is the
+		// manual-cost delta.
+		r := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 70, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true, IsAux: true,
+			GoodQtyTotal: 5, AllGoodQty: 5, AllReceivedQty: 5, PlannedQtyTotal: 5,
+			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("30.00")}},
+		}
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
+		require.NoError(t, err)
+		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "30.00")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "30.00")
+		assert.False(t, hasLine(e, Acc1130, entity.AcctSideDebit), "aux output is a material, not FG")
+		assert.False(t, hasLine(e, Acc5040, entity.AcctSideDebit))
+
+		// With no manual delta there is nothing to post at all.
+		r.Costs = nil
+		_, err = BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
+		require.ErrorIs(t, err, ErrSkipEmpty)
+	})
+
+	t.Run("three partials with scrap converge: Σ(FG + write-off) = TOTAL_WIP", func(t *testing.T) {
+		// Numeric walkthrough (plan 09 acceptance): partials keep Phase 5 behaviour to the cent,
+		// the final resolves the parked defect share into absorb + write-off with zero residue.
+		r1 := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 71, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 3, AllGoodQty: 3, AllReceivedQty: 3, PlannedQtyTotal: 10,
+		}
+		e1, err := BuildProductionReceiveEntry(r1, testStartDate, 1, testNormalLoss)
+		require.NoError(t, err)
+		assertAmount(t, e1, Acc1130, entity.AcctSideDebit, "30.00") // 100 × 3/10
+
+		r2 := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 72, ReceivedAt: testOccurred, Issues: wip100,
+			GoodQtyTotal: 2, DefectQtyTotal: 2, AllGoodQty: 5, AllReceivedQty: 7, PlannedQtyTotal: 10,
+			AllScrapQty: 2, OtherPostedFGBase: dec("30.00"),
+		}
+		e2, err := BuildProductionReceiveEntry(r2, testStartDate, 1, testNormalLoss)
+		require.NoError(t, err)
+		assertAmount(t, e2, Acc1130, entity.AcctSideDebit, "20.00") // (100−30) × 2/7
+
+		// FINAL: 3 more good → 8 good, 2 scrap, 10 received; allowance floor(10×5%)=0 → both scrap
+		// units abnormal: wo = 100 × 2/10 = 20; FG true-up = (100 − 20) − 50 = 30.
+		r3 := entity.AcctRunFacts{
+			RunID: 7, ReceiptID: 73, ReceivedAt: testOccurred, Issues: wip100, IsFinal: true,
+			GoodQtyTotal: 3, AllGoodQty: 8, AllReceivedQty: 10, PlannedQtyTotal: 10,
+			AllScrapQty: 2, OtherPostedFGBase: dec("50.00"),
+		}
+		e3, err := BuildProductionReceiveEntry(r3, testStartDate, 1, testNormalLoss)
+		require.NoError(t, err)
+		assertAmount(t, e3, Acc1130, entity.AcctSideDebit, "30.00")
+		assertAmount(t, e3, Acc5040, entity.AcctSideDebit, "20.00")
+		// Σ FG (30+20+30) + write-off (20) = 100.00 — 1120 is empty, nothing stranded.
 	})
 
 	t.Run("all-scrap partial capitalises the manual delta only", func(t *testing.T) {
@@ -252,7 +357,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			GoodQtyTotal: 0, DefectQtyTotal: 5, AllGoodQty: 0, AllReceivedQty: 5, PlannedQtyTotal: 10,
 			Costs: []entity.ProductionRunCost{{Kind: entity.ProductionRunCostCMT, AmountBase: nd("50.00")}},
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "50.00")
 		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "50.00")
@@ -267,7 +372,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			OtherPostedManualBase: dec("100.00"),
 			OtherPostedFGBase:     dec("66.66"),
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		assert.False(t, hasLine(e, Acc1120, entity.AcctSideDebit), "manual already capitalised by a sibling")
 		// TOTAL_WIP = 100 issues + 100 manual = 200; target = 200 × 3/3 = 200; true-up = 200 − 66.66.
@@ -280,7 +385,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			GoodQtyTotal: 1, AllGoodQty: 3, AllReceivedQty: 3, PlannedQtyTotal: 3,
 			OtherPostedFGBase: dec("100.00"),
 		}
-		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.ErrorIs(t, err, ErrSkipEmpty)
 	})
 
@@ -289,7 +394,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			RunID: 7, ReceiptID: 64, ReceivedAt: testOccurred, Issues: wip100,
 			GoodQtyTotal: 5, AllGoodQty: 5, AllReceivedQty: 5, PlannedQtyTotal: 3,
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		// remaining = max(3−0, 5) = 5 → fg = 100 × 5/5, capped by the good-share target (100).
 		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "100.00")
@@ -309,7 +414,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			OtherPostedManualBase: dec("300.00"),
 			OtherPostedFGBase:     dec("500.00"),
 		}
-		e, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		e, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.NoError(t, err)
 		assert.False(t, hasLine(e, Acc2010, entity.AcctSideCredit), "negative delta must not book anything")
 		assertAmount(t, e, Acc1130, entity.AcctSideDebit, "500.00") // 1000 − 500, not 900 − 500
@@ -325,7 +430,7 @@ func TestBuildProductionReceiveEntry_PartialReceipts(t *testing.T) {
 			GoodQtyTotal: 0, DefectQtyTotal: 5, AllGoodQty: 10, AllReceivedQty: 15, PlannedQtyTotal: 10,
 			OtherPostedFGBase: dec("100.00"),
 		}
-		_, err := BuildProductionReceiveEntry(r, testStartDate, 1)
+		_, err := BuildProductionReceiveEntry(r, testStartDate, 1, testNormalLoss)
 		require.ErrorIs(t, err, ErrSkipEmpty)
 		var emptyErr *EmptyReceiptError
 		require.ErrorAs(t, err, &emptyErr)

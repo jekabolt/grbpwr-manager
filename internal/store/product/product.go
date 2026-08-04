@@ -478,7 +478,7 @@ func insertProductTranslations(ctx context.Context, db dependency.DB, productId 
 func reconcileVariants(ctx context.Context, db dependency.DB, sizeMeasurements []entity.SizeWithMeasurementInsert, productID int) error {
 	existing, err := storeutil.QueryListNamed[struct {
 		SizeID int `db:"size_id"`
-	}](ctx, db, `SELECT size_id FROM product_size WHERE product_id = :id`, map[string]any{"id": productID})
+	}](ctx, db, `SELECT size_id FROM product_size WHERE product_id = :id AND grade = 'A'`, map[string]any{"id": productID})
 	if err != nil {
 		return fmt.Errorf("can't load existing variants: %w", err)
 	}
@@ -527,7 +527,7 @@ func reconcileVariants(ctx context.Context, db dependency.DB, sizeMeasurements [
 			continue
 		}
 		if err := storeutil.ExecNamed(ctx, db,
-			`DELETE FROM product_size WHERE product_id = :pid AND size_id = :sid`,
+			`DELETE FROM product_size WHERE product_id = :pid AND size_id = :sid AND grade = 'A'`,
 			map[string]any{"pid": productID, "sid": e.SizeID}); err != nil {
 			return fmt.Errorf("can't delete removed variant (size %d): %w", e.SizeID, err)
 		}
@@ -676,7 +676,7 @@ func captureVariantQuantities(ctx context.Context, db dependency.DB, productID i
 	rows, err := storeutil.QueryListNamed[struct {
 		SizeID   int             `db:"size_id"`
 		Quantity decimal.Decimal `db:"quantity"`
-	}](ctx, db, `SELECT size_id, quantity FROM product_size WHERE product_id = :id FOR UPDATE`, map[string]any{"id": productID})
+	}](ctx, db, `SELECT size_id, quantity FROM product_size WHERE product_id = :id AND grade = 'A' FOR UPDATE`, map[string]any{"id": productID})
 	if err != nil {
 		return nil, fmt.Errorf("can't read current variant quantities: %w", err)
 	}

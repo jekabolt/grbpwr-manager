@@ -33,6 +33,22 @@ const (
 	ReceiptPostingDeadLetter = "dead_letter"
 )
 
+// Defect dispositions (Phase 7, plan 09): where a receipt line's defect units went. Scrap is a
+// recorded fact with no stock (its cost is resolved by the posting rule — normal loss absorbed by
+// the good units, the abnormal excess written off); seconds land in the product's B-grade variant
+// stock at zero cost (v1 — the whole cost stays with the A units, conservative for A margin).
+// Rework was cut from v1 (review 14: a label without a workflow lets WIP drift).
+const (
+	DefectDispositionScrap   = "scrap"
+	DefectDispositionSeconds = "seconds"
+)
+
+// ValidDefectDisposition reports whether d is a known disposition. The empty string is valid on
+// input and means the default (scrap) — old clients never send the field.
+func ValidDefectDisposition(d string) bool {
+	return d == "" || d == DefectDispositionScrap || d == DefectDispositionSeconds
+}
+
 // ProductionRunReceiptLine is one counted plan line of a receipt: the plan line it was counted
 // against (RunLineId — the FK that 0230's stable ids exist for), a snapshot of that line's
 // product/size at receipt time, and the disjoint good/defect counts. GoodQty is what was posted to
@@ -45,6 +61,8 @@ type ProductionRunReceiptLine struct {
 	SizeId    sql.NullInt32 `db:"size_id"`
 	GoodQty   int           `db:"good_qty"`
 	DefectQty int           `db:"defect_qty"`
+	// DefectDisposition is where this line's defect units went (Phase 7): scrap or seconds.
+	DefectDisposition string `db:"defect_disposition"`
 	// LineKey is the plan line's stable identity, joined from production_run_line on read so the
 	// client can correlate the receipt with its grid without ever seeing row ids.
 	LineKey string `db:"line_key"`
@@ -80,6 +98,8 @@ type ProductionRunReceiptLineInput struct {
 	LineKey   string
 	GoodQty   int
 	DefectQty int
+	// DefectDisposition: scrap (default when empty) or seconds. Only meaningful with DefectQty > 0.
+	DefectDisposition string
 }
 
 // PostProductionRunReceiptParams is the receipt command (Phase 4, final-only). RequestHash is the
@@ -111,6 +131,12 @@ type PostProductionRunReceiptParams struct {
 	// False books a partial delivery and moves the run to partially_received (Phase 5). Part of the
 	// request hash — the same idempotency key with a flipped flag is a different intent.
 	Final bool
+	// LegacyTotals marks the deprecated ReceiveProductionRun shim: its counts come from the run's
+	// STORED received_qty/defect_qty (the old client stamps totals first), so the rollup write must
+	// SET, not accumulate — Phase 5's accumulate semantics double-counted every shim receive (the
+	// stored totals plus themselves), halving the frozen unit cost. Command-API receipts always
+	// carry deltas and never set this.
+	LegacyTotals bool
 }
 
 // PostProductionRunReceiptResult is what the receipt command returns — and what a replayed retry

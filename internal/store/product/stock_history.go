@@ -28,11 +28,17 @@ func (s *Store) RecordStockChange(ctx context.Context, entries []entity.StockCha
 		if err := entity.ValidateStockChange(e.Source, e.Reason, e.QuantityDelta); err != nil {
 			return fmt.Errorf("can't record stock change: %w", err)
 		}
+		grade := e.Grade
+		if grade == "" {
+			// Pre-Phase-7 callers never set it — every legacy movement is A-grade stock.
+			grade = entity.VariantGradeA
+		}
 		row := map[string]any{
 			"quantity_delta":  e.QuantityDelta,
 			"quantity_before": e.QuantityBefore,
 			"quantity_after":  e.QuantityAfter,
 			"source":          e.Source,
+			"grade":           grade,
 		}
 		setNullableInt32(row, "product_id", e.ProductId)
 		setNullableInt32(row, "size_id", e.SizeId)
@@ -158,7 +164,7 @@ func (s *Store) GetStockChanges(ctx context.Context, dateFrom, dateTo time.Time,
 		FROM product_stock_change_history psch
 		LEFT JOIN product p ON p.id = psch.product_id
 		LEFT JOIN size s ON s.id = psch.size_id
-		LEFT JOIN product_size ps ON ps.product_id = psch.product_id AND ps.size_id = psch.size_id
+		LEFT JOIN product_size ps ON ps.product_id = psch.product_id AND ps.size_id = psch.size_id AND ps.grade = psch.grade
 		WHERE psch.created_at >= :dateFrom
 		AND psch.created_at <= :dateTo
 	`

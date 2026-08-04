@@ -64,7 +64,7 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN daily_sales ds ON ds.product_id = ps.product_id AND ds.size_id = ps.size_id
 		LEFT JOIN inventory_target it ON it.product_id = ps.product_id AND it.size_id = ps.size_id
-		WHERE ps.quantity > 0
+		WHERE ps.grade = 'A' AND ps.quantity > 0
 			AND p.lifecycle_status = 2
 		ORDER BY days_on_hand ASC
 		LIMIT :limit
@@ -162,6 +162,7 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 		stock AS (
 			SELECT product_id, SUM(quantity) AS units_remaining
 			FROM product_size
+			WHERE grade = 'A'
 			GROUP BY product_id
 		)
 		SELECT
@@ -316,6 +317,7 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 				END AS sell_through_pct
 			FROM product_size ps
 			LEFT JOIN sold_qty sq ON sq.product_id = ps.product_id AND sq.size_id = ps.size_id
+			WHERE ps.grade = 'A'
 		)
 		SELECT
 			sa.product_id,

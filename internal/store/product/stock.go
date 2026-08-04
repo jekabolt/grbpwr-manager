@@ -31,6 +31,7 @@ func (s *Store) ReduceStockForProductSizes(ctx context.Context, items []entity.O
 			SET quantity = quantity - :quantity 
 			WHERE product_id = :productId 
 			AND size_id = :sizeId 
+			AND grade = 'A'
 			AND quantity >= :quantity
 			AND status = 1`
 
@@ -114,7 +115,7 @@ func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.
 		}
 		quantityAfter := quantityBefore.Add(item.QuantityDecimal())
 
-		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId`
+		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId AND grade = 'A'`
 		err = storeutil.ExecNamed(ctx, s.DB, updateQuery, map[string]any{
 			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductId,
@@ -152,7 +153,7 @@ func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.
 
 // GetProductSizeStock gets the current stock quantity for a specific product/size combination.
 func (s *Store) GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error) {
-	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId`
+	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId AND grade = 'A'`
 	params := map[string]any{
 		"productId": productId,
 		"sizeId":    sizeId,
@@ -200,9 +201,9 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 
 	query := `
 		INSERT INTO product_size 
-			(product_id, size_id, quantity) 
+			(product_id, size_id, quantity, grade) 
 		VALUES 
-			(:productId, :sizeId, :quantity) 
+			(:productId, :sizeId, :quantity, 'A') 
 		ON DUPLICATE KEY UPDATE quantity = :quantity
 	`
 	err := storeutil.ExecNamed(ctx, s.DB, query, map[string]any{
@@ -222,6 +223,35 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 	return nil
 }
 
+// updateSecondsStock is the B-grade counterpart of UpdateProductSizeStock (Phase 7): it upserts the
+// (product, size, 'B') row and, on first materialisation, mints its SKU as the A variant's SKU with
+// a '-B' suffix — the A variant's identity is guaranteed first, so a seconds booking on an
+// unpublished colourway fails with the same actionable publish-first error as any stock write.
+func (s *Store) updateSecondsStock(ctx context.Context, productId, sizeId, quantity int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO product_size 
+			(product_id, size_id, quantity, grade) 
+		VALUES 
+			(:productId, :sizeId, :quantity, 'B') 
+		ON DUPLICATE KEY UPDATE quantity = :quantity`,
+		map[string]any{"productId": productId, "sizeId": sizeId, "quantity": quantity}); err != nil {
+		return fmt.Errorf("can't upsert seconds variant: %w", err)
+	}
+	if err := ensureVariantSKU(ctx, s.DB, productId, sizeId); err != nil {
+		return fmt.Errorf("can't ensure A variant sku for seconds: %w", err)
+	}
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE product_size b
+		JOIN product_size a ON a.product_id = b.product_id AND a.size_id = b.size_id AND a.grade = 'A'
+		SET b.sku = CONCAT(a.sku, '-B')
+		WHERE b.product_id = :productId AND b.size_id = :sizeId AND b.grade = 'B'
+		  AND (b.sku IS NULL OR b.sku = '') AND a.sku IS NOT NULL AND a.sku <> ''`,
+		map[string]any{"productId": productId, "sizeId": sizeId}); err != nil {
+		return fmt.Errorf("can't mint seconds variant sku: %w", err)
+	}
+	return nil
+}
+
 // ReceiveProductionStock increments a product's per-size stock by the received quantities of a
 // production run and records each increment in product_stock_change_history with the
 // `production_received` source (the run id in reference_id). It operates on the store's current
@@ -237,7 +267,7 @@ func (s *Store) UpdateProductSizeStock(ctx context.Context, productId int, sizeI
 // the S→X upgrade deadlock shape. The journal's before/after are the locked values, so the history
 // sums to the real stock. Sizes are visited in ascending order so two concurrent receives over
 // overlapping variants take their row locks in the same order.
-func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username string) error {
+func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username, grade string) error {
 	ref := sql.NullString{String: fmt.Sprintf("production_run:%d", runID), Valid: true}
 	var adminUser sql.NullString
 	if username != "" {
@@ -253,17 +283,23 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 		if qty <= 0 {
 			continue
 		}
-		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID)
+		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID, grade)
 		if err != nil {
 			return fmt.Errorf("can't lock stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		after := before.Add(decimal.NewFromInt(int64(qty)))
-		if err := s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart())); err != nil {
+		if grade == entity.VariantGradeB {
+			err = s.updateSecondsStock(ctx, productID, sizeID, int(after.IntPart()))
+		} else {
+			err = s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart()))
+		}
+		if err != nil {
 			return fmt.Errorf("can't increment stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		if err := s.RecordStockChange(ctx, []entity.StockChangeInsert{{
 			ProductId:      sql.NullInt32{Int32: int32(productID), Valid: true},
 			SizeId:         sql.NullInt32{Int32: int32(sizeID), Valid: true},
+			Grade:          grade,
 			QuantityDelta:  decimal.NewFromInt(int64(qty)),
 			QuantityBefore: before,
 			QuantityAfter:  after,
@@ -286,7 +322,7 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 // roll back. Sold-but-unshipped units already left `quantity` at payment, so they produce the same
 // shortfall — a reversal can never steal a unit a sale claimed. Sizes are visited ascending,
 // matching the receive path's deterministic lock order.
-func (s *Store) ReverseProductionStock(ctx context.Context, productID int, perSize map[int]int, receiptID int, username, reason string) ([]entity.ProductionRunReversalShortfallItem, error) {
+func (s *Store) ReverseProductionStock(ctx context.Context, productID int, perSize map[int]int, receiptID int, username, reason, grade string) ([]entity.ProductionRunReversalShortfallItem, error) {
 	ref := sql.NullString{String: fmt.Sprintf("receipt:%d", receiptID), Valid: true}
 	var adminUser sql.NullString
 	if username != "" {
@@ -307,23 +343,29 @@ func (s *Store) ReverseProductionStock(ctx context.Context, productID int, perSi
 		if qty <= 0 {
 			continue
 		}
-		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID)
+		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID, grade)
 		if err != nil {
 			return nil, fmt.Errorf("can't lock stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		after := before.Sub(decimal.NewFromInt(int64(qty)))
 		if after.IsNegative() {
 			short = append(short, entity.ProductionRunReversalShortfallItem{
-				ProductID: productID, SizeID: sizeID, Requested: qty, OnHand: int(before.IntPart()),
+				ProductID: productID, SizeID: sizeID, Grade: grade, Requested: qty, OnHand: int(before.IntPart()),
 			})
 			continue
 		}
-		if err := s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart())); err != nil {
+		if grade == entity.VariantGradeB {
+			err = s.updateSecondsStock(ctx, productID, sizeID, int(after.IntPart()))
+		} else {
+			err = s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart()))
+		}
+		if err != nil {
 			return nil, fmt.Errorf("can't decrement stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		if err := s.RecordStockChange(ctx, []entity.StockChangeInsert{{
 			ProductId:      sql.NullInt32{Int32: int32(productID), Valid: true},
 			SizeId:         sql.NullInt32{Int32: int32(sizeID), Valid: true},
+			Grade:          grade,
 			QuantityDelta:  decimal.NewFromInt(int64(qty)).Neg(),
 			QuantityBefore: before,
 			QuantityAfter:  after,
@@ -412,7 +454,7 @@ func (s *Store) UpdateProductSizeStockWithHistory(ctx context.Context, productId
 	var before, after decimal.Decimal
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
-		before, err = lockProductSizeQuantity(ctx, rep.DB(), productId, sizeId)
+		before, err = lockProductSizeQuantity(ctx, rep.DB(), productId, sizeId, entity.VariantGradeA)
 		if err != nil {
 			return err
 		}
@@ -452,14 +494,15 @@ func (s *Store) UpdateProductSizeStockWithHistory(ctx context.Context, productId
 
 // lockProductSizeQuantity reads a variant's current quantity with FOR UPDATE (row lock), returning 0
 // when the variant row does not exist yet. Must run inside a transaction; the lock serialises
-// concurrent adjustments on the same variant.
-func lockProductSizeQuantity(ctx context.Context, db dependency.DB, productId, sizeId int) (decimal.Decimal, error) {
+// concurrent adjustments on the same variant. grade selects the A or B row of the (product, size)
+// pair (Phase 7) — every path outside production receive/reverse pins VariantGradeA.
+func lockProductSizeQuantity(ctx context.Context, db dependency.DB, productId, sizeId int, grade string) (decimal.Decimal, error) {
 	type qty struct {
 		Quantity decimal.Decimal `db:"quantity"`
 	}
 	row, err := storeutil.QueryNamedOne[qty](ctx, db,
-		`SELECT quantity FROM product_size WHERE product_id = :p AND size_id = :s FOR UPDATE`,
-		map[string]any{"p": productId, "s": sizeId})
+		`SELECT quantity FROM product_size WHERE product_id = :p AND size_id = :s AND grade = :g FOR UPDATE`,
+		map[string]any{"p": productId, "s": sizeId, "g": grade})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return decimal.Zero, nil

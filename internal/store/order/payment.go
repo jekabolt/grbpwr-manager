@@ -448,7 +448,7 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID int) error {
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE order_item oi
-		JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
+		JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id AND ps.grade = 'A'
 		JOIN product p ON p.id = oi.product_id
 		SET oi.variant_id = ps.id,
 		    oi.variant_sku_snapshot = ps.sku,
@@ -461,7 +461,7 @@ func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID
 	// identity we are about to freeze. Missing row or NULL/empty SKU both fail via the LEFT JOIN.
 	missing, err := storeutil.QueryCountNamed(ctx, db, `
 		SELECT COUNT(*) FROM order_item oi
-		LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id
+		LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id AND ps.grade = 'A'
 		WHERE oi.order_id = :oid AND (ps.sku IS NULL OR ps.sku = '')`,
 		map[string]any{"oid": orderID})
 	if err != nil {

@@ -425,6 +425,7 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 		FROM product_size ps
 		JOIN product p ON p.id = ps.product_id
 		JOIN tech_card sty ON sty.id = p.style_id
+		    AND ps.grade = 'A'
 		LEFT JOIN product_price pp ON p.id = pp.product_id AND UPPER(pp.currency) = UPPER(:baseCurrency)
 		JOIN size s ON s.id = ps.size_id
 		LEFT JOIN last_sales ls ON ls.product_id = ps.product_id AND ls.size_id = ps.size_id
