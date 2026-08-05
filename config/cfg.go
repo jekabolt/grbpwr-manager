@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -262,6 +263,14 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.PatternToken.PublicBaseURL) == "" {
 		return fmt.Errorf("pattern_token.public_base_url is required: set PATTERN_TOKEN_PUBLIC_BASE_URL " +
 			"to this backend's external origin, e.g. https://backend.grbpwr.com")
+	}
+	// Shape matters, not just presence: this value is CONCATENATED into every minted url,
+	// including the ones printed as QR codes on paper tech packs. A scheme-less or
+	// path-carrying value yields links that are broken permanently and in ink.
+	if u, err := url.Parse(strings.TrimRight(strings.TrimSpace(c.PatternToken.PublicBaseURL), "/")); err != nil ||
+		u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("pattern_token.public_base_url must be an absolute https origin with no path, "+
+			"e.g. https://backend.grbpwr.com (got %q)", c.PatternToken.PublicBaseURL)
 	}
 
 	// Accounting posting worker: when enabled, its cutover date must parse and not be in the future

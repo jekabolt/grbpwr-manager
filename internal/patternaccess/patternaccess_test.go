@@ -16,7 +16,8 @@ import (
 )
 
 type fakeObjects struct {
-	rows map[int64]*entity.PatternObjectAccess
+	rows        map[int64]*entity.PatternObjectAccess
+	ensureCalls int
 }
 
 func (f *fakeObjects) GetById(_ context.Context, id int64) (*entity.PatternObjectAccess, error) {
@@ -28,7 +29,8 @@ func (f *fakeObjects) GetById(_ context.Context, id int64) (*entity.PatternObjec
 	return &cp, nil
 }
 
-func (f *fakeObjects) EnsureByKeys(_ context.Context, keys []string) (map[string]entity.PatternObjectAccess, error) {
+func (f *fakeObjects) EnsureByKeys(_ context.Context, refs []entity.PatternObjectRef) (map[string]entity.PatternObjectAccess, error) {
+	f.ensureCalls++
 	out := map[string]entity.PatternObjectAccess{}
 	next := int64(1)
 	for _, r := range f.rows {
@@ -36,19 +38,25 @@ func (f *fakeObjects) EnsureByKeys(_ context.Context, keys []string) (map[string
 			next = r.Id + 1
 		}
 	}
-	for _, k := range keys {
+	for _, ref := range refs {
 		found := false
 		for _, r := range f.rows {
-			if r.ObjectKey == k {
-				out[k] = *r
+			if r.ObjectKey == ref.Key {
+				if !r.Filename.Valid && ref.Filename != "" {
+					r.Filename = sql.NullString{String: ref.Filename, Valid: true}
+				}
+				out[ref.Key] = *r
 				found = true
 				break
 			}
 		}
 		if !found {
-			r := &entity.PatternObjectAccess{Id: next, ObjectKey: k}
+			r := &entity.PatternObjectAccess{Id: next, ObjectKey: ref.Key}
+			if ref.Filename != "" {
+				r.Filename = sql.NullString{String: ref.Filename, Valid: true}
+			}
 			f.rows[next] = r
-			out[k] = *r
+			out[ref.Key] = *r
 			next++
 		}
 	}
@@ -68,10 +76,14 @@ func (f *fakeObjects) RecordAccess(context.Context, map[int64]int64, map[int64]t
 }
 func (f *fakeObjects) DeleteByKeys(context.Context, []string) error { return nil }
 
-type fakePresigner struct{ calls int }
+type fakePresigner struct {
+	calls        int
+	lastDownload string
+}
 
-func (p *fakePresigner) PresignPatternObject(_ context.Context, key string, download bool) (string, time.Time, error) {
+func (p *fakePresigner) PresignPatternObject(_ context.Context, key string, download bool, downloadName string) (string, time.Time, error) {
 	p.calls++
+	p.lastDownload = downloadName
 	u := "https://origin.example/" + key + "?sig=x"
 	if download {
 		u += "&dl=1"
@@ -224,5 +236,92 @@ func TestNilServiceFillIsNoop(t *testing.T) {
 	svc.FillTechCardPatternURLs(context.Background(), "https://b", ps) // must not panic
 	if ps[0].ViewUrl != "" {
 		t.Fatal("nil service must leave fields empty")
+	}
+}
+
+// TestTokenLimiterKeysOnParsedID locks the per-token budget to the row id. Parse now
+// rejects non-canonical spellings, so the only way a raw-string key could be gamed is
+// gone — but the id key also collapses the two SCOPES of one object into one budget,
+// which is the identity the limit is actually about.
+func TestTokenLimiterKeysOnParsedID(t *testing.T) {
+	objects := &fakeObjects{rows: map[int64]*entity.PatternObjectAccess{
+		1: {Id: 1, ObjectKey: testKey},
+	}}
+	svc := newTestService(t, objects)
+	internal := svc.minter.Mint(patterntoken.ScopeInternal, 1, 0)
+	print := svc.minter.Mint(patterntoken.ScopePrint, 1, 0)
+	if internal == print {
+		// sanity: distinct strings, same object
+		t.Fatal("scopes must produce distinct tokens")
+	}
+	limited := false
+	for i := 0; i < perTokenMax+5; i++ {
+		tok := internal
+		if i%2 == 1 {
+			tok = print
+		}
+		if serve(svc, "/api/p/"+tok).Code == http.StatusNotFound {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("alternating scopes of one object must share the per-token budget")
+	}
+}
+
+// TestDownloadNameComesFromTheStoredRow — the object key is a timestamp plus random hex,
+// so a download named after it is unusable. The name must come from the access row (fed by
+// the pattern row's filename), never from the request.
+func TestDownloadNameComesFromTheStoredRow(t *testing.T) {
+	objects := &fakeObjects{rows: map[int64]*entity.PatternObjectAccess{
+		1: {Id: 1, ObjectKey: testKey, Filename: sql.NullString{String: "перед.pdf", Valid: true}},
+	}}
+	presigner := &fakePresigner{}
+	svc, err := New(objects, presigner, "test-pepper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Stop)
+	tok := svc.minter.Mint(patterntoken.ScopeInternal, 1, 0)
+
+	if w := serve(svc, "/api/p/"+tok+"?dl=1"); w.Code != http.StatusFound {
+		t.Fatalf("want 302, got %d", w.Code)
+	}
+	if presigner.lastDownload != "перед.pdf" {
+		t.Fatalf("presign must get the stored filename, got %q", presigner.lastDownload)
+	}
+	// A request-supplied name must not reach the presigner (it lands in a header).
+	presigner.lastDownload = ""
+	serve(svc, "/api/p/"+tok+"?dl=1&filename=evil%22.pdf")
+	if presigner.lastDownload != "перед.pdf" {
+		t.Fatalf("request parameters must never name the download, got %q", presigner.lastDownload)
+	}
+}
+
+// TestFillFittingPatternURLsBatchEnsuresOnce — a list RPC must not ensure per fitting.
+func TestFillFittingPatternURLsBatchEnsuresOnce(t *testing.T) {
+	objects := &fakeObjects{rows: map[int64]*entity.PatternObjectAccess{}}
+	svc := newTestService(t, objects)
+	groups := [][]*pb_common.FittingPattern{
+		{{Url: "https://files.grbpwr.com/" + testKey, Filename: "a.pdf"}},
+		{{Url: "https://files.grbpwr.com/base/tech-card-patterns/2026/august/y.dxf", Filename: "b.dxf"}},
+		{{Url: "https://evil.example/nope.pdf"}},
+	}
+	svc.FillFittingPatternURLsBatch(context.Background(), "https://backend.example", groups)
+	if objects.ensureCalls != 1 {
+		t.Fatalf("want one ensure pass for the page, got %d", objects.ensureCalls)
+	}
+	if groups[0][0].ViewUrl == "" || groups[1][0].ViewUrl == "" {
+		t.Fatal("managed urls must be filled")
+	}
+	if groups[2][0].ViewUrl != "" {
+		t.Fatal("unmanaged url must stay empty")
+	}
+	// The filename rides along so downloads are named after the upload.
+	for _, r := range objects.rows {
+		if r.ObjectKey == testKey && r.Filename.String != "a.pdf" {
+			t.Fatalf("filename must be carried into the access row, got %q", r.Filename.String)
+		}
 	}
 }

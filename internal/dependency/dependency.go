@@ -1273,7 +1273,7 @@ type (
 		GetById(ctx context.Context, id int64) (*entity.PatternObjectAccess, error)
 		// EnsureByKeys returns rows for the given managed object keys, creating missing
 		// ones (epoch 0, no expiry) without touching existing state.
-		EnsureByKeys(ctx context.Context, keys []string) (map[string]entity.PatternObjectAccess, error)
+		EnsureByKeys(ctx context.Context, refs []entity.PatternObjectRef) (map[string]entity.PatternObjectAccess, error)
 		// BumpEpoch invalidates every token minted for the object so far.
 		BumpEpoch(ctx context.Context, id int64) error
 		// Revoke hard-disables access until un-revoked (distinct from a rotating bump).
@@ -1405,7 +1405,7 @@ type (
 		// window so the url string is stable within it (browser HTTP cache; no
 		// <object>/viewer remounts). download=true adds a content-disposition=attachment
 		// response override.
-		PresignPatternObject(ctx context.Context, objectKey string, download bool) (url string, expiresAt time.Time, err error)
+		PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (url string, expiresAt time.Time, err error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
 		// DeleteObjects best-effort removes the S3 objects behind the given media URLs

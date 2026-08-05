@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -45,17 +46,25 @@ var (
 // per process. Multiple instances mint different-but-equally-valid strings; the cost is a
 // cold browser cache after a hit lands on another instance, accepted like the in-memory
 // rate limiter (design R6).
-func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, download bool) (string, time.Time, error) {
+// downloadName is the filename the attachment disposition names the object under; it must
+// come from stored data (the upload's own filename), NEVER from a request parameter — it
+// lands in a response header. An empty value falls back to the object key's basename.
+func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
 	key := strings.Trim(objectKey, "/")
 	if !isManagedPatternKey(key) {
 		return "", time.Time{}, fmt.Errorf("object key %q is not a managed pattern key", objectKey)
+	}
+
+	name := sanitizeDownloadName(downloadName)
+	if name == "" {
+		name = path.Base(key)
 	}
 
 	now := time.Now().UTC()
 	windowStart := now.Truncate(presignWindow)
 	expiresAt := windowStart.Add(2 * presignWindow)
 
-	cacheKey := fmt.Sprintf("%s|%t|%d", key, download, windowStart.Unix())
+	cacheKey := fmt.Sprintf("%s|%t|%s|%d", key, download, name, windowStart.Unix())
 	presignMu.Lock()
 	if e, ok := presignCache[cacheKey]; ok && now.Before(e.expiresAt) {
 		presignMu.Unlock()
@@ -73,7 +82,7 @@ func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, dow
 	reqParams := make(url.Values)
 	if download {
 		reqParams.Set("response-content-disposition",
-			fmt.Sprintf("attachment; filename=%q", path.Base(key)))
+			fmt.Sprintf("attachment; filename=%q", name))
 	}
 	u, err := b.Client.PresignedGetObject(ctx, b.S3BucketName, key, time.Until(expiresAt), reqParams)
 	if err != nil {
@@ -87,12 +96,43 @@ func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, dow
 
 // isManagedPatternKey reports whether the key sits under the dedicated pattern folder
 // (any base-folder prefix, same recognition rule as storeutil.PatternObjectKey).
+// Relative segments are refused outright: they cannot escape this bucket (the host is
+// client-config-fixed and any normalizing intermediary would break SigV4), but the rule is
+// reused by the label path (Ф7b) and must not depend on that argument holding there.
 func isManagedPatternKey(key string) bool {
+	found := false
 	segments := strings.Split(key, "/")
 	for i, segment := range segments {
+		// An empty segment means a trailing slash or a doubled separator: that names a
+		// prefix, not an object, and would presign a key with no basename.
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
 		if segment == patternObjectPathSegment && i < len(segments)-1 {
-			return true
+			found = true
 		}
 	}
-	return false
+	return found
+}
+
+// sanitizeDownloadName reduces a stored filename to a bare, header-safe basename. Quotes,
+// control characters and path separators are dropped rather than escaped — the value is
+// interpolated into a quoted Content-Disposition parameter.
+func sanitizeDownloadName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = path.Base(filepath.ToSlash(name))
+	if name == "." || name == "/" || name == ".." {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' || r == '/' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }

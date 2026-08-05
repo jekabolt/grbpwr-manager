@@ -457,6 +457,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		// embeds cannot send Authorization headers.
 		if s.patternAccessHandler != nil {
 			r.Method(http.MethodGet, "/p/{token}", s.patternAccessHandler)
+			// HEAD too, or chi answers it 405 — the one response that would not be the
+			// uniform 404 every other rejection returns.
+			r.Method(http.MethodHead, "/p/{token}", s.patternAccessHandler)
 		}
 	})
 

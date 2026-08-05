@@ -27,6 +27,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
@@ -239,6 +240,11 @@ func (a *App) Start(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// Write validation must know which hosts are OURS before any pattern url can be
+	// stored: dto is fail-closed and rejects every pattern url until this is configured
+	// (it cannot import bucket — dependency imports dto — so the hosts are pushed in).
+	dto.SetManagedPatternHosts(bucket.ManagedHosts(&a.c.Bucket)...)
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {

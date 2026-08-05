@@ -13,6 +13,12 @@
 CREATE TABLE IF NOT EXISTS pattern_object_access (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     object_key VARCHAR(512) NOT NULL,
+    -- The human filename the object was uploaded under, carried here because the download
+    -- path (a presigned redirect) can only name the file through the object key otherwise,
+    -- and that key is a timestamp plus 128 random bits. Nullable: legacy objects and any
+    -- caller without the pattern row simply fall back to the key basename. NEVER populated
+    -- from a request parameter -- it lands in a Content-Disposition header.
+    filename VARCHAR(255) NULL DEFAULT NULL,
     epoch INT NOT NULL DEFAULT 0,
     expires_at TIMESTAMP NULL DEFAULT NULL,
     revoked_at TIMESTAMP NULL DEFAULT NULL,

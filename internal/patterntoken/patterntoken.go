@@ -104,5 +104,14 @@ func (m *Minter) Parse(token string) (scope Scope, id int64, epoch int, err erro
 	if !hmac.Equal(got, m.sig(scope, id, epoch)) {
 		return 0, 0, 0, ErrInvalid
 	}
+	// CANONICALITY. The signature covers the PARSED values, but parsing is not injective:
+	// ParseInt(base36) accepts leading zeros, '+' and upper case, and RawURLEncoding
+	// ignores the unused trailing bits of the last character — so one valid token has
+	// thousands of equivalent spellings that all verify. That is not a forgery, but any
+	// caller keying state on the token STRING (rate limiting, caching, dedupe) would see
+	// each spelling as a fresh token. Re-minting and comparing pins the one spelling.
+	if token != m.Mint(scope, id, epoch) {
+		return 0, 0, 0, ErrInvalid
+	}
 	return scope, id, epoch, nil
 }

@@ -89,3 +89,59 @@ func TestTokenShape(t *testing.T) {
 		t.Fatalf("token must be url-safe: %s", tok)
 	}
 }
+
+// TestNonCanonicalSpellingsAreRejected locks the canonicality check. base36 parsing
+// accepts leading zeros, '+' and upper case, and RawURLEncoding ignores the unused
+// trailing bits of the final character — so without the re-mint comparison one valid
+// token would have thousands of spellings that all pass the signature check. They are not
+// forgeries, but anything keying state on the token STRING (rate limiting, caches) would
+// treat each as new, which is exactly how a per-token budget gets bypassed.
+func TestNonCanonicalSpellingsAreRejected(t *testing.T) {
+	m, _ := NewMinter("test-pepper")
+	const id, epoch = 1, 0
+	canonical := m.Mint(ScopeInternal, id, epoch)
+	if _, _, _, err := m.Parse(canonical); err != nil {
+		t.Fatalf("canonical token must parse: %v", err)
+	}
+	sig := canonical[strings.Index(canonical, ".")+1:] // "epoch36.sig"
+	sig = sig[strings.Index(sig, ".")+1:]
+
+	variants := map[string]string{
+		"leading zero id":    "i01.0." + sig,
+		"many zeros id":      "i0001.0." + sig,
+		"plus signed id":     "i+1.0." + sig,
+		"upper case id":      "i1.0." + strings.ToUpper(sig[:1]) + sig[1:],
+		"leading zero epoch": "i1.00." + sig,
+		"plus signed epoch":  "i1.+0." + sig,
+		"negative zero":      "i1.-0." + sig,
+	}
+	for name, tok := range variants {
+		if tok == canonical {
+			continue // upper-casing a digit that has no letter form
+		}
+		if _, _, _, err := m.Parse(tok); err == nil {
+			t.Errorf("%s: non-canonical token %q must be rejected", name, tok)
+		}
+	}
+
+	// Trailing-bit malleability: a 22-char base64url encoding of 16 bytes leaves 4 bits
+	// unused, so 16 distinct strings decode to the same signature bytes.
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := canonical[len(canonical)-1]
+	rejected := 0
+	for _, c := range alphabet {
+		alt := canonical[:len(canonical)-1] + string(c)
+		if alt == canonical {
+			continue
+		}
+		_, _, _, err := m.Parse(alt)
+		if err == nil {
+			t.Errorf("trailing-bit variant %q must be rejected (last char %q)", alt, string(last))
+		} else {
+			rejected++
+		}
+	}
+	if rejected != len(alphabet)-1 {
+		t.Fatalf("expected every variant rejected, got %d of %d", rejected, len(alphabet)-1)
+	}
+}

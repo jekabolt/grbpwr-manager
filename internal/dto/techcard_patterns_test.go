@@ -186,3 +186,51 @@ func TestTechCardPatternURLMustBeManaged(t *testing.T) {
 		}
 	}
 }
+
+// TestPatternURLHostAllowlist locks the FAIL-CLOSED host check on pattern urls. The path
+// shape alone is not enough: https://evil.example/tech-card-patterns/x.pdf has the right
+// shape, and the admin renders a stored pattern url in an <object>.
+func TestPatternURLHostAllowlist(t *testing.T) {
+	t.Cleanup(func() { SetManagedPatternHosts("cdn", "files.grbpwr.com") })
+
+	mk := func(url string) *pb_common.TechCardInsert {
+		return &pb_common.TechCardInsert{
+			StyleNumber: "TC-HOST", Name: "host", SizeIds: []int32{4},
+			MeasurementUnit: pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
+			Patterns:        []*pb_common.TechCardSizePattern{{SizeId: 4, Url: url}},
+		}
+	}
+
+	SetManagedPatternHosts("files.grbpwr.com", "grbpwr.fra1.digitaloceanspaces.com")
+	for _, ok := range []string{
+		"https://files.grbpwr.com/base/tech-card-patterns/2026/august/x.pdf",
+		"https://grbpwr.fra1.digitaloceanspaces.com/base/tech-card-patterns/2026/august/x.dxf",
+		"https://FILES.GRBPWR.COM/base/tech-card-patterns/2026/august/x.pdf", // host compare is case-insensitive
+	} {
+		if _, err := ConvertPbTechCardInsertToEntity(mk(ok)); err != nil {
+			t.Errorf("managed url %q must be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"https://evil.example/tech-card-patterns/2026/august/x.pdf", // right shape, wrong host
+		"https://files.grbpwr.com.evil.example/tech-card-patterns/x.pdf",
+		"http://files.grbpwr.com/base/tech-card-patterns/x.pdf", // scheme
+		"https://user@files.grbpwr.com/base/tech-card-patterns/x.pdf",
+		"https://files.grbpwr.com/base/media/2026/x.jpg", // wrong folder
+		"https://files.grbpwr.com/base/tech-card-patterns/../media/x.jpg",
+		"javascript:alert(1)",
+		"",
+	} {
+		if _, err := ConvertPbTechCardInsertToEntity(mk(bad)); err == nil {
+			t.Errorf("url %q must be rejected", bad)
+		}
+	}
+
+	// Fail-closed: an unconfigured allowlist rejects everything rather than degrading to
+	// the shape-only check (a missed boot wiring must break loudly, not silently reopen).
+	SetManagedPatternHosts()
+	if _, err := ConvertPbTechCardInsertToEntity(
+		mk("https://files.grbpwr.com/base/tech-card-patterns/2026/august/x.pdf")); err == nil {
+		t.Error("with no managed hosts configured every pattern url must be rejected")
+	}
+}

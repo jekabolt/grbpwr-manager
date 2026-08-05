@@ -21,6 +21,10 @@ func (s *Server) deleteOrphanedPatternObjects(ctx context.Context, owner string,
 			slog.Int("owner_id", ownerID),
 			slog.Int("url_count", len(urls)),
 			slog.String("err", err.Error()))
+		// The objects may still exist, so their access rows must stay: dropping them
+		// would reset the revocation epoch, and a surviving (or re-referenced) object
+		// would come back reachable through tokens an operator had already revoked.
+		return
 	}
 	// Drop the objects' access rows in the same pass (design R9): a row without its
 	// object would 404 correctly but sit as dead weight forever. Same best-effort

@@ -16,11 +16,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
@@ -30,7 +33,7 @@ import (
 
 // Presigner is the narrow slice of dependency.FileStore this service needs.
 type Presigner interface {
-	PresignPatternObject(ctx context.Context, objectKey string, download bool) (string, time.Time, error)
+	PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error)
 }
 
 const (
@@ -43,6 +46,9 @@ const (
 	perIPMax    = 600
 
 	statsFlushInterval = time.Minute
+
+	// deniedLogSample is the 1-in-N Info sampling rate for denials (see notFound).
+	deniedLogSample = 10
 )
 
 // Service mints pattern urls and serves /api/p/{token}.
@@ -62,6 +68,9 @@ type Service struct {
 	statsLast  map[int64]time.Time
 	stopCh     chan struct{}
 	stopOnce   sync.Once
+
+	// deniedSeq drives the 1-in-N sampling of denial log lines.
+	deniedSeq atomic.Int64
 }
 
 // New builds the service. pepper failing closed happens in patterntoken.NewMinter.
@@ -140,17 +149,21 @@ func (s *Service) FillTechCardPatternURLs(ctx context.Context, baseURL string, p
 	if s == nil || len(ps) == 0 {
 		return
 	}
-	keys := make([]string, 0, len(ps))
+	refs := make([]entity.PatternObjectRef, 0, len(ps))
 	for _, p := range ps {
 		if k, ok := storeutil.PatternObjectKey(p.GetUrl()); ok {
-			keys = append(keys, k)
+			refs = append(refs, entity.PatternObjectRef{Key: k, Filename: p.GetFilename()})
 		}
 	}
-	rows, err := s.objects.EnsureByKeys(ctx, keys)
+	rows, err := s.objects.EnsureByKeys(ctx, refs)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "fill pattern urls failed", slog.String("err", err.Error()))
 		return
 	}
+	s.applyTechCardURLs(baseURL, rows, ps)
+}
+
+func (s *Service) applyTechCardURLs(baseURL string, rows map[string]entity.PatternObjectAccess, ps []*pb_common.TechCardSizePattern) {
 	for _, p := range ps {
 		k, ok := storeutil.PatternObjectKey(p.GetUrl())
 		if !ok {
@@ -171,29 +184,46 @@ func (s *Service) FillFittingPatternURLs(ctx context.Context, baseURL string, ps
 	if s == nil || len(ps) == 0 {
 		return
 	}
-	keys := make([]string, 0, len(ps))
-	for _, p := range ps {
-		if k, ok := storeutil.PatternObjectKey(p.GetUrl()); ok {
-			keys = append(keys, k)
+	s.FillFittingPatternURLsBatch(ctx, baseURL, [][]*pb_common.FittingPattern{ps})
+}
+
+// FillFittingPatternURLsBatch fills several fittings' patterns in ONE ensure pass. A list
+// RPC returns up to a page of fittings, and a per-fitting ensure would put a query (and,
+// for a fresh object, a write) per fitting behind every list read.
+func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL string, groups [][]*pb_common.FittingPattern) {
+	if s == nil || len(groups) == 0 {
+		return
+	}
+	refs := make([]entity.PatternObjectRef, 0, len(groups))
+	for _, ps := range groups {
+		for _, p := range ps {
+			if k, ok := storeutil.PatternObjectKey(p.GetUrl()); ok {
+				refs = append(refs, entity.PatternObjectRef{Key: k, Filename: p.GetFilename()})
+			}
 		}
 	}
-	rows, err := s.objects.EnsureByKeys(ctx, keys)
+	if len(refs) == 0 {
+		return
+	}
+	rows, err := s.objects.EnsureByKeys(ctx, refs)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "fill pattern urls failed", slog.String("err", err.Error()))
 		return
 	}
-	for _, p := range ps {
-		k, ok := storeutil.PatternObjectKey(p.GetUrl())
-		if !ok {
-			continue
+	for _, ps := range groups {
+		for _, p := range ps {
+			k, ok := storeutil.PatternObjectKey(p.GetUrl())
+			if !ok {
+				continue
+			}
+			row, ok := rows[k]
+			if !ok {
+				continue
+			}
+			tok := s.minter.Mint(patterntoken.ScopeInternal, row.Id, row.Epoch)
+			p.ViewUrl = baseURL + "/api/p/" + tok
+			p.DownloadUrl = baseURL + "/api/p/" + tok + "?dl=1"
 		}
-		row, ok := rows[k]
-		if !ok {
-			continue
-		}
-		tok := s.minter.Mint(patterntoken.ScopeInternal, row.Id, row.Epoch)
-		p.ViewUrl = baseURL + "/api/p/" + tok
-		p.DownloadUrl = baseURL + "/api/p/" + tok + "?dl=1"
 	}
 }
 
@@ -205,8 +235,15 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ip := middleware.ClientIPFromRequest(r)
 
 	notFound := func(reason string) {
-		// The REASON goes to the audit log only, never to the response.
-		slog.Default().InfoContext(ctx, "pattern access denied",
+		// The REASON goes to the audit log only, never to the response. Denials are
+		// SAMPLED at Info (every deniedLogSample-th) with the rest at Debug: this
+		// endpoint is unauthenticated, so an unmetered log line per rejected request is
+		// a log-volume amplifier anyone on the internet can pull.
+		level := slog.LevelDebug
+		if s.deniedSeq.Add(1)%deniedLogSample == 0 {
+			level = slog.LevelInfo
+		}
+		slog.Default().Log(ctx, level, "pattern access denied",
 			slog.String("reason", reason), slog.String("ip", ip),
 			slog.String("ua", r.UserAgent()))
 		http.NotFound(w, r)
@@ -221,7 +258,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		notFound("bad token")
 		return
 	}
-	if !s.tokenLimiter.Allow(ip + "|" + token) {
+	// Keyed on the PARSED id, never the token string: Parse pins canonical spelling, but
+	// the id is the identity the budget is actually about (both scopes of one object share
+	// it), and a string key would hand an attacker a fresh bucket per spelling variant.
+	if !s.tokenLimiter.Allow(ip + "|" + strconv.FormatInt(id, 10)) {
 		notFound("token rate limited")
 		return
 	}
@@ -249,7 +289,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	download := r.URL.Query().Get("dl") == "1"
-	signed, expiresAt, err := s.presign.PresignPatternObject(ctx, row.ObjectKey, download)
+	signed, expiresAt, err := s.presign.PresignPatternObject(ctx, row.ObjectKey, download, row.Filename.String)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "pattern presign failed", slog.String("err", err.Error()))
 		notFound("presign error")

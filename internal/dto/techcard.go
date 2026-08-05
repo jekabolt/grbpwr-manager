@@ -1705,22 +1705,55 @@ func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 // validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.
 var validPantoneSystems = map[string]bool{"TCX": true, "TPX": true, "TPG": true, "C": true, "U": true}
 
+// managedPatternHosts is the set of hosts a stored pattern url may point at, configured
+// once at boot from the bucket config (SetManagedPatternHosts). It is deliberately
+// FAIL-CLOSED: with no hosts configured every pattern url is rejected, because the
+// alternative — a path-shape-only check — accepts https://evil.example/tech-card-patterns/x
+// and the admin renders stored pattern urls in an <object>.
+var managedPatternHosts = map[string]struct{}{}
+
+// SetManagedPatternHosts installs the bucket's own hosts (CDN subdomain + virtual-hosted
+// origin). Called once during boot; tests configure their own fixtures.
+func SetManagedPatternHosts(hosts ...string) {
+	next := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" {
+			next[h] = struct{}{}
+		}
+	}
+	managedPatternHosts = next
+}
+
 // managedPatternObjectKey mirrors storeutil.PatternObjectKey (dto cannot import storeutil
-// — dependency imports dto). Keep the recognition rule in sync: https url whose path
-// contains the dedicated "tech-card-patterns" segment before the object name.
+// — dependency imports dto). Keep the recognition rule in sync: https url on one of OUR
+// hosts whose path contains the dedicated "tech-card-patterns" segment before the object
+// name.
 func managedPatternObjectKey(raw string) (string, bool) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return "", false
+	}
+	if _, ok := managedPatternHosts[strings.ToLower(u.Host)]; !ok {
 		return "", false
 	}
 	key := strings.Trim(u.Path, "/")
 	segments := strings.Split(key, "/")
+	found := false
 	for i, segment := range segments {
+		// Checked over the WHOLE path, not up to the folder: a dot segment after it
+		// (…/tech-card-patterns/../media/x.jpg) would otherwise pass on the earlier match.
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
 		if segment == "tech-card-patterns" && i < len(segments)-1 {
-			return key, true
+			found = true
 		}
 	}
-	return "", false
+	if !found {
+		return "", false
+	}
+	return key, true
 }
 
 // isHTTPURL reports whether s is an http(s) URL — pattern PDFs are served over the CDN,
