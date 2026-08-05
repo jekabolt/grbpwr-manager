@@ -70,13 +70,18 @@ type FittingSize struct {
 	FitNote sql.NullString `db:"fit_note"`
 }
 
-// FittingPattern is a PDF cut-pattern (выкройка) iteration measured in a fitting. It is a
-// snapshot of the uploaded file (url + filename), not a live reference to a tech-card
-// pattern — the tech card holds the final pattern, a fitting captures the iteration tried.
+// FittingPattern is a cut-pattern (выкройка) iteration measured in a fitting — PDF or
+// DXF, told apart by the url's extension. It is a snapshot of the uploaded file (url +
+// filename), not a live reference to a tech-card pattern — the tech card holds the final
+// pattern, a fitting captures the iteration tried.
 type FittingPattern struct {
-	SizeId    sql.NullInt32  `db:"size_id"`
-	URL       string         `db:"url"`
-	Filename  sql.NullString `db:"filename"`
+	SizeId   sql.NullInt32  `db:"size_id"`
+	URL      string         `db:"url"`
+	Filename sql.NullString `db:"filename"`
+	// Name is the operator-entered display name. Same write semantics as
+	// TechCardSizePattern.Name — Valid=false means absent from the payload (carry the stored
+	// name forward by (size_id, url)); Valid=true writes as given, empty clearing to NULL.
+	Name      sql.NullString `db:"name"`
 	SizeBytes sql.NullInt64  `db:"size_bytes"`
 }
 
@@ -138,19 +143,19 @@ type FittingChangeRequest struct {
 // to a tech card (the style) and/or a specific product (the colour/SKU sample);
 // at least one of TechCardId / ProductId is set (enforced in the API layer).
 type FittingInsert struct {
-	TechCardId     sql.NullInt32          `db:"tech_card_id"`
-	ProductId      sql.NullInt32          `db:"product_id"`
-	ModelId        sql.NullInt32          `db:"model_id"`
-	FittingDate    time.Time              `db:"fitting_date"`
-	Comment        sql.NullString         `db:"comment"`
-	Status         FittingStatus          `db:"status"`
-	Verdict        FittingVerdict         `db:"verdict"`
-	RoundNumber    sql.NullInt32          `db:"round_number"` // legacy per-card try-on #; the authoritative round is now the sample's (§2.7)
-	Outcome        sql.NullString         `db:"outcome"`      // FittingOutcome; NULL = undecided
-	SampleId       sql.NullInt32          `db:"sample_id"`    // the sample this fitting tried on — the primary anchor (§2.7)
+	TechCardId  sql.NullInt32  `db:"tech_card_id"`
+	ProductId   sql.NullInt32  `db:"product_id"`
+	ModelId     sql.NullInt32  `db:"model_id"`
+	FittingDate time.Time      `db:"fitting_date"`
+	Comment     sql.NullString `db:"comment"`
+	Status      FittingStatus  `db:"status"`
+	Verdict     FittingVerdict `db:"verdict"`
+	RoundNumber sql.NullInt32  `db:"round_number"` // legacy per-card try-on #; the authoritative round is now the sample's (§2.7)
+	Outcome     sql.NullString `db:"outcome"`      // FittingOutcome; NULL = undecided
+	SampleId    sql.NullInt32  `db:"sample_id"`    // the sample this fitting tried on — the primary anchor (§2.7)
 	// Audit stamps (§2.11): server-set from the JWT (replaces the deprecated client-supplied recorded_by).
-	CreatedBy string `db:"created_by"`
-	UpdatedBy string `db:"updated_by"`
+	CreatedBy      string                 `db:"created_by"`
+	UpdatedBy      string                 `db:"updated_by"`
 	Sizes          []FittingSize          `db:"-"`
 	MediaIds       []int                  `db:"-"`
 	Patterns       []FittingPattern       `db:"-"`

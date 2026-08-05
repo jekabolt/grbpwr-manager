@@ -193,6 +193,15 @@ func pbStringFromNull(ns sql.NullString) string {
 	return ""
 }
 
+// pbOptStringFromNull emits a proto3 optional string: a NULL reads back as an unset
+// field rather than "".
+func pbOptStringFromNull(ns sql.NullString) *string {
+	if ns.Valid {
+		return &ns.String
+	}
+	return nil
+}
+
 func nullInt32FromPb(v int32) sql.NullInt32 {
 	if v == 0 {
 		return sql.NullInt32{}

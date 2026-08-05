@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -116,10 +117,21 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		if p.SizeBytes < 0 {
 			return nil, fmt.Errorf("fitting pattern size_bytes must not be negative")
 		}
+		// name keeps its proto presence — Valid=false (absent) tells the store to carry the
+		// stored name forward; an explicit empty string clears. See TechCardSizePattern.name.
+		var name sql.NullString
+		if p.Name != nil {
+			trimmed := strings.TrimSpace(p.GetName())
+			if len(trimmed) > maxVarchar255 {
+				return nil, fmt.Errorf("fitting pattern name must be at most %d characters", maxVarchar255)
+			}
+			name = sql.NullString{String: trimmed, Valid: true}
+		}
 		patterns = append(patterns, entity.FittingPattern{
 			SizeId:    nullInt32FromPb(p.SizeId),
 			URL:       url,
 			Filename:  nullStringFromPb(p.Filename),
+			Name:      name,
 			SizeBytes: nullInt64FromPb(p.SizeBytes),
 		})
 	}
@@ -361,6 +373,7 @@ func fittingPatternsToPb(ps []entity.FittingPattern) []*pb_common.FittingPattern
 			SizeId:    pbInt32FromNull(p.SizeId),
 			Url:       p.URL,
 			Filename:  pbStringFromNull(p.Filename),
+			Name:      pbOptStringFromNull(p.Name),
 			SizeBytes: p.SizeBytes.Int64,
 		})
 	}

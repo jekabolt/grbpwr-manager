@@ -586,12 +586,24 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		if p.Version < 0 {
 			return nil, fmt.Errorf("pattern version must not be negative")
 		}
+		// name keeps its proto presence — Valid=false (absent) tells the store to carry the
+		// stored name forward, so a stale client cannot wipe names it never saw; an explicit
+		// empty string clears.
+		var name sql.NullString
+		if p.Name != nil {
+			trimmed := strings.TrimSpace(p.GetName())
+			if len(trimmed) > maxVarchar255 {
+				return nil, fmt.Errorf("pattern name must be at most %d characters", maxVarchar255)
+			}
+			name = sql.NullString{String: trimmed, Valid: true}
+		}
 		// uploaded_at is server-owned and deliberately dropped here: the store carries the original
 		// forward by url, so accepting a client value would only let a save rewrite history.
 		out = append(out, entity.TechCardSizePattern{
 			SizeId:    sid,
 			URL:       url,
 			Filename:  nullStringFromPb(p.Filename),
+			Name:      name,
 			SizeBytes: nullInt64FromPb(p.SizeBytes),
 			Version:   int(p.Version),
 		})
@@ -836,6 +848,7 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 			SizeId:     int32(p.SizeId),
 			Url:        p.URL,
 			Filename:   pbStringFromNull(p.Filename),
+			Name:       pbOptStringFromNull(p.Name),
 			SizeBytes:  p.SizeBytes.Int64,
 			Version:    int32(p.Version),
 			UploadedAt: pbTimestampFromNullTime(p.UploadedAt),

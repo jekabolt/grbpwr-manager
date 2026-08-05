@@ -2,6 +2,7 @@ package storeutil
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/url"
 	"strings"
@@ -10,6 +11,22 @@ import (
 )
 
 const patternObjectPathSegment = "tech-card-patterns"
+
+// ResolvePatternName applies the presence-gated write semantics of a pattern's display
+// name across a full-replace save, shared by the tech-card and fitting stores. The
+// payload's null state is proto presence, not emptiness — Valid=false means the field was
+// absent (a stale client that predates it), so the row being replaced keeps its stored
+// name (prior; the zero value when the row is new). A present name is written as given,
+// with present-empty normalised to NULL (an explicit clear).
+func ResolvePatternName(payload, prior sql.NullString) sql.NullString {
+	if !payload.Valid {
+		return prior
+	}
+	if payload.String == "" {
+		return sql.NullString{}
+	}
+	return payload
+}
 
 // UnreferencedPatternObjectURLs returns candidate pattern URLs whose canonical object key no tech
 // card or fitting row references after the caller's mutation. It is intended to run inside the same

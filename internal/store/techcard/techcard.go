@@ -1196,10 +1196,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 // the carry-forward on url alone let one size's sheet inherit the OTHER size's Rev number, and the
 // per-size MAX+1 numbering then skipped or duplicated revisions on later saves.
 type patternHistoryRow struct {
-	URL        string       `db:"url"`
-	SizeId     int          `db:"size_id"`
-	Version    int          `db:"version"`
-	UploadedAt sql.NullTime `db:"uploaded_at"`
+	URL        string         `db:"url"`
+	SizeId     int            `db:"size_id"`
+	Version    int            `db:"version"`
+	UploadedAt sql.NullTime   `db:"uploaded_at"`
+	Name       sql.NullString `db:"name"`
 }
 
 func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) ([]string, error) {
@@ -1216,7 +1217,7 @@ func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) 
 
 func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) ([]patternHistoryRow, error) {
 	rows, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
-		`SELECT url, size_id, version, uploaded_at FROM tech_card_size_pattern WHERE tech_card_id = :id`,
+		`SELECT url, size_id, version, uploaded_at, name FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": techCardID})
 	if err != nil {
 		return nil, fmt.Errorf("load tech card patterns: %w", err)
@@ -1273,7 +1274,7 @@ func patternObjectIdentity(raw string) string {
 // first occurrence.
 func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int) error {
 	prior, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
-		`SELECT url, size_id, version, uploaded_at FROM tech_card_size_pattern WHERE tech_card_id = :id`,
+		`SELECT url, size_id, version, uploaded_at, name FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": id})
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
@@ -1319,6 +1320,9 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		}
 		seenPayload[key] = struct{}{}
 		version, uploadedAt := p.Version, p.UploadedAt
+		// The display name is client-owned but presence-gated — an absent name inherits the
+		// replaced row's stored name, so a stale client cannot wipe names it never saw.
+		name := storeutil.ResolvePatternName(p.Name, known[key].Name)
 		if seen, ok := known[key]; ok {
 			// This exact sheet is already on this size: it keeps its identity, the client never owns these.
 			if version <= 0 {
@@ -1346,6 +1350,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			"size_id":       p.SizeId,
 			"url":           p.URL,
 			"filename":      p.Filename,
+			"name":          name,
 			"size_bytes":    p.SizeBytes,
 			"version":       version,
 			"uploaded_at":   uploadedAt,

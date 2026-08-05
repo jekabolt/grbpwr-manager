@@ -662,11 +662,17 @@ type TechCardSizeQuantity struct {
 	OrderQty int `db:"order_qty"`
 }
 
-// TechCardSizePattern is a final PDF cut pattern (выкройка) for one size of a tech card.
+// TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
+// the url's extension — for one size of a tech card.
 type TechCardSizePattern struct {
-	SizeId    int            `db:"size_id"`
-	URL       string         `db:"url"`
-	Filename  sql.NullString `db:"filename"`
+	SizeId   int            `db:"size_id"`
+	URL      string         `db:"url"`
+	Filename sql.NullString `db:"filename"`
+	// Name is the operator-entered display name. On WRITE the null state is proto presence,
+	// not emptiness: Valid=false means the field was absent from the payload (a stale client)
+	// and the store carries the stored name forward by (size_id, url); Valid=true means write
+	// as given, with an empty string clearing the name (stored as NULL).
+	Name      sql.NullString `db:"name"`
 	SizeBytes sql.NullInt64  `db:"size_bytes"`
 	// Version is the sheet's revision within its (style, size). 0 on the wire means "assign one":
 	// patterns are a full-replace child, so the store re-derives this on every save from the rows it

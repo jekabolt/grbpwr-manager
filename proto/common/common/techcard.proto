@@ -652,13 +652,15 @@ message TechCardSizeQuantity {
   int32 order_qty = 2; // typical calculation quantity, not an order
 }
 
-// TechCardSizePattern is a downloadable PDF выкройка (cut pattern) for one size of a
+// TechCardSizePattern is a downloadable выкройка (cut pattern) file for one size of a
 // tech card — the FINAL pattern for that size. A size can carry many patterns (pieces
-// split across sheets). The PDF is uploaded via Admin.UploadPattern, which returns the
-// url stored here; the binary lives in object storage, not the media library.
+// split across sheets). The file is a PDF or a DXF, uploaded via Admin.UploadPattern,
+// which returns the url stored here; the binary lives in object storage, not the media
+// library. The file type is carried by the url's extension (.pdf / .dxf), which the
+// server derives from the uploaded bytes — there is no separate content-type field.
 message TechCardSizePattern {
   int32 size_id = 1; // FK size(id); must be one of TechCardInsert.size_ids
-  string url = 2; // CDN url of the uploaded PDF (required)
+  string url = 2; // CDN url of the uploaded PDF/DXF (required)
   string filename = 3; // original filename, for display / download
   int64 size_bytes = 4; // file size in bytes (0 = unknown)
   // version is the sheet's revision within its (style, size) — the "v3" the admin used to scrape out
@@ -669,6 +671,13 @@ message TechCardSizePattern {
   // patterns are a full-replace child, so the row is deleted and reinserted on every card save — the
   // server carries the original timestamp forward by matching the url rather than resetting it.
   google.protobuf.Timestamp uploaded_at = 6;
+  // name is an optional operator-entered display name for the sheet ("перед", "рукав x2").
+  // Explicit presence matters across the full-replace save. ABSENT — the server preserves the
+  // previously stored name for the same (size_id, url) row, so a stale client that does not know
+  // this field cannot wipe names it never saw. PRESENT — stored as sent, and an empty string
+  // clears the name. NOTE for JSON clients — protojson cannot tell `"name": null` from an absent
+  // field, so null also reads as "preserve"; to clear a name, send the empty string.
+  optional string name = 7;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).

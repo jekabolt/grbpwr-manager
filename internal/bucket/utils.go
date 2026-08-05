@@ -21,6 +21,9 @@ const (
 	contentTypeMP4  ContentType = "video/mp4"
 	contentTypeWEBM ContentType = "video/webm"
 	contentTypePDF  ContentType = "application/pdf"
+	// contentTypeDXF is accepted ONLY by the pattern upload path (UploadPatternFile);
+	// the image/video media paths gate on their own allowlists and never reach it.
+	contentTypeDXF ContentType = "image/vnd.dxf"
 
 	// Image formats identified by content sniffing. Only JPEG/PNG/WebP/HEIC are
 	// decodable; AVIF/HEIF/GIF are recognized solely to emit a precise error.
@@ -39,6 +42,7 @@ var mimeTypeToFileExtension = map[ContentType]string{
 	contentTypeWEBP: "webp",
 	contentTypePDF:  "pdf",
 	contentTypeGIF:  "gif",
+	contentTypeDXF:  "dxf",
 }
 
 func fileExtensionFromContentType(contentType ContentType) (string, error) {

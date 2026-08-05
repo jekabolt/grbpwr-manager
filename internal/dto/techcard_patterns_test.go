@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -105,16 +106,17 @@ func TestColorwayCostRollup(t *testing.T) {
 	}
 }
 
-// TestTechCardPatternsRoundTrip covers parsing and re-emitting the per-size PDF выкройки.
+// TestTechCardPatternsRoundTrip covers parsing and re-emitting the per-size выкройки,
+// including the presence-gated display name (absent ≠ empty).
 func TestTechCardPatternsRoundTrip(t *testing.T) {
 	in := &pb_common.TechCardInsert{
 		StyleNumber: "ST-PAT",
 		Name:        "Coat",
 		SizeIds:     []int32{4, 5},
 		Patterns: []*pb_common.TechCardSizePattern{
-			{SizeId: 4, Url: "https://cdn/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234},
-			{SizeId: 4, Url: "https://cdn/x4b.pdf"}, // multiple per size is allowed
-			{SizeId: 5, Url: "https://cdn/x5.pdf"},
+			{SizeId: 4, Url: "https://cdn/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  ")},
+			{SizeId: 4, Url: "https://cdn/x4b.dxf"},                         // multiple per size is allowed; name absent
+			{SizeId: 5, Url: "https://cdn/x5.pdf", Name: stringPointer("")}, // present-empty = explicit clear
 		},
 	}
 	ent, err := ConvertPbTechCardInsertToEntity(in)
@@ -124,9 +126,22 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	if len(ent.Patterns) != 3 || ent.Patterns[0].SizeId != 4 || ent.Patterns[0].URL != "https://cdn/x4.pdf" {
 		t.Fatalf("patterns not parsed: %+v", ent.Patterns)
 	}
+	// name presence survives dto→entity: present is Valid (trimmed), absent is not.
+	if !ent.Patterns[0].Name.Valid || ent.Patterns[0].Name.String != "перед" {
+		t.Fatalf("present name not parsed/trimmed: %+v", ent.Patterns[0].Name)
+	}
+	if ent.Patterns[1].Name.Valid {
+		t.Fatalf("absent name must stay invalid (carry-forward marker): %+v", ent.Patterns[1].Name)
+	}
+	if !ent.Patterns[2].Name.Valid || ent.Patterns[2].Name.String != "" {
+		t.Fatalf("present-empty name must stay Valid (explicit clear): %+v", ent.Patterns[2].Name)
+	}
 	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *ent}, CostingFx{})
 	if len(out.TechCard.Patterns) != 3 || out.TechCard.Patterns[0].Filename != "front-m.pdf" || out.TechCard.Patterns[0].SizeBytes != 1234 {
 		t.Fatalf("patterns round-trip mismatch: %+v", out.TechCard.Patterns)
+	}
+	if out.TechCard.Patterns[0].GetName() != "перед" || out.TechCard.Patterns[1].Name != nil {
+		t.Fatalf("name round-trip mismatch: %+v", out.TechCard.Patterns)
 	}
 }
 
@@ -138,6 +153,9 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "  "}}},
 		"pattern url not http": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "javascript:alert(1)"}}},
+		"pattern name too long": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+				Name: stringPointer(strings.Repeat("n", 256))}}},
 		// R1: usage size_consumption validation cases moved with the colourway recipe to the Colorway
 		// RPCs (CreateColorway / ColorwayDevelopmentInsert.usages) — re-covered in track T-B step D.
 	}

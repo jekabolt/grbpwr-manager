@@ -57,9 +57,11 @@ service AdminService {
     };
   }
 
-  // UploadPattern uploads a PDF выкройка (cut pattern) to object storage and returns its
-  // url. Used for both tech-card per-size patterns and fitting iteration patterns. The
-  // file is stored raw (no image processing) and is NOT added to the media library.
+  // UploadPattern uploads a выкройка (cut pattern) file to object storage and returns its
+  // url. The payload must be a PDF or a DXF (sniffed from the bytes, not the declared type);
+  // the stored object's extension (.pdf / .dxf) tells the file type. Used for both tech-card
+  // per-size patterns and fitting iteration patterns. The file is stored raw (no image
+  // processing) and is NOT added to the media library.
   rpc UploadPattern(UploadPatternRequest) returns (UploadPatternResponse) {
     option (google.api.http) = {
       post: "/api/admin/content/pattern"
