@@ -851,6 +851,22 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		}
 	}
 
+	// DXF block aliases (§2.2), with the piece's stable line_key joined in — the wire speaks keys,
+	// not FKs. A piece deleted mid-flight cascades its aliases away, so the JOIN never dangles.
+	aliasRows, err := storeutil.QueryListNamed[techCardPieceDxfAliasRow](ctx, s.DB, `
+		SELECT a.tech_card_id, a.bom_line_key, a.block_name, a.piece_id, COALESCE(p.line_key, '') AS piece_line_key
+		FROM tech_card_piece_dxf_block a
+		JOIN tech_card_piece p ON p.id = a.piece_id
+		WHERE a.tech_card_id IN (:ids)
+		ORDER BY a.tech_card_id, a.bom_line_key, a.block_name`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card piece dxf aliases: %w", err)
+	}
+	aliasesByCard := make(map[int][]entity.TechCardPieceDxfAlias, len(ids))
+	for _, r := range aliasRows {
+		aliasesByCard[r.TechCardID] = append(aliasesByCard[r.TechCardID], r.TechCardPieceDxfAlias)
+	}
+
 	for i := range cards {
 		id := cards[i].Id
 		cws := colorwaysByCard[id]
@@ -864,6 +880,124 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		cards[i].BomItems = bomByCard[id]
 		cards[i].Details = detailsByCard[id]
 		cards[i].Pieces = piecesByCard[id]
+		cards[i].PieceDxfAliases = aliasesByCard[id]
+	}
+	return nil
+}
+
+type techCardPieceDxfAliasRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardPieceDxfAlias
+}
+
+// upsertTechCardPieceDxfAliases reconciles the DXF block → piece aliases (§2.2), keyed by
+// (bom_line_key, block_name) with the DB's case-insensitive semantics mirrored in Go. Runs AFTER
+// upsertTechCardPieces (resolveUsagePiece precedent) so piece_line_key resolves against this save's
+// pieces. Presence-gated: a payload that did not speak (set=false — a stale client) leaves stored
+// aliases untouched; a present payload is the new full set. An EXISTING (slot, block) pair is
+// grandfathered even when its slot left the BOM («слот удалён» is a UI state); a NEW pair requires
+// a live fabric slot.
+func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string) error {
+	if !set {
+		return nil
+	}
+	pieceRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, db,
+		`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("failed to load pieces for dxf aliases: %w", err)
+	}
+	// Lowercased on BOTH sides: alias keys are dto-uppercased while piece/BOM line keys are only
+	// trimmed on their own entry paths — a lowercase-keyed but internally consistent payload must
+	// not be refused by the server's own normalization asymmetry.
+	pieceByKey := make(map[string]int, len(pieceRows))
+	for _, r := range pieceRows {
+		pieceByKey[strings.ToLower(r.LineKey)] = r.Id
+	}
+	type aliasExistingRow struct {
+		Id         int    `db:"id"`
+		BomLineKey string `db:"bom_line_key"`
+		BlockName  string `db:"block_name"`
+		PieceId    int    `db:"piece_id"`
+	}
+	existing, err := storeutil.QueryListNamed[aliasExistingRow](ctx, db,
+		`SELECT id, bom_line_key, block_name, piece_id FROM tech_card_piece_dxf_block WHERE tech_card_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("failed to load existing dxf aliases: %w", err)
+	}
+	ciKey := func(slot, block string) string { return strings.ToLower(slot) + "|" + strings.ToLower(block) }
+	existingByKey := make(map[string]aliasExistingRow, len(existing))
+	for _, r := range existing {
+		existingByKey[ciKey(r.BomLineKey, r.BlockName)] = r
+	}
+	var fabricKeys map[string]struct{}
+	if len(aliases) > 0 {
+		rows, err := storeutil.QueryListNamed[struct {
+			LineKey string `db:"line_key"`
+		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_bom_item
+			WHERE tech_card_id = :id AND section = :section`,
+			map[string]any{"id": tcID, "section": string(entity.BomSectionFabric)})
+		if err != nil {
+			return fmt.Errorf("failed to load fabric bom line keys for dxf aliases: %w", err)
+		}
+		fabricKeys = make(map[string]struct{}, len(rows))
+		for _, r := range rows {
+			fabricKeys[strings.ToLower(r.LineKey)] = struct{}{}
+		}
+	}
+	seen := make(map[string]bool, len(aliases))
+	for i, a := range aliases {
+		pieceID, ok := pieceByKey[strings.ToLower(a.PieceLineKey)]
+		if !ok {
+			return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i),
+				"not_found", a.PieceLineKey, "the referenced cut-piece is not on this card")
+		}
+		key := ciKey(a.BomLineKey, a.BlockName)
+		if prev, exists := existingByKey[key]; exists {
+			if prev.PieceId != pieceID {
+				if err := storeutil.ExecNamed(ctx, db, `
+					UPDATE tech_card_piece_dxf_block SET piece_id = :piece_id, updated_by = :username
+					WHERE id = :id`, map[string]any{"id": prev.Id, "piece_id": pieceID, "username": username}); err != nil {
+					return fmt.Errorf("failed to update dxf alias: %w", err)
+				}
+			}
+		} else {
+			if _, live := fabricKeys[strings.ToLower(a.BomLineKey)]; !live {
+				return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i),
+					"not_found", a.BomLineKey, "pick a fabric BOM line of this card")
+			}
+			if err := storeutil.ExecNamed(ctx, db, `
+				INSERT INTO tech_card_piece_dxf_block
+					(tech_card_id, bom_line_key, block_name, piece_id, created_by, updated_by)
+				VALUES (:tech_card_id, :bom_line_key, :block_name, :piece_id, :username, :username)`,
+				map[string]any{
+					"tech_card_id": tcID,
+					"bom_line_key": a.BomLineKey,
+					"block_name":   a.BlockName,
+					"piece_id":     pieceID,
+					"username":     username,
+				}); err != nil {
+				var me *mysql.MySQLError
+				if errors.As(err, &me) && me.Number == 1062 { // ER_DUP_ENTRY
+					// The DB collation folds more than Go's ToLower (accents, ё=е, ß=ss) — a pair
+					// Go saw as distinct can still collide in MySQL. A readable refusal, not a 500.
+					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].block_name", i),
+						fmt.Sprintf("block %q collides with an existing alias on this fabric under the database's case/accent folding", a.BlockName),
+						a.BlockName, "rename the block or edit the existing alias")
+				}
+				return fmt.Errorf("failed to insert dxf alias: %w", err)
+			}
+		}
+		seen[key] = true
+	}
+	for key, r := range existingByKey {
+		if seen[key] {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_piece_dxf_block WHERE id = :id`, map[string]any{"id": r.Id}); err != nil {
+			return fmt.Errorf("failed to delete dxf alias: %w", err)
+		}
 	}
 	return nil
 }

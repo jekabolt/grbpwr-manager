@@ -74,6 +74,12 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	if layout.GetSchemaVersion() == 0 {
 		layout.SchemaVersion = 1
 	}
+	// v1 = original geometry; v2 adds piece_line_key/block_name on pieces (§2.2). Anything newer is
+	// a client this server does not understand — refuse rather than store a blob readers would
+	// silently degrade on.
+	if v := layout.GetSchemaVersion(); v != 1 && v != 2 {
+		return nil, status.Errorf(codes.InvalidArgument, "marker layout schema_version %d is not supported (1 or 2)", v)
+	}
 	blob, err := protojson.Marshal(layout)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "marker layout does not marshal: %v", err)

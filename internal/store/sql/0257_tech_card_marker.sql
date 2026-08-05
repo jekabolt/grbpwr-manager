@@ -8,10 +8,11 @@
 --
 -- Geometry lives in the `layout` JSON blob (proto-JSON of common.TechCardMarkerLayout, idiom of
 -- tech_card_release.snapshot) and NOT as references to pattern files, for three load-bearing
--- reasons. Pattern rows are a full-replace child, so only their url is stable. The pattern
--- garbage collector deletes the CDN object as soon as no pattern row references its url, so a
--- marker-by-reference would go dark on the next sheet replacement. And a DXF re-parse is not
--- reproducible identity-wise (piece ids are parse-local, tessellation depends on tolerances).
+-- reasons. Pattern object URLS are not stable (0260 later gave rows a stable line_key, but the
+-- FILE behind a row still changes on sheet replacement). The pattern garbage collector deletes
+-- the CDN object as soon as no pattern row references its url, so a marker-by-reference would go
+-- dark on the next sheet replacement. And a DXF re-parse is not reproducible identity-wise
+-- (piece ids are parse-local, tessellation depends on tolerances).
 --
 -- bom_item_id is ON DELETE SET NULL, a deliberate divergence from the RESTRICT used by
 -- tech_card_colorway_usage/piece_material pins. The BOM is upsert-diffed INSIDE UpdateTechCard,
