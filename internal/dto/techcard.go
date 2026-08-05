@@ -307,8 +307,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	// NF-07 purpose: sellable (default) produces a product; auxiliary produces a packaging material.
 	// A sellable card must not carry an output material. output_material_id is only required before
 	// the first run (the service/receive path enforces that), not at save time — a card can be
-	// drafted first. PR6 R1/R4: "auxiliary cards link no products" is now enforced where the link is
-	// created (CreateColorway refuses an auxiliary style), not here — product_ids left this payload.
+	// drafted first. PR6 R1/R4: "auxiliary cards link no products" is enforced where the link is
+	// created — product/colorway_write.go requireSellableStyle, called by CreateColorway — not here;
+	// product_ids left this payload. (That check was claimed here long before it existed; it does now.)
 	purpose := entity.TechCardPurposeSellable
 	if pb.Purpose != pb_common.TechCardPurpose_TECH_CARD_PURPOSE_UNKNOWN {
 		purpose = techCardPurposeFromPb(pb.Purpose)
@@ -738,7 +739,65 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		TopCategoryId: tc.TopCategoryId.Int32,
 		SubCategoryId: tc.SubCategoryId.Int32,
 		TypeId:        tc.TypeId.Int32,
+		// Colour variants of an AUXILIARY card's warehouse output (0252). Empty for a sellable card
+		// and for an aux card still in legacy single-output mode. Output-only here: they are written
+		// through their own RPCs because a variant owns warehouse stock.
+		OutputVariants: TechCardOutputVariantsToPb(tc.OutputVariants),
 	}
+}
+
+// TechCardOutputVariantsToPb emits an auxiliary card's colour variants for display, each with its
+// colour name, bucket name/unit and on-hand balance already resolved. on_hand stays nil (not zero)
+// when the bucket has no stock row — "no balance recorded" is a different fact from "none left".
+func TechCardOutputVariantsToPb(vs []entity.TechCardOutputVariant) []*pb_common.TechCardOutputVariant {
+	if len(vs) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardOutputVariant, 0, len(vs))
+	for i := range vs {
+		out = append(out, &pb_common.TechCardOutputVariant{
+			Id:           int32(vs[i].Id),
+			TechCardId:   int32(vs[i].TechCardId),
+			ColorCode:    vs[i].ColorCode,
+			ColorName:    vs[i].ColorName,
+			MaterialId:   int32(vs[i].MaterialId),
+			MaterialName: vs[i].MaterialName,
+			OnHand:       pbDecimalFromNull(vs[i].OnHand),
+			Unit:         vs[i].Unit,
+			Active:       vs[i].Active,
+		})
+	}
+	return out
+}
+
+// ConvertPbTechCardOutputVariantToEntity parses the writable half of a colour-variant payload. The
+// resolved fields (color_name, material_name, on_hand, unit) are read-only projections and are
+// ignored on the way in — accepting them would let a caller contradict the warehouse.
+//
+// id 0 asks for a create; material_id 0 asks the store to auto-create the bucket on a create and
+// means "keep the current bucket" on an update. Range checks only — colour existence, purpose,
+// uniqueness and unit consistency are the store's, where they can be held against the write.
+func ConvertPbTechCardOutputVariantToEntity(pb *pb_common.TechCardOutputVariant) (entity.TechCardOutputVariantInsert, error) {
+	var out entity.TechCardOutputVariantInsert
+	if pb == nil {
+		return out, fmt.Errorf("variant is required")
+	}
+	if pb.Id < 0 {
+		return out, fmt.Errorf("id must not be negative")
+	}
+	if pb.MaterialId < 0 {
+		return out, fmt.Errorf("material_id must not be negative")
+	}
+	code := strings.ToUpper(strings.TrimSpace(pb.ColorCode))
+	if code == "" {
+		return out, fmt.Errorf("color_code is required")
+	}
+	return entity.TechCardOutputVariantInsert{
+		Id:         int(pb.Id),
+		ColorCode:  code,
+		MaterialId: int(pb.MaterialId),
+		Active:     pb.Active,
+	}, nil
 }
 
 // techCardRevisionsToPb emits the server-stamped auto-journal (Q1) for display: who/what/when.
@@ -819,6 +878,11 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		OutputMaterialId:     int32(tc.OutputMaterialId.Int64),
 		OutputMaterialName:   tc.OutputMaterialName,
 		OutputMaterialOnHand: pbDecimalFromNull(tc.OutputMaterialOnHand),
+		// Colour variants of that output, ACTIVE only (0252): the "3 colours · 820 on hand" a list row
+		// shows for a varianted aux card. 0/unset means legacy single-output mode, where the
+		// output_material_* trio above is the whole answer.
+		OutputVariantCount:   int32(tc.OutputVariantCount),
+		OutputVariantsOnHand: pbDecimalFromNull(tc.OutputVariantsOnHand),
 	}
 }
 

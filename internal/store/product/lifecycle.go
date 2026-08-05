@@ -90,7 +90,8 @@ func (s *Store) transitionColorwayLifecycle(ctx context.Context, colorwayID int,
 	if t == entity.ColorwayTransitionRestore {
 		next = entity.RestoreTargetStatus(publishedEver)
 	}
-	// A colourway belongs only to a SELLABLE style — CreateColorway refuses an auxiliary one. Every
+	// A colourway belongs only to a SELLABLE style — CreateColorway refuses an auxiliary one via
+	// requireSellableStyle (colorway_write.go), the create-time twin of the check below. Every
 	// edge that brings a colourway back out of the archive has to re-check that, because the style's
 	// purpose can move AFTER the colourway was created: a card whose colourways are all archived may
 	// now flip to auxiliary (the purpose lock counts only live ones), and un-archiving one afterwards

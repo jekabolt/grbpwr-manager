@@ -11,7 +11,15 @@ import (
 
 var _ = context.Background
 
-// ---- admin (242 rpc) ----
+// ---- admin (298 rpc) ----
+
+func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
+	out := new(admin.AccrueCorporationTaxResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/corporation-tax/accrue", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 func (c *Client) AddArchive(ctx context.Context, in *admin.AddArchiveRequest) (*admin.AddArchiveResponse, error) {
 	out := new(admin.AddArchiveResponse)
@@ -245,6 +253,30 @@ func (c *Client) AssignTechCardRole(ctx context.Context, in *admin.AssignTechCar
 	return out, nil
 }
 
+func (c *Client) AutoTranslateEmailCampaign(ctx context.Context, in *admin.AutoTranslateEmailCampaignRequest) (*admin.AutoTranslateEmailCampaignResponse, error) {
+	out := new(admin.AutoTranslateEmailCampaignResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/{id}/auto-translate", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) BatchIssueMaterialStock(ctx context.Context, in *admin.BatchIssueMaterialStockRequest) (*admin.BatchIssueMaterialStockResponse, error) {
+	out := new(admin.BatchIssueMaterialStockResponse)
+	if err := c.call(ctx, "POST", "/api/admin/inventory/issue-batch", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CancelCampaign(ctx context.Context, in *admin.CancelCampaignRequest) (*admin.CancelCampaignResponse, error) {
+	out := new(admin.CancelCampaignResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/{id}/cancel", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) CancelOrder(ctx context.Context, in *admin.CancelOrderRequest) (*admin.CancelOrderResponse, error) {
 	out := new(admin.CancelOrderResponse)
 	if err := c.call(ctx, "POST", "/api/admin/orders/{order_uuid}/cancel", in, out); err != nil {
@@ -280,6 +312,14 @@ func (c *Client) CreateAccount(ctx context.Context, in *admin.CreateAccountReque
 func (c *Client) CreateAcctAccount(ctx context.Context, in *admin.CreateAcctAccountRequest) (*admin.CreateAcctAccountResponse, error) {
 	out := new(admin.CreateAcctAccountResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounting/accounts", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateBankRule(ctx context.Context, in *admin.CreateBankRuleRequest) (*admin.CreateBankRuleResponse, error) {
+	out := new(admin.CreateBankRuleResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/bank/rules", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -325,6 +365,14 @@ func (c *Client) CreateFiber(ctx context.Context, in *admin.CreateFiberRequest) 
 	return out, nil
 }
 
+func (c *Client) CreateFixedAsset(ctx context.Context, in *admin.CreateFixedAssetRequest) (*admin.CreateFixedAssetResponse, error) {
+	out := new(admin.CreateFixedAssetResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/fixed-assets", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) CreateJournalEntry(ctx context.Context, in *admin.CreateJournalEntryRequest) (*admin.CreateJournalEntryResponse, error) {
 	out := new(admin.CreateJournalEntryResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounting/journal", in, out); err != nil {
@@ -344,6 +392,14 @@ func (c *Client) CreateMaterial(ctx context.Context, in *admin.CreateMaterialReq
 func (c *Client) CreateProductionRun(ctx context.Context, in *admin.CreateProductionRunRequest) (*admin.CreateProductionRunResponse, error) {
 	out := new(admin.CreateProductionRunResponse)
 	if err := c.call(ctx, "POST", "/api/admin/production-runs", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) CreateSupplier(ctx context.Context, in *admin.CreateSupplierRequest) (*admin.CreateSupplierResponse, error) {
+	out := new(admin.CreateSupplierResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/suppliers", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -384,6 +440,30 @@ func (c *Client) DeleteAccount(ctx context.Context, in *admin.DeleteAccountReque
 func (c *Client) DeleteArchiveById(ctx context.Context, in *admin.DeleteArchiveByIdRequest) (*admin.DeleteArchiveByIdResponse, error) {
 	out := new(admin.DeleteArchiveByIdResponse)
 	if err := c.call(ctx, "DELETE", "/api/admin/archive/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteBankRule(ctx context.Context, in *admin.DeleteBankRuleRequest) (*admin.DeleteBankRuleResponse, error) {
+	out := new(admin.DeleteBankRuleResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/bank/rules/delete", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteEmailCampaign(ctx context.Context, in *admin.DeleteEmailCampaignRequest) (*admin.DeleteEmailCampaignResponse, error) {
+	out := new(admin.DeleteEmailCampaignResponse)
+	if err := c.call(ctx, "DELETE", "/api/admin/email-campaigns/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteEmailSegment(ctx context.Context, in *admin.DeleteEmailSegmentRequest) (*admin.DeleteEmailSegmentResponse, error) {
+	out := new(admin.DeleteEmailSegmentResponse)
+	if err := c.call(ctx, "DELETE", "/api/admin/email-segments/{id}", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -517,6 +597,14 @@ func (c *Client) DeleteTechCardDevExpense(ctx context.Context, in *admin.DeleteT
 	return out, nil
 }
 
+func (c *Client) DeleteTechCardOutputVariant(ctx context.Context, in *admin.DeleteTechCardOutputVariantRequest) (*admin.DeleteTechCardOutputVariantResponse, error) {
+	out := new(admin.DeleteTechCardOutputVariantResponse)
+	if err := c.call(ctx, "DELETE", "/api/admin/tech-card/output-variant/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) DeliveredOrder(ctx context.Context, in *admin.DeliveredOrderRequest) (*admin.DeliveredOrderResponse, error) {
 	out := new(admin.DeliveredOrderResponse)
 	if err := c.call(ctx, "POST", "/api/admin/orders/{order_uuid}/delivered", in, out); err != nil {
@@ -528,6 +616,22 @@ func (c *Client) DeliveredOrder(ctx context.Context, in *admin.DeliveredOrderReq
 func (c *Client) DisablePromoCode(ctx context.Context, in *admin.DisablePromoCodeRequest) (*admin.DisablePromoCodeResponse, error) {
 	out := new(admin.DisablePromoCodeResponse)
 	if err := c.call(ctx, "POST", "/api/admin/promo/{code}/disable", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ExportJpkV7M(ctx context.Context, in *admin.ExportJpkV7MRequest) (*admin.ExportJpkV7MResponse, error) {
+	out := new(admin.ExportJpkV7MResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/jpk-v7m", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ExportOssReturn(ctx context.Context, in *admin.ExportOssReturnRequest) (*admin.ExportOssReturnResponse, error) {
+	out := new(admin.ExportOssReturnResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/oss-export", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -560,6 +664,14 @@ func (c *Client) GenerateTechCardOperations(ctx context.Context, in *admin.Gener
 func (c *Client) GetAccountLedger(ctx context.Context, in *admin.GetAccountLedgerRequest) (*admin.GetAccountLedgerResponse, error) {
 	out := new(admin.GetAccountLedgerResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/ledger/{code}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetAcctAlerts(ctx context.Context, in *admin.GetAcctAlertsRequest) (*admin.GetAcctAlertsResponse, error) {
+	out := new(admin.GetAcctAlertsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/alerts", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -608,6 +720,38 @@ func (c *Client) GetBackgroundHeroColor(ctx context.Context, in *admin.GetBackgr
 func (c *Client) GetBalanceSheet(ctx context.Context, in *admin.GetBalanceSheetRequest) (*admin.GetBalanceSheetResponse, error) {
 	out := new(admin.GetBalanceSheetResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/balance-sheet", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetCampaignDispatchStatus(ctx context.Context, in *admin.GetCampaignDispatchStatusRequest) (*admin.GetCampaignDispatchStatusResponse, error) {
+	out := new(admin.GetCampaignDispatchStatusResponse)
+	if err := c.call(ctx, "GET", "/api/admin/email-campaigns/{id}/dispatch-status", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetCampaignMetrics(ctx context.Context, in *admin.GetCampaignMetricsRequest) (*admin.GetCampaignMetricsResponse, error) {
+	out := new(admin.GetCampaignMetricsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/email-campaigns/{campaign_id}/metrics", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetCampaignRecipients(ctx context.Context, in *admin.GetCampaignRecipientsRequest) (*admin.GetCampaignRecipientsResponse, error) {
+	out := new(admin.GetCampaignRecipientsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/email-campaigns/{id}/recipients", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetCashFlowStatement(ctx context.Context, in *admin.GetCashFlowStatementRequest) (*admin.GetCashFlowStatementResponse, error) {
+	out := new(admin.GetCashFlowStatementResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/cash-flow", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -677,9 +821,41 @@ func (c *Client) GetDictionary(ctx context.Context, in *admin.GetDictionaryReque
 	return out, nil
 }
 
+func (c *Client) GetEmailCampaign(ctx context.Context, in *admin.GetEmailCampaignRequest) (*admin.GetEmailCampaignResponse, error) {
+	out := new(admin.GetEmailCampaignResponse)
+	if err := c.call(ctx, "GET", "/api/admin/email-campaigns/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetEmailSegment(ctx context.Context, in *admin.GetEmailSegmentRequest) (*admin.GetEmailSegmentResponse, error) {
+	out := new(admin.GetEmailSegmentResponse)
+	if err := c.call(ctx, "GET", "/api/admin/email-segments/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetFinancialHealth(ctx context.Context, in *admin.GetFinancialHealthRequest) (*admin.GetFinancialHealthResponse, error) {
+	out := new(admin.GetFinancialHealthResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/financial-health", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetFitting(ctx context.Context, in *admin.GetFittingRequest) (*admin.GetFittingResponse, error) {
 	out := new(admin.GetFittingResponse)
 	if err := c.call(ctx, "GET", "/api/admin/fitting/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetFrs105Accounts(ctx context.Context, in *admin.GetFrs105AccountsRequest) (*admin.GetFrs105AccountsResponse, error) {
+	out := new(admin.GetFrs105AccountsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/frs105", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -773,9 +949,25 @@ func (c *Client) GetOrderReviewsPaged(ctx context.Context, in *admin.GetOrderRev
 	return out, nil
 }
 
+func (c *Client) GetOrdersOverview(ctx context.Context, in *admin.GetOrdersOverviewRequest) (*admin.GetOrdersOverviewResponse, error) {
+	out := new(admin.GetOrdersOverviewResponse)
+	if err := c.call(ctx, "GET", "/api/admin/orders/overview", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetOssReturn(ctx context.Context, in *admin.GetOssReturnRequest) (*admin.GetOssReturnResponse, error) {
 	out := new(admin.GetOssReturnResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/oss-return", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetPayables(ctx context.Context, in *admin.GetPayablesRequest) (*admin.GetPayablesResponse, error) {
+	out := new(admin.GetPayablesResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/payables", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -808,6 +1000,14 @@ func (c *Client) GetProductionRunMaterialPlan(ctx context.Context, in *admin.Get
 func (c *Client) GetProfitLossStatement(ctx context.Context, in *admin.GetProfitLossStatementRequest) (*admin.GetProfitLossStatementResponse, error) {
 	out := new(admin.GetProfitLossStatementResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/profit-loss", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetReceivables(ctx context.Context, in *admin.GetReceivablesRequest) (*admin.GetReceivablesResponse, error) {
+	out := new(admin.GetReceivablesResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/receivables", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -909,6 +1109,14 @@ func (c *Client) GetTechCard(ctx context.Context, in *admin.GetTechCardRequest) 
 	return out, nil
 }
 
+func (c *Client) GetTechCardReadiness(ctx context.Context, in *admin.GetTechCardReadinessRequest) (*admin.GetTechCardReadinessResponse, error) {
+	out := new(admin.GetTechCardReadinessResponse)
+	if err := c.call(ctx, "GET", "/api/admin/tech-card/readiness/{tech_card_id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetTechCardRelease(ctx context.Context, in *admin.GetTechCardReleaseRequest) (*admin.GetTechCardReleaseResponse, error) {
 	out := new(admin.GetTechCardReleaseResponse)
 	if err := c.call(ctx, "GET", "/api/admin/tech-card/release/{id}", in, out); err != nil {
@@ -949,6 +1157,14 @@ func (c *Client) GetTrialBalance(ctx context.Context, in *admin.GetTrialBalanceR
 	return out, nil
 }
 
+func (c *Client) GetUkVatReturn(ctx context.Context, in *admin.GetUkVatReturnRequest) (*admin.GetUkVatReturnResponse, error) {
+	out := new(admin.GetUkVatReturnResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/uk-vat-return", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetVatRates(ctx context.Context, in *admin.GetVatRatesRequest) (*admin.GetVatRatesResponse, error) {
 	out := new(admin.GetVatRatesResponse)
 	if err := c.call(ctx, "GET", "/api/admin/vat-rates", in, out); err != nil {
@@ -965,9 +1181,33 @@ func (c *Client) GetVatReturnPL(ctx context.Context, in *admin.GetVatReturnPLReq
 	return out, nil
 }
 
+func (c *Client) GetVatUe(ctx context.Context, in *admin.GetVatUeRequest) (*admin.GetVatUeResponse, error) {
+	out := new(admin.GetVatUeResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/vat-ue", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) HardEraseMember(ctx context.Context, in *admin.HardEraseMemberRequest) (*admin.HardEraseMemberResponse, error) {
 	out := new(admin.HardEraseMemberResponse)
 	if err := c.call(ctx, "POST", "/api/admin/members/{user_id}/erase", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) IgnoreBankTxn(ctx context.Context, in *admin.IgnoreBankTxnRequest) (*admin.IgnoreBankTxnResponse, error) {
+	out := new(admin.IgnoreBankTxnResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/bank/ignore", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ImportBankCsv(ctx context.Context, in *admin.ImportBankCsvRequest) (*admin.ImportBankCsvResponse, error) {
+	out := new(admin.ImportBankCsvResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/bank/import", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1029,6 +1269,22 @@ func (c *Client) ListAdmins(ctx context.Context, in *admin.ListAdminsRequest) (*
 	return out, nil
 }
 
+func (c *Client) ListBankRules(ctx context.Context, in *admin.ListBankRulesRequest) (*admin.ListBankRulesResponse, error) {
+	out := new(admin.ListBankRulesResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/bank/rules", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListBankTxns(ctx context.Context, in *admin.ListBankTxnsRequest) (*admin.ListBankTxnsResponse, error) {
+	out := new(admin.ListBankTxnsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/bank/txns", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListCollections(ctx context.Context, in *admin.ListCollectionsRequest) (*admin.ListCollectionsResponse, error) {
 	out := new(admin.ListCollectionsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/dictionaries/collections", in, out); err != nil {
@@ -1045,9 +1301,33 @@ func (c *Client) ListColors(ctx context.Context, in *admin.ListColorsRequest) (*
 	return out, nil
 }
 
+func (c *Client) ListCostingMigrationExceptions(ctx context.Context, in *admin.ListCostingMigrationExceptionsRequest) (*admin.ListCostingMigrationExceptionsResponse, error) {
+	out := new(admin.ListCostingMigrationExceptionsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/tech-card/costing-migration-exceptions", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListCountries(ctx context.Context, in *admin.ListCountriesRequest) (*admin.ListCountriesResponse, error) {
 	out := new(admin.ListCountriesResponse)
 	if err := c.call(ctx, "GET", "/api/admin/dictionaries/countries", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListEmailCampaignsPaged(ctx context.Context, in *admin.ListEmailCampaignsPagedRequest) (*admin.ListEmailCampaignsPagedResponse, error) {
+	out := new(admin.ListEmailCampaignsPagedResponse)
+	if err := c.call(ctx, "GET", "/api/admin/email-campaigns/paged", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListEmailSegments(ctx context.Context, in *admin.ListEmailSegmentsRequest) (*admin.ListEmailSegmentsResponse, error) {
+	out := new(admin.ListEmailSegmentsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/email-segments", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1064,6 +1344,14 @@ func (c *Client) ListEmployees(ctx context.Context, in *admin.ListEmployeesReque
 func (c *Client) ListFittings(ctx context.Context, in *admin.ListFittingsRequest) (*admin.ListFittingsResponse, error) {
 	out := new(admin.ListFittingsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/fitting/list", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListFixedAssets(ctx context.Context, in *admin.ListFixedAssetsRequest) (*admin.ListFixedAssetsResponse, error) {
+	out := new(admin.ListFixedAssetsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/fixed-assets", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1181,6 +1469,14 @@ func (c *Client) ListOpexRecurring(ctx context.Context, in *admin.ListOpexRecurr
 	return out, nil
 }
 
+func (c *Client) ListOrderComments(ctx context.Context, in *admin.ListOrderCommentsRequest) (*admin.ListOrderCommentsResponse, error) {
+	out := new(admin.ListOrderCommentsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/orders/{order_uuid}/comments", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListOrders(ctx context.Context, in *admin.ListOrdersRequest) (*admin.ListOrdersResponse, error) {
 	out := new(admin.ListOrdersResponse)
 	if err := c.call(ctx, "POST", "/api/admin/orders/list", in, out); err != nil {
@@ -1200,6 +1496,14 @@ func (c *Client) ListPackagingBom(ctx context.Context, in *admin.ListPackagingBo
 func (c *Client) ListPackagingRecipe(ctx context.Context, in *admin.ListPackagingRecipeRequest) (*admin.ListPackagingRecipeResponse, error) {
 	out := new(admin.ListPackagingRecipeResponse)
 	if err := c.call(ctx, "GET", "/api/admin/inventory/packaging-recipe", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListProductWaitlist(ctx context.Context, in *admin.ListProductWaitlistRequest) (*admin.ListProductWaitlistResponse, error) {
+	out := new(admin.ListProductWaitlistResponse)
+	if err := c.call(ctx, "GET", "/api/admin/waitlist", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1261,6 +1565,14 @@ func (c *Client) ListStyleAssembly(ctx context.Context, in *admin.ListStyleAssem
 	return out, nil
 }
 
+func (c *Client) ListSuppliers(ctx context.Context, in *admin.ListSuppliersRequest) (*admin.ListSuppliersResponse, error) {
+	out := new(admin.ListSuppliersResponse)
+	if err := c.call(ctx, "GET", "/api/admin/accounting/suppliers", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListTags(ctx context.Context, in *admin.ListTagsRequest) (*admin.ListTagsResponse, error) {
 	out := new(admin.ListTagsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/dictionaries/tags", in, out); err != nil {
@@ -1317,6 +1629,14 @@ func (c *Client) ListTechCards(ctx context.Context, in *admin.ListTechCardsReque
 	return out, nil
 }
 
+func (c *Client) ListVariantSeconds(ctx context.Context, in *admin.ListVariantSecondsRequest) (*admin.ListVariantSecondsResponse, error) {
+	out := new(admin.ListVariantSecondsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/colorways/{colorway_id}/seconds", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) MarkFulfillmentDelivered(ctx context.Context, in *admin.MarkFulfillmentDeliveredRequest) (*admin.MarkFulfillmentDeliveredResponse, error) {
 	out := new(admin.MarkFulfillmentDeliveredResponse)
 	if err := c.call(ctx, "POST", "/api/admin/fulfillment/deliver", in, out); err != nil {
@@ -1341,9 +1661,49 @@ func (c *Client) OverrideTier(ctx context.Context, in *admin.OverrideTierRequest
 	return out, nil
 }
 
+func (c *Client) PauseCampaign(ctx context.Context, in *admin.PauseCampaignRequest) (*admin.PauseCampaignResponse, error) {
+	out := new(admin.PauseCampaignResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/{id}/pause", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PostBankTxn(ctx context.Context, in *admin.PostBankTxnRequest) (*admin.PostBankTxnResponse, error) {
+	out := new(admin.PostBankTxnResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/bank/post", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PostDepreciation(ctx context.Context, in *admin.PostDepreciationRequest) (*admin.PostDepreciationResponse, error) {
+	out := new(admin.PostDepreciationResponse)
+	if err := c.call(ctx, "POST", "/api/admin/accounting/depreciation/post", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PostProductionRunReceipt(ctx context.Context, in *admin.PostProductionRunReceiptRequest) (*admin.PostProductionRunReceiptResponse, error) {
+	out := new(admin.PostProductionRunReceiptResponse)
+	if err := c.call(ctx, "POST", "/api/admin/production-runs/{run_id}/receipts", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) PrepareShippingLabel(ctx context.Context, in *admin.PrepareShippingLabelRequest) (*admin.PrepareShippingLabelResponse, error) {
 	out := new(admin.PrepareShippingLabelResponse)
 	if err := c.call(ctx, "GET", "/api/admin/fulfillment/label/{order_uuid}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) PreviewEmailSegment(ctx context.Context, in *admin.PreviewEmailSegmentRequest) (*admin.PreviewEmailSegmentResponse, error) {
+	out := new(admin.PreviewEmailSegmentResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-segments/preview", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1397,9 +1757,25 @@ func (c *Client) RemoveTechCardRoleAssignment(ctx context.Context, in *admin.Rem
 	return out, nil
 }
 
+func (c *Client) RenderCampaignPreview(ctx context.Context, in *admin.RenderCampaignPreviewRequest) (*admin.RenderCampaignPreviewResponse, error) {
+	out := new(admin.RenderCampaignPreviewResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/render-preview", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ReopenAcctPeriod(ctx context.Context, in *admin.ReopenAcctPeriodRequest) (*admin.ReopenAcctPeriodResponse, error) {
 	out := new(admin.ReopenAcctPeriodResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounting/periods/reopen", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RepriceTechCardBom(ctx context.Context, in *admin.RepriceTechCardBomRequest) (*admin.RepriceTechCardBomResponse, error) {
+	out := new(admin.RepriceTechCardBomResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/bom/reprice", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1429,9 +1805,25 @@ func (c *Client) ResolveAcctEvent(ctx context.Context, in *admin.ResolveAcctEven
 	return out, nil
 }
 
+func (c *Client) ResumeCampaign(ctx context.Context, in *admin.ResumeCampaignRequest) (*admin.ResumeCampaignResponse, error) {
+	out := new(admin.ResumeCampaignResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/{id}/resume", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ReverseJournalEntry(ctx context.Context, in *admin.ReverseJournalEntryRequest) (*admin.ReverseJournalEntryResponse, error) {
 	out := new(admin.ReverseJournalEntryResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounting/journal/reverse", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ReverseProductionRunReceipt(ctx context.Context, in *admin.ReverseProductionRunReceiptRequest) (*admin.ReverseProductionRunReceiptResponse, error) {
+	out := new(admin.ReverseProductionRunReceiptResponse)
+	if err := c.call(ctx, "POST", "/api/admin/production-runs/{run_id}/receipts/{receipt_id}/reverse", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1461,6 +1853,14 @@ func (c *Client) RunTierBackfill(ctx context.Context, in *admin.RunTierBackfillR
 	return out, nil
 }
 
+func (c *Client) ScheduleCampaign(ctx context.Context, in *admin.ScheduleCampaignRequest) (*admin.ScheduleCampaignResponse, error) {
+	out := new(admin.ScheduleCampaignResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/{id}/schedule", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) SchedulePickup(ctx context.Context, in *admin.SchedulePickupRequest) (*admin.SchedulePickupResponse, error) {
 	out := new(admin.SchedulePickupResponse)
 	if err := c.call(ctx, "POST", "/api/admin/fulfillment/pickup", in, out); err != nil {
@@ -1469,9 +1869,25 @@ func (c *Client) SchedulePickup(ctx context.Context, in *admin.SchedulePickupReq
 	return out, nil
 }
 
+func (c *Client) SendCampaignNow(ctx context.Context, in *admin.SendCampaignNowRequest) (*admin.SendCampaignNowResponse, error) {
+	out := new(admin.SendCampaignNowResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/{id}/send", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) SendMemberEmail(ctx context.Context, in *admin.SendMemberEmailRequest) (*admin.SendMemberEmailResponse, error) {
 	out := new(admin.SendMemberEmailResponse)
 	if err := c.call(ctx, "POST", "/api/admin/members/{user_id}/email", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SendTestEmail(ctx context.Context, in *admin.SendTestEmailRequest) (*admin.SendTestEmailResponse, error) {
+	out := new(admin.SendTestEmailResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/test-send", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1560,6 +1976,14 @@ func (c *Client) SetTaskChecklistItemDone(ctx context.Context, in *admin.SetTask
 func (c *Client) SetTrackingNumber(ctx context.Context, in *admin.SetTrackingNumberRequest) (*admin.SetTrackingNumberResponse, error) {
 	out := new(admin.SetTrackingNumberResponse)
 	if err := c.call(ctx, "POST", "/api/admin/orders/{order_uuid}/set-tracking-number", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetVariantPrice(ctx context.Context, in *admin.SetVariantPriceRequest) (*admin.SetVariantPriceResponse, error) {
+	out := new(admin.SetVariantPriceResponse)
+	if err := c.call(ctx, "POST", "/api/admin/variants/{variant_id}/price", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1869,6 +2293,22 @@ func (c *Client) UpsertCostingFxRates(ctx context.Context, in *admin.UpsertCosti
 	return out, nil
 }
 
+func (c *Client) UpsertEmailCampaign(ctx context.Context, in *admin.UpsertEmailCampaignRequest) (*admin.UpsertEmailCampaignResponse, error) {
+	out := new(admin.UpsertEmailCampaignResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-campaigns", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpsertEmailSegment(ctx context.Context, in *admin.UpsertEmailSegmentRequest) (*admin.UpsertEmailSegmentResponse, error) {
+	out := new(admin.UpsertEmailSegmentResponse)
+	if err := c.call(ctx, "POST", "/api/admin/email-segments", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) UpsertEmployee(ctx context.Context, in *admin.UpsertEmployeeRequest) (*admin.UpsertEmployeeResponse, error) {
 	out := new(admin.UpsertEmployeeResponse)
 	if err := c.call(ctx, "POST", "/api/admin/metrics/employees/upsert", in, out); err != nil {
@@ -1928,6 +2368,14 @@ func (c *Client) UpsertPaymentMethodFees(ctx context.Context, in *admin.UpsertPa
 func (c *Client) UpsertStyleAssembly(ctx context.Context, in *admin.UpsertStyleAssemblyRequest) (*admin.UpsertStyleAssemblyResponse, error) {
 	out := new(admin.UpsertStyleAssemblyResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/style-assembly/upsert", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpsertTechCardOutputVariant(ctx context.Context, in *admin.UpsertTechCardOutputVariantRequest) (*admin.UpsertTechCardOutputVariantResponse, error) {
+	out := new(admin.UpsertTechCardOutputVariantResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/output-variant/upsert", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2224,3 +2672,4 @@ func (c *Client) SFVerifyAccountMagicLink(ctx context.Context, in *frontend.Veri
 	}
 	return out, nil
 }
+

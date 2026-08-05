@@ -2,6 +2,8 @@ package product
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
@@ -35,6 +37,15 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		// The style must already exist and remain authorable; adding colourway content to a released
 		// card is frozen just like editing an existing colourway.
 		if err := storeutil.RequireMutableTechCard(ctx, rep.DB(), styleID); err != nil {
+			return err
+		}
+		// A colourway belongs only to a SELLABLE style. An auxiliary card produces a warehouse
+		// material, not a product, so a colourway under one is a dead end by construction: it can
+		// never publish (checkOwningStyleSellable refuses every non-archive edge), and meanwhile a
+		// DRAFT counts as live and pins the card's purpose — leaving the operator with a colourway
+		// they cannot use and a purpose they cannot flip back. Two comments elsewhere have claimed
+		// this check lived here since PR6; it did not, and this is it.
+		if err := requireSellableStyle(ctx, rep.DB(), styleID); err != nil {
 			return err
 		}
 		// UNIQUE(style_id, color_code) (R1): reject a duplicate colour with a clean precondition error
@@ -90,6 +101,31 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		return 0, err
 	}
 	return colorwayID, nil
+}
+
+// requireSellableStyle refuses to attach colourway work to an AUXILIARY style. It is the create-time
+// twin of checkOwningStyleSellable (lifecycle.go), which guards every edge that brings an existing
+// colourway back out of the archive, and it returns the same sentinel so both refusals reach the
+// operator as one FailedPrecondition with the same wording. Runs on the caller's db so the check
+// holds inside the create transaction.
+//
+// A missing style is not this function's error to report: the FK and the surrounding write already
+// surface it as sql.ErrNoRows → NOT_FOUND.
+func requireSellableStyle(ctx context.Context, db dependency.DB, styleID int) error {
+	row, err := storeutil.QueryNamedOne[struct {
+		Purpose string `db:"purpose"`
+	}](ctx, db, `SELECT purpose FROM tech_card WHERE id = :id`, map[string]any{"id": styleID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("load style %d purpose: %w", styleID, err)
+	}
+	if entity.TechCardPurpose(row.Purpose) == entity.TechCardPurposeAuxiliary {
+		return fmt.Errorf("%w: style %d is auxiliary, which produces a warehouse material rather than a product; register a colour variant on the card instead, or make the style sellable first",
+			entity.ErrColorwayNotSellable, styleID)
+	}
+	return nil
 }
 
 // UpdateColorway patches a colourway's own fields under an optimistic guard on its style's shared

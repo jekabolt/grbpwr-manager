@@ -105,6 +105,28 @@ const materialWithPriceSelect = `
 // the check — there is no DB-level unique index on code (it must stay unique only among non-archived
 // rows), so the check must hold the read range.
 func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (int, error) {
+	var id int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var err error
+		id, err = createMaterialInTx(ctx, rep.DB(), m)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// createMaterialInTx is CreateMaterial's body, running on the caller's connection so a write that
+// must create a material AS PART OF a larger atomic change can do so without opening a second
+// transaction. Sub-stores handed to a tx callback keep the OUTER tx opener (initSubStoresForTx), so
+// calling the exported CreateMaterial from inside a transaction would start an INDEPENDENT one —
+// its material would survive a rollback of the change that asked for it. The auto-created output
+// bucket of a colour variant (0252) is the first caller.
+//
+// Everything here is deterministic, so a deadlock retry of the enclosing transaction recomputes the
+// same code and composition it computed the first time.
+func createMaterialInTx(ctx context.Context, db dependency.DB, m *entity.MaterialInsert) (int, error) {
 	composition, err := entity.NormalizeMaterialComposition(m.CompositionEntries)
 	if err != nil {
 		return 0, err
@@ -119,44 +141,36 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 		codeMaterial.CompositionEntries = composition
 		generatedCode = materialcode.ComposeArticle(&codeMaterial)
 	}
-	var id int
-	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		if explicitCode {
-			if err := checkMaterialCodeFree(ctx, rep.DB(), m.Code, 0); err != nil {
-				return err
-			}
+	if explicitCode {
+		if err := checkMaterialCodeFree(ctx, db, m.Code, 0); err != nil {
+			return 0, err
 		}
-		newID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO material (name, section, supplier, supplier_ref, supplier_id, lead_time_days,
-				composition, spec, unit,
-				fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes,
-				image_id, purpose, material_class, other_attrs, created_by, updated_by)
-			VALUES (:name, :section, :supplier, :supplier_ref, :supplier_id, :lead_time_days,
-				:composition, :spec, :unit,
-				:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes,
-				:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
-			materialParams(m))
-		if err != nil {
-			return fmt.Errorf("create material: %w", err)
-		}
-		if !explicitCode {
-			if err := assignGeneratedMaterialCode(ctx, rep.DB(), newID, generatedCode); err != nil {
-				return fmt.Errorf("create material %d code: %w", newID, err)
-			}
-		}
-		if err := upsertMaterialAttrs(ctx, rep.DB(), newID, m); err != nil {
-			return fmt.Errorf("create material %d attrs: %w", newID, err)
-		}
-		if err := writeMaterialComposition(ctx, rep.DB(), newID, composition); err != nil {
-			return err
-		}
-		id = newID
-		return nil
-	})
+	}
+	newID, err := storeutil.ExecNamedLastId(ctx, db, `
+		INSERT INTO material (name, section, supplier, supplier_ref, supplier_id, lead_time_days,
+			composition, spec, unit,
+			fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes,
+			image_id, purpose, material_class, other_attrs, created_by, updated_by)
+		VALUES (:name, :section, :supplier, :supplier_ref, :supplier_id, :lead_time_days,
+			:composition, :spec, :unit,
+			:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes,
+			:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
+		materialParams(m))
 	if err != nil {
+		return 0, fmt.Errorf("create material: %w", err)
+	}
+	if !explicitCode {
+		if err := assignGeneratedMaterialCode(ctx, db, newID, generatedCode); err != nil {
+			return 0, fmt.Errorf("create material %d code: %w", newID, err)
+		}
+	}
+	if err := upsertMaterialAttrs(ctx, db, newID, m); err != nil {
+		return 0, fmt.Errorf("create material %d attrs: %w", newID, err)
+	}
+	if err := writeMaterialComposition(ctx, db, newID, composition); err != nil {
 		return 0, err
 	}
-	return id, nil
+	return newID, nil
 }
 
 // UpdateMaterial updates a catalog material's descriptive fields (not its price history). It is

@@ -325,10 +325,11 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		// no admin action could clear.
 		if cur.Purpose != string(tc.Purpose) {
 			refs, err := storeutil.QueryNamedOne[struct {
-				Runs          int `db:"runs"`
-				LiveColorways int `db:"live_colorways"`
-				SoldColorways int `db:"sold_colorways"`
-				Assemblies    int `db:"assemblies"`
+				Runs           int `db:"runs"`
+				LiveColorways  int `db:"live_colorways"`
+				SoldColorways  int `db:"sold_colorways"`
+				Assemblies     int `db:"assemblies"`
+				OutputVariants int `db:"output_variants"`
 			}](ctx, rep.DB(),
 				// A CANCELLED run produced nothing, so it pins nothing. "Sold" is any order that got
 				// past payment — a refunded sale still happened, and the placed/awaiting_payment/
@@ -346,7 +347,9 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 				            AND os.name NOT IN ('placed', 'awaiting_payment', 'cancelled')
 				        )                                                            AS sold_colorways,
 				        (SELECT COUNT(*) FROM style_assembly
-				           WHERE component_tech_card_id = :id)                       AS assemblies`,
+				           WHERE component_tech_card_id = :id)                       AS assemblies,
+				        (SELECT COUNT(*) FROM tech_card_output_variant
+				           WHERE tech_card_id = :id)                                 AS output_variants`,
 				map[string]any{"id": id, "archived": uint8(entity.ColorwayStatusArchived)})
 			if err != nil {
 				return fmt.Errorf("failed to check tech card purpose change: %w", err)
@@ -354,7 +357,8 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 			// Name the references that actually pin the purpose. The rule has independent arms and a
 			// card usually trips exactly one of them, so reporting all of them reads as a false
 			// positive ("but it has no runs") and hides the one thing to clear.
-			if reason := purposeLockReason(refs.Runs, refs.LiveColorways, refs.SoldColorways, refs.Assemblies); reason != "" {
+			if reason := purposeLockReason(refs.Runs, refs.LiveColorways, refs.SoldColorways,
+				refs.Assemblies, refs.OutputVariants); reason != "" {
 				return fmt.Errorf("%w: %s", entity.ErrTechCardPurposeLocked, reason)
 			}
 		}
@@ -537,7 +541,7 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 // purposeLockReason renders the references that pin a card's purpose as an operator-readable list,
 // or "" when nothing does. Each arm names both what is referencing the card and what to clear, so
 // the message is a next step rather than a restatement of the rule.
-func purposeLockReason(runs, liveColorways, soldColorways, assemblies int) string {
+func purposeLockReason(runs, liveColorways, soldColorways, assemblies, outputVariants int) string {
 	var parts []string
 	// Sold first: it is the only arm with no way out, so it must not read as one more chore in a
 	// list of things to clear.
@@ -552,6 +556,13 @@ func purposeLockReason(runs, liveColorways, soldColorways, assemblies int) strin
 	}
 	if assemblies > 0 {
 		parts = append(parts, "used as a component in "+plural(assemblies, "style assembly", "style assemblies")+" (remove it there first)")
+	}
+	// Counted whether or not the variant is ACTIVE, matching the assemblies arm above (a deactivated
+	// bill line pins too): a deactivated colour still owns a warehouse bucket with stock and history
+	// that only an auxiliary card can produce into. The escape is delete, not deactivate.
+	if outputVariants > 0 {
+		parts = append(parts, plural(outputVariants, "colour variant", "colour variants")+
+			" registered (delete them first — a colour variant pins the auxiliary purpose)")
 	}
 	return strings.Join(parts, "; ")
 }
@@ -738,6 +749,21 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].LinkedMaterials = linked
+	// Colour variants (0252) of an auxiliary card's warehouse output. Loaded on the same connection
+	// as everything above so the consistent read sees one snapshot, and NOT degraded to a warning
+	// like the list enrichers: on the single-card read this is the card's editable content, and an
+	// editor that silently rendered zero variants would offer a "+ add colour" that duplicates them.
+	//
+	// Only an auxiliary card can have them, and the guards make that an invariant rather than a
+	// convention — so a sellable style neither pays for a guaranteed-empty query on every read nor
+	// takes a dependency on the new table.
+	if cards[0].Purpose == entity.TechCardPurposeAuxiliary {
+		variants, err := listOutputVariants(ctx, s.DB, id)
+		if err != nil {
+			return nil, err
+		}
+		cards[0].OutputVariants = variants
+	}
 	return &cards[0], nil
 }
 
@@ -902,11 +928,54 @@ func (s *Store) enrichListFacts(ctx context.Context, cards []entity.TechCard) er
 		}
 	}
 
+	// Colour variants (0252) summarised for the row: how many colours the card produces and what the
+	// warehouse holds across them. ACTIVE only — a retired colour is not a colour this card makes, and
+	// the badge is read as "what can I plan", not as an archive count (the purpose lock, which counts
+	// every row, is a different question asked for a different reason).
+	type variantRow struct {
+		TechCardID int                 `db:"tech_card_id"`
+		N          int                 `db:"n"`
+		OnHand     decimal.NullDecimal `db:"on_hand"`
+	}
+	// Only auxiliary cards can have variants at all, so a page of garment styles asks nothing —
+	// same reasoning as the output-material query above, keyed on purpose rather than on the
+	// legacy single output (a varianted card need never have had one).
+	auxCards := make([]int, 0, len(cards))
+	for i := range cards {
+		if cards[i].Purpose == entity.TechCardPurposeAuxiliary {
+			auxCards = append(auxCards, cards[i].Id)
+		}
+	}
+	variantsByCard := make(map[int]variantRow, len(auxCards))
+	if len(auxCards) > 0 {
+		// SUM(ms.on_hand), NOT SUM(COALESCE(ms.on_hand, 0)): SQL's SUM skips NULLs and returns NULL for
+		// a group where every bucket is unstocked, which is exactly the distinction the row must keep.
+		// A card whose colours have no stock ROW has no balance recorded and renders "—"; coalescing
+		// would assert a measured zero — "we counted, there are none" — which is a different and
+		// possibly wrong statement. A group mixing stocked and unstocked buckets sums the stocked ones.
+		variantRows, err := storeutil.QueryListNamed[variantRow](ctx, s.DB, `
+			SELECT v.tech_card_id, COUNT(*) AS n, SUM(ms.on_hand) AS on_hand
+			FROM tech_card_output_variant v
+			LEFT JOIN material_stock ms ON ms.material_id = v.material_id
+			WHERE v.tech_card_id IN (:ids) AND v.active = TRUE
+			GROUP BY v.tech_card_id`, map[string]any{"ids": auxCards})
+		if err != nil {
+			return fmt.Errorf("count colour variants for tech card list: %w", err)
+		}
+		for _, r := range variantRows {
+			variantsByCard[r.TechCardID] = r
+		}
+	}
+
 	for i := range cards {
 		cards[i].ColorwayCount = countByStyle[cards[i].Id]
 		if out, ok := outputByCard[cards[i].Id]; ok {
 			cards[i].OutputMaterialName = out.Name
 			cards[i].OutputMaterialOnHand = out.OnHand
+		}
+		if v, ok := variantsByCard[cards[i].Id]; ok {
+			cards[i].OutputVariantCount = v.N
+			cards[i].OutputVariantsOnHand = v.OnHand
 		}
 	}
 	return nil

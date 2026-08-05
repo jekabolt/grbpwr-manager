@@ -28,6 +28,11 @@ func TestCreateProductionRunSnapshotsPlanFromRelease(t *testing.T) {
 	repo.EXPECT().TechCards().Return(tc)
 	repo.EXPECT().ProductionRuns().Return(pr)
 
+	// Every create now asks whether the card produces by colour variant (0252) before planning:
+	// a variant-mode card cannot be planned until runs carry variant lines. A sellable/legacy card
+	// has no variants, which is the answer this fixture gives.
+	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return(nil, nil)
+
 	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(&entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
 			Id: 5, TechCardId: 7,
@@ -58,10 +63,71 @@ func TestCreateProductionRunSnapshotsPlanFromRelease(t *testing.T) {
 	require.Equal(t, "EUR", captured.PlannedCurrency.String)
 }
 
+// A card that produces by COLOUR VARIANT cannot be planned yet: a run has no per-variant lines until
+// phase 3, and the scalar path would book every colour's output into one bucket. The refusal has to
+// land at PLAN time — an auxiliary run is final-only and irreversible, so a receive-time-only refusal
+// would strand the operator after the materials were issued and the goods sewn.
+func TestCreateProductionRunRefusesVariantModeCard(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return([]entity.TechCardOutputVariant{{
+		TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{
+			Id: 1, ColorCode: "BLK", MaterialId: 3, Active: true,
+		},
+		TechCardId: 7,
+	}}, nil)
+
+	s := &Server{repo: repo}
+	_, err := s.CreateProductionRun(context.Background(), &pb_admin.CreateProductionRunRequest{
+		Run: &pb_common.ProductionRunInsert{
+			TechCardId: 7,
+			Status:     pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines:      []*pb_common.ProductionRunLine{{SizeId: 1, PlannedQty: 50}},
+		},
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	// Operator voice: what they can do, not which release ships what.
+	require.Contains(t, status.Convert(err).Message(), "colour variants")
+	require.Contains(t, status.Convert(err).Message(), "Delete the colour variants")
+}
+
+// A card whose colours are ALL retired is back to single-output behaviour, which the scalar path
+// still handles correctly — so it must plan normally rather than stay blocked forever.
+func TestCreateProductionRunAllowsCardWithOnlyRetiredVariants(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	pr := mocks.NewMockProductionRuns(t)
+	repo.EXPECT().TechCards().Return(tc)
+	repo.EXPECT().ProductionRuns().Return(pr)
+	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return([]entity.TechCardOutputVariant{{
+		TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{
+			Id: 1, ColorCode: "BLK", MaterialId: 3, Active: false,
+		},
+		TechCardId: 7,
+	}}, nil)
+	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(&entity.TechCardRelease{
+		TechCardReleaseMeta: entity.TechCardReleaseMeta{Id: 5, TechCardId: 7},
+	}, nil)
+	pr.EXPECT().CreateProductionRun(mock.Anything, mock.Anything).Return(12, nil)
+
+	s := &Server{repo: repo}
+	resp, err := s.CreateProductionRun(context.Background(), &pb_admin.CreateProductionRunRequest{
+		Run: &pb_common.ProductionRunInsert{
+			TechCardId: 7, ReleaseId: 5,
+			Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines:  []*pb_common.ProductionRunLine{{SizeId: 1, PlannedQty: 50}},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, int32(12), resp.Id)
+}
+
 func TestCreateProductionRunReleaseNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return(nil, nil)
 	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(nil, sql.ErrNoRows)
 
 	s := &Server{repo: repo}

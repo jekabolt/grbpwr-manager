@@ -718,6 +718,21 @@ type (
 		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
 		AddMaterialPrice(ctx context.Context, p entity.MaterialPrice) error
 		ListMaterialPrices(ctx context.Context, materialID int) ([]entity.MaterialPrice, error)
+		// Colour variants of an AUXILIARY card's warehouse output (0252): one stock bucket per
+		// colour, extending the single tech_card.output_material_id of 0111. ZERO variants is legacy
+		// single-output mode and behaves exactly as before; the first variant switches the card over.
+		//
+		// ListOutputVariants resolves colour name, material name/unit and on-hand for display.
+		// UpsertOutputVariant writes ONE row (ins.Id 0 creates; ins.MaterialId 0 on create
+		// auto-creates the bucket) and returns its id; it refuses a sellable card
+		// (ErrTechCardNotAuxiliary), a released card (ErrTechCardReleased), a duplicate colour
+		// (*entity.ValidationError), a bucket another variant already owns
+		// (ErrOutputVariantMaterialClaimed) and a unit that disagrees with the card's other colours
+		// (ErrOutputVariantUnitMismatch). DeleteOutputVariant hard-deletes the row (the bucket itself
+		// survives) — ErrOutputVariantNotFound when it is already gone.
+		ListOutputVariants(ctx context.Context, techCardID int) ([]entity.TechCardOutputVariant, error)
+		UpsertOutputVariant(ctx context.Context, techCardID int, ins entity.TechCardOutputVariantInsert, username string) (int, error)
+		DeleteOutputVariant(ctx context.Context, id int) error
 		// RepriceTechCardBom pulls the current catalog price into every catalog-linked BOM line of a
 		// DRAFT card, stamping price_source='catalog' (production-costing Phase 3). Returns the
 		// visited lines + the count of unlinked lines it could not touch.

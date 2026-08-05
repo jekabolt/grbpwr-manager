@@ -27,6 +27,37 @@ var ErrTechCardReleased = errors.New("tech card is released and frozen; re-open 
 // "archive the colourway first".
 var ErrTechCardPurposeLocked = errors.New("tech card purpose cannot change while the card is still referenced")
 
+// ErrTechCardNotAuxiliary is returned by the output-variant writes when the target card is a
+// SELLABLE style. A colour variant is a bucket in the material warehouse, which is the one place a
+// sellable card must never produce into — its colours are colourways (products, SKUs, product
+// stock). The API layer maps it to FailedPrecondition.
+var ErrTechCardNotAuxiliary = errors.New("colour variants are only for auxiliary tech cards")
+
+// ErrOutputVariantMaterialClaimed is returned when the material a variant wants to produce into is
+// already the output bucket of another variant (uniq_tcov_material). One bucket must belong to one
+// colour of one card or its moving average blends two physically different articles and every cost
+// derived from it becomes a lie. Nothing stopped N legacy cards from sharing one
+// tech_card.output_material_id, so an "adopt this material as a colour" flow WILL hit this. The API
+// layer maps it to FailedPrecondition; the store wraps it with the card that already holds the claim.
+var ErrOutputVariantMaterialClaimed = errors.New("material is already the output of another colour variant")
+
+// ErrOutputVariantUnitMismatch is returned when a card's variant materials would end up measured in
+// different units. A run's received quantity is booked per variant but counted once, so mixing pcs
+// and metres across one card's buckets makes the run total meaningless — and material.unit freezes
+// on the first movement (ErrMaterialUnitLocked), so a wrong unit caught later may be unrepairable.
+// The API layer maps it to FailedPrecondition.
+//
+// KNOWN HOLE: this is enforced at claim time only. checkMaterialUnitChange freezes a material's unit
+// once it has movements, so a bucket that has never been received into can still have its unit
+// edited in the materials admin afterwards, drifting a card back into a mixed state behind this
+// guard's back. Phase 3 revisits it when receipts start booking per variant (that is the first point
+// where the mixed state does real arithmetic damage rather than sitting inert).
+var ErrOutputVariantUnitMismatch = errors.New("all colour variants of a card must share one unit of measure")
+
+// ErrOutputVariantNotFound is returned when the addressed variant row does not exist (or has already
+// been deleted). The API layer maps it to NotFound.
+var ErrOutputVariantNotFound = errors.New("colour variant not found")
+
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
 type TechCardStage string
@@ -89,6 +120,42 @@ const (
 var ValidTechCardPurposes = map[TechCardPurpose]bool{
 	TechCardPurposeSellable:  true,
 	TechCardPurposeAuxiliary: true,
+}
+
+// TechCardOutputVariantInsert is the writable payload of one colour variant of an AUXILIARY card's
+// warehouse output (tech_card_output_variant, migration 0252): "this card, in this colour, produces
+// into that material". MaterialId 0 on create asks the store to auto-create the bucket from the
+// card and the colour; on update it means "leave the bucket where it is".
+type TechCardOutputVariantInsert struct {
+	// Id addresses an EXISTING row; 0 asks for a create. It lives on the insert rather than beside
+	// it because this is a single-row upsert, not the full-replace shape the assembly bill uses: a
+	// variant becomes the FK target of a production-run line (phase 3), so its identity must survive
+	// an edit instead of being re-minted by a delete-all + re-insert.
+	Id         int    `db:"id"`
+	ColorCode  string `db:"color_code"`
+	MaterialId int    `db:"material_id"`
+	// Active is the normal retirement switch: a discontinued colour stops being plannable and stops
+	// counting toward the card's list totals, but keeps its bucket, its stock and its history.
+	Active bool `db:"active"`
+}
+
+// TechCardOutputVariant is a stored colour variant with the read-only identity resolved for display:
+// the colour's name, the bucket's name/unit, and its current on-hand balance. Zero variants on a
+// card is legacy single-output mode (tech_card.output_material_id) and is not represented here.
+type TechCardOutputVariant struct {
+	TechCardOutputVariantInsert
+	TechCardId int `db:"tech_card_id"`
+	// ColorName / MaterialName / Unit are JOIN projections (color, material) — read-only, never
+	// written. OnHand is LEFT JOINed from material_stock and stays INVALID when the bucket has no
+	// stock row at all, because "no balance recorded" is not the same statement as "none left".
+	ColorName    string              `db:"color_name"`
+	MaterialName string              `db:"material_name"`
+	Unit         string              `db:"unit"`
+	OnHand       decimal.NullDecimal `db:"on_hand"`
+	CreatedBy    string              `db:"created_by"`
+	UpdatedBy    string              `db:"updated_by"`
+	CreatedAt    time.Time           `db:"created_at"`
+	UpdatedAt    time.Time           `db:"updated_at"`
 }
 
 // StyleNumberSource records how a tech card's style_number was set (Q1): `generated` = the server
@@ -1288,6 +1355,15 @@ type TechCard struct {
 	// alone instead of one GetTechCard plus a warehouse read per card. List paths only.
 	OutputMaterialName   string              `db:"-"`
 	OutputMaterialOnHand decimal.NullDecimal `db:"-"`
+	// OutputVariants is the card's colour dimension over that single output (0252): one warehouse
+	// bucket per colour. Populated on the single-card read only; EMPTY means legacy single-output
+	// mode (OutputMaterialId is then the whole answer), never "not loaded yet" on that path.
+	OutputVariants []TechCardOutputVariant `db:"-"`
+	// OutputVariantCount / OutputVariantsOnHand are the list-view summary of the same thing over the
+	// ACTIVE variants only — "3 colours · 820 on hand" — resolved in one batched query per page like
+	// ColorwayCount above. List paths only; on-hand stays INVALID when no bucket has a stock row.
+	OutputVariantCount   int                 `db:"-"`
+	OutputVariantsOnHand decimal.NullDecimal `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned
