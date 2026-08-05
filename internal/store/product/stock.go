@@ -116,7 +116,11 @@ func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.
 	var historyEntries []entity.StockChangeInsert
 	for _, item := range items {
 		grade := entity.NormalizeVariantGrade(item.Grade)
-		quantityBefore, _, err := getProductSizeStockGrade(ctx, s.DB, item.ProductId, item.SizeId, grade)
+		// Locking read (FOR UPDATE, callers run inside a tx): without it the before/after pair
+		// journalled below can lie under a concurrent writer even though the additive UPDATE
+		// itself stays correct — and the B row is now shared with the locked seconds path, so
+		// both writers of the same row must carry the same guarantee.
+		quantityBefore, err := lockProductSizeQuantity(ctx, s.DB, item.ProductId, item.SizeId, grade)
 		if err != nil {
 			return fmt.Errorf("can't get product size stock: %w", err)
 		}

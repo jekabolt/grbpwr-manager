@@ -163,6 +163,13 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 		if !ok || snap.SKU == "" {
 			return fmt.Errorf("cannot create order line: product %d size %d has no live variant SKU", item.ProductId, item.SizeId)
 		}
+		// The line was PRICED off item.Grade in validation; the cost/base branches below fire off
+		// snap.Grade. If the two ever disagree (a caller skipping resolution, or a grade flip
+		// between validation and insert) the silent outcome would be an A-priced line booked as
+		// zero-cost with no revenue basis — make the disagreement loud instead.
+		if gradeOrA(item.Grade) != snap.Grade {
+			return fmt.Errorf("cannot create order line: variant %d grade changed between validation (%s) and insert (%s)", item.VariantID, gradeOrA(item.Grade), snap.Grade)
+		}
 		row := map[string]any{
 			"order_id":                orderID,
 			"product_id":              item.ProductId,
