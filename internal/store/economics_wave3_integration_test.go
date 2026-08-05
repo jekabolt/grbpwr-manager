@@ -279,7 +279,7 @@ func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
 	preRun, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	preRun.Lines[0].DefectQty = sql.NullInt64{Int64: 1, Valid: true}
-	_, err = P.PostProductionRunReceipt(ctx, receiptParamsFromStored(t, preRun, false, false, 0))
+	_, err = P.PostProductionRunReceipt(ctx, receiptParamsFromStored(t, preRun, false, false))
 	require.NoError(t, err)
 	got, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
@@ -287,11 +287,11 @@ func TestProductionRunReceiveGuardAndTaskLink(t *testing.T) {
 	require.True(t, got.ReceivedAt.Valid, "received_at stamped")
 
 	// a second receive is refused (guards double-counting)
-	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, false, 0)
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, false)
 	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
 
 	// receiving a missing run → ErrNoRows
-	_, err = receiveStoredRunViaReceipt(ctx, t, s, 0, false, 0)
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, 0, false)
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// task.production_run_id typed link round-trips (FK to the run).

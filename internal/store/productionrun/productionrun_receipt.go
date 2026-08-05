@@ -20,11 +20,12 @@ import (
 
 // PostProductionRunReceipt executes the atomic receiving command (Phase 4 receipt v1; Phase 5 adds
 // partials): in ONE transaction it records the immutable receipt + its counted lines, accumulates
-// the counts onto the plan-grid rollups, books the good units into product stock (or the output
-// material for an auxiliary run), freezes the run's actual unit cost on the receipt, optionally
-// seeds cost_price, transitions the run (partial → partially_received; final → received), and
-// writes the idempotency record. The receipt row doubles as the accounting outbox: the posting
-// worker scans receipts without a live journal entry and posts by receipt id.
+// the counts onto the plan-grid rollups, books the good units into product stock (or, for an
+// auxiliary run, into its output material — one bucket per colour when the card registered colour
+// variants), freezes the run's actual unit cost on the receipt, optionally seeds cost_price,
+// transitions the run (partial → partially_received; final → received), and writes the idempotency
+// record. The receipt row doubles as the accounting outbox: the posting worker scans receipts
+// without a live journal entry and posts by receipt id.
 //
 // Ordering inside the transaction is load-bearing:
 //  1. the run lock comes FIRST, so two concurrent commands with the same idempotency key serialize
@@ -43,7 +44,8 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		cur, err := storeutil.QueryNamedOne[struct {
 			Status      string `db:"status"`
 			LockVersion int    `db:"lock_version"`
-		}](ctx, db, `SELECT status, lock_version FROM production_run WHERE id = :id FOR UPDATE`,
+			TechCardId  int    `db:"tech_card_id"`
+		}](ctx, db, `SELECT status, lock_version, tech_card_id FROM production_run WHERE id = :id FOR UPDATE`,
 			map[string]any{"id": p.RunID})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -98,6 +100,16 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		for i := range lines {
 			byKey[lines[i].LineKey] = &lines[i]
 		}
+		// Where an auxiliary run's output lands is resolved HERE, from the card's registry as it
+		// stands inside this transaction — never from a snapshot the handler took before the run lock.
+		// See auxDestination for why each half of that matters.
+		var dest auxDestination
+		if p.Aux {
+			dest, err = resolveAuxDestination(ctx, db, cur.TechCardId, lines)
+			if err != nil {
+				return err
+			}
+		}
 		type countedLine struct {
 			line *entity.ProductionRunLine
 			in   entity.ProductionRunReceiptLineInput
@@ -105,6 +117,11 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		counted := make([]countedLine, 0, len(p.Lines))
 		seen := make(map[string]bool, len(p.Lines))
 		totalGood, totalDefect := 0, 0
+		// perVariantGood is the colour breakdown of an aux run in VARIANT mode (0253): each colour's
+		// good units, booked into that colour's own warehouse bucket further down. The rollups and the
+		// valuation stay run-wide on purpose — one run has one blended unit cost across its colours
+		// (plan §6.5; separate runs per colour is the SOP escape when that is not good enough).
+		perVariantGood := make(map[int]int)
 		for _, in := range p.Lines {
 			if in.GoodQty < 0 || in.DefectQty < 0 {
 				return fmt.Errorf("receipt line %q: negative quantity", in.LineKey)
@@ -141,6 +158,26 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 				if ln.ProductId.Valid {
 					// The handler validated a product-free grid; a product appeared since → stale read.
 					return entity.ErrProductionRunConcurrentModification
+				}
+				if dest.variantMode {
+					vid := lineVariantID(ln)
+					if vid == 0 {
+						// A counted COLOURLESS line on a card that produces by colour. The grid predates
+						// the colours (they were registered after it was planned) — there is no bucket to
+						// book it into, and the scalar path would put every colour's output into
+						// output_material_id. A mixed grid can no longer be planned (the plan-time
+						// validator refuses it), so this only catches grids that predate the colours.
+						return entity.ErrProductionRunConcurrentModification
+					}
+					if _, ok := dest.variantMaterials[vid]; !ok {
+						// The colour is not one of this card's — a genuinely impossible id, or a row that
+						// moved out from under the run. RETIREMENT is NOT this case: a retired colour is
+						// still the card's and is in the map, because retiring a colour stops new PLANS,
+						// not a delivery already in flight (an aux run has no partial, no reversal and no
+						// cancel with issued material — refusing here would strand it forever).
+						return entity.ErrProductionRunConcurrentModification
+					}
+					perVariantGood[vid] += in.GoodQty
 				}
 			} else {
 				// Anything that BOOKS stock needs a product linked to the run's card and a size from
@@ -414,14 +451,62 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			}
 		}
 
-		// Book the good units. Aux → the output material's warehouse (moving average); garment →
-		// each line's own product stock, products ascending for a deterministic lock order.
+		// Book the good units. Aux → the output material's warehouse (moving average), one bucket per
+		// COLOUR in variant mode; garment → each line's own product stock, products ascending for a
+		// deterministic lock order.
 		costPriceWrites := 0
 		var stockTransitions []entity.StockTransition
 		if p.Aux {
-			if totalGood > 0 {
+			switch {
+			case dest.variantMode:
+				// One landing per colour, each into its OWN bucket: its own moving average, its own
+				// material_price production_run point, its own low-stock answer — which is the entire
+				// reason colours exist. All of them at the SAME blended unit cost, because a run has one
+				// actual cost and nothing in the data says which colour consumed which share of it.
+				type variantBooking struct{ variantID, materialID, good int }
+				bookings := make([]variantBooking, 0, len(perVariantGood))
+				for vid, good := range perVariantGood {
+					if good <= 0 {
+						continue // a defect-only colour is a recorded fact, not a landing
+					}
+					// The bucket comes from the IN-TRANSACTION registry read, so a colour re-pointed at
+					// another material after the handler's read lands in the material the card produces
+					// into NOW — re-pointing is an explicitly supported edit, and booking the old bucket
+					// would move stock, its moving average, its price history and the M2 journal entry
+					// somewhere the operator can never unwind (an aux receipt has no reversal).
+					bookings = append(bookings, variantBooking{variantID: vid, materialID: dest.variantMaterials[vid], good: good})
+				}
+				// Materials ASCENDING before the per-material FOR UPDATE inside ReceiveInTx — the same
+				// deadlock discipline sort.Ints(productIDs) enforces on the sellable side. Two receipts of
+				// two runs sharing a colour would otherwise take the row locks in map-iteration order,
+				// which Go deliberately randomises, and deadlock intermittently. uniq_tcov_material makes
+				// the material ids distinct; the variant id is the tie-break so the order is total.
+				sort.Slice(bookings, func(i, j int) bool {
+					if bookings[i].materialID != bookings[j].materialID {
+						return bookings[i].materialID < bookings[j].materialID
+					}
+					return bookings[i].variantID < bookings[j].variantID
+				})
+				for _, b := range bookings {
+					if _, err := inventory.ReceiveInTx(ctx, rep, entity.MaterialReceiptInsert{
+						MaterialId:      b.materialID,
+						Quantity:        decimal.NewFromInt(int64(b.good)),
+						UnitCost:        unitCost,
+						ProductionRunId: sql.NullInt32{Int32: int32(p.RunID), Valid: true},
+						FromProduction:  true,
+						AdminUsername:   p.Username,
+					}, now); err != nil {
+						return err
+					}
+				}
+			case totalGood > 0:
+				// Same freshness rule for the legacy single bucket: the run lock does not cover the CARD
+				// row, so output_material_id may have moved since the handler validated it.
+				if !dest.legacyMaterialID.Valid {
+					return entity.ErrProductionRunConcurrentModification
+				}
 				if _, err := inventory.ReceiveInTx(ctx, rep, entity.MaterialReceiptInsert{
-					MaterialId:      p.OutputMaterialID,
+					MaterialId:      int(dest.legacyMaterialID.Int64),
 					Quantity:        decimal.NewFromInt(int64(totalGood)),
 					UnitCost:        unitCost,
 					ProductionRunId: sql.NullInt32{Int32: int32(p.RunID), Valid: true},
@@ -580,6 +665,84 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 	return res, nil
 }
 
+// lineVariantID is the colour a plan line produces, or 0 for a colourless one. It treats a Valid-but
+// -non-positive id as unset, matching the store boundary that writes such a value as NULL.
+func lineVariantID(ln *entity.ProductionRunLine) int {
+	if !ln.OutputVariantId.Valid || ln.OutputVariantId.Int32 <= 0 {
+		return 0
+	}
+	return int(ln.OutputVariantId.Int32)
+}
+
+// auxDestination is where an auxiliary run's output lands, resolved inside the receipt transaction.
+// Either variantMode is set and variantMaterials maps every colour of the card (active OR retired)
+// to the bucket it produces into RIGHT NOW, or the run is in legacy single-output mode and
+// legacyMaterialID is the card's one bucket (INVALID when the card has none).
+type auxDestination struct {
+	variantMode      bool
+	variantMaterials map[int]int
+	legacyMaterialID sql.NullInt64
+}
+
+// resolveAuxDestination reads the card's output registry under the run lock and decides how this
+// receipt books. It is deliberately the ONLY source of that decision — the handler's read happened
+// before the lock and can be arbitrarily stale.
+//
+// Two rules earn their keep here:
+//
+//   - RETIRED COLOURS ARE INCLUDED. Retiring a colour means "stop planning this", not "abandon the
+//     batch already on the sewing floor". An auxiliary run cannot be received partially, cannot be
+//     reversed, and cannot be cancelled while material is issued to it, so refusing its receipt
+//     because a colour was retired in the meantime strands the run — and its issued material — with
+//     no way out at all. Re-pointing the line at a live colour is not a repair either: it would book
+//     the white units into the black bucket. This mirrors the plan-time rule exactly, which lets an
+//     existing line keep its colour through a retirement.
+//   - VARIANT MODE IS DECIDED BY THE UNION of "the card has an active colour" and "the grid names a
+//     colour". The first half catches colours registered after a colourless grid was planned (that
+//     grid can no longer be received into one bucket — the counted-line loop says so). The second
+//     half catches a run planned on colours whose card has since retired all of them: the grid names
+//     buckets, so the buckets are where it lands.
+func resolveAuxDestination(ctx context.Context, db dependency.DB, techCardID int, lines []entity.ProductionRunLine) (auxDestination, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		Id         int  `db:"id"`
+		MaterialId int  `db:"material_id"`
+		Active     bool `db:"active"`
+	}](ctx, db, `
+		SELECT id, material_id, active FROM tech_card_output_variant WHERE tech_card_id = :card`,
+		map[string]any{"card": techCardID})
+	if err != nil {
+		return auxDestination{}, fmt.Errorf("failed to load colour variants of tech card %d for receipt: %w", techCardID, err)
+	}
+	dest := auxDestination{variantMaterials: make(map[int]int, len(rows))}
+	for _, r := range rows {
+		dest.variantMaterials[r.Id] = r.MaterialId
+		if r.Active {
+			dest.variantMode = true
+		}
+	}
+	if !dest.variantMode {
+		for i := range lines {
+			if lineVariantID(&lines[i]) != 0 {
+				dest.variantMode = true
+				break
+			}
+		}
+	}
+	if dest.variantMode {
+		return dest, nil
+	}
+	// Legacy single-output mode. The run lock covers the run, never the card, so this read is what
+	// makes the destination current rather than whatever the handler saw.
+	card, err := storeutil.QueryNamedOne[struct {
+		OutputMaterialId sql.NullInt64 `db:"output_material_id"`
+	}](ctx, db, `SELECT output_material_id FROM tech_card WHERE id = :id`, map[string]any{"id": techCardID})
+	if err != nil {
+		return auxDestination{}, fmt.Errorf("failed to load output material of tech card %d for receipt: %w", techCardID, err)
+	}
+	dest.legacyMaterialID = card.OutputMaterialId
+	return dest, nil
+}
+
 // idempotencyRecord is the replay-relevant slice of a command_idempotency row.
 type idempotencyRecord struct {
 	Status      string `db:"status"`
@@ -645,6 +808,16 @@ func nullIfZero(v int) any {
 		return nil
 	}
 	return v
+}
+
+// nullIfNoVariant maps "no colour" onto the nullable output_variant_id column (0253). A non-positive
+// id is unset however it was spelled — INVALID, or the {0, Valid: true} a proto3 zero becomes when a
+// mapper marks it present — so a caller can never smuggle a 0 past validation into the foreign key.
+func nullIfNoVariant(v sql.NullInt32) any {
+	if !v.Valid || v.Int32 <= 0 {
+		return nil
+	}
+	return v.Int32
 }
 
 // loadRunReceipts returns a run's receipts oldest-first, each with its counted lines (joined with

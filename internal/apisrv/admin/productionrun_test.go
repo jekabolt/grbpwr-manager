@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -27,11 +28,6 @@ func TestCreateProductionRunSnapshotsPlanFromRelease(t *testing.T) {
 	pr := mocks.NewMockProductionRuns(t)
 	repo.EXPECT().TechCards().Return(tc)
 	repo.EXPECT().ProductionRuns().Return(pr)
-
-	// Every create now asks whether the card produces by colour variant (0252) before planning:
-	// a variant-mode card cannot be planned until runs carry variant lines. A sellable/legacy card
-	// has no variants, which is the answer this fixture gives.
-	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return(nil, nil)
 
 	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(&entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
@@ -63,71 +59,53 @@ func TestCreateProductionRunSnapshotsPlanFromRelease(t *testing.T) {
 	require.Equal(t, "EUR", captured.PlannedCurrency.String)
 }
 
-// A card that produces by COLOUR VARIANT cannot be planned yet: a run has no per-variant lines until
-// phase 3, and the scalar path would book every colour's output into one bucket. The refusal has to
-// land at PLAN time — an auxiliary run is final-only and irreversible, so a receive-time-only refusal
-// would strand the operator after the materials were issued and the goods sewn.
-func TestCreateProductionRunRefusesVariantModeCard(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
-	tc := mocks.NewMockTechCards(t)
-	repo.EXPECT().TechCards().Return(tc)
-	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return([]entity.TechCardOutputVariant{{
-		TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{
-			Id: 1, ColorCode: "BLK", MaterialId: 3, Active: true,
-		},
-		TechCardId: 7,
-	}}, nil)
+// A colour line carries into the store, and the store's plan-time refusals map to codes the client
+// can act on: a colour that is not this card's is a bad payload (InvalidArgument), a RETIRED colour
+// is a card state the operator can fix (FailedPrecondition, "reactivate it or pick another"). Both
+// messages carry the store's detail — the colour id — because that is the actionable half.
+func TestCreateProductionRunMapsColourVariantRefusals(t *testing.T) {
+	plan := func(t *testing.T, storeErr error) error {
+		t.Helper()
+		repo := mocks.NewMockRepository(t)
+		tc := mocks.NewMockTechCards(t)
+		pr := mocks.NewMockProductionRuns(t)
+		repo.EXPECT().TechCards().Return(tc)
+		repo.EXPECT().ProductionRuns().Return(pr)
+		// Plan the cost from a release, so the fixture needs no costing-FX rate set — the colour
+		// refusal is what this test is about.
+		tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(&entity.TechCardRelease{
+			TechCardReleaseMeta: entity.TechCardReleaseMeta{Id: 5, TechCardId: 7},
+		}, nil)
+		pr.EXPECT().CreateProductionRun(mock.Anything, mock.MatchedBy(func(r *entity.ProductionRunInsert) bool {
+			// The colour reaches the store on the line, not as a product.
+			return len(r.Lines) == 1 && r.Lines[0].OutputVariantId.Int32 == 4 && !r.Lines[0].ProductId.Valid
+		})).Return(0, storeErr)
 
-	s := &Server{repo: repo}
-	_, err := s.CreateProductionRun(context.Background(), &pb_admin.CreateProductionRunRequest{
-		Run: &pb_common.ProductionRunInsert{
-			TechCardId: 7,
-			Status:     pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
-			Lines:      []*pb_common.ProductionRunLine{{SizeId: 1, PlannedQty: 50}},
-		},
-	})
+		s := &Server{repo: repo}
+		_, err := s.CreateProductionRun(context.Background(), &pb_admin.CreateProductionRunRequest{
+			Run: &pb_common.ProductionRunInsert{
+				TechCardId: 7, ReleaseId: 5,
+				Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+				Lines:  []*pb_common.ProductionRunLine{{OutputVariantId: 4, PlannedQty: 50}},
+			},
+		})
+		return err
+	}
+
+	err := plan(t, fmt.Errorf("%w: colour variant 4 is not a colour of tech card 7",
+		entity.ErrProductionRunLineVariantUnlinked))
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "colour variant 4")
+
+	err = plan(t, fmt.Errorf("%w: colour variant 4", entity.ErrProductionRunLineVariantRetired))
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	// Operator voice: what they can do, not which release ships what.
-	require.Contains(t, status.Convert(err).Message(), "colour variants")
-	require.Contains(t, status.Convert(err).Message(), "Delete the colour variants")
-}
-
-// A card whose colours are ALL retired is back to single-output behaviour, which the scalar path
-// still handles correctly — so it must plan normally rather than stay blocked forever.
-func TestCreateProductionRunAllowsCardWithOnlyRetiredVariants(t *testing.T) {
-	repo := mocks.NewMockRepository(t)
-	tc := mocks.NewMockTechCards(t)
-	pr := mocks.NewMockProductionRuns(t)
-	repo.EXPECT().TechCards().Return(tc)
-	repo.EXPECT().ProductionRuns().Return(pr)
-	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return([]entity.TechCardOutputVariant{{
-		TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{
-			Id: 1, ColorCode: "BLK", MaterialId: 3, Active: false,
-		},
-		TechCardId: 7,
-	}}, nil)
-	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(&entity.TechCardRelease{
-		TechCardReleaseMeta: entity.TechCardReleaseMeta{Id: 5, TechCardId: 7},
-	}, nil)
-	pr.EXPECT().CreateProductionRun(mock.Anything, mock.Anything).Return(12, nil)
-
-	s := &Server{repo: repo}
-	resp, err := s.CreateProductionRun(context.Background(), &pb_admin.CreateProductionRunRequest{
-		Run: &pb_common.ProductionRunInsert{
-			TechCardId: 7, ReleaseId: 5,
-			Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
-			Lines:  []*pb_common.ProductionRunLine{{SizeId: 1, PlannedQty: 50}},
-		},
-	})
-	require.NoError(t, err)
-	require.Equal(t, int32(12), resp.Id)
+	require.Contains(t, status.Convert(err).Message(), "reactivate the colour or pick another")
 }
 
 func TestCreateProductionRunReleaseNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(tc)
-	tc.EXPECT().ListOutputVariants(mock.Anything, 7).Return(nil, nil)
 	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(nil, sql.ErrNoRows)
 
 	s := &Server{repo: repo}
@@ -227,6 +205,101 @@ func TestReceiveProductionRunShimSynthesizesReceiptCommand(t *testing.T) {
 	require.True(t, entity.IsValidProductionRunLineKey(got.IdempotencyKey), "shim mints a shaped key")
 	require.NotEmpty(t, got.RequestHash)
 	require.Equal(t, 0, got.ExpectedLockVersion, "legacy path opts out of the optimistic lock")
+}
+
+// auxColourRun is a variant-mode aux run: one product-less line per ACTIVE colour, and a card whose
+// registry says which warehouse bucket each colour produces into.
+func auxColourRun() (*entity.ProductionRun, *entity.TechCard) {
+	run := &entity.ProductionRun{Id: 4, ProductionRunInsert: entity.ProductionRunInsert{
+		TechCardId: 7, Status: entity.ProductionRunInProgress,
+		Lines: []entity.ProductionRunLine{
+			{LineKey: "K1AAAAAAAAAAAAAAAAAAAAAAAA", OutputVariantId: sql.NullInt32{Int32: 1, Valid: true}, PlannedQty: 60,
+				ReceivedQty: sql.NullInt64{Int64: 60, Valid: true}},
+			{LineKey: "K2AAAAAAAAAAAAAAAAAAAAAAAA", OutputVariantId: sql.NullInt32{Int32: 2, Valid: true}, PlannedQty: 40,
+				ReceivedQty: sql.NullInt64{Int64: 40, Valid: true}},
+		},
+	}}
+	card := &entity.TechCard{Id: 7}
+	card.Purpose = entity.TechCardPurposeAuxiliary
+	// A legacy single output is present AND ignored: colours win the moment one is active.
+	card.OutputMaterialId = sql.NullInt64{Int64: 99, Valid: true}
+	card.OutputVariants = []entity.TechCardOutputVariant{
+		{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{Id: 1, ColorCode: "BLK", MaterialId: 31, Active: true}, TechCardId: 7},
+		{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{Id: 2, ColorCode: "WHT", MaterialId: 32, Active: true}, TechCardId: 7},
+		// Retired: deliberately absent from the map the command receives, so a line still naming it is
+		// a stale grid the store refuses rather than a bucket the card gave up being revived.
+		{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{Id: 3, ColorCode: "RED", MaterialId: 33, Active: false}, TechCardId: 7},
+	}
+	return run, card
+}
+
+// The handler marks the run auxiliary and stops there: WHERE the output lands — one bucket per
+// colour, or a legacy card's single one — is resolved by the store from the card's registry INSIDE
+// the receipt transaction (review F1/F2), because this read happens before the run lock and any
+// bucket it named could be re-pointed or retired before the command runs.
+func TestPostProductionRunReceiptAuxLeavesTheDestinationToTheStore(t *testing.T) {
+	run, card := auxColourRun()
+	repo, pr, _ := receiveMocks(t, run, card)
+	var got entity.PostProductionRunReceiptParams
+	pr.EXPECT().PostProductionRunReceipt(mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, p entity.PostProductionRunReceiptParams) (*entity.PostProductionRunReceiptResult, error) {
+			got = p
+			return &entity.PostProductionRunReceiptResult{ReceiptID: 21}, nil
+		})
+
+	_, err := (&Server{repo: repo}).PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{
+		RunId: 4, IdempotencyKey: "01AAAAAAAAAAAAAAAAAAAAAAAA",
+		Lines: []*pb_admin.PostProductionRunReceiptLineInput{
+			{LineKey: "K1AAAAAAAAAAAAAAAAAAAAAAAA", GoodQty: 60},
+			{LineKey: "K2AAAAAAAAAAAAAAAAAAAAAAAA", GoodQty: 40},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, got.Aux)
+	require.Empty(t, got.ValidProducts, "an aux run books no product stock")
+}
+
+// The one aux precondition still worth answering without opening a transaction: a legacy card with
+// no colours AND no output material has no destination the store could resolve to, and the operator
+// gets a fixable precondition instead of a reload-and-retry from inside the command.
+func TestPostProductionRunReceiptAuxWithNoColoursAndNoOutputMaterial(t *testing.T) {
+	run, card := auxColourRun()
+	card.OutputVariants = nil
+	card.OutputMaterialId = sql.NullInt64{}
+	repo, _, _ := receiveMocks(t, run, card)
+	_, err := (&Server{repo: repo}).PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{
+		RunId: 4, IdempotencyKey: "01AAAAAAAAAAAAAAAAAAAAAAAA",
+		Lines: []*pb_admin.PostProductionRunReceiptLineInput{{LineKey: "K1AAAAAAAAAAAAAAAAAAAAAAAA", GoodQty: 60}},
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "no output material")
+
+	// A card whose colours are ALL retired is in that same legacy mode — but it HAS an output
+	// material, so it passes the gate and the store decides the rest.
+	run2, card2 := auxColourRun()
+	for i := range card2.OutputVariants {
+		card2.OutputVariants[i].Active = false
+	}
+	repoB, prB, _ := receiveMocks(t, run2, card2)
+	prB.EXPECT().PostProductionRunReceipt(mock.Anything, mock.Anything).
+		Return(&entity.PostProductionRunReceiptResult{ReceiptID: 22}, nil)
+	_, err = (&Server{repo: repoB}).PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{
+		RunId: 4, IdempotencyKey: "01AAAAAAAAAAAAAAAAAAAAAAAA",
+		Lines: []*pb_admin.PostProductionRunReceiptLineInput{{LineKey: "K1AAAAAAAAAAAAAAAAAAAAAAAA", GoodQty: 60}},
+	})
+	require.NoError(t, err)
+}
+
+// The deprecated shim receives from counts already stamped on the plan grid — a flow that predates
+// colours. Rather than let it drive a per-colour booking it was never designed to express, it points
+// at the command that carries the breakdown.
+func TestReceiveProductionRunShimRefusesColourModeCard(t *testing.T) {
+	run, card := auxColourRun()
+	repo, _, _ := receiveMocks(t, run, card)
+	_, err := (&Server{repo: repo}).ReceiveProductionRun(fullAccessCtx(), &pb_admin.ReceiveProductionRunRequest{RunId: 4})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "per colour variant")
+	require.Contains(t, status.Convert(err).Message(), "receipt command")
 }
 
 // PostProductionRunReceipt maps the command's outcomes onto the API: replay is a success with

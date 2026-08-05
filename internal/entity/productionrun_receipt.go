@@ -122,11 +122,18 @@ type PostProductionRunReceiptParams struct {
 	BaseCurrency  string
 	ValidProducts map[int]bool
 	ValidSizes    map[int]bool
-	// Aux marks an auxiliary run (tech card purpose=auxiliary): good units are booked into
-	// OutputMaterialID in the material warehouse instead of product stock, and every line must be
-	// product-less.
-	Aux              bool
-	OutputMaterialID int
+	// Aux marks an auxiliary run (tech card purpose=auxiliary): good units are booked into the
+	// material warehouse instead of product stock, and every line must be product-less.
+	//
+	// WHERE they are booked is deliberately NOT a parameter. The destination — the single output
+	// material of a legacy card, or one warehouse bucket per colour variant (0252/0253) — is read
+	// FRESH inside the receipt transaction, under the run lock, from tech_card and
+	// tech_card_output_variant. A handler snapshot would be wrong in both directions: a colour
+	// re-pointed at another bucket between the read and the command would book stock, moving average,
+	// material_price and the M2 journal entry into the bucket the card no longer produces into (and
+	// an aux receipt cannot be reversed), and a colour retired in that window would make an in-flight
+	// run unreceivable — with no partial, no reversal and no cancel to escape through.
+	Aux bool
 	// Final declares the run complete: the run flips to received and further receipts are refused.
 	// False books a partial delivery and moves the run to partially_received (Phase 5). Part of the
 	// request hash — the same idempotency key with a flipped flag is a different intent.

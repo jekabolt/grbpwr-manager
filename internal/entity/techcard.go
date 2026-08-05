@@ -58,6 +58,12 @@ var ErrOutputVariantUnitMismatch = errors.New("all colour variants of a card mus
 // been deleted). The API layer maps it to NotFound.
 var ErrOutputVariantNotFound = errors.New("colour variant not found")
 
+// ErrOutputVariantReferencedByRun is returned when a colour a production run has planned into is
+// asked to be deleted (0253's fk_prl_output_variant RESTRICTs it too, as a 1451 that names no way
+// forward). Deactivation is the retirement that keeps the run's grid, the colour's warehouse bucket
+// and its history intact. The API layer maps it to FailedPrecondition.
+var ErrOutputVariantReferencedByRun = errors.New("colour variant is referenced by production run lines; deactivate it instead")
+
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
 type TechCardStage string

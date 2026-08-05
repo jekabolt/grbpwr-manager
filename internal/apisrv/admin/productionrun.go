@@ -28,31 +28,29 @@ const productionRunFKMsg = "production run references a non-existent tech card, 
 // productionRunCostWriteMsg is returned when a run write carries cost articles without costing:write.
 const productionRunCostWriteMsg = "costing:write is required to set production run cost articles"
 
-// auxVariantModeRunMsg is the one wording the plan-time and receive-time guards share, so an
-// operator who hits it twice reads the same sentence and the same way out. It is deliberately about
-// what they can DO — the feature is not here yet, and deleting the colours restores the behaviour
-// they had — rather than about which release ships what.
-const auxVariantModeRunMsg = "this card's colours are registered as colour variants; runs cannot be planned or received per variant yet — coming in the next release. Delete the colour variants to keep using the single output material."
+// auxVariantModeShimMsg is what the deprecated ReceiveProductionRun shim says to a card that
+// produces by colour. The shim receives a run from the counts already stamped on its plan lines,
+// which is a flow that predates colours entirely — no client that knows how to plan a colour also
+// uses it — so rather than guess at the colour breakdown it points at the command that carries one.
+const auxVariantModeShimMsg = "this card receives per colour variant; use the receipt command with per-variant lines"
 
-// refuseAuxVariantModeRun blocks a run against a card that produces by colour (0252). Only an
-// auxiliary card can carry variants (the registry enforces it), so the presence of one ACTIVE
-// variant is the whole test — no purpose lookup, and one indexed read rather than a full card load.
-// Deactivated colours do not count: a card whose colours are all retired is back to single-output
-// behaviour, which is exactly what the scalar path still does correctly.
-func (s *Server) refuseAuxVariantModeRun(ctx context.Context, techCardID int) error {
-	if techCardID <= 0 {
-		return nil // not our error to report; the FK check does it with the right message
-	}
-	variants, err := s.repo.TechCards().ListOutputVariants(ctx, techCardID)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't load colour variants for production run",
-			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
-		return status.Error(codes.Internal, "can't load tech card colour variants")
-	}
-	for i := range variants {
-		if variants[i].Active {
-			return status.Error(codes.FailedPrecondition, auxVariantModeRunMsg)
-		}
+// productionRunVariantLinkMsg introduces the plan-time colour refusals with the context the store's
+// bare error omits, so the operator reads one sentence rather than an id.
+const productionRunVariantLinkMsg = "this run's colour lines do not match the tech card's colours: "
+
+// productionRunVariantStatus maps the store's plan-time colour refusals onto gRPC codes, or returns
+// nil when err is something else. A colour that is not this card's is a bad payload
+// (InvalidArgument — the client sent an id it should never have offered); a retired colour is a
+// state the operator can fix on the card (FailedPrecondition — reactivate it or pick another).
+func productionRunVariantStatus(err error) error {
+	switch {
+	case errors.Is(err, entity.ErrProductionRunLineVariantUnlinked),
+		// A half-coloured grid is a payload the client should never have assembled, and the fix is in
+		// the grid rather than on the card.
+		errors.Is(err, entity.ErrProductionRunLineVariantMixedGrid):
+		return status.Error(codes.InvalidArgument, productionRunVariantLinkMsg+err.Error())
+	case errors.Is(err, entity.ErrProductionRunLineVariantRetired):
+		return status.Error(codes.FailedPrecondition, productionRunVariantLinkMsg+err.Error())
 	}
 	return nil
 }
@@ -74,13 +72,6 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 		return nil, status.Error(codes.InvalidArgument, "a production run is created as planned or in_progress; received/closed/cancelled are reached through their flows")
 	}
 	ins.Actor = authsrv.GetAdminUsername(ctx)
-	// Refuse a variant-mode card at PLAN time. The receive-time guard below is the backstop, but on
-	// its own it is a trap: an auxiliary run is final-only and irreversible, so an operator who
-	// planned the run, issued the materials and sewed the goods would discover the refusal at the one
-	// moment they can no longer undo any of it.
-	if err := s.refuseAuxVariantModeRun(ctx, ins.TechCardId); err != nil {
-		return nil, err
-	}
 	if err := s.snapshotPlannedCost(ctx, ins); err != nil {
 		return nil, err
 	}
@@ -89,6 +80,11 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 	}
 	id, err := s.repo.ProductionRuns().CreateProductionRun(ctx, ins)
 	if err != nil {
+		// Colour lines are validated inside the write transaction, against the registry they commit
+		// against — the plan-time counterpart of the receipt's ValidProducts re-check.
+		if st := productionRunVariantStatus(err); st != nil {
+			return nil, st
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
 		}
@@ -143,6 +139,9 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 			errors.Is(err, entity.ErrProductionRunHasOpenIssues) ||
 			errors.Is(err, entity.ErrProductionRunCardChange) {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		if st := productionRunVariantStatus(err); st != nil {
+			return nil, st
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, productionRunFKMsg)
@@ -561,8 +560,12 @@ func (s *Server) fireStockWriteSideEffects(ctx context.Context, transitions []en
 }
 
 // executeRunReceipt is the shared core of both receive RPCs: permission gates, tech-card linkage
-// validation (aux detection included), and the store command. Returns a gRPC status error mapped
-// from the command's outcome.
+// validation (aux detection and its colour mode included), and the store command. Returns a gRPC
+// status error mapped from the command's outcome.
+//
+// legacyTotals marks the deprecated ReceiveProductionRun shim in both senses it has: the store's
+// rollup write SETs instead of accumulating, and the aux dispatch below refuses a card that
+// produces by colour, which is a shape the shim's stamped-counts flow predates.
 func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRun, lines []entity.ProductionRunReceiptLineInput,
 	idempotencyKey string, expectedLockVersion int, note string, updateCostPrice, final, legacyTotals bool) (*entity.PostProductionRunReceiptResult, error) {
 	runID := run.Id
@@ -598,25 +601,33 @@ func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRu
 	}
 	// NF-07: an auxiliary card's output is received into the material warehouse, not product stock.
 	if card.Purpose == entity.TechCardPurposeAuxiliary {
-		// A card in colour-variant mode (0252) has one warehouse bucket per colour, and the run has
-		// to say how much of each it made. That plumbing lands with per-variant run lines; until then
-		// the honest answer is to refuse, because the scalar path below would book the whole run into
-		// output_material_id — one colour's bucket silently absorbing every colour's output, at a
-		// blended cost, with no movement to unwind it.
-		// The backstop to the plan-time guard in CreateProductionRun: colours can be registered AFTER
-		// a run was planned, so this is the last point where booking every colour's output into one
-		// bucket can still be prevented. card.OutputVariants comes from the same GetTechCardById read
-		// as everything else here, so the decision is taken against one snapshot.
+		params.Aux = true
+		// WHERE the output lands is NOT decided here. This read happened before the run lock, so any
+		// bucket it named could be re-pointed or retired before the command runs; the store resolves
+		// the destination from the card's registry inside the transaction instead. What is left here
+		// is the pair of FAST-FAIL preconditions worth answering without opening a transaction — and
+		// both are stable facts about how the card is configured, not about which bucket wins.
+		colourMode := false
 		for i := range card.OutputVariants {
 			if card.OutputVariants[i].Active {
-				return nil, status.Error(codes.FailedPrecondition, auxVariantModeRunMsg)
+				colourMode = true
+				break
 			}
 		}
-		if !card.OutputMaterialId.Valid {
+		switch {
+		case colourMode:
+			// The deprecated shim receives from the counts stamped on the plan grid by a client that
+			// predates colours entirely. Rather than let it drive a per-colour booking it was never
+			// designed to express, point it at the command that carries the breakdown.
+			if legacyTotals {
+				return nil, status.Error(codes.FailedPrecondition, auxVariantModeShimMsg)
+			}
+		case !card.OutputMaterialId.Valid:
+			// Legacy single-output mode with no bucket at all: nothing the store could resolve to.
+			// Reported here so the operator gets a precondition they can fix rather than a
+			// reload-and-retry from inside the command.
 			return nil, status.Error(codes.FailedPrecondition, "auxiliary card has no output material set; set it before receiving")
 		}
-		params.Aux = true
-		params.OutputMaterialID = int(card.OutputMaterialId.Int64)
 	} else {
 		// The card's product/size linkage travels INTO the transaction: the store re-validates the
 		// fresh plan lines against these sets under the run lock, so a racing line edit cannot book

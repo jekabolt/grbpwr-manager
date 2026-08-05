@@ -35,9 +35,10 @@ var ErrProductionRunHasReceiptHistory = errors.New("the run has receipt history;
 var ErrProductionRunReversalFinalFirst = errors.New("reverse the final receipt first: while it stands, reversing a partial would strand its cost in WIP forever")
 
 // ErrProductionRunReversalAux is returned for receipts of auxiliary runs (v1): their output landed
-// in the material warehouse and compounded its moving average — adjust or write off the material
-// instead of reversing the receipt.
-var ErrProductionRunReversalAux = errors.New("an auxiliary run's receipt cannot be reversed; adjust or write off the output material instead")
+// in the material warehouse and compounded the moving average of every bucket it touched — one for
+// a single-output card, one per colour for a card with colour variants (0253) — so the honest undo
+// is an adjustment or write-off on those materials, not a reversal of the receipt.
+var ErrProductionRunReversalAux = errors.New("an auxiliary run's receipt cannot be reversed; adjust or write off the output material (each colour's own bucket) instead")
 
 // ErrProductionRunReversalPeriodClosed is returned when the receipt's original accounting entry
 // sits in a closed period (v1 refuses; a compensating cross-period entry is v2).
