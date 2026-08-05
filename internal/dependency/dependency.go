@@ -1366,9 +1366,10 @@ type (
 		UploadContentImage(ctx context.Context, rawB64Image, folder, imageName string) (*pb_common.MediaFull, error)
 		// UploadContentVideo uploads mp4 video to bucket
 		UploadContentVideo(ctx context.Context, raw []byte, folder, videoName, contentType string) (*pb_common.MediaFull, error)
-		// UploadPatternPDF uploads a raw PDF cut pattern (выкройка) and returns its url and
-		// stored byte size. The file is kept out of the media library.
-		UploadPatternPDF(ctx context.Context, raw []byte, objectName string) (string, int64, error)
+		// UploadPatternFile uploads a raw cut pattern (выкройка) — PDF or DXF, sniffed from
+		// the bytes — and returns its url and stored byte size. The object extension
+		// (.pdf / .dxf) carries the file type. The file is kept out of the media library.
+		UploadPatternFile(ctx context.Context, raw []byte, objectName string) (string, int64, error)
 		// UploadLabelPDF durably stores a carrier shipping-label PDF (whose provider URL expires)
 		// and returns its CDN url and stored byte size. Kept out of the media library.
 		UploadLabelPDF(ctx context.Context, raw []byte, objectName string) (string, int64, error)

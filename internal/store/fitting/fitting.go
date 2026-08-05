@@ -194,10 +194,8 @@ func (s *Store) updateFittingAndListOrphanedPatternURLs(ctx context.Context, id 
 			`DELETE FROM fitting_media WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear fitting media: %w", err)
 		}
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			`DELETE FROM fitting_pattern WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
-			return fmt.Errorf("failed to clear fitting patterns: %w", err)
-		}
+		// fitting_pattern is NOT cleared here — insertFittingPatterns owns its own DELETE
+		// because it reads the rows it is about to drop (name carry-forward for stale clients).
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM fitting_callout WHERE fitting_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear fitting callouts: %w", err)
@@ -456,25 +454,64 @@ func insertFittingSizes(ctx context.Context, db dependency.DB, fittingID int, si
 	return nil
 }
 
+// insertFittingPatterns replaces a fitting's pattern rows. Like its tech-card sibling it owns
+// its own DELETE (the standalone clear in UpdateFitting is gone) because it reads the rows it
+// is about to drop — the display name is presence-gated, and a payload row whose name is
+// ABSENT (a stale client that predates the field) inherits the stored name of the row it
+// replaces, matched by (size_id, url).
 func insertFittingPatterns(ctx context.Context, db dependency.DB, fittingID int, patterns []entity.FittingPattern) error {
+	prior, err := storeutil.QueryListNamed[struct {
+		SizeId sql.NullInt32  `db:"size_id"`
+		URL    string         `db:"url"`
+		Name   sql.NullString `db:"name"`
+	}](ctx, db, `SELECT size_id, url, name FROM fitting_pattern WHERE fitting_id = :id`,
+		map[string]any{"id": fittingID})
+	if err != nil {
+		return fmt.Errorf("failed to read fitting patterns: %w", err)
+	}
+	knownNames := make(map[string]sql.NullString, len(prior))
+	for _, r := range prior {
+		knownNames[fittingPatternKey(r.SizeId, r.URL)] = r.Name
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM fitting_pattern WHERE fitting_id = :id`, map[string]any{"id": fittingID}); err != nil {
+		return fmt.Errorf("failed to clear fitting patterns: %w", err)
+	}
 	if len(patterns) == 0 {
 		return nil
 	}
 	rows := make([]map[string]any, 0, len(patterns))
-	for i, p := range patterns {
+	// Duplicate (size, url) payload rows keep the first occurrence, like the tech-card
+	// sibling — otherwise two same-key rows with different names would merge into whichever
+	// name the carry-forward map happened to keep on the NEXT save.
+	seenPayload := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		key := fittingPatternKey(p.SizeId, p.URL)
+		if _, duplicate := seenPayload[key]; duplicate {
+			continue
+		}
+		seenPayload[key] = struct{}{}
+		name := storeutil.ResolvePatternName(p.Name, knownNames[key])
 		rows = append(rows, map[string]any{
 			"fitting_id":    fittingID,
 			"size_id":       p.SizeId,
 			"url":           p.URL,
 			"filename":      p.Filename,
+			"name":          name,
 			"size_bytes":    p.SizeBytes,
-			"display_order": i,
+			"display_order": len(rows),
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "fitting_pattern", rows); err != nil {
 		return fmt.Errorf("failed to insert fitting patterns: %w", err)
 	}
 	return nil
+}
+
+// fittingPatternKey identifies one pattern row across the full-replace — the sheet (url) and
+// the size it hangs on (0 for the size-less «общий» slot).
+func fittingPatternKey(sizeID sql.NullInt32, url string) string {
+	return fmt.Sprintf("%d|%s", sizeID.Int32, url)
 }
 
 func fittingPatternURLs(ctx context.Context, db dependency.DB, fittingID int) ([]string, error) {
@@ -730,7 +767,7 @@ func (s *Store) patternsByFittingIds(ctx context.Context, ids []int) (map[int][]
 		return map[int][]entity.FittingPattern{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[fittingPatternRow](ctx, s.DB, `
-		SELECT fitting_id, size_id, url, filename, size_bytes
+		SELECT fitting_id, size_id, url, filename, name, size_bytes
 		FROM fitting_pattern
 		WHERE fitting_id IN (:ids)
 		ORDER BY fitting_id, display_order`, map[string]any{"ids": ids})

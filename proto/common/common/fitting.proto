@@ -115,13 +115,19 @@ message FittingCallout {
   google.type.Decimal pos_y = 5; // normalised y (0..1) of the marker on its photo
 }
 
-// FittingPattern is one PDF выкройка iteration tried in a fitting (snapshot of the
-// uploaded file, not a live reference to a tech-card pattern).
+// FittingPattern is one выкройка iteration tried in a fitting (snapshot of the
+// uploaded file, not a live reference to a tech-card pattern). The file is a PDF or a
+// DXF; the type is carried by the url's extension (.pdf / .dxf).
 message FittingPattern {
   int32 size_id = 1; // FK size(id); 0 = unset (which size this pattern is for)
-  string url = 2; // CDN url of the uploaded PDF (required)
+  string url = 2; // CDN url of the uploaded PDF/DXF (required)
   string filename = 3; // original filename, for display / download
   int64 size_bytes = 4; // file size in bytes (0 = unknown)
+  // name is an optional operator-entered display name. Same presence semantics as
+  // TechCardSizePattern.name — absent preserves the stored name for the same
+  // (size_id, url) row across the full-replace save; present (even empty) is stored as sent
+  // (empty clears). JSON null reads as absent (preserve) — clear with the empty string.
+  optional string name = 5;
 }
 
 // Fitting is a stored try-on session with resolved media for display.

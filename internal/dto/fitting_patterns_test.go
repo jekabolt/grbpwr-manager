@@ -14,8 +14,8 @@ func TestFittingPatternsRoundTrip(t *testing.T) {
 		TechCardId:  5,
 		FittingDate: timestamppb.New(time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC)),
 		Patterns: []*pb_common.FittingPattern{
-			{SizeId: 4, Url: "https://cdn/iter1.pdf", Filename: "iter1.pdf", SizeBytes: 99},
-			{Url: "https://cdn/iter2.pdf"}, // size unset
+			{SizeId: 4, Url: "https://cdn/iter1.pdf", Filename: "iter1.pdf", SizeBytes: 99, Name: stringPointer(" бок v2 ")},
+			{Url: "https://cdn/iter2.dxf"}, // size unset, name absent
 		},
 	}
 	ent, err := ConvertPbFittingInsertToEntity(in)
@@ -29,6 +29,13 @@ func TestFittingPatternsRoundTrip(t *testing.T) {
 	if ent.Patterns[1].SizeId.Valid {
 		t.Fatalf("second pattern size should be unset")
 	}
+	// name presence survives dto→entity: present is Valid (trimmed), absent is not.
+	if !ent.Patterns[0].Name.Valid || ent.Patterns[0].Name.String != "бок v2" {
+		t.Fatalf("present name not parsed/trimmed: %+v", ent.Patterns[0].Name)
+	}
+	if ent.Patterns[1].Name.Valid {
+		t.Fatalf("absent name must stay invalid (carry-forward marker): %+v", ent.Patterns[1].Name)
+	}
 
 	out := ConvertEntityFittingToPb(&entity.Fitting{FittingInsert: *ent})
 	if len(out.Fitting.Patterns) != 2 || out.Fitting.Patterns[0].Filename != "iter1.pdf" ||
@@ -37,6 +44,9 @@ func TestFittingPatternsRoundTrip(t *testing.T) {
 	}
 	if out.Fitting.Patterns[1].SizeId != 0 {
 		t.Fatalf("second pattern size should emit 0, got %d", out.Fitting.Patterns[1].SizeId)
+	}
+	if out.Fitting.Patterns[0].GetName() != "бок v2" || out.Fitting.Patterns[1].Name != nil {
+		t.Fatalf("name round-trip mismatch: %+v", out.Fitting.Patterns)
 	}
 }
 

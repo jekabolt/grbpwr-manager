@@ -45,20 +45,21 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 	}, nil
 }
 
-// UploadPattern uploads a raw PDF cut pattern (выкройка) and returns its url. The file is
-// stored in object storage (not the media library) and referenced by tech-card per-size
-// patterns and fitting iteration patterns.
+// UploadPattern uploads a raw cut pattern (выкройка) file — PDF or DXF, sniffed from the
+// bytes — and returns its url. The file is stored in object storage (not the media
+// library) and referenced by tech-card per-size patterns and fitting iteration patterns;
+// the object extension (.pdf / .dxf) carries the file type.
 func (s *Server) UploadPattern(ctx context.Context, req *pb_admin.UploadPatternRequest) (*pb_admin.UploadPatternResponse, error) {
 	if len(req.GetFilename()) > maxPatternFilename {
 		return nil, status.Errorf(codes.InvalidArgument, "filename must be at most %d characters", maxPatternFilename)
 	}
-	url, sizeBytes, err := s.bucket.UploadPatternPDF(ctx, req.GetRaw(), bucket.GetMediaName())
+	url, sizeBytes, err := s.bucket.UploadPatternFile(ctx, req.GetRaw(), bucket.GetMediaName())
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't upload pattern pdf",
+		slog.Default().ErrorContext(ctx, "can't upload pattern file",
 			slog.String("err", err.Error()),
 		)
-		// A rejected payload (empty / too large / not a PDF) is the client's fault;
-		// anything else (e.g. an S3 PutObject failure) is an internal error.
+		// A rejected payload (empty / too large / not a PDF or DXF) is the client's
+		// fault; anything else (e.g. an S3 PutObject failure) is an internal error.
 		code := codes.Internal
 		if errors.Is(err, bucket.ErrInvalidPattern) {
 			code = codes.InvalidArgument
