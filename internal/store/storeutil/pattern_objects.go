@@ -19,6 +19,15 @@ const patternObjectPathSegment = "tech-card-patterns"
 // name (prior; the zero value when the row is new). A present name is written as given,
 // with present-empty normalised to NULL (an explicit clear).
 func ResolvePatternName(payload, prior sql.NullString) sql.NullString {
+	return ResolveNullableOnPresence(payload, prior)
+}
+
+// ResolveNullableOnPresence is the generic presence-gated resolver behind ResolvePatternName:
+// absent (Valid=false) keeps the prior value, present-empty clears to NULL, present writes as
+// given. Referenced directly by callers whose field is NOT a display name (e.g. the pattern
+// fabric binding) so a future name-specific tweak (trimming, caps) cannot silently rewrite
+// binding semantics.
+func ResolveNullableOnPresence(payload, prior sql.NullString) sql.NullString {
 	if !payload.Valid {
 		return prior
 	}

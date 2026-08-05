@@ -1193,6 +1193,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes, buildCalloutSync(tc)); err != nil {
 		return err
 	}
+	// DXF block aliases (§2.2) resolve piece_line_key against THIS save's pieces, so they run after
+	// the piece upsert — the resolveUsagePiece ordering precedent.
+	if err := upsertTechCardPieceDxfAliases(ctx, db, id, tc.PieceDxfAliasesSet, tc.PieceDxfAliases, tc.UpdatedBy); err != nil {
+		return err
+	}
 	// production (Phase 3)
 	if err := insertTechCardConstruction(ctx, db, id, tc.Construction); err != nil {
 		return err
@@ -1299,9 +1304,11 @@ func patternObjectIdentity(raw string) string {
 //
 // Unlike the other children this owns its own reads and deletes (it is excluded from the blind
 // delete loop in UpdateTechCard) because it has to read before it writes. Rows outside the current
-// size range are dropped during narrowing; duplicate (size, url) or duplicate line_key payload rows
-// keep their first occurrence. Runs AFTER upsertTechCardBom in insertTechCardChildren, so a binding
-// to a slot created by the same save resolves.
+// size range are dropped during narrowing; duplicate (size, url) payload rows keep their first
+// occurrence, while duplicate line_keys are REJECTED upstream in parseTechCardPatterns (a duplicate
+// key may carry a distinct row — keeping the first would silently delete the row the second
+// claimed). Runs AFTER upsertTechCardBom in insertTechCardChildren, so a binding to a slot created
+// by the same save resolves.
 func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int) error {
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
@@ -1359,6 +1366,19 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	seenPayload := make(map[string]struct{}, len(patterns))
 	seenKeys := make(map[string]struct{}, len(patterns))
 	consumed := make(map[int]struct{}, len(prior))
+	// Pass 1: reserve every EXPLICIT payload line_key before any keyless adoption runs, so payload
+	// order cannot change the outcome — with a keyless row first, single-pass matching would let it
+	// adopt a stored row that a later keyed row names, silently dropping that keyed row. A keyless
+	// row may only adopt a stored row no keyed payload row claims.
+	reservedKeys := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if _, ok := liveSizes[p.SizeId]; !ok {
+			continue
+		}
+		if p.LineKey != "" {
+			reservedKeys[p.LineKey] = struct{}{}
+		}
+	}
 	order := 0
 	for i, p := range patterns {
 		if _, ok := liveSizes[p.SizeId]; !ok {
@@ -1382,7 +1402,9 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 				}
 			}
 		} else if r, ok := known[key]; ok && r.LineKey != "" {
-			if _, used := consumed[r.Id]; !used {
+			_, used := consumed[r.Id]
+			_, taken := reservedKeys[r.LineKey]
+			if !used && !taken {
 				matched = &r
 				lineKey = r.LineKey
 			}
@@ -1390,15 +1412,19 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		if lineKey == "" {
 			lineKey = newLineKey()
 		}
+		// Unreachable from the API — parseTechCardPatterns rejects duplicate payload keys before the
+		// tx — kept as defense-in-depth for direct store callers. NOTE this is NOT like a (size, url)
+		// dupe: a duplicate KEY may carry a distinct row, so silently keeping the first would delete
+		// the stored row the duplicate claimed; the dto reject is the real guard.
 		if _, dup := seenKeys[lineKey]; dup {
-			continue // two payload rows claiming one identity keep the first, like (size, url) dupes
+			continue
 		}
 		seenKeys[lineKey] = struct{}{}
 		version, uploadedAt := p.Version, p.UploadedAt
 		nameFallback := known[key].Name
-		if matched != nil && !nameFallback.Valid {
-			// A keyed row whose url just changed has no (size, url) history — inherit ITS name so a
-			// replacement upload without an explicit name does not silently clear the label.
+		if matched != nil {
+			// line_key IS the identity: the matched row's own name is the fallback — including when
+			// the new url happens to coincide with a DIFFERENT stored row's (size, url) history.
 			nameFallback = matched.Name
 		}
 		name := storeutil.ResolvePatternName(p.Name, nameFallback)
@@ -1416,6 +1442,13 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		} else {
 			uploadedAt = sql.NullTime{Time: now, Valid: true}
 		}
+		if matched != nil && matched.URL != p.URL && version == matched.Version {
+			// A keyed url change carrying the SAME version the replaced file had is an ECHO — the
+			// schema round-trips version, so a client that replaces a sheet naturally resends the old
+			// number. A replacement is a new revision by definition: force MAX+1. A genuine manual
+			// pin differs from the replaced row's number and passes through untouched.
+			version = 0
+		}
 		if version <= 0 {
 			maxVersionBySize[p.SizeId]++
 			version = maxVersionBySize[p.SizeId]
@@ -1431,7 +1464,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		if matched != nil {
 			storedBinding = matched.BomLineKey
 		}
-		bomLineKey := storeutil.ResolvePatternName(p.BomLineKey, storedBinding)
+		bomLineKey := storeutil.ResolveNullableOnPresence(p.BomLineKey, storedBinding)
 		if bomLineKey.Valid && bomLineKey.String != "" &&
 			(!storedBinding.Valid || storedBinding.String != bomLineKey.String) {
 			keys, err := loadFabricKeys()

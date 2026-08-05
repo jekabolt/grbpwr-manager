@@ -437,6 +437,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	pieceDxfAliases, pieceDxfAliasesSet, err := parseTechCardPieceDxfAliases(pb.PieceDxfAliases)
+	if err != nil {
+		return nil, err
+	}
 	labels, err := parseTechCardLabels(pb.Labels)
 	if err != nil {
 		return nil, err
@@ -521,6 +525,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Signoffs:           signoffs,
 		Patterns:           patterns,
 		Pieces:             pieces,
+		PieceDxfAliases:    pieceDxfAliases,
+		PieceDxfAliasesSet: pieceDxfAliasesSet,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
@@ -579,8 +585,79 @@ func validatePatternLineKey(key, field string) error {
 	return nil
 }
 
+// parseTechCardPieceDxfAliases parses the DXF block → cut-piece alias set. The wrapper message IS
+// the presence signal (proto3 cannot tell empty-repeated from absent): nil wrapper → (nil, false) —
+// the store preserves stored aliases; present wrapper → its items are the new full set. Block names
+// are normalized here (trim + collapse inner whitespace); duplicates within the payload are
+// rejected case-insensitively, mirroring the DB's CI UNIQUE, so the save fails with a readable
+// message instead of a driver 1062.
+func parseTechCardPieceDxfAliases(pb *pb_common.TechCardPieceDxfAliasSet) ([]entity.TechCardPieceDxfAlias, bool, error) {
+	if pb == nil {
+		return nil, false, nil
+	}
+	out := make([]entity.TechCardPieceDxfAlias, 0, len(pb.Items))
+	seen := make(map[string]bool, len(pb.Items))
+	for i, a := range pb.Items {
+		if a == nil {
+			continue
+		}
+		// Uppercased like pattern keys: legitimate mints are uppercase, the column collates CI.
+		slot := strings.ToUpper(strings.TrimSpace(a.BomLineKey))
+		if slot == "" {
+			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].bom_line_key is required", i)
+		}
+		if err := validatePatternLineKey(slot, fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i)); err != nil {
+			return nil, false, err
+		}
+		block := strings.Join(strings.Fields(a.BlockName), " ")
+		if block == "" {
+			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].block_name is required", i)
+		}
+		if utf8.RuneCountInString(block) > 255 {
+			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].block_name must be at most 255 characters", i)
+		}
+		pieceKey := strings.ToUpper(strings.TrimSpace(a.PieceLineKey))
+		if pieceKey == "" {
+			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].piece_line_key is required", i)
+		}
+		if err := validatePatternLineKey(pieceKey, fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i)); err != nil {
+			return nil, false, err
+		}
+		dupKey := strings.ToLower(slot) + "|" + strings.ToLower(block)
+		if seen[dupKey] {
+			return nil, false, fmt.Errorf(
+				"piece_dxf_aliases[%d]: block %q is mapped twice for the same fabric slot — one block name means one piece", i, block)
+		}
+		seen[dupKey] = true
+		out = append(out, entity.TechCardPieceDxfAlias{
+			BomLineKey:   slot,
+			BlockName:    block,
+			PieceLineKey: pieceKey,
+		})
+	}
+	return out, true, nil
+}
+
+// techCardPieceDxfAliasesToPb emits the alias set. The wrapper is ALWAYS present on read so a new
+// client round-trips presence and its saves carry the full set explicitly.
+func techCardPieceDxfAliasesToPb(aliases []entity.TechCardPieceDxfAlias) *pb_common.TechCardPieceDxfAliasSet {
+	out := &pb_common.TechCardPieceDxfAliasSet{Items: make([]*pb_common.TechCardPieceDxfAlias, 0, len(aliases))}
+	for _, a := range aliases {
+		out.Items = append(out.Items, &pb_common.TechCardPieceDxfAlias{
+			BomLineKey:   a.BomLineKey,
+			BlockName:    a.BlockName,
+			PieceLineKey: a.PieceLineKey,
+		})
+	}
+	return out
+}
+
 func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) ([]entity.TechCardSizePattern, error) {
 	out := make([]entity.TechCardSizePattern, 0, len(pbs))
+	// One key names one ROW: the same sheet hung on two sizes is two rows with two keys. A duplicate
+	// here is a client bug that the store's diff would otherwise resolve by silently DELETING the
+	// second stored row — so it is rejected before the transaction, like BOM/piece/run line keys.
+	seenLineKeys := make(map[string]struct{}, len(pbs))
 	for _, p := range pbs {
 		sid := int(p.SizeId)
 		if sid <= 0 || !slices.Contains(sizeIds, sid) {
@@ -619,14 +696,23 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		// line_key is validated but NEVER minted here, unlike BOM/piece line keys: an empty key IS
 		// the legacy signal the store's upsert-diff matches by (size_id, url) on — minting in the
 		// dto would make every stale-client save read as all-new rows and drop the bindings.
-		lineKey := strings.TrimSpace(p.LineKey)
+		// Uppercased: every legitimate source (client ULID, server base32, LEGACY backfill) is
+		// uppercase, while the CHAR(26) column collates case-insensitively — a lowercase spelling
+		// would miss the Go-side maps yet collide in MySQL (a 500, not a field violation).
+		lineKey := strings.ToUpper(strings.TrimSpace(p.LineKey))
 		if err := validatePatternLineKey(lineKey, "pattern line_key"); err != nil {
 			return nil, err
+		}
+		if lineKey != "" {
+			if _, dup := seenLineKeys[lineKey]; dup {
+				return nil, fmt.Errorf("pattern line_key %q is used by two rows; one key names one row — the same sheet on two sizes is two rows with two keys", lineKey)
+			}
+			seenLineKeys[lineKey] = struct{}{}
 		}
 		// bom_line_key keeps proto presence like name: absent → carry the stored binding forward.
 		var bomLineKey sql.NullString
 		if p.BomLineKey != nil {
-			trimmed := strings.TrimSpace(p.GetBomLineKey())
+			trimmed := strings.ToUpper(strings.TrimSpace(p.GetBomLineKey()))
 			if err := validatePatternLineKey(trimmed, "pattern bom_line_key"); err != nil {
 				return nil, err
 			}
@@ -756,6 +842,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
 			Patterns:          techCardPatternsToPb(tc.Patterns),
 			Pieces:            techCardPiecesToPb(tc.Pieces),
+			PieceDxfAliases:   techCardPieceDxfAliasesToPb(tc.PieceDxfAliases),
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,

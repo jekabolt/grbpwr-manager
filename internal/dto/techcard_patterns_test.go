@@ -187,6 +187,17 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 		"pattern bom_line_key wrong length": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
 				BomLineKey: stringPointer("nope")}}},
+		// One key names one ROW — a duplicate would make the store's diff silently delete the
+		// stored row the second entry claimed, so it is rejected before the transaction. The
+		// case-variant duplicate must be caught too (keys are uppercased; the column collates CI).
+		"pattern line_key duplicated": {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 5},
+			Patterns: []*pb_common.TechCardSizePattern{
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"},
+				{SizeId: 5, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"}}},
+		"pattern line_key duplicated case-insensitively": {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 5},
+			Patterns: []*pb_common.TechCardSizePattern{
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"},
+				{SizeId: 5, Url: "https://cdn/y.pdf", LineKey: "01sheetkey0000000000000001"}}},
 		// R1: usage size_consumption validation cases moved with the colourway recipe to the Colorway
 		// RPCs (CreateColorway / ColorwayDevelopmentInsert.usages) — re-covered in track T-B step D.
 	}

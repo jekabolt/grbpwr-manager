@@ -178,3 +178,101 @@ func TestPatternLineKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, bySize(read(), szA).BomLineKey.Valid, "present-empty unbinds (stored as NULL)")
 }
+
+// TestPatternLineKeysContention pins the two-pass matching and echoed-version rules from the Ф9.2
+// review. Mixed keyless+keyed payloads contending for one stored row must resolve identically in
+// BOTH payload orders (pass 1 reserves explicit keys; adoption sees only what is left), and a keyed
+// url replacement that ECHOES the replaced file's version number must take MAX+1 — the echo is the
+// schema round-trip, not a manual pin — while a genuinely different pinned number is honoured.
+func TestPatternLineKeysContention(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+	T := s.TechCards()
+
+	var szA int
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size").Scan(&szA))
+
+	const (
+		urlA = "https://cdn.example/base/tech-card-patterns/2026/august/ct1.pdf"
+		urlB = "https://cdn.example/base/tech-card-patterns/2026/august/ct2.pdf"
+		urlC = "https://cdn.example/base/tech-card-patterns/2026/august/ct3.pdf"
+	)
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: v != ""} }
+	mk := func(style string, patterns ...entity.TechCardSizePattern) *entity.TechCardInsert {
+		return &entity.TechCardInsert{
+			StyleNumber: ns(style), Name: "CT",
+			Stage: entity.TechCardStageProto, ApprovalState: entity.TechCardApprovalDraft,
+			MeasurementUnit: entity.TechCardUnitMm,
+			SizeIds:         []int{szA},
+			Patterns:        patterns,
+		}
+	}
+
+	for name, keylessFirst := range map[string]bool{"keyless first": true, "keyed first": false} {
+		t.Run(name, func(t *testing.T) {
+			style := "CT-A"
+			if !keylessFirst {
+				style = "CT-B"
+			}
+			id, err := T.AddTechCard(ctx, mk(style, entity.TechCardSizePattern{SizeId: szA, URL: urlA}))
+			require.NoError(t, err)
+			t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", id) })
+			tc, err := T.GetTechCardById(ctx, id)
+			require.NoError(t, err)
+			require.Len(t, tc.Patterns, 1)
+			stored := tc.Patterns[0]
+			require.NotEmpty(t, stored.LineKey)
+
+			keyless := entity.TechCardSizePattern{SizeId: szA, URL: urlA}
+			keyed := entity.TechCardSizePattern{SizeId: szA, URL: urlB, LineKey: stored.LineKey}
+			payload := []entity.TechCardSizePattern{keyless, keyed}
+			if !keylessFirst {
+				payload = []entity.TechCardSizePattern{keyed, keyless}
+			}
+			up := mk(style, payload...)
+			require.NoError(t, T.UpdateTechCard(ctx, id, up, tc.LockVersion))
+
+			after, err := T.GetTechCardById(ctx, id)
+			require.NoError(t, err)
+			require.Len(t, after.Patterns, 2, "both payload rows must survive regardless of order")
+			byURL := map[string]entity.TechCardSizePattern{}
+			for _, p := range after.Patterns {
+				byURL[p.URL] = p
+			}
+			require.Equal(t, stored.LineKey, byURL[urlB].LineKey, "the keyed row owns the stored identity")
+			require.NotEmpty(t, byURL[urlA].LineKey)
+			require.NotEqual(t, stored.LineKey, byURL[urlA].LineKey, "the keyless row is a NEW row, not an adoption")
+		})
+	}
+
+	t.Run("echoed version takes MAX+1, manual pin honoured", func(t *testing.T) {
+		id, err := T.AddTechCard(ctx, mk("CT-V", entity.TechCardSizePattern{SizeId: szA, URL: urlA}))
+		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", id) })
+		tc, err := T.GetTechCardById(ctx, id)
+		require.NoError(t, err)
+		stored := tc.Patterns[0]
+		require.Equal(t, 1, stored.Version)
+
+		// Replacement with the ECHOED version (the schema round-trips version, so a real client
+		// resends the old number) — must renumber to MAX+1.
+		echo := entity.TechCardSizePattern{SizeId: szA, URL: urlB, LineKey: stored.LineKey, Version: stored.Version}
+		require.NoError(t, T.UpdateTechCard(ctx, id, mk("CT-V", echo), tc.LockVersion))
+		after, err := T.GetTechCardById(ctx, id)
+		require.NoError(t, err)
+		require.Equal(t, 2, after.Patterns[0].Version, "echoed version on replacement is not a pin")
+
+		// A replacement carrying a number DIFFERENT from the replaced row's is a manual pin.
+		pin := entity.TechCardSizePattern{SizeId: szA, URL: urlC, LineKey: stored.LineKey, Version: 7}
+		require.NoError(t, T.UpdateTechCard(ctx, id, mk("CT-V", pin), after.LockVersion))
+		final, err := T.GetTechCardById(ctx, id)
+		require.NoError(t, err)
+		require.Equal(t, 7, final.Patterns[0].Version, "a genuine pin passes through")
+	})
+}

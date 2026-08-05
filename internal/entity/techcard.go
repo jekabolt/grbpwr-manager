@@ -1343,6 +1343,25 @@ type TechCardInsert struct {
 	Signoffs       []TechCardSignoff      `db:"-"`
 	Patterns       []TechCardSizePattern  `db:"-"`
 	Pieces         []TechCardPiece        `db:"-"` // structural cut-pieces + per-colourway fabric mapping (NF-05)
+	// PieceDxfAliases maps DXF block names to cut-pieces, scoped per fabric slot (§2.2). Presence is
+	// carried separately (proto3 cannot tell empty-repeated from absent): PieceDxfAliasesSet=false
+	// means the payload did not speak — the store preserves stored aliases, so a stale client cannot
+	// wipe mappings it never saw; true means full replace with the slice (empty = clear all).
+	PieceDxfAliases    []TechCardPieceDxfAlias `db:"-"`
+	PieceDxfAliasesSet bool                    `db:"-"`
+}
+
+// TechCardPieceDxfAlias is one DXF block-name → cut-piece mapping, scoped to a fabric slot
+// (bom_line_key, the same binding pattern rows carry). BlockName is stored normalized (trim +
+// collapsed inner whitespace); the DB UNIQUE per (card, slot, block) is case-insensitive, so
+// spelling-case variants collapse into one alias within a slot — the wanted cross-size dedupe.
+// PieceLineKey is the wire reference (stable TechCardPiece.line_key); the store resolves it to
+// PieceId on write and joins it back on read.
+type TechCardPieceDxfAlias struct {
+	BomLineKey   string `db:"bom_line_key"`
+	BlockName    string `db:"block_name"`
+	PieceId      int    `db:"piece_id"`
+	PieceLineKey string `db:"piece_line_key"`
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero

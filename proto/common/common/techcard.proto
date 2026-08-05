@@ -695,8 +695,10 @@ message TechCardSizePattern {
   // 8 and 9 are reserved for view_url / download_url (feat/private-patterns branch, in flight).
   // line_key is the row's STABLE identity across saves and across FILE REPLACEMENT (the url is not —
   // replacing the sheet mints a new object url). Mint a ULID on first upload and round-trip it
-  // unchanged; keep it when replacing the file and change only the url. Empty = a legacy/stale
-  // client — the server then matches by (size_id, url) exactly as before and assigns a key itself.
+  // unchanged; keep it when replacing the file and change only the url. ONE KEY NAMES ONE ROW: the
+  // same sheet hung on two sizes is two rows and therefore two keys — reusing a key on two payload
+  // rows is rejected. Empty = a legacy/stale client — the server then matches by (size_id, url)
+  // exactly as before and assigns a key itself.
   string line_key = 10;
   // bom_line_key binds this sheet to the fabric BOM line it is cut from («один DXF = одна ткань»),
   // set at upload time. Explicit presence, same rules as `name`: ABSENT — the server preserves the
@@ -1059,6 +1061,27 @@ message TechCardPieceColorwayMaterial {
   int64 fusing_bom_item_id = 9; // OUTPUT: resolved FK to the fusing BOM line
 }
 
+// TechCardPieceDxfAlias maps one DXF block name to a cut-piece, SCOPED to one fabric slot
+// (bom_line_key — the same binding pattern rows carry). The canonical piece name lives only in
+// TechCardPiece.name; block names are per-file exporter noise («PERED_S», «front-38»), so the same
+// generic name in different fabrics' files maps independently while any spelling within one
+// fabric's files (all its size DXFs) resolves to one piece. The DB UNIQUE is case-insensitive per
+// (card, slot, block).
+message TechCardPieceDxfAlias {
+  string bom_line_key = 1; // fabric BOM line (slot) this mapping is scoped to; required
+  string block_name = 2; // DXF block name, normalized (trim + inner whitespace collapsed); required
+  string piece_line_key = 3; // the cut-piece, by its stable TechCardPiece.line_key; required
+}
+
+// TechCardPieceDxfAliasSet is a presence wrapper: proto3 cannot distinguish an EMPTY repeated field
+// from an ABSENT one, and these aliases follow the pattern-binding precedent — a stale client that
+// predates the feature must not wipe mappings it never saw. Message ABSENT → the server carries the
+// stored aliases forward untouched; message PRESENT → its items are the new full set (empty items
+// clears all). New clients always send it, round-tripping what they read.
+message TechCardPieceDxfAliasSet {
+  repeated TechCardPieceDxfAlias items = 1;
+}
+
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):
 // how many per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused
 // (клеевая). materials picks, per colourway, which BOM fabric it is cut from. Full-replace child.
@@ -1235,6 +1258,10 @@ message TechCardInsert {
   // this planning date is only settable while the card is draft/approved — see the store's freeze check.
   google.protobuf.Timestamp target_drop_date = 106;
 
+  // DXF block-name → cut-piece aliases, scoped per fabric slot (§2.2). Presence-gated via the
+  // wrapper (see TechCardPieceDxfAliasSet): absent = preserve stored, present = full replace.
+  TechCardPieceDxfAliasSet piece_dxf_aliases = 107;
+
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.
@@ -1410,7 +1437,7 @@ message TechCardMarkerInsert {
 // blob (idiom: tech_card_release.snapshot). schema_version guards forward evolution — readers
 // degrade gracefully on a version they do not know.
 message TechCardMarkerLayout {
-  int32 schema_version = 1; // currently 1
+  int32 schema_version = 1; // 1, or 2 when pieces carry piece_line_key/block_name; the server accepts both
   TechCardMarkerNestParams params = 2;
   repeated TechCardMarkerPiece pieces = 3;
   repeated TechCardMarkerPlacement placements = 4;
@@ -1440,6 +1467,11 @@ message TechCardMarkerPiece {
   double bbox_w_cm = 7;
   double bbox_h_cm = 8;
   double area_cm2 = 9;
+  // schema_version 2 additions (both optional): the resolved cut-piece identity at save time, so a
+  // marker survives piece renames — readers resolve the display name through the alias map and fall
+  // back to `name` as saved. piece_id above stays parse-local (a v1 decision that remains right).
+  string piece_line_key = 10; // TechCardPiece.line_key; "" = unresolved at save time
+  string block_name = 11; // the DXF block name this piece came from; "" = unknown
 }
 
 message TechCardMarkerPoint {
