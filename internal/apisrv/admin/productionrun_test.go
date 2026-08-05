@@ -266,6 +266,11 @@ func TestPostProductionRunReceiptAuxWithNoColoursAndNoOutputMaterial(t *testing.
 	run, card := auxColourRun()
 	card.OutputVariants = nil
 	card.OutputMaterialId = sql.NullInt64{}
+	// A card with zero variant rows cannot have colour lines on its runs (the delete pre-check and
+	// the FK forbid removing a referenced variant), so the true legacy state is a colourless grid.
+	for i := range run.Lines {
+		run.Lines[i].OutputVariantId = sql.NullInt32{}
+	}
 	repo, _, _ := receiveMocks(t, run, card)
 	_, err := (&Server{repo: repo}).PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{
 		RunId: 4, IdempotencyKey: "01AAAAAAAAAAAAAAAAAAAAAAAA",
@@ -284,6 +289,24 @@ func TestPostProductionRunReceiptAuxWithNoColoursAndNoOutputMaterial(t *testing.
 	prB.EXPECT().PostProductionRunReceipt(mock.Anything, mock.Anything).
 		Return(&entity.PostProductionRunReceiptResult{ReceiptID: 22}, nil)
 	_, err = (&Server{repo: repoB}).PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{
+		RunId: 4, IdempotencyKey: "01AAAAAAAAAAAAAAAAAAAAAAAA",
+		Lines: []*pb_admin.PostProductionRunReceiptLineInput{{LineKey: "K1AAAAAAAAAAAAAAAAAAAAAAAA", GoodQty: 60}},
+	})
+	require.NoError(t, err)
+
+	// And the grandfathering promise at this gate: all colours retired, NO output material either —
+	// but the run's own lines still carry colours, so the union rule opens colour mode and the store
+	// (which reads the registry fresh, retired rows included) decides the booking. An ACTIVE-only
+	// answer here would freeze the run behind advice about an output material the card never had.
+	run3, card3 := auxColourRun()
+	for i := range card3.OutputVariants {
+		card3.OutputVariants[i].Active = false
+	}
+	card3.OutputMaterialId = sql.NullInt64{}
+	repoC, prC, _ := receiveMocks(t, run3, card3)
+	prC.EXPECT().PostProductionRunReceipt(mock.Anything, mock.Anything).
+		Return(&entity.PostProductionRunReceiptResult{ReceiptID: 23}, nil)
+	_, err = (&Server{repo: repoC}).PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{
 		RunId: 4, IdempotencyKey: "01AAAAAAAAAAAAAAAAAAAAAAAA",
 		Lines: []*pb_admin.PostProductionRunReceiptLineInput{{LineKey: "K1AAAAAAAAAAAAAAAAAAAAAAAA", GoodQty: 60}},
 	})
