@@ -742,10 +742,14 @@ const (
 	// bag: it is cut, sewn and costed as its own item, and an assembly bill has to name which of the
 	// two a style ships with (migration 0227).
 	AuxSubtypeGarmentCase TechCardAuxSubtype = "garment_case"
-	AuxSubtypeBox         TechCardAuxSubtype = "box"
-	AuxSubtypeInsert      TechCardAuxSubtype = "insert"
-	AuxSubtypeHanger      TechCardAuxSubtype = "hanger"
-	AuxSubtypeOther       TechCardAuxSubtype = "other"
+	// AuxSubtypeToteBag is a шоппер — the carrier the customer takes the purchase away in and keeps
+	// using. Distinct from a dust bag and a кофр: it is cut, sewn and costed as its own item, and an
+	// assembly bill has to name which carrier a style ships with (migration 0255).
+	AuxSubtypeToteBag TechCardAuxSubtype = "tote_bag"
+	AuxSubtypeBox     TechCardAuxSubtype = "box"
+	AuxSubtypeInsert  TechCardAuxSubtype = "insert"
+	AuxSubtypeHanger  TechCardAuxSubtype = "hanger"
+	AuxSubtypeOther   TechCardAuxSubtype = "other"
 )
 
 // ValidTechCardAuxSubtypes is the closed set enforced by the DB CHECK; it backs the entity<->DB drift
@@ -758,6 +762,7 @@ var ValidTechCardAuxSubtypes = map[TechCardAuxSubtype]bool{
 	AuxSubtypeSticker:     true,
 	AuxSubtypeDustBag:     true,
 	AuxSubtypeGarmentCase: true,
+	AuxSubtypeToteBag:     true,
 	AuxSubtypeBox:         true,
 	AuxSubtypeInsert:      true,
 	AuxSubtypeHanger:      true,

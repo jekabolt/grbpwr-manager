@@ -170,6 +170,10 @@ enum TechCardAuxSubtype {
   // кофр — the carrier a garment travels/hangs in. Its own sub-type rather than a dust bag: it is
   // cut, sewn and costed as its own item, and an assembly bill names which of the two ships.
   TECH_CARD_AUX_SUBTYPE_GARMENT_CASE = 11;
+  // шоппер — the carrier the customer takes the purchase away in and keeps using. Its own sub-type
+  // rather than a dust bag: it is cut, sewn and costed as its own item, and an assembly bill names
+  // which carrier ships.
+  TECH_CARD_AUX_SUBTYPE_TOTE_BAG = 12;
 }
 
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway

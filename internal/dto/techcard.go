@@ -2055,6 +2055,7 @@ var auxSubtypePbByEntity = map[entity.TechCardAuxSubtype]pb_common.TechCardAuxSu
 	entity.AuxSubtypeSticker:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_STICKER,
 	entity.AuxSubtypeDustBag:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_DUST_BAG,
 	entity.AuxSubtypeGarmentCase: pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_GARMENT_CASE,
+	entity.AuxSubtypeToteBag:     pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_TOTE_BAG,
 	entity.AuxSubtypeBox:         pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BOX,
 	entity.AuxSubtypeInsert:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_INSERT,
 	entity.AuxSubtypeHanger:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGER,
