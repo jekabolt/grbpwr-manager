@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -442,11 +443,45 @@ func (s *Store) DeleteOutputVariant(ctx context.Context, id int) error {
 		if err := storeutil.RequireMutableTechCard(ctx, db, row.TechCardId); err != nil {
 			return err
 		}
-		// PHASE 3 MARKER: once production_run_line.output_variant_id exists, refuse the delete here
-		// while any run line still references this variant (typed error → FailedPrecondition,
-		// "deactivate it instead"), with the ON DELETE RESTRICT FK as the backstop. There is nothing
-		// to check today — no table references a variant yet — and a pre-check against a column that
-		// does not exist would simply fail to parse.
+		// A colour a production run has planned into is history, not a mistake. Deleting it would take
+		// the run's grid with it (or, since 0253 RESTRICTs, fail as a driver 1451 that names a
+		// constraint instead of a way forward) — and the colour's warehouse bucket, its stock and its
+		// moving average would stay behind with nothing left to explain where they came from.
+		// Deactivation is the retirement that keeps all of it. The FK is the backstop for writers that
+		// bypass this store; this pre-check is what makes the refusal readable.
+		// The refusal NAMES the runs, because a bare count is a dead end: the commonest way to meet this
+		// message is a cancelled or abandoned run nobody remembers, and "3 lines reference this colour"
+		// gives an operator nothing to go and look at. A cancelled run pins a colour exactly as a live
+		// one does — its grid is still a row in the table — so the message says that too, or the card
+		// reads as permanently stuck.
+		// line_count, not `lines` — LINES is a reserved word in MySQL (LOAD DATA ... LINES TERMINATED
+		// BY) and an unquoted alias fails with a 1064 that names the wrong thing entirely.
+		refs, err := storeutil.QueryListNamed[struct {
+			RunId     int `db:"run_id"`
+			LineCount int `db:"line_count"`
+		}](ctx, db, `
+			SELECT run_id, COUNT(*) AS line_count FROM production_run_line
+			WHERE output_variant_id = :id GROUP BY run_id ORDER BY run_id`,
+			map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("count production run lines of colour variant %d: %w", id, err)
+		}
+		if len(refs) > 0 {
+			totalLines := 0
+			named := make([]string, 0, 3)
+			for i, r := range refs {
+				totalLines += r.LineCount
+				if i < 3 {
+					named = append(named, strconv.Itoa(r.RunId))
+				}
+			}
+			runList := strings.Join(named, ", ")
+			if len(refs) > len(named) {
+				runList += fmt.Sprintf(" and %d more", len(refs)-len(named))
+			}
+			return fmt.Errorf("%w: %d production run line(s) in run(s) %s still produce this colour (a cancelled run pins it too, until the run itself is deleted)",
+				entity.ErrOutputVariantReferencedByRun, totalLines, runList)
+		}
 		rows, err := storeutil.ExecNamedRows(ctx, db,
 			`DELETE FROM tech_card_output_variant WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {

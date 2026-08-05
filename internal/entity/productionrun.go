@@ -62,6 +62,25 @@ var ErrProductionRunLineProductUnlinked = errors.New("a received line's product 
 // the run's tech-card size grid — booking it would mint sellable stock in a size the style never had.
 var ErrProductionRunLineSizeUnlinked = errors.New("a received line's size is not part of the run's tech card size grid")
 
+// ErrProductionRunLineVariantUnlinked is returned at PLAN time when a run line names a colour
+// variant that is not a colour of the run's own tech card — a stale id, another card's colour, or a
+// variant on a run whose card is sellable (a sellable card can have no colours at all). Booking it
+// would send this run's output into a bucket belonging to something else.
+var ErrProductionRunLineVariantUnlinked = errors.New("a run line's colour variant does not belong to this run's tech card")
+
+// ErrProductionRunLineVariantMixedGrid is returned at PLAN time when a grid half-names colours: once
+// any line produces a colour variant, every product-less line must. Such a grid is plannable but
+// UNRECEIVABLE — the receipt books one bucket per colour and has nowhere to put a colourless line's
+// units — so it is refused while the run can still be edited, not at the receipt an auxiliary run
+// can never unwind.
+var ErrProductionRunLineVariantMixedGrid = errors.New("this run mixes colour lines with a colourless one; give every line a colour, or none")
+
+// ErrProductionRunLineVariantRetired is returned at PLAN time when a NEW line names a deactivated
+// colour. Retirement means "we no longer make this colour", so planning fresh output into it is the
+// mistake to catch — while a line that already referenced the colour when it was live keeps saving,
+// so a retirement never freezes the run it was planned on.
+var ErrProductionRunLineVariantRetired = errors.New("a run line names a retired colour variant; reactivate the colour or pick another")
+
 // ErrProductionRunConcurrentModification is returned at receive when the run's received quantities
 // changed between the handler's read and the receive transaction (a concurrent edit). The caller
 // should reload and retry.
@@ -118,12 +137,17 @@ type ProductionRunLine struct {
 	// LineKey is the line's stable identity on the wire (migration 0230, the 0159/0168 pattern): the
 	// store diffs a submitted grid by it and UPDATEs the matched row in place, so Id survives an edit
 	// and a receipt line can hold a real FK to it. Client-minted; empty means "new line".
-	LineKey     string        `db:"line_key"`
-	ProductId   sql.NullInt32 `db:"product_id"`
-	SizeId      int           `db:"size_id"`
-	PlannedQty  int           `db:"planned_qty"`
-	ReceivedQty sql.NullInt64 `db:"received_qty"`
-	DefectQty   sql.NullInt64 `db:"defect_qty"`
+	LineKey   string        `db:"line_key"`
+	ProductId sql.NullInt32 `db:"product_id"`
+	// OutputVariantId is the aux colour this line produces (tech_card_output_variant, 0252/0253) —
+	// the colour dimension of a product-less line. INVALID means either a sellable line (it names a
+	// product instead) or the single output line of a legacy single-output aux card; the two are
+	// mutually exclusive with ProductId (chk_prl_variant_xor, and the DTO says so readably).
+	OutputVariantId sql.NullInt32 `db:"output_variant_id"`
+	SizeId          int           `db:"size_id"`
+	PlannedQty      int           `db:"planned_qty"`
+	ReceivedQty     sql.NullInt64 `db:"received_qty"`
+	DefectQty       sql.NullInt64 `db:"defect_qty"`
 }
 
 // ProductionRunLineKeyLen is the exact length of a production-run line key. It matches the CHAR(26)
