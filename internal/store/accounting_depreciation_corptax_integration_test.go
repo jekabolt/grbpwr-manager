@@ -106,6 +106,12 @@ func TestDepreciationCorpTaxEndToEnd(t *testing.T) {
 		for _, id := range entryIDs {
 			_, _ = testDB.ExecContext(context.Background(), "DELETE FROM acct_journal_entry WHERE id = ?", id)
 		}
+		// PostDepreciationDue / AccrueCorporationTax create journal entries INTERNALLY — their ids
+		// never reach entryIDs, and a leaked 2026-03 depreciation charge polluted the March trial
+		// balance of TestAccountingReportsEndToEnd (suite-order-dependent failure). The container DB
+		// is throwaway and no other test relies on pre-existing depreciation/corp-tax entries, so a
+		// sweep by source_type is the robust cleanup.
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM acct_journal_entry WHERE source_type IN ('depreciation', 'corp_tax')")
 		for _, id := range assetIDs {
 			_, _ = testDB.ExecContext(context.Background(), "DELETE FROM fixed_asset WHERE id = ?", id)
 		}

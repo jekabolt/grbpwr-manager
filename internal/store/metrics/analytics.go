@@ -392,6 +392,7 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 			WHERE co.order_status_id IN (%[1]s)
 				AND co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
+				AND oi.grade = 'A'
 			GROUP BY oi.product_id, oi.size_id
 		),
 		last_sales_before AS (
@@ -401,6 +402,7 @@ func (as *analyticsStore) GetDeadStock(ctx context.Context, from, to time.Time, 
 			WHERE co.order_status_id IN (%[1]s)
 				AND co.currency = :baseCurrency
 				AND co.placed < :from
+				AND oi.grade = 'A'
 			GROUP BY oi.product_id, oi.size_id
 		),
 		last_sales AS (

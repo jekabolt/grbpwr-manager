@@ -446,12 +446,16 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 // so a retried OrderPaymentDone copies the identical values and re-stamps nothing (lock guard). Rejects
 // payment if any paid line has no resolvable live variant SKU — the frozen identity would be unknown.
 func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID int) error {
+	// Joined on the line's own variant_id (not the (product, size) pair): the pair is ambiguous
+	// once a B row exists (0251), and variant_id is the FK RESTRICT anchor resolved at insert —
+	// the row cannot have been deleted, and uq_product_size_variant means the pair+grade path
+	// would land on the same row anyway. The re-read still picks up an admin SKU re-mint that
+	// happened between checkout and payment (problem 003).
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE order_item oi
-		JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id AND ps.grade = 'A'
+		JOIN product_size ps ON ps.id = oi.variant_id
 		JOIN product p ON p.id = oi.product_id
-		SET oi.variant_id = ps.id,
-		    oi.variant_sku_snapshot = ps.sku,
+		SET oi.variant_sku_snapshot = ps.sku,
 		    oi.base_sku_snapshot = COALESCE(p.sku, oi.base_sku_snapshot)
 		WHERE oi.order_id = :oid AND ps.sku IS NOT NULL AND ps.sku != ''`,
 		map[string]any{"oid": orderID}); err != nil {
@@ -461,7 +465,7 @@ func freezeAndResnapshotOrderSKUs(ctx context.Context, db dependency.DB, orderID
 	// identity we are about to freeze. Missing row or NULL/empty SKU both fail via the LEFT JOIN.
 	missing, err := storeutil.QueryCountNamed(ctx, db, `
 		SELECT COUNT(*) FROM order_item oi
-		LEFT JOIN product_size ps ON ps.product_id = oi.product_id AND ps.size_id = oi.size_id AND ps.grade = 'A'
+		LEFT JOIN product_size ps ON ps.id = oi.variant_id
 		WHERE oi.order_id = :oid AND (ps.sku IS NULL OR ps.sku = '')`,
 		map[string]any{"oid": orderID})
 	if err != nil {

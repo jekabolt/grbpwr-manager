@@ -27,6 +27,7 @@ func (s *Store) GetInventoryValuation(ctx context.Context, from, to time.Time, l
 			JOIN customer_order co ON co.id = oi.order_id
 			WHERE co.placed >= :from AND co.placed < :to
 				AND co.order_status_id IN (:statusIds)
+				AND oi.grade = 'A'
 			GROUP BY oi.product_id
 		)
 		SELECT

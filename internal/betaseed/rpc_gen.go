@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (296 rpc) ----
+// ---- admin (298 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -1629,6 +1629,14 @@ func (c *Client) ListTechCards(ctx context.Context, in *admin.ListTechCardsReque
 	return out, nil
 }
 
+func (c *Client) ListVariantSeconds(ctx context.Context, in *admin.ListVariantSecondsRequest) (*admin.ListVariantSecondsResponse, error) {
+	out := new(admin.ListVariantSecondsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/colorways/{colorway_id}/seconds", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) MarkFulfillmentDelivered(ctx context.Context, in *admin.MarkFulfillmentDeliveredRequest) (*admin.MarkFulfillmentDeliveredResponse, error) {
 	out := new(admin.MarkFulfillmentDeliveredResponse)
 	if err := c.call(ctx, "POST", "/api/admin/fulfillment/deliver", in, out); err != nil {
@@ -1968,6 +1976,14 @@ func (c *Client) SetTaskChecklistItemDone(ctx context.Context, in *admin.SetTask
 func (c *Client) SetTrackingNumber(ctx context.Context, in *admin.SetTrackingNumberRequest) (*admin.SetTrackingNumberResponse, error) {
 	out := new(admin.SetTrackingNumberResponse)
 	if err := c.call(ctx, "POST", "/api/admin/orders/{order_uuid}/set-tracking-number", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetVariantPrice(ctx context.Context, in *admin.SetVariantPriceRequest) (*admin.SetVariantPriceResponse, error) {
+	out := new(admin.SetVariantPriceResponse)
+	if err := c.call(ctx, "POST", "/api/admin/variants/{variant_id}/price", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

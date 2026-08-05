@@ -114,6 +114,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			oi.order_id,
 			oi.product_id,
 			oi.variant_id,
+			oi.grade,
 			oi.quantity,
 			oi.size_id,
 			oi.product_price,
@@ -195,14 +196,16 @@ func fetchProductTranslations(ctx context.Context, db dependency.DB, productIds 
 
 func getOrderItemsInsert(ctx context.Context, db dependency.DB, orderId int) ([]entity.OrderItemInsert, error) {
 	query := `
-		SELECT 
+		SELECT
 			product_id,
 			product_price,
 			product_sale_percentage,
 			product_price * (1 - COALESCE(product_sale_percentage, 0) / 100) AS product_price_with_sale,
 			quantity,
-			size_id
-		FROM order_item 
+			size_id,
+			variant_id,
+			grade
+		FROM order_item
 		WHERE order_id = :orderId
 	`
 

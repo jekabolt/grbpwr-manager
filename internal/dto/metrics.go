@@ -1281,6 +1281,10 @@ func ConvertSellThroughByDropToPb(list []entity.SellThroughByDropRow) []*pb_admi
 		if r.HasCost {
 			row.GrossMargin = &decimal.Decimal{Value: r.GrossMargin.String()}
 			row.GrossMarginPct = r.GrossMarginPct
+			// The margin base: snapshot-costed lines only. Shipped so the client can show margin
+			// coverage (costed_revenue / revenue) instead of reading a costed-subset margin
+			// against the full revenue figure.
+			row.CostedRevenue = &decimal.Decimal{Value: r.CostedRevenue.String()}
 		}
 		if r.DaysTo50Pct.Valid {
 			v := r.DaysTo50Pct.Int64

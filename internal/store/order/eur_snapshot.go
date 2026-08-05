@@ -13,6 +13,42 @@ import (
 
 const eurCurrency = "EUR"
 
+// variantEURPrices returns the manual EUR price (product_size_price) for the B-grade lines in
+// items, keyed by variant id. Deliberately queries 'EUR' literally — this file builds the EUR
+// loyalty snapshot, not a base-currency figure.
+func variantEURPrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+	ids := make([]int, 0, len(items))
+	seen := make(map[int]struct{}, len(items))
+	for _, it := range items {
+		if entity.NormalizeVariantGrade(it.Grade) != entity.VariantGradeB || it.VariantID == 0 {
+			continue
+		}
+		if _, ok := seen[it.VariantID]; ok {
+			continue
+		}
+		seen[it.VariantID] = struct{}{}
+		ids = append(ids, it.VariantID)
+	}
+	out := make(map[int]decimal.Decimal, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	type row struct {
+		VariantID int             `db:"product_size_id"`
+		Price     decimal.Decimal `db:"price"`
+	}
+	rows, err := storeutil.QueryListNamed[row](ctx, db,
+		`SELECT product_size_id, price FROM product_size_price WHERE currency = 'EUR' AND product_size_id IN (:ids)`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("load variant EUR prices: %w", err)
+	}
+	for _, r := range rows {
+		out[r.VariantID] = r.Price
+	}
+	return out, nil
+}
+
 // eurUnitPrices returns the base EUR unit price per product id.
 func eurUnitPrices(ctx context.Context, db dependency.DB, productIDs []int) (map[int]decimal.Decimal, error) {
 	out := map[int]decimal.Decimal{}
@@ -62,6 +98,14 @@ func computeTotalPriceEUR(
 	if err != nil {
 		return decimal.NullDecimal{}, err
 	}
+	// B-grade lines are valued at THEIR OWN manual EUR price (product_size_price, 0251) — the
+	// A-grade catalogue EUR price would inflate loyalty spend for every seconds unit. A sellable
+	// B variant always carries the base(EUR) row (SetVariantPrice requires it), so a miss means
+	// the snapshot cannot be faithful and the order is left uncounted, same as an uncosted A line.
+	bEURPrices, err := variantEURPrices(ctx, db, items)
+	if err != nil {
+		return decimal.NullDecimal{}, err
+	}
 
 	goodsOrder := decimal.Zero
 	goodsEUR := decimal.Zero
@@ -69,6 +113,16 @@ func computeTotalPriceEUR(
 	for _, it := range items {
 		qty := it.QuantityDecimal()
 		goodsOrder = goodsOrder.Add(it.ProductPriceWithSaleDecimal().Mul(qty))
+
+		if entity.NormalizeVariantGrade(it.Grade) == entity.VariantGradeB {
+			unit, ok := bEURPrices[it.VariantID]
+			if !ok {
+				return decimal.NullDecimal{}, nil
+			}
+			// The manual price is exact — no sale percentage applies to seconds.
+			goodsEUR = goodsEUR.Add(unit.Mul(qty))
+			continue
+		}
 
 		base, ok := eurPrices[it.ProductId]
 		if !ok {

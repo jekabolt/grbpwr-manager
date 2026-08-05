@@ -340,6 +340,15 @@ func (s *Server) validateOrderItemsWithReservation(ctx context.Context, items []
 	additionalAdjustments := make([]entity.OrderItemAdjustment, 0)
 
 	for _, item := range oiv.ValidItems {
+		if entity.NormalizeVariantGrade(item.Grade) == entity.VariantGradeB {
+			// Seconds (0251) bypass the soft-reservation layer: both the stock read below and
+			// the reservation keys are (product, size) A-grade — running a B line through them
+			// would preview the WRONG row's availability and pollute the A row's reservations.
+			// The validation above already checked the B row's stock, and the DB's conditional
+			// decrement at payment remains the real guard; B is a low-volume direct-SKU flow.
+			adjustedItems = append(adjustedItems, item)
+			continue
+		}
 		// Get current stock from database
 		currentStock, exists, err := s.repo.Products().GetProductSizeStock(ctx, item.ProductId, item.SizeId)
 		if err != nil || !exists {

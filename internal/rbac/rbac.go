@@ -156,6 +156,8 @@ var methodRequirements = map[string]Requirement{
 	"CreateVariant":            wr(SectionProducts), // R2 variant CRUD
 	"UpdateVariant":            wr(SectionProducts), // R2 variant CRUD (status patch)
 	"ArchiveVariant":           wr(SectionProducts), // R2 archive-not-delete
+	"ListVariantSeconds":       rd(SectionProducts), // 0251 B-grade seconds read surface
+	"SetVariantPrice":          wr(SectionProducts), // 0251 manual B-grade price (catalogue price, not costing)
 	// Style size chart (R5). Preserves the pre-R5 authorization: the chart used to be edited through
 	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
 	"GetStyleSizeChart":               rd(SectionProducts),

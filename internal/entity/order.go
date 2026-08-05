@@ -211,6 +211,10 @@ type OrderItemInsert struct {
 	// resolved value used as the merge key / adjustment identity. Transient — never its own column (the
 	// stored snapshot is OrderItem.SKU = variant_sku_snapshot).
 	VariantSKU string `db:"-"`
+	// Grade is the product_size.grade of the resolved variant ('A' default, 'B' = manually priced
+	// factory seconds), snapshotted onto the line (0251). Server-resolved from the variant row,
+	// never client input; empty is normalised to 'A' (pre-0251 rows and legacy callers).
+	Grade string `db:"grade"`
 }
 
 func (oii *OrderItemInsert) ProductPriceWithSaleDecimal() decimal.Decimal {
@@ -269,6 +273,11 @@ type OrderItemsByProductId []OrderItemInsert
 func (a OrderItemsByProductId) Len() int { return len(a) }
 func (a OrderItemsByProductId) Less(i, j int) bool {
 	if a[i].ProductId == a[j].ProductId {
+		if a[i].SizeId == a[j].SizeId {
+			// A and B variants share the (product, size) pair (0251) — break the tie on the
+			// variant identity so sort order (and compareItems alignment) stays deterministic.
+			return a[i].VariantID < a[j].VariantID
+		}
 		return a[i].SizeId < a[j].SizeId
 	}
 	return a[i].ProductId < a[j].ProductId

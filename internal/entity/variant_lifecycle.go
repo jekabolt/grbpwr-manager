@@ -10,6 +10,18 @@ var ErrVariantExists = errors.New("variant already exists for this size")
 // FailedPrecondition.
 var ErrColorwayArchived = errors.New("colourway is archived")
 
+// ErrVariantPriceNotSeconds is returned by SetVariantPrice when the target variant is not grade 'B'
+// (0251): manual per-variant prices exist only for factory seconds — A prices live on the colourway
+// (product_price). The API layer maps it to FailedPrecondition.
+var ErrVariantPriceNotSeconds = errors.New("manual variant prices apply to B-grade (seconds) variants only")
+
+// SecondsVariant is one B-grade (factory seconds) variant with its manual price list (0251). An
+// empty Prices list means the variant is not sellable (fail-closed).
+type SecondsVariant struct {
+	Variant
+	Prices []ColorwayPriceInsert
+}
+
 // VariantStatus is a variant's (product_size) stored lifecycle (R2, migration 0155). A variant is
 // archive-not-delete: an order line, waitlist row and stock-history row all address the immutable
 // product_size.id, so a referenced variant is retired by flipping this flag, never physically removed.
