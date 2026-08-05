@@ -141,18 +141,25 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 	// Snapshot each line's variant SKU (product_size.sku) so order history keeps the SKU sold even
 	// if the product is later re-minted (task 15). Re-snapshotted at OrderPaymentDone (the freeze
 	// point) in case it changed between checkout and payment.
-	snapByProductSize, err := fetchVariantSnapshots(ctx, db, items)
+	snapByVariant, err := fetchVariantSnapshots(ctx, db, items)
 	if err != nil {
 		return fmt.Errorf("can't fetch variant snapshots for order line: %w", err)
+	}
+	// Base-currency manual prices for B-grade lines (product_size_price): a B line's
+	// product_price_base must be ITS OWN price — falling back to the product's A-grade base
+	// price would overstate reconstructed revenue for every seconds sale.
+	baseByBVariant, err := fetchVariantBasePrices(ctx, db, items)
+	if err != nil {
+		return fmt.Errorf("can't fetch variant base prices for order-item snapshot: %w", err)
 	}
 	rows := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		// The variant identity snapshot is mandatory and immutable (problems 019/023): a line must
 		// resolve to a live variant (product_size) that has a non-empty SKU, or the order is rejected here
 		// — before any commit — so order history can never be born without a stable identity.
-		// fetchVariantSnapshots omits NULL/empty SKUs, so a missing row (mismatched pair) or a blank SKU
+		// fetchVariantSnapshots omits NULL/empty SKUs, so a missing row (unresolved line) or a blank SKU
 		// both fail this check. variant_id (product_size.id) is the FK RESTRICT anchor of the line.
-		snap, ok := snapByProductSize[[2]int{item.ProductId, item.SizeId}]
+		snap, ok := snapByVariant[item.VariantID]
 		if !ok || snap.SKU == "" {
 			return fmt.Errorf("cannot create order line: product %d size %d has no live variant SKU", item.ProductId, item.SizeId)
 		}
@@ -164,16 +171,34 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 			"quantity":                item.QuantityDecimal(),
 			"size_id":                 item.SizeId,
 			"variant_id":              snap.VariantID,
+			"grade":                   gradeOrA(snap.Grade),
 			"cost_price_at_sale":      nil,
 			"product_price_base":      nil,
 			"variant_sku_snapshot":    snap.SKU,
 			"base_sku_snapshot":       snap.BaseSKU,
 		}
-		if cost, ok := costByProduct[item.ProductId]; ok {
-			row["cost_price_at_sale"] = cost
-		}
-		if base, ok := basePriceByProduct[item.ProductId]; ok {
+		if snap.Grade == entity.VariantGradeB {
+			// Zero-cost invariant (0249/0251): the A units absorbed the run's full cost, so a
+			// seconds sale carries an explicit 0 snapshot — NOT the product's A cost, and not
+			// NULL (the line is costed; its cost is genuinely zero).
+			row["cost_price_at_sale"] = decimal.Zero
+			// The base snapshot is MANDATORY for a B line: a NULL would make every money metric
+			// COALESCE onto the A catalogue base price — fabricated full-price revenue at zero
+			// cost. This hard error also closes the storefront race where SetVariantPrice
+			// clears/narrows the set between validation and insert, and the admin custom-order
+			// path (which prices lines by hand and never consulted product_size_price).
+			base, ok := baseByBVariant[item.VariantID]
+			if !ok {
+				return fmt.Errorf("cannot create order line: seconds variant %s has no base-currency manual price (set the variant price first)", snap.SKU)
+			}
 			row["product_price_base"] = base
+		} else {
+			if cost, ok := costByProduct[item.ProductId]; ok {
+				row["cost_price_at_sale"] = cost
+			}
+			if base, ok := basePriceByProduct[item.ProductId]; ok {
+				row["product_price_base"] = base
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -182,34 +207,89 @@ func insertOrderItems(ctx context.Context, db dependency.DB, items []entity.Orde
 }
 
 // variantSnapshot is the immutable identity a sold line freezes: the stable variant id (product_size.id,
-// the FK RESTRICT anchor), the variant SKU, and the base SKU (product.sku).
+// the FK RESTRICT anchor), the variant SKU, the base SKU (product.sku), and the variant grade (0251).
 type variantSnapshot struct {
 	VariantID int    `db:"id"`
 	ProductID int    `db:"product_id"`
 	SizeID    int    `db:"size_id"`
 	SKU       string `db:"variant_sku"`
 	BaseSKU   string `db:"base_sku"`
+	Grade     string `db:"grade"`
 }
 
-// fetchVariantSnapshots returns the live variant id + variant SKU (product_size) and base SKU
-// (product.sku) for each (product_id, size_id) referenced by items, keyed by [2]int{productID, sizeID}.
-// Rows with a NULL/empty variant sku are omitted (an order line must pin a minted variant).
-func fetchVariantSnapshots(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[[2]int]variantSnapshot, error) {
-	ids := distinctProductIDs(items)
+// fetchVariantSnapshots returns the live variant SKU (product_size), base SKU (product.sku) and grade
+// for each resolved variant referenced by items, keyed by variant id. Addressing by id (not the
+// (product, size) pair) is what lets the A and B rows of the same pair coexist on one order (0251);
+// every item reaching the insert has VariantID resolved (validation drops unresolved lines). Rows
+// with a NULL/empty variant sku are omitted (an order line must pin a minted variant).
+func fetchVariantSnapshots(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]variantSnapshot, error) {
+	ids := distinctVariantIDs(items)
 	if len(ids) == 0 {
-		return map[[2]int]variantSnapshot{}, nil
+		return map[int]variantSnapshot{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[variantSnapshot](ctx, db,
-		`SELECT ps.id, ps.product_id, ps.size_id, ps.sku AS variant_sku, COALESCE(p.sku, '') AS base_sku
+		`SELECT ps.id, ps.product_id, ps.size_id, ps.sku AS variant_sku, COALESCE(p.sku, '') AS base_sku, ps.grade
 		 FROM product_size ps JOIN product p ON p.id = ps.product_id
-		 WHERE ps.product_id IN (:ids) AND ps.grade = 'A' AND ps.sku IS NOT NULL AND ps.sku != ''`,
+		 WHERE ps.id IN (:ids) AND ps.sku IS NOT NULL AND ps.sku != ''`,
 		map[string]any{"ids": ids})
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[[2]int]variantSnapshot, len(rows))
+	out := make(map[int]variantSnapshot, len(rows))
 	for _, r := range rows {
-		out[[2]int{r.ProductID, r.SizeID}] = r
+		out[r.VariantID] = r
+	}
+	return out, nil
+}
+
+// distinctVariantIDs returns the unique non-zero variant ids referenced by items, order-preserving.
+func distinctVariantIDs(items []entity.OrderItemInsert) []int {
+	ids := make([]int, 0, len(items))
+	seen := make(map[int]struct{}, len(items))
+	for _, item := range items {
+		if item.VariantID == 0 {
+			continue
+		}
+		if _, ok := seen[item.VariantID]; ok {
+			continue
+		}
+		seen[item.VariantID] = struct{}{}
+		ids = append(ids, item.VariantID)
+	}
+	return ids
+}
+
+// fetchVariantBasePrices returns the base-currency manual price (product_size_price, 0251) for the
+// B-grade variants in items, keyed by variant id. B variants with no base-currency price row are
+// omitted (their product_price_base stays NULL — the A-grade catalogue fallback must NOT apply to a
+// seconds line, so validation requires the base row before a B variant is sellable).
+func fetchVariantBasePrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]decimal.Decimal, error) {
+	ids := make([]int, 0, len(items))
+	seen := make(map[int]struct{}, len(items))
+	for _, item := range items {
+		if item.Grade != entity.VariantGradeB || item.VariantID == 0 {
+			continue
+		}
+		if _, ok := seen[item.VariantID]; ok {
+			continue
+		}
+		seen[item.VariantID] = struct{}{}
+		ids = append(ids, item.VariantID)
+	}
+	if len(ids) == 0 {
+		return map[int]decimal.Decimal{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		VariantID int             `db:"product_size_id"`
+		Price     decimal.Decimal `db:"price"`
+	}](ctx, db, `SELECT product_size_id, price FROM product_size_price WHERE product_size_id IN (:ids) AND UPPER(currency) = :base`,
+		map[string]any{"ids": ids, "base": strings.ToUpper(cache.GetBaseCurrency())})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		out[r.VariantID] = r.Price
 	}
 	return out, nil
 }

@@ -120,6 +120,12 @@ type (
 		// SetVariantStatus applies a lifecycle status to a variant under an optimistic guard (R2:
 		// archive-not-delete). Returns sql.ErrNoRows if the variant is absent; size_id/SKU are immutable.
 		SetVariantStatus(ctx context.Context, variantID int, target entity.VariantStatus) (entity.Variant, error)
+		// ListVariantSeconds returns a colourway's B-grade (seconds) variants with their manual price
+		// lists (0251) — the admin's only read surface for seconds stock.
+		ListVariantSeconds(ctx context.Context, productID int) ([]entity.SecondsVariant, error)
+		// SetVariantPrice atomically replaces a B-grade variant's manual price set (0251); empty clears
+		// (fail-closed unsellable). entity.ErrVariantPriceNotSeconds for grade 'A', sql.ErrNoRows if absent.
+		SetVariantPrice(ctx context.Context, variantID int, prices []entity.ColorwayPriceInsert) error
 		// RelinkDraftColorway moves a DRAFT colourway onto a different style (R4), guarded on both sides'
 		// shared lock_version, re-minting its SKU. entity.ErrColorwayNotDraft if not draft,
 		// entity.ErrTechCardConflict on a stale version, sql.ErrNoRows if colourway/target style absent.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"log/slog"
 
@@ -50,14 +51,14 @@ func getProductsSizesByIdsWithLock(ctx context.Context, db dependency.DB, items 
 	var productSizeParams []interface{}
 	var conditions []string
 	for _, item := range items {
-		conditions = append(conditions, "(product_id = ? AND size_id = ?)")
-		productSizeParams = append(productSizeParams, item.ProductId, item.SizeId)
+		conditions = append(conditions, "(product_id = ? AND size_id = ? AND grade = ?)")
+		productSizeParams = append(productSizeParams, item.ProductId, item.SizeId, gradeOrA(item.Grade))
 	}
 
 	query := fmt.Sprintf(`
-		SELECT product_id, size_id, quantity
+		SELECT product_id, size_id, quantity, grade
 		FROM product_size
-		WHERE status = 1 AND grade = 'A' AND (%s)`, joinConditions(conditions))
+		WHERE status = 1 AND (%s)`, joinConditions(conditions))
 
 	if forUpdate {
 		query += " FOR UPDATE"
@@ -82,34 +83,83 @@ func joinConditions(conditions []string) string {
 	return result
 }
 
+// gradeOrA normalises an order line's grade: empty (pre-0251 rows, legacy callers, unresolved
+// lines) means the sellable default 'A'.
+func gradeOrA(grade string) string {
+	return entity.NormalizeVariantGrade(grade)
+}
+
+// fetchVariantPrices loads the manual per-variant prices (product_size_price, 0251) for the
+// B-grade lines in items, keyed variantID → UPPER(currency) → price. A-grade lines price from
+// the product catalogue and are skipped. Empty map when the cart has no B lines.
+func fetchVariantPrices(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) (map[int]map[string]decimal.Decimal, error) {
+	seen := make(map[int]struct{}, len(items))
+	ids := make([]int, 0, len(items))
+	for _, it := range items {
+		if it.Grade != entity.VariantGradeB || it.VariantID == 0 {
+			continue
+		}
+		if _, ok := seen[it.VariantID]; ok {
+			continue
+		}
+		seen[it.VariantID] = struct{}{}
+		ids = append(ids, it.VariantID)
+	}
+	out := make(map[int]map[string]decimal.Decimal, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		VariantID int             `db:"product_size_id"`
+		Currency  string          `db:"currency"`
+		Price     decimal.Decimal `db:"price"`
+	}](ctx, db, `SELECT product_size_id, currency, price FROM product_size_price WHERE product_size_id IN (:ids)`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("fetch variant prices: %w", err)
+	}
+	for _, r := range rows {
+		if out[r.VariantID] == nil {
+			out[r.VariantID] = make(map[string]decimal.Decimal)
+		}
+		out[r.VariantID][strings.ToUpper(r.Currency)] = r.Price
+	}
+	return out, nil
+}
+
 // resolvedVariantRow is the product_size projection used to resolve an order line's variant addressing.
 type resolvedVariantRow struct {
 	ID        int    `db:"id"`
 	ProductID int    `db:"product_id"`
 	SizeID    int    `db:"size_id"`
 	SKU       string `db:"sku"`
+	Grade     string `db:"grade"`
 }
 
 // resolveVariantAddressing fills each line's canonical variant fields (VariantID, ProductId, SizeId,
-// VariantSKU) from whichever addressing the caller supplied: the public variant_sku (storefront submit),
-// the internal variant_id (admin custom order), or an already-resolved (product_id, size_id) pair (order
-// re-validation loaded from the DB). (product_id, size_id, grade) is UNIQUE on product_size and this path pins grade A, so the pair path is
-// unambiguous. It is idempotent (re-resolving a resolved line reproduces the same fields). Lines that map
-// to no live product_size are left with ProductId==0 so the availability check downstream drops them as
-// an out-of-stock adjustment, identified by the retained VariantSKU. Read-only: variants are archived,
-// never deleted (FK RESTRICT), so the pair a SKU resolves to is stable under the later FOR UPDATE lock.
+// VariantSKU, Grade) from whichever addressing the caller supplied: the public variant_sku (storefront
+// submit), the internal variant_id (admin custom order), or an already-resolved (product_id, size_id)
+// pair (order re-validation loaded from the DB). The sku/id modes carry the variant's own grade — a
+// '-B' SKU submitted directly resolves to the B row (0251: sellable once manually priced). The pair
+// mode stays pinned to grade 'A': (product_id, size_id) alone is ambiguous once a B row exists, and
+// every pair-addressed caller re-validates lines whose variant_id is already resolved (B lines re-enter
+// through the id mode). It is idempotent (re-resolving a resolved line reproduces the same fields).
+// Lines that map to no live product_size are left with ProductId==0 so the availability check
+// downstream drops them as an out-of-stock adjustment, identified by the retained VariantSKU.
+// Read-only: variants are archived, never deleted (FK RESTRICT), so the row an address resolves to is
+// stable under the later FOR UPDATE lock.
 func resolveVariantAddressing(ctx context.Context, db dependency.DB, items []entity.OrderItemInsert) error {
 	var params []interface{}
 	var conds []string
 	for i := range items {
 		it := &items[i]
 		switch {
-		case it.ProductId != 0 && it.SizeId != 0:
-			conds = append(conds, "(product_id = ? AND size_id = ?)")
-			params = append(params, it.ProductId, it.SizeId)
 		case it.VariantID != 0:
 			conds = append(conds, "id = ?")
 			params = append(params, it.VariantID)
+		case it.ProductId != 0 && it.SizeId != 0:
+			conds = append(conds, "(product_id = ? AND size_id = ? AND grade = 'A')")
+			params = append(params, it.ProductId, it.SizeId)
 		case it.VariantSKU != "":
 			conds = append(conds, "sku = ?")
 			params = append(params, it.VariantSKU)
@@ -118,7 +168,7 @@ func resolveVariantAddressing(ctx context.Context, db dependency.DB, items []ent
 	if len(conds) == 0 {
 		return nil
 	}
-	query := `SELECT id, product_id, size_id, COALESCE(sku, '') AS sku FROM product_size WHERE grade = 'A' AND ` + joinConditions(conds)
+	query := `SELECT id, product_id, size_id, COALESCE(sku, '') AS sku, grade FROM product_size WHERE ` + joinConditions(conds)
 	var rows []resolvedVariantRow
 	if err := db.SelectContext(ctx, &rows, query, params...); err != nil {
 		return fmt.Errorf("resolve variant addressing: %w", err)
@@ -131,18 +181,20 @@ func resolveVariantAddressing(ctx context.Context, db dependency.DB, items []ent
 		if rows[i].SKU != "" {
 			bySKU[rows[i].SKU] = i
 		}
-		byPair[[2]int{rows[i].ProductID, rows[i].SizeID}] = i
+		if rows[i].Grade == entity.VariantGradeA {
+			byPair[[2]int{rows[i].ProductID, rows[i].SizeID}] = i
+		}
 	}
 	for i := range items {
 		it := &items[i]
 		idx := -1
 		switch {
-		case it.ProductId != 0 && it.SizeId != 0:
-			if j, ok := byPair[[2]int{it.ProductId, it.SizeId}]; ok {
-				idx = j
-			}
 		case it.VariantID != 0:
 			if j, ok := byID[it.VariantID]; ok {
+				idx = j
+			}
+		case it.ProductId != 0 && it.SizeId != 0:
+			if j, ok := byPair[[2]int{it.ProductId, it.SizeId}]; ok {
 				idx = j
 			}
 		case it.VariantSKU != "":
@@ -158,6 +210,7 @@ func resolveVariantAddressing(ctx context.Context, db dependency.DB, items []ent
 		it.ProductId = r.ProductID
 		it.SizeId = r.SizeID
 		it.VariantSKU = r.SKU
+		it.Grade = r.Grade
 	}
 	return nil
 }
@@ -206,8 +259,16 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 
 	prdSizeMap := make(map[string]entity.Variant)
 	for _, prdSize := range prdSizes {
-		key := fmt.Sprintf("%d-%d", prdSize.ProductId, prdSize.SizeId)
+		key := fmt.Sprintf("%d-%d-%s", prdSize.ProductId, prdSize.SizeId, gradeOrA(prdSize.Grade))
 		prdSizeMap[key] = prdSize
+	}
+
+	// Manual per-variant prices for the B-grade lines in the cart (0251). Loaded once; a B line
+	// with no price row in the order currency is rejected (fail-closed — unpriced seconds are
+	// not sellable), mirroring getProductPrice's missing-currency error for A lines.
+	variantPrices, err := fetchVariantPrices(ctx, db, items)
+	if err != nil {
+		return nil, nil, fmt.Errorf("can't fetch variant prices: %w", err)
 	}
 
 	validItems := make([]entity.OrderItem, 0, len(items))
@@ -221,7 +282,7 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 			return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("invalid quantity for product %d size %d: must be positive", item.ProductId, item.SizeId)}
 		}
 
-		sizeKey := fmt.Sprintf("%d-%d", item.ProductId, item.SizeId)
+		sizeKey := fmt.Sprintf("%d-%d-%s", item.ProductId, item.SizeId, gradeOrA(item.Grade))
 		prdSize, exists := prdSizeMap[sizeKey]
 
 		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
@@ -263,16 +324,32 @@ func validateOrderItemsStockAvailabilityWithLock(ctx context.Context, rep depend
 		}
 
 		productBody := &prd.ProductDisplay.ProductBody
-		productPrice, err := getProductPrice(&prd, currency)
-		if err != nil {
-			return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("product %d does not have a price in currency %s", prd.Id, currency)}
-		}
-		item.ProductPrice = productPrice
-		if productBody.SalePercentageDecimal().GreaterThan(decimal.Zero) {
-			item.ProductSalePercentage = productBody.SalePercentageDecimal()
-			item.ProductPriceWithSale = productPrice.Mul(decimal.NewFromInt(100).Sub(productBody.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
+		if item.Grade == entity.VariantGradeB {
+			// B-grade sells ONLY at its manual per-variant price (0251): exact, no sale
+			// percentage on top (the manual figure IS the discounted price), fail-closed
+			// when unpriced in the order currency.
+			bPrice, ok := variantPrices[item.VariantID][strings.ToUpper(currency)]
+			if !ok {
+				return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("seconds variant %s has no manual price in currency %s", item.VariantSKU, currency)}
+			}
+			if verr := requirePositivePrice(item.ProductId, bPrice); verr != nil {
+				return nil, nil, verr
+			}
+			item.ProductPrice = bPrice
+			item.ProductSalePercentage = decimal.Zero
+			item.ProductPriceWithSale = bPrice
 		} else {
-			item.ProductPriceWithSale = productPrice
+			productPrice, err := getProductPrice(&prd, currency)
+			if err != nil {
+				return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("product %d does not have a price in currency %s", prd.Id, currency)}
+			}
+			item.ProductPrice = productPrice
+			if productBody.SalePercentageDecimal().GreaterThan(decimal.Zero) {
+				item.ProductSalePercentage = productBody.SalePercentageDecimal()
+				item.ProductPriceWithSale = productPrice.Mul(decimal.NewFromInt(100).Sub(productBody.SalePercentageDecimal()).Div(decimal.NewFromInt(100)))
+			} else {
+				item.ProductPriceWithSale = productPrice
+			}
 		}
 
 		productName := canonicalProductName(productBody.Translations, "")
@@ -322,8 +399,18 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 	}
 	prdSizeMap := make(map[string]entity.Variant)
 	for _, ps := range prdSizes {
-		prdSizeMap[fmt.Sprintf("%d-%d", ps.ProductId, ps.SizeId)] = ps
+		prdSizeMap[fmt.Sprintf("%d-%d-%s", ps.ProductId, ps.SizeId, gradeOrA(ps.Grade))] = ps
 	}
+	// Custom orders price lines from the admin-supplied amounts, but a B-grade line still requires
+	// its manual base-currency price row (0251): the insert snapshots product_price_base from it,
+	// and without the row every money metric would COALESCE onto the A catalogue price. Checked
+	// early so the operator gets a clean "set the variant price first" instead of a late insert error.
+	variantPrices, err := fetchVariantPrices(ctx, db, items)
+	if err != nil {
+		return nil, nil, fmt.Errorf("can't fetch variant prices: %w", err)
+	}
+	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
+
 	validItems := make([]entity.OrderItem, 0, len(items))
 	adjustments := make([]entity.OrderItemAdjustment, 0)
 	for _, item := range items {
@@ -336,7 +423,12 @@ func validateOrderItemsStockForCustomOrder(ctx context.Context, rep dependency.R
 		if verr := requirePositivePrice(item.ProductId, item.ProductPriceDecimal()); verr != nil {
 			return nil, nil, verr
 		}
-		sizeKey := fmt.Sprintf("%d-%d", item.ProductId, item.SizeId)
+		if item.Grade == entity.VariantGradeB {
+			if _, ok := variantPrices[item.VariantID][baseCurrency]; !ok {
+				return nil, nil, &entity.ValidationError{Message: fmt.Sprintf("seconds variant %s has no manual price set — set the variant price before selling it (even at a custom amount)", item.VariantSKU)}
+			}
+		}
+		sizeKey := fmt.Sprintf("%d-%d-%s", item.ProductId, item.SizeId, gradeOrA(item.Grade))
 		prdSize, exists := prdSizeMap[sizeKey]
 		if !exists || !prdSize.QuantityDecimal().GreaterThan(decimal.Zero) {
 			adjustments = append(adjustments, entity.OrderItemAdjustment{

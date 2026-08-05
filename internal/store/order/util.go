@@ -33,7 +33,9 @@ func normalizeCustomOrderItems(items []entity.OrderItemInsert, currencyCode stri
 	if !currency.IsSupported(currencyCode) {
 		return nil, &entity.ValidationError{Message: fmt.Sprintf("unsupported order currency %q", currencyCode)}
 	}
-	type itemKey struct{ productID, sizeID int }
+	// variantID distinguishes the A and B rows of the same (product, size) pair (0251) so two
+	// legitimately different per-grade prices are not flagged as inconsistent.
+	type itemKey struct{ productID, sizeID, variantID int }
 	prices := make(map[itemKey]decimal.Decimal, len(items))
 	normalized := make([]entity.OrderItemInsert, 0, len(items))
 	for _, item := range items {
@@ -45,7 +47,7 @@ func normalizeCustomOrderItems(items []entity.OrderItemInsert, currencyCode stri
 		if verr := requirePositivePrice(item.ProductId, price); verr != nil {
 			return nil, verr
 		}
-		key := itemKey{productID: item.ProductId, sizeID: item.SizeId}
+		key := itemKey{productID: item.ProductId, sizeID: item.SizeId, variantID: item.VariantID}
 		if previous, exists := prices[key]; exists && !previous.Equal(price) {
 			return nil, &entity.ValidationError{Message: fmt.Sprintf(
 				"product %d size %d has inconsistent custom prices %s and %s",

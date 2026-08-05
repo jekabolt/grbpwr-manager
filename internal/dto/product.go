@@ -281,6 +281,26 @@ func ConvertPbStylePatchToEntity(brand string, season pb_common.SeasonEnum, seas
 	}, nil
 }
 
+// ConvertPbPriceInsertsToEntity parses wire price inserts ({currency, decimal}) into entity rows.
+// Entries with a nil/unparseable amount are dropped — callers compare input/output lengths when
+// they need to reject rather than skip bad entries (SetVariantPrice does).
+func ConvertPbPriceInsertsToEntity(pbPrices []*pb_common.ColorwayPriceInsert) []entity.ColorwayPriceInsert {
+	return convertPrices(pbPrices)
+}
+
+// ConvertEntityPriceInsertsToPb projects manual price rows ({currency, price}) to the wire price
+// message (used by the seconds listing, 0251).
+func ConvertEntityPriceInsertsToPb(prices []entity.ColorwayPriceInsert) []*pb_common.ColorwayPrice {
+	out := make([]*pb_common.ColorwayPrice, 0, len(prices))
+	for _, p := range prices {
+		out = append(out, &pb_common.ColorwayPrice{
+			Currency: p.Currency,
+			Price:    &pb_decimal.Decimal{Value: p.Price.String()},
+		})
+	}
+	return out
+}
+
 func convertPrices(pbPrices []*pb_common.ColorwayPriceInsert) []entity.ColorwayPriceInsert {
 	var prices []entity.ColorwayPriceInsert
 	for _, pbPrice := range pbPrices {

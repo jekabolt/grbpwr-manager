@@ -189,6 +189,25 @@ service AdminService {
     };
   }
 
+  // ListVariantSeconds returns a colourway's B-grade (factory seconds) variants with their manual
+  // prices (0251). B rows never appear in GetProduct or any storefront read — this is the admin's
+  // only window into seconds stock. An empty prices list means the variant is not sellable yet.
+  rpc ListVariantSeconds(ListVariantSecondsRequest) returns (ListVariantSecondsResponse) {
+    option (google.api.http) = {get: "/api/admin/colorways/{colorway_id}/seconds"};
+  }
+
+  // SetVariantPrice replaces the manual per-variant price set of a B-grade variant (0251, owner
+  // decision: seconds are priced by hand). Full replace: the request's prices become the variant's
+  // price list; an EMPTY list clears all prices and the variant stops being sellable (fail-closed).
+  // The base currency must be present in a non-empty list (order lines snapshot the base price).
+  // Refused for grade='A' variants — A prices live on the colourway (product_price).
+  rpc SetVariantPrice(SetVariantPriceRequest) returns (SetVariantPriceResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/variants/{variant_id}/price"
+      body: "*"
+    };
+  }
+
   // UpdateStyle is the SOLE writer of a style's catalogue facts (brand, sku_season, collection,
   // target_gender, fit, composition, care instructions, model-wears, categories) — R4/§14.7. It is
   // optimistically locked on expected_lock_version (stale -> ABORTED). Changing a SKU fact (season)
@@ -2467,6 +2486,31 @@ message ArchiveVariantRequest {
 }
 
 message ArchiveVariantResponse {}
+
+// B-grade seconds surface (0251). B variants live on the SAME colourway as their A siblings
+// (product_size.grade='B', '-B'-suffixed SKU, own stock) and are minted only by the production
+// receive (defect disposition = seconds) and refund (disposition = seconds) paths.
+message ListVariantSecondsRequest {
+  int64 colorway_id = 1;
+}
+
+// SecondsVariant is one B-grade variant with its manual price list. All rows here are grade 'B'
+// by construction; variant carries the id/size/quantity/SKU/status.
+message SecondsVariant {
+  common.Variant variant = 1;
+  repeated common.ColorwayPrice prices = 2; // manual per-variant prices; EMPTY = not sellable (fail-closed)
+}
+
+message ListVariantSecondsResponse {
+  repeated SecondsVariant seconds = 1;
+}
+
+message SetVariantPriceRequest {
+  int64 variant_id = 1; // must be a grade='B' variant
+  repeated common.ColorwayPriceInsert prices = 2; // full replace; empty clears (variant stops selling); non-empty must include the base currency
+}
+
+message SetVariantPriceResponse {}
 
 // Style size chart (R5, full-replace). The chart is style-owned (tech_card_size_measurement) and shares
 // the style's tech_card.lock_version; there is no separate chart version.
@@ -4872,10 +4916,11 @@ message SellThroughByDropRow {
   double sell_through_pct = 5; // units_sold / (units_sold + units_remaining) × 100
   google.type.Decimal revenue = 6; // lifetime net revenue (base currency) for the drop
   int64 units_bought = 7; // initial-stock proxy: units_sold + units_remaining
-  google.type.Decimal gross_margin = 8; // costed-subset gross margin (base ccy): Σ over the drop's costed products of (revenue − cost_price×units_sold). Meaningful only when has_cost.
+  google.type.Decimal gross_margin = 8; // costed-subset gross margin (base ccy): Σ over the drop's snapshot-costed lines of (line revenue − cost_at_sale×qty). Meaningful only when has_cost.
   double gross_margin_pct = 9; // gross_margin / costed_revenue × 100
-  bool has_cost = 10; // at least one product in the drop has a cost_price (else gross_margin is N/A, not 0)
+  bool has_cost = 10; // at least one sold line carries a sale-time cost snapshot (else gross_margin is N/A, not 0)
   optional int64 days_to_50pct = 11; // days from the drop's first sale to 50% sell-through; unset when the drop hasn't reached 50% yet
+  google.type.Decimal costed_revenue = 12; // revenue of the costed subset — the margin base; compare with `revenue` to read margin coverage
 }
 
 // --- Analytics: Size Run Efficiency ---

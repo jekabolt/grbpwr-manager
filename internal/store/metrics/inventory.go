@@ -38,6 +38,7 @@ func (is *inventoryStore) GetInventoryHealth(ctx context.Context, from, to time.
 			WHERE co.order_status_id IN (%s)
 				AND co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
+				AND oi.grade = 'A'
 			GROUP BY oi.product_id, oi.size_id
 		)
 		SELECT
@@ -157,6 +158,7 @@ func (is *inventoryStore) GetSellThroughByDrop(ctx context.Context, from, to tim
 			JOIN customer_order co ON oi.order_id = co.id
 			LEFT JOIN product_price pp_base ON oi.product_id = pp_base.product_id AND UPPER(pp_base.currency) = UPPER(:baseCurrency)
 			WHERE co.order_status_id IN (%s)
+				AND oi.grade = 'A'
 			GROUP BY oi.product_id
 		),
 		stock AS (
@@ -246,6 +248,7 @@ func (is *inventoryStore) sellThroughTimeline(ctx context.Context, statusIDs str
 		JOIN product p ON oi.product_id = p.id
 		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE co.order_status_id IN (%s)
+			AND oi.grade = 'A'
 			AND p.lifecycle_status <> 4
 			AND sty.collection IS NOT NULL AND sty.collection <> ''
 		GROUP BY sty.collection, DATE(co.placed)
@@ -302,6 +305,7 @@ func (is *inventoryStore) GetSizeRunEfficiency(ctx context.Context, from, to tim
 			WHERE co.order_status_id IN (%s)
 				AND co.currency = :baseCurrency
 				AND co.placed >= :from AND co.placed < :to
+				AND oi.grade = 'A'
 			GROUP BY oi.product_id, oi.size_id
 		),
 		size_analysis AS (

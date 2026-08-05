@@ -95,3 +95,58 @@ func (s *Server) setVariantStatus(ctx context.Context, variantID int, target ent
 	s.afterColorwayLifecycleChange(ctx, v.ProductId)
 	return dto.ConvertEntityVariantToPb(v), nil
 }
+
+// ListVariantSeconds returns a colourway's B-grade (factory seconds) variants with their manual
+// price lists (0251). B rows never appear in GetProduct or storefront reads — this is the admin's
+// only window into seconds stock; an empty prices list marks the variant unsellable (fail-closed).
+func (s *Server) ListVariantSeconds(ctx context.Context, req *pb_admin.ListVariantSecondsRequest) (*pb_admin.ListVariantSecondsResponse, error) {
+	if req.ColorwayId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "colorway_id is required")
+	}
+	rows, err := s.repo.Products().ListVariantSeconds(ctx, int(req.ColorwayId))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list seconds variants",
+			slog.Int64("colorway_id", req.ColorwayId), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list seconds variants")
+	}
+	out := make([]*pb_admin.SecondsVariant, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &pb_admin.SecondsVariant{
+			Variant: dto.ConvertEntityVariantToPb(r.Variant),
+			Prices:  dto.ConvertEntityPriceInsertsToPb(r.Prices),
+		})
+	}
+	return &pb_admin.ListVariantSecondsResponse{Seconds: out}, nil
+}
+
+// SetVariantPrice replaces the manual price set of a B-grade variant (0251, owner decision:
+// seconds are priced by hand). Full replace; an empty list clears the prices and the variant stops
+// selling (fail-closed). The store validates the per-price catalogue rules, duplicate currencies
+// and base-currency presence; grade 'A' targets are FAILED_PRECONDITION (A prices live on the
+// colourway).
+func (s *Server) SetVariantPrice(ctx context.Context, req *pb_admin.SetVariantPriceRequest) (*pb_admin.SetVariantPriceResponse, error) {
+	if req.VariantId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "variant_id is required")
+	}
+	prices := dto.ConvertPbPriceInsertsToEntity(req.Prices)
+	if len(prices) != len(req.Prices) {
+		return nil, status.Error(codes.InvalidArgument, "every price needs a currency and a parseable decimal amount")
+	}
+	err := s.repo.Products().SetVariantPrice(ctx, int(req.VariantId), prices)
+	if err != nil {
+		var ve *entity.ValidationError
+		switch {
+		case errors.As(err, &ve):
+			return nil, apierr.Invalid(ve)
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, status.Errorf(codes.NotFound, "variant %d not found", req.VariantId)
+		case errors.Is(err, entity.ErrVariantPriceNotSeconds):
+			return nil, status.Errorf(codes.FailedPrecondition, "variant %d is not a B-grade (seconds) variant — A prices live on the colourway", req.VariantId)
+		default:
+			slog.Default().ErrorContext(ctx, "can't set variant price",
+				slog.Int64("variant_id", req.VariantId), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't set variant price")
+		}
+	}
+	return &pb_admin.SetVariantPriceResponse{}, nil
+}

@@ -15,23 +15,25 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// ReduceStockForProductSizes reduces stock for product sizes atomically.
+// ReduceStockForProductSizes reduces stock for product sizes atomically. Each line decrements
+// its OWN grade's row (item.Grade, empty = 'A'): a sold '-B' line must never drain A stock (0251).
 func (s *Store) ReduceStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error {
 	var historyEntries []entity.StockChangeInsert
 	for _, item := range items {
-		quantityBefore, exists, err := s.GetProductSizeStock(ctx, item.ProductId, item.SizeId)
+		grade := entity.NormalizeVariantGrade(item.Grade)
+		quantityBefore, exists, err := getProductSizeStockGrade(ctx, s.DB, item.ProductId, item.SizeId, grade)
 		if err != nil {
 			return fmt.Errorf("error checking current quantity: %w", err)
 		}
 		if !exists {
-			return fmt.Errorf("product size not found: product ID: %d, size ID: %d", item.ProductId, item.SizeId)
+			return fmt.Errorf("product size not found: product ID: %d, size ID: %d, grade %s", item.ProductId, item.SizeId, grade)
 		}
 
-		query := `UPDATE product_size 
-			SET quantity = quantity - :quantity 
-			WHERE product_id = :productId 
-			AND size_id = :sizeId 
-			AND grade = 'A'
+		query := `UPDATE product_size
+			SET quantity = quantity - :quantity
+			WHERE product_id = :productId
+			AND size_id = :sizeId
+			AND grade = :grade
 			AND quantity >= :quantity
 			AND status = 1`
 
@@ -39,6 +41,7 @@ func (s *Store) ReduceStockForProductSizes(ctx context.Context, items []entity.O
 			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductId,
 			"sizeId":    item.SizeId,
+			"grade":     grade,
 		})
 		if err != nil {
 			return fmt.Errorf("can't decrease available sizes: %w", err)
@@ -49,7 +52,7 @@ func (s *Store) ReduceStockForProductSizes(ctx context.Context, items []entity.O
 			return fmt.Errorf("can't get rows affected: %w", err)
 		}
 		if rowsAffected == 0 {
-			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d", item.ProductId, item.SizeId)
+			return fmt.Errorf("cannot decrease available sizes: insufficient quantity for product ID: %d, size ID: %d, grade %s", item.ProductId, item.SizeId, grade)
 		}
 
 		quantityAfter := quantityBefore.Sub(item.QuantityDecimal())
@@ -58,6 +61,7 @@ func (s *Store) ReduceStockForProductSizes(ctx context.Context, items []entity.O
 			entry := entity.StockChangeInsert{
 				ProductId:      sql.NullInt32{Int32: int32(item.ProductId), Valid: true},
 				SizeId:         sql.NullInt32{Int32: int32(item.SizeId), Valid: true},
+				Grade:          grade,
 				QuantityDelta:  item.QuantityDecimal().Neg(),
 				QuantityBefore: quantityBefore,
 				QuantityAfter:  quantityAfter,
@@ -105,21 +109,25 @@ func (s *Store) ReduceStockForProductSizes(ctx context.Context, items []entity.O
 	return nil
 }
 
-// RestoreStockForProductSizes restores stock for product sizes.
+// RestoreStockForProductSizes restores stock for product sizes. Each line restores into its OWN
+// grade's row (item.Grade, empty = 'A'): a refunded/cancelled '-B' line goes back to B stock, not
+// A (0251). The B row is guaranteed to exist — the unit was decremented from it at sale.
 func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.OrderItemInsert, history *entity.StockHistoryParams) error {
 	var historyEntries []entity.StockChangeInsert
 	for _, item := range items {
-		quantityBefore, _, err := s.GetProductSizeStock(ctx, item.ProductId, item.SizeId)
+		grade := entity.NormalizeVariantGrade(item.Grade)
+		quantityBefore, _, err := getProductSizeStockGrade(ctx, s.DB, item.ProductId, item.SizeId, grade)
 		if err != nil {
 			return fmt.Errorf("can't get product size stock: %w", err)
 		}
 		quantityAfter := quantityBefore.Add(item.QuantityDecimal())
 
-		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId AND grade = 'A'`
+		updateQuery := `UPDATE product_size SET quantity = quantity + :quantity WHERE product_id = :productId AND size_id = :sizeId AND grade = :grade`
 		err = storeutil.ExecNamed(ctx, s.DB, updateQuery, map[string]any{
 			"quantity":  item.QuantityDecimal(),
 			"productId": item.ProductId,
 			"sizeId":    item.SizeId,
+			"grade":     grade,
 		})
 		if err != nil {
 			return fmt.Errorf("can't restore product quantity for sizes: %w", err)
@@ -129,6 +137,7 @@ func (s *Store) RestoreStockForProductSizes(ctx context.Context, items []entity.
 			entry := entity.StockChangeInsert{
 				ProductId:      sql.NullInt32{Int32: int32(item.ProductId), Valid: true},
 				SizeId:         sql.NullInt32{Int32: int32(item.SizeId), Valid: true},
+				Grade:          grade,
 				QuantityDelta:  item.QuantityDecimal(),
 				QuantityBefore: quantityBefore,
 				QuantityAfter:  quantityAfter,
@@ -189,19 +198,27 @@ func (s *Store) RestoreStockForProductSizesSeconds(ctx context.Context, items []
 	return nil
 }
 
-// GetProductSizeStock gets the current stock quantity for a specific product/size combination.
+// GetProductSizeStock gets the current stock quantity for a specific product/size combination
+// (sellable A grade — the public/default stream).
 func (s *Store) GetProductSizeStock(ctx context.Context, productId int, sizeId int) (decimal.Decimal, bool, error) {
-	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId AND grade = 'A'`
+	return getProductSizeStockGrade(ctx, s.DB, productId, sizeId, entity.VariantGradeA)
+}
+
+// getProductSizeStockGrade reads one grade's stock quantity for a (product, size) pair. The order
+// stock paths use it with the sold line's own grade (0251) so A and B streams never cross.
+func getProductSizeStockGrade(ctx context.Context, db dependency.DB, productId, sizeId int, grade string) (decimal.Decimal, bool, error) {
+	query := `SELECT quantity FROM product_size WHERE product_id = :productId AND size_id = :sizeId AND grade = :grade`
 	params := map[string]any{
 		"productId": productId,
 		"sizeId":    sizeId,
+		"grade":     entity.NormalizeVariantGrade(grade),
 	}
 
 	type ProductSizeQuantity struct {
 		Quantity decimal.Decimal `db:"quantity"`
 	}
 
-	productSize, err := storeutil.QueryNamedOne[ProductSizeQuantity](ctx, s.DB, query, params)
+	productSize, err := storeutil.QueryNamedOne[ProductSizeQuantity](ctx, db, query, params)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return decimal.Zero, false, nil

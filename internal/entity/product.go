@@ -653,13 +653,24 @@ const (
 
 // StockChangeInsert represents a row to insert into product_stock_change_history.
 // Variant quality grades (Phase 7): A is the sellable default; B is a factory-seconds row of the
-// SAME (product, size) with its own stock and '-B'-suffixed SKU. B variants are NOT sellable in v1
-// (their discount price is an open owner decision) — every storefront/order/metrics read pins
-// grade = 'A'; only the production receive/reverse paths touch B rows.
+// SAME (product, size) with its own stock and '-B'-suffixed SKU. A B variant is sellable ONLY once
+// it carries a manual price in product_size_price (0251, owner decision 2026-08-04) — unpriced B
+// stays fail-closed. B is never listed on the storefront (catalogue/PDP reads pin grade = 'A');
+// it is bought by submitting the '-B' SKU directly, at the manual price, with no sale percentage
+// and a zero cost snapshot (the A units absorbed the run's full cost).
 const (
 	VariantGradeA = "A"
 	VariantGradeB = "B"
 )
+
+// NormalizeVariantGrade maps an empty grade (pre-0251 rows, legacy callers) to the sellable
+// default 'A'; any explicit grade passes through unchanged.
+func NormalizeVariantGrade(grade string) string {
+	if grade == "" {
+		return VariantGradeA
+	}
+	return grade
+}
 
 type StockChangeInsert struct {
 	ProductId sql.NullInt32 `db:"product_id"`
