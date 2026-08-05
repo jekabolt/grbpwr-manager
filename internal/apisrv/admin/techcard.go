@@ -169,6 +169,9 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)
 	}
+	// Tokenized read urls are minted on the RESPONSE only — the release-snapshot path
+	// converts the entity separately and must stay token-free (persisted blobs).
+	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, pbTc.GetTechCard().GetPatterns())
 	return &pb_admin.GetTechCardResponse{TechCard: pbTc}, nil
 }
 

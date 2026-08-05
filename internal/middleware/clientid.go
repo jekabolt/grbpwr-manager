@@ -153,3 +153,10 @@ func GetClientSession(ctx context.Context) string {
 	}
 	return "unknown"
 }
+
+// ClientIPFromRequest exposes the trusted-proxy-aware client IP extraction for raw HTTP
+// handlers mounted outside the clientid middleware chain (e.g. the tokenized pattern
+// endpoint), so they rate-limit on the same identity as everything else.
+func ClientIPFromRequest(r *http.Request) string {
+	return getClientIP(r)
+}

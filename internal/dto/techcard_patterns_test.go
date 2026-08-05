@@ -114,16 +114,16 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 		Name:        "Coat",
 		SizeIds:     []int32{4, 5},
 		Patterns: []*pb_common.TechCardSizePattern{
-			{SizeId: 4, Url: "https://cdn/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  ")},
-			{SizeId: 4, Url: "https://cdn/x4b.dxf"},                         // multiple per size is allowed; name absent
-			{SizeId: 5, Url: "https://cdn/x5.pdf", Name: stringPointer("")}, // present-empty = explicit clear
+			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  ")},
+			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4b.dxf"},                         // multiple per size is allowed; name absent
+			{SizeId: 5, Url: "https://cdn/tech-card-patterns/x5.pdf", Name: stringPointer("")}, // present-empty = explicit clear
 		},
 	}
 	ent, err := ConvertPbTechCardInsertToEntity(in)
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	if len(ent.Patterns) != 3 || ent.Patterns[0].SizeId != 4 || ent.Patterns[0].URL != "https://cdn/x4.pdf" {
+	if len(ent.Patterns) != 3 || ent.Patterns[0].SizeId != 4 || ent.Patterns[0].URL != "https://cdn/tech-card-patterns/x4.pdf" {
 		t.Fatalf("patterns not parsed: %+v", ent.Patterns)
 	}
 	// name presence survives dto→entity: present is Valid (trimmed), absent is not.
@@ -154,7 +154,7 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 		"pattern url not http": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "javascript:alert(1)"}}},
 		"pattern name too long": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/tech-card-patterns/x.pdf",
 				Name: stringPointer(strings.Repeat("n", 256))}}},
 		// R1: usage size_consumption validation cases moved with the colourway recipe to the Colorway
 		// RPCs (CreateColorway / ColorwayDevelopmentInsert.usages) — re-covered in track T-B step D.
@@ -162,6 +162,27 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 	for name, in := range cases {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
+}
+
+// The Ф7 write-side tightening: a pattern url must name a managed uploaded object — an
+// arbitrary https url (previously accepted and rendered in <object>) and a client echoing
+// the output-only tokenized view_url back into url are both rejected.
+func TestTechCardPatternURLMustBeManaged(t *testing.T) {
+	for name, url := range map[string]string{
+		"arbitrary https": "https://evil.example/x.pdf",
+		"view_url echo":   "https://backend.grbpwr.com/api/p/i1.0.abc",
+		"http not https":  "http://cdn/tech-card-patterns/2026/august/x.pdf",
+		"segment last":    "https://cdn/some/tech-card-patterns",
+	} {
+		in := &pb_common.TechCardInsert{
+			Name:     "n",
+			SizeIds:  []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: url}},
+		}
+		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
+			t.Errorf("%s: url %q must be rejected", name, url)
 		}
 	}
 }

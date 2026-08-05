@@ -111,6 +111,10 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		if !isHTTPURL(url) {
 			return nil, fmt.Errorf("fitting pattern url must be an http(s) URL")
 		}
+		// Managed-object check, same rationale as parseTechCardPatterns (Ф7).
+		if _, ok := managedPatternObjectKey(url); !ok {
+			return nil, fmt.Errorf("fitting pattern url must be an uploaded pattern object url")
+		}
 		if len(p.Filename) > maxVarchar255 {
 			return nil, fmt.Errorf("fitting pattern filename must be at most %d characters", maxVarchar255)
 		}

@@ -3,6 +3,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -576,6 +577,13 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		}
 		if !isHTTPURL(url) {
 			return nil, fmt.Errorf("pattern url must be an http(s) URL")
+		}
+		// The url must name a MANAGED pattern object (Ф7): everything a pattern row can
+		// point at is produced by Admin.UploadPattern under the dedicated bucket folder.
+		// This closes two holes at once — a client echoing the output-only view_url back
+		// into url, and an arbitrary https url that the admin would render in <object>.
+		if _, ok := managedPatternObjectKey(url); !ok {
+			return nil, fmt.Errorf("pattern url must be an uploaded pattern object url")
 		}
 		if len(p.Filename) > maxVarchar255 {
 			return nil, fmt.Errorf("pattern filename must be at most %d characters", maxVarchar255)
@@ -1696,6 +1704,24 @@ func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 
 // validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.
 var validPantoneSystems = map[string]bool{"TCX": true, "TPX": true, "TPG": true, "C": true, "U": true}
+
+// managedPatternObjectKey mirrors storeutil.PatternObjectKey (dto cannot import storeutil
+// — dependency imports dto). Keep the recognition rule in sync: https url whose path
+// contains the dedicated "tech-card-patterns" segment before the object name.
+func managedPatternObjectKey(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", false
+	}
+	key := strings.Trim(u.Path, "/")
+	segments := strings.Split(key, "/")
+	for i, segment := range segments {
+		if segment == "tech-card-patterns" && i < len(segments)-1 {
+			return key, true
+		}
+	}
+	return "", false
+}
 
 // isHTTPURL reports whether s is an http(s) URL — pattern PDFs are served over the CDN,
 // so a non-http scheme (e.g. javascript:/data:) is rejected at the write boundary.

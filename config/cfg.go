@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
@@ -103,6 +104,16 @@ type Config struct {
 	GA4Sync            ga4sync.Config            `mapstructure:"ga4_sync"`
 	BigQuery           bq.Config                 `mapstructure:"bigquery"`
 	OpenRouter         openrouter.Config         `mapstructure:"openrouter"`
+	PatternToken       PatternTokenConfig        `mapstructure:"pattern_token"`
+}
+
+// PatternTokenConfig configures the tokenized pattern read path (/api/p/{token}) that
+// serves private выкройка objects. The pepper is the HMAC key behind every minted token;
+// the public base url is the externally reachable origin of THIS backend, prefixed onto
+// minted view/download urls and printed QR codes.
+type PatternTokenConfig struct {
+	Pepper        string `mapstructure:"pepper"`
+	PublicBaseURL string `mapstructure:"public_base_url"`
 }
 
 // LoadConfig loads the configuration from a file and/or environment variables.
@@ -242,6 +253,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("auth.jwt_secret is required: set AUTH_JWT_SECRET")
 	}
 
+	// Pattern token pepper is required: patternaccess fails closed on an empty HMAC key
+	// (every capability url would be forgeable). Same early-message rationale as the JWT
+	// secret. The public base url rides along because minted urls are useless without it.
+	if strings.TrimSpace(c.PatternToken.Pepper) == "" {
+		return fmt.Errorf("pattern_token.pepper is required: set PATTERN_TOKEN_PEPPER")
+	}
+	if strings.TrimSpace(c.PatternToken.PublicBaseURL) == "" {
+		return fmt.Errorf("pattern_token.public_base_url is required: set PATTERN_TOKEN_PUBLIC_BASE_URL " +
+			"to this backend's external origin, e.g. https://backend.grbpwr.com")
+	}
+
 	// Accounting posting worker: when enabled, its cutover date must parse and not be in the future
 	// (a misconfigured start date would either post pre-cutover history or nothing at all).
 	if err := c.Accounting.Validate(); err != nil {
@@ -330,6 +352,10 @@ func bindEnvVars() {
 	viper.BindEnv("mailer.webhook_secret", "MAILER_WEBHOOK_SECRET")
 	viper.BindEnv("mailer.unsubscribe_base_url", "MAILER_UNSUBSCRIBE_BASE_URL")
 	viper.BindEnv("mailer.unsubscribe_pepper", "MAILER_UNSUBSCRIBE_PEPPER")
+
+	// Pattern token (private выкройки read path)
+	viper.BindEnv("pattern_token.pepper", "PATTERN_TOKEN_PEPPER")
+	viper.BindEnv("pattern_token.public_base_url", "PATTERN_TOKEN_PUBLIC_BASE_URL")
 	viper.BindEnv("mailer.localization_enabled", "MAILER_LOCALIZATION_ENABLED")
 	viper.BindEnv("mailer.resend_requests_per_second", "MAILER_RESEND_REQUESTS_PER_SECOND")
 	viper.BindEnv("mailer.resend_burst", "MAILER_RESEND_BURST")

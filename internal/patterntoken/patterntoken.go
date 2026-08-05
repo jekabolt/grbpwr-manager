@@ -1,0 +1,108 @@
+// Package patterntoken mints and verifies the capability tokens behind /api/p/{token} —
+// the stable, unauthenticated-but-unforgeable urls that serve private pattern objects
+// (выкройки). A token names a pattern_object_access ROW (id) at a specific revocation
+// epoch; bumping the row's epoch invalidates every previously minted token for the
+// object without touching the object or the pepper.
+//
+// Format: {scope}{id36}.{epoch36}.{sig}
+//   - scope is one byte: 'i' (internal — admin SPA) or 'p' (print — tech-pack QR). The
+//     two scopes sign differently, so revoking a leaked paper tech-pack does not have to
+//     break the admin UI and vice versa (each scope can be re-epoched independently at a
+//     policy level later; today both share the row epoch).
+//   - id36 / epoch36 are base-36 (lowercase) — compact, so the printed QR stays small.
+//   - sig is base64url(HMAC_SHA256(pepper, "v1|"+scope+"|"+id+"|"+epoch)[:16]) — 128 bits.
+//
+// Expiry deliberately does NOT live in the token: it lives in the row (expires_at), so
+// the policy can change without re-printing QR codes. The token is fully deterministic —
+// one object always yields one url, which is what lets <object>/<iframe> render without
+// cache-busting remounts.
+package patterntoken
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Scope says which surface a token was minted for.
+type Scope byte
+
+const (
+	// ScopeInternal marks tokens embedded in admin API responses (view_url/download_url).
+	ScopeInternal Scope = 'i'
+	// ScopePrint marks tokens embedded in printed tech-pack QR codes.
+	ScopePrint Scope = 'p'
+)
+
+const sigBytes = 16
+
+// ErrInvalid is returned for any structurally broken or badly signed token. Callers must
+// not distinguish parse failures from signature failures externally (uniform 404).
+var ErrInvalid = errors.New("invalid pattern token")
+
+// Minter mints and verifies tokens with a server-side pepper.
+type Minter struct {
+	pepper []byte
+}
+
+// NewMinter fails closed on an empty pepper — an empty HMAC key would make every token
+// forgeable by anyone who reads this file.
+func NewMinter(pepper string) (*Minter, error) {
+	if strings.TrimSpace(pepper) == "" {
+		return nil, errors.New("pattern token pepper is empty: set PATTERN_TOKEN_PEPPER")
+	}
+	return &Minter{pepper: []byte(pepper)}, nil
+}
+
+func (m *Minter) sig(scope Scope, id int64, epoch int) []byte {
+	mac := hmac.New(sha256.New, m.pepper)
+	fmt.Fprintf(mac, "v1|%c|%d|%d", scope, id, epoch)
+	return mac.Sum(nil)[:sigBytes]
+}
+
+// Mint returns the deterministic token for (scope, row id, epoch).
+func (m *Minter) Mint(scope Scope, id int64, epoch int) string {
+	return fmt.Sprintf("%c%s.%s.%s",
+		scope,
+		strconv.FormatInt(id, 36),
+		strconv.FormatInt(int64(epoch), 36),
+		base64.RawURLEncoding.EncodeToString(m.sig(scope, id, epoch)))
+}
+
+// Parse verifies the signature and returns the token's claims. The epoch returned is the
+// one the token was MINTED for; the caller must still compare it against the row's
+// current epoch (revocation) and check the row's expiry/revoked state.
+func (m *Minter) Parse(token string) (scope Scope, id int64, epoch int, err error) {
+	if len(token) < 2 {
+		return 0, 0, 0, ErrInvalid
+	}
+	scope = Scope(token[0])
+	if scope != ScopeInternal && scope != ScopePrint {
+		return 0, 0, 0, ErrInvalid
+	}
+	parts := strings.Split(token[1:], ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, ErrInvalid
+	}
+	id, err = strconv.ParseInt(parts[0], 36, 64)
+	if err != nil || id <= 0 {
+		return 0, 0, 0, ErrInvalid
+	}
+	epoch64, err := strconv.ParseInt(parts[1], 36, 32)
+	if err != nil || epoch64 < 0 {
+		return 0, 0, 0, ErrInvalid
+	}
+	epoch = int(epoch64)
+	got, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(got) != sigBytes {
+		return 0, 0, 0, ErrInvalid
+	}
+	if !hmac.Equal(got, m.sig(scope, id, epoch)) {
+		return 0, 0, 0, ErrInvalid
+	}
+	return scope, id, epoch, nil
+}

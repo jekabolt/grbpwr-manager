@@ -57,6 +57,18 @@ envs:
   scope: RUN_TIME
   type: SECRET
   value: EV[1:XTwRb1GN7nCdm0tgfaWvY4s6uwOqOj7w:q9Ixg4Rp4+7OwZG83InfFFzk5zsBz+EozCRm]
+# Ф7 private patterns: HMAC pepper behind /api/p/{token} capability urls. REQUIRED —
+# boot fails closed when empty. Set the real secret in the DO console before deploying
+# this feature (blank here would halt prod startup).
+- key: PATTERN_TOKEN_PEPPER
+  scope: RUN_TIME
+  type: SECRET
+  value: ""
+# External origin of THIS backend, prefixed onto minted pattern view/download urls and
+# printed QR codes. REQUIRED.
+- key: PATTERN_TOKEN_PUBLIC_BASE_URL
+  scope: RUN_TIME
+  value: "https://backend.grbpwr.com"
 - key: AUTH_JWT_ISSUER
   scope: RUN_TIME
   value: grbpwr-admin

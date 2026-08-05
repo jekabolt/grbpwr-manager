@@ -1266,6 +1266,24 @@ type (
 		SetBackgroundHeroColor(ctx context.Context, color string) error
 	}
 
+	// PatternObjects manages pattern_object_access rows — per-object revocation epoch,
+	// expiry policy and coarse access stats behind the tokenized pattern read path
+	// /api/p/{token}. Rows are created lazily; a missing row means default access state.
+	PatternObjects interface {
+		GetById(ctx context.Context, id int64) (*entity.PatternObjectAccess, error)
+		// EnsureByKeys returns rows for the given managed object keys, creating missing
+		// ones (epoch 0, no expiry) without touching existing state.
+		EnsureByKeys(ctx context.Context, keys []string) (map[string]entity.PatternObjectAccess, error)
+		// BumpEpoch invalidates every token minted for the object so far.
+		BumpEpoch(ctx context.Context, id int64) error
+		// Revoke hard-disables access until un-revoked (distinct from a rotating bump).
+		Revoke(ctx context.Context, id int64, at time.Time) error
+		// RecordAccess folds a debounced batch of access stats into the rows.
+		RecordAccess(ctx context.Context, counts map[int64]int64, last map[int64]time.Time) error
+		// DeleteByKeys drops rows whose objects were garbage-collected.
+		DeleteByKeys(ctx context.Context, keys []string) error
+	}
+
 	Waitlist interface {
 		AddToWaitlist(ctx context.Context, productId int, sizeId int, email string) error
 		GetWaitlistEntriesByProductSize(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntry, error)
@@ -1307,6 +1325,7 @@ type (
 		Settings() Settings
 		Support() Support
 		Language() Language
+		PatternObjects() PatternObjects
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error
@@ -1380,6 +1399,13 @@ type (
 		// UploadLabelPDF durably stores a carrier shipping-label PDF (whose provider URL expires)
 		// and returns its CDN url and stored byte size. Kept out of the media library.
 		UploadLabelPDF(ctx context.Context, raw []byte, objectName string) (string, int64, error)
+		// PresignPatternObject returns a short-lived presigned GET url for a managed
+		// pattern object key, targeting the ORIGIN endpoint (presigned requests never
+		// pass the CDN — SigV4 binds the Host). The expiry is snapped to a deterministic
+		// window so the url string is stable within it (browser HTTP cache; no
+		// <object>/viewer remounts). download=true adds a content-disposition=attachment
+		// response override.
+		PresignPatternObject(ctx context.Context, objectKey string, download bool) (url string, expiresAt time.Time, err error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
 		// DeleteObjects best-effort removes the S3 objects behind the given media URLs
