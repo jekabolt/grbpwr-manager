@@ -306,6 +306,9 @@ func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32, keyField 
 type bomExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
+	// Section rides only the recipe path's SELECT (roll-goods guard for marker provenance);
+	// the BOM upsert's own query leaves it zero.
+	Section sql.NullString `db:"section"`
 	// Price + provenance as stored, so the upsert can tell an edited price (restamp 'manual') from a
 	// round-tripped one (keep the existing provenance, including the reprice action's 'catalog').
 	UnitPrice       decimal.NullDecimal `db:"unit_price"`
@@ -639,7 +642,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	if len(colorwayIDs) > 0 {
 		usageRows, err := storeutil.QueryListNamed[techCardColorwayUsageRow](ctx, s.DB, `
-			SELECT id, colorway_id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+			SELECT id, colorway_id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_index
 			FROM tech_card_colorway_usage
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})

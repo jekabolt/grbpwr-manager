@@ -376,6 +376,19 @@ message TechCardColorwayUsage {
   // that predates this field OMITS it on the full-replace recipe write, and the store must then
   // PRESERVE the existing pin (absent ≠ explicit clear; an explicit 0 clears).
   optional int64 material_id = 15;
+  // consumption_source is the provenance of the norm. "manual" (or "") — typed by the operator;
+  // the article's wastage_percent grosses cost up, exactly as before. "marker" — applied from a
+  // saved раскладка whose measured length already CONTAINS the cutting waste (selvedge rides the
+  // per-running-metre price), so costing must NOT gross such rows up again. `optional` is
+  // load-bearing like material_id: a stale client omits the field on the full-replace recipe
+  // write and the store PRESERVES the stored provenance triple; a present value is written as
+  // sent ("" normalises to manual and clears the pcts).
+  optional string consumption_source = 16;
+  // Display decomposition of a marker-sourced norm's waste (кромка / межлекальные выпады), in
+  // percent of the piece area. NEVER multiplied into any cost — the marker length already pays
+  // for both. NULL/unset on manual rows; carried/cleared together with consumption_source.
+  google.type.Decimal waste_selvedge_pct = 17;
+  google.type.Decimal waste_cut_pct = 18;
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower block)
@@ -1410,6 +1423,9 @@ message TechCardMarkerSummary {
   string updated_by = 20; // server-stamped
   google.protobuf.Timestamp created_at = 21;
   google.protobuf.Timestamp updated_at = 22;
+  // Кромка (selvedge, cm per edge) the раскладка ran with — snapshotted at save time from the
+  // effective article so the waste decomposition stays auditable after the material changes.
+  google.type.Decimal selvedge_cm = 23;
 }
 
 // TechCardMarker is a full stored marker: the summary plus the self-contained layout.
@@ -1437,6 +1453,9 @@ message TechCardMarkerInsert {
   int32 placed_count = 12;
   int32 total_count = 13; // >= 1; must equal placed_count (incomplete markers are refused)
   TechCardMarkerLayout layout = 14; // required, non-empty pieces + placements
+  // Кромка the layout was computed with (cm per edge, >= 0; 0 = none/unknown). The nesting
+  // client populates it from the linked article's selvedge_cm at save time.
+  google.type.Decimal selvedge_cm = 15;
 }
 
 // TechCardMarkerLayout is the self-contained geometry of a marker, stored as an opaque proto-JSON

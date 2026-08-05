@@ -136,9 +136,9 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 
 	var caveats []string
 	noProductNoted, noColorwayNoted := false, false
-	noBomNoted := make(map[string]bool)  // by colourway name
-	unitNoted := make(map[int]bool)      // by material id — unit mismatch / conversion notes
-	plannedByColorway := map[int]int{}   // product id → Σ planned qty (for uncovered-slot blockers)
+	noBomNoted := make(map[string]bool) // by colourway name
+	unitNoted := make(map[int]bool)     // by material id — unit mismatch / conversion notes
+	plannedByColorway := map[int]int{}  // product id → Σ planned qty (for uncovered-slot blockers)
 	usedSlotsByColorway := map[int]map[int]bool{}
 
 	for i := range run.Lines {
@@ -189,9 +189,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			}
 			// Wastage grosses MEASURED norms up (e.g. 5% → ×1.05) — cutting loss. A counted trim
 			// (4 buttons stay 4 buttons) takes none, mirroring the costing's UnitTotal. The run's
-			// ACTUAL cutting wastage overrides the BOM line's estimate when set.
+			// ACTUAL cutting wastage overrides the BOM line's estimate when set. A MARKER-sourced
+			// norm takes no factor at all — its measured length already contains the cutting
+			// waste, and the run override must not re-introduce it (PIECES-WASTAGE-DESIGN §2.3).
 			factor := decimal.NewFromInt(1)
-			if !counted {
+			if !counted && u.ConsumptionSource.String != entity.ConsumptionSourceMarker {
 				wastage := bom.WastagePercent
 				if run.ActualWastagePercent.Valid {
 					wastage = run.ActualWastagePercent

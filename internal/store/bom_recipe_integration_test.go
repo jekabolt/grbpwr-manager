@@ -122,6 +122,48 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 	// A stale shared version is rejected (optimistic lock).
 	_, err = T.UpdateColorwayRecipe(ctx, cwID, newVer, nil)
 	require.ErrorIs(t, err, entity.ErrTechCardConflict)
+
+	// Provenance triple (Ф9.4): a marker-sourced norm round-trips with its decomposition, and a
+	// stale client's presence-less rewrite preserves it (same protocol as the material pin) —
+	// resetting it to manual would silently re-enable the wastage gross-up in costing.
+	markerVer, err := T.UpdateColorwayRecipe(ctx, cwID, latestVer, []entity.TechCardColorwayUsage{
+		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
+			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.42")),
+			ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true},
+			WasteSelvedgePct:  decimal.NewNullDecimal(decimal.RequireFromString("1.65")),
+			WasteCutPct:       decimal.NewNullDecimal(decimal.RequireFromString("21.95"))},
+	})
+	require.NoError(t, err)
+	recipe, err = T.GetColorwayRecipe(ctx, cwID)
+	require.NoError(t, err)
+	require.Len(t, recipe, 1)
+	require.Equal(t, entity.ConsumptionSourceMarker, recipe[0].ConsumptionSource.String)
+	require.Equal(t, "1.65", recipe[0].WasteSelvedgePct.Decimal.String())
+	require.Equal(t, "21.95", recipe[0].WasteCutPct.Decimal.String())
+
+	staleVer, err := T.UpdateColorwayRecipe(ctx, cwID, markerVer, []entity.TechCardColorwayUsage{
+		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
+			Consumption: decimal.NewNullDecimal(decimal.RequireFromString("1.42"))},
+	})
+	require.NoError(t, err)
+	recipe, err = T.GetColorwayRecipe(ctx, cwID)
+	require.NoError(t, err)
+	require.Equal(t, entity.ConsumptionSourceMarker, recipe[0].ConsumptionSource.String,
+		"presence-less rewrite must preserve marker provenance")
+	require.Equal(t, "21.95", recipe[0].WasteCutPct.Decimal.String())
+
+	// An explicit manual write clears the decomposition.
+	_, err = T.UpdateColorwayRecipe(ctx, cwID, staleVer, []entity.TechCardColorwayUsage{
+		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
+			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.42")),
+			ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceManual, Valid: true}},
+	})
+	require.NoError(t, err)
+	recipe, err = T.GetColorwayRecipe(ctx, cwID)
+	require.NoError(t, err)
+	require.Equal(t, entity.ConsumptionSourceManual, recipe[0].ConsumptionSource.String)
+	require.False(t, recipe[0].WasteSelvedgePct.Valid)
+	require.False(t, recipe[0].WasteCutPct.Valid)
 }
 
 // TestColorwayRecipeReadPath is the H1 fix's contract test. Review finding H1: `techCardUsagesToPb`
