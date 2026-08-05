@@ -53,11 +53,16 @@ var ValidMaterialPurposes = map[MaterialPurpose]bool{
 
 // MaterialFabricAttr are the typed attributes of a fabric-class material (material_fabric_attr).
 type MaterialFabricAttr struct {
+	// WidthCm is the FULL roll width. The usable cutting width derives from it minus the selvedge
+	// on both edges — see Material.UsableFabricWidthCm.
 	WidthCm         decimal.NullDecimal `db:"width_cm"`
 	WeightGsm       decimal.NullDecimal `db:"weight_gsm"`
 	FabricDirection sql.NullString      `db:"fabric_direction"` // lengthwise|crosswise|any
 	ShrinkagePct    decimal.NullDecimal `db:"shrinkage_pct"`
 	RollLengthM     decimal.NullDecimal `db:"roll_length_m"`
+	// SelvedgeCm is the unusable кромка per EDGE in cm (0259). A roll property, entered when the
+	// material is added; 0 = none/unknown, keeping legacy behaviour bit-for-bit.
+	SelvedgeCm decimal.Decimal `db:"selvedge_cm"`
 }
 
 // MaterialHardwareAttr are the typed attributes of a hardware-class material (material_hardware_attr).
@@ -89,15 +94,15 @@ type MaterialPackagingAttr struct {
 // tech-card BOM line can optionally link to. It mirrors the descriptive (non-price) fields of
 // tech_card_bom_item; price lives in the append-only MaterialPrice history, not here.
 type MaterialInsert struct {
-	Name            string              `db:"name" valid:"required"`
-	Section         string              `db:"section" valid:"required"`
-	Supplier        sql.NullString      `db:"supplier" valid:"-"`
-	SupplierRef     sql.NullString      `db:"supplier_ref" valid:"-"`
+	Name        string         `db:"name" valid:"required"`
+	Section     string         `db:"section" valid:"required"`
+	Supplier    sql.NullString `db:"supplier" valid:"-"`
+	SupplierRef sql.NullString `db:"supplier_ref" valid:"-"`
 	// SupplierId links the material to the supplier CATALOG (0201) — the FK the free-text Supplier
 	// field never was (plan 13 §1; the PO entity was cut, so v1 is one blended supplier per
 	// material). LeadTimeDays is its typical order-to-door time, feeding "when can a run start".
-	SupplierId   sql.NullInt64 `db:"supplier_id" valid:"-"`
-	LeadTimeDays sql.NullInt64 `db:"lead_time_days" valid:"-"`
+	SupplierId      sql.NullInt64       `db:"supplier_id" valid:"-"`
+	LeadTimeDays    sql.NullInt64       `db:"lead_time_days" valid:"-"`
 	Composition     sql.NullString      `db:"composition" valid:"-"`
 	Spec            sql.NullString      `db:"spec" valid:"-"`
 	Unit            sql.NullString      `db:"unit" valid:"-"`
@@ -149,6 +154,43 @@ type Material struct {
 	UpdatedAt   time.Time `db:"updated_at"`
 	// Image is the resolved catalog image (#39), attached on read from ImageId. Nil when unset.
 	Image *MediaFull `db:"-"`
+}
+
+// EffectiveFabricWidthCm resolves the material's FULL roll width with the same CTI-over-flat
+// preference the article-code generator uses (materialcode.preferredDecimal): the typed
+// material_fabric_attr.width_cm wins when the side-table row exists, the legacy flat
+// material.fabric_width is the fallback. Invalid when neither is set.
+func (m *Material) EffectiveFabricWidthCm() decimal.NullDecimal {
+	// Same fallback rule as preferredDecimal: an unset or ZERO typed width falls through to the
+	// legacy flat column (zero is how a half-filled CTI row says "not really set").
+	if m.FabricAttr != nil && m.FabricAttr.WidthCm.Valid && !m.FabricAttr.WidthCm.Decimal.IsZero() {
+		return m.FabricAttr.WidthCm
+	}
+	return m.FabricWidth
+}
+
+// FabricSelvedgeCm is the кромка per edge in cm; zero when the material has no typed fabric
+// attributes (the flat model never carried a selvedge).
+func (m *Material) FabricSelvedgeCm() decimal.Decimal {
+	if m.FabricAttr != nil {
+		return m.FabricAttr.SelvedgeCm
+	}
+	return decimal.Zero
+}
+
+// UsableFabricWidthCm is the cutting width: full roll width minus the selvedge on BOTH edges,
+// clamped at zero (a selvedge wider than the roll is operator error the read path must not turn
+// into a negative width). Invalid when no width is known at all.
+func (m *Material) UsableFabricWidthCm() decimal.NullDecimal {
+	w := m.EffectiveFabricWidthCm()
+	if !w.Valid {
+		return w
+	}
+	usable := w.Decimal.Sub(m.FabricSelvedgeCm().Mul(decimal.NewFromInt(2)))
+	if usable.IsNegative() {
+		usable = decimal.Zero
+	}
+	return decimal.NullDecimal{Decimal: usable, Valid: true}
 }
 
 // MaterialPriceSource enumerates how a price point entered the history. (MaterialPriceSourcePurchase

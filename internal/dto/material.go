@@ -8,6 +8,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/materialattr"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -236,9 +237,24 @@ func pbFabricAttrs(a *pb_common.MaterialFabricAttrs) (*entity.MaterialFabricAttr
 	if err != nil {
 		return nil, fmt.Errorf("fabric_attrs.roll_length_m: %w", err)
 	}
+	selvedge, err := nullDecimalFromPb(a.SelvedgeCm)
+	if err != nil {
+		return nil, fmt.Errorf("fabric_attrs.selvedge_cm: %w", err)
+	}
+	if selvedge.Valid && selvedge.Decimal.IsNegative() {
+		return nil, fmt.Errorf("fabric_attrs.selvedge_cm must not be negative")
+	}
+	// A selvedge is a strip OF the roll — two of them cannot exceed the roll itself. Checked only
+	// when both are known; the DB stores 0 for an unset selvedge (NOT NULL DEFAULT 0).
+	if selvedge.Valid && width.Valid &&
+		selvedge.Decimal.Mul(decimal.NewFromInt(2)).GreaterThan(width.Decimal) {
+		return nil, fmt.Errorf("fabric_attrs.selvedge_cm: two selvedges (%s cm) exceed width_cm (%s)",
+			selvedge.Decimal.Mul(decimal.NewFromInt(2)), width.Decimal)
+	}
 	return &entity.MaterialFabricAttr{
 		WidthCm: width, WeightGsm: gsm, FabricDirection: nullStringFromPb(a.FabricDirection),
 		ShrinkagePct: shrink, RollLengthM: roll,
+		SelvedgeCm: selvedge.Decimal, // zero when unset
 	}, nil
 }
 
@@ -318,6 +334,7 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 				WidthCm: pbDecimalFromNull(a.WidthCm), WeightGsm: pbDecimalFromNull(a.WeightGsm),
 				FabricDirection: pbStringFromNull(a.FabricDirection),
 				ShrinkagePct:    pbDecimalFromNull(a.ShrinkagePct), RollLengthM: pbDecimalFromNull(a.RollLengthM),
+				SelvedgeCm: pbDecimalFromDecimal(a.SelvedgeCm),
 			}}
 		}
 	case entity.MaterialClassHardware:

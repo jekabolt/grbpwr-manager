@@ -1845,6 +1845,9 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),
+			// Width enrichment (0259) — read-only, filled by the single-card read only.
+			EffectiveFabricWidthCm: pbDecimalFromNull(b.EffectiveFabricWidthCm),
+			SelvedgeCm:             pbDecimalFromNull(b.SelvedgeCm),
 		})
 	}
 	return out

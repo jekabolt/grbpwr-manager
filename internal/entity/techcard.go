@@ -694,6 +694,13 @@ type TechCardBomItem struct {
 	// not stale a sign-off whose value did not change.
 	PriceSource     sql.NullString `db:"price_source"`
 	PriceSnapshotAt sql.NullTime   `db:"price_snapshot_at"`
+	// READ-ONLY enrichment (0259, Ф9.1): the width the cutter actually has for this line and the
+	// linked article's selvedge. effective = COALESCE(line's own fabric_width, article width) —
+	// the line's snapshot wins, the catalog is the fallback the audit found missing; the client
+	// derives usable width as effective − 2×selvedge. Populated only by the single-card read's
+	// enrichment SELECT; zero on writes and every other query, never persisted.
+	EffectiveFabricWidthCm decimal.NullDecimal `db:"effective_fabric_width_cm"`
+	SelvedgeCm             decimal.NullDecimal `db:"selvedge_cm"`
 }
 
 // BOM price provenance values (tech_card_bom_item.price_source).

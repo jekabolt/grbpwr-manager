@@ -540,10 +540,11 @@ func upsertMaterialAttrs(ctx context.Context, db dependency.DB, id int, m *entit
 		}
 		a := m.FabricAttr
 		return storeutil.ExecNamed(ctx, db, `
-			INSERT INTO material_fabric_attr (material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m)
-			VALUES (:id, :width_cm, :weight_gsm, :fabric_direction, :shrinkage_pct, :roll_length_m)`,
+			INSERT INTO material_fabric_attr (material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m, selvedge_cm)
+			VALUES (:id, :width_cm, :weight_gsm, :fabric_direction, :shrinkage_pct, :roll_length_m, :selvedge_cm)`,
 			map[string]any{"id": id, "width_cm": nullDecimalParam(a.WidthCm), "weight_gsm": nullDecimalParam(a.WeightGsm),
-				"fabric_direction": a.FabricDirection, "shrinkage_pct": nullDecimalParam(a.ShrinkagePct), "roll_length_m": nullDecimalParam(a.RollLengthM)})
+				"fabric_direction": a.FabricDirection, "shrinkage_pct": nullDecimalParam(a.ShrinkagePct), "roll_length_m": nullDecimalParam(a.RollLengthM),
+				"selvedge_cm": a.SelvedgeCm})
 	case string(entity.MaterialClassHardware):
 		if m.HardwareAttr == nil {
 			return nil
@@ -606,7 +607,7 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 		byID[m.Id] = m
 	}
 	fRows, err := storeutil.QueryListNamed[materialFabricAttrRow](ctx, s.DB,
-		`SELECT material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m
+		`SELECT material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m, selvedge_cm
 		 FROM material_fabric_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("load fabric attrs: %w", err)
