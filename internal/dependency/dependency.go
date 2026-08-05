@@ -742,6 +742,13 @@ type (
 		ListOutputVariantsByCardIds(ctx context.Context, techCardIDs []int) (map[int][]entity.TechCardOutputVariant, error)
 		UpsertOutputVariant(ctx context.Context, techCardID int, ins entity.TechCardOutputVariantInsert, username string) (int, error)
 		DeleteOutputVariant(ctx context.Context, id int) error
+		// Saved раскладки (markers, 0257). SaveMarker upserts by id (0 creates; last-write-wins, no
+		// lock_version bump — see the store), refusing an incomplete layout (ErrMarkerIncomplete), a
+		// released card, a size outside the card's range or an unknown bom_line_key. GetMarker is
+		// the only read carrying the layout blob; summaries ride GetTechCardById.
+		SaveMarker(ctx context.Context, techCardID, id int, ins entity.TechCardMarkerInsert, username string) (int, error)
+		GetMarker(ctx context.Context, id int) (*entity.TechCardMarker, error)
+		DeleteMarker(ctx context.Context, id int) error
 		// RepriceTechCardBom pulls the current catalog price into every catalog-linked BOM line of a
 		// DRAFT card, stamping price_source='catalog' (production-costing Phase 3). Returns the
 		// visited lines + the count of unlinked lines it could not touch.

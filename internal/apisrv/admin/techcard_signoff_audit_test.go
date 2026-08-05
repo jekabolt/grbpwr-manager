@@ -59,8 +59,7 @@ func TestUpdateTechCardCarriedApprovalUsesStoredAuditFields(t *testing.T) {
 	var written *entity.TechCardInsert
 	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
 		mock.AnythingOfType("*entity.TechCardInsert"), 3).
-		Run(func(args mock.Arguments) {
-			tc := args.Get(2).(*entity.TechCardInsert)
+		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) {
 			copy := *tc
 			copy.Signoffs = append([]entity.TechCardSignoff(nil), tc.Signoffs...)
 			written = &copy

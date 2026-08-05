@@ -14,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"unicode/utf8"
 )
 
 // Column length bounds for tech-card varchar fields, mirroring the schema so that
@@ -755,7 +756,169 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// and for an aux card still in legacy single-output mode. Output-only here: they are written
 		// through their own RPCs because a variant owns warehouse stock.
 		OutputVariants: TechCardOutputVariantsToPb(tc.OutputVariants),
+		// Saved раскладки (0257), summaries only — written through Save/DeleteTechCardMarker, the
+		// blob rides GetTechCardMarker.
+		Markers: TechCardMarkerSummariesToPb(tc.Markers),
 	}
+}
+
+// TechCardMarkerSummariesToPb emits a card's saved раскладки for display, BOM link resolved
+// (line key + name + unit) and the derived consumption-per-unit included. Unlinked markers (or
+// markers whose BOM slot was deleted — bom_item_id went NULL) carry empty strings.
+func TechCardMarkerSummariesToPb(ms []entity.TechCardMarkerSummary) []*pb_common.TechCardMarkerSummary {
+	if len(ms) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardMarkerSummary, 0, len(ms))
+	for i := range ms {
+		out = append(out, TechCardMarkerSummaryToPb(ms[i]))
+	}
+	return out
+}
+
+// TechCardMarkerSummaryToPb emits one marker summary. consumption_per_unit_cm is derived here
+// (used_length_cm / sets) — never stored, so it cannot drift from its inputs.
+func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCardMarkerSummary {
+	return &pb_common.TechCardMarkerSummary{
+		Id:                   int32(m.Id),
+		TechCardId:           int32(m.TechCardId),
+		SizeId:               int32(m.SizeId),
+		Name:                 m.Name,
+		Source:               m.Source,
+		BomLineKey:           pbStringFromNull(m.BomLineKey),
+		BomItemName:          pbStringFromNull(m.BomItemName),
+		BomItemUnit:          pbStringFromNull(m.BomItemUnit),
+		FabricWidthCm:        pbDecimalFromDecimal(m.FabricWidthCm),
+		GapCm:                pbDecimalFromDecimal(m.GapCm),
+		EdgeMarginCm:         pbDecimalFromDecimal(m.EdgeMarginCm),
+		AllowCrossGrain:      m.AllowCrossGrain,
+		Sets:                 int32(m.Sets),
+		UsedLengthCm:         pbDecimalFromDecimal(m.UsedLengthCm),
+		EfficiencyPct:        pbDecimalFromNull(m.EfficiencyPct),
+		PlacedCount:          int32(m.PlacedCount),
+		TotalCount:           int32(m.TotalCount),
+		ConsumptionPerUnitCm: pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2)),
+		CreatedBy:            m.CreatedBy,
+		UpdatedBy:            m.UpdatedBy,
+		CreatedAt:            timestamppb.New(m.CreatedAt),
+		UpdatedAt:            timestamppb.New(m.UpdatedAt),
+	}
+}
+
+// Column bounds of tech_card_marker (0257), mirrored for readable refusals before the driver's.
+const (
+	markerNameMaxChars  = 191
+	markerDimMaxFrac    = 2
+	markerWidthLimit    = 100000000 // DECIMAL(10,2)
+	markerSmallDimLimit = 10000     // DECIMAL(6,2) — gap / edge margin
+)
+
+// ConvertPbTechCardMarkerInsertToEntity parses the writable half of a marker payload — everything
+// except the layout blob, which the API layer marshals separately (idiom of the release snapshot).
+// Form checks only; facts the database has to witness (size membership, BOM line identity, the
+// card's approval state, name uniqueness) are the store's.
+func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (entity.TechCardMarkerInsert, error) {
+	var out entity.TechCardMarkerInsert
+	if pb == nil {
+		return out, fmt.Errorf("marker is required")
+	}
+	if pb.SizeId <= 0 {
+		return out, fmt.Errorf("size_id is required")
+	}
+	name := strings.TrimSpace(pb.Name)
+	if name == "" {
+		return out, fmt.Errorf("name is required")
+	}
+	// Rune count, matching the column: VARCHAR(191) counts CHARACTERS, so a byte cap would be
+	// 4x stricter than the schema for Cyrillic names — and the prefill is Russian.
+	if utf8.RuneCountInString(name) > markerNameMaxChars {
+		return out, fmt.Errorf("name must be at most %d characters", markerNameMaxChars)
+	}
+	source := entity.MarkerSource(strings.TrimSpace(pb.Source))
+	if source == "" {
+		source = entity.MarkerSourceAuto
+	}
+	if !entity.ValidMarkerSources[source] {
+		return out, fmt.Errorf("source must be one of auto|manual|imported, got %q", pb.Source)
+	}
+	width, err := requiredDecimalFromPb(pb.FabricWidthCm, "fabric_width_cm", markerDimMaxFrac, markerWidthLimit)
+	if err != nil {
+		return out, err
+	}
+	if !width.IsPositive() {
+		return out, fmt.Errorf("fabric_width_cm must be positive")
+	}
+	gap, err := nullDecimalFromPb(pb.GapCm)
+	if err != nil {
+		return out, fmt.Errorf("gap_cm: %w", err)
+	}
+	if gap.Valid && gap.Decimal.IsNegative() {
+		return out, fmt.Errorf("gap_cm must not be negative")
+	}
+	if err := validateDecimalScale(gap, "gap_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		return out, err
+	}
+	margin, err := nullDecimalFromPb(pb.EdgeMarginCm)
+	if err != nil {
+		return out, fmt.Errorf("edge_margin_cm: %w", err)
+	}
+	if margin.Valid && margin.Decimal.IsNegative() {
+		return out, fmt.Errorf("edge_margin_cm must not be negative")
+	}
+	if err := validateDecimalScale(margin, "edge_margin_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		return out, err
+	}
+	if pb.Sets < 1 {
+		return out, fmt.Errorf("sets must be at least 1")
+	}
+	// used_length_cm is ENGINE-computed float64 — round to the column scale instead of
+	// rejecting float dust (512.4370000000001 must save, not 400). Width/gap/margin stay
+	// strict: those are operator inputs.
+	usedLengthN, err := nullDecimalFromPb(pb.UsedLengthCm)
+	if err != nil {
+		return out, fmt.Errorf("used_length_cm: %w", err)
+	}
+	if !usedLengthN.Valid || !usedLengthN.Decimal.IsPositive() {
+		return out, fmt.Errorf("used_length_cm must be positive")
+	}
+	usedLength := usedLengthN.Decimal.Round(markerDimMaxFrac)
+	if err := validateDecimalScale(decimal.NullDecimal{Decimal: usedLength, Valid: true},
+		"used_length_cm", markerDimMaxFrac, markerWidthLimit); err != nil {
+		return out, err
+	}
+	efficiency, err := nullDecimalFromPb(pb.EfficiencyPct)
+	if err != nil {
+		return out, fmt.Errorf("efficiency_pct: %w", err)
+	}
+	if efficiency.Valid && (efficiency.Decimal.IsNegative() || efficiency.Decimal.GreaterThan(decimal.NewFromInt(100))) {
+		return out, fmt.Errorf("efficiency_pct must be between 0 and 100")
+	}
+	if efficiency.Valid {
+		// Engine-computed like used_length — round explicitly rather than letting MySQL
+		// truncate into DECIMAL(5,2) silently.
+		efficiency.Decimal = efficiency.Decimal.Round(2)
+	}
+	if pb.PlacedCount < 0 {
+		return out, fmt.Errorf("placed_count must not be negative")
+	}
+	if pb.TotalCount < 1 {
+		return out, fmt.Errorf("total_count must be at least 1")
+	}
+	return entity.TechCardMarkerInsert{
+		SizeId:          int(pb.SizeId),
+		Name:            name,
+		Source:          source,
+		BomLineKey:      strings.TrimSpace(pb.BomLineKey),
+		FabricWidthCm:   width,
+		GapCm:           gap.Decimal,
+		EdgeMarginCm:    margin.Decimal,
+		AllowCrossGrain: pb.AllowCrossGrain,
+		Sets:            int(pb.Sets),
+		UsedLengthCm:    usedLength,
+		EfficiencyPct:   efficiency,
+		PlacedCount:     int(pb.PlacedCount),
+		TotalCount:      int(pb.TotalCount),
+	}, nil
 }
 
 // TechCardOutputVariantsToPb emits an auxiliary card's colour variants for display, each with its
@@ -896,6 +1059,9 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		// output_material_* trio above is the whole answer.
 		OutputVariantCount:   int32(tc.OutputVariantCount),
 		OutputVariantsOnHand: pbDecimalFromNull(tc.OutputVariantsOnHand),
+		// Saved раскладки (0257): count only — a "latest consumption" without its size and BOM
+		// slot would mislead, so the number stays on the card itself.
+		MarkerCount: int32(tc.MarkerCount),
 	}
 }
 
@@ -1679,6 +1845,9 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),
+			// Width enrichment (0259) — read-only, filled by the single-card read only.
+			EffectiveFabricWidthCm: pbDecimalFromNull(b.EffectiveFabricWidthCm),
+			SelvedgeCm:             pbDecimalFromNull(b.SelvedgeCm),
 		})
 	}
 	return out

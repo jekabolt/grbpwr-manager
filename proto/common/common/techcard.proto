@@ -428,6 +428,13 @@ message TechCardBomItem {
   // material catalog), or '' for a pre-provenance row whose origin is honestly unknown.
   string price_source = 27;
   google.protobuf.Timestamp price_snapshot_at = 28; // when price_source stamped unit_price
+  // READ-ONLY width enrichment (0259, Ф9.1) — ignored on write, filled by the single-card read.
+  // effective_fabric_width_cm = COALESCE(this line's fabric_width, linked article's width): the
+  // width the раскладка should prefill instead of a hardcoded default. selvedge_cm is the linked
+  // article's кромка per edge; usable cutting width = effective − 2×selvedge. Both unset when the
+  // line is unlinked and carries no width of its own.
+  google.type.Decimal effective_fabric_width_cm = 29;
+  google.type.Decimal selvedge_cm = 30;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -458,11 +465,14 @@ enum MaterialPurpose {
 
 // MaterialFabricAttrs are the typed attributes of a fabric-class material (material_fabric_attr).
 message MaterialFabricAttrs {
-  google.type.Decimal width_cm = 1;
+  google.type.Decimal width_cm = 1; // FULL roll width, cm (usable = width − 2×selvedge)
   google.type.Decimal weight_gsm = 2;
   string fabric_direction = 3; // lengthwise|crosswise|any (fixture-validated)
   google.type.Decimal shrinkage_pct = 4;
   google.type.Decimal roll_length_m = 5;
+  // Кромка per EDGE, cm — the unusable strip of the roll (0259). Unset/0 = none; the nesting
+  // width and the selvedge wastage component both derive from it.
+  google.type.Decimal selvedge_cm = 6;
 }
 
 // MaterialHardwareAttrs are the typed attributes of a hardware-class material (material_hardware_attr).
@@ -1283,6 +1293,12 @@ message TechCard {
   // through the tech-card save — a variant owns warehouse stock, so a full-replace save must not be
   // able to re-mint or drop one.
   repeated TechCardOutputVariant output_variants = 25;
+  // OUTPUT-ONLY summaries of the card's saved раскладки (markers, 0257) — the measured fabric
+  // layouts costing reads consumption from. Summaries only: the layout blob is 60-100 KB per
+  // marker and travels exclusively on GetTechCardMarker. Written through the dedicated
+  // Save/DeleteTechCardMarker RPCs, never through the tech-card save (and marker writes do not
+  // bump lock_version — saving a раскладка must not 409 the operator's own open card form).
+  repeated TechCardMarkerSummary markers = 26;
   reserved 5; // was resolved_media (single combined list; now split)
 }
 
@@ -1309,6 +1325,123 @@ message TechCardOutputVariant {
   // totals, but keeps its bucket, its stock and its history. Deleting the variant is the harder
   // action — it is the only way to un-pin the card's auxiliary purpose.
   bool active = 9;
+}
+
+// TechCardMarkerSummary is the list row of a saved раскладка (marker, tech_card_marker): the
+// measured fabric layout of ONE size's pattern pieces on a strip of fabric. The heavy layout blob
+// (contours + placements) deliberately does NOT ride here — it travels only on GetTechCardMarker.
+//
+// consumption_per_unit_cm is DERIVED (used_length_cm / sets), never stored, so it cannot drift
+// from its inputs. It is the number costing cares about: fabric per one garment of this size.
+message TechCardMarkerSummary {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  int32 size_id = 3; // FK size(id); the size whose pieces this marker lays out
+  string name = 4; // unique per (card, size)
+  // Provenance of the layout geometry. "auto" = the nesting engine as it ran; "manual" = an
+  // operator adjusted placements (Ф5); "imported" reserved for external CAD markers.
+  string source = 5;
+  // The BOM fabric line this marker measures, as the stable wire identity of that line ("" = not
+  // linked, or the slot was deleted — the marker stays valid geometry and merely drops out of
+  // costing suggestions). Resolved server-side to tech_card_bom_item(id) with ON DELETE SET NULL.
+  string bom_line_key = 6;
+  string bom_item_name = 7; // read-only display; "" when unlinked
+  string bom_item_unit = 8; // read-only display; free text from the BOM line ("м", "cm", …)
+  google.type.Decimal fabric_width_cm = 9;
+  google.type.Decimal gap_cm = 10;
+  google.type.Decimal edge_margin_cm = 11;
+  bool allow_cross_grain = 12; // 90° rotations were permitted
+  int32 sets = 13; // комплектов — how many garments this layout cuts at once
+  google.type.Decimal used_length_cm = 14;
+  google.type.Decimal efficiency_pct = 15; // unset = not recorded
+  // placed/total instance counts at save time. The server refuses to save an incomplete marker
+  // (placed < total, FailedPrecondition) — a layout that did not fit every piece is not a
+  // consumption norm — so on stored rows these are always equal; kept as two fields for honesty.
+  int32 placed_count = 16;
+  int32 total_count = 17;
+  google.type.Decimal consumption_per_unit_cm = 18; // OUTPUT-ONLY, = used_length_cm / sets
+  string created_by = 19; // server-stamped
+  string updated_by = 20; // server-stamped
+  google.protobuf.Timestamp created_at = 21;
+  google.protobuf.Timestamp updated_at = 22;
+}
+
+// TechCardMarker is a full stored marker: the summary plus the self-contained layout.
+message TechCardMarker {
+  TechCardMarkerSummary summary = 1;
+  TechCardMarkerLayout layout = 2;
+}
+
+// TechCardMarkerInsert is the writable payload of SaveTechCardMarker. Geometry is SELF-CONTAINED
+// (contours inside the layout): pattern rows are a full-replace child whose CDN objects are
+// garbage-collected the moment no row references them, so a marker that stored url references
+// would go dark on the next sheet replacement. source_url inside pieces is provenance only.
+message TechCardMarkerInsert {
+  int32 size_id = 1; // required; must be one of the card's size_ids at save time
+  string name = 2; // required; unique per (card, size)
+  string source = 3; // auto | manual | imported; "" = auto
+  string bom_line_key = 4; // "" = not linked to a BOM fabric line
+  google.type.Decimal fabric_width_cm = 5; // required, > 0
+  google.type.Decimal gap_cm = 6; // >= 0
+  google.type.Decimal edge_margin_cm = 7; // >= 0
+  bool allow_cross_grain = 8;
+  int32 sets = 9; // >= 1
+  google.type.Decimal used_length_cm = 10; // required, > 0
+  google.type.Decimal efficiency_pct = 11; // 0..100; unset = not recorded
+  int32 placed_count = 12;
+  int32 total_count = 13; // >= 1; must equal placed_count (incomplete markers are refused)
+  TechCardMarkerLayout layout = 14; // required, non-empty pieces + placements
+}
+
+// TechCardMarkerLayout is the self-contained geometry of a marker, stored as an opaque proto-JSON
+// blob (idiom: tech_card_release.snapshot). schema_version guards forward evolution — readers
+// degrade gracefully on a version they do not know.
+message TechCardMarkerLayout {
+  int32 schema_version = 1; // currently 1
+  TechCardMarkerNestParams params = 2;
+  repeated TechCardMarkerPiece pieces = 3;
+  repeated TechCardMarkerPlacement placements = 4;
+  repeated string warnings = 5; // parse/nest warnings as shown at save time
+}
+
+// TechCardMarkerNestParams are the engine inputs that produced the layout — enough to label the
+// result honestly; NOT enough to re-run the nest (the contours already carry the parse outcome).
+message TechCardMarkerNestParams {
+  string unit = 1; // the DXF unit the contours were parsed under (mm | cm | in); "" = auto
+  double tol_cm = 2; // tessellation tolerance
+  double tol_chain_cm = 3; // loop-chaining tolerance
+  double rdp_eps_cm = 4; // simplification epsilon the PLACEMENT ran on (display contours are exact)
+  double target_length_cm = 5; // 0 = no target was set
+  int32 time_budget_s = 6; // 0 = unknown
+}
+
+// TechCardMarkerPiece is one distinct pattern piece: its exact contour (cm, local origin at the
+// piece bbox corner) and how many instances ONE set cuts. Instances = quantity × marker sets.
+message TechCardMarkerPiece {
+  int32 piece_id = 1; // layout-local id placements reference; stable within this blob only
+  string name = 2; // block name from the DXF, or the operator's label
+  string source = 3; // source DXF filename (display provenance)
+  string source_url = 4; // pattern CDN url AT SAVE TIME; provenance only — the object may be GC'd
+  int32 quantity = 5; // instances per ONE set, >= 1
+  repeated TechCardMarkerPoint poly = 6; // closed CCW contour, cm, >= 3 points
+  double bbox_w_cm = 7;
+  double bbox_h_cm = 8;
+  double area_cm2 = 9;
+}
+
+message TechCardMarkerPoint {
+  double x_cm = 1;
+  double y_cm = 2;
+}
+
+// TechCardMarkerPlacement is one placed instance: piece contour rotated by rot_deg (CCW) then
+// translated by (x_cm, y_cm) in strip coordinates — x along the fabric, y across the width.
+message TechCardMarkerPlacement {
+  int32 piece_id = 1;
+  int32 instance = 2; // 0-based within the piece's quantity × sets instances
+  int32 rot_deg = 3; // 0 | 90 | 180 | 270
+  double x_cm = 4;
+  double y_cm = 5;
 }
 
 // TechCardListItem is a lightweight tech-card header for list views.
@@ -1360,4 +1493,8 @@ message TechCardListItem {
   // is in legacy single-output mode, where output_material_* above is the whole answer.
   int32 output_variant_count = 25;
   google.type.Decimal output_variants_on_hand = 26;
+  // How many saved раскладки (markers, 0257) the card carries, batched for the page like
+  // colorway_count. The COUNT only — a "latest consumption" here would be a lie without naming
+  // the size and the BOM slot it was measured for.
+  int32 marker_count = 27;
 }

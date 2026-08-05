@@ -43,7 +43,7 @@ func TestIsDXF(t *testing.T) {
 		"blank lines first":     {[]byte("\n\n0\nSECTION\n"), true},
 		// Real exporters (AccuMark/Optitex/Lectra) front the file with multi-KB 999
 		// provenance headers — the opening pair sits deep but must still be found.
-		"999 prelude over 4KB": {append([]byte("999\n"+strings.Repeat("x", 8*1024)+"\n"), []byte("0\nSECTION\n")...), true},
+		"999 prelude over 4KB":                 {append([]byte("999\n"+strings.Repeat("x", 8*1024)+"\n"), []byte("0\nSECTION\n")...), true},
 		"999 pairs then nothing within window": {[]byte(strings.Repeat("999\nnote\n", 10*1024)), false},
 	}
 	for name, c := range cases {

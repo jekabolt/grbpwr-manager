@@ -744,9 +744,12 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,
 		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
-		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at
+		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at,
+		       COALESCE(bi.fabric_width, NULLIF(mfa.width_cm, 0), m.fabric_width) AS effective_fabric_width_cm,
+		       mfa.selvedge_cm AS selvedge_cm
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
+		LEFT JOIN material_fabric_attr mfa ON mfa.material_id = bi.material_id
 		WHERE bi.tech_card_id IN (:ids)
 		ORDER BY bi.tech_card_id, bi.display_order, bi.id`, map[string]any{"ids": ids})
 	if err != nil {
