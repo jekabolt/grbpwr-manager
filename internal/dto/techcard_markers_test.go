@@ -66,9 +66,10 @@ func TestConvertPbTechCardMarkerInsertToEntity(t *testing.T) {
 		{"nil marker", nil, "marker is required"},
 		{"missing size", func(pb *pb_common.TechCardMarkerInsert) { pb.SizeId = 0 }, "size_id"},
 		{"blank name", func(pb *pb_common.TechCardMarkerInsert) { pb.Name = "   " }, "name is required"},
-		// The column is VARCHAR(191); the cap is counted in BYTES because MySQL does — 96 Cyrillic
+		// The column is VARCHAR(191) and MySQL counts CHARACTERS, so the cap counts runes —
+		// 96 Cyrillic characters are 192 bytes but must be accepted (see the accept case below).
 		// characters are already 192 bytes.
-		{"name over 191 bytes", func(pb *pb_common.TechCardMarkerInsert) { pb.Name = strings.Repeat("ю", 96) }, "191 bytes"},
+		{"name over 191 characters", func(pb *pb_common.TechCardMarkerInsert) { pb.Name = strings.Repeat("ю", 192) }, "191 characters"},
 		{"unknown source", func(pb *pb_common.TechCardMarkerInsert) { pb.Source = "guessed" }, "source"},
 		{"missing width", func(pb *pb_common.TechCardMarkerInsert) { pb.FabricWidthCm = nil }, "fabric_width_cm"},
 		{"zero width", func(pb *pb_common.TechCardMarkerInsert) { pb.FabricWidthCm = &pb_decimal.Decimal{Value: "0"} }, "fabric_width_cm"},

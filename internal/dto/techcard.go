@@ -14,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"unicode/utf8"
 )
 
 // Column length bounds for tech-card varchar fields, mirroring the schema so that
@@ -806,7 +807,7 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 
 // Column bounds of tech_card_marker (0257), mirrored for readable refusals before the driver's.
 const (
-	markerNameMaxBytes  = 191
+	markerNameMaxChars  = 191
 	markerDimMaxFrac    = 2
 	markerWidthLimit    = 100000000 // DECIMAL(10,2)
 	markerSmallDimLimit = 10000     // DECIMAL(6,2) — gap / edge margin
@@ -828,8 +829,10 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if name == "" {
 		return out, fmt.Errorf("name is required")
 	}
-	if len(name) > markerNameMaxBytes {
-		return out, fmt.Errorf("name must be at most %d bytes", markerNameMaxBytes)
+	// Rune count, matching the column: VARCHAR(191) counts CHARACTERS, so a byte cap would be
+	// 4x stricter than the schema for Cyrillic names — and the prefill is Russian.
+	if utf8.RuneCountInString(name) > markerNameMaxChars {
+		return out, fmt.Errorf("name must be at most %d characters", markerNameMaxChars)
 	}
 	source := entity.MarkerSource(strings.TrimSpace(pb.Source))
 	if source == "" {
@@ -868,12 +871,20 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if pb.Sets < 1 {
 		return out, fmt.Errorf("sets must be at least 1")
 	}
-	usedLength, err := requiredDecimalFromPb(pb.UsedLengthCm, "used_length_cm", markerDimMaxFrac, markerWidthLimit)
+	// used_length_cm is ENGINE-computed float64 — round to the column scale instead of
+	// rejecting float dust (512.4370000000001 must save, not 400). Width/gap/margin stay
+	// strict: those are operator inputs.
+	usedLengthN, err := nullDecimalFromPb(pb.UsedLengthCm)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("used_length_cm: %w", err)
 	}
-	if !usedLength.IsPositive() {
+	if !usedLengthN.Valid || !usedLengthN.Decimal.IsPositive() {
 		return out, fmt.Errorf("used_length_cm must be positive")
+	}
+	usedLength := usedLengthN.Decimal.Round(markerDimMaxFrac)
+	if err := validateDecimalScale(decimal.NullDecimal{Decimal: usedLength, Valid: true},
+		"used_length_cm", markerDimMaxFrac, markerWidthLimit); err != nil {
+		return out, err
 	}
 	efficiency, err := nullDecimalFromPb(pb.EfficiencyPct)
 	if err != nil {
@@ -881,6 +892,11 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	}
 	if efficiency.Valid && (efficiency.Decimal.IsNegative() || efficiency.Decimal.GreaterThan(decimal.NewFromInt(100))) {
 		return out, fmt.Errorf("efficiency_pct must be between 0 and 100")
+	}
+	if efficiency.Valid {
+		// Engine-computed like used_length — round explicitly rather than letting MySQL
+		// truncate into DECIMAL(5,2) silently.
+		efficiency.Decimal = efficiency.Decimal.Round(2)
 	}
 	if pb.PlacedCount < 0 {
 		return out, fmt.Errorf("placed_count must not be negative")

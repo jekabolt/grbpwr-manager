@@ -130,6 +130,44 @@ func TestTechCardMarkerRoundTrip(t *testing.T) {
 		// The card itself does not exist -> the mutable-card guard reports no rows.
 		require.Error(t, err)
 	})
+	t.Run("cross-card marker id is not adopted", func(t *testing.T) {
+		// The REAL IDOR case: a marker id of card A addressed through an EXISTING card B must
+		// be refused, not silently rebound to B.
+		other := card()
+		other.StyleNumber = sql.NullString{String: "MRK-2", Valid: true}
+		otherID, err := T.AddTechCard(ctx, other)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = T.DeleteTechCard(ctx, otherID) })
+		_, err = T.SaveMarker(ctx, otherID, id, ins(), "tester")
+		require.ErrorIs(t, err, entity.ErrMarkerNotFound)
+		_, err = T.GetMarker(ctx, id)
+		require.NoError(t, err, "the original marker must be untouched")
+	})
+	t.Run("byte-identical re-save is not a phantom 404", func(t *testing.T) {
+		// RowsAffected counts rows CHANGED, and this UPDATE has no guaranteed-changing column —
+		// ownership must resolve via SELECT, or a no-op re-save reads as NotFound.
+		cur, err := T.GetMarker(ctx, id)
+		require.NoError(t, err)
+		again := entity.TechCardMarkerInsert{
+			SizeId:          cur.SizeId,
+			Name:            cur.Name,
+			Source:          entity.MarkerSource(cur.Source),
+			BomLineKey:      cur.BomLineKey.String,
+			FabricWidthCm:   cur.FabricWidthCm,
+			GapCm:           cur.GapCm,
+			EdgeMarginCm:    cur.EdgeMarginCm,
+			AllowCrossGrain: cur.AllowCrossGrain,
+			Sets:            cur.Sets,
+			UsedLengthCm:    cur.UsedLengthCm,
+			EfficiencyPct:   cur.EfficiencyPct,
+			PlacedCount:     cur.PlacedCount,
+			TotalCount:      cur.TotalCount,
+			Layout:          cur.Layout,
+		}
+		saved, err := T.SaveMarker(ctx, tcID, id, again, cur.UpdatedBy)
+		require.NoError(t, err)
+		require.Equal(t, id, saved)
+	})
 
 	// The BOM slot is deleted out from under the marker: the link degrades to NULL (SET NULL by
 	// design — a RESTRICT would fail the whole card save), the marker survives as geometry.

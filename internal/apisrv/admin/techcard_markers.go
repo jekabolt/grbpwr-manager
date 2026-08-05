@@ -25,6 +25,14 @@ import (
 // points) is 60-100 KB; two megabytes means a runaway payload, not a bigger raskладка.
 const maxMarkerLayoutBytes = 2 << 20
 
+// Cardinality bounds checked before the blob re-marshal (see SaveTechCardMarker). Generous
+// against reality — a marker is ~dozens of pieces with RDP'd contours of ~100 points.
+const (
+	maxMarkerPieces        = 300
+	maxMarkerPlacements    = 5000
+	maxMarkerContourPoints = 200_000
+)
+
 // SaveTechCardMarker creates (id=0) or fully replaces (id>0) one saved раскладка. Last-write-wins
 // by design, and deliberately NOT bumping tech_card.lock_version — saving a marker from the
 // nesting modal must not 409 the operator's own open card form.
@@ -42,6 +50,26 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	layout := req.GetMarker().GetLayout()
 	if layout == nil || len(layout.GetPieces()) == 0 || len(layout.GetPlacements()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "marker layout with pieces and placements is required")
+	}
+	// Cardinality is bounded BEFORE the re-marshal — the 2MB cap below measures the output,
+	// and without these guards a write-RBAC caller could ship ~50MB of points through the
+	// admin body limit and have it parsed and re-marshalled first.
+	if len(layout.GetPieces()) > maxMarkerPieces || len(layout.GetPlacements()) > maxMarkerPlacements {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"marker layout too large: max %d pieces / %d placements", maxMarkerPieces, maxMarkerPlacements)
+	}
+	points := 0
+	for _, p := range layout.GetPieces() {
+		points += len(p.GetPoly())
+		// source_url is provenance the server refuses to trust: a second, opaque write path
+		// for urls the pattern-row validation cannot see — and after Ф7 a client hydrating
+		// from view_url would bake a capability token into an immutable blob. The filename
+		// in piece.source stays as the human provenance.
+		p.SourceUrl = ""
+	}
+	if points > maxMarkerContourPoints {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"marker layout too large: %d contour points, max %d", points, maxMarkerContourPoints)
 	}
 	if layout.GetSchemaVersion() == 0 {
 		layout.SchemaVersion = 1

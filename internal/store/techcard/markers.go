@@ -72,8 +72,10 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 	if id < 0 {
 		return 0, entity.NewFieldViolation("id", "must_not_be_negative", "", "leave it 0 to save a new marker")
 	}
-	// An incomplete layout is refused before the transaction even opens: not a consumption norm.
-	if ins.PlacedCount < ins.TotalCount {
+	// An incomplete OR overfull layout is refused before the transaction even opens: only
+	// placed == total is a consumption norm (placed > total would store a "complete" marker
+	// against a wrong denominator).
+	if ins.PlacedCount != ins.TotalCount {
 		return 0, fmt.Errorf("%w: %d of %d pieces placed", entity.ErrMarkerIncomplete, ins.PlacedCount, ins.TotalCount)
 	}
 	var savedID int
@@ -83,6 +85,24 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// sibling guard so a concurrent release cannot slip past the SERIALIZABLE read.
 		if err := storeutil.RequireMutableTechCard(ctx, db, techCardID); err != nil {
 			return err
+		}
+		// Ownership FIRST for an addressed id: a marker of another card must read as gone
+		// before any validation detail (bom keys, sizes) leaks a differential answer. Resolved
+		// with a SELECT, not RowsAffected on the UPDATE below — the driver counts rows CHANGED
+		// (no clientFoundRows in the DSN), and that UPDATE has no guaranteed-changing column
+		// (the lock_version bump was deliberately dropped), so a byte-identical re-save would
+		// report 0 rows and read as a phantom 404.
+		if id > 0 {
+			if _, err := storeutil.QueryNamedOne[struct {
+				Id int64 `db:"id"`
+			}](ctx, db, `SELECT id FROM tech_card_marker WHERE id = :id AND tech_card_id = :tech_card_id`,
+				map[string]any{"id": id, "tech_card_id": techCardID}); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("%w: marker %d is not a раскладка of tech card %d",
+						entity.ErrMarkerNotFound, id, techCardID)
+				}
+				return fmt.Errorf("resolve marker %d: %w", id, err)
+			}
 		}
 		// The size must be in the card's range AT SAVE TIME. Like pattern rows, a marker may
 		// outlive its size leaving the range later — it stays a valid measurement — but minting a
@@ -126,8 +146,22 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		}
 		if id > 0 {
 			// The addressed row must already be a marker of THIS card — a foreign id is reported as
-			// gone, not silently adopted (same resolution order as the output-variant upsert).
-			rows, err := storeutil.ExecNamedRows(ctx, db, `
+			// gone, not silently adopted. Ownership is resolved with a SELECT, like the
+			// output-variant upsert, NOT via RowsAffected on the UPDATE: the driver counts rows
+			// CHANGED (no clientFoundRows in the DSN), and this UPDATE has no guaranteed-changing
+			// column (the lock_version bump was deliberately dropped) — a byte-identical re-save
+			// would report 0 rows and read as a phantom 404.
+			if _, err := storeutil.QueryNamedOne[struct {
+				Id int64 `db:"id"`
+			}](ctx, db, `SELECT id FROM tech_card_marker WHERE id = :id AND tech_card_id = :tech_card_id`,
+				map[string]any{"id": id, "tech_card_id": techCardID}); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("%w: marker %d is not a раскладка of tech card %d",
+						entity.ErrMarkerNotFound, id, techCardID)
+				}
+				return fmt.Errorf("resolve marker %d: %w", id, err)
+			}
+			if _, err := storeutil.ExecNamedRows(ctx, db, `
 				UPDATE tech_card_marker
 				SET size_id = :size_id, bom_item_id = :bom_item_id, name = :name, source = :source,
 				    fabric_width_cm = :fabric_width_cm, gap_cm = :gap_cm,
@@ -135,13 +169,8 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				    sets = :sets, used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
 				    placed_count = :placed_count, total_count = :total_count, layout = :layout,
 				    updated_by = :username
-				WHERE id = :id AND tech_card_id = :tech_card_id`, params)
-			if err != nil {
+				WHERE id = :id AND tech_card_id = :tech_card_id`, params); err != nil {
 				return fmt.Errorf("update marker %d: %w", id, err)
-			}
-			if rows == 0 {
-				return fmt.Errorf("%w: marker %d is not a раскладка of tech card %d",
-					entity.ErrMarkerNotFound, id, techCardID)
 			}
 			savedID = id
 			return nil
