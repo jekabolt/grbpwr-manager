@@ -680,6 +680,9 @@ message TechCardSizePattern {
   // version is the sheet's revision within its (style, size) — the "v3" the admin used to scrape out
   // of the filename. Send 0 and the server assigns MAX+1 for a url it has not seen on this card
   // before, and preserves the number for one it has; send a number to pin the factory's own.
+  // On a keyed replacement (url change or size move) an echoed number EQUAL to the replaced row's
+  // is treated as a round-trip echo and renumbered MAX+1 — a deliberate pin must differ from the
+  // replaced row's number.
   int32 version = 5;
   // uploaded_at is when this PDF was first attached to the card. SERVER-OWNED (ignored on write):
   // patterns are a full-replace child, so the row is deleted and reinserted on every card save — the
@@ -1260,6 +1263,9 @@ message TechCardInsert {
 
   // DXF block-name → cut-piece aliases, scoped per fabric slot (§2.2). Presence-gated via the
   // wrapper (see TechCardPieceDxfAliasSet): absent = preserve stored, present = full replace.
+  // Send the wrapper ONLY when the alias editor is wired, and always round-trip what was read —
+  // the wrapper protects against a STALE client, not a half-implemented one: a client that
+  // defaults to an empty PRESENT wrapper clears the whole table on every save.
   TechCardPieceDxfAliasSet piece_dxf_aliases = 107;
 
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;

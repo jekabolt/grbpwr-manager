@@ -251,6 +251,40 @@ func TestPatternLineKeysContention(t *testing.T) {
 		})
 	}
 
+	// The dedupe blind spot from the review: keyless + keyed sharing the SAME (size, url). The
+	// keyless row is the keyed row's echo — it must be skipped in BOTH orders, the keyed row keeps
+	// the stored identity and its name (the binding rides the same carry path).
+	for name, keylessFirst := range map[string]bool{"same-pair keyless first": true, "same-pair keyed first": false} {
+		t.Run(name, func(t *testing.T) {
+			style := "CT-P1"
+			if !keylessFirst {
+				style = "CT-P2"
+			}
+			seeded := entity.TechCardSizePattern{SizeId: szA, URL: urlA,
+				Name: sql.NullString{String: "перед", Valid: true}}
+			id, err := T.AddTechCard(ctx, mk(style, seeded))
+			require.NoError(t, err)
+			t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", id) })
+			tc, err := T.GetTechCardById(ctx, id)
+			require.NoError(t, err)
+			stored := tc.Patterns[0]
+
+			keyless := entity.TechCardSizePattern{SizeId: szA, URL: urlA}
+			keyed := entity.TechCardSizePattern{SizeId: szA, URL: urlA, LineKey: stored.LineKey}
+			payload := []entity.TechCardSizePattern{keyless, keyed}
+			if !keylessFirst {
+				payload = []entity.TechCardSizePattern{keyed, keyless}
+			}
+			require.NoError(t, T.UpdateTechCard(ctx, id, mk(style, payload...), tc.LockVersion))
+
+			after, err := T.GetTechCardById(ctx, id)
+			require.NoError(t, err)
+			require.Len(t, after.Patterns, 1, "the keyless echo must not mint a phantom duplicate")
+			require.Equal(t, stored.LineKey, after.Patterns[0].LineKey, "the keyed row owns the identity")
+			require.Equal(t, "перед", after.Patterns[0].Name.String, "the carried state survives the echo")
+		})
+	}
+
 	t.Run("echoed version takes MAX+1, manual pin honoured", func(t *testing.T) {
 		id, err := T.AddTechCard(ctx, mk("CT-V", entity.TechCardSizePattern{SizeId: szA, URL: urlA}))
 		require.NoError(t, err)

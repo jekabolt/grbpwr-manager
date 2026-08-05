@@ -25,6 +25,8 @@ const (
 	maxVarchar191  = 191
 	maxVarchar512  = 512
 	maxVarchar1024 = 1024
+	// maxPieceDxfAliases bounds the machine-generated DXF-block alias set (marker bounds precedent).
+	maxPieceDxfAliases = 2000
 
 	// Decimal bounds mirroring the Phase 2 column types so over-range input fails
 	// as InvalidArgument, not a MySQL out-of-range Internal error.
@@ -595,6 +597,11 @@ func parseTechCardPieceDxfAliases(pb *pb_common.TechCardPieceDxfAliasSet) ([]ent
 	if pb == nil {
 		return nil, false, nil
 	}
+	// Machine-generated from parsed DXF files — bounded like marker pieces/placements, so a
+	// pathological file cannot turn one save into thousands of INSERTs.
+	if len(pb.Items) > maxPieceDxfAliases {
+		return nil, false, fmt.Errorf("piece_dxf_aliases has %d items, max %d", len(pb.Items), maxPieceDxfAliases)
+	}
 	out := make([]entity.TechCardPieceDxfAlias, 0, len(pb.Items))
 	seen := make(map[string]bool, len(pb.Items))
 	for i, a := range pb.Items {
@@ -658,6 +665,11 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 	// here is a client bug that the store's diff would otherwise resolve by silently DELETING the
 	// second stored row — so it is rejected before the transaction, like BOM/piece/run line keys.
 	seenLineKeys := make(map[string]struct{}, len(pbs))
+	// Two KEYED rows sharing one (size, url) are the dup-key reject's blind spot: distinct keys,
+	// same sheet — the store's diff would keep both, but no client legitimately produces it and a
+	// buggy one is about to lose a row somewhere; reject like the key dupe. Keyless rows keep the
+	// lossless keep-first dedupe in the store.
+	seenKeyedPairs := make(map[string]struct{}, len(pbs))
 	for _, p := range pbs {
 		sid := int(p.SizeId)
 		if sid <= 0 || !slices.Contains(sizeIds, sid) {
@@ -708,6 +720,11 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 				return nil, fmt.Errorf("pattern line_key %q is used by two rows; one key names one row — the same sheet on two sizes is two rows with two keys", lineKey)
 			}
 			seenLineKeys[lineKey] = struct{}{}
+			pair := fmt.Sprintf("%d|%s", sid, url)
+			if _, dup := seenKeyedPairs[pair]; dup {
+				return nil, fmt.Errorf("two keyed pattern rows carry the same size and url; a sheet appears once per size")
+			}
+			seenKeyedPairs[pair] = struct{}{}
 		}
 		// bom_line_key keeps proto presence like name: absent → carry the stored binding forward.
 		var bomLineKey sql.NullString

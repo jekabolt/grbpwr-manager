@@ -198,6 +198,12 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 			Patterns: []*pb_common.TechCardSizePattern{
 				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"},
 				{SizeId: 5, Url: "https://cdn/y.pdf", LineKey: "01sheetkey0000000000000001"}}},
+		// The dup-key reject's blind spot — two KEYED rows, distinct keys, one (size, url): the
+		// store's diff would keep both, but no client legitimately produces it.
+		"keyed pattern rows share one size and url": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"},
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000002"}}},
 		// R1: usage size_consumption validation cases moved with the colourway recipe to the Colorway
 		// RPCs (CreateColorway / ColorwayDevelopmentInsert.usages) — re-covered in track T-B step D.
 	}

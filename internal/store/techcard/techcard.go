@@ -1371,12 +1371,18 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	// adopt a stored row that a later keyed row names, silently dropping that keyed row. A keyless
 	// row may only adopt a stored row no keyed payload row claims.
 	reservedKeys := make(map[string]struct{}, len(patterns))
+	// keyedPairs records the (size, url) of every KEYED payload row: a KEYLESS row carrying the
+	// same pair is that row's echo (a stale duplicate of one sheet) — letting it adopt or insert
+	// would either steal the keyed row's stored identity or mint a phantom duplicate, and which
+	// one happened would depend on payload order.
+	keyedPairs := make(map[string]struct{}, len(patterns))
 	for _, p := range patterns {
 		if _, ok := liveSizes[p.SizeId]; !ok {
 			continue
 		}
 		if p.LineKey != "" {
 			reservedKeys[p.LineKey] = struct{}{}
+			keyedPairs[patternHistoryKey(p.SizeId, p.URL)] = struct{}{}
 		}
 	}
 	order := 0
@@ -1385,10 +1391,20 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			continue
 		}
 		key := patternHistoryKey(p.SizeId, p.URL)
-		if _, duplicate := seenPayload[key]; duplicate {
-			continue
+		if p.LineKey == "" {
+			if _, keyed := keyedPairs[key]; keyed {
+				// A keyed payload row owns this sheet; this keyless duplicate is its echo.
+				continue
+			}
+			if _, duplicate := seenPayload[key]; duplicate {
+				// Keyless-vs-keyless (size, url) dupe — a genuine duplicate, keep the first
+				// (lossless). Keyed rows never enter this dedupe: the dto rejects keyed pairs
+				// sharing (size, url), and for direct store callers keeping both is the
+				// non-destructive choice.
+				continue
+			}
+			seenPayload[key] = struct{}{}
 		}
-		seenPayload[key] = struct{}{}
 		// Row identity, three steps (PIECES-WASTAGE-DESIGN §2.1): (1) an explicit line_key names its
 		// stored row; (2) a keyless payload row adopts the line_key of an unconsumed stored row with
 		// the same (size, url) — the legacy path, so stale clients cannot sever bindings; (3) no
@@ -1442,11 +1458,12 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		} else {
 			uploadedAt = sql.NullTime{Time: now, Valid: true}
 		}
-		if matched != nil && matched.URL != p.URL && version == matched.Version {
-			// A keyed url change carrying the SAME version the replaced file had is an ECHO — the
-			// schema round-trips version, so a client that replaces a sheet naturally resends the old
-			// number. A replacement is a new revision by definition: force MAX+1. A genuine manual
-			// pin differs from the replaced row's number and passes through untouched.
+		if _, exactPair := known[key]; matched != nil && !exactPair && version == matched.Version {
+			// A keyed row whose (size, url) left its stored history — the url changed (sheet
+			// replacement) or the sheet moved to another size — carrying the SAME version the
+			// replaced row had is an ECHO: the schema round-trips version, so a client naturally
+			// resends the old number. Both cases are a new revision by definition: force MAX+1.
+			// A genuine manual pin differs from the replaced row's number and passes untouched.
 			version = 0
 		}
 		if version <= 0 {

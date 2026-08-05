@@ -906,9 +906,12 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 	if err != nil {
 		return fmt.Errorf("failed to load pieces for dxf aliases: %w", err)
 	}
+	// Lowercased on BOTH sides: alias keys are dto-uppercased while piece/BOM line keys are only
+	// trimmed on their own entry paths — a lowercase-keyed but internally consistent payload must
+	// not be refused by the server's own normalization asymmetry.
 	pieceByKey := make(map[string]int, len(pieceRows))
 	for _, r := range pieceRows {
-		pieceByKey[r.LineKey] = r.Id
+		pieceByKey[strings.ToLower(r.LineKey)] = r.Id
 	}
 	type aliasExistingRow struct {
 		Id         int    `db:"id"`
@@ -939,12 +942,12 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 		}
 		fabricKeys = make(map[string]struct{}, len(rows))
 		for _, r := range rows {
-			fabricKeys[r.LineKey] = struct{}{}
+			fabricKeys[strings.ToLower(r.LineKey)] = struct{}{}
 		}
 	}
 	seen := make(map[string]bool, len(aliases))
 	for i, a := range aliases {
-		pieceID, ok := pieceByKey[a.PieceLineKey]
+		pieceID, ok := pieceByKey[strings.ToLower(a.PieceLineKey)]
 		if !ok {
 			return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i),
 				"not_found", a.PieceLineKey, "the referenced cut-piece is not on this card")
@@ -959,7 +962,7 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 				}
 			}
 		} else {
-			if _, live := fabricKeys[a.BomLineKey]; !live {
+			if _, live := fabricKeys[strings.ToLower(a.BomLineKey)]; !live {
 				return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i),
 					"not_found", a.BomLineKey, "pick a fabric BOM line of this card")
 			}
@@ -974,6 +977,14 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 					"piece_id":     pieceID,
 					"username":     username,
 				}); err != nil {
+				var me *mysql.MySQLError
+				if errors.As(err, &me) && me.Number == 1062 { // ER_DUP_ENTRY
+					// The DB collation folds more than Go's ToLower (accents, ё=е, ß=ss) — a pair
+					// Go saw as distinct can still collide in MySQL. A readable refusal, not a 500.
+					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].block_name", i),
+						fmt.Sprintf("block %q collides with an existing alias on this fabric under the database's case/accent folding", a.BlockName),
+						a.BlockName, "rename the block or edit the existing alias")
+				}
 				return fmt.Errorf("failed to insert dxf alias: %w", err)
 			}
 		}
