@@ -400,7 +400,9 @@ func fittingParams(f *entity.FittingInsert) map[string]any {
 	}
 }
 
-// changeRequestParams builds the write params for one structured change-request item (S26).
+// changeRequestParams builds the write params for one structured change-request item (S26). The
+// legacy piece_id column is deliberately absent: pieces live in fitting_change_request_piece since
+// 0256, and writing both would give the row two disagreeing answers to "which piece".
 func changeRequestParams(cr *entity.FittingChangeRequest) map[string]any {
 	return map[string]any{
 		"fitting_id":      cr.FittingId,
@@ -408,11 +410,74 @@ func changeRequestParams(cr *entity.FittingChangeRequest) map[string]any {
 		"note":            cr.Note,
 		"callout_number":  cr.CalloutNumber,
 		"zone":            cr.Zone,
-		"piece_id":        cr.PieceId,
 		"status":          cr.Status,
 		"carried_from_id": cr.CarriedFromId,
 		"created_by":      cr.CreatedBy,
 	}
+}
+
+// replaceChangeRequestPieces makes fitting_change_request_piece match cr.PieceIds exactly (delete-all
+// + re-insert, like the fitting's other child collections). Called inside the caller's transaction.
+func replaceChangeRequestPieces(ctx context.Context, db dependency.DB, crID int, pieceIDs []int) error {
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM fitting_change_request_piece WHERE change_request_id = :id`,
+		map[string]any{"id": crID}); err != nil {
+		return fmt.Errorf("clear change-request pieces %d: %w", crID, err)
+	}
+	return insertChangeRequestPieces(ctx, db, crID, pieceIDs)
+}
+
+// insertChangeRequestPieces writes the piece set of a change request that has none yet (a freshly
+// inserted row), skipping the pointless DELETE that replaceChangeRequestPieces would do first.
+func insertChangeRequestPieces(ctx context.Context, db dependency.DB, crID int, pieceIDs []int) error {
+	if len(pieceIDs) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(pieceIDs))
+	for i, pid := range pieceIDs {
+		rows = append(rows, map[string]any{
+			"change_request_id": crID,
+			"piece_id":          pid,
+			"display_order":     i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "fitting_change_request_piece", rows); err != nil {
+		return fmt.Errorf("insert change-request pieces %d: %w", crID, err)
+	}
+	return nil
+}
+
+type changeRequestPieceRow struct {
+	ChangeRequestID int `db:"change_request_id"`
+	PieceID         int `db:"piece_id"`
+}
+
+// attachChangeRequestPieces loads the piece sets for the given change requests and fills PieceIds in
+// place. One query for the whole page, in selection order.
+func attachChangeRequestPieces(ctx context.Context, db dependency.DB, crs []*entity.FittingChangeRequest) error {
+	if len(crs) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(crs))
+	for _, cr := range crs {
+		ids = append(ids, cr.Id)
+	}
+	rows, err := storeutil.QueryListNamed[changeRequestPieceRow](ctx, db, `
+		SELECT change_request_id, piece_id
+		FROM fitting_change_request_piece
+		WHERE change_request_id IN (:ids)
+		ORDER BY change_request_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load change-request pieces: %w", err)
+	}
+	byCR := make(map[int][]int, len(crs))
+	for _, r := range rows {
+		byCR[r.ChangeRequestID] = append(byCR[r.ChangeRequestID], r.PieceID)
+	}
+	for _, cr := range crs {
+		cr.PieceIds = byCR[cr.Id]
+	}
+	return nil
 }
 
 // validateFittingSizes rejects fit-sample sizes that the fitting's style does not make. Samples have
@@ -551,28 +616,31 @@ func insertFittingCallouts(ctx context.Context, db dependency.DB, fittingID int,
 }
 
 // insertFittingChangeRequests inserts the initial structured-remark batch on create (S26). createdBy is
-// the acting admin (the fitting's creator) — the items are stamped with it.
+// the acting admin (the fitting's creator) — the items are stamped with it. Inserted one row at a time
+// rather than in bulk because each item's piece set needs its new id; the batch is a handful of remarks
+// and the whole loop runs inside the caller's transaction.
 func insertFittingChangeRequests(ctx context.Context, db dependency.DB, fittingID int, createdBy string, crs []entity.FittingChangeRequest) error {
-	if len(crs) == 0 {
-		return nil
-	}
-	rows := make([]map[string]any, 0, len(crs))
 	for i, c := range crs {
-		rows = append(rows, map[string]any{
-			"fitting_id":      fittingID,
-			"target":          c.Target,
-			"note":            c.Note,
-			"callout_number":  c.CalloutNumber,
-			"zone":            c.Zone,
-			"piece_id":        c.PieceId,
-			"status":          c.Status,
-			"carried_from_id": c.CarriedFromId,
-			"created_by":      createdBy,
-			"display_order":   i,
-		})
-	}
-	if err := storeutil.BulkInsert(ctx, db, "fitting_change_request", rows); err != nil {
-		return fmt.Errorf("failed to insert fitting change requests: %w", err)
+		id, err := storeutil.ExecNamedLastId(ctx, db, `
+			INSERT INTO fitting_change_request (fitting_id, target, note, callout_number, zone, status, carried_from_id, created_by, display_order)
+			VALUES (:fitting_id, :target, :note, :callout_number, :zone, :status, :carried_from_id, :created_by, :display_order)`,
+			map[string]any{
+				"fitting_id":      fittingID,
+				"target":          c.Target,
+				"note":            c.Note,
+				"callout_number":  c.CalloutNumber,
+				"zone":            c.Zone,
+				"status":          c.Status,
+				"carried_from_id": c.CarriedFromId,
+				"created_by":      createdBy,
+				"display_order":   i,
+			})
+		if err != nil {
+			return fmt.Errorf("failed to insert fitting change requests: %w", err)
+		}
+		if err := insertChangeRequestPieces(ctx, db, id, c.PieceIds); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -639,12 +707,19 @@ func (s *Store) changeRequestsByFittingIds(ctx context.Context, ids []int) (map[
 		return map[int][]entity.FittingChangeRequest{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[entity.FittingChangeRequest](ctx, s.DB, `
-		SELECT id, fitting_id, target, note, callout_number, zone, piece_id, status, carried_from_id, created_by
+		SELECT id, fitting_id, target, note, callout_number, zone, status, carried_from_id, created_by
 		FROM fitting_change_request
 		WHERE fitting_id IN (:ids)
 		ORDER BY fitting_id, display_order, id`, map[string]any{"ids": ids})
 	if err != nil {
 		return nil, fmt.Errorf("can't load fitting change requests: %w", err)
+	}
+	refs := make([]*entity.FittingChangeRequest, 0, len(rows))
+	for i := range rows {
+		refs = append(refs, &rows[i])
+	}
+	if err := attachChangeRequestPieces(ctx, s.DB, refs); err != nil {
+		return nil, err
 	}
 	out := make(map[int][]entity.FittingChangeRequest, len(ids))
 	for _, r := range rows {
@@ -667,13 +742,13 @@ func (s *Store) AddFittingChangeRequest(ctx context.Context, cr *entity.FittingC
 		params := changeRequestParams(cr)
 		params["display_order"] = ord
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO fitting_change_request (fitting_id, target, note, callout_number, zone, piece_id, status, carried_from_id, created_by, display_order)
-			VALUES (:fitting_id, :target, :note, :callout_number, :zone, :piece_id, :status, :carried_from_id, :created_by, :display_order)`,
+			INSERT INTO fitting_change_request (fitting_id, target, note, callout_number, zone, status, carried_from_id, created_by, display_order)
+			VALUES (:fitting_id, :target, :note, :callout_number, :zone, :status, :carried_from_id, :created_by, :display_order)`,
 			params)
 		if err != nil {
 			return fmt.Errorf("insert fitting change request: %w", err)
 		}
-		return nil
+		return insertChangeRequestPieces(ctx, rep.DB(), id, cr.PieceIds)
 	})
 	if err != nil {
 		return 0, err
@@ -687,18 +762,35 @@ func (s *Store) AddFittingChangeRequest(ctx context.Context, cr *entity.FittingC
 func (s *Store) UpdateFittingChangeRequest(ctx context.Context, id int, cr *entity.FittingChangeRequest) error {
 	params := changeRequestParams(cr)
 	params["id"] = id
-	rows, err := storeutil.ExecNamedRows(ctx, s.DB, `
-		UPDATE fitting_change_request SET
-			target = :target, note = :note, callout_number = :callout_number, zone = :zone,
-			piece_id = :piece_id, status = :status, carried_from_id = :carried_from_id
-		WHERE id = :id`, params)
-	if err != nil {
-		return fmt.Errorf("update fitting change request %d: %w", id, err)
-	}
-	if rows == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Existence is checked with a SELECT rather than read off the UPDATE's affected-rows count.
+		// Without CLIENT_FOUND_ROWS, MySQL reports 0 for an update that CHANGED nothing — and since
+		// 0256 moved the pieces off the row, "the user only edited the piece set" is exactly that
+		// case. Trusting the count there would fail the call and roll the piece edit back.
+		//
+		// FOR UPDATE, not a plain SELECT: under SERIALIZABLE a bare read takes a SHARED lock, so two
+		// concurrent edits of the same remark would each hold S and then both ask for X on the
+		// UPDATE — a textbook upgrade deadlock. Taking X up front serialises them instead. (The tx
+		// helper does retry 1213, so this is a latency fix, not a correctness one.)
+		if _, err := storeutil.QueryNamedOne[struct {
+			Id int `db:"id"`
+		}](ctx, rep.DB(),
+			`SELECT id FROM fitting_change_request WHERE id = :id FOR UPDATE`,
+			map[string]any{"id": id}); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return sql.ErrNoRows
+			}
+			return fmt.Errorf("load fitting change request %d: %w", id, err)
+		}
+		if _, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+			UPDATE fitting_change_request SET
+				target = :target, note = :note, callout_number = :callout_number, zone = :zone,
+				status = :status, carried_from_id = :carried_from_id
+			WHERE id = :id`, params); err != nil {
+			return fmt.Errorf("update fitting change request %d: %w", id, err)
+		}
+		return replaceChangeRequestPieces(ctx, rep.DB(), id, cr.PieceIds)
+	})
 }
 
 // DeleteFittingChangeRequest deletes one item (S26). A successor's carried_from_id is SET NULL by the
@@ -729,7 +821,7 @@ func (s *Store) ListOpenFittingChangeRequests(ctx context.Context, techCardID, b
 		params["before"] = beforeRound
 	}
 	rows, err := storeutil.QueryListNamed[entity.FittingChangeRequest](ctx, s.DB, fmt.Sprintf(`
-		SELECT cr.id, cr.fitting_id, cr.target, cr.note, cr.callout_number, cr.zone, cr.piece_id,
+		SELECT cr.id, cr.fitting_id, cr.target, cr.note, cr.callout_number, cr.zone,
 			cr.status, cr.carried_from_id, cr.created_by, s.round_number
 		FROM fitting_change_request cr
 		JOIN fitting f ON f.id = cr.fitting_id
@@ -739,6 +831,14 @@ func (s *Store) ListOpenFittingChangeRequests(ctx context.Context, techCardID, b
 		ORDER BY s.round_number, cr.id`, roundFilter), params)
 	if err != nil {
 		return nil, fmt.Errorf("list open change requests: %w", err)
+	}
+	// Carrying an item into the next round copies its pieces, so the carry-over view has to load them.
+	refs := make([]*entity.FittingChangeRequest, 0, len(rows))
+	for i := range rows {
+		refs = append(refs, &rows[i])
+	}
+	if err := attachChangeRequestPieces(ctx, s.DB, refs); err != nil {
+		return nil, err
 	}
 	return rows, nil
 }
