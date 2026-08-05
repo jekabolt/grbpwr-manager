@@ -616,7 +616,7 @@ func TestAuxiliaryProductionRun(t *testing.T) {
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM production_run WHERE id = ?", runID)
 	})
 
-	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, true, outMatID)
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, true)
 	require.NoError(t, err)
 
 	// the material warehouse now holds 100 @ avg 2.
@@ -635,7 +635,7 @@ func TestAuxiliaryProductionRun(t *testing.T) {
 	got, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Equal(t, entity.ProductionRunReceived, got.Status)
-	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, true, outMatID)
+	_, err = receiveStoredRunViaReceipt(ctx, t, s, runID, true)
 	require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
 }
 

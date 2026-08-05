@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -100,6 +101,11 @@ func recordRunEvent(ctx context.Context, db dependency.DB, runID int, eventType,
 func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Every colour the grid names must be one of THIS card's, and one it still makes. Nothing is
+		// grandfathered on a create — every line here is new.
+		if err := validateRunLineVariants(ctx, rep.DB(), 0, r.TechCardId, r.Lines); err != nil {
+			return err
+		}
 		var err error
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(),
 			fmt.Sprintf(`INSERT INTO production_run (%s) VALUES (%s)`, runColumns, runValues),
@@ -117,6 +123,13 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 			map[string]any{"status": string(r.Status)})
 	})
 	if err != nil {
+		// The colour-linkage refusals are caller-fixable preconditions and are returned bare, so the
+		// handler's message is the one the operator reads.
+		if errors.Is(err, entity.ErrProductionRunLineVariantUnlinked) ||
+			errors.Is(err, entity.ErrProductionRunLineVariantRetired) ||
+			errors.Is(err, entity.ErrProductionRunLineVariantMixedGrid) {
+			return 0, err
+		}
 		return 0, fmt.Errorf("can't create production run: %w", err)
 	}
 	return id, nil
@@ -216,6 +229,12 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		// tech_card_id and the style roll-ups are all anchored to it (g25-13).
 		if r.TechCardId != cur.TechCardId {
 			return entity.ErrProductionRunCardChange
+		}
+		// Colour linkage against the STORED card (the run cannot move, per the check above). A colour
+		// the run already references survives a retirement; a colour it does not is planned fresh and
+		// must still be one this card makes.
+		if err := validateRunLineVariants(ctx, rep.DB(), id, cur.TechCardId, r.Lines); err != nil {
+			return err
 		}
 		// The stored articles are read under the run lock either way: the cost-blind path carries them
 		// through wholesale, the cost-writing path uses them to keep each unchanged article's already
@@ -333,6 +352,12 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			entity.ErrProductionRunReceiveViaUpdate, entity.ErrProductionRunHasOpenIssues,
 			entity.ErrProductionRunCardChange, entity.ErrProductionRunConflict,
 			entity.ErrProductionRunPartialTerminal:
+			return err
+		}
+		// Wrapped (they carry the offending colour's id), so they are matched by identity, not equality.
+		if errors.Is(err, entity.ErrProductionRunLineVariantUnlinked) ||
+			errors.Is(err, entity.ErrProductionRunLineVariantRetired) ||
+			errors.Is(err, entity.ErrProductionRunLineVariantMixedGrid) {
 			return err
 		}
 		return fmt.Errorf("can't update production run: %w", err)
@@ -692,8 +717,10 @@ func (s *Store) runLines(ctx context.Context, runID int) ([]entity.ProductionRun
 // loadRunLines loads a run's colour-model × size lines on the given db (pool or tx).
 func loadRunLines(ctx context.Context, db dependency.DB, runID int) ([]entity.ProductionRunLine, error) {
 	lines, err := storeutil.QueryListNamed[entity.ProductionRunLine](ctx, db,
-		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, COALESCE(size_id, 0) AS size_id, planned_qty, received_qty, defect_qty
-		 FROM production_run_line WHERE run_id = :run_id ORDER BY product_id IS NOT NULL, product_id, size_id`,
+		`SELECT id, COALESCE(line_key, '') AS line_key, product_id, output_variant_id,
+		        COALESCE(size_id, 0) AS size_id, planned_qty, received_qty, defect_qty
+		 FROM production_run_line WHERE run_id = :run_id
+		 ORDER BY product_id IS NOT NULL, product_id, output_variant_id, size_id`,
 		map[string]any{"run_id": runID})
 	if err != nil {
 		return nil, fmt.Errorf("can't load production run lines: %w", err)
@@ -719,8 +746,10 @@ func (s *Store) attachLines(ctx context.Context, runs []entity.ProductionRun) er
 		idx[runs[i].Id] = i
 	}
 	rows, err := storeutil.QueryListNamed[lineRow](ctx, s.DB,
-		`SELECT run_id, id, COALESCE(line_key, '') AS line_key, product_id, COALESCE(size_id, 0) AS size_id, planned_qty, received_qty, defect_qty
-		 FROM production_run_line WHERE run_id IN (:ids) ORDER BY run_id, product_id IS NOT NULL, product_id, size_id`,
+		`SELECT run_id, id, COALESCE(line_key, '') AS line_key, product_id, output_variant_id,
+		        COALESCE(size_id, 0) AS size_id, planned_qty, received_qty, defect_qty
+		 FROM production_run_line WHERE run_id IN (:ids)
+		 ORDER BY run_id, product_id IS NOT NULL, product_id, output_variant_id, size_id`,
 		map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load production run lines: %w", err)
@@ -830,14 +859,131 @@ func insertRunLines(ctx context.Context, db dependency.DB, runID int, lines []en
 // counted quantities through an ordinary section save, and losing them would erase counted facts).
 func runLineParams(runID int, ln *entity.ProductionRunLine, lineKey string) map[string]any {
 	return map[string]any{
-		"run_id":       runID,
-		"line_key":     lineKey,
-		"product_id":   ln.ProductId,
-		"size_id":      nullIfZero(ln.SizeId),
-		"planned_qty":  ln.PlannedQty,
-		"received_qty": ln.ReceivedQty,
-		"defect_qty":   ln.DefectQty,
+		"run_id":     runID,
+		"line_key":   lineKey,
+		"product_id": ln.ProductId,
+		// The colour a product-less aux line produces (0253). NULL for every sellable line and for the
+		// single output line of a legacy single-output aux card — chk_prl_variant_xor holds either way,
+		// including while the diff parks a mover at product_id = NULL.
+		//
+		// nullIfNoVariant, not the raw NullInt32: a caller that builds {Int32: 0, Valid: true} — the
+		// shape a proto3 zero takes on the way through any hand-written mapper — would otherwise reach
+		// the FK as a literal 0 and die as a raw 1452 naming a constraint instead of a colour. 0 means
+		// unset here exactly as it does for size_id, and every reader agrees (lineVariantID).
+		"output_variant_id": nullIfNoVariant(ln.OutputVariantId),
+		"size_id":           nullIfZero(ln.SizeId),
+		"planned_qty":       ln.PlannedQty,
+		"received_qty":      ln.ReceivedQty,
+		"defect_qty":        ln.DefectQty,
 	}
+}
+
+// validateRunLineVariants enforces, at PLAN time, everything about a run grid's colours that the
+// database cannot: that the grid is not half-coloured, that every colour it names is a colour of the
+// run's OWN tech card, and that a colour it names FRESH is one the card still makes (0252/0253). It
+// runs inside the write transaction, so the registry it reads is the registry the lines commit
+// against.
+//
+// Three rules, and the asymmetry between them is the point:
+//
+//   - NO MIXED GRID. Once any line names a colour, every product-less line must. A grid that mixes
+//     colour lines with the old colourless aux line is plannable but UNRECEIVABLE — the receipt has
+//     one bucket per colour and nowhere at all to put the colourless line's units — so allowing it
+//     only defers the refusal to the one moment an auxiliary run can no longer be unwound.
+//   - BELONGS TO THIS CARD is absolute. A colour of another card (or a stale id, or a colour on a
+//     run whose card is sellable and therefore has no colours at all) would send this run's output
+//     into someone else's warehouse bucket, blending two physically different articles into one
+//     moving average. There is no grandfathering for it.
+//   - ACTIVE is required only of a colour a line does not ALREADY carry. Retiring a colour means "we
+//     no longer make this", which must stop new plans — but a line planned while the colour was live
+//     keeps it, and every later save of that run (a note, a promised date, a round-tripped grid) must
+//     keep working. The exemption is per LINE, not per run: a run that already produces black may not
+//     use that fact to add a fresh line on a retired white.
+//
+// storedRunID is 0 on create (nothing is grandfathered) and the run's id on update. The common case
+// — a sellable grid or a legacy single-output aux line — costs ZERO extra queries.
+func validateRunLineVariants(ctx context.Context, db dependency.DB, storedRunID, techCardID int, lines []entity.ProductionRunLine) error {
+	referenced := make([]int, 0, len(lines))
+	seen := make(map[int]bool, len(lines))
+	for i := range lines {
+		id := lineVariantID(&lines[i])
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		referenced = append(referenced, id)
+	}
+	if len(referenced) == 0 {
+		return nil
+	}
+	// The mixed-grid rule is a pure payload rule, so it is answered before any round trip.
+	for i := range lines {
+		if lines[i].ProductId.Valid || lineVariantID(&lines[i]) != 0 {
+			continue
+		}
+		return fmt.Errorf("%w: line %q produces no colour while the rest of the grid does",
+			entity.ErrProductionRunLineVariantMixedGrid, lines[i].LineKey)
+	}
+	sort.Ints(referenced)
+	rows, err := storeutil.QueryListNamed[struct {
+		Id     int  `db:"id"`
+		Active bool `db:"active"`
+	}](ctx, db, `
+		SELECT id, active FROM tech_card_output_variant
+		WHERE tech_card_id = :card AND id IN (:ids)`,
+		map[string]any{"card": techCardID, "ids": referenced})
+	if err != nil {
+		return fmt.Errorf("failed to load colour variants of tech card %d for a run grid: %w", techCardID, err)
+	}
+	active := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		active[r.Id] = r.Active
+	}
+	for _, id := range referenced {
+		if _, ours := active[id]; !ours {
+			return fmt.Errorf("%w: colour variant %d is not a colour of tech card %d",
+				entity.ErrProductionRunLineVariantUnlinked, id, techCardID)
+		}
+	}
+	retiredLines := make([]int, 0, len(lines))
+	for i := range lines {
+		if id := lineVariantID(&lines[i]); id != 0 && !active[id] {
+			retiredLines = append(retiredLines, i)
+		}
+	}
+	if len(retiredLines) == 0 {
+		return nil
+	}
+	// Only now is the grandfathering read worth its round trip. It is keyed by LINE identity: the
+	// exemption belongs to the row that already carried the colour, not to the run it sits on.
+	priorByKey := make(map[string]int)
+	if storedRunID > 0 {
+		prior, err := storeutil.QueryListNamed[struct {
+			LineKey string `db:"line_key"`
+			Id      int    `db:"output_variant_id"`
+		}](ctx, db, `
+			SELECT COALESCE(line_key, '') AS line_key, output_variant_id FROM production_run_line
+			WHERE run_id = :run_id AND output_variant_id IS NOT NULL`,
+			map[string]any{"run_id": storedRunID})
+		if err != nil {
+			return fmt.Errorf("failed to load run %d stored colour variants: %w", storedRunID, err)
+		}
+		for _, p := range prior {
+			if p.LineKey != "" {
+				priorByKey[p.LineKey] = p.Id
+			}
+		}
+	}
+	for _, i := range retiredLines {
+		// A keyless line is a NEW line (the DTO mints keys for every RPC payload), so it is never
+		// grandfathered — and a keyed line is exempt only when the stored row behind that key already
+		// carried this very colour.
+		key := strings.TrimSpace(lines[i].LineKey)
+		if key == "" || priorByKey[key] != lineVariantID(&lines[i]) {
+			return fmt.Errorf("%w: colour variant %d", entity.ErrProductionRunLineVariantRetired, lineVariantID(&lines[i]))
+		}
+	}
+	return nil
 }
 
 // resolveRunLineKeys returns the stable identity of each submitted line, minting one for a keyless
@@ -934,7 +1080,8 @@ func upsertRunLines(ctx context.Context, db dependency.DB, runID int, lines []en
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
 			UPDATE production_run_line SET
-				product_id = :product_id, size_id = :size_id, planned_qty = :planned_qty,
+				product_id = :product_id, output_variant_id = :output_variant_id,
+				size_id = :size_id, planned_qty = :planned_qty,
 				received_qty = :received_qty, defect_qty = :defect_qty
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update production run line: %w", err)

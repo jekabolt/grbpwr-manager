@@ -20,8 +20,9 @@ import (
 
 // receiptParamsFromStored builds the receipt command's params the way the legacy shim does: counted
 // lines synthesized from the run's stored received/defect counts, a freshly minted idempotency key,
-// and the canonical request hash. Aux runs pass aux=true + the output material.
-func receiptParamsFromStored(t *testing.T, run *entity.ProductionRun, updateCostPrice bool, aux bool, outputMaterialID int) entity.PostProductionRunReceiptParams {
+// and the canonical request hash. An aux run passes aux=true and nothing else — WHERE its output
+// lands is read from the tech card inside the receipt transaction, never handed in (review F1/F2).
+func receiptParamsFromStored(t *testing.T, run *entity.ProductionRun, updateCostPrice bool, aux bool) entity.PostProductionRunReceiptParams {
 	t.Helper()
 	lines := make([]entity.ProductionRunReceiptLineInput, 0, len(run.Lines))
 	for _, ln := range run.Lines {
@@ -34,29 +35,28 @@ func receiptParamsFromStored(t *testing.T, run *entity.ProductionRun, updateCost
 	key, err := entity.MintProductionRunLineKey()
 	require.NoError(t, err)
 	return entity.PostProductionRunReceiptParams{
-		RunID:            run.Id,
-		Lines:            lines,
-		IdempotencyKey:   key,
-		RequestHash:      dto.HashProductionRunReceiptPayload(run.Id, lines, "", updateCostPrice, true),
-		UpdateCostPrice:  updateCostPrice,
-		Final:            true,
-		LegacyTotals:     true,
-		Username:         "tester",
-		BaseCurrency:     "EUR",
-		Aux:              aux,
-		OutputMaterialID: outputMaterialID,
+		RunID:           run.Id,
+		Lines:           lines,
+		IdempotencyKey:  key,
+		RequestHash:     dto.HashProductionRunReceiptPayload(run.Id, lines, "", updateCostPrice, true),
+		UpdateCostPrice: updateCostPrice,
+		Final:           true,
+		LegacyTotals:    true,
+		Username:        "tester",
+		BaseCurrency:    "EUR",
+		Aux:             aux,
 	}
 }
 
 // receiveStoredRunViaReceipt is the one-line replacement for the deleted store-level
 // ReceiveProductionRun/ReceiveAuxiliaryProductionRun in older integration tests.
-func receiveStoredRunViaReceipt(ctx context.Context, t *testing.T, s *MYSQLStore, runID int, aux bool, outputMaterialID int) (*entity.PostProductionRunReceiptResult, error) {
+func receiveStoredRunViaReceipt(ctx context.Context, t *testing.T, s *MYSQLStore, runID int, aux bool) (*entity.PostProductionRunReceiptResult, error) {
 	t.Helper()
 	run, err := s.ProductionRuns().GetProductionRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
-	return s.ProductionRuns().PostProductionRunReceipt(ctx, receiptParamsFromStored(t, run, false, aux, outputMaterialID))
+	return s.ProductionRuns().PostProductionRunReceipt(ctx, receiptParamsFromStored(t, run, false, aux))
 }
 
 // TestProductionReceiptCommand exercises the atomic receipt command against the real schema
@@ -149,7 +149,7 @@ func TestProductionReceiptCommand(t *testing.T) {
 		require.ErrorIs(t, err, entity.ErrIdempotencyConflict)
 
 		// A fresh key on an already-received run → the double-receive guard.
-		fresh := receiptParamsFromStored(t, got, false, false, 0)
+		fresh := receiptParamsFromStored(t, got, false, false)
 		_, err = P.PostProductionRunReceipt(ctx, fresh)
 		require.ErrorIs(t, err, entity.ErrProductionRunAlreadyReceived)
 	})
@@ -179,7 +179,7 @@ func TestProductionReceiptCommand(t *testing.T) {
 		run, err := P.GetProductionRun(ctx, runID)
 		require.NoError(t, err)
 		run.Lines[0].ReceivedQty = sql.NullInt64{Int64: 5, Valid: true}
-		_, err = P.PostProductionRunReceipt(ctx, receiptParamsFromStored(t, run, false, false, 0))
+		_, err = P.PostProductionRunReceipt(ctx, receiptParamsFromStored(t, run, false, false))
 		require.ErrorIs(t, err, entity.ErrProductionRunCancelledReceive)
 
 		// missing run → ErrNoRows.
@@ -204,7 +204,7 @@ func TestProductionReceiptCommand(t *testing.T) {
 		run, err := P.GetProductionRun(ctx, runID)
 		require.NoError(t, err)
 		run.Lines[0].DefectQty = sql.NullInt64{Int64: 1, Valid: true}
-		params := receiptParamsFromStored(t, run, false, false, 0)
+		params := receiptParamsFromStored(t, run, false, false)
 		params.ExpectedLockVersion = run.LockVersion + 41 // counted against a version that never was
 		_, err = P.PostProductionRunReceipt(ctx, params)
 		require.ErrorIs(t, err, entity.ErrProductionRunConflict)
@@ -327,7 +327,7 @@ func TestProductionReceiptPostingScan(t *testing.T) {
 	run, err := P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	run.Lines[0].DefectQty = sql.NullInt64{Int64: 10, Valid: true}
-	res, err := P.PostProductionRunReceipt(ctx, receiptParamsFromStored(t, run, false, false, 0))
+	res, err := P.PostProductionRunReceipt(ctx, receiptParamsFromStored(t, run, false, false))
 	require.NoError(t, err)
 
 	acc := s.Accounting()

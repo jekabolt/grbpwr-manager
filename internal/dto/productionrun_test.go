@@ -214,6 +214,23 @@ func TestConvertPbProductionRunInsertValidation(t *testing.T) {
 		// NOTE: a received line without a product is NOT a dto error — an auxiliary run's output has
 		// no product (it goes to the material warehouse). Product-presence is enforced per card
 		// purpose in the receive handlers, not here.
+		//
+		// Phase 3 (0253): a line produces EITHER a sellable product or an aux colour, never both, and
+		// two lines never name the same colour at the same size. The legacy "one unvarianted
+		// product-less line" rule is the same triple key seen from another angle and is asserted here
+		// too, because it is the one aux planning behaviour that must NOT change.
+		"product and colour variant on one line": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{ProductId: 11, SizeId: 1, OutputVariantId: 4, PlannedQty: 1}}},
+		"negative output_variant_id": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{OutputVariantId: -1, PlannedQty: 1}}},
+		"duplicate colour variant": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{OutputVariantId: 4, PlannedQty: 1}, {OutputVariantId: 4, PlannedQty: 2}}},
+		// A colour line is sizeless (review F5): what it produces is a warehouse bucket, not a size
+		// grid, and a size would split one colour across lines the receipt has to blend back together.
+		"size on a colour variant line": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{OutputVariantId: 4, SizeId: 2, PlannedQty: 1}}},
+		"two unvarianted product-less lines": {TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+			Lines: []*pb_common.ProductionRunLine{{PlannedQty: 1}, {PlannedQty: 2}}},
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -247,4 +264,58 @@ func TestConvertPbProductionRunInsertAllowsSizelessProductlessLine(t *testing.T)
 	require.Len(t, e.Lines, 1)
 	require.Equal(t, 0, e.Lines[0].SizeId, "0 size = NULL at the store boundary")
 	require.False(t, e.Lines[0].ProductId.Valid)
+	require.False(t, e.Lines[0].OutputVariantId.Valid,
+		"an aux card in legacy single-output mode plans one colourless line, exactly as before 0253")
+}
+
+// A variant-mode aux run plans ONE PRODUCT-LESS LINE PER COLOUR (0253). The colour is the third axis
+// of the uniqueness key, so several such lines coexist where the old {product, size} key collapsed
+// them all into "duplicate product_id 0 / size_id 0" — and each stays sizeless, like the aux line
+// always was.
+func TestConvertPbProductionRunInsertAcceptsOneLinePerColourVariant(t *testing.T) {
+	e, err := ConvertPbProductionRunInsertToEntity(&pb_common.ProductionRunInsert{
+		TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+		Lines: []*pb_common.ProductionRunLine{
+			{OutputVariantId: 4, PlannedQty: 60},
+			{OutputVariantId: 9, PlannedQty: 40},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, e.Lines, 2)
+	for i, want := range []int32{4, 9} {
+		require.True(t, e.Lines[i].OutputVariantId.Valid)
+		require.Equal(t, want, e.Lines[i].OutputVariantId.Int32)
+		require.False(t, e.Lines[i].ProductId.Valid, "a colour line names no product")
+		require.Equal(t, 0, e.Lines[i].SizeId, "a colour line needs no size, like the aux line before it")
+		require.NotEmpty(t, e.Lines[i].LineKey, "every line still gets a stable identity")
+	}
+
+	// The colour survives the round trip back to pb, so the client's next save diffs against it
+	// rather than silently dropping every line's colour.
+	pb := ConvertEntityProductionRunToPb(&entity.ProductionRun{Id: 3, ProductionRunInsert: *e})
+	require.Len(t, pb.Run.Lines, 2)
+	require.EqualValues(t, 4, pb.Run.Lines[0].OutputVariantId)
+	require.EqualValues(t, 9, pb.Run.Lines[1].OutputVariantId)
+	require.Zero(t, pb.Run.Lines[0].ProductId)
+}
+
+// A HALF-COLOURED grid (the legacy colourless aux line beside colour lines) converts cleanly here
+// and is refused one layer down, by the production-run store's plan-time validator — which is the
+// single home of that rule (review F3). The dto deliberately does not duplicate it: the two shapes
+// are distinct keys as far as uniqueness goes, and the reason the mix is illegal is a fact about how
+// an auxiliary receipt books (one bucket per colour, nowhere to put a colourless line), which is the
+// store's business. The refusal itself is pinned in
+// TestOutputVariantProductionRuns/a_half_coloured_grid_is_refused_at_plan_time.
+func TestConvertPbProductionRunInsertLeavesTheMixedGridToTheStore(t *testing.T) {
+	e, err := ConvertPbProductionRunInsertToEntity(&pb_common.ProductionRunInsert{
+		TechCardId: 1, Status: pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
+		Lines: []*pb_common.ProductionRunLine{
+			{PlannedQty: 10},
+			{OutputVariantId: 4, PlannedQty: 20},
+		},
+	})
+	require.NoError(t, err, "the dto converts the shape; the store decides it is unreceivable")
+	require.Len(t, e.Lines, 2)
+	require.False(t, e.Lines[0].OutputVariantId.Valid)
+	require.True(t, e.Lines[1].OutputVariantId.Valid)
 }

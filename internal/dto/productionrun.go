@@ -265,10 +265,13 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 	if len(pbs) == 0 {
 		return nil, nil
 	}
-	// A (product_id, size_id) pair must be unique — product_id 0 (unset) collapses to one planning
-	// bucket per size, matching the DB uniq_prl (NULLs there are distinct, but a duplicate NULL+size
-	// on the API is a client mistake worth rejecting early).
-	type key struct{ product, size int }
+	// A (product_id, output_variant_id, size_id) triple must be unique. product_id 0 (unset)
+	// collapses to one planning bucket per size, matching the DB uniq_prl (NULLs there are distinct,
+	// but a duplicate NULL+size on the API is a client mistake worth rejecting early); the colour
+	// variant (0253) is the third axis, so a variant-mode aux run may plan one line PER COLOUR while
+	// still being held to one line per colour, and the single unvarianted product-less line of a
+	// legacy aux card stays exactly as unique as it was.
+	type key struct{ product, variant, size int }
 	seen := make(map[key]struct{}, len(pbs))
 	// line_key is the row's stable identity (migration 0230): it must be unique within the payload,
 	// or the store's keyed diff would silently collapse two submitted lines onto one row.
@@ -291,8 +294,31 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 		if ln.ProductId < 0 {
 			return nil, fmt.Errorf("production run line: product_id must not be negative")
 		}
-		k := key{product: int(ln.ProductId), size: int(ln.SizeId)}
+		if ln.OutputVariantId < 0 {
+			return nil, fmt.Errorf("production run line: output_variant_id must not be negative")
+		}
+		// A line produces one thing. A product is a sellable unit booked into product_size stock; a
+		// colour variant is a warehouse bucket of an auxiliary card. Naming both is not a merge of two
+		// intents, it is a client that has not decided which run this is — and the DB says the same
+		// (chk_prl_variant_xor) with an unreadable 3819.
+		if ln.ProductId > 0 && ln.OutputVariantId > 0 {
+			return nil, fmt.Errorf("production run line: a line produces either a product or a colour variant, not both (product_id %d, output_variant_id %d)",
+				ln.ProductId, ln.OutputVariantId)
+		}
+		// A colour line is SIZELESS, like the aux line it descends from: what it produces is a
+		// warehouse bucket measured in one unit, not a size grid. Allowing a size would also split one
+		// colour across several lines that the receipt then has to blend back together — the
+		// uniqueness key below would stop guaranteeing one line per colour.
+		if ln.OutputVariantId > 0 && ln.SizeId != 0 {
+			return nil, fmt.Errorf("production run line: a colour variant line carries no size (output_variant_id %d, size_id %d)",
+				ln.OutputVariantId, ln.SizeId)
+		}
+		k := key{product: int(ln.ProductId), variant: int(ln.OutputVariantId), size: int(ln.SizeId)}
 		if _, dup := seen[k]; dup {
+			if ln.OutputVariantId > 0 {
+				return nil, fmt.Errorf("production run line: duplicate output_variant_id %d / size_id %d",
+					ln.OutputVariantId, ln.SizeId)
+			}
 			return nil, fmt.Errorf("production run line: duplicate product_id %d / size_id %d", ln.ProductId, ln.SizeId)
 		}
 		seen[k] = struct{}{}
@@ -320,6 +346,9 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 		if ln.ProductId > 0 {
 			e.ProductId = sql.NullInt32{Int32: ln.ProductId, Valid: true}
 		}
+		if ln.OutputVariantId > 0 {
+			e.OutputVariantId = sql.NullInt32{Int32: ln.OutputVariantId, Valid: true}
+		}
 		if ln.ReceivedQty != nil {
 			if *ln.ReceivedQty < 0 {
 				return nil, fmt.Errorf("production run line: received_qty must be non-negative")
@@ -332,10 +361,13 @@ func convertPbProductionRunLines(pbs []*pb_common.ProductionRunLine) ([]entity.P
 			}
 			e.DefectQty = sql.NullInt64{Int64: int64(*ln.DefectQty), Valid: true}
 		}
-		// NOTE: whether a received line needs a product depends on the card's purpose (a sellable run
-		// books into a product; an AUXILIARY run's output goes to the material warehouse with no
-		// product). The dto cannot see the purpose, so this is enforced in the receive handlers:
-		// ReceiveProductionRun requires a product per received line, receiveAuxiliaryRun forbids one.
+		// NOTE: whether a counted line needs a product — and whether it needs a COLOUR — depends on
+		// the card's purpose and on whether that card registered colour variants, neither of which the
+		// dto can see. Both are enforced downstream: PostProductionRunReceipt (the store command)
+		// requires a linked product + size on any line that books sellable stock, forbids a product on
+		// an auxiliary run entirely, and in colour mode requires every counted line to name one of the
+		// card's ACTIVE colours. Plan-time linkage of a colour to the run's own card is enforced by the
+		// production-run store on create/update.
 		out = append(out, e)
 	}
 	return out, nil
@@ -691,6 +723,9 @@ func productionRunLinesToPb(lines []entity.ProductionRunLine) []*pb_common.Produ
 			LineKey: ln.LineKey, SizeId: int32(ln.SizeId), PlannedQty: int32(ln.PlannedQty)}
 		if ln.ProductId.Valid {
 			pb.ProductId = ln.ProductId.Int32
+		}
+		if ln.OutputVariantId.Valid {
+			pb.OutputVariantId = ln.OutputVariantId.Int32
 		}
 		if ln.ReceivedQty.Valid {
 			v := int32(ln.ReceivedQty.Int64)

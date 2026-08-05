@@ -70,6 +70,7 @@ func (s *Server) techCardOutputVariantError(ctx context.Context, op string, tech
 		return status.Error(codes.NotFound, "tech card not found")
 	case errors.Is(err, entity.ErrTechCardNotAuxiliary),
 		errors.Is(err, entity.ErrOutputVariantMaterialClaimed),
+		errors.Is(err, entity.ErrOutputVariantReferencedByRun),
 		errors.Is(err, entity.ErrOutputVariantUnitMismatch):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, entity.ErrTechCardReleased):
