@@ -5135,6 +5135,14 @@ message StyleCostMaterialLine {
   google.type.Decimal wastage_pct = 10;
   google.type.Decimal line_total_base = 11; // per-garment cost folded to base (EUR); set only when convertible
   bool has_base = 12; // false when the line's currency has no FX rate → excluded from the base total
+  // OUTPUT-ONLY waste provenance (Ф9.4). "bom_estimate" — wastage_pct is the BOM line's static
+  // estimate and it WAS grossed into line_total_base, as always. "marker" — the norm came from a
+  // saved раскладка: nothing was grossed (the length already contains the waste), wastage_pct
+  // carries the EFFECTIVE total (selvedge+cut) so old clients keep seeing a truthful figure, and
+  // the two fields below decompose it for display.
+  string wastage_source = 13;
+  google.type.Decimal wastage_selvedge_pct = 14;
+  google.type.Decimal wastage_cut_pct = 15;
 }
 
 // StyleCostArticleLine is one typed manual cost article (cmt/hardware/packaging/logistics/overhead).

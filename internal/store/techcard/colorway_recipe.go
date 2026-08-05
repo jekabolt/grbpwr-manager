@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
@@ -30,6 +32,19 @@ type recipeUsagePinRow struct {
 	PieceID    sql.NullInt64  `db:"piece_id"`
 	Placement  sql.NullString `db:"placement"`
 	MaterialID sql.NullInt64  `db:"material_id"`
+	// Provenance triple, carried across presence-less writes exactly like the material pin:
+	// a stale client that predates consumption_source must not silently reset a marker-sourced
+	// norm to 'manual' (that would re-enable the wastage gross-up and shift costing).
+	ConsumptionSource string              `db:"consumption_source"`
+	WasteSelvedgePct  decimal.NullDecimal `db:"waste_selvedge_pct"`
+	WasteCutPct       decimal.NullDecimal `db:"waste_cut_pct"`
+}
+
+// usageProvenance is the resolved (source, selvedge, cut) triple written with a usage row.
+type usageProvenance struct {
+	source   string
+	selvedge decimal.NullDecimal
+	cut      decimal.NullDecimal
 }
 
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
@@ -50,6 +65,7 @@ type resolvedRecipeUsage struct {
 	bomItemID  sql.NullInt64
 	pieceID    sql.NullInt64
 	materialID sql.NullInt64
+	provenance usageProvenance
 }
 
 // UpdateColorwayRecipe replaces a colourway's material recipe (usages), restoring the write-path cut
@@ -128,16 +144,19 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		// the resolved (bom_item_id, piece_id, normalized placement) tuple, not either legacy positional
 		// index. Placement distinguishes repeatable whole-garment rows on the same BOM slot.
 		priorRows, err := storeutil.QueryListNamed[recipeUsagePinRow](ctx, rep.DB(), `
-			SELECT bom_item_id, piece_id, placement, material_id
+			SELECT bom_item_id, piece_id, placement, material_id, consumption_source, waste_selvedge_pct, waste_cut_pct
 			FROM tech_card_colorway_usage
 			WHERE colorway_id = :id`, map[string]any{"id": colorwayID})
 		if err != nil {
 			return fmt.Errorf("load colourway %d existing recipe pins: %w", colorwayID, err)
 		}
 		priorBySlot := make(map[recipeUsagePinSlot][]sql.NullInt64, len(priorRows))
+		priorProvenanceBySlot := make(map[recipeUsagePinSlot][]usageProvenance, len(priorRows))
 		for _, row := range priorRows {
 			slot := newRecipeUsagePinSlot(newRecipeUsageSlot(row.BomItemID, row.PieceID), row.Placement)
 			priorBySlot[slot] = append(priorBySlot[slot], row.MaterialID)
+			priorProvenanceBySlot[slot] = append(priorProvenanceBySlot[slot],
+				usageProvenance{source: row.ConsumptionSource, selvedge: row.WasteSelvedgePct, cut: row.WasteCutPct})
 		}
 
 		// Resolve and validate the entire replacement before its first write. In particular, MySQL
@@ -190,8 +209,30 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				// belongs to the replacement usage. A single NULL is preserved as inheritance.
 				materialID = oldPins[0]
 			}
+			// Provenance triple: present -> written as sent ('' normalises to manual, which
+			// clears the pcts); absent (stale client) -> the unambiguous prior row's triple is
+			// preserved, same rule as the material pin above; no prior/ambiguous -> manual.
+			prov := usageProvenance{source: entity.ConsumptionSourceManual}
+			if u.ConsumptionSource.Valid {
+				if u.ConsumptionSource.String == entity.ConsumptionSourceMarker {
+					prov = usageProvenance{
+						source:   entity.ConsumptionSourceMarker,
+						selvedge: u.WasteSelvedgePct,
+						cut:      u.WasteCutPct,
+					}
+				}
+			} else if oldProv := priorProvenanceBySlot[pinSlot]; len(oldProv) == 1 {
+				prov = oldProv[0]
+				if prov.source == "" {
+					prov.source = entity.ConsumptionSourceManual
+				}
+				if prov.source != entity.ConsumptionSourceMarker {
+					prov.selvedge, prov.cut = decimal.NullDecimal{}, decimal.NullDecimal{}
+				}
+			}
 			resolved = append(resolved, resolvedRecipeUsage{
 				usage: u, bomItemID: bomItemID, pieceID: pieceID, materialID: materialID,
+				provenance: prov,
 			})
 		}
 
@@ -243,21 +284,24 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			u := r.usage
 			usageID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 				INSERT INTO tech_card_colorway_usage
-					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_id, piece_index, material_id, display_order)
-				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_id, :piece_index, :material_id, :display_order)`,
+					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_id, piece_index, material_id, display_order)
+				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :consumption_source, :waste_selvedge_pct, :waste_cut_pct, :quantity, :piece_id, :piece_index, :material_id, :display_order)`,
 				map[string]any{
-					"colorway_id":    colorwayID,
-					"bom_item_id":    r.bomItemID,
-					"bom_item_index": u.BomItemIndex,
-					"placement":      u.Placement,
-					"color":          u.Color,
-					"pantone":        u.Pantone,
-					"consumption":    u.Consumption,
-					"quantity":       u.Quantity,
-					"piece_id":       r.pieceID,
-					"piece_index":    u.PieceIndex,
-					"material_id":    r.materialID,
-					"display_order":  i,
+					"colorway_id":        colorwayID,
+					"bom_item_id":        r.bomItemID,
+					"bom_item_index":     u.BomItemIndex,
+					"placement":          u.Placement,
+					"color":              u.Color,
+					"pantone":            u.Pantone,
+					"consumption":        u.Consumption,
+					"consumption_source": r.provenance.source,
+					"waste_selvedge_pct": r.provenance.selvedge,
+					"waste_cut_pct":      r.provenance.cut,
+					"quantity":           u.Quantity,
+					"piece_id":           r.pieceID,
+					"piece_index":        u.PieceIndex,
+					"material_id":        r.materialID,
+					"display_order":      i,
 				})
 			if err != nil {
 				return fmt.Errorf("insert colourway usage: %w", err)
@@ -314,7 +358,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 // colourway has no recipe yet.
 func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity.TechCardColorwayUsage, error) {
 	usages, err := storeutil.QueryListNamed[entity.TechCardColorwayUsage](ctx, s.DB, `
-		SELECT id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+		SELECT id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_index
 		FROM tech_card_colorway_usage
 		WHERE colorway_id = :id
 		ORDER BY display_order`, map[string]any{"id": colorwayID})

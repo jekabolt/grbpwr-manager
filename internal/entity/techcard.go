@@ -468,6 +468,26 @@ var ValidTechCardLabDipStatuses = map[TechCardLabDipStatus]bool{
 	LabDipRejected:  true,
 }
 
+// Consumption provenance values (tech_card_colorway_usage.consumption_source, 0261).
+const (
+	ConsumptionSourceManual = "manual"
+	ConsumptionSourceMarker = "marker"
+)
+
+// ValidConsumptionSources is the set of accepted consumption provenance values.
+var ValidConsumptionSources = map[string]bool{
+	ConsumptionSourceManual: true,
+	ConsumptionSourceMarker: true,
+}
+
+// wastageApplies reports whether the article's wastage_percent may gross this usage's cost
+// up. A marker-sourced norm came from a measured раскладка whose length already CONTAINS
+// the cutting waste (and the selvedge rides the per-running-metre price), so grossing it
+// again would double-count — the exact trap PIECES-WASTAGE-DESIGN §2.3 retires.
+func (u *TechCardColorwayUsage) wastageApplies() bool {
+	return u.ConsumptionSource.String != ConsumptionSourceMarker
+}
+
 // IsValidTechCardLabDipStatus reports whether s is an accepted lab-dip status.
 func IsValidTechCardLabDipStatus(s TechCardLabDipStatus) bool {
 	return ValidTechCardLabDipStatuses[s]
@@ -553,6 +573,16 @@ type TechCardColorwayUsage struct {
 	// (bom_item.material_id), so a later default change keeps propagating to colourways that
 	// never diverged. FK material(id) ON DELETE RESTRICT (0221).
 	MaterialId sql.NullInt64 `db:"material_id"`
+	// ConsumptionSource is the norm's provenance: 'manual' (default; wastage_percent grosses cost
+	// up as always) or 'marker' (the norm came from a saved раскладка whose length already
+	// CONTAINS the cutting waste — costing must NOT gross it up again). On WRITE the null state
+	// is proto presence, mirroring MaterialIdSet: Valid=false means the field was absent from a
+	// stale client's payload and the store preserves the stored provenance triple.
+	ConsumptionSource sql.NullString `db:"consumption_source"`
+	// WasteSelvedgePct / WasteCutPct decompose a marker-sourced norm's waste (кромка / рез) for
+	// DISPLAY — never multiplied into any cost. NULL on manual rows.
+	WasteSelvedgePct decimal.NullDecimal `db:"waste_selvedge_pct"`
+	WasteCutPct      decimal.NullDecimal `db:"waste_cut_pct"`
 	// MaterialIdSet mirrors the wire field's presence (proto3 `optional`): false = the client
 	// did not send material_id at all — an old client's full-replace recipe write must PRESERVE
 	// the existing pin; true = MaterialId is authoritative (invalid/0 explicitly clears the pin).
@@ -593,6 +623,9 @@ func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDeci
 	if !u.Consumption.Valid {
 		return decimal.NullDecimal{}
 	}
+	if !u.wastageApplies() {
+		return decimal.NullDecimal{Decimal: u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), Valid: true}
+	}
 	return decimal.NullDecimal{Decimal: applyWastage(u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
 }
 
@@ -615,6 +648,9 @@ func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySiz
 	}
 	if totalQty.IsZero() {
 		return decimal.NullDecimal{}
+	}
+	if !u.wastageApplies() {
+		return decimal.NullDecimal{Decimal: totalQty.Mul(bom.UnitPrice.Decimal), Valid: true}
 	}
 	return decimal.NullDecimal{Decimal: applyWastage(totalQty.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
 }

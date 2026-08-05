@@ -1036,7 +1036,9 @@ func ComputeTechCardUnitCostWithWastage(tc *entity.TechCard, fx CostingFx, overr
 }
 
 // cardWithRunWastage returns tc unchanged when override is unset; otherwise a shallow copy whose
-// every BOM line's wastage_percent is replaced by override. Only measured/per-size usage is grossed
+// every BOM line's wastage_percent is replaced by override. Marker-sourced usages are immune by
+// construction (Ф9.4): entity LineTotal/SizeRunTotal never read wastage_percent for them, so the
+// substitution is inert exactly where the measured length already contains the waste. Only measured/per-size usage is grossed
 // by wastage in the costing math (countable trims ignore it), so overriding every line applies the
 // run's single cutting-wastage figure to all cut materials and is inert for the rest. Only the
 // BomItems slice is cloned — the field the costing reads through the usage→bom index.

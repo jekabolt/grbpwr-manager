@@ -87,12 +87,33 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			u := &cw.Usages[i]
 			bom := resolveUsageBom(tc.BomItems, u)
 			line := &pb_admin.StyleCostMaterialLine{}
+			markerSourced := u.ConsumptionSource.String == entity.ConsumptionSourceMarker
 			if bom != nil {
 				line.BomItemId = int64(bom.Id)
 				line.MaterialName = bom.Name
 				line.Section = string(bom.Section)
 				line.Unit = bom.Unit.String
-				line.WastagePct = pbDecimalFromNull(bom.WastagePercent)
+				if markerSourced {
+					// Marker-sourced norm: nothing is grossed (the measured length already
+					// contains the waste). wastage_pct keeps meaning «эффективный итог» for old
+					// clients: selvedge+cut, decomposed in the two dedicated fields.
+					line.WastageSource = "marker"
+					line.WastageSelvedgePct = pbDecimalFromNull(u.WasteSelvedgePct)
+					line.WastageCutPct = pbDecimalFromNull(u.WasteCutPct)
+					total := decimal.Zero
+					if u.WasteSelvedgePct.Valid {
+						total = total.Add(u.WasteSelvedgePct.Decimal)
+					}
+					if u.WasteCutPct.Valid {
+						total = total.Add(u.WasteCutPct.Decimal)
+					}
+					if u.WasteSelvedgePct.Valid || u.WasteCutPct.Valid {
+						line.WastagePct = pbDecimalFromDecimal(total)
+					}
+				} else {
+					line.WastageSource = "bom_estimate"
+					line.WastagePct = pbDecimalFromNull(bom.WastagePercent)
+				}
 			}
 
 			qty, applyWaste, ok := usagePerGarmentQty(u, orderQtyBySize, totalOrderQty)
@@ -121,7 +142,9 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			// entity.UnitTotal with the resolved price substituted.
 			if ok && price.Valid {
 				lineTotal := qty.Mul(price.Decimal)
-				if applyWaste && bom != nil {
+				// Marker-sourced rows are never grossed: the marker length already pays for the
+				// waste (PIECES-WASTAGE-DESIGN §2.3) — grossing again is the double-count trap.
+				if applyWaste && bom != nil && !markerSourced {
 					lineTotal = grossByWastage(lineTotal, bom.WastagePercent)
 				}
 				if base, conv := fx.toBase(lineTotal, ccy); conv {

@@ -1199,6 +1199,58 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 // the store, S2/S3), so there is no positional range check here. size_id membership in the style's
 // range is checked by the store inside the write transaction (the request carries no size range to
 // check against, and the FK is on the global size dictionary, not on tech_card_size).
+// parseUsageProvenance parses the consumption provenance triple (Ф9.4). Presence is the
+// stale-client protocol (mirrors material_id): an ABSENT consumption_source keeps
+// Valid=false so the store preserves the stored triple across the full-replace; a present
+// value is normalised ("" → manual) and validated. The waste pcts are accepted only with
+// source=marker — display decomposition of a measured раскладка, meaningless on manual rows.
+func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullString, decimal.NullDecimal, decimal.NullDecimal, error) {
+	var src sql.NullString
+	var selvedge, cut decimal.NullDecimal
+	if u.ConsumptionSource == nil {
+		return src, selvedge, cut, nil
+	}
+	v := strings.TrimSpace(u.GetConsumptionSource())
+	if v == "" {
+		v = entity.ConsumptionSourceManual
+	}
+	if !entity.ValidConsumptionSources[v] {
+		return src, selvedge, cut, entity.NewFieldViolation(
+			fmt.Sprintf("usages[%d].consumption_source", i), "invalid", v, "manual or marker")
+	}
+	src = sql.NullString{String: v, Valid: true}
+	var err error
+	if selvedge, err = nullDecimalFromPb(u.WasteSelvedgePct); err != nil {
+		return src, selvedge, cut, fmt.Errorf("usages[%d].waste_selvedge_pct: %w", i, err)
+	}
+	if cut, err = nullDecimalFromPb(u.WasteCutPct); err != nil {
+		return src, selvedge, cut, fmt.Errorf("usages[%d].waste_cut_pct: %w", i, err)
+	}
+	if v != entity.ConsumptionSourceMarker {
+		if selvedge.Valid || cut.Valid {
+			return src, selvedge, cut, entity.NewFieldViolation(
+				fmt.Sprintf("usages[%d].waste_selvedge_pct", i), "provenance_mismatch", "",
+				"waste decomposition is meaningful only with consumption_source=marker")
+		}
+		return src, decimal.NullDecimal{}, decimal.NullDecimal{}, nil
+	}
+	hundred := decimal.NewFromInt(100)
+	for name, d := range map[string]decimal.NullDecimal{"waste_selvedge_pct": selvedge, "waste_cut_pct": cut} {
+		if d.Valid && (d.Decimal.IsNegative() || d.Decimal.GreaterThan(hundred)) {
+			return src, selvedge, cut, entity.NewFieldViolation(
+				fmt.Sprintf("usages[%d].%s", i, name), "out_of_range", d.Decimal.String(), "0..100")
+		}
+	}
+	// Engine-computed floats: round to the column scale rather than rejecting float dust.
+	if selvedge.Valid {
+		selvedge.Decimal = selvedge.Decimal.Round(2)
+	}
+	if cut.Valid {
+		cut.Decimal = cut.Decimal.Round(2)
+	}
+	return src, selvedge, cut, nil
+}
+
 func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
 	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
 	for i, u := range pbs {
@@ -1241,19 +1293,26 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 			pieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
 		}
 		materialID, materialIDSet := parseUsageMaterialID(u.MaterialId)
+		consumptionSource, wasteSelvedge, wasteCut, err := parseUsageProvenance(u, i)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardColorwayUsage{
-			BomLineKey:       strings.TrimSpace(u.BomLineKey),
-			PieceLineKey:     strings.TrimSpace(u.PieceLineKey),
-			BomItemIndex:     bomItemIndex,
-			PieceIndex:       pieceIndex,
-			MaterialId:       materialID,
-			MaterialIdSet:    materialIDSet,
-			Placement:        normalizedPlacementNull(u.Placement),
-			Color:            nullStringFromPb(u.Color),
-			Pantone:          nullStringFromPb(u.Pantone),
-			Consumption:      consumption,
-			Quantity:         quantity,
-			SizeConsumptions: scs,
+			BomLineKey:        strings.TrimSpace(u.BomLineKey),
+			PieceLineKey:      strings.TrimSpace(u.PieceLineKey),
+			ConsumptionSource: consumptionSource,
+			WasteSelvedgePct:  wasteSelvedge,
+			WasteCutPct:       wasteCut,
+			BomItemIndex:      bomItemIndex,
+			PieceIndex:        pieceIndex,
+			MaterialId:        materialID,
+			MaterialIdSet:     materialIDSet,
+			Placement:         normalizedPlacementNull(u.Placement),
+			Color:             nullStringFromPb(u.Color),
+			Pantone:           nullStringFromPb(u.Pantone),
+			Consumption:       consumption,
+			Quantity:          quantity,
+			SizeConsumptions:  scs,
 		})
 	}
 	return out, nil
@@ -1733,21 +1792,24 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			})
 		}
 		out = append(out, &pb_common.TechCardColorwayUsage{
-			BomItemIndex:     bomItemIndex,
-			BomItemId:        u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
-			MaterialId:       materialID,
-			Placement:        pbStringFromNull(u.Placement),
-			Color:            pbStringFromNull(u.Color),
-			Pantone:          pbStringFromNull(u.Pantone),
-			Consumption:      pbDecimalFromNull(u.Consumption),
-			Quantity:         pbDecimalFromNull(u.Quantity),
-			SizeConsumptions: sizeCons,
-			PieceIndex:       pieceIndex,
-			PieceId:          u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
-			PieceLineKey:     pieceKeyByID[u.PieceId.Int64],
-			BomLineKey:       bomKeyByID[u.BomItemId.Int64],
-			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
-			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
+			BomItemIndex:      bomItemIndex,
+			BomItemId:         u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
+			MaterialId:        materialID,
+			Placement:         pbStringFromNull(u.Placement),
+			Color:             pbStringFromNull(u.Color),
+			Pantone:           pbStringFromNull(u.Pantone),
+			Consumption:       pbDecimalFromNull(u.Consumption),
+			Quantity:          pbDecimalFromNull(u.Quantity),
+			SizeConsumptions:  sizeCons,
+			PieceIndex:        pieceIndex,
+			PieceId:           u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
+			PieceLineKey:      pieceKeyByID[u.PieceId.Int64],
+			BomLineKey:        bomKeyByID[u.BomItemId.Int64],
+			LineTotal:         pbMoneyFromNull(u.LineTotal(bom)),
+			SizeRunTotal:      pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
+			ConsumptionSource: pbOptStringFromNull(u.ConsumptionSource),
+			WasteSelvedgePct:  pbDecimalFromNull(u.WasteSelvedgePct),
+			WasteCutPct:       pbDecimalFromNull(u.WasteCutPct),
 		})
 	}
 	return out
