@@ -114,9 +114,10 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 		Name:        "Coat",
 		SizeIds:     []int32{4, 5},
 		Patterns: []*pb_common.TechCardSizePattern{
-			{SizeId: 4, Url: "https://cdn/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  ")},
-			{SizeId: 4, Url: "https://cdn/x4b.dxf"},                         // multiple per size is allowed; name absent
-			{SizeId: 5, Url: "https://cdn/x5.pdf", Name: stringPointer("")}, // present-empty = explicit clear
+			{SizeId: 4, Url: "https://cdn/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  "),
+				LineKey: " 01SHEETKEY0000000000000001 ", BomLineKey: stringPointer("01FABRICSLOT00000000000001")},
+			{SizeId: 4, Url: "https://cdn/x4b.dxf"},                                                        // multiple per size is allowed; name absent
+			{SizeId: 5, Url: "https://cdn/x5.pdf", Name: stringPointer(""), BomLineKey: stringPointer("")}, // present-empty = explicit clear/unbind
 		},
 	}
 	ent, err := ConvertPbTechCardInsertToEntity(in)
@@ -136,12 +137,33 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	if !ent.Patterns[2].Name.Valid || ent.Patterns[2].Name.String != "" {
 		t.Fatalf("present-empty name must stay Valid (explicit clear): %+v", ent.Patterns[2].Name)
 	}
+	// line_key is trimmed and NEVER minted here — an empty key is the store's legacy-match signal.
+	if ent.Patterns[0].LineKey != "01SHEETKEY0000000000000001" {
+		t.Fatalf("line_key not trimmed/parsed: %q", ent.Patterns[0].LineKey)
+	}
+	if ent.Patterns[1].LineKey != "" {
+		t.Fatalf("absent line_key must stay empty (legacy path), got %q", ent.Patterns[1].LineKey)
+	}
+	// bom_line_key keeps proto presence like name.
+	if !ent.Patterns[0].BomLineKey.Valid || ent.Patterns[0].BomLineKey.String != "01FABRICSLOT00000000000001" {
+		t.Fatalf("present bom_line_key not parsed: %+v", ent.Patterns[0].BomLineKey)
+	}
+	if ent.Patterns[1].BomLineKey.Valid {
+		t.Fatalf("absent bom_line_key must stay invalid (carry-forward marker)")
+	}
+	if !ent.Patterns[2].BomLineKey.Valid || ent.Patterns[2].BomLineKey.String != "" {
+		t.Fatalf("present-empty bom_line_key must stay Valid (explicit unbind)")
+	}
 	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *ent}, CostingFx{})
 	if len(out.TechCard.Patterns) != 3 || out.TechCard.Patterns[0].Filename != "front-m.pdf" || out.TechCard.Patterns[0].SizeBytes != 1234 {
 		t.Fatalf("patterns round-trip mismatch: %+v", out.TechCard.Patterns)
 	}
 	if out.TechCard.Patterns[0].GetName() != "перед" || out.TechCard.Patterns[1].Name != nil {
 		t.Fatalf("name round-trip mismatch: %+v", out.TechCard.Patterns)
+	}
+	if out.TechCard.Patterns[0].LineKey != "01SHEETKEY0000000000000001" ||
+		out.TechCard.Patterns[0].GetBomLineKey() != "01FABRICSLOT00000000000001" {
+		t.Fatalf("line keys round-trip mismatch: %+v", out.TechCard.Patterns[0])
 	}
 }
 
@@ -156,6 +178,15 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 		"pattern name too long": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
 				Name: stringPointer(strings.Repeat("n", 256))}}},
+		"pattern line_key wrong length": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+				LineKey: "SHORTKEY"}}},
+		"pattern line_key non-alnum": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+				LineKey: "01SHEETKEY000000000000000!"}}},
+		"pattern bom_line_key wrong length": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+				BomLineKey: stringPointer("nope")}}},
 		// R1: usage size_consumption validation cases moved with the colourway recipe to the Colorway
 		// RPCs (CreateColorway / ColorwayDevelopmentInsert.usages) — re-covered in track T-B step D.
 	}

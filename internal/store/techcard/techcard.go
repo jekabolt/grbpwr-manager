@@ -1228,6 +1228,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 // the carry-forward on url alone let one size's sheet inherit the OTHER size's Rev number, and the
 // per-size MAX+1 numbering then skipped or duplicated revisions on later saves.
 type patternHistoryRow struct {
+	Id         int            `db:"id"`
+	LineKey    string         `db:"line_key"`
+	BomLineKey sql.NullString `db:"bom_line_key"`
 	URL        string         `db:"url"`
 	SizeId     int            `db:"size_id"`
 	Version    int            `db:"version"`
@@ -1249,7 +1252,8 @@ func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) 
 
 func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) ([]patternHistoryRow, error) {
 	rows, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
-		`SELECT url, size_id, version, uploaded_at, name FROM tech_card_size_pattern WHERE tech_card_id = :id`,
+		`SELECT id, COALESCE(line_key, '') AS line_key, bom_line_key, url, size_id, version, uploaded_at, name
+		 FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": techCardID})
 	if err != nil {
 		return nil, fmt.Errorf("load tech card patterns: %w", err)
@@ -1289,37 +1293,34 @@ func patternObjectIdentity(raw string) string {
 	return "url:" + raw
 }
 
-// insertTechCardPatterns replaces a card's pattern rows, CARRYING FORWARD each sheet's revision and
-// upload time.
+// insertTechCardPatterns reconciles a card's pattern rows as a keyed upsert-diff (Ф9.2; it was a
+// full-replace before line keys existed), CARRYING FORWARD each sheet's revision, upload time, name
+// and fabric binding.
 //
-// Patterns are a full-replace child: every card save deletes and reinserts them. That is fine for the
-// url/filename/bytes the client round-trips, but it destroys anything the SERVER knows and the client
-// does not — which is why "when did this PDF arrive" and "which revision is it" did not exist before,
-// and the admin scraped a version out of the filename instead. So this does not delete blindly: it
-// reads the rows it is about to drop, keys them by url, and gives a returning url back its number and
-// its original timestamp. A url the card has not carried before is genuinely new — it takes MAX+1
-// within its size and is stamped now.
-//
-// Unlike the other full-replace children this owns its own DELETE (it is excluded from the blind
-// delete loop in UpdateTechCard) precisely because it has to read before it deletes. Rows outside
-// the current size range are dropped during narrowing; duplicate (size, url) payload rows keep their
-// first occurrence.
+// Unlike the other children this owns its own reads and deletes (it is excluded from the blind
+// delete loop in UpdateTechCard) because it has to read before it writes. Rows outside the current
+// size range are dropped during narrowing; duplicate (size, url) or duplicate line_key payload rows
+// keep their first occurrence. Runs AFTER upsertTechCardBom in insertTechCardChildren, so a binding
+// to a slot created by the same save resolves.
 func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int) error {
-	prior, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
-		`SELECT url, size_id, version, uploaded_at, name FROM tech_card_size_pattern WHERE tech_card_id = :id`,
-		map[string]any{"id": id})
+	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
 	}
-	// version carries forward per (size, url) — see patternHistoryRow. uploaded_at carries forward per
-	// URL: it answers "when did this PDF arrive", and the object behind a url is immutable, so the
-	// earliest timestamp any size recorded for it stays true when the same sheet turns up under another
-	// size.
+	// Carry-forward stays keyed EXACTLY as before (version per (size, url), uploaded_at per url,
+	// name presence-gated per (size, url)) — the line_key decides only which ROW a payload entry is
+	// (UPDATE vs INSERT vs DELETE), so a legacy keyless save behaves byte-identically to the old
+	// delete-all path, and a keyed save survives a url change (sheet replacement) without losing the
+	// row's identity or its fabric binding.
 	known := make(map[string]patternHistoryRow, len(prior))
+	byLineKey := make(map[string]patternHistoryRow, len(prior))
 	firstUploadByURL := make(map[string]sql.NullTime, len(prior))
 	maxVersionBySize := make(map[int]int, len(prior))
 	for _, r := range prior {
 		known[patternHistoryKey(r.SizeId, r.URL)] = r
+		if r.LineKey != "" {
+			byLineKey[r.LineKey] = r
+		}
 		if prev, seen := firstUploadByURL[r.URL]; !seen ||
 			(r.UploadedAt.Valid && (!prev.Valid || r.UploadedAt.Time.Before(prev.Time))) {
 			firstUploadByURL[r.URL] = r.UploadedAt
@@ -1328,21 +1329,38 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			maxVersionBySize[r.SizeId] = r.Version
 		}
 	}
-	if err := storeutil.ExecNamed(ctx, db,
-		`DELETE FROM tech_card_size_pattern WHERE tech_card_id = :id`, map[string]any{"id": id}); err != nil {
-		return fmt.Errorf("failed to clear tech_card_size_pattern: %w", err)
-	}
-	if len(patterns) == 0 {
-		return nil
-	}
 	now := time.Now().UTC()
-	rows := make([]map[string]any, 0, len(patterns))
 	liveSizes := make(map[int]struct{}, len(sizeIDs))
 	for _, sizeID := range sizeIDs {
 		liveSizes[sizeID] = struct{}{}
 	}
+	// The fabric-slot line keys are loaded lazily, only when some payload row binds a NEW slot —
+	// bindings that merely round-trip the stored value are tolerated even when the slot is gone
+	// («слот удалён» is a UI state, not a reason to block the save).
+	var fabricKeys map[string]struct{}
+	loadFabricKeys := func() (map[string]struct{}, error) {
+		if fabricKeys != nil {
+			return fabricKeys, nil
+		}
+		rows, err := storeutil.QueryListNamed[struct {
+			LineKey string `db:"line_key"`
+		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_bom_item
+			WHERE tech_card_id = :id AND section = :section`,
+			map[string]any{"id": id, "section": string(entity.BomSectionFabric)})
+		if err != nil {
+			return nil, fmt.Errorf("load fabric bom line keys: %w", err)
+		}
+		fabricKeys = make(map[string]struct{}, len(rows))
+		for _, r := range rows {
+			fabricKeys[r.LineKey] = struct{}{}
+		}
+		return fabricKeys, nil
+	}
 	seenPayload := make(map[string]struct{}, len(patterns))
-	for _, p := range patterns {
+	seenKeys := make(map[string]struct{}, len(patterns))
+	consumed := make(map[int]struct{}, len(prior))
+	order := 0
+	for i, p := range patterns {
 		if _, ok := liveSizes[p.SizeId]; !ok {
 			continue
 		}
@@ -1351,10 +1369,39 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			continue
 		}
 		seenPayload[key] = struct{}{}
+		// Row identity, three steps (PIECES-WASTAGE-DESIGN §2.1): (1) an explicit line_key names its
+		// stored row; (2) a keyless payload row adopts the line_key of an unconsumed stored row with
+		// the same (size, url) — the legacy path, so stale clients cannot sever bindings; (3) no
+		// match — a genuinely new row, with the client's fresh ULID or a server-minted key.
+		var matched *patternHistoryRow
+		lineKey := p.LineKey
+		if lineKey != "" {
+			if r, ok := byLineKey[lineKey]; ok {
+				if _, used := consumed[r.Id]; !used {
+					matched = &r
+				}
+			}
+		} else if r, ok := known[key]; ok && r.LineKey != "" {
+			if _, used := consumed[r.Id]; !used {
+				matched = &r
+				lineKey = r.LineKey
+			}
+		}
+		if lineKey == "" {
+			lineKey = newLineKey()
+		}
+		if _, dup := seenKeys[lineKey]; dup {
+			continue // two payload rows claiming one identity keep the first, like (size, url) dupes
+		}
+		seenKeys[lineKey] = struct{}{}
 		version, uploadedAt := p.Version, p.UploadedAt
-		// The display name is client-owned but presence-gated — an absent name inherits the
-		// replaced row's stored name, so a stale client cannot wipe names it never saw.
-		name := storeutil.ResolvePatternName(p.Name, known[key].Name)
+		nameFallback := known[key].Name
+		if matched != nil && !nameFallback.Valid {
+			// A keyed row whose url just changed has no (size, url) history — inherit ITS name so a
+			// replacement upload without an explicit name does not silently clear the label.
+			nameFallback = matched.Name
+		}
+		name := storeutil.ResolvePatternName(p.Name, nameFallback)
 		if seen, ok := known[key]; ok {
 			// This exact sheet is already on this size: it keeps its identity, the client never owns these.
 			if version <= 0 {
@@ -1377,8 +1424,30 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			// revision for that size would collide with it.
 			maxVersionBySize[p.SizeId] = version
 		}
-		rows = append(rows, map[string]any{
+		// The fabric binding is presence-gated like the name: absent carries the stored binding
+		// forward. A present, non-empty value that CHANGES the binding must name a live fabric slot;
+		// an unchanged round-trip passes even when the slot has been deleted since.
+		var storedBinding sql.NullString
+		if matched != nil {
+			storedBinding = matched.BomLineKey
+		}
+		bomLineKey := storeutil.ResolvePatternName(p.BomLineKey, storedBinding)
+		if bomLineKey.Valid && bomLineKey.String != "" &&
+			(!storedBinding.Valid || storedBinding.String != bomLineKey.String) {
+			keys, err := loadFabricKeys()
+			if err != nil {
+				return err
+			}
+			if _, ok := keys[bomLineKey.String]; !ok {
+				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].bom_line_key", i),
+					fmt.Sprintf("no fabric BOM line %q in this tech card", bomLineKey.String), "",
+					"bind the sheet to a fabric-section BOM line, or leave it unbound")
+			}
+		}
+		params := map[string]any{
 			"tech_card_id":  id,
+			"line_key":      lineKey,
+			"bom_line_key":  bomLineKey,
 			"size_id":       p.SizeId,
 			"url":           p.URL,
 			"filename":      p.Filename,
@@ -1386,11 +1455,40 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			"size_bytes":    p.SizeBytes,
 			"version":       version,
 			"uploaded_at":   uploadedAt,
-			"display_order": len(rows),
-		})
+			"display_order": order,
+		}
+		order++
+		if matched != nil {
+			consumed[matched.Id] = struct{}{}
+			params["id"] = matched.Id
+			if err := storeutil.ExecNamed(ctx, db, `
+				UPDATE tech_card_size_pattern SET
+					line_key = :line_key, bom_line_key = :bom_line_key, size_id = :size_id, url = :url,
+					filename = :filename, name = :name, size_bytes = :size_bytes, version = :version,
+					uploaded_at = :uploaded_at, display_order = :display_order
+				WHERE id = :id`, params); err != nil {
+				return fmt.Errorf("failed to update tech card pattern: %w", err)
+			}
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db, `
+			INSERT INTO tech_card_size_pattern
+				(tech_card_id, line_key, bom_line_key, size_id, url, filename, name, size_bytes, version, uploaded_at, display_order)
+			VALUES (:tech_card_id, :line_key, :bom_line_key, :size_id, :url, :filename, :name, :size_bytes, :version, :uploaded_at, :display_order)`,
+			params); err != nil {
+			return fmt.Errorf("failed to insert tech card pattern: %w", err)
+		}
 	}
-	if err := storeutil.BulkInsert(ctx, db, "tech_card_size_pattern", rows); err != nil {
-		return fmt.Errorf("failed to insert tech card patterns: %w", err)
+	// Stored rows no payload entry claimed are gone — их urls попадают в GC-кандидаты ровно как при
+	// старом delete-all (patternURLsRemovedByPayload сравнивает urls, не строки).
+	for _, r := range prior {
+		if _, used := consumed[r.Id]; used {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_size_pattern WHERE id = :id`, map[string]any{"id": r.Id}); err != nil {
+			return fmt.Errorf("failed to delete tech card pattern: %w", err)
+		}
 	}
 	return nil
 }

@@ -692,6 +692,19 @@ message TechCardSizePattern {
   // clears the name. NOTE for JSON clients — protojson cannot tell `"name": null` from an absent
   // field, so null also reads as "preserve"; to clear a name, send the empty string.
   optional string name = 7;
+  // 8 and 9 are reserved for view_url / download_url (feat/private-patterns branch, in flight).
+  // line_key is the row's STABLE identity across saves and across FILE REPLACEMENT (the url is not —
+  // replacing the sheet mints a new object url). Mint a ULID on first upload and round-trip it
+  // unchanged; keep it when replacing the file and change only the url. Empty = a legacy/stale
+  // client — the server then matches by (size_id, url) exactly as before and assigns a key itself.
+  string line_key = 10;
+  // bom_line_key binds this sheet to the fabric BOM line it is cut from («один DXF = одна ткань»),
+  // set at upload time. Explicit presence, same rules as `name`: ABSENT — the server preserves the
+  // stored binding (a stale client cannot wipe it); PRESENT — stored as sent, empty string unbinds.
+  // A non-empty value must name a fabric-section BOM line of this card, except when it round-trips
+  // the row's stored value unchanged (the slot may have been deleted — the binding then reads as
+  // «слот удалён» rather than blocking the save).
+  optional string bom_line_key = 11;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).

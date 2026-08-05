@@ -767,9 +767,17 @@ type TechCardSizeQuantity struct {
 // TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
 // the url's extension — for one size of a tech card.
 type TechCardSizePattern struct {
-	SizeId   int            `db:"size_id"`
-	URL      string         `db:"url"`
-	Filename sql.NullString `db:"filename"`
+	SizeId int `db:"size_id"`
+	// LineKey is the row's stable identity across saves and file replacement (the url changes when a
+	// sheet is replaced; the line_key does not). Empty on WRITE = legacy/stale client — the store then
+	// matches by (size_id, url) and mints a key server-side.
+	LineKey string `db:"line_key"`
+	// BomLineKey binds the sheet to the fabric BOM line it is cut from. Write semantics mirror Name:
+	// Valid=false means absent from the payload (carry the stored binding forward), Valid=true writes
+	// as given with empty unbinding (stored as NULL).
+	BomLineKey sql.NullString `db:"bom_line_key"`
+	URL        string         `db:"url"`
+	Filename   sql.NullString `db:"filename"`
 	// Name is the operator-entered display name. On WRITE the null state is proto presence,
 	// not emptiness: Valid=false means the field was absent from the payload (a stale client)
 	// and the store carries the stored name forward by (size_id, url); Valid=true means write

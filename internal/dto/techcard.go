@@ -561,6 +561,24 @@ func parseTechCardDetails(pbs []*pb_common.TechCardDetail) ([]entity.TechCardDet
 
 // parseTechCardPatterns parses the per-size PDF выкройки, validating each size is in the
 // card's size range, the url is present, and the filename is not over-long.
+// validatePatternLineKey admits an empty key or a 26-char alphanumeric one — wide enough for client
+// ULIDs (Crockford), server base32 mints and the LEGACY-prefixed backfill, tight enough for CHAR(26).
+func validatePatternLineKey(key, field string) error {
+	if key == "" {
+		return nil
+	}
+	if len(key) != 26 {
+		return fmt.Errorf("%s must be a 26-character key", field)
+	}
+	for _, r := range key {
+		alnum := (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+		if !alnum {
+			return fmt.Errorf("%s must be alphanumeric", field)
+		}
+	}
+	return nil
+}
+
 func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) ([]entity.TechCardSizePattern, error) {
 	out := make([]entity.TechCardSizePattern, 0, len(pbs))
 	for _, p := range pbs {
@@ -598,15 +616,33 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			}
 			name = sql.NullString{String: trimmed, Valid: true}
 		}
+		// line_key is validated but NEVER minted here, unlike BOM/piece line keys: an empty key IS
+		// the legacy signal the store's upsert-diff matches by (size_id, url) on — minting in the
+		// dto would make every stale-client save read as all-new rows and drop the bindings.
+		lineKey := strings.TrimSpace(p.LineKey)
+		if err := validatePatternLineKey(lineKey, "pattern line_key"); err != nil {
+			return nil, err
+		}
+		// bom_line_key keeps proto presence like name: absent → carry the stored binding forward.
+		var bomLineKey sql.NullString
+		if p.BomLineKey != nil {
+			trimmed := strings.TrimSpace(p.GetBomLineKey())
+			if err := validatePatternLineKey(trimmed, "pattern bom_line_key"); err != nil {
+				return nil, err
+			}
+			bomLineKey = sql.NullString{String: trimmed, Valid: true}
+		}
 		// uploaded_at is server-owned and deliberately dropped here: the store carries the original
 		// forward by url, so accepting a client value would only let a save rewrite history.
 		out = append(out, entity.TechCardSizePattern{
-			SizeId:    sid,
-			URL:       url,
-			Filename:  nullStringFromPb(p.Filename),
-			Name:      name,
-			SizeBytes: nullInt64FromPb(p.SizeBytes),
-			Version:   int(p.Version),
+			SizeId:     sid,
+			LineKey:    lineKey,
+			BomLineKey: bomLineKey,
+			URL:        url,
+			Filename:   nullStringFromPb(p.Filename),
+			Name:       name,
+			SizeBytes:  nullInt64FromPb(p.SizeBytes),
+			Version:    int(p.Version),
 		})
 	}
 	return out, nil
@@ -1009,6 +1045,8 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 	for _, p := range ps {
 		out = append(out, &pb_common.TechCardSizePattern{
 			SizeId:     int32(p.SizeId),
+			LineKey:    p.LineKey,
+			BomLineKey: pbOptStringFromNull(p.BomLineKey),
 			Url:        p.URL,
 			Filename:   pbStringFromNull(p.Filename),
 			Name:       pbOptStringFromNull(p.Name),
