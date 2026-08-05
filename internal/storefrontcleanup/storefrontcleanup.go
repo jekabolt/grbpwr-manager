@@ -181,6 +181,17 @@ func (w *Worker) runCleanup(ctx context.Context) bool {
 		slog.Default().InfoContext(ctx, "storefront cleanup: expired refresh tokens removed", slog.Int64("count", refreshN))
 	}
 
+	// Not a storefront table, but the same "delete expired rows" shape: command_idempotency
+	// (0232) rows past their 90-day replay window would otherwise accumulate forever.
+	idemN, err := w.repo.ProductionRuns().CleanupExpiredCommandIdempotency(ctx)
+	if err != nil {
+		ok = false
+		w.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "storefront cleanup: command idempotency failed", slog.String("err", err.Error()))
+	} else if idemN > 0 {
+		slog.Default().InfoContext(ctx, "storefront cleanup: expired command idempotency removed", slog.Int64("count", idemN))
+	}
+
 	// Record success only when every sub-cleanup completed without error.
 	if ok {
 		w.tracker.MarkSuccess()

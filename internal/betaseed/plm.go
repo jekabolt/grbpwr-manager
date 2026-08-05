@@ -2,6 +2,7 @@ package betaseed
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"strconv"
 	"strings"
@@ -1275,8 +1276,8 @@ func (s *Seeder) plmProduction(ctx context.Context, st *plmState) error {
 		Run: &common.ProductionRunInsert{
 			TechCardId: sid, Status: common.ProductionRunStatus_PRODUCTION_RUN_STATUS_IN_PROGRESS, Notes: "PLM seed production run",
 			Lines: []*common.ProductionRunLine{
-				{ProductId: cw1, SizeId: st.mID, PlannedQty: 5, ReceivedQty: p32(5), DefectQty: p32(0)},
-				{ProductId: cw1, SizeId: st.lID, PlannedQty: 5, ReceivedQty: p32(5), DefectQty: p32(0)},
+				{ProductId: cw1, SizeId: st.mID, PlannedQty: 5},
+				{ProductId: cw1, SizeId: st.lID, PlannedQty: 5},
 			},
 			Costs: []*common.ProductionRunCost{
 				{Kind: common.ProductionRunCostKind_PRODUCTION_RUN_COST_KIND_CMT, Description: "contract sewing, 10 units", Amount: decv("180.00"), Currency: "EUR"},
@@ -1286,12 +1287,33 @@ func (s *Seeder) plmProduction(ctx context.Context, st *plmState) error {
 	}); err != nil {
 		return fmt.Errorf("UpdateProductionRun: %w", err)
 	}
-	rc, err := s.C.ReceiveProductionRun(ctx, &admin.ReceiveProductionRunRequest{RunId: st.res.ProductionRunID, UpdateCostPrice: true})
+	// Receive through the REAL receipt command (the overhaul contract), not the deprecated
+	// ReceiveProductionRun shim: counts ride on the receipt lines addressed by line_key, the
+	// plan lines carry only the plan. This keeps the seeder exercising the same path the admin
+	// client uses (and the same one prod operators run).
+	grLines, err := s.C.GetProductionRun(ctx, &admin.GetProductionRunRequest{Id: st.res.ProductionRunID})
 	if err != nil {
-		return fmt.Errorf("ReceiveProductionRun: %w", err)
+		return fmt.Errorf("GetProductionRun(pre-receipt): %w", err)
+	}
+	receiptLines := make([]*admin.PostProductionRunReceiptLineInput, 0, len(grLines.GetRun().GetRun().GetLines()))
+	for _, ln := range grLines.GetRun().GetRun().GetLines() {
+		receiptLines = append(receiptLines, &admin.PostProductionRunReceiptLineInput{
+			LineKey: ln.GetLineKey(), GoodQty: 5, DefectQty: 0,
+		})
+	}
+	rc, err := s.C.PostProductionRunReceipt(ctx, &admin.PostProductionRunReceiptRequest{
+		RunId:               st.res.ProductionRunID,
+		Lines:               receiptLines,
+		IdempotencyKey:      seedIdempotencyKey(),
+		ExpectedLockVersion: grLines.GetRun().GetLockVersion(),
+		Note:                "PLM seed receipt",
+		UpdateCostPrice:     true,
+	})
+	if err != nil {
+		return fmt.Errorf("PostProductionRunReceipt: %w", err)
 	}
 	if !rc.GetCostPriceUpdated() {
-		return fmt.Errorf("expected cost_price_updated=true after ReceiveProductionRun")
+		return fmt.Errorf("expected cost_price_updated=true after PostProductionRunReceipt")
 	}
 	gr2, err := s.C.GetProductionRun(ctx, &admin.GetProductionRunRequest{Id: st.res.ProductionRunID})
 	if err != nil {
@@ -1819,4 +1841,21 @@ func valOrNA(v string) string {
 		return "n/a"
 	}
 	return v
+}
+
+// seedIdempotencyKey mints a receipt idempotency key in the server's required shape: exactly 26
+// characters of [0-9A-Z] (an uppercase-Crockford-ULID-sized token). Crypto-random; the fallback
+// (rand unavailable) still satisfies the charset by construction.
+func seedIdempotencyKey() string {
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	b := make([]byte, 26)
+	if _, err := rand.Read(b); err != nil {
+		ts := strings.ToUpper(strconv.FormatInt(time.Now().UnixNano(), 36))
+		return (ts + "00000000000000000000000000")[:26]
+	}
+	out := make([]byte, 26)
+	for i, v := range b {
+		out[i] = alphabet[int(v)%len(alphabet)]
+	}
+	return string(out)
 }

@@ -975,7 +975,8 @@ func (s *Server) ListProductWaitlist(ctx context.Context, req *pb_admin.ListProd
 		pid := int(*req.ProductId)
 		productID = &pid
 	}
-	entries, total, err := s.repo.Products().ListWaitlist(ctx, productID, int(req.Limit), int(req.Offset))
+	limit, offset := clampPagination(int(req.Limit), int(req.Offset))
+	entries, total, err := s.repo.Products().ListWaitlist(ctx, productID, limit, offset)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list product waitlist", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list product waitlist")

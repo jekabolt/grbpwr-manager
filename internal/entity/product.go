@@ -640,6 +640,25 @@ const (
 	StockAdjustmentDirectionDecrease StockAdjustmentDirection = "decrease"
 )
 
+// StockTransition is one COMMITTED product-stock change (locked before → after) of a single
+// (product, size, grade) row. Stock writers surface these so API handlers can fire the storefront
+// side effects of the stock-write contract — ISR revalidation always, back-in-stock notification
+// on a real 0→>0 transition — from the same locked values the row was written with, never from a
+// pre-read a concurrent writer could have invalidated.
+type StockTransition struct {
+	ProductID int
+	SizeID    int
+	Grade     string
+	Before    decimal.Decimal
+	After     decimal.Decimal
+}
+
+// BackInStock reports whether this transition took a previously out-of-stock row into stock —
+// the exactly-once trigger for waitlist notifications.
+func (t StockTransition) BackInStock() bool {
+	return t.Before.LessThanOrEqual(decimal.Zero) && t.After.GreaterThan(decimal.Zero)
+}
+
 // StockUpdateMode selects how UpdateProductSizeStockWithHistory interprets its amount argument. Set
 // treats amount as the absolute final quantity; Adjust treats it as a signed delta applied to the
 // row-locked current quantity, so concurrent adjustments compose instead of clobbering each other

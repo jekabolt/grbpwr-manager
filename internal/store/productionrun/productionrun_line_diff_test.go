@@ -198,8 +198,15 @@ func TestRunLineParamsCarryTheFullColumnSet(t *testing.T) {
 			t.Errorf("column %q = %v, want %v", column, got, want)
 		}
 	}
-	if len(params) != 7 {
-		t.Errorf("line params carry %d columns, want exactly the 7 written columns: %v", len(params), params)
+	// output_variant_id (0253) rides along as the 8th column; on a sellable line it must reach
+	// the params as SQL NULL (nullIfNoVariant), never a literal 0 that would trip the colour FK.
+	if got, ok := params["output_variant_id"]; !ok {
+		t.Errorf("column %q is missing from the line params", "output_variant_id")
+	} else if got != nil {
+		t.Errorf("column output_variant_id = %v on a sellable line, want SQL NULL", got)
+	}
+	if len(params) != 8 {
+		t.Errorf("line params carry %d columns, want exactly the 8 written columns: %v", len(params), params)
 	}
 }
 

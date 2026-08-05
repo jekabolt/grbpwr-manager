@@ -67,7 +67,9 @@ type (
 		// ReceiveProductionStock increments a product's per-size stock from a production run's
 		// received quantities, recording each change with the production_received source. Runs on
 		// the caller's connection (no new transaction) so it composes into ReceiveProductionRun.
-		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username, grade string) error
+		// Returns the committed per-size transitions (locked before/after) so the API layer can
+		// fire the stock-write contract's storefront side effects (ISR, waitlist notify).
+		ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username, grade string) ([]entity.StockTransition, error)
 		// SetProductCostPriceFromProductionRun writes cost (base) as the production-run-sourced
 		// cost_price of a product, recording provenance (source + run id + timestamp) and clearing
 		// the tech-card cost_breakdown. A manually set cost is never overwritten — the returned bool
@@ -765,6 +767,9 @@ type (
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
+		// CleanupExpiredCommandIdempotency purges command_idempotency rows past the 90-day replay
+		// window (bounded per call; storefrontcleanup ticks it).
+		CleanupExpiredCommandIdempotency(ctx context.Context) (int64, error)
 		// PostProductionRunReceipt is the atomic receiving command (Phase 4, receipt v1, final-only):
 		// one transaction records the immutable receipt + counted lines (addressed by the plan lines'
 		// line_key, resolved under the run lock), stamps the counts onto the plan grid, books good

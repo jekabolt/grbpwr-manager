@@ -339,6 +339,25 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 			)
 		}
 	}
+	// Stock-write contract: a restock refund put sellable A units back on the shelf, so the
+	// affected product pages must re-render (sold_out may flip). writeoff moves no stock and
+	// seconds lands on the B row the storefront never lists — neither needs a re-render. The
+	// refund path never sends back-in-stock emails: one returned unit is not a restock drop,
+	// and notifications stay an explicit operator choice (receipt modal / manual stock update).
+	if disposition == "" || disposition == entity.RefundDispositionRestock {
+		seen := make(map[int]bool, len(orderFull.OrderItems))
+		products := make([]int, 0, len(orderFull.OrderItems))
+		for i := range orderFull.OrderItems {
+			pid := orderFull.OrderItems[i].ProductId
+			if pid != 0 && !seen[pid] {
+				seen[pid] = true
+				products = append(products, pid)
+			}
+		}
+		if len(products) > 0 {
+			s.revalidateAsync(&dto.RevalidationData{Products: products, Hero: true})
+		}
+	}
 	return &pb_admin.RefundOrderResponse{}, nil
 }
 

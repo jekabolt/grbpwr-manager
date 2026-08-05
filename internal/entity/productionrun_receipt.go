@@ -156,4 +156,9 @@ type PostProductionRunReceiptResult struct {
 	ReceiptID        int  `json:"receipt_id"`
 	CostPriceUpdated bool `json:"cost_price_updated"`
 	Replayed         bool `json:"-"`
+	// StockTransitions are the committed per-(product,size,grade) before/after quantities this
+	// receipt booked, for the handler's storefront side effects (ISR + optional waitlist notify).
+	// json:"-" keeps the idempotency response byte-identical to pre-existing rows AND makes a
+	// replayed command carry no transitions — side effects fire once, on the original execution.
+	StockTransitions []StockTransition `json:"-"`
 }
