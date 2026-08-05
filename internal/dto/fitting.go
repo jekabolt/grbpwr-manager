@@ -187,7 +187,7 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 
 	changeRequests := make([]entity.FittingChangeRequest, 0, len(pb.ChangeRequests))
 	for _, cr := range pb.ChangeRequests {
-		e, err := fittingChangeRequestEntity(cr.Target, cr.Note, cr.CalloutNumber, cr.PieceId, cr.CarriedFromId, cr.Zone, cr.Status)
+		e, err := fittingChangeRequestEntity(cr.Target, cr.Note, cr.CalloutNumber, cr.PieceId, cr.CarriedFromId, cr.PieceIds, cr.Zone, cr.Status)
 		if err != nil {
 			return nil, err
 		}
@@ -280,8 +280,17 @@ func fittingChangeRequestsToPb(crs []entity.FittingChangeRequest) []*pb_common.F
 }
 
 // ConvertEntityFittingChangeRequestToPb converts one stored change-request item to pb (S26). resolved
-// is a deprecated read-only mirror of status.
+// is a deprecated read-only mirror of status, and piece_id a deprecated read-only mirror of the first
+// piece — both are emitted so a client on the previous contract still renders the row.
 func ConvertEntityFittingChangeRequestToPb(c entity.FittingChangeRequest) *pb_common.FittingChangeRequest {
+	pieceIDs := make([]int32, 0, len(c.PieceIds))
+	for _, id := range c.PieceIds {
+		pieceIDs = append(pieceIDs, int32(id))
+	}
+	var firstPiece int32
+	if len(pieceIDs) > 0 {
+		firstPiece = pieceIDs[0]
+	}
 	return &pb_common.FittingChangeRequest{
 		Id:            int32(c.Id),
 		FittingId:     int32(c.FittingId),
@@ -289,7 +298,8 @@ func ConvertEntityFittingChangeRequestToPb(c entity.FittingChangeRequest) *pb_co
 		Note:          c.Note,
 		CalloutNumber: pbInt32FromNull(c.CalloutNumber),
 		Zone:          c.Zone.String,
-		PieceId:       pbInt32FromNull(c.PieceId),
+		PieceIds:      pieceIDs,
+		PieceId:       firstPiece,
 		Status:        c.Status,
 		CarriedFromId: pbInt32FromNull(c.CarriedFromId),
 		CreatedBy:     c.CreatedBy,
@@ -298,9 +308,42 @@ func ConvertEntityFittingChangeRequestToPb(c entity.FittingChangeRequest) *pb_co
 	}
 }
 
+// maxFittingChangeRequestPieces bounds the piece set on one remark. A style's whole cut-list is well
+// under this, so the cap only catches a client looping — it is not a modelling limit.
+const maxFittingChangeRequestPieces = 100
+
+// fittingChangeRequestPieceIds validates the piece set of a change request: positive ids only,
+// de-duplicated, selection order preserved. pieceID is the DEPRECATED single-piece field — it is
+// honoured only when the set is empty, so an older client that still sends piece_id keeps working
+// and a current client that sends both does not get a phantom extra piece.
+func fittingChangeRequestPieceIds(pieceIDs []int32, pieceID int32) ([]int, error) {
+	src := pieceIDs
+	if len(src) == 0 && pieceID > 0 {
+		src = []int32{pieceID}
+	}
+	if len(src) > maxFittingChangeRequestPieces {
+		return nil, fmt.Errorf("fitting change request must not reference more than %d pieces", maxFittingChangeRequestPieces)
+	}
+	out := make([]int, 0, len(src))
+	seen := make(map[int32]bool, len(src))
+	for _, id := range src {
+		if id < 0 {
+			return nil, fmt.Errorf("fitting change request piece_ids must not be negative")
+		}
+		// 0 is the proto zero value for "unset", not a piece — a client building a fixed-length row
+		// can legitimately leave a slot empty. Skip rather than reject.
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, int(id))
+	}
+	return out, nil
+}
+
 // fittingChangeRequestEntity validates and converts the shared change-request fields (S26), used by
 // both the embedded initial batch (FittingInsert) and the dedicated CRUD.
-func fittingChangeRequestEntity(target, note string, calloutNumber, pieceID, carriedFromID int32, zone, status string) (entity.FittingChangeRequest, error) {
+func fittingChangeRequestEntity(target, note string, calloutNumber, pieceID, carriedFromID int32, pieceIDs []int32, zone, status string) (entity.FittingChangeRequest, error) {
 	t := strings.ToLower(strings.TrimSpace(target))
 	if !entity.ValidFittingChangeTargets[t] {
 		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request target must be one of pattern|construction|material|grading|other")
@@ -315,9 +358,15 @@ func fittingChangeRequestEntity(target, note string, calloutNumber, pieceID, car
 	if calloutNumber < 0 || pieceID < 0 || carriedFromID < 0 {
 		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request callout_number, piece_id and carried_from_id must not be negative")
 	}
-	z := strings.ToLower(strings.TrimSpace(zone))
+	pieces, err := fittingChangeRequestPieceIds(pieceIDs, pieceID)
+	if err != nil {
+		return entity.FittingChangeRequest{}, err
+	}
+	// Normalized, not just lowercased: a client sending the TECH_CARD_CONSTRUCTION_ZONE_* enum name
+	// (which the admin did before this field grew its own dictionary) is mapped onto its token.
+	z := entity.NormalizeFittingChangeZone(zone)
 	if z != "" && !entity.ValidFittingChangeZones[z] {
-		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request zone must be one of unknown|outer|lining|interlining|other")
+		return entity.FittingChangeRequest{}, fmt.Errorf("fitting change request zone must be one of %s", strings.Join(entity.FittingChangeZoneTokens(), "|"))
 	}
 	st := strings.ToLower(strings.TrimSpace(status))
 	if st == "" {
@@ -331,7 +380,7 @@ func fittingChangeRequestEntity(target, note string, calloutNumber, pieceID, car
 		Note:          n,
 		CalloutNumber: nullInt32FromPb(calloutNumber),
 		Zone:          nullStringFromPb(z),
-		PieceId:       nullInt32FromPb(pieceID),
+		PieceIds:      pieces,
 		Status:        st,
 		CarriedFromId: nullInt32FromPb(carriedFromID),
 	}, nil
@@ -342,7 +391,7 @@ func ConvertPbFittingChangeRequestInsertToEntity(pb *pb_common.FittingChangeRequ
 	if pb == nil {
 		return nil, fmt.Errorf("change_request is required")
 	}
-	e, err := fittingChangeRequestEntity(pb.Target, pb.Note, pb.CalloutNumber, pb.PieceId, pb.CarriedFromId, pb.Zone, pb.Status)
+	e, err := fittingChangeRequestEntity(pb.Target, pb.Note, pb.CalloutNumber, pb.PieceId, pb.CarriedFromId, pb.PieceIds, pb.Zone, pb.Status)
 	if err != nil {
 		return nil, err
 	}

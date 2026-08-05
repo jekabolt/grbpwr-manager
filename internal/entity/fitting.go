@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -24,10 +25,67 @@ var ValidFittingChangeStatuses = map[string]bool{
 	FittingChangeStatusOpen: true, FittingChangeStatusResolved: true,
 }
 
-// ValidFittingChangeZones mirrors the tech_card_operation.zone dictionary (0076) — the single source
-// of truth for garment zones (§2.7); a change-request zone is one of these or unset.
-var ValidFittingChangeZones = map[string]bool{
-	"unknown": true, "outer": true, "lining": true, "interlining": true, "other": true,
+// ValidFittingChangeZones is the fitting-owned vocabulary of garment AREAS a change request can point
+// at. It started as a mirror of the tech_card_operation.zone dictionary (0076), but that one groups
+// SEWING operations into construction bands (outer/lining/interlining) — a fitting remark is about
+// where on the GARMENT the problem is ("рукав короткий", "сидит по плечу"), which those three bands
+// can't express. The bands are kept (a remark can genuinely be about the lining as a layer) and the
+// areas are added alongside; the two dictionaries are now independent by design.
+//
+// `unknown` is the legacy no-op token, equivalent to an unset zone; it is accepted on write for old
+// clients but never produced by the current UI.
+// The slice is the source of truth (a Go map iterates randomly, which would make the same rejection
+// print its list in a different order every time); ValidFittingChangeZones is derived from it, so the
+// two cannot drift. Keep it in reading order — the admin's picker follows the same grouping.
+var fittingChangeZoneTokens = []string{
+	"unknown", // legacy no-op, equivalent to unset
+	// material bands (the original tech_card_operation.zone set)
+	"outer", "lining", "interlining",
+	// garment areas
+	"sleeve", "collar", "neckline", "armhole", "shoulder", "chest", "waist", "hip", "hem",
+	"pocket", "closure", "back", "front",
+	"other",
+}
+
+var ValidFittingChangeZones = func() map[string]bool {
+	m := make(map[string]bool, len(fittingChangeZoneTokens))
+	for _, z := range fittingChangeZoneTokens {
+		m[z] = true
+	}
+	return m
+}()
+
+// FittingChangeZoneTokens lists the accepted zone tokens in a stable order.
+func FittingChangeZoneTokens() []string {
+	return append([]string(nil), fittingChangeZoneTokens...)
+}
+
+// FittingChangeZonePrefixes are enum-name prefixes a client may send instead of the bare token
+// (the admin reused the TECH_CARD_CONSTRUCTION_ZONE_* proto enum for this field before it grew its
+// own dictionary). NormalizeFittingChangeZone strips them so an older client is normalised, not 400'd.
+var FittingChangeZonePrefixes = []string{
+	"TECH_CARD_CONSTRUCTION_ZONE_",
+	"FITTING_CHANGE_ZONE_",
+	"FITTING_ZONE_",
+}
+
+// NormalizeFittingChangeZone maps a wire zone value onto its dictionary token: trimmed, lowercased,
+// with any known enum-name prefix removed. The legacy `unknown` collapses to "" (unset) so the two
+// spellings of "no zone" do not both end up in storage. The result is NOT validated here — the caller
+// checks it against ValidFittingChangeZones.
+func NormalizeFittingChangeZone(zone string) string {
+	z := strings.TrimSpace(zone)
+	for _, p := range FittingChangeZonePrefixes {
+		if len(z) > len(p) && strings.EqualFold(z[:len(p)], p) {
+			z = z[len(p):]
+			break
+		}
+	}
+	z = strings.ToLower(z)
+	if z == "unknown" {
+		return ""
+	}
+	return z
 }
 
 // FittingStatus is the lifecycle state of a fitting session.
@@ -120,7 +178,7 @@ var ValidFittingChangeTargets = map[string]bool{
 }
 
 // FittingChangeRequest is one structured remark item produced by a fitting (S26, §2.7). target is the
-// change category; zone + PieceId are the structured location; Status (open|resolved) replaces the old
+// change category; Zone + PieceIds are the structured location; Status (open|resolved) replaces the old
 // boolean resolved; CarriedFromId links this item to the prior-round item it continues. Managed via the
 // dedicated change-request CRUD so its id is STABLE (carry-over depends on it); an initial batch may
 // still be supplied on AddFitting. FittingId/RoundNumber are read context (RoundNumber is populated
@@ -132,11 +190,15 @@ type FittingChangeRequest struct {
 	Note          string         `db:"note"`
 	CalloutNumber sql.NullInt32  `db:"callout_number"`
 	Zone          sql.NullString `db:"zone"`
-	PieceId       sql.NullInt32  `db:"piece_id"`
 	Status        string         `db:"status"`
 	CarriedFromId sql.NullInt32  `db:"carried_from_id"`
 	CreatedBy     string         `db:"created_by"`
 	RoundNumber   sql.NullInt32  `db:"round_number"` // carry-over context (derived from the sample); not a column here
+	// PieceIds are the tech_card_piece rows this remark is about (0..n). Stored in the
+	// fitting_change_request_piece join table, not on the row — one remark routinely spans several
+	// pieces. Empty = not pinned to a piece. The legacy single fitting_change_request.piece_id column
+	// is read-only history: 0256 backfilled it into the join table and nothing writes it any more.
+	PieceIds []int `db:"-"`
 }
 
 // FittingInsert is the writable payload for a fitting session. A fitting anchors
