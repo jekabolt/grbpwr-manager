@@ -1571,6 +1571,31 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/tech-card/output-variant/{id}"};
   }
 
+  // SaveTechCardMarker creates (id=0) or fully replaces (id>0) ONE saved раскладка (marker, 0257):
+  // a measured fabric layout of one size's pieces, self-contained geometry included. Last-write-wins
+  // on purpose — no lock_version of its own, and the write does NOT bump tech_card.lock_version
+  // (saving a раскладка from the nesting modal must not 409 the operator's open card form).
+  // Refused with FailedPrecondition for a released card, an incomplete layout
+  // (placed_count < total_count — not a consumption norm), or a (card, size, name) already taken;
+  // a size outside the card's range or an unknown bom_line_key is InvalidArgument.
+  rpc SaveTechCardMarker(SaveTechCardMarkerRequest) returns (SaveTechCardMarkerResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/marker/save"
+      body: "*"
+    };
+  }
+  // GetTechCardMarker returns one marker WITH its layout blob — the only place the blob travels
+  // (summaries ride GetTechCard.markers). A stored blob the current schema cannot parse degrades
+  // to summary-only with a warning rather than failing the read (hero-v2 style).
+  rpc GetTechCardMarker(GetTechCardMarkerRequest) returns (GetTechCardMarkerResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/marker/{id}"};
+  }
+  // DeleteTechCardMarker removes a saved раскладка. Markers are measurements, not structural
+  // references — nothing else points at them, so delete is plain (released cards still refuse).
+  rpc DeleteTechCardMarker(DeleteTechCardMarkerRequest) returns (DeleteTechCardMarkerResponse) {
+    option (google.api.http) = {delete: "/api/admin/tech-card/marker/{id}"};
+  }
+
   // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
   // that ship, the on-garment assembly (labels/tags) to verify per line, and the packaging the whole
   // order needs (resolved from WS2 packaging_recipe). Read-only — reserves/consumes nothing.
@@ -6732,6 +6757,32 @@ message DeleteTechCardOutputVariantRequest {
 }
 
 message DeleteTechCardOutputVariantResponse {}
+
+// SaveTechCardMarkerRequest writes ONE saved раскладка. id=0 creates; a non-zero id must already
+// be a marker of tech_card_id and is replaced whole (the layout blob has no partial update).
+message SaveTechCardMarkerRequest {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  common.TechCardMarkerInsert marker = 3;
+}
+
+message SaveTechCardMarkerResponse {
+  int32 id = 1; // the created or updated marker
+}
+
+message GetTechCardMarkerRequest {
+  int32 id = 1;
+}
+
+message GetTechCardMarkerResponse {
+  common.TechCardMarker marker = 1;
+}
+
+message DeleteTechCardMarkerRequest {
+  int32 id = 1;
+}
+
+message DeleteTechCardMarkerResponse {}
 
 // OrderPackingSpecItem is one garment line in an order's packing spec: the colourway/variant, quantity,
 // and the on-garment assembly (labels/tags) the packer must verify, size-resolved to this line's variant.

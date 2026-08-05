@@ -64,6 +64,15 @@ var ErrOutputVariantNotFound = errors.New("colour variant not found")
 // and its history intact. The API layer maps it to FailedPrecondition.
 var ErrOutputVariantReferencedByRun = errors.New("colour variant is referenced by production run lines; deactivate it instead")
 
+// ErrMarkerNotFound is returned when the addressed saved раскладка (tech_card_marker) does not
+// exist. The API layer maps it to NotFound.
+var ErrMarkerNotFound = errors.New("marker not found")
+
+// ErrMarkerIncomplete refuses saving a раскладка whose layout did not place every piece
+// (placed_count < total_count): a layout that dropped pieces is not a consumption norm, and
+// letting it through would quietly understate fabric per garment. FailedPrecondition.
+var ErrMarkerIncomplete = errors.New("marker layout is incomplete — not every piece was placed")
+
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
 type TechCardStage string
@@ -160,11 +169,97 @@ type TechCardOutputVariant struct {
 	OnHand       decimal.NullDecimal `db:"on_hand"`
 	// MaterialArchived is the bucket's catalog state. A colour pointing at archived nomenclature must
 	// never be prescribed to a packer, so the packing spec downgrades it to unresolved.
-	MaterialArchived bool `db:"material_archived"`
-	CreatedBy    string              `db:"created_by"`
-	UpdatedBy    string              `db:"updated_by"`
-	CreatedAt    time.Time           `db:"created_at"`
-	UpdatedAt    time.Time           `db:"updated_at"`
+	MaterialArchived bool      `db:"material_archived"`
+	CreatedBy        string    `db:"created_by"`
+	UpdatedBy        string    `db:"updated_by"`
+	CreatedAt        time.Time `db:"created_at"`
+	UpdatedAt        time.Time `db:"updated_at"`
+}
+
+// MarkerSource is the provenance of a saved раскладка's geometry, stored in
+// tech_card_marker.source. Mirrors the CHECK chk_tcm_source in migration 0257 (drift is caught by
+// TestMarkerSourceEnumMatchesMigration).
+type MarkerSource string
+
+const (
+	MarkerSourceAuto     MarkerSource = "auto"     // the nesting engine's layout as it ran
+	MarkerSourceManual   MarkerSource = "manual"   // operator-adjusted placements (Ф5)
+	MarkerSourceImported MarkerSource = "imported" // external CAD marker (reserved)
+)
+
+// ValidMarkerSources is the set of accepted marker provenance values.
+var ValidMarkerSources = map[MarkerSource]bool{
+	MarkerSourceAuto:     true,
+	MarkerSourceManual:   true,
+	MarkerSourceImported: true,
+}
+
+// TechCardMarkerInsert is the writable payload of one saved раскладка (tech_card_marker, 0257).
+// Layout is the opaque proto-JSON blob of common.TechCardMarkerLayout — self-contained contours +
+// placements, marshalled at the API layer (idiom: tech_card_release.snapshot). BomLineKey is the
+// stable wire identity of the BOM fabric line this marker measures; the store resolves it to
+// bom_item_id ("" = not linked).
+type TechCardMarkerInsert struct {
+	SizeId          int             `db:"size_id"`
+	Name            string          `db:"name"`
+	Source          MarkerSource    `db:"source"`
+	BomLineKey      string          `db:"-"`
+	FabricWidthCm   decimal.Decimal `db:"fabric_width_cm"`
+	GapCm           decimal.Decimal `db:"gap_cm"`
+	EdgeMarginCm    decimal.Decimal `db:"edge_margin_cm"`
+	AllowCrossGrain bool            `db:"allow_cross_grain"`
+	Sets            int             `db:"sets"`
+	UsedLengthCm    decimal.Decimal `db:"used_length_cm"`
+	// EfficiencyPct stays INVALID when the engine did not report one (a manual/imported marker) —
+	// NULL in the column, unset on the wire.
+	EfficiencyPct decimal.NullDecimal `db:"efficiency_pct"`
+	PlacedCount   int                 `db:"placed_count"`
+	TotalCount    int                 `db:"total_count"`
+	Layout        string              `db:"layout"`
+}
+
+// TechCardMarkerSummary is a stored marker without its layout blob — the shape that rides
+// GetTechCard.markers (the blob is 60-100 KB and travels only on GetTechCardMarker). BomLineKey /
+// BomItemName / BomItemUnit are JOIN projections off the linked BOM line; all three stay INVALID
+// when the marker is unlinked or its slot was deleted (bom_item_id went NULL).
+type TechCardMarkerSummary struct {
+	Id              int                 `db:"id"`
+	TechCardId      int                 `db:"tech_card_id"`
+	SizeId          int                 `db:"size_id"`
+	Name            string              `db:"name"`
+	Source          string              `db:"source"`
+	BomItemId       sql.NullInt64       `db:"bom_item_id"`
+	BomLineKey      sql.NullString      `db:"bom_line_key"`
+	BomItemName     sql.NullString      `db:"bom_item_name"`
+	BomItemUnit     sql.NullString      `db:"bom_item_unit"`
+	FabricWidthCm   decimal.Decimal     `db:"fabric_width_cm"`
+	GapCm           decimal.Decimal     `db:"gap_cm"`
+	EdgeMarginCm    decimal.Decimal     `db:"edge_margin_cm"`
+	AllowCrossGrain bool                `db:"allow_cross_grain"`
+	Sets            int                 `db:"sets"`
+	UsedLengthCm    decimal.Decimal     `db:"used_length_cm"`
+	EfficiencyPct   decimal.NullDecimal `db:"efficiency_pct"`
+	PlacedCount     int                 `db:"placed_count"`
+	TotalCount      int                 `db:"total_count"`
+	CreatedBy       string              `db:"created_by"`
+	UpdatedBy       string              `db:"updated_by"`
+	CreatedAt       time.Time           `db:"created_at"`
+	UpdatedAt       time.Time           `db:"updated_at"`
+}
+
+// ConsumptionPerUnitCm is the number costing reads: fabric length per one garment of this size.
+// Derived, never stored, so it cannot drift from its inputs.
+func (m TechCardMarkerSummary) ConsumptionPerUnitCm() decimal.Decimal {
+	if m.Sets <= 0 {
+		return m.UsedLengthCm
+	}
+	return m.UsedLengthCm.Div(decimal.NewFromInt(int64(m.Sets)))
+}
+
+// TechCardMarker is a full stored marker: the summary plus the opaque layout blob.
+type TechCardMarker struct {
+	TechCardMarkerSummary
+	Layout string `db:"layout"`
 }
 
 // StyleNumberSource records how a tech card's style_number was set (Q1): `generated` = the server
@@ -1384,6 +1479,11 @@ type TechCard struct {
 	// ColorwayCount above. List paths only; on-hand stays INVALID when no bucket has a stock row.
 	OutputVariantCount   int                 `db:"-"`
 	OutputVariantsOnHand decimal.NullDecimal `db:"-"`
+	// Markers are the card's saved раскладки (0257), summaries only — the layout blob travels
+	// exclusively on GetTechCardMarker. Populated on the single-card read; nil on lists/writes.
+	Markers []TechCardMarkerSummary `db:"-"`
+	// MarkerCount is the list-view count of the same thing, batched per page like ColorwayCount.
+	MarkerCount int `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned

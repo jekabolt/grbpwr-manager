@@ -345,6 +345,9 @@ var methodRequirements = map[string]Requirement{
 	// whoever edits the card. Reads travel on GetTechCard/ListTechCards, so there is no read RPC.
 	"UpsertTechCardOutputVariant": wr(SectionTechCards),
 	"DeleteTechCardOutputVariant": wr(SectionTechCards),
+	"SaveTechCardMarker":          wr(SectionTechCards),
+	"GetTechCardMarker":           rd(SectionTechCards),
+	"DeleteTechCardMarker":        wr(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":  wr(SectionProduction),
 	"UpdateProductionRun":  wr(SectionProduction),

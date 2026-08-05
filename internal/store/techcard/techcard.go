@@ -764,6 +764,14 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		}
 		cards[0].OutputVariants = variants
 	}
+	// Saved раскладки (0257), summaries only — the blob rides GetTechCardMarker. Loaded for every
+	// purpose (an auxiliary кофр is cut from fabric exactly like a garment), same
+	// no-degradation reasoning as the variants above: this is editable card content.
+	markers, err := listMarkerSummaries(ctx, s.DB, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].Markers = markers
 	return &cards[0], nil
 }
 
@@ -967,6 +975,29 @@ func (s *Store) enrichListFacts(ctx context.Context, cards []entity.TechCard) er
 		}
 	}
 
+	// Saved раскладки (0257): the row badge is a bare count — a "latest consumption" here would
+	// lie without naming the size and BOM slot it was measured for, so it stays off the list.
+	type markerCountRow struct {
+		TechCardID int `db:"tech_card_id"`
+		N          int `db:"n"`
+	}
+	allIDs := make([]int, 0, len(cards))
+	for i := range cards {
+		allIDs = append(allIDs, cards[i].Id)
+	}
+	markersByCard := make(map[int]int, len(cards))
+	if len(allIDs) > 0 {
+		markerRows, err := storeutil.QueryListNamed[markerCountRow](ctx, s.DB, `
+			SELECT tech_card_id, COUNT(*) AS n FROM tech_card_marker
+			WHERE tech_card_id IN (:ids) GROUP BY tech_card_id`, map[string]any{"ids": allIDs})
+		if err != nil {
+			return fmt.Errorf("count markers for tech card list: %w", err)
+		}
+		for _, r := range markerRows {
+			markersByCard[r.TechCardID] = r.N
+		}
+	}
+
 	for i := range cards {
 		cards[i].ColorwayCount = countByStyle[cards[i].Id]
 		if out, ok := outputByCard[cards[i].Id]; ok {
@@ -977,6 +1008,7 @@ func (s *Store) enrichListFacts(ctx context.Context, cards []entity.TechCard) er
 			cards[i].OutputVariantCount = v.N
 			cards[i].OutputVariantsOnHand = v.OnHand
 		}
+		cards[i].MarkerCount = markersByCard[cards[i].Id]
 	}
 	return nil
 }
