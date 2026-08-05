@@ -129,3 +129,27 @@ func TestTechCardAuxSubtypeEnumNoDrift(t *testing.T) {
 		t.Errorf("proto aux_subtype values (%d) != entity.ValidTechCardAuxSubtypes (%d)", protoValues, len(entity.ValidTechCardAuxSubtypes))
 	}
 }
+
+// TestAssemblyResolutionBasisEnumNoDrift is the same guard for the packing spec's resolution
+// discriminator: every non-UNKNOWN proto value maps back to a valid entity basis, and the three sizes
+// (proto values, mapping table, entity Valid set) agree. This enum has no DB leg — it is computed at
+// read time and never stored — so this is the only place it can drift.
+func TestAssemblyResolutionBasisEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.AssemblyResolutionBasis_name {
+		if pb_common.AssemblyResolutionBasis(v) == pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_UNKNOWN {
+			continue
+		}
+		protoValues++
+		b := assemblyResolutionBasisFromPb(pb_common.AssemblyResolutionBasis(v))
+		if !entity.ValidAssemblyResolutionBases[b] {
+			t.Errorf("proto AssemblyResolutionBasis %s maps to invalid entity basis %q", name, b)
+		}
+	}
+	if protoValues != len(assemblyResolutionBasisPbByEntity) {
+		t.Errorf("proto resolution basis values (%d) != mapping table size (%d)", protoValues, len(assemblyResolutionBasisPbByEntity))
+	}
+	if protoValues != len(entity.ValidAssemblyResolutionBases) {
+		t.Errorf("proto resolution basis values (%d) != entity.ValidAssemblyResolutionBases (%d)", protoValues, len(entity.ValidAssemblyResolutionBases))
+	}
+}

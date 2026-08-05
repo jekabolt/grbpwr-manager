@@ -158,6 +158,9 @@ type TechCardOutputVariant struct {
 	MaterialName string              `db:"material_name"`
 	Unit         string              `db:"unit"`
 	OnHand       decimal.NullDecimal `db:"on_hand"`
+	// MaterialArchived is the bucket's catalog state. A colour pointing at archived nomenclature must
+	// never be prescribed to a packer, so the packing spec downgrades it to unresolved.
+	MaterialArchived bool `db:"material_archived"`
 	CreatedBy    string              `db:"created_by"`
 	UpdatedBy    string              `db:"updated_by"`
 	CreatedAt    time.Time           `db:"created_at"`
