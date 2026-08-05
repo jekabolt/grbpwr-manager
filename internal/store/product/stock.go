@@ -326,7 +326,7 @@ func (s *Store) updateSecondsStock(ctx context.Context, productId, sizeId, quant
 // the S→X upgrade deadlock shape. The journal's before/after are the locked values, so the history
 // sums to the real stock. Sizes are visited in ascending order so two concurrent receives over
 // overlapping variants take their row locks in the same order.
-func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username, grade string) error {
+func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSize map[int]int, runID int, username, grade string) ([]entity.StockTransition, error) {
 	ref := sql.NullString{String: fmt.Sprintf("production_run:%d", runID), Valid: true}
 	var adminUser sql.NullString
 	if username != "" {
@@ -337,6 +337,7 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 		sizeIDs = append(sizeIDs, sizeID)
 	}
 	sort.Ints(sizeIDs)
+	transitions := make([]entity.StockTransition, 0, len(sizeIDs))
 	for _, sizeID := range sizeIDs {
 		qty := perSize[sizeID]
 		if qty <= 0 {
@@ -344,7 +345,7 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 		}
 		before, err := lockProductSizeQuantity(ctx, s.DB, productID, sizeID, grade)
 		if err != nil {
-			return fmt.Errorf("can't lock stock for product %d size %d: %w", productID, sizeID, err)
+			return nil, fmt.Errorf("can't lock stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		after := before.Add(decimal.NewFromInt(int64(qty)))
 		if grade == entity.VariantGradeB {
@@ -353,7 +354,7 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 			err = s.UpdateProductSizeStock(ctx, productID, sizeID, int(after.IntPart()))
 		}
 		if err != nil {
-			return fmt.Errorf("can't increment stock for product %d size %d: %w", productID, sizeID, err)
+			return nil, fmt.Errorf("can't increment stock for product %d size %d: %w", productID, sizeID, err)
 		}
 		if err := s.RecordStockChange(ctx, []entity.StockChangeInsert{{
 			ProductId:      sql.NullInt32{Int32: int32(productID), Valid: true},
@@ -366,10 +367,13 @@ func (s *Store) ReceiveProductionStock(ctx context.Context, productID int, perSi
 			ReferenceId:    ref,
 			AdminUsername:  adminUser,
 		}}); err != nil {
-			return fmt.Errorf("can't record production-received stock change: %w", err)
+			return nil, fmt.Errorf("can't record production-received stock change: %w", err)
 		}
+		transitions = append(transitions, entity.StockTransition{
+			ProductID: productID, SizeID: sizeID, Grade: grade, Before: before, After: after,
+		})
 	}
-	return nil
+	return transitions, nil
 }
 
 // ReverseProductionStock is the mirror of ReceiveProductionStock (Phase 6): it takes a reversed

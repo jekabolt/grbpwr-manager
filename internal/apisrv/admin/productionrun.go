@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
+	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -300,6 +301,19 @@ func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.Pos
 	if st != nil {
 		return nil, st
 	}
+	// Storefront side effects of the stock-write contract — fire only on the ORIGINAL execution:
+	// a replayed command carries no transitions (json:"-"), so a network retry can never re-send
+	// back-in-stock emails or re-run revalidation for stock it did not book.
+	if !result.Replayed {
+		s.fireStockWriteSideEffects(ctx, result.StockTransitions, req.NotifyWaitlist)
+	} else {
+		// The one loss window (adversarial #4, accepted): a commit-ack failure on the original
+		// execution means ITS effects never fired, and this replay will not re-fire them — the
+		// stock is booked but the pages/emails were skipped. Loud so an operator can revalidate
+		// by hand if a customer-visible page looks stale.
+		slog.Default().WarnContext(ctx, "receipt replayed; storefront side effects were fired by the original execution only",
+			slog.Int("run_id", int(req.RunId)), slog.Int("receipt_id", result.ReceiptID))
+	}
 	resp := &pb_admin.PostProductionRunReceiptResponse{
 		ReceiptId:        int32(result.ReceiptID),
 		CostPriceUpdated: result.CostPriceUpdated,
@@ -407,6 +421,15 @@ func (s *Server) ReverseProductionRunReceipt(ctx context.Context, req *pb_admin.
 		return nil, status.Error(codes.Internal, "can't reverse production run receipt")
 	}
 	resp := &pb_admin.ReverseProductionRunReceiptResponse{ReversalReceiptId: int32(result.ReversalReceiptID)}
+	// Stock went back OUT of the shelves — the storefront's sold_out state may have flipped, so
+	// the affected product pages must re-render (ISR only; a reversal never notifies). Fired
+	// UNCONDITIONALLY on success from the card's linked colourways (a guaranteed superset of the
+	// reversed receipt's products) — never coupled to the best-effort echo read below, whose
+	// transient failure must not leave the storefront advertising units that just left the shelf
+	// (adversarial #3).
+	if linked := card.LinkedProductIDs(); len(linked) > 0 {
+		s.revalidateAsync(&dto.RevalidationData{Products: linked, Hero: true})
+	}
 	// Echo the post-command run, same best-effort contract as the receipt command.
 	if run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId)); err == nil {
 		pb := dto.ConvertEntityProductionRunToPb(run)
@@ -471,7 +494,70 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 	if st != nil {
 		return nil, st
 	}
+	// The legacy shim's request carries no notify flag — ISR only, never emails.
+	if !result.Replayed {
+		s.fireStockWriteSideEffects(ctx, result.StockTransitions, false)
+	}
 	return &pb_admin.ReceiveProductionRunResponse{CostPriceUpdated: result.CostPriceUpdated}, nil
+}
+
+// fireStockWriteSideEffects applies the stock-write contract's storefront side effects for a
+// production receipt's COMMITTED transitions (mirrors UpdateVariantStock, product.go): ISR
+// revalidation for every touched product + hero always; when notify is set, the back-in-stock
+// notification for every A-grade variant that went 0→>0 — from the store's locked before/after,
+// never a pre-read. B-grade transitions never notify: seconds are not listed on the storefront
+// and NotifyMe pins grade A, so no waitlist can exist for them.
+func (s *Server) fireStockWriteSideEffects(ctx context.Context, transitions []entity.StockTransition, notify bool) {
+	if len(transitions) == 0 {
+		return
+	}
+	seen := make(map[int]bool, len(transitions))
+	products := make([]int, 0, len(transitions))
+	for _, t := range transitions {
+		if !seen[t.ProductID] {
+			seen[t.ProductID] = true
+			products = append(products, t.ProductID)
+		}
+	}
+	if notify {
+		// Group the notifying sizes per product and cap worker concurrency (mirroring
+		// revalidateSem's 4): a wide receipt — 30 sizes back in stock at once — must not spawn
+		// 30 concurrent notifyWaitlist calls against the shared 15-connection pool that also
+		// serves payments (adversarial #2). One worker per product walks its sizes SEQUENTIALLY;
+		// at most 4 workers run at a time. Same detachment contract as UpdateVariantStock:
+		// WithoutCancel (the 0→>0 event fires exactly once and is never retried, so it must
+		// survive the RPC returning), registered in revalWG so shutdown bounded-waits, panics
+		// recovered per worker.
+		perProduct := make(map[int][]int)
+		order := make([]int, 0, len(transitions))
+		for _, t := range transitions {
+			if t.Grade == entity.VariantGradeB || !t.BackInStock() {
+				continue
+			}
+			if _, ok := perProduct[t.ProductID]; !ok {
+				order = append(order, t.ProductID)
+			}
+			perProduct[t.ProductID] = append(perProduct[t.ProductID], t.SizeID)
+		}
+		if len(order) > 0 {
+			notifyCtx := context.WithoutCancel(ctx)
+			sem := make(chan struct{}, 4)
+			for _, pid := range order {
+				sizes := perProduct[pid]
+				s.revalWG.Add(1)
+				go func(pid int, sizes []int) {
+					defer s.revalWG.Done()
+					defer saferun.Recover(notifyCtx, "notify-waitlist")
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					for _, sid := range sizes {
+						s.notifyWaitlist(notifyCtx, pid, sid)
+					}
+				}(pid, sizes)
+			}
+		}
+	}
+	s.revalidateAsync(&dto.RevalidationData{Products: products, Hero: true})
 }
 
 // executeRunReceipt is the shared core of both receive RPCs: permission gates, tech-card linkage

@@ -417,6 +417,7 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		// Book the good units. Aux → the output material's warehouse (moving average); garment →
 		// each line's own product stock, products ascending for a deterministic lock order.
 		costPriceWrites := 0
+		var stockTransitions []entity.StockTransition
 		if p.Aux {
 			if totalGood > 0 {
 				if _, err := inventory.ReceiveInTx(ctx, rep, entity.MaterialReceiptInsert{
@@ -457,9 +458,11 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			}
 			sort.Ints(productIDs)
 			for _, pid := range productIDs {
-				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProduct[pid], p.RunID, p.Username, entity.VariantGradeA); err != nil {
+				tr, err := rep.Products().ReceiveProductionStock(ctx, pid, perProduct[pid], p.RunID, p.Username, entity.VariantGradeA)
+				if err != nil {
 					return err
 				}
+				stockTransitions = append(stockTransitions, tr...)
 			}
 			// cost_price seeds on the FINAL for EVERY product the whole SERIES delivered (the
 			// cumulative rollups), not just this receipt's lines — a short-close final counts
@@ -502,9 +505,11 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			}
 			sort.Ints(secondsIDs)
 			for _, pid := range secondsIDs {
-				if err := rep.Products().ReceiveProductionStock(ctx, pid, perProductSeconds[pid], p.RunID, p.Username, entity.VariantGradeB); err != nil {
+				tr, err := rep.Products().ReceiveProductionStock(ctx, pid, perProductSeconds[pid], p.RunID, p.Username, entity.VariantGradeB)
+				if err != nil {
 					return err
 				}
+				stockTransitions = append(stockTransitions, tr...)
 			}
 		}
 
@@ -541,7 +546,7 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 			return err
 		}
 
-		result := &entity.PostProductionRunReceiptResult{ReceiptID: receiptID, CostPriceUpdated: costPriceWrites > 0}
+		result := &entity.PostProductionRunReceiptResult{ReceiptID: receiptID, CostPriceUpdated: costPriceWrites > 0, StockTransitions: stockTransitions}
 		response, err := json.Marshal(result)
 		if err != nil {
 			return fmt.Errorf("failed to marshal receipt result: %w", err)
@@ -667,4 +672,29 @@ func loadRunReceipts(ctx context.Context, db dependency.DB, runID int) ([]entity
 		receipts[i].Lines = lines
 	}
 	return receipts, nil
+}
+
+// CleanupExpiredCommandIdempotency deletes command_idempotency rows older than 90 days (bounded
+// per call so a backlog cannot stall the cleanup tick; the remainder goes next tick). The key's
+// only job is to replay a client RETRY of the same intent — retries live for minutes, the modal
+// session that minted the key for hours — so 90 days is far beyond any legitimate replay window.
+// After the purge a replay of a purged key would EXECUTE anew rather than replay; for receipts
+// that is a second physical receipt, which is exactly what a three-months-later resubmission of
+// the same counts is. There is deliberately NO index on created_at: the table only ever holds a
+// few rows per receipt ever posted, and the bounded scan is cheaper than carrying an index on
+// every receipt write. CAVEAT for the future: the unindexed DELETE holds gap locks across the
+// table for the statement — fine at receipts-only volume, but if a second, higher-volume
+// command_type ever joins this table, add the created_at index THEN (the purge would otherwise
+// stall concurrent claimIdempotency INSERTs on the hot path).
+func (s *Store) CleanupExpiredCommandIdempotency(ctx context.Context) (int64, error) {
+	res, err := s.DB.ExecContext(ctx,
+		`DELETE FROM command_idempotency WHERE created_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY) LIMIT 10000`)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup expired command idempotency: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("cleanup expired command idempotency rows affected: %w", err)
+	}
+	return n, nil
 }
