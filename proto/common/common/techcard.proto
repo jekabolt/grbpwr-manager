@@ -1233,7 +1233,38 @@ message TechCard {
   int32 top_category_id = 22;
   int32 sub_category_id = 23;
   int32 type_id = 24;
+  // OUTPUT-ONLY colour variants of an AUXILIARY card's warehouse output. Empty for a sellable card
+  // and for an aux card still in legacy single-output mode (tech_card.output_material_id is then the
+  // whole answer). Written through the dedicated Upsert/DeleteTechCardOutputVariant RPCs, never
+  // through the tech-card save — a variant owns warehouse stock, so a full-replace save must not be
+  // able to re-mint or drop one.
+  repeated TechCardOutputVariant output_variants = 25;
   reserved 5; // was resolved_media (single combined list; now split)
+}
+
+// TechCardOutputVariant is one colour of an AUXILIARY card's warehouse output: "this card, in this
+// colour, produces into that material". An aux card sewn from several fabrics (a кофр in black and
+// in bone) needs one stock bucket per colour — its own on-hand, its own moving average — instead of
+// the single TechCardInsert.output_material_id.
+//
+// ZERO variants on a card is legacy single-output mode and behaves exactly as it always did; the
+// first variant switches the card over. NOT a size variant (ProductSize) and not a grade variant
+// (A/B stock) — everything here carries the output_ prefix for exactly that reason.
+message TechCardOutputVariant {
+  int32 id = 1; // 0 in a write creates a new colour
+  int32 tech_card_id = 2;
+  string color_code = 3; // CHAR(3) from the shared colour dictionary, like product.color_code
+  string color_name = 4; // read-only, resolved from the dictionary
+  int32 material_id = 5; // the warehouse bucket this colour produces into; 0 in a write auto-creates it
+  string material_name = 6; // read-only
+  // Current on-hand balance of the bucket. UNSET (not zero) when the material has no stock row at
+  // all — "no balance recorded" is not the same statement as "none left". Read-only.
+  google.type.Decimal on_hand = 7;
+  string unit = 8; // read-only; every colour of one card shares one unit of measure
+  // false retires the colour: it stops being plannable and stops counting toward the card's list
+  // totals, but keeps its bucket, its stock and its history. Deleting the variant is the harder
+  // action — it is the only way to un-pin the card's auxiliary purpose.
+  bool active = 9;
 }
 
 // TechCardListItem is a lightweight tech-card header for list views.
@@ -1279,4 +1310,10 @@ message TechCardListItem {
   int32 output_material_id = 22;
   string output_material_name = 23;
   google.type.Decimal output_material_on_hand = 24; // unset when the card has no output material
+  // Colour variants of that output (0252), summarised for the row: how many colours the card
+  // produces and what the warehouse holds across them ("3 colours · 820 on hand"). ACTIVE variants
+  // only — the badge answers "what can I plan", not "what has ever existed". 0/unset means the card
+  // is in legacy single-output mode, where output_material_* above is the whole answer.
+  int32 output_variant_count = 25;
+  google.type.Decimal output_variants_on_hand = 26;
 }

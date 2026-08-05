@@ -339,6 +339,10 @@ var methodRequirements = map[string]Requirement{
 	"UpsertStyleAssembly":  wr(SectionTechCards),
 	"ListStyleAssembly":    rd(SectionTechCards),
 	"GetStyleCostEstimate": rd(SectionTechCards),
+	// colour variants of an auxiliary card's warehouse output (0252): tech-card content, edited by
+	// whoever edits the card. Reads travel on GetTechCard/ListTechCards, so there is no read RPC.
+	"UpsertTechCardOutputVariant": wr(SectionTechCards),
+	"DeleteTechCardOutputVariant": wr(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":  wr(SectionProduction),
 	"UpdateProductionRun":  wr(SectionProduction),

@@ -181,6 +181,11 @@ func colorwayWriteError(ctx context.Context, op string, id int, err error) error
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, entity.ErrTechCardReleased):
 		return status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
+	case errors.Is(err, entity.ErrColorwayNotSellable):
+		// An auxiliary style refusing colourway work — operator-fixable (flip the card back to
+		// sellable, or register a colour variant instead), so FailedPrecondition like every other
+		// sellability gate. err, not the bare sentinel: the store names the style and the way out.
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	slog.Default().ErrorContext(ctx, "colourway write failed", slog.String("op", op), slog.Int("colorway_id", id), slog.String("err", err.Error()))
 	return status.Errorf(codes.Internal, "can't %s colourway: %v", op, err)

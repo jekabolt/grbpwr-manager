@@ -1521,6 +1521,35 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/{style_id}/style-assembly"};
   }
 
+  // UpsertTechCardOutputVariant creates or updates ONE colour variant of an AUXILIARY card's
+  // warehouse output (0252): the stock bucket the card produces into in that colour. id=0 creates;
+  // material_id=0 on create auto-creates the bucket ("<card> — <colour>", attributes copied from the
+  // card's existing output material when it has one). Single-row on purpose, NOT a full replace — a
+  // variant owns warehouse history.
+  //
+  // A NEW colour is always created ACTIVE and the request's `active` is ignored on create: a proto3
+  // bool carries no presence, so honouring an omitted field would mint colours that pin the card's
+  // purpose while staying invisible to every ACTIVE-only reader. Deactivate with a follow-up update,
+  // which does honour `active` — that retires the colour without touching its stock.
+  //
+  // Refused with FailedPrecondition for a sellable card, a released card, a colour already on the
+  // card, a bucket another variant (or another card's single output material) owns, or a unit that
+  // disagrees with the card's other colours. An archived or unitless material is InvalidArgument.
+  rpc UpsertTechCardOutputVariant(UpsertTechCardOutputVariantRequest) returns (UpsertTechCardOutputVariantResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/output-variant/upsert"
+      body: "*"
+    };
+  }
+  // DeleteTechCardOutputVariant removes a colour variant outright. Deactivating it (active=false) is
+  // the normal retirement; deleting is the "this colour was a mistake" action and the only way to
+  // un-pin the card's auxiliary purpose. The warehouse bucket itself survives with its stock and
+  // moving average — only this card's claim on it goes. Once runs can be planned by colour, a
+  // variant a run line references is refused with FailedPrecondition ("deactivate it instead").
+  rpc DeleteTechCardOutputVariant(DeleteTechCardOutputVariantRequest) returns (DeleteTechCardOutputVariantResponse) {
+    option (google.api.http) = {delete: "/api/admin/tech-card/output-variant/{id}"};
+  }
+
   // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
   // that ship, the on-garment assembly (labels/tags) to verify per line, and the packaging the whole
   // order needs (resolved from WS2 packaging_recipe). Read-only — reserves/consumes nothing.
@@ -6605,6 +6634,26 @@ message ListStyleAssemblyRequest {
 message ListStyleAssemblyResponse {
   repeated StyleAssemblyLine items = 1;
 }
+
+// UpsertTechCardOutputVariantRequest writes ONE colour of an auxiliary card's warehouse output.
+message UpsertTechCardOutputVariantRequest {
+  int32 tech_card_id = 1;
+  // id=0 creates; a non-zero id must already be a colour of tech_card_id. color_code is the CHAR(3)
+  // dictionary code. material_id=0 auto-creates the bucket on create and means "keep the current
+  // bucket" on update — moving a colour to a different bucket has to name its target. The read-only
+  // fields of TechCardOutputVariant (color_name, material_name, on_hand, unit) are ignored.
+  common.TechCardOutputVariant variant = 2;
+}
+
+message UpsertTechCardOutputVariantResponse {
+  int32 id = 1; // the created or updated variant
+}
+
+message DeleteTechCardOutputVariantRequest {
+  int32 id = 1;
+}
+
+message DeleteTechCardOutputVariantResponse {}
 
 // OrderPackingSpecItem is one garment line in an order's packing spec: the colourway/variant, quantity,
 // and the on-garment assembly (labels/tags) the packer must verify, size-resolved to this line's variant.
