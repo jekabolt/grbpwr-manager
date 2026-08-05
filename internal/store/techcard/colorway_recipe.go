@@ -47,6 +47,57 @@ type usageProvenance struct {
 	cut      decimal.NullDecimal
 }
 
+// normalized maps the DB shapes onto the canonical triple: an empty source reads as manual,
+// and a non-marker source never carries a decomposition.
+func (p usageProvenance) normalized() usageProvenance {
+	if p.source == "" {
+		p.source = entity.ConsumptionSourceManual
+	}
+	if p.source != entity.ConsumptionSourceMarker {
+		p.selvedge, p.cut = decimal.NullDecimal{}, decimal.NullDecimal{}
+	}
+	return p
+}
+
+func (p usageProvenance) equal(o usageProvenance) bool {
+	return p.source == o.source && nullDecimalEqual(p.selvedge, o.selvedge) && nullDecimalEqual(p.cut, o.cut)
+}
+
+func nullDecimalEqual(a, b decimal.NullDecimal) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	return !a.Valid || a.Decimal.Equal(b.Decimal)
+}
+
+// agreedSlotProvenance returns the provenance shared by EVERY prior row of a slot, when they
+// genuinely agree. Multiple whole-garment rows on one slot are legal, so — unlike the material
+// pin, where an ambiguous match preserves nothing — a presence-less rewrite must not flip an
+// agreeing marker slot back to manual: that would silently re-enable the wastage gross-up, the
+// exact invariant this feature exists to hold. Only genuine disagreement falls back to manual.
+func agreedSlotProvenance(rows []usageProvenance) (usageProvenance, bool) {
+	if len(rows) == 0 {
+		return usageProvenance{}, false
+	}
+	first := rows[0].normalized()
+	for _, r := range rows[1:] {
+		if !first.equal(r.normalized()) {
+			return usageProvenance{}, false
+		}
+	}
+	return first, true
+}
+
+// rollGoodsSections are the BOM families a fabric marker can lay out — the only rows where
+// consumption_source='marker' is meaningful. Countable sections never gross wastage anyway;
+// thread/trim/decoration are measured and MUST keep their gross-up.
+var rollGoodsSections = map[string]bool{
+	string(entity.BomSectionFabric):      true,
+	string(entity.BomSectionLining):      true,
+	string(entity.BomSectionInterlining): true,
+	string(entity.BomSectionInsulation):  true,
+}
+
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
 	normalizedPlacement := ""
 	if placement.Valid {
@@ -111,16 +162,18 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 
 		// Resolve the style's BOM: by stable line_key (preferred) and ordered for the legacy index ref.
 		bomRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, rep.DB(),
-			`SELECT id, line_key FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
+			`SELECT id, line_key, section FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
 			map[string]any{"id": cur.StyleID})
 		if err != nil {
 			return fmt.Errorf("load style bom for recipe: %w", err)
 		}
 		byKey := make(map[string]int, len(bomRows))
 		ordered := make([]int, 0, len(bomRows))
+		sectionByBomID := make(map[int64]string, len(bomRows))
 		for _, r := range bomRows {
 			byKey[r.LineKey] = r.Id
 			ordered = append(ordered, r.Id)
+			sectionByBomID[int64(r.Id)] = strings.ToLower(strings.TrimSpace(r.Section.String))
 		}
 
 		// Resolve the style's cut-pieces the same way (WS4): by stable line_key (preferred) and ordered
@@ -210,8 +263,10 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				materialID = oldPins[0]
 			}
 			// Provenance triple: present -> written as sent ('' normalises to manual, which
-			// clears the pcts); absent (stale client) -> the unambiguous prior row's triple is
-			// preserved, same rule as the material pin above; no prior/ambiguous -> manual.
+			// clears the pcts); absent (stale client) -> preserved when EVERY prior row of the
+			// slot agrees (repeatable whole-garment rows collide into one slot legally — an
+			// agreeing pair must not flip marker back to manual and re-enable the gross-up);
+			// no prior / genuine disagreement -> manual.
 			prov := usageProvenance{source: entity.ConsumptionSourceManual}
 			if u.ConsumptionSource.Valid {
 				if u.ConsumptionSource.String == entity.ConsumptionSourceMarker {
@@ -221,14 +276,21 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 						cut:      u.WasteCutPct,
 					}
 				}
-			} else if oldProv := priorProvenanceBySlot[pinSlot]; len(oldProv) == 1 {
-				prov = oldProv[0]
-				if prov.source == "" {
-					prov.source = entity.ConsumptionSourceManual
+			} else if agreed, ok := agreedSlotProvenance(priorProvenanceBySlot[pinSlot]); ok {
+				prov = agreed
+			}
+			// Marker provenance is meaningful only on roll goods a marker can lay out. Sent
+			// explicitly on anything else -> the client is wrong, refuse. Carried forward onto
+			// a row that no longer qualifies (legacy data, section edits) -> demote to manual
+			// quietly rather than fail a stale client's presence-less save.
+			if prov.source == entity.ConsumptionSourceMarker &&
+				(!bomItemID.Valid || !rollGoodsSections[sectionByBomID[bomItemID.Int64]]) {
+				if u.ConsumptionSource.Valid {
+					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].consumption_source", i),
+						"marker_not_roll_goods", recipeUsageSlotName(u, slot),
+						"marker consumption applies only to fabric, lining, interlining or insulation BOM lines")
 				}
-				if prov.source != entity.ConsumptionSourceMarker {
-					prov.selvedge, prov.cut = decimal.NullDecimal{}, decimal.NullDecimal{}
-				}
+				prov = usageProvenance{source: entity.ConsumptionSourceManual}
 			}
 			resolved = append(resolved, resolvedRecipeUsage{
 				usage: u, bomItemID: bomItemID, pieceID: pieceID, materialID: materialID,

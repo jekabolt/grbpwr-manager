@@ -207,6 +207,9 @@ type TechCardMarkerInsert struct {
 	FabricWidthCm   decimal.Decimal `db:"fabric_width_cm"`
 	GapCm           decimal.Decimal `db:"gap_cm"`
 	EdgeMarginCm    decimal.Decimal `db:"edge_margin_cm"`
+	// SelvedgeCm snapshots the кромка (cm per edge) the layout ran with, from the effective
+	// article at save time — keeps the waste decomposition auditable after material edits.
+	SelvedgeCm decimal.Decimal `db:"selvedge_cm"`
 	AllowCrossGrain bool            `db:"allow_cross_grain"`
 	Sets            int             `db:"sets"`
 	UsedLengthCm    decimal.Decimal `db:"used_length_cm"`
@@ -235,6 +238,7 @@ type TechCardMarkerSummary struct {
 	FabricWidthCm   decimal.Decimal     `db:"fabric_width_cm"`
 	GapCm           decimal.Decimal     `db:"gap_cm"`
 	EdgeMarginCm    decimal.Decimal     `db:"edge_margin_cm"`
+	SelvedgeCm      decimal.Decimal     `db:"selvedge_cm"`
 	AllowCrossGrain bool                `db:"allow_cross_grain"`
 	Sets            int                 `db:"sets"`
 	UsedLengthCm    decimal.Decimal     `db:"used_length_cm"`

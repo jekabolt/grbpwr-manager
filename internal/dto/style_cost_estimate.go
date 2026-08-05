@@ -107,9 +107,10 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 					if u.WasteCutPct.Valid {
 						total = total.Add(u.WasteCutPct.Decimal)
 					}
-					if u.WasteSelvedgePct.Valid || u.WasteCutPct.Valid {
-						line.WastagePct = pbDecimalFromDecimal(total)
-					}
+					// Always affirmative on marker rows: a marker with no recorded decomposition
+					// means zero EXTRA wastage in costing, and old clients must read 0, not
+					// "absent" (absent renders as the field missing, which looks like unknown).
+					line.WastagePct = pbDecimalFromDecimal(total)
 				} else {
 					line.WastageSource = "bom_estimate"
 					line.WastagePct = pbDecimalFromNull(bom.WastagePercent)

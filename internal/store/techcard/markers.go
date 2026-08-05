@@ -28,7 +28,7 @@ import (
 const markerSummaryColumns = `
 	m.id, m.tech_card_id, m.size_id, m.name, m.source, m.bom_item_id,
 	b.line_key AS bom_line_key, b.name AS bom_item_name, b.unit AS bom_item_unit,
-	m.fabric_width_cm, m.gap_cm, m.edge_margin_cm, m.allow_cross_grain, m.sets,
+	m.fabric_width_cm, m.gap_cm, m.edge_margin_cm, m.selvedge_cm, m.allow_cross_grain, m.sets,
 	m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count,
 	m.created_by, m.updated_by, m.created_at, m.updated_at`
 
@@ -135,6 +135,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"fabric_width_cm":   ins.FabricWidthCm,
 			"gap_cm":            ins.GapCm,
 			"edge_margin_cm":    ins.EdgeMarginCm,
+			"selvedge_cm":       ins.SelvedgeCm,
 			"allow_cross_grain": ins.AllowCrossGrain,
 			"sets":              ins.Sets,
 			"used_length_cm":    ins.UsedLengthCm,
@@ -165,7 +166,8 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				UPDATE tech_card_marker
 				SET size_id = :size_id, bom_item_id = :bom_item_id, name = :name, source = :source,
 				    fabric_width_cm = :fabric_width_cm, gap_cm = :gap_cm,
-				    edge_margin_cm = :edge_margin_cm, allow_cross_grain = :allow_cross_grain,
+				    edge_margin_cm = :edge_margin_cm, selvedge_cm = :selvedge_cm,
+				    allow_cross_grain = :allow_cross_grain,
 				    sets = :sets, used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
 				    placed_count = :placed_count, total_count = :total_count, layout = :layout,
 				    updated_by = :username
@@ -178,10 +180,10 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		newID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_marker
 				(tech_card_id, size_id, bom_item_id, name, source, fabric_width_cm, gap_cm,
-				 edge_margin_cm, allow_cross_grain, sets, used_length_cm, efficiency_pct,
+				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, used_length_cm, efficiency_pct,
 				 placed_count, total_count, layout, created_by, updated_by)
 			VALUES (:tech_card_id, :size_id, :bom_item_id, :name, :source, :fabric_width_cm, :gap_cm,
-				 :edge_margin_cm, :allow_cross_grain, :sets, :used_length_cm, :efficiency_pct,
+				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :used_length_cm, :efficiency_pct,
 				 :placed_count, :total_count, :layout, :username, :username)`, params)
 		if err != nil {
 			return fmt.Errorf("create marker on tech card %d: %w", techCardID, err)

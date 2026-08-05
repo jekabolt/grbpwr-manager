@@ -791,6 +791,7 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		FabricWidthCm:        pbDecimalFromDecimal(m.FabricWidthCm),
 		GapCm:                pbDecimalFromDecimal(m.GapCm),
 		EdgeMarginCm:         pbDecimalFromDecimal(m.EdgeMarginCm),
+		SelvedgeCm:           pbDecimalFromDecimal(m.SelvedgeCm),
 		AllowCrossGrain:      m.AllowCrossGrain,
 		Sets:                 int32(m.Sets),
 		UsedLengthCm:         pbDecimalFromDecimal(m.UsedLengthCm),
@@ -868,6 +869,22 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if err := validateDecimalScale(margin, "edge_margin_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
 		return out, err
 	}
+	// Selvedge is client-derived from the article (may carry engine-float dust) — round like
+	// used_length rather than reject. Two selvedges cannot exceed the fabric width.
+	selvedge, err := nullDecimalFromPb(pb.SelvedgeCm)
+	if err != nil {
+		return out, fmt.Errorf("selvedge_cm: %w", err)
+	}
+	if selvedge.Valid && selvedge.Decimal.IsNegative() {
+		return out, fmt.Errorf("selvedge_cm must not be negative")
+	}
+	if selvedge.Valid {
+		selvedge.Decimal = selvedge.Decimal.Round(markerDimMaxFrac)
+		if selvedge.Decimal.Mul(decimal.NewFromInt(2)).GreaterThan(width) {
+			return out, fmt.Errorf("selvedge_cm: two selvedges (%s cm) exceed fabric_width_cm (%s)",
+				selvedge.Decimal.Mul(decimal.NewFromInt(2)), width)
+		}
+	}
 	if pb.Sets < 1 {
 		return out, fmt.Errorf("sets must be at least 1")
 	}
@@ -912,6 +929,7 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		FabricWidthCm:   width,
 		GapCm:           gap.Decimal,
 		EdgeMarginCm:    margin.Decimal,
+		SelvedgeCm:      selvedge.Decimal,
 		AllowCrossGrain: pb.AllowCrossGrain,
 		Sets:            int(pb.Sets),
 		UsedLengthCm:    usedLength,
@@ -1194,11 +1212,6 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 	return out, nil
 }
 
-// ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
-// parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
-// the store, S2/S3), so there is no positional range check here. size_id membership in the style's
-// range is checked by the store inside the write transaction (the request carries no size range to
-// check against, and the FK is on the global size dictionary, not on tech_card_size).
 // parseUsageProvenance parses the consumption provenance triple (Ф9.4). Presence is the
 // stale-client protocol (mirrors material_id): an ABSENT consumption_source keeps
 // Valid=false so the store preserves the stored triple across the full-replace; a present
@@ -1235,11 +1248,14 @@ func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullSt
 		return src, decimal.NullDecimal{}, decimal.NullDecimal{}, nil
 	}
 	hundred := decimal.NewFromInt(100)
-	for name, d := range map[string]decimal.NullDecimal{"waste_selvedge_pct": selvedge, "waste_cut_pct": cut} {
-		if d.Valid && (d.Decimal.IsNegative() || d.Decimal.GreaterThan(hundred)) {
-			return src, selvedge, cut, entity.NewFieldViolation(
-				fmt.Sprintf("usages[%d].%s", i, name), "out_of_range", d.Decimal.String(), "0..100")
-		}
+	// Two explicit checks, selvedge first — deterministic field attribution when both are bad.
+	if selvedge.Valid && (selvedge.Decimal.IsNegative() || selvedge.Decimal.GreaterThan(hundred)) {
+		return src, selvedge, cut, entity.NewFieldViolation(
+			fmt.Sprintf("usages[%d].waste_selvedge_pct", i), "out_of_range", selvedge.Decimal.String(), "0..100")
+	}
+	if cut.Valid && (cut.Decimal.IsNegative() || cut.Decimal.GreaterThan(hundred)) {
+		return src, selvedge, cut, entity.NewFieldViolation(
+			fmt.Sprintf("usages[%d].waste_cut_pct", i), "out_of_range", cut.Decimal.String(), "0..100")
 	}
 	// Engine-computed floats: round to the column scale rather than rejecting float dust.
 	if selvedge.Valid {
@@ -1251,6 +1267,11 @@ func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullSt
 	return src, selvedge, cut, nil
 }
 
+// ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
+// parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
+// the store, S2/S3), so there is no positional range check here. size_id membership in the style's
+// range is checked by the store inside the write transaction (the request carries no size range to
+// check against, and the FK is on the global size dictionary, not on tech_card_size).
 func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
 	out := make([]entity.TechCardColorwayUsage, 0, len(pbs))
 	for i, u := range pbs {

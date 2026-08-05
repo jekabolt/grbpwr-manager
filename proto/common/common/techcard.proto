@@ -1377,6 +1377,9 @@ message TechCardMarkerSummary {
   string updated_by = 20; // server-stamped
   google.protobuf.Timestamp created_at = 21;
   google.protobuf.Timestamp updated_at = 22;
+  // Кромка (selvedge, cm per edge) the раскладка ran with — snapshotted at save time from the
+  // effective article so the waste decomposition stays auditable after the material changes.
+  google.type.Decimal selvedge_cm = 23;
 }
 
 // TechCardMarker is a full stored marker: the summary plus the self-contained layout.
@@ -1404,6 +1407,9 @@ message TechCardMarkerInsert {
   int32 placed_count = 12;
   int32 total_count = 13; // >= 1; must equal placed_count (incomplete markers are refused)
   TechCardMarkerLayout layout = 14; // required, non-empty pieces + placements
+  // Кромка the layout was computed with (cm per edge, >= 0; 0 = none/unknown). The nesting
+  // client populates it from the linked article's selvedge_cm at save time.
+  google.type.Decimal selvedge_cm = 15;
 }
 
 // TechCardMarkerLayout is the self-contained geometry of a marker, stored as an opaque proto-JSON

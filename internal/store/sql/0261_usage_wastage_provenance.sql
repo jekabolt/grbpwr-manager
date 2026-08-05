@@ -11,7 +11,9 @@
 -- bom_item.wastage_percent itself is untouched, it stays the fallback estimate, and zeroing it
 -- would stale the MATERIALS sign-off digest.
 --
--- NOTE this migration number may be renumbered at merge time. Parallel branches hold 0260.
+-- tech_card_marker.selvedge_cm snapshots the кромка the раскладка ran with (populated by the
+-- nesting client from the effective article at save time), so a marker's waste decomposition
+-- stays auditable after the material's selvedge changes.
 
 SET @col_exists := (
     SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -39,7 +41,33 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
+SET @col_exists := (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'tech_card_marker'
+      AND COLUMN_NAME = 'selvedge_cm'
+);
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE tech_card_marker ADD COLUMN selvedge_cm DECIMAL(5,2) NOT NULL DEFAULT 0 AFTER edge_margin_cm, ADD CONSTRAINT chk_tcm_selvedge_nonneg CHECK (selvedge_cm >= 0)',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 -- +migrate Down
+SET @col_exists := (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'tech_card_marker'
+      AND COLUMN_NAME = 'selvedge_cm'
+);
+SET @ddl := IF(@col_exists = 1,
+    'ALTER TABLE tech_card_marker DROP CONSTRAINT chk_tcm_selvedge_nonneg, DROP COLUMN selvedge_cm',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 SET @col_exists := (
     SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE()

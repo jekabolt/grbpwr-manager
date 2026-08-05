@@ -306,6 +306,9 @@ func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32, keyField 
 type bomExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
+	// Section rides only the recipe path's SELECT (roll-goods guard for marker provenance);
+	// the BOM upsert's own query leaves it zero.
+	Section sql.NullString `db:"section"`
 	// Price + provenance as stored, so the upsert can tell an edited price (restamp 'manual') from a
 	// round-tripped one (keep the existing provenance, including the reprice action's 'catalog').
 	UnitPrice       decimal.NullDecimal `db:"unit_price"`
