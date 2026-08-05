@@ -5,6 +5,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
 
 const (
@@ -70,6 +71,16 @@ func StyleAssemblyLineToPb(a entity.StyleAssembly) *pb_admin.StyleAssemblyLine {
 		PositionNote:        a.PositionNote.String,
 		Active:              a.Active,
 		OutputMaterialName:  a.OutputMaterialName.String,
+		OutputVariantCount:  int32(a.OutputVariantCount),
+		// Zero for a bill read on its own (ListStyleAssembly never resolves a colour); the packing spec
+		// fills these in per order item, and `unresolved` false there means "no colour dimension", not
+		// "resolution not attempted".
+		ResolvedColorCode:    a.ResolvedColorCode,
+		ResolvedColorName:    a.ResolvedColorName,
+		ResolvedMaterialId:   int32(a.ResolvedMaterialId),
+		ResolvedMaterialName: a.ResolvedMaterialName,
+		Unresolved:           a.Unresolved,
+		ResolutionBasis:      assemblyResolutionBasisToPb(a.Basis),
 	}
 	if a.SizeId.Valid {
 		pb.SizeId = a.SizeId.Int32
@@ -79,6 +90,37 @@ func StyleAssemblyLineToPb(a entity.StyleAssembly) *pb_admin.StyleAssemblyLine {
 		pb.OutputMaterialId = a.OutputMaterialId.Int32
 	}
 	return pb
+}
+
+// assemblyResolutionBasisPbByEntity is the single entity<->proto mapping table for the packing spec's
+// resolution discriminator; the drift test walks it in both directions.
+var assemblyResolutionBasisPbByEntity = map[entity.AssemblyResolutionBasis]pb_common.AssemblyResolutionBasis{
+	entity.AssemblyResolutionColorMatch:       pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_COLOR_MATCH,
+	entity.AssemblyResolutionSoleVariant:      pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_SOLE_VARIANT,
+	entity.AssemblyResolutionLegacyOutput:     pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_LEGACY_OUTPUT,
+	entity.AssemblyResolutionRetiredColor:     pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_RETIRED_COLOR,
+	entity.AssemblyResolutionNoColorMatch:     pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_NO_COLOR_MATCH,
+	entity.AssemblyResolutionArchivedMaterial: pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_ARCHIVED_MATERIAL,
+	entity.AssemblyResolutionNoOutput:         pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_NO_OUTPUT,
+}
+
+// assemblyResolutionBasisToPb maps the read-model basis to the proto enum; an unset basis (a bill read
+// on its own, never resolved against an order item) is UNKNOWN.
+func assemblyResolutionBasisToPb(b entity.AssemblyResolutionBasis) pb_common.AssemblyResolutionBasis {
+	if v, ok := assemblyResolutionBasisPbByEntity[b]; ok {
+		return v
+	}
+	return pb_common.AssemblyResolutionBasis_ASSEMBLY_RESOLUTION_BASIS_UNKNOWN
+}
+
+// assemblyResolutionBasisFromPb is the reverse leg, for the drift guard ("" for UNKNOWN).
+func assemblyResolutionBasisFromPb(p pb_common.AssemblyResolutionBasis) entity.AssemblyResolutionBasis {
+	for ent, pb := range assemblyResolutionBasisPbByEntity {
+		if pb == p {
+			return ent
+		}
+	}
+	return entity.AssemblyResolutionNotAttempted
 }
 
 // StyleAssemblyListToPb converts resolved assembly lines to protobuf.
@@ -106,6 +148,8 @@ func OrderPackingSpecToPb(spec entity.OrderPackingSpec) *pb_admin.GetOrderPackin
 			StyleName:   it.StyleName,
 			Sku:         it.SKU,
 			SizeName:    it.SizeName,
+			ColorCode:   it.ColorCode,
+			ColorName:   it.ColorName,
 			Quantity:    pbDecimalFromDecimal(it.Quantity),
 			Assembly:    StyleAssemblyListToPb(it.Assembly),
 		})

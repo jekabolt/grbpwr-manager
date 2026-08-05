@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"log/slog"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -79,10 +80,20 @@ func (s *Server) GetOrderPackingSpec(ctx context.Context, req *pb_admin.GetOrder
 		return nil, status.Error(codes.Internal, "can't load products")
 	}
 	styleByProduct := make(map[int]int, len(products))
+	// The colourway's dictionary colour code is what an assembly component's colour is matched against
+	// ("the black jacket ships the black dust bag"). Absent product ⇒ absent code ⇒ nothing matches, and
+	// the resolution falls through to its no-guess branches.
+	colorByProduct := make(map[int]string, len(products))
+	colorNameByProduct := make(map[int]string, len(products))
 	styleIDs := make([]int, 0, len(products))
 	seenStyle := map[int]bool{}
 	for i := range products {
 		styleByProduct[products[i].Id] = products[i].StyleId
+		body := products[i].ProductDisplay.ProductBody.ProductBodyInsert
+		colorByProduct[products[i].Id] = body.ColorCode
+		// The NAME comes from the same row as the code, never from the order line's snapshot: the packer
+		// has to be shown the colour the matching actually used, not a label that may have drifted.
+		colorNameByProduct[products[i].Id] = body.Color
 		if !seenStyle[products[i].StyleId] {
 			seenStyle[products[i].StyleId] = true
 			styleIDs = append(styleIDs, products[i].StyleId)
@@ -103,6 +114,32 @@ func (s *Server) GetOrderPackingSpec(ctx context.Context, req *pb_admin.GetOrder
 		assemblyByStyle[sid] = a
 	}
 
+	// ONE variant read for the whole order, over every distinct component card the bills mention (R11:
+	// the per-style ListStyleAssembly loop above is already N queries; colour resolution must not make
+	// it N×M). Every component is asked for, not only the ones ListStyleAssembly counted as varianted,
+	// so that the count and the resolution below come from the SAME read and cannot disagree.
+	componentIDs := make([]int, 0, len(styleIDs))
+	seenComponent := map[int]bool{}
+	for _, lines := range assemblyByStyle {
+		for _, l := range lines {
+			// Deactivated lines never reach a packer (assemblyForSize drops them), so their colours are
+			// not worth reading.
+			if !l.Active || l.ComponentTechCardId <= 0 || seenComponent[l.ComponentTechCardId] {
+				continue
+			}
+			seenComponent[l.ComponentTechCardId] = true
+			componentIDs = append(componentIDs, l.ComponentTechCardId)
+		}
+	}
+	// assemblyByStyle is a map, so the collection order is not stable across calls; sort so one order
+	// always produces the same query.
+	sort.Ints(componentIDs)
+	variantsByComponent, err := s.repo.TechCards().ListOutputVariantsByCardIds(ctx, componentIDs)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load component colour variants for packing spec", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load component colour variants")
+	}
+
 	spec := entity.OrderPackingSpec{OrderUUID: of.Order.UUID}
 	for _, it := range of.OrderItems {
 		styleID := styleByProduct[it.ProductId]
@@ -114,8 +151,12 @@ func (s *Server) GetOrderPackingSpec(ctx context.Context, req *pb_admin.GetOrder
 			StyleName:   styleNames[styleID],
 			SKU:         it.SKU,
 			SizeName:    sizeName(it.SizeId),
+			ColorCode:   colorByProduct[it.ProductId],
+			ColorName:   colorNameByProduct[it.ProductId],
 			Quantity:    it.Quantity,
-			Assembly:    assemblyForSize(assemblyByStyle[styleID], it.SizeId),
+			Assembly: resolveAssemblyColours(
+				assemblyForSize(assemblyByStyle[styleID], it.SizeId),
+				colorByProduct[it.ProductId], variantsByComponent),
 		})
 	}
 	pkg, err := s.repo.MaterialStock().ResolveOrderPackaging(ctx, of.Order.Id)
@@ -151,4 +192,36 @@ func assemblyForSize(all []entity.StyleAssembly, sizeID int) []entity.StyleAssem
 		}
 	}
 	return out
+}
+
+// resolveAssemblyColours names, per assembly line, the ONE warehouse bucket THIS order item consumes —
+// the black jacket's black dust bag — from the component card's live colours and the item's colourway
+// code. The rule itself is entity.ResolveAssemblyOutput; this is only the plumbing that feeds it and the
+// place where the per-item answer is stamped onto the line.
+//
+// It mutates in place, which is safe because assemblyForSize hands back a fresh slice of COPIED lines
+// per item: two items of the same style with different colourways must not overwrite each other's
+// resolution, and they don't.
+func resolveAssemblyColours(lines []entity.StyleAssembly, itemColorCode string, variantsByComponent map[int][]entity.TechCardOutputVariant) []entity.StyleAssembly {
+	for i := range lines {
+		variants := variantsByComponent[lines[i].ComponentTechCardId]
+		// The badge counts LIVE colours only (unchanged semantics), while the rule below is handed the
+		// full list — retired rows are three of its branches. Both are re-stated from the batched read
+		// rather than kept from ListStyleAssembly's COUNT subquery, so "N colours" and the resolved
+		// colour always describe the same set of rows.
+		active := 0
+		for _, v := range variants {
+			if v.Active {
+				active++
+			}
+		}
+		lines[i].OutputVariantCount = active
+		lines[i].AssemblyOutputResolution = entity.ResolveAssemblyOutput(itemColorCode, variants,
+			entity.AssemblyLegacyOutput{
+				MaterialId:   lines[i].OutputMaterialId,
+				MaterialName: lines[i].OutputMaterialName,
+				Archived:     lines[i].OutputMaterialArchived.Bool,
+			})
+	}
+	return lines
 }

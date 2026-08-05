@@ -43,7 +43,8 @@ func listOutputVariants(ctx context.Context, db dependency.DB, techCardID int) (
 		SELECT v.id, v.tech_card_id, v.color_code, v.material_id, v.active,
 		       v.created_by, v.updated_by, v.created_at, v.updated_at,
 		       c.name AS color_name, m.name AS material_name,
-		       COALESCE(m.unit, '') AS unit, ms.on_hand AS on_hand
+		       COALESCE(m.unit, '') AS unit, ms.on_hand AS on_hand,
+		       m.archived AS material_archived
 		FROM tech_card_output_variant v
 		JOIN color c ON c.code = v.color_code
 		JOIN material m ON m.id = v.material_id
@@ -54,6 +55,42 @@ func listOutputVariants(ctx context.Context, db dependency.DB, techCardID int) (
 		return nil, fmt.Errorf("can't list tech card output variants: %w", err)
 	}
 	return rows, nil
+}
+
+// ListOutputVariantsByCardIds returns the colour variants of MANY cards at once, keyed by tech card id
+// — the read the packing spec needs, where one order can touch a dozen component cards and a per-card
+// round trip would be an N+1 inside an already per-style loop (R11).
+//
+// It returns RETIRED colours too, and that is the point: "the item's colour exists on this card but is
+// switched off" is a different answer from "this card has no such colour", and only the first one may
+// never be silently substituted. Filtering here would throw away the fact the rule needs most (see
+// entity.ResolveAssemblyOutput). material.archived comes along for the same reason — a bucket the
+// catalog has withdrawn must not be prescribed.
+//
+// No on-hand join: a balance is a different question from "which bucket". A card absent from the map
+// has no colours at all — legacy single-output mode.
+func (s *Store) ListOutputVariantsByCardIds(ctx context.Context, techCardIDs []int) (map[int][]entity.TechCardOutputVariant, error) {
+	out := make(map[int][]entity.TechCardOutputVariant, len(techCardIDs))
+	if len(techCardIDs) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[entity.TechCardOutputVariant](ctx, s.DB, `
+		SELECT v.id, v.tech_card_id, v.color_code, v.material_id, v.active,
+		       v.created_by, v.updated_by, v.created_at, v.updated_at,
+		       c.name AS color_name, m.name AS material_name, COALESCE(m.unit, '') AS unit,
+		       m.archived AS material_archived
+		FROM tech_card_output_variant v
+		JOIN color c ON c.code = v.color_code
+		JOIN material m ON m.id = v.material_id
+		WHERE v.tech_card_id IN (:ids)
+		ORDER BY v.tech_card_id, v.active DESC, c.name, v.id`, map[string]any{"ids": techCardIDs})
+	if err != nil {
+		return nil, fmt.Errorf("can't list tech card output variants by ids: %w", err)
+	}
+	for _, r := range rows {
+		out[r.TechCardId] = append(out[r.TechCardId], r)
+	}
+	return out, nil
 }
 
 // outputVariantRow is the stored shape of one variant plus its bucket's unit, the two facts every

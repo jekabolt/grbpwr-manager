@@ -730,7 +730,14 @@ type (
 		// (ErrOutputVariantMaterialClaimed) and a unit that disagrees with the card's other colours
 		// (ErrOutputVariantUnitMismatch). DeleteOutputVariant hard-deletes the row (the bucket itself
 		// survives) — ErrOutputVariantNotFound when it is already gone.
+		//
+		// ListOutputVariantsByCardIds is the batched read behind the packing spec's colour resolution:
+		// card id → its colours, in ONE round trip. RETIRED colours are included deliberately — "your
+		// colour exists but is switched off" is the one answer that must never be auto-substituted — as
+		// is each bucket's material.archived. Cards with no colours at all are absent from the map
+		// (legacy single-output mode).
 		ListOutputVariants(ctx context.Context, techCardID int) ([]entity.TechCardOutputVariant, error)
+		ListOutputVariantsByCardIds(ctx context.Context, techCardIDs []int) (map[int][]entity.TechCardOutputVariant, error)
 		UpsertOutputVariant(ctx context.Context, techCardID int, ins entity.TechCardOutputVariantInsert, username string) (int, error)
 		DeleteOutputVariant(ctx context.Context, id int) error
 		// RepriceTechCardBom pulls the current catalog price into every catalog-linked BOM line of a

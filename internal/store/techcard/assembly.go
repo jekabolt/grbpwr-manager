@@ -12,12 +12,20 @@ import (
 // ListStyleAssembly returns a garment style's assembly bill (WS7, §2.8): the auxiliary components
 // (labels/tags) that physically go on/into it, each resolved with the component card's name, aux_subtype
 // and output material (the warehouse material consumed in production) plus the size name when scoped.
+//
+// output_variant_count comes along as a correlated subquery rather than a second round trip: it is the
+// one fact that tells a reader whether output_material_id above still means anything (0252 — a card with
+// active colour variants produces one bucket per colour and its single output material is stale).
+// Correlated, not a grouped JOIN, because the bill also LEFT JOINs material and size and a third join
+// would need a GROUP BY over every selected column to stay one row per assembly line.
 func (s *Store) ListStyleAssembly(ctx context.Context, styleID int) ([]entity.StyleAssembly, error) {
 	rows, err := storeutil.QueryListNamed[entity.StyleAssembly](ctx, s.DB, `
 		SELECT sa.id, sa.style_id, sa.component_tech_card_id, sa.size_id, sa.qty,
 		       sa.print_note, sa.position_note, sa.active, sa.created_by, sa.updated_by,
 		       c.name AS component_name, c.aux_subtype AS component_aux_subtype, c.output_material_id,
-		       m.name AS output_material_name, sz.name AS size_name
+		       m.name AS output_material_name, m.archived AS output_material_archived, sz.name AS size_name,
+		       (SELECT COUNT(*) FROM tech_card_output_variant v
+		         WHERE v.tech_card_id = sa.component_tech_card_id AND v.active = TRUE) AS output_variant_count
 		FROM style_assembly sa
 		JOIN tech_card c ON c.id = sa.component_tech_card_id
 		LEFT JOIN material m ON m.id = c.output_material_id

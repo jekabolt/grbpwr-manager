@@ -6652,6 +6652,25 @@ message StyleAssemblyLine {
   bool active = 11;
   int32 output_material_id = 12; // component's warehouse material (COGS/production link); 0 = none
   string output_material_name = 13; // read-only (display)
+  // How many ACTIVE colour variants (0252) the component card has. 0 = legacy single-output mode, so
+  // output_material_* above IS the bucket; > 0 = the card produces one bucket per colour and
+  // output_material_* is a stale leftover the packer must not read. Read-only display ("N colours").
+  int32 output_variant_count = 14;
+
+  // resolved_* / unresolved are set ONLY by GetOrderPackingSpec, which knows the ORDER ITEM whose
+  // colourway this line has to be matched against; ListStyleAssembly leaves them zero because a bill
+  // on its own has no colour to resolve to. See OrderPackingSpecItem.assembly.
+  string resolved_color_code = 15; // colour of the bucket this item consumes; "" when the card has no colours
+  string resolved_color_name = 16; // read-only (display)
+  int32 resolved_material_id = 17; // the bucket to pick from; 0 when unresolved
+  string resolved_material_name = 18; // read-only (display)
+  // true = the server could NOT name one bucket. resolution_basis says which refusal it is; the
+  // packer must be shown a warning, never a guessed colour.
+  bool unresolved = 19;
+  // WHY the bucket above was named, or why it could not be — a colour MATCH and a sole-variant
+  // SUBSTITUTION are both "resolved" but must not read the same to a packer. UNKNOWN when the line was
+  // not resolved against an order item at all (ListStyleAssembly).
+  common.AssemblyResolutionBasis resolution_basis = 20;
 }
 
 // StyleAssemblyItem is one writable assembly line; the style target is carried by the request.
@@ -6712,6 +6731,11 @@ message OrderPackingSpecItem {
   string size_name = 7;
   google.type.Decimal quantity = 8;
   repeated StyleAssemblyLine assembly = 9;
+  // The GARMENT's own colour — the code every assembly line above was matched against, echoed so the
+  // packer sees garment colour and component colour side by side and can catch a wrong prescription
+  // without opening the product. Both empty when the colourway could not be loaded (see below).
+  string color_code = 10;
+  string color_name = 11;
 }
 
 // OrderPackingSpecPackaging is one packaging material the order needs (WS2 resolution product → style →
