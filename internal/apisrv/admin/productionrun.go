@@ -521,11 +521,25 @@ func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRu
 		// the destination from the card's registry inside the transaction instead. What is left here
 		// is the pair of FAST-FAIL preconditions worth answering without opening a transaction — and
 		// both are stable facts about how the card is configured, not about which bucket wins.
+		// The same union rule the store's resolveAuxDestination applies: live colours on the card,
+		// OR colour lines already on the run. The second arm is the grandfathering promise — a run
+		// planned per colour stays receivable after its last colour is retired mid-flight (aux can
+		// neither partial nor reverse, and cancel is refused while materials are issued, so an
+		// ACTIVE-only answer here would freeze that run behind advice about an output material a
+		// colour-mode card deliberately does not have).
 		colourMode := false
 		for i := range card.OutputVariants {
 			if card.OutputVariants[i].Active {
 				colourMode = true
 				break
+			}
+		}
+		if !colourMode {
+			for i := range run.Lines {
+				if run.Lines[i].OutputVariantId.Valid && run.Lines[i].OutputVariantId.Int32 > 0 {
+					colourMode = true
+					break
+				}
 			}
 		}
 		switch {
