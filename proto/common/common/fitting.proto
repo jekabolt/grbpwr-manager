@@ -69,7 +69,7 @@ message FittingInsert {
 }
 
 // FittingChangeRequest is one structured remark item produced by a fitting (S26, §2.7). target is the
-// change CATEGORY; zone + piece_id are the structured LOCATION (which replace the front's misuse of
+// change CATEGORY; zone + piece_ids are the structured LOCATION (which replace the front's misuse of
 // target as a free "sleeve/collar" field, A2). status (open|resolved) replaces the old boolean
 // resolved; carried_from_id links this item to the one in the PREVIOUS round it continues, giving a
 // visible carry-over history (acceptance E.15). The free fitting.comment stays a separate free note.
@@ -79,13 +79,20 @@ message FittingChangeRequest {
   string note = 3; // what to change (required)
   int32 callout_number = 4; // optional link to a fitting_callout pin (0 = none)
   bool resolved = 5 [deprecated = true]; // DEPRECATED (S26): replaced by status; read-only mirror of status=="resolved"
-  string zone = 6; // WHERE on the garment: tech_card_operation.zone dictionary (unknown|outer|lining|interlining|other); "" = unspecified
-  int32 piece_id = 7; // FK tech_card_piece(id): which piece; 0 = unset
+  // WHERE on the garment, from the FITTING zone dictionary (see FittingChangeRequestInsert.zone for
+  // the full list); "" = unspecified. This is a fitting-owned vocabulary of garment AREAS — it is no
+  // longer the tech_card_operation.zone construction-band dictionary.
+  string zone = 6;
+  int32 piece_id = 7 [deprecated = true]; // DEPRECATED: replaced by piece_ids; read-only mirror of the first entry
   string status = 8; // open | resolved (defaults to open)
   int32 carried_from_id = 9; // FK fitting_change_request(id): the prior-round item this continues; 0 = none
   string created_by = 10; // audit: acting admin username (server-stamped, output)
   int32 fitting_id = 11; // owning fitting (output; set on the carry-over list)
   int32 round_number = 12; // the development round this item belongs to (output; derived from the sample)
+  // FK tech_card_piece(id): which pieces the remark is about. A remark routinely spans several
+  // («обработка низа на полочке и спинке»), so this is a set, not one pin; empty = not pinned to a
+  // piece. Order is the selection order. A deleted piece drops out of the set; the remark survives.
+  repeated int32 piece_ids = 13;
 }
 
 // FittingChangeRequestInsert is the write payload for the dedicated change-request CRUD (S26). Unlike
@@ -97,10 +104,18 @@ message FittingChangeRequestInsert {
   string target = 2; // change category (required): pattern | construction | material | grading | other
   string note = 3; // what to change (required)
   int32 callout_number = 4; // optional link to a fitting_callout pin (0 = none)
-  string zone = 5; // optional: tech_card_operation.zone dictionary ("" = unspecified)
-  int32 piece_id = 6; // optional FK tech_card_piece(id) (0 = unset)
+  // Optional garment AREA, from the fitting zone dictionary ("" = unspecified):
+  //   outer | lining | interlining — the material band the change is in
+  //   sleeve | collar | neckline | armhole | shoulder | chest | waist | hip | hem | pocket |
+  //   closure | back | front — the area of the garment
+  //   other, and the legacy `unknown` (equivalent to "")
+  // Tokens are lowercase; a TECH_CARD_CONSTRUCTION_ZONE_* enum name from an older client is
+  // normalised to its token rather than rejected.
+  string zone = 5;
+  int32 piece_id = 6 [deprecated = true]; // DEPRECATED: use piece_ids. Still honoured on write when piece_ids is empty.
   string status = 7; // open | resolved ("" defaults to open)
   int32 carried_from_id = 8; // optional FK to the prior-round item this continues (0 = none)
+  repeated int32 piece_ids = 9; // optional FKs tech_card_piece(id): the pieces this remark is about (empty = none)
 }
 
 // FittingCallout is a numbered marker pinned to a fitting photo, noting a fit
