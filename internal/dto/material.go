@@ -121,6 +121,15 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 	// Cutting coefficient (Ф5а.2): a MULTIPLIER, so anything below 1 would shave a requirement below
 	// the norm — which is not what «коэффициент раскроя» can ever mean. The upper bound mirrors the
 	// DB CHECK and catches the fat-fingered "103" that means +3%.
+	//
+	// ПРИСУТСТВИЕ, а не значение — три состояния, не два. google.type.Decimal is a message, so nil
+	// really does mean "the client did not send this field", and that must NOT be read as "clear it":
+	// a stale admin tab, or any bundle from the window between the backend and client deploys, sends
+	// nothing and would otherwise erase a coefficient an operator set — silently, because the
+	// catalogue has neither a signed digest nor an edit journal to notice. A PRESENT field with an
+	// empty value is the explicit "clear", exactly as an explicitly-sent UNSET purpose is on a BOM
+	// line. (Same reasoning as unit_code below, one field over.)
+	cuttingCoefficientOmitted := pb.CuttingCoefficient == nil
 	cuttingCoefficient, err := nullDecimalFromPb(pb.CuttingCoefficient)
 	if err != nil {
 		return nil, fmt.Errorf("material cutting_coefficient: %w", err)
@@ -129,6 +138,13 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 		if cuttingCoefficient.Decimal.LessThan(decimal.NewFromInt(1)) ||
 			cuttingCoefficient.Decimal.GreaterThan(decimal.NewFromInt(3)) {
 			return nil, fmt.Errorf("material cutting_coefficient must be a multiplier between 1 and 3 (1.03 = +3%%)")
+		}
+		// DECIMAL(6,4): MySQL does not REJECT 1.03456, it silently rounds it to 1.0346 and hands that
+		// back on the next read — the operator's number and the planner's number then differ with
+		// nothing anywhere saying so. Rejecting is the only way the two stay equal. (limit 100 = the
+		// two integer digits the column has; the [1,3] rule above is the tighter real bound.)
+		if err := validateDecimalScale(cuttingCoefficient, "material cutting_coefficient", 4, 100); err != nil {
+			return nil, err
 		}
 	}
 	if len(pb.Code) > maxVarchar64 {
@@ -161,14 +177,15 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 		FabricWeightGsm: fabricGsm,
 		// unit_code is NOT read here — it is a read-only projection of `unit`. Reading it on write
 		// would let an older bundle, which sends the enum's proto3 default, silently clear a unit.
-		CuttingCoefficient: cuttingCoefficient,
-		Code:               nullStringFromPb(pb.Code),
-		Color:              nullStringFromPb(pb.Color),
-		Pantone:            nullStringFromPb(pb.Pantone),
-		MinStock:           minStock,
-		Notes:              nullStringFromPb(pb.Notes),
-		ImageId:            nullInt32FromPb(pb.ImageId),
-		Purpose:            string(materialPurposePbToEntity[pb.Purpose]),
+		CuttingCoefficient:        cuttingCoefficient,
+		CuttingCoefficientOmitted: cuttingCoefficientOmitted,
+		Code:                      nullStringFromPb(pb.Code),
+		Color:                     nullStringFromPb(pb.Color),
+		Pantone:                   nullStringFromPb(pb.Pantone),
+		MinStock:                  minStock,
+		Notes:                     nullStringFromPb(pb.Notes),
+		ImageId:                   nullInt32FromPb(pb.ImageId),
+		Purpose:                   string(materialPurposePbToEntity[pb.Purpose]),
 	}
 	if err := applyPbMaterialAttrs(pb, ins); err != nil {
 		return nil, err

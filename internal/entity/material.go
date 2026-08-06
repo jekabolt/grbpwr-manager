@@ -115,6 +115,18 @@ type MaterialInsert struct {
 	// did before this field existed. There is deliberately no per-«класс ткани» default: that field
 	// does not exist and inventing a taxonomy to feed defaults is the disease this replaces.
 	CuttingCoefficient decimal.NullDecimal `db:"cutting_coefficient" valid:"-"`
+	// CuttingCoefficientOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым». Тот же приём,
+	// что PurposeOmitted / IsSampleOmitted на строке спецификации (techcard.go), и по той же
+	// причине: артикул сохраняется целиком, админка это SPA, и вкладка со старым бандлом — или
+	// любой клиент из окна между деплоем бэка и деплоем фронта — этого поля не шлёт вовсе. Без
+	// различения её сейв СТИРАЛ бы коэффициент, который выставил оператор: бесследно, потому что у
+	// каталога нет ни дайджеста, ни журнала правок, а NULL неотличим от «никто не задавал».
+	//
+	// Признак НЕГАТИВНЫЙ намеренно: нулевое значение означает «писать как обычно», поэтому любой
+	// внутренний конструктор (тесты, сидер, авто-создание бакета в output_variants) продолжает
+	// работать как писал. Читается ТОЛЬКО на UPDATE — на INSERT «отсутствует» и «пусто» это одно и
+	// то же NULL.
+	CuttingCoefficientOmitted bool `db:"-" valid:"-"`
 	// Warehouse catalog fields (NF-02).
 	Code     sql.NullString      `db:"code" valid:"-"`      // internal article code (ours), unique among non-archived
 	Color    sql.NullString      `db:"color" valid:"-"`     // colour of the purchased article

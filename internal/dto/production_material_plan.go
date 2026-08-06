@@ -77,17 +77,28 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 
 	type matAcc struct {
 		required decimal.Decimal
-		// requiredBase is the same sum WITHOUT the article's cutting coefficient, in the same unit
-		// as required — so the response can answer "why is this bigger than the norm" with two
-		// numbers and the dial between them, instead of an unexplained inflation (Ф5а.2).
-		requiredBase decimal.Decimal
+		// requiredBeforeGrossup is Σ(norm × planned_qty) with NO gross-up of ANY kind applied — no
+		// BOM wastage %, no cutting coefficient — converted into the same unit as required. It is
+		// deliberately not "required before the coefficient": a manual line's number here is also
+		// before its wastage, and a line can only ever take ONE of the two factors, so a single
+		// "before" number is the only one that stays true for every row (Ф5а.2).
+		//
+		// The invariant is required >= requiredBeforeGrossup. The ratio equals the coefficient only
+		// when every contributing line was marker-sourced; on a manual row it is the wastage factor.
+		requiredBeforeGrossup decimal.Decimal
 		// coefficient is the ARTICLE's coefficient (a property of the article, reported whenever it
 		// has one); coefficientApplied records whether any contribution actually took it.
 		coefficient        decimal.NullDecimal
 		coefficientApplied bool
-		hasSizeNorms       bool
-		name               string
-		unit               string
+		// Which kinds of norm fed this row — read only to word the "the coefficient did not bite"
+		// caveat correctly: a manual norm takes the BOM wastage % instead, a counted trim takes
+		// nothing at all, and telling an operator their counted buttons are "manual norms" is a
+		// wrong explanation of a right number.
+		hasManualNorms  bool
+		hasCountedNorms bool
+		hasSizeNorms    bool
+		name            string
+		unit            string
 	}
 	req := make(map[int]*matAcc)
 	order := make([]int, 0) // material ids, in first-seen order (then sorted for a stable response)
@@ -98,11 +109,13 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		materialID int
 	}
 	type contribAcc struct {
-		required     decimal.Decimal
-		requiredBase decimal.Decimal
-		coefficient  decimal.NullDecimal
-		hasSizeNorms bool
-		pinned       bool
+		required decimal.Decimal
+		// Same meaning as matAcc.requiredBeforeGrossup, in the slot's spec unit: before wastage AND
+		// before the coefficient, because a line takes at most one of them.
+		requiredBeforeGrossup decimal.Decimal
+		coefficient           decimal.NullDecimal
+		hasSizeNorms          bool
+		pinned                bool
 	}
 	contribs := make(map[contribKey]*contribAcc)
 
@@ -248,7 +261,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				contribs[ck] = c
 			}
 			c.required = c.required.Add(add)
-			c.requiredBase = c.requiredBase.Add(base)
+			c.requiredBeforeGrossup = c.requiredBeforeGrossup.Add(base)
 			if lineCoeff.Valid {
 				c.coefficient = lineCoeff
 			}
@@ -336,9 +349,15 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				order = append(order, mid)
 			}
 			a.required = a.required.Add(stockAdd)
-			a.requiredBase = a.requiredBase.Add(stockBase)
+			a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)
 			if lineCoeff.Valid {
 				a.coefficientApplied = true
+			}
+			switch {
+			case counted:
+				a.hasCountedNorms = true
+			case !markerSourced:
+				a.hasManualNorms = true
 			}
 			if !sizeGraded {
 				a.hasSizeNorms = false
@@ -378,14 +397,25 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	}
 
 	// A coefficient that exists but bit nothing is a silent no-op the operator would otherwise blame
-	// on the field being broken: it applies to MARKER-sourced norms only, and this run's norms are
-	// all manual. Say so once per article rather than letting the dial look dead (Ф5а.2).
+	// on the field being broken: it grosses up MARKER-sourced norms only. Say so once per article
+	// rather than letting the dial look dead — and say WHICH kind of norm shut it out, because
+	// "manual" is a wrong explanation for an article consumed as a counted quantity (Ф5а.2).
 	for _, mid := range order {
 		a := req[mid]
-		if a.coefficient.Valid && !a.coefficientApplied && a.required.IsPositive() {
-			caveats = append(caveats, fmt.Sprintf("%s: cutting coefficient %s not applied — it grosses up MARKER-sourced norms, and this run's norms for it are manual (their BOM wastage %% applies instead)",
-				a.name, a.coefficient.Decimal.String()))
+		if !a.coefficient.Valid || a.coefficientApplied || !a.required.IsPositive() {
+			continue
 		}
+		var because string
+		switch {
+		case a.hasManualNorms && a.hasCountedNorms:
+			because = "this run's norms for it are manual (their BOM wastage % applies instead) or counted quantities (which take no gross-up at all)"
+		case a.hasCountedNorms:
+			because = "this article is consumed here as a counted quantity — 4 buttons stay 4 buttons — which takes no gross-up at all"
+		default:
+			because = "this run's norms for it are manual (their BOM wastage % applies instead)"
+		}
+		caveats = append(caveats, fmt.Sprintf("%s: cutting coefficient %s not applied — it grosses up MARKER-sourced norms, and %s",
+			a.name, a.coefficient.Decimal.String(), because))
 	}
 
 	sort.Ints(order)
@@ -411,9 +441,10 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			Shortage:       pbDecimalFromDecimal(shortage.Round(3)),
 			HasSizeNorms:   a.hasSizeNorms,
 			IssuedVariance: pbDecimalFromDecimal(iss.Sub(a.required).Round(3)),
-			// Ф5а.2 — the audit trail of the gross-up: the norm's own sum, and the dial.
-			RequiredBeforeCoefficient: pbDecimalFromDecimal(a.requiredBase.Round(3)),
-			CuttingCoefficient:        pbDecimalFromNull(a.coefficient),
+			// Ф5а.2 — the audit trail of the gross-up: the norm's own un-grossed sum, and the dial.
+			// The two are related BY the dial only on a marker-fed row; see the proto comment.
+			RequiredBeforeGrossup: pbDecimalFromDecimal(a.requiredBeforeGrossup.Round(3)),
+			CuttingCoefficient:    pbDecimalFromNull(a.coefficient),
 		})
 	}
 
@@ -457,19 +488,19 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			section = pbBomSection(entity.TechCardBomSection(bom.Section))
 		}
 		out.Contributions = append(out.Contributions, &pb_admin.MaterialPlanContribution{
-			BomItemId:                 int64(k.bomID),
-			SlotName:                  slotName,
-			Section:                   section,
-			ColorwayId:                int32(k.colorwayID),
-			ColorwayName:              colorwayName(k.colorwayID),
-			MaterialId:                int32(k.materialID),
-			MaterialName:              matName(k.materialID, bom),
-			Pinned:                    c.pinned,
-			Unit:                      unit,
-			Required:                  pbDecimalFromDecimal(c.required.Round(3)),
-			HasSizeNorms:              c.hasSizeNorms,
-			RequiredBeforeCoefficient: pbDecimalFromDecimal(c.requiredBase.Round(3)),
-			CuttingCoefficient:        pbDecimalFromNull(c.coefficient),
+			BomItemId:             int64(k.bomID),
+			SlotName:              slotName,
+			Section:               section,
+			ColorwayId:            int32(k.colorwayID),
+			ColorwayName:          colorwayName(k.colorwayID),
+			MaterialId:            int32(k.materialID),
+			MaterialName:          matName(k.materialID, bom),
+			Pinned:                c.pinned,
+			Unit:                  unit,
+			Required:              pbDecimalFromDecimal(c.required.Round(3)),
+			HasSizeNorms:          c.hasSizeNorms,
+			RequiredBeforeGrossup: pbDecimalFromDecimal(c.requiredBeforeGrossup.Round(3)),
+			CuttingCoefficient:    pbDecimalFromNull(c.coefficient),
 		})
 	}
 

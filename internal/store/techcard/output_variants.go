@@ -306,7 +306,12 @@ func (s *Store) UpsertOutputVariant(ctx context.Context, techCardID int, ins ent
 			if sibUnit == "" {
 				continue
 			}
-			if !strings.EqualFold(sibUnit, unit) {
+			// Compared through the unit vocabulary (Ф5а.3), not EqualFold, for the same reason as
+			// ErrMaterialUnitLocked and pinShadowBom: «м» and "m" ARE one unit, and refusing a
+			// perfectly measurable bucket over a spelling is a false positive with no repair path —
+			// material.unit freezes on the first movement. An unmapped pair still falls back to the
+			// case-insensitive raw compare, so nothing that used to be accepted now is not.
+			if !entity.SameMaterialUnit(sibUnit, unit) {
 				return fmt.Errorf("%w: this card's colours are measured in %q, the chosen material in %q",
 					entity.ErrOutputVariantUnitMismatch, sibUnit, unit)
 			}

@@ -90,6 +90,24 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 	if measuredWidth.Valid && !measuredWidth.Decimal.IsPositive() {
 		return entity.MaterialReceiptInsert{}, fmt.Errorf("measured_width_cm must be positive when set")
 	}
+	// DECIMAL(6,2): MySQL silently rounds 148.456 to 148.46 and hands that back on the next read, so
+	// the width the floor measured and the width the marker is made for would differ with nothing
+	// saying so. Reject instead (limit 10000 = the four integer digits the column has).
+	if err := validateDecimalScale(measuredWidth, "measured_width_cm", 2, 10000); err != nil {
+		return entity.MaterialReceiptInsert{}, err
+	}
+	shadeCode := strings.TrimSpace(req.GetShadeCode())
+	if len(shadeCode) > maxVarchar64 {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf("shade_code must be at most %d characters", maxVarchar64)
+	}
+	// Both facts live on the LOT, and there is no lot without a lot code: upsertLotOnReceipt returns
+	// early on a blank one, so a measurement submitted without it would be accepted with a 200 and
+	// then dropped on the floor — the worst possible answer, because the operator who measured the
+	// roll has no way to find out it was not recorded. Refuse instead, and name the missing field.
+	if strings.TrimSpace(req.GetLot()) == "" && (measuredWidth.Valid || shadeCode != "") {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf(
+			"measured_width_cm/shade_code are recorded on the lot — set `lot` (the roll's lot code) to record them")
+	}
 	expectedAt, err := parseNullDate(req.GetExpectedAt())
 	if err != nil {
 		return entity.MaterialReceiptInsert{}, fmt.Errorf("expected_at: %w", err)
@@ -113,7 +131,7 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		Currency:        currency,
 		Lot:             nullStringFromPb(req.GetLot()),
 		MeasuredWidthCm: measuredWidth,
-		ShadeCode:       nullStringFromPb(req.GetShadeCode()),
+		ShadeCode:       nullStringFromPb(shadeCode),
 		SupplierDoc:     nullStringFromPb(req.GetSupplierDoc()),
 		SupplierId:      sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
 		ExpectedAt:      expectedAt,

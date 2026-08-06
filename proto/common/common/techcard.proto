@@ -442,7 +442,10 @@ message TechCardBomItem {
   string currency = 13; // ISO 4217 for unit_price
   string comment = 14;
   // fabric data for the cutter / marker (Phase 3.5c)
-  google.type.Decimal fabric_width = 17; // usable width, cm
+  // FULL roll width in cm, кромка INCLUDED — same correction as Material.fabric_width: this is what
+  // effective_fabric_width_cm below resolves to, and that field's own text already derives the
+  // usable cutting width as effective − 2 × selvedge.
+  google.type.Decimal fabric_width = 17;
   google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
   TechCardFabricDirection fabric_direction = 19; // nap / layout
   google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into the usage line totals
@@ -577,9 +580,9 @@ message MaterialPackagingAttrs {
 //
 // READ-ONLY on the wire. The stored value stays the free-text `unit` string (which is what a write
 // sets); unit_code is the server's normalisation of it, so a value the vocabulary does not know is
-// never guessed — it arrives as UNSPECIFIED with the raw string intact beside it, and UNSPECIFIED is
-// precisely the list of units that still need a human. A client must therefore never treat
-// UNSPECIFIED as "clear the unit".
+// never guessed — it arrives as MATERIAL_UNIT_UNKNOWN with the raw string intact beside it, and the
+// set of rows reporting UNKNOWN is precisely the list of units that still need a human. A client
+// must therefore never treat UNKNOWN as "no unit" or as "clear the unit".
 enum MaterialUnit {
   MATERIAL_UNIT_UNKNOWN = 0; // free-text value the vocabulary does not know (see `unit`)
   MATERIAL_UNIT_M = 1; // running metre — how roll goods are bought and cut
@@ -604,7 +607,13 @@ message Material {
   string composition = 6;
   string spec = 7; // ширина / плотность
   string unit = 8;
-  google.type.Decimal fabric_width = 9; // usable width, cm
+  // FULL roll width in cm, кромка INCLUDED — despite what this comment said until Ф5а.4. Nothing has
+  // ever subtracted the selvedge from it (0259 says so explicitly: the flat copy was labelled
+  // "usable" in 0095 but no consumer ever treated it as such), and both EffectiveFabricWidthCm and
+  // the metres→kg conversion depend on it being the full width: the selvedge is bought, it weighs,
+  // and billing by the cutting width understates the invoiced weight by 2–4% every time. The USABLE
+  // cutting width is this minus 2 × MaterialFabricAttrs.selvedge_cm.
+  google.type.Decimal fabric_width = 9;
   google.type.Decimal fabric_weight_gsm = 10; // weight, g/m²
   bool archived = 11;
   // latest_price is the current (latest-effective) price, if any (read-only; set via
@@ -658,6 +667,23 @@ message Material {
   // ONE default and no per-«класс ткани» taxonomy to pick it from; the value ranges (полотно ~3%,
   // трикотаж ~6%, клетка/полоска +10–20%) and what the coefficient covers belong in the field's hint
   // text, so nobody starts adding a column per loss again a year from now.
+  //
+  // WRITE SEMANTICS — three states, not two, because "the client did not send the field" and "the
+  // operator cleared it" must not be the same request (same rule as TechCardBomItem.purpose /
+  // is_sample):
+  //   * field ABSENT (null)        → LEAVE AS IS. A stale admin tab, or any bundle from before this
+  //                                  field shipped, sends nothing and must not erase a coefficient an
+  //                                  operator set — silently, with no digest and no audit trail.
+  //   * field PRESENT, value ""    → CLEAR it (store NULL). This is how the UI unsets the dial.
+  //   * field PRESENT with a value → set it.
+  //
+  // SCOPE — this is a DEMAND-side dial only. It grosses up the material PLAN's requirement
+  // (GetProductionRunMaterialPlan) and nothing else: the run's planned unit cost and the style cost
+  // estimate gross up by the BOM wastage % alone and do NOT include this coefficient. Planned COGS is
+  // therefore understated by exactly the coefficient wherever one is set. That is deliberate for now —
+  // moving it into the costing chain changes how product.cost_price is derived and every style's
+  // margin with it, which is a separate, deliberately reviewed decision. Do not present a planned cost
+  // as coefficient-inclusive.
   google.type.Decimal cutting_coefficient = 31;
   // READ-ONLY (Ф5а.3): the vocabulary normalisation of `unit`. Ignored on write — set `unit`.
   // UNKNOWN = the free text does not map to any known unit, and must not be read as "no unit".

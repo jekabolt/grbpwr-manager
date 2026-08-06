@@ -21,6 +21,9 @@ var (
 	unitCaseArmRe = regexp.MustCompile(`WHEN\s+'([^']+)'\s+THEN\s+'([^']+)'`)
 	unitInListRe  = regexp.MustCompile(`(?s)LOWER\(TRIM\(unit\)\) IN \((.*?)\)`)
 	quotedRe      = regexp.MustCompile(`'([^']*)'`)
+	// The fall-through arm, asserted separately because every other check in this file compares two
+	// lists and would pass unchanged if it were edited away.
+	caseElseUnitRe = regexp.MustCompile(`(?i)\bELSE\s+unit\b`)
 )
 
 func TestMaterialUnitMigrationMatchesTheVocabulary(t *testing.T) {
@@ -84,6 +87,16 @@ func TestMaterialUnitMigrationMatchesTheVocabulary(t *testing.T) {
 		if _, ok := want[raw]; !ok {
 			t.Errorf("0271's WHERE guard selects %q, which the vocabulary does not know", raw)
 		}
+	}
+
+	// The CASE's fall-through arm is load-bearing and invisible to every check above: the arms and
+	// the IN list agreeing tells you nothing about what happens to a row the CASE does not match.
+	// `ELSE unit` is the promise that such a row keeps its own value. Edited to `ELSE 'pcs'` — or
+	// dropped entirely, which in MySQL yields NULL — this migration would silently retype the whole
+	// catalogue, and every assertion above would still pass.
+	if !caseElseUnitRe.MatchString(content) {
+		t.Error("0271's unit CASE must end in `ELSE unit` — without it a row the CASE does not match " +
+			"is retyped (or NULLed), and nothing else in this test would notice")
 	}
 }
 

@@ -69,13 +69,13 @@ func TestPlanAppliesCuttingCoefficientToMarkerNorms(t *testing.T) {
 	require.Len(t, resp.Rows, 1)
 	row := resp.Rows[0]
 	require.Equal(t, "212", row.Required.Value, "200 m of marker norm × 1.06")
-	require.Equal(t, "200", row.RequiredBeforeCoefficient.Value, "the norm's own sum, un-grossed")
+	require.Equal(t, "200", row.RequiredBeforeGrossup.Value, "the norm's own sum, un-grossed")
 	require.Equal(t, "1.06", row.CuttingCoefficient.Value)
 	require.Equal(t, pb_common.MaterialUnit_MATERIAL_UNIT_M, row.UnitCode)
 
 	require.Len(t, resp.Contributions, 1)
 	require.Equal(t, "212", resp.Contributions[0].Required.Value)
-	require.Equal(t, "200", resp.Contributions[0].RequiredBeforeCoefficient.Value)
+	require.Equal(t, "200", resp.Contributions[0].RequiredBeforeGrossup.Value)
 	require.Equal(t, "1.06", resp.Contributions[0].CuttingCoefficient.Value)
 }
 
@@ -86,21 +86,50 @@ func TestPlanUnsetCuttingCoefficientChangesNothing(t *testing.T) {
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", decimal.NullDecimal{}, nil))
 
 	require.Equal(t, "200", resp.Rows[0].Required.Value)
-	require.Equal(t, "200", resp.Rows[0].RequiredBeforeCoefficient.Value)
+	require.Equal(t, "200", resp.Rows[0].RequiredBeforeGrossup.Value)
 	require.Nil(t, resp.Rows[0].CuttingCoefficient, "no coefficient reported when the article has none")
 }
 
 // A MANUAL norm keeps its BOM wastage estimate and does NOT also take the coefficient: the two
 // worlds are disjoint, or the line would be grossed twice. The no-op is reported rather than left to
 // look like a broken field.
+//
+// This row is also the reason the "before" number is required_before_GROSSUP and not
+// required_before_coefficient: 210 / 200 = 1.05, the WASTAGE factor, on a row that simultaneously
+// reports cutting_coefficient 1.06 and says the coefficient did not bite. Anyone dividing the two
+// numbers to recover the coefficient would read 1.05 — so the contract promises only
+// required >= required_before_grossup, and the coefficient is read from its own field.
 func TestPlanManualNormKeepsWastageAndSaysTheCoefficientDidNotBite(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "5")
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil))
 
-	require.Equal(t, "210", resp.Rows[0].Required.Value, "200 × 1.05 wastage — NOT × 1.06 as well")
-	require.Equal(t, "200", resp.Rows[0].RequiredBeforeCoefficient.Value)
+	row := resp.Rows[0]
+	require.Equal(t, "210", row.Required.Value, "200 × 1.05 wastage — NOT × 1.06 as well")
+	require.Equal(t, "200", row.RequiredBeforeGrossup.Value,
+		"before ANY gross-up: the wastage is not folded in here either")
+	require.Equal(t, "1.06", row.CuttingCoefficient.Value,
+		"the article's dial is still reported — it just did not bite")
+	require.NotEqual(t, "212", row.Required.Value,
+		"required is NOT required_before_grossup × cutting_coefficient on a manual row")
 	require.True(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"),
 		"a dial that does nothing must say so: %v", resp.Caveats)
+	require.True(t, hasCaveat(resp.Caveats, "norms for it are manual"),
+		"and it must name the RIGHT reason: %v", resp.Caveats)
+}
+
+// The other row on which required = before × coefficient is false: no coefficient anywhere, and the
+// gap between the two numbers is the plain BOM wastage. The pair still reads honestly as
+// "the norm asked for 200, the plan asks for 210".
+func TestPlanWastageOnlyRowHasNoCoefficientAndStillDecomposes(t *testing.T) {
+	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "5")
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", decimal.NullDecimal{}, nil))
+
+	row := resp.Rows[0]
+	require.Equal(t, "210", row.Required.Value)
+	require.Equal(t, "200", row.RequiredBeforeGrossup.Value)
+	require.Nil(t, row.CuttingCoefficient, "the article has none, so none is reported")
+	require.False(t, hasCaveat(resp.Caveats, "not applied"),
+		"nothing to explain when there is no dial at all: %v", resp.Caveats)
 }
 
 // A counted trim takes neither factor: 4 buttons stay 4 buttons.
@@ -125,6 +154,13 @@ func TestPlanCountedTrimTakesNoCoefficient(t *testing.T) {
 	}}
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("pcs", nd2("1.5"), nil))
 	require.Equal(t, "40", resp.Rows[0].Required.Value, "4 buttons × 10 garments, no gross-up of any kind")
+	require.Equal(t, "40", resp.Rows[0].RequiredBeforeGrossup.Value, "and the two numbers agree exactly")
+	// The caveat must not tell the operator their buttons are "manual norms" — that is the wrong
+	// explanation of a right number, and the one they would then go and try to fix.
+	require.True(t, hasCaveat(resp.Caveats, "counted quantity"),
+		"a counted row must be explained AS counted: %v", resp.Caveats)
+	require.False(t, hasCaveat(resp.Caveats, "norms for it are manual"),
+		"nothing here is a manual norm: %v", resp.Caveats)
 }
 
 // Ф5а.3. The silently-wrong addition the vocabulary exists to cut: a slot spelled «м» against an
@@ -173,7 +209,7 @@ func TestPlanConvertsMetresToKilogramsOnFullWidth(t *testing.T) {
 }
 
 // Kilograms and the coefficient compose: the gross-up happens in metres, the conversion after, and
-// required_before_coefficient is converted too so both figures are in the same (stock) unit.
+// required_before_grossup is converted too so both figures are in the same (stock) unit.
 func TestPlanKilogramsAndCoefficientCompose(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceMarker, 100, "")
 	attr := &entity.MaterialFabricAttr{WidthCm: nd2("150"), WeightGsm: nd2("220")}
@@ -182,7 +218,7 @@ func TestPlanKilogramsAndCoefficientCompose(t *testing.T) {
 	row := resp.Rows[0]
 	require.Equal(t, "kg", row.Unit)
 	require.Equal(t, "69.3", row.Required.Value, "210 m × 1.5 × 220 / 1000")
-	require.Equal(t, "66", row.RequiredBeforeCoefficient.Value, "the same conversion on the un-grossed 200 m")
+	require.Equal(t, "66", row.RequiredBeforeGrossup.Value, "the same conversion on the un-grossed 200 m")
 }
 
 // No width or no density means NO number: a weight computed from a guessed roll geometry is one

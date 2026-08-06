@@ -4,11 +4,23 @@
 -- enum). This migration collapses the CATALOGUE's legacy free-text spellings onto the canonical one.
 --
 -- Why it matters: every consumer compared units as raw strings. The production material plan carried
--- its own private metre synonym set (dto.planLengthUnits: m, м, meter, meters, metre, metres) and
--- degraded into a caveat on ANY other mismatch — so a slot spelled «м» against an article spelled
--- "m" was two different units: the quantity kept the slot's meaning while being compared against the
--- article's stock, and the pinned-article costing path (pinShadowBom) simply refused to price the
--- line. Those are the silently-wrong additions the vocabulary cuts.
+-- its own private metre synonym set (dto.planLengthUnits — m, м, meter, meters, metre, metres) and
+-- degraded into a caveat on ANY other mismatch, so a slot spelled «м» against an article spelled "m"
+-- counted as two different units. Precisely what that cost, and what it did NOT cost:
+--
+--   * The plan's ARITHMETIC on that pair was already correct. Both sides were metres, and the
+--     fall-through branch left the quantity untouched (stockAdd was initialised to the computed
+--     figure and only a real conversion ever replaced it), so the number netted against stock was
+--     the right number. What was wrong was the REPORT around it — the row was labelled with the
+--     slot's spelling instead of the catalogue's, and a caveat announced a unit conflict that did
+--     not exist, which teaches an operator to distrust the caveats that DO matter.
+--   * The pinned-article costing path (pinShadowBom) did lose a number outright — its EqualFold said
+--     «м» and "m" disagreed, and a disagreement there leaves the line UNPRICED, which blocks the
+--     cost seed. A silently missing figure, not a wrong one.
+--   * The genuinely wrong arithmetic is the case this phase's kg conversion fixes, and it is a
+--     different one: a slot in "m" against an article stocked in "kg". There the quantity really did
+--     stay in metres while being subtracted from a balance kept in kilograms. That pair is now
+--     converted through the roll's full width and density instead of being caveated and mis-netted.
 --
 -- The metre row below IS that pre-existing synonym set, lifted verbatim — it is not re-derived and
 -- not extended, because it is what legacy metre values were already being matched against.

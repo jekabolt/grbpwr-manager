@@ -41,3 +41,51 @@ func TestConvertPbReceiveMaterialStock_InputVatGuard(t *testing.T) {
 	_, err = ConvertPbReceiveMaterialStock(noCost)
 	require.NoError(t, err)
 }
+
+// TestConvertPbReceiveMaterialStock_RollFactsNeedALot pins Ф5а.1's acceptance rule. Both roll facts
+// are recorded on the LOT the receipt opens or tops up, and upsertLotOnReceipt returns early when the
+// receipt names no lot code — so without this guard a client that measured a roll and forgot the lot
+// got a 200 and no data, which is the one outcome an operator can never detect.
+func TestConvertPbReceiveMaterialStock_RollFactsNeedALot(t *testing.T) {
+	base := func() *pb_admin.ReceiveMaterialStockRequest {
+		return &pb_admin.ReceiveMaterialStockRequest{MaterialId: 1, Quantity: dec("10")}
+	}
+
+	// A width with no lot is refused, and the message names the field to fill in.
+	noLot := base()
+	noLot.MeasuredWidthCm = dec("148")
+	_, err := ConvertPbReceiveMaterialStock(noLot)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lot")
+
+	// So is a shade with no lot — and whitespace is not a lot code, because the store trims it away.
+	blankLot := base()
+	blankLot.Lot = "   "
+	blankLot.ShadeCode = "SH-7"
+	_, err = ConvertPbReceiveMaterialStock(blankLot)
+	require.Error(t, err)
+
+	// A plain receipt that carries neither fact is untouched by the rule.
+	plain := base()
+	_, err = ConvertPbReceiveMaterialStock(plain)
+	require.NoError(t, err)
+
+	// With a lot, both are accepted and the shade is trimmed on the way in.
+	full := base()
+	full.Lot = "ROLL-1"
+	full.MeasuredWidthCm = dec("148")
+	full.ShadeCode = "  SH-7  "
+	ins, err := ConvertPbReceiveMaterialStock(full)
+	require.NoError(t, err)
+	assert.Equal(t, "SH-7", ins.ShadeCode.String)
+	assert.True(t, ins.MeasuredWidthCm.Valid)
+
+	// DECIMAL(6,2) would silently round a third decimal place and hand a different width back on the
+	// next read; the marker is then made for a width nobody typed.
+	overPrecise := base()
+	overPrecise.Lot = "ROLL-1"
+	overPrecise.MeasuredWidthCm = dec("148.456")
+	_, err = ConvertPbReceiveMaterialStock(overPrecise)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decimal places")
+}

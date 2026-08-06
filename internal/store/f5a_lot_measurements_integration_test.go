@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +19,19 @@ import (
 // safe — a later receipt into the same lot that omits them must NOT erase what the first one
 // measured, while one that carries a new measurement corrects it (re-measuring a roll is a
 // correction, not a second roll).
+//
+// SAFE ONLY against a local container DSN — see the guard and mysql_test.go / project memory.
 func TestMaterialLotMeasuredWidthAndShade(t *testing.T) {
+	// Only run in CI (which points MYSQL_* at a container) or when the DSN explicitly targets a local
+	// container. Otherwise skip — a bare local `go test ./internal/store/...` uses config.toml's prod
+	// DSN, this test runs Automigrate and DELETEs rows, and this suite's TestMain drops all tables on
+	// cleanup (see mysql_test.go / project memory).
+	if os.Getenv("CI") == "" &&
+		!strings.Contains(testCfg.DSN, "127.0.0.1") &&
+		!strings.Contains(testCfg.DSN, "localhost") {
+		t.Skip("skipping outside CI unless the DSN targets a local container (avoids the configured prod DB)")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 

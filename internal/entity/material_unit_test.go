@@ -90,11 +90,13 @@ func TestSameMaterialUnit(t *testing.T) {
 }
 
 func TestCanonicalMaterialUnitPreservesTheUnmappable(t *testing.T) {
-	if got := CanonicalMaterialUnit(" МЕТRES "); got != "metres" {
-		// mixed-script input is NOT a metre; it must survive untouched (trimmed + as typed)
-		if got != "МЕТRES" {
-			t.Errorf("mixed-script unit was rewritten to %q; an unmappable value must be preserved", got)
-		}
+	// Cyrillic МЕТ + Latin RES lower-cases to "метres", which the vocabulary does not know — so it is
+	// NOT a metre and must come back trimmed but otherwise byte-for-byte as typed. Asserted as one
+	// equality on purpose: the earlier nested-if form accepted "metres" (the value silently rewritten
+	// into a unit it is not) just as happily as the preservation it claims to test.
+	if got := CanonicalMaterialUnit(" МЕТRES "); got != "МЕТRES" {
+		t.Errorf("CanonicalMaterialUnit(\" МЕТRES \") = %q, want \"МЕТRES\" — a mixed-script value is "+
+			"unmappable and must be preserved, never folded into the metre it merely looks like", got)
 	}
 	if got := CanonicalMaterialUnit("  м "); got != "m" {
 		t.Errorf("CanonicalMaterialUnit(\"  м \") = %q, want \"m\"", got)
