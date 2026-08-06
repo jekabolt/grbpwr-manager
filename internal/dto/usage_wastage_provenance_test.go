@@ -62,10 +62,28 @@ func TestParseRecipeUsagesProvenance(t *testing.T) {
 		}))
 		require.Error(t, err)
 	})
+	t.Run("above 100 pct is accepted", func(t *testing.T) {
+		// A раскладка under 50% efficiency wastes more cloth than it turns into pieces, and the
+		// inter-piece component (1/eff − 1, of the piece area) then exceeds 100. It is a real
+		// marker, not bad input — the pre-0263 bound rejected the whole recipe save on it.
+		out, err := ParseRecipeUsages(provUsage(func(u *pb_common.TechCardColorwayUsage) {
+			u.ConsumptionSource = strPtr("marker")
+			u.WasteCutPct = &pb_decimal.Decimal{Value: "122.22"}
+		}))
+		require.NoError(t, err)
+		require.Equal(t, "122.22", out[0].WasteCutPct.Decimal.String())
+	})
 	t.Run("pct out of range rejected", func(t *testing.T) {
 		_, err := ParseRecipeUsages(provUsage(func(u *pb_common.TechCardColorwayUsage) {
 			u.ConsumptionSource = strPtr("marker")
-			u.WasteCutPct = &pb_decimal.Decimal{Value: "101"}
+			u.WasteCutPct = &pb_decimal.Decimal{Value: "1001"}
+		}))
+		require.Error(t, err)
+	})
+	t.Run("negative pct rejected", func(t *testing.T) {
+		_, err := ParseRecipeUsages(provUsage(func(u *pb_common.TechCardColorwayUsage) {
+			u.ConsumptionSource = strPtr("marker")
+			u.WasteSelvedgePct = &pb_decimal.Decimal{Value: "-0.01"}
 		}))
 		require.Error(t, err)
 	})

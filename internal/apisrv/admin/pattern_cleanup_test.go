@@ -16,6 +16,12 @@ import (
 
 const testPatternURL = "https://cdn.example/base/tech-card-patterns/2026/august/pattern.pdf"
 
+// DeleteObjects is VARIADIC (urls ...string), so its generated mock flattens the slice into
+// Called(ctx, url1, url2, …). An expectation written as one []string argument therefore never
+// matches — it compares a []string against the first url — and the assertion silently degrades
+// into "0 of 1 expectations met" at teardown. Every expectation below lists the urls as
+// separate arguments for that reason.
+
 type patternCleanupContextKey struct{}
 
 func TestDeleteTechCardRemovesCommittedPatternOrphans(t *testing.T) {
@@ -25,7 +31,7 @@ func TestDeleteTechCardRemovesCommittedPatternOrphans(t *testing.T) {
 	repo.EXPECT().TechCards().Return(techCards)
 	techCards.EXPECT().DeleteTechCardAndListOrphanedPatternURLs(mock.Anything, 7).
 		Return([]string{testPatternURL}, nil)
-	files.On("DeleteObjects", mock.Anything, []string{testPatternURL}).Return(nil).Once()
+	files.On("DeleteObjects", mock.Anything, testPatternURL).Return(nil).Once()
 
 	_, err := (&Server{repo: repo, bucket: files}).DeleteTechCard(
 		context.Background(), &pb_admin.DeleteTechCardRequest{Id: 7})
@@ -39,7 +45,7 @@ func TestUpdateFittingPatternCleanupIsBestEffort(t *testing.T) {
 	repo.EXPECT().Fittings().Return(fittings)
 	fittings.EXPECT().UpdateFittingAndListOrphanedPatternURLs(mock.Anything, 9, mock.Anything, 3).
 		Return([]string{testPatternURL}, nil)
-	files.On("DeleteObjects", mock.Anything, []string{testPatternURL}).
+	files.On("DeleteObjects", mock.Anything, testPatternURL).
 		Return(errors.New("object store unavailable")).Once()
 
 	_, err := (&Server{repo: repo, bucket: files}).UpdateFitting(context.Background(), &pb_admin.UpdateFittingRequest{
@@ -60,7 +66,7 @@ func TestDeleteFittingRemovesCommittedPatternOrphans(t *testing.T) {
 	repo.EXPECT().Fittings().Return(fittings)
 	fittings.EXPECT().DeleteFittingAndListOrphanedPatternURLs(mock.Anything, 11).
 		Return([]string{testPatternURL}, nil)
-	files.On("DeleteObjects", mock.Anything, []string{testPatternURL}).Return(nil).Once()
+	files.On("DeleteObjects", mock.Anything, testPatternURL).Return(nil).Once()
 
 	_, err := (&Server{repo: repo, bucket: files}).DeleteFitting(
 		context.Background(), &pb_admin.DeleteFittingRequest{Id: 11})
@@ -74,7 +80,7 @@ func TestPatternCleanupOutlivesRequestCancellation(t *testing.T) {
 	cancel()
 	files.On("DeleteObjects", mock.MatchedBy(func(cleanupCtx context.Context) bool {
 		return cleanupCtx.Err() == nil && cleanupCtx.Value(patternCleanupContextKey{}) == "kept"
-	}), []string{testPatternURL}).Return(nil).Once()
+	}), testPatternURL).Return(nil).Once()
 
 	(&Server{bucket: files}).deleteOrphanedPatternObjects(ctx, "tech_card", 7, []string{testPatternURL})
 }

@@ -1354,6 +1354,10 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 	return out, nil
 }
 
+// wasteDecompositionMaxPct bounds both waste components. See parseUsageProvenance for WHY it is
+// not 100, and 0263 for the matching column widening.
+const wasteDecompositionMaxPct = 1000
+
 // parseUsageProvenance parses the consumption provenance triple (Ф9.4). Presence is the
 // stale-client protocol (mirrors material_id): an ABSENT consumption_source keeps
 // Valid=false so the store preserves the stored triple across the full-replace; a present
@@ -1389,15 +1393,21 @@ func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullSt
 		}
 		return src, decimal.NullDecimal{}, decimal.NullDecimal{}, nil
 	}
-	hundred := decimal.NewFromInt(100)
+	// Ceiling is 1000%, not 100% (0263): both percentages are quoted OF THE PIECE AREA, and the
+	// inter-piece component is 1/efficiency − 1, so it crosses 100% for any раскладка laying
+	// below 50% efficiency — real for awkward small sets on a wide roll, where the layout does
+	// waste more cloth than it turns into pieces. Past 1000% the input is a mis-entered width.
+	maxPct := decimal.NewFromInt(wasteDecompositionMaxPct)
 	// Two explicit checks, selvedge first — deterministic field attribution when both are bad.
-	if selvedge.Valid && (selvedge.Decimal.IsNegative() || selvedge.Decimal.GreaterThan(hundred)) {
+	if selvedge.Valid && (selvedge.Decimal.IsNegative() || selvedge.Decimal.GreaterThan(maxPct)) {
 		return src, selvedge, cut, entity.NewFieldViolation(
-			fmt.Sprintf("usages[%d].waste_selvedge_pct", i), "out_of_range", selvedge.Decimal.String(), "0..100")
+			fmt.Sprintf("usages[%d].waste_selvedge_pct", i), "out_of_range", selvedge.Decimal.String(),
+			fmt.Sprintf("0..%d", wasteDecompositionMaxPct))
 	}
-	if cut.Valid && (cut.Decimal.IsNegative() || cut.Decimal.GreaterThan(hundred)) {
+	if cut.Valid && (cut.Decimal.IsNegative() || cut.Decimal.GreaterThan(maxPct)) {
 		return src, selvedge, cut, entity.NewFieldViolation(
-			fmt.Sprintf("usages[%d].waste_cut_pct", i), "out_of_range", cut.Decimal.String(), "0..100")
+			fmt.Sprintf("usages[%d].waste_cut_pct", i), "out_of_range", cut.Decimal.String(),
+			fmt.Sprintf("0..%d", wasteDecompositionMaxPct))
 	}
 	// Engine-computed floats: round to the column scale rather than rejecting float dust.
 	if selvedge.Valid {

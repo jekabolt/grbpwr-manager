@@ -152,6 +152,23 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 		"presence-less rewrite must preserve marker provenance")
 	require.Equal(t, "21.95", recipe[0].WasteCutPct.Decimal.String())
 
+	// A low-efficiency раскладка wastes MORE cloth than it turns into pieces, so the cut
+	// component (1/efficiency − 1, of the piece area) exceeds 100. The column and its CHECK were
+	// widened to 1000 in 0263 for exactly this — before it, such a marker failed the whole
+	// recipe save on a constraint the operator could not act on.
+	wideVer, err := T.UpdateColorwayRecipe(ctx, cwID, staleVer, []entity.TechCardColorwayUsage{
+		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
+			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.42")),
+			ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true},
+			WasteSelvedgePct:  decimal.NewNullDecimal(decimal.RequireFromString("4.10")),
+			WasteCutPct:       decimal.NewNullDecimal(decimal.RequireFromString("122.22"))},
+	})
+	require.NoError(t, err, "cut waste above 100%% of piece area is a real marker, not bad input")
+	recipe, err = T.GetColorwayRecipe(ctx, cwID)
+	require.NoError(t, err)
+	require.Equal(t, "122.22", recipe[0].WasteCutPct.Decimal.String())
+	staleVer = wideVer
+
 	// An explicit manual write clears the decomposition.
 	_, err = T.UpdateColorwayRecipe(ctx, cwID, staleVer, []entity.TechCardColorwayUsage{
 		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
