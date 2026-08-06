@@ -708,7 +708,13 @@ message TechCardSizePattern {
   // clears the name. NOTE for JSON clients — protojson cannot tell `"name": null` from an absent
   // field, so null also reads as "preserve"; to clear a name, send the empty string.
   optional string name = 7;
-  // 8 and 9 are reserved for view_url / download_url (feat/private-patterns branch, in flight).
+
+  // view_url / download_url are OUTPUT-ONLY (like uploaded_at): stable tokenized urls on
+  // the backend's own origin (/api/p/{token}) that resolve to the file — the canonical
+  // way to open a pattern once objects go private. Ignored on write; empty when the
+  // stored url does not parse to a managed pattern object key.
+  string view_url = 8;
+  string download_url = 9;
   // line_key is the row's STABLE identity across saves and across FILE REPLACEMENT (the url is not —
   // replacing the sheet mints a new object url). Mint a ULID on first upload and round-trip it
   // unchanged; keep it when replacing the file and change only the url. ONE KEY NAMES ONE ROW: the

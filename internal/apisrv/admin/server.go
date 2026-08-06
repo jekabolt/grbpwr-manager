@@ -15,6 +15,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -31,11 +32,16 @@ const maxConcurrentCampaignTestSends = 2
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
-	repo            dependency.Repository
-	bucket          dependency.FileStore
-	mailer          dependency.Mailer
-	renderer        *campaignrender.Renderer
-	campaignTestSem chan struct{}
+	repo   dependency.Repository
+	bucket dependency.FileStore
+	// patternURLs mints output-only view_url/download_url on pattern messages (Ф7).
+	// Nil-safe by design — tests construct Servers without it and reads then simply
+	// omit the tokenized urls.
+	patternURLs        *patternaccess.Service
+	patternURLsBaseURL string
+	mailer             dependency.Mailer
+	renderer           *campaignrender.Renderer
+	campaignTestSem    chan struct{}
 	// campaignTestRecipientAllowlist contains lower-cased, trimmed addresses
 	// permitted for admin campaign test sends (MAILER_TEST_RECIPIENTS). Empty is
 	// fail-closed: test sends are refused until it is configured. Suppression-list
@@ -218,4 +224,12 @@ func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodN
 	default:
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
+}
+
+// SetPatternURLService wires the tokenized pattern url minter (Ф7). baseURL is this
+// backend's external origin (no trailing slash); minted urls are absolute so <object>
+// embeds and QR codes resolve against the backend, not the SPA origin.
+func (s *Server) SetPatternURLService(svc *patternaccess.Service, baseURL string) {
+	s.patternURLs = svc
+	s.patternURLsBaseURL = baseURL
 }

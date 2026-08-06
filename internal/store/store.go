@@ -35,6 +35,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/metrics"
 	"github.com/jekabolt/grbpwr-manager/internal/store/model"
 	"github.com/jekabolt/grbpwr-manager/internal/store/order"
+	"github.com/jekabolt/grbpwr-manager/internal/store/patternobject"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/productionrun"
 	"github.com/jekabolt/grbpwr-manager/internal/store/promo"
@@ -121,6 +122,7 @@ type MYSQLStore struct {
 	materialStockStore *inventory.Store
 	sampleStore        *sample.Store
 	accounting         *accounting.Store
+	patternObjectStore *patternobject.Store
 }
 
 // resolveCertPath resolves @certs paths to the config/certs directory
@@ -402,6 +404,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.productionRunStore = productionrun.New(base, ms.Tx)
 	ms.materialStockStore = inventory.New(base, ms.Tx)
 	ms.sampleStore = sample.New(base, ms.Tx)
+	ms.patternObjectStore = patternobject.New(base)
 }
 
 // initSubStoresForTx initializes sub-stores for a transactional MYSQLStore.
@@ -433,6 +436,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.productionRunStore = productionrun.New(base, outerTx)
 	txStore.materialStockStore = inventory.New(base, outerTx)
 	txStore.sampleStore = sample.New(base, outerTx)
+	txStore.patternObjectStore = patternobject.New(base)
 }
 
 func (ms *MYSQLStore) Close() {
@@ -502,6 +506,7 @@ func (ms *MYSQLStore) Language() dependency.Language             { return ms.lan
 func (ms *MYSQLStore) Membership() dependency.Membership         { return ms.membershipStore }
 func (ms *MYSQLStore) Models() dependency.Models                 { return ms.modelStore }
 func (ms *MYSQLStore) Fittings() dependency.Fittings             { return ms.fittingStore }
+func (ms *MYSQLStore) PatternObjects() dependency.PatternObjects { return ms.patternObjectStore }
 func (ms *MYSQLStore) Tasks() dependency.Tasks                   { return ms.taskStore }
 func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment       { return ms.fulfillmentStore }
 func (ms *MYSQLStore) TechCards() dependency.TechCards           { return ms.techCardStore }
