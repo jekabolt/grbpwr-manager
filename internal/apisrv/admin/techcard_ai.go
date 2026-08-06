@@ -103,7 +103,6 @@ func (s *Server) buildAIOperationContext(ctx context.Context, card *entity.TechC
 		tcx.Pieces = append(tcx.Pieces, openrouter.PieceContext{
 			Name:             p.Name,
 			PiecesPerGarment: p.PiecesPerGarment,
-			Mirrored:         p.Mirrored,
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
 			Note:             p.Note.String,

@@ -14,9 +14,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestGetStyleCutList is the acceptance test for the mirror consumer (Q6): a mirrored piece expands to
-// twice its per-garment count in the cut-list, a non-mirrored piece does not, and each piece resolves
-// its fabric (and fusing) BOM line name per colourway from the real bom_item_id.
+// TestGetStyleCutList: total_per_garment is pieces_per_garment and NOTHING doubles it — the mirror
+// fold was removed, so a stored mirrored=true must no longer change a single number (it is still
+// echoed on the response, which is what the assertions below pin). Each piece resolves its fabric
+// (and fusing) BOM line name per colourway from the real bom_item_id.
 func TestGetStyleCutList(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
@@ -47,8 +48,8 @@ func TestGetStyleCutList(t *testing.T) {
 	require.Len(t, resp.Pieces, 3)
 
 	front := resp.Pieces[0]
-	require.True(t, front.Mirrored)
-	require.Equal(t, int32(2), front.TotalPerGarment, "mirrored piece cut ×2 (a left+right pair)")
+	require.True(t, front.Mirrored, "the stored flag is still echoed…")
+	require.Equal(t, int32(1), front.TotalPerGarment, "…but no longer doubles the count")
 	require.Len(t, front.Fabrics, 1)
 	require.Equal(t, int64(100), front.Fabrics[0].BomItemId)
 	require.Equal(t, "Shell Wool", front.Fabrics[0].FabricName)
@@ -56,9 +57,9 @@ func TestGetStyleCutList(t *testing.T) {
 	require.Equal(t, "Canvas Fusing", front.Fabrics[0].FusingName)
 
 	require.False(t, resp.Pieces[1].Mirrored)
-	require.Equal(t, int32(1), resp.Pieces[1].TotalPerGarment, "non-mirrored piece is not doubled")
+	require.Equal(t, int32(1), resp.Pieces[1].TotalPerGarment)
 
-	require.Equal(t, int32(4), resp.Pieces[2].TotalPerGarment, "pieces_per_garment 2 × mirrored = 4")
+	require.Equal(t, int32(2), resp.Pieces[2].TotalPerGarment, "pieces_per_garment 2, mirror ignored")
 	require.Empty(t, resp.Pieces[2].Fabrics)
 }
 

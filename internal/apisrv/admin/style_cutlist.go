@@ -11,11 +11,22 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// GetStyleCutList is the first real consumer of the piece.mirrored flag (Q6). It projects a style's
-// cut-pieces into a production cut-list: each piece's quantity expanded for a mirrored pair
-// (pieces_per_garment × 2 when mirrored) and, per colourway, the fabric (and optional fusing) BOM line
-// it is cut from. A read-only projection over GetTechCardById — no marker/CAD export, no mutable
-// table (§2.5 / Q6). Gated read (SectionProducts).
+// GetStyleCutList projects a style's cut-pieces into a production cut-list: how many of each piece a
+// garment takes and, per colourway, the fabric (and optional fusing) BOM line it is cut from. A
+// read-only projection over GetTechCardById — no marker/CAD export, no mutable table (§2.5 / Q6).
+// Gated read (SectionProducts).
+//
+// THE MIRROR FOLD IS GONE. total_per_garment used to be pieces_per_garment × 2 whenever
+// piece.mirrored was set (Q6). The flag was never used in practice, and it double-counted against
+// the way patterns actually arrive: a graded DXF draws a left/right pair as TWO blocks, so the
+// matching dialog already creates two pieces (or one piece with the instance count baked in), and a
+// mirror flag on top of that produced four. The admin stopped offering the checkbox and stopped
+// sending the field in the same change; total_per_garment is now simply pieces_per_garment.
+//
+// The stored column is NOT read here any more but is still surfaced on the response (Mirrored below)
+// and still written by the save path from whatever the payload carries — which, from this admin, is
+// now always false. Existing `mirrored = 1` rows therefore stop affecting any number immediately,
+// and are cleared card-by-card as cards are saved.
 func (s *Server) GetStyleCutList(ctx context.Context, req *pb_admin.GetStyleCutListRequest) (*pb_admin.GetStyleCutListResponse, error) {
 	tcID := int(req.GetTechCardId())
 	if tcID <= 0 {
@@ -42,9 +53,6 @@ func (s *Server) GetStyleCutList(ctx context.Context, req *pb_admin.GetStyleCutL
 		p := &card.Pieces[i]
 		perGarment := p.PiecesPerGarment
 		total := perGarment
-		if p.Mirrored {
-			total *= 2 // Q6: mirrored = cut as a left+right pair
-		}
 		fabrics := make([]*pb_admin.StyleCutListFabric, 0, len(p.Materials))
 		for j := range p.Materials {
 			m := &p.Materials[j]

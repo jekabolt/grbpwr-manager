@@ -77,7 +77,7 @@ type plmState struct {
 	pieceFrontKey, pieceBackKey                                 string
 	bomFabricKey, bomHardwareKey, bomThreadKey, bomPackagingKey string
 
-	// cut-list numeric piece ids (front mirrored, back)
+	// cut-list numeric piece ids (front, back)
 	pieceFrontID, pieceBackID int32
 
 	// colourway variant handles (colourway #1)
@@ -436,11 +436,13 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	}
 	s.pass(st, "B.4/B.5 readback: technical=2 moodboard=1 callouts=2 (callout#2 on the moodboard image)")
 
-	// B.6 pieces with mirror, verified via the cut-list.
-	s.step(st, "B.6 pieces with mirror (front mirrored=2/garment, back=1) via cut-list")
+	// B.6 pieces, verified via the cut-list. The mirror flag is retired (the admin no longer sends
+	// it and GetStyleCutList no longer doubles by it), so a left/right pair is stated the way a
+	// graded DXF actually draws it — as a count, not as a flag on one row.
+	s.step(st, "B.6 pieces (front 2/garment, back 1) via cut-list")
 	tc.Pieces = []*common.TechCardPiece{
-		{Name: "front panel", PiecesPerGarment: 1, Mirrored: true, Grainline: "lengthwise", CalloutNumber: p32(1), Note: "cut as mirrored L/R pair", LineKey: st.pieceFrontKey},
-		{Name: "back panel", PiecesPerGarment: 1, Mirrored: false, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey},
+		{Name: "front panel", PiecesPerGarment: 2, Grainline: "lengthwise", CalloutNumber: p32(1), Note: "left + right", LineKey: st.pieceFrontKey},
+		{Name: "back panel", PiecesPerGarment: 1, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey},
 	}
 	if err := s.tcSave(ctx, sid, tc, "B.6 pieces"); err != nil {
 		return err
@@ -451,7 +453,9 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	}
 	var frontTotal, backTotal int32
 	for _, p := range cl.GetPieces() {
-		if p.GetMirrored() {
+		// Matched by NAME now: the mirror flag used to be what told the two rows apart, and it is
+		// false on both from here on.
+		if p.GetName() == "front panel" {
 			st.pieceFrontID = p.GetPieceId()
 			frontTotal = p.GetTotalPerGarment()
 		} else {
@@ -463,9 +467,9 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 		return fmt.Errorf("cut-list did not resolve numeric piece ids (front=%d back=%d)", st.pieceFrontID, st.pieceBackID)
 	}
 	if frontTotal != 2 || backTotal != 1 {
-		return fmt.Errorf("mirror math: front total_per_garment=%d (want 2) back=%d (want 1)", frontTotal, backTotal)
+		return fmt.Errorf("cut math: front total_per_garment=%d (want 2) back=%d (want 1)", frontTotal, backTotal)
 	}
-	s.pass(st, "B.6 cut-list: front piece=%d total=2 (mirrored) back piece=%d total=1", st.pieceFrontID, st.pieceBackID)
+	s.pass(st, "B.6 cut-list: front piece=%d total=2 back piece=%d total=1", st.pieceFrontID, st.pieceBackID)
 
 	// B.7/B.8 construction + size range.
 	s.step(st, "B.7/B.8 construction section + size range + size chart + UpdateStyle")
@@ -800,7 +804,7 @@ func (s *Seeder) plmColorways(ctx context.Context, st *plmState) error {
 	}
 	fabricsOnFront := 0
 	for _, p := range cl.GetPieces() {
-		if p.GetMirrored() {
+		if p.GetName() == "front panel" {
 			fabricsOnFront = len(p.GetFabrics())
 		}
 	}

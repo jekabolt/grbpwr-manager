@@ -20,7 +20,7 @@ func sampleContext() TechCardContext {
 		Gender:      "unisex",
 		Pieces: []PieceContext{
 			{Name: "front panel", PiecesPerGarment: 1, Grainline: "lengthwise"},
-			{Name: "hood", PiecesPerGarment: 2, Mirrored: true},
+			{Name: "hood", PiecesPerGarment: 2},
 		},
 		BOM: []BOMItemContext{
 			{Section: "fabric", Name: "French terry 320gsm", Composition: "100% cotton"},
@@ -35,7 +35,7 @@ func TestBuildUserPrompt_IncludesContextAndDescription(t *testing.T) {
 
 	for _, want := range []string{
 		"Oversized Hoodie", "FW26-0007", "Hoodie",
-		"front panel", "hood", "mirrored pair",
+		"front panel", "hood", "x2 per garment",
 		"French terry 320gsm", "100% cotton",
 		"lockstitch 301",
 		"serge the side seams then coverstitch the hem",

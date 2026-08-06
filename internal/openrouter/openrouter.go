@@ -104,7 +104,6 @@ type TechCardContext struct {
 type PieceContext struct {
 	Name             string
 	PiecesPerGarment int
-	Mirrored         bool
 	Grainline        string
 	Fused            bool
 	Note             string

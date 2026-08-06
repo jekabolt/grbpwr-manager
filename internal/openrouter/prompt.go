@@ -97,9 +97,6 @@ func buildUserPrompt(tcx TechCardContext, description string) string {
 			if p.PiecesPerGarment > 0 {
 				attrs = append(attrs, fmt.Sprintf("x%d per garment", p.PiecesPerGarment))
 			}
-			if p.Mirrored {
-				attrs = append(attrs, "mirrored pair")
-			}
 			if v := strings.TrimSpace(p.Grainline); v != "" {
 				attrs = append(attrs, "grainline "+v)
 			}
