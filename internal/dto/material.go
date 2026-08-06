@@ -52,6 +52,33 @@ func pbMaterialPurpose(p entity.MaterialPurpose) pb_common.MaterialPurpose {
 	return pb_common.MaterialPurpose_MATERIAL_PURPOSE_UNKNOWN
 }
 
+// materialUnitToPb maps the entity vocabulary onto the proto enum (Ф5а.3). The entity table is the
+// source of truth; this map only carries it across the wire.
+var materialUnitToPb = map[entity.MaterialUnit]pb_common.MaterialUnit{
+	entity.MaterialUnitM:    pb_common.MaterialUnit_MATERIAL_UNIT_M,
+	entity.MaterialUnitCm:   pb_common.MaterialUnit_MATERIAL_UNIT_CM,
+	entity.MaterialUnitMm:   pb_common.MaterialUnit_MATERIAL_UNIT_MM,
+	entity.MaterialUnitM2:   pb_common.MaterialUnit_MATERIAL_UNIT_M2,
+	entity.MaterialUnitG:    pb_common.MaterialUnit_MATERIAL_UNIT_G,
+	entity.MaterialUnitKg:   pb_common.MaterialUnit_MATERIAL_UNIT_KG,
+	entity.MaterialUnitPcs:  pb_common.MaterialUnit_MATERIAL_UNIT_PCS,
+	entity.MaterialUnitPair: pb_common.MaterialUnit_MATERIAL_UNIT_PAIR,
+	entity.MaterialUnitSet:  pb_common.MaterialUnit_MATERIAL_UNIT_SET,
+	entity.MaterialUnitCone: pb_common.MaterialUnit_MATERIAL_UNIT_CONE,
+	entity.MaterialUnitRoll: pb_common.MaterialUnit_MATERIAL_UNIT_ROLL,
+}
+
+// pbMaterialUnit projects a stored free-text unit onto the closed vocabulary. UNKNOWN means the
+// value maps to nothing the server knows — the raw string travels beside it and is the only truth
+// for such a row. Read-only: no write path consumes this enum, so an old client sending the proto3
+// default can never blank a unit.
+func pbMaterialUnit(unit string) pb_common.MaterialUnit {
+	if u, ok := entity.NormalizeMaterialUnit(unit); ok {
+		return materialUnitToPb[u]
+	}
+	return pb_common.MaterialUnit_MATERIAL_UNIT_UNKNOWN
+}
+
 // ConvertPbMaterialToEntityInsert validates and converts a common.Material into the editable
 // MaterialInsert (server-managed fields — id, archived, latest_price — are ignored).
 func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialInsert, error) {
@@ -91,6 +118,19 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 	if err != nil {
 		return nil, fmt.Errorf("material fabric_weight_gsm: %w", err)
 	}
+	// Cutting coefficient (Ф5а.2): a MULTIPLIER, so anything below 1 would shave a requirement below
+	// the norm — which is not what «коэффициент раскроя» can ever mean. The upper bound mirrors the
+	// DB CHECK and catches the fat-fingered "103" that means +3%.
+	cuttingCoefficient, err := nullDecimalFromPb(pb.CuttingCoefficient)
+	if err != nil {
+		return nil, fmt.Errorf("material cutting_coefficient: %w", err)
+	}
+	if cuttingCoefficient.Valid {
+		if cuttingCoefficient.Decimal.LessThan(decimal.NewFromInt(1)) ||
+			cuttingCoefficient.Decimal.GreaterThan(decimal.NewFromInt(3)) {
+			return nil, fmt.Errorf("material cutting_coefficient must be a multiplier between 1 and 3 (1.03 = +3%%)")
+		}
+	}
 	if len(pb.Code) > maxVarchar64 {
 		return nil, fmt.Errorf("material code must be at most %d characters", maxVarchar64)
 	}
@@ -119,13 +159,16 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 		Unit:            nullStringFromPb(pb.Unit),
 		FabricWidth:     fabricWidth,
 		FabricWeightGsm: fabricGsm,
-		Code:            nullStringFromPb(pb.Code),
-		Color:           nullStringFromPb(pb.Color),
-		Pantone:         nullStringFromPb(pb.Pantone),
-		MinStock:        minStock,
-		Notes:           nullStringFromPb(pb.Notes),
-		ImageId:         nullInt32FromPb(pb.ImageId),
-		Purpose:         string(materialPurposePbToEntity[pb.Purpose]),
+		// unit_code is NOT read here — it is a read-only projection of `unit`. Reading it on write
+		// would let an older bundle, which sends the enum's proto3 default, silently clear a unit.
+		CuttingCoefficient: cuttingCoefficient,
+		Code:               nullStringFromPb(pb.Code),
+		Color:              nullStringFromPb(pb.Color),
+		Pantone:            nullStringFromPb(pb.Pantone),
+		MinStock:           minStock,
+		Notes:              nullStringFromPb(pb.Notes),
+		ImageId:            nullInt32FromPb(pb.ImageId),
+		Purpose:            string(materialPurposePbToEntity[pb.Purpose]),
 	}
 	if err := applyPbMaterialAttrs(pb, ins); err != nil {
 		return nil, err
@@ -307,17 +350,21 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		Composition:     pbStringFromNull(m.Composition),
 		Spec:            pbStringFromNull(m.Spec),
 		Unit:            pbStringFromNull(m.Unit),
+		UnitCode:        pbMaterialUnit(m.Unit.String),
 		FabricWidth:     pbDecimalFromNull(m.FabricWidth),
 		FabricWeightGsm: pbDecimalFromNull(m.FabricWeightGsm),
-		Archived:        m.Archived,
-		Code:            pbStringFromNull(m.Code),
-		Color:           pbStringFromNull(m.Color),
-		Pantone:         pbStringFromNull(m.Pantone),
-		MinStock:        pbDecimalFromNull(m.MinStock),
-		Notes:           pbStringFromNull(m.Notes),
-		LockVersion:     int32(m.LockVersion),
-		ImageId:         pbInt32FromNull(m.ImageId),
-		Purpose:         pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
+		// Ф5а.2 — unset stays unset. A material with no coefficient must NOT read as 1.0 either: the
+		// UI has to be able to tell "nobody has decided yet" from "somebody decided it is 1".
+		CuttingCoefficient: pbDecimalFromNull(m.CuttingCoefficient),
+		Archived:           m.Archived,
+		Code:               pbStringFromNull(m.Code),
+		Color:              pbStringFromNull(m.Color),
+		Pantone:            pbStringFromNull(m.Pantone),
+		MinStock:           pbDecimalFromNull(m.MinStock),
+		Notes:              pbStringFromNull(m.Notes),
+		LockVersion:        int32(m.LockVersion),
+		ImageId:            pbInt32FromNull(m.ImageId),
+		Purpose:            pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
 	}
 	if m.Image != nil {
 		out.Image = ConvertEntityToCommonMedia(m.Image)

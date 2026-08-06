@@ -149,11 +149,11 @@ func createMaterialInTx(ctx context.Context, db dependency.DB, m *entity.Materia
 	newID, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO material (name, section, supplier, supplier_ref, supplier_id, lead_time_days,
 			composition, spec, unit,
-			fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes,
+			fabric_width, fabric_weight_gsm, cutting_coefficient, code, color, pantone, min_stock, notes,
 			image_id, purpose, material_class, other_attrs, created_by, updated_by)
 		VALUES (:name, :section, :supplier, :supplier_ref, :supplier_id, :lead_time_days,
 			:composition, :spec, :unit,
-			:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes,
+			:fabric_width, :fabric_weight_gsm, :cutting_coefficient, :code, :color, :pantone, :min_stock, :notes,
 			:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
 		materialParams(m))
 	if err != nil {
@@ -219,6 +219,7 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 				name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
 				supplier_id=:supplier_id, lead_time_days=:lead_time_days,
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
+				cutting_coefficient=:cutting_coefficient,
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
 				image_id=:image_id, purpose=:purpose,
 				material_class=CASE WHEN :material_class = '' THEN material_class ELSE :material_class END,
@@ -283,7 +284,12 @@ func checkMaterialUnitChange(ctx context.Context, db dependency.DB, id int, newU
 		}
 		return fmt.Errorf("read material unit: %w", err)
 	}
-	if strings.TrimSpace(cur.Unit.String) == strings.TrimSpace(newUnit.String) {
+	// Compared through the unit vocabulary (Ф5а.3), not as raw text: «м» and "m" are the SAME unit,
+	// and after 0271 canonicalised the catalogue an older bundle re-sending its own «м» would
+	// otherwise look like a unit CHANGE and be refused on any material that has stock movements —
+	// a lock that fires on a spelling is the false positive this guard must not have.
+	if entity.SameMaterialUnit(cur.Unit.String, newUnit.String) ||
+		strings.TrimSpace(cur.Unit.String) == strings.TrimSpace(newUnit.String) {
 		return nil
 	}
 	n, err := storeutil.QueryCountNamed(ctx, db,
@@ -433,29 +439,41 @@ func (s *Store) ListMaterialPrices(ctx context.Context, materialID int) ([]entit
 // materialParams maps a MaterialInsert to named query params, normalising name, section and class.
 func materialParams(m *entity.MaterialInsert) map[string]any {
 	return map[string]any{
-		"name":              strings.TrimSpace(m.Name),
-		"section":           strings.ToLower(strings.TrimSpace(m.Section)),
-		"supplier":          m.Supplier,
-		"supplier_ref":      m.SupplierRef,
-		"supplier_id":       m.SupplierId,
-		"lead_time_days":    m.LeadTimeDays,
-		"composition":       m.Composition,
-		"spec":              m.Spec,
-		"unit":              m.Unit,
-		"fabric_width":      nullDecimalParam(m.FabricWidth),
-		"fabric_weight_gsm": nullDecimalParam(m.FabricWeightGsm),
-		"code":              m.Code,
-		"color":             m.Color,
-		"pantone":           m.Pantone,
-		"min_stock":         nullDecimalParam(m.MinStock),
-		"notes":             m.Notes,
-		"image_id":          m.ImageId,
-		"purpose":           normalizeMaterialPurpose(m.Purpose),
-		"material_class":    normalizeMaterialClass(m.MaterialClass),
-		"other_attrs":       nullJSONParam(m.OtherAttrs),
-		"created_by":        m.CreatedBy,
-		"updated_by":        m.UpdatedBy,
+		"name":                strings.TrimSpace(m.Name),
+		"section":             strings.ToLower(strings.TrimSpace(m.Section)),
+		"supplier":            m.Supplier,
+		"supplier_ref":        m.SupplierRef,
+		"supplier_id":         m.SupplierId,
+		"lead_time_days":      m.LeadTimeDays,
+		"composition":         m.Composition,
+		"spec":                m.Spec,
+		"unit":                canonicalUnitParam(m.Unit),
+		"fabric_width":        nullDecimalParam(m.FabricWidth),
+		"fabric_weight_gsm":   nullDecimalParam(m.FabricWeightGsm),
+		"cutting_coefficient": nullDecimalParam(m.CuttingCoefficient),
+		"code":                m.Code,
+		"color":               m.Color,
+		"pantone":             m.Pantone,
+		"min_stock":           nullDecimalParam(m.MinStock),
+		"notes":               m.Notes,
+		"image_id":            m.ImageId,
+		"purpose":             normalizeMaterialPurpose(m.Purpose),
+		"material_class":      normalizeMaterialClass(m.MaterialClass),
+		"other_attrs":         nullJSONParam(m.OtherAttrs),
+		"created_by":          m.CreatedBy,
+		"updated_by":          m.UpdatedBy,
 	}
+}
+
+// canonicalUnitParam collapses a written unit onto its canonical spelling from the closed vocabulary
+// (Ф5а.3), so the catalogue holds one spelling per unit instead of «м» / "m" / "metres" side by side.
+// A unit the vocabulary does not know is stored trimmed but otherwise untouched — guessing would be
+// worse than the free text, because a wrong canonical unit makes two different quantities addable.
+func canonicalUnitParam(unit sql.NullString) sql.NullString {
+	if !unit.Valid {
+		return unit
+	}
+	return sql.NullString{String: entity.CanonicalMaterialUnit(unit.String), Valid: true}
 }
 
 // normalizeMaterialPurpose lower-cases/trims the purpose and defaults an empty one to 'both' (#40) —

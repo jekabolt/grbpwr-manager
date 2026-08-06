@@ -2162,22 +2162,27 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
-			Id:              int64(b.Id),
-			LineKey:         b.LineKey,
-			MaterialId:      b.MaterialId.Int64,
-			Section:         pbBomSection(b.Section),
+			Id:         int64(b.Id),
+			LineKey:    b.LineKey,
+			MaterialId: b.MaterialId.Int64,
+			Section:    pbBomSection(b.Section),
 			// Читатель всегда отдаёт присутствие — «не задано» это UNSET, а не отсутствие поля:
 			// отсутствие на чтении заставило бы клиента гадать, старый ли это сервер.
-			Purpose:         pbPtr(pbBomPurpose(b.Purpose)),
-			PurposeNote:     pbPtr(pbStringFromNull(b.PurposeNote)),
-			IsSample:        pbPtr(b.IsSample),
-			Name:            b.Name,
-			Supplier:        pbStringFromNull(b.Supplier),
-			SupplierRef:     pbStringFromNull(b.SupplierRef),
-			Color:           pbStringFromNull(b.Color),
-			Composition:     pbStringFromNull(b.Composition),
-			Spec:            pbStringFromNull(b.Spec),
-			Unit:            pbStringFromNull(b.Unit),
+			Purpose:     pbPtr(pbBomPurpose(b.Purpose)),
+			PurposeNote: pbPtr(pbStringFromNull(b.PurposeNote)),
+			IsSample:    pbPtr(b.IsSample),
+			Name:        b.Name,
+			Supplier:    pbStringFromNull(b.Supplier),
+			SupplierRef: pbStringFromNull(b.SupplierRef),
+			Color:       pbStringFromNull(b.Color),
+			Composition: pbStringFromNull(b.Composition),
+			Spec:        pbStringFromNull(b.Spec),
+			Unit:        pbStringFromNull(b.Unit),
+			// Ф5а.3 — read-only projection of `unit` onto the closed vocabulary. Never read back on
+			// write: the stored value stays the free text, because `unit` sits inside the SIGNED
+			// MATERIALS digest and respelling it would stale sign-offs on cards that BUY exactly what
+			// they bought before.
+			UnitCode:        pbMaterialUnit(b.Unit.String),
 			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
 			Currency:        pbStringFromNull(b.Currency),
 			Comment:         pbStringFromNull(b.Comment),

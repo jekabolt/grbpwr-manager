@@ -6457,6 +6457,21 @@ message MaterialPlanRow {
   google.type.Decimal shortage = 7; // max(0, required − issued − on_hand)
   bool has_size_norms = 8; // false when some contributing norm was per-garment, not size-graded (rougher estimate)
   google.type.Decimal issued_variance = 9; // issued − required: >0 over-issued vs plan (scrap/overuse), <0 under-issued/leftover (gap-04). Meaningful after issuing/receive.
+  // WHY `required` is bigger than the raw norm (Ф5а.2). required_before_coefficient is the same sum
+  // with the article's cutting coefficient NOT applied, in the same unit as `required`; together with
+  // cutting_coefficient it makes the gross-up auditable instead of an unexplained inflation.
+  //
+  // cutting_coefficient is the ARTICLE's coefficient and is reported whenever the article has one,
+  // even if this run's norms did not let it bite (it grosses up MARKER-sourced norms only; a manual
+  // norm keeps taking its BOM wastage % instead, and a caveat says so). So required =
+  // required_before_coefficient × cutting_coefficient holds for a row fed only by marker norms, and
+  // not for a row that mixes marker and manual ones — the two numbers are still exactly what they
+  // say they are.
+  google.type.Decimal required_before_coefficient = 10;
+  google.type.Decimal cutting_coefficient = 11;
+  // Vocabulary normalisation of `unit` (Ф5а.3). UNKNOWN = the row's unit is free text this
+  // server does not know, and quantities under it must not be added to anything else's.
+  common.MaterialUnit unit_code = 12;
 }
 
 // MaterialPlanContribution is one slot × colourway share of the plan — the factory-spec breakdown
@@ -6475,6 +6490,10 @@ message MaterialPlanContribution {
   string unit = 9; // the slot's spec unit (rollup rows may convert to the stock unit)
   google.type.Decimal required = 10; // in `unit`; wastage applied to measured norms only
   bool has_size_norms = 11;
+  // Same decomposition as on the rollup row (Ф5а.2), per slot × colourway: required without the
+  // article's cutting coefficient, and the coefficient applied (unset = the article has none).
+  google.type.Decimal required_before_coefficient = 12;
+  google.type.Decimal cutting_coefficient = 13;
 }
 
 // MaterialPlanBlocker is a slot × colourway the plan could NOT count — a missing article (no pin,
@@ -6519,6 +6538,15 @@ message ReceiveMaterialStockRequest {
   // When this delivery was promised to arrive (Phase 9), YYYY-MM-DD; empty = not tracked. Recorded
   // on the receipt so lateness (occurred_at vs expected_at) is a queryable fact without a PO.
   string expected_at = 12;
+  // Roll facts captured at приёмка (Ф5а.1). Both are recorded on the LOT `lot` names, so they are
+  // read ONLY when `lot` is set; an omitted value never clears what an earlier receipt into the same
+  // lot recorded.
+  //   measured_width_cm — the width that ARRIVED, not the one the supplier printed (150 nominal,
+  //     148 measured; the marker is made for the narrowest width in the batch). Must be > 0 when set.
+  //   shade_code — the dye lot / оттенок, for colour matching across rolls.
+  // Measured LENGTH has no field: `quantity` already is it.
+  google.type.Decimal measured_width_cm = 13;
+  string shade_code = 14;
 }
 
 message ReceiveMaterialStockResponse {

@@ -58,6 +58,19 @@ type MaterialLot struct {
 	ReceivedAt   sql.NullTime        `db:"received_at"`
 	Note         sql.NullString      `db:"note"`
 	Archived     bool                `db:"archived"`
+	// MeasuredWidthCm is the width that ARRIVED (Ф5а.1), as opposed to the width the supplier
+	// printed: the supplier says 150, the roll measures 148, and the marker has to be made for the
+	// NARROWEST width in the batch. The article's nominal width lives on material_fabric_attr —
+	// this is the measured fact for THIS roll. Invalid = nobody measured it, which is not the same
+	// as "it matches the nominal".
+	//
+	// There is deliberately no measured LENGTH: ReceivedQty already is it, in the material's unit.
+	MeasuredWidthCm decimal.NullDecimal `db:"measured_width_cm"`
+	// ShadeCode is the dye lot / оттенок of this roll (Ф5а.1), for colour matching across rolls.
+	// Invalid = unrecorded. Note the shop's caveat: the shade drifts WITHIN a batch too, which is
+	// why pieces of one garment are cut from adjacent layers — that is a lay-screen note, not a
+	// field.
+	ShadeCode sql.NullString `db:"shade_code"`
 }
 
 // MaterialPriceSourcePurchase marks a price point that entered the history from a stock receipt
@@ -137,9 +150,9 @@ type MaterialMovement struct {
 	SupplierId sql.NullInt32 `db:"supplier_id"`
 	// ExpectedAt is when a purchase receipt was promised to arrive (Phase 9) — lateness becomes a
 	// queryable fact (occurred_at vs expected_at) without a PO entity.
-	ExpectedAt sql.NullTime   `db:"expected_at"`
-	Reason     sql.NullString `db:"reason"`
-	Comment    sql.NullString `db:"comment"`
+	ExpectedAt    sql.NullTime   `db:"expected_at"`
+	Reason        sql.NullString `db:"reason"`
+	Comment       sql.NullString `db:"comment"`
 	AdminUsername string         `db:"admin_username"`
 	OccurredAt    sql.NullTime   `db:"occurred_at"`
 	CreatedAt     time.Time      `db:"created_at"`
@@ -160,6 +173,11 @@ type MaterialReceiptInsert struct {
 	Currency        string
 	ProductionRunId sql.NullInt32
 	Lot             sql.NullString
+	// MeasuredWidthCm / ShadeCode are captured on the LOT this receipt opens or tops up (Ф5а.1) —
+	// they are only read when Lot names a lot code, and an omitted value never clears what an
+	// earlier receipt into the same lot recorded.
+	MeasuredWidthCm decimal.NullDecimal
+	ShadeCode       sql.NullString
 	SupplierDoc     sql.NullString
 	// SupplierId optionally tags a purchase receipt with a catalogued supplier (phase 2, wave 4 — AP
 	// subledger). NULL for a receipt entered without a supplier; ignored for a receipt_production.

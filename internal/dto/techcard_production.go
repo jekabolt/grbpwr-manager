@@ -1159,9 +1159,13 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 		// When the two disagree (slot metres, article priced per cone), norm × price is off by
 		// the whole conversion factor — leave the line unpriced instead, same rule as an
 		// unpriced pin: never a silently wrong number into product.cost_price.
+		//
+		// Compared through the unit vocabulary (Ф5а.3), not EqualFold: «м» and "m" ARE the same
+		// unit, and treating them as a disagreement did not produce a wrong number — it produced a
+		// silently MISSING one (an unpriced line, which also blocks the cost seed).
 		slotUnit := strings.TrimSpace(bom.Unit.String)
 		stockUnit := strings.TrimSpace(m.Unit.String)
-		if price != nil && (slotUnit == "" || stockUnit == "" || strings.EqualFold(slotUnit, stockUnit)) {
+		if price != nil && (slotUnit == "" || stockUnit == "" || entity.SameMaterialUnit(slotUnit, stockUnit)) {
 			sh.UnitPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
 			sh.Currency = sql.NullString{String: price.Currency, Valid: price.Currency != ""}
 		}

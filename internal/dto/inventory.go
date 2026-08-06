@@ -80,6 +80,16 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 	if err != nil {
 		return entity.MaterialReceiptInsert{}, err
 	}
+	// Roll facts recorded on the lot this receipt opens or tops up (Ф5а.1). A measured width of 0 is
+	// not a measurement, it is an empty field that a decimal cannot express as absent — reject it
+	// rather than storing a roll that is nought centimetres wide.
+	measuredWidth, err := nullDecimalFromPb(req.GetMeasuredWidthCm())
+	if err != nil {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf("measured_width_cm: %w", err)
+	}
+	if measuredWidth.Valid && !measuredWidth.Decimal.IsPositive() {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf("measured_width_cm must be positive when set")
+	}
 	expectedAt, err := parseNullDate(req.GetExpectedAt())
 	if err != nil {
 		return entity.MaterialReceiptInsert{}, fmt.Errorf("expected_at: %w", err)
@@ -97,18 +107,20 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		}
 	}
 	return entity.MaterialReceiptInsert{
-		MaterialId:     int(req.MaterialId),
-		Quantity:       qty,
-		UnitCost:       unitCost,
-		Currency:       currency,
-		Lot:            nullStringFromPb(req.GetLot()),
-		SupplierDoc:    nullStringFromPb(req.GetSupplierDoc()),
-		SupplierId:     sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
-		ExpectedAt:     expectedAt,
-		OccurredAt:     occurredAt,
-		Comment:        nullStringFromPb(req.GetComment()),
-		InputVatAmount: inputVatAmount,
-		InputVatRegime: inputVatRegime,
+		MaterialId:      int(req.MaterialId),
+		Quantity:        qty,
+		UnitCost:        unitCost,
+		Currency:        currency,
+		Lot:             nullStringFromPb(req.GetLot()),
+		MeasuredWidthCm: measuredWidth,
+		ShadeCode:       nullStringFromPb(req.GetShadeCode()),
+		SupplierDoc:     nullStringFromPb(req.GetSupplierDoc()),
+		SupplierId:      sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
+		ExpectedAt:      expectedAt,
+		OccurredAt:      occurredAt,
+		Comment:         nullStringFromPb(req.GetComment()),
+		InputVatAmount:  inputVatAmount,
+		InputVatRegime:  inputVatRegime,
 	}, nil
 }
 
@@ -537,6 +549,10 @@ func MaterialLotToPb(l entity.MaterialLot) *pb_common.MaterialLot {
 		Currency:     l.Currency.String,
 		Note:         l.Note.String,
 		Archived:     l.Archived,
+		// Ф5а.1: the measured roll facts. Absent stays absent — an unmeasured roll must not read as
+		// "0 cm wide" or as agreeing with the article's nominal width.
+		MeasuredWidthCm: pbDecimalFromNull(l.MeasuredWidthCm),
+		ShadeCode:       l.ShadeCode.String,
 	}
 	if l.ReceivedAt.Valid {
 		pb.ReceivedAt = timestamppb.New(l.ReceivedAt.Time)

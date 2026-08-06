@@ -25,27 +25,37 @@ func upsertLotOnReceipt(ctx context.Context, db dependency.DB, ins entity.Materi
 	// A top-up also un-archives the lot: a fresh receipt under this code means the roll is back on
 	// the shelf, and silently accumulating into a hidden (archived) lot would make the stock
 	// invisible in the default lot list (g25-06).
+	// measured_width_cm / shade_code (Ф5а.1) follow the same COALESCE(VALUES(x), x) rule as the rest
+	// of the top-up fields: a later receipt into the same lot that leaves them blank must not erase
+	// the measurement the first receipt recorded, while a receipt that DOES carry a new measurement
+	// overwrites it — re-measuring a roll is a correction, not a second roll.
 	id, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO material_lot
-			(material_id, lot_code, supplier_doc, received_qty, remaining_qty, unit_cost, currency, received_at)
-		VALUES (:material_id, :lot_code, :supplier_doc, :qty, :qty, :unit_cost, :currency, :received_at)
+			(material_id, lot_code, supplier_doc, received_qty, remaining_qty, unit_cost, currency, received_at,
+			 measured_width_cm, shade_code)
+		VALUES (:material_id, :lot_code, :supplier_doc, :qty, :qty, :unit_cost, :currency, :received_at,
+			 :measured_width_cm, :shade_code)
 		ON DUPLICATE KEY UPDATE
-			id            = LAST_INSERT_ID(id),
-			received_qty  = received_qty + VALUES(received_qty),
-			remaining_qty = remaining_qty + VALUES(remaining_qty),
-			supplier_doc  = COALESCE(VALUES(supplier_doc), supplier_doc),
-			unit_cost     = COALESCE(VALUES(unit_cost), unit_cost),
-			currency      = COALESCE(VALUES(currency), currency),
-			received_at   = COALESCE(VALUES(received_at), received_at),
-			archived      = FALSE`,
+			id                = LAST_INSERT_ID(id),
+			received_qty      = received_qty + VALUES(received_qty),
+			remaining_qty     = remaining_qty + VALUES(remaining_qty),
+			supplier_doc      = COALESCE(VALUES(supplier_doc), supplier_doc),
+			unit_cost         = COALESCE(VALUES(unit_cost), unit_cost),
+			currency          = COALESCE(VALUES(currency), currency),
+			received_at       = COALESCE(VALUES(received_at), received_at),
+			measured_width_cm = COALESCE(VALUES(measured_width_cm), measured_width_cm),
+			shade_code        = COALESCE(VALUES(shade_code), shade_code),
+			archived          = FALSE`,
 		map[string]any{
-			"material_id":  ins.MaterialId,
-			"lot_code":     code,
-			"supplier_doc": ins.SupplierDoc,
-			"qty":          ins.Quantity.Round(qtyScale),
-			"unit_cost":    nullDecimal(ins.UnitCost),
-			"currency":     currencyNull(ins.Currency),
-			"received_at":  ins.OccurredAt,
+			"material_id":       ins.MaterialId,
+			"lot_code":          code,
+			"supplier_doc":      ins.SupplierDoc,
+			"qty":               ins.Quantity.Round(qtyScale),
+			"unit_cost":         nullDecimal(ins.UnitCost),
+			"currency":          currencyNull(ins.Currency),
+			"received_at":       ins.OccurredAt,
+			"measured_width_cm": nullDecimal(ins.MeasuredWidthCm),
+			"shade_code":        trimmedNull(ins.ShadeCode),
 		})
 	if err != nil {
 		return sql.NullInt32{}, fmt.Errorf("open material lot %q: %w", code, err)
@@ -101,13 +111,24 @@ func (s *Store) ListMaterialLots(ctx context.Context, materialID int, includeArc
 	}
 	rows, err := storeutil.QueryListNamed[entity.MaterialLot](ctx, s.DB, `
 		SELECT id, material_id, lot_code, supplier_doc, received_qty, remaining_qty, unit_cost,
-		       currency, received_at, note, archived
+		       currency, received_at, note, archived, measured_width_cm, shade_code
 		FROM material_lot `+where+`
 		ORDER BY received_at DESC, id DESC`, map[string]any{"m": materialID})
 	if err != nil {
 		return nil, fmt.Errorf("list material lots: %w", err)
 	}
 	return rows, nil
+}
+
+// trimmedNull turns a (possibly blank) NullString into one that is NULL when it holds only
+// whitespace — so a receipt sending an empty shade_code stores "unrecorded", not an empty string
+// that the top-up COALESCE would then treat as a real value and refuse to fill in later.
+func trimmedNull(s sql.NullString) sql.NullString {
+	v := strings.TrimSpace(s.String)
+	if !s.Valid || v == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: v, Valid: true}
 }
 
 // currencyNull turns a (possibly empty) currency string into an upper-cased NullString (empty → NULL).
