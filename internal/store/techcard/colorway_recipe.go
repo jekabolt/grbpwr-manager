@@ -88,15 +88,55 @@ func agreedSlotProvenance(rows []usageProvenance) (usageProvenance, bool) {
 	return first, true
 }
 
-// rollGoodsSections are the BOM families a fabric marker can lay out — the only rows where
-// consumption_source='marker' is meaningful. Countable sections never gross wastage anyway;
+// rollGoodsSectionList is THE list of BOM families sold by length — the only rows a marker can lay
+// out (so the only ones where consumption_source='marker' is meaningful), and the only ones a
+// pattern sheet or a cut-piece alias can bind to. Countable sections never gross wastage anyway;
 // thread/trim/decoration are measured and MUST keep their gross-up.
-var rollGoodsSections = map[string]bool{
-	string(entity.BomSectionFabric):      true,
-	string(entity.BomSectionLining):      true,
-	string(entity.BomSectionInterlining): true,
-	string(entity.BomSectionInsulation):  true,
+//
+// Everything below is DERIVED from this slice, deliberately. The membership map, the named-query
+// args and the SQL fragment used to be three hand-written copies sitting next to each other with a
+// comment claiming they could not drift. Proximity is not coupling: adding a fifth family to the
+// map would have left the fragment at four, and the failure is silent in the worst direction —
+// markers would accept the family, pattern/alias binding would refuse it, and no test would notice
+// because the extra named arg is simply ignored by sqlx.
+var rollGoodsSectionList = []entity.TechCardBomSection{
+	entity.BomSectionFabric,
+	entity.BomSectionLining,
+	entity.BomSectionInterlining,
+	entity.BomSectionInsulation,
 }
+
+var rollGoodsSections = func() map[string]bool {
+	m := make(map[string]bool, len(rollGoodsSectionList))
+	for _, s := range rollGoodsSectionList {
+		m[string(s)] = true
+	}
+	return m
+}()
+
+// rollGoodsSectionParam is the named parameter for one family; the fragment and the args helper
+// call it, so the two cannot name different things.
+func rollGoodsSectionParam(s entity.TechCardBomSection) string { return "sec_" + string(s) }
+
+// rollGoodsSectionArgs binds the families as named query params, on top of whatever the caller
+// already put in the map.
+func rollGoodsSectionArgs(args map[string]any) map[string]any {
+	for _, s := range rollGoodsSectionList {
+		args[rollGoodsSectionParam(s)] = string(s)
+	}
+	return args
+}
+
+// rollGoodsSectionIn is the matching SQL fragment: `section IN (:sec_fabric, …)`. Concatenated
+// after an `AND `, never containing a ':' inside a SQL comment (that combination is what breaks
+// sqlx binding with "could not find name  in map").
+var rollGoodsSectionIn = func() string {
+	names := make([]string, 0, len(rollGoodsSectionList))
+	for _, s := range rollGoodsSectionList {
+		names = append(names, ":"+rollGoodsSectionParam(s))
+	}
+	return "section IN (" + strings.Join(names, ", ") + ")"
+}()
 
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
 	normalizedPlacement := ""

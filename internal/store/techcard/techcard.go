@@ -1344,24 +1344,24 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	// The fabric-slot line keys are loaded lazily, only when some payload row binds a NEW slot —
 	// bindings that merely round-trip the stored value are tolerated even when the slot is gone
 	// («слот удалён» is a UI state, not a reason to block the save).
-	var fabricKeys map[string]struct{}
-	loadFabricKeys := func() (map[string]struct{}, error) {
-		if fabricKeys != nil {
-			return fabricKeys, nil
+	var rollGoodsKeys map[string]struct{}
+	loadRollGoodsKeys := func() (map[string]struct{}, error) {
+		if rollGoodsKeys != nil {
+			return rollGoodsKeys, nil
 		}
 		rows, err := storeutil.QueryListNamed[struct {
 			LineKey string `db:"line_key"`
 		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_bom_item
-			WHERE tech_card_id = :id AND section = :section`,
-			map[string]any{"id": id, "section": string(entity.BomSectionFabric)})
+			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
+			rollGoodsSectionArgs(map[string]any{"id": id}))
 		if err != nil {
-			return nil, fmt.Errorf("load fabric bom line keys: %w", err)
+			return nil, fmt.Errorf("load roll-goods bom line keys: %w", err)
 		}
-		fabricKeys = make(map[string]struct{}, len(rows))
+		rollGoodsKeys = make(map[string]struct{}, len(rows))
 		for _, r := range rows {
-			fabricKeys[r.LineKey] = struct{}{}
+			rollGoodsKeys[r.LineKey] = struct{}{}
 		}
-		return fabricKeys, nil
+		return rollGoodsKeys, nil
 	}
 	seenPayload := make(map[string]struct{}, len(patterns))
 	seenKeys := make(map[string]struct{}, len(patterns))
@@ -1475,7 +1475,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			maxVersionBySize[p.SizeId] = version
 		}
 		// The fabric binding is presence-gated like the name: absent carries the stored binding
-		// forward. A present, non-empty value that CHANGES the binding must name a live fabric slot;
+		// forward. A present, non-empty value that CHANGES the binding must name a live roll-goods slot;
 		// an unchanged round-trip passes even when the slot has been deleted since.
 		var storedBinding sql.NullString
 		if matched != nil {
@@ -1484,14 +1484,14 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		bomLineKey := storeutil.ResolveNullableOnPresence(p.BomLineKey, storedBinding)
 		if bomLineKey.Valid && bomLineKey.String != "" &&
 			(!storedBinding.Valid || storedBinding.String != bomLineKey.String) {
-			keys, err := loadFabricKeys()
+			keys, err := loadRollGoodsKeys()
 			if err != nil {
 				return err
 			}
 			if _, ok := keys[bomLineKey.String]; !ok {
 				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].bom_line_key", i),
-					fmt.Sprintf("no fabric BOM line %q in this tech card", bomLineKey.String), "",
-					"bind the sheet to a fabric-section BOM line, or leave it unbound")
+					fmt.Sprintf("no roll-goods BOM line %q in this tech card", bomLineKey.String), "",
+					"bind the sheet to a fabric, lining, interlining or insulation BOM line, or leave it unbound")
 			}
 		}
 		params := map[string]any{

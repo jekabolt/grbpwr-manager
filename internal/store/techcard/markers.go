@@ -26,7 +26,7 @@ import (
 // layout must never ride a summary query, and JSON columns read via * resurface the
 // quoted-JSON-scalar bug (see UnquoteLegacyComposition).
 const markerSummaryColumns = `
-	m.id, m.tech_card_id, m.size_id, m.name, m.source, m.bom_item_id,
+	m.id, m.tech_card_id, m.size_id, m.name, m.source, m.bom_item_id, m.colorway_id,
 	b.line_key AS bom_line_key, b.name AS bom_item_name, b.unit AS bom_item_unit,
 	m.fabric_width_cm, m.gap_cm, m.edge_margin_cm, m.selvedge_cm, m.allow_cross_grain, m.sets,
 	m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count,
@@ -112,18 +112,45 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		}
 		bomItemID := sql.NullInt64{}
 		if key := strings.TrimSpace(ins.BomLineKey); key != "" {
+			// Roll goods only, the same four families a pattern sheet and a cut-piece alias bind to.
+			// A marker MEASURES A LENGTH OF CLOTH: bound to a thread or hardware line it would be a
+			// consumption norm for something that is counted, not laid out. The RPC used to accept
+			// any line of the card and only the UI kept it honest — which is not a guarantee, it is
+			// a habit.
 			row, err := storeutil.QueryNamedOne[struct {
 				Id int64 `db:"id"`
-			}](ctx, db, `SELECT id FROM tech_card_bom_item WHERE tech_card_id = :card AND line_key = :key`,
-				map[string]any{"card": techCardID, "key": key})
+			}](ctx, db, `SELECT id FROM tech_card_bom_item
+				WHERE tech_card_id = :card AND line_key = :key AND `+rollGoodsSectionIn,
+				rollGoodsSectionArgs(map[string]any{"card": techCardID, "key": key}))
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					return entity.NewFieldViolation("bom_line_key", "not_found", key,
-						"pick a BOM fabric line of this card, or leave the marker unlinked")
+						"pick a fabric, lining, interlining or insulation BOM line of this card, or leave the marker unlinked")
 				}
 				return fmt.Errorf("resolve bom line %q of tech card %d: %w", key, techCardID, err)
 			}
 			bomItemID = sql.NullInt64{Int64: row.Id, Valid: true}
+		}
+		// The colourway a раскладка is measured FOR (0264). It must be a colourway OF THIS CARD:
+		// a colourway is a product row whose style_id is the card (0151 merged the domains), and
+		// the FK alone would accept any product in the catalogue — attributing a layout to another
+		// style's colourway, which then offers it in that style's recipe at a width from here.
+		// ARCHIVED(4) is excluded to match the card read, which drops archived colourways entirely
+		// — a marker pointing at one would be attributed to something the operator cannot see.
+		colorwayID := sql.NullInt64{}
+		if ins.ColorwayId > 0 {
+			n, err := storeutil.QueryCountNamed(ctx, db,
+				`SELECT COUNT(*) FROM product WHERE id = :cw AND style_id = :card AND lifecycle_status <> 4`,
+				map[string]any{"cw": ins.ColorwayId, "card": techCardID})
+			if err != nil {
+				return fmt.Errorf("check colorway %d on tech card %d: %w", ins.ColorwayId, techCardID, err)
+			}
+			if n == 0 {
+				return entity.NewFieldViolation("colorway_id", "not_on_card",
+					fmt.Sprintf("colorway %d", ins.ColorwayId),
+					"the marker's colourway must be a live colourway of this tech card, or leave it unset")
+			}
+			colorwayID = sql.NullInt64{Int64: int64(ins.ColorwayId), Valid: true}
 		}
 		params := map[string]any{
 			"id":                id,
@@ -143,6 +170,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"placed_count":      ins.PlacedCount,
 			"total_count":       ins.TotalCount,
 			"layout":            ins.Layout,
+			"colorway_id":       colorwayID,
 			"username":          username,
 		}
 		if id > 0 {
@@ -164,7 +192,8 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			if _, err := storeutil.ExecNamedRows(ctx, db, `
 				UPDATE tech_card_marker
-				SET size_id = :size_id, bom_item_id = :bom_item_id, name = :name, source = :source,
+				SET size_id = :size_id, bom_item_id = :bom_item_id, colorway_id = :colorway_id,
+				    name = :name, source = :source,
 				    fabric_width_cm = :fabric_width_cm, gap_cm = :gap_cm,
 				    edge_margin_cm = :edge_margin_cm, selvedge_cm = :selvedge_cm,
 				    allow_cross_grain = :allow_cross_grain,
@@ -179,10 +208,10 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		}
 		newID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_marker
-				(tech_card_id, size_id, bom_item_id, name, source, fabric_width_cm, gap_cm,
+				(tech_card_id, size_id, bom_item_id, colorway_id, name, source, fabric_width_cm, gap_cm,
 				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, used_length_cm, efficiency_pct,
 				 placed_count, total_count, layout, created_by, updated_by)
-			VALUES (:tech_card_id, :size_id, :bom_item_id, :name, :source, :fabric_width_cm, :gap_cm,
+			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :name, :source, :fabric_width_cm, :gap_cm,
 				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :used_length_cm, :efficiency_pct,
 				 :placed_count, :total_count, :layout, :username, :username)`, params)
 		if err != nil {

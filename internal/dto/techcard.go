@@ -934,6 +934,7 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		Name:                 m.Name,
 		Source:               m.Source,
 		BomLineKey:           pbStringFromNull(m.BomLineKey),
+		ColorwayId:           int32(m.ColorwayId.Int64),
 		BomItemName:          pbStringFromNull(m.BomItemName),
 		BomItemUnit:          pbStringFromNull(m.BomItemUnit),
 		FabricWidthCm:        pbDecimalFromDecimal(m.FabricWidthCm),
@@ -1069,11 +1070,18 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if pb.TotalCount < 1 {
 		return out, fmt.Errorf("total_count must be at least 1")
 	}
+	// 0 is «not colourway-specific», the legacy shape; a NEGATIVE id is a client bug, and letting
+	// it through would reach the store as an id that simply resolves to nothing — a refusal about
+	// a colourway that «is not on this card» rather than about a malformed number.
+	if pb.ColorwayId < 0 {
+		return out, fmt.Errorf("colorway_id must not be negative")
+	}
 	return entity.TechCardMarkerInsert{
 		SizeId:          int(pb.SizeId),
 		Name:            name,
 		Source:          source,
 		BomLineKey:      strings.TrimSpace(pb.BomLineKey),
+		ColorwayId:      int(pb.ColorwayId),
 		FabricWidthCm:   width,
 		GapCm:           gap.Decimal,
 		EdgeMarginCm:    margin.Decimal,

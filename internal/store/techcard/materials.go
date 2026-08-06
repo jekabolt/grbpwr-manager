@@ -899,7 +899,7 @@ type techCardPieceDxfAliasRow struct {
 // pieces. Presence-gated: a payload that did not speak (set=false — a stale client) leaves stored
 // aliases untouched; a present payload is the new full set. An EXISTING (slot, block) pair is
 // grandfathered even when its slot left the BOM («слот удалён» is a UI state); a NEW pair requires
-// a live fabric slot.
+// a live roll-goods slot.
 func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string) error {
 	if !set {
 		return nil
@@ -933,19 +933,19 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 	for _, r := range existing {
 		existingByKey[ciKey(r.BomLineKey, r.BlockName)] = r
 	}
-	var fabricKeys map[string]struct{}
+	var rollGoodsKeys map[string]struct{}
 	if len(aliases) > 0 {
 		rows, err := storeutil.QueryListNamed[struct {
 			LineKey string `db:"line_key"`
 		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_bom_item
-			WHERE tech_card_id = :id AND section = :section`,
-			map[string]any{"id": tcID, "section": string(entity.BomSectionFabric)})
+			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
+			rollGoodsSectionArgs(map[string]any{"id": tcID}))
 		if err != nil {
-			return fmt.Errorf("failed to load fabric bom line keys for dxf aliases: %w", err)
+			return fmt.Errorf("failed to load roll-goods bom line keys for dxf aliases: %w", err)
 		}
-		fabricKeys = make(map[string]struct{}, len(rows))
+		rollGoodsKeys = make(map[string]struct{}, len(rows))
 		for _, r := range rows {
-			fabricKeys[strings.ToLower(r.LineKey)] = struct{}{}
+			rollGoodsKeys[strings.ToLower(r.LineKey)] = struct{}{}
 		}
 	}
 	seen := make(map[string]bool, len(aliases))
@@ -965,9 +965,10 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 				}
 			}
 		} else {
-			if _, live := fabricKeys[strings.ToLower(a.BomLineKey)]; !live {
+			if _, live := rollGoodsKeys[strings.ToLower(a.BomLineKey)]; !live {
 				return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i),
-					"not_found", a.BomLineKey, "pick a fabric BOM line of this card")
+					"not_found", a.BomLineKey,
+					"pick a fabric, lining, interlining or insulation BOM line of this card")
 			}
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO tech_card_piece_dxf_block

@@ -204,6 +204,11 @@ type TechCardMarkerInsert struct {
 	Name            string          `db:"name"`
 	Source          MarkerSource    `db:"source"`
 	BomLineKey      string          `db:"-"`
+	// ColorwayId pins the colourway whose ARTICLE this layout was measured on (0264). 0 = not
+	// colourway-specific. It matters because the width does: a colourway names its own catalog
+	// article per slot, and the same pieces on a 140 cm and a 150 cm roll are two different
+	// markers with two different lengths.
+	ColorwayId int `db:"-"`
 	FabricWidthCm   decimal.Decimal `db:"fabric_width_cm"`
 	GapCm           decimal.Decimal `db:"gap_cm"`
 	EdgeMarginCm    decimal.Decimal `db:"edge_margin_cm"`
@@ -232,6 +237,7 @@ type TechCardMarkerSummary struct {
 	Name            string              `db:"name"`
 	Source          string              `db:"source"`
 	BomItemId       sql.NullInt64       `db:"bom_item_id"`
+	ColorwayId      sql.NullInt64       `db:"colorway_id"`
 	BomLineKey      sql.NullString      `db:"bom_line_key"`
 	BomItemName     sql.NullString      `db:"bom_item_name"`
 	BomItemUnit     sql.NullString      `db:"bom_item_unit"`
