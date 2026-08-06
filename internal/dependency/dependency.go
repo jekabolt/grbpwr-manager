@@ -1273,6 +1273,17 @@ type (
 		SetBackgroundHeroColor(ctx context.Context, color string) error
 	}
 
+	// Workshop is «дом настроек цеха» (Ф2.5, 0272): the singleton row of shop-floor constants that
+	// several phases of the cutting plan each assumed existed. Distinct from Settings, which is the
+	// STOREFRONT's configuration (carriers, payment, site availability) — nothing about the workshop
+	// belongs on that surface and nothing here belongs on the storefront.
+	Workshop interface {
+		GetSettings(ctx context.Context) (*entity.WorkshopSettings, error)
+		// UpdateSettings applies a partial patch (a setting the patch does not name keeps its stored
+		// value) and returns the resulting configuration.
+		UpdateSettings(ctx context.Context, patch entity.WorkshopSettingsPatch, updatedBy string) (*entity.WorkshopSettings, error)
+	}
+
 	// PatternObjects manages pattern_object_access rows — per-object revocation epoch,
 	// expiry policy and coarse access stats behind the tokenized pattern read path
 	// /api/p/{token}. Rows are created lazily; a missing row means default access state.
@@ -1330,6 +1341,7 @@ type (
 		Analytics() Analytics
 		Media() Media
 		Settings() Settings
+		Workshop() Workshop
 		Support() Support
 		Language() Language
 		PatternObjects() PatternObjects

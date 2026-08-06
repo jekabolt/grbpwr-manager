@@ -362,6 +362,19 @@ var methodRequirements = map[string]Requirement{
 	// (it moves sellable stock and rolls back cost_price).
 	"ReverseProductionRunReceipt":  wr(SectionProduction),
 	"GetProductionRunMaterialPlan": rd(SectionProduction),
+	// «Дом настроек цеха» (Ф2.5) — the physical shop floor's constants (cutting table length today;
+	// припуск, высота стопки, минимальный зазор next). Classified under production, NOT under
+	// SectionSettings: that section is the STOREFRONT's configuration ("Store settings and shipment
+	// carriers"), and the precedent for domain config is GetAlertSettings/UpsertAlertSettings, which
+	// sit in the section they serve rather than in settings.
+	//
+	// The write gate is deliberately production:write and not tech_cards:write. Changing the table
+	// length moves the verdict for every раскладка in the shop, so it belongs to whoever runs the
+	// floor, not to everyone who may edit a card. The consequence to know: the первый consumer is the
+	// tech-card nesting modal, so a tech_cards-only account cannot read the default — the modal must
+	// degrade to asking the operator for a length (today's behaviour), not fail.
+	"GetWorkshopSettings":    rd(SectionProduction),
+	"UpdateWorkshopSettings": wr(SectionProduction),
 	// material warehouse (new-flow NF-01)
 	"ReceiveMaterialStock":    wr(SectionInventory),
 	"IssueMaterialStock":      wr(SectionInventory),

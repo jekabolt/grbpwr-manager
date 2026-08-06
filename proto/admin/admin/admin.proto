@@ -1595,6 +1595,26 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/tech-card/marker/{id}"};
   }
 
+  // GetWorkshopSettings returns «дом настроек цеха» (Ф2.5, 0272): the shop-floor constants that
+  // belong to the ЦЕХ itself and not to any one card or раскладка. Первый жилец is the cutting
+  // table length, which the nesting modal used to make the operator retype on every раскладка.
+  // Every setting is individually optional — an absent one is NOT configured, and a consumer must
+  // degrade to "no verdict" rather than substitute a zero.
+  rpc GetWorkshopSettings(GetWorkshopSettingsRequest) returns (GetWorkshopSettingsResponse) {
+    option (google.api.http) = {get: "/api/admin/workshop/settings"};
+  }
+
+  // UpdateWorkshopSettings patches the workshop configuration. Partial by construction: an omitted
+  // setting is left alone (see UpdateWorkshopSettingsRequest). Returns the resulting configuration,
+  // so a caller never needs a follow-up read. A request that names no setting at all, or a value
+  // outside the plausibility band for its unit, is InvalidArgument with a field-tagged detail.
+  rpc UpdateWorkshopSettings(UpdateWorkshopSettingsRequest) returns (UpdateWorkshopSettingsResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/workshop/settings"
+      body: "*"
+    };
+  }
+
   // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
   // that ship, the on-garment assembly (labels/tags) to verify per line, and the packaging the whole
   // order needs (resolved from WS2 packaging_recipe). Read-only — reserves/consumes nothing.
@@ -4486,6 +4506,59 @@ message UpdateSettingsRequest {
 }
 
 message UpdateSettingsResponse {}
+
+// WORKSHOP SETTINGS (Ф2.5) — «дом настроек цеха». Distinct from the block above: UpdateSettings is
+// the STOREFRONT's configuration (carriers, payment, site availability); this is the physical shop
+// floor. Nothing crosses.
+
+// WorkshopSettings is the singleton shop-floor configuration (workshop_settings, 0272).
+message WorkshopSettings {
+  // Usable length of the cutting/spreading table, in CENTIMETRES.
+  //
+  // ABSENT means the workshop has not configured a table, and that is NOT the same as zero. A
+  // consumer computing a length verdict must render "no verdict available" for an absent value —
+  // comparing against 0 would tell a workshop that has merely not filled this in that every
+  // раскладка it lays is too long, which is worse than saying nothing.
+  google.type.Decimal cutting_table_length_cm = 1;
+
+  string updated_by = 2; // admin username of the last writer; "" = never written
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message GetWorkshopSettingsRequest {}
+
+message GetWorkshopSettingsResponse {
+  WorkshopSettings settings = 1;
+}
+
+// UpdateWorkshopSettingsRequest is a PARTIAL update, and each setting is TRI-STATE:
+//
+//   * ABSENT               — leave the stored value alone. This is the default for any client that
+//                            does not know the setting exists, so a workshop screen shipped before a
+//                            new tenant landed can never wipe it.
+//   * PRESENT, empty value — clear the setting back to "not configured". Needed for real: an
+//                            operator who mistyped the table length must be able to return it to
+//                            unknown, because a wrong number produces confident false verdicts while
+//                            an unset one produces none.
+//   * PRESENT with a number — set it.
+//
+// NOTE for JSON/REST callers: protojson cannot tell `"cuttingTableLengthCm": null` from an absent
+// field, so null also reads as "leave alone". To CLEAR a setting send the empty message —
+// `{"cuttingTableLengthCm": {}}` — not null.
+//
+// A request that names no setting at all is rejected rather than executed: it would write nothing
+// but still stamp updated_by/updated_at, putting a fake edit in the audit trail.
+message UpdateWorkshopSettingsRequest {
+  // Centimetres. Rejected with a field-tagged InvalidArgument outside the plausibility band
+  // (entity.Min/MaxCuttingTableLengthCm): the single most likely operator mistake is typing METRES
+  // into a field labelled centimetres, and "6" for a 6 m table would otherwise be accepted and then
+  // declare every раскладка too long.
+  google.type.Decimal cutting_table_length_cm = 1;
+}
+
+message UpdateWorkshopSettingsResponse {
+  WorkshopSettings settings = 1; // the configuration AFTER the write
+}
 
 // PaymentMethodFee is the estimated processing-fee model of a payment method.
 message PaymentMethodFee {
