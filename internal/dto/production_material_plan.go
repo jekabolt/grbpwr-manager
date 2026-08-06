@@ -163,8 +163,22 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	var caveats []string
 	noProductNoted, noColorwayNoted := false, false
 	noBomNoted := make(map[string]bool) // by colourway name
-	unitNoted := make(map[int]bool)     // by material id — unit mismatch / conversion notes
-	plannedByColorway := map[int]int{}  // product id → Σ planned qty (for uncovered-slot blockers)
+	// Unit notes are de-duplicated by the STATEMENT, not by the material. The loop below visits the
+	// same slot × colourway once per run line (product × size), so some dedupe is needed or a
+	// five-size run repeats every note five times — but a latch keyed on the material id alone was
+	// worse than noise: it let the FIRST unit note an article produced silence every later one. An
+	// article fed by one slot in metres (converted to kg) and another in pcs then reported only the
+	// successful conversion, so a total summed across units read as a precise, converted figure.
+	// Keying on the text means every DISTINCT thing that is true about this article gets said once.
+	unitNoted := make(map[string]bool)
+	noteUnit := func(msg string) {
+		if unitNoted[msg] {
+			return
+		}
+		unitNoted[msg] = true
+		caveats = append(caveats, msg)
+	}
+	plannedByColorway := map[int]int{} // product id → Σ planned qty (for uncovered-slot blockers)
 	usedSlotsByColorway := map[int]map[int]bool{}
 
 	for i := range run.Lines {
@@ -308,33 +322,23 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 					if kg.Valid && kgBase.Valid {
 						stockAdd, stockBase = kg.Decimal, kgBase.Decimal
 						rowUnit = stockUnit
-						if !unitNoted[mid] {
-							caveats = append(caveats, fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (кромка included) × %s g/m²",
-								matName(mid, bom), slotUnit, stockUnit,
-								width.Decimal.String(), gsm.Decimal.String()))
-							unitNoted[mid] = true
-						}
-					} else if !unitNoted[mid] {
-						caveats = append(caveats, fmt.Sprintf("%s: stocked in %s but the article has no full width and density — cannot convert the %s norm to weight; the row stays in %q",
+						noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (кромка included) × %s g/m²",
+							matName(mid, bom), slotUnit, stockUnit,
+							width.Decimal.String(), gsm.Decimal.String()))
+					} else {
+						noteUnit(fmt.Sprintf("%s: stocked in %s but the article has no full width and density — cannot convert the %s norm to weight; the row stays in %q",
 							matName(mid, bom), stockUnit, slotUnit, slotUnit))
-						unitNoted[mid] = true
 					}
 				case fromMetres &&
 					m.ThreadAttr != nil && m.ThreadAttr.LengthPerConeM.Valid && m.ThreadAttr.LengthPerConeM.Decimal.IsPositive():
 					stockAdd = add.Div(m.ThreadAttr.LengthPerConeM.Decimal)
 					stockBase = base.Div(m.ThreadAttr.LengthPerConeM.Decimal)
 					rowUnit = stockUnit
-					if !unitNoted[mid] {
-						caveats = append(caveats, fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
-							matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
-						unitNoted[mid] = true
-					}
+					noteUnit(fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
+						matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
 				default:
-					if !unitNoted[mid] {
-						caveats = append(caveats, fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
-							matName(mid, bom), slotUnit, stockUnit, slotUnit))
-						unitNoted[mid] = true
-					}
+					noteUnit(fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
+						matName(mid, bom), slotUnit, stockUnit, slotUnit))
 				}
 			}
 			a := req[mid]
@@ -347,6 +351,17 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				}
 				req[mid] = a
 				order = append(order, mid)
+			} else if a.unit != "" && rowUnit != "" && !entity.SameMaterialUnit(a.unit, rowUnit) {
+				// The row is about to add a quantity in one unit to a total kept in another, and it
+				// will keep the label of whichever unit was seen FIRST. That summation is an older
+				// defect with a wider blast radius than this phase, and it is being scoped separately
+				// — but it must never be silent, and above all it must not sit underneath a caveat
+				// that reads like a successful conversion. Keyed on the accumulator rather than on
+				// the conversion notes above, so no amount of successful converting can hide it.
+				noteUnit(fmt.Sprintf("%s: this run needs it in BOTH %q and %q — `required` is a SUM ACROSS UNITS "+
+					"labelled with the first unit seen (%q), so that number and its shortage are not usable; "+
+					"put the slots on one unit",
+					a.name, a.unit, rowUnit, a.unit))
 			}
 			a.required = a.required.Add(stockAdd)
 			a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)

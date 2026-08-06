@@ -232,3 +232,105 @@ func TestPlanKilogramsWithoutRollGeometryDoesNotGuess(t *testing.T) {
 	require.Equal(t, "200", resp.Rows[0].Required.Value)
 	require.True(t, hasCaveat(resp.Caveats, "cannot convert"), "%v", resp.Caveats)
 }
+
+// mixedUnitFixture is the shape the caveat latch used to hide: ONE article reached by two slots of
+// the same colourway measured in different units — slot A in metres (converted to the article's kg),
+// slot B in pieces. The rollup adds them anyway and labels the total with whichever unit it saw
+// first; that summation is an older defect being scoped separately, but it must never be silent.
+func mixedUnitFixture(qty int, sizes int) (*entity.ProductionRun, *entity.TechCard) {
+	card := &entity.TechCard{Id: 7}
+	card.BomItems = []entity.TechCardBomItem{
+		{
+			Id: 501, Name: "Main fabric", Section: entity.BomSectionFabric,
+			MaterialId: sql.NullInt64{Int64: 100, Valid: true},
+			Unit:       sql.NullString{String: "m", Valid: true},
+		},
+		{
+			Id: 502, Name: "Patch", Section: entity.BomSectionTrim,
+			MaterialId: sql.NullInt64{Int64: 100, Valid: true},
+			Unit:       sql.NullString{String: "pcs", Valid: true},
+		},
+	}
+	card.Colorways = []entity.TechCardColorway{{
+		Id: 1, Name: "black", ProductId: sql.NullInt32{Int32: 55, Valid: true},
+		Usages: []entity.TechCardColorwayUsage{
+			{
+				BomItemId:         sql.NullInt64{Int64: 501, Valid: true},
+				Consumption:       nd2("2"),
+				ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceManual, Valid: true},
+			},
+			{
+				BomItemId:         sql.NullInt64{Int64: 502, Valid: true},
+				Quantity:          nd2("3"),
+				ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceManual, Valid: true},
+			},
+		},
+	}}
+	run := &entity.ProductionRun{Id: 9, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7}}
+	for s := 1; s <= sizes; s++ {
+		run.Lines = append(run.Lines, entity.ProductionRunLine{
+			ProductId: sql.NullInt32{Int32: 55, Valid: true}, SizeId: s, PlannedQty: qty,
+		})
+	}
+	return run, card
+}
+
+// The caveat latch was keyed on the material id, so the FIRST unit note an article produced silenced
+// every later one. Here the winner was the kg conversion — which reads like a precise, successful
+// conversion — while the number underneath it was metres-converted-to-kg plus a raw count of pieces.
+// Making a wrong number look right is worse than leaving it obviously wrong.
+func TestPlanMixedSlotUnitsAreAlwaysCaveated(t *testing.T) {
+	run, card := mixedUnitFixture(100, 1)
+	attr := &entity.MaterialFabricAttr{WidthCm: nd2("150"), WeightGsm: nd2("220")}
+	resp := ComputeProductionRunMaterialPlan(run, card, map[int]decimal.Decimal{100: d("70")}, nil,
+		fabricArticle("kg", decimal.NullDecimal{}, attr))
+
+	require.Len(t, resp.Rows, 1)
+	row := resp.Rows[0]
+	// The sum across units is untouched by this fix — it is a separate, wider defect. What must NOT
+	// happen is that it goes unremarked.
+	require.Equal(t, "366", row.Required.Value, "66 kg + 300 pcs — the pre-existing mixed sum, unchanged")
+	require.Equal(t, "kg", row.Unit)
+
+	require.True(t, hasCaveat(resp.Caveats, "SUM ACROSS UNITS"),
+		"a total added across units must say so: %v", resp.Caveats)
+	require.True(t, hasCaveat(resp.Caveats, `"kg"`) && hasCaveat(resp.Caveats, `"pcs"`),
+		"the caveat must name BOTH units: %v", resp.Caveats)
+	// And the conversion note must still be there — the point is that neither hides the other.
+	require.True(t, hasCaveat(resp.Caveats, "кромка included"),
+		"the successful conversion is still reported: %v", resp.Caveats)
+}
+
+// The latch exists because the loop visits each slot once per run LINE. Dedupe is by the statement
+// now, not by the material, so a five-size run says each true thing once — and still says all of them.
+func TestPlanUnitCaveatsAreDedupedByStatementNotByMaterial(t *testing.T) {
+	run, card := mixedUnitFixture(10, 5)
+	attr := &entity.MaterialFabricAttr{WidthCm: nd2("150"), WeightGsm: nd2("220")}
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil,
+		fabricArticle("kg", decimal.NullDecimal{}, attr))
+
+	counts := map[string]int{}
+	for _, c := range resp.Caveats {
+		counts[c]++
+	}
+	for c, n := range counts {
+		require.Equal(t, 1, n, "caveat repeated %d times across 5 sizes: %q", n, c)
+	}
+	require.True(t, hasCaveat(resp.Caveats, "SUM ACROSS UNITS"), "%v", resp.Caveats)
+	require.True(t, hasCaveat(resp.Caveats, "кромка included"), "%v", resp.Caveats)
+}
+
+// A single-unit article must stay quiet: the new alarm keys on a real disagreement, not on the mere
+// presence of two slots.
+func TestPlanAgreeingSlotUnitsRaiseNoMixedUnitCaveat(t *testing.T) {
+	run, card := mixedUnitFixture(100, 1)
+	card.BomItems[1].Unit = sql.NullString{String: "м", Valid: true} // Cyrillic: the SAME unit as "m"
+	card.Colorways[0].Usages[1].Quantity = decimal.NullDecimal{}
+	card.Colorways[0].Usages[1].Consumption = nd2("3")
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil,
+		fabricArticle("m", decimal.NullDecimal{}, nil))
+
+	require.Equal(t, "500", resp.Rows[0].Required.Value, "200 m + 300 m, one unit throughout")
+	require.False(t, hasCaveat(resp.Caveats, "SUM ACROSS UNITS"),
+		"«м» and \"m\" are one unit — no disagreement to report: %v", resp.Caveats)
+}

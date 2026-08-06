@@ -606,6 +606,10 @@ message Material {
   string supplier_ref = 5;
   string composition = 6;
   string spec = 7; // ширина / плотность
+  // Free text, stored EXACTLY as sent — the server never respells it, so a client that writes "pc"
+  // reads back "pc". unit_code below is the server's read-only normalisation of this string, and it
+  // is what comparisons run on; migration 0271 collapsed the legacy catalogue spellings once, but
+  // that was a cleanup, not a standing write rule.
   string unit = 8;
   // FULL roll width in cm, кромка INCLUDED — despite what this comment said until Ф5а.4. Nothing has
   // ever subtracted the selvedge from it (0259 says so explicitly: the flat copy was labelled

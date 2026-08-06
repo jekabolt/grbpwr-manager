@@ -76,8 +76,17 @@ func NormalizeMaterialUnit(s string) (MaterialUnit, bool) {
 }
 
 // CanonicalMaterialUnit returns the canonical spelling of a free-text unit, or the trimmed original
-// when the vocabulary does not know it. This is what a write path stores: a known unit collapses
-// onto one spelling, an unknown one is preserved byte-for-byte.
+// when the vocabulary does not know it — the Go twin of migration 0271's CASE plus its `ELSE unit`
+// arm, which is why it is worth having and testing even though nothing calls it at runtime.
+//
+// NO WRITE PATH MAY CALL THIS, and that is deliberate. A version of Ф5а.3 did canonicalise
+// material.unit on save; it was reverted. Nothing in the codebase branches on a literal unit string
+// — every consumer (pbMaterialUnit, checkMaterialUnitChange, the UpsertOutputVariant sibling check,
+// pinShadowBom, the material plan) normalises on READ through NormalizeMaterialUnit /
+// SameMaterialUnit — so rewriting stored text buys no behaviour at all, while a caller that saves
+// "pc" and reads back "pcs" has had its data silently altered. It is the same trade that already
+// keeps tech_card_bom_item.unit alone. Canonical storage is 0271's ONE-TIME job on legacy rows, not
+// a standing policy.
 func CanonicalMaterialUnit(s string) string {
 	if u, ok := NormalizeMaterialUnit(s); ok {
 		return string(u)

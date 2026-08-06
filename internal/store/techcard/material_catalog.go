@@ -447,15 +447,22 @@ func (s *Store) ListMaterialPrices(ctx context.Context, materialID int) ([]entit
 // materialParams maps a MaterialInsert to named query params, normalising name, section and class.
 func materialParams(m *entity.MaterialInsert) map[string]any {
 	return map[string]any{
-		"name":                strings.TrimSpace(m.Name),
-		"section":             strings.ToLower(strings.TrimSpace(m.Section)),
-		"supplier":            m.Supplier,
-		"supplier_ref":        m.SupplierRef,
-		"supplier_id":         m.SupplierId,
-		"lead_time_days":      m.LeadTimeDays,
-		"composition":         m.Composition,
-		"spec":                m.Spec,
-		"unit":                canonicalUnitParam(m.Unit),
+		"name":           strings.TrimSpace(m.Name),
+		"section":        strings.ToLower(strings.TrimSpace(m.Section)),
+		"supplier":       m.Supplier,
+		"supplier_ref":   m.SupplierRef,
+		"supplier_id":    m.SupplierId,
+		"lead_time_days": m.LeadTimeDays,
+		"composition":    m.Composition,
+		"spec":           m.Spec,
+		// Stored VERBATIM. Ф5а.3 briefly canonicalised on write; that is reverted, because it bought
+		// nothing and broke read-your-writes: no production code branches on a literal unit string —
+		// pbMaterialUnit, checkMaterialUnitChange, the UpsertOutputVariant sibling check, pinShadowBom
+		// and the material plan all normalise on READ — so a caller that writes "pc" and reads back
+		// "pcs" got a silent rewrite in exchange for zero functional benefit. It is also the same
+		// argument that already keeps tech_card_bom_item.unit alone (0271's header): the functional
+		// benefit is taken by normalising in code. 0271 stays as a ONE-TIME cleanup of legacy rows.
+		"unit":                m.Unit,
 		"fabric_width":        nullDecimalParam(m.FabricWidth),
 		"fabric_weight_gsm":   nullDecimalParam(m.FabricWeightGsm),
 		"cutting_coefficient": nullDecimalParam(m.CuttingCoefficient),
@@ -474,17 +481,6 @@ func materialParams(m *entity.MaterialInsert) map[string]any {
 		"created_by":                  m.CreatedBy,
 		"updated_by":                  m.UpdatedBy,
 	}
-}
-
-// canonicalUnitParam collapses a written unit onto its canonical spelling from the closed vocabulary
-// (Ф5а.3), so the catalogue holds one spelling per unit instead of «м» / "m" / "metres" side by side.
-// A unit the vocabulary does not know is stored trimmed but otherwise untouched — guessing would be
-// worse than the free text, because a wrong canonical unit makes two different quantities addable.
-func canonicalUnitParam(unit sql.NullString) sql.NullString {
-	if !unit.Valid {
-		return unit
-	}
-	return sql.NullString{String: entity.CanonicalMaterialUnit(unit.String), Valid: true}
 }
 
 // normalizeMaterialPurpose lower-cases/trims the purpose and defaults an empty one to 'both' (#40) —
