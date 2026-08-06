@@ -229,9 +229,8 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/styles/{style_id}/size-chart"};
   }
 
-  // GetStyleCutList is the first real consumer of the piece.mirrored flag (Q6): a read-only cut-list
-  // for production. For each cut-piece it expands the quantity (pieces_per_garment × 2 for a mirrored
-  // pair) and resolves, per colourway, which fabric (and fusing) BOM line it is cut from. It is a
+  // GetStyleCutList is the read-only cut-list for production. For each cut-piece it reports the
+  // quantity and resolves, per colourway, which fabric (and fusing) BOM line it is cut from. It is a
   // projection over the tech card — no marker/CAD export, no mutable table.
   rpc GetStyleCutList(GetStyleCutListRequest) returns (GetStyleCutListResponse) {
     option (google.api.http) = {get: "/api/admin/styles/{tech_card_id}/cut-list"};
@@ -5086,15 +5085,17 @@ message StyleCutListFabric {
   string fusing_name = 5;
 }
 
-// StyleCutListPiece is one cut-piece expanded for production (Q6): total_per_garment folds the
-// mirrored pair into the count (pieces_per_garment × 2 when mirrored), and fabrics lists the material
-// per colourway.
+// StyleCutListPiece is one cut-piece for production. total_per_garment EQUALS pieces_per_garment:
+// зеркальное удвоение свёрнуто в само количество миграцией 0266. fabrics перечисляет материал по
+// колорвеям.
 message StyleCutListPiece {
   int32 piece_id = 1;
   string name = 2;
   int32 pieces_per_garment = 3;
-  bool mirrored = 4; // cut as a mirrored pair (left+right)
-  int32 total_per_garment = 5; // pieces_per_garment × (mirrored ? 2 : 1)
+  // ОТСТАВЛЕНО (миграция 0266): удвоение свёрнуто в pieces_per_garment, флаг погашен. Поле только
+  // отражает хранимое и НИЧЕГО не значит для количества.
+  bool mirrored = 4;
+  int32 total_per_garment = 5; // = pieces_per_garment (0266 свернул зеркальное удвоение в него)
   string grainline = 6; // долевая
   bool fused = 7;
   repeated StyleCutListFabric fabrics = 8;

@@ -1158,8 +1158,11 @@ message TechCardPieceDxfAliasSet {
 message TechCardPiece {
   string name = 1; // «полочка», «спинка», «обтачка горловины»…
   int32 pieces_per_garment = 2; // how many times cut per garment (default 1)
-  // Q6: mirrored means the piece is CUT AS A MIRRORED PAIR (left+right), not a decorative flag. The
-  // cut-list (GetStyleCutList) expands a mirrored piece ×2 over pieces_per_garment.
+  // ОТСТАВЛЕНО (миграция 0266). Означало «деталь кроится зеркальной парой», и cut list удваивал
+  // по нему pieces_per_garment. Функцией не пользовались; 0266 свернул удвоение в само количество
+  // и погасил флаг, поэтому сервер больше НИЧЕГО по нему не считает. Поле оставлено, чтобы старая
+  // строка доезжала без потерь — но описывать им правило больше нельзя, иначе следующий читатель
+  // вернёт удвоение.
   bool mirrored = 3;
   string grainline = 4; // долевая: lengthwise|crosswise|bias|any
   bool fused = 5; // клеевая (fused with interlining)

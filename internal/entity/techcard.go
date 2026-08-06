@@ -1352,7 +1352,10 @@ type TechCardPiece struct {
 	// payload → the store mints one.
 	LineKey          string        `db:"line_key"`
 	PiecesPerGarment int           `db:"pieces_per_garment"`
-	Mirrored         bool          `db:"mirrored"` // Q6: the piece is CUT AS A MIRRORED PAIR (not a decorative flag); the cut-list expands it ×2.
+	// RETIRED (0266). The cut list no longer expands this ×2 — 0266 folded the doubling into
+	// pieces_per_garment and cleared the flag, so a stored true is historical noise. Kept only so an
+	// existing row still round-trips; nothing reads it.
+	Mirrored bool `db:"mirrored"`
 	Grainline        string        `db:"grainline"`
 	Fused            bool          `db:"fused"`
 	CalloutNumber    sql.NullInt32 `db:"callout_number"`
