@@ -370,10 +370,10 @@ var methodRequirements = map[string]Requirement{
 	//
 	// The write gate is deliberately production:write and not tech_cards:write. Changing the table
 	// length moves the verdict for every раскладка in the shop, so it belongs to whoever runs the
-	// floor, not to everyone who may edit a card. The consequence to know: the первый consumer is the
-	// tech-card nesting modal, so a tech_cards-only account cannot read the default — the modal must
-	// degrade to asking the operator for a length (today's behaviour), not fail.
-	"GetWorkshopSettings":    rd(SectionProduction),
+	// floor, not to everyone who may edit a card.
+	//
+	// The READ is not here — it is allowlisted, see the allowlist below for why a single section
+	// gate could not serve both of its readers.
 	"UpdateWorkshopSettings": wr(SectionProduction),
 	// material warehouse (new-flow NF-01)
 	"ReceiveMaterialStock":    wr(SectionInventory),
@@ -522,6 +522,19 @@ var allowlist = map[string]struct{}{
 	"GetDictionary":       {},
 	"GetCurrentAccount":   {},
 	"ListAccountSections": {},
+	// Настройки цеха are shop-wide reference data — how long the cutting table is, and later the
+	// default seam allowance, the stack-height limit and the minimum gap. They are read from TWO
+	// sections that do not contain one another: the tech-card nesting modal (tech_cards) and the
+	// настилы editor on the production run (production). methodRequirements allows exactly one
+	// section per method, so ANY single read gate silently breaks one of the two callers — and it
+	// breaks it as "the length is not configured", which is indistinguishable from the truthful
+	// unset state and would make the screen quietly stop offering a default.
+	//
+	// Allowlisting the READ is the honest resolution: this is panel-wide configuration in the same
+	// sense as the dictionary, and a table's length is not confidential. The WRITE stays gated on
+	// production:write above — reading the shop's настройка and changing it for everyone are
+	// different rights.
+	"GetWorkshopSettings": {},
 }
 
 // EncodePermissions formats a permission set as the "section:access" strings
