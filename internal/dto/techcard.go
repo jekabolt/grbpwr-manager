@@ -1142,28 +1142,48 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	}, nil
 }
 
+// markerPlacementRotations is the closed set of rotations a placement may carry, and it is enforced
+// NOWHERE ELSE. The proto's "0 | 90 | 180 | 270" beside rot_deg is a comment; the column is a JSON
+// blob with no CHECK behind it, and the engine, the editor and the DXF export each just trust the
+// number. So this save path is the only gate: an angle outside the set renders one way in the
+// editor and another in the plotter file, and the раскладка stops being the thing that was measured.
+var markerPlacementRotations = map[int32]bool{0: true, 90: true, 180: true, 270: true}
+
+// normaliseRotation folds a rotation into [0, 360). -180 and 540 are the SAME half-turn as 180, and
+// a policy that compared the raw number would miss both — which is the cheapest possible way to put
+// a piece upside down on ворс with the server's blessing.
+func normaliseRotation(deg int32) int32 { return ((deg % 360) + 360) % 360 }
+
 // MarkerLayoutFactsFromPb distils the few things the SAVE PATH must know about a layout out of the
 // blob, so nothing downstream has to open it again: the blob is stored opaque (0257) and the store
 // never parses it, so whatever the store DECIDES on has to leave the transport layer as a fact.
 //
+// It also CANONICALISES rot_deg on the message it is handed, on purpose: the blob is marshalled from
+// this same message moments later, so a placement the server counted as a half-turn must not be
+// stored as -180 and read back by a consumer whose check is `rot === 180`. The facts and the bytes
+// have to describe the same placement.
+//
 // Call it AFTER schema_version has been normalised — a blob that arrives with 0 is a v1 blob, and
 // the version is what decides whether the rotation policy applies at all (Ф1.6).
-func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) entity.MarkerLayoutFacts {
+func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLayoutFacts, error) {
 	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
-	for _, p := range l.GetPlacements() {
+	for i, p := range l.GetPlacements() {
+		rot := normaliseRotation(p.GetRotDeg())
+		if !markerPlacementRotations[rot] {
+			return entity.MarkerLayoutFacts{}, fmt.Errorf(
+				"layout.placements[%d].rot_deg is %d; only 0, 90, 180 and 270 can be cut", i, p.GetRotDeg())
+		}
+		p.RotDeg = rot
 		// 180° and a mirror are the same physical mistake on directional cloth — the piece ends up
 		// the wrong way up — so both are collected, and the refusal names whichever fired.
-		if p.GetRotDeg() == 180 {
+		if rot == 180 {
 			out.HasHalfTurn = true
 		}
 		if p.GetFlipped() {
 			out.HasFlip = true
 		}
-		if out.HasHalfTurn && out.HasFlip {
-			break
-		}
 	}
-	return out
+	return out, nil
 }
 
 // TechCardOutputVariantsToPb emits an auxiliary card's colour variants for display, each with its

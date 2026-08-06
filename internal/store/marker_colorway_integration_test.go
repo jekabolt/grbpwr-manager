@@ -111,7 +111,7 @@ func TestMarkerColorwayBinding(t *testing.T) {
 			FabricWidthCm: d(width), GapCm: d("0.5"), EdgeMarginCm: d("1"),
 			Sets: 1, UsedLengthCm: d("120"),
 			PlacedCount: 3, TotalCount: 3,
-			Layout: `{"schemaVersion":1,"pieces":[],"placements":[]}`,
+			Layout: markerLayoutV1, LayoutFacts: markerLayoutFacts(t, markerLayoutV1),
 		}
 	}
 	markerByName := func(cardID int, name string) entity.TechCardMarkerSummary {

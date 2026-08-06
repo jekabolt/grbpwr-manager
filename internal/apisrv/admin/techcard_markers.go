@@ -89,8 +89,21 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	}
 	// Distilled here because this is the last place the blob is a parsed message: the store gets the
 	// facts, not a second parser (Ф1.5/Ф1.6 — the direction rule needs the version and whether any
-	// placement is upside down, and only the DB knows the cloth's направление).
-	ins.LayoutFacts = dto.MarkerLayoutFactsFromPb(layout)
+	// placement is upside down, and only the DB knows the cloth's направление). This is also where
+	// rot_deg is validated at all — nothing else in the system constrains it.
+	facts, err := dto.MarkerLayoutFactsFromPb(layout)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid marker layout: %v", err)
+	}
+	ins.LayoutFacts = facts
+	// A mirrored placement under a version that could not express one is refused for EVERY marker,
+	// linked or not: the direction rule below only sees markers bound to cloth, but a blob that lies
+	// about its own format is not a cloth question. See entity.FlipPredatesSchema.
+	if entity.FlipPredatesSchema(facts) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"marker layout declares schema_version %d but carries a mirrored placement; `flipped` exists only from version %d",
+			facts.SchemaVersion, entity.MarkerLayoutSchemaWithFlip)
+	}
 	blob, err := protojson.Marshal(layout)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "marker layout does not marshal: %v", err)

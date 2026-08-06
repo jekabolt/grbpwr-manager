@@ -81,6 +81,50 @@ func TestSaveTechCardMarkerRefusesUnknownSchema(t *testing.T) {
 	require.ErrorContains(t, err, "schema_version 4")
 }
 
+// `flipped` did not exist before schema 3, so a blob declaring an older version cannot legitimately
+// carry one. Refused for EVERY marker, not only a linked one: the direction rule never sees an
+// unlinked раскладка, but a blob lying about its own format is not a cloth question.
+func TestSaveTechCardMarkerRefusesAMirrorUnderALegacySchema(t *testing.T) {
+	for _, v := range []int32{1, 2} {
+		req := markerRequest(markerLayout(v, &pb_common.TechCardMarkerPlacement{PieceId: 1, Flipped: true}))
+		req.Marker.BomLineKey = "" // unlinked: the store-side rule would never be consulted
+		_, err := (&Server{repo: mocks.NewMockRepository(t)}).SaveTechCardMarker(context.Background(), req)
+		require.Equal(t, codes.InvalidArgument, status.Code(err), "schema_version %d", v)
+		require.ErrorContains(t, err, "flipped")
+	}
+}
+
+// rot_deg is policed nowhere else in the system — the proto's "0 | 90 | 180 | 270" is a comment and
+// the blob has no CHECK behind it. An uncuttable angle must not reach storage, and an equivalent
+// half-turn (-180, 540) must be canonicalised so the stored bytes agree with the facts the server
+// judged them by.
+func TestSaveTechCardMarkerPolicesRotation(t *testing.T) {
+	t.Run("uncuttable angle", func(t *testing.T) {
+		_, err := (&Server{repo: mocks.NewMockRepository(t)}).SaveTechCardMarker(context.Background(),
+			markerRequest(markerLayout(3, &pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: 37})))
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		require.ErrorContains(t, err, "rot_deg")
+	})
+
+	t.Run("equivalent half-turn is counted and canonicalised", func(t *testing.T) {
+		repo := mocks.NewMockRepository(t)
+		cards := mocks.NewMockTechCards(t)
+		repo.EXPECT().TechCards().Return(cards)
+
+		var got entity.TechCardMarkerInsert
+		cards.EXPECT().SaveMarker(mock.Anything, 7, 0, mock.Anything, mock.Anything).
+			Run(func(_ context.Context, _, _ int, ins entity.TechCardMarkerInsert, _ string) { got = ins }).
+			Return(9, nil)
+
+		_, err := (&Server{repo: repo}).SaveTechCardMarker(context.Background(),
+			markerRequest(markerLayout(3, &pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: -180})))
+		require.NoError(t, err)
+		require.True(t, got.LayoutFacts.HasHalfTurn, "-180 is a half-turn")
+		require.Contains(t, got.Layout, `"rotDeg":180`)
+		require.NotContains(t, got.Layout, "-180")
+	})
+}
+
 // An unset version is a v1 blob, and it must stay one all the way to the store: the version is what
 // grandfathers legacy geometry out of the directional-cloth policy, so normalising it to anything
 // else would judge old markers by a rule they predate.

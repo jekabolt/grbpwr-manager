@@ -273,36 +273,55 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 	return savedID, nil
 }
 
-// fabricDirectionLinesQuery is held as a var so a test can bind it without a database: sqlx reads
-// EVERY ':' as a named parameter, and this text is assembled from a fragment — the one failure mode
-// here is a bind error at request time, on a path whose only other coverage needs MySQL.
+// fabricDirectionLinesQuery reads the card's WHOLE BOM, ordered exactly as the card read orders it
+// (display_order, id — see the bom load in materials.go). Both halves of that sentence are load
+// bearing:
+//
+//   - the whole BOM, because a refusal is field-tagged `bom_items[i].fabric_direction` and i must be
+//     the row's position in the array the CLIENT holds. An index taken over roll goods alone would
+//     land on whatever sits at that position in the full list — a thread, a button — and pin the
+//     error on the wrong control. Roll goods are then filtered in Go, through the same
+//     rollGoodsSections map the SQL fragment is built from, so the two cannot mean different things;
+//   - the ORDER BY, because the refusal lists rows and their order must be stable. Without it MySQL
+//     may hand back the same state in a different order on a retry, and two identical saves would
+//     name two different rows.
+//
+// Held as a var so a test can bind it without a database: sqlx reads EVERY ':' as a named parameter,
+// and a bind error would take the whole save path down at request time.
 var fabricDirectionLinesQuery = `
 	SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose,
-	       COALESCE(name, '') AS name, COALESCE(fabric_direction, '') AS fabric_direction
+	       COALESCE(name, '') AS name, COALESCE(fabric_direction, '') AS fabric_direction,
+	       section
 	FROM tech_card_bom_item
-	WHERE tech_card_id = :id AND ` + rollGoodsSectionIn
+	WHERE tech_card_id = :id
+	ORDER BY display_order, id`
 
-// fabricDirectionLines loads the card's roll-goods BOM lines with both halves of the binding scope
-// and their направление — everything entity.ValidateMarkerFabricDirection needs and nothing else.
+// fabricDirectionLines loads the card's cloth lines with both halves of the binding scope, their
+// направление and their position in the card's BOM — everything
+// entity.ValidateMarkerFabricDirection needs and nothing else.
 //
-// The same four families every cloth binding uses (rollGoodsSectionIn): a thread or a button has no
-// direction to have, and including one would make a nonsense row able to block a раскладка. A line
-// that has since left roll goods is therefore absent here, which is exactly right — the marker whose
-// binding it still is resolves to a dangling scope and stays saveable, as it was before Ф1.
+// Only the four roll-goods families survive the filter: a thread or a button has no direction to
+// have, and letting one through would make a nonsense row able to block a раскладка. A line that has
+// since left roll goods is therefore absent, which is exactly right — the marker whose binding it
+// still is resolves to a dangling scope and stays saveable, as it was before Ф1.
 func fabricDirectionLines(ctx context.Context, db dependency.DB, techCardID int) ([]entity.FabricDirectionLine, error) {
 	rows, err := storeutil.QueryListNamed[struct {
 		LineKey   string `db:"line_key"`
 		Purpose   string `db:"purpose"`
 		Name      string `db:"name"`
 		Direction string `db:"fabric_direction"`
-	}](ctx, db, fabricDirectionLinesQuery, rollGoodsSectionArgs(map[string]any{"id": techCardID}))
+		Section   string `db:"section"`
+	}](ctx, db, fabricDirectionLinesQuery, map[string]any{"id": techCardID})
 	if err != nil {
-		return nil, fmt.Errorf("load roll-goods bom lines of tech card %d: %w", techCardID, err)
+		return nil, fmt.Errorf("load bom lines of tech card %d: %w", techCardID, err)
 	}
 	out := make([]entity.FabricDirectionLine, 0, len(rows))
-	for _, r := range rows {
+	for i, r := range rows {
+		if !rollGoodsSections[r.Section] {
+			continue
+		}
 		out = append(out, entity.FabricDirectionLine{
-			LineKey: r.LineKey, Purpose: r.Purpose, Name: r.Name, Direction: r.Direction,
+			Index: i, LineKey: r.LineKey, Purpose: r.Purpose, Name: r.Name, Direction: r.Direction,
 		})
 	}
 	return out, nil

@@ -6,10 +6,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 )
+
+// markerLayoutFacts derives the save-path facts from a layout blob exactly as the API layer does
+// (dto.MarkerLayoutFactsFromPb), so a fixture's blob and its facts cannot describe two different
+// раскладки. Ф1 made those facts part of what the store judges, and an insert built by hand without
+// them is refused on purpose: the zero value is the one that would exempt a layout from the
+// directional-cloth policy, so it must not be reachable by forgetting a line of wiring.
+// markerLayoutV1 is the empty legacy blob the CRUD fixtures ride on; the direction rules have their
+// own file and their own blobs.
+const markerLayoutV1 = `{"schemaVersion":1,"pieces":[],"placements":[]}`
+
+func markerLayoutFacts(t *testing.T, blob string) entity.MarkerLayoutFacts {
+	t.Helper()
+	var l pb_common.TechCardMarkerLayout
+	require.NoError(t, (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(blob), &l))
+	facts, err := dto.MarkerLayoutFactsFromPb(&l)
+	require.NoError(t, err)
+	return facts
+}
 
 // TestTechCardMarkerRoundTrip covers the saved-раскладка CRUD (0257): create with a BOM link,
 // summary on the card read, blob on GetMarker, in-place update, the refusals that guard the data
@@ -62,7 +83,7 @@ func TestTechCardMarkerRoundTrip(t *testing.T) {
 			Sets: 4, UsedLengthCm: d("512.4"),
 			EfficiencyPct: decimal.NullDecimal{Decimal: d("73.5"), Valid: true},
 			PlacedCount:   12, TotalCount: 12,
-			Layout: `{"schemaVersion":1,"pieces":[],"placements":[]}`,
+			Layout: markerLayoutV1, LayoutFacts: markerLayoutFacts(t, markerLayoutV1),
 		}
 	}
 
@@ -169,6 +190,7 @@ func TestTechCardMarkerRoundTrip(t *testing.T) {
 			PlacedCount:     cur.PlacedCount,
 			TotalCount:      cur.TotalCount,
 			Layout:          cur.Layout,
+			LayoutFacts:     markerLayoutFacts(t, cur.Layout),
 		}
 		saved, err := T.SaveMarker(ctx, tcID, id, again, cur.UpdatedBy)
 		require.NoError(t, err)

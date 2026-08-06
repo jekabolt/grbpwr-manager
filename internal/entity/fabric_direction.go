@@ -28,6 +28,12 @@ const MarkerLayoutSchemaWithFlip = 3
 // scope (line key + назначение, 0265/0267), the name a refusal has to say out loud so an operator
 // knows which row to open, and the direction — where "" is the column's NULL, i.e. UNKNOWN.
 type FabricDirectionLine struct {
+	// Index is the line's position in the card's bom_items AS THE CLIENT SEES THEM — the card read
+	// orders by (display_order, id), so that is the order the form array is built in. It exists for
+	// one reason: a field violation must be `bom_items[i].fabric_direction`, and an index taken over
+	// roll goods alone would pin the error on whichever row happens to sit at that position in the
+	// full list (a thread, a button) — confidently, and on the wrong control.
+	Index     int
 	LineKey   string
 	Purpose   string
 	Name      string
@@ -53,12 +59,30 @@ func (l FabricDirectionLine) label() string {
 // The blob is opaque past that layer by design (0257: the store stores it and never parses it), so
 // the two bits the store must DECIDE on travel as facts instead of as a second parser in the store.
 type MarkerLayoutFacts struct {
-	// SchemaVersion of the blob being saved, as normalised by the API layer (an unset 0 reads as 1).
+	// SchemaVersion of the blob being saved, as normalised by the API layer (an unset 0 reads as 1),
+	// so a ZERO here never means «v1» — it means nobody distilled the blob at all. The rule refuses
+	// on it rather than skipping: this struct's zero value grants the policy exemption, and a
+	// default that exempts must not be reachable by forgetting a line of wiring.
 	SchemaVersion int
-	// HasHalfTurn: at least one placement sits at rot_deg 180.
+	// HasHalfTurn: at least one placement sits at rot_deg 180 (after normalisation — -180 and 540
+	// are the same half-turn and are counted as one).
 	HasHalfTurn bool
 	// HasFlip: at least one placement is mirrored (schema 3+).
 	HasFlip bool
+}
+
+// FlipPredatesSchema reports a layout that carries a MIRRORED placement while declaring a version
+// that could not express one. `flipped` is unforgeable: the field did not exist before schema 3, so
+// no stored blob can contain it and no honest client can write one under an older version. Such a
+// blob is a forgery or a client bug, and it must never be treated as legacy — the whole point of the
+// version gate is that legacy geometry is EXEMPT from the rotation policy, and an exemption you can
+// claim by writing a smaller number is not a gate.
+//
+// One predicate, two enforcement points: the API refuses it for every marker (an unlinked раскладка
+// has no cloth to check but its blob must still not lie about its own format), and the rule below
+// refuses it again before granting the exemption, so the exemption stays honest for any caller.
+func FlipPredatesSchema(f MarkerLayoutFacts) bool {
+	return f.HasFlip && f.SchemaVersion > 0 && f.SchemaVersion < MarkerLayoutSchemaWithFlip
 }
 
 // MarkerFabricScope resolves the cloth a marker's bom_line_key addresses, through the ONE binding
@@ -105,16 +129,20 @@ func fabricDirectionStrictness(d TechCardFabricDirection) int {
 // one_way line forbids the flip for every line under the same назначение, because the marker is one
 // piece of geometry and it will be cut on whichever of those articles the colourway pins.
 //
-// ok is false when ANY line of the scope is UNKNOWN, and the line it names is the first such in card
-// order: one unset row makes the whole answer a guess, and a guess is what this rule refuses to make.
+// unknown collects EVERY line of the scope whose direction is unset, not the first one: the fix for
+// this refusal is a mass fill (кампания Д1), and naming one row at a time would make a three-row
+// card three round-trips. It is also the only deterministic shape — «the first» would depend on row
+// order, and the loader's ORDER BY is a promise made in one query, not by the rule.
+//
 // A value outside the closed vocabulary counts as UNKNOWN too — the DB CHECK makes that unreachable
 // through the app, and if it ever becomes reachable the fail-closed answer is the safe one.
-func ScopeFabricDirection(scope FabricScope, lines []FabricDirectionLine) (TechCardFabricDirection, FabricDirectionLine, bool) {
+func ScopeFabricDirection(scope FabricScope, lines []FabricDirectionLine) (TechCardFabricDirection, []FabricDirectionLine, bool) {
 	byKey := make(map[string]FabricDirectionLine, len(lines))
 	for _, l := range lines {
 		byKey[strings.ToLower(strings.TrimSpace(l.LineKey))] = l
 	}
 	strictest := FabricDirectionAny
+	var unknown []FabricDirectionLine
 	for _, key := range scope.LineKeys {
 		l, ok := byKey[strings.ToLower(strings.TrimSpace(key))]
 		if !ok {
@@ -122,19 +150,88 @@ func ScopeFabricDirection(scope FabricScope, lines []FabricDirectionLine) (TechC
 		}
 		dir := TechCardFabricDirection(strings.ToLower(strings.TrimSpace(l.Direction)))
 		if !ValidTechCardFabricDirections[dir] {
-			return "", l, false
+			unknown = append(unknown, l)
+			continue
 		}
 		if fabricDirectionStrictness(dir) > fabricDirectionStrictness(strictest) {
 			strictest = dir
 		}
 	}
-	return strictest, FabricDirectionLine{}, true
+	if len(unknown) > 0 {
+		return "", unknown, false
+	}
+	return strictest, nil, true
 }
+
+// scopeLinesWith returns the lines of the scope carrying a given direction, in scope order. Used to
+// NAME the blocker in a refusal: «this ткань is one_way» is actionable, «this scope resolved to
+// one_way» is a fact about the server.
+func scopeLinesWith(scope FabricScope, lines []FabricDirectionLine, want TechCardFabricDirection) []FabricDirectionLine {
+	byKey := make(map[string]FabricDirectionLine, len(lines))
+	for _, l := range lines {
+		byKey[strings.ToLower(strings.TrimSpace(l.LineKey))] = l
+	}
+	var out []FabricDirectionLine
+	for _, key := range scope.LineKeys {
+		if l, ok := byKey[strings.ToLower(strings.TrimSpace(key))]; ok &&
+			TechCardFabricDirection(strings.ToLower(strings.TrimSpace(l.Direction))) == want {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// labels / keys render a set of lines for the two halves of a violation: prose names them, the
+// machine-readable Conflicting slot carries their line_keys.
+func labelsOf(lines []FabricDirectionLine) string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, l.label())
+	}
+	return strings.Join(out, ", ")
+}
+
+func keysOf(lines []FabricDirectionLine) string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, strings.TrimSpace(l.LineKey))
+	}
+	return strings.Join(out, ", ")
+}
+
+// namesOtherThan reports whether any of these lines is NOT the one the раскладка names — the only
+// case where a refusal has to explain назначение, because the operator is being sent to a row this
+// marker does not mention and would otherwise read that as a bug.
+func namesOtherThan(lines []FabricDirectionLine, bomLineKey string) bool {
+	for _, l := range lines {
+		if !strings.EqualFold(strings.TrimSpace(l.LineKey), strings.TrimSpace(bomLineKey)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Stable machine-readable reason codes of the refusals below. A client switches on these; the prose
+// beside them is for the human and may be reworded freely.
+const (
+	// ReasonFabricDirectionUnknown — the cloth this раскладка is cut from has no направление set.
+	ReasonFabricDirectionUnknown = "direction_unknown"
+	// ReasonFlipOnOneWay — a v3 layout puts a piece upside down (180° or mirrored) on one_way cloth.
+	ReasonFlipOnOneWay = "flip_on_one_way"
+	// ReasonFlipInLegacySchema — a mirrored placement in a blob declaring a version that predates
+	// the field. Not a policy refusal: the payload is impossible.
+	ReasonFlipInLegacySchema = "flip_in_legacy_schema"
+)
 
 // ValidateMarkerFabricDirection is the whole marker-side rule in one place (Ф1.5 + Ф1.6): a marker
 // may not be saved onto cloth whose direction nobody set, and a NEW layout may not put a piece
-// upside down on cloth that is directional. lines are the card's roll-goods BOM lines; facts are the
-// layout distilled by the API layer.
+// upside down on cloth that is directional. lines are the card's roll-goods BOM lines IN CARD ORDER
+// (their Index is used verbatim in the field path); facts are the layout distilled by the API layer.
+//
+// Order of the checks is deliberate: what is wrong with the PAYLOAD first (undistilled facts, a
+// mirror that cannot exist under its declared version), then what is missing on the CARD, and only
+// then the policy. Reversed, an operator would be sent to fill in the BOM tab to satisfy a request
+// that was malformed anyway.
 func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLine, facts MarkerLayoutFacts) error {
 	scope := MarkerFabricScope(bomLineKey, lines)
 	if !scope.Live() {
@@ -145,18 +242,35 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 		// an attribution their operator can no longer reach.
 		return nil
 	}
+	if facts.SchemaVersion <= 0 {
+		// Not a validation failure — a wiring failure, and it must not read as the operator's
+		// problem. The API layer normalises an absent version to 1, so a zero reaching here means
+		// the blob was never distilled, and the zero value of MarkerLayoutFacts is precisely the one
+		// that would sail through every check below. A default that exempts has to be unreachable.
+		return fmt.Errorf("marker layout facts were not distilled (schema_version 0) — refusing to "+
+			"judge a раскладка linked to %s on inputs nobody filled", scope.Key)
+	}
+	if FlipPredatesSchema(facts) {
+		return NewFieldViolation("layout.placements", ReasonFlipInLegacySchema, "",
+			fmt.Sprintf("the layout declares schema_version %d but carries a mirrored placement, and "+
+				"`flipped` only exists from version %d on — no stored раскладка can contain one, so this is a "+
+				"client writing a version it does not actually speak; save it as version %d",
+				facts.SchemaVersion, MarkerLayoutSchemaWithFlip, MarkerLayoutSchemaWithFlip))
+	}
 	dir, unknown, known := ScopeFabricDirection(scope, lines)
 	if !known {
-		reason := fmt.Sprintf("BOM line %s has no направление ткани", unknown.label())
-		if scope.ByPurpose && !strings.EqualFold(strings.TrimSpace(unknown.LineKey), strings.TrimSpace(bomLineKey)) {
+		howToFix := fmt.Sprintf("set направление ткани (any / one_way / two_way) on the BOM tab for %s", labelsOf(unknown))
+		if scope.ByPurpose && namesOtherThan(unknown, bomLineKey) {
 			// Said only when it is surprising: the operator is being sent to a row this раскладка
 			// does not name, and without this clause that reads as a bug rather than as назначение
 			// doing its job.
-			reason += fmt.Sprintf(" — it shares назначение %q with the line this раскладка is bound to", scope.Key)
+			howToFix += fmt.Sprintf(" (they hang off назначение %q together with the line this раскладка is bound to)", scope.Key)
 		}
-		return NewFieldViolation("bom_items.fabric_direction", reason, "",
-			"set направление ткани (any / one_way / two_way) on that line on the BOM tab — while it "+
-				"is unknown the server cannot tell a harmless 180° from a ruined ворс, so the раскладка is not saved")
+		howToFix += " — while it is unknown the server cannot tell a harmless 180° from a ruined ворс, so the раскладка is not saved"
+		// The field pins the FIRST offending row so a form can focus something; the prose and the
+		// conflicting keys carry all of them, because the fix is a mass fill, not one row.
+		return NewFieldViolation(fmt.Sprintf("bom_items[%d].fabric_direction", unknown[0].Index),
+			ReasonFabricDirectionUnknown, keysOf(unknown), howToFix)
 	}
 	if facts.SchemaVersion < MarkerLayoutSchemaWithFlip {
 		// GRANDFATHERING, and it is the whole reason the version is inspected here. Stored markers
@@ -166,6 +280,10 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 		// gets a направление — measurements nobody can re-take without re-nesting, invalidated
 		// retroactively by a rule that did not exist when they were taken. Only a blob that can
 		// express `flipped` came from a client that knows the policy, so only that one is held to it.
+		//
+		// The 180° half is the half that NEEDS this: it is expressible in every version, so a legacy
+		// blob carrying it is ordinary history. The mirror half needs no grandfathering at all and
+		// got none — it was refused above, because it cannot be history.
 		return nil
 	}
 	if dir != FabricDirectionOneWay {
@@ -176,10 +294,14 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 	if !facts.HasHalfTurn && !facts.HasFlip {
 		return nil
 	}
-	return NewFieldViolation("layout.placements",
-		fmt.Sprintf("%s on one_way cloth (%s)", offendingPlacements(facts), scopeLabel(scope)), "",
-		"на направленной ткани деталь нельзя класть вверх ногами: пересоберите раскладку без 180° и "+
-			"без зеркальных размещений, либо исправьте направление ткани на вкладке BOM, если ткань на самом деле не направленная")
+	blockers := scopeLinesWith(scope, lines, FabricDirectionOneWay)
+	howToFix := fmt.Sprintf("%s: %s помечена one_way", offendingPlacements(facts), labelsOf(blockers))
+	if scope.ByPurpose && namesOtherThan(blockers, bomLineKey) {
+		howToFix += fmt.Sprintf(" (через назначение %q)", scope.Key)
+	}
+	howToFix += " — на направленной ткани деталь нельзя класть вверх ногами: пересоберите раскладку без 180° и " +
+		"без зеркальных размещений, либо исправьте направление ткани на вкладке BOM, если ткань на самом деле не направленная"
+	return NewFieldViolation("layout.placements", ReasonFlipOnOneWay, keysOf(blockers), howToFix)
 }
 
 // offendingPlacements names which half of the ban fired. «180° and mirrored» and «mirrored» send an
@@ -187,23 +309,10 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 func offendingPlacements(facts MarkerLayoutFacts) string {
 	switch {
 	case facts.HasHalfTurn && facts.HasFlip:
-		return "placements turned 180° and mirrored placements"
+		return "раскладка несёт размещения на 180° и зеркальные"
 	case facts.HasHalfTurn:
-		return "placements turned 180°"
+		return "раскладка несёт размещения на 180°"
 	default:
-		return "mirrored placements"
+		return "раскладка несёт зеркальные размещения"
 	}
-}
-
-// scopeLabel says WHICH cloth answered, in the operator's vocabulary: a назначение when the card has
-// been sorted — and then how many lines hang off it, because that is what explains a refusal caused
-// by a row the раскладка does not name — the BOM line itself when it has not.
-func scopeLabel(scope FabricScope) string {
-	if scope.ByPurpose {
-		if len(scope.LineKeys) > 1 {
-			return fmt.Sprintf("назначение %q, %d BOM lines", scope.Key, len(scope.LineKeys))
-		}
-		return fmt.Sprintf("назначение %q", scope.Key)
-	}
-	return fmt.Sprintf("BOM line %s", scope.Key)
 }
