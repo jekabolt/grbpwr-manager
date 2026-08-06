@@ -29,6 +29,19 @@
 -- half-applied with no gorp_migrations row and the next boot re-runs this file from the top. The
 -- three columns and both constraints ride ONE ALTER (MySQL 8 atomic DDL: all or nothing), guarded on
 -- the presence of `purpose`, so a re-run is a no-op rather than a "duplicate column" halt.
+--
+-- ДВЕ ЛОВУШКИ SQL, обе выглядят правильно и обе молчат:
+--
+-- 1. `purpose = 'other'` при purpose IS NULL даёт NULL, а CHECK со значением NULL MySQL считает
+--    ВЫПОЛНЕННЫМ. То есть очевидная запись `purpose_note IS NULL OR purpose = 'other'` ловит дырку
+--    вида purpose='main' и пропускает дырку вида purpose IS NULL — а NULL это состояние КАЖДОЙ
+--    строки до этой миграции и каждой ещё не разложенной. Нужен NULL-безопасный `<=>`, иначе
+--    примечание становится теневым назначением ровно там, где назначения ещё нет.
+-- 2. REGEXP под utf8mb3_general_ci регистронезависим, так что 'MAIN' прошёл бы и не попал бы потом
+--    ни в одну группу. `REGEXP BINARY` тут НЕ подходит: под utf8mb4_0900_ai_ci (так подключаются
+--    контейнерные тесты) MySQL отвечает 3995 «Character set … cannot be used in conjunction with
+--    binary». Портируемо между utf8mb3 прода и utf8mb4 тестов — сравнить байты через STRCMP с
+--    LOWER: значение должно совпадать со своей нижнерегистровой формой ПОБАЙТОВО.
 
 SET @col_exists := (
     SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -37,7 +50,7 @@ SET @col_exists := (
       AND COLUMN_NAME = 'purpose'
 );
 SET @ddl := IF(@col_exists = 0,
-    'ALTER TABLE tech_card_bom_item ADD COLUMN purpose VARCHAR(24) NULL COMMENT ''назначение of a roll-goods line; NULL = not sorted yet (never guessed)'' AFTER section, ADD COLUMN purpose_note VARCHAR(255) NULL COMMENT ''free-text note, legal only when purpose = other'' AFTER purpose, ADD COLUMN is_sample TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''семпловая: this yardage is what the sample is sewn from'' AFTER purpose_note, ADD CONSTRAINT chk_bom_item_purpose CHECK (purpose IS NULL OR purpose REGEXP ''^(main|lining|pocketing|interfacing|insulation|contrast|mesh|other)$''), ADD CONSTRAINT chk_bom_item_purpose_note CHECK (purpose_note IS NULL OR purpose = ''other'')',
+    'ALTER TABLE tech_card_bom_item ADD COLUMN purpose VARCHAR(24) NULL COMMENT ''назначение of a roll-goods line; NULL = not sorted yet (never guessed)'' AFTER section, ADD COLUMN purpose_note VARCHAR(255) NULL COMMENT ''free-text note, legal only when purpose = other'' AFTER purpose, ADD COLUMN is_sample TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''семпловая: this yardage is what the sample is sewn from'' AFTER purpose_note, ADD CONSTRAINT chk_bom_item_purpose CHECK (purpose IS NULL OR (purpose REGEXP ''^(main|lining|pocketing|interfacing|insulation|contrast|mesh|other)$'' AND STRCMP(CAST(purpose AS BINARY), CAST(LOWER(purpose) AS BINARY)) = 0)), ADD CONSTRAINT chk_bom_item_purpose_note CHECK (purpose_note IS NULL OR purpose <=> ''other'')',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;

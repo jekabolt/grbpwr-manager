@@ -765,12 +765,22 @@ type TechCardBomItem struct {
 	// only on a roll-goods line (fabric/lining/interlining/insulation); INVALID (NULL) means "not
 	// sorted yet" and is what every line predating 0265 carries, deliberately never guessed.
 	Purpose sql.NullString `db:"purpose"`
+	// PurposeOmitted / IsSampleOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым».
+	// Карточка сохраняется целиком, админка это SPA, и вкладка со старым бандлом этих полей не шлёт
+	// вовсе; без различения её сейв стёр бы назначение у ВСЕХ строк карточки — бесследно, потому
+	// что полей нет в дайджесте подписи, а NULL неотличим от «ещё не разложили».
+	//
+	// Признак НЕГАТИВНЫЙ намеренно: нулевое значение означает «писать как обычно», поэтому любой
+	// внутренний конструктор (тесты, сидер, миграционные утилиты) продолжает работать как писал.
+	// Позитивный «Set» с дефолтом false молча превратил бы их всех в ничего-не-пишущих.
+	PurposeOmitted bool `db:"-"`
 	// PurposeNote explains a BomPurposeOther line. Legal only alongside that purpose — the DB CHECK
 	// chk_bom_item_purpose_note enforces it — so the note can never quietly become a ninth purpose.
 	PurposeNote sql.NullString `db:"purpose_note"`
 	// IsSample marks the yardage the SAMPLE is sewn from. A flag rather than a purpose value because
 	// a sample is a sample MAIN plus a sample LINING; folded into Purpose the two would collapse.
 	IsSample    bool                `db:"is_sample"`
+	IsSampleOmitted bool `db:"-"`
 	Name        string              `db:"name"`
 	Supplier    sql.NullString      `db:"supplier"`
 	SupplierRef sql.NullString      `db:"supplier_ref"`

@@ -130,6 +130,46 @@ func TestBomLinePurpose(t *testing.T) {
 	edited[2].PurposeNote = sql.NullString{}
 	require.NoError(t, T.UpdateTechCard(ctx, tcID, mk(edited), lockVersion()))
 
+	// А ТЕПЕРЬ САМА ГАРАНТИЯ, мимо приложения. Очевидная запись CHECK (`purpose = 'other'`) при
+	// purpose IS NULL даёт NULL, а NULL MySQL считает выполненным условием — то есть ловит дырку
+	// purpose='main' и пропускает дырку purpose IS NULL, которая и есть состояние каждой
+	// неразложенной строки. Проверяем ОБА плеча прямым SQL: через dto такая запись не пройдёт, но
+	// констрейнт заводился как последний рубеж, а не как дубль валидации.
+	_, err = testDB.ExecContext(ctx,
+		`UPDATE tech_card_bom_item SET purpose = NULL, purpose_note = 'теневое назначение'
+		 WHERE tech_card_id = ? AND line_key = ?`, tcID, slotLegacy)
+	require.Error(t, err, "примечание без назначения (purpose NULL) должно отвергаться")
+	_, err = testDB.ExecContext(ctx,
+		`UPDATE tech_card_bom_item SET purpose = 'main', purpose_note = 'теневое назначение'
+		 WHERE tech_card_id = ? AND line_key = ?`, tcID, slotLegacy)
+	require.Error(t, err, "примечание при назначении не-other должно отвергаться")
+	// И регистр: REGEXP под utf8mb3_general_ci регистронезависим, так что 'MAIN' прошёл бы и не
+	// попал бы потом ни в одну группу интерфейса.
+	_, err = testDB.ExecContext(ctx,
+		`UPDATE tech_card_bom_item SET purpose = 'MAIN' WHERE tech_card_id = ? AND line_key = ?`,
+		tcID, slotLegacy)
+	require.Error(t, err, "назначение в другом регистре должно отвергаться")
+
+	// СТАРЫЙ КЛИЕНТ НЕ ДОЛЖЕН СТИРАТЬ. Вкладка с бандлом до 0265 этих полей не шлёт вовсе; на
+	// проводе это ОТСУТСТВИЕ, а не UNSET, и стор обязан оставить хранимое. Без различения один сейв
+	// из открытой вчера вкладки обнулял бы назначение у ВСЕХ строк карточки — бесследно, потому что
+	// полей нет в дайджесте подписи, а NULL неотличим от «ещё не разложили».
+	stale := make([]entity.TechCardBomItem, len(edited))
+	copy(stale, edited)
+	for i := range stale {
+		stale[i].Purpose = sql.NullString{}
+		stale[i].PurposeNote = sql.NullString{}
+		stale[i].IsSample = false
+		stale[i].PurposeOmitted = true
+		stale[i].IsSampleOmitted = true
+	}
+	require.NoError(t, T.UpdateTechCard(ctx, tcID, mk(stale), lockVersion()))
+	afterStale := byKey()
+	require.Equal(t, string(entity.BomPurposeContrast), afterStale[slotMain].Purpose.String,
+		"сейв без поля обязан сохранить назначение, а не обнулить его")
+	require.True(t, afterStale[slotMain].IsSample, "и признак «семпловая» тоже")
+	require.Equal(t, string(entity.BomPurposeLining), afterStale[slotSampleLn].Purpose.String)
+
 	got = byKey()
 	require.Equal(t, string(entity.BomPurposeContrast), got[slotMain].Purpose.String)
 	require.True(t, got[slotMain].IsSample)

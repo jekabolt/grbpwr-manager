@@ -394,8 +394,11 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			params["id"] = id
 			if err := storeutil.ExecNamed(ctx, db, `
 				UPDATE tech_card_bom_item SET
-					material_id=:material_id, section=:section, purpose=:purpose, purpose_note=:purpose_note,
-					is_sample=:is_sample, name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
+					material_id=:material_id, section=:section,
+					purpose=IF(:purpose_omitted, purpose, :purpose),
+					purpose_note=IF(:purpose_omitted, purpose_note, :purpose_note),
+					is_sample=IF(:is_sample_omitted, is_sample, :is_sample),
+					name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
 					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
 					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent,
@@ -485,9 +488,17 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		"tech_card_id":      tcID,
 		"material_id":       b.MaterialId,
 		"section":           string(b.Section),
+		// Присутствие, а не значение (0265). Отсутствующее поле означает «не трогай»: карточка
+		// сохраняется целиком, а вкладка со старым бандлом этих полей не шлёт вовсе — без этого её
+		// сейв стирал бы назначение у ВСЕХ строк карточки, и притом бесследно, потому что полей нет
+		// в дайджесте подписи, а NULL неотличим от «ещё не разложили». Примечание ходит вместе с
+		// назначением: они меняются одной парой, иначе примечание пережило бы смену назначения и
+		// стало бы теневой ролью.
 		"purpose":           b.Purpose,
+		"purpose_omitted":   b.PurposeOmitted,
 		"purpose_note":      b.PurposeNote,
 		"is_sample":         b.IsSample,
+		"is_sample_omitted": b.IsSampleOmitted,
 		"name":              b.Name,
 		"supplier":          b.Supplier,
 		"supplier_ref":      b.SupplierRef,

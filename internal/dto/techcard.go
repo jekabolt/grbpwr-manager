@@ -1750,9 +1750,15 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		// НАЗНАЧЕНИЕ (0265). UNSET stays NULL — "not sorted yet" is a real answer and the only honest
 		// one for every line that predates the field. The section restriction is enforced downstream,
 		// in the store, against the one roll-goods list the marker/pattern binding already uses.
+		//
+		// ПРИСУТСТВИЕ, а не значение. Поле optional: клиент, который про него не знает, поле НЕ
+		// шлёт, и это означает «не трогай», а не «очисти». Голое proto3-поле пришло бы как UNSET и
+		// стёрло бы назначение у всех строк карточки — бесследно, потому что этих полей нет в
+		// дайджесте подписи, а NULL неотличим от «ещё не разложили».
+		purposeOmitted := b.Purpose == nil
 		purpose := sql.NullString{}
-		if b.Purpose != pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
-			p, ok := techCardBomPurposePbToEntity[b.Purpose]
+		if !purposeOmitted && b.GetPurpose() != pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+			p, ok := techCardBomPurposePbToEntity[b.GetPurpose()]
 			if !ok {
 				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose", i),
 					"unknown purpose", "", "pick a purpose from the list")
@@ -1762,7 +1768,7 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		// The note is the escape hatch for OTHER and nothing else. Accepting it on MAIN would let a
 		// free-text role in through the back door and dissolve the closed list the field exists to
 		// keep — the same reason chk_bom_item_purpose_note guards the column.
-		purposeNote := nullStringFromPb(strings.TrimSpace(b.PurposeNote))
+		purposeNote := nullStringFromPb(strings.TrimSpace(b.GetPurposeNote()))
 		if purposeNote.Valid && purpose.String != string(entity.BomPurposeOther) {
 			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose_note", i),
 				"a note is only meaningful on the 'other' purpose", "",
@@ -1793,8 +1799,10 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			MaterialId:      materialID,
 			Section:         section,
 			Purpose:         purpose,
+			PurposeOmitted:  purposeOmitted,
 			PurposeNote:     purposeNote,
-			IsSample:        b.IsSample,
+			IsSample:        b.GetIsSample(),
+			IsSampleOmitted: b.IsSample == nil,
 			Name:            b.Name,
 			Supplier:        nullStringFromPb(b.Supplier),
 			SupplierRef:     nullStringFromPb(b.SupplierRef),
@@ -2130,9 +2138,11 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			LineKey:         b.LineKey,
 			MaterialId:      b.MaterialId.Int64,
 			Section:         pbBomSection(b.Section),
-			Purpose:         pbBomPurpose(b.Purpose),
-			PurposeNote:     pbStringFromNull(b.PurposeNote),
-			IsSample:        b.IsSample,
+			// Читатель всегда отдаёт присутствие — «не задано» это UNSET, а не отсутствие поля:
+			// отсутствие на чтении заставило бы клиента гадать, старый ли это сервер.
+			Purpose:         pbPtr(pbBomPurpose(b.Purpose)),
+			PurposeNote:     pbPtr(pbStringFromNull(b.PurposeNote)),
+			IsSample:        pbPtr(b.IsSample),
 			Name:            b.Name,
 			Supplier:        pbStringFromNull(b.Supplier),
 			SupplierRef:     pbStringFromNull(b.SupplierRef),
@@ -2290,6 +2300,10 @@ func pbBomSection(s entity.TechCardBomSection) pb_common.TechCardBomSection {
 // pbBomPurpose maps a stored НАЗНАЧЕНИЕ back to the wire. An unset column is UNSET, and so is a
 // value the current build does not recognise — a purpose read from a newer schema must degrade to
 // "not sorted yet" rather than be silently reported as some other purpose.
+// pbPtr wraps a value for a proto3 `optional` field. Присутствие на чтении всегда явное: «не
+// задано» это UNSET, а не отсутствие поля.
+func pbPtr[T any](v T) *T { return &v }
+
 func pbBomPurpose(p sql.NullString) pb_common.TechCardBomPurpose {
 	if !p.Valid {
 		return pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
