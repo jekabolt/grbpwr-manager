@@ -1810,11 +1810,17 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if wastage.Valid && wastage.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 			return nil, fmt.Errorf("bom wastage_percent must be between 0 and 100")
 		}
+		// НАПРАВЛЕНИЕ ТКАНИ — присутствие, а не значение, по тем же основаниям, что и назначение
+		// ниже: поле optional, и клиент со старым бандлом его не шлёт вовсе. Голый proto3-энум
+		// пришёл бы как UNKNOWN и стёр бы направление у всех строк карточки — а с Ф1 это не косметика:
+		// стёртое направление снимает с сохранения КАЖДУЮ раскладку карточки, пока его не проставят
+		// заново. Явно присланный UNKNOWN по-прежнему очищает колонку: это осознанное действие.
+		directionOmitted := b.FabricDirection == nil
 		direction := sql.NullString{}
-		if b.FabricDirection != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
-			d, ok := techCardFabricDirectionPbToEntity[b.FabricDirection]
+		if !directionOmitted && b.GetFabricDirection() != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
+			d, ok := techCardFabricDirectionPbToEntity[b.GetFabricDirection()]
 			if !ok {
-				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.FabricDirection)
+				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.GetFabricDirection())
 			}
 			direction = sql.NullString{String: string(d), Valid: true}
 		}
@@ -1867,28 +1873,29 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		out = append(out, entity.TechCardBomItem{
 			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
 			// unchanged positional index. id is read-only.
-			LineKey:         lineKey,
-			MaterialId:      materialID,
-			Section:         section,
-			Purpose:         purpose,
-			PurposeOmitted:  purposeOmitted,
-			PurposeNote:     purposeNote,
-			IsSample:        b.GetIsSample(),
-			IsSampleOmitted: b.IsSample == nil,
-			Name:            b.Name,
-			Supplier:        nullStringFromPb(b.Supplier),
-			SupplierRef:     nullStringFromPb(b.SupplierRef),
-			Color:           nullStringFromPb(b.Color),
-			Composition:     nullStringFromPb(b.Composition),
-			Spec:            nullStringFromPb(b.Spec),
-			Unit:            nullStringFromPb(b.Unit),
-			UnitPrice:       unitPrice,
-			Currency:        nullStringFromPb(b.Currency),
-			Comment:         nullStringFromPb(b.Comment),
-			FabricWidth:     fabricWidth,
-			FabricWeightGsm: fabricGsm,
-			FabricDirection: direction,
-			WastagePercent:  wastage,
+			LineKey:                lineKey,
+			MaterialId:             materialID,
+			Section:                section,
+			Purpose:                purpose,
+			PurposeOmitted:         purposeOmitted,
+			PurposeNote:            purposeNote,
+			IsSample:               b.GetIsSample(),
+			IsSampleOmitted:        b.IsSample == nil,
+			Name:                   b.Name,
+			Supplier:               nullStringFromPb(b.Supplier),
+			SupplierRef:            nullStringFromPb(b.SupplierRef),
+			Color:                  nullStringFromPb(b.Color),
+			Composition:            nullStringFromPb(b.Composition),
+			Spec:                   nullStringFromPb(b.Spec),
+			Unit:                   nullStringFromPb(b.Unit),
+			UnitPrice:              unitPrice,
+			Currency:               nullStringFromPb(b.Currency),
+			Comment:                nullStringFromPb(b.Comment),
+			FabricWidth:            fabricWidth,
+			FabricWeightGsm:        fabricGsm,
+			FabricDirection:        direction,
+			FabricDirectionOmitted: directionOmitted,
+			WastagePercent:         wastage,
 		})
 	}
 	return out, nil
@@ -2206,10 +2213,10 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
-			Id:              int64(b.Id),
-			LineKey:         b.LineKey,
-			MaterialId:      b.MaterialId.Int64,
-			Section:         pbBomSection(b.Section),
+			Id:         int64(b.Id),
+			LineKey:    b.LineKey,
+			MaterialId: b.MaterialId.Int64,
+			Section:    pbBomSection(b.Section),
 			// Читатель всегда отдаёт присутствие — «не задано» это UNSET, а не отсутствие поля:
 			// отсутствие на чтении заставило бы клиента гадать, старый ли это сервер.
 			Purpose:         pbPtr(pbBomPurpose(b.Purpose)),
@@ -2240,14 +2247,20 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	return out
 }
 
-func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
+// pbFabricDirection emits the direction with PRESENCE: a NULL column stays absent on the wire rather
+// than travelling as an explicit UNKNOWN. That keeps the response bytes exactly as they were before
+// the field became optional, and it keeps the round trip honest — a client that reads a card and
+// writes it straight back must not turn «ещё не задали» into «очисти», which is the one instruction
+// this field now refuses to infer.
+func pbFabricDirection(s sql.NullString) *pb_common.TechCardFabricDirection {
 	if !s.Valid {
-		return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
+		return nil
 	}
-	if v, ok := techCardFabricDirectionEntityToPb[entity.TechCardFabricDirection(s.String)]; ok {
-		return v
+	v, ok := techCardFabricDirectionEntityToPb[entity.TechCardFabricDirection(s.String)]
+	if !ok {
+		return nil
 	}
-	return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
+	return &v
 }
 
 // validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.

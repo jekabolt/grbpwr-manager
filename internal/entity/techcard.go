@@ -800,7 +800,13 @@ type TechCardBomItem struct {
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
 	FabricDirection sql.NullString      `db:"fabric_direction"`
-	WastagePercent  decimal.NullDecimal `db:"wastage_percent"`
+	// FabricDirectionOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым», same negative
+	// sense and same reason as PurposeOmitted above: a tab holding an older bundle does not send it,
+	// and a proto3 enum's zero value is UNKNOWN, so without the distinction that tab's save would
+	// clear направление on every line of the card. Since Ф1 that erasure is not cosmetic — it
+	// un-saves every раскладка on the card until somebody fills the column back in.
+	FabricDirectionOmitted bool                `db:"-"`
+	WastagePercent         decimal.NullDecimal `db:"wastage_percent"`
 	// Stored price provenance (production-costing Phase 3): where unit_price came from and when it
 	// was stamped. Server-owned — set by the save path ('manual' when the price changes hands
 	// through UpdateTechCard) and by the reprice action ('catalog'); NULL on pre-provenance rows.

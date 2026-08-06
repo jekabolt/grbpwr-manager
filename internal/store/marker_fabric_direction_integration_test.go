@@ -47,6 +47,9 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		lineTwoWay  = "01FDIRTWOWAY000000000000D3"
 		lineMainAny = "01FDIRMAINANY00000000000D4" // назначение main, article 1 — any
 		lineMainNap = "01FDIRMAINNAP00000000000D5" // назначение main, article 2 — one_way
+		lineLiningP = "01FDIRLININGPROD00000000D6" // назначение lining, ПРОИЗВОДСТВЕННАЯ — any
+		lineLiningS = "01FDIRLININGSAMP00000000D7" // назначение lining, СЕМПЛОВАЯ — one_way
+		lineCatalog = "01FDIRCATALOGUE000000000D8" // имя пустое, приходит из каталога
 	)
 	// display_order is left unset, so the card read (and the guard) order by id — insertion order.
 	// The thread line is FIRST on purpose: it is not roll goods, so it can never be the offending
@@ -61,6 +64,15 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 			Purpose: ns("main"), FabricDirection: ns("any")},
 		{LineKey: lineMainNap, Section: entity.BomSectionFabric, Name: "Основная ворсовая",
 			Purpose: ns("main"), FabricDirection: ns("one_way")},
+		// Одно назначение, две ткани: производственная и семпловая. Семпловая — физически другой
+		// рулон, и её ворс не должен управлять производственной раскладкой (0265 завёл is_sample
+		// флагом именно потому, что обе живут под одним назначением).
+		{LineKey: lineLiningP, Section: entity.BomSectionLining, Name: "Подкладка",
+			Purpose: ns("lining"), FabricDirection: ns("any")},
+		{LineKey: lineLiningS, Section: entity.BomSectionLining, Name: "Подкладка семпловая",
+			Purpose: ns("lining"), IsSample: true, FabricDirection: ns("one_way")},
+		// Имя строки пустое — его показывает КАТАЛОГ. Отказ обязан говорить словами экрана.
+		{LineKey: lineCatalog, Section: entity.BomSectionFabric, Name: "будет очищено"},
 	}
 	card := func(items []entity.TechCardBomItem) *entity.TechCardInsert {
 		return &entity.TechCardInsert{
@@ -76,10 +88,26 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID)
 	})
 
+	// The catalogue line is put into its real-world state directly: own name empty, material linked.
+	// parseTechCardBomItems documents that a linked line legitimately carries no name of its own and
+	// shows the catalogue's — the guard has to resolve it the same way the BOM tab does.
+	res, err := testDB.ExecContext(ctx, "INSERT INTO material (name, section) VALUES ('ВЕЛЬВЕТ ИЗ КАТАЛОГА', 'fabric')")
+	require.NoError(t, err)
+	matID, err := res.LastInsertId()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM material WHERE id = ?", matID)
+	})
+	_, err = testDB.ExecContext(ctx,
+		"UPDATE tech_card_bom_item SET name = '', material_id = ? WHERE tech_card_id = ? AND line_key = ?",
+		matID, tcID, lineCatalog)
+	require.NoError(t, err)
+
 	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
 	const (
 		legacy90    = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"rotDeg":90}]}`
-		legacy180   = `{"schemaVersion":2,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
+		legacy180   = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
+		legacy180v2 = `{"schemaVersion":2,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
 		legacyFlip  = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
 		v3half      = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
 		v3flip      = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
@@ -121,16 +149,58 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 	})
 
 	t.Run("legacy blobs keep saving on one_way cloth", func(t *testing.T) {
+		// 90° is not this rule's business at any version — cross-grain belongs to allow_cross_grain.
 		id, err := T.SaveMarker(ctx, tcID, 0, ins(t, "легаси 90°", lineOneWay, legacy90), "tester")
 		require.NoError(t, err)
-		// And so does a legacy blob carrying the very rotation v3 forbids: it predates the policy,
-		// and re-judging it would invalidate a measurement nobody can re-take without re-nesting.
-		_, err = T.SaveMarker(ctx, tcID, 0, ins(t, "легаси 180°", lineOneWay, legacy180), "tester")
-		require.NoError(t, err)
-		// Re-saving the legacy marker in place is the operator's real action (Ф5 adjustment) and
-		// must not start failing either.
+		// Re-saving in place is the operator's real action (Ф5 adjustment) and must not start failing.
 		_, err = T.SaveMarker(ctx, tcID, id, ins(t, "легаси 90°", lineOneWay, legacy90), "editor")
 		require.NoError(t, err)
+
+		// A row that PREDATES the policy: written when 180° on ворс was still saveable. It cannot be
+		// created through SaveMarker any more, which is the point — so history is staged the only way
+		// history exists, as a row already in the table.
+		_, err = testDB.ExecContext(ctx,
+			"UPDATE tech_card_marker SET layout = ?, layout_schema_version = 1 WHERE id = ?", legacy180, id)
+		require.NoError(t, err)
+		// The current client declares v3 unconditionally, so this arrives as v3 over a stored v1 and
+		// must still save: renaming or re-linking an old раскладка cannot require re-nesting it.
+		_, err = T.SaveMarker(ctx, tcID, id, ins(t, "легаси 180° переименован", lineOneWay, v3half), "editor")
+		require.NoError(t, err)
+	})
+
+	// THE HOLE. The exemption used to key on the version the PAYLOAD declares, and 180° is
+	// expressible in every version — so a brand-new marker opted out of the entire policy by writing
+	// `schemaVersion: 1`. Proven against this very container before the fix: it saved.
+	t.Run("a NEW marker cannot buy the exemption by declaring an old version", func(t *testing.T) {
+		for _, blob := range []string{legacy180, legacy180v2} {
+			var ve *entity.ValidationError
+			_, err := T.SaveMarker(ctx, tcID, 0, ins(t, "подделка версии", lineOneWay, blob), "tester")
+			require.ErrorAs(t, err, &ve, "blob %s", blob)
+			require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+		}
+	})
+
+	// СЕМПЛОВАЯ ЯРДАЖА — другой рулон. Under one назначение the sample line's ворс must not reach the
+	// production раскладка, and the production line's «any» must not exempt the sample one.
+	t.Run("sample yardage does not govern a production marker", func(t *testing.T) {
+		_, err := T.SaveMarker(ctx, tcID, 0, ins(t, "подкладка 180°", lineLiningP, v3half), "tester")
+		require.NoError(t, err)
+
+		var ve *entity.ValidationError
+		_, err = T.SaveMarker(ctx, tcID, 0, ins(t, "семпловая 180°", lineLiningS, v3half), "tester")
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+		require.Equal(t, lineLiningS, ve.Conflicting)
+	})
+
+	// The refusal has to speak the vocabulary of the screen it sends the operator to: a
+	// catalogue-linked line shows the CATALOGUE's name on the BOM tab and has none of its own.
+	t.Run("a catalogue-linked line is named, not printed as a ULID", func(t *testing.T) {
+		var ve *entity.ValidationError
+		_, err := T.SaveMarker(ctx, tcID, 0, ins(t, "из каталога", lineCatalog, v3clean), "tester")
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, entity.ReasonFabricDirectionUnknown, ve.Reason)
+		require.Contains(t, ve.HowToFix, "ВЕЛЬВЕТ ИЗ КАТАЛОГА")
 	})
 
 	// The half of the exemption that is NOT legitimate, driven end to end: `flipped` did not exist

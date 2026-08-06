@@ -33,10 +33,14 @@ type FabricDirectionLine struct {
 	// one reason: a field violation must be `bom_items[i].fabric_direction`, and an index taken over
 	// roll goods alone would pin the error on whichever row happens to sit at that position in the
 	// full list (a thread, a button) — confidently, and on the wrong control.
-	Index     int
-	LineKey   string
-	Purpose   string
-	Name      string
+	Index   int
+	LineKey string
+	Purpose string
+	Name    string
+	// IsSample marks the yardage the ОБРАЗЕЦ is sewn from (0265). It is a flag beside назначение,
+	// not a value of it, precisely because a card carries a production main fabric AND a sample main
+	// fabric under the same purpose — which makes it this rule's business: see MarkerFabricScope.
+	IsSample  bool
 	Direction string
 }
 
@@ -93,18 +97,36 @@ func FlipPredatesSchema(f MarkerLayoutFacts) bool {
 // article that line pins (0259/0264). The DIRECTION question is nevertheless asked of the whole
 // назначение, because that is the set of lines the same лекала get cut from, and 0267 moved the
 // sheet↔cloth binding there. Nobody validates that the lines under one назначение agree.
+//
+// СЕМПЛОВАЯ ЯРДАЖА В СКОУП НЕ ВХОДИТ, and this had to be decided rather than inherited: 0265's
+// stated reason for is_sample being a flag rather than a purpose is that one card carries a
+// production main fabric AND a sample main fabric under the SAME назначение. Left alone, an unset
+// direction on the sample roll would have blocked the PRODUCTION marker, and a one_way sample roll
+// would have imposed its policy on production geometry — of cloth that is physically a different
+// bolt, bought for a different purpose and often not even the same quality.
+//
+// So the scope keeps only lines on the same side of that flag as the line the marker names:
+// production markers ask production cloth, sample markers ask sample cloth. Symmetric on purpose —
+// the argument «the sample bolt is a different bolt» reads identically in both directions, and an
+// asymmetric rule would let a production roll's ворс govern a раскладка that will never touch it.
 func MarkerFabricScope(bomLineKey string, lines []FabricDirectionLine) FabricScope {
 	key := strings.TrimSpace(bomLineKey)
 	if key == "" {
 		return FabricScope{}
 	}
-	rollGoods := make([]RollGoodsLine, 0, len(lines))
-	purpose := ""
+	purpose, sample := "", false
 	for _, l := range lines {
-		rollGoods = append(rollGoods, RollGoodsLine{LineKey: l.LineKey, Purpose: l.Purpose})
 		if strings.EqualFold(strings.TrimSpace(l.LineKey), key) {
-			purpose = l.Purpose
+			purpose, sample = l.Purpose, l.IsSample
+			break
 		}
+	}
+	rollGoods := make([]RollGoodsLine, 0, len(lines))
+	for _, l := range lines {
+		if l.IsSample != sample {
+			continue
+		}
+		rollGoods = append(rollGoods, RollGoodsLine{LineKey: l.LineKey, Purpose: l.Purpose})
 	}
 	return ResolveFabricScope(purpose, key, rollGoods)
 }
@@ -146,6 +168,12 @@ func ScopeFabricDirection(scope FabricScope, lines []FabricDirectionLine) (TechC
 	for _, key := range scope.LineKeys {
 		l, ok := byKey[strings.ToLower(strings.TrimSpace(key))]
 		if !ok {
+			// Unreachable today — scope keys are built out of these same lines — and it stays
+			// unreachable only as long as that construction holds. A skip here would answer «any»
+			// for a line nobody could look at, i.e. would allow everything on evidence it does not
+			// have; the invalid-vocabulary branch below already chose the opposite default for the
+			// same situation, and two branches of one function must not disagree about it.
+			unknown = append(unknown, FabricDirectionLine{LineKey: key})
 			continue
 		}
 		dir := TechCardFabricDirection(strings.ToLower(strings.TrimSpace(l.Direction)))
@@ -226,13 +254,14 @@ const (
 // ValidateMarkerFabricDirection is the whole marker-side rule in one place (Ф1.5 + Ф1.6): a marker
 // may not be saved onto cloth whose direction nobody set, and a NEW layout may not put a piece
 // upside down on cloth that is directional. lines are the card's roll-goods BOM lines IN CARD ORDER
-// (their Index is used verbatim in the field path); facts are the layout distilled by the API layer.
+// (their Index is used verbatim in the field path); facts are the layout distilled by the API layer;
+// storedSchema is the version of the row being REPLACED — 0 when this save creates a marker.
 //
 // Order of the checks is deliberate: what is wrong with the PAYLOAD first (undistilled facts, a
 // mirror that cannot exist under its declared version), then what is missing on the CARD, and only
 // then the policy. Reversed, an operator would be sent to fill in the BOM tab to satisfy a request
 // that was malformed anyway.
-func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLine, facts MarkerLayoutFacts) error {
+func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLine, facts MarkerLayoutFacts, storedSchema int) error {
 	scope := MarkerFabricScope(bomLineKey, lines)
 	if !scope.Live() {
 		// An UNLINKED marker — no bom_line_key at all — stays saveable, and must: it is geometry
@@ -272,18 +301,22 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 		return NewFieldViolation(fmt.Sprintf("bom_items[%d].fabric_direction", unknown[0].Index),
 			ReasonFabricDirectionUnknown, keysOf(unknown), howToFix)
 	}
-	if facts.SchemaVersion < MarkerLayoutSchemaWithFlip {
-		// GRANDFATHERING, and it is the whole reason the version is inspected here. Stored markers
-		// legitimately carry rotations outside today's policy: the manual editor saves the rotation
-		// a piece ACTUALLY has, so 90° at allow_cross_grain=false is on file, and 180° with it.
-		// Judging an old blob by the new rule would refuse every one of those the moment its card
-		// gets a направление — measurements nobody can re-take without re-nesting, invalidated
-		// retroactively by a rule that did not exist when they were taken. Only a blob that can
-		// express `flipped` came from a client that knows the policy, so only that one is held to it.
+	if storedSchema > 0 && storedSchema < MarkerLayoutSchemaWithFlip {
+		// GRANDFATHERING, keyed on the version of the row ALREADY IN THE DATABASE — never on the
+		// version the payload declares. That distinction is the whole guard, and getting it wrong
+		// costs everything: `flipped` cannot be forged because the field did not exist, but a 180°
+		// is expressible in every version, so «declare schema_version 1» was a working opt-out of
+		// the policy for the exact geometry the policy exists to stop. A gate you get through by
+		// writing a smaller number is not a gate; the stored version is a fact the caller cannot
+		// write, and this rule now grants the exemption on nothing else.
 		//
-		// The 180° half is the half that NEEDS this: it is expressible in every version, so a legacy
-		// blob carrying it is ordinary history. The mirror half needs no grandfathering at all and
-		// got none — it was refused above, because it cannot be history.
+		// What the exemption is FOR: stored markers legitimately carry rotations outside today's
+		// policy — the manual editor saves the rotation a piece ACTUALLY has, so 90° at
+		// allow_cross_grain=false is on file and 180° with it. Refusing those the moment their card
+		// gets a направление would invalidate measurements nobody can re-take without re-nesting.
+		// A NEW marker (storedSchema 0) has no such history and gets no exemption whatever it
+		// declares; an old row keeps its pass even when the current client re-saves it as v3, which
+		// is what keeps renaming or re-linking a pre-Ф1 раскладка possible.
 		return nil
 	}
 	if dir != FabricDirectionOneWay {

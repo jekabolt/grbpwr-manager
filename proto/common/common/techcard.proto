@@ -444,7 +444,14 @@ message TechCardBomItem {
   // fabric data for the cutter / marker (Phase 3.5c)
   google.type.Decimal fabric_width = 17; // usable width, cm
   google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
-  TechCardFabricDirection fabric_direction = 19; // nap / layout
+  // Nap / layout. OPTIONAL for presence, on the same reasoning as purpose/is_sample above: the
+  // card is saved WHOLE, the admin is an SPA, and a tab holding an older bundle does not send this
+  // field at all — a proto3 enum's zero value is UNKNOWN, so «absent» and «clear it» were the same
+  // bytes and a stale tab would have wiped the направление off every line of the card. Silently:
+  // the field is not in the signature digest, and NULL is indistinguishable from «ещё не задали».
+  // Since Ф1 that erasure also un-saves every раскладка on the card, so absence now means «do not
+  // touch» and only an explicitly-sent UNKNOWN clears the column.
+  optional TechCardFabricDirection fabric_direction = 19;
   google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into the usage line totals
   // material_id optionally links this line to a catalog Material (task 10). The line keeps its
   // own snapshot fields regardless; 0 means unlinked (free-text / legacy).

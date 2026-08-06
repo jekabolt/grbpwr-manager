@@ -101,19 +101,27 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// adjusting one placement would fail on an attribution the operator never touched and has
 		// no control to clear. The guards exist to stop NEW bad attributions, not to retro-invalidate
 		// stored measurements.
+		//
+		// The stored LAYOUT VERSION rides along for the same journey and one more reason: it is the
+		// only fact that may grant the directional-cloth exemption (Ф1.6). Read here, from the row,
+		// it cannot be forged by the payload — which is exactly what went wrong when the exemption
+		// keyed on the version the client declared.
 		var stored struct {
-			Id         int64          `db:"id"`
-			BomItemId  sql.NullInt64  `db:"bom_item_id"`
-			BomLineKey sql.NullString `db:"bom_line_key"`
-			ColorwayId sql.NullInt64  `db:"colorway_id"`
+			Id            int64          `db:"id"`
+			BomItemId     sql.NullInt64  `db:"bom_item_id"`
+			BomLineKey    sql.NullString `db:"bom_line_key"`
+			ColorwayId    sql.NullInt64  `db:"colorway_id"`
+			SchemaVersion int            `db:"layout_schema_version"`
 		}
 		if id > 0 {
 			row, err := storeutil.QueryNamedOne[struct {
-				Id         int64          `db:"id"`
-				BomItemId  sql.NullInt64  `db:"bom_item_id"`
-				BomLineKey sql.NullString `db:"bom_line_key"`
-				ColorwayId sql.NullInt64  `db:"colorway_id"`
-			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id
+				Id            int64          `db:"id"`
+				BomItemId     sql.NullInt64  `db:"bom_item_id"`
+				BomLineKey    sql.NullString `db:"bom_line_key"`
+				ColorwayId    sql.NullInt64  `db:"colorway_id"`
+				SchemaVersion int            `db:"layout_schema_version"`
+			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id,
+					m.layout_schema_version
 				FROM tech_card_marker m
 				LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
 				WHERE m.id = :id AND m.tech_card_id = :tech_card_id`,
@@ -171,7 +179,8 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			if err != nil {
 				return err
 			}
-			if err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts); err != nil {
+			// stored.SchemaVersion is 0 for a create — no history, and therefore no exemption.
+			if err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts, stored.SchemaVersion); err != nil {
 				return err
 			}
 		}
@@ -217,6 +226,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"placed_count":      ins.PlacedCount,
 			"total_count":       ins.TotalCount,
 			"layout":            ins.Layout,
+			"schema_version":    ins.LayoutFacts.SchemaVersion,
 			"colorway_id":       colorwayID,
 			"username":          username,
 		}
@@ -246,7 +256,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				    allow_cross_grain = :allow_cross_grain,
 				    sets = :sets, used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
 				    placed_count = :placed_count, total_count = :total_count, layout = :layout,
-				    updated_by = :username
+				    layout_schema_version = :schema_version, updated_by = :username
 				WHERE id = :id AND tech_card_id = :tech_card_id`, params); err != nil {
 				return fmt.Errorf("update marker %d: %w", id, err)
 			}
@@ -257,10 +267,10 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			INSERT INTO tech_card_marker
 				(tech_card_id, size_id, bom_item_id, colorway_id, name, source, fabric_width_cm, gap_cm,
 				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, used_length_cm, efficiency_pct,
-				 placed_count, total_count, layout, created_by, updated_by)
+				 placed_count, total_count, layout, layout_schema_version, created_by, updated_by)
 			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :name, :source, :fabric_width_cm, :gap_cm,
 				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :used_length_cm, :efficiency_pct,
-				 :placed_count, :total_count, :layout, :username, :username)`, params)
+				 :placed_count, :total_count, :layout, :schema_version, :username, :username)`, params)
 		if err != nil {
 			return fmt.Errorf("create marker on tech card %d: %w", techCardID, err)
 		}
@@ -286,15 +296,24 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 //     may hand back the same state in a different order on a retry, and two identical saves would
 //     name two different rows.
 //
+// The NAME is resolved through the catalogue exactly as the card read resolves it — COALESCE over
+// NULLIF(bi.name) and m.name, see the bom load in materials.go: a line linked to a material legitimately
+// carries an EMPTY own name and shows the catalogue's on the BOM tab, so reading bi.name alone would
+// print a ULID at the operator where they expect «ВЕЛЬВЕТ ИЗ КАТАЛОГА» — the refusal has to speak the
+// vocabulary of the screen it sends them to, and there are two screens' worth of naming here only if
+// the two queries disagree.
+//
 // Held as a var so a test can bind it without a database: sqlx reads EVERY ':' as a named parameter,
 // and a bind error would take the whole save path down at request time.
 var fabricDirectionLinesQuery = `
-	SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose,
-	       COALESCE(name, '') AS name, COALESCE(fabric_direction, '') AS fabric_direction,
-	       section
-	FROM tech_card_bom_item
-	WHERE tech_card_id = :id
-	ORDER BY display_order, id`
+	SELECT COALESCE(bi.line_key, '') AS line_key, COALESCE(bi.purpose, '') AS purpose,
+	       COALESCE(NULLIF(bi.name, ''), m.name, '') AS name,
+	       COALESCE(bi.fabric_direction, '') AS fabric_direction,
+	       bi.is_sample, bi.section
+	FROM tech_card_bom_item bi
+	LEFT JOIN material m ON m.id = bi.material_id
+	WHERE bi.tech_card_id = :id
+	ORDER BY bi.display_order, bi.id`
 
 // fabricDirectionLines loads the card's cloth lines with both halves of the binding scope, their
 // направление and their position in the card's BOM — everything
@@ -310,6 +329,7 @@ func fabricDirectionLines(ctx context.Context, db dependency.DB, techCardID int)
 		Purpose   string `db:"purpose"`
 		Name      string `db:"name"`
 		Direction string `db:"fabric_direction"`
+		IsSample  bool   `db:"is_sample"`
 		Section   string `db:"section"`
 	}](ctx, db, fabricDirectionLinesQuery, map[string]any{"id": techCardID})
 	if err != nil {
@@ -321,7 +341,8 @@ func fabricDirectionLines(ctx context.Context, db dependency.DB, techCardID int)
 			continue
 		}
 		out = append(out, entity.FabricDirectionLine{
-			Index: i, LineKey: r.LineKey, Purpose: r.Purpose, Name: r.Name, Direction: r.Direction,
+			Index: i, LineKey: r.LineKey, Purpose: r.Purpose, Name: r.Name,
+			IsSample: r.IsSample, Direction: r.Direction,
 		})
 	}
 	return out, nil
