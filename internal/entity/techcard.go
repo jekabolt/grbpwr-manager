@@ -884,8 +884,18 @@ type TechCardSizePattern struct {
 	// BomLineKey binds the sheet to the fabric BOM line it is cut from. Write semantics mirror Name:
 	// Valid=false means absent from the payload (carry the stored binding forward), Valid=true writes
 	// as given with empty unbinding (stored as NULL).
+	//
+	// LEGACY HALF of the binding since 0267 — read it through entity.ResolveFabricScope, never on its
+	// own. It stays because it cannot be migrated: a sheet bound to line L has no purpose to move to
+	// until somebody sorts L, and 0265 deliberately guessed for nobody.
 	BomLineKey sql.NullString `db:"bom_line_key"`
-	URL        string         `db:"url"`
+	// FabricPurpose binds the sheet to a НАЗНАЧЕНИЕ (0265) instead of to one line — «это лекало
+	// основной ткани», which is the honest statement at card level, where no article is in play.
+	// Presence semantics are BomLineKey's exactly: Valid=false means the field was ABSENT from the
+	// payload and the store carries the stored value forward (a stale client cannot wipe a binding it
+	// never saw); Valid=true writes as given, with "" clearing it back to NULL.
+	FabricPurpose sql.NullString `db:"fabric_purpose"`
+	URL           string         `db:"url"`
 	Filename   sql.NullString `db:"filename"`
 	// Name is the operator-entered display name. On WRITE the null state is proto presence,
 	// not emptiness: Valid=false means the field was absent from the payload (a stale client)
@@ -1469,11 +1479,35 @@ type TechCardInsert struct {
 // spelling-case variants collapse into one alias within a slot — the wanted cross-size dedupe.
 // PieceLineKey is the wire reference (stable TechCardPiece.line_key); the store resolves it to
 // PieceId on write and joins it back on read.
+// Since 0267 the scope is a НАЗНАЧЕНИЕ (FabricPurpose) when the card has been sorted, and the
+// legacy BomLineKey only when it has not — resolved by entity.ResolveFabricScope, never by reading
+// one of the two fields alone. The DB's uniqueness moved with it, onto the generated column
+// scope_key = COALESCE(fabric_purpose, bom_line_key): swapping the purpose into the OLD index would
+// have made two same-named blocks of two lines sharing one purpose a duplicate, and the store fails
+// the WHOLE card save on a duplicate.
 type TechCardPieceDxfAlias struct {
-	BomLineKey   string `db:"bom_line_key"`
-	BlockName    string `db:"block_name"`
-	PieceId      int    `db:"piece_id"`
-	PieceLineKey string `db:"piece_line_key"`
+	// BomLineKey is the legacy line scope, and doubles as compatibility on a purpose-scoped row: when
+	// the purpose owns exactly ONE line the writer records that line here too, so a reader that
+	// predates 0267 still sees the binding it understands. Empty when the purpose owns several — there
+	// is no single honest answer then, and inventing one is how a class silently becomes an article.
+	BomLineKey string `db:"bom_line_key"`
+	// FabricPurpose is the scope proper ("" = not purpose-scoped; the row falls back to BomLineKey).
+	FabricPurpose string `db:"fabric_purpose"`
+	BlockName     string `db:"block_name"`
+	PieceId       int    `db:"piece_id"`
+	PieceLineKey  string `db:"piece_line_key"`
+}
+
+// Scope resolves this alias's binding against the card's cloth lines. The one call every consumer
+// makes; see entity/fabric_scope.go for why there is exactly one.
+func (a TechCardPieceDxfAlias) Scope(lines []RollGoodsLine) FabricScope {
+	return ResolveFabricScope(a.FabricPurpose, a.BomLineKey, lines)
+}
+
+// ScopeKey is the uniqueness bucket alone, for the paths that have no BOM to resolve against
+// (payload dedupe, keying stored rows). Mirrors the generated column by construction.
+func (a TechCardPieceDxfAlias) ScopeKey() string {
+	return FabricScopeKey(a.FabricPurpose, a.BomLineKey)
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero

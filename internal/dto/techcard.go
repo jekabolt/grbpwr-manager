@@ -633,11 +633,19 @@ func parseTechCardPieceDxfAliases(pb *pb_common.TechCardPieceDxfAliasSet) ([]ent
 		}
 		// Uppercased like pattern keys: legitimate mints are uppercase, the column collates CI.
 		slot := strings.ToUpper(strings.TrimSpace(a.BomLineKey))
-		if slot == "" {
-			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].bom_line_key is required", i)
-		}
 		if err := validatePatternLineKey(slot, fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i)); err != nil {
 			return nil, false, err
+		}
+		// НАЗНАЧЕНИЕ is the scope since 0267; bom_line_key is its legacy half and its compatibility
+		// echo. Exactly one of the two has to name something — a row naming neither would file under
+		// the empty scope, where every unbound alias of the card would collide with every other.
+		purpose, err := aliasFabricPurposeFromPb(a.FabricPurpose, fmt.Sprintf("piece_dxf_aliases[%d].fabric_purpose", i))
+		if err != nil {
+			return nil, false, err
+		}
+		if purpose == "" && slot == "" {
+			return nil, false, fmt.Errorf(
+				"piece_dxf_aliases[%d]: give it a назначение (fabric_purpose) or a BOM line (bom_line_key) — one of the two must say which cloth the block is cut from", i)
 		}
 		block := strings.Join(strings.Fields(a.BlockName), " ")
 		if block == "" {
@@ -653,16 +661,23 @@ func parseTechCardPieceDxfAliases(pb *pb_common.TechCardPieceDxfAliasSet) ([]ent
 		if err := validatePatternLineKey(pieceKey, fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i)); err != nil {
 			return nil, false, err
 		}
-		dupKey := strings.ToLower(slot) + "|" + strings.ToLower(block)
+		// Deduped on the SCOPE, not on the slot — the same key the generated column scope_key and the
+		// store's diff use, so the three cannot disagree. This is the alias-collapse case the whole
+		// 0267 design turns on: sorting two BOM lines into ONE назначение merges their alias sets, and
+		// if both held a «полочка» the merged set has two rows under one scope. Caught HERE, before
+		// the transaction opens, it is a readable refusal naming the block; caught by the UNIQUE index
+		// it would be a driver 1062 that fails the entire card save. The client warns earlier still.
+		dupKey := strings.ToLower(entity.FabricScopeKey(purpose, slot)) + "|" + strings.ToLower(block)
 		if seen[dupKey] {
 			return nil, false, fmt.Errorf(
-				"piece_dxf_aliases[%d]: block %q is mapped twice for the same fabric slot — one block name means one piece", i, block)
+				"piece_dxf_aliases[%d]: блок %q заявлен двумя деталями кроя под одним назначением — открой «детали кроя» на вкладке ВЫКРОЙКИ и оставь для этого блока одну связь", i, block)
 		}
 		seen[dupKey] = true
 		out = append(out, entity.TechCardPieceDxfAlias{
-			BomLineKey:   slot,
-			BlockName:    block,
-			PieceLineKey: pieceKey,
+			BomLineKey:    slot,
+			FabricPurpose: purpose,
+			BlockName:     block,
+			PieceLineKey:  pieceKey,
 		})
 	}
 	return out, true, nil
@@ -674,9 +689,10 @@ func techCardPieceDxfAliasesToPb(aliases []entity.TechCardPieceDxfAlias) *pb_com
 	out := &pb_common.TechCardPieceDxfAliasSet{Items: make([]*pb_common.TechCardPieceDxfAlias, 0, len(aliases))}
 	for _, a := range aliases {
 		out.Items = append(out.Items, &pb_common.TechCardPieceDxfAlias{
-			BomLineKey:   a.BomLineKey,
-			BlockName:    a.BlockName,
-			PieceLineKey: a.PieceLineKey,
+			BomLineKey:    a.BomLineKey,
+			FabricPurpose: pbBomPurpose(sql.NullString{String: a.FabricPurpose, Valid: a.FabricPurpose != ""}),
+			BlockName:     a.BlockName,
+			PieceLineKey:  a.PieceLineKey,
 		})
 	}
 	return out
@@ -765,17 +781,26 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			}
 			bomLineKey = sql.NullString{String: trimmed, Valid: true}
 		}
+		// fabric_purpose (0267) — the binding proper; bom_line_key above is now its legacy half.
+		// Same proto presence, for the same reason: a client that predates the field must not wipe
+		// what it never saw.
+		fabricPurpose, err := fabricPurposeFromPb(p.FabricPurpose,
+			fmt.Sprintf("patterns[%d].fabric_purpose", len(out)))
+		if err != nil {
+			return nil, err
+		}
 		// uploaded_at is server-owned and deliberately dropped here: the store carries the original
 		// forward by url, so accepting a client value would only let a save rewrite history.
 		out = append(out, entity.TechCardSizePattern{
-			SizeId:     sid,
-			LineKey:    lineKey,
-			BomLineKey: bomLineKey,
-			URL:        url,
-			Filename:   nullStringFromPb(p.Filename),
-			Name:       name,
-			SizeBytes:  nullInt64FromPb(p.SizeBytes),
-			Version:    int(p.Version),
+			SizeId:        sid,
+			LineKey:       lineKey,
+			BomLineKey:    bomLineKey,
+			FabricPurpose: fabricPurpose,
+			URL:           url,
+			Filename:      nullStringFromPb(p.Filename),
+			Name:          name,
+			SizeBytes:     nullInt64FromPb(p.SizeBytes),
+			Version:       int(p.Version),
 		})
 	}
 	return out, nil
@@ -1207,12 +1232,15 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 			SizeId:     int32(p.SizeId),
 			LineKey:    p.LineKey,
 			BomLineKey: pbOptStringFromNull(p.BomLineKey),
-			Url:        p.URL,
-			Filename:   pbStringFromNull(p.Filename),
-			Name:       pbOptStringFromNull(p.Name),
-			SizeBytes:  p.SizeBytes.Int64,
-			Version:    int32(p.Version),
-			UploadedAt: pbTimestampFromNullTime(p.UploadedAt),
+			// ALWAYS present on read (like name / bom_line_key), so a new client round-trips presence
+			// and its saves state the binding explicitly instead of falling into carry-forward.
+			FabricPurpose: pbPtr(pbBomPurpose(p.FabricPurpose)),
+			Url:           p.URL,
+			Filename:      pbStringFromNull(p.Filename),
+			Name:          pbOptStringFromNull(p.Name),
+			SizeBytes:     p.SizeBytes.Int64,
+			Version:       int32(p.Version),
+			UploadedAt:    pbTimestampFromNullTime(p.UploadedAt),
 		})
 	}
 	return out
@@ -2312,6 +2340,40 @@ func pbBomPurpose(p sql.NullString) pb_common.TechCardBomPurpose {
 		return v
 	}
 	return pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
+}
+
+// fabricPurposeFromPb maps the OPTIONAL назначение that binds a выкройка to cloth (0267), keeping
+// proto presence intact: nil → Valid=false, «поля не было — сохрани что лежит», which is what a
+// client predating the field sends; UNSET → present-empty, an explicit unbind. Unknown values are
+// REFUSED rather than degraded to UNSET the way the read path degrades them: a read must not lose a
+// row, but a write that silently unbound a sheet because the client spoke a newer vocabulary would
+// be a data loss the operator never asked for and could not see.
+func fabricPurposeFromPb(p *pb_common.TechCardBomPurpose, field string) (sql.NullString, error) {
+	if p == nil {
+		return sql.NullString{}, nil
+	}
+	if *p == pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+		return sql.NullString{Valid: true}, nil
+	}
+	v, ok := techCardBomPurposePbToEntity[*p]
+	if !ok {
+		return sql.NullString{}, fmt.Errorf("%s: unknown назначение %q", field, p.String())
+	}
+	return sql.NullString{String: string(v), Valid: true}, nil
+}
+
+// aliasFabricPurposeFromPb is the same mapping for an alias row, which needs no presence of its own:
+// the alias SET carries presence as a whole and each row is written whole, so UNSET on a row that is
+// being written means «line-scoped», never «leave the stored value alone».
+func aliasFabricPurposeFromPb(p pb_common.TechCardBomPurpose, field string) (string, error) {
+	if p == pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+		return "", nil
+	}
+	v, ok := techCardBomPurposePbToEntity[p]
+	if !ok {
+		return "", fmt.Errorf("%s: unknown назначение %q", field, p.String())
+	}
+	return string(v), nil
 }
 
 func pbLabDipStatus(s entity.TechCardLabDipStatus) pb_common.TechCardLabDipStatus {

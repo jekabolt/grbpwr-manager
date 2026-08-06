@@ -1233,14 +1233,15 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 // the carry-forward on url alone let one size's sheet inherit the OTHER size's Rev number, and the
 // per-size MAX+1 numbering then skipped or duplicated revisions on later saves.
 type patternHistoryRow struct {
-	Id         int            `db:"id"`
-	LineKey    string         `db:"line_key"`
-	BomLineKey sql.NullString `db:"bom_line_key"`
-	URL        string         `db:"url"`
-	SizeId     int            `db:"size_id"`
-	Version    int            `db:"version"`
-	UploadedAt sql.NullTime   `db:"uploaded_at"`
-	Name       sql.NullString `db:"name"`
+	Id            int            `db:"id"`
+	LineKey       string         `db:"line_key"`
+	BomLineKey    sql.NullString `db:"bom_line_key"`
+	FabricPurpose sql.NullString `db:"fabric_purpose"`
+	URL           string         `db:"url"`
+	SizeId        int            `db:"size_id"`
+	Version       int            `db:"version"`
+	UploadedAt    sql.NullTime   `db:"uploaded_at"`
+	Name          sql.NullString `db:"name"`
 }
 
 func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) ([]string, error) {
@@ -1257,7 +1258,8 @@ func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) 
 
 func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) ([]patternHistoryRow, error) {
 	rows, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
-		`SELECT id, COALESCE(line_key, '') AS line_key, bom_line_key, url, size_id, version, uploaded_at, name
+		`SELECT id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
+		        url, size_id, version, uploaded_at, name
 		 FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": techCardID})
 	if err != nil {
@@ -1341,27 +1343,30 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	for _, sizeID := range sizeIDs {
 		liveSizes[sizeID] = struct{}{}
 	}
-	// The fabric-slot line keys are loaded lazily, only when some payload row binds a NEW slot —
-	// bindings that merely round-trip the stored value are tolerated even when the slot is gone
-	// («слот удалён» is a UI state, not a reason to block the save).
-	var rollGoodsKeys map[string]struct{}
-	loadRollGoodsKeys := func() (map[string]struct{}, error) {
-		if rollGoodsKeys != nil {
-			return rollGoodsKeys, nil
+	// The card's cloth lines are loaded lazily, only when some payload row binds a NEW cloth —
+	// bindings that merely round-trip the stored value are tolerated even when the target is gone
+	// («слот удалён» is a UI state, not a reason to block the save). Both halves come along: since
+	// 0267 a sheet may name a назначение instead of a line, and resolving that needs the purposes.
+	var rollGoods []entity.RollGoodsLine
+	loadRollGoods := func() ([]entity.RollGoodsLine, error) {
+		if rollGoods != nil {
+			return rollGoods, nil
 		}
 		rows, err := storeutil.QueryListNamed[struct {
 			LineKey string `db:"line_key"`
-		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_bom_item
+			Purpose string `db:"purpose"`
+		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
+			FROM tech_card_bom_item
 			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
 			rollGoodsSectionArgs(map[string]any{"id": id}))
 		if err != nil {
-			return nil, fmt.Errorf("load roll-goods bom line keys: %w", err)
+			return nil, fmt.Errorf("load roll-goods bom lines: %w", err)
 		}
-		rollGoodsKeys = make(map[string]struct{}, len(rows))
+		rollGoods = make([]entity.RollGoodsLine, 0, len(rows))
 		for _, r := range rows {
-			rollGoodsKeys[r.LineKey] = struct{}{}
+			rollGoods = append(rollGoods, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
 		}
-		return rollGoodsKeys, nil
+		return rollGoods, nil
 	}
 	seenPayload := make(map[string]struct{}, len(patterns))
 	seenKeys := make(map[string]struct{}, len(patterns))
@@ -1474,31 +1479,49 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			// revision for that size would collide with it.
 			maxVersionBySize[p.SizeId] = version
 		}
-		// The fabric binding is presence-gated like the name: absent carries the stored binding
-		// forward. A present, non-empty value that CHANGES the binding must name a live roll-goods slot;
-		// an unchanged round-trip passes even when the slot has been deleted since.
-		var storedBinding sql.NullString
+		// The fabric binding is presence-gated like the name: absent carries the stored value
+		// forward. Both halves are gated independently, which is what makes the 0267 transition
+		// additive — a client that speaks only назначение leaves the legacy line exactly as it was,
+		// and a client that predates 0267 leaves the назначение exactly as it was.
+		var storedBinding, storedPurpose sql.NullString
 		if matched != nil {
 			storedBinding = matched.BomLineKey
+			storedPurpose = matched.FabricPurpose
 		}
 		bomLineKey := storeutil.ResolveNullableOnPresence(p.BomLineKey, storedBinding)
-		if bomLineKey.Valid && bomLineKey.String != "" &&
-			(!storedBinding.Valid || storedBinding.String != bomLineKey.String) {
-			keys, err := loadRollGoodsKeys()
+		fabricPurpose := storeutil.ResolveNullableOnPresence(p.FabricPurpose, storedPurpose)
+		// A present, non-empty value that CHANGES the binding must name something live; an unchanged
+		// round-trip passes even when the target has gone away since.
+		if fabricPurpose.Valid && fabricPurpose.String != "" &&
+			(!storedPurpose.Valid || storedPurpose.String != fabricPurpose.String) {
+			lines, err := loadRollGoods()
 			if err != nil {
 				return err
 			}
-			if _, ok := keys[bomLineKey.String]; !ok {
+			if !entity.ResolveFabricScope(fabricPurpose.String, "", lines).Live() {
+				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].fabric_purpose", i),
+					fmt.Sprintf("ни одна строка ткани этой карты не имеет назначения %q", fabricPurpose.String), "",
+					"задай это назначение нужной строке на вкладке BOM (поле «назначение»), потом привяжи к нему лекало — или оставь лист непривязанным")
+			}
+		}
+		if bomLineKey.Valid && bomLineKey.String != "" &&
+			(!storedBinding.Valid || storedBinding.String != bomLineKey.String) {
+			lines, err := loadRollGoods()
+			if err != nil {
+				return err
+			}
+			if !entity.ResolveFabricScope("", bomLineKey.String, lines).Live() {
 				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].bom_line_key", i),
 					fmt.Sprintf("no roll-goods BOM line %q in this tech card", bomLineKey.String), "",
-					"bind the sheet to a fabric, lining, interlining or insulation BOM line, or leave it unbound")
+					"на вкладке ВЫКРОЙКИ выбери для этого DXF ткань — строку BOM секции ткань, подкладка, бортовка или утеплитель, — или оставь лист непривязанным")
 			}
 		}
 		params := map[string]any{
-			"tech_card_id":  id,
-			"line_key":      lineKey,
-			"bom_line_key":  bomLineKey,
-			"size_id":       p.SizeId,
+			"tech_card_id":   id,
+			"line_key":       lineKey,
+			"bom_line_key":   bomLineKey,
+			"fabric_purpose": fabricPurpose,
+			"size_id":        p.SizeId,
 			"url":           p.URL,
 			"filename":      p.Filename,
 			"name":          name,
@@ -1513,7 +1536,8 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			params["id"] = matched.Id
 			if err := storeutil.ExecNamed(ctx, db, `
 				UPDATE tech_card_size_pattern SET
-					line_key = :line_key, bom_line_key = :bom_line_key, size_id = :size_id, url = :url,
+					line_key = :line_key, bom_line_key = :bom_line_key, fabric_purpose = :fabric_purpose,
+					size_id = :size_id, url = :url,
 					filename = :filename, name = :name, size_bytes = :size_bytes, version = :version,
 					uploaded_at = :uploaded_at, display_order = :display_order
 				WHERE id = :id`, params); err != nil {
@@ -1523,8 +1547,8 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
 			INSERT INTO tech_card_size_pattern
-				(tech_card_id, line_key, bom_line_key, size_id, url, filename, name, size_bytes, version, uploaded_at, display_order)
-			VALUES (:tech_card_id, :line_key, :bom_line_key, :size_id, :url, :filename, :name, :size_bytes, :version, :uploaded_at, :display_order)`,
+				(tech_card_id, line_key, bom_line_key, fabric_purpose, size_id, url, filename, name, size_bytes, version, uploaded_at, display_order)
+			VALUES (:tech_card_id, :line_key, :bom_line_key, :fabric_purpose, :size_id, :url, :filename, :name, :size_bytes, :version, :uploaded_at, :display_order)`,
 			params); err != nil {
 			return fmt.Errorf("failed to insert tech card pattern: %w", err)
 		}

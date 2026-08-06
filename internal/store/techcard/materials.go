@@ -884,11 +884,12 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// DXF block aliases (§2.2), with the piece's stable line_key joined in — the wire speaks keys,
 	// not FKs. A piece deleted mid-flight cascades its aliases away, so the JOIN never dangles.
 	aliasRows, err := storeutil.QueryListNamed[techCardPieceDxfAliasRow](ctx, s.DB, `
-		SELECT a.tech_card_id, a.bom_line_key, a.block_name, a.piece_id, COALESCE(p.line_key, '') AS piece_line_key
+		SELECT a.tech_card_id, a.bom_line_key, COALESCE(a.fabric_purpose, '') AS fabric_purpose,
+		       a.block_name, a.piece_id, COALESCE(p.line_key, '') AS piece_line_key
 		FROM tech_card_piece_dxf_block a
 		JOIN tech_card_piece p ON p.id = a.piece_id
 		WHERE a.tech_card_id IN (:ids)
-		ORDER BY a.tech_card_id, a.bom_line_key, a.block_name`, map[string]any{"ids": ids})
+		ORDER BY a.tech_card_id, a.scope_key, a.block_name`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card piece dxf aliases: %w", err)
 	}
@@ -920,13 +921,32 @@ type techCardPieceDxfAliasRow struct {
 	entity.TechCardPieceDxfAlias
 }
 
+// nullIfEmpty writes "" as SQL NULL. The alias table's fabric_purpose has to be NULL rather than ''
+// for the empty case: scope_key is COALESCE(fabric_purpose, bom_line_key), and '' is not NULL to
+// COALESCE — a line-scoped row storing '' would scope to the empty string and collide with every
+// other such row of the card.
+func nullIfEmpty(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
 // upsertTechCardPieceDxfAliases reconciles the DXF block → piece aliases (§2.2), keyed by
-// (bom_line_key, block_name) with the DB's case-insensitive semantics mirrored in Go. Runs AFTER
-// upsertTechCardPieces (resolveUsagePiece precedent) so piece_line_key resolves against this save's
-// pieces. Presence-gated: a payload that did not speak (set=false — a stale client) leaves stored
-// aliases untouched; a present payload is the new full set. An EXISTING (slot, block) pair is
-// grandfathered even when its slot left the BOM («слот удалён» is a UI state); a NEW pair requires
-// a live roll-goods slot.
+// (SCOPE, block_name) with the DB's case-insensitive semantics mirrored in Go. The scope is
+// entity.ResolveFabricScope's answer — назначение (0267) where the card has been sorted, the legacy
+// bom_line_key where it has not — and it is computed through that ONE function so this diff, the dto
+// dedupe and the generated column scope_key cannot drift apart.
+//
+// Runs AFTER upsertTechCardPieces (resolveUsagePiece precedent) so piece_line_key resolves against
+// this save's pieces, and BEFORE nothing in particular — the BOM is already upserted by the time
+// UpdateTechCard reaches here, so a назначение set on the BOM tab a moment ago resolves.
+//
+// Presence-gated: a payload that did not speak (set=false — a stale client) leaves stored aliases
+// untouched; a present payload is the new full set. An EXISTING (scope, block) pair is grandfathered
+// even when its scope went dead («слот удалён» / «в это назначение ещё ничего не разложено» are UI
+// states, not reasons to fail a card save); a NEW pair requires a live scope.
+//
+// A card MID-SORT — some lines sorted, some not — is the normal state for the whole transition, and
+// it needs no special case here: each alias resolves on its own, so a line-scoped row and a
+// purpose-scoped row of the same card coexist and are diffed side by side.
 func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string) error {
 	if !set {
 		return nil
@@ -944,35 +964,43 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 		pieceByKey[strings.ToLower(r.LineKey)] = r.Id
 	}
 	type aliasExistingRow struct {
-		Id         int    `db:"id"`
-		BomLineKey string `db:"bom_line_key"`
-		BlockName  string `db:"block_name"`
-		PieceId    int    `db:"piece_id"`
+		Id            int    `db:"id"`
+		BomLineKey    string `db:"bom_line_key"`
+		FabricPurpose string `db:"fabric_purpose"`
+		BlockName     string `db:"block_name"`
+		PieceId       int    `db:"piece_id"`
 	}
 	existing, err := storeutil.QueryListNamed[aliasExistingRow](ctx, db,
-		`SELECT id, bom_line_key, block_name, piece_id FROM tech_card_piece_dxf_block WHERE tech_card_id = :id`,
+		`SELECT id, bom_line_key, COALESCE(fabric_purpose, '') AS fabric_purpose, block_name, piece_id
+		 FROM tech_card_piece_dxf_block WHERE tech_card_id = :id`,
 		map[string]any{"id": tcID})
 	if err != nil {
 		return fmt.Errorf("failed to load existing dxf aliases: %w", err)
 	}
-	ciKey := func(slot, block string) string { return strings.ToLower(slot) + "|" + strings.ToLower(block) }
+	ciKey := func(scope, block string) string { return strings.ToLower(scope) + "|" + strings.ToLower(block) }
 	existingByKey := make(map[string]aliasExistingRow, len(existing))
 	for _, r := range existing {
-		existingByKey[ciKey(r.BomLineKey, r.BlockName)] = r
+		// The stored row's scope needs no BOM: it is COALESCE of what the row itself holds, the same
+		// value MySQL materialised into scope_key.
+		existingByKey[ciKey(entity.FabricScopeKey(r.FabricPurpose, r.BomLineKey), r.BlockName)] = r
 	}
-	var rollGoodsKeys map[string]struct{}
+	// The card's cloth lines WITH their назначения — resolving a purpose-scoped alias needs both
+	// halves, and a purpose that no line carries is exactly the dangling case to refuse on a NEW pair.
+	var rollGoods []entity.RollGoodsLine
 	if len(aliases) > 0 {
 		rows, err := storeutil.QueryListNamed[struct {
 			LineKey string `db:"line_key"`
-		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_bom_item
+			Purpose string `db:"purpose"`
+		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
+			FROM tech_card_bom_item
 			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
 			rollGoodsSectionArgs(map[string]any{"id": tcID}))
 		if err != nil {
-			return fmt.Errorf("failed to load roll-goods bom line keys for dxf aliases: %w", err)
+			return fmt.Errorf("failed to load roll-goods bom lines for dxf aliases: %w", err)
 		}
-		rollGoodsKeys = make(map[string]struct{}, len(rows))
+		rollGoods = make([]entity.RollGoodsLine, 0, len(rows))
 		for _, r := range rows {
-			rollGoodsKeys[strings.ToLower(r.LineKey)] = struct{}{}
+			rollGoods = append(rollGoods, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
 		}
 	}
 	seen := make(map[string]bool, len(aliases))
@@ -982,39 +1010,61 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 			return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i),
 				"not_found", a.PieceLineKey, "the referenced cut-piece is not on this card")
 		}
-		key := ciKey(a.BomLineKey, a.BlockName)
+		scope := a.Scope(rollGoods)
+		key := ciKey(scope.Key, a.BlockName)
 		if prev, exists := existingByKey[key]; exists {
-			if prev.PieceId != pieceID {
+			// Same scope, so the row keeps its identity. Its two halves are still rewritten: a card
+			// that has just been sorted sends the same scope with the compatibility line now filled in
+			// (or emptied, when the назначение turned out to own several lines), and a row that kept
+			// the old halves would answer a pre-0267 reader with a line that is no longer the whole truth.
+			if prev.PieceId != pieceID || prev.FabricPurpose != a.FabricPurpose || prev.BomLineKey != a.BomLineKey {
 				if err := storeutil.ExecNamed(ctx, db, `
-					UPDATE tech_card_piece_dxf_block SET piece_id = :piece_id, updated_by = :username
-					WHERE id = :id`, map[string]any{"id": prev.Id, "piece_id": pieceID, "username": username}); err != nil {
+					UPDATE tech_card_piece_dxf_block
+					SET piece_id = :piece_id, bom_line_key = :bom_line_key, fabric_purpose = :fabric_purpose,
+					    updated_by = :username
+					WHERE id = :id`, map[string]any{
+					"id":             prev.Id,
+					"piece_id":       pieceID,
+					"bom_line_key":   a.BomLineKey,
+					"fabric_purpose": nullIfEmpty(a.FabricPurpose),
+					"username":       username,
+				}); err != nil {
 					return fmt.Errorf("failed to update dxf alias: %w", err)
 				}
 			}
 		} else {
-			if _, live := rollGoodsKeys[strings.ToLower(a.BomLineKey)]; !live {
+			if !scope.Live() {
+				// Two different dead ends, two different controls to fix them in — so two messages.
+				// Self-contained on purpose: the operator may see this without the form scrolling
+				// anywhere, so it has to say what to do, not merely what is wrong.
+				if scope.ByPurpose {
+					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].fabric_purpose", i),
+						"not_found", a.FabricPurpose,
+						"ни одна строка ткани этой карты не имеет такого назначения — задай его нужной строке на вкладке BOM (назначение) и сохрани ещё раз")
+				}
 				return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i),
 					"not_found", a.BomLineKey,
-					"pick a fabric, lining, interlining or insulation BOM line of this card")
+					"на вкладке ВЫКРОЙКИ выбери для этого DXF ткань — строку BOM секции ткань, подкладка, бортовка или утеплитель")
 			}
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO tech_card_piece_dxf_block
-					(tech_card_id, bom_line_key, block_name, piece_id, created_by, updated_by)
-				VALUES (:tech_card_id, :bom_line_key, :block_name, :piece_id, :username, :username)`,
+					(tech_card_id, bom_line_key, fabric_purpose, block_name, piece_id, created_by, updated_by)
+				VALUES (:tech_card_id, :bom_line_key, :fabric_purpose, :block_name, :piece_id, :username, :username)`,
 				map[string]any{
-					"tech_card_id": tcID,
-					"bom_line_key": a.BomLineKey,
-					"block_name":   a.BlockName,
-					"piece_id":     pieceID,
-					"username":     username,
+					"tech_card_id":   tcID,
+					"bom_line_key":   a.BomLineKey,
+					"fabric_purpose": nullIfEmpty(a.FabricPurpose),
+					"block_name":     a.BlockName,
+					"piece_id":       pieceID,
+					"username":       username,
 				}); err != nil {
 				var me *mysql.MySQLError
 				if errors.As(err, &me) && me.Number == 1062 { // ER_DUP_ENTRY
 					// The DB collation folds more than Go's ToLower (accents, ё=е, ß=ss) — a pair
 					// Go saw as distinct can still collide in MySQL. A readable refusal, not a 500.
 					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].block_name", i),
-						fmt.Sprintf("block %q collides with an existing alias on this fabric under the database's case/accent folding", a.BlockName),
-						a.BlockName, "rename the block or edit the existing alias")
+						fmt.Sprintf("блок %q сталкивается с уже существующей связью в этом же скоупе (база складывает регистр и диакритику)", a.BlockName),
+						a.BlockName, "открой «детали кроя» на вкладке ВЫКРОЙКИ и оставь для этого блока одну связь")
 				}
 				return fmt.Errorf("failed to insert dxf alias: %w", err)
 			}

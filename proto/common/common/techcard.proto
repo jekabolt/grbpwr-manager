@@ -776,7 +776,24 @@ message TechCardSizePattern {
   // A non-empty value must name a fabric-section BOM line of this card, except when it round-trips
   // the row's stored value unchanged (the slot may have been deleted — the binding then reads as
   // «слот удалён» rather than blocking the save).
+  //
+  // LEGACY HALF since 0267 — resolve through fabric_purpose first, never read this alone. It cannot
+  // be migrated away: a sheet bound to line L has no purpose to move to until L is sorted, and 0265
+  // deliberately guessed a purpose for nobody.
   optional string bom_line_key = 11;
+  // fabric_purpose binds the sheet to a НАЗНАЧЕНИЕ (0265) rather than to one BOM line, which is what
+  // a выкройка actually is at card level: «это лекало основной ткани» is a CLASS. The concrete line
+  // matters only where the ARTICLE does — the раскладка (width/selvedge come off the colourway's
+  // pinned article) and the production run — and neither is stored on this row.
+  //
+  // Resolution, everywhere, is: fabric_purpose, else bom_line_key. Both coexist deliberately, so a
+  // card nobody has sorted keeps working untouched and migrates itself when somebody sorts it.
+  //
+  // Explicit presence, same rules as `bom_line_key`: ABSENT — the server preserves the stored value;
+  // PRESENT — stored as sent, UNSET clearing it. A value other than UNSET must be a назначение
+  // carried by at least one roll-goods BOM line of this card, except when it round-trips the row's
+  // stored value unchanged.
+  optional TechCardBomPurpose fabric_purpose = 12;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).
@@ -1131,16 +1148,30 @@ message TechCardPieceColorwayMaterial {
   int64 fusing_bom_item_id = 9; // OUTPUT: resolved FK to the fusing BOM line
 }
 
-// TechCardPieceDxfAlias maps one DXF block name to a cut-piece, SCOPED to one fabric slot
-// (bom_line_key — the same binding pattern rows carry). The canonical piece name lives only in
-// TechCardPiece.name; block names are per-file exporter noise («PERED_S», «front-38»), so the same
-// generic name in different fabrics' files maps independently while any spelling within one
-// fabric's files (all its size DXFs) resolves to one piece. The DB UNIQUE is case-insensitive per
-// (card, slot, block).
+// TechCardPieceDxfAlias maps one DXF block name to a cut-piece, SCOPED to the cloth it is cut from.
+// The canonical piece name lives only in TechCardPiece.name; block names are per-file exporter noise
+// («PERED_S», «front-38»), so the same generic name in different cloths' files maps independently
+// while any spelling within one cloth's files (all its size DXFs) resolves to one piece.
+//
+// Since 0267 the scope is a НАЗНАЧЕНИЕ (fabric_purpose) where the card has been sorted and the
+// legacy bom_line_key where it has not: scope = fabric_purpose, else bom_line_key. The DB UNIQUE
+// moved with it and is case-insensitive per (card, scope, block) — computed from the generated
+// column scope_key so the index and the server agree by construction. Swapping the purpose into the
+// OLD (card, line, block) index instead would have turned two same-named blocks of two lines sharing
+// one purpose into a duplicate, and a duplicate fails the WHOLE card save.
 message TechCardPieceDxfAlias {
-  string bom_line_key = 1; // fabric BOM line (slot) this mapping is scoped to; required
+  // bom_line_key is the LEGACY scope, and on a purpose-scoped row it is compatibility: the writer
+  // records the line here too when the purpose owns exactly ONE line, and leaves it empty when the
+  // purpose owns several (there is no single honest answer then). Required only when fabric_purpose
+  // is UNSET — one of the two must name something.
+  string bom_line_key = 1;
   string block_name = 2; // DXF block name, normalized (trim + inner whitespace collapsed); required
   string piece_line_key = 3; // the cut-piece, by its stable TechCardPiece.line_key; required
+  // fabric_purpose is the scope proper (UNSET = not purpose-scoped; the row falls back to
+  // bom_line_key). No explicit presence here and none needed: the alias SET already carries presence
+  // as a whole (TechCardPieceDxfAliasSet) and each row is written whole, so an omitted field on a
+  // row that IS being written means «this row is line-scoped», never «leave the stored value alone».
+  TechCardBomPurpose fabric_purpose = 4;
 }
 
 // TechCardPieceDxfAliasSet is a presence wrapper: proto3 cannot distinguish an EMPTY repeated field

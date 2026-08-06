@@ -315,3 +315,26 @@ func TestBomPurposeDBCheckNoDrift(t *testing.T) {
 	dbValues := extractDBEnumValues(t, content, "purpose REGEXP", 120)
 	assertSameSet(t, "TechCardBomPurpose", dbValues, mapKeysAsStrings(entity.ValidTechCardBomPurposes))
 }
+
+// TestFabricPurposeDBCheckNoDrift extends the drift guard to the 0267 bindings: the выкройка's and
+// the alias's fabric_purpose speak the SAME closed vocabulary as the BOM line's purpose (0265), and
+// they must, because that is what makes them join.
+//
+// A value one side accepts and the other does not would not fail anywhere visible: the sheet would
+// simply group under a heading no screen renders, and the раскладка for that cloth would read as
+// «not bound» while the row insists it is. Both CHECKs are asserted, and asserted to be IDENTICAL —
+// a drift between the pattern's list and the alias's would split one vocabulary in two.
+func TestFabricPurposeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0267_pattern_purpose_binding.sql")
+	const anchor = "fabric_purpose REGEXP"
+	if n := strings.Count(content, anchor); n != 2 {
+		t.Fatalf("expected exactly 2 fabric_purpose CHECKs (pattern + alias), found %d", n)
+	}
+	want := mapKeysAsStrings(entity.ValidTechCardBomPurposes)
+	first := strings.Index(content, anchor)
+	assertSameSet(t, "TechCardSizePattern.fabric_purpose",
+		extractDBEnumValues(t, content[first:], anchor, 120), want)
+	second := strings.Index(content[first+len(anchor):], anchor) + first + len(anchor)
+	assertSameSet(t, "TechCardPieceDxfAlias.fabric_purpose",
+		extractDBEnumValues(t, content[second:], anchor, 120), want)
+}
