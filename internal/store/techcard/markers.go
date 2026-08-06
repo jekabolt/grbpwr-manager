@@ -92,17 +92,40 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// (no clientFoundRows in the DSN), and that UPDATE has no guaranteed-changing column
 		// (the lock_version bump was deliberately dropped), so a byte-identical re-save would
 		// report 0 rows and read as a phantom 404.
+		//
+		// The stored bom line and colourway come back with it, because an UNCHANGED value must not
+		// be re-validated. Both guards below ask whether a target is still ELIGIBLE — a roll-goods
+		// section, a live colourway — and eligibility can lapse after the fact: archiving a
+		// colourway is a first-class card action, and a BOM line can be reclassified from fabric to
+		// trim. Re-checking an unchanged value would then make the marker permanently un-saveable:
+		// adjusting one placement would fail on an attribution the operator never touched and has
+		// no control to clear. The guards exist to stop NEW bad attributions, not to retro-invalidate
+		// stored measurements.
+		var stored struct {
+			Id         int64          `db:"id"`
+			BomItemId  sql.NullInt64  `db:"bom_item_id"`
+			BomLineKey sql.NullString `db:"bom_line_key"`
+			ColorwayId sql.NullInt64  `db:"colorway_id"`
+		}
 		if id > 0 {
-			if _, err := storeutil.QueryNamedOne[struct {
-				Id int64 `db:"id"`
-			}](ctx, db, `SELECT id FROM tech_card_marker WHERE id = :id AND tech_card_id = :tech_card_id`,
-				map[string]any{"id": id, "tech_card_id": techCardID}); err != nil {
+			row, err := storeutil.QueryNamedOne[struct {
+				Id         int64          `db:"id"`
+				BomItemId  sql.NullInt64  `db:"bom_item_id"`
+				BomLineKey sql.NullString `db:"bom_line_key"`
+				ColorwayId sql.NullInt64  `db:"colorway_id"`
+			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id
+				FROM tech_card_marker m
+				LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
+				WHERE m.id = :id AND m.tech_card_id = :tech_card_id`,
+				map[string]any{"id": id, "tech_card_id": techCardID})
+			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					return fmt.Errorf("%w: marker %d is not a раскладка of tech card %d",
 						entity.ErrMarkerNotFound, id, techCardID)
 				}
 				return fmt.Errorf("resolve marker %d: %w", id, err)
 			}
+			stored = row
 		}
 		// The size must be in the card's range AT SAVE TIME. Like pattern rows, a marker may
 		// outlive its size leaving the range later — it stays a valid measurement — but minting a
@@ -111,7 +134,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			return err
 		}
 		bomItemID := sql.NullInt64{}
-		if key := strings.TrimSpace(ins.BomLineKey); key != "" {
+		if key := strings.TrimSpace(ins.BomLineKey); key != "" &&
+			stored.BomLineKey.Valid && strings.EqualFold(stored.BomLineKey.String, key) {
+			// Unchanged binding: keep the stored line even if its section is no longer roll goods.
+			bomItemID = stored.BomItemId
+		} else if key != "" {
 			// Roll goods only, the same four families a pattern sheet and a cut-piece alias bind to.
 			// A marker MEASURES A LENGTH OF CLOTH: bound to a thread or hardware line it would be a
 			// consumption norm for something that is counted, not laid out. The RPC used to accept
@@ -138,7 +165,10 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// ARCHIVED(4) is excluded to match the card read, which drops archived colourways entirely
 		// — a marker pointing at one would be attributed to something the operator cannot see.
 		colorwayID := sql.NullInt64{}
-		if ins.ColorwayId > 0 {
+		if ins.ColorwayId > 0 && stored.ColorwayId.Valid && stored.ColorwayId.Int64 == int64(ins.ColorwayId) {
+			// Unchanged attribution: keep it even if the colourway has since been archived.
+			colorwayID = stored.ColorwayId
+		} else if ins.ColorwayId > 0 {
 			n, err := storeutil.QueryCountNamed(ctx, db,
 				`SELECT COUNT(*) FROM product WHERE id = :cw AND style_id = :card AND lifecycle_status <> 4`,
 				map[string]any{"cw": ins.ColorwayId, "card": techCardID})

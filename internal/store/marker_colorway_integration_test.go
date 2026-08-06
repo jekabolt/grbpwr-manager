@@ -170,6 +170,40 @@ func TestMarkerColorwayBinding(t *testing.T) {
 	require.False(t, markerByName(tcID, "M · A 140").ColorwayId.Valid,
 		"clearing the colourway must actually clear it, not keep the stored one")
 
+	// ARCHIVING a colourway must NOT brick its markers. Archiving is a first-class card action and
+	// does not fire ON DELETE SET NULL, so the row keeps pointing at a now-ineligible colourway. If
+	// the save re-validated that unchanged value, adjusting one placement would fail on an
+	// attribution the operator never touched and has no control to clear — the marker would be
+	// read-only forever.
+	idArch, err := T.SaveMarker(ctx, tcID, 0, ins("M · архивируемый", cwA, "140"), "tester")
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, "UPDATE product SET lifecycle_status = 4 WHERE id = ?", cwA)
+	require.NoError(t, err)
+	reSave := ins("M · архивируемый", cwA, "140")
+	reSave.UsedLengthCm = d("121")
+	_, err = T.SaveMarker(ctx, tcID, idArch, reSave, "tester")
+	require.NoError(t, err, "re-saving an UNCHANGED colourway must work after it is archived")
+	// Но ПЕРЕНАЗНАЧИТЬ на архивный — по-прежнему отказ: гарантия про новые привязки цела.
+	_, err = T.SaveMarker(ctx, tcID, idGeneral, ins("M · общий", cwA, "140"), "tester")
+	require.Error(t, err, "a NEW attribution to an archived colourway is still refused")
+	_, err = testDB.ExecContext(ctx, "UPDATE product SET lifecycle_status = 1 WHERE id = ?", cwA)
+	require.NoError(t, err)
+
+	// Тот же класс на стороне BOM: строку переклассифицировали из ткани в отделку, и маркер,
+	// который её мерил, обязан остаться сохраняемым.
+	_, err = testDB.ExecContext(ctx,
+		"UPDATE tech_card_bom_item SET section = 'trim' WHERE tech_card_id = ? AND line_key = ?",
+		tcID, fabric.LineKey)
+	require.NoError(t, err)
+	reSave2 := ins("M · архивируемый", cwA, "140")
+	reSave2.UsedLengthCm = d("122")
+	_, err = T.SaveMarker(ctx, tcID, idArch, reSave2, "tester")
+	require.NoError(t, err, "re-saving an UNCHANGED bom line must work after it leaves roll goods")
+	_, err = testDB.ExecContext(ctx,
+		"UPDATE tech_card_bom_item SET section = 'fabric' WHERE tech_card_id = ? AND line_key = ?",
+		tcID, fabric.LineKey)
+	require.NoError(t, err)
+
 	// ON DELETE SET NULL: deleting a colourway leaves the MEASUREMENT (geometry and the width it
 	// was taken at are still true) and drops only the attribution. Note what this means and why it
 	// is the accepted trade: the marker widens from colourway B to all of them.
