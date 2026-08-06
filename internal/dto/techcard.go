@@ -2234,7 +2234,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			Comment:         pbStringFromNull(b.Comment),
 			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
 			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
-			FabricDirection: pbFabricDirection(b.FabricDirection),
+			FabricDirection: pbPtr(pbFabricDirection(b.FabricDirection)),
 			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
@@ -2247,20 +2247,23 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	return out
 }
 
-// pbFabricDirection emits the direction with PRESENCE: a NULL column stays absent on the wire rather
-// than travelling as an explicit UNKNOWN. That keeps the response bytes exactly as they were before
-// the field became optional, and it keeps the round trip honest — a client that reads a card and
-// writes it straight back must not turn «ещё не задали» into «очисти», which is the one instruction
-// this field now refuses to infer.
-func pbFabricDirection(s sql.NullString) *pb_common.TechCardFabricDirection {
+// pbFabricDirection maps a stored направление to the wire enum; an unset column reads as UNKNOWN,
+// which is what it has always meant.
+//
+// The pointer is added at the CALL SITE (pbPtr), always — the same shape purpose uses since it became
+// optional. Presence is honoured on the way IN and always emitted on the way OUT, deliberately: the
+// gateway marshals with EmitUnpopulated, but protojson never emits an unset proto3-optional field, so
+// returning nil here would make "fabricDirection" VANISH from the JSON of every line that has none,
+// where every deployed client currently reads "TECH_CARD_FABRIC_DIRECTION_UNKNOWN". Optionality is a
+// statement about what a WRITE means, not a licence to change the shape of a READ.
+func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 	if !s.Valid {
-		return nil
+		return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
 	}
-	v, ok := techCardFabricDirectionEntityToPb[entity.TechCardFabricDirection(s.String)]
-	if !ok {
-		return nil
+	if v, ok := techCardFabricDirectionEntityToPb[entity.TechCardFabricDirection(s.String)]; ok {
+		return v
 	}
-	return &v
+	return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
 }
 
 // validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.

@@ -103,16 +103,26 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		matID, tcID, lineCatalog)
 	require.NoError(t, err)
 
+	// The FK the pre-Ф1 inserts below need: a marker's cloth link is by id, not by line_key.
+	var oneWayBomItemID int64
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT id FROM tech_card_bom_item WHERE tech_card_id = ? AND line_key = ?",
+		tcID, lineOneWay).Scan(&oneWayBomItemID))
+
 	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
 	const (
 		legacy90    = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"rotDeg":90}]}`
 		legacy180   = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
 		legacy180v2 = `{"schemaVersion":2,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
-		legacyFlip  = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
-		v3half      = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
-		v3flip      = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
-		v3clean     = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1}]}`
-		v3crossOnly = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":90}]}`
+		// A COMPLIANT layout declaring an old version: accepted, and the step that used to mint an
+		// exemption for the update that followed it.
+		legacyClean   = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1}]}`
+		legacyCleanV2 = `{"schemaVersion":2,"pieces":[],"placements":[{"pieceId":1}]}`
+		legacyFlip    = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
+		v3half        = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
+		v3flip        = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
+		v3clean       = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1}]}`
+		v3crossOnly   = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":90}]}`
 	)
 	ins := func(t *testing.T, name, lineKey, layout string) entity.TechCardMarkerInsert {
 		return entity.TechCardMarkerInsert{
@@ -130,7 +140,7 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 
 	t.Run("unknown direction blocks the save and pins the card-order row", func(t *testing.T) {
 		var ve *entity.ValidationError
-		_, err := T.SaveMarker(ctx, tcID, 0, ins(t, "без направления", lineUnknown, v3clean), "tester")
+		_, err := T.SaveMarker(ctx, tcID, 0, ins(t, "без направления", lineUnknown, v3half), "tester")
 		require.ErrorAs(t, err, &ve)
 		// Index 1, not 0: the thread line is first in the card's BOM and this refusal must point at
 		// the row the client actually renders.
@@ -138,6 +148,15 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		require.Equal(t, entity.ReasonFabricDirectionUnknown, ve.Reason)
 		require.Equal(t, lineUnknown, ve.Conflicting)
 		require.Contains(t, ve.HowToFix, "Твил без направления")
+	})
+
+	// ГЕОМЕТРИЯ, КОТОРАЯ НИЧЕГО НЕ РЕШАЕТ, не спрашивает ткань. Almost every stored line has no
+	// направление; demanding it for a layout that is legal on every fabric would have stopped routine
+	// saves on every legacy card, for a field the shipped client could not even set.
+	t.Run("a compliant layout saves on cloth of unknown direction", func(t *testing.T) {
+		id, err := T.SaveMarker(ctx, tcID, 0, ins(t, "без направления, но и без 180°", lineUnknown, v3clean), "tester")
+		require.NoError(t, err)
+		require.Positive(t, id)
 	})
 
 	t.Run("an unlinked marker on the same card still saves", func(t *testing.T) {
@@ -155,22 +174,66 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		// Re-saving in place is the operator's real action (Ф5 adjustment) and must not start failing.
 		_, err = T.SaveMarker(ctx, tcID, id, ins(t, "легаси 90°", lineOneWay, legacy90), "editor")
 		require.NoError(t, err)
-
-		// A row that PREDATES the policy: written when 180° on ворс was still saveable. It cannot be
-		// created through SaveMarker any more, which is the point — so history is staged the only way
-		// history exists, as a row already in the table.
-		_, err = testDB.ExecContext(ctx,
-			"UPDATE tech_card_marker SET layout = ?, layout_schema_version = 1 WHERE id = ?", legacy180, id)
-		require.NoError(t, err)
-		// The current client declares v3 unconditionally, so this arrives as v3 over a stored v1 and
-		// must still save: renaming or re-linking an old раскладка cannot require re-nesting it.
-		_, err = T.SaveMarker(ctx, tcID, id, ins(t, "легаси 180° переименован", lineOneWay, v3half), "editor")
-		require.NoError(t, err)
 	})
 
-	// THE HOLE. The exemption used to key on the version the PAYLOAD declares, and 180° is
-	// expressible in every version — so a brand-new marker opted out of the entire policy by writing
-	// `schemaVersion: 1`. Proven against this very container before the fix: it saved.
+	// A row that PREDATES the policy: written when 180° on ворс was still saveable. It CANNOT be
+	// produced through SaveMarker any more — which is the point, and which is why the previous
+	// version of this test was staging the exploit rather than history: it created the row through
+	// SaveMarker with a v1 blob, and the raw UPDATE that followed was a no-op because the save had
+	// already written the payload's own version into the column. History exists in exactly one shape:
+	// a row written by a pre-Ф1 code path. Here that is an INSERT, run around the store entirely.
+	t.Run("a pre-Ф1 row keeps its pass for unlimited saves", func(t *testing.T) {
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси до Ф1", oneWayBomItemID, legacy180)
+
+		// The current client declares v3 unconditionally, so this arrives as v3 over a stored 1.
+		// Twice, because a one-shot pass is not a pass: the first rename must not stamp the row with
+		// the current generation and refuse the second.
+		for i, name := range []string{"легаси переименован", "легаси переименован дважды"} {
+			_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, name, lineOneWay, v3half), "editor")
+			require.NoError(t, err, "rename %d must be allowed", i+1)
+			require.Equal(t, 1, markerGeneration(ctx, t, legacyID),
+				"a save that SPENT the exemption must leave the generation alone")
+		}
+	})
+
+	// THE RATCHET. A legacy row whose geometry is compliant — the overwhelming majority — spends no
+	// pass, so the save carries it forward to the current generation and it never gets one again.
+	t.Run("a pre-Ф1 row with compliant geometry loses its pass on first save", func(t *testing.T) {
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси чистый", oneWayBomItemID, legacy90)
+
+		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси чистый переименован", lineOneWay, v3clean), "editor")
+		require.NoError(t, err)
+		require.Equal(t, entity.MarkerLayoutSchemaWithFlip, markerGeneration(ctx, t, legacyID),
+			"nothing was grandfathered, so the row is now judged under the current policy")
+
+		// And the pass is gone for good: the same row can no longer take forbidden geometry.
+		var ve *entity.ValidationError
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси чистый со 180°", lineOneWay, v3half), "editor")
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+	})
+
+	// THE HOLE, in the shape that survived the previous fix: the column was a copy of the payload, so
+	// the "unforgeable stored fact" was client-written one request later. Create a compliant marker
+	// declaring 1 (accepted — there is nothing to refuse), then update it with a 180°: the stored 1
+	// bought the exemption. Proven against a container before this fix.
+	t.Run("a client cannot mint its own exemption in two requests", func(t *testing.T) {
+		for _, declared := range []string{legacyClean, legacyCleanV2} {
+			id, err := T.SaveMarker(ctx, tcID, 0, ins(t, "заявленная версия", lineOneWay, declared), "tester")
+			require.NoError(t, err, "a compliant layout is accepted whatever it declares")
+			require.Equal(t, entity.MarkerLayoutSchemaWithFlip, markerGeneration(ctx, t, id),
+				"the server writes the generation, not the payload")
+
+			var ve *entity.ValidationError
+			_, err = T.SaveMarker(ctx, tcID, id, ins(t, "заявленная версия", lineOneWay, legacy180), "tester")
+			require.ErrorAs(t, err, &ve, "declared %s", declared)
+			require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+
+			require.NoError(t, T.DeleteMarker(ctx, id))
+		}
+	})
+
+	// THE SAME HOLE at create time.
 	t.Run("a NEW marker cannot buy the exemption by declaring an old version", func(t *testing.T) {
 		for _, blob := range []string{legacy180, legacy180v2} {
 			var ve *entity.ValidationError
@@ -197,7 +260,7 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 	// catalogue-linked line shows the CATALOGUE's name on the BOM tab and has none of its own.
 	t.Run("a catalogue-linked line is named, not printed as a ULID", func(t *testing.T) {
 		var ve *entity.ValidationError
-		_, err := T.SaveMarker(ctx, tcID, 0, ins(t, "из каталога", lineCatalog, v3clean), "tester")
+		_, err := T.SaveMarker(ctx, tcID, 0, ins(t, "из каталога", lineCatalog, v3half), "tester")
 		require.ErrorAs(t, err, &ve)
 		require.Equal(t, entity.ReasonFabricDirectionUnknown, ve.Reason)
 		require.Contains(t, ve.HowToFix, "ВЕЛЬВЕТ ИЗ КАТАЛОГА")
@@ -272,7 +335,7 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		require.NoError(t, T.UpdateTechCard(ctx, tcID, card(cleared), stored.LockVersion))
 
 		var ve *entity.ValidationError
-		_, err = T.SaveMarker(ctx, tcID, 0, ins(t, "main без соседа", lineMainAny, v3clean), "tester")
+		_, err = T.SaveMarker(ctx, tcID, 0, ins(t, "main без соседа", lineMainAny, v3half), "tester")
 		require.ErrorAs(t, err, &ve)
 		require.Equal(t, entity.ReasonFabricDirectionUnknown, ve.Reason)
 		// Index 5: the ворсовая line is the sixth row of this card's BOM.
@@ -280,4 +343,39 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		require.Equal(t, lineMainNap, ve.Conflicting)
 		require.Contains(t, ve.HowToFix, "Основная ворсовая")
 	})
+}
+
+// insertPreF1Marker writes a marker the way the code that predates Ф1 wrote one: straight INSERT,
+// generation 1 (the migration's backfill), and NOT through SaveMarker.
+//
+// Going around the store is the whole point. A row created through SaveMarker is judged and stamped
+// by the current policy, so using it as "history" tests the exploit rather than the exemption —
+// which is exactly what the earlier version of this file did, and why it passed while the hole was
+// open. The only rows that legitimately carry forbidden geometry are rows nothing judged.
+func insertPreF1Marker(ctx context.Context, t *testing.T, tcID, sizeID int, name string, bomItemID int64, layout string) int {
+	t.Helper()
+	res, err := testDB.ExecContext(ctx, `
+		INSERT INTO tech_card_marker
+			(tech_card_id, size_id, bom_item_id, name, source, fabric_width_cm, gap_cm, edge_margin_cm,
+			 selvedge_cm, allow_cross_grain, sets, used_length_cm, placed_count, total_count,
+			 layout, layout_schema_version, created_by, updated_by)
+		VALUES (?, ?, ?, ?, 'manual', 140, 0.5, 1, 0, 0, 1, 120, 1, 1, ?, 1, 'pre-f1', 'pre-f1')`,
+		tcID, sizeID, bomItemID, name, layout)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card_marker WHERE id = ?", id)
+	})
+	return int(id)
+}
+
+// markerGeneration reads the policy generation stored on a marker — the fact the exemption keys on,
+// and the one the server must be the only writer of.
+func markerGeneration(ctx context.Context, t *testing.T, id int) int {
+	t.Helper()
+	var gen int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT layout_schema_version FROM tech_card_marker WHERE id = ?", id).Scan(&gen))
+	return gen
 }

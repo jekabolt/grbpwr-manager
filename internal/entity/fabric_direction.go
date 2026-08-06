@@ -251,17 +251,71 @@ const (
 	ReasonFlipInLegacySchema = "flip_in_legacy_schema"
 )
 
-// ValidateMarkerFabricDirection is the whole marker-side rule in one place (Ф1.5 + Ф1.6): a marker
-// may not be saved onto cloth whose direction nobody set, and a NEW layout may not put a piece
-// upside down on cloth that is directional. lines are the card's roll-goods BOM lines IN CARD ORDER
-// (their Index is used verbatim in the field path); facts are the layout distilled by the API layer;
-// storedSchema is the version of the row being REPLACED — 0 when this save creates a marker.
+// FabricLineNamer resolves display names for cloth lines that carry none of their own — a line linked
+// to a catalogue material legitimately has an empty name and shows the material's on the BOM tab.
 //
-// Order of the checks is deliberate: what is wrong with the PAYLOAD first (undistilled facts, a
-// mirror that cannot exist under its declared version), then what is missing on the CARD, and only
-// then the policy. Reversed, an operator would be sent to fill in the BOM tab to satisfy a request
-// that was malformed anyway.
-func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLine, facts MarkerLayoutFacts, storedSchema int) error {
+// It is a CALLBACK rather than a column of FabricDirectionLine because resolving it costs a join on
+// `material`, and the marker save runs inside a SERIALIZABLE transaction where InnoDB promotes a
+// plain SELECT to FOR SHARE: joining the catalogue on the hot path would let a concurrent material
+// edit block — or deadlock — an unrelated раскладка save, surfacing as a 500 rather than as anything
+// retryable. So it is called at most once, and only while a refusal is already being written, i.e.
+// on a transaction that is about to roll back anyway. nil means «the lines already carry their
+// names» (unit tests, and any caller that resolved them itself).
+type FabricLineNamer func(lineKeys []string) map[string]string
+
+// named fills in the display names of lines that have none, through the caller's resolver.
+func named(lines []FabricDirectionLine, resolve FabricLineNamer) []FabricDirectionLine {
+	if resolve == nil {
+		return lines
+	}
+	var missing []string
+	for _, l := range lines {
+		if strings.TrimSpace(l.Name) == "" && strings.TrimSpace(l.LineKey) != "" {
+			missing = append(missing, l.LineKey)
+		}
+	}
+	if len(missing) == 0 {
+		return lines
+	}
+	byKey := resolve(missing)
+	out := make([]FabricDirectionLine, len(lines))
+	copy(out, lines)
+	for i := range out {
+		if strings.TrimSpace(out[i].Name) == "" {
+			out[i].Name = byKey[out[i].LineKey]
+		}
+	}
+	return out
+}
+
+// ValidateMarkerFabricDirection is the whole marker-side rule in one place (Ф1.5 + Ф1.6): a layout
+// may not put a piece upside down on cloth that is directional, and it may not do so on cloth whose
+// direction nobody has set — because unknown is not an answer. lines are the card's roll-goods BOM
+// lines IN CARD ORDER (their Index is used verbatim in the field path); facts are the layout
+// distilled by the API layer; storedGeneration is the POLICY GENERATION of the row being replaced —
+// 0 when this save creates a marker.
+//
+// Returns whether the save was EXEMPTED: true only where the policy would otherwise have refused and
+// the stored row's generation bought it a pass. The caller needs that to keep the ratchet honest —
+// see the exemption block below.
+//
+// Order of the checks is deliberate, and two of them were in the wrong place before:
+//
+//  1. what is wrong with the PAYLOAD (undistilled facts, a mirror that cannot exist under its
+//     declared version) — reversed, an operator would be sent to fill in the BOM tab to satisfy a
+//     request that was malformed anyway;
+//  2. GEOMETRY THAT DECIDES NOTHING passes here, before any question about the cloth. A layout with
+//     no half-turn and no mirror is legal on every direction there is, so the direction cannot
+//     change its verdict — and demanding the field anyway contradicted this file's own rule that it
+//     becomes required «precisely where it decides something, and nowhere else». It also had a
+//     price: almost every stored line has no direction, so routine saves (rename, re-link, change
+//     the colourway) would have stopped dead on every legacy card, with a violation the client of
+//     the day could not even act on. The safety property is untouched — an upside-down placement
+//     still can never be stored on cloth of unknown direction, which is the case that reaches the
+//     unknown check below. This is a deliberate narrowing of Ф1.5 as the plan wrote it;
+//  3. only then the cloth: unknown, then the policy, then the exemption.
+func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLine, facts MarkerLayoutFacts,
+	storedGeneration int, resolveNames FabricLineNamer) (bool, error) {
 	scope := MarkerFabricScope(bomLineKey, lines)
 	if !scope.Live() {
 		// An UNLINKED marker — no bom_line_key at all — stays saveable, and must: it is geometry
@@ -269,25 +323,32 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 		// DANGLES reads the same way: its line was deleted or reclassified out of roll goods, which
 		// is a UI state («слот удалён»), not an error, and refusing it here would strand markers on
 		// an attribution their operator can no longer reach.
-		return nil
+		return false, nil
 	}
 	if facts.SchemaVersion <= 0 {
 		// Not a validation failure — a wiring failure, and it must not read as the operator's
 		// problem. The API layer normalises an absent version to 1, so a zero reaching here means
 		// the blob was never distilled, and the zero value of MarkerLayoutFacts is precisely the one
 		// that would sail through every check below. A default that exempts has to be unreachable.
-		return fmt.Errorf("marker layout facts were not distilled (schema_version 0) — refusing to "+
+		return false, fmt.Errorf("marker layout facts were not distilled (schema_version 0) — refusing to "+
 			"judge a раскладка linked to %s on inputs nobody filled", scope.Key)
 	}
 	if FlipPredatesSchema(facts) {
-		return NewFieldViolation("layout.placements", ReasonFlipInLegacySchema, "",
+		return false, NewFieldViolation("layout.placements", ReasonFlipInLegacySchema, "",
 			fmt.Sprintf("the layout declares schema_version %d but carries a mirrored placement, and "+
 				"`flipped` only exists from version %d on — no stored раскладка can contain one, so this is a "+
 				"client writing a version it does not actually speak; save it as version %d",
 				facts.SchemaVersion, MarkerLayoutSchemaWithFlip, MarkerLayoutSchemaWithFlip))
 	}
+	if !facts.HasHalfTurn && !facts.HasFlip {
+		// Nothing in this layout is upside down, so no direction — known, unknown or contradictory —
+		// can refuse it. See (2) above: this is the check whose position is the difference between a
+		// guard and a card-wide блокировка.
+		return false, nil
+	}
 	dir, unknown, known := ScopeFabricDirection(scope, lines)
 	if !known {
+		unknown = named(unknown, resolveNames)
 		howToFix := fmt.Sprintf("set направление ткани (any / one_way / two_way) on the BOM tab for %s", labelsOf(unknown))
 		if scope.ByPurpose && namesOtherThan(unknown, bomLineKey) {
 			// Said only when it is surprising: the operator is being sent to a row this раскладка
@@ -295,46 +356,50 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 			// doing its job.
 			howToFix += fmt.Sprintf(" (they hang off назначение %q together with the line this раскладка is bound to)", scope.Key)
 		}
-		howToFix += " — while it is unknown the server cannot tell a harmless 180° from a ruined ворс, so the раскладка is not saved"
+		howToFix += " — эта раскладка кладёт деталь вверх ногами, и пока направление неизвестно, " +
+			"сервер не может отличить безобидные 180° от испорченного ворса"
 		// The field pins the FIRST offending row so a form can focus something; the prose and the
 		// conflicting keys carry all of them, because the fix is a mass fill, not one row.
-		return NewFieldViolation(fmt.Sprintf("bom_items[%d].fabric_direction", unknown[0].Index),
+		return false, NewFieldViolation(fmt.Sprintf("bom_items[%d].fabric_direction", unknown[0].Index),
 			ReasonFabricDirectionUnknown, keysOf(unknown), howToFix)
-	}
-	if storedSchema > 0 && storedSchema < MarkerLayoutSchemaWithFlip {
-		// GRANDFATHERING, keyed on the version of the row ALREADY IN THE DATABASE — never on the
-		// version the payload declares. That distinction is the whole guard, and getting it wrong
-		// costs everything: `flipped` cannot be forged because the field did not exist, but a 180°
-		// is expressible in every version, so «declare schema_version 1» was a working opt-out of
-		// the policy for the exact geometry the policy exists to stop. A gate you get through by
-		// writing a smaller number is not a gate; the stored version is a fact the caller cannot
-		// write, and this rule now grants the exemption on nothing else.
-		//
-		// What the exemption is FOR: stored markers legitimately carry rotations outside today's
-		// policy — the manual editor saves the rotation a piece ACTUALLY has, so 90° at
-		// allow_cross_grain=false is on file and 180° with it. Refusing those the moment their card
-		// gets a направление would invalidate measurements nobody can re-take without re-nesting.
-		// A NEW marker (storedSchema 0) has no such history and gets no exemption whatever it
-		// declares; an old row keeps its pass even when the current client re-saves it as v3, which
-		// is what keeps renaming or re-linking a pre-Ф1 раскладка possible.
-		return nil
 	}
 	if dir != FabricDirectionOneWay {
 		// two_way and any both allow the piece upside down. The binary «directional ⇒ forbidden»
 		// would be wrong here: two_way is exactly the cloth that permits the half-turn.
-		return nil
+		return false, nil
 	}
-	if !facts.HasHalfTurn && !facts.HasFlip {
-		return nil
+	// From here the policy REFUSES. The exemption is evaluated last, and only here, on purpose: it is
+	// the only place where a pass is actually being spent, so it is the only place that may claim one.
+	// Evaluated earlier — as it was — every legacy row got the exemption on every save including the
+	// ones the policy would have waved through anyway, and the row could never earn its way out of
+	// being grandfathered.
+	if storedGeneration > 0 && storedGeneration < MarkerLayoutSchemaWithFlip {
+		// GRANDFATHERING, keyed on the generation of the row ALREADY IN THE DATABASE — never on
+		// anything the payload declares. `flipped` cannot be forged because the field did not exist,
+		// but a 180° is expressible in every version, so «declare schema_version 1» was a working
+		// opt-out of the policy for the exact geometry the policy exists to stop. A gate you get
+		// through by writing a smaller number is not a gate.
+		//
+		// What the exemption is FOR: stored markers legitimately carry rotations outside today's
+		// policy — the manual editor saves the rotation a piece ACTUALLY has, so 90° at
+		// allow_cross_grain=false is on file and 180° with it. Refusing those the moment their card
+		// gets a направление would invalidate measurements nobody can re-take without re-nesting, so
+		// such a row stays renameable and re-linkable indefinitely.
+		//
+		// KNOWN AND DELIBERATE RESIDUAL: a row that already violates can have DIFFERENT forbidden
+		// geometry written onto it under the same pass. Closing that needs the stored geometry, not
+		// the stored generation, and the price would be re-nesting to rename. Ф3's is_norm plus the
+		// Д3 re-shoot campaign are what actually retire these rows.
+		return true, nil
 	}
-	blockers := scopeLinesWith(scope, lines, FabricDirectionOneWay)
+	blockers := named(scopeLinesWith(scope, lines, FabricDirectionOneWay), resolveNames)
 	howToFix := fmt.Sprintf("%s: %s помечена one_way", offendingPlacements(facts), labelsOf(blockers))
 	if scope.ByPurpose && namesOtherThan(blockers, bomLineKey) {
 		howToFix += fmt.Sprintf(" (через назначение %q)", scope.Key)
 	}
 	howToFix += " — на направленной ткани деталь нельзя класть вверх ногами: пересоберите раскладку без 180° и " +
 		"без зеркальных размещений, либо исправьте направление ткани на вкладке BOM, если ткань на самом деле не направленная"
-	return NewFieldViolation("layout.placements", ReasonFlipOnOneWay, keysOf(blockers), howToFix)
+	return false, NewFieldViolation("layout.placements", ReasonFlipOnOneWay, keysOf(blockers), howToFix)
 }
 
 // offendingPlacements names which half of the ban fired. «180° and mirrored» and «mirrored» send an

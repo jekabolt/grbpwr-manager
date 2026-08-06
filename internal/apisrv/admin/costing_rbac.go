@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -549,4 +550,35 @@ func bomNaturalKey(b entity.TechCardBomItem) string {
 		ident = "material#" + strconv.FormatInt(b.MaterialId.Int64, 10)
 	}
 	return norm(string(b.Section)) + "\x1f" + ident + "\x1f" + norm(b.SupplierRef.String)
+}
+
+// carryOmittedFabricDirectionFrom copies the STORED направление onto every incoming BOM line that did
+// not send the field, matched by line_key — the same shape as preserveStoredCostingFrom above and for
+// a related reason: what a client did not say must not read as what it erased.
+//
+// It matters only for the DIGEST. The write already ignores this value (the upsert guards the column
+// with IF(:fabric_direction_omitted, …)), so this cannot change what is stored; it changes what the
+// MATERIALS sign-off is fingerprinted over, so a sign-off made from a tab that does not send the
+// field is not born stale against the row it just approved.
+//
+// Keyed only: a legacy line with no line_key cannot be matched safely, and guessing by position
+// would attach one line's cloth direction to another's.
+func carryOmittedFabricDirectionFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
+	if stored == nil || incoming == nil {
+		return
+	}
+	byKey := make(map[string]sql.NullString, len(stored.BomItems))
+	for _, b := range stored.BomItems {
+		if k := strings.TrimSpace(b.LineKey); k != "" {
+			byKey[strings.ToLower(k)] = b.FabricDirection
+		}
+	}
+	for i := range incoming.BomItems {
+		if !incoming.BomItems[i].FabricDirectionOmitted {
+			continue
+		}
+		if d, ok := byKey[strings.ToLower(strings.TrimSpace(incoming.BomItems[i].LineKey))]; ok {
+			incoming.BomItems[i].FabricDirection = d
+		}
+	}
 }

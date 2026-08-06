@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -166,6 +167,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			bomItemID = sql.NullInt64{Int64: row.Id, Valid: true}
 		}
+		// exempted records whether the policy WOULD have refused this geometry and the stored row's
+		// generation bought it a pass. It defaults to false — including for an unlinked marker, whose
+		// geometry no cloth judged — so the generation written below ratchets forward in every case
+		// except the one that actually spent a pass.
+		exempted := false
 		// НАПРАВЛЕНИЕ ТКАНИ decides whether this layout may exist at all (Ф1.5/Ф1.6), and only the
 		// database can answer: the direction sits on the BOM line (0073) and the scope the marker
 		// falls into may be SEVERAL lines (0267). The rule itself is one unit-tested function in
@@ -180,9 +186,12 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				return err
 			}
 			// stored.SchemaVersion is 0 for a create — no history, and therefore no exemption.
-			if err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts, stored.SchemaVersion); err != nil {
+			ok, err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts,
+				stored.SchemaVersion, fabricLineNamer(ctx, db, techCardID))
+			if err != nil {
 				return err
 			}
+			exempted = ok
 		}
 		// The colourway a раскладка is measured FOR (0264). It must be a colourway OF THIS CARD:
 		// a colourway is a product row whose style_id is the card (0151 merged the domains), and
@@ -208,6 +217,23 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			colorwayID = sql.NullInt64{Int64: int64(ins.ColorwayId), Valid: true}
 		}
+		// ПОКОЛЕНИЕ ПОЛИТИКИ, не копия пэйлоада. The column answers «what is the newest policy this
+		// row's geometry has been judged under», so the server writes its own constant — copying
+		// ins.LayoutFacts.SchemaVersion made the «unforgeable stored fact» client-written one request
+		// later: create a compliant marker declaring 1 (accepted, nothing to refuse), then update it
+		// with a 180° and the stored 1 bought the exemption. Same for the deploy window, where the
+		// shipped client still declares 2.
+		//
+		// A save that SPENT the exemption leaves the column alone — otherwise the pass would be
+		// one-shot: the row would be stamped 3 by the very save it was granted for, and the second
+		// rename of a legacy раскладка would be refused forever, which is the opposite of what
+		// grandfathering promises. Every other save ratchets the row to the current generation, so a
+		// legacy row whose geometry is compliant — the overwhelming majority — loses its pass the
+		// first time anybody touches it, and the ratchet turns one way only.
+		generation := entity.MarkerLayoutSchemaWithFlip
+		if exempted {
+			generation = stored.SchemaVersion
+		}
 		params := map[string]any{
 			"id":                id,
 			"tech_card_id":      techCardID,
@@ -226,7 +252,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"placed_count":      ins.PlacedCount,
 			"total_count":       ins.TotalCount,
 			"layout":            ins.Layout,
-			"schema_version":    ins.LayoutFacts.SchemaVersion,
+			"schema_version":    generation,
 			"colorway_id":       colorwayID,
 			"username":          username,
 		}
@@ -296,24 +322,53 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 //     may hand back the same state in a different order on a retry, and two identical saves would
 //     name two different rows.
 //
-// The NAME is resolved through the catalogue exactly as the card read resolves it — COALESCE over
-// NULLIF(bi.name) and m.name, see the bom load in materials.go: a line linked to a material legitimately
-// carries an EMPTY own name and shows the catalogue's on the BOM tab, so reading bi.name alone would
-// print a ULID at the operator where they expect «ВЕЛЬВЕТ ИЗ КАТАЛОГА» — the refusal has to speak the
-// vocabulary of the screen it sends them to, and there are two screens' worth of naming here only if
-// the two queries disagree.
+// The NAME is deliberately read RAW here — bi.name, which is empty on a catalogue-linked line — and
+// resolved through `material` only when a refusal is actually being written (fabricLineNamer below).
+// The join belongs off this path: this query runs inside a SERIALIZABLE transaction, where InnoDB
+// promotes a plain SELECT to FOR SHARE, so joining the catalogue on every marker save would let a
+// concurrent material edit block or deadlock an unrelated раскладка — reported as a 500, which is
+// neither true nor retryable. Names are prose for a refusal; prose can afford a second query.
 //
 // Held as a var so a test can bind it without a database: sqlx reads EVERY ':' as a named parameter,
 // and a bind error would take the whole save path down at request time.
 var fabricDirectionLinesQuery = `
-	SELECT COALESCE(bi.line_key, '') AS line_key, COALESCE(bi.purpose, '') AS purpose,
-	       COALESCE(NULLIF(bi.name, ''), m.name, '') AS name,
-	       COALESCE(bi.fabric_direction, '') AS fabric_direction,
-	       bi.is_sample, bi.section
-	FROM tech_card_bom_item bi
-	LEFT JOIN material m ON m.id = bi.material_id
-	WHERE bi.tech_card_id = :id
-	ORDER BY bi.display_order, bi.id`
+	SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose,
+	       COALESCE(name, '') AS name, COALESCE(fabric_direction, '') AS fabric_direction,
+	       is_sample, section
+	FROM tech_card_bom_item
+	WHERE tech_card_id = :id
+	ORDER BY display_order, id`
+
+// fabricLineNamer resolves the display names of catalogue-linked lines, and is called ONLY while a
+// refusal is being built — i.e. on a transaction already destined to roll back, so the share locks it
+// takes on `material` cost nothing anyone is waiting on. Names are resolved exactly as the card read
+// resolves them, so the refusal speaks the vocabulary of the screen it sends the operator to.
+func fabricLineNamer(ctx context.Context, db dependency.DB, techCardID int) entity.FabricLineNamer {
+	return func(lineKeys []string) map[string]string {
+		if len(lineKeys) == 0 {
+			return nil
+		}
+		rows, err := storeutil.QueryListNamed[struct {
+			LineKey string `db:"line_key"`
+			Name    string `db:"name"`
+		}](ctx, db, `SELECT COALESCE(bi.line_key, '') AS line_key, COALESCE(m.name, '') AS name
+			FROM tech_card_bom_item bi
+			JOIN material m ON m.id = bi.material_id
+			WHERE bi.tech_card_id = :id AND bi.line_key IN (:keys)`,
+			map[string]any{"id": techCardID, "keys": lineKeys})
+		if err != nil {
+			// A refusal that cannot name the row is still a refusal; it falls back to the line_key.
+			slog.Default().ErrorContext(ctx, "can't resolve catalogue names for a marker refusal",
+				slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+			return nil
+		}
+		out := make(map[string]string, len(rows))
+		for _, r := range rows {
+			out[r.LineKey] = r.Name
+		}
+		return out
+	}
+}
 
 // fabricDirectionLines loads the card's cloth lines with both halves of the binding scope, their
 // направление and their position in the card's BOM — everything

@@ -48,6 +48,7 @@ FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"4\" on message \"UpdateSe
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"5\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"7\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"9\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
+FIELD_SAME_ONEOF|proto/common/common/techcard.proto|Field \"19\" on message \"TechCardBomItem\" moved from outside to inside a oneof.
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductFull\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"1\" on message \"ArchiveProductsManualFull\" changed type from \"common.Product\" to \"common.Colorway\".
 FIELD_SAME_TYPE|proto/common/common/archive.proto|Field \"2\" on message \"ArchiveProductsTagFull\" changed type from \"common.Product\" to \"common.Colorway\".
