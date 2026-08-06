@@ -33,6 +33,13 @@ const (
 	maxMarkerContourPoints = 200_000
 )
 
+// maxMarkerLayoutSchema is the newest blob format this server understands. v1 = the original
+// geometry; v2 adds piece_line_key/block_name on a piece; v3 adds `flipped` on a placement — a
+// MIRRORED instance, the зеркальная пара no rot_deg can express (Ф1) — and with it the
+// directional-cloth policy the save path applies. Every older version keeps reading and keeps
+// saving unchanged; only the newest one is judged by the new rule (see entity/fabric_direction.go).
+const maxMarkerLayoutSchema = 3
+
 // SaveTechCardMarker creates (id=0) or fully replaces (id>0) one saved раскладка. Last-write-wins
 // by design, and deliberately NOT bumping tech_card.lock_version — saving a marker from the
 // nesting modal must not 409 the operator's own open card form.
@@ -74,12 +81,16 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	if layout.GetSchemaVersion() == 0 {
 		layout.SchemaVersion = 1
 	}
-	// v1 = original geometry; v2 adds piece_line_key/block_name on pieces (§2.2). Anything newer is
-	// a client this server does not understand — refuse rather than store a blob readers would
-	// silently degrade on.
-	if v := layout.GetSchemaVersion(); v != 1 && v != 2 {
-		return nil, status.Errorf(codes.InvalidArgument, "marker layout schema_version %d is not supported (1 or 2)", v)
+	// Anything newer than maxMarkerLayoutSchema is a client this server does not understand —
+	// refuse rather than store a blob readers would silently degrade on.
+	if v := layout.GetSchemaVersion(); v < 1 || v > maxMarkerLayoutSchema {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"marker layout schema_version %d is not supported (1..%d)", v, maxMarkerLayoutSchema)
 	}
+	// Distilled here because this is the last place the blob is a parsed message: the store gets the
+	// facts, not a second parser (Ф1.5/Ф1.6 — the direction rule needs the version and whether any
+	// placement is upside down, and only the DB knows the cloth's направление).
+	ins.LayoutFacts = dto.MarkerLayoutFactsFromPb(layout)
 	blob, err := protojson.Marshal(layout)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "marker layout does not marshal: %v", err)

@@ -39,7 +39,13 @@ func TestTechCardMarkerRoundTrip(t *testing.T) {
 			BomItems: items,
 		}
 	}
-	fabric := entity.TechCardBomItem{LineKey: "01MRKFABRIC0000000000000K1", Section: entity.BomSectionFabric, Name: "Основная"}
+	// направление ткани is part of the fixture since Ф1.5: a marker bound to a cloth line whose
+	// direction nobody set is refused, so a line without one no longer exercises the CRUD at all.
+	// 'any' keeps this test about the CRUD — the direction rules have their own file.
+	fabric := entity.TechCardBomItem{
+		LineKey: "01MRKFABRIC0000000000000K1", Section: entity.BomSectionFabric, Name: "Основная",
+		FabricDirection: ns("any"),
+	}
 
 	tcID, err := T.AddTechCard(ctx, card(fabric))
 	require.NoError(t, err)

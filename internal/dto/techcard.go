@@ -1142,6 +1142,30 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	}, nil
 }
 
+// MarkerLayoutFactsFromPb distils the few things the SAVE PATH must know about a layout out of the
+// blob, so nothing downstream has to open it again: the blob is stored opaque (0257) and the store
+// never parses it, so whatever the store DECIDES on has to leave the transport layer as a fact.
+//
+// Call it AFTER schema_version has been normalised — a blob that arrives with 0 is a v1 blob, and
+// the version is what decides whether the rotation policy applies at all (Ф1.6).
+func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) entity.MarkerLayoutFacts {
+	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
+	for _, p := range l.GetPlacements() {
+		// 180° and a mirror are the same physical mistake on directional cloth — the piece ends up
+		// the wrong way up — so both are collected, and the refusal names whichever fired.
+		if p.GetRotDeg() == 180 {
+			out.HasHalfTurn = true
+		}
+		if p.GetFlipped() {
+			out.HasFlip = true
+		}
+		if out.HasHalfTurn && out.HasFlip {
+			break
+		}
+	}
+	return out
+}
+
 // TechCardOutputVariantsToPb emits an auxiliary card's colour variants for display, each with its
 // colour name, bucket name/unit and on-hand balance already resolved. on_hand stays nil (not zero)
 // when the bucket has no stock row — "no balance recorded" is a different fact from "none left".

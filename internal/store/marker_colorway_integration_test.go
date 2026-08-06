@@ -49,6 +49,9 @@ func TestMarkerColorwayBinding(t *testing.T) {
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 	fabric := entity.TechCardBomItem{
 		LineKey: "01MCWFABRIC0000000000000K1", Section: entity.BomSectionFabric, Name: "Основная",
+		// Ф1.5: a linked marker needs the cloth's direction to be known. 'any' keeps this test
+		// about the colourway attribution.
+		FabricDirection: ns("any"),
 	}
 	newCard := func(style string) int {
 		id, err := T.AddTechCard(ctx, &entity.TechCardInsert{

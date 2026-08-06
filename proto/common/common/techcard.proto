@@ -1559,7 +1559,15 @@ message TechCardMarkerInsert {
 // blob (idiom: tech_card_release.snapshot). schema_version guards forward evolution — readers
 // degrade gracefully on a version they do not know.
 message TechCardMarkerLayout {
-  int32 schema_version = 1; // 1, or 2 when pieces carry piece_line_key/block_name; the server accepts both
+  // 1 = the original geometry; 2 adds piece_line_key/block_name on a piece; 3 adds `flipped` on a
+  // placement (Ф1). The server accepts all three and every stored blob stays readable forever.
+  //
+  // The version is also what the save path judges a layout BY. A stored v1/v2 marker legitimately
+  // carries rotations the current policy would not offer — the manual editor saves the rotation a
+  // piece actually has, even outside policy — so applying the directional-cloth rule to it would
+  // retro-invalidate every measurement on file the moment its card gets a направление. Only a blob
+  // that can express `flipped` comes from a client that knows the policy, so only v3 is held to it.
+  int32 schema_version = 1;
   TechCardMarkerNestParams params = 2;
   repeated TechCardMarkerPiece pieces = 3;
   repeated TechCardMarkerPlacement placements = 4;
@@ -1609,6 +1617,17 @@ message TechCardMarkerPlacement {
   int32 rot_deg = 3; // 0 | 90 | 180 | 270
   double x_cm = 4;
   double y_cm = 5;
+  // The instance is MIRRORED — the contour reflected before rot_deg is applied, so its chirality is
+  // the opposite of the piece as parsed. No rotation expresses this: a left and a right полочка are
+  // the same outline turned OVER, never turned around, and an engine that can only rotate cuts 44
+  // left fronts and zero right ones off a half-set of выкройки. That is the failure this field
+  // exists to make expressible (schema_version 3, Ф1).
+  //
+  // Directional cloth forbids a mirror for the same reason it forbids 180°: both put the piece on
+  // the fabric the wrong way up, and ворс, twill or a print then run against the neighbouring
+  // piece. The save path refuses either one on a one_way scope — see the schema_version note above
+  // for why only v3 blobs are judged.
+  bool flipped = 6;
 }
 
 // TechCardListItem is a lightweight tech-card header for list views.

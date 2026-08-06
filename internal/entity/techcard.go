@@ -224,6 +224,11 @@ type TechCardMarkerInsert struct {
 	PlacedCount   int                 `db:"placed_count"`
 	TotalCount    int                 `db:"total_count"`
 	Layout        string              `db:"layout"`
+	// LayoutFacts are the handful of things the SAVE PATH has to know about the blob it is storing
+	// (Ф1): its schema version, and whether any placement is upside down. Distilled at the API layer
+	// and carried as facts because the blob stays opaque past it — the store persists Layout and
+	// never parses it, and a second parser there would be a second definition of the format.
+	LayoutFacts MarkerLayoutFacts `db:"-"`
 }
 
 // TechCardMarkerSummary is a stored marker without its layout blob — the shape that rides

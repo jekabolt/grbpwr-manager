@@ -158,6 +158,23 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			bomItemID = sql.NullInt64{Int64: row.Id, Valid: true}
 		}
+		// НАПРАВЛЕНИЕ ТКАНИ decides whether this layout may exist at all (Ф1.5/Ф1.6), and only the
+		// database can answer: the direction sits on the BOM line (0073) and the scope the marker
+		// falls into may be SEVERAL lines (0267). The rule itself is one unit-tested function in
+		// entity — here we only hand it the card's cloth lines.
+		//
+		// Keyed off the PAYLOAD's line, so an unlinked marker is skipped entirely: no bom_line_key
+		// means no cloth to ask about, and that must stay saveable — it was legal before Ф1 and the
+		// geometry is just as valid without an attribution.
+		if key := strings.TrimSpace(ins.BomLineKey); key != "" {
+			lines, err := fabricDirectionLines(ctx, db, techCardID)
+			if err != nil {
+				return err
+			}
+			if err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts); err != nil {
+				return err
+			}
+		}
 		// The colourway a раскладка is measured FOR (0264). It must be a colourway OF THIS CARD:
 		// a colourway is a product row whose style_id is the card (0151 merged the domains), and
 		// the FK alone would accept any product in the catalogue — attributing a layout to another
@@ -254,6 +271,41 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		return 0, err
 	}
 	return savedID, nil
+}
+
+// fabricDirectionLinesQuery is held as a var so a test can bind it without a database: sqlx reads
+// EVERY ':' as a named parameter, and this text is assembled from a fragment — the one failure mode
+// here is a bind error at request time, on a path whose only other coverage needs MySQL.
+var fabricDirectionLinesQuery = `
+	SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose,
+	       COALESCE(name, '') AS name, COALESCE(fabric_direction, '') AS fabric_direction
+	FROM tech_card_bom_item
+	WHERE tech_card_id = :id AND ` + rollGoodsSectionIn
+
+// fabricDirectionLines loads the card's roll-goods BOM lines with both halves of the binding scope
+// and their направление — everything entity.ValidateMarkerFabricDirection needs and nothing else.
+//
+// The same four families every cloth binding uses (rollGoodsSectionIn): a thread or a button has no
+// direction to have, and including one would make a nonsense row able to block a раскладка. A line
+// that has since left roll goods is therefore absent here, which is exactly right — the marker whose
+// binding it still is resolves to a dangling scope and stays saveable, as it was before Ф1.
+func fabricDirectionLines(ctx context.Context, db dependency.DB, techCardID int) ([]entity.FabricDirectionLine, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		LineKey   string `db:"line_key"`
+		Purpose   string `db:"purpose"`
+		Name      string `db:"name"`
+		Direction string `db:"fabric_direction"`
+	}](ctx, db, fabricDirectionLinesQuery, rollGoodsSectionArgs(map[string]any{"id": techCardID}))
+	if err != nil {
+		return nil, fmt.Errorf("load roll-goods bom lines of tech card %d: %w", techCardID, err)
+	}
+	out := make([]entity.FabricDirectionLine, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, entity.FabricDirectionLine{
+			LineKey: r.LineKey, Purpose: r.Purpose, Name: r.Name, Direction: r.Direction,
+		})
+	}
+	return out, nil
 }
 
 // requireCardSize verifies the size belongs to the card's current range with a readable refusal
