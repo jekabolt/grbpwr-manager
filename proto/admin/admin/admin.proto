@@ -1595,6 +1595,19 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/tech-card/marker/{id}"};
   }
 
+  // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
+  // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
+  // tech_card_bom_item since 0073 and fed nothing but the MATERIALS digest, so it is unset on almost
+  // every stored line; Ф1 makes an unset direction REFUSE the save of any раскладка cut from that
+  // cloth, including the re-save of a marker that saves fine today. This report is what makes the
+  // fill-in campaign finishable and what says when it is finished — total_lines going to zero is the
+  // release condition for the blocking half.
+  //
+  // Read-only. Requires tech-cards read: it is the BOM tab's own data, seen across cards.
+  rpc ListTechCardFabricDirectionGaps(ListTechCardFabricDirectionGapsRequest) returns (ListTechCardFabricDirectionGapsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/fabric-direction-gaps"};
+  }
+
   // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
   // that ship, the on-garment assembly (labels/tags) to verify per line, and the packaging the whole
   // order needs (resolved from WS2 packaging_recipe). Read-only — reserves/consumes nothing.
@@ -6245,6 +6258,81 @@ message ListCostingMigrationExceptionsRequest {
 
 message ListCostingMigrationExceptionsResponse {
   repeated CostingMigrationException exceptions = 1;
+}
+
+// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — see ListTechCardFabricDirectionGaps.
+message ListTechCardFabricDirectionGapsRequest {
+  int32 tech_card_id = 1; // 0 = every card in scope; a card id re-checks one card after the fix
+  // include_inactive adds back the cards the default worklist leaves out — see the `excluded`
+  // breakdown on the response for what those are and why. Off by default because the point of the
+  // report is a list somebody can finish; on when the question is «what is the server hiding».
+  bool include_inactive = 2;
+}
+
+message ListTechCardFabricDirectionGapsResponse {
+  repeated FabricDirectionGapCard cards = 1; // cards with at least one unset line, deterministic order
+  int32 total_cards = 2;
+  // total_lines is THE campaign number: roll-goods lines still missing a направление in this scope.
+  // Zero means кампания Д1 is done for the scope asked about — that, and not a page count, is what
+  // the blocking release waits on.
+  int32 total_lines = 3;
+  // What the default scope left out, ALWAYS reported even though the rows are not. A filter nobody
+  // can see is a report that lies by omission; with include_inactive this is empty and the totals
+  // above cover everything.
+  repeated FabricDirectionGapExclusion excluded = 4;
+  int32 excluded_cards = 5;
+  int32 excluded_lines = 6;
+}
+
+// FabricDirectionGapExclusion is one reason rows were withheld, with its cost in cards and lines.
+message FabricDirectionGapExclusion {
+  common.TechCardApprovalState approval_state = 1;
+  int32 cards = 2;
+  int32 lines = 3;
+}
+
+// FabricDirectionGapCard is one tech card carrying unset cloth lines, with the facts an owner
+// triages by. Cards with at least one provably-refused раскладка come first; ties keep tech_card_id
+// order, so working the list over days never reshuffles it under the operator.
+message FabricDirectionGapCard {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string name = 3;
+  common.TechCardStage stage = 4;
+  common.TechCardApprovalState approval_state = 5;
+  // marker_save_possible is false for a RELEASED card: every marker write on one is refused before
+  // направление is even consulted, so its unset lines block nothing. This is why released cards are
+  // out of the default worklist, and it is a server fact rather than a client inference.
+  bool marker_save_possible = 6;
+  // blocked_marker_count — раскладки bound DIRECTLY to one of the lines below. These are the saves
+  // that stop working the day the blocking half ships: a marker's scope always contains the line it
+  // names, so no resolution rule can excuse them. The urgent tier.
+  int32 blocked_marker_count = 7;
+  // linked_marker_count — раскладки bound to any BOM line at all, i.e. the population the rule
+  // judges (an unlinked раскладка has no cloth and is exempt). A superset of blocked_marker_count,
+  // because a marker on a SIBLING line under the same назначение is refused too; which siblings
+  // exactly is the marker rule's answer and is deliberately not re-derived here.
+  int32 linked_marker_count = 8;
+  bool has_patterns = 9; // the card has DXF sheets, so it can be nested — a раскладка is imminent
+  repeated FabricDirectionGapLine lines = 10; // in BOM-tab order (display_order, id)
+}
+
+// FabricDirectionGapLine is one cloth line still waiting for an answer.
+message FabricDirectionGapLine {
+  int64 bom_item_id = 1;
+  string line_key = 2; // stable wire identity of the row on the BOM tab
+  // name resolves through the catalogue exactly as the BOM tab resolves it — a material-linked line
+  // legitimately carries an empty name of its own, and printing the stored column alone would show
+  // an operator a ULID where the screen says «ВЕЛЬВЕТ ИЗ КАТАЛОГА». Empty only when the line has
+  // neither its own name nor a linked article; use line_key then.
+  string name = 3;
+  common.TechCardBomSection section = 4;
+  common.TechCardBomPurpose purpose = 5; // UNSET = the line has not been sorted yet (0265)
+  // is_sample marks семпловая ярдажа. Kept in the worklist rather than filtered out: the marker
+  // rule asks the direction of sample cloth for SAMPLE раскладки, so dropping these rows would let
+  // the report read «done» while a sample раскладка still refuses to save.
+  bool is_sample = 6;
+  int32 blocked_marker_count = 7; // раскладки bound to THIS line
 }
 
 // Tech-card release snapshots (task 11).
