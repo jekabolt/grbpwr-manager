@@ -302,3 +302,16 @@ func TestEnumDriftExtractorsDetectTamperedInput(t *testing.T) {
 	got = extractDBEnumValues(t, "ENUM(''active'',''hidden'',''archived'')", "ENUM(", 80)
 	assertSameSet(t, "sanity: ENUM list", got, []string{"active", "hidden", "archived"})
 }
+
+// TestBomPurposeDBCheckNoDrift extends the drift test to НАЗНАЧЕНИЕ on a BOM line (0265):
+// entity.TechCardBomPurpose/ValidTechCardBomPurposes <-> DB CHECK chk_bom_item_purpose.
+//
+// This one guards the field's whole reason for existing. The purpose list is closed BECAUSE the
+// field is a grouping key — the moment the DB accepts a value the entity does not know (or the other
+// way round) a line lands in a bucket no screen renders, and the grouping stops being trustworthy
+// without failing anywhere visible.
+func TestBomPurposeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0265_bom_item_purpose.sql")
+	dbValues := extractDBEnumValues(t, content, "purpose REGEXP", 120)
+	assertSameSet(t, "TechCardBomPurpose", dbValues, mapKeysAsStrings(entity.ValidTechCardBomPurposes))
+}

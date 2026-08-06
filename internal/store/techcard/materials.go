@@ -376,6 +376,17 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			return res, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].line_key", i),
 				"duplicate line_key within the payload", "", "each BOM line needs a unique line_key")
 		}
+		// НАЗНАЧЕНИЕ belongs to cloth (0265). It is checked HERE, against rollGoodsSections, rather
+		// than at parse time with a second hand-written family list: the four families a marker may
+		// lay out and the four a purpose may describe are the same four by construction, and the
+		// comment above rollGoodsSectionList is explicit that proximity is not coupling — a fifth
+		// family added there must not leave a stale copy behind in the dto.
+		if b.Purpose.Valid && !rollGoodsSections[string(b.Section)] {
+			return res, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose", i),
+				"назначение applies only to roll goods (fabric, lining, interlining, insulation)",
+				fmt.Sprintf("this line is section %q", b.Section),
+				"clear the purpose, or move the line to a roll-goods section")
+		}
 		params := bomItemParams(tcID, b, i, key)
 		src, at := bomPriceProvenance(existingRowByKey[key], b, now)
 		params["price_source"], params["price_snapshot_at"] = src, at
@@ -383,7 +394,8 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			params["id"] = id
 			if err := storeutil.ExecNamed(ctx, db, `
 				UPDATE tech_card_bom_item SET
-					material_id=:material_id, section=:section, name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
+					material_id=:material_id, section=:section, purpose=:purpose, purpose_note=:purpose_note,
+					is_sample=:is_sample, name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
 					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
 					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent,
@@ -396,12 +408,12 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		} else {
 			newID, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO tech_card_bom_item
-					(tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec, unit,
-					 unit_price, currency, comment, display_order, fabric_width, fabric_weight_gsm, fabric_direction,
-					 wastage_percent, line_key, price_source, price_snapshot_at)
-				VALUES (:tech_card_id, :material_id, :section, :name, :supplier, :supplier_ref, :color, :composition, :spec, :unit,
-					 :unit_price, :currency, :comment, :display_order, :fabric_width, :fabric_weight_gsm, :fabric_direction,
-					 :wastage_percent, :line_key, :price_source, :price_snapshot_at)`, params)
+					(tech_card_id, material_id, section, purpose, purpose_note, is_sample, name, supplier, supplier_ref,
+					 color, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
+					 fabric_weight_gsm, fabric_direction, wastage_percent, line_key, price_source, price_snapshot_at)
+				VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :is_sample, :name, :supplier, :supplier_ref,
+					 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
+					 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :line_key, :price_source, :price_snapshot_at)`, params)
 			if err != nil {
 				return res, fmt.Errorf("failed to insert bom line: %w", err)
 			}
@@ -473,6 +485,9 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		"tech_card_id":      tcID,
 		"material_id":       b.MaterialId,
 		"section":           string(b.Section),
+		"purpose":           b.Purpose,
+		"purpose_note":      b.PurposeNote,
+		"is_sample":         b.IsSample,
 		"name":              b.Name,
 		"supplier":          b.Supplier,
 		"supplier_ref":      b.SupplierRef,
@@ -738,6 +753,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// query shipped broken and took every tech-card read down with it.
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT bi.id, bi.tech_card_id, bi.material_id, bi.section,
+		       bi.purpose, bi.purpose_note, bi.is_sample,
 		       COALESCE(NULLIF(bi.name, ''), m.name) AS name,
 		       COALESCE(NULLIF(m.supplier, ''), bi.supplier) AS supplier,
 		       COALESCE(NULLIF(m.supplier_ref, ''), bi.supplier_ref) AS supplier_ref,

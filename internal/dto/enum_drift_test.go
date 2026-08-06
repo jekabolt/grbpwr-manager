@@ -153,3 +153,29 @@ func TestAssemblyResolutionBasisEnumNoDrift(t *testing.T) {
 		t.Errorf("proto resolution basis values (%d) != entity.ValidAssemblyResolutionBases (%d)", protoValues, len(entity.ValidAssemblyResolutionBases))
 	}
 }
+
+// TestBomPurposeEnumNoDrift is the entity<->proto leg for НАЗНАЧЕНИЕ (0265): every non-UNSET proto
+// value maps to a valid entity purpose, and the three sizes (proto values, mapping table, entity
+// Valid set) agree. The entity<->DB leg is TestBomPurposeDBCheckNoDrift in internal/store/migrationlint.
+//
+// UNSET is skipped rather than mapped: it is not a value but the absence of one ("not sorted yet"),
+// and it must stay absent from the mapping table so it can only ever become a NULL column.
+func TestBomPurposeEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.TechCardBomPurpose_name {
+		if pb_common.TechCardBomPurpose(v) == pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+			continue
+		}
+		protoValues++
+		p, ok := techCardBomPurposePbToEntity[pb_common.TechCardBomPurpose(v)]
+		if !ok || !entity.ValidTechCardBomPurposes[p] {
+			t.Errorf("proto TechCardBomPurpose %s maps to invalid entity purpose %q", name, p)
+		}
+	}
+	if protoValues != len(techCardBomPurposePbToEntity) {
+		t.Errorf("proto purpose values (%d) != mapping table size (%d)", protoValues, len(techCardBomPurposePbToEntity))
+	}
+	if protoValues != len(entity.ValidTechCardBomPurposes) {
+		t.Errorf("proto purpose values (%d) != entity.ValidTechCardBomPurposes (%d)", protoValues, len(entity.ValidTechCardBomPurposes))
+	}
+}

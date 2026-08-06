@@ -177,6 +177,28 @@ var techCardBomSectionEntityToPb = func() map[entity.TechCardBomSection]pb_commo
 	return m
 }()
 
+// techCardBomPurposePbToEntity maps the closed НАЗНАЧЕНИЕ vocabulary (0265). UNSET is deliberately
+// absent: it is not a value, it is the absence of one ("not sorted yet"), and it maps to a NULL
+// column rather than to a string.
+var techCardBomPurposePbToEntity = map[pb_common.TechCardBomPurpose]entity.TechCardBomPurpose{
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_MAIN:        entity.BomPurposeMain,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_LINING:      entity.BomPurposeLining,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_POCKETING:   entity.BomPurposePocketing,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_INTERFACING: entity.BomPurposeInterfacing,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_INSULATION:  entity.BomPurposeInsulation,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_CONTRAST:    entity.BomPurposeContrast,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_MESH:        entity.BomPurposeMesh,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_OTHER:       entity.BomPurposeOther,
+}
+
+var techCardBomPurposeEntityToPb = func() map[entity.TechCardBomPurpose]pb_common.TechCardBomPurpose {
+	m := make(map[entity.TechCardBomPurpose]pb_common.TechCardBomPurpose, len(techCardBomPurposePbToEntity))
+	for k, v := range techCardBomPurposePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
 var techCardLabDipPbToEntity = map[pb_common.TechCardLabDipStatus]entity.TechCardLabDipStatus{
 	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_PENDING:   entity.LabDipPending,
 	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_SUBMITTED: entity.LabDipSubmitted,
@@ -1725,6 +1747,32 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			direction = sql.NullString{String: string(d), Valid: true}
 		}
 
+		// НАЗНАЧЕНИЕ (0265). UNSET stays NULL — "not sorted yet" is a real answer and the only honest
+		// one for every line that predates the field. The section restriction is enforced downstream,
+		// in the store, against the one roll-goods list the marker/pattern binding already uses.
+		purpose := sql.NullString{}
+		if b.Purpose != pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+			p, ok := techCardBomPurposePbToEntity[b.Purpose]
+			if !ok {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose", i),
+					"unknown purpose", "", "pick a purpose from the list")
+			}
+			purpose = sql.NullString{String: string(p), Valid: true}
+		}
+		// The note is the escape hatch for OTHER and nothing else. Accepting it on MAIN would let a
+		// free-text role in through the back door and dissolve the closed list the field exists to
+		// keep — the same reason chk_bom_item_purpose_note guards the column.
+		purposeNote := nullStringFromPb(strings.TrimSpace(b.PurposeNote))
+		if purposeNote.Valid && purpose.String != string(entity.BomPurposeOther) {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose_note", i),
+				"a note is only meaningful on the 'other' purpose", "",
+				"clear the note, or set the purpose to 'другое'")
+		}
+		if len(purposeNote.String) > maxVarchar255 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose_note", i),
+				fmt.Sprintf("must be at most %d characters", maxVarchar255), "", "shorten this value")
+		}
+
 		materialID := sql.NullInt64{}
 		if b.MaterialId != 0 {
 			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
@@ -1744,6 +1792,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			LineKey:         lineKey,
 			MaterialId:      materialID,
 			Section:         section,
+			Purpose:         purpose,
+			PurposeNote:     purposeNote,
+			IsSample:        b.IsSample,
 			Name:            b.Name,
 			Supplier:        nullStringFromPb(b.Supplier),
 			SupplierRef:     nullStringFromPb(b.SupplierRef),
@@ -2079,6 +2130,9 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			LineKey:         b.LineKey,
 			MaterialId:      b.MaterialId.Int64,
 			Section:         pbBomSection(b.Section),
+			Purpose:         pbBomPurpose(b.Purpose),
+			PurposeNote:     pbStringFromNull(b.PurposeNote),
+			IsSample:        b.IsSample,
 			Name:            b.Name,
 			Supplier:        pbStringFromNull(b.Supplier),
 			SupplierRef:     pbStringFromNull(b.SupplierRef),
@@ -2231,6 +2285,19 @@ func pbBomSection(s entity.TechCardBomSection) pb_common.TechCardBomSection {
 		return v
 	}
 	return pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_UNKNOWN
+}
+
+// pbBomPurpose maps a stored НАЗНАЧЕНИЕ back to the wire. An unset column is UNSET, and so is a
+// value the current build does not recognise — a purpose read from a newer schema must degrade to
+// "not sorted yet" rather than be silently reported as some other purpose.
+func pbBomPurpose(p sql.NullString) pb_common.TechCardBomPurpose {
+	if !p.Valid {
+		return pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
+	}
+	if v, ok := techCardBomPurposeEntityToPb[entity.TechCardBomPurpose(p.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
 }
 
 func pbLabDipStatus(s entity.TechCardLabDipStatus) pb_common.TechCardLabDipStatus {

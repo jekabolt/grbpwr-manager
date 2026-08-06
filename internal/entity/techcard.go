@@ -200,21 +200,21 @@ var ValidMarkerSources = map[MarkerSource]bool{
 // stable wire identity of the BOM fabric line this marker measures; the store resolves it to
 // bom_item_id ("" = not linked).
 type TechCardMarkerInsert struct {
-	SizeId          int             `db:"size_id"`
-	Name            string          `db:"name"`
-	Source          MarkerSource    `db:"source"`
-	BomLineKey      string          `db:"-"`
+	SizeId     int          `db:"size_id"`
+	Name       string       `db:"name"`
+	Source     MarkerSource `db:"source"`
+	BomLineKey string       `db:"-"`
 	// ColorwayId pins the colourway whose ARTICLE this layout was measured on (0264). 0 = not
 	// colourway-specific. It matters because the width does: a colourway names its own catalog
 	// article per slot, and the same pieces on a 140 cm and a 150 cm roll are two different
 	// markers with two different lengths.
-	ColorwayId int `db:"-"`
-	FabricWidthCm   decimal.Decimal `db:"fabric_width_cm"`
-	GapCm           decimal.Decimal `db:"gap_cm"`
-	EdgeMarginCm    decimal.Decimal `db:"edge_margin_cm"`
+	ColorwayId    int             `db:"-"`
+	FabricWidthCm decimal.Decimal `db:"fabric_width_cm"`
+	GapCm         decimal.Decimal `db:"gap_cm"`
+	EdgeMarginCm  decimal.Decimal `db:"edge_margin_cm"`
 	// SelvedgeCm snapshots the кромка (cm per edge) the layout ran with, from the effective
 	// article at save time — keeps the waste decomposition auditable after material edits.
-	SelvedgeCm decimal.Decimal `db:"selvedge_cm"`
+	SelvedgeCm      decimal.Decimal `db:"selvedge_cm"`
 	AllowCrossGrain bool            `db:"allow_cross_grain"`
 	Sets            int             `db:"sets"`
 	UsedLengthCm    decimal.Decimal `db:"used_length_cm"`
@@ -457,6 +457,49 @@ var ValidTechCardBomSections = map[TechCardBomSection]bool{
 // IsValidTechCardBomSection reports whether s is an accepted BOM section.
 func IsValidTechCardBomSection(s TechCardBomSection) bool {
 	return ValidTechCardBomSections[s]
+}
+
+// TechCardBomPurpose is НАЗНАЧЕНИЕ — what the garment uses a roll-goods line FOR. It is a SECOND
+// axis beside Section, not a refinement of it: a pocket-bag fabric, a contrast fabric and a mesh
+// second layer are all genuinely section='fabric' (cloth sold by length, laid out on the same
+// marker, grossed up by the same wastage) and differ only in role. Several lines may share one
+// purpose — naming a subset of the fabrics is the whole point of the field.
+//
+// The list is CLOSED because the field exists to GROUP. A free-text role stops grouping the moment
+// one operator writes "карманка" and the next writes "мешковина кармана"; the escape hatch is
+// therefore BomPurposeOther plus a separate note, never a free-form purpose.
+//
+// Mirrors the common.TechCardBomPurpose proto enum and the chk_bom_item_purpose DB CHECK (0265);
+// stored as a NULLABLE string in tech_card_bom_item.purpose, where NULL means "not sorted yet".
+type TechCardBomPurpose string
+
+const (
+	BomPurposeMain        TechCardBomPurpose = "main"        // основной материал
+	BomPurposeLining      TechCardBomPurpose = "lining"      // подкладка
+	BomPurposePocketing   TechCardBomPurpose = "pocketing"   // карманка
+	BomPurposeInterfacing TechCardBomPurpose = "interfacing" // бортовка / прокладка
+	BomPurposeInsulation  TechCardBomPurpose = "insulation"  // утеплитель
+	BomPurposeContrast    TechCardBomPurpose = "contrast"    // контраст / отделочная
+	BomPurposeMesh        TechCardBomPurpose = "mesh"        // сетка / второй слой
+	BomPurposeOther       TechCardBomPurpose = "other"       // другое — meaning lives in PurposeNote
+)
+
+// ValidTechCardBomPurposes is the set of accepted BOM purposes. Kept in lockstep with the DB CHECK
+// by TestBomPurposeDBCheckNoDrift and with the proto enum by TestBomPurposeEnumNoDrift.
+var ValidTechCardBomPurposes = map[TechCardBomPurpose]bool{
+	BomPurposeMain:        true,
+	BomPurposeLining:      true,
+	BomPurposePocketing:   true,
+	BomPurposeInterfacing: true,
+	BomPurposeInsulation:  true,
+	BomPurposeContrast:    true,
+	BomPurposeMesh:        true,
+	BomPurposeOther:       true,
+}
+
+// IsValidTechCardBomPurpose reports whether p is an accepted BOM purpose.
+func IsValidTechCardBomPurpose(p TechCardBomPurpose) bool {
+	return ValidTechCardBomPurposes[p]
 }
 
 // TechCardLabDipStatus is the lab-dip lifecycle of a colourway. Mirrors the
@@ -716,8 +759,18 @@ type TechCardBomItem struct {
 	// keeps its own snapshot fields, so the card is self-contained and unaffected if the
 	// catalog entry later changes; the link only powers reverse lookups (which cards use a
 	// material) and admin-side pre-fill. NULL for free-text / legacy lines.
-	MaterialId  sql.NullInt64       `db:"material_id"`
-	Section     TechCardBomSection  `db:"section"`
+	MaterialId sql.NullInt64      `db:"material_id"`
+	Section    TechCardBomSection `db:"section"`
+	// Purpose (0265) is НАЗНАЧЕНИЕ on its own axis beside Section — see TechCardBomPurpose. Accepted
+	// only on a roll-goods line (fabric/lining/interlining/insulation); INVALID (NULL) means "not
+	// sorted yet" and is what every line predating 0265 carries, deliberately never guessed.
+	Purpose sql.NullString `db:"purpose"`
+	// PurposeNote explains a BomPurposeOther line. Legal only alongside that purpose — the DB CHECK
+	// chk_bom_item_purpose_note enforces it — so the note can never quietly become a ninth purpose.
+	PurposeNote sql.NullString `db:"purpose_note"`
+	// IsSample marks the yardage the SAMPLE is sewn from. A flag rather than a purpose value because
+	// a sample is a sample MAIN plus a sample LINING; folded into Purpose the two would collapse.
+	IsSample    bool                `db:"is_sample"`
 	Name        string              `db:"name"`
 	Supplier    sql.NullString      `db:"supplier"`
 	SupplierRef sql.NullString      `db:"supplier_ref"`
