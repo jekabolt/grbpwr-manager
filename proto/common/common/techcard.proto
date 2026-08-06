@@ -1713,6 +1713,18 @@ message TechCardMarkerPlacement {
   // the fabric the wrong way up, and ворс, twill or a print then run against the neighbouring
   // piece. The save path refuses either one on a one_way scope — see the schema_version note above
   // for why only v3 blobs are judged.
+  //
+  // THE AXIS IS PART OF THE CONTRACT, and naming it is not pedantry. The reflection is
+  // `(x, y) ↦ (−x, y)` — about the Y axis, in the piece's own coordinates, applied BEFORE rot_deg:
+  //
+  //     placed(p) = R(rot_deg) · M^flipped · p + (x_cm, y_cm),   M: (x, y) ↦ (−x, y)
+  //
+  // Reflecting about the other axis would also produce a correct chirality, so a reader that
+  // guesses wrong still draws a plausible piece — it just draws it a HALF TURN from where the
+  // writer meant, because M_x = R(180) · M_y. On plain cloth that is invisible; on ворс it is a
+  // ruined panel, and in the label planner it is text upside down. Both renderers and the layout
+  // editor must compose this exact expression, and the order matters as much as the axis:
+  // M · R(θ) = R(−θ) · M, so mirroring after rotating differs by 2θ, not by a sign.
   bool flipped = 6;
 }
 
