@@ -1142,6 +1142,50 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	}, nil
 }
 
+// markerPlacementRotations is the closed set of rotations a placement may carry, and it is enforced
+// NOWHERE ELSE. The proto's "0 | 90 | 180 | 270" beside rot_deg is a comment; the column is a JSON
+// blob with no CHECK behind it, and the engine, the editor and the DXF export each just trust the
+// number. So this save path is the only gate: an angle outside the set renders one way in the
+// editor and another in the plotter file, and the раскладка stops being the thing that was measured.
+var markerPlacementRotations = map[int32]bool{0: true, 90: true, 180: true, 270: true}
+
+// normaliseRotation folds a rotation into [0, 360). -180 and 540 are the SAME half-turn as 180, and
+// a policy that compared the raw number would miss both — which is the cheapest possible way to put
+// a piece upside down on ворс with the server's blessing.
+func normaliseRotation(deg int32) int32 { return ((deg % 360) + 360) % 360 }
+
+// MarkerLayoutFactsFromPb distils the few things the SAVE PATH must know about a layout out of the
+// blob, so nothing downstream has to open it again: the blob is stored opaque (0257) and the store
+// never parses it, so whatever the store DECIDES on has to leave the transport layer as a fact.
+//
+// It also CANONICALISES rot_deg on the message it is handed, on purpose: the blob is marshalled from
+// this same message moments later, so a placement the server counted as a half-turn must not be
+// stored as -180 and read back by a consumer whose check is `rot === 180`. The facts and the bytes
+// have to describe the same placement.
+//
+// Call it AFTER schema_version has been normalised — a blob that arrives with 0 is a v1 blob, and
+// the version is what decides whether the rotation policy applies at all (Ф1.6).
+func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLayoutFacts, error) {
+	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
+	for i, p := range l.GetPlacements() {
+		rot := normaliseRotation(p.GetRotDeg())
+		if !markerPlacementRotations[rot] {
+			return entity.MarkerLayoutFacts{}, fmt.Errorf(
+				"layout.placements[%d].rot_deg is %d; only 0, 90, 180 and 270 can be cut", i, p.GetRotDeg())
+		}
+		p.RotDeg = rot
+		// 180° and a mirror are the same physical mistake on directional cloth — the piece ends up
+		// the wrong way up — so both are collected, and the refusal names whichever fired.
+		if rot == 180 {
+			out.HasHalfTurn = true
+		}
+		if p.GetFlipped() {
+			out.HasFlip = true
+		}
+	}
+	return out, nil
+}
+
 // TechCardOutputVariantsToPb emits an auxiliary card's colour variants for display, each with its
 // colour name, bucket name/unit and on-hand balance already resolved. on_hand stays nil (not zero)
 // when the bucket has no stock row — "no balance recorded" is a different fact from "none left".
@@ -1766,11 +1810,17 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if wastage.Valid && wastage.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 			return nil, fmt.Errorf("bom wastage_percent must be between 0 and 100")
 		}
+		// НАПРАВЛЕНИЕ ТКАНИ — присутствие, а не значение, по тем же основаниям, что и назначение
+		// ниже: поле optional, и клиент со старым бандлом его не шлёт вовсе. Голый proto3-энум
+		// пришёл бы как UNKNOWN и стёр бы направление у всех строк карточки — а с Ф1 это не косметика:
+		// стёртое направление снимает с сохранения КАЖДУЮ раскладку карточки, пока его не проставят
+		// заново. Явно присланный UNKNOWN по-прежнему очищает колонку: это осознанное действие.
+		directionOmitted := b.FabricDirection == nil
 		direction := sql.NullString{}
-		if b.FabricDirection != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
-			d, ok := techCardFabricDirectionPbToEntity[b.FabricDirection]
+		if !directionOmitted && b.GetFabricDirection() != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
+			d, ok := techCardFabricDirectionPbToEntity[b.GetFabricDirection()]
 			if !ok {
-				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.FabricDirection)
+				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.GetFabricDirection())
 			}
 			direction = sql.NullString{String: string(d), Valid: true}
 		}
@@ -1823,28 +1873,29 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		out = append(out, entity.TechCardBomItem{
 			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
 			// unchanged positional index. id is read-only.
-			LineKey:         lineKey,
-			MaterialId:      materialID,
-			Section:         section,
-			Purpose:         purpose,
-			PurposeOmitted:  purposeOmitted,
-			PurposeNote:     purposeNote,
-			IsSample:        b.GetIsSample(),
-			IsSampleOmitted: b.IsSample == nil,
-			Name:            b.Name,
-			Supplier:        nullStringFromPb(b.Supplier),
-			SupplierRef:     nullStringFromPb(b.SupplierRef),
-			Color:           nullStringFromPb(b.Color),
-			Composition:     nullStringFromPb(b.Composition),
-			Spec:            nullStringFromPb(b.Spec),
-			Unit:            nullStringFromPb(b.Unit),
-			UnitPrice:       unitPrice,
-			Currency:        nullStringFromPb(b.Currency),
-			Comment:         nullStringFromPb(b.Comment),
-			FabricWidth:     fabricWidth,
-			FabricWeightGsm: fabricGsm,
-			FabricDirection: direction,
-			WastagePercent:  wastage,
+			LineKey:                lineKey,
+			MaterialId:             materialID,
+			Section:                section,
+			Purpose:                purpose,
+			PurposeOmitted:         purposeOmitted,
+			PurposeNote:            purposeNote,
+			IsSample:               b.GetIsSample(),
+			IsSampleOmitted:        b.IsSample == nil,
+			Name:                   b.Name,
+			Supplier:               nullStringFromPb(b.Supplier),
+			SupplierRef:            nullStringFromPb(b.SupplierRef),
+			Color:                  nullStringFromPb(b.Color),
+			Composition:            nullStringFromPb(b.Composition),
+			Spec:                   nullStringFromPb(b.Spec),
+			Unit:                   nullStringFromPb(b.Unit),
+			UnitPrice:              unitPrice,
+			Currency:               nullStringFromPb(b.Currency),
+			Comment:                nullStringFromPb(b.Comment),
+			FabricWidth:            fabricWidth,
+			FabricWeightGsm:        fabricGsm,
+			FabricDirection:        direction,
+			FabricDirectionOmitted: directionOmitted,
+			WastagePercent:         wastage,
 		})
 	}
 	return out, nil
@@ -2188,7 +2239,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			Comment:         pbStringFromNull(b.Comment),
 			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
 			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
-			FabricDirection: pbFabricDirection(b.FabricDirection),
+			FabricDirection: pbPtr(pbFabricDirection(b.FabricDirection)),
 			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
@@ -2201,6 +2252,15 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	return out
 }
 
+// pbFabricDirection maps a stored направление to the wire enum; an unset column reads as UNKNOWN,
+// which is what it has always meant.
+//
+// The pointer is added at the CALL SITE (pbPtr), always — the same shape purpose uses since it became
+// optional. Presence is honoured on the way IN and always emitted on the way OUT, deliberately: the
+// gateway marshals with EmitUnpopulated, but protojson never emits an unset proto3-optional field, so
+// returning nil here would make "fabricDirection" VANISH from the JSON of every line that has none,
+// where every deployed client currently reads "TECH_CARD_FABRIC_DIRECTION_UNKNOWN". Optionality is a
+// statement about what a WRITE means, not a licence to change the shape of a READ.
 func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 	if !s.Valid {
 		return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN

@@ -224,6 +224,11 @@ type TechCardMarkerInsert struct {
 	PlacedCount   int                 `db:"placed_count"`
 	TotalCount    int                 `db:"total_count"`
 	Layout        string              `db:"layout"`
+	// LayoutFacts are the handful of things the SAVE PATH has to know about the blob it is storing
+	// (Ф1): its schema version, and whether any placement is upside down. Distilled at the API layer
+	// and carried as facts because the blob stays opaque past it — the store persists Layout and
+	// never parses it, and a second parser there would be a second definition of the format.
+	LayoutFacts MarkerLayoutFacts `db:"-"`
 }
 
 // TechCardMarkerSummary is a stored marker without its layout blob — the shape that rides
@@ -795,7 +800,13 @@ type TechCardBomItem struct {
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
 	FabricDirection sql.NullString      `db:"fabric_direction"`
-	WastagePercent  decimal.NullDecimal `db:"wastage_percent"`
+	// FabricDirectionOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым», same negative
+	// sense and same reason as PurposeOmitted above: a tab holding an older bundle does not send it,
+	// and a proto3 enum's zero value is UNKNOWN, so without the distinction that tab's save would
+	// clear направление on every line of the card. Since Ф1 that erasure is not cosmetic — it
+	// un-saves every раскладка on the card until somebody fills the column back in.
+	FabricDirectionOmitted bool                `db:"-"`
+	WastagePercent         decimal.NullDecimal `db:"wastage_percent"`
 	// Stored price provenance (production-costing Phase 3): where unit_price came from and when it
 	// was stamped. Server-owned — set by the save path ('manual' when the price changes hands
 	// through UpdateTechCard) and by the reprice action ('catalog'); NULL on pre-provenance rows.

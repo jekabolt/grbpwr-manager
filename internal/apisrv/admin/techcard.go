@@ -220,6 +220,15 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			return nil, status.Error(codes.Internal, "can't preserve stored costing; try again")
 		}
 	}
+	// A field the payload did not speak must not reach the DIGEST as empty. fabric_direction became
+	// optional so a stale tab cannot erase it (the store honours that with IF(:omitted, …)), but it
+	// also sits in materialsProjection, whose invariant is that it projects only fields that survive
+	// the store round-trip unchanged. Without this the projection would hash NULL while the column
+	// keeps one_way, and a MATERIALS approval made from exactly the client this optionality exists
+	// for would read «changed since sign-off» immediately — and forever, since re-approving from the
+	// same client hashes the same absence. purpose/purpose_note/is_sample dodged this by staying out
+	// of the projection; direction cannot, it is a cutting fact the approval is ABOUT.
+	carryOmittedFabricDirectionFrom(stored, tc)
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
