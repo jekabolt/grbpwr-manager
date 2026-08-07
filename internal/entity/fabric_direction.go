@@ -89,6 +89,40 @@ func FlipPredatesSchema(f MarkerLayoutFacts) bool {
 	return f.HasFlip && f.SchemaVersion > 0 && f.SchemaVersion < MarkerLayoutSchemaWithFlip
 }
 
+// StoredMarkerFacts yields the facts of the layout this save REPLACES — the geometry already on
+// file. It is a function, not a value, because reading it costs the stored blob and a parse, and the
+// exemption below is the only thing that ever asks: a save that introduces nothing forbidden never
+// needs to know what the old row looked like.
+//
+// ok=false means the stored geometry could not be read (no stored row, an unparsable blob, or a
+// caller that did not wire the distiller). It is NOT «no forbidden geometry»; the two must not be
+// confused, and the exemption treats it as «cannot forgive» — see ValidateMarkerFabricDirection.
+type StoredMarkerFacts func() (MarkerLayoutFacts, bool)
+
+// MarkerDirectionVerdict is what the rule tells its caller beyond «refused or not». Both fields feed
+// exactly one decision — what generation the row should carry afterwards — and both are needed
+// because «nothing was judged» and «judged and allowed» must not write the same thing.
+type MarkerDirectionVerdict struct {
+	// Judged: this geometry was actually held against the policy. False only when the marker has no
+	// live cloth scope at all, i.e. nothing about направление could be decided either way.
+	Judged bool
+	// Exempted: the policy would have refused, and the row's pre-Ф1 pass forgave it — which it may
+	// only do for geometry that was ALREADY THERE.
+	Exempted bool
+}
+
+// introducesForbidden reports whether the incoming layout adds an upside-down property the stored
+// layout did not already have. This is the whole scope of the exemption: it forgives what is on file,
+// never what this very save is putting there.
+//
+// Property subset, not placement identity: «this row already had a half-turn» is what the pass is
+// about, so swapping WHICH piece is turned stays forgiven. Narrowing that further would need the
+// stored placements compared one by one, and would make a rename fail whenever the client re-emitted
+// the blob in a different order — the exact cost the pass exists to avoid.
+func introducesForbidden(incoming, stored MarkerLayoutFacts) bool {
+	return (incoming.HasHalfTurn && !stored.HasHalfTurn) || (incoming.HasFlip && !stored.HasFlip)
+}
+
 // MarkerFabricScope resolves the cloth a marker's bom_line_key addresses, through the ONE binding
 // rule (ResolveFabricScope): the назначение of the named line where the card has been sorted, that
 // line alone where it has not.
@@ -291,13 +325,9 @@ func named(lines []FabricDirectionLine, resolve FabricLineNamer) []FabricDirecti
 // ValidateMarkerFabricDirection is the whole marker-side rule in one place (Ф1.5 + Ф1.6): a layout
 // may not put a piece upside down on cloth that is directional, and it may not do so on cloth whose
 // direction nobody has set — because unknown is not an answer. lines are the card's roll-goods BOM
-// lines IN CARD ORDER (their Index is used verbatim in the field path); facts are the layout
-// distilled by the API layer; storedGeneration is the POLICY GENERATION of the row being replaced —
-// 0 when this save creates a marker.
-//
-// Returns whether the save was EXEMPTED: true only where the policy would otherwise have refused and
-// the stored row's generation bought it a pass. The caller needs that to keep the ratchet honest —
-// see the exemption block below.
+// lines IN CARD ORDER (their Index is used verbatim in the field path); facts are the incoming
+// layout distilled by the API layer; storedGeneration is the POLICY GENERATION of the row being
+// replaced (0 when this save creates one); storedFacts yields the geometry that row already carries.
 //
 // Order of the checks is deliberate, and two of them were in the wrong place before:
 //
@@ -312,10 +342,10 @@ func named(lines []FabricDirectionLine, resolve FabricLineNamer) []FabricDirecti
 //     the colourway) would have stopped dead on every legacy card, with a violation the client of
 //     the day could not even act on. The safety property is untouched — an upside-down placement
 //     still can never be stored on cloth of unknown direction, which is the case that reaches the
-//     unknown check below. This is a deliberate narrowing of Ф1.5 as the plan wrote it;
+//     unknown check below;
 //  3. only then the cloth: unknown, then the policy, then the exemption.
 func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLine, facts MarkerLayoutFacts,
-	storedGeneration int, resolveNames FabricLineNamer) (bool, error) {
+	storedGeneration int, storedFacts StoredMarkerFacts, resolveNames FabricLineNamer) (MarkerDirectionVerdict, error) {
 	scope := MarkerFabricScope(bomLineKey, lines)
 	if !scope.Live() {
 		// An UNLINKED marker — no bom_line_key at all — stays saveable, and must: it is geometry
@@ -323,18 +353,25 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 		// DANGLES reads the same way: its line was deleted or reclassified out of roll goods, which
 		// is a UI state («слот удалён»), not an error, and refusing it here would strand markers on
 		// an attribution their operator can no longer reach.
-		return false, nil
+		//
+		// Judged stays FALSE, and that is not a formality: nothing here held this geometry against
+		// any cloth, so the caller must not stamp the row as judged under the current policy. Before
+		// the exemption was scoped to stored geometry that distinction was unaffordable — the
+		// generation was the only defence, so it had to ratchet on every save that did not spend a
+		// pass, and unlinking a legacy marker silently cost it one. Now the subset rule below stops
+		// new forbidden geometry on its own, so the column is free to mean exactly what it says.
+		return MarkerDirectionVerdict{}, nil
 	}
 	if facts.SchemaVersion <= 0 {
 		// Not a validation failure — a wiring failure, and it must not read as the operator's
 		// problem. The API layer normalises an absent version to 1, so a zero reaching here means
 		// the blob was never distilled, and the zero value of MarkerLayoutFacts is precisely the one
 		// that would sail through every check below. A default that exempts has to be unreachable.
-		return false, fmt.Errorf("marker layout facts were not distilled (schema_version 0) — refusing to "+
-			"judge a раскладка linked to %s on inputs nobody filled", scope.Key)
+		return MarkerDirectionVerdict{}, fmt.Errorf("marker layout facts were not distilled (schema_version 0) — "+
+			"refusing to judge a раскладка linked to %s on inputs nobody filled", scope.Key)
 	}
 	if FlipPredatesSchema(facts) {
-		return false, NewFieldViolation("layout.placements", ReasonFlipInLegacySchema, "",
+		return MarkerDirectionVerdict{Judged: true}, NewFieldViolation("layout.placements", ReasonFlipInLegacySchema, "",
 			fmt.Sprintf("the layout declares schema_version %d but carries a mirrored placement, and "+
 				"`flipped` only exists from version %d on — no stored раскладка can contain one, so this is a "+
 				"client writing a version it does not actually speak; save it as version %d",
@@ -343,8 +380,9 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 	if !facts.HasHalfTurn && !facts.HasFlip {
 		// Nothing in this layout is upside down, so no direction — known, unknown or contradictory —
 		// can refuse it. See (2) above: this is the check whose position is the difference between a
-		// guard and a card-wide блокировка.
-		return false, nil
+		// guard and a card-wide блокировка. Judged: the policy did look at this geometry and found
+		// nothing to forbid, so the row has earned the current generation.
+		return MarkerDirectionVerdict{Judged: true}, nil
 	}
 	dir, unknown, known := ScopeFabricDirection(scope, lines)
 	if !known {
@@ -360,37 +398,42 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 			"сервер не может отличить безобидные 180° от испорченного ворса"
 		// The field pins the FIRST offending row so a form can focus something; the prose and the
 		// conflicting keys carry all of them, because the fix is a mass fill, not one row.
-		return false, NewFieldViolation(fmt.Sprintf("bom_items[%d].fabric_direction", unknown[0].Index),
+		return MarkerDirectionVerdict{Judged: true}, NewFieldViolation(
+			fmt.Sprintf("bom_items[%d].fabric_direction", unknown[0].Index),
 			ReasonFabricDirectionUnknown, keysOf(unknown), howToFix)
 	}
 	if dir != FabricDirectionOneWay {
 		// two_way and any both allow the piece upside down. The binary «directional ⇒ forbidden»
 		// would be wrong here: two_way is exactly the cloth that permits the half-turn.
-		return false, nil
+		return MarkerDirectionVerdict{Judged: true}, nil
 	}
-	// From here the policy REFUSES. The exemption is evaluated last, and only here, on purpose: it is
-	// the only place where a pass is actually being spent, so it is the only place that may claim one.
-	// Evaluated earlier — as it was — every legacy row got the exemption on every save including the
-	// ones the policy would have waved through anyway, and the row could never earn its way out of
-	// being grandfathered.
-	if storedGeneration > 0 && storedGeneration < MarkerLayoutSchemaWithFlip {
-		// GRANDFATHERING, keyed on the generation of the row ALREADY IN THE DATABASE — never on
-		// anything the payload declares. `flipped` cannot be forged because the field did not exist,
-		// but a 180° is expressible in every version, so «declare schema_version 1» was a working
-		// opt-out of the policy for the exact geometry the policy exists to stop. A gate you get
-		// through by writing a smaller number is not a gate.
+	// From here the policy REFUSES, and the pre-Ф1 pass is the only thing that can change that.
+	if storedGeneration > 0 && storedGeneration < MarkerLayoutSchemaWithFlip && !introducesForbidden(facts, storedFactsOf(storedFacts)) {
+		// GRANDFATHERING, and its scope is the point. Two facts have to hold together, and neither
+		// is writable by the caller:
 		//
-		// What the exemption is FOR: stored markers legitimately carry rotations outside today's
-		// policy — the manual editor saves the rotation a piece ACTUALLY has, so 90° at
-		// allow_cross_grain=false is on file and 180° with it. Refusing those the moment their card
-		// gets a направление would invalidate measurements nobody can re-take without re-nesting, so
-		// such a row stays renameable and re-linkable indefinitely.
+		//   • the ROW predates the policy (its generation, written only by the server); and
+		//   • this save INTRODUCES nothing forbidden that the stored geometry did not already carry.
 		//
-		// KNOWN AND DELIBERATE RESIDUAL: a row that already violates can have DIFFERENT forbidden
-		// geometry written onto it under the same pass. Closing that needs the stored geometry, not
-		// the stored generation, and the price would be re-nesting to rename. Ф3's is_norm plus the
-		// Д3 re-shoot campaign are what actually retire these rows.
-		return true, nil
+		// The second condition is what was missing. Keyed on the verdict alone, the pass fired
+		// whenever the policy would have refused — including when the operator was adding the 180°
+		// right then — and, because an exempted save deliberately holds the generation back, the row
+		// stayed exemptible forever after. A legacy marker with perfectly compliant geometry could be
+		// turned upside down on ворс in two clicks and keep the licence to do it again: the ratchet
+		// defeated by the exact action it exists to prevent. The client made that trivial in
+		// practice, offering 180° on every reopened marker regardless of the cloth.
+		//
+		// What the pass is FOR: geometry ALREADY ON FILE. The manual editor saved the rotation a
+		// piece actually had, so 90° at allow_cross_grain=false is on file and 180° with it, and
+		// refusing those the moment their card gets a направление would invalidate measurements
+		// nobody can re-take without re-nesting. Such a row stays renameable and re-linkable
+		// indefinitely — and now ONLY that.
+		//
+		// KNOWN AND DELIBERATE RESIDUAL, now much smaller: the comparison is by PROPERTY, so a row
+		// that already carries a half-turn may have a different piece turned instead. Closing that
+		// needs placement-by-placement comparison against the stored blob, which would fail a rename
+		// whenever the client re-emitted the geometry in another order.
+		return MarkerDirectionVerdict{Judged: true, Exempted: true}, nil
 	}
 	blockers := named(scopeLinesWith(scope, lines, FabricDirectionOneWay), resolveNames)
 	howToFix := fmt.Sprintf("%s: %s помечена one_way", offendingPlacements(facts), labelsOf(blockers))
@@ -399,7 +442,30 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 	}
 	howToFix += " — на направленной ткани деталь нельзя класть вверх ногами: пересоберите раскладку без 180° и " +
 		"без зеркальных размещений, либо исправьте направление ткани на вкладке BOM, если ткань на самом деле не направленная"
-	return false, NewFieldViolation("layout.placements", ReasonFlipOnOneWay, keysOf(blockers), howToFix)
+	return MarkerDirectionVerdict{Judged: true}, NewFieldViolation("layout.placements", ReasonFlipOnOneWay, keysOf(blockers), howToFix)
+}
+
+// storedFactsOf reads the geometry on file, and answers «everything is forbidden already» ONLY when
+// it genuinely read it. A stored blob that cannot be distilled — unparsable, absent, or a caller that
+// never wired the distiller — yields facts with nothing set, so introducesForbidden() sees every
+// upside-down property in the payload as NEW and the pass is not granted.
+//
+// THAT DIRECTION IS DELIBERATE, and it is the opposite of what «be lenient with damaged data» would
+// suggest. The read path degrades on an unreadable blob by design (GetTechCardMarker serves the
+// summary plus a warning and NO geometry), which means a client cannot have loaded that marker's
+// placements — so whatever upside-down geometry arrives in the payload cannot be a copy of what is on
+// file. It is new by construction, and new geometry is exactly what the pass may not forgive.
+// Refusing costs the operator only the forbidden save: renaming, re-linking or re-nesting the same
+// marker with compliant geometry all still work, so nothing is stranded.
+func storedFactsOf(storedFacts StoredMarkerFacts) MarkerLayoutFacts {
+	if storedFacts == nil {
+		return MarkerLayoutFacts{}
+	}
+	f, ok := storedFacts()
+	if !ok {
+		return MarkerLayoutFacts{}
+	}
+	return f
 }
 
 // offendingPlacements names which half of the ban fired. «180° and mirrored» and «mirrored» send an

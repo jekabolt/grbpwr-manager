@@ -25,20 +25,29 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		return MarkerLayoutFacts{SchemaVersion: 3, HasHalfTurn: halfTurn, HasFlip: flip}
 	}
 	// gen(v) is the POLICY GENERATION of the row being replaced: 0 means this save creates a marker,
-	// and a create has no history to grandfather. It is the only fact the exemption may key on, and
-	// the server is the only writer of it.
+	// and a create has no history to grandfather. The server is the only writer of it.
 	gen := func(v int) int { return v }
+	// onFile is the geometry the stored row ALREADY carries — the second half of what the exemption
+	// keys on. nothingOnFile is the honest answer for a create, and also for a stored blob nobody can
+	// read: both mean «cannot forgive», never «there was nothing forbidden».
+	onFile := func(halfTurn, flip bool) StoredMarkerFacts {
+		return func() (MarkerLayoutFacts, bool) {
+			return MarkerLayoutFacts{SchemaVersion: 1, HasHalfTurn: halfTurn, HasFlip: flip}, true
+		}
+	}
+	nothingOnFile := StoredMarkerFacts(nil)
 	// validate drops the name resolver — these lines already carry their names. Its own behaviour is
 	// covered by TestValidateMarkerFabricDirectionNamesCatalogueLines.
-	validate := func(key string, lines []FabricDirectionLine, facts MarkerLayoutFacts, storedGen int) (bool, error) {
-		return ValidateMarkerFabricDirection(key, lines, facts, storedGen, nil)
+	validate := func(key string, lines []FabricDirectionLine, facts MarkerLayoutFacts, storedGen int,
+		stored StoredMarkerFacts) (MarkerDirectionVerdict, error) {
+		return ValidateMarkerFabricDirection(key, lines, facts, storedGen, stored, nil)
 	}
 
 	t.Run("one_way refuses a v3 layout with a 180° placement", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(2, shellA, "main", "Вельвет", "one_way")}
-		exempted, err := validate(shellA, lines, v3(true, false), gen(0))
+		verdict, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
-		if exempted {
+		if verdict.Exempted {
 			t.Error("a refusal cannot also be an exemption")
 		}
 		// FIX 4 of the review: the blocker is named, not printed as a bare ULID.
@@ -52,7 +61,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 
 	t.Run("one_way refuses a v3 layout with a mirrored placement", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "one_way")}
-		_, err := validate(shellA, lines, v3(false, true), gen(0))
+		_, err := validate(shellA, lines, v3(false, true), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
 		if !strings.Contains(ve.HowToFix, "зеркальные") {
 			t.Errorf("how-to-fix must say a mirror fired: %q", ve.HowToFix)
@@ -66,16 +75,19 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 	t.Run("a compliant layout saves on cloth of unknown direction", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Твил 320", "")}
 		for _, facts := range []MarkerLayoutFacts{v3(false, false), {SchemaVersion: 1}, {SchemaVersion: 2}} {
-			exempted, err := validate(shellA, lines, facts, gen(0))
-			if err != nil || exempted {
-				t.Fatalf("nothing is upside down, so the direction decides nothing: err = %v exempted = %v", err, exempted)
+			verdict, err := validate(shellA, lines, facts, gen(0), nothingOnFile)
+			if err != nil || verdict.Exempted {
+				t.Fatalf("nothing is upside down, so the direction decides nothing: err = %v verdict = %+v", err, verdict)
+			}
+			if !verdict.Judged {
+				t.Error("compliant geometry WAS judged — the row has earned the current generation")
 			}
 		}
 	})
 
 	t.Run("an upside-down layout still cannot be stored on cloth of unknown direction", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(4, shellA, "main", "Твил 320", "")}
-		_, err := validate(shellA, lines, v3(true, false), gen(0))
+		_, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "bom_items[4].fabric_direction", ReasonFabricDirectionUnknown)
 		// Actionable in both registers: a form path a client can pin, the line_key in the
 		// machine-readable slot, the name in the prose.
@@ -89,32 +101,81 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			t.Errorf("the line the раскладка names needs no назначение explanation: %q", ve.HowToFix)
 		}
 		// A mirror is refused the same way, and an old declared version does not buy it through.
-		if _, err := validate(shellA, lines, MarkerLayoutFacts{SchemaVersion: 3, HasFlip: true}, gen(0)); err == nil {
+		if _, err := validate(shellA, lines, MarkerLayoutFacts{SchemaVersion: 3, HasFlip: true}, gen(0), nothingOnFile); err == nil {
 			t.Error("a mirrored placement on unknown cloth must be refused too")
 		}
 	})
 
 	// THE EXEMPTION, and who may claim it. It is spent only where the policy would otherwise refuse,
 	// so a legacy row whose geometry is compliant never claims it — and therefore ratchets forward.
-	t.Run("only a legacy ROW with forbidden geometry is exempted", func(t *testing.T) {
+	// THE EXEMPTION, and its scope. It forgives geometry ALREADY ON FILE — never geometry this save
+	// is introducing — and it is spent only where the policy would otherwise refuse.
+	t.Run("only geometry already on file is exempted", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "one_way")}
 		for _, storedGen := range []int{1, 2} {
 			// The current client declares v3 unconditionally, so a re-save of a pre-Ф1 row arrives as
-			// v3 over a stored 1. The ROW's generation decides, not the payload's.
-			exempted, err := validate(shellA, lines, v3(true, false), gen(storedGen))
-			if err != nil || !exempted {
-				t.Fatalf("stored generation %d: err = %v exempted = %v, want an exemption", storedGen, err, exempted)
+			// v3 over a stored 1. The ROW decides, not the payload.
+			verdict, err := validate(shellA, lines, v3(true, false), gen(storedGen), onFile(true, false))
+			if err != nil || !verdict.Exempted {
+				t.Fatalf("stored generation %d: err = %v verdict = %+v, want an exemption", storedGen, err, verdict)
 			}
 		}
+
+		// THE DEFECT THIS CLOSES. A legacy row whose geometry is COMPLIANT is sent a brand-new 180°:
+		// the policy would refuse, so the old rule fired the exemption — and then held the generation
+		// back, leaving the row permanently exemptible. The ratchet was defeated by exactly the
+		// action it exists to prevent, and the client made it two clicks.
+		verdict, err := validate(shellA, lines, v3(true, false), gen(1), onFile(false, false))
+		requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
+		if verdict.Exempted {
+			t.Error("a pass may not forgive geometry this save is introducing")
+		}
+		// Same for a mirror appearing on a row that only ever had a half-turn, and vice versa: the
+		// properties are forgiven independently.
+		_, err = validate(shellA, lines, v3(false, true), gen(1), onFile(true, false))
+		requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
+		_, err = validate(shellA, lines, v3(true, false), gen(1), onFile(false, true))
+		requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
+		// Carrying BOTH forward when both are on file is still forgiven.
+		verdict, err = validate(shellA, lines, v3(true, true), gen(1), onFile(true, true))
+		if err != nil || !verdict.Exempted {
+			t.Fatalf("unchanged geometry must stay saveable: err = %v verdict = %+v", err, verdict)
+		}
+		// Dropping a forbidden property is a subset too — re-saving with LESS than was on file is
+		// how a marker gets fixed, and it must not be refused on the way.
+		verdict, err = validate(shellA, lines, v3(true, false), gen(1), onFile(true, true))
+		if err != nil || !verdict.Exempted {
+			t.Fatalf("removing a mirror must be allowed: err = %v verdict = %+v", err, verdict)
+		}
+
 		// Compliant geometry on the same legacy row spends nothing: the save is allowed on its own
 		// merits, so the caller is free to ratchet the row forward.
-		exempted, err := validate(shellA, lines, v3(false, false), gen(1))
-		if err != nil || exempted {
-			t.Fatalf("compliant geometry must not claim a pass: err = %v exempted = %v", err, exempted)
+		verdict, err = validate(shellA, lines, v3(false, false), gen(1), onFile(true, false))
+		if err != nil || verdict.Exempted || !verdict.Judged {
+			t.Fatalf("compliant geometry must not claim a pass: err = %v verdict = %+v", err, verdict)
 		}
-		// And a generation at or past the current one is no longer legacy.
-		if _, err := validate(shellA, lines, v3(true, false), gen(MarkerLayoutSchemaWithFlip)); err == nil {
-			t.Error("a row already judged under the current policy must not be exempted")
+		// And a generation at or past the current one is no longer legacy, whatever is on file.
+		_, err = validate(shellA, lines, v3(true, false), gen(MarkerLayoutSchemaWithFlip), onFile(true, false))
+		requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
+	})
+
+	// AN UNREADABLE STORED BLOB CANNOT BUY A PASS. The read path serves such a marker as summary plus
+	// a warning and NO geometry, so a client cannot have loaded those placements — whatever
+	// upside-down geometry arrives is new by construction, which is precisely what the pass may not
+	// forgive. It costs the operator only the forbidden save.
+	t.Run("unreadable stored geometry withholds the exemption", func(t *testing.T) {
+		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "one_way")}
+		unreadable := StoredMarkerFacts(func() (MarkerLayoutFacts, bool) { return MarkerLayoutFacts{}, false })
+		for _, stored := range []StoredMarkerFacts{unreadable, nil} {
+			verdict, err := validate(shellA, lines, v3(true, false), gen(1), stored)
+			requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
+			if verdict.Exempted {
+				t.Error("facts nobody could read must not read as «it was already like that»")
+			}
+		}
+		// The same marker still saves with compliant geometry — nothing is stranded.
+		if _, err := validate(shellA, lines, v3(false, false), gen(1), unreadable); err != nil {
+			t.Errorf("a compliant re-save must still work on an unreadable row: %v", err)
 		}
 	})
 
@@ -125,9 +186,13 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "one_way")}
 		for _, v := range []int{1, 2, 3} {
 			facts := MarkerLayoutFacts{SchemaVersion: v, HasHalfTurn: true}
-			_, err := validate(shellA, lines, facts, gen(0))
+			_, err := validate(shellA, lines, facts, gen(0), nothingOnFile)
 			requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
 		}
+		// Not even when something claims the create already had that geometry: there is no row yet,
+		// so the generation is 0 and no pass exists to spend.
+		_, err := validate(shellA, lines, v3(true, false), gen(0), onFile(true, false))
+		requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
 	})
 
 	// `flipped` did not exist before schema 3, so a legacy version declaring a mirror is a forgery or
@@ -135,7 +200,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 	t.Run("a mirror cannot be legacy", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "one_way")}
 		for _, v := range []int{1, 2} {
-			_, err := validate(shellA, lines, MarkerLayoutFacts{SchemaVersion: v, HasFlip: true}, gen(v))
+			_, err := validate(shellA, lines, MarkerLayoutFacts{SchemaVersion: v, HasFlip: true}, gen(v), onFile(false, true))
 			ve := requireFieldViolation(t, err, "layout.placements", ReasonFlipInLegacySchema)
 			if !strings.Contains(ve.HowToFix, "flipped") {
 				t.Errorf("how-to-fix must name the impossible field: %q", ve.HowToFix)
@@ -144,7 +209,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		// Refused on cloth that would otherwise permit everything: it is a statement about the
 		// payload, not about the fabric.
 		anyCloth := []FabricDirectionLine{line(0, shellA, "main", "Джерси", "any")}
-		_, err := validate(shellA, anyCloth, MarkerLayoutFacts{SchemaVersion: 1, HasFlip: true}, gen(1))
+		_, err := validate(shellA, anyCloth, MarkerLayoutFacts{SchemaVersion: 1, HasFlip: true}, gen(1), onFile(false, true))
 		requireFieldViolation(t, err, "layout.placements", ReasonFlipInLegacySchema)
 	})
 
@@ -156,7 +221,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			line(3, shellB, "main", "Вельвет", ""),
 			line(5, lining, "lining", "Купра", ""),
 		}
-		_, err := validate(shellA, lines, v3(true, false), gen(0))
+		_, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "bom_items[1].fabric_direction", ReasonFabricDirectionUnknown)
 		if ve.Conflicting != shellA+", "+shellB {
 			t.Errorf("conflicting = %q, want both keys of the scope in order", ve.Conflicting)
@@ -173,12 +238,15 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 	t.Run("two_way and any allow the piece upside down", func(t *testing.T) {
 		for _, dir := range []string{"two_way", "any"} {
 			lines := []FabricDirectionLine{line(0, shellA, "main", "Джерси", dir)}
-			exempted, err := validate(shellA, lines, v3(true, true), gen(1))
+			verdict, err := validate(shellA, lines, v3(true, true), gen(1), onFile(false, false))
 			if err != nil {
 				t.Errorf("%s must permit 180°/mirror, got %v", dir, err)
 			}
-			if exempted {
+			if verdict.Exempted {
 				t.Errorf("%s permits it outright — no pass is spent", dir)
+			}
+			if !verdict.Judged {
+				t.Errorf("%s: the geometry was judged and allowed", dir)
 			}
 		}
 	})
@@ -191,7 +259,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			line(1, shellB, "main", "Вельвет", "one_way"),
 			line(2, lining, "lining", "Купра", "any"),
 		}
-		_, err := validate(shellA, lines, v3(true, false), gen(0))
+		_, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
 		if !strings.Contains(ve.HowToFix, "назначение") || !strings.Contains(ve.HowToFix, "Вельвет") {
 			t.Errorf("how-to-fix must name the blocking article and why it applies: %q", ve.HowToFix)
@@ -200,7 +268,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			t.Errorf("conflicting = %q, want the one_way line %q", ve.Conflicting, shellB)
 		}
 		// The lining is a different назначение and is not dragged in by the strict shell.
-		if _, err := validate(lining, lines, v3(true, false), gen(0)); err != nil {
+		if _, err := validate(lining, lines, v3(true, false), gen(0), nothingOnFile); err != nil {
 			t.Errorf("another назначение must stay unaffected, got %v", err)
 		}
 	})
@@ -210,7 +278,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			line(0, shellA, "main", "Твил гладкий", "any"),
 			line(7, shellB, "main", "Вельвет", ""),
 		}
-		_, err := validate(shellA, lines, v3(true, false), gen(0))
+		_, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "bom_items[7].fabric_direction", ReasonFabricDirectionUnknown)
 		if !strings.Contains(ve.HowToFix, "назначение") {
 			t.Errorf("how-to-fix %q must explain why a line the marker does not name is blocking it", ve.HowToFix)
@@ -225,17 +293,17 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			line(0, shellA, "main", "Твил гладкий", "any"),
 			{Index: 1, LineKey: shellB, Purpose: "main", Name: "Твил семпловый", IsSample: true, Direction: "one_way"},
 		}
-		if _, err := validate(shellA, lines, v3(true, false), gen(0)); err != nil {
+		if _, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile); err != nil {
 			t.Errorf("a one_way SAMPLE roll must not forbid production geometry, got %v", err)
 		}
 		// …nor does an unset direction on the sample roll block the production save.
 		lines[1].Direction = ""
-		if _, err := validate(shellA, lines, v3(true, false), gen(0)); err != nil {
+		if _, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile); err != nil {
 			t.Errorf("an unset SAMPLE direction must not block a production marker, got %v", err)
 		}
 		// And symmetrically: a marker bound to the sample line asks the sample cloth.
 		lines[1].Direction = "one_way"
-		_, err := validate(shellB, lines, v3(true, false), gen(0))
+		_, err := validate(shellB, lines, v3(true, false), gen(0), nothingOnFile)
 		requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
 	})
 
@@ -246,19 +314,19 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			line(0, unsized, "", "Твил гладкий", "any"),
 			line(1, shellB, "", "Вельвет", "one_way"),
 		}
-		if _, err := validate(unsized, lines, v3(true, false), gen(0)); err != nil {
+		if _, err := validate(unsized, lines, v3(true, false), gen(0), nothingOnFile); err != nil {
 			t.Errorf("an unsorted card must resolve line-by-line, got %v", err)
 		}
 	})
 
 	t.Run("an unlinked marker stays saveable", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "")}
-		exempted, err := validate("", lines, v3(true, true), gen(1))
+		verdict, err := validate("", lines, v3(true, true), gen(1), onFile(true, true))
 		if err != nil {
 			t.Errorf("no bom_line_key means no cloth to ask about, got %v", err)
 		}
-		if exempted {
-			t.Error("nothing was judged, so nothing was exempted")
+		if verdict.Exempted || verdict.Judged {
+			t.Errorf("nothing was judged and nothing was exempted, got %+v", verdict)
 		}
 	})
 
@@ -266,7 +334,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		// The line was deleted or reclassified out of roll goods after the marker was measured.
 		// «Слот удалён» is a UI state, not a reason to strand a stored measurement.
 		lines := []FabricDirectionLine{line(0, shellB, "main", "Вельвет", "one_way")}
-		if _, err := validate("01FDGONELINE000000000000X1", lines, v3(true, true), gen(0)); err != nil {
+		if _, err := validate("01FDGONELINE000000000000X1", lines, v3(true, true), gen(0), nothingOnFile); err != nil {
 			t.Errorf("a dangling binding must not block the save, got %v", err)
 		}
 	})
@@ -275,7 +343,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		// Unreachable through the app (chk on 0073), and if it ever becomes reachable the
 		// fail-closed answer is the safe one: ask the operator rather than assume «flip allowed».
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "diagonal")}
-		_, err := validate(shellA, lines, v3(true, false), gen(0))
+		_, err := validate(shellA, lines, v3(true, false), gen(0), nothingOnFile)
 		requireFieldViolation(t, err, "bom_items[0].fabric_direction", ReasonFabricDirectionUnknown)
 	})
 
@@ -284,7 +352,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 	// so it is NOT a field violation.
 	t.Run("undistilled facts are refused, not skipped", func(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "one_way")}
-		_, err := validate(shellA, lines, MarkerLayoutFacts{}, gen(0))
+		_, err := validate(shellA, lines, MarkerLayoutFacts{}, gen(0), nothingOnFile)
 		if err == nil {
 			t.Fatal("a linked marker must not be judged on facts nobody filled")
 		}
@@ -314,7 +382,7 @@ func TestValidateMarkerFabricDirectionNamesCatalogueLines(t *testing.T) {
 	// A save that is allowed must not touch the catalogue at all: the whole point of the callback is
 	// that the join is paid for only by a request that is already failing.
 	if _, err := ValidateMarkerFabricDirection(key, lines,
-		MarkerLayoutFacts{SchemaVersion: 3}, 0, namer); err != nil {
+		MarkerLayoutFacts{SchemaVersion: 3}, 0, nil, namer); err != nil {
 		t.Fatalf("compliant geometry must save: %v", err)
 	}
 	if calls != 0 {
@@ -322,7 +390,7 @@ func TestValidateMarkerFabricDirectionNamesCatalogueLines(t *testing.T) {
 	}
 
 	_, err := ValidateMarkerFabricDirection(key, lines,
-		MarkerLayoutFacts{SchemaVersion: 3, HasHalfTurn: true}, 0, namer)
+		MarkerLayoutFacts{SchemaVersion: 3, HasHalfTurn: true}, 0, nil, namer)
 	ve := requireFieldViolation(t, err, "bom_items[3].fabric_direction", ReasonFabricDirectionUnknown)
 	if !strings.Contains(ve.HowToFix, "ВЕЛЬВЕТ ИЗ КАТАЛОГА") {
 		t.Errorf("the refusal must speak the name the BOM tab shows: %q", ve.HowToFix)
@@ -333,7 +401,7 @@ func TestValidateMarkerFabricDirectionNamesCatalogueLines(t *testing.T) {
 
 	// Without a resolver the refusal still happens; it falls back to the key rather than going quiet.
 	_, err = ValidateMarkerFabricDirection(key, lines,
-		MarkerLayoutFacts{SchemaVersion: 3, HasHalfTurn: true}, 0, nil)
+		MarkerLayoutFacts{SchemaVersion: 3, HasHalfTurn: true}, 0, nil, nil)
 	ve = requireFieldViolation(t, err, "bom_items[3].fabric_direction", ReasonFabricDirectionUnknown)
 	if !strings.Contains(ve.HowToFix, key) {
 		t.Errorf("with no resolver the key is the fallback label: %q", ve.HowToFix)

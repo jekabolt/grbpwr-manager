@@ -68,6 +68,15 @@ func TestSaveTechCardMarkerAcceptsSchema3AndCarriesTheFacts(t *testing.T) {
 	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 3, HasFlip: true}, got.LayoutFacts)
 	// The flag must survive the re-marshal too: the blob is what a later read reconstructs from.
 	require.Contains(t, got.Layout, `"flipped":true`)
+
+	// The reader for the geometry ALREADY ON FILE has to travel with the payload: the store holds
+	// those bytes and must not learn to parse them, and without this the exemption silently
+	// withholds itself from every legacy marker (fail-closed, so not dangerous — but every rename of
+	// a pre-Ф1 раскладка with a half-turn would start failing).
+	require.NotNil(t, got.DistilStoredLayout, "the stored-layout distiller must be injected here")
+	stored, err := got.DistilStoredLayout(`{"schemaVersion":1,"placements":[{"rotDeg":180}]}`)
+	require.NoError(t, err)
+	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 1, HasHalfTurn: true}, stored)
 }
 
 // A version this server does not know is refused before anything is stored — a blob whose fields

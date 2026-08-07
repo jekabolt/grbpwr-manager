@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -135,6 +136,11 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 			Sets:            1, UsedLengthCm: d("120"),
 			PlacedCount: 1, TotalCount: 1,
 			Layout: layout, LayoutFacts: markerLayoutFacts(t, layout),
+			// Injected exactly as the API layer injects it, and with the production function: the
+			// exemption reads the geometry already on file through this, and a caller that leaves it
+			// nil is told «cannot forgive» rather than «nothing was there». Wiring it here is what
+			// makes this test exercise the path the RPC actually takes.
+			DistilStoredLayout: dto.MarkerLayoutFactsFromBlob,
 		}
 	}
 
@@ -211,6 +217,71 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси чистый со 180°", lineOneWay, v3half), "editor")
 		require.ErrorAs(t, err, &ve)
 		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+	})
+
+	// THE DEFECT THIS BRANCH CLOSES. A pre-Ф1 row whose geometry is COMPLIANT is sent a brand-new
+	// 180° on ворс: the policy would refuse, the old rule fired the exemption on the verdict alone,
+	// and — because an exempted save holds the generation back — the row stayed permanently
+	// exemptible. The ratchet defeated by the exact action it exists to prevent, and the manual
+	// editor offered 180° on every reopened marker, so it was two clicks from any legacy раскладка.
+	t.Run("a legacy row cannot be given NEW forbidden geometry", func(t *testing.T) {
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси чистый до Ф1", oneWayBomItemID, legacy90)
+
+		var ve *entity.ValidationError
+		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси + новый 180°", lineOneWay, v3half), "editor")
+		require.ErrorAs(t, err, &ve, "a pass may not forgive geometry this save introduces")
+		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+		require.Equal(t, 1, markerGeneration(ctx, t, legacyID), "the refused save wrote nothing")
+
+		// A mirror is refused the same way, and independently of the half-turn.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси + зеркало", lineOneWay, v3flip), "editor")
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+
+		// The same row re-saved UNCHANGED still passes and keeps its generation: a rename must never
+		// require re-nesting.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси чистый, просто переименован", lineOneWay, v3clean), "editor")
+		require.NoError(t, err)
+	})
+
+	// AN UNREADABLE STORED BLOB BUYS NOTHING. The read path serves such a marker as summary plus a
+	// warning and no geometry, so a client cannot have loaded those placements to send them back —
+	// whatever forbidden geometry arrives is new by construction. Withholding the pass costs the
+	// operator only the forbidden save.
+	t.Run("an unreadable stored blob withholds the exemption", func(t *testing.T) {
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси нечитаемый", oneWayBomItemID, legacy180)
+		// Valid JSON (the column demands it), unreadable as a layout: schemaVersion is not a number.
+		_, err := testDB.ExecContext(ctx,
+			`UPDATE tech_card_marker SET layout = '{"schemaVersion":"не число"}' WHERE id = ?`, legacyID)
+		require.NoError(t, err)
+
+		var ve *entity.ValidationError
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "нечитаемый + 180°", lineOneWay, v3half), "editor")
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+
+		// Nothing is stranded: the same row saves with compliant geometry, and that judged save
+		// ratchets it out of the legacy generation.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "нечитаемый, перенабран", lineOneWay, v3clean), "editor")
+		require.NoError(t, err)
+		require.Equal(t, entity.MarkerLayoutSchemaWithFlip, markerGeneration(ctx, t, legacyID))
+	})
+
+	// A save that judged NOTHING must not claim the row was judged. Unlinking used to ratchet the
+	// generation, so unlink-then-relink silently cost a legacy marker its pass; the exemption is now
+	// scoped by stored geometry, so the column is free to mean what it says.
+	t.Run("unlinking does not spend the generation", func(t *testing.T) {
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси отвязан", oneWayBomItemID, legacy180)
+
+		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси без привязки", "", v3half), "editor")
+		require.NoError(t, err, "no cloth, no question")
+		require.Equal(t, 1, markerGeneration(ctx, t, legacyID),
+			"nothing was judged, so nothing may be stamped as judged")
+
+		// …so re-linking it to the same ворс still carries the geometry it always had.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси снова привязан", lineOneWay, v3half), "editor")
+		require.NoError(t, err)
+		require.Equal(t, 1, markerGeneration(ctx, t, legacyID))
 	})
 
 	// THE HOLE, in the shape that survived the previous fix: the column was a copy of the payload, so
