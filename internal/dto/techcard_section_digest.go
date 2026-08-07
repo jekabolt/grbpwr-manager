@@ -296,14 +296,24 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 // materialsProjection fingerprints what the card BUYS: which article, at what price, in what
 // quantity terms.
 //
-// DELIBERATELY ABSENT — purpose / purpose_note / is_sample (0265). They classify a line that already
-// exists; they do not change the article, the price or the consumption, so on the same reasoning as
-// price_source they are metadata about a value and must not stale a sign-off whose value did not
-// change. The concrete cost of folding them in would be paid immediately and by everyone: every
-// pre-0265 line is deliberately unsorted, so the operator's first sorting pass over an approved card
-// would mark its MATERIALS approval stale on every single card at once — a wall of "changed since
-// sign-off" that means nothing and trains people to ignore the signal that does. Adding them later
-// is a digest rebase (see costingProjection's placeholder note) and needs the same care.
+// DELIBERATELY ABSENT — purpose / purpose_note / is_sample (0265), and kind / kind_note (0278) on
+// exactly the same grounds. They classify a line that already exists; they do not change the
+// article, the price or the consumption, so on the same reasoning as price_source they are metadata
+// about a value and must not stale a sign-off whose value did not change. The concrete cost of
+// folding them in would be paid immediately and by everyone: every pre-0265 line is deliberately
+// unsorted and every pre-0278 line deliberately unclassified, so the operator's first sorting pass
+// over an approved card would mark its MATERIALS approval stale on every single card at once — a
+// wall of "changed since sign-off" that means nothing and trains people to ignore the signal that
+// does. Adding them later is a digest rebase (see costingProjection's placeholder note) and needs
+// the same care.
+//
+// THE DAY THAT CHANGES — and it is a specific day, not a vibe: the moment a kind value becomes an
+// INPUT TO A DERIVATION rather than a grouping. Today `kind` only buckets lines for a screen. If it
+// ever picks a costing rule, a consumption unit, an assembly step or anything the card's OUTPUT
+// depends on, then "these buttons are now snaps" changes what is made, the MATERIALS signature must
+// move with it, and the field must be folded in — as a POSITIONAL TAIL, appended only when filled
+// (see constructionProjection's cut_symmetry note for why an unconditional element restamps every
+// card in the database at deploy time instead of only the ones somebody actually answered).
 func materialsProjection(tc *entity.TechCardInsert) any {
 	items := make([]any, 0, len(tc.BomItems))
 	for _, b := range tc.BomItems {

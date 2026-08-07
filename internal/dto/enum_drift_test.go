@@ -215,3 +215,72 @@ func TestPieceCutSymmetryEnumNoDrift(t *testing.T) {
 		}
 	}
 }
+
+// TestBomKindEnumNoDrift is the entity<->proto leg for ЧТО ЭТО ЗА ПОЗИЦИЯ (0278): every non-UNSET
+// proto value maps to a valid entity kind, and the three sizes (proto values, mapping table, entity
+// Valid set) agree. The entity<->DB leg is TestBomKindDBCheckNoDrift in internal/store/migrationlint.
+//
+// UNSET is skipped rather than mapped, on the same rule as TechCardBomPurpose's: it is not a value
+// but the absence of one ("not classified yet"), and it must stay out of the mapping table so it can
+// only ever become a NULL column. A contributor who "completes" the map by adding it would turn
+// every save from a tab that does not know the field into a write of the string "unset".
+func TestBomKindEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.TechCardBomKind_name {
+		if pb_common.TechCardBomKind(v) == pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET {
+			continue
+		}
+		protoValues++
+		k, ok := techCardBomKindPbToEntity[pb_common.TechCardBomKind(v)]
+		if !ok || !entity.ValidTechCardBomKinds[k] {
+			t.Errorf("proto TechCardBomKind %s maps to invalid entity kind %q", name, k)
+		}
+	}
+	if protoValues != len(techCardBomKindPbToEntity) {
+		t.Errorf("proto kind values (%d) != mapping table size (%d)", protoValues, len(techCardBomKindPbToEntity))
+	}
+	if protoValues != len(entity.ValidTechCardBomKinds) {
+		t.Errorf("proto kind values (%d) != entity.ValidTechCardBomKinds (%d)", protoValues, len(entity.ValidTechCardBomKinds))
+	}
+	// The reverse table must be a true inverse: pbBomKind reads it on every card read, and a missing
+	// entry there degrades a CLASSIFIED line to «не классифицировано» silently on the wire.
+	for pb, ent := range techCardBomKindPbToEntity {
+		if got := techCardBomKindEntityToPb[ent]; got != pb {
+			t.Errorf("entity %q maps back to %s, want %s", ent, got, pb)
+		}
+	}
+}
+
+// TestLabelTypeEnumNoDrift is the entity<->proto leg for the label vocabulary (0070). The
+// entity<->DB leg is TestLabelTypeDBCheckNoDrift in internal/store/migrationlint.
+//
+// This pair is what makes 0278's exclusion of section='label' from `kind` honest: `kind` stays off
+// labels BECAUSE tech_card_label.label_type is the single owner of that vocabulary, and a single
+// owner that has drifted from either the wire or the schema is not an owner.
+//
+// UNKNOWN is skipped rather than mapped: parseTechCardLabels rejects it outright (label_type is
+// required), so it must never resolve to a stored string.
+func TestLabelTypeEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.TechCardLabelType_name {
+		if pb_common.TechCardLabelType(v) == pb_common.TechCardLabelType_TECH_CARD_LABEL_TYPE_UNKNOWN {
+			continue
+		}
+		protoValues++
+		lt, ok := techCardLabelTypePbToEntity[pb_common.TechCardLabelType(v)]
+		if !ok || !entity.ValidTechCardLabelTypes[lt] {
+			t.Errorf("proto TechCardLabelType %s maps to invalid entity label type %q", name, lt)
+		}
+	}
+	if protoValues != len(techCardLabelTypePbToEntity) {
+		t.Errorf("proto label type values (%d) != mapping table size (%d)", protoValues, len(techCardLabelTypePbToEntity))
+	}
+	if protoValues != len(entity.ValidTechCardLabelTypes) {
+		t.Errorf("proto label type values (%d) != entity.ValidTechCardLabelTypes (%d)", protoValues, len(entity.ValidTechCardLabelTypes))
+	}
+	for pb, ent := range techCardLabelTypePbToEntity {
+		if got := techCardLabelTypeEntityToPb[ent]; got != pb {
+			t.Errorf("entity %q maps back to %s, want %s", ent, got, pb)
+		}
+	}
+}

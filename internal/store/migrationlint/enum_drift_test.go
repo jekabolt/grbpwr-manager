@@ -382,3 +382,83 @@ func TestPieceCutSymmetryDBCheckIsCaseClosed(t *testing.T) {
 		t.Fatalf("the case guard must live inside chk_tcp_cut_symmetry and follow the REGEXP (regexp at %d, guard at %d)", rx, gd)
 	}
 }
+
+// TestBomKindDBCheckNoDrift is the entity<->DB leg for ЧТО ЭТО ЗА ПОЗИЦИЯ (0278):
+// entity.TechCardBomKind/ValidTechCardBomKinds <-> the DB CHECK chk_bom_item_kind. The entity<->proto
+// leg is TestBomKindEnumNoDrift in internal/dto.
+//
+// It guards the same thing TestBomPurposeDBCheckNoDrift guards on the other half of the BOM, and for
+// the same reason: the list is closed BECAUSE the field is a grouping key, so a value one side
+// accepts and the other does not puts a line in a bucket no screen renders — and the mismatch fails
+// nowhere visible. Note that entity.ValidTechCardBomKinds is itself derived from bomKindHomeSection,
+// so this one assertion covers the vocabulary AND the pairing table's key set at once.
+//
+// The window is wide (52 values) — extractDBEnumValues bounds its search from the anchor, and a
+// window shorter than the alternation would fail to FIND the list rather than fail to compare it.
+func TestBomKindDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0278_bom_item_kind.sql")
+	dbValues := extractDBEnumValues(t, content, "kind REGEXP", 800)
+	assertSameSet(t, "TechCardBomKind", dbValues, mapKeysAsStrings(entity.ValidTechCardBomKinds))
+}
+
+// TestBomKindDBCheckIsCaseClosed guards the half of chk_bom_item_kind the drift test cannot see.
+// REGEXP inherits the column's collation, which is case-INSENSITIVE on both the utf8mb3 of prod and
+// the utf8mb4_0900_ai_ci of the container tests, so the alternation alone accepts 'ZIPPER'. It
+// refuses 'zip' and nothing about case. STRCMP over a BINARY cast is what actually closes the
+// vocabulary (precedent: chk_bom_item_purpose in 0265, chk_tcp_cut_symmetry in 0275).
+func TestBomKindDBCheckIsCaseClosed(t *testing.T) {
+	content := readMigrationFile(t, "0278_bom_item_kind.sql")
+	const guard = "STRCMP(CAST(kind AS BINARY), CAST(LOWER(kind) AS BINARY)) = 0"
+	stmt := strings.Index(content, "chk_bom_item_kind CHECK")
+	if stmt < 0 {
+		t.Fatal("named vocabulary CHECK chk_bom_item_kind not found")
+	}
+	// The guard must live INSIDE the vocabulary CHECK and come AFTER the REGEXP, so
+	// extractDBEnumValues' anchor still finds the alternation.
+	rx := strings.Index(content[stmt:], "kind REGEXP")
+	gd := strings.Index(content[stmt:], guard)
+	if rx < 0 || gd < 0 || gd < rx {
+		t.Fatalf("the case guard must live inside chk_bom_item_kind and follow the REGEXP (regexp at %d, guard at %d)", rx, gd)
+	}
+}
+
+// TestBomKindNoteCheckIsNullSafe locks the one comparison in 0278 that is wrong in the obvious form
+// and silent about it. `kind = 'other'` yields NULL when kind IS NULL, and MySQL treats a CHECK that
+// evaluates to NULL as SATISFIED — so the obvious spelling catches a note on kind='zipper' and lets
+// a note through on kind IS NULL, which is the state of EVERY row that predates the migration and
+// every line nobody has classified since. That is precisely where a note would become a shadow kind:
+// on the lines that have no kind at all. Only the NULL-safe `<=>` closes it (as in
+// chk_bom_item_purpose_note, 0265).
+func TestBomKindNoteCheckIsNullSafe(t *testing.T) {
+	content := readMigrationFile(t, "0278_bom_item_kind.sql")
+	stmt := strings.Index(content, "chk_bom_item_kind_note CHECK")
+	if stmt < 0 {
+		t.Fatal("named CHECK chk_bom_item_kind_note not found")
+	}
+	end := stmt + 140
+	if end > len(content) {
+		end = len(content)
+	}
+	scope := content[stmt:end]
+	if !strings.Contains(scope, "kind <=> ''other''") {
+		t.Errorf("chk_bom_item_kind_note must compare NULL-safely with <=>; got %q", scope)
+	}
+	if strings.Contains(scope, "kind = ''other''") {
+		t.Errorf("chk_bom_item_kind_note uses `kind = 'other'`, which MySQL treats as SATISFIED on every kind IS NULL row: %q", scope)
+	}
+}
+
+// TestLabelTypeDBCheckNoDrift is the entity<->DB leg for the label vocabulary (0070):
+// entity.TechCardLabelType/ValidTechCardLabelTypes <-> the CHECK on tech_card_label.label_type. The
+// entity<->proto leg is TestLabelTypeEnumNoDrift in internal/dto.
+//
+// It had no drift guard until 0278, which is what makes it load-bearing now: 0278 excludes
+// section='label' from `kind` BECAUSE label_type is the sole owner of this vocabulary. That
+// exclusion is only honest while label_type actually stays in lockstep with the enum the client
+// renders — an entity value the CHECK refuses would leave the "already answered" question with no
+// answer at all, on a card whose LABELS sign-off already hashed the old value.
+func TestLabelTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0070_add_tech_card_production.sql")
+	dbValues := extractDBEnumValues(t, content, "label_type REGEXP", 120)
+	assertSameSet(t, "TechCardLabelType", dbValues, mapKeysAsStrings(entity.ValidTechCardLabelTypes))
+}
