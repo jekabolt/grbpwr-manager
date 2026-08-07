@@ -35,7 +35,7 @@ func TestMarkerLayoutFactsFromPb(t *testing.T) {
 				SchemaVersion: 3,
 				Placements:    []*pb_common.TechCardMarkerPlacement{place(0, false), place(90, false), place(180, false)},
 			},
-			want: entity.MarkerLayoutFacts{SchemaVersion: 3, HasHalfTurn: true},
+			want: entity.MarkerLayoutFacts{SchemaVersion: 3, HalfTurnCount: 1},
 		},
 		{
 			name: "a mirror is found independently of rotation",
@@ -43,7 +43,7 @@ func TestMarkerLayoutFactsFromPb(t *testing.T) {
 				SchemaVersion: 3,
 				Placements:    []*pb_common.TechCardMarkerPlacement{place(0, false), place(0, true)},
 			},
-			want: entity.MarkerLayoutFacts{SchemaVersion: 3, HasFlip: true},
+			want: entity.MarkerLayoutFacts{SchemaVersion: 3, FlipCount: 1},
 		},
 		{
 			name: "both are collected even when they sit on different placements",
@@ -53,7 +53,17 @@ func TestMarkerLayoutFactsFromPb(t *testing.T) {
 					place(180, false), place(0, true), place(0, false),
 				},
 			},
-			want: entity.MarkerLayoutFacts{SchemaVersion: 3, HasHalfTurn: true, HasFlip: true},
+			want: entity.MarkerLayoutFacts{SchemaVersion: 3, HalfTurnCount: 1, FlipCount: 1},
+		},
+		{
+			name: "every upside-down placement is counted, not just the first",
+			layout: &pb_common.TechCardMarkerLayout{
+				SchemaVersion: 3,
+				Placements: []*pb_common.TechCardMarkerPlacement{
+					place(180, false), place(180, false), place(180, true), place(0, false),
+				},
+			},
+			want: entity.MarkerLayoutFacts{SchemaVersion: 3, HalfTurnCount: 3, FlipCount: 1},
 		},
 		{
 			name:   "no placements, no facts",
@@ -89,7 +99,7 @@ func TestMarkerLayoutFactsNormalisesAndPolicesRotation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("rot_deg %d: unexpected error: %v", raw, err)
 			}
-			if !got.HasHalfTurn {
+			if !got.HasHalfTurn() {
 				t.Errorf("rot_deg %d must read as a half-turn", raw)
 			}
 			// The blob is marshalled from this same message: the bytes must agree with the facts,
@@ -110,7 +120,7 @@ func TestMarkerLayoutFactsNormalisesAndPolicesRotation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("rot_deg %d: unexpected error: %v", raw, err)
 			}
-			if got.HasHalfTurn {
+			if got.HasHalfTurn() {
 				t.Errorf("rot_deg %d must not read as a half-turn", raw)
 			}
 			if l.GetPlacements()[0].GetRotDeg() != want {
@@ -134,6 +144,79 @@ func TestMarkerLayoutFactsNormalisesAndPolicesRotation(t *testing.T) {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q must mention %q", err, want)
 			}
+		}
+	})
+}
+
+// The STORED blob is history: it may predate every validation this server has, so reading it must
+// judge nothing. That is the whole difference from MarkerLayoutFactsFromPb, which polices a payload —
+// and confusing the two would turn «this row is old» into «this row cannot be saved».
+func TestMarkerLayoutFactsFromBlob(t *testing.T) {
+	t.Run("reads the two forbidden properties", func(t *testing.T) {
+		cases := map[string]entity.MarkerLayoutFacts{
+			`{"schemaVersion":1,"placements":[{"pieceId":1}]}`:                   {SchemaVersion: 1},
+			`{"schemaVersion":1,"placements":[{"rotDeg":180}]}`:                  {SchemaVersion: 1, HalfTurnCount: 1},
+			`{"schemaVersion":3,"placements":[{"flipped":true}]}`:                {SchemaVersion: 3, FlipCount: 1},
+			`{"schemaVersion":3,"placements":[{"rotDeg":180},{"flipped":true}]}`: {SchemaVersion: 3, HalfTurnCount: 1, FlipCount: 1},
+			// COUNTED, not flagged: the exemption compares how many, so a reader that stopped at the
+			// first one would hand it «1» for a blob carrying forty.
+			`{"schemaVersion":1,"placements":[{"rotDeg":180},{"rotDeg":180},{"rotDeg":180}]}`: {SchemaVersion: 1, HalfTurnCount: 3},
+			`{"schemaVersion":3,"placements":[{"flipped":true},{"flipped":true}]}`:            {SchemaVersion: 3, FlipCount: 2},
+			`{"schemaVersion":3,"placements":[{"rotDeg":180,"flipped":true}]}`:                {SchemaVersion: 3, HalfTurnCount: 1, FlipCount: 1},
+			`{"schemaVersion":2,"placements":[]}`:                                             {SchemaVersion: 2},
+		}
+		for blob, want := range cases {
+			got, err := MarkerLayoutFactsFromBlob(blob)
+			if err != nil {
+				t.Fatalf("%s: unexpected error %v", blob, err)
+			}
+			if got != want {
+				t.Errorf("%s: facts = %+v, want %+v", blob, got, want)
+			}
+		}
+	})
+
+	t.Run("an equivalent half-turn on file still counts", func(t *testing.T) {
+		// Written before rot_deg was policed at all, so -180 and 540 are both on file as half-turns.
+		for _, raw := range []string{"-180", "540"} {
+			got, err := MarkerLayoutFactsFromBlob(`{"schemaVersion":1,"placements":[{"rotDeg":` + raw + `}]}`)
+			if err != nil {
+				t.Fatalf("rot %s: unexpected error %v", raw, err)
+			}
+			if !got.HasHalfTurn() {
+				t.Errorf("rot %s on file must read as a half-turn", raw)
+			}
+		}
+	})
+
+	t.Run("an uncuttable angle is read, not refused", func(t *testing.T) {
+		// The payload validator refuses 37°; history containing one must still be READABLE, or a row
+		// written before that rule could never be judged against its own geometry again.
+		got, err := MarkerLayoutFactsFromBlob(`{"schemaVersion":1,"placements":[{"rotDeg":37}]}`)
+		if err != nil {
+			t.Fatalf("stored geometry must not be judged: %v", err)
+		}
+		if got.HasHalfTurn() {
+			t.Error("37° is not a half-turn")
+		}
+	})
+
+	t.Run("a blob that does not parse is an error, not empty facts", func(t *testing.T) {
+		// The caller must be able to tell «nothing forbidden was on file» from «I could not look».
+		if _, err := MarkerLayoutFactsFromBlob(`{"schemaVersion":"не число"}`); err == nil {
+			t.Fatal("an unparsable blob must report an error")
+		}
+	})
+
+	t.Run("a blob from a newer server still reads", func(t *testing.T) {
+		// DiscardUnknown, like the read path: after a rollback the markers saved meanwhile must not
+		// all become unexemptible.
+		got, err := MarkerLayoutFactsFromBlob(`{"schemaVersion":4,"placements":[{"rotDeg":180,"someFutureField":7}]}`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got.HasHalfTurn() {
+			t.Error("the half-turn must still be seen through an unknown field")
 		}
 	})
 }

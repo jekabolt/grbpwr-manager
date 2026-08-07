@@ -224,6 +224,17 @@ type TechCardMarkerInsert struct {
 	PlacedCount   int                 `db:"placed_count"`
 	TotalCount    int                 `db:"total_count"`
 	Layout        string              `db:"layout"`
+	// DistilStoredLayout parses a STORED layout blob into facts, injected by the API layer for the
+	// same reason LayoutFacts is distilled there: the store holds the bytes and must not learn to
+	// read them (0257/0268 — the geometry is opaque to storage, and the read path deliberately
+	// survives a blob that does not parse, which a parser in the write path would turn into a hard
+	// failure). The store calls this at most once, inside its transaction, and only when the
+	// exemption is actually being considered.
+	//
+	// It travels here rather than as an argument so the repository interface — and every mock of it
+	// — stays a data contract. nil means «no stored facts available», which the rule reads as «cannot
+	// forgive», never as «nothing was there».
+	DistilStoredLayout func(blob string) (MarkerLayoutFacts, error) `db:"-"`
 	// LayoutFacts are the handful of things the SAVE PATH has to know about the blob it is storing
 	// (Ф1): its schema version, and whether any placement is upside down. Distilled at the API layer
 	// and carried as facts because the blob stays opaque past it — the store persists Layout and

@@ -103,16 +103,24 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// no control to clear. The guards exist to stop NEW bad attributions, not to retro-invalidate
 		// stored measurements.
 		//
-		// The stored LAYOUT VERSION rides along for the same journey and one more reason: it is the
-		// only fact that may grant the directional-cloth exemption (Ф1.6). Read here, from the row,
-		// it cannot be forged by the payload — which is exactly what went wrong when the exemption
-		// keyed on the version the client declared.
+		// The stored LAYOUT rides along for the same journey and one more reason: the two facts that
+		// may grant the directional-cloth exemption (Ф1.6) both live on the row — its policy
+		// generation, and the geometry it already carries. Read here, INSIDE the transaction that
+		// validates against them, neither can be forged by the payload nor changed underneath the
+		// decision by a concurrent save. Fetching them in the API layer instead would cost a second
+		// round trip and put a TOCTOU between «what the row contains» and «what the row is judged
+		// against» — on the one decision that lets forbidden geometry through.
+		//
+		// The blob itself is not parsed here: the bytes are handed to the distiller the API layer
+		// injected (ins.DistilStoredLayout). The storage layer holding geometry it cannot read is the
+		// arrangement 0257 and 0268 both rest on.
 		var stored struct {
 			Id            int64          `db:"id"`
 			BomItemId     sql.NullInt64  `db:"bom_item_id"`
 			BomLineKey    sql.NullString `db:"bom_line_key"`
 			ColorwayId    sql.NullInt64  `db:"colorway_id"`
 			SchemaVersion int            `db:"layout_schema_version"`
+			Layout        string         `db:"layout"`
 		}
 		if id > 0 {
 			row, err := storeutil.QueryNamedOne[struct {
@@ -121,8 +129,9 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				BomLineKey    sql.NullString `db:"bom_line_key"`
 				ColorwayId    sql.NullInt64  `db:"colorway_id"`
 				SchemaVersion int            `db:"layout_schema_version"`
+				Layout        string         `db:"layout"`
 			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id,
-					m.layout_schema_version
+					m.layout_schema_version, m.layout
 				FROM tech_card_marker m
 				LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
 				WHERE m.id = :id AND m.tech_card_id = :tech_card_id`,
@@ -143,8 +152,13 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			return err
 		}
 		bomItemID := sql.NullInt64{}
-		if key := strings.TrimSpace(ins.BomLineKey); key != "" &&
-			stored.BomLineKey.Valid && strings.EqualFold(stored.BomLineKey.String, key) {
+		// ONE definition of «the marker stays on the cloth it was already attributed to», read twice:
+		// here, to keep a stored line whose section has since changed, and by the direction rule,
+		// which may forgive stored geometry only on the fabric it was measured against. Two copies
+		// would drift, and the day they drifted the pass would transfer across cloth in silence.
+		key := strings.TrimSpace(ins.BomLineKey)
+		bindingUnchanged := key != "" && stored.BomLineKey.Valid && strings.EqualFold(stored.BomLineKey.String, key)
+		if bindingUnchanged {
 			// Unchanged binding: keep the stored line even if its section is no longer roll goods.
 			bomItemID = stored.BomItemId
 		} else if key != "" {
@@ -167,11 +181,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			bomItemID = sql.NullInt64{Int64: row.Id, Valid: true}
 		}
-		// exempted records whether the policy WOULD have refused this geometry and the stored row's
-		// generation bought it a pass. It defaults to false — including for an unlinked marker, whose
-		// geometry no cloth judged — so the generation written below ratchets forward in every case
-		// except the one that actually spent a pass.
-		exempted := false
+		// The verdict answers two things the generation below depends on: was this geometry judged
+		// against cloth at all, and did it spend the row's pre-Ф1 pass. Its zero value — «not judged,
+		// not exempted» — is what an unlinked marker leaves behind, and it correctly holds the
+		// generation where it is rather than claiming a judgement nobody made.
+		var verdict entity.MarkerDirectionVerdict
 		// НАПРАВЛЕНИЕ ТКАНИ decides whether this layout may exist at all (Ф1.5/Ф1.6), and only the
 		// database can answer: the direction sits on the BOM line (0073) and the scope the marker
 		// falls into may be SEVERAL lines (0267). The rule itself is one unit-tested function in
@@ -180,18 +194,26 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// Keyed off the PAYLOAD's line, so an unlinked marker is skipped entirely: no bom_line_key
 		// means no cloth to ask about, and that must stay saveable — it was legal before Ф1 and the
 		// geometry is just as valid without an attribution.
-		if key := strings.TrimSpace(ins.BomLineKey); key != "" {
+		if key != "" {
 			lines, err := fabricDirectionLines(ctx, db, techCardID)
 			if err != nil {
 				return err
 			}
-			// stored.SchemaVersion is 0 for a create — no history, and therefore no exemption.
-			ok, err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts,
-				stored.SchemaVersion, fabricLineNamer(ctx, db, techCardID))
+			// Everything the exemption may rest on comes off the ROW, in this transaction: its
+			// generation is 0 for a create (no history, no pass), its binding says whether the cloth
+			// is the same one the geometry was measured against, and its blob says what that geometry
+			// actually is.
+			v, err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts,
+				entity.StoredMarkerRow{
+					Generation:       stored.SchemaVersion,
+					BindingUnchanged: bindingUnchanged,
+					Facts:            storedMarkerFacts(ctx, id, stored.Layout, ins.DistilStoredLayout),
+				},
+				fabricLineNamer(ctx, db, techCardID))
 			if err != nil {
 				return err
 			}
-			exempted = ok
+			verdict = v
 		}
 		// The colourway a раскладка is measured FOR (0264). It must be a colourway OF THIS CARD:
 		// a colourway is a product row whose style_id is the card (0151 merged the domains), and
@@ -218,21 +240,29 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			colorwayID = sql.NullInt64{Int64: int64(ins.ColorwayId), Valid: true}
 		}
 		// ПОКОЛЕНИЕ ПОЛИТИКИ, не копия пэйлоада. The column answers «what is the newest policy this
-		// row's geometry has been judged under», so the server writes its own constant — copying
-		// ins.LayoutFacts.SchemaVersion made the «unforgeable stored fact» client-written one request
+		// row's geometry has been judged under», so the server writes its own constant — copying the
+		// payload's schema_version made the «unforgeable stored fact» client-written one request
 		// later: create a compliant marker declaring 1 (accepted, nothing to refuse), then update it
-		// with a 180° and the stored 1 bought the exemption. Same for the deploy window, where the
-		// shipped client still declares 2.
+		// with a 180° and the stored 1 bought the exemption.
 		//
-		// A save that SPENT the exemption leaves the column alone — otherwise the pass would be
-		// one-shot: the row would be stamped 3 by the very save it was granted for, and the second
-		// rename of a legacy раскладка would be refused forever, which is the opposite of what
-		// grandfathering promises. Every other save ratchets the row to the current generation, so a
-		// legacy row whose geometry is compliant — the overwhelming majority — loses its pass the
-		// first time anybody touches it, and the ratchet turns one way only.
-		generation := entity.MarkerLayoutSchemaWithFlip
-		if exempted {
-			generation = stored.SchemaVersion
+		// It moves forward only when this save actually held the geometry against the policy AND did
+		// not spend a pass. The two exclusions are different facts and both matter:
+		//
+		//   • a save that SPENT the exemption leaves the column alone, or the pass would be one-shot
+		//     — the row stamped by the very save it was granted for, and the second rename of a
+		//     legacy раскладка refused forever;
+		//   • a save that judged NOTHING (an unlinked or dangling marker) leaves it alone too,
+		//     because stamping it would claim a judgement no cloth ever made. That case used to
+		//     ratchet, so unlinking a legacy marker and re-linking it silently cost it its pass; now
+		//     that the exemption forgives only geometry already on file, the column no longer has to
+		//     carry that defence and can mean exactly what it says.
+		//
+		// Everything else ratchets, so a legacy row whose geometry is compliant — the overwhelming
+		// majority — is judged under the current policy the first time anybody touches it and never
+		// gets a pass again.
+		generation := stored.SchemaVersion
+		if generation <= 0 || (verdict.Judged && !verdict.Exempted) {
+			generation = entity.MarkerLayoutSchemaWithFlip
 		}
 		params := map[string]any{
 			"id":                id,
@@ -289,6 +319,9 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			savedID = id
 			return nil
 		}
+		// A create is judged under today's policy by definition — there is no history to protect, and
+		// stamping anything older would let a marker authored today claim a pass tomorrow.
+		params["schema_version"] = entity.MarkerLayoutSchemaWithFlip
 		newID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_marker
 				(tech_card_id, size_id, bom_item_id, colorway_id, name, source, fabric_width_cm, gap_cm,
@@ -446,4 +479,39 @@ func (s *Store) DeleteMarker(ctx context.Context, id int) error {
 		}
 		return nil
 	})
+}
+
+// storedMarkerFacts hands the stored blob to the API layer's distiller, once, and only if the rule
+// asks — which it does only when it is about to consider the exemption. A save that introduces
+// nothing forbidden never pays for the parse.
+//
+// ok=false covers every way the geometry on file cannot be read: no stored row, no distiller wired,
+// or a blob that does not parse. The rule treats all three as «cannot forgive», never as «nothing was
+// there» — see entity.storedFactsOf for why an unreadable blob must fail closed rather than open.
+func storedMarkerFacts(ctx context.Context, id int, layout string,
+	distil func(string) (entity.MarkerLayoutFacts, error)) entity.StoredMarkerFacts {
+	return func() (entity.MarkerLayoutFacts, bool) {
+		if id <= 0 || layout == "" {
+			return entity.MarkerLayoutFacts{}, false
+		}
+		if distil == nil {
+			// Fail-closed and therefore harmless — but a caller in this state silently loses EVERY
+			// exemption, so it must not be silent. dto sets the field where the payload is converted;
+			// anything reaching here without it was built by hand somewhere inside the server.
+			slog.Default().WarnContext(ctx, "marker save has no stored-layout distiller; exemptions withheld",
+				slog.Int("marker_id", id))
+			return entity.MarkerLayoutFacts{}, false
+		}
+		facts, err := distil(layout)
+		if err != nil {
+			// Not fatal, by design: the READ path already serves this marker as summary-plus-warning
+			// rather than failing, and the save path must not be the stricter of the two. It only
+			// costs the row its exemption, which it cannot honestly claim anyway — nobody could have
+			// loaded that geometry to send it back.
+			slog.Default().WarnContext(ctx, "stored marker layout does not parse; exemption withheld",
+				slog.Int("marker_id", id), slog.String("err", err.Error()))
+			return entity.MarkerLayoutFacts{}, false
+		}
+		return facts, true
+	}
 }
