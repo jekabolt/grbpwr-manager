@@ -1648,11 +1648,17 @@ message TechCardMarkerLayout {
   // 1 = the original geometry; 2 adds piece_line_key/block_name on a piece; 3 adds `flipped` on a
   // placement (Ф1). The server accepts all three and every stored blob stays readable forever.
   //
-  // The version is also what the save path judges a layout BY. A stored v1/v2 marker legitimately
-  // carries rotations the current policy would not offer — the manual editor saves the rotation a
-  // piece actually has, even outside policy — so applying the directional-cloth rule to it would
-  // retro-invalidate every measurement on file the moment its card gets a направление. Only a blob
-  // that can express `flipped` comes from a client that knows the policy, so only v3 is held to it.
+  // THIS NUMBER DOES NOT DECIDE WHETHER THE POLICY APPLIES, and an earlier version of this comment
+  // said it did. The directional-cloth rule has no version gate: a layout is judged on its geometry
+  // whatever version it declares. The number the exemption is read from is a SERVER-WRITTEN column
+  // (`tech_card_marker.layout_schema_version`, migration 0268) — a policy generation, not this
+  // field. Keying the exemption here was a real defect twice over: `flipped` cannot be forged
+  // because the field did not exist before 3, but a 180° is expressible in every version, so
+  // «declare schema_version 1» was a working opt-out of the exact ban the policy exists to enforce.
+  //
+  // What this field IS load-bearing for is `flipped` alone: a mirrored placement in a blob
+  // declaring less than 3 is an impossible payload — no stored blob can contain one — and is
+  // refused as such rather than as a policy violation.
   int32 schema_version = 1;
   TechCardMarkerNestParams params = 2;
   repeated TechCardMarkerPiece pieces = 3;
@@ -1711,8 +1717,8 @@ message TechCardMarkerPlacement {
   //
   // Directional cloth forbids a mirror for the same reason it forbids 180°: both put the piece on
   // the fabric the wrong way up, and ворс, twill or a print then run against the neighbouring
-  // piece. The save path refuses either one on a one_way scope — see the schema_version note above
-  // for why only v3 blobs are judged.
+  // piece. The save path refuses either one on a one_way scope, whatever version the blob declares
+  // — see the schema_version note above for what that field does and does not decide.
   //
   // THE AXIS IS PART OF THE CONTRACT, and naming it is not pedantry. The reflection is
   // `(x, y) ↦ (−x, y)` — about the Y axis, in the piece's own coordinates, applied BEFORE rot_deg:
