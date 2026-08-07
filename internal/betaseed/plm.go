@@ -1571,7 +1571,7 @@ func (s *Seeder) plmProduction(ctx context.Context, st *plmState) error {
 	}
 	runLV := gr.GetRun().GetLockVersion()
 	if _, err := s.C.UpdateProductionRun(ctx, &admin.UpdateProductionRunRequest{
-		Id: st.res.ProductionRunID, ExpectedLockVersion: runLV,
+		Id: st.res.ProductionRunID, ExpectedLockVersion: &runLV,
 		Run: &common.ProductionRunInsert{
 			TechCardId: sid, Status: common.ProductionRunStatus_PRODUCTION_RUN_STATUS_IN_PROGRESS, Notes: "PLM seed production run",
 			Lines: []*common.ProductionRunLine{
@@ -1600,11 +1600,12 @@ func (s *Seeder) plmProduction(ctx context.Context, st *plmState) error {
 			LineKey: ln.GetLineKey(), GoodQty: 5, DefectQty: 0,
 		})
 	}
+	receiptLV := grLines.GetRun().GetLockVersion()
 	rc, err := s.C.PostProductionRunReceipt(ctx, &admin.PostProductionRunReceiptRequest{
 		RunId:               st.res.ProductionRunID,
 		Lines:               receiptLines,
 		IdempotencyKey:      seedIdempotencyKey(),
-		ExpectedLockVersion: grLines.GetRun().GetLockVersion(),
+		ExpectedLockVersion: &receiptLV,
 		Note:                "PLM seed receipt",
 		UpdateCostPrice:     true,
 	})

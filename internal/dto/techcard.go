@@ -1170,15 +1170,20 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		// three different раскладки. It is 0 exactly when the состав is missing — the honest answer,
 		// and the one the refusal beside it explains; TotalUnitsOrLegacy's arithmetic fallback of 1
 		// must never surface here, because «1 garment» is a claim and this row makes none.
-		Composition:          markerCompositionToPb(perSize),
-		TotalUnits:           int32(entity.TotalUnitsOf(composition)),
-		ScalarApplyRefusal:   refusal,
-		Name:                 m.Name,
-		Source:               m.Source,
-		BomLineKey:           pbStringFromNull(m.BomLineKey),
-		ColorwayId:           int32(m.ColorwayId.Int64),
-		BomItemName:          pbStringFromNull(m.BomItemName),
-		BomItemUnit:          pbStringFromNull(m.BomItemUnit),
+		Composition:        markerCompositionToPb(perSize),
+		TotalUnits:         int32(entity.TotalUnitsOf(composition)),
+		ScalarApplyRefusal: refusal,
+		Name:               m.Name,
+		Source:             m.Source,
+		BomLineKey:         pbStringFromNull(m.BomLineKey),
+		ColorwayId:         int32(m.ColorwayId.Int64),
+		BomItemName:        pbStringFromNull(m.BomItemName),
+		BomItemUnit:        pbStringFromNull(m.BomItemUnit),
+		// 0 = КАРТОЧНАЯ раскладка, which is every marker a card list can currently show. Emitted from
+		// every producer of this summary rather than only from ListProductionRunLays.run_markers,
+		// because the client filters its card lists on exactly this field: a summary that reported 0
+		// for a run's marker would put a one-off раскладка into the карточка's costing band.
+		ProductionRunId:      int32(m.RunId.Int64),
 		FabricWidthCm:        pbDecimalFromDecimal(m.FabricWidthCm),
 		GapCm:                pbDecimalFromDecimal(m.GapCm),
 		EdgeMarginCm:         pbDecimalFromDecimal(m.EdgeMarginCm),
@@ -1363,6 +1368,12 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if pb.ColorwayId < 0 {
 		return out, fmt.Errorf("colorway_id must not be negative")
 	}
+	// Same shape of guard, same reason (Ф4, 0282): 0 is «карточный маркер» and a negative id is a
+	// client bug. Left alone it would reach the store as a run id that resolves to nothing and come
+	// back as «this run is not a run of this tech card» — a refusal about the wrong thing entirely.
+	if pb.ProductionRunId < 0 {
+		return out, fmt.Errorf("production_run_id must not be negative")
+	}
 	sizeID, sets, composition, err := markerCompositionOfInsert(pb)
 	if err != nil {
 		return out, err
@@ -1383,6 +1394,7 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		Source:             source,
 		BomLineKey:         strings.TrimSpace(pb.BomLineKey),
 		ColorwayId:         int(pb.ColorwayId),
+		ProductionRunId:    int(pb.ProductionRunId),
 		FabricWidthCm:      width,
 		GapCm:              gap.Decimal,
 		EdgeMarginCm:       margin.Decimal,

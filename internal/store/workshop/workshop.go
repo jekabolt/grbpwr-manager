@@ -1,6 +1,6 @@
 // Package workshop implements the workshop_settings store (0272) — «дом настроек цеха», the
-// singleton row of shop-floor constants (cutting table length today; припуск, предел стопки and
-// минимальный зазор as they land).
+// singleton row of shop-floor constants (cutting table length, припуск по умолчанию, режим гейта
+// готовности and предел высоты стопки today; минимальный зазор as it lands).
 package workshop
 
 import (
@@ -34,7 +34,7 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 }
 
 const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_cm, run_readiness_blocking,
-	       updated_by, updated_at
+	       max_stack_height_cm, updated_by, updated_at
 	FROM workshop_settings WHERE id = :id`
 
 // GetSettings returns the workshop configuration. A MISSING singleton row is not an error: it reads
@@ -88,6 +88,14 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 			return nil, err
 		}
 	}
+	// Ф4.8's tenant sides with the TABLE LENGTH on the zero question, not with the allowance: a 0 cm
+	// stack limit would fail every настил in the shop, so «у нас нет предела» is said by clearing the
+	// setting (no verdict) rather than by entering a number that refuses everything.
+	if patch.MaxStackHeightCm != nil {
+		if err := entity.ValidateMaxStackHeightCm(*patch.MaxStackHeightCm); err != nil {
+			return nil, err
+		}
+	}
 
 	params := map[string]any{
 		"id":         singletonID,
@@ -104,6 +112,11 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		// deliberate, single, auditable command — not a validator that would have to guess.
 		"run_readiness_blocking_omitted": patch.RunReadinessBlocking == nil,
 		"run_readiness_blocking":         boolParam(patch.RunReadinessBlocking),
+		// Ф4.8 — one more line, and that is the whole point of the static IF() statement: a fourth
+		// tenant cannot get its half of the mask plumbing subtly wrong the way an assembled SET list
+		// would let it.
+		"max_stack_height_omitted": patch.MaxStackHeightCm == nil,
+		"max_stack_height_cm":      nullDecimalParam(patch.MaxStackHeightCm),
 	}
 
 	var out *entity.WorkshopSettings
@@ -118,6 +131,7 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 				cutting_table_length_cm = IF(:cutting_table_length_omitted, cutting_table_length_cm, :cutting_table_length_cm),
 				default_seam_allowance_cm = IF(:seam_allowance_omitted, default_seam_allowance_cm, :default_seam_allowance_cm),
 				run_readiness_blocking = IF(:run_readiness_blocking_omitted, run_readiness_blocking, :run_readiness_blocking),
+				max_stack_height_cm = IF(:max_stack_height_omitted, max_stack_height_cm, :max_stack_height_cm),
 				updated_by = :updated_by
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update workshop settings: %w", err)

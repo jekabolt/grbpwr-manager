@@ -76,7 +76,12 @@ func (s *Store) PostProductionRunReceipt(ctx context.Context, p entity.PostProdu
 		case string(entity.ProductionRunCancelled):
 			return entity.ErrProductionRunCancelledReceive
 		}
-		if p.ExpectedLockVersion > 0 && cur.LockVersion != p.ExpectedLockVersion {
+		// Ф6.5: PRESENCE, not magnitude. The version the operator counted against is enforced whenever
+		// it was supplied — including 0, which is what a run that has never been edited reports. The
+		// old `> 0` test meant a receipt posted against a FRESH run skipped this check entirely, so a
+		// planner's edit landing between the count and the post went undetected on exactly the runs
+		// most likely to be counted straight after creation. Only an ABSENT token opts out.
+		if p.ExpectedLockVersion.Conflicts(cur.LockVersion) {
 			return entity.ErrProductionRunConflict
 		}
 		// An AUX run receives in ONE final receipt (final-review BLOCKER): its output is valued

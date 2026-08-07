@@ -205,7 +205,7 @@ func TestProductionRun(t *testing.T) {
 		Costs: []entity.ProductionRunCost{
 			{Kind: entity.ProductionRunCostCMT, Amount: decimal.RequireFromString("400"), Currency: "EUR", AmountBase: nd("400")},
 		},
-	}, 0, dto.CostingFx{}))
+	}, entity.NoLockVersion(), dto.CostingFx{}))
 	got, err = P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Equal(t, entity.ProductionRunInProgress, got.Status)
@@ -223,14 +223,14 @@ func TestProductionRun(t *testing.T) {
 		TechCardId: tcID,
 		Status:     entity.ProductionRunInProgress,
 		Lines:      got.Lines,
-	}, 0))
+	}, entity.NoLockVersion()))
 	got, err = P.GetProductionRun(ctx, runID)
 	require.NoError(t, err)
 	require.Len(t, got.Costs, 1)
 	require.Equal(t, entity.ProductionRunCostCMT, got.Costs[0].Kind)
 
 	// update of a missing run → ErrNoRows
-	err = P.UpdateProductionRun(ctx, 0, &entity.ProductionRunInsert{TechCardId: tcID, Status: entity.ProductionRunPlanned}, 0, dto.CostingFx{})
+	err = P.UpdateProductionRun(ctx, 0, &entity.ProductionRunInsert{TechCardId: tcID, Status: entity.ProductionRunPlanned}, entity.NoLockVersion(), dto.CostingFx{})
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// delete: run gone, grid cascades

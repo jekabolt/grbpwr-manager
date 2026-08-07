@@ -384,6 +384,20 @@ var methodRequirements = map[string]Requirement{
 	// (it moves sellable stock and rolls back cost_price).
 	"ReverseProductionRunReceipt":  wr(SectionProduction),
 	"GetProductionRunMaterialPlan": rd(SectionProduction),
+	// НАСТИЛЫ ПРОГОНА (Ф4). Секция production, и это не выбор по умолчанию: настил — план ЦЕХА
+	// (сколько слоёв, каким маркером, с какой ткани), а не содержимое карточки. Тот же довод, что у
+	// UpdateWorkshopSettings ниже — «менять это может тот, кто ведёт цех, а не всякий, кто правит
+	// карточку». Чтение НЕ в allowlist: в ответе едут количества, артикулы и покрытие, то есть
+	// содержимое производственного плана, а не справочник.
+	//
+	// SaveTechCardMarker выше остаётся wr(SectionTechCards): раскройный маркер сохраняется ТЕМ ЖЕ
+	// RPC с production_run_id != 0, и дополнительное требование production:write проверяется в
+	// обработчике — прецедент PostProductionRunReceipt / ReverseProductionRunReceipt, где карта
+	// держит одну секцию, а вторая проверяется кодом. Второй RPC ради секции дал бы две реализации
+	// одной валидации, которые разойдутся молча.
+	"SaveProductionRunLay":   wr(SectionProduction),
+	"DeleteProductionRunLay": wr(SectionProduction),
+	"ListProductionRunLays":  rd(SectionProduction),
 	// ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6) — production READ, and specifically NOT tech_cards.
 	//
 	// The argument, not the taste: this RPC has ONE consumer (the run-creation modal) and ONE

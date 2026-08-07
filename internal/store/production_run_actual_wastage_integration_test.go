@@ -82,7 +82,7 @@ func TestProductionRunActualWastagePersists(t *testing.T) {
 	require.NoError(t, PR.UpdateProductionRun(ctx, nullID, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress,
 		ActualWastagePercent: nd("12.00"), Lines: line,
-	}, 0, dto.CostingFx{}))
+	}, entity.NoLockVersion(), dto.CostingFx{}))
 	updated, err := PR.GetProductionRun(ctx, nullID)
 	require.NoError(t, err)
 	require.True(t, updated.ActualWastagePercent.Valid)
@@ -91,7 +91,7 @@ func TestProductionRunActualWastagePersists(t *testing.T) {
 	// and clearable back to NULL via update (fall back to the BOM estimate again).
 	require.NoError(t, PR.UpdateProductionRun(ctx, setID, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunInProgress, Lines: line,
-	}, 0, dto.CostingFx{}))
+	}, entity.NoLockVersion(), dto.CostingFx{}))
 	cleared, err := PR.GetProductionRun(ctx, setID)
 	require.NoError(t, err)
 	require.False(t, cleared.ActualWastagePercent.Valid, "update can clear the actual wastage back to NULL")

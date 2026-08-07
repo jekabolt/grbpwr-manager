@@ -63,7 +63,11 @@ func (s *Store) ReverseProductionRunReceipt(ctx context.Context, p entity.Revers
 		if cur.Status == string(entity.ProductionRunClosed) {
 			return entity.ErrProductionRunReversalClosedRun
 		}
-		if p.ExpectedLockVersion > 0 && cur.LockVersion != p.ExpectedLockVersion {
+		// Ф6.5: PRESENCE, not magnitude — same rule as the receipt path. A reversible receipt always
+		// bumped the run past 0, so `> 0` was not reachably broken here the way it was on the update
+		// and receive paths; it is corrected anyway so the three run-lock guards read identically and
+		// none of them re-acquires the habit of testing the token's size.
+		if p.ExpectedLockVersion.Conflicts(cur.LockVersion) {
 			return entity.ErrProductionRunConflict
 		}
 

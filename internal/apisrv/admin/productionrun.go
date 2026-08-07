@@ -126,12 +126,16 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	// The cost-blind path reloads and preserves stored articles under the run's FOR UPDATE lock. Its
 	// read is load-bearing: any failure aborts before the store's full-replace can delete cost rows.
 	ins.Actor = authsrv.GetAdminUsername(ctx)
+	// PRESENCE, not magnitude (Ф6.5): the field is proto3-optional, so a client that SENT a version
+	// is held to it even when that version is 0 (a fresh run's), and only a client that omitted the
+	// field entirely keeps the legacy last-write-wins.
+	lock := entity.LockGuardFromProto(req.ExpectedLockVersion)
 	var updateErr error
 	if costingWrite {
-		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, int(req.ExpectedLockVersion), s.costingFx(ctx))
+		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, lock, s.costingFx(ctx))
 	} else {
 		updateErr = s.repo.ProductionRuns().UpdateProductionRunPreservingCosts(
-			ctx, int(req.Id), ins, int(req.ExpectedLockVersion))
+			ctx, int(req.Id), ins, lock)
 	}
 	if err := updateErr; err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -307,7 +311,7 @@ func (s *Server) PostProductionRunReceipt(ctx context.Context, req *pb_admin.Pos
 		slog.Default().ErrorContext(ctx, "can't load production run for receipt", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load production run")
 	}
-	result, st := s.executeRunReceipt(ctx, run, lines, key, int(req.ExpectedLockVersion),
+	result, st := s.executeRunReceipt(ctx, run, lines, key, entity.LockGuardFromProto(req.ExpectedLockVersion),
 		strings.TrimSpace(req.Note), req.UpdateCostPrice, !req.Partial, false)
 	if st != nil {
 		return nil, st
@@ -405,7 +409,7 @@ func (s *Server) ReverseProductionRunReceipt(ctx context.Context, req *pb_admin.
 		RunID:               int(req.RunId),
 		ReceiptID:           int(req.ReceiptId),
 		Reason:              reason,
-		ExpectedLockVersion: int(req.ExpectedLockVersion),
+		ExpectedLockVersion: entity.LockGuardFromProto(req.ExpectedLockVersion),
 		Username:            authsrv.GetAdminUsername(ctx),
 		CardID:              card.Id,
 		Reseed:              reseed,
@@ -501,7 +505,11 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 	// The shim always synthesizes a FINAL receipt — the pre-receipt flow had no partial concept.
 	// The shim's lines ARE the stored totals — LegacyTotals stops the rollup write from adding
 	// them to themselves (the Phase 5 accumulate regression halved every shim unit cost).
-	result, st := s.executeRunReceipt(ctx, run, lines, key, 0, "", req.UpdateCostPrice, true, true)
+	// The deprecated shim has no client-supplied version to hold anyone to — it synthesizes the
+	// receipt from the run's STORED counts, which an old client stamped through UpdateProductionRun.
+	// So it passes the ABSENT token (legacy last-write-wins) rather than a literal 0, which under
+	// Ф6.5 would now be a real expectation and would reject every run past its first save.
+	result, st := s.executeRunReceipt(ctx, run, lines, key, entity.NoLockVersion(), "", req.UpdateCostPrice, true, true)
 	if st != nil {
 		return nil, st
 	}
@@ -579,7 +587,7 @@ func (s *Server) fireStockWriteSideEffects(ctx context.Context, transitions []en
 // rollup write SETs instead of accumulating, and the aux dispatch below refuses a card that
 // produces by colour, which is a shape the shim's stamped-counts flow predates.
 func (s *Server) executeRunReceipt(ctx context.Context, run *entity.ProductionRun, lines []entity.ProductionRunReceiptLineInput,
-	idempotencyKey string, expectedLockVersion int, note string, updateCostPrice, final, legacyTotals bool) (*entity.PostProductionRunReceiptResult, error) {
+	idempotencyKey string, expectedLockVersion entity.LockGuard, note string, updateCostPrice, final, legacyTotals bool) (*entity.PostProductionRunReceiptResult, error) {
 	runID := run.Id
 	// Moving sellable stock needs products:write on top of production:write (the RBAC interceptor
 	// gate). An account granted the permission after login must re-login — permissions ride in the JWT.
@@ -779,7 +787,21 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 		}
 		onHand[mid] = st.OnHand
 	}
-	return dto.ComputeProductionRunMaterialPlan(run, card, onHand, issued, linked), nil
+	// Ф4.6 — the настилы, and a read failure is FATAL to this request rather than degraded into an
+	// empty list. An empty list here does not mean «нет настилов», it means «мы не знаем», and the
+	// two produce different NUMBERS: falling back to the norm would silently re-estimate a slot the
+	// cutting room has already measured, under a plan_source that says NORM with full confidence.
+	// An aux card answers Applicable=false with no lays, which is the honest «настилов тут не бывает»
+	// and needs no special case below.
+	lays, err := s.repo.ProductionRuns().ListLays(ctx, int(req.RunId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "production run not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't load production run lays for material plan", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't load production run lays")
+	}
+	return dto.ComputeProductionRunMaterialPlan(run, card, onHand, issued, linked, lays.Lays), nil
 }
 
 // snapshotPlannedCost freezes the run's planned unit cost at plan time: from the linked

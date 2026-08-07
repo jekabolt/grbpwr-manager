@@ -64,7 +64,7 @@ func hasCaveat(caveats []string, needle string) bool {
 // number is bigger than the norm, with the un-grossed sum beside the dial.
 func TestPlanAppliesCuttingCoefficientToMarkerNorms(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceMarker, 100, "")
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil))
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil), nil)
 
 	require.Len(t, resp.Rows, 1)
 	row := resp.Rows[0]
@@ -83,7 +83,7 @@ func TestPlanAppliesCuttingCoefficientToMarkerNorms(t *testing.T) {
 // migration deliberately backfills nothing.
 func TestPlanUnsetCuttingCoefficientChangesNothing(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceMarker, 100, "")
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", decimal.NullDecimal{}, nil))
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", decimal.NullDecimal{}, nil), nil)
 
 	require.Equal(t, "200", resp.Rows[0].Required.Value)
 	require.Equal(t, "200", resp.Rows[0].RequiredBeforeGrossup.Value)
@@ -101,7 +101,7 @@ func TestPlanUnsetCuttingCoefficientChangesNothing(t *testing.T) {
 // required >= required_before_grossup, and the coefficient is read from its own field.
 func TestPlanManualNormKeepsWastageAndSaysTheCoefficientDidNotBite(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "5")
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil))
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil), nil)
 
 	row := resp.Rows[0]
 	require.Equal(t, "210", row.Required.Value, "200 × 1.05 wastage — NOT × 1.06 as well")
@@ -122,7 +122,7 @@ func TestPlanManualNormKeepsWastageAndSaysTheCoefficientDidNotBite(t *testing.T)
 // "the norm asked for 200, the plan asks for 210".
 func TestPlanWastageOnlyRowHasNoCoefficientAndStillDecomposes(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "5")
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", decimal.NullDecimal{}, nil))
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", decimal.NullDecimal{}, nil), nil)
 
 	row := resp.Rows[0]
 	require.Equal(t, "210", row.Required.Value)
@@ -152,7 +152,7 @@ func TestPlanCountedTrimTakesNoCoefficient(t *testing.T) {
 		TechCardId: 7,
 		Lines:      []entity.ProductionRunLine{{ProductId: sql.NullInt32{Int32: 55, Valid: true}, SizeId: 1, PlannedQty: 10}},
 	}}
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("pcs", nd2("1.5"), nil))
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("pcs", nd2("1.5"), nil), nil)
 	require.Equal(t, "40", resp.Rows[0].Required.Value, "4 buttons × 10 garments, no gross-up of any kind")
 	require.Equal(t, "40", resp.Rows[0].RequiredBeforeGrossup.Value, "and the two numbers agree exactly")
 	// The caveat must not tell the operator their buttons are "manual norms" — that is the wrong
@@ -169,7 +169,7 @@ func TestPlanCountedTrimTakesNoCoefficient(t *testing.T) {
 func TestPlanTreatsCyrillicMetreAsMetre(t *testing.T) {
 	run, card := planFixture("м", "2", entity.ConsumptionSourceManual, 100, "")
 	onHand := map[int]decimal.Decimal{100: d("50")}
-	resp := ComputeProductionRunMaterialPlan(run, card, onHand, nil, fabricArticle("m", decimal.NullDecimal{}, nil))
+	resp := ComputeProductionRunMaterialPlan(run, card, onHand, nil, fabricArticle("m", decimal.NullDecimal{}, nil), nil)
 
 	require.Equal(t, "m", resp.Rows[0].Unit, "the row takes the ARTICLE's unit, as for any agreeing pair")
 	require.Equal(t, pb_common.MaterialUnit_MATERIAL_UNIT_M, resp.Rows[0].UnitCode)
@@ -181,7 +181,7 @@ func TestPlanTreatsCyrillicMetreAsMetre(t *testing.T) {
 // unit and reports UNKNOWN rather than pretending to know what it is.
 func TestPlanUnknownUnitStillCaveats(t *testing.T) {
 	run, card := planFixture("погонный метр", "2", entity.ConsumptionSourceManual, 100, "")
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("kg", decimal.NullDecimal{}, nil))
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("kg", decimal.NullDecimal{}, nil), nil)
 
 	require.Equal(t, "погонный метр", resp.Rows[0].Unit)
 	require.Equal(t, pb_common.MaterialUnit_MATERIAL_UNIT_UNKNOWN, resp.Rows[0].UnitCode)
@@ -194,7 +194,7 @@ func TestPlanConvertsMetresToKilogramsOnFullWidth(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "")
 	attr := &entity.MaterialFabricAttr{WidthCm: nd2("150"), WeightGsm: nd2("220"), SelvedgeCm: d("2")}
 	resp := ComputeProductionRunMaterialPlan(run, card, map[int]decimal.Decimal{100: d("10")}, nil,
-		fabricArticle("kg", decimal.NullDecimal{}, attr))
+		fabricArticle("kg", decimal.NullDecimal{}, attr), nil)
 
 	row := resp.Rows[0]
 	require.Equal(t, "kg", row.Unit, "the row is in the article's stock unit, so it nets against kg stock")
@@ -213,7 +213,7 @@ func TestPlanConvertsMetresToKilogramsOnFullWidth(t *testing.T) {
 func TestPlanKilogramsAndCoefficientCompose(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceMarker, 100, "")
 	attr := &entity.MaterialFabricAttr{WidthCm: nd2("150"), WeightGsm: nd2("220")}
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("kg", nd2("1.05"), attr))
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("kg", nd2("1.05"), attr), nil)
 
 	row := resp.Rows[0]
 	require.Equal(t, "kg", row.Unit)
@@ -226,7 +226,7 @@ func TestPlanKilogramsAndCoefficientCompose(t *testing.T) {
 func TestPlanKilogramsWithoutRollGeometryDoesNotGuess(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "")
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil,
-		fabricArticle("kg", decimal.NullDecimal{}, &entity.MaterialFabricAttr{WidthCm: nd2("150")}))
+		fabricArticle("kg", decimal.NullDecimal{}, &entity.MaterialFabricAttr{WidthCm: nd2("150")}), nil)
 
 	require.Equal(t, "m", resp.Rows[0].Unit, "no density → no conversion, and the label follows the number")
 	require.Equal(t, "200", resp.Rows[0].Required.Value)
@@ -283,7 +283,7 @@ func TestPlanMixedSlotUnitsAreAlwaysCaveated(t *testing.T) {
 	run, card := mixedUnitFixture(100, 1)
 	attr := &entity.MaterialFabricAttr{WidthCm: nd2("150"), WeightGsm: nd2("220")}
 	resp := ComputeProductionRunMaterialPlan(run, card, map[int]decimal.Decimal{100: d("70")}, nil,
-		fabricArticle("kg", decimal.NullDecimal{}, attr))
+		fabricArticle("kg", decimal.NullDecimal{}, attr), nil)
 
 	require.Len(t, resp.Rows, 1)
 	row := resp.Rows[0]
@@ -307,7 +307,7 @@ func TestPlanUnitCaveatsAreDedupedByStatementNotByMaterial(t *testing.T) {
 	run, card := mixedUnitFixture(10, 5)
 	attr := &entity.MaterialFabricAttr{WidthCm: nd2("150"), WeightGsm: nd2("220")}
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil,
-		fabricArticle("kg", decimal.NullDecimal{}, attr))
+		fabricArticle("kg", decimal.NullDecimal{}, attr), nil)
 
 	counts := map[string]int{}
 	for _, c := range resp.Caveats {
@@ -328,7 +328,7 @@ func TestPlanAgreeingSlotUnitsRaiseNoMixedUnitCaveat(t *testing.T) {
 	card.Colorways[0].Usages[1].Quantity = decimal.NullDecimal{}
 	card.Colorways[0].Usages[1].Consumption = nd2("3")
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil,
-		fabricArticle("m", decimal.NullDecimal{}, nil))
+		fabricArticle("m", decimal.NullDecimal{}, nil), nil)
 
 	require.Equal(t, "500", resp.Rows[0].Required.Value, "200 m + 300 m, one unit throughout")
 	require.False(t, hasCaveat(resp.Caveats, "SUM ACROSS UNITS"),

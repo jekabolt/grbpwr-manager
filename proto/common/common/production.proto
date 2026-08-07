@@ -266,3 +266,144 @@ message ProductionRunReconCheck {
   bool ok = 4;
   string detail = 5;
 }
+
+// НАСТИЛЫ ПРОГОНА (Ф4). Настил — собственная сущность (production_run_lay / _section, migration
+// 0281), а не поле прогона: сохранение прогона его не касается НИКОГДА, и это структурная починка
+// причины смерти 0119 (полная замена детей на каждом сохранении, 0243:3-9).
+
+// Режим настилания. Решает три физических вопроса сразу (00-model.md:35-39): обязано ли число
+// слоёв быть чётным, можно ли направленную ткань, и как развёртка зеркальных деталей в маркере
+// превращается в изделия.
+enum ProductionLayMode {
+  PRODUCTION_LAY_MODE_UNSPECIFIED = 0;
+  PRODUCTION_LAY_MODE_FACE_UP = 1; // лицом вверх: каждая деталь пары — отдельное размещение
+  PRODUCTION_LAY_MODE_FACE_TO_FACE = 2; // лицом к лицу: пара слоёв даёт левую и правую из ОДНОГО размещения
+}
+
+// Статус любой проверки Ф4. UNKNOWN — ПЕРВОКЛАССНОЕ значение и НИКОГДА не читается как OK:
+// «не смогли проверить» и «проверили, всё хорошо» — разные предложения, и клиент обязан их
+// различать. Это та же дисциплина, что unknown_count у гейта Ф6.
+enum ProductionLayCheckStatus {
+  PRODUCTION_LAY_CHECK_STATUS_UNSPECIFIED = 0;
+  PRODUCTION_LAY_CHECK_STATUS_OK = 1;
+  PRODUCTION_LAY_CHECK_STATUS_WARNING = 2;
+  PRODUCTION_LAY_CHECK_STATUS_BLOCKER = 3;
+  PRODUCTION_LAY_CHECK_STATUS_UNKNOWN = 4;
+}
+
+// ПОДПИСЬ ИСТОЧНИКА ПОКРЫТИЯ живёт НЕ здесь. Ф6 приехала первой и объявила
+// admin.ProductionRunCoverageSource в admin.proto; правило «кто приехал вторым — берёт чужой»
+// (решение оркестратора Р1) применяется к самой Р1, поэтому Ф4 использует существующее
+// перечисление и лишь дополняет его значением MIXED. Двух определений одного слова нет.
+
+message ProductionRunLayQtyEntry {
+  int32 size_id = 1;
+  int32 qty = 2;
+}
+
+// Одна проверка годности. key стабилен и называет ФАКТ, а не экран и не предложение — правила
+// ключей те же, что у находок гейта Ф6.
+message ProductionLayCheck {
+  string key = 1;
+  ProductionLayCheckStatus status = 2;
+  string label = 3;
+  string detail = 4; // фактическое состояние; ПУСТО только у OK
+  int32 marker_id = 5; // 0 = проверка про настил целиком
+  string piece_line_key = 6; // "" = проверка не про конкретную деталь
+}
+
+message ProductionRunLaySectionInsert {
+  string section_key = 1;
+  int32 marker_id = 2;
+  int32 plies = 3;
+  int32 position = 4;
+}
+
+message ProductionRunLaySection {
+  int32 id = 1;
+  string section_key = 2;
+  int32 marker_id = 3;
+  string marker_name = 4;
+  int32 plies = 5;
+  int32 position = 6;
+  google.type.Decimal marker_length_cm = 7;
+  google.type.Decimal marker_width_cm = 8;
+  google.type.Decimal section_length_cm = 9; // marker_length_cm × plies
+  repeated ProductionRunLayQtyEntry marker_composition = 10;
+  repeated ProductionLayCheck checks = 11;
+}
+
+message ProductionRunLayInsert {
+  string lay_key = 1; // ULID; пусто = сервер минтит (создание)
+  int32 colorway_id = 2;
+  string bom_line_key = 3; // слот адресуется СТАБИЛЬНЫМ ключом, не id — мир line_key (0230/0159)
+  ProductionLayMode mode = 4;
+  google.type.Decimal end_loss_cm = 5; // на ОДИН конец ОДНОГО слоя
+  string name = 6;
+  string note = 7;
+  int32 display_order = 8;
+  repeated ProductionRunLaySectionInsert sections = 9;
+  // qty_snapshot СОЗНАТЕЛЬНО ОТСУТСТВУЕТ: снимок считает сервер по СВОИМ строкам прогона.
+  // Принятый от клиента снимок можно подделать, а подделанный снимок гасит бейдж устаревания —
+  // то есть ровно тот сигнал, ради которого он существует.
+}
+
+message ProductionRunLay {
+  int32 id = 1;
+  string lay_key = 2;
+  int32 colorway_id = 3;
+  string colorway_name = 4;
+  int32 bom_item_id = 5; // 0 = слот удалён из BOM; настил BROKEN, см. checks
+  string bom_line_key = 6;
+  string bom_item_name = 7;
+  int32 material_id = 8; // артикул, который колорвей пинит СЕГОДНЯ (не снимок)
+  string material_name = 9;
+  ProductionLayMode mode = 10;
+  google.type.Decimal end_loss_cm = 11;
+  string name = 12;
+  string note = 13;
+  int32 display_order = 14;
+  int32 lock_version = 15;
+  repeated ProductionRunLaySection sections = 16;
+  repeated ProductionRunLayQtyEntry qty_snapshot = 17;
+  repeated ProductionRunLayQtyEntry qty_current = 18;
+  bool quantities_stale = 19; // снимок ≠ сегодняшние строки прогона
+  int32 total_plies = 20; // Σ plies по секциям
+  google.type.Decimal cloth_length_cm = 21; // Σ(длина маркера × слои) — БЕЗ концевых потерь
+  google.type.Decimal end_loss_total_cm = 22; // 2 × end_loss_cm × total_plies
+  google.type.Decimal planned_length_cm = 23; // сумма двух — ЭТО и есть план настила
+  google.type.Decimal stack_height_cm = 24; // не задано ⇒ пусто, см. чек lay_stack_height
+  repeated ProductionLayCheck checks = 25;
+  string created_by = 26;
+  string updated_by = 27;
+  google.protobuf.Timestamp created_at = 28;
+  google.protobuf.Timestamp updated_at = 29;
+}
+
+// Клетка покрытия (Ф4.5). Считается ПО РАЗМЕЩЕНИЯМ, минимум по всем деталям всех тканей колорвея.
+message ProductionRunLayCoverageCell {
+  int32 colorway_id = 1;
+  int32 size_id = 2;
+  int32 planned_qty = 3;
+  int32 covered_qty = 4;
+  ProductionLayCheckStatus status = 5; // OK | BLOCKER | UNKNOWN — WARNING здесь не бывает
+  repeated int64 blocking_bom_item_ids = 6;
+  repeated string blocking_piece_names = 7;
+  int32 unknown_piece_count = 8;
+}
+
+// Диагностика клетки: почему покрытие такое. Читается человеком в поповере клетки.
+message ProductionRunLayPieceYield {
+  int32 colorway_id = 1;
+  int32 size_id = 2;
+  string piece_line_key = 3;
+  string piece_name = 4;
+  int64 bom_item_id = 5;
+  int32 required_per_garment = 6;
+  int32 cut_as_drawn = 7;
+  int32 cut_mirrored = 8;
+  int32 garment_yield = 9;
+  int32 overcut_qty = 10; // выкроено сверх нужного на covered_qty изделий — цена режима
+  ProductionLayCheckStatus status = 11;
+  string detail = 12;
+}

@@ -82,7 +82,7 @@ func TestComputeProductionRunMaterialPlan_RunActualWastageOverride(t *testing.T)
 
 	// Fallback: no run wastage → BOM estimate 5% → 2×10 × 1.05 = 21.
 	runFallback := &entity.ProductionRun{Id: 9, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Lines: lines}}
-	resp := ComputeProductionRunMaterialPlan(runFallback, card, nil, nil, nil)
+	resp := ComputeProductionRunMaterialPlan(runFallback, card, nil, nil, nil, nil)
 	require.Len(t, resp.Rows, 1)
 	require.Equal(t, "21", resp.Rows[0].Required.Value, "no run wastage → BOM estimate 5%%")
 
@@ -90,7 +90,7 @@ func TestComputeProductionRunMaterialPlan_RunActualWastageOverride(t *testing.T)
 	runOverride := &entity.ProductionRun{Id: 9, ProductionRunInsert: entity.ProductionRunInsert{
 		TechCardId: 7, Lines: lines, ActualWastagePercent: nd2("8"),
 	}}
-	resp = ComputeProductionRunMaterialPlan(runOverride, card, nil, nil, nil)
+	resp = ComputeProductionRunMaterialPlan(runOverride, card, nil, nil, nil, nil)
 	require.Len(t, resp.Rows, 1)
 	require.Equal(t, "21.6", resp.Rows[0].Required.Value, "run ACTUAL wastage 8%% overrides the BOM estimate")
 }

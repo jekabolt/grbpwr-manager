@@ -6,6 +6,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
@@ -185,5 +186,124 @@ func TestConvertMaterialCuttingCoefficientPresence(t *testing.T) {
 	overPrecise.CuttingCoefficient = dec("1.03456")
 	if _, err := ConvertPbMaterialToEntityInsert(overPrecise); err == nil {
 		t.Error("cutting_coefficient 1.03456 must be rejected, not silently rounded to 1.0346 by MySQL")
+	}
+}
+
+// TestConvertMaterialFabricThicknessPresence pins Ф4.8's three write states on the article's half of
+// the предел стопки. Same law as the coefficient above, same failure if it is missed — but the
+// consequence is worse than a lost setting: an erased thickness silently turns a живая проверка
+// высоты стопки back into UNKNOWN across every настил cut from that article, and nothing on the
+// screen says the number used to be there.
+func TestConvertMaterialFabricThicknessPresence(t *testing.T) {
+	base := func() *pb_common.Material {
+		return &pb_common.Material{Name: "Poplin", Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC}
+	}
+
+	// ABSENT — the field was not sent at all. Leave the stored value alone.
+	ins, err := ConvertPbMaterialToEntityInsert(base())
+	if err != nil {
+		t.Fatalf("absent thickness: %v", err)
+	}
+	if !ins.FabricThicknessMmOmitted {
+		t.Error("a nil fabric_thickness_mm must be reported as OMITTED, not as a clear")
+	}
+	if ins.FabricThicknessMm.Valid {
+		t.Errorf("omitted must carry no value: %+v", ins.FabricThicknessMm)
+	}
+
+	// PRESENT but empty — the explicit clear, i.e. «этот замер отозван». It must stay reachable, or an
+	// operator who typed a wrong thickness could never take the wrong verdict back off the screen.
+	cleared := base()
+	cleared.FabricThicknessMm = &pb_decimal.Decimal{Value: ""}
+	ins, err = ConvertPbMaterialToEntityInsert(cleared)
+	if err != nil {
+		t.Fatalf("cleared thickness: %v", err)
+	}
+	if ins.FabricThicknessMmOmitted {
+		t.Error("an explicitly sent empty decimal is a CLEAR, not an omission")
+	}
+	if ins.FabricThicknessMm.Valid {
+		t.Errorf("a clear must store NULL: %+v", ins.FabricThicknessMm)
+	}
+
+	// PRESENT with a value — set it. 0.3 mm поплин, straight out of the field's own hint text.
+	set := base()
+	set.FabricThicknessMm = dec("0.3")
+	ins, err = ConvertPbMaterialToEntityInsert(set)
+	if err != nil {
+		t.Fatalf("set thickness: %v", err)
+	}
+	if ins.FabricThicknessMmOmitted || !ins.FabricThicknessMm.Valid ||
+		ins.FabricThicknessMm.Decimal.String() != "0.3" {
+		t.Errorf("set thickness = %+v (omitted=%v)", ins.FabricThicknessMm, ins.FabricThicknessMmOmitted)
+	}
+
+	// ZERO IS NOT A THICKNESS AND IS NOT «НЕ ЗАМЕРЕНО». Accepting it would make every stack 0 cm tall
+	// and therefore within any limit — a confident verdict built out of missing data, which is the one
+	// outcome «нет толщины — нет проверки, не догадка» exists to forbid. The way to say "unmeasured"
+	// is the CLEAR above.
+	zero := base()
+	zero.FabricThicknessMm = dec("0")
+	if _, err := ConvertPbMaterialToEntityInsert(zero); err == nil {
+		t.Error("fabric_thickness_mm 0 must be rejected — clearing is how «не замерено» is recorded")
+	}
+	negative := base()
+	negative.FabricThicknessMm = dec("-0.3")
+	if _, err := ConvertPbMaterialToEntityInsert(negative); err == nil {
+		t.Error("a negative fabric_thickness_mm must be rejected")
+	}
+
+	// Millimetres, one ply. 500 is a unit mistake (metres? the whole roll?), and the DB CHECK caps at
+	// 50 — reaching it as a raw 500 instead of a readable message is the failure this guards.
+	tooThick := base()
+	tooThick.FabricThicknessMm = dec("500")
+	if _, err := ConvertPbMaterialToEntityInsert(tooThick); err == nil {
+		t.Error("fabric_thickness_mm 500 must be rejected before MySQL's CHECK turns it into a 500")
+	}
+
+	// DECIMAL(6,3) does not REJECT a fourth decimal place, it silently rounds it — so the operator's
+	// measurement and the planner's would differ with nothing anywhere saying so.
+	overPrecise := base()
+	overPrecise.FabricThicknessMm = dec("0.1234")
+	if _, err := ConvertPbMaterialToEntityInsert(overPrecise); err == nil {
+		t.Error("fabric_thickness_mm 0.1234 must be rejected, not silently rounded to 0.123 by MySQL")
+	}
+}
+
+// An article with no thickness must produce NO thickness on the wire — not "0". A zero would let the
+// lay path compute a 0 cm stack that comfortably "fits", which is exactly the verdict-out-of-nothing
+// Ф4.8 refuses; absence makes it say UNKNOWN and ask for the cloth to be measured.
+func TestConvertMaterialUnmeasuredThicknessTravelsAbsent(t *testing.T) {
+	pb := ConvertEntityMaterialToPb(entity.MaterialWithPrice{Material: entity.Material{
+		MaterialInsert: entity.MaterialInsert{Name: "Chiffon", Section: "fabric"},
+	}})
+	if pb.GetFabricThicknessMm() != nil {
+		t.Errorf("unmeasured thickness must be absent on the wire, got %+v", pb.GetFabricThicknessMm())
+	}
+}
+
+// EffectiveFabricThicknessMm is the ONE place the "unset" reading lives, and it must refuse to hand
+// back a number that would be read as a measurement — including a zero that sneaked past the column
+// CHECK in a hand-built fixture.
+func TestEffectiveFabricThicknessMmRefusesNonMeasurements(t *testing.T) {
+	nd := func(s string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true}
+	}
+	for _, tc := range []struct {
+		name  string
+		in    decimal.NullDecimal
+		valid bool
+	}{
+		{name: "never measured", in: decimal.NullDecimal{}},
+		{name: "zero is not a measurement", in: nd("0")},
+		{name: "negative is not a measurement", in: nd("-1")},
+		{name: "chiffon", in: nd("0.15"), valid: true},
+		{name: "melton", in: nd("2.5"), valid: true},
+	} {
+		m := &entity.Material{MaterialInsert: entity.MaterialInsert{FabricThicknessMm: tc.in}}
+		got := m.EffectiveFabricThicknessMm()
+		if got.Valid != tc.valid {
+			t.Errorf("%s: valid = %v, want %v (%+v)", tc.name, got.Valid, tc.valid, got)
+		}
 	}
 }

@@ -32,6 +32,10 @@ func TestMarkerConditionQueriesBind(t *testing.T) {
 		{"norm clear scope", markerNormClearScopeQuery,
 			map[string]any{"card": 1, "bom": bom, "id": 2, "username": "u"}, 5},
 		{"norm set", markerNormSetQuery, map[string]any{"id": 2, "is_norm": true, "username": "u"}, 3},
+		// Ф4: the delete guard. It runs on EVERY manual delete of a раскладка, so a bind error would
+		// make deleting any marker fail at request time — including markers no настил has ever heard
+		// of. The query is small enough to look harmless and joins two tables from another domain.
+		{"lay sections of a marker", markerLaySectionsQuery, map[string]any{"id": 2}, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

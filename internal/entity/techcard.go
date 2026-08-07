@@ -74,6 +74,21 @@ var ErrMarkerNotFound = errors.New("marker not found")
 // letting it through would quietly understate fabric per garment. FailedPrecondition.
 var ErrMarkerIncomplete = errors.New("marker layout is incomplete — not every piece was placed")
 
+// ErrMarkerUsedByLay refuses the MANUAL delete of a раскладка that a секция настила stands on
+// (Ф4, §5.4). It is the application's RESTRICT in a place the schema cannot hold one:
+// fk_prlays_marker is ON DELETE CASCADE, and it has to be — DeleteProductionRun is not
+// transactional and relies on cascades (productionrun.go), so a RESTRICT anywhere in that tree
+// would make deleting a run succeed or fail depending on the order InnoDB happened to walk it.
+//
+// So the invariant is held on the ONE path a human chooses deliberately: deleting the marker out
+// from under a lay silently shrinks that lay's plan. The CASCADE path (the run itself being
+// deleted) needs no guard — there the lays die too.
+//
+// The error VALUE says only what it is; the store wraps it with the настилы by name, because
+// «нельзя» sends the operator looking and «стоит в настиле «BLACK · основная»» sends them to the
+// screen that can free it. The API layer maps it to FailedPrecondition.
+var ErrMarkerUsedByLay = errors.New("marker is used by a lay section")
+
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
 type TechCardStage string
@@ -215,10 +230,24 @@ type TechCardMarkerInsert struct {
 	// colourway-specific. It matters because the width does: a colourway names its own catalog
 	// article per slot, and the same pieces on a 140 cm and a 150 cm roll are two different
 	// markers with two different lengths.
-	ColorwayId    int             `db:"-"`
-	FabricWidthCm decimal.Decimal `db:"fabric_width_cm"`
-	GapCm         decimal.Decimal `db:"gap_cm"`
-	EdgeMarginCm  decimal.Decimal `db:"edge_margin_cm"`
+	ColorwayId int `db:"-"`
+	// ProductionRunId makes this a РАСКРОЙНЫЙ marker owned by that прогон (tech_card_marker.run_id,
+	// 0282). 0 = КАРТОЧНЫЙ — the норма and every marker that existed before Ф4.
+	//
+	// IT IS IMMUTABLE AFTER CREATION, and the store refuses a save that would change it. The column
+	// is not an attribute of the раскладка, it is WHO OWNS ITS LIFE: a run marker dies with its run
+	// by FK CASCADE, is hidden from every card list, and is the only thing a секция настила may
+	// point at. Flipping it either way silently re-homes those three facts — a card marker turned
+	// run marker acquires an expiry date nobody asked for, and a run marker turned card marker
+	// outlives the sections that reference it. Whoever needs the other kind COPIES the geometry
+	// (решение Р2): a copy is one click and states its own provenance, a mutation states nothing.
+	//
+	// `db:"-"` because the write path names it explicitly in the INSERT and deliberately omits it
+	// from the UPDATE — the same arrangement is_norm has, and for the same reason.
+	ProductionRunId int             `db:"-"`
+	FabricWidthCm   decimal.Decimal `db:"fabric_width_cm"`
+	GapCm           decimal.Decimal `db:"gap_cm"`
+	EdgeMarginCm    decimal.Decimal `db:"edge_margin_cm"`
 	// SelvedgeCm snapshots the кромка (cm per edge) the layout ran with, from the effective
 	// article at save time — keeps the waste decomposition auditable after material edits.
 	SelvedgeCm      decimal.Decimal `db:"selvedge_cm"`
@@ -287,11 +316,22 @@ type TechCardMarkerSummary struct {
 	TechCardId int `db:"tech_card_id"`
 	// ЛЕГАСИ (Ф2), INVALID on a marker with a состав — read Composition / TotalUnits instead. See
 	// TechCardMarkerInsert.SizeId for why the type, and not just the column, had to change.
-	SizeId          sql.NullInt64       `db:"size_id"`
-	Name            string              `db:"name"`
-	Source          string              `db:"source"`
-	BomItemId       sql.NullInt64       `db:"bom_item_id"`
-	ColorwayId      sql.NullInt64       `db:"colorway_id"`
+	SizeId     sql.NullInt64 `db:"size_id"`
+	Name       string        `db:"name"`
+	Source     string        `db:"source"`
+	BomItemId  sql.NullInt64 `db:"bom_item_id"`
+	ColorwayId sql.NullInt64 `db:"colorway_id"`
+	// RunId is the прогон this РАСКРОЙНАЯ раскладка was taken for (tech_card_marker.run_id, 0282).
+	// INVALID = КАРТОЧНЫЙ marker — the норма and every marker that existed before Ф4, and every marker
+	// saved without a production_run_id since. Written once by SaveMarker at CREATE and never moved:
+	// see TechCardMarkerInsert.ProductionRunId for why a change of owner is refused rather than
+	// applied.
+	//
+	// It is projected on EVERY summary read, the card's own included, even though that read now
+	// filters run markers out: the lay plan's fitness check (dto.LayMarkerScopeCheck) has to be able
+	// to say «это КАРТОЧНЫЙ маркер» rather than infer ownership from the fact that some query
+	// filtered on it.
+	RunId           sql.NullInt64       `db:"run_id"`
 	BomLineKey      sql.NullString      `db:"bom_line_key"`
 	BomItemName     sql.NullString      `db:"bom_item_name"`
 	BomItemUnit     sql.NullString      `db:"bom_item_unit"`

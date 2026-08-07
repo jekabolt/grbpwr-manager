@@ -368,7 +368,7 @@ func TestOutputVariantProductionRuns(t *testing.T) {
 		require.NoError(t, err)
 		ins := stored.ProductionRunInsert
 		ins.Lines = append(ins.Lines, entity.ProductionRunLine{PlannedQty: 50})
-		require.ErrorIs(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &ins, stored.LockVersion),
+		require.ErrorIs(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &ins, entity.LockVersion(stored.LockVersion)),
 			entity.ErrProductionRunLineVariantMixedGrid)
 	})
 
@@ -552,7 +552,7 @@ func TestOutputVariantProductionRuns(t *testing.T) {
 		require.NoError(t, err)
 		cancelIns := cancelled.ProductionRunInsert
 		cancelIns.Status = entity.ProductionRunCancelled
-		require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &cancelIns, cancelled.LockVersion))
+		require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &cancelIns, entity.LockVersion(cancelled.LockVersion)))
 		require.ErrorIs(t, T.DeleteOutputVariant(ctx, blk), entity.ErrOutputVariantReferencedByRun)
 
 		// Deactivating always works — that is the point of the message.
@@ -616,7 +616,7 @@ func TestOutputVariantProductionRuns(t *testing.T) {
 		require.NoError(t, err)
 		ins := stored.ProductionRunInsert
 		ins.Notes = ns("still editable")
-		require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &ins, stored.LockVersion))
+		require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &ins, entity.LockVersion(stored.LockVersion)))
 
 		// But it cannot ADD a line on a colour the card no longer makes: grandfathering covers what
 		// the run already references, not a fresh plan smuggled in through an update.
@@ -626,7 +626,7 @@ func TestOutputVariantProductionRuns(t *testing.T) {
 		retireVariant(cardID, other, "GRY", 0)
 		ins2 := reread.ProductionRunInsert
 		ins2.Lines = append(ins2.Lines, variantLine(other, 5, 0))
-		err = P.UpdateProductionRunPreservingCosts(ctx, runID, &ins2, reread.LockVersion)
+		err = P.UpdateProductionRunPreservingCosts(ctx, runID, &ins2, entity.LockVersion(reread.LockVersion))
 		require.ErrorIs(t, err, entity.ErrProductionRunLineVariantRetired)
 
 		// (F4) And the exemption is per LINE, not per run: the run already produces the retired WHT,
@@ -636,7 +636,7 @@ func TestOutputVariantProductionRuns(t *testing.T) {
 		require.NoError(t, err)
 		ins3 := reread2.ProductionRunInsert
 		ins3.Lines = append(ins3.Lines, variantLine(wht, 7, 0))
-		err = P.UpdateProductionRunPreservingCosts(ctx, runID, &ins3, reread2.LockVersion)
+		err = P.UpdateProductionRunPreservingCosts(ctx, runID, &ins3, entity.LockVersion(reread2.LockVersion))
 		require.ErrorIs(t, err, entity.ErrProductionRunLineVariantRetired,
 			"a fresh line on an already-referenced retired colour is still a fresh plan")
 	})

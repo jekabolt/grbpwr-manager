@@ -50,7 +50,7 @@ func TestComputeProductionRunMaterialPlan(t *testing.T) {
 	onHand := map[int]decimal.Decimal{100: d("5")}
 	issued := map[int]decimal.Decimal{100: d("10")}
 
-	resp := ComputeProductionRunMaterialPlan(run, card, onHand, issued, nil)
+	resp := ComputeProductionRunMaterialPlan(run, card, onHand, issued, nil, nil)
 	require.Len(t, resp.Rows, 2, "materials 100 (index-keyed) and 200 (FK-keyed) are countable")
 	fkRow := resp.Rows[1]
 	require.Equal(t, int32(200), fkRow.MaterialId, "the FK-only usage resolves via bom_item_id")
@@ -118,7 +118,7 @@ func TestComputeProductionRunMaterialPlan_PinResolution(t *testing.T) {
 	}
 	onHand := map[int]decimal.Decimal{100: d("240"), 200: d("10")}
 
-	resp := ComputeProductionRunMaterialPlan(run, card, onHand, nil, linked)
+	resp := ComputeProductionRunMaterialPlan(run, card, onHand, nil, linked, nil)
 
 	byID := map[int32]*int{}
 	for i, r := range resp.Rows {

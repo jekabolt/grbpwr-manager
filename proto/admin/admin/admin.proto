@@ -1462,6 +1462,23 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/production-runs/{run_id}/material-plan"};
   }
 
+  // НАСТИЛЫ ПРОГОНА (Ф4). Сознательно ОТДЕЛЬНЫЕ RPC, а не поле UpdateProductionRun: полная замена
+  // детей внутри сохранения прогона — буквально причина смерти 0119 (0243:3-9), и она вернулась бы
+  // в тот же день, когда настилы поехали бы рядом с production_run_cost, который до сих пор
+  // full-replace (productionrun.go:356-359).
+  rpc SaveProductionRunLay(SaveProductionRunLayRequest) returns (SaveProductionRunLayResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/production-runs/{run_id}/lays"
+      body: "*"
+    };
+  }
+  rpc DeleteProductionRunLay(DeleteProductionRunLayRequest) returns (DeleteProductionRunLayResponse) {
+    option (google.api.http) = {delete: "/api/admin/production-runs/{run_id}/lays/{lay_key}"};
+  }
+  rpc ListProductionRunLays(ListProductionRunLaysRequest) returns (ListProductionRunLaysResponse) {
+    option (google.api.http) = {get: "/api/admin/production-runs/{run_id}/lays"};
+  }
+
   // CheckProductionRunReadiness — ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6). Not to be confused with
   // GetTechCardReadiness: that one is ADVISORY, takes only a card id, and sees colourways as two
   // aggregates; this one judges ONE CONCRETE FUTURE RUN — by its colourways and its quantities —
@@ -4646,6 +4663,21 @@ message WorkshopSettings {
   // true is switched on ONLY after кампания Д3 (re-measuring the norms). The order is forced and
   // physically irreversible: directions (Д1) → re-measure after Ф3 ships (Д3) → blocking (Д4).
   optional bool run_readiness_blocking = 5;
+
+  // ПРЕДЕЛ ВЫСОТЫ СТОПКИ, in CENTIMETRES — четвёртый жилец дома настроек цеха (Ф4.8), and the house
+  // rule holds again after the one tenant that broke it: ABSENT = не настроено, and a consumer must
+  // then say NOTHING about the height rather than compare against zero.
+  //
+  // САНТИМЕТРЫ, А НЕ ЧИСЛО СЛОЁВ — the whole reason this is a shop setting and not a per-marker one:
+  // 30 слоёв шифона это 2 см, 30 слоёв драпа — 30 см. What actually limits the лежание is the blade,
+  // and a blade cuts a HEIGHT. Accepted band (0, 100]; the longest knives reach about 30 cm, so past
+  // a hundred it is a unit mistake rather than a workshop.
+  //
+  // ONE limit per shop (решение Р5), not one per fabric: пер-ножевые пределы are a refinement with
+  // no data behind it today, and a column nothing can fill is not created. The article-side half of
+  // the check is common.Material.fabric_thickness_mm; either one absent ⇒ UNKNOWN, and the screen
+  // says which of the two is missing rather than printing a height nobody can trust.
+  google.type.Decimal max_stack_height_cm = 6;
 }
 
 message GetWorkshopSettingsRequest {}
@@ -4693,6 +4725,12 @@ message UpdateWorkshopSettingsRequest {
   // "clear it back to unset" for a bool, and none is needed: false and unset behave identically
   // (report-only), which is the whole point of the column's NULL having a defined behaviour.
   optional bool run_readiness_blocking = 3;
+
+  // Ф4.8 — предел высоты стопки, CENTIMETRES, band (0, 100]. Zero is REJECTED rather than stored:
+  // a limit of 0 cm would fail every настил ever laid, so «у нас нет предела» is expressed by
+  // clearing the setting (send the empty message), which withholds the verdict instead of failing
+  // it. Same floor argument as the table length, opposite to the seam allowance's legal zero.
+  google.type.Decimal max_stack_height_cm = 4;
 }
 
 message UpdateWorkshopSettingsResponse {
@@ -6638,10 +6676,20 @@ message CreateProductionRunResponse {
 message UpdateProductionRunRequest {
   int32 id = 1;
   common.ProductionRunInsert run = 2;
-  // Optimistic-lock guard from GetProductionRun/list. >0 enforces the lock: a mismatch means the run
-  // changed under the editor -> Aborted (reload and retry). 0 keeps the legacy last-write-wins
-  // behaviour, so pre-existing clients are unaffected (#9).
-  int32 expected_lock_version = 3;
+  // Optimistic-lock guard from GetProductionRun/list. PRESENCE, NOT MAGNITUDE (Ф6.5): SENDING the
+  // field enforces the lock — including sending 0, which is what every run that has never been
+  // saved reports. A mismatch means the run changed under the editor -> Aborted (reload and retry).
+  //
+  // The `>0 enforces / 0 opts out` contract this field used to carry (0120:9-10) was a hole, not a
+  // setting: a fresh run is born at lock_version 0, so the FIRST save of EVERY run — the one two
+  // tabs opened from the same list are most likely to collide on — went through unguarded, and the
+  // second writer silently clobbered the first.
+  //
+  // OMITTING the field is the LEGACY last-write-wins path, kept so a pre-Ф6.5 caller is not broken
+  // silently. It can be removed once no client omits it — see entity.NoLockVersion for the exact
+  // retirement condition. Today's admin client already sends the version it read on every run
+  // write, so it gains the guard with no client change at all.
+  optional int32 expected_lock_version = 3;
 }
 
 message UpdateProductionRunResponse {}
@@ -6723,9 +6771,11 @@ message PostProductionRunReceiptRequest {
   // fits), minted once per user intent (per modal open, NOT per attempt) so a network retry replays
   // instead of double-booking.
   string idempotency_key = 3;
-  // The lock_version the operator counted against (from the run read). >0 and stale → Aborted:
-  // someone edited the run between the count and the post. 0 opts out (legacy shim path).
-  int32 expected_lock_version = 4;
+  // The lock_version the operator counted against (from the run read). Stale → Aborted: someone
+  // edited the run between the count and the post. PRESENCE, NOT MAGNITUDE (Ф6.5) — sending 0 is a
+  // real expectation (a run counted straight after creation reports 0), and only OMITTING the field
+  // opts out (the deprecated ReceiveProductionRun shim, which never saw a client version).
+  optional int32 expected_lock_version = 4;
   string note = 5; // optional free note stored on the receipt
   // Seed every received product's cost_price from the frozen actual unit cost (costing:write).
   bool update_cost_price = 6;
@@ -6764,8 +6814,9 @@ message ReverseProductionRunReceiptRequest {
   // Required, non-empty. Stored on the reversal row (note), every stock-journal decrement
   // (comment) and the production_run_event.
   string reason = 3;
-  // The lock_version the operator saw on the run. >0 and stale → Aborted (reload and retry).
-  int32 expected_lock_version = 4;
+  // The lock_version the operator saw on the run. Stale → Aborted (reload and retry). PRESENCE, NOT
+  // MAGNITUDE (Ф6.5) — see PostProductionRunReceiptRequest; omitting it is the legacy opt-out.
+  optional int32 expected_lock_version = 4;
 }
 
 message ReverseProductionRunReceiptResponse {
@@ -6817,6 +6868,11 @@ message MaterialPlanRow {
   // Vocabulary normalisation of `unit` (Ф5а.3). UNKNOWN = the row's unit is free text this
   // server does not know, and quantities under it must not be added to anything else's.
   common.MaterialUnit unit_code = 12;
+  // Откуда взято `required` ЭТОЙ строки (Ф4.6). MIXED = артикул собрал слоты с настилами и без них,
+  // и тогда ни cutting_coefficient, ни отход не описывают строку целиком — читать надо вклады.
+  // NOTE: на пути LAYS коэффициент раскроя НЕ применяется (решение Р4): настил это измерение
+  // (длина × слои + концевые потери), а коэффициент откалиброван против нормативных ОЦЕНОК.
+  ProductionRunCoverageSource source = 13;
 }
 
 // MaterialPlanContribution is one slot × colourway share of the plan — the factory-spec breakdown
@@ -6841,6 +6897,13 @@ message MaterialPlanContribution {
   // the two are related BY the coefficient only on a marker-sourced line — see MaterialPlanRow.
   google.type.Decimal required_before_grossup = 12;
   google.type.Decimal cutting_coefficient = 13;
+  // Ф4.6. ВСЕГДА ЧИСТЫЙ (NORM или LAYS, никогда MIXED): вклад — это ОДИН слот одного колорвея, и
+  // источник у него один по построению. MIXED появляется только на строке артикула выше.
+  ProductionRunCoverageSource source = 14;
+  // Разложение настильной потребности, ноль у NORM. Названы порознь, потому что это два разных
+  // физических факта: ткань под лекалами и ткань, потерянная на концах каждого слоя.
+  google.type.Decimal lay_cloth_length_cm = 15; // Σ(длина маркера × слои)
+  google.type.Decimal lay_end_loss_cm = 16; // 2 × end_loss_cm × Σ слоёв
 }
 
 // MaterialPlanBlocker is a slot × colourway the plan could NOT count — a missing article (no pin,
@@ -6865,6 +6928,59 @@ message GetProductionRunMaterialPlanResponse {
   repeated string caveats = 2; // BOM lines without material_id, colourways without norms, lines without a product
   repeated MaterialPlanContribution contributions = 3; // slot × colourway breakdown of rows' required
   repeated MaterialPlanBlocker blockers = 4; // slot × colourway the plan could not count
+  // Ответ прогона целиком (Ф4.6): NORM пока ни одного настила нет, LAYS когда настилы закрыли все
+  // считаемые слоты, MIXED посередине. Клиент пишет этим заголовок таблицы, и ошибиться в нём ему
+  // нельзя — поэтому это поле, а не вывод из содержимого строк.
+  ProductionRunCoverageSource plan_source = 5;
+}
+
+// НАСТИЛЫ ПРОГОНА (Ф4) — запросы и ответы. Тела настилов живут в common/production.proto: настил
+// описывает производственный факт, а не форму одного ответа админского сервиса.
+
+message SaveProductionRunLayRequest {
+  int32 run_id = 1;
+  common.ProductionRunLayInsert lay = 2;
+  // PRESENCE, А НЕ ВЕЛИЧИНА. Сегодняшний прогон обходит блокировку при expected_lock_version = 0
+  // (productionrun.go:219-221, контракт назван в 0120:9-10), и это дефект, а не настройка.
+  // Повторять его на новом объекте нельзя: отсутствие поля на СУЩЕСТВУЮЩЕМ настиле — отказ, а не
+  // last-write-wins. На создании (пустой lay_key) поле не читается вовсе.
+  optional int32 expected_lock_version = 3;
+  // Явное «я проверил, количества по-прежнему покрыты» — единственный способ снять бейдж
+  // устаревания, не меняя секций. Без него правка примечания молча обновляла бы снимок и отмывала
+  // бы сигнал.
+  bool reaffirm_quantities = 4;
+}
+
+message SaveProductionRunLayResponse {
+  common.ProductionRunLay lay = 1;
+}
+
+message DeleteProductionRunLayRequest {
+  int32 run_id = 1;
+  string lay_key = 2;
+}
+
+message DeleteProductionRunLayResponse {}
+
+message ListProductionRunLaysRequest {
+  int32 run_id = 1;
+}
+
+message ListProductionRunLaysResponse {
+  // false у aux-карточки: ни колорвеев, ни деталей, ни раскладок — плана настилов там не бывает
+  // (05:104-108). Отдаётся ЯВНО, а не пустым списком: пустой список читается как «настилов пока
+  // нет», то есть как приглашение их построить.
+  bool applicable = 1;
+  string not_applicable_reason = 2;
+  repeated common.ProductionRunLay lays = 3;
+  repeated common.ProductionRunLayCoverageCell coverage = 4;
+  repeated common.ProductionRunLayPieceYield piece_yields = 5;
+  // Раскройные маркеры ЭТОГО прогона. Едут здесь, потому что отдельного List-RPC у маркеров нет
+  // (сводки ездят на GetTechCard), а карточный список их теперь не показывает — иначе редактор
+  // не смог бы предложить ни одного маркера.
+  repeated common.TechCardMarkerSummary run_markers = 6;
+  int32 unknown_count = 7; // сколько проверок НЕ СМОГЛИ ответить; ноль ≠ «всё проверено»
+  repeated string caveats = 8;
 }
 
 // РЕЖИМ ГОТОВНОСТИ ПРОГОНА (Ф6) — the gate that judges a run that does not exist yet.
@@ -6890,6 +7006,20 @@ message CheckProductionRunReadinessRequest {
   repeated ProductionRunReadinessCell cells = 4;
   // Re-checking an EXISTING run (detail page badges). 0 = a future run. It does not change any rule;
   // it changes where actual_wastage_percent comes from for the metreage.
+  //
+  // Ф4 ADDS A SECOND MEANING TO THE SAME FIELD, and deliberately does NOT add a second field for it.
+  // The Ф4 spec (§3.5) asked for an `optional production_run_id` because it was written against a
+  // gate request that named no run at all; Ф6 landed first and this field is that identifier. A
+  // second one would be two names for one fact, which is the exact duplication the phase's own
+  // decisions forbid.
+  //
+  // Present (the run detail page) ⇒ coverage for those (colourway, slot) pairs that HAVE lays is
+  // computed FROM the lays, and their source reads LAYS; absent (the creation modal, where no run
+  // exists yet) ⇒ coverage stays NORM, exactly as today. Creation therefore never consumes lays: the
+  // Ф4→Ф6 edge stays false, and the gate's behaviour on create is unchanged.
+  //
+  // A plain int32 is honest here, unlike expected_lock_version: 0 is not a legal run id, so absence
+  // and value cannot be confused. Presence-vs-magnitude only matters where zero is a real value.
   int32 run_id = 5;
 }
 
@@ -6954,6 +7084,10 @@ enum ProductionRunCoverageSource {
   PRODUCTION_RUN_COVERAGE_SOURCE_UNSPECIFIED = 0;
   PRODUCTION_RUN_COVERAGE_SOURCE_NORM = 1; // quantities × norm
   PRODUCTION_RUN_COVERAGE_SOURCE_LAYS = 2; // Ф4: length × plies + end losses
+  // Ф4.6. A row keyed by ARTICLE may collect BOTH: one slot is covered by lays, another is not yet,
+  // and the two share an article. Silently picking one of the two sources would lie in the very
+  // signature the field exists to carry. A CONTRIBUTION is never MIXED — a contribution is one slot.
+  PRODUCTION_RUN_COVERAGE_SOURCE_MIXED = 3;
 }
 
 // Coverage BY THE NORM, per (colourway, article) pair. NOT a lay plan: lays are built after the run

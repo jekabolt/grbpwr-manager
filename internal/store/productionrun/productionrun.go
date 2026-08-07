@@ -154,19 +154,19 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 // deliberate override): folding happens inside the transaction, after the stored bases have been
 // carried over, so an unchanged article keeps the base it was booked at instead of being re-valued
 // at today's rate. fx is the rate set to fold the genuinely new/changed articles with.
-func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int, fx dto.CostingFx) error {
+func (s *Store) UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion entity.LockGuard, fx dto.CostingFx) error {
 	return s.updateProductionRun(ctx, id, r, expectedLockVersion, false, fx)
 }
 
 // UpdateProductionRunPreservingCosts reloads the stored cost articles after locking the run and
 // carries them through the full-replace. It is the cost-blind update path: any preservation read
 // failure aborts the same transaction before destructive child deletes can run.
-func (s *Store) UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error {
+func (s *Store) UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion entity.LockGuard) error {
 	return s.updateProductionRun(ctx, id, r, expectedLockVersion, true, dto.CostingFx{})
 }
 
 func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert,
-	expectedLockVersion int, preserveCosts bool, fx dto.CostingFx) error {
+	expectedLockVersion entity.LockGuard, preserveCosts bool, fx dto.CostingFx) error {
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		cur, err := storeutil.QueryNamedOne[struct {
 			Status      string `db:"status"`
@@ -183,7 +183,7 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			// received → closed is the ONE legal edit of a received run (plan 05: closing was a dead
 			// end). Status-only by construction: nothing else of the immutable run is written.
 			if cur.Status == string(entity.ProductionRunReceived) && r.Status == entity.ProductionRunClosed {
-				if expectedLockVersion > 0 && cur.LockVersion != expectedLockVersion {
+				if expectedLockVersion.Conflicts(cur.LockVersion) {
 					return entity.ErrProductionRunConflict
 				}
 				net, err := netIssuedToRun(ctx, rep.DB(), id)
@@ -217,12 +217,14 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			(r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed) {
 			return entity.ErrProductionRunPartialTerminal
 		}
-		// Optimistic lock (#9): a positive expected version that no longer matches means the run was
-		// edited concurrently — reject rather than clobber the other writer's full-replace. 0 opts out
-		// (legacy last-write-wins), so pre-existing clients are unaffected. The FOR UPDATE read above
-		// serialises this against a concurrent update, so the in-Go check is authoritative; the WHERE
-		// guard on the UPDATE is belt-and-suspenders (mirrors UpdateTechCard).
-		if expectedLockVersion > 0 && cur.LockVersion != expectedLockVersion {
+		// Optimistic lock (#9, presence-corrected in Ф6.5): a SUPPLIED expected version that no longer
+		// matches means the run was edited concurrently — reject rather than clobber the other writer's
+		// full-replace. What opts out is now the ABSENCE of a token, never its magnitude: a fresh run
+		// is born at lock_version 0, so the old `> 0` test left every run's first save unguarded and
+		// two tabs both echoing that 0 silently overwrote each other (see entity.LockGuard). The FOR
+		// UPDATE read above serialises this against a concurrent update, so the in-Go check is
+		// authoritative; the WHERE guard on the UPDATE is belt-and-suspenders (mirrors UpdateTechCard).
+		if expectedLockVersion.Conflicts(cur.LockVersion) {
 			return entity.ErrProductionRunConflict
 		}
 		// The run's style is fixed at creation: the planned-cost snapshot, the movements' denormalised
@@ -292,9 +294,9 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		}
 		params := runParams(r)
 		params["id"] = id
-		params["expected_lock_version"] = expectedLockVersion
+		params["expected_lock_version"] = expectedLockVersion.Version()
 		lockGuard := ""
-		if expectedLockVersion > 0 {
+		if expectedLockVersion.Present() {
 			lockGuard = " AND lock_version = :expected_lock_version"
 		}
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
@@ -311,8 +313,10 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 			return fmt.Errorf("failed to update production run: %w", err)
 		}
 		// The row provably exists (loaded above). With the lock guard present, 0 rows means the version
-		// moved under us — make the WHERE guard load-bearing, not just the in-Go check.
-		if expectedLockVersion > 0 && rows == 0 {
+		// moved under us — make the WHERE guard load-bearing, not just the in-Go check. This is NOT the
+		// RowsAffected-counts-changed-rows trap: the statement always writes lock_version + 1, so a
+		// matched row can never report 0 changed rows however byte-identical the rest of the save is.
+		if expectedLockVersion.Present() && rows == 0 {
 			return entity.ErrProductionRunConflict
 		}
 		// Status transitions leave an attributed audit fact (Phase 8): started (→ in_progress),

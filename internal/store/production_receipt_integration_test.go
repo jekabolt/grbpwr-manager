@@ -205,7 +205,7 @@ func TestProductionReceiptCommand(t *testing.T) {
 		require.NoError(t, err)
 		run.Lines[0].DefectQty = sql.NullInt64{Int64: 1, Valid: true}
 		params := receiptParamsFromStored(t, run, false, false)
-		params.ExpectedLockVersion = run.LockVersion + 41 // counted against a version that never was
+		params.ExpectedLockVersion = entity.LockVersion(run.LockVersion + 41) // counted against a version that never was
 		_, err = P.PostProductionRunReceipt(ctx, params)
 		require.ErrorIs(t, err, entity.ErrProductionRunConflict)
 	})
@@ -269,7 +269,7 @@ func TestProductionReceiptLineDiffDB(t *testing.T) {
 	}
 	require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunPlanned, Lines: swapped,
-	}, 0))
+	}, entity.NoLockVersion()))
 	after := load()
 	require.Len(t, after, 2)
 	require.Equal(t, before, idsByKey(after), "row ids survive a slot swap")
@@ -282,7 +282,7 @@ func TestProductionReceiptLineDiffDB(t *testing.T) {
 	}
 	require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, &entity.ProductionRunInsert{
 		TechCardId: tcID, Status: entity.ProductionRunPlanned, Lines: survivors,
-	}, 0))
+	}, entity.NoLockVersion()))
 	final := load()
 	require.Len(t, final, 2)
 	require.Contains(t, idsByKey(final), after[0].LineKey)

@@ -43,7 +43,7 @@ func TestComputeProductionRunMaterialPlan_MarkerRowSkipsRunOverride(t *testing.T
 
 	// Marker row, no override: required = 2×10 = 20 flat — the BOM estimate 5% must not apply.
 	run := &entity.ProductionRun{Id: 9, ProductionRunInsert: entity.ProductionRunInsert{TechCardId: 7, Lines: lines}}
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, nil)
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, nil, nil)
 	require.Len(t, resp.Rows, 1)
 	require.Equal(t, "20", resp.Rows[0].Required.Value, "marker row must not gross by the BOM estimate")
 
@@ -52,7 +52,7 @@ func TestComputeProductionRunMaterialPlan_MarkerRowSkipsRunOverride(t *testing.T
 	runOverride := &entity.ProductionRun{Id: 9, ProductionRunInsert: entity.ProductionRunInsert{
 		TechCardId: 7, Lines: lines, ActualWastagePercent: nd2("8"),
 	}}
-	resp = ComputeProductionRunMaterialPlan(runOverride, card, nil, nil, nil)
+	resp = ComputeProductionRunMaterialPlan(runOverride, card, nil, nil, nil, nil)
 	require.Len(t, resp.Rows, 1)
 	require.Equal(t, "20", resp.Rows[0].Required.Value, "run ACTUAL override must not re-gross a marker row")
 }

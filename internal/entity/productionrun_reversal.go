@@ -86,10 +86,11 @@ type ProductCostReseed struct {
 // refusal and the tech-card reseed figures; the store owns every stateful precondition under the
 // run lock (the lock is also the idempotency guard: "unreversed receipt" can hold only once).
 type ReverseProductionRunReceiptParams struct {
-	RunID               int
-	ReceiptID           int
-	Reason              string
-	ExpectedLockVersion int
+	RunID     int
+	ReceiptID int
+	Reason    string
+	// The run version the operator saw. PRESENCE-carrying (Ф6.5) — see PostProductionRunReceiptParams.
+	ExpectedLockVersion LockGuard
 	Username            string
 	// Tech-card reseed inputs (plan 05 item 5): per-product estimate from the run's card as the
 	// handler read it — deliberately NOT lock-version-fenced (removing the dead run claim beats

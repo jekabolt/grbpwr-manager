@@ -17,8 +17,10 @@ import (
 // «Дом настроек цеха» (Ф2.5, 0272). Four phases of the production-cutting plan each said a value
 // "should come from a workshop setting" and none of them built a place for one; this is the place.
 // Первый жилец is the cutting table length — a property of the ЦЕХ that the nesting modal has been
-// making the operator retype on every раскладка. Ф3.2 (припуск), Ф4.8 (высота стопки) and
-// 08-cut-out (минимальный зазор) move in as further typed fields on the same two RPCs.
+// making the operator retype on every раскладка. Ф3.2 (припуск), Ф6.9 (режим гейта) and Ф4.8 (предел
+// высоты стопки) have since moved in as further typed fields on these same two RPCs — neither
+// handler needed a line changed for any of them, which is the point of patching by presence in the
+// dto/store rather than field by field here. 08-cut-out (минимальный зазор) lands the same way.
 
 // GetWorkshopSettings returns the shop-floor configuration. Never NotFound: a workshop that has
 // configured nothing yet is a legitimate state and reads as an all-absent settings object.

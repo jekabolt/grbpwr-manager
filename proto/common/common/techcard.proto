@@ -825,6 +825,27 @@ message Material {
   // READ-ONLY (Ф5а.3): the vocabulary normalisation of `unit`. Ignored on write — set `unit`.
   // UNKNOWN = the free text does not map to any known unit, and must not be read as "no unit".
   MaterialUnit unit_code = 32;
+  // fabric_thickness_mm (Ф4.8) — толщина полотна В ОДИН СЛОЙ, in MILLIMETRES. The article-side half
+  // of the предел стопки: stack_height_cm = Σ plies × fabric_thickness_mm / 10, checked against the
+  // workshop's WorkshopSettings.max_stack_height_cm. Ranges are a hint, not a taxonomy: шифон
+  // 0.1-0.2, поплин ~0.3, драп 1.5-2.5. Accepted band (0, 50].
+  //
+  // ABSENT MEANS «НЕ ЗАМЕРЕНО», AND THAT IS NOT ZERO. A нулевая толщина would make every lay
+  // 0 cm tall and therefore "fits" — a confident verdict built on nothing, which is precisely the
+  // failure «нет толщины — нет проверки, не догадка» forbids. A consumer with no thickness must
+  // report UNKNOWN and withhold the height entirely, prompting «толщина ткани не задана на артикуле
+  // — замерьте, и высота стопки начнёт проверяться». There is deliberately no default «по классу
+  // ткани»: that taxonomy does not exist and inventing one to feed a guess is the disease this
+  // avoids (same argument as cutting_coefficient above).
+  //
+  // WRITE SEMANTICS — three states, verbatim the same as cutting_coefficient, its neighbour on the
+  // article, and for the same reason (a stale admin tab, or any bundle from the window between the
+  // backend and client deploys, sends nothing and must not erase a measurement somebody took with
+  // calipers — silently, on a catalogue with neither a signed digest nor an edit journal):
+  //   * field ABSENT (null)        → LEAVE AS IS.
+  //   * field PRESENT, value ""    → CLEAR it (store NULL).
+  //   * field PRESENT with a value → set it.
+  google.type.Decimal fabric_thickness_mm = 33;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the
@@ -965,7 +986,13 @@ message TechCardSizeQuantity {
 // library. The file type is carried by the url's extension (.pdf / .dxf), which the
 // server derives from the uploaded bytes — there is no separate content-type field.
 message TechCardSizePattern {
-  int32 size_id = 1; // FK size(id); must be one of TechCardInsert.size_ids
+  // size_id is the size the sheet is FILED UNDER, and 0 means it is filed under none — the sheet is
+  // graded and its sizes live in the DXF's block names, which only the client reads. A non-zero
+  // value must be one of TechCardInsert.size_ids; 0 is accepted whatever the size range is,
+  // INCLUDING an empty one, which is what lets a pattern reach a card before its grade is decided.
+  // Nothing on the server reads this field to decide anything: coverage («есть ли выкройка на этот
+  // размер») is answered by the pattern size index, not by this column.
+  int32 size_id = 1;
   string url = 2; // CDN url of the uploaded PDF/DXF (required)
   string filename = 3; // original filename, for display / download
   int64 size_bytes = 4; // file size in bytes (0 = unknown)
@@ -1859,6 +1886,11 @@ message TechCardMarkerSummary {
   // answer everywhere instead of a different one per screen. Readers disagreeing would be worse
   // than two norms; readers agreeing SILENTLY would be worse than saying so.
   string norm_conflict = 35;
+
+  // Прогон, которому принадлежит РАСКРОЙНЫЙ маркер (Ф4.2, migration 0282); 0 = карточный (норма и
+  // все сегодняшние). Только на выход. Карточные списки такие маркеры не показывают вовсе, поэтому
+  // увидеть ненулевое значение можно ровно в одном месте — ListProductionRunLays.run_markers.
+  int32 production_run_id = 36;
 }
 
 // TechCardMarkerPieceSetStatus compares a раскладка's stored fingerprint of the card's cut-piece set
@@ -2032,6 +2064,15 @@ message TechCardMarkerInsert {
   // «flipping was forbidden». Inferring would OVERSTATE strictness and let the «не хуже» rule pass a
   // marker that was in fact free to flip.
   optional bool allow_flip = 21;
+
+  // Сделать маркер РАСКРОЙНЫМ для этого прогона (Ф4.2, migration 0282). 0 = карточный.
+  // НЕИЗМЕНЯЕМО после создания: перевод карточного маркера в прогонный (и обратно) переносит право
+  // на его жизнь — раскройный умирает вместе с прогоном по FK CASCADE — а вместе с этим правом
+  // меняется смысл ссылок из секций настила. Кому надо — копирует.
+  //
+  // Раскройный маркер не может быть нормой: CHECK chk_tcm_run_not_norm держит это инвариантом, а не
+  // соглашением, поэтому смерть прогона физически не может унести норму карточки.
+  int32 production_run_id = 22;
 }
 
 // TechCardMarkerLayout is the self-contained geometry of a marker, stored as an opaque proto-JSON

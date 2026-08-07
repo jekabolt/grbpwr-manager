@@ -111,9 +111,12 @@ type ProductionRunReceiptLineInput struct {
 type PostProductionRunReceiptParams struct {
 	RunID               int
 	Lines               []ProductionRunReceiptLineInput
-	IdempotencyKey      string
-	RequestHash         string
-	ExpectedLockVersion int
+	IdempotencyKey string
+	RequestHash    string
+	// The run version the operator counted against. PRESENCE-carrying (Ф6.5): a supplied 0 is a real
+	// expectation (a fresh run reports 0), an absent token is the legacy opt-out. Its zero value is
+	// absent, so any construction site that does not set it keeps the pre-Ф6.5 behaviour.
+	ExpectedLockVersion LockGuard
 	Note                string
 	UpdateCostPrice     bool
 	Username            string

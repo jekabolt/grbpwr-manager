@@ -746,8 +746,25 @@ type (
 		// lock_version bump — see the store), refusing an incomplete layout (ErrMarkerIncomplete), a
 		// released card, a size outside the card's range or an unknown bom_line_key. GetMarker is
 		// the only read carrying the layout blob; summaries ride GetTechCardById.
+		//
+		// ins.ProductionRunId decides OWNERSHIP (run_id, 0282) and is written on CREATE ONLY: a save
+		// that would move an existing раскладка between the card and a прогон is refused as a field
+		// violation, because ownership is what decides whether the row dies with a run and whether a
+		// секция настила may stand on it. Whoever needs the other kind copies the geometry (Р2).
+		// GetTechCardById's markers, the card list's marker badge and the Ф1.8 direction report all
+		// count КАРТОЧНЫЕ раскладки only; a run's are read through ListRunMarkers below.
 		SaveMarker(ctx context.Context, techCardID, id int, ins entity.TechCardMarkerInsert, username string) (int, error)
 		GetMarker(ctx context.Context, id int) (*entity.TechCardMarker, error)
+		// ListRunMarkers returns the РАСКРОЙНЫЕ раскладки of ONE production run (tech_card_marker.run_id,
+		// 0282) WITHOUT their layout blobs — the set the lay editor picks a section's marker from, and the
+		// only read that returns them at all (a run's markers are hidden from the card's list). The
+		// geometry of the markers a lay actually names is fetched through GetMarker and memoised per
+		// marker_id by the caller.
+		ListRunMarkers(ctx context.Context, runID int) ([]entity.TechCardMarkerSummary, error)
+		// DeleteMarker removes a раскладка. Refuses on a released card, and — since Ф4 — on a
+		// раскладка a секция настила stands on (ErrMarkerUsedByLay, wrapped with the настилы BY NAME).
+		// That guard is the application's RESTRICT: fk_prlays_marker is CASCADE and must be, or
+		// deleting a run would depend on InnoDB's cascade order.
 		DeleteMarker(ctx context.Context, id int) error
 		// SetMarkerNorm designates one раскладка as the НОРМИРОВОЧНАЯ one for its cloth (Ф3.4), or
 		// clears it, and returns the id of the previous norm of the SAME cloth (0 = there was none).
@@ -795,10 +812,12 @@ type (
 		CreateProductionRun(ctx context.Context, r *entity.ProductionRunInsert) (int, error)
 		// UpdateProductionRun expects the incoming cost articles UNFOLDED: it preserves each
 		// unchanged article's stored amount_base under the run lock, then folds the rest with fx.
-		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int, fx dto.CostingFx) error
+		// expectedLockVersion carries PRESENCE (entity.LockGuard): a supplied version is enforced
+		// even at 0, and only an absent one keeps the legacy last-write-wins.
+		UpdateProductionRun(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion entity.LockGuard, fx dto.CostingFx) error
 		// UpdateProductionRunPreservingCosts performs the same update but reloads and carries stored
 		// cost articles under the run's FOR UPDATE lock, for callers without costing write access.
-		UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion int) error
+		UpdateProductionRunPreservingCosts(ctx context.Context, id int, r *entity.ProductionRunInsert, expectedLockVersion entity.LockGuard) error
 		DeleteProductionRun(ctx context.Context, id int) error
 		GetProductionRun(ctx context.Context, id int) (*entity.ProductionRun, error)
 		ListProductionRuns(ctx context.Context, limit, offset int, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, int, error)
@@ -823,6 +842,27 @@ type (
 		// The run lock is the idempotency guard: an already-reversed receipt returns
 		// entity.ErrProductionRunReceiptAlreadyReversed.
 		ReverseProductionRunReceipt(ctx context.Context, params entity.ReverseProductionRunReceiptParams) (*entity.ReverseProductionRunReceiptResult, error)
+
+		// НАСТИЛЫ (Ф4, migration 0281). Deliberately THREE commands of their own rather than a field
+		// of the run's payload: a full replace of the run's children on every run save is what killed
+		// production_run_marker (0119, dropped by 0243), and UpdateProductionRun stays unable to touch
+		// a lay because it does not know lays exist.
+		//
+		// SaveLay addresses EXACTLY ONE lay by its key: a lay the payload does not mention is not
+		// touched, and only DeleteLay removes one. Inside that lay the sections are diffed by
+		// section_key — a section whose ply count changed keeps its id, so Ф5б can hang the
+		// consumption fact and the cutting receipt off it. expectedLockVersion is enforced by
+		// PRESENCE: an absent token on an existing lay is entity.ErrProductionRunLayConflict, with no
+		// legacy opt-out. reaffirm recomputes the quantity snapshot without a section edit; a
+		// note-only save leaves it (and the stale badge) alone.
+		SaveLay(ctx context.Context, runID int, ins entity.ProductionRunLayInsert,
+			expectedLockVersion entity.LockGuard, reaffirm bool, username string) (entity.ProductionRunLay, error)
+		// DeleteLay removes one lay and its sections. entity.ErrProductionRunLayNotFound when the run
+		// does not hold that key.
+		DeleteLay(ctx context.Context, runID int, layKey string) error
+		// ListLays returns the run's whole lay plan. Applicable=false (with a reason) for an auxiliary
+		// card — stated explicitly, because an empty list reads as an invitation to build one.
+		ListLays(ctx context.Context, runID int) (entity.ProductionRunLayList, error)
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with

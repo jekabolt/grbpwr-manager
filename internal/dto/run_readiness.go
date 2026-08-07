@@ -321,7 +321,13 @@ func (b *runReadinessBuilder) materialPlan() *pb_admin.GetProductionRunMaterialP
 			Lines:                runReadinessLines(b.in.Cells),
 		},
 	}
-	return ComputeProductionRunMaterialPlan(run, b.card, b.in.OnHand, b.in.Issued, b.card.LinkedMaterials)
+	// NO НАСТИЛЫ HERE, AND THAT IS NOT AN OMISSION (Ф4.6 §3.5). The run this gate judges is
+	// SYNTHETIC — assembled out of the request, with no id — so there is no lay plan that could
+	// belong to it: настилы are built afterwards, on the detail page. The источник is therefore NORM
+	// always, which is exactly what the modal's heading «оценка по норме» claims. Switching an
+	// existing run's gate onto its настилы needs `optional production_run_id` on the REQUEST, and
+	// that is Ф6's edit, not a nil this file may quietly fill in.
+	return ComputeProductionRunMaterialPlan(run, b.card, b.in.OnHand, b.in.Issued, b.card.LinkedMaterials, nil)
 }
 
 // runReadinessLines turns the request grid into plan lines. Zero and negative quantities are kept

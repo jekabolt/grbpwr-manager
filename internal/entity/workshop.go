@@ -14,8 +14,8 @@ import (
 // Первый жилец is the cutting table length. Until now the nesting modal made the operator type it in
 // on every single раскладка even though it never changes between them; it is a property of the ЦЕХ,
 // so it lives here and the раскладка merely overrides it when a particular lay is spread elsewhere.
-// Ф3.2 (припуск по умолчанию), Ф4.8 (предел высоты стопки) and 08-cut-out (минимальный зазор) move
-// in next, each as its own typed column.
+// Ф3.2 (припуск по умолчанию), Ф6.9 (режим гейта готовности) and Ф4.8 (предел высоты стопки) have
+// since moved in, each as its own typed column; 08-cut-out (минимальный зазор) is the next tenant.
 type WorkshopSettings struct {
 	// CuttingTableLengthCm is the usable length of the cutting/spreading table, in centimetres.
 	//
@@ -52,8 +52,35 @@ type WorkshopSettings struct {
 	// unset→report-only reading exists in exactly one place.
 	RunReadinessBlocking sql.NullBool `db:"run_readiness_blocking"`
 
+	// MaxStackHeightCm is the ПРЕДЕЛ ВЫСОТЫ СТОПКИ, in centimetres (Ф4.8, 0283) — the fourth tenant,
+	// and the house rule returns to normal after the one above broke it: INVALID (NULL) means «not
+	// configured» and therefore NO VERDICT, never a comparison against zero.
+	//
+	// CENTIMETRES, NOT A PLY COUNT, and that is why it belongs to the room rather than to a marker:
+	// 30 слоёв шифона is 2 cm and 30 слоёв драпа is 30 cm, so a ply limit would mean four different
+	// things on four fabrics. What actually stops the лежание is the blade, and a blade cuts a HEIGHT.
+	//
+	// ONE limit for the whole shop (решение Р5). Пер-ножевые пределы are a refinement with no data
+	// behind it today, and this house does not create a column nothing can fill. The article's half of
+	// the check is Material.FabricThicknessMm; either half missing ⇒ UNKNOWN.
+	MaxStackHeightCm decimal.NullDecimal `db:"max_stack_height_cm"`
+
 	UpdatedBy string    `db:"updated_by"`
 	UpdatedAt time.Time `db:"updated_at"`
+}
+
+// EffectiveMaxStackHeightCm is the shop's stack-height limit, or INVALID when none is configured.
+// The invalid answer is the whole point and must be carried through to the operator as «предел
+// стопки не настроен» with a way to go and set it — a caller that folds it to zero turns «мы этого
+// не знаем» into «ни один настил не проходит».
+//
+// A stored value at or below zero reads as unset: the named CHECK in 0283 already refuses it, and
+// this guards in-memory rows that never went through the column.
+func (s *WorkshopSettings) EffectiveMaxStackHeightCm() decimal.NullDecimal {
+	if s == nil || !s.MaxStackHeightCm.Valid || s.MaxStackHeightCm.Decimal.LessThanOrEqual(decimal.Zero) {
+		return decimal.NullDecimal{}
+	}
+	return s.MaxStackHeightCm
 }
 
 // WorkshopSettingsPatch is a PARTIAL write of the workshop settings: a nil field means the request
@@ -83,6 +110,11 @@ type WorkshopSettingsPatch struct {
 	// that never touched the switch is distinguishable from one that turned it off deliberately, which
 	// is an audit fact, not a behavioural one.
 	RunReadinessBlocking *bool
+	// MaxStackHeightCm (Ф4.8) is three-state like its decimal neighbours above. The middle state is
+	// load-bearing here too: a shop that typed 3 when it meant 30 must be able to go back to «не
+	// настроено», because a wrong limit fails настилы that are perfectly fine while an unset one
+	// simply declines to judge them.
+	MaxStackHeightCm *decimal.NullDecimal
 }
 
 // IsEmpty reports whether the patch names no setting at all. Such a request is rejected rather than
@@ -94,7 +126,8 @@ type WorkshopSettingsPatch struct {
 // refused with «name at least one setting» while the client is quite sure it named one.
 // TestWorkshopSettingsPatchIsEmptyCoversEveryField holds the line by reflection.
 func (p WorkshopSettingsPatch) IsEmpty() bool {
-	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceCm == nil && p.RunReadinessBlocking == nil
+	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceCm == nil &&
+		p.RunReadinessBlocking == nil && p.MaxStackHeightCm == nil
 }
 
 // Plausibility band for a cutting/spreading table length, in centimetres.
@@ -140,6 +173,48 @@ func ValidateCuttingTableLengthCm(v decimal.NullDecimal) error {
 	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxCuttingTableLengthCm)) {
 		return NewFieldViolation(field, "implausibly_long", v.Decimal.String(),
 			"the value is in CENTIMETRES and the longest spreading tables that exist are about 50 m (5000); check for a stray zero or millimetres")
+	}
+	return nil
+}
+
+// Plausibility band for the предел высоты стопки, in centimetres (Ф4.8).
+//
+// The ceiling is repeated verbatim by the named CHECK chk_workshop_settings_stack_height in 0283 —
+// the two must move together. The longest straight knife reaches about 30 cm, so 100 is not «бывает
+// редко», it is «столько не бывает»: past it the input is a unit mistake, not a workshop.
+//
+// There is NO floor beyond «positive», unlike the table length, and the asymmetry is deliberate. The
+// table's floor exists because metres typed into a centimetre field (6 for a 6 m table) is both
+// likely and silently catastrophic. Here the analogous slip has no room to hide: a stack limit is a
+// single-digit-to-low-double-digit number in centimetres already, so any floor worth writing would
+// start rejecting real workshops — 2 cm is a perfectly honest limit for someone cutting chiffon with
+// a light blade.
+const MaxStackHeightCm = 100
+
+// ValidateMaxStackHeightCm checks an incoming stack limit against the band above. An INVALID (unset)
+// value is accepted: clearing the setting is legal and is the ONLY way to say «у нас нет предела».
+//
+// ZERO IS REFUSED, and this is the fork where this setting sides with the table length rather than
+// with the seam allowance. A 0 cm allowance states something real («наши выкройки несут линию
+// кроя»); a 0 cm stack limit states that no настил may ever be laid, which is not a configuration
+// anybody means to enter. The way to stop the check is to remove the limit, not to set it to a
+// number that fails everything — the first withholds a verdict, the second manufactures a false one.
+func ValidateMaxStackHeightCm(v decimal.NullDecimal) error {
+	const field = "max_stack_height_cm"
+	if !v.Valid {
+		return nil
+	}
+	if v.Decimal.Exponent() < -2 {
+		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
+			"round to at most 2 decimal places — the column stores no more, so the extra digits would be lost silently")
+	}
+	if v.Decimal.LessThanOrEqual(decimal.Zero) {
+		return NewFieldViolation(field, "must_be_positive", v.Decimal.String(),
+			"enter the limit in centimetres; to record that the workshop has no stack limit, clear the setting instead of entering 0 — an unset limit withholds the verdict, a zero one fails every настил")
+	}
+	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxStackHeightCm)) {
+		return NewFieldViolation(field, "implausibly_tall", v.Decimal.String(),
+			"the value is in CENTIMETRES and the longest cutting knives reach about 30 cm, so anything past 100 is a unit mistake")
 	}
 	return nil
 }

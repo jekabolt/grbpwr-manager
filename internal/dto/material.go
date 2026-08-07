@@ -147,6 +147,33 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 			return nil, err
 		}
 	}
+	// Толщина полотна (Ф4.8) — ПРИСУТСТВИЕ, а не значение, три состояния, буква в букву как у
+	// коэффициента выше и по той же причине: одна вкладка со старым бандлом СТЁРЛА БЫ замер, сделанный
+	// штангенциркулем, и стёрла бы бесследно. Absent ≠ empty ≠ value.
+	//
+	// НОЛЬ ОТВЕРГАЕТСЯ ЯВНО, и это не косметика: нулевая толщина даёт стопку 0 см, то есть «влезает
+	// всегда» — вердикт, собранный из отсутствующих данных. Снять толщину можно только очисткой поля,
+	// и тогда высота честно не считается вовсе.
+	fabricThicknessOmitted := pb.FabricThicknessMm == nil
+	fabricThickness, err := nullDecimalFromPb(pb.FabricThicknessMm)
+	if err != nil {
+		return nil, fmt.Errorf("material fabric_thickness_mm: %w", err)
+	}
+	if fabricThickness.Valid {
+		if fabricThickness.Decimal.LessThanOrEqual(decimal.Zero) {
+			return nil, fmt.Errorf("material fabric_thickness_mm must be greater than 0 — to record that the thickness was never measured, clear the field instead of sending 0 (a zero thickness would make every stack 0 cm tall and pass every limit)")
+		}
+		if fabricThickness.Decimal.GreaterThan(decimal.NewFromInt(50)) {
+			return nil, fmt.Errorf("material fabric_thickness_mm must be at most 50 mm — the value is in MILLIMETRES for ONE ply (шифон 0.1-0.2, поплин 0.3, драп 1.5-2.5)")
+		}
+		// DECIMAL(6,3): MySQL rounds 0.1234 to 0.123 in silence and hands that back, so the operator's
+		// measurement and the planner's would differ with nothing anywhere saying so. Same argument as
+		// the coefficient's scale check one field up. (limit 1000 = the three integer digits the column
+		// has; the 50 mm rule above is the tighter real bound.)
+		if err := validateDecimalScale(fabricThickness, "material fabric_thickness_mm", 3, 1000); err != nil {
+			return nil, err
+		}
+	}
 	if len(pb.Code) > maxVarchar64 {
 		return nil, fmt.Errorf("material code must be at most %d characters", maxVarchar64)
 	}
@@ -179,6 +206,8 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 		// would let an older bundle, which sends the enum's proto3 default, silently clear a unit.
 		CuttingCoefficient:        cuttingCoefficient,
 		CuttingCoefficientOmitted: cuttingCoefficientOmitted,
+		FabricThicknessMm:         fabricThickness,
+		FabricThicknessMmOmitted:  fabricThicknessOmitted,
 		Code:                      nullStringFromPb(pb.Code),
 		Color:                     nullStringFromPb(pb.Color),
 		Pantone:                   nullStringFromPb(pb.Pantone),
@@ -373,7 +402,11 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		// Ф5а.2 — unset stays unset. A material with no coefficient must NOT read as 1.0 either: the
 		// UI has to be able to tell "nobody has decided yet" from "somebody decided it is 1".
 		CuttingCoefficient: pbDecimalFromNull(m.CuttingCoefficient),
-		Archived:           m.Archived,
+		// Ф4.8 — unset stays unset, and here the difference is not merely informational: an article
+		// that reads back as 0 mm would let the lay path compute a 0 cm stack that "fits", instead of
+		// telling the operator to go and measure the cloth.
+		FabricThicknessMm: pbDecimalFromNull(m.FabricThicknessMm),
+		Archived:          m.Archived,
 		Code:               pbStringFromNull(m.Code),
 		Color:              pbStringFromNull(m.Color),
 		Pantone:            pbStringFromNull(m.Pantone),

@@ -55,12 +55,15 @@ type FabricDirectionGapLine struct {
 	// direction of sample cloth for SAMPLE раскладки, so a report that dropped these rows would read
 	// «done» while a sample раскладка still refused to save.
 	IsSample bool
-	// BlockedMarkerCount — раскладки bound to THIS line: an UPPER bound on what the rule refuses
-	// here, never a count of refusals. ValidateMarkerFabricDirection lets a layout through BEFORE it
-	// asks about the cloth when that layout carries neither a 180° nor a mirror — nothing upside
-	// down means no direction can change the verdict — so a marker counted here may keep saving
+	// BlockedMarkerCount — КАРТОЧНЫЕ раскладки bound to THIS line: an UPPER bound on what the rule
+	// refuses here, never a count of refusals. ValidateMarkerFabricDirection lets a layout through
+	// BEFORE it asks about the cloth when that layout carries neither a 180° nor a mirror — nothing
+	// upside down means no direction can change the verdict — so a marker counted here may keep saving
 	// exactly as it does today. Separating the two needs the layout blob, and the store does not
 	// parse it by design (0257); an over-count is the honest thing to publish, provided it says so.
+	//
+	// РАСКРОЙНЫЕ раскладки (tech_card_marker.run_id IS NOT NULL, Ф4/0282) are NOT counted — see
+	// FabricDirectionGapCard.LinkedMarkerCount for the reason, which is the same one.
 	BlockedMarkerCount int
 }
 
@@ -74,12 +77,22 @@ type FabricDirectionGapCard struct {
 	Name          string
 	Stage         string
 	ApprovalState string
-	// LinkedMarkerCount — раскладки bound to any BOM line of this card: every marker a gap on THIS
-	// card could possibly refuse, because a marker's scope is built out of the card's own lines and
-	// an unlinked раскладка has no cloth at all. Over-inclusive by construction and chosen for it —
-	// this is the only count here with NO FALSE NEGATIVES, which is what a triage tier needs. See
+	// LinkedMarkerCount — КАРТОЧНЫЕ раскладки bound to any BOM line of this card, and КАРТОЧНЫЕ IS
+	// PART OF THE DEFINITION, not a footnote: every marker a gap on THIS card could possibly refuse,
+	// because a marker's scope is built out of the card's own lines and an unlinked раскладка has no
+	// cloth at all. Over-inclusive within that population and chosen for it — it is the only count
+	// here with NO FALSE NEGATIVES, which is what a triage tier needs. See
 	// BuildFabricDirectionGapReport for why the tier is drawn on it rather than on the sharper
 	// BlockedMarkerCount.
+	//
+	// РАСКРОЙНЫЕ РАСКЛАДКИ ПРОГОНОВ СЮДА НЕ ВХОДЯТ (tech_card_marker.run_id IS NOT NULL, Ф4/0282,
+	// решение Р6), and anybody reading this number is entitled to know that rather than to infer it.
+	// This report is the кампания Д1 worklist over CARDS; a раскройная раскладка is taken for one
+	// прогон, dies with it by FK CASCADE, and takes its направление from the very BOM line already
+	// listed here. Counting them would make a card's number climb with every run and never fall, and
+	// would rank cards as urgent on the strength of markers that delete themselves. So this is not
+	// «сколько раскладок у карточки» — it is «сколько КАРТОЧНЫХ раскладок ткань этой карточки может
+	// отбить», and a screen printing it should say карточных.
 	LinkedMarkerCount int
 	HasPatterns       bool
 	Lines             []FabricDirectionGapLine

@@ -93,3 +93,93 @@ func TestWorkshopSettingsPatchIsEmpty(t *testing.T) {
 		t.Error("a patch that sets a setting is not empty")
 	}
 }
+
+func TestValidateMaxStackHeightCm(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      decimal.NullDecimal
+		wantErr bool
+		reason  string
+	}{
+		// Clearing is legal and is the ONLY way to say «предела нет» — see the zero case below.
+		{name: "unset is accepted", in: decimal.NullDecimal{}},
+		{name: "chiffon shop with a light blade", in: wsND("2")},
+		{name: "typical straight knife", in: wsND("15")},
+		{name: "the longest knives", in: wsND("30")},
+		{name: "ceiling boundary", in: wsND("100")},
+		{name: "two decimals", in: wsND("12.50")},
+
+		// A 0 cm limit fails every настил ever laid. «У нас нет предела» is said by CLEARING the
+		// setting — that withholds the verdict, where a zero manufactures a false one.
+		{name: "zero refuses every lay", in: wsND("0"), wantErr: true, reason: "must_be_positive"},
+		{name: "negative", in: wsND("-1"), wantErr: true, reason: "must_be_positive"},
+		{name: "millimetres typed as centimetres", in: wsND("150"), wantErr: true, reason: "implausibly_tall"},
+		{name: "stray zero", in: wsND("3000"), wantErr: true, reason: "implausibly_tall"},
+		// DECIMAL(6,2) would silently round a third digit away on the round trip.
+		{name: "over-precise", in: wsND("15.005"), wantErr: true, reason: "too_many_decimal_places"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMaxStackHeightCm(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected a rejection, got nil")
+				}
+				ve, ok := err.(*ValidationError)
+				if !ok {
+					t.Fatalf("expected *ValidationError, got %T", err)
+				}
+				if ve.Field != "max_stack_height_cm" {
+					t.Errorf("field = %q, want max_stack_height_cm", ve.Field)
+				}
+				if ve.Reason != tc.reason {
+					t.Errorf("reason = %q, want %q", ve.Reason, tc.reason)
+				}
+				if ve.HowToFix == "" {
+					t.Error("a rejection must tell the operator how to fix it")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected rejection: %v", err)
+			}
+		})
+	}
+}
+
+// The plausibility band must stay inside the DB CHECK of migration 0283, or a value Go accepts would
+// be refused by MySQL as a raw 500 instead of a readable field violation.
+func TestMaxStackHeightBandFitsTheColumnCheck(t *testing.T) {
+	if MaxStackHeightCm != 100 {
+		t.Errorf("ceiling %d drifted from chk_workshop_settings_stack_height in 0283 (100); move both together",
+			MaxStackHeightCm)
+	}
+}
+
+// EffectiveMaxStackHeightCm is the ONE place «не настроено» is decided, and it must never hand back a
+// number a caller could compare against: an unset limit means the verdict is withheld, not that every
+// настил fails.
+func TestEffectiveMaxStackHeightCmWithholdsRatherThanZeroes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    decimal.NullDecimal
+		valid bool
+	}{
+		{name: "never configured", in: decimal.NullDecimal{}},
+		{name: "zero is not a limit", in: wsND("0")},
+		{name: "negative is not a limit", in: wsND("-5")},
+		{name: "configured", in: wsND("15"), valid: true},
+	} {
+		s := &WorkshopSettings{MaxStackHeightCm: tc.in}
+		if got := s.EffectiveMaxStackHeightCm(); got.Valid != tc.valid {
+			t.Errorf("%s: valid = %v, want %v (%+v)", tc.name, got.Valid, tc.valid, got)
+		}
+	}
+	if (&WorkshopSettings{}).EffectiveMaxStackHeightCm().Valid {
+		t.Error("an empty settings row configures nothing")
+	}
+	if (*WorkshopSettings)(nil).EffectiveMaxStackHeightCm().Valid {
+		t.Error("a nil settings row must read as «не настроено», not panic")
+	}
+}
+

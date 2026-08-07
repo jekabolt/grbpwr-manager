@@ -37,6 +37,12 @@ func WorkshopSettingsToPb(s *entity.WorkshopSettings) *pb_admin.WorkshopSettings
 		v := s.RunReadinessBlocking.Bool
 		out.RunReadinessBlocking = &v
 	}
+	// Ф4.8. Absent when unconfigured, and this one has teeth: a consumer that received "0" would
+	// compute «предел 0 см» and fail every настил in the shop, where an absent field makes it withhold
+	// the height verdict entirely and tell the operator which half is missing.
+	if s.MaxStackHeightCm.Valid {
+		out.MaxStackHeightCm = &pb_decimal.Decimal{Value: s.MaxStackHeightCm.Decimal.String()}
+	}
 	if !s.UpdatedAt.IsZero() {
 		out.UpdatedAt = timestamppb.New(s.UpdatedAt)
 	}
@@ -64,6 +70,14 @@ func WorkshopSettingsPatchFromPb(req *pb_admin.UpdateWorkshopSettingsRequest) (e
 		return p, err
 	}
 	p.DefaultSeamAllowanceCm = seam
+	// Ф4.8 — same tri-state, same helper. Going through presentNullDecimal rather than the shared
+	// nullDecimalFromPb is the whole safety of this screen: the latter folds nil and "" together, and a
+	// workshop tab from before this setting existed sends nil on every save of the table length.
+	stack, err := presentNullDecimal(req.MaxStackHeightCm, "max_stack_height_cm")
+	if err != nil {
+		return p, err
+	}
+	p.MaxStackHeightCm = stack
 	// Ф6.9 — presence carried by proto3 `optional`, which is the ONLY reason this is safe to add. On
 	// a bare bool, «did not send it» and «turn it off» are the same bytes, and a workshop tab holding
 	// a bundle from before this field existed would disable the gate on every unrelated save.

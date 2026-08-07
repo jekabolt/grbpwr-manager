@@ -55,6 +55,21 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	if req.GetId() < 0 {
 		return nil, status.Error(codes.InvalidArgument, "id must not be negative")
 	}
+	// РАСКРОЙНЫЙ МАРКЕР ТРЕБУЕТ ЕЩЁ И production:write (решение Р3). The RBAC map holds
+	// tech_cards:write for this method and can hold only one section per method, so the second half of
+	// the requirement is checked here — the precedent is PostProductionRunReceipt, which needs
+	// products:write on top of its mapped production:write.
+	//
+	// A marker taken FOR A RUN is a cutting-floor artefact: it is built against that run's cloth, it is
+	// hidden from the card's lists, and it dies with the run. Somebody who may edit tech cards but not
+	// run production has no business minting one — and, more sharply, a section of a настил may point
+	// only at such a marker, so this field is the entrance to the production plan.
+	//
+	// The half that the RBAC map cannot see is pinned by a test
+	// (TestSaveTechCardMarkerRunOwnershipNeedsProductionWrite): an invisible rule drifts.
+	if req.GetMarker().GetProductionRunId() != 0 && !productionWriteAccess(ctx) {
+		return nil, status.Error(codes.PermissionDenied, productionRunMarkerWriteMsg)
+	}
 	ins, err := dto.ConvertPbTechCardMarkerInsertToEntity(req.GetMarker())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid marker: %v", err)
@@ -181,8 +196,10 @@ func (s *Server) GetTechCardMarker(ctx context.Context, req *pb_admin.GetTechCar
 	return &pb_admin.GetTechCardMarkerResponse{Marker: out}, nil
 }
 
-// DeleteTechCardMarker removes a saved раскладка. Markers are measurements — nothing references
-// them, so the only refusals are "gone" and "the card is released".
+// DeleteTechCardMarker removes a saved раскладка. Markers are measurements, and nothing in the card
+// domain references them, so the card-side refusals stay "gone" and "the card is released". Since Ф4
+// there is one more, from the production side: a раскладка a секция настила stands on refuses, and
+// the refusal names the настилы (entity.ErrMarkerUsedByLay → FailedPrecondition).
 func (s *Server) DeleteTechCardMarker(ctx context.Context, req *pb_admin.DeleteTechCardMarkerRequest) (*pb_admin.DeleteTechCardMarkerResponse, error) {
 	if req.GetId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
@@ -229,6 +246,12 @@ func (s *Server) techCardMarkerError(ctx context.Context, op string, techCardID 
 	case errors.Is(err, sql.ErrNoRows):
 		return status.Error(codes.NotFound, "tech card not found")
 	case errors.Is(err, entity.ErrMarkerIncomplete):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, entity.ErrMarkerUsedByLay):
+		// err.Error() and not a constant: the store already built the sentence that NAMES the настилы,
+		// and a fixed message here would replace «стоит в настиле «BLACK · основная»» with «нельзя»,
+		// which is the difference between a refusal an operator can act on and one they can only
+		// report. FailedPrecondition — a well-formed request the current state blocks.
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, entity.ErrTechCardReleased):
 		return status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())

@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // CreateProductionRun freezes the planned unit cost from a linked tech_card_release (task 11).
@@ -133,13 +134,13 @@ func TestUpdateProductionRunCostBlindPreservationFailureIsFatal(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	pr := mocks.NewMockProductionRuns(t)
 	repo.EXPECT().ProductionRuns().Return(pr)
-	pr.EXPECT().UpdateProductionRunPreservingCosts(mock.Anything, 7, mock.AnythingOfType("*entity.ProductionRunInsert"), 3).
+	pr.EXPECT().UpdateProductionRunPreservingCosts(mock.Anything, 7, mock.AnythingOfType("*entity.ProductionRunInsert"), entity.LockVersion(3)).
 		Return(errors.New("preservation read failed"))
 	repo.EXPECT().IsErrForeignKeyViolation(mock.Anything).Return(false)
 
 	_, err := (&Server{repo: repo}).UpdateProductionRun(context.Background(), &pb_admin.UpdateProductionRunRequest{
 		Id:                  7,
-		ExpectedLockVersion: 3,
+		ExpectedLockVersion: proto.Int32(3),
 		Run: &pb_common.ProductionRunInsert{
 			TechCardId: 9,
 			Status:     pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PLANNED,
@@ -207,7 +208,8 @@ func TestReceiveProductionRunShimSynthesizesReceiptCommand(t *testing.T) {
 	require.Equal(t, map[int]bool{1: true, 2: true}, got.ValidSizes)
 	require.True(t, entity.IsValidProductionRunLineKey(got.IdempotencyKey), "shim mints a shaped key")
 	require.NotEmpty(t, got.RequestHash)
-	require.Equal(t, 0, got.ExpectedLockVersion, "legacy path opts out of the optimistic lock")
+	require.False(t, got.ExpectedLockVersion.Present(),
+		"the deprecated shim sends NO version at all — the legacy opt-out is the token's absence, not a literal 0 (Ф6.5)")
 }
 
 // auxColourRun is a variant-mode aux run: one product-less line per ACTIVE colour, and a card whose
@@ -356,13 +358,13 @@ func TestPostProductionRunReceipt(t *testing.T) {
 			return &entity.PostProductionRunReceiptResult{ReceiptID: 12, CostPriceUpdated: false}, nil
 		})
 	resp, err := (&Server{repo: repo}).PostProductionRunReceipt(fullAccessCtx(), &pb_admin.PostProductionRunReceiptRequest{
-		RunId: 4, Lines: lines, IdempotencyKey: key, ExpectedLockVersion: 3, Note: "final",
+		RunId: 4, Lines: lines, IdempotencyKey: key, ExpectedLockVersion: proto.Int32(3), Note: "final",
 	})
 	require.NoError(t, err)
 	require.Equal(t, int32(12), resp.ReceiptId)
 	require.False(t, resp.Replayed)
 	require.NotNil(t, resp.Run, "post-command run echoed")
-	require.Equal(t, 3, got.ExpectedLockVersion)
+	require.Equal(t, entity.LockVersion(3), got.ExpectedLockVersion)
 	require.Equal(t, "final", got.Note)
 	require.Equal(t, key, got.IdempotencyKey)
 	require.Equal(t, dto.HashProductionRunReceiptPayload(4, got.Lines, "final", false, true), got.RequestHash)

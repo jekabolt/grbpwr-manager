@@ -986,6 +986,12 @@ func (s *Store) enrichListFacts(ctx context.Context, cards []entity.TechCard) er
 
 	// Saved раскладки (0257): the row badge is a bare count — a "latest consumption" here would
 	// lie without naming the size and BOM slot it was measured for, so it stays off the list.
+	//
+	// КАРТОЧНЫЕ ONLY — run_id IS NULL (Ф4, 0282), the same filter listMarkerSummaries applies, and
+	// the two have to agree: this badge is read as «сколько раскладок у карточки», and the list the
+	// operator opens next shows exactly the card's markers. Counting раскройные однодневки here would
+	// make the badge drift upward with every прогон and never come back down, and clicking it would
+	// show fewer rows than the number promised — the badge accusing the list of hiding something.
 	type markerCountRow struct {
 		TechCardID int `db:"tech_card_id"`
 		N          int `db:"n"`
@@ -998,7 +1004,8 @@ func (s *Store) enrichListFacts(ctx context.Context, cards []entity.TechCard) er
 	if len(allIDs) > 0 {
 		markerRows, err := storeutil.QueryListNamed[markerCountRow](ctx, s.DB, `
 			SELECT tech_card_id, COUNT(*) AS n FROM tech_card_marker
-			WHERE tech_card_id IN (:ids) GROUP BY tech_card_id`, map[string]any{"ids": allIDs})
+			WHERE tech_card_id IN (:ids) AND run_id IS NULL
+			GROUP BY tech_card_id`, map[string]any{"ids": allIDs})
 		if err != nil {
 			return fmt.Errorf("count markers for tech card list: %w", err)
 		}

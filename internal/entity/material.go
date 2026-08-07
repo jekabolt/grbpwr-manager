@@ -127,6 +127,29 @@ type MaterialInsert struct {
 	// работать как писал. Читается ТОЛЬКО на UPDATE — на INSERT «отсутствует» и «пусто» это одно и
 	// то же NULL.
 	CuttingCoefficientOmitted bool `db:"-" valid:"-"`
+	// FabricThicknessMm (Ф4.8, 0283) is the thickness of ONE ply of the cloth, in millimetres — the
+	// article's half of the предел стопки. The workshop owns the other half
+	// (WorkshopSettings.MaxStackHeightCm) and the verdict is
+	// Σ plies × FabricThicknessMm / 10 ≤ MaxStackHeightCm, computed on READ and never stored.
+	//
+	// INVALID (NULL) MEANS «НЕ ЗАМЕРЕНО», AND IT IS NOT ZERO. Zero would make every настил exactly
+	// 0 cm tall and therefore comfortably within any limit — a confident verdict manufactured out of
+	// missing data, which is the one outcome «нет толщины — нет проверки, не догадка» exists to
+	// forbid. A reader must check .Valid and withhold the height entirely, not substitute a number.
+	// There is deliberately no per-«класс ткани» default: that taxonomy does not exist, and inventing
+	// one to feed a guess is exactly the disease CuttingCoefficient above already refused.
+	FabricThicknessMm decimal.NullDecimal `db:"fabric_thickness_mm" valid:"-"`
+	// FabricThicknessMmOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым», word for word
+	// the CuttingCoefficientOmitted rule one field up and for the identical reason: the article saves
+	// whole, the admin is an SPA, and a tab holding an older bundle — or any client in the window
+	// between the backend and the client deploy — does not send this field at all. Without the
+	// distinction such a save would ERASE a number somebody took with calipers, and erase it without
+	// a trace, because the catalogue carries neither a signed digest nor an edit journal.
+	//
+	// NEGATIVE on purpose, again: the zero value means «write as usual», so every internal
+	// constructor (tests, seeder, auto-created buckets) keeps behaving as it always did. Read ONLY on
+	// UPDATE — on INSERT «отсутствует» and «пусто» are the same NULL.
+	FabricThicknessMmOmitted bool `db:"-" valid:"-"`
 	// Warehouse catalog fields (NF-02).
 	Code     sql.NullString      `db:"code" valid:"-"`      // internal article code (ours), unique among non-archived
 	Color    sql.NullString      `db:"color" valid:"-"`     // colour of the purchased article
@@ -213,6 +236,21 @@ func (m *Material) EffectiveCuttingCoefficient() decimal.NullDecimal {
 		return decimal.NullDecimal{}
 	}
 	return m.CuttingCoefficient
+}
+
+// EffectiveFabricThicknessMm is the article's per-ply thickness in millimetres, or INVALID when the
+// article has none — and an invalid answer must be propagated as «высота стопки неизвестна», never
+// collapsed to a number. A stored value at or below zero is treated as unset for the same reason the
+// coefficient treats < 1 as unset: the DB CHECK already refuses it, and this guards in-memory values
+// that never passed through the column (a hand-built fixture, a future importer).
+//
+// Deliberately NOT a verdict helper. Whether a given настил fits is the lay path's business (it owns
+// the ply count); this returns only the article's half, so the two halves of Ф4.8 cannot drift.
+func (m *Material) EffectiveFabricThicknessMm() decimal.NullDecimal {
+	if !m.FabricThicknessMm.Valid || m.FabricThicknessMm.Decimal.LessThanOrEqual(decimal.Zero) {
+		return decimal.NullDecimal{}
+	}
+	return m.FabricThicknessMm
 }
 
 // FabricSelvedgeCm is the кромка per edge in cm; zero when the material has no typed fabric

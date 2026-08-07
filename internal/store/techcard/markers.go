@@ -33,7 +33,7 @@ import (
 // layout must never ride a summary query, and JSON columns read via * resurface the
 // quoted-JSON-scalar bug (see UnquoteLegacyComposition).
 const markerSummaryColumns = `
-	m.id, m.tech_card_id, m.size_id, m.name, m.source, m.bom_item_id, m.colorway_id,
+	m.id, m.tech_card_id, m.size_id, m.name, m.source, m.bom_item_id, m.colorway_id, m.run_id,
 	b.line_key AS bom_line_key, b.name AS bom_item_name, b.unit AS bom_item_unit,
 	m.fabric_width_cm, m.gap_cm, m.edge_margin_cm, m.selvedge_cm, m.allow_cross_grain, m.sets,
 	m.total_units, m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count,
@@ -44,6 +44,17 @@ const markerSummaryColumns = `
 // ListMarkerSummaries returns a card's saved раскладки without their layout blobs, newest first,
 // each with its СОСТАВ attached. Runs on the caller's connection so the single-card read sees one
 // snapshot.
+//
+// КАРТОЧНЫЕ ONLY — run_id IS NULL (Ф4, 0282). This is the card's ONE marker list: the whole admin
+// feeds off GetTechCard.markers, so a раскройный marker left in here would appear in the раскладки
+// table, in the costing consumption band and in the recipe suggestion, and every one of those is a
+// screen about the CARD, whose раскладки outlive any single прогон. A run marker belongs to none of
+// those conversations: it is measured for one run's cloth, it dies with that run by FK CASCADE, and
+// the only list it belongs in is the run's own (ListRunMarkers below).
+//
+// The filter also protects the two card-wide facts computed underneath it. NormPeersOf would
+// otherwise weigh run markers in «одна норма на ткань», and the piece-set comparison would report
+// «набор деталей изменился» for one-offs nobody will ever re-take.
 //
 // ORDER BY dropped m.size_id at the head (Ф2) — deliberately, not by accident. Grouping the list by
 // size stopped meaning anything the moment a раскладка could cut several sizes at once, and left
@@ -62,7 +73,7 @@ func listMarkerSummaries(ctx context.Context, db dependency.DB, techCardID int,
 		SELECT `+markerSummaryColumns+`
 		FROM tech_card_marker m
 		LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
-		WHERE m.tech_card_id = :id
+		WHERE m.tech_card_id = :id AND m.run_id IS NULL
 		ORDER BY m.updated_at DESC, m.id DESC`, map[string]any{"id": techCardID})
 	if err != nil {
 		return nil, fmt.Errorf("can't list tech card markers: %w", err)
@@ -75,6 +86,57 @@ func listMarkerSummaries(ctx context.Context, db dependency.DB, techCardID int,
 	for i := range rows {
 		rows[i].CardPieceSetFp = cardFP
 		rows[i].NormConflict = entity.NormConflictReport(peers, entity.MarkerNormScope(rows[i]))
+	}
+	return rows, nil
+}
+
+// ListRunMarkers returns the РАСКРОЙНЫЕ раскладки taken for ONE production run
+// (tech_card_marker.run_id, 0282), newest first, each with its СОСТАВ attached.
+//
+// WHY THIS EXISTS AT ALL. Markers have no List RPC of their own — summaries ride GetTechCard.markers
+// — and a run's markers are deliberately hidden from that list (they are one-offs that die with the
+// run). Without this read the lay editor would have nothing to offer in its picker: the very rows a
+// section may reference would be the rows no read returns.
+//
+// WITHOUT THE LAYOUT BLOB, and that is the point rather than an omission. A blob is 60-100 KB, this
+// read runs on every open of the run's detail page, and the plan only needs the geometry of the
+// markers its sections actually name — those are fetched one by one through GetMarker and memoised
+// per marker_id by the caller (§14 п.16). Loading every run marker's blob here would put the whole
+// set on the wire path of a page that shows a dropdown.
+//
+// NormConflict is left EMPTY, not computed: chk_tcm_run_not_norm (0282) makes a run marker unable to
+// carry the norm flag at all, so «more than one norm on this cloth» is not a sentence that can be
+// true about this set. The piece-set fingerprint IS computed, for the reason GetMarker states — a
+// field whose meaning depends on which RPC you asked is a field nobody can act on.
+func (s *Store) ListRunMarkers(ctx context.Context, runID int) ([]entity.TechCardMarkerSummary, error) {
+	rows, err := storeutil.QueryListNamed[entity.TechCardMarkerSummary](ctx, s.DB, `
+		SELECT `+markerSummaryColumns+`
+		FROM tech_card_marker m
+		LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
+		WHERE m.run_id = :run
+		ORDER BY m.updated_at DESC, m.id DESC`, map[string]any{"run": runID})
+	if err != nil {
+		return nil, fmt.Errorf("can't list markers of production run %d: %w", runID, err)
+	}
+	if len(rows) == 0 {
+		return []entity.TechCardMarkerSummary{}, nil
+	}
+	if err := attachMarkerComposition(ctx, s.DB, rows); err != nil {
+		return nil, err
+	}
+	// One fingerprint per DISTINCT card. A run has exactly one card, so this is one query in practice;
+	// keying it by card id rather than assuming so keeps the loop honest if a run's markers ever span.
+	fps := make(map[int]sql.NullString, 1)
+	for i := range rows {
+		fp, ok := fps[rows[i].TechCardId]
+		if !ok {
+			fp, err = cardPieceSetFingerprint(ctx, s.DB, rows[i].TechCardId)
+			if err != nil {
+				return nil, err
+			}
+			fps[rows[i].TechCardId] = fp
+		}
+		rows[i].CardPieceSetFp = fp
 	}
 	return rows, nil
 }
@@ -143,10 +205,15 @@ func cardPieceSetFingerprint(ctx context.Context, db dependency.DB, techCardID i
 
 // markerNormPeersQuery reads every раскладка of a card that carries the norm flag. Narrow by
 // idx_tcm_card_norm (tech_card_id, is_norm), and held as a var for the ':' reason above.
+//
+// `run_id IS NULL` AGREES WITH chk_tcm_run_not_norm (0282) RATHER THAN RELYING ON IT. The CHECK
+// makes a раскройный marker unable to carry the flag at all, so today this predicate can only ever
+// match card markers — which is precisely why writing it out costs nothing and buys the property
+// that this file's answer about норма does not depend on a constraint declared in another file.
 var markerNormPeersQuery = `
 	SELECT id, name, bom_item_id, updated_at
 	FROM tech_card_marker
-	WHERE tech_card_id = :card AND is_norm = TRUE`
+	WHERE tech_card_id = :card AND is_norm = TRUE AND run_id IS NULL`
 
 // cardNormPeers loads the card's designated norms so a single-marker read can tell whether its own
 // cloth carries more than one. The winner is picked in Go by entity.SelectNorm, NOT by an ORDER BY
@@ -249,8 +316,25 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		db := rep.DB()
 		// Content write to card-owned data: a released card refuses, inside the tx like every
 		// sibling guard so a concurrent release cannot slip past the SERIALIZABLE read.
-		if err := storeutil.RequireMutableTechCard(ctx, db, techCardID); err != nil {
-			return err
+		//
+		// РАСКРОЙНАЯ РАСКЛАДКА ИЗ-ПОД ЭТОГО ГВАРДА ИЗЪЯТА, И ЭТО НЕ ПОСЛАБЛЕНИЕ, А ГРАНИЦА
+		// СОБСТВЕННОСТИ. Гвард защищает СОДЕРЖИМОЕ КАРТОЧКИ — BOM, детали, нормы: то, на что
+		// сослался релиз и что задним числом менять нельзя. Раскройная раскладка карточке не
+		// принадлежит вовсе: она принадлежит прогону, умирает вместе с ним по FK CASCADE, нормой
+		// быть не может по CHECK, и из всех карточных перечислений скрыта. Релиз на неё не
+		// ссылался и сослаться не мог.
+		//
+		// Без изъятия фаза не работала бы ровно там, ради чего написана: прогоны запускают с
+		// ЗАМОРОЖЕННЫХ карточек, значит «снять раскладку под этот настил» отказывало бы на каждой
+		// карточке, с которой вообще шьют. Это тот же довод, по которому индекс размеров выкроек
+		// публикуется на замороженной карточке: замороженная — это ровно та, с которой работает цех.
+		//
+		// Принадлежность прогона ЭТОЙ карточке проверена ниже (resolveMarkerRunOwner), поэтому
+		// изъятие не открывает дверь в чужую карточку.
+		if ins.ProductionRunId <= 0 {
+			if err := storeutil.RequireMutableTechCard(ctx, db, techCardID); err != nil {
+				return err
+			}
 		}
 		// Ownership FIRST for an addressed id: a marker of another card must read as gone
 		// before any validation detail (bom keys, sizes) leaks a differential answer. Resolved
@@ -284,6 +368,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			BomItemId     sql.NullInt64  `db:"bom_item_id"`
 			BomLineKey    sql.NullString `db:"bom_line_key"`
 			ColorwayId    sql.NullInt64  `db:"colorway_id"`
+			RunId         sql.NullInt64  `db:"run_id"`
 			SchemaVersion int            `db:"layout_schema_version"`
 			Layout        string         `db:"layout"`
 		}
@@ -293,10 +378,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				BomItemId     sql.NullInt64  `db:"bom_item_id"`
 				BomLineKey    sql.NullString `db:"bom_line_key"`
 				ColorwayId    sql.NullInt64  `db:"colorway_id"`
+				RunId         sql.NullInt64  `db:"run_id"`
 				SchemaVersion int            `db:"layout_schema_version"`
 				Layout        string         `db:"layout"`
 			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id,
-					m.layout_schema_version, m.layout
+					m.run_id, m.layout_schema_version, m.layout
 				FROM tech_card_marker m
 				LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
 				WHERE m.id = :id AND m.tech_card_id = :tech_card_id`,
@@ -309,6 +395,12 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				return fmt.Errorf("resolve marker %d: %w", id, err)
 			}
 			stored = row
+		}
+		// ВЛАДЕНИЕ МАРКЕРОМ (Ф4, 0282), resolved before anything else is validated, because it decides
+		// what this row IS rather than what it says.
+		runID, err := resolveMarkerRunOwner(ctx, db, techCardID, id, stored.RunId, ins.ProductionRunId)
+		if err != nil {
+			return err
 		}
 		// Every size of the СОСТАВ must be in the card's range AT SAVE TIME. Like pattern rows, a
 		// marker may outlive its sizes leaving the range later — it stays a valid measurement — but
@@ -503,6 +595,12 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// видит УЖЕ ОБНОВЛЁННЫЕ колонки (док: «SET col1 = 1, col2 = col1» кладёт в col2 единицу),
 		// так что после `bom_item_id = :bom_item_id` сравнение читало бы новое значение с самим
 		// собой — всегда истина, признак не снимался бы никогда, и защита была бы декоративной.
+		//
+		// run_id IS ABSENT FROM THE UPDATE TOO, and for a stronger reason than is_norm's: ownership is
+		// not a field a save may express an opinion about (Ф4, resolveMarkerRunOwner below already
+		// refused any payload that disagreed with the stored value). Leaving the column out of the
+		// statement means that even if that guard were removed, a re-save could not move a раскладка
+		// between the card and a прогон by accident — the write simply has no way to say it.
 		if id > 0 {
 			// The addressed row must already be a marker of THIS card — a foreign id is reported as
 			// gone, not silently adopted. Ownership is resolved with a SELECT, like the
@@ -549,14 +647,17 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// A create is judged under today's policy by definition — there is no history to protect, and
 		// stamping anything older would let a marker authored today claim a pass tomorrow.
 		params["schema_version"] = entity.MarkerLayoutSchemaWithFlip
+		// run_id is written HERE and ONLY here — the UPDATE above does not list the column, which is
+		// what makes ownership immutable in the schema's own terms rather than by a guard alone.
+		params["run_id"] = runID
 		newID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_marker
-				(tech_card_id, size_id, bom_item_id, colorway_id, name, source, fabric_width_cm, gap_cm,
+				(tech_card_id, size_id, bom_item_id, colorway_id, run_id, name, source, fabric_width_cm, gap_cm,
 				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, total_units, used_length_cm,
 				 efficiency_pct, placed_count, total_count, layout, layout_schema_version,
 				 seam_allowance_cm, contour_allowance_cm, contour_layer, grain_layer, allow_flip,
 				 piece_set_fp, created_by, updated_by)
-			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :name, :source, :fabric_width_cm, :gap_cm,
+			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :run_id, :name, :source, :fabric_width_cm, :gap_cm,
 				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :total_units, :used_length_cm,
 				 :efficiency_pct, :placed_count, :total_count, :layout, :schema_version,
 				 :seam_allowance_cm, :contour_allowance_cm, :contour_layer, :grain_layer, :allow_flip,
@@ -574,6 +675,82 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		return 0, err
 	}
 	return savedID, nil
+}
+
+// resolveMarkerRunOwner decides what tech_card_marker.run_id this save writes, and refuses every
+// save that would MOVE an existing раскладка between the card and a прогон (Ф4, 0282).
+//
+// ВЛАДЕНИЕ — НЕ АТРИБУТ, А ПРАВО НА ЖИЗНЬ. run_id decides three things at once: whether the
+// раскладка is listed on the card, whether it dies with a run (FK CASCADE), and whether a секция
+// настила may stand on it (requireLaySectionMarkers demands run_id = the lay's run). Changing it
+// therefore does not edit a marker, it re-homes all three facts under a row other objects already
+// point at — and it does so in the two directions that are exactly as bad as each other:
+//
+//   - карточный → прогонный gives a раскладка of the card an expiry date nobody asked for. The
+//     норма is the sharpest case: chk_tcm_run_not_norm would refuse the write with a bare 3819, but
+//     an ordinary card marker has no such net and would simply start dying with a run;
+//   - прогонный → карточный takes a marker OUT of the run that owns it while настилы still
+//     reference it, so the sections quietly outlive their basis and «настил умирает со своим
+//     прогоном» stops being true.
+//
+// Копия — правильный ответ, и он назван (решение Р2): a copy carries its own geometry and its own
+// provenance, a mutation carries neither and steals the identity of the original.
+//
+// UNCHANGED OWNERSHIP IS NOT RE-VALIDATED, on the same principle as the stored BOM line and the
+// stored colourway a few lines up: eligibility can lapse (a run gets received, closed, cancelled)
+// and re-checking it here would make a stored marker permanently un-saveable — nudging one placement
+// would fail on an attribution the operator never touched. Whether the RUN is still open enough to
+// be planned is the lay path's question, asked where the plan is written (lockRunForLay), and asking
+// it a second time here would be a second copy of that rule, free to disagree.
+func resolveMarkerRunOwner(ctx context.Context, db dependency.DB, techCardID, markerID int,
+	storedRunID sql.NullInt64, wantRunID int) (sql.NullInt64, error) {
+
+	if markerID > 0 {
+		stored := 0
+		if storedRunID.Valid {
+			stored = int(storedRunID.Int64)
+		}
+		if stored == wantRunID {
+			return storedRunID, nil
+		}
+		return sql.NullInt64{}, entity.NewFieldViolation("production_run_id", "immutable",
+			markerRunOwnerLabel(stored),
+			fmt.Sprintf("владение раскладкой не меняется после создания (запрошено %s): "+
+				"раскройная раскладка умирает вместе со своим прогоном, и на неё ссылаются секции его настилов — "+
+				"сохраните копию с нужным production_run_id, а эту оставьте как есть",
+				markerRunOwnerLabel(wantRunID)))
+	}
+	if wantRunID == 0 {
+		return sql.NullInt64{}, nil
+	}
+	// The run must be a run OF THIS CARD. fk_tcm_run only proves the run exists, and a marker hung on
+	// another card's run would be invisible from both sides: absent from this card's list because it
+	// has an owner, and never offered to that run's настилы because requireLaySectionMarkers also
+	// matches on tech_card_id. Refused here, where it can be named, rather than stored as a row no
+	// screen can reach.
+	n, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM production_run WHERE id = :run AND tech_card_id = :card`,
+		map[string]any{"run": wantRunID, "card": techCardID})
+	if err != nil {
+		return sql.NullInt64{}, fmt.Errorf("check production run %d on tech card %d: %w",
+			wantRunID, techCardID, err)
+	}
+	if n == 0 {
+		return sql.NullInt64{}, entity.NewFieldViolation("production_run_id", "not_a_run_of_this_card",
+			markerRunOwnerLabel(wantRunID),
+			"раскройную раскладку можно снять только для прогона ЭТОЙ карточки; "+
+				"оставьте production_run_id пустым, чтобы сохранить её как карточную")
+	}
+	return sql.NullInt64{Int64: int64(wantRunID), Valid: true}, nil
+}
+
+// markerRunOwnerLabel names an owner in a refusal. 0 is not «run 0» — it is the card itself, and a
+// message that printed the number would ask the operator to look for a прогон that does not exist.
+func markerRunOwnerLabel(runID int) string {
+	if runID == 0 {
+		return "карточная раскладка (без прогона)"
+	}
+	return fmt.Sprintf("прогон %d", runID)
 }
 
 // fabricDirectionLinesQuery reads the card's WHOLE BOM, ordered exactly as the card read orders it
@@ -765,8 +942,15 @@ func replaceMarkerComposition(ctx context.Context, db dependency.DB, markerID in
 // be unreachable today is a sentinel a future migration can reach.
 //
 // Held as vars for the ':' reason stated above the composition queries.
+//
+// `run_id IS NULL` (Ф4, 0282) is the same agreement markerNormPeersQuery makes: НОРМА is an asset of
+// the CARD, раскройные раскладки are one-offs that die with a прогон, and the exclusivity scope
+// «одна норма на ткань» must not be something a run marker can compete in. chk_tcm_run_not_norm
+// already makes that impossible in the schema — the predicate says the same thing so that the rule
+// is legible where it is enforced, and so that a scope read here can never widen if the CHECK is one
+// day dropped.
 const markerNormScopePredicate = `
-	tech_card_id = :card AND is_norm = TRUE
+	tech_card_id = :card AND is_norm = TRUE AND run_id IS NULL
 	AND ((bom_item_id IS NULL AND :bom IS NULL) OR bom_item_id = :bom)`
 
 var (
@@ -776,8 +960,13 @@ var (
 	markerNormClearScopeQuery = `
 		UPDATE tech_card_marker SET is_norm = FALSE, updated_by = :username
 		WHERE ` + markerNormScopePredicate + ` AND id <> :id`
+	// The designation itself is addressed by id and carries the same `run_id IS NULL` as the LAST
+	// net, behind the explicit refusal in SetMarkerNorm. It is unreachable for a run marker today and
+	// that is the point: the guard produces the sentence an operator can act on, and this clause
+	// guarantees that a future path which forgets the guard writes NOTHING rather than a 3819.
 	markerNormSetQuery = `
-		UPDATE tech_card_marker SET is_norm = :is_norm, updated_by = :username WHERE id = :id`
+		UPDATE tech_card_marker SET is_norm = :is_norm, updated_by = :username
+		WHERE id = :id AND run_id IS NULL`
 )
 
 // SetMarkerNorm designates one раскладка as the НОРМИРОВОЧНАЯ one for its cloth, or clears it, and
@@ -819,13 +1008,32 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 		row, err := storeutil.QueryNamedOne[struct {
 			TechCardId int           `db:"tech_card_id"`
 			BomItemId  sql.NullInt64 `db:"bom_item_id"`
-		}](ctx, db, `SELECT tech_card_id, bom_item_id FROM tech_card_marker WHERE id = :id`,
+			RunId      sql.NullInt64 `db:"run_id"`
+		}](ctx, db, `SELECT tech_card_id, bom_item_id, run_id FROM tech_card_marker WHERE id = :id`,
 			map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: marker %d", entity.ErrMarkerNotFound, id)
 			}
 			return fmt.Errorf("load marker %d: %w", id, err)
+		}
+		// РАСКРОЙНАЯ РАСКЛАДКА НОРМОЙ НЕ БЫВАЕТ (Ф4, chk_tcm_run_not_norm) — and this says so in
+		// words, which is the whole reason the guard exists in Go at all. Without it the designation
+		// below would reach MySQL and come back as ERROR 3819 «Check constraint is violated», a
+		// message that names no marker, no прогон and no way forward, and which techCardMarkerError
+		// correctly cannot classify — so the operator would see Internal on a request that was simply
+		// asking for something the model forbids.
+		//
+		// BOTH DIRECTIONS ARE REFUSED, including clearing. Clearing a flag that cannot be set is not a
+		// harmless no-op here: reporting success would tell the caller «эта раскладка больше не
+		// норма», implying it could have been one, which is the exact misunderstanding this whole
+		// invariant exists to prevent. Норма — актив КАРТОЧКИ; a one-off that dies with a прогон can
+		// never hold it, so the honest answer to both requests is the same sentence.
+		if row.RunId.Valid {
+			return entity.NewFieldViolation("id", "run_marker_cannot_be_norm",
+				fmt.Sprintf("раскладка %d принадлежит прогону %d", id, row.RunId.Int64),
+				"нормой может быть только карточная раскладка: раскройная умирает вместе со своим прогоном, "+
+					"а норма — актив карточки; назначьте нормой карточную раскладку этой ткани")
 		}
 		// Designating a norm is a decision about the card's CONTENT, so a released card refuses — like
 		// every sibling guard, inside the transaction so a concurrent release cannot slip past it.
@@ -887,22 +1095,97 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 	return previousNormID, nil
 }
 
-// DeleteMarker removes a saved раскладка. Nothing references markers, so the delete is plain —
-// but it is still card content, so a released card refuses.
+// markerLaySectionsQuery names the настилы a раскладка is standing in, for the delete guard (Ф4,
+// §5.4). Held as a var for the ':' reason stated above the composition queries.
+//
+// DISTINCT because a ступенчатый настил may put the SAME раскладка in two sections, and a refusal
+// that named one lay twice would read as two problems. Ordered by the lay's own display order so
+// the sentence is stable between two attempts, and capped at four rows: three are named and the
+// fourth exists only to let the message admit there are more, instead of listing three and leaving
+// the operator to discover the rest one delete at a time.
+var markerLaySectionsQuery = `
+	SELECT DISTINCT l.id AS lay_id, l.lay_key, l.name, l.display_order
+	FROM production_run_lay_section s
+	JOIN production_run_lay l ON l.id = s.lay_id
+	WHERE s.marker_id = :id
+	ORDER BY l.display_order, l.id
+	LIMIT 4`
+
+// markerLayLabel names a настил in a refusal: how the цех calls it, falling back to its key when it
+// was never named (production_run_lay.name defaults to the empty string — «безымянный»). Mirrors
+// dto.layLabel,
+// which does the same for the coverage caveats; both exist because a message naming nothing sends
+// the operator hunting through every lay of the run.
+func markerLayLabel(name, layKey string) string {
+	if name != "" {
+		return name
+	}
+	return fmt.Sprintf("безымянный (%s)", layKey)
+}
+
+// DeleteMarker removes a saved раскладка. It is card content, so a released card refuses — and
+// since Ф4 a раскладка a секция настила stands on refuses too (entity.ErrMarkerUsedByLay).
 func (s *Store) DeleteMarker(ctx context.Context, id int) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 		row, err := storeutil.QueryNamedOne[struct {
-			TechCardId int `db:"tech_card_id"`
-		}](ctx, db, `SELECT tech_card_id FROM tech_card_marker WHERE id = :id`, map[string]any{"id": id})
+			TechCardId int           `db:"tech_card_id"`
+			RunId      sql.NullInt64 `db:"run_id"`
+		}](ctx, db, `SELECT tech_card_id, run_id FROM tech_card_marker WHERE id = :id`,
+			map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("%w: marker %d", entity.ErrMarkerNotFound, id)
 			}
 			return fmt.Errorf("load marker %d: %w", id, err)
 		}
-		if err := storeutil.RequireMutableTechCard(ctx, db, row.TechCardId); err != nil {
-			return err
+		// ЗАНЯТЫЙ МАРКЕР, asked INSIDE the transaction so a lay written concurrently cannot slip
+		// between the check and the DELETE, and asked BEFORE the card's approval state on purpose: a
+		// раскладка standing in a настил is refused whatever the карточка is doing, and «карточка
+		// released» would be a true answer to a different question — the one the operator did not ask
+		// and cannot act on.
+		//
+		// This is the application's RESTRICT: fk_prlays_marker is CASCADE and has to be (0281 spells
+		// out why — DeleteProductionRun is not transactional and lives on cascades), so without this
+		// guard deleting a marker would silently shrink somebody's настил to fewer sections and fewer
+		// plies, and the coverage arithmetic would quietly follow it down.
+		//
+		// The CASCADE path needs no guard of its own: when the ПРОГОН is deleted its настилы die in
+		// the same statement, so nothing is left pointing anywhere.
+		lays, err := storeutil.QueryListNamed[struct {
+			LayId        int    `db:"lay_id"`
+			LayKey       string `db:"lay_key"`
+			Name         string `db:"name"`
+			DisplayOrder int    `db:"display_order"`
+		}](ctx, db, markerLaySectionsQuery, map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("resolve the настилы of marker %d: %w", id, err)
+		}
+		if len(lays) > 0 {
+			named := make([]string, 0, 3)
+			for _, l := range lays[:min(len(lays), 3)] {
+				named = append(named, fmt.Sprintf("«%s»", markerLayLabel(l.Name, l.LayKey)))
+			}
+			more := ""
+			if len(lays) > 3 {
+				more = " и в других"
+			}
+			noun := "настиле"
+			if len(named) > 1 {
+				noun = "настилах"
+			}
+			return fmt.Errorf("%w: эта раскладка стоит в %s %s%s — уберите её из секций настила, "+
+				"а потом удаляйте", entity.ErrMarkerUsedByLay, noun, strings.Join(named, ", "), more)
+		}
+		// Замороженная карточка не даёт удалить СВОЮ раскладку — на неё мог сослаться релиз. На
+		// раскройную это не распространяется по той же границе собственности, что и на съёмке
+		// (см. SaveMarker выше): она принадлежит прогону, а не карточке, и умирает вместе с ним
+		// сама. Запретить удалить её руками на замороженной карточке значило бы, что убрать
+		// лишнюю раскладку из плана раскроя можно только удалив весь прогон.
+		if !row.RunId.Valid {
+			if err := storeutil.RequireMutableTechCard(ctx, db, row.TechCardId); err != nil {
+				return err
+			}
 		}
 		rows, err := storeutil.ExecNamedRows(ctx, db,
 			`DELETE FROM tech_card_marker WHERE id = :id`, map[string]any{"id": id})

@@ -149,11 +149,13 @@ func createMaterialInTx(ctx context.Context, db dependency.DB, m *entity.Materia
 	newID, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO material (name, section, supplier, supplier_ref, supplier_id, lead_time_days,
 			composition, spec, unit,
-			fabric_width, fabric_weight_gsm, cutting_coefficient, code, color, pantone, min_stock, notes,
+			fabric_width, fabric_weight_gsm, cutting_coefficient, fabric_thickness_mm,
+			code, color, pantone, min_stock, notes,
 			image_id, purpose, material_class, other_attrs, created_by, updated_by)
 		VALUES (:name, :section, :supplier, :supplier_ref, :supplier_id, :lead_time_days,
 			:composition, :spec, :unit,
-			:fabric_width, :fabric_weight_gsm, :cutting_coefficient, :code, :color, :pantone, :min_stock, :notes,
+			:fabric_width, :fabric_weight_gsm, :cutting_coefficient, :fabric_thickness_mm,
+			:code, :color, :pantone, :min_stock, :notes,
 			:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
 		materialParams(m))
 	if err != nil {
@@ -214,11 +216,12 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		params["material_class"] = strings.ToLower(strings.TrimSpace(m.MaterialClass))
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
-		// cutting_coefficient below is присутствие, а не значение (Ф5а.2) — the same IF(:x_omitted,…)
-		// shape the BOM line uses for purpose / is_sample, and for the same reason. An absent field
-		// means «не трогай»: a full replace would erase an operator's coefficient on every save from a
-		// tab running an older bundle (or any client in the window between the backend and client
-		// deploys), and erase it without a trace — the catalogue has neither a signed digest nor an
+		// cutting_coefficient and fabric_thickness_mm below are присутствие, а не значение (Ф5а.2,
+		// Ф4.8) — the same IF(:x_omitted,…) shape the BOM line uses for purpose / is_sample, and for
+		// the same reason. An absent field means «не трогай»: a full replace would erase an operator's
+		// coefficient — or a thickness somebody measured with calipers — on every save from a tab
+		// running an older bundle (or any client in the window between the backend and client
+		// deploys), and erase it without a trace: the catalogue has neither a signed digest nor an
 		// edit journal to notice. NB the explanation lives HERE and not inside the SQL: a ':' in a
 		// '--' comment is read by sqlx's named-param scanner as an empty bind name and breaks the
 		// whole query.
@@ -228,6 +231,7 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 				supplier_id=:supplier_id, lead_time_days=:lead_time_days,
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 				cutting_coefficient=IF(:cutting_coefficient_omitted, cutting_coefficient, :cutting_coefficient),
+				fabric_thickness_mm=IF(:fabric_thickness_omitted, fabric_thickness_mm, :fabric_thickness_mm),
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
 				image_id=:image_id, purpose=:purpose,
 				material_class=CASE WHEN :material_class = '' THEN material_class ELSE :material_class END,
@@ -466,9 +470,11 @@ func materialParams(m *entity.MaterialInsert) map[string]any {
 		"fabric_width":        nullDecimalParam(m.FabricWidth),
 		"fabric_weight_gsm":   nullDecimalParam(m.FabricWeightGsm),
 		"cutting_coefficient": nullDecimalParam(m.CuttingCoefficient),
+		"fabric_thickness_mm": nullDecimalParam(m.FabricThicknessMm),
 		// Read only by the UPDATE (see UpdateMaterial). On INSERT "absent" and "empty" are the same
 		// NULL, so the key is simply unused there — sqlx ignores params a query does not name.
 		"cutting_coefficient_omitted": m.CuttingCoefficientOmitted,
+		"fabric_thickness_omitted":    m.FabricThicknessMmOmitted,
 		"code":                        m.Code,
 		"color":                       m.Color,
 		"pantone":                     m.Pantone,

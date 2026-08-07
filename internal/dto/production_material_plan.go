@@ -55,7 +55,14 @@ var planSlotSections = map[entity.TechCardBomSection]bool{
 // linked resolves article identities (name/unit/thread cone length) for labelling and unit
 // conversion; nil degrades to the BOM line's own snapshot fields. onHand and issued are keyed by
 // material_id (issued = net issue_production − return_production). All may be nil/partial.
-func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.TechCard, onHand, issued map[int]decimal.Decimal, linked map[int]entity.MaterialWithPrice) *pb_admin.GetProductionRunMaterialPlanResponse {
+//
+// lays (Ф4.6) are the run's настилы. THEY SWITCH THE REQUIREMENT PER PAIR (колорвей, слот) AND
+// NEVER PER RUN: a run whose основная ткань is laid and whose подкладка is not counts the основная
+// by measurement and the подкладка by the norm, and every number says which it is
+// (MaterialPlanRow.source, MaterialPlanContribution.source, plan_source). A whole-run switch would
+// zero the подкладка — the same lie as the norm, only in the other direction. nil = no настилы, and
+// the plan is byte-for-byte what it was before this parameter existed.
+func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.TechCard, onHand, issued map[int]decimal.Decimal, linked map[int]entity.MaterialWithPrice, lays []entity.ProductionRunLay) *pb_admin.GetProductionRunMaterialPlanResponse {
 	out := &pb_admin.GetProductionRunMaterialPlanResponse{}
 	if run == nil || card == nil {
 		return out
@@ -73,6 +80,18 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	bomOrder := make(map[int]int, len(card.BomItems))
 	for i := range card.BomItems {
 		bomOrder[card.BomItems[i].Id] = i
+	}
+	bomByID := func(id int) *entity.TechCardBomItem {
+		if i, ok := bomOrder[id]; ok {
+			return &card.BomItems[i]
+		}
+		return nil
+	}
+	colorwayName := func(pid int) string {
+		if cw := colorwayByProduct[pid]; cw != nil {
+			return cw.Name
+		}
+		return fmt.Sprintf("#%d", pid)
 	}
 
 	type matAcc struct {
@@ -97,8 +116,14 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		hasManualNorms  bool
 		hasCountedNorms bool
 		hasSizeNorms    bool
-		name            string
-		unit            string
+		// hasNormSource / hasLaySource are the row's SIGNATURE (Ф4.6). A row is keyed by ARTICLE and
+		// an article can be fed by two slots at once — one laid, one not — so the two are counted
+		// rather than collapsed into one value on the way in. MIXED is the honest answer for that row
+		// and it is computed from these two flags, never guessed from the magnitude of the number.
+		hasNormSource bool
+		hasLaySource  bool
+		name          string
+		unit          string
 	}
 	req := make(map[int]*matAcc)
 	order := make([]int, 0) // material ids, in first-seen order (then sorted for a stable response)
@@ -116,6 +141,20 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		coefficient           decimal.NullDecimal
 		hasSizeNorms          bool
 		pinned                bool
+		// source is ALWAYS PURE here — NORM or LAYS, never MIXED. A contribution is ONE slot of ONE
+		// colourway, and §7.3 switches exactly that pair, so there is nothing for it to be mixed
+		// between. MIXED exists only one level up, on the article-keyed row.
+		source pb_admin.ProductionRunCoverageSource
+		// layClothCm / layEndLossCm are the LAYS decomposition, zero on the norm path. Two facts, not
+		// one sum: cloth under the markers is a different physical thing from the cloth lost at the
+		// two ends of every ply, and Ф5б compares the fact against each of them separately.
+		layClothCm   decimal.Decimal
+		layEndLossCm decimal.Decimal
+		// unit is the unit `required` is actually IN. It used to be read off the BOM line at emit
+		// time, which was true only because the norm path never leaves the slot's unit. A настил
+		// measures cloth in METRES whatever the slot's spec unit says, so the label has to travel with
+		// the number instead of being re-derived from the slot.
+		unit string
 	}
 	contribs := make(map[contribKey]*contribAcc)
 
@@ -187,6 +226,106 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	plannedByColorway := map[int]int{} // product id → Σ planned qty (for uncovered-slot blockers)
 	usedSlotsByColorway := map[int]map[int]bool{}
 
+	// Ф4.6 — WHICH PAIRS THE НАСТИЛЫ ANSWER FOR. Built BEFORE the norm walk because the walk has to
+	// know, at each (колорвей, слот), whether the norm is still the source of truth for that pair.
+	// A настил that lost its slot contributes to NOTHING and says so by name (§7.3, §14 п.6).
+	layDemand, layNotes := planLayDemandByPair(lays)
+	caveats = append(caveats, layNotes...)
+	// layArticle remembers the article the RECIPE resolves for a laid pair, so the lay's metres are
+	// attributed to the same article the norm would have used — pin first, slot default second, and
+	// through the same resolver (planBomLine), never through the positional index alone.
+	type layArticleRef struct {
+		mid    int
+		pinned bool
+	}
+	layArticle := make(map[planLayPairKey]layArticleRef, len(layDemand))
+	// The loop below visits each (колорвей, слот) once per RUN LINE, i.e. once per size, so a pair
+	// that resolves to two articles would otherwise say so five times on a five-size run.
+	layArticleClash := make(map[planLayPairKey]bool)
+	// laidSlots feeds the «отход не применён» caveat (§7.1): a wastage percent that silently stops
+	// biting is the same species of no-op as a cutting coefficient that never applies, and the
+	// existing machinery for that is copied rather than reinvented.
+	laidSlots := make(map[int]bool, len(layDemand))
+
+	// planConvert turns a quantity pair expressed in the SLOT's spec unit into the ARTICLE's stock
+	// unit. Extracted so the NORM path and the LAYS path convert through ONE implementation: two
+	// copies of this table would eventually disagree about what a metre is, and the disagreement
+	// would be a number under the wrong label rather than an error.
+	//
+	// Rollup unit discipline: the number and its label must always agree. Two conversions are known,
+	// both one-directional and both keyed off the CLOSED unit vocabulary rather than raw strings
+	// (Ф5а.3) — «м» against "m" is one unit and no longer degrades into a caveat that silently
+	// compares a slot-unit number against stock:
+	//
+	//	metres → cones: a slot in metres against an article stocked in cones divides by
+	//	  length_per_cone_m. Only that direction — a slot authored in cones against metre stock would
+	//	  divide the wrong way and report a phantom zero shortage.
+	//	metres → kilograms (Ф5а.4): a slot in metres against an article BOUGHT BY WEIGHT multiplies
+	//	  by the roll's full width and density. Only that direction, for the same reason.
+	//
+	// Any other mismatch keeps the number AND the label in the slot's unit (noted once as a caveat) —
+	// a slot-unit number under the stock unit's label was a purchase order for 18 000 cones.
+	planConvert := func(mid int, bom *entity.TechCardBomItem, slotUnitRaw string, add, base decimal.Decimal) (decimal.Decimal, decimal.Decimal, string) {
+		stockAdd, stockBase := add, base
+		rowUnit := slotUnitRaw
+		m, ok := linked[mid]
+		if !ok {
+			return stockAdd, stockBase, rowUnit
+		}
+		slotUnit := strings.TrimSpace(slotUnitRaw)
+		stockUnit := strings.TrimSpace(m.Unit.String)
+		slotU, slotKnown := entity.NormalizeMaterialUnit(slotUnit)
+		stockU, stockKnown := entity.NormalizeMaterialUnit(stockUnit)
+		fromMetres := slotKnown && slotU == entity.MaterialUnitM
+		switch {
+		case stockUnit == "" || slotUnit == "" || entity.SameMaterialUnit(slotUnit, stockUnit):
+			rowUnit = matUnit(mid, bom)
+		case fromMetres && stockKnown && stockU == entity.MaterialUnitKg:
+			// Weight is billed on the FULL roll width, кромка included — the selvedge is bought and it
+			// weighs. Using the cutting width here would understate what the supplier invoices by
+			// 2–4%. Density comes from the ARTICLE (CTI attr over the flat column), never from the BOM
+			// line's own fabric_weight_gsm: that one is a spec snapshot of what the card was drawn
+			// against and has no consumer.
+			width := m.EffectiveFabricWidthCm()
+			gsm := m.EffectiveFabricWeightGsm()
+			kg := entity.FabricLengthToKg(add, width, gsm)
+			kgBase := entity.FabricLengthToKg(base, width, gsm)
+			if kg.Valid && kgBase.Valid {
+				stockAdd, stockBase = kg.Decimal, kgBase.Decimal
+				rowUnit = stockUnit
+				noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (кромка included) × %s g/m²",
+					matName(mid, bom), slotUnit, stockUnit,
+					width.Decimal.String(), gsm.Decimal.String()))
+			} else {
+				noteUnit(fmt.Sprintf("%s: stocked in %s but the article has no full width and density — cannot convert the %s norm to weight; the row stays in %q",
+					matName(mid, bom), stockUnit, slotUnit, slotUnit))
+			}
+		case fromMetres &&
+			m.ThreadAttr != nil && m.ThreadAttr.LengthPerConeM.Valid && m.ThreadAttr.LengthPerConeM.Decimal.IsPositive():
+			stockAdd = add.Div(m.ThreadAttr.LengthPerConeM.Decimal)
+			stockBase = base.Div(m.ThreadAttr.LengthPerConeM.Decimal)
+			rowUnit = stockUnit
+			noteUnit(fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
+				matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
+		default:
+			noteUnit(fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
+				matName(mid, bom), slotUnit, stockUnit, slotUnit))
+		}
+		return stockAdd, stockBase, rowUnit
+	}
+
+	// accUnitConflict is the row-level «this article arrives in two units» alarm, kept beside the
+	// accumulator it guards. See its message: the sum it describes is an older defect being scoped
+	// separately, and it must never sit underneath a caveat that reads like a successful conversion.
+	accUnitConflict := func(a *matAcc, rowUnit string) {
+		if a.unit != "" && rowUnit != "" && !entity.SameMaterialUnit(a.unit, rowUnit) {
+			noteUnit(fmt.Sprintf("%s: this run needs it in BOTH %q and %q — `required` is a SUM ACROSS UNITS "+
+				"labelled with the first unit seen (%q), so that number and its shortage are not usable; "+
+				"put the slots on one unit",
+				a.name, a.unit, rowUnit, a.unit))
+		}
+	}
+
 	for i := range run.Lines {
 		ln := &run.Lines[i]
 		if ln.PlannedQty <= 0 {
@@ -224,6 +363,26 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			}
 			usedSlotsByColorway[pid][bom.Id] = true
 			mid, pinned := u.EffectiveMaterialId(bom)
+			// Ф4.6 — THE SWITCH, AND IT IS HERE, ON THE PAIR. This slot of this colourway has настилы:
+			// its requirement is a MEASUREMENT (length × plies + end losses), so the norm walk stops
+			// for this pair and ONLY for this pair. The sibling slot two lines down — подкладка with no
+			// настил yet — falls through to the norm below and keeps its non-zero requirement.
+			//
+			// The article resolved here is remembered rather than recomputed later: the lay's metres
+			// must land on the SAME article the norm would have used (the colourway's pin first, the
+			// slot default second), and re-deriving that in the lays pass would be a second resolver.
+			if _, laid := layDemand[planLayPairKey{colorwayID: pid, bomItemID: bom.Id}]; laid {
+				k := planLayPairKey{colorwayID: pid, bomItemID: bom.Id}
+				if prev, seen := layArticle[k]; !seen {
+					layArticle[k] = layArticleRef{mid: mid, pinned: pinned}
+				} else if prev.mid != mid && mid != 0 && !layArticleClash[k] {
+					layArticleClash[k] = true
+					caveats = append(caveats, fmt.Sprintf(
+						"слот %q у колорвея %q резолвится в два разных артикула — потребность по настилам отнесена к первому (#%d)",
+						bom.Name, colorwayName(pid), prev.mid))
+				}
+				continue
+			}
 			if mid == 0 {
 				blockAdd(bom.Id, pid, ln.PlannedQty, entity.MaterialPlanBlockerNoArticle, entity.MaterialPlanReasonNoArticle)
 				continue
@@ -277,11 +436,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			ck := contribKey{bom.Id, pid, mid}
 			c := contribs[ck]
 			if c == nil {
-				c = &contribAcc{hasSizeNorms: true, pinned: pinned}
+				c = &contribAcc{hasSizeNorms: true, pinned: pinned, unit: bom.Unit.String}
 				contribs[ck] = c
 			}
 			c.required = c.required.Add(add)
 			c.requiredBeforeGrossup = c.requiredBeforeGrossup.Add(base)
+			c.source = pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_NORM
 			if lineCoeff.Valid {
 				c.coefficient = lineCoeff
 			}
@@ -289,64 +449,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				c.hasSizeNorms = false
 			}
 
-			// Rollup unit discipline: the number and its label must always agree. Two conversions
-			// are known, both one-directional and both keyed off the CLOSED unit vocabulary rather
-			// than raw strings (Ф5а.3) — «м» against "m" is one unit and no longer degrades into a
-			// caveat that silently compares a slot-unit number against stock:
-			//
-			//   metres → cones: a slot in metres against an article stocked in cones divides by
-			//     length_per_cone_m. Only that direction — a slot authored in cones against metre
-			//     stock would divide the wrong way and report a phantom zero shortage.
-			//   metres → kilograms (Ф5а.4): a slot in metres against an article BOUGHT BY WEIGHT
-			//     multiplies by the roll's full width and density. Only that direction, for the
-			//     same reason.
-			//
-			// Any other mismatch keeps the number AND the label in the slot's unit (noted once as a
-			// caveat) — a slot-unit number under the stock unit's label was a purchase order for
-			// 18 000 cones.
-			stockAdd, stockBase := add, base
-			rowUnit := bom.Unit.String
-			if m, ok := linked[mid]; ok {
-				slotUnit := strings.TrimSpace(bom.Unit.String)
-				stockUnit := strings.TrimSpace(m.Unit.String)
-				slotU, slotKnown := entity.NormalizeMaterialUnit(slotUnit)
-				stockU, stockKnown := entity.NormalizeMaterialUnit(stockUnit)
-				fromMetres := slotKnown && slotU == entity.MaterialUnitM
-				switch {
-				case stockUnit == "" || slotUnit == "" || entity.SameMaterialUnit(slotUnit, stockUnit):
-					rowUnit = matUnit(mid, bom)
-				case fromMetres && stockKnown && stockU == entity.MaterialUnitKg:
-					// Weight is billed on the FULL roll width, кромка included — the selvedge is
-					// bought and it weighs. Using the cutting width here would understate what the
-					// supplier invoices by 2–4%. Density comes from the ARTICLE (CTI attr over the
-					// flat column), never from the BOM line's own fabric_weight_gsm: that one is a
-					// spec snapshot of what the card was drawn against and has no consumer.
-					width := m.EffectiveFabricWidthCm()
-					gsm := m.EffectiveFabricWeightGsm()
-					kg := entity.FabricLengthToKg(add, width, gsm)
-					kgBase := entity.FabricLengthToKg(base, width, gsm)
-					if kg.Valid && kgBase.Valid {
-						stockAdd, stockBase = kg.Decimal, kgBase.Decimal
-						rowUnit = stockUnit
-						noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (кромка included) × %s g/m²",
-							matName(mid, bom), slotUnit, stockUnit,
-							width.Decimal.String(), gsm.Decimal.String()))
-					} else {
-						noteUnit(fmt.Sprintf("%s: stocked in %s but the article has no full width and density — cannot convert the %s norm to weight; the row stays in %q",
-							matName(mid, bom), stockUnit, slotUnit, slotUnit))
-					}
-				case fromMetres &&
-					m.ThreadAttr != nil && m.ThreadAttr.LengthPerConeM.Valid && m.ThreadAttr.LengthPerConeM.Decimal.IsPositive():
-					stockAdd = add.Div(m.ThreadAttr.LengthPerConeM.Decimal)
-					stockBase = base.Div(m.ThreadAttr.LengthPerConeM.Decimal)
-					rowUnit = stockUnit
-					noteUnit(fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
-						matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
-				default:
-					noteUnit(fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
-						matName(mid, bom), slotUnit, stockUnit, slotUnit))
-				}
-			}
+			stockAdd, stockBase, rowUnit := planConvert(mid, bom, bom.Unit.String, add, base)
 			a := req[mid]
 			if a == nil {
 				a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: rowUnit}
@@ -357,20 +460,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				}
 				req[mid] = a
 				order = append(order, mid)
-			} else if a.unit != "" && rowUnit != "" && !entity.SameMaterialUnit(a.unit, rowUnit) {
-				// The row is about to add a quantity in one unit to a total kept in another, and it
-				// will keep the label of whichever unit was seen FIRST. That summation is an older
-				// defect with a wider blast radius than this phase, and it is being scoped separately
-				// — but it must never be silent, and above all it must not sit underneath a caveat
-				// that reads like a successful conversion. Keyed on the accumulator rather than on
-				// the conversion notes above, so no amount of successful converting can hide it.
-				noteUnit(fmt.Sprintf("%s: this run needs it in BOTH %q and %q — `required` is a SUM ACROSS UNITS "+
-					"labelled with the first unit seen (%q), so that number and its shortage are not usable; "+
-					"put the slots on one unit",
-					a.name, a.unit, rowUnit, a.unit))
+			} else {
+				accUnitConflict(a, rowUnit)
 			}
 			a.required = a.required.Add(stockAdd)
 			a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)
+			a.hasNormSource = true
 			if lineCoeff.Valid {
 				a.coefficientApplied = true
 			}
@@ -382,6 +477,159 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			}
 			if !sizeGraded {
 				a.hasSizeNorms = false
+			}
+		}
+	}
+
+	// --- Ф4.6: ПОТРЕБНОСТЬ ПАР, КОТОРЫЕ УШЛИ НА НАСТИЛЫ ------------------------------------------
+	//
+	// Driven by the НАСТИЛ, not by the run lines: the lay's length does not depend on the size grid
+	// (it already contains it — the marker's состав is what was laid), so walking the lines here
+	// would multiply one measurement by the number of sizes.
+	//
+	// NO COEFFICIENT AND NO WASTAGE ON THIS PATH (решение Р4). Both exist to correct an ESTIMATE
+	// derived from a norm; a настил is not an estimate, it is a measurement — length × plies plus end
+	// losses, with the losses already named separately. Laying a coefficient calibrated against
+	// normative estimates on top of it counts the same thing twice by an unknown amount. required
+	// therefore EQUALS required_before_grossup here, which is exactly what §7.3 asks for: the number
+	// Ф5б.2 compares the FACT against.
+	laidKeys := make([]planLayPairKey, 0, len(layDemand))
+	for k := range layDemand {
+		laidKeys = append(laidKeys, k)
+	}
+	sort.Slice(laidKeys, func(i, j int) bool {
+		oi, oj := bomOrder[laidKeys[i].bomItemID], bomOrder[laidKeys[j].bomItemID]
+		if oi != oj {
+			return oi < oj
+		}
+		return laidKeys[i].colorwayID < laidKeys[j].colorwayID
+	})
+	for _, k := range laidKeys {
+		d := layDemand[k]
+		bom := bomByID(k.bomItemID)
+		if bom == nil {
+			// The slot is live in the настил but absent from the card this plan loaded. Nothing to
+			// attribute the cloth to, and silence would drop a measured requirement on the floor.
+			caveats = append(caveats, fmt.Sprintf(
+				"настилы %s: слот #%d не найден в этой карточке — их потребность не посчитана",
+				d.label(), k.bomItemID))
+			continue
+		}
+		// The lay PROVES the slot is used by this colourway, whatever the recipe says. Marking it
+		// here keeps the uncovered-slot blocker below from firing on a slot the cutting room has
+		// already planned to lay.
+		if usedSlotsByColorway[k.colorwayID] == nil {
+			usedSlotsByColorway[k.colorwayID] = map[int]bool{}
+		}
+		usedSlotsByColorway[k.colorwayID][bom.Id] = true
+
+		mid, pinned := 0, false
+		if ref, ok := layArticle[k]; ok {
+			mid, pinned = ref.mid, ref.pinned
+		} else if bom.MaterialId.Valid {
+			// The recipe has no usage for this pair (or the colourway has no planned line), yet the
+			// slot IS being laid. The slot default is the same second choice EffectiveMaterialId
+			// would have made; taking it keeps a laid pair countable instead of blocking it on a
+			// missing norm the настил does not need.
+			mid = int(bom.MaterialId.Int64)
+		}
+		if mid == 0 {
+			blockAdd(bom.Id, k.colorwayID, plannedByColorway[k.colorwayID], entity.MaterialPlanBlockerNoArticle, entity.MaterialPlanReasonNoArticle)
+			continue
+		}
+		// Marked only AFTER the article resolved: a pair that ended as a blocker produced no number at
+		// all, and «процент отхода не применён, потребность посчитана по настилам» would then describe
+		// a requirement that was never computed.
+		laidSlots[bom.Id] = true
+		if _, planned := plannedByColorway[k.colorwayID]; !planned {
+			caveats = append(caveats, fmt.Sprintf(
+				"настилы %s построены на колорвей %q, которого прогон не планирует — их метраж всё равно в потребности",
+				d.label(), colorwayName(k.colorwayID)))
+		}
+		if d.totalCm().IsZero() {
+			caveats = append(caveats, fmt.Sprintf(
+				"настилы %s (слот %q, колорвей %q) не дают длины — потребность этой пары по настилам равна нулю, а норма к ней уже не применяется",
+				d.label(), bom.Name, colorwayName(k.colorwayID)))
+		}
+		caveats = append(caveats, d.unmeasured...)
+
+		// The настил measures CLOTH, and cloth is measured in metres — whatever the slot's spec unit
+		// happens to say. When the slot agrees, its own spelling is kept («м» stays «м») so the
+		// contribution reads like every other row; when it does not, the number stays metres and the
+		// mismatch is stated rather than laundered through the slot's label.
+		clothM := d.clothCm.Div(planCmPerMetre)
+		endLossM := d.endLossCm.Div(planCmPerMetre)
+		add := clothM.Add(endLossM)
+		contribUnit := bom.Unit.String
+		if u, ok := entity.NormalizeMaterialUnit(bom.Unit.String); !ok || u != entity.MaterialUnitM {
+			contribUnit = string(entity.MaterialUnitM)
+			spec := strings.TrimSpace(bom.Unit.String)
+			if spec == "" {
+				spec = "не задана"
+			}
+			noteUnit(fmt.Sprintf("%s: слот %q специфицирован в единице %q, а настил измеряет ткань в метрах — вклад по настилам отдан в метрах",
+				matName(mid, bom), bom.Name, spec))
+		}
+
+		ck := contribKey{bom.Id, k.colorwayID, mid}
+		c := contribs[ck]
+		if c == nil {
+			// hasSizeNorms is TRUE on a lay, and that is not a claim about norms. The flag warns that
+			// a requirement was extrapolated from a per-garment average instead of a per-size one; a
+			// настил extrapolates nothing — the sizes are already inside the раскладки it stacks.
+			// Marking it false would label the most precise number on the page a rougher estimate.
+			c = &contribAcc{hasSizeNorms: true, pinned: pinned, unit: contribUnit}
+			contribs[ck] = c
+		}
+		c.required = c.required.Add(add)
+		// §7.3: before-grossup on the LAYS path IS the lay plan. With Р4 the two are equal, and the
+		// invariant required >= required_before_grossup still holds.
+		c.requiredBeforeGrossup = c.requiredBeforeGrossup.Add(add)
+		c.source = pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_LAYS
+		c.layClothCm = c.layClothCm.Add(d.clothCm)
+		c.layEndLossCm = c.layEndLossCm.Add(d.endLossCm)
+
+		stockAdd, stockBase, rowUnit := planConvert(mid, bom, contribUnit, add, add)
+		a := req[mid]
+		if a == nil {
+			a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: rowUnit}
+			if m, ok := linked[mid]; ok {
+				a.coefficient = m.EffectiveCuttingCoefficient()
+			}
+			req[mid] = a
+			order = append(order, mid)
+		} else {
+			accUnitConflict(a, rowUnit)
+		}
+		a.required = a.required.Add(stockAdd)
+		a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)
+		a.hasLaySource = true
+	}
+
+	// §7.1 — a wastage percent that stopped biting must SAY so. The operator typed «фактический
+	// процент отхода» on the run and would otherwise watch it change nothing on the slot the cutting
+	// room has already laid; the silence would read as a broken field rather than as the deliberate
+	// no-op it is. Same species as the «coefficient did not apply» machinery below, same treatment.
+	if len(laidSlots) > 0 {
+		laidIDs := make([]int, 0, len(laidSlots))
+		for id := range laidSlots {
+			laidIDs = append(laidIDs, id)
+		}
+		sort.Slice(laidIDs, func(i, j int) bool { return bomOrder[laidIDs[i]] < bomOrder[laidIDs[j]] })
+		for _, id := range laidIDs {
+			bom := bomByID(id)
+			if bom == nil {
+				continue
+			}
+			switch {
+			case run.ActualWastagePercent.Valid:
+				caveats = append(caveats, fmt.Sprintf(
+					"процент отхода прогона %s%% не применён к слоту %q: потребность посчитана по настилам (измерение), а не по норме",
+					run.ActualWastagePercent.Decimal.String(), bom.Name))
+			case bom.WastagePercent.Valid:
+				caveats = append(caveats, fmt.Sprintf(
+					"процент отхода %s%% слота %q не применён: потребность посчитана по настилам (измерение), а не по норме",
+					bom.WastagePercent.Decimal.String(), bom.Name))
 			}
 		}
 	}
@@ -428,6 +676,13 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		var because string
 		switch {
+		case a.hasLaySource && !a.hasManualNorms && !a.hasCountedNorms:
+			// Ф4.6 / Р4. Saying «your norms are manual» about a row whose requirement was MEASURED
+			// would be a wrong explanation of a right number — the same mistake the counted-trim arm
+			// below exists to avoid.
+			because = "потребность этой строки посчитана по НАСТИЛАМ (длина × слои + концевые потери), а коэффициент правит оценку по НОРМЕ: к измерению он не применяется"
+		case a.hasLaySource:
+			because = "часть потребности посчитана по НАСТИЛАМ (к измерению коэффициент не применяется), а остальные нормы этого прогона не маркерные"
 		case a.hasManualNorms && a.hasCountedNorms:
 			because = "this run's norms for it are manual (their BOM wastage % applies instead) or counted quantities (which take no gross-up at all)"
 		case a.hasCountedNorms:
@@ -466,24 +721,15 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// The two are related BY the dial only on a marker-fed row; see the proto comment.
 			RequiredBeforeGrossup: pbDecimalFromDecimal(a.requiredBeforeGrossup.Round(3)),
 			CuttingCoefficient:    pbDecimalFromNull(a.coefficient),
+			// Ф4.6 — the signature. A number nobody can say the provenance of is the thing this whole
+			// phase walks away from, so it rides on the ROW and on every CONTRIBUTION, not only on the
+			// response as a whole.
+			Source: planRowSource(a.hasNormSource, a.hasLaySource),
 		})
 	}
 
 	// Contributions and blockers in BOM display order, then colourway id — stable and mirroring
 	// the spec sheet top-to-bottom.
-	colorwayName := func(pid int) string {
-		if cw := colorwayByProduct[pid]; cw != nil {
-			return cw.Name
-		}
-		return fmt.Sprintf("#%d", pid)
-	}
-	bomByID := func(id int) *entity.TechCardBomItem {
-		if i, ok := bomOrder[id]; ok {
-			return &card.BomItems[i]
-		}
-		return nil
-	}
-
 	ckeys := make([]contribKey, 0, len(contribs))
 	for k := range contribs {
 		ckeys = append(ckeys, k)
@@ -501,11 +747,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	for _, k := range ckeys {
 		c := contribs[k]
 		bom := bomByID(k.bomID)
-		slotName, unit := "", ""
+		slotName := ""
+		unit := c.unit
 		section := pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_UNKNOWN
 		if bom != nil {
 			slotName = bom.Name
-			unit = bom.Unit.String
 			section = pbBomSection(entity.TechCardBomSection(bom.Section))
 		}
 		out.Contributions = append(out.Contributions, &pb_admin.MaterialPlanContribution{
@@ -522,6 +768,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			HasSizeNorms:          c.hasSizeNorms,
 			RequiredBeforeGrossup: pbDecimalFromDecimal(c.requiredBeforeGrossup.Round(3)),
 			CuttingCoefficient:    pbDecimalFromNull(c.coefficient),
+			// Ф4.6. Never MIXED here by construction — a contribution is ONE slot of ONE colourway,
+			// which is exactly the unit §7.3 switches. The two lengths are zero on the norm path and
+			// are stated as zeros rather than left absent, because the proto says they ARE zero there.
+			Source:           c.source,
+			LayClothLengthCm: pbDecimalFromDecimal(c.layClothCm.Round(3)),
+			LayEndLossCm:     pbDecimalFromDecimal(c.layEndLossCm.Round(3)),
 		})
 	}
 
@@ -554,8 +806,154 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		})
 	}
 
+	// plan_source is the WHOLE ANSWER's signature, and it is folded from the CONTRIBUTIONS — the only
+	// places a source is a fact rather than an aggregate. LAYS when every counted pair went to
+	// настилы, NORM when none did, MIXED in between. It is a field and not something the client
+	// infers from the rows, because the client writes the table heading with it and may not be wrong.
+	//
+	// No contributions at all ⇒ NORM: nothing was counted, and «нормой» is what an empty plan has
+	// always been. The blockers say why it is empty.
+	planLays, planNorm := 0, 0
+	for _, c := range contribs {
+		if c.source == pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_LAYS {
+			planLays++
+			continue
+		}
+		planNorm++
+	}
+	out.PlanSource = planRowSource(planNorm > 0, planLays > 0)
+
 	out.Caveats = caveats
 	return out
+}
+
+// planRowSource folds «this number was fed by norms» and «this number was fed by настилы» into the
+// wire's signature. Both ⇒ MIXED, and MIXED is emitted rather than one of the two being picked: an
+// article shared by a laid slot and an unlaid one is genuinely both, and silently choosing would lie
+// in the very field that exists to stop the number being guessed at.
+//
+// Neither ⇒ UNSPECIFIED, which is the honest answer for the issued-but-not-required row: it has no
+// requirement at all, so there is no source that produced one.
+func planRowSource(hasNorm, hasLays bool) pb_admin.ProductionRunCoverageSource {
+	switch {
+	case hasNorm && hasLays:
+		return pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_MIXED
+	case hasLays:
+		return pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_LAYS
+	case hasNorm:
+		return pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_NORM
+	}
+	return pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_UNSPECIFIED
+}
+
+// --- Ф4.6: НАСТИЛ → ДЛИНА ------------------------------------------------------------------------
+
+// planCmPerMetre converts the настил's centimetres into the metres the slot and the article speak.
+// Deliberately NOT planPercentDivisor: the two are the same integer for unrelated reasons, and
+// sharing them would make a change to one silently change the other.
+var planCmPerMetre = decimal.NewFromInt(100)
+
+// planLayEndsPerPly is the 2 in `2 × end_loss_cm × Σ слоёв`: every ply is trimmed at BOTH ends.
+//
+// THE DEFINITION IS PINNED BY ARITHMETIC, not by prose (§7.2). The model gave two calibrations for
+// «2–5 см на конец каждого слоя» and they are mutually inconsistent: 20 слоёв × 3 м ⇒ ~1.3% works out
+// exactly (20 × 2 × 2 см = 80 см on 6000 см = 1.33%), while 1 слой × 30 м ⇒ 0.02% does not (2 × 2 см
+// = 4 см on 3000 см = 0.13%). The first carries the whole point of the paragraph — short markers laid
+// deep are punished — so it wins and the second is read as a typo. The column comment in migration
+// 0281 says the same thing, and this constant is the executable half of it.
+var planLayEndsPerPly = decimal.NewFromInt(2)
+
+// planLayPairKey is the pair a настил belongs to, and it is the UNIT OF THE SWITCH (§7.3): ONE
+// colourway × ONE BOM slot. Never the run. A run whose основная ткань is laid and whose подкладка is
+// not must keep counting the подкладка by its norm; an all-or-nothing switch would zero it, which is
+// the same lie as the norm, only pointing the other way.
+type planLayPairKey struct {
+	colorwayID int
+	bomItemID  int
+}
+
+// planLayDemand is Σ over the настилы of ONE pair, in CENTIMETRES, kept as the two physically
+// distinct facts the wire carries separately: cloth under the раскладки, and cloth lost at the two
+// ends of every ply.
+type planLayDemand struct {
+	clothCm   decimal.Decimal
+	endLossCm decimal.Decimal
+	// names are the настилы that fed this pair, for the sentences that have to name them.
+	names []string
+	// unmeasured are the ready-made caveats for sections whose раскладка has no usable length. They
+	// travel with the demand instead of being logged: a section that could not be measured makes the
+	// pair's number SMALLER, and a requirement that quietly shrank is the one failure mode this whole
+	// phase is built against.
+	unmeasured []string
+}
+
+func (d *planLayDemand) totalCm() decimal.Decimal { return d.clothCm.Add(d.endLossCm) }
+
+func (d *planLayDemand) label() string {
+	if len(d.names) == 0 {
+		return "(без имени)"
+	}
+	return strings.Join(d.names, ", ")
+}
+
+// planLayDemandByPair is §7.1 for a whole run: every настил distilled into the length of cloth its
+// pair needs.
+//
+//	cloth_length_cm(L)   = Σ по секциям (marker.used_length_cm × plies)
+//	end_loss_total_cm(L) = 2 × end_loss_cm × Σ по секциям plies
+//	planned_length_cm(L) = cloth_length_cm + end_loss_total_cm
+//	raw(C,B)             = Σ по настилам пары planned_length_cm
+//
+// A НАСТИЛ THAT LOST ITS SLOT IS NEVER SILENT. fk_prlay_bom is SET NULL (0281), so a BOM edit can
+// leave a настил pointing at nothing; such a lay drops out of the requirement WITH A FINDING that
+// names the slot it lost through the bom_line_key snapshot the row keeps exactly for this. Counting
+// it against some other slot would be worse than dropping it, and dropping it quietly would remove
+// cloth from the plan that the cutting room is still going to lay.
+//
+// Returns the caveats rather than taking a sink so the function stays pure and directly testable.
+func planLayDemandByPair(lays []entity.ProductionRunLay) (map[planLayPairKey]*planLayDemand, []string) {
+	out := make(map[planLayPairKey]*planLayDemand, len(lays))
+	var notes []string
+	for i := range lays {
+		l := &lays[i]
+		name := strings.TrimSpace(l.Name)
+		if name == "" {
+			name = l.LayKey
+		}
+		if l.Broken() {
+			notes = append(notes, fmt.Sprintf(
+				"настил %q потерял слот BOM (снимок ключа слота %q) — его метраж не вошёл в потребность ни одного артикула",
+				name, l.BomLineKey))
+			continue
+		}
+		k := planLayPairKey{colorwayID: l.ColorwayId, bomItemID: int(l.BomItemId.Int64)}
+		d := out[k]
+		if d == nil {
+			d = &planLayDemand{}
+			out[k] = d
+		}
+		d.names = append(d.names, fmt.Sprintf("%q", name))
+		for _, s := range l.Sections {
+			if !s.MarkerUsedLengthCm.Valid || !s.MarkerUsedLengthCm.Decimal.IsPositive() {
+				// A раскладка with no measured length cannot say how much cloth its section eats. The
+				// section is skipped and NAMED: the alternative is a requirement that is quietly too
+				// small, which reads as «ткани хватает» in the one place that must never be optimistic.
+				d.unmeasured = append(d.unmeasured, fmt.Sprintf(
+					"настил %q: у раскладки %q (#%d) не задана длина раскладки — %d слоёв этой секции не вошли в потребность",
+					name, s.MarkerName, s.MarkerId, s.Plies))
+				continue
+			}
+			d.clothCm = d.clothCm.Add(s.MarkerUsedLengthCm.Decimal.Mul(decimal.NewFromInt(int64(s.Plies))))
+		}
+		// End losses ride on Σ plies of the WHOLE lay, including the sections whose length is unknown:
+		// those plies are physically laid and physically trimmed at both ends whatever the раскладка's
+		// records say. Ступенчатый настил is counted by SECTION plies, i.e. conservatively — a ply
+		// crossing two sections has two ends and not four, but the difference is centimetres and
+		// understating a loss costs more than overstating it (§7.2).
+		d.endLossCm = d.endLossCm.Add(
+			planLayEndsPerPly.Mul(l.EndLossCm).Mul(decimal.NewFromInt(int64(l.TotalPlies()))))
+	}
+	return out, notes
 }
 
 // planBomLine resolves a usage's BOM line for the plan: by the read-resolved FK first (bom_item_id —
