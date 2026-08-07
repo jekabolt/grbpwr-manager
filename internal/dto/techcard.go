@@ -827,9 +827,15 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 	// lossless keep-first dedupe in the store.
 	seenKeyedPairs := make(map[string]struct{}, len(pbs))
 	for _, p := range pbs {
+		// size_id 0 = the sheet is filed under NO size (stored NULL since 0281), which is the honest
+		// value for a graded DXF: the sizes are in the file's block names and only the browser reads
+		// them. It is also the only value available while the card's size range is still empty —
+		// patterns arrive from the конструктор before anybody fixes the grade, and rejecting them
+		// until a range exists locked the upload behind a decision the file has already made.
+		// A NON-ZERO size still has to be one of the card's, so a stale row cannot name a dropped size.
 		sid := int(p.SizeId)
-		if sid <= 0 || !slices.Contains(sizeIds, sid) {
-			return nil, fmt.Errorf("pattern size_id %d must be one of size_ids", p.SizeId)
+		if sid < 0 || (sid > 0 && !slices.Contains(sizeIds, sid)) {
+			return nil, fmt.Errorf("pattern size_id %d must be one of size_ids (or 0 — размеры в самом файле)", p.SizeId)
 		}
 		url := strings.TrimSpace(p.Url)
 		if url == "" {
@@ -883,11 +889,20 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 				return nil, fmt.Errorf("pattern line_key %q is used by two rows; one key names one row — the same sheet on two sizes is two rows with two keys", lineKey)
 			}
 			seenLineKeys[lineKey] = struct{}{}
-			pair := fmt.Sprintf("%d|%s", sid, url)
-			if _, dup := seenKeyedPairs[pair]; dup {
-				return nil, fmt.Errorf("two keyed pattern rows carry the same size and url; a sheet appears once per size")
+			// SIZELESS rows are exempt, and it is not a loophole: the rule below reads «a sheet
+			// appears once per size», and rows filed under NO size are not a size. The card that
+			// legitimately hangs one combined sheet on XS and on S — the case the store documents by
+			// name — collapses both rows into the 0 bucket the moment they are re-filed sizeless, and
+			// with the rule applied there, every subsequent save of that card would 400, blocking
+			// edits that have nothing to do with выкройки. Two keyed sizeless rows on one url are two
+			// distinct sheets pointing at one object, and the line_key diff handles that losslessly.
+			if sid > 0 {
+				pair := fmt.Sprintf("%d|%s", sid, url)
+				if _, dup := seenKeyedPairs[pair]; dup {
+					return nil, fmt.Errorf("two keyed pattern rows carry the same size and url; a sheet appears once per size")
+				}
+				seenKeyedPairs[pair] = struct{}{}
 			}
-			seenKeyedPairs[pair] = struct{}{}
 		}
 		// bom_line_key keeps proto presence like name: absent → carry the stored binding forward.
 		var bomLineKey sql.NullString

@@ -167,6 +167,53 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTechCardPatternSizeless locks the 0281 admission rule: size_id 0 means «the sizes are in the
+// file», so it is accepted whatever the range is — including a card that has no range at all, which
+// is the case that used to make a DXF unuploadable. A NON-zero size is still checked against the
+// range, and a negative one is still nonsense.
+func TestTechCardPatternSizeless(t *testing.T) {
+	const url = "https://cdn/tech-card-patterns/2026/august/graded.dxf"
+
+	// No size range at all — the state a card is in while the конструктор's DXF arrives first.
+	noRange := &pb_common.TechCardInsert{
+		StyleNumber: "ST-NOSIZE", Name: "Coat",
+		Patterns: []*pb_common.TechCardSizePattern{{SizeId: 0, Url: url}},
+	}
+	ent, err := ConvertPbTechCardInsertToEntity(noRange)
+	if err != nil {
+		t.Fatalf("sizeless pattern on a card with no size range must be accepted: %v", err)
+	}
+	if len(ent.Patterns) != 1 || ent.Patterns[0].SizeId != 0 {
+		t.Fatalf("sizeless pattern not parsed as size 0: %+v", ent.Patterns)
+	}
+	// It survives the trip back out as 0 too — the client reads it as «без размера», not as a size.
+	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *ent}, CostingFx{})
+	if len(out.TechCard.Patterns) != 1 || out.TechCard.Patterns[0].SizeId != 0 {
+		t.Fatalf("sizeless pattern round-trip mismatch: %+v", out.TechCard.Patterns)
+	}
+
+	// A range exists: sizeless and size-filed sheets coexist on one card.
+	mixed := &pb_common.TechCardInsert{
+		StyleNumber: "ST-MIX", Name: "Coat", SizeIds: []int32{4, 5},
+		Patterns: []*pb_common.TechCardSizePattern{
+			{SizeId: 0, Url: url},
+			{SizeId: 4, Url: "https://cdn/tech-card-patterns/2026/august/flat.pdf"},
+		},
+	}
+	if _, err := ConvertPbTechCardInsertToEntity(mixed); err != nil {
+		t.Fatalf("sizeless next to size-filed must be accepted: %v", err)
+	}
+
+	// A negative size is not «absent», it is garbage.
+	bad := &pb_common.TechCardInsert{
+		StyleNumber: "ST-NEG", Name: "Coat", SizeIds: []int32{4},
+		Patterns: []*pb_common.TechCardSizePattern{{SizeId: -1, Url: url}},
+	}
+	if _, err := ConvertPbTechCardInsertToEntity(bad); err == nil {
+		t.Fatal("negative pattern size_id must be rejected")
+	}
+}
+
 func TestTechCardPatternAndUsageValidation(t *testing.T) {
 	cases := map[string]*pb_common.TechCardInsert{
 		"pattern size not in range": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
