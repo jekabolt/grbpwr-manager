@@ -6581,9 +6581,21 @@ message FabricDirectionGapCard {
   // blocked_marker_count — the sum of the per-line counts below. NOT a count of refusals: see
   // FabricDirectionGapLine.blocked_marker_count. Informational; it decides nothing about the order.
   int32 blocked_marker_count = 7;
-  // linked_marker_count — раскладки bound to any BOM line of this card, i.e. every marker a gap on
-  // THIS card could possibly refuse (a scope is built out of the card's own lines, and an unlinked
-  // раскладка has no cloth at all). Over-inclusive and deliberately so: it is the only count here
+  // linked_marker_count — КАРТОЧНЫЕ раскладки bound to any BOM line of this card, i.e. every marker
+  // a gap on THIS card could possibly refuse (a scope is built out of the card's own lines, and an
+  // unlinked раскладка has no cloth at all).
+  //
+  // КАРТОЧНЫЕ — часть определения, а не оговорка (Ф4, решение Р6). С Ф4.2 у раскладки есть владелец,
+  // и раскройные (`run_id IS NOT NULL`) в это число НЕ входят: отчёт — рабочий список кампании по
+  // КАРТОЧКАМ, а прогонные однодневки умирают вместе со своим прогоном и раздували бы «радиус
+  // поражения» строками, которые исчезнут сами. Направление они при этом берут с тех же строк BOM,
+  // которые отчёт уже покрывает через карточку, — то есть работы не добавляют.
+  //
+  // Следствие для КЛИЕНТА, и оно обязательное: экран, печатающий это число, обязан сказать
+  // «карточных». Без этого слова число прочтут как полное, и цех недосчитается ровно тех раскладок,
+  // которые сейчас лежат в открытых прогонах.
+  //
+  // Over-inclusive внутри карточных и deliberately so: it is the only count here
   // with no false negatives, which is why the urgent tier is drawn on it. blocked_marker_count
   // cannot do that job — it misses the case where an unset line and an ANSWERED line share a
   // назначение and only the answered one carries markers, and those markers are refused through the
