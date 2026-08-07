@@ -72,6 +72,18 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 		return nil, status.Error(codes.InvalidArgument, "a production run is created as planned or in_progress; received/closed/cancelled are reached through their flows")
 	}
 	ins.Actor = authsrv.GetAdminUsername(ctx)
+	// ГЕЙТ ГОТОВНОСТИ (Ф6), re-computed server-side against THIS payload — never trusted from the
+	// verdict the modal already holds. Saving a раскладка deliberately does not bump
+	// tech_card.lock_version, so a norm can be re-measured between the modal opening and this request
+	// arriving and the client has no version with which to notice. In report-only mode (the default,
+	// and what an unconfigured workshop gets) this logs and returns nil.
+	//
+	// It runs BEFORE the planned-cost snapshot on purpose: the snapshot reads the card and, on the
+	// live-card path, computes a costing — work there is no reason to do for a run that is about to
+	// be refused.
+	if err := s.runReadinessCreateGate(ctx, ins); err != nil {
+		return nil, err
+	}
 	if err := s.snapshotPlannedCost(ctx, ins); err != nil {
 		return nil, err
 	}

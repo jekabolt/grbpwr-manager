@@ -1462,6 +1462,35 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/production-runs/{run_id}/material-plan"};
   }
 
+  // CheckProductionRunReadiness — ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6). Not to be confused with
+  // GetTechCardReadiness: that one is ADVISORY, takes only a card id, and sees colourways as two
+  // aggregates; this one judges ONE CONCRETE FUTURE RUN — by its colourways and its quantities —
+  // and its verdict is RE-COMPUTED SERVER-SIDE inside CreateProductionRun.
+  //
+  // Read-only: writes nothing. POST rather than GET because the input carries a GRID
+  // (colourway × size × quantity), a repeating structure a query string has no honest
+  // representation of. The read-only-POST precedent in this service is GenerateTechCardOperations.
+  //
+  // THE RESPONSE ALWAYS LISTS EVERY CHECK, INCLUDING THE ONES THAT PASSED. A list of refusals alone
+  // never tells the operator WHAT the gate checks — and without that, the day blocking mode is
+  // switched on (Ф6.9) reads as a breakage rather than as a policy taking effect.
+  //
+  // NO MONEY TRAVELS IN THE ANSWER, and that is worth saying out loud because GetProductionRun right
+  // beside it strips costing: `coverage` is metres and pieces, `unit_coverage` is garments. Nothing
+  // here is stripped for an account without costing:read, and there is nothing to strip.
+  //
+  // Classified rd(production), NOT rd(tech_cards): the one consumer is the run-creation modal and
+  // the one meaning is «why can I not create this run». Whoever may create a run must be able to
+  // read the reason it was refused, or a planner without tech-card access gets a dead control
+  // stating an unfixable requirement. GetProductionRunMaterialPlan reads the very same card facts
+  // and is classified the same way.
+  rpc CheckProductionRunReadiness(CheckProductionRunReadinessRequest) returns (CheckProductionRunReadinessResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/production-runs/readiness"
+      body: "*"
+    };
+  }
+
   // Material warehouse (new-flow NF-01): on-hand balance + moving-average valuation and an
   // append-only movement ledger per catalog material.
   rpc ReceiveMaterialStock(ReceiveMaterialStockRequest) returns (ReceiveMaterialStockResponse) {
@@ -1616,6 +1645,35 @@ service AdminService {
   rpc SetTechCardMarkerNorm(SetTechCardMarkerNormRequest) returns (SetTechCardMarkerNormResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/marker/{id}/norm"
+      body: "*"
+    };
+  }
+
+  // PutTechCardPatternSizeIndex stores the size tokens the CLIENT parsed out of the DXF block names
+  // of one fabric scope (Ф6.3), so the server-side readiness gate can answer «is there a pattern for
+  // this size» honestly instead of counting tech_card_size_pattern.size_id — a column the client
+  // fills with the smallest size of the range as a pure STORAGE ARTEFACT, which is why the existing
+  // `patterns` row of GetTechCardReadiness lies on every graded card.
+  //
+  // THE SERVER DOES NOT PARSE DXF AND NEVER WILL. The heuristic that decides «which token in this
+  // file is a size» (deriveBlockSizes) stays in ONE place, in the client. What crosses the wire is
+  // its RESULT.
+  //
+  // The client sends TOKENS and the LIST OF SHEETS it parsed. The fingerprint of that sheet set is
+  // computed BY THE SERVER out of its own tech_card_size_pattern rows, so «I parsed exactly these
+  // files» cannot be forged, and re-uploading any sheet makes the index stale automatically — the
+  // same device 0268 used to close the blob-version exemption forgery.
+  //
+  // AN EMPTY TOKEN SET IS A LEGAL ANSWER and means «the files carry no size coding» (one size per
+  // file yields no tokens at all: deriveBlockSizes demands at least two size tails on one name stem).
+  // It reads as NO VERDICT, never as «there are no sizes».
+  //
+  // wr(tech_cards): this WRITES a derived fact about the card's patterns, from the patterns tab, in
+  // the same session as the upload. A production planner must not be able to write it — the index
+  // feeds the gate, and the right to rewrite it is the right to clear one's own blocker.
+  rpc PutTechCardPatternSizeIndex(PutTechCardPatternSizeIndexRequest) returns (PutTechCardPatternSizeIndexResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/pattern-size-index"
       body: "*"
     };
   }
@@ -4573,6 +4631,21 @@ message WorkshopSettings {
   //
   // A tech card may override it (common.TechCardInsert.required_seam_allowance_cm).
   google.type.Decimal default_seam_allowance_cm = 4;
+
+  // BLOCKING MODE of the production-run readiness gate (Ф6.1/Ф6.9) — третий жилец дома настроек цеха.
+  //
+  // ABSENT = not configured, and — UNLIKE every other tenant of this house — «not configured» here
+  // has a DEFINED BEHAVIOUR: REPORT-ONLY MODE. The gate computes and shows everything and does not
+  // refuse the creation of a run. There is no third state a command can be in, so «no verdict» is
+  // not available to this setting the way it is to the table length.
+  //
+  // Rolling the column out any other way would have stopped production outright: on the day Ф6 ships
+  // not a single card carries a norm with recorded measurement conditions, so «no verdict ⇒ refuse»
+  // would have refused everyone.
+  //
+  // true is switched on ONLY after кампания Д3 (re-measuring the norms). The order is forced and
+  // physically irreversible: directions (Д1) → re-measure after Ф3 ships (Д3) → blocking (Д4).
+  optional bool run_readiness_blocking = 5;
 }
 
 message GetWorkshopSettingsRequest {}
@@ -4610,6 +4683,16 @@ message UpdateWorkshopSettingsRequest {
   // allowance is a 4-5 cm hem, so anything past 10 is millimetres typed into a centimetre field or a
   // stray zero.
   google.type.Decimal default_seam_allowance_cm = 2;
+
+  // Ф6.9 — the blocking-mode switch. `optional` is MANDATORY here and is not decoration: without
+  // presence, «did not send the field» and «turn it off» are the same bytes on the wire, and a stale
+  // bundle saving the workshop screen would silently disable the gate. Exactly the price already
+  // paid on fabric_direction.
+  //
+  // Absent = leave alone. Present false = report-only. Present true = blocking. There is no
+  // "clear it back to unset" for a bool, and none is needed: false and unset behave identically
+  // (report-only), which is the whole point of the column's NULL having a defined behaviour.
+  optional bool run_readiness_blocking = 3;
 }
 
 message UpdateWorkshopSettingsResponse {
@@ -6196,6 +6279,25 @@ message TechCardReadinessRequirement {
   string label = 2; // human sentence, e.g. "a fitting has been recorded"
   bool met = 3;
   string detail = 4; // the actual state when unmet, e.g. "no fabric line in the BOM"
+  // UNKNOWN — the server COULD NOT ANSWER this row. Not «unmet», and above all not «met».
+  //
+  // It exists for one row today, `patterns`, and the reason is that the row was LYING. It counted
+  // DISTINCT tech_card_size_pattern.size_id against the size range, but the client files every
+  // sheet of a card under the SMALLEST size of the range as a pure storage artefact — so a card with
+  // five sizes and one graded DXF read as «1 of 5» and could never satisfy the prod checklist,
+  // while a card with one flat sheet per size read as fully covered whether or not those files
+  // contain those sizes.
+  //
+  // A false PASS is the worse of the two states, so the row stops asserting «verified» immediately
+  // rather than waiting for the index to fill. UNKNOWN does not count as unmet, so NO card becomes
+  // newly blocked at deploy time — the only thing that changes is that the server stops lying. The
+  // real check switches itself on card by card as the Ф6.3 size index (PutTechCardPatternSizeIndex)
+  // is populated.
+  //
+  // A row with unknown = true always carries a `detail` saying WHY there is no verdict, and `met` is
+  // false. `*_ready` booleans on this response are computed as «no row is unmet», with unknown rows
+  // skipped — a client recomputing readiness from the rows must do the same.
+  bool unknown = 5;
 }
 
 // GetTechCardReadiness answers "what is missing before this style can move on" — the checklist the
@@ -6751,6 +6853,11 @@ message MaterialPlanBlocker {
   string colorway_name = 4;
   int32 planned_qty = 5; // garments whose need for this slot is NOT in the plan
   string reason = 6; // human-readable: "no article (no pin, no slot default)" / "no consumption norm"
+  // STABLE MACHINE KEY for the same cause: `no_article` | `no_norm`. `reason` above stays a human
+  // sentence and is rewritten freely — a client that branched on its text would break on a typo fix.
+  // The readiness gate (Ф6) computes these two facts from THIS list rather than recomputing them,
+  // so the key is what keeps one fact from acquiring a second definition.
+  string key = 7;
 }
 
 message GetProductionRunMaterialPlanResponse {
@@ -6758,6 +6865,183 @@ message GetProductionRunMaterialPlanResponse {
   repeated string caveats = 2; // BOM lines without material_id, colourways without norms, lines without a product
   repeated MaterialPlanContribution contributions = 3; // slot × colourway breakdown of rows' required
   repeated MaterialPlanBlocker blockers = 4; // slot × colourway the plan could not count
+}
+
+// РЕЖИМ ГОТОВНОСТИ ПРОГОНА (Ф6) — the gate that judges a run that does not exist yet.
+
+// ProductionRunReadinessCell is one cell of the planned grid. It deliberately repeats the key of
+// production_run_line (product × size), because that IS the run about to be written: the gate judges
+// what will be recorded, not a paraphrase of it.
+message ProductionRunReadinessCell {
+  int32 colorway_id = 1; // the colourway's product id; 0 = a colourless line (aux / legacy)
+  int32 size_id = 2;
+  int32 planned_qty = 3;
+}
+
+message CheckProductionRunReadinessRequest {
+  int32 tech_card_id = 1;
+  // 0 = «planning against the LIVE card». A legal value (production_run.release_id is NULLable) and
+  // it does NOT become an error — see the release_frozen key.
+  int32 release_id = 2;
+  // The colourways being asked about. NOT derived from `cells`: the modal has to be able to show a
+  // verdict for a colourway whose quantities have not been typed yet, or there is nothing to grey
+  // its checkbox out with.
+  repeated int32 colorway_ids = 3;
+  repeated ProductionRunReadinessCell cells = 4;
+  // Re-checking an EXISTING run (detail page badges). 0 = a future run. It does not change any rule;
+  // it changes where actual_wastage_percent comes from for the metreage.
+  int32 run_id = 5;
+}
+
+// The degree of one check. FOUR, not a bool, and the load-bearing one is UNKNOWN.
+//
+// UNKNOWN is «THE SERVER HAS NO INSTRUMENT TO ANSWER», not «the data is bad». It NEVER blocks, in
+// any mode, and it is NEVER counted as passed. Blocking on it would punish the operator for a phase
+// we have not built; folding it into OK would silently not perform a check we promised — the exact
+// mistake Ф1 refused when it declined to read a NULL fabric direction as a value
+// (internal/entity/fabric_direction.go: «NULL IS NOT A FOURTH VALUE»).
+//
+// The boundary between UNKNOWN and BLOCKER: «the conditions the marker was measured under were
+// never recorded» is an ANSWER (fitness under the «not worse than» rule cannot be established, so
+// the norm is not fit) and is therefore a BLOCKER. «There is no size index» is the ABSENCE OF AN
+// INSTRUMENT and is therefore UNKNOWN.
+enum ProductionRunReadinessSeverity {
+  PRODUCTION_RUN_READINESS_SEVERITY_UNSPECIFIED = 0;
+  PRODUCTION_RUN_READINESS_SEVERITY_OK = 1;
+  PRODUCTION_RUN_READINESS_SEVERITY_UNKNOWN = 2;
+  PRODUCTION_RUN_READINESS_SEVERITY_WARNING = 3;
+  PRODUCTION_RUN_READINESS_SEVERITY_BLOCKER = 4;
+}
+
+// Where to go to fix it. THE CLIENT CHOOSES THE TAB, from `key`, with the same machinery as
+// RELEASE_BLOCKER_TAB / REQ_TAB and for the same reason: a tab name is one admin's navigation, not a
+// fact about the data. The server hands over IDENTIFIERS ONLY, so the client has something to build
+// a URL out of. An empty/zero field means «this check is not about that kind of object».
+message ProductionRunReadinessTarget {
+  int32 tech_card_id = 1;
+  int32 colorway_id = 2;
+  string bom_line_key = 3; // the BOM line's stable wire identity (0159/0260)
+  int64 bom_item_id = 4;
+  int32 marker_id = 5;
+  int64 material_id = 6;
+  int32 size_id = 7;
+}
+
+// One check of the gate.
+//
+// `key` is STABLE WIRE VOCABULARY and is what a client branches on (see the stability rules on
+// CheckProductionRunReadinessResponse). `label`/`detail` are human text, rewritten freely, and
+// rewording them is NEVER a contract change.
+message ProductionRunReadinessFinding {
+  string key = 1;
+  ProductionRunReadinessSeverity severity = 2;
+  string label = 3; // what was checked, in one sentence
+  string detail = 4; // the actual state; EMPTY only on an OK row
+  ProductionRunReadinessTarget target = 5;
+}
+
+message ProductionRunReadinessColorway {
+  int32 colorway_id = 1;
+  string colorway_name = 2;
+  bool ready = 3; // no BLOCKER on this colourway — THIS is what greys the modal's checkbox
+  repeated ProductionRunReadinessFinding findings = 4;
+}
+
+// Where the coverage figure came from. Always NORM today. Ф4.6 switches the requirement from the
+// norm to the lays, and this field exists precisely so that switch is VISIBLE rather than guessed at
+// from the magnitude of the number.
+enum ProductionRunCoverageSource {
+  PRODUCTION_RUN_COVERAGE_SOURCE_UNSPECIFIED = 0;
+  PRODUCTION_RUN_COVERAGE_SOURCE_NORM = 1; // quantities × norm
+  PRODUCTION_RUN_COVERAGE_SOURCE_LAYS = 2; // Ф4: length × plies + end losses
+}
+
+// Coverage BY THE NORM, per (colourway, article) pair. NOT a lay plan: lays are built after the run
+// is created, on the detail page. The modal's heading is literally «оценка по норме».
+message ProductionRunReadinessCoverage {
+  int32 colorway_id = 1;
+  int64 bom_item_id = 2;
+  string slot_name = 3;
+  int64 material_id = 4;
+  string material_name = 5;
+  string unit = 6;
+  common.MaterialUnit unit_code = 7; // UNKNOWN = the unit is free text; quantities under it must not be added up
+  google.type.Decimal required = 8;
+  google.type.Decimal on_hand = 9;
+  google.type.Decimal shortage = 10; // max(0, required − on_hand); NO reservations until Ф5б
+  ProductionRunCoverageSource source = 11;
+}
+
+// Coverage ACROSS SIZES AND ACROSS CLOTHS (Ф4.5). A garment is not provisioned until ALL of its
+// cloths are: 22 fronts and 20 linings are 20 garments.
+message ProductionRunReadinessUnitCoverage {
+  int32 colorway_id = 1;
+  int32 size_id = 2;
+  int32 planned_qty = 3;
+  // Garments for which EVERY required slot has both an article and a norm for this size. Today this
+  // is 0 or planned_qty (a binary fact about the recipe) rather than a fraction: fractions come from
+  // the STOCK, and that is units_from_stock below.
+  int32 provisioned_qty = 4;
+  // Garments today's stock suffices for: min over slots of floor(on_hand / norm), capped at
+  // planned_qty. An ESTIMATE, not a promise — see source.
+  int32 units_from_stock = 5;
+  ProductionRunCoverageSource source = 6;
+  repeated int64 blocking_bom_item_ids = 7; // the slots that hold provisioned_qty below planned_qty
+}
+
+// The gate's answer.
+//
+// KEY STABILITY RULES (this is contract, not style):
+//   * a key names the FACT that is missing — never the screen that fixes it, and never the sentence
+//     we happen to describe it with;
+//   * rewording label/detail is NEVER a contract change;
+//   * two facts a client would route to two different places are ALWAYS two keys, even when the
+//     sentence is the same (this is how colorway_linked and lab_dip live: one screen, two keys, and
+//     the aux filter drops them separately);
+//   * a key NEVER carries identifiers — those live in `target`;
+//   * a key is never re-used for a different fact. A retired key simply stops being emitted and the
+//     new fact gets a new key. A client that does not know a key MUST still render the row and route
+//     it to the header tab — the same rule RELEASE_BLOCKER_TAB already states.
+message CheckProductionRunReadinessResponse {
+  bool ready = 1; // no BLOCKER anywhere
+  bool blocking_enabled = 2; // the server's mode RIGHT NOW (workshop_settings.run_readiness_blocking)
+  // What CreateProductionRun WILL DO with this request: true = refuse. Sent explicitly rather than
+  // left to «!ready && blocking_enabled», because this is exactly the sentence the modal prints and
+  // the client must not be able to get it wrong.
+  bool would_block = 3;
+  // How many checks COULD NOT ANSWER. Zero is NOT «everything was verified successfully» — it means
+  // no check had to admit it lacked an instrument. Non-zero next to ready=true is the honest state
+  // «nothing is known to be broken, and these things were not checked at all».
+  int32 unknown_count = 4;
+  repeated ProductionRunReadinessFinding card = 5;
+  repeated ProductionRunReadinessColorway colorways = 6;
+  repeated ProductionRunReadinessFinding run = 7;
+  repeated ProductionRunReadinessCoverage coverage = 8;
+  repeated ProductionRunReadinessUnitCoverage unit_coverage = 9;
+  // The material plan's own irreducible caveats (unconvertible units and the like), passed through
+  // VERBATIM: they are already written as sentences for a human, and restating them as keys would
+  // give one fact a second definition.
+  repeated string caveats = 10;
+}
+
+message PutTechCardPatternSizeIndexRequest {
+  int32 tech_card_id = 1;
+  // The fabric scope: the назначение (0265) when the card has been sorted, else the BOM line's
+  // line_key — the same key entity.FabricScopeKey computes and the generated column
+  // tech_card_piece_dxf_block.scope_key holds (0267).
+  string scope_key = 2;
+  // line_keys of the sheets the client actually parsed. The server checks them against ITS OWN
+  // current membership of the scope and refuses a mismatch: an index computed over the wrong files
+  // is worse than no index.
+  repeated string sheet_line_keys = 3;
+  // Normalised (letters/digits only, lowercase) size tokens. EMPTY is legal and means «no grading
+  // was found in the files» — it is stored, and it reads back as NO VERDICT.
+  repeated string size_tokens = 4;
+}
+
+message PutTechCardPatternSizeIndexResponse {
+  string sheet_fingerprint = 1; // what the server recorded, for debugging
+  int32 resolved_size_count = 2; // how many tokens landed on sizes of the card's range
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

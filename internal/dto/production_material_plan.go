@@ -126,13 +126,19 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	type blockAcc struct {
 		plannedQty int
 		reason     string
+		// key is the STABLE MACHINE NAME of the same cause. It rides beside the prose rather than
+		// replacing it because the two have different jobs and different lifetimes: `reason` is
+		// rewritten whenever the sentence can be made clearer, `key` never changes. The Ф6 readiness
+		// gate reads these two facts from HERE instead of recomputing them — one fact, one
+		// implementation — and it could not do that safely by matching on the sentence.
+		key string
 	}
 	blocks := make(map[blockKey]*blockAcc)
-	blockAdd := func(bomID, colorwayID, qty int, reason string) {
+	blockAdd := func(bomID, colorwayID, qty int, key, reason string) {
 		k := blockKey{bomID, colorwayID}
 		b := blocks[k]
 		if b == nil {
-			b = &blockAcc{reason: reason}
+			b = &blockAcc{reason: reason, key: key}
 			blocks[k] = b
 		}
 		b.plannedQty += qty
@@ -219,12 +225,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			usedSlotsByColorway[pid][bom.Id] = true
 			mid, pinned := u.EffectiveMaterialId(bom)
 			if mid == 0 {
-				blockAdd(bom.Id, pid, ln.PlannedQty, "no article (no pin, no slot default)")
+				blockAdd(bom.Id, pid, ln.PlannedQty, entity.MaterialPlanBlockerNoArticle, entity.MaterialPlanReasonNoArticle)
 				continue
 			}
 			norm, sizeGraded, counted, ok := usageNormForSize(u, ln.SizeId)
 			if !ok {
-				blockAdd(bom.Id, pid, ln.PlannedQty, "no consumption norm")
+				blockAdd(bom.Id, pid, ln.PlannedQty, entity.MaterialPlanBlockerNoNorm, entity.MaterialPlanReasonNoNorm)
 				continue
 			}
 			// base is what the norm alone asks for; factor is the ONE gross-up this line takes.
@@ -392,7 +398,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			if usedSlotsByColorway[pid][b.Id] {
 				continue
 			}
-			blockAdd(b.Id, pid, qty, "no consumption norm")
+			blockAdd(b.Id, pid, qty, entity.MaterialPlanBlockerNoNorm, entity.MaterialPlanReasonNoNorm)
 		}
 	}
 
@@ -544,6 +550,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			ColorwayName: colorwayName(k.colorwayID),
 			PlannedQty:   int32(b.plannedQty),
 			Reason:       b.reason,
+			Key:          b.key,
 		})
 	}
 

@@ -33,6 +33,37 @@ func FailedPrecondition(ve *entity.ValidationError) error {
 	return withOptionalFieldDetail(status.New(codes.FailedPrecondition, ve.Error()), ve)
 }
 
+// FailedPreconditionMany maps a LIST of field-tagged violations onto one FailedPrecondition status
+// carrying ONE google.rpc.BadRequest with one FieldViolation per entry.
+//
+// It exists because the single-violation form above cannot express the refusal the run-readiness
+// gate has to make. A create request names several colourways; a ready one and an unready one may
+// arrive together, and the refusal is obliged to name EVERY unready colourway with its cause. With
+// one violation per round trip the operator fixes one reason per attempt, learning the next one only
+// after re-submitting — which on a five-colourway run is five round trips to discover a list the
+// server had in full the first time.
+//
+// `msg` is the sentence a client that reads only the status message sees; the violations are for a
+// client that binds failures to inputs. An empty list degrades to a plain FailedPrecondition rather
+// than an empty BadRequest, because an empty detail block reads as «the server has no idea why».
+func FailedPreconditionMany(msg string, violations []*entity.ValidationError) error {
+	st := status.New(codes.FailedPrecondition, msg)
+	fvs := make([]*errdetails.BadRequest_FieldViolation, 0, len(violations))
+	for _, ve := range violations {
+		if ve == nil || ve.Field == "" {
+			continue
+		}
+		fvs = append(fvs, fieldViolation(ve))
+	}
+	if len(fvs) == 0 {
+		return st.Err()
+	}
+	if enriched, err := st.WithDetails(&errdetails.BadRequest{FieldViolations: fvs}); err == nil {
+		st = enriched
+	}
+	return st.Err()
+}
+
 // withOptionalFieldDetail attaches a google.rpc.BadRequest FieldViolation to st when ve is
 // field-tagged (Field set); a message-only ValidationError is returned as st unchanged.
 func withOptionalFieldDetail(st *status.Status, ve *entity.ValidationError) error {

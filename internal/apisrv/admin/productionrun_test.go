@@ -28,6 +28,7 @@ func TestCreateProductionRunSnapshotsPlanFromRelease(t *testing.T) {
 	pr := mocks.NewMockProductionRuns(t)
 	repo.EXPECT().TechCards().Return(tc)
 	repo.EXPECT().ProductionRuns().Return(pr)
+	expectRunReadinessGatePasses(t, repo, tc, 7)
 
 	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(&entity.TechCardRelease{
 		TechCardReleaseMeta: entity.TechCardReleaseMeta{
@@ -71,6 +72,7 @@ func TestCreateProductionRunMapsColourVariantRefusals(t *testing.T) {
 		pr := mocks.NewMockProductionRuns(t)
 		repo.EXPECT().TechCards().Return(tc)
 		repo.EXPECT().ProductionRuns().Return(pr)
+		expectRunReadinessGatePasses(t, repo, tc, 7)
 		// Plan the cost from a release, so the fixture needs no costing-FX rate set — the colour
 		// refusal is what this test is about.
 		tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(&entity.TechCardRelease{
@@ -106,6 +108,7 @@ func TestCreateProductionRunReleaseNotFound(t *testing.T) {
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(tc)
+	expectRunReadinessGatePasses(t, repo, tc, 7)
 	tc.EXPECT().GetTechCardRelease(mock.Anything, 5).Return(nil, sql.ErrNoRows)
 
 	s := &Server{repo: repo}
@@ -517,4 +520,28 @@ func TestGetProductionRunNotFoundAndList(t *testing.T) {
 	s2 := &Server{repo: mocks.NewMockRepository(t)}
 	_, err = s2.ListProductionRuns(context.Background(), &pb_admin.ListProductionRunsRequest{Status: "bogus"})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+// expectRunReadinessGatePasses stubs the reads the Ф6 create-time gate makes, with a card that
+// raises no BLOCKER, so a test about something else is not also a test about the gate.
+//
+// It is deliberately a HELPER rather than a switch: there is no way to turn the gate off, and adding
+// one for tests would have meant adding one for production. The gate's own behaviour is tested in
+// TestRunReadinessCreateGate* and in the dto layer.
+func expectRunReadinessGatePasses(t *testing.T, repo *mocks.MockRepository, tc *mocks.MockTechCards, cardID int) {
+	t.Helper()
+	ws := mocks.NewMockWorkshop(t)
+	ms := mocks.NewMockMaterialStock(t)
+	repo.EXPECT().Workshop().Return(ws).Maybe()
+	repo.EXPECT().MaterialStock().Return(ms).Maybe()
+	// Unset: report-only, which is what an unconfigured workshop gets and what the gate defaults to.
+	ws.EXPECT().GetSettings(mock.Anything).Return(&entity.WorkshopSettings{}, nil).Maybe()
+	ms.EXPECT().NarrowestMeasuredLotWidths(mock.Anything, mock.Anything).
+		Return(map[int]decimal.NullDecimal{}, nil).Maybe()
+	tc.EXPECT().GetTechCardById(mock.Anything, cardID).Return(&entity.TechCard{
+		Id:             cardID,
+		TechCardInsert: entity.TechCardInsert{SizeIds: []int{1}, Pieces: []entity.TechCardPiece{{LineKey: "P1", Name: "перед"}}},
+	}, nil).Maybe()
+	tc.EXPECT().GetTechCardPatternSizeIndex(mock.Anything, cardID).
+		Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
 }

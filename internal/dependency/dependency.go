@@ -768,6 +768,15 @@ type (
 		// ListCostingMigrationExceptions reads the Phase 2 scalar→BOM migration exception report;
 		// techCardID 0 = all cards.
 		ListCostingMigrationExceptions(ctx context.Context, techCardID int) ([]entity.CostingMigrationException, error)
+		// GetTechCardPatternSizeIndex returns a card's stored DXF size-token index, keyed by fabric
+		// scope_key (Ф6.3, 0280). A missing key means «nobody has run the audit for that scope», which
+		// the readiness gate must render as NO VERDICT — never as «that scope has no sizes».
+		GetTechCardPatternSizeIndex(ctx context.Context, techCardID int) (map[string]entity.PatternSizeIndexRow, error)
+		// PutTechCardPatternSizeIndex stores one scope's parsed size tokens. The sheet-set fingerprint
+		// is computed BY THE STORE out of its own tech_card_size_pattern rows, and a client sheet list
+		// that disagrees with the scope's membership is refused — that is the whole safety property of
+		// the table, so it may not move to the caller.
+		PutTechCardPatternSizeIndex(ctx context.Context, in entity.PatternSizeIndexWrite) (entity.PatternSizeIndexResult, error)
 		// Immutable release snapshots (task 11): a full JSON snapshot of the enriched read-model
 		// frozen at each release, so a card's prior spec + planned cost survive re-open/re-release.
 		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error
@@ -871,6 +880,12 @@ type (
 		// ListMaterialLots returns a material's structured lots / rolls (gap-07 v2 D), active-only unless
 		// includeArchived. Traceability registry; valuation stays moving-average.
 		ListMaterialLots(ctx context.Context, materialID int, includeArchived bool) ([]entity.MaterialLot, error)
+		// NarrowestMeasuredLotWidths returns, per material, the narrowest MEASURED ROLL width among the
+		// lots that still have stock (Ф6.2). A material with no measured, non-empty lot is ABSENT from
+		// the map — «nobody measured it» is not «it matches the nominal», and the readiness gate falls
+		// back to the catalogue width on an absent key rather than inventing one. кромка is NOT
+		// subtracted here; the comparison rule needs the raw figure to show its arithmetic.
+		NarrowestMeasuredLotWidths(ctx context.Context, materialIDs []int) (map[int]decimal.NullDecimal, error)
 	}
 
 	// Accounting is the double-entry general ledger (docs/plan-accounting/). The ledger is a DERIVED,

@@ -45,6 +45,16 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 		return nil, status.Error(codes.Internal, "can't get tech card readiness")
 	}
 	staleSignoffs := staleApprovedSignoffSections(card)
+	// Р4: the `patterns` row is answered from the Ф6.3 size index instead of from
+	// tech_card_size_pattern.size_id, which is a storage artefact the client fills with the smallest
+	// size of the range. A read failure degrades to «no verdict» rather than failing the whole
+	// checklist: this row is advisory, and one unreadable derived table must not blank the other six.
+	patternIndex, ierr := s.repo.TechCards().GetTechCardPatternSizeIndex(ctx, tcID)
+	if ierr != nil {
+		slog.Default().ErrorContext(ctx, "can't load pattern size index for readiness",
+			slog.String("err", ierr.Error()), slog.Int("tech_card_id", tcID))
+		patternIndex = nil
+	}
 
 	resp := &pb_admin.GetTechCardReadinessResponse{
 		CurrentStage: dto.ConvertEntityTechCardStageToPb(facts.Stage),
@@ -52,7 +62,7 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 	}
 	if next, ok := nextTechCardStage(facts.Stage); ok {
 		resp.NextStage = dto.ConvertEntityTechCardStageToPb(next)
-		resp.NextStageRequirements = nextStageRequirements(next, facts)
+		resp.NextStageRequirements = nextStageRequirements(next, facts, card, patternIndex)
 	}
 	// An empty checklist (prod, or an unrecognised stage) reads as ready, per the field's contract
 	// "every next_stage_requirements entry is met"; a client gates on next_stage != UNKNOWN.
@@ -76,7 +86,8 @@ func nextTechCardStage(s entity.TechCardStage) (entity.TechCardStage, bool) {
 // stable machine names a client switches on; labels are the sentence it shows. `first_sample` is
 // reused for the proto-sample condition on purpose — both rows ask for the style's first sewn
 // prototype, they only differ in how specific the demand is.
-func nextStageRequirements(target entity.TechCardStage, f entity.TechCardReadinessFacts) []*pb_admin.TechCardReadinessRequirement {
+func nextStageRequirements(target entity.TechCardStage, f entity.TechCardReadinessFacts,
+	card *entity.TechCard, patternIndex map[string]entity.PatternSizeIndexRow) []*pb_admin.TechCardReadinessRequirement {
 	switch target {
 	case entity.TechCardStageProto:
 		return []*pb_admin.TechCardReadinessRequirement{
@@ -106,8 +117,7 @@ func nextStageRequirements(target entity.TechCardStage, f entity.TechCardReadine
 		return []*pb_admin.TechCardReadinessRequirement{
 			readinessReq("pp_sample", "a pre-production sample exists", f.PpSamples > 0, "no pp sample recorded"),
 			readinessReq("run_planned", "a production run is planned", f.ProductionRuns > 0, "no production run planned"),
-			readinessReq("patterns", "every size in the range has a pattern",
-				f.Sizes > 0 && f.PatternSizes == f.Sizes, patternsDetail(f)),
+			patternsRequirement(card, patternIndex),
 		}
 	}
 	return nil
@@ -143,9 +153,20 @@ func readinessReq(key, label string, met bool, detail string) *pb_admin.TechCard
 	return &pb_admin.TechCardReadinessRequirement{Key: key, Label: label, Met: met, Detail: detail}
 }
 
+// readinessUnknown builds a row the server COULD NOT ANSWER. Not met, and — the load-bearing half —
+// not counted as unmet either, so an absent instrument never blocks a stage the way a real failure
+// does. Same discipline the run-readiness gate's UNKNOWN keeps, and for the same reason: folding it
+// into either known value states something the server does not know.
+func readinessUnknown(key, label, detail string) *pb_admin.TechCardReadinessRequirement {
+	return &pb_admin.TechCardReadinessRequirement{Key: key, Label: label, Met: false, Unknown: true, Detail: detail}
+}
+
+// allReadinessMet reports «nothing is known to be missing». UNKNOWN rows are SKIPPED, not counted as
+// failures: they mean the server had no instrument, and treating that as a failure would block every
+// card at once on the day a check admits it cannot answer.
 func allReadinessMet(rows []*pb_admin.TechCardReadinessRequirement) bool {
 	for _, r := range rows {
-		if !r.Met {
+		if !r.Met && !r.Unknown {
 			return false
 		}
 	}
@@ -168,13 +189,34 @@ func bomLinkedDetail(f entity.TechCardReadinessFacts) string {
 	return fmt.Sprintf("%d of %d BOM slots have no article (no default and not pinned by every live colourway)", f.BomLines-f.BomLinkedLines, f.BomLines)
 }
 
-// patternsDetail likewise: an empty grade cannot be "fully covered" by patterns, and the prod
-// checklist has no size-range row of its own.
-func patternsDetail(f entity.TechCardReadinessFacts) string {
-	if f.Sizes == 0 {
-		return "the size range is empty"
+// patternsRequirement answers «every size in the range has a pattern» — and it is the ONE row of
+// this checklist that can say «I do not know» (Р4).
+//
+// IT USED TO LIE, in both directions. It counted DISTINCT tech_card_size_pattern.size_id against the
+// size range, but the client files every sheet of a card under the SMALLEST size of the range and
+// says so in its own comment — it is a storage artefact, not a statement about the file. So a card
+// with five sizes and one graded DXF read as «1 of 5» and could never pass, while a card with one
+// flat sheet per size read as fully covered whether or not those files contain those sizes.
+//
+// The false PASS is the worse of the two, so the row stops asserting «verified» immediately rather
+// than waiting for the Ф6.3 index to be populated everywhere. UNKNOWN does not count as unmet, so no
+// card becomes newly blocked on the day this ships; the honest check switches itself on card by card
+// as operators press «⌕ размеры в файлах».
+func patternsRequirement(card *entity.TechCard, index map[string]entity.PatternSizeIndexRow) *pb_admin.TechCardReadinessRequirement {
+	const (
+		key   = "patterns"
+		label = "every size in the range has a pattern"
+	)
+	ok, unknown, missing := dto.TechCardPatternSizeVerdict(card, index)
+	switch {
+	case ok:
+		return readinessReq(key, label, true, "")
+	case unknown != "":
+		return readinessUnknown(key, label, unknown)
+	default:
+		return readinessReq(key, label, false,
+			fmt.Sprintf("в файлах выкроек нет размеров: %s", strings.Join(missing, ", ")))
 	}
-	return fmt.Sprintf("%d of %d sizes have no pattern", f.Sizes-f.PatternSizes, f.Sizes)
 }
 
 func costingDetail(f entity.TechCardReadinessFacts) string {
