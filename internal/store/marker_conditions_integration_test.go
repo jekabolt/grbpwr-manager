@@ -259,6 +259,37 @@ func TestTechCardMarkerConditions(t *testing.T) {
 		require.True(t, markerByName("замеренная").IsNorm)
 	})
 
+	t.Run("переезд нормы на ДРУГУЮ ткань снимает признак", func(t *testing.T) {
+		// Эксклюзивность скоупится парой (карточка, bom_item_id) — «одна норма на ткань». Значит
+		// сохранение, сменившее ткань, уносит признак В ЧУЖОЙ СКОУП, и обе развязки назначал бы не
+		// человек, а случайность: у подкладки норма уже есть — станет две, и свежий updated_at
+		// отдаст победу переехавшему; нормы там нет — подкладка приобретёт её молча, а основная
+		// молча потеряет. Поэтому переезд СНИМАЕТ признак: назначить норму заново — одно осознанное
+		// действие, а отобрать её у другой ткани молча нельзя ничем.
+		//
+		// Проверяется здесь, а не рассуждением, ещё и потому, что защита ЛЕГКО СТАНОВИТСЯ
+		// ДЕКОРАТИВНОЙ: MySQL вычисляет список SET слева направо и видит уже обновлённые колонки,
+		// так что то же самое присваивание ПОСЛЕ `bom_item_id = :bom_item_id` сравнивало бы новое
+		// значение с самим собой — всегда истина, признак не снимался бы никогда, а тест на ту же
+		// ткань (выше) продолжал бы проходить.
+		require.True(t, markerByName("замеренная").IsNorm)
+		moved := measured
+		moved.BomLineKey = lining.LineKey
+		_, err := T.SaveMarker(ctx, tcID, measuredID, moved, "tester")
+		require.NoError(t, err)
+		require.False(t, markerByName("замеренная").IsNorm,
+			"признак уехал бы в скоуп подкладки, где его никто не назначал")
+
+		// Вернуть как было — тесты ниже ждут норму на основной ткани.
+		_, err = T.SaveMarker(ctx, tcID, measuredID, measured, "tester")
+		require.NoError(t, err)
+		require.False(t, markerByName("замеренная").IsNorm,
+			"возврат на прежнюю ткань — тоже переезд: признак не воскресает сам")
+		_, err = T.SetMarkerNorm(ctx, measuredID, true, "tester")
+		require.NoError(t, err)
+		require.True(t, markerByName("замеренная").IsNorm)
+	})
+
 	// --- (e) the 1761 regression -------------------------------------------------------------------
 
 	t.Run("deleting the BOM line a norm was measured against does not fail the card save", func(t *testing.T) {

@@ -483,6 +483,20 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// is_norm is DELIBERATELY ABSENT from this map and from both statements below. Designation is
 		// SetMarkerNorm's alone: re-saving geometry must neither seize the norm nor lose it, and a
 		// stale bundle must not be able to clear it by not knowing the field exists.
+		//
+		// РОВНО ОДНО ИСКЛЮЧЕНИЕ, и оно ниже в UPDATE: ПЕРЕПРИВЯЗКА К ДРУГОЙ ТКАНИ. Эксклюзивность
+		// нормы скоупится парой (карточка, bom_item_id), то есть «одна норма на ткань», — и
+		// сохранение, сменившее ткань, переносит признак В ЧУЖОЙ СКОУП. Обе развязки назначал бы
+		// не человек, а случайность: если у целевой ткани норма уже есть, их станет две, причём
+		// свежий updated_at отдаёт победу переехавшему и вытесняет действующую норму; если нормы
+		// там нет, ткань молча её приобретает, а исходная — молча теряет. Поэтому переезд СНИМАЕТ
+		// признак: назначить норму заново — одно осознанное действие, а вот отобрать её у другой
+		// ткани молча нельзя ничем. Сравнение через <=> (NULL-safe): bom_item_id обнуляем.
+		//
+		// И ПОТОМУ ЖЕ ЭТО ПРИСВАИВАНИЕ СТОИТ ПЕРВЫМ В SET. MySQL вычисляет список слева направо и
+		// видит УЖЕ ОБНОВЛЁННЫЕ колонки (док: «SET col1 = 1, col2 = col1» кладёт в col2 единицу),
+		// так что после `bom_item_id = :bom_item_id` сравнение читало бы новое значение с самим
+		// собой — всегда истина, признак не снимался бы никогда, и защита была бы декоративной.
 		if id > 0 {
 			// The addressed row must already be a marker of THIS card — a foreign id is reported as
 			// gone, not silently adopted. Ownership is resolved with a SELECT, like the
@@ -502,7 +516,8 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			if _, err := storeutil.ExecNamedRows(ctx, db, `
 				UPDATE tech_card_marker
-				SET size_id = :size_id, bom_item_id = :bom_item_id, colorway_id = :colorway_id,
+				SET is_norm = IF(:bom_item_id <=> bom_item_id, is_norm, FALSE),
+				    size_id = :size_id, bom_item_id = :bom_item_id, colorway_id = :colorway_id,
 				    name = :name, source = :source,
 				    fabric_width_cm = :fabric_width_cm, gap_cm = :gap_cm,
 				    edge_margin_cm = :edge_margin_cm, selvedge_cm = :selvedge_cm,
