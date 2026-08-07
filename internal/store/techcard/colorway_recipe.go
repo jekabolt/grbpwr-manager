@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -113,6 +114,54 @@ var rollGoodsSections = func() map[string]bool {
 	}
 	return m
 }()
+
+// kindEligibleSectionList is THE list of BOM families that ЧТО ЭТО ЗА ПОЗИЦИЯ (kind, 0276) may
+// classify. It is the COMPLEMENT of the roll-goods list above, minus labels — and it is DERIVED for
+// exactly the reason that list's own header gives: a hand-written copy of a complement is the
+// worst kind of copy, because adding a fifth roll-goods family above would leave the copy still
+// offering kinds on cloth and no test would notice.
+//
+//   - roll goods are excluded because they already have their own axis (purpose, 0265) and the two
+//     answer different questions about materials that are measured, not counted;
+//   - `label` is excluded because tech_card_label.label_type ALREADY owns that vocabulary, several
+//     label specs may point at one bom_item_id, and labelsProjection hashes label_type into the
+//     SIGNED labels digest — a `kind` there would be a second, unsigned answer free to disagree.
+//
+// The three sets (roll goods, {label}, this one) are asserted to PARTITION
+// entity.ValidTechCardBomSections by TestBomKindSectionsPartitionValidSections: a section added to
+// the enum and to none of the three fails there instead of silently becoming un-classifiable.
+//
+// Sorted, because map iteration order is randomised per run and this list is rendered into the
+// operator-facing refusal below — an error message whose wording reshuffles between two identical
+// requests is a bug report waiting to happen.
+var kindEligibleSectionList = func() []entity.TechCardBomSection {
+	out := make([]entity.TechCardBomSection, 0, len(entity.ValidTechCardBomSections))
+	for s := range entity.ValidTechCardBomSections {
+		if rollGoodsSections[string(s)] || s == entity.BomSectionLabel {
+			continue
+		}
+		out = append(out, s)
+	}
+	slices.Sort(out)
+	return out
+}()
+
+var kindEligibleSections = func() map[entity.TechCardBomSection]bool {
+	m := make(map[entity.TechCardBomSection]bool, len(kindEligibleSectionList))
+	for _, s := range kindEligibleSectionList {
+		m[s] = true
+	}
+	return m
+}()
+
+// kindEligibleSectionNames renders the eligible families for an error message, from the one list.
+func kindEligibleSectionNames() string {
+	names := make([]string, 0, len(kindEligibleSectionList))
+	for _, s := range kindEligibleSectionList {
+		names = append(names, string(s))
+	}
+	return strings.Join(names, ", ")
+}
 
 // rollGoodsSectionParam is the named parameter for one family; the fragment and the args helper
 // call it, so the two cannot name different things.

@@ -381,6 +381,75 @@ type colorwayBomUsageRefRow struct {
 	SKU  string `db:"sku"`
 }
 
+// The BOM upsert's two statements live as package-level constants so TestBomItemUpsertQueriesBind can
+// bind them without a database. sqlx parses ':' ANYWHERE in a named query — including inside a `--`
+// SQL comment — as a parameter, and a name the args map does not carry fails at BIND time, i.e. at
+// request time on the card-save path. Every guarded column added here (purpose 0265, kind 0276) adds
+// two params that are easy to add to one side only; the precedent is pieceUpdateQuery/pieceInsertQuery.
+//
+// The `*_omitted` guards are what stop a tab holding an older bundle from wiping a column it does not
+// know about: absent on the wire means «keep what is stored», not «clear it». `kind` and `kind_note`
+// share ONE decision (see parseTechCardBomItems) but keep two params, so the SQL reads as what it is —
+// two columns, each guarded — rather than making the reader trust an off-screen coupling.
+const bomItemUpdateQuery = `
+	UPDATE tech_card_bom_item SET
+		material_id=:material_id, section=:section,
+		purpose=IF(:purpose_omitted, purpose, :purpose),
+		purpose_note=IF(:purpose_omitted, purpose_note, :purpose_note),
+		kind=IF(:kind_omitted, kind, :kind),
+		kind_note=IF(:kind_note_omitted, kind_note, :kind_note),
+		is_sample=IF(:is_sample_omitted, is_sample, :is_sample),
+		name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
+		color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
+		comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
+		fabric_direction=IF(:fabric_direction_omitted, fabric_direction, :fabric_direction),
+		wastage_percent=:wastage_percent,
+		price_source=:price_source, price_snapshot_at=:price_snapshot_at
+	WHERE id=:id`
+
+const bomItemInsertQuery = `
+	INSERT INTO tech_card_bom_item
+		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, is_sample, name, supplier, supplier_ref,
+		 color, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
+		 fabric_weight_gsm, fabric_direction, wastage_percent, line_key, price_source, price_snapshot_at)
+	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :is_sample, :name, :supplier, :supplier_ref,
+		 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
+		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :line_key, :price_source, :price_snapshot_at)`
+
+// validateBomKindSection enforces the kind↔section pairing (0276) the DB CHECK deliberately does not:
+// a kind is legal only on a kind-eligible section, and within that, only in its own HOME section —
+// except BomKindOther, the one section-agnostic value, which is the escape hatch of every eligible
+// family at once (and the ONLY kind section='other' can carry).
+//
+// Both arms name the section that actually fired and how to get out of it. An unknown value is
+// REFUSED rather than degraded: the read path may degrade a value it does not recognise (a row must
+// never vanish), but a write that silently dropped a classification because the client spoke a newer
+// vocabulary would be data loss the operator never asked for and could not see.
+func validateBomKindSection(b *entity.TechCardBomItem, i int) error {
+	if !b.Kind.Valid {
+		return nil
+	}
+	field := fmt.Sprintf("bom_items[%d].kind", i)
+	kind := entity.TechCardBomKind(b.Kind.String)
+	home, known := entity.BomKindHomeSection(kind)
+	if !known {
+		return entity.NewFieldViolation(field, "unknown kind", b.Kind.String, "pick a kind from the list")
+	}
+	if !kindEligibleSections[b.Section] {
+		return entity.NewFieldViolation(field,
+			"kind applies only to "+kindEligibleSectionNames(),
+			fmt.Sprintf("this line is section %q", b.Section),
+			"clear the kind — roll goods are classified by назначение, and a label's type lives on the label spec")
+	}
+	if home != entity.BomKindAnySection && home != b.Section {
+		return entity.NewFieldViolation(field,
+			fmt.Sprintf("kind %q belongs to section %q", kind, home),
+			fmt.Sprintf("this line is section %q", b.Section),
+			fmt.Sprintf("move the line to section %q, or pick a kind of section %q", home, b.Section))
+	}
+	return nil
+}
+
 // upsertTechCardBom reconciles a card's BOM lines by line_key in one transaction instead of the old
 // delete-all + reinsert (S2/S3 root): a line_key already in the DB is UPDATEd in place (its id is
 // stable, which is what lets referrers hold a real FK), a new line_key is INSERTed, and a line_key
@@ -426,37 +495,29 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 				fmt.Sprintf("this line is section %q", b.Section),
 				"clear the purpose, or move the line to a roll-goods section")
 		}
+		// ЧТО ЭТО ЗА ПОЗИЦИЯ is the mirror of назначение and is checked in the same place, for the
+		// same reason: eligibility is the roll-goods list's complement (kindEligibleSections), and a
+		// second hand-written copy in the dto would go stale the moment a family moved.
+		//
+		// The DB CHECK closes the VOCABULARY only. The PAIRING lives here on purpose — a two-column
+		// CHECK would fire as a raw 3819 on an UPDATE that touched nothing but `section` and name a
+		// column the operator never edited (the argument 0275 makes for its even-count invariant,
+		// pointing the other way: there the schema must carry it, here the schema must not).
+		if err := validateBomKindSection(b, i); err != nil {
+			return res, err
+		}
 		params := bomItemParams(tcID, b, i, key)
 		src, at := bomPriceProvenance(existingRowByKey[key], b, now)
 		params["price_source"], params["price_snapshot_at"] = src, at
 		if id, ok := existingByKey[key]; ok {
 			params["id"] = id
-			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE tech_card_bom_item SET
-					material_id=:material_id, section=:section,
-					purpose=IF(:purpose_omitted, purpose, :purpose),
-					purpose_note=IF(:purpose_omitted, purpose_note, :purpose_note),
-					is_sample=IF(:is_sample_omitted, is_sample, :is_sample),
-					name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
-					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
-					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
-					fabric_direction=IF(:fabric_direction_omitted, fabric_direction, :fabric_direction),
-					wastage_percent=:wastage_percent,
-					price_source=:price_source, price_snapshot_at=:price_snapshot_at
-				WHERE id=:id`, params); err != nil {
+			if err := storeutil.ExecNamed(ctx, db, bomItemUpdateQuery, params); err != nil {
 				return res, fmt.Errorf("failed to update bom line: %w", err)
 			}
 			res.ordered = append(res.ordered, id)
 			res.byLineKey[key] = id
 		} else {
-			newID, err := storeutil.ExecNamedLastId(ctx, db, `
-				INSERT INTO tech_card_bom_item
-					(tech_card_id, material_id, section, purpose, purpose_note, is_sample, name, supplier, supplier_ref,
-					 color, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
-					 fabric_weight_gsm, fabric_direction, wastage_percent, line_key, price_source, price_snapshot_at)
-				VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :is_sample, :name, :supplier, :supplier_ref,
-					 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
-					 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :line_key, :price_source, :price_snapshot_at)`, params)
+			newID, err := storeutil.ExecNamedLastId(ctx, db, bomItemInsertQuery, params)
 			if err != nil {
 				return res, fmt.Errorf("failed to insert bom line: %w", err)
 			}
@@ -534,9 +595,16 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		// в дайджесте подписи, а NULL неотличим от «ещё не разложили». Примечание ходит вместе с
 		// назначением: они меняются одной парой, иначе примечание пережило бы смену назначения и
 		// стало бы теневой ролью.
-		"purpose":                  b.Purpose,
-		"purpose_omitted":          b.PurposeOmitted,
-		"purpose_note":             b.PurposeNote,
+		"purpose":         b.Purpose,
+		"purpose_omitted": b.PurposeOmitted,
+		"purpose_note":    b.PurposeNote,
+		// Та же пара для другой половины спецификации (0276). kind и kind_note СВЯЗАНЫ в схеме
+		// (chk_bom_item_kind_note), поэтому их флаги ставятся вместе в parseTechCardBomItems: запись
+		// одной половины поверх сохранённой второй — это строка, которую MySQL обязан отвергнуть.
+		"kind":                     b.Kind,
+		"kind_omitted":             b.KindOmitted,
+		"kind_note":                b.KindNote,
+		"kind_note_omitted":        b.KindNoteOmitted,
 		"is_sample":                b.IsSample,
 		"is_sample_omitted":        b.IsSampleOmitted,
 		"name":                     b.Name,
@@ -805,7 +873,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// query shipped broken and took every tech-card read down with it.
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT bi.id, bi.tech_card_id, bi.material_id, bi.section,
-		       bi.purpose, bi.purpose_note, bi.is_sample,
+		       bi.purpose, bi.purpose_note, bi.kind, bi.kind_note, bi.is_sample,
 		       COALESCE(NULLIF(bi.name, ''), m.name) AS name,
 		       COALESCE(NULLIF(m.supplier, ''), bi.supplier) AS supplier,
 		       COALESCE(NULLIF(m.supplier_ref, ''), bi.supplier_ref) AS supplier_ref,

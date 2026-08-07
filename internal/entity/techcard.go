@@ -612,6 +612,190 @@ func IsValidTechCardBomPurpose(p TechCardBomPurpose) bool {
 	return ValidTechCardBomPurposes[p]
 }
 
+// TechCardBomKind is ЧТО ЭТО ЗА ПОЗИЦИЯ — the mirror image of TechCardBomPurpose. Purpose says what
+// the garment uses a ROLL-GOODS line FOR; kind says what a NON-roll-goods line IS. They are two
+// halves of one classification and never appear on the same row: purpose is legal only on
+// fabric/lining/interlining/insulation, kind only on the sections that are neither roll goods nor
+// label.
+//
+// NOT NAMED "role" — TechCardRole already means WHO is responsible for the card, and a second
+// "role" meaning "what this button is" would be misread permanently.
+//
+// ONE FLAT VOCABULARY, not one per family: a value already implies its family (a zipper is hardware
+// and nothing else), so a per-family type would encode the section twice and let the copies drift.
+// The pairing lives in bomKindHomeSection below — as DATA, so that ValidTechCardBomKinds and the
+// section a kind belongs to can never be two lists that disagree.
+//
+// Mirrors the common.TechCardBomKind proto enum and the chk_bom_item_kind DB CHECK (0276); stored as
+// a NULLABLE string in tech_card_bom_item.kind, where NULL means "not classified yet".
+type TechCardBomKind string
+
+const (
+	// ФУРНИТУРА (home section: hardware) — countable fittings the garment stops working without.
+	BomKindZipper        TechCardBomKind = "zipper"         // молния в сборе
+	BomKindZipperSlider  TechCardBomKind = "zipper_slider"  // бегунок, если закупается отдельно
+	BomKindButton        TechCardBomKind = "button"         // пуговица
+	BomKindSnap          TechCardBomKind = "snap"           // кнопка
+	BomKindRivet         TechCardBomKind = "rivet"          // НЕСУЩАЯ заклёпка; декоративная — BomKindStud
+	BomKindEyelet        TechCardBomKind = "eyelet"         // люверс / блочка
+	BomKindHookAndBar    TechCardBomKind = "hook_and_bar"   // крючок-петля
+	BomKindSnapHook      TechCardBomKind = "snap_hook"      // карабин
+	BomKindBuckle        TechCardBomKind = "buckle"         // пряжка
+	BomKindStrapAdjuster TechCardBomKind = "strap_adjuster" // регулятор лямки
+	BomKindRing          TechCardBomKind = "ring"           // кольцо / полукольцо
+	BomKindToggle        TechCardBomKind = "toggle"         // фиксатор-«клык»
+	BomKindCordStopper   TechCardBomKind = "cord_stopper"   // фиксатор шнура; сам шнур — BomKindDrawcord
+	BomKindCordEnd       TechCardBomKind = "cord_end"       // наконечник шнура
+	BomKindMagnet        TechCardBomKind = "magnet"         // магнитная застёжка
+	BomKindChain         TechCardBomKind = "chain"          // цепь
+
+	// ОТДЕЛОЧНЫЕ (home section: trim) — soft goods sold by length.
+	BomKindElastic  TechCardBomKind = "elastic"   // резинка
+	BomKindDrawcord TechCardBomKind = "drawcord"  // шнур; его фиксатор — BomKindCordStopper
+	BomKindBinding  TechCardBomKind = "binding"   // бейка
+	BomKindTape     TechCardBomKind = "tape"      // тесьма
+	BomKindPiping   TechCardBomKind = "piping"    // кант
+	BomKindWebbing  TechCardBomKind = "webbing"   // стропа
+	BomKindHookLoop TechCardBomKind = "hook_loop" // велкро — TRIM, метражная лента, не фурнитура
+	BomKindBoning   TechCardBomKind = "boning"    // регилин
+	BomKindLace     TechCardBomKind = "lace"      // кружево
+	BomKindRibbing  TechCardBomKind = "ribbing"   // трикотажная резинка
+
+	// ДЕКОР (home section: decoration) — applied ONTO the garment; holds nothing together.
+	BomKindPrint        TechCardBomKind = "print"
+	BomKindEmbroidery   TechCardBomKind = "embroidery"
+	BomKindApplique     TechCardBomKind = "applique"
+	BomKindPatch        TechCardBomKind = "patch"
+	BomKindHeatTransfer TechCardBomKind = "heat_transfer"
+	BomKindRhinestone   TechCardBomKind = "rhinestone"
+	BomKindSequin       TechCardBomKind = "sequin"
+	BomKindStud         TechCardBomKind = "stud" // декоративная клёпка; несущая — BomKindRivet
+	BomKindFoil         TechCardBomKind = "foil"
+	BomKindLaser        TechCardBomKind = "laser"
+
+	// НИТКИ (home section: thread) — split by the JOB, which is what picks the machine.
+	BomKindSewingThread     TechCardBomKind = "sewing_thread"
+	BomKindTopstitchThread  TechCardBomKind = "topstitch_thread"
+	BomKindOverlockThread   TechCardBomKind = "overlock_thread"
+	BomKindButtonholeThread TechCardBomKind = "buttonhole_thread"
+	BomKindEmbroideryThread TechCardBomKind = "embroidery_thread"
+	BomKindElasticThread    TechCardBomKind = "elastic_thread"
+
+	// УПАКОВКА (home section: packaging). Spelt like TechCardAuxSubtype wherever the two name the
+	// SAME object, so the aux card that MAKES it and the BOM line that CONSUMES it read as one word.
+	BomKindPolybag       TechCardBomKind = "polybag"
+	BomKindCarton        TechCardBomKind = "carton"         // транспортный короб (не AuxSubtypeBox)
+	BomKindHanger        TechCardBomKind = "hanger"         // == AuxSubtypeHanger
+	BomKindHangtagString TechCardBomKind = "hangtag_string" // шнурок ярлыка, не сам AuxSubtypeHangtag
+	BomKindSticker       TechCardBomKind = "sticker"        // == AuxSubtypeSticker
+	BomKindTissue        TechCardBomKind = "tissue"
+	BomKindDustBag       TechCardBomKind = "dust_bag"     // == AuxSubtypeDustBag
+	BomKindGarmentCase   TechCardBomKind = "garment_case" // == AuxSubtypeGarmentCase
+	BomKindInsertCard    TechCardBomKind = "insert_card"  // печатная карточка, уже AuxSubtypeInsert
+
+	// ДРУГОЕ — meaning lives in KindNote, never in a shadow value on one of the 51 real kinds.
+	BomKindOther TechCardBomKind = "other"
+)
+
+// BomKindAnySection is the sentinel bomKindHomeSection uses for a kind with no single home. It is
+// NOT a section: the empty string is absent from ValidTechCardBomSections, so it can never be
+// mistaken for one. Only BomKindOther maps to it, and deliberately — «другое» is the escape hatch of
+// every eligible family at once, so pinning it to one family would make the other families' escape
+// hatch unreachable and push their strays into a wrong real kind.
+const BomKindAnySection TechCardBomSection = ""
+
+// bomKindHomeSection is THE table of the kind↔section pairing, and the single source of the
+// vocabulary itself: ValidTechCardBomKinds is derived from its keys just below, so a kind cannot be
+// added to one and forgotten in the other. A kind is legal ONLY in its home section (plus
+// BomKindAnySection's wildcard); the check runs in the store, next to the покупной purpose check —
+// see upsertTechCardBom. Which sections are eligible AT ALL is a third, derived thing that lives
+// beside rollGoodsSectionList in internal/store/techcard, because it is that list's complement and
+// hand-copying it is the exact drift that comment forbids.
+var bomKindHomeSection = map[TechCardBomKind]TechCardBomSection{
+	BomKindZipper:        BomSectionHardware,
+	BomKindZipperSlider:  BomSectionHardware,
+	BomKindButton:        BomSectionHardware,
+	BomKindSnap:          BomSectionHardware,
+	BomKindRivet:         BomSectionHardware,
+	BomKindEyelet:        BomSectionHardware,
+	BomKindHookAndBar:    BomSectionHardware,
+	BomKindSnapHook:      BomSectionHardware,
+	BomKindBuckle:        BomSectionHardware,
+	BomKindStrapAdjuster: BomSectionHardware,
+	BomKindRing:          BomSectionHardware,
+	BomKindToggle:        BomSectionHardware,
+	BomKindCordStopper:   BomSectionHardware,
+	BomKindCordEnd:       BomSectionHardware,
+	BomKindMagnet:        BomSectionHardware,
+	BomKindChain:         BomSectionHardware,
+
+	BomKindElastic:  BomSectionTrim,
+	BomKindDrawcord: BomSectionTrim,
+	BomKindBinding:  BomSectionTrim,
+	BomKindTape:     BomSectionTrim,
+	BomKindPiping:   BomSectionTrim,
+	BomKindWebbing:  BomSectionTrim,
+	BomKindHookLoop: BomSectionTrim,
+	BomKindBoning:   BomSectionTrim,
+	BomKindLace:     BomSectionTrim,
+	BomKindRibbing:  BomSectionTrim,
+
+	BomKindPrint:        BomSectionDecoration,
+	BomKindEmbroidery:   BomSectionDecoration,
+	BomKindApplique:     BomSectionDecoration,
+	BomKindPatch:        BomSectionDecoration,
+	BomKindHeatTransfer: BomSectionDecoration,
+	BomKindRhinestone:   BomSectionDecoration,
+	BomKindSequin:       BomSectionDecoration,
+	BomKindStud:         BomSectionDecoration,
+	BomKindFoil:         BomSectionDecoration,
+	BomKindLaser:        BomSectionDecoration,
+
+	BomKindSewingThread:     BomSectionThread,
+	BomKindTopstitchThread:  BomSectionThread,
+	BomKindOverlockThread:   BomSectionThread,
+	BomKindButtonholeThread: BomSectionThread,
+	BomKindEmbroideryThread: BomSectionThread,
+	BomKindElasticThread:    BomSectionThread,
+
+	BomKindPolybag:       BomSectionPackaging,
+	BomKindCarton:        BomSectionPackaging,
+	BomKindHanger:        BomSectionPackaging,
+	BomKindHangtagString: BomSectionPackaging,
+	BomKindSticker:       BomSectionPackaging,
+	BomKindTissue:        BomSectionPackaging,
+	BomKindDustBag:       BomSectionPackaging,
+	BomKindGarmentCase:   BomSectionPackaging,
+	BomKindInsertCard:    BomSectionPackaging,
+
+	BomKindOther: BomKindAnySection,
+}
+
+// ValidTechCardBomKinds is the set of accepted BOM kinds, DERIVED from bomKindHomeSection so the
+// vocabulary and the pairing table are physically the same list. Kept in lockstep with the DB CHECK
+// by TestBomKindDBCheckNoDrift and with the proto enum by TestBomKindEnumNoDrift.
+var ValidTechCardBomKinds = func() map[TechCardBomKind]bool {
+	m := make(map[TechCardBomKind]bool, len(bomKindHomeSection))
+	for k := range bomKindHomeSection {
+		m[k] = true
+	}
+	return m
+}()
+
+// IsValidTechCardBomKind reports whether k is an accepted BOM kind.
+func IsValidTechCardBomKind(k TechCardBomKind) bool {
+	return ValidTechCardBomKinds[k]
+}
+
+// BomKindHomeSection returns the one section a kind is native to. ok is false for an unknown kind;
+// a known kind whose home is BomKindAnySection is legal in EVERY kind-eligible section. Eligibility
+// itself is not answered here on purpose — it is the complement of the roll-goods list and is
+// derived where that list lives, so restating it here would create the second copy.
+func BomKindHomeSection(k TechCardBomKind) (TechCardBomSection, bool) {
+	s, ok := bomKindHomeSection[k]
+	return s, ok
+}
+
 // TechCardLabDipStatus is the lab-dip lifecycle of a colourway. Mirrors the
 // common.TechCardLabDipStatus proto enum; stored in tech_card_colorway.lab_dip_status.
 type TechCardLabDipStatus string
@@ -887,6 +1071,26 @@ type TechCardBomItem struct {
 	// PurposeNote explains a BomPurposeOther line. Legal only alongside that purpose — the DB CHECK
 	// chk_bom_item_purpose_note enforces it — so the note can never quietly become a ninth purpose.
 	PurposeNote sql.NullString `db:"purpose_note"`
+	// Kind (0276) is ЧТО ЭТО ЗА ПОЗИЦИЯ — the mirror of Purpose on the other half of the BOM, see
+	// TechCardBomKind. Accepted only on a line that is NEITHER roll goods NOR a label, and only in
+	// the kind's own home section; INVALID (NULL) means "not classified yet" and is what every line
+	// predating 0276 carries, deliberately never guessed.
+	Kind sql.NullString `db:"kind"`
+	// KindOmitted / KindNoteOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым». Тот же
+	// НЕГАТИВНЫЙ смысл и та же причина, что у PurposeOmitted: карточка сохраняется целиком, админка
+	// это SPA, и вкладка со старым бандлом этих полей не шлёт вовсе — без различения её сейв стёр бы
+	// классификацию у ВСЕХ строк карточки, и бесследно, потому что поля не входят в дайджест подписи,
+	// а NULL неотличим от «ещё не классифицировали». Нулевое значение = «пиши как обычно», поэтому
+	// любой внутренний конструктор (тесты, сидер, миграционные утилиты) работает как писал.
+	//
+	// Оба флага ставятся ВМЕСТЕ (см. parseTechCardBomItems): колонки связаны в БД
+	// (chk_bom_item_kind_note), поэтому запись одной половины при сохранённой второй — это строка,
+	// которую MySQL обязан отвергнуть сырым 3819. Пара живёт и меняется как одно целое.
+	KindOmitted bool `db:"-"`
+	// KindNote explains a BomKindOther line. Legal only alongside that kind — the DB CHECK
+	// chk_bom_item_kind_note enforces it — so the note can never quietly become a 52nd kind.
+	KindNote        sql.NullString `db:"kind_note"`
+	KindNoteOmitted bool           `db:"-"`
 	// IsSample marks the yardage the SAMPLE is sewn from. A flag rather than a purpose value because
 	// a sample is a sample MAIN plus a sample LINING; folded into Purpose the two would collapse.
 	IsSample        bool                `db:"is_sample"`

@@ -232,6 +232,74 @@ var techCardBomPurposeEntityToPb = func() map[entity.TechCardBomPurpose]pb_commo
 	return m
 }()
 
+// techCardBomKindPbToEntity maps the closed ЧТО ЭТО ЗА ПОЗИЦИЯ vocabulary (0276). UNSET is
+// deliberately absent, on the same rule as TechCardBomPurpose's: it is not a value but the absence
+// of one ("not classified yet"), and it must stay out of the table so it can only ever become a NULL
+// column. The kind↔section pairing is NOT enforced here — it needs the roll-goods complement, which
+// lives in the store beside the list it is derived from.
+var techCardBomKindPbToEntity = map[pb_common.TechCardBomKind]entity.TechCardBomKind{
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_ZIPPER:            entity.BomKindZipper,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_ZIPPER_SLIDER:     entity.BomKindZipperSlider,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BUTTON:            entity.BomKindButton,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SNAP:              entity.BomKindSnap,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_RIVET:             entity.BomKindRivet,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_EYELET:            entity.BomKindEyelet,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_HOOK_AND_BAR:      entity.BomKindHookAndBar,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SNAP_HOOK:         entity.BomKindSnapHook,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BUCKLE:            entity.BomKindBuckle,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_STRAP_ADJUSTER:    entity.BomKindStrapAdjuster,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_RING:              entity.BomKindRing,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_TOGGLE:            entity.BomKindToggle,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_CORD_STOPPER:      entity.BomKindCordStopper,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_CORD_END:          entity.BomKindCordEnd,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_MAGNET:            entity.BomKindMagnet,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_CHAIN:             entity.BomKindChain,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_ELASTIC:           entity.BomKindElastic,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_DRAWCORD:          entity.BomKindDrawcord,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BINDING:           entity.BomKindBinding,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_TAPE:              entity.BomKindTape,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_PIPING:            entity.BomKindPiping,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_WEBBING:           entity.BomKindWebbing,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_HOOK_LOOP:         entity.BomKindHookLoop,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BONING:            entity.BomKindBoning,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_LACE:              entity.BomKindLace,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_RIBBING:           entity.BomKindRibbing,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_PRINT:             entity.BomKindPrint,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_EMBROIDERY:        entity.BomKindEmbroidery,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_APPLIQUE:          entity.BomKindApplique,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_PATCH:             entity.BomKindPatch,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_HEAT_TRANSFER:     entity.BomKindHeatTransfer,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_RHINESTONE:        entity.BomKindRhinestone,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SEQUIN:            entity.BomKindSequin,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_STUD:              entity.BomKindStud,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_FOIL:              entity.BomKindFoil,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_LASER:             entity.BomKindLaser,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SEWING_THREAD:     entity.BomKindSewingThread,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_TOPSTITCH_THREAD:  entity.BomKindTopstitchThread,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_OVERLOCK_THREAD:   entity.BomKindOverlockThread,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BUTTONHOLE_THREAD: entity.BomKindButtonholeThread,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_EMBROIDERY_THREAD: entity.BomKindEmbroideryThread,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_ELASTIC_THREAD:    entity.BomKindElasticThread,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_POLYBAG:           entity.BomKindPolybag,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_CARTON:            entity.BomKindCarton,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_HANGER:            entity.BomKindHanger,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_HANGTAG_STRING:    entity.BomKindHangtagString,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_STICKER:           entity.BomKindSticker,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_TISSUE:            entity.BomKindTissue,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_DUST_BAG:          entity.BomKindDustBag,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_GARMENT_CASE:      entity.BomKindGarmentCase,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_INSERT_CARD:       entity.BomKindInsertCard,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_OTHER:             entity.BomKindOther,
+}
+
+var techCardBomKindEntityToPb = func() map[entity.TechCardBomKind]pb_common.TechCardBomKind {
+	m := make(map[entity.TechCardBomKind]pb_common.TechCardBomKind, len(techCardBomKindPbToEntity))
+	for k, v := range techCardBomKindPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
 var techCardLabDipPbToEntity = map[pb_common.TechCardLabDipStatus]entity.TechCardLabDipStatus{
 	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_PENDING:   entity.LabDipPending,
 	pb_common.TechCardLabDipStatus_TECH_CARD_LAB_DIP_STATUS_SUBMITTED: entity.LabDipSubmitted,
@@ -2103,6 +2171,41 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 				fmt.Sprintf("must be at most %d characters", maxVarchar255), "", "shorten this value")
 		}
 
+		// ЧТО ЭТО ЗА ПОЗИЦИЯ (0276) — the mirror of назначение, parsed the same way: UNSET stays NULL
+		// ("not classified yet" is the honest answer for every line that predates the field), an
+		// unrecognised value is REFUSED rather than degraded, and the kind↔section pairing is left to
+		// the store, which owns the one derived list of eligible families.
+		//
+		// ПРИСУТСТВИЕ ОДНО НА ДВОИХ, и это не упрощение. Колонки связаны в схеме
+		// (chk_bom_item_kind_note: примечание легально только при kind='other'), поэтому «перепиши
+		// одну половину, вторую оставь как лежала» — это строка, которую MySQL обязан отвергнуть
+		// сырым 3819 на сохранении карточки. Значит присланная ЛЮБАЯ из двух половин означает «пиши
+		// обе», и только отсутствие ОБЕИХ означает «не трогай» — ровно то состояние, в котором
+		// приходит вкладка со старым бандлом, и ровно та защита, ради которой поля optional.
+		kindOmitted := b.Kind == nil && b.KindNote == nil
+		kind := sql.NullString{}
+		if !kindOmitted && b.GetKind() != pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET {
+			k, ok := techCardBomKindPbToEntity[b.GetKind()]
+			if !ok {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].kind", i),
+					"unknown kind", "", "pick a kind from the list")
+			}
+			kind = sql.NullString{String: string(k), Valid: true}
+		}
+		// The note is the escape hatch for OTHER and nothing else — accepting it on ZIPPER would let
+		// free text in through the back door and dissolve the closed list the field exists to keep,
+		// the same containment chk_bom_item_kind_note gives the column.
+		kindNote := nullStringFromPb(strings.TrimSpace(b.GetKindNote()))
+		if kindNote.Valid && kind.String != string(entity.BomKindOther) {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].kind_note", i),
+				"a note is only meaningful on the 'other' kind", "",
+				"clear the note, or set the kind to 'другое'")
+		}
+		if len(kindNote.String) > maxVarchar255 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].kind_note", i),
+				fmt.Sprintf("must be at most %d characters", maxVarchar255), "", "shorten this value")
+		}
+
 		materialID := sql.NullInt64{}
 		if b.MaterialId != 0 {
 			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
@@ -2125,6 +2228,10 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			Purpose:                purpose,
 			PurposeOmitted:         purposeOmitted,
 			PurposeNote:            purposeNote,
+			Kind:                   kind,
+			KindOmitted:            kindOmitted,
+			KindNote:               kindNote,
+			KindNoteOmitted:        kindOmitted,
 			IsSample:               b.GetIsSample(),
 			IsSampleOmitted:        b.IsSample == nil,
 			Name:                   b.Name,
@@ -2473,6 +2580,8 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			// отсутствие на чтении заставило бы клиента гадать, старый ли это сервер.
 			Purpose:     pbPtr(pbBomPurpose(b.Purpose)),
 			PurposeNote: pbPtr(pbStringFromNull(b.PurposeNote)),
+			Kind:        pbPtr(pbBomKind(b.Kind)),
+			KindNote:    pbPtr(pbStringFromNull(b.KindNote)),
 			IsSample:    pbPtr(b.IsSample),
 			Name:        b.Name,
 			Supplier:    pbStringFromNull(b.Supplier),
@@ -2657,6 +2766,20 @@ func pbBomPurpose(p sql.NullString) pb_common.TechCardBomPurpose {
 		return v
 	}
 	return pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
+}
+
+// pbBomKind maps a stored ЧТО ЭТО ЗА ПОЗИЦИЯ back to the wire. An unset column is UNSET, and so is a
+// value the current build does not recognise — a kind written by a newer schema must degrade to "not
+// classified yet" rather than be silently reported as some other kind. The WRITE path refuses the
+// same input instead of degrading it: a read must not lose a row, a write must not lose a decision.
+func pbBomKind(k sql.NullString) pb_common.TechCardBomKind {
+	if !k.Valid {
+		return pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET
+	}
+	if v, ok := techCardBomKindEntityToPb[entity.TechCardBomKind(k.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_UNSET
 }
 
 // fabricPurposeFromPb maps the OPTIONAL назначение that binds a выкройка to cloth (0267), keeping

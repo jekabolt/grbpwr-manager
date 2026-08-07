@@ -161,6 +161,113 @@ enum TechCardBomPurpose {
   TECH_CARD_BOM_PURPOSE_OTHER = 8; // другое — the free-text explanation goes in purpose_note
 }
 
+// TechCardBomKind is ЧТО ЭТО ЗА ПОЗИЦИЯ — the mirror image of TechCardBomPurpose (0265). Purpose
+// says what the garment uses a ROLL-GOODS line FOR; kind says what a NON-roll-goods line IS. The
+// two never meet on the same row: purpose is legal only on fabric/lining/interlining/insulation,
+// kind only on the sections that are neither roll goods nor label.
+//
+// NOT CALLED "role". TechCardRole (designer/constructor/technologist/…) already exists in this file
+// and names WHO is responsible for a card. A second "role" meaning "what this button is" would be
+// misread permanently, by people and by grep alike.
+//
+// ONE FLAT ENUM, NOT ONE PER FAMILY. The value already implies its family — a `zipper` is hardware
+// and nothing else — so a per-family enum would encode the section twice and let the two copies
+// disagree, which is the drift class 0265's own header argues against. The pairing (each kind is
+// legal only in its HOME section) is therefore data, not type: entity.bomKindHomeSection is the
+// single table, and the store checks the pair on write. The DB CHECK closes the VOCABULARY only —
+// it never sees the section, deliberately, because a two-column CHECK would fire as a raw MySQL
+// 3819 on an UPDATE that touched only `section` and name a column the operator never edited.
+//
+// WHY `label` IS NOT ELIGIBLE. tech_card_label.label_type already owns that vocabulary
+// (main/size/care/origin/flag/hangtag/barcode/special), several label SPEC rows may point at ONE
+// bom_item_id (the material they print on), and labelsProjection already hashes label_type into the
+// signed LABELS digest. A `kind` on section=label would be a second, unsigned answer to a question
+// that is already answered and already signed.
+//
+// UNSET (0) is a first-class state meaning "not classified yet", not a default. Nothing is
+// backfilled: every line that predates 0276 is genuinely unclassified, and a guess ("this thread is
+// sewing_thread") would read as a fact and be believed.
+//
+// СПОРНЫЕ СЛУЧАИ, решённые здесь и больше нигде — граница проходит по ФУНКЦИИ, не по материалу:
+//   * велкро/липучка → HOOK_LOOP, это TRIM (мягкая лента, метраж), а не фурнитура;
+//   * заклёпка, которая ДЕРЖИТ (карман, шлёвку) → RIVET, hardware;
+//   * такая же по виду декоративная клёпка, которая ничего не держит → STUD, decoration;
+//   * шнур → DRAWCORD, trim (продаётся метражом); его фиксатор → CORD_STOPPER, hardware (штучный).
+enum TechCardBomKind {
+  TECH_CARD_BOM_KIND_UNSET = 0; // не задано — not classified yet (also every pre-0276 line)
+
+  // ФУРНИТУРА — section=hardware. Countable fittings; the garment stops working without them.
+  TECH_CARD_BOM_KIND_ZIPPER = 1; // молния (в сборе)
+  TECH_CARD_BOM_KIND_ZIPPER_SLIDER = 2; // бегунок/слайдер, когда он закупается отдельно от ленты
+  TECH_CARD_BOM_KIND_BUTTON = 3; // пуговица
+  TECH_CARD_BOM_KIND_SNAP = 4; // кнопка (нажимная)
+  TECH_CARD_BOM_KIND_RIVET = 5; // заклёпка НЕСУЩАЯ (карман, шлёвка). Декоративная — это STUD
+  TECH_CARD_BOM_KIND_EYELET = 6; // люверс / блочка
+  TECH_CARD_BOM_KIND_HOOK_AND_BAR = 7; // крючок-петля (брючный)
+  TECH_CARD_BOM_KIND_SNAP_HOOK = 8; // карабин
+  TECH_CARD_BOM_KIND_BUCKLE = 9; // пряжка
+  TECH_CARD_BOM_KIND_STRAP_ADJUSTER = 10; // регулятор лямки / рамка-регулятор
+  TECH_CARD_BOM_KIND_RING = 11; // кольцо / полукольцо
+  TECH_CARD_BOM_KIND_TOGGLE = 12; // толстовочный фиксатор-«клык», пуговица-палочка
+  TECH_CARD_BOM_KIND_CORD_STOPPER = 13; // фиксатор шнура. Сам шнур — DRAWCORD (trim)
+  TECH_CARD_BOM_KIND_CORD_END = 14; // наконечник шнура
+  TECH_CARD_BOM_KIND_MAGNET = 15; // магнитная застёжка
+  TECH_CARD_BOM_KIND_CHAIN = 16; // цепь
+
+  // ОТДЕЛОЧНЫЕ МАТЕРИАЛЫ — section=trim. Soft goods sold by length; they keep their wastage gross-up.
+  TECH_CARD_BOM_KIND_ELASTIC = 17; // резинка
+  TECH_CARD_BOM_KIND_DRAWCORD = 18; // шнур. Его фиксатор — CORD_STOPPER (hardware)
+  TECH_CARD_BOM_KIND_BINDING = 19; // бейка / окантовочная лента
+  TECH_CARD_BOM_KIND_TAPE = 20; // тесьма / киперная лента
+  TECH_CARD_BOM_KIND_PIPING = 21; // кант
+  TECH_CARD_BOM_KIND_WEBBING = 22; // стропа
+  TECH_CARD_BOM_KIND_HOOK_LOOP = 23; // велкро / контактная лента — TRIM, не фурнитура: это метражная лента
+  TECH_CARD_BOM_KIND_BONING = 24; // регилин / корсетный ус
+  TECH_CARD_BOM_KIND_LACE = 25; // кружево
+  TECH_CARD_BOM_KIND_RIBBING = 26; // трикотажная резинка (манжет/воротник/пояс)
+
+  // ДЕКОР — section=decoration. Applied ONTO the garment; nothing here holds anything together.
+  TECH_CARD_BOM_KIND_PRINT = 27; // принт
+  TECH_CARD_BOM_KIND_EMBROIDERY = 28; // вышивка
+  TECH_CARD_BOM_KIND_APPLIQUE = 29; // аппликация
+  TECH_CARD_BOM_KIND_PATCH = 30; // патч / нашивка
+  TECH_CARD_BOM_KIND_HEAT_TRANSFER = 31; // термотрансфер
+  TECH_CARD_BOM_KIND_RHINESTONE = 32; // стразы
+  TECH_CARD_BOM_KIND_SEQUIN = 33; // пайетки
+  TECH_CARD_BOM_KIND_STUD = 34; // декоративная клёпка/шип. Несущая заклёпка — RIVET (hardware)
+  TECH_CARD_BOM_KIND_FOIL = 35; // фольгирование
+  TECH_CARD_BOM_KIND_LASER = 36; // лазерная резка / гравировка
+
+  // НИТКИ — section=thread. Split by the JOB the thread does, which is what picks the machine.
+  TECH_CARD_BOM_KIND_SEWING_THREAD = 37; // швейная (стачивающая)
+  TECH_CARD_BOM_KIND_TOPSTITCH_THREAD = 38; // отделочная (отстрочка)
+  TECH_CARD_BOM_KIND_OVERLOCK_THREAD = 39; // оверлочная
+  TECH_CARD_BOM_KIND_BUTTONHOLE_THREAD = 40; // петельная
+  TECH_CARD_BOM_KIND_EMBROIDERY_THREAD = 41; // вышивальная
+  TECH_CARD_BOM_KIND_ELASTIC_THREAD = 42; // эластичная (шпульная резинка)
+
+  // УПАКОВКА — section=packaging. Spellings deliberately match TechCardAuxSubtype wherever the two
+  // name the SAME object (sticker / dust_bag / garment_case / hanger), so an auxiliary card that
+  // MAKES the item and the BOM line that CONSUMES it read as one word. The three that differ do so
+  // because the object differs: HANGTAG_STRING is the string, not the aux HANGTAG it hangs;
+  // INSERT_CARD is a printed card, narrower than the aux INSERT; CARTON is the outer shipping box
+  // (TechCardPackaging.units_per_box / box_marking), not the aux BOX the customer receives.
+  TECH_CARD_BOM_KIND_POLYBAG = 43; // полибэг
+  TECH_CARD_BOM_KIND_CARTON = 44; // короб (транспортный)
+  TECH_CARD_BOM_KIND_HANGER = 45; // вешалка
+  TECH_CARD_BOM_KIND_HANGTAG_STRING = 46; // шнурок/петля для навесного ярлыка
+  TECH_CARD_BOM_KIND_STICKER = 47; // стикер
+  TECH_CARD_BOM_KIND_TISSUE = 48; // папиросная бумага
+  TECH_CARD_BOM_KIND_DUST_BAG = 49; // пыльник
+  TECH_CARD_BOM_KIND_GARMENT_CASE = 50; // кофр
+  TECH_CARD_BOM_KIND_INSERT_CARD = 51; // вкладыш-карточка
+
+  // ДРУГОЕ — the ONLY value legal in EVERY eligible section (including section=other, which has no
+  // kinds of its own). Its meaning lives in the separate kind_note, never in a shadow value on one
+  // of the 51 real kinds — the same containment chk_bom_item_purpose_note gives назначению.
+  TECH_CARD_BOM_KIND_OTHER = 52;
+}
+
 // TechCardLabDipStatus is the lab-dip approval lifecycle of a colourway.
 enum TechCardLabDipStatus {
   TECH_CARD_LAB_DIP_STATUS_UNKNOWN = 0; // defaults to PENDING on write
@@ -513,6 +620,25 @@ message TechCardBomItem {
   // the article's unit is normalised in the server instead, which costs no sign-off.
   // UNKNOWN = the free text does not map to a known unit; it is NOT "no unit".
   MaterialUnit unit_code = 34;
+  // ЧТО ЭТО ЗА ПОЗИЦИЯ (0276) — see TechCardBomKind. The mirror of `purpose` above: accepted only on
+  // a line that is NEITHER roll goods NOR a label (hardware, thread, packaging, trim, decoration,
+  // other), and only in the kind's own home section — `zipper` on a thread line is refused with a
+  // field-tagged error, not stored. UNSET is legal everywhere and is what an unclassified line
+  // carries.
+  //
+  // OPTIONAL for the same load-bearing reason as `purpose`: the admin is an SPA, tabs survive
+  // deploys, and the card is saved WHOLE. A bare proto3 enum from a bundle that predates this field
+  // arrives as UNSET and would wipe the classification off EVERY line of the card — silently, since
+  // `kind` is deliberately outside the signed MATERIALS digest and NULL is indistinguishable from
+  // "not classified yet". Absence means «не трогай»; an explicitly sent UNSET still clears.
+  optional TechCardBomKind kind = 35;
+  // Free-text explanation, accepted ONLY when kind is OTHER (rejected otherwise, and the DB agrees
+  // via chk_bom_item_kind_note). Optional even then — «другое» with no note is a real answer.
+  //
+  // It travels as ONE UNIT with `kind`: the DB couples the two columns, so a save that rewrote one
+  // and left the other alone could hand MySQL a row it must refuse. Sending either field means both
+  // are being written; sending neither means «не трогай» both.
+  optional string kind_note = 36;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
