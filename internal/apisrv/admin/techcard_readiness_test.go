@@ -61,6 +61,7 @@ func TestGetTechCardReadiness(t *testing.T) {
 		wantNextKeys    []string          // exact keys, in display order
 		wantNextMet     map[string]bool   // key -> met
 		wantNextDetail  map[string]string // key -> exact detail sentence (unmet rows only)
+		wantNextUnknown map[string]bool   // key -> the server could not answer (Р4)
 		wantNextReady   bool
 		wantReleaseMet  map[string]bool
 		wantReleaseDetl map[string]string
@@ -177,16 +178,21 @@ func TestGetTechCardReadiness(t *testing.T) {
 			wantReleaseOK:   false,
 		},
 		{
-			name: "pp to prod: patterns must cover the whole grade",
+			// Р4. The card's DISTINCT pattern size_id count used to answer this row, and it lied in
+			// both directions — the client files every sheet under the smallest size of the range as a
+			// storage artefact. It now reads the Ф6.3 index, and this fixture has none: the honest
+			// answer is UNKNOWN. Load-bearing assertion: wantNextReady is TRUE. An UNKNOWN row must not
+			// hold a stage back, or shipping this would have blocked the whole portfolio at once.
+			name: "pp to prod: with no size index the patterns row says UNKNOWN and blocks nothing",
 			facts: entity.TechCardReadinessFacts{
 				Stage: entity.TechCardStagePP, PpSamples: 1, ProductionRuns: 1, Sizes: 5, PatternSizes: 3,
 			},
-			wantNext:       pb_common.TechCardStage_TECH_CARD_STAGE_PROD,
-			wantNextKeys:   []string{"pp_sample", "run_planned", "patterns"},
-			wantNextMet:    map[string]bool{"pp_sample": true, "run_planned": true, "patterns": false},
-			wantNextDetail: map[string]string{"patterns": "2 of 5 sizes have no pattern"},
-			wantNextReady:  false,
-			wantReleaseOK:  false,
+			wantNext:        pb_common.TechCardStage_TECH_CARD_STAGE_PROD,
+			wantNextKeys:    []string{"pp_sample", "run_planned", "patterns"},
+			wantNextMet:     map[string]bool{"pp_sample": true, "run_planned": true, "patterns": false},
+			wantNextUnknown: map[string]bool{"pp_sample": false, "run_planned": false, "patterns": true},
+			wantNextReady:   true,
+			wantReleaseOK:   false,
 		},
 		{
 			name: "prod: the last stage has no next stage and no entry conditions",
@@ -248,8 +254,15 @@ func TestGetTechCardReadiness(t *testing.T) {
 			repo := mocks.NewMockRepository(t)
 			tc := mocks.NewMockTechCards(t)
 			repo.EXPECT().TechCards().Return(tc)
+			tc.EXPECT().GetTechCardPatternSizeIndex(mock.Anything, 7).
+				Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
 			tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 7).
 				Return(tt.facts, readinessCardForFacts(tt.facts, tt.staleSection), nil)
+			// Р4: the `patterns` row now reads the Ф6.3 size index. These fixtures carry none, which
+			// is the state of every card on the day this ships — and the assertions below say what
+			// that has to produce: UNKNOWN, and a stage that is NOT held back by it.
+			tc.EXPECT().GetTechCardPatternSizeIndex(mock.Anything, 7).
+				Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
 
 			s := &Server{repo: repo}
 			resp, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 7})
@@ -268,6 +281,15 @@ func TestGetTechCardReadiness(t *testing.T) {
 			next := readinessByKey(resp.NextStageRequirements)
 			release := readinessByKey(resp.ReleaseRequirements)
 			assertReadiness(t, "next_stage", next, tt.wantNextMet, tt.wantNextDetail)
+			for key, want := range tt.wantNextUnknown {
+				row, ok := next[key]
+				require.Truef(t, ok, "next_stage checklist is missing key %q", key)
+				require.Equalf(t, want, row.Unknown, "next_stage row %q unknown flag", key)
+				if want {
+					require.NotEmptyf(t, row.Detail, "an UNKNOWN row must say WHY there is no verdict (%q)", key)
+					require.Falsef(t, row.Met, "an UNKNOWN row is never met (%q)", key)
+				}
+			}
 			assertReadiness(t, "release", release, tt.wantReleaseMet, tt.wantReleaseDetl)
 
 			// A met row never explains itself: detail is the failure reason, nothing else.
@@ -309,6 +331,8 @@ func TestGetTechCardReadinessReleaseListIsStable(t *testing.T) {
 		tc := mocks.NewMockTechCards(t)
 		repo.EXPECT().TechCards().Return(tc)
 		facts := entity.TechCardReadinessFacts{Stage: stage}
+		tc.EXPECT().GetTechCardPatternSizeIndex(mock.Anything, 3).
+			Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
 		tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 3).
 			Return(facts, readinessCardForFacts(facts, ""), nil)
 

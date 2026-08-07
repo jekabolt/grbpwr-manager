@@ -3,6 +3,8 @@ ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"ALER
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"COMPARE_MODE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"METRICS_GRANULARITY_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"METRICS_SECTION_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"PRODUCTION_RUN_COVERAGE_SOURCE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"PRODUCTION_RUN_READINESS_SEVERITY_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"REFUND_REASON_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"TIER_CODE_MEMBER\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"TREND_GRANULARITY_DAILY\" should be suffixed with \"_UNKNOWN\".

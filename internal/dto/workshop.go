@@ -29,6 +29,14 @@ func WorkshopSettingsToPb(s *entity.WorkshopSettings) *pb_admin.WorkshopSettings
 	if s.DefaultSeamAllowanceCm.Valid {
 		out.DefaultSeamAllowanceCm = &pb_decimal.Decimal{Value: s.DefaultSeamAllowanceCm.Decimal.String()}
 	}
+	// Ф6.9. Emitted only when SET, for the same presence reason as the decimals above — a workshop
+	// that never touched the switch must stay distinguishable from one that turned it off. The
+	// BEHAVIOUR of the two is identical (report-only); the distinction is an audit fact, and the
+	// screen prints «не настроено» rather than «выключено» for the absent case.
+	if s.RunReadinessBlocking.Valid {
+		v := s.RunReadinessBlocking.Bool
+		out.RunReadinessBlocking = &v
+	}
 	if !s.UpdatedAt.IsZero() {
 		out.UpdatedAt = timestamppb.New(s.UpdatedAt)
 	}
@@ -56,6 +64,13 @@ func WorkshopSettingsPatchFromPb(req *pb_admin.UpdateWorkshopSettingsRequest) (e
 		return p, err
 	}
 	p.DefaultSeamAllowanceCm = seam
+	// Ф6.9 — presence carried by proto3 `optional`, which is the ONLY reason this is safe to add. On
+	// a bare bool, «did not send it» and «turn it off» are the same bytes, and a workshop tab holding
+	// a bundle from before this field existed would disable the gate on every unrelated save.
+	if req.RunReadinessBlocking != nil {
+		v := req.GetRunReadinessBlocking()
+		p.RunReadinessBlocking = &v
+	}
 	return p, nil
 }
 

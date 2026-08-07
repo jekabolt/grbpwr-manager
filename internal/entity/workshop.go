@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -34,6 +35,23 @@ type WorkshopSettings struct {
 	// the argument 0272 made for a typed column per setting.
 	DefaultSeamAllowanceCm decimal.NullDecimal `db:"default_seam_allowance_cm"`
 
+	// RunReadinessBlocking is the mode of the production-run readiness gate (Ф6.1/Ф6.9, 0279) — the
+	// third tenant, and the one that breaks this house's own rule on purpose.
+	//
+	// EVERY OTHER SETTING HERE MEANS «NO VERDICT» WHEN UNSET, AND THIS ONE DOES NOT. A cutting table
+	// of unknown length lets a consumer say nothing; a create-run command has no «say nothing»
+	// available — it either refuses or it does not. So INVALID (and false) mean REPORT-ONLY: compute
+	// everything, show everything, log it, and let the run through.
+	//
+	// The reason is arithmetic rather than taste. On the day Ф6 ships, not one card in the portfolio
+	// carries a norm with recorded measurement conditions (Ф3 declared every pre-existing раскладка
+	// «старая норма»), so a rule of «no verdict ⇒ refuse» would have refused every run in the shop.
+	// A setting whose default stops the factory does not get created.
+	//
+	// Readers go through entity.RunReadinessBlocking, never through this field directly, so the
+	// unset→report-only reading exists in exactly one place.
+	RunReadinessBlocking sql.NullBool `db:"run_readiness_blocking"`
+
 	UpdatedBy string    `db:"updated_by"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -53,13 +71,30 @@ type WorkshopSettings struct {
 type WorkshopSettingsPatch struct {
 	CuttingTableLengthCm   *decimal.NullDecimal
 	DefaultSeamAllowanceCm *decimal.NullDecimal
+	// RunReadinessBlocking is TWO-state rather than three, and the missing state is deliberate:
+	//
+	//	nil    → the request did not mention the mode; leave it alone
+	//	&true  → blocking
+	//	&false → report-only
+	//
+	// There is no «clear it back to unset», because unset and false behave identically (see
+	// WorkshopSettings.RunReadinessBlocking) — a third state that changes nothing is a control an
+	// operator can only be confused by. The column stays NULLable so the DEFAULT state of a workshop
+	// that never touched the switch is distinguishable from one that turned it off deliberately, which
+	// is an audit fact, not a behavioural one.
+	RunReadinessBlocking *bool
 }
 
 // IsEmpty reports whether the patch names no setting at all. Such a request is rejected rather than
 // executed: it would write nothing but still stamp updated_by/updated_at, putting a fake edit in the
 // audit trail.
+//
+// EVERY NEW TENANT MUST BE ADDED HERE. The list is hand-written and there is no compiler help: a
+// setting missing from it makes a request that names ONLY that setting look empty, and the write is
+// refused with «name at least one setting» while the client is quite sure it named one.
+// TestWorkshopSettingsPatchIsEmptyCoversEveryField holds the line by reflection.
 func (p WorkshopSettingsPatch) IsEmpty() bool {
-	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceCm == nil
+	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceCm == nil && p.RunReadinessBlocking == nil
 }
 
 // Plausibility band for a cutting/spreading table length, in centimetres.

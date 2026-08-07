@@ -120,6 +120,47 @@ func (s *Store) ListMaterialLots(ctx context.Context, materialID int, includeArc
 	return rows, nil
 }
 
+// NarrowestMeasuredLotWidths returns, per material, the NARROWEST measured roll width among the lots
+// that still have stock (Ф5а.1 / Ф6.2). Materials with no measured, non-empty, non-archived lot are
+// simply absent from the map — «nobody measured it» is not «it matches the nominal», and an absent
+// key is what makes the readiness gate fall back to the catalogue width instead of inventing one.
+//
+// THE NARROWEST WINS because that is the width the shop has to lay on: a marker made for 150 cm does
+// not fit the 148 cm roll sitting next to it, and the batch is cut from whatever arrived. The same
+// rule by which the workshop makes the marker in the first place.
+//
+// The number is the FULL measured roll width, кромка included — deliberately NOT the cutting width.
+// The subtraction belongs to the comparison rule (entity.NormWidthVsArticle), which needs the raw
+// figure to be able to SAY «measured 148, less 1 cm of кромка each side = 146 of cutting width»;
+// doing it here would hide the arithmetic from the one message that has to show it.
+//
+// Batched over the whole article union of a card, because the alternative is one query per slot per
+// colourway inside a modal.
+func (s *Store) NarrowestMeasuredLotWidths(ctx context.Context, materialIDs []int) (map[int]decimal.NullDecimal, error) {
+	out := make(map[int]decimal.NullDecimal, len(materialIDs))
+	if len(materialIDs) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		MaterialId int             `db:"material_id"`
+		WidthCm    decimal.Decimal `db:"width_cm"`
+	}](ctx, s.DB, `
+		SELECT material_id, MIN(measured_width_cm) AS width_cm
+		FROM material_lot
+		WHERE material_id IN (:ids)
+		  AND archived = FALSE
+		  AND measured_width_cm IS NOT NULL
+		  AND remaining_qty > 0
+		GROUP BY material_id`, map[string]any{"ids": materialIDs})
+	if err != nil {
+		return nil, fmt.Errorf("load narrowest measured lot widths: %w", err)
+	}
+	for _, r := range rows {
+		out[r.MaterialId] = decimal.NullDecimal{Decimal: r.WidthCm, Valid: true}
+	}
+	return out, nil
+}
+
 // trimmedNull turns a (possibly blank) NullString into one that is NULL when it holds only
 // whitespace — so a receipt sending an empty shade_code stores "unrecorded", not an empty string
 // that the top-up COALESCE would then treat as a real value and refuse to fill in later.

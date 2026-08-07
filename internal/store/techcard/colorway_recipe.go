@@ -100,12 +100,12 @@ func agreedSlotProvenance(rows []usageProvenance) (usageProvenance, bool) {
 // map would have left the fragment at four, and the failure is silent in the worst direction —
 // markers would accept the family, pattern/alias binding would refuse it, and no test would notice
 // because the extra named arg is simply ignored by sqlx.
-var rollGoodsSectionList = []entity.TechCardBomSection{
-	entity.BomSectionFabric,
-	entity.BomSectionLining,
-	entity.BomSectionInterlining,
-	entity.BomSectionInsulation,
-}
+// Since Ф6 the slice itself lives in internal/entity (entity.RollGoodsSectionList): the readiness
+// gate resolves pattern/alias bindings and asks направление ткани over the same four families from
+// internal/dto, and a second literal there would have been precisely the silent drift this header
+// forbids — one package further away. Everything below still derives from the one slice; only its
+// home moved.
+var rollGoodsSectionList = entity.RollGoodsSectionList
 
 var rollGoodsSections = func() map[string]bool {
 	m := make(map[string]bool, len(rollGoodsSectionList))

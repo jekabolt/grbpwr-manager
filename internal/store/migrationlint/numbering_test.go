@@ -21,6 +21,14 @@ var knownDuplicateMigrationNumbers = map[string]int{
 	// source_type CHECK extension depends on it applying first), so the collision is grandfathered like
 	// 0003. Neither may be renamed (sql-migrate tracks by full filename); no THIRD 0195 may be added.
 	"0195": 2,
+	// 0278: two parallel cutting-plan branches landed on beta at the same time and both took 0278 —
+	// 0278_bom_item_kind.sql (ЧТО ЭТО ЗА ПОЗИЦИЯ, the BOM kind vocabulary) and
+	// 0278_marker_size_area.sql (Ф2.4, per-size consumption by area). Both are already applied on
+	// beta, both are idempotent, additive and independent (different tables: tech_card_bom_item vs
+	// tech_card_marker_size), so neither can be renumbered — sql-migrate tracks by full filename, and
+	// renaming an applied file re-applies it and leaves an orphan gorp_migrations row that halts
+	// startup. Grandfathered like 0003 and 0195; no THIRD 0278 may be added.
+	"0278": 2,
 }
 
 // TestMigrationNumbersUnique asserts migration number prefixes are unique except

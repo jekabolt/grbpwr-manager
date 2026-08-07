@@ -355,6 +355,12 @@ var methodRequirements = map[string]Requirement{
 	// a section of its own either — it writes a column of tech_card_marker, which this same right
 	// already writes through SaveTechCardMarker.
 	"SetTechCardMarkerNorm": wr(SectionTechCards),
+	// ИНДЕКС РАЗМЕРОВ ВЫКРОЕК (Ф6.3) — tech-cards WRITE, and the asymmetry with
+	// CheckProductionRunReadiness above is the point. This WRITES a derived fact about the card's
+	// patterns, from the patterns tab, in the same session as the upload it describes. A production
+	// planner must not be able to write it: the index feeds the readiness gate, so the right to
+	// rewrite it is the right to clear one's own blocker.
+	"PutTechCardPatternSizeIndex": wr(SectionTechCards),
 	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
 	// section of its own. Every field it returns is BOM-tab content the same account already reads
 	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);
@@ -378,6 +384,16 @@ var methodRequirements = map[string]Requirement{
 	// (it moves sellable stock and rolls back cost_price).
 	"ReverseProductionRunReceipt":  wr(SectionProduction),
 	"GetProductionRunMaterialPlan": rd(SectionProduction),
+	// ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6) — production READ, and specifically NOT tech_cards.
+	//
+	// The argument, not the taste: this RPC has ONE consumer (the run-creation modal) and ONE
+	// meaning («why can I not create this run»). Whoever is entitled to create a run —
+	// CreateProductionRun is wr(production) — must be entitled to read the reason it was refused;
+	// otherwise a planner without tech-card access gets a refusal and NO WAY to learn its cause,
+	// which is a dead control stating an unfixable requirement. The precedent is immediate:
+	// GetProductionRunMaterialPlan above reads the very same card facts (BOM, colourways, recipes)
+	// and is classified the same way. The answer carries no money, so SectionCosting does not apply.
+	"CheckProductionRunReadiness": rd(SectionProduction),
 	// «Дом настроек цеха» (Ф2.5) — the physical shop floor's constants (cutting table length today;
 	// припуск, высота стопки, минимальный зазор next). Classified under production, NOT under
 	// SectionSettings: that section is the STOREFRONT's configuration ("Store settings and shipment

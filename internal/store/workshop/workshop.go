@@ -33,7 +33,8 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc}
 }
 
-const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_cm, updated_by, updated_at
+const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_cm, run_readiness_blocking,
+	       updated_by, updated_at
 	FROM workshop_settings WHERE id = :id`
 
 // GetSettings returns the workshop configuration. A MISSING singleton row is not an error: it reads
@@ -96,6 +97,13 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		"cutting_table_length_cm":      nullDecimalParam(patch.CuttingTableLengthCm),
 		"seam_allowance_omitted":       patch.DefaultSeamAllowanceCm == nil,
 		"default_seam_allowance_cm":    nullDecimalParam(patch.DefaultSeamAllowanceCm),
+		// Ф6.9 — the same presence mask as its neighbours, and NO validator: a bool has no
+		// plausibility band, and the only thing that could be wrong about it is being set at the wrong
+		// TIME (before кампания Д3 has re-measured the norms), which no server-side check can know.
+		// What protects that is the gate's report-only default plus the fact that flipping it is a
+		// deliberate, single, auditable command — not a validator that would have to guess.
+		"run_readiness_blocking_omitted": patch.RunReadinessBlocking == nil,
+		"run_readiness_blocking":         boolParam(patch.RunReadinessBlocking),
 	}
 
 	var out *entity.WorkshopSettings
@@ -109,6 +117,7 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 			UPDATE workshop_settings SET
 				cutting_table_length_cm = IF(:cutting_table_length_omitted, cutting_table_length_cm, :cutting_table_length_cm),
 				default_seam_allowance_cm = IF(:seam_allowance_omitted, default_seam_allowance_cm, :default_seam_allowance_cm),
+				run_readiness_blocking = IF(:run_readiness_blocking_omitted, run_readiness_blocking, :run_readiness_blocking),
 				updated_by = :updated_by
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update workshop settings: %w", err)
@@ -133,4 +142,14 @@ func nullDecimalParam(v *decimal.NullDecimal) any {
 		return nil
 	}
 	return v.Decimal
+}
+
+// boolParam binds the two-state bool patch. nil (the setting was not named) binds NULL, which the
+// IF() discards anyway — there is no «clear it» state to express here, because unset and false
+// behave identically (see entity.WorkshopSettings.RunReadinessBlocking).
+func boolParam(v *bool) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
