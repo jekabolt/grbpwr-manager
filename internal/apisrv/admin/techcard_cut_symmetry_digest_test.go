@@ -72,9 +72,14 @@ func TestCarryOmittedPieceCutSymmetryKeepsTheConstructionDigestStable(t *testing
 	carryOmittedPieceCutSymmetryFrom(stored, nil)
 }
 
-// Keyed matching must agree with the STORE's own keying, which is exact after trimming. A key that
-// differs only in case is a row the store will INSERT as new, so folding case here would hand a
-// brand-new piece the pairing of a different one — silently, and onto the signed digest.
+// Keyed matching must agree with the STORE's own keying, which is exact after trimming: the upsert
+// looks the key up in a Go map, so a key differing only in case takes the INSERT branch and is a
+// different row as far as this process is concerned.
+//
+// The database will not let that row land — tech_card_piece carries UNIQUE (tech_card_id, line_key)
+// on a _ci collation, so the INSERT gets ER_DUP_ENTRY and the save rolls back — so this is not a
+// hole, it is a disagreement. Pinning it shut keeps the carry and the upsert holding ONE view of what
+// a piece is, instead of two that a database error happens to reconcile.
 func TestCarryOmittedPieceCutSymmetryMatchesTheStoresKeying(t *testing.T) {
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: v != ""} }
 	stored := &entity.TechCard{TechCardInsert: entity.TechCardInsert{

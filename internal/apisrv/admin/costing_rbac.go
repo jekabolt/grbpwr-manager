@@ -563,6 +563,13 @@ func bomNaturalKey(b entity.TechCardBomItem) string {
 //
 // Keyed only: a legacy line with no line_key cannot be matched safely, and guessing by position
 // would attach one line's cloth direction to another's.
+//
+// The case FOLDING below is safe, but not because folding case is right — because the schema makes
+// the disagreement unreachable. tech_card_bom_item carries UNIQUE (tech_card_id, line_key) on a _ci
+// collation, so a payload whose key differs from the stored one only in case cannot become a second
+// row: the upsert takes its INSERT branch, MySQL answers ER_DUP_ENTRY, and the transaction rolls back
+// before anything is written. Do not read the folding as a licence — the piece twin below
+// (carryOmittedPieceCutSymmetryFrom) compares exactly, and says there why.
 func carryOmittedFabricDirectionFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
 	if stored == nil || incoming == nil {
 		return
@@ -594,11 +601,20 @@ func carryOmittedFabricDirectionFrom(stored *entity.TechCard, incoming *entity.T
 // from the same tab hashes the same absence. This exact failure already happened once, with
 // направление ткани, which is why the twin exists rather than a second discovery.
 //
-// Keyed only, and keyed the way the STORE keys: the incoming line_key trimmed, compared verbatim
-// against the stored one. Deliberately stricter than the fabric-direction twin above, which folds
-// case — here a key that differs only in case is a row the store will INSERT as new, so folding case
-// would hand a brand-new piece the pairing of a different one. Guessing by POSITION would do the
-// same thing more often; a piece's pairing must never be inferred from a neighbour.
+// Keyed only, and keyed the way the STORE keys: the incoming line_key trimmed, then compared
+// VERBATIM — which is what upsertTechCardPieces does with its Go map, and what makes the two agree on
+// identity in the same process rather than by accident.
+//
+// Deliberately stricter than the fabric-direction twin above, which folds case. Neither is a live bug:
+// tech_card_piece carries UNIQUE (tech_card_id, line_key) on a _ci collation exactly as the BOM does
+// (measured), so a case-variant key cannot become a second row — the upsert's INSERT branch gets
+// ER_DUP_ENTRY and the whole save rolls back. The difference is therefore about which failure the
+// reader has to reason about, and exact matching leaves none: the carry cannot quietly hold a view of
+// identity that the store does not share, and no digest is ever computed over a mis-attributed value,
+// not even one that is later thrown away with the transaction.
+//
+// Matching by POSITION would be the real hazard, and is why this is keyed at all: a piece's pairing
+// must never be inferred from a neighbour.
 func carryOmittedPieceCutSymmetryFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
 	if stored == nil || incoming == nil {
 		return

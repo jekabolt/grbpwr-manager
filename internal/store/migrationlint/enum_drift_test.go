@@ -354,3 +354,31 @@ func TestPieceCutSymmetryDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "TechCardPieceCutSymmetry", dbValues,
 		mapKeysAsStrings(entity.ValidTechCardPieceCutSymmetries))
 }
+
+// TestPieceCutSymmetryDBCheckIsCaseClosed guards the OTHER half of chk_tcp_cut_symmetry, which the
+// drift test above cannot see: tech_card_piece is utf8mb4_0900_ai_ci and REGEXP inherits the column's
+// collation, so the alternation alone accepts 'MIRRORED' and 'Fold' — it refuses 'mirror' and nothing
+// about case. The STRCMP-over-binary comparison is what actually closes the vocabulary (precedent:
+// chk_tcpdb_fabric_purpose in 0267).
+//
+// This is the static half; TestPieceCutSymmetryDBCheckIsCaseSensitive in internal/store proves the
+// behaviour against the real migrated table. Both exist because this one runs without a database and
+// so runs everywhere, while only the other one can prove MySQL agrees.
+func TestPieceCutSymmetryDBCheckIsCaseClosed(t *testing.T) {
+	content := readMigrationFile(t, "0275_piece_cut_symmetry.sql")
+	const guard = "STRCMP(CAST(cut_symmetry AS BINARY), CAST(LOWER(cut_symmetry) AS BINARY)) = 0"
+	if !strings.Contains(content, guard) {
+		t.Fatalf("chk_tcp_cut_symmetry must close the vocabulary against case as well as spelling; missing %q", guard)
+	}
+	// The guard has to sit INSIDE the vocabulary CHECK, not merely somewhere in the file, and it has to
+	// come AFTER the REGEXP so extractDBEnumValues' anchor still finds the alternation.
+	stmt := strings.Index(content, "chk_tcp_cut_symmetry CHECK")
+	if stmt < 0 {
+		t.Fatal("named vocabulary CHECK not found")
+	}
+	rx := strings.Index(content[stmt:], "cut_symmetry REGEXP")
+	gd := strings.Index(content[stmt:], guard)
+	if rx < 0 || gd < 0 || gd < rx {
+		t.Fatalf("the case guard must live inside chk_tcp_cut_symmetry and follow the REGEXP (regexp at %d, guard at %d)", rx, gd)
+	}
+}

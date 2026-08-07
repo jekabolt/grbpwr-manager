@@ -64,7 +64,27 @@ DEALLOCATE PREPARE stmt;
 -- словаря ручным UPDATE'ом, читалась бы как «не размечено» нигде и как мусор везде. Дрифт словаря
 -- между этим CHECK'ом и entity.ValidTechCardPieceCutSymmetries ловит
 -- internal/store/migrationlint.TestPieceCutSymmetryDBCheckNoDrift — он грепает ИМЕННО этот REGEXP,
--- поэтому литерал шаблона намеренно БЕЗ префикса набора символов (см. соседний CHECK).
+-- поэтому литерал шаблона намеренно БЕЗ префикса набора символов (см. соседний CHECK), а условие
+-- регистра дописано ПОСЛЕ него.
+--
+-- ОДНОГО REGEXP МАЛО, И ЭТО НЕ ПЕДАНТИЗМ. Таблица собрана в utf8mb4_0900_ai_ci, а REGEXP наследует
+-- коллацию столбца, поэтому голый шаблон принимает 'MIRRORED' и 'Fold' наравне с 'mirrored'. Отказ
+-- он даёт только на 'mirror'. Для приложения разницы нет — оно пишет строго нижний регистр, — но
+-- смысл этого CHECK'а именно в строке, пришедшей МИМО приложения, и вот что она делает:
+--   1. PieceCutSymmetryToPb не находит 'MIRRORED' в таблице и отдаёт UNKNOWN ⇒ и карточка, и cut
+--      list показывают «не размечено»;
+--   2. constructionProjection видит Valid = true и дописывает СЫРУЮ строку в кортеж ⇒ дайджест
+--      CONSTRUCTION уезжает, и все утверждённые подписи этой карточки читаются как «изменено», без
+--      единого видимого повода;
+--   3. первое же сохранение из вкладки, которая поля не шлёт, переносит значение в
+--      upsertTechCardPieces, ValidatePieceCutSymmetry его отвергает — и карточка становится
+--      несохраняемой, ссылаясь на поле, которого оператор не видит.
+-- Поэтому регистр закрывается ЗДЕСЬ. Сравнение через STRCMP по BINARY-приведению — прецедент
+-- chk_tcpdb_fabric_purpose (0267), ровно та же конструкция на соседней таблице.
+--
+-- СОСЕДНИЙ chk_tcp_grainline (0109) ослаблен ровно так же и принимает 'Lengthwise'. Он НЕ правится
+-- здесь сознательно: это живое ограничение на боевых данных, и его ужесточение — отдельное решение
+-- с отдельной проверкой того, что лежит на проде. Не читать этот CHECK как «в доме так везде».
 --
 -- НАБОР СИМВОЛОВ ЛИТЕРАЛА-ШАБЛОНА (измерено на MySQL 8.0.46, оба пути):
 --   * ПРЯМОЙ `ALTER TABLE … CHECK (col REGEXP '…')` под `SET NAMES latin1` замораживает шаблон как
@@ -82,7 +102,7 @@ SET @chk_vocab := (
       AND CONSTRAINT_NAME = 'chk_tcp_cut_symmetry'
 );
 SET @ddl := IF(@chk_vocab = 0,
-    'ALTER TABLE tech_card_piece ADD CONSTRAINT chk_tcp_cut_symmetry CHECK (cut_symmetry IS NULL OR cut_symmetry REGEXP ''^(identical|mirrored|fold)$'')',
+    'ALTER TABLE tech_card_piece ADD CONSTRAINT chk_tcp_cut_symmetry CHECK (cut_symmetry IS NULL OR (cut_symmetry REGEXP ''^(identical|mirrored|fold)$'' AND STRCMP(CAST(cut_symmetry AS BINARY), CAST(LOWER(cut_symmetry) AS BINARY)) = 0))',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
