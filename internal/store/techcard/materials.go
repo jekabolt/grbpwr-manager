@@ -104,6 +104,43 @@ func (cs calloutSync) apply(p *entity.TechCardPiece) {
 	p.Detached = true
 }
 
+// The two halves of the piece upsert, named so a bind-without-a-database test can hold the REAL text
+// rather than a copy of it (precedent: fabricDirectionLinesQuery). sqlx reads ':' anywhere in a named
+// query — including inside a `--` comment — as a parameter, so a rationale note must live in Go
+// comments, never in the SQL.
+//
+// cut_symmetry is guarded by :cut_symmetry_omitted on the UPDATE: a tab holding an older bundle does
+// not send the field, and that must carry the stored marking forward rather than clear it — the
+// marking cannot be reconstructed without a human holding the patterns. The digest half of the same
+// contract is carryOmittedPieceCutSymmetryFrom in the API layer; both are required, and the second is
+// the one that stops a sign-off from being born stale.
+//
+// The INSERT is deliberately NOT guarded: a brand-new row has no stored value to carry, so "omitted"
+// and "explicitly unknown" are the same NULL — «не размечено».
+const (
+	pieceUpdateQuery = `
+				UPDATE tech_card_piece SET
+					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
+					cut_symmetry=IF(:cut_symmetry_omitted, cut_symmetry, :cut_symmetry),
+					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
+				WHERE id=:id`
+
+	pieceInsertQuery = `
+				INSERT INTO tech_card_piece
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :grainline, :fused, :callout_number, :detached, :note, :display_order)`
+
+	// The read side of the same row. It has to SELECT every column the write writes and the digest
+	// hashes: a field the write stores and the read never loads makes the two projections permanently
+	// disagree, and the sign-off it feeds can never match its own stored digest again — the failure the
+	// piece-material read's line_key note records having already paid for once.
+	pieceReadQuery = `
+		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note
+		FROM tech_card_piece
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order, id`
+)
+
 // upsertTechCardPieces reconciles a card's cut-pieces by line_key (S8), the same keyed upsert-diff the
 // BOM uses (§2.3): a line_key already in the DB is UPDATEd in place (id stable — which is what lets a
 // colourway recipe usage hold a real piece_id FK), a new line_key is INSERTed, and a line_key that
@@ -149,36 +186,38 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			return entity.NewFieldViolation(fmt.Sprintf("pieces[%d].line_key", i),
 				"duplicate line_key within the payload", "", "each cut-piece needs a unique line_key")
 		}
+		// КАК КРОИТСЯ (0275) — refuse the unresolvable pair with words before MySQL refuses it with a
+		// number. chk_tcp_mirrored_needs_even_count spans two columns, so its 3819 names
+		// pieces_per_garment even when the save only changed the dropdown. This also covers the write
+		// paths that do not come through the admin RPC parser at all.
+		if err := entity.ValidatePieceCutSymmetry(
+			fmt.Sprintf("pieces[%d].cut_symmetry", i), p.CutSymmetry, p.PiecesPerGarment); err != nil {
+			return err
+		}
 		params := map[string]any{
-			"tech_card_id":       tcID,
-			"name":               p.Name,
-			"line_key":           key,
-			"pieces_per_garment": p.PiecesPerGarment,
-			"mirrored":           p.Mirrored,
-			"grainline":          p.Grainline,
-			"fused":              p.Fused,
-			"callout_number":     p.CalloutNumber,
-			"detached":           p.Detached,
-			"note":               p.Note,
-			"display_order":      i,
+			"tech_card_id":         tcID,
+			"name":                 p.Name,
+			"line_key":             key,
+			"pieces_per_garment":   p.PiecesPerGarment,
+			"mirrored":             p.Mirrored,
+			"cut_symmetry":         p.CutSymmetry,
+			"cut_symmetry_omitted": p.CutSymmetryOmitted,
+			"grainline":            p.Grainline,
+			"fused":                p.Fused,
+			"callout_number":       p.CalloutNumber,
+			"detached":             p.Detached,
+			"note":                 p.Note,
+			"display_order":        i,
 		}
 		var pieceID int
 		if id, ok := existingByKey[key]; ok {
 			params["id"] = id
-			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE tech_card_piece SET
-					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
-					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
-				WHERE id=:id`, params); err != nil {
+			if err := storeutil.ExecNamed(ctx, db, pieceUpdateQuery, params); err != nil {
 				return fmt.Errorf("failed to update tech card piece: %w", err)
 			}
 			pieceID = id
 		} else {
-			newID, err := storeutil.ExecNamedLastId(ctx, db, `
-				INSERT INTO tech_card_piece
-					(tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note, display_order)
-				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :grainline, :fused, :callout_number, :detached, :note, :display_order)`,
-				params)
+			newID, err := storeutil.ExecNamedLastId(ctx, db, pieceInsertQuery, params)
 			if err != nil {
 				return fmt.Errorf("failed to insert tech card piece: %w", err)
 			}
@@ -832,11 +871,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	// Cut-pieces per card (NF-05), then per-colourway fabric mapping per piece. The stored
 	// colorway_id is surfaced directly (R1/§14.3 — no positional colorway_index anymore).
-	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, `
-		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note
-		FROM tech_card_piece
-		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
+	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, pieceReadQuery,
+		map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card pieces: %w", err)
 	}

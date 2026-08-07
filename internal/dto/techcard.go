@@ -109,6 +109,38 @@ var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirectio
 	return m
 }()
 
+// КАК КРОИТСЯ (0275). UNKNOWN is deliberately absent from the table: it is not a value but the
+// absence of one («не размечено»), so it can only ever become a NULL column — the same discipline
+// TechCardBomPurpose's UNSET follows.
+var techCardPieceCutSymmetryPbToEntity = map[pb_common.TechCardPieceCutSymmetry]entity.TechCardPieceCutSymmetry{
+	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_IDENTICAL: entity.PieceCutSymmetryIdentical,
+	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED:  entity.PieceCutSymmetryMirrored,
+	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD:      entity.PieceCutSymmetryFold,
+}
+
+var techCardPieceCutSymmetryEntityToPb = func() map[entity.TechCardPieceCutSymmetry]pb_common.TechCardPieceCutSymmetry {
+	m := make(map[entity.TechCardPieceCutSymmetry]pb_common.TechCardPieceCutSymmetry, len(techCardPieceCutSymmetryPbToEntity))
+	for k, v := range techCardPieceCutSymmetryPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+// PieceCutSymmetryToPb maps a stored marking to the wire enum; an unset column reads as UNKNOWN, which
+// is exactly «не размечено». An unrecognised stored value also reads as UNKNOWN rather than failing
+// the whole card read — the DB CHECK makes that unreachable through this app, and a read is the wrong
+// place to discover it. Exported because the cut-list projection (apisrv/admin/style_cutlist.go)
+// speaks the same vocabulary from its own response message.
+func PieceCutSymmetryToPb(s sql.NullString) pb_common.TechCardPieceCutSymmetry {
+	if !s.Valid {
+		return pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN
+	}
+	if v, ok := techCardPieceCutSymmetryEntityToPb[entity.TechCardPieceCutSymmetry(s.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN
+}
+
 var techCardMediaKindEntityToPb = func() map[entity.TechCardMediaKind]pb_common.TechCardMediaKind {
 	m := make(map[entity.TechCardMediaKind]pb_common.TechCardMediaKind, len(techCardMediaKindPbToEntity))
 	for k, v := range techCardMediaKindPbToEntity {
@@ -1852,6 +1884,29 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		if !entity.ValidTechCardGrainlines[grainline] {
 			return nil, fmt.Errorf("piece %q grainline must be one of lengthwise|crosswise|bias|any", p.Name)
 		}
+		// КАК КРОИТСЯ (0275) — ПРИСУТСТВИЕ, а не значение, by the same argument as направление ткани on
+		// the BOM line: the field is optional, and a tab holding an older bundle does not send it at all.
+		// A bare proto3 enum would arrive as UNKNOWN and wipe the marking on every piece of the card —
+		// and that marking, unlike направление, cannot be reconstructed without a human holding the
+		// patterns. An EXPLICIT UNKNOWN still clears the column: returning a piece to «не размечено» is a
+		// deliberate act.
+		cutSymmetryOmitted := p.CutSymmetry == nil
+		cutSymmetry := sql.NullString{}
+		if !cutSymmetryOmitted && p.GetCutSymmetry() != pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN {
+			cs, ok := techCardPieceCutSymmetryPbToEntity[p.GetCutSymmetry()]
+			if !ok {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].cut_symmetry", i),
+					"unknown cut symmetry", p.GetCutSymmetry().String(),
+					"pick one of: identical (одинаковые копии), mirrored (зеркальные пары), fold (крой по сгибу)")
+			}
+			cutSymmetry = sql.NullString{String: string(cs), Valid: true}
+		}
+		// Refuse the unresolvable pair here rather than at MySQL: the DB CHECK is two-column, so its
+		// 3819 names pieces_per_garment on a save that only touched the dropdown.
+		if err := entity.ValidatePieceCutSymmetry(
+			fmt.Sprintf("pieces[%d].cut_symmetry", i), cutSymmetry, perGarment); err != nil {
+			return nil, err
+		}
 		var calloutNumber sql.NullInt32
 		if p.CalloutNumber != nil {
 			// A callout_number that no longer matches a callout on the card is NOT rejected here (S8
@@ -1901,15 +1956,17 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		}
 
 		out = append(out, entity.TechCardPiece{
-			Name:             p.Name,
-			LineKey:          lineKey,
-			PiecesPerGarment: perGarment,
-			Mirrored:         p.Mirrored,
-			Grainline:        grainline,
-			Fused:            p.Fused,
-			CalloutNumber:    calloutNumber,
-			Note:             nullStringFromPb(p.Note),
-			Materials:        materials,
+			Name:               p.Name,
+			LineKey:            lineKey,
+			PiecesPerGarment:   perGarment,
+			Mirrored:           p.Mirrored,
+			CutSymmetry:        cutSymmetry,
+			CutSymmetryOmitted: cutSymmetryOmitted,
+			Grainline:          grainline,
+			Fused:              p.Fused,
+			CalloutNumber:      calloutNumber,
+			Note:               nullStringFromPb(p.Note),
+			Materials:          materials,
 		})
 	}
 	return out, nil
@@ -2377,12 +2434,18 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			LineKey:          p.LineKey,
 			PiecesPerGarment: int32(p.PiecesPerGarment),
 			Mirrored:         p.Mirrored,
-			Grainline:        p.Grainline,
-			Fused:            p.Fused,
-			CalloutNumber:    calloutNumber,
-			Detached:         p.Detached,
-			Note:             pbStringFromNull(p.Note),
-			Materials:        materials,
+			// ALWAYS present on read, even when the column is NULL: the optionality exists so a client
+			// that cannot speak the field does not erase it, not so the server can go quiet. Returning
+			// nil would make "cutSymmetry" VANISH from the JSON of every unmarked piece — which is most
+			// of them today — and a client round-tripping what it read would then send nothing back and
+			// look, to the store, exactly like the stale tab this design is protecting against.
+			CutSymmetry:   pbPtr(PieceCutSymmetryToPb(p.CutSymmetry)),
+			Grainline:     p.Grainline,
+			Fused:         p.Fused,
+			CalloutNumber: calloutNumber,
+			Detached:      p.Detached,
+			Note:          pbStringFromNull(p.Note),
+			Materials:     materials,
 		})
 	}
 	return out

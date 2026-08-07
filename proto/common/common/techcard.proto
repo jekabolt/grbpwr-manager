@@ -804,6 +804,25 @@ enum TechCardFabricDirection {
   TECH_CARD_FABRIC_DIRECTION_TWO_WAY = 3; // two-way
 }
 
+// TechCardPieceCutSymmetry — КАК деталь кроится (миграция 0275). Не количество: количество целиком
+// живёт в pieces_per_garment (0266 свернула туда зеркальное удвоение), и ни одно значение отсюда
+// ничего не умножает. Вернуть множитель нельзя: тех-пак печатает pieces_per_garment и НИКОГДА total,
+// поэтому удвоение «где-то ещё» снова напечатает фабрике «1» у детали, которую кроят парой.
+//
+// UNKNOWN — это ОТВЕТ «никто не спрашивал», а не «обычная деталь». Различать обязательно:
+// неразмеченная парная деталь при полукомплекте лекал даёт 44 левых полочки и ноль правых, и
+// единственное, что от этого спасает, — видимое «не размечено».
+//
+// FOLD не бывает MIRRORED: крой по сгибу — это объединение половины лекала с её отражением, значит
+// контур симметричен сам себе, а отражение симметричного контура конгруэнтно ему. «Со сгибом и нужна
+// дважды» (манжеты) = FOLD + pieces_per_garment = 2.
+enum TechCardPieceCutSymmetry {
+  TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN = 0; // не размечено (см. выше — это не «обычная»)
+  TECH_CARD_PIECE_CUT_SYMMETRY_IDENTICAL = 1; // n конгруэнтных копий
+  TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED = 2; // n делится на две зеркальные половины; n обязано быть чётным
+  TECH_CARD_PIECE_CUT_SYMMETRY_FOLD = 3; // крой по сгибу
+}
+
 // TechCardSizeQuantity is the TYPICAL calculation batch for a size — «типовой тираж для
 // калькуляции» (plan 13 §2). It amortises development cost and prefills a new run's grid; it is
 // NOT a real production batch — the run's own plan lines are the batch (a run may be bigger,
@@ -1294,6 +1313,17 @@ message TechCardPiece {
   // callout on the card (its source sketch callout was removed) — the piece survives, visibly
   // detached, instead of being silently dropped (orphan-control, S8).
   bool detached = 10;
+  // КАК КРОИТСЯ (0275). Отвечает на вопрос «как связаны эти pieces_per_garment панелей», и ничего не
+  // умножает — см. TechCardPieceCutSymmetry.
+  //
+  // ЯВНОЕ ПРИСУТСТВИЕ, а не голый энум, по той же причине, что и fabric_direction на строке BOM:
+  // вкладка со старым бандлом поля не шлёт вовсе, голый proto3-энум приехал бы как UNKNOWN и СТЁР бы
+  // разметку на всех деталях карточки — а разметка, в отличие от направления, невосстановима без
+  // человека с лекалами. ОТСУТСТВИЕ ⇒ сервер несёт хранимое значение дальше (store:
+  // IF(:cut_symmetry_omitted, …), и та же перенос-склейка перед дайджестом, иначе подпись из такой
+  // вкладки рождается устаревшей). ЯВНЫЙ UNKNOWN ⇒ очистить в «не размечено», это осознанное
+  // действие. Новый клиент шлёт поле ВСЕГДА, круглым рейсом того, что прочитал.
+  optional TechCardPieceCutSymmetry cut_symmetry = 11;
 }
 
 // SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers

@@ -229,6 +229,14 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// same client hashes the same absence. purpose/purpose_note/is_sample dodged this by staying out
 	// of the projection; direction cannot, it is a cutting fact the approval is ABOUT.
 	carryOmittedFabricDirectionFrom(stored, tc)
+	// КАК КРОИТСЯ (0275) is the same contract on the CONSTRUCTION section, and it needs all three legs
+	// too: `optional` in the proto, IF(:cut_symmetry_omitted, …) in the store, and this carry before
+	// the digest is restamped. Skipping this third one is what makes a sign-off born stale and stay
+	// that way. It has a second effect here as well: with the stored marking on the payload, a stale
+	// tab that edits pieces_per_garment into an odd number is refused in words by
+	// entity.ValidatePieceCutSymmetry instead of by a raw two-column CHECK naming a field it did touch
+	// and a field it did not.
+	carryOmittedPieceCutSymmetryFrom(stored, tc)
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}

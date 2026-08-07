@@ -563,6 +563,13 @@ func bomNaturalKey(b entity.TechCardBomItem) string {
 //
 // Keyed only: a legacy line with no line_key cannot be matched safely, and guessing by position
 // would attach one line's cloth direction to another's.
+//
+// The case FOLDING below is safe, but not because folding case is right — because the schema makes
+// the disagreement unreachable. tech_card_bom_item carries UNIQUE (tech_card_id, line_key) on a _ci
+// collation, so a payload whose key differs from the stored one only in case cannot become a second
+// row: the upsert takes its INSERT branch, MySQL answers ER_DUP_ENTRY, and the transaction rolls back
+// before anything is written. Do not read the folding as a licence — the piece twin below
+// (carryOmittedPieceCutSymmetryFrom) compares exactly, and says there why.
 func carryOmittedFabricDirectionFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
 	if stored == nil || incoming == nil {
 		return
@@ -579,6 +586,51 @@ func carryOmittedFabricDirectionFrom(stored *entity.TechCard, incoming *entity.T
 		}
 		if d, ok := byKey[strings.ToLower(strings.TrimSpace(incoming.BomItems[i].LineKey))]; ok {
 			incoming.BomItems[i].FabricDirection = d
+		}
+	}
+}
+
+// carryOmittedPieceCutSymmetryFrom is the twin of carryOmittedFabricDirectionFrom for КАК КРОИТСЯ
+// (0275), and exists for the same reason: what a client did not SAY must not read as what it ERASED.
+//
+// It matters only for the DIGEST. The write already ignores this value (the piece upsert guards the
+// column with IF(:cut_symmetry_omitted, …)), so this cannot change what is stored; it changes what
+// the CONSTRUCTION sign-off is fingerprinted over. Without it, an approval made from a tab that does
+// not speak the field would hash "unmarked" while the column keeps `mirrored`, and that approval
+// would read «changed since sign-off» the instant it was made — and forever, because re-approving
+// from the same tab hashes the same absence. This exact failure already happened once, with
+// направление ткани, which is why the twin exists rather than a second discovery.
+//
+// Keyed only, and keyed the way the STORE keys: the incoming line_key trimmed, then compared
+// VERBATIM — which is what upsertTechCardPieces does with its Go map, and what makes the two agree on
+// identity in the same process rather than by accident.
+//
+// Deliberately stricter than the fabric-direction twin above, which folds case. Neither is a live bug:
+// tech_card_piece carries UNIQUE (tech_card_id, line_key) on a _ci collation exactly as the BOM does
+// (measured), so a case-variant key cannot become a second row — the upsert's INSERT branch gets
+// ER_DUP_ENTRY and the whole save rolls back. The difference is therefore about which failure the
+// reader has to reason about, and exact matching leaves none: the carry cannot quietly hold a view of
+// identity that the store does not share, and no digest is ever computed over a mis-attributed value,
+// not even one that is later thrown away with the transaction.
+//
+// Matching by POSITION would be the real hazard, and is why this is keyed at all: a piece's pairing
+// must never be inferred from a neighbour.
+func carryOmittedPieceCutSymmetryFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
+	if stored == nil || incoming == nil {
+		return
+	}
+	byKey := make(map[string]sql.NullString, len(stored.Pieces))
+	for _, p := range stored.Pieces {
+		if k := strings.TrimSpace(p.LineKey); k != "" {
+			byKey[k] = p.CutSymmetry
+		}
+	}
+	for i := range incoming.Pieces {
+		if !incoming.Pieces[i].CutSymmetryOmitted {
+			continue
+		}
+		if cs, ok := byKey[strings.TrimSpace(incoming.Pieces[i].LineKey)]; ok {
+			incoming.Pieces[i].CutSymmetry = cs
 		}
 	}
 }

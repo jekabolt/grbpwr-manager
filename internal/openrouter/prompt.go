@@ -97,6 +97,17 @@ func buildUserPrompt(tcx TechCardContext, description string) string {
 			if p.PiecesPerGarment > 0 {
 				attrs = append(attrs, fmt.Sprintf("x%d per garment", p.PiecesPerGarment))
 			}
+			// КАК КРОИТСЯ (0275), spelled out in English for the model. An unmarked piece contributes
+			// NOTHING here — silence is the honest rendering of «не размечено», and a default of
+			// "identical copies" would be a fact this file made up.
+			switch strings.TrimSpace(p.CutSymmetry) {
+			case "mirrored":
+				attrs = append(attrs, "mirrored pair (left + right)")
+			case "fold":
+				attrs = append(attrs, "cut on the fold")
+			case "identical":
+				attrs = append(attrs, "identical copies")
+			}
 			if v := strings.TrimSpace(p.Grainline); v != "" {
 				attrs = append(attrs, "grainline "+v)
 			}

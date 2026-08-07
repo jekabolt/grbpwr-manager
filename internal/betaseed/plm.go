@@ -440,10 +440,17 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	// B.6 pieces, verified via the cut-list. The mirror flag is retired (the admin no longer sends
 	// it and GetStyleCutList no longer doubles by it), so a left/right pair is stated the way a
 	// graded DXF actually draws it — as a count, not as a flag on one row.
-	s.step(st, "B.6 pieces (front 2/garment, back 1) via cut-list")
+	//
+	// cut_symmetry (0275) says what the note here has always said in prose: "left + right" is a
+	// MIRRORED pair, "single cut, on the fold" is FOLD. The readback below asserts the counts did not
+	// move — front stays 2, back stays 1 — which is the whole claim of the field: it classifies the
+	// number already there and multiplies nothing.
+	s.step(st, "B.6 pieces (front 2/garment mirrored, back 1 on the fold) via cut-list")
 	tc.Pieces = []*common.TechCardPiece{
-		{Name: "front panel", PiecesPerGarment: 2, Grainline: "lengthwise", CalloutNumber: p32(1), Note: "left + right", LineKey: st.pieceFrontKey},
-		{Name: "back panel", PiecesPerGarment: 1, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey},
+		{Name: "front panel", PiecesPerGarment: 2, Grainline: "lengthwise", CalloutNumber: p32(1), Note: "left + right", LineKey: st.pieceFrontKey,
+			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED)},
+		{Name: "back panel", PiecesPerGarment: 1, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey,
+			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD)},
 	}
 	if err := s.tcSave(ctx, sid, tc, "B.6 pieces"); err != nil {
 		return err
@@ -453,15 +460,18 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 		return fmt.Errorf("GetStyleCutList: %w", err)
 	}
 	var frontTotal, backTotal int32
+	var frontSym, backSym common.TechCardPieceCutSymmetry
 	for _, p := range cl.GetPieces() {
 		// Matched by NAME now: the mirror flag used to be what told the two rows apart, and it is
 		// false on both from here on.
 		if p.GetName() == "front panel" {
 			st.pieceFrontID = p.GetPieceId()
 			frontTotal = p.GetTotalPerGarment()
+			frontSym = p.GetCutSymmetry()
 		} else {
 			st.pieceBackID = p.GetPieceId()
 			backTotal = p.GetTotalPerGarment()
+			backSym = p.GetCutSymmetry()
 		}
 	}
 	if st.pieceFrontID == 0 || st.pieceBackID == 0 {
@@ -470,7 +480,16 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	if frontTotal != 2 || backTotal != 1 {
 		return fmt.Errorf("cut math: front total_per_garment=%d (want 2) back=%d (want 1)", frontTotal, backTotal)
 	}
-	s.pass(st, "B.6 cut-list: front piece=%d total=2 back piece=%d total=1", st.pieceFrontID, st.pieceBackID)
+	// The counts above are the proof that 0275 classifies rather than multiplies; these two are the
+	// proof it survived the round trip at all.
+	if frontSym != common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED {
+		return fmt.Errorf("cut symmetry: front=%s (want MIRRORED)", frontSym)
+	}
+	if backSym != common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD {
+		return fmt.Errorf("cut symmetry: back=%s (want FOLD)", backSym)
+	}
+	s.pass(st, "B.6 cut-list: front piece=%d total=2 mirrored, back piece=%d total=1 on the fold",
+		st.pieceFrontID, st.pieceBackID)
 
 	// B.7/B.8 construction + size range.
 	s.step(st, "B.7/B.8 construction section + size range + size chart + UpdateStyle")
@@ -1956,6 +1975,11 @@ func p32(v int32) *int32 { return &v }
 func p64(v int64) *int64 { return &v }
 
 func pbool(v bool) *bool { return &v }
+
+// pcs makes the 0275 marking explicitly PRESENT on the wire. The field is `optional` so a stale tab
+// cannot erase it, which means an absent field says "carry the stored value" — the seeder has to be
+// the new client, not the stale one, or its readback would assert nothing.
+func pcs(v common.TechCardPieceCutSymmetry) *common.TechCardPieceCutSymmetry { return &v }
 
 func pstr(v string) *string { return &v }
 
