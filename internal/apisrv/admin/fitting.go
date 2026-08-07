@@ -61,6 +61,13 @@ func (s *Server) ListFittings(ctx context.Context, req *pb_admin.ListFittingsReq
 	for i := range fittings {
 		pbFittings = append(pbFittings, dto.ConvertEntityFittingToPb(&fittings[i]))
 	}
+	// ONE ensure pass for the whole page — a per-fitting call would issue a query (and,
+	// for a not-yet-seen object, a write) per row of every list read.
+	groups := make([][]*pb_common.FittingPattern, 0, len(pbFittings))
+	for _, f := range pbFittings {
+		groups = append(groups, f.GetFitting().GetPatterns())
+	}
+	s.patternURLs.FillFittingPatternURLsBatch(ctx, s.patternURLsBaseURL, groups)
 	return &pb_admin.ListFittingsResponse{Fittings: pbFittings, Total: int32(total)}, nil
 }
 
@@ -79,7 +86,9 @@ func (s *Server) GetFitting(ctx context.Context, req *pb_admin.GetFittingRequest
 		)
 		return nil, status.Errorf(codes.Internal, "can't get fitting")
 	}
-	return &pb_admin.GetFittingResponse{Fitting: dto.ConvertEntityFittingToPb(f)}, nil
+	pbF := dto.ConvertEntityFittingToPb(f)
+	s.patternURLs.FillFittingPatternURLs(ctx, s.patternURLsBaseURL, pbF.GetFitting().GetPatterns())
+	return &pb_admin.GetFittingResponse{Fitting: pbF}, nil
 }
 
 // UpdateFitting updates a fitting session.

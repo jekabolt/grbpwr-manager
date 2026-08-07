@@ -149,11 +149,11 @@ func createMaterialInTx(ctx context.Context, db dependency.DB, m *entity.Materia
 	newID, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO material (name, section, supplier, supplier_ref, supplier_id, lead_time_days,
 			composition, spec, unit,
-			fabric_width, fabric_weight_gsm, code, color, pantone, min_stock, notes,
+			fabric_width, fabric_weight_gsm, cutting_coefficient, code, color, pantone, min_stock, notes,
 			image_id, purpose, material_class, other_attrs, created_by, updated_by)
 		VALUES (:name, :section, :supplier, :supplier_ref, :supplier_id, :lead_time_days,
 			:composition, :spec, :unit,
-			:fabric_width, :fabric_weight_gsm, :code, :color, :pantone, :min_stock, :notes,
+			:fabric_width, :fabric_weight_gsm, :cutting_coefficient, :code, :color, :pantone, :min_stock, :notes,
 			:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
 		materialParams(m))
 	if err != nil {
@@ -214,11 +214,20 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 		params["material_class"] = strings.ToLower(strings.TrimSpace(m.MaterialClass))
 		params["id"] = id
 		params["expected_lock_version"] = expectedLockVersion
+		// cutting_coefficient below is присутствие, а не значение (Ф5а.2) — the same IF(:x_omitted,…)
+		// shape the BOM line uses for purpose / is_sample, and for the same reason. An absent field
+		// means «не трогай»: a full replace would erase an operator's coefficient on every save from a
+		// tab running an older bundle (or any client in the window between the backend and client
+		// deploys), and erase it without a trace — the catalogue has neither a signed digest nor an
+		// edit journal to notice. NB the explanation lives HERE and not inside the SQL: a ':' in a
+		// '--' comment is read by sqlx's named-param scanner as an empty bind name and breaks the
+		// whole query.
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			UPDATE material SET lock_version = lock_version + 1,
 				name=:name, section=:section, supplier=:supplier, supplier_ref=:supplier_ref,
 				supplier_id=:supplier_id, lead_time_days=:lead_time_days,
 				composition=:composition, spec=:spec, unit=:unit, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
+				cutting_coefficient=IF(:cutting_coefficient_omitted, cutting_coefficient, :cutting_coefficient),
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
 				image_id=:image_id, purpose=:purpose,
 				material_class=CASE WHEN :material_class = '' THEN material_class ELSE :material_class END,
@@ -283,7 +292,12 @@ func checkMaterialUnitChange(ctx context.Context, db dependency.DB, id int, newU
 		}
 		return fmt.Errorf("read material unit: %w", err)
 	}
-	if strings.TrimSpace(cur.Unit.String) == strings.TrimSpace(newUnit.String) {
+	// Compared through the unit vocabulary (Ф5а.3), not as raw text: «м» and "m" are the SAME unit,
+	// and after 0271 canonicalised the catalogue an older bundle re-sending its own «м» would
+	// otherwise look like a unit CHANGE and be refused on any material that has stock movements —
+	// a lock that fires on a spelling is the false positive this guard must not have.
+	if entity.SameMaterialUnit(cur.Unit.String, newUnit.String) ||
+		strings.TrimSpace(cur.Unit.String) == strings.TrimSpace(newUnit.String) {
 		return nil
 	}
 	n, err := storeutil.QueryCountNamed(ctx, db,
@@ -433,28 +447,39 @@ func (s *Store) ListMaterialPrices(ctx context.Context, materialID int) ([]entit
 // materialParams maps a MaterialInsert to named query params, normalising name, section and class.
 func materialParams(m *entity.MaterialInsert) map[string]any {
 	return map[string]any{
-		"name":              strings.TrimSpace(m.Name),
-		"section":           strings.ToLower(strings.TrimSpace(m.Section)),
-		"supplier":          m.Supplier,
-		"supplier_ref":      m.SupplierRef,
-		"supplier_id":       m.SupplierId,
-		"lead_time_days":    m.LeadTimeDays,
-		"composition":       m.Composition,
-		"spec":              m.Spec,
-		"unit":              m.Unit,
-		"fabric_width":      nullDecimalParam(m.FabricWidth),
-		"fabric_weight_gsm": nullDecimalParam(m.FabricWeightGsm),
-		"code":              m.Code,
-		"color":             m.Color,
-		"pantone":           m.Pantone,
-		"min_stock":         nullDecimalParam(m.MinStock),
-		"notes":             m.Notes,
-		"image_id":          m.ImageId,
-		"purpose":           normalizeMaterialPurpose(m.Purpose),
-		"material_class":    normalizeMaterialClass(m.MaterialClass),
-		"other_attrs":       nullJSONParam(m.OtherAttrs),
-		"created_by":        m.CreatedBy,
-		"updated_by":        m.UpdatedBy,
+		"name":           strings.TrimSpace(m.Name),
+		"section":        strings.ToLower(strings.TrimSpace(m.Section)),
+		"supplier":       m.Supplier,
+		"supplier_ref":   m.SupplierRef,
+		"supplier_id":    m.SupplierId,
+		"lead_time_days": m.LeadTimeDays,
+		"composition":    m.Composition,
+		"spec":           m.Spec,
+		// Stored VERBATIM. Ф5а.3 briefly canonicalised on write; that is reverted, because it bought
+		// nothing and broke read-your-writes: no production code branches on a literal unit string —
+		// pbMaterialUnit, checkMaterialUnitChange, the UpsertOutputVariant sibling check, pinShadowBom
+		// and the material plan all normalise on READ — so a caller that writes "pc" and reads back
+		// "pcs" got a silent rewrite in exchange for zero functional benefit. It is also the same
+		// argument that already keeps tech_card_bom_item.unit alone (0271's header): the functional
+		// benefit is taken by normalising in code. 0271 stays as a ONE-TIME cleanup of legacy rows.
+		"unit":                m.Unit,
+		"fabric_width":        nullDecimalParam(m.FabricWidth),
+		"fabric_weight_gsm":   nullDecimalParam(m.FabricWeightGsm),
+		"cutting_coefficient": nullDecimalParam(m.CuttingCoefficient),
+		// Read only by the UPDATE (see UpdateMaterial). On INSERT "absent" and "empty" are the same
+		// NULL, so the key is simply unused there — sqlx ignores params a query does not name.
+		"cutting_coefficient_omitted": m.CuttingCoefficientOmitted,
+		"code":                        m.Code,
+		"color":                       m.Color,
+		"pantone":                     m.Pantone,
+		"min_stock":                   nullDecimalParam(m.MinStock),
+		"notes":                       m.Notes,
+		"image_id":                    m.ImageId,
+		"purpose":                     normalizeMaterialPurpose(m.Purpose),
+		"material_class":              normalizeMaterialClass(m.MaterialClass),
+		"other_attrs":                 nullJSONParam(m.OtherAttrs),
+		"created_by":                  m.CreatedBy,
+		"updated_by":                  m.UpdatedBy,
 	}
 }
 
@@ -540,10 +565,11 @@ func upsertMaterialAttrs(ctx context.Context, db dependency.DB, id int, m *entit
 		}
 		a := m.FabricAttr
 		return storeutil.ExecNamed(ctx, db, `
-			INSERT INTO material_fabric_attr (material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m)
-			VALUES (:id, :width_cm, :weight_gsm, :fabric_direction, :shrinkage_pct, :roll_length_m)`,
+			INSERT INTO material_fabric_attr (material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m, selvedge_cm)
+			VALUES (:id, :width_cm, :weight_gsm, :fabric_direction, :shrinkage_pct, :roll_length_m, :selvedge_cm)`,
 			map[string]any{"id": id, "width_cm": nullDecimalParam(a.WidthCm), "weight_gsm": nullDecimalParam(a.WeightGsm),
-				"fabric_direction": a.FabricDirection, "shrinkage_pct": nullDecimalParam(a.ShrinkagePct), "roll_length_m": nullDecimalParam(a.RollLengthM)})
+				"fabric_direction": a.FabricDirection, "shrinkage_pct": nullDecimalParam(a.ShrinkagePct), "roll_length_m": nullDecimalParam(a.RollLengthM),
+				"selvedge_cm": a.SelvedgeCm})
 	case string(entity.MaterialClassHardware):
 		if m.HardwareAttr == nil {
 			return nil
@@ -606,7 +632,7 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 		byID[m.Id] = m
 	}
 	fRows, err := storeutil.QueryListNamed[materialFabricAttrRow](ctx, s.DB,
-		`SELECT material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m
+		`SELECT material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m, selvedge_cm
 		 FROM material_fabric_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("load fabric attrs: %w", err)

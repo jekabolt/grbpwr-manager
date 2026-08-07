@@ -153,3 +153,65 @@ func TestAssemblyResolutionBasisEnumNoDrift(t *testing.T) {
 		t.Errorf("proto resolution basis values (%d) != entity.ValidAssemblyResolutionBases (%d)", protoValues, len(entity.ValidAssemblyResolutionBases))
 	}
 }
+
+// TestBomPurposeEnumNoDrift is the entity<->proto leg for НАЗНАЧЕНИЕ (0265): every non-UNSET proto
+// value maps to a valid entity purpose, and the three sizes (proto values, mapping table, entity
+// Valid set) agree. The entity<->DB leg is TestBomPurposeDBCheckNoDrift in internal/store/migrationlint.
+//
+// UNSET is skipped rather than mapped: it is not a value but the absence of one ("not sorted yet"),
+// and it must stay absent from the mapping table so it can only ever become a NULL column.
+func TestBomPurposeEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.TechCardBomPurpose_name {
+		if pb_common.TechCardBomPurpose(v) == pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+			continue
+		}
+		protoValues++
+		p, ok := techCardBomPurposePbToEntity[pb_common.TechCardBomPurpose(v)]
+		if !ok || !entity.ValidTechCardBomPurposes[p] {
+			t.Errorf("proto TechCardBomPurpose %s maps to invalid entity purpose %q", name, p)
+		}
+	}
+	if protoValues != len(techCardBomPurposePbToEntity) {
+		t.Errorf("proto purpose values (%d) != mapping table size (%d)", protoValues, len(techCardBomPurposePbToEntity))
+	}
+	if protoValues != len(entity.ValidTechCardBomPurposes) {
+		t.Errorf("proto purpose values (%d) != entity.ValidTechCardBomPurposes (%d)", protoValues, len(entity.ValidTechCardBomPurposes))
+	}
+}
+
+// TestPieceCutSymmetryEnumNoDrift is the entity<->proto leg for КАК КРОИТСЯ (0275): every non-UNKNOWN
+// proto value maps to a valid entity symmetry, and the three sizes (proto values, mapping table,
+// entity Valid set) agree. The entity<->DB leg is TestPieceCutSymmetryDBCheckNoDrift in
+// internal/store/migrationlint.
+//
+// UNKNOWN is skipped rather than mapped, on the same rule as TechCardBomPurpose's UNSET: it is not a
+// value but the absence of one («не размечено»), and it must stay out of the mapping table so it can
+// only ever become a NULL column. A future contributor who "completes" the map by adding it would
+// turn every stale save into a write of the string "unknown".
+func TestPieceCutSymmetryEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.TechCardPieceCutSymmetry_name {
+		if pb_common.TechCardPieceCutSymmetry(v) == pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN {
+			continue
+		}
+		protoValues++
+		s, ok := techCardPieceCutSymmetryPbToEntity[pb_common.TechCardPieceCutSymmetry(v)]
+		if !ok || !entity.ValidTechCardPieceCutSymmetries[s] {
+			t.Errorf("proto TechCardPieceCutSymmetry %s maps to invalid entity symmetry %q", name, s)
+		}
+	}
+	if protoValues != len(techCardPieceCutSymmetryPbToEntity) {
+		t.Errorf("proto cut symmetry values (%d) != mapping table size (%d)", protoValues, len(techCardPieceCutSymmetryPbToEntity))
+	}
+	if protoValues != len(entity.ValidTechCardPieceCutSymmetries) {
+		t.Errorf("proto cut symmetry values (%d) != entity.ValidTechCardPieceCutSymmetries (%d)", protoValues, len(entity.ValidTechCardPieceCutSymmetries))
+	}
+	// The reverse table must be a true inverse: PieceCutSymmetryToPb reads it on every card read, and a
+	// missing entry there degrades a MARKED piece to «не размечено» silently on the wire.
+	for pb, ent := range techCardPieceCutSymmetryPbToEntity {
+		if got := techCardPieceCutSymmetryEntityToPb[ent]; got != pb {
+			t.Errorf("entity %q maps back to %s, want %s", ent, got, pb)
+		}
+	}
+}

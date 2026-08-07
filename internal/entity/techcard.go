@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +64,15 @@ var ErrOutputVariantNotFound = errors.New("colour variant not found")
 // forward). Deactivation is the retirement that keeps the run's grid, the colour's warehouse bucket
 // and its history intact. The API layer maps it to FailedPrecondition.
 var ErrOutputVariantReferencedByRun = errors.New("colour variant is referenced by production run lines; deactivate it instead")
+
+// ErrMarkerNotFound is returned when the addressed saved раскладка (tech_card_marker) does not
+// exist. The API layer maps it to NotFound.
+var ErrMarkerNotFound = errors.New("marker not found")
+
+// ErrMarkerIncomplete refuses saving a раскладка whose layout did not place every piece
+// (placed_count < total_count): a layout that dropped pieces is not a consumption norm, and
+// letting it through would quietly understate fabric per garment. FailedPrecondition.
+var ErrMarkerIncomplete = errors.New("marker layout is incomplete — not every piece was placed")
 
 // TechCardStage is the development stage of a tech card. It mirrors the
 // common.TechCardStage proto enum and is stored as a string in tech_card.stage.
@@ -160,11 +170,216 @@ type TechCardOutputVariant struct {
 	OnHand       decimal.NullDecimal `db:"on_hand"`
 	// MaterialArchived is the bucket's catalog state. A colour pointing at archived nomenclature must
 	// never be prescribed to a packer, so the packing spec downgrades it to unresolved.
-	MaterialArchived bool `db:"material_archived"`
-	CreatedBy    string              `db:"created_by"`
-	UpdatedBy    string              `db:"updated_by"`
-	CreatedAt    time.Time           `db:"created_at"`
-	UpdatedAt    time.Time           `db:"updated_at"`
+	MaterialArchived bool      `db:"material_archived"`
+	CreatedBy        string    `db:"created_by"`
+	UpdatedBy        string    `db:"updated_by"`
+	CreatedAt        time.Time `db:"created_at"`
+	UpdatedAt        time.Time `db:"updated_at"`
+}
+
+// MarkerSource is the provenance of a saved раскладка's geometry, stored in
+// tech_card_marker.source. Mirrors the CHECK chk_tcm_source in migration 0257 (drift is caught by
+// TestMarkerSourceEnumMatchesMigration).
+type MarkerSource string
+
+const (
+	MarkerSourceAuto     MarkerSource = "auto"     // the nesting engine's layout as it ran
+	MarkerSourceManual   MarkerSource = "manual"   // operator-adjusted placements (Ф5)
+	MarkerSourceImported MarkerSource = "imported" // external CAD marker (reserved)
+)
+
+// ValidMarkerSources is the set of accepted marker provenance values.
+var ValidMarkerSources = map[MarkerSource]bool{
+	MarkerSourceAuto:     true,
+	MarkerSourceManual:   true,
+	MarkerSourceImported: true,
+}
+
+// TechCardMarkerInsert is the writable payload of one saved раскладка (tech_card_marker, 0257).
+// Layout is the opaque proto-JSON blob of common.TechCardMarkerLayout — self-contained contours +
+// placements, marshalled at the API layer (idiom: tech_card_release.snapshot). BomLineKey is the
+// stable wire identity of the BOM fabric line this marker measures; the store resolves it to
+// bom_item_id ("" = not linked).
+type TechCardMarkerInsert struct {
+	// SizeId / Sets are the ЛЕГАСИ pair (Ф2). INVALID on every marker written with a состав; carried
+	// only for a payload from a STALE ADMIN BUNDLE, which is stored byte-for-byte in the old shape.
+	// sql.NullInt64 rather than int is a forcing function, not decoration: 0273 made both columns
+	// nullable, and an int here would have turned every reader into a runtime
+	// «converting NULL to int is unsupported» — on a path where ONE such row fails the whole
+	// GetTechCard read, the раскройный лист and the immutable release snapshot with it.
+	SizeId     sql.NullInt64 `db:"size_id"`
+	Name       string        `db:"name"`
+	Source     MarkerSource  `db:"source"`
+	BomLineKey string        `db:"-"`
+	// ColorwayId pins the colourway whose ARTICLE this layout was measured on (0264). 0 = not
+	// colourway-specific. It matters because the width does: a colourway names its own catalog
+	// article per slot, and the same pieces on a 140 cm and a 150 cm roll are two different
+	// markers with two different lengths.
+	ColorwayId    int             `db:"-"`
+	FabricWidthCm decimal.Decimal `db:"fabric_width_cm"`
+	GapCm         decimal.Decimal `db:"gap_cm"`
+	EdgeMarginCm  decimal.Decimal `db:"edge_margin_cm"`
+	// SelvedgeCm snapshots the кромка (cm per edge) the layout ran with, from the effective
+	// article at save time — keeps the waste decomposition auditable after material edits.
+	SelvedgeCm      decimal.Decimal `db:"selvedge_cm"`
+	AllowCrossGrain bool            `db:"allow_cross_grain"`
+	Sets            sql.NullInt64   `db:"sets"` // ЛЕГАСИ, see SizeId
+	UsedLengthCm    decimal.Decimal `db:"used_length_cm"`
+	// Composition is the NORMALISED состав — after the legacy substitution in dto, so it is never
+	// empty on a save that got this far, and every entry carries quantity >= 1. The store validates
+	// its sizes against the card's ряд and writes it to tech_card_marker_size in the same
+	// transaction as the row.
+	//
+	// It is the ONLY carrier of the garment count on this struct. total_units is written from
+	// TotalUnitsOf(Composition) at the same moment as the child rows, so the stored divisor and its
+	// own children cannot disagree — a second field here would be exactly the «two copies, which one
+	// wins» question the wire deliberately refuses to have.
+	Composition []MarkerCompositionEntry `db:"-"`
+	// EfficiencyPct stays INVALID when the engine did not report one (a manual/imported marker) —
+	// NULL in the column, unset on the wire.
+	EfficiencyPct decimal.NullDecimal `db:"efficiency_pct"`
+	PlacedCount   int                 `db:"placed_count"`
+	TotalCount    int                 `db:"total_count"`
+	Layout        string              `db:"layout"`
+	// DistilStoredLayout parses a STORED layout blob into facts, injected by the API layer for the
+	// same reason LayoutFacts is distilled there: the store holds the bytes and must not learn to
+	// read them (0257/0268 — the geometry is opaque to storage, and the read path deliberately
+	// survives a blob that does not parse, which a parser in the write path would turn into a hard
+	// failure). The store calls this at most once, inside its transaction, and only when the
+	// exemption is actually being considered.
+	//
+	// It travels here rather than as an argument so the repository interface — and every mock of it
+	// — stays a data contract. nil means «no stored facts available», which the rule reads as «cannot
+	// forgive», never as «nothing was there».
+	DistilStoredLayout func(blob string) (MarkerLayoutFacts, error) `db:"-"`
+	// LayoutFacts are the handful of things the SAVE PATH has to know about the blob it is storing
+	// (Ф1): its schema version, and whether any placement is upside down. Distilled at the API layer
+	// and carried as facts because the blob stays opaque past it — the store persists Layout and
+	// never parses it, and a second parser there would be a second definition of the format.
+	LayoutFacts MarkerLayoutFacts `db:"-"`
+}
+
+// TechCardMarkerSummary is a stored marker without its layout blob — the shape that rides
+// GetTechCard.markers (the blob is 60-100 KB and travels only on GetTechCardMarker). BomLineKey /
+// BomItemName / BomItemUnit are JOIN projections off the linked BOM line; all three stay INVALID
+// when the marker is unlinked or its slot was deleted (bom_item_id went NULL).
+type TechCardMarkerSummary struct {
+	Id         int `db:"id"`
+	TechCardId int `db:"tech_card_id"`
+	// ЛЕГАСИ (Ф2), INVALID on a marker with a состав — read Composition / TotalUnits instead. See
+	// TechCardMarkerInsert.SizeId for why the type, and not just the column, had to change.
+	SizeId          sql.NullInt64       `db:"size_id"`
+	Name            string              `db:"name"`
+	Source          string              `db:"source"`
+	BomItemId       sql.NullInt64       `db:"bom_item_id"`
+	ColorwayId      sql.NullInt64       `db:"colorway_id"`
+	BomLineKey      sql.NullString      `db:"bom_line_key"`
+	BomItemName     sql.NullString      `db:"bom_item_name"`
+	BomItemUnit     sql.NullString      `db:"bom_item_unit"`
+	FabricWidthCm   decimal.Decimal     `db:"fabric_width_cm"`
+	GapCm           decimal.Decimal     `db:"gap_cm"`
+	EdgeMarginCm    decimal.Decimal     `db:"edge_margin_cm"`
+	SelvedgeCm      decimal.Decimal     `db:"selvedge_cm"`
+	AllowCrossGrain bool                `db:"allow_cross_grain"`
+	Sets            sql.NullInt64       `db:"sets"` // ЛЕГАСИ, see SizeId
+	UsedLengthCm    decimal.Decimal     `db:"used_length_cm"`
+	EfficiencyPct   decimal.NullDecimal `db:"efficiency_pct"`
+	PlacedCount     int                 `db:"placed_count"`
+	TotalCount      int                 `db:"total_count"`
+	// TotalUnits is the stored garment count (0273). INVALID only for a row written by the OLD
+	// binary during a deploy overlap — the column is nullable and the old INSERT does not list it.
+	// Readers go through TotalUnitsOrLegacy, never through this field directly.
+	TotalUnits sql.NullInt64 `db:"total_units"`
+	// Composition comes from tech_card_marker_size in a second query (one per card read, not N+1),
+	// so it is not a column of this row — hence `db:"-"`. Readers go through CompositionOrLegacy.
+	Composition []MarkerCompositionEntry `db:"-"`
+	CreatedBy   string                   `db:"created_by"`
+	UpdatedBy   string                   `db:"updated_by"`
+	CreatedAt   time.Time                `db:"created_at"`
+	UpdatedAt   time.Time                `db:"updated_at"`
+}
+
+// ЛЕГАСИ-ФОРМА ПОБЕЖДАЕТ ПРОЕКЦИЮ, and the order of these two readers is the whole reason this
+// comment exists. A row whose `sets` is VALID is BY DEFINITION a row in the pre-Ф2 shape, and the
+// only writer that produces that shape and does not also write total_units + tech_card_marker_size
+// is THE OLD BINARY — whose UPDATE lists `sets` and `used_length_cm` and knows neither of the other
+// two. So on such a row the projection is not merely older, it is the number 0273 backfilled at
+// migration time, and `sets` is what an operator changed afterwards.
+//
+// Reading the column first inflated costing silently and permanently: backfill leaves
+// total_units = 1, the operator re-saves through the old container with sets = 4 and
+// used_length_cm = 1200, and the wire then carries consumption_per_unit_cm = 1200 against a truth of
+// 300 — with scalar_apply_refusal EMPTY, because a one-entry состав reads as homogeneous, so the Р2
+// guard is disarmed at exactly the moment it is needed. The client copies that into
+// tech_card_colorway_usage.consumption with consumption_source='marker' and nothing recomputes it.
+//
+// The window is not «a few minutes of rolling deploy»: if the new container fails its health check,
+// DigitalOcean keeps the OLD deploy serving indefinitely, and this project has been there.
+//
+// There is no symmetric hazard: no writer updates total_units without also writing `sets` and the
+// children, so a VALID `sets` can never be the stale half of the pair.
+
+// TotalUnitsOrLegacy is how many GARMENTS this раскладка cuts. Sources in order: the legacy `sets`
+// (authoritative whenever present — see above), then the total_units column, then 1.
+//
+// It cannot return 0, and that is the whole point — the old guard here was
+// `if m.Sets <= 0 { return m.UsedLengthCm }`, which did not divide by zero and instead reported the
+// WHOLE spread as the consumption of one garment: a silently N-fold-inflated norm on a path whose
+// output a client writes straight into a recipe. Making the denominator unable to be zero removes
+// the branch that produced it. The trailing 1 is an ARITHMETIC guard only — a row that reaches it
+// has no состав at all, and the wire path withholds its norm rather than emitting 1 (see
+// MarkerScalarNormRefusal).
+func (m TechCardMarkerSummary) TotalUnitsOrLegacy() int {
+	if m.Sets.Valid && m.Sets.Int64 >= 1 {
+		return int(m.Sets.Int64)
+	}
+	if m.TotalUnits.Valid && m.TotalUnits.Int64 >= 1 {
+		return int(m.TotalUnits.Int64)
+	}
+	return 1
+}
+
+// CompositionOrLegacy is the раскладка's состав, and it reads the LEGACY PAIR FIRST for the reason
+// above: while size_id is VALID the row is in the pre-Ф2 shape and (size_id, sets) is the freshest
+// statement about it — the child rows may be the migration's projection of a `sets` that has since
+// changed underneath them. Once size_id goes NULL the row belongs to the Ф2 writer, which writes the
+// children and the scalar in one transaction, and the projection is the only answer there is.
+//
+// Returning EMPTY is a real outcome, not an impossible one: a Down that dropped the projection, an
+// ops delete, a partial restore. Callers must treat empty as «this раскладка no longer states what
+// it cuts» and withhold — never as «one garment» (see MarkerScalarNormRefusal).
+func (m TechCardMarkerSummary) CompositionOrLegacy() []MarkerCompositionEntry {
+	if m.SizeId.Valid && m.SizeId.Int64 > 0 {
+		return []MarkerCompositionEntry{{SizeId: int(m.SizeId.Int64), Quantity: m.TotalUnitsOrLegacy()}}
+	}
+	if len(m.Composition) > 0 {
+		return m.Composition
+	}
+	return nil
+}
+
+// ConsumptionPerUnitCm is fabric length per ONE garment: used_length_cm / total_units. Derived,
+// never stored, so it cannot drift from its inputs.
+//
+// NOT SAFE TO PUT ON THE WIRE ON ITS OWN. On a MIXED состав it is the MEAN across sizes, and on a
+// раскладка that lost its состав entirely it is the whole spread. Every caller that emits it must
+// consult ScalarNormRefusal() first — TechCardMarkerSummaryToPb does, and it is the only producer.
+// Kept computable because the mean is still the honest answer to «how much cloth does this spread
+// use per garment», which is what a length verdict and the marker list want.
+func (m TechCardMarkerSummary) ConsumptionPerUnitCm() decimal.Decimal {
+	return m.UsedLengthCm.Div(decimal.NewFromInt(int64(m.TotalUnitsOrLegacy())))
+}
+
+// ScalarNormRefusal is "" when this marker's consumption_per_unit_cm may be applied to a recipe, and
+// the reason not to otherwise. See entity.MarkerScalarNormRefusal.
+func (m TechCardMarkerSummary) ScalarNormRefusal() string {
+	return MarkerScalarNormRefusal(m.Name, m.CompositionOrLegacy())
+}
+
+// TechCardMarker is a full stored marker: the summary plus the opaque layout blob.
+type TechCardMarker struct {
+	TechCardMarkerSummary
+	Layout string `db:"layout"`
 }
 
 // StyleNumberSource records how a tech card's style_number was set (Q1): `generated` = the server
@@ -354,6 +569,49 @@ func IsValidTechCardBomSection(s TechCardBomSection) bool {
 	return ValidTechCardBomSections[s]
 }
 
+// TechCardBomPurpose is НАЗНАЧЕНИЕ — what the garment uses a roll-goods line FOR. It is a SECOND
+// axis beside Section, not a refinement of it: a pocket-bag fabric, a contrast fabric and a mesh
+// second layer are all genuinely section='fabric' (cloth sold by length, laid out on the same
+// marker, grossed up by the same wastage) and differ only in role. Several lines may share one
+// purpose — naming a subset of the fabrics is the whole point of the field.
+//
+// The list is CLOSED because the field exists to GROUP. A free-text role stops grouping the moment
+// one operator writes "карманка" and the next writes "мешковина кармана"; the escape hatch is
+// therefore BomPurposeOther plus a separate note, never a free-form purpose.
+//
+// Mirrors the common.TechCardBomPurpose proto enum and the chk_bom_item_purpose DB CHECK (0265);
+// stored as a NULLABLE string in tech_card_bom_item.purpose, where NULL means "not sorted yet".
+type TechCardBomPurpose string
+
+const (
+	BomPurposeMain        TechCardBomPurpose = "main"        // основной материал
+	BomPurposeLining      TechCardBomPurpose = "lining"      // подкладка
+	BomPurposePocketing   TechCardBomPurpose = "pocketing"   // карманка
+	BomPurposeInterfacing TechCardBomPurpose = "interfacing" // бортовка / прокладка
+	BomPurposeInsulation  TechCardBomPurpose = "insulation"  // утеплитель
+	BomPurposeContrast    TechCardBomPurpose = "contrast"    // контраст / отделочная
+	BomPurposeMesh        TechCardBomPurpose = "mesh"        // сетка / второй слой
+	BomPurposeOther       TechCardBomPurpose = "other"       // другое — meaning lives in PurposeNote
+)
+
+// ValidTechCardBomPurposes is the set of accepted BOM purposes. Kept in lockstep with the DB CHECK
+// by TestBomPurposeDBCheckNoDrift and with the proto enum by TestBomPurposeEnumNoDrift.
+var ValidTechCardBomPurposes = map[TechCardBomPurpose]bool{
+	BomPurposeMain:        true,
+	BomPurposeLining:      true,
+	BomPurposePocketing:   true,
+	BomPurposeInterfacing: true,
+	BomPurposeInsulation:  true,
+	BomPurposeContrast:    true,
+	BomPurposeMesh:        true,
+	BomPurposeOther:       true,
+}
+
+// IsValidTechCardBomPurpose reports whether p is an accepted BOM purpose.
+func IsValidTechCardBomPurpose(p TechCardBomPurpose) bool {
+	return ValidTechCardBomPurposes[p]
+}
+
 // TechCardLabDipStatus is the lab-dip lifecycle of a colourway. Mirrors the
 // common.TechCardLabDipStatus proto enum; stored in tech_card_colorway.lab_dip_status.
 type TechCardLabDipStatus string
@@ -371,6 +629,26 @@ var ValidTechCardLabDipStatuses = map[TechCardLabDipStatus]bool{
 	LabDipSubmitted: true,
 	LabDipApproved:  true,
 	LabDipRejected:  true,
+}
+
+// Consumption provenance values (tech_card_colorway_usage.consumption_source, 0261).
+const (
+	ConsumptionSourceManual = "manual"
+	ConsumptionSourceMarker = "marker"
+)
+
+// ValidConsumptionSources is the set of accepted consumption provenance values.
+var ValidConsumptionSources = map[string]bool{
+	ConsumptionSourceManual: true,
+	ConsumptionSourceMarker: true,
+}
+
+// wastageApplies reports whether the article's wastage_percent may gross this usage's cost
+// up. A marker-sourced norm came from a measured раскладка whose length already CONTAINS
+// the cutting waste (and the selvedge rides the per-running-metre price), so grossing it
+// again would double-count — the exact trap PIECES-WASTAGE-DESIGN §2.3 retires.
+func (u *TechCardColorwayUsage) wastageApplies() bool {
+	return u.ConsumptionSource.String != ConsumptionSourceMarker
 }
 
 // IsValidTechCardLabDipStatus reports whether s is an accepted lab-dip status.
@@ -458,6 +736,16 @@ type TechCardColorwayUsage struct {
 	// (bom_item.material_id), so a later default change keeps propagating to colourways that
 	// never diverged. FK material(id) ON DELETE RESTRICT (0221).
 	MaterialId sql.NullInt64 `db:"material_id"`
+	// ConsumptionSource is the norm's provenance: 'manual' (default; wastage_percent grosses cost
+	// up as always) or 'marker' (the norm came from a saved раскладка whose length already
+	// CONTAINS the cutting waste — costing must NOT gross it up again). On WRITE the null state
+	// is proto presence, mirroring MaterialIdSet: Valid=false means the field was absent from a
+	// stale client's payload and the store preserves the stored provenance triple.
+	ConsumptionSource sql.NullString `db:"consumption_source"`
+	// WasteSelvedgePct / WasteCutPct decompose a marker-sourced norm's waste (кромка / рез) for
+	// DISPLAY — never multiplied into any cost. NULL on manual rows.
+	WasteSelvedgePct decimal.NullDecimal `db:"waste_selvedge_pct"`
+	WasteCutPct      decimal.NullDecimal `db:"waste_cut_pct"`
 	// MaterialIdSet mirrors the wire field's presence (proto3 `optional`): false = the client
 	// did not send material_id at all — an old client's full-replace recipe write must PRESERVE
 	// the existing pin; true = MaterialId is authoritative (invalid/0 explicitly clears the pin).
@@ -498,6 +786,9 @@ func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDeci
 	if !u.Consumption.Valid {
 		return decimal.NullDecimal{}
 	}
+	if !u.wastageApplies() {
+		return decimal.NullDecimal{Decimal: u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), Valid: true}
+	}
 	return decimal.NullDecimal{Decimal: applyWastage(u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
 }
 
@@ -520,6 +811,9 @@ func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySiz
 	}
 	if totalQty.IsZero() {
 		return decimal.NullDecimal{}
+	}
+	if !u.wastageApplies() {
+		return decimal.NullDecimal{Decimal: totalQty.Mul(bom.UnitPrice.Decimal), Valid: true}
 	}
 	return decimal.NullDecimal{Decimal: applyWastage(totalQty.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
 }
@@ -575,23 +869,49 @@ type TechCardBomItem struct {
 	// keeps its own snapshot fields, so the card is self-contained and unaffected if the
 	// catalog entry later changes; the link only powers reverse lookups (which cards use a
 	// material) and admin-side pre-fill. NULL for free-text / legacy lines.
-	MaterialId  sql.NullInt64       `db:"material_id"`
-	Section     TechCardBomSection  `db:"section"`
-	Name        string              `db:"name"`
-	Supplier    sql.NullString      `db:"supplier"`
-	SupplierRef sql.NullString      `db:"supplier_ref"`
-	Color       sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
-	Composition sql.NullString      `db:"composition"`
-	Spec        sql.NullString      `db:"spec"`
-	Unit        sql.NullString      `db:"unit"`
-	UnitPrice   decimal.NullDecimal `db:"unit_price"`
-	Currency    sql.NullString      `db:"currency"`
-	Comment     sql.NullString      `db:"comment"`
+	MaterialId sql.NullInt64      `db:"material_id"`
+	Section    TechCardBomSection `db:"section"`
+	// Purpose (0265) is НАЗНАЧЕНИЕ on its own axis beside Section — see TechCardBomPurpose. Accepted
+	// only on a roll-goods line (fabric/lining/interlining/insulation); INVALID (NULL) means "not
+	// sorted yet" and is what every line predating 0265 carries, deliberately never guessed.
+	Purpose sql.NullString `db:"purpose"`
+	// PurposeOmitted / IsSampleOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым».
+	// Карточка сохраняется целиком, админка это SPA, и вкладка со старым бандлом этих полей не шлёт
+	// вовсе; без различения её сейв стёр бы назначение у ВСЕХ строк карточки — бесследно, потому
+	// что полей нет в дайджесте подписи, а NULL неотличим от «ещё не разложили».
+	//
+	// Признак НЕГАТИВНЫЙ намеренно: нулевое значение означает «писать как обычно», поэтому любой
+	// внутренний конструктор (тесты, сидер, миграционные утилиты) продолжает работать как писал.
+	// Позитивный «Set» с дефолтом false молча превратил бы их всех в ничего-не-пишущих.
+	PurposeOmitted bool `db:"-"`
+	// PurposeNote explains a BomPurposeOther line. Legal only alongside that purpose — the DB CHECK
+	// chk_bom_item_purpose_note enforces it — so the note can never quietly become a ninth purpose.
+	PurposeNote sql.NullString `db:"purpose_note"`
+	// IsSample marks the yardage the SAMPLE is sewn from. A flag rather than a purpose value because
+	// a sample is a sample MAIN plus a sample LINING; folded into Purpose the two would collapse.
+	IsSample        bool                `db:"is_sample"`
+	IsSampleOmitted bool                `db:"-"`
+	Name            string              `db:"name"`
+	Supplier        sql.NullString      `db:"supplier"`
+	SupplierRef     sql.NullString      `db:"supplier_ref"`
+	Color           sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
+	Composition     sql.NullString      `db:"composition"`
+	Spec            sql.NullString      `db:"spec"`
+	Unit            sql.NullString      `db:"unit"`
+	UnitPrice       decimal.NullDecimal `db:"unit_price"`
+	Currency        sql.NullString      `db:"currency"`
+	Comment         sql.NullString      `db:"comment"`
 	// fabric data for the cutter / marker (Phase 3.5c)
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
 	FabricDirection sql.NullString      `db:"fabric_direction"`
-	WastagePercent  decimal.NullDecimal `db:"wastage_percent"`
+	// FabricDirectionOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым», same negative
+	// sense and same reason as PurposeOmitted above: a tab holding an older bundle does not send it,
+	// and a proto3 enum's zero value is UNKNOWN, so without the distinction that tab's save would
+	// clear направление on every line of the card. Since Ф1 that erasure is not cosmetic — it
+	// un-saves every раскладка on the card until somebody fills the column back in.
+	FabricDirectionOmitted bool                `db:"-"`
+	WastagePercent         decimal.NullDecimal `db:"wastage_percent"`
 	// Stored price provenance (production-costing Phase 3): where unit_price came from and when it
 	// was stamped. Server-owned — set by the save path ('manual' when the price changes hands
 	// through UpdateTechCard) and by the reprice action ('catalog'); NULL on pre-provenance rows.
@@ -599,6 +919,13 @@ type TechCardBomItem struct {
 	// not stale a sign-off whose value did not change.
 	PriceSource     sql.NullString `db:"price_source"`
 	PriceSnapshotAt sql.NullTime   `db:"price_snapshot_at"`
+	// READ-ONLY enrichment (0259, Ф9.1): the width the cutter actually has for this line and the
+	// linked article's selvedge. effective = COALESCE(line's own fabric_width, article width) —
+	// the line's snapshot wins, the catalog is the fallback the audit found missing; the client
+	// derives usable width as effective − 2×selvedge. Populated only by the single-card read's
+	// enrichment SELECT; zero on writes and every other query, never persisted.
+	EffectiveFabricWidthCm decimal.NullDecimal `db:"effective_fabric_width_cm"`
+	SelvedgeCm             decimal.NullDecimal `db:"selvedge_cm"`
 }
 
 // BOM price provenance values (tech_card_bom_item.price_source).
@@ -665,9 +992,27 @@ type TechCardSizeQuantity struct {
 // TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
 // the url's extension — for one size of a tech card.
 type TechCardSizePattern struct {
-	SizeId   int            `db:"size_id"`
-	URL      string         `db:"url"`
-	Filename sql.NullString `db:"filename"`
+	SizeId int `db:"size_id"`
+	// LineKey is the row's stable identity across saves and file replacement (the url changes when a
+	// sheet is replaced; the line_key does not). Empty on WRITE = legacy/stale client — the store then
+	// matches by (size_id, url) and mints a key server-side.
+	LineKey string `db:"line_key"`
+	// BomLineKey binds the sheet to the fabric BOM line it is cut from. Write semantics mirror Name:
+	// Valid=false means absent from the payload (carry the stored binding forward), Valid=true writes
+	// as given with empty unbinding (stored as NULL).
+	//
+	// LEGACY HALF of the binding since 0267 — read it through entity.ResolveFabricScope, never on its
+	// own. It stays because it cannot be migrated: a sheet bound to line L has no purpose to move to
+	// until somebody sorts L, and 0265 deliberately guessed for nobody.
+	BomLineKey sql.NullString `db:"bom_line_key"`
+	// FabricPurpose binds the sheet to a НАЗНАЧЕНИЕ (0265) instead of to one line — «это лекало
+	// основной ткани», which is the honest statement at card level, where no article is in play.
+	// Presence semantics are BomLineKey's exactly: Valid=false means the field was ABSENT from the
+	// payload and the store carries the stored value forward (a stale client cannot wipe a binding it
+	// never saw); Valid=true writes as given, with "" clearing it back to NULL.
+	FabricPurpose sql.NullString `db:"fabric_purpose"`
+	URL           string         `db:"url"`
+	Filename      sql.NullString `db:"filename"`
 	// Name is the operator-entered display name. On WRITE the null state is proto presence,
 	// not emptiness: Valid=false means the field was absent from the payload (a stale client)
 	// and the store carries the stored name forward by (size_id, url); Valid=true means write
@@ -1131,18 +1476,104 @@ type TechCardPiece struct {
 	// LineKey is the client-generated ULID assigned when the piece is created in the UI (before the
 	// first save); immutable; the wire identity the upsert-diff keys on. Empty on a legacy/keyless
 	// payload → the store mints one.
-	LineKey          string        `db:"line_key"`
-	PiecesPerGarment int           `db:"pieces_per_garment"`
-	Mirrored         bool          `db:"mirrored"` // Q6: the piece is CUT AS A MIRRORED PAIR (not a decorative flag); the cut-list expands it ×2.
-	Grainline        string        `db:"grainline"`
-	Fused            bool          `db:"fused"`
-	CalloutNumber    sql.NullInt32 `db:"callout_number"`
+	LineKey          string `db:"line_key"`
+	PiecesPerGarment int    `db:"pieces_per_garment"`
+	// RETIRED (0266). The cut list no longer expands this ×2 — 0266 folded the doubling into
+	// pieces_per_garment and cleared the flag, so a stored true is historical noise. Kept only so an
+	// existing row still round-trips; nothing reads it.
+	//
+	// AND IT CANNOT BE DROPPED. It sits in constructionProjection's tuple, which json.Marshal encodes
+	// POSITIONALLY, so removing it shifts the CONSTRUCTION digest of every card in the database and
+	// marks every approved sign-off "changed since approved" at deploy time — for nothing. Frozen
+	// false is the cheap state; the rebase is the expensive one. See 0275's header.
+	Mirrored bool `db:"mirrored"`
+	// CutSymmetry is HOW the piece is cut (0275): how the PiecesPerGarment panels relate to one
+	// another. INVALID (NULL) means НЕ РАЗМЕЧЕНО — nobody has answered the question — and is not the
+	// same as `identical`. Readers must keep the two apart: an unmarked mirrored piece cut from a half
+	// set of patterns yields 44 left fronts and no right ones, and the only thing that prevents it is a
+	// visible "not marked".
+	//
+	// It multiplies NOTHING. The count lives whole in PiecesPerGarment (0266 folded the mirror
+	// doubling into it); this field only explains the number already there.
+	CutSymmetry sql.NullString `db:"cut_symmetry"`
+	// CutSymmetryOmitted — the field was ABSENT on the wire, not "arrived empty": same negative sense
+	// and same reason as FabricDirectionOmitted on the BOM line. A tab holding an older bundle does not
+	// send it, and a bare proto3 enum's zero value is UNKNOWN, so without the distinction that tab's
+	// save would clear the marking on every piece of the card — and unlike направление, the marking
+	// cannot be recovered without a human holding the patterns.
+	CutSymmetryOmitted bool          `db:"-"`
+	Grainline          string        `db:"grainline"`
+	Fused              bool          `db:"fused"`
+	CalloutNumber      sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
 	Detached  bool                    `db:"detached"`
 	Note      sql.NullString          `db:"note"`
 	Materials []TechCardPieceMaterial `db:"-"`
+}
+
+// TechCardPieceCutSymmetry is HOW the panels of one cut-piece relate to each other (0275). All three
+// values are statements about MIRROR SYMMETRY, which is why one closed field carries them all rather
+// than a "pairing" flag plus an "on the fold" flag:
+//
+//   - identical — there is no mirror anywhere: n congruent copies;
+//   - mirrored  — the instances are related by reflection: n splits into two chiral halves;
+//   - fold      — the piece is related to ITSELF by reflection: cutting on the fold unions half the
+//     pattern with its own mirror image, so the resulting outline is symmetric by construction.
+//
+// From the third bullet: `fold` and `mirrored` together are geometrically IMPOSSIBLE, not merely
+// unusual — reflecting a symmetric outline is congruent to the outline itself. "On the fold AND
+// needed twice" (cuffs) is therefore `fold` with PiecesPerGarment = 2; the chirality question does
+// not arise.
+//
+// NONE of them multiplies anything. Migration 0266 folded the mirror doubling into
+// pieces_per_garment precisely so that "4 identical" and "2 mirrored pairs" became the same row; a
+// multiplier here would resurrect the bug 0266 was written to kill, because the tech pack prints
+// pieces_per_garment and never the total.
+type TechCardPieceCutSymmetry string
+
+const (
+	PieceCutSymmetryIdentical TechCardPieceCutSymmetry = "identical"
+	PieceCutSymmetryMirrored  TechCardPieceCutSymmetry = "mirrored"
+	PieceCutSymmetryFold      TechCardPieceCutSymmetry = "fold"
+)
+
+// ValidTechCardPieceCutSymmetries mirrors the DB CHECK chk_tcp_cut_symmetry (0275). "Not marked" is
+// deliberately absent: it is the NULL column, not a value, so it can never be written as one.
+var ValidTechCardPieceCutSymmetries = map[TechCardPieceCutSymmetry]bool{
+	PieceCutSymmetryIdentical: true, PieceCutSymmetryMirrored: true, PieceCutSymmetryFold: true,
+}
+
+// ValidatePieceCutSymmetry checks one piece's marking against its panel count, with a readable
+// message, BEFORE the row reaches MySQL. An INVALID (unset) symmetry is accepted — «не размечено» is
+// a legal state and the only honest one for every row that predates 0275.
+//
+// The evenness rule is not cosmetics: a mirrored pair splits in half, so the nesting expansion hands
+// the engine flippedQuantity = n/2, and for n = 3 nobody has defined a rounding rule — the state is
+// unresolvable, not ugly. It is enforced twice on purpose (0272's precedent: the schema carries the
+// invariant, Go carries the wording). The DB copy is a two-column CHECK, so it also fires on an
+// UPDATE that touches only pieces_per_garment; without this function first, the operator would get a
+// raw 3819 naming a column they did not edit.
+func ValidatePieceCutSymmetry(field string, sym sql.NullString, piecesPerGarment int) error {
+	if !sym.Valid {
+		return nil
+	}
+	v := TechCardPieceCutSymmetry(sym.String)
+	if !ValidTechCardPieceCutSymmetries[v] {
+		return NewFieldViolation(field, "unknown cut symmetry", sym.String,
+			"pick one of: identical (одинаковые копии), mirrored (зеркальные пары), fold (крой по сгибу)")
+	}
+	if v != PieceCutSymmetryMirrored {
+		return nil
+	}
+	if piecesPerGarment < 2 || piecesPerGarment%2 != 0 {
+		return NewFieldViolation(field,
+			"зеркальная пара делится пополам — количество на изделие должно быть чётным и не меньше двух",
+			strconv.Itoa(piecesPerGarment),
+			"две строки по одной штуке — это «одинаковые» по штуке каждая; «зеркальные пары» ставят на ОДНУ строку с чётным количеством")
+	}
+	return nil
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).
@@ -1233,6 +1664,49 @@ type TechCardInsert struct {
 	Signoffs       []TechCardSignoff      `db:"-"`
 	Patterns       []TechCardSizePattern  `db:"-"`
 	Pieces         []TechCardPiece        `db:"-"` // structural cut-pieces + per-colourway fabric mapping (NF-05)
+	// PieceDxfAliases maps DXF block names to cut-pieces, scoped per fabric slot (§2.2). Presence is
+	// carried separately (proto3 cannot tell empty-repeated from absent): PieceDxfAliasesSet=false
+	// means the payload did not speak — the store preserves stored aliases, so a stale client cannot
+	// wipe mappings it never saw; true means full replace with the slice (empty = clear all).
+	PieceDxfAliases    []TechCardPieceDxfAlias `db:"-"`
+	PieceDxfAliasesSet bool                    `db:"-"`
+}
+
+// TechCardPieceDxfAlias is one DXF block-name → cut-piece mapping, scoped to a fabric slot
+// (bom_line_key, the same binding pattern rows carry). BlockName is stored normalized (trim +
+// collapsed inner whitespace); the DB UNIQUE per (card, slot, block) is case-insensitive, so
+// spelling-case variants collapse into one alias within a slot — the wanted cross-size dedupe.
+// PieceLineKey is the wire reference (stable TechCardPiece.line_key); the store resolves it to
+// PieceId on write and joins it back on read.
+// Since 0267 the scope is a НАЗНАЧЕНИЕ (FabricPurpose) when the card has been sorted, and the
+// legacy BomLineKey only when it has not — resolved by entity.ResolveFabricScope, never by reading
+// one of the two fields alone. The DB's uniqueness moved with it, onto the generated column
+// scope_key = COALESCE(fabric_purpose, bom_line_key): swapping the purpose into the OLD index would
+// have made two same-named blocks of two lines sharing one purpose a duplicate, and the store fails
+// the WHOLE card save on a duplicate.
+type TechCardPieceDxfAlias struct {
+	// BomLineKey is the legacy line scope, and doubles as compatibility on a purpose-scoped row: when
+	// the purpose owns exactly ONE line the writer records that line here too, so a reader that
+	// predates 0267 still sees the binding it understands. Empty when the purpose owns several — there
+	// is no single honest answer then, and inventing one is how a class silently becomes an article.
+	BomLineKey string `db:"bom_line_key"`
+	// FabricPurpose is the scope proper ("" = not purpose-scoped; the row falls back to BomLineKey).
+	FabricPurpose string `db:"fabric_purpose"`
+	BlockName     string `db:"block_name"`
+	PieceId       int    `db:"piece_id"`
+	PieceLineKey  string `db:"piece_line_key"`
+}
+
+// Scope resolves this alias's binding against the card's cloth lines. The one call every consumer
+// makes; see entity/fabric_scope.go for why there is exactly one.
+func (a TechCardPieceDxfAlias) Scope(lines []RollGoodsLine) FabricScope {
+	return ResolveFabricScope(a.FabricPurpose, a.BomLineKey, lines)
+}
+
+// ScopeKey is the uniqueness bucket alone, for the paths that have no BOM to resolve against
+// (payload dedupe, keying stored rows). Mirrors the generated column by construction.
+func (a TechCardPieceDxfAlias) ScopeKey() string {
+	return FabricScopeKey(a.FabricPurpose, a.BomLineKey)
 }
 
 // TechCardListFilter holds optional filters for listing tech cards. Empty/zero
@@ -1384,6 +1858,11 @@ type TechCard struct {
 	// ColorwayCount above. List paths only; on-hand stays INVALID when no bucket has a stock row.
 	OutputVariantCount   int                 `db:"-"`
 	OutputVariantsOnHand decimal.NullDecimal `db:"-"`
+	// Markers are the card's saved раскладки (0257), summaries only — the layout blob travels
+	// exclusively on GetTechCardMarker. Populated on the single-card read; nil on lists/writes.
+	Markers []TechCardMarkerSummary `db:"-"`
+	// MarkerCount is the list-view count of the same thing, batched per page like ColorwayCount.
+	MarkerCount int `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned

@@ -104,6 +104,43 @@ func (cs calloutSync) apply(p *entity.TechCardPiece) {
 	p.Detached = true
 }
 
+// The two halves of the piece upsert, named so a bind-without-a-database test can hold the REAL text
+// rather than a copy of it (precedent: fabricDirectionLinesQuery). sqlx reads ':' anywhere in a named
+// query — including inside a `--` comment — as a parameter, so a rationale note must live in Go
+// comments, never in the SQL.
+//
+// cut_symmetry is guarded by :cut_symmetry_omitted on the UPDATE: a tab holding an older bundle does
+// not send the field, and that must carry the stored marking forward rather than clear it — the
+// marking cannot be reconstructed without a human holding the patterns. The digest half of the same
+// contract is carryOmittedPieceCutSymmetryFrom in the API layer; both are required, and the second is
+// the one that stops a sign-off from being born stale.
+//
+// The INSERT is deliberately NOT guarded: a brand-new row has no stored value to carry, so "omitted"
+// and "explicitly unknown" are the same NULL — «не размечено».
+const (
+	pieceUpdateQuery = `
+				UPDATE tech_card_piece SET
+					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
+					cut_symmetry=IF(:cut_symmetry_omitted, cut_symmetry, :cut_symmetry),
+					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
+				WHERE id=:id`
+
+	pieceInsertQuery = `
+				INSERT INTO tech_card_piece
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :grainline, :fused, :callout_number, :detached, :note, :display_order)`
+
+	// The read side of the same row. It has to SELECT every column the write writes and the digest
+	// hashes: a field the write stores and the read never loads makes the two projections permanently
+	// disagree, and the sign-off it feeds can never match its own stored digest again — the failure the
+	// piece-material read's line_key note records having already paid for once.
+	pieceReadQuery = `
+		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note
+		FROM tech_card_piece
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order, id`
+)
+
 // upsertTechCardPieces reconciles a card's cut-pieces by line_key (S8), the same keyed upsert-diff the
 // BOM uses (§2.3): a line_key already in the DB is UPDATEd in place (id stable — which is what lets a
 // colourway recipe usage hold a real piece_id FK), a new line_key is INSERTed, and a line_key that
@@ -149,36 +186,38 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			return entity.NewFieldViolation(fmt.Sprintf("pieces[%d].line_key", i),
 				"duplicate line_key within the payload", "", "each cut-piece needs a unique line_key")
 		}
+		// КАК КРОИТСЯ (0275) — refuse the unresolvable pair with words before MySQL refuses it with a
+		// number. chk_tcp_mirrored_needs_even_count spans two columns, so its 3819 names
+		// pieces_per_garment even when the save only changed the dropdown. This also covers the write
+		// paths that do not come through the admin RPC parser at all.
+		if err := entity.ValidatePieceCutSymmetry(
+			fmt.Sprintf("pieces[%d].cut_symmetry", i), p.CutSymmetry, p.PiecesPerGarment); err != nil {
+			return err
+		}
 		params := map[string]any{
-			"tech_card_id":       tcID,
-			"name":               p.Name,
-			"line_key":           key,
-			"pieces_per_garment": p.PiecesPerGarment,
-			"mirrored":           p.Mirrored,
-			"grainline":          p.Grainline,
-			"fused":              p.Fused,
-			"callout_number":     p.CalloutNumber,
-			"detached":           p.Detached,
-			"note":               p.Note,
-			"display_order":      i,
+			"tech_card_id":         tcID,
+			"name":                 p.Name,
+			"line_key":             key,
+			"pieces_per_garment":   p.PiecesPerGarment,
+			"mirrored":             p.Mirrored,
+			"cut_symmetry":         p.CutSymmetry,
+			"cut_symmetry_omitted": p.CutSymmetryOmitted,
+			"grainline":            p.Grainline,
+			"fused":                p.Fused,
+			"callout_number":       p.CalloutNumber,
+			"detached":             p.Detached,
+			"note":                 p.Note,
+			"display_order":        i,
 		}
 		var pieceID int
 		if id, ok := existingByKey[key]; ok {
 			params["id"] = id
-			if err := storeutil.ExecNamed(ctx, db, `
-				UPDATE tech_card_piece SET
-					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
-					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
-				WHERE id=:id`, params); err != nil {
+			if err := storeutil.ExecNamed(ctx, db, pieceUpdateQuery, params); err != nil {
 				return fmt.Errorf("failed to update tech card piece: %w", err)
 			}
 			pieceID = id
 		} else {
-			newID, err := storeutil.ExecNamedLastId(ctx, db, `
-				INSERT INTO tech_card_piece
-					(tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note, display_order)
-				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :grainline, :fused, :callout_number, :detached, :note, :display_order)`,
-				params)
+			newID, err := storeutil.ExecNamedLastId(ctx, db, pieceInsertQuery, params)
 			if err != nil {
 				return fmt.Errorf("failed to insert tech card piece: %w", err)
 			}
@@ -306,6 +345,9 @@ func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32, keyField 
 type bomExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
+	// Section rides only the recipe path's SELECT (roll-goods guard for marker provenance);
+	// the BOM upsert's own query leaves it zero.
+	Section sql.NullString `db:"section"`
 	// Price + provenance as stored, so the upsert can tell an edited price (restamp 'manual') from a
 	// round-tripped one (keep the existing provenance, including the reprice action's 'catalog').
 	UnitPrice       decimal.NullDecimal `db:"unit_price"`
@@ -373,6 +415,17 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			return res, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].line_key", i),
 				"duplicate line_key within the payload", "", "each BOM line needs a unique line_key")
 		}
+		// НАЗНАЧЕНИЕ belongs to cloth (0265). It is checked HERE, against rollGoodsSections, rather
+		// than at parse time with a second hand-written family list: the four families a marker may
+		// lay out and the four a purpose may describe are the same four by construction, and the
+		// comment above rollGoodsSectionList is explicit that proximity is not coupling — a fifth
+		// family added there must not leave a stale copy behind in the dto.
+		if b.Purpose.Valid && !rollGoodsSections[string(b.Section)] {
+			return res, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose", i),
+				"назначение applies only to roll goods (fabric, lining, interlining, insulation)",
+				fmt.Sprintf("this line is section %q", b.Section),
+				"clear the purpose, or move the line to a roll-goods section")
+		}
 		params := bomItemParams(tcID, b, i, key)
 		src, at := bomPriceProvenance(existingRowByKey[key], b, now)
 		params["price_source"], params["price_snapshot_at"] = src, at
@@ -380,10 +433,15 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			params["id"] = id
 			if err := storeutil.ExecNamed(ctx, db, `
 				UPDATE tech_card_bom_item SET
-					material_id=:material_id, section=:section, name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
+					material_id=:material_id, section=:section,
+					purpose=IF(:purpose_omitted, purpose, :purpose),
+					purpose_note=IF(:purpose_omitted, purpose_note, :purpose_note),
+					is_sample=IF(:is_sample_omitted, is_sample, :is_sample),
+					name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
 					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
 					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
-					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent,
+					fabric_direction=IF(:fabric_direction_omitted, fabric_direction, :fabric_direction),
+					wastage_percent=:wastage_percent,
 					price_source=:price_source, price_snapshot_at=:price_snapshot_at
 				WHERE id=:id`, params); err != nil {
 				return res, fmt.Errorf("failed to update bom line: %w", err)
@@ -393,12 +451,12 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		} else {
 			newID, err := storeutil.ExecNamedLastId(ctx, db, `
 				INSERT INTO tech_card_bom_item
-					(tech_card_id, material_id, section, name, supplier, supplier_ref, color, composition, spec, unit,
-					 unit_price, currency, comment, display_order, fabric_width, fabric_weight_gsm, fabric_direction,
-					 wastage_percent, line_key, price_source, price_snapshot_at)
-				VALUES (:tech_card_id, :material_id, :section, :name, :supplier, :supplier_ref, :color, :composition, :spec, :unit,
-					 :unit_price, :currency, :comment, :display_order, :fabric_width, :fabric_weight_gsm, :fabric_direction,
-					 :wastage_percent, :line_key, :price_source, :price_snapshot_at)`, params)
+					(tech_card_id, material_id, section, purpose, purpose_note, is_sample, name, supplier, supplier_ref,
+					 color, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
+					 fabric_weight_gsm, fabric_direction, wastage_percent, line_key, price_source, price_snapshot_at)
+				VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :is_sample, :name, :supplier, :supplier_ref,
+					 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
+					 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :line_key, :price_source, :price_snapshot_at)`, params)
 			if err != nil {
 				return res, fmt.Errorf("failed to insert bom line: %w", err)
 			}
@@ -467,25 +525,37 @@ func colorwayRecipeRefsForBom(ctx context.Context, db dependency.DB, bomItemID i
 // bomItemParams maps a BOM line to named params for the upsert.
 func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKey string) map[string]any {
 	return map[string]any{
-		"tech_card_id":      tcID,
-		"material_id":       b.MaterialId,
-		"section":           string(b.Section),
-		"name":              b.Name,
-		"supplier":          b.Supplier,
-		"supplier_ref":      b.SupplierRef,
-		"color":             b.Color,
-		"composition":       b.Composition,
-		"spec":              b.Spec,
-		"unit":              b.Unit,
-		"unit_price":        b.UnitPrice,
-		"currency":          b.Currency,
-		"comment":           b.Comment,
-		"display_order":     displayOrder,
-		"fabric_width":      b.FabricWidth,
-		"fabric_weight_gsm": b.FabricWeightGsm,
-		"fabric_direction":  b.FabricDirection,
-		"wastage_percent":   b.WastagePercent,
-		"line_key":          lineKey,
+		"tech_card_id": tcID,
+		"material_id":  b.MaterialId,
+		"section":      string(b.Section),
+		// Присутствие, а не значение (0265). Отсутствующее поле означает «не трогай»: карточка
+		// сохраняется целиком, а вкладка со старым бандлом этих полей не шлёт вовсе — без этого её
+		// сейв стирал бы назначение у ВСЕХ строк карточки, и притом бесследно, потому что полей нет
+		// в дайджесте подписи, а NULL неотличим от «ещё не разложили». Примечание ходит вместе с
+		// назначением: они меняются одной парой, иначе примечание пережило бы смену назначения и
+		// стало бы теневой ролью.
+		"purpose":                  b.Purpose,
+		"purpose_omitted":          b.PurposeOmitted,
+		"purpose_note":             b.PurposeNote,
+		"is_sample":                b.IsSample,
+		"is_sample_omitted":        b.IsSampleOmitted,
+		"name":                     b.Name,
+		"supplier":                 b.Supplier,
+		"supplier_ref":             b.SupplierRef,
+		"color":                    b.Color,
+		"composition":              b.Composition,
+		"spec":                     b.Spec,
+		"unit":                     b.Unit,
+		"unit_price":               b.UnitPrice,
+		"currency":                 b.Currency,
+		"comment":                  b.Comment,
+		"display_order":            displayOrder,
+		"fabric_width":             b.FabricWidth,
+		"fabric_weight_gsm":        b.FabricWeightGsm,
+		"fabric_direction":         b.FabricDirection,
+		"fabric_direction_omitted": b.FabricDirectionOmitted,
+		"wastage_percent":          b.WastagePercent,
+		"line_key":                 lineKey,
 	}
 }
 
@@ -639,7 +709,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	if len(colorwayIDs) > 0 {
 		usageRows, err := storeutil.QueryListNamed[techCardColorwayUsageRow](ctx, s.DB, `
-			SELECT id, colorway_id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+			SELECT id, colorway_id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_index
 			FROM tech_card_colorway_usage
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})
@@ -735,6 +805,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	// query shipped broken and took every tech-card read down with it.
 	bomRows, err := storeutil.QueryListNamed[techCardBomItemRow](ctx, s.DB, `
 		SELECT bi.id, bi.tech_card_id, bi.material_id, bi.section,
+		       bi.purpose, bi.purpose_note, bi.is_sample,
 		       COALESCE(NULLIF(bi.name, ''), m.name) AS name,
 		       COALESCE(NULLIF(m.supplier, ''), bi.supplier) AS supplier,
 		       COALESCE(NULLIF(m.supplier_ref, ''), bi.supplier_ref) AS supplier_ref,
@@ -744,9 +815,12 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,
 		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
-		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at
+		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at,
+		       COALESCE(bi.fabric_width, NULLIF(mfa.width_cm, 0), m.fabric_width) AS effective_fabric_width_cm,
+		       mfa.selvedge_cm AS selvedge_cm
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
+		LEFT JOIN material_fabric_attr mfa ON mfa.material_id = bi.material_id
 		WHERE bi.tech_card_id IN (:ids)
 		ORDER BY bi.tech_card_id, bi.display_order, bi.id`, map[string]any{"ids": ids})
 	if err != nil {
@@ -797,11 +871,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 
 	// Cut-pieces per card (NF-05), then per-colourway fabric mapping per piece. The stored
 	// colorway_id is surfaced directly (R1/§14.3 — no positional colorway_index anymore).
-	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, `
-		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, grainline, fused, callout_number, detached, note
-		FROM tech_card_piece
-		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
+	pieceRows, err := storeutil.QueryListNamed[techCardPieceRow](ctx, s.DB, pieceReadQuery,
+		map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card pieces: %w", err)
 	}
@@ -848,6 +919,23 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		}
 	}
 
+	// DXF block aliases (§2.2), with the piece's stable line_key joined in — the wire speaks keys,
+	// not FKs. A piece deleted mid-flight cascades its aliases away, so the JOIN never dangles.
+	aliasRows, err := storeutil.QueryListNamed[techCardPieceDxfAliasRow](ctx, s.DB, `
+		SELECT a.tech_card_id, a.bom_line_key, COALESCE(a.fabric_purpose, '') AS fabric_purpose,
+		       a.block_name, a.piece_id, COALESCE(p.line_key, '') AS piece_line_key
+		FROM tech_card_piece_dxf_block a
+		JOIN tech_card_piece p ON p.id = a.piece_id
+		WHERE a.tech_card_id IN (:ids)
+		ORDER BY a.tech_card_id, a.scope_key, a.block_name`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card piece dxf aliases: %w", err)
+	}
+	aliasesByCard := make(map[int][]entity.TechCardPieceDxfAlias, len(ids))
+	for _, r := range aliasRows {
+		aliasesByCard[r.TechCardID] = append(aliasesByCard[r.TechCardID], r.TechCardPieceDxfAlias)
+	}
+
 	for i := range cards {
 		id := cards[i].Id
 		cws := colorwaysByCard[id]
@@ -861,6 +949,174 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		cards[i].BomItems = bomByCard[id]
 		cards[i].Details = detailsByCard[id]
 		cards[i].Pieces = piecesByCard[id]
+		cards[i].PieceDxfAliases = aliasesByCard[id]
+	}
+	return nil
+}
+
+type techCardPieceDxfAliasRow struct {
+	TechCardID int `db:"tech_card_id"`
+	entity.TechCardPieceDxfAlias
+}
+
+// nullIfEmpty writes "" as SQL NULL. The alias table's fabric_purpose has to be NULL rather than ”
+// for the empty case: scope_key is COALESCE(fabric_purpose, bom_line_key), and ” is not NULL to
+// COALESCE — a line-scoped row storing ” would scope to the empty string and collide with every
+// other such row of the card.
+func nullIfEmpty(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// upsertTechCardPieceDxfAliases reconciles the DXF block → piece aliases (§2.2), keyed by
+// (SCOPE, block_name) with the DB's case-insensitive semantics mirrored in Go. The scope is
+// entity.ResolveFabricScope's answer — назначение (0267) where the card has been sorted, the legacy
+// bom_line_key where it has not — and it is computed through that ONE function so this diff, the dto
+// dedupe and the generated column scope_key cannot drift apart.
+//
+// Runs AFTER upsertTechCardPieces (resolveUsagePiece precedent) so piece_line_key resolves against
+// this save's pieces, and BEFORE nothing in particular — the BOM is already upserted by the time
+// UpdateTechCard reaches here, so a назначение set on the BOM tab a moment ago resolves.
+//
+// Presence-gated: a payload that did not speak (set=false — a stale client) leaves stored aliases
+// untouched; a present payload is the new full set. An EXISTING (scope, block) pair is grandfathered
+// even when its scope went dead («слот удалён» / «в это назначение ещё ничего не разложено» are UI
+// states, not reasons to fail a card save); a NEW pair requires a live scope.
+//
+// A card MID-SORT — some lines sorted, some not — is the normal state for the whole transition, and
+// it needs no special case here: each alias resolves on its own, so a line-scoped row and a
+// purpose-scoped row of the same card coexist and are diffed side by side.
+func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string) error {
+	if !set {
+		return nil
+	}
+	pieceRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, db,
+		`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("failed to load pieces for dxf aliases: %w", err)
+	}
+	// Lowercased on BOTH sides: alias keys are dto-uppercased while piece/BOM line keys are only
+	// trimmed on their own entry paths — a lowercase-keyed but internally consistent payload must
+	// not be refused by the server's own normalization asymmetry.
+	pieceByKey := make(map[string]int, len(pieceRows))
+	for _, r := range pieceRows {
+		pieceByKey[strings.ToLower(r.LineKey)] = r.Id
+	}
+	type aliasExistingRow struct {
+		Id            int    `db:"id"`
+		BomLineKey    string `db:"bom_line_key"`
+		FabricPurpose string `db:"fabric_purpose"`
+		BlockName     string `db:"block_name"`
+		PieceId       int    `db:"piece_id"`
+	}
+	existing, err := storeutil.QueryListNamed[aliasExistingRow](ctx, db,
+		`SELECT id, bom_line_key, COALESCE(fabric_purpose, '') AS fabric_purpose, block_name, piece_id
+		 FROM tech_card_piece_dxf_block WHERE tech_card_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("failed to load existing dxf aliases: %w", err)
+	}
+	ciKey := func(scope, block string) string { return strings.ToLower(scope) + "|" + strings.ToLower(block) }
+	existingByKey := make(map[string]aliasExistingRow, len(existing))
+	for _, r := range existing {
+		// The stored row's scope needs no BOM: it is COALESCE of what the row itself holds, the same
+		// value MySQL materialised into scope_key.
+		existingByKey[ciKey(entity.FabricScopeKey(r.FabricPurpose, r.BomLineKey), r.BlockName)] = r
+	}
+	// The card's cloth lines WITH their назначения — resolving a purpose-scoped alias needs both
+	// halves, and a purpose that no line carries is exactly the dangling case to refuse on a NEW pair.
+	var rollGoods []entity.RollGoodsLine
+	if len(aliases) > 0 {
+		rows, err := storeutil.QueryListNamed[struct {
+			LineKey string `db:"line_key"`
+			Purpose string `db:"purpose"`
+		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
+			FROM tech_card_bom_item
+			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
+			rollGoodsSectionArgs(map[string]any{"id": tcID}))
+		if err != nil {
+			return fmt.Errorf("failed to load roll-goods bom lines for dxf aliases: %w", err)
+		}
+		rollGoods = make([]entity.RollGoodsLine, 0, len(rows))
+		for _, r := range rows {
+			rollGoods = append(rollGoods, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
+		}
+	}
+	seen := make(map[string]bool, len(aliases))
+	for i, a := range aliases {
+		pieceID, ok := pieceByKey[strings.ToLower(a.PieceLineKey)]
+		if !ok {
+			return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i),
+				"not_found", a.PieceLineKey, "the referenced cut-piece is not on this card")
+		}
+		scope := a.Scope(rollGoods)
+		key := ciKey(scope.Key, a.BlockName)
+		if prev, exists := existingByKey[key]; exists {
+			// Same scope, so the row keeps its identity. Its two halves are still rewritten: a card
+			// that has just been sorted sends the same scope with the compatibility line now filled in
+			// (or emptied, when the назначение turned out to own several lines), and a row that kept
+			// the old halves would answer a pre-0267 reader with a line that is no longer the whole truth.
+			if prev.PieceId != pieceID || prev.FabricPurpose != a.FabricPurpose || prev.BomLineKey != a.BomLineKey {
+				if err := storeutil.ExecNamed(ctx, db, `
+					UPDATE tech_card_piece_dxf_block
+					SET piece_id = :piece_id, bom_line_key = :bom_line_key, fabric_purpose = :fabric_purpose,
+					    updated_by = :username
+					WHERE id = :id`, map[string]any{
+					"id":             prev.Id,
+					"piece_id":       pieceID,
+					"bom_line_key":   a.BomLineKey,
+					"fabric_purpose": nullIfEmpty(a.FabricPurpose),
+					"username":       username,
+				}); err != nil {
+					return fmt.Errorf("failed to update dxf alias: %w", err)
+				}
+			}
+		} else {
+			if !scope.Live() {
+				// Two different dead ends, two different controls to fix them in — so two messages.
+				// Self-contained on purpose: the operator may see this without the form scrolling
+				// anywhere, so it has to say what to do, not merely what is wrong.
+				if scope.ByPurpose {
+					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].fabric_purpose", i),
+						"not_found", a.FabricPurpose,
+						"ни одна строка ткани этой карты не имеет такого назначения — задай его нужной строке на вкладке BOM (назначение) и сохрани ещё раз")
+				}
+				return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i),
+					"not_found", a.BomLineKey,
+					"на вкладке ВЫКРОЙКИ выбери для этого DXF ткань — строку BOM секции ткань, подкладка, бортовка или утеплитель")
+			}
+			if err := storeutil.ExecNamed(ctx, db, `
+				INSERT INTO tech_card_piece_dxf_block
+					(tech_card_id, bom_line_key, fabric_purpose, block_name, piece_id, created_by, updated_by)
+				VALUES (:tech_card_id, :bom_line_key, :fabric_purpose, :block_name, :piece_id, :username, :username)`,
+				map[string]any{
+					"tech_card_id":   tcID,
+					"bom_line_key":   a.BomLineKey,
+					"fabric_purpose": nullIfEmpty(a.FabricPurpose),
+					"block_name":     a.BlockName,
+					"piece_id":       pieceID,
+					"username":       username,
+				}); err != nil {
+				var me *mysql.MySQLError
+				if errors.As(err, &me) && me.Number == 1062 { // ER_DUP_ENTRY
+					// The DB collation folds more than Go's ToLower (accents, ё=е, ß=ss) — a pair
+					// Go saw as distinct can still collide in MySQL. A readable refusal, not a 500.
+					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].block_name", i),
+						fmt.Sprintf("блок %q сталкивается с уже существующей связью в этом же скоупе (база складывает регистр и диакритику)", a.BlockName),
+						a.BlockName, "открой «детали кроя» на вкладке ВЫКРОЙКИ и оставь для этого блока одну связь")
+				}
+				return fmt.Errorf("failed to insert dxf alias: %w", err)
+			}
+		}
+		seen[key] = true
+	}
+	for key, r := range existingByKey {
+		if seen[key] {
+			continue
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_piece_dxf_block WHERE id = :id`, map[string]any{"id": r.Id}); err != nil {
+			return fmt.Errorf("failed to delete dxf alias: %w", err)
+		}
 	}
 	return nil
 }

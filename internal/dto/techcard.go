@@ -3,6 +3,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -13,7 +14,9 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"unicode/utf8"
 )
 
 // Column length bounds for tech-card varchar fields, mirroring the schema so that
@@ -24,6 +27,8 @@ const (
 	maxVarchar191  = 191
 	maxVarchar512  = 512
 	maxVarchar1024 = 1024
+	// maxPieceDxfAliases bounds the machine-generated DXF-block alias set (marker bounds precedent).
+	maxPieceDxfAliases = 2000
 
 	// Decimal bounds mirroring the Phase 2 column types so over-range input fails
 	// as InvalidArgument, not a MySQL out-of-range Internal error.
@@ -104,6 +109,38 @@ var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirectio
 	return m
 }()
 
+// КАК КРОИТСЯ (0275). UNKNOWN is deliberately absent from the table: it is not a value but the
+// absence of one («не размечено»), so it can only ever become a NULL column — the same discipline
+// TechCardBomPurpose's UNSET follows.
+var techCardPieceCutSymmetryPbToEntity = map[pb_common.TechCardPieceCutSymmetry]entity.TechCardPieceCutSymmetry{
+	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_IDENTICAL: entity.PieceCutSymmetryIdentical,
+	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED:  entity.PieceCutSymmetryMirrored,
+	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD:      entity.PieceCutSymmetryFold,
+}
+
+var techCardPieceCutSymmetryEntityToPb = func() map[entity.TechCardPieceCutSymmetry]pb_common.TechCardPieceCutSymmetry {
+	m := make(map[entity.TechCardPieceCutSymmetry]pb_common.TechCardPieceCutSymmetry, len(techCardPieceCutSymmetryPbToEntity))
+	for k, v := range techCardPieceCutSymmetryPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+// PieceCutSymmetryToPb maps a stored marking to the wire enum; an unset column reads as UNKNOWN, which
+// is exactly «не размечено». An unrecognised stored value also reads as UNKNOWN rather than failing
+// the whole card read — the DB CHECK makes that unreachable through this app, and a read is the wrong
+// place to discover it. Exported because the cut-list projection (apisrv/admin/style_cutlist.go)
+// speaks the same vocabulary from its own response message.
+func PieceCutSymmetryToPb(s sql.NullString) pb_common.TechCardPieceCutSymmetry {
+	if !s.Valid {
+		return pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN
+	}
+	if v, ok := techCardPieceCutSymmetryEntityToPb[entity.TechCardPieceCutSymmetry(s.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN
+}
+
 var techCardMediaKindEntityToPb = func() map[entity.TechCardMediaKind]pb_common.TechCardMediaKind {
 	m := make(map[entity.TechCardMediaKind]pb_common.TechCardMediaKind, len(techCardMediaKindPbToEntity))
 	for k, v := range techCardMediaKindPbToEntity {
@@ -168,6 +205,28 @@ var techCardBomSectionPbToEntity = map[pb_common.TechCardBomSection]entity.TechC
 var techCardBomSectionEntityToPb = func() map[entity.TechCardBomSection]pb_common.TechCardBomSection {
 	m := make(map[entity.TechCardBomSection]pb_common.TechCardBomSection, len(techCardBomSectionPbToEntity))
 	for k, v := range techCardBomSectionPbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+// techCardBomPurposePbToEntity maps the closed НАЗНАЧЕНИЕ vocabulary (0265). UNSET is deliberately
+// absent: it is not a value, it is the absence of one ("not sorted yet"), and it maps to a NULL
+// column rather than to a string.
+var techCardBomPurposePbToEntity = map[pb_common.TechCardBomPurpose]entity.TechCardBomPurpose{
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_MAIN:        entity.BomPurposeMain,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_LINING:      entity.BomPurposeLining,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_POCKETING:   entity.BomPurposePocketing,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_INTERFACING: entity.BomPurposeInterfacing,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_INSULATION:  entity.BomPurposeInsulation,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_CONTRAST:    entity.BomPurposeContrast,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_MESH:        entity.BomPurposeMesh,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_OTHER:       entity.BomPurposeOther,
+}
+
+var techCardBomPurposeEntityToPb = func() map[entity.TechCardBomPurpose]pb_common.TechCardBomPurpose {
+	m := make(map[entity.TechCardBomPurpose]pb_common.TechCardBomPurpose, len(techCardBomPurposePbToEntity))
+	for k, v := range techCardBomPurposePbToEntity {
 		m[v] = k
 	}
 	return m
@@ -436,6 +495,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if err != nil {
 		return nil, err
 	}
+	pieceDxfAliases, pieceDxfAliasesSet, err := parseTechCardPieceDxfAliases(pb.PieceDxfAliases)
+	if err != nil {
+		return nil, err
+	}
 	labels, err := parseTechCardLabels(pb.Labels)
 	if err != nil {
 		return nil, err
@@ -520,6 +583,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Signoffs:           signoffs,
 		Patterns:           patterns,
 		Pieces:             pieces,
+		PieceDxfAliases:    pieceDxfAliases,
+		PieceDxfAliasesSet: pieceDxfAliasesSet,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
@@ -560,8 +625,123 @@ func parseTechCardDetails(pbs []*pb_common.TechCardDetail) ([]entity.TechCardDet
 
 // parseTechCardPatterns parses the per-size PDF выкройки, validating each size is in the
 // card's size range, the url is present, and the filename is not over-long.
+// validatePatternLineKey admits an empty key or a 26-char alphanumeric one — wide enough for client
+// ULIDs (Crockford), server base32 mints and the LEGACY-prefixed backfill, tight enough for CHAR(26).
+func validatePatternLineKey(key, field string) error {
+	if key == "" {
+		return nil
+	}
+	if len(key) != 26 {
+		return fmt.Errorf("%s must be a 26-character key", field)
+	}
+	for _, r := range key {
+		alnum := (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+		if !alnum {
+			return fmt.Errorf("%s must be alphanumeric", field)
+		}
+	}
+	return nil
+}
+
+// parseTechCardPieceDxfAliases parses the DXF block → cut-piece alias set. The wrapper message IS
+// the presence signal (proto3 cannot tell empty-repeated from absent): nil wrapper → (nil, false) —
+// the store preserves stored aliases; present wrapper → its items are the new full set. Block names
+// are normalized here (trim + collapse inner whitespace); duplicates within the payload are
+// rejected case-insensitively, mirroring the DB's CI UNIQUE, so the save fails with a readable
+// message instead of a driver 1062.
+func parseTechCardPieceDxfAliases(pb *pb_common.TechCardPieceDxfAliasSet) ([]entity.TechCardPieceDxfAlias, bool, error) {
+	if pb == nil {
+		return nil, false, nil
+	}
+	// Machine-generated from parsed DXF files — bounded like marker pieces/placements, so a
+	// pathological file cannot turn one save into thousands of INSERTs.
+	if len(pb.Items) > maxPieceDxfAliases {
+		return nil, false, fmt.Errorf("piece_dxf_aliases has %d items, max %d", len(pb.Items), maxPieceDxfAliases)
+	}
+	out := make([]entity.TechCardPieceDxfAlias, 0, len(pb.Items))
+	seen := make(map[string]bool, len(pb.Items))
+	for i, a := range pb.Items {
+		if a == nil {
+			continue
+		}
+		// Uppercased like pattern keys: legitimate mints are uppercase, the column collates CI.
+		slot := strings.ToUpper(strings.TrimSpace(a.BomLineKey))
+		if err := validatePatternLineKey(slot, fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i)); err != nil {
+			return nil, false, err
+		}
+		// НАЗНАЧЕНИЕ is the scope since 0267; bom_line_key is its legacy half and its compatibility
+		// echo. Exactly one of the two has to name something — a row naming neither would file under
+		// the empty scope, where every unbound alias of the card would collide with every other.
+		purpose, err := aliasFabricPurposeFromPb(a.FabricPurpose, fmt.Sprintf("piece_dxf_aliases[%d].fabric_purpose", i))
+		if err != nil {
+			return nil, false, err
+		}
+		if purpose == "" && slot == "" {
+			return nil, false, fmt.Errorf(
+				"piece_dxf_aliases[%d]: give it a назначение (fabric_purpose) or a BOM line (bom_line_key) — one of the two must say which cloth the block is cut from", i)
+		}
+		block := strings.Join(strings.Fields(a.BlockName), " ")
+		if block == "" {
+			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].block_name is required", i)
+		}
+		if utf8.RuneCountInString(block) > 255 {
+			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].block_name must be at most 255 characters", i)
+		}
+		pieceKey := strings.ToUpper(strings.TrimSpace(a.PieceLineKey))
+		if pieceKey == "" {
+			return nil, false, fmt.Errorf("piece_dxf_aliases[%d].piece_line_key is required", i)
+		}
+		if err := validatePatternLineKey(pieceKey, fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i)); err != nil {
+			return nil, false, err
+		}
+		// Deduped on the SCOPE, not on the slot — the same key the generated column scope_key and the
+		// store's diff use, so the three cannot disagree. This is the alias-collapse case the whole
+		// 0267 design turns on: sorting two BOM lines into ONE назначение merges their alias sets, and
+		// if both held a «полочка» the merged set has two rows under one scope. Caught HERE, before
+		// the transaction opens, it is a readable refusal naming the block; caught by the UNIQUE index
+		// it would be a driver 1062 that fails the entire card save. The client warns earlier still.
+		dupKey := strings.ToLower(entity.FabricScopeKey(purpose, slot)) + "|" + strings.ToLower(block)
+		if seen[dupKey] {
+			return nil, false, fmt.Errorf(
+				"piece_dxf_aliases[%d]: блок %q заявлен двумя деталями кроя под одним назначением — открой «детали кроя» на вкладке ВЫКРОЙКИ и оставь для этого блока одну связь", i, block)
+		}
+		seen[dupKey] = true
+		out = append(out, entity.TechCardPieceDxfAlias{
+			BomLineKey:    slot,
+			FabricPurpose: purpose,
+			BlockName:     block,
+			PieceLineKey:  pieceKey,
+		})
+	}
+	return out, true, nil
+}
+
+// techCardPieceDxfAliasesToPb emits the alias set. The wrapper is ALWAYS present on read so a new
+// client round-trips presence and its saves carry the full set explicitly.
+func techCardPieceDxfAliasesToPb(aliases []entity.TechCardPieceDxfAlias) *pb_common.TechCardPieceDxfAliasSet {
+	out := &pb_common.TechCardPieceDxfAliasSet{Items: make([]*pb_common.TechCardPieceDxfAlias, 0, len(aliases))}
+	for _, a := range aliases {
+		out.Items = append(out.Items, &pb_common.TechCardPieceDxfAlias{
+			BomLineKey:    a.BomLineKey,
+			FabricPurpose: pbBomPurpose(sql.NullString{String: a.FabricPurpose, Valid: a.FabricPurpose != ""}),
+			BlockName:     a.BlockName,
+			PieceLineKey:  a.PieceLineKey,
+		})
+	}
+	return out
+}
+
 func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) ([]entity.TechCardSizePattern, error) {
 	out := make([]entity.TechCardSizePattern, 0, len(pbs))
+	// One key names one ROW: the same sheet hung on two sizes is two rows with two keys. A duplicate
+	// here is a client bug that the store's diff would otherwise resolve by silently DELETING the
+	// second stored row — so it is rejected before the transaction, like BOM/piece/run line keys.
+	seenLineKeys := make(map[string]struct{}, len(pbs))
+	// Two KEYED rows sharing one (size, url) are the dup-key reject's blind spot: distinct keys,
+	// same sheet — the store's diff would keep both, but no client legitimately produces it and a
+	// buggy one is about to lose a row somewhere; reject like the key dupe. Keyless rows keep the
+	// lossless keep-first dedupe in the store.
+	seenKeyedPairs := make(map[string]struct{}, len(pbs))
 	for _, p := range pbs {
 		sid := int(p.SizeId)
 		if sid <= 0 || !slices.Contains(sizeIds, sid) {
@@ -576,6 +756,13 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		}
 		if !isHTTPURL(url) {
 			return nil, fmt.Errorf("pattern url must be an http(s) URL")
+		}
+		// The url must name a MANAGED pattern object (Ф7): everything a pattern row can
+		// point at is produced by Admin.UploadPattern under the dedicated bucket folder.
+		// This closes two holes at once — a client echoing the output-only view_url back
+		// into url, and an arbitrary https url that the admin would render in <object>.
+		if _, ok := managedPatternObjectKey(url); !ok {
+			return nil, fmt.Errorf("pattern url must be an uploaded pattern object url")
 		}
 		if len(p.Filename) > maxVarchar255 {
 			return nil, fmt.Errorf("pattern filename must be at most %d characters", maxVarchar255)
@@ -597,15 +784,56 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			}
 			name = sql.NullString{String: trimmed, Valid: true}
 		}
+		// line_key is validated but NEVER minted here, unlike BOM/piece line keys: an empty key IS
+		// the legacy signal the store's upsert-diff matches by (size_id, url) on — minting in the
+		// dto would make every stale-client save read as all-new rows and drop the bindings.
+		// Uppercased: every legitimate source (client ULID, server base32, LEGACY backfill) is
+		// uppercase, while the CHAR(26) column collates case-insensitively — a lowercase spelling
+		// would miss the Go-side maps yet collide in MySQL (a 500, not a field violation).
+		lineKey := strings.ToUpper(strings.TrimSpace(p.LineKey))
+		if err := validatePatternLineKey(lineKey, "pattern line_key"); err != nil {
+			return nil, err
+		}
+		if lineKey != "" {
+			if _, dup := seenLineKeys[lineKey]; dup {
+				return nil, fmt.Errorf("pattern line_key %q is used by two rows; one key names one row — the same sheet on two sizes is two rows with two keys", lineKey)
+			}
+			seenLineKeys[lineKey] = struct{}{}
+			pair := fmt.Sprintf("%d|%s", sid, url)
+			if _, dup := seenKeyedPairs[pair]; dup {
+				return nil, fmt.Errorf("two keyed pattern rows carry the same size and url; a sheet appears once per size")
+			}
+			seenKeyedPairs[pair] = struct{}{}
+		}
+		// bom_line_key keeps proto presence like name: absent → carry the stored binding forward.
+		var bomLineKey sql.NullString
+		if p.BomLineKey != nil {
+			trimmed := strings.ToUpper(strings.TrimSpace(p.GetBomLineKey()))
+			if err := validatePatternLineKey(trimmed, "pattern bom_line_key"); err != nil {
+				return nil, err
+			}
+			bomLineKey = sql.NullString{String: trimmed, Valid: true}
+		}
+		// fabric_purpose (0267) — the binding proper; bom_line_key above is now its legacy half.
+		// Same proto presence, for the same reason: a client that predates the field must not wipe
+		// what it never saw.
+		fabricPurpose, err := fabricPurposeFromPb(p.FabricPurpose,
+			fmt.Sprintf("patterns[%d].fabric_purpose", len(out)))
+		if err != nil {
+			return nil, err
+		}
 		// uploaded_at is server-owned and deliberately dropped here: the store carries the original
 		// forward by url, so accepting a client value would only let a save rewrite history.
 		out = append(out, entity.TechCardSizePattern{
-			SizeId:    sid,
-			URL:       url,
-			Filename:  nullStringFromPb(p.Filename),
-			Name:      name,
-			SizeBytes: nullInt64FromPb(p.SizeBytes),
-			Version:   int(p.Version),
+			SizeId:        sid,
+			LineKey:       lineKey,
+			BomLineKey:    bomLineKey,
+			FabricPurpose: fabricPurpose,
+			URL:           url,
+			Filename:      nullStringFromPb(p.Filename),
+			Name:          name,
+			SizeBytes:     nullInt64FromPb(p.SizeBytes),
+			Version:       int(p.Version),
 		})
 	}
 	return out, nil
@@ -719,6 +947,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Signoffs:          techCardSignoffsToPb(tc.Signoffs),
 			Patterns:          techCardPatternsToPb(tc.Patterns),
 			Pieces:            techCardPiecesToPb(tc.Pieces),
+			PieceDxfAliases:   techCardPieceDxfAliasesToPb(tc.PieceDxfAliases),
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
@@ -755,7 +984,427 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// and for an aux card still in legacy single-output mode. Output-only here: they are written
 		// through their own RPCs because a variant owns warehouse stock.
 		OutputVariants: TechCardOutputVariantsToPb(tc.OutputVariants),
+		// Saved раскладки (0257), summaries only — written through Save/DeleteTechCardMarker, the
+		// blob rides GetTechCardMarker.
+		Markers: TechCardMarkerSummariesToPb(tc.Markers),
 	}
+}
+
+// TechCardMarkerSummariesToPb emits a card's saved раскладки for display, BOM link resolved
+// (line key + name + unit) and the derived consumption-per-unit included. Unlinked markers (or
+// markers whose BOM slot was deleted — bom_item_id went NULL) carry empty strings.
+func TechCardMarkerSummariesToPb(ms []entity.TechCardMarkerSummary) []*pb_common.TechCardMarkerSummary {
+	if len(ms) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardMarkerSummary, 0, len(ms))
+	for i := range ms {
+		out = append(out, TechCardMarkerSummaryToPb(ms[i]))
+	}
+	return out
+}
+
+// markerCompositionToPb emits a состав in the order the store read it (size_id ascending).
+func markerCompositionToPb(cs []entity.MarkerCompositionEntry) []*pb_common.TechCardMarkerCompositionEntry {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardMarkerCompositionEntry, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, &pb_common.TechCardMarkerCompositionEntry{
+			SizeId: int32(c.SizeId), Quantity: int32(c.Quantity),
+		})
+	}
+	return out
+}
+
+// TechCardMarkerSummaryToPb emits one marker summary. consumption_per_unit_cm is derived here
+// (used_length_cm / total_units) — never stored, so it cannot drift from its inputs.
+//
+// size_id and sets ride as 0 when the row carries a состав. That is the contract the proto now
+// states, and it is the honest answer: a mixed раскладка has no single size and no комплекты, and a
+// plausible substitute (say, the largest size of the состав) would be read by every existing
+// consumer as «the size this marker нормирует» and be wrong in a way that looks right.
+func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCardMarkerSummary {
+	composition := m.CompositionOrLegacy()
+	// THE SCALAR IS WITHHELD, NOT LABELLED, on a mixed состав (orchestrator decision Р2). The server
+	// is the only place that can refuse: there is no server-side marker-apply — the client copies this
+	// figure into tech_card_colorway_usage.consumption with consumption_source='marker' and the row
+	// stops being distinguishable from a measured norm — and the release snapshot then freezes
+	// whatever was emitted, forever. An absent number cannot be copied; a labelled one is.
+	//
+	// Withholding is deliberately NOT gated on the client understanding Ф2: a stale bundle that falls
+	// back to used_length/max(1,sets) will produce a visibly absurd figure (the whole spread as one
+	// garment's norm) instead of a plausible mean, and visibly absurd is the failure mode this
+	// codebase prefers — see the release-snapshot note above.
+	refusal := entity.MarkerScalarNormRefusal(m.Name, composition)
+	var consumption *pb_decimal.Decimal
+	if refusal == "" {
+		consumption = pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2))
+	}
+	return &pb_common.TechCardMarkerSummary{
+		Id:         int32(m.Id),
+		TechCardId: int32(m.TechCardId),
+		SizeId:     int32(m.SizeId.Int64),
+		// Derived from the SAME slice as the refusal and the consumption, so the three cannot describe
+		// three different раскладки. It is 0 exactly when the состав is missing — the honest answer,
+		// and the one the refusal beside it explains; TotalUnitsOrLegacy's arithmetic fallback of 1
+		// must never surface here, because «1 garment» is a claim and this row makes none.
+		Composition:          markerCompositionToPb(composition),
+		TotalUnits:           int32(entity.TotalUnitsOf(composition)),
+		ScalarApplyRefusal:   refusal,
+		Name:                 m.Name,
+		Source:               m.Source,
+		BomLineKey:           pbStringFromNull(m.BomLineKey),
+		ColorwayId:           int32(m.ColorwayId.Int64),
+		BomItemName:          pbStringFromNull(m.BomItemName),
+		BomItemUnit:          pbStringFromNull(m.BomItemUnit),
+		FabricWidthCm:        pbDecimalFromDecimal(m.FabricWidthCm),
+		GapCm:                pbDecimalFromDecimal(m.GapCm),
+		EdgeMarginCm:         pbDecimalFromDecimal(m.EdgeMarginCm),
+		SelvedgeCm:           pbDecimalFromDecimal(m.SelvedgeCm),
+		AllowCrossGrain:      m.AllowCrossGrain,
+		Sets:                 int32(m.Sets.Int64),
+		UsedLengthCm:         pbDecimalFromDecimal(m.UsedLengthCm),
+		EfficiencyPct:        pbDecimalFromNull(m.EfficiencyPct),
+		PlacedCount:          int32(m.PlacedCount),
+		TotalCount:           int32(m.TotalCount),
+		ConsumptionPerUnitCm: consumption,
+		CreatedBy:            m.CreatedBy,
+		UpdatedBy:            m.UpdatedBy,
+		CreatedAt:            timestamppb.New(m.CreatedAt),
+		UpdatedAt:            timestamppb.New(m.UpdatedAt),
+	}
+}
+
+// Column bounds of tech_card_marker (0257), mirrored for readable refusals before the driver's.
+const (
+	markerNameMaxChars  = 191
+	markerDimMaxFrac    = 2
+	markerWidthLimit    = 100000000 // DECIMAL(10,2)
+	markerSmallDimLimit = 10000     // DECIMAL(6,2) — gap / edge margin
+)
+
+// ConvertPbTechCardMarkerInsertToEntity parses the writable half of a marker payload — everything
+// except the layout blob, which the API layer marshals separately (idiom of the release snapshot).
+// Form checks only; facts the database has to witness (size membership, BOM line identity, the
+// card's approval state, name uniqueness) are the store's.
+func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (entity.TechCardMarkerInsert, error) {
+	var out entity.TechCardMarkerInsert
+	if pb == nil {
+		return out, fmt.Errorf("marker is required")
+	}
+	name := strings.TrimSpace(pb.Name)
+	if name == "" {
+		return out, fmt.Errorf("name is required")
+	}
+	// Rune count, matching the column: VARCHAR(191) counts CHARACTERS, so a byte cap would be
+	// 4x stricter than the schema for Cyrillic names — and the prefill is Russian.
+	if utf8.RuneCountInString(name) > markerNameMaxChars {
+		return out, fmt.Errorf("name must be at most %d characters", markerNameMaxChars)
+	}
+	source := entity.MarkerSource(strings.TrimSpace(pb.Source))
+	if source == "" {
+		source = entity.MarkerSourceAuto
+	}
+	if !entity.ValidMarkerSources[source] {
+		return out, fmt.Errorf("source must be one of auto|manual|imported, got %q", pb.Source)
+	}
+	width, err := requiredDecimalFromPb(pb.FabricWidthCm, "fabric_width_cm", markerDimMaxFrac, markerWidthLimit)
+	if err != nil {
+		return out, err
+	}
+	if !width.IsPositive() {
+		return out, fmt.Errorf("fabric_width_cm must be positive")
+	}
+	gap, err := nullDecimalFromPb(pb.GapCm)
+	if err != nil {
+		return out, fmt.Errorf("gap_cm: %w", err)
+	}
+	if gap.Valid && gap.Decimal.IsNegative() {
+		return out, fmt.Errorf("gap_cm must not be negative")
+	}
+	if err := validateDecimalScale(gap, "gap_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		return out, err
+	}
+	margin, err := nullDecimalFromPb(pb.EdgeMarginCm)
+	if err != nil {
+		return out, fmt.Errorf("edge_margin_cm: %w", err)
+	}
+	if margin.Valid && margin.Decimal.IsNegative() {
+		return out, fmt.Errorf("edge_margin_cm must not be negative")
+	}
+	if err := validateDecimalScale(margin, "edge_margin_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		return out, err
+	}
+	// Selvedge is client-derived from the article (may carry engine-float dust) — round like
+	// used_length rather than reject. Two selvedges cannot exceed the fabric width.
+	selvedge, err := nullDecimalFromPb(pb.SelvedgeCm)
+	if err != nil {
+		return out, fmt.Errorf("selvedge_cm: %w", err)
+	}
+	if selvedge.Valid && selvedge.Decimal.IsNegative() {
+		return out, fmt.Errorf("selvedge_cm must not be negative")
+	}
+	if selvedge.Valid {
+		selvedge.Decimal = selvedge.Decimal.Round(markerDimMaxFrac)
+		if selvedge.Decimal.Mul(decimal.NewFromInt(2)).GreaterThan(width) {
+			return out, fmt.Errorf("selvedge_cm: two selvedges (%s cm) exceed fabric_width_cm (%s)",
+				selvedge.Decimal.Mul(decimal.NewFromInt(2)), width)
+		}
+	}
+	// used_length_cm is ENGINE-computed float64 — round to the column scale instead of
+	// rejecting float dust (512.4370000000001 must save, not 400). Width/gap/margin stay
+	// strict: those are operator inputs.
+	usedLengthN, err := nullDecimalFromPb(pb.UsedLengthCm)
+	if err != nil {
+		return out, fmt.Errorf("used_length_cm: %w", err)
+	}
+	if !usedLengthN.Valid || !usedLengthN.Decimal.IsPositive() {
+		return out, fmt.Errorf("used_length_cm must be positive")
+	}
+	usedLength := usedLengthN.Decimal.Round(markerDimMaxFrac)
+	if err := validateDecimalScale(decimal.NullDecimal{Decimal: usedLength, Valid: true},
+		"used_length_cm", markerDimMaxFrac, markerWidthLimit); err != nil {
+		return out, err
+	}
+	efficiency, err := nullDecimalFromPb(pb.EfficiencyPct)
+	if err != nil {
+		return out, fmt.Errorf("efficiency_pct: %w", err)
+	}
+	if efficiency.Valid && (efficiency.Decimal.IsNegative() || efficiency.Decimal.GreaterThan(decimal.NewFromInt(100))) {
+		return out, fmt.Errorf("efficiency_pct must be between 0 and 100")
+	}
+	if efficiency.Valid {
+		// Engine-computed like used_length — round explicitly rather than letting MySQL
+		// truncate into DECIMAL(5,2) silently.
+		efficiency.Decimal = efficiency.Decimal.Round(2)
+	}
+	if pb.PlacedCount < 0 {
+		return out, fmt.Errorf("placed_count must not be negative")
+	}
+	if pb.TotalCount < 1 {
+		return out, fmt.Errorf("total_count must be at least 1")
+	}
+	// 0 is «not colourway-specific», the legacy shape; a NEGATIVE id is a client bug, and letting
+	// it through would reach the store as an id that simply resolves to nothing — a refusal about
+	// a colourway that «is not on this card» rather than about a malformed number.
+	if pb.ColorwayId < 0 {
+		return out, fmt.Errorf("colorway_id must not be negative")
+	}
+	sizeID, sets, composition, err := markerCompositionOfInsert(pb)
+	if err != nil {
+		return out, err
+	}
+	return entity.TechCardMarkerInsert{
+		// The reader for the geometry ALREADY ON FILE travels with the payload, set HERE rather than
+		// by the caller: fail-closed is right (a nil distiller withholds every exemption) but a
+		// fail-closed default nobody notices is a silent regression, and an injection sitting fifty
+		// lines away in another package is exactly the kind of statement that gets dropped in a
+		// refactor. Built where the struct is built, it cannot go missing for a wire-borne save.
+		DistilStoredLayout: MarkerLayoutFactsFromBlob,
+		SizeId:             sizeID,
+		Name:               name,
+		Source:             source,
+		BomLineKey:         strings.TrimSpace(pb.BomLineKey),
+		ColorwayId:         int(pb.ColorwayId),
+		FabricWidthCm:      width,
+		GapCm:              gap.Decimal,
+		EdgeMarginCm:       margin.Decimal,
+		SelvedgeCm:         selvedge.Decimal,
+		AllowCrossGrain:    pb.AllowCrossGrain,
+		Sets:               sets,
+		Composition:        composition,
+		UsedLengthCm:       usedLength,
+		EfficiencyPct:      efficiency,
+		PlacedCount:        int(pb.PlacedCount),
+		TotalCount:         int(pb.TotalCount),
+	}, nil
+}
+
+// markerCompositionOfInsert resolves the СОСТАВ of a save, plus the legacy (size_id, sets) pair the
+// row will carry. Exactly one rule, three outcomes:
+//
+//	layout.composition non-empty  ->  a client that speaks Ф2: size_id/sets go NULL, состав as sent
+//	empty, but size_id>0 & sets>=1 ->  a STALE ADMIN BUNDLE: stored byte-for-byte in the legacy shape
+//	                                  and projected into a one-entry состав so readers see one format
+//	neither                        ->  REFUSED
+//
+// FAIL-CLOSED is the point of the third branch. Assuming «one комплект» would be the cheap option
+// and it is the dangerous one: total_units would be 1, consumption_per_unit_cm would report the whole
+// spread as one garment's norm, and a client copies that straight into a recipe as a persistent fact
+// with consumption_source='marker'. There is no reader downstream that could later tell it was a
+// guess.
+//
+// The состав is taken ONLY from the layout blob and never from a field of its own on the insert
+// (there is deliberately none). Two copies on the wire would raise «which one wins if they differ»,
+// a question with no free answer, and would split a fact that belongs together: the blob's pieces
+// carry sizes, and the состав is the header of that same geometry.
+func markerCompositionOfInsert(pb *pb_common.TechCardMarkerInsert) (sizeID, sets sql.NullInt64,
+	composition []entity.MarkerCompositionEntry, err error) {
+	composition, err = markerCompositionFromPb(pb.GetLayout().GetComposition())
+	if err != nil {
+		return sql.NullInt64{}, sql.NullInt64{}, nil, err
+	}
+	if len(composition) > 0 {
+		return sql.NullInt64{}, sql.NullInt64{}, composition, nil
+	}
+	if pb.GetSizeId() > 0 && pb.GetSets() >= 1 {
+		return sql.NullInt64{Int64: int64(pb.GetSizeId()), Valid: true},
+			sql.NullInt64{Int64: int64(pb.GetSets()), Valid: true},
+			[]entity.MarkerCompositionEntry{{SizeId: int(pb.GetSizeId()), Quantity: int(pb.GetSets())}},
+			nil
+	}
+	return sql.NullInt64{}, sql.NullInt64{}, nil, fmt.Errorf(
+		"the раскладка needs a состав: send layout.composition (or size_id + sets if the bundle predates it)")
+}
+
+// markerCompositionFromPb validates and normalises a состав off the wire. Called from BOTH the
+// insert conversion and the layout distillation — it is a pure function of the same input, so the
+// two cannot disagree, and neither has to trust the other's ordering.
+func markerCompositionFromPb(entries []*pb_common.TechCardMarkerCompositionEntry) ([]entity.MarkerCompositionEntry, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make([]entity.MarkerCompositionEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, entity.MarkerCompositionEntry{SizeId: int(e.GetSizeId()), Quantity: int(e.GetQuantity())})
+	}
+	if err := entity.ValidateMarkerComposition(out); err != nil {
+		return nil, fmt.Errorf("layout.composition: %w", err)
+	}
+	entity.SortMarkerComposition(out)
+	return out, nil
+}
+
+// MarkerLayoutFactsFromBlob distils the geometry ALREADY ON FILE out of a stored layout blob, for the
+// one decision that needs it: whether a save is introducing an upside-down placement or merely
+// carrying forward one that was already there (Ф1.6's exemption).
+//
+// It is deliberately NOT MarkerLayoutFactsFromPb. That one polices an incoming payload — it refuses
+// an uncuttable angle and canonicalises what it accepts — and neither belongs here: a stored blob is
+// history, it may predate every validation this server has, and REFUSING to read it would turn «this
+// row is old» into «this row cannot be saved». So this reads tolerantly and judges nothing; an angle
+// outside the four is simply not a half-turn, which is the only question being asked.
+//
+// The error is reserved for a blob that does not parse at all. The store never calls this — it holds
+// the bytes and hands them here, because the JSON boundary of 0257/0268 is the reason the geometry
+// can stay opaque to the storage layer at all.
+func MarkerLayoutFactsFromBlob(blob string) (entity.MarkerLayoutFacts, error) {
+	var l pb_common.TechCardMarkerLayout
+	// DiscardUnknown, exactly like GetTechCardMarker: a blob written by a NEWER server must still be
+	// readable here, or a rollback would make every marker saved meanwhile unexemptible.
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(blob), &l); err != nil {
+		return entity.MarkerLayoutFacts{}, fmt.Errorf("stored marker layout does not parse: %w", err)
+	}
+	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
+	for _, p := range l.GetPlacements() {
+		if normaliseRotation(p.GetRotDeg()) == 180 {
+			out.HalfTurnCount++
+		}
+		if p.GetFlipped() {
+			out.FlipCount++
+		}
+	}
+	return out, nil
+}
+
+// markerPlacementRotations is the closed set of rotations a placement may carry, and it is enforced
+// NOWHERE ELSE. The proto's "0 | 90 | 180 | 270" beside rot_deg is a comment; the column is a JSON
+// blob with no CHECK behind it, and the engine, the editor and the DXF export each just trust the
+// number. So this save path is the only gate: an angle outside the set renders one way in the
+// editor and another in the plotter file, and the раскладка stops being the thing that was measured.
+var markerPlacementRotations = map[int32]bool{0: true, 90: true, 180: true, 270: true}
+
+// normaliseRotation folds a rotation into [0, 360). -180 and 540 are the SAME half-turn as 180, and
+// a policy that compared the raw number would miss both — which is the cheapest possible way to put
+// a piece upside down on ворс with the server's blessing.
+func normaliseRotation(deg int32) int32 { return ((deg % 360) + 360) % 360 }
+
+// MarkerLayoutFactsFromPb distils the few things the SAVE PATH must know about a layout out of the
+// blob, so nothing downstream has to open it again: the blob is stored opaque (0257) and the store
+// never parses it, so whatever the store DECIDES on has to leave the transport layer as a fact.
+//
+// It also CANONICALISES rot_deg on the message it is handed, on purpose: the blob is marshalled from
+// this same message moments later, so a placement the server counted as a half-turn must not be
+// stored as -180 and read back by a consumer whose check is `rot === 180`. The facts and the bytes
+// have to describe the same placement.
+//
+// Call it AFTER schema_version has been normalised — a blob that arrives with 0 is a v1 blob, and
+// the version is what decides whether the rotation policy applies at all (Ф1.6).
+func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLayoutFacts, error) {
+	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
+	// СОСТАВ (Ф2). Validated here so a malformed one is refused before anything is stored, and
+	// CANONICALISED in place for the same reason rot_deg is: these bytes are the blob moments later,
+	// and the состав the server judged must be the состав that gets written down. Sorting also makes
+	// the stored blob a function of the состав as a SET, so two clients that build the same раскладка
+	// in a different form order produce the same bytes — which the Ф0.5 regression probe asserts.
+	composition, err := markerCompositionFromPb(l.GetComposition())
+	if err != nil {
+		return entity.MarkerLayoutFacts{}, err
+	}
+	out.HasComposition = len(composition) > 0
+	slices.SortFunc(l.GetComposition(), func(a, b *pb_common.TechCardMarkerCompositionEntry) int {
+		return int(a.GetSizeId()) - int(b.GetSizeId())
+	})
+	inComposition := make(map[int32]bool, len(composition))
+	for _, c := range composition {
+		inComposition[int32(c.SizeId)] = true
+	}
+	withPieces := make(map[int32]bool, len(composition))
+	for i, p := range l.GetPieces() {
+		sizeID := p.GetSizeId()
+		if sizeID == 0 {
+			continue
+		}
+		if sizeID < 0 {
+			return entity.MarkerLayoutFacts{}, fmt.Errorf("layout.pieces[%d].size_id is %d", i, sizeID)
+		}
+		out.HasPieceSize = true
+		withPieces[sizeID] = true
+		if !inComposition[sizeID] {
+			// The instance formula multiplies a sized piece by composition[size].quantity. A piece
+			// pointing at a size the состав does not cut would resolve to a MISSING key, i.e. to zero
+			// instances — geometry that is stored, counted against the caps, drawn in the editor and
+			// cut never. Refusing is the only reading that cannot be silent.
+			return entity.MarkerLayoutFacts{}, fmt.Errorf(
+				"layout.pieces[%d].size_id is %d, which the состав does not cut", i, sizeID)
+		}
+	}
+	// …AND THE OTHER DIRECTION. A состав line whose size carries no graded piece is the same lie told
+	// backwards: total_units counts that size's garments — into the row and into
+	// tech_card_marker_size, which Ф4.5 and Ф6.2 are designed to JOIN as truth — while the geometry
+	// lays none of them, so the spread is charged to more garments than it cuts and every norm off it
+	// is short. Checked only when SOME piece is graded: a blob where NO piece carries a size is the
+	// legitimate «nothing in this DXF grades» case, and there every piece is cut once per garment of
+	// the whole состав.
+	if out.HasPieceSize {
+		for _, c := range composition {
+			if !withPieces[int32(c.SizeId)] {
+				return entity.MarkerLayoutFacts{}, fmt.Errorf(
+					"layout.composition cuts size %d but no piece is laid out for it", c.SizeId)
+			}
+		}
+	}
+	for i, p := range l.GetPlacements() {
+		rot := normaliseRotation(p.GetRotDeg())
+		if !markerPlacementRotations[rot] {
+			return entity.MarkerLayoutFacts{}, fmt.Errorf(
+				"layout.placements[%d].rot_deg is %d; only 0, 90, 180 and 270 can be cut", i, p.GetRotDeg())
+		}
+		p.RotDeg = rot
+		// 180° and a mirror are the same physical mistake on directional cloth — the piece ends up
+		// the wrong way up — so both are collected, and the refusal names whichever fired. COUNTED,
+		// not flagged: the exemption compares how many, because «this row already had one» is not a
+		// licence to add thirty-nine more.
+		if rot == 180 {
+			out.HalfTurnCount++
+		}
+		if p.GetFlipped() {
+			out.FlipCount++
+		}
+	}
+	return out, nil
 }
 
 // TechCardOutputVariantsToPb emits an auxiliary card's colour variants for display, each with its
@@ -846,12 +1495,17 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 	for _, p := range ps {
 		out = append(out, &pb_common.TechCardSizePattern{
 			SizeId:     int32(p.SizeId),
-			Url:        p.URL,
-			Filename:   pbStringFromNull(p.Filename),
-			Name:       pbOptStringFromNull(p.Name),
-			SizeBytes:  p.SizeBytes.Int64,
-			Version:    int32(p.Version),
-			UploadedAt: pbTimestampFromNullTime(p.UploadedAt),
+			LineKey:    p.LineKey,
+			BomLineKey: pbOptStringFromNull(p.BomLineKey),
+			// ALWAYS present on read (like name / bom_line_key), so a new client round-trips presence
+			// and its saves state the binding explicitly instead of falling into carry-forward.
+			FabricPurpose: pbPtr(pbBomPurpose(p.FabricPurpose)),
+			Url:           p.URL,
+			Filename:      pbStringFromNull(p.Filename),
+			Name:          pbOptStringFromNull(p.Name),
+			SizeBytes:     p.SizeBytes.Int64,
+			Version:       int32(p.Version),
+			UploadedAt:    pbTimestampFromNullTime(p.UploadedAt),
 		})
 	}
 	return out
@@ -896,6 +1550,9 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		// output_material_* trio above is the whole answer.
 		OutputVariantCount:   int32(tc.OutputVariantCount),
 		OutputVariantsOnHand: pbDecimalFromNull(tc.OutputVariantsOnHand),
+		// Saved раскладки (0257): count only — a "latest consumption" without its size and BOM
+		// slot would mislead, so the number stays on the card itself.
+		MarkerCount: int32(tc.MarkerCount),
 	}
 }
 
@@ -1028,6 +1685,71 @@ func parseTechCardColorwayUsages(pbs []*pb_common.TechCardColorwayUsage, bomItem
 	return out, nil
 }
 
+// wasteDecompositionMaxPct bounds both waste components. See parseUsageProvenance for WHY it is
+// not 100, and 0263 for the matching column widening.
+const wasteDecompositionMaxPct = 1000
+
+// parseUsageProvenance parses the consumption provenance triple (Ф9.4). Presence is the
+// stale-client protocol (mirrors material_id): an ABSENT consumption_source keeps
+// Valid=false so the store preserves the stored triple across the full-replace; a present
+// value is normalised ("" → manual) and validated. The waste pcts are accepted only with
+// source=marker — display decomposition of a measured раскладка, meaningless on manual rows.
+func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullString, decimal.NullDecimal, decimal.NullDecimal, error) {
+	var src sql.NullString
+	var selvedge, cut decimal.NullDecimal
+	if u.ConsumptionSource == nil {
+		return src, selvedge, cut, nil
+	}
+	v := strings.TrimSpace(u.GetConsumptionSource())
+	if v == "" {
+		v = entity.ConsumptionSourceManual
+	}
+	if !entity.ValidConsumptionSources[v] {
+		return src, selvedge, cut, entity.NewFieldViolation(
+			fmt.Sprintf("usages[%d].consumption_source", i), "invalid", v, "manual or marker")
+	}
+	src = sql.NullString{String: v, Valid: true}
+	var err error
+	if selvedge, err = nullDecimalFromPb(u.WasteSelvedgePct); err != nil {
+		return src, selvedge, cut, fmt.Errorf("usages[%d].waste_selvedge_pct: %w", i, err)
+	}
+	if cut, err = nullDecimalFromPb(u.WasteCutPct); err != nil {
+		return src, selvedge, cut, fmt.Errorf("usages[%d].waste_cut_pct: %w", i, err)
+	}
+	if v != entity.ConsumptionSourceMarker {
+		if selvedge.Valid || cut.Valid {
+			return src, selvedge, cut, entity.NewFieldViolation(
+				fmt.Sprintf("usages[%d].waste_selvedge_pct", i), "provenance_mismatch", "",
+				"waste decomposition is meaningful only with consumption_source=marker")
+		}
+		return src, decimal.NullDecimal{}, decimal.NullDecimal{}, nil
+	}
+	// Ceiling is 1000%, not 100% (0263): both percentages are quoted OF THE PIECE AREA, and the
+	// inter-piece component is 1/efficiency − 1, so it crosses 100% for any раскладка laying
+	// below 50% efficiency — real for awkward small sets on a wide roll, where the layout does
+	// waste more cloth than it turns into pieces. Past 1000% the input is a mis-entered width.
+	maxPct := decimal.NewFromInt(wasteDecompositionMaxPct)
+	// Two explicit checks, selvedge first — deterministic field attribution when both are bad.
+	if selvedge.Valid && (selvedge.Decimal.IsNegative() || selvedge.Decimal.GreaterThan(maxPct)) {
+		return src, selvedge, cut, entity.NewFieldViolation(
+			fmt.Sprintf("usages[%d].waste_selvedge_pct", i), "out_of_range", selvedge.Decimal.String(),
+			fmt.Sprintf("0..%d", wasteDecompositionMaxPct))
+	}
+	if cut.Valid && (cut.Decimal.IsNegative() || cut.Decimal.GreaterThan(maxPct)) {
+		return src, selvedge, cut, entity.NewFieldViolation(
+			fmt.Sprintf("usages[%d].waste_cut_pct", i), "out_of_range", cut.Decimal.String(),
+			fmt.Sprintf("0..%d", wasteDecompositionMaxPct))
+	}
+	// Engine-computed floats: round to the column scale rather than rejecting float dust.
+	if selvedge.Valid {
+		selvedge.Decimal = selvedge.Decimal.Round(2)
+	}
+	if cut.Valid {
+		cut.Decimal = cut.Decimal.Round(2)
+	}
+	return src, selvedge, cut, nil
+}
+
 // ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
 // parser it references each style BOM line by its stable line_key (resolved to a real bom_item_id in
 // the store, S2/S3), so there is no positional range check here. size_id membership in the style's
@@ -1075,19 +1797,26 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 			pieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
 		}
 		materialID, materialIDSet := parseUsageMaterialID(u.MaterialId)
+		consumptionSource, wasteSelvedge, wasteCut, err := parseUsageProvenance(u, i)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardColorwayUsage{
-			BomLineKey:       strings.TrimSpace(u.BomLineKey),
-			PieceLineKey:     strings.TrimSpace(u.PieceLineKey),
-			BomItemIndex:     bomItemIndex,
-			PieceIndex:       pieceIndex,
-			MaterialId:       materialID,
-			MaterialIdSet:    materialIDSet,
-			Placement:        normalizedPlacementNull(u.Placement),
-			Color:            nullStringFromPb(u.Color),
-			Pantone:          nullStringFromPb(u.Pantone),
-			Consumption:      consumption,
-			Quantity:         quantity,
-			SizeConsumptions: scs,
+			BomLineKey:        strings.TrimSpace(u.BomLineKey),
+			PieceLineKey:      strings.TrimSpace(u.PieceLineKey),
+			ConsumptionSource: consumptionSource,
+			WasteSelvedgePct:  wasteSelvedge,
+			WasteCutPct:       wasteCut,
+			BomItemIndex:      bomItemIndex,
+			PieceIndex:        pieceIndex,
+			MaterialId:        materialID,
+			MaterialIdSet:     materialIDSet,
+			Placement:         normalizedPlacementNull(u.Placement),
+			Color:             nullStringFromPb(u.Color),
+			Pantone:           nullStringFromPb(u.Pantone),
+			Consumption:       consumption,
+			Quantity:          quantity,
+			SizeConsumptions:  scs,
 		})
 	}
 	return out, nil
@@ -1155,6 +1884,29 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		if !entity.ValidTechCardGrainlines[grainline] {
 			return nil, fmt.Errorf("piece %q grainline must be one of lengthwise|crosswise|bias|any", p.Name)
 		}
+		// КАК КРОИТСЯ (0275) — ПРИСУТСТВИЕ, а не значение, by the same argument as направление ткани on
+		// the BOM line: the field is optional, and a tab holding an older bundle does not send it at all.
+		// A bare proto3 enum would arrive as UNKNOWN and wipe the marking on every piece of the card —
+		// and that marking, unlike направление, cannot be reconstructed without a human holding the
+		// patterns. An EXPLICIT UNKNOWN still clears the column: returning a piece to «не размечено» is a
+		// deliberate act.
+		cutSymmetryOmitted := p.CutSymmetry == nil
+		cutSymmetry := sql.NullString{}
+		if !cutSymmetryOmitted && p.GetCutSymmetry() != pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_UNKNOWN {
+			cs, ok := techCardPieceCutSymmetryPbToEntity[p.GetCutSymmetry()]
+			if !ok {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].cut_symmetry", i),
+					"unknown cut symmetry", p.GetCutSymmetry().String(),
+					"pick one of: identical (одинаковые копии), mirrored (зеркальные пары), fold (крой по сгибу)")
+			}
+			cutSymmetry = sql.NullString{String: string(cs), Valid: true}
+		}
+		// Refuse the unresolvable pair here rather than at MySQL: the DB CHECK is two-column, so its
+		// 3819 names pieces_per_garment on a save that only touched the dropdown.
+		if err := entity.ValidatePieceCutSymmetry(
+			fmt.Sprintf("pieces[%d].cut_symmetry", i), cutSymmetry, perGarment); err != nil {
+			return nil, err
+		}
 		var calloutNumber sql.NullInt32
 		if p.CalloutNumber != nil {
 			// A callout_number that no longer matches a callout on the card is NOT rejected here (S8
@@ -1204,15 +1956,17 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		}
 
 		out = append(out, entity.TechCardPiece{
-			Name:             p.Name,
-			LineKey:          lineKey,
-			PiecesPerGarment: perGarment,
-			Mirrored:         p.Mirrored,
-			Grainline:        grainline,
-			Fused:            p.Fused,
-			CalloutNumber:    calloutNumber,
-			Note:             nullStringFromPb(p.Note),
-			Materials:        materials,
+			Name:               p.Name,
+			LineKey:            lineKey,
+			PiecesPerGarment:   perGarment,
+			Mirrored:           p.Mirrored,
+			CutSymmetry:        cutSymmetry,
+			CutSymmetryOmitted: cutSymmetryOmitted,
+			Grainline:          grainline,
+			Fused:              p.Fused,
+			CalloutNumber:      calloutNumber,
+			Note:               nullStringFromPb(p.Note),
+			Materials:          materials,
 		})
 	}
 	return out, nil
@@ -1302,13 +2056,51 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if wastage.Valid && wastage.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 			return nil, fmt.Errorf("bom wastage_percent must be between 0 and 100")
 		}
+		// НАПРАВЛЕНИЕ ТКАНИ — присутствие, а не значение, по тем же основаниям, что и назначение
+		// ниже: поле optional, и клиент со старым бандлом его не шлёт вовсе. Голый proto3-энум
+		// пришёл бы как UNKNOWN и стёр бы направление у всех строк карточки — а с Ф1 это не косметика:
+		// стёртое направление снимает с сохранения КАЖДУЮ раскладку карточки, пока его не проставят
+		// заново. Явно присланный UNKNOWN по-прежнему очищает колонку: это осознанное действие.
+		directionOmitted := b.FabricDirection == nil
 		direction := sql.NullString{}
-		if b.FabricDirection != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
-			d, ok := techCardFabricDirectionPbToEntity[b.FabricDirection]
+		if !directionOmitted && b.GetFabricDirection() != pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN {
+			d, ok := techCardFabricDirectionPbToEntity[b.GetFabricDirection()]
 			if !ok {
-				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.FabricDirection)
+				return nil, fmt.Errorf("unknown bom fabric_direction: %v", b.GetFabricDirection())
 			}
 			direction = sql.NullString{String: string(d), Valid: true}
+		}
+
+		// НАЗНАЧЕНИЕ (0265). UNSET stays NULL — "not sorted yet" is a real answer and the only honest
+		// one for every line that predates the field. The section restriction is enforced downstream,
+		// in the store, against the one roll-goods list the marker/pattern binding already uses.
+		//
+		// ПРИСУТСТВИЕ, а не значение. Поле optional: клиент, который про него не знает, поле НЕ
+		// шлёт, и это означает «не трогай», а не «очисти». Голое proto3-поле пришло бы как UNSET и
+		// стёрло бы назначение у всех строк карточки — бесследно, потому что этих полей нет в
+		// дайджесте подписи, а NULL неотличим от «ещё не разложили».
+		purposeOmitted := b.Purpose == nil
+		purpose := sql.NullString{}
+		if !purposeOmitted && b.GetPurpose() != pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+			p, ok := techCardBomPurposePbToEntity[b.GetPurpose()]
+			if !ok {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose", i),
+					"unknown purpose", "", "pick a purpose from the list")
+			}
+			purpose = sql.NullString{String: string(p), Valid: true}
+		}
+		// The note is the escape hatch for OTHER and nothing else. Accepting it on MAIN would let a
+		// free-text role in through the back door and dissolve the closed list the field exists to
+		// keep — the same reason chk_bom_item_purpose_note guards the column.
+		purposeNote := nullStringFromPb(strings.TrimSpace(b.GetPurposeNote()))
+		if purposeNote.Valid && purpose.String != string(entity.BomPurposeOther) {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose_note", i),
+				"a note is only meaningful on the 'other' purpose", "",
+				"clear the note, or set the purpose to 'другое'")
+		}
+		if len(purposeNote.String) > maxVarchar255 {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose_note", i),
+				fmt.Sprintf("must be at most %d characters", maxVarchar255), "", "shorten this value")
 		}
 
 		materialID := sql.NullInt64{}
@@ -1327,23 +2119,29 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		out = append(out, entity.TechCardBomItem{
 			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
 			// unchanged positional index. id is read-only.
-			LineKey:         lineKey,
-			MaterialId:      materialID,
-			Section:         section,
-			Name:            b.Name,
-			Supplier:        nullStringFromPb(b.Supplier),
-			SupplierRef:     nullStringFromPb(b.SupplierRef),
-			Color:           nullStringFromPb(b.Color),
-			Composition:     nullStringFromPb(b.Composition),
-			Spec:            nullStringFromPb(b.Spec),
-			Unit:            nullStringFromPb(b.Unit),
-			UnitPrice:       unitPrice,
-			Currency:        nullStringFromPb(b.Currency),
-			Comment:         nullStringFromPb(b.Comment),
-			FabricWidth:     fabricWidth,
-			FabricWeightGsm: fabricGsm,
-			FabricDirection: direction,
-			WastagePercent:  wastage,
+			LineKey:                lineKey,
+			MaterialId:             materialID,
+			Section:                section,
+			Purpose:                purpose,
+			PurposeOmitted:         purposeOmitted,
+			PurposeNote:            purposeNote,
+			IsSample:               b.GetIsSample(),
+			IsSampleOmitted:        b.IsSample == nil,
+			Name:                   b.Name,
+			Supplier:               nullStringFromPb(b.Supplier),
+			SupplierRef:            nullStringFromPb(b.SupplierRef),
+			Color:                  nullStringFromPb(b.Color),
+			Composition:            nullStringFromPb(b.Composition),
+			Spec:                   nullStringFromPb(b.Spec),
+			Unit:                   nullStringFromPb(b.Unit),
+			UnitPrice:              unitPrice,
+			Currency:               nullStringFromPb(b.Currency),
+			Comment:                nullStringFromPb(b.Comment),
+			FabricWidth:            fabricWidth,
+			FabricWeightGsm:        fabricGsm,
+			FabricDirection:        direction,
+			FabricDirectionOmitted: directionOmitted,
+			WastagePercent:         wastage,
 		})
 	}
 	return out, nil
@@ -1567,21 +2365,24 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			})
 		}
 		out = append(out, &pb_common.TechCardColorwayUsage{
-			BomItemIndex:     bomItemIndex,
-			BomItemId:        u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
-			MaterialId:       materialID,
-			Placement:        pbStringFromNull(u.Placement),
-			Color:            pbStringFromNull(u.Color),
-			Pantone:          pbStringFromNull(u.Pantone),
-			Consumption:      pbDecimalFromNull(u.Consumption),
-			Quantity:         pbDecimalFromNull(u.Quantity),
-			SizeConsumptions: sizeCons,
-			PieceIndex:       pieceIndex,
-			PieceId:          u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
-			PieceLineKey:     pieceKeyByID[u.PieceId.Int64],
-			BomLineKey:       bomKeyByID[u.BomItemId.Int64],
-			LineTotal:        pbMoneyFromNull(u.LineTotal(bom)),
-			SizeRunTotal:     pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
+			BomItemIndex:      bomItemIndex,
+			BomItemId:         u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
+			MaterialId:        materialID,
+			Placement:         pbStringFromNull(u.Placement),
+			Color:             pbStringFromNull(u.Color),
+			Pantone:           pbStringFromNull(u.Pantone),
+			Consumption:       pbDecimalFromNull(u.Consumption),
+			Quantity:          pbDecimalFromNull(u.Quantity),
+			SizeConsumptions:  sizeCons,
+			PieceIndex:        pieceIndex,
+			PieceId:           u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
+			PieceLineKey:      pieceKeyByID[u.PieceId.Int64],
+			BomLineKey:        bomKeyByID[u.BomItemId.Int64],
+			LineTotal:         pbMoneyFromNull(u.LineTotal(bom)),
+			SizeRunTotal:      pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
+			ConsumptionSource: pbOptStringFromNull(u.ConsumptionSource),
+			WasteSelvedgePct:  pbDecimalFromNull(u.WasteSelvedgePct),
+			WasteCutPct:       pbDecimalFromNull(u.WasteCutPct),
 		})
 	}
 	return out
@@ -1633,12 +2434,18 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			LineKey:          p.LineKey,
 			PiecesPerGarment: int32(p.PiecesPerGarment),
 			Mirrored:         p.Mirrored,
-			Grainline:        p.Grainline,
-			Fused:            p.Fused,
-			CalloutNumber:    calloutNumber,
-			Detached:         p.Detached,
-			Note:             pbStringFromNull(p.Note),
-			Materials:        materials,
+			// ALWAYS present on read, even when the column is NULL: the optionality exists so a client
+			// that cannot speak the field does not erase it, not so the server can go quiet. Returning
+			// nil would make "cutSymmetry" VANISH from the JSON of every unmarked piece — which is most
+			// of them today — and a client round-tripping what it read would then send nothing back and
+			// look, to the store, exactly like the stale tab this design is protecting against.
+			CutSymmetry:   pbPtr(PieceCutSymmetryToPb(p.CutSymmetry)),
+			Grainline:     p.Grainline,
+			Fused:         p.Fused,
+			CalloutNumber: calloutNumber,
+			Detached:      p.Detached,
+			Note:          pbStringFromNull(p.Note),
+			Materials:     materials,
 		})
 	}
 	return out
@@ -1658,32 +2465,54 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	for i := range items {
 		b := &items[i]
 		out = append(out, &pb_common.TechCardBomItem{
-			Id:              int64(b.Id),
-			LineKey:         b.LineKey,
-			MaterialId:      b.MaterialId.Int64,
-			Section:         pbBomSection(b.Section),
-			Name:            b.Name,
-			Supplier:        pbStringFromNull(b.Supplier),
-			SupplierRef:     pbStringFromNull(b.SupplierRef),
-			Color:           pbStringFromNull(b.Color),
-			Composition:     pbStringFromNull(b.Composition),
-			Spec:            pbStringFromNull(b.Spec),
-			Unit:            pbStringFromNull(b.Unit),
+			Id:         int64(b.Id),
+			LineKey:    b.LineKey,
+			MaterialId: b.MaterialId.Int64,
+			Section:    pbBomSection(b.Section),
+			// Читатель всегда отдаёт присутствие — «не задано» это UNSET, а не отсутствие поля:
+			// отсутствие на чтении заставило бы клиента гадать, старый ли это сервер.
+			Purpose:     pbPtr(pbBomPurpose(b.Purpose)),
+			PurposeNote: pbPtr(pbStringFromNull(b.PurposeNote)),
+			IsSample:    pbPtr(b.IsSample),
+			Name:        b.Name,
+			Supplier:    pbStringFromNull(b.Supplier),
+			SupplierRef: pbStringFromNull(b.SupplierRef),
+			Color:       pbStringFromNull(b.Color),
+			Composition: pbStringFromNull(b.Composition),
+			Spec:        pbStringFromNull(b.Spec),
+			Unit:        pbStringFromNull(b.Unit),
+			// Ф5а.3 — read-only projection of `unit` onto the closed vocabulary. Never read back on
+			// write: the stored value stays the free text, because `unit` sits inside the SIGNED
+			// MATERIALS digest and respelling it would stale sign-offs on cards that BUY exactly what
+			// they bought before.
+			UnitCode:        pbMaterialUnit(b.Unit.String),
 			UnitPrice:       pbDecimalFromNull(b.UnitPrice),
 			Currency:        pbStringFromNull(b.Currency),
 			Comment:         pbStringFromNull(b.Comment),
 			FabricWidth:     pbDecimalFromNull(b.FabricWidth),
 			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
-			FabricDirection: pbFabricDirection(b.FabricDirection),
+			FabricDirection: pbPtr(pbFabricDirection(b.FabricDirection)),
 			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),
+			// Width enrichment (0259) — read-only, filled by the single-card read only.
+			EffectiveFabricWidthCm: pbDecimalFromNull(b.EffectiveFabricWidthCm),
+			SelvedgeCm:             pbDecimalFromNull(b.SelvedgeCm),
 		})
 	}
 	return out
 }
 
+// pbFabricDirection maps a stored направление to the wire enum; an unset column reads as UNKNOWN,
+// which is what it has always meant.
+//
+// The pointer is added at the CALL SITE (pbPtr), always — the same shape purpose uses since it became
+// optional. Presence is honoured on the way IN and always emitted on the way OUT, deliberately: the
+// gateway marshals with EmitUnpopulated, but protojson never emits an unset proto3-optional field, so
+// returning nil here would make "fabricDirection" VANISH from the JSON of every line that has none,
+// where every deployed client currently reads "TECH_CARD_FABRIC_DIRECTION_UNKNOWN". Optionality is a
+// statement about what a WRITE means, not a licence to change the shape of a READ.
 func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 	if !s.Valid {
 		return pb_common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_UNKNOWN
@@ -1696,6 +2525,57 @@ func pbFabricDirection(s sql.NullString) pb_common.TechCardFabricDirection {
 
 // validPantoneSystems mirrors the tech_card_colorway.pantone_system CHECK.
 var validPantoneSystems = map[string]bool{"TCX": true, "TPX": true, "TPG": true, "C": true, "U": true}
+
+// managedPatternHosts is the set of hosts a stored pattern url may point at, configured
+// once at boot from the bucket config (SetManagedPatternHosts). It is deliberately
+// FAIL-CLOSED: with no hosts configured every pattern url is rejected, because the
+// alternative — a path-shape-only check — accepts https://evil.example/tech-card-patterns/x
+// and the admin renders stored pattern urls in an <object>.
+var managedPatternHosts = map[string]struct{}{}
+
+// SetManagedPatternHosts installs the bucket's own hosts (CDN subdomain + virtual-hosted
+// origin). Called once during boot; tests configure their own fixtures.
+func SetManagedPatternHosts(hosts ...string) {
+	next := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" {
+			next[h] = struct{}{}
+		}
+	}
+	managedPatternHosts = next
+}
+
+// managedPatternObjectKey mirrors storeutil.PatternObjectKey (dto cannot import storeutil
+// — dependency imports dto). Keep the recognition rule in sync: https url on one of OUR
+// hosts whose path contains the dedicated "tech-card-patterns" segment before the object
+// name.
+func managedPatternObjectKey(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return "", false
+	}
+	if _, ok := managedPatternHosts[strings.ToLower(u.Host)]; !ok {
+		return "", false
+	}
+	key := strings.Trim(u.Path, "/")
+	segments := strings.Split(key, "/")
+	found := false
+	for i, segment := range segments {
+		// Checked over the WHOLE path, not up to the folder: a dot segment after it
+		// (…/tech-card-patterns/../media/x.jpg) would otherwise pass on the earlier match.
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
+		if segment == "tech-card-patterns" && i < len(segments)-1 {
+			found = true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return key, true
+}
 
 // isHTTPURL reports whether s is an http(s) URL — pattern PDFs are served over the CDN,
 // so a non-http scheme (e.g. javascript:/data:) is rejected at the write boundary.
@@ -1760,6 +2640,57 @@ func pbBomSection(s entity.TechCardBomSection) pb_common.TechCardBomSection {
 		return v
 	}
 	return pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_UNKNOWN
+}
+
+// pbBomPurpose maps a stored НАЗНАЧЕНИЕ back to the wire. An unset column is UNSET, and so is a
+// value the current build does not recognise — a purpose read from a newer schema must degrade to
+// "not sorted yet" rather than be silently reported as some other purpose.
+// pbPtr wraps a value for a proto3 `optional` field. Присутствие на чтении всегда явное: «не
+// задано» это UNSET, а не отсутствие поля.
+func pbPtr[T any](v T) *T { return &v }
+
+func pbBomPurpose(p sql.NullString) pb_common.TechCardBomPurpose {
+	if !p.Valid {
+		return pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
+	}
+	if v, ok := techCardBomPurposeEntityToPb[entity.TechCardBomPurpose(p.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET
+}
+
+// fabricPurposeFromPb maps the OPTIONAL назначение that binds a выкройка to cloth (0267), keeping
+// proto presence intact: nil → Valid=false, «поля не было — сохрани что лежит», which is what a
+// client predating the field sends; UNSET → present-empty, an explicit unbind. Unknown values are
+// REFUSED rather than degraded to UNSET the way the read path degrades them: a read must not lose a
+// row, but a write that silently unbound a sheet because the client spoke a newer vocabulary would
+// be a data loss the operator never asked for and could not see.
+func fabricPurposeFromPb(p *pb_common.TechCardBomPurpose, field string) (sql.NullString, error) {
+	if p == nil {
+		return sql.NullString{}, nil
+	}
+	if *p == pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+		return sql.NullString{Valid: true}, nil
+	}
+	v, ok := techCardBomPurposePbToEntity[*p]
+	if !ok {
+		return sql.NullString{}, fmt.Errorf("%s: unknown назначение %q", field, p.String())
+	}
+	return sql.NullString{String: string(v), Valid: true}, nil
+}
+
+// aliasFabricPurposeFromPb is the same mapping for an alias row, which needs no presence of its own:
+// the alias SET carries presence as a whole and each row is written whole, so UNSET on a row that is
+// being written means «line-scoped», never «leave the stored value alone».
+func aliasFabricPurposeFromPb(p pb_common.TechCardBomPurpose, field string) (string, error) {
+	if p == pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_UNSET {
+		return "", nil
+	}
+	v, ok := techCardBomPurposePbToEntity[p]
+	if !ok {
+		return "", fmt.Errorf("%s: unknown назначение %q", field, p.String())
+	}
+	return string(v), nil
 }
 
 func pbLabDipStatus(s entity.TechCardLabDipStatus) pb_common.TechCardLabDipStatus {

@@ -77,7 +77,7 @@ type plmState struct {
 	pieceFrontKey, pieceBackKey                                 string
 	bomFabricKey, bomHardwareKey, bomThreadKey, bomPackagingKey string
 
-	// cut-list numeric piece ids (front mirrored, back)
+	// cut-list numeric piece ids (front, back)
 	pieceFrontID, pieceBackID int32
 
 	// colourway variant handles (colourway #1)
@@ -109,6 +109,7 @@ func (s *Seeder) SeedPLM(ctx context.Context) (*PLMResult, error) {
 		{"B design + pieces + construction", s.plmDesign},
 		{"C materials + composition", s.plmMaterials},
 		{"C.10 BOM + operations", s.plmBOM},
+		{"C.10b раскладки (marker composition)", s.plmMarkers},
 		{"D colourways + recipe", s.plmColorways},
 		{"E samples + fittings", s.plmSamples},
 		{"spec release Rev.N", s.plmRelease},
@@ -436,11 +437,20 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	}
 	s.pass(st, "B.4/B.5 readback: technical=2 moodboard=1 callouts=2 (callout#2 on the moodboard image)")
 
-	// B.6 pieces with mirror, verified via the cut-list.
-	s.step(st, "B.6 pieces with mirror (front mirrored=2/garment, back=1) via cut-list")
+	// B.6 pieces, verified via the cut-list. The mirror flag is retired (the admin no longer sends
+	// it and GetStyleCutList no longer doubles by it), so a left/right pair is stated the way a
+	// graded DXF actually draws it — as a count, not as a flag on one row.
+	//
+	// cut_symmetry (0275) says what the note here has always said in prose: "left + right" is a
+	// MIRRORED pair, "single cut, on the fold" is FOLD. The readback below asserts the counts did not
+	// move — front stays 2, back stays 1 — which is the whole claim of the field: it classifies the
+	// number already there and multiplies nothing.
+	s.step(st, "B.6 pieces (front 2/garment mirrored, back 1 on the fold) via cut-list")
 	tc.Pieces = []*common.TechCardPiece{
-		{Name: "front panel", PiecesPerGarment: 1, Mirrored: true, Grainline: "lengthwise", CalloutNumber: p32(1), Note: "cut as mirrored L/R pair", LineKey: st.pieceFrontKey},
-		{Name: "back panel", PiecesPerGarment: 1, Mirrored: false, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey},
+		{Name: "front panel", PiecesPerGarment: 2, Grainline: "lengthwise", CalloutNumber: p32(1), Note: "left + right", LineKey: st.pieceFrontKey,
+			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED)},
+		{Name: "back panel", PiecesPerGarment: 1, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey,
+			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD)},
 	}
 	if err := s.tcSave(ctx, sid, tc, "B.6 pieces"); err != nil {
 		return err
@@ -450,22 +460,36 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 		return fmt.Errorf("GetStyleCutList: %w", err)
 	}
 	var frontTotal, backTotal int32
+	var frontSym, backSym common.TechCardPieceCutSymmetry
 	for _, p := range cl.GetPieces() {
-		if p.GetMirrored() {
+		// Matched by NAME now: the mirror flag used to be what told the two rows apart, and it is
+		// false on both from here on.
+		if p.GetName() == "front panel" {
 			st.pieceFrontID = p.GetPieceId()
 			frontTotal = p.GetTotalPerGarment()
+			frontSym = p.GetCutSymmetry()
 		} else {
 			st.pieceBackID = p.GetPieceId()
 			backTotal = p.GetTotalPerGarment()
+			backSym = p.GetCutSymmetry()
 		}
 	}
 	if st.pieceFrontID == 0 || st.pieceBackID == 0 {
 		return fmt.Errorf("cut-list did not resolve numeric piece ids (front=%d back=%d)", st.pieceFrontID, st.pieceBackID)
 	}
 	if frontTotal != 2 || backTotal != 1 {
-		return fmt.Errorf("mirror math: front total_per_garment=%d (want 2) back=%d (want 1)", frontTotal, backTotal)
+		return fmt.Errorf("cut math: front total_per_garment=%d (want 2) back=%d (want 1)", frontTotal, backTotal)
 	}
-	s.pass(st, "B.6 cut-list: front piece=%d total=2 (mirrored) back piece=%d total=1", st.pieceFrontID, st.pieceBackID)
+	// The counts above are the proof that 0275 classifies rather than multiplies; these two are the
+	// proof it survived the round trip at all.
+	if frontSym != common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED {
+		return fmt.Errorf("cut symmetry: front=%s (want MIRRORED)", frontSym)
+	}
+	if backSym != common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD {
+		return fmt.Errorf("cut symmetry: back=%s (want FOLD)", backSym)
+	}
+	s.pass(st, "B.6 cut-list: front piece=%d total=2 mirrored, back piece=%d total=1 on the fold",
+		st.pieceFrontID, st.pieceBackID)
 
 	// B.7/B.8 construction + size range.
 	s.step(st, "B.7/B.8 construction section + size range + size chart + UpdateStyle")
@@ -670,7 +694,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	tc.BomItems = []*common.TechCardBomItem{
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "Shell Fabric - Main", MaterialId: m.Fabric, LineKey: st.bomFabricKey,
 			Unit: "m", UnitPrice: decv("12.50"), Currency: "EUR", FabricWidth: decv("150"), FabricWeightGsm: decv("220"),
-			FabricDirection: common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ANY, WastagePercent: decv("8")},
+			FabricDirection: common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ANY.Enum(), WastagePercent: decv("8")},
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "YKK Zipper Pull 5mm", MaterialId: m.Hardware, LineKey: st.bomHardwareKey,
 			Unit: "pcs", UnitPrice: decv("0.90"), Currency: "EUR"},
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD, Name: "Polyester Sewing Thread Tex30", MaterialId: m.Thread, LineKey: st.bomThreadKey,
@@ -720,6 +744,146 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 		return fmt.Errorf("BOM lines did not resolve stable ids via line_key")
 	}
 	s.pass(st, "C.10 BOM saved: 4 lines, fabric_bom_id=%d hardware_bom_id=%d, materialSnapshot auto-populated", st.res.FabricBomID, st.res.HardwareBomID)
+	return nil
+}
+
+// =========================================================================== C.10b раскладки (Ф2)
+
+// plmMarkers saves TWO saved раскладки, and the pair is the point: beta has never carried a single
+// marker (the seeder predates 0257 entirely), so the СОСТАВ format was observable only by driving the
+// nesting modal by hand. One marker per branch of the instance formula:
+//
+//		instances(piece) = quantity × (piece.size_id > 0 ? composition[size_id] : total_units)
+//
+//	  - «однородная» goes down the LEGACY write path — size_id + sets, a v2 blob with no composition
+//	    and no size on any piece, exactly what a stale admin bundle sends. The server must store it in
+//	    the old shape and still read it back as a состав из одного размера. That is the branch every
+//	    row on prod is in today, and the one a deploy overlap keeps producing.
+//	  - «смешанная» goes down the Ф2 path — a v4 blob carrying composition and sizes on pieces, with
+//	    one deliberately size-AGNOSTIC piece so the `: total_units` half of the formula is covered too.
+//	    It must come back with size_id/sets 0, a three-line состав, and NO scalar consumption figure
+//	    (Р2: the mean across a состав is withheld, not labelled).
+func (s *Seeder) plmMarkers(ctx context.Context, st *plmState) error {
+	sid := st.res.StyleID
+	s.step(st, "C.10b раскладки: одна легаси (size+sets) + одна со СОСТАВОМ (v4), обе на fabric BOM line")
+
+	// A rectangle is enough geometry: the server stores the blob opaquely and validates only its
+	// cardinality and its rotations. Two shapes so the pieces are visibly distinct in the editor.
+	poly := func(w, h float64) []*common.TechCardMarkerPoint {
+		return []*common.TechCardMarkerPoint{{XCm: 0, YCm: 0}, {XCm: w, YCm: 0}, {XCm: w, YCm: h}, {XCm: 0, YCm: h}}
+	}
+	place := func(pieceID, instance int32, x, y float64) *common.TechCardMarkerPlacement {
+		return &common.TechCardMarkerPlacement{PieceId: pieceID, Instance: instance, RotDeg: 0, XCm: x, YCm: y}
+	}
+
+	// --- 1. ЛЕГАСИ: one size, four комплектов, v2 blob. Sent the way the shipped bundle sends it.
+	legacy := &common.TechCardMarkerInsert{
+		SizeId: st.mID, Sets: 4, Name: "M · основная (легаси)", Source: "auto",
+		BomLineKey:    st.bomFabricKey,
+		FabricWidthCm: decv("150"), GapCm: decv("0.5"), EdgeMarginCm: decv("1"), SelvedgeCm: decv("1"),
+		UsedLengthCm: decv("480"), EfficiencyPct: decv("71.5"),
+		PlacedCount: 8, TotalCount: 8,
+		Layout: &common.TechCardMarkerLayout{
+			SchemaVersion: 2,
+			Params:        &common.TechCardMarkerNestParams{Unit: "cm", TolCm: 0.1, RdpEpsCm: 0.05},
+			Pieces: []*common.TechCardMarkerPiece{
+				{PieceId: 1, Name: "FRONT_M", Source: "seed.dxf", Quantity: 1, Poly: poly(60, 70), BboxWCm: 60, BboxHCm: 70, AreaCm2: 4200, PieceLineKey: st.pieceFrontKey},
+				{PieceId: 2, Name: "BACK_M", Source: "seed.dxf", Quantity: 1, Poly: poly(60, 75), BboxWCm: 60, BboxHCm: 75, AreaCm2: 4500, PieceLineKey: st.pieceBackKey},
+			},
+			// quantity 1 per garment × 4 комплектов = 4 instances each.
+			Placements: []*common.TechCardMarkerPlacement{
+				place(1, 0, 0, 0), place(2, 0, 0, 75), place(1, 1, 62, 0), place(2, 1, 62, 75),
+				place(1, 2, 124, 0), place(2, 2, 124, 75), place(1, 3, 186, 0), place(2, 3, 186, 75),
+			},
+		},
+	}
+	legacyResp, err := s.C.SaveTechCardMarker(ctx, &admin.SaveTechCardMarkerRequest{TechCardId: sid, Marker: legacy})
+	if err != nil {
+		return fmt.Errorf("SaveTechCardMarker(легаси): %w", err)
+	}
+
+	// --- 2. СОСТАВ: M×2 + L×1, a v4 blob whose pieces carry sizes, plus one size-agnostic piece.
+	//         Instances: front_M 1×2 + front_L 1×1 + pocket 1×3 (total_units) = 6.
+	mixed := &common.TechCardMarkerInsert{
+		Name: "M×2 + L×1 (состав)", Source: "auto", BomLineKey: st.bomFabricKey,
+		FabricWidthCm: decv("150"), GapCm: decv("0.5"), EdgeMarginCm: decv("1"), SelvedgeCm: decv("1"),
+		UsedLengthCm: decv("330"), EfficiencyPct: decv("78.25"),
+		PlacedCount: 6, TotalCount: 6,
+		Layout: &common.TechCardMarkerLayout{
+			SchemaVersion: 4,
+			Params:        &common.TechCardMarkerNestParams{Unit: "cm", TolCm: 0.1, RdpEpsCm: 0.05},
+			Composition: []*common.TechCardMarkerCompositionEntry{
+				{SizeId: st.mID, Quantity: 2}, {SizeId: st.lID, Quantity: 1},
+			},
+			Pieces: []*common.TechCardMarkerPiece{
+				{PieceId: 1, Name: "FRONT_M", Source: "seed.dxf", Quantity: 1, SizeId: st.mID, Poly: poly(60, 70), BboxWCm: 60, BboxHCm: 70, AreaCm2: 4200, PieceLineKey: st.pieceFrontKey},
+				{PieceId: 2, Name: "FRONT_L", Source: "seed.dxf", Quantity: 1, SizeId: st.lID, Poly: poly(64, 74), BboxWCm: 64, BboxHCm: 74, AreaCm2: 4736, PieceLineKey: st.pieceFrontKey},
+				// No размерный хвост in the block name: this piece does not grade, so one is cut per
+				// garment of the WHOLE состав — the `: total_units` half of the formula.
+				{PieceId: 3, Name: "POCKET", Source: "seed.dxf", Quantity: 1, Poly: poly(16, 18), BboxWCm: 16, BboxHCm: 18, AreaCm2: 288},
+			},
+			Placements: []*common.TechCardMarkerPlacement{
+				place(1, 0, 0, 0), place(1, 1, 0, 72), place(2, 0, 62, 0),
+				place(3, 0, 128, 0), place(3, 1, 146, 0), place(3, 2, 164, 0),
+			},
+		},
+	}
+	mixedResp, err := s.C.SaveTechCardMarker(ctx, &admin.SaveTechCardMarkerRequest{TechCardId: sid, Marker: mixed})
+	if err != nil {
+		return fmt.Errorf("SaveTechCardMarker(состав): %w", err)
+	}
+
+	// NEGATIVE: a v4 field under a v3 declaration is a client writing a format it does not speak.
+	// Fired on a clone so it never touches the two real markers.
+	neg := proto.Clone(mixed).(*common.TechCardMarkerInsert)
+	neg.Name = "QA negative · состав под v3"
+	neg.Layout.SchemaVersion = 3
+	_, negErr := s.C.SaveTechCardMarker(ctx, &admin.SaveTechCardMarkerRequest{TechCardId: sid, Marker: neg})
+	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
+		return fmt.Errorf("NEGATIVE composition under schema_version 3: expected HTTP 400, got %v", negErr)
+	}
+	s.pass(st, "NEGATIVE layout.composition под schema_version=3 отвергнут -> HTTP 400")
+
+	// Read both back off the card and assert the two branches of the formula landed.
+	r, err := s.C.GetTechCard(ctx, &admin.GetTechCardRequest{Id: sid})
+	if err != nil {
+		return fmt.Errorf("GetTechCard(markers): %w", err)
+	}
+	byID := map[int32]*common.TechCardMarkerSummary{}
+	for _, m := range r.GetTechCard().GetMarkers() {
+		byID[m.GetId()] = m
+	}
+	got := byID[legacyResp.GetId()]
+	if got == nil {
+		return fmt.Errorf("легаси marker %d missing from the card read", legacyResp.GetId())
+	}
+	if got.GetSizeId() != st.mID || got.GetSets() != 4 || got.GetTotalUnits() != 4 ||
+		len(got.GetComposition()) != 1 || got.GetComposition()[0].GetQuantity() != 4 {
+		return fmt.Errorf("легаси marker read back wrong: size_id=%d sets=%d total_units=%d composition=%v",
+			got.GetSizeId(), got.GetSets(), got.GetTotalUnits(), got.GetComposition())
+	}
+	if got.GetScalarApplyRefusal() != "" || got.GetConsumptionPerUnitCm().GetValue() != "120" {
+		return fmt.Errorf("легаси marker must still hand out its scalar norm: refusal=%q consumption=%q",
+			got.GetScalarApplyRefusal(), got.GetConsumptionPerUnitCm().GetValue())
+	}
+	s.pass(st, "легаси раскладка id=%d читается как состав из одного размера (%d×%d), расход %s см/изд",
+		got.GetId(), got.GetComposition()[0].GetSizeId(), got.GetComposition()[0].GetQuantity(),
+		got.GetConsumptionPerUnitCm().GetValue())
+
+	got = byID[mixedResp.GetId()]
+	if got == nil {
+		return fmt.Errorf("marker with a состав %d missing from the card read", mixedResp.GetId())
+	}
+	if got.GetSizeId() != 0 || got.GetSets() != 0 || got.GetTotalUnits() != 3 || len(got.GetComposition()) != 2 {
+		return fmt.Errorf("состав marker read back wrong: size_id=%d sets=%d total_units=%d composition=%v",
+			got.GetSizeId(), got.GetSets(), got.GetTotalUnits(), got.GetComposition())
+	}
+	if got.GetConsumptionPerUnitCm() != nil || got.GetScalarApplyRefusal() == "" {
+		return fmt.Errorf("mixed раскладка must WITHHOLD its scalar norm: consumption=%v refusal=%q",
+			got.GetConsumptionPerUnitCm(), got.GetScalarApplyRefusal())
+	}
+	s.pass(st, "раскладка со СОСТАВОМ id=%d: %d размеров, %d изделий, скалярный расход не выдан (%s)",
+		got.GetId(), len(got.GetComposition()), got.GetTotalUnits(), got.GetScalarApplyRefusal())
 	return nil
 }
 
@@ -800,7 +964,7 @@ func (s *Seeder) plmColorways(ctx context.Context, st *plmState) error {
 	}
 	fabricsOnFront := 0
 	for _, p := range cl.GetPieces() {
-		if p.GetMirrored() {
+		if p.GetName() == "front panel" {
 			fabricsOnFront = len(p.GetFabrics())
 		}
 	}
@@ -1811,6 +1975,11 @@ func p32(v int32) *int32 { return &v }
 func p64(v int64) *int64 { return &v }
 
 func pbool(v bool) *bool { return &v }
+
+// pcs makes the 0275 marking explicitly PRESENT on the wire. The field is `optional` so a stale tab
+// cannot erase it, which means an absent field says "carry the stored value" — the seeder has to be
+// the new client, not the stale one, or its readback would assert nothing.
+func pcs(v common.TechCardPieceCutSymmetry) *common.TechCardPieceCutSymmetry { return &v }
 
 func pstr(v string) *string { return &v }
 

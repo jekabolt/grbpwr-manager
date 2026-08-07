@@ -10,6 +10,7 @@ ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_ADJUSTMENT_MODE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_CHANGE_REASON_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_CHANGE_SOURCE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/common/common/techcard.proto|Enum zero value name \"TECH_CARD_BOM_PURPOSE_UNSET\" should be suffixed with \"_UNKNOWN\".
 IMPORT_USED|proto/common/common/language.proto|Import \"google/protobuf/timestamp.proto\" is unused.
 PACKAGE_VERSION_SUFFIX|proto/admin/admin/admin.proto|Package name \"admin\" should be suffixed with a correctly formed version, such as \"admin.v1\".
 PACKAGE_VERSION_SUFFIX|proto/auth/auth/auth.proto|Package name \"auth\" should be suffixed with a correctly formed version, such as \"auth.v1\".

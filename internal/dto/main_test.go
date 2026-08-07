@@ -10,6 +10,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Pattern-url write validation is fail-closed on the host allowlist (production wires
+	// it from the bucket config); the fixtures below use "cdn" as the managed host.
+	SetManagedPatternHosts("cdn", "files.grbpwr.com")
 	cache.RefreshDictionary(&entity.DictionaryInfo{Colors: []entity.Color{
 		{ID: 1, Code: "BLK", Name: "black", Hex: sql.NullString{String: "#000000", Valid: true}},
 		{ID: 2, Code: "WHT", Name: "white", Hex: sql.NullString{String: "#FFFFFF", Valid: true}},

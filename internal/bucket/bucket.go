@@ -122,6 +122,24 @@ func (b *Bucket) managedObjectKeyFromURL(rawURL string) (string, error) {
 	return objectKeyFromURL(rawURL)
 }
 
+// ManagedHosts returns the hosts a stored media/pattern url may legitimately point at:
+// the CDN subdomain and the bucket's virtual-hosted origin. It is the single definition of
+// "our bucket" — write validation (dto) uses it so a pattern row can never carry a foreign
+// url, and it is computed here because this package owns the bucket config.
+func ManagedHosts(c *Config) []string {
+	if c == nil {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	if cdn := configuredURLHost(c.SubdomainEndpoint); cdn != "" {
+		out = append(out, cdn)
+	}
+	if endpoint := configuredURLHost(c.S3Endpoint); endpoint != "" && c.S3BucketName != "" {
+		out = append(out, strings.ToLower(c.S3BucketName+"."+endpoint))
+	}
+	return out
+}
+
 func configuredURLHost(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

@@ -143,6 +143,10 @@ message FittingPattern {
   // (size_id, url) row across the full-replace save; present (even empty) is stored as sent
   // (empty clears). JSON null reads as absent (preserve) — clear with the empty string.
   optional string name = 5;
+  // view_url / download_url are OUTPUT-ONLY tokenized read urls (see
+  // TechCardSizePattern.view_url). Ignored on write.
+  string view_url = 6;
+  string download_url = 7;
 }
 
 // Fitting is a stored try-on session with resolved media for display.

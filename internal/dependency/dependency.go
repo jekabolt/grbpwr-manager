@@ -742,6 +742,18 @@ type (
 		ListOutputVariantsByCardIds(ctx context.Context, techCardIDs []int) (map[int][]entity.TechCardOutputVariant, error)
 		UpsertOutputVariant(ctx context.Context, techCardID int, ins entity.TechCardOutputVariantInsert, username string) (int, error)
 		DeleteOutputVariant(ctx context.Context, id int) error
+		// Saved раскладки (markers, 0257). SaveMarker upserts by id (0 creates; last-write-wins, no
+		// lock_version bump — see the store), refusing an incomplete layout (ErrMarkerIncomplete), a
+		// released card, a size outside the card's range or an unknown bom_line_key. GetMarker is
+		// the only read carrying the layout blob; summaries ride GetTechCardById.
+		SaveMarker(ctx context.Context, techCardID, id int, ins entity.TechCardMarkerInsert, username string) (int, error)
+		GetMarker(ctx context.Context, id int) (*entity.TechCardMarker, error)
+		DeleteMarker(ctx context.Context, id int) error
+		// ListFabricDirectionGaps reads the кампания Д1 worklist (Ф1.8): cards whose roll-goods BOM
+		// lines still carry no направление ткани, with the counts an owner triages by. techCardID
+		// 0 = all cards. Every such card comes back — deciding which belong on a worklist is
+		// entity.BuildFabricDirectionGapReport's job, not the store's.
+		ListFabricDirectionGaps(ctx context.Context, techCardID int) ([]entity.FabricDirectionGapCard, error)
 		// RepriceTechCardBom pulls the current catalog price into every catalog-linked BOM line of a
 		// DRAFT card, stamping price_source='catalog' (production-costing Phase 3). Returns the
 		// visited lines + the count of unlinked lines it could not touch.
@@ -1266,6 +1278,35 @@ type (
 		SetBackgroundHeroColor(ctx context.Context, color string) error
 	}
 
+	// Workshop is «дом настроек цеха» (Ф2.5, 0272): the singleton row of shop-floor constants that
+	// several phases of the cutting plan each assumed existed. Distinct from Settings, which is the
+	// STOREFRONT's configuration (carriers, payment, site availability) — nothing about the workshop
+	// belongs on that surface and nothing here belongs on the storefront.
+	Workshop interface {
+		GetSettings(ctx context.Context) (*entity.WorkshopSettings, error)
+		// UpdateSettings applies a partial patch (a setting the patch does not name keeps its stored
+		// value) and returns the resulting configuration.
+		UpdateSettings(ctx context.Context, patch entity.WorkshopSettingsPatch, updatedBy string) (*entity.WorkshopSettings, error)
+	}
+
+	// PatternObjects manages pattern_object_access rows — per-object revocation epoch,
+	// expiry policy and coarse access stats behind the tokenized pattern read path
+	// /api/p/{token}. Rows are created lazily; a missing row means default access state.
+	PatternObjects interface {
+		GetById(ctx context.Context, id int64) (*entity.PatternObjectAccess, error)
+		// EnsureByKeys returns rows for the given managed object keys, creating missing
+		// ones (epoch 0, no expiry) without touching existing state.
+		EnsureByKeys(ctx context.Context, refs []entity.PatternObjectRef) (map[string]entity.PatternObjectAccess, error)
+		// BumpEpoch invalidates every token minted for the object so far.
+		BumpEpoch(ctx context.Context, id int64) error
+		// Revoke hard-disables access until un-revoked (distinct from a rotating bump).
+		Revoke(ctx context.Context, id int64, at time.Time) error
+		// RecordAccess folds a debounced batch of access stats into the rows.
+		RecordAccess(ctx context.Context, counts map[int64]int64, last map[int64]time.Time) error
+		// DeleteByKeys drops rows whose objects were garbage-collected.
+		DeleteByKeys(ctx context.Context, keys []string) error
+	}
+
 	Waitlist interface {
 		AddToWaitlist(ctx context.Context, productId int, sizeId int, email string) error
 		GetWaitlistEntriesByProductSize(ctx context.Context, productId int, sizeId int) ([]entity.WaitlistEntry, error)
@@ -1305,8 +1346,10 @@ type (
 		Analytics() Analytics
 		Media() Media
 		Settings() Settings
+		Workshop() Workshop
 		Support() Support
 		Language() Language
+		PatternObjects() PatternObjects
 		Tx(ctx context.Context, f func(context.Context, Repository) error) error
 		TxBegin(ctx context.Context) (Repository, error)
 		TxCommit(ctx context.Context) error
@@ -1380,6 +1423,13 @@ type (
 		// UploadLabelPDF durably stores a carrier shipping-label PDF (whose provider URL expires)
 		// and returns its CDN url and stored byte size. Kept out of the media library.
 		UploadLabelPDF(ctx context.Context, raw []byte, objectName string) (string, int64, error)
+		// PresignPatternObject returns a short-lived presigned GET url for a managed
+		// pattern object key, targeting the ORIGIN endpoint (presigned requests never
+		// pass the CDN — SigV4 binds the Host). The expiry is snapped to a deterministic
+		// window so the url string is stable within it (browser HTTP cache; no
+		// <object>/viewer remounts). download=true adds a content-disposition=attachment
+		// response override.
+		PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (url string, expiresAt time.Time, err error)
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
 		// DeleteObjects best-effort removes the S3 objects behind the given media URLs

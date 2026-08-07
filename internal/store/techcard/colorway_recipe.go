@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
@@ -30,6 +32,119 @@ type recipeUsagePinRow struct {
 	PieceID    sql.NullInt64  `db:"piece_id"`
 	Placement  sql.NullString `db:"placement"`
 	MaterialID sql.NullInt64  `db:"material_id"`
+	// Provenance triple, carried across presence-less writes exactly like the material pin:
+	// a stale client that predates consumption_source must not silently reset a marker-sourced
+	// norm to 'manual' (that would re-enable the wastage gross-up and shift costing).
+	ConsumptionSource string              `db:"consumption_source"`
+	WasteSelvedgePct  decimal.NullDecimal `db:"waste_selvedge_pct"`
+	WasteCutPct       decimal.NullDecimal `db:"waste_cut_pct"`
+}
+
+// usageProvenance is the resolved (source, selvedge, cut) triple written with a usage row.
+type usageProvenance struct {
+	source   string
+	selvedge decimal.NullDecimal
+	cut      decimal.NullDecimal
+}
+
+// normalized maps the DB shapes onto the canonical triple: an empty source reads as manual,
+// and a non-marker source never carries a decomposition.
+func (p usageProvenance) normalized() usageProvenance {
+	if p.source == "" {
+		p.source = entity.ConsumptionSourceManual
+	}
+	if p.source != entity.ConsumptionSourceMarker {
+		p.selvedge, p.cut = decimal.NullDecimal{}, decimal.NullDecimal{}
+	}
+	return p
+}
+
+func (p usageProvenance) equal(o usageProvenance) bool {
+	return p.source == o.source && nullDecimalEqual(p.selvedge, o.selvedge) && nullDecimalEqual(p.cut, o.cut)
+}
+
+func nullDecimalEqual(a, b decimal.NullDecimal) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	return !a.Valid || a.Decimal.Equal(b.Decimal)
+}
+
+// agreedSlotProvenance returns the provenance shared by EVERY prior row of a slot, when they
+// genuinely agree. Multiple whole-garment rows on one slot are legal, so — unlike the material
+// pin, where an ambiguous match preserves nothing — a presence-less rewrite must not flip an
+// agreeing marker slot back to manual: that would silently re-enable the wastage gross-up, the
+// exact invariant this feature exists to hold. Only genuine disagreement falls back to manual.
+func agreedSlotProvenance(rows []usageProvenance) (usageProvenance, bool) {
+	if len(rows) == 0 {
+		return usageProvenance{}, false
+	}
+	first := rows[0].normalized()
+	for _, r := range rows[1:] {
+		if !first.equal(r.normalized()) {
+			return usageProvenance{}, false
+		}
+	}
+	return first, true
+}
+
+// rollGoodsSectionList is THE list of BOM families sold by length — the only rows a marker can lay
+// out (so the only ones where consumption_source='marker' is meaningful), and the only ones a
+// pattern sheet or a cut-piece alias can bind to. Countable sections never gross wastage anyway;
+// thread/trim/decoration are measured and MUST keep their gross-up.
+//
+// Everything below is DERIVED from this slice, deliberately. The membership map, the named-query
+// args and the SQL fragment used to be three hand-written copies sitting next to each other with a
+// comment claiming they could not drift. Proximity is not coupling: adding a fifth family to the
+// map would have left the fragment at four, and the failure is silent in the worst direction —
+// markers would accept the family, pattern/alias binding would refuse it, and no test would notice
+// because the extra named arg is simply ignored by sqlx.
+var rollGoodsSectionList = []entity.TechCardBomSection{
+	entity.BomSectionFabric,
+	entity.BomSectionLining,
+	entity.BomSectionInterlining,
+	entity.BomSectionInsulation,
+}
+
+var rollGoodsSections = func() map[string]bool {
+	m := make(map[string]bool, len(rollGoodsSectionList))
+	for _, s := range rollGoodsSectionList {
+		m[string(s)] = true
+	}
+	return m
+}()
+
+// rollGoodsSectionParam is the named parameter for one family; the fragment and the args helper
+// call it, so the two cannot name different things.
+func rollGoodsSectionParam(s entity.TechCardBomSection) string { return "sec_" + string(s) }
+
+// rollGoodsSectionArgs binds the families as named query params, on top of whatever the caller
+// already put in the map.
+func rollGoodsSectionArgs(args map[string]any) map[string]any {
+	for _, s := range rollGoodsSectionList {
+		args[rollGoodsSectionParam(s)] = string(s)
+	}
+	return args
+}
+
+// rollGoodsSectionIn is the matching SQL fragment: `section IN (:sec_fabric, …)`. Concatenated
+// after an `AND `, never containing a ':' inside a SQL comment (that combination is what breaks
+// sqlx binding with "could not find name  in map").
+var rollGoodsSectionIn = rollGoodsSectionInOn("")
+
+// rollGoodsSectionInOn is the same fragment qualified by a table alias, for a query that joins
+// something else carrying a `section` column of its own — `material` does, so an unqualified
+// `section` there is not merely unclear, it is an error MySQL refuses the statement over. An empty
+// alias yields the bare form.
+func rollGoodsSectionInOn(alias string) string {
+	names := make([]string, 0, len(rollGoodsSectionList))
+	for _, s := range rollGoodsSectionList {
+		names = append(names, ":"+rollGoodsSectionParam(s))
+	}
+	if alias != "" {
+		alias += "."
+	}
+	return alias + "section IN (" + strings.Join(names, ", ") + ")"
 }
 
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
@@ -50,6 +165,7 @@ type resolvedRecipeUsage struct {
 	bomItemID  sql.NullInt64
 	pieceID    sql.NullInt64
 	materialID sql.NullInt64
+	provenance usageProvenance
 }
 
 // UpdateColorwayRecipe replaces a colourway's material recipe (usages), restoring the write-path cut
@@ -95,16 +211,18 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 
 		// Resolve the style's BOM: by stable line_key (preferred) and ordered for the legacy index ref.
 		bomRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, rep.DB(),
-			`SELECT id, line_key FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
+			`SELECT id, line_key, section FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
 			map[string]any{"id": cur.StyleID})
 		if err != nil {
 			return fmt.Errorf("load style bom for recipe: %w", err)
 		}
 		byKey := make(map[string]int, len(bomRows))
 		ordered := make([]int, 0, len(bomRows))
+		sectionByBomID := make(map[int64]string, len(bomRows))
 		for _, r := range bomRows {
 			byKey[r.LineKey] = r.Id
 			ordered = append(ordered, r.Id)
+			sectionByBomID[int64(r.Id)] = strings.ToLower(strings.TrimSpace(r.Section.String))
 		}
 
 		// Resolve the style's cut-pieces the same way (WS4): by stable line_key (preferred) and ordered
@@ -128,16 +246,19 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		// the resolved (bom_item_id, piece_id, normalized placement) tuple, not either legacy positional
 		// index. Placement distinguishes repeatable whole-garment rows on the same BOM slot.
 		priorRows, err := storeutil.QueryListNamed[recipeUsagePinRow](ctx, rep.DB(), `
-			SELECT bom_item_id, piece_id, placement, material_id
+			SELECT bom_item_id, piece_id, placement, material_id, consumption_source, waste_selvedge_pct, waste_cut_pct
 			FROM tech_card_colorway_usage
 			WHERE colorway_id = :id`, map[string]any{"id": colorwayID})
 		if err != nil {
 			return fmt.Errorf("load colourway %d existing recipe pins: %w", colorwayID, err)
 		}
 		priorBySlot := make(map[recipeUsagePinSlot][]sql.NullInt64, len(priorRows))
+		priorProvenanceBySlot := make(map[recipeUsagePinSlot][]usageProvenance, len(priorRows))
 		for _, row := range priorRows {
 			slot := newRecipeUsagePinSlot(newRecipeUsageSlot(row.BomItemID, row.PieceID), row.Placement)
 			priorBySlot[slot] = append(priorBySlot[slot], row.MaterialID)
+			priorProvenanceBySlot[slot] = append(priorProvenanceBySlot[slot],
+				usageProvenance{source: row.ConsumptionSource, selvedge: row.WasteSelvedgePct, cut: row.WasteCutPct})
 		}
 
 		// Resolve and validate the entire replacement before its first write. In particular, MySQL
@@ -190,8 +311,39 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				// belongs to the replacement usage. A single NULL is preserved as inheritance.
 				materialID = oldPins[0]
 			}
+			// Provenance triple: present -> written as sent ('' normalises to manual, which
+			// clears the pcts); absent (stale client) -> preserved when EVERY prior row of the
+			// slot agrees (repeatable whole-garment rows collide into one slot legally — an
+			// agreeing pair must not flip marker back to manual and re-enable the gross-up);
+			// no prior / genuine disagreement -> manual.
+			prov := usageProvenance{source: entity.ConsumptionSourceManual}
+			if u.ConsumptionSource.Valid {
+				if u.ConsumptionSource.String == entity.ConsumptionSourceMarker {
+					prov = usageProvenance{
+						source:   entity.ConsumptionSourceMarker,
+						selvedge: u.WasteSelvedgePct,
+						cut:      u.WasteCutPct,
+					}
+				}
+			} else if agreed, ok := agreedSlotProvenance(priorProvenanceBySlot[pinSlot]); ok {
+				prov = agreed
+			}
+			// Marker provenance is meaningful only on roll goods a marker can lay out. Sent
+			// explicitly on anything else -> the client is wrong, refuse. Carried forward onto
+			// a row that no longer qualifies (legacy data, section edits) -> demote to manual
+			// quietly rather than fail a stale client's presence-less save.
+			if prov.source == entity.ConsumptionSourceMarker &&
+				(!bomItemID.Valid || !rollGoodsSections[sectionByBomID[bomItemID.Int64]]) {
+				if u.ConsumptionSource.Valid {
+					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].consumption_source", i),
+						"marker_not_roll_goods", recipeUsageSlotName(u, slot),
+						"marker consumption applies only to fabric, lining, interlining or insulation BOM lines")
+				}
+				prov = usageProvenance{source: entity.ConsumptionSourceManual}
+			}
 			resolved = append(resolved, resolvedRecipeUsage{
 				usage: u, bomItemID: bomItemID, pieceID: pieceID, materialID: materialID,
+				provenance: prov,
 			})
 		}
 
@@ -243,21 +395,24 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			u := r.usage
 			usageID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 				INSERT INTO tech_card_colorway_usage
-					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_id, piece_index, material_id, display_order)
-				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :quantity, :piece_id, :piece_index, :material_id, :display_order)`,
+					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_id, piece_index, material_id, display_order)
+				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :consumption_source, :waste_selvedge_pct, :waste_cut_pct, :quantity, :piece_id, :piece_index, :material_id, :display_order)`,
 				map[string]any{
-					"colorway_id":    colorwayID,
-					"bom_item_id":    r.bomItemID,
-					"bom_item_index": u.BomItemIndex,
-					"placement":      u.Placement,
-					"color":          u.Color,
-					"pantone":        u.Pantone,
-					"consumption":    u.Consumption,
-					"quantity":       u.Quantity,
-					"piece_id":       r.pieceID,
-					"piece_index":    u.PieceIndex,
-					"material_id":    r.materialID,
-					"display_order":  i,
+					"colorway_id":        colorwayID,
+					"bom_item_id":        r.bomItemID,
+					"bom_item_index":     u.BomItemIndex,
+					"placement":          u.Placement,
+					"color":              u.Color,
+					"pantone":            u.Pantone,
+					"consumption":        u.Consumption,
+					"consumption_source": r.provenance.source,
+					"waste_selvedge_pct": r.provenance.selvedge,
+					"waste_cut_pct":      r.provenance.cut,
+					"quantity":           u.Quantity,
+					"piece_id":           r.pieceID,
+					"piece_index":        u.PieceIndex,
+					"material_id":        r.materialID,
+					"display_order":      i,
 				})
 			if err != nil {
 				return fmt.Errorf("insert colourway usage: %w", err)
@@ -314,7 +469,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 // colourway has no recipe yet.
 func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity.TechCardColorwayUsage, error) {
 	usages, err := storeutil.QueryListNamed[entity.TechCardColorwayUsage](ctx, s.DB, `
-		SELECT id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, quantity, piece_index
+		SELECT id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_index
 		FROM tech_card_colorway_usage
 		WHERE colorway_id = :id
 		ORDER BY display_order`, map[string]any{"id": colorwayID})

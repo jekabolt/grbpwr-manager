@@ -34,6 +34,12 @@ func (s *routeStubServer) GetTechCardReadiness(ctx context.Context, req *pb_admi
 	return &pb_admin.GetTechCardReadinessResponse{}, nil
 }
 
+func (s *routeStubServer) ListTechCardFabricDirectionGaps(ctx context.Context, req *pb_admin.ListTechCardFabricDirectionGapsRequest) (*pb_admin.ListTechCardFabricDirectionGapsResponse, error) {
+	s.lastCall = "DirectionGaps"
+	s.lastID = req.TechCardId
+	return &pb_admin.ListTechCardFabricDirectionGapsResponse{}, nil
+}
+
 // TestTechCardListRouteNotShadowed pins the grpc-gateway route-ordering invariant
 // documented on the proto: GET /tech-card/list must reach ListTechCards, not
 // GetTechCard with id="list". The mux prepends handlers and first-match wins, so
@@ -67,6 +73,21 @@ func TestTechCardListRouteNotShadowed(t *testing.T) {
 	_ = respR.Body.Close()
 	if stub.lastCall != "Readiness" || stub.lastID != 7 {
 		t.Fatalf("GET /tech-card/readiness/7 dispatched to %q (id=%d), want GetTechCardReadiness id=7", stub.lastCall, stub.lastID)
+	}
+
+	// Ф1.8: /tech-card/fabric-direction-gaps is a literal single segment sitting exactly where
+	// /tech-card/{id} matches, so it lives or dies by the same ordering — and its failure mode is
+	// quiet, a 400 «cannot parse "fabric-direction-gaps" as int32» that reads like a client bug.
+	// The route also carries no path parameter, so tech_card_id must arrive from the QUERY.
+	stub.lastCall, stub.lastID = "", 0
+	respG, err := http.Get(ts.URL + "/api/admin/tech-card/fabric-direction-gaps?tech_card_id=9")
+	if err != nil {
+		t.Fatalf("GET /tech-card/fabric-direction-gaps: %v", err)
+	}
+	_ = respG.Body.Close()
+	if stub.lastCall != "DirectionGaps" || stub.lastID != 9 {
+		t.Fatalf("GET /tech-card/fabric-direction-gaps dispatched to %q (id=%d), want ListTechCardFabricDirectionGaps id=9",
+			stub.lastCall, stub.lastID)
 	}
 
 	stub.lastCall, stub.lastID = "", 0

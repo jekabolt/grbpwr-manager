@@ -114,16 +114,17 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 		Name:        "Coat",
 		SizeIds:     []int32{4, 5},
 		Patterns: []*pb_common.TechCardSizePattern{
-			{SizeId: 4, Url: "https://cdn/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  ")},
-			{SizeId: 4, Url: "https://cdn/x4b.dxf"},                         // multiple per size is allowed; name absent
-			{SizeId: 5, Url: "https://cdn/x5.pdf", Name: stringPointer("")}, // present-empty = explicit clear
+			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  "),
+				LineKey: " 01SHEETKEY0000000000000001 ", BomLineKey: stringPointer("01FABRICSLOT00000000000001")},
+			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4b.dxf"},                                                        // multiple per size is allowed; name absent
+			{SizeId: 5, Url: "https://cdn/tech-card-patterns/x5.pdf", Name: stringPointer(""), BomLineKey: stringPointer("")}, // present-empty = explicit clear/unbind
 		},
 	}
 	ent, err := ConvertPbTechCardInsertToEntity(in)
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	if len(ent.Patterns) != 3 || ent.Patterns[0].SizeId != 4 || ent.Patterns[0].URL != "https://cdn/x4.pdf" {
+	if len(ent.Patterns) != 3 || ent.Patterns[0].SizeId != 4 || ent.Patterns[0].URL != "https://cdn/tech-card-patterns/x4.pdf" {
 		t.Fatalf("patterns not parsed: %+v", ent.Patterns)
 	}
 	// name presence survives dto→entity: present is Valid (trimmed), absent is not.
@@ -136,12 +137,33 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	if !ent.Patterns[2].Name.Valid || ent.Patterns[2].Name.String != "" {
 		t.Fatalf("present-empty name must stay Valid (explicit clear): %+v", ent.Patterns[2].Name)
 	}
+	// line_key is trimmed and NEVER minted here — an empty key is the store's legacy-match signal.
+	if ent.Patterns[0].LineKey != "01SHEETKEY0000000000000001" {
+		t.Fatalf("line_key not trimmed/parsed: %q", ent.Patterns[0].LineKey)
+	}
+	if ent.Patterns[1].LineKey != "" {
+		t.Fatalf("absent line_key must stay empty (legacy path), got %q", ent.Patterns[1].LineKey)
+	}
+	// bom_line_key keeps proto presence like name.
+	if !ent.Patterns[0].BomLineKey.Valid || ent.Patterns[0].BomLineKey.String != "01FABRICSLOT00000000000001" {
+		t.Fatalf("present bom_line_key not parsed: %+v", ent.Patterns[0].BomLineKey)
+	}
+	if ent.Patterns[1].BomLineKey.Valid {
+		t.Fatalf("absent bom_line_key must stay invalid (carry-forward marker)")
+	}
+	if !ent.Patterns[2].BomLineKey.Valid || ent.Patterns[2].BomLineKey.String != "" {
+		t.Fatalf("present-empty bom_line_key must stay Valid (explicit unbind)")
+	}
 	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *ent}, CostingFx{})
 	if len(out.TechCard.Patterns) != 3 || out.TechCard.Patterns[0].Filename != "front-m.pdf" || out.TechCard.Patterns[0].SizeBytes != 1234 {
 		t.Fatalf("patterns round-trip mismatch: %+v", out.TechCard.Patterns)
 	}
 	if out.TechCard.Patterns[0].GetName() != "перед" || out.TechCard.Patterns[1].Name != nil {
 		t.Fatalf("name round-trip mismatch: %+v", out.TechCard.Patterns)
+	}
+	if out.TechCard.Patterns[0].LineKey != "01SHEETKEY0000000000000001" ||
+		out.TechCard.Patterns[0].GetBomLineKey() != "01FABRICSLOT00000000000001" {
+		t.Fatalf("line keys round-trip mismatch: %+v", out.TechCard.Patterns[0])
 	}
 }
 
@@ -154,8 +176,34 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 		"pattern url not http": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
 			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "javascript:alert(1)"}}},
 		"pattern name too long": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
-			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/tech-card-patterns/x.pdf",
 				Name: stringPointer(strings.Repeat("n", 256))}}},
+		"pattern line_key wrong length": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+				LineKey: "SHORTKEY"}}},
+		"pattern line_key non-alnum": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+				LineKey: "01SHEETKEY000000000000000!"}}},
+		"pattern bom_line_key wrong length": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: "https://cdn/x.pdf",
+				BomLineKey: stringPointer("nope")}}},
+		// One key names one ROW — a duplicate would make the store's diff silently delete the
+		// stored row the second entry claimed, so it is rejected before the transaction. The
+		// case-variant duplicate must be caught too (keys are uppercased; the column collates CI).
+		"pattern line_key duplicated": {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 5},
+			Patterns: []*pb_common.TechCardSizePattern{
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"},
+				{SizeId: 5, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"}}},
+		"pattern line_key duplicated case-insensitively": {StyleNumber: "x", Name: "y", SizeIds: []int32{4, 5},
+			Patterns: []*pb_common.TechCardSizePattern{
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"},
+				{SizeId: 5, Url: "https://cdn/y.pdf", LineKey: "01sheetkey0000000000000001"}}},
+		// The dup-key reject's blind spot — two KEYED rows, distinct keys, one (size, url): the
+		// store's diff would keep both, but no client legitimately produces it.
+		"keyed pattern rows share one size and url": {StyleNumber: "x", Name: "y", SizeIds: []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000001"},
+				{SizeId: 4, Url: "https://cdn/x.pdf", LineKey: "01SHEETKEY0000000000000002"}}},
 		// R1: usage size_consumption validation cases moved with the colourway recipe to the Colorway
 		// RPCs (CreateColorway / ColorwayDevelopmentInsert.usages) — re-covered in track T-B step D.
 	}
@@ -163,5 +211,74 @@ func TestTechCardPatternAndUsageValidation(t *testing.T) {
 		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
 		}
+	}
+}
+
+// The Ф7 write-side tightening: a pattern url must name a managed uploaded object — an
+// arbitrary https url (previously accepted and rendered in <object>) and a client echoing
+// the output-only tokenized view_url back into url are both rejected.
+func TestTechCardPatternURLMustBeManaged(t *testing.T) {
+	for name, url := range map[string]string{
+		"arbitrary https": "https://evil.example/x.pdf",
+		"view_url echo":   "https://backend.grbpwr.com/api/p/i1.0.abc",
+		"http not https":  "http://cdn/tech-card-patterns/2026/august/x.pdf",
+		"segment last":    "https://cdn/some/tech-card-patterns",
+	} {
+		in := &pb_common.TechCardInsert{
+			Name:     "n",
+			SizeIds:  []int32{4},
+			Patterns: []*pb_common.TechCardSizePattern{{SizeId: 4, Url: url}},
+		}
+		if _, err := ConvertPbTechCardInsertToEntity(in); err == nil {
+			t.Errorf("%s: url %q must be rejected", name, url)
+		}
+	}
+}
+
+// TestPatternURLHostAllowlist locks the FAIL-CLOSED host check on pattern urls. The path
+// shape alone is not enough: https://evil.example/tech-card-patterns/x.pdf has the right
+// shape, and the admin renders a stored pattern url in an <object>.
+func TestPatternURLHostAllowlist(t *testing.T) {
+	t.Cleanup(func() { SetManagedPatternHosts("cdn", "files.grbpwr.com") })
+
+	mk := func(url string) *pb_common.TechCardInsert {
+		return &pb_common.TechCardInsert{
+			StyleNumber: "TC-HOST", Name: "host", SizeIds: []int32{4},
+			MeasurementUnit: pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_MM,
+			Patterns:        []*pb_common.TechCardSizePattern{{SizeId: 4, Url: url}},
+		}
+	}
+
+	SetManagedPatternHosts("files.grbpwr.com", "grbpwr.fra1.digitaloceanspaces.com")
+	for _, ok := range []string{
+		"https://files.grbpwr.com/base/tech-card-patterns/2026/august/x.pdf",
+		"https://grbpwr.fra1.digitaloceanspaces.com/base/tech-card-patterns/2026/august/x.dxf",
+		"https://FILES.GRBPWR.COM/base/tech-card-patterns/2026/august/x.pdf", // host compare is case-insensitive
+	} {
+		if _, err := ConvertPbTechCardInsertToEntity(mk(ok)); err != nil {
+			t.Errorf("managed url %q must be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"https://evil.example/tech-card-patterns/2026/august/x.pdf", // right shape, wrong host
+		"https://files.grbpwr.com.evil.example/tech-card-patterns/x.pdf",
+		"http://files.grbpwr.com/base/tech-card-patterns/x.pdf", // scheme
+		"https://user@files.grbpwr.com/base/tech-card-patterns/x.pdf",
+		"https://files.grbpwr.com/base/media/2026/x.jpg", // wrong folder
+		"https://files.grbpwr.com/base/tech-card-patterns/../media/x.jpg",
+		"javascript:alert(1)",
+		"",
+	} {
+		if _, err := ConvertPbTechCardInsertToEntity(mk(bad)); err == nil {
+			t.Errorf("url %q must be rejected", bad)
+		}
+	}
+
+	// Fail-closed: an unconfigured allowlist rejects everything rather than degrading to
+	// the shape-only check (a missed boot wiring must break loudly, not silently reopen).
+	SetManagedPatternHosts()
+	if _, err := ConvertPbTechCardInsertToEntity(
+		mk("https://files.grbpwr.com/base/tech-card-patterns/2026/august/x.pdf")); err == nil {
+		t.Error("with no managed hosts configured every pattern url must be rejected")
 	}
 }

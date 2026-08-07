@@ -6,6 +6,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 // TestMaterialPurposeEnumNoDrift asserts every non-UNKNOWN proto MaterialPurpose value maps (via
@@ -119,5 +120,70 @@ func TestConvertMaterialPreservesUpdatePresenceMarkers(t *testing.T) {
 	}
 	if ins.FabricAttr == nil {
 		t.Fatal("a present empty attrs message must remain distinguishable from absence")
+	}
+}
+
+// TestConvertMaterialCuttingCoefficientPresence pins Ф5а.2's THREE write states. A full replace on
+// this column would let a stale admin tab — or any client in the window between the backend and the
+// client deploy — erase a coefficient an operator set, and erase it without a trace, because the
+// catalogue carries neither a signed digest nor an edit journal.
+func TestConvertMaterialCuttingCoefficientPresence(t *testing.T) {
+	base := func() *pb_common.Material {
+		return &pb_common.Material{Name: "Twill", Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC}
+	}
+
+	// ABSENT — the field was not sent at all. Leave the stored value alone.
+	ins, err := ConvertPbMaterialToEntityInsert(base())
+	if err != nil {
+		t.Fatalf("absent coefficient: %v", err)
+	}
+	if !ins.CuttingCoefficientOmitted {
+		t.Error("a nil cutting_coefficient must be reported as OMITTED, not as a clear")
+	}
+	if ins.CuttingCoefficient.Valid {
+		t.Errorf("omitted must carry no value: %+v", ins.CuttingCoefficient)
+	}
+
+	// PRESENT but empty — the explicit "clear". This is the only way to unset the dial.
+	cleared := base()
+	cleared.CuttingCoefficient = &pb_decimal.Decimal{Value: ""}
+	ins, err = ConvertPbMaterialToEntityInsert(cleared)
+	if err != nil {
+		t.Fatalf("cleared coefficient: %v", err)
+	}
+	if ins.CuttingCoefficientOmitted {
+		t.Error("an explicitly sent empty decimal is a CLEAR, not an omission")
+	}
+	if ins.CuttingCoefficient.Valid {
+		t.Errorf("a clear must store NULL: %+v", ins.CuttingCoefficient)
+	}
+
+	// PRESENT with a value — set it.
+	set := base()
+	set.CuttingCoefficient = dec("1.06")
+	ins, err = ConvertPbMaterialToEntityInsert(set)
+	if err != nil {
+		t.Fatalf("set coefficient: %v", err)
+	}
+	if ins.CuttingCoefficientOmitted || !ins.CuttingCoefficient.Valid ||
+		ins.CuttingCoefficient.Decimal.String() != "1.06" {
+		t.Errorf("set coefficient = %+v (omitted=%v)", ins.CuttingCoefficient, ins.CuttingCoefficientOmitted)
+	}
+
+	// A multiplier below 1 shaves a requirement below the norm; above 3 is the fat-fingered "103".
+	for _, bad := range []string{"0.9", "3.5"} {
+		m := base()
+		m.CuttingCoefficient = dec(bad)
+		if _, err := ConvertPbMaterialToEntityInsert(m); err == nil {
+			t.Errorf("cutting_coefficient %s must be rejected", bad)
+		}
+	}
+
+	// DECIMAL(6,4) does not REJECT a fifth decimal place, it silently rounds it — so the operator's
+	// number and the planner's number would differ with nothing saying so.
+	overPrecise := base()
+	overPrecise.CuttingCoefficient = dec("1.03456")
+	if _, err := ConvertPbMaterialToEntityInsert(overPrecise); err == nil {
+		t.Error("cutting_coefficient 1.03456 must be rejected, not silently rounded to 1.0346 by MySQL")
 	}
 }

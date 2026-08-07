@@ -229,9 +229,8 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/styles/{style_id}/size-chart"};
   }
 
-  // GetStyleCutList is the first real consumer of the piece.mirrored flag (Q6): a read-only cut-list
-  // for production. For each cut-piece it expands the quantity (pieces_per_garment × 2 for a mirrored
-  // pair) and resolves, per colourway, which fabric (and fusing) BOM line it is cut from. It is a
+  // GetStyleCutList is the read-only cut-list for production. For each cut-piece it reports the
+  // quantity and resolves, per colourway, which fabric (and fusing) BOM line it is cut from. It is a
   // projection over the tech card — no marker/CAD export, no mutable table.
   rpc GetStyleCutList(GetStyleCutListRequest) returns (GetStyleCutListResponse) {
     option (google.api.http) = {get: "/api/admin/styles/{tech_card_id}/cut-list"};
@@ -1569,6 +1568,64 @@ service AdminService {
   // variant a run line references is refused with FailedPrecondition ("deactivate it instead").
   rpc DeleteTechCardOutputVariant(DeleteTechCardOutputVariantRequest) returns (DeleteTechCardOutputVariantResponse) {
     option (google.api.http) = {delete: "/api/admin/tech-card/output-variant/{id}"};
+  }
+
+  // SaveTechCardMarker creates (id=0) or fully replaces (id>0) ONE saved раскладка (marker, 0257):
+  // a measured fabric layout of one size's pieces, self-contained geometry included. Last-write-wins
+  // on purpose — no lock_version of its own, and the write does NOT bump tech_card.lock_version
+  // (saving a раскладка from the nesting modal must not 409 the operator's open card form).
+  // Refused with FailedPrecondition for a released card, an incomplete layout
+  // (placed_count < total_count — not a consumption norm), or a (card, size, name) already taken;
+  // a size outside the card's range or an unknown bom_line_key is InvalidArgument.
+  rpc SaveTechCardMarker(SaveTechCardMarkerRequest) returns (SaveTechCardMarkerResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/marker/save"
+      body: "*"
+    };
+  }
+  // GetTechCardMarker returns one marker WITH its layout blob — the only place the blob travels
+  // (summaries ride GetTechCard.markers). A stored blob the current schema cannot parse degrades
+  // to summary-only with a warning rather than failing the read (hero-v2 style).
+  rpc GetTechCardMarker(GetTechCardMarkerRequest) returns (GetTechCardMarkerResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/marker/{id}"};
+  }
+  // DeleteTechCardMarker removes a saved раскладка. Markers are measurements, not structural
+  // references — nothing else points at them, so delete is plain (released cards still refuse).
+  rpc DeleteTechCardMarker(DeleteTechCardMarkerRequest) returns (DeleteTechCardMarkerResponse) {
+    option (google.api.http) = {delete: "/api/admin/tech-card/marker/{id}"};
+  }
+
+  // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
+  // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
+  // tech_card_bom_item since 0073 and fed nothing but the MATERIALS digest, so it is unset on almost
+  // every stored line; Ф1 makes an unset direction refuse the save of a раскладка whose geometry
+  // needs judging — including the re-save of a marker that saves fine today. This report is what
+  // makes the fill-in campaign finishable and what says when it is finished; see total_lines for the
+  // exact go/no-go, which is NOT «total_lines == 0» on a default call.
+  //
+  // Read-only. Requires tech-cards read: it is the BOM tab's own data, seen across cards.
+  rpc ListTechCardFabricDirectionGaps(ListTechCardFabricDirectionGapsRequest) returns (ListTechCardFabricDirectionGapsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/fabric-direction-gaps"};
+  }
+
+  // GetWorkshopSettings returns «дом настроек цеха» (Ф2.5, 0272): the shop-floor constants that
+  // belong to the ЦЕХ itself and not to any one card or раскладка. Первый жилец is the cutting
+  // table length, which the nesting modal used to make the operator retype on every раскладка.
+  // Every setting is individually optional — an absent one is NOT configured, and a consumer must
+  // degrade to "no verdict" rather than substitute a zero.
+  rpc GetWorkshopSettings(GetWorkshopSettingsRequest) returns (GetWorkshopSettingsResponse) {
+    option (google.api.http) = {get: "/api/admin/workshop/settings"};
+  }
+
+  // UpdateWorkshopSettings patches the workshop configuration. Partial by construction: an omitted
+  // setting is left alone (see UpdateWorkshopSettingsRequest). Returns the resulting configuration,
+  // so a caller never needs a follow-up read. A request that names no setting at all, or a value
+  // outside the plausibility band for its unit, is InvalidArgument with a field-tagged detail.
+  rpc UpdateWorkshopSettings(UpdateWorkshopSettingsRequest) returns (UpdateWorkshopSettingsResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/workshop/settings"
+      body: "*"
+    };
   }
 
   // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
@@ -4463,6 +4520,59 @@ message UpdateSettingsRequest {
 
 message UpdateSettingsResponse {}
 
+// WORKSHOP SETTINGS (Ф2.5) — «дом настроек цеха». Distinct from the block above: UpdateSettings is
+// the STOREFRONT's configuration (carriers, payment, site availability); this is the physical shop
+// floor. Nothing crosses.
+
+// WorkshopSettings is the singleton shop-floor configuration (workshop_settings, 0272).
+message WorkshopSettings {
+  // Usable length of the cutting/spreading table, in CENTIMETRES.
+  //
+  // ABSENT means the workshop has not configured a table, and that is NOT the same as zero. A
+  // consumer computing a length verdict must render "no verdict available" for an absent value —
+  // comparing against 0 would tell a workshop that has merely not filled this in that every
+  // раскладка it lays is too long, which is worse than saying nothing.
+  google.type.Decimal cutting_table_length_cm = 1;
+
+  string updated_by = 2; // admin username of the last writer; "" = never written
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message GetWorkshopSettingsRequest {}
+
+message GetWorkshopSettingsResponse {
+  WorkshopSettings settings = 1;
+}
+
+// UpdateWorkshopSettingsRequest is a PARTIAL update, and each setting is TRI-STATE:
+//
+//   * ABSENT               — leave the stored value alone. This is the default for any client that
+//                            does not know the setting exists, so a workshop screen shipped before a
+//                            new tenant landed can never wipe it.
+//   * PRESENT, empty value — clear the setting back to "not configured". Needed for real: an
+//                            operator who mistyped the table length must be able to return it to
+//                            unknown, because a wrong number produces confident false verdicts while
+//                            an unset one produces none.
+//   * PRESENT with a number — set it.
+//
+// NOTE for JSON/REST callers: protojson cannot tell `"cuttingTableLengthCm": null` from an absent
+// field, so null also reads as "leave alone". To CLEAR a setting send the empty message —
+// `{"cuttingTableLengthCm": {}}` — not null.
+//
+// A request that names no setting at all is rejected rather than executed: it would write nothing
+// but still stamp updated_by/updated_at, putting a fake edit in the audit trail.
+message UpdateWorkshopSettingsRequest {
+  // Centimetres. Rejected with a field-tagged InvalidArgument outside the plausibility band
+  // (entity.Min/MaxCuttingTableLengthCm): the single most likely operator mistake is typing METRES
+  // into a field labelled centimetres, and "6" for a 6 m table would otherwise be accepted and then
+  // declare every раскладка too long.
+  google.type.Decimal cutting_table_length_cm = 1;
+}
+
+message UpdateWorkshopSettingsResponse {
+  WorkshopSettings settings = 1; // the configuration AFTER the write
+}
+
 // PaymentMethodFee is the estimated processing-fee model of a payment method.
 message PaymentMethodFee {
   common.PaymentMethodNameEnum payment_method = 1;
@@ -5061,18 +5171,26 @@ message StyleCutListFabric {
   string fusing_name = 5;
 }
 
-// StyleCutListPiece is one cut-piece expanded for production (Q6): total_per_garment folds the
-// mirrored pair into the count (pieces_per_garment × 2 when mirrored), and fabrics lists the material
-// per colourway.
+// StyleCutListPiece is one cut-piece for production. total_per_garment EQUALS pieces_per_garment:
+// зеркальное удвоение свёрнуто в само количество миграцией 0266. fabrics перечисляет материал по
+// колорвеям.
 message StyleCutListPiece {
   int32 piece_id = 1;
   string name = 2;
   int32 pieces_per_garment = 3;
-  bool mirrored = 4; // cut as a mirrored pair (left+right)
-  int32 total_per_garment = 5; // pieces_per_garment × (mirrored ? 2 : 1)
+  // ОТСТАВЛЕНО (миграция 0266): удвоение свёрнуто в pieces_per_garment, флаг погашен. Поле только
+  // отражает хранимое и НИЧЕГО не значит для количества.
+  bool mirrored = 4;
+  int32 total_per_garment = 5; // = pieces_per_garment (0266 свернул зеркальное удвоение в него)
   string grainline = 6; // долевая
   bool fused = 7;
   repeated StyleCutListFabric fabrics = 8;
+  // Классификация кроя (0275). total_per_garment по-прежнему РАВЕН pieces_per_garment: это поле
+  // ничего не умножает, оно объясняет уже посчитанное число. UNKNOWN = не размечено.
+  //
+  // Здесь голый энум, а не optional: ответ только на чтение, и отсутствие присутствия ничего не
+  // затирает — затирать нечем, писать через этот RPC нельзя.
+  common.TechCardPieceCutSymmetry cut_symmetry = 9;
 }
 
 message GetStyleCutListRequest {
@@ -5110,6 +5228,14 @@ message StyleCostMaterialLine {
   google.type.Decimal wastage_pct = 10;
   google.type.Decimal line_total_base = 11; // per-garment cost folded to base (EUR); set only when convertible
   bool has_base = 12; // false when the line's currency has no FX rate → excluded from the base total
+  // OUTPUT-ONLY waste provenance (Ф9.4). "bom_estimate" — wastage_pct is the BOM line's static
+  // estimate and it WAS grossed into line_total_base, as always. "marker" — the norm came from a
+  // saved раскладка: nothing was grossed (the length already contains the waste), wastage_pct
+  // carries the EFFECTIVE total (selvedge+cut) so old clients keep seeing a truthful figure, and
+  // the two fields below decompose it for display.
+  string wastage_source = 13;
+  google.type.Decimal wastage_selvedge_pct = 14;
+  google.type.Decimal wastage_cut_pct = 15;
 }
 
 // StyleCostArticleLine is one typed manual cost article (cmt/hardware/packaging/logistics/overhead).
@@ -6213,6 +6339,102 @@ message ListCostingMigrationExceptionsResponse {
   repeated CostingMigrationException exceptions = 1;
 }
 
+// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — see ListTechCardFabricDirectionGaps.
+message ListTechCardFabricDirectionGapsRequest {
+  int32 tech_card_id = 1; // 0 = every card in scope; a card id re-checks one card after the fix
+  // include_inactive adds back the cards the default worklist defers — today exactly the RELEASED
+  // ones, and the `excluded` breakdown always names which states those were. Off by default because
+  // the point of the report is a list somebody can finish; ON for the release go/no-go, because a
+  // released card is deferred on a JUDGEMENT (that nobody re-opens it) and not on a proof.
+  bool include_inactive = 2;
+  // counts_only drops `cards` and answers with the totals alone. The go/no-go call is
+  // (counts_only, include_inactive) = (true, true) — one question, one bounded answer, and that
+  // matters because the unbounded form grows with the portfolio and its failure mode
+  // (ResourceExhausted) would land on precisely the call that gates the release.
+  bool counts_only = 3;
+}
+
+message ListTechCardFabricDirectionGapsResponse {
+  repeated FabricDirectionGapCard cards = 1; // cards with at least one unset line, deterministic order
+  int32 total_cards = 2;
+  // total_lines — roll-goods lines still missing a направление IN THE SCOPE THAT WAS ASKED FOR. On a
+  // default call zero means «nothing refuses today»; it is NOT on its own the release condition,
+  // because the deferred cards below can be re-opened into scope by one ordinary card edit.
+  //
+  // THE GO/NO-GO IS total_lines + excluded_lines == 0 — equivalently total_lines == 0 with
+  // include_inactive. That is the one number, and it is the strict form: it also survives somebody
+  // moving a released card back to draft.
+  int32 total_lines = 3;
+  // What the scope deferred, ALWAYS priced even when the rows themselves are withheld. A filter
+  // nobody can see is a report that lies by omission, and this one is read as a release gate; with
+  // include_inactive this is empty and the totals above cover everything.
+  repeated FabricDirectionGapExclusion excluded = 4;
+  int32 excluded_cards = 5;
+  int32 excluded_lines = 6;
+}
+
+// FabricDirectionGapExclusion is one reason rows were withheld, with its cost in cards and lines.
+message FabricDirectionGapExclusion {
+  common.TechCardApprovalState approval_state = 1;
+  int32 cards = 2;
+  int32 lines = 3;
+}
+
+// FabricDirectionGapCard is one tech card carrying unset cloth lines, with the facts an owner
+// triages by. Cards carrying ANY bound раскладка come first (see linked_marker_count for why that
+// and not blocked_marker_count); ties keep tech_card_id order, so working the list over days never
+// reshuffles it under the operator.
+message FabricDirectionGapCard {
+  int32 tech_card_id = 1;
+  string style_number = 2;
+  string name = 3;
+  common.TechCardStage stage = 4;
+  common.TechCardApprovalState approval_state = 5;
+  // marker_save_possible is false for a RELEASED card: every marker write on one is refused outright
+  // before направление is consulted, so today its unset lines cannot refuse anything. It says
+  // «right now», not «ever» — moving the card back to draft makes it mutable with the same unset
+  // lines, which is exactly why released is DEFERRED and counted rather than dismissed.
+  bool marker_save_possible = 6;
+  // blocked_marker_count — the sum of the per-line counts below. NOT a count of refusals: see
+  // FabricDirectionGapLine.blocked_marker_count. Informational; it decides nothing about the order.
+  int32 blocked_marker_count = 7;
+  // linked_marker_count — раскладки bound to any BOM line of this card, i.e. every marker a gap on
+  // THIS card could possibly refuse (a scope is built out of the card's own lines, and an unlinked
+  // раскладка has no cloth at all). Over-inclusive and deliberately so: it is the only count here
+  // with no false negatives, which is why the urgent tier is drawn on it. blocked_marker_count
+  // cannot do that job — it misses the case where an unset line and an ANSWERED line share a
+  // назначение and only the answered one carries markers, and those markers are refused through the
+  // sibling. Re-deriving назначение here to catch that would be the marker rule restated, free to
+  // disagree with itself; over-approximating with a sound count is the cheaper honest answer.
+  int32 linked_marker_count = 8;
+  bool has_patterns = 9; // the card has DXF sheets, so it can be nested — a раскладка is imminent
+  repeated FabricDirectionGapLine lines = 10; // in BOM-tab order (display_order, id)
+}
+
+// FabricDirectionGapLine is one cloth line still waiting for an answer.
+message FabricDirectionGapLine {
+  int64 bom_item_id = 1;
+  string line_key = 2; // stable wire identity of the row on the BOM tab
+  // name resolves through the catalogue exactly as the BOM tab resolves it — a material-linked line
+  // legitimately carries an empty name of its own, and printing the stored column alone would show
+  // an operator a ULID where the screen says «ВЕЛЬВЕТ ИЗ КАТАЛОГА». Empty only when the line has
+  // neither its own name nor a linked article; use line_key then.
+  string name = 3;
+  common.TechCardBomSection section = 4;
+  common.TechCardBomPurpose purpose = 5; // UNSET = the line has not been sorted yet (0265)
+  // is_sample marks семпловая ярдажа. Kept in the worklist rather than filtered out: the marker
+  // rule asks the direction of sample cloth for SAMPLE раскладки, so dropping these rows would let
+  // the report read «done» while a sample раскладка still refuses to save.
+  bool is_sample = 6;
+  // blocked_marker_count — раскладки bound to THIS line: the population the rule will judge on this
+  // row, and an UPPER bound on what it refuses, never a count of refusals. The rule lets a layout
+  // through before it ever asks about the cloth when that layout carries neither a 180° nor a
+  // mirror — nothing upside down means no direction can change the verdict — so a marker counted
+  // here may well keep saving. Telling the two apart needs the layout blob, which the store does not
+  // parse by design (0257), so the report reports what it can actually see and says which it is.
+  int32 blocked_marker_count = 7;
+}
+
 // Tech-card release snapshots (task 11).
 message ListTechCardReleasesRequest {
   int32 tech_card_id = 1;
@@ -6423,6 +6645,33 @@ message MaterialPlanRow {
   google.type.Decimal shortage = 7; // max(0, required − issued − on_hand)
   bool has_size_norms = 8; // false when some contributing norm was per-garment, not size-graded (rougher estimate)
   google.type.Decimal issued_variance = 9; // issued − required: >0 over-issued vs plan (scrap/overuse), <0 under-issued/leftover (gap-04). Meaningful after issuing/receive.
+  // WHY `required` is bigger than the raw norm (Ф5а.2).
+  //
+  // required_before_grossup is Σ(norm × planned_qty) with NO gross-up of any kind applied — no BOM
+  // wastage %, no cutting coefficient — converted into the same unit as `required`. It is the
+  // "before" number of the before → after pair, and it is honest for every row: a manual row, a
+  // marker row, a counted trim, a row with no coefficient at all.
+  //
+  // The ONE invariant that always holds is required >= required_before_grossup. The factor between
+  // them is whatever gross-up each contributing line took, and lines take exactly one:
+  //   * MARKER-sourced norm → the article's cutting_coefficient;
+  //   * manual / legacy measured norm → the BOM line's wastage % (or the run's actual wastage);
+  //   * counted trim (4 buttons stay 4 buttons) → nothing.
+  // So required = required_before_grossup × cutting_coefficient holds ONLY for a row fed entirely by
+  // marker norms of an article that has a coefficient. On a manual row the ratio is the wastage
+  // factor while cutting_coefficient may still be set (and a caveat says it did not bite); on a
+  // counted row the ratio is 1. Do NOT derive the coefficient from the two numbers — read it from
+  // cutting_coefficient.
+  //
+  // cutting_coefficient is the ARTICLE's coefficient, reported whenever the article has one even if
+  // this run's norms did not let it bite. NOTE it is a DEMAND-side dial only: the run's planned unit
+  // cost and the style cost estimate do NOT include it (they gross up by wastage % alone), so a
+  // planned COGS must never be read as coefficient-inclusive.
+  google.type.Decimal required_before_grossup = 10;
+  google.type.Decimal cutting_coefficient = 11;
+  // Vocabulary normalisation of `unit` (Ф5а.3). UNKNOWN = the row's unit is free text this
+  // server does not know, and quantities under it must not be added to anything else's.
+  common.MaterialUnit unit_code = 12;
 }
 
 // MaterialPlanContribution is one slot × colourway share of the plan — the factory-spec breakdown
@@ -6441,6 +6690,12 @@ message MaterialPlanContribution {
   string unit = 9; // the slot's spec unit (rollup rows may convert to the stock unit)
   google.type.Decimal required = 10; // in `unit`; wastage applied to measured norms only
   bool has_size_norms = 11;
+  // Same decomposition as on the rollup row (Ф5а.2), per slot × colourway: Σ(norm × planned_qty)
+  // with NO gross-up applied (neither wastage % nor coefficient), and the article's cutting
+  // coefficient when it has one (unset = it has none). required >= required_before_grossup always;
+  // the two are related BY the coefficient only on a marker-sourced line — see MaterialPlanRow.
+  google.type.Decimal required_before_grossup = 12;
+  google.type.Decimal cutting_coefficient = 13;
 }
 
 // MaterialPlanBlocker is a slot × colourway the plan could NOT count — a missing article (no pin,
@@ -6485,6 +6740,16 @@ message ReceiveMaterialStockRequest {
   // When this delivery was promised to arrive (Phase 9), YYYY-MM-DD; empty = not tracked. Recorded
   // on the receipt so lateness (occurred_at vs expected_at) is a queryable fact without a PO.
   string expected_at = 12;
+  // Roll facts captured at приёмка (Ф5а.1). Both are recorded on the LOT `lot` names, so setting
+  // either WITHOUT a `lot` is REFUSED (InvalidArgument) rather than accepted and dropped — there is
+  // no lot to hang them on, and an operator who measured the roll would otherwise get a 200 and no
+  // data. An omitted value never clears what an earlier receipt into the same lot recorded.
+  //   measured_width_cm — the width that ARRIVED, not the one the supplier printed (150 nominal,
+  //     148 measured; the marker is made for the narrowest width in the batch). Must be > 0 when set.
+  //   shade_code — the dye lot / оттенок, for colour matching across rolls.
+  // Measured LENGTH has no field: `quantity` already is it.
+  google.type.Decimal measured_width_cm = 13;
+  string shade_code = 14;
 }
 
 message ReceiveMaterialStockResponse {
@@ -6732,6 +6997,32 @@ message DeleteTechCardOutputVariantRequest {
 }
 
 message DeleteTechCardOutputVariantResponse {}
+
+// SaveTechCardMarkerRequest writes ONE saved раскладка. id=0 creates; a non-zero id must already
+// be a marker of tech_card_id and is replaced whole (the layout blob has no partial update).
+message SaveTechCardMarkerRequest {
+  int32 id = 1;
+  int32 tech_card_id = 2;
+  common.TechCardMarkerInsert marker = 3;
+}
+
+message SaveTechCardMarkerResponse {
+  int32 id = 1; // the created or updated marker
+}
+
+message GetTechCardMarkerRequest {
+  int32 id = 1;
+}
+
+message GetTechCardMarkerResponse {
+  common.TechCardMarker marker = 1;
+}
+
+message DeleteTechCardMarkerRequest {
+  int32 id = 1;
+}
+
+message DeleteTechCardMarkerResponse {}
 
 // OrderPackingSpecItem is one garment line in an order's packing spec: the colourway/variant, quantity,
 // and the on-garment assembly (labels/tags) the packer must verify, size-resolved to this line's variant.

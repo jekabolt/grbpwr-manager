@@ -167,6 +167,7 @@ type Server struct {
 	done                    chan struct{}
 	healthChecker           HealthChecker
 	webhookHandler          WebhookHandler
+	patternAccessHandler    http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -183,6 +184,13 @@ func New(config *Config) *Server {
 // SetHealthChecker sets an optional health checker for readiness probes
 func (s *Server) SetHealthChecker(checker HealthChecker) {
 	s.healthChecker = checker
+}
+
+// SetPatternAccessHandler registers the tokenized pattern read endpoint (/api/p/{token}).
+// Token-guarded, deliberately outside admin auth — <object>/<iframe>/QR consumers cannot
+// send headers; mounted inside /api so CORS applies to the ?mode=json variant.
+func (s *Server) SetPatternAccessHandler(h http.Handler) {
+	s.patternAccessHandler = h
 }
 
 // SetWebhookHandler registers the webhook handler for Resend and list-unsubscribe routes.
@@ -444,6 +452,15 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.With(limitBody(maxAdminJSONBodyBytes)).Mount("/admin", auth.WithAuth(adminHandler))
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/frontend", frontendHandler)
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/auth", authHandler)
+		// Tokenized pattern reads: the token IS the credential (rate-limited, audited,
+		// epoch-revocable server-side), so no auth wrapper — QR codes and <object>
+		// embeds cannot send Authorization headers.
+		if s.patternAccessHandler != nil {
+			r.Method(http.MethodGet, "/p/{token}", s.patternAccessHandler)
+			// HEAD too, or chi answers it 405 — the one response that would not be the
+			// uniform 404 every other rejection returns.
+			r.Method(http.MethodHead, "/p/{token}", s.patternAccessHandler)
+		}
 	})
 
 	// Webhook routes — no CORS, no auth. Must accept POST from external services.

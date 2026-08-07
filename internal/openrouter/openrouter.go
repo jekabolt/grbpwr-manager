@@ -104,10 +104,14 @@ type TechCardContext struct {
 type PieceContext struct {
 	Name             string
 	PiecesPerGarment int
-	Mirrored         bool
-	Grainline        string
-	Fused            bool
-	Note             string
+	// CutSymmetry is the 0275 marking (identical|mirrored|fold), EMPTY when the piece is not marked.
+	// Empty must stay empty in the prompt: telling the model "identical" about a piece nobody has
+	// classified would invent a fact for it to reason from, and this context exists to describe the
+	// card, not to guess at it.
+	CutSymmetry string
+	Grainline   string
+	Fused       bool
+	Note        string
 }
 
 // BOMItemContext is one bill-of-materials line (fabric / thread / trim / …).

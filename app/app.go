@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/circuitbreaker"
 	"github.com/jekabolt/grbpwr-manager/internal/deliverysync"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
@@ -35,6 +37,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
+	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
@@ -82,6 +85,9 @@ type App struct {
 	// adminS is retained so Stop can drain the admin server's in-flight async
 	// storefront revalidations (best-effort Vercel calls) at shutdown.
 	adminS *admin.Server
+	// patternSvc is retained so Stop can flush its access-stat debounce while the DB
+	// is still open.
+	patternSvc *patternaccess.Service
 	// frontendS/authS are retained so Stop can terminate their in-memory
 	// rate-limiter cleanup goroutines (lifecycle discipline; they are singletons).
 	frontendS *frontend.Server
@@ -234,6 +240,11 @@ func (a *App) Start(ctx context.Context) error {
 			return err
 		}
 	}
+
+	// Write validation must know which hosts are OURS before any pattern url can be
+	// stored: dto is fail-closed and rejects every pattern url until this is configured
+	// (it cannot import bucket — dependency imports dto — so the hosts are pushed in).
+	dto.SetManagedPatternHosts(bucket.ManagedHosts(&a.c.Bucket)...)
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {
@@ -453,6 +464,21 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.hs.SetWebhookHandler(webhookHandler)
 
+	// Tokenized pattern read path (Ф7): stable capability urls for private выкройки —
+	// minted into admin responses (view_url/download_url) and printed QR codes, resolved
+	// at /api/p/{token} into short-lived presigned origin urls. Fails closed on a
+	// missing pepper (config.Validate guards it too, with a friendlier message).
+	patternSvc, err := patternaccess.New(a.db.PatternObjects(), a.b, a.c.PatternToken.Pepper)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to create pattern access service",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	a.patternSvc = patternSvc
+	a.hs.SetPatternAccessHandler(patternSvc)
+	a.adminS.SetPatternURLService(patternSvc, strings.TrimRight(a.c.PatternToken.PublicBaseURL, "/"))
+
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
 	// When a signing secret is configured for a processor it delivers the fastest
 	// (immediate push) confirmation, but it is not the sole mechanism: confirmation
@@ -538,6 +564,12 @@ func (a *App) Stop(ctx context.Context) {
 			)
 		}
 		cancel()
+	}
+
+	// Pattern access service: flush pending access stats and stop its limiters/ticker
+	// while the DB is still open (the flush writes rows).
+	if a.patternSvc != nil {
+		a.patternSvc.Stop()
 	}
 
 	// The HTTP listener has drained, so no new admin RPC can spawn a revalidation.

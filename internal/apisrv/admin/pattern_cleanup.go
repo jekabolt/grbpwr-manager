@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"log/slog"
+
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
 // deleteOrphanedPatternObjects removes de-referenced production-pattern PDFs after their DB mutation
@@ -18,6 +20,25 @@ func (s *Server) deleteOrphanedPatternObjects(ctx context.Context, owner string,
 			slog.String("owner", owner),
 			slog.Int("owner_id", ownerID),
 			slog.Int("url_count", len(urls)),
+			slog.String("err", err.Error()))
+		// The objects may still exist, so their access rows must stay: dropping them
+		// would reset the revocation epoch, and a surviving (or re-referenced) object
+		// would come back reachable through tokens an operator had already revoked.
+		return
+	}
+	// Drop the objects' access rows in the same pass (design R9): a row without its
+	// object would 404 correctly but sit as dead weight forever. Same best-effort
+	// contract as the object deletion above.
+	keys := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if k, ok := storeutil.PatternObjectKey(u); ok {
+			keys = append(keys, k)
+		}
+	}
+	if err := s.repo.PatternObjects().DeleteByKeys(cleanupCtx, keys); err != nil {
+		slog.Default().ErrorContext(cleanupCtx, "orphaned pattern access rows not cleaned",
+			slog.String("owner", owner),
+			slog.Int("owner_id", ownerID),
 			slog.String("err", err.Error()))
 	}
 }

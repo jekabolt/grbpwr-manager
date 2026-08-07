@@ -103,7 +103,7 @@ func (s *Server) buildAIOperationContext(ctx context.Context, card *entity.TechC
 		tcx.Pieces = append(tcx.Pieces, openrouter.PieceContext{
 			Name:             p.Name,
 			PiecesPerGarment: p.PiecesPerGarment,
-			Mirrored:         p.Mirrored,
+			CutSymmetry:      p.CutSymmetry.String, // "" when unmarked; the prompt then says nothing
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
 			Note:             p.Note.String,

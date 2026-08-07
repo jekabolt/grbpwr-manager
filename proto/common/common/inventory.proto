@@ -75,6 +75,16 @@ message MaterialLot {
   google.protobuf.Timestamp received_at = 9;
   string note = 10;
   bool archived = 11;
+  // measured_width_cm is the width that ARRIVED (Ф5а.1), as opposed to the width the supplier
+  // printed: the supplier says 150, the roll measures 148, and the marker is made for the NARROWEST
+  // width in the batch. The article's NOMINAL width lives on MaterialFabricAttrs.width_cm — this is
+  // the measured fact for THIS roll. Unset = nobody measured it (NOT "it matches the nominal").
+  // There is deliberately no measured LENGTH field: received_qty already is it.
+  google.type.Decimal measured_width_cm = 12;
+  // shade_code is the dye lot / оттенок of this roll, for colour matching across rolls. Empty =
+  // unrecorded. The shade also drifts WITHIN one batch, which is why pieces of one garment come
+  // from adjacent layers — that is a note on the lay screen, not another field here.
+  string shade_code = 13;
 }
 
 // MaterialStockRow is a catalog material joined with its stock balance, valuation and low-stock

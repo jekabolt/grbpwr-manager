@@ -184,7 +184,8 @@ func (s *Store) patternsByTechCardIds(ctx context.Context, ids []int) (map[int][
 		return map[int][]entity.TechCardSizePattern{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardPatternRow](ctx, s.DB, `
-		SELECT tech_card_id, size_id, url, filename, name, size_bytes, version, uploaded_at
+		SELECT tech_card_id, size_id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
+		       url, filename, name, size_bytes, version, uploaded_at
 		FROM tech_card_size_pattern
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
