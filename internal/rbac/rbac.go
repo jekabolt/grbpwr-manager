@@ -348,6 +348,15 @@ var methodRequirements = map[string]Requirement{
 	"SaveTechCardMarker":          wr(SectionTechCards),
 	"GetTechCardMarker":           rd(SectionTechCards),
 	"DeleteTechCardMarker":        wr(SectionTechCards),
+	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
+	// section of its own. Every field it returns is BOM-tab content the same account already reads
+	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);
+	// the report only reads it ACROSS cards. It carries no money, so the field-shaping SectionCosting
+	// does not apply. The work it produces — filling направление in on the BOM tab — needs
+	// tech_cards:write anyway, so a reader who can see the list and not act on it is the intended
+	// asymmetry rather than a gap. Never allowlisted: allowlisted means ANY authenticated account may
+	// call it, and this one enumerates the whole style portfolio by article and name.
+	"ListTechCardFabricDirectionGaps": rd(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":  wr(SectionProduction),
 	"UpdateProductionRun":  wr(SectionProduction),

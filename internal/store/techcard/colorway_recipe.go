@@ -130,13 +130,22 @@ func rollGoodsSectionArgs(args map[string]any) map[string]any {
 // rollGoodsSectionIn is the matching SQL fragment: `section IN (:sec_fabric, …)`. Concatenated
 // after an `AND `, never containing a ':' inside a SQL comment (that combination is what breaks
 // sqlx binding with "could not find name  in map").
-var rollGoodsSectionIn = func() string {
+var rollGoodsSectionIn = rollGoodsSectionInOn("")
+
+// rollGoodsSectionInOn is the same fragment qualified by a table alias, for a query that joins
+// something else carrying a `section` column of its own — `material` does, so an unqualified
+// `section` there is not merely unclear, it is an error MySQL refuses the statement over. An empty
+// alias yields the bare form.
+func rollGoodsSectionInOn(alias string) string {
 	names := make([]string, 0, len(rollGoodsSectionList))
 	for _, s := range rollGoodsSectionList {
 		names = append(names, ":"+rollGoodsSectionParam(s))
 	}
-	return "section IN (" + strings.Join(names, ", ") + ")"
-}()
+	if alias != "" {
+		alias += "."
+	}
+	return alias + "section IN (" + strings.Join(names, ", ") + ")"
+}
 
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
 	normalizedPlacement := ""

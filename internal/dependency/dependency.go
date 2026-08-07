@@ -749,6 +749,11 @@ type (
 		SaveMarker(ctx context.Context, techCardID, id int, ins entity.TechCardMarkerInsert, username string) (int, error)
 		GetMarker(ctx context.Context, id int) (*entity.TechCardMarker, error)
 		DeleteMarker(ctx context.Context, id int) error
+		// ListFabricDirectionGaps reads the кампания Д1 worklist (Ф1.8): cards whose roll-goods BOM
+		// lines still carry no направление ткани, with the counts an owner triages by. techCardID
+		// 0 = all cards. Every such card comes back — deciding which belong on a worklist is
+		// entity.BuildFabricDirectionGapReport's job, not the store's.
+		ListFabricDirectionGaps(ctx context.Context, techCardID int) ([]entity.FabricDirectionGapCard, error)
 		// RepriceTechCardBom pulls the current catalog price into every catalog-linked BOM line of a
 		// DRAFT card, stamping price_source='catalog' (production-costing Phase 3). Returns the
 		// visited lines + the count of unlinked lines it could not touch.
