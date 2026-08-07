@@ -33,7 +33,8 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc}
 }
 
-const selectSettings = `SELECT cutting_table_length_cm, updated_by, updated_at FROM workshop_settings WHERE id = :id`
+const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_cm, updated_by, updated_at
+	FROM workshop_settings WHERE id = :id`
 
 // GetSettings returns the workshop configuration. A MISSING singleton row is not an error: it reads
 // as "nothing configured yet", the same answer the seeded-but-empty row gives. Anything else would
@@ -76,6 +77,16 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 			return nil, err
 		}
 	}
+	// Ф3.2's tenant validates through a DIFFERENT function on purpose: a 0 cm table is nonsense and is
+	// rejected, a 0 cm allowance is a real setting («our выкройки carry the cut line») and is accepted.
+	// One shared validator could not have held both floors — which is exactly the argument 0272 made
+	// for a typed column per setting rather than a shared key/value table.
+	if patch.DefaultSeamAllowanceCm != nil {
+		if err := entity.ValidateSeamAllowanceStandardCm("default_seam_allowance_cm",
+			*patch.DefaultSeamAllowanceCm); err != nil {
+			return nil, err
+		}
+	}
 
 	params := map[string]any{
 		"id":         singletonID,
@@ -83,6 +94,8 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		// Presence, not value: an omitted setting keeps its stored column (see the IF() above).
 		"cutting_table_length_omitted": patch.CuttingTableLengthCm == nil,
 		"cutting_table_length_cm":      nullDecimalParam(patch.CuttingTableLengthCm),
+		"seam_allowance_omitted":       patch.DefaultSeamAllowanceCm == nil,
+		"default_seam_allowance_cm":    nullDecimalParam(patch.DefaultSeamAllowanceCm),
 	}
 
 	var out *entity.WorkshopSettings
@@ -95,6 +108,7 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE workshop_settings SET
 				cutting_table_length_cm = IF(:cutting_table_length_omitted, cutting_table_length_cm, :cutting_table_length_cm),
+				default_seam_allowance_cm = IF(:seam_allowance_omitted, default_seam_allowance_cm, :default_seam_allowance_cm),
 				updated_by = :updated_by
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update workshop settings: %w", err)

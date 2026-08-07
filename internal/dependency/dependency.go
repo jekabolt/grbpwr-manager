@@ -749,6 +749,13 @@ type (
 		SaveMarker(ctx context.Context, techCardID, id int, ins entity.TechCardMarkerInsert, username string) (int, error)
 		GetMarker(ctx context.Context, id int) (*entity.TechCardMarker, error)
 		DeleteMarker(ctx context.Context, id int) error
+		// SetMarkerNorm designates one раскладка as the НОРМИРОВОЧНАЯ one for its cloth (Ф3.4), or
+		// clears it, and returns the id of the previous norm of the SAME cloth (0 = there was none).
+		// The ONLY writer of is_norm: SaveMarker does not list the column, so re-saving geometry can
+		// neither seize a norm nor lose one. Exclusivity within (card, BOM line) is held by this
+		// transaction rather than by a UNIQUE index — see the store for the ERROR 1761 that rules the
+		// index out — which is why every reader owes a deterministic tiebreak (entity.SelectNorm).
+		SetMarkerNorm(ctx context.Context, id int, isNorm bool, username string) (int, error)
 		// ListFabricDirectionGaps reads the кампания Д1 worklist (Ф1.8): cards whose roll-goods BOM
 		// lines still carry no направление ткани, with the counts an owner triages by. techCardID
 		// 0 = all cards. Every such card comes back — deciding which belong on a worklist is

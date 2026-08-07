@@ -1611,6 +1611,22 @@ message TechCardInsert {
   // defaults to an empty PRESENT wrapper clears the whole table on every save.
   TechCardPieceDxfAliasSet piece_dxf_aliases = 107;
 
+  // ТРЕБУЕМЫЙ ПРИПУСК of this style, in CENTIMETRES (Ф3.2) — the right-hand side the readiness gate
+  // compares a раскладка's recorded allowance against.
+  //
+  // ABSENT = fall back to the workshop default (admin.WorkshopSettings.default_seam_allowance_cm),
+  // which may itself be absent — and then there is NO STANDARD, and a consumer must answer «no
+  // verdict» rather than substitute zero. Zero is legal here and states something specific: «the
+  // выкройки of this model carry the cut line, no offset needed». Confusing «0» with «not
+  // configured» would declare every раскладка with a 1 cm allowance in breach of a standard nobody
+  // set.
+  //
+  // NOT the free text construction.seam_allowances («5 мм»), which stays a human note. This is a
+  // NUMBER a machine reads. It deliberately lives on the card header and not on the construction
+  // section: any field added to a section's digest projection instantly marks EVERY signed-off
+  // CONSTRUCTION approval as «edited since signing», on every card at once.
+  google.type.Decimal required_seam_allowance_cm = 108;
+
   // Reserved so a future field can never collide with a removed one. 17-19 targets+currency;
   // 20-28 construction-desc strings → details[]; 32 was the single `media` list (split into
   // moodboard_media/technical_media); 42 pom_points; 39 prior.
@@ -1791,6 +1807,67 @@ message TechCardMarkerSummary {
   // is the explanation to show: which раскладка, why a single number would be wrong, and what to do
   // instead. Set exactly when the composition holds more than one size.
   string scalar_apply_refusal = 27;
+
+  // УСЛОВИЯ СЪЁМКИ (Ф3), as recorded on the row. See TechCardMarkerInsert (:17-21) for what each
+  // one means and why absence is a distinct answer from zero.
+  //
+  // A раскладка whose seam_allowance_cm is ABSENT is «СТАРАЯ НОРМА»: nobody recorded what was laid
+  // out or under what rules, so костинг cannot tell a marker measured along the seam line from one
+  // measured along the cut line — and the two differ by the allowance around the whole perimeter of
+  // every piece. That category is DERIVED, never a flag: there is no «is_legacy» column and there
+  // never will be one, because the unmarked stays old by itself.
+  google.type.Decimal seam_allowance_cm = 28;
+  google.type.Decimal contour_allowance_cm = 29;
+  optional string contour_layer = 30;
+  optional string grain_layer = 31;
+  optional bool allow_flip = 32;
+
+  // This раскладка is the НОРМИРОВОЧНАЯ one for its cloth on this card: the measurement costing and
+  // the readiness gate are meant to read. Set through SetTechCardMarkerNorm, never through a save —
+  // re-saving geometry must not be able to seize the norm, and a stale bundle must not be able to
+  // drop it by not knowing the field exists.
+  bool is_norm = 33;
+
+  // OUTPUT-ONLY. Whether the card's set of cut-pieces has changed since this раскладка was taken.
+  // Three-valued ON PURPOSE — see the enum.
+  TechCardMarkerPieceSetStatus piece_set_status = 34;
+
+  // OUTPUT-ONLY. Empty on a healthy card. Non-empty is the server REPORTING that more than one
+  // раскладка of the SAME cloth on this card carries is_norm — a state the schema does not prevent
+  // (exclusivity is held by the SetTechCardMarkerNorm transaction, not by a UNIQUE index; a unique
+  // index on the norm turns deleting a BOM line into ERROR 1761 and takes the whole card save down
+  // with it). Every marker of the offending scope carries the same text, so the conflict cannot be
+  // seen from one row and missed from another.
+  //
+  // It is reported rather than silently resolved because the readers DO resolve it: they take the
+  // norm deterministically (newest updated_at, then highest id), so a corrupted state yields ONE
+  // answer everywhere instead of a different one per screen. Readers disagreeing would be worse
+  // than two norms; readers agreeing SILENTLY would be worse than saying so.
+  string norm_conflict = 35;
+}
+
+// TechCardMarkerPieceSetStatus compares a раскладка's stored fingerprint of the card's cut-piece set
+// against the set the card carries TODAY (Ф3.6).
+//
+// Three states and not a bool, because two are not enough: a marker taken before Ф3 carries no
+// fingerprint at all, and collapsing that into «changed» would declare EVERY stored раскладка
+// changed at once — noise where a signal is needed. UNKNOWN is therefore not a badge on the screen
+// but a grey caption; it is the other half of the «старая норма» category.
+//
+// SCOPE IS THE WHOLE CARD, not the marker's own cloth, and the cost of that is named rather than
+// hidden: adding a LINING piece raises the status on a MAIN-fabric marker too. The badge must
+// therefore be worded «набор деталей КАРТОЧКИ изменился — перепроверьте», never «раскладка неверна».
+// The alternative — a fingerprint scoped to the marker's cloth — was rejected on evidence: the
+// piece→cloth binding is per-colourway and OPTIONAL, so wherever it is unfilled a scoped fingerprint
+// hashes the EMPTY set, every marker gets the same hash, and the answer is «не менялось» forever.
+// That is a silent false negative feeding a readiness gate; card-wide is a noisy false positive, and
+// the noise is recoverable by a human looking twice.
+enum TechCardMarkerPieceSetStatus {
+  // No fingerprint recorded (a раскладка taken before Ф3), or one cannot be computed today.
+  // NEVER read this as «changed».
+  TECH_CARD_MARKER_PIECE_SET_STATUS_UNKNOWN = 0;
+  TECH_CARD_MARKER_PIECE_SET_STATUS_MATCHES = 1; // the card cuts the same set of pieces as at save time
+  TECH_CARD_MARKER_PIECE_SET_STATUS_CHANGED = 2; // the set moved — re-check the раскладка
 }
 
 // TechCardMarkerCompositionEntry is one line of a раскладка's СОСТАВ: how many GARMENTS of one size
@@ -1850,6 +1927,55 @@ message TechCardMarkerInsert {
   // The colourway this раскладка is measured for; 0 = not colourway-specific (legacy markers and
   // cards whose colourways share one article). Must be a live colourway of this card.
   int32 colorway_id = 16;
+
+  // УСЛОВИЯ СЪЁМКИ (Ф3). All five carry PRESENCE, not just a value, and that is the whole design:
+  // the admin is an SPA, an open tab survives a deploy, and a bundle that predates Ф3 will not send
+  // them at all. Absence means «these conditions were not recorded», and such a раскладка honestly
+  // becomes «старая норма» — NOT a раскладка with zero allowance and flipping forbidden. Ф1 already
+  // paid this exact price on fabric_direction and reached the same conclusion. A save that omits
+  // them is therefore ACCEPTED, never refused: the readiness gate is what declines to accept an
+  // unlabelled measurement, and moving that refusal into the save path would only stop the geometry
+  // from being stored at all.
+
+  // The allowance the layout ADDED by offsetting the contour outward, cm, >= 0. ZERO IS A LEGAL
+  // VALUE and means «we laid the line as drawn»; ABSENT means «nobody recorded it». Not to be
+  // confused with contour_allowance_cm below — their SUM is the allowance that actually lies
+  // between the seam line and the cut line on the cloth.
+  google.type.Decimal seam_allowance_cm = 17;
+
+  // The allowance ALREADY CONTAINED in the contour that was laid out, MEASURED off the file, cm,
+  // >= 0. 0 = the laid contour IS the seam line (a closed contour was found sitting outside it by a
+  // steady distance). > 0 = the laid contour is the CUT line, and this is how far outside it sits.
+  // ABSENT = there was nothing to measure with (one closed contour in the block, or the second one
+  // crosses the first — which is how a non-grading layer behaves on a non-base size). Absence is NOT
+  // zero: the server neither refuses on it nor adds it up, it marks the allowance unconfirmed.
+  //
+  // SEAM + CONTOUR > 0 TOGETHER IS REFUSED (double allowance): the allowance would be counted twice
+  // and the spread length overstated by it around the perimeter of every piece. There is exactly one
+  // way an operator reaches that state — overriding the contour layer by hand onto the cut line and
+  // leaving the offset on — which is what makes the refusal both rare and cheap.
+  google.type.Decimal contour_allowance_cm = 18;
+
+  // The DXF layer the laid contour was taken from. "" = no layer was chosen (there was nothing to
+  // choose from in the file). Recorded so the piece DRAWING can be REBUILT at export time from the
+  // same geometry rather than from whatever ranks first today.
+  optional string contour_layer = 19;
+
+  // The DXF layer the ДОЛЕВАЯ (grain) was read from. AN EMPTY STRING HERE IS MEANINGFUL and means
+  // «do not orient» — the operator can switch orientation off deliberately. Hence `optional`: "" and
+  // «did not send it» are different answers, and collapsing them would re-orient, on rebuild, pieces
+  // the operator forbade orienting.
+  optional string grain_layer = 20;
+
+  // The FLIP POLICY the search ran under: was a piece allowed to be laid upside down (180° or
+  // mirrored, Ф1)? Recorded SEPARATELY from the cloth's fabric_direction because направление ткани
+  // is a property of the cloth TODAY and changes, while a marker must be judged by the conditions it
+  // was taken under; and because an unlinked раскладка has no cloth at all.
+  //
+  // It cannot be inferred from the geometry: «no placement in this layout is flipped» does not mean
+  // «flipping was forbidden». Inferring would OVERSTATE strictness and let the «не хуже» rule pass a
+  // marker that was in fact free to flip.
+  optional bool allow_flip = 21;
 }
 
 // TechCardMarkerLayout is the self-contained geometry of a marker, stored as an opaque proto-JSON
@@ -1886,6 +2012,13 @@ message TechCardMarkerLayout {
 
 // TechCardMarkerNestParams are the engine inputs that produced the layout — enough to label the
 // result honestly; NOT enough to re-run the nest (the contours already carry the parse outcome).
+//
+// NB (Ф3.5): unit / tol_cm / tol_chain_cm are a CONTRACT ON RE-PARSING, and that half of the
+// sentence above needs the qualification. Rebuilding the piece drawing at export time re-parses
+// TODAY'S выкройка with EXACTLY these values and checks the resulting contour against the stored one;
+// re-parsing with today's defaults instead would tessellate differently and report a geometry drift
+// on a file nobody touched. The SEARCH remains irreproducible (the GA is seeded by the composition),
+// and that has not changed.
 message TechCardMarkerNestParams {
   string unit = 1; // the DXF unit the contours were parsed under (mm | cm | in); "" = auto
   double tol_cm = 2; // tessellation tolerance

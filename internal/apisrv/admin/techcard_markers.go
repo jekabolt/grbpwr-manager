@@ -127,6 +127,18 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 				facts.SchemaVersion, entity.MarkerLayoutSchemaWithComposition,
 				entity.MarkerLayoutSchemaWithComposition)))
 	}
+	// ДВОЙНОЙ ПРИПУСК. Refused HERE and not in the dto conversion for the same reason
+	// CompositionPredatesSchema is: this has to reach the client as a FIELD violation with a stable
+	// reason code, and an error returned from ConvertPbTechCardMarkerInsertToEntity is flattened into
+	// a bare InvalidArgument two lines above.
+	//
+	// The same invariant also stands as chk_tcm_no_double_allowance in the schema, and that is a NET
+	// rather than a message: a CHECK answers 3819 with no field and no prose, so a violation reaching
+	// techCardMarkerError is a server bug and correctly surfaces as Internal.
+	if ve := entity.MarkerAllowanceRefusal(ins.SeamAllowanceCm, ins.ContourAllowanceCm,
+		ins.ContourLayer.String); ve != nil {
+		return nil, apierr.Invalid(ve)
+	}
 	blob, err := protojson.Marshal(layout)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "marker layout does not marshal: %v", err)
@@ -179,6 +191,29 @@ func (s *Server) DeleteTechCardMarker(ctx context.Context, req *pb_admin.DeleteT
 		return nil, s.techCardMarkerError(ctx, "delete", 0, err)
 	}
 	return &pb_admin.DeleteTechCardMarkerResponse{}, nil
+}
+
+// SetTechCardMarkerNorm designates one раскладка as the НОРМИРОВОЧНАЯ one for its cloth, or clears
+// it. A dedicated RPC rather than a field on the save: designation has a side effect on a sibling
+// row, and a boolean on the Insert would arrive as `false` from a stale bundle and clear the norm
+// while knowing nothing about it — the failure that forced fabric_direction to become optional in Ф1.
+func (s *Server) SetTechCardMarkerNorm(ctx context.Context, req *pb_admin.SetTechCardMarkerNormRequest) (*pb_admin.SetTechCardMarkerNormResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	previous, err := s.repo.TechCards().SetMarkerNorm(ctx, int(req.GetId()), req.GetIsNorm(),
+		authsrv.GetAdminUsername(ctx))
+	if err != nil {
+		return nil, s.techCardMarkerError(ctx, "set-norm", 0, err)
+	}
+	return &pb_admin.SetTechCardMarkerNormResponse{
+		PreviousNormMarkerId: int32(previous),
+		// A CONSTANT true, and not a stub. Re-designating the norm recomputes nothing: a recipe holds a
+		// COPIED consumption figure with provenance consumption_source='marker' and no reference back to
+		// the marker, and there is no server-side «apply marker» at all. The screen is obliged to say so,
+		// or the operator is left to assume the costing followed the designation.
+		RecipesNotRecalculated: true,
+	}, nil
 }
 
 // techCardMarkerError maps the store's typed refusals to gRPC statuses, following the

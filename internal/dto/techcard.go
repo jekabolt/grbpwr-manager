@@ -611,6 +611,15 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		}
 	}
 
+	// Validated at the boundary rather than left to the CHECK: chk_tc_required_seam_allowance would
+	// answer 3819 with no field name, and this is an operator-typed number on a form control.
+	requiredSeamAllowance, err := nullDecimalFromPb(pb.RequiredSeamAllowanceCm)
+	if err != nil {
+		return nil, fmt.Errorf("required_seam_allowance_cm: %w", err)
+	}
+	if err := entity.ValidateSeamAllowanceStandardCm("required_seam_allowance_cm", requiredSeamAllowance); err != nil {
+		return nil, err
+	}
 	insert := &entity.TechCardInsert{
 		StyleNumber:        nullStringFromPb(styleNumber),
 		StyleNumberSource:  styleNumberSourceFromPb(pb.StyleNumberSource),
@@ -653,6 +662,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		Pieces:             pieces,
 		PieceDxfAliases:    pieceDxfAliases,
 		PieceDxfAliasesSet: pieceDxfAliasesSet,
+
+		// ТРЕБУЕМЫЙ ПРИПУСК (Ф3.2). ABSENT is carried through as INVALID — «take the workshop
+		// default» — and an explicit 0 is carried through as a set zero. Deliberately NOT folded into
+		// any section digest projection: adding a field to one marks every signed-off approval of that
+		// section as edited-since-signing, on every card at once.
+		RequiredSeamAllowanceCm: requiredSeamAllowance,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
@@ -1016,6 +1031,10 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Patterns:          techCardPatternsToPb(tc.Patterns),
 			Pieces:            techCardPiecesToPb(tc.Pieces),
 			PieceDxfAliases:   techCardPieceDxfAliasesToPb(tc.PieceDxfAliases),
+
+			// Ф3.2: absent on the wire when the card sets no requirement of its own, so a client can
+			// tell «take the workshop default» from a card that requires exactly 0.
+			RequiredSeamAllowanceCm: pbDecimalFromNull(tc.RequiredSeamAllowanceCm),
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
@@ -1138,11 +1157,62 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		PlacedCount:          int32(m.PlacedCount),
 		TotalCount:           int32(m.TotalCount),
 		ConsumptionPerUnitCm: consumption,
-		CreatedBy:            m.CreatedBy,
-		UpdatedBy:            m.UpdatedBy,
-		CreatedAt:            timestamppb.New(m.CreatedAt),
-		UpdatedAt:            timestamppb.New(m.UpdatedAt),
+		// УСЛОВИЯ СЪЁМКИ (Ф3), each emitted only when RECORDED. An unrecorded condition must reach the
+		// client as an ABSENT field and never as a zero: «припуск 0» is a measurement («we laid the line
+		// as drawn») and «не записано» is the absence of one, and a screen that could not tell them
+		// apart would show every раскладка taken before Ф3 as a confidently-measured zero.
+		SeamAllowanceCm:    pbDecimalFromNull(m.SeamAllowanceCm),
+		ContourAllowanceCm: pbDecimalFromNull(m.ContourAllowanceCm),
+		ContourLayer:       pbOptionalStringFromNull(m.ContourLayer),
+		GrainLayer:         pbOptionalStringFromNull(m.GrainLayer),
+		AllowFlip:          pbOptionalBoolFromNull(m.AllowFlip),
+		IsNorm:             m.IsNorm,
+		// Derived, never stored: the comparison is against the card AS IT IS NOW, and a stored verdict
+		// would be a fact about a card state that has since moved on.
+		PieceSetStatus: markerPieceSetStatusToPb(m.PieceSetStatus()),
+		// Stamped by the store from the whole card's markers — one row cannot see a conflict between
+		// two. Empty on a healthy card.
+		NormConflict: m.NormConflict,
+		CreatedBy:    m.CreatedBy,
+		UpdatedBy:    m.UpdatedBy,
+		CreatedAt:    timestamppb.New(m.CreatedAt),
+		UpdatedAt:    timestamppb.New(m.UpdatedAt),
 	}
+}
+
+// markerPieceSetStatusToPb maps the domain's three-valued piece-set verdict onto the wire. The
+// default arm returns UNKNOWN rather than panicking, and that is the safe direction: an unmapped
+// value must read as «нечего сказать», never as «набор изменился».
+func markerPieceSetStatusToPb(s entity.MarkerPieceSetStatus) pb_common.TechCardMarkerPieceSetStatus {
+	switch s {
+	case entity.MarkerPieceSetMatches:
+		return pb_common.TechCardMarkerPieceSetStatus_TECH_CARD_MARKER_PIECE_SET_STATUS_MATCHES
+	case entity.MarkerPieceSetChanged:
+		return pb_common.TechCardMarkerPieceSetStatus_TECH_CARD_MARKER_PIECE_SET_STATUS_CHANGED
+	default:
+		return pb_common.TechCardMarkerPieceSetStatus_TECH_CARD_MARKER_PIECE_SET_STATUS_UNKNOWN
+	}
+}
+
+// pbOptionalStringFromNull / pbOptionalBoolFromNull carry PRESENCE onto a proto3 `optional` field.
+// They exist because the Ф3 conditions have three states and the ordinary helpers only carry two:
+// grain_layer = "" means «do not orient» and is a DECISION, while an absent grain_layer means nobody
+// recorded one. Collapsing them would, on rebuild, orient the very pieces an operator forbade
+// orienting.
+func pbOptionalStringFromNull(v sql.NullString) *string {
+	if !v.Valid {
+		return nil
+	}
+	s := v.String
+	return &s
+}
+
+func pbOptionalBoolFromNull(v sql.NullBool) *bool {
+	if !v.Valid {
+		return nil
+	}
+	b := v.Bool
+	return &b
 }
 
 // Column bounds of tech_card_marker (0257), mirrored for readable refusals before the driver's.
@@ -1264,6 +1334,10 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if err != nil {
 		return out, err
 	}
+	conditions, err := markerConditionsFromPb(pb)
+	if err != nil {
+		return out, err
+	}
 	return entity.TechCardMarkerInsert{
 		// The reader for the geometry ALREADY ON FILE travels with the payload, set HERE rather than
 		// by the caller: fail-closed is right (a nil distiller withholds every exemption) but a
@@ -1287,7 +1361,111 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		EfficiencyPct:      efficiency,
 		PlacedCount:        int(pb.PlacedCount),
 		TotalCount:         int(pb.TotalCount),
+		// УСЛОВИЯ СЪЁМКИ (Ф3). PieceSetFp is deliberately NOT here: the fingerprint is the store's, taken
+		// off the rows its own transaction sees, and a payload-supplied one would be forgeable and stale.
+		SeamAllowanceCm:    conditions.SeamAllowanceCm,
+		ContourAllowanceCm: conditions.ContourAllowanceCm,
+		ContourLayer:       conditions.ContourLayer,
+		GrainLayer:         conditions.GrainLayer,
+		AllowFlip:          conditions.AllowFlip,
 	}, nil
+}
+
+// markerLayerMaxChars mirrors the VARCHAR(64) of contour_layer / grain_layer — a readable refusal
+// before the driver's 1406. Rune count, matching the column: VARCHAR counts CHARACTERS.
+const markerLayerMaxChars = 64
+
+// markerConditions is the parsed Ф3 half of a marker payload, kept as one value so the conversion
+// above reads as five fields rather than fifteen lines of parsing.
+type markerConditions struct {
+	SeamAllowanceCm    decimal.NullDecimal
+	ContourAllowanceCm decimal.NullDecimal
+	ContourLayer       sql.NullString
+	GrainLayer         sql.NullString
+	AllowFlip          sql.NullBool
+}
+
+// markerConditionsFromPb reads the УСЛОВИЯ СЪЁМКИ off a payload.
+//
+// ABSENCE IS NEVER AN ERROR HERE, and that is the design, not laxity. The admin is an SPA: an open
+// tab survives a deploy and a bundle built before Ф3 sends none of these fields. Such a save is
+// stored with NULLs and the row honestly becomes «старая норма», which the readiness gate declines
+// to count — Ф1 reached the same conclusion on fabric_direction, and the alternative (refusing the
+// save) only stops the geometry being stored at all.
+//
+// BOTH ALLOWANCES ARE ROUNDED rather than refused for scale, unlike gap/edge_margin above. Those are
+// operator inputs; these are MEASUREMENTS — the offset is prefilled in the modal from the distance
+// measured between the two contours in the file, and the file-measured half is a median of sampled
+// distances. Both arrive as float64 and both are stored at 2 decimal places, so refusing
+// 1.0000000000002 would fail a save over dust in a number the column truncates anyway.
+//
+// THE LAYER NAMES ARE NOT TRIMMED. They are matched literally against the layer names parsed out of
+// the DXF when the piece drawing is rebuilt at export; trimming here would silently break that
+// comparison for any file whose layer name really does carry a space.
+//
+// THE DOUBLE-ALLOWANCE REFUSAL IS NOT HERE. It is raised in the API layer (entity.MarkerAllowanceRefusal)
+// because it must reach the client as a FIELD violation, and errors returned from this function are
+// flattened into a bare InvalidArgument by SaveTechCardMarker — the same reason
+// CompositionPredatesSchema is checked there.
+func markerConditionsFromPb(pb *pb_common.TechCardMarkerInsert) (markerConditions, error) {
+	var out markerConditions
+	seam, err := nullDecimalFromPb(pb.SeamAllowanceCm)
+	if err != nil {
+		return out, fmt.Errorf("seam_allowance_cm: %w", err)
+	}
+	if seam.Valid {
+		if seam.Decimal.IsNegative() {
+			return out, fmt.Errorf("seam_allowance_cm must not be negative")
+		}
+		seam.Decimal = seam.Decimal.Round(markerDimMaxFrac)
+		if err := validateDecimalScale(seam, "seam_allowance_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+			return out, err
+		}
+	}
+	contour, err := nullDecimalFromPb(pb.ContourAllowanceCm)
+	if err != nil {
+		return out, fmt.Errorf("contour_allowance_cm: %w", err)
+	}
+	if contour.Valid {
+		if contour.Decimal.IsNegative() {
+			return out, fmt.Errorf("contour_allowance_cm must not be negative")
+		}
+		contour.Decimal = contour.Decimal.Round(markerDimMaxFrac)
+		if err := validateDecimalScale(contour, "contour_allowance_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+			return out, err
+		}
+	}
+	contourLayer, err := markerLayerFromPb(pb.ContourLayer, "contour_layer")
+	if err != nil {
+		return out, err
+	}
+	grainLayer, err := markerLayerFromPb(pb.GrainLayer, "grain_layer")
+	if err != nil {
+		return out, err
+	}
+	out = markerConditions{
+		SeamAllowanceCm:    seam,
+		ContourAllowanceCm: contour,
+		ContourLayer:       contourLayer,
+		GrainLayer:         grainLayer,
+	}
+	if pb.AllowFlip != nil {
+		out.AllowFlip = sql.NullBool{Bool: *pb.AllowFlip, Valid: true}
+	}
+	return out, nil
+}
+
+// markerLayerFromPb carries a proto3 `optional string` layer name onto a sql.NullString WITHOUT
+// collapsing "" into NULL. The empty string is a real answer on grain_layer — «не разворачивать» —
+// and folding it into «not recorded» would, on rebuild, orient pieces the operator forbade orienting.
+func markerLayerFromPb(v *string, field string) (sql.NullString, error) {
+	if v == nil {
+		return sql.NullString{}, nil
+	}
+	if utf8.RuneCountInString(*v) > markerLayerMaxChars {
+		return sql.NullString{}, fmt.Errorf("%s must be at most %d characters", field, markerLayerMaxChars)
+	}
+	return sql.NullString{String: *v, Valid: true}, nil
 }
 
 // markerCompositionOfInsert resolves the СОСТАВ of a save, plus the legacy (size_id, sets) pair the
@@ -1976,11 +2154,18 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			return nil, err
 		}
 		var calloutNumber sql.NullInt32
-		if p.CalloutNumber != nil {
-			// A callout_number that no longer matches a callout on the card is NOT rejected here (S8
-			// orphan-control): the store marks such a piece detached — it may carry recipe history and
-			// must survive its source callout's removal — rather than failing the whole save. The store
-			// also enforces that only a TECHNICAL-sketch callout confers piece semantics (S7).
+		// A ZERO is «no callout», not callout number zero. Callouts number from one (the client mints
+		// max+1), so 0 can never resolve — and the pointer alone does not protect: a client that sends
+		// the field unconditionally hands over 0 for a piece nobody ever pinned, which arrives as a
+		// VALID number, matches nothing, and the store marks the piece detached. That is a card telling
+		// its operator «the callout you pinned this to was deleted» about a pin that never existed —
+		// 16 of 18 pieces on beta carried that badge, with no control anywhere to clear it.
+		//
+		// A callout_number that no longer matches a callout on the card is still NOT rejected here (S8
+		// orphan-control): the store marks such a piece detached — it may carry recipe history and
+		// must survive its source callout's removal — rather than failing the whole save. The store
+		// also enforces that only a TECHNICAL-sketch callout confers piece semantics (S7).
+		if p.CalloutNumber != nil && *p.CalloutNumber > 0 {
 			calloutNumber = sql.NullInt32{Int32: *p.CalloutNumber, Valid: true}
 		}
 
