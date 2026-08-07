@@ -147,6 +147,27 @@ DEALLOCATE PREPARE stmt;
 
 -- +migrate Down
 
+-- ГВАРД ИДЁТ ПЕРВЫМ, И ЭТО НЕ КОСМЕТИКА. Раньше Down сначала ронял tech_card_marker_size и
+-- total_units и только потом проверял, есть ли строки с составом — а проверка всего лишь ПРОПУСКАЛА
+-- последний MODIFY. sql-migrate видел exit 0, УДАЛЯЛ строку из gorp_migrations и рапортовал успех, а
+-- маркер со смешанным составом превращался в (size_id NULL, sets NULL, total_units NULL, ноль детей):
+-- состояние, которое эта же миграция называет недостижимым. Читатели дают тогда total_units = 1 и
+-- отдали бы на провод ВЕСЬ настил как норму на одно изделие. Откат обязан ПАДАТЬ до первого дропа.
+--
+-- SIGNAL нельзя: «This command is not supported in the prepared statement protocol yet» (проверено на
+-- MySQL 8.0.46), а без PREPARE в скрипте нет ветвления. Поэтому отказ — обращение к несуществующей
+-- КОЛОНКЕ, чьё имя и есть сообщение: ERROR 1054 с внятным текстом, детерминированно, без единого DDL.
+-- Идентификатор режется на 64 символах, поэтому текст короткий и ASCII (иначе обрежет посреди UTF-8).
+--
+-- Что делать, если он сработал: такие маркеры невыразимы в до-Ф2 схеме, у них нет ОДНОГО размера.
+-- Либо пересохраните их однородными, либо удалите. Молча свернуть состав в «размер 0 / 1 комплект»
+-- значит потерять данные под видом отката.
+SET @blocking := (SELECT COUNT(*) FROM tech_card_marker WHERE size_id IS NULL OR sets IS NULL);
+SET @ddl := IF(@blocking = 0, 'SELECT 1', CONCAT('SELECT `0273 Down blocked: ', @blocking, ' markers carry a composition`'));
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 SET @chk_exists := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_marker'
       AND CONSTRAINT_NAME = 'chk_tcm_total_units_pos');
@@ -187,8 +208,8 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- Обратно в NOT NULL — только если ни одной NULL-строки нет. Если есть, Down честно падает: молча
--- превратить состав в «размер 0 / 1 комплект» значит потерять данные под видом отката.
+-- Обратно в NOT NULL. Гвард наверху уже гарантировал, что NULL-строк нет; проверка повторяется здесь,
+-- чтобы файл оставался перезапускаемым после частичного отката (MySQL автокоммитит DDL).
 SET @nullable_rows := (SELECT COUNT(*) FROM tech_card_marker WHERE size_id IS NULL OR sets IS NULL);
 SET @is_nullable := (SELECT IS_NULLABLE FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_marker' AND COLUMN_NAME = 'size_id');

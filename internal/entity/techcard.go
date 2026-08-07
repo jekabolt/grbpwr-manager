@@ -298,50 +298,73 @@ type TechCardMarkerSummary struct {
 	UpdatedAt   time.Time                `db:"updated_at"`
 }
 
-// TotalUnitsOrLegacy is how many GARMENTS this раскладка cuts. The order of the sources is load
-// bearing and must not be rearranged: the column (Ф2), then the legacy `sets`, then 1.
+// ЛЕГАСИ-ФОРМА ПОБЕЖДАЕТ ПРОЕКЦИЮ, and the order of these two readers is the whole reason this
+// comment exists. A row whose `sets` is VALID is BY DEFINITION a row in the pre-Ф2 shape, and the
+// only writer that produces that shape and does not also write total_units + tech_card_marker_size
+// is THE OLD BINARY — whose UPDATE lists `sets` and `used_length_cm` and knows neither of the other
+// two. So on such a row the projection is not merely older, it is the number 0273 backfilled at
+// migration time, and `sets` is what an operator changed afterwards.
+//
+// Reading the column first inflated costing silently and permanently: backfill leaves
+// total_units = 1, the operator re-saves through the old container with sets = 4 and
+// used_length_cm = 1200, and the wire then carries consumption_per_unit_cm = 1200 against a truth of
+// 300 — with scalar_apply_refusal EMPTY, because a one-entry состав reads as homogeneous, so the Р2
+// guard is disarmed at exactly the moment it is needed. The client copies that into
+// tech_card_colorway_usage.consumption with consumption_source='marker' and nothing recomputes it.
+//
+// The window is not «a few minutes of rolling deploy»: if the new container fails its health check,
+// DigitalOcean keeps the OLD deploy serving indefinitely, and this project has been there.
+//
+// There is no symmetric hazard: no writer updates total_units without also writing `sets` and the
+// children, so a VALID `sets` can never be the stale half of the pair.
+
+// TotalUnitsOrLegacy is how many GARMENTS this раскладка cuts. Sources in order: the legacy `sets`
+// (authoritative whenever present — see above), then the total_units column, then 1.
 //
 // It cannot return 0, and that is the whole point — the old guard here was
 // `if m.Sets <= 0 { return m.UsedLengthCm }`, which did not divide by zero and instead reported the
 // WHOLE spread as the consumption of one garment: a silently N-fold-inflated norm on a path whose
 // output a client writes straight into a recipe. Making the denominator unable to be zero removes
-// the branch that produced it.
+// the branch that produced it. The trailing 1 is an ARITHMETIC guard only — a row that reaches it
+// has no состав at all, and the wire path withholds its norm rather than emitting 1 (see
+// MarkerScalarNormRefusal).
 func (m TechCardMarkerSummary) TotalUnitsOrLegacy() int {
-	if m.TotalUnits.Valid && m.TotalUnits.Int64 >= 1 {
-		return int(m.TotalUnits.Int64)
-	}
 	if m.Sets.Valid && m.Sets.Int64 >= 1 {
 		return int(m.Sets.Int64)
+	}
+	if m.TotalUnits.Valid && m.TotalUnits.Int64 >= 1 {
+		return int(m.TotalUnits.Int64)
 	}
 	return 1
 }
 
-// CompositionOrLegacy is the раскладка's состав. The child rows are authoritative; the fallback onto
-// (size_id, sets) is NOT the routine path — migration 0273 projected every pre-Ф2 row into children
-// once, so a stored marker normally has them. It exists for the single hole that backfill cannot
-// close: the DEPLOY OVERLAP, where the old container is still serving and writes a row in the legacy
-// shape with no children. Such a row still resolves to a non-empty состав here, which is why no
-// reader downstream has to cope with an empty one.
+// CompositionOrLegacy is the раскладка's состав, and it reads the LEGACY PAIR FIRST for the reason
+// above: while size_id is VALID the row is in the pre-Ф2 shape and (size_id, sets) is the freshest
+// statement about it — the child rows may be the migration's projection of a `sets` that has since
+// changed underneath them. Once size_id goes NULL the row belongs to the Ф2 writer, which writes the
+// children and the scalar in one transaction, and the projection is the only answer there is.
+//
+// Returning EMPTY is a real outcome, not an impossible one: a Down that dropped the projection, an
+// ops delete, a partial restore. Callers must treat empty as «this раскладка no longer states what
+// it cuts» and withhold — never as «one garment» (see MarkerScalarNormRefusal).
 func (m TechCardMarkerSummary) CompositionOrLegacy() []MarkerCompositionEntry {
-	if len(m.Composition) > 0 {
-		return m.Composition
-	}
 	if m.SizeId.Valid && m.SizeId.Int64 > 0 {
 		return []MarkerCompositionEntry{{SizeId: int(m.SizeId.Int64), Quantity: m.TotalUnitsOrLegacy()}}
 	}
-	// Unreachable: size_id is NULL only on rows the NEW code wrote, and that code writes the children
-	// in the same transaction. Returning nil rather than inventing a size keeps an impossible state
-	// visible instead of plausible.
+	if len(m.Composition) > 0 {
+		return m.Composition
+	}
 	return nil
 }
 
 // ConsumptionPerUnitCm is fabric length per ONE garment: used_length_cm / total_units. Derived,
 // never stored, so it cannot drift from its inputs.
 //
-// On a MIXED состав this is the MEAN across sizes and must not reach a recipe — see
-// MarkerScalarNormRefusal, and TechCardMarkerSummaryToPb, which withholds it rather than labelling
-// it. Kept computable here because the mean is still the honest answer to «how much cloth does this
-// spread use per garment», which is what a length verdict and the marker list want.
+// NOT SAFE TO PUT ON THE WIRE ON ITS OWN. On a MIXED состав it is the MEAN across sizes, and on a
+// раскладка that lost its состав entirely it is the whole spread. Every caller that emits it must
+// consult ScalarNormRefusal() first — TechCardMarkerSummaryToPb does, and it is the only producer.
+// Kept computable because the mean is still the honest answer to «how much cloth does this spread
+// use per garment», which is what a length verdict and the marker list want.
 func (m TechCardMarkerSummary) ConsumptionPerUnitCm() decimal.Decimal {
 	return m.UsedLengthCm.Div(decimal.NewFromInt(int64(m.TotalUnitsOrLegacy())))
 }

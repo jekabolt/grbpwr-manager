@@ -36,6 +36,15 @@ const MarkerLayoutSchemaWithComposition = 4
 // (03-composition.md): the operator decides, with the budget on screen.
 const MaxMarkerCompositionSizes = 32
 
+// MaxMarkerTotalUnits bounds BOTH one entry's quantity and their sum, and it is not arbitrary: every
+// garment of the состав needs at least one placement, so total_units can never legitimately exceed
+// maxMarkerPlacements (5000, apisrv/admin/techcard_markers.go). Nothing else tied the two together —
+// placed_count/total_count are numbers of PIECE INSTANCES and are not derived from the состав — so a
+// payload could declare a состав of two billion garments against six placements. What that buys is
+// not a big раскладка: it is consumption_per_unit_cm ≈ 0 with NO refusal (a single entry reads as
+// homogeneous), and a sum past 2^31 that the INT column rejects as an unmapped Internal error.
+const MaxMarkerTotalUnits = 5000
+
 // MarkerCompositionEntry is one line of a состав: this many GARMENTS of this size. It lives in
 // entity and not only in dto because the STORE validates it — membership of the size in the card's
 // размерный ряд is a fact only the database can witness — and because it is what the store writes
@@ -79,10 +88,17 @@ func ValidateMarkerComposition(entries []MarkerCompositionEntry) error {
 			// the instance formula while still counting against the caps.
 			return fmt.Errorf("composition[%d].quantity must be at least 1 (size %d)", i, e.SizeId)
 		}
+		if e.Quantity > MaxMarkerTotalUnits {
+			return fmt.Errorf("composition[%d].quantity is %d, max %d (size %d)",
+				i, e.Quantity, MaxMarkerTotalUnits, e.SizeId)
+		}
 		if seen[e.SizeId] {
 			return fmt.Errorf("composition lists size %d twice", e.SizeId)
 		}
 		seen[e.SizeId] = true
+	}
+	if total := TotalUnitsOf(entries); total > MaxMarkerTotalUnits {
+		return fmt.Errorf("composition cuts %d garments, max %d", total, MaxMarkerTotalUnits)
 	}
 	return nil
 }
@@ -138,13 +154,26 @@ func CompositionPredatesSchema(f MarkerLayoutFacts) bool {
 // (TechCardMarkerSummary.composition), the client already holds the size dictionary, and a server
 // that spelled out «S×1 M×2» would be rendering — badly, by id — something the screen renders
 // properly. The prose carries the RULE; the data is beside it.
+// It ALSO refuses on an EMPTY состав, and that half is the more important one. An empty состав means
+// the раскладка no longer states how many garments it cuts, and the arithmetic fallback for that is
+// «1» — i.e. the whole spread reported as one garment's norm, N times too much, with no sign that
+// anything is wrong. That state is reachable by more than one route: the Down of 0273, an ops delete
+// of tech_card_marker_size, a partial restore, a future migration. Refusing HERE contains all of
+// them at once, which is why the fix does not live in the migration alone.
 func MarkerScalarNormRefusal(name string, composition []MarkerCompositionEntry) string {
-	if len(composition) <= 1 {
-		return ""
+	label := strings.TrimSpace(name)
+	switch {
+	case len(composition) == 0:
+		return fmt.Sprintf("у раскладки %q нет состава: сервер не знает, сколько изделий она выкраивает, "+
+			"и не может назвать расход на изделие. Это не «маркер без состава» — состав есть у каждой "+
+			"раскладки, включая снятые до Ф2, — а испорченная строка: пересохраните раскладку или "+
+			"проверьте tech_card_marker_size.", label)
+	case len(composition) > 1:
+		return fmt.Sprintf("раскладка %q снята на смешанном составе (%d размеров, %d изделий), и расход на "+
+			"изделие у неё — СРЕДНЕЕ по составу: мелкие размеры оно завышает, крупные занижает. В рецепт "+
+			"такое число не пишется. Примените раскладку одного размера, либо дождитесь пер-размерного "+
+			"расхода (Ф2.4), который распределит длину настила по площадям деталей.",
+			label, len(composition), TotalUnitsOf(composition))
 	}
-	return fmt.Sprintf("раскладка %q снята на смешанном составе (%d размеров, %d изделий), и расход на изделие "+
-		"у неё — СРЕДНЕЕ по составу: мелкие размеры оно завышает, крупные занижает. В рецепт такое число не "+
-		"пишется. Примените раскладку одного размера, либо дождитесь пер-размерного расхода (Ф2.4), который "+
-		"распределит длину настила по площадям деталей.",
-		strings.TrimSpace(name), len(composition), TotalUnitsOf(composition))
+	return ""
 }

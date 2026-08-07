@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
@@ -112,10 +113,19 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	// version in which neither field existed is a client writing a format it does not speak. Left
 	// alone it would be stored as a v3 blob whose состав no reader is told to look for — a marker
 	// that is silently wrong rather than loudly refused.
+	//
+	// Emitted as a FIELD VIOLATION, not a bare status: entity.ReasonCompositionPredatesSchema is
+	// declared as a stable code clients switch on, and a reason code that is never actually put on
+	// the wire is a promise nobody keeps — the sibling ReasonFlipInLegacySchema does reach a client,
+	// through the direction rule.
 	if entity.CompositionPredatesSchema(facts) {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"marker layout declares schema_version %d but carries a состав or a size on a piece; both exist only from version %d",
-			facts.SchemaVersion, entity.MarkerLayoutSchemaWithComposition)
+		return nil, apierr.Invalid(entity.NewFieldViolation("layout.composition",
+			entity.ReasonCompositionPredatesSchema, "",
+			fmt.Sprintf("the layout declares schema_version %d but carries a состав or a size on a piece, "+
+				"and both exist only from version %d on — no stored раскладка can contain them, so this is a "+
+				"client writing a version it does not actually speak; save it as version %d",
+				facts.SchemaVersion, entity.MarkerLayoutSchemaWithComposition,
+				entity.MarkerLayoutSchemaWithComposition)))
 	}
 	blob, err := protojson.Marshal(layout)
 	if err != nil {

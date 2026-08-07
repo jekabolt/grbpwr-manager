@@ -169,6 +169,35 @@ func TestTechCardMarkerComposition(t *testing.T) {
 		"SELECT COUNT(*) FROM tech_card_marker_size WHERE marker_id = ?", singleID).Scan(&orphans))
 	require.Zero(t, orphans)
 
+	// The Down of 0273 must REFUSE while a marker with a состав exists, and it must refuse BEFORE it
+	// drops anything. It used to drop the projection and the column first and only then evaluate the
+	// guard — which merely skipped the last MODIFY, so sql-migrate saw exit 0, deleted the
+	// gorp_migrations row and reported success while turning this marker into (NULL, NULL, NULL, no
+	// children): the shape whose readers report the whole spread as one garment's norm.
+	guard, dropsBeforeGuard := markerCompositionDownGuard(t)
+	require.Empty(t, dropsBeforeGuard, "0273's Down must not drop anything before its guard: %v", dropsBeforeGuard)
+	// ONE connection: the guard is @variables + PREPARE/EXECUTE/DEALLOCATE, all session-scoped, and a
+	// pool would scatter them across connections that cannot see each other's state.
+	conn, err := testDB.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+	var guardErr error
+	for _, stmt := range guard {
+		rows, err := conn.QueryContext(ctx, stmt)
+		if err != nil {
+			guardErr = err
+			break
+		}
+		require.NoError(t, rows.Close())
+	}
+	require.Error(t, guardErr, "the Down guard must fail while a marker carries a состав")
+	require.Contains(t, guardErr.Error(), "0273 Down blocked")
+	var stillThere int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.TABLES
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_marker_size'`).Scan(&stillThere))
+	require.Equal(t, 1, stillThere, "the guard must fire before the projection is dropped")
+
 	// (e) THE LEGACY ROW. Written straight into the table in the pre-Ф2 shape — size_id + sets, no
 	// total_units, no children. This is BOTH what every row looked like before 0273 and what the old
 	// container can still write during a deploy overlap, which is the one hole the backfill cannot
@@ -213,6 +242,61 @@ func TestTechCardMarkerComposition(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM tech_card_marker_size WHERE marker_id = ?", legacyID).Scan(&children))
 	require.Equal(t, 1, children)
+
+	// THE OLD BINARY EDITS A BACKFILLED ROW (C2), on the wire this time. Its UPDATE lists `sets` and
+	// `used_length_cm` and knows neither total_units nor tech_card_marker_size — so after this the row
+	// carries sets=4 beside a total_units of 3 and a child row of 3, both of them the migration's
+	// projection of a number that has since changed. `sets` has to win, or the norm is 400/garment
+	// against a truth of 300 AND the refusal stays empty because one entry reads as homogeneous.
+	_, err = testDB.ExecContext(ctx,
+		"UPDATE tech_card_marker SET sets = 4, used_length_cm = 1200 WHERE id = ?", legacyID)
+	require.NoError(t, err)
+	stale := markerByName("легаси")
+	require.Equal(t, int64(3), stale.TotalUnits.Int64, "the stale column is still on the row")
+	require.Equal(t, 4, stale.TotalUnitsOrLegacy(), "but `sets` is what the last writer actually said")
+	require.Equal(t, []entity.MarkerCompositionEntry{{SizeId: szA, Quantity: 4}}, stale.CompositionOrLegacy())
+	require.Equal(t, "300", stale.ConsumptionPerUnitCm().String())
+}
+
+// markerCompositionDownGuard returns the statements of 0273's Down up to and including the first
+// DEALLOCATE — its refusal guard — plus any destructive statement that appears BEFORE them. Read out
+// of the migration file rather than retyped: the claim under test is about the file's ORDER, and a
+// copy in a test would only prove the copy.
+func markerCompositionDownGuard(t *testing.T) (guard []string, dropsBefore []string) {
+	t.Helper()
+	body, err := os.ReadFile("sql/0273_marker_composition.sql")
+	require.NoError(t, err)
+	_, down, ok := strings.Cut(string(body), "-- +migrate Down")
+	require.True(t, ok, "0273 has no Down section")
+	destructive := func(s string) bool {
+		u := strings.ToUpper(s)
+		// DEALLOCATE PREPARE is not a drop; DROP TABLE / DROP INDEX / DROP COLUMN / DROP CHECK and the
+		// MODIFY back to NOT NULL are.
+		return strings.Contains(u, "DROP TABLE") || strings.Contains(u, "DROP INDEX") ||
+			strings.Contains(u, "DROP COLUMN") || strings.Contains(u, "DROP CHECK") ||
+			strings.Contains(u, "MODIFY COLUMN")
+	}
+	for _, stmt := range strings.Split(down, ";") {
+		var lines []string
+		for _, l := range strings.Split(stmt, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(l), "--") {
+				lines = append(lines, l)
+			}
+		}
+		clean := strings.TrimSpace(strings.Join(lines, "\n"))
+		if clean == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToUpper(clean), "DEALLOCATE") {
+			return append(guard, clean), dropsBefore
+		}
+		if destructive(clean) {
+			dropsBefore = append(dropsBefore, clean)
+		}
+		guard = append(guard, clean)
+	}
+	t.Fatal("0273's Down has no guarded first statement")
+	return nil, nil
 }
 
 // markerCompositionBackfillStatements lifts the two DML steps of 0273 (the legacy projection and the

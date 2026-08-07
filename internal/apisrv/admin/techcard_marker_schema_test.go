@@ -119,7 +119,13 @@ func TestSaveTechCardMarkerAcceptsSchema4AndCarriesTheComposition(t *testing.T) 
 	req.Marker.Layout.Composition = []*pb_common.TechCardMarkerCompositionEntry{
 		{SizeId: 9, Quantity: 1}, {SizeId: 3, Quantity: 2},
 	}
+	// One graded piece per size of the состав: a состав line whose size lays out nothing would charge
+	// the spread to garments the geometry never cuts, and the distiller refuses it.
 	req.Marker.Layout.Pieces[0].SizeId = 3
+	req.Marker.Layout.Pieces = append(req.Marker.Layout.Pieces, &pb_common.TechCardMarkerPiece{
+		PieceId: 2, Name: "FP_XL", Quantity: 1, SizeId: 9,
+		Poly: []*pb_common.TechCardMarkerPoint{{}, {XCm: 12}, {XCm: 12, YCm: 12}},
+	})
 	_, err := (&Server{repo: repo}).SaveTechCardMarker(context.Background(), req)
 	require.NoError(t, err)
 	require.False(t, got.SizeId.Valid, "the payload's legacy size_id is ignored once a состав is present")

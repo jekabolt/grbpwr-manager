@@ -1011,11 +1011,15 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		consumption = pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2))
 	}
 	return &pb_common.TechCardMarkerSummary{
-		Id:                   int32(m.Id),
-		TechCardId:           int32(m.TechCardId),
-		SizeId:               int32(m.SizeId.Int64),
+		Id:         int32(m.Id),
+		TechCardId: int32(m.TechCardId),
+		SizeId:     int32(m.SizeId.Int64),
+		// Derived from the SAME slice as the refusal and the consumption, so the three cannot describe
+		// three different раскладки. It is 0 exactly when the состав is missing — the honest answer,
+		// and the one the refusal beside it explains; TotalUnitsOrLegacy's arithmetic fallback of 1
+		// must never surface here, because «1 garment» is a claim and this row makes none.
 		Composition:          markerCompositionToPb(composition),
-		TotalUnits:           int32(m.TotalUnitsOrLegacy()),
+		TotalUnits:           int32(entity.TotalUnitsOf(composition)),
 		ScalarApplyRefusal:   refusal,
 		Name:                 m.Name,
 		Source:               m.Source,
@@ -1308,13 +1312,14 @@ func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLa
 		return entity.MarkerLayoutFacts{}, err
 	}
 	out.HasComposition = len(composition) > 0
-	slices.SortFunc(l.Composition, func(a, b *pb_common.TechCardMarkerCompositionEntry) int {
+	slices.SortFunc(l.GetComposition(), func(a, b *pb_common.TechCardMarkerCompositionEntry) int {
 		return int(a.GetSizeId()) - int(b.GetSizeId())
 	})
 	inComposition := make(map[int32]bool, len(composition))
 	for _, c := range composition {
 		inComposition[int32(c.SizeId)] = true
 	}
+	withPieces := make(map[int32]bool, len(composition))
 	for i, p := range l.GetPieces() {
 		sizeID := p.GetSizeId()
 		if sizeID == 0 {
@@ -1324,6 +1329,7 @@ func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLa
 			return entity.MarkerLayoutFacts{}, fmt.Errorf("layout.pieces[%d].size_id is %d", i, sizeID)
 		}
 		out.HasPieceSize = true
+		withPieces[sizeID] = true
 		if !inComposition[sizeID] {
 			// The instance formula multiplies a sized piece by composition[size].quantity. A piece
 			// pointing at a size the состав does not cut would resolve to a MISSING key, i.e. to zero
@@ -1331,6 +1337,21 @@ func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLa
 			// cut never. Refusing is the only reading that cannot be silent.
 			return entity.MarkerLayoutFacts{}, fmt.Errorf(
 				"layout.pieces[%d].size_id is %d, which the состав does not cut", i, sizeID)
+		}
+	}
+	// …AND THE OTHER DIRECTION. A состав line whose size carries no graded piece is the same lie told
+	// backwards: total_units counts that size's garments — into the row and into
+	// tech_card_marker_size, which Ф4.5 and Ф6.2 are designed to JOIN as truth — while the geometry
+	// lays none of them, so the spread is charged to more garments than it cuts and every norm off it
+	// is short. Checked only when SOME piece is graded: a blob where NO piece carries a size is the
+	// legitimate «nothing in this DXF grades» case, and there every piece is cut once per garment of
+	// the whole состав.
+	if out.HasPieceSize {
+		for _, c := range composition {
+			if !withPieces[int32(c.SizeId)] {
+				return entity.MarkerLayoutFacts{}, fmt.Errorf(
+					"layout.composition cuts size %d but no piece is laid out for it", c.SizeId)
+			}
 		}
 	}
 	for i, p := range l.GetPlacements() {
