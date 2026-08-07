@@ -81,14 +81,20 @@ func TestFabricDirectionGapsReport(t *testing.T) {
 	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET approval_state = 'obsolete' WHERE id = ?", obsoleteID)
 	require.NoError(t, err)
 
-	// A раскладка bound to the unset fabric line of the gap card: the provably-refused tier.
+	// A раскладка bound to the unset fabric line of the gap card: the urgent tier.
+	//
+	// LayoutFacts is not optional even here. Since Ф1 the save path REFUSES an undistilled blob
+	// (SchemaVersion 0) on any linked marker — the zero value of MarkerLayoutFacts is precisely the
+	// one that would sail through every later check, so a default that exempts had to be made
+	// unreachable. This layout carries no placements, so a truthful generation 1 passes the rule.
 	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
 	_, err = T.SaveMarker(ctx, gapID, 0, entity.TechCardMarkerInsert{
 		SizeId: szA, Name: "M · основная", Source: entity.MarkerSourceAuto,
 		BomLineKey:    "01FDRFABRIC000000000000001",
 		FabricWidthCm: d("140"), GapCm: d("0.5"), EdgeMarginCm: d("1"),
 		Sets: 1, UsedLengthCm: d("100"), PlacedCount: 2, TotalCount: 2,
-		Layout: `{"schemaVersion":1,"pieces":[],"placements":[]}`,
+		Layout:      `{"schemaVersion":1,"pieces":[],"placements":[]}`,
+		LayoutFacts: entity.MarkerLayoutFacts{SchemaVersion: 1},
 	}, "tester")
 	require.NoError(t, err)
 
@@ -129,19 +135,22 @@ func TestFabricDirectionGapsReport(t *testing.T) {
 
 	// --- the scope decision, on the store's real output ---
 	worklist := entity.BuildFabricDirectionGapReport(all, false)
-	require.Nil(t, byID(worklist.Cards, releasedID), "released cards refuse every marker save; out by default")
-	require.Nil(t, byID(worklist.Cards, obsoleteID))
+	require.Nil(t, byID(worklist.Cards, releasedID), "a released card cannot refuse until it is re-opened; deferred")
+	require.NotNil(t, byID(worklist.Cards, obsoleteID),
+		"an obsolete card is MUTABLE — RequireMutableTechCard refuses only released — so it refuses today and belongs in the worklist")
 	require.NotNil(t, byID(worklist.Cards, gapID))
-	require.GreaterOrEqual(t, worklist.ExcludedCards, 2)
-	require.GreaterOrEqual(t, worklist.ExcludedLines, 2, "what was hidden is always priced")
-	require.Equal(t, gapID, worklist.Cards[0].TechCardID, "the card with a refused раскладка sorts first")
+	require.GreaterOrEqual(t, worklist.ExcludedCards, 1)
+	require.GreaterOrEqual(t, worklist.ExcludedLines, 1, "what was deferred is always priced")
+	require.Equal(t, gapID, worklist.Cards[0].TechCardID, "the card carrying a bound раскладка sorts first")
 
 	full := entity.BuildFabricDirectionGapReport(all, true)
-	require.NotNil(t, byID(full.Cards, releasedID), "include_inactive folds the hidden rows back in")
-	require.NotNil(t, byID(full.Cards, obsoleteID))
+	require.NotNil(t, byID(full.Cards, releasedID), "include_inactive folds the deferred rows back in")
 	require.Empty(t, full.Excluded)
-	require.Equal(t, worklist.TotalLines+worklist.ExcludedLines, full.TotalLines)
+	require.Equal(t, worklist.TotalLines+worklist.ExcludedLines, full.TotalLines,
+		"the go/no-go number: total + excluded is scope-independent")
 	require.False(t, byID(full.Cards, releasedID).MarkerSavePossible())
+	require.True(t, byID(full.Cards, obsoleteID).MarkerSavePossible(),
+		"obsolete is mutable, so its unset lines refuse saves today")
 
 	// --- filling the field in removes the row: this is what «campaign finished» looks like ---
 	_, err = testDB.ExecContext(ctx,

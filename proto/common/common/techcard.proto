@@ -442,9 +442,19 @@ message TechCardBomItem {
   string currency = 13; // ISO 4217 for unit_price
   string comment = 14;
   // fabric data for the cutter / marker (Phase 3.5c)
-  google.type.Decimal fabric_width = 17; // usable width, cm
+  // FULL roll width in cm, кромка INCLUDED — same correction as Material.fabric_width: this is what
+  // effective_fabric_width_cm below resolves to, and that field's own text already derives the
+  // usable cutting width as effective − 2 × selvedge.
+  google.type.Decimal fabric_width = 17;
   google.type.Decimal fabric_weight_gsm = 18; // weight, g/m²
-  TechCardFabricDirection fabric_direction = 19; // nap / layout
+  // Nap / layout. OPTIONAL for presence, on the same reasoning as purpose/is_sample above: the
+  // card is saved WHOLE, the admin is an SPA, and a tab holding an older bundle does not send this
+  // field at all — a proto3 enum's zero value is UNKNOWN, so «absent» and «clear it» were the same
+  // bytes and a stale tab would have wiped the направление off every line of the card. Silently:
+  // the field is not in the signature digest, and NULL is indistinguishable from «ещё не задали».
+  // Since Ф1 that erasure also un-saves every раскладка on the card, so absence now means «do not
+  // touch» and only an explicitly-sent UNKNOWN clears the column.
+  optional TechCardFabricDirection fabric_direction = 19;
   google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into the usage line totals
   // material_id optionally links this line to a catalog Material (task 10). The line keeps its
   // own snapshot fields regardless; 0 means unlinked (free-text / legacy).
@@ -496,6 +506,13 @@ message TechCardBomItem {
   // Optional по той же причине: голый bool от старого бандла приходит как false и снял бы признак
   // со всех строк карточки разом.
   optional bool is_sample = 33;
+  // READ-ONLY (Ф5а.3): the vocabulary normalisation of this line's `unit`. Ignored on write — the
+  // stored value stays the free-text `unit`, deliberately: that column is inside the SIGNED MATERIALS
+  // digest, so respelling «м» → "m" in storage would stale the MATERIALS sign-off of every card that
+  // spells a unit non-canonically, for a change that alters nothing the card BUYS. Comparison against
+  // the article's unit is normalised in the server instead, which costs no sign-off.
+  // UNKNOWN = the free text does not map to a known unit; it is NOT "no unit".
+  MaterialUnit unit_code = 34;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -561,6 +578,33 @@ message MaterialPackagingAttrs {
   string print_method = 4;
 }
 
+// MaterialUnit is the closed vocabulary a material quantity is measured in (Ф5а.3), mirroring
+// entity.MaterialUnit. Before it, every unit was free text and every consumer compared raw strings:
+// the production material plan carried a private metre synonym set (m/м/meter/meters/metre/metres)
+// and degraded into a caveat on any other mismatch, so a slot spelled «м» against an article spelled
+// "m" counted as two different units — the quantity kept the slot's meaning while being compared
+// against the article's stock, and the pinned-article costing path refused to price the line.
+//
+// READ-ONLY on the wire. The stored value stays the free-text `unit` string (which is what a write
+// sets); unit_code is the server's normalisation of it, so a value the vocabulary does not know is
+// never guessed — it arrives as MATERIAL_UNIT_UNKNOWN with the raw string intact beside it, and the
+// set of rows reporting UNKNOWN is precisely the list of units that still need a human. A client
+// must therefore never treat UNKNOWN as "no unit" or as "clear the unit".
+enum MaterialUnit {
+  MATERIAL_UNIT_UNKNOWN = 0; // free-text value the vocabulary does not know (see `unit`)
+  MATERIAL_UNIT_M = 1; // running metre — how roll goods are bought and cut
+  MATERIAL_UNIT_CM = 2;
+  MATERIAL_UNIT_MM = 3;
+  MATERIAL_UNIT_M2 = 4; // square metre (sheet goods)
+  MATERIAL_UNIT_G = 5;
+  MATERIAL_UNIT_KG = 6; // fabric bought by weight — the material plan converts metres to kg
+  MATERIAL_UNIT_PCS = 7; // countable trim
+  MATERIAL_UNIT_PAIR = 8;
+  MATERIAL_UNIT_SET = 9;
+  MATERIAL_UNIT_CONE = 10; // thread cone (MaterialThreadAttrs.length_per_cone_m metres each)
+  MATERIAL_UNIT_ROLL = 11;
+}
+
 message Material {
   int64 id = 1;
   string name = 2; // required
@@ -569,8 +613,18 @@ message Material {
   string supplier_ref = 5;
   string composition = 6;
   string spec = 7; // ширина / плотность
+  // Free text, stored EXACTLY as sent — the server never respells it, so a client that writes "pc"
+  // reads back "pc". unit_code below is the server's read-only normalisation of this string, and it
+  // is what comparisons run on; migration 0271 collapsed the legacy catalogue spellings once, but
+  // that was a cleanup, not a standing write rule.
   string unit = 8;
-  google.type.Decimal fabric_width = 9; // usable width, cm
+  // FULL roll width in cm, кромка INCLUDED — despite what this comment said until Ф5а.4. Nothing has
+  // ever subtracted the selvedge from it (0259 says so explicitly: the flat copy was labelled
+  // "usable" in 0095 but no consumer ever treated it as such), and both EffectiveFabricWidthCm and
+  // the metres→kg conversion depend on it being the full width: the selvedge is bought, it weighs,
+  // and billing by the cutting width understates the invoiced weight by 2–4% every time. The USABLE
+  // cutting width is this minus 2 × MaterialFabricAttrs.selvedge_cm.
+  google.type.Decimal fabric_width = 9;
   google.type.Decimal fabric_weight_gsm = 10; // weight, g/m²
   bool archived = 11;
   // latest_price is the current (latest-effective) price, if any (read-only; set via
@@ -613,6 +667,38 @@ message Material {
   // order-to-door time. 0 = unset for both.
   int32 supplier_id = 29;
   int32 lead_time_days = 30;
+  // cutting_coefficient (Ф5а.2) is THE one visible, editable dial per article, replacing eight named
+  // losses nobody can measure separately. It covers, together: усадка, обход пороков, сращивание,
+  // оттеночные полосы — the roll-level reality a marker cannot contain, because a marker is measured
+  // on a clean lay of a nominal width. A MULTIPLIER, not a percent (1.03 = +3%); accepted range
+  // [1, 3].
+  //
+  // Unset means nobody has set one and the requirement path multiplies by nothing — an article
+  // without a coefficient plans exactly as it did before this field existed. There is deliberately
+  // ONE default and no per-«класс ткани» taxonomy to pick it from; the value ranges (полотно ~3%,
+  // трикотаж ~6%, клетка/полоска +10–20%) and what the coefficient covers belong in the field's hint
+  // text, so nobody starts adding a column per loss again a year from now.
+  //
+  // WRITE SEMANTICS — three states, not two, because "the client did not send the field" and "the
+  // operator cleared it" must not be the same request (same rule as TechCardBomItem.purpose /
+  // is_sample):
+  //   * field ABSENT (null)        → LEAVE AS IS. A stale admin tab, or any bundle from before this
+  //                                  field shipped, sends nothing and must not erase a coefficient an
+  //                                  operator set — silently, with no digest and no audit trail.
+  //   * field PRESENT, value ""    → CLEAR it (store NULL). This is how the UI unsets the dial.
+  //   * field PRESENT with a value → set it.
+  //
+  // SCOPE — this is a DEMAND-side dial only. It grosses up the material PLAN's requirement
+  // (GetProductionRunMaterialPlan) and nothing else: the run's planned unit cost and the style cost
+  // estimate gross up by the BOM wastage % alone and do NOT include this coefficient. Planned COGS is
+  // therefore understated by exactly the coefficient wherever one is set. That is deliberate for now —
+  // moving it into the costing chain changes how product.cost_price is derived and every style's
+  // margin with it, which is a separate, deliberately reviewed decision. Do not present a planned cost
+  // as coefficient-inclusive.
+  google.type.Decimal cutting_coefficient = 31;
+  // READ-ONLY (Ф5а.3): the vocabulary normalisation of `unit`. Ignored on write — set `unit`.
+  // UNKNOWN = the free text does not map to any known unit, and must not be read as "no unit".
+  MaterialUnit unit_code = 32;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the
@@ -1559,7 +1645,15 @@ message TechCardMarkerInsert {
 // blob (idiom: tech_card_release.snapshot). schema_version guards forward evolution — readers
 // degrade gracefully on a version they do not know.
 message TechCardMarkerLayout {
-  int32 schema_version = 1; // 1, or 2 when pieces carry piece_line_key/block_name; the server accepts both
+  // 1 = the original geometry; 2 adds piece_line_key/block_name on a piece; 3 adds `flipped` on a
+  // placement (Ф1). The server accepts all three and every stored blob stays readable forever.
+  //
+  // The version is also what the save path judges a layout BY. A stored v1/v2 marker legitimately
+  // carries rotations the current policy would not offer — the manual editor saves the rotation a
+  // piece actually has, even outside policy — so applying the directional-cloth rule to it would
+  // retro-invalidate every measurement on file the moment its card gets a направление. Only a blob
+  // that can express `flipped` comes from a client that knows the policy, so only v3 is held to it.
+  int32 schema_version = 1;
   TechCardMarkerNestParams params = 2;
   repeated TechCardMarkerPiece pieces = 3;
   repeated TechCardMarkerPlacement placements = 4;
@@ -1609,6 +1703,17 @@ message TechCardMarkerPlacement {
   int32 rot_deg = 3; // 0 | 90 | 180 | 270
   double x_cm = 4;
   double y_cm = 5;
+  // The instance is MIRRORED — the contour reflected before rot_deg is applied, so its chirality is
+  // the opposite of the piece as parsed. No rotation expresses this: a left and a right полочка are
+  // the same outline turned OVER, never turned around, and an engine that can only rotate cuts 44
+  // left fronts and zero right ones off a half-set of выкройки. That is the failure this field
+  // exists to make expressible (schema_version 3, Ф1).
+  //
+  // Directional cloth forbids a mirror for the same reason it forbids 180°: both put the piece on
+  // the fabric the wrong way up, and ворс, twill or a print then run against the neighbouring
+  // piece. The save path refuses either one on a one_way scope — see the schema_version note above
+  // for why only v3 blobs are judged.
+  bool flipped = 6;
 }
 
 // TechCardListItem is a lightweight tech-card header for list views.

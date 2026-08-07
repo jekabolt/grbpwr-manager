@@ -27,8 +27,11 @@ func TestFabricDirectionIsUnknown(t *testing.T) {
 	}
 }
 
+// gapCard builds a card with `lines` unset lines, `blocked` раскладки bound to the first of them,
+// and — unless overridden — a LinkedMarkerCount consistent with that (blocked markers are linked
+// markers). The tier reads LinkedMarkerCount, so tests that care about the tier set it explicitly.
 func gapCard(id int, state string, blocked int, lines int) FabricDirectionGapCard {
-	c := FabricDirectionGapCard{TechCardID: id, ApprovalState: state}
+	c := FabricDirectionGapCard{TechCardID: id, ApprovalState: state, LinkedMarkerCount: blocked}
 	for i := 0; i < lines; i++ {
 		l := FabricDirectionGapLine{BomItemID: int64(id*100 + i)}
 		if i == 0 {
@@ -59,10 +62,9 @@ func equalInts(a, b []int) bool {
 	return true
 }
 
-// The default worklist drops released and obsolete cards — and PRICES what it dropped, always. A
-// filter nobody can see is a report that lies by omission, and this one gets read as a release
-// condition.
-func TestBuildFabricDirectionGapReportExcludesInactiveButCountsThem(t *testing.T) {
+// The default worklist defers RELEASED cards only — and PRICES what it deferred, always. A filter
+// nobody can see is a report that lies by omission, and this one gets read as a release condition.
+func TestBuildFabricDirectionGapReportDefersReleasedButCountsThem(t *testing.T) {
 	cards := []FabricDirectionGapCard{
 		gapCard(1, string(TechCardApprovalDraft), 0, 2),
 		gapCard(2, string(TechCardApprovalReleased), 0, 3),
@@ -71,35 +73,48 @@ func TestBuildFabricDirectionGapReportExcludesInactiveButCountsThem(t *testing.T
 		gapCard(5, string(TechCardApprovalInReview), 0, 1),
 	}
 	r := BuildFabricDirectionGapReport(cards, false)
-	if got := ids(r.Cards); !equalInts(got, []int{1, 3, 5}) {
-		t.Fatalf("worklist = %v, want [1 3 5]", got)
+	if got := ids(r.Cards); !equalInts(got, []int{1, 3, 4, 5}) {
+		t.Fatalf("worklist = %v, want [1 3 4 5]", got)
 	}
-	if r.TotalCards != 3 || r.TotalLines != 4 {
-		t.Fatalf("totals = %d cards / %d lines, want 3 / 4", r.TotalCards, r.TotalLines)
+	if r.TotalCards != 4 || r.TotalLines != 8 {
+		t.Fatalf("totals = %d cards / %d lines, want 4 / 8", r.TotalCards, r.TotalLines)
 	}
-	if r.ExcludedCards != 2 || r.ExcludedLines != 7 {
-		t.Fatalf("excluded = %d cards / %d lines, want 2 / 7", r.ExcludedCards, r.ExcludedLines)
+	if r.ExcludedCards != 1 || r.ExcludedLines != 3 {
+		t.Fatalf("excluded = %d cards / %d lines, want 1 / 3", r.ExcludedCards, r.ExcludedLines)
 	}
-	if len(r.Excluded) != 2 {
-		t.Fatalf("excluded breakdown = %d reasons, want 2", len(r.Excluded))
-	}
-	// Deterministic breakdown order: obsolete before released, alphabetically.
-	if r.Excluded[0].ApprovalState != string(TechCardApprovalObsolete) || r.Excluded[0].Lines != 4 {
-		t.Fatalf("first exclusion = %+v, want obsolete / 4 lines", r.Excluded[0])
-	}
-	if r.Excluded[1].ApprovalState != string(TechCardApprovalReleased) || r.Excluded[1].Lines != 3 {
-		t.Fatalf("second exclusion = %+v, want released / 3 lines", r.Excluded[1])
+	if len(r.Excluded) != 1 || r.Excluded[0].ApprovalState != string(TechCardApprovalReleased) {
+		t.Fatalf("excluded breakdown = %+v, want released only", r.Excluded)
 	}
 }
 
-// include_inactive folds the hidden rows back in and empties the breakdown — the same numbers, all
-// on one side of the fence. Without this the owner could never audit what the default scope drops.
-func TestBuildFabricDirectionGapReportIncludeInactive(t *testing.T) {
+// OBSOLETE IS NOT DEFERRED, and this is the regression that matters most in this file.
+//
+// RequireMutableTechCard refuses only `released`. An obsolete card is fully mutable, so a save on it
+// reaches the direction rule and is refused TODAY, with no state change and no warning. Holding it
+// back made the default total_lines read «finished» over exactly the failure this report exists to
+// prevent — a card nobody expected to break, breaking.
+func TestBuildFabricDirectionGapReportKeepsObsoleteInTheWorklist(t *testing.T) {
+	r := BuildFabricDirectionGapReport([]FabricDirectionGapCard{
+		gapCard(7, string(TechCardApprovalObsolete), 0, 2),
+	}, false)
+	if len(r.Cards) != 1 || r.TotalLines != 2 {
+		t.Fatalf("obsolete must be worked like any live card: %+v", r)
+	}
+	if r.ExcludedLines != 0 || len(r.Excluded) != 0 {
+		t.Fatalf("obsolete must not be counted as deferred: %+v", r.Excluded)
+	}
+}
+
+// include_inactive folds the deferred rows back in and empties the breakdown — the same numbers, all
+// on one side of the fence. This is the RELEASE GATE form of the call: the go/no-go is
+// TotalLines + ExcludedLines == 0, which is scope-independent, and this pins that identity.
+func TestBuildFabricDirectionGapReportIncludeInactiveIsTheGoNoGo(t *testing.T) {
 	cards := []FabricDirectionGapCard{
 		gapCard(1, string(TechCardApprovalDraft), 0, 2),
 		gapCard(2, string(TechCardApprovalReleased), 0, 3),
 		gapCard(4, string(TechCardApprovalObsolete), 0, 4),
 	}
+	deferred := BuildFabricDirectionGapReport(cards, false)
 	r := BuildFabricDirectionGapReport(cards, true)
 	if got := ids(r.Cards); !equalInts(got, []int{1, 2, 4}) {
 		t.Fatalf("worklist = %v, want [1 2 4]", got)
@@ -107,10 +122,14 @@ func TestBuildFabricDirectionGapReportIncludeInactive(t *testing.T) {
 	if r.TotalLines != 9 || r.ExcludedCards != 0 || r.ExcludedLines != 0 || len(r.Excluded) != 0 {
 		t.Fatalf("include_inactive must fold everything in: %+v", r)
 	}
+	if deferred.TotalLines+deferred.ExcludedLines != r.TotalLines {
+		t.Fatalf("go/no-go identity broken: %d + %d != %d",
+			deferred.TotalLines, deferred.ExcludedLines, r.TotalLines)
+	}
 }
 
-// Cards with a provably-refused раскладка come first; everything under that tier keeps the store's
-// id order. The owner works this list over days, so a second load must put the same card in the same
+// Cards carrying a bound раскладка come first; everything under that tier keeps the store's id
+// order. The owner works this list over days, so a second load must put the same card in the same
 // place — and the tier must not be a proxy sort that reshuffles on every save.
 func TestBuildFabricDirectionGapReportOrdersUrgentFirstThenById(t *testing.T) {
 	cards := []FabricDirectionGapCard{
@@ -130,8 +149,29 @@ func TestBuildFabricDirectionGapReportOrdersUrgentFirstThenById(t *testing.T) {
 	}
 }
 
-// A card whose blocked markers hang off a LATER line is still urgent — the tier is the card's sum,
-// not its first row.
+// THE SIBLING CASE, which is why the tier reads LinkedMarkerCount and not BlockedMarkerCount.
+//
+// An unset line X and an ANSWERED line Y share a назначение; the markers hang off Y. Those markers
+// resolve a scope containing X, so they are precisely the ones that break — while X reports zero
+// blocked markers. On the sharper count this card sinks below the fold; on the sound one it sorts
+// first, which is the error direction a triage tier is allowed to have.
+func TestBuildFabricDirectionGapReportTierCatchesSiblingRefusals(t *testing.T) {
+	sibling := FabricDirectionGapCard{
+		TechCardID: 9, ApprovalState: string(TechCardApprovalDraft),
+		LinkedMarkerCount: 3, // all bound to the ANSWERED sibling, which is not reported
+		Lines:             []FabricDirectionGapLine{{BomItemID: 901, BlockedMarkerCount: 0}},
+	}
+	calm := gapCard(10, string(TechCardApprovalDraft), 0, 1)
+	if sibling.BlockedMarkerCount() != 0 {
+		t.Fatal("fixture must have no directly-bound markers, or it proves nothing")
+	}
+	r := BuildFabricDirectionGapReport([]FabricDirectionGapCard{calm, sibling}, false)
+	if got := ids(r.Cards); !equalInts(got, []int{9, 10}) {
+		t.Fatalf("order = %v, want [9 10] — the sibling-refused card must not sink", got)
+	}
+}
+
+// BlockedMarkerCount is informational and sums every line, not just the first.
 func TestFabricDirectionGapCardBlockedMarkerCountSumsLines(t *testing.T) {
 	c := FabricDirectionGapCard{Lines: []FabricDirectionGapLine{
 		{BlockedMarkerCount: 0}, {BlockedMarkerCount: 3}, {BlockedMarkerCount: 2},
@@ -141,9 +181,9 @@ func TestFabricDirectionGapCardBlockedMarkerCountSumsLines(t *testing.T) {
 	}
 }
 
-// The one exclusion that is a PROOF rather than a judgement: a released card refuses every marker
-// write before направление is consulted, so its unset lines block nothing. Everything else can
-// still be nested, obsolete included — which is why obsolete is excluded on judgement and counted.
+// MarkerSavePossible is about an INSTANT, not about the campaign. Only `released` refuses every
+// marker write outright (RequireMutableTechCard); obsolete does not, which is why obsolete is worked
+// like any other card and released is merely deferred-and-counted rather than dismissed.
 func TestFabricDirectionGapCardMarkerSavePossible(t *testing.T) {
 	for state, want := range map[TechCardApprovalState]bool{
 		TechCardApprovalDraft:    true,

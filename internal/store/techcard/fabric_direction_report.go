@@ -24,12 +24,18 @@ import (
 //     it), and expressing that vocabulary a second time in SQL is exactly the drift this report
 //     cannot afford. The cost is reading every cloth line instead of the unset ones — a few per
 //     card, over a table of tens of thousands of rows.
-//   - blocked_marker_count counts раскладки bound DIRECTLY to the line. That is provable rather than
-//     approximate: whichever way a marker's scope resolves (назначение, else the line itself), the
-//     scope contains the line the marker names, so an unset direction there refuses the save.
-//     Markers on SIBLING lines under the same назначение are refused too, and are deliberately NOT
-//     counted here — resolving назначение a second time in SQL would be the marker rule restated,
-//     free to disagree with itself. The wider population rides as linked_marker_count instead.
+//   - blocked_marker_count counts раскладки bound DIRECTLY to the line, and it is an UPPER bound on
+//     that line's refusals rather than a count of them: the rule passes a layout carrying neither a
+//     180° nor a mirror before it asks about the cloth at all, and only the layout blob knows which
+//     is which (0257 — the store does not parse it, and starting here would be the wrong place to
+//     break that). Markers refused through a SIBLING line under the same назначение are not counted
+//     here either, so the number is not a lower bound; resolving назначение a second time in SQL
+//     would be the marker rule restated, free to disagree with itself. The sound, over-inclusive
+//     count is linked_marker_count, and that is the one the triage tier is drawn on.
+//   - both marker counts are scoped to the card explicitly. blocked_marker_count is already
+//     card-scoped through the bom_item_id it matches on, so the extra predicate buys nothing today —
+//     it is there so that `blocked <= linked` holds by construction rather than by the FK's good
+//     behaviour, which is what the two numbers are compared on.
 //   - ORDER BY is the BOM tab's own order (display_order, id, per the bom load in materials.go) под
 //     tech_card_id, so the list an operator works through does not reshuffle between loads and the
 //     rows inside a card sit where the screen puts them.
@@ -47,7 +53,8 @@ var fabricDirectionGapsQuery = `
 	       bi.is_sample                              AS is_sample,
 	       COALESCE(bi.fabric_direction, '')         AS fabric_direction,
 	       (SELECT COUNT(*) FROM tech_card_marker mb
-	          WHERE mb.bom_item_id = bi.id)          AS blocked_marker_count,
+	          WHERE mb.bom_item_id = bi.id
+	            AND mb.tech_card_id = tc.id)         AS blocked_marker_count,
 	       (SELECT COUNT(*) FROM tech_card_marker ml
 	          WHERE ml.tech_card_id = tc.id
 	            AND ml.bom_item_id IS NOT NULL)      AS linked_marker_count,

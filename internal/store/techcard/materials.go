@@ -401,7 +401,8 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 					name=:name, supplier=:supplier, supplier_ref=:supplier_ref,
 					color=:color, composition=:composition, spec=:spec, unit=:unit, unit_price=:unit_price, currency=:currency,
 					comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
-					fabric_direction=:fabric_direction, wastage_percent=:wastage_percent,
+					fabric_direction=IF(:fabric_direction_omitted, fabric_direction, :fabric_direction),
+					wastage_percent=:wastage_percent,
 					price_source=:price_source, price_snapshot_at=:price_snapshot_at
 				WHERE id=:id`, params); err != nil {
 				return res, fmt.Errorf("failed to update bom line: %w", err)
@@ -485,36 +486,37 @@ func colorwayRecipeRefsForBom(ctx context.Context, db dependency.DB, bomItemID i
 // bomItemParams maps a BOM line to named params for the upsert.
 func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKey string) map[string]any {
 	return map[string]any{
-		"tech_card_id":      tcID,
-		"material_id":       b.MaterialId,
-		"section":           string(b.Section),
+		"tech_card_id": tcID,
+		"material_id":  b.MaterialId,
+		"section":      string(b.Section),
 		// Присутствие, а не значение (0265). Отсутствующее поле означает «не трогай»: карточка
 		// сохраняется целиком, а вкладка со старым бандлом этих полей не шлёт вовсе — без этого её
 		// сейв стирал бы назначение у ВСЕХ строк карточки, и притом бесследно, потому что полей нет
 		// в дайджесте подписи, а NULL неотличим от «ещё не разложили». Примечание ходит вместе с
 		// назначением: они меняются одной парой, иначе примечание пережило бы смену назначения и
 		// стало бы теневой ролью.
-		"purpose":           b.Purpose,
-		"purpose_omitted":   b.PurposeOmitted,
-		"purpose_note":      b.PurposeNote,
-		"is_sample":         b.IsSample,
-		"is_sample_omitted": b.IsSampleOmitted,
-		"name":              b.Name,
-		"supplier":          b.Supplier,
-		"supplier_ref":      b.SupplierRef,
-		"color":             b.Color,
-		"composition":       b.Composition,
-		"spec":              b.Spec,
-		"unit":              b.Unit,
-		"unit_price":        b.UnitPrice,
-		"currency":          b.Currency,
-		"comment":           b.Comment,
-		"display_order":     displayOrder,
-		"fabric_width":      b.FabricWidth,
-		"fabric_weight_gsm": b.FabricWeightGsm,
-		"fabric_direction":  b.FabricDirection,
-		"wastage_percent":   b.WastagePercent,
-		"line_key":          lineKey,
+		"purpose":                  b.Purpose,
+		"purpose_omitted":          b.PurposeOmitted,
+		"purpose_note":             b.PurposeNote,
+		"is_sample":                b.IsSample,
+		"is_sample_omitted":        b.IsSampleOmitted,
+		"name":                     b.Name,
+		"supplier":                 b.Supplier,
+		"supplier_ref":             b.SupplierRef,
+		"color":                    b.Color,
+		"composition":              b.Composition,
+		"spec":                     b.Spec,
+		"unit":                     b.Unit,
+		"unit_price":               b.UnitPrice,
+		"currency":                 b.Currency,
+		"comment":                  b.Comment,
+		"display_order":            displayOrder,
+		"fabric_width":             b.FabricWidth,
+		"fabric_weight_gsm":        b.FabricWeightGsm,
+		"fabric_direction":         b.FabricDirection,
+		"fabric_direction_omitted": b.FabricDirectionOmitted,
+		"wastage_percent":          b.WastagePercent,
+		"line_key":                 lineKey,
 	}
 }
 
@@ -921,9 +923,9 @@ type techCardPieceDxfAliasRow struct {
 	entity.TechCardPieceDxfAlias
 }
 
-// nullIfEmpty writes "" as SQL NULL. The alias table's fabric_purpose has to be NULL rather than ''
-// for the empty case: scope_key is COALESCE(fabric_purpose, bom_line_key), and '' is not NULL to
-// COALESCE — a line-scoped row storing '' would scope to the empty string and collide with every
+// nullIfEmpty writes "" as SQL NULL. The alias table's fabric_purpose has to be NULL rather than ”
+// for the empty case: scope_key is COALESCE(fabric_purpose, bom_line_key), and ” is not NULL to
+// COALESCE — a line-scoped row storing ” would scope to the empty string and collide with every
 // other such row of the card.
 func nullIfEmpty(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}

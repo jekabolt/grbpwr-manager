@@ -10,10 +10,10 @@ import (
 //
 // fabric_direction has been on tech_card_bom_item since 0073 and until Ф1 fed nothing but the
 // MATERIALS digest, so it is unset on almost every stored line. Ф1 makes an unset direction refuse
-// the save of any раскладка cut from that cloth — including the re-save of a marker that saves fine
-// today — which turns «fill the field in» from housekeeping into a release condition (кампания Д1).
-// This file is the pure half of the report that campaign is worked from: the scope decision and the
-// ordering, with no SQL and no transport in them, so both are arguable in a test.
+// the save of a раскладка whose geometry actually needs judging — including the re-save of a marker
+// that saves fine today — which turns «fill the field in» from housekeeping into a release condition
+// (кампания Д1). This file is the pure half of the report that campaign is worked from: the scope
+// decision and the ordering, with no SQL and no transport in them, so both are arguable in a test.
 //
 // The report and the blocker MUST agree about what «unset» means and about which lines can even
 // have a direction. Both are shared rather than restated: the families come from the store's single
@@ -21,6 +21,14 @@ import (
 // ValidTechCardFabricDirections map the marker rule reads. A report that answered «done» while
 // saves still failed would be worse than no report at all — somebody would deploy the block onto
 // data they believed was clean.
+//
+// WHAT THIS REPORT IS EXACT ABOUT, AND WHAT IT ONLY BOUNDS. Per LINE it is exact and it is what the
+// campaign is measured by: a line reported here is a line whose направление nobody set, and no line
+// the rule can refuse on is missing. Per MARKER it only bounds, because the refusal needs a second
+// fact the store cannot see — the rule waves a layout through before it ever asks about the cloth
+// when nothing in it is upside down, and only the layout blob knows that (0257: the store does not
+// parse it). So every marker count here is a triage aid with its error direction written next to
+// it, and none of them is the campaign's measure.
 
 // FabricDirectionIsUnknown reports whether a stored fabric_direction says nothing about the cloth.
 //
@@ -47,9 +55,12 @@ type FabricDirectionGapLine struct {
 	// direction of sample cloth for SAMPLE раскладки, so a report that dropped these rows would read
 	// «done» while a sample раскладка still refused to save.
 	IsSample bool
-	// BlockedMarkerCount — раскладки bound to THIS line. They are provably refused once the blocking
-	// half ships: a marker's scope always contains the line it names, whether that scope resolves
-	// through назначение or through the line itself, so no resolution rule can excuse them.
+	// BlockedMarkerCount — раскладки bound to THIS line: an UPPER bound on what the rule refuses
+	// here, never a count of refusals. ValidateMarkerFabricDirection lets a layout through BEFORE it
+	// asks about the cloth when that layout carries neither a 180° nor a mirror — nothing upside
+	// down means no direction can change the verdict — so a marker counted here may keep saving
+	// exactly as it does today. Separating the two needs the layout blob, and the store does not
+	// parse it by design (0257); an over-count is the honest thing to publish, provided it says so.
 	BlockedMarkerCount int
 }
 
@@ -63,15 +74,20 @@ type FabricDirectionGapCard struct {
 	Name          string
 	Stage         string
 	ApprovalState string
-	// LinkedMarkerCount — раскладки bound to any BOM line at all, i.e. the population the rule
-	// judges at all (an unlinked раскладка has no cloth attached and is exempt from it).
+	// LinkedMarkerCount — раскладки bound to any BOM line of this card: every marker a gap on THIS
+	// card could possibly refuse, because a marker's scope is built out of the card's own lines and
+	// an unlinked раскладка has no cloth at all. Over-inclusive by construction and chosen for it —
+	// this is the only count here with NO FALSE NEGATIVES, which is what a triage tier needs. See
+	// BuildFabricDirectionGapReport for why the tier is drawn on it rather than on the sharper
+	// BlockedMarkerCount.
 	LinkedMarkerCount int
 	HasPatterns       bool
 	Lines             []FabricDirectionGapLine
 }
 
-// BlockedMarkerCount is the card's provably-refused раскладки: the sum over its unset lines. Two
-// markers cannot double-count — a marker names one line.
+// BlockedMarkerCount sums the per-line counts. Informational only — it is neither an upper nor a
+// lower bound on refusals (it over-counts compliant geometry, and misses markers refused through a
+// sibling line under the same назначение), so it decides nothing about scope or order.
 func (c FabricDirectionGapCard) BlockedMarkerCount() int {
 	n := 0
 	for _, l := range c.Lines {
@@ -80,10 +96,14 @@ func (c FabricDirectionGapCard) BlockedMarkerCount() int {
 	return n
 }
 
-// MarkerSavePossible reports whether a раскладка can be written to this card AT ALL. A RELEASED card
-// refuses every marker write (RequireMutableTechCard) before направление is ever consulted, so an
-// unset line on one blocks nothing — which is the whole justification for leaving those cards out of
-// the default worklist, and it is derived from the write path rather than asserted.
+// MarkerSavePossible reports whether a раскладка can be written to this card RIGHT NOW. A RELEASED
+// card refuses every marker write (RequireMutableTechCard) before направление is ever consulted; no
+// other state does, obsolete included.
+//
+// «Right now» is the whole caveat. This is a statement about an instant, not about the campaign:
+// re-opening a released card to draft is a sanctioned, ordinary edit, and the moment it happens the
+// same unset lines are live again. So it justifies DEFERRING released cards out of the default
+// worklist and pricing them — never dismissing them from the release condition.
 func (c FabricDirectionGapCard) MarkerSavePossible() bool {
 	return TechCardApprovalState(c.ApprovalState) != TechCardApprovalReleased
 }
@@ -99,48 +119,65 @@ type FabricDirectionGapExclusion struct {
 type FabricDirectionGapReport struct {
 	Cards      []FabricDirectionGapCard
 	TotalCards int
-	// TotalLines is THE campaign number — lines still missing a направление in the reported scope.
+	// TotalLines — lines still missing a направление IN THE SCOPE THAT WAS ASKED FOR. On a default
+	// call zero means «nothing refuses today»; it is not on its own the release condition, because a
+	// deferred card is one ordinary edit away from being live again.
+	//
+	// THE GO/NO-GO IS TotalLines + ExcludedLines == 0, i.e. TotalLines == 0 with includeInactive.
 	TotalLines    int
 	Excluded      []FabricDirectionGapExclusion
 	ExcludedCards int
 	ExcludedLines int
 }
 
-// fabricDirectionGapInactiveStates are the approval states the default worklist leaves out, each for
-// its own reason — and the two reasons are NOT of the same kind, which is why they are listed with
-// the argument attached rather than folded into one «inactive» idea:
+// fabricDirectionGapDeferredStates are the approval states the default worklist holds back.
 //
-//   - RELEASED is a PROOF. RequireMutableTechCard refuses every marker save on a released card, so
-//     no unset line on one can ever refuse anything. Including these rows would inflate the campaign
-//     with work that changes nothing.
-//   - OBSOLETE is a JUDGEMENT. A retired card is still mutable and its markers would still be
-//     refused; nobody is nesting it. This is the exclusion that could be wrong, so it is the one the
-//     always-reported count exists for.
+// THE TEST FOR MEMBERSHIP IS «CAN THE RULE REFUSE THIS CARD», NOT «WILL ANYBODY TOUCH IT». That
+// distinction is the whole content of this variable, and getting it wrong once already cost
+// something: OBSOLETE used to be in here on the reasoning that nobody nests a retired card. But
+// RequireMutableTechCard refuses only RELEASED — an obsolete card is fully mutable, so a save on it
+// reaches the direction rule and is refused TODAY, with no state change and no warning. Deferring it
+// made the default total_lines read «finished» over exactly the failure this report exists to
+// prevent. It is now in the worklist like any other live card.
+//
+// RELEASED stays deferred, and on an honestly weaker claim than the one first written here. It is
+// NOT a proof that these lines can never refuse: moving a card back to draft is a sanctioned edit,
+// and one of them puts the same unset lines back in play. It is a claim about ORDER OF WORK — a
+// released card cannot refuse until somebody deliberately re-opens it, so it does not belong in the
+// list being worked through today. Which is why it is priced in `excluded` on every response and why
+// the release condition is the INCLUSIVE one: total_lines + excluded_lines == 0.
 //
 // Deliberately NOT here, though both were candidates:
 //
 //   - «no раскладки yet» — a card with no markers is precisely the card whose FIRST раскладка gets
 //     refused. Filtering on it would make the report answer «done» for a card where the very next
-//     нестинг fails, which is the exact failure this report exists to prevent. It rides along as
-//     LinkedMarkerCount/BlockedMarkerCount instead, so the ordering can prioritise without the
-//     totals lying.
+//     нестинг fails. It rides along as LinkedMarkerCount instead, so the ordering can prioritise
+//     without the totals lying.
 //   - «no выкройки yet» — a card gains DXF sheets in one upload. That is a state that changes in
 //     minutes, and a worklist worked over days must not be filtered by it. It rides along as
 //     HasPatterns.
-var fabricDirectionGapInactiveStates = map[TechCardApprovalState]bool{
+var fabricDirectionGapDeferredStates = map[TechCardApprovalState]bool{
 	TechCardApprovalReleased: true,
-	TechCardApprovalObsolete: true,
 }
 
 // BuildFabricDirectionGapReport applies the worklist scope and the ordering to every card the store
-// found, and prices what it withheld.
+// found, and prices what it held back.
 //
-// ORDER: cards carrying a provably-refused раскладка first, then by tech_card_id. The tier is the
-// only thing that outranks identity, and a card leaves it only by being FIXED (its lines drop out
-// and the card leaves the report entirely) or by gaining its first bound marker — which is news, not
-// churn. Everything else is id order, so two loads days apart show the same list in the same places.
-// Sorting by «most unset lines» would have looked helpful and reshuffled the page under an operator
-// on every save.
+// ORDER: cards carrying at least one BOUND раскладка first, then by tech_card_id.
+//
+// The tier is drawn on LinkedMarkerCount and not on the sharper-looking BlockedMarkerCount, because
+// a triage tier must have no false negatives and BlockedMarkerCount has them. Let an unset line X
+// and an ANSWERED line Y share a назначение, with the markers hanging off Y: those markers resolve a
+// scope containing X, so they are the ones that break — while X reports zero blocked markers and the
+// card would sink below the fold. Catching that exactly means re-deriving назначение here, i.e. a
+// second copy of the marker rule free to disagree with the first. A sound over-approximation is the
+// cheaper honest answer: every marker a gap on this card can refuse is bound to SOME line of this
+// card, so LinkedMarkerCount > 0 can over-include but can never miss.
+//
+// A card leaves the tier only by being FIXED (its lines drop out and it leaves the report entirely)
+// or by gaining its first bound marker — which is news, not churn. Everything else is id order, so
+// two loads days apart show the same list in the same places. Sorting by «most unset lines» would
+// have looked helpful and reshuffled the page under an operator on every save.
 func BuildFabricDirectionGapReport(cards []FabricDirectionGapCard, includeInactive bool) FabricDirectionGapReport {
 	var out FabricDirectionGapReport
 	var urgent, rest []FabricDirectionGapCard
@@ -150,7 +187,7 @@ func BuildFabricDirectionGapReport(cards []FabricDirectionGapCard, includeInacti
 			continue
 		}
 		state := TechCardApprovalState(c.ApprovalState)
-		if !includeInactive && fabricDirectionGapInactiveStates[state] {
+		if !includeInactive && fabricDirectionGapDeferredStates[state] {
 			e := excluded[state]
 			if e == nil {
 				e = &FabricDirectionGapExclusion{ApprovalState: c.ApprovalState}
@@ -162,7 +199,7 @@ func BuildFabricDirectionGapReport(cards []FabricDirectionGapCard, includeInacti
 			out.ExcludedLines += len(c.Lines)
 			continue
 		}
-		if c.BlockedMarkerCount() > 0 {
+		if c.LinkedMarkerCount > 0 {
 			urgent = append(urgent, c)
 		} else {
 			rest = append(rest, c)

@@ -1598,14 +1598,34 @@ service AdminService {
   // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
   // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
   // tech_card_bom_item since 0073 and fed nothing but the MATERIALS digest, so it is unset on almost
-  // every stored line; Ф1 makes an unset direction REFUSE the save of any раскладка cut from that
-  // cloth, including the re-save of a marker that saves fine today. This report is what makes the
-  // fill-in campaign finishable and what says when it is finished — total_lines going to zero is the
-  // release condition for the blocking half.
+  // every stored line; Ф1 makes an unset direction refuse the save of a раскладка whose geometry
+  // needs judging — including the re-save of a marker that saves fine today. This report is what
+  // makes the fill-in campaign finishable and what says when it is finished; see total_lines for the
+  // exact go/no-go, which is NOT «total_lines == 0» on a default call.
   //
   // Read-only. Requires tech-cards read: it is the BOM tab's own data, seen across cards.
   rpc ListTechCardFabricDirectionGaps(ListTechCardFabricDirectionGapsRequest) returns (ListTechCardFabricDirectionGapsResponse) {
     option (google.api.http) = {get: "/api/admin/tech-card/fabric-direction-gaps"};
+  }
+
+  // GetWorkshopSettings returns «дом настроек цеха» (Ф2.5, 0272): the shop-floor constants that
+  // belong to the ЦЕХ itself and not to any one card or раскладка. Первый жилец is the cutting
+  // table length, which the nesting modal used to make the operator retype on every раскладка.
+  // Every setting is individually optional — an absent one is NOT configured, and a consumer must
+  // degrade to "no verdict" rather than substitute a zero.
+  rpc GetWorkshopSettings(GetWorkshopSettingsRequest) returns (GetWorkshopSettingsResponse) {
+    option (google.api.http) = {get: "/api/admin/workshop/settings"};
+  }
+
+  // UpdateWorkshopSettings patches the workshop configuration. Partial by construction: an omitted
+  // setting is left alone (see UpdateWorkshopSettingsRequest). Returns the resulting configuration,
+  // so a caller never needs a follow-up read. A request that names no setting at all, or a value
+  // outside the plausibility band for its unit, is InvalidArgument with a field-tagged detail.
+  rpc UpdateWorkshopSettings(UpdateWorkshopSettingsRequest) returns (UpdateWorkshopSettingsResponse) {
+    option (google.api.http) = {
+      patch: "/api/admin/workshop/settings"
+      body: "*"
+    };
   }
 
   // GetOrderPackingSpec is the packer/QC-readable composition of an order (WS7, scope 3): the garments
@@ -4500,6 +4520,59 @@ message UpdateSettingsRequest {
 
 message UpdateSettingsResponse {}
 
+// WORKSHOP SETTINGS (Ф2.5) — «дом настроек цеха». Distinct from the block above: UpdateSettings is
+// the STOREFRONT's configuration (carriers, payment, site availability); this is the physical shop
+// floor. Nothing crosses.
+
+// WorkshopSettings is the singleton shop-floor configuration (workshop_settings, 0272).
+message WorkshopSettings {
+  // Usable length of the cutting/spreading table, in CENTIMETRES.
+  //
+  // ABSENT means the workshop has not configured a table, and that is NOT the same as zero. A
+  // consumer computing a length verdict must render "no verdict available" for an absent value —
+  // comparing against 0 would tell a workshop that has merely not filled this in that every
+  // раскладка it lays is too long, which is worse than saying nothing.
+  google.type.Decimal cutting_table_length_cm = 1;
+
+  string updated_by = 2; // admin username of the last writer; "" = never written
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message GetWorkshopSettingsRequest {}
+
+message GetWorkshopSettingsResponse {
+  WorkshopSettings settings = 1;
+}
+
+// UpdateWorkshopSettingsRequest is a PARTIAL update, and each setting is TRI-STATE:
+//
+//   * ABSENT               — leave the stored value alone. This is the default for any client that
+//                            does not know the setting exists, so a workshop screen shipped before a
+//                            new tenant landed can never wipe it.
+//   * PRESENT, empty value — clear the setting back to "not configured". Needed for real: an
+//                            operator who mistyped the table length must be able to return it to
+//                            unknown, because a wrong number produces confident false verdicts while
+//                            an unset one produces none.
+//   * PRESENT with a number — set it.
+//
+// NOTE for JSON/REST callers: protojson cannot tell `"cuttingTableLengthCm": null` from an absent
+// field, so null also reads as "leave alone". To CLEAR a setting send the empty message —
+// `{"cuttingTableLengthCm": {}}` — not null.
+//
+// A request that names no setting at all is rejected rather than executed: it would write nothing
+// but still stamp updated_by/updated_at, putting a fake edit in the audit trail.
+message UpdateWorkshopSettingsRequest {
+  // Centimetres. Rejected with a field-tagged InvalidArgument outside the plausibility band
+  // (entity.Min/MaxCuttingTableLengthCm): the single most likely operator mistake is typing METRES
+  // into a field labelled centimetres, and "6" for a 6 m table would otherwise be accepted and then
+  // declare every раскладка too long.
+  google.type.Decimal cutting_table_length_cm = 1;
+}
+
+message UpdateWorkshopSettingsResponse {
+  WorkshopSettings settings = 1; // the configuration AFTER the write
+}
+
 // PaymentMethodFee is the estimated processing-fee model of a payment method.
 message PaymentMethodFee {
   common.PaymentMethodNameEnum payment_method = 1;
@@ -6263,22 +6336,32 @@ message ListCostingMigrationExceptionsResponse {
 // НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — see ListTechCardFabricDirectionGaps.
 message ListTechCardFabricDirectionGapsRequest {
   int32 tech_card_id = 1; // 0 = every card in scope; a card id re-checks one card after the fix
-  // include_inactive adds back the cards the default worklist leaves out — see the `excluded`
-  // breakdown on the response for what those are and why. Off by default because the point of the
-  // report is a list somebody can finish; on when the question is «what is the server hiding».
+  // include_inactive adds back the cards the default worklist defers — today exactly the RELEASED
+  // ones, and the `excluded` breakdown always names which states those were. Off by default because
+  // the point of the report is a list somebody can finish; ON for the release go/no-go, because a
+  // released card is deferred on a JUDGEMENT (that nobody re-opens it) and not on a proof.
   bool include_inactive = 2;
+  // counts_only drops `cards` and answers with the totals alone. The go/no-go call is
+  // (counts_only, include_inactive) = (true, true) — one question, one bounded answer, and that
+  // matters because the unbounded form grows with the portfolio and its failure mode
+  // (ResourceExhausted) would land on precisely the call that gates the release.
+  bool counts_only = 3;
 }
 
 message ListTechCardFabricDirectionGapsResponse {
   repeated FabricDirectionGapCard cards = 1; // cards with at least one unset line, deterministic order
   int32 total_cards = 2;
-  // total_lines is THE campaign number: roll-goods lines still missing a направление in this scope.
-  // Zero means кампания Д1 is done for the scope asked about — that, and not a page count, is what
-  // the blocking release waits on.
+  // total_lines — roll-goods lines still missing a направление IN THE SCOPE THAT WAS ASKED FOR. On a
+  // default call zero means «nothing refuses today»; it is NOT on its own the release condition,
+  // because the deferred cards below can be re-opened into scope by one ordinary card edit.
+  //
+  // THE GO/NO-GO IS total_lines + excluded_lines == 0 — equivalently total_lines == 0 with
+  // include_inactive. That is the one number, and it is the strict form: it also survives somebody
+  // moving a released card back to draft.
   int32 total_lines = 3;
-  // What the default scope left out, ALWAYS reported even though the rows are not. A filter nobody
-  // can see is a report that lies by omission; with include_inactive this is empty and the totals
-  // above cover everything.
+  // What the scope deferred, ALWAYS priced even when the rows themselves are withheld. A filter
+  // nobody can see is a report that lies by omission, and this one is read as a release gate; with
+  // include_inactive this is empty and the totals above cover everything.
   repeated FabricDirectionGapExclusion excluded = 4;
   int32 excluded_cards = 5;
   int32 excluded_lines = 6;
@@ -6292,26 +6375,31 @@ message FabricDirectionGapExclusion {
 }
 
 // FabricDirectionGapCard is one tech card carrying unset cloth lines, with the facts an owner
-// triages by. Cards with at least one provably-refused раскладка come first; ties keep tech_card_id
-// order, so working the list over days never reshuffles it under the operator.
+// triages by. Cards carrying ANY bound раскладка come first (see linked_marker_count for why that
+// and not blocked_marker_count); ties keep tech_card_id order, so working the list over days never
+// reshuffles it under the operator.
 message FabricDirectionGapCard {
   int32 tech_card_id = 1;
   string style_number = 2;
   string name = 3;
   common.TechCardStage stage = 4;
   common.TechCardApprovalState approval_state = 5;
-  // marker_save_possible is false for a RELEASED card: every marker write on one is refused before
-  // направление is even consulted, so its unset lines block nothing. This is why released cards are
-  // out of the default worklist, and it is a server fact rather than a client inference.
+  // marker_save_possible is false for a RELEASED card: every marker write on one is refused outright
+  // before направление is consulted, so today its unset lines cannot refuse anything. It says
+  // «right now», not «ever» — moving the card back to draft makes it mutable with the same unset
+  // lines, which is exactly why released is DEFERRED and counted rather than dismissed.
   bool marker_save_possible = 6;
-  // blocked_marker_count — раскладки bound DIRECTLY to one of the lines below. These are the saves
-  // that stop working the day the blocking half ships: a marker's scope always contains the line it
-  // names, so no resolution rule can excuse them. The urgent tier.
+  // blocked_marker_count — the sum of the per-line counts below. NOT a count of refusals: see
+  // FabricDirectionGapLine.blocked_marker_count. Informational; it decides nothing about the order.
   int32 blocked_marker_count = 7;
-  // linked_marker_count — раскладки bound to any BOM line at all, i.e. the population the rule
-  // judges (an unlinked раскладка has no cloth and is exempt). A superset of blocked_marker_count,
-  // because a marker on a SIBLING line under the same назначение is refused too; which siblings
-  // exactly is the marker rule's answer and is deliberately not re-derived here.
+  // linked_marker_count — раскладки bound to any BOM line of this card, i.e. every marker a gap on
+  // THIS card could possibly refuse (a scope is built out of the card's own lines, and an unlinked
+  // раскладка has no cloth at all). Over-inclusive and deliberately so: it is the only count here
+  // with no false negatives, which is why the urgent tier is drawn on it. blocked_marker_count
+  // cannot do that job — it misses the case where an unset line and an ANSWERED line share a
+  // назначение and only the answered one carries markers, and those markers are refused through the
+  // sibling. Re-deriving назначение here to catch that would be the marker rule restated, free to
+  // disagree with itself; over-approximating with a sound count is the cheaper honest answer.
   int32 linked_marker_count = 8;
   bool has_patterns = 9; // the card has DXF sheets, so it can be nested — a раскладка is imminent
   repeated FabricDirectionGapLine lines = 10; // in BOM-tab order (display_order, id)
@@ -6332,7 +6420,13 @@ message FabricDirectionGapLine {
   // rule asks the direction of sample cloth for SAMPLE раскладки, so dropping these rows would let
   // the report read «done» while a sample раскладка still refuses to save.
   bool is_sample = 6;
-  int32 blocked_marker_count = 7; // раскладки bound to THIS line
+  // blocked_marker_count — раскладки bound to THIS line: the population the rule will judge on this
+  // row, and an UPPER bound on what it refuses, never a count of refusals. The rule lets a layout
+  // through before it ever asks about the cloth when that layout carries neither a 180° nor a
+  // mirror — nothing upside down means no direction can change the verdict — so a marker counted
+  // here may well keep saving. Telling the two apart needs the layout blob, which the store does not
+  // parse by design (0257), so the report reports what it can actually see and says which it is.
+  int32 blocked_marker_count = 7;
 }
 
 // Tech-card release snapshots (task 11).
@@ -6545,6 +6639,33 @@ message MaterialPlanRow {
   google.type.Decimal shortage = 7; // max(0, required − issued − on_hand)
   bool has_size_norms = 8; // false when some contributing norm was per-garment, not size-graded (rougher estimate)
   google.type.Decimal issued_variance = 9; // issued − required: >0 over-issued vs plan (scrap/overuse), <0 under-issued/leftover (gap-04). Meaningful after issuing/receive.
+  // WHY `required` is bigger than the raw norm (Ф5а.2).
+  //
+  // required_before_grossup is Σ(norm × planned_qty) with NO gross-up of any kind applied — no BOM
+  // wastage %, no cutting coefficient — converted into the same unit as `required`. It is the
+  // "before" number of the before → after pair, and it is honest for every row: a manual row, a
+  // marker row, a counted trim, a row with no coefficient at all.
+  //
+  // The ONE invariant that always holds is required >= required_before_grossup. The factor between
+  // them is whatever gross-up each contributing line took, and lines take exactly one:
+  //   * MARKER-sourced norm → the article's cutting_coefficient;
+  //   * manual / legacy measured norm → the BOM line's wastage % (or the run's actual wastage);
+  //   * counted trim (4 buttons stay 4 buttons) → nothing.
+  // So required = required_before_grossup × cutting_coefficient holds ONLY for a row fed entirely by
+  // marker norms of an article that has a coefficient. On a manual row the ratio is the wastage
+  // factor while cutting_coefficient may still be set (and a caveat says it did not bite); on a
+  // counted row the ratio is 1. Do NOT derive the coefficient from the two numbers — read it from
+  // cutting_coefficient.
+  //
+  // cutting_coefficient is the ARTICLE's coefficient, reported whenever the article has one even if
+  // this run's norms did not let it bite. NOTE it is a DEMAND-side dial only: the run's planned unit
+  // cost and the style cost estimate do NOT include it (they gross up by wastage % alone), so a
+  // planned COGS must never be read as coefficient-inclusive.
+  google.type.Decimal required_before_grossup = 10;
+  google.type.Decimal cutting_coefficient = 11;
+  // Vocabulary normalisation of `unit` (Ф5а.3). UNKNOWN = the row's unit is free text this
+  // server does not know, and quantities under it must not be added to anything else's.
+  common.MaterialUnit unit_code = 12;
 }
 
 // MaterialPlanContribution is one slot × colourway share of the plan — the factory-spec breakdown
@@ -6563,6 +6684,12 @@ message MaterialPlanContribution {
   string unit = 9; // the slot's spec unit (rollup rows may convert to the stock unit)
   google.type.Decimal required = 10; // in `unit`; wastage applied to measured norms only
   bool has_size_norms = 11;
+  // Same decomposition as on the rollup row (Ф5а.2), per slot × colourway: Σ(norm × planned_qty)
+  // with NO gross-up applied (neither wastage % nor coefficient), and the article's cutting
+  // coefficient when it has one (unset = it has none). required >= required_before_grossup always;
+  // the two are related BY the coefficient only on a marker-sourced line — see MaterialPlanRow.
+  google.type.Decimal required_before_grossup = 12;
+  google.type.Decimal cutting_coefficient = 13;
 }
 
 // MaterialPlanBlocker is a slot × colourway the plan could NOT count — a missing article (no pin,
@@ -6607,6 +6734,16 @@ message ReceiveMaterialStockRequest {
   // When this delivery was promised to arrive (Phase 9), YYYY-MM-DD; empty = not tracked. Recorded
   // on the receipt so lateness (occurred_at vs expected_at) is a queryable fact without a PO.
   string expected_at = 12;
+  // Roll facts captured at приёмка (Ф5а.1). Both are recorded on the LOT `lot` names, so setting
+  // either WITHOUT a `lot` is REFUSED (InvalidArgument) rather than accepted and dropped — there is
+  // no lot to hang them on, and an operator who measured the roll would otherwise get a 200 and no
+  // data. An omitted value never clears what an earlier receipt into the same lot recorded.
+  //   measured_width_cm — the width that ARRIVED, not the one the supplier printed (150 nominal,
+  //     148 measured; the marker is made for the narrowest width in the batch). Must be > 0 when set.
+  //   shade_code — the dye lot / оттенок, for colour matching across rolls.
+  // Measured LENGTH has no field: `quantity` already is it.
+  google.type.Decimal measured_width_cm = 13;
+  string shade_code = 14;
 }
 
 message ReceiveMaterialStockResponse {

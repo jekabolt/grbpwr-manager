@@ -14,15 +14,23 @@ import (
 // growing a second vocabulary here. purpose comes off a plain string because the report's own
 // loader already collapsed NULL to "" — sql.NullString reconstructs the distinction pbBomPurpose
 // expects, and "" is the UNSET a line predating 0265 legitimately carries.
-func FabricDirectionGapReportToPb(r entity.FabricDirectionGapReport) *pb_admin.ListTechCardFabricDirectionGapsResponse {
+//
+// countsOnly answers with the totals and nothing else. It is applied HERE, where the rows would be
+// built, rather than by blanking the field afterwards — the point is not to allocate the payload at
+// all. The totals are unaffected either way: they are counted upstream, over every row, so the
+// bounded answer is the same answer.
+func FabricDirectionGapReportToPb(r entity.FabricDirectionGapReport, countsOnly bool) *pb_admin.ListTechCardFabricDirectionGapsResponse {
 	out := &pb_admin.ListTechCardFabricDirectionGapsResponse{
-		Cards:         make([]*pb_admin.FabricDirectionGapCard, 0, len(r.Cards)),
 		TotalCards:    int32(r.TotalCards),
 		TotalLines:    int32(r.TotalLines),
 		Excluded:      make([]*pb_admin.FabricDirectionGapExclusion, 0, len(r.Excluded)),
 		ExcludedCards: int32(r.ExcludedCards),
 		ExcludedLines: int32(r.ExcludedLines),
 	}
+	if countsOnly {
+		return withGapExclusions(out, r)
+	}
+	out.Cards = make([]*pb_admin.FabricDirectionGapCard, 0, len(r.Cards))
 	for _, c := range r.Cards {
 		card := &pb_admin.FabricDirectionGapCard{
 			TechCardId:         int32(c.TechCardID),
@@ -49,6 +57,14 @@ func FabricDirectionGapReportToPb(r entity.FabricDirectionGapReport) *pb_admin.L
 		}
 		out.Cards = append(out.Cards, card)
 	}
+	return withGapExclusions(out, r)
+}
+
+// withGapExclusions attaches the deferred-rows breakdown. Shared by both modes on purpose: what the
+// scope held back must be visible even when the rows are not asked for — counts_only is a payload
+// bound, never a licence to drop the part of the answer that says the report is filtering.
+func withGapExclusions(out *pb_admin.ListTechCardFabricDirectionGapsResponse,
+	r entity.FabricDirectionGapReport) *pb_admin.ListTechCardFabricDirectionGapsResponse {
 	for _, e := range r.Excluded {
 		out.Excluded = append(out.Excluded, &pb_admin.FabricDirectionGapExclusion{
 			ApprovalState: pbTechCardApprovalState(entity.TechCardApprovalState(e.ApprovalState)),

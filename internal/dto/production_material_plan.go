@@ -11,13 +11,16 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// planLengthUnits are the slot units the metres→cones thread conversion may start FROM. The
-// division is only meaningful length ÷ length-per-cone; converting from any other unit (a slot
-// authored in cones against metre stock, pcs vs cone) would divide in the wrong direction and
-// report a phantom zero shortage.
-var planLengthUnits = map[string]bool{
-	"m": true, "м": true, "meter": true, "meters": true, "metre": true, "metres": true,
-}
+// The metre synonym set that used to live here (`m, м, meter, meters, metre, metres`) moved into
+// entity.materialUnitSynonyms VERBATIM as the vocabulary's MaterialUnit "m" row (Ф5а.3). It was a
+// private map that only the thread conversion below consulted, so every OTHER unit comparison in
+// this file was a raw string compare that treated «м» and "m" as two different units — the number
+// kept the slot's meaning while being compared against the article's stock. Unit comparisons here
+// now go through entity.SameMaterialUnit / entity.NormalizeMaterialUnit, and an unknown unit still
+// falls back to the old raw compare, so nothing that used to work stops working.
+
+// planPercentDivisor turns a wastage percent into a fraction.
+var planPercentDivisor = decimal.NewFromInt(100)
 
 // planSlotSections are the BOM sections a colourway recipe is expected to cover — the garment's
 // own materials. A slot in one of these with NO norm for a produced colourway is a blocker (the
@@ -73,10 +76,29 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	}
 
 	type matAcc struct {
-		required     decimal.Decimal
-		hasSizeNorms bool
-		name         string
-		unit         string
+		required decimal.Decimal
+		// requiredBeforeGrossup is Σ(norm × planned_qty) with NO gross-up of ANY kind applied — no
+		// BOM wastage %, no cutting coefficient — converted into the same unit as required. It is
+		// deliberately not "required before the coefficient": a manual line's number here is also
+		// before its wastage, and a line can only ever take ONE of the two factors, so a single
+		// "before" number is the only one that stays true for every row (Ф5а.2).
+		//
+		// The invariant is required >= requiredBeforeGrossup. The ratio equals the coefficient only
+		// when every contributing line was marker-sourced; on a manual row it is the wastage factor.
+		requiredBeforeGrossup decimal.Decimal
+		// coefficient is the ARTICLE's coefficient (a property of the article, reported whenever it
+		// has one); coefficientApplied records whether any contribution actually took it.
+		coefficient        decimal.NullDecimal
+		coefficientApplied bool
+		// Which kinds of norm fed this row — read only to word the "the coefficient did not bite"
+		// caveat correctly: a manual norm takes the BOM wastage % instead, a counted trim takes
+		// nothing at all, and telling an operator their counted buttons are "manual norms" is a
+		// wrong explanation of a right number.
+		hasManualNorms  bool
+		hasCountedNorms bool
+		hasSizeNorms    bool
+		name            string
+		unit            string
 	}
 	req := make(map[int]*matAcc)
 	order := make([]int, 0) // material ids, in first-seen order (then sorted for a stable response)
@@ -87,9 +109,13 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		materialID int
 	}
 	type contribAcc struct {
-		required     decimal.Decimal
-		hasSizeNorms bool
-		pinned       bool
+		required decimal.Decimal
+		// Same meaning as matAcc.requiredBeforeGrossup, in the slot's spec unit: before wastage AND
+		// before the coefficient, because a line takes at most one of them.
+		requiredBeforeGrossup decimal.Decimal
+		coefficient           decimal.NullDecimal
+		hasSizeNorms          bool
+		pinned                bool
 	}
 	contribs := make(map[contribKey]*contribAcc)
 
@@ -137,8 +163,22 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	var caveats []string
 	noProductNoted, noColorwayNoted := false, false
 	noBomNoted := make(map[string]bool) // by colourway name
-	unitNoted := make(map[int]bool)     // by material id — unit mismatch / conversion notes
-	plannedByColorway := map[int]int{}  // product id → Σ planned qty (for uncovered-slot blockers)
+	// Unit notes are de-duplicated by the STATEMENT, not by the material. The loop below visits the
+	// same slot × colourway once per run line (product × size), so some dedupe is needed or a
+	// five-size run repeats every note five times — but a latch keyed on the material id alone was
+	// worse than noise: it let the FIRST unit note an article produced silence every later one. An
+	// article fed by one slot in metres (converted to kg) and another in pcs then reported only the
+	// successful conversion, so a total summed across units read as a precise, converted figure.
+	// Keying on the text means every DISTINCT thing that is true about this article gets said once.
+	unitNoted := make(map[string]bool)
+	noteUnit := func(msg string) {
+		if unitNoted[msg] {
+			return
+		}
+		unitNoted[msg] = true
+		caveats = append(caveats, msg)
+	}
+	plannedByColorway := map[int]int{} // product id → Σ planned qty (for uncovered-slot blockers)
 	usedSlotsByColorway := map[int]map[int]bool{}
 
 	for i := range run.Lines {
@@ -187,22 +227,46 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				blockAdd(bom.Id, pid, ln.PlannedQty, "no consumption norm")
 				continue
 			}
-			// Wastage grosses MEASURED norms up (e.g. 5% → ×1.05) — cutting loss. A counted trim
-			// (4 buttons stay 4 buttons) takes none, mirroring the costing's UnitTotal. The run's
-			// ACTUAL cutting wastage overrides the BOM line's estimate when set. A MARKER-sourced
-			// norm takes no factor at all — its measured length already contains the cutting
-			// waste, and the run override must not re-introduce it (PIECES-WASTAGE-DESIGN §2.3).
+			// base is what the norm alone asks for; factor is the ONE gross-up this line takes.
+			//
+			// Which gross-up depends on where the norm came from, and the two worlds stay disjoint
+			// so no line is ever grossed twice:
+			//
+			//   * MANUAL / legacy measured norm — the BOM line's wastage estimate (5% → ×1.05),
+			//     overridden by the run's ACTUAL cutting wastage when set. Unchanged by Ф5а.
+			//   * MARKER-sourced norm — the ARTICLE's cutting coefficient (Ф5а.2). A marker's
+			//     measured length already contains the cutting waste of a clean lay on a nominal
+			//     width (PIECES-WASTAGE-DESIGN §2.3), which is why the wastage factor must never
+			//     touch it; the coefficient covers what a marker CANNOT contain — усадка, обход
+			//     пороков, сращивание, оттеночные полосы. Different losses, so no double count.
+			//   * counted trim (4 buttons stay 4 buttons) — nothing, mirroring costing's UnitTotal.
+			//
+			// An article with no coefficient multiplies by nothing: this path produces exactly the
+			// number it produced before the field existed.
+			base := norm.Mul(decimal.NewFromInt(int64(ln.PlannedQty)))
 			factor := decimal.NewFromInt(1)
-			if !counted && u.ConsumptionSource.String != entity.ConsumptionSourceMarker {
+			lineCoeff := decimal.NullDecimal{}
+			markerSourced := u.ConsumptionSource.String == entity.ConsumptionSourceMarker
+			switch {
+			case counted:
+				// no gross-up
+			case markerSourced:
+				if m, ok := linked[mid]; ok {
+					if c := m.EffectiveCuttingCoefficient(); c.Valid {
+						factor = c.Decimal
+						lineCoeff = c
+					}
+				}
+			default:
 				wastage := bom.WastagePercent
 				if run.ActualWastagePercent.Valid {
 					wastage = run.ActualWastagePercent
 				}
 				if wastage.Valid {
-					factor = factor.Add(wastage.Decimal.Div(decimal.NewFromInt(100)))
+					factor = factor.Add(wastage.Decimal.Div(planPercentDivisor))
 				}
 			}
-			add := norm.Mul(decimal.NewFromInt(int64(ln.PlannedQty))).Mul(factor)
+			add := base.Mul(factor)
 
 			ck := contribKey{bom.Id, pid, mid}
 			c := contribs[ck]
@@ -211,49 +275,105 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				contribs[ck] = c
 			}
 			c.required = c.required.Add(add)
+			c.requiredBeforeGrossup = c.requiredBeforeGrossup.Add(base)
+			if lineCoeff.Valid {
+				c.coefficient = lineCoeff
+			}
 			if !sizeGraded {
 				c.hasSizeNorms = false
 			}
 
-			// Rollup unit discipline: the number and its label must always agree. The one
-			// conversion we know is thread — a slot specified in a LENGTH unit against an
-			// article stocked in cones (length_per_cone_m metres each) divides metres by cone
-			// length; only that direction, only from a length unit. Any other mismatch keeps the
-			// number AND the label in the slot's unit (comparing it against stock is noted once
-			// as a caveat) — a slot-unit number under the stock unit's label was a purchase
-			// order for 18 000 cones.
-			stockAdd := add
+			// Rollup unit discipline: the number and its label must always agree. Two conversions
+			// are known, both one-directional and both keyed off the CLOSED unit vocabulary rather
+			// than raw strings (Ф5а.3) — «м» against "m" is one unit and no longer degrades into a
+			// caveat that silently compares a slot-unit number against stock:
+			//
+			//   metres → cones: a slot in metres against an article stocked in cones divides by
+			//     length_per_cone_m. Only that direction — a slot authored in cones against metre
+			//     stock would divide the wrong way and report a phantom zero shortage.
+			//   metres → kilograms (Ф5а.4): a slot in metres against an article BOUGHT BY WEIGHT
+			//     multiplies by the roll's full width and density. Only that direction, for the
+			//     same reason.
+			//
+			// Any other mismatch keeps the number AND the label in the slot's unit (noted once as a
+			// caveat) — a slot-unit number under the stock unit's label was a purchase order for
+			// 18 000 cones.
+			stockAdd, stockBase := add, base
 			rowUnit := bom.Unit.String
 			if m, ok := linked[mid]; ok {
 				slotUnit := strings.TrimSpace(bom.Unit.String)
 				stockUnit := strings.TrimSpace(m.Unit.String)
+				slotU, slotKnown := entity.NormalizeMaterialUnit(slotUnit)
+				stockU, stockKnown := entity.NormalizeMaterialUnit(stockUnit)
+				fromMetres := slotKnown && slotU == entity.MaterialUnitM
 				switch {
-				case stockUnit == "" || slotUnit == "" || stockUnit == slotUnit:
+				case stockUnit == "" || slotUnit == "" || entity.SameMaterialUnit(slotUnit, stockUnit):
 					rowUnit = matUnit(mid, bom)
-				case planLengthUnits[strings.ToLower(slotUnit)] &&
+				case fromMetres && stockKnown && stockU == entity.MaterialUnitKg:
+					// Weight is billed on the FULL roll width, кромка included — the selvedge is
+					// bought and it weighs. Using the cutting width here would understate what the
+					// supplier invoices by 2–4%. Density comes from the ARTICLE (CTI attr over the
+					// flat column), never from the BOM line's own fabric_weight_gsm: that one is a
+					// spec snapshot of what the card was drawn against and has no consumer.
+					width := m.EffectiveFabricWidthCm()
+					gsm := m.EffectiveFabricWeightGsm()
+					kg := entity.FabricLengthToKg(add, width, gsm)
+					kgBase := entity.FabricLengthToKg(base, width, gsm)
+					if kg.Valid && kgBase.Valid {
+						stockAdd, stockBase = kg.Decimal, kgBase.Decimal
+						rowUnit = stockUnit
+						noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (кромка included) × %s g/m²",
+							matName(mid, bom), slotUnit, stockUnit,
+							width.Decimal.String(), gsm.Decimal.String()))
+					} else {
+						noteUnit(fmt.Sprintf("%s: stocked in %s but the article has no full width and density — cannot convert the %s norm to weight; the row stays in %q",
+							matName(mid, bom), stockUnit, slotUnit, slotUnit))
+					}
+				case fromMetres &&
 					m.ThreadAttr != nil && m.ThreadAttr.LengthPerConeM.Valid && m.ThreadAttr.LengthPerConeM.Decimal.IsPositive():
 					stockAdd = add.Div(m.ThreadAttr.LengthPerConeM.Decimal)
+					stockBase = base.Div(m.ThreadAttr.LengthPerConeM.Decimal)
 					rowUnit = stockUnit
-					if !unitNoted[mid] {
-						caveats = append(caveats, fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
-							matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
-						unitNoted[mid] = true
-					}
+					noteUnit(fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
+						matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
 				default:
-					if !unitNoted[mid] {
-						caveats = append(caveats, fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
-							matName(mid, bom), slotUnit, stockUnit, slotUnit))
-						unitNoted[mid] = true
-					}
+					noteUnit(fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
+						matName(mid, bom), slotUnit, stockUnit, slotUnit))
 				}
 			}
 			a := req[mid]
 			if a == nil {
 				a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: rowUnit}
+				if m, ok := linked[mid]; ok {
+					// The article's coefficient is reported whether or not this run's norms let it
+					// bite, so the operator can see the dial that exists.
+					a.coefficient = m.EffectiveCuttingCoefficient()
+				}
 				req[mid] = a
 				order = append(order, mid)
+			} else if a.unit != "" && rowUnit != "" && !entity.SameMaterialUnit(a.unit, rowUnit) {
+				// The row is about to add a quantity in one unit to a total kept in another, and it
+				// will keep the label of whichever unit was seen FIRST. That summation is an older
+				// defect with a wider blast radius than this phase, and it is being scoped separately
+				// — but it must never be silent, and above all it must not sit underneath a caveat
+				// that reads like a successful conversion. Keyed on the accumulator rather than on
+				// the conversion notes above, so no amount of successful converting can hide it.
+				noteUnit(fmt.Sprintf("%s: this run needs it in BOTH %q and %q — `required` is a SUM ACROSS UNITS "+
+					"labelled with the first unit seen (%q), so that number and its shortage are not usable; "+
+					"put the slots on one unit",
+					a.name, a.unit, rowUnit, a.unit))
 			}
 			a.required = a.required.Add(stockAdd)
+			a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)
+			if lineCoeff.Valid {
+				a.coefficientApplied = true
+			}
+			switch {
+			case counted:
+				a.hasCountedNorms = true
+			case !markerSourced:
+				a.hasManualNorms = true
+			}
 			if !sizeGraded {
 				a.hasSizeNorms = false
 			}
@@ -291,6 +411,28 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		order = append(order, mid)
 	}
 
+	// A coefficient that exists but bit nothing is a silent no-op the operator would otherwise blame
+	// on the field being broken: it grosses up MARKER-sourced norms only. Say so once per article
+	// rather than letting the dial look dead — and say WHICH kind of norm shut it out, because
+	// "manual" is a wrong explanation for an article consumed as a counted quantity (Ф5а.2).
+	for _, mid := range order {
+		a := req[mid]
+		if !a.coefficient.Valid || a.coefficientApplied || !a.required.IsPositive() {
+			continue
+		}
+		var because string
+		switch {
+		case a.hasManualNorms && a.hasCountedNorms:
+			because = "this run's norms for it are manual (their BOM wastage % applies instead) or counted quantities (which take no gross-up at all)"
+		case a.hasCountedNorms:
+			because = "this article is consumed here as a counted quantity — 4 buttons stay 4 buttons — which takes no gross-up at all"
+		default:
+			because = "this run's norms for it are manual (their BOM wastage % applies instead)"
+		}
+		caveats = append(caveats, fmt.Sprintf("%s: cutting coefficient %s not applied — it grosses up MARKER-sourced norms, and %s",
+			a.name, a.coefficient.Decimal.String(), because))
+	}
+
 	sort.Ints(order)
 	for _, mid := range order {
 		a := req[mid]
@@ -307,12 +449,17 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			MaterialId:     int32(mid),
 			MaterialName:   a.name,
 			Unit:           a.unit,
+			UnitCode:       pbMaterialUnit(a.unit),
 			Required:       pbDecimalFromDecimal(a.required.Round(3)),
 			OnHand:         pbDecimalFromDecimal(on.Round(3)),
 			Issued:         pbDecimalFromDecimal(iss.Round(3)),
 			Shortage:       pbDecimalFromDecimal(shortage.Round(3)),
 			HasSizeNorms:   a.hasSizeNorms,
 			IssuedVariance: pbDecimalFromDecimal(iss.Sub(a.required).Round(3)),
+			// Ф5а.2 — the audit trail of the gross-up: the norm's own un-grossed sum, and the dial.
+			// The two are related BY the dial only on a marker-fed row; see the proto comment.
+			RequiredBeforeGrossup: pbDecimalFromDecimal(a.requiredBeforeGrossup.Round(3)),
+			CuttingCoefficient:    pbDecimalFromNull(a.coefficient),
 		})
 	}
 
@@ -356,17 +503,19 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			section = pbBomSection(entity.TechCardBomSection(bom.Section))
 		}
 		out.Contributions = append(out.Contributions, &pb_admin.MaterialPlanContribution{
-			BomItemId:    int64(k.bomID),
-			SlotName:     slotName,
-			Section:      section,
-			ColorwayId:   int32(k.colorwayID),
-			ColorwayName: colorwayName(k.colorwayID),
-			MaterialId:   int32(k.materialID),
-			MaterialName: matName(k.materialID, bom),
-			Pinned:       c.pinned,
-			Unit:         unit,
-			Required:     pbDecimalFromDecimal(c.required.Round(3)),
-			HasSizeNorms: c.hasSizeNorms,
+			BomItemId:             int64(k.bomID),
+			SlotName:              slotName,
+			Section:               section,
+			ColorwayId:            int32(k.colorwayID),
+			ColorwayName:          colorwayName(k.colorwayID),
+			MaterialId:            int32(k.materialID),
+			MaterialName:          matName(k.materialID, bom),
+			Pinned:                c.pinned,
+			Unit:                  unit,
+			Required:              pbDecimalFromDecimal(c.required.Round(3)),
+			HasSizeNorms:          c.hasSizeNorms,
+			RequiredBeforeGrossup: pbDecimalFromDecimal(c.requiredBeforeGrossup.Round(3)),
+			CuttingCoefficient:    pbDecimalFromNull(c.coefficient),
 		})
 	}
 

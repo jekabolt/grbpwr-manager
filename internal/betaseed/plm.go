@@ -674,7 +674,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	tc.BomItems = []*common.TechCardBomItem{
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "Shell Fabric - Main", MaterialId: m.Fabric, LineKey: st.bomFabricKey,
 			Unit: "m", UnitPrice: decv("12.50"), Currency: "EUR", FabricWidth: decv("150"), FabricWeightGsm: decv("220"),
-			FabricDirection: common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ANY, WastagePercent: decv("8")},
+			FabricDirection: common.TechCardFabricDirection_TECH_CARD_FABRIC_DIRECTION_ANY.Enum(), WastagePercent: decv("8")},
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "YKK Zipper Pull 5mm", MaterialId: m.Hardware, LineKey: st.bomHardwareKey,
 			Unit: "pcs", UnitPrice: decv("0.90"), Currency: "EUR"},
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD, Name: "Polyester Sewing Thread Tex30", MaterialId: m.Thread, LineKey: st.bomThreadKey,

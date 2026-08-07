@@ -108,6 +108,25 @@ type MaterialInsert struct {
 	Unit            sql.NullString      `db:"unit" valid:"-"`
 	FabricWidth     decimal.NullDecimal `db:"fabric_width" valid:"-"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm" valid:"-"`
+	// CuttingCoefficient (Ф5а.2, 0270) is THE one visible, editable per-article dial that replaces
+	// eight named losses nobody can measure separately: усадка, обход пороков, сращивание,
+	// оттеночные полосы. Stored as a MULTIPLIER (1.0300 = +3%), not a percent. Invalid/NULL means
+	// nobody has set one and the requirement path uses ×1 — so an unset article plans exactly as it
+	// did before this field existed. There is deliberately no per-«класс ткани» default: that field
+	// does not exist and inventing a taxonomy to feed defaults is the disease this replaces.
+	CuttingCoefficient decimal.NullDecimal `db:"cutting_coefficient" valid:"-"`
+	// CuttingCoefficientOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым». Тот же приём,
+	// что PurposeOmitted / IsSampleOmitted на строке спецификации (techcard.go), и по той же
+	// причине: артикул сохраняется целиком, админка это SPA, и вкладка со старым бандлом — или
+	// любой клиент из окна между деплоем бэка и деплоем фронта — этого поля не шлёт вовсе. Без
+	// различения её сейв СТИРАЛ бы коэффициент, который выставил оператор: бесследно, потому что у
+	// каталога нет ни дайджеста, ни журнала правок, а NULL неотличим от «никто не задавал».
+	//
+	// Признак НЕГАТИВНЫЙ намеренно: нулевое значение означает «писать как обычно», поэтому любой
+	// внутренний конструктор (тесты, сидер, авто-создание бакета в output_variants) продолжает
+	// работать как писал. Читается ТОЛЬКО на UPDATE — на INSERT «отсутствует» и «пусто» это одно и
+	// то же NULL.
+	CuttingCoefficientOmitted bool `db:"-" valid:"-"`
 	// Warehouse catalog fields (NF-02).
 	Code     sql.NullString      `db:"code" valid:"-"`      // internal article code (ours), unique among non-archived
 	Color    sql.NullString      `db:"color" valid:"-"`     // colour of the purchased article
@@ -169,6 +188,33 @@ func (m *Material) EffectiveFabricWidthCm() decimal.NullDecimal {
 	return m.FabricWidth
 }
 
+// EffectiveFabricWeightGsm resolves the ARTICLE's density (g/m²) with the same CTI-over-flat
+// preference as EffectiveFabricWidthCm: typed material_fabric_attr.weight_gsm wins, the legacy flat
+// material.fabric_weight_gsm is the fallback, an unset-or-zero typed value falls through.
+//
+// This is the ARTICLE's density and the only one with a consumer. Density also exists on the BOM
+// LINE (tech_card_bom_item.fabric_weight_gsm) where nothing reads it — the two are NOT the same
+// number and must not be folded together: the line's is a spec snapshot of what the card was drawn
+// against, the article's is what the warehouse actually stocks and prices.
+func (m *Material) EffectiveFabricWeightGsm() decimal.NullDecimal {
+	if m.FabricAttr != nil && m.FabricAttr.WeightGsm.Valid && !m.FabricAttr.WeightGsm.Decimal.IsZero() {
+		return m.FabricAttr.WeightGsm
+	}
+	return m.FabricWeightGsm
+}
+
+// EffectiveCuttingCoefficient is the article's cutting coefficient as a multiplier to apply, or
+// invalid when the article has none (the caller must then multiply by nothing at all — NOT by a
+// guessed default, which would silently inflate every existing plan). A stored value below 1 is
+// treated as unset: a coefficient can only add to a norm, never shave it, and the DB CHECK already
+// refuses one — this guards in-memory values that never went through it.
+func (m *Material) EffectiveCuttingCoefficient() decimal.NullDecimal {
+	if !m.CuttingCoefficient.Valid || m.CuttingCoefficient.Decimal.LessThan(decimal.NewFromInt(1)) {
+		return decimal.NullDecimal{}
+	}
+	return m.CuttingCoefficient
+}
+
 // FabricSelvedgeCm is the кромка per edge in cm; zero when the material has no typed fabric
 // attributes (the flat model never carried a selvedge).
 func (m *Material) FabricSelvedgeCm() decimal.Decimal {
@@ -191,6 +237,29 @@ func (m *Material) UsableFabricWidthCm() decimal.NullDecimal {
 		usable = decimal.Zero
 	}
 	return decimal.NullDecimal{Decimal: usable, Valid: true}
+}
+
+// fabricKgPerMetreDivisor folds the two unit conversions of the length→weight formula into one
+// constant: cm→m (÷100) and g→kg (÷1000).
+var fabricKgPerMetreDivisor = decimal.NewFromInt(100000)
+
+// FabricLengthToKg converts a fabric length in METRES to KILOGRAMS for a roll of the given width and
+// density: kg = metres × (widthCm ÷ 100) × gsm ÷ 1000.
+//
+// widthCm must be the FULL roll width, INCLUDING the кромка. The selvedge is bought and paid for and
+// it physically weighs; billing by the cutting width (full − 2×selvedge) understates the weight the
+// supplier invoices by 2–4%. This is the one place in the codebase that deliberately wants the full
+// width rather than Material.UsableFabricWidthCm.
+//
+// Returns invalid when either input is missing or non-positive — a weight computed from a guessed
+// width or density is a number nobody can defend, and an absent answer is the honest one.
+func FabricLengthToKg(metres decimal.Decimal, fullWidthCm, gsm decimal.NullDecimal) decimal.NullDecimal {
+	if !fullWidthCm.Valid || !gsm.Valid ||
+		!fullWidthCm.Decimal.IsPositive() || !gsm.Decimal.IsPositive() {
+		return decimal.NullDecimal{}
+	}
+	kg := metres.Mul(fullWidthCm.Decimal).Mul(gsm.Decimal).Div(fabricKgPerMetreDivisor)
+	return decimal.NullDecimal{Decimal: kg, Valid: true}
 }
 
 // MaterialPriceSource enumerates how a price point entered the history. (MaterialPriceSourcePurchase

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -101,19 +102,27 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// adjusting one placement would fail on an attribution the operator never touched and has
 		// no control to clear. The guards exist to stop NEW bad attributions, not to retro-invalidate
 		// stored measurements.
+		//
+		// The stored LAYOUT VERSION rides along for the same journey and one more reason: it is the
+		// only fact that may grant the directional-cloth exemption (Ф1.6). Read here, from the row,
+		// it cannot be forged by the payload — which is exactly what went wrong when the exemption
+		// keyed on the version the client declared.
 		var stored struct {
-			Id         int64          `db:"id"`
-			BomItemId  sql.NullInt64  `db:"bom_item_id"`
-			BomLineKey sql.NullString `db:"bom_line_key"`
-			ColorwayId sql.NullInt64  `db:"colorway_id"`
+			Id            int64          `db:"id"`
+			BomItemId     sql.NullInt64  `db:"bom_item_id"`
+			BomLineKey    sql.NullString `db:"bom_line_key"`
+			ColorwayId    sql.NullInt64  `db:"colorway_id"`
+			SchemaVersion int            `db:"layout_schema_version"`
 		}
 		if id > 0 {
 			row, err := storeutil.QueryNamedOne[struct {
-				Id         int64          `db:"id"`
-				BomItemId  sql.NullInt64  `db:"bom_item_id"`
-				BomLineKey sql.NullString `db:"bom_line_key"`
-				ColorwayId sql.NullInt64  `db:"colorway_id"`
-			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id
+				Id            int64          `db:"id"`
+				BomItemId     sql.NullInt64  `db:"bom_item_id"`
+				BomLineKey    sql.NullString `db:"bom_line_key"`
+				ColorwayId    sql.NullInt64  `db:"colorway_id"`
+				SchemaVersion int            `db:"layout_schema_version"`
+			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id,
+					m.layout_schema_version
 				FROM tech_card_marker m
 				LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
 				WHERE m.id = :id AND m.tech_card_id = :tech_card_id`,
@@ -158,6 +167,32 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			bomItemID = sql.NullInt64{Int64: row.Id, Valid: true}
 		}
+		// exempted records whether the policy WOULD have refused this geometry and the stored row's
+		// generation bought it a pass. It defaults to false — including for an unlinked marker, whose
+		// geometry no cloth judged — so the generation written below ratchets forward in every case
+		// except the one that actually spent a pass.
+		exempted := false
+		// НАПРАВЛЕНИЕ ТКАНИ decides whether this layout may exist at all (Ф1.5/Ф1.6), and only the
+		// database can answer: the direction sits on the BOM line (0073) and the scope the marker
+		// falls into may be SEVERAL lines (0267). The rule itself is one unit-tested function in
+		// entity — here we only hand it the card's cloth lines.
+		//
+		// Keyed off the PAYLOAD's line, so an unlinked marker is skipped entirely: no bom_line_key
+		// means no cloth to ask about, and that must stay saveable — it was legal before Ф1 and the
+		// geometry is just as valid without an attribution.
+		if key := strings.TrimSpace(ins.BomLineKey); key != "" {
+			lines, err := fabricDirectionLines(ctx, db, techCardID)
+			if err != nil {
+				return err
+			}
+			// stored.SchemaVersion is 0 for a create — no history, and therefore no exemption.
+			ok, err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts,
+				stored.SchemaVersion, fabricLineNamer(ctx, db, techCardID))
+			if err != nil {
+				return err
+			}
+			exempted = ok
+		}
 		// The colourway a раскладка is measured FOR (0264). It must be a colourway OF THIS CARD:
 		// a colourway is a product row whose style_id is the card (0151 merged the domains), and
 		// the FK alone would accept any product in the catalogue — attributing a layout to another
@@ -182,6 +217,23 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			colorwayID = sql.NullInt64{Int64: int64(ins.ColorwayId), Valid: true}
 		}
+		// ПОКОЛЕНИЕ ПОЛИТИКИ, не копия пэйлоада. The column answers «what is the newest policy this
+		// row's geometry has been judged under», so the server writes its own constant — copying
+		// ins.LayoutFacts.SchemaVersion made the «unforgeable stored fact» client-written one request
+		// later: create a compliant marker declaring 1 (accepted, nothing to refuse), then update it
+		// with a 180° and the stored 1 bought the exemption. Same for the deploy window, where the
+		// shipped client still declares 2.
+		//
+		// A save that SPENT the exemption leaves the column alone — otherwise the pass would be
+		// one-shot: the row would be stamped 3 by the very save it was granted for, and the second
+		// rename of a legacy раскладка would be refused forever, which is the opposite of what
+		// grandfathering promises. Every other save ratchets the row to the current generation, so a
+		// legacy row whose geometry is compliant — the overwhelming majority — loses its pass the
+		// first time anybody touches it, and the ratchet turns one way only.
+		generation := entity.MarkerLayoutSchemaWithFlip
+		if exempted {
+			generation = stored.SchemaVersion
+		}
 		params := map[string]any{
 			"id":                id,
 			"tech_card_id":      techCardID,
@@ -200,6 +252,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"placed_count":      ins.PlacedCount,
 			"total_count":       ins.TotalCount,
 			"layout":            ins.Layout,
+			"schema_version":    generation,
 			"colorway_id":       colorwayID,
 			"username":          username,
 		}
@@ -229,7 +282,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				    allow_cross_grain = :allow_cross_grain,
 				    sets = :sets, used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
 				    placed_count = :placed_count, total_count = :total_count, layout = :layout,
-				    updated_by = :username
+				    layout_schema_version = :schema_version, updated_by = :username
 				WHERE id = :id AND tech_card_id = :tech_card_id`, params); err != nil {
 				return fmt.Errorf("update marker %d: %w", id, err)
 			}
@@ -240,10 +293,10 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			INSERT INTO tech_card_marker
 				(tech_card_id, size_id, bom_item_id, colorway_id, name, source, fabric_width_cm, gap_cm,
 				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, used_length_cm, efficiency_pct,
-				 placed_count, total_count, layout, created_by, updated_by)
+				 placed_count, total_count, layout, layout_schema_version, created_by, updated_by)
 			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :name, :source, :fabric_width_cm, :gap_cm,
 				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :used_length_cm, :efficiency_pct,
-				 :placed_count, :total_count, :layout, :username, :username)`, params)
+				 :placed_count, :total_count, :layout, :schema_version, :username, :username)`, params)
 		if err != nil {
 			return fmt.Errorf("create marker on tech card %d: %w", techCardID, err)
 		}
@@ -254,6 +307,100 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		return 0, err
 	}
 	return savedID, nil
+}
+
+// fabricDirectionLinesQuery reads the card's WHOLE BOM, ordered exactly as the card read orders it
+// (display_order, id — see the bom load in materials.go). Both halves of that sentence are load
+// bearing:
+//
+//   - the whole BOM, because a refusal is field-tagged `bom_items[i].fabric_direction` and i must be
+//     the row's position in the array the CLIENT holds. An index taken over roll goods alone would
+//     land on whatever sits at that position in the full list — a thread, a button — and pin the
+//     error on the wrong control. Roll goods are then filtered in Go, through the same
+//     rollGoodsSections map the SQL fragment is built from, so the two cannot mean different things;
+//   - the ORDER BY, because the refusal lists rows and their order must be stable. Without it MySQL
+//     may hand back the same state in a different order on a retry, and two identical saves would
+//     name two different rows.
+//
+// The NAME is deliberately read RAW here — bi.name, which is empty on a catalogue-linked line — and
+// resolved through `material` only when a refusal is actually being written (fabricLineNamer below).
+// The join belongs off this path: this query runs inside a SERIALIZABLE transaction, where InnoDB
+// promotes a plain SELECT to FOR SHARE, so joining the catalogue on every marker save would let a
+// concurrent material edit block or deadlock an unrelated раскладка — reported as a 500, which is
+// neither true nor retryable. Names are prose for a refusal; prose can afford a second query.
+//
+// Held as a var so a test can bind it without a database: sqlx reads EVERY ':' as a named parameter,
+// and a bind error would take the whole save path down at request time.
+var fabricDirectionLinesQuery = `
+	SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose,
+	       COALESCE(name, '') AS name, COALESCE(fabric_direction, '') AS fabric_direction,
+	       is_sample, section
+	FROM tech_card_bom_item
+	WHERE tech_card_id = :id
+	ORDER BY display_order, id`
+
+// fabricLineNamer resolves the display names of catalogue-linked lines, and is called ONLY while a
+// refusal is being built — i.e. on a transaction already destined to roll back, so the share locks it
+// takes on `material` cost nothing anyone is waiting on. Names are resolved exactly as the card read
+// resolves them, so the refusal speaks the vocabulary of the screen it sends the operator to.
+func fabricLineNamer(ctx context.Context, db dependency.DB, techCardID int) entity.FabricLineNamer {
+	return func(lineKeys []string) map[string]string {
+		if len(lineKeys) == 0 {
+			return nil
+		}
+		rows, err := storeutil.QueryListNamed[struct {
+			LineKey string `db:"line_key"`
+			Name    string `db:"name"`
+		}](ctx, db, `SELECT COALESCE(bi.line_key, '') AS line_key, COALESCE(m.name, '') AS name
+			FROM tech_card_bom_item bi
+			JOIN material m ON m.id = bi.material_id
+			WHERE bi.tech_card_id = :id AND bi.line_key IN (:keys)`,
+			map[string]any{"id": techCardID, "keys": lineKeys})
+		if err != nil {
+			// A refusal that cannot name the row is still a refusal; it falls back to the line_key.
+			slog.Default().ErrorContext(ctx, "can't resolve catalogue names for a marker refusal",
+				slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
+			return nil
+		}
+		out := make(map[string]string, len(rows))
+		for _, r := range rows {
+			out[r.LineKey] = r.Name
+		}
+		return out
+	}
+}
+
+// fabricDirectionLines loads the card's cloth lines with both halves of the binding scope, their
+// направление and their position in the card's BOM — everything
+// entity.ValidateMarkerFabricDirection needs and nothing else.
+//
+// Only the four roll-goods families survive the filter: a thread or a button has no direction to
+// have, and letting one through would make a nonsense row able to block a раскладка. A line that has
+// since left roll goods is therefore absent, which is exactly right — the marker whose binding it
+// still is resolves to a dangling scope and stays saveable, as it was before Ф1.
+func fabricDirectionLines(ctx context.Context, db dependency.DB, techCardID int) ([]entity.FabricDirectionLine, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		LineKey   string `db:"line_key"`
+		Purpose   string `db:"purpose"`
+		Name      string `db:"name"`
+		Direction string `db:"fabric_direction"`
+		IsSample  bool   `db:"is_sample"`
+		Section   string `db:"section"`
+	}](ctx, db, fabricDirectionLinesQuery, map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load bom lines of tech card %d: %w", techCardID, err)
+	}
+	out := make([]entity.FabricDirectionLine, 0, len(rows))
+	for i, r := range rows {
+		if !rollGoodsSections[r.Section] {
+			continue
+		}
+		out = append(out, entity.FabricDirectionLine{
+			Index: i, LineKey: r.LineKey, Purpose: r.Purpose, Name: r.Name,
+			IsSample: r.IsSample, Direction: r.Direction,
+		})
+	}
+	return out, nil
 }
 
 // requireCardSize verifies the size belongs to the card's current range with a readable refusal
