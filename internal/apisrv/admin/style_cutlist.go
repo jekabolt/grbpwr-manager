@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,6 +28,14 @@ import (
 // and still written by the save path from whatever the payload carries — which, from this admin, is
 // now always false. Existing `mirrored = 1` rows therefore stop affecting any number immediately,
 // and are cleared card-by-card as cards are saved.
+//
+// THE CLASSIFICATION CAME BACK, THE MULTIPLIER DID NOT (0275). cut_symmetry says how the panels of a
+// piece relate — identical copies, a mirrored pair, or cut on the fold — and is carried through to
+// this response verbatim. It multiplies nothing: total_per_garment stays equal to pieces_per_garment.
+// That is the whole point. 0266 exists because the tech pack prints pieces_per_garment and never the
+// total, so a doubling applied "somewhere else" would print 1 to the factory for a piece physically
+// cut as a pair. The classification answers that in words instead of in arithmetic. UNKNOWN on the
+// wire means «не размечено» — a question nobody has answered — and not «обычная».
 func (s *Server) GetStyleCutList(ctx context.Context, req *pb_admin.GetStyleCutListRequest) (*pb_admin.GetStyleCutListResponse, error) {
 	tcID := int(req.GetTechCardId())
 	if tcID <= 0 {
@@ -73,6 +82,7 @@ func (s *Server) GetStyleCutList(ctx context.Context, req *pb_admin.GetStyleCutL
 			PiecesPerGarment: int32(perGarment),
 			Mirrored:         p.Mirrored,
 			TotalPerGarment:  int32(total),
+			CutSymmetry:      dto.PieceCutSymmetryToPb(p.CutSymmetry),
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
 			Fabrics:          fabrics,

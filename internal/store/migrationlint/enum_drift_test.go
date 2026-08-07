@@ -338,3 +338,19 @@ func TestFabricPurposeDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "TechCardPieceDxfAlias.fabric_purpose",
 		extractDBEnumValues(t, content[second:], anchor, 120), want)
 }
+
+// TestPieceCutSymmetryDBCheckNoDrift is the entity<->DB leg for КАК КРОИТСЯ (0275):
+// entity.ValidTechCardPieceCutSymmetries <-> the DB CHECK chk_tcp_cut_symmetry. The entity<->proto
+// leg is TestPieceCutSymmetryEnumNoDrift in internal/dto.
+//
+// The anchor is deliberately `cut_symmetry REGEXP`, which occurs exactly once in the file: the
+// second CHECK in 0275 (chk_tcp_mirrored_needs_even_count) compares with `<>`, not REGEXP, so it
+// cannot be picked up by mistake. That also means the pattern literal in 0275 must stay UNPREFIXED —
+// extractDBEnumValues matches `REGEXP` followed directly by quotes, and a `_utf8mb4` in between
+// would make this test fail to find the value list rather than fail to compare it.
+func TestPieceCutSymmetryDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0275_piece_cut_symmetry.sql")
+	dbValues := extractDBEnumValues(t, content, "cut_symmetry REGEXP", 120)
+	assertSameSet(t, "TechCardPieceCutSymmetry", dbValues,
+		mapKeysAsStrings(entity.ValidTechCardPieceCutSymmetries))
+}

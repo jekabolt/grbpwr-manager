@@ -5185,6 +5185,12 @@ message StyleCutListPiece {
   string grainline = 6; // долевая
   bool fused = 7;
   repeated StyleCutListFabric fabrics = 8;
+  // Классификация кроя (0275). total_per_garment по-прежнему РАВЕН pieces_per_garment: это поле
+  // ничего не умножает, оно объясняет уже посчитанное число. UNKNOWN = не размечено.
+  //
+  // Здесь голый энум, а не optional: ответ только на чтение, и отсутствие присутствия ничего не
+  // затирает — затирать нечем, писать через этот RPC нельзя.
+  common.TechCardPieceCutSymmetry cut_symmetry = 9;
 }
 
 message GetStyleCutListRequest {

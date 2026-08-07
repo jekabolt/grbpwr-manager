@@ -582,3 +582,39 @@ func carryOmittedFabricDirectionFrom(stored *entity.TechCard, incoming *entity.T
 		}
 	}
 }
+
+// carryOmittedPieceCutSymmetryFrom is the twin of carryOmittedFabricDirectionFrom for КАК КРОИТСЯ
+// (0275), and exists for the same reason: what a client did not SAY must not read as what it ERASED.
+//
+// It matters only for the DIGEST. The write already ignores this value (the piece upsert guards the
+// column with IF(:cut_symmetry_omitted, …)), so this cannot change what is stored; it changes what
+// the CONSTRUCTION sign-off is fingerprinted over. Without it, an approval made from a tab that does
+// not speak the field would hash "unmarked" while the column keeps `mirrored`, and that approval
+// would read «changed since sign-off» the instant it was made — and forever, because re-approving
+// from the same tab hashes the same absence. This exact failure already happened once, with
+// направление ткани, which is why the twin exists rather than a second discovery.
+//
+// Keyed only, and keyed the way the STORE keys: the incoming line_key trimmed, compared verbatim
+// against the stored one. Deliberately stricter than the fabric-direction twin above, which folds
+// case — here a key that differs only in case is a row the store will INSERT as new, so folding case
+// would hand a brand-new piece the pairing of a different one. Guessing by POSITION would do the
+// same thing more often; a piece's pairing must never be inferred from a neighbour.
+func carryOmittedPieceCutSymmetryFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
+	if stored == nil || incoming == nil {
+		return
+	}
+	byKey := make(map[string]sql.NullString, len(stored.Pieces))
+	for _, p := range stored.Pieces {
+		if k := strings.TrimSpace(p.LineKey); k != "" {
+			byKey[k] = p.CutSymmetry
+		}
+	}
+	for i := range incoming.Pieces {
+		if !incoming.Pieces[i].CutSymmetryOmitted {
+			continue
+		}
+		if cs, ok := byKey[strings.TrimSpace(incoming.Pieces[i].LineKey)]; ok {
+			incoming.Pieces[i].CutSymmetry = cs
+		}
+	}
+}

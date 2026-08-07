@@ -261,10 +261,34 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 	}
 	pieces := make([]any, 0, len(tc.Pieces))
 	for _, p := range tc.Pieces {
-		pieces = append(pieces, []any{
+		row := []any{
 			p.LineKey, p.Name, p.PiecesPerGarment, p.Mirrored, p.Grainline,
 			p.Fused, p.CalloutNumber.Int32, p.Note.String,
-		})
+		}
+		// A TAIL, NOT A SLOT — and this is not stylistics. json.Marshal encodes []any POSITIONALLY, so
+		// a ninth element set UNCONDITIONALLY (be it "" or null) would shift the fingerprint of every
+		// card in the database and declare EVERY approved CONSTRUCTION sign-off stale at the moment of
+		// deploy — before anybody had marked anything. Appending only when the field is filled gives
+		// exactly what is wanted: a card nobody has marked hashes byte for byte as it did before 0275,
+		// and the only cards that go stale are the ones where a human actually ANSWERED the question —
+		// including the answer «identical», because that too is an instruction to the floor, not the
+		// absence of one. The re-approval wave is therefore the size of the marking campaign, not of
+		// the rollout.
+		//
+		// Does the field belong in the signed content at all? Yes, without reservation. CONSTRUCTION is
+		// the signature under WHAT is cut and sewn and HOW; "these two panels are a mirrored pair"
+		// changes the physical part that comes out, not metadata about it (unlike purpose/is_sample,
+		// which are excluded deliberately — see materialsProjection). Marking pairing on an approved
+		// card without moving the signature would mean signing one thing and shipping another.
+		//
+		// p.Mirrored stays in slot 4 as a frozen false (0266 cleared every 1). REMOVING it is the same
+		// unconditional shift as adding one: dropping an element breaks the fingerprint exactly as
+		// appending one does. The column costs one BOOLEAN and one `false` in JSON; the rebase costs a
+		// re-approval wave across every card at once. Do not tidy it away.
+		if p.CutSymmetry.Valid {
+			row = append(row, p.CutSymmetry.String)
+		}
+		pieces = append(pieces, row)
 	}
 	return []any{construction, ops, pieces}
 }

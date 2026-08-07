@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -784,18 +785,18 @@ type TechCardBomItem struct {
 	PurposeNote sql.NullString `db:"purpose_note"`
 	// IsSample marks the yardage the SAMPLE is sewn from. A flag rather than a purpose value because
 	// a sample is a sample MAIN plus a sample LINING; folded into Purpose the two would collapse.
-	IsSample    bool                `db:"is_sample"`
-	IsSampleOmitted bool `db:"-"`
-	Name        string              `db:"name"`
-	Supplier    sql.NullString      `db:"supplier"`
-	SupplierRef sql.NullString      `db:"supplier_ref"`
-	Color       sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
-	Composition sql.NullString      `db:"composition"`
-	Spec        sql.NullString      `db:"spec"`
-	Unit        sql.NullString      `db:"unit"`
-	UnitPrice   decimal.NullDecimal `db:"unit_price"`
-	Currency    sql.NullString      `db:"currency"`
-	Comment     sql.NullString      `db:"comment"`
+	IsSample        bool                `db:"is_sample"`
+	IsSampleOmitted bool                `db:"-"`
+	Name            string              `db:"name"`
+	Supplier        sql.NullString      `db:"supplier"`
+	SupplierRef     sql.NullString      `db:"supplier_ref"`
+	Color           sql.NullString      `db:"color"` // base/reference colour (per-colourway colour is on the usage)
+	Composition     sql.NullString      `db:"composition"`
+	Spec            sql.NullString      `db:"spec"`
+	Unit            sql.NullString      `db:"unit"`
+	UnitPrice       decimal.NullDecimal `db:"unit_price"`
+	Currency        sql.NullString      `db:"currency"`
+	Comment         sql.NullString      `db:"comment"`
 	// fabric data for the cutter / marker (Phase 3.5c)
 	FabricWidth     decimal.NullDecimal `db:"fabric_width"`
 	FabricWeightGsm decimal.NullDecimal `db:"fabric_weight_gsm"`
@@ -907,7 +908,7 @@ type TechCardSizePattern struct {
 	// never saw); Valid=true writes as given, with "" clearing it back to NULL.
 	FabricPurpose sql.NullString `db:"fabric_purpose"`
 	URL           string         `db:"url"`
-	Filename   sql.NullString `db:"filename"`
+	Filename      sql.NullString `db:"filename"`
 	// Name is the operator-entered display name. On WRITE the null state is proto presence,
 	// not emptiness: Valid=false means the field was absent from the payload (a stale client)
 	// and the store carries the stored name forward by (size_id, url); Valid=true means write
@@ -1371,21 +1372,104 @@ type TechCardPiece struct {
 	// LineKey is the client-generated ULID assigned when the piece is created in the UI (before the
 	// first save); immutable; the wire identity the upsert-diff keys on. Empty on a legacy/keyless
 	// payload → the store mints one.
-	LineKey          string        `db:"line_key"`
-	PiecesPerGarment int           `db:"pieces_per_garment"`
+	LineKey          string `db:"line_key"`
+	PiecesPerGarment int    `db:"pieces_per_garment"`
 	// RETIRED (0266). The cut list no longer expands this ×2 — 0266 folded the doubling into
 	// pieces_per_garment and cleared the flag, so a stored true is historical noise. Kept only so an
 	// existing row still round-trips; nothing reads it.
+	//
+	// AND IT CANNOT BE DROPPED. It sits in constructionProjection's tuple, which json.Marshal encodes
+	// POSITIONALLY, so removing it shifts the CONSTRUCTION digest of every card in the database and
+	// marks every approved sign-off "changed since approved" at deploy time — for nothing. Frozen
+	// false is the cheap state; the rebase is the expensive one. See 0275's header.
 	Mirrored bool `db:"mirrored"`
-	Grainline        string        `db:"grainline"`
-	Fused            bool          `db:"fused"`
-	CalloutNumber    sql.NullInt32 `db:"callout_number"`
+	// CutSymmetry is HOW the piece is cut (0275): how the PiecesPerGarment panels relate to one
+	// another. INVALID (NULL) means НЕ РАЗМЕЧЕНО — nobody has answered the question — and is not the
+	// same as `identical`. Readers must keep the two apart: an unmarked mirrored piece cut from a half
+	// set of patterns yields 44 left fronts and no right ones, and the only thing that prevents it is a
+	// visible "not marked".
+	//
+	// It multiplies NOTHING. The count lives whole in PiecesPerGarment (0266 folded the mirror
+	// doubling into it); this field only explains the number already there.
+	CutSymmetry sql.NullString `db:"cut_symmetry"`
+	// CutSymmetryOmitted — the field was ABSENT on the wire, not "arrived empty": same negative sense
+	// and same reason as FabricDirectionOmitted on the BOM line. A tab holding an older bundle does not
+	// send it, and a bare proto3 enum's zero value is UNKNOWN, so without the distinction that tab's
+	// save would clear the marking on every piece of the card — and unlike направление, the marking
+	// cannot be recovered without a human holding the patterns.
+	CutSymmetryOmitted bool          `db:"-"`
+	Grainline          string        `db:"grainline"`
+	Fused              bool          `db:"fused"`
+	CalloutNumber      sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
 	Detached  bool                    `db:"detached"`
 	Note      sql.NullString          `db:"note"`
 	Materials []TechCardPieceMaterial `db:"-"`
+}
+
+// TechCardPieceCutSymmetry is HOW the panels of one cut-piece relate to each other (0275). All three
+// values are statements about MIRROR SYMMETRY, which is why one closed field carries them all rather
+// than a "pairing" flag plus an "on the fold" flag:
+//
+//   - identical — there is no mirror anywhere: n congruent copies;
+//   - mirrored  — the instances are related by reflection: n splits into two chiral halves;
+//   - fold      — the piece is related to ITSELF by reflection: cutting on the fold unions half the
+//     pattern with its own mirror image, so the resulting outline is symmetric by construction.
+//
+// From the third bullet: `fold` and `mirrored` together are geometrically IMPOSSIBLE, not merely
+// unusual — reflecting a symmetric outline is congruent to the outline itself. "On the fold AND
+// needed twice" (cuffs) is therefore `fold` with PiecesPerGarment = 2; the chirality question does
+// not arise.
+//
+// NONE of them multiplies anything. Migration 0266 folded the mirror doubling into
+// pieces_per_garment precisely so that "4 identical" and "2 mirrored pairs" became the same row; a
+// multiplier here would resurrect the bug 0266 was written to kill, because the tech pack prints
+// pieces_per_garment and never the total.
+type TechCardPieceCutSymmetry string
+
+const (
+	PieceCutSymmetryIdentical TechCardPieceCutSymmetry = "identical"
+	PieceCutSymmetryMirrored  TechCardPieceCutSymmetry = "mirrored"
+	PieceCutSymmetryFold      TechCardPieceCutSymmetry = "fold"
+)
+
+// ValidTechCardPieceCutSymmetries mirrors the DB CHECK chk_tcp_cut_symmetry (0275). "Not marked" is
+// deliberately absent: it is the NULL column, not a value, so it can never be written as one.
+var ValidTechCardPieceCutSymmetries = map[TechCardPieceCutSymmetry]bool{
+	PieceCutSymmetryIdentical: true, PieceCutSymmetryMirrored: true, PieceCutSymmetryFold: true,
+}
+
+// ValidatePieceCutSymmetry checks one piece's marking against its panel count, with a readable
+// message, BEFORE the row reaches MySQL. An INVALID (unset) symmetry is accepted — «не размечено» is
+// a legal state and the only honest one for every row that predates 0275.
+//
+// The evenness rule is not cosmetics: a mirrored pair splits in half, so the nesting expansion hands
+// the engine flippedQuantity = n/2, and for n = 3 nobody has defined a rounding rule — the state is
+// unresolvable, not ugly. It is enforced twice on purpose (0272's precedent: the schema carries the
+// invariant, Go carries the wording). The DB copy is a two-column CHECK, so it also fires on an
+// UPDATE that touches only pieces_per_garment; without this function first, the operator would get a
+// raw 3819 naming a column they did not edit.
+func ValidatePieceCutSymmetry(field string, sym sql.NullString, piecesPerGarment int) error {
+	if !sym.Valid {
+		return nil
+	}
+	v := TechCardPieceCutSymmetry(sym.String)
+	if !ValidTechCardPieceCutSymmetries[v] {
+		return NewFieldViolation(field, "unknown cut symmetry", sym.String,
+			"pick one of: identical (одинаковые копии), mirrored (зеркальные пары), fold (крой по сгибу)")
+	}
+	if v != PieceCutSymmetryMirrored {
+		return nil
+	}
+	if piecesPerGarment < 2 || piecesPerGarment%2 != 0 {
+		return NewFieldViolation(field,
+			"зеркальная пара делится пополам — количество на изделие должно быть чётным и не меньше двух",
+			strconv.Itoa(piecesPerGarment),
+			"две строки по одной штуке — это «одинаковые» по штуке каждая; «зеркальные пары» ставят на ОДНУ строку с чётным количеством")
+	}
+	return nil
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).
