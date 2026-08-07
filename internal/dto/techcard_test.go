@@ -357,6 +357,24 @@ func TestConvertTechCardPieces(t *testing.T) {
 	if len(got3.Pieces) != 1 || !got3.Pieces[0].CalloutNumber.Valid || got3.Pieces[0].CalloutNumber.Int32 != 7 {
 		t.Errorf("callout_number 7 must be carried through for the store to detach: %+v", got3.Pieces)
 	}
+
+	// ...but a ZERO is «no callout», not callout number zero, and the difference is the whole of
+	// detached: callouts number from one, so 0 resolves to nothing, and a VALID 0 makes the store
+	// mark a piece «the callout you pinned this to was deleted» about a pin that never existed. A
+	// client that sends the field unconditionally hands over exactly that — which is how 16 of 18
+	// pieces on beta came to wear the badge. The pointer alone is not the guard; this is.
+	for name, p := range map[string]*pb_common.TechCardPiece{
+		"explicit zero": {Name: "Body", CalloutNumber: i32(0)},
+		"field absent":  {Name: "Body"},
+	} {
+		got4, err := ConvertPbTechCardInsertToEntity(baseTechCardWithPieces([]*pb_common.TechCardPiece{p}))
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if len(got4.Pieces) != 1 || got4.Pieces[0].CalloutNumber.Valid {
+			t.Errorf("%s: callout_number must land NULL, got %+v", name, got4.Pieces[0].CalloutNumber)
+		}
+	}
 }
 
 // TestConvertTechCardCosting locks the per-colourway costing and the root rollup (= colourway

@@ -2086,11 +2086,18 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			return nil, err
 		}
 		var calloutNumber sql.NullInt32
-		if p.CalloutNumber != nil {
-			// A callout_number that no longer matches a callout on the card is NOT rejected here (S8
-			// orphan-control): the store marks such a piece detached — it may carry recipe history and
-			// must survive its source callout's removal — rather than failing the whole save. The store
-			// also enforces that only a TECHNICAL-sketch callout confers piece semantics (S7).
+		// A ZERO is «no callout», not callout number zero. Callouts number from one (the client mints
+		// max+1), so 0 can never resolve — and the pointer alone does not protect: a client that sends
+		// the field unconditionally hands over 0 for a piece nobody ever pinned, which arrives as a
+		// VALID number, matches nothing, and the store marks the piece detached. That is a card telling
+		// its operator «the callout you pinned this to was deleted» about a pin that never existed —
+		// 16 of 18 pieces on beta carried that badge, with no control anywhere to clear it.
+		//
+		// A callout_number that no longer matches a callout on the card is still NOT rejected here (S8
+		// orphan-control): the store marks such a piece detached — it may carry recipe history and
+		// must survive its source callout's removal — rather than failing the whole save. The store
+		// also enforces that only a TECHNICAL-sketch callout confers piece semantics (S7).
+		if p.CalloutNumber != nil && *p.CalloutNumber > 0 {
 			calloutNumber = sql.NullInt32{Int32: *p.CalloutNumber, Valid: true}
 		}
 
