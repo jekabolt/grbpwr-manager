@@ -24,6 +24,11 @@ func WorkshopSettingsToPb(s *entity.WorkshopSettings) *pb_admin.WorkshopSettings
 	if s.CuttingTableLengthCm.Valid {
 		out.CuttingTableLengthCm = &pb_decimal.Decimal{Value: s.CuttingTableLengthCm.Decimal.String()}
 	}
+	// Ф3.2. Emitted only when SET, so a configured ZERO travels as "0" and an unconfigured setting
+	// travels as an absent field — the one distinction this whole tenant exists to preserve.
+	if s.DefaultSeamAllowanceCm.Valid {
+		out.DefaultSeamAllowanceCm = &pb_decimal.Decimal{Value: s.DefaultSeamAllowanceCm.Decimal.String()}
+	}
 	if !s.UpdatedAt.IsZero() {
 		out.UpdatedAt = timestamppb.New(s.UpdatedAt)
 	}
@@ -46,6 +51,11 @@ func WorkshopSettingsPatchFromPb(req *pb_admin.UpdateWorkshopSettingsRequest) (e
 		return p, err
 	}
 	p.CuttingTableLengthCm = v
+	seam, err := presentNullDecimal(req.DefaultSeamAllowanceCm, "default_seam_allowance_cm")
+	if err != nil {
+		return p, err
+	}
+	p.DefaultSeamAllowanceCm = seam
 	return p, nil
 }
 

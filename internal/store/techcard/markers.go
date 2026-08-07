@@ -36,6 +36,8 @@ const markerSummaryColumns = `
 	b.line_key AS bom_line_key, b.name AS bom_item_name, b.unit AS bom_item_unit,
 	m.fabric_width_cm, m.gap_cm, m.edge_margin_cm, m.selvedge_cm, m.allow_cross_grain, m.sets,
 	m.total_units, m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count,
+	m.seam_allowance_cm, m.contour_allowance_cm, m.contour_layer, m.grain_layer, m.allow_flip,
+	m.is_norm, m.piece_set_fp,
 	m.created_by, m.updated_by, m.created_at, m.updated_at`
 
 // ListMarkerSummaries returns a card's saved раскладки without their layout blobs, newest first,
@@ -47,7 +49,14 @@ const markerSummaryColumns = `
 // alone it would have kept sorting: with size_id NULL on every marker with a состав, MySQL puts
 // those first, so the list would have re-ordered itself in production under a rule nobody chose.
 // Newest first is the rule we choose.
-func listMarkerSummaries(ctx context.Context, db dependency.DB, techCardID int) ([]entity.TechCardMarkerSummary, error) {
+//
+// The card's CUT-PIECES arrive as a PARAMETER and not as a query of this function's own, for two
+// reasons. The single-card read has already loaded them, so the Ф3.6 comparison («did the set of
+// pieces change since this раскладка was taken») costs nothing here. And an argument the compiler
+// demands cannot be forgotten: a caller that skipped it would get a list in which every раскладка
+// silently reads «набор при съёмке не записан», which is indistinguishable from the truth.
+func listMarkerSummaries(ctx context.Context, db dependency.DB, techCardID int,
+	pieces []entity.TechCardPiece) ([]entity.TechCardMarkerSummary, error) {
 	rows, err := storeutil.QueryListNamed[entity.TechCardMarkerSummary](ctx, db, `
 		SELECT `+markerSummaryColumns+`
 		FROM tech_card_marker m
@@ -59,6 +68,12 @@ func listMarkerSummaries(ctx context.Context, db dependency.DB, techCardID int) 
 	}
 	if err := attachMarkerComposition(ctx, db, rows); err != nil {
 		return nil, err
+	}
+	cardFP := entity.PieceSetFingerprintNull(entity.PieceSetEntriesOf(pieces))
+	peers := entity.NormPeersOf(rows)
+	for i := range rows {
+		rows[i].CardPieceSetFp = cardFP
+		rows[i].NormConflict = entity.NormConflictReport(peers, entity.MarkerNormScope(rows[i]))
 	}
 	return rows, nil
 }
@@ -80,8 +95,85 @@ func (s *Store) GetMarker(ctx context.Context, id int) (*entity.TechCardMarker, 
 	if err := attachMarkerComposition(ctx, s.DB, one); err != nil {
 		return nil, err
 	}
+	// The two card-wide facts this row cannot see for itself. They cost a query each HERE, unlike on
+	// the card read, and both are paid rather than skipped: a piece_set_status that answered UNKNOWN
+	// on this path while the list beside it answered CHANGED, and a norm_conflict that was empty here
+	// and set there, would be worse than either answer — a field whose meaning depends on which RPC
+	// you asked is a field nobody can act on.
+	cardFP, err := cardPieceSetFingerprint(ctx, s.DB, one[0].TechCardId)
+	if err != nil {
+		return nil, err
+	}
+	one[0].CardPieceSetFp = cardFP
+	peers, err := cardNormPeers(ctx, s.DB, one[0].TechCardId)
+	if err != nil {
+		return nil, err
+	}
+	one[0].NormConflict = entity.NormConflictReport(peers, entity.MarkerNormScope(one[0]))
 	row.TechCardMarkerSummary = one[0]
 	return &row, nil
+}
+
+// markerPieceSetQuery reads the card's cut-piece set for the Ф3.6 fingerprint — the two fields the
+// fingerprint hashes and nothing else. Held as a var so a test can bind it without a database: sqlx
+// reads EVERY ':' as a named parameter, a comment included, and a bind error would take both the
+// marker save and the marker read down at request time.
+//
+// No ORDER BY on purpose: entity.PieceSetFingerprint sorts by line_key itself, precisely so the
+// fingerprint is a function of the SET and not of the card read's display_order.
+var markerPieceSetQuery = `
+	SELECT line_key, pieces_per_garment
+	FROM tech_card_piece
+	WHERE tech_card_id = :card`
+
+// cardPieceSetFingerprint fingerprints the card's cut-piece set as the given connection sees it.
+// Called on the WRITE side inside the SERIALIZABLE save transaction and on the single-marker READ;
+// the card read uses the pieces it already holds. All three go through
+// entity.PieceSetFingerprintNull — one function, every side, which is the invariant the whole
+// comparison rests on.
+func cardPieceSetFingerprint(ctx context.Context, db dependency.DB, techCardID int) (sql.NullString, error) {
+	rows, err := storeutil.QueryListNamed[entity.PieceSetEntry](ctx, db, markerPieceSetQuery,
+		map[string]any{"card": techCardID})
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("load cut-pieces of tech card %d: %w", techCardID, err)
+	}
+	return entity.PieceSetFingerprintNull(rows), nil
+}
+
+// markerNormPeersQuery reads every раскладка of a card that carries the norm flag. Narrow by
+// idx_tcm_card_norm (tech_card_id, is_norm), and held as a var for the ':' reason above.
+var markerNormPeersQuery = `
+	SELECT id, name, bom_item_id, updated_at
+	FROM tech_card_marker
+	WHERE tech_card_id = :card AND is_norm = TRUE`
+
+// cardNormPeers loads the card's designated norms so a single-marker read can tell whether its own
+// cloth carries more than one. The winner is picked in Go by entity.SelectNorm, NOT by an ORDER BY
+// here — the tiebreak has to be the same expression on every path, and one written in SQL on one
+// path and in Go on another is two tiebreaks waiting to disagree.
+func cardNormPeers(ctx context.Context, db dependency.DB, techCardID int) ([]entity.NormPeer, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		Id        int           `db:"id"`
+		Name      string        `db:"name"`
+		BomItemId sql.NullInt64 `db:"bom_item_id"`
+		UpdatedAt sql.NullTime  `db:"updated_at"`
+	}](ctx, db, markerNormPeersQuery, map[string]any{"card": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load norm markers of tech card %d: %w", techCardID, err)
+	}
+	out := make([]entity.NormPeer, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, entity.NormPeer{
+			Id:   r.Id,
+			Name: r.Name,
+			Scope: entity.NormScope{
+				BomItemId: r.BomItemId.Int64,
+				Bound:     r.BomItemId.Valid,
+			},
+			UpdatedAt: r.UpdatedAt.Time,
+		})
+	}
+	return out, nil
 }
 
 // markerCompositionQuery reads the СОСТАВ of a set of markers in ONE round trip. Held as a var so a
@@ -332,6 +424,15 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		if generation <= 0 || (verdict.Judged && !verdict.Exempted) {
 			generation = entity.MarkerLayoutSchemaWithFlip
 		}
+		// ОТПЕЧАТОК НАБОРА ДЕТАЛЕЙ (Ф3.6), computed HERE and never taken from the payload. The client
+		// does not hold the stored set, so a client-sent fingerprint would be both forgeable and stale
+		// against any concurrent card edit; taken here, inside the SERIALIZABLE transaction, the set the
+		// fingerprint saw IS the set this transaction committed against. NULL when unfingerprintable —
+		// readers turn that into UNKNOWN, never into «changed».
+		pieceSetFp, err := cardPieceSetFingerprint(ctx, db, techCardID)
+		if err != nil {
+			return err
+		}
 		params := map[string]any{
 			"id":                id,
 			"tech_card_id":      techCardID,
@@ -356,8 +457,32 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"layout":         ins.Layout,
 			"schema_version": generation,
 			"colorway_id":    colorwayID,
-			"username":       username,
+			// УСЛОВИЯ СЪЁМКИ (Ф3), stored exactly as sent — INVALID stays NULL, which reads as «not
+			// recorded». A stale bundle sends none of them and its row honestly becomes «старая норма».
+			//
+			// A RE-SAVE THEREFORE OVERWRITES THEM WITH WHATEVER THE PAYLOAD CARRIES, including nothing.
+			// That is the same last-write-wins contract the rest of this row has, and the client owes
+			// the counterpart: the manual-adjustment path must round-trip the conditions it read, or
+			// nudging one placement would strip a fresh раскладка back to «старая норма».
+			//
+			// PRESERVING THEM ON ABSENCE WAS CONSIDERED AND IS WRONG. Every save carries a COMPLETE new
+			// geometry (pieces and placements are both required), so a payload without conditions is not
+			// «the same раскладка, described more briefly» — it is a new measurement by a client that
+			// cannot state what it measured. Carrying the old conditions onto it would attach an
+			// allowance and a contour layer measured for OTHER geometry, i.e. label a раскладка with a
+			// number nobody took for it. Degrading to «старая норма» is honest and recoverable by
+			// re-taking the раскладка; a false label is neither.
+			"seam_allowance_cm":    ins.SeamAllowanceCm,
+			"contour_allowance_cm": ins.ContourAllowanceCm,
+			"contour_layer":        ins.ContourLayer,
+			"grain_layer":          ins.GrainLayer,
+			"allow_flip":           ins.AllowFlip,
+			"piece_set_fp":         pieceSetFp,
+			"username":             username,
 		}
+		// is_norm is DELIBERATELY ABSENT from this map and from both statements below. Designation is
+		// SetMarkerNorm's alone: re-saving geometry must neither seize the norm nor lose it, and a
+		// stale bundle must not be able to clear it by not knowing the field exists.
 		if id > 0 {
 			// The addressed row must already be a marker of THIS card — a foreign id is reported as
 			// gone, not silently adopted. Ownership is resolved with a SELECT, like the
@@ -385,7 +510,12 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				    sets = :sets, total_units = :total_units,
 				    used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
 				    placed_count = :placed_count, total_count = :total_count, layout = :layout,
-				    layout_schema_version = :schema_version, updated_by = :username
+				    layout_schema_version = :schema_version,
+				    seam_allowance_cm = :seam_allowance_cm,
+				    contour_allowance_cm = :contour_allowance_cm,
+				    contour_layer = :contour_layer, grain_layer = :grain_layer,
+				    allow_flip = :allow_flip, piece_set_fp = :piece_set_fp,
+				    updated_by = :username
 				WHERE id = :id AND tech_card_id = :tech_card_id`, params); err != nil {
 				return fmt.Errorf("update marker %d: %w", id, err)
 			}
@@ -402,10 +532,14 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			INSERT INTO tech_card_marker
 				(tech_card_id, size_id, bom_item_id, colorway_id, name, source, fabric_width_cm, gap_cm,
 				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, total_units, used_length_cm,
-				 efficiency_pct, placed_count, total_count, layout, layout_schema_version, created_by, updated_by)
+				 efficiency_pct, placed_count, total_count, layout, layout_schema_version,
+				 seam_allowance_cm, contour_allowance_cm, contour_layer, grain_layer, allow_flip,
+				 piece_set_fp, created_by, updated_by)
 			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :name, :source, :fabric_width_cm, :gap_cm,
 				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :total_units, :used_length_cm,
-				 :efficiency_pct, :placed_count, :total_count, :layout, :schema_version, :username, :username)`, params)
+				 :efficiency_pct, :placed_count, :total_count, :layout, :schema_version,
+				 :seam_allowance_cm, :contour_allowance_cm, :contour_layer, :grain_layer, :allow_flip,
+				 :piece_set_fp, :username, :username)`, params)
 		if err != nil {
 			return fmt.Errorf("create marker on tech card %d: %w", techCardID, err)
 		}
@@ -595,6 +729,135 @@ func replaceMarkerComposition(ctx context.Context, db dependency.DB, markerID in
 		}
 	}
 	return nil
+}
+
+// markerNormScopeSiblingsQuery and markerNormClearScopeQuery share ONE scope predicate, written once
+// and reused, because the day the two drifted the read would name a previous norm the write did not
+// clear. `bom_item_id IS NULL AND :bom IS NULL` is the «no cloth» scope written out longhand rather
+// than folded through IFNULL(...,0): the column's NULL is meaningful, and a sentinel that happens to
+// be unreachable today is a sentinel a future migration can reach.
+//
+// Held as vars for the ':' reason stated above the composition queries.
+const markerNormScopePredicate = `
+	tech_card_id = :card AND is_norm = TRUE
+	AND ((bom_item_id IS NULL AND :bom IS NULL) OR bom_item_id = :bom)`
+
+var (
+	markerNormScopeSiblingsQuery = `
+		SELECT id, name, updated_at FROM tech_card_marker
+		WHERE ` + markerNormScopePredicate + ` AND id <> :id`
+	markerNormClearScopeQuery = `
+		UPDATE tech_card_marker SET is_norm = FALSE, updated_by = :username
+		WHERE ` + markerNormScopePredicate + ` AND id <> :id`
+	markerNormSetQuery = `
+		UPDATE tech_card_marker SET is_norm = :is_norm, updated_by = :username WHERE id = :id`
+)
+
+// SetMarkerNorm designates one раскладка as the НОРМИРОВОЧНАЯ one for its cloth, or clears it, and
+// returns the id of the previous norm of the SAME cloth (0 = there was none).
+//
+// THIS IS THE ONLY WRITER OF is_norm, and that is what holds the invariant. SaveMarker does not list
+// the column, so re-saving geometry can neither seize a norm nor lose one; DeleteMarker takes the
+// norm away with the row, leaving the card without one, which the gate will see.
+//
+// EXCLUSIVITY IS HELD HERE AND NOT BY A UNIQUE INDEX. A unique index over (tech_card_id, norm scope)
+// does work — until a BOM line is deleted: fk_tcm_bom is ON DELETE SET NULL (0257), so the deletion
+// moves that line's norm into the «no cloth» scope, and if one already lives there MySQL refuses the
+// delete with ERROR 1761. BOM rows are diffed INSIDE UpdateTechCard, so that refusal would land on
+// the save of the whole card, in an error mentioning neither a norm nor a раскладка — the exact trade
+// 0257 declined when it chose SET NULL. The residual (a bug could leave two norms in a scope) is
+// contained by three things: one writer, in this SERIALIZABLE transaction; a deterministic tiebreak
+// in every reader (entity.SelectNorm), so even a corrupted state gives every screen the SAME answer;
+// and the conflict being REPORTED on the wire (TechCardMarkerSummary.norm_conflict) instead of
+// silently resolved.
+//
+// It RECOMPUTES NOTHING. There is no server-side «apply marker»: a recipe holds a copied consumption
+// figure with provenance consumption_source='marker' and no reference back to the marker, so
+// re-designating changes which раскладка is authoritative without moving any number already applied.
+// The API layer says so in the response rather than leaving the operator to assume otherwise.
+func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username string) (int, error) {
+	if id <= 0 {
+		return 0, entity.NewFieldViolation("id", "must_be_positive", "",
+			"name the раскладка to designate as the norm")
+	}
+	var previousNormID int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// RESET FIRST. txFunc RETRIES a transaction that hit a deadlock or a lock timeout — and two
+		// concurrent designations on one scope are exactly the shape that produces one, since each
+		// takes a share lock on the other's rows before upgrading. Without this line an attempt that
+		// found a previous norm and then rolled back would leave its id standing, and the retry — which
+		// may legitimately find none — would report a раскладка it did not touch.
+		previousNormID = 0
+		db := rep.DB()
+		row, err := storeutil.QueryNamedOne[struct {
+			TechCardId int           `db:"tech_card_id"`
+			BomItemId  sql.NullInt64 `db:"bom_item_id"`
+		}](ctx, db, `SELECT tech_card_id, bom_item_id FROM tech_card_marker WHERE id = :id`,
+			map[string]any{"id": id})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: marker %d", entity.ErrMarkerNotFound, id)
+			}
+			return fmt.Errorf("load marker %d: %w", id, err)
+		}
+		// Designating a norm is a decision about the card's CONTENT, so a released card refuses — like
+		// every sibling guard, inside the transaction so a concurrent release cannot slip past it.
+		if err := storeutil.RequireMutableTechCard(ctx, db, row.TechCardId); err != nil {
+			return err
+		}
+		scope := map[string]any{
+			"card":     row.TechCardId,
+			"bom":      row.BomItemId,
+			"id":       id,
+			"username": username,
+		}
+		// CLEARING first, and it returns before touching any sibling: «this is no longer the norm» says
+		// nothing about who is, and quietly promoting a neighbour would invent a decision nobody made.
+		if !isNorm {
+			if _, err := storeutil.ExecNamedRows(ctx, db, markerNormSetQuery,
+				map[string]any{"id": id, "is_norm": false, "username": username}); err != nil {
+				return fmt.Errorf("clear norm on marker %d: %w", id, err)
+			}
+			return nil
+		}
+		// The previous norm is read BEFORE it is cleared, and through the same predicate that clears
+		// it. The winner is chosen by entity.SelectNorm rather than by an ORDER BY here: if the scope
+		// somehow holds several, the id this call REPORTS must be the one every reader would also have
+		// been showing as the effective norm — otherwise the response names a раскладка the screen
+		// never displayed.
+		siblings, err := storeutil.QueryListNamed[struct {
+			Id        int          `db:"id"`
+			Name      string       `db:"name"`
+			UpdatedAt sql.NullTime `db:"updated_at"`
+		}](ctx, db, markerNormScopeSiblingsQuery, scope)
+		if err != nil {
+			return fmt.Errorf("resolve the previous norm of marker %d: %w", id, err)
+		}
+		markerScope := entity.NormScope{BomItemId: row.BomItemId.Int64, Bound: row.BomItemId.Valid}
+		peers := make([]entity.NormPeer, 0, len(siblings))
+		for _, sb := range siblings {
+			peers = append(peers, entity.NormPeer{
+				Id: sb.Id, Name: sb.Name, Scope: markerScope, UpdatedAt: sb.UpdatedAt.Time,
+			})
+		}
+		if winner, _, ok := entity.SelectNorm(peers, markerScope); ok {
+			previousNormID = winner.Id
+		}
+		// Clears ALL of them, not just the one reported: a scope that already held two is repaired by
+		// this write rather than carried forward.
+		if _, err := storeutil.ExecNamedRows(ctx, db, markerNormClearScopeQuery, scope); err != nil {
+			return fmt.Errorf("clear the previous norm of marker %d: %w", id, err)
+		}
+		if _, err := storeutil.ExecNamedRows(ctx, db, markerNormSetQuery,
+			map[string]any{"id": id, "is_norm": true, "username": username}); err != nil {
+			return fmt.Errorf("designate marker %d as the norm: %w", id, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return previousNormID, nil
 }
 
 // DeleteMarker removes a saved раскладка. Nothing references markers, so the delete is plain —

@@ -247,6 +247,25 @@ type TechCardMarkerInsert struct {
 	// failure). The store calls this at most once, inside its transaction, and only when the
 	// exemption is actually being considered.
 	//
+	// УСЛОВИЯ СЪЁМКИ (Ф3) — the rules this раскладка was measured under. ALL FIVE ARE OPTIONAL and
+	// INVALID means «not recorded», never «zero»: a bundle that predates Ф3 sends none of them, and
+	// such a save is accepted and becomes «старая норма» rather than being refused (Ф1 settled the
+	// same argument on fabric_direction). See internal/entity/marker_conditions.go for the rules that
+	// read them.
+	//
+	// GrainLayer's EMPTY STRING IS SIGNIFICANT and means «do not orient» — hence sql.NullString and
+	// not string. Folding "" into NULL would turn a deliberate «не разворачивать» into «unknown», and
+	// a rebuild would then orient pieces the operator forbade orienting.
+	SeamAllowanceCm    decimal.NullDecimal `db:"seam_allowance_cm"`
+	ContourAllowanceCm decimal.NullDecimal `db:"contour_allowance_cm"`
+	ContourLayer       sql.NullString      `db:"contour_layer"`
+	GrainLayer         sql.NullString      `db:"grain_layer"`
+	AllowFlip          sql.NullBool        `db:"allow_flip"`
+	// PieceSetFp is the fingerprint of the CARD's cut-piece set at save time (Ф3.6). Deliberately NOT
+	// on the wire and NOT accepted from a payload: the client does not know the stored set, and a
+	// client-sent fingerprint would be both forgeable and stale on any concurrent card edit. The store
+	// computes it inside the save transaction, from the very rows that transaction sees.
+	PieceSetFp sql.NullString `db:"piece_set_fp"`
 	// It travels here rather than as an argument so the repository interface — and every mock of it
 	// — stays a data contract. nil means «no stored facts available», which the rule reads as «cannot
 	// forgive», never as «nothing was there».
@@ -292,10 +311,65 @@ type TechCardMarkerSummary struct {
 	// Composition comes from tech_card_marker_size in a second query (one per card read, not N+1),
 	// so it is not a column of this row — hence `db:"-"`. Readers go through CompositionOrLegacy.
 	Composition []MarkerCompositionEntry `db:"-"`
-	CreatedBy   string                   `db:"created_by"`
-	UpdatedBy   string                   `db:"updated_by"`
-	CreatedAt   time.Time                `db:"created_at"`
-	UpdatedAt   time.Time                `db:"updated_at"`
+	// УСЛОВИЯ СЪЁМКИ (Ф3), exactly as recorded. INVALID = «not recorded», never zero; a row whose
+	// SeamAllowanceCm is INVALID is «старая норма» (IsLegacyNorm below).
+	SeamAllowanceCm    decimal.NullDecimal `db:"seam_allowance_cm"`
+	ContourAllowanceCm decimal.NullDecimal `db:"contour_allowance_cm"`
+	ContourLayer       sql.NullString      `db:"contour_layer"`
+	GrainLayer         sql.NullString      `db:"grain_layer"`
+	AllowFlip          sql.NullBool        `db:"allow_flip"`
+	// IsNorm marks THE нормировочная раскладка of this card for its cloth. Written ONLY by
+	// SetMarkerNorm — SaveMarker neither reads nor writes it, so re-saving geometry can neither seize
+	// the norm nor lose it. Exclusivity within (card, bom_item_id) is held by that transaction rather
+	// than by a UNIQUE index; see entity.SelectNorm for why, and for the tiebreak every reader owes.
+	IsNorm bool `db:"is_norm"`
+	// PieceSetFp is the fingerprint of the CARD's cut-piece set as it stood when this раскладка was
+	// saved. INVALID = never recorded (a marker from before Ф3) or unfingerprintable — which readers
+	// must render as UNKNOWN, never as «changed».
+	PieceSetFp sql.NullString `db:"piece_set_fp"`
+	// CardPieceSetFp is the fingerprint of the card's set TODAY, stamped by the store on the read
+	// paths that have the pieces to hand. INVALID = today's set cannot be fingerprinted either.
+	// Not a column — the comparison is a fact about the card, not about the row.
+	CardPieceSetFp sql.NullString `db:"-"`
+	// NormConflict is "" on a healthy card and the prose reporting «more than one norm on this cloth»
+	// otherwise, stamped by the store from entity.NormConflictReport. Not a column: the conflict is a
+	// property of the SET of a card's markers, and one row cannot see it.
+	NormConflict string    `db:"-"`
+	CreatedBy    string    `db:"created_by"`
+	UpdatedBy    string    `db:"updated_by"`
+	CreatedAt    time.Time `db:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"`
+}
+
+// Allowance is what this раскладка states about the allowance on the cloth — three-valued, see
+// entity.MarkerAllowance.
+func (m TechCardMarkerSummary) Allowance() MarkerAllowance {
+	return MarkerAllowanceOf(m.SeamAllowanceCm, m.ContourAllowanceCm)
+}
+
+// IsLegacyNorm reports «СТАРАЯ НОРМА»: a раскладка that does not say what it laid out or under which
+// rules. The category is DERIVED — there is no flag column and no migration marked anything, because
+// the unmarked stays old by itself (04-marker-conditions.md). A readiness gate must not count such a
+// marker as a valid measurement: it was taken along an unknown line, at a nominal width, under an
+// unrecorded flip policy.
+func (m TechCardMarkerSummary) IsLegacyNorm() bool { return !m.SeamAllowanceCm.Valid }
+
+// PieceSetStatus compares the fingerprint stored with this раскладка against the card's set today.
+//
+// AN UNRECORDED FINGERPRINT IS NEVER «CHANGED». That is the requirement, and it is also the only way
+// not to flood every marker taken before Ф3 with a badge: UNKNOWN is a grey caption («набор при
+// съёмке не записан»), which is the other half of the «старая норма» category — not an alarm.
+func (m TechCardMarkerSummary) PieceSetStatus() MarkerPieceSetStatus {
+	if !m.PieceSetFp.Valid || m.PieceSetFp.String == "" {
+		return MarkerPieceSetUnknown
+	}
+	if !m.CardPieceSetFp.Valid || m.CardPieceSetFp.String == "" {
+		return MarkerPieceSetUnknown
+	}
+	if m.PieceSetFp.String == m.CardPieceSetFp.String {
+		return MarkerPieceSetMatches
+	}
+	return MarkerPieceSetChanged
 }
 
 // ЛЕГАСИ-ФОРМА ПОБЕЖДАЕТ ПРОЕКЦИЮ, and the order of these two readers is the whole reason this
@@ -1549,7 +1623,19 @@ type TechCardInsert struct {
 	// TargetDropDate is the calendar day this style is planned to drop (production cockpit): owner-set
 	// planning intent, the anchor a run's PromisedAt is judged against. Unlike ApprovedAt/ReleasedAt
 	// it is client-writable, and it is a DATE column — the time of day is dropped at the dto boundary.
-	TargetDropDate   sql.NullTime            `db:"target_drop_date"`
+	TargetDropDate sql.NullTime `db:"target_drop_date"`
+	// RequiredSeamAllowanceCm is this style's ТРЕБУЕМЫЙ ПРИПУСК in centimetres (Ф3.2) — the standard
+	// a readiness gate compares a раскладка's recorded allowance against. INVALID = fall back to the
+	// workshop default, which may itself be unset, and then there is NO STANDARD and the consumer
+	// must return «no verdict» rather than substitute zero (0 is a legal setting here — see
+	// entity.RequiredSeamAllowanceCm).
+	//
+	// It lives on the card header and is in NO section digest projection, deliberately: adding a field
+	// to one would mark every signed-off approval of that section as edited-since-signing, on every
+	// card at once. And it is NOT the free text TechCardConstruction.SeamAllowances («5 мм»), which
+	// stays a human note.
+	RequiredSeamAllowanceCm decimal.NullDecimal `db:"required_seam_allowance_cm"`
+
 	BaseModelId      sql.NullInt32           `db:"base_model_id"`
 	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`
 	MeasurementUnit  TechCardMeasurementUnit `db:"measurement_unit"`

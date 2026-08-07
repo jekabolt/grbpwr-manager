@@ -357,6 +357,11 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			Purpose:           common.TechCardPurpose_TECH_CARD_PURPOSE_SELLABLE,
 			SkuSeason:         &common.SkuSeason{Code: common.SeasonEnum_SEASON_ENUM_SS, Year: 2026},
 			Concept:           "PLM acceptance seed: a single jacket style carried end to end.",
+			// Ф3.2: the card's own ТРЕБУЕМЫЙ ПРИПУСК, the right-hand side a readiness gate compares a
+			// раскладка's recorded allowance against. Set on the CARD rather than through the workshop
+			// singleton on purpose: the seeder runs repeatedly and must not clobber a shop-wide setting
+			// a human configured.
+			RequiredSeamAllowanceCm: decv("1"),
 		},
 	})
 	if err != nil {
@@ -790,6 +795,19 @@ func (s *Seeder) plmMarkers(ctx context.Context, st *plmState) error {
 		FabricWidthCm: decv("150"), GapCm: decv("0.5"), EdgeMarginCm: decv("1"), SelvedgeCm: decv("1"),
 		UsedLengthCm: decv("330"), EfficiencyPct: decv("78.25"),
 		PlacedCount: 6, TotalCount: 6,
+		// УСЛОВИЯ СЪЁМКИ (Ф3). Only THIS marker carries them; «однородная» above deliberately does not,
+		// so beta holds one раскладка of each category — a labelled measurement and a «старая норма» —
+		// and the difference is observable without driving the modal by hand.
+		//
+		// contour_allowance_cm = 0 is a MEASUREMENT («the laid contour IS the seam line»), not an
+		// absence, and grain_layer = "" is a DECISION («не разворачивать»), not «не записано». Both are
+		// here precisely because they are the two values a wire that only carried presence-by-value
+		// would silently destroy.
+		SeamAllowanceCm:    decv("1"),
+		ContourAllowanceCm: decv("0"),
+		ContourLayer:       strp("14"),
+		GrainLayer:         strp(""),
+		AllowFlip:          boolp(false),
 		Layout: &common.TechCardMarkerLayout{
 			SchemaVersion: 4,
 			Params:        &common.TechCardMarkerNestParams{Unit: "cm", TolCm: 0.1, RdpEpsCm: 0.05},
@@ -865,6 +883,123 @@ func (s *Seeder) plmMarkers(ctx context.Context, st *plmState) error {
 	}
 	s.pass(st, "раскладка со СОСТАВОМ id=%d: %d размеров, %d изделий, скалярный расход не выдан (%s)",
 		got.GetId(), len(got.GetComposition()), got.GetTotalUnits(), got.GetScalarApplyRefusal())
+
+	return s.plmMarkerConditions(ctx, st, legacyResp.GetId(), mixedResp.GetId(), mixed)
+}
+
+// plmMarkerConditions asserts the Ф3 half on the two markers just written: the conditions survive the
+// trip WITH THEIR PRESENCE, the piece-set fingerprint is server-written, the double allowance is
+// refused with words, and the norm is exclusive per cloth.
+//
+// It exists as its own function only because plmMarkers was already long; it is one step, not two.
+func (s *Seeder) plmMarkerConditions(ctx context.Context, st *plmState, legacyID, mixedID int32,
+	mixed *common.TechCardMarkerInsert) error {
+	sid := st.res.StyleID
+	s.step(st, "C.10c условия съёмки (Ф3): припуск/слои/переворот, отпечаток набора, норма")
+
+	read := func(id int32) (*common.TechCardMarkerSummary, error) {
+		r, err := s.C.GetTechCard(ctx, &admin.GetTechCardRequest{Id: sid})
+		if err != nil {
+			return nil, fmt.Errorf("GetTechCard(conditions): %w", err)
+		}
+		for _, m := range r.GetTechCard().GetMarkers() {
+			if m.GetId() == id {
+				return m, nil
+			}
+		}
+		return nil, fmt.Errorf("marker %d missing from the card read", id)
+	}
+
+	m, err := read(mixedID)
+	if err != nil {
+		return err
+	}
+	if m.GetSeamAllowanceCm().GetValue() != "1" || m.GetContourLayer() != "14" {
+		return fmt.Errorf("conditions lost in transit: seam=%q contour_layer=%q",
+			m.GetSeamAllowanceCm().GetValue(), m.GetContourLayer())
+	}
+	// The two distinctions a careless wire destroys, checked by PRESENCE and not by value.
+	if m.ContourAllowanceCm == nil || m.GetContourAllowanceCm().GetValue() != "0" {
+		return fmt.Errorf("a MEASURED zero contour allowance must survive as a value, got %v", m.ContourAllowanceCm)
+	}
+	if m.GrainLayer == nil || m.GetGrainLayer() != "" {
+		return fmt.Errorf("an EMPTY grain layer means «не разворачивать» and must survive, got %v", m.GrainLayer)
+	}
+	if m.AllowFlip == nil || m.GetAllowFlip() {
+		return fmt.Errorf("a recorded flip policy of false must survive as false, got %v", m.AllowFlip)
+	}
+	if m.GetPieceSetStatus() != common.TechCardMarkerPieceSetStatus_TECH_CARD_MARKER_PIECE_SET_STATUS_MATCHES {
+		return fmt.Errorf("the save must fingerprint the card's piece set, got %v", m.GetPieceSetStatus())
+	}
+	s.pass(st, "условия съёмки доехали: припуск %s, контур %s (замерено 0 = линия шва), долевая \"\" (не разворачивать), переворот запрещён, набор деталей СОВПАДАЕТ",
+		m.GetSeamAllowanceCm().GetValue(), m.GetContourLayer())
+
+	// The «старая норма» half: the legacy marker records no allowance and must NOT be badged as a
+	// changed piece set either — the fingerprint is written by the SAVE regardless of what the client
+	// knows about Ф3, so the two categories stay independent.
+	l, err := read(legacyID)
+	if err != nil {
+		return err
+	}
+	if l.SeamAllowanceCm != nil {
+		return fmt.Errorf("the legacy marker must record NO allowance, got %q", l.GetSeamAllowanceCm().GetValue())
+	}
+	if l.GetPieceSetStatus() != common.TechCardMarkerPieceSetStatus_TECH_CARD_MARKER_PIECE_SET_STATUS_MATCHES {
+		return fmt.Errorf("the fingerprint is server-written and does not depend on the client knowing Ф3, got %v",
+			l.GetPieceSetStatus())
+	}
+	s.pass(st, "легаси раскладка id=%d осталась «старой нормой» (припуск не записан), но отпечаток набора у неё есть", legacyID)
+
+	// NEGATIVE: the laid contour already carries the allowance AND an offset was added on top. The
+	// allowance would be counted twice and the spread length overstated around every perimeter.
+	neg := proto.Clone(mixed).(*common.TechCardMarkerInsert)
+	neg.Name = "QA negative · двойной припуск"
+	neg.ContourAllowanceCm = decv("1")
+	_, negErr := s.C.SaveTechCardMarker(ctx, &admin.SaveTechCardMarkerRequest{TechCardId: sid, Marker: neg})
+	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
+		return fmt.Errorf("NEGATIVE double seam allowance: expected HTTP 400, got %v", negErr)
+	}
+	s.pass(st, "NEGATIVE двойной припуск (контур 1 см + офсет 1 см) отвергнут -> HTTP 400")
+
+	// НОРМА. Designation is a dedicated RPC: a boolean on the save would arrive as false from a stale
+	// bundle and clear the norm while knowing nothing about it.
+	first, err := s.C.SetTechCardMarkerNorm(ctx, &admin.SetTechCardMarkerNormRequest{Id: mixedID, IsNorm: true})
+	if err != nil {
+		return fmt.Errorf("SetTechCardMarkerNorm(mixed): %w", err)
+	}
+	if first.GetPreviousNormMarkerId() != 0 || !first.GetRecipesNotRecalculated() {
+		return fmt.Errorf("first designation: previous=%d recipes_not_recalculated=%v",
+			first.GetPreviousNormMarkerId(), first.GetRecipesNotRecalculated())
+	}
+	second, err := s.C.SetTechCardMarkerNorm(ctx, &admin.SetTechCardMarkerNormRequest{Id: legacyID, IsNorm: true})
+	if err != nil {
+		return fmt.Errorf("SetTechCardMarkerNorm(legacy): %w", err)
+	}
+	if second.GetPreviousNormMarkerId() != mixedID {
+		return fmt.Errorf("designating a sibling of the same cloth must name the norm it replaced, got %d",
+			second.GetPreviousNormMarkerId())
+	}
+	m, err = read(mixedID)
+	if err != nil {
+		return err
+	}
+	l, err = read(legacyID)
+	if err != nil {
+		return err
+	}
+	if m.GetIsNorm() || !l.GetIsNorm() {
+		return fmt.Errorf("exclusivity broken: mixed.is_norm=%v legacy.is_norm=%v", m.GetIsNorm(), l.GetIsNorm())
+	}
+	if l.GetNormConflict() != "" || m.GetNormConflict() != "" {
+		return fmt.Errorf("a healthy card must report no norm conflict, got %q / %q",
+			l.GetNormConflict(), m.GetNormConflict())
+	}
+	// Put the norm back on the labelled раскладка: leaving beta with «старая норма» designated would
+	// seed the exact state the readiness gate is supposed to reject.
+	if _, err := s.C.SetTechCardMarkerNorm(ctx, &admin.SetTechCardMarkerNormRequest{Id: mixedID, IsNorm: true}); err != nil {
+		return fmt.Errorf("SetTechCardMarkerNorm(restore): %w", err)
+	}
+	s.pass(st, "норма назначается отдельным RPC и эксклюзивна по ткани: переназначение вернуло прежнюю (id=%d), рецепты не пересчитаны", mixedID)
 	return nil
 }
 
@@ -1950,6 +2085,13 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 // --- small typed helpers ---
 
 func decv(v string) *decimal.Decimal { return &decimal.Decimal{Value: v} }
+
+// strp / boolp carry PRESENCE onto a proto3 `optional` field. The Ф3 conditions need them because ""
+// and false are meaningful ANSWERS there — «не разворачивать» and «переворот запрещён» — and are not
+// the same statement as «не записано».
+func strp(v string) *string { return &v }
+
+func boolp(v bool) *bool { return &v }
 
 func p32(v int32) *int32 { return &v }
 

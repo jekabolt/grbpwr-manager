@@ -73,12 +73,12 @@ func normalizeLegacyComposition(cards []entity.TechCard) {
 
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at, target_drop_date,
-	base_model_id, base_sample_size_id,
+	required_seam_allowance_cm, base_model_id, base_sample_size_id,
 	measurement_unit, concept, notes, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at, :target_drop_date,
-	:base_model_id, :base_sample_size_id,
+	:required_seam_allowance_cm, :base_model_id, :base_sample_size_id,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
@@ -121,6 +121,11 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"measurement_unit":    string(tc.MeasurementUnit),
 		"concept":             tc.Concept,
 		"notes":               tc.Notes,
+
+		// ТРЕБУЕМЫЙ ПРИПУСК (Ф3.2): the card's override of the workshop default. NULL = «take the
+		// workshop's», 0 = «this model's выкройки carry the cut line». Written like any header scalar
+		// and, deliberately, into no section digest projection.
+		"required_seam_allowance_cm": tc.RequiredSeamAllowanceCm,
 	}
 }
 
@@ -431,6 +436,7 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_at = :approved_at, released_at = :released_at,
 				target_drop_date = :target_drop_date,
+				required_seam_allowance_cm = :required_seam_allowance_cm,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
 					purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
@@ -767,7 +773,10 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 	// Saved раскладки (0257), summaries only — the blob rides GetTechCardMarker. Loaded for every
 	// purpose (an auxiliary кофр is cut from fabric exactly like a garment), same
 	// no-degradation reasoning as the variants above: this is editable card content.
-	markers, err := listMarkerSummaries(ctx, s.DB, id)
+	// The card's cut-pieces travel in because the Ф3.6 comparison («did the set of pieces change since
+	// this раскладка was taken») needs them and s.enrich has already loaded them — so the whole check
+	// costs zero extra queries here.
+	markers, err := listMarkerSummaries(ctx, s.DB, id, cards[0].Pieces)
 	if err != nil {
 		return nil, err
 	}

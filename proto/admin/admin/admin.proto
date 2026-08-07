@@ -1594,6 +1594,31 @@ service AdminService {
   rpc DeleteTechCardMarker(DeleteTechCardMarkerRequest) returns (DeleteTechCardMarkerResponse) {
     option (google.api.http) = {delete: "/api/admin/tech-card/marker/{id}"};
   }
+  // SetTechCardMarkerNorm designates (or clears) the НОРМИРОВОЧНАЯ раскладка of a card FOR THE CLOTH
+  // that раскладка measures. Designating CLEARS the flag off the previous norm of the same cloth in
+  // one transaction — there is never more than one norm per (card, BOM line).
+  //
+  // A DEDICATED RPC, not a field on SaveTechCardMarker, for two independent reasons. (1) It is an
+  // action on the CARD, not on the раскладка: it has a side effect on a sibling row, and hiding such
+  // an effect inside «save this geometry» would let a routine placement fix seize the norm silently.
+  // (2) A boolean on the Insert would arrive as `false` from a stale bundle and CLEAR the norm while
+  // knowing nothing about it — precisely the failure that forced fabric_direction to become optional
+  // in Ф1.
+  //
+  // Re-designating RECOMPUTES NOTHING. A recipe stores a COPIED number with provenance
+  // consumption_source='marker' and holds no reference to the marker it came from; there is no
+  // server-side «apply marker» at all. Applying stays a deliberate operator action, and the response
+  // carries recipes_not_recalculated = true so the screen says so out loud instead of leaving the
+  // operator to assume the costing moved by itself.
+  //
+  // Refused with FailedPrecondition on a released card (marker designation is card content), and
+  // NotFound for a marker that does not exist.
+  rpc SetTechCardMarkerNorm(SetTechCardMarkerNormRequest) returns (SetTechCardMarkerNormResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/marker/{id}/norm"
+      body: "*"
+    };
+  }
 
   // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
   // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
@@ -4536,6 +4561,18 @@ message WorkshopSettings {
 
   string updated_by = 2; // admin username of the last writer; "" = never written
   google.protobuf.Timestamp updated_at = 3;
+
+  // ПРИПУСК НА ШОВ ПО УМОЛЧАНИЮ, in centimetres — второй жилец дома настроек цеха (Ф2.5 → Ф3.2).
+  //
+  // ABSENT = not configured, and a consumer must degrade to «no standard» rather than substitute
+  // zero — the same law as the table length above. But UNLIKE the table length, ZERO IS LEGAL HERE
+  // and means a specific thing: «our выкройки carry the cut line, no offset is needed». That is
+  // exactly why 0272 chose a TYPED COLUMN PER SETTING over a shared key/value table: one CHECK
+  // across all keys cannot express that difference, and here the two validators genuinely disagree
+  // (the table length rejects 0, this accepts it).
+  //
+  // A tech card may override it (common.TechCardInsert.required_seam_allowance_cm).
+  google.type.Decimal default_seam_allowance_cm = 4;
 }
 
 message GetWorkshopSettingsRequest {}
@@ -4567,6 +4604,12 @@ message UpdateWorkshopSettingsRequest {
   // into a field labelled centimetres, and "6" for a 6 m table would otherwise be accepted and then
   // declare every раскладка too long.
   google.type.Decimal cutting_table_length_cm = 1;
+
+  // Centimetres, 0..10. Zero is ACCEPTED (see WorkshopSettings.default_seam_allowance_cm) — send the
+  // empty message to clear the setting instead. The ceiling is a unit check: the widest real
+  // allowance is a 4-5 cm hem, so anything past 10 is millimetres typed into a centimetre field or a
+  // stray zero.
+  google.type.Decimal default_seam_allowance_cm = 2;
 }
 
 message UpdateWorkshopSettingsResponse {
@@ -7017,6 +7060,26 @@ message DeleteTechCardMarkerRequest {
 }
 
 message DeleteTechCardMarkerResponse {}
+
+// SetTechCardMarkerNormRequest designates one раскладка as the norm for its cloth, or clears it.
+// The card is resolved from the marker — a norm belongs to the раскладка, and passing the card
+// separately would create a pair that can disagree.
+message SetTechCardMarkerNormRequest {
+  int32 id = 1; // the раскладка
+  bool is_norm = 2; // true = make it the norm (clearing the previous one); false = clear this one
+}
+
+message SetTechCardMarkerNormResponse {
+  // The previous norm of the SAME cloth, whose flag was cleared by this call; 0 = there was none.
+  // Present so the screen can name what it replaced instead of reporting a change with no subject.
+  int32 previous_norm_marker_id = 1;
+  // ALWAYS true, and NOT a placeholder: recipes are not recalculated, and the screen is obliged to
+  // say so. A recipe holds a copied consumption figure with provenance consumption_source='marker'
+  // and no link back to the marker; re-designating the norm therefore changes which раскладка is
+  // AUTHORITATIVE without touching any number already applied. Apply the new norm if the consumption
+  // should move.
+  bool recipes_not_recalculated = 2;
+}
 
 // OrderPackingSpecItem is one garment line in an order's packing spec: the colourway/variant, quantity,
 // and the on-garment assembly (labels/tags) the packer must verify, size-resolved to this line's variant.
