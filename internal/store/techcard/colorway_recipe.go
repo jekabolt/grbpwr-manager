@@ -115,7 +115,7 @@ var rollGoodsSections = func() map[string]bool {
 	return m
 }()
 
-// kindEligibleSectionList is THE list of BOM families that ЧТО ЭТО ЗА ПОЗИЦИЯ (kind, 0276) may
+// kindEligibleSectionList is THE list of BOM families that ЧТО ЭТО ЗА ПОЗИЦИЯ (kind, 0278) may
 // classify. It is the COMPLEMENT of the roll-goods list above, minus labels — and it is DERIVED for
 // exactly the reason that list's own header gives: a hand-written copy of a complement is the
 // worst kind of copy, because adding a fifth roll-goods family above would leave the copy still

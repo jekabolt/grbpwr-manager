@@ -216,7 +216,7 @@ func TestPieceCutSymmetryEnumNoDrift(t *testing.T) {
 	}
 }
 
-// TestBomKindEnumNoDrift is the entity<->proto leg for ЧТО ЭТО ЗА ПОЗИЦИЯ (0276): every non-UNSET
+// TestBomKindEnumNoDrift is the entity<->proto leg for ЧТО ЭТО ЗА ПОЗИЦИЯ (0278): every non-UNSET
 // proto value maps to a valid entity kind, and the three sizes (proto values, mapping table, entity
 // Valid set) agree. The entity<->DB leg is TestBomKindDBCheckNoDrift in internal/store/migrationlint.
 //
@@ -254,7 +254,7 @@ func TestBomKindEnumNoDrift(t *testing.T) {
 // TestLabelTypeEnumNoDrift is the entity<->proto leg for the label vocabulary (0070). The
 // entity<->DB leg is TestLabelTypeDBCheckNoDrift in internal/store/migrationlint.
 //
-// This pair is what makes 0276's exclusion of section='label' from `kind` honest: `kind` stays off
+// This pair is what makes 0278's exclusion of section='label' from `kind` honest: `kind` stays off
 // labels BECAUSE tech_card_label.label_type is the single owner of that vocabulary, and a single
 // owner that has drifted from either the wire or the schema is not an owner.
 //

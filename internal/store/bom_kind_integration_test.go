@@ -11,7 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-// TestBomLineKind covers 0276: ЧТО ЭТО ЗА ПОЗИЦИЯ round-trips on a BOM line, the kind↔section
+// TestBomLineKind covers 0278: ЧТО ЭТО ЗА ПОЗИЦИЯ round-trips on a BOM line, the kind↔section
 // pairing is refused in the store, the vocabulary and the note rule are refused by MySQL itself, and
 // a line nobody has classified keeps NULL through a full write→read→write cycle.
 //
@@ -160,7 +160,7 @@ func TestBomLineKind(t *testing.T) {
 		tcID, slotUnsorted)
 	require.Error(t, err, "вид вне словаря должен отвергаться")
 
-	// СТАРЫЙ КЛИЕНТ НЕ ДОЛЖЕН СТИРАТЬ. Вкладка с бандлом до 0276 этих полей не шлёт вовсе; на
+	// СТАРЫЙ КЛИЕНТ НЕ ДОЛЖЕН СТИРАТЬ. Вкладка с бандлом до 0278 этих полей не шлёт вовсе; на
 	// проводе это ОТСУТСТВИЕ, а не UNSET, и стор обязан оставить хранимое. Без различения один сейв
 	// из открытой вчера вкладки обнулял бы классификацию у ВСЕХ строк карточки — бесследно, потому
 	// что полей нет в дайджесте подписи, а NULL неотличим от «ещё не классифицировали».

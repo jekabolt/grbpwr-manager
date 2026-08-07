@@ -232,7 +232,7 @@ var techCardBomPurposeEntityToPb = func() map[entity.TechCardBomPurpose]pb_commo
 	return m
 }()
 
-// techCardBomKindPbToEntity maps the closed ЧТО ЭТО ЗА ПОЗИЦИЯ vocabulary (0276). UNSET is
+// techCardBomKindPbToEntity maps the closed ЧТО ЭТО ЗА ПОЗИЦИЯ vocabulary (0278). UNSET is
 // deliberately absent, on the same rule as TechCardBomPurpose's: it is not a value but the absence
 // of one ("not classified yet"), and it must stay out of the table so it can only ever become a NULL
 // column. The kind↔section pairing is NOT enforced here — it needs the roll-goods complement, which
@@ -2356,7 +2356,7 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 				fmt.Sprintf("must be at most %d characters", maxVarchar255), "", "shorten this value")
 		}
 
-		// ЧТО ЭТО ЗА ПОЗИЦИЯ (0276) — the mirror of назначение, parsed the same way: UNSET stays NULL
+		// ЧТО ЭТО ЗА ПОЗИЦИЯ (0278) — the mirror of назначение, parsed the same way: UNSET stays NULL
 		// ("not classified yet" is the honest answer for every line that predates the field), an
 		// unrecognised value is REFUSED rather than degraded, and the kind↔section pairing is left to
 		// the store, which owns the one derived list of eligible families.

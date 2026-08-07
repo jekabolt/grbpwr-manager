@@ -22,7 +22,7 @@ func bomKindLine(kind *pb_common.TechCardBomKind, note *string) *pb_common.TechC
 	}
 }
 
-// A tab holding a bundle that predates 0276 sends NEITHER field. That must mean «не трогай», never
+// A tab holding a bundle that predates 0278 sends NEITHER field. That must mean «не трогай», never
 // «очисти» — the erasure would otherwise be total (every line of the card) and invisible (the fields
 // are outside the signed MATERIALS digest, and NULL is indistinguishable from "not classified yet").
 func TestBomKindAbsentMeansLeaveStoredValueAlone(t *testing.T) {

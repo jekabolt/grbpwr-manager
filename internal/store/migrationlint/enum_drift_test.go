@@ -383,7 +383,7 @@ func TestPieceCutSymmetryDBCheckIsCaseClosed(t *testing.T) {
 	}
 }
 
-// TestBomKindDBCheckNoDrift is the entity<->DB leg for ЧТО ЭТО ЗА ПОЗИЦИЯ (0276):
+// TestBomKindDBCheckNoDrift is the entity<->DB leg for ЧТО ЭТО ЗА ПОЗИЦИЯ (0278):
 // entity.TechCardBomKind/ValidTechCardBomKinds <-> the DB CHECK chk_bom_item_kind. The entity<->proto
 // leg is TestBomKindEnumNoDrift in internal/dto.
 //
@@ -396,7 +396,7 @@ func TestPieceCutSymmetryDBCheckIsCaseClosed(t *testing.T) {
 // The window is wide (52 values) — extractDBEnumValues bounds its search from the anchor, and a
 // window shorter than the alternation would fail to FIND the list rather than fail to compare it.
 func TestBomKindDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0276_bom_item_kind.sql")
+	content := readMigrationFile(t, "0278_bom_item_kind.sql")
 	dbValues := extractDBEnumValues(t, content, "kind REGEXP", 800)
 	assertSameSet(t, "TechCardBomKind", dbValues, mapKeysAsStrings(entity.ValidTechCardBomKinds))
 }
@@ -407,7 +407,7 @@ func TestBomKindDBCheckNoDrift(t *testing.T) {
 // refuses 'zip' and nothing about case. STRCMP over a BINARY cast is what actually closes the
 // vocabulary (precedent: chk_bom_item_purpose in 0265, chk_tcp_cut_symmetry in 0275).
 func TestBomKindDBCheckIsCaseClosed(t *testing.T) {
-	content := readMigrationFile(t, "0276_bom_item_kind.sql")
+	content := readMigrationFile(t, "0278_bom_item_kind.sql")
 	const guard = "STRCMP(CAST(kind AS BINARY), CAST(LOWER(kind) AS BINARY)) = 0"
 	stmt := strings.Index(content, "chk_bom_item_kind CHECK")
 	if stmt < 0 {
@@ -422,7 +422,7 @@ func TestBomKindDBCheckIsCaseClosed(t *testing.T) {
 	}
 }
 
-// TestBomKindNoteCheckIsNullSafe locks the one comparison in 0276 that is wrong in the obvious form
+// TestBomKindNoteCheckIsNullSafe locks the one comparison in 0278 that is wrong in the obvious form
 // and silent about it. `kind = 'other'` yields NULL when kind IS NULL, and MySQL treats a CHECK that
 // evaluates to NULL as SATISFIED — so the obvious spelling catches a note on kind='zipper' and lets
 // a note through on kind IS NULL, which is the state of EVERY row that predates the migration and
@@ -430,7 +430,7 @@ func TestBomKindDBCheckIsCaseClosed(t *testing.T) {
 // on the lines that have no kind at all. Only the NULL-safe `<=>` closes it (as in
 // chk_bom_item_purpose_note, 0265).
 func TestBomKindNoteCheckIsNullSafe(t *testing.T) {
-	content := readMigrationFile(t, "0276_bom_item_kind.sql")
+	content := readMigrationFile(t, "0278_bom_item_kind.sql")
 	stmt := strings.Index(content, "chk_bom_item_kind_note CHECK")
 	if stmt < 0 {
 		t.Fatal("named CHECK chk_bom_item_kind_note not found")
@@ -452,7 +452,7 @@ func TestBomKindNoteCheckIsNullSafe(t *testing.T) {
 // entity.TechCardLabelType/ValidTechCardLabelTypes <-> the CHECK on tech_card_label.label_type. The
 // entity<->proto leg is TestLabelTypeEnumNoDrift in internal/dto.
 //
-// It had no drift guard until 0276, which is what makes it load-bearing now: 0276 excludes
+// It had no drift guard until 0278, which is what makes it load-bearing now: 0278 excludes
 // section='label' from `kind` BECAUSE label_type is the sole owner of this vocabulary. That
 // exclusion is only honest while label_type actually stays in lockstep with the enum the client
 // renders — an entity value the CHECK refuses would leave the "already answered" question with no

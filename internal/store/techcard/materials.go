@@ -384,7 +384,7 @@ type colorwayBomUsageRefRow struct {
 // The BOM upsert's two statements live as package-level constants so TestBomItemUpsertQueriesBind can
 // bind them without a database. sqlx parses ':' ANYWHERE in a named query — including inside a `--`
 // SQL comment — as a parameter, and a name the args map does not carry fails at BIND time, i.e. at
-// request time on the card-save path. Every guarded column added here (purpose 0265, kind 0276) adds
+// request time on the card-save path. Every guarded column added here (purpose 0265, kind 0278) adds
 // two params that are easy to add to one side only; the precedent is pieceUpdateQuery/pieceInsertQuery.
 //
 // The `*_omitted` guards are what stop a tab holding an older bundle from wiping a column it does not
@@ -416,7 +416,7 @@ const bomItemInsertQuery = `
 		 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
 		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :line_key, :price_source, :price_snapshot_at)`
 
-// validateBomKindSection enforces the kind↔section pairing (0276) the DB CHECK deliberately does not:
+// validateBomKindSection enforces the kind↔section pairing (0278) the DB CHECK deliberately does not:
 // a kind is legal only on a kind-eligible section, and within that, only in its own HOME section —
 // except BomKindOther, the one section-agnostic value, which is the escape hatch of every eligible
 // family at once (and the ONLY kind section='other' can carry).
@@ -598,7 +598,7 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		"purpose":         b.Purpose,
 		"purpose_omitted": b.PurposeOmitted,
 		"purpose_note":    b.PurposeNote,
-		// Та же пара для другой половины спецификации (0276). kind и kind_note СВЯЗАНЫ в схеме
+		// Та же пара для другой половины спецификации (0278). kind и kind_note СВЯЗАНЫ в схеме
 		// (chk_bom_item_kind_note), поэтому их флаги ставятся вместе в parseTechCardBomItems: запись
 		// одной половины поверх сохранённой второй — это строка, которую MySQL обязан отвергнуть.
 		"kind":                     b.Kind,

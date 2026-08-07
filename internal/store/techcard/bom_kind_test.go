@@ -16,7 +16,7 @@ import (
 //
 // A BOM section is classified on exactly ONE axis and the three groups must therefore PARTITION
 // entity.ValidTechCardBomSections: roll goods answer НАЗНАЧЕНИЕ (0265), `label` is owned by
-// tech_card_label.label_type (0070), and everything else answers ЧТО ЭТО ЗА ПОЗИЦИЯ (0276). The
+// tech_card_label.label_type (0070), and everything else answers ЧТО ЭТО ЗА ПОЗИЦИЯ (0278). The
 // assertion is deliberately a partition and not "kindEligible has these six values": a hand-written
 // copy of the eligible list passes a value check forever, but the day somebody adds a twelfth
 // section to the enum it lands in NO group and this fails — which is exactly the moment a stale copy
@@ -136,7 +136,7 @@ func bomItemUpsertParams() map[string]any {
 
 // sqlx parses ':' ANYWHERE in a named query — including inside a `--` SQL comment — as a parameter,
 // and a name the args map does not carry fails at BIND time, i.e. at request time. Both statements
-// grew a guarded column pair in 0276; sqlx.Named reproduces both failure modes without a database.
+// grew a guarded column pair in 0278; sqlx.Named reproduces both failure modes without a database.
 func TestBomItemUpsertQueriesBind(t *testing.T) {
 	for name, q := range map[string]string{"update": bomItemUpdateQuery, "insert": bomItemInsertQuery} {
 		bound, _, err := sqlx.Named(q, bomItemUpsertParams())

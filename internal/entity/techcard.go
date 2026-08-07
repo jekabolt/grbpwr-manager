@@ -700,7 +700,7 @@ func IsValidTechCardBomPurpose(p TechCardBomPurpose) bool {
 // The pairing lives in bomKindHomeSection below — as DATA, so that ValidTechCardBomKinds and the
 // section a kind belongs to can never be two lists that disagree.
 //
-// Mirrors the common.TechCardBomKind proto enum and the chk_bom_item_kind DB CHECK (0276); stored as
+// Mirrors the common.TechCardBomKind proto enum and the chk_bom_item_kind DB CHECK (0278); stored as
 // a NULLABLE string in tech_card_bom_item.kind, where NULL means "not classified yet".
 type TechCardBomKind string
 
@@ -1145,10 +1145,10 @@ type TechCardBomItem struct {
 	// PurposeNote explains a BomPurposeOther line. Legal only alongside that purpose — the DB CHECK
 	// chk_bom_item_purpose_note enforces it — so the note can never quietly become a ninth purpose.
 	PurposeNote sql.NullString `db:"purpose_note"`
-	// Kind (0276) is ЧТО ЭТО ЗА ПОЗИЦИЯ — the mirror of Purpose on the other half of the BOM, see
+	// Kind (0278) is ЧТО ЭТО ЗА ПОЗИЦИЯ — the mirror of Purpose on the other half of the BOM, see
 	// TechCardBomKind. Accepted only on a line that is NEITHER roll goods NOR a label, and only in
 	// the kind's own home section; INVALID (NULL) means "not classified yet" and is what every line
-	// predating 0276 carries, deliberately never guessed.
+	// predating 0278 carries, deliberately never guessed.
 	Kind sql.NullString `db:"kind"`
 	// KindOmitted / KindNoteOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым». Тот же
 	// НЕГАТИВНЫЙ смысл и та же причина, что у PurposeOmitted: карточка сохраняется целиком, админка

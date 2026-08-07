@@ -296,12 +296,12 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 // materialsProjection fingerprints what the card BUYS: which article, at what price, in what
 // quantity terms.
 //
-// DELIBERATELY ABSENT — purpose / purpose_note / is_sample (0265), and kind / kind_note (0276) on
+// DELIBERATELY ABSENT — purpose / purpose_note / is_sample (0265), and kind / kind_note (0278) on
 // exactly the same grounds. They classify a line that already exists; they do not change the
 // article, the price or the consumption, so on the same reasoning as price_source they are metadata
 // about a value and must not stale a sign-off whose value did not change. The concrete cost of
 // folding them in would be paid immediately and by everyone: every pre-0265 line is deliberately
-// unsorted and every pre-0276 line deliberately unclassified, so the operator's first sorting pass
+// unsorted and every pre-0278 line deliberately unclassified, so the operator's first sorting pass
 // over an approved card would mark its MATERIALS approval stale on every single card at once — a
 // wall of "changed since sign-off" that means nothing and trains people to ignore the signal that
 // does. Adding them later is a digest rebase (see costingProjection's placeholder note) and needs
