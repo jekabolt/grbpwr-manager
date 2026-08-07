@@ -13,10 +13,15 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// Saved раскладки (markers, tech_card_marker, migration 0257): the measured fabric layout of one
-// size's pattern pieces, self-contained geometry included. A marker is a MEASUREMENT — costing
-// reads consumption per garment off it (used_length_cm / sets) — not a structural reference, which
-// is why its BOM link degrades to NULL instead of blocking BOM edits, and why nothing else FKs it.
+// Saved раскладки (markers, tech_card_marker, migration 0257): the measured fabric layout of a
+// СОСТАВ of pattern pieces, self-contained geometry included. A marker is a MEASUREMENT — costing
+// reads consumption per garment off it (used_length_cm / total_units) — not a structural reference,
+// which is why its BOM link degrades to NULL instead of blocking BOM edits, and why nothing else
+// FKs it.
+//
+// Ф2 (0273) replaced «one size × N комплектов» with a map size → garments: the row's size_id/sets
+// went nullable and legacy, the состав lives in tech_card_marker_size, and total_units is the
+// garment count costing divides by. See internal/entity/marker_composition.go for the rule.
 //
 // Writes are last-write-wins on purpose. Neither fitting_change_request nor
 // tech_card_output_variant carries a lock_version; concurrency collapses inside the SERIALIZABLE
@@ -30,20 +35,30 @@ const markerSummaryColumns = `
 	m.id, m.tech_card_id, m.size_id, m.name, m.source, m.bom_item_id, m.colorway_id,
 	b.line_key AS bom_line_key, b.name AS bom_item_name, b.unit AS bom_item_unit,
 	m.fabric_width_cm, m.gap_cm, m.edge_margin_cm, m.selvedge_cm, m.allow_cross_grain, m.sets,
-	m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count,
+	m.total_units, m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count,
 	m.created_by, m.updated_by, m.created_at, m.updated_at`
 
-// ListMarkerSummaries returns a card's saved раскладки without their layout blobs, newest first
-// within a size. Runs on the caller's connection so the single-card read sees one snapshot.
+// ListMarkerSummaries returns a card's saved раскладки without their layout blobs, newest first,
+// each with its СОСТАВ attached. Runs on the caller's connection so the single-card read sees one
+// snapshot.
+//
+// ORDER BY dropped m.size_id at the head (Ф2) — deliberately, not by accident. Grouping the list by
+// size stopped meaning anything the moment a раскладка could cut several sizes at once, and left
+// alone it would have kept sorting: with size_id NULL on every marker with a состав, MySQL puts
+// those first, so the list would have re-ordered itself in production under a rule nobody chose.
+// Newest first is the rule we choose.
 func listMarkerSummaries(ctx context.Context, db dependency.DB, techCardID int) ([]entity.TechCardMarkerSummary, error) {
 	rows, err := storeutil.QueryListNamed[entity.TechCardMarkerSummary](ctx, db, `
 		SELECT `+markerSummaryColumns+`
 		FROM tech_card_marker m
 		LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
 		WHERE m.tech_card_id = :id
-		ORDER BY m.size_id, m.updated_at DESC, m.id DESC`, map[string]any{"id": techCardID})
+		ORDER BY m.updated_at DESC, m.id DESC`, map[string]any{"id": techCardID})
 	if err != nil {
 		return nil, fmt.Errorf("can't list tech card markers: %w", err)
+	}
+	if err := attachMarkerComposition(ctx, db, rows); err != nil {
+		return nil, err
 	}
 	return rows, nil
 }
@@ -61,14 +76,66 @@ func (s *Store) GetMarker(ctx context.Context, id int) (*entity.TechCardMarker, 
 		}
 		return nil, fmt.Errorf("load marker %d: %w", id, err)
 	}
+	one := []entity.TechCardMarkerSummary{row.TechCardMarkerSummary}
+	if err := attachMarkerComposition(ctx, s.DB, one); err != nil {
+		return nil, err
+	}
+	row.TechCardMarkerSummary = one[0]
 	return &row, nil
+}
+
+// markerCompositionQuery reads the СОСТАВ of a set of markers in ONE round trip. Held as a var so a
+// test can bind it without a database: sqlx reads EVERY ':' as a named parameter — including one
+// inside a `--` comment — and a bind error would take the whole card read down at request time.
+//
+// ORDER BY marker_id, size_id makes the emitted состав a stable function of the data rather than of
+// InnoDB's mood: the list row shows it verbatim, and a summary that reshuffles between two reads of
+// an unchanged marker reads as the data having changed.
+var markerCompositionQuery = `
+	SELECT marker_id, size_id, quantity
+	FROM tech_card_marker_size
+	WHERE marker_id IN (:ids)
+	ORDER BY marker_id, size_id`
+
+// attachMarkerComposition fills in Composition on a batch of summaries. ONE query for the whole
+// card, not one per marker — the card read already carries a dozen child loads and an N+1 here would
+// scale with a number the operator controls.
+//
+// A marker with no child rows is left EMPTY on purpose and is not an error: it is the deploy-overlap
+// row (0273), and entity.CompositionOrLegacy turns it back into a состав из одного размера from the
+// legacy columns. Inventing something here would put that fallback in two places.
+func attachMarkerComposition(ctx context.Context, db dependency.DB, rows []entity.TechCardMarkerSummary) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(rows))
+	for i := range rows {
+		ids = append(ids, rows[i].Id)
+	}
+	children, err := storeutil.QueryListNamed[struct {
+		MarkerId int `db:"marker_id"`
+		SizeId   int `db:"size_id"`
+		Quantity int `db:"quantity"`
+	}](ctx, db, markerCompositionQuery, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("load marker composition: %w", err)
+	}
+	byMarker := make(map[int][]entity.MarkerCompositionEntry, len(rows))
+	for _, c := range children {
+		byMarker[c.MarkerId] = append(byMarker[c.MarkerId],
+			entity.MarkerCompositionEntry{SizeId: c.SizeId, Quantity: c.Quantity})
+	}
+	for i := range rows {
+		rows[i].Composition = byMarker[rows[i].Id]
+	}
+	return nil
 }
 
 // SaveMarker creates (id == 0) or fully replaces (id > 0) one saved раскладка and returns its id.
 // The layout blob has no partial update — Ф5's manual adjustment re-saves the whole marker with
 // source='manual'. Validation of the payload's FORM lives in dto; everything checked here is a
-// fact only the database can witness: the card's approval state, the size's membership in the
-// card's range, the BOM line's identity, the (card, size, name) uniqueness.
+// fact only the database can witness: the card's approval state, the membership of every size of the
+// СОСТАВ in the card's range, the BOM line's identity, the name's uniqueness on the card.
 func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.TechCardMarkerInsert, username string) (int, error) {
 	if id < 0 {
 		return 0, entity.NewFieldViolation("id", "must_not_be_negative", "", "leave it 0 to save a new marker")
@@ -136,10 +203,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			stored = row
 		}
-		// The size must be in the card's range AT SAVE TIME. Like pattern rows, a marker may
-		// outlive its size leaving the range later — it stays a valid measurement — but minting a
-		// new one against a foreign size is always a client bug.
-		if err := requireCardSize(ctx, db, techCardID, ins.SizeId); err != nil {
+		// Every size of the СОСТАВ must be in the card's range AT SAVE TIME. Like pattern rows, a
+		// marker may outlive its sizes leaving the range later — it stays a valid measurement — but
+		// minting a new one against a foreign size is always a client bug. Asked of the NORMALISED
+		// состав, so the legacy path checks exactly the one size it always did.
+		if err := requireCardSizes(ctx, db, techCardID, ins.Composition); err != nil {
 			return err
 		}
 		bomItemID := sql.NullInt64{}
@@ -247,14 +315,18 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"selvedge_cm":       ins.SelvedgeCm,
 			"allow_cross_grain": ins.AllowCrossGrain,
 			"sets":              ins.Sets,
-			"used_length_cm":    ins.UsedLengthCm,
-			"efficiency_pct":    ins.EfficiencyPct,
-			"placed_count":      ins.PlacedCount,
-			"total_count":       ins.TotalCount,
-			"layout":            ins.Layout,
-			"schema_version":    generation,
-			"colorway_id":       colorwayID,
-			"username":          username,
+			// Derived HERE, from the very slice the child rows are written from a few lines below, so
+			// the divisor of money and its own детали are written from one value inside one
+			// transaction and cannot come apart.
+			"total_units":    entity.TotalUnitsOf(ins.Composition),
+			"used_length_cm": ins.UsedLengthCm,
+			"efficiency_pct": ins.EfficiencyPct,
+			"placed_count":   ins.PlacedCount,
+			"total_count":    ins.TotalCount,
+			"layout":         ins.Layout,
+			"schema_version": generation,
+			"colorway_id":    colorwayID,
+			"username":       username,
 		}
 		if id > 0 {
 			// The addressed row must already be a marker of THIS card — a foreign id is reported as
@@ -280,11 +352,15 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				    fabric_width_cm = :fabric_width_cm, gap_cm = :gap_cm,
 				    edge_margin_cm = :edge_margin_cm, selvedge_cm = :selvedge_cm,
 				    allow_cross_grain = :allow_cross_grain,
-				    sets = :sets, used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
+				    sets = :sets, total_units = :total_units,
+				    used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
 				    placed_count = :placed_count, total_count = :total_count, layout = :layout,
 				    layout_schema_version = :schema_version, updated_by = :username
 				WHERE id = :id AND tech_card_id = :tech_card_id`, params); err != nil {
 				return fmt.Errorf("update marker %d: %w", id, err)
+			}
+			if err := replaceMarkerComposition(ctx, db, id, ins.Composition); err != nil {
+				return err
 			}
 			savedID = id
 			return nil
@@ -292,13 +368,16 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		newID, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_marker
 				(tech_card_id, size_id, bom_item_id, colorway_id, name, source, fabric_width_cm, gap_cm,
-				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, used_length_cm, efficiency_pct,
-				 placed_count, total_count, layout, layout_schema_version, created_by, updated_by)
+				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, total_units, used_length_cm,
+				 efficiency_pct, placed_count, total_count, layout, layout_schema_version, created_by, updated_by)
 			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :name, :source, :fabric_width_cm, :gap_cm,
-				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :used_length_cm, :efficiency_pct,
-				 :placed_count, :total_count, :layout, :schema_version, :username, :username)`, params)
+				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :total_units, :used_length_cm,
+				 :efficiency_pct, :placed_count, :total_count, :layout, :schema_version, :username, :username)`, params)
 		if err != nil {
 			return fmt.Errorf("create marker on tech card %d: %w", techCardID, err)
+		}
+		if err := replaceMarkerComposition(ctx, db, newID, ins.Composition); err != nil {
+			return err
 		}
 		savedID = newID
 		return nil
@@ -403,18 +482,84 @@ func fabricDirectionLines(ctx context.Context, db dependency.DB, techCardID int)
 	return out, nil
 }
 
-// requireCardSize verifies the size belongs to the card's current range with a readable refusal
-// (the FK alone would let ANY dictionary size in — membership is a card fact, not a dictionary one).
-func requireCardSize(ctx context.Context, db dependency.DB, techCardID, sizeID int) error {
-	n, err := storeutil.QueryCountNamed(ctx, db,
-		`SELECT COUNT(*) FROM tech_card_size WHERE tech_card_id = :card AND size_id = :size`,
-		map[string]any{"card": techCardID, "size": sizeID})
-	if err != nil {
-		return fmt.Errorf("check size %d on tech card %d: %w", sizeID, techCardID, err)
+// requireCardSizes verifies every size of the СОСТАВ belongs to the card's current range, with a
+// readable refusal (the FK alone would let ANY dictionary size in — membership is a card fact, not a
+// dictionary one).
+//
+// ONE query and ONE refusal listing ALL the offending sizes, not the first one: with a состав the
+// operator's fix is a table of rows, and reporting them one per round trip would make a four-row
+// mistake four saves. The refusal is field-tagged `composition` even on the legacy path, because
+// that is the only field a client of the current contract holds — a stale bundle sending size_id
+// still gets prose naming the size.
+func requireCardSizes(ctx context.Context, db dependency.DB, techCardID int, composition []entity.MarkerCompositionEntry) error {
+	if len(composition) == 0 {
+		// Unreachable through the API layer (dto refuses an empty состав before the transaction
+		// opens), and it must not degrade into "nothing to check": an empty состав means total_units
+		// = 0, i.e. a divisor of zero for every costing read downstream.
+		return entity.NewFieldViolation("composition", entity.ReasonCompositionMissing, "",
+			"the раскладка must say how many garments of which sizes it cuts")
 	}
-	if n == 0 {
-		return entity.NewFieldViolation("size_id", "not_on_card", fmt.Sprintf("size %d", sizeID),
-			"the marker's size must be one of the card's sizes")
+	ids := make([]int, 0, len(composition))
+	for _, c := range composition {
+		ids = append(ids, c.SizeId)
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		SizeId int `db:"size_id"`
+	}](ctx, db, cardSizeMembershipQuery, map[string]any{"card": techCardID, "sizes": ids})
+	if err != nil {
+		return fmt.Errorf("check composition sizes on tech card %d: %w", techCardID, err)
+	}
+	onCard := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		onCard[r.SizeId] = true
+	}
+	var missing []string
+	for _, id := range ids {
+		if !onCard[id] {
+			missing = append(missing, fmt.Sprintf("%d", id))
+		}
+	}
+	if len(missing) > 0 {
+		return entity.NewFieldViolation("composition", entity.ReasonCompositionNotOnCard,
+			strings.Join(missing, ", "),
+			fmt.Sprintf("the раскладка cuts size(s) %s, which are not in this card's размерный ряд — "+
+				"add them to the card or drop them from the состав", strings.Join(missing, ", ")))
+	}
+	return nil
+}
+
+// cardSizeMembershipQuery asks, in one round trip, which of a состав's sizes are actually in the
+// card's ряд — the difference is what the refusal names.
+var cardSizeMembershipQuery = `
+	SELECT size_id FROM tech_card_size WHERE tech_card_id = :card AND size_id IN (:sizes)`
+
+// markerCompositionDeleteQuery / markerCompositionInsertQuery are held as vars for the same reason
+// the direction query is: a stray ':' anywhere in a named query — a comment included — fails at bind
+// time, and the only thing that would catch it otherwise is a MySQL-backed test.
+var (
+	markerCompositionDeleteQuery = `DELETE FROM tech_card_marker_size WHERE marker_id = :marker_id`
+	markerCompositionInsertQuery = `
+		INSERT INTO tech_card_marker_size (marker_id, size_id, quantity)
+		VALUES (:marker_id, :size_id, :quantity)`
+)
+
+// replaceMarkerComposition rewrites a marker's СОСТАВ wholesale — the full-replace idiom this
+// repository uses for every owned child set (BOM, sizes, variants). It runs INSIDE the marker's
+// SERIALIZABLE transaction, immediately after the row, so total_units and the child rows are written
+// atomically from one ins.Composition and cannot come apart: the scalar is the divisor of money, and
+// a divisor that disagrees with its own children would be wrong without being visibly wrong.
+func replaceMarkerComposition(ctx context.Context, db dependency.DB, markerID int,
+	composition []entity.MarkerCompositionEntry) error {
+	if _, err := storeutil.ExecNamedRows(ctx, db, markerCompositionDeleteQuery,
+		map[string]any{"marker_id": markerID}); err != nil {
+		return fmt.Errorf("clear composition of marker %d: %w", markerID, err)
+	}
+	for _, c := range composition {
+		if _, err := storeutil.ExecNamedRows(ctx, db, markerCompositionInsertQuery, map[string]any{
+			"marker_id": markerID, "size_id": c.SizeId, "quantity": c.Quantity,
+		}); err != nil {
+			return fmt.Errorf("write composition size %d of marker %d: %w", c.SizeId, markerID, err)
+		}
 	}
 	return nil
 }

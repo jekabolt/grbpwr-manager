@@ -105,14 +105,16 @@ func TestMarkerColorwayBinding(t *testing.T) {
 
 	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
 	ins := func(name string, cw int, width string) entity.TechCardMarkerInsert {
-		return entity.TechCardMarkerInsert{
-			SizeId: szA, Name: name, Source: entity.MarkerSourceAuto,
+		m := entity.TechCardMarkerInsert{
+			Name: name, Source: entity.MarkerSourceAuto,
 			BomLineKey: fabric.LineKey, ColorwayId: cw,
 			FabricWidthCm: d(width), GapCm: d("0.5"), EdgeMarginCm: d("1"),
-			Sets: 1, UsedLengthCm: d("120"),
-			PlacedCount: 3, TotalCount: 3,
+			UsedLengthCm: d("120"),
+			PlacedCount:  3, TotalCount: 3,
 			Layout: markerLayoutV1, LayoutFacts: markerLayoutFacts(t, markerLayoutV1),
 		}
+		markerSizing(&m, szA, 1)
+		return m
 	}
 	markerByName := func(cardID int, name string) entity.TechCardMarkerSummary {
 		c, err := T.GetTechCardById(ctx, cardID)

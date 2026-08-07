@@ -971,13 +971,51 @@ func TechCardMarkerSummariesToPb(ms []entity.TechCardMarkerSummary) []*pb_common
 	return out
 }
 
+// markerCompositionToPb emits a состав in the order the store read it (size_id ascending).
+func markerCompositionToPb(cs []entity.MarkerCompositionEntry) []*pb_common.TechCardMarkerCompositionEntry {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardMarkerCompositionEntry, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, &pb_common.TechCardMarkerCompositionEntry{
+			SizeId: int32(c.SizeId), Quantity: int32(c.Quantity),
+		})
+	}
+	return out
+}
+
 // TechCardMarkerSummaryToPb emits one marker summary. consumption_per_unit_cm is derived here
-// (used_length_cm / sets) — never stored, so it cannot drift from its inputs.
+// (used_length_cm / total_units) — never stored, so it cannot drift from its inputs.
+//
+// size_id and sets ride as 0 when the row carries a состав. That is the contract the proto now
+// states, and it is the honest answer: a mixed раскладка has no single size and no комплекты, and a
+// plausible substitute (say, the largest size of the состав) would be read by every existing
+// consumer as «the size this marker нормирует» and be wrong in a way that looks right.
 func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCardMarkerSummary {
+	composition := m.CompositionOrLegacy()
+	// THE SCALAR IS WITHHELD, NOT LABELLED, on a mixed состав (orchestrator decision Р2). The server
+	// is the only place that can refuse: there is no server-side marker-apply — the client copies this
+	// figure into tech_card_colorway_usage.consumption with consumption_source='marker' and the row
+	// stops being distinguishable from a measured norm — and the release snapshot then freezes
+	// whatever was emitted, forever. An absent number cannot be copied; a labelled one is.
+	//
+	// Withholding is deliberately NOT gated on the client understanding Ф2: a stale bundle that falls
+	// back to used_length/max(1,sets) will produce a visibly absurd figure (the whole spread as one
+	// garment's norm) instead of a plausible mean, and visibly absurd is the failure mode this
+	// codebase prefers — see the release-snapshot note above.
+	refusal := entity.MarkerScalarNormRefusal(m.Name, composition)
+	var consumption *pb_decimal.Decimal
+	if refusal == "" {
+		consumption = pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2))
+	}
 	return &pb_common.TechCardMarkerSummary{
 		Id:                   int32(m.Id),
 		TechCardId:           int32(m.TechCardId),
-		SizeId:               int32(m.SizeId),
+		SizeId:               int32(m.SizeId.Int64),
+		Composition:          markerCompositionToPb(composition),
+		TotalUnits:           int32(m.TotalUnitsOrLegacy()),
+		ScalarApplyRefusal:   refusal,
 		Name:                 m.Name,
 		Source:               m.Source,
 		BomLineKey:           pbStringFromNull(m.BomLineKey),
@@ -989,12 +1027,12 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		EdgeMarginCm:         pbDecimalFromDecimal(m.EdgeMarginCm),
 		SelvedgeCm:           pbDecimalFromDecimal(m.SelvedgeCm),
 		AllowCrossGrain:      m.AllowCrossGrain,
-		Sets:                 int32(m.Sets),
+		Sets:                 int32(m.Sets.Int64),
 		UsedLengthCm:         pbDecimalFromDecimal(m.UsedLengthCm),
 		EfficiencyPct:        pbDecimalFromNull(m.EfficiencyPct),
 		PlacedCount:          int32(m.PlacedCount),
 		TotalCount:           int32(m.TotalCount),
-		ConsumptionPerUnitCm: pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2)),
+		ConsumptionPerUnitCm: consumption,
 		CreatedBy:            m.CreatedBy,
 		UpdatedBy:            m.UpdatedBy,
 		CreatedAt:            timestamppb.New(m.CreatedAt),
@@ -1018,9 +1056,6 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	var out entity.TechCardMarkerInsert
 	if pb == nil {
 		return out, fmt.Errorf("marker is required")
-	}
-	if pb.SizeId <= 0 {
-		return out, fmt.Errorf("size_id is required")
 	}
 	name := strings.TrimSpace(pb.Name)
 	if name == "" {
@@ -1081,9 +1116,6 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 				selvedge.Decimal.Mul(decimal.NewFromInt(2)), width)
 		}
 	}
-	if pb.Sets < 1 {
-		return out, fmt.Errorf("sets must be at least 1")
-	}
 	// used_length_cm is ENGINE-computed float64 — round to the column scale instead of
 	// rejecting float dust (512.4370000000001 must save, not 400). Width/gap/margin stay
 	// strict: those are operator inputs.
@@ -1123,8 +1155,12 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if pb.ColorwayId < 0 {
 		return out, fmt.Errorf("colorway_id must not be negative")
 	}
+	sizeID, sets, composition, err := markerCompositionOfInsert(pb)
+	if err != nil {
+		return out, err
+	}
 	return entity.TechCardMarkerInsert{
-		SizeId:          int(pb.SizeId),
+		SizeId:          sizeID,
 		Name:            name,
 		Source:          source,
 		BomLineKey:      strings.TrimSpace(pb.BomLineKey),
@@ -1134,12 +1170,68 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		EdgeMarginCm:    margin.Decimal,
 		SelvedgeCm:      selvedge.Decimal,
 		AllowCrossGrain: pb.AllowCrossGrain,
-		Sets:            int(pb.Sets),
+		Sets:            sets,
+		Composition:     composition,
 		UsedLengthCm:    usedLength,
 		EfficiencyPct:   efficiency,
 		PlacedCount:     int(pb.PlacedCount),
 		TotalCount:      int(pb.TotalCount),
 	}, nil
+}
+
+// markerCompositionOfInsert resolves the СОСТАВ of a save, plus the legacy (size_id, sets) pair the
+// row will carry. Exactly one rule, three outcomes:
+//
+//	layout.composition non-empty  ->  a client that speaks Ф2: size_id/sets go NULL, состав as sent
+//	empty, but size_id>0 & sets>=1 ->  a STALE ADMIN BUNDLE: stored byte-for-byte in the legacy shape
+//	                                  and projected into a one-entry состав so readers see one format
+//	neither                        ->  REFUSED
+//
+// FAIL-CLOSED is the point of the third branch. Assuming «one комплект» would be the cheap option
+// and it is the dangerous one: total_units would be 1, consumption_per_unit_cm would report the whole
+// spread as one garment's norm, and a client copies that straight into a recipe as a persistent fact
+// with consumption_source='marker'. There is no reader downstream that could later tell it was a
+// guess.
+//
+// The состав is taken ONLY from the layout blob and never from a field of its own on the insert
+// (there is deliberately none). Two copies on the wire would raise «which one wins if they differ»,
+// a question with no free answer, and would split a fact that belongs together: the blob's pieces
+// carry sizes, and the состав is the header of that same geometry.
+func markerCompositionOfInsert(pb *pb_common.TechCardMarkerInsert) (sizeID, sets sql.NullInt64,
+	composition []entity.MarkerCompositionEntry, err error) {
+	composition, err = markerCompositionFromPb(pb.GetLayout().GetComposition())
+	if err != nil {
+		return sql.NullInt64{}, sql.NullInt64{}, nil, err
+	}
+	if len(composition) > 0 {
+		return sql.NullInt64{}, sql.NullInt64{}, composition, nil
+	}
+	if pb.GetSizeId() > 0 && pb.GetSets() >= 1 {
+		return sql.NullInt64{Int64: int64(pb.GetSizeId()), Valid: true},
+			sql.NullInt64{Int64: int64(pb.GetSets()), Valid: true},
+			[]entity.MarkerCompositionEntry{{SizeId: int(pb.GetSizeId()), Quantity: int(pb.GetSets())}},
+			nil
+	}
+	return sql.NullInt64{}, sql.NullInt64{}, nil, fmt.Errorf(
+		"the раскладка needs a состав: send layout.composition (or size_id + sets if the bundle predates it)")
+}
+
+// markerCompositionFromPb validates and normalises a состав off the wire. Called from BOTH the
+// insert conversion and the layout distillation — it is a pure function of the same input, so the
+// two cannot disagree, and neither has to trust the other's ordering.
+func markerCompositionFromPb(entries []*pb_common.TechCardMarkerCompositionEntry) ([]entity.MarkerCompositionEntry, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make([]entity.MarkerCompositionEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, entity.MarkerCompositionEntry{SizeId: int(e.GetSizeId()), Quantity: int(e.GetQuantity())})
+	}
+	if err := entity.ValidateMarkerComposition(out); err != nil {
+		return nil, fmt.Errorf("layout.composition: %w", err)
+	}
+	entity.SortMarkerComposition(out)
+	return out, nil
 }
 
 // markerPlacementRotations is the closed set of rotations a placement may carry, and it is enforced
@@ -1167,6 +1259,41 @@ func normaliseRotation(deg int32) int32 { return ((deg % 360) + 360) % 360 }
 // the version is what decides whether the rotation policy applies at all (Ф1.6).
 func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLayoutFacts, error) {
 	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
+	// СОСТАВ (Ф2). Validated here so a malformed one is refused before anything is stored, and
+	// CANONICALISED in place for the same reason rot_deg is: these bytes are the blob moments later,
+	// and the состав the server judged must be the состав that gets written down. Sorting also makes
+	// the stored blob a function of the состав as a SET, so two clients that build the same раскладка
+	// in a different form order produce the same bytes — which the Ф0.5 regression probe asserts.
+	composition, err := markerCompositionFromPb(l.GetComposition())
+	if err != nil {
+		return entity.MarkerLayoutFacts{}, err
+	}
+	out.HasComposition = len(composition) > 0
+	slices.SortFunc(l.Composition, func(a, b *pb_common.TechCardMarkerCompositionEntry) int {
+		return int(a.GetSizeId()) - int(b.GetSizeId())
+	})
+	inComposition := make(map[int32]bool, len(composition))
+	for _, c := range composition {
+		inComposition[int32(c.SizeId)] = true
+	}
+	for i, p := range l.GetPieces() {
+		sizeID := p.GetSizeId()
+		if sizeID == 0 {
+			continue
+		}
+		if sizeID < 0 {
+			return entity.MarkerLayoutFacts{}, fmt.Errorf("layout.pieces[%d].size_id is %d", i, sizeID)
+		}
+		out.HasPieceSize = true
+		if !inComposition[sizeID] {
+			// The instance formula multiplies a sized piece by composition[size].quantity. A piece
+			// pointing at a size the состав does not cut would resolve to a MISSING key, i.e. to zero
+			// instances — geometry that is stored, counted against the caps, drawn in the editor and
+			// cut never. Refusing is the only reading that cannot be silent.
+			return entity.MarkerLayoutFacts{}, fmt.Errorf(
+				"layout.pieces[%d].size_id is %d, which the состав does not cut", i, sizeID)
+		}
+	}
 	for i, p := range l.GetPlacements() {
 		rot := normaliseRotation(p.GetRotDeg())
 		if !markerPlacementRotations[rot] {

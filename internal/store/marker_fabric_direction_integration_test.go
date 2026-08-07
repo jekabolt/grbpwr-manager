@@ -125,17 +125,19 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		v3crossOnly   = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":90}]}`
 	)
 	ins := func(t *testing.T, name, lineKey, layout string) entity.TechCardMarkerInsert {
-		return entity.TechCardMarkerInsert{
-			SizeId: szA, Name: name, Source: entity.MarkerSourceAuto,
+		m := entity.TechCardMarkerInsert{
+			Name: name, Source: entity.MarkerSourceAuto,
 			BomLineKey:    lineKey,
 			FabricWidthCm: d("140"), GapCm: d("0.5"), EdgeMarginCm: d("1"),
 			// The legacy trap in its original form: the editor saved a cross-grain rotation even
 			// though cross-grain was NOT permitted. That combination is on file and must survive.
 			AllowCrossGrain: false,
-			Sets:            1, UsedLengthCm: d("120"),
-			PlacedCount: 1, TotalCount: 1,
+			UsedLengthCm:    d("120"),
+			PlacedCount:     1, TotalCount: 1,
 			Layout: layout, LayoutFacts: markerLayoutFacts(t, layout),
 		}
+		markerSizing(&m, szA, 1)
+		return m
 	}
 
 	t.Run("unknown direction blocks the save and pins the card-order row", func(t *testing.T) {

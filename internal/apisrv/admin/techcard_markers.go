@@ -36,9 +36,13 @@ const (
 // maxMarkerLayoutSchema is the newest blob format this server understands. v1 = the original
 // geometry; v2 adds piece_line_key/block_name on a piece; v3 adds `flipped` on a placement — a
 // MIRRORED instance, the зеркальная пара no rot_deg can express (Ф1) — and with it the
-// directional-cloth policy the save path applies. Every older version keeps reading and keeps
-// saving unchanged; only the newest one is judged by the new rule (see entity/fabric_direction.go).
-const maxMarkerLayoutSchema = 3
+// directional-cloth policy the save path applies; v4 adds `composition` on the layout and `size_id`
+// on a piece (Ф2). Every older version keeps reading and keeps saving unchanged.
+//
+// ONLY THIS CONSTANT MOVES with a new schema. entity.MarkerLayoutSchemaWithFlip stays at 3: it gates
+// the Ф1.6 grandfathering, and bumping it in step would hand the directional-cloth exemption back to
+// every v3 marker — repealing Ф1.6 the day after it shipped.
+const maxMarkerLayoutSchema = entity.MarkerLayoutSchemaWithComposition
 
 // SaveTechCardMarker creates (id=0) or fully replaces (id>0) one saved раскладка. Last-write-wins
 // by design, and deliberately NOT bumping tech_card.lock_version — saving a marker from the
@@ -103,6 +107,15 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 		return nil, status.Errorf(codes.InvalidArgument,
 			"marker layout declares schema_version %d but carries a mirrored placement; `flipped` exists only from version %d",
 			facts.SchemaVersion, entity.MarkerLayoutSchemaWithFlip)
+	}
+	// Same shape of refusal, same reason: a blob carrying a состав (or a size on a piece) under a
+	// version in which neither field existed is a client writing a format it does not speak. Left
+	// alone it would be stored as a v3 blob whose состав no reader is told to look for — a marker
+	// that is silently wrong rather than loudly refused.
+	if entity.CompositionPredatesSchema(facts) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"marker layout declares schema_version %d but carries a состав or a size on a piece; both exist only from version %d",
+			facts.SchemaVersion, entity.MarkerLayoutSchemaWithComposition)
 	}
 	blob, err := protojson.Marshal(layout)
 	if err != nil {
@@ -175,9 +188,11 @@ func (s *Server) techCardMarkerError(ctx context.Context, op string, techCardID 
 	case errors.Is(err, entity.ErrTechCardReleased):
 		return status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 	case s.repo.IsErrUniqueViolation(err):
-		// uniq_tcm_card_size_name — the operator picked a name this size already carries.
+		// uniq_tcm_card_sizekey_name (0273). "for this size" became a half-truth with Ф2: markers
+		// with a состав all share size_key 0, so on those the name is unique per CARD, and only the
+		// legacy rows still scope it by size. The message states the part that is true for both.
 		return status.Error(codes.FailedPrecondition,
-			"a раскладка with this name already exists for this size; pick another name")
+			"a раскладка with this name already exists on this tech card; pick another name")
 	case s.repo.IsErrForeignKeyViolation(err):
 		return status.Error(codes.InvalidArgument, "marker references a missing tech card, size or BOM line")
 	}

@@ -23,6 +23,23 @@ import (
 // own file and their own blobs.
 const markerLayoutV1 = `{"schemaVersion":1,"pieces":[],"placements":[]}`
 
+// markerSizing mirrors what dto does with a LEGACY (size_id, sets) payload: it fills the легаси pair
+// AND the состав derived from it. A fixture built without the transport layer must still describe one
+// раскладка — the store refuses an insert with no состав, on purpose (an empty one means total_units
+// 0, i.e. a zero divisor for every costing read downstream).
+func markerSizing(m *entity.TechCardMarkerInsert, sizeID, sets int) {
+	m.SizeId = sql.NullInt64{Int64: int64(sizeID), Valid: true}
+	m.Sets = sql.NullInt64{Int64: int64(sets), Valid: true}
+	m.Composition = []entity.MarkerCompositionEntry{{SizeId: sizeID, Quantity: sets}}
+}
+
+// markerMixedSizing is the Ф2 shape: a состав and NO легаси pair, exactly as dto produces for a v4
+// blob carrying layout.composition.
+func markerMixedSizing(m *entity.TechCardMarkerInsert, entries ...entity.MarkerCompositionEntry) {
+	m.SizeId, m.Sets = sql.NullInt64{}, sql.NullInt64{}
+	m.Composition = entries
+}
+
 func markerLayoutFacts(t *testing.T, blob string) entity.MarkerLayoutFacts {
 	t.Helper()
 	var l pb_common.TechCardMarkerLayout
@@ -76,15 +93,17 @@ func TestTechCardMarkerRoundTrip(t *testing.T) {
 
 	d := func(v string) decimal.Decimal { return decimal.RequireFromString(v) }
 	ins := func() entity.TechCardMarkerInsert {
-		return entity.TechCardMarkerInsert{
-			SizeId: szA, Name: "M · основная", Source: entity.MarkerSourceAuto,
+		m := entity.TechCardMarkerInsert{
+			Name: "M · основная", Source: entity.MarkerSourceAuto,
 			BomLineKey:    fabric.LineKey,
 			FabricWidthCm: d("140"), GapCm: d("0.5"), EdgeMarginCm: d("1"),
-			Sets: 4, UsedLengthCm: d("512.4"),
+			UsedLengthCm:  d("512.4"),
 			EfficiencyPct: decimal.NullDecimal{Decimal: d("73.5"), Valid: true},
 			PlacedCount:   12, TotalCount: 12,
 			Layout: markerLayoutV1, LayoutFacts: markerLayoutFacts(t, markerLayoutV1),
 		}
+		markerSizing(&m, szA, 4)
+		return m
 	}
 
 	// Create, then read the summary off the card and the blob off GetMarker.
@@ -132,7 +151,7 @@ func TestTechCardMarkerRoundTrip(t *testing.T) {
 	t.Run("size off the card", func(t *testing.T) {
 		bad := ins()
 		bad.Name = "чужой размер"
-		bad.SizeId = szB
+		markerSizing(&bad, szB, 4)
 		var ve *entity.ValidationError
 		_, err := T.SaveMarker(ctx, tcID, 0, bad, "tester")
 		require.ErrorAs(t, err, &ve)
@@ -177,6 +196,7 @@ func TestTechCardMarkerRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		again := entity.TechCardMarkerInsert{
 			SizeId:          cur.SizeId,
+			Composition:     cur.CompositionOrLegacy(),
 			Name:            cur.Name,
 			Source:          entity.MarkerSource(cur.Source),
 			BomLineKey:      cur.BomLineKey.String,

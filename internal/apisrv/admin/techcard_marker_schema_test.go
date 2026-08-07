@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -73,12 +74,62 @@ func TestSaveTechCardMarkerAcceptsSchema3AndCarriesTheFacts(t *testing.T) {
 // A version this server does not know is refused before anything is stored — a blob whose fields
 // readers would silently drop is worse than a rejected save.
 func TestSaveTechCardMarkerRefusesUnknownSchema(t *testing.T) {
-	// No TechCards() expectation: reaching the store at all would fail the mock.
+	// No TechCards() expectation: reaching the store at all would fail the mock. The version is one
+	// past the newest this server understands — Ф2 made 4 legal, so the probe moves to 5.
+	unknown := int32(entity.MarkerLayoutSchemaWithComposition + 1)
 	_, err := (&Server{repo: mocks.NewMockRepository(t)}).SaveTechCardMarker(
-		context.Background(), markerRequest(markerLayout(4,
+		context.Background(), markerRequest(markerLayout(unknown,
 			&pb_common.TechCardMarkerPlacement{PieceId: 1})))
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.ErrorContains(t, err, "schema_version 4")
+	require.ErrorContains(t, err, "schema_version 5")
+}
+
+// Ф2 bumps the blob format to 4 (composition on the layout, size_id on a piece). The СОСТАВ must
+// reach the store NORMALISED and ordered, and the row's ЛЕГАСИ pair must go NULL — nothing else in
+// the system opens the blob, so anything not distilled here is invisible downstream.
+func TestSaveTechCardMarkerAcceptsSchema4AndCarriesTheComposition(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	cards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(cards)
+
+	var got entity.TechCardMarkerInsert
+	cards.EXPECT().SaveMarker(mock.Anything, 7, 0, mock.Anything, mock.Anything).
+		Run(func(_ context.Context, _, _ int, ins entity.TechCardMarkerInsert, _ string) { got = ins }).
+		Return(42, nil)
+
+	req := markerRequest(markerLayout(4, &pb_common.TechCardMarkerPlacement{PieceId: 1}))
+	req.Marker.Layout.Composition = []*pb_common.TechCardMarkerCompositionEntry{
+		{SizeId: 9, Quantity: 1}, {SizeId: 3, Quantity: 2},
+	}
+	req.Marker.Layout.Pieces[0].SizeId = 3
+	_, err := (&Server{repo: repo}).SaveTechCardMarker(context.Background(), req)
+	require.NoError(t, err)
+	require.False(t, got.SizeId.Valid, "the payload's legacy size_id is ignored once a состав is present")
+	require.False(t, got.Sets.Valid)
+	require.Equal(t, []entity.MarkerCompositionEntry{{SizeId: 3, Quantity: 2}, {SizeId: 9, Quantity: 1}},
+		got.Composition)
+	require.Equal(t, 3, entity.TotalUnitsOf(got.Composition))
+	require.True(t, got.LayoutFacts.HasComposition)
+	require.True(t, got.LayoutFacts.HasPieceSize)
+	// The stored bytes must carry the состав in the order the server judged it — the blob and the
+	// facts have to describe the same раскладка, and a client's form order must not change the bytes.
+	// (protojson's whitespace is deliberately unstable, so this compares positions, not a literal.)
+	_, blobComposition, ok := strings.Cut(got.Layout, `"composition"`)
+	require.True(t, ok, "the re-marshalled blob must still carry the состав")
+	require.Less(t, strings.Index(blobComposition, `"sizeId":3`), strings.Index(blobComposition, `"sizeId":9`))
+}
+
+// A состав (or a size on a piece) under a version that predates both is a client writing a format it
+// does not speak — the same impossibility as `flipped` under v1, and refused the same way.
+func TestSaveTechCardMarkerRefusesACompositionUnderALegacySchema(t *testing.T) {
+	for _, v := range []int32{1, 2, 3} {
+		req := markerRequest(markerLayout(v, &pb_common.TechCardMarkerPlacement{PieceId: 1}))
+		req.Marker.BomLineKey = "" // unlinked: no cloth question is involved
+		req.Marker.Layout.Composition = []*pb_common.TechCardMarkerCompositionEntry{{SizeId: 3, Quantity: 1}}
+		_, err := (&Server{repo: mocks.NewMockRepository(t)}).SaveTechCardMarker(context.Background(), req)
+		require.Equal(t, codes.InvalidArgument, status.Code(err), "schema_version %d", v)
+		require.ErrorContains(t, err, "состав")
+	}
 }
 
 // `flipped` did not exist before schema 3, so a blob declaring an older version cannot legitimately

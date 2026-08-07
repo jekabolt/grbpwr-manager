@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (298 rpc) ----
+// ---- admin (303 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -597,6 +597,14 @@ func (c *Client) DeleteTechCardDevExpense(ctx context.Context, in *admin.DeleteT
 	return out, nil
 }
 
+func (c *Client) DeleteTechCardMarker(ctx context.Context, in *admin.DeleteTechCardMarkerRequest) (*admin.DeleteTechCardMarkerResponse, error) {
+	out := new(admin.DeleteTechCardMarkerResponse)
+	if err := c.call(ctx, "DELETE", "/api/admin/tech-card/marker/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) DeleteTechCardOutputVariant(ctx context.Context, in *admin.DeleteTechCardOutputVariantRequest) (*admin.DeleteTechCardOutputVariantResponse, error) {
 	out := new(admin.DeleteTechCardOutputVariantResponse)
 	if err := c.call(ctx, "DELETE", "/api/admin/tech-card/output-variant/{id}", in, out); err != nil {
@@ -1109,6 +1117,14 @@ func (c *Client) GetTechCard(ctx context.Context, in *admin.GetTechCardRequest) 
 	return out, nil
 }
 
+func (c *Client) GetTechCardMarker(ctx context.Context, in *admin.GetTechCardMarkerRequest) (*admin.GetTechCardMarkerResponse, error) {
+	out := new(admin.GetTechCardMarkerResponse)
+	if err := c.call(ctx, "GET", "/api/admin/tech-card/marker/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetTechCardReadiness(ctx context.Context, in *admin.GetTechCardReadinessRequest) (*admin.GetTechCardReadinessResponse, error) {
 	out := new(admin.GetTechCardReadinessResponse)
 	if err := c.call(ctx, "GET", "/api/admin/tech-card/readiness/{tech_card_id}", in, out); err != nil {
@@ -1184,6 +1200,14 @@ func (c *Client) GetVatReturnPL(ctx context.Context, in *admin.GetVatReturnPLReq
 func (c *Client) GetVatUe(ctx context.Context, in *admin.GetVatUeRequest) (*admin.GetVatUeResponse, error) {
 	out := new(admin.GetVatUeResponse)
 	if err := c.call(ctx, "GET", "/api/admin/accounting/reports/vat-ue", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetWorkshopSettings(ctx context.Context, in *admin.GetWorkshopSettingsRequest) (*admin.GetWorkshopSettingsResponse, error) {
+	out := new(admin.GetWorkshopSettingsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/workshop/settings", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1853,6 +1877,14 @@ func (c *Client) RunTierBackfill(ctx context.Context, in *admin.RunTierBackfillR
 	return out, nil
 }
 
+func (c *Client) SaveTechCardMarker(ctx context.Context, in *admin.SaveTechCardMarkerRequest) (*admin.SaveTechCardMarkerResponse, error) {
+	out := new(admin.SaveTechCardMarkerResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/marker/save", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ScheduleCampaign(ctx context.Context, in *admin.ScheduleCampaignRequest) (*admin.ScheduleCampaignResponse, error) {
 	out := new(admin.ScheduleCampaignResponse)
 	if err := c.call(ctx, "POST", "/api/admin/email-campaigns/{id}/schedule", in, out); err != nil {
@@ -2240,6 +2272,14 @@ func (c *Client) UpdateVariant(ctx context.Context, in *admin.UpdateVariantReque
 func (c *Client) UpdateVariantStock(ctx context.Context, in *admin.UpdateVariantStockRequest) (*admin.UpdateVariantStockResponse, error) {
 	out := new(admin.UpdateVariantStockResponse)
 	if err := c.call(ctx, "POST", "/api/admin/stock/update", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) UpdateWorkshopSettings(ctx context.Context, in *admin.UpdateWorkshopSettingsRequest) (*admin.UpdateWorkshopSettingsResponse, error) {
+	out := new(admin.UpdateWorkshopSettingsResponse)
+	if err := c.call(ctx, "PATCH", "/api/admin/workshop/settings", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

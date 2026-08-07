@@ -200,10 +200,16 @@ var ValidMarkerSources = map[MarkerSource]bool{
 // stable wire identity of the BOM fabric line this marker measures; the store resolves it to
 // bom_item_id ("" = not linked).
 type TechCardMarkerInsert struct {
-	SizeId     int          `db:"size_id"`
-	Name       string       `db:"name"`
-	Source     MarkerSource `db:"source"`
-	BomLineKey string       `db:"-"`
+	// SizeId / Sets are the ЛЕГАСИ pair (Ф2). INVALID on every marker written with a состав; carried
+	// only for a payload from a STALE ADMIN BUNDLE, which is stored byte-for-byte in the old shape.
+	// sql.NullInt64 rather than int is a forcing function, not decoration: 0273 made both columns
+	// nullable, and an int here would have turned every reader into a runtime
+	// «converting NULL to int is unsupported» — on a path where ONE such row fails the whole
+	// GetTechCard read, the раскройный лист and the immutable release snapshot with it.
+	SizeId     sql.NullInt64 `db:"size_id"`
+	Name       string        `db:"name"`
+	Source     MarkerSource  `db:"source"`
+	BomLineKey string        `db:"-"`
 	// ColorwayId pins the colourway whose ARTICLE this layout was measured on (0264). 0 = not
 	// colourway-specific. It matters because the width does: a colourway names its own catalog
 	// article per slot, and the same pieces on a 140 cm and a 150 cm roll are two different
@@ -216,8 +222,18 @@ type TechCardMarkerInsert struct {
 	// article at save time — keeps the waste decomposition auditable after material edits.
 	SelvedgeCm      decimal.Decimal `db:"selvedge_cm"`
 	AllowCrossGrain bool            `db:"allow_cross_grain"`
-	Sets            int             `db:"sets"`
+	Sets            sql.NullInt64   `db:"sets"` // ЛЕГАСИ, see SizeId
 	UsedLengthCm    decimal.Decimal `db:"used_length_cm"`
+	// Composition is the NORMALISED состав — after the legacy substitution in dto, so it is never
+	// empty on a save that got this far, and every entry carries quantity >= 1. The store validates
+	// its sizes against the card's ряд and writes it to tech_card_marker_size in the same
+	// transaction as the row.
+	//
+	// It is the ONLY carrier of the garment count on this struct. total_units is written from
+	// TotalUnitsOf(Composition) at the same moment as the child rows, so the stored divisor and its
+	// own children cannot disagree — a second field here would be exactly the «two copies, which one
+	// wins» question the wire deliberately refuses to have.
+	Composition []MarkerCompositionEntry `db:"-"`
 	// EfficiencyPct stays INVALID when the engine did not report one (a manual/imported marker) —
 	// NULL in the column, unset on the wire.
 	EfficiencyPct decimal.NullDecimal `db:"efficiency_pct"`
@@ -236,9 +252,11 @@ type TechCardMarkerInsert struct {
 // BomItemName / BomItemUnit are JOIN projections off the linked BOM line; all three stay INVALID
 // when the marker is unlinked or its slot was deleted (bom_item_id went NULL).
 type TechCardMarkerSummary struct {
-	Id              int                 `db:"id"`
-	TechCardId      int                 `db:"tech_card_id"`
-	SizeId          int                 `db:"size_id"`
+	Id         int `db:"id"`
+	TechCardId int `db:"tech_card_id"`
+	// ЛЕГАСИ (Ф2), INVALID on a marker with a состав — read Composition / TotalUnits instead. See
+	// TechCardMarkerInsert.SizeId for why the type, and not just the column, had to change.
+	SizeId          sql.NullInt64       `db:"size_id"`
 	Name            string              `db:"name"`
 	Source          string              `db:"source"`
 	BomItemId       sql.NullInt64       `db:"bom_item_id"`
@@ -251,24 +269,76 @@ type TechCardMarkerSummary struct {
 	EdgeMarginCm    decimal.Decimal     `db:"edge_margin_cm"`
 	SelvedgeCm      decimal.Decimal     `db:"selvedge_cm"`
 	AllowCrossGrain bool                `db:"allow_cross_grain"`
-	Sets            int                 `db:"sets"`
+	Sets            sql.NullInt64       `db:"sets"` // ЛЕГАСИ, see SizeId
 	UsedLengthCm    decimal.Decimal     `db:"used_length_cm"`
 	EfficiencyPct   decimal.NullDecimal `db:"efficiency_pct"`
 	PlacedCount     int                 `db:"placed_count"`
 	TotalCount      int                 `db:"total_count"`
-	CreatedBy       string              `db:"created_by"`
-	UpdatedBy       string              `db:"updated_by"`
-	CreatedAt       time.Time           `db:"created_at"`
-	UpdatedAt       time.Time           `db:"updated_at"`
+	// TotalUnits is the stored garment count (0273). INVALID only for a row written by the OLD
+	// binary during a deploy overlap — the column is nullable and the old INSERT does not list it.
+	// Readers go through TotalUnitsOrLegacy, never through this field directly.
+	TotalUnits sql.NullInt64 `db:"total_units"`
+	// Composition comes from tech_card_marker_size in a second query (one per card read, not N+1),
+	// so it is not a column of this row — hence `db:"-"`. Readers go through CompositionOrLegacy.
+	Composition []MarkerCompositionEntry `db:"-"`
+	CreatedBy   string                   `db:"created_by"`
+	UpdatedBy   string                   `db:"updated_by"`
+	CreatedAt   time.Time                `db:"created_at"`
+	UpdatedAt   time.Time                `db:"updated_at"`
 }
 
-// ConsumptionPerUnitCm is the number costing reads: fabric length per one garment of this size.
-// Derived, never stored, so it cannot drift from its inputs.
-func (m TechCardMarkerSummary) ConsumptionPerUnitCm() decimal.Decimal {
-	if m.Sets <= 0 {
-		return m.UsedLengthCm
+// TotalUnitsOrLegacy is how many GARMENTS this раскладка cuts. The order of the sources is load
+// bearing and must not be rearranged: the column (Ф2), then the legacy `sets`, then 1.
+//
+// It cannot return 0, and that is the whole point — the old guard here was
+// `if m.Sets <= 0 { return m.UsedLengthCm }`, which did not divide by zero and instead reported the
+// WHOLE spread as the consumption of one garment: a silently N-fold-inflated norm on a path whose
+// output a client writes straight into a recipe. Making the denominator unable to be zero removes
+// the branch that produced it.
+func (m TechCardMarkerSummary) TotalUnitsOrLegacy() int {
+	if m.TotalUnits.Valid && m.TotalUnits.Int64 >= 1 {
+		return int(m.TotalUnits.Int64)
 	}
-	return m.UsedLengthCm.Div(decimal.NewFromInt(int64(m.Sets)))
+	if m.Sets.Valid && m.Sets.Int64 >= 1 {
+		return int(m.Sets.Int64)
+	}
+	return 1
+}
+
+// CompositionOrLegacy is the раскладка's состав. The child rows are authoritative; the fallback onto
+// (size_id, sets) is NOT the routine path — migration 0273 projected every pre-Ф2 row into children
+// once, so a stored marker normally has them. It exists for the single hole that backfill cannot
+// close: the DEPLOY OVERLAP, where the old container is still serving and writes a row in the legacy
+// shape with no children. Such a row still resolves to a non-empty состав here, which is why no
+// reader downstream has to cope with an empty one.
+func (m TechCardMarkerSummary) CompositionOrLegacy() []MarkerCompositionEntry {
+	if len(m.Composition) > 0 {
+		return m.Composition
+	}
+	if m.SizeId.Valid && m.SizeId.Int64 > 0 {
+		return []MarkerCompositionEntry{{SizeId: int(m.SizeId.Int64), Quantity: m.TotalUnitsOrLegacy()}}
+	}
+	// Unreachable: size_id is NULL only on rows the NEW code wrote, and that code writes the children
+	// in the same transaction. Returning nil rather than inventing a size keeps an impossible state
+	// visible instead of plausible.
+	return nil
+}
+
+// ConsumptionPerUnitCm is fabric length per ONE garment: used_length_cm / total_units. Derived,
+// never stored, so it cannot drift from its inputs.
+//
+// On a MIXED состав this is the MEAN across sizes and must not reach a recipe — see
+// MarkerScalarNormRefusal, and TechCardMarkerSummaryToPb, which withholds it rather than labelling
+// it. Kept computable here because the mean is still the honest answer to «how much cloth does this
+// spread use per garment», which is what a length verdict and the marker list want.
+func (m TechCardMarkerSummary) ConsumptionPerUnitCm() decimal.Decimal {
+	return m.UsedLengthCm.Div(decimal.NewFromInt(int64(m.TotalUnitsOrLegacy())))
+}
+
+// ScalarNormRefusal is "" when this marker's consumption_per_unit_cm may be applied to a recipe, and
+// the reason not to otherwise. See entity.MarkerScalarNormRefusal.
+func (m TechCardMarkerSummary) ScalarNormRefusal() string {
+	return MarkerScalarNormRefusal(m.Name, m.CompositionOrLegacy())
 }
 
 // TechCardMarker is a full stored marker: the summary plus the opaque layout blob.

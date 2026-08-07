@@ -1561,16 +1561,20 @@ message TechCardOutputVariant {
 }
 
 // TechCardMarkerSummary is the list row of a saved раскладка (marker, tech_card_marker): the
-// measured fabric layout of ONE size's pattern pieces on a strip of fabric. The heavy layout blob
+// measured fabric layout of a СОСТАВ of pattern pieces on a strip of fabric. The heavy layout blob
 // (contours + placements) deliberately does NOT ride here — it travels only on GetTechCardMarker.
 //
-// consumption_per_unit_cm is DERIVED (used_length_cm / sets), never stored, so it cannot drift
-// from its inputs. It is the number costing cares about: fabric per one garment of this size.
+// Ф2 replaced «one size × N комплектов» with a composition (size → garments). The identity of a
+// marker in a list is therefore `composition` (:25), not `size_id` (:3) — a mixed раскладка has no
+// single size to show, and the legacy fields read 0 on one.
 message TechCardMarkerSummary {
   int32 id = 1;
   int32 tech_card_id = 2;
-  int32 size_id = 3; // FK size(id); the size whose pieces this marker lays out
-  string name = 4; // unique per (card, size)
+  // ЛЕГАСИ. The size of a homogeneous marker taken before Ф2; 0 = a marker with a composition,
+  // read `composition` (:25). The number is never reused and the field is never removed — a stored
+  // pre-Ф2 row still carries it, and a stale client bundle still sends it back on save.
+  int32 size_id = 3;
+  string name = 4; // unique per (card, composition-vs-legacy size) — see uniq_tcm_card_sizekey_name
   // Provenance of the layout geometry. "auto" = the nesting engine as it ran; "manual" = an
   // operator adjusted placements (Ф5); "imported" reserved for external CAD markers.
   string source = 5;
@@ -1584,7 +1588,9 @@ message TechCardMarkerSummary {
   google.type.Decimal gap_cm = 10;
   google.type.Decimal edge_margin_cm = 11;
   bool allow_cross_grain = 12; // 90° rotations were permitted
-  int32 sets = 13; // комплектов — how many garments this layout cuts at once
+  // ЛЕГАСИ, exactly like size_id above: комплектов of the ONE size a pre-Ф2 marker cut. 0 = a
+  // marker with a composition, read total_units (:26).
+  int32 sets = 13;
   google.type.Decimal used_length_cm = 14;
   google.type.Decimal efficiency_pct = 15; // unset = not recorded
   // placed/total instance counts at save time. The server refuses to save an incomplete marker
@@ -1592,7 +1598,16 @@ message TechCardMarkerSummary {
   // consumption norm — so on stored rows these are always equal; kept as two fields for honesty.
   int32 placed_count = 16;
   int32 total_count = 17;
-  google.type.Decimal consumption_per_unit_cm = 18; // OUTPUT-ONLY, = used_length_cm / sets
+  // OUTPUT-ONLY, = used_length_cm / total_units — fabric per ONE garment.
+  //
+  // WITHHELD (unset, not zero) on a marker whose composition holds MORE THAN ONE SIZE. On a mixed
+  // раскладка this quotient is the mean across the состав: it overstates the small sizes and
+  // understates the large ones, which is the very distortion Ф2 exists to remove. It is also the
+  // number a client copies verbatim into tech_card_colorway_usage.consumption with
+  // consumption_source='marker' — i.e. it stops being a display value and becomes a persistent
+  // costing fact nothing downstream can tell apart from a measured one. So the server does not
+  // hand it out; scalar_apply_refusal (:27) says so in words. Per-size figures arrive with Ф2.4.
+  google.type.Decimal consumption_per_unit_cm = 18;
   string created_by = 19; // server-stamped
   string updated_by = 20; // server-stamped
   google.protobuf.Timestamp created_at = 21;
@@ -1606,6 +1621,34 @@ message TechCardMarkerSummary {
   // is two markers with two measured lengths. A costing suggestion that ignored this would apply
   // a length taken at another cloth's width, and be wrong in a way that reads as plausible.
   int32 colorway_id = 24;
+  // OUTPUT-ONLY СОСТАВ of the раскладка, one entry per size, ordered by size_id. ALWAYS populated,
+  // for every marker including those taken before Ф2 — migration 0273 projected each legacy row
+  // into the same shape, one entry {size_id, sets}. It is never empty and never carries quantity 0;
+  // an empty composition on the wire is a read bug, not «a marker without a состав».
+  repeated TechCardMarkerCompositionEntry composition = 25;
+  // OUTPUT-ONLY. How many GARMENTS (not pieces!) this раскладка cuts — Σ composition[].quantity, and
+  // the divisor behind consumption_per_unit_cm. Equals `sets` for a legacy marker. NOT to be confused
+  // with total_count (:17), which counts placed PIECE INSTANCES.
+  int32 total_units = 26;
+  // OUTPUT-ONLY. Empty = the scalar consumption_per_unit_cm (:18) may be applied to a recipe. A
+  // non-empty string is the server REFUSING to supply a scalar norm for this раскладка, and its text
+  // is the explanation to show: which раскладка, why a single number would be wrong, and what to do
+  // instead. Set exactly when the composition holds more than one size.
+  string scalar_apply_refusal = 27;
+}
+
+// TechCardMarkerCompositionEntry is one line of a раскладка's СОСТАВ: how many GARMENTS of one size
+// this marker cuts in a single spread. A mixed состав packs tighter than a homogeneous one — the
+// small pieces of one size settle into the межлекальные выпады of another — and «size + комплекты»
+// was replaced by a map for exactly that reason: the tighter layout was not expressible.
+//
+// repeated, deliberately NOT map<int32,int32>, for three reasons: the order of the entries inside
+// the stored blob must be stable (the Ф0.5 regression probe asserts «same input ⇒ same blob»); a map
+// degrades into an object with string keys through grpc-gateway/OpenAPI; and a repeated entry can
+// grow a field later (Ф2.4 hangs the per-size consumption here) where a map value cannot.
+message TechCardMarkerCompositionEntry {
+  int32 size_id = 1; // FK size(id); must be one of the card's sizes at save time
+  int32 quantity = 2; // garments of this size in the раскладка, >= 1
 }
 
 // TechCardMarker is a full stored marker: the summary plus the self-contained layout.
@@ -1619,15 +1662,27 @@ message TechCardMarker {
 // garbage-collected the moment no row references them, so a marker that stored url references
 // would go dark on the next sheet replacement. source_url inside pieces is provenance only.
 message TechCardMarkerInsert {
-  int32 size_id = 1; // required; must be one of the card's size_ids at save time
-  string name = 2; // required; unique per (card, size)
+  // ЛЕГАСИ pair with `sets` (:9). The СОСТАВ travels in layout.composition and nowhere else — one
+  // copy on the wire, so there is no «which of the two is right» question to answer and no
+  // cross-validation to write, and the blob stays self-contained (its pieces are tagged with sizes;
+  // the состав is the header of that same geometry).
+  //
+  // These two survive for ONE reason: a STALE ADMIN BUNDLE. The admin is an SPA, an open tab keeps
+  // sending the payload it was built with, and Ф1 already paid this price on fabric_direction. A
+  // payload with a non-empty layout.composition ignores both fields; a payload without one is
+  // accepted as a homogeneous marker when size_id > 0 and sets >= 1, and is stored in exactly the
+  // legacy shape. Neither present nor absent is guessed at: with no composition AND no size_id/sets
+  // the save is REFUSED, because inventing «1 комплект» would inflate the per-garment norm N-fold
+  // and a client writes that number straight into a recipe.
+  int32 size_id = 1;
+  string name = 2; // required; unique per (card, size) for a legacy marker, per (card, name) with a состав
   string source = 3; // auto | manual | imported; "" = auto
   string bom_line_key = 4; // "" = not linked to a BOM fabric line
   google.type.Decimal fabric_width_cm = 5; // required, > 0
   google.type.Decimal gap_cm = 6; // >= 0
   google.type.Decimal edge_margin_cm = 7; // >= 0
   bool allow_cross_grain = 8;
-  int32 sets = 9; // >= 1
+  int32 sets = 9; // ЛЕГАСИ, see size_id (:1); >= 1 when sent
   google.type.Decimal used_length_cm = 10; // required, > 0
   google.type.Decimal efficiency_pct = 11; // 0..100; unset = not recorded
   int32 placed_count = 12;
@@ -1646,7 +1701,8 @@ message TechCardMarkerInsert {
 // degrade gracefully on a version they do not know.
 message TechCardMarkerLayout {
   // 1 = the original geometry; 2 adds piece_line_key/block_name on a piece; 3 adds `flipped` on a
-  // placement (Ф1). The server accepts all three and every stored blob stays readable forever.
+  // placement (Ф1); 4 adds `composition` here and `size_id` on a piece (Ф2). The server accepts all
+  // four and every stored blob stays readable forever.
   //
   // The version is also what the save path judges a layout BY. A stored v1/v2 marker legitimately
   // carries rotations the current policy would not offer — the manual editor saves the rotation a
@@ -1658,6 +1714,12 @@ message TechCardMarkerLayout {
   repeated TechCardMarkerPiece pieces = 3;
   repeated TechCardMarkerPlacement placements = 4;
   repeated string warnings = 5; // parse/nest warnings as shown at save time
+  // СОСТАВ of the раскладка (schema_version 4). EMPTY means a legacy blob «one size, N комплектов»:
+  // the reader takes the состав from the summary instead — a single entry {summary.size_id,
+  // summary.sets} — and gets precisely the pre-Ф2 semantics back. Branch on THE PRESENCE OF THIS
+  // FIELD, never on schema_version: the version exists to decide forgery and grandfathering (Ф1),
+  // and a reader that switched on it would have to know about versions it will never see again.
+  repeated TechCardMarkerCompositionEntry composition = 6;
 }
 
 // TechCardMarkerNestParams are the engine inputs that produced the layout — enough to label the
@@ -1672,13 +1734,20 @@ message TechCardMarkerNestParams {
 }
 
 // TechCardMarkerPiece is one distinct pattern piece: its exact contour (cm, local origin at the
-// piece bbox corner) and how many instances ONE set cuts. Instances = quantity × marker sets.
+// piece bbox corner) and how many instances ONE GARMENT cuts.
 message TechCardMarkerPiece {
   int32 piece_id = 1; // layout-local id placements reference; stable within this blob only
   string name = 2; // block name from the DXF, or the operator's label
   string source = 3; // source DXF filename (display provenance)
   string source_url = 4; // pattern CDN url AT SAVE TIME; provenance only — the object may be GC'd
-  int32 quantity = 5; // instances per ONE set, >= 1
+  // Instances per ONE GARMENT, >= 1. Total instances of this piece in the раскладка:
+  //
+  //     quantity × (size_id > 0 ? composition[size_id].quantity : total_units)
+  //
+  // Legacy blob: no size_id anywhere, composition empty, the состав is {summary.size_id,
+  // summary.sets} and total_units = sets ⇒ the formula gives quantity × sets, which is exactly what
+  // this comment said before Ф2. ONE formula, no branch on the version.
+  int32 quantity = 5;
   repeated TechCardMarkerPoint poly = 6; // closed CCW contour, cm, >= 3 points
   double bbox_w_cm = 7;
   double bbox_h_cm = 8;
@@ -1688,6 +1757,13 @@ message TechCardMarkerPiece {
   // back to `name` as saved. piece_id above stays parse-local (a v1 decision that remains right).
   string piece_line_key = 10; // TechCardPiece.line_key; "" = unresolved at save time
   string block_name = 11; // the DXF block name this piece came from; "" = unknown
+  // schema_version 4: the size whose GRADATION this contour belongs to. 0/absent = the piece is
+  // size-agnostic (a DXF block with no size suffix — it does not grade, so one is cut per garment
+  // of the whole состав) OR the blob is legacy. Both readings collapse into the same formula, see
+  // quantity above. A size named here must appear in layout.composition — the server refuses a blob
+  // whose piece points at a size the состав does not cut, because the formula would silently give
+  // that piece zero instances.
+  int32 size_id = 12;
 }
 
 message TechCardMarkerPoint {
@@ -1699,7 +1775,7 @@ message TechCardMarkerPoint {
 // translated by (x_cm, y_cm) in strip coordinates — x along the fabric, y across the width.
 message TechCardMarkerPlacement {
   int32 piece_id = 1;
-  int32 instance = 2; // 0-based within the piece's quantity × sets instances
+  int32 instance = 2; // 0-based within the piece's instance count, as defined by the formula on TechCardMarkerPiece.quantity
   int32 rot_deg = 3; // 0 | 90 | 180 | 270
   double x_cm = 4;
   double y_cm = 5;

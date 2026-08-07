@@ -73,6 +73,14 @@ type MarkerLayoutFacts struct {
 	HasHalfTurn bool
 	// HasFlip: at least one placement is mirrored (schema 3+).
 	HasFlip bool
+	// HasComposition / HasPieceSize: the blob carries a состав, and at least one piece is tagged with
+	// a size (schema 4+, Ф2). BOOLEANS, not the состав itself, and that is a decision: the normalised
+	// состав already travels on TechCardMarkerInsert.Composition, and a second copy here would be a
+	// second answer to «how many garments does this marker cut» — precisely the two-copies question
+	// §2.5 of the spec refuses to answer for the wire. These two exist only for
+	// CompositionPredatesSchema, which asks whether the blob's FORMAT is honest.
+	HasComposition bool
+	HasPieceSize   bool
 }
 
 // FlipPredatesSchema reports a layout that carries a MIRRORED placement while declaring a version
