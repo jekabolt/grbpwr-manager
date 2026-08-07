@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/shopspring/decimal"
 )
 
 // The СОСТАВ queries run on the card read and inside every marker save, and a bind error would take
@@ -21,7 +22,8 @@ func TestMarkerCompositionQueriesBind(t *testing.T) {
 		{"read", markerCompositionQuery, map[string]any{"ids": []int{1, 2}}, 1},
 		{"card sizes", cardSizeMembershipQuery, map[string]any{"card": 1, "sizes": []int{2, 3}}, 2},
 		{"delete", markerCompositionDeleteQuery, map[string]any{"marker_id": 1}, 1},
-		{"insert", markerCompositionInsertQuery, map[string]any{"marker_id": 1, "size_id": 2, "quantity": 3}, 3},
+		{"insert", markerCompositionInsertQuery,
+			map[string]any{"marker_id": 1, "size_id": 2, "quantity": 3, "area": decimal.NullDecimal{}}, 4},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -42,5 +44,18 @@ func TestMarkerCompositionQueriesBind(t *testing.T) {
 func TestMarkerCompositionQueryIsOrdered(t *testing.T) {
 	if !strings.Contains(markerCompositionQuery, "ORDER BY marker_id, size_id") {
 		t.Fatal("the composition read must be ordered by (marker_id, size_id)")
+	}
+}
+
+// The per-size AREA (Ф2.4) has to travel with the quantity on BOTH sides. Read without it, every
+// marker on the card looks like one taken before Ф2.4 and hands out no per-size норма; written
+// without it, the areas silently stop being recorded on save while the read keeps working — a
+// regression that costs nothing at request time and shows up only as «почему-то нельзя применить по
+// размерам» on every newly saved раскладка.
+func TestMarkerCompositionQueriesCarryTheArea(t *testing.T) {
+	for name, q := range map[string]string{"read": markerCompositionQuery, "insert": markerCompositionInsertQuery} {
+		if !strings.Contains(q, "area_per_garment_cm2") {
+			t.Errorf("the %s query must carry area_per_garment_cm2", name)
+		}
 	}
 }

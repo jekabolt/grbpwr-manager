@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // Saved раскладки (markers, tech_card_marker, migration 0257): the measured fabric layout of a
@@ -183,8 +184,11 @@ func cardNormPeers(ctx context.Context, db dependency.DB, techCardID int) ([]ent
 // ORDER BY marker_id, size_id makes the emitted состав a stable function of the data rather than of
 // InnoDB's mood: the list row shows it verbatim, and a summary that reshuffles between two reads of
 // an unchanged marker reads as the data having changed.
+// area_per_garment_cm2 (Ф2.4, 0278) rides along: it is the BASIS of the per-size расход, and the
+// расход itself is derived on read from it and used_length — never stored, so it cannot drift. NULL
+// on every marker taken before Ф2.4, which readers turn into «no per-size norm», never into the mean.
 var markerCompositionQuery = `
-	SELECT marker_id, size_id, quantity
+	SELECT marker_id, size_id, quantity, area_per_garment_cm2
 	FROM tech_card_marker_size
 	WHERE marker_id IN (:ids)
 	ORDER BY marker_id, size_id`
@@ -205,17 +209,19 @@ func attachMarkerComposition(ctx context.Context, db dependency.DB, rows []entit
 		ids = append(ids, rows[i].Id)
 	}
 	children, err := storeutil.QueryListNamed[struct {
-		MarkerId int `db:"marker_id"`
-		SizeId   int `db:"size_id"`
-		Quantity int `db:"quantity"`
+		MarkerId          int                 `db:"marker_id"`
+		SizeId            int                 `db:"size_id"`
+		Quantity          int                 `db:"quantity"`
+		AreaPerGarmentCm2 decimal.NullDecimal `db:"area_per_garment_cm2"`
 	}](ctx, db, markerCompositionQuery, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("load marker composition: %w", err)
 	}
 	byMarker := make(map[int][]entity.MarkerCompositionEntry, len(rows))
 	for _, c := range children {
-		byMarker[c.MarkerId] = append(byMarker[c.MarkerId],
-			entity.MarkerCompositionEntry{SizeId: c.SizeId, Quantity: c.Quantity})
+		byMarker[c.MarkerId] = append(byMarker[c.MarkerId], entity.MarkerCompositionEntry{
+			SizeId: c.SizeId, Quantity: c.Quantity, AreaPerGarmentCm2: c.AreaPerGarmentCm2,
+		})
 	}
 	for i := range rows {
 		rows[i].Composition = byMarker[rows[i].Id]
@@ -721,8 +727,8 @@ var cardSizeMembershipQuery = `
 var (
 	markerCompositionDeleteQuery = `DELETE FROM tech_card_marker_size WHERE marker_id = :marker_id`
 	markerCompositionInsertQuery = `
-		INSERT INTO tech_card_marker_size (marker_id, size_id, quantity)
-		VALUES (:marker_id, :size_id, :quantity)`
+		INSERT INTO tech_card_marker_size (marker_id, size_id, quantity, area_per_garment_cm2)
+		VALUES (:marker_id, :size_id, :quantity, :area)`
 )
 
 // replaceMarkerComposition rewrites a marker's СОСТАВ wholesale — the full-replace idiom this
@@ -737,8 +743,14 @@ func replaceMarkerComposition(ctx context.Context, db dependency.DB, markerID in
 		return fmt.Errorf("clear composition of marker %d: %w", markerID, err)
 	}
 	for _, c := range composition {
+		// The area (Ф2.4) is written in the same statement as the quantity because the two are read
+		// together as one line of the norm: a row whose quantity moved and whose area did not would
+		// distribute a length by a geometry that is no longer the one it laid out. INVALID passes
+		// through as SQL NULL — «площади не записаны», the honest state of every marker taken before
+		// Ф2.4 — and never as 0, which the column refuses anyway (chk_tcms_area_pos).
 		if _, err := storeutil.ExecNamedRows(ctx, db, markerCompositionInsertQuery, map[string]any{
 			"marker_id": markerID, "size_id": c.SizeId, "quantity": c.Quantity,
+			"area": c.AreaPerGarmentCm2,
 		}); err != nil {
 			return fmt.Errorf("write composition size %d of marker %d: %w", c.SizeId, markerID, err)
 		}

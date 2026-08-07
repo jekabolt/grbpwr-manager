@@ -444,10 +444,22 @@ func (m TechCardMarkerSummary) ConsumptionPerUnitCm() decimal.Decimal {
 	return m.UsedLengthCm.Div(decimal.NewFromInt(int64(m.TotalUnitsOrLegacy())))
 }
 
+// PerSizeConsumption is this раскладка's расход per garment OF EACH SIZE of its состав (Ф2.4) — the
+// measured length distributed by piece area, so a mixed настил stops having only a mean to offer.
+// Derived, never stored, for the same reason ConsumptionPerUnitCm is: it is a function of
+// used_length and of the состав, and a stored copy would outlive a correction to either.
+//
+// One entry per состав line, in the same order. An INVALID ConsumptionCm on any line means this
+// раскладка cannot say — never that the mean should be used instead.
+func (m TechCardMarkerSummary) PerSizeConsumption() []MarkerSizeConsumption {
+	return MarkerPerSizeConsumption(m.CompositionOrLegacy(), m.UsedLengthCm)
+}
+
 // ScalarNormRefusal is "" when this marker's consumption_per_unit_cm may be applied to a recipe, and
-// the reason not to otherwise. See entity.MarkerScalarNormRefusal.
+// the reason not to otherwise. See entity.MarkerScalarNormRefusal — it reads the SAME slice
+// PerSizeConsumption returns, so the refusal and the remedy it names cannot disagree.
 func (m TechCardMarkerSummary) ScalarNormRefusal() string {
-	return MarkerScalarNormRefusal(m.Name, m.CompositionOrLegacy())
+	return MarkerScalarNormRefusal(m.Name, m.PerSizeConsumption())
 }
 
 // TechCardMarker is a full stored marker: the summary plus the opaque layout blob.
