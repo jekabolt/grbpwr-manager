@@ -14,6 +14,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"unicode/utf8"
 )
@@ -1160,22 +1161,28 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		return out, err
 	}
 	return entity.TechCardMarkerInsert{
-		SizeId:          sizeID,
-		Name:            name,
-		Source:          source,
-		BomLineKey:      strings.TrimSpace(pb.BomLineKey),
-		ColorwayId:      int(pb.ColorwayId),
-		FabricWidthCm:   width,
-		GapCm:           gap.Decimal,
-		EdgeMarginCm:    margin.Decimal,
-		SelvedgeCm:      selvedge.Decimal,
-		AllowCrossGrain: pb.AllowCrossGrain,
-		Sets:            sets,
-		Composition:     composition,
-		UsedLengthCm:    usedLength,
-		EfficiencyPct:   efficiency,
-		PlacedCount:     int(pb.PlacedCount),
-		TotalCount:      int(pb.TotalCount),
+		// The reader for the geometry ALREADY ON FILE travels with the payload, set HERE rather than
+		// by the caller: fail-closed is right (a nil distiller withholds every exemption) but a
+		// fail-closed default nobody notices is a silent regression, and an injection sitting fifty
+		// lines away in another package is exactly the kind of statement that gets dropped in a
+		// refactor. Built where the struct is built, it cannot go missing for a wire-borne save.
+		DistilStoredLayout: MarkerLayoutFactsFromBlob,
+		SizeId:             sizeID,
+		Name:               name,
+		Source:             source,
+		BomLineKey:         strings.TrimSpace(pb.BomLineKey),
+		ColorwayId:         int(pb.ColorwayId),
+		FabricWidthCm:      width,
+		GapCm:              gap.Decimal,
+		EdgeMarginCm:       margin.Decimal,
+		SelvedgeCm:         selvedge.Decimal,
+		AllowCrossGrain:    pb.AllowCrossGrain,
+		Sets:               sets,
+		Composition:        composition,
+		UsedLengthCm:       usedLength,
+		EfficiencyPct:      efficiency,
+		PlacedCount:        int(pb.PlacedCount),
+		TotalCount:         int(pb.TotalCount),
 	}, nil
 }
 
@@ -1231,6 +1238,38 @@ func markerCompositionFromPb(entries []*pb_common.TechCardMarkerCompositionEntry
 		return nil, fmt.Errorf("layout.composition: %w", err)
 	}
 	entity.SortMarkerComposition(out)
+	return out, nil
+}
+
+// MarkerLayoutFactsFromBlob distils the geometry ALREADY ON FILE out of a stored layout blob, for the
+// one decision that needs it: whether a save is introducing an upside-down placement or merely
+// carrying forward one that was already there (Ф1.6's exemption).
+//
+// It is deliberately NOT MarkerLayoutFactsFromPb. That one polices an incoming payload — it refuses
+// an uncuttable angle and canonicalises what it accepts — and neither belongs here: a stored blob is
+// history, it may predate every validation this server has, and REFUSING to read it would turn «this
+// row is old» into «this row cannot be saved». So this reads tolerantly and judges nothing; an angle
+// outside the four is simply not a half-turn, which is the only question being asked.
+//
+// The error is reserved for a blob that does not parse at all. The store never calls this — it holds
+// the bytes and hands them here, because the JSON boundary of 0257/0268 is the reason the geometry
+// can stay opaque to the storage layer at all.
+func MarkerLayoutFactsFromBlob(blob string) (entity.MarkerLayoutFacts, error) {
+	var l pb_common.TechCardMarkerLayout
+	// DiscardUnknown, exactly like GetTechCardMarker: a blob written by a NEWER server must still be
+	// readable here, or a rollback would make every marker saved meanwhile unexemptible.
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(blob), &l); err != nil {
+		return entity.MarkerLayoutFacts{}, fmt.Errorf("stored marker layout does not parse: %w", err)
+	}
+	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
+	for _, p := range l.GetPlacements() {
+		if normaliseRotation(p.GetRotDeg()) == 180 {
+			out.HalfTurnCount++
+		}
+		if p.GetFlipped() {
+			out.FlipCount++
+		}
+	}
 	return out, nil
 }
 
@@ -1302,12 +1341,14 @@ func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLa
 		}
 		p.RotDeg = rot
 		// 180° and a mirror are the same physical mistake on directional cloth — the piece ends up
-		// the wrong way up — so both are collected, and the refusal names whichever fired.
+		// the wrong way up — so both are collected, and the refusal names whichever fired. COUNTED,
+		// not flagged: the exemption compares how many, because «this row already had one» is not a
+		// licence to add thirty-nine more.
 		if rot == 180 {
-			out.HasHalfTurn = true
+			out.HalfTurnCount++
 		}
 		if p.GetFlipped() {
-			out.HasFlip = true
+			out.FlipCount++
 		}
 	}
 	return out, nil
