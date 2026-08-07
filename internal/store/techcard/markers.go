@@ -152,8 +152,13 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			return err
 		}
 		bomItemID := sql.NullInt64{}
-		if key := strings.TrimSpace(ins.BomLineKey); key != "" &&
-			stored.BomLineKey.Valid && strings.EqualFold(stored.BomLineKey.String, key) {
+		// ONE definition of «the marker stays on the cloth it was already attributed to», read twice:
+		// here, to keep a stored line whose section has since changed, and by the direction rule,
+		// which may forgive stored geometry only on the fabric it was measured against. Two copies
+		// would drift, and the day they drifted the pass would transfer across cloth in silence.
+		key := strings.TrimSpace(ins.BomLineKey)
+		bindingUnchanged := key != "" && stored.BomLineKey.Valid && strings.EqualFold(stored.BomLineKey.String, key)
+		if bindingUnchanged {
 			// Unchanged binding: keep the stored line even if its section is no longer roll goods.
 			bomItemID = stored.BomItemId
 		} else if key != "" {
@@ -189,14 +194,21 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// Keyed off the PAYLOAD's line, so an unlinked marker is skipped entirely: no bom_line_key
 		// means no cloth to ask about, and that must stay saveable — it was legal before Ф1 and the
 		// geometry is just as valid without an attribution.
-		if key := strings.TrimSpace(ins.BomLineKey); key != "" {
+		if key != "" {
 			lines, err := fabricDirectionLines(ctx, db, techCardID)
 			if err != nil {
 				return err
 			}
-			// stored.SchemaVersion is 0 for a create — no history, and therefore no exemption.
+			// Everything the exemption may rest on comes off the ROW, in this transaction: its
+			// generation is 0 for a create (no history, no pass), its binding says whether the cloth
+			// is the same one the geometry was measured against, and its blob says what that geometry
+			// actually is.
 			v, err := entity.ValidateMarkerFabricDirection(key, lines, ins.LayoutFacts,
-				stored.SchemaVersion, storedMarkerFacts(ctx, id, stored.Layout, ins.DistilStoredLayout),
+				entity.StoredMarkerRow{
+					Generation:       stored.SchemaVersion,
+					BindingUnchanged: bindingUnchanged,
+					Facts:            storedMarkerFacts(ctx, id, stored.Layout, ins.DistilStoredLayout),
+				},
 				fabricLineNamer(ctx, db, techCardID))
 			if err != nil {
 				return err
@@ -479,7 +491,15 @@ func (s *Store) DeleteMarker(ctx context.Context, id int) error {
 func storedMarkerFacts(ctx context.Context, id int, layout string,
 	distil func(string) (entity.MarkerLayoutFacts, error)) entity.StoredMarkerFacts {
 	return func() (entity.MarkerLayoutFacts, bool) {
-		if id <= 0 || layout == "" || distil == nil {
+		if id <= 0 || layout == "" {
+			return entity.MarkerLayoutFacts{}, false
+		}
+		if distil == nil {
+			// Fail-closed and therefore harmless — but a caller in this state silently loses EVERY
+			// exemption, so it must not be silent. dto sets the field where the payload is converted;
+			// anything reaching here without it was built by hand somewhere inside the server.
+			slog.Default().WarnContext(ctx, "marker save has no stored-layout distiller; exemptions withheld",
+				slog.Int("marker_id", id))
 			return entity.MarkerLayoutFacts{}, false
 		}
 		facts, err := distil(layout)

@@ -96,11 +96,6 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 		return nil, status.Errorf(codes.InvalidArgument, "invalid marker layout: %v", err)
 	}
 	ins.LayoutFacts = facts
-	// The store holds the bytes of the layout being REPLACED and must not learn to read them, so it
-	// gets the reader instead (Ф1.6's exemption may forgive only geometry that was already on file).
-	// A separate flavour from the one above on purpose: this one reads history, so it judges nothing
-	// and refuses nothing — a stored blob may predate every validation this server has.
-	ins.DistilStoredLayout = dto.MarkerLayoutFactsFromBlob
 	// A mirrored placement under a version that could not express one is refused for EVERY marker,
 	// linked or not: the direction rule below only sees markers bound to cloth, but a blob that lies
 	// about its own format is not a cloth question. See entity.FlipPredatesSchema.

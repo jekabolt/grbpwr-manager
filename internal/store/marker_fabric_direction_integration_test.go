@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -41,6 +42,17 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size").Scan(&szA))
 
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: v != ""} }
+	// The catalogue material exists BEFORE the card, so the BOM line can carry the link in the
+	// fixture itself. That matters because several subtests below re-save the whole card: state
+	// patched in afterwards with a raw UPDATE would be silently rewritten by the next full save, and
+	// the catalogue-naming assertion would start passing for the wrong reason.
+	res, err := testDB.ExecContext(ctx, "INSERT INTO material (name, section) VALUES ('ВЕЛЬВЕТ ИЗ КАТАЛОГА', 'fabric')")
+	require.NoError(t, err)
+	matID, err := res.LastInsertId()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM material WHERE id = ?", matID)
+	})
 	const (
 		lineThread  = "01FDIRTHREAD000000000000D0" // NOT roll goods: sits at index 0 of the BOM
 		lineUnknown = "01FDIRUNKNOWN00000000000D1" // направление не задано — the state of almost every line
@@ -72,8 +84,10 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 			Purpose: ns("lining"), FabricDirection: ns("any")},
 		{LineKey: lineLiningS, Section: entity.BomSectionLining, Name: "Подкладка семпловая",
 			Purpose: ns("lining"), IsSample: true, FabricDirection: ns("one_way")},
-		// Имя строки пустое — его показывает КАТАЛОГ. Отказ обязан говорить словами экрана.
-		{LineKey: lineCatalog, Section: entity.BomSectionFabric, Name: "будет очищено"},
+		// Имя строки пустое — его показывает КАТАЛОГ (parseTechCardBomItems: привязанная к материалу
+		// строка законно не имеет своего имени). Отказ обязан говорить словами экрана.
+		{LineKey: lineCatalog, Section: entity.BomSectionFabric, Name: "",
+			MaterialId: sql.NullInt64{Int64: matID, Valid: true}},
 	}
 	card := func(items []entity.TechCardBomItem) *entity.TechCardInsert {
 		return &entity.TechCardInsert{
@@ -88,21 +102,6 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", tcID)
 	})
-
-	// The catalogue line is put into its real-world state directly: own name empty, material linked.
-	// parseTechCardBomItems documents that a linked line legitimately carries no name of its own and
-	// shows the catalogue's — the guard has to resolve it the same way the BOM tab does.
-	res, err := testDB.ExecContext(ctx, "INSERT INTO material (name, section) VALUES ('ВЕЛЬВЕТ ИЗ КАТАЛОГА', 'fabric')")
-	require.NoError(t, err)
-	matID, err := res.LastInsertId()
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM material WHERE id = ?", matID)
-	})
-	_, err = testDB.ExecContext(ctx,
-		"UPDATE tech_card_bom_item SET name = '', material_id = ? WHERE tech_card_id = ? AND line_key = ?",
-		matID, tcID, lineCatalog)
-	require.NoError(t, err)
 
 	// The FK the pre-Ф1 inserts below need: a marker's cloth link is by id, not by line_key.
 	var oneWayBomItemID int64
@@ -119,11 +118,13 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		// exemption for the update that followed it.
 		legacyClean   = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1}]}`
 		legacyCleanV2 = `{"schemaVersion":2,"pieces":[],"placements":[{"pieceId":1}]}`
-		legacyFlip    = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
-		v3half        = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
-		v3flip        = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
-		v3clean       = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1}]}`
-		v3crossOnly   = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":90}]}`
+		// One stored half-turn against forty incoming ones — the escalation a boolean subset allowed.
+		legacy180x1 = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180},{"pieceId":2},{"pieceId":3}]}`
+		legacyFlip  = `{"schemaVersion":1,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
+		v3half      = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":180}]}`
+		v3flip      = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"flipped":true}]}`
+		v3clean     = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1}]}`
+		v3crossOnly = `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":1,"rotDeg":90}]}`
 	)
 	ins := func(t *testing.T, name, lineKey, layout string) entity.TechCardMarkerInsert {
 		return entity.TechCardMarkerInsert{
@@ -230,13 +231,15 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		var ve *entity.ValidationError
 		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси + новый 180°", lineOneWay, v3half), "editor")
 		require.ErrorAs(t, err, &ve, "a pass may not forgive geometry this save introduces")
-		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+		require.Equal(t, entity.ReasonFlipIntroducedOnLegacy, ve.Reason)
+		require.Contains(t, ve.HowToFix, "верните сохранённые размещения",
+			"the remedy is to restore, not to re-nest geometry that was fine")
 		require.Equal(t, 1, markerGeneration(ctx, t, legacyID), "the refused save wrote nothing")
 
 		// A mirror is refused the same way, and independently of the half-turn.
 		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси + зеркало", lineOneWay, v3flip), "editor")
 		require.ErrorAs(t, err, &ve)
-		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+		require.Equal(t, entity.ReasonFlipIntroducedOnLegacy, ve.Reason)
 
 		// The same row re-saved UNCHANGED still passes and keeps its generation: a rename must never
 		// require re-nesting.
@@ -258,7 +261,8 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		var ve *entity.ValidationError
 		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "нечитаемый + 180°", lineOneWay, v3half), "editor")
 		require.ErrorAs(t, err, &ve)
-		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+		require.Equal(t, entity.ReasonStoredLayoutUnreadable, ve.Reason,
+			"its own code: the operator is told the stored geometry cannot be read, not that theirs is wrong")
 
 		// Nothing is stranded: the same row saves with compliant geometry, and that judged save
 		// ratchets it out of the legacy generation.
@@ -270,7 +274,7 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 	// A save that judged NOTHING must not claim the row was judged. Unlinking used to ratchet the
 	// generation, so unlink-then-relink silently cost a legacy marker its pass; the exemption is now
 	// scoped by stored geometry, so the column is free to mean what it says.
-	t.Run("unlinking does not spend the generation", func(t *testing.T) {
+	t.Run("unlinking does not spend the generation, but the pass cannot follow a new binding", func(t *testing.T) {
 		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси отвязан", oneWayBomItemID, legacy180)
 
 		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси без привязки", "", v3half), "editor")
@@ -278,9 +282,116 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		require.Equal(t, 1, markerGeneration(ctx, t, legacyID),
 			"nothing was judged, so nothing may be stamped as judged")
 
-		// …so re-linking it to the same ворс still carries the geometry it always had.
+		// Re-linking is where the two rules meet, and the honest answer is a refusal. The row records
+		// the cloth its geometry is attributed to RIGHT NOW, not the history of what it used to hang
+		// on — so after an unlink there is nothing left to establish that this 180° was ever measured
+		// against this ворс. Indistinguishable, from the row's side, from re-linking a marker that
+		// came off two_way cloth, which is exactly the transfer the pass must not make. The cost is
+		// two deliberate saves in a row; the remedy is to re-nest or to leave it linked.
+		var ve *entity.ValidationError
 		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси снова привязан", lineOneWay, v3half), "editor")
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+
+		// Re-linking compliant geometry is unaffected.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси снова привязан, прямой", lineOneWay, v3clean), "editor")
 		require.NoError(t, err)
+	})
+
+	// ONE STORED HALF-TURN IS NOT A LICENCE FOR FORTY. SaveMarker replaces the whole row, so under a
+	// boolean subset «this row already has a half-turn» carried through a replacement with forty of
+	// them — plus a different size, colourway and width if the payload said so — on ворс, repeatable
+	// forever. Counting is what stops it, and it stays order-insensitive so a rename still passes.
+	t.Run("a stored half-turn does not license more of them", func(t *testing.T) {
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси один 180°", oneWayBomItemID, legacy180x1)
+
+		many := `{"schemaVersion":3,"pieces":[],"placements":[`
+		for i := 0; i < 40; i++ {
+			if i > 0 {
+				many += ","
+			}
+			many += fmt.Sprintf(`{"pieceId":%d,"rotDeg":180}`, i+1)
+		}
+		many += `]}`
+
+		var ve *entity.ValidationError
+		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси сорок 180°", lineOneWay, many), "editor")
+		require.ErrorAs(t, err, &ve)
+		require.Equal(t, entity.ReasonFlipIntroducedOnLegacy, ve.Reason)
+		require.Contains(t, ve.HowToFix, "40")
+		require.Equal(t, 1, markerGeneration(ctx, t, legacyID), "the refused save wrote nothing")
+
+		// The same count still renames, in any order the client re-emits it.
+		reordered := `{"schemaVersion":3,"pieces":[],"placements":[{"pieceId":3},{"pieceId":1,"rotDeg":180},{"pieceId":2}]}`
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси один 180°, переименован", lineOneWay, reordered), "editor")
+		require.NoError(t, err)
+		require.Equal(t, 1, markerGeneration(ctx, t, legacyID))
+	})
+
+	// A PASS DOES NOT TRAVEL BETWEEN FABRICS. A pre-Ф1 marker on two_way cloth carries a 180° that
+	// was always perfectly legal — never grandfathered geometry at all. Re-linking it to ворс in one
+	// request creates a (geometry, cloth) pairing that has never existed, and that pairing is what
+	// shades the garment wrong.
+	t.Run("the exemption does not transfer across cloth", func(t *testing.T) {
+		var twoWayBomItemID int64
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT id FROM tech_card_bom_item WHERE tech_card_id = ? AND line_key = ?",
+			tcID, lineTwoWay).Scan(&twoWayBomItemID))
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси на джерси", twoWayBomItemID, legacy180)
+
+		var ve *entity.ValidationError
+		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "джерси → ворс", lineOneWay, v3half), "editor")
+		require.ErrorAs(t, err, &ve, "a pass earned on two_way cloth must not spend on one_way")
+		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
+
+		// The same re-link WITHOUT the forbidden geometry goes through — nothing legitimate is lost.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "джерси → ворс, прямой", lineOneWay, v3clean), "editor")
+		require.NoError(t, err)
+	})
+
+	// CORRECTING THE CLOTH MUST NOT BRICK THE MARKER. A legacy 180° on two_way cloth is tolerated,
+	// not judged — so a save must not stamp the row as judged under the current policy. Ф1.8 ships a
+	// report whose whole purpose is to drive operators to correct fabric_direction, so this sequence
+	// is about to be routine: save the marker, then someone fixes the line to one_way.
+	t.Run("a marker survives its cloth being corrected to one_way", func(t *testing.T) {
+		const lineFixable = "01FDIRFIXABLE0000000000F1"
+		fixable := append(append([]entity.TechCardBomItem{}, bom...), entity.TechCardBomItem{
+			LineKey: lineFixable, Section: entity.BomSectionFabric, Name: "Ткань до уточнения",
+			FabricDirection: ns("two_way"),
+		})
+		current, err := T.GetTechCardById(ctx, tcID)
+		require.NoError(t, err)
+		require.NoError(t, T.UpdateTechCard(ctx, tcID, card(fixable), current.LockVersion))
+		t.Cleanup(func() {
+			c, err := T.GetTechCardById(context.Background(), tcID)
+			if err == nil {
+				_ = T.UpdateTechCard(context.Background(), tcID, card(bom), c.LockVersion)
+			}
+		})
+
+		var fixableBomItemID int64
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT id FROM tech_card_bom_item WHERE tech_card_id = ? AND line_key = ?",
+			tcID, lineFixable).Scan(&fixableBomItemID))
+		legacyID := insertPreF1Marker(ctx, t, tcID, szA, "легаси на уточняемой", fixableBomItemID, legacy180)
+
+		// A save while the cloth is permissive: allowed, and it must NOT claim the geometry was
+		// judged — it was merely tolerated by a fabric nobody had classified yet.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси на уточняемой, переименован", lineFixable, v3half), "editor")
+		require.NoError(t, err)
+		require.Equal(t, 1, markerGeneration(ctx, t, legacyID),
+			"tolerated is not judged: stamping here bricks the row when the line is corrected")
+
+		// Now the operator does what the Ф1.8 report asks and corrects the cloth to one_way.
+		corrected := append([]entity.TechCardBomItem{}, fixable...)
+		corrected[len(corrected)-1].FabricDirection = ns("one_way")
+		current, err = T.GetTechCardById(ctx, tcID)
+		require.NoError(t, err)
+		require.NoError(t, T.UpdateTechCard(ctx, tcID, card(corrected), current.LockVersion))
+
+		// The marker still renames: its geometry predates the policy and has not changed.
+		_, err = T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси после уточнения ткани", lineFixable, v3half), "editor")
+		require.NoError(t, err, "correcting the cloth must not make a stored marker unsaveable")
 		require.Equal(t, 1, markerGeneration(ctx, t, legacyID))
 	})
 

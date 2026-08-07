@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -65,7 +66,7 @@ func TestSaveTechCardMarkerAcceptsSchema3AndCarriesTheFacts(t *testing.T) {
 		)))
 	require.NoError(t, err)
 	require.Equal(t, int32(42), resp.GetId())
-	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 3, HasFlip: true}, got.LayoutFacts)
+	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 3, FlipCount: 1}, got.LayoutFacts)
 	// The flag must survive the re-marshal too: the blob is what a later read reconstructs from.
 	require.Contains(t, got.Layout, `"flipped":true`)
 
@@ -74,9 +75,17 @@ func TestSaveTechCardMarkerAcceptsSchema3AndCarriesTheFacts(t *testing.T) {
 	// withholds itself from every legacy marker (fail-closed, so not dangerous — but every rename of
 	// a pre-Ф1 раскладка with a half-turn would start failing).
 	require.NotNil(t, got.DistilStoredLayout, "the stored-layout distiller must be injected here")
-	stored, err := got.DistilStoredLayout(`{"schemaVersion":1,"placements":[{"rotDeg":180}]}`)
+	stored, err := got.DistilStoredLayout(`{"schemaVersion":1,"placements":[{"rotDeg":180},{"rotDeg":180}]}`)
 	require.NoError(t, err)
-	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 1, HasHalfTurn: true}, stored)
+	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 1, HalfTurnCount: 2}, stored,
+		"the stored distiller must COUNT, or one stored half-turn licenses any number of new ones")
+	// It must be the tolerant flavour. Wiring the JUDGING distiller here is the failure mode with no
+	// other symptom: history may contain angles the payload validator now refuses, and a judging
+	// reader would turn «this row is old» into «this row cannot be saved» — for the rows that need
+	// the pass most. An out-of-set angle is the cheapest way to tell the two apart.
+	legacyAngle, err := got.DistilStoredLayout(`{"schemaVersion":1,"placements":[{"rotDeg":37}]}`)
+	require.NoError(t, err, "reading history must judge nothing")
+	require.False(t, legacyAngle.HasHalfTurn())
 }
 
 // A version this server does not know is refused before anything is stored — a blob whose fields
@@ -128,7 +137,7 @@ func TestSaveTechCardMarkerPolicesRotation(t *testing.T) {
 		_, err := (&Server{repo: repo}).SaveTechCardMarker(context.Background(),
 			markerRequest(markerLayout(3, &pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: -180})))
 		require.NoError(t, err)
-		require.True(t, got.LayoutFacts.HasHalfTurn, "-180 is a half-turn")
+		require.True(t, got.LayoutFacts.HasHalfTurn(), "-180 is a half-turn")
 		require.Contains(t, got.Layout, `"rotDeg":180`)
 		require.NotContains(t, got.Layout, "-180")
 	})
@@ -150,5 +159,39 @@ func TestSaveTechCardMarkerNormalisesMissingSchemaToV1(t *testing.T) {
 	_, err := (&Server{repo: repo}).SaveTechCardMarker(context.Background(), markerRequest(
 		markerLayout(0, &pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: 180})))
 	require.NoError(t, err)
-	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 1, HasHalfTurn: true}, got.LayoutFacts)
+	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 1, HalfTurnCount: 1}, got.LayoutFacts)
+}
+
+// The whole safety argument for withholding the exemption on an unreadable stored blob rests on one
+// property of the READ path: it must not hand the client the placements it failed to parse. If that
+// ever changed — a well-meaning "salvage what parsed" — a client could round-trip geometry the server
+// believes nobody could have loaded, and the argument would die silently with nothing failing.
+//
+// So it is pinned here, both halves together: the read degrades to summary-plus-warning with no
+// geometry, AND the distiller calls the same blob unreadable. The two must agree on what unreadable
+// means, or the reasoning connecting them is void.
+func TestUnreadableStoredLayoutDegradesWithoutLeakingGeometry(t *testing.T) {
+	const broken = `{"schemaVersion":"не число","placements":[{"rotDeg":180}]}`
+
+	repo := mocks.NewMockRepository(t)
+	cards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(cards)
+	cards.EXPECT().GetMarker(mock.Anything, 5).Return(&entity.TechCardMarker{
+		TechCardMarkerSummary: entity.TechCardMarkerSummary{Id: 5, Name: "нечитаемая"},
+		Layout:                broken,
+	}, nil)
+
+	resp, err := (&Server{repo: repo}).GetTechCardMarker(context.Background(),
+		&pb_admin.GetTechCardMarkerRequest{Id: 5})
+	require.NoError(t, err, "an unreadable blob must not fail the read")
+
+	layout := resp.GetMarker().GetLayout()
+	require.NotEmpty(t, layout.GetWarnings(), "the operator has to be told the geometry is unreadable")
+	require.Empty(t, layout.GetPlacements(), "no placement may escape a failed parse")
+	require.Empty(t, layout.GetPieces(), "no piece may escape a failed parse")
+	require.Equal(t, "нечитаемая", resp.GetMarker().GetSummary().GetName(), "the summary still serves")
+
+	// …and the save path calls exactly this blob unreadable, which is why it withholds the pass.
+	_, err = dto.MarkerLayoutFactsFromBlob(broken)
+	require.Error(t, err, "the two paths must agree on what unreadable means")
 }

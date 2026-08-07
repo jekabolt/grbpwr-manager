@@ -1125,21 +1125,27 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		return out, fmt.Errorf("colorway_id must not be negative")
 	}
 	return entity.TechCardMarkerInsert{
-		SizeId:          int(pb.SizeId),
-		Name:            name,
-		Source:          source,
-		BomLineKey:      strings.TrimSpace(pb.BomLineKey),
-		ColorwayId:      int(pb.ColorwayId),
-		FabricWidthCm:   width,
-		GapCm:           gap.Decimal,
-		EdgeMarginCm:    margin.Decimal,
-		SelvedgeCm:      selvedge.Decimal,
-		AllowCrossGrain: pb.AllowCrossGrain,
-		Sets:            int(pb.Sets),
-		UsedLengthCm:    usedLength,
-		EfficiencyPct:   efficiency,
-		PlacedCount:     int(pb.PlacedCount),
-		TotalCount:      int(pb.TotalCount),
+		// The reader for the geometry ALREADY ON FILE travels with the payload, set HERE rather than
+		// by the caller: fail-closed is right (a nil distiller withholds every exemption) but a
+		// fail-closed default nobody notices is a silent regression, and an injection sitting fifty
+		// lines away in another package is exactly the kind of statement that gets dropped in a
+		// refactor. Built where the struct is built, it cannot go missing for a wire-borne save.
+		DistilStoredLayout: MarkerLayoutFactsFromBlob,
+		SizeId:             int(pb.SizeId),
+		Name:               name,
+		Source:             source,
+		BomLineKey:         strings.TrimSpace(pb.BomLineKey),
+		ColorwayId:         int(pb.ColorwayId),
+		FabricWidthCm:      width,
+		GapCm:              gap.Decimal,
+		EdgeMarginCm:       margin.Decimal,
+		SelvedgeCm:         selvedge.Decimal,
+		AllowCrossGrain:    pb.AllowCrossGrain,
+		Sets:               int(pb.Sets),
+		UsedLengthCm:       usedLength,
+		EfficiencyPct:      efficiency,
+		PlacedCount:        int(pb.PlacedCount),
+		TotalCount:         int(pb.TotalCount),
 	}, nil
 }
 
@@ -1166,10 +1172,10 @@ func MarkerLayoutFactsFromBlob(blob string) (entity.MarkerLayoutFacts, error) {
 	out := entity.MarkerLayoutFacts{SchemaVersion: int(l.GetSchemaVersion())}
 	for _, p := range l.GetPlacements() {
 		if normaliseRotation(p.GetRotDeg()) == 180 {
-			out.HasHalfTurn = true
+			out.HalfTurnCount++
 		}
 		if p.GetFlipped() {
-			out.HasFlip = true
+			out.FlipCount++
 		}
 	}
 	return out, nil
@@ -1208,12 +1214,14 @@ func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLa
 		}
 		p.RotDeg = rot
 		// 180° and a mirror are the same physical mistake on directional cloth — the piece ends up
-		// the wrong way up — so both are collected, and the refusal names whichever fired.
+		// the wrong way up — so both are collected, and the refusal names whichever fired. COUNTED,
+		// not flagged: the exemption compares how many, because «this row already had one» is not a
+		// licence to add thirty-nine more.
 		if rot == 180 {
-			out.HasHalfTurn = true
+			out.HalfTurnCount++
 		}
 		if p.GetFlipped() {
-			out.HasFlip = true
+			out.FlipCount++
 		}
 	}
 	return out, nil
