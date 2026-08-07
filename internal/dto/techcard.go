@@ -3,6 +3,7 @@ package dto
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"strings"
@@ -1091,22 +1092,45 @@ func TechCardMarkerSummariesToPb(ms []entity.TechCardMarkerSummary) []*pb_common
 	return out
 }
 
-// markerCompositionToPb emits a состав in the order the store read it (size_id ascending).
-func markerCompositionToPb(cs []entity.MarkerCompositionEntry) []*pb_common.TechCardMarkerCompositionEntry {
+// markerCompositionToPb emits a состав in the order the store read it (size_id ascending), each
+// line carrying its PER-SIZE НОРМА (Ф2.4) beside the quantity.
+//
+// It takes the derived slice and not the состав, so the size, the quantity, the расход and the area
+// it was derived from leave the server as one row that was computed once. The alternative — emitting
+// the состав here and the norms from a second call — is how two adjacent fields end up describing
+// two different раскладки.
+//
+// РАСХОД ОКРУГЛЯЕТСЯ ДО СОТЫХ, как и всё остальное на этой строке (см. used_length_cm,
+// consumption_per_unit_cm), и это единственное место, где сходимость перестаёт быть точной:
+// Σ(quantity × round(расход, 2)) отличается от used_length_cm не более чем на 0.005 × total_units.
+// The unrounded distribution converges exactly (entity.MarkerPerSizeConsumption), and rounding a
+// per-garment norm to a hundredth of a centimetre is not where a costing error comes from.
+//
+// THE AREA IS NOT ROUNDED HERE because it is not derived — it is stored at scale 2 already, and
+// re-rounding a stored number is how a display convention silently becomes a second truncation.
+func markerCompositionToPb(cs []entity.MarkerSizeConsumption) []*pb_common.TechCardMarkerCompositionEntry {
 	if len(cs) == 0 {
 		return nil
 	}
 	out := make([]*pb_common.TechCardMarkerCompositionEntry, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, &pb_common.TechCardMarkerCompositionEntry{
-			SizeId: int32(c.SizeId), Quantity: int32(c.Quantity),
-		})
+		e := &pb_common.TechCardMarkerCompositionEntry{
+			SizeId:            int32(c.SizeId),
+			Quantity:          int32(c.Quantity),
+			AreaPerGarmentCm2: pbDecimalFromNull(c.AreaPerGarmentCm2),
+		}
+		if c.ConsumptionCm.Valid {
+			e.ConsumptionPerUnitCm = pbDecimalFromDecimal(c.ConsumptionCm.Decimal.Round(2))
+		}
+		out = append(out, e)
 	}
 	return out
 }
 
-// TechCardMarkerSummaryToPb emits one marker summary. consumption_per_unit_cm is derived here
-// (used_length_cm / total_units) — never stored, so it cannot drift from its inputs.
+// TechCardMarkerSummaryToPb emits one marker summary. Both consumption figures are derived HERE and
+// never stored, so neither can drift from its inputs: the scalar (used_length_cm / total_units, and
+// withheld on a mixed состав) and the PER-SIZE норма on each состав line (Ф2.4 — the measured length
+// distributed by the area each size occupies, which is the number a mixed раскладка is applied from).
 //
 // size_id and sets ride as 0 when the row carries a состав. That is the contract the proto now
 // states, and it is the honest answer: a mixed раскладка has no single size and no комплекты, and a
@@ -1114,6 +1138,11 @@ func markerCompositionToPb(cs []entity.MarkerCompositionEntry) []*pb_common.Tech
 // consumer as «the size this marker нормирует» and be wrong in a way that looks right.
 func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCardMarkerSummary {
 	composition := m.CompositionOrLegacy()
+	// ОДИН СРЕЗ НА ВСЁ: the состав, its per-size норма, total_units and the refusal below are every
+	// one of them read off `perSize`, which is itself derived from `composition`. Two of these
+	// computed from two reads of the row is how a summary ends up saying «4 изделия» beside a состав
+	// that adds to 3.
+	perSize := entity.MarkerPerSizeConsumption(composition, m.UsedLengthCm)
 	// THE SCALAR IS WITHHELD, NOT LABELLED, on a mixed состав (orchestrator decision Р2). The server
 	// is the only place that can refuse: there is no server-side marker-apply — the client copies this
 	// figure into tech_card_colorway_usage.consumption with consumption_source='marker' and the row
@@ -1124,7 +1153,11 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 	// back to used_length/max(1,sets) will produce a visibly absurd figure (the whole spread as one
 	// garment's norm) instead of a plausible mean, and visibly absurd is the failure mode this
 	// codebase prefers — see the release-snapshot note above.
-	refusal := entity.MarkerScalarNormRefusal(m.Name, composition)
+	// Ф2.4 did not repeal the withholding: it gave the refusal a REMEDY to name. A mixed раскладка
+	// still has no sizeless per-garment number, and this is still the field that becomes
+	// tech_card_colorway_usage.consumption; what changed is that the prose can now say «примените по
+	// размерам» — but only for a раскладка whose per-size figures actually reached this slice.
+	refusal := entity.MarkerScalarNormRefusal(m.Name, perSize)
 	var consumption *pb_decimal.Decimal
 	if refusal == "" {
 		consumption = pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2))
@@ -1137,7 +1170,7 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		// three different раскладки. It is 0 exactly when the состав is missing — the honest answer,
 		// and the one the refusal beside it explains; TotalUnitsOrLegacy's arithmetic fallback of 1
 		// must never surface here, because «1 garment» is a claim and this row makes none.
-		Composition:          markerCompositionToPb(composition),
+		Composition:          markerCompositionToPb(perSize),
 		TotalUnits:           int32(entity.TotalUnitsOf(composition)),
 		ScalarApplyRefusal:   refusal,
 		Name:                 m.Name,
@@ -1486,6 +1519,17 @@ func markerLayerFromPb(v *string, field string) (sql.NullString, error) {
 // (there is deliberately none). Two copies on the wire would raise «which one wins if they differ»,
 // a question with no free answer, and would split a fact that belongs together: the blob's pieces
 // carry sizes, and the состав is the header of that same geometry.
+// ПЛОЩАДИ ПО РАЗМЕРАМ СНИМАЮТСЯ ЗДЕСЬ ЖЕ (Ф2.4), off the same layout, so the состав cannot leave
+// this function without them. Computing them a step later — in the API layer, next to
+// MarkerLayoutFactsFromPb — was the alternative, and it fails in the way this codebase keeps meeting:
+// the merge is one line somebody can drop in a refactor, and dropping it produces markers that store
+// no areas and hand out no per-size норма, which looks exactly like a раскладка taken before Ф2.4.
+// Built where the состав is built, it cannot go missing.
+//
+// The area computation is TOTAL — it never errors — because the cross-checks between the pieces and
+// the состав (a piece pointing at a size the состав does not cut, and a состав size with no pieces)
+// belong to MarkerLayoutFactsFromPb, where they reach the client as a refusal naming the field. A
+// payload that would fail them simply gets no areas here and is rejected moments later.
 func markerCompositionOfInsert(pb *pb_common.TechCardMarkerInsert) (sizeID, sets sql.NullInt64,
 	composition []entity.MarkerCompositionEntry, err error) {
 	composition, err = markerCompositionFromPb(pb.GetLayout().GetComposition())
@@ -1493,16 +1537,56 @@ func markerCompositionOfInsert(pb *pb_common.TechCardMarkerInsert) (sizeID, sets
 		return sql.NullInt64{}, sql.NullInt64{}, nil, err
 	}
 	if len(composition) > 0 {
-		return sql.NullInt64{}, sql.NullInt64{}, composition, nil
+		return sql.NullInt64{}, sql.NullInt64{},
+			entity.WithMarkerSizeAreas(composition, markerPieceAreasFromPb(pb.GetLayout())), nil
 	}
 	if pb.GetSizeId() > 0 && pb.GetSets() >= 1 {
+		legacy := []entity.MarkerCompositionEntry{{SizeId: int(pb.GetSizeId()), Quantity: int(pb.GetSets())}}
 		return sql.NullInt64{Int64: int64(pb.GetSizeId()), Valid: true},
 			sql.NullInt64{Int64: int64(pb.GetSets()), Valid: true},
-			[]entity.MarkerCompositionEntry{{SizeId: int(pb.GetSizeId()), Quantity: int(pb.GetSets())}},
+			// A legacy blob has no size on any piece, so every piece is size-agnostic and the one
+			// entry's area is the whole per-garment area. Recorded even though a homogeneous раскладка
+			// needs no area to state its norm (L / q): the number is a true measurement of what was
+			// laid out, and Ф2.4's continuation across the размерный ряд is done against exactly such
+			// per-garment areas.
+			entity.WithMarkerSizeAreas(legacy, markerPieceAreasFromPb(pb.GetLayout())),
 			nil
 	}
 	return sql.NullInt64{}, sql.NullInt64{}, nil, fmt.Errorf(
 		"the раскладка needs a состав: send layout.composition (or size_id + sets if the bundle predates it)")
+}
+
+// markerPieceAreasFromPb reduces a layout's pieces to what the area distribution needs. It is the
+// dto side of the seam MarkerLayoutFacts already draws: the protobuf stays here, the arithmetic
+// stays in entity where a test can reach it without a wire message.
+//
+// A NON-FINITE OR ABSENT AREA IS CARRIED THROUGH AS A REFUSAL, not as zero: decimal.NewFromFloat
+// panics on NaN/Inf, and «area 0» would quietly shrink the denominator of every OTHER size — the
+// error that inflates a norm without looking wrong. A negative sentinel makes
+// entity.MarkerSizeAreasPerGarment withhold the whole distribution, which is the honest outcome for
+// geometry nothing can be derived from.
+func markerPieceAreasFromPb(l *pb_common.TechCardMarkerLayout) []entity.MarkerPieceArea {
+	pieces := l.GetPieces()
+	if len(pieces) == 0 {
+		return nil
+	}
+	out := make([]entity.MarkerPieceArea, 0, len(pieces))
+	for _, p := range pieces {
+		area := p.GetAreaCm2()
+		if math.IsNaN(area) || math.IsInf(area, 0) {
+			out = append(out, entity.MarkerPieceArea{
+				SizeId: int(p.GetSizeId()), Quantity: int(p.GetQuantity()),
+				AreaCm2: decimal.NewFromInt(-1),
+			})
+			continue
+		}
+		out = append(out, entity.MarkerPieceArea{
+			SizeId:   int(p.GetSizeId()),
+			Quantity: int(p.GetQuantity()),
+			AreaCm2:  decimal.NewFromFloat(area),
+		})
+	}
+	return out
 }
 
 // markerCompositionFromPb validates and normalises a состав off the wire. Called from BOTH the
@@ -1593,6 +1677,19 @@ func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLa
 	slices.SortFunc(l.GetComposition(), func(a, b *pb_common.TechCardMarkerCompositionEntry) int {
 		return int(a.GetSizeId()) - int(b.GetSizeId())
 	})
+	// …AND THE DERIVED HALF OF THE ENTRY IS STRIPPED, for the same reason and in the same breath.
+	// TechCardMarkerCompositionEntry is one message on two surfaces: on a SUMMARY it carries the
+	// per-size норма and the area it was derived from (Ф2.4), and inside a LAYOUT BLOB it must carry
+	// neither. A client that round-tripped a summary's состав back into a save — the obvious thing to
+	// do, and the admin is an SPA that holds both — would otherwise freeze a derived figure into
+	// immutable history, where it outlives the used_length it came from and is indistinguishable from
+	// a measurement to every later reader. Zeroing here rather than refusing is deliberate: the blob
+	// is canonicalised on this path anyway (rot_deg, ordering), and refusing would turn a harmless
+	// client convenience into a failed save.
+	for _, c := range l.GetComposition() {
+		c.ConsumptionPerUnitCm = nil
+		c.AreaPerGarmentCm2 = nil
+	}
 	inComposition := make(map[int32]bool, len(composition))
 	for _, c := range composition {
 		inComposition[int32(c.SizeId)] = true

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/shopspring/decimal"
 )
 
 // СОСТАВ РАСКЛАДКИ (Ф2): a marker stopped being «one size × N комплектов» and became a map, size →
@@ -52,6 +54,15 @@ const MaxMarkerTotalUnits = 5000
 type MarkerCompositionEntry struct {
 	SizeId   int `db:"size_id"`
 	Quantity int `db:"quantity"`
+	// AreaPerGarmentCm2 (Ф2.4, migration 0278) is a_s: the area of ONE garment of this size as the
+	// раскладка laid it out — the graded pieces of this size plus a full set of the size-agnostic
+	// ones. It is the BASIS of the per-size расход and nothing else; the расход itself is derived at
+	// read time from it and used_length (marker_size_consumption.go).
+	//
+	// INVALID = the areas were never recorded for this раскладка. Two routes reach it and both are
+	// legitimate history: a marker saved before Ф2.4, and a blob whose pieces carry no usable area.
+	// Readers withhold the per-size norm rather than substituting the mean.
+	AreaPerGarmentCm2 decimal.NullDecimal `db:"area_per_garment_cm2"`
 }
 
 // Stable machine-readable reason codes for the composition refusals. A client switches on these.
@@ -146,10 +157,17 @@ func CompositionPredatesSchema(f MarkerLayoutFacts) bool {
 // downstream can tell it from a measured norm; the release snapshot then freezes it forever. The
 // caption is read once by one person; the figure is read by costing for the life of the style.
 //
-// It takes nothing away. A homogeneous раскладка is applied exactly as before, and applying a MIXED
-// one to a per-size recipe never worked at all — this is an unclosed gap until Ф2.4 (расход по
-// площади), not a regression. So the text has to name Ф2.4 and offer an action, or it reads as a
-// breakage.
+// Ф2.4 DID NOT REPEAL IT, and the question was asked directly. Per-size расход now exists, but it
+// answers a DIFFERENT question: «сколько ткани на изделие ЭТОГО размера». The scalar's question —
+// «сколько ткани на изделие» with no size named — still has no true answer on a mixed настил, and
+// the field it would be copied into (tech_card_colorway_usage.consumption, consumption_source
+// 'marker') is still the sizeless one that a release snapshot freezes forever. What Ф2.4 changes is
+// the REMEDY the text can offer: «применить по размерам» is now a thing that exists, and the prose
+// says so instead of pointing at a future phase — but only when this раскладка actually has those
+// numbers. On a mixed marker saved before Ф2.4 the areas were never recorded, and promising a
+// per-size apply that the wire does not carry would be a worse refusal than the old one.
+//
+// It takes nothing away. A homogeneous раскладка is applied exactly as before.
 // The sizes are NOT enumerated in the text on purpose: the состав rides the same summary message
 // (TechCardMarkerSummary.composition), the client already holds the size dictionary, and a server
 // that spelled out «S×1 M×2» would be rendering — badly, by id — something the screen renders
@@ -160,20 +178,37 @@ func CompositionPredatesSchema(f MarkerLayoutFacts) bool {
 // anything is wrong. That state is reachable by more than one route: the Down of 0273, an ops delete
 // of tech_card_marker_size, a partial restore, a future migration. Refusing HERE contains all of
 // them at once, which is why the fix does not live in the migration alone.
-func MarkerScalarNormRefusal(name string, composition []MarkerCompositionEntry) string {
+//
+// IT TAKES THE PER-SIZE SLICE, NOT THE СОСТАВ, and that is the same structural point Ф2.4 makes
+// everywhere: the refusal, the состав, total_units and the per-size norms must be three readings of
+// ONE slice, or two adjacent fields on the wire can describe two different раскладки. The slice
+// carries size, quantity and the derived norm together, so «is a per-size apply on offer» is read
+// off the very rows the client is about to be handed.
+func MarkerScalarNormRefusal(name string, perSize []MarkerSizeConsumption) string {
 	label := strings.TrimSpace(name)
-	switch {
-	case len(composition) == 0:
+	if len(perSize) == 0 {
 		return fmt.Sprintf("у раскладки %q нет состава: сервер не знает, сколько изделий она выкраивает, "+
 			"и не может назвать расход на изделие. Это не «маркер без состава» — состав есть у каждой "+
 			"раскладки, включая снятые до Ф2, — а испорченная строка: пересохраните раскладку или "+
 			"проверьте tech_card_marker_size.", label)
-	case len(composition) > 1:
-		return fmt.Sprintf("раскладка %q снята на смешанном составе (%d размеров, %d изделий), и расход на "+
-			"изделие у неё — СРЕДНЕЕ по составу: мелкие размеры оно завышает, крупные занижает. В рецепт "+
-			"такое число не пишется. Примените раскладку одного размера, либо дождитесь пер-размерного "+
-			"расхода (Ф2.4), который распределит длину настила по площадям деталей.",
-			label, len(composition), TotalUnitsOf(composition))
 	}
-	return ""
+	if len(perSize) == 1 {
+		return ""
+	}
+	units := 0
+	for _, r := range perSize {
+		units += r.Quantity
+	}
+	const preamble = "раскладка %q снята на смешанном составе (%d размеров, %d изделий), и ОДНОГО расхода " +
+		"на изделие у неё нет: среднее по составу завышает мелкие размеры и занижает крупные — ровно тот " +
+		"перекос, ради устранения которого заводился состав. В рецепт такое число не пишется. "
+	if MarkerPerSizeConsumptionComplete(perSize) {
+		return fmt.Sprintf(preamble+"Примените её ПО РАЗМЕРАМ: у каждого размера состава есть свой расход "+
+			"— длина настила распределена по площадям деталей этого размера.",
+			label, len(perSize), units)
+	}
+	return fmt.Sprintf(preamble+"Пер-размерный расход по ней тоже не считается: в раскладке не записаны "+
+		"площади деталей по размерам (снята до Ф2.4). Пересохраните раскладку из модалки — площади "+
+		"запишутся, и её можно будет применить по размерам, — либо примените раскладку одного размера.",
+		label, len(perSize), units)
 }
