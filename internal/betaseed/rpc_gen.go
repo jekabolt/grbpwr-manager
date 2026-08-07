@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (303 rpc) ----
+// ---- admin (305 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -1629,6 +1629,14 @@ func (c *Client) ListTechCardDevExpenses(ctx context.Context, in *admin.ListTech
 	return out, nil
 }
 
+func (c *Client) ListTechCardFabricDirectionGaps(ctx context.Context, in *admin.ListTechCardFabricDirectionGapsRequest) (*admin.ListTechCardFabricDirectionGapsResponse, error) {
+	out := new(admin.ListTechCardFabricDirectionGapsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/tech-card/fabric-direction-gaps", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListTechCardReleases(ctx context.Context, in *admin.ListTechCardReleasesRequest) (*admin.ListTechCardReleasesResponse, error) {
 	out := new(admin.ListTechCardReleasesResponse)
 	if err := c.call(ctx, "GET", "/api/admin/tech-card/{tech_card_id}/releases", in, out); err != nil {
@@ -2000,6 +2008,14 @@ func (c *Client) SetShipmentActualCost(ctx context.Context, in *admin.SetShipmen
 func (c *Client) SetTaskChecklistItemDone(ctx context.Context, in *admin.SetTaskChecklistItemDoneRequest) (*admin.SetTaskChecklistItemDoneResponse, error) {
 	out := new(admin.SetTaskChecklistItemDoneResponse)
 	if err := c.call(ctx, "POST", "/api/admin/task/checklist/done", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetTechCardMarkerNorm(ctx context.Context, in *admin.SetTechCardMarkerNormRequest) (*admin.SetTechCardMarkerNormResponse, error) {
+	out := new(admin.SetTechCardMarkerNormResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/marker/{id}/norm", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

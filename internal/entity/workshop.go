@@ -24,6 +24,16 @@ type WorkshopSettings struct {
 	// every marker it lays is too long. Callers: check .Valid before comparing.
 	CuttingTableLengthCm decimal.NullDecimal `db:"cutting_table_length_cm"`
 
+	// DefaultSeamAllowanceCm is the shop's ПРИПУСК НА ШОВ ПО УМОЛЧАНИЮ, in centimetres (Ф3.2) — the
+	// second tenant, and the one the header above predicted.
+	//
+	// INVALID (NULL) means «not configured», the same law as the table length. But ZERO IS LEGAL HERE
+	// and states something specific — «our выкройки carry the cut line, no offset needed» — which is
+	// why its validator (ValidateSeamAllowanceStandardCm) accepts 0 while the table length's rejects
+	// it. Two settings in one k/v table could not have held two opposite floors; that is precisely
+	// the argument 0272 made for a typed column per setting.
+	DefaultSeamAllowanceCm decimal.NullDecimal `db:"default_seam_allowance_cm"`
+
 	UpdatedBy string    `db:"updated_by"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -41,14 +51,15 @@ type WorkshopSettings struct {
 // return it to "unknown" rather than leave a wrong number standing, because a wrong number produces
 // confident false verdicts while an unset one produces none.
 type WorkshopSettingsPatch struct {
-	CuttingTableLengthCm *decimal.NullDecimal
+	CuttingTableLengthCm   *decimal.NullDecimal
+	DefaultSeamAllowanceCm *decimal.NullDecimal
 }
 
 // IsEmpty reports whether the patch names no setting at all. Such a request is rejected rather than
 // executed: it would write nothing but still stamp updated_by/updated_at, putting a fake edit in the
 // audit trail.
 func (p WorkshopSettingsPatch) IsEmpty() bool {
-	return p.CuttingTableLengthCm == nil
+	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceCm == nil
 }
 
 // Plausibility band for a cutting/spreading table length, in centimetres.

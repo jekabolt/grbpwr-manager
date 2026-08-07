@@ -348,6 +348,13 @@ var methodRequirements = map[string]Requirement{
 	"SaveTechCardMarker":          wr(SectionTechCards),
 	"GetTechCardMarker":           rd(SectionTechCards),
 	"DeleteTechCardMarker":        wr(SectionTechCards),
+	// Designating the НОРМИРОВОЧНАЯ раскладка (Ф3.4) — a decision about what the CARD says, under the
+	// same right as the rest of the card's content. Deliberately NOT production:write, unlike the
+	// workshop settings beside it: a припуск по умолчанию is a fact about the ЦЕХ and belongs to
+	// whoever runs the floor, while a norm belongs to one card and is chosen by whoever keeps it. Not
+	// a section of its own either — it writes a column of tech_card_marker, which this same right
+	// already writes through SaveTechCardMarker.
+	"SetTechCardMarkerNorm": wr(SectionTechCards),
 	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
 	// section of its own. Every field it returns is BOM-tab content the same account already reads
 	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);
