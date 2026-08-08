@@ -11,7 +11,7 @@ import (
 )
 
 // TestPatternViewerManifest covers the two store halves of the card-level pattern viewer
-// (0285): the narrow manifest read and the tech_card_pattern_viewer_access row lifecycle.
+// (0288): the narrow manifest read and the tech_card_pattern_viewer_access row lifecycle.
 //
 // The manifest fixture is built the only way the dangling display branches can exist in
 // real data: bindings are VALID when first written (the write path refuses a NEW binding
@@ -152,7 +152,7 @@ func TestPatternViewerManifest(t *testing.T) {
 	row, err := P.EnsureCardViewer(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, id, row.TechCardId)
-	require.Equal(t, 1, row.Epoch, "0285 starts card epochs at 1")
+	require.Equal(t, 1, row.Epoch, "0288 starts card epochs at 1")
 	require.False(t, row.RevokedAt.Valid)
 	require.False(t, row.ExpiresAt.Valid, "no default TTL — owner decision В2")
 	require.Zero(t, row.AccessCount)

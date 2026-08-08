@@ -31,7 +31,7 @@ type PatternObjectRef struct {
 	Filename string
 }
 
-// TechCardPatternViewerAccess is the card-level twin of PatternObjectAccess (0285): the
+// TechCardPatternViewerAccess is the card-level twin of PatternObjectAccess (0288): the
 // access state behind /api/pv/{token}, where one printed QR opens a whole card's pattern
 // viewer. Same epoch/revoke/expiry mechanics, but the identity is the TECH CARD id — a
 // 'c' token must only ever be resolved against this table, never pattern_object_access

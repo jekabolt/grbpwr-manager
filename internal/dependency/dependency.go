@@ -1374,7 +1374,7 @@ type (
 		// DeleteByKeys drops rows whose objects were garbage-collected.
 		DeleteByKeys(ctx context.Context, keys []string) error
 
-		// Card-viewer rows (tech_card_pattern_viewer_access, 0285): the card-level twin of
+		// Card-viewer rows (tech_card_pattern_viewer_access, 0288): the card-level twin of
 		// the object rows above, behind /api/pv/{token}. Keyed by TECH CARD id — a 'c'
 		// token must resolve through these, never through GetById (the id spaces overlap
 		// numerically and name different things).

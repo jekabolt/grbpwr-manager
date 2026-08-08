@@ -11,7 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// Card-viewer access rows (tech_card_pattern_viewer_access, 0285) — the card-level twin
+// Card-viewer access rows (tech_card_pattern_viewer_access, 0288) — the card-level twin
 // of the object rows this package already manages. Kept in the same store because the
 // mechanics (lazy ensure, epoch revocation, debounced stats) are the same; only the
 // identity differs: these rows are keyed by TECH CARD id, and nothing here may be reached
