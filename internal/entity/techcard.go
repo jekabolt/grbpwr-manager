@@ -1073,11 +1073,30 @@ type TechCardColorwayUsage struct {
 	// DISPLAY — never multiplied into any cost. NULL on manual rows.
 	WasteSelvedgePct decimal.NullDecimal `db:"waste_selvedge_pct"`
 	WasteCutPct      decimal.NullDecimal `db:"waste_cut_pct"`
+	// NormMarkerId is the Ф6.8 stamp (0291): WHICH saved раскладка this consumption was applied
+	// from. NULL = not applied from a marker (typed in, estimated) or applied before Ф6. There is
+	// deliberately NO FK — раскладки get deleted, and a dangling id honestly reads as «раскладка
+	// удалена», which is what the audit is for. On WRITE the presence protocol is NormMarkerIdSet.
+	NormMarkerId sql.NullInt64 `db:"norm_marker_id"`
+	// NormAppliedAt is the SERVER stamp of when the norm was applied (0291). OUTPUT-ONLY: the wire
+	// value is ignored on write, and the store moves it ONLY when the (source, marker) pair
+	// changes — stamping it on every recipe write would let an edit of a NEIGHBOURING field refresh
+	// it and thereby extinguish the «раскладка изменена» indicator, i.e. the breakage would look
+	// exactly like its own absence. NULL whenever NormMarkerId is NULL.
+	NormAppliedAt sql.NullTime `db:"norm_applied_at"`
 	// MaterialIdSet mirrors the wire field's presence (proto3 `optional`): false = the client
 	// did not send material_id at all — an old client's full-replace recipe write must PRESERVE
 	// the existing pin; true = MaterialId is authoritative (invalid/0 explicitly clears the pin).
 	// Not persisted.
 	MaterialIdSet bool `db:"-"`
+	// NormMarkerIdSet mirrors norm_marker_id's wire presence, for the same reason and with the same
+	// price as MaterialIdSet: the recipe is written by FULL REPLACE, so a column the client did not
+	// echo back is erased silently. false = absent → the store PRESERVES the stored stamp,
+	// REGARDLESS of whether consumption_source was sent (a client that knows about 'marker' but not
+	// about the stamp is precisely today's deployed client, and it must not blank the audit by
+	// saving a recipe); true = NormMarkerId is authoritative, an explicit 0 clearing the stamp.
+	// Not persisted.
+	NormMarkerIdSet bool `db:"-"`
 }
 
 // EffectiveMaterialId resolves the article this usage actually consumes: the colourway's pin

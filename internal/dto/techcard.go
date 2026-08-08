@@ -2172,6 +2172,11 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 			pieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
 		}
 		materialID, materialIDSet := parseUsageMaterialID(u.MaterialId)
+		// Ф6.8 stamp. norm_applied_at is NOT read here and must never be: it is a SERVER stamp, and
+		// the store moves it only when the (source, marker) pair changes. Accepting the wire value
+		// would hand the client the one field that decides whether the «раскладка изменена»
+		// indicator lights up — i.e. let a save silently declare the divergence resolved.
+		normMarkerID, normMarkerIDSet := parseUsageNormMarkerID(u.NormMarkerId)
 		consumptionSource, wasteSelvedge, wasteCut, err := parseUsageProvenance(u, i)
 		if err != nil {
 			return nil, err
@@ -2182,6 +2187,8 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 			ConsumptionSource: consumptionSource,
 			WasteSelvedgePct:  wasteSelvedge,
 			WasteCutPct:       wasteCut,
+			NormMarkerId:      normMarkerID,
+			NormMarkerIdSet:   normMarkerIDSet,
 			BomItemIndex:      bomItemIndex,
 			PieceIndex:        pieceIndex,
 			MaterialId:        materialID,
@@ -2201,6 +2208,21 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 // omitted field belongs to an older client and must be preserved by the store; an explicit zero (or
 // negative value) is an authoritative clear and therefore has presence without a valid SQL value.
 func parseUsageMaterialID(id *int64) (sql.NullInt64, bool) {
+	return parseOptionalPositiveID(id)
+}
+
+// parseUsageNormMarkerID applies the SAME protocol to the Ф6.8 norm stamp (norm_marker_id, 0291),
+// and it is a separate entry point rather than a second call to the material one because the two
+// presences are INDEPENDENT: a client may echo the material pin and know nothing about the stamp
+// (that is today's deployed client), and the store must be able to tell those two absences apart.
+func parseUsageNormMarkerID(id *int64) (sql.NullInt64, bool) {
+	return parseOptionalPositiveID(id)
+}
+
+// parseOptionalPositiveID is the one implementation of «proto3 optional id, where an explicit
+// non-positive value is an authoritative CLEAR»: absent → no presence and no value; 0 or negative →
+// presence with no value; positive → presence with the value.
+func parseOptionalPositiveID(id *int64) (sql.NullInt64, bool) {
 	if id == nil {
 		return sql.NullInt64{}, false
 	}
@@ -2778,6 +2800,19 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			v := u.MaterialId.Int64
 			materialID = &v
 		}
+		// Ф6.8 stamp, read side. An UNSTAMPED row emits ABSENCE, not 0 and not the zero date: the
+		// client's presence protocol on the way back in is «absent = keep what is stored», so a read
+		// that manufactured a 0 would turn every round-trip of an unstamped row into an explicit
+		// clear, and a zero timestamp would render as 1970 next to «раскладка изменена».
+		var normMarkerID *int64
+		if u.NormMarkerId.Valid {
+			v := u.NormMarkerId.Int64
+			normMarkerID = &v
+		}
+		var normAppliedAt *timestamppb.Timestamp
+		if u.NormAppliedAt.Valid {
+			normAppliedAt = timestamppb.New(u.NormAppliedAt.Time)
+		}
 		sizeCons := make([]*pb_common.TechCardBomSizeConsumption, 0, len(u.SizeConsumptions))
 		for _, sc := range u.SizeConsumptions {
 			sizeCons = append(sizeCons, &pb_common.TechCardBomSizeConsumption{
@@ -2804,6 +2839,8 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			ConsumptionSource: pbOptStringFromNull(u.ConsumptionSource),
 			WasteSelvedgePct:  pbDecimalFromNull(u.WasteSelvedgePct),
 			WasteCutPct:       pbDecimalFromNull(u.WasteCutPct),
+			NormMarkerId:      normMarkerID,
+			NormAppliedAt:     normAppliedAt,
 		})
 	}
 	return out
