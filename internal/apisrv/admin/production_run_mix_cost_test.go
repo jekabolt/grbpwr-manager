@@ -141,7 +141,7 @@ func TestListTechCardDevExpensesAmortisesOverRuns(t *testing.T) {
 		tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(runMixSnapshotCard(), nil)
 		tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil)
 		fit.EXPECT().ListFittings(mock.Anything, devExpenseFittingScan, 0, entity.Descending, 0, 0, 7).Return(nil, 0, nil)
-		pr.EXPECT().ListProductionRuns(mock.Anything, styleEconomicsRunScan, 0,
+		pr.EXPECT().ListProductionRuns(mock.Anything, productionRunPageSize, 0,
 			entity.ProductionRunListFilter{TechCardId: 7}).Return(runs, len(runs), runsErr)
 
 		s := &Server{repo: repo}
