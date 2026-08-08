@@ -141,18 +141,33 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
+-- chk_tcm_allowance_nonneg (0276) СТОИТ НА ОБЕИХ СТАРЫХ КОЛОНКАХ, и MySQL отвечает 3959 «column
+-- cannot be dropped or renamed» на попытку убрать колонку из-под живого CHECK'а. Снимается ТЕМ ЖЕ
+-- ALTER'ом, что и колонки: разными операторами это два коммита, и падение между ними оставило бы
+-- таблицу с проверкой, ссылающейся на колонку, которой уже нет.
+--
+-- Поймано прогоном миграций на одноразовом контейнере. На бете этого видно НЕ БЫЛО: DigitalOcean
+-- при провале сборки продолжает отдавать предыдущий деплой, поэтому /readyz отвечал 200 от СТАРОГО
+-- билда, и «зелёная» бета означала бы ровно ничего.
 SET @ddl := IF(@old = 1,
-    'ALTER TABLE tech_card_marker DROP COLUMN seam_allowance_cm, DROP COLUMN contour_allowance_cm',
+    'ALTER TABLE tech_card_marker DROP CHECK chk_tcm_allowance_nonneg, DROP CHECK chk_tcm_no_double_allowance, DROP COLUMN seam_allowance_cm, DROP COLUMN contour_allowance_cm',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
+-- ОБА CHECK'А ВОЗВРАЩАЮТСЯ, В МИЛЛИМЕТРАХ, ОДНИМ ALTER'ОМ. Диапазон — новый; ЗАПРЕТ ДВОЙНОГО
+-- ПРИПУСКА — перевыпуск инварианта 0276 §5.3, и его нельзя было просто снять: раскладка не может
+-- одновременно лежать по линии кроя (contour > 0) и быть раздутой офсетом (seam > 0), иначе припуск
+-- посчитан дважды, а длина настила завышена по всему периметру каждой детали. NULL проходит
+-- НАМЕРЕННО: UNKNOWN у MySQL не нарушает CHECK, и это честная ветка «замерить было нечем».
 SET @chk := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_marker'
       AND CONSTRAINT_NAME = 'chk_marker_allowance_mm');
 SET @ddl := IF(@chk = 0,
-    'ALTER TABLE tech_card_marker ADD CONSTRAINT chk_marker_allowance_mm CHECK ((seam_allowance_mm IS NULL OR (seam_allowance_mm >= 0 AND seam_allowance_mm <= 100)) AND (contour_allowance_mm IS NULL OR (contour_allowance_mm >= 0 AND contour_allowance_mm <= 100)))',
+    'ALTER TABLE tech_card_marker
+        ADD CONSTRAINT chk_marker_allowance_mm CHECK ((seam_allowance_mm IS NULL OR (seam_allowance_mm >= 0 AND seam_allowance_mm <= 100)) AND (contour_allowance_mm IS NULL OR (contour_allowance_mm >= 0 AND contour_allowance_mm <= 100))),
+        ADD CONSTRAINT chk_tcm_no_double_allowance_mm CHECK (seam_allowance_mm IS NULL OR contour_allowance_mm IS NULL OR seam_allowance_mm = 0 OR contour_allowance_mm = 0)',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -166,7 +181,7 @@ SET @back := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_marker'
       AND COLUMN_NAME = 'seam_allowance_mm');
 SET @ddl := IF(@back = 1,
-    'ALTER TABLE tech_card_marker DROP CHECK chk_marker_allowance_mm, ADD COLUMN seam_allowance_cm DECIMAL(6,2) NULL, ADD COLUMN contour_allowance_cm DECIMAL(6,2) NULL',
+    'ALTER TABLE tech_card_marker DROP CHECK chk_tcm_no_double_allowance_mm, DROP CHECK chk_marker_allowance_mm, ADD COLUMN seam_allowance_cm DECIMAL(6,2) NULL, ADD COLUMN contour_allowance_cm DECIMAL(6,2) NULL',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -180,7 +195,7 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 SET @ddl := IF(@back = 1,
-    'ALTER TABLE tech_card_marker DROP COLUMN contour_allowance_mm, DROP COLUMN seam_allowance_mm',
+    'ALTER TABLE tech_card_marker ADD CONSTRAINT chk_tcm_allowance_nonneg CHECK ((seam_allowance_cm IS NULL OR seam_allowance_cm >= 0) AND (contour_allowance_cm IS NULL OR contour_allowance_cm >= 0)), ADD CONSTRAINT chk_tcm_no_double_allowance CHECK (seam_allowance_cm IS NULL OR contour_allowance_cm IS NULL OR seam_allowance_cm = 0 OR contour_allowance_cm = 0), DROP COLUMN contour_allowance_mm, DROP COLUMN seam_allowance_mm',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
