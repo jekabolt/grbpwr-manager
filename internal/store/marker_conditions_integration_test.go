@@ -122,7 +122,7 @@ func TestTechCardMarkerConditions(t *testing.T) {
 	require.False(t, got.AllowFlip.Bool)
 	require.False(t, got.IsLegacyNorm(), "a раскладка that states its allowance is not «старая норма»")
 	require.True(t, got.Allowance().Confirmed)
-	require.Equal(t, "1", got.Allowance().Cm.String())
+	require.Equal(t, "1", got.Allowance().Mm.String())
 
 	// A stale bundle sends none of them; the row is stored and honestly becomes «старая норма».
 	legacyID, err := T.SaveMarker(ctx, tcID, 0, base("старая", main.LineKey), "tester")

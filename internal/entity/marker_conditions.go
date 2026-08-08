@@ -48,14 +48,20 @@ const (
 //	                                  an allowance was never measured off the file. The total is a
 //	                                  LOWER BOUND, and a gate must say «происхождение не проверено»
 //	                                  rather than treat it as the whole truth.
-//	Recorded=true,  Confirmed=true  → both halves measured; Cm is the allowance on the cloth.
+//	Recorded=true,  Confirmed=true  → both halves measured; Mm is the allowance on the cloth.
 type MarkerAllowance struct {
-	// Cm is contour_allowance_mm + seam_allowance_mm, or just the offset when the contour half was
+	// Mm is contour_allowance_mm + seam_allowance_mm, or just the offset when the contour half was
 	// never measured. Meaningless unless Recorded.
-	Cm decimal.Decimal
+	//
+	// THE SUFFIX IS LEVIED, not decoration. This field was `Cm` when the columns were centimetres, and
+	// the rename to millimetres left the name behind — so every message built from it went on saying
+	// «см» next to a millimetre number while the arithmetic stayed right. A wrong unit in a refusal is
+	// worse than no refusal: «завышена примерно на 20 см по периметру» sends a cutter looking for a
+	// twenty-centimetre error that is two.
+	Mm decimal.Decimal
 	// Recorded says the раскладка states its offset at all. False = «старая норма».
 	Recorded bool
-	// Confirmed says the contour half was measured off the file, so Cm is the total and not a floor.
+	// Confirmed says the contour half was measured off the file, so Mm is the total and not a floor.
 	Confirmed bool
 }
 
@@ -70,9 +76,9 @@ func MarkerAllowanceOf(seam, contour decimal.NullDecimal) MarkerAllowance {
 		return MarkerAllowance{}
 	}
 	if !contour.Valid {
-		return MarkerAllowance{Cm: seam.Decimal, Recorded: true}
+		return MarkerAllowance{Mm: seam.Decimal, Recorded: true}
 	}
-	return MarkerAllowance{Cm: contour.Decimal.Add(seam.Decimal), Recorded: true, Confirmed: true}
+	return MarkerAllowance{Mm: contour.Decimal.Add(seam.Decimal), Recorded: true, Confirmed: true}
 }
 
 // MarkerAllowanceRefusal returns the refusal for a DOUBLE ALLOWANCE, or nil when the pair is honest.
@@ -110,9 +116,9 @@ func MarkerAllowanceRefusal(seam, contour decimal.NullDecimal, contourLayer stri
 	}
 	total := contour.Decimal.Add(seam.Decimal)
 	return NewFieldViolation("seam_allowance_mm", ReasonDoubleSeamAllowance, seam.Decimal.String(),
-		fmt.Sprintf("%s — это линия КРОЯ: замерено, что она лежит на %s см снаружи линии шва. "+
-			"Раскладка добавила ещё %s см офсета, и припуск посчитан дважды — длина настила завышена "+
-			"примерно на %s см по периметру каждой детали. Либо поставьте припуск 0, либо выберите "+
+		fmt.Sprintf("%s — это линия КРОЯ: замерено, что она лежит на %s мм снаружи линии шва. "+
+			"Раскладка добавила ещё %s мм офсета, и припуск посчитан дважды — длина настила завышена "+
+			"примерно на %s мм по периметру каждой детали. Либо поставьте припуск 0, либо выберите "+
 			"контурный слой с линией шва.",
 			layer, contour.Decimal.String(), seam.Decimal.String(), total.String()))
 }

@@ -184,19 +184,19 @@ func TestMarkerAllowanceOf(t *testing.T) {
 		if !a.Recorded || a.Confirmed {
 			t.Fatalf("want recorded-but-unconfirmed, got %+v", a)
 		}
-		if !a.Cm.Equal(decimal.RequireFromString("1.00")) {
-			t.Fatalf("Cm = %s, want 1.00", a.Cm)
+		if !a.Mm.Equal(decimal.RequireFromString("1.00")) {
+			t.Fatalf("Mm = %s, want 1.00", a.Mm)
 		}
 	})
 	t.Run("both halves sum", func(t *testing.T) {
 		a := MarkerAllowanceOf(dec("0"), dec("1.00"))
-		if !a.Recorded || !a.Confirmed || !a.Cm.Equal(decimal.RequireFromString("1.00")) {
+		if !a.Recorded || !a.Confirmed || !a.Mm.Equal(decimal.RequireFromString("1.00")) {
 			t.Fatalf("want confirmed 1.00, got %+v", a)
 		}
 	})
 	t.Run("a recorded zero is a measurement, not an absence", func(t *testing.T) {
 		a := MarkerAllowanceOf(dec("0"), dec("0"))
-		if !a.Recorded || !a.Confirmed || !a.Cm.IsZero() {
+		if !a.Recorded || !a.Confirmed || !a.Mm.IsZero() {
 			t.Fatalf("want a confirmed zero, got %+v", a)
 		}
 	})
