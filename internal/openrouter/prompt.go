@@ -60,6 +60,9 @@ Rules:
 - Use only these attachment_kind tokens: binder, hemmer_folder, scroll_foot, zipper_foot,
   invisible_zipper_foot, edge_guide, piping_foot, elastic_attachment, other.
 - ALL lengths are MILLIMETRES. Stitch density is the one exception and is per centimetre.
+- RANGES THE SAVE ENFORCES, so a draft outside them cannot be accepted as written: stitches_per_cm
+  1..20 (3-5 is ordinary sewing; never 0 — omit it instead), seam_allowance_mm and
+  topstitch_width_mm 0..100.
 - Omit seam_class, stitches_per_cm and seam_allowance_mm when the step simply follows the card's
   default — an omitted field INHERITS, and repeating the default hides which steps genuinely differ.
 - Prefer materials and pieces from the provided context; do not invent parts that contradict it.

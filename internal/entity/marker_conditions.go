@@ -144,6 +144,12 @@ const (
 	MaxSeamAllowanceMm = 100
 	// Below this a SET value is almost certainly centimetres. Zero is exempt — it is a real setting.
 	SuspiciouslySmallSeamAllowanceMm = 1
+	// MarkerAllowanceMaxFrac is the fraction the millimetre columns actually store: DECIMAL(6,1).
+	// It is ONE, not two — the columns held centimetres with hundredths before 0290, and the code
+	// that rounded to two decimals kept doing so afterwards, which let 7.55 mm pass validation and
+	// be silently rewritten to 7.6 by MySQL. Tenths of a millimetre is the same physical precision
+	// hundredths of a centimetre were; the digit that vanished never carried anything.
+	MarkerAllowanceMaxFrac = 1
 )
 
 // ValidateSeamAllowanceStandardMm checks a REQUIRED allowance (the workshop default or a card's
@@ -172,6 +178,39 @@ func ValidateSeamAllowanceStandardMm(field string, v decimal.NullDecimal) error 
 	if v.Decimal.IsPositive() && v.Decimal.LessThan(decimal.NewFromInt(SuspiciouslySmallSeamAllowanceMm)) {
 		return NewFieldViolation(field, "implausibly_narrow", v.Decimal.String(),
 			"the value is in MILLIMETRES — under 1 mm looks like centimetres typed into a millimetre field (10 mm, not 1); enter 0 if the выкройки genuinely carry the cut line")
+	}
+	return nil
+}
+
+// ValidateMarkerAllowanceMm checks an allowance RECORDED ON A РАСКЛАДКА — either half: the offset the
+// layout added by inflating the contour, or the allowance measured inside the contour that was laid.
+//
+// THIS IS WHERE THE CEILING LIVES NOW, and the move is the point. It used to be a CHECK constraint
+// (0290, first edition), but MySQL validates ADD CONSTRAINT against every existing row, so a ceiling
+// introduced today would retroactively condemn раскладки recorded when no ceiling existed — and take
+// the whole deploy down with them (3819 on migration, and with MYSQL_AUTOMIGRATE that is a halted
+// start). A unit check belongs on the WRITE, where it can name the field and say what is wrong; the
+// schema keeps only what is true of every row that has ever existed (non-negative). See 0292.
+//
+// NO «implausibly narrow» RULE HERE, unlike the standard. One of the two halves is MEASURED off the
+// drawing, and the measurement's own floor is half a millimetre — refusing a sub-millimetre value
+// would reject an honest reading of a file where the two lines nearly coincide. The centimetre
+// mistake is caught where it actually does damage: on the STANDARD, which defines the gate.
+func ValidateMarkerAllowanceMm(field string, v decimal.NullDecimal) error {
+	if !v.Valid {
+		return nil
+	}
+	if v.Decimal.IsNegative() {
+		return NewFieldViolation(field, "must_not_be_negative", v.Decimal.String(),
+			"an allowance is 0 or more; to record that it was never measured, omit the field instead of sending a negative number")
+	}
+	if v.Decimal.Exponent() < -MarkerAllowanceMaxFrac {
+		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
+			"round to at most 1 decimal place — the column stores tenths of a millimetre, and the extra digits would be dropped by the database without saying so")
+	}
+	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxSeamAllowanceMm)) {
+		return NewFieldViolation(field, "implausibly_wide", v.Decimal.String(),
+			fmt.Sprintf("the value is in MILLIMETRES and %d mm is the ceiling — past that this is not a seam allowance but the wrong pair of contours; pick a different contour layer, or check for a stray zero", MaxSeamAllowanceMm))
 	}
 	return nil
 }
