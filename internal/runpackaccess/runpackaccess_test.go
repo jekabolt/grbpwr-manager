@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,14 +14,26 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 const testPepper = "test-pepper-for-run-pack"
 
-// moneySentinels — суммы, которыми фикстура насыщает прогон и карту. Ни одна из них не имеет права
-// появиться в манифесте; ищутся они в сыром JSON, потому что число переживает переименование поля.
-var moneySentinels = []string{"777.77", "888.88", "999.99", "555.55", "444.44"}
+// moneySentinels — суммы, которыми фикстура насыщает прогон, живую карту, СНАПШОТ РЕЛИЗА и каталог
+// артикулов. Ни одна из них не имеет права появиться в манифесте; ищутся они в сыром JSON, потому
+// что число переживает переименование поля.
+//
+// 666.66 и 333.33 приехали вместе с чтением спецификации по релизу: замороженный блоб несёт цены
+// BOM, а каталог артикулов (его дочитывают ради каталожных имён) — прайс. Оба чтения новые, и
+// доказывать их безвредность обязан тот же тест, что и раньше доказывал безвредность живой карты.
+var moneySentinels = []string{
+	"777.77", "888.88", "999.99", "555.55", "444.44", // прогон и живая карта
+	"666.66", "333.33", "222.22", // блоб релиза, каталог артикулов, юнит-кост самого релиза
+}
 
 // serveRunPack routes через тот же mount, что и http.go, чтобы chi.URLParam видел токен так же,
 // как в бою (включая HEAD — отказ по методу обязан быть неотличим от отказа по токену).
@@ -35,13 +48,15 @@ func serveRunPack(svc *Service, method, target string) *httptest.ResponseRecorde
 
 // fakeRuns — узкий фейк вместо мока всего репозитория партий: интерфейс Runs ровно за этим и узкий.
 type fakeRuns struct {
-	access    map[int]*entity.ProductionRunPackAccess
-	pack      *entity.RunPack
-	lays      entity.ProductionRunLayList
-	comp      map[int][]entity.RunPackMarkerSize
-	ensured   int
-	recorded  map[int]int64
-	packError error
+	access      map[int]*entity.ProductionRunPackAccess
+	pack        *entity.RunPack
+	lays        entity.ProductionRunLayList
+	comp        map[int][]entity.RunPackMarkerSize
+	ensured     int
+	recorded    map[int]int64
+	packError   error
+	recordErr   error
+	recordCalls int
 }
 
 func (f *fakeRuns) EnsureRunPackAccess(_ context.Context, runID int) (*entity.ProductionRunPackAccess, error) {
@@ -62,6 +77,10 @@ func (f *fakeRuns) GetRunPackAccess(_ context.Context, runID int) (*entity.Produ
 }
 
 func (f *fakeRuns) RecordRunPackAccess(_ context.Context, counts map[int]int64, _ map[int]time.Time) error {
+	f.recordCalls++
+	if f.recordErr != nil {
+		return f.recordErr
+	}
 	if f.recorded == nil {
 		f.recorded = map[int]int64{}
 	}
@@ -95,13 +114,110 @@ func (f *fakeRuns) ListLays(_ context.Context, _ int) (entity.ProductionRunLayLi
 	return f.lays, nil
 }
 
-type fakeCards struct{ card *entity.TechCard }
+// fakeCards — карточка, релиз и каталог артикулов: ровно контракт cutspec.Cards. Релиз отдаётся
+// отдельно от живой карты и НАРОЧНО описывает другую спецификацию — иначе тест не смог бы отличить
+// «посчитано по снапшоту» от «посчитано по живой карте, но повезло».
+type fakeCards struct {
+	card       *entity.TechCard
+	liveReads  int
+	release    *entity.TechCardRelease
+	releaseErr error
+	materials  map[int]*entity.MaterialWithPrice
+}
 
 func (f *fakeCards) GetTechCardById(_ context.Context, _ int) (*entity.TechCard, error) {
+	f.liveReads++
 	if f.card == nil {
 		return nil, sql.ErrNoRows
 	}
 	return f.card, nil
+}
+
+func (f *fakeCards) GetTechCardRelease(_ context.Context, id int) (*entity.TechCardRelease, error) {
+	if f.releaseErr != nil {
+		return nil, f.releaseErr
+	}
+	if f.release == nil || f.release.Id != id {
+		return nil, sql.ErrNoRows
+	}
+	return f.release, nil
+}
+
+func (f *fakeCards) GetMaterial(_ context.Context, id int) (*entity.MaterialWithPrice, error) {
+	if m, ok := f.materials[id]; ok {
+		return m, nil
+	}
+	return nil, sql.ErrNoRows
+}
+
+// Ключи спецификации. Релизная и живая половины разведены НАМЕРЕННО до последнего поля: имя детали,
+// количество панелей на изделие и артикул — по каждому из них видно, какую именно спецификацию
+// напечатал наряд.
+const (
+	relPieceKey  = "01PIECEREL0000000000000000"
+	livePieceKey = "01PIECELIVE000000000000000"
+	relPieceName = "полочка релиза"
+	livePieceCut = "живая полочка"
+)
+
+// releaseSnapshot — блоб релиза Rev.3: ОДНА деталь в двух панелях из артикула 200, у синего
+// колорвея пин на 201. Живая карта (fixture) описывает совсем другое — одну панель из артикула 100.
+//
+// Внутри блоба лежат деньги (цена строки BOM), и лежат они здесь не для полноты: этот же блоб
+// проверяет TestManifestCarriesNoMoney — снапшот обязан въехать в спецификацию, но не в бумагу.
+func releaseSnapshot() string {
+	snap := &pb_common.TechCard{
+		Id: 5,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber: "GR-042",
+			Name:        "hooded jacket",
+			SizeIds:     []int32{7, 8},
+			BomItems: []*pb_common.TechCardBomItem{{
+				Id:         700,
+				LineKey:    "01BOMREL000000000000000000",
+				Name:       "основная ткань (роль)",
+				Section:    pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC,
+				MaterialId: 200,
+				UnitPrice:  &pb_decimal.Decimal{Value: "666.66"},
+				Currency:   "EUR",
+			}},
+			Pieces: []*pb_common.TechCardPiece{{
+				LineKey:          relPieceKey,
+				Name:             relPieceName,
+				PiecesPerGarment: 2,
+				Grainline:        "долевая",
+			}},
+		},
+		Colorways: []*pb_common.AdminColorwayRef{
+			{ColorwayId: 55, DevName: "Чёрный", Usages: []*pb_common.TechCardColorwayUsage{{
+				PieceLineKey: relPieceKey, BomItemId: 700,
+			}}},
+			// Пин рецепта: тот же слот, другой артикул. Без каталожных имён обе строки подписались бы
+			// ролью слота, и разница между колорвеями исчезла бы ровно там, где её читает закройщик.
+			{ColorwayId: 66, DevName: "Синий", Usages: []*pb_common.TechCardColorwayUsage{{
+				PieceLineKey: relPieceKey, BomItemId: 700, MaterialId: proto.Int64(201),
+			}}},
+		},
+	}
+	blob, err := protojson.Marshal(snap)
+	if err != nil {
+		panic(err)
+	}
+	return string(blob)
+}
+
+// material — строка каталога артикулов с ЦЕНОЙ: наряд дочитывает каталог ради имени, и тест обязан
+// доказать, что вместе с именем в цех не уезжает прайс.
+func material(id int, name, price string) *entity.MaterialWithPrice {
+	m := &entity.MaterialWithPrice{}
+	m.Id = id
+	m.Name = name
+	if price != "" {
+		m.LatestPrice = &entity.MaterialPrice{
+			MaterialId: id, Price: decimal.RequireFromString(price), Currency: "EUR",
+		}
+	}
+	return m
 }
 
 func nd(v string) decimal.NullDecimal {
@@ -192,21 +308,43 @@ func fixture() (*fakeRuns, *fakeCards) {
 		// Слот без артикула, на который ссылается рецепт колорвея → блокер «нет артикула».
 		{Name: "Тесьма", Unit: ns("pc"), UnitPrice: nd("888.88")},
 	}
+	// Деталь ЖИВОЙ карты: одна панель на изделие из артикула 100. Всё, чем она отличается от
+	// релизной, — это те поля, по которым тест и узнаёт, какую спецификацию напечатал наряд.
+	card.Pieces = []entity.TechCardPiece{{
+		Id: 900, LineKey: livePieceKey, Name: livePieceCut, PiecesPerGarment: 1, Grainline: "долевая",
+	}}
 	card.Colorways = []entity.TechCardColorway{
 		{Id: 1, Name: "Чёрный", ProductId: ni32(55), CostPrice: nd("999.99"),
 			Usages: []entity.TechCardColorwayUsage{
-				{BomItemIndex: ni32(0), Consumption: nd("2")},
+				{BomItemIndex: ni32(0), Consumption: nd("2"), PieceId: ni64(900), PieceLineKey: livePieceKey},
 				{BomItemIndex: ni32(1), Quantity: nd("3")},
 			}},
 		{Id: 2, Name: "Синий", ProductId: ni32(66), Usages: []entity.TechCardColorwayUsage{
-			{BomItemIndex: ni32(0), Consumption: nd("2")},
+			{BomItemIndex: ni32(0), Consumption: nd("2"), PieceId: ni64(900), PieceLineKey: livePieceKey},
 		}},
 	}
 	card.LinkedMaterials = map[int]entity.MaterialWithPrice{
 		100: {LatestPrice: &entity.MaterialPrice{MaterialId: 100,
 			Price: decimal.RequireFromString("555.55"), Currency: "EUR"}},
 	}
-	return runs, &fakeCards{card: card}
+	return runs, &fakeCards{
+		card: card,
+		// Прогон привязан к релизу #12 (Rev.3), и по умолчанию снапшот ЧИТАЕМЫЙ: нормальный путь
+		// наряда — это крой по замороженной спецификации, и фикстура обязана быть нормальным путём.
+		release: &entity.TechCardRelease{
+			TechCardReleaseMeta: entity.TechCardReleaseMeta{
+				Id: 12, TechCardId: 5, ReleaseNumber: 3,
+				UnitCost:  nd("222.22"),
+				Currency:  ns("EUR"),
+				CreatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+			},
+			Snapshot: releaseSnapshot(),
+		},
+		materials: map[int]*entity.MaterialWithPrice{
+			200: material(200, "ткань релиза", "333.33"),
+			201: material(201, "подкладка релиза", ""),
+		},
+	}
 }
 
 func newTestService(t *testing.T) (*Service, *fakeRuns, *fakeCards) {
@@ -461,6 +599,102 @@ func TestRateLimitedLooksExactlyLikeEverythingElse(t *testing.T) {
 	}
 	if last != http.StatusNotFound {
 		t.Fatalf("after exhausting the per-token budget: got %d, want 404", last)
+	}
+}
+
+// TestFailedFlushKeepsCounters — неудачный сброс статистики НЕ ТЕРЯЕТ счётчики. Пачка подменяется
+// пустыми картами до похода в базу (иначе каждый запрос ждал бы мьютекс на длительности записи), и
+// раньше при ошибке она просто исчезала: один таймаут MySQL стирал все сканирования минуты, а
+// админский экран показывал «этой бумагой не пользуются».
+//
+// Проверяется и гонка: пока «шла запись», пришли новые сканирования — возврат обязан СЛОЖИТЬСЯ с
+// ними, а не затереть их и не потеряться сам.
+func TestFailedFlushKeepsCounters(t *testing.T) {
+	svc, runs, _ := newTestService(t)
+
+	svc.noteAccess(41)
+	svc.noteAccess(41)
+	svc.noteAccess(7)
+
+	runs.recordErr = errors.New("dial tcp: i/o timeout")
+	svc.flushStats()
+	if len(runs.recorded) != 0 {
+		t.Fatalf("запись провалилась, а фейк что-то сохранил: %+v", runs.recorded)
+	}
+
+	// Сканирование, пришедшее «во время записи»: оно уже лежит в свежих картах, и возврат пачки
+	// обязан его пережить.
+	svc.noteAccess(41)
+
+	runs.recordErr = nil
+	svc.flushStats()
+
+	if runs.recorded[41] != 3 || runs.recorded[7] != 1 {
+		t.Fatalf("после успешного пересброса: run 41 = %d (want 3), run 7 = %d (want 1) — счётчики "+
+			"неудачного сброса обязаны доехать вместе с накопленными позже",
+			runs.recorded[41], runs.recorded[7])
+	}
+	if runs.recordCalls != 2 {
+		t.Fatalf("record calls = %d, want 2", runs.recordCalls)
+	}
+
+	// Последний доступ остаётся ПОСЛЕДНИМ: возвращаемая метка старше накопленной во время записи, и
+	// затирать ею свежую нельзя.
+	svc.statsMu.Lock()
+	pending := len(svc.statsCount)
+	svc.statsMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("после успешного сброса в pending осталось %d прогонов", pending)
+	}
+}
+
+// TestFailedFlushKeepsLatestAccessTime — метка last_access_at при возврате пачки берётся
+// МАКСИМУМОМ. Возвращаемая метка старше той, что накопилась во время записи, и присвоение откатило
+// бы «последний доступ» в прошлое.
+func TestFailedFlushKeepsLatestAccessTime(t *testing.T) {
+	svc, runs, _ := newTestService(t)
+
+	old := time.Now().UTC().Add(-time.Hour)
+	svc.statsMu.Lock()
+	svc.statsCount[41] = 1
+	svc.statsLast[41] = old
+	svc.statsMu.Unlock()
+
+	runs.recordErr = errors.New("write timeout")
+	svc.flushStats()
+
+	fresh := time.Now().UTC()
+	svc.noteAccess(41)
+
+	svc.statsMu.Lock()
+	got := svc.statsLast[41]
+	count := svc.statsCount[41]
+	svc.statsMu.Unlock()
+	if count != 2 {
+		t.Fatalf("pending count = %d, want 2 (возвращённый + новый)", count)
+	}
+	if got.Before(fresh) {
+		t.Fatalf("last_access_at = %s откатился в прошлое (возврат затёр свежую метку)", got)
+	}
+}
+
+// TestPendingStatsAreBounded — авария базы не имеет права съесть память: число РАЗЛИЧНЫХ прогонов в
+// неотправленной пачке ограничено потолком, лишние теряются с логом. Размен сознательный —
+// статистика против живого процесса.
+func TestPendingStatsAreBounded(t *testing.T) {
+	svc, runs, _ := newTestService(t)
+	runs.recordErr = errors.New("db down")
+
+	for i := 1; i <= maxPendingRuns+50; i++ {
+		svc.noteAccess(i)
+	}
+	svc.flushStats()
+
+	svc.statsMu.Lock()
+	pending := len(svc.statsCount)
+	svc.statsMu.Unlock()
+	if pending != maxPendingRuns {
+		t.Fatalf("pending runs = %d, want потолок %d", pending, maxPendingRuns)
 	}
 }
 
