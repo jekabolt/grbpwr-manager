@@ -1145,9 +1145,13 @@ func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySiz
 	return decimal.NullDecimal{Decimal: applyWastage(totalQty.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
 }
 
-// EffectiveTotal is the usage's contribution to the materials rollup: its whole-run
-// SizeRunTotal when it has per-size consumption (order-scale), otherwise its per-garment
-// LineTotal. Mirrors the «per-size if present, else per-garment» rule applied per usage.
+// EffectiveTotal is the usage's contribution to a WHOLE-RUN rollup: its SizeRunTotal when it
+// has per-size consumption (order-scale), otherwise its per-garment LineTotal. Mirrors the
+// «per-size if present, else per-garment» rule applied per usage.
+//
+// NOT the costing basis — that is UnitTotal, and since the base-size change the two no longer
+// share a denominator. This stays a display/whole-run helper for a caller that genuinely has a
+// quantity per size in hand (a real production run's lines), never for standard cost.
 func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
 	if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
 		return rt
@@ -1155,22 +1159,56 @@ func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyByS
 	return u.LineTotal(bom)
 }
 
-// UnitTotal is the usage's PER-GARMENT material cost for costing. A per-garment usage
-// (measured Consumption or countable Quantity) uses its LineTotal directly. A usage graded
-// ONLY per size has no single per-garment rate, so its per-garment figure is the whole-run
-// SizeRunTotal divided by totalOrderQty (a qty-weighted average) — this keeps per-unit and
-// per-order on ONE scale, since unit × totalOrderQty recovers the run. INVALID when neither
-// is available (e.g. per-size only with no order quantities yet).
-func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, orderQtyBySize map[int]int, totalOrderQty int) decimal.NullDecimal {
+// BaseSizeTotal is a size-graded usage's PER-GARMENT material cost on the style's BASE SAMPLE
+// SIZE: the norm recorded for baseSizeID × unit_price, grossed up by the article's
+// wastage_percent — the same arithmetic LineTotal does for an ungraded norm, with the base
+// size's number standing in as the norm.
+//
+// INVALID (and deliberately so) when the usage is not size-graded, when the card names NO base
+// sample size (baseSizeID <= 0), when this usage carries no norm for that size, or when the
+// article has no price. Every one of those is a question nobody has answered, and the caller
+// must carry it out as «непосчитано» — see UnitTotal.
+func (u *TechCardColorwayUsage) BaseSizeTotal(bom *TechCardBomItem, baseSizeID int) decimal.NullDecimal {
+	if len(u.SizeConsumptions) == 0 || baseSizeID <= 0 || bom == nil || !bom.UnitPrice.Valid {
+		return decimal.NullDecimal{}
+	}
+	for _, sc := range u.SizeConsumptions {
+		if sc.SizeId != baseSizeID {
+			continue
+		}
+		total := sc.Consumption.Mul(bom.UnitPrice.Decimal)
+		if !u.wastageApplies() {
+			return decimal.NullDecimal{Decimal: total, Valid: true}
+		}
+		return decimal.NullDecimal{Decimal: applyWastage(total, bom.WastagePercent), Valid: true}
+	}
+	return decimal.NullDecimal{}
+}
+
+// UnitTotal is the usage's PER-GARMENT material cost for costing — the standard cost of the
+// style. A per-garment usage (measured Consumption or countable Quantity) uses its LineTotal
+// directly. A usage graded ONLY per size is costed on the BASE SAMPLE SIZE (BaseSizeTotal).
+// INVALID when neither is available, and an invalid result is the caller's signal to treat the
+// whole recipe as uncosted (dto's hasUnpriced), never to substitute a number.
+//
+// THE BASIS AND WHY IT CHANGED. This used to be SizeRunTotal ÷ Σ size_quantities — the card's
+// «типовой тираж для калькуляции» averaged the graded norms into one figure. That denominator
+// was a fiction: tech_card.size_quantities is an illustrative mix, real quantities live on a
+// production_run, and it decided what went into product.cost_price and from there into every
+// margin. It was also arithmetically unsound: the denominator summed EVERY size carrying a
+// positive quantity while the numerator summed only the sizes for which THIS usage had a norm,
+// so a partially-graded usage was divided by a run it never covered and came out systematically
+// CHEAP. A style's standard cost is now the base size's own norm — one size somebody actually
+// drafted and approved — and it moves only when that norm moves.
+//
+// WHAT MUST NOT COME BACK: a fallback to the median/average/first size when the base size is
+// unset or ungraded. That silently re-labels a number nobody approved as the approved cost. The
+// honest answer is no number, and the flag on the wire.
+func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, baseSizeID int) decimal.NullDecimal {
 	if lt := u.LineTotal(bom); lt.Valid {
 		return lt
 	}
-	if totalOrderQty > 0 {
-		if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
-			return decimal.NullDecimal{Decimal: rt.Decimal.Div(decimal.NewFromInt(int64(totalOrderQty))), Valid: true}
-		}
-	}
-	return decimal.NullDecimal{}
+	return u.BaseSizeTotal(bom, baseSizeID)
 }
 
 // applyWastage grosses a base cost up by wastage_percent when set (× (1 + pct/100)).
@@ -2176,6 +2214,19 @@ type TechCardInsert struct {
 	// wipe mappings it never saw; true means full replace with the slice (empty = clear all).
 	PieceDxfAliases    []TechCardPieceDxfAlias `db:"-"`
 	PieceDxfAliasesSet bool                    `db:"-"`
+}
+
+// CostingBaseSizeID is the size a style's STANDARD COST is computed on: its base sample size, or
+// 0 when the card names none. Every consumer of the costing basis goes through this one accessor
+// precisely so that «the card has no base size» has exactly ONE answer everywhere — 0, which
+// TechCardColorwayUsage.UnitTotal turns into an uncosted (не посчитано) size-graded line. The
+// moment two call sites resolve it themselves, one of them grows a fallback and the style quietly
+// gets a cost nobody approved.
+func (tc *TechCardInsert) CostingBaseSizeID() int {
+	if tc == nil || !tc.BaseSampleSizeId.Valid || tc.BaseSampleSizeId.Int32 <= 0 {
+		return 0
+	}
+	return int(tc.BaseSampleSizeId.Int32)
 }
 
 // TechCardPieceDxfAlias is one DXF block-name → cut-piece mapping, scoped to a fabric slot

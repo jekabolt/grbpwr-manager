@@ -468,13 +468,23 @@ func TestConvertTechCardCosting(t *testing.T) {
 }
 
 // TestConvertTechCardPerSizeCosting checks a mixed colourway (one per-garment usage + one
-// per-size usage) folds the size-run cost against per-size order quantities.
+// size-graded usage) is costed on the STYLE'S BASE SAMPLE SIZE, and that a style naming no base
+// size leaves the graded usage uncosted instead of averaging it.
+//
+// REWRITTEN with the base-size basis. It previously asserted materials_per_unit = 6.4 =
+// (1.5×10 + 1.8×20)×2/30 + 3 — the qty-weighted average over size_quantities. That expectation was
+// the old basis written down, so it could not survive the change; the graded norm no longer meets
+// the declared typical run at all. The order_cost identity the old test celebrated («unit × 30
+// recovers the run») is deliberately gone too: unit cost is now the base size's cost, and
+// multiplying it by an illustrative mix does NOT reconstruct that mix's material bill. It was never
+// a real run to reconstruct.
 func TestConvertTechCardPerSizeCosting(t *testing.T) {
 	in := &pb_common.TechCardInsert{
-		StyleNumber:    "ST-021",
-		Name:           "Parka",
-		SizeIds:        []int32{4, 5},
-		SizeQuantities: []*pb_common.TechCardSizeQuantity{{SizeId: 4, OrderQty: 10}, {SizeId: 5, OrderQty: 20}},
+		StyleNumber:      "ST-021",
+		Name:             "Parka",
+		SizeIds:          []int32{4, 5},
+		BaseSampleSizeId: 4,
+		SizeQuantities:   []*pb_common.TechCardSizeQuantity{{SizeId: 4, OrderQty: 10}, {SizeId: 5, OrderQty: 20}},
 		BomItems: []*pb_common.TechCardBomItem{
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "shell", UnitPrice: dec("2"), Currency: "EUR"},
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "zip", UnitPrice: dec("3"), Currency: "EUR"},
@@ -488,7 +498,8 @@ func TestConvertTechCardPerSizeCosting(t *testing.T) {
 	// colourways left the write payload (R1); costing reads the enriched entity.Colorways.
 	got.Colorways = []entity.TechCardColorway{
 		{Id: 101, Name: "Black", ColorCode: "BLK", Usages: []entity.TechCardColorwayUsage{
-			// per-size: (1.5×10 + 1.8×20) × 2 = 51 × 2 = 102.
+			// size-graded: costed at base size 4 → 1.5 × 2 = 3. The 1.8 on size 5 and the declared
+			// 10/20 mix are both irrelevant to the standard cost now.
 			{BomItemIndex: sni(0), SizeConsumptions: []entity.TechCardBomSizeConsumption{
 				{SizeId: 4, Consumption: decimal.RequireFromString("1.5")}, {SizeId: 5, Consumption: decimal.RequireFromString("1.8")}}},
 			// per-garment countable: 1 × 3 = 3.
@@ -498,12 +509,21 @@ func TestConvertTechCardPerSizeCosting(t *testing.T) {
 	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	cost := pb.TechCard.Costing
 	cc := cost.ColorwayCosts[0]
-	// Per-unit: the per-size usage normalises to 102/30 = 3.4, the per-garment zip is 3, so
-	// materials_per_unit = 6.4. With no manual articles / defect, unit_cost = 6.4 and
-	// order_cost = 6.4 × 30 = 192 — which equals size-run 102 + zip run 90, recovering the run.
-	if cc.ColorwayId != 101 || cc.MaterialsPerUnit.Value != "6.4" || cc.UnitCost.Value != "6.4" ||
-		cc.OrderQty != 30 || cc.OrderCost.Value != "192" {
-		t.Errorf("mixed-scale per-unit/per-order mismatch: %+v", cc)
+	// materials_per_unit = 3 (shell at base size) + 3 (zip) = 6. No manual articles / defect, so
+	// unit_cost = 6. order_qty stays Σ size_quantities = 30 (display only), order_cost = 6 × 30.
+	if cc.ColorwayId != 101 || cc.MaterialsPerUnit.Value != "6" || cc.UnitCost.Value != "6" ||
+		cc.OrderQty != 30 || cc.OrderCost.Value != "180" || cc.HasUnpriced {
+		t.Errorf("base-size costing mismatch: %+v", cc)
+	}
+
+	// No base sample size → the graded usage is NOT costed and the card says so, instead of
+	// quietly averaging the two norms. Only the countable zip survives into the figure.
+	noBase := *got
+	noBase.BaseSampleSizeId = sql.NullInt32{}
+	pbNoBase := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: noBase}, CostingFx{})
+	ccNoBase := pbNoBase.TechCard.Costing.ColorwayCosts[0]
+	if ccNoBase.MaterialsPerUnit.Value != "3" || !ccNoBase.HasUnpriced {
+		t.Errorf("without a base size the graded usage must be uncosted and flagged: %+v", ccNoBase)
 	}
 }
 

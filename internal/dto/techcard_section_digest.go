@@ -374,6 +374,24 @@ func packagingProjection(tc *entity.TechCardInsert) any {
 	}
 }
 
+// costingProjection fingerprints what the card COSTS: the manual articles, the declared typical
+// run, and — since the base-size change — the SIZE the standard cost is computed on.
+//
+// WHY base_sample_size_id is in here even though it lives on the card header. It is not metadata
+// about the costing, it is an INPUT TO THE DERIVATION: a size-graded material norm is costed at
+// that size and nowhere else (entity.TechCardColorwayUsage.UnitTotal), so re-pointing the base
+// size from M to XL reprices every colourway of the style. Leaving it out would give exactly the
+// failure the whole mechanism exists to prevent — a costing sign-off staying green over a number
+// that changed. That is the same test materialsProjection sets for `kind`: the day a field becomes
+// an input to a derivation rather than a grouping, it must join the signature.
+//
+// It is added UNCONDITIONALLY, and that restamps every stored COSTING digest at deploy: every
+// approved costing sign-off goes stale at once. That is honest, not collateral damage — the basis
+// of the number under those signatures changed in the same commit, from «average over the declared
+// mix» to «the base size's own norm», so no existing approval describes the current figure. The
+// positional-tail trick (see constructionProjection) would have bought nothing here: it preserves
+// the hash only for cards where the new element is empty, and a card with no base size is precisely
+// a card whose cost just became uncomputable — the one that most needs a fresh look.
 func costingProjection(tc *entity.TechCardInsert) any {
 	var costing any
 	if c := tc.Costing; c != nil {
@@ -392,7 +410,10 @@ func costingProjection(tc *entity.TechCardInsert) any {
 	for _, q := range tc.SizeQuantities {
 		qty = append(qty, []any{q.SizeId, q.OrderQty})
 	}
-	return []any{costing, qty}
+	// CostingBaseSizeID, not BaseSampleSizeId.Int32: an unset NullInt32 and a stored 0 mean the same
+	// thing to the costing (no basis), and hashing the raw field would let those two spellings of one
+	// state produce two fingerprints and a phantom "changed since sign-off".
+	return []any{costing, qty, tc.CostingBaseSizeID()}
 }
 
 // dec renders a nullable decimal as a canonical string, so 1.50 and 1.5 — which the DB may return

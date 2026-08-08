@@ -990,9 +990,11 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 
 	sizeIds := intsToInt32(tc.SizeIds)
 
-	// orderQtyBySize resolves each colourway usage's size_run_total the same way the cost estimate
-	// does (style_cost_estimate.go) — the style's declared per-size order quantity (size_quantities),
-	// 0/absent when the card has none yet.
+	// orderQtyBySize feeds the per-usage size_run_total shown on the recipe — the style's declared
+	// per-size quantity (size_quantities), 0/absent when the card has none yet. DISPLAY ONLY: it is
+	// «what this norm would cost over the illustrative run». The style's standard cost no longer
+	// divides by it (see entity.TechCardColorwayUsage.UnitTotal); the two numbers are now answers to
+	// different questions and must not be reconciled by reintroducing the average.
 	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
 	for _, q := range tc.SizeQuantities {
 		orderQtyBySize[q.SizeId] = q.OrderQty

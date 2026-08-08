@@ -50,10 +50,12 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 		BaseCurrency: fx.Base,
 	}
 
-	orderQtyBySize := make(map[int]int, len(tc.SizeQuantities))
+	// baseSizeID is the costing basis (see entity.TechCardColorwayUsage.UnitTotal); totalOrderQty is
+	// only the illustrative run the estimate multiplies the finished unit cost by. Keeping them apart
+	// is the whole point of this phase — the declared mix no longer divides anything.
+	baseSizeID := tc.CostingBaseSizeID()
 	totalOrderQty := 0
 	for _, q := range tc.SizeQuantities {
-		orderQtyBySize[q.SizeId] = q.OrderQty
 		if q.OrderQty > 0 {
 			totalOrderQty += q.OrderQty
 		}
@@ -80,6 +82,14 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 		usedCatalogFallback bool
 		hasUnpricedLine     bool
 		hasUnconvertibleMat bool
+		// hasNoBaseSizeNorm is kept apart from hasUnpricedLine because the operator's next action is
+		// a different one: "no price" sends them to the material, "no norm on the base size" sends
+		// them to the size grading (or to naming a base size at all). Lumping the two under one
+		// caveat sent people hunting for a price that was never the problem.
+		hasNoBaseSizeNorm bool
+		// hasNoNormLine is the third case, previously also swallowed by "unpriced": a priced article
+		// on a usage that states no consumption and no quantity at all.
+		hasNoNormLine bool
 	)
 	materialsBase := decimal.Zero
 	if cw != nil {
@@ -117,7 +127,7 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				}
 			}
 
-			qty, applyWaste, ok := usagePerGarmentQty(u, orderQtyBySize, totalOrderQty)
+			qty, applyWaste, ok := usagePerGarmentQty(u, baseSizeID)
 			if ok {
 				line.Consumption = pbDecimalFromDecimal(qty)
 			}
@@ -139,9 +149,16 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			}
 
 			// Per-garment line total in the line's own currency: qty × unit_price, grossed by
-			// wastage for measured/per-size usage (countable trims take no wastage) — identical to
+			// wastage for measured/size-graded usage (countable trims take no wastage) — identical to
 			// entity.UnitTotal with the resolved price substituted.
-			if ok && price.Valid {
+			//
+			// The three failure modes are told APART, not merged into "unpriced". A line can be
+			// uncostable because nobody priced the article, because a size-graded norm has no value
+			// on the base sample size, or because the usage carries no norm at all — and each sends
+			// the operator somewhere different. Reporting all three as "no price" (which is what a
+			// single else-branch did) sent people hunting for a price that was already there.
+			switch {
+			case ok && price.Valid:
 				lineTotal := qty.Mul(price.Decimal)
 				// Marker-sourced rows are never grossed: the marker length already pays for the
 				// waste (PIECES-WASTAGE-DESIGN §2.3) — grossing again is the double-count trap.
@@ -155,8 +172,12 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				} else {
 					hasUnconvertibleMat = true
 				}
-			} else {
+			case !price.Valid:
 				hasUnpricedLine = true
+			case len(u.SizeConsumptions) > 0:
+				hasNoBaseSizeNorm = true
+			default:
+				hasNoNormLine = true
 			}
 
 			out.Materials = append(out.Materials, line)
@@ -200,7 +221,8 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 	out.UnitCostBase = money2(unitBase)
 	out.OrderCostBase = money2(unitBase.Mul(decimal.NewFromInt(int64(totalOrderQty))))
 
-	out.Caveat = strings.Join(estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat, hasUnconvertibleArt), "; ")
+	out.Caveat = strings.Join(estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat,
+		hasUnconvertibleArt, hasNoBaseSizeNorm, hasNoNormLine), "; ")
 	return out
 }
 
@@ -239,9 +261,14 @@ func resolveUsageBom(bomItems []entity.TechCardBomItem, u *entity.TechCardColorw
 
 // usagePerGarmentQty returns the usage's per-garment quantity (price-free), whether wastage applies,
 // and ok=false when there is no usable quantity. It mirrors entity.UnitTotal exactly with the price
-// factored out: countable Quantity (no wastage); measured Consumption (wastage); per-size graded
-// consumption normalised to per-garment by dividing the run quantity by totalOrderQty (wastage).
-func usagePerGarmentQty(u *entity.TechCardColorwayUsage, orderQtyBySize map[int]int, totalOrderQty int) (decimal.Decimal, bool, bool) {
+// factored out: countable Quantity (no wastage); measured Consumption (wastage); a size-graded
+// consumption taken at the style's BASE SAMPLE SIZE (wastage).
+//
+// ok=false on a size-graded usage means the card names no base size (baseSizeID<=0) or this usage
+// has no norm on it. The estimate must then show the line WITHOUT a consumption and say so in the
+// caveat — the previous behaviour, averaging the graded norms over the card's declared typical
+// run, is exactly the invented denominator this phase removed.
+func usagePerGarmentQty(u *entity.TechCardColorwayUsage, baseSizeID int) (decimal.Decimal, bool, bool) {
 	if len(u.SizeConsumptions) == 0 {
 		if u.Quantity.Valid {
 			return u.Quantity.Decimal, false, true
@@ -251,21 +278,15 @@ func usagePerGarmentQty(u *entity.TechCardColorwayUsage, orderQtyBySize map[int]
 		}
 		return decimal.Zero, false, false
 	}
-	if totalOrderQty <= 0 {
+	if baseSizeID <= 0 {
 		return decimal.Zero, false, false
 	}
-	runQty := decimal.Zero
 	for _, sc := range u.SizeConsumptions {
-		q, ok := orderQtyBySize[sc.SizeId]
-		if !ok || q <= 0 {
-			continue
+		if sc.SizeId == baseSizeID {
+			return sc.Consumption, true, true
 		}
-		runQty = runQty.Add(sc.Consumption.Mul(decimal.NewFromInt(int64(q))))
 	}
-	if runQty.IsZero() {
-		return decimal.Zero, false, false
-	}
-	return runQty.Div(decimal.NewFromInt(int64(totalOrderQty))), true, true
+	return decimal.Zero, false, false
 }
 
 // resolvePlanUnitPrice applies the Q4 price ladder for one usage line. A colourway that PINS a
@@ -328,10 +349,17 @@ func grossByWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) de
 	return base.Mul(decimal.NewFromInt(1).Add(wastagePercent.Decimal.Div(decimal.NewFromInt(100))))
 }
 
-func estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat, hasUnconvertibleArt bool) []string {
+func estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat, hasUnconvertibleArt,
+	hasNoBaseSizeNorm, hasNoNormLine bool) []string {
 	var c []string
 	if usedCatalogFallback {
 		c = append(c, "some material lines use the latest catalog price (no BOM snapshot); the estimate may drift from the saved plan document")
+	}
+	if hasNoBaseSizeNorm {
+		c = append(c, "some size-graded material lines have no consumption on the style's base sample size (or the style names none) — those lines are NOT costed and the estimate understates")
+	}
+	if hasNoNormLine {
+		c = append(c, "some material lines state no consumption or quantity at all — those lines are NOT costed and the estimate understates")
 	}
 	if hasUnpricedLine {
 		c = append(c, "some material lines have no price (neither a BOM snapshot nor a catalog price) — the estimate understates")
