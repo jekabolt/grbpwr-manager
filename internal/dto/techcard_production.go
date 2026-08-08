@@ -391,6 +391,12 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 // parseTopstitch splits the sub-message into its three columns and enforces the one rule that makes
 // the mode mean anything: a width belongs to WIDTH and nowhere else. Carrying «6 mm» alongside
 // «edge» would leave a shadow value that nothing reads and the next editor believes.
+// The violation paths here are FLAT (`topstitch_width_mm`), not the nested wire path
+// (`topstitch.width_mm`), and that is deliberate: a field violation exists to point the admin at the
+// CONTROL the operator must fix, and the admin routes it by camel-casing the path onto a form field.
+// The form holds these three flat, so a nested path would map to `topstitch.widthMm`, match nothing,
+// and demote a precise message into an unattributable toast — see field-errors.ts, which documents
+// exactly this divergence between wire name and form name.
 func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString, decimal.NullDecimal, sql.NullInt32, error) {
 	var mode sql.NullString
 	var width decimal.NullDecimal
@@ -400,7 +406,7 @@ func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString
 	}
 	tok, ok := topstitchModePbToToken[t.Mode]
 	if !ok {
-		return mode, width, rows, entity.NewFieldViolation(step+".topstitch.mode", "unknown_value", t.Mode.String(), "pick edge or width")
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_mode", "unknown_value", t.Mode.String(), "pick edge or width")
 	}
 	mode = sql.NullString{String: tok, Valid: true}
 	w, err := nullDecimalFromPb(t.WidthMm)
@@ -410,19 +416,19 @@ func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString
 	isWidth := t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH
 	switch {
 	case isWidth && !w.Valid:
-		return mode, width, rows, entity.NewFieldViolation(step+".topstitch.width_mm", "required", "",
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "required", "",
 			"a topstitch at a stated width needs the width; pick «edge» if it runs along the fold instead")
 	case !isWidth && w.Valid:
-		return mode, width, rows, entity.NewFieldViolation(step+".topstitch.width_mm", "not_applicable", w.Decimal.String(),
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "not_applicable", w.Decimal.String(),
 			"«edge» topstitching has no width — clear it, or switch the mode to width")
 	}
-	if err := validateDecimalScale(w, step+".topstitch.width_mm", 1, entity.MaxSeamAllowanceMm); err != nil {
+	if err := validateDecimalScale(w, step+".topstitch_width_mm", 1, entity.MaxSeamAllowanceMm); err != nil {
 		return mode, width, rows, err
 	}
 	width = w
 	if t.Rows != 0 {
 		if t.Rows < 1 || t.Rows > entity.MaxTopstitchRows {
-			return mode, width, rows, entity.NewFieldViolation(step+".topstitch.rows", "out_of_range", fmt.Sprint(t.Rows),
+			return mode, width, rows, entity.NewFieldViolation(step+".topstitch_rows", "out_of_range", fmt.Sprint(t.Rows),
 				fmt.Sprintf("1 to %d rows; send 0 to leave it unset", entity.MaxTopstitchRows))
 		}
 		rows = sql.NullInt32{Int32: t.Rows, Valid: true}
