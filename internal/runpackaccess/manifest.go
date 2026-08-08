@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cutspec"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -28,12 +28,21 @@ type Manifest struct {
 	RunId       int    `json:"run_id"`
 	StyleNumber string `json:"style_number"`
 	StyleName   string `json:"style_name"`
-	// ReleaseId / ReleaseNumber — ревизия, ПО КОТОРОЙ КРОЯТ: 0 = прогон не привязан к релизу и
-	// считается по живой карте. Читаются из строки прогона, а не из ответа проекции кат-листа,
-	// хотя та называет их тоже: одно число, приезжающее из двух источников, рано или поздно
-	// приедет из них по-разному, а шапка обязана быть верной даже когда проекция деградировала.
+	// ReleaseId / ReleaseNumber — ревизия, ПО КОТОРОЙ ПОСЧИТАН ЭТОТ ДОКУМЕНТ, а не та, на которую
+	// ссылается прогон. 0/0 значит «считали по живой карте» — даже когда release_id у прогона есть.
+	//
+	// Разница между двумя прочтениями и есть тот дефект, ради которого это переписано: вьюер наряда
+	// живёт в другом репозитории и печатает «Rev.N» ровно из этого поля, поэтому заполненный номер
+	// над деталями, посчитанными по живой карте, — это бумага, по которой швея кроит не то. Пока
+	// поле называет ПОСЧИТАННОЕ, соврать им нельзя даже вьюеру, который про SpecSource не знает.
 	ReleaseId     int `json:"release_id"`
 	ReleaseNumber int `json:"release_number"`
+	// SpecSource — ПО ЧЕМУ посчитаны детали, артикулы и размерная ось: release_snapshot | live_card |
+	// live_card_fallback (значения cutspec.Source). Отдельным полем, потому что release_number = 0
+	// имеет две несводимые причины: прогон без релиза — это норма, а прогон с релизом, чей снапшот
+	// не прочитался, — авария, и вьюер обязан уметь показать её значком, а не только фразой в
+	// CutCaveats.
+	SpecSource string `json:"spec_source"`
 	// Factory — фабрика прогона (supplier.name); пусто = не назначена.
 	Factory string `json:"factory"`
 	// Status — состояние прогона как есть. Отменённый и закрытый прогон отдаётся ТАК ЖЕ: бумага у
@@ -74,6 +83,13 @@ type Manifest struct {
 	// MaterialBlockers — пары (слот, колорвей), которые материальный план НЕ смог посчитать. Из
 	// всего материального плана в наряд едут только они: остальное — про закупку и деньги, а это
 	// про «кроить не из чего», то есть про то, ради чего цех останавливается и спрашивает.
+	//
+	// Считаются ПО ЖИВОЙ КАРТЕ даже когда кат-лист посчитан по снапшоту, и ровно так же устроен
+	// админский экран материального плана (buildRunMaterialPlan читает GetTechCardById всегда).
+	// Причина не в удобстве: снапшот релиза сохраняет СВЯЗИ (слот, деталь, пин), но не нормы
+	// расхода — dto.CutSpecCardFromReleaseSnapshot их не читает, потому что наряду они не нужны.
+	// Посчитать по нему материальный план значило бы выдать «нет нормы расхода» на каждый слот
+	// партии — сорок выдуманных блокеров поверх исправной карточки.
 	MaterialBlockers []ManifestMaterialBlocker `json:"material_blockers"`
 }
 
@@ -201,22 +217,39 @@ type ManifestLaySize struct {
 	GarmentsPerPly int    `json:"garments_per_ply"`
 }
 
-// buildManifest собирает документ: узкое чтение наряда, живая карта как спецификация, проекция
-// кат-листа, блокеры материального плана и настилы.
+// buildManifest собирает документ: узкое чтение наряда, СПЕЦИФИКАЦИЯ ПРОГОНА (снапшот релиза, если
+// прогон к нему привязан), проекция кат-листа, блокеры материального плана и настилы.
 //
 // ЦЕЛАЯ КАРТА ЧИТАЕТСЯ КАК ВХОД. dto.ComputeProductionRunCutPlan принимает *entity.TechCard, и
 // узкого чтения карты под неё не существует; собрать второе (частичное) означало бы завести вторую
 // спецификацию, которая обязана совпадать с первой и не совпадёт. Деньги карты в ответ не попадают
 // не потому, что их отсюда вычёркивают, а потому что в структурах выше их нет.
+//
+// ВЫБОР СПЕЦИФИКАЦИИ — ЧУЖОЙ КОД (internal/cutspec), И ЭТО ГЛАВНОЕ В ЭТОЙ ФУНКЦИИ. Своя копия
+// правила здесь уже была: она грузила живую карту и ставила в шапку номер релиза, то есть печатала
+// «Rev.3» над раскладкой, которую после релиза кто-то переделал. Публичный наряд обязан читать
+// спецификацию ровно тем же кодом, что и админский кат-план, иначе бумага и экран расходятся молча.
 func (s *Service) buildManifest(ctx context.Context, runID int) (*Manifest, error) {
 	pack, err := s.runs.GetRunPack(ctx, runID)
 	if err != nil {
 		// sql.ErrNoRows проходит без обёртки — обработчик отличает «прогон исчез» через errors.Is.
 		return nil, err
 	}
-	card, err := s.cards.GetTechCardById(ctx, pack.Run.TechCardId)
+	spec, err := cutspec.Resolve(ctx, s.cards, &pack.Run)
 	if err != nil {
-		return nil, fmt.Errorf("load tech card %d of run %d: %w", pack.Run.TechCardId, runID, err)
+		// Обёртка сохраняет sql.ErrNoRows узнаваемым (карточки прогона нет → тот же голый 404);
+		// сбой чтения релиза сюда приезжает ОШИБКОЙ, а не деградацией — см. cutspec.Resolve.
+		return nil, fmt.Errorf("resolve cut spec of run %d: %w", runID, err)
+	}
+	// Материальному плану нужна ЖИВАЯ карта с нормами расхода (почему — в комментарии к
+	// MaterialBlockers). Когда кат-лист посчитан по снапшоту, это второе чтение; когда по живой
+	// карте — то же самое, уже прочитанное cutspec, и второй запрос был бы платой ни за что.
+	liveCard := spec.Card
+	if spec.Source == cutspec.SourceReleaseSnapshot {
+		liveCard, err = s.cards.GetTechCardById(ctx, pack.Run.TechCardId)
+		if err != nil {
+			return nil, fmt.Errorf("load tech card %d of run %d: %w", pack.Run.TechCardId, runID, err)
+		}
 	}
 	lays, err := s.runs.ListLays(ctx, runID)
 	if err != nil {
@@ -238,46 +271,42 @@ func (s *Service) buildManifest(ctx context.Context, runID int) (*Manifest, erro
 		return nil, fmt.Errorf("load lay composition of run %d: %w", runID, err)
 	}
 
-	// Релиз называется МЕТОЙ, без блоба: сам снапшот — многокилобайтная JSON-строка, и тянуть её на
-	// каждое сканирование QR ради номера ревизии было бы платой ни за что. UnitCost/Currency меты
-	// остаются пустыми осознанно: они денежные, и в этот путь не входят вовсе.
-	var release *entity.TechCardReleaseMeta
-	if pack.Run.ReleaseId.Valid && pack.ReleaseNumber > 0 {
-		release = &entity.TechCardReleaseMeta{
-			Id:            int(pack.Run.ReleaseId.Int64),
-			TechCardId:    pack.Run.TechCardId,
-			ReleaseNumber: pack.ReleaseNumber,
-			CreatedAt:     pack.ReleasedAt.Time,
-		}
-	}
-	cutPlan := dto.ComputeProductionRunCutPlan(&pack.Run, card, release)
+	cutPlan := dto.ComputeProductionRunCutPlan(&pack.Run, spec.Card, spec.Release)
 
-	// ЧЕСТНОСТЬ ПРО РЕВИЗИЮ. Контракт проекции говорит: спецификация — это СНАПШОТ релиза, если
-	// прогон к нему привязан. Снапшот лежит proto-JSON блобом (tech_card_release.snapshot), а
-	// обратного преобразования блоба в entity.TechCard в репозитории нет ни одного — есть только
-	// pb→entity для ВСТАВКИ. Поэтому сюда уходит живая карта, и шапка, называющая «Rev.N», обязана
-	// сказать об этом вслух: цех, который кроит по бумаге, должен узнать о расхождении из документа,
-	// а не из последствий. Снимается вместе с появлением пути «снапшот → спецификация» — тогда
-	// удаляется и эта оговорка, и ветка вокруг неё.
-	caveats := append([]string{}, cutPlan.GetCaveats()...)
-	if release != nil {
-		caveats = append(caveats, "кат-лист посчитан по ЖИВОЙ карте, а не по снапшоту релиза Rev."+
-			strconv.Itoa(release.ReleaseNumber)+": спецификация могла измениться после релиза")
+	// Оговорки о ВЫБОРЕ спецификации идут первыми — ровно как в админском хендлере: они объясняют,
+	// по какой карточке посчитано всё остальное, и читать их после списка «размер вне градации»
+	// бессмысленно.
+	caveats := append(append([]string{}, spec.Caveats...), cutPlan.GetCaveats()...)
+
+	// ДВЕ НЕЗАВИСИМЫЕ ПРОВЕРКИ ПРИНАДЛЕЖНОСТИ РЕЛИЗА, и обе нужны. Джойн GetRunPack сводит релиз по
+	// ПАРЕ (id, tech_card_id) и потому отдаёт release_number только для релиза этой карточки;
+	// cutspec читает строку релиза отдельным запросом и сверяет ту же принадлежность в Go. Совпадение
+	// двух чисел — доказательство обеих сразу. Расхождение означает, что между двумя чтениями релиз
+	// подменили: считали мы по разобранному снапшоту, поэтому шапка называет ЕГО номер, но молчать о
+	// таком нельзя — иначе единственным следом останется строка лога, которую в цеху не видно.
+	if spec.Release != nil && pack.ReleaseNumber != spec.Release.ReleaseNumber {
+		caveats = append(caveats, fmt.Sprintf(
+			"строка прогона называет Rev.%d, а посчитано по Rev.%d — релиз изменился между чтениями, сверьте наряд с карточкой",
+			pack.ReleaseNumber, spec.Release.ReleaseNumber))
 	}
 
 	// Материальный план считается БЕЗ остатков, выданного и справочника артикулов (nil, nil, nil):
 	// из него берутся только блокеры, а те резолвятся из карты и прогона. Справочник — это
 	// entity.MaterialWithPrice, то есть цены; не передать его — единственный способ гарантировать,
 	// что цена в этот расчёт не попадала даже в памяти.
-	materialPlan := dto.ComputeProductionRunMaterialPlan(&pack.Run, card, nil, nil, nil, lays.Lays)
+	materialPlan := dto.ComputeProductionRunMaterialPlan(&pack.Run, liveCard, nil, nil, nil, lays.Lays)
 
-	sizes, lines, garments := buildLineMatrix(card, pack.Lines)
+	// Размерная ось строится по ГРАДАЦИИ ТОЙ ЖЕ карточки, по которой посчитан кат-лист: колонки
+	// грида и колонки кат-листа обязаны стоять в одном порядке, иначе цех читает одно под другим.
+	sizes, lines, garments := buildLineMatrix(spec.Card, pack.Lines)
 
 	m := &Manifest{
-		RunId:          pack.Run.Id,
-		StyleNumber:    pack.StyleNumber,
-		StyleName:      pack.StyleName,
-		ReleaseNumber:  pack.ReleaseNumber,
+		RunId:       pack.Run.Id,
+		StyleNumber: pack.StyleNumber,
+		StyleName:   pack.StyleName,
+		// Ревизия — ИЗ ВЫБРАННОЙ СПЕЦИФИКАЦИИ, а не из строки прогона: посчитали по живой карте —
+		// шапка не называет ревизию вовсе (см. комментарий у поля).
+		SpecSource:     string(spec.Source),
 		Factory:        pack.FactoryName,
 		Status:         string(pack.Run.Status),
 		PlannedStartAt: rfc3339(pack.Run.PlannedStartAt),
@@ -300,8 +329,9 @@ func (s *Service) buildManifest(ctx context.Context, runID int) (*Manifest, erro
 
 		MaterialBlockers: materialBlockers(materialPlan),
 	}
-	if release != nil {
-		m.ReleaseId = release.Id
+	if spec.Release != nil {
+		m.ReleaseId = spec.Release.Id
+		m.ReleaseNumber = spec.Release.ReleaseNumber
 	}
 	return m, nil
 }
