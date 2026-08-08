@@ -494,7 +494,7 @@ func NormSeamAllowance(a MarkerAllowance, standardMm decimal.NullDecimal) RunRea
 	if !standardMm.Valid {
 		return RunReadinessUnknown
 	}
-	if a.Cm.GreaterThanOrEqual(standardMm.Decimal) {
+	if a.Mm.GreaterThanOrEqual(standardMm.Decimal) {
 		return RunReadinessOK
 	}
 	if a.Confirmed {

@@ -990,7 +990,7 @@ func (s *Seeder) plmMarkerConditions(ctx context.Context, st *plmState, legacyID
 	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
 		return fmt.Errorf("NEGATIVE double seam allowance: expected HTTP 400, got %v", negErr)
 	}
-	s.pass(st, "NEGATIVE двойной припуск (контур 1 см + офсет 1 см) отвергнут -> HTTP 400")
+	s.pass(st, "NEGATIVE двойной припуск (контур 1 мм + офсет 1 мм) отвергнут -> HTTP 400")
 
 	// НОРМА. Designation is a dedicated RPC: a boolean on the save would arrive as false from a stale
 	// bundle and clear the norm while knowing nothing about it.

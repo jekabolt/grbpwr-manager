@@ -276,11 +276,11 @@ func TestNormFlipPolicy(t *testing.T) {
 // one that decides whether this rule is honest: the recorded number is a LOWER BOUND there, so a
 // refusal would be a verdict the evidence does not support.
 func TestNormSeamAllowance(t *testing.T) {
-	confirmed := func(cm string) MarkerAllowance {
-		return MarkerAllowance{Cm: rrDec(cm), Recorded: true, Confirmed: true}
+	confirmed := func(mm string) MarkerAllowance {
+		return MarkerAllowance{Mm: rrDec(mm), Recorded: true, Confirmed: true}
 	}
-	lowerBound := func(cm string) MarkerAllowance {
-		return MarkerAllowance{Cm: rrDec(cm), Recorded: true}
+	lowerBound := func(mm string) MarkerAllowance {
+		return MarkerAllowance{Mm: rrDec(mm), Recorded: true}
 	}
 	tests := []struct {
 		name     string

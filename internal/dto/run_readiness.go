@@ -604,10 +604,10 @@ func (b *runReadinessBuilder) seamAllowanceRow(m *entity.TechCardMarkerSummary, 
 	case !standard.Valid:
 		detail = "эталон припуска не задан ни на карточке, ни в цехе — вердикта нет. Ноль здесь ЗАКОННАЯ настройка («выкройки несут линию кроя»), поэтому подставить его вместо «не задано» нельзя"
 	case sev == entity.RunReadinessBlocker:
-		detail = fmt.Sprintf("на раскладке %s см припуска, требуется %s см", a.Cm.String(), standard.Decimal.String())
+		detail = fmt.Sprintf("на раскладке %s мм припуска, требуется %s мм", a.Mm.String(), standard.Decimal.String())
 	default:
-		detail = fmt.Sprintf("на раскладке не меньше %s см припуска при требуемых %s см, но контурная половина не замерена — известна только НИЖНЯЯ ГРАНИЦА, и она ниже эталона. Утверждать нарушение по нижней границе нельзя",
-			a.Cm.String(), standard.Decimal.String())
+		detail = fmt.Sprintf("на раскладке не меньше %s мм припуска при требуемых %s мм, но контурная половина не замерена — известна только НИЖНЯЯ ГРАНИЦА, и она ниже эталона. Утверждать нарушение по нижней границе нельзя",
+			a.Mm.String(), standard.Decimal.String())
 	}
 	add(entity.RunReadinessFinding{Key: entity.RunReadinessKeyNormSeamAllowance, Severity: sev,
 		Label: label, Detail: detail, Target: tgt})
