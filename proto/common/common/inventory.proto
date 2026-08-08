@@ -87,6 +87,34 @@ message MaterialLot {
   string shade_code = 13;
 }
 
+// MaterialReservationClaim is ONE still-open claim on a material — a soft hold that depresses
+// available without moving on_hand (0164). Until Ф5б the ledger had a single kind of owner, a
+// customer order holding packaging; it now also admits a production run holding fabric, and the
+// schema CHECK admits EXACTLY ONE of the two (0286). Hence the two id fields, of which precisely
+// one is non-zero: a claim with no owner is a hold nobody can close, and a claim with two owners
+// would be closed twice and release cloth the other owner still holds.
+//
+// created_at is not decoration. A run abandoned in `planned` keeps holding its fabric, and the only
+// thing that makes that visible is the AGE of an open claim — «reserved» alone looks the same on
+// day one and on day ninety.
+message MaterialReservationClaim {
+  int32 id = 1;
+  int32 material_id = 2;
+  // Idempotency root: "{order_id}:{material_id}" for an order, "run:{run_id}:{material_id}:{gen}"
+  // for a run. The generation exists because the ledger is append-only and UNIQUE(claim_key, event)
+  // forbids a second reserve on one key — a correction is release-then-reserve, never an update.
+  string claim_key = 3;
+  google.type.Decimal qty = 4;
+  int32 order_id = 5; // 0 = not an order claim (see run_id)
+  int32 run_id = 6; // 0 = not a run claim (see order_id)
+  // Lot this claim is pinned to (Ф5б.6): a recut a month later out of a DIFFERENT dye lot is a
+  // visible defect on the garment. 0 = pinned to no lot, which is the normal case — the claim is
+  // about the material, and it stays valid when the roll it named is gone.
+  int32 lot_id = 7;
+  string created_by = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
 // MaterialStockRow is a catalog material joined with its stock balance, valuation and low-stock
 // flag — one row of the warehouse list. Money fields are confidential.
 message MaterialStockRow {

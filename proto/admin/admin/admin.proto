@@ -1479,6 +1479,26 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/production-runs/{run_id}/lays"};
   }
 
+  // ПРИЁМКА КРОЯ (Ф5б.5). Форма скопирована с трёх RPC настилов выше, и по той же причине: строка
+  // приёмки — ребёнок настила, а полная замена детей внутри сохранения родителя есть причина смерти
+  // 0119 (0243:3-9). Save — АПСЕРТ по паре (настил, размер), поэтому повторное сохранение той же
+  // пары правит строку, а не заводит вторую; удаление адресуется той же парой.
+  //
+  // Список отдаётся ПО ПРОГОНУ, а не по настилу: цех сверяет заказанное с выкроенным по всему
+  // прогону сразу, и список на один настил заставлял бы клиента собирать эту сверку из N ответов.
+  rpc SaveProductionRunCutReceipt(SaveProductionRunCutReceiptRequest) returns (SaveProductionRunCutReceiptResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/production-runs/{run_id}/lays/{lay_key}/cut-receipts"
+      body: "*"
+    };
+  }
+  rpc DeleteProductionRunCutReceipt(DeleteProductionRunCutReceiptRequest) returns (DeleteProductionRunCutReceiptResponse) {
+    option (google.api.http) = {delete: "/api/admin/production-runs/{run_id}/lays/{lay_key}/cut-receipts/{size_id}"};
+  }
+  rpc ListProductionRunCutReceipts(ListProductionRunCutReceiptsRequest) returns (ListProductionRunCutReceiptsResponse) {
+    option (google.api.http) = {get: "/api/admin/production-runs/{run_id}/cut-receipts"};
+  }
+
   // CheckProductionRunReadiness — ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6). Not to be confused with
   // GetTechCardReadiness: that one is ADVISORY, takes only a card id, and sees colourways as two
   // aggregates; this one judges ONE CONCRETE FUTURE RUN — by its colourways and its quantities —
@@ -7002,6 +7022,36 @@ message ListProductionRunLaysResponse {
   repeated string caveats = 8;
 }
 
+// ПРИЁМКА КРОЯ (Ф5б.5) — запросы и ответы. Тела строк живут в common/production.proto вместе с
+// настилами, чьими детьми они являются: приёмка описывает производственный факт, а не форму одного
+// ответа админского сервиса.
+
+message SaveProductionRunCutReceiptRequest {
+  int32 run_id = 1;
+  string lay_key = 2;
+  common.ProductionRunCutReceiptInsert receipt = 3;
+}
+
+message SaveProductionRunCutReceiptResponse {
+  common.ProductionRunCutReceipt receipt = 1;
+}
+
+message DeleteProductionRunCutReceiptRequest {
+  int32 run_id = 1;
+  string lay_key = 2;
+  int32 size_id = 3;
+}
+
+message DeleteProductionRunCutReceiptResponse {}
+
+message ListProductionRunCutReceiptsRequest {
+  int32 run_id = 1;
+}
+
+message ListProductionRunCutReceiptsResponse {
+  repeated common.ProductionRunCutReceipt receipts = 1;
+}
+
 // РЕЖИМ ГОТОВНОСТИ ПРОГОНА (Ф6) — the gate that judges a run that does not exist yet.
 
 // ProductionRunReadinessCell is one cell of the planned grid. It deliberately repeats the key of
@@ -7298,6 +7348,19 @@ message GetMaterialStockRequest {
 
 message GetMaterialStockResponse {
   common.MaterialStock stock = 1;
+  // РЕЗЕРВ (Ф5б.4). reserved = Σ ещё открытых претензий этого материала, available = on_hand −
+  // reserved. Это ОДНО число над ОБОИМИ владельцами — заказами, держащими упаковку, и прогонами,
+  // держащими ткань. Читатель на сервере (openReservedQty) суммирует претензии по материалу, не
+  // глядя на владельца, поэтому появление прогонов ничего в нём не поменяло; появись у ответа два
+  // числа вместо одного, первый забывший сложить их продал бы то, что уже удержано.
+  //
+  // available может быть ОТРИЦАТЕЛЬНЫМ (удержано больше, чем лежит) — это состояние перепродажи,
+  // и обрезать его нулём значило бы спрятать ровно ту ситуацию, ради которой считают резерв.
+  google.type.Decimal reserved = 2;
+  google.type.Decimal available = 3;
+  // Открытые претензии поимённо — с владельцем и с ВОЗРАСТОМ. Брошенный прогон в planned держит
+  // ткань бесконечно, и единственное, что делает это видимым, — created_at открытой претензии.
+  repeated common.MaterialReservationClaim open_reservations = 4;
 }
 
 message ListMaterialStockRequest {
