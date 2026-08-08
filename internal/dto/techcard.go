@@ -1473,12 +1473,18 @@ func markerConditionsFromPb(pb *pb_common.TechCardMarkerInsert) (markerCondition
 	if err != nil {
 		return out, fmt.Errorf("seam_allowance_mm: %w", err)
 	}
+	// THE TWO ALLOWANCE HALVES DO NOT USE markerDimMaxFrac. That constant describes the centimetre
+	// columns of this message — fabric width, gap, edge margin, used length — which are DECIMAL(6,2).
+	// Since 0290 the allowances are millimetres in DECIMAL(6,1), and rounding them to two places let
+	// 7.55 through for MySQL to silently rewrite as 7.6. The ceiling lives here too, rather than in a
+	// CHECK: see entity.ValidateMarkerAllowanceMm and 0291.
+	// ROUND FIRST, THEN JUDGE. Both halves can arrive as float64 dust from a measurement
+	// («1.0000000000000002»), and the contract of this message is that dust is rounded rather than
+	// refused — a save must not fail over digits the column drops anyway. Judging first would turn
+	// that documented tolerance into a rejection.
 	if seam.Valid {
-		if seam.Decimal.IsNegative() {
-			return out, fmt.Errorf("seam_allowance_mm must not be negative")
-		}
-		seam.Decimal = seam.Decimal.Round(markerDimMaxFrac)
-		if err := validateDecimalScale(seam, "seam_allowance_mm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		seam.Decimal = seam.Decimal.Round(entity.MarkerAllowanceMaxFrac)
+		if err := entity.ValidateMarkerAllowanceMm("seam_allowance_mm", seam); err != nil {
 			return out, err
 		}
 	}
@@ -1487,11 +1493,8 @@ func markerConditionsFromPb(pb *pb_common.TechCardMarkerInsert) (markerCondition
 		return out, fmt.Errorf("contour_allowance_mm: %w", err)
 	}
 	if contour.Valid {
-		if contour.Decimal.IsNegative() {
-			return out, fmt.Errorf("contour_allowance_mm must not be negative")
-		}
-		contour.Decimal = contour.Decimal.Round(markerDimMaxFrac)
-		if err := validateDecimalScale(contour, "contour_allowance_mm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		contour.Decimal = contour.Decimal.Round(entity.MarkerAllowanceMaxFrac)
+		if err := entity.ValidateMarkerAllowanceMm("contour_allowance_mm", contour); err != nil {
 			return out, err
 		}
 	}

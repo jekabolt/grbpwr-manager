@@ -70,8 +70,6 @@ const (
 	// weightGramsLimit caps packaging weight (INT grams). Generous — 1 tonne — so real parcels
 	// (well above 750 g) are never rejected.
 	weightGramsLimit = 1_000_000
-	stitchFrac       = 2 // stitches_per_cm DECIMAL(5,2)
-	stitchLimit      = 1_000
 )
 
 var techCardLabelTypePbToEntity = map[pb_common.TechCardLabelType]entity.TechCardLabelType{
@@ -119,7 +117,7 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 	if err != nil {
 		return nil, fmt.Errorf("construction default_stitches_per_cm: %w", err)
 	}
-	if err := validateDecimalScale(density, "construction default_stitches_per_cm", stitchFrac, stitchLimit); err != nil {
+	if err := entity.ValidateStitchesPerCm("construction default_stitches_per_cm", density); err != nil {
 		return nil, err
 	}
 	// 3/4/5 threads is the whole real range of an overlock. Anything else is a typo, and a typo here
@@ -282,7 +280,11 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err != nil {
 			return nil, fmt.Errorf("%s.stitches_per_cm: %w", step, err)
 		}
-		if err := validateDecimalScale(stitches, step+".stitches_per_cm", stitchFrac, stitchLimit); err != nil {
+		// Same band as the card default it overrides. The step's column predates the break and its
+		// CHECK is only `>= 0` (0070), so the schema would accept a zero here that the card default
+		// refuses — the override and the thing it overrides have to answer the same question the same
+		// way, and Go is the only layer where both are in view.
+		if err := entity.ValidateStitchesPerCm(step+".stitches_per_cm", stitches); err != nil {
 			return nil, err
 		}
 		smv, err := nullDecimalFromPb(o.Smv)

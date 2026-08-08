@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -1529,6 +1530,39 @@ type TechCardConstruction struct {
 	DefaultStitchesPerCm decimal.NullDecimal `db:"default_stitches_per_cm"`
 	// 3 | 4 | 5; NULL = unset. The name does not reuse the removed `overlock_threads` (a string).
 	OverlockThreadCount sql.NullInt32 `db:"overlock_thread_count"`
+}
+
+// The stitch-density band, in STITCHES PER CENTIMETRE. Below 1 a seam falls apart, above 20 the
+// needle perforates the cloth into a tear line; 3-5 is ordinary garment sewing.
+//
+// THESE TWO NUMBERS ALSO STAND IN THE SCHEMA (chk_construction_stitches, 0289), and the Go check
+// exists because the CHECK alone answers with error 3819 — no field, no words, surfaced as a bare
+// Internal. A closed range the operator can trip by typing «0» has to refuse in a sentence next to
+// the control; the constraint stays as the net underneath. Move one and move the other.
+const (
+	MinStitchesPerCm = 1
+	MaxStitchesPerCm = 20
+)
+
+// ValidateStitchesPerCm checks a stitch density — the card default or a step's override. Unset is
+// accepted (that is «inherit» on a step and «not configured» on the card); only a value being SET has
+// to be sane. ZERO IS NOT a legal setting here, unlike the seam allowance: an allowance of zero means
+// «the выкройки carry the cut line», whereas a density of zero means a seam with no stitches in it.
+func ValidateStitchesPerCm(field string, v decimal.NullDecimal) error {
+	if !v.Valid {
+		return nil
+	}
+	if v.Decimal.Exponent() < -2 {
+		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
+			"round to at most 2 decimal places — the column stores hundredths and the rest would be dropped silently")
+	}
+	if v.Decimal.LessThan(decimal.NewFromInt(MinStitchesPerCm)) ||
+		v.Decimal.GreaterThan(decimal.NewFromInt(MaxStitchesPerCm)) {
+		return NewFieldViolation(field, "out_of_range", v.Decimal.String(),
+			fmt.Sprintf("density is stitches per CENTIMETRE and runs %d to %d (3-5 is ordinary sewing); clear the field to leave it unset rather than entering 0",
+				MinStitchesPerCm, MaxStitchesPerCm))
+	}
+	return nil
 }
 
 // TechCardOperationType is the machine / stitch class of an operation. Mirrors the

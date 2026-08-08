@@ -156,17 +156,27 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- ОБА CHECK'А ВОЗВРАЩАЮТСЯ, В МИЛЛИМЕТРАХ, ОДНИМ ALTER'ОМ. Диапазон — новый; ЗАПРЕТ ДВОЙНОГО
--- ПРИПУСКА — перевыпуск инварианта 0276 §5.3, и его нельзя было просто снять: раскладка не может
--- одновременно лежать по линии кроя (contour > 0) и быть раздутой офсетом (seam > 0), иначе припуск
--- посчитан дважды, а длина настила завышена по всему периметру каждой детали. NULL проходит
--- НАМЕРЕННО: UNKNOWN у MySQL не нарушает CHECK, и это честная ветка «замерить было нечем».
+-- ОБА CHECK'А ВОЗВРАЩАЮТСЯ, В МИЛЛИМЕТРАХ, ОДНИМ ALTER'ОМ. ЗАПРЕТ ДВОЙНОГО ПРИПУСКА — перевыпуск
+-- инварианта 0276 §5.3, и его нельзя было просто снять: раскладка не может одновременно лежать по
+-- линии кроя (contour > 0) и быть раздутой офсетом (seam > 0), иначе припуск посчитан дважды, а
+-- длина настила завышена по всему периметру каждой детали. NULL проходит НАМЕРЕННО: UNKNOWN у MySQL
+-- не нарушает CHECK, и это честная ветка «замерить было нечем».
+--
+-- ВЕРХНЕЙ ГРАНИЦЫ ЗДЕСЬ НЕТ, И ЭТО ИСПРАВЛЕНИЕ. Первая редакция файла требовала <= 100 мм. Потолок
+-- припуска — проверка ЕДИНИЦ («не записали ли сантиметры в миллиметровую колонку»), а не физический
+-- закон, и предшественник (chk_tcm_allowance_nonneg, 0276) требовал только >= 0. MySQL проверяет
+-- ADD CONSTRAINT по ВСЕМ существующим строкам, поэтому одна историческая раскладка с припуском
+-- больше 10 см уронила бы миграцию (3819) — а с MYSQL_AUTOMIGRATE=true это остановка старта прода,
+-- автоматический откат DO и лгущий /readyz. Проверять единицу задним числом по данным, записанным
+-- когда правила ещё не было, — не наше дело: потолок теперь живёт на ЗАПИСИ, в
+-- entity.ValidateMarkerAllowanceMm, где он отвечает внятным field violation, а не кодом 3819.
+-- 0291 приводит бету (там строгая редакция уже применилась) к этому же состоянию.
 SET @chk := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_marker'
       AND CONSTRAINT_NAME = 'chk_marker_allowance_mm');
 SET @ddl := IF(@chk = 0,
     'ALTER TABLE tech_card_marker
-        ADD CONSTRAINT chk_marker_allowance_mm CHECK ((seam_allowance_mm IS NULL OR (seam_allowance_mm >= 0 AND seam_allowance_mm <= 100)) AND (contour_allowance_mm IS NULL OR (contour_allowance_mm >= 0 AND contour_allowance_mm <= 100))),
+        ADD CONSTRAINT chk_marker_allowance_mm CHECK ((seam_allowance_mm IS NULL OR seam_allowance_mm >= 0) AND (contour_allowance_mm IS NULL OR contour_allowance_mm >= 0)),
         ADD CONSTRAINT chk_tcm_no_double_allowance_mm CHECK (seam_allowance_mm IS NULL OR contour_allowance_mm IS NULL OR seam_allowance_mm = 0 OR contour_allowance_mm = 0)',
     'SELECT 1');
 PREPARE stmt FROM @ddl;

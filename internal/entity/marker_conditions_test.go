@@ -268,6 +268,45 @@ func TestValidateSeamAllowanceStandardMm(t *testing.T) {
 	})
 }
 
+// The RECORDED allowance is judged by different rules than the standard, and both differences are
+// deliberate. This is the validator that replaced a CHECK constraint: the ceiling could not stay in
+// the schema because ADD CONSTRAINT validates history, and a раскладка recorded before the rule
+// existed would have taken the whole deploy down with it (0291).
+func TestValidateMarkerAllowanceMm(t *testing.T) {
+	t.Run("zero is a measured value, not an absence", func(t *testing.T) {
+		if err := ValidateMarkerAllowanceMm("f", dec("0")); err != nil {
+			t.Fatalf("zero must be accepted: %v", err)
+		}
+	})
+	t.Run("unset is legal — nothing was measured", func(t *testing.T) {
+		if err := ValidateMarkerAllowanceMm("f", decimal.NullDecimal{}); err != nil {
+			t.Fatalf("an unrecorded allowance must be accepted: %v", err)
+		}
+	})
+	// NO «implausibly narrow» RULE, unlike the standard: the contour half is measured off the
+	// drawing and the measurement's own floor is half a millimetre, so 0.5 is an honest reading of a
+	// file whose two lines nearly coincide — not a centimetre typed by mistake.
+	t.Run("a sub-millimetre reading is accepted", func(t *testing.T) {
+		if err := ValidateMarkerAllowanceMm("f", dec("0.5")); err != nil {
+			t.Fatalf("a measured 0.5 mm must be accepted: %v", err)
+		}
+	})
+	for _, bad := range []string{"-1", "100.1", "250"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			if err := ValidateMarkerAllowanceMm("f", dec(bad)); err == nil {
+				t.Fatalf("%s must be refused", bad)
+			}
+		})
+	}
+	// The columns are DECIMAL(6,1) since 0290. Two decimal places used to be rounded here and
+	// rounded AGAIN by MySQL on the way in, so 7.55 became 7.6 with nothing saying so.
+	t.Run("rejects a scale the column would truncate", func(t *testing.T) {
+		if err := ValidateMarkerAllowanceMm("f", dec("7.55")); err == nil {
+			t.Fatal("a second decimal place must be refused rather than silently lost")
+		}
+	})
+}
+
 // The card wins, and an unset pair yields «no standard» rather than zero — substituting zero would
 // declare every раскладка with a 1 cm allowance in breach of a standard nobody set.
 func TestRequiredSeamAllowanceMm(t *testing.T) {
