@@ -19,7 +19,7 @@ import (
 
 // gateFixture wires the reads the gate makes around a card that is UNREADY in exactly one way: its
 // size range is empty, so card_size_range is a BLOCKER and nothing else is.
-func gateFixture(t *testing.T, blocking bool) *Server {
+func gateFixture(t *testing.T, blocking bool) (*Server, *mocks.MockProductionRuns) {
 	t.Helper()
 	repo := mocks.NewMockRepository(t)
 	tc := mocks.NewMockTechCards(t)
@@ -53,11 +53,8 @@ func gateFixture(t *testing.T, blocking bool) *Server {
 	// the absence of a CreateProductionRun expectation asserts.
 	if !blocking {
 		pr.EXPECT().CreateProductionRun(mock.Anything, mock.Anything).Return(42, nil).Maybe()
-		// Ф5б.4 резервирует ткань сразу после рождения прогона; здесь эта ветка сознательно уводится
-		// в свой лучший-из-возможных путь — тест про ГЕЙТ, а не про материальный план.
-		expectRunReservationReconcileStandsDown(t, pr, 42)
 	}
-	return &Server{repo: repo}
+	return &Server{repo: repo}, pr
 }
 
 func gateRequest() *pb_admin.CreateProductionRunRequest {
@@ -75,7 +72,11 @@ func gateRequest() *pb_admin.CreateProductionRunRequest {
 // unconfigured state has a defined behaviour — on the day Ф6 ships not one card carries a norm with
 // recorded conditions, and «no verdict ⇒ refuse» would have refused everyone.
 func TestRunReadinessCreateGateReportOnlyCreatesAnyway(t *testing.T) {
-	s := gateFixture(t, false)
+	s, pr := gateFixture(t, false)
+	// Ф5б.4 резервирует ткань сразу после рождения прогона. Здесь эта ветка уводится в свой
+	// лучший-из-возможных путь — тест про ГЕЙТ, а не про материальный план, — но уводится через
+	// Once, поэтому он ЗАОДНО доказывает, что резерв на создании прогона действительно случается.
+	expectRunReservationReconcileStandsDown(t, pr, 42)
 	resp, err := s.CreateProductionRun(context.Background(), gateRequest())
 	require.NoError(t, err, "report-only mode logs and proceeds")
 	require.Equal(t, int32(42), resp.Id)
@@ -86,7 +87,7 @@ func TestRunReadinessCreateGateReportOnlyCreatesAnyway(t *testing.T) {
 // EVERY blocker by its stable key rather than the first one — an operator fixing one reason per
 // round trip is the failure the many-violation form exists to prevent.
 func TestRunReadinessCreateGateBlockingRefusesWithEveryReason(t *testing.T) {
-	s := gateFixture(t, true)
+	s, _ := gateFixture(t, true)
 	_, err := s.CreateProductionRun(context.Background(), gateRequest())
 	require.Error(t, err)
 	require.Equal(t, codes.FailedPrecondition, status.Code(err),
@@ -120,7 +121,7 @@ func TestRunReadinessCreateGateBlockingRefusesWithEveryReason(t *testing.T) {
 // client's «!ready && blocking_enabled» because that sentence is what the modal prints.
 func TestCheckProductionRunReadinessReportsTheMode(t *testing.T) {
 	for _, blocking := range []bool{false, true} {
-		s := gateFixture(t, blocking)
+		s, _ := gateFixture(t, blocking)
 		resp, err := s.CheckProductionRunReadiness(context.Background(), &pb_admin.CheckProductionRunReadinessRequest{
 			TechCardId:  7,
 			ColorwayIds: []int32{5},
