@@ -40,6 +40,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
+	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -88,6 +89,8 @@ type App struct {
 	// patternSvc is retained so Stop can flush its access-stat debounce while the DB
 	// is still open.
 	patternSvc *patternaccess.Service
+	// runPackSvc is retained for the same reason: it debounces run-pack access stats.
+	runPackSvc *runpackaccess.Service
 	// frontendS/authS are retained so Stop can terminate their in-memory
 	// rate-limiter cleanup goroutines (lifecycle discipline; they are singletons).
 	frontendS *frontend.Server
@@ -483,6 +486,21 @@ func (a *App) Start(ctx context.Context) error {
 	a.hs.SetPatternViewerHandler(patternSvc.ManifestHandler())
 	a.adminS.SetPatternURLService(patternSvc, strings.TrimRight(a.c.PatternToken.PublicBaseURL, "/"))
 
+	// Публичный наряд на партию (/api/rp/{token}): та же капабилити-схема, что у вьюера выкроек,
+	// на том же pepper — скоуп токена ('r') подписан вместе с id, поэтому один секрет обслуживает
+	// три непересекающихся пространства идентичности и разделять его незачем. Свои бюджеты
+	// rate-limit живут внутри сервиса: за наряд отвечает цех с одного NAT, а не админская вкладка.
+	runPackSvc, err := runpackaccess.New(a.db.ProductionRuns(), a.db.TechCards(), a.c.PatternToken.Pepper)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to create run pack access service",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	a.runPackSvc = runPackSvc
+	a.hs.SetRunPackHandler(runPackSvc.Handler())
+	a.adminS.SetRunPackTokenService(runPackSvc)
+
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
 	// When a signing secret is configured for a processor it delivers the fastest
 	// (immediate push) confirmation, but it is not the sole mechanism: confirmation
@@ -574,6 +592,11 @@ func (a *App) Stop(ctx context.Context) {
 	// while the DB is still open (the flush writes rows).
 	if a.patternSvc != nil {
 		a.patternSvc.Stop()
+	}
+	// Same contract for the run pack service: its flush writes rows, so it stops before the
+	// DB does.
+	if a.runPackSvc != nil {
+		a.runPackSvc.Stop()
 	}
 
 	// The HTTP listener has drained, so no new admin RPC can spawn a revalidation.

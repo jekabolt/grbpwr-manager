@@ -169,6 +169,7 @@ type Server struct {
 	webhookHandler          WebhookHandler
 	patternAccessHandler    http.Handler
 	patternViewerHandler    http.Handler
+	runPackHandler          http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -200,6 +201,14 @@ func (s *Server) SetPatternAccessHandler(h http.Handler) {
 // SPA fetches cross-origin so it must sit inside the CORS'd /api group.
 func (s *Server) SetPatternViewerHandler(h http.Handler) {
 	s.patternViewerHandler = h
+}
+
+// SetRunPackHandler registers the public production-run pack manifest endpoint
+// (/api/rp/{token}) — the JSON the cutting floor's phone fetches from the QR printed on a
+// batch order. Same posture as /api/p and /api/pv: the token is the credential, no auth
+// wrapper, inside the CORS'd /api group.
+func (s *Server) SetRunPackHandler(h http.Handler) {
+	s.runPackHandler = h
 }
 
 // SetWebhookHandler registers the webhook handler for Resend and list-unsubscribe routes.
@@ -475,6 +484,13 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.patternViewerHandler != nil {
 			r.Method(http.MethodGet, "/pv/{token}", s.patternViewerHandler)
 			r.Method(http.MethodHead, "/pv/{token}", s.patternViewerHandler)
+		}
+		// Run pack manifest (/api/rp/{token}, scope 'r') — the batch order the cutting floor
+		// opens from paper. Same token-guarded posture as /p and /pv above, HEAD mount
+		// included so a probe cannot tell a wrong method from a wrong token.
+		if s.runPackHandler != nil {
+			r.Method(http.MethodGet, "/rp/{token}", s.runPackHandler)
+			r.Method(http.MethodHead, "/rp/{token}", s.runPackHandler)
 		}
 	})
 
