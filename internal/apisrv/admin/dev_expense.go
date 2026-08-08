@@ -94,12 +94,12 @@ func (s *Server) ListTechCardDevExpenses(ctx context.Context, req *pb_admin.List
 		fittings = nil
 	}
 	// The style's production runs are the amortisation denominator (Σ planned_qty over non-cancelled
-	// runs). Scanned to the SAME depth GetStyleEconomics uses on purpose — the two commands compute
-	// the same amortisation for the same style, and a different page size would make them disagree
-	// about it for a style with many runs. A load failure degrades to no denominator, which is the
-	// state a style with no runs is already in: order_qty 0 and no amortised figure, never a figure
-	// divided by a partial batch list.
-	runs, _, err := s.repo.ProductionRuns().ListProductionRuns(ctx, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: tcID})
+	// runs), and ALL of them are read through the SAME walk GetStyleEconomics uses, on purpose — the
+	// two commands compute the same amortisation for the same style, and a different reach would make
+	// them disagree about it for a style with many runs. A load failure degrades to no denominator,
+	// which is the state a style with no runs is already in: order_qty 0 and no amortised figure,
+	// never a figure divided by a partial batch list.
+	runs, err := s.listAllProductionRuns(ctx, entity.ProductionRunListFilter{TechCardId: tcID})
 	if err != nil {
 		slog.Default().WarnContext(ctx, "can't load production runs for dev-cost amortization; per-unit figure omitted",
 			slog.Int("tech_card_id", tcID), slog.String("err", err.Error()))

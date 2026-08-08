@@ -7,14 +7,22 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// runMixKey is one priced cell of a run's plan: a colourway at a size. Both halves are load-bearing
+// — see ComputeProductionRunPlannedUnitCost for what pooling on either one alone costs.
+type runMixKey struct {
+	productID int // the line's colourway (product id); 0 = a line that names no product
+	sizeID    int
+}
+
 // ComputeProductionRunPlannedUnitCost is a production run's planned unit cost: the average garment
-// cost of THIS batch, weighted by the batch's own size mix —
+// cost of THIS batch, weighted by the batch's own mix of COLOURWAYS AND SIZES —
 //
-//	Σ(unit_cost_at(line.size_id) × line.planned_qty) ÷ Σ line.planned_qty
+//	Σ(unit_cost_at(line.product_id, line.size_id) × line.planned_qty) ÷ Σ line.planned_qty
 //
 // A size-graded consumption is therefore taken at the size being cut, not at the style's base size;
 // a consumption stated as one number per garment is size-independent and contributes the same figure
-// at every size, exactly as before.
+// at every size. A pinned article is likewise taken at the colourway that pins it, not at the card's
+// primary colourway.
 //
 // WHY THE RUN CANNOT REUSE THE STYLE FIGURE. The snapshot froze on the run is what the whole
 // plan/fact variance is measured against, and it used to be the style's standard cost. While that
@@ -25,41 +33,60 @@ import (
 // entity.TechCardColorwayUsage.UnitTotal), the same reuse would be an obvious lie: an XL batch would
 // be planned at the M price. The run has the real numbers on its own lines; it must use them.
 //
-// THREE EDGES, each answered on purpose:
+// WHY COLOURWAY IS IN THE MIX. It was once left out on the grounds that a run carries exactly ONE
+// planned_unit_cost column and the card's primary colourway was as good a basis as any. It is not:
+// pinning exists precisely to make colourways cost differently, and a batch of 50 black on a €10 pin
+// plus 50 white on a €30 pin was snapshotted at €10 — the first colourway's price — instead of the
+// €20 it actually plans to spend. One column does not mean one colour: it means one WEIGHTED figure,
+// and the weights are on the lines. Each cell is priced by ComputeColorwayUnitCost, the same
+// per-colourway function the cost seed uses (never a second copy of that math), evaluated on a card
+// re-based to the cell's size.
+//
+// FIVE EDGES, each answered on purpose:
 //
 //  1. A run with NO lines (or none carrying a positive quantity) — the header is planned before the
 //     grid is filled — falls back to the style's standard cost on its base size. This is a conscious
 //     default and not a mix computed from nothing: the run has stated no sizes, so the only quantity
 //     information in the system is the style's own basis. It is the pre-existing behaviour, kept.
-//  2. A size on the grid with NO computable cost (typically: the recipe carries no norm for it)
-//     leaves the WHOLE run unpriced — invalid result, and the caller stores NULL. It is never
-//     dropped from the denominator: averaging over just the sizes that happen to be graded quietly
-//     prices the batch as if the ungraded sizes were free, which is precisely the defect the base-size
-//     phase found in the retired denominator. A run with no planned cost is a run that reports no
-//     variance, and that is the honest outcome.
-//  3. Sizes that resolve in DIFFERENT currencies cannot be averaged into one figure, so the result is
+//  2. A cell with NO computable cost (typically: the recipe carries no norm for that size) leaves the
+//     WHOLE run unpriced — invalid result, and the caller stores NULL. It is never dropped from the
+//     denominator: averaging over just the cells that happen to price quietly costs the batch as if
+//     the rest were free, which is precisely the defect the base-size phase found in the retired
+//     denominator. A run with no planned cost is a run that reports no variance, and that is the
+//     honest outcome.
+//  3. Cells that resolve in DIFFERENT currencies cannot be averaged into one figure, so the result is
 //     invalid. (In practice they agree — the currency depends on the costing row, not the size — but
 //     a weighted mean across two units of measure would be a meaningless number, not an approximate one.)
-//
-// COLOURWAY IS OUT OF SCOPE, deliberately. Lines also name a colourway, and pinned articles can make
-// colourways cost differently, but a run carries exactly ONE planned_unit_cost column; there is
-// nowhere to put a per-colourway plan. The snapshot has always been the card's primary-colourway
-// figure and stays so. This phase changes the SIZE basis only.
+//  4. A line naming a product the card has NO colourway for prices nothing, so the whole run goes
+//     unpriced (edge 2's rule, reached through ComputeColorwayUnitCost's own "unknown id → invalid").
+//     Falling back to the style figure there would price a batch by a colour it is not making — the
+//     very substitution this phase removed, just one level up.
+//  5. A line with NO product (an aux colour's line, or the single output of a legacy aux card) has no
+//     colourway to be priced by. It is priced by the card's own figure ONLY when the card carries at
+//     most one colourway — then that one recipe IS the card's price and nothing is being borrowed
+//     from a neighbour. On a card with two or more colourways the same line would have to pick one of
+//     them, and picking is exactly the defect; the whole batch goes unpriced instead. NULL on the
+//     batch is recoverable (somebody names the colour and re-plans); a plausible number costed off
+//     the wrong colour is not — it silently becomes the baseline every later variance is read against.
 func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wastageOverride decimal.NullDecimal, lines []entity.ProductionRunLine) (decimal.NullDecimal, string) {
-	// Several lines can name one size (one per colourway/aux colour), so quantities are pooled per
-	// size before pricing: costing the same size twice would be wasted work, and — more importantly —
-	// weighting is by garments, not by rows.
-	qtyBySize := make(map[int]int64, len(lines))
-	sizeOrder := make([]int, 0, len(lines))
+	// Several lines can name one (colourway, size) cell — the grid is diffed by line_key and holds no
+	// uniqueness on the pair — so quantities are pooled per cell before pricing: costing the same cell
+	// twice would be wasted work, and — more importantly — weighting is by garments, not by rows.
+	qtyByCell := make(map[runMixKey]int64, len(lines))
+	cellOrder := make([]runMixKey, 0, len(lines))
 	totalQty := int64(0)
 	for _, ln := range lines {
 		if ln.PlannedQty <= 0 {
 			continue
 		}
-		if _, seen := qtyBySize[ln.SizeId]; !seen {
-			sizeOrder = append(sizeOrder, ln.SizeId)
+		k := runMixKey{sizeID: ln.SizeId}
+		if ln.ProductId.Valid {
+			k.productID = int(ln.ProductId.Int32)
 		}
-		qtyBySize[ln.SizeId] += int64(ln.PlannedQty)
+		if _, seen := qtyByCell[k]; !seen {
+			cellOrder = append(cellOrder, k)
+		}
+		qtyByCell[k] += int64(ln.PlannedQty)
 		totalQty += int64(ln.PlannedQty)
 	}
 	if totalQty == 0 {
@@ -68,17 +95,17 @@ func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wast
 
 	weighted := decimal.Zero
 	currency := ""
-	for _, sizeID := range sizeOrder {
-		unit, ccy := ComputeTechCardUnitCostOnSize(tc, fx, wastageOverride, sizeID)
+	for _, cell := range cellOrder {
+		unit, ccy := runCellUnitCost(tc, fx, wastageOverride, cell)
 		if !unit.Valid {
-			return decimal.NullDecimal{}, "" // edge 2
+			return decimal.NullDecimal{}, "" // edges 2, 4 and 5
 		}
 		if currency == "" {
 			currency = ccy
 		} else if !strings.EqualFold(currency, ccy) {
 			return decimal.NullDecimal{}, "" // edge 3
 		}
-		weighted = weighted.Add(unit.Decimal.Mul(decimal.NewFromInt(qtyBySize[sizeID])))
+		weighted = weighted.Add(unit.Decimal.Mul(decimal.NewFromInt(qtyByCell[cell])))
 	}
 	avg := roundMoney(weighted.Div(decimal.NewFromInt(totalQty)))
 	if !avg.IsPositive() {
@@ -86,4 +113,27 @@ func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wast
 		return decimal.NullDecimal{}, ""
 	}
 	return decimal.NullDecimal{Decimal: avg, Valid: true}, currency
+}
+
+// runCellUnitCost is what one garment of a (colourway, size) cell costs: the colourway's own recipe
+// — pins included — evaluated at that size, with the run's actual cutting wastage applied.
+//
+// The size is applied by re-basing the card (cardCostedOnSize) rather than by threading a size
+// parameter through the costing: the whole costing path reads the basis through
+// TechCardInsert.CostingBaseSizeID, so this is the same single rule evaluated elsewhere, not a
+// second one. sizeID <= 0 leaves the card with NO basis, which is deliberately not the base size — a
+// size-graded norm then prices nothing, and a flat per-garment norm (an aux card's usual shape)
+// prices exactly as it always did.
+//
+// The product-less branch is edge 5 of ComputeProductionRunPlannedUnitCost: the card's own figure
+// when there is at most one colourway to take it from, nothing at all otherwise.
+func runCellUnitCost(tc *entity.TechCard, fx CostingFx, wastageOverride decimal.NullDecimal, cell runMixKey) (decimal.NullDecimal, string) {
+	if cell.productID <= 0 {
+		if tc != nil && len(tc.Colorways) > 1 {
+			return decimal.NullDecimal{}, ""
+		}
+		return ComputeTechCardUnitCostOnSize(tc, fx, wastageOverride, cell.sizeID)
+	}
+	return ComputeColorwayUnitCost(
+		cardCostedOnSize(cardWithRunWastage(tc, wastageOverride), cell.sizeID), cell.productID, fx)
 }

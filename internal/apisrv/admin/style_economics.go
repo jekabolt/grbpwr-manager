@@ -16,14 +16,47 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// styleEconomicsRunScan caps how many production runs are aggregated for one style. The store's
-// maxPageLimit is 100 and a single style realistically has a handful of runs, so this is never a
-// real bound (DB scale is small); it exists only to request a full page rather than the default 50.
+// productionRunPageSize is the page listAllProductionRuns walks with — the store's own maxPageLimit,
+// so a page is never silently clamped smaller than asked and the walk takes the fewest round trips.
+// It is a page size, NOT a cap: see listAllProductionRuns.
+const productionRunPageSize = 100
+
+// styleEconomicsFittingScan is how many fitting rounds are scanned for the style card. A style has a
+// handful of rounds; this only asks for a full page rather than the default. The ROUND COUNT printed
+// on the card is the store's total and is unaffected by it.
+const styleEconomicsFittingScan = 100
+
+// listAllProductionRuns returns EVERY run matching filter, walking the store's pages until the list
+// is exhausted, and is the ONLY way this package reads a style's runs.
 //
-// ListTechCardDevExpenses shares this constant rather than declaring its own: both commands amortise
-// R&D over Σ planned_qty of the SAME runs, and two scan depths would be two amortisation
-// denominators for one style.
-const styleEconomicsRunScan = 100
+// Both callers divide by these runs — R&D is amortised over Σ planned_qty and the plan/fact summary
+// is aggregated over the same slice — so a single page was a silent ceiling on a DENOMINATOR: a
+// style with 101 runs amortised its whole development spend over the first 100, and the R&D-per-unit
+// it printed was too high by exactly the share of the batch it could not see. The returned total was
+// discarded, so nothing anywhere said the number was partial.
+//
+// Paging rather than a new SQL aggregate: the summary needs the run ROWS (statuses, lines, costs),
+// not just Σ planned_qty, so an aggregate would have had to live beside a still-truncated list — two
+// reads answering the same question differently on the same card, which is the very thing the shared
+// scan depth was introduced to prevent. Scale makes the loop free: a style's runs are counted in
+// units, so this is one query in practice and the store's total ends it.
+func (s *Server) listAllProductionRuns(ctx context.Context, filter entity.ProductionRunListFilter) ([]entity.ProductionRun, error) {
+	var all []entity.ProductionRun
+	for {
+		// Offset is len(all), not a page counter: the store orders by id DESC, so the next page starts
+		// exactly where the collected rows end even if a page came back short.
+		page, total, err := s.repo.ProductionRuns().ListProductionRuns(ctx, productionRunPageSize, len(all), filter)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		// An empty page is the definitive end (it also guarantees termination whatever total says);
+		// reaching the store's own count is the normal one.
+		if len(page) == 0 || len(all) >= total {
+			return all, nil
+		}
+	}
+}
 
 // GetStyleEconomics assembles the "style as a business case" card (task 15 part C): one tech card's
 // lifetime sales margin, its R&D development-cost roll-up, the number of fitting rounds, and a
@@ -80,19 +113,20 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 	// Fitting rounds: recorded fittings for the style (each fitting is a round). Fetch the rounds
 	// themselves (not just a count) — they carry round_number/outcome/date that drive the dev-cost
 	// round attribution and time-to-approval rollup (Q8/S20).
-	fittings, rounds, err := s.repo.Fittings().ListFittings(ctx, styleEconomicsRunScan, 0, entity.Descending, 0, 0, tcID)
+	fittings, rounds, err := s.repo.Fittings().ListFittings(ctx, styleEconomicsFittingScan, 0, entity.Descending, 0, 0, tcID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "style economics: can't count fittings", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't count fittings")
 	}
 	econ.FittingRounds = int32(rounds)
 
-	// The style's production runs, loaded BEFORE the dev roll-up because that roll-up now amortises
-	// R&D over them (Σ planned_qty), not over the card's declared typical run. This is the same slice
-	// the plan/fact summary below aggregates, so the "planned quantity" behind the amortisation and
-	// the one printed as planned_qty_total on the very same card are one number, not two reads that
-	// could answer differently.
-	runs, _, err := s.repo.ProductionRuns().ListProductionRuns(ctx, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: tcID})
+	// The style's production runs — ALL of them (listAllProductionRuns explains why a page was not
+	// enough) — loaded BEFORE the dev roll-up because that roll-up now amortises R&D over them
+	// (Σ planned_qty), not over the card's declared typical run. This is the same slice the plan/fact
+	// summary below aggregates, so the "planned quantity" behind the amortisation and the one printed
+	// as planned_qty_total on the very same card are one number, not two reads that could answer
+	// differently.
+	runs, err := s.listAllProductionRuns(ctx, entity.ProductionRunListFilter{TechCardId: tcID})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "style economics: can't list production runs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load production runs")

@@ -45,9 +45,9 @@ func TestGetStyleEconomics(t *testing.T) {
 	}, nil)
 
 	// three fitting rounds (only the total is used)
-	fit.EXPECT().ListFittings(mock.Anything, styleEconomicsRunScan, 0, entity.Descending, 0, 0, 7).Return(nil, 3, nil)
+	fit.EXPECT().ListFittings(mock.Anything, styleEconomicsFittingScan, 0, entity.Descending, 0, 0, 7).Return(nil, 3, nil)
 
-	pr.EXPECT().ListProductionRuns(mock.Anything, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: 7}).Return([]entity.ProductionRun{
+	pr.EXPECT().ListProductionRuns(mock.Anything, productionRunPageSize, 0, entity.ProductionRunListFilter{TechCardId: 7}).Return([]entity.ProductionRun{
 		{ProductionRunInsert: entity.ProductionRunInsert{
 			PlannedUnitCost: decimal.NullDecimal{Decimal: decimal.RequireFromString("3.00"), Valid: true},
 			Lines:           []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 10, ReceivedQty: sql.NullInt64{Int64: 8, Valid: true}}},
@@ -116,8 +116,8 @@ func TestGetStyleEconomicsNoCost(t *testing.T) {
 	tc.EXPECT().ListTechCardDevExpenses(mock.Anything, 9).Return(nil, nil)
 	// no sales yet → nil row; handler synthesizes identity.
 	mtr.EXPECT().GetStyleMargin(mock.Anything, 9).Return(nil, nil)
-	fit.EXPECT().ListFittings(mock.Anything, styleEconomicsRunScan, 0, entity.Descending, 0, 0, 9).Return(nil, 0, nil)
-	pr.EXPECT().ListProductionRuns(mock.Anything, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: 9}).Return(nil, 0, nil)
+	fit.EXPECT().ListFittings(mock.Anything, styleEconomicsFittingScan, 0, entity.Descending, 0, 0, 9).Return(nil, 0, nil)
+	pr.EXPECT().ListProductionRuns(mock.Anything, productionRunPageSize, 0, entity.ProductionRunListFilter{TechCardId: 9}).Return(nil, 0, nil)
 	mtr.EXPECT().GetStyleSampleSummary(mock.Anything, 9).Return(entity.StyleSampleSummary{}, nil)
 	mtr.EXPECT().GetStyleMaterialsFromStock(mock.Anything, 9).Return(entity.StyleMaterialsFromStock{}, nil)
 
