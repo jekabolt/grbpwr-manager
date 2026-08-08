@@ -1,4 +1,5 @@
 ENUM_NO_DELETE|proto/common/common/production.proto|Previously present enum \"ProductionMarkerSource\" was deleted from file.
+ENUM_NO_DELETE|proto/common/common/techcard.proto|Previously present enum \"TechCardConstructionZone\" was deleted from file.
 FIELD_NO_DELETE|proto/admin/admin/admin.proto|Previously present field \"7\" with name \"season\" on message \"ListTechCardsRequest\" was deleted.
 FIELD_NO_DELETE|proto/common/common/filter.proto|Previously present field \"6\" with name \"color\" on message \"FilterConditions\" was deleted.
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"1\" with name \"product_id\" on message \"CustomOrderItemInsert\" was deleted.
@@ -8,24 +9,41 @@ FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"2\" w
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"CustomOrderItemInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/order.proto|Previously present field \"3\" with name \"size_id\" on message \"OrderItemInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/production.proto|Previously present field \"12\" with name \"markers\" on message \"ProductionRunInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"10\" with name \"seam_allowance\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"10\" with name \"version\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"11\" with name \"needle\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"11\" with name \"revision_date\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"12\" with name \"time_norm\" on message \"TechCardOperation\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"13\" with name \"attachment\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"14\" with name \"designer\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"15\" with name \"bom_item_index\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"15\" with name \"constructor\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"16\" with name \"technologist\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"18\" with name \"placement\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardColorwayCost\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"colorway_index\" on message \"TechCardPieceColorwayMaterial\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"main_stitch_type\" on message \"TechCardConstruction\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"node\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"1\" with name \"version\" on message \"TechCardRevision\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"2\" with name \"description\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"2\" with name \"hardware_cost\" on message \"TechCardCosting\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"2\" with name \"revision_date\" on message \"TechCardRevision\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"2\" with name \"stitch_density\" on message \"TechCardConstruction\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"31\" with name \"product_ids\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"34\" with name \"revisions\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"36\" with name \"approved_by\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"3\" with name \"overlock_threads\" on message \"TechCardConstruction\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"3\" with name \"packaging_cost\" on message \"TechCardCosting\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"3\" with name \"seam_type\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"3\" with name \"version\" on message \"TechCardReleaseMeta\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"41\" with name \"colorways\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"seam_allowances\" on message \"TechCardConstruction\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"season\" on message \"TechCardInsert\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"5\" with name \"topstitch_width\" on message \"TechCardOperation\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"6\" with name \"thread\" on message \"TechCardOperation\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"7\" with name \"machine_class\" on message \"TechCardConstruction\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"8\" with name \"season\" on message \"TechCardListItem\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"9\" with name \"machine\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present field \"2\" with name \"product_id\" on message \"NotifyMeRequest\" was deleted.
 FIELD_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present field \"3\" with name \"size_id\" on message \"NotifyMeRequest\" was deleted.
 FIELD_SAME_JSON_NAME|proto/admin/admin/admin.proto|Field \"1\" with name \"colorway_id\" on message \"DeleteProductMediaRequest\" changed option \"json_name\" from \"productId\" to \"colorwayId\".
@@ -61,6 +79,7 @@ FIELD_SAME_TYPE|proto/common/common/hero.proto|Field \"2\" on message \"HeroSpli
 FIELD_SAME_TYPE|proto/common/common/order.proto|Field \"17\" on message \"OrderItem\" changed type from \"common.ProductInsertTranslation\" to \"common.ColorwayInsertTranslation\".
 FIELD_SAME_TYPE|proto/common/common/techcard.proto|Field \"101\" on message \"TechCardInsert\" changed type from \"string\" to \"enum\".
 FIELD_SAME_TYPE|proto/common/common/techcard.proto|Field \"14\" on message \"TechCardListItem\" changed type from \"string\" to \"enum\".
+FIELD_SAME_TYPE|proto/common/common/techcard.proto|Field \"17\" on message \"TechCardOperation\" changed type from \"common.TechCardConstructionZone\" to \"common.TechCardGarmentZone\".
 FIELD_SAME_TYPE|proto/frontend/frontend/frontend.proto|Field \"1\" on message \"GetArchiveResponse\" changed type from \"common.ArchiveFull\" to \"frontend.StorefrontArchiveFull\".
 FIELD_SAME_TYPE|proto/frontend/frontend/frontend.proto|Field \"1\" on message \"GetArchivesPagedResponse\" changed type from \"common.ArchiveList\" to \"frontend.StorefrontArchiveList\".
 MESSAGE_NO_DELETE|proto/admin/admin/admin.proto|Previously present message \"DeleteProductByIDRequest\" was deleted from file.
@@ -110,6 +129,7 @@ MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present mess
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductsPagedRequest\" was deleted from file.
 MESSAGE_NO_DELETE|proto/frontend/frontend/frontend.proto|Previously present message \"GetProductsPagedResponse\" was deleted from file.
 ONEOF_NO_DELETE|proto/admin/admin/admin.proto|Previously present oneof \"_product_id\" on message \"ListStockChangesRequest\" was deleted.
+ONEOF_NO_DELETE|proto/common/common/techcard.proto|Previously present oneof \"_bom_item_index\" on message \"TechCardOperation\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"DeleteProductByID\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProductByID\" on service \"AdminService\" was deleted.
 RPC_NO_DELETE|proto/admin/admin/admin.proto|Previously present RPC \"GetProductCustoms\" on service \"AdminService\" was deleted.
