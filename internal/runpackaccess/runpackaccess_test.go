@@ -302,11 +302,15 @@ func fixture() (*fakeRuns, *fakeCards) {
 	// цех, — искать в готовом JSON сами эти числа, а не слово «price».
 	card := &entity.TechCard{Id: 5}
 	card.SizeIds = []int{7, 8}
+	// Секции проставлены НАРОЧНО, и это не украшение фикстуры: кат-лист берёт в артикул кроя только
+	// рулонные секции — иначе привязанная к детали этикетка становится «тканью», из которой велят
+	// кроить. Строка без секции API вообще не проходит («section is required and must be valid»),
+	// так что фикстура без них моделировала данные, которых не бывает.
 	card.BomItems = []entity.TechCardBomItem{
-		{Name: "Основная ткань", MaterialId: ni64(100), Unit: ns("m"), WastagePercent: nd("5"),
-			UnitPrice: nd("777.77"), Currency: ns("EUR")},
+		{Name: "Основная ткань", Section: entity.BomSectionFabric, MaterialId: ni64(100), Unit: ns("m"),
+			WastagePercent: nd("5"), UnitPrice: nd("777.77"), Currency: ns("EUR")},
 		// Слот без артикула, на который ссылается рецепт колорвея → блокер «нет артикула».
-		{Name: "Тесьма", Unit: ns("pc"), UnitPrice: nd("888.88")},
+		{Name: "Тесьма", Section: entity.BomSectionTrim, Unit: ns("pc"), UnitPrice: nd("888.88")},
 	}
 	// Деталь ЖИВОЙ карты: одна панель на изделие из артикула 100. Всё, чем она отличается от
 	// релизной, — это те поля, по которым тест и узнаёт, какую спецификацию напечатал наряд.
