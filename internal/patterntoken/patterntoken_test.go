@@ -10,7 +10,7 @@ func TestMintParseRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scope := range []Scope{ScopeInternal, ScopePrint} {
+	for _, scope := range []Scope{ScopeInternal, ScopePrint, ScopeCard} {
 		tok := m.Mint(scope, 12345, 7)
 		gotScope, id, epoch, err := m.Parse(tok)
 		if err != nil {
@@ -30,8 +30,34 @@ func TestMintDeterministic(t *testing.T) {
 	if m.Mint(ScopeInternal, 42, 0) == m.Mint(ScopePrint, 42, 0) {
 		t.Fatal("scopes must sign differently")
 	}
+	if m.Mint(ScopeCard, 42, 0) == m.Mint(ScopeInternal, 42, 0) ||
+		m.Mint(ScopeCard, 42, 0) == m.Mint(ScopePrint, 42, 0) {
+		t.Fatal("card scope must sign differently from both object scopes")
+	}
 	if m.Mint(ScopeInternal, 42, 0) == m.Mint(ScopeInternal, 42, 1) {
 		t.Fatal("epochs must sign differently")
+	}
+}
+
+// TestScopeRelabellingIsForgery — the signature covers the scope byte, so a token of one
+// scope re-labelled as another must not verify. This is the property the /api/p vs
+// /api/pv split stands on: 'c' tokens carry TECH CARD ids, 'i'/'p' tokens carry
+// pattern_object_access row ids, and a relabelled token would smuggle an id across that
+// namespace boundary with a valid-looking signature.
+func TestScopeRelabellingIsForgery(t *testing.T) {
+	m, _ := NewMinter("test-pepper")
+	scopes := []Scope{ScopeInternal, ScopePrint, ScopeCard}
+	for _, from := range scopes {
+		tok := m.Mint(from, 77, 3)
+		for _, to := range scopes {
+			if to == from {
+				continue
+			}
+			relabelled := string(byte(to)) + tok[1:]
+			if _, _, _, err := m.Parse(relabelled); err == nil {
+				t.Errorf("token %q relabelled %c→%c must not verify", tok, from, to)
+			}
+		}
 	}
 }
 

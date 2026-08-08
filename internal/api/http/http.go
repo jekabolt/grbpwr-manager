@@ -168,6 +168,7 @@ type Server struct {
 	healthChecker           HealthChecker
 	webhookHandler          WebhookHandler
 	patternAccessHandler    http.Handler
+	patternViewerHandler    http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -191,6 +192,14 @@ func (s *Server) SetHealthChecker(checker HealthChecker) {
 // send headers; mounted inside /api so CORS applies to the ?mode=json variant.
 func (s *Server) SetPatternAccessHandler(h http.Handler) {
 	s.patternAccessHandler = h
+}
+
+// SetPatternViewerHandler registers the card-level pattern viewer manifest endpoint
+// (/api/pv/{token}) — the JSON the public viewer page behind printed tech-pack QR codes
+// fetches. Same posture as /api/p: the token is the credential, no auth wrapper, and the
+// SPA fetches cross-origin so it must sit inside the CORS'd /api group.
+func (s *Server) SetPatternViewerHandler(h http.Handler) {
+	s.patternViewerHandler = h
 }
 
 // SetWebhookHandler registers the webhook handler for Resend and list-unsubscribe routes.
@@ -460,6 +469,12 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 			// HEAD too, or chi answers it 405 — the one response that would not be the
 			// uniform 404 every other rejection returns.
 			r.Method(http.MethodHead, "/p/{token}", s.patternAccessHandler)
+		}
+		// Card-level viewer manifest (/api/pv/{token}, scope 'c') — same token-guarded
+		// posture as /p above, including the HEAD mount for the uniform-404 property.
+		if s.patternViewerHandler != nil {
+			r.Method(http.MethodGet, "/pv/{token}", s.patternViewerHandler)
+			r.Method(http.MethodHead, "/pv/{token}", s.patternViewerHandler)
 		}
 	})
 

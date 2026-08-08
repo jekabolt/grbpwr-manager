@@ -18,6 +18,11 @@ import (
 type fakeObjects struct {
 	rows        map[int64]*entity.PatternObjectAccess
 	ensureCalls int
+
+	// Card-viewer rows, keyed by tech card id — a SEPARATE space from rows above,
+	// mirroring the two tables. ensureCardErr forces the best-effort mint path.
+	cardRows      map[int]*entity.TechCardPatternViewerAccess
+	ensureCardErr error
 }
 
 func (f *fakeObjects) GetById(_ context.Context, id int64) (*entity.PatternObjectAccess, error) {
@@ -76,6 +81,36 @@ func (f *fakeObjects) RecordAccess(context.Context, map[int64]int64, map[int64]t
 }
 func (f *fakeObjects) DeleteByKeys(context.Context, []string) error { return nil }
 
+func (f *fakeObjects) EnsureCardViewer(_ context.Context, techCardID int) (*entity.TechCardPatternViewerAccess, error) {
+	if f.ensureCardErr != nil {
+		return nil, f.ensureCardErr
+	}
+	if f.cardRows == nil {
+		f.cardRows = map[int]*entity.TechCardPatternViewerAccess{}
+	}
+	if r, ok := f.cardRows[techCardID]; ok {
+		cp := *r
+		return &cp, nil
+	}
+	r := &entity.TechCardPatternViewerAccess{TechCardId: techCardID, Epoch: 1}
+	f.cardRows[techCardID] = r
+	cp := *r
+	return &cp, nil
+}
+
+func (f *fakeObjects) GetCardViewer(_ context.Context, techCardID int) (*entity.TechCardPatternViewerAccess, error) {
+	r, ok := f.cardRows[techCardID]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	cp := *r
+	return &cp, nil
+}
+
+func (f *fakeObjects) RecordCardViewerAccess(context.Context, map[int]int64, map[int]time.Time) error {
+	return nil
+}
+
 type fakePresigner struct {
 	calls        int
 	lastDownload string
@@ -91,9 +126,34 @@ func (p *fakePresigner) PresignPatternObject(_ context.Context, key string, down
 	return u, time.Now().Add(6 * time.Hour), nil
 }
 
+// fakeCards is the CardManifests half of the fakes; cards keyed by tech card id.
+type fakeCards struct {
+	cards map[int]*entity.PatternViewerCard
+	err   error
+}
+
+func (f *fakeCards) GetPatternViewerManifest(_ context.Context, techCardID int) (*entity.PatternViewerCard, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	c, ok := f.cards[techCardID]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	cp := *c
+	return &cp, nil
+}
+
+const testViewerBaseURL = "https://backend.example"
+
 func newTestService(t *testing.T, objects *fakeObjects) *Service {
 	t.Helper()
-	svc, err := New(objects, &fakePresigner{}, "test-pepper")
+	return newTestServiceWithCards(t, objects, &fakeCards{})
+}
+
+func newTestServiceWithCards(t *testing.T, objects *fakeObjects, cards *fakeCards) *Service {
+	t.Helper()
+	svc, err := New(objects, cards, &fakePresigner{}, "test-pepper", testViewerBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +338,7 @@ func TestDownloadNameComesFromTheStoredRow(t *testing.T) {
 		1: {Id: 1, ObjectKey: testKey, Filename: sql.NullString{String: "перед.pdf", Valid: true}},
 	}}
 	presigner := &fakePresigner{}
-	svc, err := New(objects, presigner, "test-pepper")
+	svc, err := New(objects, &fakeCards{}, presigner, "test-pepper", testViewerBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}

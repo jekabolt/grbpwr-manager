@@ -316,6 +316,24 @@ func TestBomPurposeDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "TechCardBomPurpose", dbValues, mapKeysAsStrings(entity.ValidTechCardBomPurposes))
 }
 
+// TestBomPurposeOrderCoversVocabulary keeps the PRESENTATION order in lockstep with the vocabulary.
+// A purpose missing from BomPurposeOrder does not fail anywhere: it silently drops out of every
+// ordered listing built from it — including the pattern viewer's group order, where the effect is a
+// группа that exists in the data and never appears on screen. Duplicates are just as quiet: the same
+// группа twice.
+func TestBomPurposeOrderCoversVocabulary(t *testing.T) {
+	ordered := make([]string, 0, len(entity.BomPurposeOrder))
+	seen := make(map[entity.TechCardBomPurpose]bool, len(entity.BomPurposeOrder))
+	for _, p := range entity.BomPurposeOrder {
+		if seen[p] {
+			t.Fatalf("BomPurposeOrder lists %q twice", p)
+		}
+		seen[p] = true
+		ordered = append(ordered, string(p))
+	}
+	assertSameSet(t, "BomPurposeOrder", ordered, mapKeysAsStrings(entity.ValidTechCardBomPurposes))
+}
+
 // TestFabricPurposeDBCheckNoDrift extends the drift guard to the 0267 bindings: the выкройка's and
 // the alias's fabric_purpose speak the SAME closed vocabulary as the BOM line's purpose (0265), and
 // they must, because that is what makes them join.

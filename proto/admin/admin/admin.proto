@@ -6271,6 +6271,13 @@ message GetTechCardRequest {
 
 message GetTechCardResponse {
   common.TechCard tech_card = 1;
+  // Output-only capability token ('c' scope) for the public pattern viewer: the printed
+  // tech-pack QR encodes {admin origin}/p/{token}, and the page resolves it via this
+  // backend's GET /api/pv/{token}. Deliberately on the RESPONSE and not on
+  // common.TechCard: the release-snapshot path serialises common.TechCard into a stored
+  // blob, and a capability token must never reach a persisted snapshot. Never persisted;
+  // empty when the pattern service is not wired.
+  string pattern_viewer_token = 2;
 }
 
 message UpdateTechCardRequest {
