@@ -178,13 +178,15 @@ type techCardPatternRow struct {
 	entity.TechCardSizePattern
 }
 
-// patternsByTechCardIds loads the per-size PDF выкройки grouped by tech card.
+// patternsByTechCardIds loads the выкройки grouped by tech card. size_id is COALESCEd because a
+// graded sheet is filed under NO size (NULL since 0281) and the entity spells that 0 — the same
+// value the wire uses.
 func (s *Store) patternsByTechCardIds(ctx context.Context, ids []int) (map[int][]entity.TechCardSizePattern, error) {
 	if len(ids) == 0 {
 		return map[int][]entity.TechCardSizePattern{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardPatternRow](ctx, s.DB, `
-		SELECT tech_card_id, size_id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
+		SELECT tech_card_id, COALESCE(size_id, 0) AS size_id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
 		       url, filename, name, size_bytes, version, uploaded_at
 		FROM tech_card_size_pattern
 		WHERE tech_card_id IN (:ids)

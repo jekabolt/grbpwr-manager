@@ -185,7 +185,7 @@ func TestGetTechCardReadiness(t *testing.T) {
 			// hold a stage back, or shipping this would have blocked the whole portfolio at once.
 			name: "pp to prod: with no size index the patterns row says UNKNOWN and blocks nothing",
 			facts: entity.TechCardReadinessFacts{
-				Stage: entity.TechCardStagePP, PpSamples: 1, ProductionRuns: 1, Sizes: 5, PatternSizes: 3,
+				Stage: entity.TechCardStagePP, PpSamples: 1, ProductionRuns: 1, Sizes: 5,
 			},
 			wantNext:        pb_common.TechCardStage_TECH_CARD_STAGE_PROD,
 			wantNextKeys:    []string{"pp_sample", "run_planned", "patterns"},

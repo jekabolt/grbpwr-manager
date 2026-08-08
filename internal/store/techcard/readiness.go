@@ -19,8 +19,10 @@ import (
 //   - lab_dip_status is NULLable on product and the rest of the codebase reads NULL as 'pending'
 //     (see materials.go), so COALESCE here keeps a never-submitted colourway counted as outstanding.
 //   - a fitting may belong to a product only (tech_card_id NULL); the equality filters those out.
-//   - the pattern subselect intersects with the live size range: a sheet left behind for a size that
-//     has since been dropped from the grade must not count towards coverage.
+//   - there is NO pattern count here any more. It counted DISTINCT tech_card_size_pattern.size_id
+//     against the range, Р4 (0280) moved the checklist row onto tech_card_pattern_size_index because
+//     that count lied in both directions, and 0281 (a sheet may be filed under no size at all) makes
+//     it permanently wrong on top of unread. Coverage lives in the index; do not reintroduce it here.
 //   - bom_linked_lines is pin-or-default (slots, 0221): a line with no default article still counts
 //     as covered when there is at least one live colourway AND every live colourway both pins an
 //     article for it and carries no unpinned usage of it — one pinned usage next to an unpinned one
@@ -77,10 +79,6 @@ const techCardReadinessQuery = `SELECT
 	(SELECT COUNT(*) FROM production_run r WHERE r.tech_card_id = tc.id)       AS production_runs,
 	(SELECT COUNT(*) FROM production_run r
 		WHERE r.tech_card_id = tc.id AND r.status = 'received')               AS production_runs_received,
-	(SELECT COUNT(DISTINCT sp.size_id) FROM tech_card_size_pattern sp
-		WHERE sp.tech_card_id = tc.id
-		  AND sp.size_id IN (SELECT z.size_id FROM tech_card_size z
-		                     WHERE z.tech_card_id = tc.id))                   AS pattern_sizes,
 	EXISTS(SELECT 1 FROM tech_card_costing c WHERE c.tech_card_id = tc.id)     AS has_costing,
 	EXISTS(SELECT 1 FROM tech_card_costing c
 		WHERE c.tech_card_id = tc.id

@@ -1274,8 +1274,10 @@ func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) 
 
 func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) ([]patternHistoryRow, error) {
 	rows, err := storeutil.QueryListNamed[patternHistoryRow](ctx, db,
+		// COALESCE on size_id: NULL is the graded sheet (0281) and reads as 0 in the entity, the
+		// same value the wire uses for it.
 		`SELECT id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
-		        url, size_id, version, uploaded_at, name
+		        url, COALESCE(size_id, 0) AS size_id, version, uploaded_at, name
 		 FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": techCardID})
 	if err != nil {
@@ -1359,6 +1361,18 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	for _, sizeID := range sizeIDs {
 		liveSizes[sizeID] = struct{}{}
 	}
+	// A payload row is projected onto the CURRENT size range: a sheet left on a size the save is
+	// dropping is not written (its object survives — patternURLsRemovedByPayload compares urls).
+	// Size 0 is not a size but the absence of one (0281): the sheet is graded, its sizes live in the
+	// file, and the range has nothing to say about it — including when the range is still empty,
+	// which is the whole point of the sizeless row.
+	filedUnderLiveSize := func(sizeID int) bool {
+		if sizeID == 0 {
+			return true
+		}
+		_, ok := liveSizes[sizeID]
+		return ok
+	}
 	// The card's cloth lines are loaded lazily, only when some payload row binds a NEW cloth —
 	// bindings that merely round-trip the stored value are tolerated even when the target is gone
 	// («слот удалён» is a UI state, not a reason to block the save). Both halves come along: since
@@ -1397,10 +1411,15 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	// would either steal the keyed row's stored identity or mint a phantom duplicate, and which
 	// one happened would depend on payload order.
 	keyedPairs := make(map[string]struct{}, len(patterns))
+	// Every (size, url) the payload claims, keyed or not. Read only by the sizeless adoption below,
+	// and only to REFUSE: a stored row whose own pair some payload row still names belongs to that
+	// row, and re-filing a different row onto it would depend on payload order.
+	payloadPairs := make(map[string]struct{}, len(patterns))
 	for _, p := range patterns {
-		if _, ok := liveSizes[p.SizeId]; !ok {
+		if !filedUnderLiveSize(p.SizeId) {
 			continue
 		}
+		payloadPairs[patternHistoryKey(p.SizeId, p.URL)] = struct{}{}
 		if p.LineKey != "" {
 			reservedKeys[p.LineKey] = struct{}{}
 			keyedPairs[patternHistoryKey(p.SizeId, p.URL)] = struct{}{}
@@ -1408,7 +1427,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	}
 	order := 0
 	for i, p := range patterns {
-		if _, ok := liveSizes[p.SizeId]; !ok {
+		if !filedUnderLiveSize(p.SizeId) {
 			continue
 		}
 		key := patternHistoryKey(p.SizeId, p.URL)
@@ -1445,6 +1464,47 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 				matched = &r
 				lineKey = r.LineKey
 			}
+		} else if p.SizeId == 0 {
+			// (2b) A KEYLESS SIZELESS row adopts the one stored row carrying this url, whatever size
+			// it was filed under. Re-filing a sheet to «no size» (0281) is the same sheet, and without
+			// this the (size, url) lookup above misses, the stored row falls into the delete-the-rest
+			// loop below, and the sheet comes back as a brand-new row — losing its line_key, its name
+			// (the fallback is read off the row this misses) and its fabric binding. Only the identity
+			// is lost, not the file: patternURLsRemovedByPayload compares urls, and the url is still
+			// here. Today only a direct store caller can produce this — the admin client round-trips
+			// line_keys — but the dto used to reject size 0 outright, so this is the guard that
+			// rejection was quietly serving.
+			//
+			// Order-independent by construction, which the whole two-pass design exists to protect:
+			// a stored row is adopted only when NOTHING else can claim it — no live payload row names
+			// its own (size, url), no keyed row reserves its key, it is not consumed — and only when
+			// it is the ONLY candidate for the url. The legitimate «one combined sheet hung on XS and
+			// S» leaves two candidates, so nothing is adopted and the old behaviour stands.
+			var only *patternHistoryRow
+			for i := range prior {
+				r := prior[i]
+				if r.URL != p.URL || r.LineKey == "" {
+					continue
+				}
+				if _, used := consumed[r.Id]; used {
+					continue
+				}
+				if _, taken := reservedKeys[r.LineKey]; taken {
+					continue
+				}
+				if _, claimed := payloadPairs[patternHistoryKey(r.SizeId, r.URL)]; claimed {
+					continue
+				}
+				if only != nil {
+					only = nil
+					break
+				}
+				only = &r
+			}
+			if only != nil {
+				matched = only
+				lineKey = only.LineKey
+			}
 		}
 		if lineKey == "" {
 			lineKey = newLineKey()
@@ -1479,12 +1539,20 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		} else {
 			uploadedAt = sql.NullTime{Time: now, Valid: true}
 		}
-		if _, exactPair := known[key]; matched != nil && !exactPair && version == matched.Version {
-			// A keyed row whose (size, url) left its stored history — the url changed (sheet
-			// replacement) or the sheet moved to another size — carrying the SAME version the
-			// replaced row had is an ECHO: the schema round-trips version, so a client naturally
-			// resends the old number. Both cases are a new revision by definition: force MAX+1.
-			// A genuine manual pin differs from the replaced row's number and passes untouched.
+		if _, exactPair := known[key]; matched != nil && !exactPair &&
+			version == matched.Version && matched.URL != p.URL {
+			// A keyed row whose (size, url) left its stored history BECAUSE THE FILE CHANGED — the
+			// sheet was replaced — carrying the SAME version the replaced row had is an ECHO: the
+			// schema round-trips version, so a client naturally resends the old number. A replacement
+			// is a new revision by definition: force MAX+1. A genuine manual pin differs from the
+			// replaced row's number and passes untouched.
+			//
+			// A MOVE is excluded (matched.URL == p.URL): the same file changing which size it is filed
+			// under — including onto no size at all (0281) — is not a new revision of anything, and
+			// renumbering it would rewind the operator's visible «Rev.3» to «Rev.1» AND stale the 0280
+			// size index for every scope holding that sheet, because the fingerprint hashes version.
+			// The gate would then answer UNKNOWN until somebody re-ran «⌕ размеры в файлах», for a
+			// re-file that changed no geometry whatsoever.
 			version = 0
 		}
 		if version <= 0 {
@@ -1537,7 +1605,9 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			"line_key":       lineKey,
 			"bom_line_key":   bomLineKey,
 			"fabric_purpose": fabricPurpose,
-			"size_id":        p.SizeId,
+			// 0 goes down as NULL, not as size 0: the FK would reject a literal 0, and NULL is the
+			// column's own word for «размер живёт в файле».
+			"size_id":       sql.NullInt64{Int64: int64(p.SizeId), Valid: p.SizeId > 0},
 			"url":           p.URL,
 			"filename":      p.Filename,
 			"name":          name,

@@ -1320,8 +1320,17 @@ type TechCardSizeQuantity struct {
 }
 
 // TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
-// the url's extension — for one size of a tech card.
+// the url's extension. A graded DXF carries the whole range at once, so a sheet is filed under one
+// size of the card or under none at all (SizeId 0); see the field.
 type TechCardSizePattern struct {
+	// SizeId is the size this sheet is FILED UNDER, and 0 (stored NULL since 0281) means it is filed
+	// under none — the sheet is graded and its sizes live in the file's block names, which only the
+	// browser reads. It is a storage slot, not a statement about the file: the server's answer to
+	// «есть ли выкройка на этот размер» comes from tech_card_pattern_size_index (0280), and no
+	// consumer of a sheet (viewer, раскладка, piece matching, marker export) reads this field.
+	//
+	// A non-zero value must still be a size of the card's range; 0 is accepted whatever the range is,
+	// which is what lets a DXF land on a card whose size range nobody has filled in yet.
 	SizeId int `db:"size_id"`
 	// LineKey is the row's stable identity across saves and file replacement (the url changes when a
 	// sheet is replaced; the line_key does not). Empty on WRITE = legacy/stale client — the store then
@@ -2114,9 +2123,12 @@ type TechCardReadinessFacts struct {
 	ProductionRuns         int `db:"production_runs"`
 	ProductionRunsReceived int `db:"production_runs_received"`
 
-	// PatternSizes counts sizes OF THE CURRENT RANGE that carry at least one pattern sheet, so a
-	// leftover sheet for a size since dropped from the grade cannot fake full coverage.
-	PatternSizes int `db:"pattern_sizes"`
+	// PatternSizes is GONE, not moved: it counted DISTINCT tech_card_size_pattern.size_id against the
+	// range, and Р4 (0280) already took the `patterns` checklist row off it because it lied in both
+	// directions. 0281 makes the count permanently wrong on top of dead — a graded sheet is filed
+	// under NO size, so an all-sizeless card would report 0 of N. Coverage is
+	// tech_card_pattern_size_index and nothing else; anyone wanting «how many sizes have выкройки»
+	// must read that, so the tempting field does not sit here waiting to be picked up again.
 
 	HasCosting         bool `db:"has_costing"`
 	HasCostingCurrency bool `db:"has_costing_currency"`
