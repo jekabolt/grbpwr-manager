@@ -466,9 +466,12 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Tokenized pattern read path (Ф7): stable capability urls for private выкройки —
 	// minted into admin responses (view_url/download_url) and printed QR codes, resolved
-	// at /api/p/{token} into short-lived presigned origin urls. Fails closed on a
-	// missing pepper (config.Validate guards it too, with a friendlier message).
-	patternSvc, err := patternaccess.New(a.db.PatternObjects(), a.b, a.c.PatternToken.Pepper)
+	// at /api/p/{token} into short-lived presigned origin urls. The same service serves
+	// the card-level viewer manifest (/api/pv/{token}) behind the one-QR-per-fabric-scope
+	// tech-pack print. Fails closed on a missing pepper (config.Validate guards it too,
+	// with a friendlier message).
+	patternSvc, err := patternaccess.New(a.db.PatternObjects(), a.db.TechCards(), a.b,
+		a.c.PatternToken.Pepper, strings.TrimRight(a.c.PatternToken.PublicBaseURL, "/"))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create pattern access service",
 			slog.String("err", err.Error()),
@@ -477,6 +480,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.patternSvc = patternSvc
 	a.hs.SetPatternAccessHandler(patternSvc)
+	a.hs.SetPatternViewerHandler(patternSvc.ManifestHandler())
 	a.adminS.SetPatternURLService(patternSvc, strings.TrimRight(a.c.PatternToken.PublicBaseURL, "/"))
 
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.

@@ -5,10 +5,14 @@
 // object without touching the object or the pepper.
 //
 // Format: {scope}{id36}.{epoch36}.{sig}
-//   - scope is one byte: 'i' (internal — admin SPA) or 'p' (print — tech-pack QR). The
-//     two scopes sign differently, so revoking a leaked paper tech-pack does not have to
+//   - scope is one byte: 'i' (internal — admin SPA), 'p' (print — tech-pack QR) or
+//     'c' (card viewer — the id names a TECH CARD, not a pattern_object_access row).
+//     Scopes sign differently, so revoking a leaked paper tech-pack does not have to
 //     break the admin UI and vice versa (each scope can be re-epoched independently at a
-//     policy level later; today both share the row epoch).
+//     policy level later; today 'i'/'p' share the object row epoch and 'c' has its own
+//     row in tech_card_pattern_viewer_access). Because 'c' tokens carry a DIFFERENT
+//     id namespace, every handler must check the scope it serves — a card token looked
+//     up as an object id would resolve to an unrelated object.
 //   - id36 / epoch36 are base-36 (lowercase) — compact, so the printed QR stays small.
 //   - sig is base64url(HMAC_SHA256(pepper, "v1|"+scope+"|"+id+"|"+epoch)[:16]) — 128 bits.
 //
@@ -36,6 +40,11 @@ const (
 	ScopeInternal Scope = 'i'
 	// ScopePrint marks tokens embedded in printed tech-pack QR codes.
 	ScopePrint Scope = 'p'
+	// ScopeCard marks card-viewer tokens (/api/pv/{token}): the id is a TECH CARD id at
+	// the tech_card_pattern_viewer_access epoch — NOT a pattern_object_access row id.
+	// Handlers of the object scopes must refuse it, or a card token would be looked up
+	// against pattern_object_access and serve whatever object shares the number.
+	ScopeCard Scope = 'c'
 )
 
 const sigBytes = 16
@@ -81,7 +90,7 @@ func (m *Minter) Parse(token string) (scope Scope, id int64, epoch int, err erro
 		return 0, 0, 0, ErrInvalid
 	}
 	scope = Scope(token[0])
-	if scope != ScopeInternal && scope != ScopePrint {
+	if scope != ScopeInternal && scope != ScopePrint && scope != ScopeCard {
 		return 0, 0, 0, ErrInvalid
 	}
 	parts := strings.Split(token[1:], ".")

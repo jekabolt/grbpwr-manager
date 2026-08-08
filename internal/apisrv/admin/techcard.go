@@ -172,7 +172,13 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 	// Tokenized read urls are minted on the RESPONSE only — the release-snapshot path
 	// converts the entity separately and must stay token-free (persisted blobs).
 	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, pbTc.GetTechCard().GetPatterns())
-	return &pb_admin.GetTechCardResponse{TechCard: pbTc}, nil
+	return &pb_admin.GetTechCardResponse{
+		TechCard: pbTc,
+		// The card-viewer token rides the response for the same reason the urls above do:
+		// it must never land on common.TechCard, which release snapshots persist. Best
+		// effort — "" on any failure, never a failed read.
+		PatternViewerToken: s.patternURLs.MintCardViewerToken(ctx, int(req.Id)),
+	}, nil
 }
 
 // UpdateTechCard updates a tech card, replacing its nested sections.

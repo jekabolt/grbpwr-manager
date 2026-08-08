@@ -679,6 +679,12 @@ type (
 		// GetTechCardNames returns id → name for the given tech cards (cheap header-only lookup used by
 		// the packing spec to label garment styles without an N+1 GetTechCardById).
 		GetTechCardNames(ctx context.Context, ids []int) (map[int]string, error)
+		// GetPatternViewerManifest is the narrow read behind the public pattern viewer
+		// (GET /api/pv/{token}): style header, named size range, all pattern sheet rows and
+		// the roll-goods BOM lines. Deliberately NOT GetTechCardById — that read carries the
+		// whole card including costing, and this one feeds an unauthenticated endpoint.
+		// sql.ErrNoRows when the card is absent.
+		GetPatternViewerManifest(ctx context.Context, techCardID int) (*entity.PatternViewerCard, error)
 		DeleteTechCard(ctx context.Context, id int) error
 		// DeleteTechCardAndListOrphanedPatternURLs collects pattern URLs before the cascading delete and
 		// returns only those no other card/fitting references after the transaction.
@@ -1367,6 +1373,18 @@ type (
 		RecordAccess(ctx context.Context, counts map[int64]int64, last map[int64]time.Time) error
 		// DeleteByKeys drops rows whose objects were garbage-collected.
 		DeleteByKeys(ctx context.Context, keys []string) error
+
+		// Card-viewer rows (tech_card_pattern_viewer_access, 0285): the card-level twin of
+		// the object rows above, behind /api/pv/{token}. Keyed by TECH CARD id — a 'c'
+		// token must resolve through these, never through GetById (the id spaces overlap
+		// numerically and name different things).
+		//
+		// EnsureCardViewer returns the card's row, creating it lazily (epoch 1, no expiry)
+		// without touching existing state. GetCardViewer returns sql.ErrNoRows when absent.
+		EnsureCardViewer(ctx context.Context, techCardID int) (*entity.TechCardPatternViewerAccess, error)
+		GetCardViewer(ctx context.Context, techCardID int) (*entity.TechCardPatternViewerAccess, error)
+		// RecordCardViewerAccess folds a debounced batch of viewer access stats into the rows.
+		RecordCardViewerAccess(ctx context.Context, counts map[int]int64, last map[int]time.Time) error
 	}
 
 	Waitlist interface {

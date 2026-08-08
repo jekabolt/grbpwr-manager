@@ -720,6 +720,22 @@ const (
 	BomPurposeOther       TechCardBomPurpose = "other"       // другое — meaning lives in PurposeNote
 )
 
+// BomPurposeOrder is the vocabulary IN PRESENTATION ORDER — the same order the admin panel lists
+// назначения in (bom-purpose.ts bomPurposeOrder). Anything that shows purpose-keyed groups to a
+// human reads this instead of inventing its own sort, so the печать and the screens it is printed
+// from agree on which группа comes first. Kept in lockstep with the set below by
+// TestBomPurposeOrderCoversVocabulary.
+var BomPurposeOrder = []TechCardBomPurpose{
+	BomPurposeMain,
+	BomPurposeLining,
+	BomPurposePocketing,
+	BomPurposeInterfacing,
+	BomPurposeInsulation,
+	BomPurposeContrast,
+	BomPurposeMesh,
+	BomPurposeOther,
+}
+
 // ValidTechCardBomPurposes is the set of accepted BOM purposes. Kept in lockstep with the DB CHECK
 // by TestBomPurposeDBCheckNoDrift and with the proto enum by TestBomPurposeEnumNoDrift.
 var ValidTechCardBomPurposes = map[TechCardBomPurpose]bool{

@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,12 @@ type Presigner interface {
 	PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error)
 }
 
+// CardManifests is the narrow slice of dependency.TechCards the viewer manifest needs
+// (see viewer.go). dependency.TechCards satisfies it.
+type CardManifests interface {
+	GetPatternViewerManifest(ctx context.Context, techCardID int) (*entity.PatternViewerCard, error)
+}
+
 const (
 	// Per (ip|token) — an admin card with a dozen tiles bursts that many distinct
 	// tokens from one IP, so the per-pair budget only has to cover retries/reloads.
@@ -45,49 +52,81 @@ const (
 	perIPWindow = time.Minute
 	perIPMax    = 600
 
+	// The viewer manifest gets its OWN per-ip budget instead of sharing the object one.
+	// The two have different populations: /api/p is one admin browsing tiles, /api/pv is a
+	// whole workshop of phones behind a single NAT address, each scan costing a manifest
+	// plus a file hop per sheet opened. Sharing would let a busy cutting floor spend the
+	// anti-scan backstop that exists for a different threat, and the failure is silent by
+	// construction — the same bare 404 as a revoked link, with the reason sampled to Debug,
+	// so the field report would be «QR не работает» with nothing in the logs to contradict
+	// it. Separate budgets keep one population from starving the other.
+	perViewerIPWindow = time.Minute
+	perViewerIPMax    = 1200
+
 	statsFlushInterval = time.Minute
 
 	// deniedLogSample is the 1-in-N Info sampling rate for denials (see notFound).
 	deniedLogSample = 10
 )
 
-// Service mints pattern urls and serves /api/p/{token}.
+// Service mints pattern urls and serves /api/p/{token} plus the card-level viewer
+// manifest /api/pv/{token} (viewer.go).
 type Service struct {
 	objects dependency.PatternObjects
+	cards   CardManifests
 	minter  *patterntoken.Minter
 	presign Presigner
 
+	// viewerBaseURL is this backend's external origin (PatternToken.PublicBaseURL,
+	// trailing slash trimmed) — the per-file /api/p urls inside a viewer manifest are
+	// absolute because the manifest is consumed from the ADMIN SPA's origin.
+	viewerBaseURL string
+
 	tokenLimiter *ratelimit.Limiter
 	ipLimiter    *ratelimit.Limiter
+	// viewerIPLimiter is the /api/pv twin of ipLimiter — see perViewerIPMax for why the
+	// two populations must not share a budget.
+	viewerIPLimiter *ratelimit.Limiter
 
 	// Debounced access stats (design R7): the audit trail is the slog line; these
 	// counters exist for the UI and are flushed asynchronously so tile bursts do not
-	// turn into row updates per request.
-	statsMu    sync.Mutex
-	statsCount map[int64]int64
-	statsLast  map[int64]time.Time
-	stopCh     chan struct{}
-	stopOnce   sync.Once
+	// turn into row updates per request. Object and card-viewer counters are SEPARATE
+	// maps flushed to separate tables — the id spaces overlap numerically, and one
+	// shared map would credit a card's views to whatever object shares the number.
+	statsMu        sync.Mutex
+	statsCount     map[int64]int64
+	statsLast      map[int64]time.Time
+	cardStatsCount map[int]int64
+	cardStatsLast  map[int]time.Time
+	stopCh         chan struct{}
+	stopOnce       sync.Once
 
 	// deniedSeq drives the 1-in-N sampling of denial log lines.
 	deniedSeq atomic.Int64
 }
 
 // New builds the service. pepper failing closed happens in patterntoken.NewMinter.
-func New(objects dependency.PatternObjects, presign Presigner, pepper string) (*Service, error) {
+// viewerBaseURL must be the backend's external https origin without a trailing slash
+// (config.Validate pins the shape).
+func New(objects dependency.PatternObjects, cards CardManifests, presign Presigner, pepper, viewerBaseURL string) (*Service, error) {
 	minter, err := patterntoken.NewMinter(pepper)
 	if err != nil {
 		return nil, err
 	}
 	s := &Service{
-		objects:      objects,
-		minter:       minter,
-		presign:      presign,
-		tokenLimiter: ratelimit.NewLimiter(perTokenWindow, perTokenMax),
-		ipLimiter:    ratelimit.NewLimiter(perIPWindow, perIPMax),
-		statsCount:   map[int64]int64{},
-		statsLast:    map[int64]time.Time{},
-		stopCh:       make(chan struct{}),
+		objects:         objects,
+		cards:           cards,
+		minter:          minter,
+		presign:         presign,
+		viewerBaseURL:   strings.TrimRight(viewerBaseURL, "/"),
+		tokenLimiter:    ratelimit.NewLimiter(perTokenWindow, perTokenMax),
+		ipLimiter:       ratelimit.NewLimiter(perIPWindow, perIPMax),
+		viewerIPLimiter: ratelimit.NewLimiter(perViewerIPWindow, perViewerIPMax),
+		statsCount:      map[int64]int64{},
+		statsLast:       map[int64]time.Time{},
+		cardStatsCount:  map[int]int64{},
+		cardStatsLast:   map[int]time.Time{},
+		stopCh:          make(chan struct{}),
 	}
 	go s.flushLoop()
 	return s, nil
@@ -100,6 +139,7 @@ func (s *Service) Stop() {
 		s.flushStats()
 		s.tokenLimiter.Stop()
 		s.ipLimiter.Stop()
+		s.viewerIPLimiter.Stop()
 	})
 }
 
@@ -120,17 +160,29 @@ func (s *Service) flushStats() {
 	s.statsMu.Lock()
 	counts := s.statsCount
 	last := s.statsLast
+	cardCounts := s.cardStatsCount
+	cardLast := s.cardStatsLast
 	s.statsCount = map[int64]int64{}
 	s.statsLast = map[int64]time.Time{}
+	s.cardStatsCount = map[int]int64{}
+	s.cardStatsLast = map[int]time.Time{}
 	s.statsMu.Unlock()
-	if len(counts) == 0 {
+	if len(counts) == 0 && len(cardCounts) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := s.objects.RecordAccess(ctx, counts, last); err != nil {
-		slog.Default().ErrorContext(ctx, "pattern access stats flush failed",
-			slog.String("err", err.Error()))
+	if len(counts) > 0 {
+		if err := s.objects.RecordAccess(ctx, counts, last); err != nil {
+			slog.Default().ErrorContext(ctx, "pattern access stats flush failed",
+				slog.String("err", err.Error()))
+		}
+	}
+	if len(cardCounts) > 0 {
+		if err := s.objects.RecordCardViewerAccess(ctx, cardCounts, cardLast); err != nil {
+			slog.Default().ErrorContext(ctx, "pattern viewer stats flush failed",
+				slog.String("err", err.Error()))
+		}
 	}
 }
 
@@ -138,6 +190,13 @@ func (s *Service) noteAccess(id int64) {
 	s.statsMu.Lock()
 	s.statsCount[id]++
 	s.statsLast[id] = time.Now().UTC()
+	s.statsMu.Unlock()
+}
+
+func (s *Service) noteCardAccess(techCardID int) {
+	s.statsMu.Lock()
+	s.cardStatsCount[techCardID]++
+	s.cardStatsLast[techCardID] = time.Now().UTC()
 	s.statsMu.Unlock()
 }
 
@@ -256,6 +315,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	scope, id, epoch, err := s.minter.Parse(token)
 	if err != nil {
 		notFound("bad token")
+		return
+	}
+	// SCOPE ALLOWLIST. This endpoint resolves ids against pattern_object_access, so only
+	// the two OBJECT scopes may pass. A ScopeCard token carries a TECH CARD id in the same
+	// numeric range — looked up here it would resolve to an unrelated object whose row id
+	// happens to equal the card id, and serve a file the token never named. Card tokens
+	// are served by ServeManifest (/api/pv) alone; allowlist, not denylist, so a future
+	// scope fails closed here instead of inheriting object semantics by default.
+	if scope != patterntoken.ScopeInternal && scope != patterntoken.ScopePrint {
+		notFound("wrong token scope")
 		return
 	}
 	// Keyed on the PARSED id, never the token string: Parse pins canonical spelling, but
