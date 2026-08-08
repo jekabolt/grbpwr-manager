@@ -407,6 +407,18 @@ var methodRequirements = map[string]Requirement{
 	"SaveProductionRunCutReceipt":   wr(SectionProduction),
 	"DeleteProductionRunCutReceipt": wr(SectionProduction),
 	"ListProductionRunCutReceipts":  rd(SectionProduction),
+	// КАЛИБРОВКА КОЭФФИЦИЕНТА РАСКРОЯ (Ф5б.3) — production READ, ХОТЯ ЖИВЁТ НА ЭКРАНЕ АРТИКУЛА.
+	//
+	// Секция следует за тем, ЧТО В ОТВЕТЕ, а не за тем, где кнопка. А в ответе — разбор по настилам:
+	// id прогонов, id и названия карточек, замеренный расход цеха. Классифицируй мы это как
+	// tech_cards (где живут остальные чтения материала), владелец каталога без доступа к производству
+	// читал бы, сколько ткани ушло на каждую партию. Довод тот же, по которому ListProductionRunLays
+	// выше не в allowlist. Следствие названо: клиент на экране артикула обязан пережить
+	// PermissionDenied, показав отсутствие предложения, а не ошибку.
+	//
+	// READ, и это не формальность: сервер здесь НИЧЕГО НЕ ПИШЕТ — коэффициент принимает рука
+	// владельца артикула через UpdateMaterial, у которого своя (tech_cards:write) проверка.
+	"GetMaterialCuttingCoefficientSuggestion": rd(SectionProduction),
 	// ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6) — production READ, and specifically NOT tech_cards.
 	//
 	// The argument, not the taste: this RPC has ONE consumer (the run-creation modal) and ONE

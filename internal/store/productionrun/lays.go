@@ -1156,3 +1156,107 @@ func loadRunQuantitiesByColorway(ctx context.Context, db dependency.DB, runID in
 	}
 	return out, nil
 }
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// КАЛИБРОВКА КОЭФФИЦИЕНТА РАСКРОЯ (Ф5б.3): вход медианы
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+// measuredLayRow is a lay row plus the run's card — one query, because the card id is the only
+// thing the caller needs to reach the resolver and re-reading production_run per lay would be an
+// N+1 over rows that all point at a handful of cards.
+type measuredLayRow struct {
+	layRow
+	TechCardId   int    `db:"tech_card_id"`
+	TechCardName string `db:"tech_card_name"`
+}
+
+// ListMeasuredLayCandidates reads every настил that carries a CONSUMPTION FACT and whose tech card
+// NAMES the given article ANYWHERE. It is the input the coefficient calibration medians over — and
+// it is a SUPERSET, which is why the name says «candidates».
+//
+// ПОЧЕМУ ФИЛЬТРОВАТЬ ПО АРТИКУЛУ ЗДЕСЬ НЕЛЬЗЯ, И ЭТО ГЛАВНОЕ В ЭТОМ ЗАПРОСЕ.
+//
+// Настил НЕ ХРАНИТ material_id. Он хранит пару (колорвей, слот BOM), а какой артикул за этой парой
+// стоит, решает РОВНО ОДИН резолвер — dto.LayArticleMaterialId: пин колорвея, если он есть, иначе
+// артикул слота по умолчанию. Очевидный джойн
+//
+//	JOIN tech_card_bom_item bi ON bi.id = l.bom_item_id AND bi.material_id = :material
+//
+// читает ТОЛЬКО умолчание слота и потому молча теряет каждый настил, у которого колорвей приколол
+// ДРУГУЮ ткань, — и теряет правдоподобно: ответ просто становится меньше. Понимание «слот по
+// позиционному индексу» уже давало ПУСТОЙ материальный план на бете (§14 п.5); фильтр, знающий
+// только умолчание слота, — та же ошибка с новым адресом. Второго резолвера быть не должно, а
+// SQL-джойн по material_id — это и есть второй резолвер, написанный на другом языке.
+//
+// ЧТО SQL РЕШАТЬ ВПРАВЕ — только «этот артикул здесь невозможен». Пара EXISTS ниже перечисляет ВСЕ
+// места, где карточка вообще может НАЗВАТЬ артикул: tech_card_bom_item.material_id и
+// tech_card_colorway_usage.material_id. Перечень исчерпывающий не по обещанию, а по построению —
+// entity.TechCardColorwayUsage.EffectiveMaterialId возвращает либо пин юзеджа, либо material_id
+// слота, и ничего третьего. Значит карточка, не назвавшая артикул НИ ТАМ НИ ТАМ, не может
+// разрешиться в него ни для одного настила, и её отсев не теряет ни одного истинного попадания;
+// карточка, назвавшая его хоть где-то, — лишь КАНДИДАТ, и решается настил за настилом в Go.
+//
+// Прецедент — resolveLayLot выше в этом файле: он строит ровно такой же терпимый набор кандидатов
+// по тем же двум таблицам и по той же причине, и точно так же использует его ТОЛЬКО чтобы
+// ОПРОВЕРГНУТЬ, никогда чтобы выбрать.
+//
+// Порядок — от свежего замера к старому: человек, ищущий свою опечатку, ищет её среди последних.
+// Настилы без отметки времени (факт есть, штампа нет) уходят в конец, а не выдают себя за старые.
+func (s *Store) ListMeasuredLayCandidates(ctx context.Context, materialID int) ([]entity.ProductionRunLayFact, error) {
+	if materialID <= 0 {
+		return nil, nil
+	}
+	rows, err := storeutil.QueryListNamed[measuredLayRow](ctx, s.DB, `
+		SELECT `+layColumns+`, r.tech_card_id AS tech_card_id, COALESCE(tc.name, '') AS tech_card_name
+		FROM production_run_lay l
+		JOIN production_run r ON r.id = l.run_id
+		JOIN tech_card tc ON tc.id = r.tech_card_id
+		LEFT JOIN product p ON p.id = l.colorway_id
+		LEFT JOIN tech_card_bom_item bi ON bi.id = l.bom_item_id
+		LEFT JOIN material_lot ml ON ml.id = l.lot_id
+		WHERE l.actual_qty IS NOT NULL
+		  AND (
+		    EXISTS (
+		      SELECT 1 FROM tech_card_bom_item b
+		      WHERE b.tech_card_id = r.tech_card_id AND b.material_id = :material
+		    )
+		    OR EXISTS (
+		      SELECT 1 FROM tech_card_colorway_usage u
+		      JOIN product cw ON cw.id = u.colorway_id
+		      WHERE cw.style_id = r.tech_card_id AND u.material_id = :material
+		    )
+		  )
+		ORDER BY l.actual_at IS NULL, l.actual_at DESC, l.id DESC`,
+		map[string]any{"material": materialID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to load measured lays of material %d: %w", materialID, err)
+	}
+	if len(rows) == 0 {
+		return []entity.ProductionRunLayFact{}, nil
+	}
+
+	out := make([]entity.ProductionRunLayFact, 0, len(rows))
+	ids := make([]int, 0, len(rows))
+	for i := range rows {
+		// The quantity snapshot is deliberately NOT decoded: staleness is a per-run comparison and
+		// this list crosses runs. entity.ProductionRunLayFact says so on the field itself.
+		out = append(out, entity.ProductionRunLayFact{
+			ProductionRunLay: rows[i].ProductionRunLay,
+			TechCardId:       rows[i].TechCardId,
+			TechCardName:     rows[i].TechCardName,
+		})
+		ids = append(ids, rows[i].Id)
+	}
+
+	// СЕКЦИИ ОБЯЗАТЕЛЬНЫ, а не украшение: план настила — это Σ (длина раскладки × слои) + концевые
+	// потери, и без секций он равен нулю. Настил с фактом и нулевым планом выпал бы из медианы с
+	// причиной «нет плана» — то есть замер цеха потерялся бы из-за незагруженного джойна.
+	sections, err := loadLaySections(ctx, s.DB, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Sections = sections[out[i].Id]
+	}
+	return out, nil
+}

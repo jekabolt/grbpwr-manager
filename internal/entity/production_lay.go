@@ -411,6 +411,25 @@ func (l ProductionRunLay) ActualUnit() (MaterialUnit, bool) {
 	return NormalizeMaterialUnit(l.ActualUom.String)
 }
 
+// ProductionRunLayFact is ONE MEASURED настил as the coefficient calibration reads it: the lay plus
+// the run and the card it was laid for. Only lays with a recorded fact are ever loaded into it —
+// «настилов с фактом мало, это замеры цеха, а не все настилы вообще».
+//
+// THE CARD RIDES ALONG BECAUSE THE LAY DOES NOT KNOW ITS ARTICLE. production_run_lay stores a
+// colourway and a BOM slot, never a material_id: the slot names the article by default and the
+// colourway may PIN another one over it. The one resolver of that pair is
+// dto.LayArticleMaterialId(card, colorwayID, bomItemID), so calibration must have the card in hand —
+// this field is what lets the caller reach it without the store guessing on its behalf.
+//
+// QtySnapshot / QtyCurrent / QuantitiesStale ARE NOT LOADED HERE and must not be read: staleness is
+// a per-RUN comparison, and this list crosses runs by construction. An empty QtySnapshot on one of
+// these rows means «not loaded», never «the run planned nothing».
+type ProductionRunLayFact struct {
+	ProductionRunLay
+	TechCardId   int    `db:"tech_card_id"`
+	TechCardName string `db:"tech_card_name"`
+}
+
 // Machine-readable reasons a lay's plan/fact drift cannot be stated. They are REASONS and not a
 // zero, because «0%» is the most confident wrong answer this phase can give: it reads as «the plan
 // held exactly», which is the one conclusion nobody has earned.

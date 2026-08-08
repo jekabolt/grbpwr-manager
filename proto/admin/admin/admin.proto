@@ -1328,6 +1328,15 @@ service AdminService {
   rpc ListMaterialPrices(ListMaterialPricesRequest) returns (ListMaterialPricesResponse) {
     option (google.api.http) = {get: "/api/admin/materials/{material_id}/prices"};
   }
+  // ПРЕДЛОЖЕНИЕ КОЭФФИЦИЕНТА РАСКРОЯ по факту настилов (Ф5б.3).
+  //
+  // ОТДЕЛЬНЫЙ RPC, а не поле на GetMaterial/ListMaterials, и это решение, а не оформление: ответ
+  // сканирует настилы по ПРОГОНАМ и поднимает их технологические карточки, а платить за это на
+  // каждом чтении каталога незачем — каталог материалов читается всюду, а «сколько на самом деле
+  // ушло ткани» спрашивают отдельно и редко.
+  rpc GetMaterialCuttingCoefficientSuggestion(GetMaterialCuttingCoefficientSuggestionRequest) returns (GetMaterialCuttingCoefficientSuggestionResponse) {
+    option (google.api.http) = {get: "/api/admin/materials/{material_id}/cutting-coefficient-suggestion"};
+  }
 
   // RepriceTechCardBom re-pulls the current material-catalog price into every catalog-linked BOM
   // line of a mutable (non-released) card (production-costing Phase 3, plan 11): unit_price/currency are overwritten
@@ -6502,6 +6511,36 @@ message ListMaterialPricesRequest {
 
 message ListMaterialPricesResponse {
   repeated common.MaterialPrice prices = 1;
+}
+
+message GetMaterialCuttingCoefficientSuggestionRequest {
+  int32 material_id = 1;
+}
+
+// Предложение коэффициента раскроя ОДНОГО артикула по факту его настилов (Ф5б.3, §4.2).
+//
+// ДВА ЧИСЛА, И ЭТО НЕ ИЗБЫТОЧНОСТЬ. median_drift_percent — ИЗМЕРЕНИЕ (+3.00 = «уходит на 3%
+// больше плана»); suggested_coefficient — МНОЖИТЕЛЬ (1.0300), то, что сохраняется в
+// material.cutting_coefficient. 0270 хранит коэффициент множителем, потому что путь потребности на
+// него УМНОЖАЕТ. Отдай сервер одно измерение — забытый на клиенте «+1» дал бы артикулу
+// коэффициент 0.03, который entity.Material.EffectiveCuttingCoefficient читает как «НЕ ЗАДАНО»
+// (всё, что меньше единицы, — не задано), и калибровка молча обнулила бы себя.
+message GetMaterialCuttingCoefficientSuggestionResponse {
+  common.MaterialCoefficientSuggestionStatus status = 1;
+  // ИЗМЕРЕНИЕ, в процентах. ЗАПОЛНЕНО и при OUT_OF_RANGE — измерение остаётся фактом тогда, когда
+  // поле его не принимает, и человеку показывают именно его. Пусто только при TOO_FEW_FACTS.
+  google.type.Decimal median_drift_percent = 2;
+  // МНОЖИТЕЛЬ, готовый к сохранению. ПУСТО при TOO_FEW_FACTS и при OUT_OF_RANGE, и ни в одном из
+  // этих случаев это не «1.0»: коэффициента нет и коэффициент равен единице — разные утверждения.
+  google.type.Decimal suggested_coefficient = 3;
+  // Сколько настилов стоит ПОД медианой. Едет ВСЕГДА, в том числе при TOO_FEW_FACTS, где оно и есть
+  // содержание ответа. Предложение без своей опоры нечем взвесить: «1.06 по трём настилам» и
+  // «1.06 по сорока» — два разных утверждения, и решают по ним по-разному.
+  int32 lay_count = 4;
+  // Фраза для человека. НЕПУСТА ВСЕГДА, включая READY.
+  string detail = 5;
+  // Разбор ПО НАСТИЛАМ, вошедшие и невошедшие, в порядке от свежего замера к старому.
+  repeated common.MaterialCoefficientLayDrift drifts = 6;
 }
 
 // RepriceTechCardBom (production-costing Phase 3, plan 11).

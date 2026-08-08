@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 )
 
@@ -203,10 +204,19 @@ func LayFactDriftOf(o LayFactObservation, articleUom string) LayFactDrift {
 		// проверка здесь своя. Ноль — это не «ушло нисколько», это незаполненная форма.
 		d.Skipped = fmt.Sprintf("факт расхода не положителен (%s)", o.ActualQty.Decimal.String())
 	default:
-		if u, a := normaliseUom(o.ActualUom), normaliseUom(articleUom); u != "" && a != "" && u != a {
+		if u, a := normaliseUom(o.ActualUom), normaliseUom(articleUom); u != "" && a != "" && !entity.SameMaterialUnit(u, a) {
 			// Метры, делённые на килограммы, дают число, которое выглядит как дрейф. Ровно этот класс
 			// молча-неверных сложений Ф5а закрыла перечнем единиц; здесь он закрывается тем же
 			// способом — настил, чей замер не в единице артикула, НАЗЫВАЕТСЯ и не считается.
+			//
+			// СВЕРКА ИДЁТ ЧЕРЕЗ ПЕРЕЧЕНЬ (entity.SameMaterialUnit), А НЕ СРАВНЕНИЕМ СТРОК, и это не
+			// придирка. Единица ФАКТА канонизируется на записи (resolveLayActual → NormalizeMaterialUnit,
+			// «m»), а material.unit остаётся свободным текстом: 0271 переписала легаси один раз, но
+			// стандартной политики канонизации нет — и «м» на артикуле против "m" на замере суть ОДНА
+			// единица. Сырое сравнение объявило бы их разными и выбросило бы из медианы КАЖДЫЙ настил
+			// такого артикула — с виду «фактов пока мало» при полном журнале замеров. Это ровно та
+			// молча-неверная сверка, против которой перечень единиц и заводился (material_unit.go:
+			// «слот, написанный «м», против артикула "m" считался двумя разными единицами»).
 			d.Skipped = fmt.Sprintf("факт замерен в %q, а артикул считается в %q — делить нельзя", u, a)
 			return d
 		}

@@ -869,6 +869,20 @@ type (
 		// ListLays returns the run's whole lay plan. Applicable=false (with a reason) for an auxiliary
 		// card — stated explicitly, because an empty list reads as an invitation to build one.
 		ListLays(ctx context.Context, runID int) (entity.ProductionRunLayList, error)
+		// ListMeasuredLayCandidates returns every настил ACROSS RUNS that carries a consumption fact
+		// and whose tech card names the given article anywhere — the input the cutting-coefficient
+		// calibration (Ф5б.3) medians over.
+		//
+		// «CANDIDATES» IS A PROMISE ABOUT WHAT IT DOES NOT DO. A настил does not store material_id: it
+		// stores (colourway, BOM slot), and the article behind that pair is resolved by exactly one
+		// function, dto.LayArticleMaterialId — the colourway's pin when it has one, the slot's default
+		// otherwise. A SQL filter on the slot's material_id would drop every lay whose colourway pinned
+		// a different cloth, quietly and plausibly. So the query only bounds the work (cards that name
+		// the article NOWHERE cannot resolve to it for any lay) and the caller decides lay by lay.
+		//
+		// Sections ARE loaded (the plan is Σ marker length × plies); the quantity snapshot is NOT —
+		// staleness is a per-run comparison and this list crosses runs.
+		ListMeasuredLayCandidates(ctx context.Context, materialID int) ([]entity.ProductionRunLayFact, error)
 
 		// ПРИЁМКА КРОЯ (Ф5б.5, migration 0287). Two numbers per pair (настил, размер) — выкроено and
 		// принято в пошив — inserted BETWEEN production_run_line's planned_qty and received_qty,

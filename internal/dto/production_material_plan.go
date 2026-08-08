@@ -933,27 +933,74 @@ func planLayDemandByPair(lays []entity.ProductionRunLay) (map[planLayPairKey]*pl
 			out[k] = d
 		}
 		d.names = append(d.names, fmt.Sprintf("%q", name))
-		for _, s := range l.Sections {
-			if !s.MarkerUsedLengthCm.Valid || !s.MarkerUsedLengthCm.Decimal.IsPositive() {
-				// A раскладка with no measured length cannot say how much cloth its section eats. The
-				// section is skipped and NAMED: the alternative is a requirement that is quietly too
-				// small, which reads as «ткани хватает» in the one place that must never be optimistic.
-				d.unmeasured = append(d.unmeasured, fmt.Sprintf(
-					"настил %q: у раскладки %q (#%d) не задана длина раскладки — %d слоёв этой секции не вошли в потребность",
-					name, s.MarkerName, s.MarkerId, s.Plies))
-				continue
-			}
-			d.clothCm = d.clothCm.Add(s.MarkerUsedLengthCm.Decimal.Mul(decimal.NewFromInt(int64(s.Plies))))
+		g := LayPlannedGeometryOf(l)
+		for _, idx := range g.UnmeasuredSections {
+			// A раскладка with no measured length cannot say how much cloth its section eats. The
+			// section is skipped and NAMED: the alternative is a requirement that is quietly too
+			// small, which reads as «ткани хватает» in the one place that must never be optimistic.
+			s := l.Sections[idx]
+			d.unmeasured = append(d.unmeasured, fmt.Sprintf(
+				"настил %q: у раскладки %q (#%d) не задана длина раскладки — %d слоёв этой секции не вошли в потребность",
+				name, s.MarkerName, s.MarkerId, s.Plies))
 		}
-		// End losses ride on Σ plies of the WHOLE lay, including the sections whose length is unknown:
-		// those plies are physically laid and physically trimmed at both ends whatever the раскладка's
-		// records say. Ступенчатый настил is counted by SECTION plies, i.e. conservatively — a ply
-		// crossing two sections has two ends and not four, but the difference is centimetres and
-		// understating a loss costs more than overstating it (§7.2).
-		d.endLossCm = d.endLossCm.Add(
-			planLayEndsPerPly.Mul(l.EndLossCm).Mul(decimal.NewFromInt(int64(l.TotalPlies()))))
+		d.clothCm = d.clothCm.Add(g.ClothCm)
+		d.endLossCm = d.endLossCm.Add(g.EndLossCm)
 	}
 	return out, notes
+}
+
+// LayPlannedGeometry is ONE настил's planned cloth, kept as the two physically distinct facts the
+// wire carries separately: cloth under the раскладки, and cloth lost at the two ends of every ply.
+type LayPlannedGeometry struct {
+	ClothCm   decimal.Decimal
+	EndLossCm decimal.Decimal
+	// UnmeasuredSections are INDICES into the lay's Sections whose раскладка has no usable length —
+	// плies that are physically laid but cannot be turned into centimetres. Indices and not ready
+	// sentences, because the two callers name the same fact differently: the material plan says «не
+	// вошли в потребность», the calibration says «план настила неполон». The arithmetic is shared;
+	// the wording is not.
+	UnmeasuredSections []int
+}
+
+// TotalCm is planned_length_cm(L) — what a настил's plan actually claims.
+func (g LayPlannedGeometry) TotalCm() decimal.Decimal { return g.ClothCm.Add(g.EndLossCm) }
+
+// LayPlannedGeometryOf is §7.1 for ONE настил, and it is the ONLY definition of that sum:
+//
+//	cloth_length_cm(L)   = Σ по секциям (marker.used_length_cm × plies)
+//	end_loss_total_cm(L) = 2 × end_loss_cm × Σ по секциям plies
+//	planned_length_cm(L) = cloth_length_cm + end_loss_total_cm
+//
+// ОДНО ОПРЕДЕЛЕНИЕ НА ДВУХ ЧИТАТЕЛЕЙ, и это не вкус. Потребность прогона (planLayDemandByPair) и
+// калибровка коэффициента (Ф5б.3) делят одно и то же число: первая складывает его по парам, вторая
+// делит на него факт. Две копии этой суммы разошлись бы при первой же правке — и разошлись бы
+// МОЛЧА, потому что обе продолжали бы выдавать правдоподобные сантиметры, а расхождение проявилось
+// бы как «дрейф −4%» на артикуле, у которого всё в порядке.
+//
+// КОЭФФИЦИЕНТ РАСКРОЯ ЗДЕСЬ НЕ ПРИМЕНЯЕТСЯ (решение Р4 фазы Ф4), и это load-bearing: план настила
+// обязан остаться ЧИСТОЙ ГЕОМЕТРИЕЙ, иначе калибровка становится круговой — коэффициент правил бы
+// план, план правил бы коэффициент. Тот, кто соберётся «для единообразия» домножить здесь на
+// material.cutting_coefficient, сломает не потребность, а калибровку, и сломает её молча.
+func LayPlannedGeometryOf(l *entity.ProductionRunLay) LayPlannedGeometry {
+	out := LayPlannedGeometry{ClothCm: decimal.Zero, EndLossCm: decimal.Zero}
+	if l == nil {
+		return out
+	}
+	for i := range l.Sections {
+		s := &l.Sections[i]
+		if !s.MarkerUsedLengthCm.Valid || !s.MarkerUsedLengthCm.Decimal.IsPositive() {
+			out.UnmeasuredSections = append(out.UnmeasuredSections, i)
+			continue
+		}
+		out.ClothCm = out.ClothCm.Add(s.MarkerUsedLengthCm.Decimal.Mul(decimal.NewFromInt(int64(s.Plies))))
+	}
+	// End losses ride on Σ plies of the WHOLE lay, including the sections whose length is unknown:
+	// those plies are physically laid and physically trimmed at both ends whatever the раскладка's
+	// records say. Ступенчатый настил is counted by SECTION plies, i.e. conservatively — a ply
+	// crossing two sections has two ends and not four, but the difference is centimetres and
+	// understating a loss costs more than overstating it (§7.2).
+	out.EndLossCm = planLayEndsPerPly.Mul(l.EndLossCm).Mul(decimal.NewFromInt(int64(l.TotalPlies())))
+	return out
 }
 
 // planBomLine resolves a usage's BOM line for the plan: by the read-resolved FK first (bom_item_id —
