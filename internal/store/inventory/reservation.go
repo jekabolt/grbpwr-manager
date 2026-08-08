@@ -484,6 +484,25 @@ func openRunClaims(ctx context.Context, db dependency.DB, runID int) ([]entity.M
 // generation that was released is spent, and reusing its key would hit UNIQUE(claim_key, event) and
 // vanish into the INSERT IGNORE — a reserve that reports success and holds nothing. Keys that are
 // not run keys of the current shape are skipped rather than guessed at (ParseRunReservationGeneration).
+// lockRunForReservation takes the run's row so that reservation reconciles for ONE run serialise.
+//
+// Строка прогона, а не строки реестра: удерживать надо ВЫБОР ПОКОЛЕНИЯ, а он делается до того, как
+// появится строка, которую можно было бы заблокировать. Прогон — единственный объект, существующий
+// на всём протяжении пересчёта.
+//
+// Отсутствие прогона — НЕ ошибка. Прогон могли удалить между коммитом основной записи и этим
+// вызовом; его претензии унесло каскадом (fk_material_reservation_run ON DELETE CASCADE), удерживать
+// больше нечего, и пересчёт по пустому набору — честный ответ, а не отказ.
+func lockRunForReservation(ctx context.Context, db dependency.DB, runID int) error {
+	_, err := storeutil.QueryNamedOne[struct {
+		Id int `db:"id"`
+	}](ctx, db, `SELECT id FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("lock production run %d for reservation: %w", runID, err)
+	}
+	return nil
+}
+
 func nextRunGeneration(ctx context.Context, db dependency.DB, runID, materialID int) (int, error) {
 	rows, err := storeutil.QueryListNamed[struct {
 		ClaimKey string `db:"claim_key"`
@@ -539,6 +558,23 @@ func SetRunMaterialReservationsInTx(ctx context.Context, db dependency.DB, runID
 	if runID <= 0 {
 		return fmt.Errorf("run reservation needs a positive run id, got %d", runID)
 	}
+	// ПРОГОН БЕРЁТСЯ ПОД ЗАМОК ПЕРВЫМ, И БЕЗ ЭТОГО УДЕРЖАНИЕ МОЖЕТ ИСЧЕЗНУТЬ МОЛЧА.
+	//
+	// Пересчёт — это read-modify-write: прочитать открытые претензии, снять их, выписать новые под
+	// СЛЕДУЮЩИМ поколением. Поколение выбирается по уже записанным ключам, а реестр append-only с
+	// UNIQUE(claim_key, event) и вставкой через INSERT IGNORE. Два пересчёта одного прогона внахлёст
+	// (сохранение двух настилов подряд, создание прогона рядом с правкой) читают одно и то же
+	// «следующее» поколение; первый его занимает, второй молча схлопывается в IGNORE — а release
+	// СВОЕЙ старой претензии он к этому моменту уже выписал. Итог: претензия снята, новая не
+	// записана, ткань не удержана, и никто об этом не узнал.
+	//
+	// Замок на строке прогона сериализует пересчёты по прогону и делает выбор поколения безопасным.
+	// Берётся ДО первого чтения реестра: замок после чтения не защищает ничего — он бы пришёл, когда
+	// устаревшее решение уже принято. Вызовы приходят из apisrv УЖЕ ПОСЛЕ коммита основной записи,
+	// поэтому замка сохранения настила здесь нет и рассчитывать на него нельзя.
+	if err := lockRunForReservation(ctx, db, runID); err != nil {
+		return err
+	}
 	open, err := openRunClaims(ctx, db, runID)
 	if err != nil {
 		return err
@@ -580,9 +616,20 @@ func SetRunMaterialReservationsInTx(ctx context.Context, db dependency.DB, runID
 		if err != nil {
 			return err
 		}
-		if _, err := insertReservationEvent(ctx, db, materialID, runOwner(runID, want.LotId), wantQty,
-			entity.MaterialReservationReserve, entity.RunReservationClaimKey(runID, materialID, gen), username); err != nil {
+		key := entity.RunReservationClaimKey(runID, materialID, gen)
+		wrote, err := insertReservationEvent(ctx, db, materialID, runOwner(runID, want.LotId), wantQty,
+			entity.MaterialReservationReserve, key, username)
+		if err != nil {
 			return err
+		}
+		if !wrote {
+			// ВТОРОЙ ЭШЕЛОН ПОД ЗАМКОМ ВЫШЕ, и он существует потому, что цена молчания здесь —
+			// неудержанная ткань. INSERT IGNORE возвращает «ноль строк» вместо ошибки, поэтому
+			// пропавшая претензия неотличима от записанной, если не спросить. Замок делает эту ветку
+			// недостижимой; если она всё-таки сработала — значит, замка не было (чужой путь записи,
+			// вызов вне транзакции), и узнать об этом надо здесь, а не на складе.
+			return fmt.Errorf("run %d material %d: reservation key %q already taken — the hold was NOT recorded",
+				runID, materialID, key)
 		}
 	}
 	return nil

@@ -12,6 +12,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
+	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
@@ -430,5 +432,56 @@ func TestRunFabricReservation(t *testing.T) {
 		require.Equal(t, 3, gen)
 		_, ok = entity.ParseRunReservationGeneration(entity.PackagingClaimKey(7, 42))
 		require.False(t, ok, "an ORDER key must never parse as run generation 0 — that key would be reused")
+	})
+
+	// ── Одновременные пересчёты одного прогона ───────────────────────────────────────────────────
+	// ПЕРЕСЧЁТ — ЭТО READ-MODIFY-WRITE, И БЕЗ ЗАМКА НА ПРОГОНЕ ОН ТЕРЯЕТ УДЕРЖАНИЕ МОЛЧА.
+	//
+	// Поколение претензии выбирается по уже записанным ключам, реестр append-only, вставка идёт через
+	// INSERT IGNORE. Два пересчёта одного прогона внахлёст читают одно и то же «следующее» поколение;
+	// первый его занимает, второй схлопывается в IGNORE — а release своей старой претензии он к тому
+	// моменту уже выписал. Претензия снята, новая не записана, ткань не удержана, ошибки нет.
+	//
+	// ЧТО ЭТА ГОНКА РЕАЛЬНА, ПРОВЕРЕНО НА УРОВНЕ SQL, А НЕ ВЫВЕДЕНО ИЗ РАССУЖДЕНИЯ: две явные
+	// транзакции, обе прочитавшие «претензий нет» до вставки, выбирают поколение 0, и INSERT IGNORE
+	// второй пишет РОВНО НОЛЬ СТРОК, не поднимая ошибки. Воспроизводить это горутинами бессмысленно —
+	// шесть одновременных писателей на этом стенде выстраиваются в очередь сами (поколения 0..5
+	// подряд), то есть зелёный такой пробы не доказывает НИЧЕГО о наличии замка. Поэтому здесь
+	// проверяется МЕХАНИЗМ, а не удача планировщика: после пересчёта в незакрытой транзакции строка
+	// прогона обязана быть ЗАБЛОКИРОВАНА — тогда второй пересчёт физически не может встать рядом.
+	t.Run("пересчёт держит строку прогона под замком", func(t *testing.T) {
+		mat := newFabric(t, "F5B Fabric LOCK", 500)
+		runID := newRun(t)
+
+		sx := sqlx.NewDb(testDB, "mysql")
+		tx, err := sx.BeginTxx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback() }()
+
+		require.NoError(t, inventory.SetRunMaterialReservationsInTx(ctx, ltx{tx}, runID, hold(mat, 40), "tester"),
+			"пересчёт внутри явной транзакции обязан пройти")
+
+		// ПРОСИТСЯ ИМЕННО РАЗДЕЛЯЕМЫЙ ЗАМОК, И В ЭТОМ ВЕСЬ СМЫСЛ ПРОБЫ. Вставка в реестр и без нашего
+		// замка берёт на строке прогона РАЗДЕЛЯЕМЫЙ (S) замок — этого требует внешний ключ run_id.
+		// Но S-замки совместимы друг с другом, поэтому два пересчёта спокойно встают рядом, и гонка
+		// за поколением остаётся. Значит проба, спрашивающая FOR UPDATE, проходит в обоих случаях и
+		// не проверяет ничего: она ловит замок внешнего ключа, а не наш.
+		//
+		// Разделяющий вопрос — «а разделяемый замок взять можно?»: под FK-шным S можно, под нашим
+		// исключительным нельзя. NOWAIT делает ответ немедленным и детерминированным.
+		other, err := sx.BeginTxx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = other.Rollback() }()
+		var id int
+		err = other.GetContext(ctx, &id, "SELECT id FROM production_run WHERE id = ? FOR SHARE NOWAIT", runID)
+		require.Error(t, err,
+			"строку прогона можно взять в разделяемый замок — значит наш ИСКЛЮЧИТЕЛЬНЫЙ замок не взят, "+
+				"два пересчёта встанут рядом, оба выберут одно поколение, и удержание второго исчезнет в INSERT IGNORE")
+
+		// Контроль: соседний прогон свободен. Без него «ошибка» выше могла бы означать что угодно —
+		// например, что NOWAIT спотыкается обо что-то постороннее.
+		free := newRun(t)
+		require.NoError(t, other.GetContext(ctx, &id, "SELECT id FROM production_run WHERE id = ? FOR SHARE NOWAIT", free),
+			"чужой прогон обязан оставаться свободным — замок берётся на ОДИН прогон, а не на таблицу")
 	})
 }
