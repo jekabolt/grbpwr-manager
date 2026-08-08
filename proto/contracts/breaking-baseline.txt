@@ -43,6 +43,7 @@ FIELD_SAME_NAME|proto/common/common/archive.proto|Field \"1\" on message \"Archi
 FIELD_SAME_NAME|proto/common/common/order.proto|Field \"14\" on message \"OrderItem\" changed name from \"sku\" to \"variant_sku_snapshot\".
 FIELD_SAME_NAME|proto/common/common/product.proto|Field \"2\" on message \"StockChange\" changed name from \"product_id\" to \"colorway_id\".
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"3\" on message \"ListStockChangesRequest\" moved from oneof \"_product_id\" to oneof \"_colorway_id\".
+FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"3\" on message \"UpdateProductionRunRequest\" moved from outside to inside a oneof.
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"3\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"4\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
 FIELD_SAME_ONEOF|proto/admin/admin/admin.proto|Field \"5\" on message \"UpdateSettingsRequest\" moved from outside to inside a oneof.
