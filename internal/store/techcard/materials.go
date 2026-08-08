@@ -777,7 +777,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	if len(colorwayIDs) > 0 {
 		usageRows, err := storeutil.QueryListNamed[techCardColorwayUsageRow](ctx, s.DB, `
-			SELECT id, colorway_id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_index
+			SELECT id, colorway_id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, norm_marker_id, norm_applied_at, quantity, piece_index
 			FROM tech_card_colorway_usage
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})

@@ -226,9 +226,11 @@ func (s *Server) SetTechCardMarkerNorm(ctx context.Context, req *pb_admin.SetTec
 	return &pb_admin.SetTechCardMarkerNormResponse{
 		PreviousNormMarkerId: int32(previous),
 		// A CONSTANT true, and not a stub. Re-designating the norm recomputes nothing: a recipe holds a
-		// COPIED consumption figure with provenance consumption_source='marker' and no reference back to
-		// the marker, and there is no server-side «apply marker» at all. The screen is obliged to say so,
-		// or the operator is left to assume the costing followed the designation.
+		// COPIED consumption figure with provenance consumption_source='marker', and there is no
+		// server-side «apply marker» at all. Since Ф6.8 the recipe row also stamps WHICH раскладка the
+		// figure came from (norm_marker_id, 0291), but that is an audit stamp nothing recomputes from —
+		// this call leaves it exactly as it is. The screen is obliged to say so, or the operator is left
+		// to assume the costing followed the designation.
 		RecipesNotRecalculated: true,
 	}, nil
 }

@@ -420,7 +420,12 @@ func TestWorkshopDefaultSeamAllowance(t *testing.T) {
 	require.False(t, out.DefaultSeamAllowanceMm.Valid)
 
 	// The plausibility band is refused in Go, with a field, before the CHECK answers 3819 with none.
-	tooWide := decimal.NullDecimal{Decimal: decimal.RequireFromString("25"), Valid: true}
+	//
+	// 250, not 25: the field is MILLIMETRES since 0290, and entity.MaxSeamAllowanceMm is 100 — a
+	// 25 mm allowance is an ordinary hem, and asserting a refusal of it made this test fail against
+	// the very rename it should have followed. The case being made here is «a stray zero», so the
+	// value has to be one: 250 mm is a quarter of a metre of seam allowance.
+	tooWide := decimal.NullDecimal{Decimal: decimal.RequireFromString("250"), Valid: true}
 	_, err = W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{DefaultSeamAllowanceMm: &tooWide}, "tester")
 	require.Error(t, err)
 	var ve *entity.ValidationError

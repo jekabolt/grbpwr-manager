@@ -170,6 +170,10 @@ func stripProductionRunCosting(r *pb_common.ProductionRun) {
 	}
 	r.PlannedUnitCost = nil // frozen plan snapshot (money)
 	r.PlannedCurrency = ""
+	// Ф6.7: the SAME planned price recomputed against today's card (single-run read only). It is the
+	// plan snapshot's twin, not a new kind of number — leaving it would hand a costing-less
+	// production:read the very figure the line above removes, just one field over.
+	r.PlannedUnitCostToday = nil
 	if r.Run != nil {
 		r.Run.Costs = nil // actual cost articles (amount / amount_base) are confidential
 	}

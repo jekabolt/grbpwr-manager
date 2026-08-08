@@ -408,6 +408,15 @@ func ConvertEntityProductionRunToPb(r *entity.ProductionRun) *pb_common.Producti
 	}
 }
 
+// PbProductionRunPlannedCost renders a planned unit cost onto the wire EXACTLY as
+// ConvertEntityProductionRunToPb renders planned_unit_cost above. Ф6.7's today-figure is computed in
+// the api layer (it needs the repo) but must arrive formatted by the same rule as the snapshot it is
+// compared against — otherwise a client diffing the two strings could read a formatting difference as
+// a price movement.
+func PbProductionRunPlannedCost(unit decimal.NullDecimal) *pb_decimal.Decimal {
+	return pbDecimalFromNull(unit)
+}
+
 // productionRunEventsToPb maps the run's audit trail onto the wire (Phase 8).
 func productionRunEventsToPb(events []entity.ProductionRunEvent) []*pb_common.ProductionRunEvent {
 	out := make([]*pb_common.ProductionRunEvent, 0, len(events))

@@ -26,8 +26,25 @@ import (
 //
 // Writes are last-write-wins on purpose. Neither fitting_change_request nor
 // tech_card_output_variant carries a lock_version; concurrency collapses inside the SERIALIZABLE
-// write transaction. Marker writes must NOT bump tech_card.lock_version — saving a раскладка from
-// the nesting modal would otherwise 409 the same operator's open card form.
+// write transaction.
+//
+// ЧЕЙ ЗАМОК ДВИГАЕТ ЗАПИСЬ РАСКЛАДКИ (пересмотрено в Ф6.8). Прежнее правило звучало «раскладка НИКОГДА
+// не бампает tech_card.lock_version» — потому что тотальный бамп 409-ил бы открытую форму карточки
+// на каждом сохранении из модалки раскладок, а таких сохранений в одной сессии десятки. Правило
+// сохранено ровно там, где этот довод верен, и снято ровно там, где неверен:
+//
+//   - ОБЫЧНАЯ раскладка (создание любой; правка не-нормы) НЕ бампает. Это измерение рядом с
+//     карточкой, ни один экран карточки от него не меняется, и 409 на нём был бы платой ни за что;
+//   - НОРМИРОВОЧНАЯ бампает. SetMarkerNorm — В ОБЕ СТОРОНЫ, назначение и снятие: обе меняют, какую
+//     раскладку выберут гейт готовности и диалог применения нормы, то есть меняют СОДЕРЖИМОЕ
+//     карточки, а не соседнее измерение. SaveMarker — только когда правит СУЩЕСТВУЮЩУЮ строку с
+//     is_norm = true (создание новой нормой быть не может по построению).
+//
+// Бамп идёт В ТОЙ ЖЕ транзакции, что и запись раскладки (bumpTechCardLockForNorm), и НЕ ПРИНОСИТ С
+// СОБОЙ ГЕЙТА ИЗМЕНЯЕМОСТИ: сохранение раскладки, которое работало на утверждённой карточке, обязано
+// работать и после. Помощник поэтому и написан отдельно, а не переиспользован из рецепта — тот
+// тянет за собой RequireMutableTechCard и оптимистичную проверку версии, которых у этого пути
+// никогда не было.
 
 // markerSummaryColumns is the explicit list every summary read uses. Explicit, not SELECT * —
 // layout must never ride a summary query, and JSON columns read via * resurface the
@@ -40,6 +57,23 @@ const markerSummaryColumns = `
 	m.seam_allowance_mm, m.contour_allowance_mm, m.contour_layer, m.grain_layer, m.allow_flip,
 	m.is_norm, m.piece_set_fp,
 	m.created_by, m.updated_by, m.created_at, m.updated_at`
+
+// bumpTechCardLockForNorm moves the card's optimistic-lock fence because a NORM designation changed
+// (Ф6.8). See the file header for which marker writes call it and which deliberately do not.
+//
+// It is ONLY a bump. No RequireMutableTechCard, no expected-version predicate, no rows-affected
+// check — every one of those would be a NEW refusal on a path that never had it, and the first thing
+// it would refuse is saving a раскладка on a утверждённая карточка, which is the only kind the
+// workshop actually cuts from. The caller has already established the card exists and that this
+// marker belongs to it; the bump is the last thing left to say.
+func bumpTechCardLockForNorm(ctx context.Context, db dependency.DB, techCardID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE tech_card SET lock_version = lock_version + 1, updated_at = NOW()
+		WHERE id = :id`, map[string]any{"id": techCardID}); err != nil {
+		return fmt.Errorf("bump tech card %d lock after a norm change: %w", techCardID, err)
+	}
+	return nil
+}
 
 // ListMarkerSummaries returns a card's saved раскладки without their layout blobs, newest first,
 // each with its СОСТАВ attached. Runs on the caller's connection so the single-card read sees one
@@ -363,12 +397,18 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		// The blob itself is not parsed here: the bytes are handed to the distiller the API layer
 		// injected (ins.DistilStoredLayout). The storage layer holding geometry it cannot read is the
 		// arrangement 0257 and 0268 both rest on.
+		// IsNorm rides along for Ф6.8 and for nothing else: it is READ, never written here (see the
+		// is_norm note on the statements below). It is read INSIDE this transaction rather than
+		// after the write, because after the write the UPDATE's own `is_norm = IF(...)` may already
+		// have cleared it on a re-bind — and «была ли эта строка нормой, когда её правили» is the
+		// question the lock bump answers, not «осталась ли».
 		var stored struct {
 			Id            int64          `db:"id"`
 			BomItemId     sql.NullInt64  `db:"bom_item_id"`
 			BomLineKey    sql.NullString `db:"bom_line_key"`
 			ColorwayId    sql.NullInt64  `db:"colorway_id"`
 			RunId         sql.NullInt64  `db:"run_id"`
+			IsNorm        bool           `db:"is_norm"`
 			SchemaVersion int            `db:"layout_schema_version"`
 			Layout        string         `db:"layout"`
 		}
@@ -379,10 +419,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				BomLineKey    sql.NullString `db:"bom_line_key"`
 				ColorwayId    sql.NullInt64  `db:"colorway_id"`
 				RunId         sql.NullInt64  `db:"run_id"`
+				IsNorm        bool           `db:"is_norm"`
 				SchemaVersion int            `db:"layout_schema_version"`
 				Layout        string         `db:"layout"`
 			}](ctx, db, `SELECT m.id, m.bom_item_id, b.line_key AS bom_line_key, m.colorway_id,
-					m.run_id, m.layout_schema_version, m.layout
+					m.run_id, m.is_norm, m.layout_schema_version, m.layout
 				FROM tech_card_marker m
 				LEFT JOIN tech_card_bom_item b ON b.id = m.bom_item_id
 				WHERE m.id = :id AND m.tech_card_id = :tech_card_id`,
@@ -640,6 +681,17 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}
 			if err := replaceMarkerComposition(ctx, db, id, ins.Composition); err != nil {
 				return err
+			}
+			// Ф6.8: правка ДЕЙСТВУЮЩЕЙ НОРМЫ двигает замок карточки, правка обычной раскладки — нет.
+			// Норма — это число, которое карточка ОБЕЩАЕТ (гейт готовности и диалог применения
+			// читают именно её), поэтому её пересъёмка меняет содержимое карточки, а не соседнее
+			// измерение. Обычная раскладка не меняет ни одного экрана карточки, и 409 на каждом
+			// сохранении из модалки был бы платой ни за что — тот самый довод, ради которого бампа
+			// здесь не было вовсе.
+			if stored.IsNorm {
+				if err := bumpTechCardLockForNorm(ctx, db, techCardID); err != nil {
+					return err
+				}
 			}
 			savedID = id
 			return nil
@@ -988,9 +1040,12 @@ var (
 // silently resolved.
 //
 // It RECOMPUTES NOTHING. There is no server-side «apply marker»: a recipe holds a copied consumption
-// figure with provenance consumption_source='marker' and no reference back to the marker, so
-// re-designating changes which раскладка is authoritative without moving any number already applied.
-// The API layer says so in the response rather than leaving the operator to assume otherwise.
+// figure with provenance consumption_source='marker', so re-designating changes which раскладка is
+// authoritative without moving any number already applied. Since Ф6.8 the recipe row does carry a
+// reference back (norm_marker_id, 0291) — but it is a ШТАМП, not a link anything reads to recompute
+// from: it names the раскладка the figure came from so the card can report divergence, and this call
+// neither reads it nor rewrites it. The API layer says so in the response rather than leaving the
+// operator to assume otherwise.
 func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username string) (int, error) {
 	if id <= 0 {
 		return 0, entity.NewFieldViolation("id", "must_be_positive", "",
@@ -1009,7 +1064,8 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 			TechCardId int           `db:"tech_card_id"`
 			BomItemId  sql.NullInt64 `db:"bom_item_id"`
 			RunId      sql.NullInt64 `db:"run_id"`
-		}](ctx, db, `SELECT tech_card_id, bom_item_id, run_id FROM tech_card_marker WHERE id = :id`,
+			IsNorm     bool          `db:"is_norm"`
+		}](ctx, db, `SELECT tech_card_id, bom_item_id, run_id, is_norm FROM tech_card_marker WHERE id = :id`,
 			map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1053,6 +1109,19 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 				map[string]any{"id": id, "is_norm": false, "username": username}); err != nil {
 				return fmt.Errorf("clear norm on marker %d: %w", id, err)
 			}
+			// СНЯТИЕ БАМПАЕТ ТАК ЖЕ, КАК НАЗНАЧЕНИЕ (Ф6.8), и это не симметрия ради симметрии:
+			// карточка, оставшаяся БЕЗ нормы, — другая карточка. Гейт готовности начинает отказывать,
+			// диалог применения нормы остаётся без источника. Форма, открытая до снятия, обещает
+			// норму, которой больше нет, и её сохранение обязано получить 409, а не пройти.
+			//
+			// НО ТОЛЬКО ЕСЛИ НОРМА ДЕЙСТВИТЕЛЬНО СНЯЛАСЬ. Снять норму с раскладки, которая нормой не
+			// была, — обычный повтор (двойной клик, ретрай); карточка от него не меняется, и 409 в
+			// чужой открытой форме был бы платой за то, что ничего не произошло.
+			if row.IsNorm {
+				if err := bumpTechCardLockForNorm(ctx, db, row.TechCardId); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		// The previous norm is read BEFORE it is cleared, and through the same predicate that clears
@@ -1080,12 +1149,25 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 		}
 		// Clears ALL of them, not just the one reported: a scope that already held two is repaired by
 		// this write rather than carried forward.
-		if _, err := storeutil.ExecNamedRows(ctx, db, markerNormClearScopeQuery, scope); err != nil {
+		cleared, err := storeutil.ExecNamedRows(ctx, db, markerNormClearScopeQuery, scope)
+		if err != nil {
 			return fmt.Errorf("clear the previous norm of marker %d: %w", id, err)
 		}
 		if _, err := storeutil.ExecNamedRows(ctx, db, markerNormSetQuery,
 			map[string]any{"id": id, "is_norm": true, "username": username}); err != nil {
 			return fmt.Errorf("designate marker %d as the norm: %w", id, err)
+		}
+		// Назначение нормы меняет, какую раскладку прочтут гейт готовности и диалог применения, —
+		// значит, меняет содержимое карточки. В ТОЙ ЖЕ транзакции, что и сама пометка (Ф6.8).
+		//
+		// Условие — «норма скоупа действительно сменилась»: либо эта раскладка нормой не была, либо у
+		// кого-то в скоупе флаг сняли. Повторное назначение уже действующей нормы, у которой соседей
+		// нет, не меняет ничего — и не имеет права ронять 409 в чужую открытую форму (двойной клик и
+		// ретрай попадают сюда чаще, чем настоящее переназначение).
+		if !row.IsNorm || cleared > 0 {
+			if err := bumpTechCardLockForNorm(ctx, db, row.TechCardId); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1131,7 +1213,8 @@ func (s *Store) DeleteMarker(ctx context.Context, id int) error {
 		row, err := storeutil.QueryNamedOne[struct {
 			TechCardId int           `db:"tech_card_id"`
 			RunId      sql.NullInt64 `db:"run_id"`
-		}](ctx, db, `SELECT tech_card_id, run_id FROM tech_card_marker WHERE id = :id`,
+			IsNorm     bool          `db:"is_norm"`
+		}](ctx, db, `SELECT tech_card_id, run_id, is_norm FROM tech_card_marker WHERE id = :id`,
 			map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1194,6 +1277,16 @@ func (s *Store) DeleteMarker(ctx context.Context, id int) error {
 		}
 		if rows == 0 {
 			return fmt.Errorf("%w: marker %d", entity.ErrMarkerNotFound, id)
+		}
+		// УДАЛЕНИЕ НОРМЫ — ТОТ ЖЕ ПЕРЕХОД, ЧТО И ЕЁ СНЯТИЕ (Ф6.8), и замок обязан двинуться так же.
+		// Карточка осталась без нормы: гейт готовности начинает отказывать, диалог применения — без
+		// источника. Забудь этот бамп — и переход, ради которого SetMarkerNorm(false) бампает, тихо
+		// проходил бы через удаление, а форма, открытая до него, сохранилась бы, обещая норму,
+		// которой уже нет. Обычная раскладка карточку не меняет и замок не двигает.
+		if row.IsNorm {
+			if err := bumpTechCardLockForNorm(ctx, db, row.TechCardId); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

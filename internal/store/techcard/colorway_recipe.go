@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -39,29 +40,61 @@ type recipeUsagePinRow struct {
 	ConsumptionSource string              `db:"consumption_source"`
 	WasteSelvedgePct  decimal.NullDecimal `db:"waste_selvedge_pct"`
 	WasteCutPct       decimal.NullDecimal `db:"waste_cut_pct"`
+	// The Ф6.8 stamp (0291) rides the SAME carry, for the same reason: a client that knows about
+	// 'marker' but not about the stamp is today's deployed client, and its presence-less save must
+	// not blank the audit that says WHICH раскладка the norm came from.
+	NormMarkerID  sql.NullInt64 `db:"norm_marker_id"`
+	NormAppliedAt sql.NullTime  `db:"norm_applied_at"`
 }
 
-// usageProvenance is the resolved (source, selvedge, cut) triple written with a usage row.
+// usageProvenance is the resolved provenance written with a usage row: the source, its display
+// decomposition, and the Ф6.8 stamp (which раскладка the norm came from, and when it was applied).
 type usageProvenance struct {
 	source   string
 	selvedge decimal.NullDecimal
 	cut      decimal.NullDecimal
+	markerID sql.NullInt64
+	// appliedAt is SERVER-OWNED. It is never parsed off the wire and never compared by equal();
+	// see stampAppliedAt for the one rule that moves it.
+	appliedAt sql.NullTime
 }
 
-// normalized maps the DB shapes onto the canonical triple: an empty source reads as manual,
-// and a non-marker source never carries a decomposition.
+// normalized maps the DB shapes onto the canonical form: an empty source reads as manual, and a
+// non-marker source never carries a decomposition — nor a stamp. That last clause is what makes the
+// silent demotion below (a 'marker' row whose BOM line is no longer roll goods) clear the stamp
+// together with the pcts, instead of leaving a norm attributed to a раскладка it no longer claims.
 func (p usageProvenance) normalized() usageProvenance {
 	if p.source == "" {
 		p.source = entity.ConsumptionSourceManual
 	}
 	if p.source != entity.ConsumptionSourceMarker {
 		p.selvedge, p.cut = decimal.NullDecimal{}, decimal.NullDecimal{}
+		p.markerID, p.appliedAt = sql.NullInt64{}, sql.NullTime{}
+	}
+	// A stamp with no раскладка is not a stamp: the time alone answers no question, and carrying it
+	// would let «применено тогда-то» outlive the id it was about.
+	if !p.markerID.Valid {
+		p.appliedAt = sql.NullTime{}
 	}
 	return p
 }
 
+// equal compares everything a caller may DECIDE, which is the source, the decomposition and the
+// marker id — appliedAt is deliberately excluded because it is derived from those three by
+// stampAppliedAt, not chosen. Including it would make two agreeing rows of one slot (legal for
+// repeatable whole-garment usages) read as a disagreement purely because they were applied at
+// different moments, and the fallback for a disagreement is manual — silently re-enabling the
+// wastage gross-up, the exact invariant agreedSlotProvenance exists to hold.
 func (p usageProvenance) equal(o usageProvenance) bool {
-	return p.source == o.source && nullDecimalEqual(p.selvedge, o.selvedge) && nullDecimalEqual(p.cut, o.cut)
+	return p.source == o.source && nullDecimalEqual(p.selvedge, o.selvedge) &&
+		nullDecimalEqual(p.cut, o.cut) && nullInt64Equal(p.markerID, o.markerID)
+}
+
+func nullInt64Equal(a, b sql.NullInt64) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	return !a.Valid || a.Int64 == b.Int64
 }
 
 func nullDecimalEqual(a, b decimal.NullDecimal) bool {
@@ -76,6 +109,9 @@ func nullDecimalEqual(a, b decimal.NullDecimal) bool {
 // pin, where an ambiguous match preserves nothing — a presence-less rewrite must not flip an
 // agreeing marker slot back to manual: that would silently re-enable the wastage gross-up, the
 // exact invariant this feature exists to hold. Only genuine disagreement falls back to manual.
+// Ф6.8 widened what «agree» covers: the stamp's marker id is part of equal(), so two prior rows of
+// one slot applied from DIFFERENT раскладки no longer count as agreeing and neither of them wins by
+// accident. Their appliedAt is settled separately — see below.
 func agreedSlotProvenance(rows []usageProvenance) (usageProvenance, bool) {
 	if len(rows) == 0 {
 		return usageProvenance{}, false
@@ -86,7 +122,78 @@ func agreedSlotProvenance(rows []usageProvenance) (usageProvenance, bool) {
 			return usageProvenance{}, false
 		}
 	}
+	// appliedAt is NOT settled here. It is not part of the agreement — stampAppliedAt reads the
+	// slot's rows itself, including the ones that disagree, because a stamp can be carried from a
+	// row whose OTHER fields disagreed. See there.
 	return first, true
+}
+
+// carriedSlotStamp answers «какой штамп у этого слота был», когда клиент про штамп промолчал.
+//
+// Смотрит строки с ТЕМ ЖЕ источником, что у разрешаемой строки, и отдаёт их раскладку — только если
+// она у них ОДНА. Две разные раскладки на одном слоте — это неоднозначность, и угадывать здесь
+// нельзя ровно по той же причине, по которой не угадывается пин материала строкой выше: выбранная
+// наугад раскладка выглядела бы как факт.
+//
+// Почему по источнику, а не по согласию всей четвёрки: слот законно держит несколько повторяющихся
+// строк с РАЗНЫМ провенансом (одна набрана руками, другая снята с раскладки). Согласия там нет
+// никогда, а штамп у марочной строки есть, и терять его на каждом сохранении нельзя.
+func carriedSlotStamp(rows []usageProvenance, source string) sql.NullInt64 {
+	var found sql.NullInt64
+	for _, r := range rows {
+		n := r.normalized()
+		if n.source != source || !n.markerID.Valid {
+			continue
+		}
+		if found.Valid && found.Int64 != n.markerID.Int64 {
+			return sql.NullInt64{}
+		}
+		found = n.markerID
+	}
+	return found
+}
+
+// stampAppliedAt settles the Ф6.8 timestamp for a resolved row. THE ONE RULE: the stamp moves to
+// `now` only when the slot held NO row with this same (source, marker id) pair; a matching row hands
+// its moment across verbatim.
+//
+// The alternative — stamping every recipe write — is the trap this function exists to avoid. Editing
+// any NEIGHBOURING field of the row would refresh the stamp past the раскладка's updated_at, the
+// «раскладка изменена» indicator would go dark, and the disappearance would be indistinguishable
+// from the divergence having been resolved. A stale audit that says so is recoverable; one that
+// quietly reports agreement is not.
+//
+// СМОТРИМ ВСЕ СТРОКИ СЛОТА, А НЕ ТОЛЬКО СОГЛАСОВАННУЮ. Согласие (agreedSlotProvenance) отвечает на
+// другой вопрос — «что переносить, когда клиент промолчал», — и требует, чтобы совпало ВСЁ. Пусти
+// штамп через него, и слот с двумя законными повторяющимися строками, одна из которых марочная, а
+// другая ручная, объявился бы «без прошлого»: пара (marker, #5) уцелела бы, а отметка сдвинулась бы
+// на сейчас — то есть индикатор расхождения ПОГАС БЫ у настоящей раскладки, перемеренной вчера.
+// Ровно та поломка, ради которой правило и заведено, только через чёрный ход.
+//
+// Из подходящих берётся САМАЯ РАННЯЯ: индикатор загорается, когда раскладку правили ПОСЛЕ отметки,
+// поэтому ранняя может лишь показать расхождение, которое поздняя спрятала бы. Показать лишний раз —
+// это второй взгляд на раскладку; спрятать — это неверное число в костинге навсегда.
+func stampAppliedAt(prov usageProvenance, priors []usageProvenance, now time.Time) usageProvenance {
+	if !prov.markerID.Valid {
+		prov.appliedAt = sql.NullTime{}
+		return prov
+	}
+	var carried sql.NullTime
+	for _, p := range priors {
+		n := p.normalized()
+		if !n.appliedAt.Valid || n.source != prov.source || !nullInt64Equal(n.markerID, prov.markerID) {
+			continue
+		}
+		if !carried.Valid || n.appliedAt.Time.Before(carried.Time) {
+			carried = n.appliedAt
+		}
+	}
+	if carried.Valid {
+		prov.appliedAt = carried
+		return prov
+	}
+	prov.appliedAt = sql.NullTime{Time: now, Valid: true}
+	return prov
 }
 
 // rollGoodsSectionList is THE list of BOM families sold by length — the only rows a marker can lay
@@ -295,7 +402,8 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		// the resolved (bom_item_id, piece_id, normalized placement) tuple, not either legacy positional
 		// index. Placement distinguishes repeatable whole-garment rows on the same BOM slot.
 		priorRows, err := storeutil.QueryListNamed[recipeUsagePinRow](ctx, rep.DB(), `
-			SELECT bom_item_id, piece_id, placement, material_id, consumption_source, waste_selvedge_pct, waste_cut_pct
+			SELECT bom_item_id, piece_id, placement, material_id, consumption_source, waste_selvedge_pct, waste_cut_pct,
+			       norm_marker_id, norm_applied_at
 			FROM tech_card_colorway_usage
 			WHERE colorway_id = :id`, map[string]any{"id": colorwayID})
 		if err != nil {
@@ -307,8 +415,23 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			slot := newRecipeUsagePinSlot(newRecipeUsageSlot(row.BomItemID, row.PieceID), row.Placement)
 			priorBySlot[slot] = append(priorBySlot[slot], row.MaterialID)
 			priorProvenanceBySlot[slot] = append(priorProvenanceBySlot[slot],
-				usageProvenance{source: row.ConsumptionSource, selvedge: row.WasteSelvedgePct, cut: row.WasteCutPct})
+				usageProvenance{source: row.ConsumptionSource, selvedge: row.WasteSelvedgePct, cut: row.WasteCutPct,
+					markerID: row.NormMarkerID, appliedAt: row.NormAppliedAt})
 		}
+
+		// ОДИН ЧАС НА ВСЮ ЗАПИСЬ, И ЧАСЫ БАЗЫ, А НЕ ПРИЛОЖЕНИЯ. norm_applied_at существует ровно
+		// для того, чтобы клиент сравнил его с tech_card_marker.updated_at — а тот ставит СУБД
+		// (ON UPDATE CURRENT_TIMESTAMP, 0257). Возьми время из Go, и расхождение часов приложения
+		// и базы читалось бы как «раскладка изменена после применения» на раскладке, которую никто
+		// не трогал. Читается один раз до цикла, поэтому все строки одной записи штампуются одним
+		// значением и порядок строк на них не влияет.
+		nowRow, err := storeutil.QueryNamedOne[struct {
+			Now time.Time `db:"now"`
+		}](ctx, rep.DB(), `SELECT NOW() AS now`, map[string]any{})
+		if err != nil {
+			return fmt.Errorf("read db clock for colourway %d recipe stamp: %w", colorwayID, err)
+		}
+		now := nowRow.Now
 
 		// Resolve and validate the entire replacement before its first write. In particular, MySQL
 		// cannot enforce uniqueness when piece_id is NULL, and the material FK alone would turn a
@@ -365,6 +488,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			// slot agrees (repeatable whole-garment rows collide into one slot legally — an
 			// agreeing pair must not flip marker back to manual and re-enable the gross-up);
 			// no prior / genuine disagreement -> manual.
+			agreed, hadAgreed := agreedSlotProvenance(priorProvenanceBySlot[pinSlot])
 			prov := usageProvenance{source: entity.ConsumptionSourceManual}
 			if u.ConsumptionSource.Valid {
 				if u.ConsumptionSource.String == entity.ConsumptionSourceMarker {
@@ -374,8 +498,32 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 						cut:      u.WasteCutPct,
 					}
 				}
-			} else if agreed, ok := agreedSlotProvenance(priorProvenanceBySlot[pinSlot]); ok {
+			} else if hadAgreed {
 				prov = agreed
+			}
+			// ШТАМП НОРМЫ (Ф6.8) РЕШАЕТСЯ ОТДЕЛЬНО ОТ ИСТОЧНИКА, и это не симметрия ради симметрии:
+			// присутствие norm_marker_id — СВОЙ протокол, независимый от присутствия
+			// consumption_source. Клиент, который знает про 'marker', но не знает про штамп, — это
+			// ровно сегодняшний задеплоенный клиент; сложи два присутствия в одно, и его обычное
+			// сохранение рецепта обнулило бы аудит, ради которого колонка заведена.
+			//
+			//   присутствует, > 0  -> пишем как прислано
+			//   присутствует, 0    -> снять штамп (явное решение клиента)
+			//   отсутствует        -> перенести штамп слота, взятый по СВОЕМУ ИСТОЧНИКУ
+			//
+			// Перенос НЕ идёт через agreedSlotProvenance, и это разница между «работает» и «работает
+			// у большинства». Согласие требует, чтобы совпало ВСЁ, и слот с двумя законными
+			// повторяющимися строками — одна ручная, другая марочная — согласия не даёт никогда.
+			// Возьми штамп оттуда, и сегодняшний задеплоенный клиент (шлёт consumption_source, не
+			// знает про штамп) СТИРАЛ БЫ аудит на каждом сохранении рецепта такого слота — ровно то,
+			// ради чего протокол присутствия и заведён, только через чёрный ход.
+			if u.NormMarkerIdSet {
+				prov.markerID = sql.NullInt64{}
+				if u.NormMarkerId.Valid && u.NormMarkerId.Int64 > 0 {
+					prov.markerID = u.NormMarkerId
+				}
+			} else {
+				prov.markerID = carriedSlotStamp(priorProvenanceBySlot[pinSlot], prov.source)
 			}
 			// Marker provenance is meaningful only on roll goods a marker can lay out. Sent
 			// explicitly on anything else -> the client is wrong, refuse. Carried forward onto
@@ -390,10 +538,55 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				}
 				prov = usageProvenance{source: entity.ConsumptionSourceManual}
 			}
+			// normalized() FIRST, then the stamp: demotion to manual (explicit or the silent one
+			// above) must clear the marker id before the pair is compared, or a row that just lost
+			// its 'marker' source would still be measured against the stored раскладка.
+			prov = stampAppliedAt(prov.normalized(), priorProvenanceBySlot[pinSlot], now)
 			resolved = append(resolved, resolvedRecipeUsage{
 				usage: u, bomItemID: bomItemID, pieceID: pieceID, materialID: materialID,
 				provenance: prov,
 			})
+		}
+
+		// ЯВНО ПРИСЛАННЫЙ ШТАМП ОБЯЗАН УКАЗЫВАТЬ НА РАСКЛАДКУ ЭТОЙ КАРТОЧКИ (Ф6.8).
+		//
+		// FK нет намеренно (0291) — раскладки удаляют, и висящий id читается как «раскладка удалена».
+		// Но «удалена» — это про то, что БЫЛО и ушло; id, которого на этой карточке не было никогда,
+		// той же строкой не оправдывается. Без проверки экран печатал бы «раскладка удалена» на
+		// клиентской опечатке и на чужой карточке одинаково, то есть врал бы правдоподобно.
+		//
+		// Проверяется ТОЛЬКО присланное явно. Перенесённый штамп не проверяется никогда: раскладку
+		// могли удалить между применением и этим сохранением, и отказ здесь запер бы правку рецепта
+		// до тех пор, пока кто-нибудь не разберётся с чужой раскладкой.
+		explicitStamps := make([]int64, 0, len(resolved))
+		for i := range resolved {
+			if resolved[i].usage.NormMarkerIdSet && resolved[i].provenance.markerID.Valid {
+				explicitStamps = append(explicitStamps, resolved[i].provenance.markerID.Int64)
+			}
+		}
+		if len(explicitStamps) > 0 {
+			known, err := storeutil.QueryListNamed[struct {
+				Id int64 `db:"id"`
+			}](ctx, rep.DB(), `
+				SELECT id FROM tech_card_marker WHERE tech_card_id = :card AND id IN (:ids)`,
+				map[string]any{"card": cur.StyleID, "ids": explicitStamps})
+			if err != nil {
+				return fmt.Errorf("validate colourway recipe norm stamps: %w", err)
+			}
+			onCard := make(map[int64]bool, len(known))
+			for _, row := range known {
+				onCard[row.Id] = true
+			}
+			for i := range resolved {
+				if !resolved[i].usage.NormMarkerIdSet || !resolved[i].provenance.markerID.Valid {
+					continue
+				}
+				if id := resolved[i].provenance.markerID.Int64; !onCard[id] {
+					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
+						"marker_not_on_card", fmt.Sprintf("раскладка %d", id),
+						"the norm stamp must name a раскладка of this tech card — send 0 to clear it")
+				}
+			}
 		}
 
 		materialStates := make(map[int64]bool, len(materialIDs))
@@ -444,8 +637,8 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			u := r.usage
 			usageID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 				INSERT INTO tech_card_colorway_usage
-					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_id, piece_index, material_id, display_order)
-				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :consumption_source, :waste_selvedge_pct, :waste_cut_pct, :quantity, :piece_id, :piece_index, :material_id, :display_order)`,
+					(colorway_id, bom_item_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, norm_marker_id, norm_applied_at, quantity, piece_id, piece_index, material_id, display_order)
+				VALUES (:colorway_id, :bom_item_id, :bom_item_index, :placement, :color, :pantone, :consumption, :consumption_source, :waste_selvedge_pct, :waste_cut_pct, :norm_marker_id, :norm_applied_at, :quantity, :piece_id, :piece_index, :material_id, :display_order)`,
 				map[string]any{
 					"colorway_id":        colorwayID,
 					"bom_item_id":        r.bomItemID,
@@ -457,6 +650,8 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 					"consumption_source": r.provenance.source,
 					"waste_selvedge_pct": r.provenance.selvedge,
 					"waste_cut_pct":      r.provenance.cut,
+					"norm_marker_id":     r.provenance.markerID,
+					"norm_applied_at":    r.provenance.appliedAt,
 					"quantity":           u.Quantity,
 					"piece_id":           r.pieceID,
 					"piece_index":        u.PieceIndex,
@@ -518,7 +713,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 // colourway has no recipe yet.
 func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity.TechCardColorwayUsage, error) {
 	usages, err := storeutil.QueryListNamed[entity.TechCardColorwayUsage](ctx, s.DB, `
-		SELECT id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, quantity, piece_index
+		SELECT id, bom_item_id, piece_id, material_id, bom_item_index, placement, color, pantone, consumption, consumption_source, waste_selvedge_pct, waste_cut_pct, norm_marker_id, norm_applied_at, quantity, piece_index
 		FROM tech_card_colorway_usage
 		WHERE colorway_id = :id
 		ORDER BY display_order`, map[string]any{"id": colorwayID})

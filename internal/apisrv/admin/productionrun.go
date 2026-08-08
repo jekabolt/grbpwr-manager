@@ -206,7 +206,17 @@ func (s *Server) GetProductionRun(ctx context.Context, req *pb_admin.GetProducti
 		return nil, status.Error(codes.Internal, "can't get production run")
 	}
 	pb := dto.ConvertEntityProductionRunToPb(run)
-	if read, _ := s.costingAccess(ctx); !read {
+	// Ф6.7: today's figure is computed on the SINGLE read only — it costs a card read plus a costing,
+	// which is exactly the work ListProductionRuns must not do per row.
+	//
+	// И НЕ СЧИТАЕТСЯ ВОВСЕ БЕЗ ПРАВА НА КОСТИНГ. Стрип его тоже снимает (страховка на случай другого
+	// пути чтения), но полагаться на порядок «положили → стёрли» здесь не нужно и не стоит: не
+	// посчитанное не утекает ни при какой перестановке строк, а роль production:read без костинга —
+	// это цех, самый частый читатель прогона, и платить за карточку с костингом ради числа, которое
+	// сразу удаляется, незачем.
+	if read, _ := s.costingAccess(ctx); read {
+		pb.PlannedUnitCostToday = s.plannedUnitCostToday(ctx, run)
+	} else {
 		stripProductionRunCosting(pb)
 	}
 	return &pb_admin.GetProductionRunResponse{Run: pb}, nil
@@ -880,52 +890,110 @@ func planDecimal(d *pb_decimal.Decimal) decimal.Decimal {
 	return v
 }
 
-// snapshotPlannedCost freezes the run's planned unit cost at plan time: from the linked
-// tech_card_release (task 11) when one is given, otherwise from the live tech card's computed
-// costing. A missing tech card is rejected up front (rather than surfacing as an FK error); a
-// costing that cannot be folded to base leaves the snapshot null (the run still saves).
+// plannedUnitCostFor is THE planned-unit-cost formula — there is exactly one, and both the snapshot
+// frozen at plan time (snapshotPlannedCost) and the "what does the card give today" figure on the
+// single-run read (plannedUnitCostToday) go through it.
+//
+// ЭТО НЕ СТИЛЬ, А УСЛОВИЕ КОРРЕКТНОСТИ БЕЙДЖА. Клиент печатает «плановая цена — снапшот от
+// <created_at>; карточка сегодня даёт X», СРАВНИВАЯ ДВА ЧИСЛА. Разойдись эти два расчёта хоть
+// округлением — бейдж загорался бы на РАЗНИЦЕ ФОРМУЛ, выглядя при этом ровно как разница данных:
+// худшее ложноположительное из доступных здесь, потому что отличить его от настоящего нечем.
+//
+// Ветка релиза остаётся веткой релиза. Прогон, приколотый к tech_card_release, ценится этим
+// замороженным скаляром навсегда — значит и «сегодняшнее» его число берётся оттуда же, и два числа
+// совпадают по построению. Молчание бейджа тут ПРАВИЛЬНО: такой прогон ценой карточки не управляется,
+// и подсунуть ему живую карточку значило бы сообщать о расхождении, которого для него не существует.
+//
+// Errors: a missing release/card comes back as InvalidArgument (the create path refuses the write on
+// it), a failed load as Internal, logged here. The read path discards both and simply leaves its
+// today-figure empty — see plannedUnitCostToday.
+func (s *Server) plannedUnitCostFor(ctx context.Context, releaseId sql.NullInt64, techCardId int, actualWastagePercent decimal.NullDecimal) (decimal.NullDecimal, string, error) {
+	if releaseId.Valid {
+		rel, err := s.repo.TechCards().GetTechCardRelease(ctx, int(releaseId.Int64))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return decimal.NullDecimal{}, "", status.Error(codes.InvalidArgument, "release_id does not exist")
+			}
+			slog.Default().ErrorContext(ctx, "can't load release for planned cost", slog.String("err", err.Error()))
+			return decimal.NullDecimal{}, "", status.Error(codes.Internal, "can't load release")
+		}
+		return rel.UnitCost, rel.Currency.String, nil
+	}
+	card, err := s.repo.TechCards().GetTechCardById(ctx, techCardId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return decimal.NullDecimal{}, "", status.Error(codes.InvalidArgument, "tech_card_id does not exist")
+		}
+		slog.Default().ErrorContext(ctx, "can't load tech card for planned cost", slog.String("err", err.Error()))
+		return decimal.NullDecimal{}, "", status.Error(codes.Internal, "can't load tech card")
+	}
+	// From the live card, using the run's ACTUAL cutting wastage when set (it overrides every BOM
+	// line's estimate for this run's plan) — unset falls back to each line's BOM estimate. This keeps
+	// plan-vs-actual honest about the run's real marker/lay efficiency (the actuals side is measured
+	// from material issues). The release path above is a frozen scalar and is left as-is.
+	unit, currency := dto.ComputeTechCardUnitCostWithWastage(card, s.costingFx(ctx), actualWastagePercent)
+	return unit, currency, nil
+}
+
+// snapshotPlannedCost freezes the run's planned unit cost at plan time, from the one formula above.
+// A missing tech card is rejected up front (rather than surfacing as an FK error); a costing that
+// cannot be folded to base leaves the snapshot null (the run still saves).
 //
 // The snapshot is stored ONLY when it is in the base currency. Actual cost is always base, so a
 // costing-currency plan beside it produces a variance that is pure FX; NULL is the honest value and
 // every read path already tolerates it (a run with no plan simply reports no variance).
 func (s *Server) snapshotPlannedCost(ctx context.Context, ins *entity.ProductionRunInsert) error {
-	if ins.ReleaseId.Valid {
-		rel, err := s.repo.TechCards().GetTechCardRelease(ctx, int(ins.ReleaseId.Int64))
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return status.Error(codes.InvalidArgument, "release_id does not exist")
-			}
-			slog.Default().ErrorContext(ctx, "can't load release for planned cost", slog.String("err", err.Error()))
-			return status.Error(codes.Internal, "can't load release")
-		}
-		setPlannedCostIfBase(ins, rel.UnitCost, rel.Currency.String)
-		return nil
-	}
-	card, err := s.repo.TechCards().GetTechCardById(ctx, ins.TechCardId)
+	unit, currency, err := s.plannedUnitCostFor(ctx, ins.ReleaseId, ins.TechCardId, ins.ActualWastagePercent)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return status.Error(codes.InvalidArgument, "tech_card_id does not exist")
-		}
-		slog.Default().ErrorContext(ctx, "can't load tech card for planned cost", slog.String("err", err.Error()))
-		return status.Error(codes.Internal, "can't load tech card")
+		return err
 	}
-	// Snapshot from the live card, using the run's ACTUAL cutting wastage when set (it overrides every
-	// BOM line's estimate for this run's plan) — unset falls back to each line's BOM estimate. This
-	// keeps plan-vs-actual honest about the run's real marker/lay efficiency (the actuals side is
-	// measured from material issues). The release path above is a frozen scalar and is left as-is.
-	unit, currency := dto.ComputeTechCardUnitCostWithWastage(card, s.costingFx(ctx), ins.ActualWastagePercent)
 	setPlannedCostIfBase(ins, unit, currency)
 	return nil
 }
 
-// setPlannedCostIfBase writes the planned-cost snapshot only when it is denominated in the base
-// currency; anything else (including a figure with no currency recorded) leaves both columns NULL.
-func setPlannedCostIfBase(ins *entity.ProductionRunInsert, unit decimal.NullDecimal, currency string) {
+// plannedUnitCostToday is Ф6.7: the SAME formula run against today's inputs, so the client can say
+// «плановая цена — снапшот от <created_at>; карточка сегодня даёт X». Empty means "could not be
+// computed today" (the card is gone, the costing is not in base) — NOT zero, and the client is the
+// one that has to tell those apart.
+//
+// Best-effort by construction: a run must open even when its card no longer does. Every failure is
+// logged and answered with nil, never with an error that would take the whole read down with it.
+func (s *Server) plannedUnitCostToday(ctx context.Context, run *entity.ProductionRun) *pb_decimal.Decimal {
+	if run == nil {
+		return nil
+	}
+	unit, currency, err := s.plannedUnitCostFor(ctx, run.ReleaseId, run.TechCardId, run.ActualWastagePercent)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't compute today's planned unit cost for production run",
+			slog.Int("run_id", run.Id), slog.String("err", err.Error()))
+		return nil
+	}
+	// Rendered by the same helper that renders planned_unit_cost, so the two numbers a client compares
+	// are formatted by one rule and a difference between them is never a difference of formatting.
+	return dto.PbProductionRunPlannedCost(plannedCostInBase(unit, currency))
+}
+
+// plannedCostInBase applies the base-currency cut-off: a planned cost denominated in anything else
+// (including a figure with no currency recorded) is not reported at all. Actual cost is always base,
+// so a costing-currency plan beside it produces a variance that is pure FX. Both the stored snapshot
+// and the today-figure go through this one rule — the cut-off must not drift between them any more
+// than the formula above may.
+func plannedCostInBase(unit decimal.NullDecimal, currency string) decimal.NullDecimal {
 	if !unit.Valid || !strings.EqualFold(strings.TrimSpace(currency), cache.GetBaseCurrency()) {
+		return decimal.NullDecimal{}
+	}
+	return unit
+}
+
+// setPlannedCostIfBase writes the planned-cost snapshot only when it is denominated in the base
+// currency; anything else leaves both columns NULL.
+func setPlannedCostIfBase(ins *entity.ProductionRunInsert, unit decimal.NullDecimal, currency string) {
+	inBase := plannedCostInBase(unit, currency)
+	if !inBase.Valid {
 		ins.PlannedUnitCost = decimal.NullDecimal{}
 		ins.PlannedCurrency = sql.NullString{}
 		return
 	}
-	ins.PlannedUnitCost = unit
+	ins.PlannedUnitCost = inBase
 	ins.PlannedCurrency = sql.NullString{String: currency, Valid: true}
 }
