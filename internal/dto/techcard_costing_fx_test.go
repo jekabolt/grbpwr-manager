@@ -100,21 +100,30 @@ func TestComputeTechCardCostBreakdownBase(t *testing.T) {
 
 // TestComputeTechCardDevCostSummary checks the task-14 dev-cost roll-up: base total over foldable
 // rows, per-kind split, has_unconverted flag, and the amortized unit_cost_with_dev = production
-// unit cost + dev_total / Σ order_qty.
+// unit cost + dev_total / order_qty.
+//
+// REWRITTEN with the run-mix phase: the 100-unit denominator no longer comes from the card's
+// declared size_quantities (which fxTestCard still carries, and which must now be inert) but from a
+// production run planning 100 garments. The arithmetic below is unchanged on purpose — the same
+// numbers must come out once a REAL batch of the same size exists, so the assertions test the
+// denominator's provenance rather than a new formula.
 func TestComputeTechCardDevCostSummary(t *testing.T) {
 	nd := func(v string) decimal.NullDecimal {
 		return decimal.NullDecimal{Decimal: decimal.RequireFromString(v), Valid: true}
 	}
 	dec := decimal.RequireFromString
 
-	// EUR card: unit cost 16 (materials 3×2 + cmt 10), size run 100 units.
+	// EUR card: unit cost 16 (materials 3×2 + cmt 10); one run planning 100 units.
 	card := fxTestCard("EUR", "2", "10")
+	runs := []entity.ProductionRun{{ProductionRunInsert: entity.ProductionRunInsert{
+		Lines: []entity.ProductionRunLine{{SizeId: 4, PlannedQty: 100}},
+	}}}
 	expenses := []entity.TechCardDevExpense{
 		{Kind: "sample", Amount: dec("100"), Currency: "EUR", AmountBase: nd("100")},
 		{Kind: "labour", Amount: dec("50"), Currency: "EUR", AmountBase: nd("50")},
 		{Kind: "materials", Amount: dec("30"), Currency: "USD"}, // no amount_base → unconverted
 	}
-	sum := ComputeTechCardDevCostSummary(card, expenses, nil, CostingFx{Base: "EUR"})
+	sum := ComputeTechCardDevCostSummary(card, expenses, nil, runs, CostingFx{Base: "EUR"})
 
 	if sum.TotalBase.Value != "150" {
 		t.Fatalf("total_base: got %s, want 150 (unconverted row excluded)", sum.TotalBase.Value)
@@ -123,7 +132,7 @@ func TestComputeTechCardDevCostSummary(t *testing.T) {
 		t.Fatalf("has_unconverted: got false, want true (the USD row has no rate)")
 	}
 	if sum.OrderQty != 100 {
-		t.Fatalf("order_qty: got %d, want 100", sum.OrderQty)
+		t.Fatalf("order_qty: got %d, want 100 (the run's planned qty)", sum.OrderQty)
 	}
 	// 16 + 150/100 = 17.5.
 	if sum.UnitCostWithDev == nil || sum.UnitCostWithDev.Value != "17.5" {

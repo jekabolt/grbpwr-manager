@@ -26,23 +26,22 @@ func ComputeStyleProductionSummary(runs []entity.ProductionRun, materialsFromSto
 	hasActuals, hasPlan := false, false
 	for i := range runs {
 		r := &runs[i]
-		if r.Status == entity.ProductionRunCancelled {
+		if !runCountsAsProduction(r) {
 			continue // an abandoned run is not planned or actual production — don't inflate totals
 		}
 		runs32++
-		var runPlannedQty int64
+		plannedThisRun := runPlannedQty(r)
 		for _, ln := range r.Lines {
-			runPlannedQty += int64(ln.PlannedQty)
 			if ln.ReceivedQty.Valid {
 				receivedQty += ln.ReceivedQty.Int64
 			}
 		}
-		plannedQty += runPlannedQty
+		plannedQty += plannedThisRun
 		// Same currency guard as the run-level actuals: actual is always base, a planned snapshot in
 		// the costing currency would make the roll-up's variance an FX artefact (plannedCostInBase).
 		if plannedCostInBase(r) {
 			hasPlan = true
-			planned = planned.Add(r.PlannedUnitCost.Decimal.Mul(decimal.NewFromInt(runPlannedQty)))
+			planned = planned.Add(r.PlannedUnitCost.Decimal.Mul(decimal.NewFromInt(plannedThisRun)))
 		}
 		for _, c := range r.Costs {
 			if c.AmountBase.Valid {
@@ -72,4 +71,43 @@ func ComputeStyleProductionSummary(runs []entity.ProductionRun, materialsFromSto
 	}
 	out.HasActuals = hasActuals
 	return out
+}
+
+// runCountsAsProduction reports whether a run belongs in a style's production picture at all. A
+// cancelled run is abandoned production: it never made a garment and never will, so it inflates
+// neither the quantity a style is planned to produce nor the money spent on it.
+func runCountsAsProduction(r *entity.ProductionRun) bool {
+	return r.Status != entity.ProductionRunCancelled
+}
+
+// runPlannedQty is Σ planned_qty over one run's grid lines — the garments that run intends to make.
+func runPlannedQty(r *entity.ProductionRun) int64 {
+	total := int64(0)
+	for _, ln := range r.Lines {
+		total += int64(ln.PlannedQty)
+	}
+	return total
+}
+
+// PlannedRunQtyTotal is Σ planned_qty over a style's NON-CANCELLED production runs: how many
+// garments of this style are actually planned to exist. It is the same number
+// ComputeStyleProductionSummary reports as planned_qty_total, by construction rather than by
+// coincidence — both go through runCountsAsProduction + runPlannedQty.
+//
+// That sharing is the point. This is now also the denominator R&D amortisation divides by
+// (ComputeTechCardDevCostSummary), and the two figures appear on the SAME style card: a second
+// query with its own idea of which runs count would put two different production quantities a few
+// pixels apart, and whichever one the reader trusted would be a coin toss. 0 means the style has no
+// planned production yet — a real answer, not a missing one, and the caller must treat it as "do not
+// divide" rather than substitute something.
+func PlannedRunQtyTotal(runs []entity.ProductionRun) int64 {
+	total := int64(0)
+	for i := range runs {
+		r := &runs[i]
+		if !runCountsAsProduction(r) {
+			continue
+		}
+		total += runPlannedQty(r)
+	}
+	return total
 }

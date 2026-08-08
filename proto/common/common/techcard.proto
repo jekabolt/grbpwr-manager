@@ -923,11 +923,19 @@ message TechCardDevCostSummary {
   google.type.Decimal total_base = 1; // Σ amount_base over foldable rows (EUR)
   bool has_unconverted = 2; // some row lacked amount_base (missing FX rate) → total is partial
   repeated TechCardDevCostByKind by_kind = 3; // Σ per kind
-  // Amortized informational figure: production unit_cost + total_base / Σ order_qty — how much
-  // development adds to each unit at the current size run. Unset when order_qty is 0 or the
-  // production unit cost is unavailable. NOT part of cost_price (development is a period cost).
+  // Amortized informational figure: production unit_cost + total_base / order_qty — how much
+  // development adds to each unit over the quantity this style is actually planned to produce.
+  // Unset when order_qty is 0 or the production unit cost is unavailable. NOT part of cost_price
+  // (development is a period cost).
   google.type.Decimal unit_cost_with_dev = 4;
-  int32 order_qty = 5; // Σ size order_qty used for amortization
+  // order_qty is Σ planned_qty over the style's NON-CANCELLED PRODUCTION RUNS — the batches somebody
+  // committed to make. It is NOT the tech card's size_quantities: that field is the «типовой тираж
+  // для калькуляции», an illustrative mix nobody produces, and while it was the denominator here the
+  // R&D-per-unit of a style moved whenever someone edited a quantity that was never going to exist.
+  // The field name is kept for wire compatibility; read it as «запланировано по прогонам».
+  // 0 = no production run planned yet, and then unit_cost_with_dev is unset — R&D spent before the
+  // first batch is planned has nothing to be spread over, and no substitute batch is invented for it.
+  int32 order_qty = 5;
   // Q8 rollup (read projection, built alongside — never seeded into cost_price):
   repeated TechCardDevCostByRound by_round = 6; // spend attributed to each fitting round
   int32 rounds_to_approval = 7; // highest fitting round reached at approval; 0 = not approved yet

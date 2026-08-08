@@ -1169,6 +1169,40 @@ func ComputeTechCardUnitCostWithWastage(tc *entity.TechCard, fx CostingFx, overr
 	return ComputeTechCardUnitCost(cardWithRunWastage(tc, override), fx)
 }
 
+// ComputeTechCardUnitCostOnSize is ComputeTechCardUnitCostWithWastage costed on a GIVEN size
+// instead of the style's base sample size — the per-garment cost of this style AT sizeID, with the
+// run's actual cutting wastage applied the same way.
+//
+// It exists for the ONE caller that legitimately knows a size other than the base one: a production
+// run, whose lines say which sizes are actually being made and how many of each. Standard cost
+// stays on the base size (entity.TechCardColorwayUsage.UnitTotal explains why); this is not a second
+// basis for the style, it is the same basis evaluated at a size somebody has really committed to cut.
+//
+// sizeID <= 0 means "no size", and that is deliberately NOT the base size: it produces the same
+// uncosted result a card with no base sample size produces, so a line with no size can never be
+// priced off a size nobody named for it.
+func ComputeTechCardUnitCostOnSize(tc *entity.TechCard, fx CostingFx, override decimal.NullDecimal, sizeID int) (decimal.NullDecimal, string) {
+	return ComputeTechCardUnitCost(cardCostedOnSize(cardWithRunWastage(tc, override), sizeID), fx)
+}
+
+// cardCostedOnSize returns a shallow copy of tc whose COSTING BASIS is sizeID: the whole costing
+// path reads the basis through entity.TechCardInsert.CostingBaseSizeID, so re-pointing that one
+// field re-evaluates every graded norm at sizeID and leaves the rest of the math untouched. Doing
+// it this way rather than threading a size through colorwayCost is the point — a parallel size
+// parameter would be a second place for the "which size do we cost on" rule to live, and the two
+// would drift the first time one of them grew a fallback.
+//
+// The caller's card is never mutated: only the scalar basis field differs, and every slice is shared
+// read-only (cardWithRunWastage already cloned BomItems when it had to).
+func cardCostedOnSize(tc *entity.TechCard, sizeID int) *entity.TechCard {
+	if tc == nil {
+		return nil
+	}
+	cp := *tc
+	cp.BaseSampleSizeId = sql.NullInt32{Int32: int32(sizeID), Valid: sizeID > 0}
+	return &cp
+}
+
 // cardWithRunWastage returns tc unchanged when override is unset; otherwise a shallow copy whose
 // every BOM line's wastage_percent is replaced by override. Marker-sourced usages are immune by
 // construction (Ф9.4): entity LineTotal/SizeRunTotal never read wastage_percent for them, so the
