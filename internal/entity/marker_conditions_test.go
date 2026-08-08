@@ -271,7 +271,7 @@ func TestValidateSeamAllowanceStandardMm(t *testing.T) {
 // The RECORDED allowance is judged by different rules than the standard, and both differences are
 // deliberate. This is the validator that replaced a CHECK constraint: the ceiling could not stay in
 // the schema because ADD CONSTRAINT validates history, and a раскладка recorded before the rule
-// existed would have taken the whole deploy down with it (0291).
+// existed would have taken the whole deploy down with it (0292).
 func TestValidateMarkerAllowanceMm(t *testing.T) {
 	t.Run("zero is a measured value, not an absence", func(t *testing.T) {
 		if err := ValidateMarkerAllowanceMm("f", dec("0")); err != nil {

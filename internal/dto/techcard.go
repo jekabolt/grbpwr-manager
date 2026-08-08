@@ -1477,7 +1477,7 @@ func markerConditionsFromPb(pb *pb_common.TechCardMarkerInsert) (markerCondition
 	// columns of this message — fabric width, gap, edge margin, used length — which are DECIMAL(6,2).
 	// Since 0290 the allowances are millimetres in DECIMAL(6,1), and rounding them to two places let
 	// 7.55 through for MySQL to silently rewrite as 7.6. The ceiling lives here too, rather than in a
-	// CHECK: see entity.ValidateMarkerAllowanceMm and 0291.
+	// CHECK: see entity.ValidateMarkerAllowanceMm and 0292.
 	// ROUND FIRST, THEN JUDGE. Both halves can arrive as float64 dust from a measurement
 	// («1.0000000000000002»), and the contract of this message is that dust is rounded rather than
 	// refused — a save must not fail over digits the column drops anyway. Judging first would turn

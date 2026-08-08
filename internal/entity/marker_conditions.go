@@ -190,7 +190,7 @@ func ValidateSeamAllowanceStandardMm(field string, v decimal.NullDecimal) error 
 // introduced today would retroactively condemn раскладки recorded when no ceiling existed — and take
 // the whole deploy down with them (3819 on migration, and with MYSQL_AUTOMIGRATE that is a halted
 // start). A unit check belongs on the WRITE, where it can name the field and say what is wrong; the
-// schema keeps only what is true of every row that has ever existed (non-negative). See 0291.
+// schema keeps only what is true of every row that has ever existed (non-negative). See 0292.
 //
 // NO «implausibly narrow» RULE HERE, unlike the standard. One of the two halves is MEASURED off the
 // drawing, and the measurement's own floor is half a millimetre — refusing a sub-millimetre value

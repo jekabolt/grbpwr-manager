@@ -170,7 +170,7 @@ DEALLOCATE PREPARE stmt;
 -- автоматический откат DO и лгущий /readyz. Проверять единицу задним числом по данным, записанным
 -- когда правила ещё не было, — не наше дело: потолок теперь живёт на ЗАПИСИ, в
 -- entity.ValidateMarkerAllowanceMm, где он отвечает внятным field violation, а не кодом 3819.
--- 0291 приводит бету (там строгая редакция уже применилась) к этому же состоянию.
+-- 0292 приводит бету (там строгая редакция уже применилась) к этому же состоянию.
 SET @chk := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_marker'
       AND CONSTRAINT_NAME = 'chk_marker_allowance_mm');
