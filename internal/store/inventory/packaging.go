@@ -89,7 +89,7 @@ func (s *Store) ConsumePackagingForOrder(ctx context.Context, orderID, itemCount
 			}
 			// Close the reservation claim first (the ship fulfils it) — idempotent on (claim_key,
 			// consume). Done regardless of physical stock so the soft hold is always released on ship.
-			if _, err := insertReservationEvent(ctx, db, materialID, orderID, qty,
+			if _, err := insertReservationEvent(ctx, db, materialID, orderOwner(orderID), qty,
 				entity.MaterialReservationConsume, entity.PackagingClaimKey(orderID, materialID), username); err != nil {
 				return err
 			}

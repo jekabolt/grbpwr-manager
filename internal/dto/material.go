@@ -70,13 +70,38 @@ var materialUnitToPb = map[entity.MaterialUnit]pb_common.MaterialUnit{
 
 // pbMaterialUnit projects a stored free-text unit onto the closed vocabulary. UNKNOWN means the
 // value maps to nothing the server knows — the raw string travels beside it and is the only truth
-// for such a row. Read-only: no write path consumes this enum, so an old client sending the proto3
-// default can never blank a unit.
+// for such a row.
+//
+// ЭТО БОЛЬШЕ НЕ ЧИСТО ЧИТАЮЩЕЕ ОТОБРАЖЕНИЕ. До Ф5б здесь стояло «no write path consumes this enum,
+// so an old client sending the proto3 default can never blank a unit» — с Ф5б.2 путь записи
+// появился: единица факта расхода настила (actual_uom) приезжает ИМЕННО этим перечислением, и
+// именно оно закрывает словарь, потому что колонка в схеме свободна по построению (0285). Отсюда
+// materialUnitFromPb ниже и его отказ на UNSPECIFIED: пустое перечисление там не «метры по
+// умолчанию», а незаполненное поле.
 func pbMaterialUnit(unit string) pb_common.MaterialUnit {
 	if u, ok := entity.NormalizeMaterialUnit(unit); ok {
 		return materialUnitToPb[u]
 	}
 	return pb_common.MaterialUnit_MATERIAL_UNIT_UNKNOWN
+}
+
+// materialUnitFromPb is the WRITE direction of the vocabulary (Ф5б.2). It reports !ok for
+// MATERIAL_UNIT_UNKNOWN as well as for anything unmapped — «единица не выбрана» and «единица, о
+// которой сервер не знает» are both refusals, and neither may silently become a real unit.
+//
+// Строится обходом того же materialUnitToPb, а не второй таблицей: две руками написанные копии
+// словаря разошлись бы, и разошлись бы молча — ровно та ошибка, от которой Ф5а этот перечень и
+// заводила.
+func materialUnitFromPb(u pb_common.MaterialUnit) (entity.MaterialUnit, bool) {
+	if u == pb_common.MaterialUnit_MATERIAL_UNIT_UNKNOWN {
+		return "", false
+	}
+	for entityUnit, pbUnit := range materialUnitToPb {
+		if pbUnit == u {
+			return entityUnit, true
+		}
+	}
+	return "", false
 }
 
 // ConvertPbMaterialToEntityInsert validates and converts a common.Material into the editable
@@ -407,14 +432,14 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		// telling the operator to go and measure the cloth.
 		FabricThicknessMm: pbDecimalFromNull(m.FabricThicknessMm),
 		Archived:          m.Archived,
-		Code:               pbStringFromNull(m.Code),
-		Color:              pbStringFromNull(m.Color),
-		Pantone:            pbStringFromNull(m.Pantone),
-		MinStock:           pbDecimalFromNull(m.MinStock),
-		Notes:              pbStringFromNull(m.Notes),
-		LockVersion:        int32(m.LockVersion),
-		ImageId:            pbInt32FromNull(m.ImageId),
-		Purpose:            pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
+		Code:              pbStringFromNull(m.Code),
+		Color:             pbStringFromNull(m.Color),
+		Pantone:           pbStringFromNull(m.Pantone),
+		MinStock:          pbDecimalFromNull(m.MinStock),
+		Notes:             pbStringFromNull(m.Notes),
+		LockVersion:       int32(m.LockVersion),
+		ImageId:           pbInt32FromNull(m.ImageId),
+		Purpose:           pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
 	}
 	if m.Image != nil {
 		out.Image = ConvertEntityToCommonMedia(m.Image)

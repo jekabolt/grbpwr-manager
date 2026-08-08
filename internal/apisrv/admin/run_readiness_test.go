@@ -53,6 +53,9 @@ func gateFixture(t *testing.T, blocking bool) *Server {
 	// the absence of a CreateProductionRun expectation asserts.
 	if !blocking {
 		pr.EXPECT().CreateProductionRun(mock.Anything, mock.Anything).Return(42, nil).Maybe()
+		// Ф5б.4 резервирует ткань сразу после рождения прогона; здесь эта ветка сознательно уводится
+		// в свой лучший-из-возможных путь — тест про ГЕЙТ, а не про материальный план.
+		expectRunReservationReconcileStandsDown(t, pr, 42)
 	}
 	return &Server{repo: repo}
 }

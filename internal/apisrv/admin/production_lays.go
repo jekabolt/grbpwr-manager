@@ -110,6 +110,13 @@ func (s *Server) SaveProductionRunLay(ctx context.Context, req *pb_admin.SavePro
 		return nil, s.productionRunLayError(ctx, "save", runID, err)
 	}
 
+	// РЕЗЕРВ ПЕРЕСЧИТЫВАЕТСЯ ПОД ИЗМЕРЕННОЕ (Ф5б.4, §4.1). Настил — это замер вместо оценки, поэтому
+	// после его сохранения удерживать надо ровно то, что он показал: норма могла и завышать, и
+	// занижать, а держать ткань по числу, которое цех уже опроверг, — значит либо запирать чужой
+	// рулон, либо не запереть свой. Идемпотентно: тот же настил, сохранённый дважды, не пишет в
+	// реестр ничего.
+	s.reconcileRunReservations(ctx, runID, authsrv.GetAdminUsername(ctx))
+
 	// ОДИН ПУТЬ ЧТЕНИЯ. The saved настил is projected by rebuilding the whole plan and picking it out,
 	// so a save and the list that follows it cannot disagree about a single field — checks, coverage
 	// and totals included. It costs a handful of reads on a path nobody calls in a loop.

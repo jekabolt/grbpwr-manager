@@ -14,6 +14,11 @@ import (
 
 // ГОДНОСТЬ МАРКЕР↔НАСТИЛ (Ф4.4) И ВЫСОТА СТОПКИ (Ф4.8) — §8 и §11 спеки, точные предикаты.
 //
+// Ф5б.1 добавила сюда одиннадцатую — `lay_lot_width` (Р8): ширину маркера против измеренной ширины
+// ТОГО РУЛОНА, с которого стелют. Она живёт здесь, а не в новом файле, потому что это проверка
+// годности настила той же формы, что и остальные десять, и её вердикт складывается тем же
+// WorstLayCheckStatus; отдельный файл дал бы вторую лестницу статусов.
+//
 // Everything here is a PURE FUNCTION of (настил, маркеры, детали, BOM, настройки цеха, артикул), the
 // same shape as ComputeProductionRunMaterialPlan: no store, no wire, no clock. Each predicate answers
 // ONE named fact about a настил and returns it as a LayCheck with a stable key.
@@ -189,6 +194,9 @@ const (
 	LayCheckKeyMarkerScope = "lay_marker_scope"
 	// LayCheckKeyMarkerWidth — ширина маркера против полезной ширины артикула СЕГОДНЯ.
 	LayCheckKeyMarkerWidth = "lay_marker_width"
+	// LayCheckKeyLotWidth — ширина маркера против ИЗМЕРЕННОЙ ширины ТОГО РУЛОНА, с которого стелют
+	// (Ф5б.1, Р8). Не дубликат lay_marker_width: см. LayLotFacts.
+	LayCheckKeyLotWidth = "lay_lot_width"
 	// LayCheckKeyStackHeight — высота стопки против предела цеха (Ф4.8, §11).
 	LayCheckKeyStackHeight = "lay_stack_height"
 	// LayCheckKeyTableLength — длина маркера против длины раскройного стола. ПРЕДУПРЕЖДЕНИЕ.
@@ -318,6 +326,33 @@ type LayArticleFacts struct {
 	FabricThicknessMm decimal.NullDecimal
 }
 
+// LayLotFacts is the РУЛОН this настил is actually spread from: production_run_lay.lot_id /
+// lot_code (0285) joined to material_lot.measured_width_cm (0269).
+//
+// ЭТО НЕ LayArticleFacts.NarrowestMeasuredLotCm, И РАЗНИЦА — ВЕСЬ СМЫСЛ ОТДЕЛЬНОЙ ПРОВЕРКИ. That one
+// is the NARROWEST measured lot the article still has stock of — a question about the CATALOGUE,
+// asked so a norm is not approved against cloth nobody has. This one is the roll under the knife.
+// The two answer differently in both directions: an article whose narrowest lot is 146 can be cut
+// today off a 152 roll (lay_marker_width refuses, lay_lot_width passes), and a marker fit for the
+// catalogue's narrowest can still be wider than the roll somebody just put on the table if that lot
+// was measured after the marker was taken. Folding them into one check would answer one question
+// with the other's evidence.
+type LayLotFacts struct {
+	// LotId is production_run_lay.lot_id. INVALID = либо лот не выбран вовсе, либо он УДАЛЁН
+	// (fk_prlay_lot ON DELETE SET NULL, 0285). Обе — «сверять не с чем», обе UNKNOWN, и обе НАЗЫВАЮТ
+	// свою причину: для человека это разные новости, даже когда статус один.
+	LotId sql.NullInt64
+	// LotCode is the NOT NULL snapshot taken when the lot was bound (Р6). It exists to NAME a lot that
+	// disappeared, exactly as LayIdentity.BomLineKey names a deleted slot — the price of SET NULL,
+	// paid for by a настил that can still speak the missing roll's name instead of falling silent.
+	LotCode string
+	// MeasuredWidthCm is material_lot.measured_width_cm (0269) — the width that ARRIVED, i.e. the FULL
+	// roll INCLUDING кромка, NOT a cutting width. Passed RAW on purpose: entity.NormWidthVsArticle
+	// subtracts the selvedge, and subtracting it here as well would be invisible and always
+	// permissive. INVALID = НЕ ЗАМЕРЕНО ⇒ UNKNOWN, никогда «влезает».
+	MeasuredWidthCm decimal.NullDecimal
+}
+
 // LayWorkshopLimits are the settings of the ЦЕХА — one room, one set of numbers (Р5). NULL means «не
 // настроено», and then there is NO VERDICT, not a zero.
 type LayWorkshopLimits struct {
@@ -366,7 +401,11 @@ type LayCheckInput struct {
 	Mode     LayFaceMode
 	Sections []LayCheckSection
 	Article  LayArticleFacts
-	Limits   LayWorkshopLimits
+	// Lot is the РУЛОН this настил is spread from (0285). ZERO VALUE = лот не выбран ⇒ lay_lot_width is
+	// UNKNOWN, which is the correct reading for every настил built before Ф5б and for every caller
+	// that has not wired the join yet: «не сверяли», never «влезает».
+	Lot    LayLotFacts
+	Limits LayWorkshopLimits
 	// BomLines are the card's ROLL-GOODS lines — the input entity.MarkerFabricScope resolves the
 	// направление scope out of. Passed whole because «строжайшее побеждает» is a fact about the
 	// назначение, not about one line (§8.1).
@@ -741,6 +780,88 @@ func LayMarkerWidthCheck(marker LayMarkerFacts, article LayArticleFacts) LayChec
 	return c
 }
 
+// LayLotWidthCheck — `lay_lot_width` (Ф5б.1, Р8). Ширина маркера против ИЗМЕРЕННОЙ ширины ТОГО
+// РУЛОНА, с которого этот настил стелется:
+//
+//	ширина лота не задана (лот не выбран, лот удалён, лот не замерен) ⇒ UNKNOWN, а НЕ «влезает»
+//	маркер уже лота                                                  ⇒ OK
+//	маркер шире лота                                                 ⇒ BLOCKER
+//
+// BLOCKER, А НЕ WARNING, И ЭТО СОЗНАТЕЛЬНО РАСХОДИТСЯ С СОСЕДНЕЙ lay_table_length. НЕ «УНИФИЦИРУЙТЕ»
+// ИХ. Стол короче маркера — это про то, СКОЛЬКО РАЗ придётся настилать: маркер длиннее стола просто
+// делится на проходы, физика не нарушена, и запрещать раскройщику многопроходный настил сервер не
+// вправе. Рулон уже маркера не делится ни на что: деталь, выходящая за кромку, не выкроится ни в
+// один проход, ни в сто — поперёк ткани резать нечего. Одна проверка предупреждает, вторая
+// отказывает, и любое их сведение к одному статусу — это либо запрет законного многопроходного
+// настилания, либо разрешение резать воздух.
+//
+// СРАВНЕНИЕ — entity.NormWidthVsArticle ЦЕЛИКОМ, включая вычитание кромки из измеренного рулона и
+// названную там же консервативность скалярного сравнения. Вторая реализация сравнения ширин
+// разошлась бы с lay_marker_width и с гейтом Ф6, и разошлась бы молча.
+//
+// НОМИНАЛ АРТИКУЛА В ПРЕДИКАТ НЕ ПЕРЕДАЁТСЯ, И ЭТО НЕ ЗАБЫВЧИВОСТЬ. entity.NormWidthVsArticle падает
+// на каталожную ширину, когда замера нет; передать сюда article.NominalUsableWidthCm значило бы
+// превратить незамеренный лот в OK по ширине, которую этот рулон никому не обещал, — то есть ровно
+// в тот ответ «влезает», против которого Р8 и написана. Вопрос «а что говорит каталог» уже задан, и
+// на него отвечает lay_marker_width.
+func LayLotWidthCheck(marker LayMarkerFacts, lot LayLotFacts, article LayArticleFacts) LayCheck {
+	c := LayCheck{Key: LayCheckKeyLotWidth, Label: "ширина маркера против измеренной ширины лота", MarkerId: marker.Id}
+
+	if !lot.LotId.Valid || lot.LotId.Int64 <= 0 {
+		c.Status = LayCheckStatusUnknown
+		if code := strings.TrimSpace(lot.LotCode); code != "" {
+			// Снимок кода пережил лот (Р6) — настил называет пропавший рулон вместо того, чтобы
+			// молчать. Это и есть то, чем оплачен SET NULL.
+			c.Detail = fmt.Sprintf("лот %s, с которого стелился настил, удалён из справочника — измеренную ширину спросить не у кого", code)
+			return c
+		}
+		c.Detail = "лот, с которого стелется настил, не выбран — сверять ширину маркера не с чем"
+		return c
+	}
+
+	// Непозитивный замер — это не рулон нулевой ширины, в который ничего не влезает; это незаполненное
+	// поле в чужой одежде. chk_material_lot_measured_width (0269) такую строку не пропустит, но
+	// предикат здесь чистый и вход берёт значениями, а весь файл уже читает «не Valid или не
+	// положительно» как «не задано» (LayStackHeightVerdict, LayTableLengthCheck).
+	measured := lot.MeasuredWidthCm
+	if measured.Valid && !measured.Decimal.IsPositive() {
+		measured = decimal.NullDecimal{}
+	}
+
+	v := entity.NormWidthVsArticle(marker.FabricWidthCm, measured, article.SelvedgeCm, decimal.NullDecimal{})
+	if v.Basis == entity.NormWidthBasisNone {
+		c.Status = LayCheckStatusUnknown
+		c.Detail = fmt.Sprintf("ширина лота %s не замерена — сверять ширину маркера не с чем; замерьте рулон, и проверка начнёт работать",
+			layLotLabel(lot))
+		return c
+	}
+	switch layCheckStatusFromSeverity(v.Severity) {
+	case LayCheckStatusOK:
+		c.Status = LayCheckStatusOK
+	case LayCheckStatusBlocker:
+		c.Status = LayCheckStatusBlocker
+		c.Detail = fmt.Sprintf("маркер снят на ширине %s см, а лот %s замерен на %s см — раскройной ширины в нём %s см (кромка %s см с каждого края); этот маркер на этом рулоне не режется",
+			marker.FabricWidthCm.String(), layLotLabel(lot), v.MeasuredRollCm.Decimal.String(),
+			v.TodayCuttingCm.Decimal.String(), article.SelvedgeCm.String())
+	default:
+		// Вердикт, которого этот файл прочитать не может. Не OK: нечитаемый ответ не бывает одобрением.
+		c.Status = LayCheckStatusUnknown
+		c.Detail = fmt.Sprintf("сверка ширины лота %s вернула вердикт, который нечем прочитать", layLotLabel(lot))
+	}
+	return c
+}
+
+// layLotLabel names a lot for a message: the code the склад calls it by, falling back to the id.
+func layLotLabel(lot LayLotFacts) string {
+	if code := strings.TrimSpace(lot.LotCode); code != "" {
+		return code
+	}
+	if lot.LotId.Valid {
+		return fmt.Sprintf("#%d", lot.LotId.Int64)
+	}
+	return "—"
+}
+
 // stackHeightMmPerCm — миллиметры в сантиметре. Named because the /10 in Σ plies × thickness_mm / 10
 // is the unit conversion Ф4.8 is entirely about (30 слоёв шифона — 2 см, 30 слоёв драпа — 30 см), and
 // a bare 10 in that expression is the kind of thing somebody later reads as a tolerance.
@@ -1050,6 +1171,7 @@ func ProductionLaySectionChecks(in LayCheckInput, section LayCheckSection) []Lay
 	return []LayCheck{
 		LayMarkerScopeCheck(in.Lay, section.Marker),
 		LayMarkerWidthCheck(section.Marker, in.Article),
+		LayLotWidthCheck(section.Marker, in.Lot, in.Article),
 		LayMirrorExpansionCheck(in.Mode, section.Marker, in.PieceSymmetry),
 	}
 }

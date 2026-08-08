@@ -533,6 +533,23 @@ func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueIn
 	if movementCost.Valid {
 		m.Currency = sql.NullString{String: strings.ToUpper(cache.GetBaseCurrency()), Valid: true}
 	}
+	// Ф5б.4 — an issue to a run turns that run's soft hold into a physical decrement (§4.1, the
+	// 'consume' step). on_hand has just dropped; closing the hold by the same amount is what keeps
+	// available = on_hand − reserved unchanged across the issue instead of double-counting the
+	// cloth as both gone and still held. A partial issue re-holds its remainder (see
+	// ConsumeRunReservationInTx). Same transaction as the movement: a rolled-back issue must not
+	// leave a closed claim behind.
+	//
+	// A RETURN is deliberately left alone. It puts material back on the shelf, but whether the run
+	// still needs it is a question about the plan, not about this movement — the answer arrives
+	// when the caller next recomputes the requirement and calls SetRunMaterialReservations, which
+	// re-holds the outstanding need from scratch. Guessing here would re-open a hold for a run that
+	// was returning the cloth precisely because it no longer needs it.
+	if ins.ProductionRunId.Valid && !ins.IsReturn {
+		if err := ConsumeRunReservationInTx(ctx, db, int(ins.ProductionRunId.Int32), ins.MaterialId, ins.Quantity, ins.AdminUsername); err != nil {
+			return entity.MaterialMovement{}, err
+		}
+	}
 	return insertMovement(ctx, db, m)
 }
 

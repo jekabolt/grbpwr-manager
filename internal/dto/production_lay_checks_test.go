@@ -888,6 +888,132 @@ func TestMarkerWidthDelegatesToPhase6Predicate(t *testing.T) {
 	})
 }
 
+// ------------------------------------------------------------ Ф5б.1 — ширина лота (Р8)
+
+// lotOf builds the РУЛОН facts a настил carries after 0285: a live lot id, its code snapshot, and
+// whatever the склад measured.
+func lotOf(id int64, code string, measured decimal.NullDecimal) LayLotFacts {
+	return LayLotFacts{LotId: nullInt(id), LotCode: code, MeasuredWidthCm: measured}
+}
+
+// TestLotWidthIsABlockerAndNeverGuesses is acceptance probe §6 п.1 in both halves, plus the reason
+// Р8 makes this a BLOCKER while the neighbouring lay_table_length is only a WARNING.
+func TestLotWidthIsABlockerAndNeverGuesses(t *testing.T) {
+	// Артикул номиналом 150 без кромки — ровно постановка зонда §6 п.1.
+	article := LayArticleFacts{Name: "ВЕЛЬВЕТ", NominalUsableWidthCm: nd("150")}
+	marker149 := healthyMarker()
+	marker149.FabricWidthCm = cm("149")
+
+	t.Run("§6 п.1: лот замерен на 148 при номинале 150, маркер 149 ⇒ BLOCKER", func(t *testing.T) {
+		c := LayLotWidthCheck(marker149, lotOf(4, "LOT-A/148", nd("148")), article)
+		if c.Status != LayCheckStatusBlocker {
+			t.Fatalf("status = %v (%s), want BLOCKER", c.Status, c.Detail)
+		}
+		if !c.Status.Blocks() {
+			t.Errorf("маркер шире рулона обязан ЗАПРЕЩАТЬ настил")
+		}
+		if !strings.Contains(c.Detail, "148") || !strings.Contains(c.Detail, "LOT-A/148") {
+			t.Errorf("detail must carry the measured width and name the lot: %q", c.Detail)
+		}
+	})
+
+	t.Run("§6 п.1: лот без замера ⇒ UNKNOWN, а не «влезает»", func(t *testing.T) {
+		// Номинал артикула ЗАДАН и заведомо шире маркера. Если предикат когда-нибудь начнёт падать
+		// на каталожную ширину, тут появится OK — то есть «влезает» про рулон, который никто не мерил.
+		c := LayLotWidthCheck(marker149, lotOf(4, "LOT-A", unsetDec), article)
+		if c.Status != LayCheckStatusUnknown {
+			t.Fatalf("status = %v (%s), want UNKNOWN — незамеренный рулон ничего не обещал", c.Status, c.Detail)
+		}
+		if c.Status == LayCheckStatusOK || c.Status.Blocks() {
+			t.Errorf("UNKNOWN не бывает ни одобрением, ни отказом")
+		}
+		if c.Detail == "" || !strings.Contains(c.Detail, "LOT-A") {
+			t.Errorf("UNKNOWN обязан объяснить себя и назвать лот: %q", c.Detail)
+		}
+	})
+
+	t.Run("маркер уже лота ⇒ OK и без detail", func(t *testing.T) {
+		c := LayLotWidthCheck(healthyMarker(), lotOf(4, "LOT-B", nd("152")), article) // маркер 145
+		if c.Status != LayCheckStatusOK || c.Detail != "" {
+			t.Fatalf("status = %v / %q, want OK with no detail", c.Status, c.Detail)
+		}
+	})
+
+	t.Run("кромка вычитается из замера ровно один раз", func(t *testing.T) {
+		// measured_width_cm — это ПОЛНАЯ приехавшая ширина, включая кромку, а fabric_width_cm маркера —
+		// уже раскройная. Кромку снимает entity.NormWidthVsArticle, и снять её ЗДЕСЬ тоже — ошибка
+		// невидимая и всегда в сторону отказа.
+		withSelvedge := LayArticleFacts{Name: "ВЕЛЬВЕТ", NominalUsableWidthCm: nd("150"), SelvedgeCm: cm("3")}
+
+		// ГРАНИЦА — главный страж двойного вычитания: 151 приехало, кромка 3 ⇒ ровно 145 раскройных,
+		// то есть ровно ширина маркера. Вычти кромку дважды — получишь 139 и ложный BLOCKER.
+		if c := LayLotWidthCheck(healthyMarker(), lotOf(4, "LOT-EXACT", nd("151")), withSelvedge); c.Status != LayCheckStatusOK {
+			t.Fatalf("замер 151 при кромке 3 даёт ровно 145 раскройных = ширина маркера, ожидался OK; "+
+				"получено %v (%s) — похоже, кромка снята дважды", c.Status, c.Detail)
+		}
+
+		// И на сантиметр уже — отказ, с ОБОИМИ числами в тексте: сырым замером и раскройной шириной.
+		c := LayLotWidthCheck(healthyMarker(), lotOf(4, "LOT-C", nd("150")), withSelvedge)
+		if c.Status != LayCheckStatusBlocker {
+			t.Fatalf("status = %v (%s), want BLOCKER", c.Status, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "150") {
+			t.Errorf("detail must show the RAW measured width 150: %q", c.Detail)
+		}
+		if !strings.Contains(c.Detail, "144") {
+			t.Errorf("detail must show today's cutting width 144 (кромка снята один раз): %q", c.Detail)
+		}
+	})
+
+	t.Run("лот не выбран ⇒ UNKNOWN", func(t *testing.T) {
+		c := LayLotWidthCheck(marker149, LayLotFacts{}, article)
+		if c.Status != LayCheckStatusUnknown || c.Detail == "" {
+			t.Fatalf("status = %v / %q, want UNKNOWN with a detail", c.Status, c.Detail)
+		}
+	})
+
+	t.Run("лот удалён ⇒ UNKNOWN и НАЗЫВАЕТ пропавший рулон по снимку кода", func(t *testing.T) {
+		// fk_prlay_lot ON DELETE SET NULL (0285): id ушёл, снимок кода остался — это и есть то, чем
+		// оплачен SET NULL (Р6).
+		c := LayLotWidthCheck(marker149, LayLotFacts{LotId: noInt, LotCode: "LOT-GONE"}, article)
+		if c.Status != LayCheckStatusUnknown {
+			t.Fatalf("status = %v (%s), want UNKNOWN", c.Status, c.Detail)
+		}
+		if !strings.Contains(c.Detail, "LOT-GONE") {
+			t.Errorf("настил обязан НАЗВАТЬ пропавший лот, а не молчать: %q", c.Detail)
+		}
+	})
+
+	t.Run("замер не положителен ⇒ UNKNOWN, а не рулон нулевой ширины", func(t *testing.T) {
+		c := LayLotWidthCheck(marker149, lotOf(4, "LOT-D", nd("0")), article)
+		if c.Status != LayCheckStatusUnknown || c.Detail == "" {
+			t.Fatalf("status = %v / %q, want UNKNOWN with a detail", c.Status, c.Detail)
+		}
+	})
+
+	// ЭТОТ ПОДТЕСТ — ЗАЩИТА ОТ «УНИФИКАЦИИ» ДВУХ СОСЕДНИХ ПРОВЕРОК. Один и тот же настил не
+	// помещается на стол И не помещается в рулон, и статусы обязаны РАЗОЙТИСЬ: длинный маркер
+	// делится на проходы (WARNING), широкий не режется вообще (BLOCKER).
+	t.Run("длина стола предупреждает, ширина лота ЗАПРЕЩАЕТ — расхождение намеренное", func(t *testing.T) {
+		secs := []LayCheckSection{section("S1", 10, marker149)} // маркер 149 см шириной, 620 см длиной
+		table := LayTableLengthCheck(secs, nd("500"))
+		lot := LayLotWidthCheck(marker149, lotOf(4, "LOT-A/148", nd("148")), article)
+		if table.Status != LayCheckStatusWarning {
+			t.Fatalf("длина стола = %v, want WARNING", table.Status)
+		}
+		if lot.Status != LayCheckStatusBlocker {
+			t.Fatalf("ширина лота = %v, want BLOCKER", lot.Status)
+		}
+		if table.Status == lot.Status {
+			t.Errorf("две проверки сравнялись — кто-то «унифицировал» их: настил длиннее стола " +
+				"стелется в несколько проходов, а маркер шире рулона не режется ни в один")
+		}
+		if table.Status.Blocks() {
+			t.Errorf("длина стола не вправе запрещать настил")
+		}
+	})
+}
+
 func TestQuantitiesStaleIsAWarningAndOrderInsensitive(t *testing.T) {
 	snap := []LayQtyEntry{{SizeId: 10, Qty: 20}, {SizeId: 11, Qty: 30}}
 
@@ -944,7 +1070,7 @@ func TestAggregatesReturnTheWholeTableOfSection8(t *testing.T) {
 			t.Errorf("check %d = %q, want %q (order is part of the contract)", i, got[i].Key, key)
 		}
 	}
-	sectionKeys := []string{LayCheckKeyMarkerScope, LayCheckKeyMarkerWidth, LayCheckKeyMirrorExpansion}
+	sectionKeys := []string{LayCheckKeyMarkerScope, LayCheckKeyMarkerWidth, LayCheckKeyLotWidth, LayCheckKeyMirrorExpansion}
 	gotSec := ProductionLaySectionChecks(in, in.Sections[0])
 	if len(gotSec) != len(sectionKeys) {
 		t.Fatalf("section checks = %d, want %d", len(gotSec), len(sectionKeys))
@@ -981,6 +1107,7 @@ func TestEveryCheckDetailsUnlessOK(t *testing.T) {
 			Article: LayArticleFacts{
 				Name: "ВЕЛЬВЕТ", NominalUsableWidthCm: nd("150"), FabricThicknessMm: nd("0.3"),
 			},
+			Lot:           lotOf(4, "LOT-A", nd("150")),
 			Limits:        LayWorkshopLimits{MaxStackHeightCm: nd("15"), CuttingTableLengthCm: nd("1000")},
 			BomLines:      []entity.FabricDirectionLine{{LineKey: healthyLay().BomLineKey, Purpose: "main", Name: "ВЕЛЬВЕТ", Direction: "two_way"}},
 			PieceSymmetry: map[string]sql.NullString{"PIECE_FRONT": marked(entity.PieceCutSymmetryMirrored)},
@@ -1019,6 +1146,9 @@ func TestEveryCheckDetailsUnlessOK(t *testing.T) {
 		{"coverage unknown", func(in *LayCheckInput) { in.Covered = LayCoveredQty{} }},
 		{"marker off scope", func(in *LayCheckInput) { in.Sections[0].Marker.RunId = 0 }},
 		{"width unknown", func(in *LayCheckInput) { in.Article.NominalUsableWidthCm = unsetDec }},
+		{"lot unmeasured", func(in *LayCheckInput) { in.Lot.MeasuredWidthCm = unsetDec }},
+		{"lot narrower than the marker", func(in *LayCheckInput) { in.Lot.MeasuredWidthCm = nd("140") }},
+		{"lot deleted", func(in *LayCheckInput) { in.Lot.LotId = noInt }},
 		{"symmetry unmarked", func(in *LayCheckInput) { in.PieceSymmetry = nil }},
 		{"blob unread", func(in *LayCheckInput) { in.Sections[0].Marker.Yield = nil }},
 	}
@@ -1061,6 +1191,12 @@ func TestUnknownNeverCollapsesIntoOK(t *testing.T) {
 		{"в настиле нет слоёв", LayStackHeightCheck(0, nd("0.3"), nd("15"))},
 		{"длина стола не настроена", LayTableLengthCheck([]LayCheckSection{section("S1", 4, healthyMarker())}, unsetDec)},
 		{"ширины артикула нет", LayMarkerWidthCheck(healthyMarker(), LayArticleFacts{Name: "X"})},
+		{"лот не выбран", LayLotWidthCheck(healthyMarker(), LayLotFacts{},
+			LayArticleFacts{Name: "X", NominalUsableWidthCm: nd("150")})},
+		{"лот удалён, остался снимок кода", LayLotWidthCheck(healthyMarker(), LayLotFacts{LotCode: "LOT-GONE"},
+			LayArticleFacts{Name: "X", NominalUsableWidthCm: nd("150")})},
+		{"ширина лота не замерена", LayLotWidthCheck(healthyMarker(), lotOf(4, "LOT-A", unsetDec),
+			LayArticleFacts{Name: "X", NominalUsableWidthCm: nd("150")})},
 		{"направление не заполнено", LayDirectionModeCheck(LayFaceModeFaceUp, "K",
 			[]entity.FabricDirectionLine{{LineKey: "K", Direction: ""}})},
 		{"скоуп не резолвится", LayDirectionModeCheck(LayFaceModeFaceUp, "GONE",

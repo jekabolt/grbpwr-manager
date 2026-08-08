@@ -10,6 +10,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -281,9 +282,17 @@ func (b *layPlanBuilder) lay(l *entity.ProductionRunLay, cov LayCoverage) (*pb_c
 			BomLineKey: l.BomLineKey,
 			Name:       l.Name,
 		},
-		Mode:          mode,
-		Sections:      sections,
-		Article:       article,
+		Mode:     mode,
+		Sections: sections,
+		Article:  article,
+		// ЛОТ ПОДАЁТСЯ В ПРОВЕРКИ, ИНАЧЕ `lay_lot_width` ВЕЧНО UNKNOWN. Замер ширины рулона приезжает
+		// джойном вместе с настилом (LotMeasuredWidthCm) — сырым, с кромкой; кромку снимает сам
+		// предикат, и снимать её здесь значило бы вычесть дважды, всегда в разрешающую сторону.
+		Lot: LayLotFacts{
+			LotId:           l.LotId,
+			LotCode:         l.LotCode,
+			MeasuredWidthCm: l.LotMeasuredWidthCm,
+		},
 		Limits:        b.limits(),
 		BomLines:      entity.FabricDirectionLinesOfBom(card.BomItems),
 		PieceSymmetry: cardPieceSymmetry(card),
@@ -363,8 +372,51 @@ func (b *layPlanBuilder) lay(l *entity.ProductionRunLay, cov LayCoverage) (*pb_c
 		UpdatedBy:     l.UpdatedBy,
 		CreatedAt:     timestamppb.New(l.CreatedAt),
 		UpdatedAt:     timestamppb.New(l.UpdatedAt),
+
+		// РУЛОН. Обе половины едут ВСЕГДА, потому что различать их обязан клиент: пустой id при
+		// НЕПУСТОМ коде — это «лот удалён из справочника, но настил всё ещё может его НАЗВАТЬ» (FK
+		// стоит на SET NULL, и снимок кода — то, чем эта уступка оплачена), а обе пустые — просто
+		// незаполненное поле. История, которую нельзя переписать, и пустая форма.
+		LotId:   int32(l.LotId.Int64),
+		LotCode: l.LotCode,
+
+		// ФАКТ, как его ввёл человек, вместе с тем, КТО и КОГДА. Без автора и времени это просто
+		// число в поле; с ними — свидетельство, которое можно оспорить.
+		ActualQty:    pbDecimalFromNull(l.ActualQty),
+		ActualUom:    pbMaterialUnit(l.ActualUom.String),
+		ActualMethod: layActualMethodPb(entity.ProductionLayActualMethod(l.ActualMethod.String)),
+		ActualBy:     l.ActualBy,
+		ActualAt:     layActualAtPb(l.ActualAt),
+
+		// ДРЕЙФ — В ПРОЦЕНТАХ, а entity считает его ДОЛЕЙ. Умножение живёт ровно здесь, на границе
+		// провода, и один раз: имя поля на проводе (actual_drift_percent) — единственное место, где
+		// эта единица названа, и разъехаться им нельзя.
+		//
+		// Отсутствует, а не ноль, когда сравнивать нечего: нет факта, нет плана, либо единица факта
+		// не длина (килограммы в сантиметры без плотности и ширины не переводятся). «Нечего
+		// сравнить» и «сошлось ровно» обязаны выглядеть по-разному — иначе цех прочитает первое как
+		// второе и успокоится.
+		ActualDriftPercent: layDriftPercentPb(cloth.Add(endLoss), l),
 	}
 	return out, all
+}
+
+// layActualAtPb keeps «замера не было» absent instead of turning it into the zero instant: a
+// timestamp of 1 January year 1 reads as a date, and a date is a claim that somebody measured.
+func layActualAtPb(t sql.NullTime) *timestamppb.Timestamp {
+	if !t.Valid {
+		return nil
+	}
+	return timestamppb.New(t.Time)
+}
+
+// layDriftPercentPb turns the entity's fraction into the wire's percent, or into ABSENCE.
+func layDriftPercentPb(plannedCm decimal.Decimal, l *entity.ProductionRunLay) *pb_decimal.Decimal {
+	v := entity.ProductionRunLayDrift(plannedCm, *l)
+	if !v.Known {
+		return nil
+	}
+	return pbDecimalFromDecimal(v.Drift.Mul(decimal.NewFromInt(100)).Round(2))
 }
 
 // layOvercutCheck asks `lay_overcut` ONCE PER SIZE and folds the answers into one finding.
@@ -699,6 +751,9 @@ func ConvertPbProductionRunLayInsertToEntity(pb *pb_common.ProductionRunLayInser
 	if note := strings.TrimSpace(pb.GetNote()); note != "" {
 		out.Note = sql.NullString{String: note, Valid: true}
 	}
+	if err := layLotAndActualFromPb(pb, &out); err != nil {
+		return entity.ProductionRunLayInsert{}, err
+	}
 	out.Sections = make([]entity.ProductionRunLaySectionInsert, 0, len(pb.GetSections()))
 	for _, s := range pb.GetSections() {
 		out.Sections = append(out.Sections, entity.ProductionRunLaySectionInsert{
@@ -709,6 +764,90 @@ func ConvertPbProductionRunLayInsertToEntity(pb *pb_common.ProductionRunLayInser
 		})
 	}
 	return out, nil
+}
+
+// layLotAndActualFromPb reads the ONLY two fields of this message where SILENCE IS NOT ERASURE.
+//
+// Всё остальное в ProductionRunLayInsert — полная замена состояния: не прислал имя, значит имя
+// стёрлось. Лот и факт устроены иначе, потому что их пишет ДРУГОЙ ЧЕЛОВЕК В ДРУГОЙ МОМЕНТ: замер
+// делает цех после того, как рулон уже раскроен, а число слоёв правит планировщик — на экране, где
+// факта не видно. Оптимистичная блокировка от этого не спасает: она ловит УСТАРЕВШУЮ копию, а
+// здесь копия свежая, просто писатель про поле не знает. Стёртый замер не переснять.
+//
+// Три состояния на каждое поле, и голым lot_id их не выразить — int32 не различает «не трогай» и
+// «отвяжи», оба приезжают нулём. Поэтому намерение отвязать произносится ФЛАГОМ:
+//
+//	lot_id > 0        → привязать       clear_lot = true    → отвязать      иначе → не трогать
+//	actual_qty задан  → записать факт   clear_actual = true → снять факт    иначе → не трогать
+//
+// ФЛАГ ПОБЕЖДАЕТ ЗНАЧЕНИЕ, а не наоборот: «отвяжи, и вот тебе заодно id» — это противоречие в самом
+// запросе, и разрешать его в пользу привязки значило бы молча сделать обратное тому, что нажали.
+//
+// Половина формы (единица выбрана, количество ещё нет) НЕ ПИШЕТСЯ ВОВСЕ и ошибкой не является:
+// одностороннюю импликацию «факт целиком или никак» схема формулирует как «есть количество ⇒ есть
+// единица и метод», и наполовину заполненная форма ей не противоречит — ей просто нечего записать.
+func layLotAndActualFromPb(pb *pb_common.ProductionRunLayInsert, out *entity.ProductionRunLayInsert) error {
+	switch {
+	case pb.GetClearLot():
+		unbind := 0
+		out.LotId = &unbind
+	case pb.GetLotId() > 0:
+		bind := int(pb.GetLotId())
+		out.LotId = &bind
+	}
+
+	if pb.GetClearActual() {
+		// Факт без количества = снять факт целиком, вместе с автором и временем: «замер отозван» и
+		// «замер равен нулю» — разные утверждения, и второе схема не примет (chk_prlay_actual_qty).
+		out.Actual = &entity.ProductionRunLayActualInput{}
+		return nil
+	}
+
+	qty := pb.GetActualQty()
+	if qty == nil || strings.TrimSpace(qty.GetValue()) == "" {
+		return nil
+	}
+	d, err := decimal.NewFromString(strings.TrimSpace(qty.GetValue()))
+	if err != nil {
+		return entity.NewFieldViolation("lay.actual_qty", "not_a_number", qty.GetValue(),
+			fmt.Sprintf("enter how much cloth actually went into this настил, e.g. 94.92 (%v)", err))
+	}
+	actual := entity.ProductionRunLayActualInput{Qty: decimal.NullDecimal{Decimal: d, Valid: true}}
+	if u, ok := materialUnitFromPb(pb.GetActualUom()); ok {
+		actual.Uom = u
+	}
+	if m, ok := layActualMethodFromPb(pb.GetActualMethod()); ok {
+		actual.Method = m
+	}
+	// Незаполненные единица и метод сюда доезжают ПУСТЫМИ, а не отвергаются здесь: их обязательность
+	// при заданном количестве — правило домена, и живёт оно в entity.ValidateProductionRunLayActual,
+	// которое зовёт store. Вторая проверка тут дала бы второе сообщение об одной ошибке, и они
+	// разошлись бы при первой же правке формулировки.
+	out.Actual = &actual
+	return nil
+}
+
+// layActualMethodPb / layActualMethodFromPb — ЕДИНСТВЕННЫЙ перевод между хранимым словарём
+// (chk_prlay_actual_method) и перечислением провода. UNSPECIFIED никогда не становится методом:
+// незаданное поле — это не «замерили рулон до и после».
+func layActualMethodPb(m entity.ProductionLayActualMethod) pb_common.ProductionLayActualMethod {
+	switch m {
+	case entity.ProductionLayActualMethodRollBeforeAfter:
+		return pb_common.ProductionLayActualMethod_PRODUCTION_LAY_ACTUAL_METHOD_ROLL_BEFORE_AFTER
+	case entity.ProductionLayActualMethodWeighed:
+		return pb_common.ProductionLayActualMethod_PRODUCTION_LAY_ACTUAL_METHOD_WEIGHED
+	}
+	return pb_common.ProductionLayActualMethod_PRODUCTION_LAY_ACTUAL_METHOD_UNSPECIFIED
+}
+
+func layActualMethodFromPb(m pb_common.ProductionLayActualMethod) (entity.ProductionLayActualMethod, bool) {
+	switch m {
+	case pb_common.ProductionLayActualMethod_PRODUCTION_LAY_ACTUAL_METHOD_ROLL_BEFORE_AFTER:
+		return entity.ProductionLayActualMethodRollBeforeAfter, true
+	case pb_common.ProductionLayActualMethod_PRODUCTION_LAY_ACTUAL_METHOD_WEIGHED:
+		return entity.ProductionLayActualMethodWeighed, true
+	}
+	return "", false
 }
 
 // layModePb / layModeFromPb are the ONE translation between the stored dictionary (chk_prlay_mode)

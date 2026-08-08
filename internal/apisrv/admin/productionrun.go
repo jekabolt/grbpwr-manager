@@ -18,6 +18,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -103,6 +104,10 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 		slog.Default().ErrorContext(ctx, "can't create production run", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't create production run")
 	}
+	// РЕЗЕРВ ТКАНИ С МОМЕНТА РОЖДЕНИЯ (Ф5б.4, §4.1). Потребность здесь берётся из НОРМЫ — настилов у
+	// новорождённого прогона ещё нет. Без этого вызова два прогона на один артикул оба видели бы
+	// «хватает» вплоть до выдачи, а узнал бы об этом тот, кто пришёл на склад вторым.
+	s.reconcileRunReservations(ctx, id, ins.Actor)
 	return &pb_admin.CreateProductionRunResponse{Id: int32(id)}, nil
 }
 
@@ -714,7 +719,19 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 	if req.RunId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
-	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId))
+	return s.buildRunMaterialPlan(ctx, int(req.RunId))
+}
+
+// buildRunMaterialPlan is the ONE composition of a run's material requirement, and it has TWO
+// readers now: the read-only RPC above, and the fabric reservation below (Ф5б.4).
+//
+// ОНА ИЗВЛЕЧЕНА ИМЕННО ЗАТЕМ, ЧТОБЫ ЧИТАТЕЛЕЙ ОСТАЛОСЬ ДВА, А ОПРЕДЕЛЕНИЙ — ОДНО. Резерв, считающий
+// потребность своей вторая дорогой, рано или поздно разошёлся бы с тем, что показывает экран
+// материального плана, — и разошёлся бы молча: оба числа выглядят правдоподобно, а сходятся они
+// только пока их считают одинаково. Резерв под тем, что видит цех, — это не оптимизация, это
+// условие, чтобы «не хватает ткани» на экране и «ткань удержана» в реестре означали одно и то же.
+func (s *Server) buildRunMaterialPlan(ctx context.Context, runID int) (*pb_admin.GetProductionRunMaterialPlanResponse, error) {
+	run, err := s.repo.ProductionRuns().GetProductionRun(ctx, runID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
@@ -793,7 +810,7 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 	// cutting room has already measured, under a plan_source that says NORM with full confidence.
 	// An aux card answers Applicable=false with no lays, which is the honest «настилов тут не бывает»
 	// and needs no special case below.
-	lays, err := s.repo.ProductionRuns().ListLays(ctx, int(req.RunId))
+	lays, err := s.repo.ProductionRuns().ListLays(ctx, runID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "production run not found")
@@ -802,6 +819,65 @@ func (s *Server) GetProductionRunMaterialPlan(ctx context.Context, req *pb_admin
 		return nil, status.Error(codes.Internal, "can't load production run lays")
 	}
 	return dto.ComputeProductionRunMaterialPlan(run, card, onHand, issued, linked, lays.Lays), nil
+}
+
+// reconcileRunReservations makes the run's OPEN fabric claims equal its current requirement (Ф5б.4).
+//
+// Зовётся в двух моментах §4.1 — после рождения прогона (потребность из НОРМЫ) и после сохранения
+// настила (потребность из НАСТИЛОВ). Одна функция на оба, потому что различие живёт целиком внутри
+// материального плана: он сам выбирает источник и сам говорит, какой выбрал. Второй вызов, знающий
+// про «настилы против нормы», был бы третьим определением потребности.
+//
+// УДЕРЖИВАЕТСЯ НЕПОКРЫТЫЙ ОСТАТОК, А НЕ ВАЛОВАЯ ПОТРЕБНОСТЬ: required − issued. Выданное уже ушло со
+// склада, и держать его вторично значит выдумать дефицит на ровном месте — на прогоне, которому
+// всё выдали, «не хватает ткани» загорелось бы ровно на всю его потребность.
+//
+// ОШИБКА ЗДЕСЬ НЕ РОНЯЕТ ЗАПРОС, И ЭТО НЕ СНИСХОДИТЕЛЬНОСТЬ, А ЕДИНСТВЕННЫЙ ЧЕСТНЫЙ ВЫБОР. Оба
+// вызова стоят ПОСЛЕ того, как основная запись зафиксирована: прогон уже создан, настил уже сохранён.
+// Вернуть отсюда ошибку значит сказать «не получилось» про запись, которая получилась, — и клиент
+// повторит её, встретив оптимистичную блокировку. Резерв же идемпотентен по построению: следующее
+// сохранение настила приведёт претензии к истине. Поэтому промах пишется в лог как ошибка (его
+// увидят), но ответ остаётся правдой о том, что произошло с данными.
+func (s *Server) reconcileRunReservations(ctx context.Context, runID int, username string) {
+	plan, err := s.buildRunMaterialPlan(ctx, runID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't build material plan to reserve fabric",
+			slog.Int("run_id", runID), slog.String("err", err.Error()))
+		return
+	}
+	required := make(map[int]entity.RunMaterialRequirement, len(plan.GetRows()))
+	for _, row := range plan.GetRows() {
+		mid := int(row.GetMaterialId())
+		if mid <= 0 {
+			continue
+		}
+		outstanding := planDecimal(row.GetRequired()).Sub(planDecimal(row.GetIssued()))
+		if !outstanding.IsPositive() {
+			// Ноль в карту НЕ КЛАДЁТСЯ, и это не то же самое, что не класть строку вовсе: писатель
+			// делает открытые претензии прогона РАВНЫМИ карте, поэтому отсутствие ключа снимает
+			// удержание, а нулевая претензия висела бы удержанием на ноль метров — строкой, которая
+			// ничего не держит и которую всё равно надо кому-то закрывать.
+			continue
+		}
+		required[mid] = entity.RunMaterialRequirement{Qty: outstanding}
+	}
+	if err := s.repo.MaterialStock().SetRunMaterialReservations(ctx, runID, required, username); err != nil {
+		slog.Default().ErrorContext(ctx, "can't reserve fabric for production run",
+			slog.Int("run_id", runID), slog.String("err", err.Error()))
+	}
+}
+
+// planDecimal reads a plan cell, treating absence as zero — the plan emits every number it knows and
+// omits only what it could not compute, and «нечего вычитать» is exactly zero here.
+func planDecimal(d *pb_decimal.Decimal) decimal.Decimal {
+	if d == nil {
+		return decimal.Zero
+	}
+	v, err := decimal.NewFromString(strings.TrimSpace(d.GetValue()))
+	if err != nil {
+		return decimal.Zero
+	}
+	return v
 }
 
 // snapshotPlannedCost freezes the run's planned unit cost at plan time: from the linked

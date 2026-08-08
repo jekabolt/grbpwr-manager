@@ -17,6 +17,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -198,6 +199,13 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 					WHERE id = :id`, map[string]any{"id": id, "status": string(entity.ProductionRunClosed)}); err != nil {
 					return fmt.Errorf("failed to close production run: %w", err)
 				}
+				// Ф5б.4 — closing releases whatever fabric the run still holds (§4.1). This is the
+				// received → closed door; the other terminal transitions go through the release below.
+				// Both doors need it: a hold that survives the run holds cloth nobody will ever come
+				// back for, and every later run reads a shortage that does not physically exist.
+				if err := inventory.ReleaseRunReservationsInTx(ctx, rep.DB(), id, r.Actor); err != nil {
+					return err
+				}
 				return recordRunEvent(ctx, rep.DB(), id, entity.ProductionRunEventClosed, r.Actor, "",
 					map[string]any{"from": cur.Status, "to": string(entity.ProductionRunClosed), "lock_version_after": cur.LockVersion + 1})
 			}
@@ -318,6 +326,18 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		// matched row can never report 0 changed rows however byte-identical the rest of the save is.
 		if expectedLockVersion.Present() && rows == 0 {
 			return entity.ErrProductionRunConflict
+		}
+		// Ф5б.4 — a run that has ended holds no fabric (§4.1: release at closing AND at cancellation).
+		// Cancellation is the one that is easy to forget and the expensive one to forget: a cancelled
+		// run is precisely the run nobody will open again, so cloth it keeps is cloth nobody notices
+		// is missing. Keyed on the run's RESULTING status rather than on the transition, so an echo
+		// save of an already-terminal run repairs a hold that somehow survived; the release itself is
+		// idempotent (a closed claim is not re-closed) and a no-op for a run holding nothing.
+		// Order-owned packaging claims are untouched — they hang off a different owner column.
+		if r.Status == entity.ProductionRunCancelled || r.Status == entity.ProductionRunClosed {
+			if err := inventory.ReleaseRunReservationsInTx(ctx, rep.DB(), id, r.Actor); err != nil {
+				return err
+			}
 		}
 		// Status transitions leave an attributed audit fact (Phase 8): started (→ in_progress),
 		// cancelled, closed. received/partially_received never pass this path (receipt-owned).

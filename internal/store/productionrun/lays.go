@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // НАСТИЛЫ (Ф4, migration 0281). A lay is the run's cutting plan for ONE pair (colourway, BOM slot):
@@ -146,7 +147,7 @@ func (s *Store) SaveLay(ctx context.Context, runID int, ins entity.ProductionRun
 		var stored *layIdentity
 		if ins.LayKey != "" {
 			row, err := storeutil.QueryNamedOne[layIdentity](ctx, db, `
-				SELECT id, lock_version, qty_snapshot
+				SELECT id, lock_version, qty_snapshot, actual_qty, actual_uom, actual_method
 				FROM production_run_lay
 				WHERE run_id = :run_id AND lay_key = :lay_key`,
 				map[string]any{"run_id": runID, "lay_key": ins.LayKey})
@@ -193,19 +194,30 @@ func (s *Store) SaveLay(ctx context.Context, runID int, ins entity.ProductionRun
 			return err
 		}
 
+		// 6b. The lot, if the payload speaks about one (Ф5б.1). Resolved to a code SNAPSHOT here and
+		// not on read: the code has to survive the lot's deletion, which is what SET NULL is paid
+		// with.
+		lot, err := resolveLayLot(ctx, db, ins.LotId, ins.ColorwayId, bomItemID)
+		if err != nil {
+			return err
+		}
+		// 6c. The consumption fact, if the payload speaks about one (Ф5б.2). The who/when stamp is
+		// renewed ONLY when the measurement itself moved — see resolveLayActual.
+		actual := resolveLayActual(ins.Actual, stored)
+
 		// 7. Header upsert. lock_version is bumped on EVERY update, whether or not a column changed:
 		// the version is a statement about "somebody saved this", which is what the other tab needs
 		// to hear.
 		layID := 0
 		creating := stored == nil
 		if creating {
-			layID, err = insertLayHeader(ctx, db, runID, ins, bomItemID, username)
+			layID, err = insertLayHeader(ctx, db, runID, ins, bomItemID, lot, actual, username)
 			if err != nil {
 				return err
 			}
 		} else {
 			layID = stored.Id
-			if err := updateLayHeader(ctx, db, layID, ins, bomItemID, username); err != nil {
+			if err := updateLayHeader(ctx, db, layID, ins, bomItemID, lot, actual, username); err != nil {
 				return err
 			}
 		}
@@ -218,7 +230,10 @@ func (s *Store) SaveLay(ctx context.Context, runID int, ins entity.ProductionRun
 
 		// 9. The quantity snapshot is recomputed IF AND ONLY IF the sections changed, the caller
 		// reaffirmed, or the lay is new. A note edit leaves it alone — otherwise the stale badge
-		// would wash itself clean by accident.
+		// would wash itself clean by accident. THE SAME HOLDS FOR THE LOT AND THE FACT (Ф5б): naming
+		// the roll or typing what really went says nothing about whether the run still plans the
+		// quantities this lay was built for, and letting either clear the badge would launder the one
+		// signal the snapshot exists to raise — at the exact moment the cutting room is looking at it.
 		if creating || sectionsChanged || reaffirm {
 			if err := refreshLayQtySnapshot(ctx, db, layID, runID, ins.ColorwayId); err != nil {
 				return err
@@ -328,11 +343,154 @@ func (s *Store) ListLays(ctx context.Context, runID int) (entity.ProductionRunLa
 }
 
 // layIdentity is the stored half of a lay a save needs before it writes anything: the id it must
-// keep, the version it must match, and the snapshot it must not disturb.
+// keep, the version it must match, the snapshot it must not disturb, and the consumption fact it
+// must compare against — the who/when stamp is renewed only when the MEASUREMENT moved, so the
+// previous measurement has to be in hand before the new one is written.
 type layIdentity struct {
-	Id          int    `db:"id"`
-	LockVersion int    `db:"lock_version"`
-	QtySnapshot []byte `db:"qty_snapshot"`
+	Id           int                 `db:"id"`
+	LockVersion  int                 `db:"lock_version"`
+	QtySnapshot  []byte              `db:"qty_snapshot"`
+	ActualQty    decimal.NullDecimal `db:"actual_qty"`
+	ActualUom    sql.NullString      `db:"actual_uom"`
+	ActualMethod sql.NullString      `db:"actual_method"`
+}
+
+// layLotBinding is a RESOLVED lot instruction. nil (the pointer the callers pass around) means the
+// payload was silent and the stored binding must not be touched; a value with an invalid LotId is
+// the explicit UNBIND, which clears the snapshot with it — a lay that no longer claims a roll must
+// not keep naming one.
+type layLotBinding struct {
+	LotId sql.NullInt64
+	Code  string
+}
+
+// layActualWrite is a RESOLVED fact instruction: the three stored values plus whether the who/when
+// stamp has to be renewed. nil means the payload was silent.
+type layActualWrite struct {
+	Qty    decimal.NullDecimal
+	Uom    sql.NullString
+	Method sql.NullString
+	// Stamp is true only when the measurement itself changed. A save that echoes an unchanged fact —
+	// which every full-payload client does on every note edit — must NOT rewrite actual_by/actual_at,
+	// or the last person to touch the lay would be recorded as the one who measured it, and the
+	// provenance the method column exists for would be a lie by the second save.
+	Stamp bool
+}
+
+// resolveLayLot turns the payload's lot instruction into a binding plus its code SNAPSHOT.
+//
+// THE SNAPSHOT IS TAKEN HERE, at bind time, and never refreshed on read: fk_prlay_lot is ON DELETE
+// SET NULL (Р6), so the id is the part that can vanish and the code is the part that must not. A
+// join-time COALESCE would have produced an empty name for exactly the lay that most needs one.
+//
+// THE LOT MUST PLAUSIBLY BE THIS SLOT'S CLOTH. The candidate articles are the slot's own material
+// plus whatever this colourway pins onto it (0281's slot world, the pins of the colourway recipe).
+// When the slot resolves to NO article at all — a free-text BOM line — the check CANNOT DISPROVE
+// anything and therefore allows: refusing there would block a legitimate lay over a card that simply
+// never linked its cloth to the catalogue. When it does resolve, a lot of some other article is
+// refused BY NAME, because such a binding poisons two readers at once (the width check would compare
+// the marker against a different fabric's roll, and a перекрой would be reserved out of it).
+//
+// A PIN THAT DOES NOT CARRY ITS FK COUNTS TOO — that is the `bom_item_id IS NULL` arm. A legacy
+// usage row addresses its BOM line by POSITION (bom_item_index) and leaves the FK empty, exactly as
+// planBomLine's fallback documents; scoping the pins strictly by bom_item_id would make such a pin
+// invisible here and refuse a lot that is genuinely this colourway's cloth. Re-deriving the
+// positional index in SQL would put a second copy of the pin-resolution rules in the repository, so
+// the rule chosen is the tolerant one: a pin that cannot say WHICH slot it is on cannot be used to
+// disprove anything either.
+func resolveLayLot(ctx context.Context, db dependency.DB, lotID *int, colorwayID, bomItemID int) (*layLotBinding, error) {
+	if lotID == nil {
+		return nil, nil
+	}
+	if *lotID <= 0 {
+		return &layLotBinding{}, nil
+	}
+	lot, err := storeutil.QueryNamedOne[struct {
+		Id         int    `db:"id"`
+		LotCode    string `db:"lot_code"`
+		MaterialId int    `db:"material_id"`
+	}](ctx, db, `
+		SELECT id, lot_code, material_id
+		FROM material_lot WHERE id = :id`, map[string]any{"id": *lotID})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, entity.NewFieldViolation("lay.lot_id", "not_found", fmt.Sprintf("lot %d", *lotID),
+				"pick a lot that exists in the material warehouse, or leave the lay without one")
+		}
+		return nil, fmt.Errorf("resolve lot %d for lay: %w", *lotID, err)
+	}
+	candidates, err := storeutil.QueryListNamed[struct {
+		MaterialId int `db:"material_id"`
+	}](ctx, db, `
+		SELECT bi.material_id AS material_id
+		FROM tech_card_bom_item bi
+		WHERE bi.id = :bom AND bi.material_id IS NOT NULL
+		UNION
+		SELECT u.material_id AS material_id
+		FROM tech_card_colorway_usage u
+		WHERE u.colorway_id = :cw AND u.material_id IS NOT NULL
+		  AND (u.bom_item_id = :bom OR u.bom_item_id IS NULL)`,
+		map[string]any{"bom": bomItemID, "cw": colorwayID})
+	if err != nil {
+		return nil, fmt.Errorf("resolve articles of bom item %d for lay lot: %w", bomItemID, err)
+	}
+	if len(candidates) > 0 {
+		ok := false
+		for _, c := range candidates {
+			if c.MaterialId == lot.MaterialId {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, entity.NewFieldViolation("lay.lot_id", "lot_of_another_article",
+				fmt.Sprintf("lot %q is article %d", lot.LotCode, lot.MaterialId),
+				"lay this slot off a lot of the cloth the slot actually holds")
+		}
+	}
+	// The code is copied WHOLE and never clipped: material_lot.lot_code (0118) and
+	// production_run_lay.lot_code (0285) are both VARCHAR(64), so the snapshot cannot outgrow its
+	// column — and if one of them is ever widened without the other, MySQL must say so loudly rather
+	// than let a truncation quietly rename the roll the настил is pointing at.
+	return &layLotBinding{LotId: sql.NullInt64{Int64: int64(lot.Id), Valid: true}, Code: lot.LotCode}, nil
+}
+
+// resolveLayActual turns the payload's fact instruction into the three values to store and decides
+// whether the who/when stamp is renewed. Validation has already happened (validateLayInsert): what
+// is left here is normalisation to the vocabulary's canonical spelling — chk_prlay_actual_uom
+// demands lower case, and NormalizeMaterialUnit is the ONE place that knows «м» is "m".
+func resolveLayActual(in *entity.ProductionRunLayActualInput, stored *layIdentity) *layActualWrite {
+	if in == nil {
+		return nil
+	}
+	out := &layActualWrite{Qty: in.Qty}
+	if u, ok := entity.NormalizeMaterialUnit(string(in.Uom)); ok {
+		out.Uom = sql.NullString{String: string(u), Valid: true}
+	}
+	if m := strings.TrimSpace(string(in.Method)); m != "" {
+		out.Method = sql.NullString{String: m, Valid: true}
+	}
+	if stored == nil {
+		out.Stamp = out.Qty.Valid
+		return out
+	}
+	out.Stamp = !sameNullDecimal(stored.ActualQty, out.Qty) ||
+		stored.ActualUom != out.Uom ||
+		stored.ActualMethod != out.Method
+	return out
+}
+
+// sameNullDecimal compares two optional decimals by VALUE, not by representation: "12.500" and
+// "12.5" are the same measurement, and treating them as different would restamp the fact — and
+// rewrite who measured it — on a save that changed nothing.
+func sameNullDecimal(a, b decimal.NullDecimal) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	if !a.Valid {
+		return true
+	}
+	return a.Decimal.Equal(b.Decimal)
 }
 
 // validateLayInsert enforces in Go everything the schema's CHECKs enforce in SQL, so a bad payload
@@ -367,6 +525,15 @@ func validateLayInsert(ins *entity.ProductionRunLayInsert) error {
 		ins.EndLossCm.GreaterThan(entity.ProductionLayEndLossMaxCm) {
 		return entity.NewFieldViolation("lay.end_loss_cm", "out_of_range", ins.EndLossCm.String(),
 			"end loss is measured per ONE end of ONE ply, 0..100 cm")
+	}
+	// «ФАКТ ЦЕЛИКОМ ИЛИ НИКАК» is refused HERE, in Go, and not left to chk_prlay_actual_complete:
+	// MySQL answers a violated CHECK with error 3819 and the constraint's name, which tells the
+	// cutting room nothing about which of the three fields it forgot. The CHECK stays as the floor
+	// under a direct SQL writer; this is the sentence a human reads.
+	if ins.Actual != nil {
+		if err := entity.ValidateProductionRunLayActual("lay", *ins.Actual); err != nil {
+			return err
+		}
 	}
 	for i := range ins.Sections {
 		sec := &ins.Sections[i]
@@ -507,7 +674,7 @@ func requireLaySectionMarkers(ctx context.Context, db dependency.DB, runID, tech
 // insertLayHeader creates the lay row. A duplicate key here is the create/create race — two tabs
 // minting the same lay_key at once — and it is a conflict, not an internal error.
 func insertLayHeader(ctx context.Context, db dependency.DB, runID int, ins entity.ProductionRunLayInsert,
-	bomItemID int, username string) (int, error) {
+	bomItemID int, lot *layLotBinding, actual *layActualWrite, username string) (int, error) {
 
 	params := layHeaderParams(ins, bomItemID, username)
 	params["run_id"] = runID
@@ -515,38 +682,126 @@ func insertLayHeader(ctx context.Context, db dependency.DB, runID int, ins entit
 	// An empty snapshot is written here and replaced by refreshLayQtySnapshot in the same
 	// transaction; the column is NOT NULL and no lay ever leaves this function without one.
 	params["qty_snapshot"] = "[]"
+	// On a CREATE, silence and «no lot / no fact» are the same thing: there is no prior value for
+	// silence to protect, so both land as the column defaults. The columns are listed unconditionally
+	// precisely because of that — a dynamic INSERT would buy nothing and cost readability.
+	params["lot_id"] = sql.NullInt64{}
+	params["lot_code"] = ""
+	if lot != nil {
+		params["lot_id"] = lot.LotId
+		params["lot_code"] = lot.Code
+	}
+	params["actual_qty"] = decimal.NullDecimal{}
+	params["actual_uom"] = sql.NullString{}
+	params["actual_method"] = sql.NullString{}
+	params["actual_by"] = ""
+	if actual != nil {
+		params["actual_qty"] = actual.Qty
+		params["actual_uom"] = actual.Uom
+		params["actual_method"] = actual.Method
+		if actual.Qty.Valid {
+			params["actual_by"] = username
+		}
+	}
+	actualAt := "NULL"
+	if actual != nil && actual.Qty.Valid {
+		actualAt = "CURRENT_TIMESTAMP"
+	}
 	id, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO production_run_lay
 			(run_id, lay_key, colorway_id, bom_item_id, bom_line_key, name, mode, end_loss_cm,
-			 qty_snapshot, note, display_order, created_by, updated_by)
+			 qty_snapshot, note, display_order, lot_id, lot_code,
+			 actual_qty, actual_uom, actual_method, actual_by, actual_at, created_by, updated_by)
 		VALUES
 			(:run_id, :lay_key, :colorway_id, :bom_item_id, :bom_line_key, :name, :mode, :end_loss_cm,
-			 :qty_snapshot, :note, :display_order, :created_by, :updated_by)`, params)
+			 :qty_snapshot, :note, :display_order, :lot_id, :lot_code,
+			 :actual_qty, :actual_uom, :actual_method, :actual_by, `+actualAt+`, :created_by, :updated_by)`, params)
 	if err != nil {
 		var me *mysql.MySQLError
 		if errors.As(err, &me) && me.Number == 1062 {
 			return 0, fmt.Errorf("%w: lay %q was created concurrently", entity.ErrProductionRunLayConflict, ins.LayKey)
+		}
+		if ve := layCheckViolation(err); ve != nil {
+			return 0, ve
 		}
 		return 0, fmt.Errorf("failed to insert production run lay: %w", err)
 	}
 	return id, nil
 }
 
+// layCheckViolation turns MySQL's «CONSTRAINT %s is violated» (3819) into a named field violation.
+// It is the LAST line, not the first: validateLayInsert refuses the same payloads earlier and with
+// more context. This exists so that a CHECK the Go rules do not yet mirror — a column added by a
+// later migration, a value written by a path that grew a hole — still reaches the user as a sentence
+// about the fact rather than as a constraint identifier.
+func layCheckViolation(err error) *entity.ValidationError {
+	var me *mysql.MySQLError
+	if !errors.As(err, &me) || me.Number != 3819 {
+		return nil
+	}
+	switch {
+	case strings.Contains(me.Message, "chk_prlay_actual_complete"):
+		return entity.NewFieldViolation("lay.actual_qty", "incomplete_fact", "",
+			"a consumption fact needs its unit and its measuring method recorded with it")
+	case strings.Contains(me.Message, "chk_prlay_actual_uom"):
+		return entity.NewFieldViolation("lay.actual_uom", "malformed", "",
+			"measure the fact in one of the known units, spelled in lower case")
+	case strings.Contains(me.Message, "chk_prlay_actual_method"):
+		return entity.NewFieldViolation("lay.actual_method", "unknown_method", "",
+			"say how it was measured: roll_before_after or weighed")
+	case strings.Contains(me.Message, "chk_prlay_actual_qty"):
+		return entity.NewFieldViolation("lay.actual_qty", "out_of_range", "",
+			"a consumption fact is a positive quantity; leave it empty to withdraw the fact instead")
+	}
+	return nil
+}
+
 // updateLayHeader rewrites the lay's attributes and bumps its version. qty_snapshot is absent from
 // the SET list on purpose: it is the server's own fact and is refreshed only under the rule in
 // SaveLay. lay_key and run_id are absent because they are the identity, not an attribute.
+// The lot and the fact join the SET list ONLY when the payload spoke about them (entity's LotId /
+// Actual carry presence). That asymmetry with every other column here is the whole protection of
+// Ф5б: a client written before migration 0285 saves a lay with a perfectly valid expected version
+// and no idea these columns exist, and a full SET list would let it wipe a measurement that cannot
+// be taken again.
 func updateLayHeader(ctx context.Context, db dependency.DB, layID int, ins entity.ProductionRunLayInsert,
-	bomItemID int, username string) error {
+	bomItemID int, lot *layLotBinding, actual *layActualWrite, username string) error {
 
 	params := layHeaderParams(ins, bomItemID, username)
 	params["id"] = layID
-	if err := storeutil.ExecNamed(ctx, db, `
-		UPDATE production_run_lay SET
-			lock_version = lock_version + 1,
-			colorway_id = :colorway_id, bom_item_id = :bom_item_id, bom_line_key = :bom_line_key,
-			name = :name, mode = :mode, end_loss_cm = :end_loss_cm, note = :note,
-			display_order = :display_order, updated_by = :updated_by
-		WHERE id = :id`, params); err != nil {
+	sets := []string{
+		"lock_version = lock_version + 1",
+		"colorway_id = :colorway_id", "bom_item_id = :bom_item_id", "bom_line_key = :bom_line_key",
+		"name = :name", "mode = :mode", "end_loss_cm = :end_loss_cm", "note = :note",
+		"display_order = :display_order", "updated_by = :updated_by",
+	}
+	if lot != nil {
+		sets = append(sets, "lot_id = :lot_id", "lot_code = :lot_code")
+		params["lot_id"] = lot.LotId
+		params["lot_code"] = lot.Code
+	}
+	if actual != nil {
+		sets = append(sets, "actual_qty = :actual_qty", "actual_uom = :actual_uom",
+			"actual_method = :actual_method")
+		params["actual_qty"] = actual.Qty
+		params["actual_uom"] = actual.Uom
+		params["actual_method"] = actual.Method
+		if actual.Stamp {
+			// Renewed only when the measurement moved, and cleared outright when the fact is
+			// withdrawn: a signature must not outlive the number it was put under.
+			if actual.Qty.Valid {
+				sets = append(sets, "actual_by = :actual_by", "actual_at = CURRENT_TIMESTAMP")
+				params["actual_by"] = username
+			} else {
+				sets = append(sets, "actual_by = '', actual_at = NULL")
+			}
+		}
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`UPDATE production_run_lay SET `+strings.Join(sets, ", ")+` WHERE id = :id`, params); err != nil {
+		if ve := layCheckViolation(err); ve != nil {
+			return ve
+		}
 		return fmt.Errorf("failed to update production run lay %d: %w", layID, err)
 	}
 	return nil
@@ -758,10 +1013,17 @@ func loadRunColorwayQuantities(ctx context.Context, db dependency.DB, runID, col
 // layColumns is the explicit column list every lay read uses. Explicit and not SELECT *: the JSON
 // snapshot must be read by name (a `*` read is how the quoted-JSON-scalar bug resurfaces), and the
 // joined names must not collide with the row's own.
+// The lot's own facts (article, measured width, shade) come from the join and are NULL exactly when
+// the lot is gone; l.lot_code comes from the ROW and survives that, which is the whole point of the
+// snapshot. Reading the code from ml.lot_code instead would go quiet for precisely the lay that has
+// to shout.
 const layColumns = `
 	l.id, l.run_id, l.lay_key, l.colorway_id, COALESCE(p.color, '') AS colorway_name,
 	l.bom_item_id, l.bom_line_key, bi.name AS bom_item_name,
 	l.mode, l.end_loss_cm, l.name, l.note, l.display_order, l.lock_version,
+	l.lot_id, l.lot_code, ml.material_id AS lot_material_id,
+	ml.measured_width_cm AS lot_measured_width_cm, ml.shade_code AS lot_shade_code,
+	l.actual_qty, l.actual_uom, l.actual_method, l.actual_by, l.actual_at,
 	l.qty_snapshot, l.created_by, l.updated_by, l.created_at, l.updated_at`
 
 // layRow is the stored lay plus its raw snapshot bytes, which only this file decodes.
@@ -785,6 +1047,7 @@ func loadLays(ctx context.Context, db dependency.DB, runID, layID int) ([]entity
 		FROM production_run_lay l
 		LEFT JOIN product p ON p.id = l.colorway_id
 		LEFT JOIN tech_card_bom_item bi ON bi.id = l.bom_item_id
+		LEFT JOIN material_lot ml ON ml.id = l.lot_id
 		WHERE l.run_id = :run`+narrow+`
 		ORDER BY l.display_order, l.id`, params)
 	if err != nil {

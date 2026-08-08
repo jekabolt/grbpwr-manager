@@ -398,6 +398,15 @@ var methodRequirements = map[string]Requirement{
 	"SaveProductionRunLay":   wr(SectionProduction),
 	"DeleteProductionRunLay": wr(SectionProduction),
 	"ListProductionRunLays":  rd(SectionProduction),
+	// ПРИЁМКА КРОЯ (Ф5б.5) — та же секция и по тому же доводу: выкроенное и принятое в пошив считает
+	// тот, кто ведёт цех. Чтение НЕ в allowlist — в ответе едут количества прогона.
+	//
+	// Заметим, что секция здесь НЕ следует из статуса прогона: приёмку кроя принимают и на закрытом
+	// прогоне (это отчёт о прошлом, а не план), поэтому единственный, кто её ограничивает, — вот эта
+	// карта.
+	"SaveProductionRunCutReceipt":   wr(SectionProduction),
+	"DeleteProductionRunCutReceipt": wr(SectionProduction),
+	"ListProductionRunCutReceipts":  rd(SectionProduction),
 	// ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6) — production READ, and specifically NOT tech_cards.
 	//
 	// The argument, not the taste: this RPC has ONE consumer (the run-creation modal) and ONE

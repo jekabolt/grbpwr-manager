@@ -863,6 +863,32 @@ type (
 		// ListLays returns the run's whole lay plan. Applicable=false (with a reason) for an auxiliary
 		// card — stated explicitly, because an empty list reads as an invitation to build one.
 		ListLays(ctx context.Context, runID int) (entity.ProductionRunLayList, error)
+
+		// ПРИЁМКА КРОЯ (Ф5б.5, migration 0287). Two numbers per pair (настил, размер) — выкроено and
+		// принято в пошив — inserted BETWEEN production_run_line's planned_qty and received_qty,
+		// which these methods only ever READ. Re-meaning the existing fields would open a double
+		// ledger where «принято в пошив» and «сдано готовым» drift apart under one name.
+		//
+		// Unlike a настил, a receipt is accepted on a TERMINAL run: a настил is a plan and rewriting
+		// a finished run's plan rewrites history, while a receipt is a report of what happened at the
+		// cutting table — and cutting precedes sewing, which precedes receiving. The numbers are
+		// never validated against each other or against the plan: overcutting is legitimate, and the
+		// discrepancy is carried to the reader rather than refused.
+		//
+		// SaveCutReceipt upserts ONE pair (настил addressed by lay_key, размер) and leaves every
+		// other pair alone — a pair the payload does not mention is not touched.
+		SaveCutReceipt(ctx context.Context, runID int, layKey string,
+			ins entity.ProductionRunCutReceiptInsert, username string) (entity.ProductionRunCutReceipt, error)
+		// DeleteCutReceipt removes the count of ONE pair — the only way to say «this size was never
+		// on this настил», which a row of zeroes cannot say.
+		// entity.ErrProductionRunCutReceiptNotFound when the pair holds no receipt.
+		DeleteCutReceipt(ctx context.Context, runID int, layKey string, sizeID int) error
+		// ListCutReceipts returns every receipt of the run across all of its настилы. By run and not
+		// by настил: the cutting room reconciles заказанное against выкроенное for the whole run at
+		// once. The rows carry NO planned/received quantity — those are per (колорвей, размер) while
+		// a receipt is per (настил, размер), and one colourway legitimately has several настилы, so
+		// copying the order onto each of their rows would make any sum over receipts double it.
+		ListCutReceipts(ctx context.Context, runID int) ([]entity.ProductionRunCutReceipt, error)
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with
@@ -908,7 +934,28 @@ type (
 		// refund) — the soft hold is returned without any physical writeoff. Idempotent.
 		ReleasePackagingForOrder(ctx context.Context, orderID int, username string) error
 		// MaterialAvailable returns a material's on_hand, open-reserved and available (on_hand − reserved).
+		// Since 0286 "reserved" folds BOTH owners of the ledger — orders holding packaging and runs
+		// holding fabric — because the reader sums by material without asking who owns the claim.
 		MaterialAvailable(ctx context.Context, materialID int) (entity.MaterialAvailability, error)
+		// SetRunMaterialReservations makes a production run's open fabric claims equal `required`
+		// (Ф5б.4): the hold placed when the run is created (requirement from the NORM) and the
+		// correction when the lays displace that norm are the SAME call with different numbers. A
+		// correction is release + reserve of the next generation, never an update, so `available`
+		// moves by exactly the difference. `required` is the OUTSTANDING need — gross requirement
+		// minus what is already issued, which has physically left on_hand. Idempotent.
+		SetRunMaterialReservations(ctx context.Context, runID int, required map[int]entity.RunMaterialRequirement, username string) error
+		// ReleaseRunReservations closes every open fabric claim of a run. Called automatically when a
+		// run is closed or cancelled; exposed for an operator freeing an abandoned run's cloth by hand.
+		ReleaseRunReservations(ctx context.Context, runID int, username string) error
+		// ListMaterialReservations returns every OPEN claim on a material — both owners, with the
+		// claim's age — oldest first. This is the answer to "the cloth reads short, who is holding it":
+		// a run parked in `planned` since March is a legitimate, and visible, hold.
+		ListMaterialReservations(ctx context.Context, materialID int) ([]entity.MaterialReservationClaim, error)
+		// LotAvailable returns one lot's remaining minus the open claims naming that lot (Ф5б.6, Р7).
+		// Asked ONLY by the recut check — a recut must come out of the same dye lot as the original
+		// cut. Deliberately not folded into MaterialAvailable: the general question is about the
+		// material, and answering it per roll would refuse a run holding plenty across several rolls.
+		LotAvailable(ctx context.Context, lotID int) (entity.MaterialLotAvailability, error)
 		// ListPackagingRecipe returns every packaging recipe (all scopes) joined with material name/unit.
 		ListPackagingRecipe(ctx context.Context) ([]entity.PackagingRecipe, error)
 		// ResolveOrderPackaging returns the packaging materials an order needs (product → style → global),

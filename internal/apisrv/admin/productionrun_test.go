@@ -44,6 +44,7 @@ func TestCreateProductionRunSnapshotsPlanFromRelease(t *testing.T) {
 		captured = r
 		return true
 	})).Return(11, nil)
+	expectRunReservationReconcileStandsDown(t, pr, 11)
 
 	s := &Server{repo: repo}
 	resp, err := s.CreateProductionRun(context.Background(), &pb_admin.CreateProductionRunRequest{
@@ -530,6 +531,28 @@ func TestGetProductionRunNotFoundAndList(t *testing.T) {
 // It is deliberately a HELPER rather than a switch: there is no way to turn the gate off, and adding
 // one for tests would have meant adding one for production. The gate's own behaviour is tested in
 // TestRunReadinessCreateGate* and in the dto layer.
+// expectRunReservationReconcileStandsDown lets a create-path test ignore Ф5б.4 without pretending it
+// is not there.
+//
+// CreateProductionRun reserves fabric after the run is born, and that reconcile re-reads the run to
+// compose its material plan. A test about the PLANNED-COST SNAPSHOT or about the READINESS GATE has
+// no business also mocking a material plan — so the run read is stubbed to fail, which drives the
+// reconcile down its best-effort path: it logs and returns, exactly as it does in production when
+// the plan cannot be composed.
+//
+// ЭТО НЕ ГЛУШИТ ПРОВЕРКУ РЕЗЕРВА, А ПЕРЕАДРЕСУЕТ ЕЁ. Какое ЧИСЛО уезжает в резерв, проверяет
+// f5b_run_reservation_wiring_test.go на общей с Ф4.6 фикстуре.
+//
+// ONCE, А НЕ MAYBE, И ЭТО ВТОРАЯ ПОЛОВИНА СМЫСЛА. Maybe промолчал бы, если бы вызов резерва из
+// CreateProductionRun кто-то удалил, — то есть хелпер, написанный ради «не мешать», сам стал бы тем,
+// что прячет пропажу. Once превращает его в противоположность: оба теста, которые его зовут, ЗАОДНО
+// доказывают, что резерв на рождении прогона случается ровно один раз.
+func expectRunReservationReconcileStandsDown(t *testing.T, pr *mocks.MockProductionRuns, runID int) {
+	t.Helper()
+	pr.EXPECT().GetProductionRun(mock.Anything, runID).
+		Return(nil, errors.New("run read unavailable in this test")).Once()
+}
+
 func expectRunReadinessGatePasses(t *testing.T, repo *mocks.MockRepository, tc *mocks.MockTechCards, cardID int) {
 	t.Helper()
 	ws := mocks.NewMockWorkshop(t)
