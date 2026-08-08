@@ -209,7 +209,13 @@ func (s *Server) GetProductionRun(ctx context.Context, req *pb_admin.GetProducti
 	if read, _ := s.costingAccess(ctx); !read {
 		stripProductionRunCosting(pb)
 	}
-	return &pb_admin.GetProductionRunResponse{Run: pb}, nil
+	return &pb_admin.GetProductionRunResponse{
+		Run: pb,
+		// Токен наряда едет на ОТВЕТЕ, а не на common.ProductionRun: тот сериализуется в
+		// сохраняемые снапшоты, а капабилити-токену там не место. Best effort — «» на любом сбое,
+		// но не проваленное чтение прогона.
+		RunPackToken: s.runPackTokens.MintRunPackToken(ctx, int(req.Id)),
+	}, nil
 }
 
 // ListProductionRuns returns runs matching the optional tech-card / status filter, newest-first.

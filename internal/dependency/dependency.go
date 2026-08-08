@@ -909,6 +909,26 @@ type (
 		// a receipt is per (настил, размер), and one colourway legitimately has several настилы, so
 		// copying the order onto each of their rows would make any sum over receipts double it.
 		ListCutReceipts(ctx context.Context, runID int) ([]entity.ProductionRunCutReceipt, error)
+
+		// ПУБЛИЧНЫЙ НАРЯД (production_run_pack_access, 0293) — прогонный близнец карточного вьюера
+		// выкроек: одна ссылка-капабилити на бумаге открывает манифест партии без JWT
+		// (/api/rp/{token}, internal/runpackaccess). Токен скоупа 'r' резолвится ТОЛЬКО через эти
+		// методы и никогда через карточные или объектные (числовые диапазоны id пересекаются, а
+		// означают разное).
+		//
+		// EnsureRunPackAccess создаёт строку лениво (epoch 1, без срока), не трогая существующее
+		// состояние; GetRunPackAccess отдаёт sql.ErrNoRows, когда строки нет.
+		EnsureRunPackAccess(ctx context.Context, runID int) (*entity.ProductionRunPackAccess, error)
+		GetRunPackAccess(ctx context.Context, runID int) (*entity.ProductionRunPackAccess, error)
+		// RecordRunPackAccess сворачивает отложенную пачку счётчиков доступа в строки.
+		RecordRunPackAccess(ctx context.Context, counts map[int]int64, last map[int]time.Time) error
+		// GetRunPack — узкое чтение под манифест наряда: строка прогона БЕЗ денежных колонок и без
+		// дочерних коллекций (затраты, движения, приёмки, события, сверка), плюс стиль, фабрика,
+		// номер релиза и плановый грид с именами. sql.ErrNoRows, когда прогона нет.
+		GetRunPack(ctx context.Context, runID int) (*entity.RunPack, error)
+		// GetRunPackMarkerSizes читает состав набора раскладок (размер × количество в одном слое)
+		// одним запросом — краткая разбивка настила в наряде.
+		GetRunPackMarkerSizes(ctx context.Context, markerIDs []int) (map[int][]entity.RunPackMarkerSize, error)
 	}
 
 	// Samples is the sample (сэмпл) repository (new-flow NF-04): a sewn prototype of a style, with

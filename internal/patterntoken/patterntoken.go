@@ -5,14 +5,17 @@
 // object without touching the object or the pepper.
 //
 // Format: {scope}{id36}.{epoch36}.{sig}
-//   - scope is one byte: 'i' (internal — admin SPA), 'p' (print — tech-pack QR) or
-//     'c' (card viewer — the id names a TECH CARD, not a pattern_object_access row).
+//   - scope is one byte: 'i' (internal — admin SPA), 'p' (print — tech-pack QR), 'c'
+//     (card viewer — the id names a TECH CARD, not a pattern_object_access row) or 'r'
+//     (run pack — the id names a PRODUCTION RUN).
 //     Scopes sign differently, so revoking a leaked paper tech-pack does not have to
 //     break the admin UI and vice versa (each scope can be re-epoched independently at a
-//     policy level later; today 'i'/'p' share the object row epoch and 'c' has its own
-//     row in tech_card_pattern_viewer_access). Because 'c' tokens carry a DIFFERENT
-//     id namespace, every handler must check the scope it serves — a card token looked
-//     up as an object id would resolve to an unrelated object.
+//     policy level later; today 'i'/'p' share the object row epoch, 'c' has its own row in
+//     tech_card_pattern_viewer_access and 'r' its own in production_run_pack_access).
+//     Because 'c' and 'r' tokens carry DIFFERENT id namespaces, every handler must check
+//     the scope it serves — a card token looked up as an object id would resolve to an
+//     unrelated object, and a run token looked up as a card id would serve an unrelated
+//     card's manifest. The check is an allowlist per endpoint, never a denylist.
 //   - id36 / epoch36 are base-36 (lowercase) — compact, so the printed QR stays small.
 //   - sig is base64url(HMAC_SHA256(pepper, "v1|"+scope+"|"+id+"|"+epoch)[:16]) — 128 bits.
 //
@@ -45,6 +48,12 @@ const (
 	// Handlers of the object scopes must refuse it, or a card token would be looked up
 	// against pattern_object_access and serve whatever object shares the number.
 	ScopeCard Scope = 'c'
+	// ScopeRunPack marks run-pack tokens (/api/rp/{token}, migration 0293): the id is a
+	// PRODUCTION RUN id at the production_run_pack_access epoch. It is the third id
+	// namespace in this format and shares numbers with the other two, so it is the third
+	// reason every handler allowlists its own scope: a run token accepted by /api/pv would
+	// print the tech card that happens to carry the run's number.
+	ScopeRunPack Scope = 'r'
 )
 
 const sigBytes = 16
@@ -90,7 +99,7 @@ func (m *Minter) Parse(token string) (scope Scope, id int64, epoch int, err erro
 		return 0, 0, 0, ErrInvalid
 	}
 	scope = Scope(token[0])
-	if scope != ScopeInternal && scope != ScopePrint && scope != ScopeCard {
+	if scope != ScopeInternal && scope != ScopePrint && scope != ScopeCard && scope != ScopeRunPack {
 		return 0, 0, 0, ErrInvalid
 	}
 	parts := strings.Split(token[1:], ".")

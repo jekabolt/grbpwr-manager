@@ -330,6 +330,18 @@ func TestManifestRefusesObjectScopes(t *testing.T) {
 			t.Errorf("scope %c token on /api/pv must 404, got %d", scope, w.Code)
 		}
 	}
+
+	// И третий скоуп, добавленный позже: 'r' адресует ПРОГОН (production_run_pack_access, 0293).
+	// Его id живёт в том же числовом диапазоне, что и id карточки и id строки объекта, поэтому
+	// оба здешних обработчика обязаны отбить его своим allowlist'ом — иначе валидно подписанный
+	// наряд открыл бы тех-карту, у которой совпал номер. Проверка стоит ЗДЕСЬ, в пакете-владельце
+	// обоих allowlist'ов: у себя дома runpackaccess проверяет зеркальную половину.
+	runTok := svc.minter.Mint(patterntoken.ScopeRunPack, 5, 1)
+	for _, path := range []string{"/api/pv/", "/api/p/"} {
+		if w := serveViewer(svc, http.MethodGet, path+runTok); w.Code != http.StatusNotFound {
+			t.Errorf("run-pack token on %s must 404, got %d", path, w.Code)
+		}
+	}
 }
 
 func TestManifestNegativeOutcomesAreUniform404(t *testing.T) {

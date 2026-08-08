@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
+	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -39,9 +40,12 @@ type Server struct {
 	// omit the tokenized urls.
 	patternURLs        *patternaccess.Service
 	patternURLsBaseURL string
-	mailer             dependency.Mailer
-	renderer           *campaignrender.Renderer
-	campaignTestSem    chan struct{}
+	// runPackTokens mints the output-only run_pack_token on a run read (/api/rp). Nil-safe
+	// for the same reason patternURLs is.
+	runPackTokens   *runpackaccess.Service
+	mailer          dependency.Mailer
+	renderer        *campaignrender.Renderer
+	campaignTestSem chan struct{}
 	// campaignTestRecipientAllowlist contains lower-cased, trimmed addresses
 	// permitted for admin campaign test sends (MAILER_TEST_RECIPIENTS). Empty is
 	// fail-closed: test sends are refused until it is configured. Suppression-list
@@ -232,4 +236,11 @@ func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodN
 func (s *Server) SetPatternURLService(svc *patternaccess.Service, baseURL string) {
 	s.patternURLs = svc
 	s.patternURLsBaseURL = baseURL
+}
+
+// SetRunPackTokenService wires the run-pack token minter (/api/rp). No base url here: the
+// response carries the bare TOKEN and the admin builds the printed url from its own origin,
+// exactly like pattern_viewer_token — the page that resolves it lives in the SPA.
+func (s *Server) SetRunPackTokenService(svc *runpackaccess.Service) {
+	s.runPackTokens = svc
 }
