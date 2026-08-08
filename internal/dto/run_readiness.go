@@ -456,7 +456,7 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 // the screen and one of them could refuse a run.
 func (b *runReadinessBuilder) normChecks(cw *entity.TechCardColorway, base entity.RunReadinessTarget, out *entity.RunReadinessColorway) {
 	add := func(f entity.RunReadinessFinding) { out.Findings = append(out.Findings, f) }
-	standard := entity.RequiredSeamAllowanceCm(b.card.RequiredSeamAllowanceCm, b.workshopSeamAllowance())
+	standard := entity.RequiredSeamAllowanceMm(b.card.RequiredSeamAllowanceMm, b.workshopSeamAllowance())
 
 	for j := range cw.Usages {
 		u := &cw.Usages[j]
@@ -512,7 +512,7 @@ func (b *runReadinessBuilder) workshopSeamAllowance() decimal.NullDecimal {
 	if b.in.Settings == nil {
 		return decimal.NullDecimal{}
 	}
-	return b.in.Settings.DefaultSeamAllowanceCm
+	return b.in.Settings.DefaultSeamAllowanceMm
 }
 
 // normProvenance emits norm_provenance (and norm_multiple when a norm exists) and returns the

@@ -104,27 +104,41 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 		val   string
 		max   int
 	}{
-		{"construction main_stitch_type", pb.MainStitchType, maxVarchar255},
-		{"construction stitch_density", pb.StitchDensity, maxVarchar64},
-		{"construction overlock_threads", pb.OverlockThreads, maxVarchar32},
-		{"construction seam_allowances", pb.SeamAllowances, maxVarchar255},
 		{"construction hem_finish", pb.HemFinish, maxVarchar255},
 		{"construction pressing", pb.Pressing, maxVarchar255},
-		{"construction machine_class", pb.MachineClass, maxVarchar255},
 	} {
 		if len(c.val) > c.max {
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
 		}
 	}
+	seamClass, err := parseSeamClass(pb.DefaultSeamClass, "construction default_seam_class")
+	if err != nil {
+		return nil, err
+	}
+	density, err := nullDecimalFromPb(pb.DefaultStitchesPerCm)
+	if err != nil {
+		return nil, fmt.Errorf("construction default_stitches_per_cm: %w", err)
+	}
+	if err := validateDecimalScale(density, "construction default_stitches_per_cm", stitchFrac, stitchLimit); err != nil {
+		return nil, err
+	}
+	// 3/4/5 threads is the whole real range of an overlock. Anything else is a typo, and a typo here
+	// reaches the printed sheet as an instruction to thread a machine that does not exist.
+	var threads sql.NullInt32
+	if pb.OverlockThreadCount != 0 {
+		if pb.OverlockThreadCount < 3 || pb.OverlockThreadCount > 5 {
+			return nil, entity.NewFieldViolation("construction overlock_thread_count", "out_of_range",
+				fmt.Sprint(pb.OverlockThreadCount), "an overlock runs 3, 4 or 5 threads; send 0 to leave it unset")
+		}
+		threads = sql.NullInt32{Int32: pb.OverlockThreadCount, Valid: true}
+	}
 	return &entity.TechCardConstruction{
-		MainStitchType:  nullStringFromPb(pb.MainStitchType),
-		StitchDensity:   nullStringFromPb(pb.StitchDensity),
-		OverlockThreads: nullStringFromPb(pb.OverlockThreads),
-		SeamAllowances:  nullStringFromPb(pb.SeamAllowances),
-		HemFinish:       nullStringFromPb(pb.HemFinish),
-		Pressing:        nullStringFromPb(pb.Pressing),
-		MachineClass:    nullStringFromPb(pb.MachineClass),
-		Notes:           nullStringFromPb(pb.Notes),
+		HemFinish:            nullStringFromPb(pb.HemFinish),
+		Pressing:             nullStringFromPb(pb.Pressing),
+		Notes:                nullStringFromPb(pb.Notes),
+		DefaultSeamClass:     seamClass,
+		DefaultStitchesPerCm: density,
+		OverlockThreadCount:  threads,
 	}, nil
 }
 
@@ -150,97 +164,178 @@ var techCardOperationTypeEntityToPb = func() map[entity.TechCardOperationType]pb
 	return m
 }()
 
-var techCardConstructionZonePbToEntity = map[pb_common.TechCardConstructionZone]entity.TechCardConstructionZone{
-	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER:       entity.ZoneOuter,
-	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_LINING:      entity.ZoneLining,
-	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_INTERLINING: entity.ZoneInterlining,
-	pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OTHER:       entity.ZoneOther,
-}
-var techCardConstructionZoneEntityToPb = func() map[entity.TechCardConstructionZone]pb_common.TechCardConstructionZone {
-	m := make(map[entity.TechCardConstructionZone]pb_common.TechCardConstructionZone, len(techCardConstructionZonePbToEntity))
-	for k, v := range techCardConstructionZonePbToEntity {
+// The zone map is BUILT FROM entity.GarmentZoneTokens rather than written out, so a token added to
+// the vocabulary cannot be silently absent here — the proto enum name is derived from the token by
+// the same rule for all eighteen. A hand-written map is exactly where the fitting/operation copies
+// would drift apart again.
+var techCardGarmentZonePbToEntity = func() map[pb_common.TechCardGarmentZone]entity.TechCardGarmentZone {
+	m := make(map[pb_common.TechCardGarmentZone]entity.TechCardGarmentZone, len(entity.GarmentZoneTokens))
+	for _, tok := range entity.GarmentZoneTokens {
+		if tok == string(entity.ZoneUnknown) {
+			continue
+		}
+		name := "TECH_CARD_GARMENT_ZONE_" + strings.ToUpper(tok)
+		v, ok := pb_common.TechCardGarmentZone_value[name]
+		if !ok {
+			panic("garment zone token without a proto enum value: " + tok)
+		}
+		m[pb_common.TechCardGarmentZone(v)] = entity.TechCardGarmentZone(tok)
+	}
+	return m
+}()
+
+var techCardGarmentZoneEntityToPb = func() map[entity.TechCardGarmentZone]pb_common.TechCardGarmentZone {
+	m := make(map[entity.TechCardGarmentZone]pb_common.TechCardGarmentZone, len(techCardGarmentZonePbToEntity))
+	for k, v := range techCardGarmentZonePbToEntity {
 		m[v] = k
 	}
 	return m
 }()
 
-// parseTechCardOperations validates and converts operations. calloutNumbers is the
-// set of TechCardCallout.number values in the same payload (so an operation's
-// callout_number can be range-checked) and bomItemCount is the number of submitted
-// bom_items (so an operation's bom_item_index can be range-checked).
+// The same derivation for the three dictionaries the break introduced. Each maps proto enum ->
+// storage token by name, and each panics at init on a mismatch: a dictionary half-added is worse
+// than one not added, because it fails on the one value nobody tested.
+func enumTokenMap[E ~int32](prefix string, tokens []string, values map[string]int32) map[E]string {
+	m := make(map[E]string, len(tokens))
+	for _, tok := range tokens {
+		v, ok := values[prefix+strings.ToUpper(tok)]
+		if !ok {
+			panic("token without a proto enum value: " + prefix + tok)
+		}
+		m[E(v)] = tok
+	}
+	return m
+}
+
+var seamClassPbToToken = enumTokenMap[pb_common.TechCardSeamClass]("TECH_CARD_SEAM_CLASS_", entity.SeamClassTokens, pb_common.TechCardSeamClass_value)
+var seamClassTokenToPb = invertTokenMap(seamClassPbToToken)
+
+var attachmentKindPbToToken = enumTokenMap[pb_common.TechCardAttachmentKind]("TECH_CARD_ATTACHMENT_KIND_", entity.AttachmentKindTokens, pb_common.TechCardAttachmentKind_value)
+var attachmentKindTokenToPb = invertTokenMap(attachmentKindPbToToken)
+
+var topstitchModePbToToken = enumTokenMap[pb_common.TechCardTopstitchMode]("TECH_CARD_TOPSTITCH_MODE_", entity.TopstitchModeTokens, pb_common.TechCardTopstitchMode_value)
+var topstitchModeTokenToPb = invertTokenMap(topstitchModePbToToken)
+
+func invertTokenMap[E comparable](m map[E]string) map[string]E {
+	out := make(map[string]E, len(m))
+	for k, v := range m {
+		out[v] = k
+	}
+	return out
+}
+
+// parseSeamClass turns the wire enum into the storage token. UNKNOWN is not an error: it means
+// «inherit the card default», and the row stores NULL so the inherited value is never mistaken for
+// a decision somebody made.
+func parseSeamClass(v pb_common.TechCardSeamClass, field string) (sql.NullString, error) {
+	if v == pb_common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_UNKNOWN {
+		return sql.NullString{}, nil
+	}
+	tok, ok := seamClassPbToToken[v]
+	if !ok {
+		return sql.NullString{}, entity.NewFieldViolation(field, "unknown_value", v.String(),
+			"pick a seam class from the list")
+	}
+	return sql.NullString{String: tok, Valid: true}, nil
+}
+
+// parseTechCardOperations validates and converts the assembly order. calloutNumbers is the set of
+// TechCardCallout.number values in the same payload, so an operation's callout_number can be
+// range-checked.
+//
+// TWO FIELDS ARE REQUIRED AND BOTH ARE CLOSED LISTS — operation_type and zone. That pairing is the
+// lesson of the removed `node`: a mandatory field with free input has no right answer, so the
+// operator invents one and two cards say the same thing differently. Everything else is optional,
+// and unset means «inherit the card default», never «zero».
 func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers map[int]bool, bomItemCount int) ([]entity.TechCardOperation, error) {
+	_ = bomItemCount // the positional bom_item_index went with the break; the line keys are the reference
 	out := make([]entity.TechCardOperation, 0, len(pbs))
 	for i, o := range pbs {
-		if o.Node == "" {
-			return nil, fmt.Errorf("operation node is required")
+		step := fmt.Sprintf("operations[%d]", i)
+		if o.OperationType == pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN {
+			return nil, entity.NewFieldViolation(step+".operation_type", "required", "",
+				"pick what the step DOES (join, overlock, topstitch, …) — it names the step and drives its defaults")
 		}
-		if len(o.Node) > maxVarchar255 || len(o.SeamType) > maxVarchar255 || len(o.Thread) > maxVarchar255 {
-			return nil, fmt.Errorf("operation node/seam_type/thread must be at most %d characters", maxVarchar255)
+		opType, ok := techCardOperationTypePbToEntity[o.OperationType]
+		if !ok {
+			return nil, entity.NewFieldViolation(step+".operation_type", "unknown_value", o.OperationType.String(), "pick a type from the list")
 		}
-		if len(o.TopstitchWidth) > maxVarchar64 || len(o.Machine) > maxVarchar64 ||
-			len(o.SeamAllowance) > maxVarchar64 || len(o.Needle) > maxVarchar64 || len(o.Attachment) > maxVarchar64 {
-			return nil, fmt.Errorf("operation topstitch_width/machine/seam_allowance/needle/attachment must be at most %d characters", maxVarchar64)
+		if o.Zone == pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_UNKNOWN {
+			return nil, entity.NewFieldViolation(step+".zone", "required", "",
+				"pick WHERE on the garment the step works — the step heading is built from it, and «other» is a legitimate answer")
 		}
-		if len(o.Placement) > maxVarchar255 {
-			return nil, fmt.Errorf("operation placement must be at most %d characters", maxVarchar255)
-		}
-		opType := entity.OpTypeUnknown
-		if o.OperationType != pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN {
-			t, ok := techCardOperationTypePbToEntity[o.OperationType]
-			if !ok {
-				return nil, fmt.Errorf("unknown operation operation_type: %v", o.OperationType)
-			}
-			opType = t
-		}
-		zone := entity.ZoneUnknown
-		if o.Zone != pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_UNKNOWN {
-			z, ok := techCardConstructionZonePbToEntity[o.Zone]
-			if !ok {
-				return nil, fmt.Errorf("unknown operation zone: %v", o.Zone)
-			}
-			zone = z
-		}
-		// bom_item_index uses proto3 explicit presence: a nil pointer means "no
-		// material" (so index 0 stays a valid reference), a set value must be in range.
-		var bomItemIndex sql.NullInt32
-		if o.BomItemIndex != nil {
-			idx := *o.BomItemIndex
-			if idx < 0 || int(idx) >= bomItemCount {
-				return nil, fmt.Errorf("operation bom_item_index %d out of range (have %d bom_items)", idx, bomItemCount)
-			}
-			bomItemIndex = sql.NullInt32{Int32: idx, Valid: true}
+		zone, ok := techCardGarmentZonePbToEntity[o.Zone]
+		if !ok {
+			return nil, entity.NewFieldViolation(step+".zone", "unknown_value", o.Zone.String(), "pick a zone from the list")
 		}
 		if o.CalloutNumber < 0 {
-			return nil, fmt.Errorf("operation callout_number must not be negative")
+			return nil, entity.NewFieldViolation(step+".callout_number", "must_not_be_negative", fmt.Sprint(o.CalloutNumber), "clear the pin instead")
 		}
 		calloutNumber := nullInt32FromPb(o.CalloutNumber)
 		if o.CalloutNumber > 0 && !calloutNumbers[int(o.CalloutNumber)] {
 			// S8 parity with pieces (callout-sync rules): a reference to a callout that no longer
 			// exists DETACHES — the link is cleared, the operation survives — instead of vetoing the
-			// save. Sketch cleanup (K.31) must not be blocked by a stale display cross-ref; the beta
-			// A–L run caught this path 400-ing where the piece path degrades gracefully.
+			// save. Sketch cleanup (K.31) must not be blocked by a stale display cross-ref.
 			calloutNumber = sql.NullInt32{}
 		}
 		stitches, err := nullDecimalFromPb(o.StitchesPerCm)
 		if err != nil {
-			return nil, fmt.Errorf("operation stitches_per_cm: %w", err)
+			return nil, fmt.Errorf("%s.stitches_per_cm: %w", step, err)
 		}
-		if err := validateDecimalScale(stitches, "operation stitches_per_cm", stitchFrac, stitchLimit); err != nil {
-			return nil, err
-		}
-		timeNorm, err := nullDecimalFromPb(o.TimeNorm)
-		if err != nil {
-			return nil, fmt.Errorf("operation time_norm: %w", err)
-		}
-		if err := validateDecimalScale(timeNorm, "operation time_norm", 3, 10_000); err != nil {
+		if err := validateDecimalScale(stitches, step+".stitches_per_cm", stitchFrac, stitchLimit); err != nil {
 			return nil, err
 		}
 		smv, err := nullDecimalFromPb(o.Smv)
 		if err != nil {
-			return nil, fmt.Errorf("operation smv: %w", err)
+			return nil, fmt.Errorf("%s.smv: %w", step, err)
 		}
-		if err := validateDecimalScale(smv, "operation smv", 3, 10_000); err != nil {
+		if err := validateDecimalScale(smv, step+".smv", 3, 10_000); err != nil {
 			return nil, err
+		}
+		seamClass, err := parseSeamClass(o.SeamClass, step+".seam_class")
+		if err != nil {
+			return nil, err
+		}
+		// The step's allowance override. UNSET = inherit the card standard; ZERO IS A REAL VALUE
+		// («the выкройки carry the cut line»), which is why presence and value are read separately
+		// here exactly as they are on the card and in the workshop settings.
+		var seamAllowanceMm decimal.NullDecimal
+		if o.SeamAllowanceMm != nil {
+			seamAllowanceMm, err = nullDecimalFromPb(o.SeamAllowanceMm)
+			if err != nil {
+				return nil, fmt.Errorf("%s.seam_allowance_mm: %w", step, err)
+			}
+			if err := entity.ValidateSeamAllowanceStandardMm(step+".seam_allowance_mm", seamAllowanceMm); err != nil {
+				return nil, err
+			}
+		}
+		topMode, topWidth, topRows, err := parseTopstitch(o.Topstitch, step)
+		if err != nil {
+			return nil, err
+		}
+		attachKind := sql.NullString{}
+		if o.AttachmentKind != pb_common.TechCardAttachmentKind_TECH_CARD_ATTACHMENT_KIND_UNKNOWN {
+			tok, ok := attachmentKindPbToToken[o.AttachmentKind]
+			if !ok {
+				return nil, entity.NewFieldViolation(step+".attachment_kind", "unknown_value", o.AttachmentKind.String(), "pick an attachment from the list")
+			}
+			attachKind = sql.NullString{String: tok, Valid: true}
+		}
+		var attachSize decimal.NullDecimal
+		if o.AttachmentSizeMm != nil {
+			attachSize, err = nullDecimalFromPb(o.AttachmentSizeMm)
+			if err != nil {
+				return nil, fmt.Errorf("%s.attachment_size_mm: %w", step, err)
+			}
+			if err := validateDecimalScale(attachSize, step+".attachment_size_mm", 1, entity.MaxSeamAllowanceMm); err != nil {
+				return nil, err
+			}
+			// A size with no attachment is a number describing nothing — and it prints on the sheet
+			// next to a blank tool.
+			if attachSize.Valid && !attachKind.Valid {
+				return nil, entity.NewFieldViolation(step+".attachment_size_mm", "needs_attachment_kind", attachSize.Decimal.String(),
+					"pick the attachment first — a size on its own describes no tool")
+			}
 		}
 		// piece_line_keys (WS4): the cut-pieces this operation works on. Repeated because an
 		// assembly operation spans as many pieces as it joins. Blanks are dropped and duplicates
@@ -256,12 +351,12 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			seenPieceKey[k] = true
 			pieceLineKeys = append(pieceLineKeys, k)
 		}
-		// bom_line_keys (repeated): the materials this operation consumes. Falls back to the legacy
-		// single bom_line_key so an older client keeps working. Blanks dropped, duplicates collapsed
-		// -- UNIQUE(operation_id, bom_item_id) would turn a repeat into a 500.
+		// bom_line_keys: the materials this operation consumes. The legacy single bom_line_key went
+		// with the break — the chip row was always the real answer, and the single field was a second
+		// one that the printed sheet then had to subtract to stop printing it twice.
 		var bomLineKeys []string
 		seenBomKey := make(map[string]bool, len(o.BomLineKeys))
-		for _, k := range append(append([]string{}, o.BomLineKeys...), o.BomLineKey) {
+		for _, k := range o.BomLineKeys {
 			k = strings.TrimSpace(k)
 			if k == "" || seenBomKey[k] {
 				continue
@@ -272,31 +367,67 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		out = append(out, entity.TechCardOperation{
 			// operation_number is server-assigned = (position+1)*10 («оп. 10, 20, …»);
 			// any client value is ignored (plan §4). Reorder shifts numbers (Q6).
-			OperationNumber: sql.NullInt32{Int32: int32((i + 1) * 10), Valid: true},
-			Node:            o.Node,
-			Description:     nullStringFromPb(o.Description),
-			SeamType:        nullStringFromPb(o.SeamType),
-			Machine:         nullStringFromPb(o.Machine),
-			StitchesPerCm:   stitches,
-			TopstitchWidth:  nullStringFromPb(o.TopstitchWidth),
-			SeamAllowance:   nullStringFromPb(o.SeamAllowance),
-			Thread:          nullStringFromPb(o.Thread),
-			Needle:          nullStringFromPb(o.Needle),
-			Attachment:      nullStringFromPb(o.Attachment),
-			TimeNorm:        timeNorm,
-			SMV:             smv,
-			Note:            nullStringFromPb(o.Note),
-			OperationType:   opType,
-			Zone:            zone,
-			BomLineKey:      strings.TrimSpace(o.BomLineKey), // stable ref (WS3 follow-up); store prefers it over the index
-			BomItemIndex:    bomItemIndex,
-			CalloutNumber:   calloutNumber,
-			Placement:       normalizedPlacementNull(o.Placement),
-			PieceLineKeys:   pieceLineKeys,
-			BomLineKeys:     bomLineKeys,
+			OperationNumber:  sql.NullInt32{Int32: int32((i + 1) * 10), Valid: true},
+			OperationType:    opType,
+			Zone:             zone,
+			StitchesPerCm:    stitches,
+			SeamClass:        seamClass,
+			SeamAllowanceMm:  seamAllowanceMm,
+			TopstitchMode:    topMode,
+			TopstitchWidthMm: topWidth,
+			TopstitchRows:    topRows,
+			AttachmentKind:   attachKind,
+			AttachmentSizeMm: attachSize,
+			SMV:              smv,
+			Note:             nullStringFromPb(o.Note),
+			CalloutNumber:    calloutNumber,
+			PieceLineKeys:    pieceLineKeys,
+			BomLineKeys:      bomLineKeys,
 		})
 	}
 	return out, nil
+}
+
+// parseTopstitch splits the sub-message into its three columns and enforces the one rule that makes
+// the mode mean anything: a width belongs to WIDTH and nowhere else. Carrying «6 mm» alongside
+// «edge» would leave a shadow value that nothing reads and the next editor believes.
+func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString, decimal.NullDecimal, sql.NullInt32, error) {
+	var mode sql.NullString
+	var width decimal.NullDecimal
+	var rows sql.NullInt32
+	if t == nil || t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN {
+		return mode, width, rows, nil
+	}
+	tok, ok := topstitchModePbToToken[t.Mode]
+	if !ok {
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch.mode", "unknown_value", t.Mode.String(), "pick edge or width")
+	}
+	mode = sql.NullString{String: tok, Valid: true}
+	w, err := nullDecimalFromPb(t.WidthMm)
+	if err != nil {
+		return mode, width, rows, fmt.Errorf("%s.topstitch.width_mm: %w", step, err)
+	}
+	isWidth := t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH
+	switch {
+	case isWidth && !w.Valid:
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch.width_mm", "required", "",
+			"a topstitch at a stated width needs the width; pick «edge» if it runs along the fold instead")
+	case !isWidth && w.Valid:
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch.width_mm", "not_applicable", w.Decimal.String(),
+			"«edge» topstitching has no width — clear it, or switch the mode to width")
+	}
+	if err := validateDecimalScale(w, step+".topstitch.width_mm", 1, entity.MaxSeamAllowanceMm); err != nil {
+		return mode, width, rows, err
+	}
+	width = w
+	if t.Rows != 0 {
+		if t.Rows < 1 || t.Rows > entity.MaxTopstitchRows {
+			return mode, width, rows, entity.NewFieldViolation(step+".topstitch.rows", "out_of_range", fmt.Sprint(t.Rows),
+				fmt.Sprintf("1 to %d rows; send 0 to leave it unset", entity.MaxTopstitchRows))
+		}
+		rows = sql.NullInt32{Int32: t.Rows, Valid: true}
+	}
+	return mode, width, rows, nil
 }
 
 func parseTechCardLabels(pbs []*pb_common.TechCardLabel) ([]entity.TechCardLabel, error) {
@@ -443,14 +574,12 @@ func techCardConstructionToPb(c *entity.TechCardConstruction) *pb_common.TechCar
 		return nil
 	}
 	return &pb_common.TechCardConstruction{
-		MainStitchType:  pbStringFromNull(c.MainStitchType),
-		StitchDensity:   pbStringFromNull(c.StitchDensity),
-		OverlockThreads: pbStringFromNull(c.OverlockThreads),
-		SeamAllowances:  pbStringFromNull(c.SeamAllowances),
-		HemFinish:       pbStringFromNull(c.HemFinish),
-		Pressing:        pbStringFromNull(c.Pressing),
-		MachineClass:    pbStringFromNull(c.MachineClass),
-		Notes:           pbStringFromNull(c.Notes),
+		HemFinish:            pbStringFromNull(c.HemFinish),
+		Pressing:             pbStringFromNull(c.Pressing),
+		Notes:                pbStringFromNull(c.Notes),
+		DefaultSeamClass:     seamClassTokenToPb[c.DefaultSeamClass.String],
+		DefaultStitchesPerCm: pbDecimalFromNull(c.DefaultStitchesPerCm),
+		OverlockThreadCount:  c.OverlockThreadCount.Int32,
 	}
 }
 
@@ -458,11 +587,6 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 	out := make([]*pb_common.TechCardOperation, 0, len(ops))
 	for i := range ops {
 		o := ops[i]
-		var bomItemIndex *int32
-		if o.BomItemIndex.Valid {
-			v := o.BomItemIndex.Int32
-			bomItemIndex = &v
-		}
 		pieceIds := make([]int64, 0, len(o.PieceIds))
 		for _, id := range o.PieceIds {
 			pieceIds = append(pieceIds, int64(id))
@@ -471,41 +595,50 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 		for _, id := range o.BomIds {
 			bomIds = append(bomIds, int64(id))
 		}
+		// The overrides go out with PRESENCE, not as zeros: an absent allowance means «inherit the
+		// card standard» and a present 0 means «cut on the line as drawn». Emitting 0 for both would
+		// hand the client the one confusion the whole cascade is built to avoid.
+		var seamAllowanceMm *pb_decimal.Decimal
+		if o.SeamAllowanceMm.Valid {
+			seamAllowanceMm = pbDecimalFromNull(o.SeamAllowanceMm)
+		}
+		var attachmentSizeMm *pb_decimal.Decimal
+		if o.AttachmentSizeMm.Valid {
+			attachmentSizeMm = pbDecimalFromNull(o.AttachmentSizeMm)
+		}
 		out = append(out, &pb_common.TechCardOperation{
-			OperationNumber: pbInt32FromNull(o.OperationNumber),
-			Node:            o.Node,
-			Description:     pbStringFromNull(o.Description),
-			SeamType:        pbStringFromNull(o.SeamType),
-			Machine:         pbStringFromNull(o.Machine),
-			StitchesPerCm:   pbDecimalFromNull(o.StitchesPerCm),
-			TopstitchWidth:  pbStringFromNull(o.TopstitchWidth),
-			SeamAllowance:   pbStringFromNull(o.SeamAllowance),
-			Thread:          pbStringFromNull(o.Thread),
-			Needle:          pbStringFromNull(o.Needle),
-			Attachment:      pbStringFromNull(o.Attachment),
-			TimeNorm:        pbDecimalFromNull(o.TimeNorm),
-			Smv:             pbDecimalFromNull(o.SMV),
-			Note:            pbStringFromNull(o.Note),
-			OperationType:   techCardOperationTypeEntityToPb[o.OperationType],
-			Zone:            techCardConstructionZoneEntityToPb[o.Zone],
-			BomItemIndex:    bomItemIndex,
-			// The singular pair: the durable line_key and the FK it resolved to. Emitting the key is
-			// what makes the operation round-trippable — a client that speaks line_keys used to read
-			// bom_line_key back empty and, on its next save, wrote NULL over bom_item_id. parse folds
-			// it into bom_line_keys (deduped), so a card written through that path already carries it
-			// in the plural list; constructionProjection hashes the plural list only, so section
-			// digests are byte-identical before and after this change.
-			BomLineKey:    o.BomLineKey,
-			BomItemId:     o.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
-			CalloutNumber: pbInt32FromNull(o.CalloutNumber),
-			Placement:     pbStringFromNull(o.Placement),
-			PieceLineKeys: o.PieceLineKeys,
-			PieceIds:      pieceIds,
-			BomLineKeys:   o.BomLineKeys,
-			BomItemIds:    bomIds,
+			OperationNumber:  pbInt32FromNull(o.OperationNumber),
+			OperationType:    techCardOperationTypeEntityToPb[o.OperationType],
+			Zone:             techCardGarmentZoneEntityToPb[o.Zone],
+			StitchesPerCm:    pbDecimalFromNull(o.StitchesPerCm),
+			SeamClass:        seamClassTokenToPb[o.SeamClass.String],
+			SeamAllowanceMm:  seamAllowanceMm,
+			Topstitch:        topstitchToPb(o),
+			AttachmentKind:   attachmentKindTokenToPb[o.AttachmentKind.String],
+			AttachmentSizeMm: attachmentSizeMm,
+			Smv:              pbDecimalFromNull(o.SMV),
+			Note:             pbStringFromNull(o.Note),
+			CalloutNumber:    pbInt32FromNull(o.CalloutNumber),
+			PieceLineKeys:    o.PieceLineKeys,
+			PieceIds:         pieceIds,
+			BomLineKeys:      o.BomLineKeys,
+			BomItemIds:       bomIds,
 		})
 	}
 	return out
+}
+
+// topstitchToPb emits the sub-message only when there is topstitching at all — an always-present
+// wrapper carrying MODE_UNKNOWN would read as «somebody considered it» on every step that has none.
+func topstitchToPb(o entity.TechCardOperation) *pb_common.TechCardTopstitch {
+	if !o.TopstitchMode.Valid {
+		return nil
+	}
+	return &pb_common.TechCardTopstitch{
+		Mode:    topstitchModeTokenToPb[o.TopstitchMode.String],
+		WidthMm: pbDecimalFromNull(o.TopstitchWidthMm),
+		Rows:    o.TopstitchRows.Int32,
+	}
 }
 
 // --- issues (Phase 3.5b) ---
@@ -739,16 +872,12 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 
 // operationMinutes is the minute figure one operation contributes to a minute rollup: its standard
 // minute value (smv, 0219) when set, the legacy time_norm otherwise. smv was added as time_norm's
-// successor — the two columns describe the same quantity, and an operation that has been properly
-// timed carries that number in smv while time_norm keeps whatever the sheet was first authored with.
-// Preferring smv is therefore what makes the newer measurement the one that counts; the fallback
-// keeps every card authored before 0219 rolling up exactly as it did. Invalid = the operation is
-// untimed in both columns and contributes nothing.
+// successor. The legacy `time_norm` it used to fall back to went with the operations break: two time
+// fields on one form, with no rule saying which the operator should fill, is a guarantee that half
+// the cards are timed in one column and half in the other. SMV is now the only answer, and an
+// operation with none is untimed and contributes nothing.
 func operationMinutes(o *entity.TechCardOperation) decimal.NullDecimal {
-	if o.SMV.Valid {
-		return o.SMV
-	}
-	return o.TimeNorm
+	return o.SMV
 }
 
 // techCardCostingToPb emits the stored per-unit cost articles plus the computed per-colourway

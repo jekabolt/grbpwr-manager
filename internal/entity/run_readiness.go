@@ -470,7 +470,7 @@ func NormFlipPolicy(dir TechCardFabricDirection, directionKnown bool, allowFlip 
 }
 
 // NormSeamAllowance compares the allowance the раскладка actually laid against the standard this
-// card is held to (RequiredSeamAllowanceCm: the card's override, else the workshop default).
+// card is held to (RequiredSeamAllowanceMm: the card's override, else the workshop default).
 //
 // THE UNCONFIRMED CASE IS THE INTERESTING ONE, and it is where the UNKNOWN/BLOCKER boundary earns
 // its keep. MarkerAllowance is three-valued: an allowance whose CONTOUR half was never measured off
@@ -487,14 +487,14 @@ func NormFlipPolicy(dir TechCardFabricDirection, directionKnown bool, allowFlip 
 //	confirmed, below         → BLOCKER. The total is known and it is short.
 //	unconfirmed, below       → UNKNOWN. The true total is ≥ Cm and could be anything above it;
 //	                          refusing on it would be a verdict the evidence does not support.
-func NormSeamAllowance(a MarkerAllowance, standardCm decimal.NullDecimal) RunReadinessSeverity {
+func NormSeamAllowance(a MarkerAllowance, standardMm decimal.NullDecimal) RunReadinessSeverity {
 	if !a.Recorded {
 		return RunReadinessUnknown
 	}
-	if !standardCm.Valid {
+	if !standardMm.Valid {
 		return RunReadinessUnknown
 	}
-	if a.Cm.GreaterThanOrEqual(standardCm.Decimal) {
+	if a.Cm.GreaterThanOrEqual(standardMm.Decimal) {
 		return RunReadinessOK
 	}
 	if a.Confirmed {

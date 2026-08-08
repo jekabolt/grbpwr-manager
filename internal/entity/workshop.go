@@ -25,7 +25,7 @@ type WorkshopSettings struct {
 	// every marker it lays is too long. Callers: check .Valid before comparing.
 	CuttingTableLengthCm decimal.NullDecimal `db:"cutting_table_length_cm"`
 
-	// DefaultSeamAllowanceCm is the shop's ПРИПУСК НА ШОВ ПО УМОЛЧАНИЮ, in centimetres (Ф3.2) — the
+	// DefaultSeamAllowanceMm is the shop's ПРИПУСК НА ШОВ ПО УМОЛЧАНИЮ, in centimetres (Ф3.2) — the
 	// second tenant, and the one the header above predicted.
 	//
 	// INVALID (NULL) means «not configured», the same law as the table length. But ZERO IS LEGAL HERE
@@ -33,7 +33,7 @@ type WorkshopSettings struct {
 	// why its validator (ValidateSeamAllowanceStandardCm) accepts 0 while the table length's rejects
 	// it. Two settings in one k/v table could not have held two opposite floors; that is precisely
 	// the argument 0272 made for a typed column per setting.
-	DefaultSeamAllowanceCm decimal.NullDecimal `db:"default_seam_allowance_cm"`
+	DefaultSeamAllowanceMm decimal.NullDecimal `db:"default_seam_allowance_mm"`
 
 	// RunReadinessBlocking is the mode of the production-run readiness gate (Ф6.1/Ф6.9, 0279) — the
 	// third tenant, and the one that breaks this house's own rule on purpose.
@@ -97,7 +97,7 @@ func (s *WorkshopSettings) EffectiveMaxStackHeightCm() decimal.NullDecimal {
 // confident false verdicts while an unset one produces none.
 type WorkshopSettingsPatch struct {
 	CuttingTableLengthCm   *decimal.NullDecimal
-	DefaultSeamAllowanceCm *decimal.NullDecimal
+	DefaultSeamAllowanceMm *decimal.NullDecimal
 	// RunReadinessBlocking is TWO-state rather than three, and the missing state is deliberate:
 	//
 	//	nil    → the request did not mention the mode; leave it alone
@@ -126,7 +126,7 @@ type WorkshopSettingsPatch struct {
 // refused with «name at least one setting» while the client is quite sure it named one.
 // TestWorkshopSettingsPatchIsEmptyCoversEveryField holds the line by reflection.
 func (p WorkshopSettingsPatch) IsEmpty() bool {
-	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceCm == nil &&
+	return p.CuttingTableLengthCm == nil && p.DefaultSeamAllowanceMm == nil &&
 		p.RunReadinessBlocking == nil && p.MaxStackHeightCm == nil
 }
 

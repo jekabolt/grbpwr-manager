@@ -26,7 +26,7 @@ func sampleContext() TechCardContext {
 			{Section: "fabric", Name: "French terry 320gsm", Composition: "100% cotton"},
 			{Section: "thread", Name: "Poly core 120"},
 		},
-		Construction: &ConstructionContext{MainStitchType: "lockstitch 301", SeamAllowances: "1 cm"},
+		Construction: &ConstructionContext{DefaultSeamClass: "ss_plain", DefaultStitchesPerCm: "4", OverlockThreadCount: 4},
 	}
 }
 
@@ -37,7 +37,9 @@ func TestBuildUserPrompt_IncludesContextAndDescription(t *testing.T) {
 		"Oversized Hoodie", "FW26-0007", "Hoodie",
 		"front panel", "hood", "x2 per garment",
 		"French terry 320gsm", "100% cotton",
-		"lockstitch 301",
+		// The card DEFAULTS, which the prompt now states so a draft can omit the fields that match
+		// them — the old free-text "lockstitch 301" was a stitch class the step already carries.
+		"ss_plain", "4 stitches/cm", "overlock threads: 4",
 		"serge the side seams then coverstitch the hem",
 	} {
 		if !strings.Contains(p, want) {
@@ -65,7 +67,7 @@ func TestExtractJSON(t *testing.T) {
 		`{"operations":[]}`:                                          `{"operations":[]}`,
 		"```json\n{\"operations\":[]}\n```":                          `{"operations":[]}`,
 		"```\n{\"a\":1}\n```":                                        `{"a":1}`,
-		"Here you go:\n{\"operations\":[{\"node\":\"x\"}]}\nThanks!": `{"operations":[{"node":"x"}]}`,
+		"Here you go:\n{\"operations\":[{\"zone\":\"x\"}]}\nThanks!": `{"operations":[{"zone":"x"}]}`,
 		"no json here":                                               "",
 		"":                                                           "",
 	}
@@ -80,8 +82,8 @@ func TestParseResult_NumbersAsNumbersOrStrings(t *testing.T) {
 	// A model may emit numeric fields as raw numbers OR as strings; both must parse.
 	content := `{
 	  "operations": [
-	    {"node":"overlock side seams","operation_type":"overlock","stitches_per_cm":4,"time_norm_minutes":"0.8","operation_number":"10","callout_number":3},
-	    {"node":"coverstitch hem","operation_type":"coverstitch","stitches_per_cm":"5","time_norm_minutes":1.2,"operation_number":20}
+	    {"zone":"outer","note":"overlock side seams","operation_type":"overlock","stitches_per_cm":4,"smv_minutes":"0.8","operation_number":"10","callout_number":3},
+	    {"zone":"hem","note":"coverstitch hem","operation_type":"coverstitch","stitches_per_cm":"5","smv_minutes":1.2,"operation_number":20}
 	  ],
 	  "notes": "assumed 4-thread overlock"
 	}`
@@ -96,23 +98,23 @@ func TestParseResult_NumbersAsNumbersOrStrings(t *testing.T) {
 		t.Errorf("notes = %q", r.Notes)
 	}
 	o0 := r.Operations[0]
-	if o0.StitchesPerCm.String() != "4" || o0.TimeNormMinutes.String() != "0.8" ||
+	if o0.StitchesPerCm.String() != "4" || o0.SmvMinutes.String() != "0.8" ||
 		o0.OperationNumber.String() != "10" || o0.CalloutNumber.String() != "3" {
 		t.Errorf("op0 numeric parse: spc=%q tn=%q num=%q co=%q",
-			o0.StitchesPerCm, o0.TimeNormMinutes, o0.OperationNumber, o0.CalloutNumber)
+			o0.StitchesPerCm, o0.SmvMinutes, o0.OperationNumber, o0.CalloutNumber)
 	}
 	o1 := r.Operations[1]
-	if o1.StitchesPerCm.String() != "5" || o1.TimeNormMinutes.String() != "1.2" || o1.OperationNumber.String() != "20" {
-		t.Errorf("op1 numeric parse: spc=%q tn=%q num=%q", o1.StitchesPerCm, o1.TimeNormMinutes, o1.OperationNumber)
+	if o1.StitchesPerCm.String() != "5" || o1.SmvMinutes.String() != "1.2" || o1.OperationNumber.String() != "20" {
+		t.Errorf("op1 numeric parse: spc=%q tn=%q num=%q", o1.StitchesPerCm, o1.SmvMinutes, o1.OperationNumber)
 	}
 }
 
 func TestParseResult_Fenced(t *testing.T) {
-	r, err := parseResult("```json\n{\"operations\":[{\"node\":\"attach cuffs\"}]}\n```")
+	r, err := parseResult("```json\n{\"operations\":[{\"zone\":\"sleeve\"}]}\n```")
 	if err != nil {
 		t.Fatalf("parseResult fenced: %v", err)
 	}
-	if len(r.Operations) != 1 || r.Operations[0].Node != "attach cuffs" {
+	if len(r.Operations) != 1 || r.Operations[0].Zone != "sleeve" {
 		t.Fatalf("unexpected parse: %+v", r.Operations)
 	}
 }
@@ -128,7 +130,7 @@ func TestParseResult_Errors(t *testing.T) {
 
 func TestJSONNum_Null(t *testing.T) {
 	var op Operation
-	if err := json.Unmarshal([]byte(`{"node":"x","stitches_per_cm":null}`), &op); err != nil {
+	if err := json.Unmarshal([]byte(`{"zone":"x","stitches_per_cm":null}`), &op); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if op.StitchesPerCm.String() != "" {
@@ -179,7 +181,7 @@ func TestGenerateOperations_RoundTrip(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"model":"stub-model","choices":[{"message":{"role":"assistant","content":"{\"operations\":[{\"node\":\"join shoulders\",\"operation_type\":\"lockstitch\",\"time_norm_minutes\":0.5}],\"notes\":\"ok\"}"}}]}`)
+		io.WriteString(w, `{"model":"stub-model","choices":[{"message":{"role":"assistant","content":"{\"operations\":[{\"zone\":\"shoulder\",\"operation_type\":\"lockstitch\",\"smv_minutes\":0.5}],\"notes\":\"ok\"}"}}]}`)
 	}))
 	defer srv.Close()
 
@@ -197,7 +199,7 @@ func TestGenerateOperations_RoundTrip(t *testing.T) {
 	if !strings.Contains(gotBody, "assemble it") {
 		t.Errorf("request body missing description brief: %s", gotBody)
 	}
-	if len(res.Operations) != 1 || res.Operations[0].Node != "join shoulders" {
+	if len(res.Operations) != 1 || res.Operations[0].Zone != "shoulder" {
 		t.Fatalf("unexpected operations: %+v", res.Operations)
 	}
 	if res.Notes != "ok" {

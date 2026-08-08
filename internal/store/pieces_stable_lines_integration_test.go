@@ -133,7 +133,8 @@ func TestPiecesStableLinesRecipeReferenceSurvives(t *testing.T) {
 	// operations case being accepted with 200 — C.10's negative probe). The legacy positional index
 	// keeps its transition tolerance; only the stable-key form is strict.
 	badOpCard := card(piece("PK1", "Front panel"), piece("PK2", "Back"))
-	badOpCard.Operations = []entity.TechCardOperation{{Node: "neg probe", BomLineKey: "does-not-exist"}}
+	badOpCard.Operations = []entity.TechCardOperation{{OperationType: entity.OpTypeLockstitch,
+		Zone: entity.ZoneOuter, BomLineKeys: []string{"does-not-exist"}}}
 	err = T.UpdateTechCard(ctx, tcID, badOpCard, c4.LockVersion)
 	require.Error(t, err, "unknown operation bom_line_key must be refused")
 	require.True(t, errors.As(err, &ve), "operation bom_line_key refusal must be field-tagged, got %v", err)

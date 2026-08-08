@@ -18,20 +18,18 @@ func insertTechCardConstruction(ctx context.Context, db dependency.DB, tcID int,
 	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_construction
-			(tech_card_id, main_stitch_type, stitch_density, overlock_threads, seam_allowances,
-			 hem_finish, pressing, machine_class, notes)
-		VALUES (:tech_card_id, :main_stitch_type, :stitch_density, :overlock_threads, :seam_allowances,
-			 :hem_finish, :pressing, :machine_class, :notes)`,
+			(tech_card_id, default_seam_class, default_stitches_per_cm, overlock_thread_count,
+			 hem_finish, pressing, notes)
+		VALUES (:tech_card_id, :default_seam_class, :default_stitches_per_cm, :overlock_thread_count,
+			 :hem_finish, :pressing, :notes)`,
 		map[string]any{
-			"tech_card_id":     tcID,
-			"main_stitch_type": c.MainStitchType,
-			"stitch_density":   c.StitchDensity,
-			"overlock_threads": c.OverlockThreads,
-			"seam_allowances":  c.SeamAllowances,
-			"hem_finish":       c.HemFinish,
-			"pressing":         c.Pressing,
-			"machine_class":    c.MachineClass,
-			"notes":            c.Notes,
+			"tech_card_id":            tcID,
+			"default_seam_class":      c.DefaultSeamClass,
+			"default_stitches_per_cm": c.DefaultStitchesPerCm,
+			"overlock_thread_count":   c.OverlockThreadCount,
+			"hem_finish":              c.HemFinish,
+			"pressing":                c.Pressing,
+			"notes":                   c.Notes,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card construction: %w", err)
 	}
@@ -44,36 +42,25 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 	}
 	rows := make([]map[string]any, 0, len(ops))
 	for i, o := range ops {
-		bomID, err := resolveBomRef(bomRes, o.BomLineKey, o.BomItemIndex,
-			fmt.Sprintf("operations[%d].bom_line_key", i))
-		if err != nil {
-			return err
-		}
 		rows = append(rows, map[string]any{
 			"tech_card_id":     tcID,
 			"operation_number": o.OperationNumber,
-			"node":             o.Node,
-			"description":      o.Description,
-			"seam_type":        o.SeamType,
-			"machine":          o.Machine,
-			"stitches_per_cm":  o.StitchesPerCm,
-			"topstitch_width":  o.TopstitchWidth,
-			"seam_allowance":   o.SeamAllowance,
-			"thread":           o.Thread,
-			"needle":           o.Needle,
-			"attachment":       o.Attachment,
-			"time_norm":        o.TimeNorm,
-			"smv":              o.SMV,
-			"note":             o.Note,
 			"operation_type":   string(o.OperationType),
 			"zone":             string(o.Zone),
-			// Resolved above by stable line_key (preferred) or the legacy positional index (S2/S3);
-			// *_index kept for the transition.
-			"bom_item_id":    bomID,
-			"bom_item_index": o.BomItemIndex,
-			"callout_number": o.CalloutNumber,
-			"placement":      o.Placement,
-			"display_order":  i,
+			"stitches_per_cm":  o.StitchesPerCm,
+			"seam_class":       o.SeamClass,
+			// Millimetres. NULL here means «inherit the card standard», and 0 means «cut on the line
+			// as drawn» — the store writes whichever the payload carried and invents neither.
+			"seam_allowance_mm":  o.SeamAllowanceMm,
+			"topstitch_mode":     o.TopstitchMode,
+			"topstitch_width_mm": o.TopstitchWidthMm,
+			"topstitch_rows":     o.TopstitchRows,
+			"attachment_kind":    o.AttachmentKind,
+			"attachment_size_mm": o.AttachmentSizeMm,
+			"smv":                o.SMV,
+			"note":               o.Note,
+			"callout_number":     o.CalloutNumber,
+			"display_order":      i,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -377,10 +364,6 @@ type techCardOperationRow struct {
 	// entity.TechCardOperation and never reaches the wire (the wire identity of an operation is its
 	// operation_number).
 	Id int `db:"id"`
-	// BomLineKey is the stable wire reference of the single BOM line the operation's bom_item_id
-	// column points at, resolved through a LEFT JOIN because the column itself holds only the FK.
-	// It lands on entity.TechCardOperation.BomLineKey (db:"-", so it cannot be scanned there).
-	BomLineKey sql.NullString `db:"bom_line_key"`
 	entity.TechCardOperation
 }
 
@@ -431,17 +414,17 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	// Operations are returned sorted ascending by operation_number (the addressable
 	// «оп. 10, 20, …»); unnumbered operations sort last, with display_order as a
 	// stable tiebreaker within each group.
-	// b.line_key resolves o.bom_item_id back to the durable reference the client writes with. Without
-	// it the read emitted only the resolved FK (bom_item_id), so a read-modify-write client that
-	// speaks line_keys sent bom_line_key back empty and degraded the column to NULL on its next save.
-	// LEFT JOIN on the BOM line's primary key: at most one match, no row multiplication.
+	//
+	// The LEFT JOIN onto tech_card_bom_item is gone with the singular bom_item_id it resolved: the
+	// materials a step consumes are the many-to-many links (0200) read below, and the single column
+	// was a second answer that the printed sheet had to subtract from the first.
 	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
-		SELECT o.id, o.tech_card_id, o.operation_number, o.node, o.description, o.seam_type, o.machine,
-		       o.stitches_per_cm, o.topstitch_width, o.seam_allowance, o.thread, o.needle, o.attachment,
-		       o.time_norm, o.smv, o.note, o.operation_type, o.zone, o.bom_item_id, o.bom_item_index,
-		       o.callout_number, o.placement, b.line_key AS bom_line_key
+		SELECT o.id, o.tech_card_id, o.operation_number, o.operation_type, o.zone,
+		       o.stitches_per_cm, o.seam_class, o.seam_allowance_mm,
+		       o.topstitch_mode, o.topstitch_width_mm, o.topstitch_rows,
+		       o.attachment_kind, o.attachment_size_mm,
+		       o.smv, o.note, o.callout_number
 		FROM tech_card_operation o
-		LEFT JOIN tech_card_bom_item b ON b.id = o.bom_item_id
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`,
 		map[string]any{"ids": ids})
@@ -457,7 +440,6 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	posByOpID := make(map[int]operationPos, len(opRows))
 	for _, r := range opRows {
 		op := r.TechCardOperation
-		op.BomLineKey = r.BomLineKey.String // "" when bom_item_id is NULL, matching the write side
 		opsByCard[r.TechCardID] = append(opsByCard[r.TechCardID], op)
 		posByOpID[r.Id] = operationPos{cardID: r.TechCardID, index: len(opsByCard[r.TechCardID]) - 1}
 	}

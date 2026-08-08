@@ -73,12 +73,12 @@ func normalizeLegacyComposition(cards []entity.TechCard) {
 
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at, target_drop_date,
-	required_seam_allowance_cm, base_model_id, base_sample_size_id,
+	required_seam_allowance_mm, base_model_id, base_sample_size_id,
 	measurement_unit, concept, notes, purpose, output_material_id, aux_subtype, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at, :target_drop_date,
-	:required_seam_allowance_cm, :base_model_id, :base_sample_size_id,
+	:required_seam_allowance_mm, :base_model_id, :base_sample_size_id,
 	:measurement_unit, :concept, :notes, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
@@ -125,7 +125,7 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		// ТРЕБУЕМЫЙ ПРИПУСК (Ф3.2): the card's override of the workshop default. NULL = «take the
 		// workshop's», 0 = «this model's выкройки carry the cut line». Written like any header scalar
 		// and, deliberately, into no section digest projection.
-		"required_seam_allowance_cm": tc.RequiredSeamAllowanceCm,
+		"required_seam_allowance_mm": tc.RequiredSeamAllowanceMm,
 	}
 }
 
@@ -436,7 +436,7 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 				stage = :stage, status = :status, approval_state = :approval_state,
 				approved_at = :approved_at, released_at = :released_at,
 				target_drop_date = :target_drop_date,
-				required_seam_allowance_cm = :required_seam_allowance_cm,
+				required_seam_allowance_mm = :required_seam_allowance_mm,
 				base_model_id = :base_model_id, base_sample_size_id = :base_sample_size_id,
 				measurement_unit = :measurement_unit, concept = :concept, notes = :notes,
 					purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
