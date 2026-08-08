@@ -19,6 +19,10 @@ import (
 // styleEconomicsRunScan caps how many production runs are aggregated for one style. The store's
 // maxPageLimit is 100 and a single style realistically has a handful of runs, so this is never a
 // real bound (DB scale is small); it exists only to request a full page rather than the default 50.
+//
+// ListTechCardDevExpenses shares this constant rather than declaring its own: both commands amortise
+// R&D over Σ planned_qty of the SAME runs, and two scan depths would be two amortisation
+// denominators for one style.
 const styleEconomicsRunScan = 100
 
 // GetStyleEconomics assembles the "style as a business case" card (task 15 part C): one tech card's
@@ -83,17 +87,23 @@ func (s *Server) GetStyleEconomics(ctx context.Context, req *pb_admin.GetStyleEc
 	}
 	econ.FittingRounds = int32(rounds)
 
-	dev := dto.ComputeTechCardDevCostSummary(card, expenses, fittings, fx)
-	econ.DevCost = dev
-
-	// Production plan/fact across the style's runs. The material actuals issued from the warehouse
-	// (net of returns, non-cancelled runs) fold into the run-level and now the style-level actual, so
-	// fetch them first and pass them in (nf09-02) — the run detail and this roll-up must agree.
+	// The style's production runs, loaded BEFORE the dev roll-up because that roll-up now amortises
+	// R&D over them (Σ planned_qty), not over the card's declared typical run. This is the same slice
+	// the plan/fact summary below aggregates, so the "planned quantity" behind the amortisation and
+	// the one printed as planned_qty_total on the very same card are one number, not two reads that
+	// could answer differently.
 	runs, _, err := s.repo.ProductionRuns().ListProductionRuns(ctx, styleEconomicsRunScan, 0, entity.ProductionRunListFilter{TechCardId: tcID})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "style economics: can't list production runs", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't load production runs")
 	}
+
+	dev := dto.ComputeTechCardDevCostSummary(card, expenses, fittings, runs, fx)
+	econ.DevCost = dev
+
+	// Production plan/fact across the style's runs. The material actuals issued from the warehouse
+	// (net of returns, non-cancelled runs) fold into the run-level and now the style-level actual, so
+	// fetch them first and pass them in (nf09-02) — the run detail and this roll-up must agree.
 	matFromStock, err := s.repo.Metrics().GetStyleMaterialsFromStock(ctx, tcID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "style economics: can't get materials from stock", slog.String("err", err.Error()))

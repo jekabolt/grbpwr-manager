@@ -27,7 +27,9 @@ func TestComputeTechCardDevCostSummaryRollup(t *testing.T) {
 		{Kind: "other", AmountBase: nd("20"), FittingId: fid(99)},                                    // unknown fitting → round 0
 	}
 
-	sum := ComputeTechCardDevCostSummary(card, expenses, fittings, CostingFx{Base: "EUR"})
+	// No production runs: the Q8 attribution below is unaffected by the amortisation denominator, so
+	// this stays the round-attribution test it always was.
+	sum := ComputeTechCardDevCostSummary(card, expenses, fittings, nil, CostingFx{Base: "EUR"})
 	require.Equal(t, "200", sum.TotalBase.Value)
 
 	// by_round sorted ascending: 0 → 50 (labour+other), 1 → 100, 2 → 50.
@@ -58,7 +60,7 @@ func TestComputeTechCardDevCostSummaryNoApproval(t *testing.T) {
 	expenses := []entity.TechCardDevExpense{
 		{Kind: "sample", AmountBase: nd("100"), FittingId: fid(10)},
 	}
-	sum := ComputeTechCardDevCostSummary(card, expenses, fittings, CostingFx{Base: "EUR"})
+	sum := ComputeTechCardDevCostSummary(card, expenses, fittings, nil, CostingFx{Base: "EUR"})
 	require.Equal(t, int32(0), sum.RoundsToApproval)
 	require.Nil(t, sum.ApprovedAt)
 	require.Equal(t, int32(0), sum.DaysToApproval)

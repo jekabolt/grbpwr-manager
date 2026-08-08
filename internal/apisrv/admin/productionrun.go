@@ -915,11 +915,16 @@ func (s *Server) snapshotPlannedCost(ctx context.Context, ins *entity.Production
 		slog.Default().ErrorContext(ctx, "can't load tech card for planned cost", slog.String("err", err.Error()))
 		return status.Error(codes.Internal, "can't load tech card")
 	}
-	// Snapshot from the live card, using the run's ACTUAL cutting wastage when set (it overrides every
+	// Snapshot from the live card, priced on THIS run's own size mix (ins.Lines) rather than on the
+	// style's standard cost, and using the run's ACTUAL cutting wastage when set (it overrides every
 	// BOM line's estimate for this run's plan) — unset falls back to each line's BOM estimate. This
 	// keeps plan-vs-actual honest about the run's real marker/lay efficiency (the actuals side is
-	// measured from material issues). The release path above is a frozen scalar and is left as-is.
-	unit, currency := dto.ComputeTechCardUnitCostWithWastage(card, s.costingFx(ctx), ins.ActualWastagePercent)
+	// measured from material issues) AND about what it is actually cutting: a batch of nothing but XL
+	// used to be planned at the style figure, so every variance it ever reported carried that gap.
+	// See ComputeProductionRunPlannedUnitCost for the three edges (no lines → style figure on the base
+	// size; an ungraded size → no plan at all; mixed currencies → no plan).
+	// The release path above is a frozen scalar and is left as-is.
+	unit, currency := dto.ComputeProductionRunPlannedUnitCost(card, s.costingFx(ctx), ins.ActualWastagePercent, ins.Lines)
 	setPlannedCostIfBase(ins, unit, currency)
 	return nil
 }

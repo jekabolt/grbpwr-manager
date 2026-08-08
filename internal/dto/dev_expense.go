@@ -112,15 +112,21 @@ func ConvertEntityDevExpensesToPb(list []entity.TechCardDevExpense) []*pb_common
 
 // ComputeTechCardDevCostSummary rolls up a style's development-cost journal (output-only): the
 // total in base currency, a per-kind breakdown, the amortized unit_cost_with_dev = production
-// unit cost + dev_total / Σ order_qty, and (Q8) the R&D rollup — spend attributed to each fitting
+// unit cost + dev_total / order_qty, and (Q8) the R&D rollup — spend attributed to each fitting
 // round, the rounds-to-approval, and the time-to-approval timeline. The amortized figure is set only
-// when the size run and a base-currency production unit cost are both known; development stays a
-// PERIOD cost and is never seeded into cost_price, so this is purely informational. has_unconverted
-// flags a partial total (some row's currency had no FX rate). `fittings` carries the style's fitting
-// rounds — an expense's fitting_id resolves to that fitting's round_number, restoring the S20
-// attribution the frontend had dead-coded to 0. (Sample→round attribution is Q7/WS6: TODO-merge to
-// also resolve round via sample_id once samples carry round_number; today rounds come from fittings.)
-func ComputeTechCardDevCostSummary(card *entity.TechCard, expenses []entity.TechCardDevExpense, fittings []entity.Fitting, fx CostingFx) *pb_common.TechCardDevCostSummary {
+// when a base-currency production unit cost AND a real planned quantity are both known; development
+// stays a PERIOD cost and is never seeded into cost_price, so this is purely informational.
+// has_unconverted flags a partial total (some row's currency had no FX rate). `fittings` carries the
+// style's fitting rounds — an expense's fitting_id resolves to that fitting's round_number, restoring
+// the S20 attribution the frontend had dead-coded to 0. (Sample→round attribution is Q7/WS6:
+// TODO-merge to also resolve round via sample_id once samples carry round_number; today rounds come
+// from fittings.)
+//
+// `runs` are the style's production runs and they are the amortisation denominator (see
+// PlannedRunQtyTotal): passing none is a legitimate state — a style with no planned batch gets
+// order_qty 0 and no amortised figure — so a caller that fails to load them degrades to exactly the
+// same, honest, output rather than to a wrong number.
+func ComputeTechCardDevCostSummary(card *entity.TechCard, expenses []entity.TechCardDevExpense, fittings []entity.Fitting, runs []entity.ProductionRun, fx CostingFx) *pb_common.TechCardDevCostSummary {
 	// fitting id → round number (only fittings that carry a round).
 	fittingRound := make(map[int32]int32, len(fittings))
 	for i := range fittings {
@@ -223,19 +229,24 @@ func ComputeTechCardDevCostSummary(card *entity.TechCard, expenses []entity.Tech
 		}
 	}
 
-	// Amortize the dev total over the current size run, added to the production unit cost.
-	orderQty := 0
-	if card != nil {
-		for _, q := range card.SizeQuantities {
-			if q.OrderQty > 0 {
-				orderQty += q.OrderQty
-			}
-		}
-	}
+	// Amortize the dev total over what the style is actually PLANNED TO PRODUCE — Σ planned_qty across
+	// its non-cancelled production runs — added to the production unit cost.
+	//
+	// This used to divide by Σ card.SizeQuantities, the «типовой тираж для калькуляции». That is an
+	// illustrative mix, not a batch: nobody commits to producing it, and editing a quantity on the
+	// costing tab moved the R&D-per-unit of a style whose real batches were already running. The runs
+	// are where the committed quantities live, and they are the only quantities a spend can honestly
+	// be spread over.
+	//
+	// NO RUNS YET ⇒ NO DENOMINATOR ⇒ NO FIGURE. order_qty is then 0 and unit_cost_with_dev is left
+	// unset — the same shape as an unavailable unit cost, and the only truthful one: R&D spent before
+	// the first batch is planned has nothing to be divided by, and inventing a batch to divide by
+	// would publish an amortised cost that no decision was ever based on.
+	orderQty := PlannedRunQtyTotal(runs)
 	out.OrderQty = int32(orderQty)
 	if orderQty > 0 && totalBase.IsPositive() {
 		if unit, ccy := ComputeTechCardUnitCost(card, fx); unit.Valid && strings.EqualFold(ccy, fx.Base) {
-			perUnitDev := totalBase.Div(decimal.NewFromInt(int64(orderQty)))
+			perUnitDev := totalBase.Div(decimal.NewFromInt(orderQty))
 			out.UnitCostWithDev = pbDecimalFromDecimal(roundMoney(unit.Decimal.Add(perUnitDev)))
 		}
 	}
