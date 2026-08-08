@@ -150,7 +150,7 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	// The same invariant also stands as chk_tcm_no_double_allowance in the schema, and that is a NET
 	// rather than a message: a CHECK answers 3819 with no field and no prose, so a violation reaching
 	// techCardMarkerError is a server bug and correctly surfaces as Internal.
-	if ve := entity.MarkerAllowanceRefusal(ins.SeamAllowanceCm, ins.ContourAllowanceCm,
+	if ve := entity.MarkerAllowanceRefusal(ins.SeamAllowanceMm, ins.ContourAllowanceMm,
 		ins.ContourLayer.String); ve != nil {
 		return nil, apierr.Invalid(ve)
 	}

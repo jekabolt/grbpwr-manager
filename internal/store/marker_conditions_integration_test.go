@@ -67,7 +67,7 @@ func TestTechCardMarkerConditions(t *testing.T) {
 			BomItems: []entity.TechCardBomItem{main, lining},
 			Pieces:   pieces,
 			// Ф3.2's card-level override travels on the header and must survive the round trip.
-			RequiredSeamAllowanceCm: nd("0"),
+			RequiredSeamAllowanceMm: nd("0"),
 		}
 	}
 	tcID, err := T.AddTechCard(ctx, card([]entity.TechCardPiece{pieceFront, pieceBack}))
@@ -102,8 +102,8 @@ func TestTechCardMarkerConditions(t *testing.T) {
 	// --- (a) the conditions round-trip, with every distinction intact -----------------------------
 
 	measured := base("замеренная", main.LineKey)
-	measured.SeamAllowanceCm = nd("1")
-	measured.ContourAllowanceCm = nd("0") // the file was measured: the laid contour IS the seam line
+	measured.SeamAllowanceMm = nd("1")
+	measured.ContourAllowanceMm = nd("0") // the file was measured: the laid contour IS the seam line
 	measured.ContourLayer = sql.NullString{String: "14", Valid: true}
 	measured.GrainLayer = sql.NullString{String: "", Valid: true} // «не разворачивать» — a DECISION
 	measured.AllowFlip = sql.NullBool{Bool: false, Valid: true}
@@ -111,9 +111,9 @@ func TestTechCardMarkerConditions(t *testing.T) {
 	require.NoError(t, err)
 
 	got := markerByName("замеренная")
-	require.Equal(t, "1", got.SeamAllowanceCm.Decimal.String())
-	require.True(t, got.ContourAllowanceCm.Valid)
-	require.True(t, got.ContourAllowanceCm.Decimal.IsZero(),
+	require.Equal(t, "1", got.SeamAllowanceMm.Decimal.String())
+	require.True(t, got.ContourAllowanceMm.Valid)
+	require.True(t, got.ContourAllowanceMm.Decimal.IsZero(),
 		"a RECORDED zero must come back as a value, not as «не записано»")
 	require.Equal(t, "14", got.ContourLayer.String)
 	require.True(t, got.GrainLayer.Valid, "an EMPTY grain layer is «не разворачивать»")
@@ -128,19 +128,19 @@ func TestTechCardMarkerConditions(t *testing.T) {
 	legacyID, err := T.SaveMarker(ctx, tcID, 0, base("старая", main.LineKey), "tester")
 	require.NoError(t, err)
 	legacy := markerByName("старая")
-	require.False(t, legacy.SeamAllowanceCm.Valid)
+	require.False(t, legacy.SeamAllowanceMm.Valid)
 	require.True(t, legacy.IsLegacyNorm())
 	require.False(t, legacy.Allowance().Recorded)
 
 	t.Run("the card's required allowance round-trips and a recorded zero is not «unset»", func(t *testing.T) {
 		c, err := T.GetTechCardById(ctx, tcID)
 		require.NoError(t, err)
-		require.True(t, c.RequiredSeamAllowanceCm.Valid,
+		require.True(t, c.RequiredSeamAllowanceMm.Valid,
 			"an explicit 0 is a REQUIREMENT («our выкройки carry the cut line»), not an absent one")
-		require.True(t, c.RequiredSeamAllowanceCm.Decimal.IsZero())
+		require.True(t, c.RequiredSeamAllowanceMm.Decimal.IsZero())
 		// And it takes precedence over the workshop default, which is what the gate will read.
 		ws := decimal.NullDecimal{Decimal: decimal.RequireFromString("1"), Valid: true}
-		require.True(t, entity.RequiredSeamAllowanceCm(c.RequiredSeamAllowanceCm, ws).Decimal.IsZero())
+		require.True(t, entity.RequiredSeamAllowanceMm(c.RequiredSeamAllowanceMm, ws).Decimal.IsZero())
 	})
 
 	// --- (b) the fingerprint is the store's, and the comparison is against the card TODAY ----------
@@ -396,34 +396,34 @@ func TestWorkshopDefaultSeamAllowance(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = W.UpdateSettings(context.Background(), entity.WorkshopSettingsPatch{
 			CuttingTableLengthCm:   &before.CuttingTableLengthCm,
-			DefaultSeamAllowanceCm: &before.DefaultSeamAllowanceCm,
+			DefaultSeamAllowanceMm: &before.DefaultSeamAllowanceMm,
 		}, "cleanup")
 	})
 
 	zero := decimal.NullDecimal{Decimal: decimal.Zero, Valid: true}
-	out, err := W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{DefaultSeamAllowanceCm: &zero}, "tester")
+	out, err := W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{DefaultSeamAllowanceMm: &zero}, "tester")
 	require.NoError(t, err)
-	require.True(t, out.DefaultSeamAllowanceCm.Valid, "a configured 0 is a SETTING, not «not configured»")
-	require.True(t, out.DefaultSeamAllowanceCm.Decimal.IsZero())
+	require.True(t, out.DefaultSeamAllowanceMm.Valid, "a configured 0 is a SETTING, not «not configured»")
+	require.True(t, out.DefaultSeamAllowanceMm.Decimal.IsZero())
 
 	// An omitted setting carries the stored value forward — a workshop screen shipped before this
 	// tenant landed must not be able to wipe it.
 	table := decimal.NullDecimal{Decimal: decimal.RequireFromString("600"), Valid: true}
 	out, err = W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{CuttingTableLengthCm: &table}, "tester")
 	require.NoError(t, err)
-	require.True(t, out.DefaultSeamAllowanceCm.Valid)
+	require.True(t, out.DefaultSeamAllowanceMm.Valid)
 
 	// Clearing is its own state, distinct from zero.
 	cleared := decimal.NullDecimal{}
-	out, err = W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{DefaultSeamAllowanceCm: &cleared}, "tester")
+	out, err = W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{DefaultSeamAllowanceMm: &cleared}, "tester")
 	require.NoError(t, err)
-	require.False(t, out.DefaultSeamAllowanceCm.Valid)
+	require.False(t, out.DefaultSeamAllowanceMm.Valid)
 
 	// The plausibility band is refused in Go, with a field, before the CHECK answers 3819 with none.
 	tooWide := decimal.NullDecimal{Decimal: decimal.RequireFromString("25"), Valid: true}
-	_, err = W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{DefaultSeamAllowanceCm: &tooWide}, "tester")
+	_, err = W.UpdateSettings(ctx, entity.WorkshopSettingsPatch{DefaultSeamAllowanceMm: &tooWide}, "tester")
 	require.Error(t, err)
 	var ve *entity.ValidationError
 	require.ErrorAs(t, err, &ve)
-	require.Equal(t, "default_seam_allowance_cm", ve.Field)
+	require.Equal(t, "default_seam_allowance_mm", ve.Field)
 }

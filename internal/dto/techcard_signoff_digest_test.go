@@ -104,10 +104,8 @@ func TestTechCardSectionDigestsAreSectionScoped(t *testing.T) {
 
 func TestConstructionDigestCoversOperationCostingInputs(t *testing.T) {
 	base := entity.TechCardInsert{Operations: []entity.TechCardOperation{{
-		Node:          "join side seam",
-		Machine:       sql.NullString{String: "lockstitch", Valid: true},
 		OperationType: entity.OpTypeLockstitch,
-		TimeNorm:      decimal.NullDecimal{Decimal: decimal.RequireFromString("1.20"), Valid: true},
+		Zone:          entity.TechCardGarmentZone("waist"),
 		SMV:           decimal.NullDecimal{Decimal: decimal.RequireFromString("1.10"), Valid: true},
 	}}}
 	wantDifferent := func(t *testing.T, mutate func(*entity.TechCardOperation)) {
@@ -127,14 +125,17 @@ func TestConstructionDigestCoversOperationCostingInputs(t *testing.T) {
 			op.SMV = decimal.NullDecimal{Decimal: decimal.RequireFromString("1.15"), Valid: true}
 		})
 	})
-	t.Run("time norm", func(t *testing.T) {
+	// `time norm` and `machine` used to be subtests here. Both columns went with the operations
+	// break — time_norm as the legacy twin of smv, machine as a copy of operation_type written by a
+	// preset — so what replaces them is the pair a step is now actually costed and placed by.
+	t.Run("zone", func(t *testing.T) {
 		wantDifferent(t, func(op *entity.TechCardOperation) {
-			op.TimeNorm = decimal.NullDecimal{Decimal: decimal.RequireFromString("1.25"), Valid: true}
+			op.Zone = entity.TechCardGarmentZone("hem")
 		})
 	})
-	t.Run("machine", func(t *testing.T) {
+	t.Run("seam allowance override", func(t *testing.T) {
 		wantDifferent(t, func(op *entity.TechCardOperation) {
-			op.Machine = sql.NullString{String: "overlock", Valid: true}
+			op.SeamAllowanceMm = decimal.NullDecimal{Decimal: decimal.RequireFromString("12"), Valid: true}
 		})
 	})
 	t.Run("operation type", func(t *testing.T) {

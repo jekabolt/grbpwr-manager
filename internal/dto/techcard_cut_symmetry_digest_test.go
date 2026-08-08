@@ -8,17 +8,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// unmarkedConstructionDigest is the CONSTRUCTION fingerprint of the fixture below as computed by the
-// code that shipped BEFORE migration 0275 — captured by running this exact fixture against
-// constructionProjection at the parent commit, not by re-deriving it from the code under test.
+// unmarkedConstructionDigest is the CONSTRUCTION fingerprint of the fixture below.
 //
-// It is the whole safety argument of the conditional tail in one constant. `p.Mirrored` already sits
-// in the tuple and digestOf is sha256(json.Marshal(...)), which encodes a []any POSITIONALLY, so a
-// ninth element written UNCONDITIONALLY would move this value for every card in the database and
-// declare every approved CONSTRUCTION sign-off stale the moment the deploy landed — before a single
-// person had marked a single piece. A hash that has to stay equal to a number recorded from the old
-// code is the only form of that claim a test can actually check.
-const unmarkedConstructionDigest = "cff82c699db5face04eb5d10487a671b8ea11a4de6f45521e56f506db1fb1cb5"
+// WHAT THIS CONSTANT ANCHORS, AND WHAT IT NO LONGER CAN. It began as the value produced by the code
+// that shipped BEFORE migration 0275, captured at the parent commit — a cross-version claim that the
+// conditional tail added for cut symmetry could not move the hash of a card nobody had marked.
+// The operations break (0289/0290) reshaped BOTH tuples of this projection — the free-text
+// construction defaults became typed ones, and the operation tuple lost eleven fields — so the value
+// moved ONCE, deliberately, and this constant was re-captured from the code at that commit.
+//
+// That one-time move is the cost the break was accepted with, and it is bounded: an empty operations
+// list marshals identically whatever shape the operation tuple has, so only cards that actually
+// carry CONSTRUCTION DEFAULTS are affected. Cards with none — every card whose construction section
+// was never filled — hash exactly as before.
+//
+// The invariant the pair of tests below enforces is unchanged and is the reason the constant stays:
+// digestOf is sha256(json.Marshal(...)), which encodes a []any POSITIONALLY, so a tail element
+// written UNCONDITIONALLY would move this value for every card in the database and declare every
+// approved CONSTRUCTION sign-off stale the moment the deploy landed — before a single person had
+// marked a single piece. A hash pinned to a recorded number is the only form of that claim a test
+// can actually check.
+const unmarkedConstructionDigest = "74d1523ccb53e759117076fc007133a84b2e31fee72e9585f45500e732e8979d"
 
 // cutSymmetryDigestFixture is a card with content in every part of the CONSTRUCTION projection —
 // header, one operation, three pieces — so the pin covers the tuple's shape and not just an empty
@@ -27,16 +37,14 @@ const unmarkedConstructionDigest = "cff82c699db5face04eb5d10487a671b8ea11a4de6f4
 func cutSymmetryDigestFixture() *entity.TechCardInsert {
 	return &entity.TechCardInsert{
 		Construction: &entity.TechCardConstruction{
-			MainStitchType:  sql.NullString{String: "lockstitch 301", Valid: true},
-			StitchDensity:   sql.NullString{String: "4/cm", Valid: true},
-			OverlockThreads: sql.NullString{String: "4-thread", Valid: true},
-			SeamAllowances:  sql.NullString{String: "1 cm", Valid: true},
+			DefaultSeamClass: sql.NullString{String: "ss_plain", Valid: true},
+			HemFinish:        sql.NullString{String: "coverstitch", Valid: true},
 		},
 		Operations: []entity.TechCardOperation{
 			{
-				Node:        "assembly",
-				Description: sql.NullString{String: "втачать рукав", Valid: true},
-				SeamType:    sql.NullString{String: "overlock", Valid: true},
+				OperationType: entity.OpTypeOverlock,
+				Zone:          entity.TechCardGarmentZone("sleeve"),
+				Note:          sql.NullString{String: "втачать рукав", Valid: true},
 			},
 		},
 		Pieces: []entity.TechCardPiece{
@@ -50,7 +58,7 @@ func cutSymmetryDigestFixture() *entity.TechCardInsert {
 
 // An UNMARKED card must hash exactly as it did before 0275. This is the test the design exists for:
 // the re-approval wave has to be the size of the marking campaign, not the size of the rollout.
-func TestUnmarkedCardConstructionDigestIsUnchangedBy0275(t *testing.T) {
+func TestUnmarkedCardConstructionDigestIsStable(t *testing.T) {
 	got := TechCardSectionDigests(cutSymmetryDigestFixture())[entity.SignoffConstruction]
 	require.Equal(t, unmarkedConstructionDigest, got,
 		"an unmarked card's CONSTRUCTION digest moved: every approved sign-off in the database just went stale at deploy time")

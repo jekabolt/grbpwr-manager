@@ -614,11 +614,11 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 
 	// Validated at the boundary rather than left to the CHECK: chk_tc_required_seam_allowance would
 	// answer 3819 with no field name, and this is an operator-typed number on a form control.
-	requiredSeamAllowance, err := nullDecimalFromPb(pb.RequiredSeamAllowanceCm)
+	requiredSeamAllowance, err := nullDecimalFromPb(pb.RequiredSeamAllowanceMm)
 	if err != nil {
-		return nil, fmt.Errorf("required_seam_allowance_cm: %w", err)
+		return nil, fmt.Errorf("required_seam_allowance_mm: %w", err)
 	}
-	if err := entity.ValidateSeamAllowanceStandardCm("required_seam_allowance_cm", requiredSeamAllowance); err != nil {
+	if err := entity.ValidateSeamAllowanceStandardMm("required_seam_allowance_mm", requiredSeamAllowance); err != nil {
 		return nil, err
 	}
 	insert := &entity.TechCardInsert{
@@ -668,7 +668,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// default» — and an explicit 0 is carried through as a set zero. Deliberately NOT folded into
 		// any section digest projection: adding a field to one marks every signed-off approval of that
 		// section as edited-since-signing, on every card at once.
-		RequiredSeamAllowanceCm: requiredSeamAllowance,
+		RequiredSeamAllowanceMm: requiredSeamAllowance,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
@@ -1050,7 +1050,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 
 			// Ф3.2: absent on the wire when the card sets no requirement of its own, so a client can
 			// tell «take the workshop default» from a card that requires exactly 0.
-			RequiredSeamAllowanceCm: pbDecimalFromNull(tc.RequiredSeamAllowanceCm),
+			RequiredSeamAllowanceMm: pbDecimalFromNull(tc.RequiredSeamAllowanceMm),
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
@@ -1214,8 +1214,8 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		// client as an ABSENT field and never as a zero: «припуск 0» is a measurement («we laid the line
 		// as drawn») and «не записано» is the absence of one, and a screen that could not tell them
 		// apart would show every раскладка taken before Ф3 as a confidently-measured zero.
-		SeamAllowanceCm:    pbDecimalFromNull(m.SeamAllowanceCm),
-		ContourAllowanceCm: pbDecimalFromNull(m.ContourAllowanceCm),
+		SeamAllowanceMm:    pbDecimalFromNull(m.SeamAllowanceMm),
+		ContourAllowanceMm: pbDecimalFromNull(m.ContourAllowanceMm),
 		ContourLayer:       pbOptionalStringFromNull(m.ContourLayer),
 		GrainLayer:         pbOptionalStringFromNull(m.GrainLayer),
 		AllowFlip:          pbOptionalBoolFromNull(m.AllowFlip),
@@ -1423,8 +1423,8 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		TotalCount:         int(pb.TotalCount),
 		// УСЛОВИЯ СЪЁМКИ (Ф3). PieceSetFp is deliberately NOT here: the fingerprint is the store's, taken
 		// off the rows its own transaction sees, and a payload-supplied one would be forgeable and stale.
-		SeamAllowanceCm:    conditions.SeamAllowanceCm,
-		ContourAllowanceCm: conditions.ContourAllowanceCm,
+		SeamAllowanceMm:    conditions.SeamAllowanceMm,
+		ContourAllowanceMm: conditions.ContourAllowanceMm,
 		ContourLayer:       conditions.ContourLayer,
 		GrainLayer:         conditions.GrainLayer,
 		AllowFlip:          conditions.AllowFlip,
@@ -1438,8 +1438,8 @@ const markerLayerMaxChars = 64
 // markerConditions is the parsed Ф3 half of a marker payload, kept as one value so the conversion
 // above reads as five fields rather than fifteen lines of parsing.
 type markerConditions struct {
-	SeamAllowanceCm    decimal.NullDecimal
-	ContourAllowanceCm decimal.NullDecimal
+	SeamAllowanceMm    decimal.NullDecimal
+	ContourAllowanceMm decimal.NullDecimal
 	ContourLayer       sql.NullString
 	GrainLayer         sql.NullString
 	AllowFlip          sql.NullBool
@@ -1469,29 +1469,29 @@ type markerConditions struct {
 // CompositionPredatesSchema is checked there.
 func markerConditionsFromPb(pb *pb_common.TechCardMarkerInsert) (markerConditions, error) {
 	var out markerConditions
-	seam, err := nullDecimalFromPb(pb.SeamAllowanceCm)
+	seam, err := nullDecimalFromPb(pb.SeamAllowanceMm)
 	if err != nil {
-		return out, fmt.Errorf("seam_allowance_cm: %w", err)
+		return out, fmt.Errorf("seam_allowance_mm: %w", err)
 	}
 	if seam.Valid {
 		if seam.Decimal.IsNegative() {
-			return out, fmt.Errorf("seam_allowance_cm must not be negative")
+			return out, fmt.Errorf("seam_allowance_mm must not be negative")
 		}
 		seam.Decimal = seam.Decimal.Round(markerDimMaxFrac)
-		if err := validateDecimalScale(seam, "seam_allowance_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		if err := validateDecimalScale(seam, "seam_allowance_mm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
 			return out, err
 		}
 	}
-	contour, err := nullDecimalFromPb(pb.ContourAllowanceCm)
+	contour, err := nullDecimalFromPb(pb.ContourAllowanceMm)
 	if err != nil {
-		return out, fmt.Errorf("contour_allowance_cm: %w", err)
+		return out, fmt.Errorf("contour_allowance_mm: %w", err)
 	}
 	if contour.Valid {
 		if contour.Decimal.IsNegative() {
-			return out, fmt.Errorf("contour_allowance_cm must not be negative")
+			return out, fmt.Errorf("contour_allowance_mm must not be negative")
 		}
 		contour.Decimal = contour.Decimal.Round(markerDimMaxFrac)
-		if err := validateDecimalScale(contour, "contour_allowance_cm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
+		if err := validateDecimalScale(contour, "contour_allowance_mm", markerDimMaxFrac, markerSmallDimLimit); err != nil {
 			return out, err
 		}
 	}
@@ -1504,8 +1504,8 @@ func markerConditionsFromPb(pb *pb_common.TechCardMarkerInsert) (markerCondition
 		return out, err
 	}
 	out = markerConditions{
-		SeamAllowanceCm:    seam,
-		ContourAllowanceCm: contour,
+		SeamAllowanceMm:    seam,
+		ContourAllowanceMm: contour,
 		ContourLayer:       contourLayer,
 		GrainLayer:         grainLayer,
 	}

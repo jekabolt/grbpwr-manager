@@ -33,7 +33,7 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 	return &Store{Base: base, txFunc: txFunc}
 }
 
-const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_cm, run_readiness_blocking,
+const selectSettings = `SELECT cutting_table_length_cm, default_seam_allowance_mm, run_readiness_blocking,
 	       max_stack_height_cm, updated_by, updated_at
 	FROM workshop_settings WHERE id = :id`
 
@@ -82,9 +82,9 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 	// rejected, a 0 cm allowance is a real setting («our выкройки carry the cut line») and is accepted.
 	// One shared validator could not have held both floors — which is exactly the argument 0272 made
 	// for a typed column per setting rather than a shared key/value table.
-	if patch.DefaultSeamAllowanceCm != nil {
-		if err := entity.ValidateSeamAllowanceStandardCm("default_seam_allowance_cm",
-			*patch.DefaultSeamAllowanceCm); err != nil {
+	if patch.DefaultSeamAllowanceMm != nil {
+		if err := entity.ValidateSeamAllowanceStandardMm("default_seam_allowance_mm",
+			*patch.DefaultSeamAllowanceMm); err != nil {
 			return nil, err
 		}
 	}
@@ -103,8 +103,8 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		// Presence, not value: an omitted setting keeps its stored column (see the IF() above).
 		"cutting_table_length_omitted": patch.CuttingTableLengthCm == nil,
 		"cutting_table_length_cm":      nullDecimalParam(patch.CuttingTableLengthCm),
-		"seam_allowance_omitted":       patch.DefaultSeamAllowanceCm == nil,
-		"default_seam_allowance_cm":    nullDecimalParam(patch.DefaultSeamAllowanceCm),
+		"seam_allowance_omitted":       patch.DefaultSeamAllowanceMm == nil,
+		"default_seam_allowance_mm":    nullDecimalParam(patch.DefaultSeamAllowanceMm),
 		// Ф6.9 — the same presence mask as its neighbours, and NO validator: a bool has no
 		// plausibility band, and the only thing that could be wrong about it is being set at the wrong
 		// TIME (before кампания Д3 has re-measured the norms), which no server-side check can know.
@@ -129,7 +129,7 @@ func (s *Store) UpdateSettings(ctx context.Context, patch entity.WorkshopSetting
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
 			UPDATE workshop_settings SET
 				cutting_table_length_cm = IF(:cutting_table_length_omitted, cutting_table_length_cm, :cutting_table_length_cm),
-				default_seam_allowance_cm = IF(:seam_allowance_omitted, default_seam_allowance_cm, :default_seam_allowance_cm),
+				default_seam_allowance_mm = IF(:seam_allowance_omitted, default_seam_allowance_mm, :default_seam_allowance_mm),
 				run_readiness_blocking = IF(:run_readiness_blocking_omitted, run_readiness_blocking, :run_readiness_blocking),
 				max_stack_height_cm = IF(:max_stack_height_omitted, max_stack_height_cm, :max_stack_height_cm),
 				updated_by = :updated_by

@@ -4666,7 +4666,7 @@ message WorkshopSettings {
   string updated_by = 2; // admin username of the last writer; "" = never written
   google.protobuf.Timestamp updated_at = 3;
 
-  // ПРИПУСК НА ШОВ ПО УМОЛЧАНИЮ, in centimetres — второй жилец дома настроек цеха (Ф2.5 → Ф3.2).
+  // ПРИПУСК НА ШОВ ПО УМОЛЧАНИЮ, in MILLIMETRES — второй жилец дома настроек цеха (Ф2.5 → Ф3.2).
   //
   // ABSENT = not configured, and a consumer must degrade to «no standard» rather than substitute
   // zero — the same law as the table length above. But UNLIKE the table length, ZERO IS LEGAL HERE
@@ -4675,8 +4675,14 @@ message WorkshopSettings {
   // across all keys cannot express that difference, and here the two validators genuinely disagree
   // (the table length rejects 0, this accepts it).
   //
-  // A tech card may override it (common.TechCardInsert.required_seam_allowance_cm).
-  google.type.Decimal default_seam_allowance_cm = 4;
+  // MILLIMETRES since 0290, unlike its housemates cutting_table_length_cm and max_stack_height_cm,
+  // which stay CENTIMETRES. That is not an inconsistency, it is the boundary the owner drew: the
+  // seam-allowance chain (workshop → card → sewing step) speaks millimetres end to end so no
+  // conversion sits inside it, while cloth-and-table dimensions keep the unit they read best in —
+  // a 12 m table is 1200 cm, not 12000 mm. The `_cm`/`_mm` suffix on every field IS the guard.
+  //
+  // A tech card may override it (common.TechCardInsert.required_seam_allowance_mm).
+  google.type.Decimal default_seam_allowance_mm = 7;
 
   // BLOCKING MODE of the production-run readiness gate (Ф6.1/Ф6.9) — третий жилец дома настроек цеха.
   //
@@ -4707,6 +4713,9 @@ message WorkshopSettings {
   // the check is common.Material.fabric_thickness_mm; either one absent ⇒ UNKNOWN, and the screen
   // says which of the two is missing rather than printing a height nobody can trust.
   google.type.Decimal max_stack_height_cm = 6;
+
+  reserved 4;
+  reserved "default_seam_allowance_cm";
 }
 
 message GetWorkshopSettingsRequest {}
@@ -4739,11 +4748,11 @@ message UpdateWorkshopSettingsRequest {
   // declare every раскладка too long.
   google.type.Decimal cutting_table_length_cm = 1;
 
-  // Centimetres, 0..10. Zero is ACCEPTED (see WorkshopSettings.default_seam_allowance_cm) — send the
-  // empty message to clear the setting instead. The ceiling is a unit check: the widest real
-  // allowance is a 4-5 cm hem, so anything past 10 is millimetres typed into a centimetre field or a
-  // stray zero.
-  google.type.Decimal default_seam_allowance_cm = 2;
+  // MILLIMETRES, 0..100. Zero is ACCEPTED (see WorkshopSettings.default_seam_allowance_mm) — send the
+  // empty message to clear the setting instead. The ceiling is a unit check, and it now catches the
+  // OPPOSITE mistake to the one it used to: the widest real allowance is a 40-50 mm hem, so anything
+  // past 100 is a stray zero, and anything BELOW 1 is centimetres typed into a millimetre field.
+  google.type.Decimal default_seam_allowance_mm = 5;
 
   // Ф6.9 — the blocking-mode switch. `optional` is MANDATORY here and is not decoration: without
   // presence, «did not send the field» and «turn it off» are the same bytes on the wire, and a stale
@@ -4760,6 +4769,9 @@ message UpdateWorkshopSettingsRequest {
   // clearing the setting (send the empty message), which withholds the verdict instead of failing
   // it. Same floor argument as the table length, opposite to the seam allowance's legal zero.
   google.type.Decimal max_stack_height_cm = 4;
+
+  reserved 2;
+  reserved "default_seam_allowance_cm";
 }
 
 message UpdateWorkshopSettingsResponse {

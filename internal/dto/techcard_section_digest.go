@@ -243,20 +243,26 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 	var construction any
 	if tc.Construction != nil {
 		c := tc.Construction
+		// FIXED ORDER, FOREVER. Reordering these rewrites every stored CONSTRUCTION digest and marks
+		// every approved section as edited-since-signing. This tuple CHANGED SHAPE in the operations
+		// break (0289) — the free-text defaults became typed ones — so approvals on cards that
+		// carried construction defaults are stale exactly once, by design.
 		construction = []any{
-			c.MainStitchType.String, c.StitchDensity.String, c.OverlockThreads.String,
-			c.SeamAllowances.String, c.HemFinish.String, c.Pressing.String,
-			c.MachineClass.String, c.Notes.String,
+			c.DefaultSeamClass.String, digestDecimal(c.DefaultStitchesPerCm),
+			c.OverlockThreadCount.Int32, c.HemFinish.String, c.Pressing.String, c.Notes.String,
 		}
 	}
+	// The operation tuple, also FIXED FOREVER. Unlike construction above, changing this one was
+	// free: an EMPTY operations list marshals identically whatever shape the tuple has, and no card
+	// on prod had a single operation when the break landed.
 	ops := make([]any, 0, len(tc.Operations))
 	for _, o := range tc.Operations {
 		ops = append(ops, []any{
-			o.Node, o.Description.String, o.SeamType.String, digestDecimal(o.StitchesPerCm),
-			o.TopstitchWidth.String, o.Thread.String, o.Note.String, o.OperationNumber.Int32,
-			o.Machine.String, o.SeamAllowance.String, o.Needle.String, digestDecimal(o.TimeNorm),
-			digestDecimal(o.SMV), o.Attachment.String, string(o.OperationType), o.CalloutNumber.Int32,
-			string(o.Zone), o.Placement.String, o.BomLineKeys, o.PieceLineKeys,
+			o.OperationNumber.Int32, string(o.OperationType), string(o.Zone),
+			o.PieceLineKeys, o.BomLineKeys, digestDecimal(o.SMV), o.CalloutNumber.Int32,
+			digestDecimal(o.StitchesPerCm), o.SeamClass.String, digestDecimal(o.SeamAllowanceMm),
+			o.TopstitchMode.String, digestDecimal(o.TopstitchWidthMm), o.TopstitchRows.Int32,
+			o.AttachmentKind.String, digestDecimal(o.AttachmentSizeMm), o.Note.String,
 		})
 	}
 	pieces := make([]any, 0, len(tc.Pieces))

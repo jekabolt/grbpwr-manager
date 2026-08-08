@@ -40,7 +40,7 @@ func rrHealthyCard() *entity.TechCard {
 		TechCardInsert: entity.TechCardInsert{
 			Purpose:                 entity.TechCardPurposeSellable,
 			SizeIds:                 []int{1, 2},
-			RequiredSeamAllowanceCm: rrNullDec("1"),
+			RequiredSeamAllowanceMm: rrNullDec("1"),
 			Pieces:                  pieces,
 			PieceDxfAliases: []entity.TechCardPieceDxfAlias{
 				{BomLineKey: rrLineKey, BlockName: "FP", PieceId: 1, PieceLineKey: "PIECE1"},
@@ -70,8 +70,8 @@ func rrHealthyCard() *entity.TechCard {
 			IsNorm:        true,
 			FabricWidthCm: decimal.RequireFromString("140"),
 			// Conditions recorded, confirmed, and clearing the card's 1 cm standard.
-			SeamAllowanceCm:    rrNullDec("1"),
-			ContourAllowanceCm: rrNullDec("0"),
+			SeamAllowanceMm:    rrNullDec("1"),
+			ContourAllowanceMm: rrNullDec("0"),
 			AllowFlip:          sql.NullBool{Bool: false, Valid: true},
 			PieceSetFp:         fp,
 			CardPieceSetFp:     fp,

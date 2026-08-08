@@ -361,7 +361,7 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			// раскладка's recorded allowance against. Set on the CARD rather than through the workshop
 			// singleton on purpose: the seeder runs repeatedly and must not clobber a shop-wide setting
 			// a human configured.
-			RequiredSeamAllowanceCm: decv("1"),
+			RequiredSeamAllowanceMm: decv("1"),
 		},
 	})
 	if err != nil {
@@ -502,9 +502,12 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 		return err
 	}
 	tc.Construction = &common.TechCardConstruction{
-		MainStitchType: "lockstitch 301", StitchDensity: "4/cm", OverlockThreads: "4-thread",
-		SeamAllowances: "1cm", HemFinish: "coverstitch double-fold", Pressing: "steam press, no top pressure on print",
-		MachineClass: "industrial single-needle", Notes: "QA seeded construction section",
+		DefaultSeamClass:     common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_SS_PLAIN,
+		DefaultStitchesPerCm: decv("4"),
+		OverlockThreadCount:  4,
+		HemFinish:            "coverstitch double-fold",
+		Pressing:             "steam press, no top pressure on print",
+		Notes:                "QA seeded construction section",
 	}
 	tc.SizeIds = []int32{st.mID, st.lID}
 	if err := s.tcSave(ctx, sid, tc, "B.7/B.8 construction+size_ids"); err != nil {
@@ -513,10 +516,10 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	if tc, err = s.tcFetch(ctx, sid); err != nil {
 		return err
 	}
-	if tc.GetConstruction().GetMainStitchType() == "" || len(tc.GetSizeIds()) != 2 {
-		return fmt.Errorf("B.7/B.8 readback: construction=%q size_ids=%d", tc.GetConstruction().GetMainStitchType(), len(tc.GetSizeIds()))
+	if tc.GetConstruction().GetDefaultSeamClass() == common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_UNKNOWN || len(tc.GetSizeIds()) != 2 {
+		return fmt.Errorf("B.7/B.8 readback: construction=%v size_ids=%d", tc.GetConstruction().GetDefaultSeamClass(), len(tc.GetSizeIds()))
 	}
-	s.pass(st, "B.7 construction.mainStitchType=%q; B.8 size_ids=[%d,%d]", tc.GetConstruction().GetMainStitchType(), st.mID, st.lID)
+	s.pass(st, "B.7 construction.defaultSeamClass=%v; B.8 size_ids=[%d,%d]", tc.GetConstruction().GetDefaultSeamClass(), st.mID, st.lID)
 
 	// style size chart (shares the lock_version).
 	if err := s.withLock(ctx, sid, func(lv uint64) error {
@@ -708,16 +711,25 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 			Unit: "pcs", UnitPrice: decv("0.60"), Currency: "EUR"},
 	}
 	tc.Operations = []*common.TechCardOperation{
-		{Node: "attach zipper", Description: "attach main zipper to front placket", OperationNumber: 10,
+		{OperationNumber: 10,
 			OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH,
-			Zone:          common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER,
-			Placement:     "front placket", BomLineKey: st.bomHardwareKey, CalloutNumber: 1},
+			// CLOSURE, not OUTER: the zone now says WHERE on the garment, and «front placket» — the
+			// free-text placement this row used to carry — is exactly what it replaces.
+			Zone:         common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_CLOSURE,
+			BomLineKeys:  []string{st.bomHardwareKey},
+			CalloutNumber: 1,
+			Note:          "attach main zipper to front placket"},
 	}
 
 	// NEGATIVE: an operation referencing an unknown bom_line_key must be rejected (400).
 	// Fire on a clone so it never touches the real save.
 	neg := proto.Clone(tc).(*common.TechCardInsert)
-	neg.Operations = append(neg.Operations, &common.TechCardOperation{Node: "QA negative probe", BomLineKey: "does-not-exist-xyz"})
+	// The probe is the unknown key and nothing else: with `node` gone, the row carries only the two
+	// required fields plus the bad reference, so a rejection can mean one thing.
+	neg.Operations = append(neg.Operations, &common.TechCardOperation{
+		OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH,
+		Zone:          common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OTHER,
+		BomLineKeys:   []string{"does-not-exist-xyz"}})
 	negLV, err := s.lockVersion(ctx, sid)
 	if err != nil {
 		return err
@@ -818,12 +830,12 @@ func (s *Seeder) plmMarkers(ctx context.Context, st *plmState) error {
 		// so beta holds one раскладка of each category — a labelled measurement and a «старая норма» —
 		// and the difference is observable without driving the modal by hand.
 		//
-		// contour_allowance_cm = 0 is a MEASUREMENT («the laid contour IS the seam line»), not an
+		// contour_allowance_mm = 0 is a MEASUREMENT («the laid contour IS the seam line»), not an
 		// absence, and grain_layer = "" is a DECISION («не разворачивать»), not «не записано». Both are
 		// here precisely because they are the two values a wire that only carried presence-by-value
 		// would silently destroy.
-		SeamAllowanceCm:    decv("1"),
-		ContourAllowanceCm: decv("0"),
+		SeamAllowanceMm:    decv("1"),
+		ContourAllowanceMm: decv("0"),
 		ContourLayer:       strp("14"),
 		GrainLayer:         strp(""),
 		AllowFlip:          boolp(false),
@@ -933,13 +945,13 @@ func (s *Seeder) plmMarkerConditions(ctx context.Context, st *plmState, legacyID
 	if err != nil {
 		return err
 	}
-	if m.GetSeamAllowanceCm().GetValue() != "1" || m.GetContourLayer() != "14" {
+	if m.GetSeamAllowanceMm().GetValue() != "1" || m.GetContourLayer() != "14" {
 		return fmt.Errorf("conditions lost in transit: seam=%q contour_layer=%q",
-			m.GetSeamAllowanceCm().GetValue(), m.GetContourLayer())
+			m.GetSeamAllowanceMm().GetValue(), m.GetContourLayer())
 	}
 	// The two distinctions a careless wire destroys, checked by PRESENCE and not by value.
-	if m.ContourAllowanceCm == nil || m.GetContourAllowanceCm().GetValue() != "0" {
-		return fmt.Errorf("a MEASURED zero contour allowance must survive as a value, got %v", m.ContourAllowanceCm)
+	if m.ContourAllowanceMm == nil || m.GetContourAllowanceMm().GetValue() != "0" {
+		return fmt.Errorf("a MEASURED zero contour allowance must survive as a value, got %v", m.ContourAllowanceMm)
 	}
 	if m.GrainLayer == nil || m.GetGrainLayer() != "" {
 		return fmt.Errorf("an EMPTY grain layer means «не разворачивать» and must survive, got %v", m.GrainLayer)
@@ -951,7 +963,7 @@ func (s *Seeder) plmMarkerConditions(ctx context.Context, st *plmState, legacyID
 		return fmt.Errorf("the save must fingerprint the card's piece set, got %v", m.GetPieceSetStatus())
 	}
 	s.pass(st, "условия съёмки доехали: припуск %s, контур %s (замерено 0 = линия шва), долевая \"\" (не разворачивать), переворот запрещён, набор деталей СОВПАДАЕТ",
-		m.GetSeamAllowanceCm().GetValue(), m.GetContourLayer())
+		m.GetSeamAllowanceMm().GetValue(), m.GetContourLayer())
 
 	// The «старая норма» half: the legacy marker records no allowance and must NOT be badged as a
 	// changed piece set either — the fingerprint is written by the SAVE regardless of what the client
@@ -960,8 +972,8 @@ func (s *Seeder) plmMarkerConditions(ctx context.Context, st *plmState, legacyID
 	if err != nil {
 		return err
 	}
-	if l.SeamAllowanceCm != nil {
-		return fmt.Errorf("the legacy marker must record NO allowance, got %q", l.GetSeamAllowanceCm().GetValue())
+	if l.SeamAllowanceMm != nil {
+		return fmt.Errorf("the legacy marker must record NO allowance, got %q", l.GetSeamAllowanceMm().GetValue())
 	}
 	if l.GetPieceSetStatus() != common.TechCardMarkerPieceSetStatus_TECH_CARD_MARKER_PIECE_SET_STATUS_MATCHES {
 		return fmt.Errorf("the fingerprint is server-written and does not depend on the client knowing Ф3, got %v",
@@ -973,7 +985,7 @@ func (s *Seeder) plmMarkerConditions(ctx context.Context, st *plmState, legacyID
 	// allowance would be counted twice and the spread length overstated around every perimeter.
 	neg := proto.Clone(mixed).(*common.TechCardMarkerInsert)
 	neg.Name = "QA negative · двойной припуск"
-	neg.ContourAllowanceCm = decv("1")
+	neg.ContourAllowanceMm = decv("1")
 	_, negErr := s.C.SaveTechCardMarker(ctx, &admin.SaveTechCardMarkerRequest{TechCardId: sid, Marker: neg})
 	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
 		return fmt.Errorf("NEGATIVE double seam allowance: expected HTTP 400, got %v", negErr)

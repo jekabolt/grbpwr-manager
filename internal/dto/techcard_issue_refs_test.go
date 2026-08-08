@@ -10,7 +10,15 @@ import (
 )
 
 func TestConvertTechCardIssueReferences(t *testing.T) {
-	operations := []*pb_common.TechCardOperation{{Node: "first"}, {Node: "second"}}
+	// Both required fields, and nothing else: this test is about issue -> operation references, and a
+	// step that fails validation for an unrelated reason would fail it for the wrong one.
+	op := func() *pb_common.TechCardOperation {
+		return &pb_common.TechCardOperation{
+			OperationType: pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH,
+			Zone:          pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OUTER,
+		}
+	}
+	operations := []*pb_common.TechCardOperation{op(), op()}
 
 	t.Run("valid operation and callout references", func(t *testing.T) {
 		got, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{

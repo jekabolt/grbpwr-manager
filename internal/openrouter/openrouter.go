@@ -98,6 +98,9 @@ type TechCardContext struct {
 	Pieces       []PieceContext
 	BOM          []BOMItemContext
 	Construction *ConstructionContext
+	// RequiredSeamAllowanceMm is the card's allowance standard in MILLIMETRES ("" = none set). Stated
+	// so a draft does not propose per-step allowances that contradict the card.
+	RequiredSeamAllowanceMm string
 }
 
 // PieceContext is one structural cut-piece of the garment.
@@ -124,35 +127,37 @@ type BOMItemContext struct {
 	Supplier    string
 }
 
-// ConstructionContext is the card's default construction description, if any.
+// ConstructionContext is the card's DEFAULTS, if any — what a drafted step inherits rather than
+// restates. Empty strings stay empty in the prompt: naming a default nobody configured would invent
+// a fact for the model to reason from.
 type ConstructionContext struct {
-	MainStitchType  string
-	StitchDensity   string
-	OverlockThreads string
-	SeamAllowances  string
+	DefaultSeamClass     string
+	DefaultStitchesPerCm string
+	OverlockThreadCount  int32
 }
 
-// Operation is one drafted sewing operation as returned by the model. Numeric-ish
-// fields are captured as jsonNum (tolerating both JSON numbers and strings); the
-// caller parses/validates them when mapping to the persisted operation shape.
+// Operation is one drafted sewing operation as returned by the model. Numeric-ish fields are
+// captured as jsonNum (tolerating both JSON numbers and strings); the caller parses/validates them
+// when mapping to the persisted operation shape.
+//
+// EVERY DESCRIPTIVE FIELD IS NOW A DICTIONARY TOKEN, and that is the point of the shape: the old
+// struct held twelve bare strings, so the model answered «оверлок 4-нит.» or «overlock 4 thread» or
+// anything else, and whatever came back was stored verbatim because there was nothing to check it
+// against. A token either resolves to an enum value or becomes UNKNOWN for a human to fix.
 type Operation struct {
-	OperationNumber jsonNum `json:"operation_number"`
-	Node            string  `json:"node"`
-	Description     string  `json:"description"`
-	SeamType        string  `json:"seam_type"`
-	OperationType   string  `json:"operation_type"`
-	Machine         string  `json:"machine"`
-	StitchesPerCm   jsonNum `json:"stitches_per_cm"`
-	TopstitchWidth  string  `json:"topstitch_width"`
-	SeamAllowance   string  `json:"seam_allowance"`
-	Thread          string  `json:"thread"`
-	Needle          string  `json:"needle"`
-	Attachment      string  `json:"attachment"`
-	TimeNormMinutes jsonNum `json:"time_norm_minutes"`
-	Zone            string  `json:"zone"`
-	CalloutNumber   jsonNum `json:"callout_number"`
-	Placement       string  `json:"placement"`
-	Note            string  `json:"note"`
+	OperationNumber  jsonNum `json:"operation_number"`
+	OperationType    string  `json:"operation_type"`
+	Zone             string  `json:"zone"`
+	SeamClass        string  `json:"seam_class"`
+	StitchesPerCm    jsonNum `json:"stitches_per_cm"`
+	SeamAllowanceMm  jsonNum `json:"seam_allowance_mm"`
+	TopstitchMode    string  `json:"topstitch_mode"`
+	TopstitchWidthMm jsonNum `json:"topstitch_width_mm"`
+	TopstitchRows    jsonNum `json:"topstitch_rows"`
+	AttachmentKind   string  `json:"attachment_kind"`
+	SmvMinutes       jsonNum `json:"smv_minutes"`
+	CalloutNumber    jsonNum `json:"callout_number"`
+	Note             string  `json:"note"`
 }
 
 // Result is the parsed model output: drafted operations plus optional free-text notes.

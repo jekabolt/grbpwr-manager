@@ -226,7 +226,7 @@ func TestMarkerAllowanceRefusal(t *testing.T) {
 			if ve == nil {
 				return
 			}
-			if ve.Field != "seam_allowance_cm" || ve.Reason != ReasonDoubleSeamAllowance {
+			if ve.Field != "seam_allowance_mm" || ve.Reason != ReasonDoubleSeamAllowance {
 				t.Fatalf("violation = %+v, want the seam field and the stable reason code", ve)
 			}
 			// The prose has to carry the ARITHMETIC, not just the verdict: an operator who is told
@@ -238,44 +238,47 @@ func TestMarkerAllowanceRefusal(t *testing.T) {
 	}
 }
 
-func TestValidateSeamAllowanceStandardCm(t *testing.T) {
+func TestValidateSeamAllowanceStandardMm(t *testing.T) {
 	t.Run("zero is a legal standard", func(t *testing.T) {
 		// The whole reason this validator is not ValidateCuttingTableLengthCm: 0 cm of table is
-		// nonsense, 0 cm of allowance is «our выкройки carry the cut line».
-		if err := ValidateSeamAllowanceStandardCm("f", dec("0")); err != nil {
+		// nonsense, 0 mm of allowance is «our выкройки carry the cut line».
+		if err := ValidateSeamAllowanceStandardMm("f", dec("0")); err != nil {
 			t.Fatalf("zero must be accepted: %v", err)
 		}
 	})
 	t.Run("unset is legal", func(t *testing.T) {
-		if err := ValidateSeamAllowanceStandardCm("f", decimal.NullDecimal{}); err != nil {
+		if err := ValidateSeamAllowanceStandardMm("f", decimal.NullDecimal{}); err != nil {
 			t.Fatalf("clearing the standard must be accepted: %v", err)
 		}
 	})
-	for _, bad := range []string{"-0.5", "10.01", "25"} {
+	// 0.5 is the CENTIMETRE mistake the mm switch introduced: it looks like a plausible allowance to
+	// whoever types it and means half a millimetre to everything downstream, so it is refused by its
+	// own rule rather than by the ceiling.
+	for _, bad := range []string{"-0.5", "0.5", "100.01", "250"} {
 		t.Run("rejects "+bad, func(t *testing.T) {
-			if err := ValidateSeamAllowanceStandardCm("f", dec(bad)); err == nil {
+			if err := ValidateSeamAllowanceStandardMm("f", dec(bad)); err == nil {
 				t.Fatalf("%s must be refused", bad)
 			}
 		})
 	}
 	t.Run("rejects a scale the column would truncate", func(t *testing.T) {
-		if err := ValidateSeamAllowanceStandardCm("f", dec("1.005")); err == nil {
-			t.Fatal("a third decimal place must be refused rather than silently lost")
+		if err := ValidateSeamAllowanceStandardMm("f", dec("10.05")); err == nil {
+			t.Fatal("a second decimal place must be refused rather than silently lost")
 		}
 	})
 }
 
 // The card wins, and an unset pair yields «no standard» rather than zero — substituting zero would
 // declare every раскладка with a 1 cm allowance in breach of a standard nobody set.
-func TestRequiredSeamAllowanceCm(t *testing.T) {
-	if got := RequiredSeamAllowanceCm(dec("0"), dec("1.00")); !got.Valid || !got.Decimal.IsZero() {
+func TestRequiredSeamAllowanceMm(t *testing.T) {
+	if got := RequiredSeamAllowanceMm(dec("0"), dec("1.00")); !got.Valid || !got.Decimal.IsZero() {
 		t.Fatalf("the card's explicit zero must win over the workshop default, got %+v", got)
 	}
-	if got := RequiredSeamAllowanceCm(decimal.NullDecimal{}, dec("1.00")); !got.Valid ||
+	if got := RequiredSeamAllowanceMm(decimal.NullDecimal{}, dec("1.00")); !got.Valid ||
 		!got.Decimal.Equal(decimal.RequireFromString("1.00")) {
 		t.Fatalf("an unset card must fall back to the workshop default, got %+v", got)
 	}
-	if got := RequiredSeamAllowanceCm(decimal.NullDecimal{}, decimal.NullDecimal{}); got.Valid {
+	if got := RequiredSeamAllowanceMm(decimal.NullDecimal{}, decimal.NullDecimal{}); got.Valid {
 		t.Fatal("with neither configured there is NO standard; it must not degrade to zero")
 	}
 }
@@ -378,7 +381,7 @@ func TestIsLegacyNorm(t *testing.T) {
 	if !m.IsLegacyNorm() {
 		t.Fatal("a раскладка with no recorded allowance is «старая норма»")
 	}
-	m.SeamAllowanceCm = dec("0")
+	m.SeamAllowanceMm = dec("0")
 	if m.IsLegacyNorm() {
 		t.Fatal("a RECORDED zero is a measurement — the row is not legacy")
 	}

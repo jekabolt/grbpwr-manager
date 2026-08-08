@@ -26,8 +26,8 @@ func WorkshopSettingsToPb(s *entity.WorkshopSettings) *pb_admin.WorkshopSettings
 	}
 	// Ф3.2. Emitted only when SET, so a configured ZERO travels as "0" and an unconfigured setting
 	// travels as an absent field — the one distinction this whole tenant exists to preserve.
-	if s.DefaultSeamAllowanceCm.Valid {
-		out.DefaultSeamAllowanceCm = &pb_decimal.Decimal{Value: s.DefaultSeamAllowanceCm.Decimal.String()}
+	if s.DefaultSeamAllowanceMm.Valid {
+		out.DefaultSeamAllowanceMm = &pb_decimal.Decimal{Value: s.DefaultSeamAllowanceMm.Decimal.String()}
 	}
 	// Ф6.9. Emitted only when SET, for the same presence reason as the decimals above — a workshop
 	// that never touched the switch must stay distinguishable from one that turned it off. The
@@ -65,11 +65,11 @@ func WorkshopSettingsPatchFromPb(req *pb_admin.UpdateWorkshopSettingsRequest) (e
 		return p, err
 	}
 	p.CuttingTableLengthCm = v
-	seam, err := presentNullDecimal(req.DefaultSeamAllowanceCm, "default_seam_allowance_cm")
+	seam, err := presentNullDecimal(req.DefaultSeamAllowanceMm, "default_seam_allowance_mm")
 	if err != nil {
 		return p, err
 	}
-	p.DefaultSeamAllowanceCm = seam
+	p.DefaultSeamAllowanceMm = seam
 	// Ф4.8 — same tri-state, same helper. Going through presentNullDecimal rather than the shared
 	// nullDecimalFromPb is the whole safety of this screen: the latter folds nil and "" together, and a
 	// workshop tab from before this setting existed sends nil on every save of the table length.

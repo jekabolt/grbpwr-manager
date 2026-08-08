@@ -388,12 +388,12 @@ func TestConvertTechCardCosting(t *testing.T) {
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_FABRIC, Name: "shell", UnitPrice: dec("10"), Currency: "EUR"},
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "zip", UnitPrice: dec("3"), Currency: "USD"},
 		},
+		// SMV is the only time column since the operations break; the legacy time_norm it used to
+		// supersede is gone, so an untimed step contributes nothing rather than falling back.
 		Operations: []*pb_common.TechCardOperation{
-			{Node: "collar", TimeNorm: dec("2")},
-			{Node: "side", TimeNorm: dec("3")},
-			// smv supersedes time_norm (0219): a re-timed operation rolls up by its smv, and the stale
-			// time_norm beside it is ignored rather than added on top.
-			{Node: "hem", TimeNorm: dec("9"), Smv: dec("1.5")},
+			{OperationType: opTypeLock, Zone: zoneCollar, Smv: dec("2")},
+			{OperationType: opTypeLock, Zone: zoneOuter, Smv: dec("3")},
+			{OperationType: opTypeLock, Zone: zoneHem, Smv: dec("1.5")},
 		},
 		SizeQuantities: []*pb_common.TechCardSizeQuantity{{SizeId: 4, OrderQty: 100}},
 		Costing:        &pb_common.TechCardCosting{CmtCost: dec("10"), DefectPercent: dec("10"), Currency: "EUR"},
@@ -511,7 +511,7 @@ func TestConvertTechCardPerSizeCosting(t *testing.T) {
 // value ignored), placement normalisation, and the classification refs.
 func TestConvertTechCardOperations(t *testing.T) {
 	in := &pb_common.TechCardInsert{
-		StyleNumber: "ST-030",
+		StyleNumber: "OPS-1",
 		Name:        "Jacket",
 		Callouts:    []*pb_common.TechCardCallout{{Number: 1}, {Number: 2}},
 		BomItems: []*pb_common.TechCardBomItem{
@@ -519,11 +519,12 @@ func TestConvertTechCardOperations(t *testing.T) {
 			{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_TRIM, Name: "binding"},
 		},
 		Operations: []*pb_common.TechCardOperation{
-			{Node: "bind hem", OperationNumber: 999, Placement: "  Outer Hem", // client number ignored
+			{OperationNumber: 999, // client number ignored
 				OperationType: pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_COVERSTITCH,
-				Zone:          pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER,
-				BomItemIndex:  i32(1), CalloutNumber: 2},
-			{Node: "lay thread", BomItemIndex: i32(0)}, // index 0 must survive as present
+				Zone:          zoneHem,
+				SeamClass:     pb_common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_BS_BOUND,
+				CalloutNumber: 2},
+			{OperationType: opTypeLock, Zone: zoneOuter},
 		},
 	}
 	got, err := ConvertPbTechCardInsertToEntity(in)
@@ -534,37 +535,48 @@ func TestConvertTechCardOperations(t *testing.T) {
 	if got.Operations[0].OperationNumber.Int32 != 10 || got.Operations[1].OperationNumber.Int32 != 20 {
 		t.Errorf("operation numbers not server-assigned: %v, %v", got.Operations[0].OperationNumber, got.Operations[1].OperationNumber)
 	}
-	if got.Operations[0].Placement.String != "outer hem" {
-		t.Errorf("operation placement not normalised: %q", got.Operations[0].Placement.String)
-	}
-	if got.Operations[0].OperationType != entity.OpTypeCoverstitch || got.Operations[0].Zone != entity.ZoneOuter ||
-		got.Operations[0].BomItemIndex.Int32 != 1 || got.Operations[0].CalloutNumber.Int32 != 2 {
+	if got.Operations[0].OperationType != entity.OpTypeCoverstitch ||
+		got.Operations[0].Zone != entity.TechCardGarmentZone("hem") ||
+		got.Operations[0].SeamClass.String != "bs_bound" ||
+		got.Operations[0].CalloutNumber.Int32 != 2 {
 		t.Errorf("operation classification mismatch: %+v", got.Operations[0])
 	}
-	if !got.Operations[1].BomItemIndex.Valid || got.Operations[1].BomItemIndex.Int32 != 0 {
-		t.Errorf("bom_item_index 0 should be present: %+v", got.Operations[1].BomItemIndex)
+	// An override left unset must stay NULL rather than acquiring the card default: that difference
+	// is what keeps «the technologist chose this» distinguishable from «it defaulted».
+	if got.Operations[1].SeamClass.Valid || got.Operations[1].SeamAllowanceMm.Valid {
+		t.Errorf("unset overrides must stay NULL: %+v", got.Operations[1])
 	}
 
 	pb := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
-	if pb.TechCard.Operations[0].OperationNumber != 10 || pb.TechCard.Operations[0].Placement != "outer hem" {
+	if pb.TechCard.Operations[0].OperationNumber != 10 || pb.TechCard.Operations[0].Zone != zoneHem {
 		t.Errorf("pb operation mismatch: %+v", pb.TechCard.Operations[0])
 	}
-	if pop := pb.TechCard.Operations[1]; pop.BomItemIndex == nil || *pop.BomItemIndex != 0 {
-		t.Errorf("pb op1 bom_item_index 0 should round-trip as present: %+v", pop.BomItemIndex)
+	if pb.TechCard.Operations[1].SeamAllowanceMm != nil {
+		t.Errorf("an inherited allowance must go out ABSENT, not as zero: %+v", pb.TechCard.Operations[1])
 	}
 
-	// a placement that matches no usage is a soft case — drafts are incomplete, never rejected.
-	if _, err := ConvertPbTechCardInsertToEntity(&pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
-		Operations: []*pb_common.TechCardOperation{{Node: "n", Placement: "nonexistent part"}}}); err != nil {
-		t.Errorf("placement mismatch must be accepted (soft): %v", err)
-	}
-
-	// hard errors: out-of-range bom_item_index.
+	// THE TWO REQUIRED FIELDS, and they are the only two. Both are closed lists — that pairing is the
+	// lesson of the removed free-text `node`, which was mandatory and unanswerable.
 	bad := map[string]*pb_common.TechCardInsert{
-		"op no node": {StyleNumber: "x", Name: "y", Operations: []*pb_common.TechCardOperation{{SeamType: "x"}}},
-		"bom idx range": {StyleNumber: "x", Name: "y",
-			BomItems:   []*pb_common.TechCardBomItem{{Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD, Name: "t"}},
-			Operations: []*pb_common.TechCardOperation{{Node: "n", BomItemIndex: i32(3)}}},
+		"missing operation_type": {StyleNumber: "x", Name: "y",
+			Operations: []*pb_common.TechCardOperation{{Zone: zoneOuter}}},
+		"missing zone": {StyleNumber: "x", Name: "y",
+			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock}}},
+		"edge topstitch with a width": {StyleNumber: "x", Name: "y",
+			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter,
+				Topstitch: &pb_common.TechCardTopstitch{
+					Mode:    pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE,
+					WidthMm: dec("6")}}}},
+		"width topstitch without a width": {StyleNumber: "x", Name: "y",
+			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter,
+				Topstitch: &pb_common.TechCardTopstitch{
+					Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH}}}},
+		"attachment size with no attachment": {StyleNumber: "x", Name: "y",
+			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter,
+				AttachmentSizeMm: dec("8")}}},
+		"allowance in centimetres": {StyleNumber: "x", Name: "y",
+			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter,
+				SeamAllowanceMm: dec("0.5")}}},
 	}
 	for name, bi := range bad {
 		if _, err := ConvertPbTechCardInsertToEntity(bi); err == nil {
@@ -572,26 +584,48 @@ func TestConvertTechCardOperations(t *testing.T) {
 		}
 	}
 
+	// Zero is NOT one of those cases: it is a real allowance («cut on the line as drawn»), and the
+	// day it starts reading as «unset» the whole cascade loses its floor.
+	zero := &pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
+		Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter, SeamAllowanceMm: dec("0")}}}
+	zeroEnt, err := ConvertPbTechCardInsertToEntity(zero)
+	if err != nil {
+		t.Fatalf("a zero allowance must be accepted: %v", err)
+	}
+	if !zeroEnt.Operations[0].SeamAllowanceMm.Valid || !zeroEnt.Operations[0].SeamAllowanceMm.Decimal.IsZero() {
+		t.Errorf("zero allowance must survive as PRESENT zero: %+v", zeroEnt.Operations[0].SeamAllowanceMm)
+	}
+
 	// An operation referencing a callout that no longer exists DETACHES (link cleared, op kept) —
 	// S8 parity with the piece callout-sync rules: sketch cleanup (K.31) is never vetoed by a stale
 	// display cross-ref. Changed from a hard error after the beta A–L run hit the veto live.
 	detached := &pb_common.TechCardInsert{StyleNumber: "x", Name: "y",
 		Callouts:   []*pb_common.TechCardCallout{{Number: 1}},
-		Operations: []*pb_common.TechCardOperation{{Node: "n", CalloutNumber: 9}}}
+		Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter, CalloutNumber: 9}}}
 	ent, err := ConvertPbTechCardInsertToEntity(detached)
 	if err != nil {
 		t.Fatalf("unmatched callout_number must detach, not error: %v", err)
 	}
 	if len(ent.Operations) != 1 || ent.Operations[0].CalloutNumber.Valid {
-		t.Errorf("expected the operation kept with callout_number cleared, got %+v", ent.Operations)
+		t.Errorf("stale callout_number must be cleared, operation kept: %+v", ent.Operations)
 	}
 }
+
+// Shorthands for the two required fields, so a fixture that is not ABOUT them does not restate them
+// at full enum length on every row.
+const (
+	opTypeLock = pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH
+	zoneOuter  = pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OUTER
+	zoneHem    = pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_HEM
+	zoneCollar = pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_COLLAR
+)
+
 
 func TestConvertTechCardIssuesAndRelease(t *testing.T) {
 	in := &pb_common.TechCardInsert{
 		StyleNumber: "ST-035",
 		Name:        "Jacket",
-		Operations:  []*pb_common.TechCardOperation{{Node: "sew collar"}},
+		Operations:  []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneCollar}},
 		Issues: []*pb_common.TechCardIssue{
 			{OperationNumber: 10, Severity: pb_common.TechCardIssueSeverity_TECH_CARD_ISSUE_SEVERITY_HIGH, Description: "collar too tight to turn"},
 		},

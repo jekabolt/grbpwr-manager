@@ -96,7 +96,8 @@ func TestCloneStyleForSeasonNormalizesLegacyIssueRefsAndCurrencylessCosting(t *t
 	source := cloneSourceCard()
 	source.Operations = []entity.TechCardOperation{{
 		OperationNumber: sql.NullInt32{Int32: 10, Valid: true},
-		Node:            "legacy operation",
+		OperationType:   entity.OpTypeLockstitch,
+		Zone:            entity.ZoneOuter,
 	}}
 	source.Callouts = []entity.TechCardCallout{{Number: 1}}
 	source.Issues = []entity.TechCardIssue{{

@@ -286,8 +286,8 @@ type TechCardMarkerInsert struct {
 	// GrainLayer's EMPTY STRING IS SIGNIFICANT and means «do not orient» — hence sql.NullString and
 	// not string. Folding "" into NULL would turn a deliberate «не разворачивать» into «unknown», and
 	// a rebuild would then orient pieces the operator forbade orienting.
-	SeamAllowanceCm    decimal.NullDecimal `db:"seam_allowance_cm"`
-	ContourAllowanceCm decimal.NullDecimal `db:"contour_allowance_cm"`
+	SeamAllowanceMm    decimal.NullDecimal `db:"seam_allowance_mm"`
+	ContourAllowanceMm decimal.NullDecimal `db:"contour_allowance_mm"`
 	ContourLayer       sql.NullString      `db:"contour_layer"`
 	GrainLayer         sql.NullString      `db:"grain_layer"`
 	AllowFlip          sql.NullBool        `db:"allow_flip"`
@@ -353,9 +353,9 @@ type TechCardMarkerSummary struct {
 	// so it is not a column of this row — hence `db:"-"`. Readers go through CompositionOrLegacy.
 	Composition []MarkerCompositionEntry `db:"-"`
 	// УСЛОВИЯ СЪЁМКИ (Ф3), exactly as recorded. INVALID = «not recorded», never zero; a row whose
-	// SeamAllowanceCm is INVALID is «старая норма» (IsLegacyNorm below).
-	SeamAllowanceCm    decimal.NullDecimal `db:"seam_allowance_cm"`
-	ContourAllowanceCm decimal.NullDecimal `db:"contour_allowance_cm"`
+	// SeamAllowanceMm is INVALID is «старая норма» (IsLegacyNorm below).
+	SeamAllowanceMm    decimal.NullDecimal `db:"seam_allowance_mm"`
+	ContourAllowanceMm decimal.NullDecimal `db:"contour_allowance_mm"`
 	ContourLayer       sql.NullString      `db:"contour_layer"`
 	GrainLayer         sql.NullString      `db:"grain_layer"`
 	AllowFlip          sql.NullBool        `db:"allow_flip"`
@@ -385,7 +385,7 @@ type TechCardMarkerSummary struct {
 // Allowance is what this раскладка states about the allowance on the cloth — three-valued, see
 // entity.MarkerAllowance.
 func (m TechCardMarkerSummary) Allowance() MarkerAllowance {
-	return MarkerAllowanceOf(m.SeamAllowanceCm, m.ContourAllowanceCm)
+	return MarkerAllowanceOf(m.SeamAllowanceMm, m.ContourAllowanceMm)
 }
 
 // IsLegacyNorm reports «СТАРАЯ НОРМА»: a раскладка that does not say what it laid out or under which
@@ -393,7 +393,7 @@ func (m TechCardMarkerSummary) Allowance() MarkerAllowance {
 // the unmarked stays old by itself (04-marker-conditions.md). A readiness gate must not count such a
 // marker as a valid measurement: it was taken along an unknown line, at a nominal width, under an
 // unrecorded flip policy.
-func (m TechCardMarkerSummary) IsLegacyNorm() bool { return !m.SeamAllowanceCm.Valid }
+func (m TechCardMarkerSummary) IsLegacyNorm() bool { return !m.SeamAllowanceMm.Valid }
 
 // PieceSetStatus compares the fingerprint stored with this раскладка against the card's set today.
 //
@@ -1507,15 +1507,28 @@ func AuxSubtypeFromName(name string) (TechCardAuxSubtype, bool) {
 }
 
 // TechCardConstruction holds general workmanship parameters (Sheet «Обработка», 1:1).
+// The card's DEFAULTS — what an operation inherits when it does not override.
+//
+// It used to be a block of free-text notes that nothing inherited, sharing its suggestion lists with
+// the operation editor while the operator retyped the same «5 мм» on every step. The typed fields
+// below are the half an operation can actually inherit; hem finish and pressing stay prose because
+// they genuinely are.
+//
+// THE SEAM ALLOWANCE IS NOT HERE. The card's standard is TechCard.RequiredSeamAllowanceMm, which
+// 0277 deliberately put on the card rather than in this section: a field in a section's digest
+// projection marks every signed-off approval of that section as stale the moment it is added. A
+// second card-level allowance would also be a second answer to a settled question.
 type TechCardConstruction struct {
-	MainStitchType  sql.NullString `db:"main_stitch_type"`
-	StitchDensity   sql.NullString `db:"stitch_density"`
-	OverlockThreads sql.NullString `db:"overlock_threads"`
-	SeamAllowances  sql.NullString `db:"seam_allowances"`
-	HemFinish       sql.NullString `db:"hem_finish"`
-	Pressing        sql.NullString `db:"pressing"`
-	MachineClass    sql.NullString `db:"machine_class"`
-	Notes           sql.NullString `db:"notes"`
+	HemFinish sql.NullString `db:"hem_finish"`
+	Pressing  sql.NullString `db:"pressing"`
+	Notes     sql.NullString `db:"notes"`
+	// Inherited by TechCardOperation.SeamClass when that one is unset.
+	DefaultSeamClass sql.NullString `db:"default_seam_class"`
+	// Inherited by TechCardOperation.StitchesPerCm. STITCHES PER CENTIMETRE — density is quoted per
+	// cm in every language and is not part of the millimetre switch.
+	DefaultStitchesPerCm decimal.NullDecimal `db:"default_stitches_per_cm"`
+	// 3 | 4 | 5; NULL = unset. The name does not reuse the removed `overlock_threads` (a string).
+	OverlockThreadCount sql.NullInt32 `db:"overlock_thread_count"`
 }
 
 // TechCardOperationType is the machine / stitch class of an operation. Mirrors the
@@ -1548,73 +1561,160 @@ var ValidTechCardOperationTypes = map[TechCardOperationType]bool{
 	OpTypeFusing: true, OpTypeHandwork: true, OpTypeOther: true,
 }
 
-// TechCardConstructionZone is the display-grouping band of an operation. Mirrors the
-// common.TechCardConstructionZone proto enum; stored as a string in
-// tech_card_operation.zone ("unknown" when unset).
-type TechCardConstructionZone string
+// TechCardGarmentZone says WHERE ON THE GARMENT a step works. Mirrors the common.TechCardGarmentZone
+// proto enum; stored as a string in tech_card_operation.zone ("unknown" when unset, and REJECTED on
+// write — zone is one of the two fields a step cannot be saved without).
+//
+// It replaces TechCardConstructionZone, which held only the three material bands and therefore could
+// not answer «where»; the free-text `placement` carried that and is gone.
+type TechCardGarmentZone string
 
-const (
-	ZoneUnknown     TechCardConstructionZone = "unknown"
-	ZoneOuter       TechCardConstructionZone = "outer"
-	ZoneLining      TechCardConstructionZone = "lining"
-	ZoneInterlining TechCardConstructionZone = "interlining"
-	ZoneOther       TechCardConstructionZone = "other"
-)
-
-// ValidTechCardConstructionZones is the set of accepted zones (excluding the
-// "unknown" default, which is applied implicitly when unset).
-var ValidTechCardConstructionZones = map[TechCardConstructionZone]bool{
-	ZoneOuter: true, ZoneLining: true, ZoneInterlining: true, ZoneOther: true,
+// GarmentZoneTokens is THE vocabulary of garment areas, in reading order (material bands first, then
+// areas, then other) — and it has TWO consumers, which is the whole point of it being one slice.
+//
+// The fitting change-request zone (0256) got here first: it started as a mirror of the old three
+// construction bands and widened to garment areas, because a fitting remark is about where on the
+// garment the problem is. An operation needs the same answer for the same reason. Holding the same
+// eighteen tokens in two places is the drift 0278's header argues against at length, so
+// ValidGarmentZones (operations) and ValidFittingChangeZones (fitting) are both DERIVED from here.
+//
+// A slice, not a map, because a Go map iterates randomly and the same rejection would print its list
+// in a different order every time.
+var GarmentZoneTokens = []string{
+	"unknown", // unset; legal in storage, rejected on an operation write
+	// material bands
+	"outer", "lining", "interlining",
+	// garment areas
+	"sleeve", "collar", "neckline", "armhole", "shoulder", "chest", "waist", "hip", "hem",
+	"pocket", "closure", "back", "front",
+	"other",
 }
 
-// TechCardOperation is one per-node sewing operation (Sheet «Обработка»).
+const (
+	ZoneUnknown     TechCardGarmentZone = "unknown"
+	ZoneOuter       TechCardGarmentZone = "outer"
+	ZoneLining      TechCardGarmentZone = "lining"
+	ZoneInterlining TechCardGarmentZone = "interlining"
+	ZoneOther       TechCardGarmentZone = "other"
+)
+
+// ValidGarmentZones is the set accepted on an operation, derived from GarmentZoneTokens minus the
+// "unknown" placeholder — an operation must name a real zone.
+var ValidGarmentZones = func() map[TechCardGarmentZone]bool {
+	m := make(map[TechCardGarmentZone]bool, len(GarmentZoneTokens))
+	for _, z := range GarmentZoneTokens {
+		if z == string(ZoneUnknown) {
+			continue
+		}
+		m[TechCardGarmentZone(z)] = true
+	}
+	return m
+}()
+
+// TechCardSeamClass is the ISO 4916 seam class. Stored as a string in tech_card_operation.seam_class
+// and tech_card_construction.default_seam_class; "" / NULL = inherit.
+//
+// It replaces the free-text seam_type, whose suggestion list answered two questions with one value:
+// «стачной взаутюжку» and «стачной вразутюжку» are ONE class (SS plain) pressed two different ways.
+// Pressing direction is prose on TechCardConstruction.Pressing and is not a seam class.
+type TechCardSeamClass string
+
+var SeamClassTokens = []string{
+	"ss_plain", "ss_french",
+	"ls_lapped", "ls_flat_felled",
+	"ef_hem_raw", "ef_hem_turned", "ef_faced",
+	"bs_bound", "fs_flat", "os_topstitch",
+	"other",
+}
+
+var ValidSeamClasses = tokenSet[TechCardSeamClass](SeamClassTokens)
+
+// TechCardAttachmentKind is the folder / guide / presser foot a step runs with. There is no "none"
+// token: for a presser foot «none» and «not specified» are the same fact downstream, and offering
+// both would make an operator choose between two spellings of nothing.
+type TechCardAttachmentKind string
+
+var AttachmentKindTokens = []string{
+	"binder", "hemmer_folder", "scroll_foot", "zipper_foot", "invisible_zipper_foot",
+	"edge_guide", "piping_foot", "elastic_attachment", "other",
+}
+
+var ValidAttachmentKinds = tokenSet[TechCardAttachmentKind](AttachmentKindTokens)
+
+// TechCardTopstitchMode replaces the free-text topstitch_width, whose real values were three
+// different KINDS of answer at once: «нет», «в край» (a placement, not a width) and «2 × 6 мм»
+// (a width AND a row count).
+type TechCardTopstitchMode string
+
+const (
+	TopstitchEdge  TechCardTopstitchMode = "edge"
+	TopstitchWidth TechCardTopstitchMode = "width"
+)
+
+var TopstitchModeTokens = []string{"edge", "width"}
+
+var ValidTopstitchModes = tokenSet[TechCardTopstitchMode](TopstitchModeTokens)
+
+// tokenSet turns a token slice into the membership set its validator uses, so the slice stays the
+// single source and the two can never disagree.
+func tokenSet[T ~string](tokens []string) map[T]bool {
+	m := make(map[T]bool, len(tokens))
+	for _, t := range tokens {
+		m[T(t)] = true
+	}
+	return m
+}
+
+// MaxTopstitchRows caps the row count. Four rows of topstitching is already decorative extremity;
+// past that it is a typo, and an unbounded count reaches the printed sheet as nonsense.
+const MaxTopstitchRows = 4
+
+// TechCardOperation is one sewing step of the assembly order (Sheet «Обработка»).
+//
+// Eleven fields left in the operations break, and none of them are coming back as an optional
+// variant: `node`/`description`/`seam_type`/`topstitch_width`/`thread`/`machine`/`seam_allowance`/
+// `needle`/`time_norm`/`attachment`/`placement`. Four of those were written by the CODE (a preset,
+// the linked BOM line, the joined piece names) and then stored as facts and hashed into a signed
+// digest; one duplicated an attribute the thread article already carries; and `node` asked a
+// question with no single answer, which is why the pattern-maker who met it could not fill it.
+//
+// What is left is what a step IS: a verb, a place, what it joins, what it consumes, how long it
+// takes — plus overrides that are unset when they agree with the card.
 type TechCardOperation struct {
 	OperationNumber sql.NullInt32       `db:"operation_number"`
-	Node            string              `db:"node"`
-	Description     sql.NullString      `db:"description"`
-	SeamType        sql.NullString      `db:"seam_type"`
-	Machine         sql.NullString      `db:"machine"`
-	StitchesPerCm   decimal.NullDecimal `db:"stitches_per_cm"`
-	TopstitchWidth  sql.NullString      `db:"topstitch_width"`
-	SeamAllowance   sql.NullString      `db:"seam_allowance"`
-	Thread          sql.NullString      `db:"thread"`
-	Needle          sql.NullString      `db:"needle"`
-	Attachment      sql.NullString      `db:"attachment"`
-	TimeNorm        decimal.NullDecimal `db:"time_norm"`
-	SMV             decimal.NullDecimal `db:"smv"` // standard minute value; NULL = unset
-	Note            sql.NullString      `db:"note"`
-	// classification + links (Phase 3.5d)
-	OperationType TechCardOperationType    `db:"operation_type"` // machine/stitch class; "unknown" = unset
-	Zone          TechCardConstructionZone `db:"zone"`           // display-grouping band; "unknown" = unset
-	// BomItemId is the real FK to the referenced BOM line (S2/S3), resolved and written by the store;
-	// BomItemIndex is the legacy positional reference kept during the transition (dropped in M3).
-	BomItemId sql.NullInt64 `db:"bom_item_id"`
-	// BomLineKey is the wire reference to that BOM line by its stable line_key (WS3 follow-up:
-	// positionality off the wire). The store resolves it to BomItemId; not persisted (db:"-").
-	BomLineKey string `db:"-"`
-	// BomItemIndex is the 0-based index into the submitted bom_items of the material
-	// this operation applies; NULL = no reference (index 0 is a valid reference). When
-	// set it wins; otherwise the material resolves via Placement against the selected
-	// colourway's usages.
-	BomItemIndex sql.NullInt32 `db:"bom_item_index"`
+	SMV             decimal.NullDecimal `db:"smv"` // minutes; the ONLY time field (time_norm is gone)
+	Note            sql.NullString      `db:"note"` // the only free text on a step
+
+	// The two REQUIRED fields, and the only two. Both are closed lists — nothing with free input is
+	// mandatory on a step ever again, which is exactly what made `node` a trap.
+	OperationType TechCardOperationType `db:"operation_type"` // the verb; "unknown" rejected on write
+	Zone          TechCardGarmentZone   `db:"zone"`           // where on the garment; "unknown" rejected
+
+	// Overrides. NULL/"" = INHERIT from the card, and the inherited value is never written back into
+	// the row: the moment it is, «the technologist chose 4 st/cm» stops being distinguishable from
+	// «it defaulted to 4», which is the defect this break exists to remove.
+	StitchesPerCm    decimal.NullDecimal `db:"stitches_per_cm"` // STITCHES PER CM — not part of the mm switch
+	SeamClass        sql.NullString      `db:"seam_class"`
+	SeamAllowanceMm  decimal.NullDecimal `db:"seam_allowance_mm"` // millimetres; 0 is a REAL setting
+	TopstitchMode    sql.NullString      `db:"topstitch_mode"`
+	TopstitchWidthMm decimal.NullDecimal `db:"topstitch_width_mm"`
+	TopstitchRows    sql.NullInt32       `db:"topstitch_rows"`
+	AttachmentKind   sql.NullString      `db:"attachment_kind"`
+	AttachmentSizeMm decimal.NullDecimal `db:"attachment_size_mm"`
+
 	// CalloutNumber links the operation to a TechCardCallout.number; NULL/0 = none.
 	CalloutNumber sql.NullInt32 `db:"callout_number"`
-	// Placement is the garment part this operation works on; resolves the real material
-	// via the selected colourway's usages (normalized trim+lower match). NULL = unset.
-	// It is a human LABEL, not a join key -- PieceIds below is the real reference.
-	Placement sql.NullString `db:"placement"`
+
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
 	PieceLineKeys []string `db:"-"`
 	// PieceIds are the resolved tech_card_piece FKs, held in the tech_card_operation_piece join
 	// table (0199) rather than a column: an assembly operation spans as many pieces as it joins.
-	// This is deliberately many-to-many, unlike TechCardColorwayUsage.PieceId, which is 1:1 because
-	// a consumption norm is about exactly one piece. Not persisted on the row itself (db:"-").
 	PieceIds []int `db:"-"`
 	// BomLineKeys / BomIds are the off-part materials this operation consumes (thread, fusing), held
-	// in tech_card_operation_bom (0200). Many-to-many for the same reason the piece links are: one
-	// operation can join several materials. The legacy single BomLineKey/BomItemId above stays as
-	// the first entry during the transition. Not persisted on the row itself (db:"-").
+	// in tech_card_operation_bom (0200). Many-to-many for the same reason the piece links are.
+	// The legacy single bom_line_key / bom_item_id / bom_item_index went with the break — the chip
+	// row WAS the answer, and the single field was a second one.
 	BomLineKeys []string `db:"-"`
 	BomIds      []int    `db:"-"`
 }
@@ -1989,17 +2089,22 @@ type TechCardInsert struct {
 	// planning intent, the anchor a run's PromisedAt is judged against. Unlike ApprovedAt/ReleasedAt
 	// it is client-writable, and it is a DATE column — the time of day is dropped at the dto boundary.
 	TargetDropDate sql.NullTime `db:"target_drop_date"`
-	// RequiredSeamAllowanceCm is this style's ТРЕБУЕМЫЙ ПРИПУСК in centimetres (Ф3.2) — the standard
-	// a readiness gate compares a раскладка's recorded allowance against. INVALID = fall back to the
-	// workshop default, which may itself be unset, and then there is NO STANDARD and the consumer
-	// must return «no verdict» rather than substitute zero (0 is a legal setting here — see
-	// entity.RequiredSeamAllowanceCm).
+	// RequiredSeamAllowanceMm is this style's ТРЕБУЕМЫЙ ПРИПУСК in MILLIMETRES (Ф3.2) — both the
+	// standard a readiness gate compares a раскладка's recorded allowance against AND the head of the
+	// cascade the sewing steps inherit from (workshop → this → operation.SeamAllowanceMm). INVALID =
+	// fall back to the workshop default, which may itself be unset, and then there is NO STANDARD and
+	// the consumer must return «no verdict» rather than substitute zero (0 is a legal setting here —
+	// see entity.RequiredSeamAllowanceMm).
+	//
+	// MILLIMETRES since 0290: one unit for the whole allowance chain, so nothing converts between the
+	// standard and the step that must honour it. Cutting-table length and fabric edge margin stay in
+	// CENTIMETRES — a 12 m table reads worse in millimetres — and the field-name suffix is the guard.
 	//
 	// It lives on the card header and is in NO section digest projection, deliberately: adding a field
 	// to one would mark every signed-off approval of that section as edited-since-signing, on every
-	// card at once. And it is NOT the free text TechCardConstruction.SeamAllowances («5 мм»), which
-	// stays a human note.
-	RequiredSeamAllowanceCm decimal.NullDecimal `db:"required_seam_allowance_cm"`
+	// card at once. (The free-text twin it used to be contrasted with, TechCardConstruction's
+	// «5 мм» note, no longer exists — the operations break removed it.)
+	RequiredSeamAllowanceMm decimal.NullDecimal `db:"required_seam_allowance_mm"`
 
 	BaseModelId      sql.NullInt32           `db:"base_model_id"`
 	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`

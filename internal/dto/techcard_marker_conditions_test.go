@@ -28,26 +28,26 @@ func TestMarkerConditionsFromPayload(t *testing.T) {
 		// count an unlabelled measurement.
 		out, err := ConvertPbTechCardMarkerInsertToEntity(validMarkerInsertPb())
 		require.NoError(t, err)
-		require.False(t, out.SeamAllowanceCm.Valid)
-		require.False(t, out.ContourAllowanceCm.Valid)
+		require.False(t, out.SeamAllowanceMm.Valid)
+		require.False(t, out.ContourAllowanceMm.Valid)
 		require.False(t, out.ContourLayer.Valid)
 		require.False(t, out.GrainLayer.Valid)
 		require.False(t, out.AllowFlip.Valid)
-		require.True(t, entity.TechCardMarkerSummary{SeamAllowanceCm: out.SeamAllowanceCm}.IsLegacyNorm())
+		require.True(t, entity.TechCardMarkerSummary{SeamAllowanceMm: out.SeamAllowanceMm}.IsLegacyNorm())
 	})
 
 	t.Run("all five are carried through", func(t *testing.T) {
 		pb := validMarkerInsertPb()
-		pb.SeamAllowanceCm = &pb_decimal.Decimal{Value: "1"}
-		pb.ContourAllowanceCm = &pb_decimal.Decimal{Value: "0"}
+		pb.SeamAllowanceMm = &pb_decimal.Decimal{Value: "1"}
+		pb.ContourAllowanceMm = &pb_decimal.Decimal{Value: "0"}
 		pb.ContourLayer = ptrStr("14")
 		pb.GrainLayer = ptrStr("7")
 		pb.AllowFlip = ptrBool(false)
 		out, err := ConvertPbTechCardMarkerInsertToEntity(pb)
 		require.NoError(t, err)
-		require.Equal(t, "1", out.SeamAllowanceCm.Decimal.String())
-		require.True(t, out.ContourAllowanceCm.Valid)
-		require.True(t, out.ContourAllowanceCm.Decimal.IsZero(), "a RECORDED zero is a measurement")
+		require.Equal(t, "1", out.SeamAllowanceMm.Decimal.String())
+		require.True(t, out.ContourAllowanceMm.Valid)
+		require.True(t, out.ContourAllowanceMm.Decimal.IsZero(), "a RECORDED zero is a measurement")
 		require.Equal(t, sql.NullString{String: "14", Valid: true}, out.ContourLayer)
 		require.Equal(t, sql.NullString{String: "7", Valid: true}, out.GrainLayer)
 		require.Equal(t, sql.NullBool{Bool: false, Valid: true}, out.AllowFlip,
@@ -78,18 +78,18 @@ func TestMarkerConditionsFromPayload(t *testing.T) {
 		// Both halves arrive as float64 from a measurement and are stored at 2 dp; refusing dust would
 		// fail a save over digits the column truncates anyway.
 		pb := validMarkerInsertPb()
-		pb.SeamAllowanceCm = &pb_decimal.Decimal{Value: "1.0000000000000002"}
-		pb.ContourAllowanceCm = &pb_decimal.Decimal{Value: "0.9999999999"}
+		pb.SeamAllowanceMm = &pb_decimal.Decimal{Value: "1.0000000000000002"}
+		pb.ContourAllowanceMm = &pb_decimal.Decimal{Value: "0.9999999999"}
 		out, err := ConvertPbTechCardMarkerInsertToEntity(pb)
 		require.NoError(t, err)
-		require.Equal(t, "1", out.SeamAllowanceCm.Decimal.String())
-		require.Equal(t, "1", out.ContourAllowanceCm.Decimal.String())
+		require.Equal(t, "1", out.SeamAllowanceMm.Decimal.String())
+		require.Equal(t, "1", out.ContourAllowanceMm.Decimal.String())
 	})
 
 	t.Run("a negative allowance is refused", func(t *testing.T) {
 		for _, f := range []func(*pb_common.TechCardMarkerInsert){
-			func(p *pb_common.TechCardMarkerInsert) { p.SeamAllowanceCm = &pb_decimal.Decimal{Value: "-1"} },
-			func(p *pb_common.TechCardMarkerInsert) { p.ContourAllowanceCm = &pb_decimal.Decimal{Value: "-1"} },
+			func(p *pb_common.TechCardMarkerInsert) { p.SeamAllowanceMm = &pb_decimal.Decimal{Value: "-1"} },
+			func(p *pb_common.TechCardMarkerInsert) { p.ContourAllowanceMm = &pb_decimal.Decimal{Value: "-1"} },
 		} {
 			pb := validMarkerInsertPb()
 			f(pb)
@@ -114,13 +114,13 @@ func TestMarkerConditionsFromPayload(t *testing.T) {
 // refuse it — otherwise the client gets a bare InvalidArgument with no field to point at.
 func TestDtoDoesNotSwallowTheDoubleAllowanceRefusal(t *testing.T) {
 	pb := validMarkerInsertPb()
-	pb.SeamAllowanceCm = &pb_decimal.Decimal{Value: "1"}
-	pb.ContourAllowanceCm = &pb_decimal.Decimal{Value: "1"}
+	pb.SeamAllowanceMm = &pb_decimal.Decimal{Value: "1"}
+	pb.ContourAllowanceMm = &pb_decimal.Decimal{Value: "1"}
 	out, err := ConvertPbTechCardMarkerInsertToEntity(pb)
 	require.NoError(t, err, "the dto parses the FORM; the combination is judged where a field tag survives")
-	ve := entity.MarkerAllowanceRefusal(out.SeamAllowanceCm, out.ContourAllowanceCm, out.ContourLayer.String)
+	ve := entity.MarkerAllowanceRefusal(out.SeamAllowanceMm, out.ContourAllowanceMm, out.ContourLayer.String)
 	require.NotNil(t, ve)
-	require.Equal(t, "seam_allowance_cm", ve.Field)
+	require.Equal(t, "seam_allowance_mm", ve.Field)
 	require.Equal(t, entity.ReasonDoubleSeamAllowance, ve.Reason)
 }
 
@@ -137,8 +137,8 @@ func TestTechCardMarkerSummaryToPbEmitsConditionsWithPresence(t *testing.T) {
 
 	t.Run("unrecorded conditions are absent", func(t *testing.T) {
 		pb := TechCardMarkerSummaryToPb(base)
-		require.Nil(t, pb.SeamAllowanceCm)
-		require.Nil(t, pb.ContourAllowanceCm)
+		require.Nil(t, pb.SeamAllowanceMm)
+		require.Nil(t, pb.ContourAllowanceMm)
 		require.Nil(t, pb.ContourLayer)
 		require.Nil(t, pb.GrainLayer)
 		require.Nil(t, pb.AllowFlip)
@@ -150,15 +150,15 @@ func TestTechCardMarkerSummaryToPbEmitsConditionsWithPresence(t *testing.T) {
 
 	t.Run("recorded zeros and an empty grain layer survive the trip", func(t *testing.T) {
 		m := base
-		m.SeamAllowanceCm = mustNullDecimal("0")
-		m.ContourAllowanceCm = mustNullDecimal("1")
+		m.SeamAllowanceMm = mustNullDecimal("0")
+		m.ContourAllowanceMm = mustNullDecimal("1")
 		m.ContourLayer = sql.NullString{String: "14", Valid: true}
 		m.GrainLayer = sql.NullString{String: "", Valid: true}
 		m.AllowFlip = sql.NullBool{Bool: false, Valid: true}
 		m.IsNorm = true
 		pb := TechCardMarkerSummaryToPb(m)
-		require.Equal(t, "0", pb.SeamAllowanceCm.Value)
-		require.Equal(t, "1", pb.ContourAllowanceCm.Value)
+		require.Equal(t, "0", pb.SeamAllowanceMm.Value)
+		require.Equal(t, "1", pb.ContourAllowanceMm.Value)
 		require.NotNil(t, pb.GrainLayer)
 		require.Equal(t, "", *pb.GrainLayer, "an empty grain layer is «не разворачивать», not «не записано»")
 		require.NotNil(t, pb.AllowFlip)

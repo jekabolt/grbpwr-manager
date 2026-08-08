@@ -125,12 +125,14 @@ func (s *Server) buildAIOperationContext(ctx context.Context, card *entity.TechC
 
 	if c := card.Construction; c != nil {
 		tcx.Construction = &openrouter.ConstructionContext{
-			MainStitchType:  c.MainStitchType.String,
-			StitchDensity:   c.StitchDensity.String,
-			OverlockThreads: c.OverlockThreads.String,
-			SeamAllowances:  c.SeamAllowances.String,
+			DefaultSeamClass:     c.DefaultSeamClass.String,
+			DefaultStitchesPerCm: decimalOrEmpty(c.DefaultStitchesPerCm),
+			OverlockThreadCount:  c.OverlockThreadCount.Int32,
 		}
 	}
+	// The card's own allowance standard, in millimetres — the draft should not invent a per-step
+	// allowance that contradicts it, and stating it is cheaper than correcting it afterwards.
+	tcx.RequiredSeamAllowanceMm = decimalOrEmpty(card.RequiredSeamAllowanceMm)
 
 	return tcx
 }
@@ -154,29 +156,39 @@ func (s *Server) resolveCategoryName(ctx context.Context, categoryID sql.NullInt
 }
 
 // aiOperationToPb maps one drafted operation onto the persisted common.TechCardOperation shape.
-// Numeric-ish fields are parsed leniently (a bad value is dropped, not fatal) so a rough draft still
-// yields an editable operation for the technologist.
+//
+// Every dictionary value goes through the token maps below, so a model that invents a word produces
+// UNKNOWN rather than a stored string nothing recognises. UNKNOWN is deliberately NOT fatal here:
+// this is a DRAFT a technologist reviews and completes, and dropping the whole step because one
+// field was guessed badly would throw away the nine fields that were right. The save path is where
+// the two required fields are actually enforced.
 func aiOperationToPb(o openrouter.Operation) *pb_common.TechCardOperation {
 	op := &pb_common.TechCardOperation{
-		Node:           strings.TrimSpace(o.Node),
-		Description:    o.Description,
-		SeamType:       o.SeamType,
-		Machine:        o.Machine,
-		TopstitchWidth: o.TopstitchWidth,
-		SeamAllowance:  o.SeamAllowance,
-		Thread:         o.Thread,
-		Needle:         o.Needle,
-		Attachment:     o.Attachment,
 		Note:           o.Note,
-		Placement:      o.Placement,
 		OperationType:  aiOperationType(o.OperationType),
-		Zone:           aiConstructionZone(o.Zone),
+		Zone:           aiGarmentZone(o.Zone),
+		SeamClass:      aiSeamClass(o.SeamClass),
+		AttachmentKind: aiAttachmentKind(o.AttachmentKind),
 	}
 	if v := normalizeDecimal(o.StitchesPerCm.String()); v != "" {
 		op.StitchesPerCm = &pb_decimal.Decimal{Value: v}
 	}
-	if v := normalizeDecimal(o.TimeNormMinutes.String()); v != "" {
-		op.TimeNorm = &pb_decimal.Decimal{Value: v}
+	if v := normalizeDecimal(o.SmvMinutes.String()); v != "" {
+		op.Smv = &pb_decimal.Decimal{Value: v}
+	}
+	if v := normalizeDecimal(o.SeamAllowanceMm.String()); v != "" {
+		op.SeamAllowanceMm = &pb_decimal.Decimal{Value: v}
+	}
+	if mode := aiTopstitchMode(o.TopstitchMode); mode != pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN {
+		t := &pb_common.TechCardTopstitch{Mode: mode, Rows: parsePositiveInt(o.TopstitchRows.String())}
+		// A width only travels with WIDTH — the same rule the save path enforces. Letting a drafted
+		// «edge, 6 mm» through would hand the technologist a step that cannot be saved as shown.
+		if mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH {
+			if v := normalizeDecimal(o.TopstitchWidthMm.String()); v != "" {
+				t.WidthMm = &pb_decimal.Decimal{Value: v}
+			}
+		}
+		op.Topstitch = t
 	}
 	if n := parsePositiveInt(o.OperationNumber.String()); n > 0 {
 		op.OperationNumber = n
@@ -185,6 +197,15 @@ func aiOperationToPb(o openrouter.Operation) *pb_common.TechCardOperation {
 		op.CalloutNumber = n
 	}
 	return op
+}
+
+// decimalOrEmpty renders a nullable decimal for the prompt; "" when unset, so the prompt simply does
+// not mention a default nobody configured instead of asserting a zero.
+func decimalOrEmpty(d decimal.NullDecimal) string {
+	if !d.Valid {
+		return ""
+	}
+	return d.Decimal.String()
 }
 
 // normalizeDecimal validates a numeric literal and returns its canonical string, or "" when empty
@@ -231,12 +252,22 @@ var aiOpTypeTokens = map[string]pb_common.TechCardOperationType{
 	"other":         pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_OTHER,
 }
 
-// aiZoneTokens maps the model's zone tokens onto the proto construction-zone enum.
-var aiZoneTokens = map[string]pb_common.TechCardConstructionZone{
-	"outer":       pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OUTER,
-	"lining":      pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_LINING,
-	"interlining": pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_INTERLINING,
-	"other":       pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_OTHER,
+// The remaining dictionaries are BUILT from the entity token slices rather than typed out: a
+// hand-written copy is exactly where the vocabulary silently loses a value that was added elsewhere,
+// and here the loss would be invisible — the model's correct answer would simply become UNKNOWN.
+var aiZoneTokens = aiTokenMap(entity.GarmentZoneTokens, "TECH_CARD_GARMENT_ZONE_", pb_common.TechCardGarmentZone_value)
+var aiSeamClassTokens = aiTokenMap(entity.SeamClassTokens, "TECH_CARD_SEAM_CLASS_", pb_common.TechCardSeamClass_value)
+var aiAttachmentTokens = aiTokenMap(entity.AttachmentKindTokens, "TECH_CARD_ATTACHMENT_KIND_", pb_common.TechCardAttachmentKind_value)
+var aiTopstitchTokens = aiTokenMap(entity.TopstitchModeTokens, "TECH_CARD_TOPSTITCH_MODE_", pb_common.TechCardTopstitchMode_value)
+
+func aiTokenMap(tokens []string, prefix string, values map[string]int32) map[string]int32 {
+	m := make(map[string]int32, len(tokens))
+	for _, tok := range tokens {
+		if v, ok := values[prefix+strings.ToUpper(tok)]; ok {
+			m[tok] = v
+		}
+	}
+	return m
 }
 
 func aiOperationType(token string) pb_common.TechCardOperationType {
@@ -246,11 +277,32 @@ func aiOperationType(token string) pb_common.TechCardOperationType {
 	return pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN
 }
 
-func aiConstructionZone(token string) pb_common.TechCardConstructionZone {
+func aiGarmentZone(token string) pb_common.TechCardGarmentZone {
 	if v, ok := aiZoneTokens[normalizeToken(token)]; ok {
-		return v
+		return pb_common.TechCardGarmentZone(v)
 	}
-	return pb_common.TechCardConstructionZone_TECH_CARD_CONSTRUCTION_ZONE_UNKNOWN
+	return pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_UNKNOWN
+}
+
+func aiSeamClass(token string) pb_common.TechCardSeamClass {
+	if v, ok := aiSeamClassTokens[normalizeToken(token)]; ok {
+		return pb_common.TechCardSeamClass(v)
+	}
+	return pb_common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_UNKNOWN
+}
+
+func aiAttachmentKind(token string) pb_common.TechCardAttachmentKind {
+	if v, ok := aiAttachmentTokens[normalizeToken(token)]; ok {
+		return pb_common.TechCardAttachmentKind(v)
+	}
+	return pb_common.TechCardAttachmentKind_TECH_CARD_ATTACHMENT_KIND_UNKNOWN
+}
+
+func aiTopstitchMode(token string) pb_common.TechCardTopstitchMode {
+	if v, ok := aiTopstitchTokens[normalizeToken(token)]; ok {
+		return pb_common.TechCardTopstitchMode(v)
+	}
+	return pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN
 }
 
 // normalizeToken lowercases and collapses spaces/hyphens to underscores so "Double Needle",

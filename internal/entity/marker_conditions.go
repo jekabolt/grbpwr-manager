@@ -50,7 +50,7 @@ const (
 //	                                  rather than treat it as the whole truth.
 //	Recorded=true,  Confirmed=true  → both halves measured; Cm is the allowance on the cloth.
 type MarkerAllowance struct {
-	// Cm is contour_allowance_cm + seam_allowance_cm, or just the offset when the contour half was
+	// Cm is contour_allowance_mm + seam_allowance_mm, or just the offset when the contour half was
 	// never measured. Meaningless unless Recorded.
 	Cm decimal.Decimal
 	// Recorded says the раскладка states its offset at all. False = «старая норма».
@@ -62,8 +62,8 @@ type MarkerAllowance struct {
 // MarkerAllowanceOf assembles the two recorded halves into one answer.
 //
 // The two are ONE quantity split in two, and keeping them apart is what turns «двойной припуск» from
-// a taxonomy question into arithmetic: seam_allowance_cm is what the LAYOUT added by offsetting the
-// contour outward, contour_allowance_cm is what the FILE already had inside the contour that was
+// a taxonomy question into arithmetic: seam_allowance_mm is what the LAYOUT added by offsetting the
+// contour outward, contour_allowance_mm is what the FILE already had inside the contour that was
 // laid, and their sum is what actually lies on the cloth.
 func MarkerAllowanceOf(seam, contour decimal.NullDecimal) MarkerAllowance {
 	if !seam.Valid {
@@ -109,7 +109,7 @@ func MarkerAllowanceRefusal(seam, contour decimal.NullDecimal, contourLayer stri
 		layer = fmt.Sprintf("слой %q", layer)
 	}
 	total := contour.Decimal.Add(seam.Decimal)
-	return NewFieldViolation("seam_allowance_cm", ReasonDoubleSeamAllowance, seam.Decimal.String(),
+	return NewFieldViolation("seam_allowance_mm", ReasonDoubleSeamAllowance, seam.Decimal.String(),
 		fmt.Sprintf("%s — это линия КРОЯ: замерено, что она лежит на %s см снаружи линии шва. "+
 			"Раскладка добавила ещё %s см офсета, и припуск посчитан дважды — длина настила завышена "+
 			"примерно на %s см по периметру каждой детали. Либо поставьте припуск 0, либо выберите "+
@@ -118,46 +118,59 @@ func MarkerAllowanceRefusal(seam, contour decimal.NullDecimal, contourLayer stri
 }
 
 // Plausibility band for the REQUIRED seam allowance — the workshop default and a card's override,
-// in centimetres. Repeated verbatim by chk_workshop_settings_seam_allowance and
-// chk_tc_required_seam_allowance (migration 0277); the numbers must move together.
+// in MILLIMETRES. Repeated verbatim by chk_workshop_settings_seam_allowance and
+// chk_tc_required_seam_allowance (0277, rewritten in 0290); the numbers must move together, and the
+// client's MAX_SEAM_ALLOWANCE_MM is the third copy of the same ceiling.
 //
 // THE FLOOR IS ZERO AND THAT IS THE POINT. Unlike the cutting table length, whose validator rejects
-// 0 because a 0 cm table is nonsense, a 0 cm required allowance is a REAL workshop setting: «our
+// 0 because a 0 cm table is nonsense, a 0 mm required allowance is a REAL workshop setting: «our
 // выкройки carry the cut line, no offset is needed». «Not configured» is expressed by NULL, and
 // exactly this difference is why 0272 chose a typed column per setting over a shared key/value
 // table — one CHECK across all keys cannot hold two opposite floors.
 //
-// The ceiling is a unit check: the widest real allowance is a 4-5 cm hem, so anything past 10 cm is
-// millimetres typed into a centimetre field, or a stray zero.
+// The ceiling is a unit check, and since 0290 it catches the OPPOSITE mistake to the one it used to.
+// The widest real allowance is a 40-50 mm hem, so past 100 mm it is a stray zero; and a value BELOW
+// 1 is centimetres typed into a millimetre field, which the validator now names explicitly because
+// «0.5» is otherwise a perfectly plausible-looking number that means five millimetres to the person
+// typing it and half a millimetre to everything downstream.
 const (
-	MinSeamAllowanceCm = 0
-	MaxSeamAllowanceCm = 10
+	MinSeamAllowanceMm = 0
+	MaxSeamAllowanceMm = 100
+	// Below this a SET value is almost certainly centimetres. Zero is exempt — it is a real setting.
+	SuspiciouslySmallSeamAllowanceMm = 1
 )
 
-// ValidateSeamAllowanceStandardCm checks a REQUIRED allowance (the workshop default or a card's
+// ValidateSeamAllowanceStandardMm checks a REQUIRED allowance (the workshop default or a card's
 // override) against the band above. An INVALID value is accepted — clearing the standard is legal;
 // only a value being SET has to be plausible. `field` names the caller's field so the refusal points
 // at the control the operator touched.
-func ValidateSeamAllowanceStandardCm(field string, v decimal.NullDecimal) error {
+func ValidateSeamAllowanceStandardMm(field string, v decimal.NullDecimal) error {
 	if !v.Valid {
 		return nil
 	}
-	if v.Decimal.Exponent() < -2 {
+	if v.Decimal.Exponent() < -1 {
 		return NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(),
-			"round to at most 2 decimal places — the column stores no more, so the extra digits would be lost silently")
+			"round to at most 1 decimal place — the column stores tenths of a millimetre and no more, so the extra digits would be lost silently")
 	}
 	if v.Decimal.IsNegative() {
 		return NewFieldViolation(field, "must_not_be_negative", v.Decimal.String(),
 			"a required allowance is 0 or more; to record that no standard is set, clear the field instead of entering a negative number")
 	}
-	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxSeamAllowanceCm)) {
+	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxSeamAllowanceMm)) {
 		return NewFieldViolation(field, "implausibly_wide", v.Decimal.String(),
-			fmt.Sprintf("the value is in CENTIMETRES and the widest real allowance is a 4-5 cm hem — %d is the ceiling; check for millimetres or a stray zero", MaxSeamAllowanceCm))
+			fmt.Sprintf("the value is in MILLIMETRES and the widest real allowance is a 40-50 mm hem — %d is the ceiling; check for a stray zero", MaxSeamAllowanceMm))
+	}
+	// Not folded into the check above: this one is the CENTIMETRE mistake, and it needs its own words.
+	// «1» typed by someone thinking in centimetres is a tenth of what they meant, and it is silently
+	// plausible — the gate would then pass every marker in the shop.
+	if v.Decimal.IsPositive() && v.Decimal.LessThan(decimal.NewFromInt(SuspiciouslySmallSeamAllowanceMm)) {
+		return NewFieldViolation(field, "implausibly_narrow", v.Decimal.String(),
+			"the value is in MILLIMETRES — under 1 mm looks like centimetres typed into a millimetre field (10 mm, not 1); enter 0 if the выкройки genuinely carry the cut line")
 	}
 	return nil
 }
 
-// RequiredSeamAllowanceCm is the STANDARD a readiness gate compares a раскладка's recorded allowance
+// RequiredSeamAllowanceMm is the STANDARD a readiness gate compares a раскладка's recorded allowance
 // against. The order of the sources is not to be rearranged: the card's own requirement wins, and
 // the workshop default is the fallback.
 //
@@ -168,7 +181,7 @@ func ValidateSeamAllowanceStandardCm(field string, v decimal.NullDecimal) error 
 //
 // It takes the two values rather than the two structs on purpose: this is a rule about two numbers,
 // and a rule that named TechCard and WorkshopSettings would be untestable without building both.
-func RequiredSeamAllowanceCm(cardOverride, workshopDefault decimal.NullDecimal) decimal.NullDecimal {
+func RequiredSeamAllowanceMm(cardOverride, workshopDefault decimal.NullDecimal) decimal.NullDecimal {
 	if cardOverride.Valid {
 		return cardOverride
 	}
