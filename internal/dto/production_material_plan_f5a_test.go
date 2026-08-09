@@ -203,7 +203,7 @@ func TestPlanConvertsMetresToKilogramsOnFullWidth(t *testing.T) {
 	// the 2–4% understatement the spec names.
 	require.Equal(t, "66", row.Required.Value)
 	require.Equal(t, "56", row.Shortage.Value, "66 kg needed − 10 kg on hand")
-	require.True(t, hasCaveat(resp.Caveats, "кромка included"), "the conversion must be stated: %v", resp.Caveats)
+	require.True(t, hasCaveat(resp.Caveats, "selvedge included"), "the conversion must be stated: %v", resp.Caveats)
 	require.Equal(t, "200", resp.Contributions[0].Required.Value, "the contribution stays in the SLOT's unit (metres)")
 	require.Equal(t, "m", resp.Contributions[0].Unit)
 }
@@ -297,7 +297,7 @@ func TestPlanMixedSlotUnitsAreAlwaysCaveated(t *testing.T) {
 	require.True(t, hasCaveat(resp.Caveats, `"kg"`) && hasCaveat(resp.Caveats, `"pcs"`),
 		"the caveat must name BOTH units: %v", resp.Caveats)
 	// And the conversion note must still be there — the point is that neither hides the other.
-	require.True(t, hasCaveat(resp.Caveats, "кромка included"),
+	require.True(t, hasCaveat(resp.Caveats, "selvedge included"),
 		"the successful conversion is still reported: %v", resp.Caveats)
 }
 
@@ -317,7 +317,7 @@ func TestPlanUnitCaveatsAreDedupedByStatementNotByMaterial(t *testing.T) {
 		require.Equal(t, 1, n, "caveat repeated %d times across 5 sizes: %q", n, c)
 	}
 	require.True(t, hasCaveat(resp.Caveats, "SUM ACROSS UNITS"), "%v", resp.Caveats)
-	require.True(t, hasCaveat(resp.Caveats, "кромка included"), "%v", resp.Caveats)
+	require.True(t, hasCaveat(resp.Caveats, "selvedge included"), "%v", resp.Caveats)
 }
 
 // A single-unit article must stay quiet: the new alarm keys on a real disagreement, not on the mere

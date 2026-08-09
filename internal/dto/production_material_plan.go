@@ -293,7 +293,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			if kg.Valid && kgBase.Valid {
 				stockAdd, stockBase = kg.Decimal, kgBase.Decimal
 				rowUnit = stockUnit
-				noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (кромка included) × %s g/m²",
+				noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (selvedge included) × %s g/m²",
 					matName(mid, bom), slotUnit, stockUnit,
 					width.Decimal.String(), gsm.Decimal.String()))
 			} else {
@@ -378,7 +378,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				} else if prev.mid != mid && mid != 0 && !layArticleClash[k] {
 					layArticleClash[k] = true
 					caveats = append(caveats, fmt.Sprintf(
-						"слот %q у колорвея %q резолвится в два разных артикула — потребность по настилам отнесена к первому (#%d)",
+						"slot %q of colourway %q resolves to two different articles — the lay-based requirement is attributed to the first one (#%d)",
 						bom.Name, colorwayName(pid), prev.mid))
 				}
 				continue
@@ -511,7 +511,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// The slot is live in the настил but absent from the card this plan loaded. Nothing to
 			// attribute the cloth to, and silence would drop a measured requirement on the floor.
 			caveats = append(caveats, fmt.Sprintf(
-				"настилы %s: слот #%d не найден в этой карточке — их потребность не посчитана",
+				"lays %s: slot #%d is not found in this card — their requirement is not counted",
 				d.label(), k.bomItemID))
 			continue
 		}
@@ -543,12 +543,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		laidSlots[bom.Id] = true
 		if _, planned := plannedByColorway[k.colorwayID]; !planned {
 			caveats = append(caveats, fmt.Sprintf(
-				"настилы %s построены на колорвей %q, которого прогон не планирует — их метраж всё равно в потребности",
+				"lays %s are built for colourway %q, which the run does not plan — their metreage still counts towards the requirement",
 				d.label(), colorwayName(k.colorwayID)))
 		}
 		if d.totalCm().IsZero() {
 			caveats = append(caveats, fmt.Sprintf(
-				"настилы %s (слот %q, колорвей %q) не дают длины — потребность этой пары по настилам равна нулю, а норма к ней уже не применяется",
+				"lays %s (slot %q, colourway %q) yield no length — this pair's lay-based requirement is zero, and the norm no longer applies to it",
 				d.label(), bom.Name, colorwayName(k.colorwayID)))
 		}
 		caveats = append(caveats, d.unmeasured...)
@@ -565,9 +565,9 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			contribUnit = string(entity.MaterialUnitM)
 			spec := strings.TrimSpace(bom.Unit.String)
 			if spec == "" {
-				spec = "не задана"
+				spec = "not set"
 			}
-			noteUnit(fmt.Sprintf("%s: слот %q специфицирован в единице %q, а настил измеряет ткань в метрах — вклад по настилам отдан в метрах",
+			noteUnit(fmt.Sprintf("%s: slot %q is specified in unit %q, but a lay measures cloth in metres — the lay contribution is given in metres",
 				matName(mid, bom), bom.Name, spec))
 		}
 
@@ -624,11 +624,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			switch {
 			case run.ActualWastagePercent.Valid:
 				caveats = append(caveats, fmt.Sprintf(
-					"процент отхода прогона %s%% не применён к слоту %q: потребность посчитана по настилам (измерение), а не по норме",
+					"the run's wastage percent %s%% is not applied to slot %q: the requirement is computed from lays (a measurement), not from the norm",
 					run.ActualWastagePercent.Decimal.String(), bom.Name))
 			case bom.WastagePercent.Valid:
 				caveats = append(caveats, fmt.Sprintf(
-					"процент отхода %s%% слота %q не применён: потребность посчитана по настилам (измерение), а не по норме",
+					"the wastage percent %s%% of slot %q is not applied: the requirement is computed from lays (a measurement), not from the norm",
 					bom.WastagePercent.Decimal.String(), bom.Name))
 			}
 		}
@@ -680,9 +680,9 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// Ф4.6 / Р4. Saying «your norms are manual» about a row whose requirement was MEASURED
 			// would be a wrong explanation of a right number — the same mistake the counted-trim arm
 			// below exists to avoid.
-			because = "потребность этой строки посчитана по НАСТИЛАМ (длина × слои + концевые потери), а коэффициент правит оценку по НОРМЕ: к измерению он не применяется"
+			because = "this row's requirement is computed from LAYS (length × plies + end losses), while the coefficient adjusts the NORM-based estimate: it does not apply to a measurement"
 		case a.hasLaySource:
-			because = "часть потребности посчитана по НАСТИЛАМ (к измерению коэффициент не применяется), а остальные нормы этого прогона не маркерные"
+			because = "part of the requirement is computed from LAYS (the coefficient does not apply to a measurement), and this run's remaining norms are not marker-sourced"
 		case a.hasManualNorms && a.hasCountedNorms:
 			because = "this run's norms for it are manual (their BOM wastage % applies instead) or counted quantities (which take no gross-up at all)"
 		case a.hasCountedNorms:
@@ -891,7 +891,7 @@ func (d *planLayDemand) totalCm() decimal.Decimal { return d.clothCm.Add(d.endLo
 
 func (d *planLayDemand) label() string {
 	if len(d.names) == 0 {
-		return "(без имени)"
+		return "(unnamed)"
 	}
 	return strings.Join(d.names, ", ")
 }
@@ -922,7 +922,7 @@ func planLayDemandByPair(lays []entity.ProductionRunLay) (map[planLayPairKey]*pl
 		}
 		if l.Broken() {
 			notes = append(notes, fmt.Sprintf(
-				"настил %q потерял слот BOM (снимок ключа слота %q) — его метраж не вошёл в потребность ни одного артикула",
+				"lay %q lost its BOM slot (slot key snapshot %q) — its metreage did not enter any article's requirement",
 				name, l.BomLineKey))
 			continue
 		}
@@ -940,7 +940,7 @@ func planLayDemandByPair(lays []entity.ProductionRunLay) (map[planLayPairKey]*pl
 			// small, which reads as «ткани хватает» in the one place that must never be optimistic.
 			s := l.Sections[idx]
 			d.unmeasured = append(d.unmeasured, fmt.Sprintf(
-				"настил %q: у раскладки %q (#%d) не задана длина раскладки — %d слоёв этой секции не вошли в потребность",
+				"lay %q: marker %q (#%d) has no marker length set — %d plies of this section did not enter the requirement",
 				name, s.MarkerName, s.MarkerId, s.Plies))
 		}
 		d.clothCm = d.clothCm.Add(g.ClothCm)

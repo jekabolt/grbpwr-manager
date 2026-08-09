@@ -248,7 +248,7 @@ func TestModeParityRefusesOddPliesFaceToFace(t *testing.T) {
 		if !strings.Contains(err.Error(), "S2") {
 			t.Errorf("refusal does not name the offending section: %v", err)
 		}
-		if strings.Contains(err.Error(), "секция S1") {
+		if strings.Contains(err.Error(), "section S1") {
 			t.Errorf("refusal blames the even section too: %v", err)
 		}
 	})
@@ -279,7 +279,7 @@ func TestStackHeightNeverGuesses(t *testing.T) {
 			t.Fatalf("stack_height_cm = %s was returned for an unmeasured article; §11 says it is "+
 				"not returned AT ALL — a zero reads as «влезает»", v.HeightCm.Decimal.String())
 		}
-		if !strings.Contains(v.Detail, "толщина ткани не задана") {
+		if !strings.Contains(v.Detail, "fabric thickness is not set") {
 			t.Errorf("detail does not tell the operator to measure: %q", v.Detail)
 		}
 		c := LayStackHeightCheck(plies, unsetDec, nd("15"))
@@ -301,7 +301,7 @@ func TestStackHeightNeverGuesses(t *testing.T) {
 		if !v.HeightCm.Valid || v.HeightCm.Decimal.String() != "1.2" {
 			t.Errorf("height = %v, want 1.2 cm (40 слоёв × 0.3 мм / 10)", v.HeightCm)
 		}
-		if !strings.Contains(v.Detail, "предел стопки не настроен") {
+		if !strings.Contains(v.Detail, "the stack limit is not configured") {
 			t.Errorf("detail does not point at the workshop settings: %q", v.Detail)
 		}
 	})
@@ -311,7 +311,7 @@ func TestStackHeightNeverGuesses(t *testing.T) {
 		if v.Status != LayCheckStatusUnknown || v.HeightCm.Valid || v.LimitCm.Valid {
 			t.Fatalf("verdict = %+v, want UNKNOWN with neither number", v)
 		}
-		if !strings.Contains(v.Detail, "толщина") || !strings.Contains(v.Detail, "предел") {
+		if !strings.Contains(v.Detail, "thickness") || !strings.Contains(v.Detail, "limit") {
 			t.Errorf("detail names only one of the two gaps: %q", v.Detail)
 		}
 	})
@@ -398,7 +398,7 @@ func TestDetachedMarkerIsCaughtOnRead(t *testing.T) {
 	if c.MarkerId != detached.Id {
 		t.Errorf("finding does not name the marker (%d)", c.MarkerId)
 	}
-	if !strings.Contains(c.Detail, "потерял слот") {
+	if !strings.Contains(c.Detail, "lost its BOM slot") {
 		t.Errorf("detail does not say what happened: %q", c.Detail)
 	}
 
@@ -448,7 +448,7 @@ func TestDetachedMarkerIsCaughtOnRead(t *testing.T) {
 		if c.Status != LayCheckStatusBlocker {
 			t.Fatalf("status = %v, want BLOCKER (Р2: секция ссылается только на СВОЮ копию)", c.Status)
 		}
-		if !strings.Contains(c.Detail, "КАРТОЧНЫЙ") {
+		if !strings.Contains(c.Detail, "CARD marker") {
 			t.Errorf("detail does not explain what is wrong: %q", c.Detail)
 		}
 	})
@@ -490,11 +490,11 @@ func TestMarkerWithoutColorwayReadsAsGeneral(t *testing.T) {
 		{"NULL = общая", noInt, testColorway, MarkerColorwayGeneral, LayCheckStatusOK, ""},
 		{"0 = общая (SET NULL прочитан как ноль)", nullInt(0), testColorway, MarkerColorwayGeneral, LayCheckStatusOK, ""},
 		{"тот же колорвей", nullInt(testColorway), testColorway, MarkerColorwayMatches, LayCheckStatusOK, ""},
-		{"другой колорвей", nullInt(testColorway + 1), testColorway, MarkerColorwayForeign, LayCheckStatusBlocker, "колорвею"},
+		{"другой колорвей", nullInt(testColorway + 1), testColorway, MarkerColorwayForeign, LayCheckStatusBlocker, "colourway"},
 		// Ноль с ОБЕИХ сторон: production_run_lay.colorway_id is NOT NULL, so a zero here is an
 		// unfilled input. Answering MATCHES would pair two absences and call the pair an agreement.
 		{"общий маркер против незаполненного колорвея настила", nullInt(0), 0, MarkerColorwayGeneral, LayCheckStatusOK, ""},
-		{"привязанный маркер против незаполненного колорвея настила", nullInt(9), 0, MarkerColorwayForeign, LayCheckStatusBlocker, "колорвею"},
+		{"привязанный маркер против незаполненного колорвея настила", nullInt(9), 0, MarkerColorwayForeign, LayCheckStatusBlocker, "colourway"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -763,7 +763,7 @@ func TestOvercutIsAWarningWithTheSpecArithmetic(t *testing.T) {
 		if c.Status.Blocks() {
 			t.Fatalf("перекрой не имеет права блокировать прогон")
 		}
-		if !strings.Contains(c.Detail, "перекрой 20") {
+		if !strings.Contains(c.Detail, "overcut of 20") {
 			t.Errorf("detail does not carry the §8.2 number (p = %d): %q", p, c.Detail)
 		}
 		if c.PieceLineKey != "PIECE_POCKET" {
@@ -773,7 +773,7 @@ func TestOvercutIsAWarningWithTheSpecArithmetic(t *testing.T) {
 
 	t.Run("спинка: перекрой p/2", func(t *testing.T) {
 		c := LayOvercutCheck([]LayPieceCut{back}, covered)
-		if c.Status != LayCheckStatusWarning || !strings.Contains(c.Detail, "перекрой 10") {
+		if c.Status != LayCheckStatusWarning || !strings.Contains(c.Detail, "overcut of 10") {
 			t.Fatalf("status = %v, detail = %q, want WARNING with перекрой 10", c.Status, c.Detail)
 		}
 	})
@@ -1036,13 +1036,13 @@ func TestQuantitiesStaleIsAWarningAndOrderInsensitive(t *testing.T) {
 		if c.Status != LayCheckStatusWarning || c.Status.Blocks() {
 			t.Fatalf("status = %v, want WARNING", c.Status)
 		}
-		if !strings.Contains(c.Detail, "было 30, стало 45") {
+		if !strings.Contains(c.Detail, "was 30, now 45") {
 			t.Errorf("detail does not carry the change: %q", c.Detail)
 		}
 	})
 	t.Run("размер исчез из прогона", func(t *testing.T) {
 		c := LayQuantitiesStaleCheck(snap, []LayQtyEntry{{SizeId: 10, Qty: 20}})
-		if c.Status != LayCheckStatusWarning || !strings.Contains(c.Detail, "стало 0") {
+		if c.Status != LayCheckStatusWarning || !strings.Contains(c.Detail, "now 0") {
 			t.Fatalf("status = %v, detail = %q", c.Status, c.Detail)
 		}
 	})

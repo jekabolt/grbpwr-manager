@@ -77,7 +77,7 @@ func DistilLayPlanMarker(m *entity.TechCardMarker) LayPlanMarker {
 			merged, ferr := y.WithSummaryComposition(comp[0].SizeId, comp[0].Quantity)
 			if ferr != nil {
 				out.Caveats = append(out.Caveats, fmt.Sprintf(
-					"раскладка %q: состав со сводки не применён (%v) — что она кроит, сказать нечем",
+					"marker %q: the composition from the summary was not applied (%v) — there is no way to say what it cuts",
 					markerLabel(m.TechCardMarkerSummary), ferr))
 			} else {
 				y = merged
@@ -87,13 +87,13 @@ func DistilLayPlanMarker(m *entity.TechCardMarker) LayPlanMarker {
 			// partial restore). Withheld, never read as one garment — the same refusal
 			// MarkerScalarNormRefusal makes on the costing side.
 			out.Caveats = append(out.Caveats, fmt.Sprintf(
-				"раскладка %q не говорит, сколько изделий кроит — покрытие по ней не считается",
+				"marker %q does not say how many units it cuts — coverage over it is not computed",
 				markerLabel(m.TechCardMarkerSummary)))
 		default:
 			// A multi-size состав beside a blob that predates состав. WithSummaryComposition takes ONE
 			// size by design, and picking one of several would be an invention.
 			out.Caveats = append(out.Caveats, fmt.Sprintf(
-				"раскладка %q: блоб схемы %d не несёт состава, а сводка называет %d размеров — покрытие по ней не считается",
+				"marker %q: a schema-%d blob carries no composition, while the summary names %d sizes — coverage over it is not computed",
 				markerLabel(m.TechCardMarkerSummary), y.SchemaVersion, len(comp)))
 		}
 	}
@@ -133,7 +133,7 @@ func BuildProductionRunLayPlan(in LayPlanInput) *pb_admin.ListProductionRunLaysR
 	if in.Card == nil || in.Run == nil {
 		return &pb_admin.ListProductionRunLaysResponse{
 			Applicable:          false,
-			NotApplicableReason: "план настилов не построен: прогон или карточка не загружены",
+			NotApplicableReason: "the lay plan is not built: the run or the card is not loaded",
 		}
 	}
 	if in.Card.Purpose == entity.TechCardPurposeAuxiliary {
@@ -243,7 +243,7 @@ func (b *layPlanBuilder) coverageLays() []Lay {
 			m, ok := b.in.Markers[s.MarkerId]
 			switch {
 			case !ok:
-				sec.YieldErr = fmt.Errorf("раскладка %d не загружена", s.MarkerId)
+				sec.YieldErr = fmt.Errorf("marker %d is not loaded", s.MarkerId)
 			case m.YieldErr != nil:
 				sec.YieldErr = m.YieldErr
 			case m.Yield != nil:
@@ -456,7 +456,7 @@ func (b *layPlanBuilder) layOvercutCheck(l *entity.ProductionRunLay, mode LayFac
 		label = c.Label
 		statuses = append(statuses, c.Status)
 		if c.Detail != "" {
-			details = append(details, fmt.Sprintf("размер #%d: %s", cell.SizeID, c.Detail))
+			details = append(details, fmt.Sprintf("size #%d: %s", cell.SizeID, c.Detail))
 		}
 	}
 	if len(statuses) == 0 {
@@ -518,7 +518,7 @@ func (b *layPlanBuilder) pieceCuts(l *entity.ProductionRunLay, mode LayFaceMode,
 			// «Сколько выкроено» — пол, а не факт. Пол, прочитанный как факт, — это выдуманный ответ в
 			// любую сторону, поэтому деталь уходит в UNKNOWN, а причина — в оговорки.
 			lp.Symmetry = sql.NullString{}
-			b.addCaveat("настил %q: сколько деталей %q выкроено, посчитать не удалось — раскладка секции не читается или не знает своего состава",
+			b.addCaveat("lay %q: could not count how many of piece %q were cut — the section's marker cannot be read or does not know its composition",
 				layNameOf(l), pieceNameOf(p))
 		}
 		out = append(out, lp)
@@ -723,12 +723,12 @@ func LayWriteCheckInput(runID, techCardID int, bomItemID sql.NullInt64, ins enti
 func ConvertPbProductionRunLayInsertToEntity(pb *pb_common.ProductionRunLayInsert) (entity.ProductionRunLayInsert, error) {
 	var out entity.ProductionRunLayInsert
 	if pb == nil {
-		return out, entity.NewFieldViolation("lay", "required", "", "send the настил to save")
+		return out, entity.NewFieldViolation("lay", "required", "", "send the lay to save")
 	}
 	mode, ok := layModeFromPb(pb.GetMode())
 	if !ok {
 		return out, entity.NewFieldViolation("lay.mode", "unknown_mode", pb.GetMode().String(),
-			"pick FACE_UP (лицом вверх) or FACE_TO_FACE (лицом к лицу)")
+			"pick FACE_UP or FACE_TO_FACE")
 	}
 	endLoss := decimal.Zero
 	if v := pb.GetEndLossCm(); v != nil && strings.TrimSpace(v.GetValue()) != "" {
@@ -810,7 +810,7 @@ func layLotAndActualFromPb(pb *pb_common.ProductionRunLayInsert, out *entity.Pro
 	d, err := decimal.NewFromString(strings.TrimSpace(qty.GetValue()))
 	if err != nil {
 		return entity.NewFieldViolation("lay.actual_qty", "not_a_number", qty.GetValue(),
-			fmt.Sprintf("enter how much cloth actually went into this настил, e.g. 94.92 (%v)", err))
+			fmt.Sprintf("enter how much cloth actually went into this lay, e.g. 94.92 (%v)", err))
 	}
 	actual := entity.ProductionRunLayActualInput{Qty: decimal.NullDecimal{Decimal: d, Valid: true}}
 	if u, ok := materialUnitFromPb(pb.GetActualUom()); ok {

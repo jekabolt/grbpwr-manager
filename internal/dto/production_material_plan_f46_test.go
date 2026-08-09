@@ -204,12 +204,12 @@ func TestPlanLaysDoNotTakeTheCuttingCoefficient(t *testing.T) {
 
 	// И он не молчит о том, ПОЧЕМУ не сработал, и не врёт ни про «ручные нормы», ни про то, что
 	// какая-то часть строки посчитана иначе: у этой строки ВСЯ потребность из настилов.
-	require.True(t, hasCaveat(resp.Caveats, "потребность этой строки посчитана по НАСТИЛАМ"),
+	require.True(t, hasCaveat(resp.Caveats, "this row's requirement is computed from LAYS"),
 		"оговорка обязана назвать настилы причиной, а не выдумать ручные нормы")
-	require.True(t, hasCaveat(resp.Caveats, "к измерению он не применяется"))
+	require.True(t, hasCaveat(resp.Caveats, "it does not apply to a measurement"))
 	require.False(t, hasCaveat(resp.Caveats, "norms for it are manual"),
 		"«ваши нормы ручные» — неверное объяснение верного числа")
-	require.False(t, hasCaveat(resp.Caveats, "часть потребности"),
+	require.False(t, hasCaveat(resp.Caveats, "part of the requirement"),
 		"«часть по настилам» — тоже неверное объяснение: по настилам посчитана вся строка")
 }
 
@@ -228,8 +228,8 @@ func TestPlanMixedRowExplainsTheCoefficientDifferently(t *testing.T) {
 		[]entity.ProductionRunLay{f46Lay(f46Fabric, "настил-1", "2", f46Section(9001, 20, "300"))})
 
 	require.Equal(t, pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_MIXED, resp.Rows[0].Source)
-	require.True(t, hasCaveat(resp.Caveats, "часть потребности посчитана по НАСТИЛАМ"))
-	require.False(t, hasCaveat(resp.Caveats, "потребность этой строки посчитана по НАСТИЛАМ"))
+	require.True(t, hasCaveat(resp.Caveats, "part of the requirement is computed from LAYS"))
+	require.False(t, hasCaveat(resp.Caveats, "this row's requirement is computed from LAYS"))
 }
 
 // Обратная половина Р4: на пути НОРМЫ коэффициент применяется как и раньше. Один прогон, два
@@ -369,7 +369,7 @@ func TestPlanLaysDisplaceTheWastagePercentOutLoud(t *testing.T) {
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, f46Articles(), lays)
 
 	require.Equal(t, "60.8", f46RowByMaterial(t, resp, 100).Required.Value, "8% к измерению не применяются")
-	require.True(t, hasCaveat(resp.Caveats, "процент отхода прогона 8% не применён к слоту \"Основная ткань\""),
+	require.True(t, hasCaveat(resp.Caveats, "the run's wastage percent 8% is not applied to slot \"Основная ткань\""),
 		"вытесненный процент отхода обязан быть назван по слоту")
 	require.False(t, hasCaveat(resp.Caveats, "\"Подкладка\""),
 		"подкладка считается по норме и её отход применён — про неё говорить нечего")
@@ -413,7 +413,7 @@ func TestPlanUnmeasuredSectionIsNamed(t *testing.T) {
 	resp := ComputeProductionRunMaterialPlan(f46Run(100), card, nil, nil, f46Articles(),
 		[]entity.ProductionRunLay{lay})
 
-	require.True(t, hasCaveat(resp.Caveats, "не задана длина раскладки"),
+	require.True(t, hasCaveat(resp.Caveats, "has no marker length set"),
 		"неизмеримая секция обязана быть названа")
 	fc := f46ContribBySlot(t, resp, f46Fabric)
 	require.Equal(t, "6000", fc.LayClothLengthCm.Value, "в ткань вошла только измеренная секция")
@@ -450,7 +450,7 @@ func TestPlanLaidSlotWithoutArticleBlocks(t *testing.T) {
 
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, f46Articles(), lays)
 
-	require.False(t, hasCaveat(resp.Caveats, "не применён к слоту \"Основная ткань\""),
+	require.False(t, hasCaveat(resp.Caveats, "is not applied to slot \"Основная ткань\""),
 		"у заблокированной пары потребности нет вовсе — говорить, что к ней «не применён отход, потому что посчитано по настилам», значит описывать несуществующее число")
 
 	found := false
@@ -472,7 +472,7 @@ func TestPlanEmptyLayZeroIsSpokenAloud(t *testing.T) {
 		[]entity.ProductionRunLay{f46Lay(f46Fabric, "пустой", "2")})
 
 	require.Equal(t, "0", f46RowByMaterial(t, resp, 100).Required.Value)
-	require.True(t, hasCaveat(resp.Caveats, "не дают длины"),
+	require.True(t, hasCaveat(resp.Caveats, "yield no length"),
 		"нулевая потребность по настилам — самое опасное число на странице, и оно обязано говорить")
 }
 
@@ -491,7 +491,7 @@ func TestPlanLayStaysInMetresWhenTheSlotUnitDisagrees(t *testing.T) {
 
 	require.Equal(t, "m", f46ContribBySlot(t, resp, f46Fabric).Unit,
 		"вклад подписан той единицей, в которой он ДЕЙСТВИТЕЛЬНО посчитан")
-	require.True(t, hasCaveat(resp.Caveats, "настил измеряет ткань в метрах"))
+	require.True(t, hasCaveat(resp.Caveats, "a lay measures cloth in metres"))
 }
 
 // Конверсия в складскую единицу — ОДНА на оба пути: метры настила уходят в килограммы по полной
@@ -540,7 +540,7 @@ func TestPlanLayOnUnplannedColourwayIsCountedAndNamed(t *testing.T) {
 		[]entity.ProductionRunLay{f46Lay(f46Fabric, "настил-1", "2", f46Section(9001, 20, "300"))})
 
 	require.Equal(t, "60.8", f46RowByMaterial(t, resp, 100).Required.Value)
-	require.True(t, hasCaveat(resp.Caveats, "которого прогон не планирует"),
+	require.True(t, hasCaveat(resp.Caveats, "which the run does not plan"),
 		"расхождение настила с планом обязано быть названо, а не тихо посчитано или тихо выброшено")
 }
 
@@ -565,7 +565,7 @@ func TestPlanAmbiguousLaidPairArticleIsNamedOnce(t *testing.T) {
 
 	n := 0
 	for _, c := range resp.Caveats {
-		if len(c) > 0 && hasCaveat([]string{c}, "резолвится в два разных артикула") {
+		if len(c) > 0 && hasCaveat([]string{c}, "resolves to two different articles") {
 			n++
 		}
 	}

@@ -345,7 +345,7 @@ func TestRunLineWithoutColorwayIsAnExplicitFinding(t *testing.T) {
 	if f.LineKey != "L2" {
 		t.Errorf("finding names line %q, want L2", f.LineKey)
 	}
-	if !strings.Contains(f.Detail, "без колорвея") {
+	if !strings.Contains(f.Detail, "no colourway") {
 		t.Errorf("detail = %q, must say the line has no colourway", f.Detail)
 	}
 	if _, ok := byKey[LayCoverageFindingKeyLineWithoutSize]; !ok {
@@ -557,7 +557,7 @@ func TestFaceToFaceOddPliesContributesNothingAndBlocks(t *testing.T) {
 		t.Errorf("unknown = %d, want 0 — это доказанный ноль, а не пробел", c.UnknownPieceCount)
 	}
 	joined := strings.Join(cov.Caveats, " | ")
-	if !strings.Contains(joined, "нечётная") {
+	if !strings.Contains(joined, "odd ply count") {
 		t.Errorf("caveats = %q, must name the odd section", joined)
 	}
 }
@@ -607,7 +607,7 @@ func TestBrokenLayMakesShortageUnprovableButKeepsSufficiency(t *testing.T) {
 		if c.Status != CoverageStatusUnknown {
 			t.Fatalf("status = %s, want UNKNOWN", c.Status)
 		}
-		if !strings.Contains(strings.Join(cov.Caveats, " | "), "потерял слот BOM") {
+		if !strings.Contains(strings.Join(cov.Caveats, " | "), "lost its BOM slot") {
 			t.Errorf("caveats = %q, must name the broken lay", cov.Caveats)
 		}
 	})

@@ -91,8 +91,8 @@ func TestConvertPbTechCardMarkerInsertToEntity(t *testing.T) {
 		{"nil marker", nil, "marker is required"},
 		// FAIL-CLOSED: neither a состав nor the legacy pair. Assuming «one комплект» would report the
 		// whole spread as one garment's norm, and a client writes that straight into a recipe.
-		{"no состав and no legacy pair", func(pb *pb_common.TechCardMarkerInsert) { pb.SizeId = 0 }, "состав"},
-		{"legacy size without sets", func(pb *pb_common.TechCardMarkerInsert) { pb.Sets = 0 }, "состав"},
+		{"no состав and no legacy pair", func(pb *pb_common.TechCardMarkerInsert) { pb.SizeId = 0 }, "needs a composition"},
+		{"legacy size without sets", func(pb *pb_common.TechCardMarkerInsert) { pb.Sets = 0 }, "needs a composition"},
 		{"blank name", func(pb *pb_common.TechCardMarkerInsert) { pb.Name = "   " }, "name is required"},
 		// The column is VARCHAR(191) and MySQL counts CHARACTERS, so the cap counts runes —
 		// 96 Cyrillic characters are 192 bytes but must be accepted (see the accept case below).
@@ -173,7 +173,7 @@ func TestMarkerLayoutFactsRefuseAPieceSizeOutsideTheComposition(t *testing.T) {
 	}
 	_, err := MarkerLayoutFactsFromPb(layout)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "which the состав does not cut")
+	require.Contains(t, err.Error(), "which the composition does not cut")
 
 	layout.Pieces[0].SizeId = 3
 	facts, err := MarkerLayoutFactsFromPb(layout)

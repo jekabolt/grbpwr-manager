@@ -110,16 +110,16 @@ func MarkerAllowanceRefusal(seam, contour decimal.NullDecimal, contourLayer stri
 	}
 	layer := strings.TrimSpace(contourLayer)
 	if layer == "" {
-		layer = "выбранный контурный слой"
+		layer = "the selected contour layer"
 	} else {
-		layer = fmt.Sprintf("слой %q", layer)
+		layer = fmt.Sprintf("layer %q", layer)
 	}
 	total := contour.Decimal.Add(seam.Decimal)
 	return NewFieldViolation("seam_allowance_mm", ReasonDoubleSeamAllowance, seam.Decimal.String(),
-		fmt.Sprintf("%s — это линия КРОЯ: замерено, что она лежит на %s мм снаружи линии шва. "+
-			"Раскладка добавила ещё %s мм офсета, и припуск посчитан дважды — длина настила завышена "+
-			"примерно на %s мм по периметру каждой детали. Либо поставьте припуск 0, либо выберите "+
-			"контурный слой с линией шва.",
+		fmt.Sprintf("%s is the CUT line: it was measured to lie %s mm outside the seam line. "+
+			"The marker added another %s mm of offset, so the allowance is counted twice — the lay length is overstated "+
+			"by roughly %s mm around the perimeter of every piece. Either set the allowance to 0, or pick "+
+			"a contour layer that carries the seam line.",
 			layer, contour.Decimal.String(), seam.Decimal.String(), total.String()))
 }
 
@@ -177,7 +177,7 @@ func ValidateSeamAllowanceStandardMm(field string, v decimal.NullDecimal) error 
 	// plausible — the gate would then pass every marker in the shop.
 	if v.Decimal.IsPositive() && v.Decimal.LessThan(decimal.NewFromInt(SuspiciouslySmallSeamAllowanceMm)) {
 		return NewFieldViolation(field, "implausibly_narrow", v.Decimal.String(),
-			"the value is in MILLIMETRES — under 1 mm looks like centimetres typed into a millimetre field (10 mm, not 1); enter 0 if the выкройки genuinely carry the cut line")
+			"the value is in MILLIMETRES — under 1 mm looks like centimetres typed into a millimetre field (10 mm, not 1); enter 0 if the patterns genuinely carry the cut line")
 	}
 	return nil
 }
@@ -447,8 +447,8 @@ func NormConflictReport(peers []NormPeer, scope NormScope) string {
 	if !ok || len(contenders) < 2 {
 		return ""
 	}
-	return fmt.Sprintf("на этой ткани отмечено %d норм сразу — так быть не должно. Действует "+
-		"раскладка %q (последняя изменённая); остальные помечены нормой, но не учитываются. "+
-		"Переназначьте норму, чтобы состояние снова читалось однозначно.",
+	return fmt.Sprintf("this fabric has %d norms marked at once — that should not happen. Marker %q "+
+		"(the last one modified) is in effect; the others are marked as norms but are not counted. "+
+		"Reassign the norm so the state reads unambiguously again.",
 		len(contenders), winner.Name)
 }
