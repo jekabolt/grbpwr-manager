@@ -2069,6 +2069,10 @@ const wasteDecompositionMaxPct = 1000
 // Valid=false so the store preserves the stored triple across the full-replace; a present
 // value is normalised ("" → manual) and validated. The waste pcts are accepted only with
 // source=marker — display decomposition of a measured раскладка, meaningless on manual rows.
+//
+// 'dxf' (0294) needs no branch of its own here and that is the point: it is netto pattern area,
+// so it carries no waste decomposition either, and the existing non-marker clause already
+// refuses the pair. Adding a third case would only have created a second place to forget.
 func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullString, decimal.NullDecimal, decimal.NullDecimal, error) {
 	var src sql.NullString
 	var selvedge, cut decimal.NullDecimal
@@ -2081,7 +2085,7 @@ func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullSt
 	}
 	if !entity.ValidConsumptionSources[v] {
 		return src, selvedge, cut, entity.NewFieldViolation(
-			fmt.Sprintf("usages[%d].consumption_source", i), "invalid", v, "manual or marker")
+			fmt.Sprintf("usages[%d].consumption_source", i), "invalid", v, "manual, marker or dxf")
 	}
 	src = sql.NullString{String: v, Valid: true}
 	var err error
@@ -2123,6 +2127,39 @@ func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullSt
 		cut.Decimal = cut.Decimal.Round(2)
 	}
 	return src, selvedge, cut, nil
+}
+
+// validateDxfNormShape holds the one thing 'dxf' (0294) claims that no other source claims: that a
+// MEASURED RATE was computed from the pattern areas. The claim is refutable by the row's own shape,
+// and refusing it here is not pedantry — the two shapes below each split costing from purchasing.
+//
+// ПОЧЕМУ КОЛИЧЕСТВО НЕСОВМЕСТИМО С ЭТИМ ИСТОЧНИКОМ. LineTotal читает Quantity ПЕРВЫМ и возвращает
+// «штук × цена» вообще без гросс-апа, а план материалов (usageNormForSize) читает SizeConsumptions →
+// Consumption → Quantity, то есть на строке, где заполнено И то, И другое, берёт РАСХОД. Одна и та
+// же строка тогда замораживает дешёвую себестоимость (по количеству) и резервирует ткань по норме
+// (по расходу): расхождение не в проценте, а в природе числа, и оно уезжает в product.cost_price и
+// в снимок релиза, где его уже никто не пересчитает.
+//
+// ЭТА ПРОВЕРКА НАРОЧНО НЕ РАСПРОСТРАНЯЕТСЯ НА 'marker'. Форма там ровно так же бессмысленна, но
+// строки с обоими полями лежат в базе с 0079 (счётный трим, у которого когда-то заполнили и расход),
+// и запрет ударил бы по СОХРАНЕНИЮ карточки, которую сегодня открывают и сохраняют без правок — то
+// есть сломал бы работу, ничего не починив. Новый источник такого груза не несёт: строк с ним нет.
+func validateDxfNormShape(source sql.NullString, consumption, quantity decimal.NullDecimal,
+	sizes []entity.TechCardBomSizeConsumption, i int) error {
+	if !source.Valid || source.String != entity.ConsumptionSourceDxf {
+		return nil
+	}
+	if quantity.Valid {
+		return entity.NewFieldViolation(fmt.Sprintf("usages[%d].quantity", i), "provenance_mismatch",
+			quantity.Decimal.String(),
+			"consumption_source=dxf is a measured rate computed from pattern areas — it cannot ride a countable quantity")
+	}
+	if !consumption.Valid && len(sizes) == 0 {
+		return entity.NewFieldViolation(fmt.Sprintf("usages[%d].consumption_source", i), "provenance_without_norm",
+			entity.ConsumptionSourceDxf,
+			"consumption_source=dxf states WHERE the norm came from — send the norm (consumption or size_consumptions) with it")
+	}
+	return nil
 }
 
 // ParseRecipeUsages parses the usages of an UpdateColorwayRecipe request. Unlike the style-save
@@ -2179,6 +2216,9 @@ func ParseRecipeUsages(pbs []*pb_common.TechCardColorwayUsage) ([]entity.TechCar
 		normMarkerID, normMarkerIDSet := parseUsageNormMarkerID(u.NormMarkerId)
 		consumptionSource, wasteSelvedge, wasteCut, err := parseUsageProvenance(u, i)
 		if err != nil {
+			return nil, err
+		}
+		if err := validateDxfNormShape(consumptionSource, consumption, quantity, scs, i); err != nil {
 			return nil, err
 		}
 		out = append(out, entity.TechCardColorwayUsage{

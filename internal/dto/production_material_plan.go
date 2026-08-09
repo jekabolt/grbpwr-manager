@@ -115,7 +115,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		// wrong explanation of a right number.
 		hasManualNorms  bool
 		hasCountedNorms bool
-		hasSizeNorms    bool
+		// hasDxfNorms is the third non-marker kind (0294): a norm computed from the pattern sheets.
+		// It grosses by the BOM wastage percent exactly like a manual one, so it changes no number
+		// here — it exists so the caveat can say WHICH kind of norm shut the coefficient out.
+		hasDxfNorms  bool
+		hasSizeNorms bool
 		// hasNormSource / hasLaySource are the row's SIGNATURE (Ф4.6). A row is keyed by ARTICLE and
 		// an article can be fed by two slots at once — one laid, one not — so the two are counted
 		// rather than collapsed into one value on the way in. MIXED is the honest answer for that row
@@ -397,8 +401,15 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// Which gross-up depends on where the norm came from, and the two worlds stay disjoint
 			// so no line is ever grossed twice:
 			//
-			//   * MANUAL / legacy measured norm — the BOM line's wastage estimate (5% → ×1.05),
+			//   * MANUAL / DXF / legacy measured norm — the BOM line's wastage estimate (5% → ×1.05),
 			//     overridden by the run's ACTUAL cutting wastage when set. Unchanged by Ф5а.
+			//     'dxf' (0294) is netto piece area: it contains NO waste of any kind, so the wastage
+			//     estimate is the only thing that pays for the cloth between the pieces — and the
+			//     article's cutting coefficient deliberately does NOT also bite, because that
+			//     coefficient is calibrated against MEASURED marker lengths. The consequence is worth
+			//     stating plainly: a dxf norm asks for less cloth than a marker norm of the same slot
+			//     unless the slot's wastage percent covers усадка and пороки too. The readiness gate
+			//     refuses a run whose dxf slot declares no percentage at all.
 			//   * MARKER-sourced norm — the ARTICLE's cutting coefficient (Ф5а.2). A marker's
 			//     measured length already contains the cutting waste of a clean lay on a nominal
 			//     width (PIECES-WASTAGE-DESIGN §2.3), which is why the wastage factor must never
@@ -412,6 +423,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			factor := decimal.NewFromInt(1)
 			lineCoeff := decimal.NullDecimal{}
 			markerSourced := u.ConsumptionSource.String == entity.ConsumptionSourceMarker
+			dxfSourced := u.ConsumptionSource.String == entity.ConsumptionSourceDxf
 			switch {
 			case counted:
 				// no gross-up
@@ -472,6 +484,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			switch {
 			case counted:
 				a.hasCountedNorms = true
+			case dxfSourced:
+				// Kept apart from hasManualNorms so the «coefficient did not bite» caveat below can
+				// name the real reason. Both take the wastage branch, but «your norms are manual» is
+				// a wrong explanation of a right number for a norm computed off the patterns — the
+				// same species of lie the counted-trim arm exists to avoid.
+				a.hasDxfNorms = true
 			case !markerSourced:
 				a.hasManualNorms = true
 			}
@@ -676,19 +694,36 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		var because string
 		switch {
-		case a.hasLaySource && !a.hasManualNorms && !a.hasCountedNorms:
+		case a.hasLaySource && !a.hasManualNorms && !a.hasCountedNorms && !a.hasDxfNorms:
 			// Ф4.6 / Р4. Saying «your norms are manual» about a row whose requirement was MEASURED
 			// would be a wrong explanation of a right number — the same mistake the counted-trim arm
 			// below exists to avoid.
 			because = "this row's requirement is computed from LAYS (length × plies + end losses), while the coefficient adjusts the NORM-based estimate: it does not apply to a measurement"
 		case a.hasLaySource:
 			because = "part of the requirement is computed from LAYS (the coefficient does not apply to a measurement), and this run's remaining norms are not marker-sourced"
-		case a.hasManualNorms && a.hasCountedNorms:
-			because = "this run's norms for it are manual (their BOM wastage % applies instead) or counted quantities (which take no gross-up at all)"
-		case a.hasCountedNorms:
+		case a.hasCountedNorms && !a.hasManualNorms && !a.hasDxfNorms:
 			because = "this article is consumed here as a counted quantity — 4 buttons stay 4 buttons — which takes no gross-up at all"
 		default:
-			because = "this run's norms for it are manual (their BOM wastage % applies instead)"
+			// Собирается из ПРИСУТСТВУЮЩИХ видов норм, а не перечисляется парами. Пар было две, стало
+			// шесть с приходом 'dxf' (0294), и рукописный набор арок — это ровно тот код, где через
+			// одну ветку начинают говорить «ваши нормы ручные» про норму, снятую с выкроек. Порядок
+			// (ручная → выкройки → штучная) фиксирован, поэтому строка для старых сочетаний
+			// побайтово та же, что и до 0294.
+			kinds := make([]string, 0, 3)
+			if a.hasManualNorms {
+				kinds = append(kinds, "manual (their BOM wastage % applies instead)")
+			}
+			if a.hasDxfNorms {
+				kinds = append(kinds, "taken from the patterns — netto piece area, so their BOM wastage % applies instead")
+			}
+			if a.hasCountedNorms {
+				kinds = append(kinds, "counted quantities (which take no gross-up at all)")
+			}
+			if len(kinds) == 0 {
+				// No norm kind recorded at all: keep the pre-0294 wording rather than an empty phrase.
+				kinds = append(kinds, "manual (their BOM wastage % applies instead)")
+			}
+			because = "this run's norms for it are " + strings.Join(kinds, " or ")
 		}
 		caveats = append(caveats, fmt.Sprintf("%s: cutting coefficient %s not applied — it grosses up MARKER-sourced norms, and %s",
 			a.name, a.coefficient.Decimal.String(), because))

@@ -958,22 +958,41 @@ var ValidTechCardLabDipStatuses = map[TechCardLabDipStatus]bool{
 	LabDipRejected:  true,
 }
 
-// Consumption provenance values (tech_card_colorway_usage.consumption_source, 0261).
+// Consumption provenance values (tech_card_colorway_usage.consumption_source, 0261; 'dxf' 0294).
 const (
 	ConsumptionSourceManual = "manual"
 	ConsumptionSourceMarker = "marker"
+	// ConsumptionSourceDxf is a norm computed from the pattern sheets: Σ(площадь деталей) ÷
+	// раскройная ширина. It is NETTO — it contains no inter-piece waste, no selvedge and no
+	// end-of-lay loss, because a pattern says nothing about how the pieces were laid. That is
+	// exactly why it grosses up like a manual norm (wastageApplies below): the honest total is
+	// netto × the slot's declared cutting percentage.
+	//
+	// It is NOT a weaker 'marker'. A marker MEASURED a layout; this one measures the garment. The
+	// two answer different questions, and the difference is auditable: dxf carries no waste
+	// decomposition and no norm stamp (a раскладка id would be a claim about a layout that never
+	// happened) — normalized() in the store clears both for every non-marker source.
+	ConsumptionSourceDxf = "dxf"
 )
 
 // ValidConsumptionSources is the set of accepted consumption provenance values.
 var ValidConsumptionSources = map[string]bool{
 	ConsumptionSourceManual: true,
 	ConsumptionSourceMarker: true,
+	ConsumptionSourceDxf:    true,
 }
 
 // wastageApplies reports whether the article's wastage_percent may gross this usage's cost
 // up. A marker-sourced norm came from a measured раскладка whose length already CONTAINS
 // the cutting waste (and the selvedge rides the per-running-metre price), so grossing it
 // again would double-count — the exact trap PIECES-WASTAGE-DESIGN §2.3 retires.
+//
+// EVERY OTHER SOURCE GROSSES, and 'dxf' (0294) belongs on that side deliberately, not by
+// omission: a pattern area is netto, so the percentage is the only thing that pays for the
+// cloth between the pieces. The failure mode to keep in mind is the slot whose
+// wastage_percent is NULL — applyWastage then multiplies by nothing and a netto norm reaches
+// purchasing as if it were a total. The readiness gate blocks a run on exactly that pair
+// (dxf + no declared percentage) rather than letting the arithmetic be silently short.
 func (u *TechCardColorwayUsage) wastageApplies() bool {
 	return u.ConsumptionSource.String != ConsumptionSourceMarker
 }
@@ -1064,10 +1083,11 @@ type TechCardColorwayUsage struct {
 	// never diverged. FK material(id) ON DELETE RESTRICT (0221).
 	MaterialId sql.NullInt64 `db:"material_id"`
 	// ConsumptionSource is the norm's provenance: 'manual' (default; wastage_percent grosses cost
-	// up as always) or 'marker' (the norm came from a saved раскладка whose length already
-	// CONTAINS the cutting waste — costing must NOT gross it up again). On WRITE the null state
-	// is proto presence, mirroring MaterialIdSet: Valid=false means the field was absent from a
-	// stale client's payload and the store preserves the stored provenance triple.
+	// up as always), 'marker' (the norm came from a saved раскладка whose length already CONTAINS
+	// the cutting waste — costing must NOT gross it up again), or 'dxf' (0294; netto pattern area
+	// ÷ раскройная ширина — grosses up like manual, see ConsumptionSourceDxf). On WRITE the null
+	// state is proto presence, mirroring MaterialIdSet: Valid=false means the field was absent from
+	// a stale client's payload and the store preserves the stored provenance triple.
 	ConsumptionSource sql.NullString `db:"consumption_source"`
 	// WasteSelvedgePct / WasteCutPct decompose a marker-sourced norm's waste (кромка / рез) for
 	// DISPLAY — never multiplied into any cost. NULL on manual rows.
