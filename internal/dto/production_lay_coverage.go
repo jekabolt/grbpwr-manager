@@ -165,14 +165,14 @@ func ComputeLayCoverage(in LayCoverageInput) LayCoverage {
 	card := in.Card
 	if card == nil {
 		out.Applicable = false
-		out.NotApplicableReason = "карточка не загружена"
+		out.NotApplicableReason = "the card is not loaded"
 		return out
 	}
 	if card.Purpose == entity.TechCardPurposeAuxiliary {
 		// §6.3, последняя строка: у aux-карточки нет ни колорвеев, ни деталей кроя. Ноль означал бы
 		// «не покрыто», а покрывать нечего.
 		out.Applicable = false
-		out.NotApplicableReason = "вспомогательная карточка — настилов и покрытия у неё не бывает"
+		out.NotApplicableReason = "an auxiliary card — it never has lays or coverage"
 		return out
 	}
 
@@ -319,7 +319,7 @@ func requiredPiecesForColorway(card *entity.TechCard, colorwayID int) []required
 		if m == nil {
 			out = append(out, requiredPiece{
 				piece:  p,
-				reason: "деталь не привязана к слоту BOM у этого колорвея — неизвестно, какой настил обязан её кроить",
+				reason: "the piece is not bound to a BOM slot for this colourway — it is unknown which lay is supposed to cut it",
 			})
 			continue
 		}
@@ -327,7 +327,7 @@ func requiredPiecesForColorway(card *entity.TechCard, colorwayID int) []required
 		if bom == nil {
 			out = append(out, requiredPiece{
 				piece:  p,
-				reason: "ссылка детали на слот BOM не резолвится — неизвестно, какой настил обязан её кроить",
+				reason: "the piece's BOM slot reference does not resolve — it is unknown which lay is supposed to cut it",
 			})
 			continue
 		}
@@ -398,7 +398,7 @@ func (b *coverageCellBuilder) answer(i int, a cellAnswer) {
 func (b *coverageCellBuilder) finish() *CoverageCell {
 	for i := range b.required {
 		if !b.answered[i] {
-			b.answers[i] = cellAnswer{detail: "деталь не была посчитана при наполнении клетки"}
+			b.answers[i] = cellAnswer{detail: "the piece was not counted when the cell was filled"}
 			b.missing = append(b.missing, b.required[i].label())
 		}
 		b.cell.Add(b.required[i].key(), b.answers[i].yield)
@@ -464,7 +464,7 @@ func (b *layCoverageBuilder) indexLays(lays []Lay) {
 			if _, seen := b.brokenLay[l.ColorwayID]; !seen {
 				b.brokenLay[l.ColorwayID] = name
 			}
-			b.addCaveat("настил %q потерял слот BOM: его раскрой не привязывается ни к одной ткани, покрытие этого колорвея не доказуемо", name)
+			b.addCaveat("lay %q lost its BOM slot: its cutting cannot be attributed to any fabric, and this colourway's coverage is not provable", name)
 			continue
 		}
 		k := layPairKey{colorwayID: l.ColorwayID, bomItemID: l.BomItemID}
@@ -488,7 +488,7 @@ func (b *layCoverageBuilder) grid(lines []entity.ProductionRunLine, out *LayCove
 				Key:     LayCoverageFindingKeyLineWithoutColorway,
 				LineKey: l.LineKey,
 				SizeID:  l.SizeId,
-				Detail:  "строка прогона без колорвея — настил принадлежит паре (колорвей, слот), поэтому покрытие такой строки не считается",
+				Detail:  "a run line with no colourway — a lay belongs to a (colourway, slot) pair, so coverage for such a line is not computed",
 			})
 			continue
 		}
@@ -497,7 +497,7 @@ func (b *layCoverageBuilder) grid(lines []entity.ProductionRunLine, out *LayCove
 				Key:     LayCoverageFindingKeyLineWithoutSize,
 				LineKey: l.LineKey,
 				SizeID:  l.SizeId,
-				Detail:  "строка прогона без размера — состав маркера ключуется размером, поэтому покрытие такой строки не считается",
+				Detail:  "a run line with no size — a marker's composition is keyed by size, so coverage for such a line is not computed",
 			})
 			continue
 		}
@@ -541,7 +541,7 @@ func (b *layCoverageBuilder) cell(colorwayID, sizeID, plannedQty int) (LayCovera
 	}
 	cell := cb.finish()
 	for _, name := range cb.missing {
-		b.addCaveat("деталь %q не была посчитана при наполнении клетки — покрытие считается неизвестным по этой детали", name)
+		b.addCaveat("piece %q was not counted when the cell was filled — coverage is treated as unknown for this piece", name)
 	}
 
 	out := LayCoverageCell{
@@ -664,7 +664,7 @@ func (b *layCoverageBuilder) pieceAnswer(rp requiredPiece, colorwayID, sizeID, p
 	for _, l := range lays {
 		for _, s := range l.Sections {
 			if s.YieldErr != nil {
-				unknown = fmt.Sprintf("раскладка маркера %d не читается (%v) — что она выкроила, сказать нечем", s.MarkerID, s.YieldErr)
+				unknown = fmt.Sprintf("the layout of marker %d cannot be read (%v) — there is no way to say what it cut", s.MarkerID, s.YieldErr)
 				continue
 			}
 			chiralityKnown = chiralityKnown && s.Yield.ChiralityKnown()
@@ -672,7 +672,7 @@ func (b *layCoverageBuilder) pieceAnswer(rp requiredPiece, colorwayID, sizeID, p
 			if !inst.Known {
 				// Неатрибутируемый блоб или блоб без состава. Сумма стала бы полом, а пол,
 				// прочитанный как факт, — это выдуманная нехватка.
-				unknown = fmt.Sprintf("маркер %d не может отнести свои детали к карточке или не знает своего состава", s.MarkerID)
+				unknown = fmt.Sprintf("marker %d cannot attribute its pieces to the card or does not know its composition", s.MarkerID)
 				continue
 			}
 			for _, c := range inst.Caveats {
@@ -684,10 +684,10 @@ func (b *layCoverageBuilder) pieceAnswer(rp requiredPiece, colorwayID, sizeID, p
 					// §6.2 шаг 2: секция не вносит НИЧЕГО. Это доказанный ноль, а не пробел —
 					// последний непарный слой отдаёт только одну хиральность. Сам вердикт «настил
 					// негоден» ставит проверка lay_mode_parity (§8), здесь остаётся арифметика.
-					b.addCaveat("настил %q: секция маркера %d нечётная в режиме «лицом к лицу» и не вносит в покрытие ничего", layLabel(l), s.MarkerID)
+					b.addCaveat("lay %q: the section of marker %d has an odd ply count in face-to-face mode and contributes nothing to coverage", layLabel(l), s.MarkerID)
 					continue
 				}
-				unknown = fmt.Sprintf("секция маркера %d: %v", s.MarkerID, err)
+				unknown = fmt.Sprintf("section of marker %d: %v", s.MarkerID, err)
 				continue
 			}
 			cut.AsDrawn += cutBySection.AsDrawn
@@ -703,11 +703,11 @@ func (b *layCoverageBuilder) pieceAnswer(rp requiredPiece, colorwayID, sizeID, p
 	if !y.Known {
 		switch {
 		case !rp.piece.CutSymmetry.Valid:
-			detail = "у детали не размечено, как она кроится (cut_symmetry) — сколько изделий из неё выйдет, сказать нечем"
+			detail = "the piece is not marked with how it is cut (cut_symmetry) — there is no way to say how many units it yields"
 		case !chiralityKnown:
-			detail = "раскладка старше схемы 3: зеркальность размещений в ней не записана, и «нет зеркальных» не доказательство"
+			detail = "the layout predates schema 3: placement mirroring is not recorded in it, and 'no mirrored placements' is not proof"
 		default:
-			detail = "деталь не даёт вычислимого выхода изделий"
+			detail = "the piece yields no computable unit count"
 		}
 	}
 
@@ -719,7 +719,7 @@ func (b *layCoverageBuilder) pieceAnswer(rp requiredPiece, colorwayID, sizeID, p
 	if name, broken := b.brokenLay[colorwayID]; broken && y.Known && y.Garments < plannedQty {
 		return cellAnswer{
 			cut:    cut,
-			detail: fmt.Sprintf("нехватка не доказуема: у колорвея есть настил %q, потерявший слот BOM, и его раскрой мог включать эту деталь", name),
+			detail: fmt.Sprintf("the shortfall is not provable: the colourway has lay %q, which lost its BOM slot, and its cutting may have included this piece", name),
 		}
 	}
 	return cellAnswer{yield: y, cut: cut, detail: detail}

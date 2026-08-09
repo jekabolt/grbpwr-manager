@@ -52,7 +52,7 @@ func cutPlanCutArticleSection(b *entity.TechCardBomItem) bool {
 // aux-цвета: единственный выход карточки в легаси-режиме (см. ProductionRunLine.OutputVariantId).
 // Пустое имя здесь недопустимо: колонка попадает и в строки, и в блокеры, а блокер «деталь X, цвет
 // “”» неисполним — по нему нельзя понять, какую партию остановили.
-const cutPlanLegacyOutputName = "без цвета (единственный выход карточки)"
+const cutPlanLegacyOutputName = "no colour (the card's only output)"
 
 // ComputeProductionRunCutPlan projects a run's lines onto the style's cut pieces: деталь × колорвей
 // × размер → сколько панелей выкроить и из какого артикула. Сестра ComputeProductionRunMaterialPlan
@@ -105,7 +105,7 @@ func ComputeProductionRunCutPlan(
 	// молчание здесь читалось бы как «деталей не нужно». Говорим только когда партия непуста:
 	// у прогона без линий и так нет ни одной строки, и вторая жалоба ничего не добавляет.
 	if len(card.Pieces) == 0 && len(groups) > 0 {
-		caveats = append(caveats, "в карточке нет деталей кроя — наряд пуст, хотя партия запланирована")
+		caveats = append(caveats, "the card has no cut pieces — the run pack is empty even though the batch is planned")
 	}
 
 	for i := range card.Pieces {
@@ -361,10 +361,10 @@ func (g *cutPlanGroup) resolve(piece *entity.TechCardPiece, items []entity.TechC
 			// Две разные ткани на одну деталь — это не «выбери любую»: у детали один крой, и какой
 			// из слотов настилать, знает только человек.
 			return cutPlanArticle{}, fmt.Sprintf(
-				"%s называет для этой детали %d разных слотов — из какого её кроить, не сказано", g.specLabel, len(slots))
+				"%s names %d different slots for this piece — which one to cut it from is not stated", g.specLabel, len(slots))
 		case resolved == 0:
 			return cutPlanArticle{}, fmt.Sprintf(
-				"%s называет эту деталь, но строка BOM, на которую он ссылается, в карточке не найдена", g.specLabel)
+				"%s names this piece, but the BOM line it references is not found in the card", g.specLabel)
 		}
 		// Рецепт назвал деталь, но ни одним полотном: про крой он не сказал ничего — падаем в (б).
 	}
@@ -377,12 +377,12 @@ func (g *cutPlanGroup) resolve(piece *entity.TechCardPiece, items []entity.TechC
 		return cutPlanArticleOf(g.rollSlots[0], true)
 	case 0:
 		return cutPlanArticle{}, fmt.Sprintf(
-			"%s не называет ткань для этой детали, и рулонных слотов в нём нет", g.specLabel)
+			"%s does not name a fabric for this piece, and it has no roll slots", g.specLabel)
 	default:
 		// (в) ДВУСМЫСЛЕННОСТЬ УХОДИТ В БЛОКЕРЫ ЦЕЛИКОМ. Подкладка вместо основной ткани — это
 		// испорченный настил, а не опечатка в бумаге.
 		return cutPlanArticle{}, fmt.Sprintf(
-			"%s не называет ткань для этой детали, а рулонных слотов у него %d — наряд не угадывает",
+			"%s does not name a fabric for this piece, and it has %d roll slots — the run pack does not guess",
 			g.specLabel, len(g.rollSlots))
 	}
 }
@@ -397,7 +397,7 @@ func cutPlanArticleOf(s cutPlanSlot, inferred bool) (cutPlanArticle, string) {
 		mid = s.articleID()
 	}
 	if mid == 0 {
-		return cutPlanArticle{}, fmt.Sprintf("в слоте %q нет артикула: ни пина рецепта, ни умолчания слота", s.bom.Name)
+		return cutPlanArticle{}, fmt.Sprintf("slot %q has no article: neither a recipe pin nor a slot default", s.bom.Name)
 	}
 	return cutPlanArticle{bom: s.bom, materialID: mid, pinned: pinned, inferred: inferred}, ""
 }
@@ -500,7 +500,7 @@ func cutPlanGroups(run *entity.ProductionRun, card *entity.TechCard, sizes *cutP
 
 	if noProduct > 0 {
 		caveats = append(caveats, fmt.Sprintf(
-			"линии без продукта и без aux-цвета (%d изделий) не попали в наряд — их крой не с чем сопоставить", noProduct))
+			"lines with no product and no aux colour (%d units) did not make it into the run pack — there is nothing to match their cutting against", noProduct))
 	}
 	if noColorway > 0 {
 		pids := make([]int, 0, len(unknownProducts))
@@ -509,7 +509,7 @@ func cutPlanGroups(run *entity.ProductionRun, card *entity.TechCard, sizes *cutP
 		}
 		sort.Ints(pids)
 		caveats = append(caveats, fmt.Sprintf(
-			"продукты %v не найдены среди колорвеев карточки — %d изделий не попали в наряд", pids, noColorway))
+			"products %v are not found among the card's colourways — %d units did not make it into the run pack", pids, noColorway))
 	}
 
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -539,7 +539,7 @@ func newCutPlanGroup(
 		sizes:      sizes,
 		byPieceID:  map[int][]*entity.TechCardColorwayUsage{},
 		byPieceKey: map[string][]*entity.TechCardColorwayUsage{},
-		specLabel:  "рецепт колорвея",
+		specLabel:  "the colourway recipe",
 	}
 	switch {
 	case variant != nil:
@@ -563,7 +563,7 @@ func newCutPlanGroup(
 		// блокеров с фразой про несуществующий колорвей, а поля output_variant_* и «size_id = 0 =
 		// безразмерная линия (aux-прогон)» самого контракта — полями, которые не может заполнить
 		// никто.
-		g.specLabel = "BOM карточки"
+		g.specLabel = "the card BOM"
 		for i := range card.BomItems {
 			if b := &card.BomItems[i]; cutPlanRollSections[b.Section] {
 				g.rollSlots = append(g.rollSlots, cutPlanSlot{bom: b})
@@ -658,7 +658,7 @@ func (x *cutPlanSizeIndex) strayNotes() []string {
 	out := make([]string, 0, len(x.stray))
 	for _, id := range x.stray {
 		out = append(out, fmt.Sprintf(
-			"размер %s не входит в градацию карточки — его количества посчитаны, но выкройки на него в карточке может не быть",
+			"size %s is not in the card's size range — its quantities are counted, but the card may have no pattern for it",
 			sizeLabelOf(id)))
 	}
 	return out

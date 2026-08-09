@@ -281,9 +281,9 @@ func TestComputeProductionRunCutPlan_Caveats(t *testing.T) {
 	resp := ComputeProductionRunCutPlan(run, card, nil)
 
 	require.Len(t, resp.Caveats, 3)
-	require.Contains(t, resp.Caveats[0], "2 изделий", "линия без продукта названа количеством")
+	require.Contains(t, resp.Caveats[0], "(2 units)", "линия без продукта названа количеством")
 	require.Contains(t, resp.Caveats[1], "99")
-	require.Contains(t, resp.Caveats[2], "градаци")
+	require.Contains(t, resp.Caveats[2], "size range")
 	// Шапка называет размер ПАРТИИ (10+3+7+2), а не сумму привязанного: ужать её значило бы спрятать
 	// девять изделий в правдоподобное число. Разницу объясняют оговорки выше.
 	require.Equal(t, int32(22), resp.GarmentsTotal)

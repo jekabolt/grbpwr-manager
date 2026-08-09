@@ -762,7 +762,7 @@ func parseTechCardPieceDxfAliases(pb *pb_common.TechCardPieceDxfAliasSet) ([]ent
 		}
 		if purpose == "" && slot == "" {
 			return nil, false, fmt.Errorf(
-				"piece_dxf_aliases[%d]: give it a назначение (fabric_purpose) or a BOM line (bom_line_key) — one of the two must say which cloth the block is cut from", i)
+				"piece_dxf_aliases[%d]: give it a purpose (fabric_purpose) or a BOM line (bom_line_key) — one of the two must say which cloth the block is cut from", i)
 		}
 		block := strings.Join(strings.Fields(a.BlockName), " ")
 		if block == "" {
@@ -787,7 +787,7 @@ func parseTechCardPieceDxfAliases(pb *pb_common.TechCardPieceDxfAliasSet) ([]ent
 		dupKey := strings.ToLower(entity.FabricScopeKey(purpose, slot)) + "|" + strings.ToLower(block)
 		if seen[dupKey] {
 			return nil, false, fmt.Errorf(
-				"piece_dxf_aliases[%d]: блок %q заявлен двумя деталями кроя под одним назначением — открой «детали кроя» на вкладке ВЫКРОЙКИ и оставь для этого блока одну связь", i, block)
+				"piece_dxf_aliases[%d]: block %q is claimed by two cut pieces under one purpose — open 'cut pieces' on the PATTERNS tab and leave a single link for this block", i, block)
 		}
 		seen[dupKey] = true
 		out = append(out, entity.TechCardPieceDxfAlias{
@@ -835,7 +835,7 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		// A NON-ZERO size still has to be one of the card's, so a stale row cannot name a dropped size.
 		sid := int(p.SizeId)
 		if sid < 0 || (sid > 0 && !slices.Contains(sizeIds, sid)) {
-			return nil, fmt.Errorf("pattern size_id %d must be one of size_ids (or 0 — размеры в самом файле)", p.SizeId)
+			return nil, fmt.Errorf("pattern size_id %d must be one of size_ids (or 0 — the sizes live in the file itself)", p.SizeId)
 		}
 		url := strings.TrimSpace(p.Url)
 		if url == "" {
@@ -1585,7 +1585,7 @@ func markerCompositionOfInsert(pb *pb_common.TechCardMarkerInsert) (sizeID, sets
 			nil
 	}
 	return sql.NullInt64{}, sql.NullInt64{}, nil, fmt.Errorf(
-		"the раскладка needs a состав: send layout.composition (or size_id + sets if the bundle predates it)")
+		"the marker needs a composition: send layout.composition (or size_id + sets if the bundle predates it)")
 }
 
 // markerPieceAreasFromPb reduces a layout's pieces to what the area distribution needs. It is the
@@ -1743,7 +1743,7 @@ func MarkerLayoutFactsFromPb(l *pb_common.TechCardMarkerLayout) (entity.MarkerLa
 			// instances — geometry that is stored, counted against the caps, drawn in the editor and
 			// cut never. Refusing is the only reading that cannot be silent.
 			return entity.MarkerLayoutFacts{}, fmt.Errorf(
-				"layout.pieces[%d].size_id is %d, which the состав does not cut", i, sizeID)
+				"layout.pieces[%d].size_id is %d, which the composition does not cut", i, sizeID)
 		}
 	}
 	// …AND THE OTHER DIRECTION. A состав line whose size carries no graded piece is the same lie told
@@ -2294,7 +2294,7 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			if !ok {
 				return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].cut_symmetry", i),
 					"unknown cut symmetry", p.GetCutSymmetry().String(),
-					"pick one of: identical (одинаковые копии), mirrored (зеркальные пары), fold (крой по сгибу)")
+					"pick one of: identical (identical copies), mirrored (mirrored pairs), fold (cut on the fold)")
 			}
 			cutSymmetry = sql.NullString{String: string(cs), Valid: true}
 		}
@@ -2500,7 +2500,7 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if purposeNote.Valid && purpose.String != string(entity.BomPurposeOther) {
 			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose_note", i),
 				"a note is only meaningful on the 'other' purpose", "",
-				"clear the note, or set the purpose to 'другое'")
+				"clear the note, or set the purpose to 'other'")
 		}
 		if len(purposeNote.String) > maxVarchar255 {
 			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose_note", i),
@@ -2535,7 +2535,7 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if kindNote.Valid && kind.String != string(entity.BomKindOther) {
 			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].kind_note", i),
 				"a note is only meaningful on the 'other' kind", "",
-				"clear the note, or set the kind to 'другое'")
+				"clear the note, or set the kind to 'other'")
 		}
 		if len(kindNote.String) > maxVarchar255 {
 			return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].kind_note", i),
@@ -3148,7 +3148,7 @@ func fabricPurposeFromPb(p *pb_common.TechCardBomPurpose, field string) (sql.Nul
 	}
 	v, ok := techCardBomPurposePbToEntity[*p]
 	if !ok {
-		return sql.NullString{}, fmt.Errorf("%s: unknown назначение %q", field, p.String())
+		return sql.NullString{}, fmt.Errorf("%s: unknown purpose %q", field, p.String())
 	}
 	return sql.NullString{String: string(v), Valid: true}, nil
 }
@@ -3162,7 +3162,7 @@ func aliasFabricPurposeFromPb(p pb_common.TechCardBomPurpose, field string) (str
 	}
 	v, ok := techCardBomPurposePbToEntity[p]
 	if !ok {
-		return "", fmt.Errorf("%s: unknown назначение %q", field, p.String())
+		return "", fmt.Errorf("%s: unknown purpose %q", field, p.String())
 	}
 	return string(v), nil
 }

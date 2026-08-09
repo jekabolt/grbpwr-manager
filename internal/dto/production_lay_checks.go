@@ -297,14 +297,14 @@ type LayCheckSection struct {
 func (s LayCheckSection) describe() string {
 	name := strings.TrimSpace(s.Marker.Name)
 	if name == "" {
-		name = fmt.Sprintf("маркер #%d", s.Marker.Id)
+		name = fmt.Sprintf("marker #%d", s.Marker.Id)
 	} else {
-		name = fmt.Sprintf("маркер %q", name)
+		name = fmt.Sprintf("marker %q", name)
 	}
 	if key := strings.TrimSpace(s.SectionKey); key != "" {
-		return fmt.Sprintf("секция %s (%s, слоёв: %d)", key, name, s.Plies)
+		return fmt.Sprintf("section %s (%s, plies: %d)", key, name, s.Plies)
 	}
-	return fmt.Sprintf("%s (слоёв: %d)", name, s.Plies)
+	return fmt.Sprintf("%s (plies: %d)", name, s.Plies)
 }
 
 // LayArticleFacts is the АРТИКУЛ the колорвей pins TODAY (not a snapshot — §11: cloth whose article
@@ -495,13 +495,13 @@ func ColorwayBindingOf(markerColorwayId sql.NullInt64, layColorwayId int) Marker
 // one nobody tested. The probe lays a single as-drawn instance — the counts are irrelevant, only the
 // refusal is read.
 func LayModeParityCheck(mode LayFaceMode, sections []LayCheckSection) LayCheck {
-	c := LayCheck{Key: LayCheckKeyModeParity, Label: "чётность слоёв под режим настилания"}
+	c := LayCheck{Key: LayCheckKeyModeParity, Label: "ply parity against the lay mode"}
 	if !ValidLayFaceModes[mode] {
 		// Не UNKNOWN: chk_prlay_mode (0281) makes this unreachable through the app, so a mode outside
 		// the dictionary is a corrupt row, and «не могу проверить» would let it through the save path
 		// that calls this predicate to refuse.
 		c.Status = LayCheckStatusBlocker
-		c.Detail = fmt.Sprintf("режим настилания %q не из словаря (%s|%s)", mode, LayFaceModeFaceUp, LayFaceModeFaceToFace)
+		c.Detail = fmt.Sprintf("lay mode %q is not in the dictionary (%s|%s)", mode, LayFaceModeFaceUp, LayFaceModeFaceToFace)
 		return c
 	}
 	var odd, malformed []string
@@ -518,11 +518,11 @@ func LayModeParityCheck(mode LayFaceMode, sections []LayCheckSection) LayCheck {
 	switch {
 	case len(odd) > 0 && len(malformed) > 0:
 		c.Status = LayCheckStatusBlocker
-		c.Detail = fmt.Sprintf("настил лицом к лицу требует чётного числа слоёв в каждой секции; нечётные: %s; кроме того: %s",
+		c.Detail = fmt.Sprintf("a face-to-face lay requires an even number of plies in every section; odd: %s; besides that: %s",
 			strings.Join(odd, ", "), strings.Join(malformed, ", "))
 	case len(odd) > 0:
 		c.Status = LayCheckStatusBlocker
-		c.Detail = fmt.Sprintf("настил лицом к лицу требует чётного числа слоёв в каждой секции; нечётные: %s", strings.Join(odd, ", "))
+		c.Detail = fmt.Sprintf("a face-to-face lay requires an even number of plies in every section; odd: %s", strings.Join(odd, ", "))
 	case len(malformed) > 0:
 		c.Status = LayCheckStatusBlocker
 		c.Detail = strings.Join(malformed, "; ")
@@ -541,18 +541,18 @@ func LayModeParityCheck(mode LayFaceMode, sections []LayCheckSection) LayCheck {
 // touching neither the настил nor the run. A check that ran only at save time would leave that
 // настил rendering green until the next time somebody edited it, which may be never.
 func LayMarkerScopeCheck(lay LayIdentity, marker LayMarkerFacts) LayCheck {
-	c := LayCheck{Key: LayCheckKeyMarkerScope, Label: "маркер принадлежит этому настилу", MarkerId: marker.Id}
+	c := LayCheck{Key: LayCheckKeyMarkerScope, Label: "the marker belongs to this lay", MarkerId: marker.Id}
 	var faults []string
 
 	if marker.TechCardId != lay.TechCardId {
-		faults = append(faults, fmt.Sprintf("маркер снят с карточки #%d, а прогон ведётся по карточке #%d",
+		faults = append(faults, fmt.Sprintf("the marker was made from card #%d, while the run works off card #%d",
 			marker.TechCardId, lay.TechCardId))
 	}
 	if marker.RunId != lay.RunId {
 		if marker.RunId == 0 {
-			faults = append(faults, "это КАРТОЧНЫЙ маркер (норма или свободная раскладка); секция настила ссылается только на копию, принадлежащую прогону")
+			faults = append(faults, "this is a CARD marker (a consumption norm or a free marker); a lay section may only reference the copy owned by the run")
 		} else {
-			faults = append(faults, fmt.Sprintf("маркер принадлежит прогону #%d, а настил — прогону #%d", marker.RunId, lay.RunId))
+			faults = append(faults, fmt.Sprintf("the marker belongs to run #%d, while the lay belongs to run #%d", marker.RunId, lay.RunId))
 		}
 	}
 
@@ -560,17 +560,17 @@ func LayMarkerScopeCheck(lay LayIdentity, marker LayMarkerFacts) LayCheck {
 	case !lay.BomItemId.Valid:
 		// Слот самого настила пропал. Не UNKNOWN: сравнивать не с чем — значит соответствие НЕ
 		// доказано, а «доказать нечем» здесь совпало бы с «годен» на экране цеха.
-		faults = append(faults, fmt.Sprintf("слот BOM настила удалён (снимок line_key %s) — сопоставить маркер не с чем",
+		faults = append(faults, fmt.Sprintf("the lay's BOM slot has been deleted (line_key snapshot %s) — there is nothing to match the marker against",
 			nameOrDash(lay.BomLineKey)))
 	case !marker.BomItemId.Valid:
-		faults = append(faults, "маркер потерял слот BOM (строку BOM удалили из карточки) — он больше не про ткань этого настила")
+		faults = append(faults, "the marker lost its BOM slot (the BOM line was deleted from the card) — it is no longer about this lay's fabric")
 	case marker.BomItemId.Int64 != lay.BomItemId.Int64:
-		faults = append(faults, fmt.Sprintf("маркер снят по слоту BOM #%d, а настил стелется по слоту #%d",
+		faults = append(faults, fmt.Sprintf("the marker was made for BOM slot #%d, while the lay is spread on slot #%d",
 			marker.BomItemId.Int64, lay.BomItemId.Int64))
 	}
 
 	if ColorwayBindingOf(marker.ColorwayId, lay.ColorwayId) == MarkerColorwayForeign {
-		faults = append(faults, fmt.Sprintf("маркер привязан к колорвею #%d, а настил — к колорвею #%d",
+		faults = append(faults, fmt.Sprintf("the marker is bound to colourway #%d, while the lay is bound to colourway #%d",
 			marker.ColorwayId.Int64, lay.ColorwayId))
 	}
 
@@ -599,24 +599,24 @@ func LayMarkerScopeCheck(lay LayIdentity, marker LayMarkerFacts) LayCheck {
 // visible HERE. It is visible in coverage, which asks PerLayerInstances per size. This check answers
 // «нарезан ли маркер под этот режим», a property of the geometry as a whole.
 func LayMirrorExpansionCheck(mode LayFaceMode, marker LayMarkerFacts, symmetry map[string]sql.NullString) LayCheck {
-	c := LayCheck{Key: LayCheckKeyMirrorExpansion, Label: "развёртка зеркальных деталей под режим настилания", MarkerId: marker.Id}
+	c := LayCheck{Key: LayCheckKeyMirrorExpansion, Label: "mirrored-piece expansion under the lay mode", MarkerId: marker.Id}
 	if !ValidLayFaceModes[mode] {
 		// lay_mode_parity already carries the BLOCKER for a mode outside the dictionary; repeating it
 		// here would double-count one fault, and answering OK would approve geometry against a rule
 		// nobody could name.
 		c.Status = LayCheckStatusUnknown
-		c.Detail = fmt.Sprintf("режим настилания %q не из словаря — судить развёртку не по чему", mode)
+		c.Detail = fmt.Sprintf("lay mode %q is not in the dictionary — there is no rule to judge the expansion by", mode)
 		return c
 	}
 	if marker.Yield == nil {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = "раскладка маркера не прочитана — развёртку деталей проверить нечем"
+		c.Detail = "the marker's layout was not read — there is nothing to check the piece expansion with"
 		return c
 	}
 	y := *marker.Yield
 	if !y.Attributable() {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = fmt.Sprintf("раскладка не сопоставляется с деталями карточки (схема блоба %d, неатрибутируемых деталей: %d)",
+		c.Detail = fmt.Sprintf("the layout cannot be matched to the card's pieces (blob schema %d, unattributable pieces: %d)",
 			y.SchemaVersion, y.UnattributedPieces)
 		return c
 	}
@@ -634,7 +634,7 @@ func LayMirrorExpansionCheck(mode LayFaceMode, marker LayMarkerFacts, symmetry m
 	}
 	if len(byPiece) == 0 {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = "в раскладке нет ни одной атрибутированной детали"
+		c.Detail = "the layout has no attributed pieces at all"
 		return c
 	}
 
@@ -652,21 +652,21 @@ func LayMirrorExpansionCheck(mode LayFaceMode, marker LayMarkerFacts, symmetry m
 		sym, ok := symmetry[key]
 		if !ok || !sym.Valid {
 			statuses = append(statuses, LayCheckStatusUnknown)
-			unknowns = append(unknowns, fmt.Sprintf("%s: КАК КРОИТСЯ не размечено", name))
+			unknowns = append(unknowns, fmt.Sprintf("%s: cut symmetry is not set", name))
 			continue
 		}
 		switch entity.TechCardPieceCutSymmetry(sym.String) {
 		case entity.PieceCutSymmetryMirrored:
 			if !y.ChiralityKnown() {
 				statuses = append(statuses, LayCheckStatusUnknown)
-				unknowns = append(unknowns, fmt.Sprintf("%s: раскладка схемы %d не различает отражённые размещения", name, y.SchemaVersion))
+				unknowns = append(unknowns, fmt.Sprintf("%s: a schema-%d layout does not distinguish flipped placements", name, y.SchemaVersion))
 				continue
 			}
 			switch mode {
 			case LayFaceModeFaceUp:
 				if counts.AsDrawn != counts.Mirrored {
 					statuses = append(statuses, LayCheckStatusBlocker)
-					faults = append(faults, fmt.Sprintf("%s: как нарисовано %d, отражённых %d — при настилании лицом вверх обе руки кроятся из маркера и их должно быть поровну",
+					faults = append(faults, fmt.Sprintf("%s: as-drawn %d, flipped %d — in a face-up lay both hands are cut from the marker and their counts must be equal",
 						name, counts.AsDrawn, counts.Mirrored))
 					faultKeys = append(faultKeys, key)
 					continue
@@ -674,7 +674,7 @@ func LayMirrorExpansionCheck(mode LayFaceMode, marker LayMarkerFacts, symmetry m
 			case LayFaceModeFaceToFace:
 				if counts.Mirrored > 0 {
 					statuses = append(statuses, LayCheckStatusBlocker)
-					faults = append(faults, fmt.Sprintf("%s: отражённых размещений %d — маркер разложен под настилание лицом вверх, а настил идёт лицом к лицу",
+					faults = append(faults, fmt.Sprintf("%s: %d flipped placements — the marker is nested for face-up spreading, while the lay runs face to face",
 						name, counts.Mirrored))
 					faultKeys = append(faultKeys, key)
 					continue
@@ -690,7 +690,7 @@ func LayMirrorExpansionCheck(mode LayFaceMode, marker LayMarkerFacts, symmetry m
 			// Значение вне словаря 0275. Не «наверное identical» — ровно та подстановка, ради
 			// запрета которой 0275 и заводилась.
 			statuses = append(statuses, LayCheckStatusUnknown)
-			unknowns = append(unknowns, fmt.Sprintf("%s: КАК КРОИТСЯ = %q не из словаря", name, sym.String))
+			unknowns = append(unknowns, fmt.Sprintf("%s: cut symmetry = %q is not in the dictionary", name, sym.String))
 		}
 	}
 
@@ -720,7 +720,7 @@ func LayMirrorExpansionCheck(mode LayFaceMode, marker LayMarkerFacts, symmetry m
 // громкой — что и есть причина, по которой её UNKNOWN обязан выглядеть как «не проверено», а не как
 // отказ и не как «годен».
 func LayDirectionModeCheck(mode LayFaceMode, bomLineKey string, lines []entity.FabricDirectionLine) LayCheck {
-	c := LayCheck{Key: LayCheckKeyDirectionMode, Label: "направление ткани против режима настилания"}
+	c := LayCheck{Key: LayCheckKeyDirectionMode, Label: "fabric direction against the lay mode"}
 	scope := entity.MarkerFabricScope(bomLineKey, lines)
 	if !scope.Live() {
 		// ScopeFabricDirection over an EMPTY scope answers `any` with no unknowns — truthfully, since
@@ -728,7 +728,7 @@ func LayDirectionModeCheck(mode LayFaceMode, bomLineKey string, lines []entity.F
 		// does not exist. A dangling scope is the state of a настил whose slot was deleted, i.e.
 		// exactly the case lay_slot_detached is shouting about.
 		c.Status = LayCheckStatusUnknown
-		c.Detail = fmt.Sprintf("строка BOM %s не найдена среди тканевых строк карточки — направление спросить не у кого",
+		c.Detail = fmt.Sprintf("BOM line %s is not found among the card's fabric lines — there is nothing to ask for the direction",
 			nameOrDash(bomLineKey))
 		return c
 	}
@@ -739,7 +739,7 @@ func LayDirectionModeCheck(mode LayFaceMode, bomLineKey string, lines []entity.F
 			names = append(names, nameOrDash(l.LineKey))
 		}
 		c.Status = LayCheckStatusUnknown
-		c.Detail = fmt.Sprintf("направление ткани не задано на строках BOM: %s — заполните его на вкладке BOM, и проверка начнёт работать",
+		c.Detail = fmt.Sprintf("fabric direction is not set on BOM lines: %s — fill it in on the BOM tab and this check will start working",
 			strings.Join(names, ", "))
 		return c
 	}
@@ -752,7 +752,7 @@ func LayDirectionModeCheck(mode LayFaceMode, bomLineKey string, lines []entity.F
 		return c
 	}
 	c.Status = LayCheckStatusBlocker
-	c.Detail = fmt.Sprintf("ткань назначения %s направленная (one_way), а настил лицом к лицу кладёт каждый второй слой лицом вниз — ворс и направленный рисунок развернутся",
+	c.Detail = fmt.Sprintf("the fabric of purpose %s is directional (one_way), while a face-to-face lay puts every second ply face down — the nap and any directional print will end up reversed",
 		nameOrDash(scope.Key))
 	return c
 }
@@ -765,16 +765,16 @@ func LayDirectionModeCheck(mode LayFaceMode, bomLineKey string, lines []entity.F
 // названную там же консервативность скалярного сравнения. Здесь только перевод вердикта в статус Ф4:
 // вторая реализация сравнения ширин разошлась бы с гейтом Ф6, и разошлась бы молча.
 func LayMarkerWidthCheck(marker LayMarkerFacts, article LayArticleFacts) LayCheck {
-	c := LayCheck{Key: LayCheckKeyMarkerWidth, Label: "ширина маркера против полезной ширины артикула", MarkerId: marker.Id}
+	c := LayCheck{Key: LayCheckKeyMarkerWidth, Label: "marker width against the article's usable width", MarkerId: marker.Id}
 	v := entity.NormWidthVsArticle(marker.FabricWidthCm, article.NarrowestMeasuredLotCm, article.SelvedgeCm, article.NominalUsableWidthCm)
 	c.Status = layCheckStatusFromSeverity(v.Severity)
 	switch c.Status {
 	case LayCheckStatusOK:
 	case LayCheckStatusBlocker:
-		c.Detail = fmt.Sprintf("маркер снят на ширине %s см, а полезная ширина артикула %s сегодня %s см",
+		c.Detail = fmt.Sprintf("the marker was made %s cm wide, while the usable width of article %s today is %s cm",
 			marker.FabricWidthCm.String(), nameOrDash(article.Name), v.TodayCuttingCm.Decimal.String())
 	default:
-		c.Detail = fmt.Sprintf("у артикула %s нет ни ширины в каталоге, ни измеренной ширины лота — сравнивать не с чем",
+		c.Detail = fmt.Sprintf("article %s has neither a catalogue width nor a measured lot width — there is nothing to compare against",
 			nameOrDash(article.Name))
 	}
 	return c
@@ -805,17 +805,17 @@ func LayMarkerWidthCheck(marker LayMarkerFacts, article LayArticleFacts) LayChec
 // в тот ответ «влезает», против которого Р8 и написана. Вопрос «а что говорит каталог» уже задан, и
 // на него отвечает lay_marker_width.
 func LayLotWidthCheck(marker LayMarkerFacts, lot LayLotFacts, article LayArticleFacts) LayCheck {
-	c := LayCheck{Key: LayCheckKeyLotWidth, Label: "ширина маркера против измеренной ширины лота", MarkerId: marker.Id}
+	c := LayCheck{Key: LayCheckKeyLotWidth, Label: "marker width against the lot's measured width", MarkerId: marker.Id}
 
 	if !lot.LotId.Valid || lot.LotId.Int64 <= 0 {
 		c.Status = LayCheckStatusUnknown
 		if code := strings.TrimSpace(lot.LotCode); code != "" {
 			// Снимок кода пережил лот (Р6) — настил называет пропавший рулон вместо того, чтобы
 			// молчать. Это и есть то, чем оплачен SET NULL.
-			c.Detail = fmt.Sprintf("лот %s, с которого стелился настил, удалён из справочника — измеренную ширину спросить не у кого", code)
+			c.Detail = fmt.Sprintf("lot %s, which this lay was spread from, has been deleted from the register — there is nowhere to ask for its measured width", code)
 			return c
 		}
-		c.Detail = "лот, с которого стелется настил, не выбран — сверять ширину маркера не с чем"
+		c.Detail = "the lot this lay is spread from is not selected — there is nothing to compare the marker width against"
 		return c
 	}
 
@@ -831,7 +831,7 @@ func LayLotWidthCheck(marker LayMarkerFacts, lot LayLotFacts, article LayArticle
 	v := entity.NormWidthVsArticle(marker.FabricWidthCm, measured, article.SelvedgeCm, decimal.NullDecimal{})
 	if v.Basis == entity.NormWidthBasisNone {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = fmt.Sprintf("ширина лота %s не замерена — сверять ширину маркера не с чем; замерьте рулон, и проверка начнёт работать",
+		c.Detail = fmt.Sprintf("the width of lot %s is not measured — there is nothing to compare the marker width against; measure the roll and this check will start working",
 			layLotLabel(lot))
 		return c
 	}
@@ -840,13 +840,13 @@ func LayLotWidthCheck(marker LayMarkerFacts, lot LayLotFacts, article LayArticle
 		c.Status = LayCheckStatusOK
 	case LayCheckStatusBlocker:
 		c.Status = LayCheckStatusBlocker
-		c.Detail = fmt.Sprintf("маркер снят на ширине %s см, а лот %s замерен на %s см — раскройной ширины в нём %s см (кромка %s см с каждого края); этот маркер на этом рулоне не режется",
+		c.Detail = fmt.Sprintf("the marker was made %s cm wide, while lot %s measures %s cm — its cutting width is %s cm (selvedge %s cm on each edge); this marker cannot be cut on this roll",
 			marker.FabricWidthCm.String(), layLotLabel(lot), v.MeasuredRollCm.Decimal.String(),
 			v.TodayCuttingCm.Decimal.String(), article.SelvedgeCm.String())
 	default:
 		// Вердикт, которого этот файл прочитать не может. Не OK: нечитаемый ответ не бывает одобрением.
 		c.Status = LayCheckStatusUnknown
-		c.Detail = fmt.Sprintf("сверка ширины лота %s вернула вердикт, который нечем прочитать", layLotLabel(lot))
+		c.Detail = fmt.Sprintf("the width comparison for lot %s returned a verdict there is no way to read", layLotLabel(lot))
 	}
 	return c
 }
@@ -905,12 +905,12 @@ func LayStackHeightVerdict(totalPlies int, fabricThicknessMm, maxStackHeightCm d
 
 	thicknessKnown := fabricThicknessMm.Valid && fabricThicknessMm.Decimal.IsPositive()
 	if !thicknessKnown {
-		missing = append(missing, "толщина ткани не задана на артикуле — замерьте, и высота стопки начнёт проверяться")
+		missing = append(missing, "fabric thickness is not set on the article — measure it and the stack height will start being checked")
 	}
 	if totalPlies < 1 {
 		// Ноль слоёв — это не стопка нулевой высоты, влезающая в любой предел; это настил, о котором
 		// сказать нечего. Тот же провал, что «нет толщины ⇒ 0 см», в другой одежде.
-		missing = append(missing, "в настиле нет ни одного слоя — высоту стопки считать не из чего")
+		missing = append(missing, "the lay has no plies at all — there is nothing to compute the stack height from")
 	}
 	if thicknessKnown && totalPlies >= 1 {
 		out.HeightCm = decimal.NullDecimal{
@@ -922,7 +922,7 @@ func LayStackHeightVerdict(totalPlies int, fabricThicknessMm, maxStackHeightCm d
 	if maxStackHeightCm.Valid && maxStackHeightCm.Decimal.IsPositive() {
 		out.LimitCm = maxStackHeightCm
 	} else {
-		missing = append(missing, "предел стопки не настроен в настройках цеха")
+		missing = append(missing, "the stack limit is not configured in the workshop settings")
 	}
 
 	if len(missing) > 0 {
@@ -932,7 +932,7 @@ func LayStackHeightVerdict(totalPlies int, fabricThicknessMm, maxStackHeightCm d
 	}
 	if out.HeightCm.Decimal.GreaterThan(out.LimitCm.Decimal) {
 		out.Status = LayCheckStatusBlocker
-		out.Detail = fmt.Sprintf("стопка %s см (%d слоёв × %s мм) выше предела цеха %s см",
+		out.Detail = fmt.Sprintf("the stack is %s cm (%d plies × %s mm), above the workshop limit of %s cm",
 			out.HeightCm.Decimal.String(), totalPlies, fabricThicknessMm.Decimal.String(), out.LimitCm.Decimal.String())
 		return out
 	}
@@ -962,7 +962,7 @@ func LayStackHeightCheck(totalPlies int, fabricThicknessMm, maxStackHeightCm dec
 		// измеримое как есть, НАЗЫВАТЬ, что именно посчитано, и калибровать по факту в Ф5б.
 		// Поэтому вердикт остаётся, а обещание из него убрано: цех читает «по толщине», а не
 		// «высота стопки», и знает, что запас надо держать сверх этого числа.
-		Label:  "высота стопки ПО ТОЛЩИНЕ ТКАНИ (без распушения настила) против предела цеха",
+		Label:  "stack height BY FABRIC THICKNESS (no lay loft included) against the workshop limit",
 		Detail: v.Detail,
 	}
 }
@@ -976,15 +976,15 @@ func LayStackHeightCheck(totalPlies int, fabricThicknessMm, maxStackHeightCm dec
 // Сравнивается ДЛИНА МАРКЕРА, а не длина настила: один проход настилания — это ровно один маркер в
 // длину, сколько бы слоёв под него ни легло.
 func LayTableLengthCheck(sections []LayCheckSection, cuttingTableLengthCm decimal.NullDecimal) LayCheck {
-	c := LayCheck{Key: LayCheckKeyTableLength, Label: "длина маркера против длины раскройного стола"}
+	c := LayCheck{Key: LayCheckKeyTableLength, Label: "marker length against the cutting table length"}
 	if !cuttingTableLengthCm.Valid || !cuttingTableLengthCm.Decimal.IsPositive() {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = "длина раскройного стола не настроена в настройках цеха"
+		c.Detail = "the cutting table length is not configured in the workshop settings"
 		return c
 	}
 	if len(sections) == 0 {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = "в настиле нет ни одной секции — мерить нечего"
+		c.Detail = "the lay has no sections at all — there is nothing to measure"
 		return c
 	}
 	longest := sections[0]
@@ -996,7 +996,7 @@ func LayTableLengthCheck(sections []LayCheckSection, cuttingTableLengthCm decima
 	if longest.Marker.UsedLengthCm.GreaterThan(cuttingTableLengthCm.Decimal) {
 		c.Status = LayCheckStatusWarning
 		c.MarkerId = longest.Marker.Id
-		c.Detail = fmt.Sprintf("%s длиной %s см не помещается на стол %s см — настил придётся стелить в несколько проходов",
+		c.Detail = fmt.Sprintf("%s at %s cm long does not fit on a %s cm table — the lay will have to be spread in several passes",
 			longest.describe(), longest.Marker.UsedLengthCm.String(), cuttingTableLengthCm.Decimal.String())
 		return c
 	}
@@ -1010,13 +1010,13 @@ func LayTableLengthCheck(sections []LayCheckSection, cuttingTableLengthCm decima
 // Цена решения «fk_prlay_bom — SET NULL» (0281), оплаченная НЕ-NULL-снимком bom_line_key: настил
 // всегда может НАЗВАТЬ пропавший слот и потому никогда не молчит.
 func LaySlotDetachedCheck(lay LayIdentity) LayCheck {
-	c := LayCheck{Key: LayCheckKeySlotDetached, Label: "слот BOM настила на месте"}
+	c := LayCheck{Key: LayCheckKeySlotDetached, Label: "the lay's BOM slot is in place"}
 	if lay.BomItemId.Valid {
 		c.Status = LayCheckStatusOK
 		return c
 	}
 	c.Status = LayCheckStatusBlocker
-	c.Detail = fmt.Sprintf("строка BOM, по которой стелился настил, удалена из карточки (снимок line_key %s) — настил выпадает из потребности и покрытия",
+	c.Detail = fmt.Sprintf("the BOM line this lay was spread against has been deleted from the card (line_key snapshot %s) — the lay drops out of the requirement and coverage",
 		nameOrDash(lay.BomLineKey))
 	return c
 }
@@ -1029,7 +1029,7 @@ func LaySlotDetachedCheck(lay LayIdentity) LayCheck {
 // re-serialisation. Нулевые количества выброшены с обеих сторон: размер с qty 0 и отсутствующий
 // размер — одно и то же утверждение о плане.
 func LayQuantitiesStaleCheck(snapshot, current []LayQtyEntry) LayCheck {
-	c := LayCheck{Key: LayCheckKeyQuantitiesStale, Label: "снимок количеств против строк прогона"}
+	c := LayCheck{Key: LayCheckKeyQuantitiesStale, Label: "quantity snapshot against the run's lines"}
 	was, now := normaliseLayQty(snapshot), normaliseLayQty(current)
 	var diffs []string
 	seen := make(map[int]bool, len(was)+len(now))
@@ -1045,7 +1045,7 @@ func LayQuantitiesStaleCheck(snapshot, current []LayQtyEntry) LayCheck {
 	sort.Ints(sizes)
 	for _, sizeID := range sizes {
 		if was[sizeID] != now[sizeID] {
-			diffs = append(diffs, fmt.Sprintf("размер #%d: было %d, стало %d", sizeID, was[sizeID], now[sizeID]))
+			diffs = append(diffs, fmt.Sprintf("size #%d: was %d, now %d", sizeID, was[sizeID], now[sizeID]))
 		}
 	}
 	if len(diffs) == 0 {
@@ -1053,7 +1053,7 @@ func LayQuantitiesStaleCheck(snapshot, current []LayQtyEntry) LayCheck {
 		return c
 	}
 	c.Status = LayCheckStatusWarning
-	c.Detail = fmt.Sprintf("количества прогона изменились после построения настила (%s) — пересоберите настил или подтвердите количества",
+	c.Detail = fmt.Sprintf("the run's quantities changed after the lay was built (%s) — rebuild the lay or confirm the quantities",
 		strings.Join(diffs, "; "))
 	return c
 }
@@ -1089,15 +1089,15 @@ func normaliseLayQty(entries []LayQtyEntry) map[int]int {
 // даёт PieceYieldGarments: деталь, у которой `cut_symmetry` не размечено или чьи руки блоб не
 // различает, не имеет определённого перекроя — у неё не определено даже, что из выкроенного годно.
 func LayOvercutCheck(pieces []LayPieceCut, covered LayCoveredQty) LayCheck {
-	c := LayCheck{Key: LayCheckKeyOvercut, Label: "перекрой: выкроено сверх нужного"}
+	c := LayCheck{Key: LayCheckKeyOvercut, Label: "overcut: more cut than needed"}
 	if !covered.Known {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = "покрытие настила не определено — сравнивать выкроенное не с чем"
+		c.Detail = "the lay's coverage is not determined — there is nothing to compare the cut counts against"
 		return c
 	}
 	if len(pieces) == 0 {
 		c.Status = LayCheckStatusUnknown
-		c.Detail = "ни одной детали для сравнения"
+		c.Detail = "no pieces to compare"
 		return c
 	}
 	coveredQty := covered.Qty
@@ -1115,14 +1115,14 @@ func LayOvercutCheck(pieces []LayPieceCut, covered LayCoveredQty) LayCheck {
 		y := PieceYieldGarments(p.Cut, p.Symmetry, p.PiecesPerGarment, p.ChiralityKnown)
 		if !y.Known {
 			statuses = append(statuses, LayCheckStatusUnknown)
-			unknowns = append(unknowns, fmt.Sprintf("%s: сколько из выкроенного годно — не определено (КАК КРОИТСЯ не размечено или руки не различимы)", name))
+			unknowns = append(unknowns, fmt.Sprintf("%s: how much of the cut is usable is undetermined (cut symmetry is not set, or the hands are indistinguishable)", name))
 			continue
 		}
 		need := coveredQty * p.PiecesPerGarment
 		over := p.Cut.Total() - need
 		if over > 0 {
 			statuses = append(statuses, LayCheckStatusWarning)
-			overs = append(overs, fmt.Sprintf("%s: выкроено %d, на %d изделий нужно %d — перекрой %d",
+			overs = append(overs, fmt.Sprintf("%s: %d cut, %d units need %d — overcut of %d",
 				name, p.Cut.Total(), coveredQty, need, over))
 			overKeys = append(overKeys, p.PieceLineKey)
 			continue
@@ -1231,9 +1231,9 @@ func LayChecksPb(checks []LayCheck) []*pb_common.ProductionLayCheck {
 // to the line_key that at least deep-links. Same reasoning as FabricDirectionLine.label.
 func layCheckPieceLabel(lineKey, name string) string {
 	if n := strings.TrimSpace(name); n != "" {
-		return fmt.Sprintf("деталь %q", n)
+		return fmt.Sprintf("piece %q", n)
 	}
-	return fmt.Sprintf("деталь %s", nameOrDash(lineKey))
+	return fmt.Sprintf("piece %s", nameOrDash(lineKey))
 }
 
 func nameOrDash(s string) string {

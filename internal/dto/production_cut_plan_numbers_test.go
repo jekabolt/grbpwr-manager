@@ -82,7 +82,7 @@ func TestComputeProductionRunCutPlan_BrokenRecipeReferenceStillBlocks(t *testing
 
 	require.Empty(t, resp.Rows)
 	require.Len(t, resp.Blockers, 1)
-	require.Contains(t, resp.Blockers[0].Reason, "не найдена")
+	require.Contains(t, resp.Blockers[0].Reason, "is not found in the card")
 	require.Equal(t, int32(10), resp.Blockers[0].Garments)
 }
 
@@ -141,7 +141,7 @@ func TestComputeProductionRunCutPlan_ProductlessLineOnSellableCardStaysACaveat(t
 	require.Equal(t, int32(200), resp.Rows[0].MaterialId, "пин колорвея")
 	require.True(t, resp.Rows[0].Pinned)
 	require.Len(t, resp.Caveats, 1)
-	require.Contains(t, resp.Caveats[0], "2 изделий",
+	require.Contains(t, resp.Caveats[0], "(2 units)",
 		"изделия без цвета названы количеством, а не разложены по умолчанию слота")
 	require.Equal(t, int32(12), resp.GarmentsTotal, "шапка при этом называет всю партию")
 }
