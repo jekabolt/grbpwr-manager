@@ -118,8 +118,8 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		// hasDxfNorms is the third non-marker kind (0294): a norm computed from the pattern sheets.
 		// It grosses by the BOM wastage percent exactly like a manual one, so it changes no number
 		// here — it exists so the caveat can say WHICH kind of norm shut the coefficient out.
-		hasDxfNorms bool
-		hasSizeNorms    bool
+		hasDxfNorms  bool
+		hasSizeNorms bool
 		// hasNormSource / hasLaySource are the row's SIGNATURE (Ф4.6). A row is keyed by ARTICLE and
 		// an article can be fed by two slots at once — one laid, one not — so the two are counted
 		// rather than collapsed into one value on the way in. MIXED is the honest answer for that row

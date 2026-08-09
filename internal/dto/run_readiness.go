@@ -536,7 +536,22 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 	// отсутствие не инструмента, а ОТВЕТА. Клиент не даёт применить выкройки на слот без процента —
 	// эта строка ловит данные, пришедшие другой дорогой.
 	if u.ConsumptionSource.String == entity.ConsumptionSourceDxf {
-		if !bom.WastagePercent.Valid {
+		// БЛОКЕР ГОВОРИТ О НОРМЕ, ЗНАЧИТ НОРМА ОБЯЗАНА БЫТЬ. Источник — это метка на числе, и на
+		// строке БЕЗ числа она не описывает ничего: «нет нормы» уже краснеет один раз в slot_norm
+		// (его считает материальный план), и второй красный здесь напечатал бы один факт дважды —
+		// то самое, что инвариант 1 запрещает. Такая строка законно доживает до сюда через прямой
+		// вызов стора или через обнуление числа в обход редактора; ответ ей — предупреждение.
+		hasNorm := u.Consumption.Valid || len(u.SizeConsumptions) > 0
+		// ПРОЦЕНТ ПРОГОНА СЧИТАЕТСЯ ЗАЯВЛЕННЫМ ТАК ЖЕ, КАК ПРОЦЕНТ СЛОТА. На перепроверке живого
+		// прогона план подставляет `run.actual_wastage_percent` ВМЕСТО слотового — и делает это даже
+		// когда слотовый NULL (production_material_plan.go, ветка default). Значит потребность там
+		// гроссится полностью, и блокер с текстом «занижены» был бы про этот прогон ложью. Смотреть
+		// только на слот значило бы судить не по тому числу, которое считает деньги.
+		declaredPct := bom.WastagePercent
+		if b.in.ActualWastagePercent.Valid {
+			declaredPct = b.in.ActualWastagePercent
+		}
+		if hasNorm && !declaredPct.Valid {
 			add(entity.RunReadinessFinding{
 				Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessBlocker,
 				Label: label,
@@ -546,11 +561,21 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 			})
 			return nil
 		}
+		// Процент печатается ТОЛЬКО когда он есть: на строке без нормы (см. выше) его может не быть
+		// вовсе, и `.Decimal` у невалидного NullDecimal — это ноль, который прочитался бы как
+		// заявленный ноль отходов. Худший вид неверного числа: правдоподобный.
+		pct := "не задан"
+		if declaredPct.Valid {
+			pct = declaredPct.Decimal.String() + "%"
+			if b.in.ActualWastagePercent.Valid {
+				pct += " (фактический процент прогона, он замещает слотовый)"
+			}
+		}
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessWarning,
 			Label: label,
-			Detail: fmt.Sprintf("расход по слоту %q снят с выкроек (NETTO площадь деталей ÷ раскройная ширина), отходы доначисляет процент раскроя слота — %s%%. Гейт это принимает: выкройки есть раньше раскладки, и норма по ним проверяема, в отличие от набранной руками. Но условия съёмки проверить не по чему — раскладки за такой нормой нет, и коэффициент раскроя артикула её не трогает",
-				bom.Name, bom.WastagePercent.Decimal.String()),
+			Detail: fmt.Sprintf("расход по слоту %q снят с выкроек (NETTO площадь деталей ÷ раскройная ширина), отходы доначисляет процент раскроя слота — %s. Гейт это принимает: выкройки есть раньше раскладки, и норма по ним проверяема, в отличие от набранной руками. Но условия съёмки проверить не по чему — раскладки за такой нормой нет, и коэффициент раскроя артикула её не трогает",
+				bom.Name, pct),
 			Target: tgt,
 		})
 		return nil

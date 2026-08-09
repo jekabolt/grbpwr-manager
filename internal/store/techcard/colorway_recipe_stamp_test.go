@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -73,5 +74,63 @@ func TestStampAppliedAtMovesOnlyWhenTheMarkerChanges(t *testing.T) {
 		stray := usageProvenance{source: entity.ConsumptionSourceManual, markerID: id(5), appliedAt: at(applied)}
 		got := stampAppliedAt(marker(id(5), sql.NullTime{}), []usageProvenance{stray}, now)
 		require.Equal(t, now, got.appliedAt.Time)
+	})
+}
+
+// НОРМА С ВЫКРОЕК В ПРОВЕНАНСЕ (0294). Хелперы чистые, а цена ошибки в них — молчаливая: строка,
+// сохранённая как 'manual' вместо 'dxf', выглядит на экране «введённой руками», то есть фича
+// читается отключённой, а не сломанной. База здесь не нужна.
+func TestDxfProvenanceCarriesAndNeverStamps(t *testing.T) {
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	dxf := usageProvenance{source: entity.ConsumptionSourceDxf}
+
+	t.Run("normalized оставляет источник и чистит всё марочное", func(t *testing.T) {
+		got := usageProvenance{
+			source:   entity.ConsumptionSourceDxf,
+			selvedge: decimal.NewNullDecimal(decimal.RequireFromString("2")),
+			cut:      decimal.NewNullDecimal(decimal.RequireFromString("20")),
+			markerID: sql.NullInt64{Int64: 5, Valid: true},
+			appliedAt: sql.NullTime{
+				Time: now, Valid: true},
+		}.normalized()
+		require.Equal(t, entity.ConsumptionSourceDxf, got.source, "источник не демотируется нормализацией")
+		require.False(t, got.selvedge.Valid, "разложение отходов описывает раскладку, которой не было")
+		require.False(t, got.cut.Valid)
+		require.False(t, got.markerID.Valid, "id раскладки — заявление о настиле, которого не случалось")
+		require.False(t, got.appliedAt.Valid)
+	})
+
+	t.Run("штамп никогда не ставится и не переносится", func(t *testing.T) {
+		// Ф2 (следующая фаза) при желании заведёт свежесть dxf-нормы отдельно; СЕГОДНЯ отметка у неё
+		// пуста, и это не забывчивость — отметка без раскладки ни на один вопрос не отвечает.
+		priors := []usageProvenance{{
+			source:    entity.ConsumptionSourceDxf,
+			appliedAt: sql.NullTime{Time: now.Add(-time.Hour), Valid: true},
+		}}
+		got := stampAppliedAt(dxf.normalized(), priors, now)
+		require.False(t, got.appliedAt.Valid)
+	})
+
+	t.Run("presence-less сохранение переносит согласованный dxf слота", func(t *testing.T) {
+		agreed, ok := agreedSlotProvenance([]usageProvenance{dxf, dxf})
+		require.True(t, ok, "две одинаковые dxf-строки слота согласны")
+		require.Equal(t, entity.ConsumptionSourceDxf, agreed.source,
+			"стейлый клиент не имеет права молча вернуть строку в ручной режим")
+	})
+
+	t.Run("dxf и marker на одном слоте согласия не дают", func(t *testing.T) {
+		marker := usageProvenance{source: entity.ConsumptionSourceMarker}
+		_, ok := agreedSlotProvenance([]usageProvenance{dxf, marker})
+		require.False(t, ok)
+	})
+
+	t.Run("carriedSlotStamp по источнику dxf не находит ничего", func(t *testing.T) {
+		// Даже если в строках слота лежит марочный штамп: он принадлежит другому источнику, и
+		// перенести его на dxf значило бы приписать площади деталей чужую раскладку.
+		priors := []usageProvenance{{
+			source:   entity.ConsumptionSourceMarker,
+			markerID: sql.NullInt64{Int64: 7, Valid: true},
+		}}
+		require.False(t, carriedSlotStamp(priors, entity.ConsumptionSourceDxf).Valid)
 	})
 }
