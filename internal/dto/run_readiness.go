@@ -521,6 +521,41 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) *entity.TechCardMarkerSummary {
 	const label = "норма расхода взята из нормировочной раскладки"
 
+	// НОРМА С ВЫКРОЕК (0294) — свой ответ, а не «введена руками».
+	//
+	// Раскладки за ней нет и быть не может, поэтому пять условий съёмки ниже так же не имеют
+	// предмета, как у ручной нормы, и строка остаётся WARNING. Но текст обязан отличаться: сказать
+	// про netto с выкроек «введено руками» — это соврать оператору в единственном месте, где он
+	// узнаёт, чему верить.
+	//
+	// А ВОТ ПАРА (dxf + wastage_percent NULL) — BLOCKER, и это не строгость ради строгости.
+	// Площадь деталей не содержит межлекальных выпадов, кромки и концов настила; процент раскроя
+	// слота — ЕДИНСТВЕННОЕ, что за них платит (applyWastage при NULL умножает на единицу). Пустой
+	// процент здесь означает не «отходов нет», а «никто не сказал сколько», и потребность уходит в
+	// закупку заведомо занижённой. Это тот же UNKNOWN/BLOCKER-порог, что у «старой нормы» ниже:
+	// отсутствие не инструмента, а ОТВЕТА. Клиент не даёт применить выкройки на слот без процента —
+	// эта строка ловит данные, пришедшие другой дорогой.
+	if u.ConsumptionSource.String == entity.ConsumptionSourceDxf {
+		if !bom.WastagePercent.Valid {
+			add(entity.RunReadinessFinding{
+				Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessBlocker,
+				Label: label,
+				Detail: fmt.Sprintf("расход по слоту %q снят с выкроек — это NETTO площадь деталей, поделённая на раскройную ширину, без межлекальных выпадов, кромки и концов настила. Процент раскроя у слота НЕ ЗАДАН, поэтому потребность и себестоимость идут по чистой площади и занижены. Задайте процент раскроя слота или снимите норму с раскладки",
+					bom.Name),
+				Target: tgt,
+			})
+			return nil
+		}
+		add(entity.RunReadinessFinding{
+			Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessWarning,
+			Label: label,
+			Detail: fmt.Sprintf("расход по слоту %q снят с выкроек (NETTO площадь деталей ÷ раскройная ширина), отходы доначисляет процент раскроя слота — %s%%. Гейт это принимает: выкройки есть раньше раскладки, и норма по ним проверяема, в отличие от набранной руками. Но условия съёмки проверить не по чему — раскладки за такой нормой нет, и коэффициент раскроя артикула её не трогает",
+				bom.Name, bom.WastagePercent.Decimal.String()),
+			Target: tgt,
+		})
+		return nil
+	}
+
 	// An absent consumption_source is 'manual': that is the column's DEFAULT (0261) and what every
 	// row predating it carries. Reading absence as 'marker' would demand a норма-раскладка of every
 	// legacy recipe on the card.

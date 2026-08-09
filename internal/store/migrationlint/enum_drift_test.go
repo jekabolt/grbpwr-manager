@@ -480,3 +480,21 @@ func TestLabelTypeDBCheckNoDrift(t *testing.T) {
 	dbValues := extractDBEnumValues(t, content, "label_type REGEXP", 120)
 	assertSameSet(t, "TechCardLabelType", dbValues, mapKeysAsStrings(entity.ValidTechCardLabelTypes))
 }
+
+// TestConsumptionSourceDBCheckNoDrift is the entity<->DB leg for the norm-provenance vocabulary:
+// entity.ValidConsumptionSources <-> chk_tccu_consumption_source on tech_card_colorway_usage.
+//
+// The anchor is 0294 (which added 'dxf'), not 0261 (which created the constraint), and that is the
+// rule for a recreated CHECK: the file that owns the CURRENT vocabulary is the one whose literal
+// list must match. Anchoring on the creating migration would have kept the test passing while the
+// live constraint moved on — the drift would be invisible in exactly the direction it matters.
+//
+// It is load-bearing because the source decides MONEY: the whole point of 'marker' is that costing
+// must NOT gross it up, while 'manual' and 'dxf' must. A value Go accepts and the CHECK refuses
+// fails the recipe save on a constraint the operator cannot interpret; a value the CHECK accepts and
+// Go does not silently lands in the wastage branch of every consumer.
+func TestConsumptionSourceDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0294_usage_consumption_source_dxf.sql")
+	dbValues := extractDBEnumValues(t, content, "chk_tccu_consumption_source CHECK", 200)
+	assertSameSet(t, "ConsumptionSource", dbValues, mapKeysAsStrings(entity.ValidConsumptionSources))
+}

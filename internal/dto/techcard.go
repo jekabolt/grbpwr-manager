@@ -2069,6 +2069,10 @@ const wasteDecompositionMaxPct = 1000
 // Valid=false so the store preserves the stored triple across the full-replace; a present
 // value is normalised ("" → manual) and validated. The waste pcts are accepted only with
 // source=marker — display decomposition of a measured раскладка, meaningless on manual rows.
+//
+// 'dxf' (0294) needs no branch of its own here and that is the point: it is netto pattern area,
+// so it carries no waste decomposition either, and the existing non-marker clause already
+// refuses the pair. Adding a third case would only have created a second place to forget.
 func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullString, decimal.NullDecimal, decimal.NullDecimal, error) {
 	var src sql.NullString
 	var selvedge, cut decimal.NullDecimal
@@ -2081,7 +2085,7 @@ func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullSt
 	}
 	if !entity.ValidConsumptionSources[v] {
 		return src, selvedge, cut, entity.NewFieldViolation(
-			fmt.Sprintf("usages[%d].consumption_source", i), "invalid", v, "manual or marker")
+			fmt.Sprintf("usages[%d].consumption_source", i), "invalid", v, "manual, marker or dxf")
 	}
 	src = sql.NullString{String: v, Valid: true}
 	var err error
