@@ -211,6 +211,14 @@ func (s *Store) AddTechCard(ctx context.Context, tc *entity.TechCardInsert) (int
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
 		}
+		// A card created directly in RELEASED state freezes at commit exactly like the update path,
+		// and the apisrv snapshots it post-commit the same way — same backfill, same reasons (see
+		// updateTechCardAndListOrphanedPatternURLs).
+		if tc.ApprovalState == entity.TechCardApprovalReleased {
+			if err := backfillBomPricesOnRelease(ctx, rep.DB(), id); err != nil {
+				return err
+			}
+		}
 		// A new card's colourways may already link products (they become "styled" and take the
 		// style's season/model + colourway colour) — re-mint their SKUs while unlocked.
 		if err := remintCardProducts(ctx, rep.DB(), id, nil); err != nil {
@@ -512,6 +520,19 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		}
 		if err := insertTechCardChildren(ctx, rep.DB(), id, tc); err != nil {
 			return err
+		}
+		// A card that goes RELEASED this save is frozen the moment this transaction commits, and the
+		// post-commit release snapshot (snapshotReleaseIfReleased) marshals what the COLUMNS then
+		// hold — so a linked BOM line whose catalog price appeared only after the material was linked
+		// (unit_price still NULL) must take the current catalog price NOW, inside this transaction.
+		// The freeze check above guarantees this save IS the release transition (a released card only
+		// re-opens to draft), so the fill runs exactly once per release episode. Only NULL prices are
+		// filled — an agreed price is never overwritten — and an unpriceable line stays NULL rather
+		// than blocking the release.
+		if tc.ApprovalState == entity.TechCardApprovalReleased {
+			if err := backfillBomPricesOnRelease(ctx, rep.DB(), id); err != nil {
+				return err
+			}
 		}
 		// UpdateTechCard is the BOM's write owner, so refresh the auto-derived style composition from
 		// the just-upserted fabric lines before committing. Manual composition remains untouched.
