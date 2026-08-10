@@ -15,10 +15,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// costbasis-report is the before/after instrument for the base-size costing change: it prices every
-// tech card BOTH ways — the retired qty-weighted average over tech_card.size_quantities, and the
-// norm on the style's base sample size — and reports the difference per card × colourway × расход,
-// plus which styles stop having a computable cost at all.
+// costbasis-report is the before/after instrument for a costing-basis change. Current comparison
+// (v2, the T6 range-average change): it prices every tech card BOTH ways — the outgoing basis
+// (the norm on the style's base sample size) and the incoming one (the simple average over the
+// declared size range) — and reports the difference per card × colourway × расход, plus which
+// styles stop having a computable cost at all.
 //
 // IT WRITES NOTHING, and that is a property of how it connects, not a promise in a comment: it
 // builds the repository with store.NewForTest and Automigrate forced OFF. The normal store.New
@@ -32,12 +33,12 @@ var (
 
 	costBasisCmd = &cobra.Command{
 		Use:   "costbasis-report",
-		Short: "READ-ONLY before/after report for the base-size costing basis",
-		Long: "Prices every tech card on the retired basis (per-size norms averaged over the card's " +
-			"declared typical run) and on the new one (the norm on the base sample size), and prints " +
-			"the per-card, per-colourway and per-usage difference, which styles become uncosted, " +
-			"whose product.cost_price may be overwritten, and which costing sign-offs go stale. " +
-			"Opens the database read-only (no migrations, no SKU backfill, no writes).",
+		Short: "READ-ONLY before/after report for the range-average costing basis (T6)",
+		Long: "Prices every tech card on the outgoing basis (the norm on the style's base sample " +
+			"size) and on the incoming one (the simple average over the declared size range), and " +
+			"prints the per-card, per-colourway and per-usage difference, which styles become " +
+			"uncosted, whose product.cost_price may be overwritten, and which costing sign-offs go " +
+			"stale. Opens the database read-only (no migrations, no SKU backfill, no writes).",
 		RunE: runCostBasisReport,
 	}
 )

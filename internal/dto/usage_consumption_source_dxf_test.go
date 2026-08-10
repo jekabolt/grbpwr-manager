@@ -71,10 +71,15 @@ func TestDxfNormGrossesUpLikeManual(t *testing.T) {
 	require.True(t, rt.Valid)
 	require.Equal(t, "540", rt.Decimal.String(), "dxf per-size run: (2+3)×10×10×1.08")
 
-	// Себестоимость стиля — норма БАЗОВОГО размера, тоже с гросс-апом.
-	bs := perSize.BaseSizeTotal(bom, 2)
+	// Партионная клетка — норма КОНКРЕТНОГО размера, тоже с гросс-апом.
+	bs := perSize.SizeNormTotal(bom, 2)
 	require.True(t, bs.Valid)
-	require.Equal(t, "32.4", bs.Decimal.String(), "base size 2: 3×10×1.08")
+	require.Equal(t, "32.4", bs.Decimal.String(), "size 2: 3×10×1.08")
+
+	// Себестоимость стиля — среднее по ряду, с тем же гросс-апом: (2+3)/2 × 10 × 1.08.
+	avg := perSize.RangeAverageTotal(bom, []int{1, 2})
+	require.True(t, avg.Valid)
+	require.Equal(t, "27", avg.Decimal.String(), "range average: 2.5×10×1.08")
 
 	// И ни один процент раскроя — ни одного умножения: слот без процента отдаёт чистое netto. Это
 	// и есть та дыра, которую гейт готовности закрывает блокером (см. readiness-тесты ниже).

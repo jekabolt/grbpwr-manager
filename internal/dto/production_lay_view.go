@@ -532,27 +532,33 @@ func (b *layPlanBuilder) pieceCuts(l *entity.ProductionRunLay, mode LayFaceMode,
 	return out
 }
 
-// slotPieces are the card's cut-pieces this настил is responsible for: those whose slot FOR THIS
-// COLOURWAY is the настил's own. Resolved through pieceSlotBomLine — the recipe's resolver, not a
-// second one (§14 п.5).
+// slotPieces are the card's cut-pieces this настил is responsible for: those with a recipe layer
+// FOR THIS COLOURWAY on the настил's own slot. Resolved through the recipe projection
+// (pieceUsageIndex / planBomLine) — the same resolver the cut plan and coverage use, not a second
+// one (§14 п.5). С T4 деталь слоится: полочка с шеллом и подкладом принадлежит И настилу основной
+// ткани, И настилу подклада — каждому по своему слою.
 func (b *layPlanBuilder) slotPieces(l *entity.ProductionRunLay) []*entity.TechCardPiece {
 	if !l.BomItemId.Valid {
 		// Настил без слота (fk_prlay_bom SET NULL) не отвечает ни за одну деталь: сказать, что он кроил,
 		// нельзя вовсе. lay_slot_detached уже назвал это блокером.
 		return nil
 	}
+	cw := recipeColorwayOf(b.in.Card, l.ColorwayId)
+	if cw == nil {
+		return nil
+	}
+	idx := newPieceUsageIndex(cw.Usages, b.in.Card.Pieces)
 	out := make([]*entity.TechCardPiece, 0, len(b.in.Card.Pieces))
 	for i := range b.in.Card.Pieces {
 		p := &b.in.Card.Pieces[i]
-		m := pieceMaterialForColorway(p, l.ColorwayId)
-		if m == nil {
-			continue
+		for _, u := range idx.forPiece(p) {
+			bom := planBomLine(u, b.in.Card.BomItems)
+			if bom == nil || int64(bom.Id) != l.BomItemId.Int64 {
+				continue
+			}
+			out = append(out, p)
+			break
 		}
-		bom := pieceSlotBomLine(m, b.in.Card.BomItems)
-		if bom == nil || int64(bom.Id) != l.BomItemId.Int64 {
-			continue
-		}
-		out = append(out, p)
 	}
 	return out
 }

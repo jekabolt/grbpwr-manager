@@ -46,6 +46,9 @@ func clearTechCardPieceMaterials(ctx context.Context, db dependency.DB, tcID int
 type pieceExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
+	// Name rides only the recipe path's SELECT (T4): the «две основные на одной детали» refusal
+	// names the piece. The pieces upsert's own query leaves it empty.
+	Name string `db:"name"`
 }
 
 // calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
@@ -348,6 +351,11 @@ type bomExistingRow struct {
 	// Section rides only the recipe path's SELECT (roll-goods guard for marker provenance);
 	// the BOM upsert's own query leaves it zero.
 	Section sql.NullString `db:"section"`
+	// Purpose and Name ride the same recipe-path SELECT only (T4): purpose feeds the derived layer
+	// role (entity.DerivePieceLayerRole) behind the «две основные на одной детали» refusal, and the
+	// name is what that refusal prints. Zero on the BOM upsert's own query.
+	Purpose sql.NullString `db:"purpose"`
+	Name    string         `db:"name"`
 	// Price + provenance as stored, so the upsert can tell an edited price (restamp 'manual') from a
 	// round-tripped one (keep the existing provenance, including the reprice action's 'catalog').
 	UnitPrice       decimal.NullDecimal `db:"unit_price"`

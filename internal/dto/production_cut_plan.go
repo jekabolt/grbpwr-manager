@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -111,15 +112,16 @@ func ComputeProductionRunCutPlan(
 	for i := range card.Pieces {
 		p := &card.Pieces[i]
 		for _, g := range groups {
-			art, reason := g.resolve(p, card.BomItems)
-			if reason != "" {
-				// Блокер, а не строка с прочерком: строка с пустой тканью читается как «кроить не из
-				// чего» и теряется среди сорока таких же, а это единственное место наряда, где цех
-				// обязан остановиться и спросить.
-				//
-				// ColorwayName у aux-линии несёт имя ЦВЕТА: у CutPlanBlocker нет поля варианта, а
-				// безымянный блокер («деталь X, цвет “”») неисполним — по нему нельзя даже понять,
-				// какую партию остановили. colorway_id при этом честно остаётся нулём.
+			res := g.resolve(p, card.BomItems)
+			// Блокеры, а не строки с прочерком: строка с пустой тканью читается как «кроить не из
+			// чего» и теряется среди сорока таких же, а это единственное место наряда, где цех
+			// обязан остановиться и спросить. С T4 блокеры и строки НЕ исключают друг друга: у
+			// детали со слоями шелл может печататься, пока подклад без артикула стоит блокером.
+			//
+			// ColorwayName у aux-линии несёт имя ЦВЕТА: у CutPlanBlocker нет поля варианта, а
+			// безымянный блокер («деталь X, цвет “”») неисполним — по нему нельзя даже понять,
+			// какую партию остановили. colorway_id при этом честно остаётся нулём.
+			for _, reason := range res.blockers {
 				out.Blockers = append(out.Blockers, &pb_admin.CutPlanBlocker{
 					PieceId:      int32(p.Id),
 					PieceName:    p.Name,
@@ -128,57 +130,61 @@ func ComputeProductionRunCutPlan(
 					Garments:     int32(g.garments),
 					Reason:       reason,
 				})
-				continue
 			}
-			row := &pb_admin.CutPlanRow{
-				PieceId:      int32(p.Id),
-				PieceLineKey: p.LineKey,
-				PieceName:    p.Name,
-				ColorwayId:   int32(g.key.colorwayID),
-				ColorwayName: g.colorwayName,
-				// Aux-линия несёт цвет вместо продукта (0252/0253): пара полей ниже — это её
-				// единственная идентичность, поэтому она едет рядом с колорвеем, а не вместо него.
-				OutputVariantId:   int32(g.key.variantID),
-				OutputVariantName: g.variantName,
-				// Спецификация детали дублируется в КАЖДОЙ строке колорвея намеренно: наряд режут по
-				// строкам, и деталь без долевой в своей строке раскроят неправильно, даже если та же
-				// долевая написана строкой выше у другого цвета.
-				PiecesPerGarment: int32(p.PiecesPerGarment),
-				CutSymmetry:      PieceCutSymmetryToPb(p.CutSymmetry),
-				Grainline:        p.Grainline,
-				Fused:            p.Fused,
-				BomItemId:        int64(art.bom.Id),
-				SlotName:         art.bom.Name,
-				Section:          pbBomSection(art.bom.Section),
-				MaterialId:       int32(art.materialID),
-				MaterialName:     cutPlanMaterialName(card, art.materialID, art.bom),
-				Pinned:           art.pinned,
-				SlotInferred:     art.inferred,
+			for artIdx := range res.articles {
+				art := &res.articles[artIdx]
+				row := &pb_admin.CutPlanRow{
+					PieceId:      int32(p.Id),
+					PieceLineKey: p.LineKey,
+					PieceName:    p.Name,
+					ColorwayId:   int32(g.key.colorwayID),
+					ColorwayName: g.colorwayName,
+					// Aux-линия несёт цвет вместо продукта (0252/0253): пара полей ниже — это её
+					// единственная идентичность, поэтому она едет рядом с колорвеем, а не вместо него.
+					OutputVariantId:   int32(g.key.variantID),
+					OutputVariantName: g.variantName,
+					// Спецификация детали дублируется в КАЖДОЙ строке колорвея намеренно: наряд режут по
+					// строкам, и деталь без долевой в своей строке раскроят неправильно, даже если та же
+					// долевая написана строкой выше у другого цвета. С T4 деталь со СЛОЯМИ даёт по строке
+					// на кроимый слой (решение владельца) — спецификация повторяется и в них: каждую из
+					// этих строк режут отдельно, на своём настиле.
+					PiecesPerGarment: int32(p.PiecesPerGarment),
+					CutSymmetry:      PieceCutSymmetryToPb(p.CutSymmetry),
+					Grainline:        p.Grainline,
+					Fused:            p.Fused,
+					BomItemId:        int64(art.bom.Id),
+					SlotName:         art.bom.Name,
+					Section:          pbBomSection(art.bom.Section),
+					MaterialId:       int32(art.materialID),
+					MaterialName:     cutPlanMaterialName(card, art.materialID, art.bom),
+					Pinned:           art.pinned,
+					SlotInferred:     art.inferred,
+				}
+				// Клеевая: ОДНА и только одна (pieceFusingSlot: привязанная к детали, иначе
+				// единственная клеевая колорвея у fused-детали) — «несколько» и «ни одной» одинаково
+				// нечего печатать, и ни то ни другое не блокер. Деталь всё равно кроится;
+				// недублированная деталь — брак пошива, а не остановка раскроя. Пара едет на строке
+				// ОСНОВНОГО слоя (без основного — на первой): дублируют шелл, не подклад.
+				if res.fusing != nil && artIdx == res.fusingAt {
+					row.FusingBomItemId = int64(res.fusing.bom.Id)
+					row.FusingMaterialName = cutPlanMaterialName(card, res.fusing.articleID(), res.fusing.bom)
+				}
+				for _, sizeID := range g.sizeOrder() {
+					garments := g.bySize[sizeID]
+					row.BySize = append(row.BySize, &pb_admin.CutPlanSizeQty{
+						SizeId:   int32(sizeID),
+						SizeName: cutPlanSizeName(sizeID),
+						Garments: int32(garments),
+						// ЕДИНСТВЕННОЕ умножение во всей проекции. cut_symmetry сюда не входит — см.
+						// заголовок функции и CutPlanRow в контракте.
+						PiecesToCut: int32(garments * p.PiecesPerGarment),
+					})
+				}
+				row.GarmentsTotal = int32(g.garments)
+				row.PiecesToCutTotal = int32(g.garments * p.PiecesPerGarment)
+				out.PiecesToCutTotal += row.PiecesToCutTotal
+				out.Rows = append(out.Rows, row)
 			}
-			// Клеевая: ОДНА и только одна — «несколько» и «ни одной» одинаково нечего печатать, и ни
-			// то ни другое не блокер. Деталь всё равно кроится; недублированная деталь — брак пошива,
-			// а не остановка раскроя, и превращать это в блокер значило бы останавливать цех на
-			// вопросе, который решается у стола дублирования.
-			if p.Fused && len(g.fusingSlots) == 1 {
-				fs := g.fusingSlots[0]
-				row.FusingBomItemId = int64(fs.bom.Id)
-				row.FusingMaterialName = cutPlanMaterialName(card, fs.articleID(), fs.bom)
-			}
-			for _, sizeID := range g.sizeOrder() {
-				garments := g.bySize[sizeID]
-				row.BySize = append(row.BySize, &pb_admin.CutPlanSizeQty{
-					SizeId:   int32(sizeID),
-					SizeName: cutPlanSizeName(sizeID),
-					Garments: int32(garments),
-					// ЕДИНСТВЕННОЕ умножение во всей проекции. cut_symmetry сюда не входит — см.
-					// заголовок функции и CutPlanRow в контракте.
-					PiecesToCut: int32(garments * p.PiecesPerGarment),
-				})
-			}
-			row.GarmentsTotal = int32(g.garments)
-			row.PiecesToCutTotal = int32(g.garments * p.PiecesPerGarment)
-			out.PiecesToCutTotal += row.PiecesToCutTotal
-			out.Rows = append(out.Rows, row)
 		}
 	}
 
@@ -250,14 +256,14 @@ type cutPlanGroup struct {
 	// карточки колорвеев нет вовсе, и «рецепт колорвея не называет ткань» было бы для неё
 	// бессмысленным обвинением в адрес несуществующей сущности.
 	specLabel string
-	// byPieceID / byPieceKey — строки рецепта, которые НАЗЫВАЮТ деталь. ДВЕ карты на одну связь, и
-	// это не перестраховка: у детали ДВЕ идентичности, и в замороженном релизе выживает только
-	// вторая. Снапшот карточки не несёт tech_card_piece.id вовсе (в контракте детали нет поля id,
-	// есть line_key), поэтому наряд, печатаемый по релизу, сопоставлял бы usage.piece_id с нулями и
-	// «рецепт эту деталь не называет» стало бы истиной для КАЖДОЙ детали каждого релиза — то есть
-	// ровно там, где спецификация заморожена и надёжнее всего. Пусто у aux-карточки.
-	byPieceID  map[int][]*entity.TechCardColorwayUsage
-	byPieceKey map[string][]*entity.TechCardColorwayUsage
+	// pieceIdx — строки рецепта, которые НАЗЫВАЮТ деталь (pieceUsageIndex, piece_layers.go), во
+	// всех ТРЁХ формах привязки — FK, line_key и легаси piece_index, тех же, что у предиката
+	// entity.IsPieceMaterialAssignment. Это не перестраховка: в замороженном релизе у детали
+	// выживает только line_key (снапшот не несёт tech_card_piece.id), а у совсем старого релиза —
+	// один лишь позиционный индекс; наряд, сопоставляющий одну форму, звал бы «рецепт эту деталь
+	// не называет» для КАЖДОЙ детали каждого такого релиза — то есть ровно там, где спецификация
+	// заморожена и надёжнее всего. nil у aux-карточки.
+	pieceIdx *pieceUsageIndex
 	// rollSlots — рулонные слоты, ДОСТУПНЫЕ этой колонке, в порядке рецепта (у aux — в порядке BOM).
 	rollSlots []cutPlanSlot
 	// fusingSlots — подмножество rollSlots секции INTERLINING, для дублированных деталей.
@@ -297,74 +303,81 @@ func (g *cutPlanGroup) sizeOrder() []int {
 	return ids
 }
 
-// usagesFor — строки рецепта, называющие эту деталь: по FK, а если карточка пришла из релиза (где
-// у детали есть только ULID) — по line_key.
+// usagesFor — строки рецепта, называющие эту деталь: по FK; по line_key, если карточка пришла из
+// релиза (где у детали есть только ULID); по легаси-позиционному индексу у совсем старого релиза.
+// Правило живёт в pieceUsageIndex (piece_layers.go) — одном на все рецептные проекции связи
+// «деталь ↔ материал».
 func (g *cutPlanGroup) usagesFor(piece *entity.TechCardPiece) []*entity.TechCardColorwayUsage {
-	if piece.Id > 0 {
-		if us := g.byPieceID[piece.Id]; len(us) > 0 {
-			return us
-		}
-	}
-	if piece.LineKey != "" {
-		return g.byPieceKey[piece.LineKey]
-	}
-	return nil
+	return g.pieceIdx.forPiece(piece)
 }
 
-// resolve — ТА САМАЯ резолюция «деталь → артикул», три правила по порядку и ни одного шага сверх.
-//
-// Пустой reason = строка печатается; непустой = вместо строки блокер с этой фразой.
+// cutPlanResolution — ответ резолюции для ОДНОЙ пары (деталь, колонка): строки и блокеры больше не
+// исключают друг друга (T4, слои) — у детали может печататься шелл, пока подклад без артикула
+// стоит блокером.
+type cutPlanResolution struct {
+	articles []cutPlanArticle
+	blockers []string
+	// fusing / fusingAt — выбранная клеевая пара и ИНДЕКС строки articles, на которой она едет
+	// (строка основного слоя; без основного — первая). nil = пары нет.
+	fusing   *cutPlanSlot
+	fusingAt int
+}
+
+// resolve — ТА САМАЯ резолюция «деталь → из чего кроить», три правила по порядку и ни одного шага
+// сверх. С T4 правило (а) отдаёт ПО СТРОКЕ НА КАЖДЫЙ КРОИМЫЙ СЛОЙ (решение владельца: деталь
+// законно слоится на шелл/подклад/утеплитель), а блокером остаётся только конфликт ОСНОВНЫХ.
 //
 // tech_card_piece_material (piece.Materials) здесь НЕ ИСПОЛЬЗУЕТСЯ, и это не забывчивость: админка
 // в эту таблицу ничего не пишет, на живых карточках она пуста — именно поэтому колонка «ткань по
 // колорвеям» на старом стилевом cut list всегда была пустой. Читать её значит повторить тот же
 // пустой экран, только в цехе.
-func (g *cutPlanGroup) resolve(piece *entity.TechCardPiece, items []entity.TechCardBomItem) (cutPlanArticle, string) {
-	// (а) РЕЦЕПТ НАЗЫВАЕТ ДЕТАЛЬ ПОЛОТНОМ. Единственный случай, где наряд ничего не выводит: строка
-	// рецепта сама сказала, какой слот идёт на эту деталь. FK сначала, ULID вторым — тот же порядок
+func (g *cutPlanGroup) resolve(piece *entity.TechCardPiece, items []entity.TechCardBomItem) cutPlanResolution {
+	// (а) РЕЦЕПТ НАЗЫВАЕТ ДЕТАЛЬ ПОЛОТНОМ. Единственный случай, где наряд ничего не выводит: строки
+	// рецепта сами сказали, какие слои идут на эту деталь. FK сначала, ULID вторым — тот же порядок
 	// приоритетов, что у planBomLine со строкой BOM, и по той же причине: id точнее, а ключ
 	// переживает заморозку релиза.
 	//
-	// В кандидаты берутся ТОЛЬКО секции cutPlanCutArticleSection: привязка к детали сама по себе
-	// ничего не говорит о крое (к детали привязывают и этикетку, и нитку), а «называет → значит
-	// ткань» печатало цеху артикул этикетки. Названные, но нерулонные строки не блокер и не строка —
-	// они просто молчат о крое, и ответ на «из чего кроить» ищется дальше, в правиле (б).
+	// В строки идут ТОЛЬКО секции cutPlanCutArticleSection: привязка к детали сама по себе ничего
+	// не говорит о крое (к детали привязывают и этикетку, и нитку), а «называет → значит ткань»
+	// печатало цеху артикул этикетки. Привязанная клеевая — не строка кроя, а пара fusing_* на
+	// строке основного слоя (collectPieceLayers). Названные, но нерулонные строки не блокер и не
+	// строка — они просто молчат о крое, и ответ ищется дальше, в правиле (б).
 	if usages := g.usagesFor(piece); len(usages) > 0 {
-		slots := make([]cutPlanSlot, 0, len(usages))
-		// resolved — сколько названных на детали строк рецепта вообще нашли свою строку BOM. Считается
-		// ДО фильтра по секции, потому что различает два разных «кандидатов нет»: сломанную ссылку
-		// (рецепт указывает на строку, которой в карточке нет — это блокер) и честную привязку
-		// нерулонного расхода (этикетка, нитка, клеевая — про крой они не говорят ничего, и наряд
-		// обязан спуститься к правилу (б), а не остановить цех фразой про ненайденную строку BOM).
-		resolved := 0
-		// Дедуп по УКАЗАТЕЛЮ на строку BOM, а не по её id, и это не стиль: снапшоты релизов, снятые
-		// до появления bom_item.id на проводе, несут id = 0 у ВСЕХ строк, и дедуп по id схлопнул бы
-		// основную ткань с подкладкой в одну — то есть напечатал бы строку ровно там, где контракт
-		// требует блокер. Указатель в один и тот же слайс уникален всегда.
-		seen := make(map[*entity.TechCardBomItem]bool, len(usages))
-		for _, u := range usages {
-			bom := planBomLine(u, items)
-			if bom == nil || seen[bom] {
-				continue
-			}
-			seen[bom] = true
-			resolved++
-			if !cutPlanCutArticleSection(bom) {
-				continue
-			}
-			slots = append(slots, cutPlanSlot{bom: bom, usage: u})
-		}
+		pl := collectPieceLayers(usages, items)
 		switch {
-		case len(slots) == 1:
-			return cutPlanArticleOf(slots[0], false)
-		case len(slots) > 1:
-			// Две разные ткани на одну деталь — это не «выбери любую»: у детали один крой, и какой
-			// из слотов настилать, знает только человек.
-			return cutPlanArticle{}, fmt.Sprintf(
-				"%s names %d different slots for this piece — which one to cut it from is not stated", g.specLabel, len(slots))
-		case resolved == 0:
-			return cutPlanArticle{}, fmt.Sprintf(
-				"%s names this piece, but the BOM line it references is not found in the card", g.specLabel)
+		case pl.mainConflict():
+			// Конфликт основных — единственный блокер слоёной модели, и он неделим: печатать
+			// «хорошие» слои рядом с ним значило бы выдать наряд, половина которого под вопросом.
+			var res cutPlanResolution
+			if len(pl.mains) >= 2 {
+				res.blockers = append(res.blockers, fmt.Sprintf(
+					"деталь привязана к %d основным тканям (%s) — непонятно, из какой её кроить; оставь в рецепте одну основную",
+					len(pl.mains), strings.Join(pl.layerNames(pl.mains), ", ")))
+			} else {
+				res.blockers = append(res.blockers, fmt.Sprintf(
+					"у детали несколько слоёв ткани, и назначение не разобрано у: %s — не доказать, что это не вторая основная; задай назначения строкам на вкладке BOM",
+					strings.Join(pl.layerNames(pl.unsorted), ", ")))
+			}
+			return res
+		case len(pl.layers) > 0:
+			res := cutPlanResolution{fusing: pieceFusingSlot(piece, pl.fusing, g.fusingSlots)}
+			for i, slot := range pl.layers {
+				art, reason := cutPlanArticleOf(slot, false)
+				if reason != "" {
+					// Слой без артикула — блокер ЭТОГО слоя, не всей детали: шелл печатается, а
+					// подклад останавливается и называется.
+					res.blockers = append(res.blockers, reason)
+					continue
+				}
+				if pl.roles[i] == entity.BomPurposeMain {
+					res.fusingAt = len(res.articles)
+				}
+				res.articles = append(res.articles, art)
+			}
+			return res
+		case pl.resolved == 0:
+			return cutPlanResolution{blockers: []string{fmt.Sprintf(
+				"%s names this piece, but the BOM line it references is not found in the card", g.specLabel)}}
 		}
 		// Рецепт назвал деталь, но ни одним полотном: про крой он не сказал ничего — падаем в (б).
 	}
@@ -374,16 +387,25 @@ func (g *cutPlanGroup) resolve(piece *entity.TechCardPiece, items []entity.TechC
 	// вариант, и строка честно помечается slot_inferred.
 	switch len(g.rollSlots) {
 	case 1:
-		return cutPlanArticleOf(g.rollSlots[0], true)
+		art, reason := cutPlanArticleOf(g.rollSlots[0], true)
+		if reason != "" {
+			return cutPlanResolution{blockers: []string{reason}}
+		}
+		return cutPlanResolution{
+			articles: []cutPlanArticle{art},
+			fusing:   pieceFusingSlot(piece, nil, g.fusingSlots),
+		}
 	case 0:
-		return cutPlanArticle{}, fmt.Sprintf(
-			"%s does not name a fabric for this piece, and it has no roll slots", g.specLabel)
+		return cutPlanResolution{blockers: []string{fmt.Sprintf(
+			"%s does not name a fabric for this piece, and it has no roll slots", g.specLabel)}}
 	default:
 		// (в) ДВУСМЫСЛЕННОСТЬ УХОДИТ В БЛОКЕРЫ ЦЕЛИКОМ. Подкладка вместо основной ткани — это
-		// испорченный настил, а не опечатка в бумаге.
-		return cutPlanArticle{}, fmt.Sprintf(
+		// испорченный настил, а не опечатка в бумаге. Слоёная модель этого не меняет: без привязки
+		// к детали рецепт не сказал, ЧТО из перечисленного — её слои, и печатать все подряд значило
+		// бы кроить каждую деталь из каждой ткани колорвея.
+		return cutPlanResolution{blockers: []string{fmt.Sprintf(
 			"%s does not name a fabric for this piece, and it has %d roll slots — the run pack does not guess",
-			g.specLabel, len(g.rollSlots))
+			g.specLabel, len(g.rollSlots))}}
 	}
 }
 
@@ -534,12 +556,10 @@ func newCutPlanGroup(
 	sizes *cutPlanSizeIndex,
 ) *cutPlanGroup {
 	g := &cutPlanGroup{
-		key:        key,
-		bySize:     map[int]int{},
-		sizes:      sizes,
-		byPieceID:  map[int][]*entity.TechCardColorwayUsage{},
-		byPieceKey: map[string][]*entity.TechCardColorwayUsage{},
-		specLabel:  "the colourway recipe",
+		key:       key,
+		bySize:    map[int]int{},
+		sizes:     sizes,
+		specLabel: "the colourway recipe",
 	}
 	switch {
 	case variant != nil:
@@ -578,18 +598,12 @@ func newCutPlanGroup(
 		// Код колорвея — не выдумка, а вторая его подпись в карточке; пустая колонка в цехе хуже.
 		g.colorwayName = cw.Code.String
 	}
+	g.pieceIdx = newPieceUsageIndex(cw.Usages, card.Pieces)
 	// По указателю, а не по id — по той же причине, что и в resolve: у строк BOM старого снапшота
 	// релиза id нулевые, и дедуп по ним оставил бы один «рулонный слот» там, где их два.
 	seenSlot := make(map[*entity.TechCardBomItem]bool, len(cw.Usages))
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
-		if u.PieceId.Valid && u.PieceId.Int64 > 0 {
-			pid := int(u.PieceId.Int64)
-			g.byPieceID[pid] = append(g.byPieceID[pid], u)
-		}
-		if u.PieceLineKey != "" {
-			g.byPieceKey[u.PieceLineKey] = append(g.byPieceKey[u.PieceLineKey], u)
-		}
 		bom := planBomLine(u, card.BomItems)
 		if bom == nil || !cutPlanRollSections[bom.Section] || seenSlot[bom] {
 			continue
@@ -708,6 +722,12 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		if mid := b.GetMaterialId(); mid > 0 {
 			item.MaterialId = sql.NullInt64{Int64: mid, Valid: true}
 		}
+		// НАЗНАЧЕНИЕ читается из снапшота (T4): производная роль слоя — вход резолюции наряда
+		// (конфликт основных), и релиз без него судил бы каждую слоёную деталь как «не разложено».
+		// UNSET в карте отсутствует намеренно — старый снапшот честно остаётся NULL.
+		if p, ok := techCardBomPurposePbToEntity[b.GetPurpose()]; ok {
+			item.Purpose = sql.NullString{String: string(p), Valid: true}
+		}
 		card.BomItems = append(card.BomItems, item)
 	}
 	for _, p := range ins.GetPieces() {
@@ -753,10 +773,11 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 				use.PieceId = sql.NullInt64{Int64: id, Valid: true}
 			}
 			if u.PieceIndex != nil {
-				// Легаси-позиционная привязка к детали переезжает вместе с FK и line_key: группировка
-				// наряда её не читает, но предикат «строка-назначение детали»
-				// (entity.IsPieceMaterialAssignment) обязан узнать строку, у которой из трёх
-				// представлений привязки в снапшоте выжило только это.
+				// Легаси-позиционная привязка к детали переезжает вместе с FK и line_key: у совсем
+				// старого релиза из трёх представлений привязки в снапшоте выжило только это, и его
+				// обязаны узнать ОБА читателя — предикат «строка-назначение детали»
+				// (entity.IsPieceMaterialAssignment) и разбор слоёв (pieceUsageIndex, который
+				// резолвит индекс в деталь по позиции — снапшот сохраняет порядок деталей).
 				use.PieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
 			}
 			if u.MaterialId != nil && *u.MaterialId > 0 {

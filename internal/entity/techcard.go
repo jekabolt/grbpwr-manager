@@ -1155,8 +1155,8 @@ func (u *TechCardColorwayUsage) EffectiveMaterialId(bom *TechCardBomItem) (id in
 // NULL` that drift apart — are the NORM rollups: colorwayCost / ComputeColorwayUnitCost, the
 // style cost estimate, the run material plan, run readiness (normChecks, unitCoverage), the
 // frozen release costs (via its pb mirror in dto), and the norm-money methods below
-// (LineTotal / SizeRunTotal / BaseSizeTotal). Readers that deliberately DO look at piece-bound
-// rows, because the ASSIGNMENT half of the row is exactly their business:
+// (LineTotal / SizeRunTotal / SizeNormTotal / RangeAverageTotal). Readers that deliberately DO
+// look at piece-bound rows, because the ASSIGNMENT half of the row is exactly their business:
 //   - the cutting plan (production_cut_plan.go) — what is cut from what;
 //   - the lay-article resolver (dto.ResolveLayArticle) — a piece row's PIN can name the slot's
 //     article when no garment-level row pins one;
@@ -1179,10 +1179,10 @@ func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
 // the rollups skip them entirely — and the money methods must agree: a legacy number typed on
 // such a row otherwise ships a line_total to the wire that the cost no longer contains, i.e.
 // two contradicting figures on one card and an invitation to re-sum them. Guarded HERE, in the
-// methods, and not in ConvertRecipeUsagesToPb: these three methods (LineTotal / SizeRunTotal /
-// BaseSizeTotal) are the single definition of «this row's norm-money» — EffectiveTotal and
-// UnitTotal compose them — while the converter is just one reader, and a guard there would
-// leave every other (and every future) caller to rediscover the rule.
+// methods, and not in ConvertRecipeUsagesToPb: these norm-money methods (LineTotal / SizeRunTotal /
+// SizeNormTotal / RangeAverageTotal) are the single definition of «this row's norm-money» —
+// EffectiveTotal and UnitTotal compose them — while the converter is just one reader, and a guard
+// there would leave every other (and every future) caller to rediscover the rule.
 func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDecimal {
 	if u.IsPieceMaterialAssignment() {
 		return decimal.NullDecimal{}
@@ -1247,25 +1247,26 @@ func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyByS
 	return u.LineTotal(bom)
 }
 
-// BaseSizeTotal is a size-graded usage's PER-GARMENT material cost on the style's BASE SAMPLE
-// SIZE: the norm recorded for baseSizeID × unit_price, grossed up by the article's
-// wastage_percent — the same arithmetic LineTotal does for an ungraded norm, with the base
-// size's number standing in as the norm.
+// SizeNormTotal is a size-graded usage's PER-GARMENT material cost AT ONE CONCRETE SIZE: the
+// norm recorded for sizeID × unit_price, grossed up by the article's wastage_percent — the same
+// arithmetic LineTotal does for an ungraded norm, with that size's number standing in as the
+// norm. It is the arithmetic behind CostingBasisSize — a production-run cell being priced at
+// the size somebody committed to cut (dto.ComputeTechCardUnitCostOnSize).
 //
-// INVALID (and deliberately so) when the usage is not size-graded, when the card names NO base
-// sample size (baseSizeID <= 0), when this usage carries no norm for that size, or when the
-// article has no price. Every one of those is a question nobody has answered, and the caller
-// must carry it out as «непосчитано» — see UnitTotal.
-func (u *TechCardColorwayUsage) BaseSizeTotal(bom *TechCardBomItem, baseSizeID int) decimal.NullDecimal {
+// INVALID (and deliberately so) when the usage is not size-graded, when no size is named
+// (sizeID <= 0), when this usage carries no norm for that size, or when the article has no
+// price. Every one of those is a question nobody has answered, and the caller must carry it out
+// as «непосчитано» — see UnitTotal.
+func (u *TechCardColorwayUsage) SizeNormTotal(bom *TechCardBomItem, sizeID int) decimal.NullDecimal {
 	// Piece-bound row → no norm-money; see LineTotal for the argument.
 	if u.IsPieceMaterialAssignment() {
 		return decimal.NullDecimal{}
 	}
-	if len(u.SizeConsumptions) == 0 || baseSizeID <= 0 || bom == nil || !bom.UnitPrice.Valid {
+	if len(u.SizeConsumptions) == 0 || sizeID <= 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
 	for _, sc := range u.SizeConsumptions {
-		if sc.SizeId != baseSizeID {
+		if sc.SizeId != sizeID {
 			continue
 		}
 		total := sc.Consumption.Mul(bom.UnitPrice.Decimal)
@@ -1277,30 +1278,128 @@ func (u *TechCardColorwayUsage) BaseSizeTotal(bom *TechCardBomItem, baseSizeID i
 	return decimal.NullDecimal{}
 }
 
+// RangeAverageTotal is a size-graded usage's PER-GARMENT material cost as the STYLE's standard
+// cost sees it (CostingBasisRangeAverage): the SIMPLE ARITHMETIC MEAN of the norms over the
+// card's declared size range — Σ norm(s) / |rangeSizeIds| over EVERY s in rangeSizeIds — ×
+// unit_price, grossed up by the article's wastage_percent exactly as SizeNormTotal grosses one
+// size's norm (marker-sourced norms are never grossed; the measured length already contains the
+// waste). Price and percentage are constants of the row, so averaging the norms first equals
+// averaging the per-size costs — one division, no intermediate rounding (money is rounded once,
+// at the end, by the caller's roundMoney).
+//
+// FULL COVERAGE OR NOTHING. A range size this usage has no norm for makes the result INVALID —
+// never «the average of the sizes that happen to be graded»: an only-XS average would silently
+// understate the style. This is the same rule the «по выкройкам» apply already enforces on
+// write («норма пишется на весь ряд или не пишется вовсе») read back at costing time; the
+// missing sizes are named by MissingRangeNorms. Norms on sizes OUTSIDE the declared range
+// (legacy tails after a range edit) neither join the average nor block it — the range is the
+// only carrier of the set. An EMPTY range (len == 0) is likewise INVALID: a card that declares
+// no size range has no set to average over, and a number from nowhere is not an answer.
+//
+// Also invalid when the usage is not size-graded or the article has no price — see UnitTotal.
+func (u *TechCardColorwayUsage) RangeAverageTotal(bom *TechCardBomItem, rangeSizeIds []int) decimal.NullDecimal {
+	// Piece-bound row → no norm-money; see LineTotal for the argument.
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
+	if bom == nil || !bom.UnitPrice.Valid {
+		return decimal.NullDecimal{}
+	}
+	avg, ok := u.RangeAverageNorm(rangeSizeIds)
+	if !ok {
+		return decimal.NullDecimal{}
+	}
+	total := avg.Mul(bom.UnitPrice.Decimal)
+	if !u.wastageApplies() {
+		return decimal.NullDecimal{Decimal: total, Valid: true}
+	}
+	return decimal.NullDecimal{Decimal: applyWastage(total, bom.WastagePercent), Valid: true}
+}
+
+// RangeAverageNorm is the price-free half of RangeAverageTotal — the averaged NORM itself, for
+// mirrors that price it their own way (the style cost estimate resolves its own price ladder).
+// ONE implementation of the coverage rule: ok=false when the usage is not size-graded, the range
+// is empty, or any range size lacks a norm — the callers must then report the line uncosted,
+// never average what happens to be there. Kept beside RangeAverageTotal so the two cannot drift.
+func (u *TechCardColorwayUsage) RangeAverageNorm(rangeSizeIds []int) (decimal.Decimal, bool) {
+	if len(u.SizeConsumptions) == 0 || len(rangeSizeIds) == 0 {
+		return decimal.Zero, false
+	}
+	normBySize := make(map[int]decimal.Decimal, len(u.SizeConsumptions))
+	for _, sc := range u.SizeConsumptions {
+		if _, dup := normBySize[sc.SizeId]; dup {
+			continue // first entry wins, mirroring SizeNormTotal's first-match scan
+		}
+		normBySize[sc.SizeId] = sc.Consumption
+	}
+	sum := decimal.Zero
+	for _, id := range rangeSizeIds {
+		norm, ok := normBySize[id]
+		if !ok {
+			return decimal.Zero, false // partial coverage — no averaging over a subset
+		}
+		sum = sum.Add(norm)
+	}
+	return sum.Div(decimal.NewFromInt(int64(len(rangeSizeIds)))), true
+}
+
+// MissingRangeNorms names the sizes of the declared range this size-graded usage carries NO
+// norm for — the poimённый list the caveat owes the operator when RangeAverageTotal refuses to
+// average over a subset. Order follows rangeSizeIds (the declared range). Empty when coverage
+// is full, when the usage is not size-graded (nothing to cover), or when the range is empty
+// (that is a different caveat: no range at all, not missing norms).
+func (u *TechCardColorwayUsage) MissingRangeNorms(rangeSizeIds []int) []int {
+	if len(u.SizeConsumptions) == 0 {
+		return nil
+	}
+	graded := make(map[int]bool, len(u.SizeConsumptions))
+	for _, sc := range u.SizeConsumptions {
+		graded[sc.SizeId] = true
+	}
+	var missing []int
+	for _, id := range rangeSizeIds {
+		if !graded[id] {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
 // UnitTotal is the usage's PER-GARMENT material cost for costing — the standard cost of the
 // style. A per-garment usage (measured Consumption or countable Quantity) uses its LineTotal
-// directly. A usage graded ONLY per size is costed on the BASE SAMPLE SIZE (BaseSizeTotal).
-// INVALID when neither is available, and an invalid result is the caller's signal to treat the
-// whole recipe as uncosted (dto's hasUnpriced), never to substitute a number.
+// directly. A usage graded ONLY per size is costed on the basis the caller resolved through
+// TechCardInsert.CostingBasis: the range average for the style figure, one concrete size for a
+// production-run cell, or nothing at all. INVALID when no number is available, and an invalid
+// result is the caller's signal to treat the whole recipe as uncosted (dto's hasUnpriced),
+// never to substitute a number.
 //
-// THE BASIS AND WHY IT CHANGED. This used to be SizeRunTotal ÷ Σ size_quantities — the card's
-// «типовой тираж для калькуляции» averaged the graded norms into one figure. That denominator
-// was a fiction: tech_card.size_quantities is an illustrative mix, real quantities live on a
-// production_run, and it decided what went into product.cost_price and from there into every
-// margin. It was also arithmetically unsound: the denominator summed EVERY size carrying a
-// positive quantity while the numerator summed only the sizes for which THIS usage had a norm,
-// so a partially-graded usage was divided by a run it never covered and came out systematically
-// CHEAP. A style's standard cost is now the base size's own norm — one size somebody actually
-// drafted and approved — and it moves only when that norm moves.
+// THE BASIS AND ITS HISTORY — two deliberate changes, each killing a specific fiction:
+//  1. Originally SizeRunTotal ÷ Σ size_quantities: the card's «типовой тираж» averaged the
+//     graded norms, quantity-weighted. Retired because that mix is illustrative (real
+//     quantities live on a production_run) and arithmetically unsound — the denominator counted
+//     every size with a quantity while the numerator only the sizes THIS usage covered, so a
+//     partially-graded usage came out systematically CHEAP.
+//  2. Then the base sample size's own norm, strictly, no fallback. Retired by the owner's
+//     decision (T6, 2026-08-10): the base size had no place to be assigned in the UI and no
+//     honest claim to represent the style — it is now a reference «размер образца» only. The
+//     style's standard cost is the SIMPLE AVERAGE over the declared size range
+//     (RangeAverageTotal), computable exactly when the norm covers the whole range.
 //
-// WHAT MUST NOT COME BACK: a fallback to the median/average/first size when the base size is
-// unset or ungraded. That silently re-labels a number nobody approved as the approved cost. The
-// honest answer is no number, and the flag on the wire.
-func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, baseSizeID int) decimal.NullDecimal {
+// WHAT MUST NOT COME BACK: an average over a SUBSET of the range (only the graded sizes — the
+// silent understatement both retired bases were caught committing), the typical-run weighted
+// denominator, and any fallback that turns «no basis» into a number. A missing basis is
+// answered with no number and the flag on the wire.
+func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, basis CostingBasis) decimal.NullDecimal {
 	if lt := u.LineTotal(bom); lt.Valid {
 		return lt
 	}
-	return u.BaseSizeTotal(bom, baseSizeID)
+	switch basis.Mode {
+	case CostingBasisSize:
+		return u.SizeNormTotal(bom, basis.SizeID)
+	case CostingBasisRangeAverage:
+		return u.RangeAverageTotal(bom, basis.RangeSizeIds)
+	}
+	return decimal.NullDecimal{}
 }
 
 // applyWastage grosses a base cost up by wastage_percent when set (× (1 + pct/100)).
@@ -2270,7 +2369,13 @@ type TechCardInsert struct {
 	// «5 мм» note, no longer exists — the operations break removed it.)
 	RequiredSeamAllowanceMm decimal.NullDecimal `db:"required_seam_allowance_mm"`
 
-	BaseModelId      sql.NullInt32           `db:"base_model_id"`
+	BaseModelId sql.NullInt32 `db:"base_model_id"`
+	// BaseSampleSizeId is the REFERENCE «размер образца» — the size the sample was sewn in. It
+	// feeds the tech-pack print («sample size») and the storefront «model wears M» line, and
+	// NOTHING else: since T6 (owner decision 2026-08-10) it is NOT an input to costing — the
+	// style's standard cost averages over the declared size range instead (see CostingBasis).
+	// The column stays: dropping it would strand a rollback binary mid-deploy, and the
+	// reference role is real.
 	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`
 	MeasurementUnit  TechCardMeasurementUnit `db:"measurement_unit"`
 	// MeasurementUnitSet separates "the client chose a unit" from "the field was absent". The unit is a
@@ -2306,19 +2411,61 @@ type TechCardInsert struct {
 	// wipe mappings it never saw; true means full replace with the slice (empty = clear all).
 	PieceDxfAliases    []TechCardPieceDxfAlias `db:"-"`
 	PieceDxfAliasesSet bool                    `db:"-"`
+	// CostingSizeOverride re-points the costing basis for ONE computation, and it is THREE-valued
+	// on purpose: nil = the style default (the simple average over the declared size range); >0 =
+	// cost on that concrete size (a production-run cell pricing the size it actually cuts); 0 =
+	// NO basis at all — a size-graded norm then prices NOTHING. The zero is not a degenerate
+	// spelling of the default: a run line with no size used to express «без базиса» through a
+	// NULL base_sample_size_id, and if that state fell into the new default it would silently
+	// take the range-average price — the exact fallback this design forbids. Not persisted; set
+	// ONLY by dto.cardCostedOnSize (the one legitimate re-basing point).
+	CostingSizeOverride *int `db:"-"`
 }
 
-// CostingBaseSizeID is the size a style's STANDARD COST is computed on: its base sample size, or
-// 0 when the card names none. Every consumer of the costing basis goes through this one accessor
-// precisely so that «the card has no base size» has exactly ONE answer everywhere — 0, which
-// TechCardColorwayUsage.UnitTotal turns into an uncosted (не посчитано) size-graded line. The
-// moment two call sites resolve it themselves, one of them grows a fallback and the style quietly
-// gets a cost nobody approved.
-func (tc *TechCardInsert) CostingBaseSizeID() int {
-	if tc == nil || !tc.BaseSampleSizeId.Valid || tc.BaseSampleSizeId.Int32 <= 0 {
-		return 0
+// CostingBasisMode says WHAT a size-graded norm's per-garment cost is evaluated on.
+type CostingBasisMode int
+
+const (
+	// CostingBasisNone: no basis — a size-graded norm prices nothing. A real state (a run line
+	// that names no size), never a fallback target.
+	CostingBasisNone CostingBasisMode = iota
+	// CostingBasisRangeAverage: the style default — the simple arithmetic mean of the norm over
+	// the card's declared size range (see TechCardColorwayUsage.RangeAverageTotal).
+	CostingBasisRangeAverage
+	// CostingBasisSize: one concrete size somebody committed to (a production-run cell).
+	CostingBasisSize
+)
+
+// CostingBasis is the resolved answer to «на чём считается пер-изделийная стоимость строки с
+// нормами по размерам». Carried as a value through the costing so every graded line of one
+// computation answers the same question the same way.
+type CostingBasis struct {
+	Mode CostingBasisMode
+	// SizeID is the concrete size when Mode == CostingBasisSize; 0 otherwise.
+	SizeID int
+	// RangeSizeIds is the declared size range when Mode == CostingBasisRangeAverage (may be
+	// empty — a card with no declared range, which prices graded norms as invalid); nil otherwise.
+	RangeSizeIds []int
+}
+
+// CostingBasis resolves the card's costing basis. Every consumer goes through this one resolver
+// precisely so that each of the three states has exactly ONE spelling everywhere — the moment
+// two call sites resolve it themselves, one of them grows a fallback and the style quietly gets
+// a cost nobody approved. The default is the STYLE basis: the simple average over the declared
+// size range (owner decision T6; base_sample_size_id is a reference field and no longer read
+// here). CostingSizeOverride, set only by dto.cardCostedOnSize, narrows it to one size (>0) or
+// to no basis at all (0) — see the field for why 0 must never mean «default».
+func (tc *TechCardInsert) CostingBasis() CostingBasis {
+	if tc == nil {
+		return CostingBasis{Mode: CostingBasisNone}
 	}
-	return int(tc.BaseSampleSizeId.Int32)
+	if tc.CostingSizeOverride != nil {
+		if *tc.CostingSizeOverride > 0 {
+			return CostingBasis{Mode: CostingBasisSize, SizeID: *tc.CostingSizeOverride}
+		}
+		return CostingBasis{Mode: CostingBasisNone}
+	}
+	return CostingBasis{Mode: CostingBasisRangeAverage, RangeSizeIds: tc.SizeIds}
 }
 
 // TechCardPieceDxfAlias is one DXF block-name → cut-piece mapping, scoped to a fabric slot

@@ -150,6 +150,8 @@ func TestRunReadinessEmitsEveryCheckIncludingThePassingOnes(t *testing.T) {
 		entity.RunReadinessKeyNormConditionsRecorded, entity.RunReadinessKeyNormSeamAllowance,
 		entity.RunReadinessKeyNormFlipPolicy, entity.RunReadinessKeyNormPieceSet,
 		entity.RunReadinessKeyNormWidthVsArticle,
+		entity.RunReadinessKeyPieceRoleConflict, entity.RunReadinessKeyPieceMainFabric,
+		entity.RunReadinessKeyPieceFabricSorted,
 		entity.RunReadinessKeySizesInRange, entity.RunReadinessKeySizesInDxf,
 		entity.RunReadinessKeyQuantitiesPresent, entity.RunReadinessKeyStockShortage,
 	}

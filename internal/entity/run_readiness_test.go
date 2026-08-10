@@ -108,6 +108,7 @@ func TestRunReadinessKeyRegistryIsComplete(t *testing.T) {
 		RunReadinessKeyNormProvenance, RunReadinessKeyNormConditionsRecorded, RunReadinessKeyNormSeamAllowance,
 		RunReadinessKeyNormFlipPolicy, RunReadinessKeyNormPieceSet, RunReadinessKeyNormWidthVsArticle,
 		RunReadinessKeyNormMultiple,
+		RunReadinessKeyPieceRoleConflict, RunReadinessKeyPieceMainFabric, RunReadinessKeyPieceFabricSorted,
 		RunReadinessKeySizesInRange, RunReadinessKeySizesInDxf, RunReadinessKeyQuantitiesPresent,
 		RunReadinessKeyStockShortage,
 	}

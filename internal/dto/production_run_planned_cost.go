@@ -19,19 +19,20 @@ type runMixKey struct {
 //
 //	Σ(unit_cost_at(line.product_id, line.size_id) × line.planned_qty) ÷ Σ line.planned_qty
 //
-// A size-graded consumption is therefore taken at the size being cut, not at the style's base size;
-// a consumption stated as one number per garment is size-independent and contributes the same figure
-// at every size. A pinned article is likewise taken at the colourway that pins it, not at the card's
-// primary colourway.
+// A size-graded consumption is therefore taken at the size being cut, not averaged over the style's
+// declared range; a consumption stated as one number per garment is size-independent and contributes
+// the same figure at every size. A pinned article is likewise taken at the colourway that pins it,
+// not at the card's primary colourway.
 //
 // WHY THE RUN CANNOT REUSE THE STYLE FIGURE. The snapshot froze on the run is what the whole
 // plan/fact variance is measured against, and it used to be the style's standard cost. While that
 // standard was a quantity-weighted average over tech_card.size_quantities the mismatch was invisible
 // — an invented mix hid inside a number nobody could trace — so a batch of nothing but XL was
 // planned at the price of a mix it had no part in, and the variance carried that error silently for
-// the run's whole life. Now that the style's standard is the BASE SIZE's own norm (see
-// entity.TechCardColorwayUsage.UnitTotal), the same reuse would be an obvious lie: an XL batch would
-// be planned at the M price. The run has the real numbers on its own lines; it must use them.
+// the run's whole life. The style's standard is now the simple average over the declared size
+// range (see entity.TechCardColorwayUsage.UnitTotal), and the same reuse would still be a lie —
+// an all-XL batch is not an average batch. The run has the real numbers on its own lines; it
+// must use them.
 //
 // WHY COLOURWAY IS IN THE MIX. It was once left out on the grounds that a run carries exactly ONE
 // planned_unit_cost column and the card's primary colourway was as good a basis as any. It is not:
@@ -45,9 +46,15 @@ type runMixKey struct {
 // FIVE EDGES, each answered on purpose:
 //
 //  1. A run with NO lines (or none carrying a positive quantity) — the header is planned before the
-//     grid is filled — falls back to the style's standard cost on its base size. This is a conscious
-//     default and not a mix computed from nothing: the run has stated no sizes, so the only quantity
-//     information in the system is the style's own basis. It is the pre-existing behaviour, kept.
+//     grid is filled — is priced with NO basis, set EXPLICITLY (cardCostedOnSize's zero), never by
+//     falling into the style default. A flat per-garment norm needs no basis and prices exactly as
+//     it always did (an aux card's empty header keeps its figure); a size-graded norm prices
+//     nothing, so a graded card's empty run has no planned cost — the pre-T6 outcome, kept. The
+//     range average is NOT inherited here on purpose: the average is a figure of the MODEL, and an
+//     empty run has stated no size mix at all — handing it the average would be a guess about the
+//     batch dressed up as a plan, the exact «no basis quietly becomes a number» fallback the
+//     three-valued override exists to kill (see cardCostedOnSize). Explicit rather than implied,
+//     so a future change of the override's default cannot re-open this hole.
 //  2. A cell with NO computable cost (typically: the recipe carries no norm for that size) leaves the
 //     WHOLE run unpriced — invalid result, and the caller stores NULL. It is never dropped from the
 //     denominator: averaging over just the cells that happen to price quietly costs the batch as if
@@ -90,7 +97,8 @@ func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wast
 		totalQty += int64(ln.PlannedQty)
 	}
 	if totalQty == 0 {
-		return ComputeTechCardUnitCostWithWastage(tc, fx, wastageOverride) // edge 1
+		// Edge 1: explicit NO basis (sizeID 0), never the style default — see the header.
+		return ComputeTechCardUnitCostOnSize(tc, fx, wastageOverride, 0)
 	}
 
 	weighted := decimal.Zero
@@ -120,10 +128,11 @@ func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wast
 //
 // The size is applied by re-basing the card (cardCostedOnSize) rather than by threading a size
 // parameter through the costing: the whole costing path reads the basis through
-// TechCardInsert.CostingBaseSizeID, so this is the same single rule evaluated elsewhere, not a
-// second one. sizeID <= 0 leaves the card with NO basis, which is deliberately not the base size — a
-// size-graded norm then prices nothing, and a flat per-garment norm (an aux card's usual shape)
-// prices exactly as it always did.
+// TechCardInsert.CostingBasis, so this is the same single rule evaluated elsewhere, not a second
+// one. sizeID <= 0 leaves the card with NO basis — deliberately not the style default: a
+// size-graded norm then prices nothing (never the range average, which would price the line off
+// sizes it does not name), and a flat per-garment norm (an aux card's usual shape) prices
+// exactly as it always did.
 //
 // The product-less branch is edge 5 of ComputeProductionRunPlannedUnitCost: the card's own figure
 // when there is at most one colourway to take it from, nothing at all otherwise.

@@ -891,8 +891,9 @@ func operationMinutes(o *entity.TechCardOperation) decimal.NullDecimal {
 // techCardCostingToPb emits the stored per-unit cost articles plus the computed per-colourway
 // costs and the root rollup. Root figures are the PRIMARY colourway = index 0. Cost is built
 // per GARMENT (unit_cost = materials_per_unit + shared manual articles, × (1 + defect%)) on the
-// style's BASE SAMPLE SIZE, then scaled to the whole run for display only (order_cost = unit_cost
-// × order_qty, order_qty = Σ size_quantities). Returns nil when no costing row exists.
+// style's costing basis — a size-graded norm enters as its simple average over the declared
+// size range — then scaled to the whole run for display only (order_cost = unit_cost ×
+// order_qty, order_qty = Σ size_quantities). Returns nil when no costing row exists.
 func techCardCostingToPb(tc *entity.TechCard, fx CostingFx) *pb_common.TechCardCosting {
 	pb, _ := techCardCostingWithRoot(tc, fx)
 	return pb
@@ -907,13 +908,15 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 		return nil, colorwayCostResult{}
 	}
 	c := tc.Costing
-	// Two different questions, deliberately kept apart since the base-size change:
-	//   baseSizeID    — WHAT the per-garment cost is computed on (the style's base sample size).
+	// Two different questions, deliberately kept apart:
+	//   basis         — WHAT the per-garment cost is computed on (the style default: the simple
+	//                   average over the declared size range — entity.CostingBasis).
 	//   totalOrderQty — the illustrative run size_quantities still declares, used ONLY to scale the
 	//                   already-computed unit cost into the display order_qty / order_cost pair.
-	// It is no longer a denominator anywhere. Feeding it back into the unit figure is the fiction
-	// this phase removed: a card's typical mix is not what a garment costs.
-	baseSizeID := tc.CostingBaseSizeID()
+	// size_quantities is not a denominator anywhere: the range average divides by the SIZE COUNT,
+	// never by the typical mix — feeding quantities back into the unit figure is the fiction the
+	// base-size phase removed, and the range-average phase keeps it removed.
+	basis := tc.CostingBasis()
 	totalOrderQty := 0
 	for _, q := range tc.SizeQuantities {
 		if q.OrderQty > 0 {
@@ -947,7 +950,7 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 	colorwayCosts := make([]*pb_common.TechCardColorwayCost, 0, len(tc.Colorways))
 	root := colorwayCostResult{}
 	for ci := range tc.Colorways {
-		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, tc.LinkedMaterials, costingCcy, baseSizeID, fx)
+		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, tc.LinkedMaterials, costingCcy, basis, fx)
 		unit, order := unitAndOrder(cc.materialsPerUnit)
 		colorwayCosts = append(colorwayCosts, &pb_common.TechCardColorwayCost{
 			ColorwayId:               int64(tc.Colorways[ci].Id),
@@ -1121,7 +1124,7 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	if c.DefectPercent.Valid {
 		defectMul = defectMul.Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100)))
 	}
-	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBaseSizeID(), fx)
+	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
 	if cc.hasUnpriced {
 		return decimal.NullDecimal{}, ""
 	}
@@ -1197,36 +1200,48 @@ func ComputeTechCardUnitCostWithWastage(tc *entity.TechCard, fx CostingFx, overr
 }
 
 // ComputeTechCardUnitCostOnSize is ComputeTechCardUnitCostWithWastage costed on a GIVEN size
-// instead of the style's base sample size — the per-garment cost of this style AT sizeID, with the
-// run's actual cutting wastage applied the same way.
+// instead of the style's default basis (the range average) — the per-garment cost of this style
+// AT sizeID, with the run's actual cutting wastage applied the same way.
 //
-// It exists for the ONE caller that legitimately knows a size other than the base one: a production
-// run, whose lines say which sizes are actually being made and how many of each. Standard cost
-// stays on the base size (entity.TechCardColorwayUsage.UnitTotal explains why); this is not a second
-// basis for the style, it is the same basis evaluated at a size somebody has really committed to cut.
+// It exists for the ONE caller that legitimately knows a concrete size: a production run, whose
+// lines say which sizes are actually being made and how many of each. Standard cost stays on the
+// range average (entity.TechCardColorwayUsage.UnitTotal explains why); this is not a second
+// basis for the style, it is the same basis machinery evaluated at a size somebody has really
+// committed to cut.
 //
-// sizeID <= 0 means "no size", and that is deliberately NOT the base size: it produces the same
-// uncosted result a card with no base sample size produces, so a line with no size can never be
-// priced off a size nobody named for it.
+// sizeID <= 0 means "no size", and that is deliberately NOT the style default: it produces an
+// uncosted result for every size-graded norm, so a line with no size can never be priced off the
+// range average — a price for sizes the line never named (see cardCostedOnSize).
 func ComputeTechCardUnitCostOnSize(tc *entity.TechCard, fx CostingFx, override decimal.NullDecimal, sizeID int) (decimal.NullDecimal, string) {
 	return ComputeTechCardUnitCost(cardCostedOnSize(cardWithRunWastage(tc, override), sizeID), fx)
 }
 
 // cardCostedOnSize returns a shallow copy of tc whose COSTING BASIS is sizeID: the whole costing
-// path reads the basis through entity.TechCardInsert.CostingBaseSizeID, so re-pointing that one
+// path reads the basis through entity.TechCardInsert.CostingBasis, so setting the one override
 // field re-evaluates every graded norm at sizeID and leaves the rest of the math untouched. Doing
 // it this way rather than threading a size through colorwayCost is the point — a parallel size
 // parameter would be a second place for the "which size do we cost on" rule to live, and the two
 // would drift the first time one of them grew a fallback.
 //
-// The caller's card is never mutated: only the scalar basis field differs, and every slice is shared
-// read-only (cardWithRunWastage already cloned BomItems when it had to).
+// sizeID <= 0 sets the override to 0 = «no basis», NEVER back to the style default. This zero is
+// the whole reason the override is three-valued: a run line with no size must stay uncosted, and
+// if «no size» relaxed to the default it would silently take the range-average price — a figure
+// for sizes the line never named, i.e. exactly the forbidden fallback wearing the new basis.
+//
+// The caller's card is never mutated: only the override pointer differs (it points at a fresh
+// local), and every slice is shared read-only (cardWithRunWastage already cloned BomItems when
+// it had to). No other code may set CostingSizeOverride — this is the one legitimate re-basing
+// point, and a second writer is how two "which size" rules start to drift.
 func cardCostedOnSize(tc *entity.TechCard, sizeID int) *entity.TechCard {
 	if tc == nil {
 		return nil
 	}
 	cp := *tc
-	cp.BaseSampleSizeId = sql.NullInt32{Int32: int32(sizeID), Valid: sizeID > 0}
+	override := sizeID
+	if override < 0 {
+		override = 0
+	}
+	cp.CostingSizeOverride = &override
 	return &cp
 }
 
@@ -1276,7 +1291,7 @@ func techCardCostBreakdownBase(tc *entity.TechCard, cw *entity.TechCardColorway,
 	// The chosen colourway's materials, folded to base — the rollup's basis. An uncostable line
 	// blocks the decomposition for the same reason it blocks the unit cost: the Materials component
 	// would be short by that material while the report presents it as the whole recipe.
-	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBaseSizeID(), fx)
+	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
 	if !cc.baseConvertible || cc.hasUnpriced {
 		return entity.CostBreakdown{}, false
 	}
@@ -1314,10 +1329,11 @@ type colorwayCostResult struct {
 	hasUnconverted   bool                          // a usage currency ≠ costingCcy (excluded from materialsPerUnit)
 	// hasUnpriced is true when at least one authored usage could not be costed at all — its article
 	// carries no price, its pin does not resolve (or its unit disagrees with the slot's), it points
-	// at no BOM line, it has no norm, or it is graded per size while the style names no base sample
-	// size / carries no norm ON that size. Such a line contributes NOTHING to any bucket, so no
-	// currency flag catches it and every rollup silently understates the recipe by that material. It
-	// blocks the cost seed, never the display figures.
+	// at no BOM line, it has no norm, or it is graded per size while the basis cannot answer: the
+	// norm does not cover the whole declared size range, the card declares no range, or the
+	// computation runs with no basis at all (a run line naming no size). Such a line contributes
+	// NOTHING to any bucket, so no currency flag catches it and every rollup silently understates
+	// the recipe by that material. It blocks the cost seed, never the display figures.
 	hasUnpriced bool
 	// baseConvertible is true when every usage currency could be folded into the base currency
 	// via the FX rates; materialsPerUnitBase is that Σ in base currency (valid only when true).
@@ -1362,13 +1378,14 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 }
 
 // colorwayCost computes one colourway's PER-GARMENT material cost from its usages. Each usage
-// contributes its per-garment UnitTotal (a size-graded usage is costed on the style's BASE SAMPLE
-// SIZE — baseSizeID, 0 when the card names none, which leaves such a usage uncosted), resolved
-// against the BOM article it points at — with the colourway's pinned article's price substituted
-// when the usage pins one (linked is the card's LinkedMaterials map; nil degrades to slot-default
+// contributes its per-garment UnitTotal on the caller's resolved basis (the style default: a
+// size-graded usage enters as the simple average of its norms over the declared size range —
+// incomplete range coverage, or no declared range, leaves it uncosted), resolved against the
+// BOM article it points at — with the colourway's pinned article's price substituted when the
+// usage pins one (linked is the card's LinkedMaterials map; nil degrades to slot-default
 // prices). Buckets are per-currency (no FX conversion); currency-less lines fold into the costing
 // currency, and a line in another currency is flagged (and left out of materialsPerUnit).
-func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice, costingCcy string, baseSizeID int, fx CostingFx) colorwayCostResult {
+func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice, costingCcy string, basis entity.CostingBasis, fx CostingFx) colorwayCostResult {
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
 	hasUnconverted := false
@@ -1384,7 +1401,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
 		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
-		ut := u.UnitTotal(bom, baseSizeID)
+		ut := u.UnitTotal(bom, basis)
 		if !ut.Valid {
 			hasUnpriced = true
 			continue

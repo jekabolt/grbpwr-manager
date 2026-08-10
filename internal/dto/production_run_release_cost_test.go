@@ -65,16 +65,17 @@ func releaseBlob(t *testing.T, card *entity.TechCard) *pb_common.TechCard {
 
 // ГЛАВНОЕ ПРО СНАПШОТ: цена ПИНА переживает заморозку — но только как посчитанная цена колорвея.
 // Сам артикул 200 в блобе есть (пин), а его цены нет нигде: она в каталоге материалов. Поэтому
-// релизная ветка читает costing.colorway_costs, а не пересчитывает рецепт по замороженным входам —
-// пересчёт оставил бы белый колорвей БЕЗ цены и обнулил бы всю партию.
+// пересчёт по замороженным входам (CostingCard) оставляет пришпиленную строку БЕЗ цены — клетка
+// такого колорвея не ценится по размеру, и партия с ним целиком падает на costing.colorway_costs,
+// единственное место, где цена пина заморожена.
 func TestReleaseFrozenColorwayCostsCarryPinnedPrices(t *testing.T) {
 	snap := releaseBlob(t, releaseMixCard())
 
 	costs := ReleaseFrozenColorwayCosts(snap)
 	require.NotNil(t, costs)
 	require.Equal(t, "EUR", costs.Currency)
-	require.Equal(t, "10", costs.UnitCostByColorway[55].String(), "чёрный: 1 м × 10 по умолчанию слота")
-	require.Equal(t, "30", costs.UnitCostByColorway[66].String(), "белый: 1 м × 30 по ПИНУ, замороженный каталогом релиза")
+	require.Equal(t, "15", costs.UnitCostByColorway[55].String(), "чёрный: средняя норма (1+2)/2 × 10 по умолчанию слота")
+	require.Equal(t, "45", costs.UnitCostByColorway[66].String(), "белый: 1.5 м × 30 по ПИНУ, замороженный каталогом релиза")
 
 	// И одновременно — почему пересчёт по блобу невозможен: цены артикула 200 в замороженных
 	// входах нет, есть только сам пин.
@@ -101,8 +102,9 @@ func relLine(productID, sizeID, qty int) entity.ProductionRunLine {
 	return ln
 }
 
-// ГЛАВНОЕ ЧИСЛО РЕЛИЗНОЙ ВЕТКИ: партия из 50 чёрных по €10 и 50 белых по €30 стоит €20 за изделие.
-// Скаляр релиза — цена ПЕРВОГО колорвея, то есть €10, и именно он снимался с такой партии.
+// ГЛАВНОЕ ЧИСЛО РЕЛИЗНОЙ ВЕТКИ: партия из 50 чёрных и 50 белых НЕ снимается по цене первого
+// колорвея. Белый пришпилен, а цены пина в блобе нет — размерный проход по такой партии не
+// считается, и она ЦЕЛИКОМ взвешивается замороженными стилевыми ценами колорвеев: €30, а не €15.
 func TestReleaseRunPlannedCostIsWeightedByColorway(t *testing.T) {
 	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, releaseMixCard()))
 
@@ -111,37 +113,81 @@ func TestReleaseRunPlannedCostIsWeightedByColorway(t *testing.T) {
 	})
 	require.True(t, unit.Valid)
 	require.Equal(t, "EUR", ccy)
-	require.Equal(t, "20", unit.Decimal.String(), "(10×50 + 30×50) ÷ 100")
-	require.NotEqual(t, "10", unit.Decimal.String(), "РОВНО ЭТО и снималось раньше — скаляр релиза")
+	require.Equal(t, "30", unit.Decimal.String(), "(15×50 + 45×50) ÷ 100")
+	require.NotEqual(t, "15", unit.Decimal.String(), "РОВНО ЭТО и снималось раньше — скаляр релиза")
 
 	// Вес — по изделиям, а не по колорвеям.
 	unit, _ = ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{
 		relLine(55, 4, 90), relLine(66, 4, 10),
 	})
-	require.Equal(t, "12", unit.Decimal.String(), "(10×90 + 30×10) ÷ 100")
+	require.Equal(t, "18", unit.Decimal.String(), "(15×90 + 45×10) ÷ 100")
 
 	// Несколько линий на один колорвей — это один колорвей: разбиение не переставляет веса.
 	unit, _ = ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{
 		relLine(55, 4, 25), relLine(55, 6, 25), relLine(66, 4, 50),
 	})
-	require.Equal(t, "20", unit.Decimal.String())
+	require.Equal(t, "30", unit.Decimal.String())
 
-	// Партия из одних чёрных стоит ровно столько, сколько стоила: пин соседа в неё не течёт.
+	// Партия из одних чёрных пинов не несёт, поэтому считается ПО РАЗМЕРУ из замороженной
+	// карточки: норма размера 4 — 1 м × 10 = 10, а не 15 (среднее по ряду). Пин соседа в неё не
+	// течёт ни ценой, ни своей неспособностью посчитаться по размеру.
 	unit, _ = ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{relLine(55, 4, 100)})
 	require.Equal(t, "10", unit.Decimal.String())
 }
 
-// РАЗМЕРА В РЕЛИЗНОЙ ВЕТКЕ НЕТ, и это записано тестом, а не только комментарием: замороженная цена
-// существует лишь на базовом размере карточки. Партия из одних размеров 6 стоит столько же, сколько
-// такая же партия размера 4 — осознанный остаток (пересчитать норму на размер нечем: цены пина в
-// блобе нет).
-func TestReleaseRunPlannedCostIgnoresSizeByDesign(t *testing.T) {
+// БЛОКЕР-2 РЕВЬЮ: размерная клетка релизного прогона равна цене того же размера в ЖИВОЙ ветке.
+// Стилевая цена стала средним по ряду (T6), и партия обязана этого не заметить: релиз, снятый
+// после выката, на прогоне из одних M даёт цену M — ту же цифру, что нерелизный прогон той же
+// карточки, — а не среднее по ряду.
+func TestReleaseRunSizeCellMatchesLiveBranch(t *testing.T) {
+	fx := CostingFx{Base: "EUR"}
+	card := releaseMixCard()
+	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, card))
+	require.NotNil(t, costs)
+	require.NotNil(t, costs.CostingCard, "снапшот несёт костинг-проекцию для размерных клеток")
+
+	for name, lines := range map[string][]entity.ProductionRunLine{
+		"только размер 4":        {relLine(55, 4, 100)},
+		"только размер 6":        {relLine(55, 6, 100)},
+		"микс 90/10 по размерам": {relLine(55, 4, 90), relLine(55, 6, 10)},
+	} {
+		live, liveCcy := ComputeProductionRunPlannedUnitCost(card, fx, decimal.NullDecimal{}, lines)
+		frozen, frozenCcy := ComputeReleaseRunPlannedUnitCost(costs, lines)
+		require.True(t, live.Valid, "%s: живая ветка ценит", name)
+		require.True(t, frozen.Valid, "%s: релизная ветка ценит", name)
+		require.Equal(t, live.Decimal.String(), frozen.Decimal.String(),
+			"%s: релизная и живая ветка обязаны дать ОДНУ цифру на одном размере", name)
+		require.Equal(t, liveCcy, frozenCcy, "%s", name)
+	}
+
+	// Конкретные числа, чтобы регресс не спрятался за «обе ветки съехали одинаково»: размер 4 →
+	// 10 (норма 1×10), размер 6 → 20 (норма 2×10), и ни то ни другое не 15 (среднее по ряду).
+	at4, _ := ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{relLine(55, 4, 100)})
+	require.Equal(t, "10", at4.Decimal.String())
+	at6, _ := ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{relLine(55, 6, 100)})
+	require.Equal(t, "20", at6.Decimal.String())
+}
+
+// ПРЕДЕЛ СНАПШОТА, записанный тестом: у пришпиленного колорвея цены пина в блобе нет, размерная
+// клетка по нему не считается, и партия ЦЕЛИКОМ (всё-или-ничего, не по клеткам) падает на
+// замороженную стилевую цену колорвея. Живая ветка дала бы 60 (2 м × 30 по пину); релизная даёт
+// замороженные 45 — це́ны здесь заморожены сильнее, чем размерны, и это документированный выбор.
+func TestReleaseRunPinnedCellFallsBackToFrozenColorwayMix(t *testing.T) {
 	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, releaseMixCard()))
 
-	base, _ := ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{relLine(55, 4, 100)})
-	graded, _ := ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{relLine(55, 6, 100)})
-	require.Equal(t, base.Decimal.String(), graded.Decimal.String(),
-		"живая ветка дала бы здесь 20 (норма размера 6 вдвое больше); релизная остаётся на базовом размере")
+	unit, ccy := ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{relLine(66, 6, 100)})
+	require.True(t, unit.Valid)
+	require.Equal(t, "EUR", ccy)
+	require.Equal(t, "45", unit.Decimal.String(),
+		"замороженная стилевая цена пина (1.5 м × 30), не размерная и не сегодняшний каталог")
+
+	// Смешанная партия с пином тоже целиком на стилевых ценах: половина клеток по размеру, половина
+	// по среднему — запрещённая смесь, её не должно быть даже там, где часть клеток посчиталась бы.
+	mixed, _ := ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{
+		relLine(55, 6, 50), relLine(66, 6, 50),
+	})
+	require.Equal(t, "30", mixed.Decimal.String(),
+		"(15+45)/2 по замороженным стилевым ценам; НЕ (20+45)/2 — чёрная клетка не смеет быть размерной, когда белая не может")
 }
 
 // Колорвей без рецепта наследует цену СТИЛЯ — то же правило, что у ComputeColorwayUnitCost.
@@ -154,8 +200,8 @@ func TestReleaseFrozenColorwayCostsInheritStyleForRecipelessColorway(t *testing.
 
 	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, card))
 	require.NotNil(t, costs)
-	require.Equal(t, "15", costs.UnitCostByColorway[55].String(), "чёрный: 1 м × 10 + CMT 5")
-	require.Equal(t, "15", costs.UnitCostByColorway[66].String(),
+	require.Equal(t, "20", costs.UnitCostByColorway[55].String(), "чёрный: 1.5 м (средняя по ряду) × 10 + CMT 5")
+	require.Equal(t, "20", costs.UnitCostByColorway[66].String(),
 		"белый без рецепта берёт цену стиля, а не свои €5 из одного CMT")
 
 	// Наследовать можно только полную цену стиля: у корня с флагом неполноты брать нечего.
@@ -181,8 +227,8 @@ func TestT8ReleaseFrozenAllPieceRowsColorwayInheritsStyle(t *testing.T) {
 
 	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, card))
 	require.NotNil(t, costs)
-	require.Equal(t, "15", costs.UnitCostByColorway[55].String(), "чёрный: 1 м × 10 + CMT 5")
-	require.Equal(t, "15", costs.UnitCostByColorway[66].String(),
+	require.Equal(t, "20", costs.UnitCostByColorway[55].String(), "чёрный: 1.5 м (средняя по ряду) × 10 + CMT 5")
+	require.Equal(t, "20", costs.UnitCostByColorway[66].String(),
 		"белый из одних строк деталей наследует цену стиля, а не свои €5 из одного CMT")
 }
 
