@@ -16,7 +16,7 @@ import (
 // свести ответы по деталям в клетку (CoverageCell, шаг 5). ЗДЕСЬ живёт то, что требует КАРТОЧКУ и
 // ПЛАН, и чего тот файл сознательно не взял:
 //
-//	шаг 0 — какой слот BOM кроит эту деталь у этого колорвея      (pieceSlotBomLine)
+//	шаг 0 — какие слои кроят эту деталь у этого колорвея          (requiredPiecesForColorway, T4)
 //	шаг 4 — какие детали для этого колорвея вообще ОБЯЗАТЕЛЬНЫ    (requiredPiecesForColorway)
 //	сборка — обход (колорвей × размер) по строкам прогона          (ComputeLayCoverage)
 //	отдача — контракт §6.4, дословно                              (CoverageCellsPb / ApplyToUnitCoverage)
@@ -229,43 +229,22 @@ func (c LayCoverage) ColorwayStatus(colorwayID int) CoverageStatus {
 	return WorstCoverageStatus(ss...)
 }
 
-// --- ШАГ 0: ДЕТАЛЬ → СЛОТ -----------------------------------------------------------------------
+// --- ШАГ 0: ДЕТАЛЬ → СЛОИ -----------------------------------------------------------------------
 
-// pieceSlotBomLine resolves ONE cut-piece's fabric slot for ONE colourway — §6.2 step 0.
+// recipeColorwayOf finds the card colourway a run line's product id names. ColorwayID here is the
+// colourway's PRODUCT id — the identity a run line and a настил carry — matched against
+// TechCardColorway.ProductId, never against the row id.
 //
-// IT CALLS THE RECIPE'S RESOLVER; it does not reproduce its priority. tech_card_piece_material
-// carries the SAME reference pair as a colourway usage — the durable FK bom_item_id plus the LEGACY
-// POSITIONAL bom_item_index (0109:39) — into the SAME []entity.TechCardBomItem, and planBomLine
-// reads nothing else off the value it is handed. Понимание ТОЛЬКО позиционного индекса уже давало
-// ПУСТОЙ материал-план на бете (живой баг, зафиксированный комментарием на planBomLine); второй
-// резолвер здесь означал бы, что покрытие и рецепт могут разойтись в том, какой слот кроит деталь —
-// и разойдутся они молча, потому что обе стороны вернут какой-то слот.
-//
-// The synthetic usage is the price of keeping ONE implementation while planBomLine's signature is
-// typed to the usage. Расщепить planBomLine на общее ядро (id, index, items) — правка ЧУЖОГО файла;
-// она предложена оркестратору отдельно. Пока её нет, вызов идёт через ту самую функцию, и любое
-// изменение её приоритета покрытие подхватывает автоматически — что и есть требуемый инвариант.
-func pieceSlotBomLine(m *entity.TechCardPieceMaterial, items []entity.TechCardBomItem) *entity.TechCardBomItem {
-	if m == nil {
-		return nil
-	}
-	return planBomLine(&entity.TechCardColorwayUsage{
-		BomItemId:    m.BomItemId,
-		BomItemIndex: m.BomItemIndex,
-		// BomLineKey is passed through even though planBomLine does not read it TODAY. Both types
-		// carry the same wire reference by stable line_key, and the day the shared resolver learns
-		// about it, a synthetic usage that silently dropped it would resolve pieces by an older rule
-		// than the recipe — the divergence this whole function exists to make impossible.
-		BomLineKey: m.BomLineKey,
-	}, items)
-}
-
-// pieceMaterialForColorway finds the piece's binding for one colourway. TechCardPieceMaterial.
-// ColorwayID is the explicit colourway id = product.id, the same identity a run line names.
-func pieceMaterialForColorway(p *entity.TechCardPiece, colorwayID int) *entity.TechCardPieceMaterial {
-	for i := range p.Materials {
-		if p.Materials[i].ColorwayID == colorwayID {
-			return &p.Materials[i]
+// С T4 связь «деталь ↔ слот» читается ИЗ РЕЦЕПТА (детальные строки tech_card_colorway_usage), а не
+// из tech_card_piece_material: админка в ту таблицу не пишет, на живых карточках она пуста —
+// именно поэтому покрытие настилов карты 38 видело все детали как UNKNOWN. Разбор строк — общий
+// pieceUsageIndex / planBomLine (piece_layers.go), не второй резолвер: покрытие и наряд обязаны
+// согласиться в том, какими слоями кроится деталь, и разойтись они могут только молча.
+func recipeColorwayOf(card *entity.TechCard, colorwayID int) *entity.TechCardColorway {
+	for i := range card.Colorways {
+		cw := &card.Colorways[i]
+		if cw.ProductId.Valid && int(cw.ProductId.Int32) == colorwayID {
+			return cw
 		}
 	}
 	return nil
@@ -273,26 +252,39 @@ func pieceMaterialForColorway(p *entity.TechCardPiece, colorwayID int) *entity.T
 
 // --- ШАГ 4: ОБЯЗАТЕЛЬНЫЕ ДЕТАЛИ КОЛОРВЕЯ ---------------------------------------------------------
 
-// requiredPiece is one card cut-piece as the cell sees it: either bound to a slot, or unresolved and
-// therefore UNKNOWN — never absent. §6.2 step 0 says it in one line: «деталь, чей слот не
-// резолвится, даёт UNKNOWN, а не выпадает».
+// requiredPiece is one card cut-piece AT ONE LAYER as the cell sees it: either bound to a slot, or
+// unresolved and therefore UNKNOWN — never absent. §6.2 step 0 says it in one line: «деталь, чей
+// слот не резолвится, даёт UNKNOWN, а не выпадает». С T4 деталь со слоями даёт ПО ЗАПИСИ НА КАЖДЫЙ
+// кроимый слой: полочка с шеллом и подкладом обязана присутствовать и в настиле основной ткани, и
+// в настиле подклада, и минимум клетки считает их двумя голосами.
 type requiredPiece struct {
 	piece     *entity.TechCardPiece
 	bomItemID int64
 	bomName   string
 	resolved  bool
+	// layer is this entry's ordinal among the piece's resolved layers (0-based) — the tie-breaker
+	// that keeps two layers of ONE piece two separate voices in the cell (see key()).
+	layer int
 	// reason is why the slot did not resolve, for the diagnostic row. Empty on a resolved piece.
 	reason string
 }
 
 // key is the identity the cell's minimum is keyed by. tech_card_piece.line_key is the stable one; a
 // legacy keyless piece gets a synthetic id-based key so that TWO keyless pieces cannot collapse into
-// one entry and quietly leave the minimum.
+// one entry and quietly leave the minimum. A RESOLVED entry additionally carries its layer ordinal:
+// the blocking-slot attribution maps the cell's keys BACK to entries (byKey in cell()), and two
+// layers of one piece sharing a key would attribute the shell's shortage to whichever layer was
+// indexed last. Ordinal, not slot id — old release snapshots carry id 0 on every BOM line, and a
+// slot-id suffix would collapse exactly there.
 func (r requiredPiece) key() string {
-	if r.piece.LineKey != "" {
-		return r.piece.LineKey
+	base := r.piece.LineKey
+	if base == "" {
+		base = fmt.Sprintf("piece#%d", r.piece.Id)
 	}
-	return fmt.Sprintf("piece#%d", r.piece.Id)
+	if r.resolved {
+		return fmt.Sprintf("%s@layer#%d", base, r.layer)
+	}
+	return base
 }
 
 func (r requiredPiece) label() string {
@@ -302,44 +294,57 @@ func (r requiredPiece) label() string {
 	return r.key()
 }
 
-// requiredPiecesForColorway is §6.2 step 4's `required(C)`: every cut-piece of the card whose slot
-// for C falls into planSlotSections — the EXISTING definition from production_material_plan.go, not
-// a second one.
+// requiredPiecesForColorway is §6.2 step 4's `required(C)`: every cut-piece of the card, one entry
+// PER CUTTABLE LAYER of the colourway's recipe. The layers are collectPieceLayers — the run pack's
+// own parse (piece_layers.go), NOT a second reading of the recipe: what coverage demands a настил
+// for must be exactly what the наряд prints as a cut row, or the two answers drift apart silently.
+// planSlotSections is deliberately NOT the filter here: that set answers «сколько закупить» and
+// includes thread/hardware/trim/decoration, and a piece legitimately bound to швейная нитка (a T8
+// assignment, not a layer) would become a required «layer» no настил can ever satisfy — the store
+// only allows настилы for roll goods — permanently blocking a fully-covered cell.
 //
-// A piece is dropped from the list in EXACTLY ONE case: its slot resolved and that slot is outside
-// planSlotSections (label/packaging/other — those ride the assembly and packaging recipes, and a cut
-// piece bound to one is not a garment part the cloth plan counts). Every other outcome — no binding
-// for this colourway, a binding that does not resolve to a line — keeps the piece IN the list as
-// unresolved, i.e. as an UNKNOWN the cell has to carry.
+// A piece is dropped from the list in EXACTLY ONE case: its bindings resolve and NONE of them is a
+// cuttable layer. Non-roll rows (label/thread/фурнитура) are assignments, not cutting; a
+// piece-bound клеевая rides the fusing_* pair of the наряд, and a missing interlining настил is
+// брак пошива, not a cutting stop (pieceFusingSlot) — so none of those owes the cell a voice.
+// Every other outcome — no binding for this colourway, bindings that do not resolve to any line —
+// keeps the piece IN the list as unresolved, i.e. as an UNKNOWN the cell has to carry. A piece
+// whose bindings PARTLY resolve keeps its resolved layers and silently drops the broken ref — the
+// broken half carries no cut requirement of its own, and a second UNKNOWN voice would grey a cell
+// the resolved layers can honestly judge.
 func requiredPiecesForColorway(card *entity.TechCard, colorwayID int) []requiredPiece {
+	cw := recipeColorwayOf(card, colorwayID)
+	var idx *pieceUsageIndex
+	if cw != nil {
+		idx = newPieceUsageIndex(cw.Usages, card.Pieces)
+	}
 	out := make([]requiredPiece, 0, len(card.Pieces))
 	for i := range card.Pieces {
 		p := &card.Pieces[i]
-		m := pieceMaterialForColorway(p, colorwayID)
-		if m == nil {
+		us := idx.forPiece(p)
+		if len(us) == 0 {
 			out = append(out, requiredPiece{
 				piece:  p,
 				reason: "the piece is not bound to a BOM slot for this colourway — it is unknown which lay is supposed to cut it",
 			})
 			continue
 		}
-		bom := pieceSlotBomLine(m, card.BomItems)
-		if bom == nil {
+		pl := collectPieceLayers(us, card.BomItems)
+		for layer := range pl.layers {
+			out = append(out, requiredPiece{
+				piece:     p,
+				bomItemID: int64(pl.layers[layer].bom.Id),
+				bomName:   pl.layers[layer].bom.Name,
+				resolved:  true,
+				layer:     layer,
+			})
+		}
+		if len(pl.layers) == 0 && pl.resolved == 0 {
 			out = append(out, requiredPiece{
 				piece:  p,
 				reason: "the piece's BOM slot reference does not resolve — it is unknown which lay is supposed to cut it",
 			})
-			continue
 		}
-		if !planSlotSections[bom.Section] {
-			continue
-		}
-		out = append(out, requiredPiece{
-			piece:     p,
-			bomItemID: int64(bom.Id),
-			bomName:   bom.Name,
-			resolved:  true,
-		})
 	}
 	return out
 }

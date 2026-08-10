@@ -50,10 +50,11 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 		BaseCurrency: fx.Base,
 	}
 
-	// baseSizeID is the costing basis (see entity.TechCardColorwayUsage.UnitTotal); totalOrderQty is
-	// only the illustrative run the estimate multiplies the finished unit cost by. Keeping them apart
-	// is the whole point of this phase — the declared mix no longer divides anything.
-	baseSizeID := tc.CostingBaseSizeID()
+	// basis is the costing basis — for the style estimate always the range average (see
+	// entity.TechCardColorwayUsage.UnitTotal); totalOrderQty is only the illustrative run the
+	// estimate multiplies the finished unit cost by. Keeping them apart still matters: the range
+	// average divides by the SIZE COUNT of the declared range, never by the declared mix.
+	basis := tc.CostingBasis()
 	totalOrderQty := 0
 	for _, q := range tc.SizeQuantities {
 		if q.OrderQty > 0 {
@@ -82,13 +83,20 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 		usedCatalogFallback bool
 		hasUnpricedLine     bool
 		hasUnconvertibleMat bool
-		// hasNoBaseSizeNorm is kept apart from hasUnpricedLine because the operator's next action is
-		// a different one: "no price" sends them to the material, "no norm on the base size" sends
-		// them to the size grading (or to naming a base size at all). Lumping the two under one
-		// caveat sent people hunting for a price that was never the problem.
-		hasNoBaseSizeNorm bool
-		// hasNoNormLine is the third case, previously also swallowed by "unpriced": a priced article
-		// on a usage that states no consumption and no quantity at all.
+		// hasIncompleteRangeNorm is kept apart from hasUnpricedLine because the operator's next
+		// action is a different one: "no price" sends them to the material, "the norm does not
+		// cover the whole size range" sends them to the size grading. Lumping the two under one
+		// caveat sent people hunting for a price that was never the problem. The missing sizes are
+		// collected poimённо (missingNormSizeIds, in declared-range order) — «какие-то размеры»
+		// is not an actionable sentence.
+		hasIncompleteRangeNorm bool
+		missingNormSizeSet     = map[int]bool{}
+		// hasNoSizeRange is the emptier failure: the card declares no size range at all, so a
+		// size-graded norm has no set to be averaged over. A different sentence again — the fix is
+		// declaring the range, not grading more sizes.
+		hasNoSizeRange bool
+		// hasNoNormLine is the remaining case, previously also swallowed by "unpriced": a priced
+		// article on a usage that states no consumption and no quantity at all.
 		hasNoNormLine bool
 	)
 	materialsBase := decimal.Zero
@@ -134,7 +142,7 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				}
 			}
 
-			qty, applyWaste, ok := usagePerGarmentQty(u, baseSizeID)
+			qty, applyWaste, ok := usagePerGarmentQty(u, basis)
 			if ok {
 				line.Consumption = pbDecimalFromDecimal(qty)
 			}
@@ -159,13 +167,15 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			// wastage for measured/size-graded usage (countable trims take no wastage) — identical to
 			// entity.UnitTotal with the resolved price substituted.
 			//
-			// The three failure modes are told APART, not merged into "unpriced". A line can be
-			// uncostable because nobody priced the article, because a size-graded norm has no value
-			// on the base sample size, or because the usage carries no norm at all — and each sends
-			// the operator somewhere different. Reporting all three as "no price" (which is what a
-			// single else-branch did) sent people hunting for a price that was already there.
-			switch {
-			case ok && price.Valid:
+			// The failure modes are told APART, not merged into "unpriced" — and they are
+			// INDEPENDENT verdicts, not an else-ladder. A line can be uncostable because nobody
+			// priced the article, because a size-graded norm does not cover the whole declared
+			// range (or the card declares none), or because the usage carries no norm at all — and
+			// each sends the operator somewhere different. Reporting all of them as "no price"
+			// (a single else-branch) sent people hunting for a price that was already there; and a
+			// ladder that put "no price" FIRST hid the missing sizes behind it, so the operator
+			// fixed the price only to be handed the second problem on the next save.
+			if ok && price.Valid {
 				lineTotal := qty.Mul(price.Decimal)
 				// Marker-sourced rows are never grossed: the marker length already pays for the
 				// waste (PIECES-WASTAGE-DESIGN §2.3) — grossing again is the double-count trap.
@@ -179,12 +189,23 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				} else {
 					hasUnconvertibleMat = true
 				}
-			case !price.Valid:
-				hasUnpricedLine = true
-			case len(u.SizeConsumptions) > 0:
-				hasNoBaseSizeNorm = true
-			default:
-				hasNoNormLine = true
+			} else {
+				if !price.Valid {
+					hasUnpricedLine = true
+				}
+				if !ok {
+					switch {
+					case len(u.SizeConsumptions) == 0:
+						hasNoNormLine = true
+					case len(basis.RangeSizeIds) == 0:
+						hasNoSizeRange = true
+					default:
+						hasIncompleteRangeNorm = true
+						for _, id := range u.MissingRangeNorms(basis.RangeSizeIds) {
+							missingNormSizeSet[id] = true
+						}
+					}
+				}
 			}
 
 			out.Materials = append(out.Materials, line)
@@ -228,8 +249,16 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 	out.UnitCostBase = money2(unitBase)
 	out.OrderCostBase = money2(unitBase.Mul(decimal.NewFromInt(int64(totalOrderQty))))
 
+	// The missing sizes are named in DECLARED-RANGE order — the order the operator sees the range
+	// in — regardless of which line reported which size first.
+	var missingNormSizes []string
+	for _, id := range basis.RangeSizeIds {
+		if missingNormSizeSet[id] {
+			missingNormSizes = append(missingNormSizes, sizeLabelOf(id))
+		}
+	}
 	out.Caveat = strings.Join(estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat,
-		hasUnconvertibleArt, hasNoBaseSizeNorm, hasNoNormLine), "; ")
+		hasUnconvertibleArt, hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine, missingNormSizes), "; ")
 	return out
 }
 
@@ -269,13 +298,15 @@ func resolveUsageBom(bomItems []entity.TechCardBomItem, u *entity.TechCardColorw
 // usagePerGarmentQty returns the usage's per-garment quantity (price-free), whether wastage applies,
 // and ok=false when there is no usable quantity. It mirrors entity.UnitTotal exactly with the price
 // factored out: countable Quantity (no wastage); measured Consumption (wastage); a size-graded
-// consumption taken at the style's BASE SAMPLE SIZE (wastage).
+// consumption entering on the resolved basis (wastage) — for the style estimate that is the simple
+// average over the declared size range, delegated to entity.RangeAverageNorm so the coverage rule
+// («the whole range or nothing») has exactly one implementation.
 //
-// ok=false on a size-graded usage means the card names no base size (baseSizeID<=0) or this usage
-// has no norm on it. The estimate must then show the line WITHOUT a consumption and say so in the
-// caveat — the previous behaviour, averaging the graded norms over the card's declared typical
-// run, is exactly the invented denominator this phase removed.
-func usagePerGarmentQty(u *entity.TechCardColorwayUsage, baseSizeID int) (decimal.Decimal, bool, bool) {
+// ok=false on a size-graded usage means the basis cannot answer: the norm misses part of the
+// declared range, the card declares no range, or the basis is a size this usage carries no norm
+// for. The estimate must then show the line WITHOUT a consumption and say so in the caveat —
+// averaging whatever subset happens to be graded is the forbidden fallback.
+func usagePerGarmentQty(u *entity.TechCardColorwayUsage, basis entity.CostingBasis) (decimal.Decimal, bool, bool) {
 	if len(u.SizeConsumptions) == 0 {
 		if u.Quantity.Valid {
 			return u.Quantity.Decimal, false, true
@@ -285,12 +316,16 @@ func usagePerGarmentQty(u *entity.TechCardColorwayUsage, baseSizeID int) (decima
 		}
 		return decimal.Zero, false, false
 	}
-	if baseSizeID <= 0 {
-		return decimal.Zero, false, false
-	}
-	for _, sc := range u.SizeConsumptions {
-		if sc.SizeId == baseSizeID {
-			return sc.Consumption, true, true
+	switch basis.Mode {
+	case entity.CostingBasisSize:
+		for _, sc := range u.SizeConsumptions {
+			if sc.SizeId == basis.SizeID {
+				return sc.Consumption, true, true
+			}
+		}
+	case entity.CostingBasisRangeAverage:
+		if avg, ok := u.RangeAverageNorm(basis.RangeSizeIds); ok {
+			return avg, true, true
 		}
 	}
 	return decimal.Zero, false, false
@@ -357,13 +392,23 @@ func grossByWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) de
 }
 
 func estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat, hasUnconvertibleArt,
-	hasNoBaseSizeNorm, hasNoNormLine bool) []string {
+	hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine bool, missingNormSizes []string) []string {
 	var c []string
 	if usedCatalogFallback {
 		c = append(c, "some material lines use the latest catalog price (no BOM snapshot); the estimate may drift from the saved plan document")
 	}
-	if hasNoBaseSizeNorm {
-		c = append(c, "some size-graded material lines have no consumption on the style's base sample size (or the style names none) — those lines are NOT costed and the estimate understates")
+	if hasIncompleteRangeNorm {
+		// The style cost is the simple average over the declared size range, and an average over a
+		// subset is forbidden (it silently understates) — so the line prices as a whole range or
+		// not at all, and the operator is told WHICH sizes stand in the way.
+		msg := "some size-graded material lines have no consumption on some sizes of the declared size range"
+		if len(missingNormSizes) > 0 {
+			msg += " (missing: " + strings.Join(missingNormSizes, ", ") + ")"
+		}
+		c = append(c, msg+" — the style cost averages over the WHOLE range, so those lines are NOT costed and the estimate understates")
+	}
+	if hasNoSizeRange {
+		c = append(c, "the card declares no size range, so a size-graded norm has nothing to be averaged over — those lines are NOT costed and the estimate understates")
 	}
 	if hasNoNormLine {
 		c = append(c, "some material lines state no consumption or quantity at all — those lines are NOT costed and the estimate understates")

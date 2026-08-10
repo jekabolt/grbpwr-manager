@@ -66,13 +66,15 @@ func TestRunPlannedCostIsWeightedByColorway(t *testing.T) {
 	fx := CostingFx{Base: "EUR"}
 	card := colorwayMixCard()
 
-	// Сначала — сами цены колорвеев, чтобы ниже нечего было списать на арифметику.
+	// Сначала — сами СТИЛЕВЫЕ цены колорвеев (среднее по ряду {4,6}: (1+2)/2 = 1.5 м), чтобы ниже
+	// нечего было списать на арифметику. Клетки прогона считаются на СВОЁМ размере и этих цифр не
+	// трогают.
 	black, ccy := ComputeColorwayUnitCost(card, 55, fx)
 	require.True(t, black.Valid)
-	require.Equal(t, "10", black.Decimal.String(), "чёрный на базовом размере 4: 1 м × 10")
+	require.Equal(t, "15", black.Decimal.String(), "чёрный, среднее по ряду: 1.5 м × 10")
 	white, _ := ComputeColorwayUnitCost(card, 66, fx)
 	require.True(t, white.Valid)
-	require.Equal(t, "30", white.Decimal.String(), "белый на базовом размере 4: 1 м × 30 (пин)")
+	require.Equal(t, "45", white.Decimal.String(), "белый, среднее по ряду: 1.5 м × 30 (пин)")
 
 	unit, gotCcy := ComputeProductionRunPlannedUnitCost(card, fx, decimal.NullDecimal{},
 		[]entity.ProductionRunLine{cwLine(55, 4, 50), cwLine(66, 4, 50)})

@@ -444,8 +444,149 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 		}
 
 		b.normChecks(cw, tgt, &out)
+		b.pieceLayerChecks(cw, tgt, &out)
 		b.colorways = append(b.colorways, out)
 	}
+}
+
+// pieceLayerChecks emits the three layer-role rows of T4 for one colourway. The role of a layer is
+// DERIVED from the BOM line its recipe row references (entity.DerivePieceLayerRole) — nothing here
+// is stored, so these checks are exactly the second line of defence behind the recipe write's
+// «duplicate_main_fabric» refusal: the same conflict arises WITHOUT a recipe edit, by re-sorting a
+// line's назначение on the BOM tab, and the card save deliberately does not refuse that.
+//
+// The layer selection is collectPieceLayers — the cut plan's own (piece_layers.go). One rule, not
+// two: a piece the gate calls conflicted must be exactly the piece the run pack refuses to print.
+func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base entity.RunReadinessTarget, out *entity.RunReadinessColorway) {
+	add := func(f entity.RunReadinessFinding) { out.Findings = append(out.Findings, f) }
+	idx := newPieceUsageIndex(cw.Usages, b.card.Pieces)
+
+	type offender struct {
+		detail string
+		bom    *entity.TechCardBomItem
+	}
+	var conflicts []offender
+	conflictSeverity := entity.RunReadinessOK
+	var mainless []offender
+	var unsorted []offender
+
+	for i := range b.card.Pieces {
+		p := &b.card.Pieces[i]
+		us := idx.forPiece(p)
+		if len(us) == 0 {
+			continue
+		}
+		pl := collectPieceLayers(us, b.card.BomItems)
+		if len(pl.layers) == 0 {
+			// Только нерулонные/клеевые привязки: кроя они не описывают, деталь судят прежние
+			// правила наряда (вывод единственного рулонного слота) — ролям здесь нечего проверять.
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = p.LineKey
+		}
+
+		// П1 и его градации — тем же предикатом, что блокер наряда.
+		switch {
+		case len(pl.mains) >= 2:
+			conflicts = append(conflicts, offender{
+				detail: fmt.Sprintf("деталь %q: %d основные ткани (%s) — цельная деталь кроится из одной основной",
+					name, len(pl.mains), strings.Join(pl.layerNames(pl.mains), ", ")),
+				bom: pl.layers[pl.mains[0]].bom,
+			})
+			conflictSeverity = entity.RunReadinessBlocker
+		case pl.mainConflict():
+			conflicts = append(conflicts, offender{
+				detail: fmt.Sprintf("деталь %q: у слоя %s не задано назначение рядом с другими слоями — не доказать, что это не вторая основная",
+					name, strings.Join(pl.layerNames(pl.unsorted), ", ")),
+				bom: pl.layers[pl.unsorted[0]].bom,
+			})
+			conflictSeverity = entity.RunReadinessBlocker
+		default:
+			// Дубль НЕ-основной роли (двойной подклад, два «канта») — предупреждение: физически
+			// кроимо, но человек должен взглянуть.
+			byRole := map[entity.TechCardBomPurpose][]int{}
+			for li, role := range pl.roles {
+				if role == entity.BomPurposeMain || role == entity.PieceLayerRoleUnsorted {
+					continue
+				}
+				byRole[role] = append(byRole[role], li)
+			}
+			for _, role := range entity.BomPurposeOrder {
+				idxs := byRole[role]
+				if len(idxs) < 2 {
+					continue
+				}
+				conflicts = append(conflicts, offender{
+					detail: fmt.Sprintf("деталь %q: роль «%s» у %d строк (%s)",
+						name, entity.PieceLayerRoleLabel(role), len(idxs), strings.Join(pl.layerNames(idxs), ", ")),
+					bom: pl.layers[idxs[0]].bom,
+				})
+				if conflictSeverity == entity.RunReadinessOK {
+					conflictSeverity = entity.RunReadinessWarning
+				}
+			}
+		}
+
+		// П2: слои есть, основной нет — и нет неразложенной fabric-строки, которая могла бы ею
+		// оказаться (та уже названа своей находкой ниже; двоить один факт запрещает инвариант 1).
+		if len(pl.mains) == 0 && len(pl.unsorted) == 0 {
+			roles := make([]string, 0, len(pl.roles))
+			for _, r := range pl.roles {
+				roles = append(roles, entity.PieceLayerRoleLabel(r))
+			}
+			mainless = append(mainless, offender{
+				detail: fmt.Sprintf("деталь %q привязана к %s, но не к основной ткани", name, strings.Join(roles, ", ")),
+				bom:    pl.layers[0].bom,
+			})
+		}
+
+		// П3: детальная строка на fabric-строку без назначения — роль слоя неизвестна.
+		for _, li := range pl.unsorted {
+			unsorted = append(unsorted, offender{
+				detail: fmt.Sprintf("ткань %q (деталь %q)", pl.layers[li].bom.Name, name),
+				bom:    pl.layers[li].bom,
+			})
+		}
+	}
+
+	emit := func(key, label, lead, fix string, offs []offender, sev entity.RunReadinessSeverity) {
+		if len(offs) == 0 {
+			add(entity.RunReadinessFinding{Key: key, Severity: entity.RunReadinessOK, Label: label, Target: base})
+			return
+		}
+		details := make([]string, 0, len(offs))
+		for _, o := range offs {
+			details = append(details, o.detail)
+		}
+		t := base
+		if offs[0].bom != nil {
+			t.BomItemId = int64(offs[0].bom.Id)
+			t.BomLineKey = offs[0].bom.LineKey
+		}
+		add(entity.RunReadinessFinding{
+			Key: key, Severity: sev, Label: label,
+			Detail: fmt.Sprintf("%s: %s. %s", lead, strings.Join(details, "; "), fix),
+			Target: t,
+		})
+	}
+
+	emit(entity.RunReadinessKeyPieceRoleConflict,
+		"роли слоёв деталей не конфликтуют",
+		"конфликт ролей",
+		"Оставь детали одну основную ткань или задай второй строке её назначение на вкладке BOM (подкладка, дублерин, контраст…).",
+		conflicts, conflictSeverity)
+	emit(entity.RunReadinessKeyPieceMainFabric,
+		"у каждой детали со слоями есть основная ткань",
+		"деталь без основной",
+		"Добавь строку с тканью назначения «основной материал» — или подтверди, что состав детали такой и есть.",
+		mainless, entity.RunReadinessWarning)
+	emit(entity.RunReadinessKeyPieceFabricSorted,
+		"ткани деталей разложены по назначению",
+		"назначение не задано — роль слоя неизвестна",
+		"Задай назначение строке на вкладке BOM.",
+		unsorted, entity.RunReadinessWarning)
 }
 
 // normChecks emits the norm rows for every ROLL-GOODS slot of this colourway's recipe.
