@@ -3,6 +3,7 @@ package entity
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -374,6 +375,38 @@ type ProductionRunLay struct {
 	ActualBy     string              `db:"actual_by"`
 	ActualAt     sql.NullTime        `db:"actual_at"`
 
+	// NettoQty is the ШТАМП ЗНАМЕНАТЕЛЯ предложения процента раскроя (0296, T7 волна 2): сколько
+	// ткани дала бы этому настилу норма «по выкройкам» БЕЗ ЕДИНОГО ВЫПАДА — состав раскладки ×
+	// пер-размерная dxf-норма слота, × слои, Σ по секциям. Записывается СЕРВЕРОМ в той же
+	// ТРАНЗАКЦИИ, что и сам факт (SaveLay, computeLayNettoStamp), в ЕДИНИЦЕ ФАКТА (actual_uom) —
+	// сервер штампует только когда единицы сходятся, поэтому ActualQty / NettoQty делится без
+	// перевода.
+	//
+	// ПОЧЕМУ ШТАМП, А НЕ ПЕРЕСЧЁТ НА ЧТЕНИИ. Когда карточка переходит на marker-норму (целевое
+	// состояние), её dxf-норма перезаписывается — и netto прошлых настилов пересчитать больше не из
+	// чего: знаменатель испаряется ровно по мере правильного использования системы. Дом-стиль
+	// qty_snapshot / lot_code: значение, которое обязано пережить источник.
+	//
+	// INVALID = «в момент замера netto вычислить было не из чего» (нет dxf-нормы слота, состав
+	// раскладки неизвестен, единицы несводимы) — НЕ ноль и НЕ «выпадов не было». Читатель
+	// (BuildBomWastageSuggestion) тогда пробует живую dxf-норму, а её отсутствие называет причиной.
+	//
+	// ЭТО НЕ ПЛАН НАСТИЛА. План (LayPlannedGeometryOf) — измеренная длина раскладки × слои +
+	// концевые, с выпадами ВНУТРИ; netto — норма без выпадов. Первый калибрует коэффициент
+	// артикула, второй — процент раскроя строки BOM. Слить их — слить два разных слагаемых отходов.
+	//
+	// НИКТО НЕ ЧИТАЕТ ЭТО ПОЛЕ НАПРЯМУЮ — только через TrustedNettoStamp: штамп самопроверяем
+	// (базис ниже), и сырое чтение поверило бы знаменателю, чей факт с тех пор переписал старый
+	// бинарь.
+	NettoQty decimal.NullDecimal `db:"netto_qty"`
+	// NettoBasisQty/NettoBasisUom — БАЗИС штампа: копия факта (величина + единица), над которым
+	// netto считалось, снятая тем же оператором записи. Это и делает штамп самопроверяемым (правки
+	// ревью T7в2, MAJOR 4): при откате DO старый бинарь правит факт, не зная про netto-колонки, и
+	// после повторного выката базис перестаёт совпадать с фактом — TrustedNettoStamp это видит и
+	// отбрасывает штамп с причиной, вместо того чтобы делить новый факт на чужой знаменатель.
+	NettoBasisQty decimal.NullDecimal `db:"netto_basis_qty"`
+	NettoBasisUom sql.NullString      `db:"netto_basis_uom"`
+
 	CreatedBy string    `db:"created_by"`
 	UpdatedBy string    `db:"updated_by"`
 	CreatedAt time.Time `db:"created_at"`
@@ -409,6 +442,38 @@ func (l ProductionRunLay) ActualUnit() (MaterialUnit, bool) {
 		return "", false
 	}
 	return NormalizeMaterialUnit(l.ActualUom.String)
+}
+
+// TrustedNettoStamp is THE ONE reader of the netto stamp (0296), and the rule it enforces is named:
+// ШТАМПУ ВЕРЯТ ТОЛЬКО ВМЕСТЕ С ФАКТОМ, КОТОРЫЙ ОН ДЕЛИЛ — базис штампа (величина + единица факта в
+// момент записи) обязан совпасть с сегодняшним фактом, иначе штамп ОТБРАСЫВАЕТСЯ С ПРИЧИНОЙ, а не
+// принимается на веру.
+//
+// Зачем: при откате DO старый бинарь правит actual_qty/actual_uom, не зная про netto-колонки. Без
+// самопроверки новый код после повторного выката делил бы НОВЫЙ факт на знаменатель, посчитанный
+// для СТАРОГО, — недетектируемо. Базис и есть детектор: он меняется только вместе со штампом
+// (SaveLay пишет тройку одним оператором), поэтому расхождение с фактом доказывает, что факт
+// правили мимо штампа.
+//
+// Возвращает (штамп, ""): штамп есть и согласован; (invalid, причина): штамп есть, но отброшен;
+// (invalid, ""): штампа нет — оба «invalid» отправляют читателя к живому пересчёту нормы.
+func (l ProductionRunLay) TrustedNettoStamp() (decimal.NullDecimal, string) {
+	if !l.NettoQty.Valid {
+		return decimal.NullDecimal{}, ""
+	}
+	if !l.NettoBasisQty.Valid || !l.NettoBasisUom.Valid {
+		// Штамп без базиса не мог возникнуть на пути записи (chk_prlay_netto_basis): не гадаем,
+		// каким фактом он был оправдан, — отбрасываем.
+		return decimal.NullDecimal{}, "штамп netto без базиса факта — источник записи неизвестен, штамп отброшен"
+	}
+	if !l.ActualQty.Valid || !l.ActualUom.Valid ||
+		!l.NettoBasisQty.Decimal.Equal(l.ActualQty.Decimal) ||
+		!SameMaterialUnit(l.NettoBasisUom.String, l.ActualUom.String) {
+		return decimal.NullDecimal{}, fmt.Sprintf(
+			"факт настила правили мимо штампа netto (штамп делил %s %s) — штамп отброшен",
+			l.NettoBasisQty.Decimal.String(), l.NettoBasisUom.String)
+	}
+	return l.NettoQty, ""
 }
 
 // ProductionRunLayFact is ONE MEASURED настил as the coefficient calibration reads it: the lay plus

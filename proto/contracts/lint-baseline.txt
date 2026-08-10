@@ -12,6 +12,7 @@ ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_ADJUSTMENT_MODE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_CHANGE_REASON_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/product.proto|Enum zero value name \"STOCK_CHANGE_SOURCE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/common/common/production.proto|Enum zero value name \"BOM_WASTAGE_SUGGESTION_STATUS_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/production.proto|Enum zero value name \"MATERIAL_COEFFICIENT_SUGGESTION_STATUS_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/production.proto|Enum zero value name \"PRODUCTION_LAY_ACTUAL_METHOD_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/common/common/production.proto|Enum zero value name \"PRODUCTION_LAY_CHECK_STATUS_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".

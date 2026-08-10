@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -130,6 +131,12 @@ func bomItemUpsertParams() map[string]any {
 	params := bomItemParams(1, b, 0, b.LineKey)
 	params["price_source"] = sql.NullString{}
 	params["price_snapshot_at"] = time.Time{}
+	// Wastage provenance (0296) is decided in Go (bomWastageProvenance) and added at the call
+	// site, exactly like the price pair above.
+	params["wastage_source"] = entity.BomWastageSourceManual
+	params["wastage_lay_count"] = sql.NullInt64{}
+	params["wastage_applied_at"] = sql.NullTime{}
+	params["wastage_applied_percent"] = decimal.NullDecimal{}
 	params["id"] = 7
 	return params
 }

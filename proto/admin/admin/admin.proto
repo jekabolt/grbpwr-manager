@@ -1338,6 +1338,24 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/materials/{material_id}/cutting-coefficient-suggestion"};
   }
 
+  // ПРЕДЛОЖЕНИЕ ПРОЦЕНТА РАСКРОЯ по факту настилов (T7 волна 2) — СОСЕД, НЕ СИНОНИМ предыдущего
+  // RPC. Оба медианят факты настилов одного артикула, но знаменатели РАЗНЫЕ, и потому это разные
+  // числа для разных полей:
+  //
+  //   cutting-coefficient-suggestion: факт ÷ план-ГЕОМЕТРИЯ (длина раскладки × слои + концевые) —
+  //     выпады уже в знаменателе, медиана меряет только усадку/пороки (2–6%) →
+  //     material.cutting_coefficient;
+  //   bom-wastage-suggestion:         факт ÷ NETTO (состав раскладки × норма «по выкройкам») —
+  //     выпадов в знаменателе НЕТ, медиана меряет выпады + концы + усадку (15–30%) →
+  //     tech_card_bom_item.wastage_percent.
+  //
+  // ПРЕДЛОЖЕНИЕ, А НЕ ПРИМЕНЕНИЕ: обработчик только читает; число вписывает в поле рука. Скоуп
+  // медианы — все модели артикула, и ответ несёт состав (счётчики + список дрейфов с именами
+  // карточек): число без опоры непроверяемо.
+  rpc GetBomWastageSuggestion(GetBomWastageSuggestionRequest) returns (GetBomWastageSuggestionResponse) {
+    option (google.api.http) = {get: "/api/admin/materials/{material_id}/bom-wastage-suggestion"};
+  }
+
   // RepriceTechCardBom re-pulls the current material-catalog price into every catalog-linked BOM
   // line of a mutable (non-released) card (production-costing Phase 3, plan 11): unit_price/currency are overwritten
   // with the same CATALOG_LATEST resolution the style cost estimate uses (costing currency, else
@@ -6560,6 +6578,45 @@ message GetMaterialCuttingCoefficientSuggestionResponse {
   string detail = 5;
   // Разбор ПО НАСТИЛАМ, вошедшие и невошедшие, в порядке от свежего замера к старому.
   repeated common.MaterialCoefficientLayDrift drifts = 6;
+}
+
+message GetBomWastageSuggestionRequest {
+  int32 material_id = 1;
+}
+
+// Предложение процента раскроя (bom_item.wastage_percent) ОДНОГО артикула по факту его настилов
+// (T7 волна 2): медиана «факт ÷ netto − 1» по настилам, где есть И замер, И netto-знаменатель.
+//
+// ЗДЕСЬ ОДНА ЕДИНИЦА — ПРОЦЕНТ, и это отличие от соседа сознательное: у коэффициента ответ несёт
+// измерение-процент И множитель, потому что поле хранит множитель; у процента поле хранит процент,
+// и вторая единица в ответе повторила бы путаницу «коэффициент против процента» в обратную сторону.
+message GetBomWastageSuggestionResponse {
+  common.BomWastageSuggestionStatus status = 1;
+  // ИЗМЕРЕНИЕ: медиана дрейфа над netto, в процентах (+22.00 = «уходит на 22% больше безотходной
+  // нормы»). Заполнено и при OUT_OF_RANGE — измерение остаётся фактом, когда поле его не принимает.
+  // Пусто только при TOO_FEW_FACTS.
+  google.type.Decimal median_over_netto_percent = 2;
+  // ЧИСЛО ДЛЯ ПОЛЯ: тот же процент, отдаётся ТОЛЬКО при READY. Пусто при TOO_FEW_FACTS и при
+  // OUT_OF_RANGE — и ни в одном случае это не «0»: процента нет и процент равен нулю — разные
+  // утверждения о ткани.
+  google.type.Decimal suggested_wastage_percent = 3;
+  // Сколько настилов стоит ПОД медианой. Едет всегда — при TOO_FEW_FACTS это и есть содержание
+  // ответа («фактов пока 1 из 3»).
+  int32 lay_count = 4;
+  // По скольким РАЗНЫМ карточкам (моделям) эти настилы. «Медиана по 3 настилам, 1 модель» и
+  // «по 3 настилам, 3 модели» — разные основания применять число к СВОЕЙ модели: межлекальные
+  // выпады — свойство модели, и медиана по чужой обязана быть видна как таковая.
+  int32 tech_card_count = 5;
+  // Фраза для человека. Непуста всегда, включая READY.
+  string detail = 6;
+  // Разбор ПО НАСТИЛАМ, вошедшие и невошедшие, от свежего замера к старому.
+  repeated common.BomWastageLayDrift drifts = 7;
+  // ОКНО ОТБОРА: сколько настилов-кандидатов РАССМОТРЕНО (свежие N — скан истории артикула
+  // ограничен) и сколько измеренных кандидатов есть ВСЕГО. considered < total означает, что
+  // медиана стоит на свежем окне, — и это видно, а не подразумевается: «медиана по N» без
+  // названного окна непроверяема.
+  int32 considered_lay_count = 8;
+  int32 total_measured_lay_count = 9;
 }
 
 // RepriceTechCardBom (production-costing Phase 3, plan 11).

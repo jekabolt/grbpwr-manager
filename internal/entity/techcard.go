@@ -1488,6 +1488,32 @@ type TechCardBomItem struct {
 	// un-saves every раскладка on the card until somebody fills the column back in.
 	FabricDirectionOmitted bool                `db:"-"`
 	WastagePercent         decimal.NullDecimal `db:"wastage_percent"`
+	// ПРОВЕНАНС ПРОЦЕНТА РАСКРОЯ (0296, T7 волна 2): откуда взялось число в WastagePercent —
+	// 'manual' (введено руками; умолчание и вся история колонки) или 'lays' (применено из
+	// предложения «медиана факта настилов над netto», GetBomWastageSuggestion). Плюс штамп
+	// применения: по скольким настилам стояла медиана, когда сервер её проштамповал и КАКОЕ число
+	// она удостоверяет (все NULL на 'manual'). Финальную четвёрку решает
+	// ResolveBomWastageProvenance — правка значения сбрасывает источник в 'manual', что бы клиент
+	// ни прислал; эхо старого клиента сохраняет всё verbatim. Читается ТОЛЬКО через
+	// EffectiveWastageProvenance: бейдж самопроверяем по WastageAppliedPercent (MAJOR 4).
+	//
+	// Дисциплина price_source: аудит-метаданные о значении, в MATERIALS-дайджест НЕ входят (само
+	// значение WastagePercent в подписи уже есть — добавление провенанса рестампило бы все карточки).
+	WastageSource         string              `db:"wastage_source"`
+	WastageLayCount       sql.NullInt64       `db:"wastage_lay_count"`
+	WastageAppliedAt      sql.NullTime        `db:"wastage_applied_at"`
+	WastageAppliedPercent decimal.NullDecimal `db:"wastage_applied_percent"`
+	// WastageProvenanceOmitted — пара (wastage_source, wastage_lay_count) ОТСУТСТВОВАЛА на проводе,
+	// а не «пришла пустой». Тот же НЕГАТИВНЫЙ смысл и та же причина, что у PurposeOmitted: карточка
+	// сохраняется целиком, и вкладка со старым бандлом пары не шлёт вовсе — без различения её сейв
+	// стёр бы аудит применения у всех строк. Пара живёт как одно целое (см. kind/kind_note).
+	WastageProvenanceOmitted bool `db:"-"`
+	// WastageClaimVerified — СЕРВЕРНЫЙ вердикт, никогда не провод: обработчик (verifyBomWastageClaims)
+	// пересчитал предложение для артикула строки и подтвердил, что присланная пара (процент, счётчик)
+	// и есть текущая медиана. Это ЕДИНСТВЕННАЯ дверь, через которую свежая заявка 'lays' становится
+	// бейджем (см. ResolveBomWastageProvenance): без подтверждения заявка со сменой числа — ручная
+	// правка в одежде числа, и она ложится как 'manual'.
+	WastageClaimVerified bool `db:"-"`
 	// Stored price provenance (production-costing Phase 3): where unit_price came from and when it
 	// was stamped. Server-owned — set by the save path ('manual' when the price changes hands
 	// through UpdateTechCard) and by the reprice action ('catalog'); NULL on pre-provenance rows.
@@ -1509,6 +1535,146 @@ const (
 	BomPriceSourceManual  = "manual"  // typed/edited through a card save
 	BomPriceSourceCatalog = "catalog" // pulled from the material catalog by RepriceTechCardBom
 )
+
+// BOM wastage provenance values (tech_card_bom_item.wastage_source, 0296). Mirrors
+// chk_bom_item_wastage_source.
+const (
+	// BomWastageSourceManual — процент введён руками. Умолчание колонки и честное описание всей её
+	// истории до 0296.
+	BomWastageSourceManual = "manual"
+	// BomWastageSourceLays — процент применён из предложения «медиана факта настилов над netto»
+	// (GetBomWastageSuggestion). Число всё равно кладёт рука — источник говорит, ОТКУДА она его
+	// взяла, а не кто нажал сохранить.
+	BomWastageSourceLays = "lays"
+)
+
+// ValidBomWastageSources is the set of storable wastage provenance values.
+var ValidBomWastageSources = map[string]bool{
+	BomWastageSourceManual: true,
+	BomWastageSourceLays:   true,
+}
+
+// BomWastageProvenance is the stored provenance of one BOM line's wastage_percent: the source, the
+// apply stamp (сколько настилов, когда) and — the self-check half — WHAT number the stamp
+// certifies (AppliedPercent, a copy of wastage_percent at apply time).
+type BomWastageProvenance struct {
+	Source    string
+	LayCount  sql.NullInt64
+	AppliedAt sql.NullTime
+	// AppliedPercent is server-owned and never read off the wire. It exists so the badge survives
+	// nothing it should not: see EffectiveBomWastageProvenance.
+	AppliedPercent decimal.NullDecimal
+}
+
+// EffectiveBomWastageProvenance is THE ONE reader of a stored wastage provenance, and the rule is
+// named: БЕЙДЖУ 'lays' ВЕРЯТ ТОЛЬКО ВМЕСТЕ С ЧИСЛОМ, КОТОРОЕ ОН УДОСТОВЕРЯЕТ — applied_percent
+// обязан совпасть с сегодняшним wastage_percent, иначе бейдж читается как 'manual', а не на веру
+// (правки ревью T7в2, MAJOR 4).
+//
+// Зачем: при откате DO старый бинарь переписывает wastage_percent, не зная про провенанс-колонки, —
+// без самопроверки бейдж «медиана по N раскроям» остался бы на числе, которого калибровка не
+// давала, недетектируемо. applied_percent меняется только вместе с бейджем (один оператор записи),
+// поэтому расхождение доказывает правку значения мимо провенанса.
+func EffectiveBomWastageProvenance(stored BomWastageProvenance, storedPercent decimal.NullDecimal) BomWastageProvenance {
+	src := stored.Source
+	if src == "" {
+		src = BomWastageSourceManual
+	}
+	if src != BomWastageSourceLays {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	if !stored.AppliedPercent.Valid || !storedPercent.Valid ||
+		!stored.AppliedPercent.Decimal.Equal(storedPercent.Decimal) {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	return BomWastageProvenance{Source: BomWastageSourceLays, LayCount: stored.LayCount,
+		AppliedAt: stored.AppliedAt, AppliedPercent: stored.AppliedPercent}
+}
+
+// EffectiveWastageProvenance reads this line's wastage provenance through the self-check above —
+// the projection to the wire and the save path both go through it, so a desynced badge is dead
+// everywhere at once.
+func (b *TechCardBomItem) EffectiveWastageProvenance() BomWastageProvenance {
+	return EffectiveBomWastageProvenance(BomWastageProvenance{
+		Source:         b.WastageSource,
+		LayCount:       b.WastageLayCount,
+		AppliedAt:      b.WastageAppliedAt,
+		AppliedPercent: b.WastageAppliedPercent,
+	}, b.WastagePercent)
+}
+
+// ResolveBomWastageProvenance decides the provenance a BOM line carries after a card save — the ONE
+// rule both the insert and the update write, kept pure so it is testable without a database.
+//
+//	stored         — the provenance as it is in the row (zero value for a NEW line);
+//	storedPercent  — wastage_percent as stored (invalid for a new line);
+//	sentPercent    — wastage_percent as the payload states it;
+//	sent           — the payload's provenance pair; meaningful only when sentProvenance is true;
+//	sentProvenance — false when the pair was ABSENT from the wire (an old bundle's full replace);
+//	sentVerified   — SERVER verdict (TechCardBomItem.WastageClaimVerified): the handler recomputed
+//	                 the suggestion and the sent (percent, count) IS the current median.
+//
+// ПРАВИЛО — О СУТИ, НЕ О ПРИСУТСТВИИ ПОЛЕЙ (правки ревью T7в2, MAJOR 3): ИЗМЕНИЛОСЬ ЗНАЧЕНИЕ
+// ПРОЦЕНТА — ИСТОЧНИК СТАНОВИТСЯ 'manual', ЧТО БЫ КЛИЕНТ НИ ПРИСЛАЛ. Эхо-отправка source='lays'
+// при новом числе не сохраняет бейдж и не двигает штамп даты. Единственное исключение — сервер САМ
+// подтвердил (sentVerified), что новое число и есть его текущая медиана: тогда это применение
+// предложения, и бейдж штампуется заново. В порядке:
+//
+//  1. ПАРА ОТСУТСТВУЕТ (старый бандл): значение изменилось → 'manual' (ручная правка через бандл
+//     до провенанса); не изменилось → verbatim, отсутствие — молчание, не инструкция.
+//  2. ПАРА ПРИСЛАНА, 'manual' (или пусто): 'manual', счётчик и штамп не переживают источник.
+//  3. ПАРА ПРИСЛАНА, 'lays', ЧИСТОЕ ЭХО (stored-бейдж жив, процент и счётчик не менялись):
+//     verbatim, штамп даты НЕ движется — освежённый штамп заявил бы более свежую калибровку, чем
+//     была сделана (дисциплина norm_applied_at).
+//  4. ПАРА ПРИСЛАНА, 'lays', НЕ эхо: только sentVerified делает бейдж (AppliedAt=now,
+//     AppliedPercent=sentPercent); без подтверждения — 'manual'. Прямой вызов стора мимо
+//     обработчика подтвердить не может ничего — fail-closed.
+//
+// Validation of the sent pair (vocabulary, count only with 'lays', порог) happens at parse time
+// (dto.parseTechCardBomItems), not here: this function decides, it does not refuse.
+func ResolveBomWastageProvenance(stored BomWastageProvenance, storedPercent decimal.NullDecimal,
+	sentPercent decimal.NullDecimal, sent BomWastageProvenance, sentProvenance bool,
+	sentVerified bool, now time.Time) BomWastageProvenance {
+
+	// Через самопроверку: рассинхронизированный бейдж (MAJOR 4) мёртв и для verbatim-переноса —
+	// иначе эхо воскресило бы то, что чтение уже отбросило.
+	storedEff := EffectiveBomWastageProvenance(stored, storedPercent)
+	percentMoved := storedPercent.Valid != sentPercent.Valid ||
+		(storedPercent.Valid && !storedPercent.Decimal.Equal(sentPercent.Decimal))
+
+	if !sentProvenance {
+		if percentMoved {
+			return BomWastageProvenance{Source: BomWastageSourceManual}
+		}
+		return storedEff
+	}
+
+	source := sent.Source
+	if source == "" {
+		source = BomWastageSourceManual
+	}
+	if source != BomWastageSourceLays {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	if storedEff.Source == BomWastageSourceLays && !percentMoved &&
+		nullInt64Same(storedEff.LayCount, sent.LayCount) {
+		return storedEff
+	}
+	if !sentVerified {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	return BomWastageProvenance{Source: BomWastageSourceLays, LayCount: sent.LayCount,
+		AppliedAt:      sql.NullTime{Time: now, Valid: true},
+		AppliedPercent: sentPercent}
+}
+
+// nullInt64Same reports value equality of two nullable ints (both absent counts as same).
+func nullInt64Same(a, b sql.NullInt64) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	return !a.Valid || a.Int64 == b.Int64
+}
 
 // RepricedBomLine is one catalog-linked BOM line the reprice action visited: the price it had, the
 // price the catalog resolves to now (invalid when the catalog has no usable current price), and
