@@ -261,7 +261,13 @@ func (b *layPlanBuilder) coverageLays() []Lay {
 func (b *layPlanBuilder) lay(l *entity.ProductionRunLay, cov LayCoverage) (*pb_common.ProductionRunLay, []LayCheck) {
 	card := b.in.Card
 	mode := LayFaceMode(l.Mode)
-	materialID := LayArticleMaterialId(card, l.ColorwayId, bomItemIdOf(l))
+	res := ResolveLayArticle(card, l.ColorwayId, bomItemIdOf(l))
+	materialID := res.MaterialId
+	if len(res.PieceClash) > 1 {
+		// Той же интонацией, что layArticleClash в материальном плане: выбор назван, а не сделан молча.
+		b.addCaveat("lay %q: piece rows pin %d different articles and no garment-level row pins one — the lay is attributed to the first pin (#%d)",
+			l.Name, len(res.PieceClash), materialID)
+	}
 	article := b.article(materialID)
 
 	sections := make([]LayCheckSection, 0, len(l.Sections))
@@ -622,14 +628,42 @@ func (b *layPlanBuilder) article(materialID int) LayArticleFacts {
 	return out
 }
 
-// LayArticleMaterialId resolves the article a колорвей pins on one BOM slot: the colourway's own
-// usage when it has one, the slot's default otherwise. 0 = неизвестен.
+// LayArticleResolution is the answer to «which article stands behind this (колорвей, слот) pair»
+// together with how contested it was. Produced by ResolveLayArticle — the ONE resolver behind lay
+// attribution, the identity prefetch and the coefficient calibration.
+type LayArticleResolution struct {
+	MaterialId int
+	// Pinned mirrors EffectiveMaterialId's flag: true iff MaterialId came from a recipe pin that
+	// differs from the slot default.
+	Pinned bool
+	// PieceClash lists the DISTINCT piece-row pins (display order) when rule 3 below had to pick:
+	// no garment-level pin, and the piece rows pin MORE than one article. MaterialId is then the
+	// first pin, and the caller must say so out loud (the material plan's layArticleClash caveat is
+	// the intonation to copy). Empty everywhere else.
+	PieceClash []int
+}
+
+// ResolveLayArticle resolves the article a колорвей stands behind on one BOM slot. The rule,
+// named (T8 review, решение владельца: расход — свойство изделия, строка детали — назначение
+// материала детали):
+//
+//  1. пин строки ИЗДЕЛИЯ (garment-level row) — the slot's norm carrier names its cloth;
+//  2. иначе пин строк ДЕТАЛЕЙ, если он ЕДИНСТВЕННЫЙ: a piece row легитимно назначает артикул
+//     («деталь кроится из Y»), кат-лист кроит из него и валидация лота его принимает — атрибуция
+//     настила к умолчанию слота считала бы другой рулон, чем стелет цех;
+//  3. при расхождении пинов деталей — не угадывать молча: берётся первый пин, а расхождение
+//     возвращается в PieceClash, чтобы каждый потребитель НАЗВАЛ его каветой;
+//  4. иначе умолчание слота. MaterialId 0 = артикул неизвестен.
+//
+// Пин, равный умолчанию слота, ведёт себя как умолчание (правило EffectiveMaterialId /
+// pinShadowBom — одно правило, не два) и в ярусах 1–3 не участвует.
 //
 // Через planBomLine, как и всё остальное в этом файле: рецепт и настил обязаны согласиться в том,
 // какой слот чем кроится, и разойдутся они молча — обе стороны вернут какой-то слот.
-func LayArticleMaterialId(card *entity.TechCard, colorwayID int, bomItemID int64) int {
+func ResolveLayArticle(card *entity.TechCard, colorwayID int, bomItemID int64) LayArticleResolution {
+	out := LayArticleResolution{}
 	if card == nil || bomItemID <= 0 {
-		return 0
+		return out
 	}
 	var bom *entity.TechCardBomItem
 	for i := range card.BomItems {
@@ -639,28 +673,55 @@ func LayArticleMaterialId(card *entity.TechCard, colorwayID int, bomItemID int64
 		}
 	}
 	if bom == nil {
-		return 0
+		return out
 	}
 	for i := range card.Colorways {
 		cw := &card.Colorways[i]
 		if !cw.ProductId.Valid || int(cw.ProductId.Int32) != colorwayID {
 			continue
 		}
+		var piecePins []int
+		pieceSeen := map[int]bool{}
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
 			line := planBomLine(u, card.BomItems)
 			if line == nil || int64(line.Id) != bomItemID {
 				continue
 			}
-			if id, _ := u.EffectiveMaterialId(bom); id > 0 {
-				return id
+			id, pinned := u.EffectiveMaterialId(bom)
+			if !pinned || id <= 0 {
+				// Строка без собственного пина (или с пином, равным умолчанию) слот не оспаривает:
+				// строка изделия падает в умолчание ярусом 4, строка детали просто наследует ткань слота.
+				continue
 			}
+			if u.IsPieceMaterialAssignment() {
+				if !pieceSeen[id] {
+					pieceSeen[id] = true
+					piecePins = append(piecePins, id)
+				}
+				continue
+			}
+			// Ярус 1: первый пин строки изделия по display order — как и раньше.
+			return LayArticleResolution{MaterialId: id, Pinned: true}
 		}
+		switch {
+		case len(piecePins) == 1:
+			return LayArticleResolution{MaterialId: piecePins[0], Pinned: true}
+		case len(piecePins) > 1:
+			return LayArticleResolution{MaterialId: piecePins[0], Pinned: true, PieceClash: piecePins}
+		}
+		break
 	}
 	if bom.MaterialId.Valid {
-		return int(bom.MaterialId.Int64)
+		return LayArticleResolution{MaterialId: int(bom.MaterialId.Int64)}
 	}
-	return 0
+	return out
+}
+
+// LayArticleMaterialId is ResolveLayArticle's answer alone — for the callers that need the id and
+// not the contest (prefetch, calibration). 0 = неизвестен.
+func LayArticleMaterialId(card *entity.TechCard, colorwayID int, bomItemID int64) int {
+	return ResolveLayArticle(card, colorwayID, bomItemID).MaterialId
 }
 
 // LayPlanMaterialIds is the set of articles a lay plan will ask about — what the handler fetches
