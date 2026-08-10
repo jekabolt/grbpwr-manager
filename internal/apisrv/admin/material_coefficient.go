@@ -45,7 +45,10 @@ func (s *Server) GetMaterialCuttingCoefficientSuggestion(ctx context.Context,
 		return nil, status.Error(codes.Internal, "can't get material")
 	}
 
-	lays, err := s.repo.ProductionRuns().ListMeasuredLayCandidates(ctx, materialID)
+	// Окно то же, что у соседа (measuredLayScanLimit, MAJOR 5): безлимитный скан истории артикула
+	// делал по последовательной загрузке карточки на настил и выходил по таймауту на популярном
+	// артикуле. Полный счётчик здесь не отдаётся — контракт этого ответа не менялся.
+	lays, _, err := s.repo.ProductionRuns().ListMeasuredLayCandidates(ctx, materialID, measuredLayScanLimit)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list measured lays for coefficient suggestion",
 			slog.Int("material_id", materialID), slog.String("err", err.Error()))

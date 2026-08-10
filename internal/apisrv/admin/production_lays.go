@@ -96,6 +96,11 @@ func (s *Server) SaveProductionRunLay(ctx context.Context, req *pb_admin.SavePro
 	// dto.ColorwayBindingOf and must not be re-expressed as SQL. Best-effort by construction: if the
 	// pre-flight cannot resolve what it needs, it stands aside and the store speaks — a guard that
 	// turned a lookup failure into a refusal would block saves for a reason the operator cannot see.
+	//
+	// ШТАМП NETTO (0296) ЗДЕСЬ НЕ СЧИТАЕТСЯ, И ЭТО РЕШЕНИЕ (правки ревью T7в2, MAJOR 1): знаменатель
+	// считает SaveLay ВНУТРИ транзакции записи факта (computeLayNettoStamp) — посчитанный до неё, он
+	// мог бы разъехаться с рецептом, под которым факт коммитится, а ошибка чтения здесь превращалась
+	// бы в тихий NULL-штамп.
 	if st := s.preflightLayForSave(ctx, runID, ins, markers); st != nil {
 		return nil, st
 	}

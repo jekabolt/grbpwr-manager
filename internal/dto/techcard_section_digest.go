@@ -306,7 +306,11 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 // DELIBERATELY ABSENT — purpose / purpose_note / is_sample (0265), and kind / kind_note (0278) on
 // exactly the same grounds. They classify a line that already exists; they do not change the
 // article, the price or the consumption, so on the same reasoning as price_source they are metadata
-// about a value and must not stale a sign-off whose value did not change. The concrete cost of
+// about a value and must not stale a sign-off whose value did not change. The same holds for
+// wastage_source / wastage_lay_count / wastage_applied_at (0296): the SIGNED value is
+// wastage_percent itself (already below); where the number came from is audit about it, and folding
+// the provenance in would restamp every card at the first save after deploy — the wall-of-stale
+// failure this paragraph exists to prevent. The concrete cost of
 // folding them in would be paid immediately and by everyone: every pre-0265 line is deliberately
 // unsorted and every pre-0278 line deliberately unclassified, so the operator's first sorting pass
 // over an approved card would mark its MATERIALS approval stale on every single card at once — a

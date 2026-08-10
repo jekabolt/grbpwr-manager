@@ -428,6 +428,13 @@ var methodRequirements = map[string]Requirement{
 	// READ, и это не формальность: сервер здесь НИЧЕГО НЕ ПИШЕТ — коэффициент принимает рука
 	// владельца артикула через UpdateMaterial, у которого своя (tech_cards:write) проверка.
 	"GetMaterialCuttingCoefficientSuggestion": rd(SectionProduction),
+	// ПРЕДЛОЖЕНИЕ ПРОЦЕНТА РАСКРОЯ (T7 волна 2) — та же классификация и ДОСЛОВНО тот же довод, что у
+	// соседа строкой выше: ответ несёт разбор по настилам (id прогонов, карточки, замеренный расход
+	// цеха), поэтому production:read, а не tech_cards — и READ, потому что сервер ничего не пишет:
+	// процент принимает рука через UpdateTechCard со своей (tech_cards:write) проверкой. Забыть RPC
+	// в этой карте — не «открыть», а ЗАКРЫТЬ его всем, кроме суперпользователя: неизвестный метод
+	// запрещается fail-closed, и на бете под суперпользователем это незаметно.
+	"GetBomWastageSuggestion": rd(SectionProduction),
 	// ГЕЙТ ГОТОВНОСТИ ПРОГОНА (Ф6) — production READ, and specifically NOT tech_cards.
 	//
 	// The argument, not the taste: this RPC has ONE consumer (the run-creation modal) and ONE

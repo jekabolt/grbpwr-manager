@@ -2500,6 +2500,61 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		if wastage.Valid && wastage.Decimal.GreaterThan(decimal.NewFromInt(100)) {
 			return nil, fmt.Errorf("bom wastage_percent must be between 0 and 100")
 		}
+		// ПРОВЕНАНС ПРОЦЕНТА РАСКРОЯ (0296): пара (source, lay_count) живёт как одно целое — та же
+		// связка, что kind/kind_note. Отсутствие ОБОИХ полей = «сохрани что было» (verbatim-протокол
+		// присутствия: старый бандл не должен стирать аудит full-replace-сейвом); решает финальную
+		// тройку entity.ResolveBomWastageProvenance в store. wastage_applied_at с провода не
+		// читается вовсе — это серверный штамп.
+		wastageProvenanceOmitted := b.WastageSource == nil && b.WastageLayCount == nil
+		wastageSource := ""
+		wastageLayCount := sql.NullInt64{}
+		if !wastageProvenanceOmitted {
+			wastageSource = strings.TrimSpace(b.GetWastageSource())
+			if wastageSource == "" {
+				wastageSource = entity.BomWastageSourceManual
+			}
+			if !entity.ValidBomWastageSources[wastageSource] {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].wastage_source", i),
+					"unknown source", b.GetWastageSource(), "manual or lays")
+			}
+			if b.WastageLayCount != nil && b.GetWastageLayCount() != 0 {
+				if b.GetWastageLayCount() < 0 {
+					return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].wastage_lay_count", i),
+						"must be positive", fmt.Sprintf("%d", b.GetWastageLayCount()),
+						"echo the lay count from the suggestion response, or omit it")
+				}
+				wastageLayCount = sql.NullInt64{Int64: int64(b.GetWastageLayCount()), Valid: true}
+			}
+			if wastageSource != entity.BomWastageSourceLays && wastageLayCount.Valid {
+				// Счётчик настилов без источника 'lays' — бейдж «по фактам» на ручном числе.
+				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].wastage_lay_count", i),
+					"a lay count is only meaningful with wastage_source=lays", "",
+					"clear the count, or set wastage_source=lays")
+			}
+			if wastageSource == entity.BomWastageSourceLays && !wastage.Valid {
+				// Источник «применено из медианы» без самого числа — провенанс ни о чём (та же
+				// проверка, что provenance_without_norm у consumption_source=dxf).
+				return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].wastage_source", i),
+					"provenance_without_value", entity.BomWastageSourceLays,
+					"wastage_source=lays states WHERE the percent came from — send wastage_percent with it")
+			}
+			if wastageSource == entity.BomWastageSourceLays {
+				// ПОРОГ ПРОВЕРЯЕТСЯ НА ЗАПИСИ (правки ревью T7в2, MINOR 1): сервер не предлагает
+				// медиану моложе MinLaysForWastageSuggestion настилов — и не принимает ЗАЯВКУ о
+				// такой. 'lays' без счётчика или со счётчиком ниже порога — утверждение, которого
+				// калибровка никогда не делала; хранить его значит подписать сервер под чужим числом.
+				if !wastageLayCount.Valid {
+					return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].wastage_lay_count", i),
+						"required with wastage_source=lays", "",
+						"echo the lay count from the suggestion response")
+				}
+				if wastageLayCount.Int64 < int64(MinLaysForWastageSuggestion) {
+					return nil, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].wastage_lay_count", i),
+						"below_threshold", fmt.Sprintf("%d", wastageLayCount.Int64),
+						fmt.Sprintf("a median needs at least %d measured lays — the server itself never suggests one from fewer", MinLaysForWastageSuggestion))
+				}
+			}
+		}
 		// НАПРАВЛЕНИЕ ТКАНИ — присутствие, а не значение, по тем же основаниям, что и назначение
 		// ниже: поле optional, и клиент со старым бандлом его не шлёт вовсе. Голый proto3-энум
 		// пришёл бы как UNKNOWN и стёр бы направление у всех строк карточки — а с Ф1 это не косметика:
@@ -2598,33 +2653,36 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 		out = append(out, entity.TechCardBomItem{
 			// A keyless line cannot be named by a submitted key reference; legacy referrers use their
 			// unchanged positional index. id is read-only.
-			LineKey:                lineKey,
-			MaterialId:             materialID,
-			Section:                section,
-			Purpose:                purpose,
-			PurposeOmitted:         purposeOmitted,
-			PurposeNote:            purposeNote,
-			Kind:                   kind,
-			KindOmitted:            kindOmitted,
-			KindNote:               kindNote,
-			KindNoteOmitted:        kindOmitted,
-			IsSample:               b.GetIsSample(),
-			IsSampleOmitted:        b.IsSample == nil,
-			Name:                   b.Name,
-			Supplier:               nullStringFromPb(b.Supplier),
-			SupplierRef:            nullStringFromPb(b.SupplierRef),
-			Color:                  nullStringFromPb(b.Color),
-			Composition:            nullStringFromPb(b.Composition),
-			Spec:                   nullStringFromPb(b.Spec),
-			Unit:                   nullStringFromPb(b.Unit),
-			UnitPrice:              unitPrice,
-			Currency:               nullStringFromPb(b.Currency),
-			Comment:                nullStringFromPb(b.Comment),
-			FabricWidth:            fabricWidth,
-			FabricWeightGsm:        fabricGsm,
-			FabricDirection:        direction,
-			FabricDirectionOmitted: directionOmitted,
-			WastagePercent:         wastage,
+			LineKey:                  lineKey,
+			MaterialId:               materialID,
+			Section:                  section,
+			Purpose:                  purpose,
+			PurposeOmitted:           purposeOmitted,
+			PurposeNote:              purposeNote,
+			Kind:                     kind,
+			KindOmitted:              kindOmitted,
+			KindNote:                 kindNote,
+			KindNoteOmitted:          kindOmitted,
+			IsSample:                 b.GetIsSample(),
+			IsSampleOmitted:          b.IsSample == nil,
+			Name:                     b.Name,
+			Supplier:                 nullStringFromPb(b.Supplier),
+			SupplierRef:              nullStringFromPb(b.SupplierRef),
+			Color:                    nullStringFromPb(b.Color),
+			Composition:              nullStringFromPb(b.Composition),
+			Spec:                     nullStringFromPb(b.Spec),
+			Unit:                     nullStringFromPb(b.Unit),
+			UnitPrice:                unitPrice,
+			Currency:                 nullStringFromPb(b.Currency),
+			Comment:                  nullStringFromPb(b.Comment),
+			FabricWidth:              fabricWidth,
+			FabricWeightGsm:          fabricGsm,
+			FabricDirection:          direction,
+			FabricDirectionOmitted:   directionOmitted,
+			WastagePercent:           wastage,
+			WastageSource:            wastageSource,
+			WastageLayCount:          wastageLayCount,
+			WastageProvenanceOmitted: wastageProvenanceOmitted,
 		})
 	}
 	return out, nil
@@ -2964,6 +3022,10 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 	out := make([]*pb_common.TechCardBomItem, 0, len(items))
 	for i := range items {
 		b := &items[i]
+		// Провенанс процента раскроя читается ТОЛЬКО через самопроверку (MAJOR 4): бейдж 'lays',
+		// чей applied_percent разошёлся с wastage_percent (значение правили мимо провенанса — откат
+		// DO), наружу едет как 'manual' без счётчика и штампа, а не на веру.
+		wp := b.EffectiveWastageProvenance()
 		out = append(out, &pb_common.TechCardBomItem{
 			Id:         int64(b.Id),
 			LineKey:    b.LineKey,
@@ -2995,6 +3057,13 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			FabricWeightGsm: pbDecimalFromNull(b.FabricWeightGsm),
 			FabricDirection: pbPtr(pbFabricDirection(b.FabricDirection)),
 			WastagePercent:  pbDecimalFromNull(b.WastagePercent),
+			// Провенанс процента раскроя (0296) — ЭФФЕКТИВНЫЙ (wp выше). Присутствие отдаётся
+			// ВСЕГДА (pbPtr): «manual» — реальный ответ, а не отсутствие поля; отсутствие на чтении
+			// заставило бы клиента гадать, старый ли это сервер (та же дисциплина, что purpose/kind
+			// выше). lay_count: pointer только когда штамп есть.
+			WastageSource:    pbPtr(wp.Source),
+			WastageLayCount:  pbWastageLayCount(wp.LayCount),
+			WastageAppliedAt: pbTimestampFromNullTime(wp.AppliedAt),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),
@@ -3004,6 +3073,17 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 		})
 	}
 	return out
+}
+
+// pbWastageLayCount emits the applied-median lay count (0296): a pointer exactly when the stamp is
+// stored. NULL genuinely means «нет штампа» — zero would claim «медиана по нулю настилов», a
+// sentence the calibration can never produce.
+func pbWastageLayCount(v sql.NullInt64) *int32 {
+	if !v.Valid {
+		return nil
+	}
+	n := int32(v.Int64)
+	return &n
 }
 
 // pbFabricDirection maps a stored направление to the wire enum; an unset column reads as UNKNOWN,

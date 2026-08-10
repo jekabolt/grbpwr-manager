@@ -300,6 +300,17 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// rows; source audit authorship is never carried into the new design cycle.
 	insert.ApprovalState = entity.TechCardApprovalDraft
 	insert.Signoffs = nil
+	// Провенанс процента раскроя — тоже аудит ПРИМЕНЕНИЯ, и он не переезжает в новый цикл (тот же
+	// довод, что подписи выше): бейдж «медиана по N раскроям» удостоверяет применение на ТОЙ
+	// карточке в ТОТ момент, а у клона строка начинается как manual и зарабатывает бейдж заново на
+	// фактах нового сезона. Явный manual, а не пропуск пары: пропуск — «сохрани что было», а у
+	// новой строки «что было» не существует.
+	for i := range insert.BomItems {
+		insert.BomItems[i].WastageSource = entity.BomWastageSourceManual
+		insert.BomItems[i].WastageLayCount = sql.NullInt64{}
+		insert.BomItems[i].WastageProvenanceOmitted = false
+		insert.BomItems[i].WastageClaimVerified = false
+	}
 	// The target drop date belongs to the season the SOURCE card was made for. A clone into a new
 	// season would inherit a date that is already in the past and read as «просрочен» the moment the
 	// new card is opened — reset it with the rest of the design cycle and let the owner set the new one.

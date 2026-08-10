@@ -490,17 +490,22 @@ message TechCardColorwayUsage {
   repeated TechCardBomSizeConsumption size_consumptions = 7; // per-size rate; size_id ∈ TechCardInsert.size_ids
   google.type.Decimal line_total = 8; // OUTPUT-ONLY (per-garment)
   google.type.Decimal size_run_total = 9; // OUTPUT-ONLY (whole run)
-  // explicit presence: 0-based index into TechCardInsert.pieces saying which cut-piece this
-  // consumption norm is about; unset = whole garment (informational, NF-05).
+  // explicit presence: 0-based index into TechCardInsert.pieces saying which cut-piece this row
+  // ASSIGNS the slot's material to («деталь X кроится из артикула Y» — T8: a piece-bound row is a
+  // MATERIAL ASSIGNMENT, never a norm; the consumption norm lives ONLY on the garment-level row,
+  // piece unset). Unset = garment-level row — the slot's norm carrier. Legacy positional form.
   optional int32 piece_index = 10;
   // bom_line_key references the owning style's BOM line by its stable line_key (S2/S3) — the durable
   // reference the recipe write-path resolves to a real bom_item_id. Preferred over bom_item_index
   // (which stays for the transition / legacy read). bom_item_id is the resolved FK on read.
   string bom_line_key = 11;
   int64 bom_item_id = 12; // OUTPUT: resolved FK to the BOM line
-  // piece_line_key references the cut-piece this norm is about by its stable TechCardPiece.line_key
-  // (WS4). The recipe write-path resolves it to the real piece_id FK (usage.piece_id RESTRICT).
-  // Preferred over the positional piece_index (kept for the transition). piece_id is the resolved FK.
+  // piece_line_key references the cut-piece this row ASSIGNS the slot's material to, by its stable
+  // TechCardPiece.line_key (WS4). T8: this binding is «из чего кроится деталь» — a material
+  // assignment, NOT a norm; a piece-bound row carries no consumption of its own, and the server
+  // refuses to read one as «нормы нет» for the slot. The recipe write-path resolves it to the real
+  // piece_id FK (usage.piece_id RESTRICT). Preferred over the positional piece_index (kept for the
+  // transition). piece_id is the resolved FK.
   string piece_line_key = 13;
   int64 piece_id = 14; // OUTPUT: resolved FK to the cut-piece
   // material_id pins the CONCRETE catalog article this colourway takes for the slot (the BOM line
@@ -663,6 +668,25 @@ message TechCardBomItem {
   // and left the other alone could hand MySQL a row it must refuse. Sending either field means both
   // are being written; sending neither means «не трогай» both.
   optional string kind_note = 36;
+  // ПРОВЕНАНС ПРОЦЕНТА РАСКРОЯ (0296, T7 волна 2): откуда взялось число в wastage_percent.
+  // "manual" (или "") — введено руками; "lays" — применено из предложения «медиана факта настилов
+  // над netto» (GetBomWastageSuggestion). Тот же приём, что consumption_source на юзедже.
+  //
+  // `optional` — несущее, тот же verbatim-протокол, что у purpose/kind выше: карточка сохраняется
+  // ПОЛНОЙ ЗАМЕНОЙ строк, и вкладка со старым бандлом этих полей не шлёт вовсе — отсутствие пары
+  // означает «сохрани что было», иначе первый же сейв старого клиента стёр бы аудит у всех строк.
+  // ВАЖНО: сервер сам сбрасывает провенанс в 'manual', когда ЗНАЧЕНИЕ wastage_percent изменилось,
+  // а провенанс при этом не прислан, — правка числа руками через старый бандл не должна донашивать
+  // бейдж «по фактам» (та же логика, что у price_source при смене цены).
+  optional string wastage_source = 37;
+  // Штамп применения: по скольким настилам стояла медиана в момент применения. Шлётся ВМЕСТЕ с
+  // wastage_source='lays' (клиент эхонит lay_count из ответа предложения); на 'manual' обязан
+  // отсутствовать/обнуляться. Пара живёт как одно целое — см. kind/kind_note.
+  optional int32 wastage_lay_count = 38;
+  // OUTPUT-ONLY, СЕРВЕРНЫЙ ШТАМП: когда предложение применено. Клиент шлёт что угодно — сервер
+  // игнорирует; ставится когда тройка (source='lays', lay_count, wastage_percent) МЕНЯЕТСЯ, и
+  // гасится вместе со сбросом в 'manual' — дисциплина norm_applied_at (:20 юзеджа).
+  google.protobuf.Timestamp wastage_applied_at = 39;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
