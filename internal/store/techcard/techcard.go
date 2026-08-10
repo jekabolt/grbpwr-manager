@@ -528,7 +528,9 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		// The freeze check above guarantees this save IS the release transition (a released card only
 		// re-opens to draft), so the fill runs exactly once per release episode. Only NULL prices are
 		// filled — an agreed price is never overwritten — and an unpriceable line stays NULL rather
-		// than blocking the release.
+		// than blocking the release. NB: the fill legitimately stales an approved MATERIALS sign-off,
+		// including one approved in this same save — that is documented, deliberate, and non-blocking;
+		// see the KNOWN CONSEQUENCE note on backfillBomPricesOnRelease before "fixing" it.
 		if tc.ApprovalState == entity.TechCardApprovalReleased {
 			if err := backfillBomPricesOnRelease(ctx, rep.DB(), id); err != nil {
 				return err

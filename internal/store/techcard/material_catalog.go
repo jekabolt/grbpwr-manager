@@ -1018,6 +1018,26 @@ func repriceBomLinesTx(ctx context.Context, db dependency.DB, tcID int, baseCurr
 // prices next to a unit cost that the costing fallback resolved correctly. Only NULL prices are
 // filled; an unpriceable line stays NULL rather than blocking the release. The caller's own header
 // UPDATE already moved the lock_version fence for this save, so no extra bump happens here.
+//
+// KNOWN, ACCEPTED CONSEQUENCE — «подпись протухла сама»: this fill STALES an approved MATERIALS
+// sign-off, including one approved in the very save that releases the card. materialsProjection
+// (internal/dto/techcard_section_digest.go) hashes unit_price/currency, and the sign-off digest is
+// stamped by restampFreshSignoffDigests (internal/apisrv/admin/techcard.go) from the PAYLOAD, before
+// this transaction runs — so a "sign everything and release" save signs a digest over a NULL price
+// while the columns commit with the catalog price, and the approval reads «changed since sign-off»
+// from birth. This is the same semantics the explicit reprice action already has ("a changed price
+// legitimately stales an approved MATERIALS sign-off"), and release readiness is advisory — it
+// reports, never blocks — so the release itself is unaffected.
+//
+// The payload-carry idiom that fixes the two neighbouring diseases in that file
+// (carryOmittedFabricDirectionFrom, carryOmittedPieceCutSymmetryFrom — write the server-known value
+// onto the payload BEFORE the digest is stamped) deliberately does NOT apply here: bomPriceProvenance
+// (materials.go) stamps any price the payload carries as 'manual', and this price comes from the
+// CATALOG — carrying it would make the provenance lie about a value nobody typed. An honest fix is
+// one of two invasive moves: teach the save path a non-manual provenance for a server-sourced carried
+// price, or move the digest stamping to after the write transaction. Both sit on the hottest write
+// path of the card, so neither is done as a side effect of this fill; until then a card signed while
+// a linked line was priceless will show a stale MATERIALS approval after release, by design.
 func backfillBomPricesOnRelease(ctx context.Context, db dependency.DB, tcID int) error {
 	_, _, touched, err := repriceBomLinesTx(ctx, db, tcID, cache.GetBaseCurrency(), true)
 	if err != nil {

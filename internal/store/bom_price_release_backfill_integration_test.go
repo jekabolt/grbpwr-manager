@@ -6,9 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // TestBomPriceReleaseBackfill pins the release-time price backfill end-to-end against a real
@@ -18,8 +23,10 @@ import (
 // price is NEVER overwritten (even when the catalog disagrees), a free-text line is never
 // touched, a linked material with no resolvable price leaves its line NULL without blocking the
 // release, the save's own lock_version bump is the only bump, and the post-release consistent
-// read (what the release snapshot marshals) already carries the filled price. The create-as-
-// released path gets the same backfill.
+// read (what the release snapshot marshals) already carries the filled price — which is then
+// proven on the FROZEN DOCUMENT itself: the persisted tech_card_release.snapshot blob, produced
+// by the same consistent-read → marshal → save sequence the apisrv release snapshot runs, must
+// hold the backfilled price. The create-as-released path gets the same backfill.
 func TestBomPriceReleaseBackfill(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -158,6 +165,51 @@ func TestBomPriceReleaseBackfill(t *testing.T) {
 	}
 	require.True(t, snapPrice.Valid, "the release snapshot input must carry the backfilled price")
 	require.True(t, snapPrice.Decimal.Equal(decimal.RequireFromString("9.99")))
+
+	// The frozen release document itself — the whole reason the backfill exists. The apisrv
+	// snapshotReleaseIfReleased is not constructible from this package (unexported Server fields),
+	// so this reproduces its exact post-commit sequence with the SAME production code — the
+	// consistent reload above → ConvertEntityTechCardToPb → protojson.Marshal →
+	// SaveTechCardRelease — and then asserts on the PERSISTED tech_card_release.snapshot, parsed
+	// the way GetTechCardRelease parses it. If the backfill ever drifts out of the release
+	// transaction (runs after the snapshot, or in a later tx), the consistent reload sees NULL and
+	// the blob assertion below fails.
+	rates, err := s.TechCards().GetCostingFxRatesToBase(ctx)
+	require.NoError(t, err)
+	fx := dto.CostingFx{ToBase: rates, Base: cache.GetBaseCurrency()}
+	blob, err := protojson.Marshal(dto.ConvertEntityTechCardToPb(released, fx))
+	require.NoError(t, err)
+	unit, unitCurrency := dto.ComputeTechCardUnitCost(released, fx)
+	require.NoError(t, s.TechCards().SaveTechCardRelease(ctx, entity.TechCardRelease{
+		TechCardReleaseMeta: entity.TechCardReleaseMeta{
+			TechCardId: tcID,
+			UnitCost:   unit,
+			Currency:   sql.NullString{String: unitCurrency, Valid: unit.Valid && unitCurrency != ""},
+		},
+		Snapshot: string(blob),
+	}))
+	var storedSnap string
+	require.NoError(t, testDB.QueryRowContext(ctx, `
+		SELECT snapshot FROM tech_card_release
+		WHERE tech_card_id = ? ORDER BY release_number DESC LIMIT 1`, tcID).Scan(&storedSnap))
+	var snap pb_common.TechCard
+	require.NoError(t, (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(storedSnap), &snap))
+	frozenPrices := map[string]*pb_decimal.Decimal{}
+	frozenSources := map[string]string{}
+	for _, b := range snap.GetTechCard().GetBomItems() {
+		frozenPrices[b.GetLineKey()] = b.GetUnitPrice()
+		frozenSources[b.GetLineKey()] = b.GetPriceSource()
+	}
+	require.NotNil(t, frozenPrices[lateKey],
+		"the frozen release document must carry the backfilled price, not NULL")
+	require.True(t, decimal.RequireFromString(frozenPrices[lateKey].GetValue()).
+		Equal(decimal.RequireFromString("9.99")))
+	require.Equal(t, entity.BomPriceSourceCatalog, frozenSources[lateKey])
+	require.NotNil(t, frozenPrices[agreedKey])
+	require.True(t, decimal.RequireFromString(frozenPrices[agreedKey].GetValue()).
+		Equal(decimal.RequireFromString("5.00")), "the frozen document keeps the agreed price")
+	require.Nil(t, frozenPrices[noPriceKey],
+		"an unpriceable line freezes as NULL — priced by nobody, claimed by nobody")
 
 	// A card created DIRECTLY in released state freezes at commit the same way — same backfill.
 	card2 := &entity.TechCardInsert{
