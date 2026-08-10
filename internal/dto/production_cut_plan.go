@@ -752,6 +752,13 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			if id := u.GetPieceId(); id > 0 {
 				use.PieceId = sql.NullInt64{Int64: id, Valid: true}
 			}
+			if u.PieceIndex != nil {
+				// Легаси-позиционная привязка к детали переезжает вместе с FK и line_key: группировка
+				// наряда её не читает, но предикат «строка-назначение детали»
+				// (entity.IsPieceMaterialAssignment) обязан узнать строку, у которой из трёх
+				// представлений привязки в снапшоте выжило только это.
+				use.PieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
+			}
 			if u.MaterialId != nil && *u.MaterialId > 0 {
 				use.MaterialId = sql.NullInt64{Int64: *u.MaterialId, Valid: true}
 			}

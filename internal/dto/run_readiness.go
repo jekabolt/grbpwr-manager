@@ -460,6 +460,12 @@ func (b *runReadinessBuilder) normChecks(cw *entity.TechCardColorway, base entit
 
 	for j := range cw.Usages {
 		u := &cw.Usages[j]
+		// A piece-bound row (entity.IsPieceMaterialAssignment) carries no norm, so there is no
+		// provenance to judge: the rows below describe the GARMENT-level norm of the slot, and
+		// emitting them per piece row printed the same warning once per piece.
+		if u.IsPieceMaterialAssignment() {
+			continue
+		}
 		bom := planBomLine(u, b.card.BomItems)
 		if bom == nil || !entity.IsRollGoodsSection(bom.Section) {
 			continue
@@ -1104,6 +1110,12 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 		usageByBom := map[int]*entity.TechCardColorwayUsage{}
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
+			// A piece-bound row (entity.IsPieceMaterialAssignment) carries no norm; letting it
+			// into this map would let display order decide whether a slot «has a norm» — a piece
+			// row sorted after the garment row used to shadow it here.
+			if u.IsPieceMaterialAssignment() {
+				continue
+			}
 			if bom := planBomLine(u, b.card.BomItems); bom != nil {
 				usageByBom[bom.Id] = u
 			}

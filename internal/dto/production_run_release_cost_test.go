@@ -169,6 +169,57 @@ func TestReleaseFrozenColorwayCostsInheritStyleForRecipelessColorway(t *testing.
 		"неполная цена стиля не наследуется — прогон остаётся на скаляре")
 }
 
+// T8: колорвей, у которого в снапшоте ОДНИ строки-назначения деталей, — для замороженной проекции
+// колорвей БЕЗ рецепта: он наследует цену стиля, а не свою замороженную цифру без ткани. До правки
+// len(usages) > 0 считал его «авторским», и релизная партия тихо занижалась на весь материал.
+func TestT8ReleaseFrozenAllPieceRowsColorwayInheritsStyle(t *testing.T) {
+	card := releaseMixCard()
+	card.Costing.CmtCost = nd("5")
+	card.Pieces = []entity.TechCardPiece{{Id: 1, LineKey: "PIECE1", Name: "перед", PiecesPerGarment: 1}}
+	// Белый: только назначение детали (с легаси-числом — оно тоже не должно ничего менять).
+	card.Colorways[1].Usages = []entity.TechCardColorwayUsage{pieceRow(1, 1, "10")}
+
+	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, card))
+	require.NotNil(t, costs)
+	require.Equal(t, "15", costs.UnitCostByColorway[55].String(), "чёрный: 1 м × 10 + CMT 5")
+	require.Equal(t, "15", costs.UnitCostByColorway[66].String(),
+		"белый из одних строк деталей наследует цену стиля, а не свои €5 из одного CMT")
+}
+
+// T8: привязка к детали узнаётся во ВСЕХ трёх проводных формах — piece_id, только piece_line_key
+// (у снапшота id детали нет вовсе), только легаси piece_index (включая индекс 0, где ноль —
+// настоящая деталь, а не «не задано»). Строка любой из этих форм рецептом не считается.
+func TestT8ReleaseFrozenPieceBindingSurvivesEveryWireForm(t *testing.T) {
+	zero := int32(0)
+	snap := &pb_common.TechCard{
+		TechCard: &pb_common.TechCardInsert{
+			Costing: &pb_common.TechCardCosting{
+				Currency: "EUR", UnitCost: &pb_decimal.Decimal{Value: "15"},
+				ColorwayCosts: []*pb_common.TechCardColorwayCost{
+					{ColorwayId: 55, UnitCost: &pb_decimal.Decimal{Value: "15"}},
+					{ColorwayId: 66, UnitCost: &pb_decimal.Decimal{Value: "5"}},
+					{ColorwayId: 77, UnitCost: &pb_decimal.Decimal{Value: "5"}},
+					{ColorwayId: 88, UnitCost: &pb_decimal.Decimal{Value: "5"}},
+				},
+			},
+		},
+		Colorways: []*pb_common.AdminColorwayRef{
+			{ColorwayId: 55, Usages: []*pb_common.TechCardColorwayUsage{{}}}, // авторская строка изделия
+			{ColorwayId: 66, Usages: []*pb_common.TechCardColorwayUsage{{PieceId: 1}}},
+			{ColorwayId: 77, Usages: []*pb_common.TechCardColorwayUsage{{PieceLineKey: "PIECE1"}}},
+			{ColorwayId: 88, Usages: []*pb_common.TechCardColorwayUsage{{PieceIndex: &zero}}},
+		},
+	}
+
+	costs := ReleaseFrozenColorwayCosts(snap)
+	require.NotNil(t, costs)
+	require.Equal(t, "15", costs.UnitCostByColorway[55].String(), "авторский колорвей стоит своей цифрой")
+	for _, id := range []int{66, 77, 88} {
+		require.Equal(t, "15", costs.UnitCostByColorway[id].String(),
+			"колорвей %d из одних строк деталей наследует цену стиля, а не свои €5 без ткани", id)
+	}
+}
+
 // Края, каждый из которых оставляет прогон на скаляре релиза.
 func TestReleaseRunPlannedCostEdges(t *testing.T) {
 	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, releaseMixCard()))

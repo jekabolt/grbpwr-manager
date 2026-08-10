@@ -95,6 +95,13 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 	if cw != nil {
 		for i := range cw.Usages {
 			u := &cw.Usages[i]
+			// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a
+			// cut-piece and carries no norm: no estimate line, no total contribution and no
+			// caveat — an empty piece row is not a «line with no norm», and a legacy number on
+			// one is not part of the garment's plan cost.
+			if u.IsPieceMaterialAssignment() {
+				continue
+			}
 			bom := resolveUsageBom(tc.BomItems, u)
 			line := &pb_admin.StyleCostMaterialLine{}
 			markerSourced := u.ConsumptionSource.String == entity.ConsumptionSourceMarker

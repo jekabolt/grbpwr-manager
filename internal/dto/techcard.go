@@ -2791,8 +2791,10 @@ func optionalStringFromNull(value sql.NullString) *string {
 }
 
 // ConvertRecipeUsagesToPb emits a colourway's usages, each with its computed per-garment
-// line_total and whole-run size_run_total (resolved against the referenced BOM article). The
-// counterpart read-side of ParseRecipeUsages. Exported: used both by the tech-card read
+// line_total and whole-run size_run_total (resolved against the referenced BOM article). A
+// piece-bound row emits NEITHER: the methods themselves refuse (entity LineTotal — see its
+// comment for why the rule lives there and not here), so the wire cannot show a money figure
+// the costing rollups no longer contain. The counterpart read-side of ParseRecipeUsages. Exported: used both by the tech-card read
 // (techCardColorwayRefsToPb, for the constructor view) and directly by GetColorwayByID (H1 fix —
 // recipe is colourway-owned, 01-DOMAIN-MODEL §2.3, so GetColorwayByID is the minimum surface that
 // must return it).

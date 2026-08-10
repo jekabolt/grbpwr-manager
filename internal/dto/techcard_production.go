@@ -1098,7 +1098,12 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	// articles only — a silent price DROP by the whole material component on every legacy
 	// multi-colourway style whose recipes were never authored. An authored recipe, however
 	// sparse, stands on its own.
-	if len(cw.Usages) == 0 {
+	//
+	// Piece-bound rows do not count as a recipe here: they assign materials to pieces and carry
+	// no norms (entity.IsPieceMaterialAssignment), so a colourway whose usages are ALL piece
+	// assignments would otherwise be costed as manual articles only — the exact silent drop this
+	// guard exists to prevent.
+	if !colorwayHasNormRows(cw) {
 		return ComputeTechCardUnitCost(tc, fx)
 	}
 	c := tc.Costing
@@ -1134,6 +1139,20 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	return decimal.NullDecimal{}, ""
 }
 
+// colorwayHasNormRows reports whether the colourway's recipe has at least one GARMENT-level row —
+// a row that can carry a norm. A colourway with none (no usages at all, or nothing but piece
+// assignments, entity.IsPieceMaterialAssignment) has an EMPTY recipe for every computation: the
+// unit cost inherits the style figure, and the cost breakdown must inherit the SAME projection
+// (ComputeColorwayCostBreakdownBase), or the pair (cost_price, cost_breakdown) contradicts itself.
+func colorwayHasNormRows(cw *entity.TechCardColorway) bool {
+	for i := range cw.Usages {
+		if !cw.Usages[i].IsPieceMaterialAssignment() {
+			return true
+		}
+	}
+	return false
+}
+
 // colorwayForProduct returns the card's colourway bound to productID, or nil.
 func colorwayForProduct(tc *entity.TechCard, productID int) *entity.TechCardColorway {
 	for i := range tc.Colorways {
@@ -1153,6 +1172,14 @@ func ComputeColorwayCostBreakdownBase(tc *entity.TechCard, colorwayProductID int
 		return entity.CostBreakdown{}, false
 	}
 	if cw := colorwayForProduct(tc, colorwayProductID); cw != nil {
+		// A colourway with an EMPTY recipe (none, or piece assignments only) inherits the STYLE
+		// unit cost in ComputeColorwayUnitCost — and the breakdown must decompose the SAME figure.
+		// Decomposing the colourway's own empty recipe instead pairs an inherited cost_price
+		// (fabric included) with materials = 0, and the COGS-structure metrics
+		// (internal/store/metrics/style.go) then spread a real figure over wrong shares.
+		if !colorwayHasNormRows(cw) {
+			return ComputeTechCardCostBreakdownBase(tc, fx)
+		}
 		return techCardCostBreakdownBase(tc, cw, fx)
 	}
 	return entity.CostBreakdown{}, false
@@ -1348,6 +1375,12 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 	hasUnpriced := false
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
+		// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a cut-piece
+		// and carries no norm: no contribution — a legacy number typed on such a row must not add
+		// to the garment's cost — and no hasUnpriced — an empty piece row must not veto the seed.
+		if u.IsPieceMaterialAssignment() {
+			continue
+		}
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
 		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
