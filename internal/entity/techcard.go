@@ -1061,8 +1061,9 @@ type TechCardColorwayUsage struct {
 	// BomLineKey is the wire reference used by the recipe write-path: the stable line_key of the
 	// style's BOM line this usage consumes. The store resolves it to BomItemId. Not persisted (db:"-").
 	BomLineKey string `db:"-"`
-	// PieceLineKey is the wire reference to the cut-piece this usage's consumption norm is about: the
-	// stable line_key of the style's tech_card_piece (WS4). The store resolves it to PieceId, the real
+	// PieceLineKey is the wire reference to the cut-piece this usage ASSIGNS its material to («деталь
+	// X кроится из артикула Y» — NOT a norm binding, see IsPieceMaterialAssignment): the stable
+	// line_key of the style's tech_card_piece (WS4). The store resolves it to PieceId, the real
 	// FK (usage.piece_id RESTRICT). It replaces the positional PieceIndex, kept for the transition.
 	PieceLineKey string              `db:"-"`
 	BomItemIndex sql.NullInt32       `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
@@ -1072,7 +1073,8 @@ type TechCardColorwayUsage struct {
 	Consumption  decimal.NullDecimal `db:"consumption"` // per-garment rate (measured materials)
 	Quantity     decimal.NullDecimal `db:"quantity"`    // count (countable trims)
 	// PieceIndex is an optional 0-based arrow into TechCardInsert.Pieces saying which cut-piece
-	// this consumption norm is about; NULL = the whole garment (informational, NF-05).
+	// this row assigns its material to; NULL = a garment-level row — the carrier of the slot's
+	// consumption norm (see IsPieceMaterialAssignment). Legacy positional form of the binding.
 	PieceIndex sql.NullInt32 `db:"piece_index"`
 	// SizeConsumptions is the per-size material rate (in-memory; persisted to
 	// tech_card_colorway_usage_consumption). When non-empty it grades usage per size.
@@ -1137,12 +1139,54 @@ func (u *TechCardColorwayUsage) EffectiveMaterialId(bom *TechCardBomItem) (id in
 	return 0, false
 }
 
+// IsPieceMaterialAssignment reports whether this recipe row is bound to a concrete cut-piece,
+// through ANY of the three representations of that binding: the resolved PieceId FK (store
+// reads), the wire/snapshot PieceLineKey, or the legacy positional PieceIndex.
+//
+// Such a row is the ASSIGNMENT of a material to a piece («деталь X кроится из артикула Y») and
+// NOT a carrier of a consumption norm. Расход ткани — свойство ИЗДЕЛИЯ (решение владельца,
+// T1/T8): the garment-level row of the same slot carries the norm, so a piece-bound row must
+// contribute NOTHING to costing, the run's material requirement, planned run cost or the
+// readiness verdict — and, symmetrically, a piece-bound row with no number is NOT a «missing
+// norm» and must never block a run whose garment-level row has one. A colourway whose usages
+// are ALL piece-bound has, for every computation, an EMPTY recipe.
+//
+// The consumers that filter through THIS predicate — one rule, not N copies of `piece_id IS
+// NULL` that drift apart — are the NORM rollups: colorwayCost / ComputeColorwayUnitCost, the
+// style cost estimate, the run material plan, run readiness (normChecks, unitCoverage), the
+// frozen release costs (via its pb mirror in dto), and the norm-money methods below
+// (LineTotal / SizeRunTotal / BaseSizeTotal). Readers that deliberately DO look at piece-bound
+// rows, because the ASSIGNMENT half of the row is exactly their business:
+//   - the cutting plan (production_cut_plan.go) — what is cut from what;
+//   - the lay-article resolver (dto.ResolveLayArticle) — a piece row's PIN can name the slot's
+//     article when no garment-level row pins one;
+//   - identity prefetches (LinkedMaterials id harvesting) — a piece pin's article needs a name;
+//   - the lot-validation / calibration SQL candidate sets (internal/store/productionrun/lays.go),
+//     which admit pins from ALL rows by construction.
+func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
+	return (u.PieceId.Valid && u.PieceId.Int64 > 0) ||
+		u.PieceLineKey != "" ||
+		u.PieceIndex.Valid
+}
+
 // LineTotal is the usage's per-garment material cost, resolved against its catalog
 // article (bom). It is INVALID (the cost moves to SizeRunTotal) when the usage has
 // per-size consumption. A countable trim (Quantity, no Consumption) is Quantity ×
 // unit_price with no wastage; a measured material is Consumption × unit_price grossed
 // up by the article's wastage_percent.
+//
+// A PIECE-BOUND ROW HAS NO NORM-MONEY. IsPieceMaterialAssignment rows carry no norm (T8), so
+// the rollups skip them entirely — and the money methods must agree: a legacy number typed on
+// such a row otherwise ships a line_total to the wire that the cost no longer contains, i.e.
+// two contradicting figures on one card and an invitation to re-sum them. Guarded HERE, in the
+// methods, and not in ConvertRecipeUsagesToPb: these three methods (LineTotal / SizeRunTotal /
+// BaseSizeTotal) are the single definition of «this row's norm-money» — EffectiveTotal and
+// UnitTotal compose them — while the converter is just one reader, and a guard there would
+// leave every other (and every future) caller to rediscover the rule.
 func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDecimal {
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
 	if len(u.SizeConsumptions) > 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
@@ -1164,6 +1208,11 @@ func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDeci
 // quantity contributes nothing). INVALID when there is no per-size consumption, no
 // unit_price, or no order quantities yet (the cost is then 0, per the costing rule).
 func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
+	// Piece-bound row → no norm-money; see LineTotal for the argument and for why the guard
+	// lives in the methods rather than the wire converter.
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
 	if len(u.SizeConsumptions) == 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
@@ -1208,6 +1257,10 @@ func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyByS
 // article has no price. Every one of those is a question nobody has answered, and the caller
 // must carry it out as «непосчитано» — see UnitTotal.
 func (u *TechCardColorwayUsage) BaseSizeTotal(bom *TechCardBomItem, baseSizeID int) decimal.NullDecimal {
+	// Piece-bound row → no norm-money; see LineTotal for the argument.
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
 	if len(u.SizeConsumptions) == 0 || baseSizeID <= 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
@@ -1793,7 +1846,7 @@ const MaxTopstitchRows = 4
 // takes — plus overrides that are unset when they agree with the card.
 type TechCardOperation struct {
 	OperationNumber sql.NullInt32       `db:"operation_number"`
-	SMV             decimal.NullDecimal `db:"smv"` // minutes; the ONLY time field (time_norm is gone)
+	SMV             decimal.NullDecimal `db:"smv"`  // minutes; the ONLY time field (time_norm is gone)
 	Note            sql.NullString      `db:"note"` // the only free text on a step
 
 	// The two REQUIRED fields, and the only two. Both are closed lists — nothing with free input is

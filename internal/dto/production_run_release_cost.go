@@ -73,10 +73,19 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 	// рецепт никогда не писали (легаси-стили с одним авторским рецептом на все цвета), в
 	// colorway_costs лежат ОДНИ РУЧНЫЕ СТАТЬИ: цена без ткани. Взвесить партию такой цифрой значит
 	// уронить план на всю материальную составляющую — тихо и на самых обычных карточках.
+	//
+	// «РЕЦЕПТ» ЗДЕСЬ — ПО ТОМУ ЖЕ ПРЕДИКАТУ, ЧТО У ЖИВОГО ПУТИ (T8): строка-назначение детали
+	// рецептом не считается. Колорвей, у которого в снапшоте остались ОДНИ такие строки, считался
+	// бы «авторским» и брал бы свою замороженную проекцию без ткани — ровно то тихое занижение,
+	// от которого этот блок защищает.
 	authored := make(map[int]bool, len(snap.GetColorways()))
 	for _, cw := range snap.GetColorways() {
-		if len(cw.GetUsages()) > 0 {
+		for _, u := range cw.GetUsages() {
+			if pbUsageIsPieceAssignment(u) {
+				continue
+			}
 			authored[int(cw.GetColorwayId())] = true
+			break
 		}
 	}
 	// Цена стиля = корень костинга (первый колорвей), и наследовать её можно, только если она сама
@@ -108,6 +117,15 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 		return nil
 	}
 	return out
+}
+
+// pbUsageIsPieceAssignment — зеркало entity.TechCardColorwayUsage.IsPieceMaterialAssignment для
+// проводной/снапшотной формы строки рецепта. Все три представления привязки, потому что снапшот
+// несёт не все: у замороженного релиза может выжить только piece_line_key (id детали в контракте
+// нет вовсе — см. CutSpecCardFromReleaseSnapshot), у легаси-строки — только позиционный
+// piece_index (present = привязка, включая индекс 0).
+func pbUsageIsPieceAssignment(u *pb_common.TechCardColorwayUsage) bool {
+	return u.GetPieceId() > 0 || u.GetPieceLineKey() != "" || u.PieceIndex != nil
 }
 
 // ComputeReleaseRunPlannedUnitCost — плановая цена изделия РЕЛИЗНОГО прогона: замороженные цены

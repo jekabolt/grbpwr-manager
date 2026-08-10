@@ -236,11 +236,18 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	layDemand, layNotes := planLayDemandByPair(lays)
 	caveats = append(caveats, layNotes...)
 	// layArticle remembers the article the RECIPE resolves for a laid pair, so the lay's metres are
-	// attributed to the same article the norm would have used — pin first, slot default second, and
-	// through the same resolver (planBomLine), never through the positional index alone.
+	// attributed to the SAME article every other lay reader uses — ResolveLayArticle, the one
+	// resolver (garment pin → sole piece pin → slot default), never the positional index alone and
+	// never a private second rule that would let the plan count a different roll than the lay view
+	// shows and the cutting room lays.
 	type layArticleRef struct {
 		mid    int
 		pinned bool
+		// pieceClash — ResolveLayArticle's contest, to be named ONCE per pair in the lays pass.
+		pieceClash []int
+		// rowMid is the FIRST visited garment row's own resolution, kept solely so the clash check
+		// below can still notice a pair whose rows resolve to two different articles.
+		rowMid int
 	}
 	layArticle := make(map[planLayPairKey]layArticleRef, len(layDemand))
 	// The loop below visits each (колорвей, слот) once per RUN LINE, i.e. once per size, so a pair
@@ -357,6 +364,14 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
+			// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a
+			// cut-piece and carries no norm: no contribution, no blocker, and no «slot covered»
+			// mark — the requirement of the slot is counted from its GARMENT-level row. A slot
+			// referenced ONLY by piece rows therefore falls into the uncovered-slot blocker
+			// below, which is the honest verdict: it has no garment norm to plan by.
+			if u.IsPieceMaterialAssignment() {
+				continue
+			}
 			bom := planBomLine(u, card.BomItems)
 			if bom == nil {
 				if !noBomNoted[cw.Name] {
@@ -372,17 +387,19 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// for this pair and ONLY for this pair. The sibling slot two lines down — подкладка with no
 			// настил yet — falls through to the norm below and keeps its non-zero requirement.
 			//
-			// The article resolved here is remembered rather than recomputed later: the lay's metres
-			// must land on the SAME article the norm would have used (the colourway's pin first, the
-			// slot default second), and re-deriving that in the lays pass would be a second resolver.
+			// The article for the pair is resolved ONCE, through ResolveLayArticle — the same
+			// resolver the lay view and the calibration read — and remembered; the row-by-row walk
+			// only checks that no OTHER garment row of the pair resolves elsewhere, and names the
+			// pair once when one does.
 			if _, laid := layDemand[planLayPairKey{colorwayID: pid, bomItemID: bom.Id}]; laid {
 				k := planLayPairKey{colorwayID: pid, bomItemID: bom.Id}
 				if prev, seen := layArticle[k]; !seen {
-					layArticle[k] = layArticleRef{mid: mid, pinned: pinned}
-				} else if prev.mid != mid && mid != 0 && !layArticleClash[k] {
+					res := ResolveLayArticle(card, pid, int64(bom.Id))
+					layArticle[k] = layArticleRef{mid: res.MaterialId, pinned: res.Pinned, pieceClash: res.PieceClash, rowMid: mid}
+				} else if prev.rowMid != mid && mid != 0 && !layArticleClash[k] {
 					layArticleClash[k] = true
 					caveats = append(caveats, fmt.Sprintf(
-						"slot %q of colourway %q resolves to two different articles — the lay-based requirement is attributed to the first one (#%d)",
+						"slot %q of colourway %q resolves to two different articles — the lay-based requirement is attributed to #%d",
 						bom.Name, colorwayName(pid), prev.mid))
 				}
 				continue
@@ -541,15 +558,22 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		usedSlotsByColorway[k.colorwayID][bom.Id] = true
 
-		mid, pinned := 0, false
-		if ref, ok := layArticle[k]; ok {
-			mid, pinned = ref.mid, ref.pinned
-		} else if bom.MaterialId.Valid {
-			// The recipe has no usage for this pair (or the colourway has no planned line), yet the
-			// slot IS being laid. The slot default is the same second choice EffectiveMaterialId
-			// would have made; taking it keeps a laid pair countable instead of blocking it on a
-			// missing norm the настил does not need.
-			mid = int(bom.MaterialId.Int64)
+		ref, ok := layArticle[k]
+		if !ok {
+			// The norm walk never visited this pair (the colourway has no planned line, or the
+			// slot's recipe rows are all piece assignments) — resolve it HERE through the same
+			// resolver: garment pin → sole piece pin → slot default. Falling back to the slot
+			// default alone would be a second resolver, and it would count a different roll than
+			// the one the cut plan names and the lot validation accepted.
+			res := ResolveLayArticle(card, k.colorwayID, int64(k.bomItemID))
+			ref = layArticleRef{mid: res.MaterialId, pinned: res.Pinned, pieceClash: res.PieceClash}
+		}
+		mid, pinned := ref.mid, ref.pinned
+		if len(ref.pieceClash) > 1 {
+			// Той же интонацией, что layArticleClash выше: выбор назван, а не сделан молча.
+			caveats = append(caveats, fmt.Sprintf(
+				"slot %q of colourway %q: piece rows pin %d different articles and no garment-level row pins one — the lay-based requirement is attributed to the first pin (#%d)",
+				bom.Name, colorwayName(k.colorwayID), len(ref.pieceClash), mid))
 		}
 		if mid == 0 {
 			blockAdd(bom.Id, k.colorwayID, plannedByColorway[k.colorwayID], entity.MaterialPlanBlockerNoArticle, entity.MaterialPlanReasonNoArticle)
