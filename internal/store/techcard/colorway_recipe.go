@@ -493,9 +493,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 							pieceName = fmt.Sprintf("#%d", pieceID.Int64)
 						}
 						return entity.NewFieldViolation(fmt.Sprintf("usages[%d]", i), "duplicate_main_fabric",
-							fmt.Sprintf("у детали %q уже есть основная ткань %q (usages[%d]) — вторая основная на цельной детали невозможна: цельная деталь кроится из одной основной",
+							fmt.Sprintf("piece %q already has a main fabric %q (usages[%d]) — a second main fabric on a solid piece is impossible: a solid piece is cut from a single main fabric",
 								pieceName, bomNameByID[previous.bomID], previous.idx),
-							"задай второй ткани её назначение на вкладке BOM (подкладка, дублерин, контраст…) — или разбей деталь на две")
+							"assign the second fabric its purpose on the BOM tab (lining, interfacing, contrast…) — or split the piece in two")
 					}
 					mainByPiece[pieceID.Int64] = mainLayerRef{idx: i, bomID: bomItemID.Int64}
 				}

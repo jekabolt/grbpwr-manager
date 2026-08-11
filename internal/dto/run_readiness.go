@@ -459,7 +459,7 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 // two: a piece the gate calls conflicted must be exactly the piece the run pack refuses to print.
 func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base entity.RunReadinessTarget, out *entity.RunReadinessColorway) {
 	add := func(f entity.RunReadinessFinding) { out.Findings = append(out.Findings, f) }
-	idx := newPieceUsageIndex(cw.Usages, b.card.Pieces)
+	idx := newPieceUsageIndex(cw, b.card.Pieces)
 
 	type offender struct {
 		detail string

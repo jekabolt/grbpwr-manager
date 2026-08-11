@@ -68,7 +68,7 @@ func TestCutPlanTwoMainsBlock(t *testing.T) {
 
 	require.Empty(t, resp.Rows, "конфликт основных неделим — печатать «хорошие» слои рядом с ним нельзя")
 	require.Len(t, resp.Blockers, 1)
-	require.Contains(t, resp.Blockers[0].Reason, "основным тканям")
+	require.Contains(t, resp.Blockers[0].Reason, "main fabrics")
 	require.Contains(t, resp.Blockers[0].Reason, "основная ткань")
 	require.Contains(t, resp.Blockers[0].Reason, "поплин")
 }
@@ -89,7 +89,7 @@ func TestCutPlanMainBesideUnsortedFabricBlocks(t *testing.T) {
 
 	require.Empty(t, resp.Rows)
 	require.Len(t, resp.Blockers, 1)
-	require.Contains(t, resp.Blockers[0].Reason, "не разобрано")
+	require.Contains(t, resp.Blockers[0].Reason, "unsorted")
 	require.Contains(t, resp.Blockers[0].Reason, "ткань без назначения")
 }
 
@@ -289,8 +289,9 @@ func TestRunReadinessPieceLayerFindings(t *testing.T) {
 	})
 }
 
-// Кат-лист стиля читает рецептную проекцию: запись на каждый слой, клеевая парой на записи
-// основного слоя. Замороженная tech_card_piece_material больше не источник.
+// Кат-лист стиля читает рецептную половину проекции: запись на каждый слой, клеевая парой на
+// записи основного слоя. Второй источник — замороженная tech_card_piece_material — проверяется
+// ниже, в TestStyleCutFabricIndexReadsFrozenPieceMaterialTable.
 func TestStyleCutFabricIndexProjectsRecipeLayers(t *testing.T) {
 	card := t4LayeredCard()
 	card.Pieces[0].Fused = true
@@ -351,6 +352,76 @@ func TestCutPlanReleaseLegacyPieceIndexBindsLayers(t *testing.T) {
 		require.False(t, row.SlotInferred, "рецепт назвал слои — это правило (а), не вывод")
 		require.Equal(t, int32(20), row.PiecesToCutTotal)
 	}
+}
+
+// РЕГРЕССИЯ ПРОДА: у живой карточки прода связь «деталь → ткань» живёт ТОЛЬКО в замороженной
+// tech_card_piece_material (пять деталей одного колорвея на одном слоте), а рецепт того же
+// колорвея весь «на изделие» (piece_id NULL). Источника связи ДВА, и деталь привязана, если её
+// называет любой из них (шапка piece_layers.go): кат-лист стиля обязан дать ткань КАЖДОЙ детали,
+// и наряд обязан видеть ту же связь — правило одно, в общем pieceUsageIndex.
+func TestStyleCutFabricIndexReadsFrozenPieceMaterialTable(t *testing.T) {
+	card := cutPlanSingleFabricCard() // рецепт: только строки «на изделие», деталей не называет
+	card.BomItems = append(card.BomItems,
+		entity.TechCardBomItem{Id: 503, LineKey: "BOM-LINING", Name: "подкладка купра", Section: entity.BomSectionLining, MaterialId: cutMid(400)},
+		entity.TechCardBomItem{Id: 504, LineKey: "BOM-FUSE", Name: "дублерин 30г", Section: entity.BomSectionInterlining, MaterialId: cutMid(600)},
+	)
+	names := []string{"FP", "BP", "RP", "LP", "BLT"}
+	card.Pieces = card.Pieces[:0]
+	for i, n := range names {
+		card.Pieces = append(card.Pieces, entity.TechCardPiece{
+			Id: 11 + i, LineKey: "P-" + n, Name: n, PiecesPerGarment: 1, Grainline: "lengthwise",
+			Materials: []entity.TechCardPieceMaterial{{ColorwayID: 55, BomItemId: cutMid(501)}},
+		})
+	}
+	// Строка ЧУЖОГО колорвея не подмешивается: фильтр по colorway_id, а не «всё, что есть у детали».
+	card.Pieces[0].Materials = append(card.Pieces[0].Materials,
+		entity.TechCardPieceMaterial{ColorwayID: 99, BomItemId: cutMid(503)})
+	// Клеевая старой таблицы едет парой fusing_* — тем же правилом секции, что у рецепта.
+	card.Pieces[4].Fused = true
+	card.Pieces[4].Materials[0].FusingBomItemId = cutMid(504)
+
+	idx := NewStyleCutFabricIndex(card)
+	for i := range card.Pieces {
+		fabrics := idx.FabricsFor(&card.Pieces[i])
+		require.Len(t, fabrics, 1, "деталь %s: ткань названа старой таблицей", card.Pieces[i].Name)
+		require.Equal(t, int64(501), fabrics[0].BomItemId)
+		require.Equal(t, "основная ткань", fabrics[0].FabricName)
+		require.Equal(t, int64(55), fabrics[0].ColorwayId)
+	}
+	blt := idx.FabricsFor(&card.Pieces[4])
+	require.Equal(t, int64(504), blt[0].FusingBomItemId, "клеевая из старой таблицы — парой на записи слоя")
+	require.Equal(t, "дублерин 30г", blt[0].FusingName)
+
+	// Наряд видит ТУ ЖЕ связь: правило (а), а не вывод единственного слота и не блокер.
+	resp := ComputeProductionRunCutPlan(
+		cutPlanRun(entity.ProductionRunLine{ProductId: cutPid(55), SizeId: 1, PlannedQty: 10}), card, nil)
+	require.Empty(t, resp.Blockers)
+	require.Len(t, resp.Rows, len(names), "по строке на каждую привязанную деталь")
+	for _, row := range resp.Rows {
+		require.Equal(t, int64(501), row.BomItemId)
+		require.False(t, row.SlotInferred, "связь НАЗВАНА старой таблицей, а не выведена")
+	}
+}
+
+// Пересечение источников безопасно: деталь, названную на одном слоте И рецептом, И старой таблицей,
+// кат-лист считает ОДИН раз, а слот достаётся строке РЕЦЕПТА — её пин артикула не теряется.
+func TestPieceLayersBothSourcesCountOnceRecipePinWins(t *testing.T) {
+	card := cutPlanSingleFabricCard()
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages,
+		entity.TechCardColorwayUsage{BomItemId: cutMid(501), PieceId: cutMid(11), MaterialId: cutMid(777)})
+	card.Pieces[0].Materials = []entity.TechCardPieceMaterial{{ColorwayID: 55, BomItemId: cutMid(501)}}
+
+	idx := NewStyleCutFabricIndex(card)
+	fabrics := idx.FabricsFor(&card.Pieces[0])
+	require.Len(t, fabrics, 1, "оба источника называют один слот — деталь входит один раз")
+	require.Equal(t, int64(501), fabrics[0].BomItemId)
+
+	resp := ComputeProductionRunCutPlan(
+		cutPlanRun(entity.ProductionRunLine{ProductId: cutPid(55), SizeId: 1, PlannedQty: 10}), card, nil)
+	require.Empty(t, resp.Blockers)
+	require.Len(t, resp.Rows, 1)
+	require.Equal(t, int32(777), resp.Rows[0].MaterialId, "слот выиграла строка рецепта — пин жив")
+	require.True(t, resp.Rows[0].Pinned)
 }
 
 // Покрытие настилов: привязка детали к НЕРУЛОННОЙ строке (швейная нитка) — законное назначение

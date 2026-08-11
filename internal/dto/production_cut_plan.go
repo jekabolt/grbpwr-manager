@@ -327,10 +327,10 @@ type cutPlanResolution struct {
 // сверх. С T4 правило (а) отдаёт ПО СТРОКЕ НА КАЖДЫЙ КРОИМЫЙ СЛОЙ (решение владельца: деталь
 // законно слоится на шелл/подклад/утеплитель), а блокером остаётся только конфликт ОСНОВНЫХ.
 //
-// tech_card_piece_material (piece.Materials) здесь НЕ ИСПОЛЬЗУЕТСЯ, и это не забывчивость: админка
-// в эту таблицу ничего не пишет, на живых карточках она пуста — именно поэтому колонка «ткань по
-// колорвеям» на старом стилевом cut list всегда была пустой. Читать её значит повторить тот же
-// пустой экран, только в цехе.
+// tech_card_piece_material (piece.Materials) сюда входит НЕ отдельной веткой, а вторым источником
+// САМОГО pieceUsageIndex (см. шапку piece_layers.go): на проде связь пяти живых деталей живёт
+// только в ней, и наряд обязан видеть её тем же одним правилом, что кат-лист стиля, покрытие и
+// гейт, — иначе кат-лист показывал бы ткань, которой наряд «не видит».
 func (g *cutPlanGroup) resolve(piece *entity.TechCardPiece, items []entity.TechCardBomItem) cutPlanResolution {
 	// (а) РЕЦЕПТ НАЗЫВАЕТ ДЕТАЛЬ ПОЛОТНОМ. Единственный случай, где наряд ничего не выводит: строки
 	// рецепта сами сказали, какие слои идут на эту деталь. FK сначала, ULID вторым — тот же порядок
@@ -351,11 +351,11 @@ func (g *cutPlanGroup) resolve(piece *entity.TechCardPiece, items []entity.TechC
 			var res cutPlanResolution
 			if len(pl.mains) >= 2 {
 				res.blockers = append(res.blockers, fmt.Sprintf(
-					"деталь привязана к %d основным тканям (%s) — непонятно, из какой её кроить; оставь в рецепте одну основную",
+					"the piece is bound to %d main fabrics (%s) — it is unclear which one to cut it from; keep a single main fabric in the recipe",
 					len(pl.mains), strings.Join(pl.layerNames(pl.mains), ", ")))
 			} else {
 				res.blockers = append(res.blockers, fmt.Sprintf(
-					"у детали несколько слоёв ткани, и назначение не разобрано у: %s — не доказать, что это не вторая основная; задай назначения строкам на вкладке BOM",
+					"the piece has several fabric layers, and the purpose is unsorted for: %s — there is no proof it is not a second main fabric; assign purposes to the lines on the BOM tab",
 					strings.Join(pl.layerNames(pl.unsorted), ", ")))
 			}
 			return res
@@ -598,7 +598,7 @@ func newCutPlanGroup(
 		// Код колорвея — не выдумка, а вторая его подпись в карточке; пустая колонка в цехе хуже.
 		g.colorwayName = cw.Code.String
 	}
-	g.pieceIdx = newPieceUsageIndex(cw.Usages, card.Pieces)
+	g.pieceIdx = newPieceUsageIndex(cw, card.Pieces)
 	// По указателю, а не по id — по той же причине, что и в resolve: у строк BOM старого снапшота
 	// релиза id нулевые, и дедуп по ним оставил бы один «рулонный слот» там, где их два.
 	seenSlot := make(map[*entity.TechCardBomItem]bool, len(cw.Usages))

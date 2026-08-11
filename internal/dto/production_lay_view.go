@@ -547,7 +547,7 @@ func (b *layPlanBuilder) slotPieces(l *entity.ProductionRunLay) []*entity.TechCa
 	if cw == nil {
 		return nil
 	}
-	idx := newPieceUsageIndex(cw.Usages, b.in.Card.Pieces)
+	idx := newPieceUsageIndex(cw, b.in.Card.Pieces)
 	out := make([]*entity.TechCardPiece, 0, len(b.in.Card.Pieces))
 	for i := range b.in.Card.Pieces {
 		p := &b.in.Card.Pieces[i]

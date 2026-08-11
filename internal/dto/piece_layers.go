@@ -1,25 +1,39 @@
 package dto
 
 import (
+	"database/sql"
+
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
 
-// СЛОИ ДЕТАЛИ КРОЯ (T4) — рецептная проекция связи «деталь ↔ материалы» и её ЕДИНСТВЕННЫЙ носитель.
+// СЛОИ ДЕТАЛИ КРОЯ (T4) — проекция связи «деталь ↔ материалы» и её ЕДИНСТВЕННЫЙ носитель.
 //
-// Связь живёт в детальных строках рецепта (tech_card_colorway_usage.piece_id); роль каждого слоя —
-// вывод из строки BOM (entity.DerivePieceLayerRole), нигде не хранится. Этот файл держит общий
-// разбор для всех серверных читателей связи: кат-плана прогона, кат-листа стиля, покрытия настилов
-// и гейта готовности. Второй разбор в любом из них был бы вторым определением «какими слоями
-// кроится деталь» — и разошёлся бы с первым молча, потому что обе стороны вернули бы какой-то
-// список.
+// У связи ДВА источника, и объединяются они ЗДЕСЬ, при построении индекса (newPieceUsageIndex):
 //
-// tech_card_piece_material здесь СОЗНАТЕЛЬНО не читается: админка в неё не пишет (schema.ts прямо
-// говорит «this admin no longer edits that map at all»), на живых карточках она пуста, и все её
-// серверные читатели переведены на эту проекцию. Таблица законсервирована: запись, round-trip и
-// COLOUR-дайджест не тронуты, снос — отдельной фазой.
+//  1. детальные строки рецепта (tech_card_colorway_usage.piece_id) — то, что пишет админка сегодня
+//     («+ добавить материал к детали» на вкладке колорвеев); на бете связь живёт почти целиком тут;
+//  2. tech_card_piece_material (piece.Materials) — замороженная таблица старой вкладки деталей.
+//     Новых записей в неё нет, но на ПРОДЕ она — единственный носитель связи живой карточки: пять
+//     деталей колорвея названы ТОЛЬКО ею, а рецепт того же колорвея весь «на изделие». Читатель
+//     одного лишь рецепта терял бы ткань у каждой из этих деталей.
+//
+// Деталь привязана к ткани, если её называет ЛЮБОЙ из источников — то же решение и по той же
+// причине, что у админки в use-fabric-dxf-pieces.ts (там второй источник — рецепт, здесь — старая
+// таблица; пустым бывает то один, то другой). Пересечение безопасно: обе строки одного слота
+// схлопывает дедуп по строке BOM в collectPieceLayers, и строка РЕЦЕПТА замешивается первой, так
+// что слот достаётся ей — вместе с её пином артикула.
+//
+// Роль каждого слоя — вывод из строки BOM (entity.DerivePieceLayerRole), нигде не хранится; для
+// строки старой таблицы она выводится тем же правилом по её слоту. Этот файл держит общий разбор
+// для всех серверных читателей связи: кат-плана прогона, кат-листа стиля, покрытия настилов и
+// гейта готовности. Объединять источники в любом ИЗ них (а не здесь, в общем индексе) значило бы
+// завести ВТОРОЕ определение «какими слоями кроится деталь»: кат-лист показывал бы ткань, которой
+// наряд не видит, и обе стороны выглядели бы правыми. Запись в старую таблицу не возвращается:
+// round-trip и COLOUR-дайджест не тронуты, снос — отдельной фазой, после переноса данных прода.
 
-// pieceUsageIndex — детальные строки ОДНОГО колорвея, разложенные по идентичностям детали. Формы
+// pieceUsageIndex — детальные строки ОДНОГО колорвея (обоих источников, см. шапку файла),
+// разложенные по идентичностям детали. Формы
 // привязки — ТЕ ЖЕ ТРИ, что узнаёт предикат entity.IsPieceMaterialAssignment: FK piece_id, ULID
 // piece_line_key (в замороженном релизе выживает только он — снапшот не несёт tech_card_piece.id)
 // и легаси-позиционный piece_index (у совсем старого релиза — единственная выжившая форма, которую
@@ -43,8 +57,12 @@ type pieceUsageIndex struct {
 }
 
 // newPieceUsageIndex строит индекс по строкам колорвея; pieces — детали ТОЙ ЖЕ карты, нужны
-// резолву позиционной формы.
-func newPieceUsageIndex(usages []entity.TechCardColorwayUsage, pieces []entity.TechCardPiece) *pieceUsageIndex {
+// резолву позиционной формы и второму источнику связи (piece.Materials).
+func newPieceUsageIndex(cw *entity.TechCardColorway, pieces []entity.TechCardPiece) *pieceUsageIndex {
+	var usages []entity.TechCardColorwayUsage
+	if cw != nil {
+		usages = cw.Usages
+	}
 	x := &pieceUsageIndex{
 		byID:  make(map[int][]*entity.TechCardColorwayUsage, len(usages)),
 		byKey: make(map[string][]*entity.TechCardColorwayUsage, len(usages)),
@@ -72,20 +90,81 @@ func newPieceUsageIndex(usages []entity.TechCardColorwayUsage, pieces []entity.T
 			// для предиката строка остаётся назначением, но деталь не находит.
 			continue
 		}
-		p := &pieces[idx]
-		switch {
-		case p.Id > 0:
-			x.byID[p.Id] = append(x.byID[p.Id], u)
-		case p.LineKey != "":
-			x.byKey[p.LineKey] = append(x.byKey[p.LineKey], u)
-		default:
-			if x.byPiece == nil {
-				x.byPiece = make(map[*entity.TechCardPiece][]*entity.TechCardColorwayUsage)
+		x.addForPiece(&pieces[idx], u)
+	}
+	if cw == nil {
+		return x
+	}
+
+	// ВТОРОЙ ИСТОЧНИК (см. шапку файла): строки tech_card_piece_material этого колорвея входят в
+	// индекс СИНТЕТИЧЕСКИМИ строками рецепта — та же деталь, тот же слот BOM, — и дальше их судит
+	// тот же разбор: planBomLine, роль по слоту (DerivePieceLayerRole), дедуп по строке BOM.
+	// Ссылка на клеевую — отдельная синтетическая строка: клеевость и у рецепта не хранится на
+	// связи, а выводится из СЕКЦИИ строки BOM (collectPieceLayers), и старая таблица проходит через
+	// то же правило. Синтетика замешивается ПОСЛЕ строк рецепта, поэтому при пересечении источников
+	// слот выигрывает строка рецепта — вместе со своим пином артикула. В cw.Usages синтетика не
+	// попадает: нормы, деньги и провод её не видят.
+	cwID := pieceMaterialColorwayID(cw)
+	for i := range pieces {
+		p := &pieces[i]
+		for _, pm := range p.Materials {
+			if pm.ColorwayID != cwID {
+				continue
 			}
-			x.byPiece[p] = append(x.byPiece[p], u)
+			for _, ref := range [2]struct {
+				id  sql.NullInt64
+				pos sql.NullInt32
+			}{
+				{pm.BomItemId, pm.BomItemIndex},
+				{pm.FusingBomItemId, pm.FusingBomItemIndex},
+			} {
+				hasID := ref.id.Valid && ref.id.Int64 > 0
+				hasPos := ref.pos.Valid && ref.pos.Int32 >= 0
+				if !hasID && !hasPos {
+					continue
+				}
+				u := &entity.TechCardColorwayUsage{PieceLineKey: p.LineKey}
+				if hasID {
+					u.BomItemId = ref.id
+				}
+				if hasPos {
+					u.BomItemIndex = ref.pos
+				}
+				if p.Id > 0 {
+					u.PieceId = sql.NullInt64{Int64: int64(p.Id), Valid: true}
+				}
+				x.addForPiece(p, u)
+			}
 		}
 	}
 	return x
+}
+
+// addForPiece кладёт строку под идентичности САМОЙ детали — единое правило регистрации для
+// легаси-позиционной формы и для синтетики второго источника: приоритет идентичностей тот же,
+// которым их читает forPiece, четвёртого правила матчинга не появляется.
+func (x *pieceUsageIndex) addForPiece(p *entity.TechCardPiece, u *entity.TechCardColorwayUsage) {
+	switch {
+	case p.Id > 0:
+		x.byID[p.Id] = append(x.byID[p.Id], u)
+	case p.LineKey != "":
+		x.byKey[p.LineKey] = append(x.byKey[p.LineKey], u)
+	default:
+		if x.byPiece == nil {
+			x.byPiece = make(map[*entity.TechCardPiece][]*entity.TechCardColorwayUsage)
+		}
+		x.byPiece[p] = append(x.byPiece[p], u)
+	}
+}
+
+// pieceMaterialColorwayID — идентичность, которой tech_card_piece_material называет колорвей:
+// его product id (так писала старая вкладка), на живой карточке совпадающий с id колорвея by
+// construction. ЕДИНОЕ правило с идентичностью колонки ответа FabricsFor.
+func pieceMaterialColorwayID(cw *entity.TechCardColorway) int {
+	if cw.ProductId.Valid && cw.ProductId.Int32 > 0 {
+		return int(cw.ProductId.Int32)
+	}
+	return cw.Id
 }
 
 // forPiece — строки рецепта, называющие эту деталь: по FK; по line_key, если карточка пришла из
@@ -180,10 +259,11 @@ func collectPieceLayers(usages []*entity.TechCardColorwayUsage, items []entity.T
 	return pl
 }
 
-// StyleCutFabricIndex — рецептная проекция для кат-листа стиля (GetStyleCutList): по колорвею и
-// детали — из каких слоёв она кроится и какой клеевой дублируется. Заменяет чтение замороженной
-// tech_card_piece_material, из-за которого колонка «ткань по колорвеям» на живых карточках была
-// пуста (карта 38 жила одним рецептом).
+// StyleCutFabricIndex — проекция связи для кат-листа стиля (GetStyleCutList): по колорвею и
+// детали — из каких слоёв она кроится и какой клеевой дублируется. Источники и их объединение —
+// pieceUsageIndex (см. шапку файла): рецепт (носитель связи на бете; чтение одной лишь замороженной
+// tech_card_piece_material оставляло колонку «ткань по колорвеям» пустой — карта 38 жила одним
+// рецептом) ПЛЮС сама tech_card_piece_material (единственный носитель связи живой карточки прода).
 type StyleCutFabricIndex struct {
 	card      *entity.TechCard
 	colorways []styleCutColorway
@@ -204,7 +284,7 @@ func NewStyleCutFabricIndex(card *entity.TechCard) *StyleCutFabricIndex {
 	}
 	for i := range card.Colorways {
 		cw := &card.Colorways[i]
-		sc := styleCutColorway{cw: cw, idx: newPieceUsageIndex(cw.Usages, card.Pieces)}
+		sc := styleCutColorway{cw: cw, idx: newPieceUsageIndex(cw, card.Pieces)}
 		seen := make(map[*entity.TechCardBomItem]bool, len(cw.Usages))
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
@@ -235,12 +315,10 @@ func (x *StyleCutFabricIndex) FabricsFor(piece *entity.TechCardPiece) []*pb_admi
 	var out []*pb_admin.StyleCutListFabric
 	for i := range x.colorways {
 		sc := &x.colorways[i]
-		colorwayID := sc.cw.Id
-		if sc.cw.ProductId.Valid && sc.cw.ProductId.Int32 > 0 {
-			// Идентичность колонки — product id, как её несла piece_material.colorway_id и как её
-			// называет линия прогона; на живой карточке они совпадают by construction.
-			colorwayID = int(sc.cw.ProductId.Int32)
-		}
+		// Идентичность колонки — product id, как её несёт piece_material.colorway_id и как её
+		// называет линия прогона; правило одно с матчингом второго источника в индексе
+		// (pieceMaterialColorwayID), на живой карточке совпадает с id by construction.
+		colorwayID := pieceMaterialColorwayID(sc.cw)
 		pl := collectPieceLayers(sc.idx.forPiece(piece), x.card.BomItems)
 		if len(pl.layers) == 0 {
 			continue
