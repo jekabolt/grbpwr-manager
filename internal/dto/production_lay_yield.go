@@ -101,9 +101,20 @@ type MarkerYield struct {
 	// «блоб не знает состава», never «состав пуст» — techcard.proto states a composition is never
 	// empty on the wire.
 	Composition map[int]int
-	// Pieces is instances PLACED in the marker, by piece and size. Counted off the placements, which
-	// is safe on a stored blob: SaveMarker refuses PlacedCount != TotalCount, so a saved marker's
-	// placements are complete.
+	// Pieces is instances PLACED in the marker, by piece and size — counted off the PLACEMENTS, so
+	// this number is «сколько легло», never «сколько просили разложить».
+	//
+	// THE TWO USED TO BE THE SAME THING AND ARE NOT ANY MORE. Until 0299 SaveMarker refused every
+	// layout with PlacedCount != TotalCount, so a stored blob's placements were complete by
+	// construction and this field could be read as the marker's full yield. Черновик (is_draft) is
+	// exactly the row where they differ: the движок ran out of budget, some pieces were never laid,
+	// and counting the placements of one would understate its yield by however many are missing —
+	// which lands here as a coverage BLOCKER on a настил nobody actually laid short.
+	//
+	// A draft never reaches this parse: requireLaySectionMarkers (0299) refuses a черновик as a
+	// section's раскладка, and a section is the only route from a stored marker into coverage. The
+	// property this field rests on is therefore that guard, not the save path — which is why the
+	// sentence naming it is here rather than a comment about placed_count elsewhere.
 	Pieces map[MarkerPieceKey]MarkerPieceCounts
 	// PieceNames is piece_line_key → the piece's name as written in the blob, for messages. Only
 	// attributed pieces appear.
@@ -240,10 +251,12 @@ func MarkerYieldFromBlob(blob string) (MarkerYield, error) {
 
 	placements := l.GetPlacements()
 	if len(placements) == 0 {
-		// SaveMarker refuses placed_count != total_count with total_count >= 1, so no SAVED marker
-		// has an empty layout. An empty one is either a blob that was never a marker or one that lost
-		// its placements, and answering «this marker cuts nothing» would put a BLOCKER on the run for
-		// a parse failure.
+		// No marker that can reach coverage has an empty layout. SaveMarker demands total_count >= 1
+		// and refuses placed_count > total_count outright; a layout that placed NOTHING is a черновик
+		// (0299), and a черновик is refused as a section's раскладка by requireLaySectionMarkers, so
+		// it never gets parsed here. An empty one is therefore either a blob that was never a marker
+		// or one that lost its placements, and answering «this marker cuts nothing» would put a
+		// BLOCKER on the run for a parse failure.
 		return MarkerYield{}, errors.New("stored marker layout carries no placements")
 	}
 	for i, pl := range placements {

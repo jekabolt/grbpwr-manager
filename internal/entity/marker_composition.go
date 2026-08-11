@@ -212,3 +212,24 @@ func MarkerScalarNormRefusal(name string, perSize []MarkerSizeConsumption) strin
 		"запишутся, и её можно будет применить по размерам, — либо примените раскладку одного размера.",
 		label, len(perSize), units)
 }
+
+// MarkerDraftNormRefusal is the prose refusing EVERY norm off a ЧЕРНОВИК (0299): the scalar, the
+// per-size figures, and the designation itself. One sentence, one place, so the wire, the norm setter
+// and the lay editor all send the operator to the same action.
+//
+// IT NAMES THE ARITHMETIC RATHER THAN THE FLAG. «Это черновик» is a fact about a column; «движок
+// уложил 31 деталь из 45» is the fact about the cloth, and it is the one that explains why the number
+// would be short — used_length_cm measured a spread the other fourteen were never laid into. The
+// remedy is named too, because it is not obvious from the screen: the нестинг runs in the browser and
+// its cost grows as the SQUARE of the piece count, so «не уложилось» almost always means the search
+// ran out of time rather than that the pieces do not fit.
+//
+// The counts are printed even when they look impossible (a total of 0 from a corrupted row): a
+// refusal that silently dropped its numbers would be indistinguishable from one that had none.
+func MarkerDraftNormRefusal(name string, placed, total int) string {
+	return fmt.Sprintf("раскладка %q — ЧЕРНОВИК: движок уложил %d деталей из %d, поэтому измеренная "+
+		"длина настила короче настоящей и расход по ней занижен. Нормой такая раскладка не назначается "+
+		"и в рецепт не применяется — ни целиком, ни по размерам. Увеличьте бюджет поиска и пересчитайте "+
+		"раскладку; когда лягут все детали, она перестанет быть черновиком сама.",
+		strings.TrimSpace(name), placed, total)
+}

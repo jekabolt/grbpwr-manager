@@ -753,6 +753,19 @@ type (
 		// released card, a size outside the card's range or an unknown bom_line_key. GetMarker is
 		// the only read carrying the layout blob; summaries ride GetTechCardById.
 		//
+		// ЧЕРНОВИК (is_draft, 0299) is the one way past ErrMarkerIncomplete: ins.IsDraft is the
+		// caller's CONSENT to store a layout the движок could not finish (placed < total), and the
+		// column is derived from the counts rather than copied from that flag — so the flag cannot
+		// mark a complete раскладка as a draft, and a re-run that finally laid everything clears it in
+		// the same write. placed > total stays refused always. A downgrade of a stored раскладка to a
+		// draft is refused while it is the НОРМА, while a секция настила stands on it, or while a
+		// recipe row stamps it as the source of its norm — all three already turn its length into
+		// money. Only PlacedCount is server-verified (dto counts the blob's placements); TotalCount
+		// remains a client claim, so «not a draft» is not proof of completeness.
+		//
+		// A draft names no consumption on the wire, cannot be designated a norm, cannot be a recipe's
+		// norm_marker_id stamp and cannot be a lay section's раскладка.
+		//
 		// ins.ProductionRunId decides OWNERSHIP (run_id, 0282) and is written on CREATE ONLY: a save
 		// that would move an existing раскладка between the card and a прогон is refused as a field
 		// violation, because ownership is what decides whether the row dies with a run and whether a
@@ -778,6 +791,9 @@ type (
 		// neither seize a norm nor lose one. Exclusivity within (card, BOM line) is held by this
 		// transaction rather than by a UNIQUE index — see the store for the ERROR 1761 that rules the
 		// index out — which is why every reader owes a deterministic tiebreak (entity.SelectNorm).
+		// Refuses a раскройная раскладка (run_id) and a ЧЕРНОВИК (is_draft, 0299) in BOTH directions,
+		// clearing included: reporting «эта раскладка больше не норма» would imply it could have been
+		// one, which is the misunderstanding both invariants exist to prevent.
 		SetMarkerNorm(ctx context.Context, id int, isNorm bool, username string) (int, error)
 		// ListFabricDirectionGaps reads the кампания Д1 worklist (Ф1.8): cards whose roll-goods BOM
 		// lines still carry no направление ткани, with the counts an owner triages by. techCardID

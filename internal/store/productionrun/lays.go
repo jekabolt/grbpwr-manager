@@ -721,6 +721,14 @@ func requireLayColorway(ctx context.Context, db dependency.DB, runID, techCardID
 // marker — the norm included — can never be a section: the run's markers cascade with the run, and
 // letting a section point at a card marker would make "a lay dies with its run" false and would put
 // a delete of a run in a position to take a card asset with it.
+//
+// A ЧЕРНОВИК (is_draft, 0299) IS REFUSED TOO, and this is the seam where a draft would otherwise
+// enter the production side. A section is not a reference — it is arithmetic: the material plan reads
+// used_length_cm × plies off exactly these rows (dto.LayPlannedGeometryOf), so a раскладка that
+// dropped pieces would order cloth for a настил shorter than the one the цех will actually lay. It is
+// refused with its OWN reason rather than through the membership one below: «скопируйте карточную
+// раскладку в прогон» is true advice for a card marker and nonsense for a draft of this very run,
+// whose fix is to raise the search budget and re-run it.
 func requireLaySectionMarkers(ctx context.Context, db dependency.DB, runID, techCardID, bomItemID int,
 	sections []entity.ProductionRunLaySectionInsert) error {
 
@@ -731,22 +739,38 @@ func requireLaySectionMarkers(ctx context.Context, db dependency.DB, runID, tech
 	for i := range sections {
 		ids = append(ids, sections[i].MarkerId)
 	}
-	rows, err := storeutil.QueryListNamed[struct {
-		Id int `db:"id"`
-	}](ctx, db, `
-		SELECT id FROM tech_card_marker
+	type sectionMarkerRow struct {
+		Id          int    `db:"id"`
+		Name        string `db:"name"`
+		IsDraft     bool   `db:"is_draft"`
+		PlacedCount int    `db:"placed_count"`
+		TotalCount  int    `db:"total_count"`
+	}
+	rows, err := storeutil.QueryListNamed[sectionMarkerRow](ctx, db, `
+		SELECT id, name, is_draft, placed_count, total_count FROM tech_card_marker
 		WHERE id IN (:ids) AND tech_card_id = :card AND run_id = :run AND bom_item_id = :bom`,
 		map[string]any{"ids": ids, "card": techCardID, "run": runID, "bom": bomItemID})
 	if err != nil {
 		return fmt.Errorf("resolve lay section markers of run %d: %w", runID, err)
 	}
 	ok := make(map[int]bool, len(rows))
+	drafts := make(map[int]sectionMarkerRow, len(rows))
 	for _, r := range rows {
+		if r.IsDraft {
+			drafts[r.Id] = r
+			continue
+		}
 		ok[r.Id] = true
 	}
 	for i := range sections {
 		if ok[sections[i].MarkerId] {
 			continue
+		}
+		if d, isDraft := drafts[sections[i].MarkerId]; isDraft {
+			return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "marker_is_draft",
+				fmt.Sprintf("marker %d", sections[i].MarkerId),
+				entity.MarkerDraftNormRefusal(d.Name, d.PlacedCount, d.TotalCount)+
+					" В настил она тоже не встаёт: метраж настила считается по её длине.")
 		}
 		return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "not_a_run_marker",
 			fmt.Sprintf("marker %d", sections[i].MarkerId),
