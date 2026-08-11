@@ -316,7 +316,7 @@ func requiredPiecesForColorway(card *entity.TechCard, colorwayID int) []required
 	cw := recipeColorwayOf(card, colorwayID)
 	var idx *pieceUsageIndex
 	if cw != nil {
-		idx = newPieceUsageIndex(cw.Usages, card.Pieces)
+		idx = newPieceUsageIndex(cw, card.Pieces)
 	}
 	out := make([]requiredPiece, 0, len(card.Pieces))
 	for i := range card.Pieces {

@@ -50,10 +50,12 @@ func (s *Server) GetStyleCutList(ctx context.Context, req *pb_admin.GetStyleCutL
 		return nil, status.Error(codes.Internal, "can't load tech card")
 	}
 
-	// The fabrics come from the RECIPE projection (T4, dto.StyleCutFabricIndex): the piece-bound
-	// usage rows of each colourway, one entry per cuttable layer, with the fusing pair resolved by
-	// the cut plan's own rule. tech_card_piece_material is NOT read any more — the admin never
-	// writes it, so this column was empty on every live card (карта 38 lived on the recipe alone).
+	// The fabrics come from the TWO-SOURCE projection (T4, dto.StyleCutFabricIndex): the
+	// piece-bound usage rows of each colourway UNIONED with the frozen tech_card_piece_material
+	// rows (the only carrier of the binding on prod's live card), one entry per cuttable layer,
+	// with the fusing pair resolved by the cut plan's own rule. The union lives in the shared
+	// pieceUsageIndex (piece_layers.go), so the run pack, coverage and the readiness gate see
+	// exactly the same bindings as this list.
 	fabricIdx := dto.NewStyleCutFabricIndex(card)
 
 	pieces := make([]*pb_admin.StyleCutListPiece, 0, len(card.Pieces))
