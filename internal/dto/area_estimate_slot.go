@@ -117,6 +117,32 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 	seen := map[string]bool{}
 	var pin int64
 	pinAgrees := true
+	// ВТОРОЙ ИСТОЧНИК НАЗНАЧЕНИЙ — tech_card_piece_material (С5). Живой поток пишет строку рецепта
+	// («+ добавить материал к детали» на вкладке колорвеев), но карточки, заведённые через вкладку
+	// деталей кроя, держат ту же связь на самой детали. Читать один источник значило бы, что часть
+	// карточек остаётся с нулём при полностью заполненной спецификации — та же болезнь, от которой
+	// лечит вся фаза, только на другой популяции.
+	//
+	// СТРОКА РЕЦЕПТА ПОБЕЖДАЕТ: она новее, она же несёт пин, и дублирование по детали снимается по
+	// одному ключу (см. seen).
+	appendPiece := func(pieceID int, pinnedMaterial int64) {
+		p := byID[pieceID]
+		if p == nil || strings.TrimSpace(p.LineKey) == "" {
+			return
+		}
+		if seen[p.LineKey] {
+			return // one piece, one contour: a second statement about it adds no cloth
+		}
+		seen[p.LineKey] = true
+		out = append(out, entity.AreaEstimatePiece{LineKey: p.LineKey, PerGarment: p.PiecesPerGarment})
+		if pinnedMaterial > 0 {
+			if pin == 0 {
+				pin = pinnedMaterial
+			} else if pin != pinnedMaterial {
+				pinAgrees = false
+			}
+		}
+	}
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
 		if !u.IsPieceMaterialAssignment() {
@@ -125,21 +151,26 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 		if !u.BomItemId.Valid || int(u.BomItemId.Int64) != bom.Id {
 			continue
 		}
-		p := byID[int(u.PieceId.Int64)]
-		if p == nil || strings.TrimSpace(p.LineKey) == "" {
-			continue
-		}
-		if seen[p.LineKey] {
-			continue // one piece, one contour: a second row for the same piece adds no cloth
-		}
-		seen[p.LineKey] = true
-		out = append(out, entity.AreaEstimatePiece{LineKey: p.LineKey, PerGarment: p.PiecesPerGarment})
-		if u.MaterialId.Valid && u.MaterialId.Int64 > 0 {
-			if pin == 0 {
-				pin = u.MaterialId.Int64
-			} else if pin != u.MaterialId.Int64 {
-				pinAgrees = false
+		appendPiece(int(u.PieceId.Int64), u.MaterialId.Int64)
+	}
+	// Второй источник — после первого, поэтому строка рецепта всегда выигрывает по seen.
+	colorwayKey := cw.Id
+	if cw.ProductId.Valid && cw.ProductId.Int32 > 0 {
+		colorwayKey = int(cw.ProductId.Int32)
+	}
+	for i := range tc.Pieces {
+		p := &tc.Pieces[i]
+		for j := range p.Materials {
+			m := &p.Materials[j]
+			// Назначение материала детали живёт на КОНКРЕТНОМ колорвее; нулевой id означает «на всех»
+			// и относится к этому тоже.
+			if m.ColorwayID != 0 && m.ColorwayID != colorwayKey {
+				continue
 			}
+			if !m.BomItemId.Valid || int(m.BomItemId.Int64) != bom.Id {
+				continue
+			}
+			appendPiece(p.Id, 0)
 		}
 	}
 	if !pinAgrees {

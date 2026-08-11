@@ -688,7 +688,24 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			if usedSlotsByColorway[pid][b.Id] {
 				continue
 			}
-			blockAdd(b.Id, pid, qty, entity.MaterialPlanBlockerNoNorm, entity.MaterialPlanReasonNoNorm)
+			// ОЦЕНКА ПО ПЛОЩАДИ (Ф1) ЗДЕСЬ НЕ СТАНОВИТСЯ ПОТРЕБНОСТЬЮ — И ЭТО РЕШЕНИЕ, А НЕ ПРОБЕЛ.
+			//
+			// В костинге netto-оценка полезна: она честная нижняя граница и снимает «ноль» с
+			// карточки, у которой всё заполнено. В ЗАКУПКЕ та же нижняя граница вредна ровно
+			// настолько же, насколько там полезна: по ней закупят на все межлекальные выпады меньше,
+			// чем нужно (по замерам беты — около трети), и обнаружится это посреди настила.
+			//
+			// Поэтому слот, у которого есть только оценка, остаётся БЛОКЕРОМ — «остановись и сними
+			// раскладку», а не «закупим по нижней границе». Меняется лишь формулировка: она называет
+			// следующий шаг, потому что «нормы нет» на карточке с посчитанной оценкой звучит как
+			// неправда и отправляет вписывать число руками.
+			reason := entity.MaterialPlanReasonNoNorm
+			if cw := colorwayByProduct[pid]; cw != nil && card != nil {
+				if _, _, ok, _ := slotAreaEstimate(card, cw, b, linked, card.CostingBasis(), ""); ok {
+					reason = entity.MaterialPlanReasonEstimateOnly
+				}
+			}
+			blockAdd(b.Id, pid, qty, entity.MaterialPlanBlockerNoNorm, reason)
 		}
 	}
 
