@@ -1,7 +1,6 @@
 package dto
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -9,17 +8,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the second half of the base-size change: the two places that still priced off
-// tech_card.size_quantities — the phantom «типовой тираж» — now read the real numbers instead. A
+// These tests pin the second half of the basis story: the two places that once priced off
+// tech_card.size_quantities — the phantom «типовой тираж» — read the real numbers instead. A
 // production run prices its plan on the mix of ITS OWN lines; R&D amortisation divides by the
 // quantity the style's runs actually plan to make.
 
-// runMixCard is baseSizeCard's shape with the numbers chosen so each size costs a round figure:
-// sizes 4 (base) / 5 / 6, shell norms 2 / 2.5 / 3 m at 10 EUR with 10% wastage, a 3-piece zip at
-// 2 EUR, cmt 5. Unit cost at size s = norm(s)×10×1.1 + 6 + 5 → 33 / 38.5 / 44.
+// runMixCard is rangeAvgCard with the numbers chosen so each size costs a round figure:
+// declared range 4 / 5 / 6, shell norms 2 / 2.5 / 3 m at 10 EUR with 10% wastage, a 3-piece zip
+// at 2 EUR, cmt 5. Unit cost at size s = norm(s)×10×1.1 + 6 + 5 → 33 / 38.5 / 44; the style's
+// standard (the range average) = 2.5×10×1.1 + 6 + 5 = 38.5.
 // Its size_quantities declare a mix skewed hard onto size 6; nothing below may move when they do.
 func runMixCard() *entity.TechCard {
-	return baseSizeCard()
+	return rangeAvgCard()
 }
 
 func mixLine(sizeID, qty int) entity.ProductionRunLine {
@@ -36,7 +36,7 @@ func TestRunPlannedCostUsesItsOwnSizeMix(t *testing.T) {
 	// The style's standard cost — the number the run used to snapshot regardless of what it cut.
 	style, styleCcy := ComputeTechCardUnitCost(card, fx)
 	require.True(t, style.Valid)
-	require.Equal(t, "33", style.Decimal.String(), "standard cost = base size 4: 2×10×1.1 + 6 + 5")
+	require.Equal(t, "38.5", style.Decimal.String(), "standard cost = range average: 2.5×10×1.1 + 6 + 5")
 
 	// A run of nothing but size 6: 3×10×1.1 + 6 + 5 = 44. NOT 33.
 	unit, ccy := ComputeProductionRunPlannedUnitCost(card, fx, noWastageOverride,
@@ -71,16 +71,25 @@ func TestRunPlannedCostUsesItsOwnSizeMix(t *testing.T) {
 	require.Equal(t, "44", shiftedUnit.Decimal.String(), "size_quantities must not touch a run's plan")
 
 	// And the run's own card must come back unmutated — the basis swap is a shallow copy.
-	require.EqualValues(t, 4, card.BaseSampleSizeId.Int32, "pricing a run must not re-point the card's base size")
+	require.Nil(t, card.CostingSizeOverride, "pricing a run must not re-base the caller's card")
+	require.EqualValues(t, 4, card.BaseSampleSizeId.Int32, "the reference base size is untouched")
 }
 
-// TestRunPlannedCostWithoutLinesFallsBackToStyle covers the conscious default: a header planned
-// before the grid exists has stated no sizes at all, so there is no mix to weight by and the style's
-// standard cost (on its base size) is the only quantity information in the system.
-func TestRunPlannedCostWithoutLinesFallsBackToStyle(t *testing.T) {
+// TestRunPlannedCostWithoutLinesIsCostedWithNoBasis is the review fix on edge 1: a header planned
+// before the grid exists has stated no sizes at all, so it is priced with NO basis — explicitly.
+// A graded card's empty run therefore has NO planned cost: handing it the style's range average
+// would be a guess about a batch whose size mix nobody has stated, i.e. exactly the «no basis
+// quietly becomes a number» fallback the three-valued override forbids. A card whose norms are all
+// per-garment needs no basis and keeps its figure — the pre-existing behaviour for aux cards.
+func TestRunPlannedCostWithoutLinesIsCostedWithNoBasis(t *testing.T) {
 	fx := CostingFx{Base: "EUR"}
 	card := runMixCard()
-	style, styleCcy := ComputeTechCardUnitCost(card, fx)
+
+	// The style average IS computable (38.5) — that is the trap's precondition: the empty run must
+	// refuse it anyway.
+	style, _ := ComputeTechCardUnitCost(card, fx)
+	require.True(t, style.Valid)
+	require.Equal(t, "38.5", style.Decimal.String())
 
 	for name, lines := range map[string][]entity.ProductionRunLine{
 		"nil grid":        nil,
@@ -90,10 +99,22 @@ func TestRunPlannedCostWithoutLinesFallsBackToStyle(t *testing.T) {
 		"zero after pool": {mixLine(5, 0)},
 	} {
 		unit, ccy := ComputeProductionRunPlannedUnitCost(card, fx, decimal.NullDecimal{}, lines)
-		require.True(t, unit.Valid, "%s: a run with no declared quantity still snapshots the style figure", name)
-		require.Equal(t, style.Decimal.String(), unit.Decimal.String(), "%s", name)
-		require.Equal(t, styleCcy, ccy, "%s", name)
+		require.False(t, unit.Valid,
+			"%s: an empty run of a size-graded card must NOT inherit the range average", name)
+		require.Empty(t, ccy, "%s", name)
 	}
+
+	// The flat-recipe half of the rule: per-garment norms need no basis, so an aux-shaped card's
+	// empty header keeps the figure it always had.
+	flat := runMixCard()
+	flat.Colorways[0].Usages[0].SizeConsumptions = nil
+	flat.Colorways[0].Usages[0].Consumption = nd("2")
+	flatStyle, flatCcy := ComputeTechCardUnitCost(flat, fx)
+	require.True(t, flatStyle.Valid)
+	unit, ccy := ComputeProductionRunPlannedUnitCost(flat, fx, decimal.NullDecimal{}, nil)
+	require.True(t, unit.Valid, "an empty run of a flat-normed card still prices — nothing needed a basis")
+	require.Equal(t, flatStyle.Decimal.String(), unit.Decimal.String())
+	require.Equal(t, flatCcy, ccy)
 }
 
 // TestRunPlannedCostUngradedSizeLeavesNoPlan is the guard against the defect the previous phase
@@ -141,9 +162,14 @@ func TestRunPlannedCostKeepsWastageOverride(t *testing.T) {
 		[]entity.ProductionRunLine{mixLine(6, 40)})
 	require.Equal(t, "41", unit.Decimal.String())
 
-	// The no-lines fallback carries the override too (it is the same style figure, re-wasted).
-	fallback, _ := ComputeProductionRunPlannedUnitCost(card, fx, nd("20"), nil)
-	styleOverridden, _ := ComputeTechCardUnitCostWithWastage(card, fx, nd("20"))
+	// The no-lines branch carries the override too — visible on a FLAT card, the only shape an
+	// empty run still prices (a graded card's empty run has no basis and no figure).
+	flat := runMixCard()
+	flat.Colorways[0].Usages[0].SizeConsumptions = nil
+	flat.Colorways[0].Usages[0].Consumption = nd("2")
+	fallback, _ := ComputeProductionRunPlannedUnitCost(flat, fx, nd("20"), nil)
+	styleOverridden, _ := ComputeTechCardUnitCostWithWastage(flat, fx, nd("20"))
+	require.True(t, fallback.Valid)
 	require.Equal(t, styleOverridden.Decimal.String(), fallback.Decimal.String())
 
 	require.Equal(t, "10", card.BomItems[0].WastagePercent.Decimal.String(), "override must not mutate the card")
@@ -200,10 +226,10 @@ func TestPlannedRunQtyTotalIsTheSummaryQty(t *testing.T) {
 // nothing at all when there are none.
 func TestDevCostAmortisesOverRuns(t *testing.T) {
 	fx := CostingFx{Base: "EUR"}
-	card := runMixCard() // standard cost 33 on base size 4
+	card := runMixCard() // standard cost 38.5 (range average)
 	expenses := []entity.TechCardDevExpense{{Kind: "sample", AmountBase: nd("330")}}
 
-	// Two live runs planning 10 + 20 = 30 garments → 330/30 = 11 per unit → 33 + 11 = 44.
+	// Two live runs planning 10 + 20 = 30 garments → 330/30 = 11 per unit → 38.5 + 11 = 49.5.
 	runs := []entity.ProductionRun{
 		{ProductionRunInsert: entity.ProductionRunInsert{Lines: []entity.ProductionRunLine{mixLine(4, 10)}}},
 		{ProductionRunInsert: entity.ProductionRunInsert{Lines: []entity.ProductionRunLine{mixLine(6, 20)}}},
@@ -211,11 +237,11 @@ func TestDevCostAmortisesOverRuns(t *testing.T) {
 	sum := ComputeTechCardDevCostSummary(card, expenses, nil, runs, fx)
 	require.EqualValues(t, 30, sum.OrderQty)
 	require.NotNil(t, sum.UnitCostWithDev)
-	require.Equal(t, "44", sum.UnitCostWithDev.Value)
+	require.Equal(t, "49.5", sum.UnitCostWithDev.Value)
 
 	// The card's declared typical run (10+30+60 = 100) is no longer the denominator: were it still
-	// used, the figure above would have been 33 + 3.30 = 36.30.
-	require.NotEqual(t, "36.3", sum.UnitCostWithDev.Value)
+	// used, the figure above would have been 38.5 + 3.30 = 41.80.
+	require.NotEqual(t, "41.8", sum.UnitCostWithDev.Value)
 
 	// A cancelled run adds no denominator — spending is not amortised over garments nobody will make.
 	withCancelled := append(runs, entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
@@ -224,7 +250,7 @@ func TestDevCostAmortisesOverRuns(t *testing.T) {
 	}})
 	sum = ComputeTechCardDevCostSummary(card, expenses, nil, withCancelled, fx)
 	require.EqualValues(t, 30, sum.OrderQty, "cancelled runs are excluded, exactly as in the plan/fact summary")
-	require.Equal(t, "44", sum.UnitCostWithDev.Value)
+	require.Equal(t, "49.5", sum.UnitCostWithDev.Value)
 }
 
 // TestDevCostWithoutRunsIsNotAmortised: no runs → no denominator → no per-unit figure. The total and
@@ -255,13 +281,15 @@ func TestDevCostWithoutRunsIsNotAmortised(t *testing.T) {
 // only the amortised figure.
 func TestDevCostNoUnitCostStillReportsQty(t *testing.T) {
 	fx := CostingFx{Base: "EUR"}
-	noBase := runMixCard()
-	noBase.BaseSampleSizeId = sql.NullInt32{} // graded norms become uncosted → no standard cost
+	uncovered := runMixCard()
+	// A range size with no norm → the graded shell is uncosted → no standard cost. (Clearing the
+	// base sample size no longer breaks anything: it is a reference field since T6.)
+	uncovered.SizeIds = append(uncovered.SizeIds, 7)
 	runs := []entity.ProductionRun{{ProductionRunInsert: entity.ProductionRunInsert{
 		Lines: []entity.ProductionRunLine{mixLine(4, 30)},
 	}}}
 
-	sum := ComputeTechCardDevCostSummary(noBase, []entity.TechCardDevExpense{{Kind: "sample", AmountBase: nd("330")}}, nil, runs, fx)
+	sum := ComputeTechCardDevCostSummary(uncovered, []entity.TechCardDevExpense{{Kind: "sample", AmountBase: nd("330")}}, nil, runs, fx)
 	require.EqualValues(t, 30, sum.OrderQty)
 	require.Nil(t, sum.UnitCostWithDev, "no standard cost to add the amortised R&D to")
 }

@@ -30,7 +30,9 @@ func slotRef(id int64) sql.NullInt64 { return sql.NullInt64{Int64: id, Valid: tr
 func idxRef(i int32) sql.NullInt32   { return sql.NullInt32{Int32: i, Valid: true} }
 
 // twoClothCard is a sellable card with two cloths and two colourways: полочка кроится из основной,
-// подкладочная деталь — из подкладки, и так у обоих цветов.
+// подкладочная деталь — из подкладки, и так у обоих цветов. Связь «деталь ↔ слот» задана ТАМ, ГДЕ
+// ЖИВЁТ (T4): детальными строками рецепта каждого колорвея, не законсервированной
+// tech_card_piece_material.
 func twoClothCard() *entity.TechCard {
 	card := &entity.TechCard{Id: 7}
 	card.Purpose = entity.TechCardPurposeSellable
@@ -40,25 +42,23 @@ func twoClothCard() *entity.TechCard {
 		{Id: fixtureLabelSlot, LineKey: "BOM_LABEL", Name: "ЭТИКЕТКА", Section: entity.BomSectionLabel},
 	}
 	card.Colorways = []entity.TechCardColorway{
-		{Id: 1, ProductId: idxRef(fixtureCw1)},
-		{Id: 2, ProductId: idxRef(fixtureCw2)},
+		{Id: 1, ProductId: idxRef(fixtureCw1), Usages: []entity.TechCardColorwayUsage{
+			{BomItemId: slotRef(fixtureFabricSlot), PieceId: slotRef(1)},
+			{BomItemId: slotRef(fixtureLiningSlot), PieceId: slotRef(2)},
+		}},
+		{Id: 2, ProductId: idxRef(fixtureCw2), Usages: []entity.TechCardColorwayUsage{
+			{BomItemId: slotRef(fixtureFabricSlot), PieceId: slotRef(1)},
+			{BomItemId: slotRef(fixtureLiningSlot), PieceId: slotRef(2)},
+		}},
 	}
 	card.Pieces = []entity.TechCardPiece{
 		{
 			Id: 1, Name: "ПОЛОЧКА", LineKey: "K_FRONT", PiecesPerGarment: 2,
 			CutSymmetry: marked(entity.PieceCutSymmetryMirrored),
-			Materials: []entity.TechCardPieceMaterial{
-				{ColorwayID: fixtureCw1, BomItemId: slotRef(fixtureFabricSlot)},
-				{ColorwayID: fixtureCw2, BomItemId: slotRef(fixtureFabricSlot)},
-			},
 		},
 		{
 			Id: 2, Name: "ПОДКЛАДКА ПОЛОЧКИ", LineKey: "K_LINING", PiecesPerGarment: 1,
 			CutSymmetry: marked(entity.PieceCutSymmetryIdentical),
-			Materials: []entity.TechCardPieceMaterial{
-				{ColorwayID: fixtureCw1, BomItemId: slotRef(fixtureLiningSlot)},
-				{ColorwayID: fixtureCw2, BomItemId: slotRef(fixtureLiningSlot)},
-			},
 		},
 	}
 	return card
@@ -229,8 +229,9 @@ func TestLayCoverageUnknownNeverReadsAsOK(t *testing.T) {
 	// Деталь без разметки cut_symmetry на основной ткани — «НЕ РАЗМЕЧЕНО» (0275).
 	card.Pieces = append(card.Pieces, entity.TechCardPiece{
 		Id: 3, Name: "КАРМАН", LineKey: "K_POCKET", PiecesPerGarment: 1, CutSymmetry: unmarked,
-		Materials: []entity.TechCardPieceMaterial{{ColorwayID: fixtureCw1, BomItemId: slotRef(fixtureFabricSlot)}},
 	})
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages,
+		entity.TechCardColorwayUsage{BomItemId: slotRef(fixtureFabricSlot), PieceId: slotRef(3)})
 	pocketMarker := mustYield(t, &pb_common.TechCardMarkerLayout{
 		SchemaVersion: 4,
 		Composition:   comp([2]int32{fixtureSize, 1}),
@@ -345,7 +346,7 @@ func TestRunLineWithoutColorwayIsAnExplicitFinding(t *testing.T) {
 	if f.LineKey != "L2" {
 		t.Errorf("finding names line %q, want L2", f.LineKey)
 	}
-	if !strings.Contains(f.Detail, "без колорвея") {
+	if !strings.Contains(f.Detail, "no colourway") {
 		t.Errorf("detail = %q, must say the line has no colourway", f.Detail)
 	}
 	if _, ok := byKey[LayCoverageFindingKeyLineWithoutSize]; !ok {
@@ -456,8 +457,9 @@ func TestPieceOnNonRecipeSlotIsNotRequired(t *testing.T) {
 	card.Pieces = append(card.Pieces, entity.TechCardPiece{
 		Id: 9, Name: "ВШИВНОЙ ЯРЛЫК", LineKey: "K_LABEL", PiecesPerGarment: 1,
 		CutSymmetry: marked(entity.PieceCutSymmetryIdentical),
-		Materials:   []entity.TechCardPieceMaterial{{ColorwayID: fixtureCw1, BomItemId: slotRef(fixtureLabelSlot)}},
 	})
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages,
+		entity.TechCardColorwayUsage{BomItemId: slotRef(fixtureLabelSlot), PieceId: slotRef(9)})
 	for _, rp := range requiredPiecesForColorway(card, fixtureCw1) {
 		if rp.piece.LineKey == "K_LABEL" {
 			t.Fatalf("этикеточная деталь попала в required: %+v", rp)
@@ -467,25 +469,26 @@ func TestPieceOnNonRecipeSlotIsNotRequired(t *testing.T) {
 
 // ------------------------------------------------------- §14 п.5
 
-// Резолв слота идёт ЧЕРЕЗ ОБЩИЙ РЕЗОЛВЕР (planBomLine), а не по позиции: приоритет — FK, потом
-// легаси-индекс. Резолв только по позиции уже давал ПУСТОЙ материал-план на бете.
+// Резолв слота идёт ЧЕРЕЗ ОБЩИЙ РЕЗОЛВЕР (planBomLine) по детальной строке рецепта — самой строке,
+// а не её пересказу: приоритет — FK, потом легаси-индекс. Резолв только по позиции уже давал
+// ПУСТОЙ материал-план на бете.
 func TestPieceSlotResolvesByFkBeforePosition(t *testing.T) {
 	items := twoClothCard().BomItems // индекс 0 = основная, 1 = подкладка, 2 = этикетка
 
 	t.Run("FK бьёт позиционный индекс", func(t *testing.T) {
-		m := &entity.TechCardPieceMaterial{
-			ColorwayID:   fixtureCw1,
+		u := &entity.TechCardColorwayUsage{
 			BomItemId:    slotRef(fixtureLiningSlot), // подкладка
 			BomItemIndex: idxRef(0),                  // а позиция указывает на основную
+			PieceId:      slotRef(2),
 		}
-		got := pieceSlotBomLine(m, items)
+		got := planBomLine(u, items)
 		if got == nil || got.Id != fixtureLiningSlot {
 			t.Fatalf("resolved %+v, want the lining slot %d", got, fixtureLiningSlot)
 		}
 	})
 
 	t.Run("легаси-строка без FK резолвится позиционно", func(t *testing.T) {
-		got := pieceSlotBomLine(&entity.TechCardPieceMaterial{BomItemIndex: idxRef(1)}, items)
+		got := planBomLine(&entity.TechCardColorwayUsage{BomItemIndex: idxRef(1), PieceId: slotRef(2)}, items)
 		if got == nil || got.Id != fixtureLiningSlot {
 			t.Fatalf("resolved %+v, want the lining slot", got)
 		}
@@ -493,8 +496,9 @@ func TestPieceSlotResolvesByFkBeforePosition(t *testing.T) {
 
 	t.Run("нерезолвимая ссылка даёт UNKNOWN, а деталь остаётся в клетке", func(t *testing.T) {
 		card := twoClothCard()
-		card.Pieces[1].Materials = []entity.TechCardPieceMaterial{
-			{ColorwayID: fixtureCw1, BomItemIndex: idxRef(99)}, // индекс за пределами BOM
+		card.Colorways[0].Usages = []entity.TechCardColorwayUsage{
+			{BomItemId: slotRef(fixtureFabricSlot), PieceId: slotRef(1)},
+			{BomItemIndex: idxRef(99), PieceId: slotRef(2)}, // индекс за пределами BOM
 		}
 		required := requiredPiecesForColorway(card, fixtureCw1)
 		if len(required) != 2 {
@@ -522,7 +526,9 @@ func TestPieceSlotResolvesByFkBeforePosition(t *testing.T) {
 
 	t.Run("деталь без привязки к этому колорвею тоже UNKNOWN, а не пропуск", func(t *testing.T) {
 		card := twoClothCard()
-		card.Pieces[1].Materials = nil
+		card.Colorways[0].Usages = []entity.TechCardColorwayUsage{
+			{BomItemId: slotRef(fixtureFabricSlot), PieceId: slotRef(1)},
+		}
 		required := requiredPiecesForColorway(card, fixtureCw1)
 		if len(required) != 2 {
 			t.Fatalf("required = %d, want 2", len(required))
@@ -557,7 +563,7 @@ func TestFaceToFaceOddPliesContributesNothingAndBlocks(t *testing.T) {
 		t.Errorf("unknown = %d, want 0 — это доказанный ноль, а не пробел", c.UnknownPieceCount)
 	}
 	joined := strings.Join(cov.Caveats, " | ")
-	if !strings.Contains(joined, "нечётная") {
+	if !strings.Contains(joined, "odd ply count") {
 		t.Errorf("caveats = %q, must name the odd section", joined)
 	}
 }
@@ -607,7 +613,7 @@ func TestBrokenLayMakesShortageUnprovableButKeepsSufficiency(t *testing.T) {
 		if c.Status != CoverageStatusUnknown {
 			t.Fatalf("status = %s, want UNKNOWN", c.Status)
 		}
-		if !strings.Contains(strings.Join(cov.Caveats, " | "), "потерял слот BOM") {
+		if !strings.Contains(strings.Join(cov.Caveats, " | "), "lost its BOM slot") {
 			t.Errorf("caveats = %q, must name the broken lay", cov.Caveats)
 		}
 	})

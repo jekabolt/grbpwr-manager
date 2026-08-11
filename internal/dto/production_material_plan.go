@@ -115,7 +115,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		// wrong explanation of a right number.
 		hasManualNorms  bool
 		hasCountedNorms bool
-		hasSizeNorms    bool
+		// hasDxfNorms is the third non-marker kind (0294): a norm computed from the pattern sheets.
+		// It grosses by the BOM wastage percent exactly like a manual one, so it changes no number
+		// here — it exists so the caveat can say WHICH kind of norm shut the coefficient out.
+		hasDxfNorms  bool
+		hasSizeNorms bool
 		// hasNormSource / hasLaySource are the row's SIGNATURE (Ф4.6). A row is keyed by ARTICLE and
 		// an article can be fed by two slots at once — one laid, one not — so the two are counted
 		// rather than collapsed into one value on the way in. MIXED is the honest answer for that row
@@ -232,11 +236,18 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	layDemand, layNotes := planLayDemandByPair(lays)
 	caveats = append(caveats, layNotes...)
 	// layArticle remembers the article the RECIPE resolves for a laid pair, so the lay's metres are
-	// attributed to the same article the norm would have used — pin first, slot default second, and
-	// through the same resolver (planBomLine), never through the positional index alone.
+	// attributed to the SAME article every other lay reader uses — ResolveLayArticle, the one
+	// resolver (garment pin → sole piece pin → slot default), never the positional index alone and
+	// never a private second rule that would let the plan count a different roll than the lay view
+	// shows and the cutting room lays.
 	type layArticleRef struct {
 		mid    int
 		pinned bool
+		// pieceClash — ResolveLayArticle's contest, to be named ONCE per pair in the lays pass.
+		pieceClash []int
+		// rowMid is the FIRST visited garment row's own resolution, kept solely so the clash check
+		// below can still notice a pair whose rows resolve to two different articles.
+		rowMid int
 	}
 	layArticle := make(map[planLayPairKey]layArticleRef, len(layDemand))
 	// The loop below visits each (колорвей, слот) once per RUN LINE, i.e. once per size, so a pair
@@ -293,7 +304,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			if kg.Valid && kgBase.Valid {
 				stockAdd, stockBase = kg.Decimal, kgBase.Decimal
 				rowUnit = stockUnit
-				noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (кромка included) × %s g/m²",
+				noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (selvedge included) × %s g/m²",
 					matName(mid, bom), slotUnit, stockUnit,
 					width.Decimal.String(), gsm.Decimal.String()))
 			} else {
@@ -353,6 +364,14 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
+			// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a
+			// cut-piece and carries no norm: no contribution, no blocker, and no «slot covered»
+			// mark — the requirement of the slot is counted from its GARMENT-level row. A slot
+			// referenced ONLY by piece rows therefore falls into the uncovered-slot blocker
+			// below, which is the honest verdict: it has no garment norm to plan by.
+			if u.IsPieceMaterialAssignment() {
+				continue
+			}
 			bom := planBomLine(u, card.BomItems)
 			if bom == nil {
 				if !noBomNoted[cw.Name] {
@@ -368,17 +387,19 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// for this pair and ONLY for this pair. The sibling slot two lines down — подкладка with no
 			// настил yet — falls through to the norm below and keeps its non-zero requirement.
 			//
-			// The article resolved here is remembered rather than recomputed later: the lay's metres
-			// must land on the SAME article the norm would have used (the colourway's pin first, the
-			// slot default second), and re-deriving that in the lays pass would be a second resolver.
+			// The article for the pair is resolved ONCE, through ResolveLayArticle — the same
+			// resolver the lay view and the calibration read — and remembered; the row-by-row walk
+			// only checks that no OTHER garment row of the pair resolves elsewhere, and names the
+			// pair once when one does.
 			if _, laid := layDemand[planLayPairKey{colorwayID: pid, bomItemID: bom.Id}]; laid {
 				k := planLayPairKey{colorwayID: pid, bomItemID: bom.Id}
 				if prev, seen := layArticle[k]; !seen {
-					layArticle[k] = layArticleRef{mid: mid, pinned: pinned}
-				} else if prev.mid != mid && mid != 0 && !layArticleClash[k] {
+					res := ResolveLayArticle(card, pid, int64(bom.Id))
+					layArticle[k] = layArticleRef{mid: res.MaterialId, pinned: res.Pinned, pieceClash: res.PieceClash, rowMid: mid}
+				} else if prev.rowMid != mid && mid != 0 && !layArticleClash[k] {
 					layArticleClash[k] = true
 					caveats = append(caveats, fmt.Sprintf(
-						"слот %q у колорвея %q резолвится в два разных артикула — потребность по настилам отнесена к первому (#%d)",
+						"slot %q of colourway %q resolves to two different articles — the lay-based requirement is attributed to #%d",
 						bom.Name, colorwayName(pid), prev.mid))
 				}
 				continue
@@ -397,8 +418,15 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// Which gross-up depends on where the norm came from, and the two worlds stay disjoint
 			// so no line is ever grossed twice:
 			//
-			//   * MANUAL / legacy measured norm — the BOM line's wastage estimate (5% → ×1.05),
+			//   * MANUAL / DXF / legacy measured norm — the BOM line's wastage estimate (5% → ×1.05),
 			//     overridden by the run's ACTUAL cutting wastage when set. Unchanged by Ф5а.
+			//     'dxf' (0294) is netto piece area: it contains NO waste of any kind, so the wastage
+			//     estimate is the only thing that pays for the cloth between the pieces — and the
+			//     article's cutting coefficient deliberately does NOT also bite, because that
+			//     coefficient is calibrated against MEASURED marker lengths. The consequence is worth
+			//     stating plainly: a dxf norm asks for less cloth than a marker norm of the same slot
+			//     unless the slot's wastage percent covers усадка and пороки too. The readiness gate
+			//     refuses a run whose dxf slot declares no percentage at all.
 			//   * MARKER-sourced norm — the ARTICLE's cutting coefficient (Ф5а.2). A marker's
 			//     measured length already contains the cutting waste of a clean lay on a nominal
 			//     width (PIECES-WASTAGE-DESIGN §2.3), which is why the wastage factor must never
@@ -412,6 +440,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			factor := decimal.NewFromInt(1)
 			lineCoeff := decimal.NullDecimal{}
 			markerSourced := u.ConsumptionSource.String == entity.ConsumptionSourceMarker
+			dxfSourced := u.ConsumptionSource.String == entity.ConsumptionSourceDxf
 			switch {
 			case counted:
 				// no gross-up
@@ -472,6 +501,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			switch {
 			case counted:
 				a.hasCountedNorms = true
+			case dxfSourced:
+				// Kept apart from hasManualNorms so the «coefficient did not bite» caveat below can
+				// name the real reason. Both take the wastage branch, but «your norms are manual» is
+				// a wrong explanation of a right number for a norm computed off the patterns — the
+				// same species of lie the counted-trim arm exists to avoid.
+				a.hasDxfNorms = true
 			case !markerSourced:
 				a.hasManualNorms = true
 			}
@@ -511,7 +546,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// The slot is live in the настил but absent from the card this plan loaded. Nothing to
 			// attribute the cloth to, and silence would drop a measured requirement on the floor.
 			caveats = append(caveats, fmt.Sprintf(
-				"настилы %s: слот #%d не найден в этой карточке — их потребность не посчитана",
+				"lays %s: slot #%d is not found in this card — their requirement is not counted",
 				d.label(), k.bomItemID))
 			continue
 		}
@@ -523,15 +558,22 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		usedSlotsByColorway[k.colorwayID][bom.Id] = true
 
-		mid, pinned := 0, false
-		if ref, ok := layArticle[k]; ok {
-			mid, pinned = ref.mid, ref.pinned
-		} else if bom.MaterialId.Valid {
-			// The recipe has no usage for this pair (or the colourway has no planned line), yet the
-			// slot IS being laid. The slot default is the same second choice EffectiveMaterialId
-			// would have made; taking it keeps a laid pair countable instead of blocking it on a
-			// missing norm the настил does not need.
-			mid = int(bom.MaterialId.Int64)
+		ref, ok := layArticle[k]
+		if !ok {
+			// The norm walk never visited this pair (the colourway has no planned line, or the
+			// slot's recipe rows are all piece assignments) — resolve it HERE through the same
+			// resolver: garment pin → sole piece pin → slot default. Falling back to the slot
+			// default alone would be a second resolver, and it would count a different roll than
+			// the one the cut plan names and the lot validation accepted.
+			res := ResolveLayArticle(card, k.colorwayID, int64(k.bomItemID))
+			ref = layArticleRef{mid: res.MaterialId, pinned: res.Pinned, pieceClash: res.PieceClash}
+		}
+		mid, pinned := ref.mid, ref.pinned
+		if len(ref.pieceClash) > 1 {
+			// Той же интонацией, что layArticleClash выше: выбор назван, а не сделан молча.
+			caveats = append(caveats, fmt.Sprintf(
+				"slot %q of colourway %q: piece rows pin %d different articles and no garment-level row pins one — the lay-based requirement is attributed to the first pin (#%d)",
+				bom.Name, colorwayName(k.colorwayID), len(ref.pieceClash), mid))
 		}
 		if mid == 0 {
 			blockAdd(bom.Id, k.colorwayID, plannedByColorway[k.colorwayID], entity.MaterialPlanBlockerNoArticle, entity.MaterialPlanReasonNoArticle)
@@ -543,12 +585,12 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		laidSlots[bom.Id] = true
 		if _, planned := plannedByColorway[k.colorwayID]; !planned {
 			caveats = append(caveats, fmt.Sprintf(
-				"настилы %s построены на колорвей %q, которого прогон не планирует — их метраж всё равно в потребности",
+				"lays %s are built for colourway %q, which the run does not plan — their metreage still counts towards the requirement",
 				d.label(), colorwayName(k.colorwayID)))
 		}
 		if d.totalCm().IsZero() {
 			caveats = append(caveats, fmt.Sprintf(
-				"настилы %s (слот %q, колорвей %q) не дают длины — потребность этой пары по настилам равна нулю, а норма к ней уже не применяется",
+				"lays %s (slot %q, colourway %q) yield no length — this pair's lay-based requirement is zero, and the norm no longer applies to it",
 				d.label(), bom.Name, colorwayName(k.colorwayID)))
 		}
 		caveats = append(caveats, d.unmeasured...)
@@ -565,9 +607,9 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			contribUnit = string(entity.MaterialUnitM)
 			spec := strings.TrimSpace(bom.Unit.String)
 			if spec == "" {
-				spec = "не задана"
+				spec = "not set"
 			}
-			noteUnit(fmt.Sprintf("%s: слот %q специфицирован в единице %q, а настил измеряет ткань в метрах — вклад по настилам отдан в метрах",
+			noteUnit(fmt.Sprintf("%s: slot %q is specified in unit %q, but a lay measures cloth in metres — the lay contribution is given in metres",
 				matName(mid, bom), bom.Name, spec))
 		}
 
@@ -624,11 +666,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			switch {
 			case run.ActualWastagePercent.Valid:
 				caveats = append(caveats, fmt.Sprintf(
-					"процент отхода прогона %s%% не применён к слоту %q: потребность посчитана по настилам (измерение), а не по норме",
+					"the run's wastage percent %s%% is not applied to slot %q: the requirement is computed from lays (a measurement), not from the norm",
 					run.ActualWastagePercent.Decimal.String(), bom.Name))
 			case bom.WastagePercent.Valid:
 				caveats = append(caveats, fmt.Sprintf(
-					"процент отхода %s%% слота %q не применён: потребность посчитана по настилам (измерение), а не по норме",
+					"the wastage percent %s%% of slot %q is not applied: the requirement is computed from lays (a measurement), not from the norm",
 					bom.WastagePercent.Decimal.String(), bom.Name))
 			}
 		}
@@ -676,19 +718,36 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		var because string
 		switch {
-		case a.hasLaySource && !a.hasManualNorms && !a.hasCountedNorms:
+		case a.hasLaySource && !a.hasManualNorms && !a.hasCountedNorms && !a.hasDxfNorms:
 			// Ф4.6 / Р4. Saying «your norms are manual» about a row whose requirement was MEASURED
 			// would be a wrong explanation of a right number — the same mistake the counted-trim arm
 			// below exists to avoid.
-			because = "потребность этой строки посчитана по НАСТИЛАМ (длина × слои + концевые потери), а коэффициент правит оценку по НОРМЕ: к измерению он не применяется"
+			because = "this row's requirement is computed from LAYS (length × plies + end losses), while the coefficient adjusts the NORM-based estimate: it does not apply to a measurement"
 		case a.hasLaySource:
-			because = "часть потребности посчитана по НАСТИЛАМ (к измерению коэффициент не применяется), а остальные нормы этого прогона не маркерные"
-		case a.hasManualNorms && a.hasCountedNorms:
-			because = "this run's norms for it are manual (their BOM wastage % applies instead) or counted quantities (which take no gross-up at all)"
-		case a.hasCountedNorms:
+			because = "part of the requirement is computed from LAYS (the coefficient does not apply to a measurement), and this run's remaining norms are not marker-sourced"
+		case a.hasCountedNorms && !a.hasManualNorms && !a.hasDxfNorms:
 			because = "this article is consumed here as a counted quantity — 4 buttons stay 4 buttons — which takes no gross-up at all"
 		default:
-			because = "this run's norms for it are manual (their BOM wastage % applies instead)"
+			// Собирается из ПРИСУТСТВУЮЩИХ видов норм, а не перечисляется парами. Пар было две, стало
+			// шесть с приходом 'dxf' (0294), и рукописный набор арок — это ровно тот код, где через
+			// одну ветку начинают говорить «ваши нормы ручные» про норму, снятую с выкроек. Порядок
+			// (ручная → выкройки → штучная) фиксирован, поэтому строка для старых сочетаний
+			// побайтово та же, что и до 0294.
+			kinds := make([]string, 0, 3)
+			if a.hasManualNorms {
+				kinds = append(kinds, "manual (their BOM wastage % applies instead)")
+			}
+			if a.hasDxfNorms {
+				kinds = append(kinds, "taken from the patterns — netto piece area, so their BOM wastage % applies instead")
+			}
+			if a.hasCountedNorms {
+				kinds = append(kinds, "counted quantities (which take no gross-up at all)")
+			}
+			if len(kinds) == 0 {
+				// No norm kind recorded at all: keep the pre-0294 wording rather than an empty phrase.
+				kinds = append(kinds, "manual (their BOM wastage % applies instead)")
+			}
+			because = "this run's norms for it are " + strings.Join(kinds, " or ")
 		}
 		caveats = append(caveats, fmt.Sprintf("%s: cutting coefficient %s not applied — it grosses up MARKER-sourced norms, and %s",
 			a.name, a.coefficient.Decimal.String(), because))
@@ -891,7 +950,7 @@ func (d *planLayDemand) totalCm() decimal.Decimal { return d.clothCm.Add(d.endLo
 
 func (d *planLayDemand) label() string {
 	if len(d.names) == 0 {
-		return "(без имени)"
+		return "(unnamed)"
 	}
 	return strings.Join(d.names, ", ")
 }
@@ -922,7 +981,7 @@ func planLayDemandByPair(lays []entity.ProductionRunLay) (map[planLayPairKey]*pl
 		}
 		if l.Broken() {
 			notes = append(notes, fmt.Sprintf(
-				"настил %q потерял слот BOM (снимок ключа слота %q) — его метраж не вошёл в потребность ни одного артикула",
+				"lay %q lost its BOM slot (slot key snapshot %q) — its metreage did not enter any article's requirement",
 				name, l.BomLineKey))
 			continue
 		}
@@ -940,7 +999,7 @@ func planLayDemandByPair(lays []entity.ProductionRunLay) (map[planLayPairKey]*pl
 			// small, which reads as «ткани хватает» in the one place that must never be optimistic.
 			s := l.Sections[idx]
 			d.unmeasured = append(d.unmeasured, fmt.Sprintf(
-				"настил %q: у раскладки %q (#%d) не задана длина раскладки — %d слоёв этой секции не вошли в потребность",
+				"lay %q: marker %q (#%d) has no marker length set — %d plies of this section did not enter the requirement",
 				name, s.MarkerName, s.MarkerId, s.Plies))
 		}
 		d.clothCm = d.clothCm.Add(g.ClothCm)

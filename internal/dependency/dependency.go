@@ -882,7 +882,12 @@ type (
 		//
 		// Sections ARE loaded (the plan is Σ marker length × plies); the quantity snapshot is NOT —
 		// staleness is a per-run comparison and this list crosses runs.
-		ListMeasuredLayCandidates(ctx context.Context, materialID int) ([]entity.ProductionRunLayFact, error)
+		//
+		// The selection is CAPPED to the `limit` freshest measurements (правки ревью T7в2, MAJOR 5) —
+		// an unbounded scan cost a sequential card+markers load per lay of a popular article. The
+		// second return value is how many candidates exist IN TOTAL, so the caller can state the
+		// window in its answer instead of implying the median saw everything.
+		ListMeasuredLayCandidates(ctx context.Context, materialID, limit int) ([]entity.ProductionRunLayFact, int, error)
 
 		// ПРИЁМКА КРОЯ (Ф5б.5, migration 0287). Two numbers per pair (настил, размер) — выкроено and
 		// принято в пошив — inserted BETWEEN production_run_line's planned_qty and received_qty,

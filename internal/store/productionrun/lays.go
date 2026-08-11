@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -205,6 +206,35 @@ func (s *Store) SaveLay(ctx context.Context, runID int, ins entity.ProductionRun
 		// renewed ONLY when the measurement itself moved — see resolveLayActual.
 		actual := resolveLayActual(ins.Actual, stored)
 
+		// 6d. ШТАМП NETTO (0296, правки ревью T7в2 MAJOR 1) — считается ЗДЕСЬ, В ТОЙ ЖЕ ТРАНЗАКЦИИ,
+		// что пишет факт, и правило названо: ЗНАМЕНАТЕЛЬ СЧИТАЕТСЯ ТАМ ЖЕ, ГДЕ ПИШЕТСЯ ФАКТ, А
+		// ОШИБКА ЧТЕНИЯ — ОТКАЗ СЕЙВА, НЕ ТИХИЙ NULL. Карточка и раскладки читаются через rep (снимок
+		// этой транзакции), поэтому знаменатель не может разъехаться с сохраняемым фактом: рецепт,
+		// поменянный до нас, виден целиком, поменянный после — не виден вовсе, и штамп честен в
+		// обоих порядках. Временная ошибка чтения роняет транзакцию — факт НЕ коммитится со штампом
+		// NULL, потому что RPC потом пересчитал бы знаменатель по СЕГОДНЯШНЕЙ карточке, что
+		// противоречит самой цели исторического штампа.
+		//
+		// Легитимно невычислимое netto (нет dxf-нормы, состав не записан, единицы несводимы) — НЕ
+		// ошибка: штамп остаётся NULL, dto.LayNettoOf называет причину на пути чтения, и предложение
+		// показывает настил как «без штампа» (netto_stamped=false / skipped). Считается только когда
+		// штамп БУДЕТ записан (Stamp): эхо-сейв не платит за чтения и не подменяет знаменатель
+		// сегодняшней нормой.
+		if actual != nil && actual.Stamp && actual.Qty.Valid {
+			netto, err := computeLayNettoStamp(ctx, rep, runID, run.TechCardId, bomItemID,
+				ins, actual.Uom.String)
+			if err != nil {
+				return err
+			}
+			actual.Netto = netto
+			if netto.Valid {
+				// БАЗИС штампа (MAJOR 4): копия факта, над которым netto посчитано, — то, что делает
+				// штамп самопроверяемым после отката DO (entity.TrustedNettoStamp).
+				actual.NettoBasisQty = actual.Qty
+				actual.NettoBasisUom = actual.Uom
+			}
+		}
+
 		// 7. Header upsert. lock_version is bumped on EVERY update, whether or not a column changed:
 		// the version is a statement about "somebody saved this", which is what the other tab needs
 		// to hear.
@@ -375,6 +405,60 @@ type layActualWrite struct {
 	// or the last person to touch the lay would be recorded as the one who measured it, and the
 	// provenance the method column exists for would be a lie by the second save.
 	Stamp bool
+	// Netto is the netto-знаменатель предложения процента раскроя (0296), computed by SaveLay
+	// INSIDE the write transaction (computeLayNettoStamp) — never off the wire, never before the
+	// tx. Written ONLY under Stamp — an echo save must not re-derive the denominator from a norm
+	// that may have changed since the замер: the stamp exists precisely because the dxf-норма
+	// испаряется при переходе карточки на marker-норму. Invalid = «netto в момент замера вычислить
+	// не из чего», stored as NULL; withdrawal of the fact clears it (a denominator must not outlive
+	// its numerator's replacement).
+	Netto decimal.NullDecimal
+	// NettoBasisQty/NettoBasisUom — БАЗИС штампа (MAJOR 4): копия факта, над которым Netto
+	// посчитано. Пишутся строго вместе с Netto (chk_prlay_netto_basis) и только под Stamp; их
+	// расхождение с actual_qty/actual_uom на чтении доказывает правку факта мимо штампа (старый
+	// бинарь после отката DO) — entity.TrustedNettoStamp тогда отбрасывает штамп с причиной.
+	NettoBasisQty decimal.NullDecimal
+	NettoBasisUom sql.NullString
+}
+
+// computeLayNettoStamp computes the netto-знаменатель (0296) for a lay whose FACT is being written —
+// INSIDE the caller's transaction, from the card and раскладки exactly as this transaction sees
+// them. That placement is the point (правки ревью T7в2, MAJOR 1): a denominator read before the tx
+// could belong to a recipe that changed under our feet, and a failed read outside the tx used to
+// become a silent NULL stamp. Here a read failure fails the SAVE — named, not swallowed — and a
+// successful read cannot disagree with the fact it is stamped next to.
+//
+// The arithmetic itself is dto.LayNettoOf — the ONE owner of the netto rule; this function only
+// feeds it the payload's sections joined with the run's раскладки (state, composition) and the
+// card. An incomputable netto (no dxf norm, unknown состав, несводимые единицы) returns invalid
+// WITHOUT error: that is a real state the suggestion names on the read path, not a failure.
+func computeLayNettoStamp(ctx context.Context, rep dependency.Repository, runID, techCardID,
+	bomItemID int, ins entity.ProductionRunLayInsert, actualUom string) (decimal.NullDecimal, error) {
+
+	card, err := rep.TechCards().GetTechCardById(ctx, techCardID)
+	if err != nil {
+		return decimal.NullDecimal{}, fmt.Errorf("failed to load tech card %d for the netto stamp: %w", techCardID, err)
+	}
+	markers, err := rep.TechCards().ListRunMarkers(ctx, runID)
+	if err != nil {
+		return decimal.NullDecimal{}, fmt.Errorf("failed to load раскладки of run %d for the netto stamp: %w", runID, err)
+	}
+	byID := make(map[int]*entity.TechCardMarkerSummary, len(markers))
+	for i := range markers {
+		byID[markers[i].Id] = &markers[i]
+	}
+	sections := make([]dto.LayNettoSection, 0, len(ins.Sections))
+	for _, sec := range ins.Sections {
+		ns := dto.LayNettoSection{Plies: sec.Plies}
+		if m := byID[sec.MarkerId]; m != nil {
+			ns.MarkerLabel = m.Name
+			// ОДИН владелец состава — CompositionOrLegacy; раскладка без состава оставит секцию
+			// пустой, и netto откажет, назвав её.
+			ns.Composition = m.CompositionOrLegacy()
+		}
+		sections = append(sections, ns)
+	}
+	return dto.LayNettoOf(card, ins.ColorwayId, int64(bomItemID), actualUom, sections).Qty, nil
 }
 
 // resolveLayLot turns the payload's lot instruction into a binding plus its code SNAPSHOT.
@@ -695,10 +779,16 @@ func insertLayHeader(ctx context.Context, db dependency.DB, runID int, ins entit
 	params["actual_uom"] = sql.NullString{}
 	params["actual_method"] = sql.NullString{}
 	params["actual_by"] = ""
+	params["netto_qty"] = decimal.NullDecimal{}
+	params["netto_basis_qty"] = decimal.NullDecimal{}
+	params["netto_basis_uom"] = sql.NullString{}
 	if actual != nil {
 		params["actual_qty"] = actual.Qty
 		params["actual_uom"] = actual.Uom
 		params["actual_method"] = actual.Method
+		params["netto_qty"] = actual.Netto
+		params["netto_basis_qty"] = actual.NettoBasisQty
+		params["netto_basis_uom"] = actual.NettoBasisUom
 		if actual.Qty.Valid {
 			params["actual_by"] = username
 		}
@@ -711,11 +801,13 @@ func insertLayHeader(ctx context.Context, db dependency.DB, runID int, ins entit
 		INSERT INTO production_run_lay
 			(run_id, lay_key, colorway_id, bom_item_id, bom_line_key, name, mode, end_loss_cm,
 			 qty_snapshot, note, display_order, lot_id, lot_code,
-			 actual_qty, actual_uom, actual_method, actual_by, actual_at, created_by, updated_by)
+			 actual_qty, actual_uom, actual_method, actual_by, actual_at,
+			 netto_qty, netto_basis_qty, netto_basis_uom, created_by, updated_by)
 		VALUES
 			(:run_id, :lay_key, :colorway_id, :bom_item_id, :bom_line_key, :name, :mode, :end_loss_cm,
 			 :qty_snapshot, :note, :display_order, :lot_id, :lot_code,
-			 :actual_qty, :actual_uom, :actual_method, :actual_by, `+actualAt+`, :created_by, :updated_by)`, params)
+			 :actual_qty, :actual_uom, :actual_method, :actual_by, `+actualAt+`,
+			 :netto_qty, :netto_basis_qty, :netto_basis_uom, :created_by, :updated_by)`, params)
 	if err != nil {
 		var me *mysql.MySQLError
 		if errors.As(err, &me) && me.Number == 1062 {
@@ -789,11 +881,26 @@ func updateLayHeader(ctx context.Context, db dependency.DB, layID int, ins entit
 		if actual.Stamp {
 			// Renewed only when the measurement moved, and cleared outright when the fact is
 			// withdrawn: a signature must not outlive the number it was put under.
+			//
+			// THE NETTO STAMP (0296) MOVES UNDER THE SAME CONDITION AND NO OTHER. An echo save must
+			// not re-derive the denominator from today's норма: the whole point of stamping netto at
+			// замер time is that the dxf-норма испаряется when the card moves to a marker norm, and
+			// a rewrite here would replace the denominator the fact was measured against with
+			// whatever the card says now. The BASIS (the fact copy the stamp divided — MAJOR 4)
+			// moves strictly together with the stamp, in the one statement that also writes the
+			// fact: that lockstep is what makes the stamp self-verifying after a DO rollback.
+			// Withdrawal clears all three together with the signature.
 			if actual.Qty.Valid {
-				sets = append(sets, "actual_by = :actual_by", "actual_at = CURRENT_TIMESTAMP")
+				sets = append(sets, "actual_by = :actual_by", "actual_at = CURRENT_TIMESTAMP",
+					"netto_qty = :netto_qty", "netto_basis_qty = :netto_basis_qty",
+					"netto_basis_uom = :netto_basis_uom")
 				params["actual_by"] = username
+				params["netto_qty"] = actual.Netto
+				params["netto_basis_qty"] = actual.NettoBasisQty
+				params["netto_basis_uom"] = actual.NettoBasisUom
 			} else {
-				sets = append(sets, "actual_by = '', actual_at = NULL")
+				sets = append(sets,
+					"actual_by = '', actual_at = NULL, netto_qty = NULL, netto_basis_qty = NULL, netto_basis_uom = NULL")
 			}
 		}
 	}
@@ -1024,6 +1131,7 @@ const layColumns = `
 	l.lot_id, l.lot_code, ml.material_id AS lot_material_id,
 	ml.measured_width_cm AS lot_measured_width_cm, ml.shade_code AS lot_shade_code,
 	l.actual_qty, l.actual_uom, l.actual_method, l.actual_by, l.actual_at,
+	l.netto_qty, l.netto_basis_qty, l.netto_basis_uom,
 	l.qty_snapshot, l.created_by, l.updated_by, l.created_at, l.updated_at`
 
 // layRow is the stored lay plus its raw snapshot bytes, which only this file decodes.
@@ -1202,19 +1310,22 @@ type measuredLayRow struct {
 //
 // Порядок — от свежего замера к старому: человек, ищущий свою опечатку, ищет её среди последних.
 // Настилы без отметки времени (факт есть, штампа нет) уходят в конец, а не выдают себя за старые.
-func (s *Store) ListMeasuredLayCandidates(ctx context.Context, materialID int) ([]entity.ProductionRunLayFact, error) {
+//
+// ВЫБОРКА ОГРАНИЧЕНА (правки ревью T7в2, MAJOR 5): limit свежих настилов, и рядом СЧИТАЕТСЯ, сколько
+// кандидатов есть всего, — вызывающий обязан назвать окно в ответе, иначе «медиана по N» из окна
+// непроверяема. Безлимитный вариант делал по последовательной загрузке карточки и раскладок на
+// каждый настил популярного артикула — сотни запросов и таймаут на проде.
+func (s *Store) ListMeasuredLayCandidates(ctx context.Context, materialID, limit int) ([]entity.ProductionRunLayFact, int, error) {
 	if materialID <= 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
-	rows, err := storeutil.QueryListNamed[measuredLayRow](ctx, s.DB, `
-		SELECT `+layColumns+`, r.tech_card_id AS tech_card_id, COALESCE(tc.name, '') AS tech_card_name
-		FROM production_run_lay l
-		JOIN production_run r ON r.id = l.run_id
-		JOIN tech_card tc ON tc.id = r.tech_card_id
-		LEFT JOIN product p ON p.id = l.colorway_id
-		LEFT JOIN tech_card_bom_item bi ON bi.id = l.bom_item_id
-		LEFT JOIN material_lot ml ON ml.id = l.lot_id
-		WHERE l.actual_qty IS NOT NULL
+	if limit <= 0 {
+		return nil, 0, fmt.Errorf("measured lay candidates need a positive limit, got %d", limit)
+	}
+	// Пара EXISTS ниже — ЕДИНСТВЕННЫЙ отборщик кандидатов (см. шапку); COUNT обязан считать ровно
+	// его, поэтому предикат буквально тот же.
+	const candidatePredicate = `
+		l.actual_qty IS NOT NULL
 		  AND (
 		    EXISTS (
 		      SELECT 1 FROM tech_card_bom_item b
@@ -1225,14 +1336,35 @@ func (s *Store) ListMeasuredLayCandidates(ctx context.Context, materialID int) (
 		      JOIN product cw ON cw.id = u.colorway_id
 		      WHERE cw.style_id = r.tech_card_id AND u.material_id = :material
 		    )
-		  )
-		ORDER BY l.actual_at IS NULL, l.actual_at DESC, l.id DESC`,
+		  )`
+	totalRow, err := storeutil.QueryNamedOne[struct {
+		N int `db:"n"`
+	}](ctx, s.DB, `
+		SELECT COUNT(*) AS n
+		FROM production_run_lay l
+		JOIN production_run r ON r.id = l.run_id
+		WHERE `+candidatePredicate,
 		map[string]any{"material": materialID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to load measured lays of material %d: %w", materialID, err)
+		return nil, 0, fmt.Errorf("failed to count measured lays of material %d: %w", materialID, err)
+	}
+	rows, err := storeutil.QueryListNamed[measuredLayRow](ctx, s.DB, `
+		SELECT `+layColumns+`, r.tech_card_id AS tech_card_id, COALESCE(tc.name, '') AS tech_card_name
+		FROM production_run_lay l
+		JOIN production_run r ON r.id = l.run_id
+		JOIN tech_card tc ON tc.id = r.tech_card_id
+		LEFT JOIN product p ON p.id = l.colorway_id
+		LEFT JOIN tech_card_bom_item bi ON bi.id = l.bom_item_id
+		LEFT JOIN material_lot ml ON ml.id = l.lot_id
+		WHERE `+candidatePredicate+`
+		ORDER BY l.actual_at IS NULL, l.actual_at DESC, l.id DESC
+		LIMIT :limit`,
+		map[string]any{"material": materialID, "limit": limit})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to load measured lays of material %d: %w", materialID, err)
 	}
 	if len(rows) == 0 {
-		return []entity.ProductionRunLayFact{}, nil
+		return []entity.ProductionRunLayFact{}, totalRow.N, nil
 	}
 
 	out := make([]entity.ProductionRunLayFact, 0, len(rows))
@@ -1253,10 +1385,10 @@ func (s *Store) ListMeasuredLayCandidates(ctx context.Context, materialID int) (
 	// причиной «нет плана» — то есть замер цеха потерялся бы из-за незагруженного джойна.
 	sections, err := loadLaySections(ctx, s.DB, ids)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for i := range out {
 		out[i].Sections = sections[out[i].Id]
 	}
-	return out, nil
+	return out, totalRow.N, nil
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -846,12 +847,6 @@ func (s *Store) RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency s
 	var out []entity.RepricedBomLine
 	skippedUnlinked := 0
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// txFunc may retry the callback after a deadlock; never carry results from an aborted
-		// attempt (the reprice FOR UPDATE below vs the save path's shared-lock read is exactly the
-		// S→X pair that deadlocks under SERIALIZABLE).
-		out = out[:0]
-		skippedUnlinked = 0
-		touched := 0
 		card, err := storeutil.QueryNamedOne[struct {
 			ApprovalState string `db:"approval_state"`
 		}](ctx, rep.DB(), `SELECT approval_state FROM tech_card WHERE id = :id FOR UPDATE`,
@@ -866,99 +861,14 @@ func (s *Store) RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency s
 			return entity.ErrTechCardReleased
 		}
 
-		costingCurrency := ""
-		costingRows, err := storeutil.QueryListNamed[struct {
-			Currency sql.NullString `db:"currency"`
-		}](ctx, rep.DB(), `SELECT currency FROM tech_card_costing WHERE tech_card_id = :id`,
-			map[string]any{"id": tcID})
+		// txFunc may retry the callback after a deadlock (the reprice FOR UPDATE above vs the save
+		// path's shared-lock read is exactly the S→X pair that deadlocks under SERIALIZABLE); the
+		// helper returns fresh slices, so results from an aborted attempt are never carried over.
+		lines, skipped, touched, err := repriceBomLinesTx(ctx, rep.DB(), tcID, baseCurrency, false)
 		if err != nil {
-			return fmt.Errorf("load costing currency for reprice: %w", err)
+			return err
 		}
-		if len(costingRows) > 0 {
-			costingCurrency = strings.TrimSpace(costingRows[0].Currency.String)
-		}
-
-		lines, err := storeutil.QueryListNamed[struct {
-			Id         int                 `db:"id"`
-			LineKey    string              `db:"line_key"`
-			Name       string              `db:"name"`
-			Section    string              `db:"section"`
-			MaterialId sql.NullInt64       `db:"material_id"`
-			UnitPrice  decimal.NullDecimal `db:"unit_price"`
-			Currency   sql.NullString      `db:"currency"`
-		}](ctx, rep.DB(), `
-			SELECT id, COALESCE(line_key, '') AS line_key, name, section, material_id, unit_price, currency
-			FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
-			map[string]any{"id": tcID})
-		if err != nil {
-			return fmt.Errorf("load bom lines for reprice: %w", err)
-		}
-
-		ids := make([]int, 0, len(lines))
-		seen := map[int]bool{}
-		for i := range lines {
-			if !lines[i].MaterialId.Valid {
-				skippedUnlinked++
-				continue
-			}
-			id := int(lines[i].MaterialId.Int64)
-			if !seen[id] {
-				seen[id] = true
-				ids = append(ids, id)
-			}
-		}
-		materials := map[int]entity.MaterialWithPrice{}
-		if len(ids) > 0 {
-			rows, err := storeutil.QueryListNamed[materialRow](ctx, rep.DB(),
-				materialWithPriceSelect+` WHERE m.id IN (:ids)`, map[string]any{"ids": ids})
-			if err != nil {
-				return fmt.Errorf("load catalog prices for reprice: %w", err)
-			}
-			for _, mw := range materialsFromPriceRows(rows) {
-				materials[mw.Id] = mw
-			}
-		}
-
-		now := time.Now().UTC()
-		for i := range lines {
-			l := &lines[i]
-			if !l.MaterialId.Valid {
-				continue
-			}
-			res := entity.RepricedBomLine{
-				LineKey:     l.LineKey,
-				Name:        l.Name,
-				Section:     entity.TechCardBomSection(l.Section),
-				OldPrice:    l.UnitPrice,
-				OldCurrency: strings.TrimSpace(l.Currency.String),
-			}
-			mw, ok := materials[int(l.MaterialId.Int64)]
-			var price *entity.MaterialPrice
-			if ok {
-				price = mw.LatestPriceForCurrencies(costingCurrency, baseCurrency)
-			}
-			if price == nil {
-				// No current catalog price in a resolvable currency — the line keeps its number
-				// (and its provenance: nothing was pulled, so nothing may claim 'catalog').
-				out = append(out, res)
-				continue
-			}
-			res.NewPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
-			res.NewCurrency = price.Currency
-			res.Changed = !(l.UnitPrice.Valid && l.UnitPrice.Decimal.Equal(price.Price) &&
-				strings.EqualFold(res.OldCurrency, price.Currency))
-			if err := storeutil.ExecNamed(ctx, rep.DB(), `
-				UPDATE tech_card_bom_item SET unit_price = :price, currency = :currency,
-					price_source = :source, price_snapshot_at = :at
-				WHERE id = :id`, map[string]any{
-				"id": l.Id, "price": price.Price, "currency": price.Currency,
-				"source": entity.BomPriceSourceCatalog, "at": now,
-			}); err != nil {
-				return fmt.Errorf("reprice bom line %d: %w", l.Id, err)
-			}
-			touched++
-			out = append(out, res)
-		}
+		out, skippedUnlinked = lines, skipped
 		if touched > 0 {
 			// The reprice changed card CONTENT, so it must move the same optimistic-lock fence a
 			// save moves — otherwise a form opened before the reprice still carries a passing
@@ -977,6 +887,167 @@ func (s *Store) RepriceTechCardBom(ctx context.Context, tcID int, baseCurrency s
 		return nil, 0, err
 	}
 	return out, skippedUnlinked, nil
+}
+
+// repriceBomLinesTx pulls the current material-catalog price into a card's catalog-linked BOM lines
+// INSIDE THE CALLER'S TRANSACTION — the shared core of the explicit reprice action and the release
+// backfill. Price resolution is the estimate's own CATALOG_LATEST ladder
+// (LatestPriceForCurrencies(costing currency, base currency)), so a written line equals what the
+// cost estimate already reports for it, and every written line is stamped price_source='catalog' /
+// price_snapshot_at=now.
+//
+// onlyMissing=false restamps EVERY linked line (the reprice button: the price is now provably the
+// catalog's). onlyMissing=true fills ONLY lines whose unit_price is NULL — an agreed price IS the
+// frozen snapshot the column exists for and is never overwritten, and an already-priced line is
+// omitted from the report entirely. In both modes a line with no material link is counted in
+// skippedUnlinked and never touched, and a linked material with no resolvable current price leaves
+// its line unchanged (reported with an unset new price when the mode reports it at all).
+//
+// The caller owns the card lock, the released-state rule and any lock_version consequence — this
+// helper only moves BOM money.
+func repriceBomLinesTx(ctx context.Context, db dependency.DB, tcID int, baseCurrency string, onlyMissing bool) ([]entity.RepricedBomLine, int, int, error) {
+	costingCurrency := ""
+	costingRows, err := storeutil.QueryListNamed[struct {
+		Currency sql.NullString `db:"currency"`
+	}](ctx, db, `SELECT currency FROM tech_card_costing WHERE tech_card_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("load costing currency for reprice: %w", err)
+	}
+	if len(costingRows) > 0 {
+		costingCurrency = strings.TrimSpace(costingRows[0].Currency.String)
+	}
+
+	lines, err := storeutil.QueryListNamed[struct {
+		Id         int                 `db:"id"`
+		LineKey    string              `db:"line_key"`
+		Name       string              `db:"name"`
+		Section    string              `db:"section"`
+		MaterialId sql.NullInt64       `db:"material_id"`
+		UnitPrice  decimal.NullDecimal `db:"unit_price"`
+		Currency   sql.NullString      `db:"currency"`
+	}](ctx, db, `
+		SELECT id, COALESCE(line_key, '') AS line_key, name, section, material_id, unit_price, currency
+		FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("load bom lines for reprice: %w", err)
+	}
+
+	skippedUnlinked := 0
+	ids := make([]int, 0, len(lines))
+	seen := map[int]bool{}
+	for i := range lines {
+		if !lines[i].MaterialId.Valid {
+			skippedUnlinked++
+			continue
+		}
+		if onlyMissing && lines[i].UnitPrice.Valid {
+			continue // not a candidate, so its material need not be loaded
+		}
+		id := int(lines[i].MaterialId.Int64)
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	materials := map[int]entity.MaterialWithPrice{}
+	if len(ids) > 0 {
+		rows, err := storeutil.QueryListNamed[materialRow](ctx, db,
+			materialWithPriceSelect+` WHERE m.id IN (:ids)`, map[string]any{"ids": ids})
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("load catalog prices for reprice: %w", err)
+		}
+		for _, mw := range materialsFromPriceRows(rows) {
+			materials[mw.Id] = mw
+		}
+	}
+
+	var out []entity.RepricedBomLine
+	touched := 0
+	now := time.Now().UTC()
+	for i := range lines {
+		l := &lines[i]
+		if !l.MaterialId.Valid {
+			continue
+		}
+		if onlyMissing && l.UnitPrice.Valid {
+			continue // an agreed price is the snapshot itself — a fill never overwrites it
+		}
+		res := entity.RepricedBomLine{
+			LineKey:     l.LineKey,
+			Name:        l.Name,
+			Section:     entity.TechCardBomSection(l.Section),
+			OldPrice:    l.UnitPrice,
+			OldCurrency: strings.TrimSpace(l.Currency.String),
+		}
+		mw, ok := materials[int(l.MaterialId.Int64)]
+		var price *entity.MaterialPrice
+		if ok {
+			price = mw.LatestPriceForCurrencies(costingCurrency, baseCurrency)
+		}
+		if price == nil {
+			// No current catalog price in a resolvable currency — the line keeps its number
+			// (and its provenance: nothing was pulled, so nothing may claim 'catalog').
+			out = append(out, res)
+			continue
+		}
+		res.NewPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
+		res.NewCurrency = price.Currency
+		res.Changed = !(l.UnitPrice.Valid && l.UnitPrice.Decimal.Equal(price.Price) &&
+			strings.EqualFold(res.OldCurrency, price.Currency))
+		if err := storeutil.ExecNamed(ctx, db, `
+			UPDATE tech_card_bom_item SET unit_price = :price, currency = :currency,
+				price_source = :source, price_snapshot_at = :at
+			WHERE id = :id`, map[string]any{
+			"id": l.Id, "price": price.Price, "currency": price.Currency,
+			"source": entity.BomPriceSourceCatalog, "at": now,
+		}); err != nil {
+			return nil, 0, 0, fmt.Errorf("reprice bom line %d: %w", l.Id, err)
+		}
+		touched++
+		out = append(out, res)
+	}
+	return out, skippedUnlinked, touched, nil
+}
+
+// backfillBomPricesOnRelease fills the current catalog price into every linked BOM line that has
+// NO agreed price, at the moment a card goes RELEASED and inside the same transaction that writes
+// the release. A price added to the catalog AFTER the material was linked never reached the line's
+// frozen unit_price snapshot, so without this the "immutable release document" would carry NULL
+// prices next to a unit cost that the costing fallback resolved correctly. Only NULL prices are
+// filled; an unpriceable line stays NULL rather than blocking the release. The caller's own header
+// UPDATE already moved the lock_version fence for this save, so no extra bump happens here.
+//
+// KNOWN, ACCEPTED CONSEQUENCE — «подпись протухла сама»: this fill STALES an approved MATERIALS
+// sign-off, including one approved in the very save that releases the card. materialsProjection
+// (internal/dto/techcard_section_digest.go) hashes unit_price/currency, and the sign-off digest is
+// stamped by restampFreshSignoffDigests (internal/apisrv/admin/techcard.go) from the PAYLOAD, before
+// this transaction runs — so a "sign everything and release" save signs a digest over a NULL price
+// while the columns commit with the catalog price, and the approval reads «changed since sign-off»
+// from birth. This is the same semantics the explicit reprice action already has ("a changed price
+// legitimately stales an approved MATERIALS sign-off"), and release readiness is advisory — it
+// reports, never blocks — so the release itself is unaffected.
+//
+// The payload-carry idiom that fixes the two neighbouring diseases in that file
+// (carryOmittedFabricDirectionFrom, carryOmittedPieceCutSymmetryFrom — write the server-known value
+// onto the payload BEFORE the digest is stamped) deliberately does NOT apply here: bomPriceProvenance
+// (materials.go) stamps any price the payload carries as 'manual', and this price comes from the
+// CATALOG — carrying it would make the provenance lie about a value nobody typed. An honest fix is
+// one of two invasive moves: teach the save path a non-manual provenance for a server-sourced carried
+// price, or move the digest stamping to after the write transaction. Both sit on the hottest write
+// path of the card, so neither is done as a side effect of this fill; until then a card signed while
+// a linked line was priceless will show a stale MATERIALS approval after release, by design.
+func backfillBomPricesOnRelease(ctx context.Context, db dependency.DB, tcID int) error {
+	_, _, touched, err := repriceBomLinesTx(ctx, db, tcID, cache.GetBaseCurrency(), true)
+	if err != nil {
+		return fmt.Errorf("backfill bom prices on release: %w", err)
+	}
+	if touched > 0 {
+		slog.Default().InfoContext(ctx, "release backfilled catalog prices into unpriced BOM lines",
+			slog.Int("tech_card_id", tcID), slog.Int("lines", touched))
+	}
+	return nil
 }
 
 // ListCostingMigrationExceptions reads the Phase 2 scalar→BOM migration's exception report.

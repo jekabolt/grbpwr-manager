@@ -958,22 +958,41 @@ var ValidTechCardLabDipStatuses = map[TechCardLabDipStatus]bool{
 	LabDipRejected:  true,
 }
 
-// Consumption provenance values (tech_card_colorway_usage.consumption_source, 0261).
+// Consumption provenance values (tech_card_colorway_usage.consumption_source, 0261; 'dxf' 0294).
 const (
 	ConsumptionSourceManual = "manual"
 	ConsumptionSourceMarker = "marker"
+	// ConsumptionSourceDxf is a norm computed from the pattern sheets: Σ(площадь деталей) ÷
+	// раскройная ширина. It is NETTO — it contains no inter-piece waste, no selvedge and no
+	// end-of-lay loss, because a pattern says nothing about how the pieces were laid. That is
+	// exactly why it grosses up like a manual norm (wastageApplies below): the honest total is
+	// netto × the slot's declared cutting percentage.
+	//
+	// It is NOT a weaker 'marker'. A marker MEASURED a layout; this one measures the garment. The
+	// two answer different questions, and the difference is auditable: dxf carries no waste
+	// decomposition and no norm stamp (a раскладка id would be a claim about a layout that never
+	// happened) — normalized() in the store clears both for every non-marker source.
+	ConsumptionSourceDxf = "dxf"
 )
 
 // ValidConsumptionSources is the set of accepted consumption provenance values.
 var ValidConsumptionSources = map[string]bool{
 	ConsumptionSourceManual: true,
 	ConsumptionSourceMarker: true,
+	ConsumptionSourceDxf:    true,
 }
 
 // wastageApplies reports whether the article's wastage_percent may gross this usage's cost
 // up. A marker-sourced norm came from a measured раскладка whose length already CONTAINS
 // the cutting waste (and the selvedge rides the per-running-metre price), so grossing it
 // again would double-count — the exact trap PIECES-WASTAGE-DESIGN §2.3 retires.
+//
+// EVERY OTHER SOURCE GROSSES, and 'dxf' (0294) belongs on that side deliberately, not by
+// omission: a pattern area is netto, so the percentage is the only thing that pays for the
+// cloth between the pieces. The failure mode to keep in mind is the slot whose
+// wastage_percent is NULL — applyWastage then multiplies by nothing and a netto norm reaches
+// purchasing as if it were a total. The readiness gate blocks a run on exactly that pair
+// (dxf + no declared percentage) rather than letting the arithmetic be silently short.
 func (u *TechCardColorwayUsage) wastageApplies() bool {
 	return u.ConsumptionSource.String != ConsumptionSourceMarker
 }
@@ -1042,8 +1061,9 @@ type TechCardColorwayUsage struct {
 	// BomLineKey is the wire reference used by the recipe write-path: the stable line_key of the
 	// style's BOM line this usage consumes. The store resolves it to BomItemId. Not persisted (db:"-").
 	BomLineKey string `db:"-"`
-	// PieceLineKey is the wire reference to the cut-piece this usage's consumption norm is about: the
-	// stable line_key of the style's tech_card_piece (WS4). The store resolves it to PieceId, the real
+	// PieceLineKey is the wire reference to the cut-piece this usage ASSIGNS its material to («деталь
+	// X кроится из артикула Y» — NOT a norm binding, see IsPieceMaterialAssignment): the stable
+	// line_key of the style's tech_card_piece (WS4). The store resolves it to PieceId, the real
 	// FK (usage.piece_id RESTRICT). It replaces the positional PieceIndex, kept for the transition.
 	PieceLineKey string              `db:"-"`
 	BomItemIndex sql.NullInt32       `db:"bom_item_index"` // 0-based index into the submitted bom_items; NULL = unset
@@ -1053,7 +1073,8 @@ type TechCardColorwayUsage struct {
 	Consumption  decimal.NullDecimal `db:"consumption"` // per-garment rate (measured materials)
 	Quantity     decimal.NullDecimal `db:"quantity"`    // count (countable trims)
 	// PieceIndex is an optional 0-based arrow into TechCardInsert.Pieces saying which cut-piece
-	// this consumption norm is about; NULL = the whole garment (informational, NF-05).
+	// this row assigns its material to; NULL = a garment-level row — the carrier of the slot's
+	// consumption norm (see IsPieceMaterialAssignment). Legacy positional form of the binding.
 	PieceIndex sql.NullInt32 `db:"piece_index"`
 	// SizeConsumptions is the per-size material rate (in-memory; persisted to
 	// tech_card_colorway_usage_consumption). When non-empty it grades usage per size.
@@ -1064,10 +1085,11 @@ type TechCardColorwayUsage struct {
 	// never diverged. FK material(id) ON DELETE RESTRICT (0221).
 	MaterialId sql.NullInt64 `db:"material_id"`
 	// ConsumptionSource is the norm's provenance: 'manual' (default; wastage_percent grosses cost
-	// up as always) or 'marker' (the norm came from a saved раскладка whose length already
-	// CONTAINS the cutting waste — costing must NOT gross it up again). On WRITE the null state
-	// is proto presence, mirroring MaterialIdSet: Valid=false means the field was absent from a
-	// stale client's payload and the store preserves the stored provenance triple.
+	// up as always), 'marker' (the norm came from a saved раскладка whose length already CONTAINS
+	// the cutting waste — costing must NOT gross it up again), or 'dxf' (0294; netto pattern area
+	// ÷ раскройная ширина — grosses up like manual, see ConsumptionSourceDxf). On WRITE the null
+	// state is proto presence, mirroring MaterialIdSet: Valid=false means the field was absent from
+	// a stale client's payload and the store preserves the stored provenance triple.
 	ConsumptionSource sql.NullString `db:"consumption_source"`
 	// WasteSelvedgePct / WasteCutPct decompose a marker-sourced norm's waste (кромка / рез) for
 	// DISPLAY — never multiplied into any cost. NULL on manual rows.
@@ -1117,12 +1139,54 @@ func (u *TechCardColorwayUsage) EffectiveMaterialId(bom *TechCardBomItem) (id in
 	return 0, false
 }
 
+// IsPieceMaterialAssignment reports whether this recipe row is bound to a concrete cut-piece,
+// through ANY of the three representations of that binding: the resolved PieceId FK (store
+// reads), the wire/snapshot PieceLineKey, or the legacy positional PieceIndex.
+//
+// Such a row is the ASSIGNMENT of a material to a piece («деталь X кроится из артикула Y») and
+// NOT a carrier of a consumption norm. Расход ткани — свойство ИЗДЕЛИЯ (решение владельца,
+// T1/T8): the garment-level row of the same slot carries the norm, so a piece-bound row must
+// contribute NOTHING to costing, the run's material requirement, planned run cost or the
+// readiness verdict — and, symmetrically, a piece-bound row with no number is NOT a «missing
+// norm» and must never block a run whose garment-level row has one. A colourway whose usages
+// are ALL piece-bound has, for every computation, an EMPTY recipe.
+//
+// The consumers that filter through THIS predicate — one rule, not N copies of `piece_id IS
+// NULL` that drift apart — are the NORM rollups: colorwayCost / ComputeColorwayUnitCost, the
+// style cost estimate, the run material plan, run readiness (normChecks, unitCoverage), the
+// frozen release costs (via its pb mirror in dto), and the norm-money methods below
+// (LineTotal / SizeRunTotal / SizeNormTotal / RangeAverageTotal). Readers that deliberately DO
+// look at piece-bound rows, because the ASSIGNMENT half of the row is exactly their business:
+//   - the cutting plan (production_cut_plan.go) — what is cut from what;
+//   - the lay-article resolver (dto.ResolveLayArticle) — a piece row's PIN can name the slot's
+//     article when no garment-level row pins one;
+//   - identity prefetches (LinkedMaterials id harvesting) — a piece pin's article needs a name;
+//   - the lot-validation / calibration SQL candidate sets (internal/store/productionrun/lays.go),
+//     which admit pins from ALL rows by construction.
+func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
+	return (u.PieceId.Valid && u.PieceId.Int64 > 0) ||
+		u.PieceLineKey != "" ||
+		u.PieceIndex.Valid
+}
+
 // LineTotal is the usage's per-garment material cost, resolved against its catalog
 // article (bom). It is INVALID (the cost moves to SizeRunTotal) when the usage has
 // per-size consumption. A countable trim (Quantity, no Consumption) is Quantity ×
 // unit_price with no wastage; a measured material is Consumption × unit_price grossed
 // up by the article's wastage_percent.
+//
+// A PIECE-BOUND ROW HAS NO NORM-MONEY. IsPieceMaterialAssignment rows carry no norm (T8), so
+// the rollups skip them entirely — and the money methods must agree: a legacy number typed on
+// such a row otherwise ships a line_total to the wire that the cost no longer contains, i.e.
+// two contradicting figures on one card and an invitation to re-sum them. Guarded HERE, in the
+// methods, and not in ConvertRecipeUsagesToPb: these norm-money methods (LineTotal / SizeRunTotal /
+// SizeNormTotal / RangeAverageTotal) are the single definition of «this row's norm-money» —
+// EffectiveTotal and UnitTotal compose them — while the converter is just one reader, and a guard
+// there would leave every other (and every future) caller to rediscover the rule.
 func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDecimal {
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
 	if len(u.SizeConsumptions) > 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
@@ -1144,6 +1208,11 @@ func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDeci
 // quantity contributes nothing). INVALID when there is no per-size consumption, no
 // unit_price, or no order quantities yet (the cost is then 0, per the costing rule).
 func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
+	// Piece-bound row → no norm-money; see LineTotal for the argument and for why the guard
+	// lives in the methods rather than the wire converter.
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
 	if len(u.SizeConsumptions) == 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
@@ -1178,21 +1247,26 @@ func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyByS
 	return u.LineTotal(bom)
 }
 
-// BaseSizeTotal is a size-graded usage's PER-GARMENT material cost on the style's BASE SAMPLE
-// SIZE: the norm recorded for baseSizeID × unit_price, grossed up by the article's
-// wastage_percent — the same arithmetic LineTotal does for an ungraded norm, with the base
-// size's number standing in as the norm.
+// SizeNormTotal is a size-graded usage's PER-GARMENT material cost AT ONE CONCRETE SIZE: the
+// norm recorded for sizeID × unit_price, grossed up by the article's wastage_percent — the same
+// arithmetic LineTotal does for an ungraded norm, with that size's number standing in as the
+// norm. It is the arithmetic behind CostingBasisSize — a production-run cell being priced at
+// the size somebody committed to cut (dto.ComputeTechCardUnitCostOnSize).
 //
-// INVALID (and deliberately so) when the usage is not size-graded, when the card names NO base
-// sample size (baseSizeID <= 0), when this usage carries no norm for that size, or when the
-// article has no price. Every one of those is a question nobody has answered, and the caller
-// must carry it out as «непосчитано» — see UnitTotal.
-func (u *TechCardColorwayUsage) BaseSizeTotal(bom *TechCardBomItem, baseSizeID int) decimal.NullDecimal {
-	if len(u.SizeConsumptions) == 0 || baseSizeID <= 0 || bom == nil || !bom.UnitPrice.Valid {
+// INVALID (and deliberately so) when the usage is not size-graded, when no size is named
+// (sizeID <= 0), when this usage carries no norm for that size, or when the article has no
+// price. Every one of those is a question nobody has answered, and the caller must carry it out
+// as «непосчитано» — see UnitTotal.
+func (u *TechCardColorwayUsage) SizeNormTotal(bom *TechCardBomItem, sizeID int) decimal.NullDecimal {
+	// Piece-bound row → no norm-money; see LineTotal for the argument.
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
+	if len(u.SizeConsumptions) == 0 || sizeID <= 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
 	for _, sc := range u.SizeConsumptions {
-		if sc.SizeId != baseSizeID {
+		if sc.SizeId != sizeID {
 			continue
 		}
 		total := sc.Consumption.Mul(bom.UnitPrice.Decimal)
@@ -1204,30 +1278,128 @@ func (u *TechCardColorwayUsage) BaseSizeTotal(bom *TechCardBomItem, baseSizeID i
 	return decimal.NullDecimal{}
 }
 
+// RangeAverageTotal is a size-graded usage's PER-GARMENT material cost as the STYLE's standard
+// cost sees it (CostingBasisRangeAverage): the SIMPLE ARITHMETIC MEAN of the norms over the
+// card's declared size range — Σ norm(s) / |rangeSizeIds| over EVERY s in rangeSizeIds — ×
+// unit_price, grossed up by the article's wastage_percent exactly as SizeNormTotal grosses one
+// size's norm (marker-sourced norms are never grossed; the measured length already contains the
+// waste). Price and percentage are constants of the row, so averaging the norms first equals
+// averaging the per-size costs — one division, no intermediate rounding (money is rounded once,
+// at the end, by the caller's roundMoney).
+//
+// FULL COVERAGE OR NOTHING. A range size this usage has no norm for makes the result INVALID —
+// never «the average of the sizes that happen to be graded»: an only-XS average would silently
+// understate the style. This is the same rule the «по выкройкам» apply already enforces on
+// write («норма пишется на весь ряд или не пишется вовсе») read back at costing time; the
+// missing sizes are named by MissingRangeNorms. Norms on sizes OUTSIDE the declared range
+// (legacy tails after a range edit) neither join the average nor block it — the range is the
+// only carrier of the set. An EMPTY range (len == 0) is likewise INVALID: a card that declares
+// no size range has no set to average over, and a number from nowhere is not an answer.
+//
+// Also invalid when the usage is not size-graded or the article has no price — see UnitTotal.
+func (u *TechCardColorwayUsage) RangeAverageTotal(bom *TechCardBomItem, rangeSizeIds []int) decimal.NullDecimal {
+	// Piece-bound row → no norm-money; see LineTotal for the argument.
+	if u.IsPieceMaterialAssignment() {
+		return decimal.NullDecimal{}
+	}
+	if bom == nil || !bom.UnitPrice.Valid {
+		return decimal.NullDecimal{}
+	}
+	avg, ok := u.RangeAverageNorm(rangeSizeIds)
+	if !ok {
+		return decimal.NullDecimal{}
+	}
+	total := avg.Mul(bom.UnitPrice.Decimal)
+	if !u.wastageApplies() {
+		return decimal.NullDecimal{Decimal: total, Valid: true}
+	}
+	return decimal.NullDecimal{Decimal: applyWastage(total, bom.WastagePercent), Valid: true}
+}
+
+// RangeAverageNorm is the price-free half of RangeAverageTotal — the averaged NORM itself, for
+// mirrors that price it their own way (the style cost estimate resolves its own price ladder).
+// ONE implementation of the coverage rule: ok=false when the usage is not size-graded, the range
+// is empty, or any range size lacks a norm — the callers must then report the line uncosted,
+// never average what happens to be there. Kept beside RangeAverageTotal so the two cannot drift.
+func (u *TechCardColorwayUsage) RangeAverageNorm(rangeSizeIds []int) (decimal.Decimal, bool) {
+	if len(u.SizeConsumptions) == 0 || len(rangeSizeIds) == 0 {
+		return decimal.Zero, false
+	}
+	normBySize := make(map[int]decimal.Decimal, len(u.SizeConsumptions))
+	for _, sc := range u.SizeConsumptions {
+		if _, dup := normBySize[sc.SizeId]; dup {
+			continue // first entry wins, mirroring SizeNormTotal's first-match scan
+		}
+		normBySize[sc.SizeId] = sc.Consumption
+	}
+	sum := decimal.Zero
+	for _, id := range rangeSizeIds {
+		norm, ok := normBySize[id]
+		if !ok {
+			return decimal.Zero, false // partial coverage — no averaging over a subset
+		}
+		sum = sum.Add(norm)
+	}
+	return sum.Div(decimal.NewFromInt(int64(len(rangeSizeIds)))), true
+}
+
+// MissingRangeNorms names the sizes of the declared range this size-graded usage carries NO
+// norm for — the poimённый list the caveat owes the operator when RangeAverageTotal refuses to
+// average over a subset. Order follows rangeSizeIds (the declared range). Empty when coverage
+// is full, when the usage is not size-graded (nothing to cover), or when the range is empty
+// (that is a different caveat: no range at all, not missing norms).
+func (u *TechCardColorwayUsage) MissingRangeNorms(rangeSizeIds []int) []int {
+	if len(u.SizeConsumptions) == 0 {
+		return nil
+	}
+	graded := make(map[int]bool, len(u.SizeConsumptions))
+	for _, sc := range u.SizeConsumptions {
+		graded[sc.SizeId] = true
+	}
+	var missing []int
+	for _, id := range rangeSizeIds {
+		if !graded[id] {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
 // UnitTotal is the usage's PER-GARMENT material cost for costing — the standard cost of the
 // style. A per-garment usage (measured Consumption or countable Quantity) uses its LineTotal
-// directly. A usage graded ONLY per size is costed on the BASE SAMPLE SIZE (BaseSizeTotal).
-// INVALID when neither is available, and an invalid result is the caller's signal to treat the
-// whole recipe as uncosted (dto's hasUnpriced), never to substitute a number.
+// directly. A usage graded ONLY per size is costed on the basis the caller resolved through
+// TechCardInsert.CostingBasis: the range average for the style figure, one concrete size for a
+// production-run cell, or nothing at all. INVALID when no number is available, and an invalid
+// result is the caller's signal to treat the whole recipe as uncosted (dto's hasUnpriced),
+// never to substitute a number.
 //
-// THE BASIS AND WHY IT CHANGED. This used to be SizeRunTotal ÷ Σ size_quantities — the card's
-// «типовой тираж для калькуляции» averaged the graded norms into one figure. That denominator
-// was a fiction: tech_card.size_quantities is an illustrative mix, real quantities live on a
-// production_run, and it decided what went into product.cost_price and from there into every
-// margin. It was also arithmetically unsound: the denominator summed EVERY size carrying a
-// positive quantity while the numerator summed only the sizes for which THIS usage had a norm,
-// so a partially-graded usage was divided by a run it never covered and came out systematically
-// CHEAP. A style's standard cost is now the base size's own norm — one size somebody actually
-// drafted and approved — and it moves only when that norm moves.
+// THE BASIS AND ITS HISTORY — two deliberate changes, each killing a specific fiction:
+//  1. Originally SizeRunTotal ÷ Σ size_quantities: the card's «типовой тираж» averaged the
+//     graded norms, quantity-weighted. Retired because that mix is illustrative (real
+//     quantities live on a production_run) and arithmetically unsound — the denominator counted
+//     every size with a quantity while the numerator only the sizes THIS usage covered, so a
+//     partially-graded usage came out systematically CHEAP.
+//  2. Then the base sample size's own norm, strictly, no fallback. Retired by the owner's
+//     decision (T6, 2026-08-10): the base size had no place to be assigned in the UI and no
+//     honest claim to represent the style — it is now a reference «размер образца» only. The
+//     style's standard cost is the SIMPLE AVERAGE over the declared size range
+//     (RangeAverageTotal), computable exactly when the norm covers the whole range.
 //
-// WHAT MUST NOT COME BACK: a fallback to the median/average/first size when the base size is
-// unset or ungraded. That silently re-labels a number nobody approved as the approved cost. The
-// honest answer is no number, and the flag on the wire.
-func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, baseSizeID int) decimal.NullDecimal {
+// WHAT MUST NOT COME BACK: an average over a SUBSET of the range (only the graded sizes — the
+// silent understatement both retired bases were caught committing), the typical-run weighted
+// denominator, and any fallback that turns «no basis» into a number. A missing basis is
+// answered with no number and the flag on the wire.
+func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, basis CostingBasis) decimal.NullDecimal {
 	if lt := u.LineTotal(bom); lt.Valid {
 		return lt
 	}
-	return u.BaseSizeTotal(bom, baseSizeID)
+	switch basis.Mode {
+	case CostingBasisSize:
+		return u.SizeNormTotal(bom, basis.SizeID)
+	case CostingBasisRangeAverage:
+		return u.RangeAverageTotal(bom, basis.RangeSizeIds)
+	}
+	return decimal.NullDecimal{}
 }
 
 // applyWastage grosses a base cost up by wastage_percent when set (× (1 + pct/100)).
@@ -1316,6 +1488,32 @@ type TechCardBomItem struct {
 	// un-saves every раскладка on the card until somebody fills the column back in.
 	FabricDirectionOmitted bool                `db:"-"`
 	WastagePercent         decimal.NullDecimal `db:"wastage_percent"`
+	// ПРОВЕНАНС ПРОЦЕНТА РАСКРОЯ (0296, T7 волна 2): откуда взялось число в WastagePercent —
+	// 'manual' (введено руками; умолчание и вся история колонки) или 'lays' (применено из
+	// предложения «медиана факта настилов над netto», GetBomWastageSuggestion). Плюс штамп
+	// применения: по скольким настилам стояла медиана, когда сервер её проштамповал и КАКОЕ число
+	// она удостоверяет (все NULL на 'manual'). Финальную четвёрку решает
+	// ResolveBomWastageProvenance — правка значения сбрасывает источник в 'manual', что бы клиент
+	// ни прислал; эхо старого клиента сохраняет всё verbatim. Читается ТОЛЬКО через
+	// EffectiveWastageProvenance: бейдж самопроверяем по WastageAppliedPercent (MAJOR 4).
+	//
+	// Дисциплина price_source: аудит-метаданные о значении, в MATERIALS-дайджест НЕ входят (само
+	// значение WastagePercent в подписи уже есть — добавление провенанса рестампило бы все карточки).
+	WastageSource         string              `db:"wastage_source"`
+	WastageLayCount       sql.NullInt64       `db:"wastage_lay_count"`
+	WastageAppliedAt      sql.NullTime        `db:"wastage_applied_at"`
+	WastageAppliedPercent decimal.NullDecimal `db:"wastage_applied_percent"`
+	// WastageProvenanceOmitted — пара (wastage_source, wastage_lay_count) ОТСУТСТВОВАЛА на проводе,
+	// а не «пришла пустой». Тот же НЕГАТИВНЫЙ смысл и та же причина, что у PurposeOmitted: карточка
+	// сохраняется целиком, и вкладка со старым бандлом пары не шлёт вовсе — без различения её сейв
+	// стёр бы аудит применения у всех строк. Пара живёт как одно целое (см. kind/kind_note).
+	WastageProvenanceOmitted bool `db:"-"`
+	// WastageClaimVerified — СЕРВЕРНЫЙ вердикт, никогда не провод: обработчик (verifyBomWastageClaims)
+	// пересчитал предложение для артикула строки и подтвердил, что присланная пара (процент, счётчик)
+	// и есть текущая медиана. Это ЕДИНСТВЕННАЯ дверь, через которую свежая заявка 'lays' становится
+	// бейджем (см. ResolveBomWastageProvenance): без подтверждения заявка со сменой числа — ручная
+	// правка в одежде числа, и она ложится как 'manual'.
+	WastageClaimVerified bool `db:"-"`
 	// Stored price provenance (production-costing Phase 3): where unit_price came from and when it
 	// was stamped. Server-owned — set by the save path ('manual' when the price changes hands
 	// through UpdateTechCard) and by the reprice action ('catalog'); NULL on pre-provenance rows.
@@ -1337,6 +1535,146 @@ const (
 	BomPriceSourceManual  = "manual"  // typed/edited through a card save
 	BomPriceSourceCatalog = "catalog" // pulled from the material catalog by RepriceTechCardBom
 )
+
+// BOM wastage provenance values (tech_card_bom_item.wastage_source, 0296). Mirrors
+// chk_bom_item_wastage_source.
+const (
+	// BomWastageSourceManual — процент введён руками. Умолчание колонки и честное описание всей её
+	// истории до 0296.
+	BomWastageSourceManual = "manual"
+	// BomWastageSourceLays — процент применён из предложения «медиана факта настилов над netto»
+	// (GetBomWastageSuggestion). Число всё равно кладёт рука — источник говорит, ОТКУДА она его
+	// взяла, а не кто нажал сохранить.
+	BomWastageSourceLays = "lays"
+)
+
+// ValidBomWastageSources is the set of storable wastage provenance values.
+var ValidBomWastageSources = map[string]bool{
+	BomWastageSourceManual: true,
+	BomWastageSourceLays:   true,
+}
+
+// BomWastageProvenance is the stored provenance of one BOM line's wastage_percent: the source, the
+// apply stamp (сколько настилов, когда) and — the self-check half — WHAT number the stamp
+// certifies (AppliedPercent, a copy of wastage_percent at apply time).
+type BomWastageProvenance struct {
+	Source    string
+	LayCount  sql.NullInt64
+	AppliedAt sql.NullTime
+	// AppliedPercent is server-owned and never read off the wire. It exists so the badge survives
+	// nothing it should not: see EffectiveBomWastageProvenance.
+	AppliedPercent decimal.NullDecimal
+}
+
+// EffectiveBomWastageProvenance is THE ONE reader of a stored wastage provenance, and the rule is
+// named: БЕЙДЖУ 'lays' ВЕРЯТ ТОЛЬКО ВМЕСТЕ С ЧИСЛОМ, КОТОРОЕ ОН УДОСТОВЕРЯЕТ — applied_percent
+// обязан совпасть с сегодняшним wastage_percent, иначе бейдж читается как 'manual', а не на веру
+// (правки ревью T7в2, MAJOR 4).
+//
+// Зачем: при откате DO старый бинарь переписывает wastage_percent, не зная про провенанс-колонки, —
+// без самопроверки бейдж «медиана по N раскроям» остался бы на числе, которого калибровка не
+// давала, недетектируемо. applied_percent меняется только вместе с бейджем (один оператор записи),
+// поэтому расхождение доказывает правку значения мимо провенанса.
+func EffectiveBomWastageProvenance(stored BomWastageProvenance, storedPercent decimal.NullDecimal) BomWastageProvenance {
+	src := stored.Source
+	if src == "" {
+		src = BomWastageSourceManual
+	}
+	if src != BomWastageSourceLays {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	if !stored.AppliedPercent.Valid || !storedPercent.Valid ||
+		!stored.AppliedPercent.Decimal.Equal(storedPercent.Decimal) {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	return BomWastageProvenance{Source: BomWastageSourceLays, LayCount: stored.LayCount,
+		AppliedAt: stored.AppliedAt, AppliedPercent: stored.AppliedPercent}
+}
+
+// EffectiveWastageProvenance reads this line's wastage provenance through the self-check above —
+// the projection to the wire and the save path both go through it, so a desynced badge is dead
+// everywhere at once.
+func (b *TechCardBomItem) EffectiveWastageProvenance() BomWastageProvenance {
+	return EffectiveBomWastageProvenance(BomWastageProvenance{
+		Source:         b.WastageSource,
+		LayCount:       b.WastageLayCount,
+		AppliedAt:      b.WastageAppliedAt,
+		AppliedPercent: b.WastageAppliedPercent,
+	}, b.WastagePercent)
+}
+
+// ResolveBomWastageProvenance decides the provenance a BOM line carries after a card save — the ONE
+// rule both the insert and the update write, kept pure so it is testable without a database.
+//
+//	stored         — the provenance as it is in the row (zero value for a NEW line);
+//	storedPercent  — wastage_percent as stored (invalid for a new line);
+//	sentPercent    — wastage_percent as the payload states it;
+//	sent           — the payload's provenance pair; meaningful only when sentProvenance is true;
+//	sentProvenance — false when the pair was ABSENT from the wire (an old bundle's full replace);
+//	sentVerified   — SERVER verdict (TechCardBomItem.WastageClaimVerified): the handler recomputed
+//	                 the suggestion and the sent (percent, count) IS the current median.
+//
+// ПРАВИЛО — О СУТИ, НЕ О ПРИСУТСТВИИ ПОЛЕЙ (правки ревью T7в2, MAJOR 3): ИЗМЕНИЛОСЬ ЗНАЧЕНИЕ
+// ПРОЦЕНТА — ИСТОЧНИК СТАНОВИТСЯ 'manual', ЧТО БЫ КЛИЕНТ НИ ПРИСЛАЛ. Эхо-отправка source='lays'
+// при новом числе не сохраняет бейдж и не двигает штамп даты. Единственное исключение — сервер САМ
+// подтвердил (sentVerified), что новое число и есть его текущая медиана: тогда это применение
+// предложения, и бейдж штампуется заново. В порядке:
+//
+//  1. ПАРА ОТСУТСТВУЕТ (старый бандл): значение изменилось → 'manual' (ручная правка через бандл
+//     до провенанса); не изменилось → verbatim, отсутствие — молчание, не инструкция.
+//  2. ПАРА ПРИСЛАНА, 'manual' (или пусто): 'manual', счётчик и штамп не переживают источник.
+//  3. ПАРА ПРИСЛАНА, 'lays', ЧИСТОЕ ЭХО (stored-бейдж жив, процент и счётчик не менялись):
+//     verbatim, штамп даты НЕ движется — освежённый штамп заявил бы более свежую калибровку, чем
+//     была сделана (дисциплина norm_applied_at).
+//  4. ПАРА ПРИСЛАНА, 'lays', НЕ эхо: только sentVerified делает бейдж (AppliedAt=now,
+//     AppliedPercent=sentPercent); без подтверждения — 'manual'. Прямой вызов стора мимо
+//     обработчика подтвердить не может ничего — fail-closed.
+//
+// Validation of the sent pair (vocabulary, count only with 'lays', порог) happens at parse time
+// (dto.parseTechCardBomItems), not here: this function decides, it does not refuse.
+func ResolveBomWastageProvenance(stored BomWastageProvenance, storedPercent decimal.NullDecimal,
+	sentPercent decimal.NullDecimal, sent BomWastageProvenance, sentProvenance bool,
+	sentVerified bool, now time.Time) BomWastageProvenance {
+
+	// Через самопроверку: рассинхронизированный бейдж (MAJOR 4) мёртв и для verbatim-переноса —
+	// иначе эхо воскресило бы то, что чтение уже отбросило.
+	storedEff := EffectiveBomWastageProvenance(stored, storedPercent)
+	percentMoved := storedPercent.Valid != sentPercent.Valid ||
+		(storedPercent.Valid && !storedPercent.Decimal.Equal(sentPercent.Decimal))
+
+	if !sentProvenance {
+		if percentMoved {
+			return BomWastageProvenance{Source: BomWastageSourceManual}
+		}
+		return storedEff
+	}
+
+	source := sent.Source
+	if source == "" {
+		source = BomWastageSourceManual
+	}
+	if source != BomWastageSourceLays {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	if storedEff.Source == BomWastageSourceLays && !percentMoved &&
+		nullInt64Same(storedEff.LayCount, sent.LayCount) {
+		return storedEff
+	}
+	if !sentVerified {
+		return BomWastageProvenance{Source: BomWastageSourceManual}
+	}
+	return BomWastageProvenance{Source: BomWastageSourceLays, LayCount: sent.LayCount,
+		AppliedAt:      sql.NullTime{Time: now, Valid: true},
+		AppliedPercent: sentPercent}
+}
+
+// nullInt64Same reports value equality of two nullable ints (both absent counts as same).
+func nullInt64Same(a, b sql.NullInt64) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	return !a.Valid || a.Int64 == b.Int64
+}
 
 // RepricedBomLine is one catalog-linked BOM line the reprice action visited: the price it had, the
 // price the catalog resolves to now (invalid when the catalog has no usable current price), and
@@ -1773,7 +2111,7 @@ const MaxTopstitchRows = 4
 // takes — plus overrides that are unset when they agree with the card.
 type TechCardOperation struct {
 	OperationNumber sql.NullInt32       `db:"operation_number"`
-	SMV             decimal.NullDecimal `db:"smv"` // minutes; the ONLY time field (time_norm is gone)
+	SMV             decimal.NullDecimal `db:"smv"`  // minutes; the ONLY time field (time_norm is gone)
 	Note            sql.NullString      `db:"note"` // the only free text on a step
 
 	// The two REQUIRED fields, and the only two. Both are closed lists — nothing with free input is
@@ -2197,7 +2535,13 @@ type TechCardInsert struct {
 	// «5 мм» note, no longer exists — the operations break removed it.)
 	RequiredSeamAllowanceMm decimal.NullDecimal `db:"required_seam_allowance_mm"`
 
-	BaseModelId      sql.NullInt32           `db:"base_model_id"`
+	BaseModelId sql.NullInt32 `db:"base_model_id"`
+	// BaseSampleSizeId is the REFERENCE «размер образца» — the size the sample was sewn in. It
+	// feeds the tech-pack print («sample size») and the storefront «model wears M» line, and
+	// NOTHING else: since T6 (owner decision 2026-08-10) it is NOT an input to costing — the
+	// style's standard cost averages over the declared size range instead (see CostingBasis).
+	// The column stays: dropping it would strand a rollback binary mid-deploy, and the
+	// reference role is real.
 	BaseSampleSizeId sql.NullInt32           `db:"base_sample_size_id"`
 	MeasurementUnit  TechCardMeasurementUnit `db:"measurement_unit"`
 	// MeasurementUnitSet separates "the client chose a unit" from "the field was absent". The unit is a
@@ -2233,19 +2577,61 @@ type TechCardInsert struct {
 	// wipe mappings it never saw; true means full replace with the slice (empty = clear all).
 	PieceDxfAliases    []TechCardPieceDxfAlias `db:"-"`
 	PieceDxfAliasesSet bool                    `db:"-"`
+	// CostingSizeOverride re-points the costing basis for ONE computation, and it is THREE-valued
+	// on purpose: nil = the style default (the simple average over the declared size range); >0 =
+	// cost on that concrete size (a production-run cell pricing the size it actually cuts); 0 =
+	// NO basis at all — a size-graded norm then prices NOTHING. The zero is not a degenerate
+	// spelling of the default: a run line with no size used to express «без базиса» through a
+	// NULL base_sample_size_id, and if that state fell into the new default it would silently
+	// take the range-average price — the exact fallback this design forbids. Not persisted; set
+	// ONLY by dto.cardCostedOnSize (the one legitimate re-basing point).
+	CostingSizeOverride *int `db:"-"`
 }
 
-// CostingBaseSizeID is the size a style's STANDARD COST is computed on: its base sample size, or
-// 0 when the card names none. Every consumer of the costing basis goes through this one accessor
-// precisely so that «the card has no base size» has exactly ONE answer everywhere — 0, which
-// TechCardColorwayUsage.UnitTotal turns into an uncosted (не посчитано) size-graded line. The
-// moment two call sites resolve it themselves, one of them grows a fallback and the style quietly
-// gets a cost nobody approved.
-func (tc *TechCardInsert) CostingBaseSizeID() int {
-	if tc == nil || !tc.BaseSampleSizeId.Valid || tc.BaseSampleSizeId.Int32 <= 0 {
-		return 0
+// CostingBasisMode says WHAT a size-graded norm's per-garment cost is evaluated on.
+type CostingBasisMode int
+
+const (
+	// CostingBasisNone: no basis — a size-graded norm prices nothing. A real state (a run line
+	// that names no size), never a fallback target.
+	CostingBasisNone CostingBasisMode = iota
+	// CostingBasisRangeAverage: the style default — the simple arithmetic mean of the norm over
+	// the card's declared size range (see TechCardColorwayUsage.RangeAverageTotal).
+	CostingBasisRangeAverage
+	// CostingBasisSize: one concrete size somebody committed to (a production-run cell).
+	CostingBasisSize
+)
+
+// CostingBasis is the resolved answer to «на чём считается пер-изделийная стоимость строки с
+// нормами по размерам». Carried as a value through the costing so every graded line of one
+// computation answers the same question the same way.
+type CostingBasis struct {
+	Mode CostingBasisMode
+	// SizeID is the concrete size when Mode == CostingBasisSize; 0 otherwise.
+	SizeID int
+	// RangeSizeIds is the declared size range when Mode == CostingBasisRangeAverage (may be
+	// empty — a card with no declared range, which prices graded norms as invalid); nil otherwise.
+	RangeSizeIds []int
+}
+
+// CostingBasis resolves the card's costing basis. Every consumer goes through this one resolver
+// precisely so that each of the three states has exactly ONE spelling everywhere — the moment
+// two call sites resolve it themselves, one of them grows a fallback and the style quietly gets
+// a cost nobody approved. The default is the STYLE basis: the simple average over the declared
+// size range (owner decision T6; base_sample_size_id is a reference field and no longer read
+// here). CostingSizeOverride, set only by dto.cardCostedOnSize, narrows it to one size (>0) or
+// to no basis at all (0) — see the field for why 0 must never mean «default».
+func (tc *TechCardInsert) CostingBasis() CostingBasis {
+	if tc == nil {
+		return CostingBasis{Mode: CostingBasisNone}
 	}
-	return int(tc.BaseSampleSizeId.Int32)
+	if tc.CostingSizeOverride != nil {
+		if *tc.CostingSizeOverride > 0 {
+			return CostingBasis{Mode: CostingBasisSize, SizeID: *tc.CostingSizeOverride}
+		}
+		return CostingBasis{Mode: CostingBasisNone}
+	}
+	return CostingBasis{Mode: CostingBasisRangeAverage, RangeSizeIds: tc.SizeIds}
 }
 
 // TechCardPieceDxfAlias is one DXF block-name → cut-piece mapping, scoped to a fabric slot

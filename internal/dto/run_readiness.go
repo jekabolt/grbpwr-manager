@@ -444,8 +444,149 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 		}
 
 		b.normChecks(cw, tgt, &out)
+		b.pieceLayerChecks(cw, tgt, &out)
 		b.colorways = append(b.colorways, out)
 	}
+}
+
+// pieceLayerChecks emits the three layer-role rows of T4 for one colourway. The role of a layer is
+// DERIVED from the BOM line its recipe row references (entity.DerivePieceLayerRole) — nothing here
+// is stored, so these checks are exactly the second line of defence behind the recipe write's
+// «duplicate_main_fabric» refusal: the same conflict arises WITHOUT a recipe edit, by re-sorting a
+// line's назначение on the BOM tab, and the card save deliberately does not refuse that.
+//
+// The layer selection is collectPieceLayers — the cut plan's own (piece_layers.go). One rule, not
+// two: a piece the gate calls conflicted must be exactly the piece the run pack refuses to print.
+func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base entity.RunReadinessTarget, out *entity.RunReadinessColorway) {
+	add := func(f entity.RunReadinessFinding) { out.Findings = append(out.Findings, f) }
+	idx := newPieceUsageIndex(cw, b.card.Pieces)
+
+	type offender struct {
+		detail string
+		bom    *entity.TechCardBomItem
+	}
+	var conflicts []offender
+	conflictSeverity := entity.RunReadinessOK
+	var mainless []offender
+	var unsorted []offender
+
+	for i := range b.card.Pieces {
+		p := &b.card.Pieces[i]
+		us := idx.forPiece(p)
+		if len(us) == 0 {
+			continue
+		}
+		pl := collectPieceLayers(us, b.card.BomItems)
+		if len(pl.layers) == 0 {
+			// Только нерулонные/клеевые привязки: кроя они не описывают, деталь судят прежние
+			// правила наряда (вывод единственного рулонного слота) — ролям здесь нечего проверять.
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = p.LineKey
+		}
+
+		// П1 и его градации — тем же предикатом, что блокер наряда.
+		switch {
+		case len(pl.mains) >= 2:
+			conflicts = append(conflicts, offender{
+				detail: fmt.Sprintf("деталь %q: %d основные ткани (%s) — цельная деталь кроится из одной основной",
+					name, len(pl.mains), strings.Join(pl.layerNames(pl.mains), ", ")),
+				bom: pl.layers[pl.mains[0]].bom,
+			})
+			conflictSeverity = entity.RunReadinessBlocker
+		case pl.mainConflict():
+			conflicts = append(conflicts, offender{
+				detail: fmt.Sprintf("деталь %q: у слоя %s не задано назначение рядом с другими слоями — не доказать, что это не вторая основная",
+					name, strings.Join(pl.layerNames(pl.unsorted), ", ")),
+				bom: pl.layers[pl.unsorted[0]].bom,
+			})
+			conflictSeverity = entity.RunReadinessBlocker
+		default:
+			// Дубль НЕ-основной роли (двойной подклад, два «канта») — предупреждение: физически
+			// кроимо, но человек должен взглянуть.
+			byRole := map[entity.TechCardBomPurpose][]int{}
+			for li, role := range pl.roles {
+				if role == entity.BomPurposeMain || role == entity.PieceLayerRoleUnsorted {
+					continue
+				}
+				byRole[role] = append(byRole[role], li)
+			}
+			for _, role := range entity.BomPurposeOrder {
+				idxs := byRole[role]
+				if len(idxs) < 2 {
+					continue
+				}
+				conflicts = append(conflicts, offender{
+					detail: fmt.Sprintf("деталь %q: роль «%s» у %d строк (%s)",
+						name, entity.PieceLayerRoleLabel(role), len(idxs), strings.Join(pl.layerNames(idxs), ", ")),
+					bom: pl.layers[idxs[0]].bom,
+				})
+				if conflictSeverity == entity.RunReadinessOK {
+					conflictSeverity = entity.RunReadinessWarning
+				}
+			}
+		}
+
+		// П2: слои есть, основной нет — и нет неразложенной fabric-строки, которая могла бы ею
+		// оказаться (та уже названа своей находкой ниже; двоить один факт запрещает инвариант 1).
+		if len(pl.mains) == 0 && len(pl.unsorted) == 0 {
+			roles := make([]string, 0, len(pl.roles))
+			for _, r := range pl.roles {
+				roles = append(roles, entity.PieceLayerRoleLabel(r))
+			}
+			mainless = append(mainless, offender{
+				detail: fmt.Sprintf("деталь %q привязана к %s, но не к основной ткани", name, strings.Join(roles, ", ")),
+				bom:    pl.layers[0].bom,
+			})
+		}
+
+		// П3: детальная строка на fabric-строку без назначения — роль слоя неизвестна.
+		for _, li := range pl.unsorted {
+			unsorted = append(unsorted, offender{
+				detail: fmt.Sprintf("ткань %q (деталь %q)", pl.layers[li].bom.Name, name),
+				bom:    pl.layers[li].bom,
+			})
+		}
+	}
+
+	emit := func(key, label, lead, fix string, offs []offender, sev entity.RunReadinessSeverity) {
+		if len(offs) == 0 {
+			add(entity.RunReadinessFinding{Key: key, Severity: entity.RunReadinessOK, Label: label, Target: base})
+			return
+		}
+		details := make([]string, 0, len(offs))
+		for _, o := range offs {
+			details = append(details, o.detail)
+		}
+		t := base
+		if offs[0].bom != nil {
+			t.BomItemId = int64(offs[0].bom.Id)
+			t.BomLineKey = offs[0].bom.LineKey
+		}
+		add(entity.RunReadinessFinding{
+			Key: key, Severity: sev, Label: label,
+			Detail: fmt.Sprintf("%s: %s. %s", lead, strings.Join(details, "; "), fix),
+			Target: t,
+		})
+	}
+
+	emit(entity.RunReadinessKeyPieceRoleConflict,
+		"роли слоёв деталей не конфликтуют",
+		"конфликт ролей",
+		"Оставь детали одну основную ткань или задай второй строке её назначение на вкладке BOM (подкладка, дублерин, контраст…).",
+		conflicts, conflictSeverity)
+	emit(entity.RunReadinessKeyPieceMainFabric,
+		"у каждой детали со слоями есть основная ткань",
+		"деталь без основной",
+		"Добавь строку с тканью назначения «основной материал» — или подтверди, что состав детали такой и есть.",
+		mainless, entity.RunReadinessWarning)
+	emit(entity.RunReadinessKeyPieceFabricSorted,
+		"ткани деталей разложены по назначению",
+		"назначение не задано — роль слоя неизвестна",
+		"Задай назначение строке на вкладке BOM.",
+		unsorted, entity.RunReadinessWarning)
 }
 
 // normChecks emits the norm rows for every ROLL-GOODS slot of this colourway's recipe.
@@ -460,6 +601,12 @@ func (b *runReadinessBuilder) normChecks(cw *entity.TechCardColorway, base entit
 
 	for j := range cw.Usages {
 		u := &cw.Usages[j]
+		// A piece-bound row (entity.IsPieceMaterialAssignment) carries no norm, so there is no
+		// provenance to judge: the rows below describe the GARMENT-level norm of the slot, and
+		// emitting them per piece row printed the same warning once per piece.
+		if u.IsPieceMaterialAssignment() {
+			continue
+		}
 		bom := planBomLine(u, b.card.BomItems)
 		if bom == nil || !entity.IsRollGoodsSection(bom.Section) {
 			continue
@@ -520,6 +667,66 @@ func (b *runReadinessBuilder) workshopSeamAllowance() decimal.NullDecimal {
 func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bom *entity.TechCardBomItem,
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) *entity.TechCardMarkerSummary {
 	const label = "норма расхода взята из нормировочной раскладки"
+
+	// НОРМА С ВЫКРОЕК (0294) — свой ответ, а не «введена руками».
+	//
+	// Раскладки за ней нет и быть не может, поэтому пять условий съёмки ниже так же не имеют
+	// предмета, как у ручной нормы, и строка остаётся WARNING. Но текст обязан отличаться: сказать
+	// про netto с выкроек «введено руками» — это соврать оператору в единственном месте, где он
+	// узнаёт, чему верить.
+	//
+	// А ВОТ ПАРА (dxf + wastage_percent NULL) — BLOCKER, и это не строгость ради строгости.
+	// Площадь деталей не содержит межлекальных выпадов, кромки и концов настила; процент раскроя
+	// слота — ЕДИНСТВЕННОЕ, что за них платит (applyWastage при NULL умножает на единицу). Пустой
+	// процент здесь означает не «отходов нет», а «никто не сказал сколько», и потребность уходит в
+	// закупку заведомо занижённой. Это тот же UNKNOWN/BLOCKER-порог, что у «старой нормы» ниже:
+	// отсутствие не инструмента, а ОТВЕТА. Клиент не даёт применить выкройки на слот без процента —
+	// эта строка ловит данные, пришедшие другой дорогой.
+	if u.ConsumptionSource.String == entity.ConsumptionSourceDxf {
+		// БЛОКЕР ГОВОРИТ О НОРМЕ, ЗНАЧИТ НОРМА ОБЯЗАНА БЫТЬ. Источник — это метка на числе, и на
+		// строке БЕЗ числа она не описывает ничего: «нет нормы» уже краснеет один раз в slot_norm
+		// (его считает материальный план), и второй красный здесь напечатал бы один факт дважды —
+		// то самое, что инвариант 1 запрещает. Такая строка законно доживает до сюда через прямой
+		// вызов стора или через обнуление числа в обход редактора; ответ ей — предупреждение.
+		hasNorm := u.Consumption.Valid || len(u.SizeConsumptions) > 0
+		// ПРОЦЕНТ ПРОГОНА СЧИТАЕТСЯ ЗАЯВЛЕННЫМ ТАК ЖЕ, КАК ПРОЦЕНТ СЛОТА. На перепроверке живого
+		// прогона план подставляет `run.actual_wastage_percent` ВМЕСТО слотового — и делает это даже
+		// когда слотовый NULL (production_material_plan.go, ветка default). Значит потребность там
+		// гроссится полностью, и блокер с текстом «занижены» был бы про этот прогон ложью. Смотреть
+		// только на слот значило бы судить не по тому числу, которое считает деньги.
+		declaredPct := bom.WastagePercent
+		if b.in.ActualWastagePercent.Valid {
+			declaredPct = b.in.ActualWastagePercent
+		}
+		if hasNorm && !declaredPct.Valid {
+			add(entity.RunReadinessFinding{
+				Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessBlocker,
+				Label: label,
+				Detail: fmt.Sprintf("расход по слоту %q снят с выкроек — это NETTO площадь деталей, поделённая на раскройную ширину, без межлекальных выпадов, кромки и концов настила. Процент раскроя у слота НЕ ЗАДАН, поэтому потребность и себестоимость идут по чистой площади и занижены. Задайте процент раскроя слота или снимите норму с раскладки",
+					bom.Name),
+				Target: tgt,
+			})
+			return nil
+		}
+		// Процент печатается ТОЛЬКО когда он есть: на строке без нормы (см. выше) его может не быть
+		// вовсе, и `.Decimal` у невалидного NullDecimal — это ноль, который прочитался бы как
+		// заявленный ноль отходов. Худший вид неверного числа: правдоподобный.
+		pct := "не задан"
+		if declaredPct.Valid {
+			pct = declaredPct.Decimal.String() + "%"
+			if b.in.ActualWastagePercent.Valid {
+				pct += " (фактический процент прогона, он замещает слотовый)"
+			}
+		}
+		add(entity.RunReadinessFinding{
+			Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessWarning,
+			Label: label,
+			Detail: fmt.Sprintf("расход по слоту %q снят с выкроек (NETTO площадь деталей ÷ раскройная ширина), отходы доначисляет процент раскроя слота — %s. Гейт это принимает: выкройки есть раньше раскладки, и норма по ним проверяема, в отличие от набранной руками. Но условия съёмки проверить не по чему — раскладки за такой нормой нет, и коэффициент раскроя артикула её не трогает",
+				bom.Name, pct),
+			Target: tgt,
+		})
+		return nil
+	}
 
 	// An absent consumption_source is 'manual': that is the column's DEFAULT (0261) and what every
 	// row predating it carries. Reading absence as 'marker' would demand a норма-раскладка of every
@@ -1044,6 +1251,12 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 		usageByBom := map[int]*entity.TechCardColorwayUsage{}
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
+			// A piece-bound row (entity.IsPieceMaterialAssignment) carries no norm; letting it
+			// into this map would let display order decide whether a slot «has a norm» — a piece
+			// row sorted after the garment row used to shadow it here.
+			if u.IsPieceMaterialAssignment() {
+				continue
+			}
 			if bom := planBomLine(u, b.card.BomItems); bom != nil {
 				usageByBom[bom.Id] = u
 			}

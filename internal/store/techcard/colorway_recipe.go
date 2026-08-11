@@ -367,7 +367,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 
 		// Resolve the style's BOM: by stable line_key (preferred) and ordered for the legacy index ref.
 		bomRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, rep.DB(),
-			`SELECT id, line_key, section FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
+			`SELECT id, line_key, section, purpose, name FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
 			map[string]any{"id": cur.StyleID})
 		if err != nil {
 			return fmt.Errorf("load style bom for recipe: %w", err)
@@ -375,26 +375,36 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		byKey := make(map[string]int, len(bomRows))
 		ordered := make([]int, 0, len(bomRows))
 		sectionByBomID := make(map[int64]string, len(bomRows))
+		// Derived layer role per BOM line (T4): purpose when sorted, else the section fallback —
+		// the ONE rule, entity.DerivePieceLayerRole. Feeds the «две основные» refusal below.
+		roleByBomID := make(map[int64]entity.TechCardBomPurpose, len(bomRows))
+		bomNameByID := make(map[int64]string, len(bomRows))
 		for _, r := range bomRows {
 			byKey[r.LineKey] = r.Id
 			ordered = append(ordered, r.Id)
-			sectionByBomID[int64(r.Id)] = strings.ToLower(strings.TrimSpace(r.Section.String))
+			section := strings.ToLower(strings.TrimSpace(r.Section.String))
+			sectionByBomID[int64(r.Id)] = section
+			role, _ := entity.DerivePieceLayerRole(entity.TechCardBomSection(section), r.Purpose.String)
+			roleByBomID[int64(r.Id)] = role
+			bomNameByID[int64(r.Id)] = r.Name
 		}
 
 		// Resolve the style's cut-pieces the same way (WS4): by stable line_key (preferred) and ordered
 		// for the legacy piece_index ref. This is what lets usage.piece_id carry a real FK now that
 		// pieces are keyed — the recipe write-path never wrote piece_id before (only piece_index).
 		pieceRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, rep.DB(),
-			`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id ORDER BY display_order, id`,
+			`SELECT id, line_key, name FROM tech_card_piece WHERE tech_card_id = :id ORDER BY display_order, id`,
 			map[string]any{"id": cur.StyleID})
 		if err != nil {
 			return fmt.Errorf("load style pieces for recipe: %w", err)
 		}
 		pieceByKey := make(map[string]int, len(pieceRows))
 		pieceOrdered := make([]int, 0, len(pieceRows))
+		pieceNameByID := make(map[int64]string, len(pieceRows))
 		for _, r := range pieceRows {
 			pieceByKey[r.LineKey] = r.Id
 			pieceOrdered = append(pieceOrdered, r.Id)
+			pieceNameByID[int64(r.Id)] = r.Name
 		}
 
 		// Capture the old pins before the full replace. Presence-less writes come from clients that
@@ -438,6 +448,17 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		// missing article into an internal error instead of an actionable field violation.
 		resolved := make([]resolvedRecipeUsage, 0, len(usages))
 		seen := make(map[recipeUsageSlot]int, len(usages))
+		// mainByPiece — П1 (T4): у детали не бывает ДВУХ строк роли «основная ткань». Роль — вывод
+		// из строки BOM (roleByBomID выше), поэтому ловятся только явные main×2: fabric-строка без
+		// назначения даёт роль «не разложено», и отказывать по догадке здесь нельзя — её случай
+		// называет гейт готовности (предупреждение), а кат-план останавливает наряд. Конфликт от
+		// смены назначения на вкладке BOM сейв КАРТОЧКИ сознательно не отбивает (правка BOM легитимна
+		// сама по себе) — его тоже ловит гейт.
+		type mainLayerRef struct {
+			idx   int
+			bomID int64
+		}
+		mainByPiece := make(map[int64]mainLayerRef, len(usages))
 		materialIDs := make([]int64, 0, len(usages))
 		seenMaterialIDs := make(map[int64]bool, len(usages))
 		for i := range usages {
@@ -464,6 +485,20 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 						"keep only one usage for each BOM-line and cut-piece pair")
 				}
 				seen[slot] = i
+				// П1 (T4): вторая ОСНОВНАЯ на одной цельной детали — ошибка данных, а не слой.
+				if roleByBomID[bomItemID.Int64] == entity.BomPurposeMain {
+					if previous, exists := mainByPiece[pieceID.Int64]; exists {
+						pieceName := pieceNameByID[pieceID.Int64]
+						if pieceName == "" {
+							pieceName = fmt.Sprintf("#%d", pieceID.Int64)
+						}
+						return entity.NewFieldViolation(fmt.Sprintf("usages[%d]", i), "duplicate_main_fabric",
+							fmt.Sprintf("piece %q already has a main fabric %q (usages[%d]) — a second main fabric on a solid piece is impossible: a solid piece is cut from a single main fabric",
+								pieceName, bomNameByID[previous.bomID], previous.idx),
+							"assign the second fabric its purpose on the BOM tab (lining, interfacing, contrast…) — or split the piece in two")
+					}
+					mainByPiece[pieceID.Int64] = mainLayerRef{idx: i, bomID: bomItemID.Int64}
+				}
 			}
 			pinSlot := newRecipeUsagePinSlot(slot, u.Placement)
 
@@ -491,12 +526,22 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			agreed, hadAgreed := agreedSlotProvenance(priorProvenanceBySlot[pinSlot])
 			prov := usageProvenance{source: entity.ConsumptionSourceManual}
 			if u.ConsumptionSource.Valid {
-				if u.ConsumptionSource.String == entity.ConsumptionSourceMarker {
+				// ЯВНО ПРИСЛАННЫЙ ИСТОЧНИК РАЗБИРАЕТСЯ ПО ИМЕНИ, А НЕ «ВСЁ, ЧТО НЕ MARKER → MANUAL».
+				// Раньше здесь стояло одно сравнение с 'marker', и любое другое присланное значение
+				// молча ложилось как manual. Для двух значений это читалось как нормализация; с
+				// приходом 'dxf' (0294) та же строка стала бы тихой ложью: карточка сохранилась бы,
+				// экран показал бы «введено руками», и фича выглядела бы отключённой, а не сломанной.
+				// dxf не несёт разложения отходов (netto площадь деталей — не измеренная раскладка);
+				// dto это уже запрещает, а normalized() ниже чистит их и у прямых вызовов стора.
+				switch u.ConsumptionSource.String {
+				case entity.ConsumptionSourceMarker:
 					prov = usageProvenance{
 						source:   entity.ConsumptionSourceMarker,
 						selvedge: u.WasteSelvedgePct,
 						cut:      u.WasteCutPct,
 					}
+				case entity.ConsumptionSourceDxf:
+					prov = usageProvenance{source: entity.ConsumptionSourceDxf}
 				}
 			} else if hadAgreed {
 				prov = agreed
@@ -525,16 +570,26 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			} else {
 				prov.markerID = carriedSlotStamp(priorProvenanceBySlot[pinSlot], prov.source)
 			}
-			// Marker provenance is meaningful only on roll goods a marker can lay out. Sent
-			// explicitly on anything else -> the client is wrong, refuse. Carried forward onto
-			// a row that no longer qualifies (legacy data, section edits) -> demote to manual
-			// quietly rather than fail a stale client's presence-less save.
-			if prov.source == entity.ConsumptionSourceMarker &&
+			// DERIVED provenance is meaningful only on roll goods. Sent explicitly on anything else
+			// -> the client is wrong, refuse. Carried forward onto a row that no longer qualifies
+			// (legacy data, section edits) -> demote to manual quietly rather than fail a stale
+			// client's presence-less save.
+			//
+			// Обе производные нормы попадают под одно правило по ОДНОЙ причине, но разными словами:
+			// раскладку кладут только на рулонное (её длина иначе не значит ничего), а выкройки
+			// привязываются к тем же четырём семействам (rollGoodsSectionList — их же список), и
+			// площадь деталей, поделённая на ширину полотна, у пуговицы не имеет смысла. Ручная
+			// норма остаётся единственным путём для нерулонного — тесьма на метраж, нитка, фурнитура.
+			if prov.source != entity.ConsumptionSourceManual &&
 				(!bomItemID.Valid || !rollGoodsSections[sectionByBomID[bomItemID.Int64]]) {
 				if u.ConsumptionSource.Valid {
+					code, what := "marker_not_roll_goods", "marker consumption"
+					if prov.source == entity.ConsumptionSourceDxf {
+						code, what = "dxf_not_roll_goods", "pattern-derived consumption"
+					}
 					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].consumption_source", i),
-						"marker_not_roll_goods", recipeUsageSlotName(u, slot),
-						"marker consumption applies only to fabric, lining, interlining or insulation BOM lines")
+						code, recipeUsageSlotName(u, slot),
+						what+" applies only to fabric, lining, interlining or insulation BOM lines")
 				}
 				prov = usageProvenance{source: entity.ConsumptionSourceManual}
 			}

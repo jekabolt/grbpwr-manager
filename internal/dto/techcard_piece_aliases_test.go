@@ -58,7 +58,7 @@ func TestParseTechCardPieceDxfAliases(t *testing.T) {
 		})
 		_, _, err := parseTechCardPieceDxfAliases(pb)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "под одним назначением")
+		require.Contains(t, err.Error(), "under one purpose")
 	})
 	t.Run("same block on two slots is fine", func(t *testing.T) {
 		pb := validAliasSet()
@@ -133,7 +133,7 @@ func TestParseTechCardPieceDxfAliasesFabricPurpose(t *testing.T) {
 				{FabricPurpose: main, BomLineKey: otherSlot, BlockName: "перед", PieceLineKey: aliasPieceKey},
 			}})
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "под одним назначением")
+		require.Contains(t, err.Error(), "under one purpose")
 	})
 	t.Run("two purposes keep the same block name apart", func(t *testing.T) {
 		out, _, err := parseTechCardPieceDxfAliases(&pb_common.TechCardPieceDxfAliasSet{

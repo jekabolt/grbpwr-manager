@@ -46,6 +46,9 @@ func clearTechCardPieceMaterials(ctx context.Context, db dependency.DB, tcID int
 type pieceExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
+	// Name rides only the recipe path's SELECT (T4): the «две основные на одной детали» refusal
+	// names the piece. The pieces upsert's own query leaves it empty.
+	Name string `db:"name"`
 }
 
 // calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
@@ -348,12 +351,28 @@ type bomExistingRow struct {
 	// Section rides only the recipe path's SELECT (roll-goods guard for marker provenance);
 	// the BOM upsert's own query leaves it zero.
 	Section sql.NullString `db:"section"`
+	// Purpose and Name ride the same recipe-path SELECT only (T4): purpose feeds the derived layer
+	// role (entity.DerivePieceLayerRole) behind the «две основные на одной детали» refusal, and the
+	// name is what that refusal prints. Zero on the BOM upsert's own query.
+	Purpose sql.NullString `db:"purpose"`
+	Name    string         `db:"name"`
 	// Price + provenance as stored, so the upsert can tell an edited price (restamp 'manual') from a
 	// round-tripped one (keep the existing provenance, including the reprice action's 'catalog').
 	UnitPrice       decimal.NullDecimal `db:"unit_price"`
 	Currency        sql.NullString      `db:"currency"`
 	PriceSource     sql.NullString      `db:"price_source"`
 	PriceSnapshotAt sql.NullTime        `db:"price_snapshot_at"`
+	// Wastage percent + provenance as stored (0296), for the same two distinctions one field over:
+	// an edited percent resets to 'manual' whatever the wire claims (unless the handler VERIFIED the
+	// claim against the live suggestion), an unchanged echo keeps its stored provenance verbatim.
+	// Decided by entity.ResolveBomWastageProvenance — one pure rule for both statements.
+	// applied_percent is the badge's self-check copy (MAJOR 4) — read so a desynced badge cannot be
+	// carried forward as 'lays'.
+	WastagePercent        decimal.NullDecimal `db:"wastage_percent"`
+	WastageSource         sql.NullString      `db:"wastage_source"`
+	WastageLayCount       sql.NullInt64       `db:"wastage_lay_count"`
+	WastageAppliedAt      sql.NullTime        `db:"wastage_applied_at"`
+	WastageAppliedPercent decimal.NullDecimal `db:"wastage_applied_percent"`
 }
 
 // bomPriceProvenance decides what price_source/price_snapshot_at a line carries after this save.
@@ -373,6 +392,28 @@ func bomPriceProvenance(existing *bomExistingRow, b *entity.TechCardBomItem, now
 		return existing.PriceSource, existing.PriceSnapshotAt
 	}
 	return sql.NullString{String: entity.BomPriceSourceManual, Valid: true}, sql.NullTime{Time: now, Valid: true}
+}
+
+// bomWastageProvenance decides the wastage provenance a line carries after this save. A thin
+// adapter over entity.ResolveBomWastageProvenance — the rule itself is pure and lives (and is
+// tested) in entity; this function only translates the stored row into the rule's vocabulary.
+// b.WastageClaimVerified is the HANDLER's verdict (verifyBomWastageClaims): the only door through
+// which a fresh 'lays' claim becomes a badge — a direct store caller cannot open it, fail-closed.
+func bomWastageProvenance(existing *bomExistingRow, b *entity.TechCardBomItem, now time.Time) entity.BomWastageProvenance {
+	stored := entity.BomWastageProvenance{}
+	storedPercent := decimal.NullDecimal{}
+	if existing != nil {
+		stored = entity.BomWastageProvenance{
+			Source:         existing.WastageSource.String,
+			LayCount:       existing.WastageLayCount,
+			AppliedAt:      existing.WastageAppliedAt,
+			AppliedPercent: existing.WastageAppliedPercent,
+		}
+		storedPercent = existing.WastagePercent
+	}
+	return entity.ResolveBomWastageProvenance(stored, storedPercent, b.WastagePercent,
+		entity.BomWastageProvenance{Source: b.WastageSource, LayCount: b.WastageLayCount},
+		!b.WastageProvenanceOmitted, b.WastageClaimVerified, now)
 }
 
 type colorwayBomUsageRefRow struct {
@@ -404,6 +445,8 @@ const bomItemUpdateQuery = `
 		comment=:comment, display_order=:display_order, fabric_width=:fabric_width, fabric_weight_gsm=:fabric_weight_gsm,
 		fabric_direction=IF(:fabric_direction_omitted, fabric_direction, :fabric_direction),
 		wastage_percent=:wastage_percent,
+		wastage_source=:wastage_source, wastage_lay_count=:wastage_lay_count, wastage_applied_at=:wastage_applied_at,
+		wastage_applied_percent=:wastage_applied_percent,
 		price_source=:price_source, price_snapshot_at=:price_snapshot_at
 	WHERE id=:id`
 
@@ -411,10 +454,12 @@ const bomItemInsertQuery = `
 	INSERT INTO tech_card_bom_item
 		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, is_sample, name, supplier, supplier_ref,
 		 color, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
-		 fabric_weight_gsm, fabric_direction, wastage_percent, line_key, price_source, price_snapshot_at)
+		 fabric_weight_gsm, fabric_direction, wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at,
+		 wastage_applied_percent, line_key, price_source, price_snapshot_at)
 	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :is_sample, :name, :supplier, :supplier_ref,
 		 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
-		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :line_key, :price_source, :price_snapshot_at)`
+		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :wastage_source, :wastage_lay_count, :wastage_applied_at,
+		 :wastage_applied_percent, :line_key, :price_source, :price_snapshot_at)`
 
 // validateBomKindSection enforces the kind↔section pairing (0278) the DB CHECK deliberately does not:
 // a kind is legal only on a kind-eligible section, and within that, only in its own HOME section —
@@ -460,7 +505,8 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 	res := bomResolver{byLineKey: make(map[string]int, len(items)), ordered: make([]int, 0, len(items))}
 
 	existingRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, db,
-		`SELECT id, line_key, unit_price, currency, price_source, price_snapshot_at
+		`SELECT id, line_key, unit_price, currency, price_source, price_snapshot_at,
+		        wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at, wastage_applied_percent
 		 FROM tech_card_bom_item WHERE tech_card_id = :id`, map[string]any{"id": tcID})
 	if err != nil {
 		return res, fmt.Errorf("failed to load existing bom lines: %w", err)
@@ -509,6 +555,14 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		params := bomItemParams(tcID, b, i, key)
 		src, at := bomPriceProvenance(existingRowByKey[key], b, now)
 		params["price_source"], params["price_snapshot_at"] = src, at
+		// Провенанс процента раскроя (0296): финальную тройку решает чистое правило (verbatim при
+		// молчании пары, сброс в 'manual' при правке значения через старый бандл, серверный штамп
+		// applied_at на смене сути) — SQL пишет уже решённое, поэтому IF-гардов здесь нет.
+		wp := bomWastageProvenance(existingRowByKey[key], b, now)
+		params["wastage_source"] = wp.Source
+		params["wastage_lay_count"] = wp.LayCount
+		params["wastage_applied_at"] = wp.AppliedAt
+		params["wastage_applied_percent"] = wp.AppliedPercent
 		if id, ok := existingByKey[key]; ok {
 			params["id"] = id
 			if err := storeutil.ExecNamed(ctx, db, bomItemUpdateQuery, params); err != nil {
@@ -883,6 +937,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,
 		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
+		       bi.wastage_source, bi.wastage_lay_count, bi.wastage_applied_at, bi.wastage_applied_percent,
 		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at,
 		       COALESCE(bi.fabric_width, NULLIF(mfa.width_cm, 0), m.fabric_width) AS effective_fabric_width_cm,
 		       mfa.selvedge_cm AS selvedge_cm

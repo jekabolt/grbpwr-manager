@@ -20,7 +20,8 @@ func sc(sizeID int, v string) entity.TechCardBomSizeConsumption {
 	return entity.TechCardBomSizeConsumption{SizeId: sizeID, Consumption: decimal.RequireFromString(v)}
 }
 
-// reportCard: sizes 4/5/6 with a declared run of 10/30/60, one graded fabric, EUR throughout.
+// reportCard: declared range 4/5/6, base sample size 4, one graded fabric (2 / 2.5 / 3 m at 10
+// EUR). Old basis (base size): 2 × 10 = 20. New basis (range average): 2.5 × 10 = 25.
 func reportCard() *entity.TechCard {
 	c := &entity.TechCard{Id: 1}
 	c.Name = "Parka"
@@ -44,100 +45,98 @@ func reportCard() *entity.TechCard {
 	return c
 }
 
-func declared(c *entity.TechCard) (map[int]int, int) {
-	m, total := map[int]int{}, 0
-	for _, q := range c.SizeQuantities {
-		if q.OrderQty > 0 {
-			m[q.SizeId] = q.OrderQty
-			total += q.OrderQty
-		}
-	}
-	return m, total
-}
-
-// TestOldWeightedNormReproducesRetiredBasis pins the "before" column. The report is only worth
+// TestOldBaseSizeNormReproducesOutgoingBasis pins the "before" column. The report is only worth
 // reading if its old number is the number the system used to produce — an approximation would make
-// every delta it prints a fiction.
-func TestOldWeightedNormReproducesRetiredBasis(t *testing.T) {
+// every delta it prints a fiction. The outgoing basis: the base sample size's norm, strictly.
+func TestOldBaseSizeNormReproducesOutgoingBasis(t *testing.T) {
 	card := reportCard()
-	qty, _ := declared(card)
 	u := &card.Colorways[0].Usages[0]
 
-	// (2×10 + 2.5×30 + 3×60) / 100 = 275/100 = 2.75
-	got, ok := oldWeightedNorm(u, qty)
+	got, ok := oldBaseSizeNorm(u, oldBaseSizeID(card))
 	require.True(t, ok)
-	require.Equal(t, "2.75", got.String())
+	require.Equal(t, "2", got.String())
 
-	// THE DEFECT, written down as a test. Drop the norm for size 6 and the numerator loses 180
-	// while the denominator keeps all 100 garments: (2×10 + 2.5×30) / 100 = 0.95 — well under the
-	// 2..3 the usage is actually graded at anywhere. That systematic undercount is why some cards
-	// get MORE expensive under the base-size basis without anybody having repriced anything.
-	partial := *u
-	partial.SizeConsumptions = []entity.TechCardBomSizeConsumption{sc(4, "2"), sc(5, "2.5")}
-	got, ok = oldWeightedNorm(&partial, qty)
-	require.True(t, ok)
-	require.Equal(t, "0.95", got.String())
+	// No base size at all → the outgoing basis produced nothing. On beta that is EVERY card.
+	_, ok = oldBaseSizeNorm(u, 0)
+	require.False(t, ok)
 
-	// No declared run at all → the old basis had no denominator and produced nothing.
-	_, ok = oldWeightedNorm(u, map[int]int{})
+	// A base size this usage was never graded on → nothing either, exactly as the outgoing
+	// UnitTotal answered.
+	_, ok = oldBaseSizeNorm(u, 9)
 	require.False(t, ok)
 }
 
-// TestOldBasisCardPricesThroughLiveCosting proves the shadow-card trick: running the CURRENT costing
-// code over the rewritten card yields the retired figure, so the report never needs a second copy of
-// the costing math to compare against.
+// TestOldBasisCardPricesThroughLiveCosting proves the shadow-card trick: running the CURRENT
+// costing code (now the range average) over the rewritten card yields the outgoing figure, so the
+// report never needs a second copy of the costing math to compare against.
 func TestOldBasisCardPricesThroughLiveCosting(t *testing.T) {
 	card := reportCard()
-	qty, total := declared(card)
 	fx := dto.CostingFx{Base: "EUR"}
 
-	// New basis: base size 4 → 2 × 10 = 20.
+	// New basis: the range average (2+2.5+3)/3 = 2.5 → 25.
 	newCost, ccy := dto.ComputeColorwayUnitCost(card, 55, fx)
 	require.True(t, newCost.Valid)
 	require.Equal(t, "EUR", ccy)
-	require.Equal(t, "20", newCost.Decimal.String())
+	require.Equal(t, "25", newCost.Decimal.String())
 
-	// Old basis via the shadow: 2.75 × 10 = 27.5.
-	old := oldBasisCard(card, qty, total)
+	// Old basis via the shadow: base size 4 → 2 × 10 = 20.
+	old := oldBasisCard(card)
 	oldCost, oldCcy := dto.ComputeColorwayUnitCost(old, 55, fx)
 	require.True(t, oldCost.Valid)
 	require.Equal(t, "EUR", oldCcy)
-	require.Equal(t, "27.5", oldCost.Decimal.String())
+	require.Equal(t, "20", oldCost.Decimal.String())
 
 	// The shadow must not mutate the caller's card — the report prices both from the same load.
 	require.Len(t, card.Colorways[0].Usages[0].SizeConsumptions, 3)
 	require.False(t, card.Colorways[0].Usages[0].Consumption.Valid)
 
-	// A card with no declared run had NO old figure (nothing to divide by) but has a new one. The
+	// A card with no base size had NO old figure but HAS a new one (the beta-wide case). The
 	// report must show that as an appearance, not silently as a zero.
-	noRun := reportCard()
-	noRun.SizeQuantities = nil
-	emptyQty, emptyTotal := declared(noRun)
-	oldCost, _ = dto.ComputeColorwayUnitCost(oldBasisCard(noRun, emptyQty, emptyTotal), 55, fx)
+	noBase := reportCard()
+	noBase.BaseSampleSizeId = sql.NullInt32{}
+	oldCost, _ = dto.ComputeColorwayUnitCost(oldBasisCard(noBase), 55, fx)
 	require.False(t, oldCost.Valid)
-	newCost, _ = dto.ComputeColorwayUnitCost(noRun, 55, fx)
+	newCost, _ = dto.ComputeColorwayUnitCost(noBase, 55, fx)
 	require.True(t, newCost.Valid)
+
+	// And the reverse: coverage that satisfied the base size but not the whole range loses its
+	// figure — the count the summary must carry as BecameUncosted.
+	gap := reportCard()
+	gap.SizeIds = append(gap.SizeIds, 7)
+	oldCost, _ = dto.ComputeColorwayUnitCost(oldBasisCard(gap), 55, fx)
+	require.True(t, oldCost.Valid, "the outgoing basis never looked past the base size")
+	newCost, _ = dto.ComputeColorwayUnitCost(gap, 55, fx)
+	require.False(t, newCost.Valid, "the range average requires the whole range")
 }
 
-// TestBuildUsageReportsBothNorms checks the row a human reads: the graded norms, the retired
-// average, the base-size norm, and the uncosted verdict when the base size carries none.
+// TestBuildUsageReportsBothNorms checks the row a human reads: the graded norms, the base-size
+// norm (old), the range average (new), and the uncosted verdict when the range is not covered.
 func TestBuildUsageReportsBothNorms(t *testing.T) {
 	card := reportCard()
-	qty, _ := declared(card)
 	names := map[int]string{4: "M", 5: "L", 6: "XL"}
 
-	got := buildUsage(card, &card.Colorways[0].Usages[0], 4, names, qty)
+	got := buildUsage(card, &card.Colorways[0].Usages[0], oldBaseSizeID(card), names)
 	require.True(t, got.SizeGraded)
 	require.Equal(t, "Shell", got.Material)
 	require.Len(t, got.NormsBySize, 3)
 	require.Equal(t, "M", got.NormsBySize[0].SizeName)
-	require.True(t, got.NormsBySize[0].PartOfDeclaredRun)
-	require.Equal(t, "2.75", *got.OldNorm)
-	require.Equal(t, "2", *got.NewNorm)
+	require.True(t, got.NormsBySize[0].InDeclaredRange)
+	require.Equal(t, "2", *got.OldNorm)
+	require.Equal(t, "2.5", *got.NewNorm)
 	require.False(t, got.Uncosted)
 
-	// Base size the usage was never graded on → no new norm, flagged uncosted.
-	got = buildUsage(card, &card.Colorways[0].Usages[0], 9, names, qty)
+	// No base size → no old norm; the new side stands on its own (the beta-wide appearance).
+	got = buildUsage(card, &card.Colorways[0].Usages[0], 0, names)
+	require.Nil(t, got.OldNorm)
+	require.Equal(t, "2.5", *got.NewNorm)
+	require.False(t, got.Uncosted)
+
+	// A range size with no norm → no new norm, flagged uncosted (whole-range-or-nothing); the
+	// norm on the stray size is reported but marked outside the range.
+	gap := reportCard()
+	gap.SizeIds = []int{4, 5, 6, 7}
+	got = buildUsage(gap, &gap.Colorways[0].Usages[0], oldBaseSizeID(gap), names)
+	require.Equal(t, "2", *got.OldNorm)
 	require.Nil(t, got.NewNorm)
 	require.True(t, got.Uncosted)
 
@@ -145,7 +144,7 @@ func TestBuildUsageReportsBothNorms(t *testing.T) {
 	perGarment := entity.TechCardColorwayUsage{
 		BomItemId: sql.NullInt64{Int64: 1, Valid: true}, Consumption: nd("1.5"),
 	}
-	got = buildUsage(card, &perGarment, 4, names, qty)
+	got = buildUsage(card, &perGarment, oldBaseSizeID(card), names)
 	require.False(t, got.SizeGraded)
 	require.Equal(t, "1.5", *got.PerGarment)
 	require.Nil(t, got.OldNorm)
@@ -175,27 +174,25 @@ func TestPercentileNearestRank(t *testing.T) {
 }
 
 // TestChangedVerdictReadsRawFigures locks the classification against the rounded percentage. Both
-// cases below have DeltaPct nil or "0" and are still real changes.
+// cases below have DeltaPct nil and are still real changes.
 func TestChangedVerdictReadsRawFigures(t *testing.T) {
 	fx := dto.CostingFx{Base: "EUR"}
 	names := map[int]string{4: "M", 5: "L", 6: "XL"}
 
-	// A card with no declared run had NO old figure at all; the base size gives it one.
-	noRun := reportCard()
-	noRun.SizeQuantities = nil
-	qty, total := declared(noRun)
-	got := buildColorway(noRun, oldBasisCard(noRun, qty, total), &noRun.Colorways[0], 0, fx, names, qty)
+	// A card with no base size had NO old figure at all; the range average gives it one.
+	noBase := reportCard()
+	noBase.BaseSampleSizeId = sql.NullInt32{}
+	got := buildColorway(noBase, oldBasisCard(noBase), &noBase.Colorways[0], 0, fx, names, true)
 	require.Nil(t, got.OldUnitCost)
 	require.NotNil(t, got.NewUnitCost)
 	require.Nil(t, got.DeltaPct, "no percentage exists across an absent figure")
 	require.True(t, got.BecameCosted)
 	require.True(t, got.Changed, "gaining a cost is a change even with no percentage to show")
 
-	// The reverse: a base size the recipe was never graded on takes the cost away.
+	// The reverse: a range grown past the grading takes the cost away.
 	lost := reportCard()
-	lost.BaseSampleSizeId = sql.NullInt32{Int32: 9, Valid: true}
-	qty, total = declared(lost)
-	got = buildColorway(lost, oldBasisCard(lost, qty, total), &lost.Colorways[0], 0, fx, names, qty)
+	lost.SizeIds = append(lost.SizeIds, 7)
+	got = buildColorway(lost, oldBasisCard(lost), &lost.Colorways[0], 0, fx, names, true)
 	require.NotNil(t, got.OldUnitCost)
 	require.Nil(t, got.NewUnitCost)
 	require.True(t, got.BecameUncosted)
@@ -209,12 +206,10 @@ func TestRepricesProductNeedsMoreThanProvenance(t *testing.T) {
 	fx := dto.CostingFx{Base: "EUR"}
 	names := map[int]string{4: "M"}
 
+	// Stored price already equals the new figure (25) → nothing moves.
 	card := reportCard()
-	qty, total := declared(card)
-
-	// Stored price already equals the new figure (20) → nothing moves.
-	card.Colorways[0].CostPrice = nd("20")
-	got := buildColorway(card, oldBasisCard(card, qty, total), &card.Colorways[0], 0, fx, names, qty)
+	card.Colorways[0].CostPrice = nd("25")
+	got := buildColorway(card, oldBasisCard(card), &card.Colorways[0], 0, fx, names, true)
 	require.True(t, got.SeedMayOverwrite, "NULL provenance permits a write")
 	require.False(t, got.RepricesProduct, "same number is not a reprice")
 
@@ -222,14 +217,59 @@ func TestRepricesProductNeedsMoreThanProvenance(t *testing.T) {
 	manual := reportCard()
 	manual.Colorways[0].CostPrice = nd("99")
 	manual.Colorways[0].CostPriceSource = ns("manual")
-	got = buildColorway(manual, oldBasisCard(manual, qty, total), &manual.Colorways[0], 0, fx, names, qty)
+	got = buildColorway(manual, oldBasisCard(manual), &manual.Colorways[0], 0, fx, names, true)
 	require.False(t, got.SeedMayOverwrite)
 	require.False(t, got.RepricesProduct)
 
-	// Permitted provenance, different number → this one really moves.
+	// Permitted provenance, different number → this one really moves (20 stored, 25 computed).
 	moves := reportCard()
-	moves.Colorways[0].CostPrice = nd("27.50")
+	moves.Colorways[0].CostPrice = nd("20")
 	moves.Colorways[0].CostPriceSource = ns("tech_card")
-	got = buildColorway(moves, oldBasisCard(moves, qty, total), &moves.Colorways[0], 0, fx, names, qty)
+	got = buildColorway(moves, oldBasisCard(moves), &moves.Colorways[0], 0, fx, names, true)
 	require.True(t, got.RepricesProduct)
+}
+
+// TestRepricesProductNeedsOwnership is the review fix (MAJOR 3): the live seed's UPDATE requires
+// product.primary_tech_card_id = this card ON TOP of provenance, so a colourway product owned by
+// another card is a guaranteed no-op and must not be counted — this report is the only place a
+// human sees the price of the change before prod, and it must not overstate it.
+func TestRepricesProductNeedsOwnership(t *testing.T) {
+	fx := dto.CostingFx{Base: "EUR"}
+	names := map[int]string{4: "M"}
+
+	// Same figures as the "moves" case above — permissive provenance, 20 stored vs 25 computed —
+	// with the ONE difference that this card is not the product's primary.
+	moves := reportCard()
+	moves.Colorways[0].CostPrice = nd("20")
+	moves.Colorways[0].CostPriceSource = ns("tech_card")
+	got := buildColorway(moves, oldBasisCard(moves), &moves.Colorways[0], 0, fx, names, false)
+	require.True(t, got.SeedMayOverwrite, "provenance alone still permits the write")
+	require.False(t, got.OwnedByThisCard)
+	require.False(t, got.RepricesProduct, "a non-primary card reprices nothing, however far the figure moved")
+}
+
+// TestUsageDetailSkipsPieceAssignments is the review fix (MINOR 5): a piece-bound row carries no
+// norm and is skipped by BOTH costing sides (T8), so the detail must not list it with an old→new
+// pair — the one row that cannot reprice would read as if it just did.
+func TestUsageDetailSkipsPieceAssignments(t *testing.T) {
+	fx := dto.CostingFx{Base: "EUR"}
+	names := map[int]string{4: "M", 5: "L", 6: "XL"}
+
+	card := reportCard()
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages, entity.TechCardColorwayUsage{
+		BomItemId: sql.NullInt64{Int64: 1, Valid: true},
+		PieceId:   sql.NullInt64{Int64: 9, Valid: true}, // назначение материала детали, T8
+		// Легаси-числа на строке-назначении: деньги их не читают, и отчёт не имеет права их печатать.
+		SizeConsumptions: []entity.TechCardBomSizeConsumption{sc(4, "1"), sc(5, "1"), sc(6, "1")},
+	})
+
+	got := buildColorway(card, oldBasisCard(card), &card.Colorways[0], 0, fx, names, true)
+	require.Len(t, got.Usages, 1, "the piece-bound row must not appear in the detail")
+	require.Equal(t, "Shell", got.Usages[0].Material)
+
+	// And the money agrees with the detail: the legacy numbers on the piece row moved nothing.
+	clean := reportCard()
+	cleanCw := buildColorway(clean, oldBasisCard(clean), &clean.Colorways[0], 0, fx, names, true)
+	require.Equal(t, *cleanCw.NewUnitCost, *got.NewUnitCost)
+	require.Equal(t, *cleanCw.OldUnitCost, *got.OldUnitCost)
 }

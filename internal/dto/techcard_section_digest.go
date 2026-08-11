@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -305,7 +306,11 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 // DELIBERATELY ABSENT — purpose / purpose_note / is_sample (0265), and kind / kind_note (0278) on
 // exactly the same grounds. They classify a line that already exists; they do not change the
 // article, the price or the consumption, so on the same reasoning as price_source they are metadata
-// about a value and must not stale a sign-off whose value did not change. The concrete cost of
+// about a value and must not stale a sign-off whose value did not change. The same holds for
+// wastage_source / wastage_lay_count / wastage_applied_at (0296): the SIGNED value is
+// wastage_percent itself (already below); where the number came from is audit about it, and folding
+// the provenance in would restamp every card at the first save after deploy — the wall-of-stale
+// failure this paragraph exists to prevent. The concrete cost of
 // folding them in would be paid immediately and by everyone: every pre-0265 line is deliberately
 // unsorted and every pre-0278 line deliberately unclassified, so the operator's first sorting pass
 // over an approved card would mark its MATERIALS approval stale on every single card at once — a
@@ -375,23 +380,31 @@ func packagingProjection(tc *entity.TechCardInsert) any {
 }
 
 // costingProjection fingerprints what the card COSTS: the manual articles, the declared typical
-// run, and — since the base-size change — the SIZE the standard cost is computed on.
+// run, and — since the range-average basis (T6) — the DECLARED SIZE RANGE the standard cost
+// averages over.
 //
-// WHY base_sample_size_id is in here even though it lives on the card header. It is not metadata
-// about the costing, it is an INPUT TO THE DERIVATION: a size-graded material norm is costed at
-// that size and nowhere else (entity.TechCardColorwayUsage.UnitTotal), so re-pointing the base
-// size from M to XL reprices every colourway of the style. Leaving it out would give exactly the
-// failure the whole mechanism exists to prevent — a costing sign-off staying green over a number
-// that changed. That is the same test materialsProjection sets for `kind`: the day a field becomes
-// an input to a derivation rather than a grouping, it must join the signature.
+// WHY size_ids are in here even though the range lives on the card header. The range is not
+// metadata about the costing, it is an INPUT TO THE DERIVATION: a size-graded material norm
+// enters the style cost as Σ norm / |range| over exactly that set
+// (entity.TechCardColorwayUsage.RangeAverageTotal), so adding or removing a size reprices every
+// colourway of the style. Leaving it out would give exactly the failure the whole mechanism
+// exists to prevent — a costing sign-off staying green over a number that changed. That is the
+// same test materialsProjection sets for `kind`: the day a field becomes an input to a
+// derivation rather than a grouping, it must join the signature.
 //
-// It is added UNCONDITIONALLY, and that restamps every stored COSTING digest at deploy: every
-// approved costing sign-off goes stale at once. That is honest, not collateral damage — the basis
-// of the number under those signatures changed in the same commit, from «average over the declared
-// mix» to «the base size's own norm», so no existing approval describes the current figure. The
-// positional-tail trick (see constructionProjection) would have bought nothing here: it preserves
-// the hash only for cards where the new element is empty, and a card with no base size is precisely
-// a card whose cost just became uncomputable — the one that most needs a fresh look.
+// SORTED, because only MEMBERSHIP is the input: Σ/n is order-blind, so reordering the declared
+// range must not restamp a signature, while adding or removing a size must. Hashing the stored
+// order would let a cosmetic reshuffle read as «changed since sign-off».
+//
+// base_sample_size_id LEFT the projection in the same change, unconditionally: it is a reference
+// «размер образца» now, not an input — re-pointing it moves no figure, so keeping it hashed
+// would restamp signatures over nothing. Swapping the basis element restamps every stored
+// COSTING digest at deploy — every approved costing sign-off goes stale at once. That is honest,
+// not collateral damage (owner: «переподпишем»): the basis of the number under those signatures
+// changed in the same commit, from «the base size's own norm» to «the simple average over the
+// declared range», so no existing approval describes the current figure. The positional-tail
+// trick (see constructionProjection) would have bought nothing here — there is no card for which
+// the two bases agree by construction.
 func costingProjection(tc *entity.TechCardInsert) any {
 	var costing any
 	if c := tc.Costing; c != nil {
@@ -410,10 +423,13 @@ func costingProjection(tc *entity.TechCardInsert) any {
 	for _, q := range tc.SizeQuantities {
 		qty = append(qty, []any{q.SizeId, q.OrderQty})
 	}
-	// CostingBaseSizeID, not BaseSampleSizeId.Int32: an unset NullInt32 and a stored 0 mean the same
-	// thing to the costing (no basis), and hashing the raw field would let those two spellings of one
-	// state produce two fingerprints and a phantom "changed since sign-off".
-	return []any{costing, qty, tc.CostingBaseSizeID()}
+	rangeIds := append([]int(nil), tc.SizeIds...)
+	sort.Ints(rangeIds)
+	rangeVals := make([]any, 0, len(rangeIds))
+	for _, id := range rangeIds {
+		rangeVals = append(rangeVals, id)
+	}
+	return []any{costing, qty, rangeVals}
 }
 
 // dec renders a nullable decimal as a canonical string, so 1.50 and 1.5 — which the DB may return

@@ -137,6 +137,27 @@ const (
 	// instead of a UNIQUE index: silently taking the first is forbidden.
 	RunReadinessKeyNormMultiple = "norm_multiple"
 
+	// --- слои деталей (T4: роль слоя — вывод из строки BOM, DerivePieceLayerRole) ---
+	// RunReadinessKeyPieceRoleConflict — роли слоёв каждой детали не конфликтуют. BLOCKER на «две
+	// основные на одной цельной детали» и на его недоказуемого близнеца (основная рядом с
+	// неразложенной fabric-строкой — не доказать, что это не вторая основная): ровно те же случаи
+	// останавливают наряд, и гейт не имеет права быть зеленее наряда. Дубль НЕ-основной роли (два
+	// «канта», двойной подклад) — WARNING: физически кроимо, но человек должен взглянуть.
+	// Вторая линия обороны после отказа UpdateColorwayRecipe: конфликт возникает и БЕЗ правки
+	// рецепта — сменой назначения строки на вкладке BOM, которую сейв карточки сознательно не
+	// отбивает (правка BOM легитимна сама по себе).
+	RunReadinessKeyPieceRoleConflict = "piece_role_conflict"
+	// RunReadinessKeyPieceMainFabric — у каждой детали со слоями есть основная ткань. WARNING:
+	// деталь, привязанная к подкладу без шелла, кроима по каждому названному слою, но состав
+	// подозрителен и человек должен его подтвердить. Деталь ВОВСЕ без детальных строк сюда не
+	// попадает — её судят прежние правила наряда (вывод единственного рулонного слота).
+	RunReadinessKeyPieceMainFabric = "piece_main_fabric"
+	// RunReadinessKeyPieceFabricSorted — ткань каждой детали разложена по назначению. WARNING-наг,
+	// не блокер: НАЗНАЧЕНИЕ (0265) сознательно не бэкфилилось, и половина живых детальных строк —
+	// fabric без назначения; жёсткий отказ закричал бы на них в день выката. Роль такого слоя
+	// неизвестна («не разложено»), и пока строка одна — наряд печатает её как раньше.
+	RunReadinessKeyPieceFabricSorted = "piece_fabric_sorted"
+
 	// --- прогон ---
 	RunReadinessKeySizesInRange      = "sizes_in_range"
 	RunReadinessKeySizesInDxf        = "sizes_in_dxf"
@@ -177,6 +198,9 @@ var RunReadinessKeyGroups = map[string]RunReadinessGroup{
 	RunReadinessKeyNormPieceSet:           RunReadinessGroupColorway,
 	RunReadinessKeyNormWidthVsArticle:     RunReadinessGroupColorway,
 	RunReadinessKeyNormMultiple:           RunReadinessGroupColorway,
+	RunReadinessKeyPieceRoleConflict:      RunReadinessGroupColorway,
+	RunReadinessKeyPieceMainFabric:        RunReadinessGroupColorway,
+	RunReadinessKeyPieceFabricSorted:      RunReadinessGroupColorway,
 
 	RunReadinessKeySizesInRange:      RunReadinessGroupRun,
 	RunReadinessKeySizesInDxf:        RunReadinessGroupRun,

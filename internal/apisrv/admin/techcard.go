@@ -95,6 +95,12 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
+	// Заявки провенанса 'lays' на процент раскроя проверяются ПО СУТИ (MAJOR 3): у новой карточки
+	// эха не бывает — либо число совпало с текущей медианой сервера и бейдж подтверждён, либо
+	// строка ляжет как manual.
+	if err := s.verifyBomWastageClaims(ctx, nil, tc.BomItems); err != nil {
+		return nil, err
+	}
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
@@ -210,6 +216,13 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
 			slog.Int("tech_card_id", int(req.Id)))
 		return nil, status.Error(codes.Internal, "can't load tech card; try again")
+	}
+	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет
+	// verbatim; свежая заявка подтверждается пересчётом предложения — совпало, и только тогда,
+	// бейдж штампуется; иначе строка ложится как manual: изменил число — источник стал manual, что
+	// бы клиент ни прислал.
+	if err := s.verifyBomWastageClaims(ctx, stored, tc.BomItems); err != nil {
+		return nil, err
 	}
 	username := authsrv.GetAdminUsername(ctx)
 	tc.UpdatedBy = username // server-stamp; created_by is preserved (not in SET)

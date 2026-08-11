@@ -11,6 +11,7 @@ import (
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/cutspec"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
@@ -905,10 +906,33 @@ func planDecimal(d *pb_decimal.Decimal) decimal.Decimal {
 // округлением — бейдж загорался бы на РАЗНИЦЕ ФОРМУЛ, выглядя при этом ровно как разница данных:
 // худшее ложноположительное из доступных здесь, потому что отличить его от настоящего нечем.
 //
-// Ветка релиза остаётся веткой релиза. Прогон, приколотый к tech_card_release, ценится этим
-// замороженным скаляром навсегда — значит и «сегодняшнее» его число берётся оттуда же, и два числа
-// совпадают по построению. Молчание бейджа тут ПРАВИЛЬНО: такой прогон ценой карточки не управляется,
-// и подсунуть ему живую карточку значило бы сообщать о расхождении, которого для него не существует.
+// ВЕТКА РЕЛИЗА ОСТАЁТСЯ ВЕТКОЙ РЕЛИЗА, но микс партии взвешивает и её. Прогон, приколотый к
+// tech_card_release, ценится ТОЛЬКО замороженными числами релиза — но не одним скаляром стиля, а
+// клетками (колорвей, РАЗМЕР) собственных линий, посчитанными по замороженной костинг-проекции
+// блоба тем же правилом клетки, что у живой ветки (releaseRunPlannedUnitCost →
+// dto.ComputeReleaseRunPlannedUnitCost): партия из одних M стоит по нормам M, а не по среднему
+// ряда. Где блоб размерную клетку оценить не может (цены пина в нём нет), партия ЦЕЛИКОМ падает
+// на замороженные стилевые цены колорвеев, взвешенные линиями. Скаляр — цена ПЕРВОГО колорвея
+// карточки, поэтому партия из 50 чёрных по €10 и 50 белых по €30 снимала €10 вместо €20, и вся
+// её plan/fact вариация ехала от этого. Живая ветка это уже умеет; ветка релиза умеет теперь.
+//
+// БЕЙДЖ ПРИ ЭТОМ МОЛЧИТ ПО ПОСТРОЕНИЮ, и это условие, а не следствие: и снимок, и «сегодня» читают
+// ОДИН И ТОТ ЖЕ замороженный блоб плюс линии прогона, а сами по себе те не меняются — их правит
+// только оператор, и тогда бейдж честно показывает, что партию перепланировали. Ни живая карточка,
+// ни каталог материалов, ни курсы в этот расчёт не входят — иначе переоценка склада зажигала бы
+// «карточка изменилась» на прогоне, у которого карточка заморожена.
+//
+// ОДИН РАЗ БЕЙДЖ ВСЁ-ТАКИ ЗАГОРИТСЯ — на прогонах, чей снимок заморожен ПРЕЖНЕЙ формулой: у
+// смешанной по цветам партии в базе лежит цена первого колорвея (а у односизовой — стилевая, не
+// размерная), «сегодня» же отныне даёт взвешенную по клеткам. Это неизбежная цена любой правки
+// формулы (живая ветка прошла через то же, когда переехала на микс), и она одноразовая: снимок не
+// переписывается задним числом, потому что он исторический факт, а не кэш. Отличить это
+// расхождение от расхождения данных в тот момент нечем — но указывает оно на прогон, чей план и
+// правда посчитан по отставшему правилу.
+//
+// ЛЮБАЯ НЕПРИГОДНОСТЬ ЗАМОРОЖЕННЫХ ДАННЫХ ВОЗВРАЩАЕТ ПРЕЖНЕЕ ПОВЕДЕНИЕ — скаляр rel.UnitCost со
+// своей валютой. Деградации «посчитаем по живой карточке» здесь нет ни в одном виде: цена релизного
+// прогона не имеет права поехать от того, что кто-то правил карточку после релиза.
 //
 // Errors: a missing release/card comes back as InvalidArgument (the create path refuses the write on
 // it), a failed load as Internal, logged here. The read path discards both and simply leaves its
@@ -918,8 +942,9 @@ func planDecimal(d *pb_decimal.Decimal) decimal.Decimal {
 // стилевой цифрой, и каждая вариация, которую она когда-либо показала, несла в себе этот разрыв.
 // Параметр обязан идти сюда, а не считаться у одного из двух вызывающих: разойдись снапшот и
 // «сегодня» хотя бы миксом — бейдж загорелся бы на разнице формул, что этот хелпер и существует
-// предотвращать. Три края (нет линий → стилевая цифра на базовом размере; неградуированный размер →
-// плана нет вовсе; смешанные валюты → плана нет) живут в ComputeProductionRunPlannedUnitCost.
+// предотвращать. Края (нет линий → считается БЕЗ базиса: плоские нормы ценятся, градуированные
+// нет — средняя по ряду пустому прогону не подставляется; неградуированный размер → плана нет
+// вовсе; смешанные валюты → плана нет) живут в ComputeProductionRunPlannedUnitCost.
 func (s *Server) plannedUnitCostFor(ctx context.Context, releaseId sql.NullInt64, techCardId int, actualWastagePercent decimal.NullDecimal, lines []entity.ProductionRunLine) (decimal.NullDecimal, string, error) {
 	if releaseId.Valid {
 		rel, err := s.repo.TechCards().GetTechCardRelease(ctx, int(releaseId.Int64))
@@ -929,6 +954,9 @@ func (s *Server) plannedUnitCostFor(ctx context.Context, releaseId sql.NullInt64
 			}
 			slog.Default().ErrorContext(ctx, "can't load release for planned cost", slog.String("err", err.Error()))
 			return decimal.NullDecimal{}, "", status.Error(codes.Internal, "can't load release")
+		}
+		if unit, currency, ok := releaseRunPlannedUnitCost(ctx, rel, techCardId, lines); ok {
+			return unit, currency, nil
 		}
 		return rel.UnitCost, rel.Currency.String, nil
 	}
@@ -945,9 +973,47 @@ func (s *Server) plannedUnitCostFor(ctx context.Context, releaseId sql.NullInt64
 	// line's estimate for this run's plan) — unset falls back to each line's BOM estimate. This keeps
 	// plan-vs-actual honest about the run's real marker/lay efficiency (the actuals side is measured
 	// from material issues) AND about what the batch is actually cutting.
-	// The release path above is a frozen scalar and is left as-is.
+	// The release path above prices the same cells from the FROZEN snapshot instead (falling back to
+	// the frozen colourway figures, then the release scalar) — never from this live card.
 	unit, currency := dto.ComputeProductionRunPlannedUnitCost(card, s.costingFx(ctx), actualWastagePercent, lines)
 	return unit, currency, nil
+}
+
+// releaseRunPlannedUnitCost — цена релизного прогона по миксу его линий, посчитанная ИСКЛЮЧИТЕЛЬНО
+// по замороженным числам релиза. ok=false значит «замороженные данные эту партию не оценивают», и
+// вызывающий возвращается к скаляру релиза — прежнему поведению, а не к живой карточке.
+//
+// МИКС УТОЧНЯЕТ СКАЛЯР, А НЕ ЗАМЕНЯЕТ СОБОЙ ЕГО ОТСУТСТВИЕ — отсюда сверка валют. Скаляр релиза
+// хранится в БАЗОВОЙ валюте, когда костинг удалось в неё свернуть по курсам (ComputeTechCardUnitCost
+// предпочитает unit_cost_base), а замороженные цены колорвеев лежат в валюте КОСТИНГА, и
+// пересчитать их сегодняшними курсами значило бы разморозить цену. Валюты разошлись (костинг в USD,
+// скаляр свёрнут в EUR) или скаляра нет вовсе — партия остаётся ровно на том, что у неё было:
+// подменить NULL или базовое число валютой костинга означало бы либо выдумать план там, где релиз
+// его не смог посчитать, либо положить рядом с фактическими евро сумму в другой валюте.
+//
+// ФАКТИЧЕСКОГО ПРОЦЕНТА КРОЯ ЗДЕСЬ НЕТ И БЫТЬ НЕ МОЖЕТ — параметр actualWastagePercent, которым
+// живая ветка замещает оценку каждой строки BOM, в замороженные цены не входит: они посчитаны в
+// момент релиза, задолго до того, как эту партию раскроили. Это ровно то же, что было со скаляром,
+// и это не потеря: применить его к готовому числу означало бы умножить на процент кроя и CMT с
+// накладными, то есть посчитать не то.
+func releaseRunPlannedUnitCost(ctx context.Context, rel *entity.TechCardRelease, techCardID int, lines []entity.ProductionRunLine) (decimal.NullDecimal, string, bool) {
+	if rel == nil {
+		return decimal.NullDecimal{}, "", false
+	}
+	costs := cutspec.FrozenColorwayCosts(ctx, rel, techCardID)
+	if costs == nil {
+		return decimal.NullDecimal{}, "", false
+	}
+	unit, currency := dto.ComputeReleaseRunPlannedUnitCost(costs, lines)
+	if !unit.Valid {
+		return decimal.NullDecimal{}, "", false
+	}
+	// rel.Currency.Valid влечёт rel.UnitCost.Valid: снапшот релиза пишет валюту только вместе с
+	// посчитанной ценой (snapshotReleaseIfReleased), поэтому одной проверки хватает на обе.
+	if !rel.Currency.Valid || !strings.EqualFold(strings.TrimSpace(rel.Currency.String), strings.TrimSpace(currency)) {
+		return decimal.NullDecimal{}, "", false
+	}
+	return unit, currency, true
 }
 
 // snapshotPlannedCost freezes the run's planned unit cost at plan time, from the one formula above.

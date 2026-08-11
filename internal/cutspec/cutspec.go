@@ -10,10 +10,17 @@
 // зовут; третий читатель обязан прийти сюда же, а не списать логику в третий раз.
 //
 // ДЕНЬГИ. Замороженный блоб релиза несёт костинг и цены BOM, и распарсить его, не подняв их в
-// память, нельзя. Но наружу из пакета уезжает только то, что собрал dto.CutSpecCardFromReleaseSnapshot
+// память, нельзя. Наружу из пакета уезжает только то, что собрал dto.CutSpecCardFromReleaseSnapshot
 // (градация, детали, BOM-связи, рецепты, aux-цвета) плюс мета релиза, собранная здесь ПОИМЁННО без
 // unit_cost/currency. Это важно ровно потому, что один из читателей — публичный эндпоинт наряда, где
 // нет аккаунта, под который можно было бы срезать костинг постфактум.
+//
+// ИСКЛЮЧЕНИЕ РОВНО ОДНО И ОНО НАЗВАНО: FrozenColorwayCosts — дверь для плановой цены релизного
+// прогона. Она отдаёт ЗАМОРОЖЕННЫЕ ЦЕНЫ КОЛОРВЕЕВ и больше ничего: ни блоба, ни карточки, ни
+// строк BOM. Дверь заведена здесь, а не рядом с деньгами, потому что «какой релиз, наш ли он, и
+// читается ли он» — правило ЭТОГО пакета, и второй его копии быть не должно (см. заголовок выше).
+// Публичный наряд её не зовёт и звать не имеет права: у него нет аккаунта, под которым деньги
+// разрешены.
 package cutspec
 
 import (
@@ -127,30 +134,11 @@ func releaseSpec(ctx context.Context, cards Cards, run *entity.ProductionRun) (*
 		return nil, nil, nil, fmt.Errorf("cut spec: load release %d of run %d: %w", relID, run.Id, err)
 	}
 
-	// РЕЛИЗ ОБЯЗАН БЫТЬ РЕЛИЗОМ ЭТОЙ КАРТОЧКИ. В схеме это две независимые ссылки
-	// (production_run.release_id и production_run.tech_card_id), составного ключа между ними нет, и
-	// никто по дороге их не сверяет — снапшот-костинг прогона проверяет только, что релиз
-	// существует. Не проверить здесь значит уметь напечатать цеху наряд по ЧУЖОЙ карточке: детали,
-	// ткани и артикулы другого стиля под номером этой партии.
-	if rel.TechCardId != run.TechCardId {
-		slog.Default().WarnContext(ctx, "cut spec: run points at a release of another tech card",
-			slog.Int("run_id", run.Id), slog.Int("release_id", relID),
-			slog.Int("release_tech_card_id", rel.TechCardId), slog.Int("run_tech_card_id", run.TechCardId))
-		return nil, nil, []string{fmt.Sprintf(
-			"релиз #%d принадлежит другой карточке — наряд посчитан по ЖИВОЙ карточке этого прогона", relID)}, nil
+	snap, caveat := parseReleaseSnapshot(ctx, rel, run.TechCardId, run.Id)
+	if snap == nil {
+		return nil, nil, []string{caveat}, nil
 	}
-
-	var snap pb_common.TechCard
-	if uerr := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(rel.Snapshot), &snap); uerr != nil {
-		// Текст ошибки цитирует поле замороженного блоба (а тот несёт костинг и цены BOM) — в
-		// оговорку, которая уедет на бумагу и в публичный манифест, он не попадает.
-		slog.Default().WarnContext(ctx, "cut spec: release snapshot won't parse",
-			slog.Int("release_id", relID), slog.String("err", uerr.Error()))
-		return nil, nil, []string{fmt.Sprintf(
-			"снапшот релиза Rev.%d не читается текущей схемой — наряд посчитан по ЖИВОЙ карточке, а она могла измениться после релиза",
-			rel.ReleaseNumber)}, nil
-	}
-	card := dto.CutSpecCardFromReleaseSnapshot(&snap)
+	card := dto.CutSpecCardFromReleaseSnapshot(snap)
 	if card == nil {
 		return nil, nil, []string{fmt.Sprintf(
 			"снапшот релиза Rev.%d пуст — наряд посчитан по ЖИВОЙ карточке, а она могла измениться после релиза",
@@ -169,6 +157,73 @@ func releaseSpec(ctx context.Context, cards Cards, run *entity.ProductionRun) (*
 		CreatedAt:     rel.CreatedAt,
 	}
 	return card, meta, nil, nil
+}
+
+// parseReleaseSnapshot проверяет, что релиз принадлежит ЭТОЙ карточке, и разбирает его блоб.
+// Читателей у этого правила двое — наряд и плановая цена релизного прогона, — а копия одна:
+// разойдись они, один из двух печатал бы Rev.N над числами чужой ревизии, что и есть авария,
+// ради предотвращения которой заведён весь пакет.
+//
+// snap == nil без ошибки = «снапшот непригоден, дальше по своему правилу», а caveat — человеческая
+// причина ДЛЯ НАРЯДА (денежный читатель её выбрасывает: у него нет бумаги, на которую её печатать).
+// runID = 0, когда прогона ещё нет: цену партии считают и на создании, до первичного ключа.
+func parseReleaseSnapshot(ctx context.Context, rel *entity.TechCardRelease, techCardID, runID int) (*pb_common.TechCard, string) {
+	if rel == nil {
+		return nil, ""
+	}
+	// Имена полей те же, что были у этой записи в логе до вынесения функции: по ним ищут, и
+	// переименование ради «теперь читателей двое» стоило бы ровно того, ради чего логи и пишут.
+	attrs := []any{
+		slog.Int("release_id", rel.Id),
+		slog.Int("release_tech_card_id", rel.TechCardId),
+		slog.Int("run_tech_card_id", techCardID),
+	}
+	if runID > 0 {
+		attrs = append(attrs, slog.Int("run_id", runID))
+	}
+
+	// РЕЛИЗ ОБЯЗАН БЫТЬ РЕЛИЗОМ ЭТОЙ КАРТОЧКИ. В схеме это две независимые ссылки
+	// (production_run.release_id и production_run.tech_card_id), составного ключа между ними нет, и
+	// никто по дороге их не сверяет — снапшот-костинг прогона проверяет только, что релиз
+	// существует. Не проверить здесь значит уметь напечатать цеху наряд по ЧУЖОЙ карточке (детали,
+	// ткани и артикулы другого стиля под номером этой партии) и снять с партии цену чужого стиля.
+	if rel.TechCardId != techCardID {
+		slog.Default().WarnContext(ctx, "cut spec: run points at a release of another tech card", attrs...)
+		return nil, fmt.Sprintf(
+			"релиз #%d принадлежит другой карточке — наряд посчитан по ЖИВОЙ карточке этого прогона", rel.Id)
+	}
+
+	var snap pb_common.TechCard
+	if uerr := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal([]byte(rel.Snapshot), &snap); uerr != nil {
+		// Текст ошибки цитирует поле замороженного блоба (а тот несёт костинг и цены BOM) — в
+		// оговорку, которая уедет на бумагу и в публичный манифест, он не попадает.
+		slog.Default().WarnContext(ctx, "cut spec: release snapshot won't parse",
+			append(attrs, slog.String("err", uerr.Error()))...)
+		return nil, fmt.Sprintf(
+			"снапшот релиза Rev.%d не читается текущей схемой — наряд посчитан по ЖИВОЙ карточке, а она могла измениться после релиза",
+			rel.ReleaseNumber)
+	}
+	return &snap, ""
+}
+
+// FrozenColorwayCosts — ДЕНЕЖНАЯ ДВЕРЬ пакета (единственная, см. заголовок): замороженные цены
+// колорвеев релиза для плановой цены релизного прогона.
+//
+// Релиз сюда приезжает УЖЕ ПРОЧИТАННЫМ, а не по id: вызывающий держит его в руках ради
+// замороженного скаляра, к которому обязан вернуться при любой непригодности снапшота, и второй
+// запрос той же строки был бы платой ни за что.
+//
+// nil = «замороженных цен нет» (релиза нет, релиз чужой карточки, блоб не читается, денег в блобе
+// нет). Деградации на живую карточку здесь НЕ БЫВАЕТ ни в каком виде — в отличие от Resolve, где
+// наряд по живой карточке с громкой оговоркой лучше пустого экрана у закройщика. Цена так не
+// умеет: посчитанная по живой карточке, она молча поедет от правок, сделанных ПОСЛЕ релиза, и
+// заявит про партию число, которого никто не утверждал.
+func FrozenColorwayCosts(ctx context.Context, rel *entity.TechCardRelease, techCardID int) *dto.ReleaseFrozenCosts {
+	snap, _ := parseReleaseSnapshot(ctx, rel, techCardID, 0)
+	if snap == nil {
+		return nil
+	}
+	return dto.ReleaseFrozenColorwayCosts(snap)
 }
 
 // resolveArticles возвращает карточке из снапшота каталожные имена артикулов.

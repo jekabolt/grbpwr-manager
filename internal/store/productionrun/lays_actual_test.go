@@ -62,6 +62,12 @@ func TestResolveLayActualStamp(t *testing.T) {
 	if echo.Uom.String != "m" {
 		t.Fatalf("the unit is stored canonically (chk_prlay_actual_uom is lower case only), got %q", echo.Uom.String)
 	}
+	// Штамп netto (0296) сюда НЕ приезжает: знаменатель считает SaveLay внутри транзакции записи
+	// (computeLayNettoStamp) и ТОЛЬКО когда Stamp — эхо не платит за чтения и не подменяет
+	// знаменатель сегодняшней нормой; у эха Netto пуст.
+	if echo.Netto.Valid || echo.NettoBasisQty.Valid || echo.NettoBasisUom.Valid {
+		t.Fatal("an echo must not carry a netto candidate — the denominator is computed in-tx and only under Stamp")
+	}
 
 	cases := []struct {
 		name string
