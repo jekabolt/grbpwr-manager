@@ -158,3 +158,26 @@ func TestMeasuredColorwayIsPricedFromItselfNotFromItsNeighbour(t *testing.T) {
 		t.Fatal("an unmeasured piece-only colourway claims a recipe; it would be costed as manual articles only — a silent price drop")
 	}
 }
+
+// TestEstimateReachesTheStyleEstimateToo closes С4's visible half: the смета and the costing
+// headline must not disagree about the same card. Before this, the headline counted an estimated
+// slot and the смета did not list it at all.
+func TestEstimateReachesTheStyleEstimateToo(t *testing.T) {
+	tc := estimateCard()
+	est := ComputeStyleCostEstimate(tc, 35, nil, CostingFx{Base: "EUR"})
+	if est == nil {
+		t.Fatal("no estimate produced")
+	}
+	var found bool
+	for _, l := range est.Materials {
+		if l.GetBomItemId() == 56 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the estimated slot is missing from the смета while the headline counts it — two numbers for one card")
+	}
+	if est.GetCaveat() == "" {
+		t.Error("an area-estimated смета carries no caveat; the lower bound would read as a norm")
+	}
+}
