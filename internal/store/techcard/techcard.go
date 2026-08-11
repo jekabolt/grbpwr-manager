@@ -813,6 +813,16 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].PieceAreaScopes = areas
+	// Токен входов себестоимости, которых нет в записи карточки (Ф-П): площади и назначения деталей
+	// на ткань. Считается ТОЙ ЖЕ функцией, что на записи, — не «так же», а буквально той же: чтение
+	// рецепта не выбирает line_key (поля провода), и вторая реализация дала бы другой токен об одном
+	// и том же множестве, то есть подпись, устаревшую с рождения. Цена — один запрос на чтение
+	// карточки, у которой есть площади или пер-детальные строки.
+	derived, err := s.GetTechCardDerivedCostInputsDigest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].DerivedCostInputsDigest = derived
 	return &cards[0], nil
 }
 

@@ -2560,6 +2560,14 @@ type TechCardInsert struct {
 	// materials (Phase 2)
 	BomItems  []TechCardBomItem  `db:"-"` // article catalog
 	Colorways []TechCardColorway `db:"-"` // colourways carry the usage recipe
+	// DerivedCostInputsDigest fingerprints the cost inputs that live OUTSIDE this write payload —
+	// measured piece areas (0297) and the recipe's piece→fabric assignments — so the COSTING
+	// signature can cover them (Ф-П). See DerivedCostInputsDigest for why a token and not fields.
+	//
+	// Populated by the STORE on read, and supplied by the write path from the store before stamping
+	// a fresh approval. Empty means «neither exists», and the projection then appends nothing, so a
+	// card that has neither hashes byte-identically to before this phase.
+	DerivedCostInputsDigest string `db:"-"`
 	// production (Phase 3); 1:1 sections are nil when unset
 	Construction   *TechCardConstruction  `db:"-"`
 	Operations     []TechCardOperation    `db:"-"`

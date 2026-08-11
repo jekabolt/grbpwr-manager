@@ -109,8 +109,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, status.Error(codes.PermissionDenied, "costing:read is required to change the costing sign-off")
 	}
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
-	// here exactly as it does on update — so the same correction applies.
-	if err := s.restampFreshSignoffDigests(ctx, tc, freshSignoffs); err != nil {
+	// here exactly as it does on update — so the same correction applies. The card id is 0 on purpose:
+	// it does not exist yet, so it can carry neither measured areas nor a recipe (Ф-П).
+	if err := s.restampFreshSignoffDigests(ctx, 0, tc, freshSignoffs); err != nil {
 		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
 			slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
@@ -259,7 +260,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
-	if err := s.restampFreshSignoffDigests(ctx, tc, freshSignoffs); err != nil {
+	if err := s.restampFreshSignoffDigests(ctx, int(req.Id), tc, freshSignoffs); err != nil {
 		slog.Default().ErrorContext(ctx, "can't finalize fresh tech card sign-off digest",
 			slog.Int("tech_card_id", int(req.Id)), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
@@ -325,7 +326,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 //
 // Only sections explicitly classified as fresh by prepareCreateTechCardSignoffs or
 // reconcileUpdateTechCardSignoffs move. A carried approval is copied from storage and never restamped.
-func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.TechCardInsert, freshSignoffs map[entity.TechCardSignoffSection]bool) error {
+func (s *Server) restampFreshSignoffDigests(ctx context.Context, techCardID int, tc *entity.TechCardInsert, freshSignoffs map[entity.TechCardSignoffSection]bool) error {
 	if tc == nil || len(tc.Signoffs) == 0 {
 		return nil
 	}
@@ -343,6 +344,24 @@ func (s *Server) restampFreshSignoffDigests(ctx context.Context, tc *entity.Tech
 	identities, err := s.linkedBomMaterialIdentities(ctx, tc)
 	if err != nil {
 		return err
+	}
+	// ВХОДЫ СЕБЕСТОИМОСТИ, КОТОРЫХ НЕТ В ЭТОЙ ЗАПИСИ (Ф-П). Площади деталей и назначения деталей на
+	// ткань живут в своих таблицах и пишутся своими RPC; в payload карточки их нет и быть не может.
+	// Стамп обязан взять их у стора — ровно так же, как берёт разрешённую через каталог идентичность
+	// строки BOM выше. Не взять значило бы подписать дайджест, который следующее же чтение объявит
+	// изменившимся, — вечно устаревшая подпись, которую нечем погасить.
+	//
+	// Карточка, которую создают ЭТИМ ЖЕ запросом, площадей ещё не имеет (id появляется в той же
+	// транзакции): пустой токен ничего не добавляет в проекцию, и это верный ответ.
+	// Только когда УТВЕРЖДАЮТ КОСТИНГ: токен входит лишь в эту проекцию, и заставлять утверждение
+	// раздела ЭТИКЕТКИ ходить в площади, листы и рецепт значило бы дать несвязанной подсистеме право
+	// уронить чужую подпись.
+	if techCardID > 0 && freshSignoffs[entity.SignoffCosting] {
+		derived, err := s.repo.TechCards().GetTechCardDerivedCostInputsDigest(ctx, techCardID)
+		if err != nil {
+			return err
+		}
+		tc.DerivedCostInputsDigest = derived
 	}
 	final := dto.TechCardSectionDigestsAsRead(tc, identities)
 	for _, so := range fresh {

@@ -63,6 +63,72 @@ func (s *Store) GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[
 	return out, nil
 }
 
+// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs a card's own write does not carry:
+// measured piece areas and the recipe's piece→fabric assignments (Ф-П).
+//
+// BOTH SIDES CALL THIS ONE FUNCTION — the card read (which puts the token on the entity) and the
+// write path that stamps a fresh COSTING approval (which has only the payload, and the payload
+// cannot contain either half). A second implementation on the read side is what the comment inside
+// warns against: it would produce a different token about the same set, i.e. a signature stale from
+// birth that nothing can clear.
+//
+// Empty means «neither exists», which the projection turns into «append nothing» — see
+// entity.DerivedCostInputsDigest for why that is load-bearing rather than an optimisation.
+func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCardID int) (string, error) {
+	areas, err := s.GetTechCardPieceAreas(ctx, techCardID)
+	if err != nil {
+		return "", err
+	}
+	// ОДНА РЕАЛИЗАЦИЯ НА ОБЕ СТОРОНЫ, И ЭТО НЕ АККУРАТНОСТЬ, А УСЛОВИЕ РАБОТОСПОСОБНОСТИ.
+	//
+	// Токен обязан совпасть у записи и у чтения, иначе подпись КОСТИНГ становится устаревшей сразу
+	// после проставления и погасить её нечем. Соблазн посчитать его на чтении из уже загруженных
+	// структур ловушечен: чтение рецепта НЕ выбирает piece_line_key/bom_line_key (это поля провода,
+	// db:"-"), так что Go-версия увидела бы «#id», а SQL-версия — настоящие line_key. Два разных
+	// токена об одном и том же множестве.
+	//
+	// Отбор пер-детальных строк повторяет entity.IsPieceMaterialAssignment: piece_id ЛИБО легаси
+	// piece_index. Взять только piece_id значило бы, что на легаси-строке предикат денег и предикат
+	// подписи расходятся — деньги её пропускают, подпись не видит.
+	//
+	// АРХИВНЫЕ КОЛОРВЕИ ИСКЛЮЧЕНЫ ТЕМ ЖЕ ФИЛЬТРОМ, ЧТО И В ЧТЕНИИ КАРТОЧКИ (lifecycle_status <> 4):
+	// расчёт их не видит, и токен, который бы их видел, объявлял бы подпись изменившейся из-за
+	// колорвея, не влияющего ни на одно число.
+	//
+	// pieces_per_garment ВХОДИТ В ТОКЕН, потому что Ф1 умножает на него площадь одного контура:
+	// правка «этой детали идёт две» меняет себестоимость, и подпись обязана это увидеть. Он уже
+	// хешируется в CONSTRUCTION, но подпись КОСТИНГ — про другое утверждение и своей зависимости
+	// делегировать не может.
+	rows, err := storeutil.QueryListNamed[struct {
+		ColorwayId       int    `db:"colorway_id"`
+		PieceKey         string `db:"piece_key"`
+		BomKey           string `db:"bom_key"`
+		PiecesPerGarment int    `db:"pieces_per_garment"`
+	}](ctx, s.DB, `
+		SELECT u.colorway_id,
+		       COALESCE(p.line_key, CONCAT('#', COALESCE(u.piece_id, 0)), '') AS piece_key,
+		       COALESCE(b.line_key, CONCAT('#', COALESCE(u.bom_item_id, 0)), '') AS bom_key,
+		       COALESCE(p.pieces_per_garment, 0) AS pieces_per_garment
+		FROM tech_card_colorway_usage u
+		JOIN product c ON c.id = u.colorway_id AND c.style_id = :id AND c.lifecycle_status <> 4
+		LEFT JOIN tech_card_piece p ON p.id = u.piece_id
+		LEFT JOIN tech_card_bom_item b ON b.id = u.bom_item_id
+		WHERE u.piece_id IS NOT NULL OR u.piece_index IS NOT NULL`, map[string]any{"id": techCardID})
+	if err != nil {
+		return "", fmt.Errorf("load piece→fabric assignments of tech card %d: %w", techCardID, err)
+	}
+	assignments := make([]entity.PieceFabricAssignment, 0, len(rows))
+	for _, r := range rows {
+		assignments = append(assignments, entity.PieceFabricAssignment{
+			ColorwayKey:      r.ColorwayId,
+			PieceKey:         r.PieceKey,
+			BomKey:           r.BomKey,
+			PiecesPerGarment: r.PiecesPerGarment,
+		})
+	}
+	return entity.DerivedCostInputsDigest(areas, assignments), nil
+}
+
 // scopeFingerprints computes TODAY's source fingerprint for every fabric scope of a card — sheets
 // AND блок→деталь links, because both are what the measurement was derived from.
 //
@@ -459,6 +525,21 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 				}); err != nil {
 				return fmt.Errorf("write piece area %q: %w", r.PieceLineKey, err)
 			}
+		}
+		// ЗАМЕР — МУТАЦИЯ АГРЕГАТА СТИЛЯ, ПОТОМУ ЧТО С Ф-П ОН ВХОДИТ В ПОДПИСЬ КОСТИНГ.
+		//
+		// Без этого бампа возможна такая последовательность: путь сохранения карточки читает токен
+		// входов себестоимости, кто-то в этот момент перемеряет площади, карточка коммитит подпись
+		// со СТАРЫМ токеном — и подпись рождается устаревшей, а оптимистический замок карточки этого
+		// не замечает, потому что версия не двигалась. Рецепт колорвея бампает по той же причине.
+		//
+		// Бампается ТОЛЬКО при реальном изменении: повтор того же замера выше уходит в no-op и версию
+		// не двигает, иначе «пересчитать» на неизменившейся карточке 409-ил бы чужую открытую форму
+		// ни за что.
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE tech_card SET lock_version = lock_version + 1 WHERE id = :id`,
+			map[string]any{"id": in.TechCardId}); err != nil {
+			return fmt.Errorf("bump lock for piece areas: %w", err)
 		}
 		out = entity.PieceAreaResult{
 			ScopeKey:         scopeKey,

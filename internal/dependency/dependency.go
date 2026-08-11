@@ -811,6 +811,11 @@ type (
 		// different set of files would answer for files nobody read, and an understated area
 		// understates the norm, which is discovered in the warehouse rather than on screen.
 		SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaWrite) (entity.PieceAreaResult, error)
+		// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs the card's own write does
+		// not carry — measured piece areas and the recipe's piece→fabric assignments (Ф-П). The write
+		// path needs it to stamp a fresh COSTING approval over content it cannot see; the read path
+		// computes the same token from data it already holds. Empty = neither exists.
+		GetTechCardDerivedCostInputsDigest(ctx context.Context, techCardID int) (string, error)
 		// Immutable release snapshots (task 11): a full JSON snapshot of the enriched read-model
 		// frozen at each release, so a card's prior spec + planned cost survive re-open/re-release.
 		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error
