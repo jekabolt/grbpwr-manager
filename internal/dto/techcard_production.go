@@ -950,7 +950,7 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 	colorwayCosts := make([]*pb_common.TechCardColorwayCost, 0, len(tc.Colorways))
 	root := colorwayCostResult{}
 	for ci := range tc.Colorways {
-		cc := colorwayCost(&tc.Colorways[ci], tc.BomItems, tc.LinkedMaterials, costingCcy, basis, fx)
+		cc := colorwayCost(tc, &tc.Colorways[ci], tc.BomItems, tc.LinkedMaterials, costingCcy, basis, fx)
 		unit, order := unitAndOrder(cc.materialsPerUnit)
 		colorwayCosts = append(colorwayCosts, &pb_common.TechCardColorwayCost{
 			ColorwayId:               int64(tc.Colorways[ci].Id),
@@ -1045,7 +1045,10 @@ func ComputeTechCardUnitCost(tc *entity.TechCard, fx CostingFx) (decimal.NullDec
 	}
 	// Prefer the base-currency rollup so a non-base costing can still seed the product cost;
 	// it is set only when every currency involved has an FX rate.
-	if pb.UnitCostBase != nil && !root.hasUnpriced {
+	// hasEstimate здесь по той же причине, что hasUnpriced: ветка базовой валюты — это ВТОРОЙ вход в
+	// посев, и пропустив её, мы бы запретили оценке сеять цену только в валюте костинга, а в базовой
+	// пустили бы ровно то же заниженное число.
+	if pb.UnitCostBase != nil && !root.hasUnpriced && !root.hasEstimate {
 		if v, err := decimal.NewFromString(pb.UnitCostBase.Value); err == nil && v.IsPositive() {
 			return decimal.NullDecimal{Decimal: v, Valid: true}, pb.BaseCurrency
 		}
@@ -1067,8 +1070,17 @@ func ComputeTechCardUnitCost(tc *entity.TechCard, fx CostingFx) (decimal.NullDec
 // silently missing — a BDT fabric on an EUR (== base) costing came out as trims+CMT and, because the
 // currency then reads as base, sailed straight through the seed's base-currency guard into
 // product.cost_price, to be rewritten with the same wrong number on every save.
+// ОЦЕНКА ПО ПЛОЩАДИ НЕ СЕЕТ КАТАЛОЖНУЮ СЕБЕСТОИМОСТЬ, И ЭТО НЕ ОСТОРОЖНОСТЬ.
+//
+// Ступень 0 — netto, нижняя граница: межлекальных выпадов и концов настила в ней нет и быть не
+// может. По собственным замерам беты КПД раскладки 69.7–75%, то есть занижение на треть. Уйдя в
+// product.cost_price, это занижение становится маржой по стилю, отчётами и проводками — и там оно
+// уже неотличимо от факта. Показать на экране с подписью «оценка снизу» честно; записать в каталог
+// как себестоимость — нет.
+//
+// Поэтому «посчитано» и «годно для посева» — РАЗНЫЕ вопросы, и разошлись они здесь.
 func completeForSeed(cc colorwayCostResult) bool {
-	return !cc.hasUnconverted && !cc.hasUnpriced
+	return !cc.hasUnconverted && !cc.hasUnpriced && !cc.hasEstimate
 }
 
 // HasColorwayForProduct reports whether the card carries a colourway bound to productID. The seed
@@ -1124,8 +1136,14 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	if c.DefectPercent.Valid {
 		defectMul = defectMul.Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100)))
 	}
-	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
+	cc := colorwayCost(tc, cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
 	if cc.hasUnpriced {
+		return decimal.NullDecimal{}, ""
+	}
+	// ВТОРОЙ ВХОД В ПОСЕВ — ветка базовой валюты. Она стоит ДО completeForSeed и проверяла только
+	// сходимость курсов, поэтому оценка, запрещённая к посеву в валюте костинга, проходила бы здесь
+	// в базовой — то же заниженное число, другой дверью.
+	if cc.hasEstimate {
 		return decimal.NullDecimal{}, ""
 	}
 	if manualBase, ok := fx.toBase(manualPerUnit, costingCcy); ok && cc.baseConvertible {
@@ -1291,8 +1309,11 @@ func techCardCostBreakdownBase(tc *entity.TechCard, cw *entity.TechCardColorway,
 	// The chosen colourway's materials, folded to base — the rollup's basis. An uncostable line
 	// blocks the decomposition for the same reason it blocks the unit cost: the Materials component
 	// would be short by that material while the report presents it as the whole recipe.
-	cc := colorwayCost(cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
-	if !cc.baseConvertible || cc.hasUnpriced {
+	cc := colorwayCost(tc, cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
+	// hasEstimate здесь по тем же основаниям, что и в цене: разбивка едет в product.cost_breakdown
+	// рядом с cost_price, и разрешить ей оценку значило бы опубликовать заниженную структуру
+	// себестоимости под ценой, которую мы только что отказались сеять.
+	if !cc.baseConvertible || cc.hasUnpriced || cc.hasEstimate {
 		return entity.CostBreakdown{}, false
 	}
 	// Each manual article is in the costing currency; fold individually. An absent (invalid)
@@ -1335,6 +1356,12 @@ type colorwayCostResult struct {
 	// NOTHING to any bucket, so no currency flag catches it and every rollup silently understates
 	// the recipe by that material. It blocks the cost seed, never the display figures.
 	hasUnpriced bool
+	// hasEstimate is true when at least one roll slot was costed by AREA ESTIMATE (Ф1, ступень 0)
+	// rather than by an authored norm. The figure is a NETTO lower bound — inter-piece waste and lay
+	// ends are not in it and cannot be — so it may be shown, but it may not seed product.cost_price
+	// and it may not stand under a release. Kept apart from hasUnpriced: that one means «a line was
+	// dropped from the total», this one means «a line is in the total, at its floor».
+	hasEstimate bool
 	// baseConvertible is true when every usage currency could be folded into the base currency
 	// via the FX rates; materialsPerUnitBase is that Σ in base currency (valid only when true).
 	baseConvertible      bool
@@ -1385,11 +1412,15 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 // usage pins one (linked is the card's LinkedMaterials map; nil degrades to slot-default
 // prices). Buckets are per-currency (no FX conversion); currency-less lines fold into the costing
 // currency, and a line in another currency is flagged (and left out of materialsPerUnit).
-func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice, costingCcy string, basis entity.CostingBasis, fx CostingFx) colorwayCostResult {
+func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice, costingCcy string, basis entity.CostingBasis, fx CostingFx) colorwayCostResult {
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
 	hasUnconverted := false
 	hasUnpriced := false
+	// Слоты, у которых норма ЗАЯВЛЕНА (посчиталась или отказала): оценка по площади к ним не
+	// применяется. Введённое человеком число всегда сильнее выведенного — иначе правка нормы вниз
+	// молча заменялась бы оценкой вверх.
+	authored := map[int]bool{}
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
 		// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a cut-piece
@@ -1400,6 +1431,9 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		}
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
+		if src := resolveUsageBom(bomItems, u); src != nil {
+			authored[src.Id] = true
+		}
 		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
 		ut := u.UnitTotal(bom, basis)
 		if !ut.Valid {
@@ -1414,6 +1448,51 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 			order = append(order, ccy)
 		}
 		byCcy[ccy] = byCcy[ccy].Add(ut.Decimal)
+		if ccy != "" && ccy != costingCcy {
+			hasUnconverted = true
+		}
+	}
+
+	// ОЦЕНКА ПО ПЛОЩАДИ (Ф1, ступень 0) — для рулонного слота, на который детали назначены, а норму
+	// никто не вписал. До этой врезки такой слот стоил ноль и молчал: строка, привязанная к детали,
+	// нормы не несёт (T8), а другой строки на слоте нет.
+	//
+	// Оценка НЕ поднимает hasUnpriced: она не «строка без цены», а посчитанная нижняя граница. Её
+	// собственный флаг — hasEstimate, и он запрещает ровно одно: сеять каталожную себестоимость.
+	hasEstimate := false
+	for i := range bomItems {
+		b := &bomItems[i]
+		if authored[b.Id] {
+			continue
+		}
+		amount, ccy, ok, refusal := slotAreaEstimate(tc, cw, b, linked, basis, fx.Base)
+		if !ok {
+			// НАЗНАЧЕННЫЙ, НО НЕПОСЧИТАННЫЙ СЛОТ — ЭТО hasUnpriced, А НЕ ТИШИНА.
+			//
+			// Детали на слот назначены, значит ткань в изделие ВХОДИТ. Если посчитать её не удалось —
+			// нет площадей, устарели выкройки, нет ширины, нет цены, пины спорят, нет базиса — то итог
+			// занижен ровно на этот материал, и молчание здесь публикует себестоимость с недостающей
+			// тканью. Единственное исключение — «деталей не назначено»: тогда слот к этому колорвею
+			// просто не относится (и, скажем, у подкладки своя судьба).
+			// ...НО ТОЛЬКО ЕСЛИ ОЦЕНКА ВООБЩЕ БЫЛА ПРИМЕНИМА. «Площадей нет» — это НОРМАЛЬНОЕ
+			// состояние всякой карточки, которую ещё не измеряли, и оно означает ровно то, что
+			// означало до Ф1: у колорвея с одними пер-детальными строками рецепт пуст (T8). Подняв
+			// на нём флаг, мы бы остановили посев себестоимости у каждой существующей карточки —
+			// регрессия, которую поймал TestT8ReleaseFrozenAllPieceRowsColorwayInheritsStyle.
+			//
+			// Громким отказ становится там, где карточку ИЗМЕРИЛИ: тогда слот обязан считаться, и
+			// молчание о его провале — это опубликованная себестоимость с недостающей тканью.
+			measured := len(tc.PieceAreaScopes) > 0
+			if measured && refusal != "" && refusal != entity.AreaEstimateNoAssignments && refusal != entity.AreaEstimateNoAreas {
+				hasUnpriced = true
+			}
+			continue
+		}
+		hasEstimate = true
+		if _, seen := byCcy[ccy]; !seen {
+			order = append(order, ccy)
+		}
+		byCcy[ccy] = byCcy[ccy].Add(amount)
 		if ccy != "" && ccy != costingCcy {
 			hasUnconverted = true
 		}
@@ -1460,6 +1539,7 @@ func colorwayCost(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem
 		materialsPerUnit:     materialsPerUnit,
 		hasUnconverted:       hasUnconverted,
 		hasUnpriced:          hasUnpriced,
+		hasEstimate:          hasEstimate,
 		baseConvertible:      baseConvertible,
 		materialsPerUnitBase: baseSum,
 	}

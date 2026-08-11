@@ -43,6 +43,9 @@ const (
 	AreaEstimateStale         AreaEstimateRefusal = "areas_stale"
 	AreaEstimateNoWidth       AreaEstimateRefusal = "no_cutting_width"
 	AreaEstimateUnitUnknown   AreaEstimateRefusal = "unit_not_convertible"
+	AreaEstimateNoPrice       AreaEstimateRefusal = "no_price"
+	AreaEstimateNoBasis       AreaEstimateRefusal = "no_basis"
+	AreaEstimatePinConflict   AreaEstimateRefusal = "pin_conflict"
 )
 
 // AreaEstimatePiece is one cut piece of the slot's scope, as the estimate needs it.
@@ -176,6 +179,12 @@ func AreaEstimateRefusalText(r AreaEstimateRefusal) string {
 		return "у ткани не заполнена ширина полотна — делить не на что"
 	case AreaEstimateUnitUnknown:
 		return "единица слота не переводится из длины (килограммы считаются только по раскладке)"
+	case AreaEstimateNoPrice:
+		return "у ткани нет цены ни в строке, ни в каталоге"
+	case AreaEstimateNoBasis:
+		return "нет размера, на котором считать (строка партии не называет размер)"
+	case AreaEstimatePinConflict:
+		return "детали одного слота пришпилены к разным артикулам — это два разных рулона"
 	}
 	return ""
 }
