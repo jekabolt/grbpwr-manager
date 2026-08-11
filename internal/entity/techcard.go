@@ -73,6 +73,13 @@ var ErrMarkerNotFound = errors.New("marker not found")
 // ErrMarkerIncomplete refuses saving a раскладка whose layout did not place every piece
 // (placed_count < total_count): a layout that dropped pieces is not a consumption norm, and
 // letting it through would quietly understate fabric per garment. FailedPrecondition.
+//
+// SINCE 0299 IT IS THE DEFAULT AND NOT THE ONLY ANSWER. A caller that says so explicitly
+// (TechCardMarkerInsert.IsDraft) stores such a layout as a ЧЕРНОВИК instead — visible, re-runnable,
+// and structurally unable to name a расход or hold a norm. This error is what everyone who has NOT
+// said so still gets, a stale admin bundle included, which is the safe direction: not knowing about
+// drafts cannot mint one. placed_count > total_count is refused under this same error whatever the
+// caller says — that is a self-contradicting count, not an unfinished search.
 var ErrMarkerIncomplete = errors.New("marker layout is incomplete — not every piece was placed")
 
 // ErrMarkerUsedByLay refuses the MANUAL delete of a раскладка that a секция настила stands on
@@ -270,7 +277,25 @@ type TechCardMarkerInsert struct {
 	EfficiencyPct decimal.NullDecimal `db:"efficiency_pct"`
 	PlacedCount   int                 `db:"placed_count"`
 	TotalCount    int                 `db:"total_count"`
-	Layout        string              `db:"layout"`
+	// IsDraft is the client's CONSENT to store an incomplete layout, not a description of one. The
+	// движок раскладки runs in the operator's browser and its cost grows as the SQUARE of the piece
+	// count, so «не уложил все детали в бюджет» is a normal outcome; without this flag the save is
+	// refused (ErrMarkerIncomplete) and minutes of the only executor we have are thrown away.
+	//
+	// THE STORE DOES NOT COPY IT INTO THE COLUMN. Черновик — это состояние СЧЁТЧИКОВ (placed_count <
+	// total_count), and the column is written from them; this field only decides whether such a
+	// layout is ACCEPTED or REFUSED. A stale admin bundle sends `false` and therefore keeps the
+	// pre-0299 behaviour — the refusal — which is the safe direction: it cannot mint a draft by not
+	// knowing the field exists.
+	//
+	// HOW FAR THAT GOES, PRECISELY. Of the two counters the server witnesses ONE: dto checks
+	// PlacedCount against the number of placements in the blob it is about to store. TotalCount stays
+	// the client's CLAIM — piece multiplicity lives on the card, not in a single number — so a
+	// payload that understates it still passes an incomplete layout off as complete, exactly as it
+	// did before 0299. Inherited debt, named where it is inherited
+	// (ConvertPbTechCardMarkerInsertToEntity), not a property this field provides.
+	IsDraft bool   `db:"-"`
+	Layout  string `db:"layout"`
 	// DistilStoredLayout parses a STORED layout blob into facts, injected by the API layer for the
 	// same reason LayoutFacts is distilled there: the store holds the bytes and must not learn to
 	// read them (0257/0268 — the geometry is opaque to storage, and the read path deliberately
@@ -346,6 +371,18 @@ type TechCardMarkerSummary struct {
 	EfficiencyPct   decimal.NullDecimal `db:"efficiency_pct"`
 	PlacedCount     int                 `db:"placed_count"`
 	TotalCount      int                 `db:"total_count"`
+	// IsDraft says SOME of the pieces were laid and some were not (placed_count < total_count, 0299).
+	// Such a раскладка is STORED — visible and re-runnable — and is structurally unable to become a
+	// norm (chk_tcm_draft_not_norm) or to stand in a секция настила. Every reader that turns a marker
+	// into a NUMBER must skip it: its used_length_cm is the length of a spread that dropped pieces, so
+	// every расход off it is short by however much cloth the missing pieces would have taken. The
+	// methods below withhold rather than answer, which is the same «нечего сказать» the mixed-состав
+	// refusal already speaks.
+	//
+	// FALSE IS NOT A PROOF OF COMPLETENESS. The flag follows the counters, and only the numerator is
+	// verified against the stored geometry (dto counts the blob's placements); an understated
+	// total_count still reads as complete. See TechCardMarkerInsert.IsDraft for the whole statement.
+	IsDraft bool `db:"is_draft"`
 	// TotalUnits is the stored garment count (0273). INVALID only for a row written by the OLD
 	// binary during a deploy overlap — the column is nullable and the old INSERT does not list it.
 	// Readers go through TotalUnitsOrLegacy, never through this field directly.
@@ -492,14 +529,50 @@ func (m TechCardMarkerSummary) ConsumptionPerUnitCm() decimal.Decimal {
 //
 // One entry per состав line, in the same order. An INVALID ConsumptionCm on any line means this
 // раскладка cannot say — never that the mean should be used instead.
+//
+// A ЧЕРНОВИК (0299) says nothing on any line, and the area basis goes with the number. Both halves
+// are deliberate. The расход is short because used_length_cm measures a spread the missing pieces
+// were never laid into. The area a_s is short for the same reason and worse: the wire publishes it
+// as the BASIS a client CONTINUES the formula from onto sizes the состав does not cut
+// (TechCardMarkerCompositionEntry.area_per_garment_cm2), so a draft's areas would understate every
+// size of the ряд, including the ones nobody laid out. The состав itself — which sizes, how many —
+// survives, because that is what the раскладка was ASKED to lay and it is true of the draft too.
 func (m TechCardMarkerSummary) PerSizeConsumption() []MarkerSizeConsumption {
-	return MarkerPerSizeConsumption(m.CompositionOrLegacy(), m.UsedLengthCm)
+	rows := MarkerPerSizeConsumption(m.CompositionOrLegacy(), m.UsedLengthCm)
+	if m.IsDraft {
+		return withheldSizeConsumption(rows)
+	}
+	return rows
+}
+
+// withheldSizeConsumption keeps the состав and drops every derived figure on it. Copied rather than
+// mutated in place: the input slice is the row's own Composition on the legacy path, and blanking it
+// there would leave a stored marker's areas cleared for the rest of the request.
+func withheldSizeConsumption(rows []MarkerSizeConsumption) []MarkerSizeConsumption {
+	if len(rows) == 0 {
+		return rows
+	}
+	out := make([]MarkerSizeConsumption, len(rows))
+	for i, r := range rows {
+		out[i] = MarkerSizeConsumption{SizeId: r.SizeId, Quantity: r.Quantity}
+	}
+	return out
 }
 
 // ScalarNormRefusal is "" when this marker's consumption_per_unit_cm may be applied to a recipe, and
 // the reason not to otherwise. See entity.MarkerScalarNormRefusal — it reads the SAME slice
 // PerSizeConsumption returns, so the refusal and the remedy it names cannot disagree.
+//
+// ЧЕРНОВИК ОТВЕЧАЕТ ПЕРВЫМ, and with its own sentence rather than through the mixed-состав one. Both
+// would refuse — a draft's per-size rows are withheld, so a mixed draft would fall into «пер-размерный
+// расход тоже не считается» — but that text sends the operator to look for missing areas, and the
+// action here is a different one: raise the budget and re-run. A homogeneous draft would not be
+// caught at all: one состав line reads as honest, and the mean of a spread that dropped pieces would
+// go out as a norm.
 func (m TechCardMarkerSummary) ScalarNormRefusal() string {
+	if m.IsDraft {
+		return MarkerDraftNormRefusal(m.Name, m.PlacedCount, m.TotalCount)
+	}
 	return MarkerScalarNormRefusal(m.Name, m.PerSizeConsumption())
 }
 

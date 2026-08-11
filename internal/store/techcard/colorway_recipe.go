@@ -620,26 +620,45 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			}
 		}
 		if len(explicitStamps) > 0 {
-			known, err := storeutil.QueryListNamed[struct {
-				Id int64 `db:"id"`
-			}](ctx, rep.DB(), `
-				SELECT id FROM tech_card_marker WHERE tech_card_id = :card AND id IN (:ids)`,
+			type stampRow struct {
+				Id          int64  `db:"id"`
+				Name        string `db:"name"`
+				IsDraft     bool   `db:"is_draft"`
+				PlacedCount int    `db:"placed_count"`
+				TotalCount  int    `db:"total_count"`
+			}
+			known, err := storeutil.QueryListNamed[stampRow](ctx, rep.DB(), `
+				SELECT id, name, is_draft, placed_count, total_count
+				FROM tech_card_marker WHERE tech_card_id = :card AND id IN (:ids)`,
 				map[string]any{"card": cur.StyleID, "ids": explicitStamps})
 			if err != nil {
 				return fmt.Errorf("validate colourway recipe norm stamps: %w", err)
 			}
-			onCard := make(map[int64]bool, len(known))
+			onCard := make(map[int64]stampRow, len(known))
 			for _, row := range known {
-				onCard[row.Id] = true
+				onCard[row.Id] = row
 			}
 			for i := range resolved {
 				if !resolved[i].usage.NormMarkerIdSet || !resolved[i].provenance.markerID.Valid {
 					continue
 				}
-				if id := resolved[i].provenance.markerID.Int64; !onCard[id] {
+				id := resolved[i].provenance.markerID.Int64
+				row, onThisCard := onCard[id]
+				if !onThisCard {
 					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
 						"marker_not_on_card", fmt.Sprintf("раскладка %d", id),
 						"the norm stamp must name a раскладка of this tech card — send 0 to clear it")
+				}
+				// И ТОТ ЖЕ ЗАПРОС ОТКАЗЫВАЕТ ЧЕРНОВИКУ (0299). Штамп утверждает «расход в этой строке
+				// взят вот с той раскладки», а черновик расхода не называет ВООБЩЕ: на проводе у него
+				// нет ни скалярного числа, ни пер-размерных (TechCardMarkerSummaryToPb withholds both).
+				// Значит штамп на черновик — ссылка на источник, которого не было, и отчёт о
+				// расхождении карточки печатал бы её как настоящую. Отдельная причина, а не
+				// marker_not_on_card: та отправила бы искать удалённую строку, а искать надо бюджет.
+				if row.IsDraft {
+					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
+						"marker_is_draft", fmt.Sprintf("раскладка %d", id),
+						entity.MarkerDraftNormRefusal(row.Name, row.PlacedCount, row.TotalCount))
 				}
 			}
 		}

@@ -1216,7 +1216,11 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 	// one of them read off `perSize`, which is itself derived from `composition`. Two of these
 	// computed from two reads of the row is how a summary ends up saying «4 изделия» beside a состав
 	// that adds to 3.
-	perSize := entity.MarkerPerSizeConsumption(composition, m.UsedLengthCm)
+	//
+	// Взято МЕТОДАМИ строки, а не свободной функцией: правило черновика (0299) — «раскладка ничего не
+	// называет» — живёт в entity рядом с самим полем, и вызов сюда его приносит. Раскрыть здесь
+	// derivation заново значило бы завести второе место, где решают, что раскладка говорит о расходе.
+	perSize := m.PerSizeConsumption()
 	// THE SCALAR IS WITHHELD, NOT LABELLED, on a mixed состав (orchestrator decision Р2). The server
 	// is the only place that can refuse: there is no server-side marker-apply — the client copies this
 	// figure into tech_card_colorway_usage.consumption with consumption_source='marker' and the row
@@ -1231,7 +1235,13 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 	// still has no sizeless per-garment number, and this is still the field that becomes
 	// tech_card_colorway_usage.consumption; what changed is that the prose can now say «примените по
 	// размерам» — but only for a раскладка whose per-size figures actually reached this slice.
-	refusal := entity.MarkerScalarNormRefusal(m.Name, perSize)
+	// ЧЕРНОВИК (0299) ОТКАЗЫВАЕТ ЗДЕСЬ ЖЕ И ТЕМ ЖЕ МЕХАНИЗМОМ, потому что это ровно тот же довод: на
+	// этом поле нет способа пометить число «неполным» так, чтобы пометка пережила копирование. Клиент
+	// переносит его в tech_card_colorway_usage.consumption с provenance 'marker', после чего строка
+	// неотличима от измеренной нормы, а слепок релиза замораживает её навсегда. У черновика
+	// used_length_cm — это длина настила, в который часть деталей не легла, то есть занижена на
+	// столько ткани, сколько взяли бы недостающие детали. Отсутствующее число скопировать нельзя.
+	refusal := m.ScalarNormRefusal()
 	var consumption *pb_decimal.Decimal
 	if refusal == "" {
 		consumption = pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2))
@@ -1268,6 +1278,7 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		EfficiencyPct:        pbDecimalFromNull(m.EfficiencyPct),
 		PlacedCount:          int32(m.PlacedCount),
 		TotalCount:           int32(m.TotalCount),
+		IsDraft:              m.IsDraft,
 		ConsumptionPerUnitCm: consumption,
 		// УСЛОВИЯ СЪЁМКИ (Ф3), each emitted only when RECORDED. An unrecorded condition must reach the
 		// client as an ABSENT field and never as a zero: «припуск 0» is a measurement («we laid the line
@@ -1436,6 +1447,31 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if pb.TotalCount < 1 {
 		return out, fmt.Errorf("total_count must be at least 1")
 	}
+	// ЧИСЛИТЕЛЬ СВЕРЯЕТСЯ С БЛОБОМ, КОТОРЫЙ СЕРВЕР ХРАНИТ. placed_count решает, черновик это или
+	// измеренная раскладка (0299), и до этой проверки оно было чистым утверждением клиента рядом с
+	// геометрией, которая его опровергает: «уложено 45» при 31 размещении проходило, и все гварды
+	// черновика видели полную раскладку. Размещения сервер и так держит — сосчитать их дешевле, чем
+	// поверить.
+	//
+	// ЗНАМЕНАТЕЛЬ ТАК НЕ ЗАКРЫТЬ, И ЭТО НАЗВАННЫЙ ДОЛГ, А НЕ НЕДОСМОТР. total_count — это сколько
+	// экземпляров ПРОСИЛИ разложить, а кратность живёт в карточке (TechCardMarkerPiece.quantity ×
+	// состав), не в одном числе. Клиент, приславший заниженный total_count, и сегодня выдаёт неполную
+	// раскладку за полную — ровно как до фазы; 0299 этого не чинит и не претендует. Вывести его из
+	// блоба схемы 4 в принципе можно — Σ quantity × состав, — но только если блоб сохраняет и
+	// НЕУЛОЖЕННЫЕ детали, а такого договора с клиентом ещё нет: он появится вместе с очередью заданий,
+	// и закрыть знаменатель обязана та же фаза.
+	//
+	// Under `pb.Layout != nil` because the converter is deliberately layout-agnostic (a payload may
+	// carry the legacy size_id/sets shape and nothing else). On the RPC path that branch is not
+	// reachable: SaveTechCardMarker refuses a nil layout and an empty placements slice a few lines
+	// after calling this, so the comparison is unconditional wherever a marker is actually saved.
+	if pb.Layout != nil {
+		if placed := len(pb.Layout.GetPlacements()); int(pb.PlacedCount) != placed {
+			return out, fmt.Errorf(
+				"placed_count is %d but the layout carries %d placements; placed_count counts the placements the layout actually holds",
+				pb.PlacedCount, placed)
+		}
+	}
 	// 0 is «not colourway-specific», the legacy shape; a NEGATIVE id is a client bug, and letting
 	// it through would reach the store as an id that simply resolves to nothing — a refusal about
 	// a colourway that «is not on this card» rather than about a malformed number.
@@ -1480,6 +1516,11 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		EfficiencyPct:      efficiency,
 		PlacedCount:        int(pb.PlacedCount),
 		TotalCount:         int(pb.TotalCount),
+		// СОГЛАСИЕ сохранить неполную раскладку (0299), а не утверждение о ней: колонку пишет store из
+		// пары placed/total, а это поле решает ровно один вопрос — принять неполную или отказать.
+		// Поэтому оно не сверяется со счётчиками и здесь: согласие на ПОЛНУЮ раскладку не ложь, а
+		// просто не к месту. Сверяется — числитель, выше, и по совсем другому поводу.
+		IsDraft: pb.IsDraft,
 		// УСЛОВИЯ СЪЁМКИ (Ф3). PieceSetFp is deliberately NOT here: the fingerprint is the store's, taken
 		// off the rows its own transaction sees, and a payload-supplied one would be forgeable and stale.
 		SeamAllowanceMm:    conditions.SeamAllowanceMm,

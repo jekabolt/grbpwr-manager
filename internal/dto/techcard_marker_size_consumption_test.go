@@ -37,13 +37,23 @@ func markerAreaLayoutPb() *pb_common.TechCardMarkerLayout {
 	}
 }
 
+// matchCountsToLayout makes the payload's counters agree with the geometry it carries. Since 0299 the
+// server verifies placed_count against the blob's placements, and the fixtures in this file are
+// deliberately minimal about placements (they are about AREAS, which are read off the PIECES) — so
+// they have to state their own count instead of inheriting the shared fixture's twelve.
+func matchCountsToLayout(pb *pb_common.TechCardMarkerInsert) *pb_common.TechCardMarkerInsert {
+	n := int32(len(pb.GetLayout().GetPlacements()))
+	pb.PlacedCount, pb.TotalCount = n, n
+	return pb
+}
+
 // Площади снимаются там же, где собирается состав, и потому не могут не сняться. The insert is the
 // only thing the store is handed, so an area that failed to reach it is a marker with no per-size
 // норма — which looks exactly like one taken before Ф2.4 and would never be noticed.
 func TestMarkerInsertCarriesPerSizeAreas(t *testing.T) {
 	pb := validMarkerInsertPb()
 	pb.Layout = markerAreaLayoutPb()
-	out, err := ConvertPbTechCardMarkerInsertToEntity(pb)
+	out, err := ConvertPbTechCardMarkerInsertToEntity(matchCountsToLayout(pb))
 	require.NoError(t, err)
 
 	// Sorted by size_id, each line carrying the area of ONE garment of that size.
@@ -68,7 +78,7 @@ func TestLegacyMarkerInsertStillRecordsItsArea(t *testing.T) {
 		},
 		Placements: []*pb_common.TechCardMarkerPlacement{{PieceId: 1}},
 	}
-	out, err := ConvertPbTechCardMarkerInsertToEntity(pb)
+	out, err := ConvertPbTechCardMarkerInsertToEntity(matchCountsToLayout(pb))
 	require.NoError(t, err)
 	require.Equal(t, []string{"3:4:4800"}, compositionDigest(out.Composition))
 }
@@ -104,7 +114,7 @@ func TestSaveStripsDerivedFieldsFromTheLayoutComposition(t *testing.T) {
 
 	// The insert reads size_id/quantity only, so a forged area cannot become the stored basis: the
 	// areas below are the ones computed off the PIECES.
-	out, err := ConvertPbTechCardMarkerInsertToEntity(pb)
+	out, err := ConvertPbTechCardMarkerInsertToEntity(matchCountsToLayout(pb))
 	require.NoError(t, err)
 	require.Equal(t, "5200", out.Composition[0].AreaPerGarmentCm2.Decimal.String())
 
