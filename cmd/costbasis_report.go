@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -52,6 +53,13 @@ func init() {
 }
 
 func runCostBasisReport(cmd *cobra.Command, args []string) error {
+	// Diagnostics go to stderr; stdout carries the report and nothing else. main() points the
+	// default logger at stdout, which is right for the serving binaries (App Platform collects
+	// it) and wrong here: the store logs the CA-certificate path when it connects, and that one
+	// line ahead of the document makes `--json | jq` fail with "extra data" — the flag exists
+	// precisely to be piped. Scoped to this command rather than changed in main for that reason.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+
 	// The read-only loader: this command opens the database and prints. Requiring the
 	// serving secrets (JWT key, pattern-token pepper) would only force production keys
 	// into the shell of whoever runs the report.
