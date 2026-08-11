@@ -52,7 +52,10 @@ func init() {
 }
 
 func runCostBasisReport(cmd *cobra.Command, args []string) error {
-	cfg, err := config.LoadConfig(cfgFile)
+	// The read-only loader: this command opens the database and prints. Requiring the
+	// serving secrets (JWT key, pattern-token pepper) would only force production keys
+	// into the shell of whoever runs the report.
+	cfg, err := config.LoadConfigForReadOnlyTooling(cfgFile)
 	if err != nil {
 		return fmt.Errorf("cannot load a config: %w", err)
 	}

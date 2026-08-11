@@ -121,7 +121,30 @@ type PatternTokenConfig struct {
 // Environment variables take precedence over config file values.
 // Env var names are the explicit allowlist in bindEnvVars (e.g. MYSQL_DSN,
 // AUTH_JWT_SECRET), matching the flat names used in .do/app.yaml.
+//
+// This is the loader for anything that SERVES. Read-only command-line reports
+// should use LoadConfigForReadOnlyTooling.
 func LoadConfig(cfgFile string) (*Config, error) {
+	return loadConfig(cfgFile, (*Config).Validate)
+}
+
+// LoadConfigForReadOnlyTooling loads the same configuration for read-only
+// command-line reports, and differs from LoadConfig only in what it insists on:
+// the database DSN, and nothing else.
+//
+// The other settings LoadConfig requires are serving secrets. The JWT signing
+// key and the pattern-token pepper are required there because auth.New and
+// patternaccess fail closed on an empty key: a running API with either unset
+// would accept forged admin tokens or mint forgeable capability urls. A report
+// opens the database, reads and prints; it never issues or verifies a token, so
+// demanding those values makes nothing safer. It only forces whoever runs the
+// report to paste production serving secrets into a shell, which is strictly
+// worse than not asking for them.
+func LoadConfigForReadOnlyTooling(cfgFile string) (*Config, error) {
+	return loadConfig(cfgFile, (*Config).ValidateForReadOnlyTooling)
+}
+
+func loadConfig(cfgFile string, validate func(*Config) error) (*Config, error) {
 	viper.SetConfigType("toml")
 
 	// bindEnvVars is the single source of truth for env-var names. viper.AutomaticEnv
@@ -215,7 +238,7 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// where tests intentionally construct minimal env-only configs (no MySQL
 	// DSN) to exercise the viper bind/unmarshal path in isolation.
 	if !runningUnderTest() {
-		if err := config.Validate(); err != nil {
+		if err := validate(&config); err != nil {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
 		}
 	}
@@ -230,21 +253,40 @@ func runningUnderTest() bool {
 	return flag.Lookup("test.v") != nil
 }
 
+// validateDSN checks the database DSN, which every entry point needs. By this
+// point the DSN has already been constructed from MYSQL_* / db.* parts when
+// possible, so an empty value means neither MYSQL_DSN nor a complete set of
+// parts was given. An empty DSN would otherwise let sqlx.Open succeed lazily
+// and fail much later as a generic ping error.
+func (c *Config) validateDSN() error {
+	if c.DB.DSN == "" {
+		return fmt.Errorf("mysql.dsn is required: set MYSQL_DSN, or provide the parts " +
+			"(MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, optional MYSQL_PORT; " +
+			"or the DigitalOcean db.HOSTNAME/db.USERNAME/db.PASSWORD/db.DATABASE bindings)")
+	}
+	return nil
+}
+
+// ValidateForReadOnlyTooling checks the one setting a read-only report cannot
+// do without. The serving secrets Validate insists on are deliberately absent
+// here — see LoadConfigForReadOnlyTooling for why requiring them would move
+// production keys into a shell without protecting anything.
+//
+// It reuses Validate's DSN wording rather than restating it: the two loaders
+// must fail the same way on the same missing value, and a second copy of that
+// message would be the thing that drifts.
+func (c *Config) ValidateForReadOnlyTooling() error {
+	return c.validateDSN()
+}
+
 // Validate checks that genuinely-required configuration is present. It only
 // fails on settings the app needs in every environment; optional, env-gated
 // features (analytics GA4/BigQuery behind enabled flags, mail, bucket, stripe,
 // revalidation) are intentionally not enforced here and are validated by their
 // own constructors when actually used.
 func (c *Config) Validate() error {
-	// MySQL DSN is required in every environment. By this point the DSN has
-	// already been constructed from MYSQL_* / db.* parts when possible, so an
-	// empty value means neither MYSQL_DSN nor a complete set of parts was given.
-	// An empty DSN would otherwise let sqlx.Open succeed lazily and fail much
-	// later as a generic ping error.
-	if c.DB.DSN == "" {
-		return fmt.Errorf("mysql.dsn is required: set MYSQL_DSN, or provide the parts " +
-			"(MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, optional MYSQL_PORT; " +
-			"or the DigitalOcean db.HOSTNAME/db.USERNAME/db.PASSWORD/db.DATABASE bindings)")
+	if err := c.validateDSN(); err != nil {
+		return err
 	}
 
 	// Auth JWT secret is required: auth.New fails closed on an empty HS256 secret
