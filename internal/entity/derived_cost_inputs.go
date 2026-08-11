@@ -47,6 +47,10 @@ type PieceFabricAssignment struct {
 	// piece, not on the assignment, but it enters the SAME derivation and therefore the same
 	// signature: «this piece goes twice» is a different cost with the same areas.
 	PiecesPerGarment int
+	// PinnedMaterialId is the article this colourway pins on the piece (0 = none). The estimate takes
+	// BOTH the price and the cutting width from the effective article, so re-pinning a piece reprices
+	// the garment — and a signature that did not see it would be green over a changed number.
+	PinnedMaterialId int64
 }
 
 // DerivedCostInputsDigest fingerprints the cost inputs that live outside the card's own write:
@@ -92,6 +96,7 @@ func DerivedCostInputsDigest(areas map[string]PieceAreaScope, assignments []Piec
 			strings.ToUpper(strings.TrimSpace(a.PieceKey)),
 			strings.ToUpper(strings.TrimSpace(a.BomKey)),
 			a.PiecesPerGarment,
+			a.PinnedMaterialId,
 		})
 	}
 	if len(areaRows) == 0 && len(assignRows) == 0 {

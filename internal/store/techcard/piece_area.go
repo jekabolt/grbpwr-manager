@@ -95,6 +95,9 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 	// расчёт их не видит, и токен, который бы их видел, объявлял бы подпись изменившейся из-за
 	// колорвея, не влияющего ни на одно число.
 	//
+	// ПИН АРТИКУЛА ВХОДИТ В ТОКЕН, потому что оценка берёт у пришпиленного артикула И ЦЕНУ, И ШИРИНУ:
+	// перешпилить деталь на другой рулон значит переоценить изделие, и подпись обязана это увидеть.
+	//
 	// pieces_per_garment ВХОДИТ В ТОКЕН, потому что Ф1 умножает на него площадь одного контура:
 	// правка «этой детали идёт две» меняет себестоимость, и подпись обязана это увидеть. Он уже
 	// хешируется в CONSTRUCTION, но подпись КОСТИНГ — про другое утверждение и своей зависимости
@@ -104,11 +107,13 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 		PieceKey         string `db:"piece_key"`
 		BomKey           string `db:"bom_key"`
 		PiecesPerGarment int    `db:"pieces_per_garment"`
+		PinnedMaterialId int64  `db:"pinned_material_id"`
 	}](ctx, s.DB, `
 		SELECT u.colorway_id,
 		       COALESCE(p.line_key, CONCAT('#', COALESCE(u.piece_id, 0)), '') AS piece_key,
 		       COALESCE(b.line_key, CONCAT('#', COALESCE(u.bom_item_id, 0)), '') AS bom_key,
-		       COALESCE(p.pieces_per_garment, 0) AS pieces_per_garment
+		       COALESCE(p.pieces_per_garment, 0) AS pieces_per_garment,
+		       COALESCE(u.material_id, 0) AS pinned_material_id
 		FROM tech_card_colorway_usage u
 		JOIN product c ON c.id = u.colorway_id AND c.style_id = :id AND c.lifecycle_status <> 4
 		LEFT JOIN tech_card_piece p ON p.id = u.piece_id
@@ -124,6 +129,7 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 			PieceKey:         r.PieceKey,
 			BomKey:           r.BomKey,
 			PiecesPerGarment: r.PiecesPerGarment,
+			PinnedMaterialId: r.PinnedMaterialId,
 		})
 	}
 	return entity.DerivedCostInputsDigest(areas, assignments), nil

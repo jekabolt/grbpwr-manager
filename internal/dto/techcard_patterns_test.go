@@ -88,7 +88,7 @@ func TestColorwayCostRollup(t *testing.T) {
 		{BomItemIndex: idx(1), Quantity: ndFrom("1")}, // 3 USD
 		{BomItemIndex: idx(2), Quantity: ndFrom("4")}, // 20 currency-less
 	}}
-	res := colorwayCost(&cw, bomItems, nil, "EUR", entity.CostingBasis{Mode: entity.CostingBasisNone}, CostingFx{})
+	res := colorwayCost(&entity.TechCard{}, &cw, bomItems, nil, "EUR", entity.CostingBasis{Mode: entity.CostingBasisNone}, CostingFx{})
 	// materials_per_unit = EUR(20) + currency-less(20) = 40; USD excluded. All usages are
 	// per-garment (countable Quantity), so the costing basis is irrelevant here — hence
 	// CostingBasisNone, which for a size-graded usage would mean «no basis, not costed».
