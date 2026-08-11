@@ -101,15 +101,20 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 		}
 	}
 	// Цена стиля = корень костинга (первый колорвей), и наследовать её можно, только если она сама
-	// полна — те же два флага, что и у колорвея.
+	// полна — те же флаги, что и у колорвея.
+	//
+	// has_estimate ЗДЕСЬ ОБЯЗАТЕЛЕН (Ф1). Замороженная цена релиза — это то, против чего меряется вся
+	// последующая разница плана и факта; вморозив в неё netto-оценку, мы бы получили базу, занижённую
+	// на все межлекальные выпады, и каждое отклонение считалось бы от неё как от факта. Слепок,
+	// сделанный до Ф1, флага не несёт и читается как раньше — protojson отдаёт false.
 	style, err := nullDecimalFromPb(costing.GetUnitCost())
 	styleOK := err == nil && style.Valid && style.Decimal.IsPositive() &&
-		!costing.GetHasUnpriced() && !costing.GetHasUnconvertedCurrencies()
+		!costing.GetHasUnpriced() && !costing.GetHasUnconvertedCurrencies() && !costing.GetHasEstimate()
 
 	out := &ReleaseFrozenCosts{Currency: currency, UnitCostByColorway: make(map[int]decimal.Decimal, len(costing.GetColorwayCosts()))}
 	for _, cc := range costing.GetColorwayCosts() {
 		id := int(cc.GetColorwayId())
-		if id <= 0 || cc.GetHasUnpriced() || cc.GetHasUnconvertedCurrencies() {
+		if id <= 0 || cc.GetHasUnpriced() || cc.GetHasUnconvertedCurrencies() || cc.GetHasEstimate() {
 			continue
 		}
 		unit, err := nullDecimalFromPb(cc.GetUnitCost())

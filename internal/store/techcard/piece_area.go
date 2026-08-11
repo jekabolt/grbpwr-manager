@@ -98,6 +98,16 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 	// ПИН АРТИКУЛА ВХОДИТ В ТОКЕН, потому что оценка берёт у пришпиленного артикула И ЦЕНУ, И ШИРИНУ:
 	// перешпилить деталь на другой рулон значит переоценить изделие, и подпись обязана это увидеть.
 	//
+	// ГЕОМЕТРИЯ АРТИКУЛА (ширина, кромка, единица) ВХОДИТ ПО ТОЙ ЖЕ ПРИЧИНЕ, хотя живёт в каталоге, а
+	// не на карточке: норма — это площадь, делённая на РАСКРОЙНУЮ ширину, так что правка ширины или
+	// кромки в справочнике переоценивает изделие, ничего не трогая в карточке. Подпись, не увидевшая
+	// этого, осталась бы зелёной над другим числом.
+	//
+	// ЦЕНА артикула сюда НЕ входит — сознательно и с известной дырой. Каталожная цена пина не
+	// заморожена и сегодня (см. слепок релиза), а хешировать её здесь значило бы устаревание подписи
+	// КОСТИНГ у всех карточек, где этот артикул, при каждой переоценке справочника. Это решение
+	// владельца, а не разработчика; до него дыра остаётся ровно там, где была.
+	//
 	// pieces_per_garment ВХОДИТ В ТОКЕН, потому что Ф1 умножает на него площадь одного контура:
 	// правка «этой детали идёт две» меняет себестоимость, и подпись обязана это увидеть. Он уже
 	// хешируется в CONSTRUCTION, но подпись КОСТИНГ — про другое утверждение и своей зависимости
@@ -108,16 +118,24 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 		BomKey           string `db:"bom_key"`
 		PiecesPerGarment int    `db:"pieces_per_garment"`
 		PinnedMaterialId int64  `db:"pinned_material_id"`
+		ArticleGeometry  string `db:"article_geometry"`
 	}](ctx, s.DB, `
 		SELECT u.colorway_id,
 		       COALESCE(p.line_key, CONCAT('#', COALESCE(u.piece_id, 0)), '') AS piece_key,
 		       COALESCE(b.line_key, CONCAT('#', COALESCE(u.bom_item_id, 0)), '') AS bom_key,
 		       COALESCE(p.pieces_per_garment, 0) AS pieces_per_garment,
-		       COALESCE(u.material_id, 0) AS pinned_material_id
+		       COALESCE(u.material_id, 0) AS pinned_material_id,
+		       CONCAT_WS('|',
+		           COALESCE(NULLIF(fa.width_cm, 0), m.fabric_width, ''),
+		           COALESCE(fa.selvedge_cm, ''),
+		           COALESCE(m.unit, '')
+		       ) AS article_geometry
 		FROM tech_card_colorway_usage u
 		JOIN product c ON c.id = u.colorway_id AND c.style_id = :id AND c.lifecycle_status <> 4
 		LEFT JOIN tech_card_piece p ON p.id = u.piece_id
 		LEFT JOIN tech_card_bom_item b ON b.id = u.bom_item_id
+		LEFT JOIN material m ON m.id = COALESCE(NULLIF(u.material_id, 0), b.material_id)
+		LEFT JOIN material_fabric_attr fa ON fa.material_id = m.id
 		WHERE u.piece_id IS NOT NULL OR u.piece_index IS NOT NULL`, map[string]any{"id": techCardID})
 	if err != nil {
 		return "", fmt.Errorf("load piece→fabric assignments of tech card %d: %w", techCardID, err)
@@ -130,6 +148,7 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 			BomKey:           r.BomKey,
 			PiecesPerGarment: r.PiecesPerGarment,
 			PinnedMaterialId: r.PinnedMaterialId,
+			ArticleGeometry:  r.ArticleGeometry,
 		})
 	}
 	return entity.DerivedCostInputsDigest(areas, assignments), nil
