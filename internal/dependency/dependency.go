@@ -800,6 +800,17 @@ type (
 		// that disagrees with the scope's membership is refused — that is the whole safety property of
 		// the table, so it may not move to the caller.
 		PutTechCardPatternSizeIndex(ctx context.Context, in entity.PatternSizeIndexWrite) (entity.PatternSizeIndexResult, error)
+		// GetTechCardPieceAreas returns a card's measured cut-piece areas (Ф0, 0297), grouped by
+		// fabric scope, with staleness already resolved against today's sheets. A missing scope means
+		// «nobody has measured that fabric» — a different sentence, and a different next action, from
+		// «that fabric needs no cloth».
+		GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[string]entity.PieceAreaScope, error)
+		// SaveTechCardPieceAreas replaces ONE fabric scope's measured areas. Like the size index
+		// above, the sheet-set fingerprint is computed BY THE STORE from its own rows and a client
+		// sheet list that disagrees with the scope's membership is refused: areas measured over a
+		// different set of files would answer for files nobody read, and an understated area
+		// understates the norm, which is discovered in the warehouse rather than on screen.
+		SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaWrite) (entity.PieceAreaResult, error)
 		// Immutable release snapshots (task 11): a full JSON snapshot of the enriched read-model
 		// frozen at each release, so a card's prior spec + planned cost survive re-open/re-release.
 		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error

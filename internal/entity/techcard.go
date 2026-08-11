@@ -2828,6 +2828,13 @@ type TechCard struct {
 	Markers []TechCardMarkerSummary `db:"-"`
 	// MarkerCount is the list-view count of the same thing, batched per page like ColorwayCount.
 	MarkerCount int `db:"-"`
+	// PieceAreaScopes are the measured cut-piece areas (Ф0, 0297), grouped by fabric scope — the
+	// geometry a fabric consumption norm is DERIVED from when nobody typed one. Populated on the
+	// single-card read (nil on lists/writes), keyed by scope_key.
+	//
+	// A map, not a slice: every reader asks «what are the areas of THIS fabric», never «what is the
+	// third scope», and the one place that needs a stable order (the wire) sorts on the way out.
+	PieceAreaScopes map[string]PieceAreaScope `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned

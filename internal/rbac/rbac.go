@@ -361,6 +361,11 @@ var methodRequirements = map[string]Requirement{
 	// planner must not be able to write it: the index feeds the readiness gate, so the right to
 	// rewrite it is the right to clear one's own blocker.
 	"PutTechCardPatternSizeIndex": wr(SectionTechCards),
+	// Площади деталей кроя (Ф0): тот же уровень, что индекс размеров — производный факт о
+	// выкройках карточки, пишется со вкладки выкроек, и им кормится костинг и гейт релиза.
+	// Плановик производства не должен уметь его переписать: право переписать площади — это право
+	// снять себе блокер.
+	"SaveTechCardPieceAreas": wr(SectionTechCards),
 	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
 	// section of its own. Every field it returns is BOM-tab content the same account already reads
 	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);

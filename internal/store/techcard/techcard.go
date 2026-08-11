@@ -804,6 +804,15 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].Markers = markers
+	// Измеренные площади деталей (Ф0, 0297) — вход, из которого выводится норма расхода, когда её
+	// никто не вписал. Читаются здесь, а не по требованию: их видят и костинг, и смета, и плановая
+	// цена партии, и все они ходят через эту же карточку. Пустая карта — законное «никто ещё не
+	// мерил», и это ДРУГОЕ утверждение, чем «этой ткани не нужно полотна».
+	areas, err := s.GetTechCardPieceAreas(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].PieceAreaScopes = areas
 	return &cards[0], nil
 }
 
