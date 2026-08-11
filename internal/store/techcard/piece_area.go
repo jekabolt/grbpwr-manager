@@ -101,7 +101,7 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int) (map[
 		BlockName    string `db:"block_name"`
 		PieceLineKey string `db:"piece_line_key"`
 	}](ctx, db, `
-		SELECT COALESCE(NULLIF(a.fabric_purpose, ''), a.bom_line_key) AS scope_key,
+		SELECT a.scope_key,
 		       a.block_name,
 		       COALESCE(p.line_key, '') AS piece_line_key
 		FROM tech_card_piece_dxf_block a
@@ -117,6 +117,56 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int) (map[
 		})
 	}
 	return out, nil
+}
+
+// sizeCoverageDiff returns "" when every measured piece covers the range in one of the two legal
+// forms, and a readable description of the first violations otherwise.
+//
+// Legal forms, and nothing between them:
+//   - EXACTLY ONE row with no size — the piece does not grade and enters every size whole;
+//   - one row per size of the declared range — the piece grades.
+//
+// A mixture (a sizeless row AND sized rows for the same piece) is not a partial answer: it is two
+// contradicting statements about the piece, and picking either one would be inventing the operator's
+// intent.
+func sizeCoverageDiff(sizesByPiece map[string]map[int]bool, cardSizes []int) string {
+	var problems []string
+	pieces := make([]string, 0, len(sizesByPiece))
+	for p := range sizesByPiece {
+		pieces = append(pieces, p)
+	}
+	sort.Strings(pieces)
+	for _, p := range pieces {
+		got := sizesByPiece[p]
+		ungraded := got[0]
+		sized := len(got) - boolToInt(ungraded)
+		switch {
+		case ungraded && sized > 0:
+			problems = append(problems, p+": measured both with and without a size")
+		case ungraded:
+			// One sizeless row is a complete answer by itself.
+		case len(cardSizes) == 0:
+			problems = append(problems, p+": the card declares no size range, so a sized measurement cannot be complete")
+		default:
+			var missing []string
+			for _, s := range cardSizes {
+				if !got[s] {
+					missing = append(missing, fmt.Sprintf("%d", s))
+				}
+			}
+			if len(missing) > 0 {
+				problems = append(problems, p+": missing sizes "+strings.Join(missing, ", "))
+			}
+		}
+	}
+	return strings.Join(problems, "; ")
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // sameMeasurement reports whether a submitted set is byte-for-byte what is already stored, under the
@@ -247,7 +297,7 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 			FROM tech_card_piece_dxf_block a
 			JOIN tech_card_piece p ON p.id = a.piece_id
 			WHERE a.tech_card_id = :id
-			  AND COALESCE(NULLIF(a.fabric_purpose, ''), a.bom_line_key) = :scope`,
+			  AND a.scope_key = :scope`,
 			map[string]any{"id": in.TechCardId, "scope": scopeKey})
 		if err != nil {
 			return fmt.Errorf("load dxf block links of scope %q: %w", scopeKey, err)
@@ -286,13 +336,19 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 			return fmt.Errorf("load size range of tech card %d: %w", in.TechCardId, err)
 		}
 		cardSizes := make(map[int]bool, len(sizeRows))
+		cardSizeOrder := make([]int, 0, len(sizeRows))
 		for _, sr := range sizeRows {
+			if !cardSizes[sr.SizeId] {
+				cardSizeOrder = append(cardSizeOrder, sr.SizeId)
+			}
 			cardSizes[sr.SizeId] = true
 		}
 
 		var unknown []string
 		submitted := map[string]bool{}
 		seen := map[string]bool{}
+		// Какие размеры измерены у каждой детали — вход проверки полноты по паре (деталь, размер).
+		sizesByPiece := map[string]map[int]bool{}
 		for _, r := range in.Rows {
 			k := strings.ToUpper(strings.TrimSpace(r.PieceLineKey))
 			if k == "" || !known[k] {
@@ -307,6 +363,10 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 				return entity.NewFieldViolation("areas", "size_not_in_range", r.PieceLineKey,
 					"this size is not in the card's size range — measure the range the card declares")
 			}
+			if sizesByPiece[k] == nil {
+				sizesByPiece[k] = map[int]bool{}
+			}
+			sizesByPiece[k][int(r.SizeId.Int64)] = true // 0 = ungraded
 			// A duplicate (piece, size) in ONE payload is a client bug that the UNIQUE key would
 			// report as a driver error with no field on it. Named here instead.
 			dup := fmt.Sprintf("%s|%d", k, r.SizeId.Int64)
@@ -328,6 +388,20 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		if diff := pieceSetDiff(expected, submitted); diff != "" {
 			return entity.NewFieldViolation("areas", "piece_set_mismatch", diff,
 				"measure the WHOLE scope: a missing piece understates the garment's area (and the norm derived from it), an extra one belongs to another fabric")
+		}
+		// ПОЛНОТА ПРОВЕРЯЕТСЯ ПО ПАРЕ (ДЕТАЛЬ, РАЗМЕР), А НЕ ПО ДЕТАЛИ.
+		//
+		// Проверка только по деталям пропускает ровно ту же беду, от которой защищает проверка по
+		// деталям, просто на другой оси: набор, где деталь измерена на S и не измерена на L,
+		// проходит целиком, и площадь изделия размера L молча теряет эту деталь. Норма L выходит
+		// заниженной, и обнаруживается это там же, где всегда, — когда ткань кончилась.
+		//
+		// Деталь либо НЕ ГРАДУИРУЕТСЯ (ровно одна строка с пустым размером — она входит в каждый
+		// размер целиком), либо градуируется и обязана иметь строку на КАЖДЫЙ размер ряда. Смесь
+		// этих двух форм у одной детали — не «частичный ответ», а два разных утверждения о ней.
+		if diff := sizeCoverageDiff(sizesByPiece, cardSizeOrder); diff != "" {
+			return entity.NewFieldViolation("areas", "size_set_incomplete", diff,
+				"measure every size of the card's range for each piece (or exactly once with no size when the piece does not grade)")
 		}
 
 		blocks, err := scopeBlockRefs(ctx, db, in.TechCardId)

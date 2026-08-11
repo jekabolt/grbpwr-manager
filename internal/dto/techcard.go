@@ -1102,9 +1102,13 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 
 // TechCardPieceAreaScopesToPb emits a card's measured piece areas, scope by scope.
 //
-// SORTED BY SCOPE, AND ROWS SORTED WITHIN IT, because the source is a map and the wire is a list: an
-// unordered emission would make two reads of an unchanged card differ, which matters the moment
-// anything downstream digests this projection (and the release snapshot is exactly that).
+// SORTED BY SCOPE, because the source is a map and the wire is a list: an unordered emission would
+// make two reads of an unchanged card differ, which matters the moment anything downstream digests
+// this projection (and the release snapshot is exactly that).
+//
+// ROWS ARRIVE ALREADY ORDERED from the store (ORDER BY piece_line_key, size_key) and are emitted as
+// given. A caller that builds the map itself owes the same order — this function does not re-sort,
+// and claiming it did would be a promise the code does not keep.
 func TechCardPieceAreaScopesToPb(scopes map[string]entity.PieceAreaScope) []*pb_common.TechCardPieceAreaScope {
 	if len(scopes) == 0 {
 		return nil
@@ -3438,10 +3442,14 @@ func PieceAreaWriteFromPb(techCardID int, scopeKey string, sheetLineKeys []strin
 			return entity.PieceAreaWrite{}, fmt.Errorf("piece %q has no area — a measurement that produced no number is a failed read, not a small piece", a.GetPieceLineKey())
 		}
 		row := entity.PieceAreaInput{
-			PieceLineKey:    strings.TrimSpace(a.GetPieceLineKey()),
-			AreaCm2:         area.Decimal,
+			PieceLineKey: strings.TrimSpace(a.GetPieceLineKey()),
+			// ОКРУГЛЕНИЕ ДО МАСШТАБА КОЛОНКИ ЗДЕСЬ, А НЕ В MySQL. Колонка — DECIMAL(12,2), и
+			// присланные 1234.567 легли бы как 1234.57; сравнение «то же самое измерение» шло бы
+			// против ПРИСЛАННОГО значения, никогда не совпадало, и каждый повтор переписывал бы
+			// весь скоуп вместе с датой замера — ровно то, что проверка на повтор обещает не делать.
+			AreaCm2:         area.Decimal.RoundBank(2),
 			ContourLayer:    strings.TrimSpace(contourLayer),
-			SeamAllowanceMm: seam.Decimal,
+			SeamAllowanceMm: seam.Decimal.RoundBank(1),
 			Hulled:          a.GetHulled(),
 			AmbiguousPick:   a.GetAmbiguousPick(),
 		}
