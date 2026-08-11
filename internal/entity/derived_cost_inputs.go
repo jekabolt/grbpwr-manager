@@ -51,6 +51,11 @@ type PieceFabricAssignment struct {
 	// BOTH the price and the cutting width from the effective article, so re-pinning a piece reprices
 	// the garment — and a signature that did not see it would be green over a changed number.
 	PinnedMaterialId int64
+	// ArticleGeometry is the effective article's width / selvedge / unit, as one canonical string.
+	// It lives in the catalogue rather than on the card, and it still belongs in the card's costing
+	// signature: the norm is an area divided by the CUTTING width, so editing either reprices the
+	// garment without touching the card at all.
+	ArticleGeometry string
 }
 
 // DerivedCostInputsDigest fingerprints the cost inputs that live outside the card's own write:
@@ -97,6 +102,7 @@ func DerivedCostInputsDigest(areas map[string]PieceAreaScope, assignments []Piec
 			strings.ToUpper(strings.TrimSpace(a.BomKey)),
 			a.PiecesPerGarment,
 			a.PinnedMaterialId,
+			strings.TrimSpace(a.ArticleGeometry),
 		})
 	}
 	if len(areaRows) == 0 && len(assignRows) == 0 {
