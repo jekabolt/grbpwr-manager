@@ -220,6 +220,12 @@ const (
 const (
 	MaterialPlanReasonNoArticle = "no article (no pin, no slot default)"
 	MaterialPlanReasonNoNorm    = "no consumption norm"
+	// MaterialPlanReasonEstimateOnly: the slot HAS a computable area estimate (Ф1) and no measured
+	// norm. Costing shows that estimate as a lower bound; purchasing must not, because a netto
+	// figure buys ~a third less cloth than the cutting room needs. The blocker stays; only the
+	// sentence changes, so it names the next step (take a marker) instead of «no norm», which on a
+	// card whose cost is on screen reads as untrue and sends people to type a number by hand.
+	MaterialPlanReasonEstimateOnly = "area estimate only — take a marker before ordering"
 )
 
 // --- СТРОКИ И ОТЧЁТ -----------------------------------------------------------------------------
