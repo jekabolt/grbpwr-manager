@@ -103,6 +103,10 @@ var ErrProductionRunConflict = errors.New("production run was modified concurren
 type ProductionRunStatus string
 
 const (
+	// ProductionRunDraft (Ф2): расчётная партия. Состав набран, деньги считаются, но ткань НЕ
+	// зарезервирована, гейт готовности не применялся и наряда нет — всё это навешивает переход
+	// draft → planned. Считать деньги не значит занимать сырьё.
+	ProductionRunDraft      ProductionRunStatus = "draft"
 	ProductionRunPlanned    ProductionRunStatus = "planned"
 	ProductionRunInProgress ProductionRunStatus = "in_progress"
 	// ProductionRunPartiallyReceived: at least one partial receipt is booked and the run is not yet
@@ -115,6 +119,7 @@ const (
 
 // ValidProductionRunStatuses is the set of accepted run statuses.
 var ValidProductionRunStatuses = map[ProductionRunStatus]bool{
+	ProductionRunDraft:             true,
 	ProductionRunPlanned:           true,
 	ProductionRunInProgress:        true,
 	ProductionRunPartiallyReceived: true,
