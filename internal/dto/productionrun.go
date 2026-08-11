@@ -25,6 +25,7 @@ var productionRunStatusPbToEntity = map[pb_common.ProductionRunStatus]entity.Pro
 	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_CLOSED:             entity.ProductionRunClosed,
 	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_CANCELLED:          entity.ProductionRunCancelled,
 	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_PARTIALLY_RECEIVED: entity.ProductionRunPartiallyReceived,
+	pb_common.ProductionRunStatus_PRODUCTION_RUN_STATUS_DRAFT:              entity.ProductionRunDraft,
 }
 
 // productionRunStatusEntityToPb is the reverse map.
