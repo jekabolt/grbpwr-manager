@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/url"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -1092,7 +1093,59 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Saved раскладки (0257), summaries only — written through Save/DeleteTechCardMarker, the
 		// blob rides GetTechCardMarker.
 		Markers: TechCardMarkerSummariesToPb(tc.Markers),
+		// Измеренные площади деталей (Ф0, 0297) — вход вывода нормы. В контракте они лежат ЗДЕСЬ, в
+		// читаемой обёртке, а не в TechCardInsert: пишет их отдельный RPC, и полная замена карточки
+		// не должна иметь возможности их стереть. Это же кладёт их в слепок релиза.
+		PieceAreaScopes: TechCardPieceAreaScopesToPb(tc.PieceAreaScopes),
 	}
+}
+
+// TechCardPieceAreaScopesToPb emits a card's measured piece areas, scope by scope.
+//
+// SORTED BY SCOPE, AND ROWS SORTED WITHIN IT, because the source is a map and the wire is a list: an
+// unordered emission would make two reads of an unchanged card differ, which matters the moment
+// anything downstream digests this projection (and the release snapshot is exactly that).
+func TechCardPieceAreaScopesToPb(scopes map[string]entity.PieceAreaScope) []*pb_common.TechCardPieceAreaScope {
+	if len(scopes) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(scopes))
+	for k := range scopes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]*pb_common.TechCardPieceAreaScope, 0, len(keys))
+	for _, k := range keys {
+		sc := scopes[k]
+		rows := make([]*pb_common.TechCardPieceArea, 0, len(sc.Rows))
+		for _, r := range sc.Rows {
+			rows = append(rows, &pb_common.TechCardPieceArea{
+				PieceLineKey: r.PieceLineKey,
+				// 0 on the wire is «ungraded», the same sentinel the column's NULL carries. A piece
+				// that grades never has size 0 (sizes are FKs starting at 1), so the two states stay
+				// distinguishable without an optional.
+				SizeId:        int32(r.SizeId.Int64),
+				AreaCm2:       pbDecimalFromDecimal(r.AreaCm2),
+				Hulled:        r.Hulled,
+				AmbiguousPick: r.AmbiguousPick,
+			})
+		}
+		item := &pb_common.TechCardPieceAreaScope{
+			ScopeKey: k,
+			Areas:    rows,
+			Stale:    sc.Stale,
+		}
+		// Conditions and provenance are one per scope (one transaction wrote them); read them off
+		// the first row rather than duplicating them on every area.
+		if len(sc.Rows) > 0 {
+			item.ContourLayer = sc.Rows[0].ContourLayer
+			item.SeamAllowanceMm = pbDecimalFromDecimal(sc.Rows[0].SeamAllowanceMm)
+			item.ParsedBy = sc.Rows[0].ParsedBy
+			item.ParsedAt = timestamppb.New(sc.Rows[0].ParsedAt)
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // TechCardMarkerSummariesToPb emits a card's saved раскладки for display, BOM link resolved
@@ -3349,6 +3402,55 @@ func pbMoneyFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
 // roundMoney rounds a money amount to 2 decimals (banker's rounding) for storage/emit.
 func roundMoney(d decimal.Decimal) decimal.Decimal {
 	return d.RoundBank(2)
+}
+
+// PieceAreaWriteFromPb turns one SaveTechCardPieceAreas payload into the store's write shape.
+//
+// THE CONVERSION IS WHERE THE ZERO-SIZE SENTINEL IS RESOLVED, once: size_id 0 on the wire is
+// «ungraded piece» (it enters every size's set whole), and it must become SQL NULL rather than the
+// integer 0, or MySQL's UNIQUE would let one ungraded piece land twice and double the garment's
+// area. The reverse direction lives in TechCardPieceAreaScopesToPb; the two are the only places that
+// know about the sentinel.
+//
+// An unparseable area is an ERROR, never a zero: a zero area is a free garment.
+func PieceAreaWriteFromPb(techCardID int, scopeKey string, sheetLineKeys []string,
+	areas []*pb_common.TechCardPieceArea, contourLayer string, seamAllowance *pb_decimal.Decimal,
+	parsedBy string) (entity.PieceAreaWrite, error) {
+	out := entity.PieceAreaWrite{
+		TechCardId:    techCardID,
+		ScopeKey:      strings.TrimSpace(scopeKey),
+		SheetLineKeys: sheetLineKeys,
+		ParsedBy:      parsedBy,
+	}
+	seam, err := nullDecimalFromPb(seamAllowance)
+	if err != nil {
+		return entity.PieceAreaWrite{}, fmt.Errorf("seam_allowance_mm: %w", err)
+	}
+	for _, a := range areas {
+		if a == nil {
+			continue
+		}
+		area, err := nullDecimalFromPb(a.GetAreaCm2())
+		if err != nil {
+			return entity.PieceAreaWrite{}, fmt.Errorf("area of piece %q: %w", a.GetPieceLineKey(), err)
+		}
+		if !area.Valid {
+			return entity.PieceAreaWrite{}, fmt.Errorf("piece %q has no area — a measurement that produced no number is a failed read, not a small piece", a.GetPieceLineKey())
+		}
+		row := entity.PieceAreaInput{
+			PieceLineKey:    strings.TrimSpace(a.GetPieceLineKey()),
+			AreaCm2:         area.Decimal,
+			ContourLayer:    strings.TrimSpace(contourLayer),
+			SeamAllowanceMm: seam.Decimal,
+			Hulled:          a.GetHulled(),
+			AmbiguousPick:   a.GetAmbiguousPick(),
+		}
+		if sid := a.GetSizeId(); sid > 0 {
+			row.SizeId = sql.NullInt64{Int64: int64(sid), Valid: true}
+		}
+		out.Rows = append(out.Rows, row)
+	}
+	return out, nil
 }
 
 func nullDecimalFromPb(d *pb_decimal.Decimal) (decimal.NullDecimal, error) {
