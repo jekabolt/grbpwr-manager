@@ -199,3 +199,29 @@ func isRollGoodsSection(s entity.TechCardBomSection) bool {
 	}
 	return false
 }
+
+// catalogAsLinked adapts the estimate's price catalogue to the shape slotAreaEstimate expects.
+//
+// THE TWO PATHS CARRY DIFFERENT MAPS FOR A REASON: the costing rollup holds the card's
+// LinkedMaterials (identity + prices + fabric attributes), the style estimate holds only the latest
+// price per material. Rather than teach slotAreaEstimate two shapes, the estimate lends what it has:
+// prices resolve, and the article's WIDTH does not — so the estimate falls back to the BOM line's
+// own snapshot width, which is the same number in every case where the card was filled in normally.
+//
+// The alternative — a second width rule inside the estimate — is the thing this whole phase exists
+// to stop: two screens computing one number two ways.
+func catalogAsLinked(catalog map[int64]*entity.MaterialPrice) map[int]entity.MaterialWithPrice {
+	if len(catalog) == 0 {
+		return nil
+	}
+	out := make(map[int]entity.MaterialWithPrice, len(catalog))
+	for id, price := range catalog {
+		if price == nil {
+			continue
+		}
+		m := entity.MaterialWithPrice{LatestPrice: price}
+		m.Id = int(id)
+		out[int(id)] = m
+	}
+	return out
+}
