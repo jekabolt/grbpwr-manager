@@ -1424,6 +1424,14 @@ message TechCardColorwayCost {
   // contributes to NO currency bucket, so unit_cost is withheld from cost seeding for this
   // colourway and should not be trusted as complete.
   bool has_unpriced = 11;
+  // OUTPUT-ONLY: set when at least one roll slot of THIS colourway was costed by AREA ESTIMATE
+  // (Ф1, ступень 0) — площадь деталей ÷ раскройную ширину — instead of an authored norm.
+  //
+  // ЭТО NETTO, НИЖНЯЯ ГРАНИЦА. Межлекальных выпадов и концов настила в ней нет и быть не может: их
+  // знает только раскладка. Число показывать МОЖНО и нужно (иначе карточка стоит ноль при полностью
+  // заполненной спецификации), но подписывать им каталожную себестоимость — нельзя: сервер сам не
+  // сеет cost_price с этим флагом, и клиент обязан показывать цифру как ОЦЕНКУ, а не как цену.
+  bool has_estimate = 12;
   reserved 3, 4; // was materials_cost, size_run_total (superseded by the per-unit / per-order model)
 }
 
@@ -1473,6 +1481,10 @@ message TechCardCosting {
   // contributes to NO currency bucket, so unit_cost/unit_cost_base are withheld from cost seeding
   // and should not be trusted as complete.
   bool has_unpriced = 30;
+  // OUTPUT-ONLY: the root rollup was costed, in part, by AREA ESTIMATE (Ф1, ступень 0). Same
+  // meaning and same warning as TechCardColorwayCost.has_estimate: netto, lower bound, shown but
+  // never seeded into the catalogue.
+  bool has_estimate = 31;
   google.type.Decimal total_sam = 16; // Σ operation smv, time_norm where smv is unset (minutes); informative
   repeated TechCardColorwayCost colorway_costs = 18; // OUTPUT-ONLY, per colourway
 

@@ -139,3 +139,22 @@ func TestUnmeasuredCardStaysSilent(t *testing.T) {
 		t.Fatal("an unmeasured card raised hasUnpriced; that is T8's empty recipe, not a failure")
 	}
 }
+
+// TestMeasuredColorwayIsPricedFromItselfNotFromItsNeighbour closes С1.
+//
+// The old rule read «nothing but piece assignments» as «empty recipe» and handed such a colourway
+// the STYLE figure — i.e. the primary colourway's price. That was defensible while a piece-only
+// recipe produced no number of its own. Since Ф1 it produces one, and inheriting would give a
+// colourway pinned to a different article somebody else's cost while its own sat computed and
+// unused.
+func TestMeasuredColorwayIsPricedFromItselfNotFromItsNeighbour(t *testing.T) {
+	tc := estimateCard()
+	if !colorwayHasOwnRecipe(tc, &tc.Colorways[0]) {
+		t.Fatal("a measured piece-only colourway reads as having no recipe; it would inherit the style figure")
+	}
+	// And the unmeasured case keeps the old behaviour, because every card in the database is in it.
+	tc.PieceAreaScopes = nil
+	if colorwayHasOwnRecipe(tc, &tc.Colorways[0]) {
+		t.Fatal("an unmeasured piece-only colourway claims a recipe; it would be costed as manual articles only — a silent price drop")
+	}
+}

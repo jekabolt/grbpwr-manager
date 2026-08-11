@@ -961,6 +961,7 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 			OrderCost:                pbDecimalFromDecimal(roundMoney(order)),
 			HasUnconvertedCurrencies: cc.hasUnconverted,
 			HasUnpriced:              cc.hasUnpriced,
+			HasEstimate:              cc.hasEstimate,
 		})
 		if ci == 0 {
 			root = cc
@@ -985,6 +986,7 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 		OrderCost:                pbDecimalFromDecimal(roundMoney(rootOrder)),
 		HasUnconvertedCurrencies: root.hasUnconverted,
 		HasUnpriced:              root.hasUnpriced,
+		HasEstimate:              root.hasEstimate,
 		ColorwayCosts:            colorwayCosts,
 	}
 
@@ -1118,7 +1120,13 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	// no norms (entity.IsPieceMaterialAssignment), so a colourway whose usages are ALL piece
 	// assignments would otherwise be costed as manual articles only — the exact silent drop this
 	// guard exists to prevent.
-	if !colorwayHasNormRows(cw) {
+	//
+	// SINCE Ф1 THERE IS A SECOND WAY TO HAVE A RECIPE: piece assignments on a slot whose areas are
+	// MEASURED are costable. Such a colourway must be priced from ITSELF — inheriting the primary's
+	// figure would hand a colourway pinned to a different article its neighbour's price while its
+	// own, correct one sat computed and unused. See colorwayHasOwnRecipe for why the measured guard
+	// is what keeps every existing (unmeasured) card on the old inheritance path.
+	if !colorwayHasOwnRecipe(tc, cw) {
 		return ComputeTechCardUnitCost(tc, fx)
 	}
 	c := tc.Costing
@@ -1160,15 +1168,45 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	return decimal.NullDecimal{}, ""
 }
 
-// colorwayHasNormRows reports whether the colourway's recipe has at least one GARMENT-level row —
-// a row that can carry a norm. A colourway with none (no usages at all, or nothing but piece
-// assignments, entity.IsPieceMaterialAssignment) has an EMPTY recipe for every computation: the
-// unit cost inherits the style figure, and the cost breakdown must inherit the SAME projection
+// colorwayHasOwnRecipe reports whether the colourway can be costed FROM ITSELF. A colourway that
+// cannot inherits the style figure, and the breakdown must inherit the same projection
 // (ComputeColorwayCostBreakdownBase), or the pair (cost_price, cost_breakdown) contradicts itself.
-func colorwayHasNormRows(cw *entity.TechCardColorway) bool {
+//
+// TWO WAYS TO HAVE A RECIPE, AND THE SECOND ONE IS NEW (Ф1):
+//
+//  1. a GARMENT-level row — a row that can carry a norm (the original rule);
+//  2. piece assignments on a roll slot WHOSE AREAS ARE MEASURED — since Ф1 those are a costable
+//     recipe, not an empty one.
+//
+// WHY THE SECOND CLAUSE IS NOT OPTIONAL. The old rule read «nothing but piece assignments» as «empty
+// recipe» and handed the colourway its neighbour's price. That was defensible while such a recipe
+// produced no number; it stopped being defensible the moment it produces its own. A second colourway
+// pinned to a different, more expensive article would otherwise be SEEDED with the primary's cost —
+// its own, correct, computable figure discarded in favour of another colour's.
+//
+// WHY IT IS GUARDED BY «measured» RATHER THAN BY «has piece rows». Every card in the database has
+// piece assignments and no measured areas; treating those as a recipe would compute materials = 0
+// for them and seed CMT-only as the whole cost — silently cheaper than the inheritance they get
+// today. Unmeasured stays empty, exactly as before.
+func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool {
 	for i := range cw.Usages {
 		if !cw.Usages[i].IsPieceMaterialAssignment() {
 			return true
+		}
+	}
+	if tc == nil || len(tc.PieceAreaScopes) == 0 {
+		return false
+	}
+	for i := range tc.BomItems {
+		b := &tc.BomItems[i]
+		if !isRollGoodsSection(b.Section) {
+			continue
+		}
+		if pieces, _ := slotAssignedPieces(tc, cw, b); len(pieces) > 0 {
+			scope := entity.FabricScopeKey(b.Purpose.String, b.LineKey)
+			if sc, ok := tc.PieceAreaScopes[scope]; ok && len(sc.Rows) > 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -1198,7 +1236,7 @@ func ComputeColorwayCostBreakdownBase(tc *entity.TechCard, colorwayProductID int
 		// Decomposing the colourway's own empty recipe instead pairs an inherited cost_price
 		// (fabric included) with materials = 0, and the COGS-structure metrics
 		// (internal/store/metrics/style.go) then spread a real figure over wrong shares.
-		if !colorwayHasNormRows(cw) {
+		if !colorwayHasOwnRecipe(tc, cw) {
 			return ComputeTechCardCostBreakdownBase(tc, fx)
 		}
 		return techCardCostBreakdownBase(tc, cw, fx)
