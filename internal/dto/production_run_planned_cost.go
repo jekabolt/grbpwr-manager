@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -76,6 +77,18 @@ type runMixKey struct {
 //     batch is recoverable (somebody names the colour and re-plans); a plausible number costed off
 //     the wrong colour is not — it silently becomes the baseline every later variance is read against.
 func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wastageOverride decimal.NullDecimal, lines []entity.ProductionRunLine) (decimal.NullDecimal, string) {
+	unit, ccy, _ := ComputeProductionRunPlannedUnitCostWithReason(tc, fx, wastageOverride, lines)
+	return unit, ccy
+}
+
+// ComputeProductionRunPlannedUnitCostWithReason is the same computation, additionally saying WHY it
+// refused.
+//
+// The reason is not decoration. Every refusal below sends the operator somewhere different — fill
+// the grid, cost that one cell, name the colour, agree the currencies — and an empty decimal said
+// none of it: the screen printed «цена не посчитана» and left the person to guess which of four
+// things was wrong. An empty string means the computation succeeded.
+func ComputeProductionRunPlannedUnitCostWithReason(tc *entity.TechCard, fx CostingFx, wastageOverride decimal.NullDecimal, lines []entity.ProductionRunLine) (decimal.NullDecimal, string, string) {
 	// Several lines can name one (colourway, size) cell — the grid is diffed by line_key and holds no
 	// uniqueness on the pair — so quantities are pooled per cell before pricing: costing the same cell
 	// twice would be wasted work, and — more importantly — weighting is by garments, not by rows.
@@ -98,7 +111,11 @@ func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wast
 	}
 	if totalQty == 0 {
 		// Edge 1: explicit NO basis (sizeID 0), never the style default — see the header.
-		return ComputeTechCardUnitCostOnSize(tc, fx, wastageOverride, 0)
+		unit, ccy := ComputeTechCardUnitCostOnSize(tc, fx, wastageOverride, 0)
+		if !unit.Valid {
+			return unit, ccy, "в партии нет ни одной строки с количеством — считать нечего"
+		}
+		return unit, ccy, ""
 	}
 
 	weighted := decimal.Zero
@@ -106,21 +123,26 @@ func ComputeProductionRunPlannedUnitCost(tc *entity.TechCard, fx CostingFx, wast
 	for _, cell := range cellOrder {
 		unit, ccy := runCellUnitCost(tc, fx, wastageOverride, cell)
 		if !unit.Valid {
-			return decimal.NullDecimal{}, "" // edges 2, 4 and 5
+			// Edges 2, 4 and 5. НАЗЫВАЕТСЯ ИМЕННО ЯЧЕЙКА: «партия не считается» на партии из двадцати
+			// строк — это приглашение перебирать их руками.
+			return decimal.NullDecimal{}, "", fmt.Sprintf(
+				"ячейка (колорвей %d, размер %d) не считается: у её рецепта нет нормы на этот размер, либо колорвей не принадлежит карточке",
+				cell.productID, cell.sizeID)
 		}
 		if currency == "" {
 			currency = ccy
 		} else if !strings.EqualFold(currency, ccy) {
-			return decimal.NullDecimal{}, "" // edge 3
+			return decimal.NullDecimal{}, "", fmt.Sprintf(
+				"ячейки партии считаются в разных валютах (%s и %s) — взвешенное среднее по двум валютам не число", currency, ccy)
 		}
 		weighted = weighted.Add(unit.Decimal.Mul(decimal.NewFromInt(qtyByCell[cell])))
 	}
 	avg := roundMoney(weighted.Div(decimal.NewFromInt(totalQty)))
 	if !avg.IsPositive() {
 		// Mirrors ComputeTechCardUnitCost's own rule: a non-positive cost is not a cost.
-		return decimal.NullDecimal{}, ""
+		return decimal.NullDecimal{}, "", "посчитанная цена не положительна — это не цена"
 	}
-	return decimal.NullDecimal{Decimal: avg, Valid: true}, currency
+	return decimal.NullDecimal{Decimal: avg, Valid: true}, currency, ""
 }
 
 // runCellUnitCost is what one garment of a (colourway, size) cell costs: the colourway's own recipe
