@@ -1086,19 +1086,25 @@ type patternScope struct {
 	sheets []entity.PatternSheetRef
 }
 
-// patternScopes groups the card's pattern sheets by the ONE binding rule's uniqueness bucket. The
-// fingerprint is computed HERE, from the server's own rows, which is what makes the index
-// unforgeable in the dangerous direction and what makes a re-upload stale it by itself.
+// patternScopes groups the card's pattern sheets by the ТКАНЬ each one addresses. The fingerprint
+// is computed HERE, from the server's own rows, which is what makes the index unforgeable in the
+// dangerous direction and what makes a re-upload stale it by itself.
+//
+// КЛЮЧ — ЛИЧНОСТЬ ТКАНИ, А НЕ ВЕДРО ЗАПИСИ, и он обязан быть тем же, что у PutTechCardPatternSizeIndex:
+// строка индекса кладётся под ключом, который прислал клиент (сгруппировавший по сегодняшнему BOM),
+// и ищется здесь. Разойдись эти два ключа — и разбор, только что успешно записанный, читался бы как
+// «размеры в файлах не проверялись» на каждой разобранной по назначениям карточке.
 func (b *runReadinessBuilder) patternScopes() []patternScope {
 	return patternScopesOfCard(b.card)
 }
 
 func patternScopesOfCard(card *entity.TechCard) []patternScope {
+	lines := entity.RollGoodsLinesOfBom(card.BomItems)
 	byKey := map[string][]entity.PatternSheetRef{}
 	var order []string
 	for i := range card.Patterns {
 		p := &card.Patterns[i]
-		key := entity.FabricScopeKey(p.FabricPurpose.String, p.BomLineKey.String)
+		key := entity.FabricScopeIdentity(p.FabricPurpose.String, p.BomLineKey.String, lines)
 		if key == "" {
 			// A sheet bound to nothing at all (uploaded before 0260). pattern_binding_resolved already
 			// names it; indexing it under "" would let one unbound sheet answer for every cloth.

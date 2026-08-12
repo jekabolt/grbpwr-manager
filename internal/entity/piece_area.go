@@ -119,7 +119,12 @@ type PieceAreaRow struct {
 // full answer (a missing piece lowers the garment's area, a lower area lowers the norm, and that is
 // discovered in the warehouse, not on screen).
 type PieceAreaWrite struct {
-	TechCardId    int
+	TechCardId int
+	// ScopeKey is the ТКАНЬ the measurement belongs to, as FabricScopeIdentity resolves it against
+	// today's BOM — the назначение of the addressed line where the card has been sorted, that line
+	// alone where it has not. NOT the value stored in tech_card_piece_dxf_block.scope_key: a link
+	// written before the sort still names the line, and matching the two is what refused a card
+	// whose blocks were all linked.
 	ScopeKey      string
 	SheetLineKeys []string
 	Rows          []PieceAreaInput

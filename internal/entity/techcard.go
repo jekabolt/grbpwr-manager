@@ -2748,6 +2748,11 @@ func (a TechCardPieceDxfAlias) Scope(lines []RollGoodsLine) FabricScope {
 
 // ScopeKey is the uniqueness bucket alone, for the paths that have no BOM to resolve against
 // (payload dedupe, keying stored rows). Mirrors the generated column by construction.
+//
+// NOT THE KEY TO MATCH THIS ALIAS AGAINST ANYTHING ELSE. An alias written before the card was sorted
+// names the LINE and goes on naming it; the fabric it addresses is that line's назначение, which is
+// FabricScopeIdentity. Bucketing block links by this method is what refused a card whose blocks were
+// all linked — see the header of that function.
 func (a TechCardPieceDxfAlias) ScopeKey() string {
 	return FabricScopeKey(a.FabricPurpose, a.BomLineKey)
 }

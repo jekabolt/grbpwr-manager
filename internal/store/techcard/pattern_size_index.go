@@ -26,6 +26,11 @@ import (
 // («purpose first, else the legacy line») is NOT done in SQL: entity.FabricScopeKey is the ONE place
 // that rule lives, and a COALESCE here would be a second copy that drifts the day somebody clears a
 // назначение on the BOM tab.
+//
+// Its consumers bucket the rows through entity.FabricScopeIdentity, not through FabricScopeKey: the
+// key a sheet is FILED under and the ТКАНЬ it addresses are two different questions, and a JOIN onto
+// tech_card_bom_item here to answer the second one would be exactly the third copy the paragraph
+// above forbids. Both answers stay in Go, over the lines loadRollGoodsLines returns.
 const patternSheetsQuery = `
 	SELECT line_key, url, version,
 	       COALESCE(bom_line_key, '') AS bom_line_key,
@@ -76,19 +81,20 @@ func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.Patte
 	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
-		sheets, err := storeutil.QueryListNamed[patternSheetRow](ctx, db, patternSheetsQuery,
-			map[string]any{"id": in.TechCardId})
+		lines, err := loadRollGoodsLines(ctx, db, in.TechCardId)
 		if err != nil {
-			return fmt.Errorf("load pattern sheets of tech card %d: %w", in.TechCardId, err)
+			return err
 		}
-		// The scope's CURRENT membership, bucketed by the one binding rule.
-		var mine []entity.PatternSheetRef
-		for _, sh := range sheets {
-			if entity.FabricScopeKey(sh.FabricPurpose, sh.BomLineKey) != scopeKey {
-				continue
-			}
-			mine = append(mine, entity.PatternSheetRef{LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version})
+		// The scope's CURRENT membership, bucketed by the ТКАНЬ each sheet addresses — the same
+		// grouping the panel shows and the same key dto.patternScopesOfCard reads this row back
+		// under. Bucketing by what the sheet itself names would strand every sheet of a card the
+		// moment its BOM line got a назначение, and the audit would refuse «в этом скоупе нет
+		// листов» about files sitting right there.
+		sheetsByScope, err := scopeSheetRefs(ctx, db, in.TechCardId, lines)
+		if err != nil {
+			return err
 		}
+		mine := sheetsByScope[scopeKey]
 		if len(mine) == 0 {
 			return entity.NewFieldViolation("scope_key", "scope_has_no_sheets", scopeKey,
 				"this fabric scope carries no pattern sheets on the server — upload them, or check that the scope key matches the card's назначение / line_key")

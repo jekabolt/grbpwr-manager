@@ -1424,20 +1424,11 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		if rollGoods != nil {
 			return rollGoods, nil
 		}
-		rows, err := storeutil.QueryListNamed[struct {
-			LineKey string `db:"line_key"`
-			Purpose string `db:"purpose"`
-		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
-			FROM tech_card_bom_item
-			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
-			rollGoodsSectionArgs(map[string]any{"id": id}))
+		lines, err := loadRollGoodsLines(ctx, db, id)
 		if err != nil {
-			return nil, fmt.Errorf("load roll-goods bom lines: %w", err)
+			return nil, err
 		}
-		rollGoods = make([]entity.RollGoodsLine, 0, len(rows))
-		for _, r := range rows {
-			rollGoods = append(rollGoods, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
-		}
+		rollGoods = lines
 		return rollGoods, nil
 	}
 	seenPayload := make(map[string]struct{}, len(patterns))
