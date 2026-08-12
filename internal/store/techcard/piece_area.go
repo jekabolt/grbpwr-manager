@@ -357,27 +357,80 @@ func ungradedPieceSizedDiff(sizesByPiece map[string]map[int]bool, ungradedNames 
 // задним числом ради того, чтобы галочка встала, значит потерять работу человека с лекалами и молча
 // оставить норму без входных данных. Порядок — обратный: сначала перемерить, потом помечать.
 
+// lockTechCardRow takes the card row's write lock without changing it. Единственная цель — чтобы
+// путь, который правит ДЕТЕЙ карточки, и путь, который правит площади, встали в очередь на одной
+// строке; см. довод в SaveTechCardPieceAreas.
+func lockTechCardRow(ctx context.Context, db dependency.DB, techCardID int) error {
+	if _, err := storeutil.QueryNamedOne[struct {
+		Id int `db:"id"`
+	}](ctx, db, `SELECT id FROM tech_card WHERE id = :id FOR UPDATE`,
+		map[string]any{"id": techCardID}); err != nil {
+		return fmt.Errorf("lock tech card %d: %w", techCardID, err)
+	}
+	return nil
+}
+
+// sizedAreaRow is one stored area that names a size, with the bucket it was written into.
+type sizedAreaRow struct {
+	PieceLineKey string `db:"piece_line_key"`
+	ScopeKey     string `db:"scope_key"`
+}
+
 // sizedAreaPieceKeys returns the line keys (uppercase, как они лежат в таблице) деталей карточки, у
-// которых есть ХОТЯ БЫ одна площадь, привязанная к размеру. Скоуп не различается намеренно:
-// пер-размерный замер по любой ткани противоречит пометке одинаково.
+// которых есть ХОТЯ БЫ одна площадь, привязанная к размеру, — но ТОЛЬКО в живых скоупах ткани.
 func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (map[string]bool, error) {
-	rows, err := storeutil.QueryListNamed[struct {
-		PieceLineKey string `db:"piece_line_key"`
-	}](ctx, db, `
-		SELECT DISTINCT piece_line_key
+	rows, err := storeutil.QueryListNamed[sizedAreaRow](ctx, db, `
+		SELECT DISTINCT piece_line_key, scope_key
 		FROM tech_card_piece_area
 		WHERE tech_card_id = :id AND size_id IS NOT NULL`,
 		map[string]any{"id": techCardID})
 	if err != nil {
 		return nil, fmt.Errorf("load sized piece areas of tech card %d: %w", techCardID, err)
 	}
+	lines, err := loadRollGoodsLines(ctx, db, techCardID)
+	if err != nil {
+		return nil, err
+	}
+	return livePieceKeysOfSizedAreas(rows, lines), nil
+}
+
+// livePieceKeysOfSizedAreas keeps only the sized areas whose scope STILL resolves to cloth on the
+// card, and returns the pieces they belong to.
+//
+// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. scope_key — это ВЕДРО ЗАПИСИ
+// (COALESCE(fabric_purpose, bom_line_key)), и оно намеренно не двигается вслед за BOM. Значит
+// назначение, присвоенное или переименованное ПОСЛЕ замера, оставляет пер-размерные строки под
+// ключом, которого на карточке больше нет. Предписанное лекарство «перемерьте» на них не действует:
+// полная замена работает по одному ЖИВОМУ скоупу (пустой набор отвергается, мёртвый не пройдёт
+// scope_has_no_sheets), то есть деталь стала бы непомечаемой навсегда, без единого способа это
+// расшить.
+//
+// А главное — такие строки ничего и не ломают: entity.AreaEstimateNorm спрашивает площади по ключу
+// ЖИВОЙ строки (dto.slotAreaEstimate считает его как FabricScopeKey(строка.purpose, строка.line_key)),
+// поэтому мёртвое ведро не питает ни одну норму. Противоречие, ради которого стоит гард, физически
+// не может из него возникнуть.
+//
+// Живой набор считается ровно тем же выражением, что и у читателя нормы, — иначе гард охранял бы
+// один ключ, а норма читала другой, и мы бы вернулись к «ведро против личности» (0267), только на
+// третьей таблице. Сравнение дословное: назначения — закрытый нижний регистр, ключи строк —
+// заглавные ULID'ы на входе, обе стороны считает одна функция.
+func livePieceKeysOfSizedAreas(rows []sizedAreaRow, lines []entity.RollGoodsLine) map[string]bool {
+	live := make(map[string]bool, len(lines))
+	for _, l := range lines {
+		if k := entity.FabricScopeKey(l.Purpose, l.LineKey); k != "" {
+			live[k] = true
+		}
+	}
 	out := make(map[string]bool, len(rows))
 	for _, r := range rows {
+		if !live[strings.TrimSpace(r.ScopeKey)] {
+			continue
+		}
 		if k := strings.ToUpper(strings.TrimSpace(r.PieceLineKey)); k != "" {
 			out[k] = true
 		}
 	}
-	return out, nil
+	return out
 }
 
 // ungradedFlipKeys returns the pieces of THIS payload that turn the UNI flag ON, as uppercase line
@@ -520,6 +573,36 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		// ЗАМОК НА СТРОКЕ КАРТОЧКИ — ПЕРВЫМ ДЕЙСТВИЕМ, ДО ЛЮБОГО ЧТЕНИЯ.
+		//
+		// Замер и сохранение карточки правят РАЗНЫЕ таблицы, но проверяют друг друга: здесь читается
+		// пометка UNI детали, а там (upsertTechCardPieces) — эти самые площади. Два обычных
+		// snapshot-чтения такую пару не сериализуют: замер, прошедший проверку при флаге false и ещё
+		// не закоммиченный, невидим для сохранения карточки, которое в этот момент ставит UNI, — и
+		// коммитятся ОБЕ транзакции. Противоречие ложится в базу молча, а дальше его не поймает уже
+		// ничто: для всех следующих сохранений флаг «уже true», то есть не переход.
+		//
+		// Строка tech_card — единственное, что у обоих путей общее, поэтому она и берётся замком.
+		// Сохранение карточки держит на ней X-замок со своего `UPDATE tech_card SET lock_version =
+		// lock_version + 1 … WHERE lock_version = :expected`, и он стоит ДО записи детей. Отсюда обе
+		// возможные очереди:
+		//   * карточка успела первой — этот SELECT ждёт её коммита, снимок открывается уже после
+		//     него, пометка видна, и замер отвергает сам себя (ungraded_piece_measured_by_size);
+		//   * замер успел первым — его бамп версии в конце сдвигает lock_version, оптимистичная
+		//     проверка карточки не находит своей версии и отдаёт конфликт, а не тихую запись.
+		// Повтор того же замера уходит в no-op и версию не двигает — но он и не добавляет ни одной
+		// строки, так что противоречить новой пометке нечему.
+		//
+		// FOR UPDATE, А НЕ РАННИЙ БАМП ВЕРСИИ: бамп на входе 409-ил бы чужую открытую форму на каждом
+		// «пересчитать», даже когда замер не изменился, — ровно то поведение, которое ниже
+		// сознательно оставлено no-op'ом. Замок даёт сериализацию, ничего не меняя в строке.
+		//
+		// СТОИТ ДАЖЕ РАНЬШЕ ПРОВЕРКИ РЕЛИЗА, потому что в REPEATABLE READ снимок транзакции
+		// открывается ПЕРВЫМ обычным чтением: любое чтение до замка зафиксировало бы состояние «до»,
+		// и проверка заморозки судила бы по нему же.
+		if err := lockTechCardRow(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
 		// РЕЛИЗ ЗАМОРАЖИВАЕТ СОДЕРЖИМОЕ, А ПЛОЩАДИ — СОДЕРЖИМОЕ. С тех пор как они уезжают в
 		// слепок релиза (dto.ConvertEntityTechCardToPb), запись поверх released-карточки развела бы
 		// живую карточку со слепком, по которому уже режут, и сделала бы состав слепка зависящим от

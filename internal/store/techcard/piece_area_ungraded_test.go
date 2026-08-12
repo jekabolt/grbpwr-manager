@@ -210,3 +210,75 @@ func TestUngradedFlipOnSizedAreas(t *testing.T) {
 		}
 	})
 }
+
+// Мёртвое ведро НЕ ДОЛЖНО блокировать пометку. scope_key — ведро записи, оно намеренно не двигается
+// вслед за BOM, поэтому назначение, присвоенное или переименованное после замера, оставляет
+// пер-размерные строки под ключом, которого на карточке уже нет. Отказывать по ним — значит сделать
+// деталь непомечаемой навсегда: перемерить мёртвый скоуп нечем, а норму он всё равно не питает.
+func TestLivePieceKeysOfSizedAreas(t *testing.T) {
+	const (
+		pocket = "01POCKET0000000000000001"
+		front  = "01FRONT00000000000000001"
+		lineA  = "01LINEA00000000000000001"
+		lineB  = "01LINEB00000000000000001"
+	)
+
+	cases := map[string]struct {
+		rows  []sizedAreaRow
+		lines []entity.RollGoodsLine
+		want  []string
+	}{
+		"purpose-scoped rows count while the purpose is on a line": {
+			rows:  []sizedAreaRow{{PieceLineKey: pocket, ScopeKey: "main"}},
+			lines: []entity.RollGoodsLine{{LineKey: lineA, Purpose: "main"}},
+			want:  []string{pocket},
+		},
+		"line-scoped rows count while the line is unsorted": {
+			rows:  []sizedAreaRow{{PieceLineKey: pocket, ScopeKey: lineA}},
+			lines: []entity.RollGoodsLine{{LineKey: lineA}},
+			want:  []string{pocket},
+		},
+		// Ровно тот случай из ревью: строку L замерили ДО сортировки, потом ей дали назначение.
+		// Ведро осталось L, живой ключ стал «main», норма читает «main» — старые строки не питают
+		// ничего и заменить их нечем.
+		"a line-scoped row is dead once its line got a purpose": {
+			rows:  []sizedAreaRow{{PieceLineKey: pocket, ScopeKey: lineA}},
+			lines: []entity.RollGoodsLine{{LineKey: lineA, Purpose: "main"}},
+		},
+		"a purpose nobody carries any more is dead": {
+			rows:  []sizedAreaRow{{PieceLineKey: pocket, ScopeKey: "lining"}},
+			lines: []entity.RollGoodsLine{{LineKey: lineA, Purpose: "main"}},
+		},
+		"a row of a deleted line is dead": {
+			rows:  []sizedAreaRow{{PieceLineKey: pocket, ScopeKey: lineB}},
+			lines: []entity.RollGoodsLine{{LineKey: lineA}},
+		},
+		// Живое и мёртвое рядом: гард обязан говорить ровно о том, что человек может перемерить.
+		"live and dead rows in one card are separated": {
+			rows: []sizedAreaRow{
+				{PieceLineKey: pocket, ScopeKey: lineB},
+				{PieceLineKey: front, ScopeKey: "main"},
+			},
+			lines: []entity.RollGoodsLine{{LineKey: lineA, Purpose: "main"}},
+			want:  []string{front},
+		},
+		"a card with no cloth lines has no live scopes at all": {
+			rows:  []sizedAreaRow{{PieceLineKey: pocket, ScopeKey: "main"}},
+			lines: nil,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := livePieceKeysOfSizedAreas(tc.rows, tc.lines)
+			if len(got) != len(tc.want) {
+				t.Fatalf("live sized pieces = %v, want %v", got, tc.want)
+			}
+			for _, k := range tc.want {
+				if !got[strings.ToUpper(k)] {
+					t.Fatalf("live sized pieces = %v, must contain %q", got, k)
+				}
+			}
+		})
+	}
+}
