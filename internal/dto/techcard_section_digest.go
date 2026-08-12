@@ -429,7 +429,27 @@ func costingProjection(tc *entity.TechCardInsert) any {
 	for _, id := range rangeIds {
 		rangeVals = append(rangeVals, id)
 	}
-	return []any{costing, qty, rangeVals}
+	out := []any{costing, qty, rangeVals}
+	// A TAIL, NOT A SLOT — the same device constructionProjection uses, and for the same reason:
+	// json.Marshal encodes []any POSITIONALLY, so a fourth element written unconditionally (even as
+	// "") would move the fingerprint of EVERY card in the database and declare every approved
+	// COSTING sign-off stale at the moment of deploy, before anybody had touched anything.
+	//
+	// WHAT THIS COVERS AND WHY IT BELONGS IN THE SIGNATURE. Since Ф1 the standard cost is derived
+	// from two things the card's own write does not carry: the MEASURED AREAS of its cut pieces
+	// (0297) and the recipe's statement of WHICH FABRIC each piece is cut from. Both change the
+	// number under the signature. Leaving them out would let a re-parse of the patterns, or a piece
+	// moved from the main fabric to the lining, reprice an approved card while its COSTING sign-off
+	// stayed green — signing one document and shipping another.
+	//
+	// Empty (no areas AND no piece-bound recipe rows) appends nothing, so the only cards that go
+	// stale are the ones where somebody actually measured or assigned. Today that set is empty:
+	// nothing writes areas yet, and the piece-assignment half moves only cards whose COSTING
+	// approval was already describing a figure it could not see.
+	if tc.DerivedCostInputsDigest != "" {
+		out = append(out, tc.DerivedCostInputsDigest)
+	}
+	return out
 }
 
 // dec renders a nullable decimal as a canonical string, so 1.50 and 1.5 — which the DB may return

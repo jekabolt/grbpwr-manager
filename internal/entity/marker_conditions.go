@@ -389,10 +389,19 @@ func MarkerNormScope(m TechCardMarkerSummary) NormScope {
 
 // NormPeersOf collects the markers that carry the flag, so a caller holding a card's summaries never
 // has to ask the database a second time.
+//
+// ЧЕРНОВИКИ ОТСЕИВАЮТСЯ ЗДЕСЬ, and this is the one Go choke point where that costs a single line:
+// every reader that asks «какая раскладка нормирует эту ткань» — the card read, the single-marker
+// read, the readiness gate's normProvenance — goes through SelectNorm, and SelectNorm sees only what
+// this function hands it. chk_tcm_draft_not_norm (0299) already makes the combination unstorable, so
+// the filter can never fire today; it is written out for the same reason markerNormPeersQuery writes
+// out `run_id IS NULL` beside chk_tcm_run_not_norm — this file's answer about норма must not depend
+// on a constraint declared in another one, and a draft that reached here would be picked as the
+// effective norm by updated_at alone.
 func NormPeersOf(markers []TechCardMarkerSummary) []NormPeer {
 	var out []NormPeer
 	for _, m := range markers {
-		if !m.IsNorm {
+		if !m.IsNorm || m.IsDraft {
 			continue
 		}
 		out = append(out, NormPeer{

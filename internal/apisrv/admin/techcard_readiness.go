@@ -67,7 +67,9 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 	// An empty checklist (prod, or an unrecognised stage) reads as ready, per the field's contract
 	// "every next_stage_requirements entry is met"; a client gates on next_stage != UNKNOWN.
 	resp.NextStageReady = allReadinessMet(resp.NextStageRequirements)
-	resp.ReleaseRequirements = releaseRequirements(facts, staleSignoffs)
+	// Слоты, из-за которых цена карточки СЕГОДНЯ не считается (Ф1). Отдельный вход, потому что
+	// facts — это одна SQL-строка, а этот ответ выводится из геометрии, спецификации и рецептов.
+	resp.ReleaseRequirements = releaseRequirements(facts, staleSignoffs, dto.TechCardCostBlockers(card, s.costingFx(ctx)))
 	resp.ReleaseReady = allReadinessMet(resp.ReleaseRequirements)
 	return resp, nil
 }
@@ -126,13 +128,26 @@ func nextStageRequirements(target entity.TechCardStage, f entity.TechCardReadine
 // releaseRequirements is what a card needs before approval_state may go RELEASED — the spec the
 // factory is handed. Independent of the stage checklist: a sampling-complete style can still be
 // un-releasable (no costing currency, a colourway whose lab dip nobody signed).
-func releaseRequirements(f entity.TechCardReadinessFacts, staleSignoffs []entity.TechCardSignoffSection) []*pb_admin.TechCardReadinessRequirement {
+func releaseRequirements(f entity.TechCardReadinessFacts, staleSignoffs []entity.TechCardSignoffSection,
+	costBlockers []string) []*pb_admin.TechCardReadinessRequirement {
 	return []*pb_admin.TechCardReadinessRequirement{
 		readinessReq("style_number", "the style has a style number", f.HasStyleNumber, "no style number set"),
 		readinessReq("size_range", "the size range is not empty", f.Sizes > 0, "no sizes in the range"),
 		readinessReq("bom_fabric", "the BOM has at least one fabric line", f.BomFabricLines > 0, "no fabric line in the BOM"),
 		readinessReq("costing", "the costing is filled in with a currency",
 			f.HasCosting && f.HasCostingCurrency, costingDetail(f)),
+		// «Костинг ЗАПОЛНЕН» и «цена СЧИТАЕТСЯ» — разные утверждения, и до Ф1 разойтись им было
+		// негде: расчёт брал только вписанные нормы, а вписанная норма считается всегда. С выводом
+		// нормы из геометрии появился слот, который в изделие входит, а посчитаться не может
+		// (устарели выкройки, спорят пины, нет ширины) — и цена карточки становится непосчитанной,
+		// НЕ ТРОГАЯ при этом product.cost_price: та остаётся прежней, её читают бухгалтерия и COGS
+		// проданного, и обнулять её задним числом хуже, чем оставить. Без этой строки карточка
+		// выпускалась бы со стухшей каталожной ценой, а чек-лист сообщал бы, что всё в порядке.
+		//
+		// Причина называется ПОИМЁННО, потому что общее «нормы нет» отправляет вписывать число
+		// руками — то есть ровно туда, откуда эта фаза уводит.
+		readinessReq("costing_computes", "the cost still computes for every measured fabric",
+			len(costBlockers) == 0, "cost no longer computes: "+strings.Join(costBlockers, "; ")),
 		readinessReq("colorway_linked", "at least one live colourway", f.LiveColorways > 0, "no live colourway"),
 		// Vacuously met with no colourways: the colorway_linked row above already carries that
 		// failure, and a checklist that reds the same fact twice reads as two separate problems.

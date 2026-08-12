@@ -53,7 +53,7 @@ const markerSummaryColumns = `
 	m.id, m.tech_card_id, m.size_id, m.name, m.source, m.bom_item_id, m.colorway_id, m.run_id,
 	b.line_key AS bom_line_key, b.name AS bom_item_name, b.unit AS bom_item_unit,
 	m.fabric_width_cm, m.gap_cm, m.edge_margin_cm, m.selvedge_cm, m.allow_cross_grain, m.sets,
-	m.total_units, m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count,
+	m.total_units, m.used_length_cm, m.efficiency_pct, m.placed_count, m.total_count, m.is_draft,
 	m.seam_allowance_mm, m.contour_allowance_mm, m.contour_layer, m.grain_layer, m.allow_flip,
 	m.is_norm, m.piece_set_fp,
 	m.created_by, m.updated_by, m.created_at, m.updated_at`
@@ -240,14 +240,15 @@ func cardPieceSetFingerprint(ctx context.Context, db dependency.DB, techCardID i
 // markerNormPeersQuery reads every раскладка of a card that carries the norm flag. Narrow by
 // idx_tcm_card_norm (tech_card_id, is_norm), and held as a var for the ':' reason above.
 //
-// `run_id IS NULL` AGREES WITH chk_tcm_run_not_norm (0282) RATHER THAN RELYING ON IT. The CHECK
-// makes a раскройный marker unable to carry the flag at all, so today this predicate can only ever
-// match card markers — which is precisely why writing it out costs nothing and buys the property
-// that this file's answer about норма does not depend on a constraint declared in another file.
+// `run_id IS NULL` AGREES WITH chk_tcm_run_not_norm (0282) RATHER THAN RELYING ON IT, and
+// `is_draft = FALSE` says the same thing about chk_tcm_draft_not_norm (0299). Both CHECKs make the
+// combination unstorable, so today neither clause can change the answer — which is precisely why
+// writing them out costs nothing and buys the property that this file's answer about норма does not
+// depend on constraints declared in another file.
 var markerNormPeersQuery = `
 	SELECT id, name, bom_item_id, updated_at
 	FROM tech_card_marker
-	WHERE tech_card_id = :card AND is_norm = TRUE AND run_id IS NULL`
+	WHERE tech_card_id = :card AND is_norm = TRUE AND run_id IS NULL AND is_draft = FALSE`
 
 // cardNormPeers loads the card's designated norms so a single-marker read can tell whether its own
 // cloth carries more than one. The winner is picked in Go by entity.SelectNorm, NOT by an ORDER BY
@@ -339,12 +340,38 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 	if id < 0 {
 		return 0, entity.NewFieldViolation("id", "must_not_be_negative", "", "leave it 0 to save a new marker")
 	}
-	// An incomplete OR overfull layout is refused before the transaction even opens: only
-	// placed == total is a consumption norm (placed > total would store a "complete" marker
-	// against a wrong denominator).
-	if ins.PlacedCount != ins.TotalCount {
+	// ПЕРЕПОЛНЕННАЯ раскладка отказывает ВСЕГДА, черновик или нет, and it is refused first because it
+	// is not an incomplete result at all — it is a WRONG DENOMINATOR. placed > total says the row
+	// counted more pieces than it has, and there is no state, draft included, in which a count that
+	// contradicts itself describes cloth.
+	if ins.PlacedCount > ins.TotalCount {
+		return 0, fmt.Errorf("%w: %d of %d pieces placed — the layout counts more placements than pieces",
+			entity.ErrMarkerIncomplete, ins.PlacedCount, ins.TotalCount)
+	}
+	// НЕПОЛНАЯ — только с явного согласия клиента (0299). Отказ остаётся ровно тем же для всех, кто
+	// согласия не выразил, включая устаревший бандл админки: он не знает поля, шлёт false и получает
+	// прежнее поведение. Согласие — это НЕ утверждение «строка черновая»: черновиком её делает сама
+	// геометрия (см. `draft` ниже), а здесь решается только, принять её или отвергнуть.
+	if ins.PlacedCount < ins.TotalCount && !ins.IsDraft {
 		return 0, fmt.Errorf("%w: %d of %d pieces placed", entity.ErrMarkerIncomplete, ins.PlacedCount, ins.TotalCount)
 	}
+	// ЧЕРНОВИК ВЫВОДИТСЯ ИЗ СЧЁТЧИКОВ, А НЕ КОПИРУЕТСЯ ИЗ ПЭЙЛОАДА — тот же приём, что у
+	// layout_schema_version и piece_set_fp несколькими экранами ниже. Из этого следует ровно одно
+	// полезное свойство и ровно один названный долг; путать их нельзя.
+	//
+	// ЧТО ЭТО ДАЁТ. Пэйлоад с is_draft = true и полной раскладкой сохраняется ОБЫЧНОЙ, а пересчёт,
+	// уложивший все детали, приходит с placed == total и снимает признак В ТОЙ ЖЕ ЗАПИСИ — без
+	// отдельного «подтвердить», которое кто-нибудь однажды забудет нажать. Обратный переход (была
+	// полной, пересчитали хуже) законен, но не молча: три гварда ниже — норма, настилы и штамп
+	// рецепта — отказывают ровно там, где он двигал бы деньги.
+	//
+	// ЧЕГО ЭТО НЕ ДАЁТ, И ЭТО НАДО ЧИТАТЬ БУКВАЛЬНО. Из двух чисел сервер сегодня свидетельствует
+	// ОДНО: dto сверяет placed_count с числом размещений в блобе, который сервер же и хранит.
+	// total_count остаётся УТВЕРЖДЕНИЕМ КЛИЕНТА — кратность деталей живёт в карточке, а не в одном
+	// числе, — поэтому заниженный знаменатель по-прежнему выдаёт неполную раскладку за полную, ровно
+	// как до 0299. Это долг, унаследованный вместе с отказом `placed != total`, а не свойство,
+	// которое фаза обещает; см. ConvertPbTechCardMarkerInsertToEntity, где он назван подробно.
+	draft := ins.PlacedCount < ins.TotalCount
 	var savedID int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
@@ -442,6 +469,89 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 		runID, err := resolveMarkerRunOwner(ctx, db, techCardID, id, stored.RunId, ins.ProductionRunId)
 		if err != nil {
 			return err
+		}
+		// ПОНИЖЕНИЕ ДО ЧЕРНОВИКА ОТКАЗЫВАЕТ ТАМ, ГДЕ СТРОКА УЖЕ ДВИГАЕТ ДЕНЬГИ (0299). Создание
+		// черновика свободно — он ни на что не сослался. Правка СУЩЕСТВУЮЩЕЙ полной раскладки в
+		// неполную — не всегда: на неё уже могли сослаться, и тогда пересчёт с меньшим бюджетом молча
+		// укоротил бы чужое число. Оба гварда стоят В ЭТОЙ транзакции, а не рядом с ней: назначить
+		// норму и встать в секцию настила можно параллельно, и проверка снаружи была бы TOCTOU.
+		if draft && id > 0 {
+			// НОРМА. chk_tcm_draft_not_norm (0299) отказал бы и сам, но голым 3819 — сообщением, которое
+			// не называет ни раскладку, ни выход, и которое techCardMarkerError честно не умеет
+			// классифицировать, так что оператор увидел бы Internal на запрос, просто просящий
+			// невозможного. Тот же довод и то же разделение труда, что у run_marker_cannot_be_norm.
+			if stored.IsNorm {
+				return entity.NewFieldViolation("placed_count", "norm_cannot_become_draft",
+					fmt.Sprintf("%d из %d деталей", ins.PlacedCount, ins.TotalCount),
+					fmt.Sprintf("%s Эта раскладка НАЗНАЧЕНА НОРМОЙ, и её расход уже применяют в рецепт — "+
+						"снимите с неё норму или сохраните пересчёт отдельной раскладкой.",
+						entity.MarkerDraftNormRefusal(ins.Name, ins.PlacedCount, ins.TotalCount)))
+			}
+			// НАСТИЛЫ. Секция настила берёт с раскладки used_length_cm × слои — это метраж
+			// материального плана (dto.LayPlannedGeometryOf). Схема здесь помочь не может:
+			// fk_prlays_marker — это CASCADE (0281), ссылку она не запрещает, а состояние маркера её не
+			// интересует. Запрос тот же, что у гварда удаления, чтобы «занята настилом» имело в файле
+			// одно определение.
+			lays, err := storeutil.QueryListNamed[struct {
+				LayId        int    `db:"lay_id"`
+				LayKey       string `db:"lay_key"`
+				Name         string `db:"name"`
+				DisplayOrder int    `db:"display_order"`
+			}](ctx, db, markerLaySectionsQuery, map[string]any{"id": id})
+			if err != nil {
+				return fmt.Errorf("resolve the настилы of marker %d: %w", id, err)
+			}
+			if len(lays) > 0 {
+				named := make([]string, 0, 3)
+				for _, l := range lays[:min(len(lays), 3)] {
+					named = append(named, fmt.Sprintf("«%s»", markerLayLabel(l.Name, l.LayKey)))
+				}
+				return entity.NewFieldViolation("placed_count", "lay_marker_cannot_become_draft",
+					fmt.Sprintf("%d из %d деталей", ins.PlacedCount, ins.TotalCount),
+					fmt.Sprintf("%s Эта раскладка стоит в настиле %s, и его метраж считается по её длине — "+
+						"уберите её из секций настила или сохраните пересчёт отдельной раскладкой.",
+						entity.MarkerDraftNormRefusal(ins.Name, ins.PlacedCount, ins.TotalCount),
+						strings.Join(named, ", ")))
+			}
+			// ШТАМП РЕЦЕПТА — ТРЕТЬЯ ССЫЛКА, И ЕЁ НЕ ЛОВИТ НИ ОДНА ИЗ ДВУХ ПРЕДЫДУЩИХ.
+			// tech_card_colorway_usage.norm_marker_id (0291) говорит «расход в этой строке взят вот с
+			// той раскладки», и стоять он может на раскладке, у которой is_norm = FALSE: рецепт
+			// применяют один раз и штамп остаётся, даже если норму потом сняли или переназначили.
+			// Штампы, ПЕРЕНЕСЁННЫЕ при пересохранении рецепта, к тому же намеренно не валидируются
+			// (colorway_recipe.go) — так что «раскладка со штампом» и «раскладка-норма» пересекаются, но
+			// не совпадают. Без этой проверки полную раскладку со штампом можно пересохранить
+			// черновиком, и рецепт продолжил бы называть источником своей нормы строку, которая расхода
+			// больше не называет вообще.
+			//
+			// Джойн только по КАРТОЧНЫМ таблицам (product, tech_card_bom_item) — в `material` эта
+			// транзакция не ходит намеренно: она SERIALIZABLE, InnoDB поднимает обычный SELECT до FOR
+			// SHARE, и правка каталога начала бы блокировать сохранение чужой раскладки (тот же довод,
+			// что у fabricDirectionLinesQuery).
+			stamped, err := storeutil.QueryListNamed[struct {
+				ColorwayId   int    `db:"colorway_id"`
+				ColorwayName string `db:"colorway_name"`
+				LineLabel    string `db:"line_label"`
+			}](ctx, db, markerRecipeStampsQuery, map[string]any{"id": id})
+			if err != nil {
+				return fmt.Errorf("resolve the recipe rows stamping marker %d: %w", id, err)
+			}
+			if len(stamped) > 0 {
+				rows := make([]string, 0, 3)
+				for _, s := range stamped[:min(len(stamped), 3)] {
+					rows = append(rows, fmt.Sprintf("%s · %s",
+						markerColorwayLabel(s.ColorwayId, s.ColorwayName), markerStampedLineLabel(s.LineLabel)))
+				}
+				more := ""
+				if len(stamped) > 3 {
+					more = " и в других"
+				}
+				return entity.NewFieldViolation("placed_count", "stamped_marker_cannot_become_draft",
+					fmt.Sprintf("%d из %d деталей", ins.PlacedCount, ins.TotalCount),
+					fmt.Sprintf("%s На неё сослан расход в рецепте: %s%s. Снимите штамп в этих строках "+
+						"(или примените к ним другую норму) — или сохраните пересчёт отдельной раскладкой.",
+						entity.MarkerDraftNormRefusal(ins.Name, ins.PlacedCount, ins.TotalCount),
+						strings.Join(rows, ", "), more))
+			}
 		}
 		// Every size of the СОСТАВ must be in the card's range AT SAVE TIME. Like pattern rows, a
 		// marker may outlive its sizes leaving the range later — it stays a valid measurement — but
@@ -593,6 +703,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			"efficiency_pct": ins.EfficiencyPct,
 			"placed_count":   ins.PlacedCount,
 			"total_count":    ins.TotalCount,
+			// Derived from the pair above, never copied from the payload — see `draft` at the top of
+			// this function. Written by BOTH statements, so the flag moves in both directions: a
+			// пересчёт that finally laid everything clears it in the same UPDATE that stores the new
+			// geometry, and the row stops being a черновик without anyone confirming anything.
+			"is_draft":       draft,
 			"layout":         ins.Layout,
 			"schema_version": generation,
 			"colorway_id":    colorwayID,
@@ -669,7 +784,8 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				    allow_cross_grain = :allow_cross_grain,
 				    sets = :sets, total_units = :total_units,
 				    used_length_cm = :used_length_cm, efficiency_pct = :efficiency_pct,
-				    placed_count = :placed_count, total_count = :total_count, layout = :layout,
+				    placed_count = :placed_count, total_count = :total_count, is_draft = :is_draft,
+				    layout = :layout,
 				    layout_schema_version = :schema_version,
 				    seam_allowance_mm = :seam_allowance_mm,
 				    contour_allowance_mm = :contour_allowance_mm,
@@ -706,12 +822,12 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			INSERT INTO tech_card_marker
 				(tech_card_id, size_id, bom_item_id, colorway_id, run_id, name, source, fabric_width_cm, gap_cm,
 				 edge_margin_cm, selvedge_cm, allow_cross_grain, sets, total_units, used_length_cm,
-				 efficiency_pct, placed_count, total_count, layout, layout_schema_version,
+				 efficiency_pct, placed_count, total_count, is_draft, layout, layout_schema_version,
 				 seam_allowance_mm, contour_allowance_mm, contour_layer, grain_layer, allow_flip,
 				 piece_set_fp, created_by, updated_by)
 			VALUES (:tech_card_id, :size_id, :bom_item_id, :colorway_id, :run_id, :name, :source, :fabric_width_cm, :gap_cm,
 				 :edge_margin_cm, :selvedge_cm, :allow_cross_grain, :sets, :total_units, :used_length_cm,
-				 :efficiency_pct, :placed_count, :total_count, :layout, :schema_version,
+				 :efficiency_pct, :placed_count, :total_count, :is_draft, :layout, :schema_version,
 				 :seam_allowance_mm, :contour_allowance_mm, :contour_layer, :grain_layer, :allow_flip,
 				 :piece_set_fp, :username, :username)`, params)
 		if err != nil {
@@ -1000,9 +1116,13 @@ func replaceMarkerComposition(ctx context.Context, db dependency.DB, markerID in
 // «одна норма на ткань» must not be something a run marker can compete in. chk_tcm_run_not_norm
 // already makes that impossible in the schema — the predicate says the same thing so that the rule
 // is legible where it is enforced, and so that a scope read here can never widen if the CHECK is one
-// day dropped.
+// day dropped. `is_draft = FALSE` (0299) rides for the identical reason, and it stays on BOTH sides
+// of this shared predicate on purpose. A черновик that somehow carried the flag would then keep it
+// through a clear — which is the right trade, because it is invisible to every reader anyway
+// (NormPeersOf and markerNormPeersQuery drop it), while a predicate that read one set and cleared
+// another is the exact drift this constant exists to prevent.
 const markerNormScopePredicate = `
-	tech_card_id = :card AND is_norm = TRUE AND run_id IS NULL
+	tech_card_id = :card AND is_norm = TRUE AND run_id IS NULL AND is_draft = FALSE
 	AND ((bom_item_id IS NULL AND :bom IS NULL) OR bom_item_id = :bom)`
 
 var (
@@ -1012,13 +1132,13 @@ var (
 	markerNormClearScopeQuery = `
 		UPDATE tech_card_marker SET is_norm = FALSE, updated_by = :username
 		WHERE ` + markerNormScopePredicate + ` AND id <> :id`
-	// The designation itself is addressed by id and carries the same `run_id IS NULL` as the LAST
-	// net, behind the explicit refusal in SetMarkerNorm. It is unreachable for a run marker today and
-	// that is the point: the guard produces the sentence an operator can act on, and this clause
-	// guarantees that a future path which forgets the guard writes NOTHING rather than a 3819.
+	// The designation itself is addressed by id and carries `run_id IS NULL AND is_draft = FALSE` as
+	// the LAST net, behind the explicit refusals in SetMarkerNorm. Both are unreachable today and that
+	// is the point: the guards produce the sentence an operator can act on, and these clauses
+	// guarantee that a future path which forgets one writes NOTHING rather than a 3819.
 	markerNormSetQuery = `
 		UPDATE tech_card_marker SET is_norm = :is_norm, updated_by = :username
-		WHERE id = :id AND run_id IS NULL`
+		WHERE id = :id AND run_id IS NULL AND is_draft = FALSE`
 )
 
 // SetMarkerNorm designates one раскладка as the НОРМИРОВОЧНАЯ one for its cloth, or clears it, and
@@ -1061,11 +1181,17 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 		previousNormID = 0
 		db := rep.DB()
 		row, err := storeutil.QueryNamedOne[struct {
-			TechCardId int           `db:"tech_card_id"`
-			BomItemId  sql.NullInt64 `db:"bom_item_id"`
-			RunId      sql.NullInt64 `db:"run_id"`
-			IsNorm     bool          `db:"is_norm"`
-		}](ctx, db, `SELECT tech_card_id, bom_item_id, run_id, is_norm FROM tech_card_marker WHERE id = :id`,
+			TechCardId  int           `db:"tech_card_id"`
+			BomItemId   sql.NullInt64 `db:"bom_item_id"`
+			RunId       sql.NullInt64 `db:"run_id"`
+			IsNorm      bool          `db:"is_norm"`
+			IsDraft     bool          `db:"is_draft"`
+			Name        string        `db:"name"`
+			PlacedCount int           `db:"placed_count"`
+			TotalCount  int           `db:"total_count"`
+		}](ctx, db, `SELECT tech_card_id, bom_item_id, run_id, is_norm, is_draft, name,
+				placed_count, total_count
+			FROM tech_card_marker WHERE id = :id`,
 			map[string]any{"id": id})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1090,6 +1216,18 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 				fmt.Sprintf("раскладка %d принадлежит прогону %d", id, row.RunId.Int64),
 				"нормой может быть только карточная раскладка: раскройная умирает вместе со своим прогоном, "+
 					"а норма — актив карточки; назначьте нормой карточную раскладку этой ткани")
+		}
+		// ЧЕРНОВИК НОРМОЙ НЕ БЫВАЕТ (0299, chk_tcm_draft_not_norm) — тот же приём и тот же довод, что
+		// строкой выше: без этого гварда назначение доехало бы до MySQL и вернулось ERROR 3819, а
+		// снятие тихо не сделало бы ничего (markerNormSetQuery несёт `is_draft = FALSE`).
+		//
+		// ОБЕ СТОРОНЫ ОТКАЗЫВАЮТ, включая снятие, по доводу раскройной раскладки: «эта раскладка
+		// больше не норма» подразумевает, что ею можно было быть, а это ровно то заблуждение, ради
+		// которого весь инвариант и существует.
+		if row.IsDraft {
+			return entity.NewFieldViolation("id", "draft_cannot_be_norm",
+				fmt.Sprintf("раскладка %d", id),
+				entity.MarkerDraftNormRefusal(row.Name, row.PlacedCount, row.TotalCount))
 		}
 		// Designating a norm is a decision about the card's CONTENT, so a released card refuses — like
 		// every sibling guard, inside the transaction so a concurrent release cannot slip past it.
@@ -1192,6 +1330,46 @@ var markerLaySectionsQuery = `
 	WHERE s.marker_id = :id
 	ORDER BY l.display_order, l.id
 	LIMIT 4`
+
+// markerRecipeStampsQuery names the recipe rows whose норма is stamped as coming from a раскладка
+// (tech_card_colorway_usage.norm_marker_id, 0291), for the draft-downgrade guard. Held as a var for
+// the ':' reason stated above the composition queries.
+//
+// DISTINCT is deliberately ABSENT and the LIMIT deliberately generous: one colourway may stamp the
+// same раскладка on several slots, and each of those is a separate row the operator has to go and
+// change. Ordered by colourway then display order — the order the recipe screen itself lists them —
+// so two attempts name the rows the same way, and capped at four so the message can admit there are
+// more instead of listing three and leaving the rest to be discovered one save at a time.
+var markerRecipeStampsQuery = `
+	SELECT u.colorway_id AS colorway_id,
+	       COALESCE(NULLIF(p.dev_name, ''), NULLIF(p.color, ''), '') AS colorway_name,
+	       COALESCE(NULLIF(b.name, ''), b.line_key, '') AS line_label
+	FROM tech_card_colorway_usage u
+	LEFT JOIN product p ON p.id = u.colorway_id
+	LEFT JOIN tech_card_bom_item b ON b.id = u.bom_item_id
+	WHERE u.norm_marker_id = :id
+	ORDER BY u.colorway_id, u.display_order
+	LIMIT 4`
+
+// markerColorwayLabel names a colourway in a refusal, falling back to its id when the row carries
+// neither a dev name nor a colour. Same shape and same reason as markerLayLabel below: «снимите
+// штамп в рецепте» sends the operator hunting, «BLACK · основная» sends them to a screen.
+func markerColorwayLabel(id int, name string) string {
+	if name != "" {
+		return name
+	}
+	return fmt.Sprintf("колорвей %d", id)
+}
+
+// markerStampedLineLabel names the recipe's BOM slot. A stamp whose bom_item_id went NULL (the line
+// was deleted — fk is SET NULL) has nothing left to name, and saying so beats printing an empty
+// string that reads as a missing word.
+func markerStampedLineLabel(label string) string {
+	if label != "" {
+		return label
+	}
+	return "строка без слота"
+}
 
 // markerLayLabel names a настил in a refusal: how the цех calls it, falling back to its key when it
 // was never named (production_run_lay.name defaults to the empty string — «безымянный»). Mirrors

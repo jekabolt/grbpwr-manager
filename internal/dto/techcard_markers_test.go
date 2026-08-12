@@ -29,6 +29,18 @@ func validMarkerInsertPb() *pb_common.TechCardMarkerInsert {
 	}
 }
 
+// markerPlacements builds n bare placements so a test layout agrees with the fixture's placed_count.
+// The converter only COUNTS them — placed_count is the one counter the server verifies against the
+// blob it is about to store (0299) — so their contents are irrelevant here; the geometry rules
+// (rot_deg, piece references) belong to MarkerLayoutFactsFromPb and are tested against it.
+func markerPlacements(n int) []*pb_common.TechCardMarkerPlacement {
+	out := make([]*pb_common.TechCardMarkerPlacement, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, &pb_common.TechCardMarkerPlacement{PieceId: 1, Instance: int32(i)})
+	}
+	return out
+}
+
 // The dto parses FORM only — trim/normalise, bounds, enum membership. Everything the database has
 // to witness (size membership, BOM identity, released card, name uniqueness) is the store's.
 func TestConvertPbTechCardMarkerInsertToEntity(t *testing.T) {
@@ -57,6 +69,7 @@ func TestConvertPbTechCardMarkerInsertToEntity(t *testing.T) {
 			Composition: []*pb_common.TechCardMarkerCompositionEntry{
 				{SizeId: 7, Quantity: 2}, {SizeId: 3, Quantity: 1},
 			},
+			Placements: markerPlacements(int(pb.PlacedCount)),
 		}
 		out, err := ConvertPbTechCardMarkerInsertToEntity(pb)
 		require.NoError(t, err)
@@ -127,7 +140,9 @@ func TestConvertPbTechCardMarkerInsertToEntity(t *testing.T) {
 func TestMarkerCompositionShapeRefusals(t *testing.T) {
 	with := func(entries ...*pb_common.TechCardMarkerCompositionEntry) *pb_common.TechCardMarkerInsert {
 		pb := validMarkerInsertPb()
-		pb.Layout = &pb_common.TechCardMarkerLayout{SchemaVersion: 4, Composition: entries}
+		pb.Layout = &pb_common.TechCardMarkerLayout{
+			SchemaVersion: 4, Composition: entries, Placements: markerPlacements(int(pb.PlacedCount)),
+		}
 		return pb
 	}
 	cases := []struct {
@@ -309,6 +324,7 @@ func TestMarkerCompositionQuantityCeiling(t *testing.T) {
 		pb.Layout = &pb_common.TechCardMarkerLayout{
 			SchemaVersion: 4,
 			Composition:   []*pb_common.TechCardMarkerCompositionEntry{{SizeId: 3, Quantity: q}},
+			Placements:    markerPlacements(int(pb.PlacedCount)),
 		}
 		_, err := ConvertPbTechCardMarkerInsertToEntity(pb)
 		return err
@@ -325,6 +341,7 @@ func TestMarkerCompositionQuantityCeiling(t *testing.T) {
 		Composition: []*pb_common.TechCardMarkerCompositionEntry{
 			{SizeId: 3, Quantity: entity.MaxMarkerTotalUnits}, {SizeId: 4, Quantity: 1},
 		},
+		Placements: markerPlacements(int(pb.PlacedCount)),
 	}
 	_, err := ConvertPbTechCardMarkerInsertToEntity(pb)
 	require.ErrorContains(t, err, "garments, max")

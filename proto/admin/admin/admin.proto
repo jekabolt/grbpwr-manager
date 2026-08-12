@@ -1749,6 +1749,43 @@ service AdminService {
     };
   }
 
+  // SaveTechCardPieceAreas stores the MEASURED AREAS of one fabric scope's cut pieces (Ф0) — the
+  // geometry the server needs to DERIVE a fabric consumption norm instead of demanding that somebody
+  // type one.
+  //
+  // THE PROBLEM IT SOLVES. A card can be complete — priced BOM, parsed patterns, every piece
+  // assigned to a fabric in the colourway recipe — and still cost zero, because money is computed
+  // only from a recipe row carrying an explicit norm, and a piece-bound row deliberately carries
+  // none (T8: «расход — свойство изделия»). The missing link was never data the operator failed to
+  // enter; it was the area, which existed only in the browser's memory because DXF is parsed there
+  // and only there.
+  //
+  // SAME DIVISION OF LABOUR AS THE SIZE INDEX ABOVE: the client measures, the server stores, and the
+  // half that could be forged in the dangerous direction is computed server-side. The client says
+  // WHICH SHEETS it measured; the server fingerprints that set from its own tech_card_size_pattern
+  // rows and refuses a mismatch in both directions. Re-uploading any sheet then makes the areas read
+  // as STALE by itself.
+  //
+  // ONE SCOPE PER CALL, FULL REPLACE OF THAT SCOPE. A card's fabrics are parsed independently and a
+  // pack download can succeed for one sheet and fail for another, so a card-wide replace would let a
+  // failed lining download silently delete a good main-fabric measurement.
+  //
+  // A PARTIAL SET IS REFUSED, NOT STORED. A missing piece lowers the garment's area, a lower area
+  // lowers the norm, and an understated norm is discovered in the warehouse rather than on screen.
+  //
+  // AREAS ARE PER ONE INSTANCE OF THE CONTOUR — pieces_per_garment is applied by the reader. It
+  // lives on the piece, changes with an ordinary card edit, and baking it in here would make a
+  // stored number quietly wrong after every such edit.
+  //
+  // wr(tech_cards): the same right as the size index — this writes a derived fact about the card's
+  // patterns, from the patterns tab, and it feeds costing and the release gate.
+  rpc SaveTechCardPieceAreas(SaveTechCardPieceAreasRequest) returns (SaveTechCardPieceAreasResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/piece-areas"
+      body: "*"
+    };
+  }
+
   // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
   // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
   // tech_card_bom_item since 0073 and fed nothing but the MATERIALS digest, so it is unset on almost
@@ -7478,6 +7515,29 @@ message PutTechCardPatternSizeIndexRequest {
 message PutTechCardPatternSizeIndexResponse {
   string sheet_fingerprint = 1; // what the server recorded, for debugging
   int32 resolved_size_count = 2; // how many tokens landed on sizes of the card's range
+}
+
+message SaveTechCardPieceAreasRequest {
+  int32 tech_card_id = 1;
+  // The fabric scope: назначение (0265) when the card has been sorted, else the BOM line's line_key —
+  // the same key entity.FabricScopeKey computes.
+  string scope_key = 2;
+  // line_keys of the sheets the client actually measured. Checked against the server's own current
+  // membership of the scope; a mismatch in either direction is refused.
+  repeated string sheet_line_keys = 3;
+  // The WHOLE measured set of this scope. Empty is refused: a parse that found nothing is a failed
+  // read, and storing it would turn it into a confident zero area — a free garment.
+  repeated common.TechCardPieceArea areas = 4;
+  // Conditions the areas were measured under. They are not decoration: the seam layer must be
+  // inflated by the allowance and the cutting layer must not, and getting it wrong shifts the norm
+  // by the allowance around every piece's whole perimeter.
+  string contour_layer = 5;
+  google.type.Decimal seam_allowance_mm = 6;
+}
+
+message SaveTechCardPieceAreasResponse {
+  string sheet_fingerprint = 1; // what the server recorded
+  int32 stored = 2; // rows written for this scope
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

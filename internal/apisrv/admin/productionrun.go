@@ -70,8 +70,8 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 	// as booked that never was (bypassing ReceiveProductionRun) and — since received/closed runs are
 	// immutable for update AND delete — leave a permanently stuck row (g25-01); cancelled makes no
 	// sense at birth either.
-	if ins.Status != entity.ProductionRunPlanned && ins.Status != entity.ProductionRunInProgress {
-		return nil, status.Error(codes.InvalidArgument, "a production run is created as planned or in_progress; received/closed/cancelled are reached through their flows")
+	if ins.Status != entity.ProductionRunDraft && ins.Status != entity.ProductionRunPlanned && ins.Status != entity.ProductionRunInProgress {
+		return nil, status.Error(codes.InvalidArgument, "a production run is created as draft, planned or in_progress; received/closed/cancelled are reached through their flows")
 	}
 	ins.Actor = authsrv.GetAdminUsername(ctx)
 	// ГЕЙТ ГОТОВНОСТИ (Ф6), re-computed server-side against THIS payload — never trusted from the
@@ -83,8 +83,16 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 	// It runs BEFORE the planned-cost snapshot on purpose: the snapshot reads the card and, on the
 	// live-card path, computes a costing — work there is no reason to do for a run that is about to
 	// be refused.
-	if err := s.runReadinessCreateGate(ctx, ins); err != nil {
-		return nil, err
+	// ЧЕРНОВИК ГЕЙТ НЕ ПРОХОДИТ (Ф2). Гейт отвечает на вопрос «можно ли это резать», а черновик резать
+	// никто не собирается: он существует, чтобы посчитать деньги по конкретному составу. Заставить
+	// его отвечать на чужой вопрос значило бы запретить прикидку по карточке, у которой ещё нет
+	// раскладок, — то есть ровно по той, ради которой прикидку и делают.
+	//
+	// Гейт применяется на переходе draft → planned, там же, где появляется резерв.
+	if ins.Status != entity.ProductionRunDraft {
+		if err := s.runReadinessCreateGate(ctx, ins); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.snapshotPlannedCost(ctx, ins); err != nil {
 		return nil, err
@@ -108,7 +116,13 @@ func (s *Server) CreateProductionRun(ctx context.Context, req *pb_admin.CreatePr
 	// РЕЗЕРВ ТКАНИ С МОМЕНТА РОЖДЕНИЯ (Ф5б.4, §4.1). Потребность здесь берётся из НОРМЫ — настилов у
 	// новорождённого прогона ещё нет. Без этого вызова два прогона на один артикул оба видели бы
 	// «хватает» вплоть до выдачи, а узнал бы об этом тот, кто пришёл на склад вторым.
-	s.reconcileRunReservations(ctx, id, ins.Actor)
+	//
+	// ЧЕРНОВИК НЕ РЕЗЕРВИРУЕТ. Прикидка «сколько будет стоить сто чёрных и полсотни белых» не имеет
+	// права занимать ткань: соседний прогон увидел бы нехватку из-за чужого черновика, а узнал бы об
+	// этом тот, кто пришёл на склад вторым. Резерв навешивает переход draft → planned.
+	if ins.Status != entity.ProductionRunDraft {
+		s.reconcileRunReservations(ctx, id, ins.Actor)
+	}
 	return &pb_admin.CreateProductionRunResponse{Id: int32(id)}, nil
 }
 
@@ -136,6 +150,16 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 	// is held to it even when that version is 0 (a fresh run's), and only a client that omitted the
 	// field entirely keeps the legacy last-write-wins.
 	lock := entity.LockGuardFromProto(req.ExpectedLockVersion)
+	// ЦЕНУ ЧЕРНОВИКА ЗДЕСЬ НЕ СНИМАЮТ, И СНИМАТЬ НЕ НАДО.
+	//
+	// Снапшот `planned_unit_cost` — это БАЗА, против которой меряется разница плана и факта, и стор
+	// намеренно не пишет её на правке: пересчёт стёр бы то, с чем сравнивают. У черновика такой базы
+	// нет и мерить нечего — ему нужен ответ «сколько стоит ВОТ ЭТОТ состав СЕЙЧАС», а он уже есть:
+	// `planned_unit_cost_today` (Ф6.7) считает ту же формулу по сегодняшним входам на каждом чтении
+	// прогона. Клиент черновика читает именно её.
+	//
+	// Поэтому правка состава черновика не требует ни записи, ни лишнего расчёта: цифра следует за
+	// составом сама, по построению.
 	var updateErr error
 	if costingWrite {
 		updateErr = s.repo.ProductionRuns().UpdateProductionRun(ctx, int(req.Id), ins, lock, s.costingFx(ctx))
@@ -170,6 +194,23 @@ func (s *Server) UpdateProductionRun(ctx context.Context, req *pb_admin.UpdatePr
 		}
 		slog.Default().ErrorContext(ctx, "can't update production run", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't update production run")
+	}
+	// ПЕРЕХОД draft → всё остальное: здесь черновик становится обязательством, и здесь же появляется
+	// резерв ткани. Гейт готовности на этом переходе НЕ применяется намеренно: он живёт на создании
+	// (runReadinessCreateGate) и на старте кроя, а промежуточное «партию решили шить» не должно
+	// отказывать за то, чего от черновика никто и не требовал.
+	//
+	// Резерв пересчитывается ПОСЛЕ успешной записи: до неё состав ещё не тот, который будут шить.
+	//
+	// РЕЗЕРВ ПЕРЕСЧИТЫВАЕТСЯ НА КАЖДОЙ ПРАВКЕ НЕ-ЧЕРНОВИКА, а не только на переходе. До этой правки
+	// он ставился ровно дважды — при рождении прогона и при сохранении настила, — поэтому правка
+	// состава («шьём не 100, а 300») оставляла склад держать прежнее количество: занятое по старому
+	// плану, а не по тому, который будут шить. reconcileRunReservations по построению приводит
+	// открытые притязания к ТЕКУЩЕЙ потребности, так что лишний вызов ничего не портит.
+	//
+	// Черновик не резервирует вовсе — ни на создании, ни здесь.
+	if ins.Status != entity.ProductionRunDraft {
+		s.reconcileRunReservations(ctx, int(req.Id), ins.Actor)
 	}
 	return &pb_admin.UpdateProductionRunResponse{}, nil
 }
@@ -216,7 +257,13 @@ func (s *Server) GetProductionRun(ctx context.Context, req *pb_admin.GetProducti
 	// это цех, самый частый читатель прогона, и платить за карточку с костингом ради числа, которое
 	// сразу удаляется, незачем.
 	if read, _ := s.costingAccess(ctx); read {
-		pb.PlannedUnitCostToday = s.plannedUnitCostToday(ctx, run)
+		var reason string
+		pb.PlannedUnitCostToday, reason = s.plannedUnitCostTodayWithReason(ctx, run)
+		// Причина едет ТОЛЬКО когда цены нет. Непустая строка при непустой цене читалась бы как
+		// предупреждение о числе, которое в порядке.
+		if pb.PlannedUnitCostToday == nil {
+			pb.PlannedCostReason = reason
+		}
 	} else {
 		stripProductionRunCosting(pb)
 	}
@@ -975,7 +1022,7 @@ func (s *Server) plannedUnitCostFor(ctx context.Context, releaseId sql.NullInt64
 	// from material issues) AND about what the batch is actually cutting.
 	// The release path above prices the same cells from the FROZEN snapshot instead (falling back to
 	// the frozen colourway figures, then the release scalar) — never from this live card.
-	unit, currency := dto.ComputeProductionRunPlannedUnitCost(card, s.costingFx(ctx), actualWastagePercent, lines)
+	unit, currency, _ := dto.ComputeProductionRunPlannedUnitCostWithReason(card, s.costingFx(ctx), actualWastagePercent, lines)
 	return unit, currency, nil
 }
 
@@ -1039,6 +1086,29 @@ func (s *Server) snapshotPlannedCost(ctx context.Context, ins *entity.Production
 //
 // Best-effort by construction: a run must open even when its card no longer does. Every failure is
 // logged and answered with nil, never with an error that would take the whole read down with it.
+// plannedUnitCostTodayWithReason is plannedUnitCostToday plus the sentence explaining an empty
+// figure. Separate rather than a changed signature: the plain form is called where the reason has
+// nowhere to go, and returning a string nobody reads invites somebody to start reading it wrongly.
+func (s *Server) plannedUnitCostTodayWithReason(ctx context.Context, run *entity.ProductionRun) (*pb_decimal.Decimal, string) {
+	today := s.plannedUnitCostToday(ctx, run)
+	if today != nil || run == nil {
+		return today, ""
+	}
+	// Причина считается ТОЛЬКО когда цифры нет: на успешном пути это лишний расчёт костинга.
+	card, err := s.repo.TechCards().GetTechCardById(ctx, run.TechCardId)
+	if err != nil || card == nil {
+		return nil, "карточка недоступна — по ней сейчас не посчитать"
+	}
+	_, _, reason := dto.ComputeProductionRunPlannedUnitCostWithReason(
+		card, s.costingFx(ctx), run.ActualWastagePercent, run.Lines)
+	if reason == "" {
+		// Цифры нет, а расчёт причины не назвал: значит она не в миксе, а в валюте — snapshot
+		// пишется только в базовой (setPlannedCostIfBase).
+		reason = "костинг карточки не в базовой валюте — плановая цена партии пишется только в ней"
+	}
+	return nil, reason
+}
+
 func (s *Server) plannedUnitCostToday(ctx context.Context, run *entity.ProductionRun) *pb_decimal.Decimal {
 	if run == nil {
 		return nil

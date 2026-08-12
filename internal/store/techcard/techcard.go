@@ -804,6 +804,25 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].Markers = markers
+	// Измеренные площади деталей (Ф0, 0297) — вход, из которого выводится норма расхода, когда её
+	// никто не вписал. Читаются здесь, а не по требованию: их видят и костинг, и смета, и плановая
+	// цена партии, и все они ходят через эту же карточку. Пустая карта — законное «никто ещё не
+	// мерил», и это ДРУГОЕ утверждение, чем «этой ткани не нужно полотна».
+	areas, err := s.GetTechCardPieceAreas(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].PieceAreaScopes = areas
+	// Токен входов себестоимости, которых нет в записи карточки (Ф-П): площади и назначения деталей
+	// на ткань. Считается ТОЙ ЖЕ функцией, что на записи, — не «так же», а буквально той же: чтение
+	// рецепта не выбирает line_key (поля провода), и вторая реализация дала бы другой токен об одном
+	// и том же множестве, то есть подпись, устаревшую с рождения. Цена — один запрос на чтение
+	// карточки, у которой есть площади или пер-детальные строки.
+	derived, err := s.GetTechCardDerivedCostInputsDigest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].DerivedCostInputsDigest = derived
 	return &cards[0], nil
 }
 
@@ -1405,20 +1424,11 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		if rollGoods != nil {
 			return rollGoods, nil
 		}
-		rows, err := storeutil.QueryListNamed[struct {
-			LineKey string `db:"line_key"`
-			Purpose string `db:"purpose"`
-		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
-			FROM tech_card_bom_item
-			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
-			rollGoodsSectionArgs(map[string]any{"id": id}))
+		lines, err := loadRollGoodsLines(ctx, db, id)
 		if err != nil {
-			return nil, fmt.Errorf("load roll-goods bom lines: %w", err)
+			return nil, err
 		}
-		rollGoods = make([]entity.RollGoodsLine, 0, len(rows))
-		for _, r := range rows {
-			rollGoods = append(rollGoods, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
-		}
+		rollGoods = lines
 		return rollGoods, nil
 	}
 	seenPayload := make(map[string]struct{}, len(patterns))

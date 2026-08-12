@@ -12,10 +12,28 @@ import (
 
 // detachRelinkedColorwayReferences keeps the recipe slots but removes their identities against the
 // source style. Piece-material mappings belong to source-card pieces and cannot follow the colourway.
+//
+// ШТАМП НОРМЫ (norm_marker_id, 0291) — ТАКАЯ ЖЕ ПРИВЯЗКА К ИСХОДНОМУ СТИЛЮ, ЧТО И ТРИ СОСЕДНИЕ, и
+// снимается по той же причине: раскладки принадлежат КАРТОЧКЕ (tech_card_marker.tech_card_id), а
+// колорвей уезжает на другую. Оставить id значило бы, что строка рецепта продолжает называть
+// источником своей нормы раскладку, которой на этой карточке нет и не будет.
+//
+// И это не только про аккуратность аудита: UpdateColorwayRecipe проверяет ЯВНО присланный штамп на
+// принадлежность карточке (marker_not_on_card), а сегодняшний клиент перечитывает хранимый штамп и
+// шлёт его обратно ЯВНО на каждом полном перезаписывании рецепта. То есть неснятый штамп сделал бы
+// рецепт перепривязанного колорвея НЕСОХРАНЯЕМЫМ — до тех пор, пока человек не догадается
+// демотировать норму в ручную. Отказ был бы правдой о данных, но эти данные создал бы сам перенос.
+//
+// Само ЧИСЛО и его источник (consumption_source = 'marker') остаются: длина снята с ткани и
+// по-прежнему содержит межлекальные выпады, поэтому гросс-ап процентом раскроя к ней применять
+// по-прежнему нельзя. Устаревает не измерение, а ссылка на него — её и убираем. Дата применения
+// уходит вместе с id: отметка «применено тогда-то» без раскладки не отвечает ни на один вопрос
+// (тот же довод, что в usageProvenance.normalized()).
 func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, colorwayID int) error {
 	if err := storeutil.ExecNamed(ctx, db, `
 		UPDATE tech_card_colorway_usage
-		SET bom_item_id = NULL, piece_id = NULL, bom_item_index = NULL, piece_index = NULL
+		SET bom_item_id = NULL, piece_id = NULL, bom_item_index = NULL, piece_index = NULL,
+		    norm_marker_id = NULL, norm_applied_at = NULL
 		WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
 		return fmt.Errorf("detach recipe references for colourway %d: %w", colorwayID, err)
 	}

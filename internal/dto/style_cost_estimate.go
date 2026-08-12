@@ -100,6 +100,15 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 		hasNoNormLine bool
 	)
 	materialsBase := decimal.Zero
+	// Слоты, у которых норма ЗАЯВЛЕНА: оценка к ним не применяется — введённое сильнее выведенного.
+	// ТЕМ ЖЕ предикатом, что у костинга (colorwayAuthoredSlots), а не своей копией внутри цикла ниже:
+	// смета и заголовок обязаны считать «заявленным» одно и то же множество слотов, иначе один экран
+	// покажет оценку там, где другой уже показал норму.
+	authoredSlots := map[int]bool{}
+	if cw != nil {
+		authoredSlots = colorwayAuthoredSlots(cw, tc.BomItems)
+	}
+	hasAreaEstimate := false
 	if cw != nil {
 		for i := range cw.Usages {
 			u := &cw.Usages[i]
@@ -211,6 +220,53 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			out.Materials = append(out.Materials, line)
 		}
 	}
+	// ОЦЕНКА ПО ПЛОЩАДИ В СМЕТЕ (Ф1, С4). Без неё смета противоречила бы заголовку костинга: тот уже
+	// считает слот с назначенными деталями по площади, а здесь он бы отсутствовал вовсе — два числа
+	// об одной карточке на соседних экранах, и это ровно та болезнь, от которой лечит вся фаза.
+	//
+	// Цена берётся ТЕМ ЖЕ путём, что у заголовка (пин → слот → снапшот), а не лестницей сметы с
+	// каталожным фолбэком: расхождение в цене между экранами было бы вторым источником той же
+	// болезни, и лечить его надо один раз, а не двумя приближениями.
+	if cw != nil {
+		for i := range tc.BomItems {
+			b := &tc.BomItems[i]
+			if authoredSlots[b.Id] {
+				continue
+			}
+			// tc.LinkedMaterials, А НЕ ПРАЙС-КАТАЛОГ СМЕТЫ. Раньше сюда одалживался catalog, у
+			// которого есть цены и нет атрибутов ткани, — и ширина молча падала на снапшот строки
+			// BOM, тогда как костинг и карточное чтение берут ПОЛЕЗНУЮ ширину артикула
+			// (UsableFabricWidthCm, рулон минус две кромки). На артикуле 150 см с кромкой 5 см это
+			// 140 против 150: смета показывала 0.9333 м там, где карточка считала 1 м, и обе цифры
+			// выглядели правдоподобно. Одна и та же карта на всех проекциях — единственный способ,
+			// которым «то же число» перестаёт быть обещанием и становится свойством.
+			//
+			// Карта здесь всегда та же: смету грузит тот же GetTechCardById, что и карточное чтение,
+			// и LinkedMaterials он заполняет по тем же id (слоты BOM + пины рецептов), причём с
+			// ценами — то есть содержит всё, ради чего одалживался catalog.
+			est := slotAreaEstimate(tc, cw, b, tc.LinkedMaterials, basis, fx.Base)
+			if !est.ok {
+				continue
+			}
+			amount, ccy := est.money, est.currency
+			hasAreaEstimate = true
+			line := &pb_admin.StyleCostMaterialLine{
+				BomItemId:    int64(b.Id),
+				MaterialName: b.Name,
+				Section:      string(b.Section),
+				Unit:         b.Unit.String,
+				Currency:     ccy,
+			}
+			if base, conv := fx.toBase(amount, ccy); conv {
+				line.HasBase = true
+				line.LineTotalBase = money2(base)
+				materialsBase = materialsBase.Add(base)
+			} else {
+				hasUnconvertibleMat = true
+			}
+			out.Materials = append(out.Materials, line)
+		}
+	}
 	out.MaterialsPerUnitBase = money2(materialsBase)
 
 	// Typed manual articles (cmt/hardware/packaging/logistics/overhead), each folded to base.
@@ -257,8 +313,13 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			missingNormSizes = append(missingNormSizes, sizeLabelOf(id))
 		}
 	}
-	out.Caveat = strings.Join(estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat,
-		hasUnconvertibleArt, hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine, missingNormSizes), "; ")
+	caveats := estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat,
+		hasUnconvertibleArt, hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine, missingNormSizes)
+	if hasAreaEstimate {
+		caveats = append(caveats,
+			"some fabric lines are an AREA ESTIMATE (netto: piece areas ÷ cutting width) — a lower bound with no inter-piece waste in it; take a marker to turn it into a norm")
+	}
+	out.Caveat = strings.Join(caveats, "; ")
 	return out
 }
 

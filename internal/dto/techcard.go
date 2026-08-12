@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/url"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -1058,7 +1059,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		ResolvedTechnicalMedia: resolvedTechnical,
 		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
 		// recipe (H1 fix) resolved against this style's own BOM items.
-		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, tc.Pieces, orderQtyBySize, fx),
+		Colorways: techCardColorwayRefsToPb(tc, orderQtyBySize, fx),
 		// Structured fibre composition (S17/M1 fix), alongside — never instead of — the legacy
 		// free-text Composition below.
 		CompositionEntries: compositionEntriesToPb(tc.CompositionEntries),
@@ -1092,7 +1093,117 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// Saved раскладки (0257), summaries only — written through Save/DeleteTechCardMarker, the
 		// blob rides GetTechCardMarker.
 		Markers: TechCardMarkerSummariesToPb(tc.Markers),
+		// Измеренные площади деталей (Ф0, 0297) — вход вывода нормы. В контракте они лежат ЗДЕСЬ, в
+		// читаемой обёртке, а не в TechCardInsert: пишет их отдельный RPC, и полная замена карточки
+		// не должна иметь возможности их стереть. Это же кладёт их в слепок релиза.
+		PieceAreaScopes: TechCardPieceAreaScopesToPb(tc.PieceAreaScopes),
 	}
+}
+
+// TechCardPieceAreaScopesToPb emits a card's measured piece areas, scope by scope.
+//
+// SORTED BY SCOPE, because the source is a map and the wire is a list: an unordered emission would
+// make two reads of an unchanged card differ, which matters the moment anything downstream digests
+// this projection (and the release snapshot is exactly that).
+//
+// ROWS ARRIVE ALREADY ORDERED from the store (ORDER BY piece_line_key, size_key) and are emitted as
+// given. A caller that builds the map itself owes the same order — this function does not re-sort,
+// and claiming it did would be a promise the code does not keep.
+func TechCardPieceAreaScopesToPb(scopes map[string]entity.PieceAreaScope) []*pb_common.TechCardPieceAreaScope {
+	if len(scopes) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(scopes))
+	for k := range scopes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]*pb_common.TechCardPieceAreaScope, 0, len(keys))
+	for _, k := range keys {
+		sc := scopes[k]
+		rows := make([]*pb_common.TechCardPieceArea, 0, len(sc.Rows))
+		for _, r := range sc.Rows {
+			rows = append(rows, &pb_common.TechCardPieceArea{
+				PieceLineKey: r.PieceLineKey,
+				// 0 on the wire is «ungraded», the same sentinel the column's NULL carries. A piece
+				// that grades never has size 0 (sizes are FKs starting at 1), so the two states stay
+				// distinguishable without an optional.
+				SizeId:        int32(r.SizeId.Int64),
+				AreaCm2:       pbDecimalFromDecimal(r.AreaCm2),
+				Hulled:        r.Hulled,
+				AmbiguousPick: r.AmbiguousPick,
+			})
+		}
+		item := &pb_common.TechCardPieceAreaScope{
+			ScopeKey: k,
+			Areas:    rows,
+			Stale:    sc.Stale,
+		}
+		// Conditions and provenance are one per scope (one transaction wrote them); read them off
+		// the first row rather than duplicating them on every area.
+		if len(sc.Rows) > 0 {
+			item.ContourLayer = sc.Rows[0].ContourLayer
+			item.SeamAllowanceMm = pbDecimalFromDecimal(sc.Rows[0].SeamAllowanceMm)
+			item.ParsedBy = sc.Rows[0].ParsedBy
+			item.ParsedAt = timestamppb.New(sc.Rows[0].ParsedAt)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// techCardSlotAreaEstimatesToPb публикует оценки расхода по площади (Ф1) — включая слоты, где
+// оценки не вышло.
+//
+// СТУПЕНЬ ВЫБИРАЕТ ВЫЗЫВАЮЩИЙ, А НЕ ЭТА ФУНКЦИЯ. Ей передают либо активный срез
+// (colorwayAreaEstimates — слоты БЕЗ авторской нормы, те самые, из которых сложены деньги), либо
+// теневой (colorwayShadowAreaEstimates — слоты С нормой, справочно), и печатает она их ОДИНАКОВО:
+// одна конверсия, один словарь отказов, один провенанс. Ступень строки — это поле AdminColorwayRef,
+// в которое лёг результат; ничего, что отличало бы тень внутри самой строки, нет намеренно (см.
+// shadow_area_estimates в контракте), поэтому два среза нельзя смешивать в один список.
+//
+// ОТКАЗ ПУБЛИКУЕТСЯ НАРАВНЕ С ЧИСЛОМ, и это половина смысла сообщения. Пустая строка на экране
+// читается как «ткани уходит ноль»; названная причина — как «расход не посчитан, и вот чего не
+// хватает». Пропустить неудачные слоты значило бы вернуть ту же пустоту, из-за которой карточка с
+// полностью заполненной спецификацией показывала «себестоимость не посчитана» и не говорила почему.
+//
+// НЕПРИМЕНИМЫЙ СЛОТ (пустой refusal при ok=false) сюда не попадает вовсе: это защитный ноль
+// slotAreaEstimate для не-рулонной секции, у него нет ни числа, ни причины, которую можно устранить.
+func techCardSlotAreaEstimatesToPb(est []slotEstimate) []*pb_common.TechCardSlotAreaEstimate {
+	if len(est) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardSlotAreaEstimate, 0, len(est))
+	for _, e := range est {
+		if !e.ok && e.refusal == "" {
+			continue
+		}
+		item := &pb_common.TechCardSlotAreaEstimate{
+			BomLineKey:   e.bomLineKey,
+			ScopeKey:     e.scopeKey,
+			Unit:         e.unit,
+			Refusal:      string(e.refusal),
+			RefusalText:  entity.AreaEstimateRefusalText(e.refusal),
+			PieceCount:   int32(e.pieceCount),
+			Stale:        e.stale,
+			ContourLayer: e.contourLayer,
+			ParsedBy:     e.parsedBy,
+		}
+		if e.ok {
+			item.PerGarment = pbDecimalFromDecimal(e.perGarment)
+		}
+		// Провенанс — только у измеренного скоупа. Ноль-время и нулевой припуск у слота, который
+		// никто не мерил, читались бы как «мерили 1 января 1 года без припуска».
+		if e.measured {
+			item.SeamAllowanceMm = pbDecimalFromDecimal(e.seamAllowanceMm)
+			item.ParsedAt = timestamppb.New(e.parsedAt)
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // TechCardMarkerSummariesToPb emits a card's saved раскладки for display, BOM link resolved
@@ -1159,7 +1270,11 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 	// one of them read off `perSize`, which is itself derived from `composition`. Two of these
 	// computed from two reads of the row is how a summary ends up saying «4 изделия» beside a состав
 	// that adds to 3.
-	perSize := entity.MarkerPerSizeConsumption(composition, m.UsedLengthCm)
+	//
+	// Взято МЕТОДАМИ строки, а не свободной функцией: правило черновика (0299) — «раскладка ничего не
+	// называет» — живёт в entity рядом с самим полем, и вызов сюда его приносит. Раскрыть здесь
+	// derivation заново значило бы завести второе место, где решают, что раскладка говорит о расходе.
+	perSize := m.PerSizeConsumption()
 	// THE SCALAR IS WITHHELD, NOT LABELLED, on a mixed состав (orchestrator decision Р2). The server
 	// is the only place that can refuse: there is no server-side marker-apply — the client copies this
 	// figure into tech_card_colorway_usage.consumption with consumption_source='marker' and the row
@@ -1174,7 +1289,13 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 	// still has no sizeless per-garment number, and this is still the field that becomes
 	// tech_card_colorway_usage.consumption; what changed is that the prose can now say «примените по
 	// размерам» — but only for a раскладка whose per-size figures actually reached this slice.
-	refusal := entity.MarkerScalarNormRefusal(m.Name, perSize)
+	// ЧЕРНОВИК (0299) ОТКАЗЫВАЕТ ЗДЕСЬ ЖЕ И ТЕМ ЖЕ МЕХАНИЗМОМ, потому что это ровно тот же довод: на
+	// этом поле нет способа пометить число «неполным» так, чтобы пометка пережила копирование. Клиент
+	// переносит его в tech_card_colorway_usage.consumption с provenance 'marker', после чего строка
+	// неотличима от измеренной нормы, а слепок релиза замораживает её навсегда. У черновика
+	// used_length_cm — это длина настила, в который часть деталей не легла, то есть занижена на
+	// столько ткани, сколько взяли бы недостающие детали. Отсутствующее число скопировать нельзя.
+	refusal := m.ScalarNormRefusal()
 	var consumption *pb_decimal.Decimal
 	if refusal == "" {
 		consumption = pbDecimalFromDecimal(m.ConsumptionPerUnitCm().Round(2))
@@ -1211,6 +1332,7 @@ func TechCardMarkerSummaryToPb(m entity.TechCardMarkerSummary) *pb_common.TechCa
 		EfficiencyPct:        pbDecimalFromNull(m.EfficiencyPct),
 		PlacedCount:          int32(m.PlacedCount),
 		TotalCount:           int32(m.TotalCount),
+		IsDraft:              m.IsDraft,
 		ConsumptionPerUnitCm: consumption,
 		// УСЛОВИЯ СЪЁМКИ (Ф3), each emitted only when RECORDED. An unrecorded condition must reach the
 		// client as an ABSENT field and never as a zero: «припуск 0» is a measurement («we laid the line
@@ -1379,6 +1501,31 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 	if pb.TotalCount < 1 {
 		return out, fmt.Errorf("total_count must be at least 1")
 	}
+	// ЧИСЛИТЕЛЬ СВЕРЯЕТСЯ С БЛОБОМ, КОТОРЫЙ СЕРВЕР ХРАНИТ. placed_count решает, черновик это или
+	// измеренная раскладка (0299), и до этой проверки оно было чистым утверждением клиента рядом с
+	// геометрией, которая его опровергает: «уложено 45» при 31 размещении проходило, и все гварды
+	// черновика видели полную раскладку. Размещения сервер и так держит — сосчитать их дешевле, чем
+	// поверить.
+	//
+	// ЗНАМЕНАТЕЛЬ ТАК НЕ ЗАКРЫТЬ, И ЭТО НАЗВАННЫЙ ДОЛГ, А НЕ НЕДОСМОТР. total_count — это сколько
+	// экземпляров ПРОСИЛИ разложить, а кратность живёт в карточке (TechCardMarkerPiece.quantity ×
+	// состав), не в одном числе. Клиент, приславший заниженный total_count, и сегодня выдаёт неполную
+	// раскладку за полную — ровно как до фазы; 0299 этого не чинит и не претендует. Вывести его из
+	// блоба схемы 4 в принципе можно — Σ quantity × состав, — но только если блоб сохраняет и
+	// НЕУЛОЖЕННЫЕ детали, а такого договора с клиентом ещё нет: он появится вместе с очередью заданий,
+	// и закрыть знаменатель обязана та же фаза.
+	//
+	// Under `pb.Layout != nil` because the converter is deliberately layout-agnostic (a payload may
+	// carry the legacy size_id/sets shape and nothing else). On the RPC path that branch is not
+	// reachable: SaveTechCardMarker refuses a nil layout and an empty placements slice a few lines
+	// after calling this, so the comparison is unconditional wherever a marker is actually saved.
+	if pb.Layout != nil {
+		if placed := len(pb.Layout.GetPlacements()); int(pb.PlacedCount) != placed {
+			return out, fmt.Errorf(
+				"placed_count is %d but the layout carries %d placements; placed_count counts the placements the layout actually holds",
+				pb.PlacedCount, placed)
+		}
+	}
 	// 0 is «not colourway-specific», the legacy shape; a NEGATIVE id is a client bug, and letting
 	// it through would reach the store as an id that simply resolves to nothing — a refusal about
 	// a colourway that «is not on this card» rather than about a malformed number.
@@ -1423,6 +1570,11 @@ func ConvertPbTechCardMarkerInsertToEntity(pb *pb_common.TechCardMarkerInsert) (
 		EfficiencyPct:      efficiency,
 		PlacedCount:        int(pb.PlacedCount),
 		TotalCount:         int(pb.TotalCount),
+		// СОГЛАСИЕ сохранить неполную раскладку (0299), а не утверждение о ней: колонку пишет store из
+		// пары placed/total, а это поле решает ровно один вопрос — принять неполную или отказать.
+		// Поэтому оно не сверяется со счётчиками и здесь: согласие на ПОЛНУЮ раскладку не ложь, а
+		// просто не к месту. Сверяется — числитель, выше, и по совсем другому поводу.
+		IsDraft: pb.IsDraft,
 		// УСЛОВИЯ СЪЁМКИ (Ф3). PieceSetFp is deliberately NOT here: the fingerprint is the store's, taken
 		// off the rows its own transaction sees, and a payload-supplied one would be forgeable and stale.
 		SeamAllowanceMm:    conditions.SeamAllowanceMm,
@@ -2729,10 +2881,16 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 // (UpdateColorwayRecipe persisted usages that no read path surfaced, A3.4). bomItems/orderQtyBySize
 // resolve each usage's line_total/size_run_total against the style's BOM (caller strips money for an
 // account without costing:read, same as the rest of the tech-card read).
-func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int, fx CostingFx) []*pb_common.AdminColorwayRef {
-	if len(cws) == 0 {
+// Оценки расхода по площади (Ф1) едут ЗДЕСЬ же — см. techCardSlotAreaEstimatesToPb: они свойство
+// пары (колорвей, слот), и без них строка «одного списка по тканям» у слота без нормы пуста.
+// Поэтому функция берёт всю карточку, а не три её списка: аргументы оценки (BOM, каталог
+// материалов, базис костинга) обязаны быть ТЕМИ ЖЕ, что у денежного пути, а собрать их можно только
+// из карточки целиком.
+func techCardColorwayRefsToPb(tc *entity.TechCard, orderQtyBySize map[int]int, fx CostingFx) []*pb_common.AdminColorwayRef {
+	if tc == nil || len(tc.Colorways) == 0 {
 		return nil
 	}
+	cws, bomItems, pieces := tc.Colorways, tc.BomItems, tc.Pieces
 	out := make([]*pb_common.AdminColorwayRef, 0, len(cws))
 	for i := range cws {
 		c := &cws[i]
@@ -2775,6 +2933,25 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 		}
 		ref.Prices = convertEntityPricesToPb(c.Prices)
 		ref.NetPrices = netColorwayPricesToPb(c.Prices, fx)
+		// ТЕ ЖЕ АРГУМЕНТЫ, ЧТО У ДЕНЕГ. Каждый производственный вызов colorwayCost передаёт ровно
+		// эту четвёрку (tc.BomItems, tc.LinkedMaterials, tc.CostingBasis(), fx.Base) — базис в том
+		// числе: у стиля это СРЕДНЕЕ по объявленному размерному ряду, и опубликовать здесь норму
+		// одного размера значило бы разойтись со стоимостью на весь градационный разброс.
+		ref.AreaEstimates = techCardSlotAreaEstimatesToPb(
+			colorwayAreaEstimates(tc, c, bomItems, tc.LinkedMaterials, tc.CostingBasis(), fx.Base))
+		// ТЕНЬ — ТА ЖЕ ОЦЕНКА ДЛЯ СЛОТА, У КОТОРОГО НОРМА УЖЕ ЕСТЬ, и она едет ОТДЕЛЬНЫМ полем.
+		//
+		// Публикуемое множество тут шире считаемого, и это единственное место, где они расходятся:
+		// деньги по-прежнему собирает colorwayAreaEstimates (слоты БЕЗ нормы), а рядом печатается
+		// справочная нижняя граница для слотов С нормой — иначе расстояние между тем, что вписал
+		// человек, и тем, что даёт геометрия, не показать нигде: ни один ответ сервера не нёс обе
+		// цифры про один слот.
+		//
+		// ТЕ ЖЕ ЧЕТЫРЕ АРГУМЕНТА, что у активной ступени и у денег. Не ради симметрии: тень
+		// сравнивают с авторской нормой ТОГО ЖЕ слота, и посчитай её на другом базисе — разойдутся
+		// они на весь градационный разброс, а выглядело бы это как измеренное занижение оценки.
+		ref.ShadowAreaEstimates = techCardSlotAreaEstimatesToPb(
+			colorwayShadowAreaEstimates(tc, c, bomItems, tc.LinkedMaterials, tc.CostingBasis(), fx.Base))
 		out = append(out, ref)
 	}
 	return out
@@ -3349,6 +3526,59 @@ func pbMoneyFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
 // roundMoney rounds a money amount to 2 decimals (banker's rounding) for storage/emit.
 func roundMoney(d decimal.Decimal) decimal.Decimal {
 	return d.RoundBank(2)
+}
+
+// PieceAreaWriteFromPb turns one SaveTechCardPieceAreas payload into the store's write shape.
+//
+// THE CONVERSION IS WHERE THE ZERO-SIZE SENTINEL IS RESOLVED, once: size_id 0 on the wire is
+// «ungraded piece» (it enters every size's set whole), and it must become SQL NULL rather than the
+// integer 0, or MySQL's UNIQUE would let one ungraded piece land twice and double the garment's
+// area. The reverse direction lives in TechCardPieceAreaScopesToPb; the two are the only places that
+// know about the sentinel.
+//
+// An unparseable area is an ERROR, never a zero: a zero area is a free garment.
+func PieceAreaWriteFromPb(techCardID int, scopeKey string, sheetLineKeys []string,
+	areas []*pb_common.TechCardPieceArea, contourLayer string, seamAllowance *pb_decimal.Decimal,
+	parsedBy string) (entity.PieceAreaWrite, error) {
+	out := entity.PieceAreaWrite{
+		TechCardId:    techCardID,
+		ScopeKey:      strings.TrimSpace(scopeKey),
+		SheetLineKeys: sheetLineKeys,
+		ParsedBy:      parsedBy,
+	}
+	seam, err := nullDecimalFromPb(seamAllowance)
+	if err != nil {
+		return entity.PieceAreaWrite{}, fmt.Errorf("seam_allowance_mm: %w", err)
+	}
+	for _, a := range areas {
+		if a == nil {
+			continue
+		}
+		area, err := nullDecimalFromPb(a.GetAreaCm2())
+		if err != nil {
+			return entity.PieceAreaWrite{}, fmt.Errorf("area of piece %q: %w", a.GetPieceLineKey(), err)
+		}
+		if !area.Valid {
+			return entity.PieceAreaWrite{}, fmt.Errorf("piece %q has no area — a measurement that produced no number is a failed read, not a small piece", a.GetPieceLineKey())
+		}
+		row := entity.PieceAreaInput{
+			PieceLineKey: strings.TrimSpace(a.GetPieceLineKey()),
+			// ОКРУГЛЕНИЕ ДО МАСШТАБА КОЛОНКИ ЗДЕСЬ, А НЕ В MySQL. Колонка — DECIMAL(12,2), и
+			// присланные 1234.567 легли бы как 1234.57; сравнение «то же самое измерение» шло бы
+			// против ПРИСЛАННОГО значения, никогда не совпадало, и каждый повтор переписывал бы
+			// весь скоуп вместе с датой замера — ровно то, что проверка на повтор обещает не делать.
+			AreaCm2:         area.Decimal.RoundBank(2),
+			ContourLayer:    strings.TrimSpace(contourLayer),
+			SeamAllowanceMm: seam.Decimal.RoundBank(1),
+			Hulled:          a.GetHulled(),
+			AmbiguousPick:   a.GetAmbiguousPick(),
+		}
+		if sid := a.GetSizeId(); sid > 0 {
+			row.SizeId = sql.NullInt64{Int64: int64(sid), Valid: true}
+		}
+		out.Rows = append(out.Rows, row)
+	}
+	return out, nil
 }
 
 func nullDecimalFromPb(d *pb_decimal.Decimal) (decimal.NullDecimal, error) {

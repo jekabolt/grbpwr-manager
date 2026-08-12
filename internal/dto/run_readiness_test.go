@@ -566,3 +566,48 @@ func sortedKeys(m map[string]entity.RunReadinessSeverity) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestPatternScopesFollowTheSortIntoThePurpose — читающая половина того же разрыва, что убил замер
+// площадей (entity.FabricScopeIdentity).
+//
+// Лист привязан к строке L; строку потом разложили в назначение 'main'. Клиент группирует по
+// СЕГОДНЯШНЕМУ BOM и кладёт разбор размеров под ключом 'main' — и стор с этой починкой принимает
+// именно этот ключ. Если бы чтение продолжало группировать листы по тому, что назвала сама запись,
+// только что записанный разбор читался бы как «размеры в файлах не проверялись» на каждой
+// разобранной карточке, и починка записи молча ничего бы не дала.
+func TestPatternScopesFollowTheSortIntoThePurpose(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems[0].Purpose = sql.NullString{String: "main", Valid: true}
+
+	scopes := patternScopesOfCard(card)
+	if len(scopes) != 1 {
+		t.Fatalf("want one scope, got %d", len(scopes))
+	}
+	if scopes[0].key != "main" {
+		t.Fatalf("scope key = %q, want \"main\" — the sheet's line has been sorted, so its fabric is the назначение", scopes[0].key)
+	}
+
+	in := rrInput(card)
+	in.PatternSizeIndex = map[string]entity.PatternSizeIndexRow{"main": {
+		ScopeKey:         "main",
+		SheetFingerprint: entity.PatternSheetFingerprint(scopes[0].sheets),
+		SizeTokensJSON:   `["s","m"]`,
+	}}
+	f, ok := rrFind(ComputeProductionRunReadiness(in), entity.RunReadinessKeySizesInDxf)
+	if !ok {
+		t.Fatal("sizes_in_dxf must always be emitted")
+	}
+	if f.Severity == entity.RunReadinessUnknown && strings.Contains(f.Detail, "не проверялись") {
+		t.Fatalf("the index stored under the resolved scope must be FOUND, got %s / %q", f.Severity, f.Detail)
+	}
+}
+
+// TestPatternScopesOfAnUnsortedCardAreUnchanged: сегодняшняя популяция — карточки, которые никто не
+// раскладывал по назначениям. Для них личность ткани равна ведру записи, и починка обязана не
+// двигать НИЧЕГО: иначе всякая хранимая строка индекса разом стала бы ненаходимой.
+func TestPatternScopesOfAnUnsortedCardAreUnchanged(t *testing.T) {
+	scopes := patternScopesOfCard(rrHealthyCard())
+	if len(scopes) != 1 || scopes[0].key != rrLineKey {
+		t.Fatalf("unsorted card must keep the line key as its scope, got %+v", scopes)
+	}
+}

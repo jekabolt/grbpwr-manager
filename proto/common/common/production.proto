@@ -22,6 +22,14 @@ enum ProductionRunStatus {
   // (production-costing Phase 5). Receipt commands own this state and RECEIVED — neither is
   // writable through UpdateProductionRun.
   PRODUCTION_RUN_STATUS_PARTIALLY_RECEIVED = 6;
+  // DRAFT (Ф2): расчётная партия — состав набран, деньги считаются, производство НЕ начато.
+  //
+  // Отличается от PLANNED ровно тремя обязательствами, которых у неё НЕТ: она не резервирует ткань,
+  // не проходит гейт готовности и не печатает наряд. Всё это появляется на переходе draft → planned.
+  //
+  // Так и должно быть: прикидка «сколько будет стоить сто чёрных и полсотни белых» не имеет права
+  // занимать сырьё на складе, иначе соседний прогон увидит нехватку из-за чужого черновика.
+  PRODUCTION_RUN_STATUS_DRAFT = 7;
 }
 
 // ProductionRunLine is one colour-model × size line of a run: which product (colourway) at which
@@ -270,6 +278,16 @@ message ProductionRun {
   // ТОЛЬКО на одиночном чтении (GetProductionRun); на списках пусто всегда — это лишний расчёт
   // костинга на строку. Деньги: снимается stripProductionRunCosting наравне с planned_unit_cost.
   google.type.Decimal planned_unit_cost_today = 12;
+  // ПОЧЕМУ цены партии нет — словами, а не догадкой по пустоте.
+  //
+  // До этого поля пустая цена была неотличима от «ноль» и от «пока не считали»: сервер возвращал
+  // невалидный decimal, и клиент выводил причину сам, из соседних признаков. Причин же несколько, и
+  // ведут они в РАЗНЫЕ места: у партии нет строк с количеством; ячейка (колорвей, размер) не
+  // считается; строка называет колорвей, которого у карточки нет; ячейки разошлись по валютам.
+  //
+  // ПУСТАЯ СТРОКА = цена посчитана (или её никто не спрашивал). Непустая — готовое предложение для
+  // экрана; клиент его показывает, а не переводит.
+  string planned_cost_reason = 13;
 }
 
 // ProductionRunEvent is one row of the run's append-only audit trail: who did what to the run,
