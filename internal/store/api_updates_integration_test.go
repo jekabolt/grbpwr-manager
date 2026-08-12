@@ -30,7 +30,7 @@ func TestAPIUpdatesIntegration(t *testing.T) {
 	var mediaID, fid, tid, tcID, smID int
 	defer func() {
 		if smID != 0 {
-			_ = s.Samples().DeleteSample(ctx, smID)
+			_, _, _ = s.Samples().DeleteSample(ctx, smID)
 		}
 		if tcID != 0 {
 			_ = s.TechCards().DeleteTechCard(ctx, tcID)

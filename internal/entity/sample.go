@@ -8,8 +8,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// ErrSampleHasMovements is returned when deleting a sample that has material stock movements — its
-// issues are applied facts and dropping the sample would orphan them.
+// ErrSampleHasMovements отказывает удалению ТЕХ-КАРТЫ, у одного из семплов которой есть движения
+// материала: карточка сносит свои семплы каскадом, молча и без вердикта, — а значит, унесла бы с
+// собой ещё не возвращённую на склад ткань.
+//
+// Удаление ОДНОГО семпла этой ошибкой больше не пользуется: там граница другая и разговор другой —
+// см. SampleDeletionVerdict в sample_deletion.go. Правило там мягче (важно не наличие движений, а
+// невозвращённый остаток) именно потому, что там есть кому его объяснить: диалог называет материал
+// и говорит, что с ним сделать. Каскадное удаление карточки такого диалога не имеет, поэтому и
+// остаётся строгим.
 var ErrSampleHasMovements = errors.New("sample has material movements")
 
 // ErrSampleColorwayForeign is returned when a sample's colorway_id does not belong to the sample's

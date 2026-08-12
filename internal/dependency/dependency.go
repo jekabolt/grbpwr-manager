@@ -984,7 +984,13 @@ type (
 	Samples interface {
 		AddSample(ctx context.Context, sm *entity.SampleInsert) (int, error)
 		UpdateSample(ctx context.Context, id int, sm *entity.SampleInsert, expectedLockVersion int) error
-		DeleteSample(ctx context.Context, id int) error
+		// EvaluateSampleDeletion — сухой прогон удаления: вердикт без единой записи (его читает
+		// диалог подтверждения). Второе значение — статус «списан»: он не меняет вердикт, но
+		// меняет выход из него, потому что складу запрещён возврат материала по списанному семплу.
+		EvaluateSampleDeletion(ctx context.Context, id int) (*entity.SampleDeletionVerdict, bool, error)
+		// DeleteSample удаляет семпл, пере-проверив тот же вердикт ВНУТРИ транзакции. Вердикт
+		// возвращается всегда, когда посчитан, — и на успехе, и рядом с entity.ErrSampleNotDeletable.
+		DeleteSample(ctx context.Context, id int) (*entity.SampleDeletionVerdict, bool, error)
 		GetSampleById(ctx context.Context, id int) (*entity.Sample, error)
 		// ListSamples lists samples; techCardID <= 0 spans all styles (cross-style queue), and
 		// status/purpose are optional string filters ("" = any).

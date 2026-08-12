@@ -30,7 +30,7 @@ func TestWS6SampleRoundSpineAndCarryOver(t *testing.T) {
 			_ = s.Fittings().DeleteFitting(ctx, id)
 		}
 		for _, id := range sampleIDs {
-			_ = s.Samples().DeleteSample(ctx, id)
+			_, _, _ = s.Samples().DeleteSample(ctx, id)
 		}
 		if techCardID != 0 {
 			_ = s.TechCards().DeleteTechCard(ctx, techCardID)

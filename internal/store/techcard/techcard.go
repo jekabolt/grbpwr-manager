@@ -656,7 +656,10 @@ func stageRegressionViolation(to entity.TechCardStage, n int, artifact string) e
 
 // DeleteTechCard deletes a tech card by id (child sections cascade). It refuses when any of the
 // card's samples has material stock movements: the sample rows cascade (ON DELETE CASCADE) and would
-// orphan their issued-material cost, bypassing DeleteSample's ErrSampleHasMovements guard (NF-04). It
+// orphan their issued-material cost. This guard stays STRICTER than deleting one sample (which asks
+// only that the material came back — entity.SampleDeletionVerdict) on purpose: that path has a dialog
+// naming the material and what to do with it, and this one snaps every sample of the card at once,
+// silently and without a verdict, so «есть движения» is the only honest line it can draw (NF-04). It
 // also refuses when the card is used as an auxiliary component in another style's assembly bill
 // (style_assembly.component_tech_card_id -> tech_card ON DELETE RESTRICT, 0174) — a raw DB 1451 there
 // would otherwise surface as an unreadable Internal (P4-flyover M2/S24-regression); both checks and the

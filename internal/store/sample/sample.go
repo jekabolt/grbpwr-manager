@@ -281,30 +281,8 @@ func (s *Store) UpdateSample(ctx context.Context, id int, sm *entity.SampleInser
 	})
 }
 
-// DeleteSample deletes a sample, refusing when it has material stock movements (applied facts). The
-// movement guard and the delete run in one transaction so an issue committed concurrently cannot slip
-// between the check and the delete and orphan its cost. Returns ErrSampleHasMovements in that case and
-// sql.ErrNoRows when the sample does not exist.
-func (s *Store) DeleteSample(ctx context.Context, id int) error {
-	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		n, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COUNT(*) FROM material_stock_movement WHERE sample_id = :id`, map[string]any{"id": id})
-		if err != nil {
-			return fmt.Errorf("check sample movements: %w", err)
-		}
-		if n > 0 {
-			return entity.ErrSampleHasMovements
-		}
-		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `DELETE FROM sample WHERE id = :id`, map[string]any{"id": id})
-		if err != nil {
-			return fmt.Errorf("can't delete sample %d: %w", id, err)
-		}
-		if rows == 0 {
-			return sql.ErrNoRows
-		}
-		return nil
-	})
-}
+// Удаление семпла живёт в sample_delete.go: у него свой вердикт (что держит, что уйдёт каскадом,
+// что осиротеет), и читать его рядом с обычным CRUD было бы неудобно обоим.
 
 // GetSampleById returns a sample with its composed cost block, or sql.ErrNoRows when none exists.
 func (s *Store) GetSampleById(ctx context.Context, id int) (*entity.Sample, error) {
