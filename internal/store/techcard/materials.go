@@ -310,52 +310,73 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 		}
 	}
 
-	// ВСЕ ЗАБЛОКИРОВАННЫЕ ДЕТАЛИ — ОДНИМ ОТКАЗОМ И ПО ИМЕНАМ, А НЕ ПО ОДНОЙ ЗА СОХРАНЕНИЕ.
+	// УДАЛЕНИЕ ДЕТАЛИ УНОСИТ ТО, ЧТО ВИСЕЛО НА НЕЙ. Иначе карточка запирается насмерть.
 	//
-	// Ниже удаление идёт по одной строке, и первая же упёршаяся в FK роняет транзакцию. На карточке,
-	// где рецепт колорвея держит ДЕВЯТЬ деталей (а держит он их ровно тогда, когда деталям назначена
-	// ткань — самый обычный случай), это девять неудачных сохранений подряд, каждое из которых
-	// называет СЛЕДУЮЩЕГО виновника и ни разу — всех. Хуже того, называет оно `line_key`: ULID,
-	// которого нет ни на одном экране, так что даже одну деталь по нему не найти.
+	// Строка рецепта, привязанная к детали, держит её внешним ключом ON DELETE RESTRICT
+	// (fk_usage_piece), а рецепт правится ДРУГИМ RPC — сохранение карточки его не редактирует. Пока
+	// удаление просто упиралось в этот ключ, выход был один: вручную снять строку в каждом колорвее
+	// и только потом удалять деталь. А строка эта появляется от самого обычного действия —
+	// «назначить детали ткань», — так что на разобранной карточке держатся ВСЕ детали разом:
+	// заменил чертёж на файл с другими именами блоков (новые детали заводятся сами) — и получай по
+	// отказу на каждое сохранение, по одной детали за раз.
 	//
-	// Поэтому спрашиваем ЗАРАНЕЕ и обо всех сразу, и называем деталь так, как она подписана на
-	// карточке, — тем же правилом, по которому назван отказ выноски выше.
+	// ЧТО ИМЕННО УНОСИТСЯ И ПОЧЕМУ ЭТО НЕ ПОТЕРЯ ДАННЫХ СВЕРХ САМОГО УДАЛЕНИЯ. Строка рецепта — это
+	// утверждение «ЭТА деталь кроится из этой ткани» (и, если вписана, её норма). Без детали у него
+	// не остаётся подлежащего: ни один расчёт такую строку не читает (оценка идёт по НАЗНАЧЕННЫМ
+	// деталям), а UNIQUE рецепта по ней не считает. Оставить её значило бы хранить факт о том, чего
+	// нет. Замеренные площади — то же самое, но они висят на line_key без внешнего ключа, поэтому
+	// их надо убирать явно: иначе от детали остаётся строка с площадью, которую никто не
+	// перезапишет до следующего замера этой ткани.
 	//
-	// FK-ветка ниже остаётся: она ловит ссылки, о которых этот запрос не знает, и никакая проверка
-	// в Go не заменяет ограничения в схеме.
-	doomed := make([]int, 0, len(existingByKey))
+	// ЧЕЛОВЕК ОБ ЭТОМ ПРЕДУПРЕЖДЁН НА КЛИЕНТЕ (панель детали называет колорвеи-держатели и просит
+	// подтверждение), а здесь стоит исполнение: удаление обязано быть атомарным с удалением самой
+	// детали, а рецепт и деталь лежат в одной транзакции только тут.
+	//
+	// ЧУЖОЙ РЕДАКТОР РЕЦЕПТА НЕ ПОТЕРЯЕТСЯ МОЛЧА: оптимистическая версия колорвея — это общий
+	// tech_card.lock_version стиля (см. UpdateColorwayRecipe), который это же сохранение и двигает,
+	// так что параллельная правка рецепта получит честный конфликт, а не тихую перезапись.
+	//
+	// FK-ветка ниже остаётся backstop'ом: она ловит ссылки, о которых этот код не знает.
+	doomedIDs := make([]int, 0, len(existingByKey))
+	doomedKeys := make([]string, 0, len(existingByKey))
 	for key, id := range existingByKey {
 		if !seen[key] {
-			doomed = append(doomed, id)
+			doomedIDs = append(doomedIDs, id)
+			doomedKeys = append(doomedKeys, key)
 		}
 	}
-	if len(doomed) > 0 {
-		blocked, err := storeutil.QueryListNamed[struct {
-			Name string `db:"name"`
-		}](ctx, db, `
-			SELECT DISTINCT p.name AS name
-			FROM tech_card_piece p
-			JOIN tech_card_colorway_usage u ON u.piece_id = p.id
-			WHERE p.id IN (:ids)
-			ORDER BY p.name`, map[string]any{"ids": doomed})
-		if err != nil {
-			return fmt.Errorf("check pieces referenced by colourway recipes: %w", err)
+	if len(doomedIDs) > 0 {
+		// УДАЛЯЕМ ТОЛЬКО СТРОКИ РЕЦЕПТА ЭТОГО ЖЕ СТИЛЯ, и это не перестраховка.
+		//
+		// Схема связывает строку рецепта с колорвеем и с деталью ДВУМЯ независимыми ключами и нигде
+		// не требует, чтобы колорвей принадлежал стилю детали. Такой строки не создаёт ни один
+		// живой путь записи, но `piece_id IN (...)` доверяет этому на слово — а плата за ошибку тут
+		// не «отказ», а молча вычищенный рецепт ЧУЖОГО стиля. Соединение с product возвращает
+		// проверку в сам запрос.
+		//
+		// Если такая строка всё же есть, она переживёт этот DELETE и упрётся в FK ниже: чужой
+		// рецепт останется цел, а сохранение честно откажет вместо тихой порчи.
+		if err := storeutil.ExecNamed(ctx, db, `
+			DELETE u FROM tech_card_colorway_usage u
+			JOIN product p ON p.id = u.colorway_id
+			WHERE u.piece_id IN (:ids) AND p.style_id = :card`,
+			map[string]any{"ids": doomedIDs, "card": tcID}); err != nil {
+			return fmt.Errorf("drop recipe lines of deleted cut-pieces: %w", err)
 		}
-		if len(blocked) > 0 {
-			names := make([]string, 0, len(blocked))
-			for _, b := range blocked {
-				names = append(names, fmt.Sprintf("%q", b.Name))
-			}
-			return entity.NewFieldViolation("pieces",
-				fmt.Sprintf("these cut-pieces still have recipe lines: %s", strings.Join(names, ", ")),
-				"colourway recipe usages",
-				"a card save cannot edit a recipe, so delete each of these pieces' rows on the COLORWAYS tab first — then delete the pieces. An ARCHIVED colourway holds its rows too, and the card read hides it, so a piece named here with no visible holder is being held by one")
+		if err := storeutil.ExecNamed(ctx, db, `
+			DELETE FROM tech_card_piece_area
+			WHERE tech_card_id = :card AND piece_line_key IN (:keys)`,
+			map[string]any{"card": tcID, "keys": doomedKeys}); err != nil {
+			return fmt.Errorf("drop measured areas of deleted cut-pieces: %w", err)
 		}
 	}
 
-	// Delete pieces that vanished from the payload. FK RESTRICT (fk_usage_piece) blocks a piece still
-	// referenced by a colourway recipe usage — surface that as an actionable field-tagged error
-	// (the deferred-from-0159 guard, now live because pieces are keyed/stable).
+	// Delete pieces that vanished from the payload.
+	//
+	// 1451 ЗДЕСЬ БОЛЬШЕ НЕ ЗНАЧИТ «СТРОКА РЕЦЕПТА» — их только что унесли выше, а операции карточки
+	// стираются в начале этой же транзакции (см. список таблиц в UpdateTechCard), так что их связи
+	// с деталями до сюда не доживают. Значит сюда доходит ссылка, о которой этот код не знает, и
+	// назвать её конкретно нечем: врать про рецепт хуже, чем признать незнание и назвать деталь.
 	for key, id := range existingByKey {
 		if seen[key] {
 			continue
@@ -365,8 +386,8 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			var me *mysql.MySQLError
 			if errors.As(err, &me) && me.Number == 1451 { // ER_ROW_IS_REFERENCED_2
 				return entity.NewFieldViolation("pieces",
-					fmt.Sprintf("cut-piece %q is still referenced", key), "a colourway recipe usage",
-					"remove that consumption line before deleting the piece")
+					fmt.Sprintf("cut-piece %q is still referenced", key), "another record",
+					"its recipe lines and measured areas are removed with it, so something else holds this piece — report it: the card cannot resolve this on its own")
 			}
 			return fmt.Errorf("failed to delete tech card piece: %w", err)
 		}
