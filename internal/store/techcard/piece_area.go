@@ -727,9 +727,17 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 			// РАЗМЕР ОБЯЗАН БЫТЬ РАЗМЕРОМ ЭТОЙ КАРТОЧКИ. Площадь, записанная на размер вне ряда,
 			// не попадёт ни в один расчёт (все они идут по ряду) и будет молча висеть, делая
 			// комплект «полным» для читателя, считающего строки.
+			//
+			// ОТКАЗ НАЗЫВАЕТ РАЗМЕР, А НЕ ДЕТАЛЬ. Прежний клал в «конфликтующее» line_key детали —
+			// то есть ULID, который оператору не говорит ничего, — и при этом умалчивал о размере,
+			// единственном, что здесь виновато. А живая причина расхождения ровно одна и она не
+			// про геометрию: ряд правлен в форме и не сохранён (модалка сопоставления деталей
+			// заводит найденные в чертеже размеры в ряд карточки сама). Клиент это теперь ловит до
+			// отправки, но человек, до которого отказ всё же дошёл, обязан прочесть, что делать.
 			if r.SizeId.Valid && !cardSizes[int(r.SizeId.Int64)] {
-				return entity.NewFieldViolation("areas", "size_not_in_range", r.PieceLineKey,
-					"this size is not in the card's size range — measure the range the card declares")
+				return entity.NewFieldViolation("areas", "size_not_in_range",
+					fmt.Sprintf("size_id %d", r.SizeId.Int64),
+					"this size is not in the card's SAVED size range — if it was just added in the form (the card's size range grows from the DXF on its own), save the card first, then measure")
 			}
 			if sizesByPiece[k] == nil {
 				sizesByPiece[k] = map[int]bool{}
