@@ -334,6 +334,110 @@ func ungradedPieceSizedDiff(sizesByPiece map[string]map[int]bool, ungradedNames 
 	return strings.Join(problems, "; ")
 }
 
+// ВТОРАЯ ПОЛОВИНА ТОГО ЖЕ ПРАВИЛА, НА ДРУГОМ КОНЦЕ ВРЕМЕНИ.
+//
+// Отказ выше стоит на записи ПЛОЩАДЕЙ и ловит «меряем по размерам деталь, помеченную UNI». Но
+// пометка ставится не там: она приезжает сохранением КАРТОЧКИ, и порядок действий может быть
+// обратным — сначала деталь честно перемерили по всему ряду, потом кто-то поставил галочку. Замер
+// при этом не переписывается и не устаревает: строки лежат, отпечаток источника прежний, «пересчёт»
+// никто не просит.
+//
+// Что получается дальше — не косметика. entity.AreaEstimateNorm читает площади по размеру и берёт
+// безразмерную строку ТОЛЬКО как фолбэк («деталь входит в каждый размер целиком»), поэтому карточка
+// продолжает считать норму по РАЗНЫМ площадям на разных размерах, утверждая при этом обратное.
+// Карточка внутренне противоречива, ничто не помечено stale, а релиз это противоречие замораживает в
+// снапшот и уносит в цех.
+//
+// Поэтому переход false → true запрещён, пока у детали лежат пер-размерные строки. Запрещён именно
+// ПЕРЕХОД: карточка, где флаг как был false, так и остался, не проверяется вовсе (это весь живой
+// массив), а обратный переход true → false законен — он возвращает деталь в состояние, в котором
+// пер-размерные замеры и есть правильная форма.
+//
+// СЕРВЕР НИЧЕГО НЕ УДАЛЯЕТ. Площади — измеренная геометрия, а не производное значение; стереть их
+// задним числом ради того, чтобы галочка встала, значит потерять работу человека с лекалами и молча
+// оставить норму без входных данных. Порядок — обратный: сначала перемерить, потом помечать.
+
+// sizedAreaPieceKeys returns the line keys (uppercase, как они лежат в таблице) деталей карточки, у
+// которых есть ХОТЯ БЫ одна площадь, привязанная к размеру. Скоуп не различается намеренно:
+// пер-размерный замер по любой ткани противоречит пометке одинаково.
+func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (map[string]bool, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		PieceLineKey string `db:"piece_line_key"`
+	}](ctx, db, `
+		SELECT DISTINCT piece_line_key
+		FROM tech_card_piece_area
+		WHERE tech_card_id = :id AND size_id IS NOT NULL`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load sized piece areas of tech card %d: %w", techCardID, err)
+	}
+	out := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if k := strings.ToUpper(strings.TrimSpace(r.PieceLineKey)); k != "" {
+			out[k] = true
+		}
+	}
+	return out, nil
+}
+
+// ungradedFlipKeys returns the pieces of THIS payload that turn the UNI flag ON, as uppercase line
+// key → index in the payload. Пусто — значит проверять нечего и лишний запрос к площадям не нужен;
+// на сегодняшней базе, где помеченных деталей нет, пусто будет всегда.
+//
+// ПЕРЕХОД СЧИТАЕТСЯ ПО ЭФФЕКТИВНОМУ ЗНАЧЕНИЮ, А НЕ ПО ПРИСЛАННОМУ. Если поля на проводе не было
+// (UngradedOmitted), запись сохраняет хранимое (IF(:ungraded_omitted, …)) — эффективное значение
+// равно старому, перехода нет по определению, и молчащая вкладка не может ни включить флаг, ни
+// нарваться на этот отказ. Деталь, уже помеченную в базе, тоже пропускаем: это НЕ переход, а если
+// противоречие там уже лежит, то отказ на любом сохранении сделал бы такую карточку неспасаемой.
+//
+// Деталь без line_key — новая, ключ ей выпишет сам upsert, и площадей под ним быть не может.
+func ungradedFlipKeys(pieces []entity.TechCardPiece, storedUngraded map[string]bool) map[string]int {
+	out := map[string]int{}
+	for i := range pieces {
+		p := &pieces[i]
+		key := strings.TrimSpace(p.LineKey)
+		if key == "" || p.UngradedOmitted || !p.Ungraded || storedUngraded[key] {
+			continue
+		}
+		out[strings.ToUpper(key)] = i
+	}
+	return out
+}
+
+// ungradedFlipOnSizedAreas refuses the save when a piece turning UNI on already carries per-size
+// areas, and returns nil otherwise. Отказ той же природы и того же вида, что и
+// ungraded_piece_measured_by_size на записи площадей: та же беда, увиденная с другого конца.
+//
+// Названы ВСЕ виновники сразу, а поле указывает на первого: чинить их всё равно одним заходом на
+// вкладке выкроек, и отказ, выдающий их по одному, отправил бы человека мерить пять раз подряд.
+func ungradedFlipOnSizedAreas(pieces []entity.TechCardPiece, flips map[string]int, sizedAreas map[string]bool) *entity.ValidationError {
+	offenders := make([]int, 0, len(flips))
+	for key, idx := range flips {
+		if sizedAreas[key] {
+			offenders = append(offenders, idx)
+		}
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	sort.Ints(offenders)
+	names := make([]string, 0, len(offenders))
+	for _, i := range offenders {
+		name := strings.TrimSpace(pieces[i].Name)
+		if name == "" {
+			name = strings.TrimSpace(pieces[i].LineKey)
+		}
+		names = append(names, "«"+name+"»")
+	}
+	return entity.NewFieldViolation(
+		fmt.Sprintf("pieces[%d].ungraded", offenders[0]),
+		"ungraded_piece_has_sized_areas",
+		strings.Join(names, ", "),
+		"сначала перемерьте площади: у детали лежат пер-размерные замеры, а у неградуируемой детали бывает "+
+			"только один — безразмерный. Пересчитайте площади этой ткани на вкладке выкроек (или снимите "+
+			"пометку UNI); сервер не стирает измеренную геометрию сам")
+}
+
 // sameMeasurement reports whether a submitted set is byte-for-byte what is already stored, under the
 // same source fingerprint. Compared field by field rather than by a digest so that adding a column
 // later cannot silently make two different measurements look equal.

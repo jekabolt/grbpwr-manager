@@ -49,6 +49,11 @@ type pieceExistingRow struct {
 	// Name rides only the recipe path's SELECT (T4): the «две основные на одной детали» refusal
 	// names the piece. The pieces upsert's own query leaves it empty.
 	Name string `db:"name"`
+	// Ungraded rides only the pieces upsert's own SELECT (0302): включение флага проверяется против
+	// уже измеренных площадей, а для этого нужно ХРАНИМОЕ значение — по присланному переход не
+	// отличить от повторного сохранения того же. Прочие пути этот столбец не выбирают, и false у них
+	// ничего не значит.
+	Ungraded bool `db:"ungraded"`
 }
 
 // calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
@@ -173,13 +178,33 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 	}
 
 	existingRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, db,
-		`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+		`SELECT id, line_key, ungraded FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
 	if err != nil {
 		return fmt.Errorf("failed to load existing pieces: %w", err)
 	}
 	existingByKey := make(map[string]int, len(existingRows))
+	storedUngraded := make(map[string]bool, len(existingRows))
 	for _, r := range existingRows {
 		existingByKey[r.LineKey] = r.Id
+		storedUngraded[r.LineKey] = r.Ungraded
+	}
+
+	// ПОМЕТИТЬ ДЕТАЛЬ UNI МОЖНО, ТОЛЬКО ЕСЛИ ЕЁ ПЛОЩАДИ НЕ ИЗМЕРЕНЫ ПО РАЗМЕРАМ. Правило целиком, с
+	// доводами, живёт в piece_area.go рядом со вторым его концом — отказом на записи площадей;
+	// здесь только место, где переход происходит, и оно обязано быть В ТОЙ ЖЕ транзакции, что и
+	// сохранение карточки, иначе проверка судила бы о площадях, которые к моменту записи флага уже
+	// другие.
+	//
+	// Запрос к площадям делается ТОЛЬКО когда что-то реально включается: на всей сегодняшней базе
+	// помеченных деталей нет, значит обычное сохранение карточки не платит за это правило ничем.
+	if flips := ungradedFlipKeys(pieces, storedUngraded); len(flips) > 0 {
+		sizedAreas, err := sizedAreaPieceKeys(ctx, db, tcID)
+		if err != nil {
+			return err
+		}
+		if ve := ungradedFlipOnSizedAreas(pieces, flips, sizedAreas); ve != nil {
+			return ve
+		}
 	}
 
 	seen := make(map[string]bool, len(pieces))
