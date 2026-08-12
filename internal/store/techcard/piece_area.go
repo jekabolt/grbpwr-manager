@@ -427,8 +427,16 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		if len(expected) == 0 {
 			// Без привязок блоков полноту доказать НЕЧЕМ, и «примем что дали» здесь — это молчаливое
 			// согласие на любой недобор.
+			//
+			// ТЕКСТ НАЗЫВАЕТ МЕСТО И ДЕЙСТВИЕ, А НЕ ЗАДАЧУ. Прежний («link the DXF blocks to the
+			// pieces first») отправлял связывать блоки — и попадал в оператора, который их уже
+			// связал: сопоставление живёт в форме карточки, пишется через setValue и до сохранения
+			// карточки на сервер не приезжает вовсе. Человек смотрел в модалку, где связано всё, и
+			// читал отказ как поломку. После починки скоупа (личность ткани вместо ведра записи,
+			// см. scopeBlockRefs) это остаётся ЕДИНСТВЕННОЙ живой причиной пустоты здесь — значит
+			// именно её и надо называть первой.
 			return entity.NewFieldViolation("scope_key", "scope_has_no_block_links", scopeKey,
-				"this fabric scope has no блок→деталь links, so a complete set cannot be proven — link the DXF blocks to the pieces first")
+				"this fabric scope has no SAVED блок→деталь links, so a complete set cannot be proven. Open «↔ детали кроя» for this fabric on the PATTERNS tab, save the mapping, then save the card — a mapping that exists only in the form is invisible here")
 		}
 		// Детали карточки — для отдельной, более понятной жалобы на ключ, которого вообще нет.
 		pieces, err := storeutil.QueryListNamed[struct {
