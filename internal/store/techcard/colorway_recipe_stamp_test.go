@@ -134,3 +134,43 @@ func TestDxfProvenanceCarriesAndNeverStamps(t *testing.T) {
 		require.False(t, carriedSlotStamp(priors, entity.ConsumptionSourceDxf).Valid)
 	})
 }
+
+// ЭХО ХРАНИМОГО ШТАМПА ПРОТИВ НОВОГО УТВЕРЖДЕНИЯ. На этом различии держится освобождение от
+// marker_not_on_card: сегодняшний клиент перечитывает штамп и шлёт его обратно ЯВНО на каждом
+// полном перезаписывании рецепта, поэтому удалённая раскладка иначе запирает правку рецепта
+// целиком. Проверяется без базы — предикат чистый, а ошибка в нём стоит либо запертого рецепта
+// (слишком строг), либо принятого чужого id (слишком мягок).
+func TestSlotHoldsStampSeparatesEchoFromNewClaim(t *testing.T) {
+	id := func(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }
+	marker := func(v int64) usageProvenance {
+		return usageProvenance{source: entity.ConsumptionSourceMarker, markerID: id(v)}
+	}
+
+	t.Run("прошлого нет — любой id это новое утверждение", func(t *testing.T) {
+		require.False(t, slotHoldsStamp(nil, 5))
+	})
+
+	t.Run("тот же id — эхо", func(t *testing.T) {
+		require.True(t, slotHoldsStamp([]usageProvenance{marker(5)}, 5))
+	})
+
+	t.Run("другой id — новое утверждение, проверяется как прежде", func(t *testing.T) {
+		require.False(t, slotHoldsStamp([]usageProvenance{marker(5)}, 7),
+			"подмена штампа на чужой id обязана доехать до отказа")
+	})
+
+	t.Run("ручная строка штампа не держит", func(t *testing.T) {
+		manual := usageProvenance{source: entity.ConsumptionSourceManual, markerID: id(5)}
+		require.False(t, slotHoldsStamp([]usageProvenance{manual}, 5),
+			"normalized() чистит штамп у неручного источника — ручная строка не оправдывает id")
+	})
+
+	// СЛОТ С ДВУМЯ ЗАКОННЫМИ ПОВТОРЯЮЩИМИСЯ СТРОКАМИ. Согласия здесь нет ни по какому определению
+	// (одна строка ручная), и ни agreedSlotProvenance, ни пин материала на таком слоте ничего не
+	// переносят. Но вопрос «лежал ли этот id на слоте» — закрытый, и неоднозначность на него не
+	// влияет: иначе повторяющаяся строка запирала бы рецепт ровно там, где одиночная проходит.
+	t.Run("разногласие на слоте эхо не отменяет", func(t *testing.T) {
+		priors := []usageProvenance{{source: entity.ConsumptionSourceManual}, marker(5)}
+		require.True(t, slotHoldsStamp(priors, 5))
+	})
+}

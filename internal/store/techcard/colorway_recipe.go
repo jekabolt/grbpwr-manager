@@ -153,6 +153,26 @@ func carriedSlotStamp(rows []usageProvenance, source string) sql.NullInt64 {
 	return found
 }
 
+// slotHoldsStamp reports whether id is a stamp THIS SLOT ALREADY CARRIES — i.e. whether the client
+// is echoing back a раскладка the row was stamped with earlier, rather than naming a new one.
+//
+// Это МЕМБЕРШИП, А НЕ ВЫБОР, и потому здесь нет оговорки «ровно одна прежняя строка», которой
+// связаны пин материала и carriedSlotStamp. Тем двоим неоднозначность мешает по существу: они
+// РЕШАЮТ, какое значение перенести, и наугад выбранное выглядело бы фактом. Здесь же вопрос
+// закрытый — «это число уже лежало на слоте?» — и на него две законные повторяющиеся строки
+// отвечают ничуть не хуже одной.
+//
+// Читается нормализованная форма: у ручной строки штампа не бывает по построению (normalized его
+// чистит), так что несовпадение источника отсеивается само.
+func slotHoldsStamp(rows []usageProvenance, id int64) bool {
+	for _, r := range rows {
+		if n := r.normalized(); n.markerID.Valid && n.markerID.Int64 == id {
+			return true
+		}
+	}
+	return false
+}
+
 // stampAppliedAt settles the Ф6.8 timestamp for a resolved row. THE ONE RULE: the stamp moves to
 // `now` only when the slot held NO row with this same (source, marker id) pair; a matching row hands
 // its moment across verbatim.
@@ -610,9 +630,20 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		// той же строкой не оправдывается. Без проверки экран печатал бы «раскладка удалена» на
 		// клиентской опечатке и на чужой карточке одинаково, то есть врал бы правдоподобно.
 		//
-		// Проверяется ТОЛЬКО присланное явно. Перенесённый штамп не проверяется никогда: раскладку
-		// могли удалить между применением и этим сохранением, и отказ здесь запер бы правку рецепта
-		// до тех пор, пока кто-нибудь не разберётся с чужой раскладкой.
+		// ПРОВЕРЯЕТСЯ НОВОЕ, А НЕ ЭХО. Перенесённый штамп (клиент про поле промолчал) не проверяется
+		// никогда, и ТОЧНО ТАК ЖЕ проходит явно присланный штамп, КОТОРЫЙ НА ЭТОМ СЛОТЕ УЖЕ ЛЕЖИТ.
+		// Здесь раньше стояла одна оговорка про перенос, и она описывала не то, что делает код:
+		// сегодняшний клиент читает хранимый штамп и шлёт его обратно ЯВНО на каждом полном
+		// перезаписывании рецепта, так что после удаления раскладки отказ срабатывал ровно там, где
+		// комментарий обещал, что не сработает, — и запирал правку рецепта до ручной демотации нормы.
+		//
+		// Гвард на удаление раскладки был бы вторым отказом вместо первого: человек оказался бы между
+		// «нельзя удалить, на неё ссылается рецепт» и «нельзя сохранить рецепт, раскладки нет».
+		// Освобождение НЕИЗМЕНЁННОГО значения — тот же приём, которым в этом файле уже разрешён
+		// круговой рейс пина на АРХИВНЫЙ артикул (см. material_archived ниже): клиент сознательно
+		// возвращает то, что прочитал, и отказ на этом бил бы по правке соседнего поля, ничего не
+		// починив. Новое или ИЗМЕНЁННОЕ значение проверяется как прежде — им клиент делает
+		// утверждение, а не повторяет чужое.
 		explicitStamps := make([]int64, 0, len(resolved))
 		for i := range resolved {
 			if resolved[i].usage.NormMarkerIdSet && resolved[i].provenance.markerID.Valid {
@@ -621,14 +652,15 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		}
 		if len(explicitStamps) > 0 {
 			type stampRow struct {
-				Id          int64  `db:"id"`
-				Name        string `db:"name"`
-				IsDraft     bool   `db:"is_draft"`
-				PlacedCount int    `db:"placed_count"`
-				TotalCount  int    `db:"total_count"`
+				Id          int64         `db:"id"`
+				Name        string        `db:"name"`
+				RunId       sql.NullInt64 `db:"run_id"`
+				IsDraft     bool          `db:"is_draft"`
+				PlacedCount int           `db:"placed_count"`
+				TotalCount  int           `db:"total_count"`
 			}
 			known, err := storeutil.QueryListNamed[stampRow](ctx, rep.DB(), `
-				SELECT id, name, is_draft, placed_count, total_count
+				SELECT id, name, run_id, is_draft, placed_count, total_count
 				FROM tech_card_marker WHERE tech_card_id = :card AND id IN (:ids)`,
 				map[string]any{"card": cur.StyleID, "ids": explicitStamps})
 			if err != nil {
@@ -645,9 +677,38 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				id := resolved[i].provenance.markerID.Int64
 				row, onThisCard := onCard[id]
 				if !onThisCard {
+					// ЭХО УЖЕ ХРАНИМОГО ШТАМПА ПРОХОДИТ, И ИМЕННО ЗДЕСЬ — на «раскладки нет», потому
+					// что это единственный отказ, который висящий id вызывает законно: раскладку
+					// удалили после применения. Слот берётся тот же, что у пина материала строкой
+					// ниже (bom_item_id, piece_id, нормализованное placement).
+					pinSlot := newRecipeUsagePinSlot(
+						newRecipeUsageSlot(resolved[i].bomItemID, resolved[i].pieceID),
+						resolved[i].usage.Placement,
+					)
+					if slotHoldsStamp(priorProvenanceBySlot[pinSlot], id) {
+						continue
+					}
 					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
 						"marker_not_on_card", fmt.Sprintf("раскладка %d", id),
 						"the norm stamp must name a раскладка of this tech card — send 0 to clear it")
+				}
+				// РАСКРОЙНАЯ РАСКЛАДКА ПРОГОНА ИСТОЧНИКОМ НОРМЫ НЕ БЫВАЕТ (Ф4, 0282). Она принадлежит
+				// прогону, умирает вместе с ним (CASCADE) и нормой быть не может по
+				// chk_tcm_run_not_norm — то есть штамп на неё это ссылка на источник, которого не
+				// бывает: строка рецепта утверждала бы, что её расход снят с раскладки, которую
+				// карточка никогда не признавала нормой и которая исчезнет с прогоном.
+				//
+				// Отдельная причина, а не marker_not_on_card: карточку раскладка как раз называет
+				// правильно (tech_card_id совпадает — потому запрос выше её и находит), неверна её
+				// ПРИНАДЛЕЖНОСТЬ. Клиент такого не шлёт (markersOfColorway отсеивает прогонные до
+				// того, как их можно выбрать), так что это доводка провода, а не поломка экрана.
+				if row.RunId.Valid {
+					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
+						"marker_belongs_to_run",
+						fmt.Sprintf("раскладка %d принадлежит прогону %d", id, row.RunId.Int64),
+						"источником нормы может быть только карточная раскладка: раскройная умирает "+
+							"вместе со своим прогоном и нормой быть не может — примените норму с "+
+							"карточной раскладки этой ткани или пришлите 0, чтобы снять штамп")
 				}
 				// И ТОТ ЖЕ ЗАПРОС ОТКАЗЫВАЕТ ЧЕРНОВИКУ (0299). Штамп утверждает «расход в этой строке
 				// взят вот с той раскладки», а черновик расхода не называет ВООБЩЕ: на проводе у него
