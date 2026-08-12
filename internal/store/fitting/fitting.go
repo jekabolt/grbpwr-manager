@@ -16,13 +16,21 @@ import (
 // sample must belong to the fitting's tech card; when the fitting has no tech card set, it inherits
 // the sample's so round auto-numbering and the style's fitting list/rounds include it. No sample
 // linked → nothing to do.
+//
+// It also inherits the ROUND from that sample when the caller sent none: post-WS6 (§2.7) the
+// authoritative round is the sample's (sample.round_number), and a fitting is an event on it — so a
+// try-on of a round-2 sample belongs to round 2, not to whatever the per-card try-on counter would
+// have invented next. Several fittings legitimately share a round (0300 dropped the UNIQUE that
+// used to reject the second one).
 func resolveFittingSample(ctx context.Context, db dependency.DB, f *entity.FittingInsert) error {
 	if !f.SampleId.Valid {
 		return nil
 	}
-	tc, err := storeutil.QueryNamedOne[struct {
-		TechCardId int `db:"tech_card_id"`
-	}](ctx, db, `SELECT tech_card_id FROM sample WHERE id = :id`, map[string]any{"id": f.SampleId.Int32})
+	sm, err := storeutil.QueryNamedOne[struct {
+		TechCardId  int           `db:"tech_card_id"`
+		RoundNumber sql.NullInt32 `db:"round_number"`
+	}](ctx, db, `SELECT tech_card_id, round_number FROM sample WHERE id = :id`,
+		map[string]any{"id": f.SampleId.Int32})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return entity.ErrSampleForeignToCard
@@ -30,12 +38,15 @@ func resolveFittingSample(ctx context.Context, db dependency.DB, f *entity.Fitti
 		return fmt.Errorf("load fitting sample %d: %w", f.SampleId.Int32, err)
 	}
 	if f.TechCardId.Valid {
-		if int(f.TechCardId.Int32) != tc.TechCardId {
+		if int(f.TechCardId.Int32) != sm.TechCardId {
 			return entity.ErrSampleForeignToCard
 		}
-		return nil
+	} else {
+		f.TechCardId = sql.NullInt32{Int32: int32(sm.TechCardId), Valid: true}
 	}
-	f.TechCardId = sql.NullInt32{Int32: int32(tc.TechCardId), Valid: true}
+	if !f.RoundNumber.Valid {
+		f.RoundNumber = sm.RoundNumber
+	}
 	return nil
 }
 
@@ -74,9 +85,12 @@ func (s *Store) AddFitting(ctx context.Context, f *entity.FittingInsert) (int, e
 			return err
 		}
 		params := fittingParams(f)
-		// Auto-assign the round number within the tx when it is not set and the fitting is
-		// anchored to a tech card, so a style's try-ons number themselves 1, 2, 3, …. A manual
-		// round_number is honoured; the uniq_fitting_round index guards a concurrent collision.
+		// Fallback numbering for a fitting outside the round spine — no sample, or a legacy sample
+		// that predates round_number (0170): number those 1, 2, 3, … within the card. A fitting on a
+		// sample that HAS a round never reaches this branch; resolveFittingSample above already gave
+		// it that round, which is the authoritative one. A manual round_number is honoured either
+		// way, and rounds are no longer unique per card (0300), so a concurrent insert can only
+		// produce a shared number, never an error.
 		if !f.RoundNumber.Valid && f.TechCardId.Valid {
 			next, err := storeutil.QueryCountNamed(ctx, rep.DB(),
 				`SELECT COALESCE(MAX(round_number), 0) + 1 FROM fitting WHERE tech_card_id = :tc`,
