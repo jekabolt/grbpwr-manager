@@ -39,6 +39,12 @@
 -- падения не застаёт полусостояния. PREPARE/EXECUTE/DEALLOCATE по одному оператору на строку
 -- (multiStatements=true в контейнерных тестах замаскировал бы баг, который прод не переживёт).
 -- 0001 не редактируется.
+--
+-- НОМЕР 0301, А НЕ 0300: 0300 заняла соседняя сессия (fitting_round_not_unique), и файл был
+-- переименован ПОСЛЕ применения на бете. Строку в gorp_migrations там переименовали вместе с
+-- ним: sql-migrate отслеживает миграции по ПОЛНОМУ имени файла, поэтому переименование
+-- применённой миграции без правки строки оставляет в базе запись, которой нет среди файлов,
+-- и деплой клинит на «unknown migration in database».
 
 SET @old_fk := (SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_item'
