@@ -120,25 +120,32 @@ func (cs calloutSync) apply(p *entity.TechCardPiece) {
 //
 // The INSERT is deliberately NOT guarded: a brand-new row has no stored value to carry, so "omitted"
 // and "explicitly unknown" are the same NULL — «не размечено».
+//
+// ungraded (0302) охраняется ТЕМ ЖЕ механизмом и по той же причине: у голого bool ноль неотличим от
+// молчания, поэтому сохранение из вкладки, которая про градацию не спрашивает, сняло бы пометку со
+// всех деталей карточки — незаметно, потому что снятая пометка выглядит как обычная карточка. Три
+// ноги контракта те же самые: optional в прото, IF(:ungraded_omitted, …) здесь и
+// carryOmittedPieceUngradedFrom перед пересчётом дайджеста CONSTRUCTION.
 const (
 	pieceUpdateQuery = `
 				UPDATE tech_card_piece SET
 					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
 					cut_symmetry=IF(:cut_symmetry_omitted, cut_symmetry, :cut_symmetry),
+					ungraded=IF(:ungraded_omitted, ungraded, :ungraded),
 					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
 				WHERE id=:id`
 
 	pieceInsertQuery = `
 				INSERT INTO tech_card_piece
-					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note, display_order)
-				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :grainline, :fused, :callout_number, :detached, :note, :display_order)`
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :callout_number, :detached, :note, :display_order)`
 
 	// The read side of the same row. It has to SELECT every column the write writes and the digest
 	// hashes: a field the write stores and the read never loads makes the two projections permanently
 	// disagree, and the sign-off it feeds can never match its own stored digest again — the failure the
 	// piece-material read's line_key note records having already paid for once.
 	pieceReadQuery = `
-		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note
+		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, callout_number, detached, note
 		FROM tech_card_piece
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order, id`
@@ -205,6 +212,8 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			"mirrored":             p.Mirrored,
 			"cut_symmetry":         p.CutSymmetry,
 			"cut_symmetry_omitted": p.CutSymmetryOmitted,
+			"ungraded":             p.Ungraded,
+			"ungraded_omitted":     p.UngradedOmitted,
 			"grainline":            p.Grainline,
 			"fused":                p.Fused,
 			"callout_number":       p.CalloutNumber,

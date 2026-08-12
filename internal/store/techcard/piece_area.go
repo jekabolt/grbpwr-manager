@@ -248,6 +248,11 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 // A mixture (a sizeless row AND sized rows for the same piece) is not a partial answer: it is two
 // contradicting statements about the piece, and picking either one would be inventing the operator's
 // intent.
+//
+// КАКУЮ ИЗ ДВУХ ФОРМ ВЫБРАТЬ — эта функция не решает и решать не может: она видит только замер.
+// Деталь, ПОМЕЧЕННУЮ безразмерной (ungraded, 0302), первая форма обязывает — это проверяет
+// ungradedPieceSizedDiff рядом, и вызывается он РАНЬШЕ. Читать этот комментарий как «законны обе
+// формы для любой детали» больше нельзя.
 func sizeCoverageDiff(sizesByPiece map[string]map[int]bool, cardSizes []int) string {
 	var problems []string
 	pieces := make([]string, 0, len(sizesByPiece))
@@ -257,12 +262,15 @@ func sizeCoverageDiff(sizesByPiece map[string]map[int]bool, cardSizes []int) str
 	sort.Strings(pieces)
 	for _, p := range pieces {
 		got := sizesByPiece[p]
-		ungraded := got[0]
-		sized := len(got) - boolToInt(ungraded)
+		// sizeless — «есть строка без размера» (size_id = 0), то есть свойство ЗАМЕРА. Не путать с
+		// ungraded, свойством САМОЙ детали: первое — что прислали, второе — что карточка утверждает.
+		// Разъехаться они могут в обе стороны, и именно поэтому проверок две.
+		sizeless := got[0]
+		sized := len(got) - boolToInt(sizeless)
 		switch {
-		case ungraded && sized > 0:
+		case sizeless && sized > 0:
 			problems = append(problems, p+": measured both with and without a size")
-		case ungraded:
+		case sizeless:
 			// One sizeless row is a complete answer by itself.
 		case len(cardSizes) == 0:
 			problems = append(problems, p+": the card declares no size range, so a sized measurement cannot be complete")
@@ -286,6 +294,44 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ungradedPieceSizedDiff returns "" when no piece the card DECLARES ungraded (UNI, 0302) was measured
+// per size, and a readable Russian description of the offenders otherwise. Ключи те же
+// (uppercase line_key), что и у sizeCoverageDiff, — сравнение идёт по одному и тому же замеру.
+//
+// ПРОВЕРКА ОДНОСТОРОННЯЯ, И ЭТО НЕ ПОЛОВИНА ПРАВИЛА. Пометка UNI значит «второго контура у детали не
+// существует», поэтому пер-размерный замер помеченной детали — это либо замер не той детали, либо
+// устаревшая пометка; в обоих случаях число, которое сохранилось бы молча, отвечает не на тот
+// вопрос. Обратное же — безразмерная строка у НЕПОМЕЧЕННОЙ детали — остаётся законным: поле
+// появилось позже всех живых карточек и на них стоит по умолчанию false, так что запрет второй
+// стороны сделал бы неспасаемой каждую карточку, замеренную до 0302, ничего при этом не узнав.
+//
+// Деталь называется по ИМЕНИ, а не по line_key: этот отказ читает человек, который открыл вкладку и
+// видит там «карман», а не 26 символов ULID. Ключ остаётся в тексте лишь как запасное имя для
+// детали, у которой имени нет.
+func ungradedPieceSizedDiff(sizesByPiece map[string]map[int]bool, ungradedNames map[string]string) string {
+	var problems []string
+	pieces := make([]string, 0, len(sizesByPiece))
+	for p := range sizesByPiece {
+		pieces = append(pieces, p)
+	}
+	sort.Strings(pieces)
+	for _, p := range pieces {
+		name, ok := ungradedNames[p]
+		if !ok {
+			continue
+		}
+		got := sizesByPiece[p]
+		if sized := len(got) - boolToInt(got[0]); sized == 0 {
+			continue
+		}
+		if name == "" {
+			name = p
+		}
+		problems = append(problems, fmt.Sprintf("«%s»: деталь помечена как безразмерная (UNI), но замер прислан по размерам", name))
+	}
+	return strings.Join(problems, "; ")
 }
 
 // sameMeasurement reports whether a submitted set is byte-for-byte what is already stored, under the
@@ -439,17 +485,28 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 				"this fabric scope has no SAVED блок→деталь links, so a complete set cannot be proven. Open «↔ детали кроя» for this fabric on the PATTERNS tab, save the mapping, then save the card — a mapping that exists only in the form is invisible here")
 		}
 		// Детали карточки — для отдельной, более понятной жалобы на ключ, которого вообще нет.
+		//
+		// Имя и флаг UNI (0302) читаются здесь же, ОДНИМ запросом внутри той же транзакции: имя —
+		// чтобы отказ называл деталь так, как её зовёт конструктор, а не двадцатью шестью символами
+		// ULID; флаг — потому что «эта деталь одна на весь ряд» теперь хранимое заявление карточки, и
+		// проверять замер против него надо тем же снимком, в котором проверялся состав комплекта.
 		pieces, err := storeutil.QueryListNamed[struct {
-			LineKey string `db:"line_key"`
-		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_piece WHERE tech_card_id = :id`,
+			LineKey  string `db:"line_key"`
+			Name     string `db:"name"`
+			Ungraded bool   `db:"ungraded"`
+		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, name, ungraded FROM tech_card_piece WHERE tech_card_id = :id`,
 			map[string]any{"id": in.TechCardId})
 		if err != nil {
 			return fmt.Errorf("load pieces of tech card %d: %w", in.TechCardId, err)
 		}
 		known := make(map[string]bool, len(pieces))
+		ungradedNames := map[string]string{}
 		for _, p := range pieces {
 			if k := strings.ToUpper(strings.TrimSpace(p.LineKey)); k != "" {
 				known[k] = true
+				if p.Ungraded {
+					ungradedNames[k] = strings.TrimSpace(p.Name)
+				}
 			}
 		}
 		sizeRows, err := storeutil.QueryListNamed[struct {
@@ -523,6 +580,15 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		// Деталь либо НЕ ГРАДУИРУЕТСЯ (ровно одна строка с пустым размером — она входит в каждый
 		// размер целиком), либо градуируется и обязана иметь строку на КАЖДЫЙ размер ряда. Смесь
 		// этих двух форм у одной детали — не «частичный ответ», а два разных утверждения о ней.
+		//
+		// ЗАЯВЛЕННАЯ БЕЗРАЗМЕРНОСТЬ ПРОВЕРЯЕТСЯ ПЕРВОЙ, потому что она объясняет причину точнее.
+		// Помеченная UNI деталь, присланная по размерам, провалила бы и проверку ниже — но та
+		// сказала бы «не хватает размеров» и отправила бы оператора домеривать то, чего у детали
+		// нет.
+		if diff := ungradedPieceSizedDiff(sizesByPiece, ungradedNames); diff != "" {
+			return entity.NewFieldViolation("areas", "ungraded_piece_measured_by_size", diff,
+				"деталь помечена как безразмерная (UNI): её контур один на весь ряд, поэтому у неё бывает ровно одна строка замера — без размера. Либо снимите пометку UNI на вкладке деталей кроя, либо померьте эту деталь один раз")
+		}
 		if diff := sizeCoverageDiff(sizesByPiece, cardSizeOrder); diff != "" {
 			return entity.NewFieldViolation("areas", "size_set_incomplete", diff,
 				"measure every size of the card's range for each piece (or exactly once with no size when the piece does not grade)")

@@ -257,6 +257,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// entity.ValidatePieceCutSymmetry instead of by a raw two-column CHECK naming a field it did touch
 	// and a field it did not.
 	carryOmittedPieceCutSymmetryFrom(stored, tc)
+	// UNI (0302) — третья ветка того же контракта, на той же секции CONSTRUCTION. Без переноса
+	// подпись, поставленная из вкладки, которая про градацию не спрашивает, хешировала бы «не
+	// помечено» поверх колонки, где пометка стоит.
+	carryOmittedPieceUngradedFrom(stored, tc)
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}

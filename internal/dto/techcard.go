@@ -2558,11 +2558,18 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			Mirrored:           p.Mirrored,
 			CutSymmetry:        cutSymmetry,
 			CutSymmetryOmitted: cutSymmetryOmitted,
-			Grainline:          grainline,
-			Fused:              p.Fused,
-			CalloutNumber:      calloutNumber,
-			Note:               nullStringFromPb(p.Note),
-			Materials:          materials,
+			// UNI (0302) — заявление конструктора «эта деталь одна на весь ряд», а не догадка по имени
+			// блока DXF. Как и у cut_symmetry рядом, значимо ПРИСУТСТВИЕ: отсутствие поля — это
+			// молчание старой вкладки, и стирать им пометку нельзя. Проверять здесь больше нечего —
+			// единственное правило, которое из флага следует (помеченной детали нельзя мерить площадь
+			// по размерам), живёт на записи площадей, там же, где лежат сами строки замера.
+			Ungraded:        p.GetUngraded(),
+			UngradedOmitted: p.Ungraded == nil,
+			Grainline:       grainline,
+			Fused:           p.Fused,
+			CalloutNumber:   calloutNumber,
+			Note:            nullStringFromPb(p.Note),
+			Materials:       materials,
 		})
 	}
 	return out, nil
@@ -3174,7 +3181,13 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			// nil would make "cutSymmetry" VANISH from the JSON of every unmarked piece — which is most
 			// of them today — and a client round-tripping what it read would then send nothing back and
 			// look, to the store, exactly like the stale tab this design is protecting against.
-			CutSymmetry:   pbPtr(PieceCutSymmetryToPb(p.CutSymmetry)),
+			CutSymmetry: pbPtr(PieceCutSymmetryToPb(p.CutSymmetry)),
+			// UNI (0302): ВСЕГДА присутствует на чтении, по тому же доводу, что и cut_symmetry выше —
+			// optional существует, чтобы неговорящий клиент не стёр пометку, а не чтобы сервер молчал.
+			// Отдать nil значило бы, что у непомеченной детали (а таких сегодня почти все) поле из
+			// JSON пропадает, и клиент, честно возвращающий прочитанное, выглядел бы для стора ровно
+			// той старой вкладкой, от которой всё это и защищает.
+			Ungraded:      pbPtr(p.Ungraded),
 			Grainline:     p.Grainline,
 			Fused:         p.Fused,
 			CalloutNumber: calloutNumber,
