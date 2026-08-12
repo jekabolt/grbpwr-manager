@@ -2458,10 +2458,24 @@ type TechCardPiece struct {
 	// send it, and a bare proto3 enum's zero value is UNKNOWN, so without the distinction that tab's
 	// save would clear the marking on every piece of the card — and unlike направление, the marking
 	// cannot be recovered without a human holding the patterns.
-	CutSymmetryOmitted bool          `db:"-"`
-	Grainline          string        `db:"grainline"`
-	Fused              bool          `db:"fused"`
-	CalloutNumber      sql.NullInt32 `db:"callout_number"`
+	CutSymmetryOmitted bool `db:"-"`
+	// Ungraded — деталь НЕ ГРАДУИРУЕТСЯ (UNI, 0302): её контур один на весь ряд и входит в комплект
+	// каждого размера целиком (карман, шлёвка, обтачка). Это заявление конструктора, а не вывод из
+	// имени блока DXF — эвристика по имени ошибается молча в обе стороны (см. заголовок 0302).
+	//
+	// Читателям: false НЕ значит «градуируется». Поле появилось позже всех живых карточек и на них
+	// стоит по умолчанию, поэтому единственное, что оно позволяет утверждать, — это true. Отсюда и
+	// односторонняя проверка на замере площадей: помеченной детали пер-размерные строки запрещены,
+	// а безразмерная строка у непомеченной остаётся законной.
+	Ungraded bool `db:"ungraded"`
+	// UngradedOmitted — поля НЕ БЫЛО на проводе, а не «пришло пустым»: тот же отрицательный смысл и
+	// та же причина, что у CutSymmetryOmitted рядом. У голого bool ноль неотличим от «не сказал», и
+	// без этого различия сохранение из вкладки, которая про градацию не спрашивает, снимало бы
+	// пометку со всех деталей карточки.
+	UngradedOmitted bool          `db:"-"`
+	Grainline       string        `db:"grainline"`
+	Fused           bool          `db:"fused"`
+	CalloutNumber   sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.

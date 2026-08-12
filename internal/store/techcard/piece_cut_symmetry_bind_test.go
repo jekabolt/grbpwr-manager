@@ -20,6 +20,8 @@ func pieceUpsertParams() map[string]any {
 		"mirrored":             false,
 		"cut_symmetry":         sql.NullString{String: "mirrored", Valid: true},
 		"cut_symmetry_omitted": false,
+		"ungraded":             false,
+		"ungraded_omitted":     false,
 		"grainline":            "lengthwise",
 		"fused":                false,
 		"callout_number":       sql.NullInt32{},

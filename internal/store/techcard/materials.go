@@ -49,6 +49,11 @@ type pieceExistingRow struct {
 	// Name rides only the recipe path's SELECT (T4): the «две основные на одной детали» refusal
 	// names the piece. The pieces upsert's own query leaves it empty.
 	Name string `db:"name"`
+	// Ungraded rides only the pieces upsert's own SELECT (0302): включение флага проверяется против
+	// уже измеренных площадей, а для этого нужно ХРАНИМОЕ значение — по присланному переход не
+	// отличить от повторного сохранения того же. Прочие пути этот столбец не выбирают, и false у них
+	// ничего не значит.
+	Ungraded bool `db:"ungraded"`
 }
 
 // calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
@@ -120,25 +125,32 @@ func (cs calloutSync) apply(p *entity.TechCardPiece) {
 //
 // The INSERT is deliberately NOT guarded: a brand-new row has no stored value to carry, so "omitted"
 // and "explicitly unknown" are the same NULL — «не размечено».
+//
+// ungraded (0302) охраняется ТЕМ ЖЕ механизмом и по той же причине: у голого bool ноль неотличим от
+// молчания, поэтому сохранение из вкладки, которая про градацию не спрашивает, сняло бы пометку со
+// всех деталей карточки — незаметно, потому что снятая пометка выглядит как обычная карточка. Три
+// ноги контракта те же самые: optional в прото, IF(:ungraded_omitted, …) здесь и
+// carryOmittedPieceUngradedFrom перед пересчётом дайджеста CONSTRUCTION.
 const (
 	pieceUpdateQuery = `
 				UPDATE tech_card_piece SET
 					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
 					cut_symmetry=IF(:cut_symmetry_omitted, cut_symmetry, :cut_symmetry),
+					ungraded=IF(:ungraded_omitted, ungraded, :ungraded),
 					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
 				WHERE id=:id`
 
 	pieceInsertQuery = `
 				INSERT INTO tech_card_piece
-					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note, display_order)
-				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :grainline, :fused, :callout_number, :detached, :note, :display_order)`
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :callout_number, :detached, :note, :display_order)`
 
 	// The read side of the same row. It has to SELECT every column the write writes and the digest
 	// hashes: a field the write stores and the read never loads makes the two projections permanently
 	// disagree, and the sign-off it feeds can never match its own stored digest again — the failure the
 	// piece-material read's line_key note records having already paid for once.
 	pieceReadQuery = `
-		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, grainline, fused, callout_number, detached, note
+		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, callout_number, detached, note
 		FROM tech_card_piece
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order, id`
@@ -166,21 +178,53 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 	}
 
 	existingRows, err := storeutil.QueryListNamed[pieceExistingRow](ctx, db,
-		`SELECT id, line_key FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+		`SELECT id, line_key, ungraded FROM tech_card_piece WHERE tech_card_id = :id`, map[string]any{"id": tcID})
 	if err != nil {
 		return fmt.Errorf("failed to load existing pieces: %w", err)
 	}
 	existingByKey := make(map[string]int, len(existingRows))
+	storedUngraded := make(map[string]bool, len(existingRows))
 	for _, r := range existingRows {
 		existingByKey[r.LineKey] = r.Id
+		storedUngraded[r.LineKey] = r.Ungraded
+	}
+
+	// ИМЕНА С ВЫНОСОК — ДО ГАРДА, А НЕ ВНУТРИ ЦИКЛА ЗАПИСИ. cs.apply выводит имя детали из её
+	// технической выноски (S8/S7) и помечает detached оторвавшиеся; работа независимая для каждой
+	// детали, поэтому её порядок не меняет ничего — кроме одного: отказ ниже НАЗЫВАЕТ деталь, и
+	// назвать её он обязан так, как она подписана на карточке, а не ULID'ом с провода.
+	for i := range pieces {
+		cs.apply(&pieces[i])
+	}
+
+	// ПОМЕТИТЬ ДЕТАЛЬ UNI МОЖНО, ТОЛЬКО ЕСЛИ ЕЁ ПЛОЩАДИ НЕ ИЗМЕРЕНЫ ПО РАЗМЕРАМ. Правило целиком, с
+	// доводами, живёт в piece_area.go рядом со вторым его концом — отказом на записи площадей; здесь
+	// только место, где переход происходит.
+	//
+	// ЧТО ИМЕННО ГАРАНТИРУЕТ ЭТО ЧТЕНИЕ. Само по себе — ничего против гонки: обычный snapshot-SELECT
+	// не видит незакоммиченный замер, и одной «той же транзакции» здесь не хватает. Пару
+	// сериализует строка tech_card: этот путь уже держит на ней X-замок (UPDATE tech_card SET
+	// lock_version = … выполняется ДО записи детей), а путь замера берёт её FOR UPDATE первым же
+	// действием своей транзакции. Поэтому замер либо целиком до нас (и мы видим его строки), либо
+	// целиком после (и его собственная проверка видит нашу пометку); середины нет. Убрать любой из
+	// двух замков — вернуть тихое противоречие, которое дальше не поймает уже ничто, потому что для
+	// следующих сохранений флаг «уже true», то есть не переход.
+	//
+	// Запрос к площадям делается ТОЛЬКО когда что-то реально включается: на всей сегодняшней базе
+	// помеченных деталей нет, значит обычное сохранение карточки не платит за это правило ничем.
+	if flips := ungradedFlipKeys(pieces, storedUngraded); len(flips) > 0 {
+		sizedAreas, err := sizedAreaPieceKeys(ctx, db, tcID)
+		if err != nil {
+			return err
+		}
+		if ve := ungradedFlipOnSizedAreas(pieces, flips, sizedAreas); ve != nil {
+			return ve
+		}
 	}
 
 	seen := make(map[string]bool, len(pieces))
 	for i := range pieces {
 		p := &pieces[i]
-		// S8/S7: derive the piece name from its technical-sketch callout (canonical part name) and set
-		// detached when the callout is gone or is a moodboard/unanchored callout (no piece semantics).
-		cs.apply(p)
 		key := strings.TrimSpace(p.LineKey)
 		if key == "" {
 			key = newLineKey() // legacy/keyless payload: server assigns a stable key
@@ -205,6 +249,8 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			"mirrored":             p.Mirrored,
 			"cut_symmetry":         p.CutSymmetry,
 			"cut_symmetry_omitted": p.CutSymmetryOmitted,
+			"ungraded":             p.Ungraded,
+			"ungraded_omitted":     p.UngradedOmitted,
 			"grainline":            p.Grainline,
 			"fused":                p.Fused,
 			"callout_number":       p.CalloutNumber,

@@ -248,6 +248,11 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 // A mixture (a sizeless row AND sized rows for the same piece) is not a partial answer: it is two
 // contradicting statements about the piece, and picking either one would be inventing the operator's
 // intent.
+//
+// КАКУЮ ИЗ ДВУХ ФОРМ ВЫБРАТЬ — эта функция не решает и решать не может: она видит только замер.
+// Деталь, ПОМЕЧЕННУЮ безразмерной (ungraded, 0302), первая форма обязывает — это проверяет
+// ungradedPieceSizedDiff рядом, и вызывается он РАНЬШЕ. Читать этот комментарий как «законны обе
+// формы для любой детали» больше нельзя.
 func sizeCoverageDiff(sizesByPiece map[string]map[int]bool, cardSizes []int) string {
 	var problems []string
 	pieces := make([]string, 0, len(sizesByPiece))
@@ -257,12 +262,15 @@ func sizeCoverageDiff(sizesByPiece map[string]map[int]bool, cardSizes []int) str
 	sort.Strings(pieces)
 	for _, p := range pieces {
 		got := sizesByPiece[p]
-		ungraded := got[0]
-		sized := len(got) - boolToInt(ungraded)
+		// sizeless — «есть строка без размера» (size_id = 0), то есть свойство ЗАМЕРА. Не путать с
+		// ungraded, свойством САМОЙ детали: первое — что прислали, второе — что карточка утверждает.
+		// Разъехаться они могут в обе стороны, и именно поэтому проверок две.
+		sizeless := got[0]
+		sized := len(got) - boolToInt(sizeless)
 		switch {
-		case ungraded && sized > 0:
+		case sizeless && sized > 0:
 			problems = append(problems, p+": measured both with and without a size")
-		case ungraded:
+		case sizeless:
 			// One sizeless row is a complete answer by itself.
 		case len(cardSizes) == 0:
 			problems = append(problems, p+": the card declares no size range, so a sized measurement cannot be complete")
@@ -286,6 +294,201 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ungradedPieceSizedDiff returns "" when no piece the card DECLARES ungraded (UNI, 0302) was measured
+// per size, and a readable Russian description of the offenders otherwise. Ключи те же
+// (uppercase line_key), что и у sizeCoverageDiff, — сравнение идёт по одному и тому же замеру.
+//
+// ПРОВЕРКА ОДНОСТОРОННЯЯ, И ЭТО НЕ ПОЛОВИНА ПРАВИЛА. Пометка UNI значит «второго контура у детали не
+// существует», поэтому пер-размерный замер помеченной детали — это либо замер не той детали, либо
+// устаревшая пометка; в обоих случаях число, которое сохранилось бы молча, отвечает не на тот
+// вопрос. Обратное же — безразмерная строка у НЕПОМЕЧЕННОЙ детали — остаётся законным: поле
+// появилось позже всех живых карточек и на них стоит по умолчанию false, так что запрет второй
+// стороны сделал бы неспасаемой каждую карточку, замеренную до 0302, ничего при этом не узнав.
+//
+// Деталь называется по ИМЕНИ, а не по line_key: этот отказ читает человек, который открыл вкладку и
+// видит там «карман», а не 26 символов ULID. Ключ остаётся в тексте лишь как запасное имя для
+// детали, у которой имени нет.
+func ungradedPieceSizedDiff(sizesByPiece map[string]map[int]bool, ungradedNames map[string]string) string {
+	var problems []string
+	pieces := make([]string, 0, len(sizesByPiece))
+	for p := range sizesByPiece {
+		pieces = append(pieces, p)
+	}
+	sort.Strings(pieces)
+	for _, p := range pieces {
+		name, ok := ungradedNames[p]
+		if !ok {
+			continue
+		}
+		got := sizesByPiece[p]
+		if sized := len(got) - boolToInt(got[0]); sized == 0 {
+			continue
+		}
+		if name == "" {
+			name = p
+		}
+		problems = append(problems, fmt.Sprintf("«%s»: деталь помечена как безразмерная (UNI), но замер прислан по размерам", name))
+	}
+	return strings.Join(problems, "; ")
+}
+
+// ВТОРАЯ ПОЛОВИНА ТОГО ЖЕ ПРАВИЛА, НА ДРУГОМ КОНЦЕ ВРЕМЕНИ.
+//
+// Отказ выше стоит на записи ПЛОЩАДЕЙ и ловит «меряем по размерам деталь, помеченную UNI». Но
+// пометка ставится не там: она приезжает сохранением КАРТОЧКИ, и порядок действий может быть
+// обратным — сначала деталь честно перемерили по всему ряду, потом кто-то поставил галочку. Замер
+// при этом не переписывается и не устаревает: строки лежат, отпечаток источника прежний, «пересчёт»
+// никто не просит.
+//
+// Что получается дальше — не косметика. entity.AreaEstimateNorm читает площади по размеру и берёт
+// безразмерную строку ТОЛЬКО как фолбэк («деталь входит в каждый размер целиком»), поэтому карточка
+// продолжает считать норму по РАЗНЫМ площадям на разных размерах, утверждая при этом обратное.
+// Карточка внутренне противоречива, ничто не помечено stale, а релиз это противоречие замораживает в
+// снапшот и уносит в цех.
+//
+// Поэтому переход false → true запрещён, пока у детали лежат пер-размерные строки. Запрещён именно
+// ПЕРЕХОД: карточка, где флаг как был false, так и остался, не проверяется вовсе (это весь живой
+// массив), а обратный переход true → false законен — он возвращает деталь в состояние, в котором
+// пер-размерные замеры и есть правильная форма.
+//
+// СЕРВЕР НИЧЕГО НЕ УДАЛЯЕТ. Площади — измеренная геометрия, а не производное значение; стереть их
+// задним числом ради того, чтобы галочка встала, значит потерять работу человека с лекалами и молча
+// оставить норму без входных данных. Порядок — обратный: сначала перемерить, потом помечать.
+
+// lockTechCardRow takes the card row's write lock without changing it. Единственная цель — чтобы
+// путь, который правит ДЕТЕЙ карточки, и путь, который правит площади, встали в очередь на одной
+// строке; см. довод в SaveTechCardPieceAreas.
+func lockTechCardRow(ctx context.Context, db dependency.DB, techCardID int) error {
+	if _, err := storeutil.QueryNamedOne[struct {
+		Id int `db:"id"`
+	}](ctx, db, `SELECT id FROM tech_card WHERE id = :id FOR UPDATE`,
+		map[string]any{"id": techCardID}); err != nil {
+		return fmt.Errorf("lock tech card %d: %w", techCardID, err)
+	}
+	return nil
+}
+
+// sizedAreaRow is one stored area that names a size, with the bucket it was written into.
+type sizedAreaRow struct {
+	PieceLineKey string `db:"piece_line_key"`
+	ScopeKey     string `db:"scope_key"`
+}
+
+// sizedAreaPieceKeys returns the line keys (uppercase, как они лежат в таблице) деталей карточки, у
+// которых есть ХОТЯ БЫ одна площадь, привязанная к размеру, — но ТОЛЬКО в живых скоупах ткани.
+func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (map[string]bool, error) {
+	rows, err := storeutil.QueryListNamed[sizedAreaRow](ctx, db, `
+		SELECT DISTINCT piece_line_key, scope_key
+		FROM tech_card_piece_area
+		WHERE tech_card_id = :id AND size_id IS NOT NULL`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load sized piece areas of tech card %d: %w", techCardID, err)
+	}
+	lines, err := loadRollGoodsLines(ctx, db, techCardID)
+	if err != nil {
+		return nil, err
+	}
+	return livePieceKeysOfSizedAreas(rows, lines), nil
+}
+
+// livePieceKeysOfSizedAreas keeps only the sized areas whose scope STILL resolves to cloth on the
+// card, and returns the pieces they belong to.
+//
+// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. scope_key — это ВЕДРО ЗАПИСИ
+// (COALESCE(fabric_purpose, bom_line_key)), и оно намеренно не двигается вслед за BOM. Значит
+// назначение, присвоенное или переименованное ПОСЛЕ замера, оставляет пер-размерные строки под
+// ключом, которого на карточке больше нет. Предписанное лекарство «перемерьте» на них не действует:
+// полная замена работает по одному ЖИВОМУ скоупу (пустой набор отвергается, мёртвый не пройдёт
+// scope_has_no_sheets), то есть деталь стала бы непомечаемой навсегда, без единого способа это
+// расшить.
+//
+// А главное — такие строки ничего и не ломают: entity.AreaEstimateNorm спрашивает площади по ключу
+// ЖИВОЙ строки (dto.slotAreaEstimate считает его как FabricScopeKey(строка.purpose, строка.line_key)),
+// поэтому мёртвое ведро не питает ни одну норму. Противоречие, ради которого стоит гард, физически
+// не может из него возникнуть.
+//
+// Живой набор считается ровно тем же выражением, что и у читателя нормы, — иначе гард охранял бы
+// один ключ, а норма читала другой, и мы бы вернулись к «ведро против личности» (0267), только на
+// третьей таблице. Сравнение дословное: назначения — закрытый нижний регистр, ключи строк —
+// заглавные ULID'ы на входе, обе стороны считает одна функция.
+func livePieceKeysOfSizedAreas(rows []sizedAreaRow, lines []entity.RollGoodsLine) map[string]bool {
+	live := make(map[string]bool, len(lines))
+	for _, l := range lines {
+		if k := entity.FabricScopeKey(l.Purpose, l.LineKey); k != "" {
+			live[k] = true
+		}
+	}
+	out := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		if !live[strings.TrimSpace(r.ScopeKey)] {
+			continue
+		}
+		if k := strings.ToUpper(strings.TrimSpace(r.PieceLineKey)); k != "" {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// ungradedFlipKeys returns the pieces of THIS payload that turn the UNI flag ON, as uppercase line
+// key → index in the payload. Пусто — значит проверять нечего и лишний запрос к площадям не нужен;
+// на сегодняшней базе, где помеченных деталей нет, пусто будет всегда.
+//
+// ПЕРЕХОД СЧИТАЕТСЯ ПО ЭФФЕКТИВНОМУ ЗНАЧЕНИЮ, А НЕ ПО ПРИСЛАННОМУ. Если поля на проводе не было
+// (UngradedOmitted), запись сохраняет хранимое (IF(:ungraded_omitted, …)) — эффективное значение
+// равно старому, перехода нет по определению, и молчащая вкладка не может ни включить флаг, ни
+// нарваться на этот отказ. Деталь, уже помеченную в базе, тоже пропускаем: это НЕ переход, а если
+// противоречие там уже лежит, то отказ на любом сохранении сделал бы такую карточку неспасаемой.
+//
+// Деталь без line_key — новая, ключ ей выпишет сам upsert, и площадей под ним быть не может.
+func ungradedFlipKeys(pieces []entity.TechCardPiece, storedUngraded map[string]bool) map[string]int {
+	out := map[string]int{}
+	for i := range pieces {
+		p := &pieces[i]
+		key := strings.TrimSpace(p.LineKey)
+		if key == "" || p.UngradedOmitted || !p.Ungraded || storedUngraded[key] {
+			continue
+		}
+		out[strings.ToUpper(key)] = i
+	}
+	return out
+}
+
+// ungradedFlipOnSizedAreas refuses the save when a piece turning UNI on already carries per-size
+// areas, and returns nil otherwise. Отказ той же природы и того же вида, что и
+// ungraded_piece_measured_by_size на записи площадей: та же беда, увиденная с другого конца.
+//
+// Названы ВСЕ виновники сразу, а поле указывает на первого: чинить их всё равно одним заходом на
+// вкладке выкроек, и отказ, выдающий их по одному, отправил бы человека мерить пять раз подряд.
+func ungradedFlipOnSizedAreas(pieces []entity.TechCardPiece, flips map[string]int, sizedAreas map[string]bool) *entity.ValidationError {
+	offenders := make([]int, 0, len(flips))
+	for key, idx := range flips {
+		if sizedAreas[key] {
+			offenders = append(offenders, idx)
+		}
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	sort.Ints(offenders)
+	names := make([]string, 0, len(offenders))
+	for _, i := range offenders {
+		name := strings.TrimSpace(pieces[i].Name)
+		if name == "" {
+			name = strings.TrimSpace(pieces[i].LineKey)
+		}
+		names = append(names, "«"+name+"»")
+	}
+	return entity.NewFieldViolation(
+		fmt.Sprintf("pieces[%d].ungraded", offenders[0]),
+		"ungraded_piece_has_sized_areas",
+		strings.Join(names, ", "),
+		"сначала перемерьте площади: у детали лежат пер-размерные замеры, а у неградуируемой детали бывает "+
+			"только один — безразмерный. Пересчитайте площади этой ткани на вкладке выкроек (или снимите "+
+			"пометку UNI); сервер не стирает измеренную геометрию сам")
 }
 
 // sameMeasurement reports whether a submitted set is byte-for-byte what is already stored, under the
@@ -370,6 +573,36 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
+		// ЗАМОК НА СТРОКЕ КАРТОЧКИ — ПЕРВЫМ ДЕЙСТВИЕМ, ДО ЛЮБОГО ЧТЕНИЯ.
+		//
+		// Замер и сохранение карточки правят РАЗНЫЕ таблицы, но проверяют друг друга: здесь читается
+		// пометка UNI детали, а там (upsertTechCardPieces) — эти самые площади. Два обычных
+		// snapshot-чтения такую пару не сериализуют: замер, прошедший проверку при флаге false и ещё
+		// не закоммиченный, невидим для сохранения карточки, которое в этот момент ставит UNI, — и
+		// коммитятся ОБЕ транзакции. Противоречие ложится в базу молча, а дальше его не поймает уже
+		// ничто: для всех следующих сохранений флаг «уже true», то есть не переход.
+		//
+		// Строка tech_card — единственное, что у обоих путей общее, поэтому она и берётся замком.
+		// Сохранение карточки держит на ней X-замок со своего `UPDATE tech_card SET lock_version =
+		// lock_version + 1 … WHERE lock_version = :expected`, и он стоит ДО записи детей. Отсюда обе
+		// возможные очереди:
+		//   * карточка успела первой — этот SELECT ждёт её коммита, снимок открывается уже после
+		//     него, пометка видна, и замер отвергает сам себя (ungraded_piece_measured_by_size);
+		//   * замер успел первым — его бамп версии в конце сдвигает lock_version, оптимистичная
+		//     проверка карточки не находит своей версии и отдаёт конфликт, а не тихую запись.
+		// Повтор того же замера уходит в no-op и версию не двигает — но он и не добавляет ни одной
+		// строки, так что противоречить новой пометке нечему.
+		//
+		// FOR UPDATE, А НЕ РАННИЙ БАМП ВЕРСИИ: бамп на входе 409-ил бы чужую открытую форму на каждом
+		// «пересчитать», даже когда замер не изменился, — ровно то поведение, которое ниже
+		// сознательно оставлено no-op'ом. Замок даёт сериализацию, ничего не меняя в строке.
+		//
+		// СТОИТ ДАЖЕ РАНЬШЕ ПРОВЕРКИ РЕЛИЗА, потому что в REPEATABLE READ снимок транзакции
+		// открывается ПЕРВЫМ обычным чтением: любое чтение до замка зафиксировало бы состояние «до»,
+		// и проверка заморозки судила бы по нему же.
+		if err := lockTechCardRow(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
 		// РЕЛИЗ ЗАМОРАЖИВАЕТ СОДЕРЖИМОЕ, А ПЛОЩАДИ — СОДЕРЖИМОЕ. С тех пор как они уезжают в
 		// слепок релиза (dto.ConvertEntityTechCardToPb), запись поверх released-карточки развела бы
 		// живую карточку со слепком, по которому уже режут, и сделала бы состав слепка зависящим от
@@ -439,17 +672,28 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 				"this fabric scope has no SAVED блок→деталь links, so a complete set cannot be proven. Open «↔ детали кроя» for this fabric on the PATTERNS tab, save the mapping, then save the card — a mapping that exists only in the form is invisible here")
 		}
 		// Детали карточки — для отдельной, более понятной жалобы на ключ, которого вообще нет.
+		//
+		// Имя и флаг UNI (0302) читаются здесь же, ОДНИМ запросом внутри той же транзакции: имя —
+		// чтобы отказ называл деталь так, как её зовёт конструктор, а не двадцатью шестью символами
+		// ULID; флаг — потому что «эта деталь одна на весь ряд» теперь хранимое заявление карточки, и
+		// проверять замер против него надо тем же снимком, в котором проверялся состав комплекта.
 		pieces, err := storeutil.QueryListNamed[struct {
-			LineKey string `db:"line_key"`
-		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key FROM tech_card_piece WHERE tech_card_id = :id`,
+			LineKey  string `db:"line_key"`
+			Name     string `db:"name"`
+			Ungraded bool   `db:"ungraded"`
+		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, name, ungraded FROM tech_card_piece WHERE tech_card_id = :id`,
 			map[string]any{"id": in.TechCardId})
 		if err != nil {
 			return fmt.Errorf("load pieces of tech card %d: %w", in.TechCardId, err)
 		}
 		known := make(map[string]bool, len(pieces))
+		ungradedNames := map[string]string{}
 		for _, p := range pieces {
 			if k := strings.ToUpper(strings.TrimSpace(p.LineKey)); k != "" {
 				known[k] = true
+				if p.Ungraded {
+					ungradedNames[k] = strings.TrimSpace(p.Name)
+				}
 			}
 		}
 		sizeRows, err := storeutil.QueryListNamed[struct {
@@ -523,6 +767,15 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		// Деталь либо НЕ ГРАДУИРУЕТСЯ (ровно одна строка с пустым размером — она входит в каждый
 		// размер целиком), либо градуируется и обязана иметь строку на КАЖДЫЙ размер ряда. Смесь
 		// этих двух форм у одной детали — не «частичный ответ», а два разных утверждения о ней.
+		//
+		// ЗАЯВЛЕННАЯ БЕЗРАЗМЕРНОСТЬ ПРОВЕРЯЕТСЯ ПЕРВОЙ, потому что она объясняет причину точнее.
+		// Помеченная UNI деталь, присланная по размерам, провалила бы и проверку ниже — но та
+		// сказала бы «не хватает размеров» и отправила бы оператора домеривать то, чего у детали
+		// нет.
+		if diff := ungradedPieceSizedDiff(sizesByPiece, ungradedNames); diff != "" {
+			return entity.NewFieldViolation("areas", "ungraded_piece_measured_by_size", diff,
+				"деталь помечена как безразмерная (UNI): её контур один на весь ряд, поэтому у неё бывает ровно одна строка замера — без размера. Либо снимите пометку UNI на вкладке деталей кроя, либо померьте эту деталь один раз")
+		}
 		if diff := sizeCoverageDiff(sizesByPiece, cardSizeOrder); diff != "" {
 			return entity.NewFieldViolation("areas", "size_set_incomplete", diff,
 				"measure every size of the card's range for each piece (or exactly once with no size when the piece does not grade)")

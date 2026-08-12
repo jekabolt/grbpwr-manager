@@ -655,3 +655,38 @@ func carryOmittedPieceCutSymmetryFrom(stored *entity.TechCard, incoming *entity.
 		}
 	}
 }
+
+// carryOmittedPieceUngradedFrom is the same contract once more, for UNI (0302): деталь, про которую
+// клиент НЕ СКАЗАЛ, не должна читаться как деталь, у которой пометку СНЯЛИ.
+//
+// Отдельная функция, а не пятая строка в соседней, — по образцу пары выше: у каждого поля своя
+// причина быть optional и своя цена ошибки, и слитая функция назвала бы обе одним именем. Ключ
+// сравнивается ВЕРБАТИМ после trim — ровно как в carryOmittedPieceCutSymmetryFrom и как в самом
+// upsertTechCardPieces, чтобы перенос не держал своего, отличного от стора, представления о том,
+// какая деталь какая.
+//
+// Значимо только для ДАЙДЖЕСТА: запись это значение уже игнорирует (IF(:ungraded_omitted, …)), а
+// вот constructionProjection хеширует ungraded, и без переноса подпись, поставленная из неговорящей
+// вкладки, сравнивалась бы с колонкой, где пометка стоит, — то есть рождалась бы устаревшей и
+// оставалась такой навсегда, потому что повторное утверждение из той же вкладки хеширует то же
+// молчание. Эта беда уже случалась дважды (направление ткани, затем крой); третий раз она здесь
+// закрыта заранее, а не открыта заново.
+func carryOmittedPieceUngradedFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
+	if stored == nil || incoming == nil {
+		return
+	}
+	byKey := make(map[string]bool, len(stored.Pieces))
+	for _, p := range stored.Pieces {
+		if k := strings.TrimSpace(p.LineKey); k != "" {
+			byKey[k] = p.Ungraded
+		}
+	}
+	for i := range incoming.Pieces {
+		if !incoming.Pieces[i].UngradedOmitted {
+			continue
+		}
+		if u, ok := byKey[strings.TrimSpace(incoming.Pieces[i].LineKey)]; ok {
+			incoming.Pieces[i].Ungraded = u
+		}
+	}
+}

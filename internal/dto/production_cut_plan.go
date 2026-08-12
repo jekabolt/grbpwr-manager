@@ -743,6 +743,13 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			PiecesPerGarment: perGarment,
 			Grainline:        p.GetGrainline(),
 			Fused:            p.GetFused(),
+			// UNI (0302) переносится из снапшота, хотя РАСЧЁТ кроя его сегодня не спрашивает: деталь
+			// и так режется по своему контуру, сколько бы их ни было в ряду. Поле здесь затем, чтобы
+			// следующий потребитель этой структуры получил то, что подписано релизом, а не молчаливый
+			// false — потеря на разборе выглядит как «конструктор не помечал», и отличить её от
+			// правды нечем. Старый снапшот, где поля не было, честно даёт false — так же, как
+			// назначение строки BOM выше честно остаётся NULL.
+			Ungraded: p.GetUngraded(),
 		}
 		if v, ok := techCardPieceCutSymmetryPbToEntity[p.GetCutSymmetry()]; ok {
 			piece.CutSymmetry = sql.NullString{String: string(v), Valid: true}
