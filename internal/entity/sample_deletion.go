@@ -56,6 +56,10 @@ const (
 	SampleOrphanDevExpense       = "orphan_dev_expense"       // tech_card_dev_expense.sample_id
 	SampleOrphanTask             = "orphan_task"              // task.sample_id
 	SampleOrphanNextRound        = "orphan_next_round"        // sample.previous_sample_id
+	// Деньги, которые уйдут из сводки стиля вместе с семплом: количество вернулось, а стоимость —
+	// нет (некостированная выдача). Не блокер: оператор не может задним числом оценить то, что
+	// ушло без цены, — но и молчать об этом нельзя.
+	SampleOrphanStyleCost = "orphan_style_cost"
 )
 
 // Как выйти из блокера. Выходы РАЗНЫЕ — в отличие от колорвея, где на все блокеры был один ответ
@@ -217,6 +221,21 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 		"%d движение материала останется в ленте склада без семпла",
 		"%d движения материала останутся в ленте склада без семпла",
 		"%d движений материала останутся в ленте склада без семпла")
+	// ОДНО ИСКЛЮЧЕНИЕ ИЗ «расход стиля не изменится», и молчать о нём нельзя. Количество сошлось в
+	// ноль, а ДЕНЬГИ — нет: так бывает, когда часть выдачи ушла со склада НЕКОСТИРОВАННОЙ (средняя
+	// цена материала тогда не была известна). Возврат такую выдачу оценить не может — оценить её
+	// задним числом значило бы выдумать стоимость, — и в ленте остаётся неснятая сумма. Сводка
+	// стиля считает сэмплирование джойном по семплу, поэтому вместе с семплом эта сумма из неё
+	// уйдёт. Число маленькое и редкое, но «почему расход стиля вдруг изменился» — вопрос, ответ на
+	// который должен звучать ДО удаления, а не через месяц.
+	if residue := sampleCostedResidue(f.Materials); !residue.IsZero() {
+		v.Orphans = append(v.Orphans, SampleDeletionEntry{
+			Reason: SampleOrphanStyleCost,
+			Count:  1,
+			Text: fmt.Sprintf("%s € уйдёт из расхода стиля на сэмплирование (движения останутся в ленте): часть выдачи ушла без известной цены, и возврат её не снял",
+				residue.StringFixed(2)),
+		})
+	}
 	// Dev-расходы — ДЕНЬГИ, и они остаются в расходах карточки; теряется только адрес «за какой
 	// именно семпл заплатили». Удалять их вместе с семплом было бы хуже: потраченное не исчезает
 	// оттого, что запись о прототипе стёрли.
@@ -285,6 +304,17 @@ func appendSampleEntry(dst []SampleDeletionEntry, reason string, n int, one, few
 		return dst
 	}
 	return append(dst, SampleDeletionEntry{Reason: reason, Count: n, Text: pluralRU(n, one, few, many)})
+}
+
+// sampleCostedResidue — сколько стоимости осталось на семпле, когда КОЛИЧЕСТВО уже сошлось в ноль.
+// Считается только по костированным движениям: именно они складываются в расход стиля на
+// сэмплирование, и именно эта сумма исчезнет из отчёта вместе с семплом.
+func sampleCostedResidue(ms []SampleOutstandingMaterial) decimal.Decimal {
+	total := decimal.Zero
+	for _, m := range ms {
+		total = total.Add(m.CostedValue)
+	}
+	return total.Round(2)
 }
 
 // materialQtyNames — «2.4 m «Wool Melton 340»». Количество печатается БЕЗ хвостовых нулей: 2.400

@@ -4512,7 +4512,12 @@ message DeleteSampleRequest {
 message SampleDeletionEntry {
   // Стабильный код. Блокеры: material_outstanding | material_over_returned | fitting | referenced.
   // Каскад: media | substitution. Сироты: orphan_material_movement | orphan_dev_expense |
-  // orphan_task | orphan_next_round.
+  // orphan_task | orphan_next_round | orphan_style_cost.
+  //
+  // orphan_style_cost — единственная сирота, за которой стоят ДЕНЬГИ, а не строки: количество
+  // материала вернулось на склад, а стоимость — нет (часть выдачи ушла без известной цены, и
+  // возврат её оценить не может). Сводка стиля считает сэмплирование джойном по семплу, поэтому
+  // вместе с семплом эта сумма из отчёта уйдёт. count там всегда 1: это одна сумма, а не набор.
   //
   // referenced — сетка безопасности против ушедшей вперёд схемы: FK с RESTRICT, которого нет в
   // перечислении сервера. Он называет своё незнание, а не факт, и приходит с count = 0.

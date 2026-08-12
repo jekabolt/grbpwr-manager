@@ -121,6 +121,48 @@ func TestClassifySampleDeletionUnnamedMaterialStaysAddressable(t *testing.T) {
 	require.NotContains(t, v.Blockers[0].Text, "«»")
 }
 
+// Деньги, которые уйдут из сводки стиля. Количество вернулось (не блокер), а костированная
+// стоимость осталась — так бывает после некостированной выдачи, и молчать об этом нельзя: иначе
+// расход стиля на сэмплирование однажды меняется сам по себе, без единой подсказки почему.
+func TestClassifySampleDeletionNamesTheCostThatLeavesTheStyle(t *testing.T) {
+	v := ClassifySampleDeletion(SampleDeletionFacts{
+		SampleID: 3,
+		Materials: []SampleOutstandingMaterial{{
+			MaterialID: 7, Name: "Wool Melton 340", Unit: "m",
+			Qty:         decimal.Zero,
+			CostedValue: decimal.RequireFromString("20.004"),
+		}},
+		Orphans: SampleOrphanCounts{MaterialMovements: 3},
+	})
+	require.True(t, v.Deletable, "деньги не блокируют — оценить прошлое задним числом оператор не может")
+	requireReason(t, v.Orphans, SampleOrphanStyleCost, "20.00 €")
+}
+
+// Обычный случай — вся выдача костирована, возврат снял её ровно — НЕ печатает денежной строки:
+// сумма нулевая, и «0 € уйдёт из расхода» было бы шумом в каждом втором диалоге.
+func TestClassifySampleDeletionSilentWhenCostNetsToZero(t *testing.T) {
+	v := ClassifySampleDeletion(SampleDeletionFacts{
+		SampleID:  3,
+		Materials: []SampleOutstandingMaterial{{MaterialID: 7, Qty: decimal.Zero, CostedValue: decimal.Zero}},
+		Orphans:   SampleOrphanCounts{MaterialMovements: 2},
+	})
+	require.True(t, v.Deletable)
+	for _, o := range v.Orphans {
+		require.NotEqual(t, SampleOrphanStyleCost, o.Reason)
+	}
+}
+
+func requireReason(t *testing.T, entries []SampleDeletionEntry, reason, contains string) {
+	t.Helper()
+	for _, e := range entries {
+		if e.Reason == reason {
+			require.Contains(t, e.Text, contains)
+			return
+		}
+	}
+	t.Fatalf("no %s entry in %+v", reason, entries)
+}
+
 // Каскад и сироты — разные категории, и вердикт не имеет права их путать: первое умрёт, второе
 // переживёт удаление и потеряет семпл.
 func TestClassifySampleDeletionSeparatesCascadeFromOrphans(t *testing.T) {
