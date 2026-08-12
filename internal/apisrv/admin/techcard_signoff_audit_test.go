@@ -167,7 +167,8 @@ func TestRestampFreshSignoffDigestsSkipsCatalogWithoutFreshApproval(t *testing.T
 			SignedDigest: sql.NullString{String: "carried", Valid: true},
 		}},
 	}
-	err := (&Server{}).restampFreshSignoffDigests(context.Background(), tc, nil)
+	// nil fresh-set → nothing to restamp, so the card id is never dereferenced (0 is fine here).
+	err := (&Server{}).restampFreshSignoffDigests(context.Background(), 0, tc, nil)
 	require.NoError(t, err)
 }
 
