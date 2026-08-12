@@ -1149,19 +1149,9 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 	// halves, and a purpose that no line carries is exactly the dangling case to refuse on a NEW pair.
 	var rollGoods []entity.RollGoodsLine
 	if len(aliases) > 0 {
-		rows, err := storeutil.QueryListNamed[struct {
-			LineKey string `db:"line_key"`
-			Purpose string `db:"purpose"`
-		}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
-			FROM tech_card_bom_item
-			WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
-			rollGoodsSectionArgs(map[string]any{"id": tcID}))
+		rollGoods, err = loadRollGoodsLines(ctx, db, tcID)
 		if err != nil {
-			return fmt.Errorf("failed to load roll-goods bom lines for dxf aliases: %w", err)
-		}
-		rollGoods = make([]entity.RollGoodsLine, 0, len(rows))
-		for _, r := range rows {
-			rollGoods = append(rollGoods, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
+			return err
 		}
 	}
 	seen := make(map[string]bool, len(aliases))

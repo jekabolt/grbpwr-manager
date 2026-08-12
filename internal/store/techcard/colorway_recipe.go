@@ -323,6 +323,32 @@ func rollGoodsSectionInOn(alias string) string {
 	return alias + "section IN (" + strings.Join(names, ", ") + ")"
 }
 
+// loadRollGoodsLines reads the card's cloth lines in the shape the ONE binding rule takes
+// (entity.ResolveFabricScope / entity.FabricScopeIdentity): the stable line_key and its назначение.
+//
+// One loader for every path that has to resolve a binding, because the ARGUMENTS of that rule drift
+// as easily as the rule itself: a caller that forgot the purpose column, or narrowed the families to
+// three, would resolve every binding of a sorted card to its legacy line and be indistinguishable
+// from a card nobody sorted. entity.RollGoodsLinesOfBom is the same projection for callers that
+// already hold an enriched card and must not pay for a second read.
+func loadRollGoodsLines(ctx context.Context, db dependency.DB, techCardID int) ([]entity.RollGoodsLine, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		LineKey string `db:"line_key"`
+		Purpose string `db:"purpose"`
+	}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
+		FROM tech_card_bom_item
+		WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
+		rollGoodsSectionArgs(map[string]any{"id": techCardID}))
+	if err != nil {
+		return nil, fmt.Errorf("load roll-goods bom lines of tech card %d: %w", techCardID, err)
+	}
+	out := make([]entity.RollGoodsLine, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
+	}
+	return out, nil
+}
+
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
 	normalizedPlacement := ""
 	if placement.Valid {

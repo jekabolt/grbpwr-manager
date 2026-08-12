@@ -160,21 +160,17 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 // A scope with no sheets simply does not appear: its stored areas then compare against "" and read
 // as stale, which is the honest answer — the files they were measured from are gone.
 func (s *Store) scopeFingerprints(ctx context.Context, db dependency.DB, techCardID int) (map[string]string, error) {
-	sheets, err := storeutil.QueryListNamed[patternSheetRow](ctx, db, patternSheetsQuery,
-		map[string]any{"id": techCardID})
-	if err != nil {
-		return nil, fmt.Errorf("load pattern sheets of tech card %d: %w", techCardID, err)
-	}
-	blocks, err := scopeBlockRefs(ctx, db, techCardID)
+	lines, err := loadRollGoodsLines(ctx, db, techCardID)
 	if err != nil {
 		return nil, err
 	}
-	byScope := map[string][]entity.PatternSheetRef{}
-	for _, sh := range sheets {
-		k := entity.FabricScopeKey(sh.FabricPurpose, sh.BomLineKey)
-		byScope[k] = append(byScope[k], entity.PatternSheetRef{
-			LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
-		})
+	byScope, err := scopeSheetRefs(ctx, db, techCardID, lines)
+	if err != nil {
+		return nil, err
+	}
+	blocks, err := scopeBlockRefs(ctx, db, techCardID, lines)
+	if err != nil {
+		return nil, err
 	}
 	out := make(map[string]string, len(byScope))
 	for k, refs := range byScope {
@@ -183,16 +179,47 @@ func (s *Store) scopeFingerprints(ctx context.Context, db dependency.DB, techCar
 	return out, nil
 }
 
-// scopeBlockRefs loads a card's блок→деталь links, bucketed by fabric scope. A link whose piece is
-// gone does not appear (the FK cascades it away), which is exactly the event the fingerprint has to
-// notice.
-func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int) (map[string][]entity.PieceAreaBlockRef, error) {
+// scopeSheetRefs loads a card's pattern sheets bucketed by the ТКАНЬ they address.
+//
+// СШИВАЮТСЯ ОНИ С ЛИЧНОСТЬЮ ТКАНИ, А НЕ С ВЕДРОМ ЗАПИСИ (entity.FabricScopeIdentity). Ключ, под
+// которым площади ХРАНЯТСЯ, приходит от клиента, а клиент группирует по сегодняшнему BOM
+// (bom-purpose.ts scopeKeyOfBinding); сверять с ним то, что назвала сама запись, значит сравнивать
+// разные вопросы — и на разобранной по назначениям карточке они расходятся молча.
+func scopeSheetRefs(ctx context.Context, db dependency.DB, techCardID int, lines []entity.RollGoodsLine) (map[string][]entity.PatternSheetRef, error) {
+	sheets, err := storeutil.QueryListNamed[patternSheetRow](ctx, db, patternSheetsQuery,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load pattern sheets of tech card %d: %w", techCardID, err)
+	}
+	out := map[string][]entity.PatternSheetRef{}
+	for _, sh := range sheets {
+		k := entity.FabricScopeIdentity(sh.FabricPurpose, sh.BomLineKey, lines)
+		out[k] = append(out[k], entity.PatternSheetRef{
+			LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
+		})
+	}
+	return out, nil
+}
+
+// scopeBlockRefs loads a card's блок→деталь links, bucketed by the ТКАНЬ they address. A link whose
+// piece is gone does not appear (the FK cascades it away), which is exactly the event the
+// fingerprint has to notice.
+//
+// ГРУППИРОВКА ИДЁТ НЕ ПО ХРАНИМОМУ scope_key, И ЭТО ТА САМАЯ ПОЧИНКА. Генерируемая колонка держит
+// ВЕДРО УНИКАЛЬНОСТИ — то, что назвала сама связь, — а связь, заведённая до разбора карточки,
+// называет СТРОКУ и называет её навсегда (чтение отдаёт обе половины, клиент возвращает их как
+// есть). Карточка, у которой строку потом разложили в назначение, держала девять привязанных блоков
+// под ключом строки, тогда как площади и деньги спрашивали про «main»: доказательство полноты
+// находило пустоту и отвечало «блоки не привязаны» — на карточке, где привязано всё.
+func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int, lines []entity.RollGoodsLine) (map[string][]entity.PieceAreaBlockRef, error) {
 	rows, err := storeutil.QueryListNamed[struct {
-		ScopeKey     string `db:"scope_key"`
-		BlockName    string `db:"block_name"`
-		PieceLineKey string `db:"piece_line_key"`
+		BomLineKey    string `db:"bom_line_key"`
+		FabricPurpose string `db:"fabric_purpose"`
+		BlockName     string `db:"block_name"`
+		PieceLineKey  string `db:"piece_line_key"`
 	}](ctx, db, `
-		SELECT a.scope_key,
+		SELECT COALESCE(a.bom_line_key, '') AS bom_line_key,
+		       COALESCE(a.fabric_purpose, '') AS fabric_purpose,
 		       a.block_name,
 		       COALESCE(p.line_key, '') AS piece_line_key
 		FROM tech_card_piece_dxf_block a
@@ -203,7 +230,8 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int) (map[
 	}
 	out := make(map[string][]entity.PieceAreaBlockRef, len(rows))
 	for _, r := range rows {
-		out[r.ScopeKey] = append(out[r.ScopeKey], entity.PieceAreaBlockRef{
+		k := entity.FabricScopeIdentity(r.FabricPurpose, r.BomLineKey, lines)
+		out[k] = append(out[k], entity.PieceAreaBlockRef{
 			BlockName: r.BlockName, PieceLineKey: r.PieceLineKey,
 		})
 	}
@@ -350,18 +378,18 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		if err := storeutil.RequireMutableTechCard(ctx, db, in.TechCardId); err != nil {
 			return err
 		}
-		sheets, err := storeutil.QueryListNamed[patternSheetRow](ctx, db, patternSheetsQuery,
-			map[string]any{"id": in.TechCardId})
+		// ОДИН НАБОР СТРОК ТКАНИ НА ВСЮ ТРАНЗАКЦИЮ. Листы и связи блоков разрешаются в ОДНУ И ТУ ЖЕ
+		// личность ткани (entity.FabricScopeIdentity), и если бы каждая половина читала BOM сама,
+		// правка назначения между двумя чтениями развела бы их по разным ключам внутри одной проверки.
+		lines, err := loadRollGoodsLines(ctx, db, in.TechCardId)
 		if err != nil {
-			return fmt.Errorf("load pattern sheets of tech card %d: %w", in.TechCardId, err)
+			return err
 		}
-		var mine []entity.PatternSheetRef
-		for _, sh := range sheets {
-			if entity.FabricScopeKey(sh.FabricPurpose, sh.BomLineKey) != scopeKey {
-				continue
-			}
-			mine = append(mine, entity.PatternSheetRef{LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version})
+		sheetsByScope, err := scopeSheetRefs(ctx, db, in.TechCardId, lines)
+		if err != nil {
+			return err
 		}
+		mine := sheetsByScope[scopeKey]
 		if len(mine) == 0 {
 			return entity.NewFieldViolation("scope_key", "scope_has_no_sheets", scopeKey,
 				"this fabric scope carries no pattern sheets on the server — upload them, or check that the scope key matches the card's назначение / line_key")
@@ -381,20 +409,17 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		// подкладочной. Недостающая — это неполный комплект, а неполный комплект занижает площадь
 		// изделия, заниженная площадь занижает норму, и обнаруживается это на складе, когда ткань
 		// кончилась, а не на экране, где число придумали.
-		aliasPieces, err := storeutil.QueryListNamed[struct {
-			PieceLineKey string `db:"piece_line_key"`
-		}](ctx, db, `
-			SELECT COALESCE(p.line_key, '') AS piece_line_key
-			FROM tech_card_piece_dxf_block a
-			JOIN tech_card_piece p ON p.id = a.piece_id
-			WHERE a.tech_card_id = :id
-			  AND a.scope_key = :scope`,
-			map[string]any{"id": in.TechCardId, "scope": scopeKey})
+		//
+		// СОСТАВ БЕРЁТСЯ ИЗ ТОГО ЖЕ scopeBlockRefs, ЧТО И ОТПЕЧАТОК НИЖЕ, а не отдельным запросом с
+		// `scope_key = :scope`. Тот запрос сравнивал ВЕДРО записи с ЛИЧНОСТЬЮ ткани и на разобранной
+		// карточке не находил ничего — «блоки не привязаны» при девяти привязанных блоках. Заодно
+		// исчезает третье место, где скоуп разрешался бы в SQL: правило целиком осталось в Go.
+		blocks, err := scopeBlockRefs(ctx, db, in.TechCardId, lines)
 		if err != nil {
-			return fmt.Errorf("load dxf block links of scope %q: %w", scopeKey, err)
+			return err
 		}
-		expected := make(map[string]bool, len(aliasPieces))
-		for _, a := range aliasPieces {
+		expected := make(map[string]bool, len(blocks[scopeKey]))
+		for _, a := range blocks[scopeKey] {
 			if k := strings.ToUpper(strings.TrimSpace(a.PieceLineKey)); k != "" {
 				expected[k] = true
 			}
@@ -495,10 +520,6 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 				"measure every size of the card's range for each piece (or exactly once with no size when the piece does not grade)")
 		}
 
-		blocks, err := scopeBlockRefs(ctx, db, in.TechCardId)
-		if err != nil {
-			return err
-		}
 		fingerprint := entity.PieceAreaSourceFingerprint(mine, blocks[scopeKey])
 
 		// ПОВТОР ТОГО ЖЕ ЗАМЕРА — НИЧЕГО НЕ ДЕЛАЕТ. Без этой проверки каждое нажатие «пересчитать»
