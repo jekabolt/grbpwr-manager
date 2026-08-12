@@ -101,7 +101,13 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 	)
 	materialsBase := decimal.Zero
 	// Слоты, у которых норма ЗАЯВЛЕНА: оценка к ним не применяется — введённое сильнее выведенного.
+	// ТЕМ ЖЕ предикатом, что у костинга (colorwayAuthoredSlots), а не своей копией внутри цикла ниже:
+	// смета и заголовок обязаны считать «заявленным» одно и то же множество слотов, иначе один экран
+	// покажет оценку там, где другой уже показал норму.
 	authoredSlots := map[int]bool{}
+	if cw != nil {
+		authoredSlots = colorwayAuthoredSlots(cw, tc.BomItems)
+	}
 	hasAreaEstimate := false
 	if cw != nil {
 		for i := range cw.Usages {
@@ -114,9 +120,6 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				continue
 			}
 			bom := resolveUsageBom(tc.BomItems, u)
-			if bom != nil {
-				authoredSlots[bom.Id] = true
-			}
 			line := &pb_admin.StyleCostMaterialLine{}
 			markerSourced := u.ConsumptionSource.String == entity.ConsumptionSourceMarker
 			if bom != nil {
@@ -230,10 +233,22 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			if authoredSlots[b.Id] {
 				continue
 			}
-			amount, ccy, ok, _ := slotAreaEstimate(tc, cw, b, catalogAsLinked(catalog), basis, fx.Base)
-			if !ok {
+			// tc.LinkedMaterials, А НЕ ПРАЙС-КАТАЛОГ СМЕТЫ. Раньше сюда одалживался catalog, у
+			// которого есть цены и нет атрибутов ткани, — и ширина молча падала на снапшот строки
+			// BOM, тогда как костинг и карточное чтение берут ПОЛЕЗНУЮ ширину артикула
+			// (UsableFabricWidthCm, рулон минус две кромки). На артикуле 150 см с кромкой 5 см это
+			// 140 против 150: смета показывала 0.9333 м там, где карточка считала 1 м, и обе цифры
+			// выглядели правдоподобно. Одна и та же карта на всех проекциях — единственный способ,
+			// которым «то же число» перестаёт быть обещанием и становится свойством.
+			//
+			// Карта здесь всегда та же: смету грузит тот же GetTechCardById, что и карточное чтение,
+			// и LinkedMaterials он заполняет по тем же id (слоты BOM + пины рецептов), причём с
+			// ценами — то есть содержит всё, ради чего одалживался catalog.
+			est := slotAreaEstimate(tc, cw, b, tc.LinkedMaterials, basis, fx.Base)
+			if !est.ok {
 				continue
 			}
+			amount, ccy := est.money, est.currency
 			hasAreaEstimate = true
 			line := &pb_admin.StyleCostMaterialLine{
 				BomItemId:    int64(b.Id),

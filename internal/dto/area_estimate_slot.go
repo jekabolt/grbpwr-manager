@@ -2,6 +2,7 @@ package dto
 
 import (
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
@@ -20,8 +21,60 @@ import (
 // настила в нём нет. Оно показывается, но НЕ СЕЕТ каталожную себестоимость (см. costTierEstimate и
 // его читателей) — занижение здесь измеряется десятками процентов.
 
-// slotAreaEstimate is the per-garment money one roll slot contributes by ESTIMATE, in the article's
-// own currency. ok=false means no estimate is available, and the refusal says why.
+// slotEstimate — ПОЛНЫЙ ответ про один рулонный слот одного колорвея: сколько он съедает на изделие
+// по оценке, в какой единице, во что это обходится — а когда ответа нет, какого именно факта не
+// хватает и на каком замере ответ стоял бы.
+//
+// ОДНА СТРУКТУРА НА НОРМУ И НА ДЕНЬГИ, И В ЭТОМ ВЕСЬ СМЫСЛ. Рецепт печатает расход на изделие,
+// костинг печатает цену; посчитай их двумя вызовами с двумя наборами аргументов — и рано или поздно
+// на экране окажется норма от одного базиса под ценой от другого. Разойдутся они ровно на весь
+// градационный разброс (стилевая цена считается по СРЕДНЕМУ размерного ряда, а не по одному
+// размеру) и ничем себя не выдадут: обе цифры выглядят правдоподобно. Поэтому money здесь —
+// perGarment × цена, в том же проходе, а наружу отдаются оба поля ОДНОГО ответа.
+type slotEstimate struct {
+	// bomLineKey — стабильный ключ строки BOM, по которому клиент сшивает оценку со своей строкой.
+	// Не id: в слепке релиза у части строк его нет, а ключ есть всегда.
+	bomLineKey string
+	// scopeKey — скоуп площадей, на которых стоит ответ: COALESCE(назначение, line_key), тот же
+	// ключ, что у TechCard.piece_area_scopes.
+	scopeKey string
+
+	// ok=true — ЕСТЬ ДЕНЬГИ: perGarment/unit/money/currency заполнены. ok=false — refusal называет
+	// недостающий факт.
+	ok      bool
+	refusal entity.AreaEstimateRefusal
+
+	// normDerived=true — есть ГЕОМЕТРИЯ: perGarment посчитан. Отдельно от ok намеренно: расход —
+	// вопрос про выкройки и ширину рулона, и у него есть ответ даже там, где у артикула нет цены.
+	// Читателю, который спрашивает «есть ли у слота оценка расхода» (материальный план), нужен
+	// именно этот флаг: иначе смена валюты костинга меняла бы предписанное оператору действие, не
+	// меняя ни одной выкройки. normDerived=true при ok=false — законное состояние (нет цены).
+	normDerived bool
+
+	// perGarment — норма на ИЗДЕЛИЕ в ЕДИНИЦЕ СЛОТА, на базисе костинга (у стиля — среднее по
+	// объявленному размерному ряду). Значима при normDerived.
+	perGarment decimal.Decimal
+	unit       string
+	money      decimal.Decimal
+	currency   string
+
+	// pieceCount — сколько деталей кроя колорвей назначил на этот слот. Ноль — это и есть причина
+	// no_pieces_assigned; ненулевой при отказе означает «назначения есть, не хватает другого».
+	pieceCount int
+
+	// Провенанс замера, на котором ответ стоит ИЛИ СТОЯЛ БЫ. Заполняется до любого отказа: «площади
+	// сняты 3 августа по слою кроя, и они устарели» — это ответ, а пустая строка — нет.
+	measured        bool
+	stale           bool
+	contourLayer    string
+	seamAllowanceMm decimal.Decimal
+	parsedBy        string
+	parsedAt        time.Time
+}
+
+// slotAreaEstimate answers «what does this one roll slot consume per garment by estimate, and why
+// not» — the single place that assembles the arguments of entity.AreaEstimateNorm and the only
+// caller of it. Money is derived here from the answer, never computed beside it.
 //
 // The basis follows the same three-valued rule as every other costing path: one concrete size for a
 // run cell, the simple average over the declared range for the style figure, and NOTHING when there
@@ -34,14 +87,62 @@ func slotAreaEstimate(
 	linked map[int]entity.MaterialWithPrice,
 	basis entity.CostingBasis,
 	baseCcy string,
-) (money decimal.Decimal, currency string, ok bool, refusal entity.AreaEstimateRefusal) {
+) slotEstimate {
 	if tc == nil || cw == nil || bom == nil || !isRollGoodsSection(bom.Section) {
-		return decimal.Zero, "", false, ""
+		// Пустой refusal = «оценка к этому слоту неприменима вовсе», не «не посчиталась»: у нитки
+		// площади нет ни в каком смысле, и назвать причину значило бы обещать, что причину можно
+		// устранить.
+		return slotEstimate{}
 	}
-	pieces, pinned := slotAssignedPieces(tc, cw, bom)
+	scope := entity.FabricScopeKey(bom.Purpose.String, bom.LineKey)
+	out := slotEstimate{
+		bomLineKey: bom.LineKey,
+		scopeKey:   scope,
+		// ЕДИНИЦА — СВОЙСТВО СЛОТА, А НЕ ПИНА, поэтому её можно назвать до разбора цены: пин-тень
+		// (pinShadowBom) копирует строку и подменяет только цену с валютой, а расхождение единиц —
+		// ровно то, из-за чего она ОТКАЗЫВАЕТСЯ ценить строку. Единица слота и единица пина в
+		// посчитанном ответе поэтому всегда одна и та же.
+		unit: bom.Unit.String,
+	}
+	if sc, ok := tc.PieceAreaScopes[scope]; ok && len(sc.Rows) > 0 {
+		out.measured = true
+		out.stale = sc.Stale
+		// Условия и провенанс — одни на скоуп (их пишет одна транзакция), читаются с первой строки
+		// ровно как в TechCardPieceAreaScopesToPb; второго правила чтения тех же полей не заводим.
+		out.contourLayer = sc.Rows[0].ContourLayer
+		out.seamAllowanceMm = sc.Rows[0].SeamAllowanceMm
+		out.parsedBy = sc.Rows[0].ParsedBy
+		out.parsedAt = sc.Rows[0].ParsedAt
+	}
+
+	pieces, pinned, pinConflict := slotAssignedPieces(tc, cw, bom)
+	out.pieceCount = len(pieces)
+	if pinConflict {
+		// СПОРЯЩИЕ ПИНЫ — ЭТО НЕ «ДЕТАЛЕЙ НЕТ». Раньше конфликт возвращался пустым списком и читался
+		// как no_pieces_assigned, то есть отправлял оператора назначать детали, которые уже
+		// назначены, — а починить надо артикул. Причина существовала в словаре и не доезжала ни до
+		// одного экрана.
+		out.refusal = entity.AreaEstimatePinConflict
+		return out
+	}
 	if len(pieces) == 0 {
-		return decimal.Zero, "", false, entity.AreaEstimateNoAssignments
+		out.refusal = entity.AreaEstimateNoAssignments
+		return out
 	}
+	// ГЕОМЕТРИЯ СЧИТАЕТСЯ ДО ЦЕНЫ, И ЭТО НЕ ПЕРЕСТАНОВКА РАДИ КРАСОТЫ. «Сколько ткани съедает
+	// изделие» — вопрос про выкройки и ширину рулона; он имеет ответ и тогда, когда у артикула нет
+	// цены. Читатели, которым нужна ИМЕННО норма (материальный план: «есть только оценка по площади»
+	// против «нормы расхода нет»), обязаны получать ответ, не зависящий от валютной лестницы, —
+	// иначе смена валюты костинга меняет предписанное оператору действие, ничего не меняя в цехе.
+	//
+	// ЛЕСТНИЦА ОТКАЗОВ ПРИ ЭТОМ НЕ ТРОНУТА: «нет цены» по-прежнему называется РАНЬШЕ геометрических
+	// причин (см. ниже), поэтому деньги и флаги костинга ведут себя ровно как раньше.
+	widthCm := slotCuttingWidthCm(bom, pinned, linked)
+	perGarment, normRefusal := areaEstimateOnBasis(scope, pieces, tc.PieceAreaScopes, widthCm, out.unit, basis)
+	if normRefusal == "" {
+		out.perGarment, out.normDerived = perGarment, true
+	}
+
 	// ЦЕНА И ШИРИНА БЕРУТСЯ У ОДНОГО И ТОГО ЖЕ АРТИКУЛА. Пин колорвея меняет и то и другое разом:
 	// посчитать длину по ширине слота, а деньги по цене пина (или наоборот) значило бы описать
 	// рулон, которого нет ни на складе, ни в спецификации.
@@ -54,27 +155,47 @@ func slotAreaEstimate(
 		// НАЗНАЧЕНИЯ ЕСТЬ, А ЦЕНЫ НЕТ — это «строка без цены», а не «оценивать нечего»: слот входит
 		// в изделие, но не входит ни в один итог. Молчаливый пропуск здесь и есть тот самый способ
 		// опубликовать себестоимость с недостающим материалом.
-		return decimal.Zero, "", false, entity.AreaEstimateNoPrice
+		out.refusal = entity.AreaEstimateNoPrice
+		return out
 	}
-	widthCm := slotCuttingWidthCm(bom, pinned, linked)
-	scope := entity.FabricScopeKey(bom.Purpose.String, bom.LineKey)
-	unit := priced.Unit.String
+	if normRefusal != "" {
+		out.refusal = normRefusal
+		return out
+	}
+	// ПРОЦЕНТ РАСКРОЯ СЛОТА НЕ НАЧИСЛЯЕТСЯ. Оценка объявлена нижней границей и показывается как
+	// таковая; догрузив её процентом, мы получили бы число, которое выглядит как норма, считается
+	// как норма и при этом ею не является. Ступень наверх — только через раскладку.
+	out.money = perGarment.Mul(priced.UnitPrice.Decimal)
+	out.currency = priced.Currency.String
+	out.ok = true
+	return out
+}
 
+// areaEstimateOnBasis сводит пер-размерную норму к ОДНОМУ числу на изделие по правилу базиса —
+// конкретный размер для клетки прогона, простое среднее по объявленному ряду для стилевой цифры,
+// и НИЧЕГО, когда базиса нет.
+func areaEstimateOnBasis(
+	scope string,
+	pieces []entity.AreaEstimatePiece,
+	areas map[string]entity.PieceAreaScope,
+	widthCm decimal.NullDecimal,
+	unit string,
+	basis entity.CostingBasis,
+) (decimal.Decimal, entity.AreaEstimateRefusal) {
 	norm := func(sizeID int) (decimal.Decimal, entity.AreaEstimateRefusal) {
-		return entity.AreaEstimateNorm(scope, pieces, tc.PieceAreaScopes, widthCm, unit, sizeID)
+		return entity.AreaEstimateNorm(scope, pieces, areas, widthCm, unit, sizeID)
 	}
-
 	var perGarment decimal.Decimal
 	switch basis.Mode {
 	case entity.CostingBasisSize:
 		n, r := norm(basis.SizeID)
 		if r != "" {
-			return decimal.Zero, "", false, r
+			return decimal.Zero, r
 		}
 		perGarment = n
 	case entity.CostingBasisRangeAverage:
 		if len(basis.RangeSizeIds) == 0 {
-			return decimal.Zero, "", false, entity.AreaEstimateIncomplete
+			return decimal.Zero, entity.AreaEstimateIncomplete
 		}
 		sum := decimal.Zero
 		for _, sid := range basis.RangeSizeIds {
@@ -82,7 +203,7 @@ func slotAreaEstimate(
 			if r != "" {
 				// НЕТ УСРЕДНЕНИЯ ПО ПОДМНОЖЕСТВУ. Средняя по тем размерам, что посчитались, — это
 				// ровно то систематическое занижение, ради устранения которого T6 менял базис.
-				return decimal.Zero, "", false, r
+				return decimal.Zero, r
 			}
 			sum = sum.Add(n)
 		}
@@ -90,25 +211,152 @@ func slotAreaEstimate(
 	default:
 		// Базиса нет (строка прогона без размера): пер-размерная величина без размера — это
 		// отсутствие ответа, а не ноль.
-		return decimal.Zero, "", false, entity.AreaEstimateNoBasis
+		return decimal.Zero, entity.AreaEstimateNoBasis
 	}
 	if !perGarment.IsPositive() {
-		return decimal.Zero, "", false, entity.AreaEstimateIncomplete
+		return decimal.Zero, entity.AreaEstimateIncomplete
 	}
-	total := perGarment.Mul(priced.UnitPrice.Decimal)
-	// ПРОЦЕНТ РАСКРОЯ СЛОТА НЕ НАЧИСЛЯЕТСЯ. Оценка объявлена нижней границей и показывается как
-	// таковая; догрузив её процентом, мы получили бы число, которое выглядит как норма, считается
-	// как норма и при этом ею не является. Ступень наверх — только через раскладку.
-	return total, priced.Currency.String, true, ""
+	return perGarment, ""
+}
+
+// colorwayAreaEstimates — оценки ВСЕХ рулонных слотов колорвея, у которых нет собственной строки
+// рецепта. ЕДИНСТВЕННЫЙ вход и для денег (colorwayCost складывает money), и для нормы на проводе
+// (techCardSlotAreaEstimatesToPb печатает perGarment): деньги — это perGarment × цена ОДНОГО и того
+// же ответа, а не второй расчёт рядом.
+//
+// Обе ветки передают сюда одну и ту же четвёрку (tc.BomItems, tc.LinkedMaterials, tc.CostingBasis(),
+// fx.Base) — собрать её иначе значит опубликовать норму от одного базиса под ценой от другого, и
+// именно это равенство закреплено тестом TestPublishedNormIsTheNumberTheMoneyUsed.
+//
+// СЛОТ СО СВОЕЙ СТРОКОЙ СЮДА НЕ ПОПАДАЕТ. Оценка существует ровно там, где нормы никто не вписал;
+// введённое человеком число всегда сильнее выведенного, иначе правка нормы вниз молча заменялась бы
+// оценкой вверх. Именно поэтому оценка не может ехать НА строке рецепта — её там нет.
+func colorwayAreaEstimates(
+	tc *entity.TechCard,
+	cw *entity.TechCardColorway,
+	bomItems []entity.TechCardBomItem,
+	linked map[int]entity.MaterialWithPrice,
+	basis entity.CostingBasis,
+	baseCcy string,
+) []slotEstimate {
+	if tc == nil || cw == nil {
+		return nil
+	}
+	authored := colorwayAuthoredSlots(cw, bomItems)
+	out := make([]slotEstimate, 0, len(bomItems))
+	for i := range bomItems {
+		b := &bomItems[i]
+		if authored[b.Id] || !isRollGoodsSection(b.Section) {
+			continue
+		}
+		out = append(out, slotAreaEstimate(tc, cw, b, linked, basis, baseCcy))
+	}
+	return out
+}
+
+// areaRefusalBlocksTheCost — ОДНО правило на вопрос «этот отказ занижает себестоимость».
+//
+// Слот, на который детали НАЗНАЧЕНЫ, входит в изделие. Если посчитать его не удалось — устарели
+// выкройки, нет ширины, нет цены, спорят пины, нет базиса — итог занижен ровно на этот материал, и
+// молчание публикует себестоимость с недостающей тканью.
+//
+// ДВА ИСКЛЮЧЕНИЯ, И ОБА — «слот сюда не относится», а не «слот сломан»: «деталей не назначено» и
+// «площадей нет». Второе — НОРМАЛЬНОЕ состояние всякой ещё не измеренной карточки, то есть всех
+// сегодняшних: подняв на нём флаг, мы остановили бы посев себестоимости у каждой из них
+// (регрессия, которую поймал TestT8ReleaseFrozenAllPieceRowsColorwayInheritsStyle). Громким отказ
+// становится там, где карточку ИЗМЕРИЛИ.
+//
+// Предикат вынесен затем, что у него теперь ДВА читателя: флаг hasUnpriced в костинге и чек-лист
+// готовности к релизу, который называет те же слоты словами. Вторая копия однажды разошлась бы, и
+// экран говорил бы «всё в порядке» о карточке, чью цену сервер отказался считать.
+func areaRefusalBlocksTheCost(measured bool, r entity.AreaEstimateRefusal) bool {
+	if !measured || r == "" {
+		return false
+	}
+	return r != entity.AreaEstimateNoAssignments && r != entity.AreaEstimateNoAreas
+}
+
+// TechCardCostBlockers — слоты, ИЗ-ЗА КОТОРЫХ цена карточки сегодня не считается, названные словами
+// оператора: «<ткань> (<цвет>): <причина>».
+//
+// ЗАЧЕМ ЭТО СУЩЕСТВУЕТ. Отказ оценки делает цену НЕПОСЧИТАННОЙ, но product.cost_price при этом
+// остаётся тем, чем был: его читают бухгалтерия и COGS проданного, и обнулять его задним числом
+// хуже, чем оставить. Значит карточка может уехать в релиз с каталожной ценой, которая больше
+// ничему не соответствует, и до сих пор ни один экран этого не говорил: чек-лист релиза спрашивал
+// только «заполнен ли костинг и есть ли валюта». Пустая строка здесь = «нечего сообщить».
+//
+// НЕ ТРОГАЕТ ДАННЫЕ И НЕ БЛОКИРУЕТ ЗАПИСЬ: чек-лист готовности по построению советует, а не
+// запрещает (GetTechCardReadiness). Это про честность экрана.
+func TechCardCostBlockers(tc *entity.TechCard, fx CostingFx) []string {
+	if tc == nil || len(tc.Colorways) == 0 {
+		return nil
+	}
+	measured := len(tc.PieceAreaScopes) > 0
+	if !measured {
+		return nil
+	}
+	nameByLineKey := make(map[string]string, len(tc.BomItems))
+	for i := range tc.BomItems {
+		b := &tc.BomItems[i]
+		name := strings.TrimSpace(b.Name)
+		if name == "" {
+			name = b.LineKey
+		}
+		nameByLineKey[b.LineKey] = name
+	}
+	out := make([]string, 0, len(tc.Colorways))
+	for i := range tc.Colorways {
+		cw := &tc.Colorways[i]
+		// ТЕ ЖЕ АРГУМЕНТЫ, ЧТО У ДЕНЕГ И У ПРОВОДА — см. colorwayAreaEstimates.
+		for _, e := range colorwayAreaEstimates(tc, cw, tc.BomItems, tc.LinkedMaterials, tc.CostingBasis(), fx.Base) {
+			if !areaRefusalBlocksTheCost(measured, e.refusal) {
+				continue
+			}
+			fabric := nameByLineKey[e.bomLineKey]
+			if fabric == "" {
+				fabric = e.bomLineKey
+			}
+			colour := strings.TrimSpace(cw.Name)
+			if colour == "" {
+				colour = cw.ColorCode
+			}
+			out = append(out, fabric+" ("+colour+"): "+entity.AreaEstimateRefusalText(e.refusal))
+		}
+	}
+	return out
+}
+
+// colorwayAuthoredSlots — слоты, у которых норма ЗАЯВЛЕНА (посчиталась или отказала): к ним оценка
+// по площади не применяется. Одно правило на деньги и на публикацию — вторая копия предиката
+// однажды разошлась бы, и слот получил бы и норму, и оценку разом.
+//
+// Строка-назначение детали (IsPieceMaterialAssignment) заявлением нормы НЕ является: она говорит
+// «эта деталь кроится из этой ткани» и числа не несёт (T8) — ради таких слотов оценка и заведена.
+func colorwayAuthoredSlots(cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem) map[int]bool {
+	authored := make(map[int]bool, len(cw.Usages))
+	for i := range cw.Usages {
+		u := &cw.Usages[i]
+		if u.IsPieceMaterialAssignment() {
+			continue
+		}
+		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
+		// positional index, and a nil bom here would leave its slot open to a second (estimated)
+		// figure on top of the authored one.
+		if src := resolveUsageBom(bomItems, u); src != nil {
+			authored[src.Id] = true
+		}
+	}
+	return authored
 }
 
 // slotAssignedPieces lists the cut pieces this colourway assigns to this slot, with the multiplicity
-// the estimate multiplies by, and the article the piece rows pin (0 = none, or disagreement).
+// the estimate multiplies by, the article the piece rows pin (0 = none), and whether those pins
+// DISAGREE.
 //
 // ONE PREDICATE WITH THE MONEY: entity.IsPieceMaterialAssignment. The piece rows are exactly the
 // statement «this piece is cut from that fabric»; a garment-level row would carry a norm and would
 // have been costed before this function was ever reached.
-func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *entity.TechCardBomItem) ([]entity.AreaEstimatePiece, int64) {
+func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *entity.TechCardBomItem) ([]entity.AreaEstimatePiece, int64, bool) {
 	byID := make(map[int]*entity.TechCardPiece, len(tc.Pieces))
 	for i := range tc.Pieces {
 		byID[tc.Pieces[i].Id] = &tc.Pieces[i]
@@ -130,11 +378,10 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 		if p == nil || strings.TrimSpace(p.LineKey) == "" {
 			return
 		}
-		if seen[p.LineKey] {
-			return // one piece, one contour: a second statement about it adds no cloth
-		}
-		seen[p.LineKey] = true
-		out = append(out, entity.AreaEstimatePiece{LineKey: p.LineKey, PerGarment: p.PiecesPerGarment})
+		// ПИН УЧИТЫВАЕТСЯ ДАЖЕ У ПОВТОРНОЙ СТРОКИ. Дедупликация ниже снимает ПЛОЩАДЬ (один контур
+		// нельзя посчитать дважды), но не мнение строки об артикуле: две строки на одну деталь,
+		// назвавшие разные рулоны, — это тот же спор, что две детали с разными пинами, и раньше он
+		// проходил молча, потому что вторую строку отбрасывали целиком.
 		if pinnedMaterial > 0 {
 			if pin == 0 {
 				pin = pinnedMaterial
@@ -142,6 +389,11 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 				pinAgrees = false
 			}
 		}
+		if seen[p.LineKey] {
+			return // one piece, one contour: a second statement about it adds no cloth
+		}
+		seen[p.LineKey] = true
+		out = append(out, entity.AreaEstimatePiece{LineKey: p.LineKey, PerGarment: p.PiecesPerGarment})
 	}
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
@@ -173,14 +425,13 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 			appendPiece(p.Id, 0)
 		}
 	}
-	if !pinAgrees {
-		// см. AreaEstimatePinConflict у вызывающего: возврат пустого списка означает именно это.
-		// Две детали одного слота пришпилены к РАЗНЫМ артикулам — это не «оценка чуть неточна», это
-		// два разных рулона под одним слотом. Молча выбрать один значило бы посчитать половину
-		// изделия по чужой цене и чужой ширине.
-		return nil, 0
-	}
-	return out, pin
+	// Конфликт возвращается ОТДЕЛЬНЫМ признаком, а не пустым списком, как раньше. Две детали одного
+	// слота, пришпиленные к РАЗНЫМ артикулам, — это не «оценка чуть неточна», это два разных рулона
+	// под одним слотом, и молча выбрать один значило бы посчитать половину изделия по чужой цене и
+	// чужой ширине. Но детали при этом НАЗНАЧЕНЫ: пустой список читался бы как «назначений нет» и
+	// отправлял оператора чинить то, что в порядке, вместо артикула. pin при конфликте бессмыслен —
+	// вызывающий обязан отказаться до его использования.
+	return out, pin, !pinAgrees
 }
 
 // slotCuttingWidthCm resolves the CUTTING width: the pinned article's, else the slot's article's,
@@ -231,28 +482,8 @@ func isRollGoodsSection(s entity.TechCardBomSection) bool {
 	return false
 }
 
-// catalogAsLinked adapts the estimate's price catalogue to the shape slotAreaEstimate expects.
-//
-// THE TWO PATHS CARRY DIFFERENT MAPS FOR A REASON: the costing rollup holds the card's
-// LinkedMaterials (identity + prices + fabric attributes), the style estimate holds only the latest
-// price per material. Rather than teach slotAreaEstimate two shapes, the estimate lends what it has:
-// prices resolve, and the article's WIDTH does not — so the estimate falls back to the BOM line's
-// own snapshot width, which is the same number in every case where the card was filled in normally.
-//
-// The alternative — a second width rule inside the estimate — is the thing this whole phase exists
-// to stop: two screens computing one number two ways.
-func catalogAsLinked(catalog map[int64]*entity.MaterialPrice) map[int]entity.MaterialWithPrice {
-	if len(catalog) == 0 {
-		return nil
-	}
-	out := make(map[int]entity.MaterialWithPrice, len(catalog))
-	for id, price := range catalog {
-		if price == nil {
-			continue
-		}
-		m := entity.MaterialWithPrice{LatestPrice: price}
-		m.Id = int(id)
-		out[int(id)] = m
-	}
-	return out
-}
+// catalogAsLinked УДАЛЁН НАМЕРЕННО (ревью Ф-С). Он адаптировал прайс-каталог сметы под форму,
+// которую ждёт оценка, и честно объявлял, что атрибутов ткани в нём нет, — а значит смета
+// резолвила ширину по снапшоту строки BOM, тогда как костинг брал полезную ширину артикула. Это и
+// было расхождение: не «две реализации формулы», а ОДНА формула с двумя разными аргументами, что
+// ничуть не лучше и куда труднее заметить. Обе проекции теперь передают tc.LinkedMaterials.

@@ -1059,7 +1059,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		ResolvedTechnicalMedia: resolvedTechnical,
 		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
 		// recipe (H1 fix) resolved against this style's own BOM items.
-		Colorways: techCardColorwayRefsToPb(tc.Colorways, tc.BomItems, tc.Pieces, orderQtyBySize, fx),
+		Colorways: techCardColorwayRefsToPb(tc, orderQtyBySize, fx),
 		// Structured fibre composition (S17/M1 fix), alongside — never instead of — the legacy
 		// free-text Composition below.
 		CompositionEntries: compositionEntriesToPb(tc.CompositionEntries),
@@ -1148,6 +1148,53 @@ func TechCardPieceAreaScopesToPb(scopes map[string]entity.PieceAreaScope) []*pb_
 			item.ParsedAt = timestamppb.New(sc.Rows[0].ParsedAt)
 		}
 		out = append(out, item)
+	}
+	return out
+}
+
+// techCardSlotAreaEstimatesToPb публикует оценку расхода по площади (Ф1) для каждого рулонного
+// слота колорвея, у которого нет строки рецепта, — включая слоты, где оценки не вышло.
+//
+// ОТКАЗ ПУБЛИКУЕТСЯ НАРАВНЕ С ЧИСЛОМ, и это половина смысла сообщения. Пустая строка на экране
+// читается как «ткани уходит ноль»; названная причина — как «расход не посчитан, и вот чего не
+// хватает». Пропустить неудачные слоты значило бы вернуть ту же пустоту, из-за которой карточка с
+// полностью заполненной спецификацией показывала «себестоимость не посчитана» и не говорила почему.
+//
+// НЕПРИМЕНИМЫЙ СЛОТ (пустой refusal при ok=false) сюда не попадает вовсе: это защитный ноль
+// slotAreaEstimate для не-рулонной секции, у него нет ни числа, ни причины, которую можно устранить.
+func techCardSlotAreaEstimatesToPb(est []slotEstimate) []*pb_common.TechCardSlotAreaEstimate {
+	if len(est) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardSlotAreaEstimate, 0, len(est))
+	for _, e := range est {
+		if !e.ok && e.refusal == "" {
+			continue
+		}
+		item := &pb_common.TechCardSlotAreaEstimate{
+			BomLineKey:   e.bomLineKey,
+			ScopeKey:     e.scopeKey,
+			Unit:         e.unit,
+			Refusal:      string(e.refusal),
+			RefusalText:  entity.AreaEstimateRefusalText(e.refusal),
+			PieceCount:   int32(e.pieceCount),
+			Stale:        e.stale,
+			ContourLayer: e.contourLayer,
+			ParsedBy:     e.parsedBy,
+		}
+		if e.ok {
+			item.PerGarment = pbDecimalFromDecimal(e.perGarment)
+		}
+		// Провенанс — только у измеренного скоупа. Ноль-время и нулевой припуск у слота, который
+		// никто не мерил, читались бы как «мерили 1 января 1 года без припуска».
+		if e.measured {
+			item.SeamAllowanceMm = pbDecimalFromDecimal(e.seamAllowanceMm)
+			item.ParsedAt = timestamppb.New(e.parsedAt)
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -2827,10 +2874,16 @@ func parseTechCardSizeConsumptions(pbs []*pb_common.TechCardBomSizeConsumption, 
 // (UpdateColorwayRecipe persisted usages that no read path surfaced, A3.4). bomItems/orderQtyBySize
 // resolve each usage's line_total/size_run_total against the style's BOM (caller strips money for an
 // account without costing:read, same as the rest of the tech-card read).
-func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int, fx CostingFx) []*pb_common.AdminColorwayRef {
-	if len(cws) == 0 {
+// Оценки расхода по площади (Ф1) едут ЗДЕСЬ же — см. techCardSlotAreaEstimatesToPb: они свойство
+// пары (колорвей, слот), и без них строка «одного списка по тканям» у слота без нормы пуста.
+// Поэтому функция берёт всю карточку, а не три её списка: аргументы оценки (BOM, каталог
+// материалов, базис костинга) обязаны быть ТЕМИ ЖЕ, что у денежного пути, а собрать их можно только
+// из карточки целиком.
+func techCardColorwayRefsToPb(tc *entity.TechCard, orderQtyBySize map[int]int, fx CostingFx) []*pb_common.AdminColorwayRef {
+	if tc == nil || len(tc.Colorways) == 0 {
 		return nil
 	}
+	cws, bomItems, pieces := tc.Colorways, tc.BomItems, tc.Pieces
 	out := make([]*pb_common.AdminColorwayRef, 0, len(cws))
 	for i := range cws {
 		c := &cws[i]
@@ -2873,6 +2926,12 @@ func techCardColorwayRefsToPb(cws []entity.TechCardColorway, bomItems []entity.T
 		}
 		ref.Prices = convertEntityPricesToPb(c.Prices)
 		ref.NetPrices = netColorwayPricesToPb(c.Prices, fx)
+		// ТЕ ЖЕ АРГУМЕНТЫ, ЧТО У ДЕНЕГ. Каждый производственный вызов colorwayCost передаёт ровно
+		// эту четвёрку (tc.BomItems, tc.LinkedMaterials, tc.CostingBasis(), fx.Base) — базис в том
+		// числе: у стиля это СРЕДНЕЕ по объявленному размерному ряду, и опубликовать здесь норму
+		// одного размера значило бы разойтись со стоимостью на весь градационный разброс.
+		ref.AreaEstimates = techCardSlotAreaEstimatesToPb(
+			colorwayAreaEstimates(tc, c, bomItems, tc.LinkedMaterials, tc.CostingBasis(), fx.Base))
 		out = append(out, ref)
 	}
 	return out
