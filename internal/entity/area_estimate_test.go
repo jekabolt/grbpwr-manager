@@ -2,6 +2,8 @@ package entity
 
 import (
 	"database/sql"
+	"os"
+	"regexp"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -116,6 +118,68 @@ func TestAreaEstimateRefusesStaleAreas(t *testing.T) {
 		[]AreaEstimatePiece{{LineKey: "P1", PerGarment: 1}}, areas, width("140"), "m", 4)
 	if refusal != AreaEstimateStale {
 		t.Fatalf("stale areas produced %q, want %q", refusal, AreaEstimateStale)
+	}
+}
+
+// TestAllAreaEstimateRefusalsCoversEveryConstant makes the list impossible to forget.
+//
+// AllAreaEstimateRefusals is hand-written, and every guard that iterates it — the operator-text
+// check below, the wire-coverage table in internal/dto — is only as complete as that slice. A tenth
+// refusal declared as a constant and left out of it would silently narrow all of them at once, and
+// the symptom would be a blank cell on a recipe screen months later. So the constants are read back
+// out of the SOURCE and compared: forgetting is now a failing test rather than a quiet regression.
+func TestAllAreaEstimateRefusalsCoversEveryConstant(t *testing.T) {
+	src, err := os.ReadFile("area_estimate.go")
+	if err != nil {
+		t.Fatalf("cannot read the refusal declarations: %v", err)
+	}
+	// Matches the const block's `AreaEstimateX AreaEstimateRefusal = "token"`, and nothing else:
+	// the slice literal below it spells its entries without the type or the string.
+	re := regexp.MustCompile(`AreaEstimateRefusal\s*=\s*"([a-z_]+)"`)
+	declared := map[AreaEstimateRefusal]bool{}
+	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+		declared[AreaEstimateRefusal(m[1])] = true
+	}
+	if len(declared) == 0 {
+		t.Fatal("no refusal constants found; the guard is matching nothing and would pass on anything")
+	}
+	listed := map[AreaEstimateRefusal]bool{}
+	for _, r := range AllAreaEstimateRefusals {
+		listed[r] = true
+	}
+	for r := range declared {
+		if !listed[r] {
+			t.Errorf("refusal %q is declared but missing from AllAreaEstimateRefusals; every guard that iterates the slice silently stops covering it", r)
+		}
+	}
+	for r := range listed {
+		if !declared[r] {
+			t.Errorf("AllAreaEstimateRefusals lists %q, which is not a declared constant", r)
+		}
+	}
+}
+
+// TestEveryRefusalHasOperatorText guards the list the wire iterates over.
+//
+// The refusal now travels to the recipe screen and stands there INSTEAD of a number: a reason with
+// no sentence renders as a blank cell, which reads as «this fabric consumes nothing» rather than as
+// «this consumption was not computed». A tenth refusal added without its sentence fails here.
+func TestEveryRefusalHasOperatorText(t *testing.T) {
+	seen := map[AreaEstimateRefusal]bool{}
+	for _, r := range AllAreaEstimateRefusals {
+		if r == "" {
+			t.Error("the empty refusal is «estimate computed», never a listed reason")
+		}
+		if seen[r] {
+			t.Errorf("refusal %q listed twice; the coverage check it feeds would pass on nine of eight", r)
+		}
+		seen[r] = true
+		if AreaEstimateRefusalText(r) == "" {
+			t.Errorf("refusal %q has no operator-facing text; its row would show an empty cell", r)
+		}
+	}
+	if AreaEstimateRefusalText("") != "" {
+		t.Error("a computed estimate renders a refusal sentence; the number would be captioned as a failure")
 	}
 }
 

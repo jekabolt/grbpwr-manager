@@ -48,6 +48,25 @@ const (
 	AreaEstimatePinConflict   AreaEstimateRefusal = "pin_conflict"
 )
 
+// AllAreaEstimateRefusals перечисляет причины отказа, чтобы их МОЖНО БЫЛО ПЕРЕБРАТЬ.
+//
+// Отказ теперь едет на провод (AdminColorwayRef.area_estimates.refusal) и там он — не диагностика,
+// а ЕДИНСТВЕННОЕ, что стоит в строке рецепта вместо числа: по нему клиент называет недостающий факт
+// и ведёт на вкладку, где его добавляют. Причина, которую забыли перевести на язык экрана, читается
+// как пустая строка — то есть как «расхода нет», а не как «расход не посчитан». Этот список
+// существует, чтобы тест мог потребовать покрытия ВСЕХ причин, а не тех, о которых вспомнили.
+var AllAreaEstimateRefusals = []AreaEstimateRefusal{
+	AreaEstimateNoAssignments,
+	AreaEstimateNoAreas,
+	AreaEstimateIncomplete,
+	AreaEstimateStale,
+	AreaEstimateNoWidth,
+	AreaEstimateUnitUnknown,
+	AreaEstimateNoPrice,
+	AreaEstimateNoBasis,
+	AreaEstimatePinConflict,
+}
+
 // AreaEstimatePiece is one cut piece of the slot's scope, as the estimate needs it.
 type AreaEstimatePiece struct {
 	LineKey string

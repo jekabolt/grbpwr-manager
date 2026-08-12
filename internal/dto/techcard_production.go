@@ -1202,7 +1202,13 @@ func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool
 		if !isRollGoodsSection(b.Section) {
 			continue
 		}
-		if pieces, _ := slotAssignedPieces(tc, cw, b); len(pieces) > 0 {
+		// СПОРЯЩИЕ ПИНЫ РЕЦЕПТ НЕ ОТМЕНЯЮТ. Это ДВА РАЗНЫХ ВОПРОСА, и путать их дорого: «есть ли у
+		// колорвея собственный рецепт» (да — детали назначены, слот измерен) и «считается ли он»
+		// (нет — про это hasUnpriced). Ответив «рецепта нет», мы отправляли бы такой колорвей
+		// наследовать цену ПЕРВИЧНОГО — и посев записал бы её продукту, а прогон спланировал по ней.
+		// То есть карточка, которую мы только что отказались считать, всё равно называла бы цену,
+		// просто чужую. Здесь поэтому только len(pieces) > 0: конфликт снимет уже расчёт.
+		if pieces, _, _ := slotAssignedPieces(tc, cw, b); len(pieces) > 0 {
 			scope := entity.FabricScopeKey(b.Purpose.String, b.LineKey)
 			if sc, ok := tc.PieceAreaScopes[scope]; ok && len(sc.Rows) > 0 {
 				return true
@@ -1404,6 +1410,10 @@ type colorwayCostResult struct {
 	// via the FX rates; materialsPerUnitBase is that Σ in base currency (valid only when true).
 	baseConvertible      bool
 	materialsPerUnitBase decimal.Decimal
+	// estimates — тот самый срез, из которого сложены деньги выше. Он же уезжает на провод как
+	// норма на изделие: держать его в результате дешевле, чем доверять двум вызовам совпасть, и
+	// именно на этом равенстве стоит TestPublishedNormIsTheNumberTheMoneyUsed.
+	estimates []slotEstimate
 }
 
 // pinShadowBom substitutes the PINNED article's latest price and currency for the slot default's
@@ -1455,10 +1465,6 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 	order := make([]string, 0)
 	hasUnconverted := false
 	hasUnpriced := false
-	// Слоты, у которых норма ЗАЯВЛЕНА (посчиталась или отказала): оценка по площади к ним не
-	// применяется. Введённое человеком число всегда сильнее выведенного — иначе правка нормы вниз
-	// молча заменялась бы оценкой вверх.
-	authored := map[int]bool{}
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
 		// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a cut-piece
@@ -1469,9 +1475,6 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		}
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
-		if src := resolveUsageBom(bomItems, u); src != nil {
-			authored[src.Id] = true
-		}
 		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
 		ut := u.UnitTotal(bom, basis)
 		if !ut.Valid {
@@ -1497,31 +1500,20 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 	//
 	// Оценка НЕ поднимает hasUnpriced: она не «строка без цены», а посчитанная нижняя граница. Её
 	// собственный флаг — hasEstimate, и он запрещает ровно одно: сеять каталожную себестоимость.
+	//
+	// СЧИТАЕТСЯ ОДНИМ ВЫЗОВОМ colorwayAreaEstimates — тем же, из которого карточка публикует норму на
+	// изделие (AdminColorwayRef.area_estimates). Деньги здесь — это money ЭТОГО среза, то есть
+	// perGarment × цена той же строки: рецепт и заголовок костинга не могут назвать разные числа,
+	// потому что число одно.
 	hasEstimate := false
-	for i := range bomItems {
-		b := &bomItems[i]
-		if authored[b.Id] {
-			continue
-		}
-		amount, ccy, ok, refusal := slotAreaEstimate(tc, cw, b, linked, basis, fx.Base)
+	estimates := colorwayAreaEstimates(tc, cw, bomItems, linked, basis, fx.Base)
+	for _, e := range estimates {
+		amount, ccy, ok, refusal := e.money, e.currency, e.ok, e.refusal
 		if !ok {
-			// НАЗНАЧЕННЫЙ, НО НЕПОСЧИТАННЫЙ СЛОТ — ЭТО hasUnpriced, А НЕ ТИШИНА.
-			//
-			// Детали на слот назначены, значит ткань в изделие ВХОДИТ. Если посчитать её не удалось —
-			// нет площадей, устарели выкройки, нет ширины, нет цены, пины спорят, нет базиса — то итог
-			// занижен ровно на этот материал, и молчание здесь публикует себестоимость с недостающей
-			// тканью. Единственное исключение — «деталей не назначено»: тогда слот к этому колорвею
-			// просто не относится (и, скажем, у подкладки своя судьба).
-			// ...НО ТОЛЬКО ЕСЛИ ОЦЕНКА ВООБЩЕ БЫЛА ПРИМЕНИМА. «Площадей нет» — это НОРМАЛЬНОЕ
-			// состояние всякой карточки, которую ещё не измеряли, и оно означает ровно то, что
-			// означало до Ф1: у колорвея с одними пер-детальными строками рецепт пуст (T8). Подняв
-			// на нём флаг, мы бы остановили посев себестоимости у каждой существующей карточки —
-			// регрессия, которую поймал TestT8ReleaseFrozenAllPieceRowsColorwayInheritsStyle.
-			//
-			// Громким отказ становится там, где карточку ИЗМЕРИЛИ: тогда слот обязан считаться, и
-			// молчание о его провале — это опубликованная себестоимость с недостающей тканью.
-			measured := len(tc.PieceAreaScopes) > 0
-			if measured && refusal != "" && refusal != entity.AreaEstimateNoAssignments && refusal != entity.AreaEstimateNoAreas {
+			// НАЗНАЧЕННЫЙ, НО НЕПОСЧИТАННЫЙ СЛОТ — ЭТО hasUnpriced, А НЕ ТИШИНА. Правило целиком
+			// живёт в areaRefusalBlocksTheCost: у него теперь второй читатель — чек-лист готовности
+			// к релизу, который называет ровно эти слоты словами.
+			if areaRefusalBlocksTheCost(len(tc.PieceAreaScopes) > 0, refusal) {
 				hasUnpriced = true
 			}
 			continue
@@ -1580,5 +1572,6 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		hasEstimate:          hasEstimate,
 		baseConvertible:      baseConvertible,
 		materialsPerUnitBase: baseSum,
+		estimates:            estimates,
 	}
 }
