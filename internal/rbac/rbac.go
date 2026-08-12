@@ -150,6 +150,14 @@ var methodRequirements = map[string]Requirement{
 	"GetColorwaysPaged":        rd(SectionProducts),
 	"GetColorwayByID":          rd(SectionProducts),
 	"ArchiveColorwayByID":      wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
+	// Физическое удаление колорвея живёт в ТОМ ЖЕ скоупе, что и архивирование, и это выбор: обе
+	// операции снимают колорвей с карточки, различаются только обратимостью, и разводить их по
+	// правам значило бы завести роль, которая может архивировать, но не может стереть опечатку —
+	// то есть ровно ту, для которой фича и написана. Необратимость охраняет не право и не сухой
+	// прогон (dry_run никем не навязан — клиент вправе позвать сразу dry_run = false), а сам
+	// предикат: удалить можно только то, что никогда не продавалось, не стояло в партии и в
+	// настиле и не имеет остатка, и он пере-проверяется внутри транзакции удаления.
+	"DeleteColorwayByID":       wr(SectionProducts),
 	"PublishColorway":          wr(SectionProducts), // R6 lifecycle transition
 	"TransitionColorwayStatus": wr(SectionProducts), // R6 lifecycle transition (hide/unhide/archive)
 	"UpdateVariantStock":       wr(SectionProducts),

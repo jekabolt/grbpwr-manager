@@ -210,6 +210,103 @@ func (s *Server) ArchiveColorwayByID(ctx context.Context, req *pb_admin.ArchiveC
 	return &pb_admin.ArchiveColorwayByIDResponse{}, nil
 }
 
+// DeleteColorwayByID удаляет колорвей физически — узкая дырка в правиле «архивируем, не удаляем»
+// (R6/R9). Довод и граница описаны у RPC в admin.proto и в internal/entity/colorway_deletion.go.
+//
+// Один RPC с сухим прогоном, а не два: диалог подтверждения и само удаление обязаны отвечать на
+// ОДИН вопрос. dry_run = true считает вердикт и ничего не меняет; dry_run = false пере-проверяет
+// тот же предикат внутри транзакции и удаляет.
+//
+// expected_version принимается и НЕ проверяется — прецедент ArchiveColorwayByID, и по тому же
+// доводу: при расхождении не происходит ничего. Версия колорвея — это tech_card.lock_version, и ни
+// одно из событий, которые здесь решают (продажа, попадание в партию, настил, приход остатка), её
+// не двигает; проверка не закрыла бы ни одной настоящей гонки и отказывала бы на правке рецепта
+// соседнего колорвея. Гонку закрывает пере-проверка фактов в транзакции.
+func (s *Server) DeleteColorwayByID(ctx context.Context, req *pb_admin.DeleteColorwayByIDRequest) (*pb_admin.DeleteColorwayByIDResponse, error) {
+	id := int(req.GetColorwayId())
+	if id <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "colorway_id is required")
+	}
+	if req.GetDryRun() {
+		v, err := s.repo.Products().EvaluateColorwayDeletion(ctx, id)
+		if err != nil {
+			return nil, colorwayDeleteError(ctx, id, err)
+		}
+		return pbColorwayDeletionResponse(v, false), nil
+	}
+	v, err := s.repo.Products().DeleteColorway(ctx, id)
+	if err != nil {
+		if errors.Is(err, entity.ErrColorwayNotDeletable) && v != nil {
+			// Каждый блокер — отдельный field violation. Одной строкой оператор снимал бы
+			// перечисленные причины по одной за круг, узнавая следующую только после повторной
+			// попытки, — а сервер знал их целиком с первого раза. Исключение ровно одно: блокер
+			// `referenced` приходит от FK, которого нет в перечислении сервера, и приезжает
+			// В ОДИНОЧКУ, потому что о нём известно только то, что он есть.
+			slog.Default().WarnContext(ctx, "colourway delete refused",
+				slog.Int("colorway_id", id), slog.String("blockers", v.BlockerSummary()))
+			return nil, apierr.FailedPreconditionMany(
+				fmt.Sprintf("колорвей %s удалить нельзя: %s", v.Label, v.BlockerSummary()),
+				v.FieldViolations())
+		}
+		return nil, colorwayDeleteError(ctx, id, err)
+	}
+	// ПОЛНЫЙ набор побочных эффектов, а не архивный. Архив оставляет строку живой, поэтому ему
+	// хватает пересчёта словарных счётчиков и ревалидации; удаление строку СНОСИТ, и всякий
+	// серверный кэш, который её держал, обязан быть перестроен, а не пересчитан. Hero резолвит
+	// продукты по id из своего слепка — не обновив его, витрина продолжила бы указывать на
+	// несуществующий продукт. Поэтому afterColorwayWrite (RefreshHero + словарь + ревалидация), то
+	// есть тот же набор, что у создания и правки колорвея.
+	s.afterColorwayWrite(ctx, id)
+	return pbColorwayDeletionResponse(v, true), nil
+}
+
+// colorwayDeleteError отображает ОСТАЛЬНЫЕ отказы удаления. Неудаляемость обрабатывается выше, у
+// вызова: только там на руках вердикт, а без него FailedPrecondition не смог бы назвать причины —
+// то есть выродился бы в «нельзя», ради устранения которого фича и написана. Сырой MySQL 1451 сюда
+// не доходит вовсе: стор переводит остаточный RESTRICT в блокер `referenced`.
+func colorwayDeleteError(ctx context.Context, id int, err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return status.Errorf(codes.NotFound, "colourway %d not found", id)
+	}
+	if errors.Is(err, entity.ErrColorwayNotDeletable) {
+		// Вердикт до сюда не доехал (стор не сумел его посчитать) — сказать нечего, кроме факта.
+		return status.Errorf(codes.FailedPrecondition, "colourway %d cannot be deleted", id)
+	}
+	slog.Default().ErrorContext(ctx, "can't delete colourway",
+		slog.Int("colorway_id", id), slog.String("err", err.Error()))
+	return status.Errorf(codes.Internal, "can't delete colourway %d", id)
+}
+
+// pbColorwayDeletionResponse проецирует вердикт на провод. deleted — параметр, а не поле вердикта:
+// вердикт отвечает «можно ли», а «сделано ли» знает только вызвавший путь.
+func pbColorwayDeletionResponse(v *entity.ColorwayDeletionVerdict, deleted bool) *pb_admin.DeleteColorwayByIDResponse {
+	if v == nil {
+		return &pb_admin.DeleteColorwayByIDResponse{Deleted: deleted}
+	}
+	return &pb_admin.DeleteColorwayByIDResponse{
+		Deletable: v.Deletable,
+		Blockers:  pbColorwayDeletionEntries(v.Blockers),
+		Cascade:   pbColorwayDeletionEntries(v.Cascade),
+		Orphans:   pbColorwayDeletionEntries(v.Orphans),
+		Deleted:   deleted,
+	}
+}
+
+func pbColorwayDeletionEntries(in []entity.ColorwayDeletionEntry) []*pb_admin.ColorwayDeletionEntry {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*pb_admin.ColorwayDeletionEntry, 0, len(in))
+	for _, e := range in {
+		out = append(out, &pb_admin.ColorwayDeletionEntry{
+			Reason: e.Reason,
+			Text:   e.Text,
+			Count:  int32(e.Count),
+		})
+	}
+	return out
+}
+
 // PublishColorway transitions a DRAFT colourway to ACTIVE (R6). The store enforces the sellable
 // preconditions and an optimistic guard on the current lifecycle_status.
 func (s *Server) PublishColorway(ctx context.Context, req *pb_admin.PublishColorwayRequest) (*pb_admin.PublishColorwayResponse, error) {
