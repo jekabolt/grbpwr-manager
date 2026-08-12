@@ -35,6 +35,10 @@ import (
 // РАЗВЕСТИ два артикула. Карточка грузится настоящим загрузчиком специально: резолвер умеет
 // откатываться на позиционный индекс слота, и лёгкая выборка с другим порядком разрешила бы
 // legacy-юзедж в чужой слот.
+// measuredLayScanLimit mirrors the API-layer window (internal/apisrv/admin/bom_wastage.go): the
+// candidate scan is bounded, so the test has to name a window like every real caller does.
+const measuredLayScanLimit = 50
+
 func TestMaterialCuttingCoefficientCalibration(t *testing.T) {
 	if os.Getenv("CI") == "" &&
 		!strings.Contains(testCfg.DSN, "127.0.0.1") &&
@@ -209,7 +213,7 @@ func TestMaterialCuttingCoefficientCalibration(t *testing.T) {
 	// ---- SQL-отбор: приколотый настил ДОСТАВЛЕН -------------------------------------------------
 
 	t.Run("отбор доносит настилы, чей артикул назван ТОЛЬКО пином колорвея", func(t *testing.T) {
-		cands, err := PR.ListMeasuredLayCandidates(ctx, matPinned)
+		cands, _, err := PR.ListMeasuredLayCandidates(ctx, matPinned, measuredLayScanLimit)
 		require.NoError(t, err)
 		require.NotEmpty(t, cands,
 			"артикул matPinned не назван ни на одном слоте: джойн по tech_card_bom_item.material_id вернул бы пусто")
@@ -224,7 +228,7 @@ func TestMaterialCuttingCoefficientCalibration(t *testing.T) {
 	})
 
 	t.Run("карточка, не называющая артикул нигде, в отбор не попадает", func(t *testing.T) {
-		cands, err := PR.ListMeasuredLayCandidates(ctx, matStranger)
+		cands, _, err := PR.ListMeasuredLayCandidates(ctx, matStranger, measuredLayScanLimit)
 		require.NoError(t, err)
 		require.Empty(t, cands, "ограничение отбора вправе отсеять только заведомо невозможное")
 	})
@@ -240,7 +244,7 @@ func TestMaterialCuttingCoefficientCalibration(t *testing.T) {
 		Median string
 	} {
 		t.Helper()
-		lays, err := PR.ListMeasuredLayCandidates(ctx, materialID)
+		lays, _, err := PR.ListMeasuredLayCandidates(ctx, materialID, measuredLayScanLimit)
 		require.NoError(t, err)
 		got := dto.BuildMaterialCoefficientSuggestion(dto.MaterialCoefficientCalibrationInput{
 			MaterialId: materialID, ArticleUom: "m", Lays: lays,
