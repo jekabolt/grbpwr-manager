@@ -310,6 +310,49 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 		}
 	}
 
+	// ВСЕ ЗАБЛОКИРОВАННЫЕ ДЕТАЛИ — ОДНИМ ОТКАЗОМ И ПО ИМЕНАМ, А НЕ ПО ОДНОЙ ЗА СОХРАНЕНИЕ.
+	//
+	// Ниже удаление идёт по одной строке, и первая же упёршаяся в FK роняет транзакцию. На карточке,
+	// где рецепт колорвея держит ДЕВЯТЬ деталей (а держит он их ровно тогда, когда деталям назначена
+	// ткань — самый обычный случай), это девять неудачных сохранений подряд, каждое из которых
+	// называет СЛЕДУЮЩЕГО виновника и ни разу — всех. Хуже того, называет оно `line_key`: ULID,
+	// которого нет ни на одном экране, так что даже одну деталь по нему не найти.
+	//
+	// Поэтому спрашиваем ЗАРАНЕЕ и обо всех сразу, и называем деталь так, как она подписана на
+	// карточке, — тем же правилом, по которому назван отказ выноски выше.
+	//
+	// FK-ветка ниже остаётся: она ловит ссылки, о которых этот запрос не знает, и никакая проверка
+	// в Go не заменяет ограничения в схеме.
+	doomed := make([]int, 0, len(existingByKey))
+	for key, id := range existingByKey {
+		if !seen[key] {
+			doomed = append(doomed, id)
+		}
+	}
+	if len(doomed) > 0 {
+		blocked, err := storeutil.QueryListNamed[struct {
+			Name string `db:"name"`
+		}](ctx, db, `
+			SELECT DISTINCT p.name AS name
+			FROM tech_card_piece p
+			JOIN tech_card_colorway_usage u ON u.piece_id = p.id
+			WHERE p.id IN (:ids)
+			ORDER BY p.name`, map[string]any{"ids": doomed})
+		if err != nil {
+			return fmt.Errorf("check pieces referenced by colourway recipes: %w", err)
+		}
+		if len(blocked) > 0 {
+			names := make([]string, 0, len(blocked))
+			for _, b := range blocked {
+				names = append(names, fmt.Sprintf("%q", b.Name))
+			}
+			return entity.NewFieldViolation("pieces",
+				fmt.Sprintf("these cut-pieces still have recipe lines: %s", strings.Join(names, ", ")),
+				"colourway recipe usages",
+				"a card save cannot edit a recipe, so delete each of these pieces' rows on the COLORWAYS tab first — then delete the pieces. An ARCHIVED colourway holds its rows too, and the card read hides it, so a piece named here with no visible holder is being held by one")
+		}
+	}
+
 	// Delete pieces that vanished from the payload. FK RESTRICT (fk_usage_piece) blocks a piece still
 	// referenced by a colourway recipe usage — surface that as an actionable field-tagged error
 	// (the deferred-from-0159 guard, now live because pieces are keyed/stable).
