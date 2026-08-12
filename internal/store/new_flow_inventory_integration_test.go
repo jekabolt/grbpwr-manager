@@ -372,8 +372,39 @@ func TestSampleCost(t *testing.T) {
 		require.Equal(t, int32(tcID), mv.TechCardId.Int32, "movement tech_card_id = sample's tech card")
 	}
 
-	// the sample cannot be deleted while it has material movements.
-	require.ErrorIs(t, s.Samples().DeleteSample(ctx, smID), entity.ErrSampleHasMovements)
+	// УДАЛЕНИЕ СЕМПЛА ИДЁТ ЗА МАТЕРИАЛОМ, а не за фактом движения. Пока 2 m из выданных 2.5 m не
+	// вернулись на склад, семпл держит их стоимость и удаляться не должен — но отказ обязан
+	// НАЗЫВАТЬ материал, а не просто говорить «есть движения».
+	v, _, err := s.Samples().EvaluateSampleDeletion(ctx, smID)
+	require.NoError(t, err)
+	require.False(t, v.Deletable, "2 m still out on the sample")
+	require.Len(t, v.Blockers, 1)
+	require.Equal(t, entity.SampleBlockerMaterialOutstanding, v.Blockers[0].Reason)
+	require.Contains(t, v.Blockers[0].Text, "2")
+	_, _, err = s.Samples().DeleteSample(ctx, smID)
+	require.ErrorIs(t, err, entity.ErrSampleNotDeletable)
+
+	// Возврат остатка обнуляет чистый расход — и ровно с этого момента семпл удаляется. Движения
+	// склада при этом НИКУДА не деваются: они переживают удаление (sample_id → NULL) и остаются в
+	// ленте, поэтому вердикт называет их сиротами.
+	_, err = s.MaterialStock().IssueMaterialStock(ctx, entity.MaterialIssueInsert{
+		MaterialId: matID, Quantity: decimal.NewFromInt(2), SampleId: sql.NullInt32{Int32: int32(smID), Valid: true}, IsReturn: true,
+	})
+	require.NoError(t, err)
+	v, _, err = s.Samples().EvaluateSampleDeletion(ctx, smID)
+	require.NoError(t, err)
+	require.True(t, v.Deletable, "everything returned: %s", v.BlockerSummary())
+	require.NotEmpty(t, v.Orphans, "the movements survive the sample and say so")
+	v, _, err = s.Samples().DeleteSample(ctx, smID)
+	require.NoError(t, err)
+	require.True(t, v.Deletable)
+	_, err = s.Samples().GetSampleById(ctx, smID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+
+	// Лента склада пережила удаление целиком — стирать учёт задним числом удаление не имеет права.
+	after, _, err := s.MaterialStock().ListMaterialMovements(ctx, 50, 0, entity.MaterialMovementFilter{MaterialId: matID})
+	require.NoError(t, err)
+	require.Len(t, after, len(movements)+1, "issue + two returns all still in the ledger")
 }
 
 // atoiDay converts a 2-char day string ("01".."31") to its int day for building a deterministic

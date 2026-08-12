@@ -38,7 +38,7 @@ func TestAddSampleAutoLinksPreviousSampleId(t *testing.T) {
 	var sampleIDs []int
 	defer func() {
 		for _, id := range sampleIDs {
-			_ = s.Samples().DeleteSample(ctx, id)
+			_, _, _ = s.Samples().DeleteSample(ctx, id)
 		}
 		_ = s.TechCards().DeleteTechCard(ctx, techCardID)
 	}()

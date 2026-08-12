@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -74,22 +76,77 @@ func (s *Server) UpdateSample(ctx context.Context, req *pb_admin.UpdateSampleReq
 	return &pb_admin.UpdateSampleResponse{}, nil
 }
 
-// DeleteSample deletes a sample, refusing when it has material stock movements.
+// DeleteSample удаляет семпл — границу, довод и три категории вердикта см. у RPC в admin.proto.
+// dry_run отвечает тем же вердиктом, ничего не меняя: его читает диалог подтверждения.
 func (s *Server) DeleteSample(ctx context.Context, req *pb_admin.DeleteSampleRequest) (*pb_admin.DeleteSampleResponse, error) {
-	if req.GetId() <= 0 {
+	id := int(req.GetId())
+	if id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	if err := s.repo.Samples().DeleteSample(ctx, int(req.GetId())); err != nil {
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			return nil, status.Error(codes.NotFound, "sample not found")
-		case errors.Is(err, entity.ErrSampleHasMovements):
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
+	if req.GetDryRun() {
+		v, _, err := s.repo.Samples().EvaluateSampleDeletion(ctx, id)
+		if err != nil {
+			return nil, sampleDeleteError(ctx, id, err)
 		}
-		slog.Default().ErrorContext(ctx, "can't delete sample", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't delete sample")
+		return pbSampleDeletionResponse(v, false), nil
 	}
-	return &pb_admin.DeleteSampleResponse{}, nil
+	v, scrapped, err := s.repo.Samples().DeleteSample(ctx, id)
+	if err != nil {
+		if errors.Is(err, entity.ErrSampleNotDeletable) && v != nil {
+			// Каждый блокер — отдельный field violation: оператор, у которого и ткань не
+			// возвращена, и примерки записаны, узнаёт обе причины за один заход, а не вторую
+			// после того, как снял первую. Совет внутри каждого свой, и статус «списан» меняет
+			// именно совет: возврат по такому семплу склад не примет.
+			slog.Default().WarnContext(ctx, "sample delete refused",
+				slog.Int("sample_id", id), slog.String("blockers", v.BlockerSummary()))
+			return nil, apierr.FailedPreconditionMany(
+				fmt.Sprintf("сэмпл %s удалить нельзя: %s", v.Label, v.BlockerSummary()),
+				v.FieldViolations(scrapped))
+		}
+		return nil, sampleDeleteError(ctx, id, err)
+	}
+	return pbSampleDeletionResponse(v, true), nil
+}
+
+// sampleDeleteError отображает ОСТАЛЬНЫЕ отказы удаления. Неудаляемость обрабатывается выше, у
+// вызова: только там на руках вердикт, а без него FailedPrecondition не смог бы назвать причины —
+// то есть выродился бы в «нельзя», ради устранения которого фича и написана.
+func sampleDeleteError(ctx context.Context, id int, err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return status.Error(codes.NotFound, "sample not found")
+	}
+	if errors.Is(err, entity.ErrSampleNotDeletable) {
+		// Вердикт до сюда не доехал (стор не сумел его посчитать) — сказать нечего, кроме факта.
+		return status.Errorf(codes.FailedPrecondition, "sample %d cannot be deleted", id)
+	}
+	slog.Default().ErrorContext(ctx, "can't delete sample", slog.Int("sample_id", id), slog.String("err", err.Error()))
+	return status.Error(codes.Internal, "can't delete sample")
+}
+
+// pbSampleDeletionResponse проецирует вердикт на провод. deleted — параметр, а не поле вердикта:
+// вердикт отвечает «можно ли», а «сделано ли» знает только вызвавший путь.
+func pbSampleDeletionResponse(v *entity.SampleDeletionVerdict, deleted bool) *pb_admin.DeleteSampleResponse {
+	if v == nil {
+		return &pb_admin.DeleteSampleResponse{Deleted: deleted}
+	}
+	return &pb_admin.DeleteSampleResponse{
+		Deletable: v.Deletable,
+		Blockers:  pbSampleDeletionEntries(v.Blockers),
+		Cascade:   pbSampleDeletionEntries(v.Cascade),
+		Orphans:   pbSampleDeletionEntries(v.Orphans),
+		Deleted:   deleted,
+	}
+}
+
+func pbSampleDeletionEntries(src []entity.SampleDeletionEntry) []*pb_admin.SampleDeletionEntry {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]*pb_admin.SampleDeletionEntry, 0, len(src))
+	for _, e := range src {
+		out = append(out, &pb_admin.SampleDeletionEntry{Reason: e.Reason, Text: e.Text, Count: int32(e.Count)})
+	}
+	return out
 }
 
 // GetSample returns a sample with its composed cost (stripped without costing:read).
