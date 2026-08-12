@@ -147,6 +147,17 @@ type (
 		UnhideColorway(ctx context.Context, colorwayID int) error
 		// ArchiveColorway transitions ACTIVE|HIDDEN->ARCHIVED and stamps the archival audit.
 		ArchiveColorway(ctx context.Context, colorwayID int) error
+		// EvaluateColorwayDeletion answers "may this colourway be deleted outright" WITHOUT changing
+		// anything — the confirmation dialog's read. The verdict carries the blockers, the cascade
+		// (what dies with it) and the SET NULL orphans (what survives and loses its colourway).
+		// sql.ErrNoRows when the colourway is absent.
+		EvaluateColorwayDeletion(ctx context.Context, colorwayID int) (*entity.ColorwayDeletionVerdict, error)
+		// DeleteColorway physically removes a colourway that was never sold, never produced, sits in
+		// no lay and holds no stock (the narrow hole in archive-not-delete, R6/R9). It re-evaluates the
+		// SAME predicate INSIDE the transaction and returns entity.ErrColorwayNotDeletable — with the
+		// verdict alongside — when it no longer holds. On success the verdict describes what was just
+		// removed and orphaned (counted before the DELETE).
+		DeleteColorway(ctx context.Context, colorwayID int) (*entity.ColorwayDeletionVerdict, error)
 		// TransitionColorwayToHidden moves a colourway to HIDDEN via the single legal edge from its current
 		// state: hide (ACTIVE->HIDDEN) or restore/unarchive (ARCHIVED->HIDDEN, clearing the deleted_at
 		// tombstone). Any other source state is rejected by the entity state machine (fail-closed).

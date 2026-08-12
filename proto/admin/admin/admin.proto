@@ -135,6 +135,34 @@ service AdminService {
     };
   }
 
+  // DeleteColorwayByID УДАЛЯЕТ колорвей физически — узкая дырка в правиле «архивируем, не удаляем»
+  // (R6/R9). Правило верно для всего, что когда-либо жило: у проданного колорвея заморожен SKU и на
+  // него ссылается история заказов. Но колорвей, который НИКОГДА не продавался и НИКОГДА не
+  // производился, — это опечатка, а не запись, и архив-единственный-выход навсегда засоряет список
+  // колорвеев карточки брошенными цветами.
+  //
+  // ГРАНИЦА: удалить можно ⟺ не продан И не стоит ни в одной партии (включая ЧЕРНОВУЮ) И не стоит ни
+  // в одном настиле И нет остатка. Всё остальное — только архив, и отказ НАЗЫВАЕТ факт, который
+  // держит («продан: 3 заказа», «стоит в партии #12 (черновик)»), а не отвечает «нельзя».
+  //
+  // ДВА СУЖЕНИЯ ЭТОЙ ГРАНИЦЫ, наложенные схемой, а не решением: план запаса (inventory_target) и
+  // примерка (fitting) ссылаются на продукт через FK с ON DELETE RESTRICT, поэтому СУБД откажет
+  // независимо от четвёрки выше. Сервер называет и их — выбор был не «блокировать или нет», а
+  // «названный факт или сырой MySQL 1451». Третий остаточный код, referenced, — не факт вовсе, см.
+  // ColorwayDeletionEntry.reason.
+  //
+  // dry_run = true отвечает на тот же вопрос и НИЧЕГО не меняет — это и есть чтение диалога
+  // подтверждения: диалог печатает, что умрёт и что осиротеет, вместо того чтобы предлагать
+  // оператору поверить глаголу. dry_run = false пере-проверяет тот же предикат ВНУТРИ транзакции и
+  // удаляет: предикат, доказанный вне транзакции, — гонка, а эта гонка удаляет.
+  //
+  // Отказ — FailedPrecondition с одним field violation НА КАЖДЫЙ блокер, никогда не сырой MySQL 1451.
+  // Единственный отказ, который факт НЕ называет, — reason = referenced: FK, о котором сервер не
+  // знает (схема ушла вперёд его перечисления). Он честно говорит именно это и чинится кодом.
+  rpc DeleteColorwayByID(DeleteColorwayByIDRequest) returns (DeleteColorwayByIDResponse) {
+    option (google.api.http) = {delete: "/api/admin/colorways/{colorway_id}"};
+  }
+
   // PublishColorway transitions a DRAFT colourway to ACTIVE (R6), enforcing the sellable
   // preconditions (built base SKU, ≥1 valid-SKU variant, complete sku_season+model_no, dictionary
   // colour, country, price, default translation).
@@ -2693,6 +2721,60 @@ message ArchiveColorwayByIDRequest {
 }
 
 message ArchiveColorwayByIDResponse {}
+
+message DeleteColorwayByIDRequest {
+  int32 colorway_id = 1;
+  // expected_version ведёт себя РОВНО как на ArchiveColorwayByID: поле принимается и НЕ проверяется
+  // — при расхождении не происходит ничего, отказа по версии нет. Это не недоделка, а вывод:
+  // версия колорвея — это tech_card.lock_version, и ни один факт, который решает удаляемость
+  // (продажа, строка партии, настил, остаток), её не двигает. Проверка не закрыла бы ни одной
+  // настоящей гонки и при этом отказывала бы на правке рецепта СОСЕДНЕГО колорвея той же карточки.
+  // Гонку закрывает пере-проверка фактов внутри транзакции удаления.
+  uint64 expected_version = 2;
+  // dry_run = true: посчитать вердикт и НЕ удалять. Ответ идентичен по форме, deleted = false.
+  bool dry_run = 3;
+}
+
+// ColorwayDeletionEntry — одна запись вердикта удаления: стабильный код, готовая фраза, количество.
+// Строковый код, а не enum, — по соглашению refusal у оценки расхода (common/techcard.proto): код
+// не заводит нулевого значения, которое в замороженном ответе читалось бы как «причины нет».
+// Фразу собирает сервер: формулировка одна на систему, второй перевод на клиенте с ней разойдётся.
+message ColorwayDeletionEntry {
+  // Стабильный код. Блокеры: sold | production_run | lay | stock | inventory_target | fitting |
+  // referenced. Каскад: variant | variant_price | price | media | tag | translation | recipe_usage |
+  // size_consumption | piece_material | packaging_recipe | lab_dip_round | cost_event | waitlist |
+  // stock_history | style_link. Сироты: orphan_marker | orphan_material_movement | orphan_sample |
+  // orphan_task.
+  //
+  // inventory_target и fitting СУЖАЮТ границу владельца: по ней такой колорвей удаляется, но у
+  // обоих FK стоит RESTRICT, и СУБД откажет в любом случае — выбор был только между названным
+  // фактом и сырым MySQL 1451. referenced — сетка безопасности против ушедшей вперёд схемы: FK,
+  // которого нет в перечислении сервера; она называет своё незнание, а не факт.
+  string reason = 1;
+  // Готовая фраза для экрана: «продан: 3 заказа», «стоит в партии #12 (черновик)».
+  string text = 2;
+  // Сколько объектов стоит за записью (заказов, партий, строк рецепта, раскладок). 0 значит «отсюда
+  // не видно» и приходит только с reason = referenced: MySQL сообщает имя ограничения, а не
+  // мощность, и поставить туда 1 значило бы выдумать число.
+  int32 count = 3;
+}
+
+message DeleteColorwayByIDResponse {
+  // Разрешает ли вердикт удаление. При dry_run = false и deletable = false ответа не будет вовсе —
+  // придёт FailedPrecondition; поле осмысленно прежде всего в сухом прогоне.
+  bool deletable = 1;
+  // Что держит удаление. Пусто ⟺ deletable.
+  repeated ColorwayDeletionEntry blockers = 2;
+  // Что уйдёт ВМЕСТЕ с колорвеем (ON DELETE CASCADE — его собственные строки). Это список, который
+  // печатает диалог подтверждения.
+  repeated ColorwayDeletionEntry cascade = 3;
+  // ТРЕТЬЯ КАТЕГОРИЯ, ни блокер, ни каскад: записи с ON DELETE SET NULL переживут удаление и
+  // ПОТЕРЯЮТ колорвей. Раскладка, снятая под этот артикул, останется длиной, померенной ни на чём.
+  // Отказать не за что, но оператор обязан узнать это ДО подтверждения, а не после.
+  repeated ColorwayDeletionEntry orphans = 4;
+  // Действительно ли строка удалена. false в сухом прогоне.
+  bool deleted = 5;
+}
 
 message PublishColorwayRequest {
   int32 colorway_id = 1;
