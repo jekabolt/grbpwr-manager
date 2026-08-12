@@ -244,12 +244,15 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 func (v SampleDeletionVerdict) FieldViolations(scrapped bool) []*ValidationError {
 	out := make([]*ValidationError, 0, len(v.Blockers))
 	for _, b := range v.Blockers {
-		out = append(out, NewFieldViolation("sample_id", b.Reason, b.Text, sampleBlockerHowToFix(b.Reason, scrapped)))
+		out = append(out, NewFieldViolation("sample_id", b.Reason, b.Text, SampleBlockerHowToFix(b.Reason, scrapped)))
 	}
 	return out
 }
 
-func sampleBlockerHowToFix(reason string, scrapped bool) string {
+// SampleBlockerHowToFix — выход из блокера одной фразой. Экспортирован потому, что его печатают ДВА
+// пути: field violation настоящего отказа и сухой прогон, который читает диалог подтверждения. Один
+// источник — иначе диалог и ошибка начали бы советовать разное по одному и тому же факту.
+func SampleBlockerHowToFix(reason string, scrapped bool) string {
 	switch reason {
 	case SampleBlockerMaterialOutstanding:
 		if scrapped {

@@ -84,11 +84,11 @@ func (s *Server) DeleteSample(ctx context.Context, req *pb_admin.DeleteSampleReq
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
 	if req.GetDryRun() {
-		v, _, err := s.repo.Samples().EvaluateSampleDeletion(ctx, id)
+		v, scrapped, err := s.repo.Samples().EvaluateSampleDeletion(ctx, id)
 		if err != nil {
 			return nil, sampleDeleteError(ctx, id, err)
 		}
-		return pbSampleDeletionResponse(v, false), nil
+		return pbSampleDeletionResponse(v, scrapped, false), nil
 	}
 	v, scrapped, err := s.repo.Samples().DeleteSample(ctx, id)
 	if err != nil {
@@ -105,7 +105,7 @@ func (s *Server) DeleteSample(ctx context.Context, req *pb_admin.DeleteSampleReq
 		}
 		return nil, sampleDeleteError(ctx, id, err)
 	}
-	return pbSampleDeletionResponse(v, true), nil
+	return pbSampleDeletionResponse(v, scrapped, true), nil
 }
 
 // sampleDeleteError отображает ОСТАЛЬНЫЕ отказы удаления. Неудаляемость обрабатывается выше, у
@@ -125,26 +125,35 @@ func sampleDeleteError(ctx context.Context, id int, err error) error {
 
 // pbSampleDeletionResponse проецирует вердикт на провод. deleted — параметр, а не поле вердикта:
 // вердикт отвечает «можно ли», а «сделано ли» знает только вызвавший путь.
-func pbSampleDeletionResponse(v *entity.SampleDeletionVerdict, deleted bool) *pb_admin.DeleteSampleResponse {
+func pbSampleDeletionResponse(v *entity.SampleDeletionVerdict, scrapped, deleted bool) *pb_admin.DeleteSampleResponse {
 	if v == nil {
 		return &pb_admin.DeleteSampleResponse{Deleted: deleted}
 	}
 	return &pb_admin.DeleteSampleResponse{
 		Deletable: v.Deletable,
-		Blockers:  pbSampleDeletionEntries(v.Blockers),
-		Cascade:   pbSampleDeletionEntries(v.Cascade),
-		Orphans:   pbSampleDeletionEntries(v.Orphans),
-		Deleted:   deleted,
+		// Выход едет ТОЛЬКО у блокеров: каскаду и сиротам выходить неоткуда, они не отказ. Тот же
+		// текст, что и в field violation настоящего отказа, — из одной функции, чтобы диалог и
+		// ошибка не разошлись формулировкой.
+		Blockers: pbSampleDeletionEntries(v.Blockers, func(reason string) string {
+			return entity.SampleBlockerHowToFix(reason, scrapped)
+		}),
+		Cascade: pbSampleDeletionEntries(v.Cascade, nil),
+		Orphans: pbSampleDeletionEntries(v.Orphans, nil),
+		Deleted: deleted,
 	}
 }
 
-func pbSampleDeletionEntries(src []entity.SampleDeletionEntry) []*pb_admin.SampleDeletionEntry {
+func pbSampleDeletionEntries(src []entity.SampleDeletionEntry, fixFor func(reason string) string) []*pb_admin.SampleDeletionEntry {
 	if len(src) == 0 {
 		return nil
 	}
 	out := make([]*pb_admin.SampleDeletionEntry, 0, len(src))
 	for _, e := range src {
-		out = append(out, &pb_admin.SampleDeletionEntry{Reason: e.Reason, Text: e.Text, Count: int32(e.Count)})
+		pb := &pb_admin.SampleDeletionEntry{Reason: e.Reason, Text: e.Text, Count: int32(e.Count)}
+		if fixFor != nil {
+			pb.HowToFix = fixFor(e.Reason)
+		}
+		out = append(out, pb)
 	}
 	return out
 }
