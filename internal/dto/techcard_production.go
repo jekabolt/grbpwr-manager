@@ -1452,6 +1452,63 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 	return &sh
 }
 
+// withCuttingCoefficient stamps the EFFECTIVE article's roll-reality coefficient
+// (material.cutting_coefficient, 0270) onto a COPY of the BOM line, so the four money-of-the-norm
+// methods — the single definition of what this row costs — can apply it themselves. ЕДИНСТВЕННЫЙ
+// резолвер коэффициента на денежном пути: кто считает деньги нормы мимо него, считает без рулона.
+//
+// ЭФФЕКТИВНЫЙ АРТИКУЛ, А НЕ «ПИН, ЕСЛИ ОН ОТЛИЧАЕТСЯ». Это ловушка, на которую очень легко сесть,
+// повторив форму pinShadowBom: та возвращает строку БЕЗ ИЗМЕНЕНИЙ, когда пина нет или пин равен
+// умолчанию слота, — и правильно, ей в этих случаях нечего подменять, цена умолчания уже верна.
+// Коэффициент же нужен во ВСЕХ трёх случаях, потому что артикул есть всегда, а не только когда он
+// расходится с умолчанием. Поэтому резолв идёт через entity.EffectiveMaterialId — то самое одно
+// правило («пин, иначе умолчание; пин, равный умолчанию, ведёт себя как умолчание»), которое уже
+// решает, чей это рулон, — а не через сравнение «пин ≠ умолчание».
+//
+// КОПИЯ, И ЭТО НЕ ГИГИЕНА, А ГРАНИЦА. Строку из tc.BomItems штамповать на месте нельзя: тот же
+// указатель читают план настила и обе калибровки, где коэффициента быть не должно ни при каких
+// условиях (иначе калибровка калибрует сама себя — шапка material_coefficient_calibration.go).
+// Штамп на месте протёк бы туда молча: числа продолжили бы считаться.
+//
+// НЕТ КАРТЫ, НЕТ АРТИКУЛА, НЕТ КОЭФФИЦИЕНТА — возвращается ИСХОДНЫЙ указатель, и деньги строки
+// получаются ровно те же, что до этой врезки (списочные чтения приходят с nil linked). Границу
+// «только рулонные секции» держит entity.TechCardBomItem.EffectiveCuttingCoefficient, а не этот
+// резолвер: там её нельзя обойти, забыв позвать сюда.
+func withCuttingCoefficient(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, linked map[int]entity.MaterialWithPrice) *entity.TechCardBomItem {
+	if bom == nil || u == nil {
+		return bom
+	}
+	id, _ := u.EffectiveMaterialId(bom)
+	return withArticleCuttingCoefficient(bom, id, linked)
+}
+
+// withArticleCuttingCoefficient is the article-keyed half of the stamp: for readers that already
+// KNOW which article they are pricing and have no usage to resolve it from — the LAY path, where the
+// pair (колорвей, слот) was resolved once by ResolveLayArticle and there is no single recipe row
+// behind the number at all.
+//
+// ОДНО МЕСТО ШТАМПА НА ВСЕ ПУТИ. Резолв артикула у нормового и настильного путей разный по
+// необходимости (строка рецепта против пары), а вот граница применения — нет: она целиком в
+// entity.EffectiveCuttingCoefficient, куда обе дороги приходят через эту функцию. Второй штамп
+// «прямо здесь, у меня же есть linked» — это ровно то место, где рулонная граница однажды
+// разъедется с этой.
+func withArticleCuttingCoefficient(bom *entity.TechCardBomItem, materialID int, linked map[int]entity.MaterialWithPrice) *entity.TechCardBomItem {
+	if bom == nil || materialID <= 0 || len(linked) == 0 {
+		return bom
+	}
+	m, ok := linked[materialID]
+	if !ok {
+		return bom
+	}
+	coeff := m.EffectiveCuttingCoefficient()
+	if !coeff.Valid {
+		return bom
+	}
+	sh := *bom
+	sh.CuttingCoefficient = coeff
+	return &sh
+}
+
 // colorwayCost computes one colourway's PER-GARMENT material cost from its usages. Each usage
 // contributes its per-garment UnitTotal on the caller's resolved basis (the style default: a
 // size-graded usage enters as the simple average of its norms over the declared size range —
@@ -1475,7 +1532,12 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		}
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
-		bom := pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base)
+		// ЦЕНА И КОЭФФИЦИЕНТ БЕРУТСЯ У ОДНОГО АРТИКУЛА — у эффективного (пин колорвея, иначе
+		// умолчание слота). pinShadowBom подменяет цену, когда пин расходится с умолчанием;
+		// withCuttingCoefficient проставляет коэффициент ВСЕГДА, потому что артикул есть и тогда,
+		// когда подменять цену нечего. Две функции, один артикул: EffectiveMaterialId у обеих.
+		bom := withCuttingCoefficient(
+			pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base), u, linked)
 		ut := u.UnitTotal(bom, basis)
 		if !ut.Valid {
 			hasUnpriced = true

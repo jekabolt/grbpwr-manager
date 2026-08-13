@@ -41,7 +41,13 @@ func releaseMixCard() *entity.TechCard {
 		}},
 	}
 	// Каталог на момент релиза: цена пина живёт ЗДЕСЬ, и в контракте TechCard этой карты нет.
+	//
+	// УМОЛЧАНИЕ СЛОТА (100) ТОЖЕ ЗДЕСЬ, и это не украшение фикстуры: настоящий загрузчик
+	// (GetTechCardById) кладёт в LinkedMaterials И умолчания слотов, И пины рецептов, а заморозка
+	// коэффициента (W3) читает артикул СТРОКИ. Без него блоб вышел бы с «коэффициент неизвестен» на
+	// каждой рулонной строке — то есть фикстура проверяла бы фолбэк вместо пер-размерного пути.
 	card.LinkedMaterials = map[int]entity.MaterialWithPrice{
+		100: {Material: entity.Material{Id: 100, MaterialInsert: entity.MaterialInsert{Unit: nstr("m")}}},
 		200: {
 			Material:    entity.Material{MaterialInsert: entity.MaterialInsert{Unit: nstr("m")}},
 			LatestPrice: &entity.MaterialPrice{MaterialId: 200, Price: decimal.RequireFromString("30"), Currency: "EUR"},
@@ -166,6 +172,63 @@ func TestReleaseRunSizeCellMatchesLiveBranch(t *testing.T) {
 	require.Equal(t, "10", at4.Decimal.String())
 	at6, _ := ComputeReleaseRunPlannedUnitCost(costs, []entity.ProductionRunLine{relLine(55, 6, 100)})
 	require.Equal(t, "20", at6.Decimal.String())
+}
+
+// КОЭФФИЦИЕНТ РАСКРОЯ ПЕРЕЖИВАЕТ ЗАМОРОЗКУ (W3). Он свойство АРТИКУЛА, а каталог материалов в блоб
+// не входит — и до заморозки поля пер-размерная клетка считалась БЕЗ него: получалось полное на вид
+// число, заниженное ровно на коэффициент, и оно ПРЕДПОЧИТАЛОСЬ замороженному скаляру, который
+// коэффициент содержит. Описанный предел, который код молча предпочитает, — не предел, а дефект.
+func TestReleaseSizeCellCarriesTheFrozenCuttingCoefficient(t *testing.T) {
+	fx := CostingFx{Base: "EUR"}
+	card := releaseMixCard()
+	m := card.LinkedMaterials[100]
+	m.CuttingCoefficient = nd("1.06")
+	card.LinkedMaterials[100] = m
+
+	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, card))
+	require.NotNil(t, costs)
+	require.NotNil(t, costs.CostingCard)
+
+	lines := []entity.ProductionRunLine{relLine(55, 4, 100)}
+	live, liveCcy := ComputeProductionRunPlannedUnitCost(card, fx, decimal.NullDecimal{}, lines)
+	frozen, frozenCcy := ComputeReleaseRunPlannedUnitCost(costs, lines)
+	require.True(t, frozen.Valid, "новый снапшот считается пер-размерно, а не уходит в фолбэк")
+	require.Equal(t, live.Decimal.String(), frozen.Decimal.String(),
+		"замороженная клетка обязана совпасть с живой — коэффициент теперь есть у обеих")
+	require.Equal(t, liveCcy, frozenCcy)
+	require.Equal(t, "10.6", frozen.Decimal.String(), "норма 1 × 10 EUR × 1.06")
+}
+
+// СТАРЫЙ СНАПШОТ (снят до заморозки коэффициента) ОБЯЗАН ОТКАЗАТЬСЯ, а не занизить. Отсутствие поля
+// значит «коэффициент НЕИЗВЕСТЕН», и посчитать такую рулонную строку как есть — это ровно то тихое
+// занижение, ради устранения которого поле и заведено. Честный отказ уводит партию на замороженный
+// скаляр, где коэффициент учтён.
+func TestReleaseSizeCellRefusesWhenTheFrozenCoefficientIsUnknown(t *testing.T) {
+	card := releaseMixCard()
+	m := card.LinkedMaterials[100]
+	m.CuttingCoefficient = nd("1.06")
+	card.LinkedMaterials[100] = m
+
+	snap := releaseBlob(t, card)
+	// Ровно то, чем отличается блоб, снятый до W3: поля нет вовсе. Не «ноль» и не «единица» —
+	// именно отсутствие, потому что на разнице «нет надбавки» / «не знаем» всё и держится.
+	for _, b := range snap.GetTechCard().GetBomItems() {
+		b.CuttingCoefficient = nil
+	}
+
+	costs := ReleaseFrozenColorwayCosts(snap)
+	require.NotNil(t, costs)
+	require.NotNil(t, costs.CostingCard)
+
+	frozen, _ := ComputeReleaseRunPlannedUnitCost(costs,
+		[]entity.ProductionRunLine{relLine(55, 4, 100)})
+	// Партия падает на замороженный скаляр колорвея — тот самый, который коэффициент содержит.
+	require.Equal(t, costs.UnitCostByColorway[55].String(), frozen.Decimal.String(),
+		"неизвестный коэффициент обязан увести в фолбэк, а не посчитаться заниженно")
+
+	// И явно: пер-размерный пересчёт по такой карточке не даёт заниженной цифры.
+	require.NotEqual(t, "10", frozen.Decimal.String(),
+		"10 = норма × цена БЕЗ коэффициента — ровно то занижение, которое чинится")
 }
 
 // ПРЕДЕЛ СНАПШОТА, записанный тестом: у пришпиленного колорвея цены пина в блобе нет, размерная

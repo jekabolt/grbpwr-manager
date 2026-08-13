@@ -19,9 +19,6 @@ import (
 // now go through entity.SameMaterialUnit / entity.NormalizeMaterialUnit, and an unknown unit still
 // falls back to the old raw compare, so nothing that used to work stops working.
 
-// planPercentDivisor turns a wastage percent into a fraction.
-var planPercentDivisor = decimal.NewFromInt(100)
-
 // planSlotSections are the BOM sections a colourway recipe is expected to cover — the garment's
 // own materials. A slot in one of these with NO norm for a produced colourway is a blocker (the
 // plan literally cannot count it). label/packaging/other are deliberately outside: labels ride
@@ -109,17 +106,19 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		// has one); coefficientApplied records whether any contribution actually took it.
 		coefficient        decimal.NullDecimal
 		coefficientApplied bool
-		// Which kinds of norm fed this row — read only to word the "the coefficient did not bite"
-		// caveat correctly: a manual norm takes the BOM wastage % instead, a counted trim takes
-		// nothing at all, and telling an operator their counted buttons are "manual norms" is a
-		// wrong explanation of a right number.
-		hasManualNorms  bool
+		// Which kinds of contribution fed this row — read only to word the "the coefficient did not
+		// bite" caveat correctly. С W3 таких видов ровно два, и ИСТОЧНИК НОРМЫ СРЕДИ НИХ БОЛЬШЕ НЕ
+		// ЧИСЛИТСЯ: manual, dxf и marker берут коэффициент одинаково, поэтому «ваши нормы ручные»
+		// объясняло бы молчание дела, которого нет.
+		//
+		// hasCountedNorms — счётная фурнитура: 4 пуговицы остаются 4 пуговицами, гросс-апа нет
+		// вовсе. hasNonRollNorms — мерная строка НЕ рулонной секции: усадка и пороки суть свойства
+		// полотна в рулоне, и на нитке коэффициент бессмыслен. Сказать оператору «нормы ручные» про
+		// его пуговицы (или про нитку) — ровно тот неверный ответ на верное число, ради которого
+		// этот разбор и существует.
 		hasCountedNorms bool
-		// hasDxfNorms is the third non-marker kind (0294): a norm computed from the pattern sheets.
-		// It grosses by the BOM wastage percent exactly like a manual one, so it changes no number
-		// here — it exists so the caveat can say WHICH kind of norm shut the coefficient out.
-		hasDxfNorms  bool
-		hasSizeNorms bool
+		hasNonRollNorms bool
+		hasSizeNorms    bool
 		// hasNormSource / hasLaySource are the row's SIGNATURE (Ф4.6). A row is keyed by ARTICLE and
 		// an article can be fed by two slots at once — one laid, one not — so the two are counted
 		// rather than collapsed into one value on the way in. MIXED is the honest answer for that row
@@ -413,52 +412,47 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				blockAdd(bom.Id, pid, ln.PlannedQty, entity.MaterialPlanBlockerNoNorm, entity.MaterialPlanReasonNoNorm)
 				continue
 			}
-			// base is what the norm alone asks for; factor is the ONE gross-up this line takes.
+			// base is what the norm alone asks for; factor is the gross-up this line takes — И ЭТО
+			// ТОТ ЖЕ ФАКТОР, ЧТО БЕРЁТ СЕБЕСТОИМОСТЬ ТОЙ ЖЕ СТРОКИ (entity.NormGrossUp).
 			//
-			// Which gross-up depends on where the norm came from, and the two worlds stay disjoint
-			// so no line is ever grossed twice:
+			// ДВА МНОЖИТЕЛЯ С РАЗНЫМИ БАЗАМИ, а не «один из двух» (это правило W3 и заменило):
 			//
-			//   * MANUAL / DXF / legacy measured norm — the BOM line's wastage estimate (5% → ×1.05),
-			//     overridden by the run's ACTUAL cutting wastage when set. Unchanged by Ф5а.
-			//     'dxf' (0294) is netto piece area: it contains NO waste of any kind, so the wastage
-			//     estimate is the only thing that pays for the cloth between the pieces — and the
-			//     article's cutting coefficient deliberately does NOT also bite, because that
-			//     coefficient is calibrated against MEASURED marker lengths. The consequence is worth
-			//     stating plainly: a dxf norm asks for less cloth than a marker norm of the same slot
-			//     unless the slot's wastage percent covers усадка and пороки too. The readiness gate
-			//     refuses a run whose dxf slot declares no percentage at all.
-			//   * MARKER-sourced norm — the ARTICLE's cutting coefficient (Ф5а.2). A marker's
-			//     measured length already contains the cutting waste of a clean lay on a nominal
-			//     width (PIECES-WASTAGE-DESIGN §2.3), which is why the wastage factor must never
-			//     touch it; the coefficient covers what a marker CANNOT contain — усадка, обход
-			//     пороков, сращивание, оттеночные полосы. Different losses, so no double count.
-			//   * counted trim (4 buttons stay 4 buttons) — nothing, mirroring costing's UnitTotal.
+			//   * ГЕОМЕТРИЯ НАСТИЛА — процент слота (5% → ×1.05), переопределяемый фактическим
+			//     процентом отхода ПРОГОНА, когда он задан. Платит за межлекальные выпады и концы
+			//     настила. MARKER-строке не начисляется никогда: измеренная длина раскладки эти
+			//     выпады уже содержит (PIECES-WASTAGE-DESIGN §2.3), и второй раз — двойной счёт.
+			//   * РЕАЛЬНОСТЬ РУЛОНА — коэффициент АРТИКУЛА (Ф5а.2), и он начисляется ЛЮБОЙ мерной
+			//     роликовой строке независимо от источника нормы: усадку, обход пороков, сращивание
+			//     и оттеночные полосы не содержит НИ ОДНА раскладка — ни измеренная, ни netto.
+			//   * СЧЁТНАЯ фурнитура — ничего вовсе (4 пуговицы остаются 4 пуговицами), зеркально
+			//     раннему возврату счётной ветки в костинге.
 			//
-			// An article with no coefficient multiplies by nothing: this path produces exactly the
-			// number it produced before the field existed.
+			// ПОЧЕМУ ЭТО ИЗМЕНИЛОСЬ (W3). Раньше коэффициент кусал ТОЛЬКО marker-строку, и основание
+			// у исключения было ровно одно: процент тогда оплачивал в том числе усадку и пороки,
+			// так что начислить сверх него коэффициент значило бы оплатить их дважды. W3 сузил смысл
+			// процента до чистой геометрии настила — и вместе с основанием исчезло исключение.
+			// Оставить его значило бы просить у закупки на 2–6% меньше ткани, чем оплатила
+			// себестоимость: линейно, молча и ровно на тех строках, где коэффициент задан.
+			//
+			// Артикул без коэффициента умножает на ничто: строка считается ровно так же, как до
+			// появления поля.
 			base := norm.Mul(decimal.NewFromInt(int64(ln.PlannedQty)))
 			factor := decimal.NewFromInt(1)
 			lineCoeff := decimal.NullDecimal{}
-			markerSourced := u.ConsumptionSource.String == entity.ConsumptionSourceMarker
-			dxfSourced := u.ConsumptionSource.String == entity.ConsumptionSourceDxf
-			switch {
-			case counted:
-				// no gross-up
-			case markerSourced:
-				if m, ok := linked[mid]; ok {
-					if c := m.EffectiveCuttingCoefficient(); c.Valid {
-						factor = c.Decimal
-						lineCoeff = c
-					}
-				}
-			default:
-				wastage := bom.WastagePercent
-				if run.ActualWastagePercent.Valid {
-					wastage = run.ActualWastagePercent
-				}
-				if wastage.Valid {
-					factor = factor.Add(wastage.Decimal.Div(planPercentDivisor))
-				}
+			// ИСТОЧНИК НОРМЫ ЗДЕСЬ БОЛЬШЕ НЕ РАЗБИРАЕТСЯ. До W3 на нём стояла развилка гросс-апа
+			// (marker → коэффициент, остальные → процент); теперь разницу между провенансами знает
+			// ровно одно место — entity.wastageApplies внутри NormGrossUp, — и второе чтение
+			// consumption_source в этом файле было бы началом следующего расхождения.
+			nonRoll := !entity.IsRollGoodsSection(bom.Section)
+			if !counted {
+				// ТОТ ЖЕ БАЗОВЫЙ ОБЪЕКТ И ТО ЖЕ ПРАВИЛО, ЧТО У КОСТИНГА. Коэффициент проставляется
+				// тем же резолвером (withCuttingCoefficient → EffectiveMaterialId — артикул уже
+				// разрешён в mid двадцатью строками выше, это он же), а множители складывает
+				// entity.NormGrossUp — функция, которую зовёт и grossNorm. Переписать здесь
+				// арифметику заново нельзя: именно так эти две стороны и разъехались до W3.
+				planBom := withCuttingCoefficient(bom, u, linked)
+				factor = u.NormGrossUp(planBom, run.ActualWastagePercent)
+				lineCoeff = planBom.EffectiveCuttingCoefficient()
 			}
 			add := base.Mul(factor)
 
@@ -498,17 +492,15 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			if lineCoeff.Valid {
 				a.coefficientApplied = true
 			}
+			// Виды норм, из-за которых коэффициент МОЖЕТ не укусить, — только они и записываются.
+			// Источник нормы (manual / dxf / marker) с W3 в этот список НЕ входит: коэффициент
+			// начисляется любой мерной роликовой норме независимо от провенанса, поэтому «ваши
+			// нормы ручные» перестало быть объяснением чего бы то ни было.
 			switch {
 			case counted:
 				a.hasCountedNorms = true
-			case dxfSourced:
-				// Kept apart from hasManualNorms so the «coefficient did not bite» caveat below can
-				// name the real reason. Both take the wastage branch, but «your norms are manual» is
-				// a wrong explanation of a right number for a norm computed off the patterns — the
-				// same species of lie the counted-trim arm exists to avoid.
-				a.hasDxfNorms = true
-			case !markerSourced:
-				a.hasManualNorms = true
+			case nonRoll:
+				a.hasNonRollNorms = true
 			}
 			if !sizeGraded {
 				a.hasSizeNorms = false
@@ -601,7 +593,27 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		// mismatch is stated rather than laundered through the slot's label.
 		clothM := d.clothCm.Div(planCmPerMetre)
 		endLossM := d.endLossCm.Div(planCmPerMetre)
-		add := clothM.Add(endLossM)
+		geom := clothM.Add(endLossM)
+
+		// КОЭФФИЦИЕНТ ЛОЖИТСЯ И НА НАСТИЛ (W3) — ПОСЛЕ ГЕОМЕТРИИ, НЕ ВНУТРЬ НЕЁ.
+		//
+		// Настил — это ПЛАН того, что положат на стол: длина раскладки × слои + концы. Усадка,
+		// обход пороков, сращивание и оттеночные полосы случаются с ПОЛОТНОМ и не зависят от того,
+		// чем посчитали требование — нормой или измеренной раскладкой. Оставить настильную часть без
+		// коэффициента значило бы на MIXED-строке грossить нормовую половину и не грossить
+		// настеленную: одна строка, два разных правила, и цех недополучает ровно на настеленной.
+		//
+		// ГЕОМЕТРИЯ ОСТАЁТСЯ ЧИСТОЙ, И ЭТО УСЛОВИЕ НЕКРУГОВОСТИ. LayPlannedGeometryOf — знаменатель
+		// калибровки САМОГО коэффициента (факт ÷ план-геометрия): попади коэффициент внутрь неё,
+		// дрейф схлопнулся бы к нулю на артикуле, который на самом деле садится, и величина стала бы
+		// подтверждать сама себя. Поэтому умножение стоит ЗДЕСЬ, на закупочном требовании, а не в
+		// LayPlannedGeometryOf — и калибровка продолжает читать геометрию напрямую.
+		layBom := withArticleCuttingCoefficient(bom, mid, linked)
+		layCoeff := layBom.EffectiveCuttingCoefficient()
+		add := geom
+		if layCoeff.Valid {
+			add = add.Mul(layCoeff.Decimal)
+		}
 		contribUnit := bom.Unit.String
 		if u, ok := entity.NormalizeMaterialUnit(bom.Unit.String); !ok || u != entity.MaterialUnitM {
 			contribUnit = string(entity.MaterialUnitM)
@@ -624,14 +636,16 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			contribs[ck] = c
 		}
 		c.required = c.required.Add(add)
-		// §7.3: before-grossup on the LAYS path IS the lay plan. With Р4 the two are equal, and the
-		// invariant required >= required_before_grossup still holds.
-		c.requiredBeforeGrossup = c.requiredBeforeGrossup.Add(add)
+		// §7.3: before-grossup on the LAYS path IS the lay plan — ЧИСТАЯ ГЕОМЕТРИЯ, без коэффициента.
+		// До W3 два числа здесь совпадали (наценки на этом пути не было вовсе); теперь они расходятся
+		// ровно на коэффициент, и это делает пару читаемой: «раскладки просят 60.8, закупка — 64.448».
+		// Инвариант required >= required_before_grossup держится.
+		c.requiredBeforeGrossup = c.requiredBeforeGrossup.Add(geom)
 		c.source = pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_LAYS
 		c.layClothCm = c.layClothCm.Add(d.clothCm)
 		c.layEndLossCm = c.layEndLossCm.Add(d.endLossCm)
 
-		stockAdd, stockBase, rowUnit := planConvert(mid, bom, contribUnit, add, add)
+		stockAdd, stockBase, rowUnit := planConvert(mid, bom, contribUnit, add, geom)
 		a := req[mid]
 		if a == nil {
 			a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: rowUnit}
@@ -646,6 +660,15 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		a.required = a.required.Add(stockAdd)
 		a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)
 		a.hasLaySource = true
+		if layCoeff.Valid {
+			a.coefficientApplied = true
+		}
+		if !entity.IsRollGoodsSection(bom.Section) {
+			// Нерулонный слот, посчитанный настилом, — экзотика, но объяснение у него то же, что у
+			// нерулонной нормы, и оно обязано доехать до кавеата: иначе коэффициент на таком артикуле
+			// молча «не сработал» без единого слова.
+			a.hasNonRollNorms = true
+		}
 	}
 
 	// §7.1 — a wastage percent that stopped biting must SAY so. The operator typed «фактический
@@ -732,49 +755,51 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	}
 
 	// A coefficient that exists but bit nothing is a silent no-op the operator would otherwise blame
-	// on the field being broken: it grosses up MARKER-sourced norms only. Say so once per article
-	// rather than letting the dial look dead — and say WHICH kind of norm shut it out, because
-	// "manual" is a wrong explanation for an article consumed as a counted quantity (Ф5а.2).
+	// on the field being broken. Say so once per article rather than letting the dial look dead —
+	// and say WHAT shut it out, because a wrong explanation of a right number sends people to fix
+	// the wrong thing.
+	//
+	// С W3 ЭТОТ КАВЕАТ СТАЛ РЕДКИМ, И ЭТО ЕГО ГЛАВНОЕ ИЗМЕНЕНИЕ. Раньше он срабатывал на КАЖДОМ
+	// артикуле с ручной или dxf-нормой — то есть в самом обычном случае, — потому что коэффициент
+	// кусал только marker-строки. Теперь он кусает любую мерную роликовую норму, и остаться без
+	// него можно ровно тремя способами: требование посчитано от НАСТИЛОВ (это измерение, а не
+	// норма), артикул расходуется СЧЁТНО, или он стоит на НЕРУЛОННОЙ секции.
 	for _, mid := range order {
 		a := req[mid]
-		if !a.coefficient.Valid || a.coefficientApplied || !a.required.IsPositive() {
+		if !a.coefficient.Valid || !a.required.IsPositive() {
 			continue
 		}
-		var because string
-		switch {
-		case a.hasLaySource && !a.hasManualNorms && !a.hasCountedNorms && !a.hasDxfNorms:
-			// Ф4.6 / Р4. Saying «your norms are manual» about a row whose requirement was MEASURED
-			// would be a wrong explanation of a right number — the same mistake the counted-trim arm
-			// below exists to avoid.
-			because = "this row's requirement is computed from LAYS (length × plies + end losses), while the coefficient adjusts the NORM-based estimate: it does not apply to a measurement"
-		case a.hasLaySource:
-			because = "part of the requirement is computed from LAYS (the coefficient does not apply to a measurement), and this run's remaining norms are not marker-sourced"
-		case a.hasCountedNorms && !a.hasManualNorms && !a.hasDxfNorms:
-			because = "this article is consumed here as a counted quantity — 4 buttons stay 4 buttons — which takes no gross-up at all"
-		default:
-			// Собирается из ПРИСУТСТВУЮЩИХ видов норм, а не перечисляется парами. Пар было две, стало
-			// шесть с приходом 'dxf' (0294), и рукописный набор арок — это ровно тот код, где через
-			// одну ветку начинают говорить «ваши нормы ручные» про норму, снятую с выкроек. Порядок
-			// (ручная → выкройки → штучная) фиксирован, поэтому строка для старых сочетаний
-			// побайтово та же, что и до 0294.
-			kinds := make([]string, 0, 3)
-			if a.hasManualNorms {
-				kinds = append(kinds, "manual (their BOM wastage % applies instead)")
-			}
-			if a.hasDxfNorms {
-				kinds = append(kinds, "taken from the patterns — netto piece area, so their BOM wastage % applies instead")
-			}
-			if a.hasCountedNorms {
-				kinds = append(kinds, "counted quantities (which take no gross-up at all)")
-			}
-			if len(kinds) == 0 {
-				// No norm kind recorded at all: keep the pre-0294 wording rather than an empty phrase.
-				kinds = append(kinds, "manual (their BOM wastage % applies instead)")
-			}
-			because = "this run's norms for it are " + strings.Join(kinds, " or ")
+		// Собирается из ПРИСУТСТВУЮЩИХ причин, а не перечисляется сочетаниями: рукописный набор
+		// арок — ровно тот код, где через одну ветку начинают говорить «ваши нормы ручные» про
+		// счётную фурнитуру. Порядок (настилы → счётные → нерулонные) фиксирован.
+		// НАСТИЛОВ В ЭТОМ ПЕРЕЧНЕ БОЛЬШЕ НЕТ (W3): коэффициент ложится и на настильное требование —
+		// после геометрии, поверх измерения, — потому что усадка и пороки случаются с полотном
+		// независимо от того, чем посчитали требование. Осталось ровно две причины не укусить, и обе
+		// про природу самого расхода, а не про способ его подсчёта.
+		reasons := make([]string, 0, 2)
+		if a.hasCountedNorms {
+			reasons = append(reasons, "the counted quantities take no gross-up at all — 4 buttons stay 4 buttons")
 		}
-		caveats = append(caveats, fmt.Sprintf("%s: cutting coefficient %s not applied — it grosses up MARKER-sourced norms, and %s",
-			a.name, a.coefficient.Decimal.String(), because))
+		if a.hasNonRollNorms {
+			reasons = append(reasons, "the non-roll-goods slots have no roll shrinkage or flaws to pay for")
+		}
+		if len(reasons) == 0 {
+			continue // взяло всё, что могло взять — объяснять нечего
+		}
+		// ЧАСТИЧНОЕ ПРИМЕНЕНИЕ НАЗЫВАЕТСЯ ЧАСТИЧНЫМ. Строка артикула может собрать И настил, И
+		// норму (Ф4.6 MIXED): с W3 норма коэффициент берёт, настил — нет, и обе фразы неверны
+		// поодиночке. «Не применён» о строке, где он применён к половине, отправил бы чинить
+		// работающее поле; молчание о той половине, где он не применён, скрыло бы, почему число
+		// меньше ожидаемого. Prefix несёт «вся или часть», reasons — «что именно не взяло».
+		if a.coefficientApplied {
+			caveats = append(caveats, fmt.Sprintf(
+				"%s: cutting coefficient %s applied to PART of this row only — %s",
+				a.name, a.coefficient.Decimal.String(), strings.Join(reasons, "; and ")))
+			continue
+		}
+		caveats = append(caveats, fmt.Sprintf(
+			"%s: cutting coefficient %s not applied — it grosses up every MEASURED norm of a roll-goods slot, and here %s",
+			a.name, a.coefficient.Decimal.String(), strings.Join(reasons, "; and ")))
 	}
 
 	sort.Ints(order)
@@ -932,8 +957,10 @@ func planRowSource(hasNorm, hasLays bool) pb_admin.ProductionRunCoverageSource {
 // --- Ф4.6: НАСТИЛ → ДЛИНА ------------------------------------------------------------------------
 
 // planCmPerMetre converts the настил's centimetres into the metres the slot and the article speak.
-// Deliberately NOT planPercentDivisor: the two are the same integer for unrelated reasons, and
-// sharing them would make a change to one silently change the other.
+// Здесь жил довод «это НЕ делитель процентов, хоть и та же сотня»; сам делитель уехал в
+// entity.applyWastage вместе с арифметикой гросс-апа (W3), и довод остаётся в силе на будущее:
+// сотня в переводе сантиметров и сотня в проценте — разные сотни, и общей константы у них быть
+// не должно.
 var planCmPerMetre = decimal.NewFromInt(100)
 
 // planLayEndsPerPly is the 2 in `2 × end_loss_cm × Σ слоёв`: every ply is trimmed at BOTH ends.

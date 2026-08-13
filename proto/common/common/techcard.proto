@@ -578,9 +578,14 @@ message TechCardColorwayUsage {
   // PRESERVE the existing pin (absent ≠ explicit clear; an explicit 0 clears).
   optional int64 material_id = 15;
   // consumption_source is the provenance of the norm. "manual" (or "") — typed by the operator;
-  // the article's wastage_percent grosses cost up, exactly as before. "marker" — applied from a
+  // the slot's wastage_percent grosses cost up, exactly as before. "marker" — applied from a
   // saved раскладка whose measured length already CONTAINS the cutting waste (selvedge rides the
-  // per-running-metre price), so costing must NOT gross such rows up again. `optional` is
+  // per-running-metre price), so costing must NOT gross such rows up by the PERCENT again.
+  //
+  // THIS FIELD GOVERNS THE PERCENT ONLY. The second multiplier of a norm's money — the article's
+  // material.cutting_coefficient — applies to EVERY measured norm whatever the provenance, "marker"
+  // included: it pays for усадка, обход пороков, сращивание и оттеночные полосы, which a marker
+  // cannot contain because it is measured on a clean lay of nominal width. `optional` is
   // load-bearing like material_id: a stale client omits the field on the full-replace recipe
   // write and the store PRESERVES the stored provenance triple; a present value is written as
   // sent ("" normalises to manual and clears the pcts).
@@ -654,7 +659,17 @@ message TechCardBomItem {
   // Since Ф1 that erasure also un-saves every раскладка on the card, so absence now means «do not
   // touch» and only an explicitly-sent UNKNOWN clears the column.
   optional TechCardFabricDirection fabric_direction = 19;
-  google.type.Decimal wastage_percent = 20; // cutting wastage %, folded into the usage line totals
+  // wastage_percent — ПРОЦЕНТ РАСКРОЯ СЛОТА, and since W3 it means ONE thing: THE GEOMETRY OF THE
+  // LAY — inter-piece waste + lay ends, over a netto base (typically 15–30%). Кромка is NOT in it:
+  // it is already subtracted by dividing the piece area by the CUTTING width. Усадка, обход пороков,
+  // сращивание и оттеночные полосы are NOT in it either — those are the roll's reality and are paid
+  // for exactly once, by material.cutting_coefficient, which multiplies the same money independently
+  // of this percent and of the norm's provenance. Before W3 this field was documented as covering
+  // усадка/пороки too; that overlap billed them twice wherever both dials were set.
+  //
+  // Folded into the usage line totals (line_total / size_run_total) and every costing rollup —
+  // EXCEPT on a marker-sourced norm, whose measured length already contains this geometry.
+  google.type.Decimal wastage_percent = 20;
   // material_id optionally links this line to a catalog Material (task 10). The line keeps its
   // own snapshot fields regardless; 0 means unlinked (free-text / legacy).
   int64 material_id = 23;
@@ -750,6 +765,26 @@ message TechCardBomItem {
   // игнорирует; ставится когда тройка (source='lays', lay_count, wastage_percent) МЕНЯЕТСЯ, и
   // гасится вместе со сбросом в 'manual' — дисциплина norm_applied_at (:20 юзеджа).
   google.protobuf.Timestamp wastage_applied_at = 39;
+  // ЗАМОРОЖЕННЫЙ КОЭФФИЦИЕНТ РАСКРОЯ ЭТОЙ СТРОКИ (W3) — OUTPUT-ONLY, на записи игнорируется.
+  //
+  // Коэффициент — свойство АРТИКУЛА (material.cutting_coefficient), а не строки BOM, и в обычном
+  // чтении карточки он и читается с артикула. Здесь он едет вместе со строкой ровно ради ОДНОГО
+  // читателя: РЕЛИЗНОГО СНАПШОТА. Блоб релиза замораживает спецификацию и нормы, но каталог
+  // материалов в него не входит — а с W3 коэффициент ВХОДИТ В ДЕНЬГИ нормы. Без этого поля
+  // пер-размерный пересчёт из блоба считал бы БЕЗ коэффициента, получал бы полное на вид число
+  // ниже замороженного скаляра и молча предпочитался ему.
+  //
+  // ТРИ СОСТОЯНИЯ, А НЕ ДВА, И РАЗНИЦА НЕСУЩАЯ:
+  //   * поле ОТСУТСТВУЕТ (null) — снапшот снят ДО этой заморозки: коэффициент НЕИЗВЕСТЕН. Читатель
+  //     обязан ОТКАЗАТЬСЯ считать такую рулонную строку и увести расчёт в фолбэк на замороженный
+  //     скаляр — ровно так же, как он уже поступает с непроставленной ценой пина. Молчаливое
+  //     занижение недопустимо, честный отказ допустим;
+  //   * поле ЗАДАНО и равно 1 — известно, что надбавки НЕТ. Это УТВЕРЖДЕНИЕ, а не пустота;
+  //   * поле ЗАДАНО и больше 1 — величина, которой строка грossилась в момент релиза.
+  //
+  // «Нет коэффициента» и «не знаем коэффициента» поэтому НИКОГДА не одно и то же значение: на этой
+  // разнице и стоит отказ выше, и свести их к одному null значило бы вернуть тихое занижение.
+  google.type.Decimal cutting_coefficient = 40;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -925,13 +960,39 @@ message Material {
   //   * field PRESENT, value ""    → CLEAR it (store NULL). This is how the UI unsets the dial.
   //   * field PRESENT with a value → set it.
   //
-  // SCOPE — this is a DEMAND-side dial only. It grosses up the material PLAN's requirement
-  // (GetProductionRunMaterialPlan) and nothing else: the run's planned unit cost and the style cost
-  // estimate gross up by the BOM wastage % alone and do NOT include this coefficient. Planned COGS is
-  // therefore understated by exactly the coefficient wherever one is set. That is deliberate for now —
-  // moving it into the costing chain changes how product.cost_price is derived and every style's
-  // margin with it, which is a separate, deliberately reviewed decision. Do not present a planned cost
-  // as coefficient-inclusive.
+  // SCOPE (W3) — THIS DIAL IS IN THE COSTING CHAIN. It grosses up the money of a recipe norm
+  // (TechCardColorwayUsage.line_total / size_run_total, the colourway unit cost, the run's planned
+  // unit cost, the style cost estimate) as well as the material PLAN's requirement. Planned COGS
+  // and product.cost_price therefore CONTAIN the coefficient wherever one is set. It used to be a
+  // demand-side dial only, and the understatement that followed was the reason for the change.
+  //
+  // TWO MULTIPLIERS, TWO BASES, AND THEY ARE NOT INTERCHANGEABLE:
+  //
+  //     расход = ГЕОМЕТРИЯ(набор деталей, ширина, настил) × РЕАЛЬНОСТЬ_РУЛОНА(артикул)
+  //
+  //   * ГЕОМЕТРИЯ = tech_card_bom_item.wastage_percent. Pays for the LAY and nothing else:
+  //     inter-piece waste + lay ends. Its base is netto, where none of that exists yet, so the
+  //     number is large (15–30%). A marker-sourced norm never takes it — the measured length
+  //     already contains it.
+  //   * РЕАЛЬНОСТЬ РУЛОНА = this coefficient. Pays for what NO marker can contain, because a
+  //     marker is measured on a clean lay of nominal width: усадка, обход пороков, сращивание,
+  //     оттеночные полосы. Its base is the marker length, where the waste already is, so the
+  //     number is small (2–6%). It applies to EVERY measured norm regardless of provenance —
+  //     marker, manual and dxf alike.
+  //
+  // Substituting one for the other is a silent defect, not a typo: the coefficient in the percent's
+  // place understates by every inter-piece drop, linearly; the percent in the coefficient's place
+  // pays for those drops twice.
+  //
+  // WHERE IT DELIBERATELY DOES NOT APPLY: countable trims (4 buttons stay 4 buttons) and
+  // non-roll-goods sections (a coefficient on thread is meaningless).
+  //
+  // A LAY-BASED REQUIREMENT DOES TAKE IT — after the geometry, never inside it. A настил is a PLAN
+  // of what will be spread; shrinkage, flaw avoidance and splicing happen to the CLOTH whatever the
+  // requirement was computed from. What must stay untouched is the lay GEOMETRY itself
+  // (dto.LayPlannedGeometryOf) and both calibrations: факт ÷ план-геометрия is an honest measurement
+  // of this coefficient exactly because the coefficient is not in that denominator — put it there
+  // and the calibration starts confirming itself.
   google.type.Decimal cutting_coefficient = 31;
   // READ-ONLY (Ф5а.3): the vocabulary normalisation of `unit`. Ignored on write — set `unit`.
   // UNKNOWN = the free text does not map to any known unit, and must not be read as "no unit".

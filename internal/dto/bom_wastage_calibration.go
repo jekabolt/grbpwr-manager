@@ -27,10 +27,22 @@ import (
 //     усадку, обход пороков, сращивание — типично 2–6%, и ложится в material.cutting_coefficient
 //     (МНОЖИТЕЛЬ на артикуле);
 //
-//   - этот расчёт делит факт на NETTO — то, что дала бы норма «по выкройкам» БЕЗ ЕДИНОГО ВЫПАДА
-//     (состав раскладки × пер-размерная dxf-норма). Медиана поэтому меряет ВСЁ, чего нет в netto:
-//     межлекальные выпады + концы настила + усадку/пороки — типично 15–30%, и ложится в
+//   - этот расчёт делит факт на NETTO × КОЭФФИЦИЕНТ АРТИКУЛА (знаменатель после W3). Netto — то,
+//     что дала бы норма «по выкройкам» БЕЗ ЕДИНОГО ВЫПАДА (состав раскладки × пер-размерная
+//     dxf-норма); коэффициент вынимает из измерения усадку и пороки, которые он уже оплачивает сам.
+//     Остаток — ровно геометрия настила: межлекальные выпады + концы, типично 15–30%, и ложится в
 //     bom_item.wastage_percent (ПРОЦЕНТ на строке BOM модели).
+//
+// ЗНАМЕНАТЕЛЬ ЗДЕСЬ ДВИНУЛСЯ ВМЕСТЕ СО СМЫСЛОМ ПОЛЯ (W3), И ИНАЧЕ БЫТЬ НЕ МОГЛО. До W3 процент
+// оплачивал и усадку тоже, поэтому чистое netto было честным знаменателем. W3 сузил процент до
+// геометрии настила и отдал усадку/пороки/сращивание коэффициенту, который с тех пор входит в ТЕ ЖЕ
+// деньги нормы (entity.NormGrossUp). Оставь знаменатель прежним — и предложение на артикуле с
+// коэффициентом оплачивало бы усадку ДВАЖДЫ: netto × (1 + процент_с_усадкой) × коэффициент.
+//
+// ЛИНЕЙКА СМЕНИЛАСЬ, А НЕ ФАКТ, и ответ RPC обязан это говорить (denominator_cutting_coefficient):
+// значения процента, применённые ДО W3, посчитаны по старой линейке и на артикуле с коэффициентом
+// с тех пор завышены примерно на него. Ничто их не переписывает молча — система никогда не
+// применяет предложение сама.
 //
 // Это два РАЗНЫХ слагаемых отходов с разными базами, непересекающиеся по построению
 // (production_material_plan.go: «the two worlds stay disjoint so no line is ever grossed twice»).
@@ -274,6 +286,15 @@ type LayWastageObservation struct {
 	// ActualQty is production_run_lay.actual_qty — в единице netto по построению штампа/пересчёта
 	// (единицы сверены на записи и в LayNettoOf), поэтому дробь не требует перевода.
 	ActualQty decimal.NullDecimal
+	// Coefficient — коэффициент раскроя АРТИКУЛА, НА КОТОРОМ МЕРИЛСЯ ЭТОТ ФАКТ. Входит в
+	// ЗНАМЕНАТЕЛЬ (netto × коэффициент), см. LayWastageDriftOf. INVALID = у артикула коэффициента
+	// нет, знаменатель — чистое netto.
+	//
+	// НА НАБЛЮДЕНИИ, А НЕ НА ВХОДЕ ЦЕЛИКОМ, хотя сегодня он у всех настилов один: наблюдения
+	// отбираются по артикулу (LayArticleMaterialId), и величина, которой делят ЭТОТ факт, обязана
+	// принадлежать ЕМУ. Общее поле на входе стало бы приглашением подставить «сегодняшний артикул
+	// карточки» в тот день, когда отбор перестанет быть по одному артикулу.
+	Coefficient decimal.NullDecimal
 }
 
 // LayWastageDrift is ONE настил's вклад — с третьим ответом в типе, как у соседа: невошедший настил
@@ -308,8 +329,35 @@ func LayWastageDriftOf(o LayWastageObservation) LayWastageDrift {
 	case !o.ActualQty.Decimal.IsPositive():
 		d.Skipped = fmt.Sprintf("факт расхода не положителен (%s)", o.ActualQty.Decimal.String())
 	default:
+		// ЗНАМЕНАТЕЛЬ = netto × КОЭФФИЦИЕНТ АРТИКУЛА (W3), а не чистое netto.
+		//
+		// Процент раскроя теперь означает ТОЛЬКО геометрию настила (межлекальные выпады + концы), а
+		// усадку/пороки/сращивание оплачивает коэффициент — и оплачивает В ТЕХ ЖЕ деньгах нормы
+		// (entity.NormGrossUp). Медиана над ЧИСТЫМ netto меряет всё сразу, поэтому вписать её в
+		// сужённое поле значило бы оплатить усадку дважды: один раз процентом, второй —
+		// коэффициентом. Разделив факт ещё и на коэффициент, мы вынимаем из измерения ровно то, что
+		// уже оплачено, и остаток — ровно геометрия, то есть ровно то, чем процент стал.
+		//
+		// КРУГА НЕТ, И ЭТО ПРОВЕРЯЕМО ПО ЗНАМЕНАТЕЛЯМ. Коэффициент калибруется факт ÷
+		// ПЛАН-ГЕОМЕТРИЕЙ настила (LayPlannedGeometryOf: длина раскладки × слои + концевые) —
+		// величиной, в которой нет ни процента, ни коэффициента. Значит коэффициент не зависит ни
+		// от netto, ни от процента, и ссылка на него здесь однонаправленна:
+		//
+		//	коэффициент ← (факт, геометрия настила)
+		//	процент     ← (факт, netto, коэффициент)
+		//
+		// Петля появилась бы только если бы план настила начали гроссить коэффициентом — что Р4
+		// запрещает ровно по этой причине (шапка material_coefficient_calibration.go).
+		denom := o.NettoQty.Decimal
+		if o.Coefficient.Valid {
+			denom = denom.Mul(o.Coefficient.Decimal)
+		}
+		if !denom.IsPositive() {
+			d.Skipped = fmt.Sprintf("знаменатель настила не положителен (%s) — делить не на что", denom.String())
+			return d
+		}
 		d.Drift = decimal.NullDecimal{
-			Decimal: o.ActualQty.Decimal.Div(o.NettoQty.Decimal).Sub(wastageOne),
+			Decimal: o.ActualQty.Decimal.Div(denom).Sub(wastageOne),
 			Valid:   true,
 		}
 	}
@@ -358,6 +406,15 @@ func BomWastageSuggestionOf(lays []LayWastageObservation) BomWastageSuggestion {
 	out.LayCount = len(counted)
 	out.TechCardCount = len(cards)
 
+	// ОДНА ФОРМУЛА, ОДНА ФРАЗА. Знаменатель называется ТАМ ЖЕ, где написана формула, потому что это
+	// один и тот же факт: приписать линейку отдельным предложением значило бы напечатать оператору
+	// две несовместимые формулы подряд («факт ÷ netto» и «знаменатель netto × коэффициент») и
+	// оставить его выбирать, какой верить. Читает это ЧЕЛОВЕК, а не ревьюер кода.
+	denom := "netto"
+	if c := countedDenominatorCoefficient(lays); c.Valid {
+		denom = fmt.Sprintf("(netto × %s)", c.Decimal.String())
+	}
+
 	if out.LayCount < MinLaysForWastageSuggestion {
 		out.Status = WastageSuggestionTooFewFacts
 		out.Detail = fmt.Sprintf("фактов пока мало: настилов с замером и netto %d, нужно %d — процент, выведенный из одного-двух раскроев, это догадка в одежде числа",
@@ -375,14 +432,26 @@ func BomWastageSuggestionOf(lays []LayWastageObservation) BomWastageSuggestion {
 		// сказать «выпадов нет» там, где измерение говорит «ваша netto-норма завышена — или замер
 		// врёт». Медиана ниже нуля буквально означает, что ткани ушло МЕНЬШЕ безотходной нормы.
 		out.Status = WastageSuggestionOutOfRange
-		out.Detail = fmt.Sprintf("медианный дрейф над netto по %d настилам (%d моделей) — %s%%, а поле принимает от %s до %s — проверьте замеры и dxf-нормы: скорее всего, среди них есть ошибка",
-			out.LayCount, out.TechCardCount, percent.String(), wastagePercentMin.String(), wastagePercentMax.String())
+		out.Detail = fmt.Sprintf("медианный дрейф над %s по %d настилам (%d моделей) — %s%%, а поле принимает от %s до %s — проверьте замеры и dxf-нормы: скорее всего, среди них есть ошибка",
+			denom, out.LayCount, out.TechCardCount, percent.String(), wastagePercentMin.String(), wastagePercentMax.String())
 		return out
 	}
 
 	out.Status = WastageSuggestionReady
 	out.SuggestedPercent = decimal.NullDecimal{Decimal: percent, Valid: true}
-	out.Detail = fmt.Sprintf("предложение %s%% — медиана «факт ÷ netto − 1» по %d настилам, %d моделей; применяется рукой, не автоматом — и это НЕ коэффициент раскроя артикула: тот меряется от длины раскладки и выпадов не содержит",
-		percent.String(), out.LayCount, out.TechCardCount)
+	out.Detail = fmt.Sprintf("предложение %s%% — медиана «факт ÷ %s − 1» по %d настилам, %d моделей; применяется рукой, не автоматом — и это НЕ коэффициент раскроя артикула: тот меряется от длины раскладки и выпадов не содержит",
+		percent.String(), denom, out.LayCount, out.TechCardCount)
 	return out
+}
+
+// countedDenominatorCoefficient — коэффициент, которым РЕАЛЬНО делили. Берётся у настилов, ВОШЕДШИХ
+// в медиану: настил, выпавший без числа, ничего о линейке не свидетельствует, а фраза обязана
+// описывать посчитанное, а не поданное на вход.
+func countedDenominatorCoefficient(lays []LayWastageObservation) decimal.NullDecimal {
+	for _, o := range lays {
+		if LayWastageDriftOf(o).Counted() && o.Coefficient.Valid {
+			return o.Coefficient
+		}
+	}
+	return decimal.NullDecimal{}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -86,6 +87,24 @@ func (s *Server) bomWastageCalibrationInput(ctx context.Context, materialID int)
 		return dto.BomWastageCalibrationInput{}, fmt.Errorf("failed to list measured lays: %w", err)
 	}
 
+	// КОЭФФИЦИЕНТ АРТИКУЛА — ЧАСТЬ ЗНАМЕНАТЕЛЯ (W3): дрейф считается над netto × коэффициент, потому
+	// что усадку и пороки оплачивает он, а процент с W3 — только геометрию настила. Медиана над
+	// чистым netto предложила бы процент, который оплатит усадку ВТОРОЙ раз.
+	//
+	// ЧИТАЕТСЯ ЗДЕСЬ, А НЕ У ВЫЗЫВАЮЩЕГО, И ЭТО НЕСУЩЕЕ. Этот сборщик — общий вход для ЧТЕНИЯ
+	// (GetBomWastageSuggestion) и для ПОДТВЕРЖДЕНИЯ ЗАЯВКИ на записи (verifyBomWastageClaims), и
+	// обе стороны обязаны стоять на ОДНОЙ медиане. Проставь коэффициент один из вызывающих — заявка
+	// проверялась бы линейкой, отличной от той, по которой число предложено, и расходились бы они
+	// молча: заявка просто переставала бы подтверждаться, а бейдж — необъяснимо становиться 'manual'.
+	mat, err := s.repo.TechCards().GetMaterial(ctx, materialID)
+	if err != nil {
+		return dto.BomWastageCalibrationInput{}, fmt.Errorf("failed to load material %d for the wastage denominator: %w", materialID, err)
+	}
+	coefficient := decimal.NullDecimal{}
+	if mat != nil {
+		coefficient = mat.EffectiveCuttingCoefficient()
+	}
+
 	// Карточки — настоящим загрузчиком и по одной на карточку (резолвер артикула откатывается на
 	// позиционный индекс слота, осмысленный только в порядке настоящего загрузчика). НЕ best-effort:
 	// ненагруженная карточка молча вынула бы её настилы из медианы — «фактов мало» при полном
@@ -127,6 +146,7 @@ func (s *Server) bomWastageCalibrationInput(ctx context.Context, materialID int)
 		Markers:               markers,
 		ConsideredLayCount:    len(lays),
 		TotalMeasuredLayCount: total,
+		Coefficient:           coefficient,
 	}, nil
 }
 

@@ -285,7 +285,7 @@ func TestT8MaterialPlanLayAttributionFollowsPiecePin(t *testing.T) {
 func TestT8ConvertRecipeUsagesToPbPieceRowHasNoMoney(t *testing.T) {
 	card := t8Card()
 	usages := card.Colorways[0].Usages
-	pb := ConvertRecipeUsagesToPb(usages, card.BomItems, card.Pieces, nil)
+	pb := ConvertRecipeUsagesToPb(usages, card.BomItems, card.Pieces, nil, nil)
 	require.Len(t, pb, 3)
 	require.Nil(t, pb[0].LineTotal, "легаси-число 1.4 на строке детали не превращается в line_total")
 	require.NotNil(t, pb[1].LineTotal, "строка изделия деньги несёт")
@@ -298,7 +298,7 @@ func TestT8ConvertRecipeUsagesToPbPieceRowHasNoMoney(t *testing.T) {
 		PieceLineKey:     "PIECE1", // привязка только ключом, без PieceId — форма снапшота/провода
 		SizeConsumptions: []entity.TechCardBomSizeConsumption{{SizeId: 1, Consumption: d("2")}},
 	}
-	pb = ConvertRecipeUsagesToPb([]entity.TechCardColorwayUsage{graded}, card.BomItems, card.Pieces, map[int]int{1: 5})
+	pb = ConvertRecipeUsagesToPb([]entity.TechCardColorwayUsage{graded}, card.BomItems, card.Pieces, map[int]int{1: 5}, nil)
 	require.Nil(t, pb[0].SizeRunTotal, "и посайзовые деньги строки детали не едут на провод")
 }
 

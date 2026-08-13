@@ -187,7 +187,15 @@ func TestPlanSourceIsLaysOnlyWhenEveryCountedPairIsLaid(t *testing.T) {
 // Р4 — КОЭФФИЦИЕНТ РАСКРОЯ НА ПУТИ НАСТИЛОВ НЕ ПРИМЕНЯЕТСЯ. Настил — измерение (длина × слои +
 // концевые потери), а коэффициент откалиброван против нормативных ОЦЕНОК: наложить его сверху значит
 // дважды учесть одно и то же на неизвестную величину.
-func TestPlanLaysDoNotTakeTheCuttingCoefficient(t *testing.T) {
+// W3: КОЭФФИЦИЕНТ ЛОЖИТСЯ И НА НАСТИЛ. Настил — план того, что положат на стол; усадка, обход
+// пороков и сращивание случаются с ПОЛОТНОМ и не зависят от того, чем посчитали требование.
+// Раньше здесь стоял обратный тест — он был прав, пока коэффициент вообще не входил в деньги: тогда
+// «наценка только на оценку, не на измерение» было связной моделью. С W3 деньги той же рулонной
+// строки коэффициент берут, и настил без него недодавал бы цеху ровно на его величину.
+//
+// ГЕОМЕТРИЯ ПРИ ЭТОМ ОСТАЁТСЯ ЧИСТОЙ — она знаменатель калибровки самого коэффициента, и это
+// проверяется здесь же парой (before, required).
+func TestPlanLaysTakeTheCuttingCoefficientAfterGeometry(t *testing.T) {
 	card, run := f46Card(), f46Run(100)
 	articles := f46Articles()
 	m := articles[100]
@@ -198,19 +206,29 @@ func TestPlanLaysDoNotTakeTheCuttingCoefficient(t *testing.T) {
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, articles, lays)
 
 	row := f46RowByMaterial(t, resp, 100)
-	require.Equal(t, "60.8", row.Required.Value, "60.8 × 1.06 = 64.448 — коэффициент к измерению не применяется")
-	require.Equal(t, "60.8", row.RequiredBeforeGrossup.Value, "на пути настилов наценки нет вовсе, значит до и после совпадают")
-	require.Equal(t, "1.06", row.CuttingCoefficient.Value, "коэффициент артикула всё равно показан — он существует")
+	require.Equal(t, "64.448", row.Required.Value, "60.8 геометрии × 1.06 коэффициента")
+	require.Equal(t, "60.8", row.RequiredBeforeGrossup.Value,
+		"«до» на пути настилов — ЧИСТАЯ геометрия: она знаменатель калибровки коэффициента и обязана остаться без него")
+	require.Equal(t, "1.06", row.CuttingCoefficient.Value)
 
-	// И он не молчит о том, ПОЧЕМУ не сработал, и не врёт ни про «ручные нормы», ни про то, что
-	// какая-то часть строки посчитана иначе: у этой строки ВСЯ потребность из настилов.
-	require.True(t, hasCaveat(resp.Caveats, "this row's requirement is computed from LAYS"),
-		"оговорка обязана назвать настилы причиной, а не выдумать ручные нормы")
-	require.True(t, hasCaveat(resp.Caveats, "it does not apply to a measurement"))
-	require.False(t, hasCaveat(resp.Caveats, "norms for it are manual"),
-		"«ваши нормы ручные» — неверное объяснение верного числа")
-	require.False(t, hasCaveat(resp.Caveats, "part of the requirement"),
-		"«часть по настилам» — тоже неверное объяснение: по настилам посчитана вся строка")
+	// Наценка сработала — объяснять нечего, и выдуманного объяснения быть не должно.
+	require.False(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"),
+		"коэффициент укусил: оговорка про no-op была бы ложью: %v", resp.Caveats)
+	require.False(t, hasCaveat(resp.Caveats, "applied to PART of this row"), "%v", resp.Caveats)
+}
+
+// Артикул без коэффициента считает настил ровно как до W3 — то же число, что пиннилось предыдущей
+// редакцией этого теста.
+func TestPlanLaysWithoutCoefficientAreUnchanged(t *testing.T) {
+	card, run := f46Card(), f46Run(100)
+	lays := []entity.ProductionRunLay{f46Lay(f46Fabric, "настил-1", "2", f46Section(9001, 20, "300"))}
+
+	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, f46Articles(), lays)
+
+	row := f46RowByMaterial(t, resp, 100)
+	require.Equal(t, "60.8", row.Required.Value)
+	require.Equal(t, "60.8", row.RequiredBeforeGrossup.Value, "нет коэффициента — до и после совпадают, как и было")
+	require.Nil(t, row.CuttingCoefficient)
 }
 
 // Та же оговорка на строке, собравшей ОБА источника, обязана звучать иначе: здесь по настилам
@@ -228,14 +246,17 @@ func TestPlanMixedRowExplainsTheCoefficientDifferently(t *testing.T) {
 		[]entity.ProductionRunLay{f46Lay(f46Fabric, "настил-1", "2", f46Section(9001, 20, "300"))})
 
 	require.Equal(t, pb_admin.ProductionRunCoverageSource_PRODUCTION_RUN_COVERAGE_SOURCE_MIXED, resp.Rows[0].Source)
-	require.True(t, hasCaveat(resp.Caveats, "part of the requirement is computed from LAYS"))
-	require.False(t, hasCaveat(resp.Caveats, "this row's requirement is computed from LAYS"))
+	// ОБЕ ПОЛОВИНЫ БЕРУТ КОЭФФИЦИЕНТ (W3) — и нормовая, и настеленная. Это и есть починка MIXED:
+	// раньше строка грossилась наполовину, и разница уходила в недозакупку молча. Объяснять теперь
+	// нечего ни целиком, ни частично.
+	require.False(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"))
+	require.False(t, hasCaveat(resp.Caveats, "applied to PART of this row only"))
 }
 
-// Обратная половина Р4: на пути НОРМЫ коэффициент применяется как и раньше. Один прогон, два
-// артикула — один настелен, другой считается по маркерной норме, — и наценка достаётся ровно
-// второму.
-func TestPlanNormPathStillTakesTheCoefficientWhileLaysDoNot(t *testing.T) {
+// ОБА ПУТИ БЕРУТ КОЭФФИЦИЕНТ (W3), и берут его от РАЗНЫХ баз: настил — от измеренной геометрии,
+// норма — от нормы с процентом. Один прогон, два артикула — один настелен, другой считается по
+// маркерной норме, — и наценка достаётся ОБОИМ.
+func TestPlanNormAndLayPathsBothTakeTheCoefficient(t *testing.T) {
 	card, run := f46Card(), f46Run(100)
 	// Подкладка считается по МАРКЕРНОЙ норме, значит её наценка — коэффициент артикула.
 	card.Colorways[0].Usages[1].ConsumptionSource = sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true}
@@ -249,7 +270,7 @@ func TestPlanNormPathStillTakesTheCoefficientWhileLaysDoNot(t *testing.T) {
 
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, articles, lays)
 
-	require.Equal(t, "60.8", f46RowByMaterial(t, resp, 100).Required.Value, "настил: без коэффициента")
+	require.Equal(t, "66.88", f46RowByMaterial(t, resp, 100).Required.Value, "настил: 60.8 геометрии × 1.10")
 	require.Equal(t, "165", f46RowByMaterial(t, resp, 200).Required.Value, "1.5 × 100 × 1.10 — норма: с коэффициентом")
 }
 

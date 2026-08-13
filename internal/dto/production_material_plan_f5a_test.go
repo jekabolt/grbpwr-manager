@@ -90,31 +90,29 @@ func TestPlanUnsetCuttingCoefficientChangesNothing(t *testing.T) {
 	require.Nil(t, resp.Rows[0].CuttingCoefficient, "no coefficient reported when the article has none")
 }
 
-// A MANUAL norm keeps its BOM wastage estimate and does NOT also take the coefficient: the two
-// worlds are disjoint, or the line would be grossed twice. The no-op is reported rather than left to
-// look like a broken field.
+// W3: A MANUAL norm takes BOTH multipliers — the slot's wastage percent (geometry of the lay) and
+// the article's cutting coefficient (the roll's reality). Раньше здесь стоял ровно обратный тест, и
+// он был прав при старом смысле процента: тот оплачивал в том числе усадку, поэтому коэффициент
+// сверху был бы двойным счётом. W3 сузил процент до геометрии — и исключение исчезло вместе со
+// своим основанием.
 //
-// This row is also the reason the "before" number is required_before_GROSSUP and not
-// required_before_coefficient: 210 / 200 = 1.05, the WASTAGE factor, on a row that simultaneously
-// reports cutting_coefficient 1.06 and says the coefficient did not bite. Anyone dividing the two
-// numbers to recover the coefficient would read 1.05 — so the contract promises only
-// required >= required_before_grossup, and the coefficient is read from its own field.
-func TestPlanManualNormKeepsWastageAndSaysTheCoefficientDidNotBite(t *testing.T) {
+// Эта строка — и есть причина, по которой «до» называется required_before_GROSSUP, а не
+// required_before_coefficient: 222.6 / 200 = 1.113, то есть ОБА множителя сразу, и ни один из них
+// по отдельности из пары чисел не восстанавливается. Контракт обещает только
+// required >= required_before_grossup; коэффициент читается из своего поля.
+func TestPlanManualNormTakesBothWastageAndCoefficient(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "5")
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil), nil)
 
 	row := resp.Rows[0]
-	require.Equal(t, "210", row.Required.Value, "200 × 1.05 wastage — NOT × 1.06 as well")
+	require.Equal(t, "222.6", row.Required.Value, "200 × 1.05 wastage × 1.06 coefficient")
 	require.Equal(t, "200", row.RequiredBeforeGrossup.Value,
-		"before ANY gross-up: the wastage is not folded in here either")
-	require.Equal(t, "1.06", row.CuttingCoefficient.Value,
-		"the article's dial is still reported — it just did not bite")
-	require.NotEqual(t, "212", row.Required.Value,
-		"required is NOT required_before_grossup × cutting_coefficient on a manual row")
-	require.True(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"),
-		"a dial that does nothing must say so: %v", resp.Caveats)
-	require.True(t, hasCaveat(resp.Caveats, "norms for it are manual"),
-		"and it must name the RIGHT reason: %v", resp.Caveats)
+		"before ANY gross-up: neither factor is folded in here")
+	require.Equal(t, "1.06", row.CuttingCoefficient.Value)
+	require.False(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"),
+		"the dial DID bite — an explanation of a no-op would be a lie: %v", resp.Caveats)
+	require.False(t, hasCaveat(resp.Caveats, "applied to PART of this row"),
+		"the whole row took it: %v", resp.Caveats)
 }
 
 // The other row on which required = before × coefficient is false: no coefficient anywhere, and the
@@ -157,7 +155,7 @@ func TestPlanCountedTrimTakesNoCoefficient(t *testing.T) {
 	require.Equal(t, "40", resp.Rows[0].RequiredBeforeGrossup.Value, "and the two numbers agree exactly")
 	// The caveat must not tell the operator their buttons are "manual norms" — that is the wrong
 	// explanation of a right number, and the one they would then go and try to fix.
-	require.True(t, hasCaveat(resp.Caveats, "counted quantity"),
+	require.True(t, hasCaveat(resp.Caveats, "the counted quantities take no gross-up at all"),
 		"a counted row must be explained AS counted: %v", resp.Caveats)
 	require.False(t, hasCaveat(resp.Caveats, "norms for it are manual"),
 		"nothing here is a manual norm: %v", resp.Caveats)

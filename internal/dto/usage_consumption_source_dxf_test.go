@@ -18,8 +18,8 @@ import (
 // отдельным значением, а не «ручной нормой с пометкой»:
 //   1. на проводе он принимается, но разложения отходов не несёт (оно про измеренную раскладку);
 //   2. в деньгах он ГРОССИТСЯ процентом раскроя, побитово как ручной — netto иначе занижено;
-//   3. в потребности прогона его не трогает коэффициент раскроя артикула, и объяснение этому в
-//      ответе не называет норму ручной.
+//   3. в потребности прогона он берёт ТЕ ЖЕ множители, что и в деньгах (W3): процент раскроя за
+//      геометрию настила и коэффициент артикула за реальность рулона.
 
 func TestParseRecipeUsagesAcceptsDxfWithoutDecomposition(t *testing.T) {
 	t.Run("dxf is a valid source", func(t *testing.T) {
@@ -88,37 +88,40 @@ func TestDxfNormGrossesUpLikeManual(t *testing.T) {
 		"wastage_percent NULL means applyWastage multiplies by nothing — netto reaches the money as a total")
 }
 
-// Ф5а.2 остаётся неприкосновенной: коэффициент раскроя артикула калиброван по ИЗМЕРЕННЫМ длинам
-// раскладок, поэтому норму с выкроек он не трогает. Но объяснение в ответе обязано называть верную
-// причину — «ваши нормы ручные» про площадь деталей было бы правильным числом с ложным поводом.
-func TestPlanDxfNormTakesWastageNotCoefficientAndSaysWhy(t *testing.T) {
+// W3: норма с выкроек берёт ОБА множителя. Площадь деталей не содержит ни межлекальных выпадов
+// (их оплачивает процент слота), ни усадки с пороками (их оплачивает коэффициент артикула) — то
+// есть netto не содержит ВООБЩЕ НИЧЕГО, и оба множителя ложатся на неё без пересечения.
+//
+// Раньше здесь стоял обратный тест: коэффициент dxf-норму не трогал, а ответ объяснял, почему.
+// Основание было в старом смысле процента (он оплачивал и усадку); W3 его снял.
+func TestPlanDxfNormTakesBothWastageAndCoefficient(t *testing.T) {
 	run, card := planFixture("m", "2", entity.ConsumptionSourceDxf, 100, "5")
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil), nil)
 
 	require.Len(t, resp.Rows, 1)
 	row := resp.Rows[0]
-	require.Equal(t, "210", row.Required.Value, "200 × 1.05 wastage — the coefficient must NOT also bite")
+	require.Equal(t, "222.6", row.Required.Value, "200 × 1.05 wastage × 1.06 coefficient")
 	require.Equal(t, "200", row.RequiredBeforeGrossup.Value)
-	require.True(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"),
-		"a dial that does nothing must say so: %v", resp.Caveats)
-	require.True(t, hasCaveat(resp.Caveats, "taken from the patterns"),
-		"and it must name the RIGHT reason, not «manual»: %v", resp.Caveats)
-	for _, c := range resp.Caveats {
-		if strings.Contains(c, "cutting coefficient") {
-			require.NotContains(t, c, "norms for it are manual",
-				"a pattern-derived norm is not a manual one: %q", c)
-		}
-	}
+	require.False(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"),
+		"the dial bit — there is no no-op to explain: %v", resp.Caveats)
 }
 
-// The pre-0294 wordings must be byte-identical, because the composed phrase replaced hand-written
-// arms: a caveat whose text drifts silently is a caveat nobody trusts twice.
-func TestPlanCoefficientCaveatWordingUnchangedForManualNorms(t *testing.T) {
-	run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "5")
-	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil), nil)
-	require.True(t, hasCaveat(resp.Caveats,
-		"cutting coefficient 1.06 not applied — it grosses up MARKER-sourced norms, and this run's norms for it are manual (their BOM wastage % applies instead)"),
-		"manual-only wording must not drift: %v", resp.Caveats)
+// ПРОВЕНАНС НОРМЫ БОЛЬШЕ НЕ РЕШАЕТ, КУСАЕТ ЛИ КОЭФФИЦИЕНТ. Три источника, одно число: разойтись они
+// могут только по ПРОЦЕНТУ (marker его не берёт), но коэффициент берут все три одинаково.
+func TestPlanCoefficientBitesRegardlessOfNormProvenance(t *testing.T) {
+	for _, tc := range []struct{ src, want string }{
+		// manual/dxf: 200 × 1.05 × 1.06. marker: процента нет (длина раскладки его уже содержит),
+		// значит 200 × 1.06 — но коэффициент на месте во всех трёх.
+		{entity.ConsumptionSourceManual, "222.6"},
+		{entity.ConsumptionSourceDxf, "222.6"},
+		{entity.ConsumptionSourceMarker, "212"},
+	} {
+		run, card := planFixture("m", "2", tc.src, 100, "5")
+		resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("m", nd2("1.06"), nil), nil)
+		require.Equal(t, tc.want, resp.Rows[0].Required.Value, "source %q", tc.src)
+		require.False(t, hasCaveat(resp.Caveats, "cutting coefficient 1.06 not applied"),
+			"source %q: the coefficient bit, so nothing is explained away: %v", tc.src, resp.Caveats)
+	}
 }
 
 // ГЕЙТ ГОТОВНОСТИ. Норма с выкроек — не «введена руками», и текст обязан это говорить: гейт —
@@ -269,22 +272,26 @@ func TestRunReadinessDxfNormAcceptsTheRunsActualWastagePercent(t *testing.T) {
 	require.Contains(t, f.Detail, "фактический процент прогона")
 }
 
-// Фраза кавеата собирается из присутствующих видов норм. Пинятся ВСЕ сочетания, а не два: ошибка в
-// порядке списка или в join прошла бы зелёной на одном.
-func TestPlanCoefficientCaveatNamesEveryNormKindCombination(t *testing.T) {
-	// Два слота одного артикула: один ручной, другой с выкроек — статистика видов складывается на
-	// артикуле, а кавеат печатается по нему.
-	twoSlots := func(srcA, srcB string, quantityB bool) (*entity.ProductionRun, *entity.TechCard) {
-		run, card := planFixture("m", "2", srcA, 100, "5")
+// Фраза кавеата собирается из ПРИСУТСТВУЮЩИХ причин. С W3 причин ровно три — настилы, счётность,
+// нерулонная секция, — и источник нормы среди них не числится. Пинятся все сочетания, а не одно:
+// ошибка в порядке списка или в join прошла бы зелёной на единственном.
+func TestPlanCoefficientCaveatNamesEveryReasonCombination(t *testing.T) {
+	// Два слота ОДНОГО артикула: статистика причин складывается на артикуле, а кавеат печатается
+	// по нему. Второй слот получает секцию и вид расхода по параметрам.
+	twoSlots := func(section entity.TechCardBomSection, countedB bool) (*entity.ProductionRun, *entity.TechCard) {
+		run, card := planFixture("m", "2", entity.ConsumptionSourceManual, 100, "5")
+		// Первый слот делаем счётным-или-нерулонным через сам вызов; здесь — только второй.
 		second := card.BomItems[0]
 		second.Id = 502
 		second.Name = "Second slot"
+		second.Section = section
 		card.BomItems = append(card.BomItems, second)
 		u := entity.TechCardColorwayUsage{
-			BomItemId:         sql.NullInt64{Int64: 502, Valid: true},
-			ConsumptionSource: sql.NullString{String: srcB, Valid: srcB != ""},
+			BomItemId: sql.NullInt64{Int64: 502, Valid: true},
+			ConsumptionSource: sql.NullString{
+				String: entity.ConsumptionSourceManual, Valid: true},
 		}
-		if quantityB {
+		if countedB {
 			u.Quantity = nd2("3")
 		} else {
 			u.Consumption = nd2("1")
@@ -302,19 +309,41 @@ func TestPlanCoefficientCaveatNamesEveryNormKindCombination(t *testing.T) {
 		return ""
 	}
 
-	t.Run("manual + dxf", func(t *testing.T) {
-		got := caveatOf(twoSlots(entity.ConsumptionSourceManual, entity.ConsumptionSourceDxf, false))
-		require.Contains(t, got, "are manual (their BOM wastage % applies instead) or taken from the patterns")
+	t.Run("рулонная норма + счётный слот — частичное применение", func(t *testing.T) {
+		got := caveatOf(twoSlots(entity.BomSectionFabric, true))
+		require.Contains(t, got, "applied to PART of this row only")
+		require.Contains(t, got, "the counted quantities take no gross-up at all")
 	})
-	t.Run("dxf + counted", func(t *testing.T) {
-		got := caveatOf(twoSlots(entity.ConsumptionSourceDxf, entity.ConsumptionSourceManual, true))
-		require.Contains(t, got, "taken from the patterns")
-		require.Contains(t, got, "or counted quantities (which take no gross-up at all)")
-		require.NotContains(t, got, "are manual (their BOM wastage % applies instead)")
+	t.Run("рулонная норма + нерулонный слот — частичное применение", func(t *testing.T) {
+		got := caveatOf(twoSlots(entity.BomSectionThread, false))
+		require.Contains(t, got, "applied to PART of this row only")
+		require.Contains(t, got, "the non-roll-goods slots have no roll shrinkage or flaws to pay for")
 	})
-	t.Run("manual + counted keeps the pre-0294 sentence", func(t *testing.T) {
-		got := caveatOf(twoSlots(entity.ConsumptionSourceManual, entity.ConsumptionSourceManual, true))
-		require.Contains(t, got,
-			"this run's norms for it are manual (their BOM wastage % applies instead) or counted quantities (which take no gross-up at all)")
+	t.Run("обе причины разом — обе и названы, в фиксированном порядке", func(t *testing.T) {
+		// Второй слот — МЕРНЫЙ на нерулонной секции (счётность победила бы нерулонность: у
+		// счётной строки гросс-апа нет вовсе, и это более сильная причина — см. порядок switch).
+		run, card := twoSlots(entity.BomSectionThread, false)
+		// Третий слот: счётный на рулонной секции, чтобы к нерулонной причине добавилась счётная.
+		third := card.BomItems[0]
+		third.Id = 503
+		third.Name = "Third slot"
+		card.BomItems = append(card.BomItems, third)
+		card.Colorways[0].Usages = append(card.Colorways[0].Usages, entity.TechCardColorwayUsage{
+			BomItemId: sql.NullInt64{Int64: 503, Valid: true},
+			Quantity:  nd2("2"),
+			ConsumptionSource: sql.NullString{
+				String: entity.ConsumptionSourceManual, Valid: true},
+		})
+		got := caveatOf(run, card)
+		require.Contains(t, got, "the counted quantities take no gross-up at all")
+		require.Contains(t, got, "the non-roll-goods slots have no roll shrinkage or flaws to pay for")
+		require.Less(t,
+			strings.Index(got, "the counted quantities"),
+			strings.Index(got, "the non-roll-goods slots"),
+			"порядок причин фиксирован: настилы → счётные → нерулонные")
+	})
+	t.Run("НЕТ причин — нет и кавеата", func(t *testing.T) {
+		// Обе строки мерные и рулонные: коэффициент взял всё, объяснять нечего.
+		require.Equal(t, "", caveatOf(twoSlots(entity.BomSectionLining, false)))
 	})
 }

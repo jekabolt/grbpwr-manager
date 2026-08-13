@@ -48,6 +48,16 @@ type BomWastageCalibrationInput struct {
 	// быть видно, а не подразумеваться.
 	ConsideredLayCount    int
 	TotalMeasuredLayCount int
+	// Coefficient — коэффициент раскроя АРТИКУЛА (material.cutting_coefficient через
+	// EffectiveCuttingCoefficient), входящий в ЗНАМЕНАТЕЛЬ каждого настила: netto × коэффициент
+	// (W3, см. LayWastageDriftOf). INVALID = коэффициента нет, знаменатель — чистое netto.
+	//
+	// АРТИКУЛ ТОТ, ПО КОТОРОМУ ОТОБРАНЫ НАСТИЛЫ, а не сегодняшний пин какой-то карточки: наблюдения
+	// оставляют только те замеры, что разрешаются в MaterialId, поэтому коэффициент здесь
+	// принадлежит ровно тому рулону, на котором эти факты и мерились. ЗНАЧЕНИЕ при этом СЕГОДНЯШНЕЕ:
+	// исторических коэффициентов система не хранит, и предложение честно говорит, какой линейкой
+	// мерило (denominator_cutting_coefficient на проводе).
+	Coefficient decimal.NullDecimal
 }
 
 // BomWastageObservationsOf resolves the candidates to THIS article's observations — the pure half
@@ -73,6 +83,9 @@ func BomWastageObservationsOf(in BomWastageCalibrationInput) ([]LayWastageObserv
 			LayKey:     l.LayKey,
 			TechCardId: l.TechCardId,
 			ActualQty:  l.ActualQty,
+			// Настил дошёл сюда только потому, что разрешился в in.MaterialId (проверка строкой
+			// выше) — значит это коэффициент ЕГО артикула, а не чужого.
+			Coefficient: in.Coefficient,
 		}
 		stamp, discarded := l.TrustedNettoStamp()
 		if stamp.Valid {
@@ -151,6 +164,10 @@ func BuildBomWastageSuggestion(in BomWastageCalibrationInput) *pb_admin.GetBomWa
 		// коэффициента» в обратную сторону. Правило уже отдаёт проценты; проекция ничего не умножает.
 		MedianOverNettoPercent:  pbDecimalFromNull(sug.MedianPercent),
 		SuggestedWastagePercent: pbDecimalFromNull(sug.SuggestedPercent),
+		// ЛИНЕЙКА НАЗЫВАЕТСЯ ВМЕСТЕ С ЧИСЛОМ (W3). Значения, применённые до W3, мерились чистым
+		// netto, поэтому у артикула с коэффициентом сегодняшняя цифра ниже прежней — и оператор,
+		// сверяющий её с сохранённым процентом, обязан видеть, что изменился не факт, а знаменатель.
+		DenominatorCuttingCoefficient: pbDecimalFromNull(in.Coefficient),
 	}
 
 	for _, d := range sug.Drifts {

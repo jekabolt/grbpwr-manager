@@ -1055,10 +1055,16 @@ var ValidConsumptionSources = map[string]bool{
 	ConsumptionSourceDxf:    true,
 }
 
-// wastageApplies reports whether the article's wastage_percent may gross this usage's cost
+// wastageApplies reports whether the SLOT's wastage_percent may gross this usage's cost
 // up. A marker-sourced norm came from a measured раскладка whose length already CONTAINS
 // the cutting waste (and the selvedge rides the per-running-metre price), so grossing it
 // again would double-count — the exact trap PIECES-WASTAGE-DESIGN §2.3 retires.
+//
+// ЭТО ПРО ПРОЦЕНТ, И ТОЛЬКО ПРО НЕГО. Второй множитель денег нормы — коэффициент раскроя артикула
+// (TechCardBomItem.EffectiveCuttingCoefficient) — применяется НЕЗАВИСИМО от источника, в том числе
+// к marker-строке: он оплачивает усадку, обход пороков, сращивание и оттеночные полосы, то есть
+// ровно то, чего измеренная раскладка содержать НЕ МОЖЕТ. Тот, кто прочтёт этот предикат как
+// «гросс-ап применяется / не применяется», выключит вместе с процентом и рулон. См. grossNorm.
 //
 // EVERY OTHER SOURCE GROSSES, and 'dxf' (0294) belongs on that side deliberately, not by
 // omission: a pattern area is netto, so the percentage is the only thing that pays for the
@@ -1245,8 +1251,9 @@ func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
 // LineTotal is the usage's per-garment material cost, resolved against its catalog
 // article (bom). It is INVALID (the cost moves to SizeRunTotal) when the usage has
 // per-size consumption. A countable trim (Quantity, no Consumption) is Quantity ×
-// unit_price with no wastage; a measured material is Consumption × unit_price grossed
-// up by the article's wastage_percent.
+// unit_price with NO gross-up of any kind — it returns before grossNorm, and that early
+// return IS the «никогда счётные» boundary of both multipliers; a measured material is
+// Consumption × unit_price × grossNorm's two multipliers (slot geometry, roll reality).
 //
 // A PIECE-BOUND ROW HAS NO NORM-MONEY. IsPieceMaterialAssignment rows carry no norm (T8), so
 // the rollups skip them entirely — and the money methods must agree: a legacy number typed on
@@ -1269,15 +1276,12 @@ func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDeci
 	if !u.Consumption.Valid {
 		return decimal.NullDecimal{}
 	}
-	if !u.wastageApplies() {
-		return decimal.NullDecimal{Decimal: u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), Valid: true}
-	}
-	return decimal.NullDecimal{Decimal: applyWastage(u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
+	return decimal.NullDecimal{Decimal: u.grossNorm(u.Consumption.Decimal.Mul(bom.UnitPrice.Decimal), bom), Valid: true}
 }
 
 // SizeRunTotal is the usage's whole-run material cost when it has per-size consumption:
-// Σ(consumption_size × order_qty_size) × unit_price, grossed up by the article's
-// wastage_percent. orderQtyBySize maps size_id → order quantity (a size with no order
+// Σ(consumption_size × order_qty_size) × unit_price, grossed up by grossNorm (the slot's
+// wastage_percent and the article's cutting coefficient). orderQtyBySize maps size_id → order quantity (a size with no order
 // quantity contributes nothing). INVALID when there is no per-size consumption, no
 // unit_price, or no order quantities yet (the cost is then 0, per the costing rule).
 func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
@@ -1300,10 +1304,7 @@ func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySiz
 	if totalQty.IsZero() {
 		return decimal.NullDecimal{}
 	}
-	if !u.wastageApplies() {
-		return decimal.NullDecimal{Decimal: totalQty.Mul(bom.UnitPrice.Decimal), Valid: true}
-	}
-	return decimal.NullDecimal{Decimal: applyWastage(totalQty.Mul(bom.UnitPrice.Decimal), bom.WastagePercent), Valid: true}
+	return decimal.NullDecimal{Decimal: u.grossNorm(totalQty.Mul(bom.UnitPrice.Decimal), bom), Valid: true}
 }
 
 // EffectiveTotal is the usage's contribution to a WHOLE-RUN rollup: its SizeRunTotal when it
@@ -1321,9 +1322,8 @@ func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyByS
 }
 
 // SizeNormTotal is a size-graded usage's PER-GARMENT material cost AT ONE CONCRETE SIZE: the
-// norm recorded for sizeID × unit_price, grossed up by the article's wastage_percent — the same
-// arithmetic LineTotal does for an ungraded norm, with that size's number standing in as the
-// norm. It is the arithmetic behind CostingBasisSize — a production-run cell being priced at
+// norm recorded for sizeID × unit_price, grossed up by grossNorm — the same arithmetic LineTotal
+// does for an ungraded norm, with that size's number standing in as the norm. It is the arithmetic behind CostingBasisSize — a production-run cell being priced at
 // the size somebody committed to cut (dto.ComputeTechCardUnitCostOnSize).
 //
 // INVALID (and deliberately so) when the usage is not size-graded, when no size is named
@@ -1342,11 +1342,7 @@ func (u *TechCardColorwayUsage) SizeNormTotal(bom *TechCardBomItem, sizeID int) 
 		if sc.SizeId != sizeID {
 			continue
 		}
-		total := sc.Consumption.Mul(bom.UnitPrice.Decimal)
-		if !u.wastageApplies() {
-			return decimal.NullDecimal{Decimal: total, Valid: true}
-		}
-		return decimal.NullDecimal{Decimal: applyWastage(total, bom.WastagePercent), Valid: true}
+		return decimal.NullDecimal{Decimal: u.grossNorm(sc.Consumption.Mul(bom.UnitPrice.Decimal), bom), Valid: true}
 	}
 	return decimal.NullDecimal{}
 }
@@ -1354,9 +1350,9 @@ func (u *TechCardColorwayUsage) SizeNormTotal(bom *TechCardBomItem, sizeID int) 
 // RangeAverageTotal is a size-graded usage's PER-GARMENT material cost as the STYLE's standard
 // cost sees it (CostingBasisRangeAverage): the SIMPLE ARITHMETIC MEAN of the norms over the
 // card's declared size range — Σ norm(s) / |rangeSizeIds| over EVERY s in rangeSizeIds — ×
-// unit_price, grossed up by the article's wastage_percent exactly as SizeNormTotal grosses one
-// size's norm (marker-sourced norms are never grossed; the measured length already contains the
-// waste). Price and percentage are constants of the row, so averaging the norms first equals
+// unit_price, grossed up by grossNorm exactly as SizeNormTotal grosses one size's norm
+// (a marker-sourced norm takes no PERCENT — the measured length already contains the waste —
+// but takes the coefficient like every other norm). Price and multipliers are constants of the row, so averaging the norms first equals
 // averaging the per-size costs — one division, no intermediate rounding (money is rounded once,
 // at the end, by the caller's roundMoney).
 //
@@ -1382,11 +1378,7 @@ func (u *TechCardColorwayUsage) RangeAverageTotal(bom *TechCardBomItem, rangeSiz
 	if !ok {
 		return decimal.NullDecimal{}
 	}
-	total := avg.Mul(bom.UnitPrice.Decimal)
-	if !u.wastageApplies() {
-		return decimal.NullDecimal{Decimal: total, Valid: true}
-	}
-	return decimal.NullDecimal{Decimal: applyWastage(total, bom.WastagePercent), Valid: true}
+	return decimal.NullDecimal{Decimal: u.grossNorm(avg.Mul(bom.UnitPrice.Decimal), bom), Valid: true}
 }
 
 // RangeAverageNorm is the price-free half of RangeAverageTotal — the averaged NORM itself, for
@@ -1481,6 +1473,87 @@ func applyWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) deci
 		return base
 	}
 	return base.Mul(decimal.NewFromInt(1).Add(wastagePercent.Decimal.Div(decimal.NewFromInt(100))))
+}
+
+// applyCuttingCoefficient грузит базу коэффициентом раскроя артикула, когда он задан. Коэффициент
+// хранится МНОЖИТЕЛЕМ (1.03 = +3%), поэтому здесь нет деления на сто — и это не мелочь: перепутать
+// его с процентом значит удорожить рулон в сто раз или на сотую долю. Не задан → база как есть.
+func applyCuttingCoefficient(base decimal.Decimal, coefficient decimal.NullDecimal) decimal.Decimal {
+	if !coefficient.Valid {
+		return base
+	}
+	return base.Mul(coefficient.Decimal)
+}
+
+// grossNorm — ЕДИНСТВЕННОЕ определение того, во что превращаются деньги МЕРНОЙ нормы этой строки.
+// Все четыре метода денег нормы зовут его и только его; ни один читатель не досчитывает ничего
+// сверху.
+//
+// ДВА МНОЖИТЕЛЯ С РАЗНЫМИ БАЗАМИ, И ИХ НЕЛЬЗЯ ПОДМЕНЯТЬ ОДИН ДРУГИМ:
+//
+//		расход = ГЕОМЕТРИЯ(набор деталей, ширина, настил) × РЕАЛЬНОСТЬ_РУЛОНА(артикул)
+//
+//	  - ГЕОМЕТРИЯ — процент раскроя строки (WastagePercent). Он платит РОВНО за настил: межлекальные
+//	    выпады и концы настила, и больше ни за что. Кромка в него не входит — она уже вычтена
+//	    делением площади на РАСКРОЙНУЮ ширину. База — netto, где выпадов нет вовсе, поэтому число
+//	    крупное (типично 15–30%). Измеренная раскладка эти выпады УЖЕ содержит внутри своей длины,
+//	    и потому marker-строка процентом не гроssится НИКОГДА (wastageApplies) — правило не
+//	    изменилось и не изменится;
+//	  - РЕАЛЬНОСТЬ РУЛОНА — коэффициент артикула (EffectiveCuttingCoefficient). Он платит за то,
+//	    чего НИ ОДНА раскладка увидеть не может, потому что раскладка меряется на чистом настиле
+//	    номинальной ширины: усадка, обход пороков, сращивание, оттеночные полосы. База — длина
+//	    раскладки, где выпады уже есть, поэтому число мелкое (типично 2–6%). Он применяется к ОБОИМ
+//	    путям — и к marker-норме, и к netto/manual/dxf-норме, — именно потому, что источник нормы к
+//	    нему отношения не имеет: ни один настил его не видит.
+//
+// ПОДМЕНА ОДНОГО ДРУГИМ — ТИХИЙ ДЕФЕКТ, А НЕ ОПЕЧАТКА. Поставить коэффициент вместо процента —
+// занизить расход на ВСЕ межлекальные выпады, линейно; поставить процент вместо коэффициента —
+// оплатить выпады дважды. Тот же довод, слово в слово, живёт в шапке dto/bom_wastage_calibration.go,
+// потому что там он объясняет два ЗНАМЕНАТЕЛЯ, а здесь — два МНОЖИТЕЛЯ одной и той же пары причин.
+//
+// Порядок множителей на результат не влияет (умножение коммутативно), но записан геометрия→рулон:
+// сначала кроим, потом расплачиваемся за рулон.
+func (u *TechCardColorwayUsage) grossNorm(base decimal.Decimal, bom *TechCardBomItem) decimal.Decimal {
+	return base.Mul(u.NormGrossUp(bom, decimal.NullDecimal{}))
+}
+
+// NormGrossUp is the FACTOR a measured norm of this row takes — the same rule grossNorm applies to
+// money, handed out as a bare multiplier so the DEMAND side (production_material_plan.go) can use
+// THE VERY SAME DEFINITION instead of restating it.
+//
+// ОДНО ОПРЕДЕЛЕНИЕ НА ДВА ПУТИ, И ЭТО НЕСУЩЕЕ. До W3 потребность и себестоимость грossили строку
+// РАЗНО: потребность давала коэффициент только marker-строке, себестоимость не давала его вовсе.
+// Разойтись им нельзя ни в одну сторону — расхождение означает, что цех получает не то количество
+// ткани, которое оплачено, и ошибка ЛИНЕЙНА по разошедшемуся множителю и молчалива. Поэтому
+// множители считаются здесь, а оба пути только умножают на результат. Кто соберётся «уточнить»
+// правило для одной из сторон — обязан сделать это ЗДЕСЬ, и тогда поедут обе.
+//
+// СЧЁТНАЯ СТРОКА СЮДА НЕ ПОПАДАЕТ. 4 пуговицы остаются 4 пуговицами: в костинге её отсекает ранний
+// возврат LineTotal, в потребности — ветка counted. Позвать эту функцию на счётной строке значило
+// бы начислить ей гросс-ап, которого у неё нет, поэтому оба вызывающих проверяют счётность ДО.
+//
+// wastageOverride — ФАКТИЧЕСКИЙ ПРОЦЕНТ ОТХОДА ПРОГОНА (production_run.actual_wastage_percent,
+// 0187). Он ЗАМЕНЯЕТ процент слота и остаётся ПРОЦЕНТОМ, то есть геометрией настила: цех измерил
+// свои выпады на этой партии точнее, чем оценка модели. Он НЕ заменяет коэффициент и не отменяет
+// его — усадка и пороки рулона к тому, что цех намерил на раскладке, отношения не имеют, и
+// коэффициент ложится поверх переопределённого процента ровно так же, как поверх слотового.
+// INVALID = переопределения нет, работает процент слота. На marker-строке переопределение не
+// применяется вовсе — там не применяется никакой процент.
+func (u *TechCardColorwayUsage) NormGrossUp(bom *TechCardBomItem, wastageOverride decimal.NullDecimal) decimal.Decimal {
+	factor := decimal.NewFromInt(1)
+	if bom == nil {
+		return factor
+	}
+	if u.wastageApplies() {
+		pct := bom.WastagePercent
+		if wastageOverride.Valid {
+			pct = wastageOverride
+		}
+		// applyWastage к единице И ЕСТЬ множитель процента — то же выражение, что грossит деньги,
+		// без второй его записи.
+		factor = applyWastage(factor, pct)
+	}
+	return applyCuttingCoefficient(factor, bom.EffectiveCuttingCoefficient())
 }
 
 // TechCardBomItem is one bill-of-materials line — a catalog article (Sheet
@@ -1601,6 +1674,51 @@ type TechCardBomItem struct {
 	// enrichment SELECT; zero on writes and every other query, never persisted.
 	EffectiveFabricWidthCm decimal.NullDecimal `db:"effective_fabric_width_cm"`
 	SelvedgeCm             decimal.NullDecimal `db:"selvedge_cm"`
+	// CuttingCoefficient — РЕАЛЬНОСТЬ РУЛОНА артикула, которым эта строка ФАКТИЧЕСКИ кроится в
+	// считаемом сейчас колорвее (material.cutting_coefficient, 0270), проставленная В ПАМЯТИ на
+	// КОПИЮ строки перед подсчётом денег нормы. Никогда не колонка (`db:"-"`), никогда не провод,
+	// никогда не подпись: у строки BOM своего коэффициента нет и быть не может — коэффициент живёт
+	// на артикуле, а артикул выбирает колорвей (EffectiveMaterialId).
+	//
+	// ЗАЧЕМ ОНА ЗДЕСЬ, А НЕ ПАРАМЕТРОМ. Деньги нормы определены ровно в четырёх методах
+	// (LineTotal / SizeRunTotal / SizeNormTotal / RangeAverageTotal), и оба множителя обязаны
+	// умножаться ТАМ ЖЕ. Процент раскроя уже едет на строке (WastagePercent), цена пина — тоже
+	// (pinShadowBom подменяет UnitPrice на копии). Коэффициент — третий множитель той же природы,
+	// и класть его иначе значило бы завести второе место, где деньги строки досчитываются.
+	//
+	// ЗАПОЛНЯЕТ ЕЁ ТОЛЬКО dto (withCuttingCoefficient) и ТОЛЬКО НА КОПИИ. Строка из tc.BomItems
+	// никогда не штампуется на месте — иначе множитель протёк бы в пути, которым он запрещён:
+	// в план настила и в обе калибровки, где коэффициент в знаменателе делает измерение круговым
+	// (см. шапку dto/material_coefficient_calibration.go).
+	//
+	// НЕЗАПОЛНЕННАЯ = «коэффициента нет», а не ×1.0 с претензией: карточка без коэффициента считает
+	// ровно те же деньги, что до врезки. Читать ТОЛЬКО через EffectiveCuttingCoefficient ниже —
+	// он держит границу секций.
+	CuttingCoefficient decimal.NullDecimal `db:"-"`
+}
+
+// EffectiveCuttingCoefficient — множитель «реальность рулона» ЭТОЙ строки, или INVALID, когда его
+// нет. ЕДИНСТВЕННЫЙ читатель поля выше, и здесь же живёт граница применения:
+//
+//   - ТОЛЬКО РУЛОННЫЕ СЕКЦИИ (fabric / lining / interlining / insulation). Коэффициент оплачивает
+//     усадку, обход пороков, сращивание и оттеночные полосы — свойства ПОЛОТНА В РУЛОНЕ. У нитки,
+//     пуговицы или этикетки таких потерь нет ни в каком смысле, и начислить их значило бы поднять
+//     цену фурнитуры на процент, которого никто не наблюдал. Граница стоит ЗДЕСЬ, а не у
+//     заполняющего, чтобы её нельзя было обойти, забыв про неё;
+//   - ЗНАЧЕНИЕ МЕНЬШЕ ЕДИНИЦЫ = «не задано», слово в слово правило
+//     Material.EffectiveCuttingCoefficient: коэффициент может только добавить к норме, но не
+//     срезать её.
+//
+// Границу «только мерные строки, никогда счётные» держит не этот метод, а порядок в LineTotal:
+// счётная строка (Quantity) возвращается ДО любого гросс-апа. 4 пуговицы остаются 4 пуговицами.
+func (b *TechCardBomItem) EffectiveCuttingCoefficient() decimal.NullDecimal {
+	if b == nil || !IsRollGoodsSection(b.Section) {
+		return decimal.NullDecimal{}
+	}
+	if !b.CuttingCoefficient.Valid || b.CuttingCoefficient.Decimal.LessThan(decimal.NewFromInt(1)) {
+		return decimal.NullDecimal{}
+	}
+	return b.CuttingCoefficient
 }
 
 // BOM price provenance values (tech_card_bom_item.price_source).
