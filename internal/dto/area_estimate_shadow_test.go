@@ -183,9 +183,18 @@ func TestShadowIsNotANormInAFrozenRelease(t *testing.T) {
 	require.NotNil(t, frozen)
 	require.Empty(t, frozen.PieceAreaScopes,
 		"костинг-проекция снапшота не несёт площадей: по ней оценка не воспроизводима ни в какой ступени")
-	require.Empty(t,
-		colorwayShadowAreaEstimates(frozen, &frozen.Colorways[0], frozen.BomItems, frozen.LinkedMaterials, frozen.CostingBasis(), "EUR"),
-		"из замороженной карточки нельзя вывести тень — и слава богу: это была бы оценка по СЕГОДНЯШНЕЙ геометрии под датой релиза")
+	// Ни одна тень по замороженной карточке НЕ ВЫВОДИТСЯ — и слава богу: это была бы оценка по
+	// СЕГОДНЯШНЕЙ геометрии под датой релиза. Проверяется именно это, а не пустота списка: с тех пор
+	// как проекция снапшота стала переносить section (W3, без неё не работала граница рулонных
+	// секций), рулонный слот попадает в перебор и возвращает ОТКАЗ. Отказ — это запись без нормы,
+	// без денег и с названной причиной; раньше список был пуст лишь потому, что секция терялась, то
+	// есть тест держался за симптом чужого дефекта.
+	for _, sh := range colorwayShadowAreaEstimates(frozen, &frozen.Colorways[0], frozen.BomItems,
+		frozen.LinkedMaterials, frozen.CostingBasis(), "EUR") {
+		require.False(t, sh.ok, "тень посчиталась по замороженной карточке: %+v", sh)
+		require.True(t, sh.money.IsZero(), "у отказа не может быть денег: %+v", sh)
+		require.NotEmpty(t, sh.refusal, "отказ обязан называть причину, иначе он неотличим от бага")
+	}
 }
 
 // TestShadowNeverReachesTheMaterialPlan: закупка не видит тень ни при каком раскладе.

@@ -186,10 +186,33 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			// fixed the price only to be handed the second problem on the next save.
 			if ok && price.Valid {
 				lineTotal := qty.Mul(price.Decimal)
-				// Marker-sourced rows are never grossed: the marker length already pays for the
-				// waste (PIECES-WASTAGE-DESIGN §2.3) — grossing again is the double-count trap.
+				// ПРОЦЕНТ — ТОЛЬКО ГЕОМЕТРИЯ НАСТИЛА, И «НЕ ГРОССИТСЯ» ОТНОСИТСЯ ТОЛЬКО К НЕМУ.
+				// Второй множитель — коэффициент рулона — ниже, и marker-строку он БЕРЁТ.
+				// Marker-sourced rows are never grossed by the PERCENT:
+				// the marker length already pays for the inter-piece waste and the lay ends
+				// (PIECES-WASTAGE-DESIGN §2.3) — grossing again is the double-count trap.
 				if applyWaste && bom != nil && !markerSourced {
 					lineTotal = grossByWastage(lineTotal, bom.WastagePercent)
+				}
+				// КОЭФФИЦИЕНТ — РЕАЛЬНОСТЬ РУЛОНА, и он бьёт НЕЗАВИСИМО от источника нормы, в том
+				// числе по marker-строке: усадку, обход пороков, сращивание и оттеночные полосы не
+				// содержит ни одна раскладка (W3). Счётная строка сюда не доходит — usagePerGarmentQty
+				// возвращает applyWaste=false у Quantity, и она же единственная безгросс-аповая.
+				//
+				// ЧЕРЕЗ ТОТ ЖЕ РЕЗОЛВЕР И ТУ ЖЕ КАРТУ, ЧТО ЗАГОЛОВОК КОСТИНГА (tc.LinkedMaterials,
+				// withCuttingCoefficient → EffectiveMaterialId): смета и карточка обязаны назвать
+				// один коэффициент одного артикула, иначе это два числа об одной строке на соседних
+				// экранах — ровно та болезнь, от которой лечит вся фаза. Границу «только рулонные
+				// секции» держит entity.EffectiveCuttingCoefficient, поэтому её здесь не повторяем.
+				if applyWaste && bom != nil {
+					if c := withCuttingCoefficient(bom, u, tc.LinkedMaterials).EffectiveCuttingCoefficient(); c.Valid {
+						lineTotal = lineTotal.Mul(c.Decimal)
+						// МНОЖИТЕЛЬ, ВОШЕДШИЙ В ЧИСЛО, ОБЯЗАН ЕХАТЬ РЯДОМ С ЧИСЛОМ. Смета обещает
+						// полный провенанс строки; коэффициент, применённый молча, делал
+						// line_total_base невосстановимым из опубликованных полей — расхождение,
+						// которое читатель видит и объяснить не может.
+						line.CuttingCoefficient = pbDecimalFromDecimal(c.Decimal)
+					}
 				}
 				if base, conv := fx.toBase(lineTotal, ccy); conv {
 					line.HasBase = true

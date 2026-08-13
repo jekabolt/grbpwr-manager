@@ -1038,7 +1038,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			TechnicalMedia:    technicalMedia,
 			Callouts:          callouts,
 			Details:           techCardDetailsToPb(tc.Details),
-			BomItems:          techCardBomItemsToPb(tc.BomItems),
+			BomItems:          techCardBomItemsToPb(tc.BomItems, tc.LinkedMaterials),
 			Construction:      techCardConstructionToPb(tc.Construction),
 			Operations:        techCardOperationsToPb(tc.Operations),
 			Labels:            techCardLabelsToPb(tc.Labels),
@@ -2906,7 +2906,7 @@ func techCardColorwayRefsToPb(tc *entity.TechCard, orderQtyBySize map[int]int, f
 			BaseSku:            c.BaseSku.String,
 			ColorCode:          c.ColorCode,
 			Status:             pb_common.ColorwayLifecycleStatus(c.Status),
-			Usages:             ConvertRecipeUsagesToPb(c.Usages, bomItems, pieces, orderQtyBySize),
+			Usages:             ConvertRecipeUsagesToPb(c.Usages, bomItems, pieces, orderQtyBySize, tc.LinkedMaterials),
 			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
 			LabDipRound:        c.LabDipRound.Int32,
 			LabDipDecidedBy:    c.LabDipDecidedBy.String,
@@ -3040,7 +3040,18 @@ func optionalStringFromNull(value sql.NullString) *string {
 // (techCardColorwayRefsToPb, for the constructor view) and directly by GetColorwayByID (H1 fix —
 // recipe is colourway-owned, 01-DOMAIN-MODEL §2.3, so GetColorwayByID is the minimum surface that
 // must return it).
-func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int) []*pb_common.TechCardColorwayUsage {
+// linked — карта артикулов карточки (TechCard.LinkedMaterials), из которой берётся КОЭФФИЦИЕНТ
+// РАСКРОЯ эффективного артикула строки: он входит в деньги нормы (entity.grossNorm), и без него
+// строки рецепта складывались бы в число МЕНЬШЕ заголовка костинга на всей карточке, где
+// коэффициент задан, — то есть выглядели бы сломанными в самом обычном случае. nil (списочные
+// чтения) = коэффициента нет, числа ровно как до врезки.
+//
+// ЦЕНУ ПИНА ЭТА ПРОЕКЦИЯ ПО-ПРЕЖНЕМУ НЕ ПОДМЕНЯЕТ, и это ДОСУЩЕСТВУЮЩЕЕ расхождение, а не
+// следствие правки: line_total/size_run_total строки с пином считаются по цене УМОЛЧАНИЯ СЛОТА,
+// тогда как костинг (colorwayCost → pinShadowBom) берёт цену пина. Не тронуто здесь сознательно —
+// починка меняет видимые числа у пинов (у непроценённого пина строка обязана остаться БЕЗ денег,
+// как в костинге), и это отдельное решение. Авторитетная цифра — colorwayCost.
+func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int, linked map[int]entity.MaterialWithPrice) []*pb_common.TechCardColorwayUsage {
 	// piece_id → line_key: the write-path accepts piece_line_key and resolves it to the FK, but
 	// the read previously emitted ONLY the resolved id — the editor keys piece binding by
 	// line_key, so every piece-bound usage read back as unbound.
@@ -3068,7 +3079,7 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 		// index (style_cost_estimate.go) — NOT bomItemAtIndex alone: a usage created via bom_line_key
 		// (S2/S3) may round-trip with bom_item_index unset, and bomItemAtIndex would then wrongly show
 		// no line_total/size_run_total even though the FK resolved fine.
-		bom := resolveUsageBom(bomItems, u)
+		bom := withCuttingCoefficient(resolveUsageBom(bomItems, u), u, linked)
 		var bomItemIndex *int32
 		if u.BomItemIndex.Valid {
 			v := u.BomItemIndex.Int32
@@ -3128,6 +3139,30 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 		})
 	}
 	return out
+}
+
+// frozenBomCuttingCoefficient is the value the wire (and therefore the release blob) carries for
+// this line: the EFFECTIVE coefficient of the line's article, or an explicit 1 when the article has
+// none — «известно, что надбавки нет». nil ONLY when the article cannot be resolved at all, which
+// is what a reader must treat as «неизвестно» (techcard.proto documents the three states).
+//
+// Граница рулонных секций держится там же, где всюду: entity.EffectiveCuttingCoefficient. Нерулонная
+// строка поэтому замораживает единицу — и это ПРАВДА про неё: коэффициент к ней не применяется, то
+// есть надбавки на ней нет, и читателю блоба не нужно знать, почему.
+func frozenBomCuttingCoefficient(b *entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice) *pb_decimal.Decimal {
+	if b == nil || !b.MaterialId.Valid || b.MaterialId.Int64 <= 0 || len(linked) == 0 {
+		return nil
+	}
+	m, ok := linked[int(b.MaterialId.Int64)]
+	if !ok {
+		return nil
+	}
+	sh := *b
+	sh.CuttingCoefficient = m.EffectiveCuttingCoefficient()
+	if c := sh.EffectiveCuttingCoefficient(); c.Valid {
+		return pbDecimalFromDecimal(c.Decimal)
+	}
+	return pbDecimalFromDecimal(decimal.NewFromInt(1))
 }
 
 // techCardPiecesToPb emits the structural cut-pieces (+ per-colourway fabric mapping) for display.
@@ -3208,7 +3243,17 @@ func bomItemAtIndex(bomItems []entity.TechCardBomItem, idx sql.NullInt32) *entit
 	return &bomItems[idx.Int32]
 }
 
-func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardBomItem {
+// linked — каталог артикулов карточки. Из него берётся ЗАМОРАЖИВАЕМЫЙ коэффициент раскроя строки
+// (cutting_coefficient на проводе): он свойство артикула, но релизный блоб каталога не содержит, а
+// с W3 коэффициент входит в деньги нормы — см. шапку поля в techcard.proto.
+//
+// ЗАПИСЫВАЕТСЯ ЯВНАЯ ЕДИНИЦА, КОГДА КОЭФФИЦИЕНТА НЕТ, и это не украшение: читатель блоба обязан
+// отличать «надбавки нет» от «снапшот старше заморозки». Единственный способ сказать первое —
+// сказать это числом. nil остаётся за вторым.
+//
+// nil linked (списочные чтения) поэтому оставляет поле ПУСТЫМ, а не пишет единицу: там артикулы не
+// разрешены, и утверждать «надбавки нет» было бы враньём с видом факта.
+func techCardBomItemsToPb(items []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice) []*pb_common.TechCardBomItem {
 	out := make([]*pb_common.TechCardBomItem, 0, len(items))
 	for i := range items {
 		b := &items[i]
@@ -3260,6 +3305,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem) []*pb_common.TechCardB
 			// Width enrichment (0259) — read-only, filled by the single-card read only.
 			EffectiveFabricWidthCm: pbDecimalFromNull(b.EffectiveFabricWidthCm),
 			SelvedgeCm:             pbDecimalFromNull(b.SelvedgeCm),
+			CuttingCoefficient:     frozenBomCuttingCoefficient(b, linked),
 		})
 	}
 	return out

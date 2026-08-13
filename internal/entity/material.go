@@ -111,9 +111,19 @@ type MaterialInsert struct {
 	// CuttingCoefficient (Ф5а.2, 0270) is THE one visible, editable per-article dial that replaces
 	// eight named losses nobody can measure separately: усадка, обход пороков, сращивание,
 	// оттеночные полосы. Stored as a MULTIPLIER (1.0300 = +3%), not a percent. Invalid/NULL means
-	// nobody has set one and the requirement path uses ×1 — so an unset article plans exactly as it
-	// did before this field existed. There is deliberately no per-«класс ткани» default: that field
-	// does not exist and inventing a taxonomy to feed defaults is the disease this replaces.
+	// nobody has set one and every path multiplies by nothing — so an unset article plans and costs
+	// exactly as it did before this field existed. There is deliberately no per-«класс ткани»
+	// default: that field does not exist and inventing a taxonomy to feed defaults is the disease
+	// this replaces.
+	//
+	// СКОУП (W3): коэффициент ВХОДИТ В СЕБЕСТОИМОСТЬ — деньги нормы рецепта грузятся им независимо
+	// от источника нормы (entity.TechCardColorwayUsage.grossNorm), потому что усадку и пороки не
+	// содержит НИ ОДНА раскладка — включая ИЗМЕРЕННУЮ, поэтому он ложится и на настильное требование
+	// закупки, поверх его геометрии. Чего он НЕ трогает — саму план-геометрию настила
+	// (LayPlannedGeometryOf) и обе калибровки: там он оказался бы в знаменателе, и измерение стало бы
+	// круговым (шапка dto/material_coefficient_calibration.go).
+	// Границы применения — рулонные секции и только мерные строки — держит
+	// TechCardBomItem.EffectiveCuttingCoefficient и ранний возврат счётной ветки LineTotal.
 	CuttingCoefficient decimal.NullDecimal `db:"cutting_coefficient" valid:"-"`
 	// CuttingCoefficientOmitted — поле ОТСУТСТВОВАЛО на проводе, а не «пришло пустым». Тот же приём,
 	// что PurposeOmitted / IsSampleOmitted на строке спецификации (techcard.go), и по той же

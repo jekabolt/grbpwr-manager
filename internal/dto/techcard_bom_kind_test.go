@@ -99,7 +99,7 @@ func TestBomKindReadAlwaysCarriesPresenceAndDegradesUnknowns(t *testing.T) {
 		{Kind: sql.NullString{String: string(entity.BomKindButton), Valid: true}},
 		{},
 		{Kind: sql.NullString{String: "grommet_v2", Valid: true}},
-	})
+	}, nil)
 	require.NotNil(t, out[0].Kind)
 	require.Equal(t, pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BUTTON, out[0].GetKind())
 	require.NotNil(t, out[1].Kind)

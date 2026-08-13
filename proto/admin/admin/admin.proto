@@ -1400,6 +1400,14 @@ service AdminService {
   //     выпадов в знаменателе НЕТ, медиана меряет выпады + концы + усадку (15–30%) →
   //     tech_card_bom_item.wastage_percent.
   //
+  // ПОСЛЕ W3 у второго предложения знаменатель netto × КОЭФФИЦИЕНТ артикула, а не чистое netto:
+  // wastage_percent теперь означает только геометрию настила (выпады + концы), усадку/пороки
+  // оплачивает коэффициент — и оплачивает в тех же деньгах себестоимости, так что медиана над
+  // чистым netto предложила бы процент, оплачивающий их второй раз. Ответ называет свою линейку
+  // (denominator_cutting_coefficient), потому что на артикуле с коэффициентом сегодняшнее число
+  // НИЖЕ применённого до W3 — сменилась линейка, а не факт цеха. См. BomWastageSuggestionStatus
+  // в common/production.proto.
+  //
   // ПРЕДЛОЖЕНИЕ, А НЕ ПРИМЕНЕНИЕ: обработчик только читает; число вписывает в поле рука. Скоуп
   // медианы — все модели артикула, и ответ несёт состав (счётчики + список дрейфов с именами
   // карточек): число без опоры непроверяемо.
@@ -5652,12 +5660,24 @@ message StyleCostMaterialLine {
   bool has_base = 12; // false when the line's currency has no FX rate → excluded from the base total
   // OUTPUT-ONLY waste provenance (Ф9.4). "bom_estimate" — wastage_pct is the BOM line's static
   // estimate and it WAS grossed into line_total_base, as always. "marker" — the norm came from a
-  // saved раскладка: nothing was grossed (the length already contains the waste), wastage_pct
+  // saved раскладка: THE PERCENT was not grossed (the length already contains the waste) — the
+  // article's cutting_coefficient below still was, and on a marker line it is the ONLY multiplier
+  // in line_total_base. wastage_pct
   // carries the EFFECTIVE total (selvedge+cut) so old clients keep seeing a truthful figure, and
   // the two fields below decompose it for display.
   string wastage_source = 13;
   google.type.Decimal wastage_selvedge_pct = 14;
   google.type.Decimal wastage_cut_pct = 15;
+  // ВТОРОЙ МНОЖИТЕЛЬ СТРОКИ (W3): коэффициент раскроя ЭФФЕКТИВНОГО артикула строки
+  // (material.cutting_coefficient — пин колорвея, иначе умолчание слота), уже вошедший в
+  // line_total_base. Пусто = множителя нет (артикул без коэффициента, нерулонная секция, счётная
+  // строка) — и тогда line_total_base объясняется одними полями выше, как и до W3.
+  //
+  // БЕЗ ЭТОГО ПОЛЯ СТРОКА БЫЛА НЕВОССТАНОВИМА, и это была не мелочь, а разрыв контракта сметы:
+  // 2 м × €10 при коэффициенте 1.05 даёт line_total_base 21, тогда как consumption × unit_price ×
+  // (1 + wastage_pct) объясняют 20. Читатель, сверяющий смету руками, видел расхождение и не имел
+  // ни одного поля, которым его закрыть.
+  google.type.Decimal cutting_coefficient = 16;
 }
 
 // StyleCostArticleLine is one typed manual cost article (cmt/hardware/packaging/logistics/overhead).
@@ -6809,6 +6829,18 @@ message GetBomWastageSuggestionResponse {
   // названного окна непроверяема.
   int32 considered_lay_count = 8;
   int32 total_measured_lay_count = 9;
+  // ЛИНЕЙКА, ПО КОТОРОЙ ПОСЧИТАНА МЕДИАНА (W3). Знаменатель дрейфа — netto × ЭТОТ коэффициент, а не
+  // чистое netto: с W3 усадку/пороки оплачивает material.cutting_coefficient, и оставить их в
+  // медиане значило бы предложить процент, который оплатит их ВТОРОЙ раз.
+  //
+  // ПУСТО = знаменатель чистое netto (у артикула коэффициента нет) — и тогда цифра означает ровно
+  // то же, что означала до W3.
+  //
+  // ПОЛЕ ОБЯЗАНО ЧИТАТЬСЯ ВМЕСТЕ С ЧИСЛОМ. Значения, применённые до W3, считались по чистому netto,
+  // поэтому у артикула с коэффициентом сегодняшнее предложение НИЖЕ прежнего примерно на величину
+  // коэффициента. Это не «факт изменился» — это сменилась линейка, и оператор, сравнивающий с
+  // сохранённым процентом, обязан видеть, чем именно мерили.
+  google.type.Decimal denominator_cutting_coefficient = 10;
 }
 
 // RepriceTechCardBom (production-costing Phase 3, plan 11).
@@ -7187,7 +7219,7 @@ message MaterialPlanRow {
   int32 material_id = 1;
   string material_name = 2;
   string unit = 3;
-  google.type.Decimal required = 4; // Σ over lines: norm(colourway,size) × planned_qty × (1 + wastage%)
+  google.type.Decimal required = 4; // Σ over lines: norm(colourway,size) × planned_qty × gross-up (see required_before_grossup)
   google.type.Decimal on_hand = 5; // material_stock.on_hand (NF-01)
   google.type.Decimal issued = 6; // net already issued to this run (issue_production − return_production)
   google.type.Decimal shortage = 7; // max(0, required − issued − on_hand)
@@ -7201,20 +7233,33 @@ message MaterialPlanRow {
   // marker row, a counted trim, a row with no coefficient at all.
   //
   // The ONE invariant that always holds is required >= required_before_grossup. The factor between
-  // them is whatever gross-up each contributing line took, and lines take exactly one:
-  //   * MARKER-sourced norm → the article's cutting_coefficient;
-  //   * manual / legacy measured norm → the BOM line's wastage % (or the run's actual wastage);
-  //   * counted trim (4 buttons stay 4 buttons) → nothing.
-  // So required = required_before_grossup × cutting_coefficient holds ONLY for a row fed entirely by
-  // marker norms of an article that has a coefficient. On a manual row the ratio is the wastage
-  // factor while cutting_coefficient may still be set (and a caveat says it did not bite); on a
-  // counted row the ratio is 1. Do NOT derive the coefficient from the two numbers — read it from
-  // cutting_coefficient.
+  // them is whatever gross-up each contributing line took — and since W3 a MEASURED line can take
+  // TWO multipliers, not one, because they have different bases:
+  //
+  //     расход = ГЕОМЕТРИЯ(набор деталей, ширина, настил) × РЕАЛЬНОСТЬ_РУЛОНА(артикул)
+  //
+  //   * ГЕОМЕТРИЯ — the BOM line's wastage % (or the run's actual wastage %, which REPLACES it):
+  //     inter-piece waste + lay ends, over a netto base. A MARKER-sourced norm never takes it — the
+  //     measured length already contains it. A requirement computed from LAYS never takes it either,
+  //     for the same reason: a lay is that measurement.
+  //   * РЕАЛЬНОСТЬ РУЛОНА — the article's cutting_coefficient: усадка, обход пороков, сращивание,
+  //     оттеночные полосы. Applied to EVERY measured roll-goods contribution regardless of how the
+  //     requirement was computed — marker, manual, dxf and LAYS alike — because none of them can
+  //     contain it. On the lay path it multiplies the requirement AFTER the geometry, never inside
+  //     it: the lay geometry is the denominator that calibrates this very coefficient.
+  //   * counted trim (4 buttons stay 4 buttons) → nothing at all.
+  //   * a non-roll-goods slot → the percent only; a roll's shrinkage means nothing on thread.
+  //
+  // So required = required_before_grossup × cutting_coefficient holds only where the percent did not
+  // also bite (a marker norm, or a lay). Do NOT derive the coefficient from the two numbers — read
+  // it from cutting_coefficient.
   //
   // cutting_coefficient is the ARTICLE's coefficient, reported whenever the article has one even if
-  // this run's norms did not let it bite. NOTE it is a DEMAND-side dial only: the run's planned unit
-  // cost and the style cost estimate do NOT include it (they gross up by wastage % alone), so a
-  // planned COGS must never be read as coefficient-inclusive.
+  // this run's contributions did not let it bite (counted quantities, non-roll-goods slots — a
+  // caveat then says which). IT IS NO LONGER DEMAND-ONLY: since W3 the same coefficient multiplies
+  // the MONEY of the norm too — the run's planned unit cost, the style cost estimate and
+  // product.cost_price all contain it. Purchasing and costing therefore stand on the same
+  // multipliers, which is the whole point of the change.
   google.type.Decimal required_before_grossup = 10;
   google.type.Decimal cutting_coefficient = 11;
   // Vocabulary normalisation of `unit` (Ф5а.3). UNKNOWN = the row's unit is free text this
@@ -7222,8 +7267,11 @@ message MaterialPlanRow {
   common.MaterialUnit unit_code = 12;
   // Откуда взято `required` ЭТОЙ строки (Ф4.6). MIXED = артикул собрал слоты с настилами и без них,
   // и тогда ни cutting_coefficient, ни отход не описывают строку целиком — читать надо вклады.
-  // NOTE: на пути LAYS коэффициент раскроя НЕ применяется (решение Р4): настил это измерение
-  // (длина × слои + концевые потери), а коэффициент откалиброван против нормативных ОЦЕНОК.
+  // NOTE: на пути LAYS не применяется ПРОЦЕНТ раскроя — настил это измерение (длина × слои +
+  // концевые потери), и выпады уже внутри него. КОЭФФИЦИЕНТ применяется и там (W3): усадка, пороки и
+  // сращивание случаются с полотном независимо от того, чем посчитали требование. Он умножает
+  // требование ПОСЛЕ геометрии — сама геометрия обязана остаться чистой, потому что она знаменатель
+  // калибровки этого же коэффициента.
   ProductionRunCoverageSource source = 13;
 }
 
@@ -7241,12 +7289,13 @@ message MaterialPlanContribution {
   string material_name = 7;
   bool pinned = 8; // true = the colourway pinned this article; false = inherited slot default
   string unit = 9; // the slot's spec unit (rollup rows may convert to the stock unit)
-  google.type.Decimal required = 10; // in `unit`; wastage applied to measured norms only
+  google.type.Decimal required = 10; // in `unit`; gross-ups applied to measured norms only
   bool has_size_norms = 11;
-  // Same decomposition as on the rollup row (Ф5а.2), per slot × colourway: Σ(norm × planned_qty)
-  // with NO gross-up applied (neither wastage % nor coefficient), and the article's cutting
-  // coefficient when it has one (unset = it has none). required >= required_before_grossup always;
-  // the two are related BY the coefficient only on a marker-sourced line — see MaterialPlanRow.
+  // Same decomposition as on the rollup row, per slot × colourway: Σ(norm × planned_qty) with NO
+  // gross-up applied (neither wastage % nor coefficient), and the article's cutting coefficient when
+  // it has one (unset = it has none). required >= required_before_grossup always; the two are
+  // related BY the coefficient alone only where the percent did not also bite (a marker norm, or a
+  // lay) — the two-multiplier model is stated in full on MaterialPlanRow.
   google.type.Decimal required_before_grossup = 12;
   google.type.Decimal cutting_coefficient = 13;
   // Ф4.6. ВСЕГДА ЧИСТЫЙ (NORM или LAYS, никогда MIXED): вклад — это ОДИН слот одного колорвея, и
