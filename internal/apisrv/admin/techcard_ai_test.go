@@ -450,3 +450,197 @@ func TestAIEquipmentParkEmptyCard(t *testing.T) {
 		park.attach(nil)
 	}
 }
+
+// --- the ВТО half of the same seam: a press profile belongs to a PROCESS, not just to a machine ----
+
+const (
+	aiIroningProfileKey  = "01J0AIPARKIRONINGPROG0001A"
+	aiFusingProfileKey   = "01J0AIPARKFUSINGPROGR0002B"
+	aiUniversalPressKey  = "01J0AIPARKUNIVERSALPR0003C"
+	aiFusingPressMachine = "fusing_press"
+)
+
+func aiPressProfile(key, process string) entity.TechCardPressProfile {
+	p := entity.TechCardPressProfile{
+		ProfileKey:        key,
+		PressEquipment:    aiFusingPressMachine,
+		PressTemperatureC: sql.NullInt32{Int32: 150, Valid: true},
+		PressDwellSec:     sql.NullInt32{Int32: 12, Valid: true},
+	}
+	if process != "" {
+		p.PressOperationType = sql.NullString{String: process, Valid: true}
+	}
+	return p
+}
+
+func aiPressStep(process string) *pb_common.TechCardOperation {
+	return aiOperationToPb(openrouter.Operation{
+		OperationType: process, PressEquipment: aiFusingPressMachine, Zone: "front",
+	})
+}
+
+// TestAIEquipmentParkWillNotAttachAPressingProfileToAFusingStep is the defect this pair of rules was
+// split over, and it is not a hypothetical: a card carries ONE profile of the дублирующий пресс and
+// it is declared for ВТО — the ironing program, not дублирование. Indexed by equipment alone, the
+// SERVER wrote that profile's key onto a drafted fusing step; the sign gate then looked the profile
+// up BY THE KEY THE SERVER HAD JUST WRITTEN, found a temperature and a dwell in it, and let the
+// approval through. Дублирование on an ironing program, under a signature — the exact thing the gate
+// exists to stop, reached through the one path no human ever chose.
+func TestAIEquipmentParkWillNotAttachAPressingProfileToAFusingStep(t *testing.T) {
+	presses := []entity.TechCardPressProfile{aiPressProfile(aiIroningProfileKey, string(entity.OpTypePress))}
+	park := aiTestPark(nil, presses)
+
+	fusing := aiPressStep("fusing")
+	park.attach(fusing)
+	if fusing.PressProfileKey != "" {
+		t.Errorf("an ironing profile was hung on a fusing step: %q", fusing.PressProfileKey)
+	}
+	open := aiPressStep("press_open")
+	park.attach(open)
+	if open.PressProfileKey != "" {
+		t.Errorf("разутюжка is not the process this profile declares either: %q", open.PressProfileKey)
+	}
+	// The step it IS for keeps inheriting — narrowing the rule must not cost the profile its own job.
+	press := aiPressStep("press")
+	park.attach(press)
+	if press.PressProfileKey != aiIroningProfileKey {
+		t.Errorf("the profile's own process no longer inherits it: %q", press.PressProfileKey)
+	}
+
+	// And the mirror: a profile declared for fusing is not an ironing setup.
+	fusingPark := aiTestPark(nil, []entity.TechCardPressProfile{aiPressProfile(aiFusingProfileKey, string(entity.OpTypeFusing))})
+	ironed := aiPressStep("press")
+	fusingPark.attach(ironed)
+	if ironed.PressProfileKey != "" {
+		t.Errorf("a fusing recipe was hung on a ВТО step: %q", ironed.PressProfileKey)
+	}
+	fused := aiPressStep("fusing")
+	fusingPark.attach(fused)
+	if fused.PressProfileKey != aiFusingProfileKey {
+		t.Errorf("the fusing step lost the card's only fusing profile: %q", fused.PressProfileKey)
+	}
+
+	// The CONTEXT keeps its half of the promise: the line is the sole answer for the process it names,
+	// so it stays inheritable and the model is still told to omit the settings that match it.
+	lines := aiPressProfileSummaries(&entity.TechCardEquipmentDefaults{Presses: presses})
+	if len(lines) != 1 {
+		t.Fatalf("lines = %v", lines)
+	}
+	if strings.Contains(lines[0], "SEVERAL") {
+		t.Errorf("the card's only ironing profile must stay inheritable for an ironing step: %q", lines[0])
+	}
+}
+
+// A profile that declares NO process is universal, and universal has to keep meaning universal —
+// narrowing the rule by process is worthless if it quietly narrows the profiles that declared none.
+func TestAIEquipmentParkAttachesAUniversalPressProfileToEveryProcess(t *testing.T) {
+	presses := []entity.TechCardPressProfile{aiPressProfile(aiUniversalPressKey, "")}
+	park := aiTestPark(nil, presses)
+	for _, process := range []string{"press", "press_open", "fusing"} {
+		op := aiPressStep(process)
+		park.attach(op)
+		if op.PressProfileKey != aiUniversalPressKey {
+			t.Errorf("a universal profile must be inherited by a %s step: %q", process, op.PressProfileKey)
+		}
+	}
+	lines := aiPressProfileSummaries(&entity.TechCardEquipmentDefaults{Presses: presses})
+	if len(lines) != 1 || strings.Contains(lines[0], "SEVERAL") {
+		t.Errorf("a universal sole profile must stay inheritable: %v", lines)
+	}
+}
+
+// Two profiles of ONE piece of equipment used to be «ambiguous» by counting alone. Once the question
+// carries the process, two profiles that answer two different processes are not competing at all —
+// each is the sole answer to its own question, and the prompt has to say so or the model would state
+// settings it was meant to omit. The pair that DOES still compete — a universal profile beside a
+// declared one — stays ambiguous for the process they share and only for that one.
+func TestAIEquipmentParkTellsTwoProcessesApartOnOneMachine(t *testing.T) {
+	split := []entity.TechCardPressProfile{
+		aiPressProfile(aiIroningProfileKey, string(entity.OpTypePress)),
+		aiPressProfile(aiFusingProfileKey, string(entity.OpTypeFusing)),
+	}
+	park := aiTestPark(nil, split)
+	for process, want := range map[string]string{
+		"press":      aiIroningProfileKey,
+		"fusing":     aiFusingProfileKey,
+		"press_open": "", // neither profile declares разутюжка, so there is nothing to inherit
+	} {
+		op := aiPressStep(process)
+		park.attach(op)
+		if op.PressProfileKey != want {
+			t.Errorf("a %s step attached %q, want %q", process, op.PressProfileKey, want)
+		}
+	}
+	for i, l := range aiPressProfileSummaries(&entity.TechCardEquipmentDefaults{Presses: split}) {
+		if strings.Contains(l, "SEVERAL") {
+			t.Errorf("line %d answers its own process alone and must stay inheritable: %q", i, l)
+		}
+	}
+
+	// A universal profile beside a fusing one: the fusing step has two answers and gets none, while
+	// the ironing step still has exactly one. The line for either must then be marked, because the
+	// model may name that equipment for the process where the answer is not decided.
+	overlap := []entity.TechCardPressProfile{
+		aiPressProfile(aiUniversalPressKey, ""),
+		aiPressProfile(aiFusingProfileKey, string(entity.OpTypeFusing)),
+	}
+	overlapPark := aiTestPark(nil, overlap)
+	contested := aiPressStep("fusing")
+	overlapPark.attach(contested)
+	if contested.PressProfileKey != "" {
+		t.Errorf("two profiles fit a fusing step; picking one invents an answer: %q", contested.PressProfileKey)
+	}
+	uncontested := aiPressStep("press")
+	overlapPark.attach(uncontested)
+	if uncontested.PressProfileKey != aiUniversalPressKey {
+		t.Errorf("only the universal profile fits an ironing step here: %q", uncontested.PressProfileKey)
+	}
+	for i, l := range aiPressProfileSummaries(&entity.TechCardEquipmentDefaults{Presses: overlap}) {
+		if !strings.Contains(l, "SEVERAL") {
+			t.Errorf("line %d is contested for fusing and must not promise inheritance: %q", i, l)
+		}
+	}
+}
+
+// The two halves of the seam, end to end over ONE park: what the mapper attaches is what the sign
+// gate resolves. The mapper writes the key; the gate reads it back. They were two rules and the
+// looser one was reachable by machine, which is how an ironing recipe came to sign off дублирование.
+func TestAIAttachmentAndTheSignGateAnswerTheSameQuestion(t *testing.T) {
+	presses := []entity.TechCardPressProfile{aiPressProfile(aiIroningProfileKey, string(entity.OpTypePress))}
+	drafted := aiPressStep("fusing")
+	aiTestPark(nil, presses).attach(drafted)
+
+	stepAsSaved := &entity.TechCardOperation{
+		OperationType:   entity.OpTypeFusing,
+		PressEquipment:  sql.NullString{String: aiFusingPressMachine, Valid: true},
+		PressProfileKey: sql.NullString{String: drafted.PressProfileKey, Valid: drafted.PressProfileKey != ""},
+	}
+	profile, ambiguous := resolveFusingPressProfile(stepAsSaved, presses)
+	if ambiguous || profile != nil {
+		t.Fatalf("the gate resolved an ironing profile for a fusing step: %+v (ambiguous=%v)", profile, ambiguous)
+	}
+
+	// The same step with the key put there BY HAND — a technologist picking the wrong row in the
+	// client — has to be refused by the gate on its own, without the mapper's help.
+	byHand := *stepAsSaved
+	byHand.PressProfileKey = sql.NullString{String: aiIroningProfileKey, Valid: true}
+	if profile, ambiguous := resolveFusingPressProfile(&byHand, presses); ambiguous || profile != nil {
+		t.Fatalf("a hand-picked ironing profile still resolved for a fusing step: %+v (ambiguous=%v)", profile, ambiguous)
+	}
+
+	// Universal, both ways: the mapper attaches it and the gate resolves the very same key.
+	universal := []entity.TechCardPressProfile{aiPressProfile(aiUniversalPressKey, "")}
+	draftedUniversal := aiPressStep("fusing")
+	aiTestPark(nil, universal).attach(draftedUniversal)
+	if draftedUniversal.PressProfileKey != aiUniversalPressKey {
+		t.Fatalf("the universal profile was not attached: %q", draftedUniversal.PressProfileKey)
+	}
+	resolved, ambiguous := resolveFusingPressProfile(&entity.TechCardOperation{
+		OperationType:   entity.OpTypeFusing,
+		PressEquipment:  sql.NullString{String: aiFusingPressMachine, Valid: true},
+		PressProfileKey: sql.NullString{String: draftedUniversal.PressProfileKey, Valid: true},
+	}, universal)
+	if ambiguous || resolved == nil || resolved.ProfileKey != aiUniversalPressKey {
+		t.Fatalf("the gate did not resolve the key the mapper wrote: %+v (ambiguous=%v)", resolved, ambiguous)
+	}
+}

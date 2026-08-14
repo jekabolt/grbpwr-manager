@@ -115,6 +115,11 @@ Rules:
   and every setting that matches it must be OMITTED. A line marked SEVERAL means the card holds more
   than one profile of that equipment — nothing can be attached, nothing is inherited, and a step on
   it has to STATE every setting it needs. Equipment named in no line at all inherits nothing either.
+- A PRESSING LINE ALSO BELONGS TO A PROCESS. A line that reads «for fusing», «for press» or «for
+  press_open» is inherited by a step of THAT process alone — an ironing setup is not a fusing recipe,
+  however well the equipment matches — while a line that names no process serves every ВТО step. A
+  press / press_open / fusing step whose equipment has no line for its own process inherits nothing
+  and must state press_temperature_c and press_dwell_sec itself.
 - Fill thread_count, needle_type, needle_size_nm, thread_tension, stitch_width_mm,
   press_temperature_c, press_dwell_sec, press_pressure_n_cm2, press_steam or press_cloth where the
   step genuinely deviates from a profile it inherits, and wherever there is no profile behind it at
@@ -219,7 +224,7 @@ func buildUserPrompt(tcx TechCardContext, description string) string {
 		// the model is told to state its settings rather than omit them into a link that will not be
 		// made. Promising inheritance there is how an omitted setting became no setting at all.
 		writeBullets(&b, "CARD MACHINES (name machine_type; an unmarked line is the card's only profile of that machine and a step naming it INHERITS it — omit every setting that matches. A line marked SEVERAL inherits NOTHING: state the settings)", c.MachineProfiles)
-		writeBullets(&b, "CARD PRESSING EQUIPMENT / ВТО (name press_equipment; same rule — an unmarked line is inherited by a press / press_open / fusing step naming it, a line marked SEVERAL is not)", c.PressProfiles)
+		writeBullets(&b, "CARD PRESSING EQUIPMENT / ВТО (name press_equipment; same rule PLUS the process — an unmarked line is inherited by a press / press_open / fusing step naming that equipment FOR THE PROCESS THE LINE STATES, a line that states no process by any of them, and a line marked SEVERAL by none)", c.PressProfiles)
 	}
 	if v := strings.TrimSpace(tcx.RequiredSeamAllowanceMm); v != "" {
 		writeKV(&b, "Required seam allowance (mm)", v)

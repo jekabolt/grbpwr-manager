@@ -139,9 +139,11 @@ type BOMItemContext struct {
 //
 // The lines carry NO profile keys, and never will: the model does not create profiles and cannot
 // pick between two identical overlocks — it answers with the machine or the equipment TYPE. The
-// caller attaches the profile afterwards, and only where that type names exactly one of them. Where
-// it names several, the rendered line says so (the caller marks it) and the prompt then asks for the
-// settings outright instead of promising an inheritance nothing would deliver.
+// caller attaches the profile afterwards, and only where that type names exactly one of them — for a
+// pressing line, exactly one FOR THE STEP'S PROCESS, since a profile declared for ironing is not a
+// fusing recipe and is not attached to a fusing step. Where the question has several answers, the
+// rendered line says so (the caller marks it) and the prompt then asks for the settings outright
+// instead of promising an inheritance nothing would deliver.
 type ConstructionContext struct {
 	DefaultSeamClass     string
 	DefaultStitchesPerCm string

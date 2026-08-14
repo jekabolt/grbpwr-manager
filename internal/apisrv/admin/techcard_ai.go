@@ -238,13 +238,13 @@ func aiPressProfileSummaries(d *entity.TechCardEquipmentDefaults) []string {
 		if p.Note.Valid && p.Note.String != "" {
 			parts = append(parts, p.Note.String)
 		}
-		out = append(out, aiProfileLine(head, p.Label, sole[p.PressEquipment] != "", parts))
+		out = append(out, aiProfileLine(head, p.Label, aiPressProfileIsSole(sole, p), parts))
 	}
 	return out
 }
 
 // aiSoleMachineProfiles / aiSolePressProfiles answer the one question both halves of this seam
-// depend on: does this equipment name ONE profile on this card?
+// depend on: does this step name ONE profile on this card?
 //
 // They are the single source of that fact, and deliberately so. The prompt promises inheritance
 // exactly where they answer yes, and attach() delivers it exactly there — computing «is it
@@ -257,37 +257,86 @@ func aiSoleMachineProfiles(d *entity.TechCardEquipmentDefaults) map[string]strin
 	}
 	keys := make(map[string]string, len(d.Machines))
 	for i := range d.Machines {
-		aiIndexSoleProfile(keys, d.Machines[i].MachineType, d.Machines[i].ProfileKey)
+		machine := strings.TrimSpace(d.Machines[i].MachineType)
+		if machine == "" {
+			continue
+		}
+		aiIndexSoleProfile(keys, machine, d.Machines[i].ProfileKey)
 	}
 	return keys
 }
 
-func aiSolePressProfiles(d *entity.TechCardEquipmentDefaults) map[string]string {
+// aiPressStepTypes are the three ВТО verbs a press profile can be applied to. A profile declares one
+// of them or none; the index is built per verb, because that — not the equipment alone — is the
+// question a step asks.
+var aiPressStepTypes = [...]entity.TechCardOperationType{
+	entity.OpTypePress, entity.OpTypePressOpen, entity.OpTypeFusing,
+}
+
+// aiPressFit is what a ВТО step actually asks the park: «which profile of THIS equipment fits THIS
+// process». The equipment alone was the old key and it was the wrong one — a profile declared for
+// ironing then answered a fusing step, the server wrote its key onto the drafted step, and the sign
+// gate read the temperature back out of it and approved дублирование on an ironing program. The rule
+// is shared with the gate (pressProfileFitsStep) so the two cannot drift apart again.
+type aiPressFit struct {
+	equipment string
+	stepType  entity.TechCardOperationType
+}
+
+func aiSolePressProfiles(d *entity.TechCardEquipmentDefaults) map[aiPressFit]string {
 	if d == nil {
 		return nil
 	}
-	keys := make(map[string]string, len(d.Presses))
-	for i := range d.Presses {
-		aiIndexSoleProfile(keys, d.Presses[i].PressEquipment, d.Presses[i].ProfileKey)
+	keys := make(map[aiPressFit]string, len(d.Presses)*len(aiPressStepTypes))
+	for _, stepType := range aiPressStepTypes {
+		for i := range d.Presses {
+			p := &d.Presses[i]
+			equipment := strings.TrimSpace(p.PressEquipment)
+			if equipment == "" || !pressProfileFitsStep(p, stepType) {
+				continue
+			}
+			aiIndexSoleProfile(keys, aiPressFit{equipment: equipment, stepType: stepType}, p.ProfileKey)
+		}
 	}
 	return keys
 }
 
-// aiIndexSoleProfile records the first profile of an equipment and BLANKS it on the second, which is
+// aiPressProfileIsSole answers the PROMPT's half of the same question for one line: may a step that
+// names this equipment omit its settings and inherit this profile?
+//
+// A profile declared for one process is judged on that process alone; a universal one serves all
+// three verbs and is only inheritable where it is the single fit for every one of them — an iron
+// profile with no process, sharing the card with an iron profile for fusing, is unambiguous for a
+// pressing step and ambiguous for a fusing one, and a line the model is told to omit settings for
+// must be inheritable wherever the model may name it. A profile that fits no verb at all (a stored
+// process outside the vocabulary) is inheritable nowhere, which is why the loop has to notice that
+// it never fitted anything rather than fall out of the range saying yes.
+func aiPressProfileIsSole(sole map[aiPressFit]string, p *entity.TechCardPressProfile) bool {
+	equipment := strings.TrimSpace(p.PressEquipment)
+	fitsSomething := false
+	for _, stepType := range aiPressStepTypes {
+		if !pressProfileFitsStep(p, stepType) {
+			continue
+		}
+		fitsSomething = true
+		if sole[aiPressFit{equipment: equipment, stepType: stepType}] == "" {
+			return false
+		}
+	}
+	return fitsSomething
+}
+
+// aiIndexSoleProfile records the first profile under a question and BLANKS it on the second, which is
 // why the map is read as `!= ""` rather than with the comma-ok form: a blanked entry has to stay in
 // the map, or a third profile of the same equipment would look like a first one and re-enter it.
 // A profile with no durable key contributes nothing either — attaching a step to a key nothing can
 // be found by is the detached state with extra steps.
-func aiIndexSoleProfile(keys map[string]string, equipment, profileKey string) {
-	equipment = strings.TrimSpace(equipment)
-	if equipment == "" {
+func aiIndexSoleProfile[K comparable](keys map[K]string, question K, profileKey string) {
+	if _, seen := keys[question]; seen {
+		keys[question] = ""
 		return
 	}
-	if _, seen := keys[equipment]; seen {
-		keys[equipment] = ""
-		return
-	}
-	keys[equipment] = strings.TrimSpace(profileKey)
+	keys[question] = strings.TrimSpace(profileKey)
 }
 
 // aiEquipmentPark attaches a drafted step to a profile of the card. It is the only thing in the
@@ -308,8 +357,8 @@ func aiIndexSoleProfile(keys map[string]string, equipment, profileKey string) {
 // to a question nobody asked, and the sheet would print settings from a machine nobody chose. There
 // the prompt drops the inheritance promise instead and asks for the settings outright.
 type aiEquipmentPark struct {
-	machines map[string]string // machine token -> its ONE profile key; "" once ambiguous
-	presses  map[string]string // press equipment token -> ditto
+	machines map[string]string     // machine token -> its ONE profile key; "" once ambiguous
+	presses  map[aiPressFit]string // (press equipment, ВТО verb) -> ditto
 }
 
 func newAIEquipmentPark(c *entity.TechCardConstruction) aiEquipmentPark {
@@ -336,7 +385,16 @@ func (p aiEquipmentPark) attach(op *pb_common.TechCardOperation) {
 	if key := p.machines[aiMachineTypeNames[op.GetMachineType()]]; key != "" {
 		op.MachineProfileKey = key
 	}
-	if key := p.presses[aiPressEquipmentNames[op.GetPressEquipment()]]; key != "" {
+	// The ВТО half asks with the step's PROCESS as well as its equipment, because that is the
+	// question the ladder asks on the way back in — and this attachment is the one a SERVER makes,
+	// so its rule has to be the server's rule. By equipment alone, a fusing step drafted onto a card
+	// holding one ironing profile of the fusing press came back carrying that profile's key, and the
+	// sign gate then took the ironing temperature and dwell through the key and let the signature
+	// through: дублирование on an ironing program, approved.
+	if key := p.presses[aiPressFit{
+		equipment: aiPressEquipmentNames[op.GetPressEquipment()],
+		stepType:  entity.TechCardOperationType(aiOperationTypeNames[op.GetOperationType()]),
+	}]; key != "" {
 		op.PressProfileKey = key
 	}
 }
@@ -543,6 +601,11 @@ var aiPressClothTokens = aiTokenMap[pb_common.TechCardPressCloth](entity.PressCl
 // are built name-for-name from the same vocabulary, so no two tokens share an enum member.
 var aiMachineTypeNames = aiInvertTokenMap(aiMachineTypeTokens)
 var aiPressEquipmentNames = aiInvertTokenMap(aiPressEquipmentTokens)
+
+// aiOperationTypeNames is the same inversion for the step's own verb, which the press half of the
+// park needs: a profile declared for one process fits only steps of that process, and the token is
+// what a stored profile carries.
+var aiOperationTypeNames = aiInvertTokenMap(aiOpTypeTokens)
 
 func aiInvertTokenMap[E comparable](m map[string]E) map[E]string {
 	out := make(map[E]string, len(m))

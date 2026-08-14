@@ -854,9 +854,21 @@ func resolveFusingPressProfile(o *entity.TechCardOperation,
 	presses []entity.TechCardPressProfile) (*entity.TechCardPressProfile, bool) {
 	if key := strings.TrimSpace(o.PressProfileKey.String); o.PressProfileKey.Valid && key != "" {
 		for i := range presses {
-			if presses[i].ProfileKey == key {
-				return &presses[i], false
+			if presses[i].ProfileKey != key {
+				continue
 			}
+			// THE KEY IS NOT A BYPASS AROUND THE PROCESS. Step 3 has always refused a profile
+			// declared for pressing, and step 2 used to take whatever the key pointed at — so the
+			// same park answered one question two ways, and the softer answer was reachable by
+			// simply putting a key on the step. It is reachable BY THE SERVER: the AI mapper
+			// attaches a profile to a drafted step, and attaching an ironing profile to a fusing
+			// step handed this gate a ВТО temperature to approve дублирование with. A mismatch
+			// resolves to «not set» and never falls through to step 3: the step names THIS profile,
+			// and quietly signing it off against a different one is a second wrong answer.
+			if !pressProfileFitsStep(&presses[i], entity.OpTypeFusing) {
+				return nil, false
+			}
+			return &presses[i], false
 		}
 		return nil, false
 	}
@@ -866,12 +878,7 @@ func resolveFusingPressProfile(o *entity.TechCardOperation,
 	var found *entity.TechCardPressProfile
 	for i := range presses {
 		p := &presses[i]
-		if p.PressEquipment != o.PressEquipment.String {
-			continue
-		}
-		// NULL process = universal, and a profile declared for pressing or open-pressing is not a
-		// fusing recipe however well its equipment matches.
-		if p.PressOperationType.Valid && p.PressOperationType.String != string(entity.OpTypeFusing) {
+		if p.PressEquipment != o.PressEquipment.String || !pressProfileFitsStep(p, entity.OpTypeFusing) {
 			continue
 		}
 		if found != nil {
@@ -880,6 +887,18 @@ func resolveFusingPressProfile(o *entity.TechCardOperation,
 		found = p
 	}
 	return found, false
+}
+
+// pressProfileFitsStep is THE rule for «may this press profile be applied to a step of this process»,
+// and it is one function on purpose. A profile may declare WHICH process it is for: NULL is universal
+// and fits any ВТО step, a declared one fits only its own. An ironing profile is not a fusing recipe
+// however well the equipment matches — same machine, different program, and the difference shows up
+// as a delamination after the first wash rather than at the press.
+//
+// It was written out twice, and the copies drifted (see the caller above and aiSolePressProfiles):
+// wherever the process was dropped from the question, the answer silently widened.
+func pressProfileFitsStep(p *entity.TechCardPressProfile, stepType entity.TechCardOperationType) bool {
+	return !p.PressOperationType.Valid || p.PressOperationType.String == string(stepType)
 }
 
 // fusingStepLabel names a step the way the sheet does — «оп. 30» — falling back to the position when

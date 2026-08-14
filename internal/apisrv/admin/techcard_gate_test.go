@@ -418,6 +418,64 @@ func TestUpdateTechCardApprovesFusingResolvedThroughTheLadder(t *testing.T) {
 	}
 }
 
+// TestUpdateTechCardRefusesApprovingFusingThroughAPressingProfileNamedByKey closes the hole step 2
+// of the ladder used to be. Step 3 always refused a profile declared for pressing; step 2 took
+// whatever the key pointed at, so the same park answered one question two ways and the softer answer
+// was reachable by simply putting a key on the step — including BY THE SERVER, which is how it was
+// actually reached: the AI mapper attached the card's only ironing profile of the дублирующий пресс
+// to a drafted fusing step, and the gate then read that profile's temperature and dwell back out
+// through the key and approved. Дублирование on an ironing program, signed.
+func TestUpdateTechCardRefusesApprovingFusingThroughAPressingProfileNamedByKey(t *testing.T) {
+	ironing := gateFusingPressProfile(gateFusingKeyA, 150, 3,
+		pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS)
+	fusing := gateFusingPressProfile(gateFusingKeyB, 145, 12,
+		pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_FUSING)
+
+	tests := []struct {
+		name    string
+		presses []*pb_common.TechCardPressProfile
+	}{
+		{"the card's only profile of that press is an ironing one", []*pb_common.TechCardPressProfile{ironing}},
+		{
+			// And the refusal is not «try the next one»: the step NAMES this profile, and signing it
+			// off against a different profile of the same press would be a second wrong answer — the
+			// sheet would print the values of the row nobody pointed at.
+			"a mismatched key is not quietly swapped for the profile that would have fitted",
+			[]*pb_common.TechCardPressProfile{ironing, fusing},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := gateUpdate(t, &entity.TechCard{},
+				gateFusingCard(tt.presses, gateFusingStep(gateFusingKeyA)), gateStopsAtStored)
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			msg := status.Convert(err).Message()
+			require.Contains(t, msg, "signoffs[0]")
+			require.Contains(t, msg, "fusing step(s) 10")
+			require.Contains(t, msg, "press_temperature_c")
+		})
+	}
+
+	// The other direction, so the narrowing cannot be «refuse everything named by key»: a profile
+	// that declares no process is universal and a step naming it by key still resolves through it.
+	t.Run("a universal profile named by key still signs the step off", func(t *testing.T) {
+		universal := gateFusingPressProfile(gateFusingKeyB, 140, 10,
+			pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN)
+		err := gateUpdate(t, &entity.TechCard{},
+			gateFusingCard([]*pb_common.TechCardPressProfile{ironing, universal}, gateFusingStep(gateFusingKeyB)),
+			gateReachesStore)
+		require.Equal(t, codes.Aborted, status.Code(err))
+	})
+
+	// …and a profile declared FOR fusing, named by key, is exactly what step 2 is for.
+	t.Run("a fusing profile named by key signs the step off", func(t *testing.T) {
+		err := gateUpdate(t, &entity.TechCard{},
+			gateFusingCard([]*pb_common.TechCardPressProfile{ironing, fusing}, gateFusingStep(gateFusingKeyB)),
+			gateReachesStore)
+		require.Equal(t, codes.Aborted, status.Code(err))
+	})
+}
+
 func TestUpdateTechCardRefusesApprovingFusingWithTwoFittingProfiles(t *testing.T) {
 	presses := []*pb_common.TechCardPressProfile{
 		gateFusingPressProfile(gateFusingKeyA, 150, 12,
