@@ -9,6 +9,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // ПЛОЩАДИ ДЕТАЛЕЙ КРОЯ (Ф0, 0297) — the store half.
@@ -31,7 +32,7 @@ import (
 // next action — from «this fabric needs no cloth».
 func (s *Store) GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[string]entity.PieceAreaScope, error) {
 	rows, err := storeutil.QueryListNamed[entity.PieceAreaRow](ctx, s.DB, `
-		SELECT id, tech_card_id, scope_key, piece_line_key, size_id, area_cm2,
+		SELECT id, tech_card_id, scope_key, piece_line_key, size_id, area_cm2, perimeter_cm,
 		       contour_layer, seam_allowance_mm, hulled, ambiguous_pick,
 		       sheet_fingerprint, parsed_by, parsed_at
 		FROM tech_card_piece_area
@@ -108,6 +109,18 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 	// КОСТИНГ у всех карточек, где этот артикул, при каждой переоценке справочника. Это решение
 	// владельца, а не разработчика; до него дыра остаётся ровно там, где была.
 	//
+	// РАЗМЕТКА ДУБЛИРОВАНИЯ (0304) ВХОДИТ В ТОКЕН ВМЕСТЕ С ЭТАЛОНОМ ПРИПУСКА, и последнее — не
+	// перестраховка. Режим решает, умножается ли контур на площадь или на ширину полосы (разница в
+	// разы), ширина — во сколько именно, а у режима «по припуску» ширину даёт эталон, который живёт
+	// ВНЕ карточки: в настройках цеха. Правка цехового припуска 10 → 20 мм удваивает стоимость
+	// клеевой на каждой такой детали КАЖДОЙ карточки, не трогая ни одной из них, — ровно тот случай,
+	// ради которого в токен уже входит геометрия артикула из справочника.
+	//
+	// Эталон подставляется КАСКАДОМ и только там, где он на что-то влияет: карточка → цех, и только
+	// при 'seam_allowance'. Хешировать его безусловно значило бы устаревать подписи карточек, где
+	// клеевой нет вовсе. `ws.id = 1` — синглтон, закреплённый chk_workshop_settings_singleton (0272);
+	// LEFT JOIN, потому что ненастроенный цех — законное состояние и строки может не быть.
+	//
 	// pieces_per_garment ВХОДИТ В ТОКЕН, потому что Ф1 умножает на него площадь одного контура:
 	// правка «этой детали идёт две» меняет себестоимость, и подпись обязана это увидеть. Он уже
 	// хешируется в CONSTRUCTION, но подпись КОСТИНГ — про другое утверждение и своей зависимости
@@ -119,12 +132,20 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 		PiecesPerGarment int    `db:"pieces_per_garment"`
 		PinnedMaterialId int64  `db:"pinned_material_id"`
 		ArticleGeometry  string `db:"article_geometry"`
+		FusingMarking    string `db:"fusing_marking"`
 	}](ctx, s.DB, `
 		SELECT u.colorway_id,
 		       COALESCE(p.line_key, CONCAT('#', COALESCE(u.piece_id, 0)), '') AS piece_key,
 		       COALESCE(b.line_key, CONCAT('#', COALESCE(u.bom_item_id, 0)), '') AS bom_key,
 		       COALESCE(p.pieces_per_garment, 0) AS pieces_per_garment,
 		       COALESCE(u.material_id, 0) AS pinned_material_id,
+		       IF(p.fusing_mode IS NULL, '', CONCAT_WS('|',
+		           p.fusing_mode,
+		           COALESCE(p.fusing_width_mm, ''),
+		           IF(p.fusing_mode = 'seam_allowance',
+		              COALESCE(tc.required_seam_allowance_mm, ws.default_seam_allowance_mm, ''),
+		              '')
+		       )) AS fusing_marking,
 		       CONCAT_WS('|',
 		           COALESCE(NULLIF(fa.width_cm, 0), m.fabric_width, ''),
 		           COALESCE(fa.selvedge_cm, ''),
@@ -136,6 +157,8 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 		LEFT JOIN tech_card_bom_item b ON b.id = u.bom_item_id
 		LEFT JOIN material m ON m.id = COALESCE(NULLIF(u.material_id, 0), b.material_id)
 		LEFT JOIN material_fabric_attr fa ON fa.material_id = m.id
+		LEFT JOIN tech_card tc ON tc.id = :id
+		LEFT JOIN workshop_settings ws ON ws.id = 1
 		WHERE u.piece_id IS NOT NULL OR u.piece_index IS NOT NULL`, map[string]any{"id": techCardID})
 	if err != nil {
 		return "", fmt.Errorf("load piece→fabric assignments of tech card %d: %w", techCardID, err)
@@ -149,6 +172,7 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 			PiecesPerGarment: r.PiecesPerGarment,
 			PinnedMaterialId: r.PinnedMaterialId,
 			ArticleGeometry:  r.ArticleGeometry,
+			FusingMarking:    r.FusingMarking,
 		})
 	}
 	return entity.DerivedCostInputsDigest(areas, assignments), nil
@@ -513,6 +537,22 @@ func sameMeasurement(stored []entity.PieceAreaRow, submitted []entity.PieceAreaI
 		r, ok := have[key{strings.ToUpper(strings.TrimSpace(s.PieceLineKey)), s.SizeId.Int64}]
 		if !ok ||
 			!r.AreaCm2.Equal(s.AreaCm2) ||
+			// ПЕРИМЕТР УЧАСТВУЕТ В СРАВНЕНИИ НЕСИММЕТРИЧНО, и обе половины этой несимметричности
+			// куплены дорого.
+			//
+			// ПОЯВЛЕНИЕ периметра — ИЗМЕНЕНИЕ. Обновлённый клиент присылает ту же геометрию,
+			// ДОПОЛНЕННУЮ периметром (0305); признай мы это «тем же замером», периметр не появился
+			// бы НИКОГДА — каждая следующая попытка сравнивалась бы ровно так же, — и краевое
+			// дублирование молча отказывало бы на карточке, где оператор нажал «пересчитать» и
+			// увидел, что всё сошлось.
+			//
+			// ИСЧЕЗНОВЕНИЕ периметра — НЕ ИЗМЕНЕНИЕ. Старая вкладка поля не знает и не шлёт его
+			// вовсе; будь это изменением, её публикация того же самого замера прошла бы как правка и
+			// full-replace записал бы NULL поверх уже снятых периметров — то есть СТАРЫЙ КЛИЕНТ
+			// ГАСИЛ БЫ работу нового, молча и на всей карточке. Это тот же контракт «молчание ≠
+			// стирание», что у cut_symmetry и ungraded на детали, только выраженный сравнением, а не
+			// флагом: у строки замера флагу присутствия негде жить.
+			!perimeterAgrees(r.PerimeterCm, s.PerimeterCm) ||
 			r.ContourLayer != s.ContourLayer ||
 			!r.SeamAllowanceMm.Equal(s.SeamAllowanceMm) ||
 			r.Hulled != s.Hulled ||
@@ -521,6 +561,19 @@ func sameMeasurement(stored []entity.PieceAreaRow, submitted []entity.PieceAreaI
 		}
 	}
 	return true
+}
+
+// perimeterAgrees reports whether a submitted perimeter leaves the stored one alone.
+//
+// Асимметрия намеренная и объяснена на месте вызова: ОТСУТСТВИЕ присланного периметра — это «клиент
+// не знает поля», а не «периметра нет». Единственный способ стереть уже снятый периметр — прислать
+// замер, у которого его действительно нет по существу, а такого пути нет: клиент, умеющий считать
+// периметр, считает его для каждой строки, которую вообще публикует.
+func perimeterAgrees(stored, submitted decimal.NullDecimal) bool {
+	if !submitted.Valid {
+		return true
+	}
+	return stored.Valid && stored.Decimal.Equal(submitted.Decimal)
 }
 
 // pieceSetDiff returns "" when the submitted pieces are exactly the scope's expected set, and a
@@ -795,7 +848,7 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		// на неизменившейся карточке двигало бы id и parsed_at, то есть переписывало бы провенанс
 		// («измерено сегодня») там, где ничего не измеряли заново.
 		existing, err := storeutil.QueryListNamed[entity.PieceAreaRow](ctx, db, `
-			SELECT piece_line_key, size_id, area_cm2, contour_layer, seam_allowance_mm,
+			SELECT piece_line_key, size_id, area_cm2, perimeter_cm, contour_layer, seam_allowance_mm,
 			       hulled, ambiguous_pick, sheet_fingerprint
 			FROM tech_card_piece_area
 			WHERE tech_card_id = :card AND scope_key = :scope
@@ -819,10 +872,10 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		for _, r := range in.Rows {
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO tech_card_piece_area
-					(tech_card_id, scope_key, piece_line_key, size_id, area_cm2,
+					(tech_card_id, scope_key, piece_line_key, size_id, area_cm2, perimeter_cm,
 					 contour_layer, seam_allowance_mm, hulled, ambiguous_pick,
 					 sheet_fingerprint, parsed_by)
-				VALUES (:card, :scope, :piece, :size, :area,
+				VALUES (:card, :scope, :piece, :size, :area, :perimeter,
 				        :layer, :seam, :hulled, :ambiguous,
 				        :fp, :by)`,
 				map[string]any{
@@ -831,6 +884,7 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 					"piece":     strings.ToUpper(strings.TrimSpace(r.PieceLineKey)),
 					"size":      r.SizeId,
 					"area":      r.AreaCm2,
+					"perimeter": r.PerimeterCm,
 					"layer":     r.ContourLayer,
 					"seam":      r.SeamAllowanceMm,
 					"hulled":    r.Hulled,

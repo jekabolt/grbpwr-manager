@@ -123,6 +123,40 @@ func slotAreaEstimate(
 
 	pieces, pinned, pinConflict := slotAssignedPieces(tc, cw, bom)
 	out.pieceCount = len(pieces)
+	// ПРОВЕНАНС ЗАИМСТВОВАННОГО ЗАМЕРА. У клеевого слота своего замера обычно нет вовсе (её лекал не
+	// существует), а норма при этом считается — по контуру основной ткани. Без этой врезки экран
+	// показал бы ЧИСЛО и пустое «измерено …»: цифра без даты и без слоя, то есть ровно то, от чего
+	// провенанс и заводился. Берём условия того скоупа, из которого реально считали.
+	//
+	// Условия и провенанс берутся с ПЕРВОГО заимствованного скоупа (их надо показать одним набором),
+	// а вот УСТАРЕВАНИЕ агрегируется по всем — см. комментарий у out.stale ниже.
+	if !out.measured {
+		seenScope := map[string]bool{}
+		for _, p := range pieces {
+			borrowed := strings.TrimSpace(p.ScopeOverride)
+			if borrowed == "" || seenScope[borrowed] {
+				continue
+			}
+			seenScope[borrowed] = true
+			sc, ok := tc.PieceAreaScopes[borrowed]
+			if !ok || len(sc.Rows) == 0 {
+				continue
+			}
+			if !out.measured {
+				out.measured = true
+				out.contourLayer = sc.Rows[0].ContourLayer
+				out.seamAllowanceMm = sc.Rows[0].SeamAllowanceMm
+				out.parsedBy = sc.Rows[0].ParsedBy
+				out.parsedAt = sc.Rows[0].ParsedAt
+			}
+			// STALE — ЧЕРЕЗ OR ПО ВСЕМ ЗАИМСТВОВАННЫМ СКОУПАМ, а не по первому попавшемуся. Клеевая
+			// одного слота законно заимствует контуры у РАЗНЫХ тканей (деталь из основной + деталь из
+			// контрастной), и устаревание любого из них уже отказывает расчёту (AreaEstimateStale).
+			// Возьми мы флаг с первого — провод сказал бы «замер свежий» под пустой оценкой, и экран
+			// напечатал бы «не посчитано» вместо «замер устарел, пересчитайте».
+			out.stale = out.stale || sc.Stale
+		}
+	}
 	if pinConflict {
 		// СПОРЯЩИЕ ПИНЫ — ЭТО НЕ «ДЕТАЛЕЙ НЕТ». Раньше конфликт возвращался пустым списком и читался
 		// как no_pieces_assigned, то есть отправлял оператора назначать детали, которые уже
@@ -468,7 +502,9 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 			return // one piece, one contour: a second statement about it adds no cloth
 		}
 		seen[p.LineKey] = true
-		out = append(out, entity.AreaEstimatePiece{LineKey: p.LineKey, PerGarment: p.PiecesPerGarment})
+		ap := entity.AreaEstimatePiece{LineKey: p.LineKey, PerGarment: p.PiecesPerGarment}
+		ap.StripWidthCm, ap.StripWidthMissing, ap.ScopeOverride = fusingGeometryFor(tc, cw, bom, p)
+		out = append(out, ap)
 	}
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
@@ -494,7 +530,15 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 			if m.ColorwayID != 0 && m.ColorwayID != colorwayKey {
 				continue
 			}
-			if !m.BomItemId.Valid || int(m.BomItemId.Int64) != bom.Id {
+			// ВТОРАЯ ПОЛОВИНА ЛЕГАСИ-ИСТОЧНИКА: у строки детали ДВЕ ссылки на BOM — ткань
+			// (bom_item_id) и клеевая (fusing_bom_item_id). Читать только первую значило бы, что
+			// клеевой слот на карточке, заведённой через вкладку деталей кроя, не видит НИ ОДНОЙ
+			// детали и вечно отвечает «детали не назначены» — при том, что кат-план этот же источник
+			// видит и печатает по нему пару «деталь → клеевая». Одна связь, два читателя, и
+			// расходиться им нельзя.
+			fusingHere := bom.Section == entity.BomSectionInterlining && p.Fused &&
+				m.FusingBomItemId.Valid && int(m.FusingBomItemId.Int64) == bom.Id
+			if !fusingHere && (!m.BomItemId.Valid || int(m.BomItemId.Int64) != bom.Id) {
 				continue
 			}
 			appendPiece(p.Id, 0)
@@ -562,3 +606,151 @@ func isRollGoodsSection(s entity.TechCardBomSection) bool { return entity.IsRoll
 // резолвила ширину по снапшоту строки BOM, тогда как костинг брал полезную ширину артикула. Это и
 // было расхождение: не «две реализации формулы», а ОДНА формула с двумя разными аргументами, что
 // ничуть не лучше и куда труднее заметить. Обе проекции теперь передают tc.LinkedMaterials.
+
+// fusingGeometryFor answers, for ONE piece on ONE slot, the two questions 0304 introduced: is this
+// piece a STRIP on this slot rather than a whole contour, and WHERE does its contour live.
+//
+// It returns (unset, "") for everything that is not edge fusing — every piece of every fabric or
+// lining slot, and a fused piece marked «целиком». That is the pre-0304 arithmetic, preserved by
+// construction: the caller multiplies by area exactly as before.
+//
+// ТОЛЬКО КЛЕЕВОЙ СЛОТ. Деталь дублируется — это утверждение про КЛЕЕВУЮ, а не про ткань: полочка
+// кроится из основной ткани целиком независимо от того, лежит ли на её краю полоса дублерина.
+// Применить режим к слоту основной ткани значило бы посчитать саму полочку полоской 25 мм, то есть
+// обнулить расход ткани на изделии — самая дорогая из возможных ошибок здесь и совершенно
+// незаметная на экране, где стоит одно правдоподобное число.
+//
+// ГЕОМЕТРИЯ ЗАИМСТВУЕТСЯ У ТКАНИ, ИЗ КОТОРОЙ ДЕТАЛЬ КРОИТСЯ, потому что у клеевой своих выкроек не
+// бывает: её кроят по лекалу дублируемой детали. Кандидат обязан удовлетворять ОБОИМ условиям —
+// колорвей действительно назначил деталь на этот рулонный слот, И в его скоупе есть замер этой
+// детали. Одного первого мало (назначение без замера ничего не даёт), одного второго — тоже:
+// площадь могла остаться от ткани, с которой деталь давно сняли.
+//
+// НЕСКОЛЬКО КАНДИДАТОВ — ЭТО ОТКАЗ ОТ ЗАИМСТВОВАНИЯ, а не выбор первого. Одна деталь законно
+// кроится из нескольких слоёв, и подкладочная версия нарисована СВОИМ контуром со своей площадью
+// (шапка 0297). Взять любой из двух значило бы считать клеевую то по одному лекалу, то по другому в
+// зависимости от порядка строк рецепта. Без заимствования слот честно упрётся в «площади не
+// измерены» — указание неточное, но не выдуманное; выдуманное число хуже.
+func fusingGeometryFor(tc *entity.TechCard, cw *entity.TechCardColorway, bom *entity.TechCardBomItem,
+	p *entity.TechCardPiece) (width decimal.NullDecimal, missing bool, scopeOverride string) {
+	if bom.Section != entity.BomSectionInterlining || !p.Fused {
+		return decimal.NullDecimal{}, false, ""
+	}
+	scope := fusedPieceContourScope(tc, cw, bom, p)
+	switch entity.PieceFusingModeOrFull(p.FusingMode) {
+	case entity.PieceFusingModeStrip:
+		if !p.FusingWidthMm.Valid {
+			// Ширины нет там, где она обязательна: колонка этого не допускает (0304), но карточка
+			// могла приехать другим путём (слепок релиза, импорт). НЕ полный контур: подпись на
+			// экране говорит «полосой», и посчитать её как «всю деталь» значило бы разойтись с
+			// написанным в разы — молча. Отказ называет недостающий факт.
+			return decimal.NullDecimal{}, true, scope
+		}
+		return mmToCm(p.FusingWidthMm), false, scope
+	case entity.PieceFusingModeSeamAllowance:
+		// ЭТАЛОН ПРИПУСКА, каскадом 0277: переопределение карточки, иначе цеховой дефолт. Не
+		// припуск, под которым СНЯТ замер (tech_card_piece_area.seam_allowance_mm): тот равен нулю,
+		// когда мерили по слою кроя, где припуск уже нарисован, — и полоса вышла бы нулевой ширины на
+		// самой обычной карточке.
+		std := entity.RequiredSeamAllowanceMm(tc.RequiredSeamAllowanceMm, tc.WorkshopSeamAllowanceMm)
+		if !std.Valid || !std.Decimal.IsPositive() {
+			// Эталона нет ни на карточке, ни в цехе — ширины полосы не существует. ОТКАЗ, а не полный
+			// контур: «по припуску», посчитанное как «вся деталь», — это цифра, которая не
+			// соответствует подписи рядом с ней, и расходятся они в разы.
+			return decimal.NullDecimal{}, true, scope
+		}
+		return mmToCm(std), false, scope
+	default: // full
+		return decimal.NullDecimal{}, false, scope
+	}
+}
+
+// fusedPieceContourScope finds the ONE fabric scope holding this piece's measured contour, or "" when
+// the answer is not unique — see fusingGeometryFor's header on why "" beats a guess.
+func fusedPieceContourScope(tc *entity.TechCard, cw *entity.TechCardColorway, bom *entity.TechCardBomItem,
+	p *entity.TechCardPiece) string {
+	key := strings.ToUpper(strings.TrimSpace(p.LineKey))
+	if key == "" {
+		return ""
+	}
+	// СВОЯ ГЕОМЕТРИЯ ПОБЕЖДАЕТ ЗАИМСТВОВАННУЮ, и это не оптимизация. Клеевая ОБЫЧНО не имеет своих
+	// выкроек — ради этого случая заимствование и заведено, — но бывает и нарисованной отдельным
+	// лекалом (обтачка дублируется не по контуру детали, а своей деталью). Если у скоупа этого слота
+	// есть замер ЭТОЙ детали, он и есть ответ: подменить его контуром основной ткани значило бы
+	// посчитать клеевую по чужому лекалу, имея на руках её собственное.
+	slotScope := entity.FabricScopeKey(bom.Purpose.String, bom.LineKey)
+	if sc, ok := tc.PieceAreaScopes[slotScope]; ok {
+		for _, r := range sc.Rows {
+			if strings.ToUpper(strings.TrimSpace(r.PieceLineKey)) == key {
+				return ""
+			}
+		}
+	}
+	bomByID := make(map[int]*entity.TechCardBomItem, len(tc.BomItems))
+	for i := range tc.BomItems {
+		bomByID[tc.BomItems[i].Id] = &tc.BomItems[i]
+	}
+	candidates := map[string]bool{}
+	consider := func(bomID int) {
+		b := bomByID[bomID]
+		// Клеевой слот не заимствует у клеевого: свой скоуп уже проверен вызывающим, а вторая
+		// interlining-строка — это другая клеевая, а не лекало детали.
+		if b == nil || b.Id == bom.Id || b.Section == entity.BomSectionInterlining ||
+			!isRollGoodsSection(b.Section) {
+			return
+		}
+		scope := entity.FabricScopeKey(b.Purpose.String, b.LineKey)
+		sc, ok := tc.PieceAreaScopes[scope]
+		if !ok {
+			return
+		}
+		for _, r := range sc.Rows {
+			if strings.ToUpper(strings.TrimSpace(r.PieceLineKey)) == key {
+				candidates[scope] = true
+				return
+			}
+		}
+	}
+	for i := range cw.Usages {
+		u := &cw.Usages[i]
+		if !u.IsPieceMaterialAssignment() || !u.BomItemId.Valid || !u.PieceId.Valid {
+			continue
+		}
+		if int(u.PieceId.Int64) == p.Id {
+			consider(int(u.BomItemId.Int64))
+		}
+	}
+	// Второй источник назначений — tech_card_piece_material, тот же, что и у вызывающего: карточки,
+	// заведённые через вкладку деталей кроя, держат связь на самой детали.
+	colorwayKey := cw.Id
+	if cw.ProductId.Valid && cw.ProductId.Int32 > 0 {
+		colorwayKey = int(cw.ProductId.Int32)
+	}
+	for j := range p.Materials {
+		m := &p.Materials[j]
+		if m.ColorwayID != 0 && m.ColorwayID != colorwayKey {
+			continue
+		}
+		if m.BomItemId.Valid {
+			consider(int(m.BomItemId.Int64))
+		}
+	}
+	if len(candidates) != 1 {
+		return ""
+	}
+	for scope := range candidates {
+		return scope
+	}
+	return ""
+}
+
+// mmToCm converts a millimetre width into the centimetres the geometry is measured in. ONE place
+// does this conversion, because the piece states its strip in millimetres (that is how a technologist
+// names it) while every contour in tech_card_piece_area is in centimetres — and a missed division by
+// ten inflates the interlining tenfold.
+func mmToCm(mm decimal.NullDecimal) decimal.NullDecimal {
+	if !mm.Valid {
+		return mm
+	}
+	return decimal.NullDecimal{Decimal: mm.Decimal.Div(decimal.NewFromInt(10)), Valid: true}
+}

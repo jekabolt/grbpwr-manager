@@ -2590,10 +2590,29 @@ type TechCardPiece struct {
 	// та же причина, что у CutSymmetryOmitted рядом. У голого bool ноль неотличим от «не сказал», и
 	// без этого различия сохранение из вкладки, которая про градацию не спрашивает, снимало бы
 	// пометку со всех деталей карточки.
-	UngradedOmitted bool          `db:"-"`
-	Grainline       string        `db:"grainline"`
-	Fused           bool          `db:"fused"`
-	CalloutNumber   sql.NullInt32 `db:"callout_number"`
+	UngradedOmitted bool   `db:"-"`
+	Grainline       string `db:"grainline"`
+	Fused           bool   `db:"fused"`
+	// FusingMode — КАК ИМЕННО дублируется деталь (0304); NULL = НЕ РАЗМЕЧЕНО, ровно как у CutSymmetry
+	// выше. Осмысленно только при Fused: снятая галка гасит и режим, и ширину (NormalizeFusing), иначе
+	// уцелевший 'strip' читался бы как «не дублируется», а норму давал бы полосой.
+	//
+	// Читателю, которому нужно число, а не разметка, служит PieceFusingModeOrFull: до 0304 весь код
+	// читал голую галку единственным возможным способом — «клеевая по тому же лекалу», — и разворот
+	// NULL в full сохраняет ровно это поведение. Но ЭКРАН обязан различать: молчание, показанное как
+	// «целиком», перестаёт быть заметным вопросом в тот самый момент, когда на него ответили за
+	// технолога.
+	FusingMode sql.NullString `db:"fusing_mode"`
+	// FusingWidthMm — ширина клеевой полосы, мм. Значима и обязательна ТОЛЬКО при
+	// PieceFusingModeStrip; при остальных режимах гасится, потому что число рядом с «по припуску»
+	// спорит с эталоном припуска (0277) молча: на экране видно одно, в расчёте другое.
+	FusingWidthMm decimal.NullDecimal `db:"fusing_width_mm"`
+	// FusingOmitted — ПАРЫ не было на проводе, а не «пришла пустой»: тот же отрицательный смысл и та
+	// же причина, что у CutSymmetryOmitted и UngradedOmitted рядом. Один флаг на оба поля, потому что
+	// присутствие режима управляет и шириной: клиент, приславший режим без ширины, заявляет «полоса
+	// без числа», а не «ширину не трогать», — иначе полоса досталась бы шириной от прошлой правки.
+	FusingOmitted bool          `db:"-"`
+	CalloutNumber sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
@@ -2661,6 +2680,145 @@ func ValidatePieceCutSymmetry(field string, sym sql.NullString, piecesPerGarment
 			"зеркальная пара делится пополам — количество на изделие должно быть чётным и не меньше двух",
 			strconv.Itoa(piecesPerGarment),
 			"две строки по одной штуке — это «одинаковые» по штуке каждая; «зеркальные пары» ставят на ОДНУ строку с чётным количеством")
+	}
+	return nil
+}
+
+// TechCardPieceFusingMode is HOW a piece is fused (0304) — where the interlining actually lies, not
+// whether there is any. Meaningful only on a piece whose Fused flag is up.
+//
+// Until 0304 the answer was one for everybody, and every reader took it the only way it could be
+// taken — «клеевая выкроена по тому же лекалу»: the cut list pairs the piece with the interlining
+// slot whole, the tech pack prints «fused: yes», and the area estimate would charge the interlining
+// slot the FULL contour. Edge fusing is the common case on the floor, and the difference is money in
+// multiples: a front panel of 4200 cm² has a ~260 cm perimeter, so a 25 mm strip is 650 cm² — 6.5×
+// less.
+type TechCardPieceFusingMode string
+
+const (
+	PieceFusingModeFull TechCardPieceFusingMode = "full"
+	// PieceFusingModeSeamAllowance and PieceFusingModeStrip BOTH lay a strip along the edge and differ
+	// only in where its width comes from: the card's (else the workshop's) seam-allowance standard
+	// (0277) versus the number typed on the piece. Collapsing them into one value with a mandatory
+	// number would mean re-typing the allowance on every piece and then diverging from the standard
+	// 0277 exists to hold.
+	PieceFusingModeSeamAllowance TechCardPieceFusingMode = "seam_allowance"
+	PieceFusingModeStrip         TechCardPieceFusingMode = "strip"
+)
+
+// ValidTechCardPieceFusingModes mirrors the DB CHECK chk_tcp_fusing_mode (0304). "Not marked" is
+// deliberately absent for the same reason as in cut symmetry: it is the NULL column, not a value.
+var ValidTechCardPieceFusingModes = map[TechCardPieceFusingMode]bool{
+	PieceFusingModeFull: true, PieceFusingModeSeamAllowance: true, PieceFusingModeStrip: true,
+}
+
+// PieceFusingStripWidthCeilingMm mirrors the ceiling in chk_tcp_fusing_width (0304). The widest real
+// fused strip is a hem, 40-50 mm; anything above is a unit slip (cm typed as mm) or a stray zero.
+// The two numbers are obliged to move together — schema carries the invariant, Go carries the
+// wording (0272's precedent).
+const PieceFusingStripWidthCeilingMm = 100
+
+// PieceFusingModeOrFull is the READER's view of an unmarked piece: NULL unfolds to `full`.
+//
+// This is what keeps everything written before 0304 behaving exactly as it did — the flag alone
+// always meant «same pattern piece, cut from interlining». It is deliberately NOT what the SCREEN
+// does: an unanswered question shown as an answer stops being visible the moment somebody answers it
+// on the технолог's behalf. Compute with this; display entity.TechCardPiece.FusingMode itself.
+//
+// A piece that is not fused at all has no mode — the caller gets `full` only if it asks about a
+// fused one, so callers must gate on Fused first.
+func PieceFusingModeOrFull(mode sql.NullString) TechCardPieceFusingMode {
+	if !mode.Valid {
+		return PieceFusingModeFull
+	}
+	if v := TechCardPieceFusingMode(mode.String); ValidTechCardPieceFusingModes[v] {
+		return v
+	}
+	return PieceFusingModeFull
+}
+
+// NormalizeFusing collapses the marking to the ONE shape the DB CHECKs accept, so an operator never
+// meets a raw MySQL 3819 naming a column they did not touch.
+//
+// Two rules, both of them about the columns being unable to lie together:
+//
+//   - НЕ ДУБЛИРУЕТСЯ ⇒ разметки нет. A mode surviving a cleared checkbox would read «не
+//     дублируется» on screen while handing the estimate a strip — and unchecking the box is exactly
+//     the moment nobody looks at the mode any more.
+//   - ШИРИНА ТОЛЬКО У STRIP. A number left beside «по припуску» argues with the standard silently:
+//     the screen shows the standard, the arithmetic uses the leftover.
+//
+// Normalising rather than refusing is the right call here because neither state is an operator's
+// statement — both are residue of a previous edit, and there is exactly one thing they can mean.
+func (p *TechCardPiece) NormalizeFusing() {
+	if !p.Fused {
+		p.FusingMode = sql.NullString{}
+		p.FusingWidthMm = decimal.NullDecimal{}
+		return
+	}
+	if PieceFusingModeOrFull(p.FusingMode) != PieceFusingModeStrip {
+		p.FusingWidthMm = decimal.NullDecimal{}
+	}
+}
+
+// ValidatePieceFusing checks one piece's fusing marking BEFORE the row reaches MySQL, in the words
+// the operator needs. An unset mode is accepted — «не размечено» is legal and the only honest state
+// for every row that predates 0304.
+//
+// Call NormalizeFusing FIRST: this function judges an operator's statement, not residue. The pair it
+// refuses to invent is the one only a human can supply — a strip with no width. Defaulting that to
+// the seam allowance would silently turn «полосой» into «по припуску», and the two differ by
+// whatever the technologist meant to type.
+func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm decimal.NullDecimal) error {
+	if !mode.Valid {
+		if widthMm.Valid {
+			return NewFieldViolation(field, "ширина клеевой полосы задана, а режим дублирования не выбран", widthMm.Decimal.String(),
+				"выберите «полосой», либо уберите ширину: у режимов «целиком» и «по припуску» своего числа нет")
+		}
+		return nil
+	}
+	if !fused {
+		return NewFieldViolation(field, "режим дублирования задан у детали, которая не дублируется", mode.String,
+			"поднимите галку «дублируется» либо снимите режим")
+	}
+	v := TechCardPieceFusingMode(mode.String)
+	if !ValidTechCardPieceFusingModes[v] {
+		return NewFieldViolation(field, "unknown fusing mode", mode.String,
+			"pick one of: full (вся деталь), seam_allowance (по припуску), strip (полосой заданной ширины)")
+	}
+	if v != PieceFusingModeStrip {
+		if widthMm.Valid {
+			return NewFieldViolation(field, "ширина полосы задана при режиме, у которого своей ширины нет", mode.String,
+				"«по припуску» берёт ширину из эталона припуска карточки; своё число ставят режимом «полосой»")
+		}
+		return nil
+	}
+	if !widthMm.Valid {
+		return NewFieldViolation(field, "у режима «полосой» не задана ширина", "",
+			"впишите ширину полосы в миллиметрах, либо выберите «по припуску», чтобы взять её из эталона припуска")
+	}
+	if !widthMm.Decimal.IsPositive() {
+		return NewFieldViolation(field, "ширина клеевой полосы должна быть больше нуля", widthMm.Decimal.String(),
+			"нулевая полоса — это «не дублируется»; снимите галку, если клеевой нет")
+	}
+	// МАСШТАБ КОЛОНКИ ПРОВЕРЯЕТСЯ ЗДЕСЬ, потому что за нас его «поправит» MySQL — и поправит молча.
+	// Колонка DECIMAL(6,1): 25.25 ляжет как 25.3, а дайджест CONSTRUCTION к тому моменту УЖЕ
+	// посчитан по 25.25 — подпись, поставленная этим же сохранением, разойдётся с первым же чтением
+	// карточки и останется устаревшей навсегда. Второй сценарий злее: 0.04 округлится до 0.0, и
+	// chk_tcp_fusing_width отобьёт всю карточку номером 3819.
+	//
+	// ОТКАЗ, А НЕ ОКРУГЛЕНИЕ. Площадь детали округляет ПАРСЕР (её никто не вводит руками, это замер),
+	// а ширину полосы вводит человек — тихо изменить набранное им число значит подписать не то, что
+	// он видел.
+	if widthMm.Decimal.Exponent() < -1 {
+		return NewFieldViolation(field, "ширина клеевой полосы задаётся с точностью до десятых миллиметра",
+			widthMm.Decimal.String(),
+			"округлите до одного знака после запятой — например, 25.3 вместо 25.25")
+	}
+	if widthMm.Decimal.GreaterThan(decimal.NewFromInt(PieceFusingStripWidthCeilingMm)) {
+		return NewFieldViolation(field, "ширина клеевой полосы больше 100 мм — похоже на сантиметры вместо миллиметров",
+			widthMm.Decimal.String(),
+			"самая широкая реальная полоса — дублирование низа, 40-50 мм; для дублирования целиком есть режим «вся деталь»")
 	}
 	return nil
 }
@@ -3053,6 +3211,18 @@ type TechCard struct {
 	// A map, not a slice: every reader asks «what are the areas of THIS fabric», never «what is the
 	// third scope», and the one place that needs a stable order (the wire) sorts on the way out.
 	PieceAreaScopes map[string]PieceAreaScope `db:"-"`
+	// WorkshopSeamAllowanceMm is the SHOP's default seam allowance (0277) carried onto the card at
+	// read time, so a reader can resolve the standard's full cascade — card override, else shop — with
+	// RequiredSeamAllowanceMm(tc.RequiredSeamAllowanceMm, tc.WorkshopSeamAllowanceMm).
+	//
+	// It is here rather than in each caller's signature because the callers that need it are the
+	// COSTING ones (площадь → норма → деньги), and their argument lists are already long and shared
+	// across four entry points. Threading a settings struct through all of them would mean four places
+	// that can pass nil, i.e. four places where «по припуску» silently loses its width and the
+	// interlining is costed at zero-width strips. Populated on the single-card read only (INVALID on
+	// lists/writes), exactly like PieceAreaScopes above — and INVALID is honest there: a list row
+	// derives no norms.
+	WorkshopSeamAllowanceMm decimal.NullDecimal `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned

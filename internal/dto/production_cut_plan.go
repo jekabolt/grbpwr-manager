@@ -169,6 +169,20 @@ func ComputeProductionRunCutPlan(
 					row.FusingBomItemId = int64(res.fusing.bom.Id)
 					row.FusingMaterialName = cutPlanMaterialName(card, res.fusing.articleID(), res.fusing.bom)
 				}
+				// КАК ИМЕННО дублировать (0304) — СВОЙСТВО ДЕТАЛИ, а не свойство разрешённого артикула,
+				// поэтому печатается независимо от того, нашлась ли пара выше. Пара не находится в
+				// законных случаях («несколько клеевых у колорвея» — правило pieceFusingSlot), и деталь
+				// при этом всё равно дублируется: строка несёт fused=true. Спрячь мы режим внутрь
+				// условия — она сказала бы «дублируется» и «способ не указан» на карточке, где способ
+				// размечен, то есть отправила бы раскройщика выкраивать клеевую по всему лекалу ровно
+				// там, где ему и так не хватает артикула.
+				//
+				// Хранимое NULL печатается как «не размечено», а не как «целиком»: развернуть его здесь
+				// значило бы напечатать цеху ответ, которого никто не давал.
+				if p.Fused {
+					row.FusingMode = PieceFusingModeToPb(p.FusingMode)
+					row.FusingWidthMm = pbDecimalFromNull(p.FusingWidthMm)
+				}
 				for _, sizeID := range g.sizeOrder() {
 					garments := g.bySize[sizeID]
 					row.BySize = append(row.BySize, &pb_admin.CutPlanSizeQty{
@@ -753,6 +767,16 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		}
 		if v, ok := techCardPieceCutSymmetryPbToEntity[p.GetCutSymmetry()]; ok {
 			piece.CutSymmetry = sql.NullString{String: string(v), Valid: true}
+		}
+		// РАЗМЕТКА ДУБЛИРОВАНИЯ ИЗ СНАПШОТА (0304), по тому же доводу, что и UNI выше, но с большей
+		// ценой потери: наряд по релизу ПЕЧАТАЕТ этот режим цеху. Молчаливое «не размечено» на
+		// карточке, где релиз подписан с «полосой 25 мм», — это указание выкроить клеевую по всему
+		// лекалу. Старый снапшот, где поля не было, честно даёт «не размечено»: он его и не нёс.
+		if v, ok := techCardPieceFusingModePbToEntity[p.GetFusingMode()]; ok {
+			piece.FusingMode = sql.NullString{String: string(v), Valid: true}
+		}
+		if w, err := nullDecimalFromPb(p.GetFusingWidthMm()); err == nil {
+			piece.FusingWidthMm = w
 		}
 		card.Pieces = append(card.Pieces, piece)
 	}
