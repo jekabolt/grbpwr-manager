@@ -132,9 +132,15 @@ func TestPiecesStableLinesRecipeReferenceSurvives(t *testing.T) {
 	// error, never a silently-NULL link (no-silent-no-op norm; the beta A–L acceptance run caught the
 	// operations case being accepted with 200 — C.10's negative probe). The legacy positional index
 	// keeps its transition tolerance; only the stable-key form is strict.
+	//
+	// The step is written in the form 0306 stores: (machine, lockstitch), never the bare legacy token
+	// — that one is accepted on the WIRE and canonicalised in dto, and this test writes entities
+	// straight to the store, where the column's CHECK refuses it with a bare 3819 that says nothing
+	// about bom_line_key.
 	badOpCard := card(piece("PK1", "Front panel"), piece("PK2", "Back"))
-	badOpCard.Operations = []entity.TechCardOperation{{OperationType: entity.OpTypeLockstitch,
-		Zone: entity.ZoneOuter, BomLineKeys: []string{"does-not-exist"}}}
+	badOpCard.Operations = []entity.TechCardOperation{{OperationType: entity.OpTypeMachine,
+		MachineType: sql.NullString{String: "lockstitch", Valid: true},
+		Zone:        entity.ZoneOuter, BomLineKeys: []string{"does-not-exist"}}}
 	err = T.UpdateTechCard(ctx, tcID, badOpCard, c4.LockVersion)
 	require.Error(t, err, "unknown operation bom_line_key must be refused")
 	require.True(t, errors.As(err, &ve), "operation bom_line_key refusal must be field-tagged, got %v", err)

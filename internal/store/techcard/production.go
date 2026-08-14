@@ -18,9 +18,9 @@ import (
 // `pressing` and `overlock_thread_count` are NOT written and are not a forgotten pair: 0306 dropped
 // both columns — the prose moved into `notes` under a tag and the thread count became an overlock
 // PROFILE, because one thread count on a card could only ever describe one overlock and a card may
-// run several. The entity still carries the two fields at this point purely so the section digest
-// can freeze their positions in the signed tuple; the fields themselves go in T6. Naming either
-// column here is an immediate 1054 on every save that touches construction.
+// run several. The entity no longer carries either field; what survives them is their frozen
+// POSITION in the CONSTRUCTION digest tuple. Naming either column here is an immediate 1054 on
+// every save that touches construction.
 func insertTechCardConstruction(ctx context.Context, db dependency.DB, tcID int, c *entity.TechCardConstruction) error {
 	if c == nil {
 		return nil
@@ -568,7 +568,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	}
 
 	// Explicit column list, not SELECT * (the packaging precedent below). 0306 dropped `pressing` and
-	// `overlock_thread_count`; T6 removes the matching entity fields. A star makes every read depend
+	// `overlock_thread_count`, and the entity fields went with them. A star makes every read depend
 	// on those two moving in exact lockstep — and on a Down they do not: the columns come back while
 	// the struct has nowhere to put them, and a strict StructScan refuses an unmapped column. Naming
 	// the columns turns «the migration and the binary ship together» from a hidden requirement into

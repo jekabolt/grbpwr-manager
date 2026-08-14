@@ -2107,19 +2107,20 @@ func AuxSubtypeFromName(name string) (TechCardAuxSubtype, bool) {
 // second card-level allowance would also be a second answer to a settled question.
 type TechCardConstruction struct {
 	HemFinish sql.NullString `db:"hem_finish"`
-	Pressing  sql.NullString `db:"pressing"`
 	Notes     sql.NullString `db:"notes"`
 	// Inherited by TechCardOperation.SeamClass when that one is unset.
 	DefaultSeamClass sql.NullString `db:"default_seam_class"`
 	// Inherited by TechCardOperation.StitchesPerCm. STITCHES PER CENTIMETRE — density is quoted per
 	// cm in every language and is not part of the millimetre switch.
 	DefaultStitchesPerCm decimal.NullDecimal `db:"default_stitches_per_cm"`
-	// 3 | 4 | 5; NULL = unset. The name does not reuse the removed `overlock_threads` (a string).
-	//
-	// SUPERSEDED by EquipmentDefaults.Machines[].ThreadCount: one thread count on the card could
-	// only ever describe one overlock, and a card may run several. Removed together with Pressing
-	// once every consumer is off them.
-	OverlockThreadCount sql.NullInt32 `db:"overlock_thread_count"`
+
+	// GONE FROM HERE, AND NOT COMING BACK: `Pressing` (prose) and `OverlockThreadCount`. 0306 moved
+	// the prose into Notes under a deterministic tag and turned the thread count into an overlock
+	// PROFILE below — one thread count on a card could only ever describe one overlock, and a card
+	// may run several. Their POSITIONS in the CONSTRUCTION digest tuple are frozen forever at the
+	// values NULL used to marshal to (constructionProjection), so a card that never filled them
+	// hashes exactly as it did before the move and its sign-off does not go stale.
+
 	// EquipmentDefaults is the card's machine and ВТО park — which machines this style is sewn on,
 	// with what settings, and which presses/irons it is pressed on. Not a column: the profiles live
 	// in tech_card_equipment_profile, keyed by the card.
@@ -2238,24 +2239,22 @@ func ValidateStitchesPerCm(field string, v decimal.NullDecimal) error {
 // tech_card_operation.operation_type ("unknown" when unset).
 type TechCardOperationType string
 
+// THE NINE LEGACY TOKENS HAVE NO CONSTANTS HERE, deliberately. `lockstitch`, `double_needle`,
+// `overlock`, `coverstitch`, `chainstitch`, `blindhem`, `bartack`, `buttonhole`, `button_attach`
+// are accepted on the WIRE forever (an archived release snapshot is protojson holding those very
+// names) but they are canonicalised into (machine, machine_type) before an entity exists, so no
+// value of this type in Go may hold one. A constant is an invitation to write one into a fresh
+// row — which the DB CHECK now refuses with a bare 3819 — so the only place those strings survive
+// is LegacyOperationMachineType below, as data.
 const (
-	OpTypeUnknown      TechCardOperationType = "unknown"
-	OpTypeLockstitch   TechCardOperationType = "lockstitch"
-	OpTypeDoubleNeedle TechCardOperationType = "double_needle"
-	OpTypeOverlock     TechCardOperationType = "overlock"
-	OpTypeCoverstitch  TechCardOperationType = "coverstitch"
-	OpTypeChainstitch  TechCardOperationType = "chainstitch"
-	OpTypeBlindhem     TechCardOperationType = "blindhem"
-	OpTypeBartack      TechCardOperationType = "bartack"
-	OpTypeButtonhole   TechCardOperationType = "buttonhole"
-	OpTypeButtonAttach TechCardOperationType = "button_attach"
-	OpTypeFusing       TechCardOperationType = "fusing"
-	OpTypeHandwork     TechCardOperationType = "handwork"
-	OpTypeOther        TechCardOperationType = "other"
+	OpTypeUnknown  TechCardOperationType = "unknown"
+	OpTypeFusing   TechCardOperationType = "fusing"
+	OpTypeHandwork TechCardOperationType = "handwork"
+	OpTypeOther    TechCardOperationType = "other"
 
 	// The verbs a step is chosen from now. «What is done» and «on what» became two fields: the
-	// nine legacy members above answered both at once, so a step could not say «прострочить»
-	// without also committing to a stitch class in the same value.
+	// nine legacy tokens answered both at once, so a step could not say «прострочить» without
+	// also committing to a stitch class in the same value.
 	OpTypeMachine   TechCardOperationType = "machine"    // машинная; the machine is MachineType
 	OpTypePress     TechCardOperationType = "press"      // ВТО: приутюжить / заутюжить / отпарить
 	OpTypePressOpen TechCardOperationType = "press_open" // разутюжка
@@ -2280,16 +2279,20 @@ var OperationTypeTokens = []string{
 // `blindhem` → `blindstitch` and `double_needle` → `lockstitch_double_needle` are the only two
 // renames; the double-needle machine exists in the vocabulary precisely so this row survives the
 // move instead of collapsing into a plain lockstitch.
+//
+// The keys are STRING LITERALS, not constants: this map is the only place the nine legacy tokens
+// are allowed to exist in Go, and naming them once here is what keeps a fresh row from ever being
+// written with one.
 var LegacyOperationMachineType = map[TechCardOperationType]string{
-	OpTypeLockstitch:   "lockstitch",
-	OpTypeDoubleNeedle: "lockstitch_double_needle",
-	OpTypeOverlock:     "overlock",
-	OpTypeCoverstitch:  "coverstitch",
-	OpTypeChainstitch:  "chainstitch",
-	OpTypeBlindhem:     "blindstitch",
-	OpTypeBartack:      "bartack",
-	OpTypeButtonhole:   "buttonhole",
-	OpTypeButtonAttach: "button_attach",
+	"lockstitch":    "lockstitch",
+	"double_needle": "lockstitch_double_needle",
+	"overlock":      "overlock",
+	"coverstitch":   "coverstitch",
+	"chainstitch":   "chainstitch",
+	"blindhem":      "blindstitch",
+	"bartack":       "bartack",
+	"buttonhole":    "buttonhole",
+	"button_attach": "button_attach",
 }
 
 // MachineTypeLegacyToken is the inverse: machine token -> the legacy operation-type token a row
@@ -2311,15 +2314,6 @@ var MachineTypeLegacyToken = func() map[string]string {
 	}
 	return out
 }()
-
-// ValidTechCardOperationTypes is the set of accepted operation types (excluding the
-// "unknown" default, which is applied implicitly when unset).
-var ValidTechCardOperationTypes = map[TechCardOperationType]bool{
-	OpTypeLockstitch: true, OpTypeDoubleNeedle: true, OpTypeOverlock: true,
-	OpTypeCoverstitch: true, OpTypeChainstitch: true, OpTypeBlindhem: true,
-	OpTypeBartack: true, OpTypeButtonhole: true, OpTypeButtonAttach: true,
-	OpTypeFusing: true, OpTypeHandwork: true, OpTypeOther: true,
-}
 
 // TechCardGarmentZone says WHERE ON THE GARMENT a step works. Mirrors the common.TechCardGarmentZone
 // proto enum; stored as a string in tech_card_operation.zone ("unknown" when unset, and REJECTED on
@@ -2376,7 +2370,8 @@ var ValidGarmentZones = func() map[TechCardGarmentZone]bool {
 //
 // It replaces the free-text seam_type, whose suggestion list answered two questions with one value:
 // «стачной взаутюжку» and «стачной вразутюжку» are ONE class (SS plain) pressed two different ways.
-// Pressing direction is prose on TechCardConstruction.Pressing and is not a seam class.
+// The pressing direction is a STEP — OpTypePress (заутюжить) or OpTypePressOpen (разутюжить) — and
+// never a seam class.
 type TechCardSeamClass string
 
 var SeamClassTokens = []string{

@@ -1457,21 +1457,12 @@ message TechCardEquipmentDefaults {
 // TechCardOperation.operation_type, and a card-wide default for it is not a thing a card can mean.
 message TechCardConstruction {
   string hem_finish = 5; // обработка низа / подгибка — genuinely prose, stays text
-  string pressing = 6; // ВТО / финишная отделка — genuinely prose, stays text
   string notes = 8;
   // Inherited by TechCardOperation.seam_class when that one is UNKNOWN.
   TechCardSeamClass default_seam_class = 11;
   // Inherited by TechCardOperation.stitches_per_cm when that one is unset. In STITCHES PER
   // CENTIMETRE — stitch density is quoted per cm everywhere and is NOT part of the mm switch.
   google.type.Decimal default_stitches_per_cm = 12;
-  // 3 | 4 | 5; 0 = unset. The name does NOT reuse the removed `overlock_threads` (a string):
-  // a reused name with a new type is the drift the removed-registry rule exists to prevent.
-  //
-  // SUPERSEDED by equipment_defaults.machines[].thread_count — one overlock thread count on the
-  // card could only ever describe one overlock. Both this field and `pressing` (6) are removed and
-  // reserved together with their Go consumers, in the pressing/overlock move; until then they stay
-  // on the wire so the tree keeps building.
-  int32 overlock_thread_count = 13;
   // The card's machine and ВТО park: which machines this style is sewn on and with what settings,
   // which presses/irons it is pressed on. A step inherits from here (by profile key, or by type
   // when the card has exactly one profile of that type) and stores only what it overrides.
@@ -1479,8 +1470,14 @@ message TechCardConstruction {
   // Absent = preserve the stored profiles; present = full replace (empty = delete all). See
   // TechCardEquipmentDefaults for why presence lives in a wrapper and not in a flag.
   TechCardEquipmentDefaults equipment_defaults = 14;
-  reserved 1, 2, 3, 4, 7, 9, 10;
-  reserved "main_stitch_type", "stitch_density", "overlock_threads", "seam_allowances", "machine_class", "labour_rate", "labour_rate_currency";
+  // 6 was `pressing` and 13 was `overlock_thread_count`, and both were RETIRED BY THE PARK, not
+  // dropped: 0306 moved the prose into `notes` under a deterministic tag and turned the thread count
+  // into an overlock PROFILE, because one thread count on a card could only ever describe one
+  // overlock while a card may run several. Their positions in the CONSTRUCTION digest tuple stay
+  // frozen at the values NULL used to marshal to (see the Go projection), so a card that never
+  // filled them hashes byte for byte as before and its sign-off does not go stale.
+  reserved 1, 2, 3, 4, 6, 7, 9, 10, 13;
+  reserved "main_stitch_type", "stitch_density", "overlock_threads", "seam_allowances", "machine_class", "labour_rate", "labour_rate_currency", "pressing", "overlock_thread_count";
 }
 
 // TechCardOperationType says WHAT a step does. It used to mix that with the machine class, which
@@ -1552,8 +1549,9 @@ enum TechCardGarmentZone {
 // EF edge finishing, BS bound, FS flat, OS ornamental. It replaces the free-text `seam_type`,
 // whose suggestion list mixed the class with the PRESSING DIRECTION — «стачной взаутюжку» and
 // «стачной вразутюжку» are one class (SS plain) pressed two ways, and holding them as two
-// entries made the field answer two questions with one value. Pressing stays prose on
-// TechCardConstruction.pressing.
+// entries made the field answer two questions with one value. The pressing direction is a STEP of
+// its own now — PRESS (заутюжить) and PRESS_OPEN (разутюжить), each with its own ВТО settings — and
+// it stopped being prose on the construction when that field was retired by the equipment park.
 //
 // UNKNOWN = inherit TechCardConstruction.default_seam_class. Inheritance is a DISPLAY rule: the
 // server stores the unset value and never materialises the inherited one, so «the technologist

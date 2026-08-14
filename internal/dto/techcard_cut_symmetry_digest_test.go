@@ -42,7 +42,13 @@ func cutSymmetryDigestFixture() *entity.TechCardInsert {
 		},
 		Operations: []entity.TechCardOperation{
 			{
-				OperationType: entity.OpTypeOverlock,
+				// (machine, overlock) — ТА ЖЕ операция, что раньше писалась одним словом `overlock`:
+				// перекладка 0306 разнесла «что делаем» и «на чём» по двум колонкам, а компат-проекция
+				// хеширует эту пару байт в байт как прежнюю строку. Отпечаток выше поэтому НЕ ДВИГАЕТСЯ,
+				// и это единственное, что его здесь удерживает — если он поехал, сломана биекция, а не
+				// фикстура.
+				OperationType: entity.OpTypeMachine,
+				MachineType:   sql.NullString{String: "overlock", Valid: true},
 				Zone:          entity.TechCardGarmentZone("sleeve"),
 				Note:          sql.NullString{String: "втачать рукав", Valid: true},
 			},

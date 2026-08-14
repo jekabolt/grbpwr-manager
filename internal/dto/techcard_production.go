@@ -97,17 +97,8 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 	if pb == nil {
 		return nil, nil
 	}
-	for _, c := range []struct {
-		field string
-		val   string
-		max   int
-	}{
-		{"construction hem_finish", pb.HemFinish, maxVarchar255},
-		{"construction pressing", pb.Pressing, maxVarchar255},
-	} {
-		if len(c.val) > c.max {
-			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
-		}
+	if len(pb.HemFinish) > maxVarchar255 {
+		return nil, fmt.Errorf("construction hem_finish must be at most %d characters", maxVarchar255)
 	}
 	seamClass, err := parseSeamClass(pb.DefaultSeamClass, "construction default_seam_class")
 	if err != nil {
@@ -120,29 +111,22 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 	if err := entity.ValidateStitchesPerCm("construction default_stitches_per_cm", density); err != nil {
 		return nil, err
 	}
-	// 3/4/5 threads is the whole real range of an overlock. Anything else is a typo, and a typo here
-	// reaches the printed sheet as an instruction to thread a machine that does not exist.
-	var threads sql.NullInt32
-	if pb.OverlockThreadCount != 0 {
-		if pb.OverlockThreadCount < 3 || pb.OverlockThreadCount > 5 {
-			return nil, entity.NewFieldViolation("construction overlock_thread_count", "out_of_range",
-				fmt.Sprint(pb.OverlockThreadCount), "an overlock runs 3, 4 or 5 threads; send 0 to leave it unset")
-		}
-		threads = sql.NullInt32{Int32: pb.OverlockThreadCount, Valid: true}
-	}
 	// The card's machine / ВТО park. nil wrapper -> nil here, and the store then preserves what is
 	// stored; see parseTechCardEquipmentDefaults for why the presence lives in a wrapper.
+	//
+	// `pressing` (prose) and `overlock_thread_count` are NOT read and are not forgotten: both wire
+	// fields are reserved and both columns are gone (0306). The thread count is a machine PROFILE
+	// here — with its 1..20 range instead of the 3..5 this parser used to police, because the field
+	// now describes any machine's threading and not only an overlock's.
 	equipment, err := parseTechCardEquipmentDefaults(pb.EquipmentDefaults)
 	if err != nil {
 		return nil, err
 	}
 	return &entity.TechCardConstruction{
 		HemFinish:            nullStringFromPb(pb.HemFinish),
-		Pressing:             nullStringFromPb(pb.Pressing),
 		Notes:                nullStringFromPb(pb.Notes),
 		DefaultSeamClass:     seamClass,
 		DefaultStitchesPerCm: density,
-		OverlockThreadCount:  threads,
 		EquipmentDefaults:    equipment,
 	}, nil
 }
@@ -628,11 +612,9 @@ func techCardConstructionToPb(c *entity.TechCardConstruction) *pb_common.TechCar
 	}
 	return &pb_common.TechCardConstruction{
 		HemFinish:            pbStringFromNull(c.HemFinish),
-		Pressing:             pbStringFromNull(c.Pressing),
 		Notes:                pbStringFromNull(c.Notes),
 		DefaultSeamClass:     seamClassTokenToPb[c.DefaultSeamClass.String],
 		DefaultStitchesPerCm: pbDecimalFromNull(c.DefaultStitchesPerCm),
-		OverlockThreadCount:  c.OverlockThreadCount.Int32,
 		// ALWAYS non-nil — a read that omitted the wrapper would be re-read by the clone path as
 		// «this payload did not speak about equipment», and the clone would lose the park.
 		EquipmentDefaults: equipmentDefaultsToPb(c.EquipmentDefaults),
