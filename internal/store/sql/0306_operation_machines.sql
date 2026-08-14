@@ -24,6 +24,24 @@
 -- полностью переписывается каждым сохранением карточки, и ссылка на исчезнувший профиль означает
 -- «наследовать нечего», а не «строка операции недействительна».
 --
+-- КЛЮЧ — ЭТО ИДЕНТИЧНОСТЬ, ПОЭТОМУ СРАВНЕНИЕ ДВОИЧНОЕ. У profile_key и у обеих ссылок шага
+-- объявлено `COLLATE utf8mb4_bin`, а не коллация схемы по умолчанию (utf8mb3_general_ci на проде,
+-- utf8mb4_0900_ai_ci в контейнере) — обе регистронезависимы. Без этой строки база и Go расходятся
+-- в том, ЧТО СЧИТАТЬ ОДНИМ КЛЮЧОМ: Go сравнивает ключи побайтно (проверка дублей парка в
+-- parseTechCardEquipmentDefaults и резолв ссылки шага в resolveProfileKey), а ci-коллация склеивала
+-- бы 'abc…' и 'ABC…' в один. Расхождение стреляло дважды и в разные стороны: два профиля,
+-- различающиеся только регистром, проходили проверку дублей в Go и падали на UNIQUE сырой 1062; а
+-- ссылка шага, отличающаяся от ключа профиля регистром, проходила форматную проверку, НЕ находилась
+-- при резолве в Go и молча уезжала в NULL — полная замена сохраняла эту отвязку навсегда.
+-- Регистр НЕ нормализуется ни здесь, ни в dto: ключ минтит клиент, и переписывать чужую
+-- идентичность сервер не вправе; правило сравнения приводится к Go, а не наоборот.
+-- UNIQUE(tech_card_id, profile_key) собственной коллации не имеет — он наследует коллацию колонки,
+-- поэтому одной правки колонки достаточно, отдельной правки индексу не нужно.
+-- Именно utf8mb4_bin, а не `CHAR(26) BINARY`: атрибут BINARY в MySQL 8.0 объявлен deprecated
+-- (предупреждение 1287) и брал бы коллацию от charset'а схемы, то есть на проде и в контейнере
+-- разную. Смешанное сравнение utf8mb4_bin-колонки с utf8mb3_general_ci-колонкой проверено на 8.0.46:
+-- 1267 не стреляет, побеждает _bin — то есть двоичность распространяется на сравнение, а не ломает его.
+--
 -- DOWN ЧЕСТНО LOSSY. Он возвращает КОЛОНКИ, но не содержимое: профили дропаются вместе с таблицей,
 -- перенесённая в notes проза остаётся в notes, а pressing / overlock_thread_count возвращаются
 -- ПУСТЫМИ. Цикл up → down → up сохраняет схему и не сохраняет данные — это записано здесь, чтобы
@@ -51,7 +69,7 @@
 CREATE TABLE IF NOT EXISTS tech_card_equipment_profile (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   tech_card_id INT NOT NULL COMMENT 'SIGNED: tech_card.id signed с 0067, UNSIGNED здесь = отказ FK 3780',
-  profile_key CHAR(26) NOT NULL COMMENT 'durable ULID строки профиля; идентичность профиля, переживает full-replace',
+  profile_key CHAR(26) COLLATE utf8mb4_bin NOT NULL COMMENT 'durable ULID строки профиля; идентичность профиля, переживает full-replace. _bin: сравнение как в Go, побайтно — см. шапку',
   kind VARCHAR(8) NOT NULL COMMENT 'machine | press — какое из двух сообщений проводa породило строку',
   equipment VARCHAR(32) NOT NULL COMMENT 'токен machine-словаря ИЛИ press-словаря, по kind',
   label VARCHAR(64) NULL COMMENT 'имя для человека (оверлок у окна); В КЛЮЧ НЕ ВХОДИТ',
@@ -109,7 +127,7 @@ SET @op_new := (SELECT COUNT(*) FROM information_schema.COLUMNS
 SET @ddl := IF(@op_new = 0,
     'ALTER TABLE tech_card_operation
         ADD COLUMN machine_type VARCHAR(32) NULL COMMENT ''машинка машинного шага; NULL = шаг не машинный либо не указано'',
-        ADD COLUMN machine_profile_key CHAR(26) NULL COMMENT ''мягкая ссылка на профиль карточки; FK намеренно нет, профили переписываются каждым сохранением'',
+        ADD COLUMN machine_profile_key CHAR(26) COLLATE utf8mb4_bin NULL COMMENT ''мягкая ссылка на профиль карточки; FK намеренно нет, профили переписываются каждым сохранением. _bin: та же идентичность, что у profile_key'',
         ADD COLUMN thread_count TINYINT NULL COMMENT ''override числа ниток; NULL = наследуется от профиля'',
         ADD COLUMN needle_type VARCHAR(16) NULL COMMENT ''override типа иглы; NULL = наследуется'',
         ADD COLUMN needle_size_nm SMALLINT NULL COMMENT ''override номера иглы Nm; NULL = наследуется'',
@@ -117,7 +135,7 @@ SET @ddl := IF(@op_new = 0,
         ADD COLUMN thread_tension_note VARCHAR(64) NULL COMMENT ''уточнение к шкале натяжения; без шкалы запрещено'',
         ADD COLUMN stitch_width_mm DECIMAL(4,1) NULL COMMENT ''ШИРИНА стежка, мм; НЕ путать с topstitch_width_mm (отступ от края)'',
         ADD COLUMN press_equipment VARCHAR(16) NULL COMMENT ''оборудование ВТО-шага; NULL = шаг не утюжильный либо не указано'',
-        ADD COLUMN press_profile_key CHAR(26) NULL COMMENT ''мягкая ссылка на press-профиль карточки'',
+        ADD COLUMN press_profile_key CHAR(26) COLLATE utf8mb4_bin NULL COMMENT ''мягкая ссылка на press-профиль карточки; _bin, как и machine_profile_key'',
         ADD COLUMN press_temperature_c SMALLINT NULL COMMENT ''override температуры, °C; NULL = наследуется'',
         ADD COLUMN press_dwell_sec SMALLINT NULL COMMENT ''override выдержки, с; NULL = наследуется'',
         ADD COLUMN press_pressure_n_cm2 DECIMAL(5,1) NULL COMMENT ''override давления, Н/см²; NULL = наследуется'',

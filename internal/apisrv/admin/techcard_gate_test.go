@@ -61,15 +61,30 @@ func gateInsert(aware bool) *pb_common.TechCardInsert {
 	}
 }
 
+// gateStage is HOW FAR the request is expected to get, and the mock is built to match it. It is an
+// assertion in its own right, not bookkeeping: rule 1 reads the payload and owes storage nothing, so
+// a request it refuses must never have loaded the card — expecting that load would quietly permit
+// the ordering this gate exists to guarantee (rule 1 ahead of the dto conversion, which happens
+// after the load).
+type gateStage int
+
+const (
+	gateStopsAtWire   gateStage = iota // refused off the payload alone; nothing is read
+	gateStopsAtStored                  // the stored card is read, the write is never attempted
+	gateReachesStore                   // every gate passed and the write was attempted
+)
+
 // gateUpdate runs UpdateTechCard against a stored card, with the store answering a conflict so a
 // request that survives every gate is distinguishable from one that was refused.
-func gateUpdate(t *testing.T, stored *entity.TechCard, tc *pb_common.TechCardInsert, expectStoreCall bool) error {
+func gateUpdate(t *testing.T, stored *entity.TechCard, tc *pb_common.TechCardInsert, stage gateStage) error {
 	t.Helper()
 	repo := mocks.NewMockRepository(t)
 	techCards := mocks.NewMockTechCards(t)
-	repo.EXPECT().TechCards().Return(techCards)
-	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(stored, nil)
-	if expectStoreCall {
+	if stage > gateStopsAtWire {
+		repo.EXPECT().TechCards().Return(techCards)
+		techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(stored, nil)
+	}
+	if stage == gateReachesStore {
 		techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
 			mock.AnythingOfType("*entity.TechCardInsert"), 3).Return(nil, entity.ErrTechCardConflict)
 	}
@@ -97,7 +112,7 @@ func TestUpdateTechCardRefusesOutdatedClientOverStoredMachineFacts(t *testing.T)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := gateUpdate(t, tt.stored, gateInsert(false), false)
+			err := gateUpdate(t, tt.stored, gateInsert(false), gateStopsAtStored)
 			require.Equal(t, codes.FailedPrecondition, status.Code(err))
 			require.Contains(t, status.Convert(err).Message(), "outdated admin client")
 			require.Contains(t, status.Convert(err).Message(), "update the admin panel")
@@ -146,10 +161,36 @@ func TestUpdateTechCardRefusesOutdatedClientEchoingMachineFields(t *testing.T) {
 			}
 			return tc
 		}},
+		// THE ECHO THE CONVERTER HAS AN OPINION ABOUT. A machine value on a step type that cannot
+		// carry one is refused by parseOperationEquipment in words — «the machine settings belong to a
+		// machine step, clear the field» — and that sentence is useless to the sender, whose form has
+		// no such field to clear: it is echoing a value it never rendered. The gate has the sentence
+		// that can be acted on, so the gate has to speak first, which it only does while rule 1 sits
+		// ahead of the conversion.
+		{"a machine value echoed onto a step type that cannot carry one", func() *pb_common.TechCardInsert {
+			tc := gateInsert(false)
+			tc.Operations = []*pb_common.TechCardOperation{{
+				OperationType: pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_HANDWORK,
+				Zone:          gateZone(),
+				ThreadCount:   4,
+			}}
+			return tc
+		}},
+		{"a ВТО value echoed onto a step type that cannot carry one", func() *pb_common.TechCardInsert {
+			tc := gateInsert(false)
+			tc.Operations = []*pb_common.TechCardOperation{{
+				OperationType: pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_HANDWORK,
+				Zone:          gateZone(),
+				PressCloth:    pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_TEFLON_SHEET,
+			}}
+			return tc
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := gateUpdate(t, &entity.TechCard{}, tt.payload(), false)
+			// gateStopsAtWire is the load-bearing half: the refusal must come off the payload, before
+			// the card is read and therefore before the conversion that reads it.
+			err := gateUpdate(t, &entity.TechCard{}, tt.payload(), gateStopsAtWire)
 			require.Equal(t, codes.FailedPrecondition, status.Code(err))
 			require.Contains(t, status.Convert(err).Message(), "does not declare support")
 		})
@@ -187,7 +228,7 @@ func TestUpdateTechCardAllowsOutdatedClientOnCardWithoutMachineFacts(t *testing.
 			Zone:            "outer",
 		}},
 	}}
-	err := gateUpdate(t, stored, tc, true)
+	err := gateUpdate(t, stored, tc, gateReachesStore)
 	require.Equal(t, codes.Aborted, status.Code(err), "a legacy save with nothing to erase must go through")
 }
 
@@ -198,7 +239,7 @@ func TestUpdateTechCardAllowsAwareClientOverStoredMachineFacts(t *testing.T) {
 		Zone:          gateZone(),
 		MachineType:   pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_OVERLOCK,
 	}}
-	err := gateUpdate(t, storedCardWithMachineFacts(), tc, true)
+	err := gateUpdate(t, storedCardWithMachineFacts(), tc, gateReachesStore)
 	require.Equal(t, codes.Aborted, status.Code(err))
 }
 
@@ -321,7 +362,7 @@ func TestUpdateTechCardRefusesApprovingFusingWithoutTemperatureOrDwell(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(tt.presses, tt.step), false)
+			err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(tt.presses, tt.step), gateStopsAtStored)
 			require.Equal(t, codes.InvalidArgument, status.Code(err))
 			msg := status.Convert(err).Message()
 			require.Contains(t, msg, "signoffs[0]")
@@ -335,7 +376,7 @@ func TestUpdateTechCardRefusesApprovingFusingWithoutTemperatureOrDwell(t *testin
 func TestUpdateTechCardRefusesApprovingFusingWithOnlyHalfTheRecipe(t *testing.T) {
 	step := gateFusingStep("")
 	step.PressTemperatureC = 150
-	err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(nil, step), false)
+	err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(nil, step), gateStopsAtStored)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Contains(t, status.Convert(err).Message(), "fusing step(s) 10")
 }
@@ -371,7 +412,7 @@ func TestUpdateTechCardApprovesFusingResolvedThroughTheLadder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(tt.presses, tt.step()), true)
+			err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(tt.presses, tt.step()), gateReachesStore)
 			require.Equal(t, codes.Aborted, status.Code(err))
 		})
 	}
@@ -384,7 +425,7 @@ func TestUpdateTechCardRefusesApprovingFusingWithTwoFittingProfiles(t *testing.T
 		gateFusingPressProfile(gateFusingKeyB, 190, 20,
 			pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_UNKNOWN),
 	}
-	err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(presses, gateFusingStep("")), false)
+	err := gateUpdate(t, &entity.TechCard{}, gateFusingCard(presses, gateFusingStep("")), gateStopsAtStored)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	msg := status.Convert(err).Message()
 	require.Contains(t, msg, "signoffs[0]")
@@ -396,7 +437,7 @@ func TestUpdateTechCardRefusesApprovingFusingWithTwoFittingProfiles(t *testing.T
 func TestUpdateTechCardSavesAnUnderspecifiedFusingStepWithoutApproval(t *testing.T) {
 	tc := gateFusingCard(nil, gateFusingStep(""))
 	tc.Signoffs = nil
-	err := gateUpdate(t, &entity.TechCard{}, tc, true)
+	err := gateUpdate(t, &entity.TechCard{}, tc, gateReachesStore)
 	require.Equal(t, codes.Aborted, status.Code(err))
 }
 
@@ -413,7 +454,7 @@ func TestUpdateTechCardDoesNotReJudgeACarriedConstructionApproval(t *testing.T) 
 			SignedDigest: sql.NullString{String: "stored-digest", Valid: true},
 		}},
 	}}
-	err := gateUpdate(t, stored, tc, true)
+	err := gateUpdate(t, stored, tc, gateReachesStore)
 	require.Equal(t, codes.Aborted, status.Code(err))
 }
 

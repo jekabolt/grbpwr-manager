@@ -153,6 +153,15 @@ func parseTechCardEquipmentDefaults(pb *pb_common.TechCardEquipmentDefaults) (*e
 	// One key space across BOTH lists: the step's reference names a key, not a key-and-a-kind, and
 	// UNIQUE(tech_card_id, profile_key) in the schema is over the whole table. Caught here so the
 	// operator reads a sentence instead of a driver 1062.
+	//
+	// The comparison is BYTE-WISE, and the column agrees with it: 0306 declares profile_key
+	// COLLATE utf8mb4_bin precisely so that «same key» means the same thing on both sides. Under the
+	// schema's default (case-insensitive) collation these two halves disagreed, and disagreed in both
+	// directions at once — two keys differing only in case passed this check and died on the UNIQUE
+	// as a raw 1062, while a step whose reference differed from its profile's key by case passed the
+	// format check, failed resolveProfileKey's byte-wise lookup and silently detached. The case is
+	// never normalised here: the key is minted by the client and rewriting somebody's identity to
+	// make a comparison work is how two keys end up under one name.
 	seen := make(map[string]bool, len(pb.Machines)+len(pb.Presses))
 	for i, m := range pb.Machines {
 		field := fmt.Sprintf("construction.equipment_defaults.machines[%d]", i)

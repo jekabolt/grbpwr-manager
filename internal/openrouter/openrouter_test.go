@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -124,6 +125,70 @@ func TestSystemPrompt_CarriesEveryVocabulary(t *testing.T) {
 	}
 	if strings.Contains(systemPrompt, "{{") {
 		t.Errorf("an unfilled placeholder survived into the prompt:\n%s", systemPrompt)
+	}
+}
+
+// TestSystemPrompt_OmissionMeansInheritNotNo guards the seam between the prompt and the NONE/UNKNOWN
+// split. Once a step could inherit an attachment from a machine profile, «omit the field when no
+// attachment is used» stopped being true and started being backwards: an omitted attachment_kind now
+// puts the PROFILE'S foot on a step that was meant to run bare. The token is the only way to say no,
+// and the prompt is the only place the model can learn that.
+func TestSystemPrompt_OmissionMeansInheritNotNo(t *testing.T) {
+	if strings.Contains(systemPrompt, "omit when no attachment is used") {
+		t.Error("the prompt still tells the model to omit attachment_kind for «no attachment» — that now inherits the profile's")
+	}
+	for _, want := range []string{
+		`"none" = SEWN BARE`,
+		"AN OMITTED FIELD INHERITS; IT DOES NOT MEAN \"NO\".",
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Errorf("the prompt does not state %q", want)
+		}
+	}
+}
+
+// TestSystemPrompt_CarriesTheThreadTensionQualifier: the scale is closed, so «other» says nothing on
+// its own. The qualifier has to be askable in the prompt AND decodable in the answer — a field the
+// prompt never mentions is one the model never sends, and a field the shape never declares is one
+// the decoder silently drops.
+func TestSystemPrompt_CarriesTheThreadTensionQualifier(t *testing.T) {
+	if !strings.Contains(systemPrompt, "thread_tension_note") {
+		t.Fatal("the prompt never asks for thread_tension_note; at tension «other» the draft can say nothing")
+	}
+	if !strings.Contains(systemPrompt, fmt.Sprint(entity.MaxThreadTensionNoteLen)) {
+		t.Error("the prompt does not state the qualifier's length bound, which the save enforces")
+	}
+	var op Operation
+	if err := json.Unmarshal([]byte(`{"thread_tension":"other","thread_tension_note":"x"}`), &op); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if op.ThreadTensionNote != "x" {
+		t.Errorf("the answer shape drops the qualifier: %+v", op)
+	}
+}
+
+// TestUserPrompt_PromisesInheritanceOnlyWhereThereIsOne. The context lines are rendered by the
+// caller, which marks an equipment it holds several profiles of; the prompt's job is to have told the
+// model what that mark means. A heading that promised inheritance unconditionally would be asking for
+// omissions that inherit from nothing, because only a sole profile can be attached to a step.
+func TestUserPrompt_PromisesInheritanceOnlyWhereThereIsOne(t *testing.T) {
+	p := buildUserPrompt(TechCardContext{
+		Construction: &ConstructionContext{
+			MachineProfiles: []string{"overlock: 4 threads", "lockstitch [SEVERAL profiles of this equipment on the card]: 3 st/cm"},
+			PressProfiles:   []string{"iron for press: 150 °C"},
+		},
+	}, "sew it")
+	for _, want := range []string{"SEVERAL", "CARD MACHINES", "CARD PRESSING EQUIPMENT"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("user prompt missing %q\n---\n%s", want, p)
+		}
+	}
+	if !strings.Contains(systemPrompt, "SEVERAL") {
+		t.Error("the system prompt never explains the SEVERAL mark the context uses")
+	}
+	// And it must not have kept the unconditional promise it replaced.
+	if strings.Contains(p, "a machine step inherits these") {
+		t.Error("the machines heading still promises inheritance unconditionally")
 	}
 }
 

@@ -44,7 +44,7 @@ Respond with ONE JSON object and NOTHING else — no markdown, no commentary. Sh
       "topstitch_mode": "width",       // {{TOPSTITCH_MODES}}; omit when the step has no topstitching
       "topstitch_width_mm": "6",       // ONLY with topstitch_mode "width"
       "topstitch_rows": 2,             // 1..{{MAX_TOPSTITCH_ROWS}}; omit when unknown
-      "attachment_kind": "binder",     // token from the list below; omit when no attachment is used
+      "attachment_kind": "binder",     // token below; "none" = SEWN BARE. Omit only to inherit the machine profile
       "smv_minutes": "0.8",            // standard minute value for the step, numeric
       "callout_number": 0,             // sketch callout number if relevant, else 0
       "note": "…",                     // optional remark, free text — the ONLY free-text field
@@ -55,6 +55,7 @@ Respond with ONE JSON object and NOTHING else — no markdown, no commentary. Sh
       "needle_type": "ballpoint",      // needle POINT, token from the list below
       "needle_size_nm": 90,            // needle size in Nm ({{NEEDLE_SIZE_RANGE}}); Nm 90 = 0.90 mm blade
       "thread_tension": "normal",      // token from the list below, RELATIVE to that machine's usual
+      "thread_tension_note": "на 0.5 туже", // ≤{{MAX_TENSION_NOTE}} chars qualifying that scale; ONLY together with thread_tension
       "stitch_width_mm": "5",          // zigzag amplitude / overlock bite in mm, {{STITCH_WIDTH_RANGE}}
 
       // PRESSING STEPS ONLY / ВТО (operation_type "press", "press_open" or "fusing"). Omit elsewhere.
@@ -91,6 +92,14 @@ Rules:
 - Use only these zone tokens: {{ZONES}}.
 - Use only these seam_class tokens (ISO 4916): {{SEAM_CLASSES}}.
 - Use only these attachment_kind tokens: {{ATTACHMENT_KINDS}}.
+- AN OMITTED FIELD INHERITS; IT DOES NOT MEAN "NO". attachment_kind and press_cloth each carry a
+  "none" token for that, and the two answers are not the same one: omitting attachment_kind on a
+  step whose machine profile lists a binder puts the BINDER on that step, while "none" says the step
+  is sewn bare. Write "none" whenever the step deliberately runs without the attachment or without a
+  press cloth, and omit the field only when the profile's answer is the right one.
+- thread_tension_note qualifies the scale and never replaces it: send it only together with
+  thread_tension, and above all with thread_tension "other", which says nothing on its own. A note
+  without a scale is refused by the save.
 - ALL lengths are MILLIMETRES. Stitch density is the one exception and is per centimetre. Pressure is
   in N/cm² on the cloth — never bar, never a dial number.
 - RANGES THE SAVE ENFORCES, so a draft outside them cannot be accepted as written: stitches_per_cm
@@ -100,12 +109,18 @@ Rules:
   press_dwell_sec {{PRESS_DWELL_RANGE}}, press_pressure_n_cm2 {{PRESS_PRESSURE_RANGE}}.
 - Omit seam_class, stitches_per_cm and seam_allowance_mm when the step simply follows the card's
   default — an omitted field INHERITS, and repeating the default hides which steps genuinely differ.
-- THE SAME RULE GOVERNS THE EQUIPMENT SETTINGS: when the context lists a machine or press profile,
-  name its type and OMIT every setting that matches it. Fill thread_count, needle_type,
-  needle_size_nm, thread_tension, stitch_width_mm, press_temperature_c, press_dwell_sec,
-  press_pressure_n_cm2, press_steam or press_cloth ONLY where the step genuinely deviates.
-- You do not create equipment profiles and you never invent an identifier for one: name the
-  machine_type / press_equipment, and the technologist links the profile.
+- THE EQUIPMENT SETTINGS FOLLOW THAT RULE ONLY WHERE THERE IS SOMETHING TO INHERIT FROM, and the
+  context says exactly where. A profile line with no marker is the card's ONLY profile of that
+  machine or that pressing equipment: naming the type is enough, the step is attached to it for you,
+  and every setting that matches it must be OMITTED. A line marked SEVERAL means the card holds more
+  than one profile of that equipment — nothing can be attached, nothing is inherited, and a step on
+  it has to STATE every setting it needs. Equipment named in no line at all inherits nothing either.
+- Fill thread_count, needle_type, needle_size_nm, thread_tension, stitch_width_mm,
+  press_temperature_c, press_dwell_sec, press_pressure_n_cm2, press_steam or press_cloth where the
+  step genuinely deviates from a profile it inherits, and wherever there is no profile behind it at
+  all — there, state as much as you can.
+- You do not create equipment profiles and you never name or invent an identifier for one: answer
+  with machine_type / press_equipment, and the linking is done for you or by the technologist.
 - Prefer materials and pieces from the provided context; do not invent parts that contradict it.
 - Leave a field out rather than guessing when you genuinely do not know.
 - Output must be valid JSON parseable as-is.`
@@ -129,6 +144,7 @@ func buildSystemPrompt() string {
 		"{{STITCHES_PER_CM_RANGE}}", promptRange(entity.MinStitchesPerCm, entity.MaxStitchesPerCm),
 		"{{SEAM_ALLOWANCE_RANGE}}", promptRange(entity.MinSeamAllowanceMm, entity.MaxSeamAllowanceMm),
 		"{{MAX_TOPSTITCH_ROWS}}", fmt.Sprint(entity.MaxTopstitchRows),
+		"{{MAX_TENSION_NOTE}}", fmt.Sprint(entity.MaxThreadTensionNoteLen),
 		"{{THREAD_COUNT_RANGE}}", promptRange(entity.MinThreadCount, entity.MaxThreadCount),
 		"{{NEEDLE_SIZE_RANGE}}", promptRange(entity.MinNeedleSizeNm, entity.MaxNeedleSizeNm),
 		"{{STITCH_WIDTH_RANGE}}", promptRange(entity.MinStitchWidthMm, entity.MaxStitchWidthMm),
@@ -194,8 +210,16 @@ func buildUserPrompt(tcx TechCardContext, description string) string {
 		// step that runs on the listed overlock at the listed density says so by naming the machine
 		// and staying silent about the rest. A card with no park contributes nothing, exactly like an
 		// unset default.
-		writeBullets(&b, "CARD MACHINES (a machine step inherits these — name machine_type and omit every setting that matches)", c.MachineProfiles)
-		writeBullets(&b, "CARD PRESSING EQUIPMENT / ВТО (a press / press_open / fusing step inherits these — name press_equipment and omit every setting that matches)", c.PressProfiles)
+		//
+		// THE HEADINGS PROMISE ONLY WHAT THE MAPPER DELIVERS. A step is attached to a profile by the
+		// CALLER, after the answer comes back, and it can only do that where the machine or the
+		// pressing equipment names ONE profile — the card may legitimately hold two identical overlocks, and
+		// the model has no way to say which one it meant: it never sees a profile key and could not
+		// answer with one. So a line for an equipment with several profiles is marked SEVERAL, and
+		// the model is told to state its settings rather than omit them into a link that will not be
+		// made. Promising inheritance there is how an omitted setting became no setting at all.
+		writeBullets(&b, "CARD MACHINES (name machine_type; an unmarked line is the card's only profile of that machine and a step naming it INHERITS it — omit every setting that matches. A line marked SEVERAL inherits NOTHING: state the settings)", c.MachineProfiles)
+		writeBullets(&b, "CARD PRESSING EQUIPMENT / ВТО (name press_equipment; same rule — an unmarked line is inherited by a press / press_open / fusing step naming it, a line marked SEVERAL is not)", c.PressProfiles)
 	}
 	if v := strings.TrimSpace(tcx.RequiredSeamAllowanceMm); v != "" {
 		writeKV(&b, "Required seam allowance (mm)", v)

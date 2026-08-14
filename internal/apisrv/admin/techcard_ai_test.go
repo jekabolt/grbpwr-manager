@@ -283,3 +283,170 @@ func TestAIProfileSummaries(t *testing.T) {
 		t.Error("a nil park must produce no lines at all")
 	}
 }
+
+// --- the thread-tension qualifier, and the profile link the model cannot make ---------------------
+
+// TestAIOperationToPb_ThreadTensionNote: the closed scale needs its qualifier to be worth anything at
+// «other», and the qualifier needs the scale to be legal at all.
+func TestAIOperationToPb_ThreadTensionNote(t *testing.T) {
+	var drafted openrouter.Operation
+	if err := json.Unmarshal([]byte(`{
+	  "operation_type":"machine","machine_type":"overlock","zone":"side",
+	  "thread_tension":"other","thread_tension_note":"на 0.5 туже верхней"
+	}`), &drafted); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// The field has to exist in the answer SHAPE first: without the json tag the decoder drops the
+	// sentence and «other» arrives meaning nothing.
+	if drafted.ThreadTensionNote != "на 0.5 туже верхней" {
+		t.Fatalf("the note never reached the decoded answer: %q", drafted.ThreadTensionNote)
+	}
+	op := aiOperationToPb(drafted)
+	if op.ThreadTension != pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_OTHER {
+		t.Fatalf("tension = %v", op.ThreadTension)
+	}
+	if op.ThreadTensionNote != "на 0.5 туже верхней" {
+		t.Errorf("note = %q", op.ThreadTensionNote)
+	}
+
+	// A note with no scale is refused by the save in exactly those words, so a draft that carried one
+	// would be a step the technologist cannot save until they find the field that did it.
+	bare := aiOperationToPb(openrouter.Operation{
+		OperationType: "machine", MachineType: "overlock", Zone: "side",
+		ThreadTensionNote: "чуть слабее",
+	})
+	if bare.ThreadTensionNote != "" {
+		t.Errorf("a qualifier with no scale must not travel: %q", bare.ThreadTensionNote)
+	}
+
+	// Over the column's width the note is CUT and marked, not dropped and not passed on: passed on it
+	// is a save the operator cannot complete, dropped it takes the only content «other» has.
+	long := aiOperationToPb(openrouter.Operation{
+		OperationType: "machine", MachineType: "overlock", Zone: "side",
+		ThreadTension: "other", ThreadTensionNote: strings.Repeat("я", entity.MaxThreadTensionNoteLen+20),
+	})
+	if n := len([]rune(long.ThreadTensionNote)); n != entity.MaxThreadTensionNoteLen {
+		t.Errorf("truncated note is %d runes, want %d", n, entity.MaxThreadTensionNoteLen)
+	}
+	if !strings.HasSuffix(long.ThreadTensionNote, "…") {
+		t.Errorf("a cut note must say it was cut: %q", long.ThreadTensionNote)
+	}
+}
+
+func aiTestPark(machines []entity.TechCardMachineProfile, presses []entity.TechCardPressProfile) aiEquipmentPark {
+	return newAIEquipmentPark(&entity.TechCardConstruction{
+		EquipmentDefaults: &entity.TechCardEquipmentDefaults{Machines: machines, Presses: presses},
+	})
+}
+
+// TestAIEquipmentParkAttachesTheSoleProfile is the whole point of the park in the prompt: the model
+// is told to OMIT the settings that match a listed profile, and an omitted setting only inherits
+// through a profile key — which the model has no field for and no way to choose. If the server does
+// not attach it, every omission the prompt asked for becomes a blank on the sheet.
+func TestAIEquipmentParkAttachesTheSoleProfile(t *testing.T) {
+	const overlockKey = "01J0AIPARKOVERLOCK00000001"
+	const ironKey = "01J0AIPARKIRON00000000001A"
+	park := aiTestPark(
+		[]entity.TechCardMachineProfile{{ProfileKey: overlockKey, MachineType: "overlock"}},
+		[]entity.TechCardPressProfile{{ProfileKey: ironKey, PressEquipment: "iron"}},
+	)
+
+	machine := aiOperationToPb(openrouter.Operation{OperationType: "machine", MachineType: "overlock", Zone: "side"})
+	park.attach(machine)
+	if machine.MachineProfileKey != overlockKey {
+		t.Errorf("machine step was not attached: %q", machine.MachineProfileKey)
+	}
+	if machine.PressProfileKey != "" {
+		t.Errorf("a machine step must not gain a ВТО reference: %q", machine.PressProfileKey)
+	}
+
+	press := aiOperationToPb(openrouter.Operation{OperationType: "press", PressEquipment: "iron", Zone: "front"})
+	park.attach(press)
+	if press.PressProfileKey != ironKey {
+		t.Errorf("press step was not attached: %q", press.PressProfileKey)
+	}
+	if press.MachineProfileKey != "" {
+		t.Errorf("a ВТО step must not gain a machine reference: %q", press.MachineProfileKey)
+	}
+
+	// Equipment the card does not run has nothing to inherit from, and a step naming it is left
+	// unattached rather than pointed at something plausible.
+	other := aiOperationToPb(openrouter.Operation{OperationType: "machine", MachineType: "bartack", Zone: "pocket"})
+	park.attach(other)
+	if other.MachineProfileKey != "" {
+		t.Errorf("a machine the card does not run must not be attached: %q", other.MachineProfileKey)
+	}
+
+	// A step whose machine the model never named is a draft with a blank, and a blank cannot pick a
+	// profile either.
+	blank := aiOperationToPb(openrouter.Operation{OperationType: "machine", Zone: "side"})
+	park.attach(blank)
+	if blank.MachineProfileKey != "" {
+		t.Errorf("a step with no machine must not be attached: %q", blank.MachineProfileKey)
+	}
+}
+
+// TestAIEquipmentParkRefusesToGuessBetweenTwoIdenticalMachines: «два одинаковых станка» is a
+// supported answer, not a duplicate — it is the reason the durable key exists. Picking one of them
+// for the technologist would print settings from a machine nobody chose, so the server attaches
+// nothing and the context stops promising the inheritance instead.
+func TestAIEquipmentParkRefusesToGuessBetweenTwoIdenticalMachines(t *testing.T) {
+	machines := []entity.TechCardMachineProfile{
+		{ProfileKey: "01J0AIPARKOVERLOCK0000000A", MachineType: "overlock", Label: sql.NullString{String: "у окна", Valid: true}},
+		{ProfileKey: "01J0AIPARKOVERLOCK0000000B", MachineType: "overlock", Label: sql.NullString{String: "у двери", Valid: true}},
+		{ProfileKey: "01J0AIPARKBARTACK00000000C", MachineType: "bartack"},
+	}
+	park := aiTestPark(machines, nil)
+
+	ambiguous := aiOperationToPb(openrouter.Operation{OperationType: "machine", MachineType: "overlock", Zone: "side"})
+	park.attach(ambiguous)
+	if ambiguous.MachineProfileKey != "" {
+		t.Errorf("two overlocks cannot be told apart; the step must stay unattached, got %q", ambiguous.MachineProfileKey)
+	}
+	// The unambiguous neighbour is unaffected — ambiguity is per equipment, not per card.
+	sole := aiOperationToPb(openrouter.Operation{OperationType: "machine", MachineType: "bartack", Zone: "pocket"})
+	park.attach(sole)
+	if sole.MachineProfileKey != "01J0AIPARKBARTACK00000000C" {
+		t.Errorf("the card's only bartack must still be attached: %q", sole.MachineProfileKey)
+	}
+
+	// And the CONTEXT has to say the same thing the mapper does: the two overlock lines are marked,
+	// the bartack line is not. A prompt that promised inheritance here would be asking for omissions
+	// that inherit from nothing.
+	lines := aiMachineProfileSummaries(&entity.TechCardEquipmentDefaults{Machines: machines})
+	if len(lines) != 3 {
+		t.Fatalf("lines = %v", lines)
+	}
+	for i, l := range lines[:2] {
+		if !strings.Contains(l, "SEVERAL") {
+			t.Errorf("overlock line %d must be marked: %q", i, l)
+		}
+	}
+	if strings.Contains(lines[2], "SEVERAL") {
+		t.Errorf("the card's only bartack must not be marked: %q", lines[2])
+	}
+
+	// Three presses of one equipment: the third must not look like a first one and re-enter the index.
+	pressPark := aiTestPark(nil, []entity.TechCardPressProfile{
+		{ProfileKey: "01J0AIPARKIRON0000000000A1", PressEquipment: "iron"},
+		{ProfileKey: "01J0AIPARKIRON0000000000B2", PressEquipment: "iron"},
+		{ProfileKey: "01J0AIPARKIRON0000000000C3", PressEquipment: "iron"},
+	})
+	third := aiOperationToPb(openrouter.Operation{OperationType: "fusing", PressEquipment: "iron", Zone: "front"})
+	pressPark.attach(third)
+	if third.PressProfileKey != "" {
+		t.Errorf("three irons are no more attachable than two: %q", third.PressProfileKey)
+	}
+}
+
+// A card with no park at all attaches nothing and panics on nothing — the ordinary case today.
+func TestAIEquipmentParkEmptyCard(t *testing.T) {
+	for _, park := range []aiEquipmentPark{{}, newAIEquipmentPark(nil), newAIEquipmentPark(&entity.TechCardConstruction{})} {
+		op := aiOperationToPb(openrouter.Operation{OperationType: "machine", MachineType: "overlock", Zone: "side"})
+		park.attach(op)
+		if op.MachineProfileKey != "" {
+			t.Errorf("an empty park attached %q", op.MachineProfileKey)
+		}
+		park.attach(nil)
+	}
+}

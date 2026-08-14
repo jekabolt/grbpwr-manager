@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -682,5 +683,81 @@ func TestOperationRangeBands(t *testing.T) {
 	}
 	if !got.Operations[0].StitchWidthMm.Valid || !got.Operations[0].StitchWidthMm.Decimal.IsZero() {
 		t.Errorf("a zero stitch width must survive as a PRESENT zero: %+v", got.Operations[0].StitchWidthMm)
+	}
+}
+
+// TestProfileKeyIdentityIsCaseSensitive pins the side of the disagreement Go has always been on, so
+// that the column's collation cannot drift back to the other one unnoticed.
+//
+// The durable key IS the identity of a profile row, and this converter reads that identity byte for
+// byte — twice: the park's duplicate check, and the step's reference resolution. Until 0306 spelled
+// `COLLATE utf8mb4_bin` on the column, the database read it case-INSENSITIVELY (utf8mb3_general_ci on
+// prod, utf8mb4_0900_ai_ci in the container), and the two halves broke in opposite directions from
+// the same cause: two keys differing only in case passed the check here and died on
+// uq_equipment_profile_key as a driver 1062, while a step whose reference differed by case passed the
+// format check, matched nothing here and silently detached into NULL — which the full replace then
+// preserved forever.
+//
+// The case is NEVER normalised. The key is minted by the client and round-tripped verbatim; folding
+// it to make a comparison work is how one name ends up covering two identities (the scope_key trap).
+func TestProfileKeyIdentityIsCaseSensitive(t *testing.T) {
+	const upper = "01J0CASEKEY0000000000000AB"
+	lower := strings.ToLower(upper)
+	if upper == lower || strings.ToUpper(lower) != upper {
+		t.Fatalf("the fixture must differ ONLY in case: %q vs %q", upper, lower)
+	}
+
+	park := &pb_common.TechCardConstruction{
+		EquipmentDefaults: &pb_common.TechCardEquipmentDefaults{
+			Machines: []*pb_common.TechCardMachineProfile{
+				{ProfileKey: upper, MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_OVERLOCK},
+				{ProfileKey: lower, MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_OVERLOCK},
+			},
+		},
+	}
+	two, err := ConvertPbTechCardInsertToEntity(equipCard(park, true))
+	if err != nil {
+		t.Fatalf("two keys differing only in case are two profiles: %v", err)
+	}
+	got := []string{two.Construction.EquipmentDefaults.Machines[0].ProfileKey,
+		two.Construction.EquipmentDefaults.Machines[1].ProfileKey}
+	if got[0] != upper || got[1] != lower {
+		t.Errorf("the keys were rewritten: %q", got)
+	}
+
+	// The step's reference is resolved with the same eye. It names ONE of the two rows, and the one
+	// it names is the one it spelled.
+	step := func(key string) *pb_common.TechCardOperation {
+		op := equipMachineOp(zoneOuter, pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_OVERLOCK)
+		op.MachineProfileKey = key
+		return op
+	}
+	for _, want := range []string{upper, lower} {
+		linked, err := ConvertPbTechCardInsertToEntity(equipCard(park, true, step(want)))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if linked.Operations[0].MachineProfileKey.String != want {
+			t.Errorf("reference %q resolved to %q", want, linked.Operations[0].MachineProfileKey.String)
+		}
+	}
+
+	// And against a park that holds only one spelling, the other spelling is a key naming nothing —
+	// which detaches, exactly as any other stale key does. That is the honest answer only because the
+	// column agrees the two are different; under a CI collation the row would have matched and this
+	// detachment would have been a lie about storage.
+	onlyUpper := &pb_common.TechCardConstruction{
+		EquipmentDefaults: &pb_common.TechCardEquipmentDefaults{
+			Machines: []*pb_common.TechCardMachineProfile{
+				{ProfileKey: upper, MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_OVERLOCK},
+			},
+		},
+	}
+	detached, err := ConvertPbTechCardInsertToEntity(equipCard(onlyUpper, true, step(lower)))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if detached.Operations[0].MachineProfileKey.Valid {
+		t.Errorf("a key naming no profile must detach: %+v", detached.Operations[0].MachineProfileKey)
 	}
 }

@@ -137,8 +137,11 @@ type BOMItemContext struct {
 // and, more to the point, a step now says «machine» + «on an overlock», so the park is what tells
 // the model which machines this style is actually sewn on and which settings it may leave out.
 //
-// The lines carry NO profile keys. The model does not create profiles and cannot link a step to
-// one: it names the machine or the equipment TYPE, and the technologist attaches the profile.
+// The lines carry NO profile keys, and never will: the model does not create profiles and cannot
+// pick between two identical overlocks — it answers with the machine or the equipment TYPE. The
+// caller attaches the profile afterwards, and only where that type names exactly one of them. Where
+// it names several, the rendered line says so (the caller marks it) and the prompt then asks for the
+// settings outright instead of promising an inheritance nothing would deliver.
 type ConstructionContext struct {
 	DefaultSeamClass     string
 	DefaultStitchesPerCm string
@@ -180,7 +183,13 @@ type Operation struct {
 	NeedleType    string  `json:"needle_type"`
 	NeedleSizeNm  jsonNum `json:"needle_size_nm"`
 	ThreadTension string  `json:"thread_tension"`
-	StitchWidthMm jsonNum `json:"stitch_width_mm"` // zigzag amplitude / overlock bite, NOT the topstitch width
+	// The qualifier that makes the scale usable. The scale is CLOSED (looser / normal / tighter /
+	// other) precisely because a free string could not be compared between two machines — and
+	// «other» is then an answer with nothing in it unless this field travels beside it. Without the
+	// field in the shape the model has no way to say what «other» meant, and a model that says it
+	// anyway has the sentence silently dropped by the decoder.
+	ThreadTensionNote string  `json:"thread_tension_note"`
+	StitchWidthMm     jsonNum `json:"stitch_width_mm"` // zigzag amplitude / overlock bite, NOT the topstitch width
 
 	// The ВТО block: press / press_open / fusing. No profile key here either — see ConstructionContext.
 	PressEquipment    string  `json:"press_equipment"`

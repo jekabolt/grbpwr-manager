@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
@@ -70,9 +71,15 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 		return nil, status.Errorf(codes.Unavailable, "AI operations generation failed: %v", err)
 	}
 
+	// The park is read from the CARD, not from the draft, so it is built once outside the loop and
+	// applied to every step: the model answers with equipment, the server answers with which profile
+	// of that equipment the step belongs to.
+	park := newAIEquipmentPark(card.Construction)
 	ops := make([]*pb_common.TechCardOperation, 0, len(result.Operations))
 	for i := range result.Operations {
-		ops = append(ops, aiOperationToPb(result.Operations[i]))
+		op := aiOperationToPb(result.Operations[i])
+		park.attach(op)
+		ops = append(ops, op)
 	}
 	slog.Default().InfoContext(ctx, "drafted AI tech-card operations",
 		slog.Int("tech_card_id", int(req.TechCardId)), slog.Int("operations", len(ops)))
@@ -144,8 +151,10 @@ func (s *Server) buildAIOperationContext(ctx context.Context, card *entity.TechC
 //
 // THE PROFILE KEY IS NOT IN THE LINE, and that is the contract with the model rather than an
 // omission: it does not create profiles and cannot link a step to one. It names the machine or the
-// equipment TYPE; the technologist attaches the profile afterwards. A key in the context would only
-// teach it to emit a field that does not exist in the answer shape.
+// equipment TYPE; the SERVER attaches the profile afterwards (aiEquipmentPark.attach), and where it
+// cannot — because the card holds several profiles of that equipment — the line says so out loud.
+// A key in the context would only teach the model to emit a field that does not exist in the answer
+// shape, and could not be answered anyway: two identical overlocks are indistinguishable to it.
 //
 // A nil park (an older card, or a read that did not hydrate them) yields nil, and the prompt then
 // says nothing about equipment — the same silence it keeps about an unset default.
@@ -153,6 +162,7 @@ func aiMachineProfileSummaries(d *entity.TechCardEquipmentDefaults) []string {
 	if d == nil {
 		return nil
 	}
+	sole := aiSoleMachineProfiles(d)
 	out := make([]string, 0, len(d.Machines))
 	for i := range d.Machines {
 		m := &d.Machines[i]
@@ -182,7 +192,7 @@ func aiMachineProfileSummaries(d *entity.TechCardEquipmentDefaults) []string {
 		if m.Note.Valid && m.Note.String != "" {
 			parts = append(parts, m.Note.String)
 		}
-		out = append(out, aiProfileLine(m.MachineType, m.Label, parts))
+		out = append(out, aiProfileLine(m.MachineType, m.Label, sole[m.MachineType] != "", parts))
 	}
 	return out
 }
@@ -191,6 +201,7 @@ func aiPressProfileSummaries(d *entity.TechCardEquipmentDefaults) []string {
 	if d == nil {
 		return nil
 	}
+	sole := aiSolePressProfiles(d)
 	out := make([]string, 0, len(d.Presses))
 	for i := range d.Presses {
 		p := &d.Presses[i]
@@ -227,9 +238,107 @@ func aiPressProfileSummaries(d *entity.TechCardEquipmentDefaults) []string {
 		if p.Note.Valid && p.Note.String != "" {
 			parts = append(parts, p.Note.String)
 		}
-		out = append(out, aiProfileLine(head, p.Label, parts))
+		out = append(out, aiProfileLine(head, p.Label, sole[p.PressEquipment] != "", parts))
 	}
 	return out
+}
+
+// aiSoleMachineProfiles / aiSolePressProfiles answer the one question both halves of this seam
+// depend on: does this equipment name ONE profile on this card?
+//
+// They are the single source of that fact, and deliberately so. The prompt promises inheritance
+// exactly where they answer yes, and attach() delivers it exactly there — computing «is it
+// ambiguous» twice is how a prompt ends up promising a link the mapper does not make, which is the
+// defect this pair exists to close. Equipment answered by two profiles is simply absent from the
+// map: there is no key to attach and no promise to make.
+func aiSoleMachineProfiles(d *entity.TechCardEquipmentDefaults) map[string]string {
+	if d == nil {
+		return nil
+	}
+	keys := make(map[string]string, len(d.Machines))
+	for i := range d.Machines {
+		aiIndexSoleProfile(keys, d.Machines[i].MachineType, d.Machines[i].ProfileKey)
+	}
+	return keys
+}
+
+func aiSolePressProfiles(d *entity.TechCardEquipmentDefaults) map[string]string {
+	if d == nil {
+		return nil
+	}
+	keys := make(map[string]string, len(d.Presses))
+	for i := range d.Presses {
+		aiIndexSoleProfile(keys, d.Presses[i].PressEquipment, d.Presses[i].ProfileKey)
+	}
+	return keys
+}
+
+// aiIndexSoleProfile records the first profile of an equipment and BLANKS it on the second, which is
+// why the map is read as `!= ""` rather than with the comma-ok form: a blanked entry has to stay in
+// the map, or a third profile of the same equipment would look like a first one and re-enter it.
+// A profile with no durable key contributes nothing either — attaching a step to a key nothing can
+// be found by is the detached state with extra steps.
+func aiIndexSoleProfile(keys map[string]string, equipment, profileKey string) {
+	equipment = strings.TrimSpace(equipment)
+	if equipment == "" {
+		return
+	}
+	if _, seen := keys[equipment]; seen {
+		keys[equipment] = ""
+		return
+	}
+	keys[equipment] = strings.TrimSpace(profileKey)
+}
+
+// aiEquipmentPark attaches a drafted step to a profile of the card. It is the only thing in the
+// drafting loop that depends on the CARD rather than on the answer, which is why it is not folded
+// into aiOperationToPb.
+//
+// WHY THE SERVER HAS TO DO THIS AT ALL. An omitted setting on a step means «inherit», and a step
+// inherits from the profile its key points at — a step with no key inherits from nothing. The model
+// never sees a profile key, has no field to answer with one and could not choose between two
+// identical overlocks if it did. So a draft that dutifully omits the settings matching a listed
+// profile would, left unattached, arrive at the technologist as fifteen blanks: the omission would
+// read as «not stated» on the sheet, and the park's whole grounding value in the prompt would be a
+// promise nothing kept.
+//
+// WHY ONLY WHERE THERE IS EXACTLY ONE. Several profiles of the same equipment is a supported shape,
+// not a mistake to collapse («два одинаковых станка» — the owner's answer, and the reason the
+// durable key exists at all). Picking one of them for the technologist would be inventing an answer
+// to a question nobody asked, and the sheet would print settings from a machine nobody chose. There
+// the prompt drops the inheritance promise instead and asks for the settings outright.
+type aiEquipmentPark struct {
+	machines map[string]string // machine token -> its ONE profile key; "" once ambiguous
+	presses  map[string]string // press equipment token -> ditto
+}
+
+func newAIEquipmentPark(c *entity.TechCardConstruction) aiEquipmentPark {
+	if c == nil {
+		return aiEquipmentPark{}
+	}
+	return aiEquipmentPark{
+		machines: aiSoleMachineProfiles(c.EquipmentDefaults),
+		presses:  aiSolePressProfiles(c.EquipmentDefaults),
+	}
+}
+
+// attach fills the step's profile reference from the equipment it names. The step keeps whatever the
+// mapper decided about the equipment itself: a step that named no machine (or one this card does not
+// run) is left unattached rather than pointed at something plausible.
+//
+// Only the block the step's own type owns is ever touched, because aiOperationToPb fills only that
+// block — the save path refuses a ВТО reference on a machine step in words, and a draft that cannot
+// be saved as shown is worse than a blank.
+func (p aiEquipmentPark) attach(op *pb_common.TechCardOperation) {
+	if op == nil {
+		return
+	}
+	if key := p.machines[aiMachineTypeNames[op.GetMachineType()]]; key != "" {
+		op.MachineProfileKey = key
+	}
+	if key := p.presses[aiPressEquipmentNames[op.GetPressEquipment()]]; key != "" {
+		op.PressProfileKey = key
+	}
 }
 
 // aiNeedleSummary states the point and the size together when both are set, because that is how a
@@ -261,9 +370,17 @@ func aiAttachmentSummary(kind sql.NullString) string {
 // aiProfileLine assembles «type ("label"): setting, setting». The label is a name for a human
 // («оверлок у окна») and never the identity, so it is parenthetical — the type is what the model
 // has to answer with.
-func aiProfileLine(head string, label sql.NullString, parts []string) string {
+//
+// `sole` is what the whole line is FOR beyond grounding: an unmarked line is inheritable and its
+// settings are meant to be omitted, a marked one is not. The marker is spelled out rather than left
+// implicit in «there are two overlock lines», because a model that has to count identical headings
+// to work out whether omission is safe will get it wrong on the card where it matters.
+func aiProfileLine(head string, label sql.NullString, sole bool, parts []string) string {
 	if label.Valid && strings.TrimSpace(label.String) != "" {
 		head += ` ("` + strings.TrimSpace(label.String) + `")`
+	}
+	if !sole {
+		head += " [SEVERAL profiles of this equipment on the card — this one is NOT inherited, state the settings on the step]"
 	}
 	if len(parts) == 0 {
 		return head
@@ -317,6 +434,13 @@ func aiOperationToPb(o openrouter.Operation) *pb_common.TechCardOperation {
 		op.NeedleType = aiEnum(o.NeedleType, aiNeedleTypeTokens)
 		op.NeedleSizeNm = aiRangedInt32(o.NeedleSizeNm.String(), entity.MinNeedleSizeNm, entity.MaxNeedleSizeNm)
 		op.ThreadTension = aiEnum(o.ThreadTension, aiThreadTensionTokens)
+		// The qualifier travels ONLY with the scale — the same rule as the topstitch width below, and
+		// the save states it in the same words: a note with no scale describes no setting the next
+		// machine can be set to, and it is refused outright. Dropping it here costs a sentence;
+		// keeping it would cost the technologist a step that cannot be saved until they find it.
+		if op.ThreadTension != pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_UNKNOWN {
+			op.ThreadTensionNote = aiBoundedText(o.ThreadTensionNote, entity.MaxThreadTensionNoteLen)
+		}
 		op.StitchWidthMm = aiRangedDecimal(o.StitchWidthMm.String(), 1, entity.MinStitchWidthMm, entity.MaxStitchWidthMm)
 	case pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS,
 		pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS_OPEN,
@@ -413,6 +537,21 @@ var aiNeedleTypeTokens = aiTokenMap[pb_common.TechCardNeedleType](entity.NeedleT
 var aiThreadTensionTokens = aiTokenMap[pb_common.TechCardThreadTension](entity.ThreadTensionTokens, "TECH_CARD_THREAD_TENSION_", pb_common.TechCardThreadTension_value)
 var aiPressClothTokens = aiTokenMap[pb_common.TechCardPressCloth](entity.PressClothTokens, "TECH_CARD_PRESS_CLOTH_", pb_common.TechCardPressCloth_value)
 
+// aiMachineTypeNames / aiPressEquipmentNames invert the two equipment maps. The mapper resolves the
+// model's word into an enum first and only then has to ask the park about it, and the park is keyed
+// by the STORAGE token, because that is what a stored profile carries. Inverting is safe: the maps
+// are built name-for-name from the same vocabulary, so no two tokens share an enum member.
+var aiMachineTypeNames = aiInvertTokenMap(aiMachineTypeTokens)
+var aiPressEquipmentNames = aiInvertTokenMap(aiPressEquipmentTokens)
+
+func aiInvertTokenMap[E comparable](m map[string]E) map[E]string {
+	out := make(map[E]string, len(m))
+	for tok, v := range m {
+		out[v] = tok
+	}
+	return out
+}
+
 // aiTokenMap projects a vocabulary onto its proto enum by name. A token with no matching member is
 // dropped rather than fatal — the same slice is fed to dto.enumTokenMap, which panics at init on
 // exactly that mismatch, so the loud check already exists one package over.
@@ -473,6 +612,22 @@ func aiMachineType(token string) pb_common.TechCardMachineType {
 		return aiMachineTypeTokens[machine]
 	}
 	return pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_UNKNOWN
+}
+
+// aiBoundedText trims a short free-text answer to the column the save writes it into, in RUNES,
+// marking the cut with an ellipsis.
+//
+// Cut rather than dropped: this qualifier is the only content behind thread_tension "other", and
+// dropping it would leave the technologist a scale that says «not one of the three» and nothing
+// about which. Marked rather than cut silently: a truncated Russian sentence read as if the model
+// had ended it there is a different instruction from the one it wrote, and the ellipsis is what
+// stops the draft from asserting it.
+func aiBoundedText(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max-1]) + "…"
 }
 
 // aiRangedInt32 reads a drafted integer setting and answers 0 («not set» on the wire) to anything

@@ -371,4 +371,83 @@ func TestTechCardEquipmentProfiles(t *testing.T) {
 		}), nil), c8.LockVersion)
 	require.Error(t, err, "a profile no step can reference is not a profile")
 	require.True(t, errors.As(err, &ve), "the refusal must be field-tagged, got %v", err)
+
+	// --- H. two keys differing only in CASE are two profiles ----------------------------------------
+	//
+	// This is the probe for the one thing the schema decides and Go cannot: WHAT COUNTS AS ONE KEY.
+	// The key is the identity of a profile row, and every Go reader of it compares byte for byte —
+	// the park's duplicate check in dto, the step's reference resolution. The column has to agree,
+	// and it only does because 0306 declares profile_key COLLATE utf8mb4_bin: the schema default is
+	// case-INSENSITIVE on both prod (utf8mb3_general_ci) and the test container
+	// (utf8mb4_0900_ai_ci), and under it this very save died on uq_equipment_profile_key with a raw
+	// 1062 — two rows Go had already agreed were two rows.
+	//
+	// Written against the STORE and not the converter on purpose: the disagreement lived in the
+	// column, so only a real MySQL can testify about it.
+	c9, err := T.GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	upperKey := key("CASEKEY")
+	lowerKey := strings.ToLower(upperKey)
+	require.NotEqual(t, upperKey, lowerKey)
+	require.Equal(t, upperKey, strings.ToUpper(lowerKey), "the two keys must differ ONLY in case")
+
+	upperProfile := machineDoor
+	upperProfile.ProfileKey, upperProfile.Label, upperProfile.ThreadCount = upperKey, ns("верхний регистр"), ni(5)
+	lowerProfile := machineDoor
+	lowerProfile.ProfileKey, lowerProfile.Label, lowerProfile.ThreadCount = lowerKey, ns("нижний регистр"), ni(3)
+
+	require.NoError(t, T.UpdateTechCard(ctx, tcID, card("EQP-T4-1",
+		construction("подгибка 4 см", &entity.TechCardEquipmentDefaults{
+			Machines: []entity.TechCardMachineProfile{upperProfile, lowerProfile},
+		}),
+		[]entity.TechCardOperation{machineStep(lowerKey)}), c9.LockVersion),
+		"two keys differing only in case are two profiles, not a duplicate to collapse")
+
+	c10, err := T.GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	require.Equal(t, 2, countProfiles(tcID), "both spellings are stored")
+	d10 := c10.Construction.EquipmentDefaults
+	require.NotNil(t, d10)
+	require.Len(t, d10.Machines, 2)
+	byKey := make(map[string]entity.TechCardMachineProfile, 2)
+	for _, m := range d10.Machines {
+		byKey[m.ProfileKey] = m
+	}
+	require.Len(t, byKey, 2, "the two spellings must read back as two distinct keys, not one")
+	require.Equal(t, "верхний регистр", byKey[upperKey].Label.String)
+	require.Equal(t, int32(5), byKey[upperKey].ThreadCount.Int32)
+	require.Equal(t, "нижний регистр", byKey[lowerKey].Label.String)
+	require.Equal(t, int32(3), byKey[lowerKey].ThreadCount.Int32,
+		"each row keeps its own settings — a case-folding column would have kept only one of them")
+	// The step's reference is stored with the spelling it was given: it names ONE of the two rows.
+	require.Equal(t, lowerKey, opByNumber(c10)[10].MachineProfileKey.String)
+
+	// The step's two reference columns carry the same identity and must read it the same way. Nothing
+	// in Go compares them IN SQL today, so only the schema can testify about them — and a key column
+	// that folds case is a GROUP BY, a DISTINCT or a join away from folding two profiles into one.
+	// Asserted by suffix, not by name: the charset half is the schema's business (utf8mb3 on prod,
+	// utf8mb4 here), the _bin half is ours.
+	for _, c := range []struct{ table, column string }{
+		{"tech_card_equipment_profile", "profile_key"},
+		{"tech_card_operation", "machine_profile_key"},
+		{"tech_card_operation", "press_profile_key"},
+	} {
+		var collation string
+		require.NoError(t, testDB.QueryRowContext(ctx, `
+			SELECT COLLATION_NAME FROM information_schema.COLUMNS
+			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+			c.table, c.column).Scan(&collation))
+		require.True(t, strings.HasSuffix(collation, "_bin"),
+			"%s.%s collates %q — a durable key has to compare byte-wise, as every Go reader of it does",
+			c.table, c.column, collation)
+	}
+
+	// The index is case-sensitive, not merely tolerant: the SAME spelling twice is still one key, and
+	// still refused by the database.
+	_, err = testDB.ExecContext(ctx, `
+		INSERT INTO tech_card_equipment_profile (tech_card_id, profile_key, kind, equipment)
+		VALUES (?, ?, 'machine', 'overlock')`, tcID, upperKey)
+	require.Error(t, err, "uq_equipment_profile_key must still refuse an exact duplicate")
+	require.Contains(t, err.Error(), "uq_equipment_profile_key",
+		"and it must name the index, which is how the API layer tells this apart from a taken style number")
 }

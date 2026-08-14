@@ -37,6 +37,32 @@ func styleNumberTaken() error {
 		"this style number is already used by another style; choose a different one or accept a fresh generated proposal"))
 }
 
+// equipmentProfileKeyIndex is the name 0306 gives UNIQUE(tech_card_id, profile_key). It is written
+// here because a 1062 is the ONLY way the API layer can learn which key was tripped: the driver
+// hands back one error number for every unique index in the schema, and the index name inside its
+// message is the only discriminator there is.
+const equipmentProfileKeyIndex = "uq_equipment_profile_key"
+
+// techCardUniqueViolation names the unique key a tech-card save actually tripped.
+//
+// A card write touches TWO of them, and until 0306 there was only one: for years every 1062 out of
+// this path was UNIQUE(style_number), so the handlers translated the number itself into «this style
+// number is taken». With an equipment park on the card that translation became a lie — a duplicate
+// PROFILE key would tell the operator to change the article of a style whose article is fine, about
+// a field the failing form does not even contain.
+//
+// The payload path is normally caught earlier and in a full sentence (parseTechCardEquipmentDefaults
+// dedupes both lists against one key space), so what reaches here is the entity-level writers that
+// never see the wire: the seeder, the clone path, tests. That is precisely why the message has to
+// stand on its own — nothing upstream is going to explain it.
+func techCardUniqueViolation(err error) error {
+	if err != nil && strings.Contains(err.Error(), equipmentProfileKeyIndex) {
+		return apierr.Invalid(entity.NewFieldViolation("construction.equipment_defaults", "duplicate_profile_key", "",
+			"two equipment profiles on this card carry the same key — a key is the identity of a profile, and the steps pointing at it would have two answers; give one of them a fresh key"))
+	}
+	return styleNumberTaken()
+}
+
 // validateStyleNumberOverride enforces the strict manual-override contract (Q1): when the owner
 // hand-sets the article (style_number_source = manual) the value must be present and pass the strict
 // format validator, else a field-tagged InvalidArgument on style_number. A generated (server-
@@ -91,7 +117,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// §8, rule 1 — BEFORE the conversion, the only ordering that guarantees a stale bundle reads the
 	// gate's sentence («update the admin panel») rather than a field violation about a control it does
 	// not render. Rule 2 has nothing to say here: a card being created has no stored facts to erase.
-	if err := machineCapabilityGate(req.TechCard, nil); err != nil {
+	if err := machineCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
@@ -137,7 +163,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 			return nil, apierr.Invalid(ve)
 		}
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, styleNumberTaken()
+			return nil, techCardUniqueViolation(err)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)
@@ -210,6 +236,14 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
 	}
+	// §8, rule 1 — ahead of the conversion for the same reason it is ahead of it on Create: it reads
+	// the WIRE and owes the entity nothing, and a stale bundle that echoes a type it cannot render
+	// must hear «update the admin panel» rather than the converter's «pick a type from the list»,
+	// which names a control that bundle does not have. Rule 2 stays where it is — it needs the stored
+	// card, which is loaded below.
+	if err := machineCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -231,12 +265,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			slog.Int("tech_card_id", int(req.Id)))
 		return nil, status.Error(codes.Internal, "can't load tech card; try again")
 	}
-	// §8 — the first thing done with `stored`, because both rules are about what this save would
-	// DESTROY and every line below either reconciles sign-offs or moves data toward the store. The
-	// conversion above cannot pre-empt it with a confusing message: the two «required» rules of the
-	// machine and ВТО blocks are themselves conditioned on awareness, so a stale bundle's payload
-	// reaches this point intact.
-	if err := machineCapabilityGate(req.TechCard, stored); err != nil {
+	// §8, rule 2 — the first thing done with `stored`, because it is about what this save would
+	// DESTROY and every line below either reconciles sign-offs or moves data toward the store.
+	if err := machineCapabilityStoredGate(req.TechCard, stored); err != nil {
 		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет
@@ -325,7 +356,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, styleNumberTaken()
+			return nil, techCardUniqueViolation(err)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)
@@ -557,8 +588,15 @@ func outdatedMachineClient(reason string) error {
 	return status.Error(codes.FailedPrecondition, "outdated admin client: "+reason+"; "+outdatedMachineClientFix)
 }
 
-// machineCapabilityGate refuses a save from a bundle that never heard of the machine / ВТО fields
-// when that save would DESTROY such facts (§8 of the plan).
+// The machine capability gate refuses a save from a bundle that never heard of the machine / ВТО
+// fields when that save would DESTROY such facts (§8 of the plan).
+//
+// IT IS TWO FUNCTIONS BECAUSE ITS TWO RULES RUN AT DIFFERENT MOMENTS, and that is not a style
+// choice. Rule 1 reads the wire and nothing else, so it runs BEFORE dto conversion — a stale bundle
+// that echoes an operation type it cannot render would otherwise be turned away by the converter
+// («pick a type from the list»), which points at a control that bundle does not have and cannot be
+// acted on. Rule 2 needs the stored card and therefore cannot run until it is loaded. Fusing them
+// into one call forced the whole gate down to the later point, and rule 1's sentence with it.
 //
 // Operations are full-replace with no per-field protection and the equipment park is presence-gated
 // one level deeper, so a payload from a pre-0306 bundle simply omits fifteen columns per step and the
@@ -582,12 +620,23 @@ func outdatedMachineClient(reason string) error {
 //     plan, because silent erasure is worse and a fifteen-column carry is not a per-save mechanic.
 //
 // The gate is silent on every card with no machine facts, which today is almost all of them.
-func machineCapabilityGate(pb *pb_common.TechCardInsert, stored *entity.TechCard) error {
+func machineCapabilityWireGate(pb *pb_common.TechCardInsert) error {
 	if pb.GetMachineFieldsAware() {
 		return nil
 	}
 	if payloadSpeaksMachineFields(pb) {
 		return outdatedMachineClient("the payload carries machine / ВТО values it does not declare support for")
+	}
+	return nil
+}
+
+// machineCapabilityStoredGate is rule 2, and it runs only after the stored card is in hand. It
+// repeats the awareness check rather than assuming the wire gate already passed: the two are called
+// from different places, and a rule that silently depends on its sibling having run first is one
+// refactor away from not running at all.
+func machineCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.TechCard) error {
+	if pb.GetMachineFieldsAware() {
+		return nil
 	}
 	if storedHasMachineFacts(stored) {
 		return outdatedMachineClient("this tech card holds machine / ВТО parameters (equipment profiles, or machine and pressing settings on its steps)")
