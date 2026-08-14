@@ -498,3 +498,244 @@ func TestConsumptionSourceDBCheckNoDrift(t *testing.T) {
 	dbValues := extractDBEnumValues(t, content, "chk_tccu_consumption_source CHECK", 200)
 	assertSameSet(t, "ConsumptionSource", dbValues, mapKeysAsStrings(entity.ValidConsumptionSources))
 }
+
+// --- 0306: машинки и режимы ВТО -------------------------------------------------------------------
+//
+// Ten vocabularies land at once, and SEVEN of them are written into the schema TWICE — once on
+// tech_card_operation (the step's override) and once on tech_card_equipment_profile (the card's
+// default). That doubling is the whole reason these tests are worth their length: a widening applied
+// to one CHECK and forgotten on the other fails NOWHERE at write time on the side that was widened,
+// and fails with a bare 3819 on the side that was not — on whichever of the two the operator happens
+// to touch second. So each pair is asserted against the SAME entity slice, which is what makes the
+// two copies provably one vocabulary.
+//
+// The anchor migration is 0306 for every one of them, including attachment_kind: 0289 created that
+// CHECK, 0306 recreated it with three more tokens, and the rule for a recreated CHECK is that the
+// file owning the CURRENT vocabulary is the one the test must read (the 0294-over-0261 precedent
+// above). Anchoring on 0289 would keep this passing while the live constraint moved on.
+
+const migration0306 = "0306_operation_machines.sql"
+
+// assertPairedCheckNoDrift asserts BOTH schema copies of one vocabulary — the operation's override
+// CHECK and the profile's default CHECK — against the single entity slice.
+func assertPairedCheckNoDrift(t *testing.T, label, opAnchor, eqpAnchor string, window int, tokens []string) {
+	t.Helper()
+	content := readMigrationFile(t, migration0306)
+	assertSameSet(t, label+" (tech_card_operation)",
+		extractDBEnumValues(t, content, opAnchor, window), tokens)
+	assertSameSet(t, label+" (tech_card_equipment_profile)",
+		extractDBEnumValues(t, content, eqpAnchor, window), tokens)
+}
+
+// TestMachineTypeDBCheckNoDrift is the entity<->DB leg for «на чём» (0306): entity.MachineTypeTokens
+// <-> chk_op_machine_type. The profile side of the same vocabulary is NOT a separate CHECK — it is
+// folded into the union chk_eqp_equipment, asserted by TestEquipmentUnionDBCheckNoDrift below.
+//
+// It is load-bearing beyond the usual drift argument: migration 0306 step 5 writes nine of these
+// tokens into existing rows, and the digest's compat projection reads them back through
+// entity.MachineTypeLegacyToken. A machine the CHECK refuses would fail the migration itself; a
+// machine the entity does not know would hash as an unmapped tail and stale every signed
+// CONSTRUCTION approval on the card.
+func TestMachineTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, migration0306)
+	dbValues := extractDBEnumValues(t, content, "chk_op_machine_type CHECK", 600)
+	assertSameSet(t, "TechCardMachineType", dbValues, entity.MachineTypeTokens)
+}
+
+// TestPressEquipmentDBCheckNoDrift is the entity<->DB leg for the ВТО half: entity.PressEquipmentTokens
+// <-> chk_op_press_equipment. As with the machine list, the profile side lives in the union CHECK.
+func TestPressEquipmentDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, migration0306)
+	dbValues := extractDBEnumValues(t, content, "chk_op_press_equipment CHECK", 250)
+	assertSameSet(t, "TechCardPressEquipment", dbValues, entity.PressEquipmentTokens)
+}
+
+// TestEquipmentUnionDBCheckNoDrift guards the one CHECK in 0306 that is not a copy of any single Go
+// slice: tech_card_equipment_profile.equipment holds a machine token when kind='machine' and a press
+// token when kind='press', so its vocabulary is the UNION of the two — with 'other' appearing ONCE,
+// because it is legal under both kinds and a duplicate in a REGEXP alternation is a silent invitation
+// to let the two lists drift apart while the CHECK still "matches".
+//
+// assertSameSet already fails on a duplicated DB value, so the single-'other' rule is enforced by
+// construction rather than by a second assertion.
+func TestEquipmentUnionDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, migration0306)
+	dbValues := extractDBEnumValues(t, content, "chk_eqp_equipment CHECK", 700)
+
+	union := make([]string, 0, len(entity.MachineTypeTokens)+len(entity.PressEquipmentTokens))
+	seen := make(map[string]bool)
+	for _, tok := range append(append([]string{}, entity.MachineTypeTokens...), entity.PressEquipmentTokens...) {
+		if seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		union = append(union, tok)
+	}
+	assertSameSet(t, "equipment union (machine + press)", dbValues, union)
+
+	// The overlap is exactly {other} today. If a future token lands in both slices the union above
+	// still works, but the CHECK author has to know it happened — a machine and a press sharing a
+	// token means `equipment` alone stops identifying the kind.
+	overlap := 0
+	machines := make(map[string]bool, len(entity.MachineTypeTokens))
+	for _, m := range entity.MachineTypeTokens {
+		machines[m] = true
+	}
+	for _, p := range entity.PressEquipmentTokens {
+		if machines[p] {
+			if p != "other" {
+				t.Errorf("machine and press vocabularies both claim %q; `equipment` no longer identifies the kind", p)
+			}
+			overlap++
+		}
+	}
+	if overlap != 1 {
+		t.Errorf("expected exactly one shared token ('other') between the machine and press vocabularies, found %d", overlap)
+	}
+}
+
+// TestNeedleTypeDBCheckNoDrift — entity.NeedleTypeTokens <-> chk_op_needle_type / chk_eqp_needle_type.
+func TestNeedleTypeDBCheckNoDrift(t *testing.T) {
+	assertPairedCheckNoDrift(t, "TechCardNeedleType",
+		"chk_op_needle_type CHECK", "chk_eqp_needle_type CHECK", 250, entity.NeedleTypeTokens)
+}
+
+// TestThreadTensionDBCheckNoDrift — entity.ThreadTensionTokens <-> chk_op_thread_tension /
+// chk_eqp_thread_tension.
+func TestThreadTensionDBCheckNoDrift(t *testing.T) {
+	assertPairedCheckNoDrift(t, "TechCardThreadTension",
+		"chk_op_thread_tension CHECK", "chk_eqp_thread_tension CHECK", 200, entity.ThreadTensionTokens)
+}
+
+// TestPressClothDBCheckNoDrift — entity.PressClothTokens <-> chk_op_press_cloth / chk_eqp_press_cloth.
+// 'none' being IN the vocabulary is the point of the whole token: NULL means «inherit the profile»,
+// so without a spelled-out 'none' a step could not cancel the profile's press cloth.
+func TestPressClothDBCheckNoDrift(t *testing.T) {
+	assertPairedCheckNoDrift(t, "TechCardPressCloth",
+		"chk_op_press_cloth CHECK", "chk_eqp_press_cloth CHECK", 250, entity.PressClothTokens)
+	for _, tok := range entity.PressClothTokens {
+		if tok == "none" {
+			return
+		}
+	}
+	t.Error("PressClothTokens lost 'none': without it a step cannot cancel the profile's press cloth, and NULL already means «inherit»")
+}
+
+// TestAttachmentKindDBCheckNoDrift — entity.AttachmentKindTokens <-> chk_op_attachment_kind (widened
+// by 0306 step 7) / chk_eqp_attachment. Same 'none' argument as the press cloth: it was genuinely
+// absent before profiles existed (0289's own comment said so) and is required now.
+func TestAttachmentKindDBCheckNoDrift(t *testing.T) {
+	assertPairedCheckNoDrift(t, "TechCardAttachmentKind",
+		"chk_op_attachment_kind CHECK", "chk_eqp_attachment CHECK", 350, entity.AttachmentKindTokens)
+	for _, tok := range entity.AttachmentKindTokens {
+		if tok == "walking_foot" {
+			t.Error("walking_foot is deliberately NOT an attachment: industrially it is a machine with unison/top feed — a transport property that belongs next to bed_type")
+		}
+	}
+}
+
+// TestBedTypeDBCheckNoDrift — entity.BedTypeTokens <-> chk_eqp_bed_type. Profile-only by design: the
+// bed is machine IDENTITY, so a step cannot override it (a different bed is a different machine),
+// and there is deliberately no chk_op_bed_type to pair this with.
+func TestBedTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, migration0306)
+	dbValues := extractDBEnumValues(t, content, "chk_eqp_bed_type CHECK", 200)
+	assertSameSet(t, "TechCardBedType", dbValues, entity.BedTypeTokens)
+	if strings.Contains(content, "chk_op_bed_type") {
+		t.Error("bed_type must not become a per-step override: it is machine identity (see 0306 header)")
+	}
+}
+
+// TestAutomationLevelDBCheckNoDrift — entity.AutomationLevelTokens <-> chk_eqp_automation.
+// Profile-only for the same reason as the bed, and with no 'other' member: it is an ORDERED SCALE,
+// and a scale with an «other» has stopped being one.
+func TestAutomationLevelDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, migration0306)
+	dbValues := extractDBEnumValues(t, content, "chk_eqp_automation CHECK", 200)
+	assertSameSet(t, "TechCardAutomationLevel", dbValues, entity.AutomationLevelTokens)
+	for _, v := range dbValues {
+		if v == "other" {
+			t.Error("automation is an ordered scale and must not carry 'other'")
+		}
+	}
+	if strings.Contains(content, "chk_op_automation") {
+		t.Error("automation must not become a per-step override: it is machine identity (see 0306 header)")
+	}
+}
+
+// TestOperationTypeDBCheckNoDrift is the entity<->DB leg for the STORED operation type after the
+// split: entity.OperationTypeTokens <-> chk_op_operation_type (0306 step 6).
+//
+// The nine legacy tokens must NOT be here, and that is the assertion with teeth. They stay alive
+// forever on the WIRE (release snapshots are protojson carrying those names), but 0306 step 5
+// rewrites every stored row into (machine, machine_type), so a legacy token in the CHECK would mean
+// the schema still admits a shape the canonicalisation is supposed to have made impossible — and the
+// digest's compat projection, which reads `machine` + machine_type, would silently disagree with a
+// row that kept the old spelling.
+func TestOperationTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, migration0306)
+	dbValues := extractDBEnumValues(t, content, "chk_op_operation_type CHECK", 250)
+	assertSameSet(t, "TechCardOperationType (stored)", dbValues, entity.OperationTypeTokens)
+
+	for _, v := range dbValues {
+		if _, isLegacy := entity.LegacyOperationMachineType[entity.TechCardOperationType(v)]; isLegacy {
+			t.Errorf("chk_op_operation_type still admits the legacy token %q, which 0306 step 5 rewrites away", v)
+		}
+	}
+}
+
+// Test0306VocabulariesAreCaseClosed guards the half of every 0306 vocabulary CHECK that the drift
+// tests above cannot see. REGEXP inherits the column's collation, which is case-INSENSITIVE on both
+// the utf8mb3_general_ci of prod and the utf8mb4_0900_ai_ci of the container, so the alternation
+// alone accepts 'OVERLOCK' and 'Iron'. It refuses 'overlok' and nothing about case. The STRCMP over a
+// BINARY cast is what actually closes the vocabulary.
+//
+// This is not theoretical here: 0076's operation_type CHECK was written WITHOUT the guard, prod
+// therefore admits 'LOCKSTITCH' legally, and 0306 has to LOWER the column (step 3) before it dares
+// add a strict CHECK — because ADD CONSTRAINT re-validates the whole table and a failure there halts
+// startup. This test is what keeps the next vocabulary from repeating that.
+func Test0306VocabulariesAreCaseClosed(t *testing.T) {
+	content := readMigrationFile(t, migration0306)
+	for _, c := range []struct{ constraint, column string }{
+		{"chk_op_machine_type", "machine_type"},
+		{"chk_op_press_equipment", "press_equipment"},
+		{"chk_op_needle_type", "needle_type"},
+		{"chk_op_thread_tension", "thread_tension"},
+		{"chk_op_press_cloth", "press_cloth"},
+		{"chk_op_attachment_kind", "attachment_kind"},
+		{"chk_op_operation_type", "operation_type"},
+		{"chk_eqp_kind", "kind"},
+		{"chk_eqp_equipment", "equipment"},
+		{"chk_eqp_needle_type", "needle_type"},
+		{"chk_eqp_bed_type", "bed_type"},
+		{"chk_eqp_automation", "automation"},
+		{"chk_eqp_thread_tension", "thread_tension"},
+		{"chk_eqp_attachment", "attachment_kind"},
+		{"chk_eqp_press_op_type", "press_operation_type"},
+		{"chk_eqp_press_cloth", "press_cloth"},
+	} {
+		stmt := strings.Index(content, c.constraint+" CHECK")
+		if stmt < 0 {
+			t.Errorf("named vocabulary CHECK %s not found in 0306", c.constraint)
+			continue
+		}
+		guard := "STRCMP(CAST(" + c.column + " AS BINARY), CAST(LOWER(" + c.column + ") AS BINARY)) = 0"
+		rx := strings.Index(content[stmt:], c.column+" REGEXP")
+		gd := strings.Index(content[stmt:], guard)
+		if rx < 0 {
+			t.Errorf("%s: no REGEXP alternation on %s", c.constraint, c.column)
+			continue
+		}
+		// The guard has to sit INSIDE this CHECK (i.e. before the next constraint starts) and AFTER
+		// the REGEXP, so extractDBEnumValues' anchor still finds the alternation.
+		next := strings.Index(content[stmt+len(c.constraint):], "CONSTRAINT chk_")
+		limit := len(content) - stmt
+		if next >= 0 {
+			limit = next + len(c.constraint)
+		}
+		if gd < 0 || gd < rx || gd > limit {
+			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
+				c.constraint, c.column, rx, gd, limit)
+		}
+	}
+}

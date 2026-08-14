@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -12,26 +13,169 @@ import (
 
 // --- inserts (called within the AddTechCard / UpdateTechCard transaction) ---
 
+// insertTechCardConstruction writes the card's DEFAULTS row.
+//
+// `pressing` and `overlock_thread_count` are NOT written and are not a forgotten pair: 0306 dropped
+// both columns — the prose moved into `notes` under a tag and the thread count became an overlock
+// PROFILE, because one thread count on a card could only ever describe one overlock and a card may
+// run several. The entity no longer carries either field; what survives them is their frozen
+// POSITION in the CONSTRUCTION digest tuple. Naming either column here is an immediate 1054 on
+// every save that touches construction.
 func insertTechCardConstruction(ctx context.Context, db dependency.DB, tcID int, c *entity.TechCardConstruction) error {
 	if c == nil {
 		return nil
 	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_construction
-			(tech_card_id, default_seam_class, default_stitches_per_cm, overlock_thread_count,
-			 hem_finish, pressing, notes)
-		VALUES (:tech_card_id, :default_seam_class, :default_stitches_per_cm, :overlock_thread_count,
-			 :hem_finish, :pressing, :notes)`,
+			(tech_card_id, default_seam_class, default_stitches_per_cm, hem_finish, notes)
+		VALUES (:tech_card_id, :default_seam_class, :default_stitches_per_cm, :hem_finish, :notes)`,
 		map[string]any{
 			"tech_card_id":            tcID,
 			"default_seam_class":      c.DefaultSeamClass,
 			"default_stitches_per_cm": c.DefaultStitchesPerCm,
-			"overlock_thread_count":   c.OverlockThreadCount,
 			"hem_finish":              c.HemFinish,
-			"pressing":                c.Pressing,
 			"notes":                   c.Notes,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card construction: %w", err)
+	}
+	return nil
+}
+
+// equipmentKindMachine / equipmentKindPress say which of the two lists a profile row came from. The
+// kind is written from THE LIST, never inferred from a field, and that is what makes «a machine row
+// wearing press settings» unrepresentable rather than merely refused: entity.TechCardMachineProfile
+// has no press fields to fill and entity.TechCardPressProfile has no machine fields.
+const (
+	equipmentKindMachine = "machine"
+	equipmentKindPress   = "press"
+)
+
+// insertTechCardEquipmentProfiles writes the card's equipment park — the machines this style is sewn
+// on and the ВТО modes it is pressed in — into the one table both kinds share.
+//
+// PRESENCE, not emptiness, is the gate, and the same nil is read in two places for two different
+// reasons: here it means «this payload has nothing to write», and in UpdateTechCard's full-replace
+// loop it means «do not DELETE what is stored». A caller that honoured only one of the two would
+// either lose the stored park or write a second copy of it.
+func insertTechCardEquipmentProfiles(ctx context.Context, db dependency.DB, tcID int, c *entity.TechCardConstruction) error {
+	if c == nil || c.EquipmentDefaults == nil {
+		return nil
+	}
+	d := c.EquipmentDefaults
+	if err := validateTechCardEquipmentProfiles(d); err != nil {
+		return err
+	}
+	rows := make([]map[string]any, 0, len(d.Machines)+len(d.Presses))
+	for _, m := range d.Machines {
+		row := equipmentProfileRow(tcID, equipmentKindMachine, m.ProfileKey, m.MachineType, m.Label, m.Note)
+		row["thread_count"] = m.ThreadCount
+		row["needle_type"] = m.NeedleType
+		row["needle_size_nm"] = m.NeedleSizeNm
+		row["bed_type"] = m.BedType
+		row["automation"] = m.Automation
+		row["thread_tension"] = m.ThreadTension
+		row["thread_tension_note"] = m.ThreadTensionNote
+		row["attachment_kind"] = m.AttachmentKind
+		row["stitches_per_cm"] = m.StitchesPerCm
+		row["stitch_width_mm"] = m.StitchWidthMm
+		rows = append(rows, row)
+	}
+	for _, p := range d.Presses {
+		row := equipmentProfileRow(tcID, equipmentKindPress, p.ProfileKey, p.PressEquipment, p.Label, p.Note)
+		row["press_operation_type"] = p.PressOperationType
+		row["press_temperature_c"] = p.PressTemperatureC
+		row["press_dwell_sec"] = p.PressDwellSec
+		row["press_pressure_n_cm2"] = p.PressPressureNCm2
+		row["press_steam"] = p.PressSteam
+		row["press_cloth"] = p.PressCloth
+		rows = append(rows, row)
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_equipment_profile", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card equipment profiles: %w", err)
+	}
+	return nil
+}
+
+// equipmentProfileRow builds the FULL column set of one profile row with both kind-specific blocks
+// empty, and both kinds go through it. Not tidiness: BulkInsert takes its column list from the FIRST
+// row of the batch, so a machine row and a press row carrying different keys would write whichever
+// kind came first and silently drop the other kind's settings on the floor.
+func equipmentProfileRow(tcID int, kind, profileKey, equipment string, label, note sql.NullString) map[string]any {
+	return map[string]any{
+		"tech_card_id": tcID,
+		"profile_key":  profileKey,
+		"kind":         kind,
+		"equipment":    equipment,
+		"label":        label,
+		"note":         note,
+		// The other kind's block stays NULL. NULL here is not «inherit» — a profile inherits from
+		// nothing; it is «this setting does not exist on this kind of equipment».
+		"thread_count":         nil,
+		"needle_type":          nil,
+		"needle_size_nm":       nil,
+		"bed_type":             nil,
+		"automation":           nil,
+		"thread_tension":       nil,
+		"thread_tension_note":  nil,
+		"attachment_kind":      nil,
+		"stitches_per_cm":      nil,
+		"stitch_width_mm":      nil,
+		"press_operation_type": nil,
+		"press_temperature_c":  nil,
+		"press_dwell_sec":      nil,
+		"press_pressure_n_cm2": nil,
+		"press_steam":          nil,
+		"press_cloth":          nil,
+	}
+}
+
+// validateTechCardEquipmentProfiles closes the one thing 0306 deliberately leaves open: the PAIR
+// (kind, equipment). The schema checks the two vocabularies as a union — `chk_eqp_equipment` accepts
+// every machine token and every press token in the one column both kinds share — so
+// `INSERT (kind='machine', equipment='iron')` passes the database and lands a press in the machine
+// park, where the read path hands it back as a machine type nothing maps and the machine silently
+// disappears off the card. A two-column CHECK would have caught it with error 3819: no field name,
+// no words, for a value the operator picked from a list — the argument 0289 settled, so the pair is
+// checked here instead, in a sentence.
+//
+// The other half of the invariant needs no check and gets none: «a machine row with press columns
+// filled» is unrepresentable — see the comment on equipmentKindMachine.
+func validateTechCardEquipmentProfiles(d *entity.TechCardEquipmentDefaults) error {
+	for i := range d.Machines {
+		field := fmt.Sprintf("construction.equipment_defaults.machines[%d]", i)
+		if err := requireEquipmentProfileKey(d.Machines[i].ProfileKey, field); err != nil {
+			return err
+		}
+		if !entity.ValidMachineTypes[entity.TechCardMachineType(d.Machines[i].MachineType)] {
+			return entity.NewFieldViolation(field+".machine_type", "not_a_machine_type",
+				d.Machines[i].MachineType,
+				"a machine profile has to name a sewing machine; iron / press / fusing_press / steam_dummy / steamer belong to a PRESS profile")
+		}
+	}
+	for i := range d.Presses {
+		field := fmt.Sprintf("construction.equipment_defaults.presses[%d]", i)
+		if err := requireEquipmentProfileKey(d.Presses[i].ProfileKey, field); err != nil {
+			return err
+		}
+		if !entity.ValidPressEquipment[entity.TechCardPressEquipment(d.Presses[i].PressEquipment)] {
+			return entity.NewFieldViolation(field+".press_equipment", "not_press_equipment",
+				d.Presses[i].PressEquipment,
+				"a press profile has to name pressing equipment; a sewing machine belongs to a MACHINE profile")
+		}
+	}
+	return nil
+}
+
+// requireEquipmentProfileKey refuses a blank durable key. The column is CHAR(26) NOT NULL and MySQL
+// takes '' happily, so the schema cannot catch this; what it does catch is the SECOND blank-keyed
+// profile, as a 1062 on uq_equipment_profile_key with nothing in it an operator could act on. A
+// wire payload never gets here (dto mints a key for an empty one), which leaves the direct entity
+// writers — the seeder, the clone path's fixtures, tests — and a keyless profile is a row no step
+// can ever reference.
+func requireEquipmentProfileKey(key, field string) error {
+	if strings.TrimSpace(key) == "" {
+		return entity.NewFieldViolation(field+".profile_key", "required", "",
+			"an equipment profile is identified by its durable key — a row without one is one no step can point at")
 	}
 	return nil
 }
@@ -61,6 +205,29 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"note":               o.Note,
 			"callout_number":     o.CalloutNumber,
 			"display_order":      i,
+			// «На чём» (0306) — the machine block and the ВТО block. Every one of these is an
+			// OVERRIDE: NULL means «inherit from the profile the step points at, or from the card»,
+			// and the store never materialises an inherited value into the row — the moment it does,
+			// «the technologist chose 4 threads» stops being distinguishable from «it defaulted to 4».
+			// The two profile keys are SOFT references (no FK): the park is full-replaced on every
+			// save, so a key naming nothing means «nothing to inherit», not «this row is invalid».
+			"machine_type":         o.MachineType,
+			"machine_profile_key":  o.MachineProfileKey,
+			"thread_count":         o.ThreadCount,
+			"needle_type":          o.NeedleType,
+			"needle_size_nm":       o.NeedleSizeNm,
+			"thread_tension":       o.ThreadTension,
+			"thread_tension_note":  o.ThreadTensionNote,
+			"stitch_width_mm":      o.StitchWidthMm,
+			"press_equipment":      o.PressEquipment,
+			"press_profile_key":    o.PressProfileKey,
+			"press_temperature_c":  o.PressTemperatureC,
+			"press_dwell_sec":      o.PressDwellSec,
+			"press_pressure_n_cm2": o.PressPressureNCm2,
+			// Three-valued: NULL inherits, 0 is «без пара» — a real instruction, which is why the
+			// column is written from a NullBool and not from a plain bool.
+			"press_steam": o.PressSteam,
+			"press_cloth": o.PressCloth,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -400,8 +567,15 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		ids = append(ids, cards[i].Id)
 	}
 
+	// Explicit column list, not SELECT * (the packaging precedent below). 0306 dropped `pressing` and
+	// `overlock_thread_count`, and the entity fields went with them. A star makes every read depend
+	// on those two moving in exact lockstep — and on a Down they do not: the columns come back while
+	// the struct has nowhere to put them, and a strict StructScan refuses an unmapped column. Naming
+	// the columns turns «the migration and the binary ship together» from a hidden requirement into
+	// one that shows up in this list.
 	consRows, err := storeutil.QueryListNamed[techCardConstructionRow](ctx, s.DB,
-		`SELECT * FROM tech_card_construction WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
+		`SELECT tech_card_id, default_seam_class, default_stitches_per_cm, hem_finish, notes
+		 FROM tech_card_construction WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card construction: %w", err)
 	}
@@ -409,6 +583,48 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	for i := range consRows {
 		c := consRows[i].TechCardConstruction
 		consByCard[consRows[i].TechCardID] = &c
+	}
+
+	// The card's equipment park (0306). Read as two passes rather than one flat row split by kind:
+	// the two entity structs already carry the db tags for their own halves, and a third restatement
+	// of twenty-odd column names is a third place for them to drift. Ordered by profile_key so a read
+	// is stable; the digest sorts by key again in its own projection and does not rely on this.
+	machineRows, err := storeutil.QueryListNamed[entity.TechCardMachineProfile](ctx, s.DB, `
+		SELECT id, tech_card_id, profile_key, label, equipment, thread_count, needle_type,
+		       needle_size_nm, bed_type, automation, thread_tension, thread_tension_note,
+		       attachment_kind, stitches_per_cm, stitch_width_mm, note
+		FROM tech_card_equipment_profile
+		WHERE tech_card_id IN (:ids) AND kind = 'machine'
+		ORDER BY tech_card_id, profile_key`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card machine profiles: %w", err)
+	}
+	pressRows, err := storeutil.QueryListNamed[entity.TechCardPressProfile](ctx, s.DB, `
+		SELECT id, tech_card_id, profile_key, label, equipment, press_operation_type,
+		       press_temperature_c, press_dwell_sec, press_pressure_n_cm2, press_steam,
+		       press_cloth, note
+		FROM tech_card_equipment_profile
+		WHERE tech_card_id IN (:ids) AND kind = 'press'
+		ORDER BY tech_card_id, profile_key`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card press profiles: %w", err)
+	}
+	equipmentByCard := make(map[int]*entity.TechCardEquipmentDefaults)
+	equipmentOf := func(cardID int) *entity.TechCardEquipmentDefaults {
+		d, ok := equipmentByCard[cardID]
+		if !ok {
+			d = &entity.TechCardEquipmentDefaults{}
+			equipmentByCard[cardID] = d
+		}
+		return d
+	}
+	for i := range machineRows {
+		d := equipmentOf(machineRows[i].TechCardId)
+		d.Machines = append(d.Machines, machineRows[i])
+	}
+	for i := range pressRows {
+		d := equipmentOf(pressRows[i].TechCardId)
+		d.Presses = append(d.Presses, pressRows[i])
 	}
 
 	// Operations are returned sorted ascending by operation_number (the addressable
@@ -423,6 +639,10 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		       o.stitches_per_cm, o.seam_class, o.seam_allowance_mm,
 		       o.topstitch_mode, o.topstitch_width_mm, o.topstitch_rows,
 		       o.attachment_kind, o.attachment_size_mm,
+		       o.machine_type, o.machine_profile_key, o.thread_count, o.needle_type,
+		       o.needle_size_nm, o.thread_tension, o.thread_tension_note, o.stitch_width_mm,
+		       o.press_equipment, o.press_profile_key, o.press_temperature_c, o.press_dwell_sec,
+		       o.press_pressure_n_cm2, o.press_steam, o.press_cloth,
 		       o.smv, o.note, o.callout_number
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
@@ -569,6 +789,20 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	for i := range cards {
 		id := cards[i].Id
 		cards[i].Construction = consByCard[id]
+		// The park hangs off the CARD, not off the construction row (its FK is on tech_card), so a
+		// card can hold profiles with no construction row at all — 0306's migrated overlock profile
+		// arrives on cards that never filled anything else in the section. An empty construction is
+		// created for them rather than dropping the profiles, which is what «no row» would do.
+		//
+		// Left nil when there are no profiles: nil is «this card has no park» on the read side, and
+		// only on the WRITE side does nil mean «the payload did not speak». The mapper turns either
+		// into the same empty wrapper on the wire.
+		if d := equipmentByCard[id]; d != nil {
+			if cards[i].Construction == nil {
+				cards[i].Construction = &entity.TechCardConstruction{}
+			}
+			cards[i].Construction.EquipmentDefaults = d
+		}
 		cards[i].Operations = opsByCard[id]
 		cards[i].Labels = labelsByCard[id]
 		cards[i].Packaging = pkgByCard[id]
