@@ -172,6 +172,102 @@ func TestRestampFreshSignoffDigestsSkipsCatalogWithoutFreshApproval(t *testing.T
 	require.NoError(t, err)
 }
 
+// storedCardWithEquipmentPark is a card whose park lives in storage and nowhere in the payloads
+// below — the whole point of the belt these tests cover.
+func storedCardWithEquipmentPark() *entity.TechCard {
+	return &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		Construction: &entity.TechCardConstruction{
+			EquipmentDefaults: &entity.TechCardEquipmentDefaults{
+				Presses: []entity.TechCardPressProfile{{
+					ProfileKey:        "01J0PRESSKEY0000000000001A",
+					PressEquipment:    "fusing_press",
+					PressTemperatureC: sql.NullInt32{Int32: 150, Valid: true},
+					PressDwellSec:     sql.NullInt32{Int32: 12, Valid: true},
+				}},
+			},
+		},
+	}}
+}
+
+// A fresh CONSTRUCTION approval must not be stamped over a park the payload does not carry — in
+// EITHER shape the store treats as «do not touch it»: a construction sent without the wrapper, and no
+// construction at all. Both would fingerprint the section as having no profiles while the next read
+// returns them, which is «changed since sign-off» from birth and unclearable, because re-approving
+// from the same client hashes the same absence.
+func TestUpdateTechCardRefusesFreshConstructionApprovalThatDropsTheStoredPark(t *testing.T) {
+	tests := []struct {
+		name         string
+		construction *pb_common.TechCardConstruction
+		wantMessage  string
+	}{
+		{"a construction sent without the wrapper", &pb_common.TechCardConstruction{},
+			"construction_equipment_not_carried"},
+		// Caught one check earlier, by the section-presence rule, and with the better sentence for
+		// this shape. The belt keeps the case in its own condition anyway — see its comment.
+		{"no construction at all", nil, "cannot approve construction"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := mocks.NewMockRepository(t)
+			techCards := mocks.NewMockTechCards(t)
+			repo.EXPECT().TechCards().Return(techCards)
+			techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).
+				Return(storedCardWithEquipmentPark(), nil)
+
+			_, err := (&Server{repo: repo}).UpdateTechCard(fullAccessCtx(), &pb_admin.UpdateTechCardRequest{
+				Id: 7, ExpectedLockVersion: 3,
+				TechCard: &pb_common.TechCardInsert{
+					StyleNumber:        "TC-PARK",
+					Name:               "park carry guard",
+					MachineFieldsAware: true,
+					Construction:       tt.construction,
+					Signoffs:           gateConstructionSignoff(),
+				},
+			})
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			require.Contains(t, status.Convert(err).Message(), tt.wantMessage)
+		})
+	}
+}
+
+// The belt does not depend on the presence check running first: the «no construction» half is stated
+// in its own condition, because the two are independent rules and only one of them is about the park.
+func TestFreshConstructionEquipmentBeltIsIndependentOfSectionPresence(t *testing.T) {
+	tc := &entity.TechCardInsert{Signoffs: []entity.TechCardSignoff{{
+		Section: entity.SignoffConstruction, State: entity.SignoffStateApproved,
+	}}}
+	fresh := map[entity.TechCardSignoffSection]bool{entity.SignoffConstruction: true}
+	ve := validateFreshConstructionCarriesStoredEquipment(tc, storedCardWithEquipmentPark(), fresh)
+	require.NotNil(t, ve)
+	require.Equal(t, "signoffs[0].section", ve.Field)
+}
+
+// An EMPTY wrapper is «delete them all», not «I know nothing about them»: it is a deliberate
+// instruction, the store obeys it, and the digest projection hashes the resulting empty park — so the
+// approval is honest and must go through.
+func TestUpdateTechCardApprovesConstructionThatDeliberatelyEmptiesThePark(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(storedCardWithEquipmentPark(), nil)
+	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
+		mock.AnythingOfType("*entity.TechCardInsert"), 3).Return(nil, entity.ErrTechCardConflict)
+
+	_, err := (&Server{repo: repo}).UpdateTechCard(fullAccessCtx(), &pb_admin.UpdateTechCardRequest{
+		Id: 7, ExpectedLockVersion: 3,
+		TechCard: &pb_common.TechCardInsert{
+			StyleNumber:        "TC-PARK",
+			Name:               "deliberate clear",
+			MachineFieldsAware: true,
+			Construction: &pb_common.TechCardConstruction{
+				EquipmentDefaults: &pb_common.TechCardEquipmentDefaults{},
+			},
+			Signoffs: gateConstructionSignoff(),
+		},
+	})
+	require.Equal(t, codes.Aborted, status.Code(err))
+}
+
 func TestUpdateTechCardRejectsFreshApprovalForAbsentPreservedSection(t *testing.T) {
 	tests := []struct {
 		name    string
