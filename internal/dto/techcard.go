@@ -581,7 +581,15 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	for _, c := range callouts {
 		calloutNumbers[c.Number] = true
 	}
-	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems))
+	// A step's profile reference resolves against the profiles of THIS payload — full-replace has no
+	// stable ids to FK against on write, exactly as with the callout numbers above. A payload that
+	// carried no equipment wrapper leaves the park nil: there is nothing to resolve against and the
+	// keys pass through.
+	var park *equipmentPark
+	if construction != nil {
+		park = newEquipmentPark(construction.EquipmentDefaults)
+	}
+	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems), park, pb.MachineFieldsAware)
 	if err != nil {
 		return nil, err
 	}
@@ -697,6 +705,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// any section digest projection: adding a field to one marks every signed-off approval of that
 		// section as edited-since-signing, on every card at once.
 		RequiredSeamAllowanceMm: requiredSeamAllowance,
+
+		// TRANSPORT, not content: it says whether the CLIENT that sent this payload knows the machine
+		// / ВТО fields exist. The service reads it to refuse a save that would erase facts the bundle
+		// cannot see (§8); it is deliberately NOT part of any digest — who sent a payload is not what
+		// a signature attests.
+		MachineFieldsAware: pb.MachineFieldsAware,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:

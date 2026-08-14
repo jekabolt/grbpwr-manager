@@ -130,6 +130,12 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 		}
 		threads = sql.NullInt32{Int32: pb.OverlockThreadCount, Valid: true}
 	}
+	// The card's machine / ВТО park. nil wrapper -> nil here, and the store then preserves what is
+	// stored; see parseTechCardEquipmentDefaults for why the presence lives in a wrapper.
+	equipment, err := parseTechCardEquipmentDefaults(pb.EquipmentDefaults)
+	if err != nil {
+		return nil, err
+	}
 	return &entity.TechCardConstruction{
 		HemFinish:            nullStringFromPb(pb.HemFinish),
 		Pressing:             nullStringFromPb(pb.Pressing),
@@ -137,27 +143,32 @@ func parseTechCardConstruction(pb *pb_common.TechCardConstruction) (*entity.Tech
 		DefaultSeamClass:     seamClass,
 		DefaultStitchesPerCm: density,
 		OverlockThreadCount:  threads,
+		EquipmentDefaults:    equipment,
 	}, nil
 }
 
-var techCardOperationTypePbToEntity = map[pb_common.TechCardOperationType]entity.TechCardOperationType{
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH:    entity.OpTypeLockstitch,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_DOUBLE_NEEDLE: entity.OpTypeDoubleNeedle,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_OVERLOCK:      entity.OpTypeOverlock,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_COVERSTITCH:   entity.OpTypeCoverstitch,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_CHAINSTITCH:   entity.OpTypeChainstitch,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BLINDHEM:      entity.OpTypeBlindhem,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BARTACK:       entity.OpTypeBartack,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BUTTONHOLE:    entity.OpTypeButtonhole,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_BUTTON_ATTACH: entity.OpTypeButtonAttach,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_FUSING:        entity.OpTypeFusing,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_HANDWORK:      entity.OpTypeHandwork,
-	pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_OTHER:         entity.OpTypeOther,
-}
-var techCardOperationTypeEntityToPb = func() map[entity.TechCardOperationType]pb_common.TechCardOperationType {
-	m := make(map[entity.TechCardOperationType]pb_common.TechCardOperationType, len(techCardOperationTypePbToEntity))
-	for k, v := range techCardOperationTypePbToEntity {
-		m[v] = k
+// The operation-type vocabulary AS IT IS STORED: the six choosable verbs plus "unknown". Derived
+// from entity.OperationTypeTokens, so a verb added to the vocabulary without a proto member panics
+// at init instead of failing on the one value nobody tested.
+var operationTypePbToToken = enumTokenMap[pb_common.TechCardOperationType]("TECH_CARD_OPERATION_TYPE_", entity.OperationTypeTokens, pb_common.TechCardOperationType_value)
+var operationTypeTokenToPb = invertTokenMap(operationTypePbToToken)
+
+// legacyOperationTypePbToEntity is the NINE legacy wire values — the ones that answered «what» and
+// «on what» with a single word. They are still accepted (a bundle that predates the split keeps
+// working, and a release snapshot is protojson holding exactly these names, forever), and they are
+// canonicalised into (machine, machine_type) BEFORE an entity exists. They are never emitted.
+//
+// Derived from entity.LegacyOperationMachineType by name, not typed out again: that map is the one
+// canonicalisation table, shared with migration 0306 and the digest's compat projection.
+var legacyOperationTypePbToEntity = func() map[pb_common.TechCardOperationType]entity.TechCardOperationType {
+	m := make(map[pb_common.TechCardOperationType]entity.TechCardOperationType, len(entity.LegacyOperationMachineType))
+	for legacy := range entity.LegacyOperationMachineType {
+		name := "TECH_CARD_OPERATION_TYPE_" + strings.ToUpper(string(legacy))
+		v, ok := pb_common.TechCardOperationType_value[name]
+		if !ok {
+			panic("legacy operation type without a proto enum value: " + string(legacy))
+		}
+		m[pb_common.TechCardOperationType(v)] = legacy
 	}
 	return m
 }()
@@ -245,7 +256,13 @@ func parseSeamClass(v pb_common.TechCardSeamClass, field string) (sql.NullString
 // lesson of the removed `node`: a mandatory field with free input has no right answer, so the
 // operator invents one and two cards say the same thing differently. Everything else is optional,
 // and unset means «inherit the card default», never «zero».
-func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers map[int]bool, bomItemCount int) ([]entity.TechCardOperation, error) {
+//
+// park is the equipment park of the SAME payload (nil when the payload carried no wrapper), used to
+// resolve a step's profile reference; aware says whether the client that sent this payload knows
+// about the machine / ВТО fields at all — the two «required» rules below hold only for a client
+// that could have filled them in, because a bundle that predates the split must keep saving exactly
+// as it did.
+func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers map[int]bool, bomItemCount int, park *equipmentPark, aware bool) ([]entity.TechCardOperation, error) {
 	_ = bomItemCount // the positional bom_item_index went with the break; the line keys are the reference
 	out := make([]entity.TechCardOperation, 0, len(pbs))
 	for i, o := range pbs {
@@ -254,9 +271,14 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			return nil, entity.NewFieldViolation(step+".operation_type", "required", "",
 				"pick what the step DOES (join, overlock, topstitch, …) — it names the step and drives its defaults")
 		}
-		opType, ok := techCardOperationTypePbToEntity[o.OperationType]
-		if !ok {
-			return nil, entity.NewFieldViolation(step+".operation_type", "unknown_value", o.OperationType.String(), "pick a type from the list")
+		// CANONICALISATION HAPPENS HERE, before any entity exists — and therefore before any section
+		// digest is stamped off that entity (StampTechCardSignoffDigests runs at the end of the
+		// conversion). Doing it later would hash the raw legacy token into a signature and then read
+		// back the canonical one, and every card approved by an old bundle would read «edited since
+		// sign-off» from the moment it was signed.
+		opType, machineType, err := canonicaliseOperationType(o, step)
+		if err != nil {
+			return nil, err
 		}
 		if o.Zone == pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_UNKNOWN {
 			return nil, entity.NewFieldViolation(step+".zone", "required", "",
@@ -315,13 +337,13 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err != nil {
 			return nil, err
 		}
-		attachKind := sql.NullString{}
-		if o.AttachmentKind != pb_common.TechCardAttachmentKind_TECH_CARD_ATTACHMENT_KIND_UNKNOWN {
-			tok, ok := attachmentKindPbToToken[o.AttachmentKind]
-			if !ok {
-				return nil, entity.NewFieldViolation(step+".attachment_kind", "unknown_value", o.AttachmentKind.String(), "pick an attachment from the list")
-			}
-			attachKind = sql.NullString{String: tok, Valid: true}
+		// UNKNOWN -> NULL («inherit the profile's foot»), NONE -> 'none' («this step runs bare»).
+		// The two used to be one value here; see parseEquipmentEnum for why they had to come apart
+		// the day something sat above the step to inherit from.
+		attachKind, err := parseEquipmentEnum(o.AttachmentKind, attachmentKindPbToToken,
+			step+".attachment_kind", "pick an attachment from the list")
+		if err != nil {
+			return nil, err
 		}
 		var attachSize decimal.NullDecimal
 		if o.AttachmentSizeMm != nil {
@@ -333,11 +355,17 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 				return nil, err
 			}
 			// A size with no attachment is a number describing nothing — and it prints on the sheet
-			// next to a blank tool.
-			if attachSize.Valid && !attachKind.Valid {
+			// next to a blank tool. 'none' counts as no attachment for exactly the same reason: a
+			// binder size next to «runs bare» measures a tool the step just said it does not use.
+			if attachSize.Valid && (!attachKind.Valid || attachKind.String == attachmentKindNone) {
 				return nil, entity.NewFieldViolation(step+".attachment_size_mm", "needs_attachment_kind", attachSize.Decimal.String(),
 					"pick the attachment first — a size on its own describes no tool")
 			}
+		}
+		// --- «на чём»: the machine and ВТО blocks ---------------------------------------------------
+		machine, press, err := parseOperationEquipment(o, opType, machineType, park, aware, step)
+		if err != nil {
+			return nil, err
 		}
 		// piece_line_keys (WS4): the cut-pieces this operation works on. Repeated because an
 		// assembly operation spans as many pieces as it joins. Blanks are dropped and duplicates
@@ -385,6 +413,23 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			CalloutNumber:    calloutNumber,
 			PieceLineKeys:    pieceLineKeys,
 			BomLineKeys:      bomLineKeys,
+
+			MachineType:       machine.machineType,
+			MachineProfileKey: machine.profileKey,
+			ThreadCount:       machine.threadCount,
+			NeedleType:        machine.needleType,
+			NeedleSizeNm:      machine.needleSizeNm,
+			ThreadTension:     machine.threadTension,
+			ThreadTensionNote: machine.threadTensionNote,
+			StitchWidthMm:     machine.stitchWidthMm,
+
+			PressEquipment:    press.equipment,
+			PressProfileKey:   press.profileKey,
+			PressTemperatureC: press.temperatureC,
+			PressDwellSec:     press.dwellSec,
+			PressPressureNCm2: press.pressureNCm2,
+			PressSteam:        press.steam,
+			PressCloth:        press.cloth,
 		})
 	}
 	return out, nil
@@ -588,6 +633,9 @@ func techCardConstructionToPb(c *entity.TechCardConstruction) *pb_common.TechCar
 		DefaultSeamClass:     seamClassTokenToPb[c.DefaultSeamClass.String],
 		DefaultStitchesPerCm: pbDecimalFromNull(c.DefaultStitchesPerCm),
 		OverlockThreadCount:  c.OverlockThreadCount.Int32,
+		// ALWAYS non-nil — a read that omitted the wrapper would be re-read by the clone path as
+		// «this payload did not speak about equipment», and the clone would lose the park.
+		EquipmentDefaults: equipmentDefaultsToPb(c.EquipmentDefaults),
 	}
 }
 
@@ -614,9 +662,18 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 		if o.AttachmentSizeMm.Valid {
 			attachmentSizeMm = pbDecimalFromNull(o.AttachmentSizeMm)
 		}
+		var stitchWidthMm *pb_decimal.Decimal
+		if o.StitchWidthMm.Valid {
+			stitchWidthMm = pbDecimalFromNull(o.StitchWidthMm)
+		}
+		var pressPressure *pb_decimal.Decimal
+		if o.PressPressureNCm2.Valid {
+			pressPressure = pbDecimalFromNull(o.PressPressureNCm2)
+		}
+		opType, machineType := emitOperationType(o)
 		out = append(out, &pb_common.TechCardOperation{
 			OperationNumber:  pbInt32FromNull(o.OperationNumber),
-			OperationType:    techCardOperationTypeEntityToPb[o.OperationType],
+			OperationType:    opType,
 			Zone:             techCardGarmentZoneEntityToPb[o.Zone],
 			StitchesPerCm:    pbDecimalFromNull(o.StitchesPerCm),
 			SeamClass:        seamClassTokenToPb[o.SeamClass.String],
@@ -631,9 +688,51 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			PieceIds:         pieceIds,
 			BomLineKeys:      o.BomLineKeys,
 			BomItemIds:       bomIds,
+
+			// The machine block. A NULL token maps to the enum's zero member (UNKNOWN) = «inherit»,
+			// which is the same statement the column makes.
+			MachineType:       machineType,
+			MachineProfileKey: pbStringFromNull(o.MachineProfileKey),
+			ThreadCount:       pbInt32FromNull(o.ThreadCount),
+			NeedleType:        needleTypeTokenToPb[o.NeedleType.String],
+			NeedleSizeNm:      pbInt32FromNull(o.NeedleSizeNm),
+			ThreadTension:     threadTensionTokenToPb[o.ThreadTension.String],
+			ThreadTensionNote: pbStringFromNull(o.ThreadTensionNote),
+			StitchWidthMm:     stitchWidthMm,
+
+			// The ВТО block. press_cloth 'none' goes out as NONE (an instruction), NULL as UNKNOWN
+			// (inherit); press_steam goes out ABSENT when NULL, because false is «без пара» and a
+			// two-valued field would turn that instruction back into a default.
+			PressEquipment:    pressEquipmentTokenToPb[o.PressEquipment.String],
+			PressProfileKey:   pbStringFromNull(o.PressProfileKey),
+			PressTemperatureC: pbInt32FromNull(o.PressTemperatureC),
+			PressDwellSec:     pbInt32FromNull(o.PressDwellSec),
+			PressPressureNCm2: pressPressure,
+			PressSteam:        pbOptionalBoolFromNull(o.PressSteam),
+			PressCloth:        pressClothTokenToPb[o.PressCloth.String],
 		})
 	}
 	return out
+}
+
+// emitOperationType emits the verb and the machine. ONLY the new values go out: the nine legacy
+// members are accepted on the wire forever (snapshots) but never spoken, so a client has exactly one
+// vocabulary to render.
+//
+// The legacy branch is a belt for a row this phase says cannot exist — migration 0306 rewrites every
+// stored legacy token in the same deploy that ships this code. If one is ever read anyway (a rollback,
+// a hand-written row), it goes out canonicalised rather than as UNKNOWN: a step that lost its type
+// entirely is worse than one described in the new words, and it is the same canonicalisation the
+// write path would apply the moment that card is saved.
+func emitOperationType(o entity.TechCardOperation) (pb_common.TechCardOperationType, pb_common.TechCardMachineType) {
+	machineType := machineTypeTokenToPb[o.MachineType.String]
+	if machine, ok := entity.LegacyOperationMachineType[o.OperationType]; ok {
+		if !o.MachineType.Valid {
+			machineType = machineTypeTokenToPb[machine]
+		}
+		return pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE, machineType
+	}
+	return operationTypeTokenToPb[string(o.OperationType)], machineType
 }
 
 // topstitchToPb emits the sub-message only when there is topstitching at all — an always-present

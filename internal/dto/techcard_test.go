@@ -562,7 +562,11 @@ func TestConvertTechCardOperations(t *testing.T) {
 	if got.Operations[0].OperationNumber.Int32 != 10 || got.Operations[1].OperationNumber.Int32 != 20 {
 		t.Errorf("operation numbers not server-assigned: %v, %v", got.Operations[0].OperationNumber, got.Operations[1].OperationNumber)
 	}
-	if got.Operations[0].OperationType != entity.OpTypeCoverstitch ||
+	// The fixture sends the LEGACY single-axis type COVERSTITCH, and it lands as the two axes the
+	// step now has: the verb «machine» and the machine «coverstitch». Canonicalisation happens in
+	// the conversion, before the entity exists and therefore before any digest is stamped off it.
+	if got.Operations[0].OperationType != entity.OpTypeMachine ||
+		got.Operations[0].MachineType.String != "coverstitch" ||
 		got.Operations[0].Zone != entity.TechCardGarmentZone("hem") ||
 		got.Operations[0].SeamClass.String != "bs_bound" ||
 		got.Operations[0].CalloutNumber.Int32 != 2 {
@@ -640,6 +644,10 @@ func TestConvertTechCardOperations(t *testing.T) {
 
 // Shorthands for the two required fields, so a fixture that is not ABOUT them does not restate them
 // at full enum length on every row.
+//
+// opTypeLock is deliberately the LEGACY value: these fixtures double as the standing proof that a
+// bundle predating the machine/verb split keeps saving. It canonicalises to (machine, lockstitch),
+// which is why no fixture here may assert on OperationType unless that is what it is testing.
 const (
 	opTypeLock = pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH
 	zoneOuter  = pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OUTER
