@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 func sampleContext() TechCardContext {
@@ -26,7 +28,15 @@ func sampleContext() TechCardContext {
 			{Section: "fabric", Name: "French terry 320gsm", Composition: "100% cotton"},
 			{Section: "thread", Name: "Poly core 120"},
 		},
-		Construction: &ConstructionContext{DefaultSeamClass: "ss_plain", DefaultStitchesPerCm: "4", OverlockThreadCount: 4},
+		Construction: &ConstructionContext{
+			DefaultSeamClass:     "ss_plain",
+			DefaultStitchesPerCm: "4",
+			// The equipment park, already rendered by the caller. It replaces the single
+			// OverlockThreadCount: one thread count could describe one overlock, and a card runs
+			// several machines whose settings a step is expected to inherit rather than restate.
+			MachineProfiles: []string{`overlock ("оверлок у окна"): 4 threads, ballpoint needle Nm 90, 4 st/cm`},
+			PressProfiles:   []string{"fusing_press for fusing: 150 °C, 12 s, 3.5 N/cm², no steam"},
+		},
 	}
 }
 
@@ -39,7 +49,11 @@ func TestBuildUserPrompt_IncludesContextAndDescription(t *testing.T) {
 		"French terry 320gsm", "100% cotton",
 		// The card DEFAULTS, which the prompt now states so a draft can omit the fields that match
 		// them — the old free-text "lockstitch 301" was a stitch class the step already carries.
-		"ss_plain", "4 stitches/cm", "overlock threads: 4",
+		"ss_plain", "4 stitches/cm",
+		// The equipment park, for the same reason one step further: a draft that knows the card runs
+		// a 4-thread overlock at 4 st/cm can name the machine and stay silent about the settings.
+		"CARD MACHINES", `overlock ("оверлок у окна"): 4 threads`,
+		"CARD PRESSING EQUIPMENT", "fusing_press for fusing: 150 °C",
 		"serge the side seams then coverstitch the hem",
 	} {
 		if !strings.Contains(p, want) {
@@ -57,8 +71,59 @@ func TestBuildUserPrompt_OmitsEmptyFields(t *testing.T) {
 	if strings.Contains(p, "Brand:") || strings.Contains(p, "CUT PIECES") || strings.Contains(p, "BILL OF MATERIALS") {
 		t.Errorf("empty sections should be omitted:\n%s", p)
 	}
+	// A card with no equipment park says nothing about equipment. An empty heading would read as
+	// «this style is sewn on no machines», which is a fact nobody entered.
+	if strings.Contains(p, "CARD MACHINES") || strings.Contains(p, "CARD PRESSING EQUIPMENT") {
+		t.Errorf("an empty equipment park must contribute nothing:\n%s", p)
+	}
 	if !strings.Contains(p, "Tee") || !strings.Contains(p, "sew it") {
 		t.Errorf("required content missing:\n%s", p)
+	}
+}
+
+// TestSystemPrompt_CarriesEveryVocabulary is the drift guard the hand-written lists could not have.
+// A token missing from the prompt is a token the model NEVER emits, and nothing downstream can see
+// that: the answer simply never contains the word. The previous prompt listed eight attachment
+// kinds against a vocabulary of twelve and nobody noticed, which is the whole argument for rendering
+// these from the entity slices.
+func TestSystemPrompt_CarriesEveryVocabulary(t *testing.T) {
+	for name, tokens := range map[string][]string{
+		"operation_type":  entity.OperationTypeTokens,
+		"machine_type":    entity.MachineTypeTokens,
+		"press_equipment": entity.PressEquipmentTokens,
+		"needle_type":     entity.NeedleTypeTokens,
+		"thread_tension":  entity.ThreadTensionTokens,
+		"press_cloth":     entity.PressClothTokens,
+		"zone":            entity.GarmentZoneTokens,
+		"seam_class":      entity.SeamClassTokens,
+		"attachment_kind": entity.AttachmentKindTokens,
+		"topstitch_mode":  entity.TopstitchModeTokens,
+	} {
+		for _, tok := range tokens {
+			if tok == "unknown" { // a storage placeholder, never an answer
+				continue
+			}
+			if !strings.Contains(systemPrompt, tok) {
+				t.Errorf("%s token %q is missing from the system prompt — the model can never emit it", name, tok)
+			}
+		}
+	}
+	// The bands the SAVE enforces (§4.1) are stated from the same constants the save checks against,
+	// so a draft outside them is a prompt bug rather than a surprise at the point of saving.
+	for _, want := range []string{
+		promptRange(entity.MinThreadCount, entity.MaxThreadCount),
+		promptRange(entity.MinNeedleSizeNm, entity.MaxNeedleSizeNm),
+		promptRange(entity.MinPressTemperatureC, entity.MaxPressTemperatureC),
+		promptRange(entity.MinPressDwellSec, entity.MaxPressDwellSec),
+		promptRange(entity.MinPressPressureNCm2, entity.MaxPressPressureNCm2),
+		promptRange(entity.MinStitchWidthMm, entity.MaxStitchWidthMm),
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Errorf("system prompt does not state the range %q", want)
+		}
+	}
+	if strings.Contains(systemPrompt, "{{") {
+		t.Errorf("an unfilled placeholder survived into the prompt:\n%s", systemPrompt)
 	}
 }
 
@@ -108,6 +173,102 @@ func TestParseResult_NumbersAsNumbersOrStrings(t *testing.T) {
 		t.Errorf("op1 numeric parse: spc=%q tn=%q num=%q", o1.StitchesPerCm, o1.SmvMinutes, o1.OperationNumber)
 	}
 }
+
+// TestParseResult_MachineAndPressBlocks pins the shape the split produced: the machine axis, the
+// ВТО block, a LEGACY type word (which the model will keep answering with — it was the operation
+// type until this phase and is in every sewing text), and a press step that names no equipment.
+//
+// The last one is the important one: an incomplete step is a DRAFT WITH A BLANK, not a parse error.
+// Refusing the document would throw away the three complete steps beside it.
+func TestParseResult_MachineAndPressBlocks(t *testing.T) {
+	content := `{
+	  "operations": [
+	    {"zone":"shoulder","operation_type":"overlock","stitches_per_cm":4},
+	    {"zone":"hem","operation_type":"machine","machine_type":"coverstitch","thread_count":4,
+	     "needle_type":"ballpoint","needle_size_nm":"90","thread_tension":"looser","stitch_width_mm":"5.2"},
+	    {"zone":"front","operation_type":"press_open","press_equipment":"iron","press_temperature_c":150,
+	     "press_dwell_sec":"12","press_pressure_n_cm2":"3.5","press_steam":"no","press_cloth":"damp_press_cloth"},
+	    {"zone":"collar","operation_type":"press"}
+	  ]
+	}`
+	r, err := parseResult(content)
+	if err != nil {
+		t.Fatalf("parseResult: %v", err)
+	}
+	if len(r.Operations) != 4 {
+		t.Fatalf("want 4 operations, got %d", len(r.Operations))
+	}
+
+	// The legacy word survives the transport untouched; canonicalising it into (machine, overlock)
+	// is the mapper's job one package over, and it needs the word to do it.
+	if got := r.Operations[0].OperationType; got != "overlock" {
+		t.Errorf("legacy operation_type = %q, want it carried through verbatim", got)
+	}
+
+	m := r.Operations[1]
+	if m.MachineType != "coverstitch" || m.NeedleType != "ballpoint" || m.ThreadTension != "looser" {
+		t.Errorf("machine tokens: type=%q needle=%q tension=%q", m.MachineType, m.NeedleType, m.ThreadTension)
+	}
+	// Numbers arrive as numbers OR as strings, and both spellings appear in this one step.
+	if m.ThreadCount.String() != "4" || m.NeedleSizeNm.String() != "90" || m.StitchWidthMm.String() != "5.2" {
+		t.Errorf("machine numbers: threads=%q needle=%q width=%q",
+			m.ThreadCount, m.NeedleSizeNm, m.StitchWidthMm)
+	}
+
+	p := r.Operations[2]
+	if p.PressEquipment != "iron" || p.PressCloth != "damp_press_cloth" {
+		t.Errorf("press tokens: equipment=%q cloth=%q", p.PressEquipment, p.PressCloth)
+	}
+	if p.PressTemperatureC.String() != "150" || p.PressDwellSec.String() != "12" || p.PressPressureNCm2.String() != "3.5" {
+		t.Errorf("press numbers: t=%q dwell=%q pressure=%q",
+			p.PressTemperatureC, p.PressDwellSec, p.PressPressureNCm2)
+	}
+	// «no» is an ANSWER — «без пара» — and has to reach the wire as an explicit false, not as silence.
+	steam := p.PressSteam.Ptr()
+	if steam == nil || *steam {
+		t.Errorf("press_steam «no» = %v, want an explicit false", steam)
+	}
+
+	bare := r.Operations[3]
+	if bare.OperationType != "press" || bare.PressEquipment != "" {
+		t.Errorf("bare press step = %+v", bare)
+	}
+	if bare.PressSteam.Ptr() != nil {
+		t.Error("an unstated press_steam must stay unstated, not become false")
+	}
+}
+
+// TestJSONBool_Tolerance: a model hedges in words, and a plain *bool would answer an
+// UnmarshalTypeError for the WHOLE document — one «yes» in one step would cost the entire draft.
+func TestJSONBool_Tolerance(t *testing.T) {
+	cases := map[string]*bool{
+		`true`:    ptr(true),
+		`"true"`:  ptr(true),
+		`"Yes"`:   ptr(true),
+		`1`:       ptr(true),
+		`false`:   ptr(false),
+		`"no"`:    ptr(false),
+		`0`:       ptr(false),
+		`null`:    nil,
+		`""`:      nil,
+		`"maybe"`: nil, // unrecognised = not stated, never an error
+	}
+	for in, want := range cases {
+		var op Operation
+		if err := json.Unmarshal([]byte(`{"press_steam":`+in+`}`), &op); err != nil {
+			t.Fatalf("press_steam %s must never fail to unmarshal: %v", in, err)
+		}
+		got := op.PressSteam.Ptr()
+		switch {
+		case want == nil && got != nil:
+			t.Errorf("press_steam %s = %v, want unstated", in, *got)
+		case want != nil && (got == nil || *got != *want):
+			t.Errorf("press_steam %s = %v, want %v", in, got, *want)
+		}
+	}
+}
+
+func ptr(b bool) *bool { return &b }
 
 func TestParseResult_Fenced(t *testing.T) {
 	r, err := parseResult("```json\n{\"operations\":[{\"zone\":\"sleeve\"}]}\n```")

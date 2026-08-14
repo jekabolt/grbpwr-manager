@@ -130,10 +130,20 @@ type BOMItemContext struct {
 // ConstructionContext is the card's DEFAULTS, if any — what a drafted step inherits rather than
 // restates. Empty strings stay empty in the prompt: naming a default nobody configured would invent
 // a fact for the model to reason from.
+//
+// MachineProfiles / PressProfiles are the card's equipment park, ALREADY RENDERED as one summary
+// line each («overlock: 4 threads, ballpoint needle Nm 90, 4 st/cm»). They replace the single
+// OverlockThreadCount, which could only ever describe one overlock on a card that may run several —
+// and, more to the point, a step now says «machine» + «on an overlock», so the park is what tells
+// the model which machines this style is actually sewn on and which settings it may leave out.
+//
+// The lines carry NO profile keys. The model does not create profiles and cannot link a step to
+// one: it names the machine or the equipment TYPE, and the technologist attaches the profile.
 type ConstructionContext struct {
 	DefaultSeamClass     string
 	DefaultStitchesPerCm string
-	OverlockThreadCount  int32
+	MachineProfiles      []string
+	PressProfiles        []string
 }
 
 // Operation is one drafted sewing operation as returned by the model. Numeric-ish fields are
@@ -144,6 +154,11 @@ type ConstructionContext struct {
 // struct held twelve bare strings, so the model answered «оверлок 4-нит.» or «overlock 4 thread» or
 // anything else, and whatever came back was stored verbatim because there was nothing to check it
 // against. A token either resolves to an enum value or becomes UNKNOWN for a human to fix.
+//
+// The two axes are why machine_type exists beside operation_type: the type says WHAT the step does
+// (machine work, pressing, fusing, handwork) and the machine says WHAT IT IS DONE ON. One word could
+// not carry both, which is why a draft used to answer «overlock» and leave the ВТО steps with no
+// vocabulary at all — a press step had nothing to say about the iron, the temperature or the cloth.
 type Operation struct {
 	OperationNumber  jsonNum `json:"operation_number"`
 	OperationType    string  `json:"operation_type"`
@@ -158,6 +173,24 @@ type Operation struct {
 	SmvMinutes       jsonNum `json:"smv_minutes"`
 	CalloutNumber    jsonNum `json:"callout_number"`
 	Note             string  `json:"note"`
+
+	// The machine step: «on what», plus the settings that deviate from the card's profile.
+	MachineType   string  `json:"machine_type"`
+	ThreadCount   jsonNum `json:"thread_count"`
+	NeedleType    string  `json:"needle_type"`
+	NeedleSizeNm  jsonNum `json:"needle_size_nm"`
+	ThreadTension string  `json:"thread_tension"`
+	StitchWidthMm jsonNum `json:"stitch_width_mm"` // zigzag amplitude / overlock bite, NOT the topstitch width
+
+	// The ВТО block: press / press_open / fusing. No profile key here either — see ConstructionContext.
+	PressEquipment    string  `json:"press_equipment"`
+	PressTemperatureC jsonNum `json:"press_temperature_c"`
+	PressDwellSec     jsonNum `json:"press_dwell_sec"`
+	PressPressureNCm2 jsonNum `json:"press_pressure_n_cm2"` // pressure on the cloth, N/cm²
+	// Three-valued, hence jsonBool and not bool: absent = the model said nothing, false = «без пара»,
+	// which is a real instruction a two-valued field would quietly turn back into a default.
+	PressSteam jsonBool `json:"press_steam"`
+	PressCloth string   `json:"press_cloth"`
 }
 
 // Result is the parsed model output: drafted operations plus optional free-text notes.
@@ -191,6 +224,40 @@ func (n *jsonNum) UnmarshalJSON(b []byte) error {
 
 // String returns the captured literal (canonical-ish; the caller validates).
 func (n jsonNum) String() string { return string(n) }
+
+// jsonBool is an OPTIONAL boolean with presence: it has to hold «not stated», «yes» and «no» as
+// three answers, because press_steam does.
+//
+// It NEVER fails to unmarshal, and that is the point rather than laxity: a plain *bool would return
+// an UnmarshalTypeError on `"press_steam": "yes"`, and json.Unmarshal reports that for the whole
+// document — one hedged word in one step would throw away the entire draft. Anything unrecognised
+// is simply «not stated», which is what an unanswered question means everywhere else in this file.
+type jsonBool struct {
+	set   bool
+	value bool
+}
+
+// UnmarshalJSON accepts true/false, the same words quoted, the usual yes/no/1/0 spellings, and null.
+func (b *jsonBool) UnmarshalJSON(data []byte) error {
+	*b = jsonBool{}
+	s := strings.ToLower(strings.Trim(strings.TrimSpace(string(data)), `"`))
+	switch strings.TrimSpace(s) {
+	case "true", "yes", "y", "1", "on":
+		*b = jsonBool{set: true, value: true}
+	case "false", "no", "n", "0", "off":
+		*b = jsonBool{set: true, value: false}
+	}
+	return nil
+}
+
+// Ptr renders the three states as the wire's optional bool: nil when the model said nothing.
+func (b jsonBool) Ptr() *bool {
+	if !b.set {
+		return nil
+	}
+	v := b.value
+	return &v
+}
 
 // --- OpenRouter wire types (OpenAI-compatible chat/completions) ---
 
