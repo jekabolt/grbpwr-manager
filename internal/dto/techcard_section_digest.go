@@ -248,23 +248,79 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		// every approved section as edited-since-signing. This tuple CHANGED SHAPE in the operations
 		// break (0289) — the free-text defaults became typed ones — so approvals on cards that
 		// carried construction defaults are stale exactly once, by design.
+		//
+		// ПОЗИЦИИ 3 И 5 ЗАМОРОЖЕНЫ НАВСЕГДА. В них жили overlock_thread_count и pressing, снятые
+		// парком оборудования (0306): один счёт нитей на карточку мог описать только один оверлок, а
+		// карточка шьётся на нескольких. УДАЛИТЬ элемент из позиционного массива — ровно тот же
+		// безусловный сдвиг, что и дописать: всё, что стоит правее, съезжает, и КАЖДАЯ карточка в
+		// базе, у которой обоих полей не было (то есть подавляющее большинство), получила бы новый
+		// отпечаток и объявила бы свою подпись CONSTRUCTION устаревшей в момент выкатки, ни за что.
+		// Поэтому на их местах стоят ровно те значения, в которые маршалился NULL: int32(0) и "".
+		// Прецедент — позиции 2-3 в costingProjection (бывшие hardware/packaging cost).
+		//
+		// Карточка, у которой эти два поля БЫЛИ заполнены, отпечаток меняет — и это честно, а не
+		// побочный ущерб: миграция 0306 перенесла её pressing в notes (позиция 6 ниже) и завела ей
+		// профиль оверлока, то есть подписанное содержание действительно двинулось. Волна
+		// переутверждения равна множеству таких карточек, а не всей базе.
 		construction = []any{
 			c.DefaultSeamClass.String, digestDecimal(c.DefaultStitchesPerCm),
-			c.OverlockThreadCount.Int32, c.HemFinish.String, c.Pressing.String, c.Notes.String,
+			int32(0), // была OverlockThreadCount; NULL маршалился как 0 — ЗАМОРОЖЕНО НАВСЕГДА
+			c.HemFinish.String,
+			"", // была Pressing; NULL маршалился как "" — ЗАМОРОЖЕНО НАВСЕГДА
+			c.Notes.String,
 		}
 	}
 	// The operation tuple, also FIXED FOREVER. Unlike construction above, changing this one was
 	// free: an EMPTY operations list marshals identically whatever shape the tuple has, and no card
 	// on prod had a single operation when the break landed.
+	//
+	// Позиция 2 с 0306 — КОМПАТ-ПРОЕКЦИЯ, а не сырой тип шага: см. digestOperationTypeCompat.
 	ops := make([]any, 0, len(tc.Operations))
-	for _, o := range tc.Operations {
-		ops = append(ops, []any{
-			o.OperationNumber.Int32, string(o.OperationType), string(o.Zone),
+	for i := range tc.Operations {
+		o := &tc.Operations[i]
+		row := []any{
+			o.OperationNumber.Int32, digestOperationTypeCompat(o), string(o.Zone),
 			o.PieceLineKeys, o.BomLineKeys, digestDecimal(o.SMV), o.CalloutNumber.Int32,
 			digestDecimal(o.StitchesPerCm), o.SeamClass.String, digestDecimal(o.SeamAllowanceMm),
 			o.TopstitchMode.String, digestDecimal(o.TopstitchWidthMm), o.TopstitchRows.Int32,
 			o.AttachmentKind.String, digestDecimal(o.AttachmentSizeMm), o.Note.String,
-		})
+		}
+		// ДВА УСЛОВНЫХ ХВОСТА, КАЖДЫЙ ПАРОЙ «ИМЯ, ЗНАЧЕНИЕ» — по обоим доводам, которые эта функция
+		// уже держит на деталях. (1) Безусловные элементы сдвинули бы отпечаток КАЖДОГО шага в базе
+		// и объявили бы все утверждённые подписи CONSTRUCTION устаревшими в момент выкатки; при
+		// условном появлении волна равна множеству шагов, где машинные факты реально заполнили, то
+		// есть сегодня — нулю. (2) Голый хвост запрещён уроком 0302/0304 в комментарии к деталям:
+		// типы хвостов пересекаются (обе врезки здесь — массивы), и ["press", …] против [ …] стало
+		// бы неразличимо; тег отвечает на вопрос, ЧЕЙ хвост, навсегда.
+		//
+		// В подписанном содержании этим фактам место без оговорок: CONSTRUCTION — подпись под тем,
+		// ЧТО шьют и КАК. «Этот шов идёт на оверлоке в пять нитей иглой Nm 90» и «дублировать при
+		// 150 °C двенадцать секунд» — указания цеху, меняющие физическое изделие, а не метаданные о
+		// нём (в отличие от purpose/kind, исключённых намеренно — см. materialsProjection).
+		if operationHasMachineTail(o) {
+			// machine_type ПУСТ, когда он уже уехал в компат-позицию: там он и хешируется, а
+			// дублировать его здесь значило бы записать один факт дважды. Неоднозначности нет —
+			// компат-позиция при этом несёт legacy-токен, которого нет в новом словаре типов.
+			machineType := o.MachineType.String
+			if _, collapsed := legacyOperationTypeOf(o); collapsed {
+				machineType = ""
+			}
+			row = append(row, []any{"machine",
+				machineType, o.MachineProfileKey.String, o.ThreadCount.Int32,
+				o.NeedleType.String, o.NeedleSizeNm.Int32, o.ThreadTension.String,
+				o.ThreadTensionNote.String, digestDecimal(o.StitchWidthMm)})
+		}
+		if operationHasPressTail(o) {
+			// ПАР — ПАРОЙ {Valid, Bool}, а не одним bool: он трёхзначен по построению (не задано =
+			// наследовать профиль, явное «без пара» = указание цеху, «с паром»), и схлопывание
+			// первых двух дало бы двум РАЗНЫМ режимам ВТО один отпечаток — подпись под «без пара»
+			// читалась бы как действительная под «как получится».
+			row = append(row, []any{"press",
+				o.PressEquipment.String, o.PressProfileKey.String, o.PressTemperatureC.Int32,
+				o.PressDwellSec.Int32, digestDecimal(o.PressPressureNCm2),
+				[]any{o.PressSteam.Valid, o.PressSteam.Bool}, o.PressCloth.String})
+		}
+		ops = append(ops, row)
 	}
 	pieces := make([]any, 0, len(tc.Pieces))
 	for _, p := range tc.Pieces {
@@ -342,7 +398,128 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		}
 		pieces = append(pieces, row)
 	}
-	return []any{construction, ops, pieces}
+	out := []any{construction, ops, pieces}
+	// ПАРК ОБОРУДОВАНИЯ (0306) — УСЛОВНЫЙ ХВОСТ ВНЕШНЕГО КОРТЕЖА, тот же приём и те же два довода,
+	// что у хвостов шага выше: безусловный четвёртый элемент сдвинул бы отпечаток КАЖДОЙ карточки в
+	// базе, а тег «equipment» отвечает на вопрос, чей хвост, когда рядом встанет пятый.
+	//
+	// Профили входят в подпись, потому что шаг наследует от них ЖИВЬЁМ: строка шага хранит только
+	// то, чем он отличается, а «на чём и как» читается из профиля в момент чтения. Сменить профилю
+	// температуру и не сдвинуть подпись — значит подписать 150 °C, а отдать в цех 190.
+	if tail := equipmentProfilesTail(tc.Construction); tail != nil {
+		out = append(out, tail)
+	}
+	return out
+}
+
+// legacyOperationTypeOf says whether a step collapses into the ONE legacy operation-type token it
+// used to be stored as, and which one. The pair (machine, <machine token>) is exactly what migration
+// 0306 split the nine legacy types into, so the mapping back is total on those nine and empty on
+// everything else.
+func legacyOperationTypeOf(o *entity.TechCardOperation) (string, bool) {
+	if o.OperationType != entity.OpTypeMachine || !o.MachineType.Valid {
+		return "", false
+	}
+	legacy, ok := entity.MachineTypeLegacyToken[o.MachineType.String]
+	return legacy, ok
+}
+
+// digestOperationTypeCompat hashes a step's type AS IT WAS STORED BEFORE 0306: (machine, lockstitch)
+// hashes byte for byte as the string "lockstitch" did. This is what keeps migration day from
+// declaring every signed CONSTRUCTION section stale — the rows 0306 rewrote did not change their
+// CONTENT, only the two columns it is spread across, and a fingerprint must follow content.
+//
+// ОДНОЗНАЧНОСТЬ, а не удобство: девять legacy-токенов и семь токенов нового словаря
+// (entity.OperationTypeTokens) НЕ ПЕРЕСЕКАЮТСЯ, поэтому "lockstitch" в этой позиции читается ровно
+// одним способом. Биекция полная в обе стороны: entity.MachineTypeLegacyToken строится инверсией
+// LegacyOperationMachineType и паникует при init на неинъективной правке, а DTO канонизирует legacy
+// с провода ДО построения entity — значит шага с сырым legacy-типом после Ф1 не существует, и
+// «мигрированный» и «нововведённый» варианты одного шага дают один отпечаток по построению.
+//
+// Машинка, которой в legacy не было (coverlock, zigzag, автоматы), не схлопывается: позиция несёт
+// "machine", а сама машинка уезжает в machine-хвост. Такой карточки до 0306 существовать не могло,
+// поэтому протухать нечему.
+func digestOperationTypeCompat(o *entity.TechCardOperation) string {
+	if legacy, ok := legacyOperationTypeOf(o); ok {
+		return legacy
+	}
+	return string(o.OperationType)
+}
+
+// operationHasMachineTail is true only when the step says something ABOVE the compat position — a
+// machine that has no legacy twin, or any of the seven per-step machine overrides. A migrated
+// `lockstitch → (machine, lockstitch)` row therefore carries no tail at all and hashes exactly as it
+// did before 0306.
+func operationHasMachineTail(o *entity.TechCardOperation) bool {
+	if o.MachineType.Valid {
+		if _, collapsed := legacyOperationTypeOf(o); !collapsed {
+			return true
+		}
+	}
+	return o.MachineProfileKey.Valid || o.ThreadCount.Valid || o.NeedleType.Valid ||
+		o.NeedleSizeNm.Valid || o.ThreadTension.Valid || o.ThreadTensionNote.Valid ||
+		o.StitchWidthMm.Valid
+}
+
+// operationHasPressTail mirrors it for ВТО. PressSteam counts by VALIDITY, not by value: «без пара»
+// is an instruction and must produce a tail, and therefore a different fingerprint, than a step
+// nobody has answered. A legacy `fusing` step with no ВТО facts — every fusing row in the database
+// today — carries no tail and hashes as before.
+func operationHasPressTail(o *entity.TechCardOperation) bool {
+	return o.PressEquipment.Valid || o.PressProfileKey.Valid || o.PressTemperatureC.Valid ||
+		o.PressDwellSec.Valid || o.PressPressureNCm2.Valid || o.PressSteam.Valid ||
+		o.PressCloth.Valid
+}
+
+// equipmentProfilesTail projects the card's equipment park, or nil when it holds nothing.
+//
+// ПРИСУТСТВИЕ ОБЁРТКИ В ОТПЕЧАТОК НЕ ВХОДИТ — только её содержание. Пустая обёртка («заменить парк
+// на пустой») и отсутствующая («старый клиент про парк не говорил») — одно и то же содержание, ноль
+// профилей, и обязаны дать один отпечаток; иначе смена версии клиента сама по себе устаревала бы
+// подпись. Транспортный флаг machine_fields_aware в проекции не появляется по тому же доводу: он
+// говорит о ОТПРАВИТЕЛЕ, а не о карточке.
+//
+// СОРТИРОВКА ЗДЕСЬ, А НЕ В ЧТЕНИИ. Порядок профилей не значим: шаг ссылается на профиль по
+// profile_key, поэтому перестановка списка не меняет ни одного указания цеху и не смеет двигать
+// подпись. Полагаться на ORDER BY чтения нельзя — записываемый payload через него не проходит, и
+// два порядка одного парка дали бы два отпечатка. Копия, а не сортировка на месте: проекция
+// считается и на payload'е записи, и на модели чтения, и молча переупорядочить чужой слайс значило
+// бы менять то, что будет записано.
+func equipmentProfilesTail(c *entity.TechCardConstruction) any {
+	if c == nil || c.EquipmentDefaults == nil {
+		return nil
+	}
+	d := c.EquipmentDefaults
+	if len(d.Machines)+len(d.Presses) == 0 {
+		return nil
+	}
+	machines := append([]entity.TechCardMachineProfile(nil), d.Machines...)
+	sort.SliceStable(machines, func(i, j int) bool { return machines[i].ProfileKey < machines[j].ProfileKey })
+	presses := append([]entity.TechCardPressProfile(nil), d.Presses...)
+	sort.SliceStable(presses, func(i, j int) bool { return presses[i].ProfileKey < presses[j].ProfileKey })
+
+	// Id / TechCardId are deliberately absent: they are assigned by the store, so hashing them would
+	// make the write payload's fingerprint differ from the read model's for the same content — the
+	// permanent, un-clearable «changed since sign-off» this file's header warns about.
+	machineRows := make([]any, 0, len(machines))
+	for _, m := range machines {
+		machineRows = append(machineRows, []any{
+			m.ProfileKey, m.Label.String, m.MachineType, m.ThreadCount.Int32,
+			m.NeedleType.String, m.NeedleSizeNm.Int32, m.BedType.String, m.Automation.String,
+			m.ThreadTension.String, m.ThreadTensionNote.String, m.AttachmentKind.String,
+			digestDecimal(m.StitchesPerCm), digestDecimal(m.StitchWidthMm), m.Note.String,
+		})
+	}
+	pressRows := make([]any, 0, len(presses))
+	for _, p := range presses {
+		pressRows = append(pressRows, []any{
+			p.ProfileKey, p.Label.String, p.PressEquipment, p.PressOperationType.String,
+			p.PressTemperatureC.Int32, p.PressDwellSec.Int32, digestDecimal(p.PressPressureNCm2),
+			// Тот же трёхзначный пар, что и на шаге, и парой по той же причине.
+			[]any{p.PressSteam.Valid, p.PressSteam.Bool}, p.PressCloth.String, p.Note.String,
+		})
+	}
+	return []any{"equipment", machineRows, pressRows}
 }
 
 // materialsProjection fingerprints what the card BUYS: which article, at what price, in what
