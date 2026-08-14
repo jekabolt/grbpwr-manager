@@ -2115,7 +2115,89 @@ type TechCardConstruction struct {
 	// cm in every language and is not part of the millimetre switch.
 	DefaultStitchesPerCm decimal.NullDecimal `db:"default_stitches_per_cm"`
 	// 3 | 4 | 5; NULL = unset. The name does not reuse the removed `overlock_threads` (a string).
+	//
+	// SUPERSEDED by EquipmentDefaults.Machines[].ThreadCount: one thread count on the card could
+	// only ever describe one overlock, and a card may run several. Removed together with Pressing
+	// once every consumer is off them.
 	OverlockThreadCount sql.NullInt32 `db:"overlock_thread_count"`
+	// EquipmentDefaults is the card's machine and ВТО park — which machines this style is sewn on,
+	// with what settings, and which presses/irons it is pressed on. Not a column: the profiles live
+	// in tech_card_equipment_profile, keyed by the card.
+	//
+	// NIL IS NOT «no profiles»: nil means the write payload did not speak about equipment at all
+	// (an older bundle), and the store then PRESERVES what is stored. A non-nil value — even with
+	// both lists empty — is a full replace, and empty lists mean «delete them all». The wrapper is
+	// the only place that distinction can live, which is why it is a pointer to a struct rather than
+	// two slices on this one.
+	EquipmentDefaults *TechCardEquipmentDefaults `db:"-"`
+}
+
+// TechCardEquipmentDefaults is the card's equipment park in one value, split by kind. It is the
+// PRESENCE unit of the section: absent (a nil *TechCardEquipmentDefaults on the construction) means
+// «the payload did not speak», present means full replace.
+type TechCardEquipmentDefaults struct {
+	Machines []TechCardMachineProfile
+	Presses  []TechCardPressProfile
+}
+
+// TechCardMachineProfile is one row of the card's machine park: «this style is sewn on such a
+// machine, set up like this». A step names the machine TYPE (and may point at one profile by key)
+// and stores only what it genuinely deviates in — everything unset is inherited live and never
+// written into the step's row.
+//
+// IDENTITY IS ProfileKey, a durable 26-char client-minted key exactly like BomLineKey /
+// PieceLineKey, for exactly the same reason: the list is full-replaced on every save, so an index
+// or an id would break every step that references a profile the moment a row moves. Label is a
+// NAME FOR A HUMAN («оверлок у окна») and is deliberately not part of the identity — one name may
+// sit on two different keys and one key may be renamed, and conflating the two is the scope_key
+// trap. Several profiles of the SAME machine type are normal, not a duplicate to collapse.
+//
+// Stored in tech_card_equipment_profile with kind='machine'; the press columns of that table stay
+// NULL on these rows.
+type TechCardMachineProfile struct {
+	Id           int            `db:"id"`
+	TechCardId   int            `db:"tech_card_id"`
+	ProfileKey   string         `db:"profile_key"`
+	Label        sql.NullString `db:"label"`
+	MachineType  string         `db:"equipment"` // machine-vocabulary token; column is shared with the press kind
+	ThreadCount  sql.NullInt32  `db:"thread_count"`
+	NeedleType   sql.NullString `db:"needle_type"`
+	NeedleSizeNm sql.NullInt32  `db:"needle_size_nm"`
+	// BedType and Automation are machine IDENTITY, which is why they exist here and have no
+	// override on a step: a different bed is a different machine.
+	BedType           sql.NullString      `db:"bed_type"`
+	Automation        sql.NullString      `db:"automation"`
+	ThreadTension     sql.NullString      `db:"thread_tension"`
+	ThreadTensionNote sql.NullString      `db:"thread_tension_note"`
+	AttachmentKind    sql.NullString      `db:"attachment_kind"`
+	StitchesPerCm     decimal.NullDecimal `db:"stitches_per_cm"` // STITCHES PER CM, as everywhere
+	// StitchWidthMm is the zigzag amplitude / the bite of an overlock — NOT the topstitch width,
+	// which is a distance from an edge. Zero is a legal setting.
+	StitchWidthMm decimal.NullDecimal `db:"stitch_width_mm"`
+	Note          sql.NullString      `db:"note"`
+}
+
+// TechCardPressProfile is the ВТО twin of TechCardMachineProfile: one press / iron / steamer of the
+// card with the settings a step inherits. Same durable-key rules, stored in the same table with
+// kind='press' (the machine columns stay NULL on these rows).
+type TechCardPressProfile struct {
+	Id             int            `db:"id"`
+	TechCardId     int            `db:"tech_card_id"`
+	ProfileKey     string         `db:"profile_key"`
+	Label          sql.NullString `db:"label"`
+	PressEquipment string         `db:"equipment"` // press-vocabulary token; shared column
+	// PressOperationType says WHICH PROCESS this profile is for, so a form can offer it by default
+	// on the right kind of step: "press" | "press_open" | "fusing"; NULL = universal.
+	PressOperationType sql.NullString      `db:"press_operation_type"`
+	PressTemperatureC  sql.NullInt32       `db:"press_temperature_c"`
+	PressDwellSec      sql.NullInt32       `db:"press_dwell_sec"`
+	PressPressureNCm2  decimal.NullDecimal `db:"press_pressure_n_cm2"` // N/cm², the unit is in the name
+	// PressSteam is THREE-valued on purpose: invalid = not stated (inherit / unknown), false =
+	// «без пара», true = with steam. Collapsing the first two would turn a real instruction into
+	// a default.
+	PressSteam sql.NullBool   `db:"press_steam"`
+	PressCloth sql.NullString `db:"press_cloth"` // 'none' is a real answer, distinct from NULL
+	Note       sql.NullString `db:"note"`
 }
 
 // The stitch-density band, in STITCHES PER CENTIMETRE. Below 1 a seam falls apart, above 20 the
@@ -2170,7 +2252,65 @@ const (
 	OpTypeFusing       TechCardOperationType = "fusing"
 	OpTypeHandwork     TechCardOperationType = "handwork"
 	OpTypeOther        TechCardOperationType = "other"
+
+	// The verbs a step is chosen from now. «What is done» and «on what» became two fields: the
+	// nine legacy members above answered both at once, so a step could not say «прострочить»
+	// without also committing to a stitch class in the same value.
+	OpTypeMachine   TechCardOperationType = "machine"    // машинная; the machine is MachineType
+	OpTypePress     TechCardOperationType = "press"      // ВТО: приутюжить / заутюжить / отпарить
+	OpTypePressOpen TechCardOperationType = "press_open" // разутюжка
 )
+
+// OperationTypeTokens is THE vocabulary of operation types as it is STORED — the six choosable
+// verbs plus "unknown" (legal in a row, rejected on write). The nine legacy tokens are NOT here:
+// they are accepted on the wire and canonicalised into (machine, machine_type) before an entity
+// exists, so no row written after this phase can hold one, and the DB CHECK enforces exactly this
+// list. The reading order is the order an editor offers them in.
+var OperationTypeTokens = []string{
+	"unknown", // unset; legal in storage, rejected on an operation write
+	"machine", "press", "press_open", "fusing", "handwork", "other",
+}
+
+// LegacyOperationMachineType is the ONE canonicalisation table for the nine legacy operation types:
+// each maps to (machine, <this machine token>). It has three consumers and they must never diverge
+// — the dto write path (which canonicalises before building the entity, therefore before any
+// digest), migration 0306 (which restates it as a CASE, checked against this map by a lint), and
+// the digest's compat projection (through the inverse below).
+//
+// `blindhem` → `blindstitch` and `double_needle` → `lockstitch_double_needle` are the only two
+// renames; the double-needle machine exists in the vocabulary precisely so this row survives the
+// move instead of collapsing into a plain lockstitch.
+var LegacyOperationMachineType = map[TechCardOperationType]string{
+	OpTypeLockstitch:   "lockstitch",
+	OpTypeDoubleNeedle: "lockstitch_double_needle",
+	OpTypeOverlock:     "overlock",
+	OpTypeCoverstitch:  "coverstitch",
+	OpTypeChainstitch:  "chainstitch",
+	OpTypeBlindhem:     "blindstitch",
+	OpTypeBartack:      "bartack",
+	OpTypeButtonhole:   "buttonhole",
+	OpTypeButtonAttach: "button_attach",
+}
+
+// MachineTypeLegacyToken is the inverse: machine token -> the legacy operation-type token a row
+// with that machine used to be stored as. It exists for the digest's compat projection, which
+// hashes (machine, lockstitch) byte-identically to the string "lockstitch" it hashed before the
+// move — that is what keeps every signed CONSTRUCTION approval from going stale on migration day.
+//
+// Derived, never typed twice: the map above is the single source, and a non-injective edit to it
+// (two legacy types pointing at one machine) panics here at init rather than silently making two
+// different steps hash the same.
+var MachineTypeLegacyToken = func() map[string]string {
+	out := make(map[string]string, len(LegacyOperationMachineType))
+	for legacy, machine := range LegacyOperationMachineType {
+		if prev, dup := out[machine]; dup {
+			panic("LegacyOperationMachineType is not injective: machine " + machine +
+				" is claimed by both " + string(prev) + " and " + string(legacy))
+		}
+		out[machine] = string(legacy)
+	}
+	return out
+}()
 
 // ValidTechCardOperationTypes is the set of accepted operation types (excluding the
 // "unknown" default, which is applied implicitly when unset).
@@ -2249,17 +2389,140 @@ var SeamClassTokens = []string{
 
 var ValidSeamClasses = tokenSet[TechCardSeamClass](SeamClassTokens)
 
-// TechCardAttachmentKind is the folder / guide / presser foot a step runs with. There is no "none"
-// token: for a presser foot «none» and «not specified» are the same fact downstream, and offering
-// both would make an operator choose between two spellings of nothing.
+// TechCardAttachmentKind is the folder / guide / presser foot a step runs with.
+//
+// "none" IS NOT A SPELLING OF NULL here, though it was until the card grew machine profiles: with
+// nothing above the step, «no foot» and «not specified» really were one fact. Now NULL means
+// «inherit the profile's foot» and 'none' means «this step runs bare» — and without the token a
+// step could not cancel what the profile says.
+//
+// `walking_foot` is deliberately absent: industrially that is a machine with unison / top feed —
+// a property of the transport, not a snap-on attachment. It would belong next to bed_type.
 type TechCardAttachmentKind string
 
 var AttachmentKindTokens = []string{
 	"binder", "hemmer_folder", "scroll_foot", "zipper_foot", "invisible_zipper_foot",
-	"edge_guide", "piping_foot", "elastic_attachment", "other",
+	"edge_guide", "piping_foot", "elastic_attachment", "teflon_foot", "roller_foot",
+	"none", "other",
 }
 
 var ValidAttachmentKinds = tokenSet[TechCardAttachmentKind](AttachmentKindTokens)
+
+// --- equipment vocabularies -----------------------------------------------------------------------
+//
+// The «на чём» half of a step, and the settings a machine or a press profile carries. Every slice
+// below is the single source three ways: the dto builds its proto↔token map from it (and panics at
+// init on a token with no enum member), the DB CHECK of migration 0306 restates it and a lint
+// compares the two, and a rejection message prints it in this order — which is why these are
+// slices and not maps.
+//
+// None of them carry "unknown": an unset value is NULL in the column, never a token, so that the
+// «inherited» and «decided» states stay distinguishable (the rule the whole overrides model rests
+// on). OperationTypeTokens is the one exception — a row's operation_type is NOT NULL.
+
+// TechCardMachineType is the machine a MACHINE step runs on: the second axis, the one the old
+// operation type mixed into the verb.
+type TechCardMachineType string
+
+var MachineTypeTokens = []string{
+	"lockstitch", "lockstitch_double_needle", "overlock", "coverstitch", "coverlock",
+	"chainstitch", "blindstitch", "zigzag", "bartack", "buttonhole", "button_attach",
+	"embroidery", "handstitch_imitation", "hardware_attach", "elastic_attach",
+	"binding_taping", "zipper_setting", "gathering", "patch_pocket_auto", "welt_pocket_auto",
+	"template_auto", "collar_cuff_auto", "sleeve_setting_auto", "waistband_auto",
+	"other",
+}
+
+var ValidMachineTypes = tokenSet[TechCardMachineType](MachineTypeTokens)
+
+// TechCardPressEquipment is the «на чём» of a ВТО step (press / press_open / fusing).
+type TechCardPressEquipment string
+
+var PressEquipmentTokens = []string{
+	"iron", "press", "fusing_press", "steam_dummy", "steamer", "other",
+}
+
+var ValidPressEquipment = tokenSet[TechCardPressEquipment](PressEquipmentTokens)
+
+// TechCardNeedleType is the needle POINT — the fact that decides whether a knit is pierced or
+// pushed aside. Never defaulted to "universal": unset means inherit.
+type TechCardNeedleType string
+
+var NeedleTypeTokens = []string{
+	"universal", "ballpoint", "stretch", "jeans", "leather", "microtex", "embroidery", "other",
+}
+
+var ValidNeedleTypes = tokenSet[TechCardNeedleType](NeedleTypeTokens)
+
+// TechCardBedType is the machine's bed. Machine IDENTITY, so it lives on a profile and has no
+// per-step override: a different bed is a different machine.
+type TechCardBedType string
+
+var BedTypeTokens = []string{"flatbed", "cylinder_bed", "post_bed", "feed_off_arm", "other"}
+
+var ValidBedTypes = tokenSet[TechCardBedType](BedTypeTokens)
+
+// TechCardAutomationLevel is an ORDERED SCALE and therefore has no "other" — a scale with an
+// «other» member has stopped being a scale. Machine identity, profile-only, like the bed.
+type TechCardAutomationLevel string
+
+var AutomationLevelTokens = []string{"basic", "semi_auto", "auto"}
+
+var ValidAutomationLevels = tokenSet[TechCardAutomationLevel](AutomationLevelTokens)
+
+// TechCardThreadTension is a closed scale RELATIVE to the machine's normal setting, plus a free
+// note for the number a particular machine wants. A raw dial figure was rejected deliberately: it
+// means nothing across two machines of the same class.
+type TechCardThreadTension string
+
+var ThreadTensionTokens = []string{"looser", "normal", "tighter", "other"}
+
+var ValidThreadTensions = tokenSet[TechCardThreadTension](ThreadTensionTokens)
+
+// TechCardPressCloth is what sits between the iron and the cloth. 'none' is a real answer for the
+// same reason it is on the attachment kind: NULL already means «inherit the profile».
+type TechCardPressCloth string
+
+var PressClothTokens = []string{"none", "press_cloth", "damp_press_cloth", "teflon_sheet", "other"}
+
+var ValidPressCloths = tokenSet[TechCardPressCloth](PressClothTokens)
+
+// The equipment ranges. EVERY ONE OF THESE IS A SANITY BOUND, NOT A STANDARD: they exist to catch
+// a typo before it reaches the shop floor («14 °C» for «140», a needle «9» for Nm 90), not to
+// declare what a machine may be set to. Each also stands in the schema (the chk_eqp_* / chk_op_*
+// CHECKs of 0306), and the Go check exists because a CHECK alone answers with error 3819 — no
+// field, no words. Move one and move the other.
+const (
+	// Threads on one machine: a five-thread safety overlock is the usual top, twenty is already
+	// generous for a multi-needle chainstitch.
+	MinThreadCount = 1
+	MaxThreadCount = 20
+	// Needle size in Nm (the metric system: Nm 90 = 0.90 mm blade). 35 is the finest made, 300 is
+	// upholstery leather.
+	MinNeedleSizeNm = 35
+	MaxNeedleSizeNm = 300
+	// Stitch WIDTH in mm — zigzag amplitude, overlock bite. ZERO IS A LEGAL SETTING (a straight
+	// stitch on a machine that can swing), unlike the density where zero means no stitches at all.
+	MinStitchWidthMm = 0
+	MaxStitchWidthMm = 20
+	// Press temperature in °C. The floor is what catches «14» typed for «140»; the ceiling is above
+	// any fusing recipe and below the point where the cloth is simply destroyed.
+	MinPressTemperatureC = 40
+	MaxPressTemperatureC = 250
+	// Dwell in seconds: one second to five minutes.
+	MinPressDwellSec = 1
+	MaxPressDwellSec = 300
+	// Pressure on the cloth in N/cm² — THE UNIT IS IN THE NAME, in the column and in every label,
+	// so nothing has to guess between bar and N/cm².
+	MinPressPressureNCm2 = 1
+	MaxPressPressureNCm2 = 100
+	// Column widths of the two free strings a profile carries (0306). A label is a name («оверлок у
+	// окна»), not a description; the note is where the machine model and the detail behind `other`
+	// go. The tension note shares the label's width — it qualifies a scale, it does not replace it.
+	MaxEquipmentProfileLabelLen = 64
+	MaxThreadTensionNoteLen     = 64
+	MaxEquipmentProfileNoteLen  = 255
+)
 
 // TechCardTopstitchMode replaces the free-text topstitch_width, whose real values were three
 // different KINDS of answer at once: «нет», «в край» (a placement, not a width) and «2 × 6 мм»
@@ -2321,6 +2584,36 @@ type TechCardOperation struct {
 	TopstitchRows    sql.NullInt32       `db:"topstitch_rows"`
 	AttachmentKind   sql.NullString      `db:"attachment_kind"`
 	AttachmentSizeMm decimal.NullDecimal `db:"attachment_size_mm"`
+
+	// --- «на чём»: the machine block, meaningful when OperationType == machine ---------------------
+	// MachineType is the second axis: the verb is OperationType, the machine is here. Required for
+	// a machine step (on an aware write), rejected on any other type.
+	MachineType sql.NullString `db:"machine_type"`
+	// MachineProfileKey points at ONE profile of the card's park BY KEY, because a card may hold
+	// several machines of the same type and «the overlock» is then not an answer. Empty = resolve
+	// by type, which only works when the card has exactly one profile of that type. The reference
+	// is SOFT — no FK: the profile list is full-replaced on every save, so an FK with ON DELETE
+	// would be a lie about a row that is deleted and re-inserted routinely.
+	MachineProfileKey sql.NullString `db:"machine_profile_key"`
+	// Overrides. NULL = INHERIT (step → profile → card default), and the inherited value is never
+	// written back into the row — the same rule the older overrides above follow.
+	ThreadCount       sql.NullInt32       `db:"thread_count"`
+	NeedleType        sql.NullString      `db:"needle_type"`
+	NeedleSizeNm      sql.NullInt32       `db:"needle_size_nm"`
+	ThreadTension     sql.NullString      `db:"thread_tension"`
+	ThreadTensionNote sql.NullString      `db:"thread_tension_note"` // only alongside the scale
+	StitchWidthMm     decimal.NullDecimal `db:"stitch_width_mm"`     // zigzag amplitude / overlock bite, NOT the topstitch width
+
+	// --- the ВТО block, meaningful when OperationType is press / press_open / fusing ---------------
+	PressEquipment    sql.NullString      `db:"press_equipment"`
+	PressProfileKey   sql.NullString      `db:"press_profile_key"`
+	PressTemperatureC sql.NullInt32       `db:"press_temperature_c"`
+	PressDwellSec     sql.NullInt32       `db:"press_dwell_sec"`
+	PressPressureNCm2 decimal.NullDecimal `db:"press_pressure_n_cm2"` // N/cm², unit in the name
+	// PressSteam is three-valued: invalid = inherit, false = «без пара» (a real instruction), true
+	// = with steam. Collapsing the first two would turn an instruction into a default.
+	PressSteam sql.NullBool   `db:"press_steam"`
+	PressCloth sql.NullString `db:"press_cloth"` // 'none' cancels the profile's cloth; NULL inherits
 
 	// CalloutNumber links the operation to a TechCardCallout.number; NULL/0 = none.
 	CalloutNumber sql.NullInt32 `db:"callout_number"`
@@ -2948,6 +3241,15 @@ type TechCardInsert struct {
 	// wipe mappings it never saw; true means full replace with the slice (empty = clear all).
 	PieceDxfAliases    []TechCardPieceDxfAlias `db:"-"`
 	PieceDxfAliasesSet bool                    `db:"-"`
+	// MachineFieldsAware says the CLIENT that sent this payload knows about the machine / ВТО
+	// fields on operations and about equipment profiles. Transport, not content: it is in no digest
+	// projection — which bundle saved a card is not something a signature may depend on.
+	//
+	// Operations are full-replace with no per-field protection, so a save from a bundle that never
+	// heard of MachineType would silently wipe every machine fact on the card. This flag is what
+	// lets the API tell «an old client is about to erase facts» from «a card that has none» and
+	// refuse the first with a sentence instead of quietly obeying it.
+	MachineFieldsAware bool `db:"-"`
 	// CostingSizeOverride re-points the costing basis for ONE computation, and it is THREE-valued
 	// on purpose: nil = the style default (the simple average over the declared size range); >0 =
 	// cost on that concrete size (a production-run cell pricing the size it actually cuts); 0 =
