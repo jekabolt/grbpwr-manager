@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/shopspring/decimal"
 )
 
 // pieceUpsertParams mirrors the map upsertTechCardPieces builds, so a parameter added to the query and
@@ -24,6 +25,9 @@ func pieceUpsertParams() map[string]any {
 		"ungraded_omitted":     false,
 		"grainline":            "lengthwise",
 		"fused":                false,
+		"fusing_mode":          sql.NullString{},
+		"fusing_width_mm":      decimal.NullDecimal{},
+		"fusing_omitted":       false,
 		"callout_number":       sql.NullInt32{},
 		"detached":             false,
 		"note":                 sql.NullString{},
@@ -78,5 +82,60 @@ func TestPieceReadSelectsEveryWrittenColumn(t *testing.T) {
 		if !strings.Contains(pieceReadQuery, col) {
 			t.Errorf("the piece read must SELECT %s: the digest hashes it on the write side", col)
 		}
+	}
+}
+
+// РАЗМЕТКА ДУБЛИРОВАНИЯ (0304) охраняется как и два соседа — но ВЛОЖЕННО в снятую галку, и это не
+// стилистика. chk_tcp_fusing_mode двухколоночный: режим законен только у fused-детали. Вкладка со
+// старым бандлом режим не шлёт, а галку снять умеет, и голый перенос оставил бы 'strip' рядом с
+// fused=0 — то есть уронил бы ВСЁ сохранение карточки в 3819 с именем колонки, которой эта вкладка
+// не знает. Потерять это вложение — значит починить один клиент и сломать другой, молча.
+func TestPieceUpdateClearsFusingWhenTheBoxIsUnchecked(t *testing.T) {
+	for _, want := range []string{
+		"fusing_mode=IF(:fused, IF(:fusing_omitted, fusing_mode, :fusing_mode), NULL)",
+		"fusing_width_mm=IF(:fused, IF(:fusing_omitted, fusing_width_mm, :fusing_width_mm), NULL)",
+	} {
+		if !strings.Contains(pieceUpdateQuery, want) {
+			t.Fatalf("the piece UPDATE must gate the carried fusing marking on `fused`: missing %s", want)
+		}
+	}
+}
+
+// Ширина и режим ЧИТАЮТСЯ обратно. Колонка, которую запись пишет, а чтение не выбирает, навсегда
+// разводит две проекции: подпись CONSTRUCTION хеширует разметку (constructionProjection), и карточка
+// перестала бы совпадать со своим же хранимым дайджестом — та самая беда, о которой предупреждает
+// шапка pieceReadQuery.
+func TestPieceReadSelectsTheFusingColumns(t *testing.T) {
+	for _, col := range []string{"fusing_mode", "fusing_width_mm"} {
+		if !strings.Contains(pieceReadQuery, col) {
+			t.Fatalf("the piece read must SELECT %s — the digest hashes it", col)
+		}
+	}
+}
+
+// СТАРЫЙ КЛИЕНТ НЕ ГАСИТ УЖЕ СНЯТЫЙ ПЕРИМЕТР (0305). Вкладка, которая поля не знает, публикует тот
+// же замер без него; будь это «изменением», full-replace записал бы NULL поверх периметров, снятых
+// новым клиентом, — молча и на всей ткани, после чего краевое дублирование перестало бы считаться.
+//
+// Обратное направление ОБЯЗАНО оставаться изменением: иначе периметр не появился бы никогда.
+func TestPerimeterComparisonIsAsymmetric(t *testing.T) {
+	stored := decimal.NullDecimal{Decimal: decimal.RequireFromString("260"), Valid: true}
+	absent := decimal.NullDecimal{}
+	other := decimal.NullDecimal{Decimal: decimal.RequireFromString("300"), Valid: true}
+
+	if !perimeterAgrees(stored, absent) {
+		t.Error("молчание старого клиента прочиталось как стирание периметра")
+	}
+	if perimeterAgrees(absent, stored) {
+		t.Error("появление периметра прочиталось как «тот же замер» — он не сохранился бы никогда")
+	}
+	if perimeterAgrees(stored, other) {
+		t.Error("другой периметр прочитался как тот же")
+	}
+	if !perimeterAgrees(stored, stored) {
+		t.Error("повтор того же замера прочитался как правка — провенанс переписывался бы зря")
+	}
+	if !perimeterAgrees(absent, absent) {
+		t.Error("два замера без периметра разошлись")
 	}
 }

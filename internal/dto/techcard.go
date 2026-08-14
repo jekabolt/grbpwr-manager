@@ -114,6 +114,33 @@ var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirectio
 // КАК КРОИТСЯ (0275). UNKNOWN is deliberately absent from the table: it is not a value but the
 // absence of one («не размечено»), so it can only ever become a NULL column — the same discipline
 // TechCardBomPurpose's UNSET follows.
+var techCardPieceFusingModePbToEntity = map[pb_common.TechCardPieceFusingMode]entity.TechCardPieceFusingMode{
+	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_FULL:           entity.PieceFusingModeFull,
+	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE: entity.PieceFusingModeSeamAllowance,
+	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_STRIP:          entity.PieceFusingModeStrip,
+}
+
+var techCardPieceFusingModeEntityToPb = func() map[entity.TechCardPieceFusingMode]pb_common.TechCardPieceFusingMode {
+	m := make(map[entity.TechCardPieceFusingMode]pb_common.TechCardPieceFusingMode, len(techCardPieceFusingModePbToEntity))
+	for k, v := range techCardPieceFusingModePbToEntity {
+		m[v] = k
+	}
+	return m
+}()
+
+// PieceFusingModeToPb maps a stored marking to the wire enum; an unset column reads as UNKNOWN — «не
+// размечено», which is what the screen must show. A reader that needs a NUMBER instead unfolds it to
+// FULL via entity.PieceFusingModeOrFull; the two must not be conflated, see that function.
+func PieceFusingModeToPb(m sql.NullString) pb_common.TechCardPieceFusingMode {
+	if !m.Valid {
+		return pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_UNKNOWN
+	}
+	if v, ok := techCardPieceFusingModeEntityToPb[entity.TechCardPieceFusingMode(m.String)]; ok {
+		return v
+	}
+	return pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_UNKNOWN
+}
+
 var techCardPieceCutSymmetryPbToEntity = map[pb_common.TechCardPieceCutSymmetry]entity.TechCardPieceCutSymmetry{
 	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_IDENTICAL: entity.PieceCutSymmetryIdentical,
 	pb_common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED:  entity.PieceCutSymmetryMirrored,
@@ -1130,6 +1157,7 @@ func TechCardPieceAreaScopesToPb(scopes map[string]entity.PieceAreaScope) []*pb_
 				// distinguishable without an optional.
 				SizeId:        int32(r.SizeId.Int64),
 				AreaCm2:       pbDecimalFromDecimal(r.AreaCm2),
+				PerimeterCm:   pbDecimalFromNull(r.PerimeterCm),
 				Hulled:        r.Hulled,
 				AmbiguousPick: r.AmbiguousPick,
 			})
@@ -2496,6 +2524,42 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			fmt.Sprintf("pieces[%d].cut_symmetry", i), cutSymmetry, perGarment); err != nil {
 			return nil, err
 		}
+		// КАК ДУБЛИРУЕТСЯ (0304) — ПРИСУТСТВИЕ пары, а не значения, ровно как у соседа сверху и по той
+		// же причине. Один флаг на оба поля: присутствие РЕЖИМА управляет и шириной, потому что
+		// «полосой N мм» осмысленно только целиком. Клиент, приславший режим и промолчавший про
+		// ширину, заявляет «полоса без числа» — это ошибка, и её называет ValidatePieceFusing, — а не
+		// «ширину не трогать»; иначе полоса досталась бы шириной от прошлой правки, чужой и молча.
+		fusingOmitted := p.FusingMode == nil
+		fusingMode := sql.NullString{}
+		fusingWidth := decimal.NullDecimal{}
+		if !fusingOmitted {
+			if p.GetFusingMode() != pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_UNKNOWN {
+				fm, ok := techCardPieceFusingModePbToEntity[p.GetFusingMode()]
+				if !ok {
+					return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_mode", i),
+						"unknown fusing mode", p.GetFusingMode().String(),
+						"pick one of: full (вся деталь), seam_allowance (по припуску), strip (полосой заданной ширины)")
+				}
+				fusingMode = sql.NullString{String: string(fm), Valid: true}
+			}
+			w, err := nullDecimalFromPb(p.FusingWidthMm)
+			if err != nil {
+				return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_width_mm", i),
+					"ширина клеевой полосы — не число", p.GetFusingWidthMm().GetValue(),
+					"впишите ширину в миллиметрах, например 25")
+			}
+			fusingWidth = w
+		}
+		// Отказ ЗДЕСЬ, а не в MySQL, и по тому же доводу, что у cut_symmetry выше: chk_tcp_fusing_width
+		// двухколоночный, поэтому его 3819 назовёт fusing_width_mm на сохранении, которое трогало
+		// только радиокнопку. Судится ровно то, что клиент СКАЗАЛ: промолчавший про пару не судится
+		// вовсе (его значения донесёт перенос), а сказавший отвечает за обе половины сразу.
+		if !fusingOmitted {
+			if err := entity.ValidatePieceFusing(
+				fmt.Sprintf("pieces[%d].fusing_mode", i), p.Fused, fusingMode, fusingWidth); err != nil {
+				return nil, err
+			}
+		}
 		var calloutNumber sql.NullInt32
 		// A ZERO is «no callout», not callout number zero. Callouts number from one (the client mints
 		// max+1), so 0 can never resolve — and the pointer alone does not protect: a client that sends
@@ -2567,6 +2631,9 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			UngradedOmitted: p.Ungraded == nil,
 			Grainline:       grainline,
 			Fused:           p.Fused,
+			FusingMode:      fusingMode,
+			FusingWidthMm:   fusingWidth,
+			FusingOmitted:   fusingOmitted,
 			CalloutNumber:   calloutNumber,
 			Note:            nullStringFromPb(p.Note),
 			Materials:       materials,
@@ -3222,7 +3289,16 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			// Отдать nil значило бы, что у непомеченной детали (а таких сегодня почти все) поле из
 			// JSON пропадает, и клиент, честно возвращающий прочитанное, выглядел бы для стора ровно
 			// той старой вкладкой, от которой всё это и защищает.
-			Ungraded:      pbPtr(p.Ungraded),
+			Ungraded: pbPtr(p.Ungraded),
+			// КАК ДУБЛИРУЕТСЯ (0304): ВСЕГДА присутствует на чтении, третий раз по тому же доводу, что
+			// у двух соседей выше. Молчание сервера на неразмеченной детали превратило бы честного
+			// клиента, возвращающего прочитанное, в ту самую старую вкладку, ради которой поле и
+			// сделано optional.
+			FusingMode: pbPtr(PieceFusingModeToPb(p.FusingMode)),
+			// Ширина едет БЕЗ обёртки присутствия, потому что присутствие несёт РЕЖИМ: пара атомарна, и
+			// у режима без своей ширины её и не бывает. nil здесь читается клиентом как «числа нет»,
+			// что верно для «целиком» и «по припуску» и невозможно для «полосой».
+			FusingWidthMm: pbDecimalFromNull(p.FusingWidthMm),
 			Grainline:     p.Grainline,
 			Fused:         p.Fused,
 			CalloutNumber: calloutNumber,
@@ -3582,6 +3658,15 @@ func pbMoneyFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
 	return &pb_decimal.Decimal{Value: roundMoney(nd.Decimal).String()}
 }
 
+// roundNullDecimal rounds an optional decimal to `places`, PRESERVING absence. Rounding through
+// `.Decimal` alone would turn «не снимался» into a rounded zero, i.e. into a measurement.
+func roundNullDecimal(nd decimal.NullDecimal, places int32) decimal.NullDecimal {
+	if !nd.Valid {
+		return nd
+	}
+	return decimal.NullDecimal{Decimal: nd.Decimal.RoundBank(places), Valid: true}
+}
+
 // roundMoney rounds a money amount to 2 decimals (banker's rounding) for storage/emit.
 func roundMoney(d decimal.Decimal) decimal.Decimal {
 	return d.RoundBank(2)
@@ -3620,13 +3705,29 @@ func PieceAreaWriteFromPb(techCardID int, scopeKey string, sheetLineKeys []strin
 		if !area.Valid {
 			return entity.PieceAreaWrite{}, fmt.Errorf("piece %q has no area — a measurement that produced no number is a failed read, not a small piece", a.GetPieceLineKey())
 		}
+		// ПЕРИМЕТР НЕОБЯЗАТЕЛЕН (0305), и отказывать за его отсутствие нельзя: клиент, написанный до
+		// этого поля, меряет площади безупречно для той цели, ради которой писался. Пустой периметр
+		// ложится NULL'ом и честно означает «краевое дублирование по этой строке не посчитать» —
+		// см. entity.AreaEstimateNoPerimeter. Ноль при этом РАВНОСИЛЕН отсутствию: контур нулевого
+		// периметра — это провалившийся разбор, а не маленькая деталь (тот же довод, что этажом выше
+		// про площадь), и CHECK в 0305 такую строку всё равно не примет.
+		perimeter, err := nullDecimalFromPb(a.GetPerimeterCm())
+		if err != nil {
+			return entity.PieceAreaWrite{}, fmt.Errorf("perimeter of piece %q: %w", a.GetPieceLineKey(), err)
+		}
+		if perimeter.Valid && !perimeter.Decimal.IsPositive() {
+			perimeter = decimal.NullDecimal{}
+		}
 		row := entity.PieceAreaInput{
 			PieceLineKey: strings.TrimSpace(a.GetPieceLineKey()),
 			// ОКРУГЛЕНИЕ ДО МАСШТАБА КОЛОНКИ ЗДЕСЬ, А НЕ В MySQL. Колонка — DECIMAL(12,2), и
 			// присланные 1234.567 легли бы как 1234.57; сравнение «то же самое измерение» шло бы
 			// против ПРИСЛАННОГО значения, никогда не совпадало, и каждый повтор переписывал бы
 			// весь скоуп вместе с датой замера — ровно то, что проверка на повтор обещает не делать.
-			AreaCm2:         area.Decimal.RoundBank(2),
+			AreaCm2: area.Decimal.RoundBank(2),
+			// Тот же масштаб и та же причина, что у площади строкой выше: сравнение повтора идёт
+			// против округлённого значения, иначе периметр вечно «менялся» и переписывал провенанс.
+			PerimeterCm:     roundNullDecimal(perimeter, 2),
 			ContourLayer:    strings.TrimSpace(contourLayer),
 			SeamAllowanceMm: seam.Decimal.RoundBank(1),
 			Hulled:          a.GetHulled(),
@@ -3650,6 +3751,10 @@ func nullDecimalFromPb(d *pb_decimal.Decimal) (decimal.NullDecimal, error) {
 	}
 	return decimal.NullDecimal{Decimal: v, Valid: true}, nil
 }
+
+// PbDecimalFromNull is the exported alias of pbDecimalFromNull for callers outside dto (the admin
+// service emits a piece's fusing width straight off the entity).
+func PbDecimalFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal { return pbDecimalFromNull(nd) }
 
 func pbDecimalFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
 	if !nd.Valid {

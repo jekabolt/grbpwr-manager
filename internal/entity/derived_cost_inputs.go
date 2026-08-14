@@ -56,6 +56,15 @@ type PieceFabricAssignment struct {
 	// signature: the norm is an area divided by the CUTTING width, so editing either reprices the
 	// garment without touching the card at all.
 	ArticleGeometry string
+	// FusingMarking — разметка дублирования детали (0304) одной канонической строкой: режим, ширина
+	// полосы и — только для «по припуску» — ЭФФЕКТИВНЫЙ эталон припуска, по которому эта ширина
+	// выведена. Пусто = деталь не размечена.
+	//
+	// ВСЕ ТРИ ВЕЛИЧИНЫ МЕНЯЮТ ДЕНЬГИ, и ни одна из них не видна подписи КОСТИНГ иначе. Режим решает,
+	// умножается ли контур на площадь или на ширину полосы (разница в разы); ширина — во сколько
+	// именно; эталон живёт вообще ВНЕ карточки (настройки цеха) и двигает ту же цифру, ничего в
+	// карточке не трогая, — ровно тот же довод, по которому сюда уже входит геометрия артикула.
+	FusingMarking string
 }
 
 // DerivedCostInputsDigest fingerprints the cost inputs that live outside the card's own write:
@@ -92,6 +101,15 @@ func DerivedCostInputsDigest(areas map[string]PieceAreaScope, assignments []Piec
 				r.Hulled,
 				r.AmbiguousPick,
 			})
+			// ПЕРИМЕТР — ХВОСТОМ И ТОЛЬКО КОГДА СНЯТ (0305). Он второй сомножитель краевого
+			// дублирования: перемерили выкройку, периметр стал 300 вместо 260 — клеевая подорожала на
+			// 15%, а подпись без этой строки осталась бы зелёной. Условность обязательна по той же
+			// причине, что и везде: у всех сегодняшних замеров периметра нет, и безусловный элемент
+			// объявил бы устаревшими все подписи разом.
+			if r.PerimeterCm.Valid {
+				last := areaRows[len(areaRows)-1]
+				areaRows[len(areaRows)-1] = append(last, []any{"perimeter", r.PerimeterCm.Decimal.String()})
+			}
 		}
 	}
 	assignRows := make([][]any, 0, len(assignments))
@@ -104,6 +122,14 @@ func DerivedCostInputsDigest(areas map[string]PieceAreaScope, assignments []Piec
 			a.PinnedMaterialId,
 			strings.TrimSpace(a.ArticleGeometry),
 		})
+		// ХВОСТОМ И ТОЛЬКО У РАЗМЕЧЕННОЙ ДЕТАЛИ — тот же приём и та же причина, что у хвостов
+		// проекций секций: строки кодируются ПОЗИЦИОННО, и безусловный седьмой элемент сдвинул бы
+		// токен КАЖДОЙ карточки, объявив все утверждённые подписи КОСТИНГ устаревшими в момент
+		// выкатки. Размеченных деталей сегодня нет ни одной.
+		if m := strings.TrimSpace(a.FusingMarking); m != "" {
+			last := assignRows[len(assignRows)-1]
+			assignRows[len(assignRows)-1] = append(last, []any{"fusing", m})
+		}
 	}
 	if len(areaRows) == 0 && len(assignRows) == 0 {
 		return ""

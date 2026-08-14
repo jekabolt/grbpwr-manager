@@ -261,6 +261,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// подпись, поставленная из вкладки, которая про градацию не спрашивает, хешировала бы «не
 	// помечено» поверх колонки, где пометка стоит.
 	carryOmittedPieceUngradedFrom(stored, tc)
+	// КАК ДУБЛИРУЕТСЯ (0304) — четвёртая ветка того же контракта, на той же секции CONSTRUCTION и по
+	// той же причине. Отличие одно: перенос ещё и ГАСИТ разметку, если эта же правка сняла галку
+	// «дублируется», — иначе дайджест подписал бы режим, который стор в ту же транзакцию обнулит.
+	carryOmittedPieceFusingFrom(stored, tc)
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}

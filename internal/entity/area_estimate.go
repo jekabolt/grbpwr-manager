@@ -46,6 +46,22 @@ const (
 	AreaEstimateNoPrice       AreaEstimateRefusal = "no_price"
 	AreaEstimateNoBasis       AreaEstimateRefusal = "no_basis"
 	AreaEstimatePinConflict   AreaEstimateRefusal = "pin_conflict"
+	// AreaEstimateNoPerimeter — краевое дублирование не посчитать: у детали снята площадь, но не
+	// периметр (замер до 0305). ОТДЕЛЬНАЯ причина, а не AreaEstimateIncomplete, потому что действие
+	// оператора другое и противоположно очевидному: комплект НЕ неполон — все детали на месте, все
+	// размеры покрыты, экран замера показывает «всё сошлось». Не хватает второй меры того же контура,
+	// и добывается она ровно одним движением — пересчитать площади этого скоупа новым клиентом.
+	// Сказать здесь «комплект неполон» значило бы отправить искать пропавшую деталь, которой нет.
+	AreaEstimateNoPerimeter AreaEstimateRefusal = "no_measured_perimeter"
+	// AreaEstimateNoStripWidth — деталь размечена «по припуску», а эталона припуска нет ни на
+	// карточке, ни в настройках цеха: ширины полосы не существует, считать нечем.
+	//
+	// ОТКАЗ, А НЕ ПОДСТАНОВКА ПОЛНОГО КОНТУРА. Соблазн «посчитать целиком, ошибка в сторону запаса»
+	// здесь ложный: на экране осталось бы «по припуску», а деньги были бы посчитаны как «вся
+	// деталь» — расхождение в разы между тем, что написано, и тем, что стоит, причём молчаливое.
+	// Ноль был бы хуже вдвое, но и запас не оправдывает цифру, которая не соответствует подписи
+	// рядом с ней.
+	AreaEstimateNoStripWidth AreaEstimateRefusal = "no_seam_allowance_standard"
 )
 
 // AllAreaEstimateRefusals перечисляет причины отказа, чтобы их МОЖНО БЫЛО ПЕРЕБРАТЬ.
@@ -65,6 +81,8 @@ var AllAreaEstimateRefusals = []AreaEstimateRefusal{
 	AreaEstimateNoPrice,
 	AreaEstimateNoBasis,
 	AreaEstimatePinConflict,
+	AreaEstimateNoPerimeter,
+	AreaEstimateNoStripWidth,
 }
 
 // AreaEstimatePiece is one cut piece of the slot's scope, as the estimate needs it.
@@ -74,6 +92,28 @@ type AreaEstimatePiece struct {
 	// carries. Never below 1 in practice; a zero is treated as one instance, because a declared piece
 	// that is cut zero times is not a thing the card can express.
 	PerGarment int
+	// StripWidthCm turns this piece from an AREA into a STRIP (0304): set, the piece contributes
+	// `perimeter × width` instead of its area, because the interlining lies only along the edge.
+	//
+	// A WIDTH, NOT A MODE, and that is the whole point of the shape. Which mode produced the number —
+	// «по припуску» reading the card's seam-allowance standard, or «полосой» reading the piece's own
+	// millimetres — is a question about the CARD, and it is answered once, by the caller that holds
+	// both the piece and the slot (slotAssignedPieces). Passing the mode down here would make this
+	// function resolve the standard a second time, and the day the two resolutions disagreed the
+	// recipe would print one norm under a cost computed from another.
+	//
+	// UNSET = the piece contributes its area: fusing the whole piece, and every piece of every
+	// non-interlining slot. That is the pre-0304 behaviour, preserved by construction rather than by
+	// a branch.
+	StripWidthCm decimal.NullDecimal
+	// StripWidthMissing — деталь размечена КРАЕВЫМ дублированием, но ширины полосы у неё нет:
+	// «по припуску» при незаданном эталоне. Отдельное поле, а не пустая StripWidthCm, потому что
+	// пустая ширина уже ЗНАЧИТ «считать площадью» (дублирование целиком), и свести к ней этот
+	// случай значило бы посчитать полосу как всю деталь — молча и в разы дороже.
+	StripWidthMissing bool
+	// ScopeOverride names the fabric scope this piece's GEOMETRY lives in, when it is not the slot's
+	// own — see AreaEstimateNorm's header on borrowed geometry. Empty = the slot's scope.
+	ScopeOverride string
 }
 
 var (
@@ -92,6 +132,26 @@ var (
 // ungraded one — that is what «не градуируется» means. A piece with neither is an INCOMPLETE set and
 // refuses the whole size: a lost piece lowers the area, a lower area lowers the norm, and the
 // shortfall is discovered in the warehouse rather than on the screen.
+//
+// ДВЕ ВЕЩИ, КОТОРЫЕ ПРИНЁС 0304, И ОБЕ ПРО КЛЕЕВУЮ.
+//
+// ПЕРВАЯ — ПОЛОСА ВМЕСТО ПЛОЩАДИ. Деталь с заданной StripWidthCm вносит `периметр × ширину`, а не
+// свою площадь: клеевая лежит только вдоль среза. Формула остаётся одна на всех, потому что и то и
+// другое — площадь в см², делённая дальше на ту же раскройную ширину; развилка ровно в том, ЧЕМ
+// умножается контур.
+//
+// ВТОРАЯ — ЗАИМСТВОВАННАЯ ГЕОМЕТРИЯ (ScopeOverride). Площади лежат по СКОУПАМ ТКАНИ, а у клеевой
+// своих выкроек не бывает: её не рисуют отдельным лекалом, её кроят по лекалу той детали, которую
+// дублируют. Требовать замер клеевого скоупа значило бы требовать чертёж, которого не существует, и
+// клеевой слот отказывал бы навсегда с «площади не измерены» — при полностью измеренной карточке.
+// Поэтому деталь вправе назвать скоуп, где её контур ЕСТЬ, и оценка читает геометрию оттуда, а
+// ширину полотна — по-прежнему у СВОЕГО артикула (клеевая уже рулон другой ширины). Скоуп выбирает
+// вызывающий (slotAssignedPieces), который один держит и деталь, и слот; здесь только чтение.
+//
+// СВЕЖЕСТЬ ПРОВЕРЯЕТСЯ У КАЖДОГО ЗАДЕЙСТВОВАННОГО СКОУПА, а не у слотового. Заимствуя контур
+// основной ткани, клеевой слот наследует и её устаревание: перерисовали полочку — устарела и норма
+// клеевой на неё. Проверить только свой скоуп значило бы считать клеевую по лекалу, которого в
+// файлах уже нет, и молчать об этом ровно там, где основная ткань честно скажет «пересчитайте».
 func AreaEstimateNorm(
 	scope string,
 	pieces []AreaEstimatePiece,
@@ -103,14 +163,47 @@ func AreaEstimateNorm(
 	if len(pieces) == 0 {
 		return decimal.Zero, AreaEstimateNoAssignments
 	}
-	sc, ok := areas[scope]
-	if !ok || len(sc.Rows) == 0 {
-		return decimal.Zero, AreaEstimateNoAreas
+	// Скоупы проверяются В ПОРЯДКЕ ПОЯВЛЕНИЯ, начиная со слотового, чтобы у одинаковых карточек
+	// отказ был одинаковым: причина едет на экран, и «зависит от порядка обхода map» означало бы, что
+	// два оператора видят разные указания починить.
+	index := make(map[string]map[string]map[int]PieceAreaRow, 2)
+	loadScope := func(key string) (map[string]map[int]PieceAreaRow, AreaEstimateRefusal) {
+		if idx, ok := index[key]; ok {
+			return idx, ""
+		}
+		sc, ok := areas[key]
+		if !ok || len(sc.Rows) == 0 {
+			return nil, AreaEstimateNoAreas
+		}
+		if sc.Stale {
+			// Устаревшие площади — это НЕ «примерно те же». Выкройки менялись после замера, и считать по
+			// ним значило бы называть числом то, чего в файлах уже нет.
+			return nil, AreaEstimateStale
+		}
+		idx := make(map[string]map[int]PieceAreaRow, len(sc.Rows))
+		for _, r := range sc.Rows {
+			k := strings.ToUpper(strings.TrimSpace(r.PieceLineKey))
+			if idx[k] == nil {
+				idx[k] = map[int]PieceAreaRow{}
+			}
+			idx[k][int(r.SizeId.Int64)] = r
+		}
+		index[key] = idx
+		return idx, ""
 	}
-	if sc.Stale {
-		// Устаревшие площади — это НЕ «примерно те же». Выкройки менялись после замера, и считать по
-		// ним значило бы называть числом то, чего в файлах уже нет.
-		return decimal.Zero, AreaEstimateStale
+	// Слотовый скоуп грузится первым и тогда, когда все детали заимствуют чужой: у карточки без
+	// клеевых выкроек его просто нет, и отказывать за это нельзя — см. заголовок.
+	var borrowedOnly = true
+	for _, p := range pieces {
+		if strings.TrimSpace(p.ScopeOverride) == "" {
+			borrowedOnly = false
+			break
+		}
+	}
+	if !borrowedOnly {
+		if _, refusal := loadScope(scope); refusal != "" {
+			return decimal.Zero, refusal
+		}
 	}
 	if !widthCm.Valid || !widthCm.Decimal.IsPositive() {
 		return decimal.Zero, AreaEstimateNoWidth
@@ -120,37 +213,66 @@ func AreaEstimateNorm(
 		return decimal.Zero, AreaEstimateUnitUnknown
 	}
 
-	// Индекс площадей скоупа: деталь → (размер → площадь), где 0 = неградуируемая.
-	bySizeByPiece := make(map[string]map[int]decimal.Decimal, len(sc.Rows))
-	for _, r := range sc.Rows {
-		key := strings.ToUpper(strings.TrimSpace(r.PieceLineKey))
-		if bySizeByPiece[key] == nil {
-			bySizeByPiece[key] = map[int]decimal.Decimal{}
-		}
-		bySizeByPiece[key][int(r.SizeId.Int64)] = r.AreaCm2
-	}
-
-	total := decimal.Zero
+	// ДВА ПРОХОДА, И ПОРЯДОК МЕЖДУ НИМИ — ЭТО ПОРЯДОК ОТКАЗОВ, а не стиль. Каждая причина обязана
+	// называть ДЕЙСТВИЕ оператора, и «комплект неполон» старше «нет периметра»: деталь, которой нет
+	// в замере вовсе, надо домерить, и пока её нет, любая жалоба на вторую меру ТОЙ ЖЕ детали
+	// отправляет чинить не то. В один проход побеждала бы та причина, чья деталь попалась раньше, —
+	// то есть указание оператору зависело бы от порядка строк рецепта.
+	rows := make([]PieceAreaRow, 0, len(pieces))
 	for _, p := range pieces {
+		effScope := scope
+		if s := strings.TrimSpace(p.ScopeOverride); s != "" {
+			effScope = s
+		}
+		bySizeByPiece, refusal := loadScope(effScope)
+		if refusal != "" {
+			return decimal.Zero, refusal
+		}
 		key := strings.ToUpper(strings.TrimSpace(p.LineKey))
 		sizes, ok := bySizeByPiece[key]
 		if !ok {
 			return decimal.Zero, AreaEstimateIncomplete
 		}
-		area, ok := sizes[sizeID]
+		row, ok := sizes[sizeID]
 		if !ok {
 			// Неградуируемая деталь входит в комплект КАЖДОГО размера целиком — то же правило, что у
 			// MarkerSizeAreasPerGarment; второго правила не заводим.
-			area, ok = sizes[0]
+			row, ok = sizes[0]
 		}
 		if !ok {
 			return decimal.Zero, AreaEstimateIncomplete
+		}
+		rows = append(rows, row)
+	}
+
+	total := decimal.Zero
+	for i, p := range pieces {
+		row := rows[i]
+		contour := row.AreaCm2
+		switch {
+		case p.StripWidthMissing:
+			// Ширины полосы не существует («по припуску» без эталона). Посчитать полным контуром
+			// было бы в разы дороже подписи, которая стоит рядом на экране.
+			return decimal.Zero, AreaEstimateNoStripWidth
+		case p.StripWidthCm.Valid:
+			// КРАЕВОЕ ДУБЛИРОВАНИЕ. Периметра нет — ОТКАЗ, а не вывод полосы из площади: у компактной
+			// детали и у длинной узкой одной площади периметры отличаются вдвое, и ошибка ушла бы прямо
+			// в закупку клеевой. Отказ называет ровно то одно движение, которым он лечится.
+			if !row.PerimeterCm.Valid || !row.PerimeterCm.Decimal.IsPositive() {
+				return decimal.Zero, AreaEstimateNoPerimeter
+			}
+			// ВЕРХНЯЯ ОЦЕНКА, И ЭТО ЗАЯВЛЕНО. Полоса идёт по срезам, а не по всему периметру: у сгиба
+			// припуска нет и клеевой там не бывает. Различить срез от сгиба можно только поребёрной
+			// разметкой лекала, которую никто не ведёт, — поэтому здесь честный периметр целиком.
+			// Ошибка направлена В ЗАПАС (клеевой закажут чуть больше), в отличие от вывода из площади,
+			// который врал бы в обе стороны непредсказуемо.
+			contour = row.PerimeterCm.Decimal.Mul(p.StripWidthCm.Decimal)
 		}
 		mult := p.PerGarment
 		if mult <= 0 {
 			mult = 1
 		}
-		total = total.Add(area.Mul(decimal.NewFromInt(int64(mult))))
+		total = total.Add(contour.Mul(decimal.NewFromInt(int64(mult))))
 	}
 	if !total.IsPositive() {
 		return decimal.Zero, AreaEstimateIncomplete
@@ -194,6 +316,10 @@ func AreaEstimateRefusalText(r AreaEstimateRefusal) string {
 		return "у части деталей нет площади на этот размер — комплект неполон, оценка занижала бы"
 	case AreaEstimateStale:
 		return "выкройки менялись после замера площадей — пересчитайте площади"
+	case AreaEstimateNoPerimeter:
+		return "у деталей снята площадь, но не периметр — клеевую полосу по краю посчитать нечем; пересчитайте площади этой ткани, замер добавит периметр"
+	case AreaEstimateNoStripWidth:
+		return "деталь дублируется по припуску, а эталон припуска не задан — ни на карточке, ни в настройках цеха; ширины полосы взять неоткуда"
 	case AreaEstimateNoWidth:
 		return "у ткани не заполнена ширина полотна — делить не на что"
 	case AreaEstimateUnitUnknown:
