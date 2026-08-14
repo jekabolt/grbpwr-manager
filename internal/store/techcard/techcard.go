@@ -498,15 +498,24 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		// so preserve its stored row; non-nil means replace it. A present-but-empty message parses to
 		// a non-nil all-zero entity and deliberately takes the replace path, clearing every value by
 		// inserting an all-NULL row (valid for all three schemas). Lists remain full-replace.
+		//
+		// The equipment park (0306) is presence-aware ONE LEVEL DEEPER, and it needs its own line for
+		// two independent reasons. Its FK is on tech_card, not on tech_card_construction, so the
+		// DELETE of the construction row above does not cascade to it — clearing it is this loop's
+		// job or nobody's. And its presence signal is the WRAPPER, not the section: a client that
+		// sends a construction it does understand while knowing nothing about profiles must not erase
+		// the park, whereas a present-but-empty wrapper is a deliberate «delete them all».
 		preserveAbsentSection := map[string]bool{
-			"tech_card_construction": tc.Construction == nil,
-			"tech_card_packaging":    tc.Packaging == nil,
-			"tech_card_costing":      tc.Costing == nil,
+			"tech_card_construction":      tc.Construction == nil,
+			"tech_card_packaging":         tc.Packaging == nil,
+			"tech_card_costing":           tc.Costing == nil,
+			"tech_card_equipment_profile": tc.Construction == nil || tc.Construction.EquipmentDefaults == nil,
 		}
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_detail",
-			"tech_card_construction", "tech_card_operation", "tech_card_label",
+			"tech_card_construction", "tech_card_equipment_profile",
+			"tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 		} {
 			if preserveAbsentSection[table] {
@@ -1276,6 +1285,12 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	}
 	// production (Phase 3)
 	if err := insertTechCardConstruction(ctx, db, id, tc.Construction); err != nil {
+		return err
+	}
+	// The card's machine / ВТО park (0306). Order relative to the operations below does not matter:
+	// a step names a profile by KEY, and that reference is resolved where it is consumed, not by an
+	// FK — which is the whole reason the park can be full-replaced on every save.
+	if err := insertTechCardEquipmentProfiles(ctx, db, id, tc.Construction); err != nil {
 		return err
 	}
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
