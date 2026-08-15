@@ -660,8 +660,18 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if approvalState == entity.TechCardApprovalReleased {
 		for _, is := range issues {
 			if is.Severity == entity.IssueSeverityHigh && is.Status == entity.IssueStatusOpen {
-				return nil, fmt.Errorf("cannot release: a high-severity issue is still open: %q", is.Description)
+				// Был голый fmt.Errorf, выходивший наружу нетипизированной строкой: единственный
+				// жёсткий отказ релиза во всём репозитории не умел назвать поле. Теперь как у
+				// соседних гейтов — FieldViolation → apierr.Invalid → BadRequest.
+				return nil, entity.NewFieldViolation("approval_state", "high_severity_issue_open",
+					is.Description,
+					"закройте претензию высокой важности или понизьте её — карточка с известной несобираемой операцией на фабрику не уходит")
 			}
+		}
+		// Правило 4: сборка обязана сходиться в одно изделие. Включается только на карточке с
+		// производящими шагами — сегодняшняя неразмеченная релизится как раньше.
+		if verr := assemblyReleaseCheck(operations, pieces); verr != nil {
+			return nil, verr
 		}
 	}
 

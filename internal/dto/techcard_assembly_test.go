@@ -3,6 +3,7 @@ package dto
 import (
 	"database/sql"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -100,8 +101,8 @@ func TestAssemblyCanonicalizeEmptyInputsStayNil(t *testing.T) {
 // Иначе удаление или перестановка первого шага молча теряют имя, набранное один раз.
 func TestAssemblyCanonicalizeUnitNameOnFirstProducer(t *testing.T) {
 	ops := []entity.TechCardOperation{
-		asmOp([]string{"FR", "BK"}, "SHELL"),           // имени не дал
-		asmOp([]string{"SHELL", "SL"}, "SHELL"),        // имя дал поглощающий
+		asmOp([]string{"FR", "BK"}, "SHELL"),    // имени не дал
+		asmOp([]string{"SHELL", "SL"}, "SHELL"), // имя дал поглощающий
 	}
 	ops[1].OutputUnitName = nullStringFromPb("корпус")
 
@@ -254,5 +255,75 @@ func TestAssemblyOperationNumberAlreadyCanonical(t *testing.T) {
 	order := entity.AssemblyOperationOrder(ops)
 	if !reflect.DeepEqual(order, []int{0, 1, 2}) {
 		t.Errorf("порядок по каноническим номерам %v, ожидался [0 1 2]", order)
+	}
+}
+
+// TestAssemblyReleaseCheckTwoTerminals — правило 4: изделие одно, а не два.
+func TestAssemblyReleaseCheckTwoTerminals(t *testing.T) {
+	ops := []entity.TechCardOperation{
+		asmOp([]string{"FR", "BK"}, "SHELL"),
+		asmOp([]string{"HD", "LN"}, "HOOD"),
+	}
+	pieces := asmPieces("FR", "BK", "HD", "LN")
+	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+		t.Fatalf("разметка сама по себе законна, отвергнута: %v", verr)
+	}
+	verr := assemblyReleaseCheck(ops, pieces)
+	if verr == nil {
+		t.Fatal("релиз с двумя терминалами обязан быть отвергнут")
+	}
+	for _, want := range []string{"SHELL", "HOOD"} {
+		if !strings.Contains(verr.HowToFix, want) {
+			t.Errorf("отказ обязан назвать терминал %q, получено: %s", want, verr.HowToFix)
+		}
+	}
+}
+
+// TestAssemblyReleaseCheckOrphanPiece — деталь, не попавшая в изделие, названа ПО ИМЕНИ:
+// технолог не знает своих ULID'ов.
+func TestAssemblyReleaseCheckOrphanPiece(t *testing.T) {
+	ops := []entity.TechCardOperation{asmOp([]string{"FR", "BK"}, "SHELL")}
+	pieces := asmPieces("FR", "BK", "FLAP")
+	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+		t.Fatalf("отвергнуто: %v", verr)
+	}
+	verr := assemblyReleaseCheck(ops, pieces)
+	if verr == nil {
+		t.Fatal("релиз со строкой-сиротой обязан быть отвергнут")
+	}
+	if !strings.Contains(verr.HowToFix, "деталь FLAP") {
+		t.Errorf("отказ обязан назвать деталь по имени, получено: %s", verr.HowToFix)
+	}
+}
+
+// TestAssemblyReleaseCheckUnmarkedCardPasses — состояние КАЖДОЙ сегодняшней карточки: узлов нет,
+// правило 4 не включается, релиз идёт как раньше. Условие включения читает именно наличие
+// output_unit_key, а не входов.
+func TestAssemblyReleaseCheckUnmarkedCardPasses(t *testing.T) {
+	ops := []entity.TechCardOperation{
+		{PieceLineKeys: []string{"FR", "BK"}},
+		{PieceLineKeys: []string{"FLAP"}},
+	}
+	pieces := asmPieces("FR", "BK", "FLAP")
+	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+		t.Fatalf("отвергнуто: %v", verr)
+	}
+	if verr := assemblyReleaseCheck(ops, pieces); verr != nil {
+		t.Fatalf("неразмеченная карточка обязана релизиться как раньше, получено: %v", verr)
+	}
+}
+
+// TestAssemblyReleaseCheckConverged — сходящаяся сборка проходит.
+func TestAssemblyReleaseCheckConverged(t *testing.T) {
+	ops := []entity.TechCardOperation{
+		asmOp([]string{"FR", "BK"}, "SHELL"),
+		asmOp([]string{"SHELL", "HD"}, "GARMENT"),
+	}
+	pieces := asmPieces("FR", "BK", "HD")
+	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+		t.Fatalf("отвергнуто: %v", verr)
+	}
+	if verr := assemblyReleaseCheck(ops, pieces); verr != nil {
+		t.Fatalf("сходящаяся сборка отвергнута: %v", verr)
 	}
 }

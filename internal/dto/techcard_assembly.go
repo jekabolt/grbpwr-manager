@@ -140,6 +140,115 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 	return nil
 }
 
+// assemblyReleaseCheck — правило 4, на переходе в RELEASED: ровно один терминальный узел, и
+// каждая объявленная строка детали в него попадает.
+//
+// ПОЧЕМУ НА РЕЛИЗЕ, А НЕ НА ПОДПИСИ. Первая редакция плана вешала это правило на СВЕЖУЮ подпись
+// CONSTRUCTION, и в той точке оно не гейтило ничего: карточку можно зарелизить вовсе без
+// подписи (approval_state — свободное поле, единственная жёсткая проверка при RELEASED была про
+// открытые high-severity issues), с ПЕРЕНЕСЁННОЙ подписью (reconcileUpdateTechCardSignoffs
+// помечает секцию свежей только когда переносить нечего) или разметив граф уже после
+// утверждения (устаревание подписи — advisory, оно записи не блокирует).
+//
+// Условие включения — карточка несёт хотя бы один ПРОИЗВОДЯЩИЙ ШАГ. Неразмеченная карточка
+// релизится ровно как раньше, и сегодня это все карточки без исключения.
+//
+// Гейт живёт в конвертере, потому что конвертер общий всем трём входам записи. Отсюда следствие,
+// без которого он ломает штатную операцию: клон сезона обязан становиться черновиком ДО
+// конверсии, а не после (см. CloneStyleForSeason).
+func assemblyReleaseCheck(ops []entity.TechCardOperation, pieces []entity.TechCardPiece) *entity.ValidationError {
+	produces := false
+	for i := range ops {
+		if ops[i].OutputUnitKey.String != "" {
+			produces = true
+			break
+		}
+	}
+	// Именно «есть output_unit_key», а не «есть входы-узлы»: узел без производящего шага движок
+	// и так не допустит, но условие обязано читаться однозначно.
+	if !produces {
+		return nil
+	}
+
+	steps := make([]entity.AssemblyStep, len(ops))
+	for i := range ops {
+		steps[i] = entity.AssemblyStep{
+			Inputs:         ops[i].AssemblyInputs,
+			OutputUnitKey:  ops[i].OutputUnitKey.String,
+			OutputUnitName: ops[i].OutputUnitName.String,
+		}
+	}
+	p := assemblyPieces(pieces)
+	res := entity.AssemblySweep(p, steps)
+	violations := entity.AssemblyReleaseCheck(p, steps, res)
+	if len(violations) == 0 {
+		return nil
+	}
+	msg := violations[0].Message
+	for _, v := range violations[1:] {
+		msg += "; " + v.Message
+	}
+	return entity.NewFieldViolation("approval_state", string(violations[0].Detail), "released",
+		"сборка не сходится: "+msg)
+}
+
+// TechCardAssemblyBlocker — совещательная половина правила 4 для чек-листа готовности.
+// Возвращает "" когда релизу ничто не мешает.
+//
+// Существует, чтобы UI не обещал готовность, противоречащую будущему отказу: жёсткий гейт живёт
+// в конвертере и срабатывает уже на попытке сохранить RELEASED, а технолог должен видеть причину
+// ДО того, как нажмёт. Пока стор не читает сборочные факты, строка выполняется вакуумно — на
+// неразмеченной карточке ей нечего блокировать, и это верное поведение, а не заглушка.
+func TechCardAssemblyBlocker(tc *entity.TechCard) string {
+	if tc == nil {
+		return ""
+	}
+	produces := false
+	for i := range tc.Operations {
+		if tc.Operations[i].OutputUnitKey.String != "" {
+			produces = true
+			break
+		}
+	}
+	if !produces {
+		return ""
+	}
+
+	pieceKeys := make(map[string]bool, len(tc.Pieces))
+	for _, p := range tc.Pieces {
+		if p.LineKey != "" {
+			pieceKeys[p.LineKey] = true
+		}
+	}
+	// Порядок шагов у ПРОЧИТАННОЙ карточки берётся единственной функцией порядка: массива
+	// payload'а здесь нет, а сортировка чтения (operation_number, затем display_order) на
+	// легаси-строках расходится с позицией в срезе.
+	order := entity.AssemblyOperationOrder(tc.Operations)
+	steps := make([]entity.AssemblyStep, 0, len(order))
+	for _, idx := range order {
+		op := tc.Operations[idx]
+		inputs := op.AssemblyInputs
+		if inputs == nil {
+			inputs = entity.ClassifyAssemblyInputs(pieceKeys, op.InputKeys)
+		}
+		steps = append(steps, entity.AssemblyStep{
+			Inputs:         inputs,
+			OutputUnitKey:  op.OutputUnitKey.String,
+			OutputUnitName: op.OutputUnitName.String,
+		})
+	}
+	p := assemblyPieces(tc.Pieces)
+	violations := entity.AssemblyReleaseCheck(p, steps, entity.AssemblySweep(p, steps))
+	if len(violations) == 0 {
+		return ""
+	}
+	msg := violations[0].Message
+	for _, v := range violations[1:] {
+		msg += "; " + v.Message
+	}
+	return msg
+}
+
 // --- вспомогательное ---------------------------------------------------------------------------
 
 const (
@@ -201,4 +310,3 @@ func assemblyReasonOf(v entity.AssemblyViolation) string {
 	}
 	return "assembly_rule_violation"
 }
-
