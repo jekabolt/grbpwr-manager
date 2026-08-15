@@ -167,7 +167,7 @@ func validateTechCardEquipmentProfiles(d *entity.TechCardEquipmentDefaults) erro
 }
 
 // requireEquipmentProfileKey refuses a blank durable key. The column is CHAR(26) NOT NULL and MySQL
-// takes '' happily, so the schema cannot catch this; what it does catch is the SECOND blank-keyed
+// takes ” happily, so the schema cannot catch this; what it does catch is the SECOND blank-keyed
 // profile, as a 1062 on uq_equipment_profile_key with nothing in it an operator could act on. A
 // wire payload never gets here (dto mints a key for an empty one), which leaves the direct entity
 // writers — the seeder, the clone path's fixtures, tests — and a keyless profile is a row no step
@@ -228,12 +228,16 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			// column is written from a NullBool and not from a plain bool.
 			"press_steam": o.PressSteam,
 			"press_cloth": o.PressCloth,
+			// Сборка (0307). Пусто = шаг ничего не собирает: это обработка, а не «не заполнено».
+			// Колонка ключа _bin — сравнение побайтное, как обещает контракт.
+			"output_unit_key":  o.OutputUnitKey,
+			"output_unit_name": o.OutputUnitName,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card operations: %w", err)
 	}
-	if err := insertTechCardOperationPieces(ctx, db, tcID, ops); err != nil {
+	if err := insertTechCardOperationInputs(ctx, db, tcID, ops); err != nil {
 		return err
 	}
 	return insertTechCardOperationBoms(ctx, db, tcID, ops, bomRes)
@@ -297,18 +301,25 @@ func insertTechCardOperationBoms(ctx context.Context, db dependency.DB, tcID int
 	return nil
 }
 
-// insertTechCardOperationPieces writes the operation -> cut-piece links (0199). Many-to-many, unlike
-// the recipe's single usage.piece_id: an assembly operation spans as many pieces as it joins.
+// insertTechCardOperationInputs writes the ЕДИНЫЙ упорядоченный список входов операции (0307):
+// каждая строка — либо деталь, либо узел, и display_order — позиция в ОБЪЕДИНЕНИИ.
 //
-// It re-reads the operation ids rather than threading them out of the bulk insert, because
-// BulkInsert returns no ids and inserting one-by-one just to collect LastInsertId would cost a
-// round-trip per operation. display_order is unique within a card and is what was just written, so
-// it is a reliable join back. Cut-pieces are upserted BEFORE operations in insertTechCardChildren,
-// so their line_keys already resolve here.
-func insertTechCardOperationPieces(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+// Пишет ДВЕ таблицы. Новая tech_card_operation_input — истина; легаси tech_card_operation_piece
+// (0199) заполняется зеркально и остаётся источником для отката. Причина домовая: провалившийся
+// деплой на DO откатывается сам, а readyz при этом возвращает 200 старым процессом — откатившийся
+// код обязан найти свою таблицу наполненной. Двойная запись стоит десяти строк, потому что список
+// уже канонический: детали из него фильтруются одним проходом.
+//
+// Ids операций перечитываются, а не протаскиваются из bulk-вставки: BulkInsert их не возвращает, а
+// вставка по одной ради LastInsertId стоила бы round-trip на операцию. display_order уникален
+// внутри карточки и только что записан, поэтому это надёжный join назад. Детали апсертятся ДО
+// операций в insertTechCardChildren, так что их line_key здесь уже резолвятся.
+func insertTechCardOperationInputs(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+	// Гвард считает ОБЪЕДИНЕНИЕ, а не только детали: шаг, у которого входы — одни узлы, при
+	// проверке по PieceLineKeys потерял бы их целиком.
 	wanted := false
 	for i := range ops {
-		if len(ops[i].PieceLineKeys) > 0 {
+		if len(ops[i].AssemblyInputs) > 0 || len(ops[i].PieceLineKeys) > 0 {
 			wanted = true
 			break
 		}
@@ -341,33 +352,69 @@ func insertTechCardOperationPieces(ctx context.Context, db dependency.DB, tcID i
 		opIDByOrder[r.DisplayOrder] = r.Id
 	}
 
-	links := make([]map[string]any, 0)
+	inputs := make([]map[string]any, 0)
+	legacy := make([]map[string]any, 0)
 	for i, o := range ops {
 		opID, ok := opIDByOrder[i]
 		if !ok {
 			return fmt.Errorf("operation %d missing after insert", i)
 		}
-		for j, key := range o.PieceLineKeys {
-			pieceID, ok := pieceByKey[key]
+		// Канонический список приходит из конвертера. Пустой он только у неосведомлённой записи,
+		// которую канонизация не трогала: тогда объединение вырождается в легаси-проекцию.
+		union := o.AssemblyInputs
+		if len(union) == 0 {
+			union = make([]entity.OperationInput, 0, len(o.PieceLineKeys))
+			for _, k := range o.PieceLineKeys {
+				union = append(union, entity.OperationInput{Kind: entity.AssemblyInputPiece, Key: k})
+			}
+		}
+		legacyOrder := 0
+		for j, in := range union {
+			if in.Kind == entity.AssemblyInputUnit {
+				// Узел — ссылка по ключу, без FK: узел не строка таблицы, а результат шага.
+				// Существование ключа уже удостоверено канонизацией (правило 1).
+				inputs = append(inputs, map[string]any{
+					"operation_id":  opID,
+					"piece_id":      nil,
+					"unit_key":      in.Key,
+					"display_order": j,
+				})
+				continue
+			}
+			pieceID, ok := pieceByKey[in.Key]
 			if !ok {
 				// Field-tagged rather than a bare error, so the admin client can pin it to the exact
 				// operation row instead of failing the whole card with an unattributable message.
-				return entity.NewFieldViolation(fmt.Sprintf("operations[%d].piece_line_keys[%d]", i, j),
-					fmt.Sprintf("no cut-piece %q in this style", key), "",
+				return entity.NewFieldViolation(fmt.Sprintf("operations[%d].input_keys[%d]", i, j),
+					fmt.Sprintf("no cut-piece %q in this style", in.Key), "",
 					"reference an existing cut-piece by its line_key")
 			}
-			links = append(links, map[string]any{
+			inputs = append(inputs, map[string]any{
 				"operation_id":  opID,
 				"piece_id":      pieceID,
+				"unit_key":      nil,
 				"display_order": j,
 			})
+			// Легаси-зеркало нумеруется по СВОЕЙ шкале (только детали, подряд): у 0199 порядок
+			// пер-табличный, и записать в него сквозные позиции объединения значило бы отдать
+			// откатившемуся коду дыры в нумерации.
+			legacy = append(legacy, map[string]any{
+				"operation_id":  opID,
+				"piece_id":      pieceID,
+				"display_order": legacyOrder,
+			})
+			legacyOrder++
 		}
 	}
-	if len(links) == 0 {
-		return nil
+	if len(inputs) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_input", inputs); err != nil {
+			return fmt.Errorf("failed to insert operation inputs: %w", err)
+		}
 	}
-	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_piece", links); err != nil {
-		return fmt.Errorf("failed to insert operation piece links: %w", err)
+	if len(legacy) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_piece", legacy); err != nil {
+			return fmt.Errorf("failed to insert operation piece links: %w", err)
+		}
 	}
 	return nil
 }
@@ -643,7 +690,8 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		       o.needle_size_nm, o.thread_tension, o.thread_tension_note, o.stitch_width_mm,
 		       o.press_equipment, o.press_profile_key, o.press_temperature_c, o.press_dwell_sec,
 		       o.press_pressure_n_cm2, o.press_steam, o.press_cloth,
-		       o.smv, o.note, o.callout_number
+		       o.smv, o.note, o.callout_number,
+		       o.output_unit_key, o.output_unit_name
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`,
@@ -664,10 +712,65 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		posByOpID[r.Id] = operationPos{cardID: r.TechCardID, index: len(opsByCard[r.TechCardID]) - 1}
 	}
 
-	// Operation -> cut-piece links (0199). Read as its own pass and joined back by operation_id — the
-	// row identity, not a positional proxy for it. line_key travels alongside the id so the client
-	// gets the durable reference it writes with, not just the resolved FK.
-	pieceLinkRows, err := storeutil.QueryListNamed[struct {
+	// Входы операции — ЕДИНЫЙ упорядоченный список (0307). Читается своим проходом и цепляется
+	// назад по operation_id (идентичность строки, а не позиционный суррогат); line_key едет рядом с
+	// id, чтобы клиент получил ту же durable-ссылку, которой пишет.
+	//
+	// Порядок — display_order объединения: он и есть авторский порядок «деталь между узлами».
+	inputRows, err := storeutil.QueryListNamed[struct {
+		OpID     int            `db:"op_id"`
+		PieceID  sql.NullInt64  `db:"piece_id"`
+		PieceKey sql.NullString `db:"line_key"`
+		UnitKey  sql.NullString `db:"unit_key"`
+	}](ctx, s.DB, `
+		SELECT o.id AS op_id, l.piece_id AS piece_id, p.line_key AS line_key, l.unit_key AS unit_key
+		FROM tech_card_operation_input l
+		JOIN tech_card_operation o ON o.id = l.operation_id
+		LEFT JOIN tech_card_piece p ON p.id = l.piece_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.display_order, l.display_order, l.id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card operation inputs: %w", err)
+	}
+	// Операции, у которых строки в новой таблице ЕСТЬ. Всё остальное поедет фолбэком ниже.
+	haveInputs := make(map[int]bool, len(inputRows))
+	for _, l := range inputRows {
+		pos, ok := posByOpID[l.OpID]
+		if !ok {
+			continue
+		}
+		haveInputs[l.OpID] = true
+		list := opsByCard[pos.cardID]
+		op := &list[pos.index]
+		switch {
+		case l.UnitKey.Valid && l.UnitKey.String != "":
+			op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
+				Kind: entity.AssemblyInputUnit, Key: l.UnitKey.String,
+			})
+			op.InputKeys = append(op.InputKeys, l.UnitKey.String)
+		case l.PieceID.Valid && l.PieceKey.Valid:
+			op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
+				Kind: entity.AssemblyInputPiece, Key: l.PieceKey.String,
+			})
+			op.InputKeys = append(op.InputKeys, l.PieceKey.String)
+			op.PieceIds = append(op.PieceIds, int(l.PieceID.Int64))
+			op.PieceLineKeys = append(op.PieceLineKeys, l.PieceKey.String)
+		}
+	}
+
+	// ПЕРЕХОДНЫЙ ФОЛБЭК на 0199 — пер-операционный, и он не компромисс, а точная семантика.
+	//
+	// Он существует ради окна отката: откатившийся код пишет только 0199, полная замена операций
+	// каскадом сносит строки новой таблицы и не восстанавливает их, а миграция-копия второй раз не
+	// выполняется. Без фолбэка карточки, отредактированные в этом окне, вернулись бы с пустыми
+	// входами.
+	//
+	// Точность обеспечивает щит совместимости: карточка со сборочными фактами НЕ МОЖЕТ быть
+	// записана старым кодом (FailedPrecondition). Значит операция, у которой есть строки в 0199 и
+	// ноль строк в новой таблице, гарантированно piece-only — прочитать её из 0199 не догадка, а
+	// факт. Снимается вместе с самой таблицей отдельной задачей Ф6, когда прод отстоит без отката.
+	legacyRows, err := storeutil.QueryListNamed[struct {
 		OpID     int    `db:"op_id"`
 		PieceID  int    `db:"piece_id"`
 		PieceKey string `db:"line_key"`
@@ -682,14 +785,22 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	if err != nil {
 		return fmt.Errorf("can't load tech card operation piece links: %w", err)
 	}
-	for _, l := range pieceLinkRows {
+	for _, l := range legacyRows {
+		if haveInputs[l.OpID] {
+			continue
+		}
 		pos, ok := posByOpID[l.OpID]
 		if !ok {
 			continue
 		}
 		list := opsByCard[pos.cardID]
-		list[pos.index].PieceIds = append(list[pos.index].PieceIds, l.PieceID)
-		list[pos.index].PieceLineKeys = append(list[pos.index].PieceLineKeys, l.PieceKey)
+		op := &list[pos.index]
+		op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
+			Kind: entity.AssemblyInputPiece, Key: l.PieceKey,
+		})
+		op.InputKeys = append(op.InputKeys, l.PieceKey)
+		op.PieceIds = append(op.PieceIds, l.PieceID)
+		op.PieceLineKeys = append(op.PieceLineKeys, l.PieceKey)
 	}
 
 	// Operation -> BOM-line links (0200), same keying as the piece links above.
