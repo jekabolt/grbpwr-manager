@@ -60,17 +60,26 @@ func oneAnnotation(text string) entity.TechCardOperationMedia {
 }
 
 // САМОЕ ВАЖНОЕ УТВЕРЖДЕНИЕ ФИЧИ ДЛЯ БАЗЫ: карточка без операционных фотографий обязана хешировать
-// байт-в-байт так же, как до правки. Пустой список — не «пустое значение», а отсутствие хвоста.
+// байт-в-байт так же, как ДО ПРАВКИ — против ЗАКРЕПЛЁННОГО числа, а не против самой себя.
+//
+// Сравнение «nil-Media против []-Media» такой защитой НЕ является: обе стороны идут через новый
+// код, и безусловный хвост сдвинул бы их одинаково — тест остался бы зелёным ровно в том случае,
+// ради которого написан. Единственная форма этого утверждения, которую тест может проверить, —
+// хеш, записанный числом до появления фичи; он уже закреплён соседним файлом (0275) и покрывает
+// весь кортеж CONSTRUCTION, а не пустой список.
 func TestOperationMediaDigestUnchangedWithoutMedia(t *testing.T) {
-	noField := mediaPlainOp() // как читалась до 0308: поля нет вовсе
+	require.Equal(t, unmarkedConstructionDigest,
+		TechCardSectionDigests(cutSymmetryDigestFixture())[entity.SignoffConstruction],
+		"безусловный хвост media сдвинул бы отпечаток каждой карточки и объявил устаревшими все подписанные CONSTRUCTION")
+
+	// И отдельно: пустой список с провода — то же самое, что отсутствие поля.
+	noField := mediaPlainOp()
 	empty := mediaPlainOp()
-	empty.Media = []entity.TechCardOperationMedia{} // как может прийти с провода: пустой список
-
-	before := TechCardSectionDigests(mediaDigestCard(noField))
-	after := TechCardSectionDigests(mediaDigestCard(empty))
-
-	require.Equal(t, before[entity.SignoffConstruction], after[entity.SignoffConstruction],
-		"пустой список фотографий не факт цеха: хвост не должен появляться, иначе выкатка объявит устаревшими все подписанные карточки")
+	empty.Media = []entity.TechCardOperationMedia{}
+	require.Equal(t,
+		TechCardSectionDigests(mediaDigestCard(noField))[entity.SignoffConstruction],
+		TechCardSectionDigests(mediaDigestCard(empty))[entity.SignoffConstruction],
+		"пустой список фотографий не факт цеха: хвоста быть не должно")
 }
 
 // Хвост появляется ровно тогда, когда появляется фотография, — и подпись протухает по делу:

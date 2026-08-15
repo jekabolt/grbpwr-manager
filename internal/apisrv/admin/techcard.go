@@ -121,12 +121,18 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, err
 	}
 	// Щит узлов сборки (0307), тот же довод и тот же момент.
+	if err := mediaCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
 	// Стор-гейт с nil вместо сохранённой карточки — не заглушка, а ровно то, чем создание
 	// является: карточки ещё нет, стирать нечего. Единственное, что он тут скажет, — «снять
 	// разметку» у создаваемой карточки бессмысленно, и это надо сказать, а не пропустить.
+	if err := mediaCapabilityStoredGate(req.TechCard, nil); err != nil {
+		return nil, err
+	}
 	if err := assemblyCapabilityStoredGate(req.TechCard, nil); err != nil {
 		return nil, err
 	}
@@ -255,6 +261,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, err
 	}
 	// Тот же довод, тот же момент — щит узлов сборки (0307).
+	if err := mediaCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
@@ -287,6 +296,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// Щит + контентный бекстоп для узлов: отказывает и устаревшей вкладке, и осведомлённой, но
 	// пустой записи, которая стёрла бы разметку молча (параллельная вкладка, AI-черновик,
 	// восстановленный до-фичевый черновик).
+	if err := mediaCapabilityStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
 	if err := assemblyCapabilityStoredGate(req.TechCard, stored); err != nil {
 		return nil, err
 	}

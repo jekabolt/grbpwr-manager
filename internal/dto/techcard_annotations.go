@@ -91,7 +91,7 @@ func operationMediaFromPb(step string, in []*pb_common.TechCardOperationMedia) (
 	out := make([]entity.TechCardOperationMedia, 0, len(in))
 	seenMedia := make(map[int]bool, len(in))
 	for i, m := range in {
-		path := fmt.Sprintf("%s.media.%d", step, i)
+		path := fmt.Sprintf("%s.media[%d]", step, i)
 		if m == nil {
 			continue
 		}
@@ -120,7 +120,9 @@ func operationMediaFromPb(step string, in []*pb_common.TechCardOperationMedia) (
 		out = append(out, entity.TechCardOperationMedia{
 			MediaId:      mediaID,
 			Caption:      nullStringFromPb(caption),
-			DisplayOrder: i,
+			// Позиция в РЕЗУЛЬТАТЕ, а не индекс входа: nil-элемент посреди списка оставил бы
+			// дыру, и порядок в сущности разошёлся бы с тем, что запишет стор.
+			DisplayOrder: len(out),
 			Annotations:  anns,
 		})
 	}
@@ -140,7 +142,7 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 	}
 	out := make([]entity.TechCardAnnotation, 0, len(in))
 	for j, a := range in {
-		ap := fmt.Sprintf("%s.annotations.%d", path, j)
+		ap := fmt.Sprintf("%s.annotations[%d]", path, j)
 		if a == nil {
 			continue
 		}
@@ -156,7 +158,7 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 		}
 		points := make([]entity.TechCardAnnotationPoint, 0, len(a.Points))
 		for k, p := range a.Points {
-			pp := fmt.Sprintf("%s.points.%d", ap, k)
+			pp := fmt.Sprintf("%s.points[%d]", ap, k)
 			if p == nil {
 				return nil, entity.NewFieldViolation(pp, "required", "", "у выноски пропущена точка")
 			}
@@ -183,7 +185,17 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 		if err != nil {
 			return nil, err
 		}
-		color := annotationColorFromPb[a.Color] // отсутствие в словаре = чернильный
+		// Неизвестный ненулевой цвет — ОТКАЗ, как и неизвестный вид: клиент новее сервера иначе
+		// потерял бы различие молча. UNKNOWN — законное «чернильный», это не неизвестность.
+		color := entity.TechCardAnnotationColor("")
+		if a.Color != pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_UNKNOWN {
+			c, ok := annotationColorFromPb[a.Color]
+			if !ok {
+				return nil, entity.NewFieldViolation(ap+".color", "unknown_value", a.Color.String(),
+					"цвет выноски — из закрытого списка: лист швеи печатают и чёрно-белым")
+			}
+			color = c
+		}
 		out = append(out, entity.TechCardAnnotation{
 			Kind:   kind,
 			Points: points,
