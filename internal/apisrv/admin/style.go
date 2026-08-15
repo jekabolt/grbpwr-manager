@@ -289,16 +289,26 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	}
 	pbInsert.StyleNumber = styleNumber
 	pbInsert.StyleNumberSource = pb_common.StyleNumberSource_STYLE_NUMBER_SOURCE_GENERATED
+	// Клон — новый цикл разработки: он начинается черновиком. Сброс стоит ДО конверсии, а не
+	// после неё, потому что конвертер теперь несёт релизные гейты (открытые high-severity
+	// претензии, сходимость сборки). Оставь сброс после — и клонирование released-карточки
+	// падало бы на состоянии, которое клон всё равно немедленно отменяет.
+	pbInsert.ApprovalState = pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT
+	// Серверный payload знает про поля сборки по построению — он собран из прочитанной карточки
+	// теми же конвертерами. Флаг здесь ничего не разблокирует сегодня (клон гейтов не зовёт), но
+	// снимает мину на будущее: гейт, добавленный в этот путь, иначе отказывал бы клону его же
+	// собственный payload — ровно так уже пришлось спасать костинг (stripTechCardCosting выше).
+	pbInsert.AssemblyAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
 		// is pointed at the offending line rather than at the clone attempt.
 		return nil, techCardConvertErr(err)
 	}
-	// A clone is a fresh design cycle for the new season — reset the PLM freeze and every section
-	// approval so it is editable and starts unapproved. The store stamps the clone actor on its new
-	// rows; source audit authorship is never carried into the new design cycle.
-	insert.ApprovalState = entity.TechCardApprovalDraft
+	// Сброс approval_state ПЕРЕЕХАЛ ВЫШЕ, в pb, до конверсии (см. pbInsert.ApprovalState): в
+	// конвертере теперь стоит релизный гейт сборки, и released-исходник отказывался бы
+	// клонироваться из-за состояния, которое клон всё равно немедленно сбрасывает. Здесь остаётся
+	// только то, чего в pb нет.
 	insert.Signoffs = nil
 	// Провенанс процента раскроя — тоже аудит ПРИМЕНЕНИЯ, и он не переезжает в новый цикл (тот же
 	// довод, что подписи выше): бейдж «медиана по N раскроям» удостоверяет применение на ТОЙ

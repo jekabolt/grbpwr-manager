@@ -2625,6 +2625,25 @@ type TechCardOperation struct {
 	// row WAS the answer, and the single field was a second one.
 	BomLineKeys []string `db:"-"`
 	BomIds      []int    `db:"-"`
+
+	// --- сборка: что шаг производит и что берёт со стола (0307) -----------------------------------
+	// OutputUnitKey — код узла, который производит шаг. NULL/"" = шаг ничего не собирает, это
+	// ОБРАБОТКА: его входы остаются доступными следующим шагам. Сравнение ключей ПОБАЙТНОЕ
+	// (колонка _bin), «SHELL» и «Shell» — два разных узла.
+	OutputUnitKey sql.NullString `db:"output_unit_key"`
+	// OutputUnitName — имя узла. Живёт на первом производящем шаге; поглощающие могут не
+	// повторять. В дайджест секции НЕ входит: имя не факт цеха.
+	OutputUnitName sql.NullString `db:"output_unit_name"`
+
+	// InputKeys — единый упорядоченный список входов шага СЫРЫМИ ключами, как они пришли с
+	// провода (поле 46). Не персистится: в БД лежит уже классифицированное объединение.
+	InputKeys []string `db:"-"`
+	// AssemblyInputs — тот же список после классификации «деталь или узел». КАНОНИЧЕСКАЯ ФОРМА:
+	// ниже по течению никто не пересобирает список из двух половин и не угадывает природу ключа
+	// заново. Заполняется одним пост-проходом в конвертере (canonicalizeAssembly), до штампа
+	// подписей — иначе позиция 4 кортежа дайджеста хешировала бы одно, а чтение возвращало другое.
+	// PieceLineKeys выше — производная проекция этого списка (только детали).
+	AssemblyInputs []OperationInput `db:"-"`
 }
 
 // TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.
@@ -3245,6 +3264,20 @@ type TechCardInsert struct {
 	// lets the API tell «an old client is about to erase facts» from «a card that has none» and
 	// refuse the first with a sentence instead of quietly obeying it.
 	MachineFieldsAware bool `db:"-"`
+
+	// AssemblyAware — то же самое про поля сборки (input_keys / output_unit_key / output_unit_name).
+	// Транспорт, не содержание; ни в один дайджест не входит.
+	//
+	// Флаг НЕ ФИЛЬТРУЕТ ПОЛЯ: разбор 46-48 происходит всегда. «Игнорировать при aware=false»
+	// выглядит защитой, а на деле открывает дыру — CloneStyleForSeason строит payload сам,
+	// транспортных флагов не эмитит и оба capability-гейта обходит, так что клон размеченной
+	// карточки вернулся бы без узлов и без единой ошибки.
+	AssemblyAware bool `db:"-"`
+	// AssemblyCleared — явное намерение снять разметку узлов целиком. Осведомлённая запись, не
+	// несущая ни одного сборочного факта против карточки, которая их несёт, отклоняется без него:
+	// иначе параллельная вкладка, AI-черновик или восстановленный до-фичевый черновик стирали бы
+	// самый дорогой ручной ввод карточки молча.
+	AssemblyCleared bool `db:"-"`
 	// CostingSizeOverride re-points the costing basis for ONE computation, and it is THREE-valued
 	// on purpose: nil = the style default (the simple average over the declared size range); >0 =
 	// cost on that concrete size (a production-run cell pricing the size it actually cuts); 0 =

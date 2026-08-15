@@ -120,6 +120,16 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := machineCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Щит узлов сборки (0307), тот же довод и тот же момент.
+	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	// Стор-гейт с nil вместо сохранённой карточки — не заглушка, а ровно то, чем создание
+	// является: карточки ещё нет, стирать нечего. Единственное, что он тут скажет, — «снять
+	// разметку» у создаваемой карточки бессмысленно, и это надо сказать, а не пропустить.
+	if err := assemblyCapabilityStoredGate(req.TechCard, nil); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -244,6 +254,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := machineCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Тот же довод, тот же момент — щит узлов сборки (0307).
+	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -268,6 +282,12 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// §8, rule 2 — the first thing done with `stored`, because it is about what this save would
 	// DESTROY and every line below either reconciles sign-offs or moves data toward the store.
 	if err := machineCapabilityStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
+	// Щит + контентный бекстоп для узлов: отказывает и устаревшей вкладке, и осведомлённой, но
+	// пустой записи, которая стёрла бы разметку молча (параллельная вкладка, AI-черновик,
+	// восстановленный до-фичевый черновик).
+	if err := assemblyCapabilityStoredGate(req.TechCard, stored); err != nil {
 		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет

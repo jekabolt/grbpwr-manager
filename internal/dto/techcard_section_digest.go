@@ -320,6 +320,19 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 				o.PressDwellSec.Int32, digestDecimal(o.PressPressureNCm2),
 				[]any{o.PressSteam.Valid, o.PressSteam.Bool}, o.PressCloth.String})
 		}
+		// ТРЕТИЙ условный хвост — сборка (0307), по тем же двум доводам, что два выше.
+		//
+		// Хвост несёт ВЕСЬ упорядоченный union тегами «piece»/«unit», а не только узловые входы.
+		// Иначе подпись получилась бы непоследовательной: перестановка двух ДЕТАЛЕЙ меняла бы
+		// отпечаток (позиция 4 — упорядоченный список), а перестановка детали и узла — нет.
+		// Старым подписям это ничем не грозит: у них хвоста нет вовсе.
+		//
+		// ИМЯ УЗЛА В ХВОСТ НЕ ВХОДИТ. Оно разрешается по первому производителю и фактом цеха не
+		// является; хешировать его значило бы протухать подпись от невидимой правки на поглощающем
+		// шаге. Ключ входит: он идентичность узла, и его смена — содержательная правка.
+		if operationHasAssemblyTail(o) {
+			row = append(row, []any{"assembly", o.OutputUnitKey.String, assemblyInputTail(o)})
+		}
 		ops = append(ops, row)
 	}
 	pieces := make([]any, 0, len(tc.Pieces))
@@ -469,6 +482,44 @@ func operationHasPressTail(o *entity.TechCardOperation) bool {
 	return o.PressEquipment.Valid || o.PressProfileKey.Valid || o.PressTemperatureC.Valid ||
 		o.PressDwellSec.Valid || o.PressPressureNCm2.Valid || o.PressSteam.Valid ||
 		o.PressCloth.Valid
+}
+
+// operationHasAssemblyTail — есть ли у шага сборочные факты (0307).
+//
+// Вход-ДЕТАЛЬ фактом сборки не является: он есть у каждой сегодняшней карточки и уже стоит
+// позицией 4 базового кортежа. Хвост появляется только там, где шаг что-то производит или берёт
+// со стола УЗЕЛ, — то есть сегодня не появляется нигде, и ни одна действующая подпись
+// CONSTRUCTION при выкатке не протухает.
+func operationHasAssemblyTail(o *entity.TechCardOperation) bool {
+	if o.OutputUnitKey.Valid && o.OutputUnitKey.String != "" {
+		return true
+	}
+	for _, in := range o.AssemblyInputs {
+		if in.Kind == entity.AssemblyInputUnit {
+			return true
+		}
+	}
+	return false
+}
+
+// assemblyInputTail проецирует упорядоченный union входов парами «вид, ключ».
+//
+// nil при пустом списке, а НЕ пустой срез: json.Marshal их различает, и шаг, записанный как [],
+// но прочитанный как null, дал бы разный отпечаток на записи и на чтении — подпись рождалась бы
+// протухшей и оставалась такой навсегда.
+func assemblyInputTail(o *entity.TechCardOperation) []any {
+	if len(o.AssemblyInputs) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(o.AssemblyInputs))
+	for _, in := range o.AssemblyInputs {
+		kind := "piece"
+		if in.Kind == entity.AssemblyInputUnit {
+			kind = "unit"
+		}
+		out = append(out, []any{kind, in.Key})
+	}
+	return out
 }
 
 // equipmentProfilesTail projects the card's equipment park, or nil when it holds nothing.

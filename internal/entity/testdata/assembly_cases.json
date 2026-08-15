@@ -1,0 +1,350 @@
+{
+  "note": [
+    "Кейсы сборочного графа. ЭТОТ ФАЙЛ ЧИТАЮТ ДВЕ РЕАЛИЗАЦИИ: Go-движок",
+    "(internal/entity/techcard_assembly.go) и его TS-порт в админ-клиенте",
+    "(assembly-frontier.ts). Правила обязаны совпадать до буквы: пикер имеет право предлагать",
+    "ровно то, что примет запись, иначе клиент разрешит то, что сервер отвергнет.",
+    "Поэтому файл самодостаточен — никаких ссылок на Go-типы, только значения.",
+    "",
+    "Схема кейса:",
+    "  pieces[]             — объявленные строки деталей: lineKey + человеческое имя",
+    "  steps[]              — операции по порядку: inputs (СЫРЫЕ ключи), output, outputName",
+    "  expectViolations[]   — ожидаемые нарушения прохода, В ПОРЯДКЕ ВЫДАЧИ:",
+    "                         rule   — 0 гигиена, 1 фронтир, 2 однократность, 3 арность джойна,",
+    "                                  6 пространство имён, 7 дубль входа",
+    "                         detail — МАШИННЫЙ КОД ВЕТКИ, обязателен: одни и те же координаты",
+    "                                  дают разные причины (см. ниже), и без него порт с мёртвой",
+    "                                  веткой прошёл бы эти кейсы",
+    "                         step, input (-1 = нарушение не про конкретный вход)",
+    "  expectFrontierBefore — необязательно: фронтир ПЕРЕД каждым шагом. Пикер шага k имеет",
+    "                         право предлагать ровно это. Без пина порт, считающий фронтир",
+    "                         ПОСЛЕ шага, прошёл бы все кейсы и предлагал шагу его же выход",
+    "  expectFrontier[]     — что осталось на столе после последнего шага, в порядке появления",
+    "  expectUnits[]        — необязательно: узлы с именем, первым производителем, поглощениями",
+    "                         и замыканием по деталям",
+    "  expectRelease[]      — нарушения правила 4 (rule всегда 4, detail различает); [] = релиз",
+    "                         проходит",
+    "",
+    "Коды ветвей: shadow-name, duplicate-input, unknown-key, produced-later, self-reference,",
+    "consumed-earlier, off-frontier, key-is-piece, too-few-inputs, second-producer,",
+    "no-terminal, many-terminals, unreached-pieces.",
+    "",
+    "Классификация сырого ключа: совпал с lineKey детали — деталь, иначе ссылка на узел",
+    "(возможно висячая — её ловит правило 1, а не классификация)."
+  ],
+  "cases": [
+    {
+      "name": "сходящееся худи",
+      "why": "Опорный случай: цепочка поглощений собирает изделие, все детали доходят до терминала. Фронтир перед каждым шагом запинен — это то, что увидит пикер.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "SL-L", "name": "рукав левый" },
+        { "lineKey": "SL-R", "name": "рукав правый" },
+        { "lineKey": "HD", "name": "капюшон" }
+      ],
+      "steps": [
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" },
+        { "inputs": ["SHELL", "SL-L"], "output": "SHELL", "outputName": "" },
+        { "inputs": ["SHELL", "SL-R"], "output": "SHELL", "outputName": "" },
+        { "inputs": ["SHELL", "HD"], "output": "GARMENT", "outputName": "изделие" }
+      ],
+      "expectViolations": [],
+      "expectFrontierBefore": [
+        ["FR", "BK", "SL-L", "SL-R", "HD"],
+        ["SL-L", "SL-R", "HD", "SHELL"],
+        ["SL-R", "HD", "SHELL"],
+        ["HD", "SHELL"]
+      ],
+      "expectFrontier": ["GARMENT"],
+      "expectUnits": [
+        {
+          "key": "SHELL",
+          "name": "корпус",
+          "producedAt": 0,
+          "absorbedAt": [1, 2],
+          "leaves": ["FR", "BK", "SL-L", "SL-R"]
+        },
+        {
+          "key": "GARMENT",
+          "name": "изделие",
+          "producedAt": 3,
+          "absorbedAt": [],
+          "leaves": ["FR", "BK", "SL-L", "SL-R", "HD"]
+        }
+      ],
+      "expectRelease": []
+    },
+    {
+      "name": "обработка не съедает входы",
+      "why": "Шаг с пустым выходом ничего не собирает: узел остаётся на столе следующим шагам.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" }
+      ],
+      "steps": [
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" },
+        { "inputs": ["SHELL"], "output": "", "outputName": "" }
+      ],
+      "expectViolations": [],
+      "expectFrontierBefore": [["FR", "BK"], ["SHELL"]],
+      "expectFrontier": ["SHELL"],
+      "expectRelease": []
+    },
+    {
+      "name": "шаг без входов валиден",
+      "why": "Правила «у шага обязан быть вход» нет и не будет: сегодня piece_line_keys advisory при пустоте. Прототип считает это ошибкой — прототип неправ.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" }
+      ],
+      "steps": [
+        { "inputs": [], "output": "", "outputName": "" },
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" }
+      ],
+      "expectViolations": [],
+      "expectFrontier": ["SHELL"],
+      "expectRelease": []
+    },
+    {
+      "name": "карточка без узлов вакуумно валидна",
+      "why": "Состояние КАЖДОЙ сегодняшней карточки. Ни одного нарушения и ни одного отказа релиза — иначе выкатка фичи сломала бы всю базу.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" }
+      ],
+      "steps": [
+        { "inputs": ["FR"], "output": "", "outputName": "" },
+        { "inputs": ["BK"], "output": "", "outputName": "" }
+      ],
+      "expectViolations": [],
+      "expectFrontier": ["FR", "BK"],
+      "expectRelease": []
+    },
+    {
+      "name": "парная деталь съедается одной строкой один раз",
+      "why": "Правила — ПРО СТРОКИ, а не про физические экземпляры: строка с pieces_per_garment=2 (рукав) входит в узел одним входом. Движок про количество не знает и знать не должен; кейс существует, чтобы TS-порт не начал «раскрывать» парную деталь в два входа. Парные детали, уходящие в РАЗНЫЕ узлы, обязаны быть двумя строками — это свойство данных, а не прохода.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "SL", "name": "рукав (×2 в одной строке)" }
+      ],
+      "steps": [
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" },
+        { "inputs": ["SHELL", "SL"], "output": "SHELL", "outputName": "" }
+      ],
+      "expectViolations": [],
+      "expectFrontier": ["SHELL"],
+      "expectUnits": [
+        {
+          "key": "SHELL",
+          "name": "корпус",
+          "producedAt": 0,
+          "absorbedAt": [1],
+          "leaves": ["FR", "BK", "SL"]
+        }
+      ],
+      "expectRelease": []
+    },
+    {
+      "name": "дубль входа внутри шага",
+      "why": "Правило 7. Джойн при этом остаётся законным: различных существующих входов два.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" }
+      ],
+      "steps": [{ "inputs": ["FR", "FR", "BK"], "output": "SHELL", "outputName": "корпус" }],
+      "expectViolations": [{ "rule": 7, "detail": "duplicate-input", "step": 0, "input": 1 }],
+      "expectFrontier": ["SHELL"],
+      "expectRelease": []
+    },
+    {
+      "name": "джойн из повторённого одного входа",
+      "why": "Правило 3 считает РАЗЛИЧНЫЕ существующие входы. В прототипе [A,A] проходит — так «узел из одного входа» обходится дублем.",
+      "pieces": [{ "lineKey": "FR", "name": "полочка" }],
+      "steps": [{ "inputs": ["FR", "FR"], "output": "SHELL", "outputName": "корпус" }],
+      "expectViolations": [
+        { "rule": 7, "detail": "duplicate-input", "step": 0, "input": 1 },
+        { "rule": 3, "detail": "too-few-inputs", "step": 0, "input": -1 }
+      ],
+      "expectFrontier": ["FR"],
+      "expectRelease": [{ "rule": 4, "detail": "no-terminal" }]
+    },
+    {
+      "name": "джойн с несуществующим входом",
+      "why": "Правило 1, ветка «такого нет вообще». Плюс правило 3: призрак не считается существующим входом, поэтому арность не набирается.",
+      "pieces": [{ "lineKey": "FR", "name": "полочка" }],
+      "steps": [{ "inputs": ["FR", "ПРИЗРАК"], "output": "SHELL", "outputName": "корпус" }],
+      "expectViolations": [
+        { "rule": 1, "detail": "unknown-key", "step": 0, "input": 1 },
+        { "rule": 3, "detail": "too-few-inputs", "step": 0, "input": -1 }
+      ],
+      "expectFrontier": ["FR"],
+      "expectRelease": [{ "rule": 4, "detail": "no-terminal" }]
+    },
+    {
+      "name": "ключ узла занят деталью",
+      "why": "Правило 6 и САМЫЙ ТИХИЙ дефект прототипа: там это считается поглощением, деталь получает чужие листья, а второй вход исчезает без сообщения. Здесь оба входа обязаны остаться на столе.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" }
+      ],
+      "steps": [{ "inputs": ["FR", "BK"], "output": "FR", "outputName": "полочка в сборе" }],
+      "expectViolations": [{ "rule": 6, "detail": "key-is-piece", "step": 0, "input": -1 }],
+      "expectFrontier": ["FR", "BK"],
+      "expectRelease": [{ "rule": 4, "detail": "no-terminal" }]
+    },
+    {
+      "name": "шаг ссылается на собственный выход",
+      "why": "Правило 1, ветка «это выход этого же шага». Отдельная от «появится позже»: ключ объявлен здесь и сейчас, и сообщение «появится на шаге 1» звучало бы издевательством.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" }
+      ],
+      "steps": [{ "inputs": ["FR", "SHELL"], "output": "SHELL", "outputName": "корпус" }],
+      "expectViolations": [
+        { "rule": 1, "detail": "self-reference", "step": 0, "input": 1 },
+        { "rule": 3, "detail": "too-few-inputs", "step": 0, "input": -1 }
+      ],
+      "expectFrontier": ["FR", "BK"],
+      "expectRelease": [{ "rule": 4, "detail": "no-terminal" }]
+    },
+    {
+      "name": "второй производитель того же узла",
+      "why": "Правило 2. Узел НЕ переписывается: его замыкание остаётся честным. В прототипе он затирается, и накопленные поглощением листья пропадают — после чего правило 4 начинает лгать.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "SL", "name": "рукав" },
+        { "lineKey": "HD", "name": "капюшон" }
+      ],
+      "steps": [
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" },
+        { "inputs": ["SL", "HD"], "output": "SHELL", "outputName": "корпус ещё раз" }
+      ],
+      "expectViolations": [{ "rule": 2, "detail": "second-producer", "step": 1, "input": -1 }],
+      "expectFrontier": ["SL", "HD", "SHELL"],
+      "expectUnits": [
+        {
+          "key": "SHELL",
+          "name": "корпус",
+          "producedAt": 0,
+          "absorbedAt": [],
+          "leaves": ["FR", "BK"]
+        }
+      ],
+      "expectRelease": [{ "rule": 4, "detail": "unreached-pieces" }]
+    },
+    {
+      "name": "ссылка вперёд на ещё не произведённый узел",
+      "why": "Правило 1, ветка «появится на шаге k». В прототипе она МЕРТВА: будущего узла нет в словаре, и выдаётся «не существует» — диагностика, которая уводит искать опечатку там, где переставлены шаги. Ветку пинит detail: координаты у обеих веток одинаковы.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "HD", "name": "капюшон" }
+      ],
+      "steps": [
+        { "inputs": ["HD", "SHELL"], "output": "GARMENT", "outputName": "изделие" },
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" }
+      ],
+      "expectViolations": [
+        { "rule": 1, "detail": "produced-later", "step": 0, "input": 1 },
+        { "rule": 3, "detail": "too-few-inputs", "step": 0, "input": -1 }
+      ],
+      "expectFrontierBefore": [
+        ["FR", "BK", "HD"],
+        ["FR", "BK", "HD"]
+      ],
+      "expectFrontier": ["HD", "SHELL"],
+      "expectRelease": [{ "rule": 4, "detail": "unreached-pieces" }]
+    },
+    {
+      "name": "релиз: два терминала",
+      "why": "Правило 4. Сироты при этом НЕ перечисляются: при двух терминалах ни одна деталь формально не достигает изделия, и список из сорока имён утопил бы настоящую причину.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "HD", "name": "капюшон" },
+        { "lineKey": "LN", "name": "подкладка капюшона" }
+      ],
+      "steps": [
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" },
+        { "inputs": ["HD", "LN"], "output": "HOOD", "outputName": "капюшон в сборе" }
+      ],
+      "expectViolations": [],
+      "expectFrontier": ["SHELL", "HOOD"],
+      "expectRelease": [{ "rule": 4, "detail": "many-terminals" }]
+    },
+    {
+      "name": "релиз: строка-сирота",
+      "why": "Правило 4 по ЗАМЫКАНИЮ, а не по «ключ где-то упомянут». Живая деталь терминалом не считается — терминал только узел.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "FLAP", "name": "клапан кармана" }
+      ],
+      "steps": [{ "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" }],
+      "expectViolations": [],
+      "expectFrontier": ["FLAP", "SHELL"],
+      "expectRelease": [{ "rule": 4, "detail": "unreached-pieces" }]
+    },
+    {
+      "name": "цепочка поглощений переносит имя",
+      "why": "Первый производитель имени не дал, поглощающий дал. Имя принимается, но producedAt остаётся на первом: иначе имя молча теряется при удалении шага.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "HEM1", "name": "подгибка низа" },
+        { "lineKey": "HEM2", "name": "подгибка рукава" }
+      ],
+      "steps": [
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "" },
+        { "inputs": ["SHELL", "HEM1"], "output": "SHELL", "outputName": "корпус" },
+        { "inputs": ["SHELL", "HEM2"], "output": "SHELL", "outputName": "" }
+      ],
+      "expectViolations": [],
+      "expectFrontier": ["SHELL"],
+      "expectUnits": [
+        {
+          "key": "SHELL",
+          "name": "корпус",
+          "producedAt": 0,
+          "absorbedAt": [1, 2],
+          "leaves": ["FR", "BK", "HEM1", "HEM2"]
+        }
+      ],
+      "expectRelease": []
+    },
+    {
+      "name": "имя узла без ключа",
+      "why": "Гигиена: шаг ничего не собирает, а имя набрано — теневое значение, которое никогда не будет показано.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" }
+      ],
+      "steps": [{ "inputs": ["FR", "BK"], "output": "", "outputName": "корпус" }],
+      "expectViolations": [{ "rule": 0, "detail": "shadow-name", "step": 0, "input": -1 }],
+      "expectFrontier": ["FR", "BK"],
+      "expectRelease": []
+    },
+    {
+      "name": "деталь съедена дважды",
+      "why": "Правило 2 на строке детали — ядро всей модели: строка съедается ровно одним джойном.",
+      "pieces": [
+        { "lineKey": "FR", "name": "полочка" },
+        { "lineKey": "BK", "name": "спинка" },
+        { "lineKey": "HD", "name": "капюшон" }
+      ],
+      "steps": [
+        { "inputs": ["FR", "BK"], "output": "SHELL", "outputName": "корпус" },
+        { "inputs": ["FR", "HD"], "output": "HOOD", "outputName": "капюшон в сборе" }
+      ],
+      "expectViolations": [
+        { "rule": 2, "detail": "consumed-earlier", "step": 1, "input": 0 },
+        { "rule": 3, "detail": "too-few-inputs", "step": 1, "input": -1 }
+      ],
+      "expectFrontier": ["HD", "SHELL"],
+      "expectRelease": [{ "rule": 4, "detail": "unreached-pieces" }]
+    }
+  ]
+}
