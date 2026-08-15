@@ -74,7 +74,7 @@ type plmState struct {
 	media []int32 // 3 uploaded jpegs
 
 	// stable line keys
-	pieceFrontKey, pieceBackKey                                 string
+	pieceFrontKey, pieceBackKey, pieceCuffKey                   string
 	bomFabricKey, bomHardwareKey, bomThreadKey, bomPackagingKey string
 
 	// durable equipment-profile keys (26-char, the shape the server validates)
@@ -200,6 +200,10 @@ func (s *Seeder) tcFetch(ctx context.Context, styleID int32) (*common.TechCardIn
 // «an old bundle is about to flatten what a new one wrote», which is exactly what the flag is for.
 func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardInsert, label string) error {
 	tc.MachineFieldsAware = true
+	// Осведомлённость о полях сборки. Сидер — первый настоящий НЕинтерактивный клиент фичи, и он
+	// обязан ходить штатным путём через все гейты: без флага щит отвергнет любое сохранение против
+	// карточки, которую сидер сам же и разметил.
+	tc.AssemblyAware = true
 	err := s.withLock(ctx, styleID, func(lv uint64) error {
 		_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{
 			Id:                  styleID,
@@ -277,6 +281,9 @@ func (s *Seeder) plmSetup(ctx context.Context, st *plmState) error {
 	// line keys
 	st.pieceFrontKey = s.key("piece-front")
 	st.pieceBackKey = s.key("piece-back")
+	// Третья деталь нужна ГРАФУ: с двумя деталями второй джойн собрать не из чего, а без второго
+	// джойна нет ни поглощения, ни настоящей проверки правила 4.
+	st.pieceCuffKey = s.key("piece-cuff")
 	st.bomFabricKey = s.key("bom-fabric")
 	st.bomHardwareKey = s.key("bom-hardware")
 	st.bomThreadKey = s.key("bom-thread")
@@ -382,6 +389,7 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			// The card is created by a client that knows about machines and ВТО profiles — every
 			// later save of it (via tcSave) says the same, and B.7 fills its equipment park.
 			MachineFieldsAware: true,
+			AssemblyAware:      true,
 		},
 	})
 	if err != nil {
@@ -476,6 +484,8 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED)},
 		{Name: "back panel", PiecesPerGarment: 1, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey,
 			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD)},
+		{Name: "cuff", PiecesPerGarment: 2, Grainline: "crosswise", Note: "вход второго джойна — без него граф не собрать", LineKey: st.pieceCuffKey,
+			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_IDENTICAL)},
 	}
 	if err := s.tcSave(ctx, sid, tc, "B.6 pieces"); err != nil {
 		return err
@@ -489,11 +499,16 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	for _, p := range cl.GetPieces() {
 		// Matched by NAME now: the mirror flag used to be what told the two rows apart, and it is
 		// false on both from here on.
-		if p.GetName() == "front panel" {
+		//
+		// ЯВНЫЙ switch, а не if/else: раньше «всё, что не front» считалось back, и появление
+		// третьей детали молча перезаписало бы id спинки манжетой — вместе с проверками ниже,
+		// которые тогда сверяли бы не то, что думают.
+		switch p.GetName() {
+		case "front panel":
 			st.pieceFrontID = p.GetPieceId()
 			frontTotal = p.GetTotalPerGarment()
 			frontSym = p.GetCutSymmetry()
-		} else {
+		case "back panel":
 			st.pieceBackID = p.GetPieceId()
 			backTotal = p.GetTotalPerGarment()
 			backSym = p.GetCutSymmetry()
@@ -770,16 +785,47 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	// MACHINE + machine_type, not the legacy LOCKSTITCH: «что делаем» and «на чём» are two fields
 	// now, and the legacy token would be canonicalised into exactly this pair anyway. The seeder is
 	// the only automatic end-to-end run of a card, so it speaks the form the client will send.
+	// СБОРОЧНЫЙ ГРАФ (0307), а не одна операция. Раньше здесь сеялся единственный шаг вовсе без
+	// привязок к деталям, и «дозаполнить его узлами» было невозможно: джойну нужно не меньше двух
+	// входов, а входов не было ни одного.
+	//
+	// Граф намеренно проходит ВСЕ правила, включая четвёртое: один терминал, и каждая деталь в
+	// него попадает. Бета — единственное место, где фичу можно увидеть работающей до того, как её
+	// разметит живой технолог, поэтому демо обязано быть валидным, а не просто непустым.
+	//
+	//   10  полочка + спинка              → SHELL      джойн: узел рождается
+	//   20  SHELL                         → (ничего)   обработка: вход остаётся на столе
+	//   30  SHELL + манжета               → SHELL      ПОГЛОЩЕНИЕ: узел сохраняет идентичность
+	//
+	// Терминал ровно один (SHELL), в него входят все три детали.
 	tc.Operations = []*common.TechCardOperation{
 		{OperationNumber: 10,
 			OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
 			MachineType:   common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
 			// CLOSURE, not OUTER: the zone now says WHERE on the garment, and «front placket» — the
 			// free-text placement this row used to carry — is exactly what it replaces.
-			Zone:          common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_CLOSURE,
-			BomLineKeys:   []string{st.bomHardwareKey},
-			CalloutNumber: 1,
-			Note:          "attach main zipper to front placket"},
+			Zone:           common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_CLOSURE,
+			BomLineKeys:    []string{st.bomHardwareKey},
+			CalloutNumber:  1,
+			InputKeys:      []string{st.pieceFrontKey, st.pieceBackKey},
+			OutputUnitKey:  "SHELL",
+			OutputUnitName: "корпус",
+			Note:           "attach main zipper to front placket"},
+		{OperationNumber: 20,
+			OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			MachineType:   common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+			Zone:          common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OTHER,
+			// Обработка: выходного ключа НЕТ. Её вход не съедается и остаётся доступным шагу 30 —
+			// в этом вся разница между обработкой и джойном.
+			InputKeys: []string{"SHELL"},
+			Note:      "отстрочка по корпусу"},
+		{OperationNumber: 30,
+			OperationType:  common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			MachineType:    common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+			Zone:           common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_SLEEVE,
+			InputKeys:      []string{"SHELL", st.pieceCuffKey},
+			OutputUnitKey:  "SHELL",
+			Note:           "притачать манжету — узел вбирает деталь, идентичность сохраняется"},
 	}
 
 	// NEGATIVE: an operation referencing an unknown bom_line_key must be rejected (400).
@@ -800,6 +846,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	// facts without the flag is refused for a DIFFERENT reason, and the probe would then pass while
 	// proving nothing about bom_line_key.
 	neg.MachineFieldsAware = true
+	neg.AssemblyAware = true
 	_, negErr := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(negLV), TechCard: neg})
 	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
 		return fmt.Errorf("NEGATIVE bad bomLineKey: expected HTTP 400, got %v", negErr)
@@ -1433,6 +1480,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	// Same reason as the bom_line_key probe: this one bypasses tcSave, and the fetched body carries
 	// the card's machine facts, so it must state the capability or it is refused for the wrong reason.
 	tc2.MachineFieldsAware = true
+	tc2.AssemblyAware = true
 	strayLV, err := s.lockVersion(ctx, sid)
 	if err != nil {
 		return err
@@ -1504,6 +1552,7 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 			AuxSubtype: sub, OutputMaterialId: int32(matID),
 			Stage: common.TechCardStage_TECH_CARD_STAGE_PROD, ApprovalState: common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT,
 			MachineFieldsAware: true,
+			AssemblyAware:      true,
 		}})
 		if err != nil {
 			return fmt.Errorf("CreateTechCard(aux %s): %w", names[i], err)

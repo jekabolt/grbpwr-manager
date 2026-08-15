@@ -132,6 +132,7 @@ func (s *Seeder) seedOneStyle(ctx context.Context, idx int, p styleParams) (Cata
 			SizeIds:      []int32{p.mID, p.lID},
 			// The seeder is a new-generation client on every card it touches, catalogue ones included.
 			MachineFieldsAware: true,
+			AssemblyAware:      true,
 		},
 	})
 	if err != nil {
