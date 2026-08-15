@@ -3,7 +3,9 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -240,7 +242,83 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 	if err := insertTechCardOperationInputs(ctx, db, tcID, ops); err != nil {
 		return err
 	}
+	if err := insertTechCardOperationMedia(ctx, db, tcID, ops); err != nil {
+		return err
+	}
 	return insertTechCardOperationBoms(ctx, db, tcID, ops, bomRes)
+}
+
+// insertTechCardOperationMedia пишет фотографии шагов с выносками (0308).
+//
+// Выноски едут JSON-колонкой одним значением на картинку: у выноски нет внешних ссылок, она
+// читается и пишется только целиком со своим снимком. Форма уже проверена в dto — сюда приходит
+// то, что сервер согласился считать выноской, и стор не валидирует повторно.
+//
+// Ids операций перечитываются по display_order — та же причина, что у входов и BOM-связей выше:
+// BulkInsert их не возвращает, а вставка по одной ради LastInsertId стоила бы round-trip на шаг.
+func insertTechCardOperationMedia(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+	wanted := false
+	for i := range ops {
+		if len(ops[i].Media) > 0 {
+			wanted = true
+			break
+		}
+	}
+	if !wanted {
+		return nil
+	}
+	opRows, err := storeutil.QueryListNamed[struct {
+		Id           int `db:"id"`
+		DisplayOrder int `db:"display_order"`
+	}](ctx, db,
+		`SELECT id, display_order FROM tech_card_operation WHERE tech_card_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("load operations for media links: %w", err)
+	}
+	opIDByOrder := make(map[int]int, len(opRows))
+	for _, r := range opRows {
+		opIDByOrder[r.DisplayOrder] = r.Id
+	}
+
+	rows := make([]map[string]any, 0)
+	for i, o := range ops {
+		if len(o.Media) == 0 {
+			continue
+		}
+		opID, ok := opIDByOrder[i]
+		if !ok {
+			return fmt.Errorf("operation %d missing after insert", i)
+		}
+		for j, m := range o.Media {
+			anns := m.Annotations
+			if anns == nil {
+				anns = []entity.TechCardAnnotation{}
+			}
+			raw, err := json.Marshal(anns)
+			if err != nil {
+				return fmt.Errorf("marshal annotations of operation %d media %d: %w", i, j, err)
+			}
+			var caption any
+			if m.Caption.Valid && m.Caption.String != "" {
+				caption = m.Caption.String
+			}
+			rows = append(rows, map[string]any{
+				"tech_card_operation_id": opID,
+				"media_id":               m.MediaId,
+				"caption":                caption,
+				// Позиция В СПИСКЕ ШАГА, а не сквозная: филмстрип листается внутри своего шага.
+				"display_order": j,
+				"annotations":   string(raw),
+			})
+		}
+	}
+	if len(rows) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_media", rows); err != nil {
+			return fmt.Errorf("failed to insert operation media: %w", err)
+		}
+	}
+	return nil
 }
 
 // insertTechCardOperationBoms writes the operation -> BOM-line links (0200): the off-part materials
@@ -827,6 +905,49 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		list := opsByCard[pos.cardID]
 		list[pos.index].BomIds = append(list[pos.index].BomIds, l.BomItemID)
 		list[pos.index].BomLineKeys = append(list[pos.index].BomLineKeys, l.BomKey)
+	}
+
+	// Фотографии шагов с выносками (0308). Цепляются по operation_id — идентичности строки, а не
+	// позиционному суррогату: причина та же, что у входов выше.
+	mediaRows, err := storeutil.QueryListNamed[struct {
+		OpID         int            `db:"op_id"`
+		MediaID      int            `db:"media_id"`
+		Caption      sql.NullString `db:"caption"`
+		DisplayOrder int            `db:"display_order"`
+		Annotations  []byte         `db:"annotations"`
+	}](ctx, s.DB, `
+		SELECT o.id AS op_id, m.media_id, m.caption, m.display_order, m.annotations
+		FROM tech_card_operation_media m
+		JOIN tech_card_operation o ON o.id = m.tech_card_operation_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.display_order, m.display_order, m.id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card operation media: %w", err)
+	}
+	for _, m := range mediaRows {
+		pos, ok := posByOpID[m.OpID]
+		if !ok {
+			continue
+		}
+		var anns []entity.TechCardAnnotation
+		if len(m.Annotations) > 0 {
+			// Битый JSON в колонке — это испорченная строка, а не повод уронить чтение всей
+			// карточки: картинка вернётся без выносок, и это видно, в отличие от пятисотки.
+			if err := json.Unmarshal(m.Annotations, &anns); err != nil {
+				slog.Default().Error("tech card operation media: broken annotations json",
+					slog.Int("operation_id", m.OpID), slog.Int("media_id", m.MediaID),
+					slog.String("err", err.Error()))
+				anns = nil
+			}
+		}
+		list := opsByCard[pos.cardID]
+		list[pos.index].Media = append(list[pos.index].Media, entity.TechCardOperationMedia{
+			MediaId:      m.MediaID,
+			Caption:      m.Caption,
+			DisplayOrder: m.DisplayOrder,
+			Annotations:  anns,
+		})
 	}
 
 	labelRows, err := storeutil.QueryListNamed[techCardLabelRow](ctx, s.DB, `

@@ -1129,6 +1129,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		},
 		ResolvedMoodboardMedia: resolvedMoodboard,
 		ResolvedTechnicalMedia: resolvedTechnical,
+		// Операционные снимки (0308) — словарь «media_id → откуда взять картинку». Дистинкт по
+		// карточке: одна фотография законно висит на нескольких шагах.
+		ResolvedOperationMedia: resolvedOperationMedia(tc),
 		// Derived, output-only (R1/§3.3): a style's colourways are its products. Each ref carries its
 		// recipe (H1 fix) resolved against this style's own BOM items.
 		Colorways: techCardColorwayRefsToPb(tc, orderQtyBySize, fx),

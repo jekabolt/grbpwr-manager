@@ -2644,6 +2644,89 @@ type TechCardOperation struct {
 	// подписей — иначе позиция 4 кортежа дайджеста хешировала бы одно, а чтение возвращало другое.
 	// PieceLineKeys выше — производная проекция этого списка (только детали).
 	AssemblyInputs []OperationInput `db:"-"`
+
+	// Media — фотографии ЭТОГО шага с выносками поверх них (0308). Не персистится в строке
+	// операции: живёт в child-таблице и едет в той же транзакции, что и прочие связи шага.
+	Media []TechCardOperationMedia `db:"-"`
+}
+
+// ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────
+//
+// Тип НЕ ЗНАЕТ СЛОВА «ОПЕРАЦИЯ» намеренно: та же выноска пригодится карточному эскизу, детали
+// кроя и примерке — им понадобится своё поле, а не свой формат выноски.
+
+// TechCardAnnotationKind — вид выноски. Закрытый словарь: вид определяет и число точек, и что
+// рисуется, и чем является текст. Оси (якорь × геометрия × лидер × подпись) — язык
+// ПРОЕКТИРОВАНИЯ набора, а не форма хранения: независимыми полями пришлось бы валидировать
+// комбинаторику бессмыслицы вроде скобки с одной точкой.
+type TechCardAnnotationKind string
+
+const (
+	AnnotationKindPin     TechCardAnnotationKind = "pin"     // 1 точка · номер по позиции · текст в легенде
+	AnnotationKindLabel   TechCardAnnotationKind = "label"   // 1 точка · плашка со стрелкой
+	AnnotationKindDim     TechCardAnnotationKind = "dim"     // 2 точки · размерная линия с засечками
+	AnnotationKindBracket TechCardAnnotationKind = "bracket" // 2 точки · скобка над участком
+	AnnotationKindMulti   TechCardAnnotationKind = "multi"   // 2..8 точек · одна подпись, много мест
+)
+
+// PointsAllowed возвращает допустимый диапазон числа точек для вида. Второе значение — false,
+// если вид неизвестен.
+func (k TechCardAnnotationKind) PointsAllowed() (min, max int, ok bool) {
+	switch k {
+	case AnnotationKindPin, AnnotationKindLabel:
+		return 1, 1, true
+	case AnnotationKindDim, AnnotationKindBracket:
+		return 2, 2, true
+	case AnnotationKindMulti:
+		return 2, 8, true
+	}
+	return 0, 0, false
+}
+
+// TechCardAnnotationColor — цвет выноски. Закрытый список, а не свободный hex: лист швеи печатают
+// и на чёрно-белом принтере, где произвольный цвет станет неразличимым серым. Пусто = чернильный.
+type TechCardAnnotationColor string
+
+const (
+	AnnotationColorRed    TechCardAnnotationColor = "red"
+	AnnotationColorBlue   TechCardAnnotationColor = "blue"
+	AnnotationColorGreen  TechCardAnnotationColor = "green"
+	AnnotationColorOrange TechCardAnnotationColor = "orange"
+)
+
+var ValidTechCardAnnotationColors = map[TechCardAnnotationColor]bool{
+	AnnotationColorRed: true, AnnotationColorBlue: true, AnnotationColorGreen: true, AnnotationColorOrange: true,
+}
+
+// TechCardAnnotationPoint — точка в нормализованных координатах кадра (0..1). Та же система, что
+// у pos_x/pos_y карточных выносок, и тот же тип: decimal, а не float.
+type TechCardAnnotationPoint struct {
+	X decimal.Decimal `json:"x"`
+	Y decimal.Decimal `json:"y"`
+}
+
+// TechCardAnnotation — одна выноска. Лидер (линия от плашки к якорю) НЕ хранится: он строится
+// правилом отрисовки, и хранить производное значило бы дать ему разойтись с якорем.
+type TechCardAnnotation struct {
+	Kind   TechCardAnnotationKind    `json:"kind"`
+	Points []TechCardAnnotationPoint `json:"points"`
+	Text   string                    `json:"text,omitempty"`
+	LabelX decimal.Decimal           `json:"label_x"`
+	LabelY decimal.Decimal           `json:"label_y"`
+	Color  TechCardAnnotationColor   `json:"color,omitempty"`
+}
+
+// TechCardOperationMedia — одна картинка шага со своими выносками.
+type TechCardOperationMedia struct {
+	Id                  int                  `db:"id"`
+	TechCardOperationId int                  `db:"tech_card_operation_id"`
+	MediaId             int                  `db:"media_id"`
+	Caption             sql.NullString       `db:"caption"`
+	DisplayOrder        int                  `db:"display_order"`
+	// Annotations в БД лежит JSON-колонкой; в Go — разобранным списком. Сырое значение читается
+	// в AnnotationsRaw и разбирается стором один раз.
+	Annotations    []TechCardAnnotation `db:"-"`
+	AnnotationsRaw []byte               `db:"annotations"`
 }
 
 // TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.
@@ -3506,6 +3589,11 @@ type TechCard struct {
 	// single-card read alongside the legacy free-text Composition (TechCardInsert.Composition) — never
 	// instead of it. Empty when the style has no style_composition rows yet.
 	CompositionEntries []CompositionEntry `db:"-"`
+	// ResolvedOperationMedia — разрешённые фотографии ШАГОВ этой карточки, дистинкт по media_id
+	// (0308). Отдельным списком, а не внутри операции: write-сообщение операции возит только
+	// media_id, а URL и размеры это read-данные — та же разводка, что у карточных медиа, где
+	// TechCardMediaItem пишет, а ResolvedMedia читает.
+	ResolvedOperationMedia []TechCardMediaFull `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an

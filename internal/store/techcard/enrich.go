@@ -84,7 +84,64 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err := s.enrichMaterials(ctx, cards); err != nil {
 		return err
 	}
-	return s.enrichProduction(ctx, cards)
+	if err := s.enrichProduction(ctx, cards); err != nil {
+		return err
+	}
+	// ПОСЛЕ производства, а не вместе с карточными медиа: id операционных снимков известны только
+	// когда операции уже прочитаны. Резолвится одним запросом на всю пачку карточек.
+	return s.enrichOperationMedia(ctx, cards)
+}
+
+// enrichOperationMedia разрешает media_id операционных снимков (0308) в полные записи медиа.
+//
+// Дистинкт по карточке: одна и та же фотография законно висит на нескольких шагах, а клиенту
+// нужен словарь «id → откуда взять картинку», а не повторы. Отсутствующее медиа (удалено из
+// библиотеки) просто не попадает в словарь — строка операции при этом уже ушла каскадом, так что
+// такого быть не должно, но чтение не имеет права на этом падать.
+func (s *Store) enrichOperationMedia(ctx context.Context, cards []entity.TechCard) error {
+	wanted := make(map[int]bool)
+	for i := range cards {
+		for _, op := range cards[i].Operations {
+			for _, m := range op.Media {
+				wanted[m.MediaId] = true
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB,
+		`SELECT * FROM media WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load operation media: %w", err)
+	}
+	byID := make(map[int]entity.MediaFull, len(rows))
+	for i := range rows {
+		byID[rows[i].Id] = rows[i]
+	}
+	for i := range cards {
+		seen := make(map[int]bool)
+		var out []entity.TechCardMediaFull
+		for _, op := range cards[i].Operations {
+			for _, m := range op.Media {
+				if seen[m.MediaId] {
+					continue
+				}
+				full, ok := byID[m.MediaId]
+				if !ok {
+					continue
+				}
+				seen[m.MediaId] = true
+				out = append(out, entity.TechCardMediaFull{Media: full})
+			}
+		}
+		cards[i].ResolvedOperationMedia = out
+	}
+	return nil
 }
 
 type techCardIDRow struct {
