@@ -633,6 +633,23 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 
+	// --- РЕЕСТР ПОСТ-ПРОХОДОВ. Порядок обязателен, а не сложился ---------------------------------
+	//
+	//     canonicalizeAssembly  →  релизные гейты  →  StampTechCardSignoffDigests
+	//
+	// Канонизация МУТИРУЕТ разобранный payload: классифицирует входы операций в «деталь или
+	// узел», пересобирает PieceLineKeys как проекцию объединения и переносит имя узла на первого
+	// производителя. Релизные гейты обязаны читать уже нормализованное, а штамп — хешировать
+	// итог: PieceLineKeys стоит позицией 4 в кортеже CONSTRUCTION, и подпись, поставленная до
+	// нормализации, никогда не совпала бы с отпечатком следующего чтения.
+	//
+	// Конвертер тем самым перестал быть чистым переводчиком и стал нормализатором. Следующая
+	// фича, которой понадобится то же место, обязана встать в этот реестр ЯВНО — иначе
+	// пост-проходы начнут зависеть друг от друга по порядку молча.
+	if verr := canonicalizeAssembly(operations, pieces); verr != nil {
+		return nil, verr
+	}
+
 	// Release gate: a card cannot be RELEASED to a factory while any high-severity maker issue is
 	// still open (a known un-buildable operation).
 	// TODO(pr6-B): the colourway lab-dip release gate (no release while any colourway's bulk colour is
@@ -711,6 +728,10 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// cannot see (§8); it is deliberately NOT part of any digest — who sent a payload is not what
 		// a signature attests.
 		MachineFieldsAware: pb.MachineFieldsAware,
+		// Те же два транспортных флага для сборки. Ни один не входит в дайджест: кто прислал
+		// payload и что он при этом намеревался — не то, что удостоверяет подпись.
+		AssemblyAware:   pb.AssemblyAware,
+		AssemblyCleared: pb.AssemblyCleared,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:

@@ -365,6 +365,27 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			seenPieceKey[k] = true
 			pieceLineKeys = append(pieceLineKeys, k)
 		}
+		// --- сборка (0307): что шаг берёт со стола и что производит ---------------------------
+		// Здесь только СЫРОЙ разбор: классифицировать ключ («деталь или узел») на этом месте
+		// физически нельзя — детали карточки разбираются ПОЗЖЕ операций, множества ещё нет.
+		// Классификация и все правила графа живут одним пост-проходом в конвертере
+		// (canonicalizeAssembly), после обоих разборов и до штампа подписей.
+		//
+		// Поля разбираются ВСЕГДА, независимо от aware: флаг объявляет способность бандла, а не
+		// выключает разбор. Иначе серверный round-trip (клон сезона payload строит сам и флага
+		// не несёт) молча вернул бы карточку без разметки.
+		var inputKeys []string
+		for _, k := range o.InputKeys {
+			// Только trim и отбрасывание пустых. Дубли НЕ схлопываются, в отличие от легаси-поля
+			// ниже: для объединения повтор — это нарушение правила 7, о котором технолог обязан
+			// узнать, а не молча исправленная опечатка.
+			if k = strings.TrimSpace(k); k != "" {
+				inputKeys = append(inputKeys, k)
+			}
+		}
+		outputUnitKey := strings.TrimSpace(o.OutputUnitKey)
+		outputUnitName := strings.TrimSpace(o.OutputUnitName)
+
 		// bom_line_keys: the materials this operation consumes. The legacy single bom_line_key went
 		// with the break — the chip row was always the real answer, and the single field was a second
 		// one that the printed sheet then had to subtract to stop printing it twice.
@@ -397,6 +418,9 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			CalloutNumber:    calloutNumber,
 			PieceLineKeys:    pieceLineKeys,
 			BomLineKeys:      bomLineKeys,
+			InputKeys:        inputKeys,
+			OutputUnitKey:    nullStringFromPb(outputUnitKey),
+			OutputUnitName:   nullStringFromPb(outputUnitName),
 
 			MachineType:       machine.machineType,
 			MachineProfileKey: machine.profileKey,
