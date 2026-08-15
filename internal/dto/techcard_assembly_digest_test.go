@@ -142,7 +142,7 @@ func TestAssemblyDigestWriteReadRoundTrip(t *testing.T) {
 		{LineKey: "FR", Name: "полочка", PiecesPerGarment: 1},
 		{LineKey: "BK", Name: "спинка", PiecesPerGarment: 1},
 	}
-	require.Nil(t, canonicalizeAssembly(writeOps, pieces))
+	require.Nil(t, canonicalizeAssembly(writeOps, pieces, true))
 
 	// Форма ЧТЕНИЯ: то, что собирает стор из строк tech_card_operation_input.
 	readOps := []entity.TechCardOperation{

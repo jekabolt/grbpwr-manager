@@ -10,11 +10,17 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// Детали объявляются В САМОМ payload'е: узкий предикат отличает узел от детали сравнением с
+// line_key этой же записи, а не запросом к базе.
 func asmPayload(aware, cleared bool, ops ...*pb_common.TechCardOperation) *pb_common.TechCardInsert {
 	return &pb_common.TechCardInsert{
 		AssemblyAware:   aware,
 		AssemblyCleared: cleared,
 		Operations:      ops,
+		Pieces: []*pb_common.TechCardPiece{
+			{LineKey: "FR", Name: "полочка"},
+			{LineKey: "BK", Name: "спинка"},
+		},
 	}
 }
 
@@ -22,7 +28,15 @@ func opWithUnit(key string) *pb_common.TechCardOperation {
 	return &pb_common.TechCardOperation{OutputUnitKey: key, InputKeys: []string{"FR", "BK"}}
 }
 
-func opPlain() *pb_common.TechCardOperation {
+// opAwareNoUnits — то, что шлёт НОВЫЙ клиент на карточке без разметки: все входы полем 46, но
+// это чистые детали. Именно этот payload первая редакция гейта считала «несущим узлы», из-за
+// чего бекстоп умирал ровно на своём первом мотивирующем кейсе — параллельной вкладке.
+func opAwareNoUnits() *pb_common.TechCardOperation {
+	return &pb_common.TechCardOperation{InputKeys: []string{"FR", "BK"}}
+}
+
+// opLegacyNoUnits — старый бандл: поля 46 не знает, шлёт только легаси-проекцию.
+func opLegacyNoUnits() *pb_common.TechCardOperation {
 	return &pb_common.TechCardOperation{PieceLineKeys: []string{"FR"}}
 }
 
@@ -51,7 +65,7 @@ func TestAssemblyGateTruthTable(t *testing.T) {
 	}{
 		{
 			name:   "неразмеченная карточка, старый бандл — сегодняшний путь",
-			stored: storedPlain(), pb: asmPayload(false, false, opPlain()),
+			stored: storedPlain(), pb: asmPayload(false, false, opLegacyNoUnits()),
 			wantWire: codes.OK, wantStored: codes.OK,
 		},
 		{
@@ -61,17 +75,17 @@ func TestAssemblyGateTruthTable(t *testing.T) {
 		},
 		{
 			name:   "cleared без aware — бандл просит снять то, о чём не знает",
-			stored: storedPlain(), pb: asmPayload(false, true, opPlain()),
+			stored: storedPlain(), pb: asmPayload(false, true, opLegacyNoUnits()),
 			wantWire: codes.InvalidArgument, wantStored: codes.OK,
 		},
 		{
 			name:   "cleared на неразмеченной карточке — теневое намерение",
-			stored: storedPlain(), pb: asmPayload(true, true, opPlain()),
-			wantWire: codes.OK, wantStored: codes.OK,
+			stored: storedPlain(), pb: asmPayload(true, true, opAwareNoUnits()),
+			wantWire: codes.OK, wantStored: codes.InvalidArgument,
 		},
 		{
 			name:   "размеченная карточка, старый бандл — устаревшая вкладка",
-			stored: storedWithUnits(), pb: asmPayload(false, false, opPlain()),
+			stored: storedWithUnits(), pb: asmPayload(false, false, opLegacyNoUnits()),
 			wantWire: codes.OK, wantStored: codes.FailedPrecondition,
 		},
 		{
@@ -80,13 +94,17 @@ func TestAssemblyGateTruthTable(t *testing.T) {
 			wantWire: codes.OK, wantStored: codes.OK,
 		},
 		{
-			name:   "размеченная карточка, осведомлённая ПУСТАЯ запись — бекстоп",
-			stored: storedWithUnits(), pb: asmPayload(true, false, opPlain()),
+			// САМЫЙ ВАЖНЫЙ КЕЙС: payload нового клиента, где все входы идут полем 46, но узлов в
+			// них нет. Широкий предикат назвал бы это «несёт узлы» и пропустил бы стирание.
+			name:   "размеченная карточка, осведомлённая запись БЕЗ узлов — бекстоп",
+			stored: storedWithUnits(), pb: asmPayload(true, false, opAwareNoUnits()),
 			wantWire: codes.OK, wantStored: codes.FailedPrecondition,
 		},
 		{
+			// Кнопка «снять разметку» шлёт РАСПАКОВАННЫЕ входы полем 46 (детали) + флаг. Широкий
+			// предикат прочитал бы это как «снял и одновременно прислал узлы» и отказал.
 			name:   "размеченная карточка, снятие разметки с объявленным намерением",
-			stored: storedWithUnits(), pb: asmPayload(true, true, opPlain()),
+			stored: storedWithUnits(), pb: asmPayload(true, true, opAwareNoUnits()),
 			wantWire: codes.OK, wantStored: codes.OK,
 		},
 		{

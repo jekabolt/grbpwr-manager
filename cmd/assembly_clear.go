@@ -116,15 +116,63 @@ func runAssemblyClear(cmd *cobra.Command, args []string) error {
 	if pbInsert == nil {
 		return fmt.Errorf("не собрать wire-форму тех-карты %d", assemblyClearID)
 	}
-	for _, o := range pbInsert.GetOperations() {
+	// Входы-узлы возвращаются В ДЕТАЛИ ПО ЗАМЫКАНИЮ, а не просто отбрасываются.
+	//
+	// Разница не косметическая. Шаг со входами [SHELL, SL] после наивного отбрасывания остался бы
+	// с одним рукавом: полочка и спинка, жившие ВНУТРИ узла SHELL, к шагу не вернулись бы, и
+	// карточка после «аварийного восстановления» врала бы о том, что этот шаг сшивает. Замыкание
+	// узла (его листья) движок уже считает — берём его.
+	steps := make([]entity.AssemblyStep, 0, len(card.Operations))
+	order := entity.AssemblyOperationOrder(card.Operations)
+	for _, idx := range order {
+		op := card.Operations[idx]
+		steps = append(steps, entity.AssemblyStep{
+			Inputs:         op.AssemblyInputs,
+			OutputUnitKey:  op.OutputUnitKey.String,
+			OutputUnitName: op.OutputUnitName.String,
+		})
+	}
+	sweepPieces := make([]entity.AssemblyPiece, 0, len(card.Pieces))
+	for _, p := range card.Pieces {
+		sweepPieces = append(sweepPieces, entity.AssemblyPiece{LineKey: p.LineKey, Name: p.Name})
+	}
+	sweep := entity.AssemblySweep(sweepPieces, steps)
+
+	pbOps := pbInsert.GetOperations()
+	for i, o := range pbOps {
 		if o == nil {
 			continue
 		}
 		o.OutputUnitKey = ""
 		o.OutputUnitName = ""
-		// Входы возвращаются к деталь-проекции: piece_line_keys карточка несёт всегда, и это
-		// ровно замыкание входов по деталям, посчитанное чтением.
-		o.InputKeys = nil
+		if i >= len(card.Operations) {
+			continue
+		}
+		// Разворачиваем объединение: деталь остаётся собой, узел раскрывается в свои листья.
+		// Дедуп нужен — два узла могут содержать одну деталь только при нарушении правила 2, но
+		// аварийный инструмент обязан пережить и испорченную карточку.
+		seen := make(map[string]bool)
+		expanded := make([]string, 0, len(card.Operations[i].AssemblyInputs))
+		for _, in := range card.Operations[i].AssemblyInputs {
+			keys := []string{in.Key}
+			if in.Kind == entity.AssemblyInputUnit {
+				if u, ok := sweep.Units[in.Key]; ok {
+					keys = u.Leaves
+				} else {
+					keys = nil // висячая ссылка на узел: возвращать нечего
+				}
+			}
+			for _, k := range keys {
+				if !seen[k] {
+					seen[k] = true
+					expanded = append(expanded, k)
+				}
+			}
+		}
+		// Осведомлённая запись живёт по полю 46, поэтому заполняем именно его: положиться на то,
+		// что конвертер возьмёт 21, больше нельзя — источник входов выбирается по флагу.
+		o.InputKeys = expanded
+		o.PieceLineKeys = expanded
 	}
 	// Осведомлённость и НАМЕРЕНИЕ. Без второго флага контентный бекстоп отказал бы этой записи —
 	// и правильно бы сделал: снятие разметки без объявленного намерения неотличимо от

@@ -22,17 +22,23 @@ import (
 // строит payload сам, транспортных флагов не эмитит и оба гейта обходит, так что клон размеченной
 // карточки вернулся бы без узлов и без единой ошибки.
 //
-// ТАБЛИЦА ИСТИННОСТИ ПАРЫ ФЛАГОВ (stored несёт узлы × payload несёт узлы × aware × cleared):
+// ТАБЛИЦА ИСТИННОСТИ ПАРЫ ФЛАГОВ. «Payload несёт узлы» здесь читается УЗКИМ предикатом
+// (payloadCarriesAssemblyUnits), а «эхоит поля» — широким (payloadSpeaksAssembly); почему их
+// два, написано над самими предикатами.
 //
 //	stored нет | payload нет | aware нет  | —      → сохранить (сегодняшний путь, ни одной проверки)
-//	stored нет | payload есть| aware нет  | —      → отказ: бандл эхоит поля, которых не знает
+//	stored нет | эхо полей   | aware нет  | —      → отказ: бандл эхоит поля, которых не знает
 //	stored нет | любой       | aware есть | false  → сохранить
 //	stored нет | нет         | aware есть | TRUE   → отказ: «снял разметку» там, где её не было
 //	stored есть| —           | aware нет  | —      → FailedPrecondition: устаревшая вкладка
-//	stored есть| есть        | aware есть | false  → сохранить (обычное редактирование)
-//	stored есть| НЕТ         | aware есть | false  → ОТКАЗ БЕКСТОПОМ: это и есть тихое стирание
-//	stored есть| нет         | aware есть | TRUE   → сохранить: снятие разметки, намерение объявлено
-//	stored есть| есть        | aware есть | TRUE   → отказ: противоречие, «снял» и одновременно прислал
+//	stored есть| УЗЛЫ        | aware есть | false  → сохранить (обычное редактирование)
+//	stored есть| БЕЗ УЗЛОВ   | aware есть | false  → ОТКАЗ БЕКСТОПОМ: это и есть тихое стирание
+//	stored есть| без узлов   | aware есть | TRUE   → сохранить: снятие разметки, намерение объявлено
+//	stored есть| УЗЛЫ        | aware есть | TRUE   → отказ: противоречие, «снял» и одновременно прислал
+//
+// Все девять клеток покрыты тестом, и payload в нём — тот, что реально шлёт НОВЫЙ клиент: все
+// входы полем 46, включая чистые детали. На payload'е из легаси-поля таблица зелёная и при
+// сломанных предикатах.
 
 const outdatedAssemblyClientFix = "this version of the admin panel cannot edit assembly units, and its save replaces the whole step list — update the admin panel (hard-refresh) and try again"
 
@@ -45,7 +51,7 @@ func assemblyCapabilityWireGate(pb *pb_common.TechCardInsert) error {
 	if pb.GetAssemblyAware() {
 		// Намерение без предмета — теневой флаг. Ловится здесь, а не в конвертере, потому что это
 		// утверждение о ЗАПРОСЕ, а не о карточке.
-		if pb.GetAssemblyCleared() && payloadSpeaksAssembly(pb) {
+		if pb.GetAssemblyCleared() && payloadCarriesAssemblyUnits(pb) {
 			return status.Error(codes.InvalidArgument,
 				"assembly_cleared is set together with assembly units in the same payload: decide whether the card keeps its units or drops them")
 		}
@@ -75,6 +81,14 @@ func assemblyCapabilityWireGate(pb *pb_common.TechCardInsert) error {
 // ручной ввод карточки исчезал бы молча.
 func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.TechCard) error {
 	if !storedHasAssemblyFacts(stored) {
+		// Намерение без предмета. Клиент, у которого cleared протекает в каждое сохранение, иначе
+		// оставался бы невидимым до первой размеченной карточки — а там уже стирал бы её законно.
+		if pb.GetAssemblyAware() && pb.GetAssemblyCleared() {
+			slog.Default().Warn("assembly gate refused assembly_cleared on a card with no markup",
+				slog.String("gate", "stored"), slog.String("cell", "stored:none/aware:yes/cleared:yes"))
+			return status.Error(codes.InvalidArgument,
+				"assembly_cleared is set but this tech card has no assembly units to clear")
+		}
 		return nil
 	}
 	if !pb.GetAssemblyAware() {
@@ -82,7 +96,7 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 			slog.String("gate", "stored"), slog.String("cell", "stored:units/aware:no"))
 		return outdatedAssemblyClient("this tech card is marked up with assembly units (what each step produces and takes)")
 	}
-	if payloadSpeaksAssembly(pb) {
+	if payloadCarriesAssemblyUnits(pb) {
 		return nil
 	}
 	if pb.GetAssemblyCleared() {
@@ -97,10 +111,12 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 			"another tab or a restored draft is about to overwrite it")
 }
 
-// payloadSpeaksAssembly — несёт ли payload хоть один сборочный факт.
+// ДВА ПРЕДИКАТА, ПОТОМУ ЧТО ВОПРОСА ДВА, и слить их — значит сломать и защиту, и путь
+// отступления одной функцией.
 //
-// Читается с ПРОВОДА, как и машинный аналог: у сырых полей нет канонизации, которая могла бы
-// превратить обычную старую операцию в «говорящую про сборку».
+// payloadSpeaksAssembly отвечает «трогает ли payload сборочные ПОЛЯ вообще». Это вопрос про
+// БАНДЛ: неосведомлённый клиент, эхоящий поле 46, эхоит то, чего не понимает. Предикат широкий
+// намеренно — любой ключ в 46 считается разговором про сборку.
 func payloadSpeaksAssembly(pb *pb_common.TechCardInsert) bool {
 	if pb == nil {
 		return false
@@ -114,6 +130,49 @@ func payloadSpeaksAssembly(pb *pb_common.TechCardInsert) bool {
 		}
 		for _, k := range o.GetInputKeys() {
 			if strings.TrimSpace(k) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// payloadCarriesAssemblyUnits отвечает на СОВСЕМ ДРУГОЙ вопрос: несёт ли payload УЗЛЫ.
+//
+// Это вопрос про СОДЕРЖАНИЕ, и широкий предикат выше на него отвечать не может. Осведомлённый
+// клиент по контракту шлёт ВСЕ входы полем 46, включая чистые детали, — то есть «говорит про
+// сборку» на каждом сохранении любой карточки. Спроси у широкого предиката про содержание, и:
+//   - бекстоп умрёт для нового клиента (параллельная вкладка, открытая до разметки, шлёт 46 с
+//     деталями, предикат отвечает «узлы есть», гейт пропускает, разметка стёрта молча) — то
+//     есть первый же кейс, ради которого бекстоп заведён;
+//   - кнопка «снять разметку» станет невыразимой: она обязана прислать 46 с деталями и флаг
+//     cleared, а это прочиталось бы как противоречие «снял и одновременно прислал узлы».
+//
+// Узел — это непустой выходной ключ (или имя) ЛИБО вход, не совпадающий ни с одной line_key
+// деталей ЭТОГО ЖЕ payload'а. Сравнение по своему же payload'у, а не по сохранённой карточке:
+// детали приходят в той же записи, и спрашивать базу здесь незачем.
+func payloadCarriesAssemblyUnits(pb *pb_common.TechCardInsert) bool {
+	if pb == nil {
+		return false
+	}
+	pieceKeys := make(map[string]bool, len(pb.GetPieces()))
+	for _, p := range pb.GetPieces() {
+		if p == nil {
+			continue
+		}
+		if k := strings.TrimSpace(p.GetLineKey()); k != "" {
+			pieceKeys[k] = true
+		}
+	}
+	for _, o := range pb.GetOperations() {
+		if o == nil {
+			continue
+		}
+		if strings.TrimSpace(o.GetOutputUnitKey()) != "" || strings.TrimSpace(o.GetOutputUnitName()) != "" {
+			return true
+		}
+		for _, k := range o.GetInputKeys() {
+			if k = strings.TrimSpace(k); k != "" && !pieceKeys[k] {
 				return true
 			}
 		}

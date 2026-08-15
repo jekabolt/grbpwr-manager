@@ -34,7 +34,7 @@ import (
 // МУТИРУЕТ ops: заполняет AssemblyInputs, переписывает InputKeys и PieceLineKeys, нормализует
 // имя узла. Это делает конвертер нормализатором, а не только переводчиком, поэтому порядок
 // хвоста конвертера (канонизация → релизный гейт → штамп) обязателен и записан там же.
-func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCardPiece) *entity.ValidationError {
+func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCardPiece, aware bool) *entity.ValidationError {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -44,7 +44,10 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 	// сегодняшней карточки, и любая правка здесь — регресс на всей базе.
 	marked := false
 	for i := range ops {
-		if ops[i].OutputUnitKey.String != "" || len(ops[i].InputKeys) > 0 {
+		// Имя узла считается сборочным фактом наравне с ключом. Иначе payload, несущий ТОЛЬКО
+		// имя (без ключа и без входов), проскакивал бы мимо прохода и оседал в колонке
+		// output_unit_name — теневое значение, которое контракт обещает отклонять.
+		if ops[i].OutputUnitKey.String != "" || ops[i].OutputUnitName.String != "" || len(ops[i].InputKeys) > 0 {
 			marked = true
 			break
 		}
@@ -86,11 +89,16 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 
 	steps := make([]entity.AssemblyStep, len(ops))
 	for i := range ops {
-		// Источник входов. Осведомлённая запись живёт по объединению (46); неосведомлённая — по
-		// легаси-проекции (21), ровно как сегодня. Один источник истины на запись: смешивать их
-		// значило бы дать двум полям спорить о том, что технолог имел в виду.
-		raw := ops[i].InputKeys
-		if len(raw) == 0 {
+		// Источник входов выбирается ПО ФЛАГУ, а не по наполненности поля, и это не педантизм.
+		// Осведомлённая запись живёт по объединению (46) целиком; неосведомлённая — по
+		// легаси-проекции (21), ровно как сегодня. Пер-операционный фолбэк «46 пусто → возьму
+		// 21» смешал бы два источника внутри одной записи: GET-modify-PUT, очистивший 46 у шага,
+		// но эхонувший 21 (а она эмитится всегда), молча воскресил бы входы, которые автор
+		// только что убрал. Один источник истины на запись.
+		var raw []string
+		if aware {
+			raw = ops[i].InputKeys
+		} else {
 			raw = ops[i].PieceLineKeys
 		}
 		ops[i].AssemblyInputs = entity.ClassifyAssemblyInputs(pieceKeys, raw)

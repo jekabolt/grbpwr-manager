@@ -35,7 +35,7 @@ func TestAssemblyCanonicalizeLeavesUnmarkedCardUntouched(t *testing.T) {
 	before := make([]entity.TechCardOperation, len(ops))
 	copy(before, ops)
 
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK")); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
 		t.Fatalf("карточка без узлов обязана проходить вакуумно, получено: %v", verr)
 	}
 	if !reflect.DeepEqual(ops, before) {
@@ -59,7 +59,7 @@ func TestAssemblyCanonicalizeProjection(t *testing.T) {
 	ops[0].PieceLineKeys = []string{"МУСОР"}
 	ops[1].PieceLineKeys = nil
 
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL")); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL"), true); verr != nil {
 		t.Fatalf("валидная разметка отвергнута: %v", verr)
 	}
 	if got, want := ops[0].PieceLineKeys, []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
@@ -86,7 +86,7 @@ func TestAssemblyCanonicalizeEmptyInputsStayNil(t *testing.T) {
 		asmOp([]string{"FR", "BK"}, "SHELL"),
 		asmOp(nil, ""), // обработка без входов — законна
 	}
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK")); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if ops[1].InputKeys != nil {
@@ -106,7 +106,7 @@ func TestAssemblyCanonicalizeUnitNameOnFirstProducer(t *testing.T) {
 	}
 	ops[1].OutputUnitName = nullStringFromPb("корпус")
 
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL")); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL"), true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if got := ops[0].OutputUnitName.String; got != "корпус" {
@@ -117,19 +117,42 @@ func TestAssemblyCanonicalizeUnitNameOnFirstProducer(t *testing.T) {
 	}
 }
 
-// TestAssemblyCanonicalizeLegacyFallback — неосведомлённая запись входов в поле 46 не шлёт;
-// объединение берётся из легаси-проекции, и поведение остаётся сегодняшним.
-func TestAssemblyCanonicalizeLegacyFallback(t *testing.T) {
-	ops := []entity.TechCardOperation{
-		{PieceLineKeys: []string{"FR", "BK"}, OutputUnitKey: nullStringFromPb("SHELL")},
-		{PieceLineKeys: []string{"SL"}, InputKeys: []string{"SHELL", "SL"}, OutputUnitKey: nullStringFromPb("SHELL")},
-	}
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL")); verr != nil {
-		t.Fatalf("легаси-путь отвергнут: %v", verr)
-	}
-	if got, want := ops[0].InputKeys, []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("шаг 0 объединение из легаси-проекции: %v, ожидалось %v", got, want)
-	}
+// TestAssemblyCanonicalizeSourceFollowsTheFlag — источник входов выбирается ПО ФЛАГУ, а не по
+// наполненности поля.
+//
+// Это не педантизм, а защита от воскрешения. Поле 21 эмитится на чтении ВСЕГДА, поэтому
+// GET-modify-PUT, очистивший объединение у шага, но эхонувший легаси-проекцию, при
+// пер-операционном фолбэке «46 пусто → возьму 21» молча вернул бы входы, которые автор только
+// что убрал.
+func TestAssemblyCanonicalizeSourceFollowsTheFlag(t *testing.T) {
+	t.Run("осведомлённая запись игнорирует легаси-проекцию", func(t *testing.T) {
+		ops := []entity.TechCardOperation{
+			// Автор убрал входы из объединения; легаси-проекция осталась эхом с чтения.
+			{PieceLineKeys: []string{"FR", "BK"}, InputKeys: nil},
+			asmOp([]string{"FR", "BK"}, "SHELL"),
+		}
+		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
+			t.Fatalf("отвергнуто: %v", verr)
+		}
+		if ops[0].InputKeys != nil || ops[0].PieceLineKeys != nil {
+			t.Errorf("входы воскресли из легаси-проекции: InputKeys=%v PieceLineKeys=%v",
+				ops[0].InputKeys, ops[0].PieceLineKeys)
+		}
+	})
+
+	t.Run("неосведомлённая запись живёт по легаси-проекции", func(t *testing.T) {
+		ops := []entity.TechCardOperation{
+			// Старый бандл поля 46 не шлёт; сюда оно попасть может только эхом, и его обязано
+			// игнорировать — источником остаётся 21.
+			{PieceLineKeys: []string{"FR", "BK"}, InputKeys: []string{"МУСОР"}},
+		}
+		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), false); verr != nil {
+			t.Fatalf("легаси-путь отвергнут: %v", verr)
+		}
+		if got, want := ops[0].PieceLineKeys, []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("шаг 0 детали: %v, ожидалось %v", got, want)
+		}
+	})
 }
 
 // TestAssemblyCanonicalizeViolations — по одному отказу на каждую строку таблицы §5.1, с
@@ -226,7 +249,7 @@ func TestAssemblyCanonicalizeViolations(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			verr := canonicalizeAssembly(c.ops, asmPieces(c.pieces...))
+			verr := canonicalizeAssembly(c.ops, asmPieces(c.pieces...), true)
 			if verr == nil {
 				t.Fatal("ожидался отказ, получено принятие")
 			}
@@ -265,7 +288,7 @@ func TestAssemblyReleaseCheckTwoTerminals(t *testing.T) {
 		asmOp([]string{"HD", "LN"}, "HOOD"),
 	}
 	pieces := asmPieces("FR", "BK", "HD", "LN")
-	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
 		t.Fatalf("разметка сама по себе законна, отвергнута: %v", verr)
 	}
 	verr := assemblyReleaseCheck(ops, pieces)
@@ -284,7 +307,7 @@ func TestAssemblyReleaseCheckTwoTerminals(t *testing.T) {
 func TestAssemblyReleaseCheckOrphanPiece(t *testing.T) {
 	ops := []entity.TechCardOperation{asmOp([]string{"FR", "BK"}, "SHELL")}
 	pieces := asmPieces("FR", "BK", "FLAP")
-	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	verr := assemblyReleaseCheck(ops, pieces)
@@ -305,7 +328,7 @@ func TestAssemblyReleaseCheckUnmarkedCardPasses(t *testing.T) {
 		{PieceLineKeys: []string{"FLAP"}},
 	}
 	pieces := asmPieces("FR", "BK", "FLAP")
-	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if verr := assemblyReleaseCheck(ops, pieces); verr != nil {
@@ -320,10 +343,81 @@ func TestAssemblyReleaseCheckConverged(t *testing.T) {
 		asmOp([]string{"SHELL", "HD"}, "GARMENT"),
 	}
 	pieces := asmPieces("FR", "BK", "HD")
-	if verr := canonicalizeAssembly(ops, pieces); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if verr := assemblyReleaseCheck(ops, pieces); verr != nil {
 		t.Fatalf("сходящаяся сборка отвергнута: %v", verr)
+	}
+}
+
+// TestAssemblyEmittedOnRead — эмиссия 46-48 на чтении, и это НЕ формальность.
+//
+// Без неё клон сезона молча стирает разметку: CloneStyleForSeason строит payload через
+// ConvertEntityTechCardToPb, и pb без сборочных полей уходит обратно в конвертер, где
+// канонизация не видит фактов и сохраняет карточку неразмеченной — без единой ошибки. Ровно та
+// катастрофа, ради которой флаг не фильтрует поля. Плюс: GET без этих полей не даёт клиенту
+// ничего рендерить, а релизный снапшот (вербатимный protojson read-модели) их не понесёт.
+func TestAssemblyEmittedOnRead(t *testing.T) {
+	ops := []entity.TechCardOperation{{
+		OperationType: "machine", Zone: "closure",
+		OutputUnitKey:  nullStringFromPb("SHELL"),
+		OutputUnitName: nullStringFromPb("корпус"),
+		InputKeys:      []string{"FR", "BK"},
+		PieceLineKeys:  []string{"FR", "BK"},
+	}}
+	pb := techCardOperationsToPb(ops)
+	if len(pb) != 1 {
+		t.Fatalf("операций на проводе %d, ожидалась 1", len(pb))
+	}
+	if got := pb[0].GetOutputUnitKey(); got != "SHELL" {
+		t.Errorf("output_unit_key не эмитится: %q", got)
+	}
+	if got := pb[0].GetOutputUnitName(); got != "корпус" {
+		t.Errorf("output_unit_name не эмитится: %q", got)
+	}
+	if got, want := pb[0].GetInputKeys(), []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("input_keys не эмитятся: %v, ожидалось %v", got, want)
+	}
+	// Легаси-проекция едет РЯДОМ, а не вместо: 21 остаётся «только детали» навсегда.
+	if got, want := pb[0].GetPieceLineKeys(), []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("легаси-проекция потеряна: %v, ожидалось %v", got, want)
+	}
+}
+
+// TestAssemblyClonePathKeepsUnits — серверный round-trip entity→pb→entity, тот самый, которым
+// ходит клон сезона. Именно он ловит пропущенную эмиссию.
+func TestAssemblyClonePathKeepsUnits(t *testing.T) {
+	ops := []entity.TechCardOperation{
+		{OperationType: "machine", Zone: "closure",
+			OutputUnitKey: nullStringFromPb("SHELL"), InputKeys: []string{"FR", "BK"},
+			PieceLineKeys: []string{"FR", "BK"}},
+		{OperationType: "machine", Zone: "closure",
+			OutputUnitKey: nullStringFromPb("GARMENT"), InputKeys: []string{"SHELL", "HD"},
+			PieceLineKeys: []string{"HD"}},
+	}
+	pieces := asmPieces("FR", "BK", "HD")
+
+	// Прямое направление: карточка уходит на провод…
+	wire := techCardOperationsToPb(ops)
+	// …и возвращается обратно сырыми ключами.
+	back := make([]entity.TechCardOperation, 0, len(wire))
+	for _, w := range wire {
+		back = append(back, entity.TechCardOperation{
+			OperationType: "machine", Zone: "closure",
+			InputKeys:      w.GetInputKeys(),
+			OutputUnitKey:  nullStringFromPb(w.GetOutputUnitKey()),
+			OutputUnitName: nullStringFromPb(w.GetOutputUnitName()),
+		})
+	}
+	if verr := canonicalizeAssembly(back, pieces, true); verr != nil {
+		t.Fatalf("клонический round-trip отвергнут: %v", verr)
+	}
+	if back[0].OutputUnitKey.String != "SHELL" || back[1].OutputUnitKey.String != "GARMENT" {
+		t.Fatalf("узлы не пережили round-trip: %q, %q",
+			back[0].OutputUnitKey.String, back[1].OutputUnitKey.String)
+	}
+	if len(back[1].AssemblyInputs) != 2 || back[1].AssemblyInputs[0].Kind != entity.AssemblyInputUnit {
+		t.Errorf("вход-узел не пережил round-trip: %+v", back[1].AssemblyInputs)
 	}
 }

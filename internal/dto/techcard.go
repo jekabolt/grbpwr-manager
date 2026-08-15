@@ -646,7 +646,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	// Конвертер тем самым перестал быть чистым переводчиком и стал нормализатором. Следующая
 	// фича, которой понадобится то же место, обязана встать в этот реестр ЯВНО — иначе
 	// пост-проходы начнут зависеть друг от друга по порядку молча.
-	if verr := canonicalizeAssembly(operations, pieces); verr != nil {
+	if verr := canonicalizeAssembly(operations, pieces, pb.AssemblyAware); verr != nil {
 		return nil, verr
 	}
 

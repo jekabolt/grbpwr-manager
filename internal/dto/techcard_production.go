@@ -716,6 +716,17 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			PressPressureNCm2: pressPressure,
 			PressSteam:        pbOptionalBoolFromNull(o.PressSteam),
 			PressCloth:        pressClothTokenToPb[o.PressCloth.String],
+
+			// Сборка (0307). Эмитится ВСЕГДА и вместе с легаси-проекцией 21/22 выше — они не
+			// заменяют друг друга: 21 остаётся «только детали» навсегда, 46 несёт объединение.
+			//
+			// Без этой эмиссии клон сезона молча стирал бы разметку: CloneStyleForSeason строит
+			// payload именно здесь, и pb без 46-48 уходит в конвертер, где канонизация не видит
+			// сборочных фактов и сохраняет карточку неразмеченной — без единой ошибки. Ровно та
+			// катастрофа, ради которой флаг не фильтрует поля.
+			InputKeys:      o.InputKeys,
+			OutputUnitKey:  pbStringFromNull(o.OutputUnitKey),
+			OutputUnitName: pbStringFromNull(o.OutputUnitName),
 		})
 	}
 	return out

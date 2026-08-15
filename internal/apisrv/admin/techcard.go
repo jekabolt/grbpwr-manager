@@ -120,8 +120,14 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := machineCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
-	// Щит узлов сборки (0307), тот же довод и тот же момент. Правило 2 здесь так же молчит.
+	// Щит узлов сборки (0307), тот же довод и тот же момент.
 	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	// Стор-гейт с nil вместо сохранённой карточки — не заглушка, а ровно то, чем создание
+	// является: карточки ещё нет, стирать нечего. Единственное, что он тут скажет, — «снять
+	// разметку» у создаваемой карточки бессмысленно, и это надо сказать, а не пропустить.
+	if err := assemblyCapabilityStoredGate(req.TechCard, nil); err != nil {
 		return nil, err
 	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
