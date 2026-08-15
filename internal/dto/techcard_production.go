@@ -386,6 +386,14 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		outputUnitKey := strings.TrimSpace(o.OutputUnitKey)
 		outputUnitName := strings.TrimSpace(o.OutputUnitName)
 
+		// Фотографии шага с выносками (0308). Разбираются здесь же, чтобы отказ назвал конкретную
+		// выноску конкретной картинки конкретного шага: путь собирается от `step`, который уже
+		// посчитан выше для отказов по типу и зоне.
+		media, err := operationMediaFromPb(step, o.Media)
+		if err != nil {
+			return nil, err
+		}
+
 		// bom_line_keys: the materials this operation consumes. The legacy single bom_line_key went
 		// with the break — the chip row was always the real answer, and the single field was a second
 		// one that the printed sheet then had to subtract to stop printing it twice.
@@ -421,6 +429,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			InputKeys:        inputKeys,
 			OutputUnitKey:    nullStringFromPb(outputUnitKey),
 			OutputUnitName:   nullStringFromPb(outputUnitName),
+			Media:            media,
 
 			MachineType:       machine.machineType,
 			MachineProfileKey: machine.profileKey,
@@ -725,6 +734,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			// сборочных фактов и сохраняет карточку неразмеченной — без единой ошибки. Ровно та
 			// катастрофа, ради которой флаг не фильтрует поля.
 			InputKeys:      o.InputKeys,
+			Media:          operationMediaToPb(o.Media),
 			OutputUnitKey:  pbStringFromNull(o.OutputUnitKey),
 			OutputUnitName: pbStringFromNull(o.OutputUnitName),
 		})

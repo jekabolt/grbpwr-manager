@@ -333,6 +333,24 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if operationHasAssemblyTail(o) {
 			row = append(row, []any{"assembly", o.OutputUnitKey.String, assemblyInputTail(o)})
 		}
+		// ФОТОГРАФИИ ШАГА С ВЫНОСКАМИ (0308) — ТОЖЕ ХВОСТОМ, И ТОЖЕ ТОЛЬКО ПРИ ЗАПОЛНЕННОСТИ.
+		//
+		// Довод дословно тот же, что у двух хвостов выше: json.Marshal кодирует []any позиционно,
+		// и безусловный элемент сдвинул бы отпечаток КАЖДОЙ карточки, объявив все подписанные
+		// CONSTRUCTION устаревшими в момент выката — до того, как кто-либо приложил хоть одну
+		// фотографию. С хвостом волна пере-подписаний равна размеру кампании разметки.
+		//
+		// А ВХОДИТ ЛИ ЭТО В ПОДПИСАННОЕ СОДЕРЖИМОЕ ВООБЩЕ? Да. CONSTRUCTION — подпись под тем, ЧТО
+		// и КАК шьют; указание «здесь припосадить 6 мм», нарисованное на снимке узла, — инструкция
+		// цеху ровно того же рода, что припуск или класс шва. Сдвинули точку мерки — сменилось
+		// указание, и подпись обязана протухнуть.
+		//
+		// Порядок картинок ВХОДИТ (это порядок показа и печати), подпись к картинке — тоже
+		// (её читают на листе). Цвет — НЕТ: он различает пересекающиеся выноски и смысла не
+		// несёт, а протухать подпись от перекраски значило бы наказывать за наведение порядка.
+		if len(o.Media) > 0 {
+			row = append(row, []any{"media", operationMediaTail(o)})
+		}
 		ops = append(ops, row)
 	}
 	pieces := make([]any, 0, len(tc.Pieces))
@@ -500,6 +518,28 @@ func operationHasAssemblyTail(o *entity.TechCardOperation) bool {
 		}
 	}
 	return false
+}
+
+// operationMediaTail проецирует фотографии шага: media_id, подпись и выноски по порядку.
+//
+// Цвет в проекцию не входит — см. довод у места вызова. Координаты берутся строкой decimal, а не
+// float64: тот же тип, что на проводе и в БД, и никакого округления по дороге в отпечаток.
+func operationMediaTail(o *entity.TechCardOperation) []any {
+	out := make([]any, 0, len(o.Media))
+	for _, m := range o.Media {
+		anns := make([]any, 0, len(m.Annotations))
+		for _, a := range m.Annotations {
+			points := make([]any, 0, len(a.Points))
+			for _, p := range a.Points {
+				points = append(points, []any{p.X.String(), p.Y.String()})
+			}
+			anns = append(anns, []any{
+				string(a.Kind), points, a.Text, a.LabelX.String(), a.LabelY.String(),
+			})
+		}
+		out = append(out, []any{m.MediaId, m.Caption.String, anns})
+	}
+	return out
 }
 
 // assemblyInputTail проецирует упорядоченный union входов парами «вид, ключ».
