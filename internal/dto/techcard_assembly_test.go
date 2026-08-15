@@ -126,18 +126,36 @@ func TestAssemblyCanonicalizeUnitNameOnFirstProducer(t *testing.T) {
 // пер-операционном фолбэке «46 пусто → возьму 21» молча вернул бы входы, которые автор только
 // что убрал.
 func TestAssemblyCanonicalizeSourceFollowsTheFlag(t *testing.T) {
-	t.Run("осведомлённая запись игнорирует легаси-проекцию", func(t *testing.T) {
+	// ЭТОТ ТЕСТ РАНЬШЕ ЗАКРЕПЛЯЛ ДЕФЕКТ. Он требовал, чтобы осведомлённая запись, у которой шаг
+	// прислал ТОЛЬКО легаси-проекцию, молча получила пустые входы — и называл это «игнорирует
+	// легаси-проекцию». На деле это пер-операционная тихая потеря: объединение пусто, проекция
+	// пересобирается в nil, стор пишет ноль строк, бекстоп молчит (узлы в payload'е есть, просто
+	// на другом шаге). Теперь это отказ.
+	t.Run("частично заполненное объединение — отказ, а не тихая потеря", func(t *testing.T) {
 		ops := []entity.TechCardOperation{
-			// Автор убрал входы из объединения; легаси-проекция осталась эхом с чтения.
 			{PieceLineKeys: []string{"FR", "BK"}, InputKeys: nil},
 			asmOp([]string{"FR", "BK"}, "SHELL"),
 		}
+		verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true)
+		if verr == nil {
+			t.Fatal("шаг с одной легаси-проекцией в осведомлённой записи обязан быть отвергнут")
+		}
+		if verr.Reason != "assembly_inputs_missing" {
+			t.Errorf("reason %q, ожидался assembly_inputs_missing", verr.Reason)
+		}
+	})
+
+	t.Run("автор очистил входы шага — законно и проходит", func(t *testing.T) {
+		ops := []entity.TechCardOperation{
+			// Пустое объединение при пустой же проекции: это намерение, а не потеря.
+			{PieceLineKeys: nil, InputKeys: nil},
+			asmOp([]string{"FR", "BK"}, "SHELL"),
+		}
 		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
-			t.Fatalf("отвергнуто: %v", verr)
+			t.Fatalf("очистка входов шага отвергнута: %v", verr)
 		}
 		if ops[0].InputKeys != nil || ops[0].PieceLineKeys != nil {
-			t.Errorf("входы воскресли из легаси-проекции: InputKeys=%v PieceLineKeys=%v",
-				ops[0].InputKeys, ops[0].PieceLineKeys)
+			t.Errorf("пустой шаг обзавёлся входами: %v / %v", ops[0].InputKeys, ops[0].PieceLineKeys)
 		}
 	})
 
