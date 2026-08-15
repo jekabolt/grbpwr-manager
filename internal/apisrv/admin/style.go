@@ -294,6 +294,11 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// претензии, сходимость сборки). Оставь сброс после — и клонирование released-карточки
 	// падало бы на состоянии, которое клон всё равно немедленно отменяет.
 	pbInsert.ApprovalState = pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT
+	// Серверный payload знает про поля сборки по построению — он собран из прочитанной карточки
+	// теми же конвертерами. Флаг здесь ничего не разблокирует сегодня (клон гейтов не зовёт), но
+	// снимает мину на будущее: гейт, добавленный в этот путь, иначе отказывал бы клону его же
+	// собственный payload — ровно так уже пришлось спасать костинг (stripTechCardCosting выше).
+	pbInsert.AssemblyAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
