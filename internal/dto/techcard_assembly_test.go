@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
 
 func asmPieces(keys ...string) []entity.TechCardPiece {
@@ -419,5 +420,70 @@ func TestAssemblyClonePathKeepsUnits(t *testing.T) {
 	}
 	if len(back[1].AssemblyInputs) != 2 || back[1].AssemblyInputs[0].Kind != entity.AssemblyInputUnit {
 		t.Errorf("вход-узел не пережил round-trip: %+v", back[1].AssemblyInputs)
+	}
+}
+
+// TestAssemblyParsedFromWire — обратная нога, которой не было ни в одном тесте: поля 46-48
+// действительно РАЗБИРАЮТСЯ парсером операций.
+//
+// Пин на реальный путь, а не на ручную сборку entity: без него `pbInsert.AssemblyAware = true`
+// можно убрать из клона, и ни один тест не упадёт — а на джойне с двумя прямыми деталями
+// вход-узел пропал бы МОЛЧА (на остальных дал бы громкий отказ правила 3).
+func TestAssemblyParsedFromWire(t *testing.T) {
+	pbOps := []*pb_common.TechCardOperation{
+		{
+			OperationType:  pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			MachineType:    pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+			Zone:           pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OTHER,
+			InputKeys:      []string{"FR", "BK"},
+			OutputUnitKey:  "SHELL",
+			OutputUnitName: "корпус",
+		},
+	}
+	ops, err := parseTechCardOperations(pbOps, map[int]bool{}, 0, nil, true)
+	if err != nil {
+		t.Fatalf("разбор операций отвергнут: %v", err)
+	}
+	if got, want := ops[0].InputKeys, []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("input_keys не разобраны: %v, ожидалось %v", got, want)
+	}
+	if got := ops[0].OutputUnitKey.String; got != "SHELL" {
+		t.Errorf("output_unit_key не разобран: %q", got)
+	}
+	if got := ops[0].OutputUnitName.String; got != "корпус" {
+		t.Errorf("output_unit_name не разобран: %q", got)
+	}
+}
+
+// TestAssemblyCloneRequiresAwareFlag фиксирует, ЗАЧЕМ клон принудительно ставит assembly_aware.
+//
+// Источник входов выбирается по флагу. Убери флаг из клон-пути — и серверный round-trip возьмёт
+// входы из легаси-проекции, где узлов нет: джойн [SHELL, HD] превратится в [HD], то есть
+// потеряет вход. Здесь это громкий отказ правила 3; на джойне с двумя прямыми деталями было бы
+// тихо. Тест держит обе ветки рядом, чтобы разница была видна.
+func TestAssemblyCloneRequiresAwareFlag(t *testing.T) {
+	pieces := asmPieces("FR", "BK", "HD")
+	mk := func() []entity.TechCardOperation {
+		return []entity.TechCardOperation{
+			{OperationType: "machine", Zone: "other",
+				InputKeys: []string{"FR", "BK"}, PieceLineKeys: []string{"FR", "BK"},
+				OutputUnitKey: nullStringFromPb("SHELL")},
+			{OperationType: "machine", Zone: "other",
+				InputKeys: []string{"SHELL", "HD"}, PieceLineKeys: []string{"HD"},
+				OutputUnitKey: nullStringFromPb("GARMENT")},
+		}
+	}
+	withFlag := mk()
+	if verr := canonicalizeAssembly(withFlag, pieces, true); verr != nil {
+		t.Fatalf("клон с флагом обязан проходить: %v", verr)
+	}
+	if len(withFlag[1].AssemblyInputs) != 2 {
+		t.Fatalf("вход-узел потерян даже с флагом: %+v", withFlag[1].AssemblyInputs)
+	}
+
+	withoutFlag := mk()
+	if verr := canonicalizeAssembly(withoutFlag, pieces, false); verr == nil {
+		t.Error("без флага объединение берётся из легаси-проекции и джойн теряет вход-узел — " +
+			"это обязано быть отказом, а не тихой потерей")
 	}
 }

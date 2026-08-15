@@ -85,7 +85,8 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 		// оставался бы невидимым до первой размеченной карточки — а там уже стирал бы её законно.
 		if pb.GetAssemblyAware() && pb.GetAssemblyCleared() {
 			slog.Default().Warn("assembly gate refused assembly_cleared on a card with no markup",
-				slog.String("gate", "stored"), slog.String("cell", "stored:none/aware:yes/cleared:yes"))
+				slog.String("gate", "stored"), slog.String("cell", "stored:none/aware:yes/cleared:yes"),
+				slog.Int("tech_card_id", storedCardID(stored)))
 			return status.Error(codes.InvalidArgument,
 				"assembly_cleared is set but this tech card has no assembly units to clear")
 		}
@@ -93,7 +94,8 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 	}
 	if !pb.GetAssemblyAware() {
 		slog.Default().Warn("assembly gate refused an outdated bundle against a marked-up card",
-			slog.String("gate", "stored"), slog.String("cell", "stored:units/aware:no"))
+			slog.String("gate", "stored"), slog.String("cell", "stored:units/aware:no"),
+			slog.Int("tech_card_id", storedCardID(stored)))
 		return outdatedAssemblyClient("this tech card is marked up with assembly units (what each step produces and takes)")
 	}
 	if payloadCarriesAssemblyUnits(pb) {
@@ -104,7 +106,8 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 		return nil
 	}
 	slog.Default().Warn("assembly backstop refused an aware but empty save",
-		slog.String("gate", "backstop"), slog.String("cell", "stored:units/payload:none/aware:yes/cleared:no"))
+		slog.String("gate", "backstop"), slog.String("cell", "stored:units/payload:none/aware:yes/cleared:no"),
+		slog.Int("tech_card_id", storedCardID(stored)))
 	return status.Error(codes.FailedPrecondition,
 		"this save would erase the assembly units on this tech card and does not carry any: "+
 			"if you meant to remove them, use «снять разметку узлов»; otherwise reload the card — "+
@@ -114,6 +117,16 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 // ДВА ПРЕДИКАТА, ПОТОМУ ЧТО ВОПРОСА ДВА, и слить их — значит сломать и защиту, и путь
 // отступления одной функцией.
 //
+// storedCardID — id для лог-строки; 0, когда карточки ещё нет (путь создания). Без id строка
+// отвечает «кто-то бился о щит», а нужно «эта карточка», иначе разбор инцидента начинается с
+// поиска по времени.
+func storedCardID(stored *entity.TechCard) int {
+	if stored == nil {
+		return 0
+	}
+	return stored.Id
+}
+
 // payloadSpeaksAssembly отвечает «трогает ли payload сборочные ПОЛЯ вообще». Это вопрос про
 // БАНДЛ: неосведомлённый клиент, эхоящий поле 46, эхоит то, чего не понимает. Предикат широкий
 // намеренно — любой ключ в 46 считается разговором про сборку.

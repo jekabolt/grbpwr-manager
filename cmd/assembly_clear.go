@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/spf13/cobra"
 )
 
@@ -33,13 +34,18 @@ import (
 var (
 	assemblyClearID     int
 	assemblyClearDryRun bool
+	assemblyClearReopen bool
 
 	assemblyClearCmd = &cobra.Command{
 		Use:   "assembly-clear",
 		Short: "Снять разметку узлов сборки с одной тех-карты (аварийный люк)",
 		Long: "Снимает output_unit_key/output_unit_name со всех шагов карточки и возвращает входы-узлы\n" +
-			"в детали. Запись идёт через штатный конвертер, поэтому отпечатки секций\n" +
-			"переставляются той же проекцией, что и при обычном сохранении.\n\n" +
+			"в детали по замыканию. Запись идёт через штатный конвертер (канонизация, релизные\n" +
+			"гейты, штамп) — то есть карточка после снятия валидна ровно так же, как после\n" +
+			"обычного сохранения.\n\n" +
+			"Подписи НЕ пере-заверяются: секция CONSTRUCTION честно станет «изменено после\n" +
+			"подписи», как при любой правке содержания. Скрипт не имеет права утверждать\n" +
+			"человеческую подпись заново.\n\n" +
 			"Люк на случай отката клиента: старый бандл не может послать assembly_aware и упирается\n" +
 			"в щит совместимости, то есть размеченная карточка становится нередактируемой для всех.",
 		RunE: runAssemblyClear,
@@ -49,6 +55,8 @@ var (
 func init() {
 	assemblyClearCmd.Flags().IntVar(&assemblyClearID, "id", 0, "id тех-карты (обязательно)")
 	assemblyClearCmd.Flags().BoolVar(&assemblyClearDryRun, "dry-run", false, "показать, что будет снято, и ничего не писать")
+	assemblyClearCmd.Flags().BoolVar(&assemblyClearReopen, "reopen-to-draft", false,
+		"вернуть RELEASED-карточку в черновик (иначе стор запрещает править выпущенную карточку)")
 	rootCmd.AddCommand(assemblyClearCmd)
 }
 
@@ -102,6 +110,19 @@ func runAssemblyClear(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stdout, "разметки нет — снимать нечего")
 		return nil
 	}
+	// RELEASED-карточка заморожена стором, и это ровно тот случай, ради которого люк написан:
+	// в аварии отката клиента выпущенная размеченная карточка иначе остаётся нередактируемой
+	// ВООБЩЕ — ни старым бандлом (щит), ни этим скриптом (заморозка). Возврат в черновик —
+	// решение человека, поэтому он за отдельным флагом, а не подразумевается.
+	released := card.ApprovalState == entity.TechCardApprovalReleased
+	if released && !assemblyClearReopen {
+		return fmt.Errorf("тех-карта %d выпущена (approval_state=released) и заморожена для правок: "+
+			"повторите с --reopen-to-draft, если снятие разметки важнее выпущенного состояния", assemblyClearID)
+	}
+	if released {
+		fmt.Fprintln(os.Stdout, "карточка выпущена — будет возвращена в черновик (--reopen-to-draft)")
+	}
+
 	if assemblyClearDryRun {
 		fmt.Fprintln(os.Stdout, "--dry-run: ничего не записано")
 		return nil
@@ -149,6 +170,11 @@ func runAssemblyClear(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		// Разворачиваем объединение: деталь остаётся собой, узел раскрывается в свои листья.
+		//
+		// ОГРУБЛЕНИЕ, о котором надо знать: листья берутся ФИНАЛЬНЫЕ. Обработка на шаге k,
+		// бравшая узел, который поглотили позже, получит и те детали, которых на шаге k ещё не
+		// существовало (ВТО подола раньше пришива подола). Карточка остаётся валидной, но
+		// последовательность огрубляется — это аварийный инструмент, а не редактор.
 		// Дедуп нужен — два узла могут содержать одну деталь только при нарушении правила 2, но
 		// аварийный инструмент обязан пережить и испорченную карточку.
 		seen := make(map[string]bool)
@@ -179,6 +205,11 @@ func runAssemblyClear(cmd *cobra.Command, args []string) error {
 	// параллельной вкладки, стирающей её по недоразумению.
 	pbInsert.AssemblyAware = true
 	pbInsert.AssemblyCleared = true
+	if released {
+		// DRAFT ставится В PB, до конверсии — зеркало клона сезона: релизные гейты живут в
+		// конвертере, и выпущенное состояние надо снять раньше, чем они его увидят.
+		pbInsert.ApprovalState = pb_common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT
+	}
 
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
@@ -187,7 +218,7 @@ func runAssemblyClear(cmd *cobra.Command, args []string) error {
 	if _, err := repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(ctx, assemblyClearID, insert, card.LockVersion); err != nil {
 		return fmt.Errorf("не записать тех-карту %d: %w", assemblyClearID, err)
 	}
-	fmt.Fprintf(os.Stdout, "разметка снята: узлов %d, входов-узлов %d; отпечатки секций переставлены\n",
-		marked, unitInputs)
+	fmt.Fprintf(os.Stdout, "разметка снята: узлов %d, входов-узлов %d\n", marked, unitInputs)
+	fmt.Fprintln(os.Stdout, "подписи не пере-заверены: CONSTRUCTION станет «изменено после подписи» — это правда, а не дефект")
 	return nil
 }
