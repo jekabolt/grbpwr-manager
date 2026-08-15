@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -51,6 +52,10 @@ func assemblyCapabilityWireGate(pb *pb_common.TechCardInsert) error {
 		return nil
 	}
 	if payloadSpeaksAssembly(pb) {
+		// Наблюдаемость: без счётчика отказов никто не узнает, бьётся ли старый бандл о щит в
+		// проде — а именно это единственный признак, что клиент где-то не обновился.
+		slog.Default().Warn("assembly gate refused an unaware payload that echoes units",
+			slog.String("gate", "wire"), slog.String("cell", "stored:any/payload:units/aware:no"))
 		return outdatedAssemblyClient("the payload carries assembly units it does not declare support for")
 	}
 	if pb.GetAssemblyCleared() {
@@ -73,6 +78,8 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 		return nil
 	}
 	if !pb.GetAssemblyAware() {
+		slog.Default().Warn("assembly gate refused an outdated bundle against a marked-up card",
+			slog.String("gate", "stored"), slog.String("cell", "stored:units/aware:no"))
 		return outdatedAssemblyClient("this tech card is marked up with assembly units (what each step produces and takes)")
 	}
 	if payloadSpeaksAssembly(pb) {
@@ -82,6 +89,8 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 		// Намерение объявлено — это единственный законный путь снять разметку.
 		return nil
 	}
+	slog.Default().Warn("assembly backstop refused an aware but empty save",
+		slog.String("gate", "backstop"), slog.String("cell", "stored:units/payload:none/aware:yes/cleared:no"))
 	return status.Error(codes.FailedPrecondition,
 		"this save would erase the assembly units on this tech card and does not carry any: "+
 			"if you meant to remove them, use «снять разметку узлов»; otherwise reload the card — "+

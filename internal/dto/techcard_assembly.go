@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"log/slog"
 	"strconv"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -107,7 +108,14 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 	// нужен читателям, у которых массива нет.
 	res := entity.AssemblySweep(assemblyPieces(pieces), steps)
 	if len(res.Violations) > 0 {
-		return assemblyViolationToField(res.Violations[0])
+		v := res.Violations[0]
+		// Отказ считается ПО НОМЕРУ ПРАВИЛА и по ветке: «сколько отказов» ничего не говорит, а
+		// «правило 1, ветка produced-later, двадцать раз за неделю» говорит, что технолог не
+		// понимает порядок шагов, и чинить надо интерфейс, а не правило.
+		slog.Default().Info("assembly canonicalisation refused a payload",
+			slog.Int("rule", int(v.Rule)), slog.String("branch", string(v.Detail)),
+			slog.Int("step", v.Step), slog.Int("violations", len(res.Violations)))
+		return assemblyViolationToField(v)
 	}
 
 	// --- нормализация после успешной проверки --------------------------------------------------
