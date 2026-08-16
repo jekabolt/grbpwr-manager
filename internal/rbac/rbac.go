@@ -252,6 +252,7 @@ var methodRequirements = map[string]Requirement{
 	"UploadPattern":      wr(SectionContent),
 	"DeleteFromBucket":   wr(SectionContent),
 	"ListObjectsPaged":   rd(SectionContent),
+	"GetMediaUsage":      rd(SectionContent),
 	// hero
 	"AddHero":                wr(SectionHero),
 	"GetBackgroundHeroColor": rd(SectionHero),

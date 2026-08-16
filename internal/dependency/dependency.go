@@ -1437,6 +1437,10 @@ type (
 		GetMediaByIds(ctx context.Context, ids []int) (map[int]entity.MediaFull, error)
 		DeleteMediaById(ctx context.Context, id int) error
 		ListMediaPaged(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor) ([]entity.MediaFull, error)
+		// GetMediaUsage reports which entities still reference each of the given media ids,
+		// so the library can tell a free file from one standing on the storefront. Ids with
+		// no references are absent from the map. One query covers the whole batch.
+		GetMediaUsage(ctx context.Context, ids []int) (map[int][]entity.MediaUsageRef, error)
 	}
 
 	Admin interface {

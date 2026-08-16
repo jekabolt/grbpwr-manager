@@ -11,6 +11,18 @@ type MediaFull struct {
 	MediaItem
 }
 
+// MediaUsageRef is a single place still holding on to a media item: which entity, which
+// slot inside it, and a name a human recognises. It answers the only question the media
+// library could not previously answer — "may I delete this file, and if not, why not".
+// One entity can appear more than once when it uses the same file in several slots.
+type MediaUsageRef struct {
+	MediaId  int    `db:"media_id" json:"media_id"`
+	Kind     string `db:"kind" json:"kind"`
+	EntityId int    `db:"entity_id" json:"entity_id"`
+	Label    string `db:"label" json:"label"`
+	Slot     string `db:"slot" json:"slot"`
+}
+
 type MediaItem struct {
 	FullSizeMediaURL   string         `db:"full_size" json:"full_size"`
 	FullSizeWidth      int            `db:"full_size_width" json:"full_size_width"`
