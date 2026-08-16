@@ -711,6 +711,10 @@ type TechCardMediaFull struct {
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
+//
+// Геометрия (Kind/Points/Color) — то же ремесло, что у TechCardAnnotation, и те же правила числа
+// точек: вид один и тот же тип. PosX/PosY остаются положением НУМЕРОВАННОГО МАРКЕРА, а Points
+// держит якоря фигуры; у пина Points пуст.
 type TechCardCallout struct {
 	Number      int                 `db:"callout_number"`
 	Part        sql.NullString      `db:"part"`
@@ -719,6 +723,16 @@ type TechCardCallout struct {
 	MediaId     sql.NullInt32       `db:"media_id"` // sketch this callout is pinned to
 	PosX        decimal.NullDecimal `db:"pos_x"`    // normalised 0..1 marker position
 	PosY        decimal.NullDecimal `db:"pos_y"`
+	Kind        TechCardAnnotationKind  `db:"kind"`
+	Color       TechCardAnnotationColor `db:"color"`
+	// KindOmitted — вкладка со старым бандлом про геометрию не говорила вовсе. Тогда хранимая
+	// тройка (вид, якоря, цвет) переносится по НОМЕРУ выноски, до пересчёта дайджеста. Не колонка:
+	// это факт запроса, а не карточки.
+	KindOmitted bool `db:"-"`
+	// Points в БД лежит JSON-колонкой, в Go — разобранным списком; сырое значение читается
+	// в PointsRaw и разбирается стором один раз (так же, как выноски снимка шага).
+	Points    []TechCardAnnotationPoint `db:"-"`
+	PointsRaw []byte                    `db:"points"`
 }
 
 // TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
@@ -2667,6 +2681,7 @@ const (
 	AnnotationKindDim     TechCardAnnotationKind = "dim"     // 2 точки · размерная линия с засечками
 	AnnotationKindBracket TechCardAnnotationKind = "bracket" // 2 точки · скобка над участком
 	AnnotationKindMulti   TechCardAnnotationKind = "multi"   // 2..8 точек · одна подпись, много мест
+	AnnotationKindArc     TechCardAnnotationKind = "arc"     // 3 точки · дуга через среднюю точку
 )
 
 // PointsAllowed возвращает допустимый диапазон числа точек для вида. Второе значение — false,
@@ -2679,6 +2694,11 @@ func (k TechCardAnnotationKind) PointsAllowed() (min, max int, ok bool) {
 		return 2, 2, true
 	case AnnotationKindMulti:
 		return 2, 8, true
+	case AnnotationKindArc:
+		// Ровно три, и средняя ЛЕЖИТ НА КРИВОЙ: из трёх точек кривой управляющая точка Безье
+		// считается однозначно, поэтому хранится то, что человек показал, а не то, что вывела
+		// формула.
+		return 3, 3, true
 	}
 	return 0, 0, false
 }
@@ -2714,6 +2734,10 @@ type TechCardAnnotation struct {
 	LabelX decimal.Decimal           `json:"label_x"`
 	LabelY decimal.Decimal           `json:"label_y"`
 	Color  TechCardAnnotationColor   `json:"color,omitempty"`
+	// PieceLineKey — деталь кроя, о которой указание. Ссылка советующая: указание ставят раньше,
+	// чем детали появляются из чертежа, и неразрешимый ключ не отказ сохранения, а «деталь
+	// удалена» на экране. omitempty — чтобы у выносок без детали JSON в колонке не менялся.
+	PieceLineKey string `json:"piece,omitempty"`
 }
 
 // TechCardOperationMedia — одна картинка шага со своими выносками.
