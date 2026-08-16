@@ -1121,6 +1121,76 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/task/checklist/{id}"};
   }
 
+  // FILES LIBRARY
+  // Shared internal documents: mockups, design guidelines, icons, 3D parts,
+  // spreadsheets. The bytes live PRIVATELY in object storage (unlike the media
+  // library, which is public-read on the CDN because the storefront reads it) and
+  // are only ever reachable through short-lived presigned urls minted per response.
+  //
+  // Topics are LABELS, not folders: a file carries several at once, or none (those
+  // land in «Разобрать»). That is what removes the "which single folder does this
+  // belong in" decision — the moment at which a file gets lost.
+  //
+  // UPLOAD IS NOT AN RPC. It is a streaming multipart endpoint,
+  // POST /api/files/upload — see internal/api/http and internal/apisrv/admin/
+  // files_upload.go. A gRPC method would have to carry the payload base64-encoded
+  // inside a single message, which neither the 50 MiB grpc limit nor the 72 MiB
+  // admin-JSON limit can hold for the files this library exists to keep.
+
+  // GetLibraryFile returns one file with its topics and freshly minted urls.
+  rpc GetLibraryFile(GetLibraryFileRequest) returns (GetLibraryFileResponse) {
+    option (google.api.http) = {get: "/api/admin/files/{id}"};
+  }
+
+  // ListLibraryFiles is the grid: a page of files filtered by topic, by "no topic
+  // at all", or by a search that matches file names AND topic names.
+  // Declared AFTER GET /files/{id} on purpose — same reason as the task routes:
+  // in grpc-gateway v2 the later registration wins, so a literal path must come
+  // after the templated one or it gets shadowed by it.
+  rpc ListLibraryFiles(ListLibraryFilesRequest) returns (ListLibraryFilesResponse) {
+    option (google.api.http) = {get: "/api/admin/files/list"};
+  }
+
+  // UpdateLibraryFile renames a file and REPLACES its topic set.
+  rpc UpdateLibraryFile(UpdateLibraryFileRequest) returns (UpdateLibraryFileResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/update"
+      body: "*"
+    };
+  }
+
+  // DeleteLibraryFile removes a file and its bytes. Refused while any task holds
+  // it — the error names the holding cards.
+  rpc DeleteLibraryFile(DeleteLibraryFileRequest) returns (DeleteLibraryFileResponse) {
+    option (google.api.http) = {delete: "/api/admin/files/{id}"};
+  }
+
+  // ListFileTopics is the rail: topics ordered by usage, plus the two badges.
+  rpc ListFileTopics(ListFileTopicsRequest) returns (ListFileTopicsResponse) {
+    option (google.api.http) = {get: "/api/admin/files/topics/list"};
+  }
+
+  // CreateFileTopic creates a topic, or returns the existing one with that name.
+  rpc CreateFileTopic(CreateFileTopicRequest) returns (CreateFileTopicResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/topics/create"
+      body: "*"
+    };
+  }
+
+  // RenameFileTopic updates a topic's name and description together.
+  rpc RenameFileTopic(RenameFileTopicRequest) returns (RenameFileTopicResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/topics/rename"
+      body: "*"
+    };
+  }
+
+  // DeleteFileTopic removes a topic, refused while files still carry it.
+  rpc DeleteFileTopic(DeleteFileTopicRequest) returns (DeleteFileTopicResponse) {
+    option (google.api.http) = {delete: "/api/admin/files/topics/{id}"};
+  }
+
   // ORDER FULFILLMENT BOARD
   // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
   // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
@@ -4603,7 +4673,131 @@ message GetTaskRequest {
 
 message GetTaskResponse {
   common.Task task = 1;
+  // Resolved library attachments, carrying freshly minted presigned urls.
+  // common.Task itself only carries their ids: it is reused in contexts that get
+  // persisted, and a url with a 6-12h life must never be written down anywhere.
+  repeated LibraryFile files = 2;
 }
+
+// LibraryFile is one file in the shared library.
+//
+// The three url fields are minted per response and expire — they are never
+// persisted, which is why this message lives in admin.proto rather than common.*
+// (common messages get serialised into durable release snapshots, and a stored
+// presigned url would be a link that rots).
+message LibraryFile {
+  int32 id = 1;
+  string file_name = 2;
+  string content_type = 3;
+  int64 size_bytes = 4;
+  string sha256 = 5;
+  string uploaded_by = 6;
+  repeated FileTopic topics = 7;
+  google.protobuf.Timestamp created_at = 8;
+  // url views the file in place. EMPTY for anything not inline-safe: svg and html
+  // would execute on the bucket's origin, so they get download_url only.
+  string url = 9;
+  // download_url always works and carries a content-disposition: attachment.
+  string download_url = 10;
+  // preview_url is the browser-rendered thumbnail; empty when there is none (the
+  // render failed, or the type has no sensible preview). A file without one is
+  // still perfectly usable — the grid shows an extension plate instead.
+  string preview_url = 11;
+  google.protobuf.Timestamp urls_expire_at = 12;
+}
+
+// FileTopic is a topic LABEL, not a folder.
+message FileTopic {
+  int32 id = 1;
+  string name = 2;
+  int32 files_count = 3;
+  // What this topic is about. Empty for most of them; the field is what lets a
+  // label stand in for a project page without inventing a project entity.
+  string description = 4;
+}
+
+message GetLibraryFileRequest {
+  int32 id = 1;
+}
+
+message GetLibraryFileResponse {
+  LibraryFile file = 1;
+}
+
+message ListLibraryFilesRequest {
+  // topic_id filters to one topic; 0 means no topic filter.
+  int32 topic_id = 1;
+  // untopiced selects only files carrying no topic at all («Разобрать»). Takes
+  // precedence over topic_id — they are two views of the same rail.
+  bool untopiced = 2;
+  // search matches the file name OR the name of a topic the file carries. Both,
+  // because graphic PDFs exported from design tools carry no extractable text at
+  // all, so names and topics are the only things there are to match on. The
+  // implementation is a LIKE today; FULLTEXT or embeddings can replace it behind
+  // this same field without changing the contract.
+  string search = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+  common.OrderFactor order_factor = 6;
+}
+
+message ListLibraryFilesResponse {
+  repeated LibraryFile files = 1;
+  int32 total = 2;
+}
+
+message UpdateLibraryFileRequest {
+  int32 id = 1;
+  string file_name = 2;
+  // topic_ids is the FULL replacement set, not a delta.
+  repeated int32 topic_ids = 3;
+  // new_topics are names typed on the fly; existing names resolve to the existing
+  // topic rather than failing.
+  repeated string new_topics = 4;
+}
+
+message UpdateLibraryFileResponse {}
+
+message DeleteLibraryFileRequest {
+  int32 id = 1;
+}
+
+message DeleteLibraryFileResponse {}
+
+message ListFileTopicsRequest {}
+
+message ListFileTopicsResponse {
+  repeated FileTopic topics = 1;
+  // The two rail badges. They live here rather than costing a separate list call
+  // each: untopiced_count is how many files carry no topic, total_files how many
+  // exist at all.
+  int32 untopiced_count = 2;
+  int32 total_files = 3;
+}
+
+message CreateFileTopicRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message CreateFileTopicResponse {
+  int32 id = 1;
+}
+
+message RenameFileTopicRequest {
+  int32 id = 1;
+  string name = 2;
+  // Sent together with the name: one dialog edits both.
+  string description = 3;
+}
+
+message RenameFileTopicResponse {}
+
+message DeleteFileTopicRequest {
+  int32 id = 1;
+}
+
+message DeleteFileTopicResponse {}
 
 message UpdateTaskRequest {
   int32 id = 1;

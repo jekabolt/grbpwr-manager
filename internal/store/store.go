@@ -43,6 +43,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/settings"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/store/support"
+	"github.com/jekabolt/grbpwr-manager/internal/store/fileslibrary"
 	"github.com/jekabolt/grbpwr-manager/internal/store/task"
 	"github.com/jekabolt/grbpwr-manager/internal/store/techcard"
 	"github.com/jekabolt/grbpwr-manager/internal/store/workshop"
@@ -117,6 +118,7 @@ type MYSQLStore struct {
 	modelStore         *model.Store
 	fittingStore       *fitting.Store
 	taskStore          *task.Store
+	filesStore         *fileslibrary.Store
 	fulfillmentStore   *fulfillment.Store
 	techCardStore      *techcard.Store
 	productionRunStore *productionrun.Store
@@ -401,6 +403,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.modelStore = model.New(base, ms.Tx)
 	ms.fittingStore = fitting.New(base, ms.Tx)
 	ms.taskStore = task.New(base, ms.Tx)
+	ms.filesStore = fileslibrary.New(base, ms.Tx)
 	ms.fulfillmentStore = fulfillment.New(base, ms.Tx)
 	ms.techCardStore = techcard.New(base, ms.Tx, ms.readTx, func() dependency.Repository { return ms })
 	ms.productionRunStore = productionrun.New(base, ms.Tx)
@@ -434,6 +437,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.modelStore = model.New(base, outerTx)
 	txStore.fittingStore = fitting.New(base, outerTx)
 	txStore.taskStore = task.New(base, outerTx)
+	txStore.filesStore = fileslibrary.New(base, outerTx)
 	txStore.fulfillmentStore = fulfillment.New(base, outerTx)
 	txStore.techCardStore = techcard.New(base, outerTx, outerTx, func() dependency.Repository { return txStore })
 	txStore.productionRunStore = productionrun.New(base, outerTx)
@@ -513,6 +517,7 @@ func (ms *MYSQLStore) Models() dependency.Models                 { return ms.mod
 func (ms *MYSQLStore) Fittings() dependency.Fittings             { return ms.fittingStore }
 func (ms *MYSQLStore) PatternObjects() dependency.PatternObjects { return ms.patternObjectStore }
 func (ms *MYSQLStore) Tasks() dependency.Tasks                   { return ms.taskStore }
+func (ms *MYSQLStore) Files() dependency.Files                   { return ms.filesStore }
 func (ms *MYSQLStore) Fulfillment() dependency.Fulfillment       { return ms.fulfillmentStore }
 func (ms *MYSQLStore) TechCards() dependency.TechCards           { return ms.techCardStore }
 func (ms *MYSQLStore) ProductionRuns() dependency.ProductionRuns { return ms.productionRunStore }

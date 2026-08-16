@@ -63,6 +63,13 @@ message TaskInsert {
   google.protobuf.Timestamp due_date = 5; // optional; unset = no deadline
   repeated string labels = 6; // freeform lightweight tags within a board (client/list filtering)
   repeated int32 media_ids = 7; // attached reference images/files via the existing media bucket
+  // Attached files from the private files library. Separate from media_ids
+  // because the two live in buckets with opposite privacy: media is public-read
+  // on the CDN (it ships to the storefront), library files are private and leave
+  // only through a short-lived presigned url. The UI merges both into a single
+  // "attachments" list — the split is a storage fact, not a distinction a person
+  // should have to hold in their head.
+  repeated int32 file_ids = 16;
 
   // Optional typed links to existing admin entities (0 / "" = none). Follows the
   // fitting precedent (several nullable typed FKs, NOT a polymorphic entity_type
@@ -118,6 +125,10 @@ message Task {
   // (never client-supplied, never cleared on later moves). Unset = the card has
   // not been started yet. This is distinct from the planned TaskInsert.start_date.
   google.protobuf.Timestamp started_at = 12;
+  // Ids of the attached library files. Only the ids: the resolved files, with
+  // their expiring presigned urls, ride on admin.GetTaskResponse.files, because
+  // this message is reused in contexts that get persisted.
+  repeated int32 file_ids = 13;
 }
 
 // TaskCommentInsert is the writable payload for a comment. author is set

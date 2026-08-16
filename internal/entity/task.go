@@ -85,6 +85,13 @@ type TaskInsert struct {
 	SampleId        sql.NullInt32  `db:"sample_id"`
 	Labels          []string       `db:"-"`
 	MediaIds        []int          `db:"-"`
+	// FileIds are library files attached to the card. Separate from MediaIds
+	// because the two live in different buckets with opposite privacy: media is
+	// public-read on the CDN (it ships to the storefront), library files are
+	// private and only ever leave through a short-lived presigned url. The UI
+	// merges both into one "attachments" list — the split is a storage fact, not
+	// something a person should have to think about.
+	FileIds []int `db:"-"`
 }
 
 // Task is a stored kanban card: content (TaskInsert) + placement + resolved media
@@ -96,7 +103,10 @@ type Task struct {
 	Status    TaskStatus  `db:"status"`
 	Position  int         `db:"position"`
 	Media     []MediaFull `db:"-"`
-	CreatedBy string      `db:"created_by"`
+	// Files are the resolved library attachments. Resolved by the handler rather
+	// than the task store, so the task store never has to know the files store.
+	Files     []LibraryFile `db:"-"`
+	CreatedBy string        `db:"created_by"`
 	CreatedAt time.Time   `db:"created_at"`
 	UpdatedAt time.Time   `db:"updated_at"`
 	// ArchivedAt is the soft-archive marker: Valid = archived (hidden from the

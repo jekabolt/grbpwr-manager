@@ -3,6 +3,7 @@ package dependency
 import (
 	"context"
 	"database/sql"
+	"io"
 	"net/http"
 	"time"
 
@@ -635,6 +636,39 @@ type (
 		AddTaskChecklistItem(ctx context.Context, taskID int, content string) (int, error)
 		SetTaskChecklistItemDone(ctx context.Context, id int, done bool) error
 		DeleteTaskChecklistItem(ctx context.Context, id int) error
+	}
+
+	// Files is the files-library storage: metadata of private S3 objects and the
+	// topic labels they carry. Topics are LABELS, not folders — a file carries
+	// several at once and may carry none. The bytes themselves belong to
+	// FileStore; nothing here touches the bucket.
+	Files interface {
+		// AddFile inserts the metadata row and links topics in one transaction.
+		// Names in newTopics are created on the fly; an existing name resolves to
+		// the existing topic instead of failing.
+		AddFile(ctx context.Context, f *entity.LibraryFileInsert, topicIDs []int, newTopics []string) (int, error)
+		GetFileById(ctx context.Context, id int) (*entity.LibraryFile, error)
+		ListFiles(ctx context.Context, f entity.LibraryFileListFilter) ([]entity.LibraryFile, int, error)
+		// ListFilesByIds resolves an explicit set (a task's attachments), preserving
+		// the order of the given ids.
+		ListFilesByIds(ctx context.Context, ids []int) ([]entity.LibraryFile, error)
+		// FindFilesBySha256 backs the duplicate hint on upload. A duplicate is
+		// reported, never rejected.
+		FindFilesBySha256(ctx context.Context, sha256 string) ([]entity.LibraryFile, error)
+		// UpdateFile renames the file and REPLACES its topic set.
+		UpdateFile(ctx context.Context, id int, fileName string, topicIDs []int, newTopics []string) error
+		// DeleteFile refuses while any task holds the file (returning
+		// entity.ErrLibraryFileInUse naming the holders) and otherwise returns the
+		// S3 keys behind it for best-effort bucket cleanup by the caller.
+		DeleteFile(ctx context.Context, id int) (objectKeys []string, err error)
+		// ListTopics returns topics ordered by usage, plus the two rail badges:
+		// files carrying no topic, and the total file count.
+		ListTopics(ctx context.Context) (topics []entity.FileTopicWithCount, untopiced, total int, err error)
+		CreateTopic(ctx context.Context, name, description string) (int, error)
+		RenameTopic(ctx context.Context, id int, name, description string) error
+		// DeleteTopic refuses while files still carry the topic — deleting it would
+		// silently unlabel them into «Разобрать».
+		DeleteTopic(ctx context.Context, id int) error
 	}
 
 	// Fulfillment is the orders-fulfillment board's storage: the board-owned
@@ -1540,6 +1574,7 @@ type (
 		Models() Models
 		Fittings() Fittings
 		Tasks() Tasks
+		Files() Files
 		Fulfillment() Fulfillment
 		TechCards() TechCards
 		ProductionRuns() ProductionRuns
@@ -1645,6 +1680,25 @@ type (
 		// <object>/viewer remounts). download=true adds a content-disposition=attachment
 		// response override.
 		PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (url string, expiresAt time.Time, err error)
+		// UploadLibraryObject streams a files-library payload into a PRIVATE object
+		// and returns its key, the hex sha256 computed from the stream, and the byte
+		// count. Privacy here is the ABSENCE of the public-read acl the media/pattern/
+		// label uploads set — these files never belong on the public CDN. The hash is
+		// computed server-side because the bytes pass through us anyway, so there is
+		// no reason to trust a client-supplied one.
+		UploadLibraryObject(ctx context.Context, r io.Reader, contentType, ext string) (objectKey, sha256hex string, size int64, err error)
+		// UploadLibraryPreview stores the small browser-rendered preview image for a
+		// library file under the same privacy rules.
+		UploadLibraryPreview(ctx context.Context, raw []byte, ext string) (objectKey string, err error)
+		// PresignLibraryObject returns a short-lived presigned GET url for a managed
+		// files-library key, with the same window-snapping (and therefore url
+		// stability) as PresignPatternObject. Reachable only from RBAC-gated admin
+		// handlers — unlike the pattern variant, which a token endpoint can reach.
+		PresignLibraryObject(ctx context.Context, objectKey string, download bool, downloadName string) (url string, expiresAt time.Time, err error)
+		// RemoveObjectsByKeys best-effort deletes objects addressed by KEY rather than
+		// url. DeleteObjects takes urls, which library files do not store — they keep
+		// keys, because a private object has no durable url to keep.
+		RemoveObjectsByKeys(ctx context.Context, keys ...string) error
 		// GetBaseFolder returns the base folder for the bucket
 		GetBaseFolder() string
 		// DeleteObjects best-effort removes the S3 objects behind the given media URLs

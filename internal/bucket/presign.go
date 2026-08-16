@@ -50,9 +50,30 @@ var (
 // come from stored data (the upload's own filename), NEVER from a request parameter — it
 // lands in a response header. An empty value falls back to the object key's basename.
 func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
+	return b.presignManagedObject(ctx, objectKey, patternObjectPathSegment, download, downloadName)
+}
+
+// PresignLibraryObject is the same mechanism for files-library objects (the file
+// itself and its preview image, which lives under files-library/previews/ and is
+// therefore covered by the same segment).
+//
+// It is a SEPARATE method rather than an extra segment accepted by
+// PresignPatternObject on purpose: that one is reachable from the unauthenticated
+// token endpoints (/api/p, /api/pv, /api/rp), and widening the set of keys it can
+// sign would widen what those endpoints could be talked into serving. This one is
+// only ever called from RBAC-gated admin handlers, and keeping the two apart is
+// what keeps that difference true by construction rather than by discipline.
+func (b *Bucket) PresignLibraryObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
+	return b.presignManagedObject(ctx, objectKey, libraryFolder, download, downloadName)
+}
+
+// presignManagedObject holds the shared mechanics: the managed-key guard, the
+// window snapping that keeps the url string stable, the memoization and its
+// prune, and the download-name sanitisation.
+func (b *Bucket) presignManagedObject(ctx context.Context, objectKey, requiredSegment string, download bool, downloadName string) (string, time.Time, error) {
 	key := strings.Trim(objectKey, "/")
-	if !isManagedPatternKey(key) {
-		return "", time.Time{}, fmt.Errorf("object key %q is not a managed pattern key", objectKey)
+	if !isManagedKeyInSegment(key, requiredSegment) {
+		return "", time.Time{}, fmt.Errorf("object key %q is not a managed %q key", objectKey, requiredSegment)
 	}
 
 	name := sanitizeDownloadName(downloadName)
@@ -94,12 +115,25 @@ func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, dow
 	return u.String(), expiresAt, nil
 }
 
-// isManagedPatternKey reports whether the key sits under the dedicated pattern folder
+// isManagedKeyInSegment reports whether the key sits under the given dedicated folder
 // (any base-folder prefix, same recognition rule as storeutil.PatternObjectKey).
 // Relative segments are refused outright: they cannot escape this bucket (the host is
 // client-config-fixed and any normalizing intermediary would break SigV4), but the rule is
-// reused by the label path (Ф7b) and must not depend on that argument holding there.
-func isManagedPatternKey(key string) bool {
+// reused by the label path (Ф7b) and the files library, and must not depend on that
+// argument holding there.
+//
+// The segment must not be the LAST one, which is what makes "the folder itself" an
+// invalid target: a key has to name an object, not a prefix.
+func isManagedKeyInSegment(key, requiredSegment string) bool {
+	if requiredSegment == "" {
+		return false
+	}
+	// A multi-part segment spec (files-library/previews) is matched as a prefix run,
+	// but callers pass the top folder and rely on nesting being covered — keep the
+	// simple case simple and refuse anything with a separator.
+	if strings.Contains(requiredSegment, "/") {
+		return false
+	}
 	found := false
 	segments := strings.Split(key, "/")
 	for i, segment := range segments {
@@ -108,7 +142,7 @@ func isManagedPatternKey(key string) bool {
 		if segment == "" || segment == "." || segment == ".." {
 			return false
 		}
-		if segment == patternObjectPathSegment && i < len(segments)-1 {
+		if segment == requiredSegment && i < len(segments)-1 {
 			found = true
 		}
 	}

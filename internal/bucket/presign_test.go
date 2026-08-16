@@ -27,9 +27,44 @@ func TestIsManagedPatternKey(t *testing.T) {
 		"substring only":       {"base/tech-card-patterns-public/x.pdf", false},
 	}
 	for name, c := range cases {
-		if got := isManagedPatternKey(c.key); got != c.want {
-			t.Errorf("%s: isManagedPatternKey(%q) = %v, want %v", name, c.key, got, c.want)
+		if got := isManagedKeyInSegment(c.key, patternObjectPathSegment); got != c.want {
+			t.Errorf("%s: isManagedKeyInSegment(%q, pattern) = %v, want %v", name, c.key, got, c.want)
 		}
+	}
+}
+
+// TestIsManagedLibraryKey is the same gate for the files library. The two folders must
+// stay mutually exclusive: a pattern key is not signable as a library object and vice
+// versa, which is what keeps the unauthenticated pattern endpoints from reaching library
+// files even if a key were somehow smuggled into them.
+func TestIsManagedLibraryKey(t *testing.T) {
+	cases := map[string]struct {
+		key  string
+		want bool
+	}{
+		"canonical":       {"base/files-library/2026/august/x-deadbeef.pdf", true},
+		"preview nested":  {"base/files-library/previews/2026/august/x.webp", true},
+		"no base folder":  {"files-library/2026/august/x.xlsx", true},
+		"folder is last":  {"base/files-library", false},
+		"pattern key":     {"base/tech-card-patterns/2026/x.pdf", false},
+		"media key":       {"base/media/2026/august/x.jpg", false},
+		"parent segment":  {"base/files-library/../../secrets/x.pdf", false},
+		"substring only":  {"base/files-library-public/x.pdf", false},
+		"empty":           {"", false},
+		"multipart spec":  {"base/files-library/previews/x.webp", true},
+	}
+	for name, c := range cases {
+		if got := isManagedKeyInSegment(c.key, libraryFolder); got != c.want {
+			t.Errorf("%s: isManagedKeyInSegment(%q, library) = %v, want %v", name, c.key, got, c.want)
+		}
+	}
+	// A pattern key must never pass the library guard, and a library key must never pass
+	// the pattern one — assert the crossing explicitly, not by implication.
+	if isManagedKeyInSegment("base/files-library/2026/x.pdf", patternObjectPathSegment) {
+		t.Error("library key passed the pattern guard")
+	}
+	if isManagedKeyInSegment("base/tech-card-patterns/2026/x.pdf", libraryFolder) {
+		t.Error("pattern key passed the library guard")
 	}
 }
 

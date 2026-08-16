@@ -170,6 +170,7 @@ type Server struct {
 	patternAccessHandler    http.Handler
 	patternViewerHandler    http.Handler
 	runPackHandler          http.Handler
+	fileUploadHandler       http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -193,6 +194,15 @@ func (s *Server) SetHealthChecker(checker HealthChecker) {
 // send headers; mounted inside /api so CORS applies to the ?mode=json variant.
 func (s *Server) SetPatternAccessHandler(h http.Handler) {
 	s.patternAccessHandler = h
+}
+
+// SetFileUploadHandler registers the files-library multipart upload endpoint
+// (POST /api/files/upload). Unlike the token-guarded pattern endpoints, this one
+// IS authenticated — the caller is expected to pass it already wrapped in the
+// admin authorization middleware. It lives outside the gateway mount because a
+// file cannot ride inside a single gRPC message.
+func (s *Server) SetFileUploadHandler(h http.Handler) {
+	s.fileUploadHandler = h
 }
 
 // SetPatternViewerHandler registers the card-level pattern viewer manifest endpoint
@@ -293,6 +303,22 @@ const maxJSONBodyBytes = 4 << 20 // 4 MB
 // hop, not the JSON body). Reusing grpcMaxRecvMsgSize here would silently reject any
 // video over ~37.5 MiB (= 50 MiB × 3/4) before it reached the handler.
 const maxAdminJSONBodyBytes = 72 << 20 // 72 MiB (base64 of a 50 MiB video ≈ 66.7 MiB + JSON envelope)
+
+// maxFileUploadBodyBytes caps a files-library upload. It is NOT related to the
+// admin-JSON cap above: that one exists because base64 inflates a payload inside
+// a gRPC message, whereas this is a raw multipart stream that never expands.
+//
+// 95 MiB is chosen to sit just under the request-body ceiling the platform in
+// front of the app is believed to impose (~100 MB on DigitalOcean App Platform —
+// NOT verified, and worth verifying with a real large file before relying on it).
+// Being the smaller of the two limits matters: our own limit produces a clean 413
+// with a message, whereas the platform's produces a truncated body, which reaches
+// the handler as an unexpected EOF and needs its own log line to be told apart
+// from a person closing the tab.
+//
+// Files above this go through presigned PUT straight to the bucket — which needs
+// a CORS policy on the bucket that only its owner can set, hence not in this pass.
+const maxFileUploadBodyBytes = 95 << 20 // 95 MiB
 
 // limitBody caps the request body via http.MaxBytesReader, so an oversized body is
 // rejected instead of being fully buffered by the JSON gateway.
@@ -491,6 +517,15 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.runPackHandler != nil {
 			r.Method(http.MethodGet, "/rp/{token}", s.runPackHandler)
 			r.Method(http.MethodHead, "/rp/{token}", s.runPackHandler)
+		}
+		// Files-library upload. Its own body cap, deliberately NOT the admin-JSON one:
+		// that limit is sized for base64-expanded media inside a gRPC message, and this
+		// is a raw stream with entirely different economics. The handler arrives already
+		// wrapped in admin authorization (app wiring) — the interceptor that guards every
+		// gRPC method has no reach here.
+		if s.fileUploadHandler != nil {
+			r.With(limitBody(maxFileUploadBodyBytes)).
+				Method(http.MethodPost, "/files/upload", s.fileUploadHandler)
 		}
 	})
 

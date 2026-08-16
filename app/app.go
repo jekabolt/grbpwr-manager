@@ -501,6 +501,13 @@ func (a *App) Start(ctx context.Context) error {
 	a.hs.SetRunPackHandler(runPackSvc.Handler())
 	a.adminS.SetRunPackTokenService(runPackSvc)
 
+	// Files-library upload (POST /api/files/upload). The only admin write that is not
+	// a gRPC method — a file cannot fit inside one message — so it is wrapped here in
+	// the admin authorization middleware by hand. That wrapping is the whole of its
+	// authentication: without it the endpoint would be open, since the gRPC
+	// interceptor never sees a plain HTTP route.
+	a.hs.SetFileUploadHandler(authS.WithAdminAuthz(a.adminS.FileUploadHandler()))
+
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
 	// When a signing secret is configured for a processor it delivers the fastest
 	// (immediate push) confirmation, but it is not the sole mechanism: confirmation

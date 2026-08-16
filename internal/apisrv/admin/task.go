@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const taskFKViolationMsg = "tech_card_id, product_id, archive_id, fitting_id, or media_id does not reference an existing record"
+const taskFKViolationMsg = "tech_card_id, product_id, archive_id, fitting_id, media_id, or file_id does not reference an existing record"
 
 // AddTask creates a new kanban task from its content + placement. created_by is
 // stamped from the caller's JWT; the card is appended to its (board,status) column.
@@ -68,7 +68,29 @@ func (s *Server) GetTask(ctx context.Context, req *pb_admin.GetTaskRequest) (*pb
 		slog.Default().ErrorContext(ctx, "can't get task by id", slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.Internal, "can't get task")
 	}
-	return &pb_admin.GetTaskResponse{Task: dto.ConvertEntityTaskToPb(t)}, nil
+	// Library attachments are resolved here rather than in the task store, so the
+	// task store never has to know the files store — and because the resolved form
+	// carries presigned urls, which only make sense for the life of one response.
+	//
+	// Deliberately gated on tasks:read, not files:read: an attachment is part of
+	// the card's content, exactly as its media already is. The files section gates
+	// the library itself, not what someone chose to pin to a task.
+	var files []*pb_admin.LibraryFile
+	if len(t.FileIds) > 0 {
+		resolved, err := s.repo.Files().ListFilesByIds(ctx, t.FileIds)
+		if err != nil {
+			// A card that cannot resolve its attachments is still a card worth
+			// showing; losing the whole task over a file lookup would be worse.
+			slog.Default().ErrorContext(ctx, "can't resolve task files",
+				slog.Int("task_id", t.Id), slog.String("err", err.Error()))
+		} else {
+			files = s.libraryFilesToPb(ctx, resolved)
+		}
+	}
+	return &pb_admin.GetTaskResponse{
+		Task:  dto.ConvertEntityTaskToPb(t),
+		Files: files,
+	}, nil
 }
 
 // UpdateTask replaces a task's content. Placement is not touched here (see MoveTask).

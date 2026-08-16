@@ -58,8 +58,21 @@ const (
 	// content manager can hold tech_cards:read for sketches/sizes without seeing money.
 	// This is the first "a permission redacts fields, not methods" precedent — future
 	// financial fields (materials, production runs, dev costs) should classify here too.
-	SectionCosting    = "costing"
-	SectionTasks      = "tasks"
+	SectionCosting = "costing"
+	SectionTasks   = "tasks"
+	// SectionFiles governs the files library: shared internal documents (mockups,
+	// design guidelines, icons, 3D parts, spreadsheets), their topic labels, and
+	// attaching them to tasks.
+	//
+	// Note there is exactly ONE section for the whole library, so everything in it
+	// is visible to everyone holding files:read. That is why the seed topics in
+	// migration 0312 deliberately omit `legal` and `finance` — a library that
+	// cannot keep a secret should not advertise places to put one.
+	//
+	// The multipart upload endpoint (POST /api/files/upload) is NOT an RPC and so
+	// is absent from methodRequirements; it enforces files:write inside the
+	// handler instead. See internal/apisrv/admin/files_upload.go.
+	SectionFiles      = "files"
 	SectionSettings   = "settings"
 	SectionSupport    = "support"
 	SectionMembership = "membership"
@@ -99,6 +112,7 @@ var catalog = []SectionInfo{
 	{SectionInventory, "Inventory", "Material warehouse: on-hand stock, receipts, issues, adjustments and valuation."},
 	{SectionCosting, "Costing", "Confidential cost of goods: tech-card costing & BOM prices, product cost, margin/COGS analytics. Redacts fields, does not hide screens."},
 	{SectionTasks, "Tasks", "Internal team kanban board."},
+	{SectionFiles, "Files", "Files library: shared documents, mockups and guidelines; topics and task attachments."},
 	{SectionSettings, "Settings", "Store settings and shipment carriers."},
 	{SectionSupport, "Support", "Support tickets and reviews."},
 	{SectionMembership, "Membership", "Members, loyalty tiers, hacker invites."},
@@ -143,13 +157,13 @@ func wr(section string) Requirement { return Requirement{section, entity.AccessW
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
-	"CreateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorway":           wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorwayRecipe":     wr(SectionProducts), // colourway-owned material recipe (S2/S3 write-path)
-	"UpdateStyle":              wr(SectionProducts), // R4: sole writer of catalogue-style facts
-	"GetColorwaysPaged":        rd(SectionProducts),
-	"GetColorwayByID":          rd(SectionProducts),
-	"ArchiveColorwayByID":      wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
+	"CreateColorway":       wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":       wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorwayRecipe": wr(SectionProducts), // colourway-owned material recipe (S2/S3 write-path)
+	"UpdateStyle":          wr(SectionProducts), // R4: sole writer of catalogue-style facts
+	"GetColorwaysPaged":    rd(SectionProducts),
+	"GetColorwayByID":      rd(SectionProducts),
+	"ArchiveColorwayByID":  wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
 	// Физическое удаление колорвея живёт в ТОМ ЖЕ скоупе, что и архивирование, и это выбор: обе
 	// операции снимают колорвей с карточки, различаются только обратимостью, и разводить их по
 	// правам значило бы завести роль, которая может архивировать, но не может стереть опечатку —
@@ -496,6 +510,16 @@ var methodRequirements = map[string]Requirement{
 	"AddTaskComment":   wr(SectionTasks),
 	"ListTaskComments": rd(SectionTasks),
 	"ListTasks":        rd(SectionTasks),
+
+	// files library
+	"GetLibraryFile":    rd(SectionFiles),
+	"ListLibraryFiles":  rd(SectionFiles),
+	"UpdateLibraryFile": wr(SectionFiles),
+	"DeleteLibraryFile": wr(SectionFiles),
+	"ListFileTopics":    rd(SectionFiles),
+	"CreateFileTopic":   wr(SectionFiles),
+	"RenameFileTopic":   wr(SectionFiles),
+	"DeleteFileTopic":   wr(SectionFiles),
 	// task archive + checklist
 	"ArchiveTask":              wr(SectionTasks),
 	"UnarchiveTask":            wr(SectionTasks),

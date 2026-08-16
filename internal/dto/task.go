@@ -166,6 +166,19 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 		mediaIds = append(mediaIds, int(m))
 	}
 
+	fileIds := make([]int, 0, len(pb.FileIds))
+	seenFile := make(map[int]bool, len(pb.FileIds))
+	for _, f := range pb.FileIds {
+		if f <= 0 {
+			return nil, fmt.Errorf("task file_id must be positive")
+		}
+		if seenFile[int(f)] {
+			continue
+		}
+		seenFile[int(f)] = true
+		fileIds = append(fileIds, int(f))
+	}
+
 	return &entity.TaskInsert{
 		Title:           title,
 		Description:     nullStringFromPb(strings.TrimSpace(pb.Description)),
@@ -182,6 +195,7 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 		SampleId:        nullInt32FromPb(pb.SampleId),
 		Labels:          labels,
 		MediaIds:        mediaIds,
+		FileIds:         fileIds,
 	}, nil
 }
 
@@ -197,6 +211,14 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 	for i := range t.Media {
 		media = append(media, ConvertEntityToCommonMedia(&t.Media[i]))
 		mediaIds = append(mediaIds, int32(t.Media[i].Id))
+	}
+
+	// Only the ids of library attachments travel on common.Task. The resolved
+	// files carry presigned urls with a 6-12h life, and this message is reused in
+	// places that get persisted — a stored url would be a link that rots.
+	fileIds := make([]int32, 0, len(t.FileIds))
+	for _, id := range t.FileIds {
+		fileIds = append(fileIds, int32(id))
 	}
 
 	return &pb_common.Task{
@@ -217,6 +239,7 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 			FittingId:       pbInt32FromNull(t.FittingId),
 			ProductionRunId: pbInt32FromNull(t.ProductionRunId),
 			SampleId:        pbInt32FromNull(t.SampleId),
+			FileIds:         fileIds,
 		},
 		Board:      taskBoardEntityToPb[t.Board],
 		Status:     taskStatusEntityToPb[t.Status],
@@ -228,6 +251,7 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 		ArchivedAt: pbTimestampFromNullTime(t.ArchivedAt),
 		StartedAt:  pbTimestampFromNullTime(t.StartedAt),
 		Checklist:  ConvertEntityTaskChecklistToPb(t.Checklist),
+		FileIds:    fileIds,
 	}
 }
 

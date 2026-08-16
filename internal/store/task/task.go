@@ -61,7 +61,10 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
 			return err
 		}
-		return insertTaskMedia(ctx, rep.DB(), id, t.MediaIds)
+		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds); err != nil {
+			return err
+		}
+		return insertTaskFiles(ctx, rep.DB(), id, t.FileIds)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't add task: %w", err)
@@ -110,10 +113,17 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 			`DELETE FROM task_media WHERE task_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear task media: %w", err)
 		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM task_file WHERE task_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear task files: %w", err)
+		}
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
 			return err
 		}
-		return insertTaskMedia(ctx, rep.DB(), id, t.MediaIds)
+		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds); err != nil {
+			return err
+		}
+		return insertTaskFiles(ctx, rep.DB(), id, t.FileIds)
 	})
 	if err != nil {
 		return fmt.Errorf("can't update task: %w", err)
@@ -351,8 +361,13 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 		return nil, err
 	}
 	t.Labels = labels[id]
+	fileIDs, err := s.fileIdsByTaskIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
 	t.Media = media[id]
 	t.Checklist = checklist[id]
+	t.FileIds = fileIDs[id]
 	return &t, nil
 }
 
@@ -444,6 +459,10 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	if err != nil {
 		return nil, 0, err
 	}
+	fileIDs, err := s.fileIdsByTaskIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
 	checklist, err := s.checklistByTaskIds(ctx, ids)
 	if err != nil {
 		return nil, 0, err
@@ -452,6 +471,7 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		tasks[i].Labels = labels[tasks[i].Id]
 		tasks[i].Media = media[tasks[i].Id]
 		tasks[i].Checklist = checklist[tasks[i].Id]
+		tasks[i].FileIds = fileIDs[tasks[i].Id]
 	}
 	return tasks, total, nil
 }
@@ -566,6 +586,68 @@ func insertTaskMedia(ctx context.Context, db dependency.DB, taskID int, mediaIDs
 		return fmt.Errorf("failed to insert task media: %w", err)
 	}
 	return nil
+}
+
+// insertTaskFiles links library files to a card, mirroring insertTaskMedia. A
+// non-existent file id surfaces as a foreign-key violation, which the API layer
+// maps to InvalidArgument rather than a 500.
+func insertTaskFiles(ctx context.Context, db dependency.DB, taskID int, fileIDs []int) error {
+	if len(fileIDs) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(fileIDs))
+	rows := make([]map[string]any, 0, len(fileIDs))
+	for _, fid := range fileIDs {
+		if fid <= 0 {
+			continue
+		}
+		// The same file attached twice is one attachment, not an error: the picker
+		// can legitimately hand us a duplicate, and uniq_task_file would otherwise
+		// fail the whole save.
+		if _, ok := seen[fid]; ok {
+			continue
+		}
+		seen[fid] = struct{}{}
+		rows = append(rows, map[string]any{
+			"task_id":       taskID,
+			"file_id":       fid,
+			"display_order": len(rows),
+		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := storeutil.BulkInsert(ctx, db, "task_file", rows); err != nil {
+		return fmt.Errorf("failed to insert task files: %w", err)
+	}
+	return nil
+}
+
+type taskFileRow struct {
+	TaskID int `db:"task_id"`
+	FileID int `db:"file_id"`
+}
+
+// fileIdsByTaskIds returns only the ids. Resolving the files themselves is the
+// handler's job: the task store must not depend on the files store, and the
+// resolved form carries presigned urls that only make sense per response.
+func (s *Store) fileIdsByTaskIds(ctx context.Context, ids []int) (map[int][]int, error) {
+	if len(ids) == 0 {
+		return map[int][]int{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[taskFileRow](ctx, s.DB, `
+		SELECT task_id, file_id
+		FROM task_file
+		WHERE task_id IN (:ids)
+		ORDER BY task_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load task files: %w", err)
+	}
+	out := make(map[int][]int, len(ids))
+	for _, r := range rows {
+		out[r.TaskID] = append(out[r.TaskID], r.FileID)
+	}
+	return out, nil
 }
 
 type taskLabelRow struct {
