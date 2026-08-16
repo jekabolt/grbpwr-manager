@@ -79,6 +79,14 @@ func TestStyleEconomicsAmortisesOverEveryRunNotJustTheFirstPage(t *testing.T) {
 		"знаменатель амортизации — тот же, что и напечатанное рядом plan-количество")
 	// 1010 EUR разработки на 1010 изделий = ровно 1 на единицу поверх стилевых 27. Обрезка на сотне
 	// дала бы 1010/1000 = 1.01 → 28.01: правдоподобное число, которое ни с чем не сходится.
+	//
+	// ПРОВЕРКА НА NIL ПЕРЕД РАЗЫМЕНОВАНИЕМ — не косметика. Без неё падение этого теста было не
+	// провалом, а ПАНИКОЙ, а паника убивает тестовый бинарь: из 241 теста пакета выполнялось 108,
+	// и в тени оставались, в частности, таблица истинности щита узлов сборки и весь набор
+	// ИИ-генератора по оборудованию. Утверждение осталось прежним и по-прежнему красное — но
+	// теперь оно красное ОДНО, а не вместе с половиной пакета.
+	require.NotNil(t, e.DevCost, "экономика без блока разработки — уже провал, дальше смотреть нечего")
+	require.NotNil(t, e.DevCost.UnitCostWithDev, "себестоимость с разработкой не посчитана")
 	require.Equal(t, "28", e.DevCost.UnitCostWithDev.Value)
 }
 
@@ -104,7 +112,11 @@ func TestListTechCardDevExpensesAmortisesOverEveryRun(t *testing.T) {
 	s := &Server{repo: repo}
 	resp, err := s.ListTechCardDevExpenses(fullAccessCtx(), &pb_admin.ListTechCardDevExpensesRequest{TechCardId: 7})
 	require.NoError(t, err)
+	require.NotNil(t, resp.Summary, "сводка не посчитана — дальше разыменовывать нечего")
 	require.EqualValues(t, 1010, resp.Summary.OrderQty)
+	// NotNil перед разыменованием по той же причине, что у соседа выше: паника в тесте убивает
+	// бинарь и уносит с собой всё, что стояло в очереди после него.
+	require.NotNil(t, resp.Summary.UnitCostWithDev, "себестоимость с разработкой не посчитана")
 	require.Equal(t, "28", resp.Summary.UnitCostWithDev.Value)
 }
 

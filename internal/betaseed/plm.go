@@ -200,6 +200,7 @@ func (s *Seeder) tcFetch(ctx context.Context, styleID int32) (*common.TechCardIn
 // «an old bundle is about to flatten what a new one wrote», which is exactly what the flag is for.
 func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardInsert, label string) error {
 	tc.MachineFieldsAware = true
+	tc.MediaAware = true
 	// Осведомлённость о полях сборки. Сидер — первый настоящий НЕинтерактивный клиент фичи, и он
 	// обязан ходить штатным путём через все гейты: без флага щит отвергнет любое сохранение против
 	// карточки, которую сидер сам же и разметил.
@@ -390,6 +391,7 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			// later save of it (via tcSave) says the same, and B.7 fills its equipment park.
 			MachineFieldsAware: true,
 			AssemblyAware:      true,
+			MediaAware:         true,
 		},
 	})
 	if err != nil {
@@ -847,6 +849,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	// proving nothing about bom_line_key.
 	neg.MachineFieldsAware = true
 	neg.AssemblyAware = true
+	neg.MediaAware = true
 	_, negErr := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(negLV), TechCard: neg})
 	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
 		return fmt.Errorf("NEGATIVE bad bomLineKey: expected HTTP 400, got %v", negErr)
@@ -1481,6 +1484,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	// the card's machine facts, so it must state the capability or it is refused for the wrong reason.
 	tc2.MachineFieldsAware = true
 	tc2.AssemblyAware = true
+	tc2.MediaAware = true
 	strayLV, err := s.lockVersion(ctx, sid)
 	if err != nil {
 		return err
@@ -1553,6 +1557,7 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 			Stage: common.TechCardStage_TECH_CARD_STAGE_PROD, ApprovalState: common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT,
 			MachineFieldsAware: true,
 			AssemblyAware:      true,
+			MediaAware:         true,
 		}})
 		if err != nil {
 			return fmt.Errorf("CreateTechCard(aux %s): %w", names[i], err)
@@ -2208,7 +2213,13 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.Notes = fmt.Sprintf("race-%d-%s", idx, s.Run)
 			// Both racers are new-generation clients; without the flag the loser would be refused by
 			// the capability gate instead of by the lock, and the race would prove nothing.
+			// ВСЕ ТРИ ФЛАГА, А НЕ ОДИН. `body` — клон прочитанной карточки, а чтение отдаёт узлы
+			// сборки безусловно: с одним лишь machine-флагом щит сборки отвергал ОБА гонщика
+			// (FailedPrecondition вместо 200 и 409), и финальная фаза сидера падала, ни разу не
+			// проверив то, ради чего написана, — оптимистическую блокировку.
 			body.MachineFieldsAware = true
+			body.AssemblyAware = true
+			body.MediaAware = true
 			_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(raceLV), TechCard: body})
 			if e == nil {
 				codes[idx] = 200

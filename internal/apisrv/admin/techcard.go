@@ -673,6 +673,23 @@ func machineCapabilityWireGate(pb *pb_common.TechCardInsert) error {
 // refactor away from not running at all.
 func machineCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.TechCard) error {
 	if pb.GetMachineFieldsAware() {
+		// НАБЛЮДАЕМОСТЬ ВМЕСТО ОТКАЗА — и это осознанный выбор, а не недоделка.
+		//
+		// У двух младших щитов (узлы, снимки) есть контентный бекстоп: осведомлённая запись, не
+		// несущая содержимого против карточки, которая его несёт, отвергается, а выход из отказа
+		// даёт парный флаг намерения. Здесь такого флага нет, и заводить его ради этого случая
+		// значило бы третий раз расширить контракт: у машинных фактов НЕТ СТАБИЛЬНОГО КЛЮЧА —
+		// операции пишутся полной заменой, — поэтому перенести хранимое, как переносится разметка
+		// детали, невозможно, и единственной формой защиты остался бы отказ без права на ошибку.
+		//
+		// Оба реальных пути потери закрыты в источнике: «заменить весь список» ИИ-черновиком теперь
+		// называет число шагов с машинками ДО нажатия, а до-0306 черновики выметаются версией ключа
+		// хранилища. Остаётся скрипт и сидер — их потеря становится СЧИТАЕМОЙ здесь, а не
+		// невидимой. Если счётчик когда-нибудь начнёт расти, это и будет доводом за флаг намерения.
+		if storedHasMachineFacts(stored) && !payloadSpeaksMachineFields(pb) {
+			slog.Default().Warn("machine gate: aware payload drops stored machine/ВТО facts",
+				slog.String("gate", "stored"), slog.String("cell", "aware:yes/payload:none/stored:facts"))
+		}
 		return nil
 	}
 	if storedHasMachineFacts(stored) {

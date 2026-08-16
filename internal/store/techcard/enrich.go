@@ -214,7 +214,7 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
 		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y,
-		       kind, color, points
+		       kind, color, dashed, filled, points, parts
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -235,6 +235,30 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 				c.Kind = entity.AnnotationKindPin
 			}
 		}
+		if len(c.PartsRaw) > 0 {
+			// Битый список деталей — та же логика, что у якорей: указание остаётся с одной
+			// деталью из `part`, и это видно, а чтение карточки не падает.
+			if err := json.Unmarshal(c.PartsRaw, &c.Parts); err != nil {
+				slog.Default().Error("tech card callout: broken parts json",
+					slog.Int("tech_card_id", r.TechCardID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				c.Parts = nil
+			}
+		}
+		// ЧТЕНИЕ ПОДЧИНЯЕТСЯ ТОМУ ЖЕ ПРАВИЛУ, ЧТО И ЗАПИСЬ, а не своему. Раньше здесь `part`
+		// объявлялся главнее и прокручивался в начало списка, а на записи главным был список — два
+		// противоположных правила для одного инварианта, и порядок чекбоксов в интерфейсе решал,
+		// как называется деталь.
+		//
+		// Правило одно: список главнее, `part` — его первый элемент. Строка, где список пуст (стор
+		// не пишет его для одной детали), дозаполняется отсюда — иначе проекция в отпечаток видела
+		// бы на чтении не то, что видела на записи.
+		c.Parts = c.PartList()
+		first := ""
+		if len(c.Parts) > 0 {
+			first = c.Parts[0]
+		}
+		c.Part = sql.NullString{String: first, Valid: first != ""}
 		out[r.TechCardID] = append(out[r.TechCardID], c)
 	}
 	return out, nil

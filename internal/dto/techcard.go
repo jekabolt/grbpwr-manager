@@ -524,8 +524,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 
 	callouts := make([]entity.TechCardCallout, 0, len(pb.Callouts))
 	for ci, c := range pb.Callouts {
-		if len(c.Part) > maxVarchar255 || len(c.Dimensions) > maxVarchar255 {
-			return nil, fmt.Errorf("callout part and dimensions must be at most %d characters", maxVarchar255)
+		if len(c.Dimensions) > maxVarchar255 {
+			return nil, fmt.Errorf("callout dimensions must be at most %d characters", maxVarchar255)
 		}
 		if c.MediaId < 0 {
 			return nil, fmt.Errorf("callout media_id must not be negative")
@@ -544,24 +544,49 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		if err := validateUnitInterval(posY, "callout pos_y"); err != nil {
 			return nil, err
 		}
-		kind, points, color, err := calloutGeometryFromPb(
-			fmt.Sprintf("callouts[%d]", ci), c.Kind, c.Points, c.Color)
+		path := fmt.Sprintf("callouts[%d]", ci)
+		geom, err := calloutGeometryFromPb(path, c)
 		if err != nil {
 			return nil, err
 		}
+		parts, err := calloutParts(path, c.Parts, c.Part)
+		if err != nil {
+			return nil, err
+		}
+		// `part` ХРАНИТСЯ ПЕРВЫМ ЭЛЕМЕНТОМ СПИСКА, а не тем, что прислали. Иначе читатель, знающий
+		// только старое поле (архив релиза, печать тех-пака), увидел бы одну деталь, а список —
+		// другую, и «деталь ↔ выноска» разошлась бы на бумаге с экраном.
+		part := ""
+		if len(parts) > 0 {
+			part = parts[0]
+		}
+		// ПРЕДЕЛ ПРОВЕРЯЕТСЯ У ТОГО, ЧТО УЕДЕТ В КОЛОНКУ, а не у присланного поля. В `part` теперь
+		// попадает первый элемент СПИСКА, и проверка старого поля обходилась payload'ом, где `part`
+		// пуст, а в `parts` лежит триста знаков: валидация пропускала, а MySQL отвечал сырым 1406,
+		// не называя ни выноску, ни поле.
+		for _, name := range parts {
+			if len(name) > maxVarchar255 {
+				return nil, entity.NewFieldViolation(path+".parts", "too_long", "",
+					fmt.Sprintf("имя детали в указании — не длиннее %d знаков", maxVarchar255))
+			}
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
-			Part:        nullStringFromPb(c.Part),
+			Part:        nullStringFromPb(part),
 			Description: nullStringFromPb(c.Description),
 			Dimensions:  nullStringFromPb(c.Dimensions),
 			MediaId:     nullInt32FromPb(c.MediaId),
 			PosX:        posX,
 			PosY:        posY,
-			Kind:        kind,
-			Points:      points,
-			Color:       color,
-			// Тройка атомарна: молчание про вид — молчание про всю геометрию, и хранимая
-			// переносится по номеру выноски (carryOmittedCalloutGeometryFrom).
+			Kind:        geom.Kind,
+			Points:      geom.Points,
+			Color:       geom.Color,
+			Dashed:      geom.Dashed,
+			Filled:      geom.Filled,
+			Parts:       parts,
+			// Группа атомарна: молчание про вид — молчание про всю геометрию, и хранимая
+			// переносится по номеру выноски (CarryOmittedCalloutGeometry). `parts` в группу не
+			// входит: старое `part` есть у любого клиента.
 			KindOmitted: c.Kind == nil,
 		})
 	}
@@ -1075,6 +1100,12 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Kind:   calloutKindPbPtr(c.Kind),
 			Points: calloutPointsToPb(c.Points),
 			Color:  annotationColorToPb[c.Color],
+			Dashed: c.Dashed,
+			Filled: c.Filled,
+			// Список деталей отдаётся всегда, а `part` выше — первым его элементом. Хранимое,
+			// записанное до 0310, списка не несёт, и он собирается из `part` — иначе новый
+			// клиент, вернувший прочитанное круглым рейсом, стёр бы деталь пустым списком.
+			Parts: calloutPartsToPb(c),
 		})
 	}
 

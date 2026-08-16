@@ -1878,6 +1878,17 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			}
 			points = string(raw)
 		}
+		// Список деталей — той же JSON-колонкой и по тому же правилу, что якоря: NULL, когда
+		// сказать нечего. Одна деталь СПИСКОМ НЕ ПИШЕТСЯ: она уже лежит в `part`, и второй
+		// экземпляр той же строки — это второе место, откуда её однажды прочтут по-разному.
+		var parts any
+		if len(c.Parts) > 1 {
+			raw, err := json.Marshal(c.Parts)
+			if err != nil {
+				return fmt.Errorf("marshal callout %d parts: %w", c.Number, err)
+			}
+			parts = string(raw)
+		}
 		rows = append(rows, map[string]any{
 			"tech_card_id":   id,
 			"callout_number": c.Number,
@@ -1889,9 +1900,12 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			"pos_y":          c.PosY,
 			"kind":           string(kind),
 			"color":          string(c.Color),
+			"dashed":         c.Dashed,
+			"filled":         c.Filled,
 			// NULL, а не «[]», когда якорей нет: у пина их не бывает вовсе, и пустой массив в
 			// колонке был бы вторым способом сказать то же самое.
 			"points":        points,
+			"parts":         parts,
 			"display_order": i,
 		})
 	}

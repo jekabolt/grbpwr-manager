@@ -93,7 +93,12 @@ SET @chk_vocab := (
       AND CONSTRAINT_NAME = 'chk_tcp_fusing_mode'
 );
 SET @ddl := IF(@chk_vocab = 0,
-    'ALTER TABLE tech_card_piece ADD CONSTRAINT chk_tcp_fusing_mode CHECK (fusing_mode IS NULL OR (fused = TRUE AND fusing_mode IN (_utf8mb4''full'', _utf8mb4''seam_allowance'', _utf8mb4''strip'')))',
+    -- STRCMP, А НЕ ОДИН ЛИШЬ СПИСОК. Интродьюсер `_utf8mb4` задаёт КОДИРОВКУ, а не регистр:
+    -- сравнение сводится к коллации колонки (`..._ai_ci`), и 'FULL' проходил бы как законное
+    -- значение. Цена промаха несимметрична: `PieceFusingModeOrFull` не найдёт такой ключ в карте и
+    -- МОЛЧА вернёт `full` — то есть полосу клеевой посчитает сплошным дублированием, ровно ту
+    -- ошибку, ради которой эта колонка и заведена. Дом уже стандартизировал эту форму в 0289/0306.
+    'ALTER TABLE tech_card_piece ADD CONSTRAINT chk_tcp_fusing_mode CHECK (fusing_mode IS NULL OR (fused = TRUE AND fusing_mode IN (_utf8mb4''full'', _utf8mb4''seam_allowance'', _utf8mb4''strip'') AND STRCMP(CAST(fusing_mode AS BINARY), CAST(LOWER(fusing_mode) AS BINARY)) = 0))',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
