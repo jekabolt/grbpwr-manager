@@ -79,6 +79,18 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/content"};
   }
 
+  // GetMediaUsage reports, for each requested media id, every place that still references it.
+  // The media library otherwise cannot tell a free file from one standing on the storefront:
+  // common.MediaFull carries no back-references, so deleting was a gamble — the FK simply
+  // refuses (DeleteFromBucket returns FailedPrecondition) and the operator never learns which
+  // of the seventeen referencing columns held it. Batched by id on purpose: a library page
+  // asks about its whole visible grid in one call rather than one call per tile.
+  // A media id with no references comes back with an empty refs list, never omitted, so the
+  // client can render "unused" without guessing whether the id was simply dropped.
+  rpc GetMediaUsage(GetMediaUsageRequest) returns (GetMediaUsageResponse) {
+    option (google.api.http) = {get: "/api/admin/content/usage"};
+  }
+
   // PRODUCTS MANAGER
 
   // CreateColorway creates a new DRAFT colourway attached to an existing style (R2/R4 write
@@ -2577,6 +2589,31 @@ message DeleteFromBucketRequest {
 }
 
 message DeleteFromBucketResponse {}
+
+message GetMediaUsageRequest {
+  repeated int32 media_ids = 1; // the media ids to look up, typically one library page
+}
+
+message GetMediaUsageResponse {
+  // One entry per requested id, including ids that turned out to be unreferenced (empty refs)
+  // and ids that no longer exist. Order is not guaranteed to match the request — match by media_id.
+  repeated MediaUsage usages = 1;
+}
+
+message MediaUsage {
+  int32 media_id = 1;
+  repeated MediaUsageRef refs = 2; // empty means the file is free to delete
+}
+
+// MediaUsageRef is one place holding on to a media item. Several refs may name the same
+// entity when it uses the file in more than one slot (a photo that is both the product
+// thumbnail and a gallery frame yields two refs with the same kind and entity_id).
+message MediaUsageRef {
+  string kind = 1; // product | archive | model | material | task | tech_card | fitting | sample
+  int32 entity_id = 2; // id of the entity to navigate to, in the space named by kind
+  string label = 3; // human-readable name of that entity, e.g. "CARGO PANTS BLACK"
+  string slot = 4; // where inside the entity, e.g. thumbnail | gallery | swatch | callout | moodboard
+}
 
 // PRODUCTS MANAGER
 
