@@ -44,9 +44,13 @@ SET @asm_new := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_operation'
       AND COLUMN_NAME = 'output_unit_key');
 SET @ddl := IF(@asm_new = 0,
+    -- ИМЯ УЗЛА — ЯВНО utf8mb4, а не «как у таблицы». Ключ рядом получает utf8mb4 через свою
+    -- коллацию, а имя без явного указания наследовало бы кодировку ТАБЛИЦЫ — на проде это
+    -- utf8mb3, и «рукав 🧵» падал бы сырым `ERROR 1366 Incorrect string value`. Воспроизвести это
+    -- на бете невозможно: она в utf8mb4, и там всё пишется.
     'ALTER TABLE tech_card_operation
         ADD COLUMN output_unit_key VARCHAR(64) COLLATE utf8mb4_bin NULL COMMENT ''код узла, который производит шаг (SHELL); NULL = обработка, шаг ничего не собирает. _bin: сравнение ключей побайтное'',
-        ADD COLUMN output_unit_name VARCHAR(255) NULL COMMENT ''имя узла; живёт на первом производящем шаге, поглощающие могут не повторять''',
+        ADD COLUMN output_unit_name VARCHAR(255) CHARACTER SET utf8mb4 NULL COMMENT ''имя узла; живёт на первом производящем шаге, поглощающие могут не повторять''',
     'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -92,8 +96,27 @@ CREATE TABLE IF NOT EXISTS tech_card_operation_input (
 --
 --    Идемпотентно через NOT EXISTS, а не INSERT IGNORE: IGNORE проглотил бы заодно и настоящие
 --    нарушения FK, превратив испорченную связь в молча пропущенную строку.
+--    ПОЗИЦИЯ ПЕРЕНУМЕРОВЫВАЕТСЯ, А НЕ КОПИРУЕТСЯ. Источник (0199) объявляет display_order как
+--    `INT NOT NULL DEFAULT 0` и уникальности на пару (operation_id, display_order) НЕ ИМЕЕТ — её
+--    держит только код приложения. Приёмник такую пару ЗАПРЕЩАЕТ (uniq_op_input_order выше).
+--    Дословное копирование поэтому корректно ровно до первой пары строк одного шага с одинаковой
+--    позицией: `ERROR 1062 Duplicate entry '2-0'`, строки в gorp_migrations нет, следующий старт
+--    повторяет падение — вечный цикл, причём readyz отвечает 200 от старого процесса, и снаружи
+--    это выглядит зависанием, а не отказом.
+--
+--    ROW_NUMBER делает перенос корректным при ЛЮБЫХ данных, а не при удачных: порядок берётся
+--    прежний (display_order), ничья разводится по piece_id — детерминированно, поэтому повторный
+--    прогон даёт те же номера. Проверять прод запросом больше не нужно.
+--
+--    Повторный запуск после падения ФАЙЛА (не этого оператора) безопасен: INSERT ... SELECT
+--    атомарен, поэтому полу-вставленного состояния не бывает, а NOT EXISTS отсекает уже
+--    перенесённое целиком. Новых строк в источнике между прогонами появиться не может: миграции
+--    идут на старте процесса, до того как сервер начинает отвечать, так что писателя в этот
+--    момент нет вовсе.
 INSERT INTO tech_card_operation_input (operation_id, piece_id, unit_key, display_order, created_at)
-SELECT p.operation_id, p.piece_id, NULL, p.display_order, p.created_at
+SELECT p.operation_id, p.piece_id, NULL,
+       ROW_NUMBER() OVER (PARTITION BY p.operation_id ORDER BY p.display_order, p.piece_id) - 1,
+       p.created_at
 FROM tech_card_operation_piece p
 WHERE NOT EXISTS (
     SELECT 1 FROM tech_card_operation_input i
