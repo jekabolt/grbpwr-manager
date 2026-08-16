@@ -17,6 +17,12 @@ import (
 // tech_card_size_pattern.filename / fitting_pattern.filename VARCHAR(255) columns).
 const maxPatternFilename = 255
 
+// maxMediaUsageIds bounds one usage lookup. The batch fans out to one placeholder per id per
+// registry entry (seventeen tables), so an unbounded request would build a statement with tens
+// of thousands of binds. A library page is ~50 tiles; 500 leaves generous headroom while keeping
+// the widest statement near 8.5k placeholders, well under MySQL's limit.
+const maxMediaUsageIds = 500
+
 // UploadContentImage
 func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_admin.UploadContentImageResponse, error) {
 	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, s.bucket.GetBaseFolder(), bucket.GetMediaName())
@@ -137,5 +143,67 @@ func (s *Server) ListObjectsPaged(ctx context.Context, req *pb_admin.ListObjects
 
 	return &pb_admin.ListObjectsPagedResponse{
 		List: entities,
+	}, nil
+}
+
+// GetMediaUsage reports where each requested media item is still referenced.
+//
+// Without it the library cannot distinguish a free file from one on the storefront, and
+// DeleteFromBucket's FailedPrecondition is the operator's only (useless) feedback: the FK
+// refuses, and nothing says which of the seventeen referencing columns held the file.
+//
+// Every requested id is answered, including unreferenced and non-existent ones, which come
+// back with an empty refs list. Omitting them would make "unused" indistinguishable from a
+// response the client failed to match up.
+func (s *Server) GetMediaUsage(ctx context.Context, req *pb_admin.GetMediaUsageRequest) (*pb_admin.GetMediaUsageResponse, error) {
+	// Deduplicate before counting against the cap: a client repeating an id must not be able
+	// to burn the budget, and the store would only fold the duplicates away anyway.
+	seen := make(map[int]struct{}, len(req.GetMediaIds()))
+	ids := make([]int, 0, len(req.GetMediaIds()))
+	for _, id := range req.GetMediaIds() {
+		if id <= 0 {
+			return nil, status.Errorf(codes.InvalidArgument, "media id must be positive, got %d", id)
+		}
+		if _, dup := seen[int(id)]; dup {
+			continue
+		}
+		seen[int(id)] = struct{}{}
+		ids = append(ids, int(id))
+	}
+	if len(ids) > maxMediaUsageIds {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"at most %d media ids per request, got %d", maxMediaUsageIds, len(ids))
+	}
+	if len(ids) == 0 {
+		return &pb_admin.GetMediaUsageResponse{}, nil
+	}
+
+	usage, err := s.repo.Media().GetMediaUsage(ctx, ids)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't get media usage",
+			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to get media usage: %v", err)
+	}
+
+	usages := make([]*pb_admin.MediaUsage, 0, len(ids))
+	for _, id := range ids {
+		refs := make([]*pb_admin.MediaUsageRef, 0, len(usage[id]))
+		for _, r := range usage[id] {
+			refs = append(refs, &pb_admin.MediaUsageRef{
+				Kind:     r.Kind,
+				EntityId: int32(r.EntityId),
+				Label:    r.Label,
+				Slot:     r.Slot,
+			})
+		}
+		usages = append(usages, &pb_admin.MediaUsage{
+			MediaId: int32(id),
+			Refs:    refs,
+		})
+	}
+
+	return &pb_admin.GetMediaUsageResponse{
+		Usages: usages,
 	}, nil
 }
