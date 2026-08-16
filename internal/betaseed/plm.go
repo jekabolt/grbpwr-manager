@@ -74,8 +74,11 @@ type plmState struct {
 	media []int32 // 3 uploaded jpegs
 
 	// stable line keys
-	pieceFrontKey, pieceBackKey                                 string
+	pieceFrontKey, pieceBackKey, pieceCuffKey                   string
 	bomFabricKey, bomHardwareKey, bomThreadKey, bomPackagingKey string
+
+	// durable equipment-profile keys (26-char, the shape the server validates)
+	overlockProfileKey, ironProfileKey string
 
 	// cut-list numeric piece ids (front, back)
 	pieceFrontID, pieceBackID int32
@@ -189,7 +192,19 @@ func (s *Seeder) tcFetch(ctx context.Context, styleID int32) (*common.TechCardIn
 }
 
 // tcSave full-replaces the tech card with a fresh lock_version (retry on 409).
+//
+// EVERY save states machine_fields_aware, and it is set HERE rather than on each payload because a
+// read-modify-write cycle is what the seeder does: tcFetch returns the stored card — machine types,
+// equipment profiles and all — and the flag is a property of the CLIENT, never of the body, so the
+// read never carries it back. A save that echoed those facts without the flag would be refused as
+// «an old bundle is about to flatten what a new one wrote», which is exactly what the flag is for.
 func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardInsert, label string) error {
+	tc.MachineFieldsAware = true
+	tc.MediaAware = true
+	// Осведомлённость о полях сборки. Сидер — первый настоящий НЕинтерактивный клиент фичи, и он
+	// обязан ходить штатным путём через все гейты: без флага щит отвергнет любое сохранение против
+	// карточки, которую сидер сам же и разметил.
+	tc.AssemblyAware = true
 	err := s.withLock(ctx, styleID, func(lv uint64) error {
 		_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{
 			Id:                  styleID,
@@ -267,10 +282,20 @@ func (s *Seeder) plmSetup(ctx context.Context, st *plmState) error {
 	// line keys
 	st.pieceFrontKey = s.key("piece-front")
 	st.pieceBackKey = s.key("piece-back")
+	// Третья деталь нужна ГРАФУ: с двумя деталями второй джойн собрать не из чего, а без второго
+	// джойна нет ни поглощения, ни настоящей проверки правила 4.
+	st.pieceCuffKey = s.key("piece-cuff")
 	st.bomFabricKey = s.key("bom-fabric")
 	st.bomHardwareKey = s.key("bom-hardware")
 	st.bomThreadKey = s.key("bom-thread")
 	st.bomPackagingKey = s.key("bom-packaging")
+
+	// Equipment-profile keys are DURABLE CLIENT-MINTED IDENTITIES, not readable run keys: the server
+	// validates a profile_key as exactly 26 alphanumerics (the piece / BOM line-key rule), because a
+	// step points at a profile by this key and the whole list is full-replaced on every save.
+	// seedIdempotencyKey mints exactly that shape.
+	st.overlockProfileKey = seedIdempotencyKey()
+	st.ironProfileKey = seedIdempotencyKey()
 
 	s.pass(st, "setup: sizes(m=%d l=%d) cat(top=%d sub=%d type=%d) meas=%v country=%s colors=%s,%s carrier=%d admin=%d/%d media=%v",
 		st.mID, st.lID, st.top, st.sub, st.typ, st.meas, st.country, st.color1, st.color2, st.carrier, st.myAdminID, st.otherAdminID, st.media)
@@ -362,6 +387,11 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			// singleton on purpose: the seeder runs repeatedly and must not clobber a shop-wide setting
 			// a human configured.
 			RequiredSeamAllowanceMm: decv("1"),
+			// The card is created by a client that knows about machines and ВТО profiles — every
+			// later save of it (via tcSave) says the same, and B.7 fills its equipment park.
+			MachineFieldsAware: true,
+			AssemblyAware:      true,
+			MediaAware:         true,
 		},
 	})
 	if err != nil {
@@ -456,6 +486,8 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_MIRRORED)},
 		{Name: "back panel", PiecesPerGarment: 1, Grainline: "lengthwise", Note: "single cut, on the fold", LineKey: st.pieceBackKey,
 			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_FOLD)},
+		{Name: "cuff", PiecesPerGarment: 2, Grainline: "crosswise", Note: "вход второго джойна — без него граф не собрать", LineKey: st.pieceCuffKey,
+			CutSymmetry: pcs(common.TechCardPieceCutSymmetry_TECH_CARD_PIECE_CUT_SYMMETRY_IDENTICAL)},
 	}
 	if err := s.tcSave(ctx, sid, tc, "B.6 pieces"); err != nil {
 		return err
@@ -469,11 +501,16 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	for _, p := range cl.GetPieces() {
 		// Matched by NAME now: the mirror flag used to be what told the two rows apart, and it is
 		// false on both from here on.
-		if p.GetName() == "front panel" {
+		//
+		// ЯВНЫЙ switch, а не if/else: раньше «всё, что не front» считалось back, и появление
+		// третьей детали молча перезаписало бы id спинки манжетой — вместе с проверками ниже,
+		// которые тогда сверяли бы не то, что думают.
+		switch p.GetName() {
+		case "front panel":
 			st.pieceFrontID = p.GetPieceId()
 			frontTotal = p.GetTotalPerGarment()
 			frontSym = p.GetCutSymmetry()
-		} else {
+		case "back panel":
 			st.pieceBackID = p.GetPieceId()
 			backTotal = p.GetTotalPerGarment()
 			backSym = p.GetCutSymmetry()
@@ -501,13 +538,34 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	if tc, err = s.tcFetch(ctx, sid); err != nil {
 		return err
 	}
+	// The card's equipment PARK replaces the two free-text answers this section used to give. The
+	// thread count was `overlock_thread_count` on the construction — one number that could only ever
+	// describe one overlock — and is a machine profile now; the ВТО prose was `pressing` and is a
+	// press profile with an actual temperature and dwell. The prose itself is not thrown away: it
+	// stays in the notes, which is exactly where 0306 put it for every existing card.
 	tc.Construction = &common.TechCardConstruction{
 		DefaultSeamClass:     common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_SS_PLAIN,
 		DefaultStitchesPerCm: decv("4"),
-		OverlockThreadCount:  4,
 		HemFinish:            "coverstitch double-fold",
-		Pressing:             "steam press, no top pressure on print",
-		Notes:                "QA seeded construction section",
+		Notes:                "QA seeded construction section\n\nВТО: steam press, no top pressure on print",
+		EquipmentDefaults: &common.TechCardEquipmentDefaults{
+			Machines: []*common.TechCardMachineProfile{{
+				ProfileKey:  st.overlockProfileKey,
+				Label:       "seed overlock",
+				MachineType: common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_OVERLOCK,
+				ThreadCount: 4,
+			}},
+			Presses: []*common.TechCardPressProfile{{
+				ProfileKey:        st.ironProfileKey,
+				Label:             "seed iron",
+				PressEquipment:    common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_IRON,
+				OperationType:     common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS,
+				PressTemperatureC: 140,
+				PressDwellSec:     10,
+				PressSteam:        pbool(true),
+				Note:              "no top pressure on print",
+			}},
+		},
 	}
 	tc.SizeIds = []int32{st.mID, st.lID}
 	if err := s.tcSave(ctx, sid, tc, "B.7/B.8 construction+size_ids"); err != nil {
@@ -519,7 +577,23 @@ func (s *Seeder) plmDesign(ctx context.Context, st *plmState) error {
 	if tc.GetConstruction().GetDefaultSeamClass() == common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_UNKNOWN || len(tc.GetSizeIds()) != 2 {
 		return fmt.Errorf("B.7/B.8 readback: construction=%v size_ids=%d", tc.GetConstruction().GetDefaultSeamClass(), len(tc.GetSizeIds()))
 	}
-	s.pass(st, "B.7 construction.defaultSeamClass=%v; B.8 size_ids=[%d,%d]", tc.GetConstruction().GetDefaultSeamClass(), st.mID, st.lID)
+	// The park has to come BACK, wrapper and all: a read that dropped it would make the next save
+	// (and the seasonal clone, which round-trips the read) silently lose the profiles.
+	park := tc.GetConstruction().GetEquipmentDefaults()
+	if len(park.GetMachines()) != 1 || len(park.GetPresses()) != 1 {
+		return fmt.Errorf("B.7 equipment park readback: machines=%d presses=%d (want 1/1)",
+			len(park.GetMachines()), len(park.GetPresses()))
+	}
+	if park.GetMachines()[0].GetProfileKey() != st.overlockProfileKey || park.GetMachines()[0].GetThreadCount() != 4 {
+		return fmt.Errorf("B.7 overlock profile readback: key=%q threads=%d",
+			park.GetMachines()[0].GetProfileKey(), park.GetMachines()[0].GetThreadCount())
+	}
+	if park.GetPresses()[0].GetPressTemperatureC() != 140 || !park.GetPresses()[0].GetPressSteam() {
+		return fmt.Errorf("B.7 iron profile readback: temp=%d steam=%v",
+			park.GetPresses()[0].GetPressTemperatureC(), park.GetPresses()[0].GetPressSteam())
+	}
+	s.pass(st, "B.7 construction.defaultSeamClass=%v + equipment park (overlock 4 threads, iron 140C/10s steam); B.8 size_ids=[%d,%d]",
+		tc.GetConstruction().GetDefaultSeamClass(), st.mID, st.lID)
 
 	// style size chart (shares the lock_version).
 	if err := s.withLock(ctx, sid, func(lv uint64) error {
@@ -710,15 +784,50 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_PACKAGING, Name: "Shipping Box - Standard", MaterialId: m.Packaging, LineKey: st.bomPackagingKey,
 			Unit: "pcs", UnitPrice: decv("0.60"), Currency: "EUR"},
 	}
+	// MACHINE + machine_type, not the legacy LOCKSTITCH: «что делаем» and «на чём» are two fields
+	// now, and the legacy token would be canonicalised into exactly this pair anyway. The seeder is
+	// the only automatic end-to-end run of a card, so it speaks the form the client will send.
+	// СБОРОЧНЫЙ ГРАФ (0307), а не одна операция. Раньше здесь сеялся единственный шаг вовсе без
+	// привязок к деталям, и «дозаполнить его узлами» было невозможно: джойну нужно не меньше двух
+	// входов, а входов не было ни одного.
+	//
+	// Граф намеренно проходит ВСЕ правила, включая четвёртое: один терминал, и каждая деталь в
+	// него попадает. Бета — единственное место, где фичу можно увидеть работающей до того, как её
+	// разметит живой технолог, поэтому демо обязано быть валидным, а не просто непустым.
+	//
+	//   10  полочка + спинка              → SHELL      джойн: узел рождается
+	//   20  SHELL                         → (ничего)   обработка: вход остаётся на столе
+	//   30  SHELL + манжета               → SHELL      ПОГЛОЩЕНИЕ: узел сохраняет идентичность
+	//
+	// Терминал ровно один (SHELL), в него входят все три детали.
 	tc.Operations = []*common.TechCardOperation{
 		{OperationNumber: 10,
-			OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH,
+			OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			MachineType:   common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
 			// CLOSURE, not OUTER: the zone now says WHERE on the garment, and «front placket» — the
 			// free-text placement this row used to carry — is exactly what it replaces.
-			Zone:         common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_CLOSURE,
-			BomLineKeys:  []string{st.bomHardwareKey},
-			CalloutNumber: 1,
-			Note:          "attach main zipper to front placket"},
+			Zone:           common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_CLOSURE,
+			BomLineKeys:    []string{st.bomHardwareKey},
+			CalloutNumber:  1,
+			InputKeys:      []string{st.pieceFrontKey, st.pieceBackKey},
+			OutputUnitKey:  "SHELL",
+			OutputUnitName: "корпус",
+			Note:           "attach main zipper to front placket"},
+		{OperationNumber: 20,
+			OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			MachineType:   common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+			Zone:          common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OTHER,
+			// Обработка: выходного ключа НЕТ. Её вход не съедается и остаётся доступным шагу 30 —
+			// в этом вся разница между обработкой и джойном.
+			InputKeys: []string{"SHELL"},
+			Note:      "отстрочка по корпусу"},
+		{OperationNumber: 30,
+			OperationType:  common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			MachineType:    common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+			Zone:           common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_SLEEVE,
+			InputKeys:      []string{"SHELL", st.pieceCuffKey},
+			OutputUnitKey:  "SHELL",
+			Note:           "притачать манжету — узел вбирает деталь, идентичность сохраняется"},
 	}
 
 	// NEGATIVE: an operation referencing an unknown bom_line_key must be rejected (400).
@@ -727,13 +836,20 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	// The probe is the unknown key and nothing else: with `node` gone, the row carries only the two
 	// required fields plus the bad reference, so a rejection can mean one thing.
 	neg.Operations = append(neg.Operations, &common.TechCardOperation{
-		OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_LOCKSTITCH,
+		OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+		MachineType:   common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
 		Zone:          common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OTHER,
 		BomLineKeys:   []string{"does-not-exist-xyz"}})
 	negLV, err := s.lockVersion(ctx, sid)
 	if err != nil {
 		return err
 	}
+	// The probe bypasses tcSave, so it states the capability itself — a payload carrying machine
+	// facts without the flag is refused for a DIFFERENT reason, and the probe would then pass while
+	// proving nothing about bom_line_key.
+	neg.MachineFieldsAware = true
+	neg.AssemblyAware = true
+	neg.MediaAware = true
 	_, negErr := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(negLV), TechCard: neg})
 	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
 		return fmt.Errorf("NEGATIVE bad bomLineKey: expected HTTP 400, got %v", negErr)
@@ -1364,6 +1480,11 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 		return err
 	}
 	tc2.Notes = "stray edit while released"
+	// Same reason as the bom_line_key probe: this one bypasses tcSave, and the fetched body carries
+	// the card's machine facts, so it must state the capability or it is refused for the wrong reason.
+	tc2.MachineFieldsAware = true
+	tc2.AssemblyAware = true
+	tc2.MediaAware = true
 	strayLV, err := s.lockVersion(ctx, sid)
 	if err != nil {
 		return err
@@ -1434,6 +1555,9 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 			Name: names[i] + " (PLM seed)", Purpose: common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY,
 			AuxSubtype: sub, OutputMaterialId: int32(matID),
 			Stage: common.TechCardStage_TECH_CARD_STAGE_PROD, ApprovalState: common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT,
+			MachineFieldsAware: true,
+			AssemblyAware:      true,
+			MediaAware:         true,
 		}})
 		if err != nil {
 			return fmt.Errorf("CreateTechCard(aux %s): %w", names[i], err)
@@ -2087,6 +2211,15 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			defer wg.Done()
 			body := proto.Clone(base).(*common.TechCardInsert)
 			body.Notes = fmt.Sprintf("race-%d-%s", idx, s.Run)
+			// Both racers are new-generation clients; without the flag the loser would be refused by
+			// the capability gate instead of by the lock, and the race would prove nothing.
+			// ВСЕ ТРИ ФЛАГА, А НЕ ОДИН. `body` — клон прочитанной карточки, а чтение отдаёт узлы
+			// сборки безусловно: с одним лишь machine-флагом щит сборки отвергал ОБА гонщика
+			// (FailedPrecondition вместо 200 и 409), и финальная фаза сидера падала, ни разу не
+			// проверив то, ради чего написана, — оптимистическую блокировку.
+			body.MachineFieldsAware = true
+			body.AssemblyAware = true
+			body.MediaAware = true
 			_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(raceLV), TechCard: body})
 			if e == nil {
 				codes[idx] = 200

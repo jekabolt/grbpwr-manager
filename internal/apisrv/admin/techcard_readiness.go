@@ -69,7 +69,8 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 	resp.NextStageReady = allReadinessMet(resp.NextStageRequirements)
 	// Слоты, из-за которых цена карточки СЕГОДНЯ не считается (Ф1). Отдельный вход, потому что
 	// facts — это одна SQL-строка, а этот ответ выводится из геометрии, спецификации и рецептов.
-	resp.ReleaseRequirements = releaseRequirements(facts, staleSignoffs, dto.TechCardCostBlockers(card, s.costingFx(ctx)))
+	resp.ReleaseRequirements = releaseRequirements(facts, staleSignoffs,
+		dto.TechCardCostBlockers(card, s.costingFx(ctx)), dto.TechCardAssemblyBlocker(card))
 	resp.ReleaseReady = allReadinessMet(resp.ReleaseRequirements)
 	return resp, nil
 }
@@ -129,7 +130,7 @@ func nextStageRequirements(target entity.TechCardStage, f entity.TechCardReadine
 // factory is handed. Independent of the stage checklist: a sampling-complete style can still be
 // un-releasable (no costing currency, a colourway whose lab dip nobody signed).
 func releaseRequirements(f entity.TechCardReadinessFacts, staleSignoffs []entity.TechCardSignoffSection,
-	costBlockers []string) []*pb_admin.TechCardReadinessRequirement {
+	costBlockers []string, assemblyBlocker string) []*pb_admin.TechCardReadinessRequirement {
 	return []*pb_admin.TechCardReadinessRequirement{
 		readinessReq("style_number", "the style has a style number", f.HasStyleNumber, "no style number set"),
 		readinessReq("size_range", "the size range is not empty", f.Sizes > 0, "no sizes in the range"),
@@ -156,6 +157,12 @@ func releaseRequirements(f entity.TechCardReadinessFacts, staleSignoffs []entity
 		readinessReq("signoffs", "every recorded sign-off is approved",
 			f.Signoffs > 0 && f.SignoffsApproved == f.Signoffs && len(staleSignoffs) == 0,
 			signoffsDetail(f, staleSignoffs)),
+		// Совещательная половина правила 4. Жёсткий отказ живёт в конвертере и срабатывает уже на
+		// попытке сохранить RELEASED — без этой строки чек-лист обещал бы готовность, которую
+		// сохранение тут же опровергнет. На неразмеченной карточке выполняется вакуумно: узлов
+		// нет, сходиться нечему, и это все сегодняшние карточки.
+		readinessReq("construction_graph", "the assembly graph converges into one garment",
+			assemblyBlocker == "", assemblyBlocker),
 	}
 }
 

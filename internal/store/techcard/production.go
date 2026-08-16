@@ -3,7 +3,10 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -12,26 +15,169 @@ import (
 
 // --- inserts (called within the AddTechCard / UpdateTechCard transaction) ---
 
+// insertTechCardConstruction writes the card's DEFAULTS row.
+//
+// `pressing` and `overlock_thread_count` are NOT written and are not a forgotten pair: 0306 dropped
+// both columns — the prose moved into `notes` under a tag and the thread count became an overlock
+// PROFILE, because one thread count on a card could only ever describe one overlock and a card may
+// run several. The entity no longer carries either field; what survives them is their frozen
+// POSITION in the CONSTRUCTION digest tuple. Naming either column here is an immediate 1054 on
+// every save that touches construction.
 func insertTechCardConstruction(ctx context.Context, db dependency.DB, tcID int, c *entity.TechCardConstruction) error {
 	if c == nil {
 		return nil
 	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_construction
-			(tech_card_id, default_seam_class, default_stitches_per_cm, overlock_thread_count,
-			 hem_finish, pressing, notes)
-		VALUES (:tech_card_id, :default_seam_class, :default_stitches_per_cm, :overlock_thread_count,
-			 :hem_finish, :pressing, :notes)`,
+			(tech_card_id, default_seam_class, default_stitches_per_cm, hem_finish, notes)
+		VALUES (:tech_card_id, :default_seam_class, :default_stitches_per_cm, :hem_finish, :notes)`,
 		map[string]any{
 			"tech_card_id":            tcID,
 			"default_seam_class":      c.DefaultSeamClass,
 			"default_stitches_per_cm": c.DefaultStitchesPerCm,
-			"overlock_thread_count":   c.OverlockThreadCount,
 			"hem_finish":              c.HemFinish,
-			"pressing":                c.Pressing,
 			"notes":                   c.Notes,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card construction: %w", err)
+	}
+	return nil
+}
+
+// equipmentKindMachine / equipmentKindPress say which of the two lists a profile row came from. The
+// kind is written from THE LIST, never inferred from a field, and that is what makes «a machine row
+// wearing press settings» unrepresentable rather than merely refused: entity.TechCardMachineProfile
+// has no press fields to fill and entity.TechCardPressProfile has no machine fields.
+const (
+	equipmentKindMachine = "machine"
+	equipmentKindPress   = "press"
+)
+
+// insertTechCardEquipmentProfiles writes the card's equipment park — the machines this style is sewn
+// on and the ВТО modes it is pressed in — into the one table both kinds share.
+//
+// PRESENCE, not emptiness, is the gate, and the same nil is read in two places for two different
+// reasons: here it means «this payload has nothing to write», and in UpdateTechCard's full-replace
+// loop it means «do not DELETE what is stored». A caller that honoured only one of the two would
+// either lose the stored park or write a second copy of it.
+func insertTechCardEquipmentProfiles(ctx context.Context, db dependency.DB, tcID int, c *entity.TechCardConstruction) error {
+	if c == nil || c.EquipmentDefaults == nil {
+		return nil
+	}
+	d := c.EquipmentDefaults
+	if err := validateTechCardEquipmentProfiles(d); err != nil {
+		return err
+	}
+	rows := make([]map[string]any, 0, len(d.Machines)+len(d.Presses))
+	for _, m := range d.Machines {
+		row := equipmentProfileRow(tcID, equipmentKindMachine, m.ProfileKey, m.MachineType, m.Label, m.Note)
+		row["thread_count"] = m.ThreadCount
+		row["needle_type"] = m.NeedleType
+		row["needle_size_nm"] = m.NeedleSizeNm
+		row["bed_type"] = m.BedType
+		row["automation"] = m.Automation
+		row["thread_tension"] = m.ThreadTension
+		row["thread_tension_note"] = m.ThreadTensionNote
+		row["attachment_kind"] = m.AttachmentKind
+		row["stitches_per_cm"] = m.StitchesPerCm
+		row["stitch_width_mm"] = m.StitchWidthMm
+		rows = append(rows, row)
+	}
+	for _, p := range d.Presses {
+		row := equipmentProfileRow(tcID, equipmentKindPress, p.ProfileKey, p.PressEquipment, p.Label, p.Note)
+		row["press_operation_type"] = p.PressOperationType
+		row["press_temperature_c"] = p.PressTemperatureC
+		row["press_dwell_sec"] = p.PressDwellSec
+		row["press_pressure_n_cm2"] = p.PressPressureNCm2
+		row["press_steam"] = p.PressSteam
+		row["press_cloth"] = p.PressCloth
+		rows = append(rows, row)
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_equipment_profile", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card equipment profiles: %w", err)
+	}
+	return nil
+}
+
+// equipmentProfileRow builds the FULL column set of one profile row with both kind-specific blocks
+// empty, and both kinds go through it. Not tidiness: BulkInsert takes its column list from the FIRST
+// row of the batch, so a machine row and a press row carrying different keys would write whichever
+// kind came first and silently drop the other kind's settings on the floor.
+func equipmentProfileRow(tcID int, kind, profileKey, equipment string, label, note sql.NullString) map[string]any {
+	return map[string]any{
+		"tech_card_id": tcID,
+		"profile_key":  profileKey,
+		"kind":         kind,
+		"equipment":    equipment,
+		"label":        label,
+		"note":         note,
+		// The other kind's block stays NULL. NULL here is not «inherit» — a profile inherits from
+		// nothing; it is «this setting does not exist on this kind of equipment».
+		"thread_count":         nil,
+		"needle_type":          nil,
+		"needle_size_nm":       nil,
+		"bed_type":             nil,
+		"automation":           nil,
+		"thread_tension":       nil,
+		"thread_tension_note":  nil,
+		"attachment_kind":      nil,
+		"stitches_per_cm":      nil,
+		"stitch_width_mm":      nil,
+		"press_operation_type": nil,
+		"press_temperature_c":  nil,
+		"press_dwell_sec":      nil,
+		"press_pressure_n_cm2": nil,
+		"press_steam":          nil,
+		"press_cloth":          nil,
+	}
+}
+
+// validateTechCardEquipmentProfiles closes the one thing 0306 deliberately leaves open: the PAIR
+// (kind, equipment). The schema checks the two vocabularies as a union — `chk_eqp_equipment` accepts
+// every machine token and every press token in the one column both kinds share — so
+// `INSERT (kind='machine', equipment='iron')` passes the database and lands a press in the machine
+// park, where the read path hands it back as a machine type nothing maps and the machine silently
+// disappears off the card. A two-column CHECK would have caught it with error 3819: no field name,
+// no words, for a value the operator picked from a list — the argument 0289 settled, so the pair is
+// checked here instead, in a sentence.
+//
+// The other half of the invariant needs no check and gets none: «a machine row with press columns
+// filled» is unrepresentable — see the comment on equipmentKindMachine.
+func validateTechCardEquipmentProfiles(d *entity.TechCardEquipmentDefaults) error {
+	for i := range d.Machines {
+		field := fmt.Sprintf("construction.equipment_defaults.machines[%d]", i)
+		if err := requireEquipmentProfileKey(d.Machines[i].ProfileKey, field); err != nil {
+			return err
+		}
+		if !entity.ValidMachineTypes[entity.TechCardMachineType(d.Machines[i].MachineType)] {
+			return entity.NewFieldViolation(field+".machine_type", "not_a_machine_type",
+				d.Machines[i].MachineType,
+				"a machine profile has to name a sewing machine; iron / press / fusing_press / steam_dummy / steamer belong to a PRESS profile")
+		}
+	}
+	for i := range d.Presses {
+		field := fmt.Sprintf("construction.equipment_defaults.presses[%d]", i)
+		if err := requireEquipmentProfileKey(d.Presses[i].ProfileKey, field); err != nil {
+			return err
+		}
+		if !entity.ValidPressEquipment[entity.TechCardPressEquipment(d.Presses[i].PressEquipment)] {
+			return entity.NewFieldViolation(field+".press_equipment", "not_press_equipment",
+				d.Presses[i].PressEquipment,
+				"a press profile has to name pressing equipment; a sewing machine belongs to a MACHINE profile")
+		}
+	}
+	return nil
+}
+
+// requireEquipmentProfileKey refuses a blank durable key. The column is CHAR(26) NOT NULL and MySQL
+// takes ” happily, so the schema cannot catch this; what it does catch is the SECOND blank-keyed
+// profile, as a 1062 on uq_equipment_profile_key with nothing in it an operator could act on. A
+// wire payload never gets here (dto mints a key for an empty one), which leaves the direct entity
+// writers — the seeder, the clone path's fixtures, tests — and a keyless profile is a row no step
+// can ever reference.
+func requireEquipmentProfileKey(key, field string) error {
+	if strings.TrimSpace(key) == "" {
+		return entity.NewFieldViolation(field+".profile_key", "required", "",
+			"an equipment profile is identified by its durable key — a row without one is one no step can point at")
 	}
 	return nil
 }
@@ -61,15 +207,118 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"note":               o.Note,
 			"callout_number":     o.CalloutNumber,
 			"display_order":      i,
+			// «На чём» (0306) — the machine block and the ВТО block. Every one of these is an
+			// OVERRIDE: NULL means «inherit from the profile the step points at, or from the card»,
+			// and the store never materialises an inherited value into the row — the moment it does,
+			// «the technologist chose 4 threads» stops being distinguishable from «it defaulted to 4».
+			// The two profile keys are SOFT references (no FK): the park is full-replaced on every
+			// save, so a key naming nothing means «nothing to inherit», not «this row is invalid».
+			"machine_type":         o.MachineType,
+			"machine_profile_key":  o.MachineProfileKey,
+			"thread_count":         o.ThreadCount,
+			"needle_type":          o.NeedleType,
+			"needle_size_nm":       o.NeedleSizeNm,
+			"thread_tension":       o.ThreadTension,
+			"thread_tension_note":  o.ThreadTensionNote,
+			"stitch_width_mm":      o.StitchWidthMm,
+			"press_equipment":      o.PressEquipment,
+			"press_profile_key":    o.PressProfileKey,
+			"press_temperature_c":  o.PressTemperatureC,
+			"press_dwell_sec":      o.PressDwellSec,
+			"press_pressure_n_cm2": o.PressPressureNCm2,
+			// Three-valued: NULL inherits, 0 is «без пара» — a real instruction, which is why the
+			// column is written from a NullBool and not from a plain bool.
+			"press_steam": o.PressSteam,
+			"press_cloth": o.PressCloth,
+			// Сборка (0307). Пусто = шаг ничего не собирает: это обработка, а не «не заполнено».
+			// Колонка ключа _bin — сравнение побайтное, как обещает контракт.
+			"output_unit_key":  o.OutputUnitKey,
+			"output_unit_name": o.OutputUnitName,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card operations: %w", err)
 	}
-	if err := insertTechCardOperationPieces(ctx, db, tcID, ops); err != nil {
+	if err := insertTechCardOperationInputs(ctx, db, tcID, ops); err != nil {
+		return err
+	}
+	if err := insertTechCardOperationMedia(ctx, db, tcID, ops); err != nil {
 		return err
 	}
 	return insertTechCardOperationBoms(ctx, db, tcID, ops, bomRes)
+}
+
+// insertTechCardOperationMedia пишет фотографии шагов с выносками (0308).
+//
+// Выноски едут JSON-колонкой одним значением на картинку: у выноски нет внешних ссылок, она
+// читается и пишется только целиком со своим снимком. Форма уже проверена в dto — сюда приходит
+// то, что сервер согласился считать выноской, и стор не валидирует повторно.
+//
+// Ids операций перечитываются по display_order — та же причина, что у входов и BOM-связей выше:
+// BulkInsert их не возвращает, а вставка по одной ради LastInsertId стоила бы round-trip на шаг.
+func insertTechCardOperationMedia(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+	wanted := false
+	for i := range ops {
+		if len(ops[i].Media) > 0 {
+			wanted = true
+			break
+		}
+	}
+	if !wanted {
+		return nil
+	}
+	opRows, err := storeutil.QueryListNamed[struct {
+		Id           int `db:"id"`
+		DisplayOrder int `db:"display_order"`
+	}](ctx, db,
+		`SELECT id, display_order FROM tech_card_operation WHERE tech_card_id = :id`,
+		map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("load operations for media links: %w", err)
+	}
+	opIDByOrder := make(map[int]int, len(opRows))
+	for _, r := range opRows {
+		opIDByOrder[r.DisplayOrder] = r.Id
+	}
+
+	rows := make([]map[string]any, 0)
+	for i, o := range ops {
+		if len(o.Media) == 0 {
+			continue
+		}
+		opID, ok := opIDByOrder[i]
+		if !ok {
+			return fmt.Errorf("operation %d missing after insert", i)
+		}
+		for j, m := range o.Media {
+			anns := m.Annotations
+			if anns == nil {
+				anns = []entity.TechCardAnnotation{}
+			}
+			raw, err := json.Marshal(anns)
+			if err != nil {
+				return fmt.Errorf("marshal annotations of operation %d media %d: %w", i, j, err)
+			}
+			var caption any
+			if m.Caption.Valid && m.Caption.String != "" {
+				caption = m.Caption.String
+			}
+			rows = append(rows, map[string]any{
+				"tech_card_operation_id": opID,
+				"media_id":               m.MediaId,
+				"caption":                caption,
+				// Позиция В СПИСКЕ ШАГА, а не сквозная: филмстрип листается внутри своего шага.
+				"display_order": j,
+				"annotations":   string(raw),
+			})
+		}
+	}
+	if len(rows) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_media", rows); err != nil {
+			return fmt.Errorf("failed to insert operation media: %w", err)
+		}
+	}
+	return nil
 }
 
 // insertTechCardOperationBoms writes the operation -> BOM-line links (0200): the off-part materials
@@ -130,18 +379,25 @@ func insertTechCardOperationBoms(ctx context.Context, db dependency.DB, tcID int
 	return nil
 }
 
-// insertTechCardOperationPieces writes the operation -> cut-piece links (0199). Many-to-many, unlike
-// the recipe's single usage.piece_id: an assembly operation spans as many pieces as it joins.
+// insertTechCardOperationInputs writes the ЕДИНЫЙ упорядоченный список входов операции (0307):
+// каждая строка — либо деталь, либо узел, и display_order — позиция в ОБЪЕДИНЕНИИ.
 //
-// It re-reads the operation ids rather than threading them out of the bulk insert, because
-// BulkInsert returns no ids and inserting one-by-one just to collect LastInsertId would cost a
-// round-trip per operation. display_order is unique within a card and is what was just written, so
-// it is a reliable join back. Cut-pieces are upserted BEFORE operations in insertTechCardChildren,
-// so their line_keys already resolve here.
-func insertTechCardOperationPieces(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+// Пишет ДВЕ таблицы. Новая tech_card_operation_input — истина; легаси tech_card_operation_piece
+// (0199) заполняется зеркально и остаётся источником для отката. Причина домовая: провалившийся
+// деплой на DO откатывается сам, а readyz при этом возвращает 200 старым процессом — откатившийся
+// код обязан найти свою таблицу наполненной. Двойная запись стоит десяти строк, потому что список
+// уже канонический: детали из него фильтруются одним проходом.
+//
+// Ids операций перечитываются, а не протаскиваются из bulk-вставки: BulkInsert их не возвращает, а
+// вставка по одной ради LastInsertId стоила бы round-trip на операцию. display_order уникален
+// внутри карточки и только что записан, поэтому это надёжный join назад. Детали апсертятся ДО
+// операций в insertTechCardChildren, так что их line_key здесь уже резолвятся.
+func insertTechCardOperationInputs(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+	// Гвард считает ОБЪЕДИНЕНИЕ, а не только детали: шаг, у которого входы — одни узлы, при
+	// проверке по PieceLineKeys потерял бы их целиком.
 	wanted := false
 	for i := range ops {
-		if len(ops[i].PieceLineKeys) > 0 {
+		if len(ops[i].AssemblyInputs) > 0 || len(ops[i].PieceLineKeys) > 0 {
 			wanted = true
 			break
 		}
@@ -174,33 +430,69 @@ func insertTechCardOperationPieces(ctx context.Context, db dependency.DB, tcID i
 		opIDByOrder[r.DisplayOrder] = r.Id
 	}
 
-	links := make([]map[string]any, 0)
+	inputs := make([]map[string]any, 0)
+	legacy := make([]map[string]any, 0)
 	for i, o := range ops {
 		opID, ok := opIDByOrder[i]
 		if !ok {
 			return fmt.Errorf("operation %d missing after insert", i)
 		}
-		for j, key := range o.PieceLineKeys {
-			pieceID, ok := pieceByKey[key]
+		// Канонический список приходит из конвертера. Пустой он только у неосведомлённой записи,
+		// которую канонизация не трогала: тогда объединение вырождается в легаси-проекцию.
+		union := o.AssemblyInputs
+		if len(union) == 0 {
+			union = make([]entity.OperationInput, 0, len(o.PieceLineKeys))
+			for _, k := range o.PieceLineKeys {
+				union = append(union, entity.OperationInput{Kind: entity.AssemblyInputPiece, Key: k})
+			}
+		}
+		legacyOrder := 0
+		for j, in := range union {
+			if in.Kind == entity.AssemblyInputUnit {
+				// Узел — ссылка по ключу, без FK: узел не строка таблицы, а результат шага.
+				// Существование ключа уже удостоверено канонизацией (правило 1).
+				inputs = append(inputs, map[string]any{
+					"operation_id":  opID,
+					"piece_id":      nil,
+					"unit_key":      in.Key,
+					"display_order": j,
+				})
+				continue
+			}
+			pieceID, ok := pieceByKey[in.Key]
 			if !ok {
 				// Field-tagged rather than a bare error, so the admin client can pin it to the exact
 				// operation row instead of failing the whole card with an unattributable message.
-				return entity.NewFieldViolation(fmt.Sprintf("operations[%d].piece_line_keys[%d]", i, j),
-					fmt.Sprintf("no cut-piece %q in this style", key), "",
+				return entity.NewFieldViolation(fmt.Sprintf("operations[%d].input_keys[%d]", i, j),
+					fmt.Sprintf("no cut-piece %q in this style", in.Key), "",
 					"reference an existing cut-piece by its line_key")
 			}
-			links = append(links, map[string]any{
+			inputs = append(inputs, map[string]any{
 				"operation_id":  opID,
 				"piece_id":      pieceID,
+				"unit_key":      nil,
 				"display_order": j,
 			})
+			// Легаси-зеркало нумеруется по СВОЕЙ шкале (только детали, подряд): у 0199 порядок
+			// пер-табличный, и записать в него сквозные позиции объединения значило бы отдать
+			// откатившемуся коду дыры в нумерации.
+			legacy = append(legacy, map[string]any{
+				"operation_id":  opID,
+				"piece_id":      pieceID,
+				"display_order": legacyOrder,
+			})
+			legacyOrder++
 		}
 	}
-	if len(links) == 0 {
-		return nil
+	if len(inputs) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_input", inputs); err != nil {
+			return fmt.Errorf("failed to insert operation inputs: %w", err)
+		}
 	}
-	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_piece", links); err != nil {
-		return fmt.Errorf("failed to insert operation piece links: %w", err)
+	if len(legacy) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_piece", legacy); err != nil {
+			return fmt.Errorf("failed to insert operation piece links: %w", err)
+		}
 	}
 	return nil
 }
@@ -400,8 +692,15 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		ids = append(ids, cards[i].Id)
 	}
 
+	// Explicit column list, not SELECT * (the packaging precedent below). 0306 dropped `pressing` and
+	// `overlock_thread_count`, and the entity fields went with them. A star makes every read depend
+	// on those two moving in exact lockstep — and on a Down they do not: the columns come back while
+	// the struct has nowhere to put them, and a strict StructScan refuses an unmapped column. Naming
+	// the columns turns «the migration and the binary ship together» from a hidden requirement into
+	// one that shows up in this list.
 	consRows, err := storeutil.QueryListNamed[techCardConstructionRow](ctx, s.DB,
-		`SELECT * FROM tech_card_construction WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
+		`SELECT tech_card_id, default_seam_class, default_stitches_per_cm, hem_finish, notes
+		 FROM tech_card_construction WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card construction: %w", err)
 	}
@@ -409,6 +708,48 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	for i := range consRows {
 		c := consRows[i].TechCardConstruction
 		consByCard[consRows[i].TechCardID] = &c
+	}
+
+	// The card's equipment park (0306). Read as two passes rather than one flat row split by kind:
+	// the two entity structs already carry the db tags for their own halves, and a third restatement
+	// of twenty-odd column names is a third place for them to drift. Ordered by profile_key so a read
+	// is stable; the digest sorts by key again in its own projection and does not rely on this.
+	machineRows, err := storeutil.QueryListNamed[entity.TechCardMachineProfile](ctx, s.DB, `
+		SELECT id, tech_card_id, profile_key, label, equipment, thread_count, needle_type,
+		       needle_size_nm, bed_type, automation, thread_tension, thread_tension_note,
+		       attachment_kind, stitches_per_cm, stitch_width_mm, note
+		FROM tech_card_equipment_profile
+		WHERE tech_card_id IN (:ids) AND kind = 'machine'
+		ORDER BY tech_card_id, profile_key`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card machine profiles: %w", err)
+	}
+	pressRows, err := storeutil.QueryListNamed[entity.TechCardPressProfile](ctx, s.DB, `
+		SELECT id, tech_card_id, profile_key, label, equipment, press_operation_type,
+		       press_temperature_c, press_dwell_sec, press_pressure_n_cm2, press_steam,
+		       press_cloth, note
+		FROM tech_card_equipment_profile
+		WHERE tech_card_id IN (:ids) AND kind = 'press'
+		ORDER BY tech_card_id, profile_key`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card press profiles: %w", err)
+	}
+	equipmentByCard := make(map[int]*entity.TechCardEquipmentDefaults)
+	equipmentOf := func(cardID int) *entity.TechCardEquipmentDefaults {
+		d, ok := equipmentByCard[cardID]
+		if !ok {
+			d = &entity.TechCardEquipmentDefaults{}
+			equipmentByCard[cardID] = d
+		}
+		return d
+	}
+	for i := range machineRows {
+		d := equipmentOf(machineRows[i].TechCardId)
+		d.Machines = append(d.Machines, machineRows[i])
+	}
+	for i := range pressRows {
+		d := equipmentOf(pressRows[i].TechCardId)
+		d.Presses = append(d.Presses, pressRows[i])
 	}
 
 	// Operations are returned sorted ascending by operation_number (the addressable
@@ -423,7 +764,12 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		       o.stitches_per_cm, o.seam_class, o.seam_allowance_mm,
 		       o.topstitch_mode, o.topstitch_width_mm, o.topstitch_rows,
 		       o.attachment_kind, o.attachment_size_mm,
-		       o.smv, o.note, o.callout_number
+		       o.machine_type, o.machine_profile_key, o.thread_count, o.needle_type,
+		       o.needle_size_nm, o.thread_tension, o.thread_tension_note, o.stitch_width_mm,
+		       o.press_equipment, o.press_profile_key, o.press_temperature_c, o.press_dwell_sec,
+		       o.press_pressure_n_cm2, o.press_steam, o.press_cloth,
+		       o.smv, o.note, o.callout_number,
+		       o.output_unit_key, o.output_unit_name
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`,
@@ -444,10 +790,65 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		posByOpID[r.Id] = operationPos{cardID: r.TechCardID, index: len(opsByCard[r.TechCardID]) - 1}
 	}
 
-	// Operation -> cut-piece links (0199). Read as its own pass and joined back by operation_id — the
-	// row identity, not a positional proxy for it. line_key travels alongside the id so the client
-	// gets the durable reference it writes with, not just the resolved FK.
-	pieceLinkRows, err := storeutil.QueryListNamed[struct {
+	// Входы операции — ЕДИНЫЙ упорядоченный список (0307). Читается своим проходом и цепляется
+	// назад по operation_id (идентичность строки, а не позиционный суррогат); line_key едет рядом с
+	// id, чтобы клиент получил ту же durable-ссылку, которой пишет.
+	//
+	// Порядок — display_order объединения: он и есть авторский порядок «деталь между узлами».
+	inputRows, err := storeutil.QueryListNamed[struct {
+		OpID     int            `db:"op_id"`
+		PieceID  sql.NullInt64  `db:"piece_id"`
+		PieceKey sql.NullString `db:"line_key"`
+		UnitKey  sql.NullString `db:"unit_key"`
+	}](ctx, s.DB, `
+		SELECT o.id AS op_id, l.piece_id AS piece_id, p.line_key AS line_key, l.unit_key AS unit_key
+		FROM tech_card_operation_input l
+		JOIN tech_card_operation o ON o.id = l.operation_id
+		LEFT JOIN tech_card_piece p ON p.id = l.piece_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.display_order, l.display_order, l.id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card operation inputs: %w", err)
+	}
+	// Операции, у которых строки в новой таблице ЕСТЬ. Всё остальное поедет фолбэком ниже.
+	haveInputs := make(map[int]bool, len(inputRows))
+	for _, l := range inputRows {
+		pos, ok := posByOpID[l.OpID]
+		if !ok {
+			continue
+		}
+		haveInputs[l.OpID] = true
+		list := opsByCard[pos.cardID]
+		op := &list[pos.index]
+		switch {
+		case l.UnitKey.Valid && l.UnitKey.String != "":
+			op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
+				Kind: entity.AssemblyInputUnit, Key: l.UnitKey.String,
+			})
+			op.InputKeys = append(op.InputKeys, l.UnitKey.String)
+		case l.PieceID.Valid && l.PieceKey.Valid:
+			op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
+				Kind: entity.AssemblyInputPiece, Key: l.PieceKey.String,
+			})
+			op.InputKeys = append(op.InputKeys, l.PieceKey.String)
+			op.PieceIds = append(op.PieceIds, int(l.PieceID.Int64))
+			op.PieceLineKeys = append(op.PieceLineKeys, l.PieceKey.String)
+		}
+	}
+
+	// ПЕРЕХОДНЫЙ ФОЛБЭК на 0199 — пер-операционный, и он не компромисс, а точная семантика.
+	//
+	// Он существует ради окна отката: откатившийся код пишет только 0199, полная замена операций
+	// каскадом сносит строки новой таблицы и не восстанавливает их, а миграция-копия второй раз не
+	// выполняется. Без фолбэка карточки, отредактированные в этом окне, вернулись бы с пустыми
+	// входами.
+	//
+	// Точность обеспечивает щит совместимости: карточка со сборочными фактами НЕ МОЖЕТ быть
+	// записана старым кодом (FailedPrecondition). Значит операция, у которой есть строки в 0199 и
+	// ноль строк в новой таблице, гарантированно piece-only — прочитать её из 0199 не догадка, а
+	// факт. Снимается вместе с самой таблицей отдельной задачей Ф6, когда прод отстоит без отката.
+	legacyRows, err := storeutil.QueryListNamed[struct {
 		OpID     int    `db:"op_id"`
 		PieceID  int    `db:"piece_id"`
 		PieceKey string `db:"line_key"`
@@ -462,14 +863,22 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	if err != nil {
 		return fmt.Errorf("can't load tech card operation piece links: %w", err)
 	}
-	for _, l := range pieceLinkRows {
+	for _, l := range legacyRows {
+		if haveInputs[l.OpID] {
+			continue
+		}
 		pos, ok := posByOpID[l.OpID]
 		if !ok {
 			continue
 		}
 		list := opsByCard[pos.cardID]
-		list[pos.index].PieceIds = append(list[pos.index].PieceIds, l.PieceID)
-		list[pos.index].PieceLineKeys = append(list[pos.index].PieceLineKeys, l.PieceKey)
+		op := &list[pos.index]
+		op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
+			Kind: entity.AssemblyInputPiece, Key: l.PieceKey,
+		})
+		op.InputKeys = append(op.InputKeys, l.PieceKey)
+		op.PieceIds = append(op.PieceIds, l.PieceID)
+		op.PieceLineKeys = append(op.PieceLineKeys, l.PieceKey)
 	}
 
 	// Operation -> BOM-line links (0200), same keying as the piece links above.
@@ -496,6 +905,49 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		list := opsByCard[pos.cardID]
 		list[pos.index].BomIds = append(list[pos.index].BomIds, l.BomItemID)
 		list[pos.index].BomLineKeys = append(list[pos.index].BomLineKeys, l.BomKey)
+	}
+
+	// Фотографии шагов с выносками (0308). Цепляются по operation_id — идентичности строки, а не
+	// позиционному суррогату: причина та же, что у входов выше.
+	mediaRows, err := storeutil.QueryListNamed[struct {
+		OpID         int            `db:"op_id"`
+		MediaID      int            `db:"media_id"`
+		Caption      sql.NullString `db:"caption"`
+		DisplayOrder int            `db:"display_order"`
+		Annotations  []byte         `db:"annotations"`
+	}](ctx, s.DB, `
+		SELECT o.id AS op_id, m.media_id, m.caption, m.display_order, m.annotations
+		FROM tech_card_operation_media m
+		JOIN tech_card_operation o ON o.id = m.tech_card_operation_id
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.display_order, m.display_order, m.id`,
+		map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load tech card operation media: %w", err)
+	}
+	for _, m := range mediaRows {
+		pos, ok := posByOpID[m.OpID]
+		if !ok {
+			continue
+		}
+		var anns []entity.TechCardAnnotation
+		if len(m.Annotations) > 0 {
+			// Битый JSON в колонке — это испорченная строка, а не повод уронить чтение всей
+			// карточки: картинка вернётся без выносок, и это видно, в отличие от пятисотки.
+			if err := json.Unmarshal(m.Annotations, &anns); err != nil {
+				slog.Default().Error("tech card operation media: broken annotations json",
+					slog.Int("operation_id", m.OpID), slog.Int("media_id", m.MediaID),
+					slog.String("err", err.Error()))
+				anns = nil
+			}
+		}
+		list := opsByCard[pos.cardID]
+		list[pos.index].Media = append(list[pos.index].Media, entity.TechCardOperationMedia{
+			MediaId:      m.MediaID,
+			Caption:      m.Caption,
+			DisplayOrder: m.DisplayOrder,
+			Annotations:  anns,
+		})
 	}
 
 	labelRows, err := storeutil.QueryListNamed[techCardLabelRow](ctx, s.DB, `
@@ -569,6 +1021,20 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	for i := range cards {
 		id := cards[i].Id
 		cards[i].Construction = consByCard[id]
+		// The park hangs off the CARD, not off the construction row (its FK is on tech_card), so a
+		// card can hold profiles with no construction row at all — 0306's migrated overlock profile
+		// arrives on cards that never filled anything else in the section. An empty construction is
+		// created for them rather than dropping the profiles, which is what «no row» would do.
+		//
+		// Left nil when there are no profiles: nil is «this card has no park» on the read side, and
+		// only on the WRITE side does nil mean «the payload did not speak». The mapper turns either
+		// into the same empty wrapper on the wire.
+		if d := equipmentByCard[id]; d != nil {
+			if cards[i].Construction == nil {
+				cards[i].Construction = &entity.TechCardConstruction{}
+			}
+			cards[i].Construction.EquipmentDefaults = d
+		}
 		cards[i].Operations = opsByCard[id]
 		cards[i].Labels = labelsByCard[id]
 		cards[i].Packaging = pkgByCard[id]

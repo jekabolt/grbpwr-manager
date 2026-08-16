@@ -37,6 +37,32 @@ func styleNumberTaken() error {
 		"this style number is already used by another style; choose a different one or accept a fresh generated proposal"))
 }
 
+// equipmentProfileKeyIndex is the name 0306 gives UNIQUE(tech_card_id, profile_key). It is written
+// here because a 1062 is the ONLY way the API layer can learn which key was tripped: the driver
+// hands back one error number for every unique index in the schema, and the index name inside its
+// message is the only discriminator there is.
+const equipmentProfileKeyIndex = "uq_equipment_profile_key"
+
+// techCardUniqueViolation names the unique key a tech-card save actually tripped.
+//
+// A card write touches TWO of them, and until 0306 there was only one: for years every 1062 out of
+// this path was UNIQUE(style_number), so the handlers translated the number itself into «this style
+// number is taken». With an equipment park on the card that translation became a lie — a duplicate
+// PROFILE key would tell the operator to change the article of a style whose article is fine, about
+// a field the failing form does not even contain.
+//
+// The payload path is normally caught earlier and in a full sentence (parseTechCardEquipmentDefaults
+// dedupes both lists against one key space), so what reaches here is the entity-level writers that
+// never see the wire: the seeder, the clone path, tests. That is precisely why the message has to
+// stand on its own — nothing upstream is going to explain it.
+func techCardUniqueViolation(err error) error {
+	if err != nil && strings.Contains(err.Error(), equipmentProfileKeyIndex) {
+		return apierr.Invalid(entity.NewFieldViolation("construction.equipment_defaults", "duplicate_profile_key", "",
+			"two equipment profiles on this card carry the same key — a key is the identity of a profile, and the steps pointing at it would have two answers; give one of them a fresh key"))
+	}
+	return styleNumberTaken()
+}
+
 // validateStyleNumberOverride enforces the strict manual-override contract (Q1): when the owner
 // hand-sets the article (style_number_source = manual) the value must be present and pass the strict
 // format validator, else a field-tagged InvalidArgument on style_number. A generated (server-
@@ -88,6 +114,28 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to set cost data (costing block or BOM prices)")
 	}
+	// §8, rule 1 — BEFORE the conversion, the only ordering that guarantees a stale bundle reads the
+	// gate's sentence («update the admin panel») rather than a field violation about a control it does
+	// not render. Rule 2 has nothing to say here: a card being created has no stored facts to erase.
+	if err := machineCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	// Щит узлов сборки (0307), тот же довод и тот же момент.
+	if err := mediaCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	// Стор-гейт с nil вместо сохранённой карточки — не заглушка, а ровно то, чем создание
+	// является: карточки ещё нет, стирать нечего. Единственное, что он тут скажет, — «снять
+	// разметку» у создаваемой карточки бессмысленно, и это надо сказать, а не пропустить.
+	if err := mediaCapabilityStoredGate(req.TechCard, nil); err != nil {
+		return nil, err
+	}
+	if err := assemblyCapabilityStoredGate(req.TechCard, nil); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -108,6 +156,13 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if costingSignoffChanged(nil, tc.Signoffs, freshSignoffs) && !canReadCosting {
 		return nil, status.Error(codes.PermissionDenied, "costing:read is required to change the costing sign-off")
 	}
+	// §9 on the create path, in the same slot it holds on update: after the fresh set is known and
+	// BEFORE the digests are stamped, because a refusal must reject the REQUEST rather than leave a
+	// fingerprint behind it. A card can be created with CONSTRUCTION already approved, so the gate
+	// belongs on both paths or on neither.
+	if err := validateFusingSignGate(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	// A card can be created with sections already approved, and a linked BOM line reads back enriched
 	// here exactly as it does on update — so the same correction applies. The card id is 0 on purpose:
 	// it does not exist yet, so it can carry neither measured areas nor a recipe (Ф-П).
@@ -124,7 +179,7 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 			return nil, apierr.Invalid(ve)
 		}
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, styleNumberTaken()
+			return nil, techCardUniqueViolation(err)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)
@@ -197,6 +252,21 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if !canWriteCosting && techCardInsertHasCostingData(req.TechCard) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
 	}
+	// §8, rule 1 — ahead of the conversion for the same reason it is ahead of it on Create: it reads
+	// the WIRE and owes the entity nothing, and a stale bundle that echoes a type it cannot render
+	// must hear «update the admin panel» rather than the converter's «pick a type from the list»,
+	// which names a control that bundle does not have. Rule 2 stays where it is — it needs the stored
+	// card, which is loaded below.
+	if err := machineCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	// Тот же довод, тот же момент — щит узлов сборки (0307).
+	if err := mediaCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -217,6 +287,20 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
 			slog.Int("tech_card_id", int(req.Id)))
 		return nil, status.Error(codes.Internal, "can't load tech card; try again")
+	}
+	// §8, rule 2 — the first thing done with `stored`, because it is about what this save would
+	// DESTROY and every line below either reconciles sign-offs or moves data toward the store.
+	if err := machineCapabilityStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
+	// Щит + контентный бекстоп для узлов: отказывает и устаревшей вкладке, и осведомлённой, но
+	// пустой записи, которая стёрла бы разметку молча (параллельная вкладка, AI-черновик,
+	// восстановленный до-фичевый черновик).
+	if err := mediaCapabilityStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
+	if err := assemblyCapabilityStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет
 	// verbatim; свежая заявка подтверждается пересчётом предложения — совпало, и только тогда,
@@ -261,7 +345,25 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// подпись, поставленная из вкладки, которая про градацию не спрашивает, хешировала бы «не
 	// помечено» поверх колонки, где пометка стоит.
 	carryOmittedPieceUngradedFrom(stored, tc)
+	// КАК ДУБЛИРУЕТСЯ (0304) — четвёртая ветка того же контракта, на той же секции CONSTRUCTION и по
+	// той же причине. Отличие одно: перенос ещё и ГАСИТ разметку, если эта же правка сняла галку
+	// «дублируется», — иначе дайджест подписал бы режим, который стор в ту же транзакцию обнулит.
+	carryOmittedPieceFusingFrom(stored, tc)
+	// ГЕОМЕТРИЯ УКАЗАНИЙ НА ЭСКИЗЕ (0309) — тот же контракт присутствия, но на секции DESIGN.
+	// Вкладка со старым бандлом шлёт выноски без вида, якорей и цвета; без переноса сохранение
+	// такой вкладки стёрло бы каждую мерку и скобку на карточке, а подпись DESIGN, поставленная
+	// из неё, хешировала бы «просто точки» поверх эскиза, где нарисовано указание.
+	dto.CarryOmittedCalloutGeometry(stored, tc)
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	// The two sign-off belts, both between the presence check and the restamp — the last point where
+	// the fresh set, the stored card and the payload are all in view, and the last point at which a
+	// refusal is still a refusal of the REQUEST rather than a fingerprint already taken.
+	if err := validateFreshConstructionCarriesStoredEquipment(tc, stored, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	if err := validateFusingSignGate(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
 	if err := s.restampFreshSignoffDigests(ctx, int(req.Id), tc, freshSignoffs); err != nil {
@@ -291,7 +393,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, styleNumberTaken()
+			return nil, techCardUniqueViolation(err)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, techCardFKMsg)
@@ -510,6 +612,356 @@ func validateFreshSignoffSectionPresence(tc *entity.TechCardInsert,
 		}
 	}
 	return nil
+}
+
+// --- §8: the outdated-client gate, and the sign-off belt behind it -------------------------------
+
+// outdatedMachineClientFix is the ONE way out of both refusals below, so it is written once. A gate
+// that says «no» without naming the remedy trains the operator to reload and retry until the data is
+// gone by some other route.
+const outdatedMachineClientFix = "this version of the admin panel cannot edit those fields, and its save replaces the whole step list — update the admin panel (hard-refresh) and try again"
+
+func outdatedMachineClient(reason string) error {
+	return status.Error(codes.FailedPrecondition, "outdated admin client: "+reason+"; "+outdatedMachineClientFix)
+}
+
+// The machine capability gate refuses a save from a bundle that never heard of the machine / ВТО
+// fields when that save would DESTROY such facts (§8 of the plan).
+//
+// IT IS TWO FUNCTIONS BECAUSE ITS TWO RULES RUN AT DIFFERENT MOMENTS, and that is not a style
+// choice. Rule 1 reads the wire and nothing else, so it runs BEFORE dto conversion — a stale bundle
+// that echoes an operation type it cannot render would otherwise be turned away by the converter
+// («pick a type from the list»), which points at a control that bundle does not have and cannot be
+// acted on. Rule 2 needs the stored card and therefore cannot run until it is loaded. Fusing them
+// into one call forced the whole gate down to the later point, and rule 1's sentence with it.
+//
+// Operations are full-replace with no per-field protection and the equipment park is presence-gated
+// one level deeper, so a payload from a pre-0306 bundle simply omits fifteen columns per step and the
+// store writes the omission. The deploy window for that bundle is long by decision (the client is
+// frozen until a neighbouring branch merges), so «deploy the two together» is not the mitigation it
+// usually is — this is.
+//
+// TWO RULES, and both are needed:
+//
+//  1. THE PAYLOAD ECHOES what it cannot edit. A stale bundle round-trips values it does not
+//     understand as raw enum numbers; a payload that speaks MACHINE / PRESS / PRESS_OPEN, any of the
+//     fifteen step fields or the equipment wrapper WITHOUT declaring awareness is such an echo. Read
+//     off the WIRE and not off the entity on purpose: the converter canonicalises the nine legacy
+//     types into (machine, <machine>) before an entity exists, so an entity-side check would read a
+//     perfectly ordinary old-client `lockstitch` step as «speaks MACHINE» and lock out the client
+//     this gate exists to keep working.
+//  2. THE STORED CARD HOLDS the facts. This is the one that fires in practice: the payload of a
+//     bundle that dropped the unknown fields looks innocent, and only storage knows what the save is
+//     about to erase. Migration 0306 itself creates such cards (every ex-lockstitch step now carries
+//     machine_type), which makes those cards read-only for the old bundle — a price accepted in the
+//     plan, because silent erasure is worse and a fifteen-column carry is not a per-save mechanic.
+//
+// The gate is silent on every card with no machine facts, which today is almost all of them.
+func machineCapabilityWireGate(pb *pb_common.TechCardInsert) error {
+	if pb.GetMachineFieldsAware() {
+		return nil
+	}
+	if payloadSpeaksMachineFields(pb) {
+		return outdatedMachineClient("the payload carries machine / ВТО values it does not declare support for")
+	}
+	return nil
+}
+
+// machineCapabilityStoredGate is rule 2, and it runs only after the stored card is in hand. It
+// repeats the awareness check rather than assuming the wire gate already passed: the two are called
+// from different places, and a rule that silently depends on its sibling having run first is one
+// refactor away from not running at all.
+func machineCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.TechCard) error {
+	if pb.GetMachineFieldsAware() {
+		// НАБЛЮДАЕМОСТЬ ВМЕСТО ОТКАЗА — и это осознанный выбор, а не недоделка.
+		//
+		// У двух младших щитов (узлы, снимки) есть контентный бекстоп: осведомлённая запись, не
+		// несущая содержимого против карточки, которая его несёт, отвергается, а выход из отказа
+		// даёт парный флаг намерения. Здесь такого флага нет, и заводить его ради этого случая
+		// значило бы третий раз расширить контракт: у машинных фактов НЕТ СТАБИЛЬНОГО КЛЮЧА —
+		// операции пишутся полной заменой, — поэтому перенести хранимое, как переносится разметка
+		// детали, невозможно, и единственной формой защиты остался бы отказ без права на ошибку.
+		//
+		// Оба реальных пути потери закрыты в источнике: «заменить весь список» ИИ-черновиком теперь
+		// называет число шагов с машинками ДО нажатия, а до-0306 черновики выметаются версией ключа
+		// хранилища. Остаётся скрипт и сидер — их потеря становится СЧИТАЕМОЙ здесь, а не
+		// невидимой. Если счётчик когда-нибудь начнёт расти, это и будет доводом за флаг намерения.
+		if storedHasMachineFacts(stored) && !payloadSpeaksMachineFields(pb) {
+			slog.Default().Warn("machine gate: aware payload drops stored machine/ВТО facts",
+				slog.String("gate", "stored"), slog.String("cell", "aware:yes/payload:none/stored:facts"))
+		}
+		return nil
+	}
+	if storedHasMachineFacts(stored) {
+		return outdatedMachineClient("this tech card holds machine / ВТО parameters (equipment profiles, or machine and pressing settings on its steps)")
+	}
+	return nil
+}
+
+// payloadSpeaksMachineFields is rule 1's predicate, read off the WIRE (see the note above).
+//
+// The three operation types are the ones the split ADDED (13-15); FUSING / HANDWORK / OTHER and the
+// nine legacy tokens all predate it and an old bundle sends them legitimately.
+func payloadSpeaksMachineFields(pb *pb_common.TechCardInsert) bool {
+	if pb == nil {
+		return false
+	}
+	if pb.GetConstruction().GetEquipmentDefaults() != nil {
+		return true
+	}
+	for _, o := range pb.GetOperations() {
+		if o == nil {
+			continue
+		}
+		switch o.GetOperationType() {
+		case pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS,
+			pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS_OPEN:
+			return true
+		}
+		if o.GetMachineType() != pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_UNKNOWN ||
+			strings.TrimSpace(o.GetMachineProfileKey()) != "" ||
+			o.GetThreadCount() != 0 ||
+			o.GetNeedleType() != pb_common.TechCardNeedleType_TECH_CARD_NEEDLE_TYPE_UNKNOWN ||
+			o.GetNeedleSizeNm() != 0 ||
+			o.GetThreadTension() != pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_UNKNOWN ||
+			strings.TrimSpace(o.GetThreadTensionNote()) != "" ||
+			strings.TrimSpace(o.GetStitchWidthMm().GetValue()) != "" {
+			return true
+		}
+		if o.GetPressEquipment() != pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_UNKNOWN ||
+			strings.TrimSpace(o.GetPressProfileKey()) != "" ||
+			o.GetPressTemperatureC() != 0 ||
+			o.GetPressDwellSec() != 0 ||
+			strings.TrimSpace(o.GetPressPressureNCm2().GetValue()) != "" ||
+			o.PressSteam != nil || // three-valued: «без пара» is a stated fact, not an absence
+			o.GetPressCloth() != pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_UNKNOWN {
+			return true
+		}
+	}
+	return false
+}
+
+// storedHasMachineFacts is rule 2's predicate: profiles on the card, or ANY of the fifteen new
+// columns filled on ANY step.
+//
+// machine_type counts, including on a step migration 0306 rewrote from a legacy token. That is not an
+// oversight to soften later: the column is what the old bundle would blank, and «it was only the
+// machine we lost» is exactly the silent damage this gate exists to stop.
+func storedHasMachineFacts(stored *entity.TechCard) bool {
+	if stored == nil {
+		return false
+	}
+	if c := stored.Construction; c != nil && c.EquipmentDefaults != nil {
+		if len(c.EquipmentDefaults.Machines)+len(c.EquipmentDefaults.Presses) > 0 {
+			return true
+		}
+	}
+	for i := range stored.Operations {
+		o := &stored.Operations[i]
+		if o.MachineType.Valid || o.MachineProfileKey.Valid || o.ThreadCount.Valid ||
+			o.NeedleType.Valid || o.NeedleSizeNm.Valid || o.ThreadTension.Valid ||
+			o.ThreadTensionNote.Valid || o.StitchWidthMm.Valid ||
+			o.PressEquipment.Valid || o.PressProfileKey.Valid || o.PressTemperatureC.Valid ||
+			o.PressDwellSec.Valid || o.PressPressureNCm2.Valid || o.PressSteam.Valid ||
+			o.PressCloth.Valid {
+			return true
+		}
+	}
+	return false
+}
+
+// validateFreshConstructionCarriesStoredEquipment refuses a FRESH CONSTRUCTION approval that would be
+// stamped without the equipment park the card actually keeps.
+//
+// The wrapper is the presence signal one level below the section: absent means «do not touch the
+// stored park» and the store obeys it — in BOTH shapes, a construction sent without the wrapper and
+// a construction not sent at all (preserveAbsentSection). The digest projection cannot see that: an
+// absent wrapper projects as «no profiles», which is the same tail an empty park projects, and it has
+// no view of storage to tell the two apart. So the approval would be fingerprinted over a park that
+// is not there and the very next read would report «changed since sign-off» — permanently, because
+// re-approving from the same bundle hashes the same absence. The condition is therefore stated as
+// «storage HAS profiles AND the payload's wrapper does not carry them», independent of whether the
+// section itself was sent; this is the only place both halves are in view.
+//
+// The «construction not sent at all» half is normally caught one step earlier by
+// validateFreshSignoffSectionPresence with a better sentence («this save does not carry that
+// section»). It stays in the condition anyway: this belt must not depend on the ORDER of the two
+// checks to be correct, and the capability gate above already makes both mostly unreachable — they
+// insure the day the gate is loosened.
+func validateFreshConstructionCarriesStoredEquipment(tc *entity.TechCardInsert, stored *entity.TechCard,
+	fresh map[entity.TechCardSignoffSection]bool) *entity.ValidationError {
+	if tc == nil || !fresh[entity.SignoffConstruction] {
+		return nil
+	}
+	if stored == nil || stored.Construction == nil || stored.Construction.EquipmentDefaults == nil ||
+		len(stored.Construction.EquipmentDefaults.Machines)+len(stored.Construction.EquipmentDefaults.Presses) == 0 {
+		return nil
+	}
+	if tc.Construction != nil && tc.Construction.EquipmentDefaults != nil {
+		return nil // present, even empty: an empty park is a deliberate «delete them all» and hashes as one
+	}
+	i, ok := freshConstructionSignoffIndex(tc, fresh)
+	if !ok {
+		return nil
+	}
+	return entity.NewFieldViolation(fmt.Sprintf("signoffs[%d].section", i),
+		"construction_equipment_not_carried", "",
+		"this card holds equipment profiles and this save does not carry them, so the approval would be fingerprinted without them and read as «changed since sign-off» from the moment it is made; send construction.equipment_defaults as read, or drop the approval")
+}
+
+// freshConstructionSignoffIndex finds the payload index of the CONSTRUCTION approval this save is
+// making fresh, so a refusal can point at the control that carries it.
+func freshConstructionSignoffIndex(tc *entity.TechCardInsert,
+	fresh map[entity.TechCardSignoffSection]bool) (int, bool) {
+	if tc == nil || !fresh[entity.SignoffConstruction] {
+		return 0, false
+	}
+	for i := range tc.Signoffs {
+		if tc.Signoffs[i].Section == entity.SignoffConstruction &&
+			tc.Signoffs[i].State == entity.SignoffStateApproved {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// --- §9: the fusing sign gate --------------------------------------------------------------------
+
+// validateFusingSignGate refuses a FRESH CONSTRUCTION approval while any fusing step still resolves
+// no temperature or no dwell.
+//
+// The philosophy is 0289's and it is not «required fields by another name»: a DRAFT step may say
+// nothing at all — a technologist sketches the order first and fills the recipe later, and a save
+// that refuses a half-typed step is a save nobody makes. The SIGNATURE is the different thing: it
+// says «this is what the floor makes», and a fusing instruction with neither a temperature nor a
+// dwell is not an instruction. The defect it hides is invisible at the machine and shows up after the
+// first wash, by which time the card says it was approved.
+//
+// RESOLUTION IS THE LADDER OF §3, not a column check: the step's own override, else the profile it
+// names by key, else the ONE press profile of the card whose equipment matches the step and whose
+// process is fusing or universal. Several matching profiles with no key on the step is not «pick the
+// first» — it is two answers to one question, and the sheet would print whichever the ladder happened
+// to reach, so it is refused as ambiguity with its own sentence.
+//
+// Pressure, steam and press cloth are deliberately NOT required: they are desirable, and a gate that
+// demands everything is a gate that gets worked around by approving from another screen.
+func validateFusingSignGate(tc *entity.TechCardInsert,
+	fresh map[entity.TechCardSignoffSection]bool) *entity.ValidationError {
+	idx, ok := freshConstructionSignoffIndex(tc, fresh)
+	if !ok {
+		return nil
+	}
+	// The park of THIS payload, which is what the card will present on the next read: a save that
+	// omits the wrapper preserves the stored park, and that case is refused by the belt above rather
+	// than resolved against storage here — the ladder must never bless a step from a park the
+	// signature is not being taken over.
+	var presses []entity.TechCardPressProfile
+	if tc.Construction != nil && tc.Construction.EquipmentDefaults != nil {
+		presses = tc.Construction.EquipmentDefaults.Presses
+	}
+	var unresolved, ambiguous []string
+	for i := range tc.Operations {
+		o := &tc.Operations[i]
+		if o.OperationType != entity.OpTypeFusing {
+			continue
+		}
+		needTemp, needDwell := !o.PressTemperatureC.Valid, !o.PressDwellSec.Valid
+		if !needTemp && !needDwell {
+			continue // the step states both itself; the profile it may also name is irrelevant here
+		}
+		profile, isAmbiguous := resolveFusingPressProfile(o, presses)
+		if isAmbiguous {
+			ambiguous = append(ambiguous, fusingStepLabel(o, i))
+			continue
+		}
+		if profile != nil {
+			needTemp = needTemp && !profile.PressTemperatureC.Valid
+			needDwell = needDwell && !profile.PressDwellSec.Valid
+		}
+		if needTemp || needDwell {
+			unresolved = append(unresolved, fusingStepLabel(o, i))
+		}
+	}
+	switch {
+	case len(ambiguous) > 0:
+		return entity.NewFieldViolation(fmt.Sprintf("signoffs[%d]", idx),
+			"fusing_press_profile_ambiguous", "",
+			fmt.Sprintf("fusing step(s) %s name no press profile and the card holds more than one that fits, so the temperature and dwell they run at are not decided; point each step at a profile (press_profile_key) or state the values on the step before approving",
+				strings.Join(ambiguous, ", ")))
+	case len(unresolved) > 0:
+		return entity.NewFieldViolation(fmt.Sprintf("signoffs[%d]", idx),
+			"fusing_missing_temperature_or_dwell", "",
+			fmt.Sprintf("fusing step(s) %s resolve no temperature and/or no dwell — a fusing instruction without them is not one, and the defect shows up after the first wash; set press_temperature_c and press_dwell_sec on the step, or point it at a press profile that carries them",
+				strings.Join(unresolved, ", ")))
+	}
+	return nil
+}
+
+// resolveFusingPressProfile walks steps 2 and 3 of the §3 ladder for a fusing step. The second return
+// value is «ambiguous»: the step named no profile and the card holds more than one that fits.
+//
+// A key that names nothing resolves to «not set» rather than to an error, which is the same detach
+// rule the converter applies (a profile deleted from the park must not veto the save) — the step then
+// has to state the values itself, and the gate says so.
+func resolveFusingPressProfile(o *entity.TechCardOperation,
+	presses []entity.TechCardPressProfile) (*entity.TechCardPressProfile, bool) {
+	if key := strings.TrimSpace(o.PressProfileKey.String); o.PressProfileKey.Valid && key != "" {
+		for i := range presses {
+			if presses[i].ProfileKey != key {
+				continue
+			}
+			// THE KEY IS NOT A BYPASS AROUND THE PROCESS. Step 3 has always refused a profile
+			// declared for pressing, and step 2 used to take whatever the key pointed at — so the
+			// same park answered one question two ways, and the softer answer was reachable by
+			// simply putting a key on the step. It is reachable BY THE SERVER: the AI mapper
+			// attaches a profile to a drafted step, and attaching an ironing profile to a fusing
+			// step handed this gate a ВТО temperature to approve дублирование with. A mismatch
+			// resolves to «not set» and never falls through to step 3: the step names THIS profile,
+			// and quietly signing it off against a different one is a second wrong answer.
+			if !pressProfileFitsStep(&presses[i], entity.OpTypeFusing) {
+				return nil, false
+			}
+			return &presses[i], false
+		}
+		return nil, false
+	}
+	if !o.PressEquipment.Valid {
+		return nil, false // no equipment named, so there is no type to inherit by
+	}
+	var found *entity.TechCardPressProfile
+	for i := range presses {
+		p := &presses[i]
+		if p.PressEquipment != o.PressEquipment.String || !pressProfileFitsStep(p, entity.OpTypeFusing) {
+			continue
+		}
+		if found != nil {
+			return nil, true
+		}
+		found = p
+	}
+	return found, false
+}
+
+// pressProfileFitsStep is THE rule for «may this press profile be applied to a step of this process»,
+// and it is one function on purpose. A profile may declare WHICH process it is for: NULL is universal
+// and fits any ВТО step, a declared one fits only its own. An ironing profile is not a fusing recipe
+// however well the equipment matches — same machine, different program, and the difference shows up
+// as a delamination after the first wash rather than at the press.
+//
+// It was written out twice, and the copies drifted (see the caller above and aiSolePressProfiles):
+// wherever the process was dropped from the question, the answer silently widened.
+func pressProfileFitsStep(p *entity.TechCardPressProfile, stepType entity.TechCardOperationType) bool {
+	return !p.PressOperationType.Valid || p.PressOperationType.String == string(stepType)
+}
+
+// fusingStepLabel names a step the way the sheet does — «оп. 30» — falling back to the position when
+// the number is not stamped yet (the converter assigns (i+1)*10, so that fallback is the same value).
+func fusingStepLabel(o *entity.TechCardOperation, i int) string {
+	if o.OperationNumber.Valid {
+		return fmt.Sprint(o.OperationNumber.Int32)
+	}
+	return fmt.Sprint((i + 1) * 10)
 }
 
 // linkedBomMaterialIdentities loads the catalog identity of every material the payload's BOM links, so a

@@ -711,6 +711,10 @@ type TechCardMediaFull struct {
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
+//
+// Геометрия (Kind/Points/Color) — то же ремесло, что у TechCardAnnotation, и те же правила числа
+// точек: вид один и тот же тип. PosX/PosY остаются положением НУМЕРОВАННОГО МАРКЕРА, а Points
+// держит якоря фигуры; у пина Points пуст.
 type TechCardCallout struct {
 	Number      int                 `db:"callout_number"`
 	Part        sql.NullString      `db:"part"`
@@ -719,6 +723,57 @@ type TechCardCallout struct {
 	MediaId     sql.NullInt32       `db:"media_id"` // sketch this callout is pinned to
 	PosX        decimal.NullDecimal `db:"pos_x"`    // normalised 0..1 marker position
 	PosY        decimal.NullDecimal `db:"pos_y"`
+	Kind        TechCardAnnotationKind  `db:"kind"`
+	Color       TechCardAnnotationColor `db:"color"`
+	// Dashed/Filled — те же правила, что у выноски снимка шага: пунктир входит в подпись,
+	// штриховка живёт только у полигона. Колонки заведены 0310.
+	Dashed bool `db:"dashed"`
+	Filled bool `db:"filled"`
+	// KindOmitted — вкладка со старым бандлом про геометрию не говорила вовсе. Тогда хранимая
+	// тройка (вид, якоря, цвет) переносится по НОМЕРУ выноски, до пересчёта дайджеста. Не колонка:
+	// это факт запроса, а не карточки.
+	KindOmitted bool `db:"-"`
+	// Points в БД лежит JSON-колонкой, в Go — разобранным списком; сырое значение читается
+	// в PointsRaw и разбирается стором один раз (так же, как выноски снимка шага).
+	Points    []TechCardAnnotationPoint `db:"-"`
+	PointsRaw []byte                    `db:"points"`
+	// Parts — все детали, о которых указание. Имена, а не ключи: связь «деталь ↔ выноска» стоит на
+	// именах (`part`), и заводить второй способ адресовать деталь ради списка значило бы держать
+	// две несогласуемые половины одной связи. Первый элемент обязан совпадать с Part.
+	//
+	// В БД — JSON-колонка (0310), в Go — разобранный список; сырое значение читается в PartsRaw.
+	Parts    []string `db:"-"`
+	PartsRaw []byte   `db:"parts"`
+}
+
+// PartList — детали указания ОДНИМ СПИСКОМ, по единственному правилу: непустой список главнее,
+// пустой читается как [Part]. Возвращает нормализованное значение: без пустых, без повторов.
+//
+// ФУНКЦИЯ ЕСТЬ, ПОТОМУ ЧТО ПРАВИЛО ОДНО, А МЕСТ ТРИ: разбор с провода, проекция в отпечаток и
+// обратный ход на чтении. Пока правило было записано в каждом из них отдельно, они разошлись — и
+// разошлись молча: указание с ОДНОЙ деталью и пунктиром на ЗАПИСИ кодировалось как ["полочка"], а
+// на ЧТЕНИИ как null, потому что стор не пишет список из одного имени (оно уже в Part). Отпечаток
+// DESIGN у такой карточки не совпадал сам с собой, то есть подпись рождалась протухшей и не
+// лечилась переутверждением — повторный штамп брал то же расхождение.
+func (c TechCardCallout) PartList() []string {
+	src := c.Parts
+	if len(src) == 0 {
+		src = []string{c.Part.String}
+	}
+	out := make([]string, 0, len(src))
+	seen := make(map[string]bool, len(src))
+	for _, v := range src {
+		name := strings.TrimSpace(v)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
@@ -2107,15 +2162,98 @@ func AuxSubtypeFromName(name string) (TechCardAuxSubtype, bool) {
 // second card-level allowance would also be a second answer to a settled question.
 type TechCardConstruction struct {
 	HemFinish sql.NullString `db:"hem_finish"`
-	Pressing  sql.NullString `db:"pressing"`
 	Notes     sql.NullString `db:"notes"`
 	// Inherited by TechCardOperation.SeamClass when that one is unset.
 	DefaultSeamClass sql.NullString `db:"default_seam_class"`
 	// Inherited by TechCardOperation.StitchesPerCm. STITCHES PER CENTIMETRE — density is quoted per
 	// cm in every language and is not part of the millimetre switch.
 	DefaultStitchesPerCm decimal.NullDecimal `db:"default_stitches_per_cm"`
-	// 3 | 4 | 5; NULL = unset. The name does not reuse the removed `overlock_threads` (a string).
-	OverlockThreadCount sql.NullInt32 `db:"overlock_thread_count"`
+
+	// GONE FROM HERE, AND NOT COMING BACK: `Pressing` (prose) and `OverlockThreadCount`. 0306 moved
+	// the prose into Notes under a deterministic tag and turned the thread count into an overlock
+	// PROFILE below — one thread count on a card could only ever describe one overlock, and a card
+	// may run several. Their POSITIONS in the CONSTRUCTION digest tuple are frozen forever at the
+	// values NULL used to marshal to (constructionProjection), so a card that never filled them
+	// hashes exactly as it did before the move and its sign-off does not go stale.
+
+	// EquipmentDefaults is the card's machine and ВТО park — which machines this style is sewn on,
+	// with what settings, and which presses/irons it is pressed on. Not a column: the profiles live
+	// in tech_card_equipment_profile, keyed by the card.
+	//
+	// NIL IS NOT «no profiles»: nil means the write payload did not speak about equipment at all
+	// (an older bundle), and the store then PRESERVES what is stored. A non-nil value — even with
+	// both lists empty — is a full replace, and empty lists mean «delete them all». The wrapper is
+	// the only place that distinction can live, which is why it is a pointer to a struct rather than
+	// two slices on this one.
+	EquipmentDefaults *TechCardEquipmentDefaults `db:"-"`
+}
+
+// TechCardEquipmentDefaults is the card's equipment park in one value, split by kind. It is the
+// PRESENCE unit of the section: absent (a nil *TechCardEquipmentDefaults on the construction) means
+// «the payload did not speak», present means full replace.
+type TechCardEquipmentDefaults struct {
+	Machines []TechCardMachineProfile
+	Presses  []TechCardPressProfile
+}
+
+// TechCardMachineProfile is one row of the card's machine park: «this style is sewn on such a
+// machine, set up like this». A step names the machine TYPE (and may point at one profile by key)
+// and stores only what it genuinely deviates in — everything unset is inherited live and never
+// written into the step's row.
+//
+// IDENTITY IS ProfileKey, a durable 26-char client-minted key exactly like BomLineKey /
+// PieceLineKey, for exactly the same reason: the list is full-replaced on every save, so an index
+// or an id would break every step that references a profile the moment a row moves. Label is a
+// NAME FOR A HUMAN («оверлок у окна») and is deliberately not part of the identity — one name may
+// sit on two different keys and one key may be renamed, and conflating the two is the scope_key
+// trap. Several profiles of the SAME machine type are normal, not a duplicate to collapse.
+//
+// Stored in tech_card_equipment_profile with kind='machine'; the press columns of that table stay
+// NULL on these rows.
+type TechCardMachineProfile struct {
+	Id           int            `db:"id"`
+	TechCardId   int            `db:"tech_card_id"`
+	ProfileKey   string         `db:"profile_key"`
+	Label        sql.NullString `db:"label"`
+	MachineType  string         `db:"equipment"` // machine-vocabulary token; column is shared with the press kind
+	ThreadCount  sql.NullInt32  `db:"thread_count"`
+	NeedleType   sql.NullString `db:"needle_type"`
+	NeedleSizeNm sql.NullInt32  `db:"needle_size_nm"`
+	// BedType and Automation are machine IDENTITY, which is why they exist here and have no
+	// override on a step: a different bed is a different machine.
+	BedType           sql.NullString      `db:"bed_type"`
+	Automation        sql.NullString      `db:"automation"`
+	ThreadTension     sql.NullString      `db:"thread_tension"`
+	ThreadTensionNote sql.NullString      `db:"thread_tension_note"`
+	AttachmentKind    sql.NullString      `db:"attachment_kind"`
+	StitchesPerCm     decimal.NullDecimal `db:"stitches_per_cm"` // STITCHES PER CM, as everywhere
+	// StitchWidthMm is the zigzag amplitude / the bite of an overlock — NOT the topstitch width,
+	// which is a distance from an edge. Zero is a legal setting.
+	StitchWidthMm decimal.NullDecimal `db:"stitch_width_mm"`
+	Note          sql.NullString      `db:"note"`
+}
+
+// TechCardPressProfile is the ВТО twin of TechCardMachineProfile: one press / iron / steamer of the
+// card with the settings a step inherits. Same durable-key rules, stored in the same table with
+// kind='press' (the machine columns stay NULL on these rows).
+type TechCardPressProfile struct {
+	Id             int            `db:"id"`
+	TechCardId     int            `db:"tech_card_id"`
+	ProfileKey     string         `db:"profile_key"`
+	Label          sql.NullString `db:"label"`
+	PressEquipment string         `db:"equipment"` // press-vocabulary token; shared column
+	// PressOperationType says WHICH PROCESS this profile is for, so a form can offer it by default
+	// on the right kind of step: "press" | "press_open" | "fusing"; NULL = universal.
+	PressOperationType sql.NullString      `db:"press_operation_type"`
+	PressTemperatureC  sql.NullInt32       `db:"press_temperature_c"`
+	PressDwellSec      sql.NullInt32       `db:"press_dwell_sec"`
+	PressPressureNCm2  decimal.NullDecimal `db:"press_pressure_n_cm2"` // N/cm², the unit is in the name
+	// PressSteam is THREE-valued on purpose: invalid = not stated (inherit / unknown), false =
+	// «без пара», true = with steam. Collapsing the first two would turn a real instruction into
+	// a default.
+	PressSteam sql.NullBool   `db:"press_steam"`
+	PressCloth sql.NullString `db:"press_cloth"` // 'none' is a real answer, distinct from NULL
+	Note       sql.NullString `db:"note"`
 }
 
 // The stitch-density band, in STITCHES PER CENTIMETRE. Below 1 a seam falls apart, above 20 the
@@ -2156,30 +2294,81 @@ func ValidateStitchesPerCm(field string, v decimal.NullDecimal) error {
 // tech_card_operation.operation_type ("unknown" when unset).
 type TechCardOperationType string
 
+// THE NINE LEGACY TOKENS HAVE NO CONSTANTS HERE, deliberately. `lockstitch`, `double_needle`,
+// `overlock`, `coverstitch`, `chainstitch`, `blindhem`, `bartack`, `buttonhole`, `button_attach`
+// are accepted on the WIRE forever (an archived release snapshot is protojson holding those very
+// names) but they are canonicalised into (machine, machine_type) before an entity exists, so no
+// value of this type in Go may hold one. A constant is an invitation to write one into a fresh
+// row — which the DB CHECK now refuses with a bare 3819 — so the only place those strings survive
+// is LegacyOperationMachineType below, as data.
 const (
-	OpTypeUnknown      TechCardOperationType = "unknown"
-	OpTypeLockstitch   TechCardOperationType = "lockstitch"
-	OpTypeDoubleNeedle TechCardOperationType = "double_needle"
-	OpTypeOverlock     TechCardOperationType = "overlock"
-	OpTypeCoverstitch  TechCardOperationType = "coverstitch"
-	OpTypeChainstitch  TechCardOperationType = "chainstitch"
-	OpTypeBlindhem     TechCardOperationType = "blindhem"
-	OpTypeBartack      TechCardOperationType = "bartack"
-	OpTypeButtonhole   TechCardOperationType = "buttonhole"
-	OpTypeButtonAttach TechCardOperationType = "button_attach"
-	OpTypeFusing       TechCardOperationType = "fusing"
-	OpTypeHandwork     TechCardOperationType = "handwork"
-	OpTypeOther        TechCardOperationType = "other"
+	OpTypeUnknown  TechCardOperationType = "unknown"
+	OpTypeFusing   TechCardOperationType = "fusing"
+	OpTypeHandwork TechCardOperationType = "handwork"
+	OpTypeOther    TechCardOperationType = "other"
+
+	// The verbs a step is chosen from now. «What is done» and «on what» became two fields: the
+	// nine legacy tokens answered both at once, so a step could not say «прострочить» without
+	// also committing to a stitch class in the same value.
+	OpTypeMachine   TechCardOperationType = "machine"    // машинная; the machine is MachineType
+	OpTypePress     TechCardOperationType = "press"      // ВТО: приутюжить / заутюжить / отпарить
+	OpTypePressOpen TechCardOperationType = "press_open" // разутюжка
 )
 
-// ValidTechCardOperationTypes is the set of accepted operation types (excluding the
-// "unknown" default, which is applied implicitly when unset).
-var ValidTechCardOperationTypes = map[TechCardOperationType]bool{
-	OpTypeLockstitch: true, OpTypeDoubleNeedle: true, OpTypeOverlock: true,
-	OpTypeCoverstitch: true, OpTypeChainstitch: true, OpTypeBlindhem: true,
-	OpTypeBartack: true, OpTypeButtonhole: true, OpTypeButtonAttach: true,
-	OpTypeFusing: true, OpTypeHandwork: true, OpTypeOther: true,
+// OperationTypeTokens is THE vocabulary of operation types as it is STORED — the six choosable
+// verbs plus "unknown" (legal in a row, rejected on write). The nine legacy tokens are NOT here:
+// they are accepted on the wire and canonicalised into (machine, machine_type) before an entity
+// exists, so no row written after this phase can hold one, and the DB CHECK enforces exactly this
+// list. The reading order is the order an editor offers them in.
+var OperationTypeTokens = []string{
+	"unknown", // unset; legal in storage, rejected on an operation write
+	"machine", "press", "press_open", "fusing", "handwork", "other",
 }
+
+// LegacyOperationMachineType is the ONE canonicalisation table for the nine legacy operation types:
+// each maps to (machine, <this machine token>). It has three consumers and they must never diverge
+// — the dto write path (which canonicalises before building the entity, therefore before any
+// digest), migration 0306 (which restates it as a CASE, checked against this map by a lint), and
+// the digest's compat projection (through the inverse below).
+//
+// `blindhem` → `blindstitch` and `double_needle` → `lockstitch_double_needle` are the only two
+// renames; the double-needle machine exists in the vocabulary precisely so this row survives the
+// move instead of collapsing into a plain lockstitch.
+//
+// The keys are STRING LITERALS, not constants: this map is the only place the nine legacy tokens
+// are allowed to exist in Go, and naming them once here is what keeps a fresh row from ever being
+// written with one.
+var LegacyOperationMachineType = map[TechCardOperationType]string{
+	"lockstitch":    "lockstitch",
+	"double_needle": "lockstitch_double_needle",
+	"overlock":      "overlock",
+	"coverstitch":   "coverstitch",
+	"chainstitch":   "chainstitch",
+	"blindhem":      "blindstitch",
+	"bartack":       "bartack",
+	"buttonhole":    "buttonhole",
+	"button_attach": "button_attach",
+}
+
+// MachineTypeLegacyToken is the inverse: machine token -> the legacy operation-type token a row
+// with that machine used to be stored as. It exists for the digest's compat projection, which
+// hashes (machine, lockstitch) byte-identically to the string "lockstitch" it hashed before the
+// move — that is what keeps every signed CONSTRUCTION approval from going stale on migration day.
+//
+// Derived, never typed twice: the map above is the single source, and a non-injective edit to it
+// (two legacy types pointing at one machine) panics here at init rather than silently making two
+// different steps hash the same.
+var MachineTypeLegacyToken = func() map[string]string {
+	out := make(map[string]string, len(LegacyOperationMachineType))
+	for legacy, machine := range LegacyOperationMachineType {
+		if prev, dup := out[machine]; dup {
+			panic("LegacyOperationMachineType is not injective: machine " + machine +
+				" is claimed by both " + string(prev) + " and " + string(legacy))
+		}
+		out[machine] = string(legacy)
+	}
+	return out
+}()
 
 // TechCardGarmentZone says WHERE ON THE GARMENT a step works. Mirrors the common.TechCardGarmentZone
 // proto enum; stored as a string in tech_card_operation.zone ("unknown" when unset, and REJECTED on
@@ -2236,7 +2425,8 @@ var ValidGarmentZones = func() map[TechCardGarmentZone]bool {
 //
 // It replaces the free-text seam_type, whose suggestion list answered two questions with one value:
 // «стачной взаутюжку» and «стачной вразутюжку» are ONE class (SS plain) pressed two different ways.
-// Pressing direction is prose on TechCardConstruction.Pressing and is not a seam class.
+// The pressing direction is a STEP — OpTypePress (заутюжить) or OpTypePressOpen (разутюжить) — and
+// never a seam class.
 type TechCardSeamClass string
 
 var SeamClassTokens = []string{
@@ -2249,17 +2439,140 @@ var SeamClassTokens = []string{
 
 var ValidSeamClasses = tokenSet[TechCardSeamClass](SeamClassTokens)
 
-// TechCardAttachmentKind is the folder / guide / presser foot a step runs with. There is no "none"
-// token: for a presser foot «none» and «not specified» are the same fact downstream, and offering
-// both would make an operator choose between two spellings of nothing.
+// TechCardAttachmentKind is the folder / guide / presser foot a step runs with.
+//
+// "none" IS NOT A SPELLING OF NULL here, though it was until the card grew machine profiles: with
+// nothing above the step, «no foot» and «not specified» really were one fact. Now NULL means
+// «inherit the profile's foot» and 'none' means «this step runs bare» — and without the token a
+// step could not cancel what the profile says.
+//
+// `walking_foot` is deliberately absent: industrially that is a machine with unison / top feed —
+// a property of the transport, not a snap-on attachment. It would belong next to bed_type.
 type TechCardAttachmentKind string
 
 var AttachmentKindTokens = []string{
 	"binder", "hemmer_folder", "scroll_foot", "zipper_foot", "invisible_zipper_foot",
-	"edge_guide", "piping_foot", "elastic_attachment", "other",
+	"edge_guide", "piping_foot", "elastic_attachment", "teflon_foot", "roller_foot",
+	"none", "other",
 }
 
 var ValidAttachmentKinds = tokenSet[TechCardAttachmentKind](AttachmentKindTokens)
+
+// --- equipment vocabularies -----------------------------------------------------------------------
+//
+// The «на чём» half of a step, and the settings a machine or a press profile carries. Every slice
+// below is the single source three ways: the dto builds its proto↔token map from it (and panics at
+// init on a token with no enum member), the DB CHECK of migration 0306 restates it and a lint
+// compares the two, and a rejection message prints it in this order — which is why these are
+// slices and not maps.
+//
+// None of them carry "unknown": an unset value is NULL in the column, never a token, so that the
+// «inherited» and «decided» states stay distinguishable (the rule the whole overrides model rests
+// on). OperationTypeTokens is the one exception — a row's operation_type is NOT NULL.
+
+// TechCardMachineType is the machine a MACHINE step runs on: the second axis, the one the old
+// operation type mixed into the verb.
+type TechCardMachineType string
+
+var MachineTypeTokens = []string{
+	"lockstitch", "lockstitch_double_needle", "overlock", "coverstitch", "coverlock",
+	"chainstitch", "blindstitch", "zigzag", "bartack", "buttonhole", "button_attach",
+	"embroidery", "handstitch_imitation", "hardware_attach", "elastic_attach",
+	"binding_taping", "zipper_setting", "gathering", "patch_pocket_auto", "welt_pocket_auto",
+	"template_auto", "collar_cuff_auto", "sleeve_setting_auto", "waistband_auto",
+	"other",
+}
+
+var ValidMachineTypes = tokenSet[TechCardMachineType](MachineTypeTokens)
+
+// TechCardPressEquipment is the «на чём» of a ВТО step (press / press_open / fusing).
+type TechCardPressEquipment string
+
+var PressEquipmentTokens = []string{
+	"iron", "press", "fusing_press", "steam_dummy", "steamer", "other",
+}
+
+var ValidPressEquipment = tokenSet[TechCardPressEquipment](PressEquipmentTokens)
+
+// TechCardNeedleType is the needle POINT — the fact that decides whether a knit is pierced or
+// pushed aside. Never defaulted to "universal": unset means inherit.
+type TechCardNeedleType string
+
+var NeedleTypeTokens = []string{
+	"universal", "ballpoint", "stretch", "jeans", "leather", "microtex", "embroidery", "other",
+}
+
+var ValidNeedleTypes = tokenSet[TechCardNeedleType](NeedleTypeTokens)
+
+// TechCardBedType is the machine's bed. Machine IDENTITY, so it lives on a profile and has no
+// per-step override: a different bed is a different machine.
+type TechCardBedType string
+
+var BedTypeTokens = []string{"flatbed", "cylinder_bed", "post_bed", "feed_off_arm", "other"}
+
+var ValidBedTypes = tokenSet[TechCardBedType](BedTypeTokens)
+
+// TechCardAutomationLevel is an ORDERED SCALE and therefore has no "other" — a scale with an
+// «other» member has stopped being a scale. Machine identity, profile-only, like the bed.
+type TechCardAutomationLevel string
+
+var AutomationLevelTokens = []string{"basic", "semi_auto", "auto"}
+
+var ValidAutomationLevels = tokenSet[TechCardAutomationLevel](AutomationLevelTokens)
+
+// TechCardThreadTension is a closed scale RELATIVE to the machine's normal setting, plus a free
+// note for the number a particular machine wants. A raw dial figure was rejected deliberately: it
+// means nothing across two machines of the same class.
+type TechCardThreadTension string
+
+var ThreadTensionTokens = []string{"looser", "normal", "tighter", "other"}
+
+var ValidThreadTensions = tokenSet[TechCardThreadTension](ThreadTensionTokens)
+
+// TechCardPressCloth is what sits between the iron and the cloth. 'none' is a real answer for the
+// same reason it is on the attachment kind: NULL already means «inherit the profile».
+type TechCardPressCloth string
+
+var PressClothTokens = []string{"none", "press_cloth", "damp_press_cloth", "teflon_sheet", "other"}
+
+var ValidPressCloths = tokenSet[TechCardPressCloth](PressClothTokens)
+
+// The equipment ranges. EVERY ONE OF THESE IS A SANITY BOUND, NOT A STANDARD: they exist to catch
+// a typo before it reaches the shop floor («14 °C» for «140», a needle «9» for Nm 90), not to
+// declare what a machine may be set to. Each also stands in the schema (the chk_eqp_* / chk_op_*
+// CHECKs of 0306), and the Go check exists because a CHECK alone answers with error 3819 — no
+// field, no words. Move one and move the other.
+const (
+	// Threads on one machine: a five-thread safety overlock is the usual top, twenty is already
+	// generous for a multi-needle chainstitch.
+	MinThreadCount = 1
+	MaxThreadCount = 20
+	// Needle size in Nm (the metric system: Nm 90 = 0.90 mm blade). 35 is the finest made, 300 is
+	// upholstery leather.
+	MinNeedleSizeNm = 35
+	MaxNeedleSizeNm = 300
+	// Stitch WIDTH in mm — zigzag amplitude, overlock bite. ZERO IS A LEGAL SETTING (a straight
+	// stitch on a machine that can swing), unlike the density where zero means no stitches at all.
+	MinStitchWidthMm = 0
+	MaxStitchWidthMm = 20
+	// Press temperature in °C. The floor is what catches «14» typed for «140»; the ceiling is above
+	// any fusing recipe and below the point where the cloth is simply destroyed.
+	MinPressTemperatureC = 40
+	MaxPressTemperatureC = 250
+	// Dwell in seconds: one second to five minutes.
+	MinPressDwellSec = 1
+	MaxPressDwellSec = 300
+	// Pressure on the cloth in N/cm² — THE UNIT IS IN THE NAME, in the column and in every label,
+	// so nothing has to guess between bar and N/cm².
+	MinPressPressureNCm2 = 1
+	MaxPressPressureNCm2 = 100
+	// Column widths of the two free strings a profile carries (0306). A label is a name («оверлок у
+	// окна»), not a description; the note is where the machine model and the detail behind `other`
+	// go. The tension note shares the label's width — it qualifies a scale, it does not replace it.
+	MaxEquipmentProfileLabelLen = 64
+	MaxThreadTensionNoteLen     = 64
+	MaxEquipmentProfileNoteLen  = 255
+)
 
 // TechCardTopstitchMode replaces the free-text topstitch_width, whose real values were three
 // different KINDS of answer at once: «нет», «в край» (a placement, not a width) and «2 × 6 мм»
@@ -2322,6 +2635,36 @@ type TechCardOperation struct {
 	AttachmentKind   sql.NullString      `db:"attachment_kind"`
 	AttachmentSizeMm decimal.NullDecimal `db:"attachment_size_mm"`
 
+	// --- «на чём»: the machine block, meaningful when OperationType == machine ---------------------
+	// MachineType is the second axis: the verb is OperationType, the machine is here. Required for
+	// a machine step (on an aware write), rejected on any other type.
+	MachineType sql.NullString `db:"machine_type"`
+	// MachineProfileKey points at ONE profile of the card's park BY KEY, because a card may hold
+	// several machines of the same type and «the overlock» is then not an answer. Empty = resolve
+	// by type, which only works when the card has exactly one profile of that type. The reference
+	// is SOFT — no FK: the profile list is full-replaced on every save, so an FK with ON DELETE
+	// would be a lie about a row that is deleted and re-inserted routinely.
+	MachineProfileKey sql.NullString `db:"machine_profile_key"`
+	// Overrides. NULL = INHERIT (step → profile → card default), and the inherited value is never
+	// written back into the row — the same rule the older overrides above follow.
+	ThreadCount       sql.NullInt32       `db:"thread_count"`
+	NeedleType        sql.NullString      `db:"needle_type"`
+	NeedleSizeNm      sql.NullInt32       `db:"needle_size_nm"`
+	ThreadTension     sql.NullString      `db:"thread_tension"`
+	ThreadTensionNote sql.NullString      `db:"thread_tension_note"` // only alongside the scale
+	StitchWidthMm     decimal.NullDecimal `db:"stitch_width_mm"`     // zigzag amplitude / overlock bite, NOT the topstitch width
+
+	// --- the ВТО block, meaningful when OperationType is press / press_open / fusing ---------------
+	PressEquipment    sql.NullString      `db:"press_equipment"`
+	PressProfileKey   sql.NullString      `db:"press_profile_key"`
+	PressTemperatureC sql.NullInt32       `db:"press_temperature_c"`
+	PressDwellSec     sql.NullInt32       `db:"press_dwell_sec"`
+	PressPressureNCm2 decimal.NullDecimal `db:"press_pressure_n_cm2"` // N/cm², unit in the name
+	// PressSteam is three-valued: invalid = inherit, false = «без пара» (a real instruction), true
+	// = with steam. Collapsing the first two would turn an instruction into a default.
+	PressSteam sql.NullBool   `db:"press_steam"`
+	PressCloth sql.NullString `db:"press_cloth"` // 'none' cancels the profile's cloth; NULL inherits
+
 	// CalloutNumber links the operation to a TechCardCallout.number; NULL/0 = none.
 	CalloutNumber sql.NullInt32 `db:"callout_number"`
 
@@ -2337,6 +2680,154 @@ type TechCardOperation struct {
 	// row WAS the answer, and the single field was a second one.
 	BomLineKeys []string `db:"-"`
 	BomIds      []int    `db:"-"`
+
+	// --- сборка: что шаг производит и что берёт со стола (0307) -----------------------------------
+	// OutputUnitKey — код узла, который производит шаг. NULL/"" = шаг ничего не собирает, это
+	// ОБРАБОТКА: его входы остаются доступными следующим шагам. Сравнение ключей ПОБАЙТНОЕ
+	// (колонка _bin), «SHELL» и «Shell» — два разных узла.
+	OutputUnitKey sql.NullString `db:"output_unit_key"`
+	// OutputUnitName — имя узла. Живёт на первом производящем шаге; поглощающие могут не
+	// повторять. В дайджест секции НЕ входит: имя не факт цеха.
+	OutputUnitName sql.NullString `db:"output_unit_name"`
+
+	// InputKeys — единый упорядоченный список входов шага СЫРЫМИ ключами, как они пришли с
+	// провода (поле 46). Не персистится: в БД лежит уже классифицированное объединение.
+	InputKeys []string `db:"-"`
+	// AssemblyInputs — тот же список после классификации «деталь или узел». КАНОНИЧЕСКАЯ ФОРМА:
+	// ниже по течению никто не пересобирает список из двух половин и не угадывает природу ключа
+	// заново. Заполняется одним пост-проходом в конвертере (canonicalizeAssembly), до штампа
+	// подписей — иначе позиция 4 кортежа дайджеста хешировала бы одно, а чтение возвращало другое.
+	// PieceLineKeys выше — производная проекция этого списка (только детали).
+	AssemblyInputs []OperationInput `db:"-"`
+
+	// Media — фотографии ЭТОГО шага с выносками поверх них (0308). Не персистится в строке
+	// операции: живёт в child-таблице и едет в той же транзакции, что и прочие связи шага.
+	Media []TechCardOperationMedia `db:"-"`
+}
+
+// ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────
+//
+// Тип НЕ ЗНАЕТ СЛОВА «ОПЕРАЦИЯ» намеренно: та же выноска пригодится карточному эскизу, детали
+// кроя и примерке — им понадобится своё поле, а не свой формат выноски.
+
+// TechCardAnnotationKind — вид выноски. Закрытый словарь: вид определяет и число точек, и что
+// рисуется, и чем является текст. Оси (якорь × геометрия × лидер × подпись) — язык
+// ПРОЕКТИРОВАНИЯ набора, а не форма хранения: независимыми полями пришлось бы валидировать
+// комбинаторику бессмыслицы вроде скобки с одной точкой.
+type TechCardAnnotationKind string
+
+const (
+	AnnotationKindPin     TechCardAnnotationKind = "pin"     // 1 точка · номер по позиции · текст в легенде
+	AnnotationKindLabel   TechCardAnnotationKind = "label"   // 1 точка · плашка со стрелкой
+	AnnotationKindDim     TechCardAnnotationKind = "dim"     // 2 точки · размерная линия с засечками
+	AnnotationKindBracket TechCardAnnotationKind = "bracket" // 2 точки · скобка над участком
+	AnnotationKindMulti   TechCardAnnotationKind = "multi"   // 2..8 точек · одна подпись, много мест
+	AnnotationKindArc     TechCardAnnotationKind = "arc"     // 3 точки · дуга через среднюю точку
+	AnnotationKindPolygon TechCardAnnotationKind = "polygon" // 3..40 точек · замкнутая область
+	AnnotationKindInk     TechCardAnnotationKind = "ink"     // 2..200 точек · свободный след
+)
+
+// LineKinds — виды, у которых есть ЛИНИЯ, то есть те, у которых пунктир что-то значит. Пин это
+// точка, и «пунктирная точка» — не оформление, а второй способ записать одно и то же.
+func (k TechCardAnnotationKind) HasLine() bool { return k != AnnotationKindPin }
+
+// AreaKind — вид, у которого есть ПЛОЩАДЬ. Только полигон: у ломаной, дуги и мерки заливать
+// нечего, и флаг заливки под ними означал бы ровно ничего.
+func (k TechCardAnnotationKind) HasArea() bool { return k == AnnotationKindPolygon }
+
+// PointsAllowed возвращает допустимый диапазон числа точек для вида. Второе значение — false,
+// если вид неизвестен.
+func (k TechCardAnnotationKind) PointsAllowed() (min, max int, ok bool) {
+	switch k {
+	case AnnotationKindPin, AnnotationKindLabel:
+		return 1, 1, true
+	case AnnotationKindDim, AnnotationKindBracket:
+		return 2, 2, true
+	case AnnotationKindMulti:
+		return 2, 8, true
+	case AnnotationKindArc:
+		// Ровно три, и средняя ЛЕЖИТ НА КРИВОЙ: из трёх точек кривой управляющая точка Безье
+		// считается однозначно, поэтому хранится то, что человек показал, а не то, что вывела
+		// формула.
+		return 3, 3, true
+	case AnnotationKindPolygon:
+		// Три — минимум, при котором область вообще есть: две точки это отрезок, и «замкнуть» его
+		// нечем. Сорок — потолок читаемости: контур, обведённый по сорока углам, на печати
+		// сливается в кляксу, а правится он поштучно.
+		return 3, 40, true
+	case AnnotationKindInk:
+		// Двести — потолок ХРАНЕНИЯ, а не рисования: клиент прореживает след перед отправкой.
+		// Без предела один росчерк мышью кладёт в JSON-колонку тысячи decimal-пар, и карточка
+		// начинает возить их на каждом чтении.
+		return 2, 200, true
+	}
+	return 0, 0, false
+}
+
+// TechCardAnnotationColor — цвет выноски. Закрытый список, а не свободный hex: лист швеи печатают
+// и на чёрно-белом принтере, где произвольный цвет станет неразличимым серым. Пусто = чернильный.
+type TechCardAnnotationColor string
+
+const (
+	AnnotationColorRed    TechCardAnnotationColor = "red"
+	AnnotationColorBlue   TechCardAnnotationColor = "blue"
+	AnnotationColorGreen  TechCardAnnotationColor = "green"
+	AnnotationColorOrange TechCardAnnotationColor = "orange"
+	// Белый читается на тёмной ткани — а тёмная ткань это половина снимков узла. На бумаге он не
+	// пропадает: отрисовка кладёт под белую линию тёмное гало.
+	AnnotationColorWhite TechCardAnnotationColor = "white"
+)
+
+var ValidTechCardAnnotationColors = map[TechCardAnnotationColor]bool{
+	AnnotationColorRed: true, AnnotationColorBlue: true, AnnotationColorGreen: true,
+	AnnotationColorOrange: true, AnnotationColorWhite: true,
+}
+
+// TechCardAnnotationPoint — точка в нормализованных координатах кадра (0..1). Та же система, что
+// у pos_x/pos_y карточных выносок, и тот же тип: decimal, а не float.
+type TechCardAnnotationPoint struct {
+	X decimal.Decimal `json:"x"`
+	Y decimal.Decimal `json:"y"`
+}
+
+// TechCardAnnotation — одна выноска. Лидер (линия от плашки к якорю) НЕ хранится: он строится
+// правилом отрисовки, и хранить производное значило бы дать ему разойтись с якорем.
+type TechCardAnnotation struct {
+	Kind   TechCardAnnotationKind    `json:"kind"`
+	Points []TechCardAnnotationPoint `json:"points"`
+	Text   string                    `json:"text,omitempty"`
+	LabelX decimal.Decimal           `json:"label_x"`
+	LabelY decimal.Decimal           `json:"label_y"`
+	Color  TechCardAnnotationColor   `json:"color,omitempty"`
+	// PieceLineKey — ПЕРВАЯ из деталей кроя, о которых указание. Ссылка советующая: указание ставят
+	// раньше, чем детали появляются из чертежа, и неразрешимый ключ не отказ сохранения, а «деталь
+	// удалена» на экране. omitempty — чтобы у выносок без детали JSON в колонке не менялся.
+	//
+	// ПОЛЕ ЖИВЁТ РЯДОМ СО СПИСКОМ, а не вместо него: колонка annotations это JSON, и уже записанные
+	// выноски несут `piece`. Читатель берёт список, если он есть, иначе — это поле; писатель
+	// заполняет оба, и первый элемент списка обязан совпадать с ним.
+	PieceLineKey string `json:"piece,omitempty"`
+	// PieceLineKeys — все детали, о которых указание. Узел законно собирает несколько деталей
+	// сразу, и «какая из них главная» у шва не спрашивается.
+	PieceLineKeys []string `json:"pieces,omitempty"`
+	// Dashed — пунктир вместо сплошной. Входит в подпись секции: на чертеже сплошная и пунктир
+	// говорят разное, а не выглядят по-разному.
+	Dashed bool `json:"dashed,omitempty"`
+	// Filled — штриховка области полигона. Только у полигона; у прочих видов сервер обнуляет.
+	Filled bool `json:"filled,omitempty"`
+}
+
+// TechCardOperationMedia — одна картинка шага со своими выносками.
+type TechCardOperationMedia struct {
+	Id                  int                  `db:"id"`
+	TechCardOperationId int                  `db:"tech_card_operation_id"`
+	MediaId             int                  `db:"media_id"`
+	Caption             sql.NullString       `db:"caption"`
+	DisplayOrder        int                  `db:"display_order"`
+	// Annotations в БД лежит JSON-колонкой; в Go — разобранным списком. Сырое значение читается
+	// в AnnotationsRaw и разбирается стором один раз.
+	Annotations    []TechCardAnnotation `db:"-"`
+	AnnotationsRaw []byte               `db:"annotations"`
 }
 
 // TechCardIssueSeverity / TechCardIssueStatus classify a maker-flagged issue.
@@ -2590,10 +3081,29 @@ type TechCardPiece struct {
 	// та же причина, что у CutSymmetryOmitted рядом. У голого bool ноль неотличим от «не сказал», и
 	// без этого различия сохранение из вкладки, которая про градацию не спрашивает, снимало бы
 	// пометку со всех деталей карточки.
-	UngradedOmitted bool          `db:"-"`
-	Grainline       string        `db:"grainline"`
-	Fused           bool          `db:"fused"`
-	CalloutNumber   sql.NullInt32 `db:"callout_number"`
+	UngradedOmitted bool   `db:"-"`
+	Grainline       string `db:"grainline"`
+	Fused           bool   `db:"fused"`
+	// FusingMode — КАК ИМЕННО дублируется деталь (0304); NULL = НЕ РАЗМЕЧЕНО, ровно как у CutSymmetry
+	// выше. Осмысленно только при Fused: снятая галка гасит и режим, и ширину (NormalizeFusing), иначе
+	// уцелевший 'strip' читался бы как «не дублируется», а норму давал бы полосой.
+	//
+	// Читателю, которому нужно число, а не разметка, служит PieceFusingModeOrFull: до 0304 весь код
+	// читал голую галку единственным возможным способом — «клеевая по тому же лекалу», — и разворот
+	// NULL в full сохраняет ровно это поведение. Но ЭКРАН обязан различать: молчание, показанное как
+	// «целиком», перестаёт быть заметным вопросом в тот самый момент, когда на него ответили за
+	// технолога.
+	FusingMode sql.NullString `db:"fusing_mode"`
+	// FusingWidthMm — ширина клеевой полосы, мм. Значима и обязательна ТОЛЬКО при
+	// PieceFusingModeStrip; при остальных режимах гасится, потому что число рядом с «по припуску»
+	// спорит с эталоном припуска (0277) молча: на экране видно одно, в расчёте другое.
+	FusingWidthMm decimal.NullDecimal `db:"fusing_width_mm"`
+	// FusingOmitted — ПАРЫ не было на проводе, а не «пришла пустой»: тот же отрицательный смысл и та
+	// же причина, что у CutSymmetryOmitted и UngradedOmitted рядом. Один флаг на оба поля, потому что
+	// присутствие режима управляет и шириной: клиент, приславший режим без ширины, заявляет «полоса
+	// без числа», а не «ширину не трогать», — иначе полоса досталась бы шириной от прошлой правки.
+	FusingOmitted bool          `db:"-"`
+	CalloutNumber sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
@@ -2661,6 +3171,145 @@ func ValidatePieceCutSymmetry(field string, sym sql.NullString, piecesPerGarment
 			"зеркальная пара делится пополам — количество на изделие должно быть чётным и не меньше двух",
 			strconv.Itoa(piecesPerGarment),
 			"две строки по одной штуке — это «одинаковые» по штуке каждая; «зеркальные пары» ставят на ОДНУ строку с чётным количеством")
+	}
+	return nil
+}
+
+// TechCardPieceFusingMode is HOW a piece is fused (0304) — where the interlining actually lies, not
+// whether there is any. Meaningful only on a piece whose Fused flag is up.
+//
+// Until 0304 the answer was one for everybody, and every reader took it the only way it could be
+// taken — «клеевая выкроена по тому же лекалу»: the cut list pairs the piece with the interlining
+// slot whole, the tech pack prints «fused: yes», and the area estimate would charge the interlining
+// slot the FULL contour. Edge fusing is the common case on the floor, and the difference is money in
+// multiples: a front panel of 4200 cm² has a ~260 cm perimeter, so a 25 mm strip is 650 cm² — 6.5×
+// less.
+type TechCardPieceFusingMode string
+
+const (
+	PieceFusingModeFull TechCardPieceFusingMode = "full"
+	// PieceFusingModeSeamAllowance and PieceFusingModeStrip BOTH lay a strip along the edge and differ
+	// only in where its width comes from: the card's (else the workshop's) seam-allowance standard
+	// (0277) versus the number typed on the piece. Collapsing them into one value with a mandatory
+	// number would mean re-typing the allowance on every piece and then diverging from the standard
+	// 0277 exists to hold.
+	PieceFusingModeSeamAllowance TechCardPieceFusingMode = "seam_allowance"
+	PieceFusingModeStrip         TechCardPieceFusingMode = "strip"
+)
+
+// ValidTechCardPieceFusingModes mirrors the DB CHECK chk_tcp_fusing_mode (0304). "Not marked" is
+// deliberately absent for the same reason as in cut symmetry: it is the NULL column, not a value.
+var ValidTechCardPieceFusingModes = map[TechCardPieceFusingMode]bool{
+	PieceFusingModeFull: true, PieceFusingModeSeamAllowance: true, PieceFusingModeStrip: true,
+}
+
+// PieceFusingStripWidthCeilingMm mirrors the ceiling in chk_tcp_fusing_width (0304). The widest real
+// fused strip is a hem, 40-50 mm; anything above is a unit slip (cm typed as mm) or a stray zero.
+// The two numbers are obliged to move together — schema carries the invariant, Go carries the
+// wording (0272's precedent).
+const PieceFusingStripWidthCeilingMm = 100
+
+// PieceFusingModeOrFull is the READER's view of an unmarked piece: NULL unfolds to `full`.
+//
+// This is what keeps everything written before 0304 behaving exactly as it did — the flag alone
+// always meant «same pattern piece, cut from interlining». It is deliberately NOT what the SCREEN
+// does: an unanswered question shown as an answer stops being visible the moment somebody answers it
+// on the технолог's behalf. Compute with this; display entity.TechCardPiece.FusingMode itself.
+//
+// A piece that is not fused at all has no mode — the caller gets `full` only if it asks about a
+// fused one, so callers must gate on Fused first.
+func PieceFusingModeOrFull(mode sql.NullString) TechCardPieceFusingMode {
+	if !mode.Valid {
+		return PieceFusingModeFull
+	}
+	if v := TechCardPieceFusingMode(mode.String); ValidTechCardPieceFusingModes[v] {
+		return v
+	}
+	return PieceFusingModeFull
+}
+
+// NormalizeFusing collapses the marking to the ONE shape the DB CHECKs accept, so an operator never
+// meets a raw MySQL 3819 naming a column they did not touch.
+//
+// Two rules, both of them about the columns being unable to lie together:
+//
+//   - НЕ ДУБЛИРУЕТСЯ ⇒ разметки нет. A mode surviving a cleared checkbox would read «не
+//     дублируется» on screen while handing the estimate a strip — and unchecking the box is exactly
+//     the moment nobody looks at the mode any more.
+//   - ШИРИНА ТОЛЬКО У STRIP. A number left beside «по припуску» argues with the standard silently:
+//     the screen shows the standard, the arithmetic uses the leftover.
+//
+// Normalising rather than refusing is the right call here because neither state is an operator's
+// statement — both are residue of a previous edit, and there is exactly one thing they can mean.
+func (p *TechCardPiece) NormalizeFusing() {
+	if !p.Fused {
+		p.FusingMode = sql.NullString{}
+		p.FusingWidthMm = decimal.NullDecimal{}
+		return
+	}
+	if PieceFusingModeOrFull(p.FusingMode) != PieceFusingModeStrip {
+		p.FusingWidthMm = decimal.NullDecimal{}
+	}
+}
+
+// ValidatePieceFusing checks one piece's fusing marking BEFORE the row reaches MySQL, in the words
+// the operator needs. An unset mode is accepted — «не размечено» is legal and the only honest state
+// for every row that predates 0304.
+//
+// Call NormalizeFusing FIRST: this function judges an operator's statement, not residue. The pair it
+// refuses to invent is the one only a human can supply — a strip with no width. Defaulting that to
+// the seam allowance would silently turn «полосой» into «по припуску», and the two differ by
+// whatever the technologist meant to type.
+func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm decimal.NullDecimal) error {
+	if !mode.Valid {
+		if widthMm.Valid {
+			return NewFieldViolation(field, "ширина клеевой полосы задана, а режим дублирования не выбран", widthMm.Decimal.String(),
+				"выберите «полосой», либо уберите ширину: у режимов «целиком» и «по припуску» своего числа нет")
+		}
+		return nil
+	}
+	if !fused {
+		return NewFieldViolation(field, "режим дублирования задан у детали, которая не дублируется", mode.String,
+			"поднимите галку «дублируется» либо снимите режим")
+	}
+	v := TechCardPieceFusingMode(mode.String)
+	if !ValidTechCardPieceFusingModes[v] {
+		return NewFieldViolation(field, "unknown fusing mode", mode.String,
+			"pick one of: full (вся деталь), seam_allowance (по припуску), strip (полосой заданной ширины)")
+	}
+	if v != PieceFusingModeStrip {
+		if widthMm.Valid {
+			return NewFieldViolation(field, "ширина полосы задана при режиме, у которого своей ширины нет", mode.String,
+				"«по припуску» берёт ширину из эталона припуска карточки; своё число ставят режимом «полосой»")
+		}
+		return nil
+	}
+	if !widthMm.Valid {
+		return NewFieldViolation(field, "у режима «полосой» не задана ширина", "",
+			"впишите ширину полосы в миллиметрах, либо выберите «по припуску», чтобы взять её из эталона припуска")
+	}
+	if !widthMm.Decimal.IsPositive() {
+		return NewFieldViolation(field, "ширина клеевой полосы должна быть больше нуля", widthMm.Decimal.String(),
+			"нулевая полоса — это «не дублируется»; снимите галку, если клеевой нет")
+	}
+	// МАСШТАБ КОЛОНКИ ПРОВЕРЯЕТСЯ ЗДЕСЬ, потому что за нас его «поправит» MySQL — и поправит молча.
+	// Колонка DECIMAL(6,1): 25.25 ляжет как 25.3, а дайджест CONSTRUCTION к тому моменту УЖЕ
+	// посчитан по 25.25 — подпись, поставленная этим же сохранением, разойдётся с первым же чтением
+	// карточки и останется устаревшей навсегда. Второй сценарий злее: 0.04 округлится до 0.0, и
+	// chk_tcp_fusing_width отобьёт всю карточку номером 3819.
+	//
+	// ОТКАЗ, А НЕ ОКРУГЛЕНИЕ. Площадь детали округляет ПАРСЕР (её никто не вводит руками, это замер),
+	// а ширину полосы вводит человек — тихо изменить набранное им число значит подписать не то, что
+	// он видел.
+	if widthMm.Decimal.Exponent() < -1 {
+		return NewFieldViolation(field, "ширина клеевой полосы задаётся с точностью до десятых миллиметра",
+			widthMm.Decimal.String(),
+			"округлите до одного знака после запятой — например, 25.3 вместо 25.25")
+	}
+	if widthMm.Decimal.GreaterThan(decimal.NewFromInt(PieceFusingStripWidthCeilingMm)) {
+		return NewFieldViolation(field, "ширина клеевой полосы больше 100 мм — похоже на сантиметры вместо миллиметров",
+			widthMm.Decimal.String(),
+			"самая широкая реальная полоса — дублирование низа, 40-50 мм; для дублирования целиком есть режим «вся деталь»")
 	}
 	return nil
 }
@@ -2790,6 +3439,29 @@ type TechCardInsert struct {
 	// wipe mappings it never saw; true means full replace with the slice (empty = clear all).
 	PieceDxfAliases    []TechCardPieceDxfAlias `db:"-"`
 	PieceDxfAliasesSet bool                    `db:"-"`
+	// MachineFieldsAware says the CLIENT that sent this payload knows about the machine / ВТО
+	// fields on operations and about equipment profiles. Transport, not content: it is in no digest
+	// projection — which bundle saved a card is not something a signature may depend on.
+	//
+	// Operations are full-replace with no per-field protection, so a save from a bundle that never
+	// heard of MachineType would silently wipe every machine fact on the card. This flag is what
+	// lets the API tell «an old client is about to erase facts» from «a card that has none» and
+	// refuse the first with a sentence instead of quietly obeying it.
+	MachineFieldsAware bool `db:"-"`
+
+	// AssemblyAware — то же самое про поля сборки (input_keys / output_unit_key / output_unit_name).
+	// Транспорт, не содержание; ни в один дайджест не входит.
+	//
+	// Флаг НЕ ФИЛЬТРУЕТ ПОЛЯ: разбор 46-48 происходит всегда. «Игнорировать при aware=false»
+	// выглядит защитой, а на деле открывает дыру — CloneStyleForSeason строит payload сам,
+	// транспортных флагов не эмитит и оба capability-гейта обходит, так что клон размеченной
+	// карточки вернулся бы без узлов и без единой ошибки.
+	AssemblyAware bool `db:"-"`
+	// AssemblyCleared — явное намерение снять разметку узлов целиком. Осведомлённая запись, не
+	// несущая ни одного сборочного факта против карточки, которая их несёт, отклоняется без него:
+	// иначе параллельная вкладка, AI-черновик или восстановленный до-фичевый черновик стирали бы
+	// самый дорогой ручной ввод карточки молча.
+	AssemblyCleared bool `db:"-"`
 	// CostingSizeOverride re-points the costing basis for ONE computation, and it is THREE-valued
 	// on purpose: nil = the style default (the simple average over the declared size range); >0 =
 	// cost on that concrete size (a production-run cell pricing the size it actually cuts); 0 =
@@ -3018,6 +3690,11 @@ type TechCard struct {
 	// single-card read alongside the legacy free-text Composition (TechCardInsert.Composition) — never
 	// instead of it. Empty when the style has no style_composition rows yet.
 	CompositionEntries []CompositionEntry `db:"-"`
+	// ResolvedOperationMedia — разрешённые фотографии ШАГОВ этой карточки, дистинкт по media_id
+	// (0308). Отдельным списком, а не внутри операции: write-сообщение операции возит только
+	// media_id, а URL и размеры это read-данные — та же разводка, что у карточных медиа, где
+	// TechCardMediaItem пишет, а ResolvedMedia читает.
+	ResolvedOperationMedia []TechCardMediaFull `db:"-"`
 	// ResolvedMedia carries the sketch media with their MediaFull resolved.
 	ResolvedMedia []TechCardMediaFull `db:"-"`
 	// PreviewURL is a thumbnail chosen for list/gallery views (B-9): first moodboard image for an
@@ -3053,6 +3730,18 @@ type TechCard struct {
 	// A map, not a slice: every reader asks «what are the areas of THIS fabric», never «what is the
 	// third scope», and the one place that needs a stable order (the wire) sorts on the way out.
 	PieceAreaScopes map[string]PieceAreaScope `db:"-"`
+	// WorkshopSeamAllowanceMm is the SHOP's default seam allowance (0277) carried onto the card at
+	// read time, so a reader can resolve the standard's full cascade — card override, else shop — with
+	// RequiredSeamAllowanceMm(tc.RequiredSeamAllowanceMm, tc.WorkshopSeamAllowanceMm).
+	//
+	// It is here rather than in each caller's signature because the callers that need it are the
+	// COSTING ones (площадь → норма → деньги), and their argument lists are already long and shared
+	// across four entry points. Threading a settings struct through all of them would mean four places
+	// that can pass nil, i.e. four places where «по припуску» silently loses its width and the
+	// interlining is costed at zero-width strips. Populated on the single-card read only (INVALID on
+	// lists/writes), exactly like PieceAreaScopes above — and INVALID is honest there: a list row
+	// derives no norms.
+	WorkshopSeamAllowanceMm decimal.NullDecimal `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned

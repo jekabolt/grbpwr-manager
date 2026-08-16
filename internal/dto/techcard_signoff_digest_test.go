@@ -103,8 +103,15 @@ func TestTechCardSectionDigestsAreSectionScoped(t *testing.T) {
 }
 
 func TestConstructionDigestCoversOperationCostingInputs(t *testing.T) {
+	// НОВАЯ ФОРМА ШАГА: «что делают» и «на чём» — два поля (0306). Фикстура переписана с
+	// OpTypeLockstitch на пару (machine, lockstitch) не для красоты: канонизация в конверсии
+	// proto→entity означает, что шага с сырым legacy-типом после Ф1 не существует, и фикстура,
+	// описывающая несуществующее состояние, перестаёт что-либо доказывать. Отпечаток от этого не
+	// двигается — компат-проекция хеширует пару ровно как прежнюю строку, что пинится эталонным
+	// hex'ом в techcard_machine_digest_test.go.
 	base := entity.TechCardInsert{Operations: []entity.TechCardOperation{{
-		OperationType: entity.OpTypeLockstitch,
+		OperationType: entity.OpTypeMachine,
+		MachineType:   sql.NullString{String: "lockstitch", Valid: true},
 		Zone:          entity.TechCardGarmentZone("waist"),
 		SMV:           decimal.NullDecimal{Decimal: decimal.RequireFromString("1.10"), Valid: true},
 	}}}
@@ -128,6 +135,14 @@ func TestConstructionDigestCoversOperationCostingInputs(t *testing.T) {
 	// `time norm` and `machine` used to be subtests here. Both columns went with the operations
 	// break — time_norm as the legacy twin of smv, machine as a copy of operation_type written by a
 	// preset — so what replaces them is the pair a step is now actually costed and placed by.
+	//
+	// `machine` вернулся, но уже не копией типа: 0306 сделал машинку ВТОРОЙ ОСЬЮ шага, и «этот шов
+	// идёт на оверлоке, а не на прямострочке» — другое указание цеху при том же типе и той же SMV.
+	t.Run("machine type", func(t *testing.T) {
+		wantDifferent(t, func(op *entity.TechCardOperation) {
+			op.MachineType = sql.NullString{String: "overlock", Valid: true}
+		})
+	})
 	t.Run("zone", func(t *testing.T) {
 		wantDifferent(t, func(op *entity.TechCardOperation) {
 			op.Zone = entity.TechCardGarmentZone("hem")

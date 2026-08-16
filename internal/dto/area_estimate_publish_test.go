@@ -407,6 +407,32 @@ func TestEveryRefusalReachesTheWire(t *testing.T) {
 			tc.CostingSizeOverride = &zero
 			return tc
 		}},
+		// Клеевая полосой по краю (0304) на замере, снятом до 0305: площадь есть, периметра нет.
+		// Комплект при этом ПОЛОН и не устарел — то есть все соседние причины сказали бы неправду и
+		// отправили оператора чинить то, что в порядке. Единственный слот карточки сделан клеевым,
+		// чтобы публикуемая оценка осталась одна: заимствование геометрии здесь ни при чём, контур
+		// детали лежит в своём же скоупе.
+		{"no measured perimeter", entity.AreaEstimateNoPerimeter, func() *entity.TechCard {
+			tc := measuredCard()
+			tc.BomItems[0].Section = entity.BomSectionInterlining
+			tc.Pieces[0].Fused = true
+			tc.Pieces[0].FusingMode = sql.NullString{String: string(entity.PieceFusingModeStrip), Valid: true}
+			tc.Pieces[0].FusingWidthMm = decimal.NullDecimal{
+				Decimal: decimal.RequireFromString("25"), Valid: true,
+			}
+			return tc
+		}},
+		// «По припуску» при незаданном эталоне: ширины полосы не существует. Комплект полон, замер
+		// свеж — недостающий факт лежит в настройках цеха, и только эта причина туда и посылает.
+		{"no seam allowance standard", entity.AreaEstimateNoStripWidth, func() *entity.TechCard {
+			tc := measuredCard()
+			tc.BomItems[0].Section = entity.BomSectionInterlining
+			tc.Pieces[0].Fused = true
+			tc.Pieces[0].FusingMode = sql.NullString{
+				String: string(entity.PieceFusingModeSeamAllowance), Valid: true,
+			}
+			return tc
+		}},
 		{"pin conflict", entity.AreaEstimatePinConflict, func() *entity.TechCard {
 			// Two pieces of ONE slot pinned to two different articles: that is two rolls, not an
 			// imprecise estimate. Picking one silently would cost half the garment at the other

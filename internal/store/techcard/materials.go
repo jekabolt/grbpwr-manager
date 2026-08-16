@@ -131,26 +131,47 @@ func (cs calloutSync) apply(p *entity.TechCardPiece) {
 // всех деталей карточки — незаметно, потому что снятая пометка выглядит как обычная карточка. Три
 // ноги контракта те же самые: optional в прото, IF(:ungraded_omitted, …) здесь и
 // carryOmittedPieceUngradedFrom перед пересчётом дайджеста CONSTRUCTION.
+//
+// РАЗМЕТКА ДУБЛИРОВАНИЯ (0304) идёт ТЕМ ЖЕ механизмом, но охраняется ОДНИМ флагом на ДВЕ колонки —
+// :fusing_omitted закрывает и режим, и ширину. Раздельные флаги были бы не строже, а опаснее: пара
+// «режим strip + ширина» осмысленна только целиком, и клиент, приславший режим без ширины, заявляет
+// «полоса без числа» (это ошибка, её ловит entity.ValidatePieceFusing), а не «ширину не трогать». С
+// двумя флагами такая правка молча донесла бы ширину от прошлой правки — чужую и правдоподобную.
+//
+// И ОДНО ОТЛИЧИЕ ОТ ОБОИХ СОСЕДЕЙ, БЕЗ КОТОРОГО ОХРАНА САМА СЕБЯ РОНЯЕТ: перенос вложен в
+// IF(:fused, …, NULL). У cut_symmetry и ungraded хранимое значение можно нести дальше безусловно —
+// они ни от чего на строке не зависят. Разметка дублирования зависит: chk_tcp_fusing_mode
+// двухколоночный и требует, чтобы режим стоял ТОЛЬКО у fused-детали. Вкладка со старым бандлом
+// поля не шлёт, но галку «дублируется» снять умеет — и голый перенос сохранил бы 'strip' рядом с
+// fused=0, то есть уронил бы ВСЁ сохранение карточки в 3819 с именем колонки, которой эта вкладка
+// не знает. Снятая галка обязана гасить разметку здесь же, в том же операторе, который её снимает:
+// это не заявление оператора, а остаток прошлой правки, и означать он может ровно одно.
+//
+// Тот же довод — причина, по которой ЭТА ветка контракта не может обойтись переносом в API-слое
+// (carryOmittedPieceFusingFrom): тот приводит в порядок ДАЙДЖЕСТ, а инвариант колонки обязан
+// держаться и на путях, которые через парсер RPC не идут вовсе.
 const (
 	pieceUpdateQuery = `
 				UPDATE tech_card_piece SET
 					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
 					cut_symmetry=IF(:cut_symmetry_omitted, cut_symmetry, :cut_symmetry),
 					ungraded=IF(:ungraded_omitted, ungraded, :ungraded),
+					fusing_mode=IF(:fused, IF(:fusing_omitted, fusing_mode, :fusing_mode), NULL),
+					fusing_width_mm=IF(:fused, IF(:fusing_omitted, fusing_width_mm, :fusing_width_mm), NULL),
 					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
 				WHERE id=:id`
 
 	pieceInsertQuery = `
 				INSERT INTO tech_card_piece
-					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, callout_number, detached, note, display_order)
-				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :callout_number, :detached, :note, :display_order)`
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, fusing_mode, fusing_width_mm, callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :fusing_mode, :fusing_width_mm, :callout_number, :detached, :note, :display_order)`
 
 	// The read side of the same row. It has to SELECT every column the write writes and the digest
 	// hashes: a field the write stores and the read never loads makes the two projections permanently
 	// disagree, and the sign-off it feeds can never match its own stored digest again — the failure the
 	// piece-material read's line_key note records having already paid for once.
 	pieceReadQuery = `
-		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, callout_number, detached, note
+		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, fusing_mode, fusing_width_mm, callout_number, detached, note
 		FROM tech_card_piece
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order, id`
@@ -241,6 +262,19 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			fmt.Sprintf("pieces[%d].cut_symmetry", i), p.CutSymmetry, p.PiecesPerGarment); err != nil {
 			return err
 		}
+		// КАК ДУБЛИРУЕТСЯ (0304) — тот же порядок и та же причина: сперва СВЕСТИ к форме, которую
+		// CHECK'и принимают, потом судить то, что осталось.
+		//
+		// Нормализация здесь, а не только в парсере RPC, потому что этот стор — не единственная
+		// дорога к колонке (сидер беты, будущие импорты), а chk_tcp_fusing_mode двухколоночный: он
+		// сработает и на правке, которая тронула ОДНУ галку «дублируется», выдав 3819 с именем
+		// колонки, которую оператор не трогал. Снятая галка обязана гасить разметку молча — это не
+		// заявление оператора, а остаток прошлой правки, и означать он может ровно одно.
+		p.NormalizeFusing()
+		if err := entity.ValidatePieceFusing(
+			fmt.Sprintf("pieces[%d].fusing_mode", i), p.Fused, p.FusingMode, p.FusingWidthMm); err != nil {
+			return err
+		}
 		params := map[string]any{
 			"tech_card_id":         tcID,
 			"name":                 p.Name,
@@ -253,6 +287,9 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			"ungraded_omitted":     p.UngradedOmitted,
 			"grainline":            p.Grainline,
 			"fused":                p.Fused,
+			"fusing_mode":          p.FusingMode,
+			"fusing_width_mm":      p.FusingWidthMm,
+			"fusing_omitted":       p.FusingOmitted,
 			"callout_number":       p.CalloutNumber,
 			"detached":             p.Detached,
 			"note":                 p.Note,

@@ -73,7 +73,14 @@ func (s *Server) GetStyleCutList(ctx context.Context, req *pb_admin.GetStyleCutL
 			CutSymmetry:      dto.PieceCutSymmetryToPb(p.CutSymmetry),
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
-			Fabrics:          fabrics,
+			// КАК ИМЕННО дублируется (0304). Печатается РЯДОМ с fused, а не вместо него, и печатать
+			// обязано: раскройщик, прочитавший голое «fused: yes» у детали, которая дублируется полосой
+			// 25 мм, выкроит клеевую по всему лекалу. Хранимое NULL уезжает как UNKNOWN — «не
+			// размечено», — а не разворачивается в «целиком»: развернуть его здесь значило бы напечатать
+			// цеху ответ, которого никто не давал.
+			FusingMode:    dto.PieceFusingModeToPb(p.FusingMode),
+			FusingWidthMm: dto.PbDecimalFromNull(p.FusingWidthMm),
+			Fabrics:       fabrics,
 		})
 	}
 

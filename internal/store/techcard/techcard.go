@@ -5,6 +5,7 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -498,15 +499,24 @@ func (s *Store) updateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 		// so preserve its stored row; non-nil means replace it. A present-but-empty message parses to
 		// a non-nil all-zero entity and deliberately takes the replace path, clearing every value by
 		// inserting an all-NULL row (valid for all three schemas). Lists remain full-replace.
+		//
+		// The equipment park (0306) is presence-aware ONE LEVEL DEEPER, and it needs its own line for
+		// two independent reasons. Its FK is on tech_card, not on tech_card_construction, so the
+		// DELETE of the construction row above does not cascade to it — clearing it is this loop's
+		// job or nobody's. And its presence signal is the WRAPPER, not the section: a client that
+		// sends a construction it does understand while knowing nothing about profiles must not erase
+		// the park, whereas a present-but-empty wrapper is a deliberate «delete them all».
 		preserveAbsentSection := map[string]bool{
-			"tech_card_construction": tc.Construction == nil,
-			"tech_card_packaging":    tc.Packaging == nil,
-			"tech_card_costing":      tc.Costing == nil,
+			"tech_card_construction":      tc.Construction == nil,
+			"tech_card_packaging":         tc.Packaging == nil,
+			"tech_card_costing":           tc.Costing == nil,
+			"tech_card_equipment_profile": tc.Construction == nil || tc.Construction.EquipmentDefaults == nil,
 		}
 		for _, table := range []string{
 			"tech_card_size", "tech_card_product", "tech_card_media",
 			"tech_card_callout", "tech_card_detail",
-			"tech_card_construction", "tech_card_operation", "tech_card_label",
+			"tech_card_construction", "tech_card_equipment_profile",
+			"tech_card_operation", "tech_card_label",
 			"tech_card_packaging", "tech_card_costing", "tech_card_issue", "tech_card_signoff",
 		} {
 			if preserveAbsentSection[table] {
@@ -816,6 +826,21 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].PieceAreaScopes = areas
+	// ЦЕХОВОЙ ЭТАЛОН ПРИПУСКА (0277) — вторая половина каскада, без которой первая ничего не решает.
+	// Режим дублирования «по припуску» (0304) берёт ширину полосы из этого эталона: переопределение
+	// карточки, иначе цеховой дефолт. Прочитать здесь — значит прочитать один раз для всех, кто
+	// считает по этой карточке деньги; читать у каждого из них значило бы четыре места, каждое из
+	// которых умеет молча остаться без ширины и посчитать клеевую полосой нулевой ширины.
+	//
+	// ОТСУТСТВИЕ СТРОКИ — НЕ ОШИБКА, ровно как и в самом сторе настроек: «ничего не настроено» —
+	// законный ответ, и оценка на нём честно откажется назвать ширину, вместо того чтобы выдумать её.
+	settings, err := s.repFunc().Workshop().GetSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load workshop settings for tech card %d: %w", id, err)
+	}
+	if settings != nil {
+		cards[0].WorkshopSeamAllowanceMm = settings.DefaultSeamAllowanceMm
+	}
 	// Токен входов себестоимости, которых нет в записи карточки (Ф-П): площади и назначения деталей
 	// на ткань. Считается ТОЙ ЖЕ функцией, что на записи, — не «так же», а буквально той же: чтение
 	// рецепта не выбирает line_key (поля провода), и вторая реализация дала бы другой токен об одном
@@ -1261,6 +1286,12 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	}
 	// production (Phase 3)
 	if err := insertTechCardConstruction(ctx, db, id, tc.Construction); err != nil {
+		return err
+	}
+	// The card's machine / ВТО park (0306). Order relative to the operations below does not matter:
+	// a step names a profile by KEY, and that reference is resolved where it is consumed, not by an
+	// FK — which is the whole reason the park can be full-replaced on every save.
+	if err := insertTechCardEquipmentProfiles(ctx, db, id, tc.Construction); err != nil {
 		return err
 	}
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
@@ -1833,6 +1864,31 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 	}
 	rows := make([]map[string]any, 0, len(callouts))
 	for i, c := range callouts {
+		// Якоря геометрии — JSON-колонкой, одним значением на выноску (0309). Форма уже проверена
+		// в dto: сюда приходит то, что сервер согласился считать указанием.
+		kind := c.Kind
+		if kind == "" {
+			kind = entity.AnnotationKindPin
+		}
+		var points any
+		if len(c.Points) > 0 {
+			raw, err := json.Marshal(c.Points)
+			if err != nil {
+				return fmt.Errorf("marshal callout %d points: %w", c.Number, err)
+			}
+			points = string(raw)
+		}
+		// Список деталей — той же JSON-колонкой и по тому же правилу, что якоря: NULL, когда
+		// сказать нечего. Одна деталь СПИСКОМ НЕ ПИШЕТСЯ: она уже лежит в `part`, и второй
+		// экземпляр той же строки — это второе место, откуда её однажды прочтут по-разному.
+		var parts any
+		if len(c.Parts) > 1 {
+			raw, err := json.Marshal(c.Parts)
+			if err != nil {
+				return fmt.Errorf("marshal callout %d parts: %w", c.Number, err)
+			}
+			parts = string(raw)
+		}
 		rows = append(rows, map[string]any{
 			"tech_card_id":   id,
 			"callout_number": c.Number,
@@ -1842,7 +1898,15 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			"media_id":       c.MediaId,
 			"pos_x":          c.PosX,
 			"pos_y":          c.PosY,
-			"display_order":  i,
+			"kind":           string(kind),
+			"color":          string(c.Color),
+			"dashed":         c.Dashed,
+			"filled":         c.Filled,
+			// NULL, а не «[]», когда якорей нет: у пина их не бывает вовсе, и пустой массив в
+			// колонке был бы вторым способом сказать то же самое.
+			"points":        points,
+			"parts":         parts,
+			"display_order": i,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_callout", rows); err != nil {

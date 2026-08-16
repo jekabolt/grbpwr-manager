@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -688,5 +689,50 @@ func carryOmittedPieceUngradedFrom(stored *entity.TechCard, incoming *entity.Tec
 		if u, ok := byKey[strings.TrimSpace(incoming.Pieces[i].LineKey)]; ok {
 			incoming.Pieces[i].Ungraded = u
 		}
+	}
+}
+
+// carryOmittedPieceFusingFrom is the same contract a FOURTH time, for КАК ДУБЛИРУЕТСЯ (0304):
+// деталь, про которую клиент НЕ СКАЗАЛ, не должна читаться как деталь, у которой разметку СНЯЛИ.
+//
+// Отдельная функция, а не пятая строка в соседней, по образцу всей тройки выше: у каждого поля своя
+// причина быть optional и своя цена ошибки. Ключ сравнивается ВЕРБАТИМ после trim — как в обеих
+// соседках и как в самом upsertTechCardPieces, чтобы перенос не держал своего, отличного от стора,
+// представления о том, какая деталь какая.
+//
+// ПЕРЕНОСИТСЯ ПАРА ЦЕЛИКОМ, потому что присутствие режима управляет и шириной: донести режим и
+// оставить ширину от текущей формы значило бы собрать «полосу 25 мм» из чужих половин — режим со
+// склада, число с экрана, — и захешировать эту химеру в подпись.
+//
+// И ОДНА СТРОКА, КОТОРОЙ НЕТ У СОСЕДОК: перенесённая разметка ГАСИТСЯ, если та же правка сняла
+// галку «дублируется». Инвариант «нет дублирования — нет разметки» держит и колонка (chk_tcp_fusing_mode),
+// и стор (IF(:fused, …, NULL)), поэтому без этой строки дайджест хешировал бы 'strip' на детали, у
+// которой в базе окажется NULL, — подпись описывала бы состояние, которого нет ни в одной строке
+// таблицы. Это не то же самое, что молчание клиента: галку он прислал явно, и она отвечает на
+// вопрос за оба поля сразу.
+func carryOmittedPieceFusingFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
+	if stored == nil || incoming == nil {
+		return
+	}
+	type fusing struct {
+		mode  sql.NullString
+		width decimal.NullDecimal
+	}
+	byKey := make(map[string]fusing, len(stored.Pieces))
+	for _, p := range stored.Pieces {
+		if k := strings.TrimSpace(p.LineKey); k != "" {
+			byKey[k] = fusing{mode: p.FusingMode, width: p.FusingWidthMm}
+		}
+	}
+	for i := range incoming.Pieces {
+		if !incoming.Pieces[i].FusingOmitted {
+			continue
+		}
+		if f, ok := byKey[strings.TrimSpace(incoming.Pieces[i].LineKey)]; ok {
+			incoming.Pieces[i].FusingMode = f.mode
+			incoming.Pieces[i].FusingWidthMm = f.width
+		}
+		// Одно правило на все пути записи — то же самое, что применит стор.
+		incoming.Pieces[i].NormalizeFusing()
 	}
 }

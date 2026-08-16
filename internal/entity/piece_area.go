@@ -93,6 +93,17 @@ type PieceAreaRow struct {
 	SizeId sql.NullInt64 `db:"size_id"`
 	// AreaCm2 is ONE instance's area in cm², under the conditions below.
 	AreaCm2 decimal.Decimal `db:"area_cm2"`
+	// PerimeterCm is the SAME contour's perimeter under the SAME conditions (0305) — the second
+	// measure of one measurement, which is why it rides this row rather than a table of its own.
+	// Edge fusing is priced by it: a strip along the seam costs `perimeter × strip width`, where the
+	// area answers only for fusing the whole piece.
+	//
+	// INVALID is legal and PERMANENT, not transitional: every measurement taken before 0305 lacks it
+	// because the client did not compute it then. Such a row honestly means «есть площадь, нет
+	// периметра», and the edge estimate refuses on it instead of deriving a strip from an area —
+	// there is no honest derivation, a compact piece and a long narrow one of equal area differ
+	// twofold in perimeter, and the error would land in the interlining purchase order.
+	PerimeterCm decimal.NullDecimal `db:"perimeter_cm"`
 
 	ContourLayer    string          `db:"contour_layer"`
 	SeamAllowanceMm decimal.Decimal `db:"seam_allowance_mm"`
@@ -133,9 +144,14 @@ type PieceAreaWrite struct {
 
 // PieceAreaInput is one row of the submitted set.
 type PieceAreaInput struct {
-	PieceLineKey    string
-	SizeId          sql.NullInt64
-	AreaCm2         decimal.Decimal
+	PieceLineKey string
+	SizeId       sql.NullInt64
+	AreaCm2      decimal.Decimal
+	// PerimeterCm is optional on the wire (0305): a client that predates the field submits areas
+	// without it, and the row is stored with a NULL perimeter rather than refused. Refusing would
+	// make an older tab unable to save geometry it measures perfectly well for the purpose it was
+	// written for.
+	PerimeterCm     decimal.NullDecimal
 	ContourLayer    string
 	SeamAllowanceMm decimal.Decimal
 	Hulled          bool

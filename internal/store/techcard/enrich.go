@@ -3,7 +3,9 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -84,7 +86,64 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err := s.enrichMaterials(ctx, cards); err != nil {
 		return err
 	}
-	return s.enrichProduction(ctx, cards)
+	if err := s.enrichProduction(ctx, cards); err != nil {
+		return err
+	}
+	// ПОСЛЕ производства, а не вместе с карточными медиа: id операционных снимков известны только
+	// когда операции уже прочитаны. Резолвится одним запросом на всю пачку карточек.
+	return s.enrichOperationMedia(ctx, cards)
+}
+
+// enrichOperationMedia разрешает media_id операционных снимков (0308) в полные записи медиа.
+//
+// Дистинкт по карточке: одна и та же фотография законно висит на нескольких шагах, а клиенту
+// нужен словарь «id → откуда взять картинку», а не повторы. Отсутствующее медиа (удалено из
+// библиотеки) просто не попадает в словарь — строка операции при этом уже ушла каскадом, так что
+// такого быть не должно, но чтение не имеет права на этом падать.
+func (s *Store) enrichOperationMedia(ctx context.Context, cards []entity.TechCard) error {
+	wanted := make(map[int]bool)
+	for i := range cards {
+		for _, op := range cards[i].Operations {
+			for _, m := range op.Media {
+				wanted[m.MediaId] = true
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaFull](ctx, s.DB,
+		`SELECT * FROM media WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("can't load operation media: %w", err)
+	}
+	byID := make(map[int]entity.MediaFull, len(rows))
+	for i := range rows {
+		byID[rows[i].Id] = rows[i]
+	}
+	for i := range cards {
+		seen := make(map[int]bool)
+		var out []entity.TechCardMediaFull
+		for _, op := range cards[i].Operations {
+			for _, m := range op.Media {
+				if seen[m.MediaId] {
+					continue
+				}
+				full, ok := byID[m.MediaId]
+				if !ok {
+					continue
+				}
+				seen[m.MediaId] = true
+				out = append(out, entity.TechCardMediaFull{Media: full})
+			}
+		}
+		cards[i].ResolvedOperationMedia = out
+	}
+	return nil
 }
 
 type techCardIDRow struct {
@@ -154,7 +213,8 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 		return map[int][]entity.TechCardCallout{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
-		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y
+		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y,
+		       kind, color, dashed, filled, points, parts
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -163,7 +223,43 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 	}
 	out := make(map[int][]entity.TechCardCallout, len(ids))
 	for _, r := range rows {
-		out[r.TechCardID] = append(out[r.TechCardID], r.TechCardCallout)
+		c := r.TechCardCallout
+		if len(c.PointsRaw) > 0 {
+			// Битый JSON в колонке — испорченная строка, а не повод уронить чтение всей карточки:
+			// указание вернётся пином, и это видно, в отличие от пятисотки (довод 0308).
+			if err := json.Unmarshal(c.PointsRaw, &c.Points); err != nil {
+				slog.Default().Error("tech card callout: broken points json",
+					slog.Int("tech_card_id", r.TechCardID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				c.Points = nil
+				c.Kind = entity.AnnotationKindPin
+			}
+		}
+		if len(c.PartsRaw) > 0 {
+			// Битый список деталей — та же логика, что у якорей: указание остаётся с одной
+			// деталью из `part`, и это видно, а чтение карточки не падает.
+			if err := json.Unmarshal(c.PartsRaw, &c.Parts); err != nil {
+				slog.Default().Error("tech card callout: broken parts json",
+					slog.Int("tech_card_id", r.TechCardID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				c.Parts = nil
+			}
+		}
+		// ЧТЕНИЕ ПОДЧИНЯЕТСЯ ТОМУ ЖЕ ПРАВИЛУ, ЧТО И ЗАПИСЬ, а не своему. Раньше здесь `part`
+		// объявлялся главнее и прокручивался в начало списка, а на записи главным был список — два
+		// противоположных правила для одного инварианта, и порядок чекбоксов в интерфейсе решал,
+		// как называется деталь.
+		//
+		// Правило одно: список главнее, `part` — его первый элемент. Строка, где список пуст (стор
+		// не пишет его для одной детали), дозаполняется отсюда — иначе проекция в отпечаток видела
+		// бы на чтении не то, что видела на записи.
+		c.Parts = c.PartList()
+		first := ""
+		if len(c.Parts) > 0 {
+			first = c.Parts[0]
+		}
+		c.Part = sql.NullString{String: first, Valid: first != ""}
+		out[r.TechCardID] = append(out[r.TechCardID], c)
 	}
 	return out, nil
 }

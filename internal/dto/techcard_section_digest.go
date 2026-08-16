@@ -228,10 +228,53 @@ func designProjection(tc *entity.TechCardInsert) any {
 	}
 	callouts := make([]any, 0, len(tc.Callouts))
 	for _, c := range tc.Callouts {
-		callouts = append(callouts, []any{
+		row := []any{
 			c.Number, c.Part.String, c.Description.String, c.Dimensions.String,
 			c.MediaId.Int32, digestDecimal(c.PosX), digestDecimal(c.PosY),
-		})
+		}
+		// ХВОСТ, А НЕ СЛОТ — тот же довод, что у cut_symmetry детали и у фотографий шага.
+		// json.Marshal кодирует []any ПОЗИЦИОННО, поэтому восьмой элемент, поставленный
+		// безусловно, сдвинул бы отпечаток КАЖДОЙ карточки в базе и объявил бы каждую подписанную
+		// секцию DESIGN протухшей в момент деплоя — до того, как кто-нибудь нарисовал первую дугу.
+		// Хвост дописывается только у выноски, которая перестала быть простым пином: карточка, где
+		// геометрию никто не рисовал, хэшируется байт в байт как до 0309.
+		//
+		// Входит ли геометрия в подписываемое? Да, без оговорок: DESIGN — подпись под тем, ЧТО
+		// нарисовано на эскизе, а мерка «6 мм» и скобка над участком это указание цеху, а не
+		// метаданные о нём.
+		//
+		// ЦВЕТ — НЕ ВХОДИТ, ровно как у выносок на снимке шага: он различает пересекающиеся
+		// указания и смысла не несёт, а протухшая подпись за перекраску наказывала бы за наведение
+		// порядка на листе. По той же причине он и не открывает хвост.
+		//
+		// ВТОРОЙ ХВОСТ — ПОВЕРХ ПЕРВОГО, а не вместо. Пунктир, штриховка и список деталей приехали
+		// позже (0310), и вписать их внутрь уже существующего хвоста значило бы сдвинуть отпечаток
+		// каждой карточки, где кто-то успел нарисовать мерку. Второй хвост открывается только тем,
+		// что этих фактов ТРЕБУЕТ, и обязательно тянет за собой первый: иначе восьмой элемент
+		// означал бы то геометрию, то стиль, и различать их было бы нечем.
+		//
+		// ПУНКТИР И ШТРИХОВКА ВХОДЯТ В ПОДПИСЬ, в отличие от цвета: сплошная и пунктир на чертеже
+		// говорят разное («шов» против «построения»), а контур и заливка — «эта граница» против
+		// «эта площадь». Цвет же только различает пересекающиеся указания.
+		// СПИСОК ДЕТАЛЕЙ БЕРЁТСЯ НОРМАЛИЗОВАННЫМ, а не сырым. Стор не пишет колонку `parts`, пока
+		// деталь одна (она уже в `part`), поэтому сырое поле на ЗАПИСИ содержит ["полочка"], а на
+		// ЧТЕНИИ той же строки — nil. Отпечаток тогда не совпадает сам с собой: подпись DESIGN
+		// рождается протухшей и не лечится переутверждением, потому что повторный штамп берёт то
+		// же расхождение. Одно правило на все три места — `PartList`.
+		parts := c.PartList()
+		geom := calloutKindOrPin(c.Kind) != entity.AnnotationKindPin || len(c.Points) > 0
+		style := c.Dashed || c.Filled || len(parts) > 1
+		if geom || style {
+			points := make([]any, 0, len(c.Points))
+			for _, p := range c.Points {
+				points = append(points, []any{p.X.String(), p.Y.String()})
+			}
+			row = append(row, []any{string(calloutKindOrPin(c.Kind)), points})
+		}
+		if style {
+			row = append(row, []any{c.Dashed, c.Filled, parts})
+		}
+		callouts = append(callouts, row)
 	}
 	details := make([]any, 0, len(tc.Details))
 	for _, d := range tc.Details {
@@ -248,23 +291,110 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		// every approved section as edited-since-signing. This tuple CHANGED SHAPE in the operations
 		// break (0289) — the free-text defaults became typed ones — so approvals on cards that
 		// carried construction defaults are stale exactly once, by design.
+		//
+		// ПОЗИЦИИ 3 И 5 ЗАМОРОЖЕНЫ НАВСЕГДА. В них жили overlock_thread_count и pressing, снятые
+		// парком оборудования (0306): один счёт нитей на карточку мог описать только один оверлок, а
+		// карточка шьётся на нескольких. УДАЛИТЬ элемент из позиционного массива — ровно тот же
+		// безусловный сдвиг, что и дописать: всё, что стоит правее, съезжает, и КАЖДАЯ карточка в
+		// базе, у которой обоих полей не было (то есть подавляющее большинство), получила бы новый
+		// отпечаток и объявила бы свою подпись CONSTRUCTION устаревшей в момент выкатки, ни за что.
+		// Поэтому на их местах стоят ровно те значения, в которые маршалился NULL: int32(0) и "".
+		// Прецедент — позиции 2-3 в costingProjection (бывшие hardware/packaging cost).
+		//
+		// Карточка, у которой эти два поля БЫЛИ заполнены, отпечаток меняет — и это честно, а не
+		// побочный ущерб: миграция 0306 перенесла её pressing в notes (позиция 6 ниже) и завела ей
+		// профиль оверлока, то есть подписанное содержание действительно двинулось. Волна
+		// переутверждения равна множеству таких карточек, а не всей базе.
 		construction = []any{
 			c.DefaultSeamClass.String, digestDecimal(c.DefaultStitchesPerCm),
-			c.OverlockThreadCount.Int32, c.HemFinish.String, c.Pressing.String, c.Notes.String,
+			int32(0), // была OverlockThreadCount; NULL маршалился как 0 — ЗАМОРОЖЕНО НАВСЕГДА
+			c.HemFinish.String,
+			"", // была Pressing; NULL маршалился как "" — ЗАМОРОЖЕНО НАВСЕГДА
+			c.Notes.String,
 		}
 	}
 	// The operation tuple, also FIXED FOREVER. Unlike construction above, changing this one was
 	// free: an EMPTY operations list marshals identically whatever shape the tuple has, and no card
 	// on prod had a single operation when the break landed.
+	//
+	// Позиция 2 с 0306 — КОМПАТ-ПРОЕКЦИЯ, а не сырой тип шага: см. digestOperationTypeCompat.
 	ops := make([]any, 0, len(tc.Operations))
-	for _, o := range tc.Operations {
-		ops = append(ops, []any{
-			o.OperationNumber.Int32, string(o.OperationType), string(o.Zone),
+	for i := range tc.Operations {
+		o := &tc.Operations[i]
+		row := []any{
+			o.OperationNumber.Int32, digestOperationTypeCompat(o), string(o.Zone),
 			o.PieceLineKeys, o.BomLineKeys, digestDecimal(o.SMV), o.CalloutNumber.Int32,
 			digestDecimal(o.StitchesPerCm), o.SeamClass.String, digestDecimal(o.SeamAllowanceMm),
 			o.TopstitchMode.String, digestDecimal(o.TopstitchWidthMm), o.TopstitchRows.Int32,
 			o.AttachmentKind.String, digestDecimal(o.AttachmentSizeMm), o.Note.String,
-		})
+		}
+		// ДВА УСЛОВНЫХ ХВОСТА, КАЖДЫЙ ПАРОЙ «ИМЯ, ЗНАЧЕНИЕ» — по обоим доводам, которые эта функция
+		// уже держит на деталях. (1) Безусловные элементы сдвинули бы отпечаток КАЖДОГО шага в базе
+		// и объявили бы все утверждённые подписи CONSTRUCTION устаревшими в момент выкатки; при
+		// условном появлении волна равна множеству шагов, где машинные факты реально заполнили, то
+		// есть сегодня — нулю. (2) Голый хвост запрещён уроком 0302/0304 в комментарии к деталям:
+		// типы хвостов пересекаются (обе врезки здесь — массивы), и ["press", …] против [ …] стало
+		// бы неразличимо; тег отвечает на вопрос, ЧЕЙ хвост, навсегда.
+		//
+		// В подписанном содержании этим фактам место без оговорок: CONSTRUCTION — подпись под тем,
+		// ЧТО шьют и КАК. «Этот шов идёт на оверлоке в пять нитей иглой Nm 90» и «дублировать при
+		// 150 °C двенадцать секунд» — указания цеху, меняющие физическое изделие, а не метаданные о
+		// нём (в отличие от purpose/kind, исключённых намеренно — см. materialsProjection).
+		if operationHasMachineTail(o) {
+			// machine_type ПУСТ, когда он уже уехал в компат-позицию: там он и хешируется, а
+			// дублировать его здесь значило бы записать один факт дважды. Неоднозначности нет —
+			// компат-позиция при этом несёт legacy-токен, которого нет в новом словаре типов.
+			machineType := o.MachineType.String
+			if _, collapsed := legacyOperationTypeOf(o); collapsed {
+				machineType = ""
+			}
+			row = append(row, []any{"machine",
+				machineType, o.MachineProfileKey.String, o.ThreadCount.Int32,
+				o.NeedleType.String, o.NeedleSizeNm.Int32, o.ThreadTension.String,
+				o.ThreadTensionNote.String, digestDecimal(o.StitchWidthMm)})
+		}
+		if operationHasPressTail(o) {
+			// ПАР — ПАРОЙ {Valid, Bool}, а не одним bool: он трёхзначен по построению (не задано =
+			// наследовать профиль, явное «без пара» = указание цеху, «с паром»), и схлопывание
+			// первых двух дало бы двум РАЗНЫМ режимам ВТО один отпечаток — подпись под «без пара»
+			// читалась бы как действительная под «как получится».
+			row = append(row, []any{"press",
+				o.PressEquipment.String, o.PressProfileKey.String, o.PressTemperatureC.Int32,
+				o.PressDwellSec.Int32, digestDecimal(o.PressPressureNCm2),
+				[]any{o.PressSteam.Valid, o.PressSteam.Bool}, o.PressCloth.String})
+		}
+		// ТРЕТИЙ условный хвост — сборка (0307), по тем же двум доводам, что два выше.
+		//
+		// Хвост несёт ВЕСЬ упорядоченный union тегами «piece»/«unit», а не только узловые входы.
+		// Иначе подпись получилась бы непоследовательной: перестановка двух ДЕТАЛЕЙ меняла бы
+		// отпечаток (позиция 4 — упорядоченный список), а перестановка детали и узла — нет.
+		// Старым подписям это ничем не грозит: у них хвоста нет вовсе.
+		//
+		// ИМЯ УЗЛА В ХВОСТ НЕ ВХОДИТ. Оно разрешается по первому производителю и фактом цеха не
+		// является; хешировать его значило бы протухать подпись от невидимой правки на поглощающем
+		// шаге. Ключ входит: он идентичность узла, и его смена — содержательная правка.
+		if operationHasAssemblyTail(o) {
+			row = append(row, []any{"assembly", o.OutputUnitKey.String, assemblyInputTail(o)})
+		}
+		// ФОТОГРАФИИ ШАГА С ВЫНОСКАМИ (0308) — ТОЖЕ ХВОСТОМ, И ТОЖЕ ТОЛЬКО ПРИ ЗАПОЛНЕННОСТИ.
+		//
+		// Довод дословно тот же, что у двух хвостов выше: json.Marshal кодирует []any позиционно,
+		// и безусловный элемент сдвинул бы отпечаток КАЖДОЙ карточки, объявив все подписанные
+		// CONSTRUCTION устаревшими в момент выката — до того, как кто-либо приложил хоть одну
+		// фотографию. С хвостом волна пере-подписаний равна размеру кампании разметки.
+		//
+		// А ВХОДИТ ЛИ ЭТО В ПОДПИСАННОЕ СОДЕРЖИМОЕ ВООБЩЕ? Да. CONSTRUCTION — подпись под тем, ЧТО
+		// и КАК шьют; указание «здесь припосадить 6 мм», нарисованное на снимке узла, — инструкция
+		// цеху ровно того же рода, что припуск или класс шва. Сдвинули точку мерки — сменилось
+		// указание, и подпись обязана протухнуть.
+		//
+		// Порядок картинок ВХОДИТ (это порядок показа и печати), подпись к картинке — тоже
+		// (её читают на листе). Цвет — НЕТ: он различает пересекающиеся выноски и смысла не
+		// несёт, а протухать подпись от перекраски значило бы наказывать за наведение порядка.
+		if len(o.Media) > 0 {
+			row = append(row, []any{"media", operationMediaTail(o)})
+		}
+		ops = append(ops, row)
 	}
 	pieces := make([]any, 0, len(tc.Pieces))
 	for _, p := range tc.Pieces {
@@ -314,9 +444,241 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if p.Ungraded {
 			row = append(row, p.Ungraded)
 		}
+		// РАЗМЕТКА ДУБЛИРОВАНИЯ (0304) — ТРЕТИЙ условный элемент, и он приходит ПАРОЙ «имя, значение»
+		// ровно потому, что абзац выше это предписал. Голым хвостом его дописать нельзя: cut_symmetry
+		// дописывается СТРОКОЙ, режим — тоже строка, и ["strip"] перестал бы отвечать на вопрос, чей
+		// он. Это не гипотетика: карточка, где размечено дублирование и НЕ размечено «как кроится»,
+		// столкнулась бы с карточкой, где наоборот, — и две разные конструкции получили бы один
+		// отпечаток, то есть подпись под одной читалась бы как действительная под другой. Тег
+		// закрывает это навсегда и оставляет место четвёртому полю.
+		//
+		// ТОЛЬКО КОГДА РАЗМЕЧЕНО — тот же довод, что у обоих соседей: безусловный элемент сдвинул бы
+		// отпечаток КАЖДОЙ карточки в базе и объявил бы все утверждённые подписи CONSTRUCTION
+		// устаревшими в момент выкатки, ни за что. Размеченных деталей сегодня нет ни одной, значит
+		// волна переутверждения ровно равна кампании разметки.
+		//
+		// ШИРИНА ВХОДИТ В ПАРУ, а не хешируется отдельно: 10 мм и 25 мм — это разное количество
+		// клеевой и разный физический край изделия, то есть разное содержание того же утверждения.
+		// Пустая строка у режимов без своей ширины — не «ноль», а «своего числа нет», и она законно
+		// отличает «полосой 10 мм» от «по припуску».
+		//
+		// В ПОДПИСАННОМ СОДЕРЖАНИИ ПОЛЕ ОБЯЗАНО БЫТЬ. CONSTRUCTION — подпись под тем, ЧТО кроят и
+		// шьют; «эта деталь дублируется только по краю на 25 мм» описывает физическую деталь, которая
+		// выйдет из цеха, а не метаданные о ней (в отличие от purpose/is_sample, исключённых
+		// намеренно). Утвердить карточку, потом сменить дублирование целиком на полосу и не сдвинуть
+		// подпись — значит подписать одно, а отдать в цех другое, причём с разницей в разы по клеевой.
+		if p.FusingMode.Valid {
+			row = append(row, []any{"fusing", p.FusingMode.String, digestDecimal(p.FusingWidthMm)})
+		}
 		pieces = append(pieces, row)
 	}
-	return []any{construction, ops, pieces}
+	out := []any{construction, ops, pieces}
+	// ПАРК ОБОРУДОВАНИЯ (0306) — УСЛОВНЫЙ ХВОСТ ВНЕШНЕГО КОРТЕЖА, тот же приём и те же два довода,
+	// что у хвостов шага выше: безусловный четвёртый элемент сдвинул бы отпечаток КАЖДОЙ карточки в
+	// базе, а тег «equipment» отвечает на вопрос, чей хвост, когда рядом встанет пятый.
+	//
+	// Профили входят в подпись, потому что шаг наследует от них ЖИВЬЁМ: строка шага хранит только
+	// то, чем он отличается, а «на чём и как» читается из профиля в момент чтения. Сменить профилю
+	// температуру и не сдвинуть подпись — значит подписать 150 °C, а отдать в цех 190.
+	if tail := equipmentProfilesTail(tc.Construction); tail != nil {
+		out = append(out, tail)
+	}
+	return out
+}
+
+// legacyOperationTypeOf says whether a step collapses into the ONE legacy operation-type token it
+// used to be stored as, and which one. The pair (machine, <machine token>) is exactly what migration
+// 0306 split the nine legacy types into, so the mapping back is total on those nine and empty on
+// everything else.
+func legacyOperationTypeOf(o *entity.TechCardOperation) (string, bool) {
+	if o.OperationType != entity.OpTypeMachine || !o.MachineType.Valid {
+		return "", false
+	}
+	legacy, ok := entity.MachineTypeLegacyToken[o.MachineType.String]
+	return legacy, ok
+}
+
+// digestOperationTypeCompat hashes a step's type AS IT WAS STORED BEFORE 0306: (machine, lockstitch)
+// hashes byte for byte as the string "lockstitch" did. This is what keeps migration day from
+// declaring every signed CONSTRUCTION section stale — the rows 0306 rewrote did not change their
+// CONTENT, only the two columns it is spread across, and a fingerprint must follow content.
+//
+// ОДНОЗНАЧНОСТЬ, а не удобство: девять legacy-токенов и семь токенов нового словаря
+// (entity.OperationTypeTokens) НЕ ПЕРЕСЕКАЮТСЯ, поэтому "lockstitch" в этой позиции читается ровно
+// одним способом. Биекция полная в обе стороны: entity.MachineTypeLegacyToken строится инверсией
+// LegacyOperationMachineType и паникует при init на неинъективной правке, а DTO канонизирует legacy
+// с провода ДО построения entity — значит шага с сырым legacy-типом после Ф1 не существует, и
+// «мигрированный» и «нововведённый» варианты одного шага дают один отпечаток по построению.
+//
+// Машинка, которой в legacy не было (coverlock, zigzag, автоматы), не схлопывается: позиция несёт
+// "machine", а сама машинка уезжает в machine-хвост. Такой карточки до 0306 существовать не могло,
+// поэтому протухать нечему.
+func digestOperationTypeCompat(o *entity.TechCardOperation) string {
+	if legacy, ok := legacyOperationTypeOf(o); ok {
+		return legacy
+	}
+	return string(o.OperationType)
+}
+
+// operationHasMachineTail is true only when the step says something ABOVE the compat position — a
+// machine that has no legacy twin, or any of the seven per-step machine overrides. A migrated
+// `lockstitch → (machine, lockstitch)` row therefore carries no tail at all and hashes exactly as it
+// did before 0306.
+func operationHasMachineTail(o *entity.TechCardOperation) bool {
+	if o.MachineType.Valid {
+		if _, collapsed := legacyOperationTypeOf(o); !collapsed {
+			return true
+		}
+	}
+	return o.MachineProfileKey.Valid || o.ThreadCount.Valid || o.NeedleType.Valid ||
+		o.NeedleSizeNm.Valid || o.ThreadTension.Valid || o.ThreadTensionNote.Valid ||
+		o.StitchWidthMm.Valid
+}
+
+// operationHasPressTail mirrors it for ВТО. PressSteam counts by VALIDITY, not by value: «без пара»
+// is an instruction and must produce a tail, and therefore a different fingerprint, than a step
+// nobody has answered. A legacy `fusing` step with no ВТО facts — every fusing row in the database
+// today — carries no tail and hashes as before.
+func operationHasPressTail(o *entity.TechCardOperation) bool {
+	return o.PressEquipment.Valid || o.PressProfileKey.Valid || o.PressTemperatureC.Valid ||
+		o.PressDwellSec.Valid || o.PressPressureNCm2.Valid || o.PressSteam.Valid ||
+		o.PressCloth.Valid
+}
+
+// operationHasAssemblyTail — есть ли у шага сборочные факты (0307).
+//
+// Вход-ДЕТАЛЬ фактом сборки не является: он есть у каждой сегодняшней карточки и уже стоит
+// позицией 4 базового кортежа. Хвост появляется только там, где шаг что-то производит или берёт
+// со стола УЗЕЛ, — то есть сегодня не появляется нигде, и ни одна действующая подпись
+// CONSTRUCTION при выкатке не протухает.
+func operationHasAssemblyTail(o *entity.TechCardOperation) bool {
+	if o.OutputUnitKey.Valid && o.OutputUnitKey.String != "" {
+		return true
+	}
+	for _, in := range o.AssemblyInputs {
+		if in.Kind == entity.AssemblyInputUnit {
+			return true
+		}
+	}
+	return false
+}
+
+// operationMediaTail проецирует фотографии шага: media_id, подпись и выноски по порядку.
+//
+// Цвет в проекцию не входит — см. довод у места вызова. Координаты берутся строкой decimal, а не
+// float64: тот же тип, что на проводе и в БД, и никакого округления по дороге в отпечаток.
+func operationMediaTail(o *entity.TechCardOperation) []any {
+	out := make([]any, 0, len(o.Media))
+	for _, m := range o.Media {
+		anns := make([]any, 0, len(m.Annotations))
+		for _, a := range m.Annotations {
+			points := make([]any, 0, len(a.Points))
+			for _, p := range a.Points {
+				points = append(points, []any{p.X.String(), p.Y.String()})
+			}
+			ann := []any{
+				string(a.Kind), points, a.Text, a.LabelX.String(), a.LabelY.String(),
+			}
+			// Деталь — ХВОСТОМ, по той же причине, что и всё прочее дописанное к подписываемому
+			// кортежу: шестой элемент, поставленный безусловно, сдвинул бы отпечаток каждого
+			// снимка, у которого выноски уже есть. Указание, называющее ДЕТАЛЬ, — часть
+			// инструкции цеху («эту строчку на подборте»), поэтому в подпись входит.
+			//
+			// ВТОРОЙ ХВОСТ (0310: пунктир, штриховка, список деталей) кладётся ПОВЕРХ первого и
+			// обязательно тянет его за собой — даже пустым. Иначе шестой элемент означал бы то
+			// деталь, то стиль, и прочесть кортеж, не угадывая, стало бы нельзя. Указание с одной
+			// деталью и без пунктира хешируется байт в байт как до 0310.
+			keys := a.PieceLineKeys
+			if len(keys) == 0 && a.PieceLineKey != "" {
+				keys = []string{a.PieceLineKey}
+			}
+			first := ""
+			if len(keys) > 0 {
+				first = keys[0]
+			}
+			style := a.Dashed || a.Filled || len(keys) > 1
+			if first != "" || style {
+				ann = append(ann, first)
+			}
+			if style {
+				ann = append(ann, []any{a.Dashed, a.Filled, keys})
+			}
+			anns = append(anns, ann)
+		}
+		out = append(out, []any{m.MediaId, m.Caption.String, anns})
+	}
+	return out
+}
+
+// assemblyInputTail проецирует упорядоченный union входов парами «вид, ключ».
+//
+// nil при пустом списке, а НЕ пустой срез: json.Marshal их различает, и шаг, записанный как [],
+// но прочитанный как null, дал бы разный отпечаток на записи и на чтении — подпись рождалась бы
+// протухшей и оставалась такой навсегда.
+func assemblyInputTail(o *entity.TechCardOperation) []any {
+	if len(o.AssemblyInputs) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(o.AssemblyInputs))
+	for _, in := range o.AssemblyInputs {
+		kind := "piece"
+		if in.Kind == entity.AssemblyInputUnit {
+			kind = "unit"
+		}
+		out = append(out, []any{kind, in.Key})
+	}
+	return out
+}
+
+// equipmentProfilesTail projects the card's equipment park, or nil when it holds nothing.
+//
+// ПРИСУТСТВИЕ ОБЁРТКИ В ОТПЕЧАТОК НЕ ВХОДИТ — только её содержание. Пустая обёртка («заменить парк
+// на пустой») и отсутствующая («старый клиент про парк не говорил») — одно и то же содержание, ноль
+// профилей, и обязаны дать один отпечаток; иначе смена версии клиента сама по себе устаревала бы
+// подпись. Транспортный флаг machine_fields_aware в проекции не появляется по тому же доводу: он
+// говорит о ОТПРАВИТЕЛЕ, а не о карточке.
+//
+// СОРТИРОВКА ЗДЕСЬ, А НЕ В ЧТЕНИИ. Порядок профилей не значим: шаг ссылается на профиль по
+// profile_key, поэтому перестановка списка не меняет ни одного указания цеху и не смеет двигать
+// подпись. Полагаться на ORDER BY чтения нельзя — записываемый payload через него не проходит, и
+// два порядка одного парка дали бы два отпечатка. Копия, а не сортировка на месте: проекция
+// считается и на payload'е записи, и на модели чтения, и молча переупорядочить чужой слайс значило
+// бы менять то, что будет записано.
+func equipmentProfilesTail(c *entity.TechCardConstruction) any {
+	if c == nil || c.EquipmentDefaults == nil {
+		return nil
+	}
+	d := c.EquipmentDefaults
+	if len(d.Machines)+len(d.Presses) == 0 {
+		return nil
+	}
+	machines := append([]entity.TechCardMachineProfile(nil), d.Machines...)
+	sort.SliceStable(machines, func(i, j int) bool { return machines[i].ProfileKey < machines[j].ProfileKey })
+	presses := append([]entity.TechCardPressProfile(nil), d.Presses...)
+	sort.SliceStable(presses, func(i, j int) bool { return presses[i].ProfileKey < presses[j].ProfileKey })
+
+	// Id / TechCardId are deliberately absent: they are assigned by the store, so hashing them would
+	// make the write payload's fingerprint differ from the read model's for the same content — the
+	// permanent, un-clearable «changed since sign-off» this file's header warns about.
+	machineRows := make([]any, 0, len(machines))
+	for _, m := range machines {
+		machineRows = append(machineRows, []any{
+			m.ProfileKey, m.Label.String, m.MachineType, m.ThreadCount.Int32,
+			m.NeedleType.String, m.NeedleSizeNm.Int32, m.BedType.String, m.Automation.String,
+			m.ThreadTension.String, m.ThreadTensionNote.String, m.AttachmentKind.String,
+			digestDecimal(m.StitchesPerCm), digestDecimal(m.StitchWidthMm), m.Note.String,
+		})
+	}
+	pressRows := make([]any, 0, len(presses))
+	for _, p := range presses {
+		pressRows = append(pressRows, []any{
+			p.ProfileKey, p.Label.String, p.PressEquipment, p.PressOperationType.String,
+			p.PressTemperatureC.Int32, p.PressDwellSec.Int32, digestDecimal(p.PressPressureNCm2),
+			// Тот же трёхзначный пар, что и на шаге, и парой по той же причине.
+			[]any{p.PressSteam.Valid, p.PressSteam.Bool}, p.PressCloth.String, p.Note.String,
+		})
+	}
+	return []any{"equipment", machineRows, pressRows}
 }
 
 // materialsProjection fingerprints what the card BUYS: which article, at what price, in what

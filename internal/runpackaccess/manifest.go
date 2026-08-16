@@ -148,6 +148,11 @@ type ManifestCutRow struct {
 	Pinned             bool   `json:"pinned"`
 	FusingBomItemId    int64  `json:"fusing_bom_item_id"`
 	FusingMaterialName string `json:"fusing_material_name"`
+	// КАК ИМЕННО дублировать (0304). Словом, а не энумом, как и cut_symmetry рядом: манифест читает
+	// раскройщик с телефона, и «TECH_CARD_PIECE_FUSING_MODE_STRIP» ему не указание. Пустая строка =
+	// не размечено — отсутствие указания, а не его разновидность.
+	FusingMode    string `json:"fusing_mode"`
+	FusingWidthMm string `json:"fusing_width_mm"`
 
 	BySize           []ManifestCutQty `json:"by_size"`
 	GarmentsTotal    int              `json:"garments_total"`
@@ -480,6 +485,8 @@ func cutRows(plan *pb_admin.GetProductionRunCutPlanResponse) []ManifestCutRow {
 			Pinned:             r.GetPinned(),
 			FusingBomItemId:    r.GetFusingBomItemId(),
 			FusingMaterialName: r.GetFusingMaterialName(),
+			FusingMode:         fusingModeWord(r.GetFusingMode()),
+			FusingWidthMm:      r.GetFusingWidthMm().GetValue(),
 			BySize:             bySize,
 			GarmentsTotal:      int(r.GetGarmentsTotal()),
 			PiecesToCutTotal:   int(r.GetPiecesToCutTotal()),
@@ -568,6 +575,16 @@ func cutSymmetryWord(v pb_common.TechCardPieceCutSymmetry) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimPrefix(v.String(), "TECH_CARD_PIECE_CUT_SYMMETRY_"))
+}
+
+func fusingModeWord(v pb_common.TechCardPieceFusingMode) string {
+	if v == pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_UNKNOWN {
+		// Та же причина, что у cutSymmetryWord: «не размечено» — отсутствие указания. Развернуть его
+		// здесь в «full» значило бы напечатать цеху ответ, которого никто не давал, — и напечатать
+		// его на бумаге, по которой режут.
+		return ""
+	}
+	return strings.ToLower(strings.TrimPrefix(v.String(), "TECH_CARD_PIECE_FUSING_MODE_"))
 }
 
 func bomSectionWord(v pb_common.TechCardBomSection) string {

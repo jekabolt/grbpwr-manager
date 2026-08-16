@@ -40,6 +40,7 @@ FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"41
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"seam_allowances\" on message \"TechCardConstruction\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"4\" with name \"season\" on message \"TechCardInsert\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"5\" with name \"topstitch_width\" on message \"TechCardOperation\" was deleted.
+FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"6\" with name \"pressing\" on message \"TechCardConstruction\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"6\" with name \"thread\" on message \"TechCardOperation\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"7\" with name \"machine_class\" on message \"TechCardConstruction\" was deleted.
 FIELD_NO_DELETE|proto/common/common/techcard.proto|Previously present field \"8\" with name \"season\" on message \"TechCardListItem\" was deleted.

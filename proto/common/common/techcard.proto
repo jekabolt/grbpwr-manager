@@ -69,6 +69,15 @@ message TechCardMediaFull {
 }
 
 // TechCardCallout is a numbered detail note pointing at the technical sketch.
+//
+// ГЕОМЕТРИЯ (kind/points/color) ДОПИСАНА, А НЕ ЗАВЕДЕНА РЯДОМ. Указания на карточном эскизе и
+// указания на снимке шага — одно и то же ремесло: мерка между двумя точками, скобка над участком,
+// дуга по окату. Второй список выносок на той же картинке заставил бы человека выбирать, в какой из
+// двух систем он сейчас рисует, а читателя — смотреть в обе.
+//
+// Расширение чисто аддитивное: `pos_x/pos_y` СОХРАНЯЮТ смысл «где стоит нумерованный маркер», а
+// `points` держит якоря геометрии. У выноски-пина (всё, что заведено до этой правки) points пуст, и
+// она читается ровно как читалась.
 message TechCardCallout {
   int32 number = 1; // callout number on the sketch
   string part = 2; // деталь / узел
@@ -77,6 +86,39 @@ message TechCardCallout {
   int32 media_id = 5; // FK media(id); sketch this callout is pinned to (0 = unanchored)
   google.type.Decimal pos_x = 6; // normalised x (0..1) of the marker on its sketch
   google.type.Decimal pos_y = 7; // normalised y (0..1) of the marker on its sketch
+  // Вид указания. UNKNOWN и PIN — одно и то же («просто нумерованная точка»).
+  //
+  // ЯВНОЕ ПРИСУТСТВИЕ, как у cut_symmetry/ungraded/fusing_mode детали, и ровно по той же причине:
+  // вкладка со старым бандлом поля не шлёт вовсе, голый proto3-энум приехал бы как UNKNOWN и СТЁР
+  // бы геометрию КАЖДОГО указания на карточке — сохранением, которое эскиз даже не открывало.
+  // ОТСУТСТВИЕ ⇒ сервер несёт хранимое значение дальше (перенос по НОМЕРУ выноски, перед
+  // дайджестом — иначе подпись DESIGN из такой вкладки рождается устаревшей). ЯВНЫЙ PIN ⇒ человек
+  // сам превратил указание обратно в точку, это осознанное действие. Новый клиент шлёт поле
+  // ВСЕГДА, круглым рейсом того, что прочитал.
+  //
+  // ГРУППА АТОМАРНА: присутствие ЭТОГО поля управляет всем, что описывает фигуру, — якорями,
+  // цветом, пунктиром и заливкой. Клиент, приславший вид, обязан прислать их все; иначе дуга без
+  // якорей досталась бы точками от прошлой правки, то есть чужими, и молча.
+  //
+  // `parts` в группу НЕ входит: старое поле `part` есть у любого клиента, и правило «пустой
+  // список читается как [part]» обходится без флага присутствия.
+  optional TechCardAnnotationKind kind = 8;
+  // Якоря геометрии — БЕЗ маркера: маркер живёт в pos_x/pos_y и служит подписи. Пусто у PIN;
+  // LABEL — 1, DIM/BRACKET — 2, ARC — 3, MULTI — 2..8, POLYGON — 3..40, INK — 2..200. Правило и
+  // слова отказа те же, что у TechCardAnnotation, потому что вид один и тот же.
+  repeated TechCardAnnotationPoint points = 9;
+  TechCardAnnotationColor color = 10;
+  // Пунктир и штриховка — те же, что у выноски на снимке шага, и по тем же правилам: пунктир
+  // входит в подпись, штриховка живёт только у полигона. См. TechCardAnnotation.
+  bool dashed = 11;
+  bool filled = 12;
+  // ДЕТАЛИ, О КОТОРЫХ УКАЗАНИЕ. Список имён — тех же, что несёт `part`, и по тем же правилам
+  // связи «деталь ↔ выноска» (деталь ссылается на выноску НОМЕРОМ, и на один номер законно
+  // ссылаются несколько деталей).
+  //
+  // СОВМЕСТИМОСТЬ БЕЗ ФЛАГА: пустой список читается как [part], непустой вытесняет `part`
+  // целиком, и сервер отдаёт `part` = первым элементом.
+  repeated string parts = 13;
 }
 
 // TechCardRevision is one entry in the spec-document changelog (what changed in
@@ -1150,6 +1192,33 @@ enum TechCardPieceCutSymmetry {
   TECH_CARD_PIECE_CUT_SYMMETRY_FOLD = 3; // крой по сгибу
 }
 
+// TechCardPieceFusingMode — КАК ИМЕННО дублируется деталь (миграция 0304). Осмысленно только у
+// детали с поднятой галкой `fused`: галка отвечает «дублируется ли», это поле — «где именно лежит
+// клеевая».
+//
+// ЗАЧЕМ РАЗЛИЧАТЬ. До 0304 ответ был один на всех, и весь код читал его единственным возможным
+// способом — «клеевая выкроена по той же лекале»: кат-лист ставит деталь в пару к interlining-слоту
+// целиком, тех-пак печатает «fused: yes», оценка расхода приписала бы клеевому слоту ПОЛНУЮ площадь
+// контура. В цеху чаще дублируется только край. Разница денежная и в разы: у полочки площадью
+// 4200 см² периметр ~260 см, полоса 25 мм — это 650 см², в 6.5 раза меньше.
+//
+// UNKNOWN — «НЕ РАЗМЕЧЕНО», а не «целиком», ровно как у TechCardPieceCutSymmetry рядом. Читатель,
+// которому нужно число сейчас, разворачивает его в FULL сам (entity.PieceFusingModeOrFull) — это
+// сохраняет поведение всего, что было до 0304, — но на ЭКРАНЕ неразмеченная деталь обязана
+// оставаться видимо неразмеченной. Иначе вопрос «а как здесь на самом деле» перестанет быть
+// заметен ровно в тот момент, когда на него впервые ответили за технолога.
+//
+// SEAM_ALLOWANCE И STRIP обе кладут полосу вдоль среза и различаются ТОЛЬКО источником её ширины:
+// первая берёт эталон припуска карточки (иначе цеха, 0277), вторая — fusing_width_mm. Свести их в
+// одно значение с обязательным числом значило бы вписывать припуск руками на каждой детали и ловить
+// расхождение с эталоном, ради которого 0277 и заводилась.
+enum TechCardPieceFusingMode {
+  TECH_CARD_PIECE_FUSING_MODE_UNKNOWN = 0; // не размечено (см. выше — это не «целиком»)
+  TECH_CARD_PIECE_FUSING_MODE_FULL = 1; // дублируется вся деталь: клеевая = тот же контур
+  TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE = 2; // полоса по припуску; ширина = эталон припуска (0277)
+  TECH_CARD_PIECE_FUSING_MODE_STRIP = 3; // полоса заданной ширины; fusing_width_mm обязателен
+}
+
 // TechCardSizeQuantity is the TYPICAL calculation batch for a size — «типовой тираж для
 // калькуляции» (plan 13 §2). It amortises development cost and prefills a new run's grid; it is
 // NOT a real production batch — the run's own plan lines are the batch (a run may be bigger,
@@ -1247,6 +1316,174 @@ enum TechCardLabelType {
   TECH_CARD_LABEL_TYPE_SPECIAL = 8; // спецэтикетка
 }
 
+// TechCardMachineType is the SECOND AXIS of a sewing step: operation_type says WHAT is done
+// («machine», «press», «fusing»…), this says ON WHAT. Holding both on one field is what made the
+// old TechCardOperationType a mixture of a verb and a machine class — a step could not say
+// «прострочить на двухигольной» without the two answers colliding in one enum member.
+//
+// 23 machines of the owner's park + LOCKSTITCH_DOUBLE_NEEDLE, which exists for one specific
+// reason: without it the migration of the legacy `double_needle` operation type would have
+// collapsed irreversibly into the plain lockstitch and lost the fact somebody recorded.
+enum TechCardMachineType {
+  TECH_CARD_MACHINE_TYPE_UNKNOWN = 0; // unset; REJECTED on write for a MACHINE step
+  TECH_CARD_MACHINE_TYPE_LOCKSTITCH = 1; // прямострочная (301)
+  TECH_CARD_MACHINE_TYPE_LOCKSTITCH_DOUBLE_NEEDLE = 2; // двухигольная прямострочная
+  TECH_CARD_MACHINE_TYPE_OVERLOCK = 3; // оверлок (504/514/516)
+  TECH_CARD_MACHINE_TYPE_COVERSTITCH = 4; // распошивальная / плоскошовная (602/605)
+  TECH_CARD_MACHINE_TYPE_COVERLOCK = 5; // коверлок
+  TECH_CARD_MACHINE_TYPE_CHAINSTITCH = 6; // цепной стежок (401)
+  TECH_CARD_MACHINE_TYPE_BLINDSTITCH = 7; // потайной стежок (103)
+  TECH_CARD_MACHINE_TYPE_ZIGZAG = 8; // зигзаг (304)
+  TECH_CARD_MACHINE_TYPE_BARTACK = 9; // закрепочная
+  TECH_CARD_MACHINE_TYPE_BUTTONHOLE = 10; // петельная
+  TECH_CARD_MACHINE_TYPE_BUTTON_ATTACH = 11; // пуговичная
+  TECH_CARD_MACHINE_TYPE_EMBROIDERY = 12; // вышивальная
+  TECH_CARD_MACHINE_TYPE_HANDSTITCH_IMITATION = 13; // имитация ручного стежка (AMF)
+  TECH_CARD_MACHINE_TYPE_HARDWARE_ATTACH = 14; // пришивание фурнитуры
+  TECH_CARD_MACHINE_TYPE_ELASTIC_ATTACH = 15; // притачивание резинки
+  TECH_CARD_MACHINE_TYPE_BINDING_TAPING = 16; // бейка и кант
+  TECH_CARD_MACHINE_TYPE_ZIPPER_SETTING = 17; // пришивание молнии
+  TECH_CARD_MACHINE_TYPE_GATHERING = 18; // сборка / присбаривание
+  TECH_CARD_MACHINE_TYPE_PATCH_POCKET_AUTO = 19; // автомат накладных карманов
+  TECH_CARD_MACHINE_TYPE_WELT_POCKET_AUTO = 20; // автомат прорезных карманов
+  TECH_CARD_MACHINE_TYPE_TEMPLATE_AUTO = 21; // шаблонный швейный автомат
+  TECH_CARD_MACHINE_TYPE_COLLAR_CUFF_AUTO = 22; // автомат воротников/манжет/планок
+  TECH_CARD_MACHINE_TYPE_SLEEVE_SETTING_AUTO = 23; // автомат втачивания рукавов
+  TECH_CARD_MACHINE_TYPE_WAISTBAND_AUTO = 24; // автомат притачивания пояса
+  TECH_CARD_MACHINE_TYPE_OTHER = 25; // + note on the profile / step
+}
+
+// TechCardPressEquipment is the «on what» of a ВТО step (PRESS / PRESS_OPEN / FUSING), the press
+// side of the same second axis TechCardMachineType covers for sewing.
+enum TechCardPressEquipment {
+  TECH_CARD_PRESS_EQUIPMENT_UNKNOWN = 0; // unset; REJECTED on an aware write for a press step
+  TECH_CARD_PRESS_EQUIPMENT_IRON = 1; // утюг (утюжильный стол)
+  TECH_CARD_PRESS_EQUIPMENT_PRESS = 2; // пресс
+  TECH_CARD_PRESS_EQUIPMENT_FUSING_PRESS = 3; // дублирующий пресс
+  TECH_CARD_PRESS_EQUIPMENT_STEAM_DUMMY = 4; // паровоздушный манекен
+  TECH_CARD_PRESS_EQUIPMENT_STEAMER = 5; // отпариватель
+  TECH_CARD_PRESS_EQUIPMENT_OTHER = 6;
+}
+
+// TechCardNeedleType is the needle point, the fact that decides whether a knit is pierced or
+// pushed aside. UNKNOWN = inherit (profile → nothing), never «universal by default».
+enum TechCardNeedleType {
+  TECH_CARD_NEEDLE_TYPE_UNKNOWN = 0; // unset / inherited
+  TECH_CARD_NEEDLE_TYPE_UNIVERSAL = 1; // R
+  TECH_CARD_NEEDLE_TYPE_BALLPOINT = 2; // SES/SUK, трикотаж
+  TECH_CARD_NEEDLE_TYPE_STRETCH = 3;
+  TECH_CARD_NEEDLE_TYPE_JEANS = 4;
+  TECH_CARD_NEEDLE_TYPE_LEATHER = 5;
+  TECH_CARD_NEEDLE_TYPE_MICROTEX = 6;
+  TECH_CARD_NEEDLE_TYPE_EMBROIDERY = 7;
+  TECH_CARD_NEEDLE_TYPE_OTHER = 8;
+}
+
+// TechCardBedType is the machine's bed. It is the IDENTITY of a machine, not a setting of a step —
+// which is why it lives on the profile only and has deliberately no override on the operation:
+// a different bed is a different machine, so the step changes machine_type instead.
+enum TechCardBedType {
+  TECH_CARD_BED_TYPE_UNKNOWN = 0;
+  TECH_CARD_BED_TYPE_FLATBED = 1; // плоская
+  TECH_CARD_BED_TYPE_CYLINDER_BED = 2; // цилиндрическая / рукавная
+  TECH_CARD_BED_TYPE_POST_BED = 3; // колонковая
+  TECH_CARD_BED_TYPE_FEED_OFF_ARM = 4; // П-образная (off-arm)
+  TECH_CARD_BED_TYPE_OTHER = 5;
+}
+
+// TechCardAutomationLevel is an ORDERED SCALE, and therefore has NO `OTHER`: a scale with an
+// «other» member is no longer a scale. Like bed_type it is machine identity, profile-only.
+enum TechCardAutomationLevel {
+  TECH_CARD_AUTOMATION_LEVEL_UNKNOWN = 0;
+  TECH_CARD_AUTOMATION_LEVEL_BASIC = 1; // механическая
+  TECH_CARD_AUTOMATION_LEVEL_SEMI_AUTO = 2; // автообрезка / позиционирование / закрепка
+  TECH_CARD_AUTOMATION_LEVEL_AUTO = 3; // программируемый автомат
+}
+
+// TechCardThreadTension is a CLOSED SCALE relative to the machine's normal setting, plus a free
+// thread_tension_note for the numbers a particular machine wants. A raw dial number was rejected
+// deliberately: it means nothing across two machines of the same class.
+enum TechCardThreadTension {
+  TECH_CARD_THREAD_TENSION_UNKNOWN = 0; // unset / inherited
+  TECH_CARD_THREAD_TENSION_LOOSER = 1; // слабее обычного
+  TECH_CARD_THREAD_TENSION_NORMAL = 2;
+  TECH_CARD_THREAD_TENSION_TIGHTER = 3; // туже обычного
+  TECH_CARD_THREAD_TENSION_OTHER = 4; // + thread_tension_note
+}
+
+// TechCardPressCloth is what sits between the iron and the cloth.
+//
+// NONE IS NOT UNKNOWN HERE, and that is the point: with inheritance in play, «не указано» means
+// «take the card profile's answer», so without an explicit NONE a step could never CANCEL the
+// profile's press cloth. The same argument added NONE to TechCardAttachmentKind.
+enum TechCardPressCloth {
+  TECH_CARD_PRESS_CLOTH_UNKNOWN = 0; // не указано / наследуется
+  TECH_CARD_PRESS_CLOTH_NONE = 1; // явное «без проутюжильника»
+  TECH_CARD_PRESS_CLOTH_PRESS_CLOTH = 2; // сухой проутюжильник
+  TECH_CARD_PRESS_CLOTH_DAMP_PRESS_CLOTH = 3; // влажный
+  TECH_CARD_PRESS_CLOTH_TEFLON_SHEET = 4;
+  TECH_CARD_PRESS_CLOTH_OTHER = 5;
+}
+
+// TechCardMachineProfile is one row of CARD DEFAULTS: «this card is sewn on such a machine, set up
+// like this». A step then names the machine TYPE (or points at this exact profile by key) and
+// overrides only what it genuinely deviates in — everything unset is inherited live and NEVER
+// materialised into the step's row.
+//
+// IDENTITY IS profile_key, a durable client-minted ULID exactly like bom_line_key / piece_line_key:
+// the list is full-replaced on every save, so a positional index or an id would break every step
+// reference the moment a row moves. `label` is a NAME FOR A HUMAN («оверлок у окна») and is NOT
+// part of the identity — the scope_key lesson (two different keys living under one name) is what
+// keeps them separate. There may be MANY profiles of one type: two identical machines set up
+// differently is the normal case, not a mistake to deduplicate.
+message TechCardMachineProfile {
+  string profile_key = 1; // 26-char durable key; empty = the server mints one
+  string label = 2; // optional human name, ≤64
+  TechCardMachineType machine_type = 3; // REQUIRED; UNKNOWN is rejected
+  int32 thread_count = 4; // 1..20; 0 = unset
+  TechCardNeedleType needle_type = 5;
+  int32 needle_size_nm = 6; // Nm, 35..300; 0 = unset
+  TechCardBedType bed_type = 7; // machine identity
+  TechCardAutomationLevel automation = 8; // machine identity
+  TechCardThreadTension thread_tension = 9;
+  string thread_tension_note = 10; // ≤64; only alongside the scale
+  TechCardAttachmentKind attachment_kind = 11; // default foot / folder; NONE is legal
+  google.type.Decimal stitches_per_cm = 12; // 1..20, per CENTIMETRE
+  google.type.Decimal stitch_width_mm = 13; // 0..20 mm; NOT topstitch.width_mm (that is an edge distance)
+  string note = 14; // machine model, the detail behind OTHER; ≤255
+}
+
+// TechCardPressProfile is the ВТО twin of TechCardMachineProfile: one press / iron / steamer of the
+// card, with the settings a step inherits. Same durable-key rules.
+message TechCardPressProfile {
+  string profile_key = 1;
+  string label = 2;
+  TechCardPressEquipment press_equipment = 3; // REQUIRED; UNKNOWN is rejected
+  // WHICH PROCESS this profile is for, so the form can offer it by default on the right step:
+  // UNKNOWN (universal), PRESS, PRESS_OPEN or FUSING are legal; any other operation type is
+  // rejected — a profile «for a lockstitch step» is not a thing a press can mean.
+  TechCardOperationType operation_type = 4;
+  int32 press_temperature_c = 5; // 40..250; 0 = unset (the floor catches «14» typed for «140»)
+  int32 press_dwell_sec = 6; // 1..300; 0 = unset
+  google.type.Decimal press_pressure_n_cm2 = 7; // PRESSURE ON THE CLOTH, N/cm² — the unit is IN THE NAME; 1..100
+  optional bool press_steam = 8; // absent = not stated; false = «без пара», a real answer
+  TechCardPressCloth press_cloth = 9; // NONE is legal (see the enum)
+  string note = 10; // ≤255
+}
+
+// TechCardEquipmentDefaults wraps the two profile lists, and the WRAPPER IS THE PRESENCE SIGNAL —
+// which is the whole reason it exists rather than two bare repeated fields on the construction:
+//   absent (nil)  — the payload did not speak about equipment (an older bundle), so the server
+//                   PRESERVES the stored profiles;
+//   present       — full replace, and an EMPTY wrapper means «delete them all», an intent a bare
+//                   repeated field can never express.
+// A hand-made bool flag was rejected for this job: a flag inside the payload would be hashed into
+// the section digest and would make every signature depend on which client saved last.
+message TechCardEquipmentDefaults {
+  repeated TechCardMachineProfile machines = 1;
+  repeated TechCardPressProfile presses = 2;
+}
+
 // TechCardConstruction holds the card's DEFAULTS — the values an operation inherits when it does
 // not override them. Until the operations break it was a block of free-text notes that nothing
 // inherited (the editor said so out loud: «общие параметры по умолчанию, конкретные задавайте в
@@ -1262,37 +1499,57 @@ enum TechCardLabelType {
 // TechCardOperation.operation_type, and a card-wide default for it is not a thing a card can mean.
 message TechCardConstruction {
   string hem_finish = 5; // обработка низа / подгибка — genuinely prose, stays text
-  string pressing = 6; // ВТО / финишная отделка — genuinely prose, stays text
   string notes = 8;
   // Inherited by TechCardOperation.seam_class when that one is UNKNOWN.
   TechCardSeamClass default_seam_class = 11;
   // Inherited by TechCardOperation.stitches_per_cm when that one is unset. In STITCHES PER
   // CENTIMETRE — stitch density is quoted per cm everywhere and is NOT part of the mm switch.
   google.type.Decimal default_stitches_per_cm = 12;
-  // 3 | 4 | 5; 0 = unset. The name does NOT reuse the removed `overlock_threads` (a string):
-  // a reused name with a new type is the drift the removed-registry rule exists to prevent.
-  int32 overlock_thread_count = 13;
-  reserved 1, 2, 3, 4, 7, 9, 10;
-  reserved "main_stitch_type", "stitch_density", "overlock_threads", "seam_allowances", "machine_class", "labour_rate", "labour_rate_currency";
+  // The card's machine and ВТО park: which machines this style is sewn on and with what settings,
+  // which presses/irons it is pressed on. A step inherits from here (by profile key, or by type
+  // when the card has exactly one profile of that type) and stores only what it overrides.
+  //
+  // Absent = preserve the stored profiles; present = full replace (empty = delete all). See
+  // TechCardEquipmentDefaults for why presence lives in a wrapper and not in a flag.
+  TechCardEquipmentDefaults equipment_defaults = 14;
+  // 6 was `pressing` and 13 was `overlock_thread_count`, and both were RETIRED BY THE PARK, not
+  // dropped: 0306 moved the prose into `notes` under a deterministic tag and turned the thread count
+  // into an overlock PROFILE, because one thread count on a card could only ever describe one
+  // overlock while a card may run several. Their positions in the CONSTRUCTION digest tuple stay
+  // frozen at the values NULL used to marshal to (see the Go projection), so a card that never
+  // filled them hashes byte for byte as before and its sign-off does not go stale.
+  reserved 1, 2, 3, 4, 6, 7, 9, 10, 13;
+  reserved "main_stitch_type", "stitch_density", "overlock_threads", "seam_allowances", "machine_class", "labour_rate", "labour_rate_currency", "pressing", "overlock_thread_count";
 }
 
-// TechCardOperationType classifies an operation by its machine / stitch class
-// (replaces the coarse seaming/overlock/decorative split with the real sewing
-// taxonomy the factory works in).
+// TechCardOperationType says WHAT a step does. It used to mix that with the machine class, which
+// is why 1-9 read like a machine list: a step could not say «прострочить» without also committing
+// to a stitch class in the same value, and «на чём» had no field of its own. The second axis is
+// TechCardMachineType / TechCardPressEquipment now, and the verbs left here are six: MACHINE,
+// PRESS, PRESS_OPEN, FUSING, HANDWORK, OTHER.
 enum TechCardOperationType {
   TECH_CARD_OPERATION_TYPE_UNKNOWN = 0;
-  TECH_CARD_OPERATION_TYPE_LOCKSTITCH = 1; // челночный (301)
-  TECH_CARD_OPERATION_TYPE_DOUBLE_NEEDLE = 2; // двухигольная
-  TECH_CARD_OPERATION_TYPE_OVERLOCK = 3; // оверлок (504/516)
-  TECH_CARD_OPERATION_TYPE_COVERSTITCH = 4; // плоскошовная (распошивалка)
-  TECH_CARD_OPERATION_TYPE_CHAINSTITCH = 5; // цепной стежок (401)
-  TECH_CARD_OPERATION_TYPE_BLINDHEM = 6; // потайная подшивка
-  TECH_CARD_OPERATION_TYPE_BARTACK = 7; // закрепка
-  TECH_CARD_OPERATION_TYPE_BUTTONHOLE = 8; // петля
-  TECH_CARD_OPERATION_TYPE_BUTTON_ATTACH = 9; // пришивание пуговиц
+  // 1-9 ARE LEGACY AND LIVE FOREVER. They are still ACCEPTED on write (canonicalised into
+  // (MACHINE, machine_type) before anything else sees them) but never EMITTED on read.
+  //
+  // The symbols themselves can never be deleted: a release snapshot is immutable protojson holding
+  // these very names, and removing a member would make such a snapshot parse «successfully» while
+  // silently losing what the step was. A cleanup phase for them was considered and cancelled.
+  TECH_CARD_OPERATION_TYPE_LOCKSTITCH = 1 [deprecated = true]; // челночный (301) → MACHINE + lockstitch
+  TECH_CARD_OPERATION_TYPE_DOUBLE_NEEDLE = 2 [deprecated = true]; // → MACHINE + lockstitch_double_needle
+  TECH_CARD_OPERATION_TYPE_OVERLOCK = 3 [deprecated = true]; // → MACHINE + overlock
+  TECH_CARD_OPERATION_TYPE_COVERSTITCH = 4 [deprecated = true]; // → MACHINE + coverstitch
+  TECH_CARD_OPERATION_TYPE_CHAINSTITCH = 5 [deprecated = true]; // → MACHINE + chainstitch
+  TECH_CARD_OPERATION_TYPE_BLINDHEM = 6 [deprecated = true]; // → MACHINE + blindstitch
+  TECH_CARD_OPERATION_TYPE_BARTACK = 7 [deprecated = true]; // → MACHINE + bartack
+  TECH_CARD_OPERATION_TYPE_BUTTONHOLE = 8 [deprecated = true]; // → MACHINE + buttonhole
+  TECH_CARD_OPERATION_TYPE_BUTTON_ATTACH = 9 [deprecated = true]; // → MACHINE + button_attach
   TECH_CARD_OPERATION_TYPE_FUSING = 10; // дублирование / фиксация прокладки
   TECH_CARD_OPERATION_TYPE_HANDWORK = 11; // ручная операция
   TECH_CARD_OPERATION_TYPE_OTHER = 12;
+  TECH_CARD_OPERATION_TYPE_MACHINE = 13; // машинная; «на чём» is machine_type
+  TECH_CARD_OPERATION_TYPE_PRESS = 14; // ВТО: приутюжить / заутюжить / отпарить / финишное
+  TECH_CARD_OPERATION_TYPE_PRESS_OPEN = 15; // разутюжка — the most frequent inter-operation step
 }
 
 // TechCardGarmentZone says WHERE ON THE GARMENT a step works — and it is one of the two fields a
@@ -1334,8 +1591,9 @@ enum TechCardGarmentZone {
 // EF edge finishing, BS bound, FS flat, OS ornamental. It replaces the free-text `seam_type`,
 // whose suggestion list mixed the class with the PRESSING DIRECTION — «стачной взаутюжку» and
 // «стачной вразутюжку» are one class (SS plain) pressed two ways, and holding them as two
-// entries made the field answer two questions with one value. Pressing stays prose on
-// TechCardConstruction.pressing.
+// entries made the field answer two questions with one value. The pressing direction is a STEP of
+// its own now — PRESS (заутюжить) and PRESS_OPEN (разутюжить), each with its own ВТО settings — and
+// it stopped being prose on the construction when that field was retired by the equipment park.
 //
 // UNKNOWN = inherit TechCardConstruction.default_seam_class. Inheritance is a DISPLAY rule: the
 // server stores the unset value and never materialises the inherited one, so «the technologist
@@ -1357,11 +1615,18 @@ enum TechCardSeamClass {
 
 // TechCardAttachmentKind is the folder / guide / presser foot the step runs with.
 //
-// THERE IS NO `NONE`, AND THAT IS THE POINT: for a presser foot, «none» and «not specified» are
-// the same fact to everyone downstream, and offering both would make an operator pick between two
-// spellings of nothing. UNKNOWN covers it.
+// THERE IS A `NONE` NOW, AND IT IS NOT A SPELLING OF UNKNOWN. The old comment here said the
+// opposite — «none» and «not specified» are the same fact — and it was TRUE for as long as this
+// field was not inherited: with nothing above the step, both meant «nothing on the machine».
+// Since the card carries machine profiles, UNKNOWN means «take the profile's foot» and the step
+// lost any way to say «this one runs bare». NONE is that sentence. The two are different facts and
+// both are stored.
+//
+// `walking_foot` is deliberately NOT in this list: in an industrial shop a walking foot is a
+// machine with a unison / top feed — a property of the TRANSPORT, not a snap-on foot an operator
+// fits per step. If it is ever needed it belongs next to bed_type on the machine, not here.
 enum TechCardAttachmentKind {
-  TECH_CARD_ATTACHMENT_KIND_UNKNOWN = 0; // none / not specified
+  TECH_CARD_ATTACHMENT_KIND_UNKNOWN = 0; // not specified — inherit the profile's foot
   TECH_CARD_ATTACHMENT_KIND_BINDER = 1; // окантовыватель
   TECH_CARD_ATTACHMENT_KIND_HEMMER_FOLDER = 2; // подгибатель
   TECH_CARD_ATTACHMENT_KIND_SCROLL_FOOT = 3; // лапка-улитка
@@ -1371,6 +1636,9 @@ enum TechCardAttachmentKind {
   TECH_CARD_ATTACHMENT_KIND_PIPING_FOOT = 7; // лапка для канта
   TECH_CARD_ATTACHMENT_KIND_ELASTIC_ATTACHMENT = 8; // лапка для резинки
   TECH_CARD_ATTACHMENT_KIND_OTHER = 9;
+  TECH_CARD_ATTACHMENT_KIND_TEFLON_FOOT = 10; // тефлоновая лапка
+  TECH_CARD_ATTACHMENT_KIND_ROLLER_FOOT = 11; // роликовая лапка
+  TECH_CARD_ATTACHMENT_KIND_NONE = 12; // explicit «no foot / no attachment», cancels the profile's
 }
 
 // TechCardTopstitchMode replaces the free-text `topstitch_width`, whose real values were three
@@ -1421,6 +1689,138 @@ message TechCardTopstitch {
 // inherits from the workshop. The inherited value is shown as a placeholder and NEVER written
 // into the row — the day it is written, «the technologist decided 4 st/cm» stops being
 // distinguishable from «it defaulted to 4», which is precisely today's defect.
+// ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────
+//
+// Выноска отвечает швее на два вопроса, которые не помещаются в текст шага: ЧТО тут делать и ПО
+// КАКОМУ РАЗМЕРУ. Поэтому она живёт поверх снимка узла, а не в описании.
+//
+// ЗАКРЫТЫЙ СЛОВАРЬ `kind`, А НЕ СВОБОДНЫЕ ОСИ. Проектировался набор осями (якорь × геометрия ×
+// лидер × подпись), но хранить оси независимыми полями значит валидировать комбинаторику
+// бессмыслицы: скобка с одной точкой, номер на мерке, лидер у того, у чего нет якоря. Вид —
+// одно значение, и оно определяет и число точек, и что рисуется, и чем является текст.
+//
+// СООБЩЕНИЕ НЕ ЗНАЕТ СЛОВА «ОПЕРАЦИЯ». Тот же тип пригодится карточному эскизу, детали кроя и
+// примерке — им нужно будет лишь своё поле, а не свой формат выноски.
+enum TechCardAnnotationKind {
+  TECH_CARD_ANNOTATION_KIND_UNKNOWN = 0;
+  // 1 точка. Номер — позиция в списке; текст — заметка, читается в легенде.
+  TECH_CARD_ANNOTATION_KIND_PIN = 1;
+  // 1 точка + плашка. Текст — подпись, лидер-стрелка строится сам.
+  TECH_CARD_ANNOTATION_KIND_LABEL = 2;
+  // 2 точки. Размерная линия с засечками; текст — значение с единицами («6 мм»).
+  TECH_CARD_ANNOTATION_KIND_DIM = 3;
+  // 2 точки. Скобка над участком; текст — что с этим участком делать.
+  TECH_CARD_ANNOTATION_KIND_BRACKET = 4;
+  // 2..8 точек. Одна подпись, ветвящаяся к нескольким местам («закрепки ×3»).
+  TECH_CARD_ANNOTATION_KIND_MULTI = 5;
+  // 3 точки: начало, ТОЧКА НА КРИВОЙ, конец. Дуга — единственный способ показать линию, которая на
+  // изделии не прямая: посадку оката, скругление борта, ход отделочной строчки по кокетке. Отрезком
+  // это не сказать, а ломаной из десяти точек — сказать нельзя дважды одинаково.
+  //
+  // Средняя точка ЛЕЖИТ НА КРИВОЙ, а не управляет ей со стороны. Управляющая точка Безье не
+  // принадлежит кривой, и технолог, ставящий её мышью, каждый раз промахивается мимо линии, которую
+  // рисует; из трёх точек НА кривой управляющая считается однозначно (2·P1 − (P0+P2)/2).
+  TECH_CARD_ANNOTATION_KIND_ARC = 6;
+  // 3..40 точек. ЗАМКНУТЫЙ КОНТУР — область, а не линия: «эту зону продублировать клеевой»,
+  // «здесь настрочить». Ни мерка, ни скобка область не выражают: они говорят про отрезок, а
+  // порок ткани и участок дублирования имеют форму пятна.
+  //
+  // Замыкание ПОДРАЗУМЕВАЕТСЯ и последней точкой не дублируется. Хранить повторение первой точки
+  // значило бы завести два места для одной координаты, которые однажды разойдутся: правка первой
+  // точки не догнала бы копию, и контур разомкнулся бы на волосок — незаметно на экране и
+  // предательски на печати.
+  TECH_CARD_ANNOTATION_KIND_POLYGON = 7;
+  // 2..200 точек. СВОБОДНЫЙ СЛЕД МАРКЕРА — ломаная без правил, «обвёл и показал». Существует не
+  // вместо чертёжных видов, а рядом с ними: разговор у стола идёт быстрее, чем ставится мерка, и
+  // набросок, который не сделали, не заменяется точной фигурой, которую не сделали тоже.
+  //
+  // Верхний предел — не вкус: точки лежат decimal-парами в JSON, и след, снятый с каждого
+  // движения мыши, набирает тысячи за секунду. Клиент прореживает след ДО отправки, поэтому 200
+  // здесь потолок, а не норма.
+  TECH_CARD_ANNOTATION_KIND_INK = 8;
+}
+
+// Цвет выноски. ЗАКРЫТЫЙ СПИСОК, а не свободный hex: лист швеи печатается и на чёрно-белом
+// принтере, и произвольный цвет там превратился бы в неразличимый серый. Значение по умолчанию
+// (UNKNOWN) — чернильный, то есть тот же, каким рисуется всё остальное на листе; цвет РАЗЛИЧАЕТ
+// пересекающиеся выноски, а не кодирует смысл — смысл несёт вид и текст.
+enum TechCardAnnotationColor {
+  TECH_CARD_ANNOTATION_COLOR_UNKNOWN = 0; // чернильный
+  TECH_CARD_ANNOTATION_COLOR_RED = 1;
+  TECH_CARD_ANNOTATION_COLOR_BLUE = 2;
+  TECH_CARD_ANNOTATION_COLOR_GREEN = 3;
+  TECH_CARD_ANNOTATION_COLOR_ORANGE = 4;
+  // Белый. Единственный цвет, который читается на тёмной ткани, — а тёмная ткань это половина
+  // снимков узла. На бумаге он не исчезает: отрисовка кладёт под белую линию тёмное гало, поэтому
+  // на белом листе видно контур, а на чёрном снимке — саму линию.
+  TECH_CARD_ANNOTATION_COLOR_WHITE = 5;
+}
+
+// Точка выноски в НОРМАЛИЗОВАННЫХ координатах кадра (0..1) — та же система, что у pos_x/pos_y
+// карточных выносок. Decimal, а не float: промежуточный ввод и круговой рейс без потерь, и один
+// тип на обе системы координат карточки.
+message TechCardAnnotationPoint {
+  google.type.Decimal x = 1;
+  google.type.Decimal y = 2;
+}
+
+message TechCardAnnotation {
+  TechCardAnnotationKind kind = 1;
+  // Число точек определяется видом и проверяется сервером: PIN/LABEL — 1, DIM/BRACKET — 2,
+  // ARC — 3, MULTI — от 2 до 8.
+  repeated TechCardAnnotationPoint points = 2;
+  string text = 3;
+  // Положение плашки с текстом, 0..1. Лидер НЕ хранится — он строится от плашки к якорю по
+  // правилу отрисовки; хранить его значило бы хранить производное и дать ему разойтись.
+  google.type.Decimal label_x = 4;
+  google.type.Decimal label_y = 5;
+  TechCardAnnotationColor color = 6;
+  // ДЕТАЛЬ КРОЯ, О КОТОРОЙ ЭТА ВЫНОСКА. Стабильный line_key детали ЭТОЙ ЖЕ карточки — тот же ключ,
+  // которым деталь адресуют вход операции и назначение материала, а не имя: имя переживает
+  // переименование хуже, чем ссылка.
+  //
+  // ССЫЛКА СОВЕТУЮЩАЯ, а не проверяемая. Указание можно поставить раньше, чем деталь заведена
+  // (снимок узла приходит с примерки, детали кроя рождаются из чертежа позже), и отказ сохранения
+  // всей карточки из-за неразрешимого ключа стоил бы дороже, чем висящая ссылка: клиент показывает
+  // «деталь удалена», человек перевыбирает. Ровно так же ведут себя piece_line_keys операции.
+  //
+  // УСТАРЕЛО в пользу piece_line_keys ниже, но не снято: клиент, который про список не знает,
+  // по-прежнему шлёт и читает это поле. Сервер отдаёт его ПЕРВЫМ элементом списка.
+  string piece_line_key = 7;
+  // ПУНКТИР ВМЕСТО СПЛОШНОЙ. На чертеже это различие несёт смысл, а не украшает: сплошная —
+  // то, что видно и делают, пунктир — построение, припуск, линия под слоем. Поэтому поле входит
+  // в подпись секции, как и сам вид, а не остаётся оформлением вроде цвета.
+  //
+  // У PIN линии нет вовсе, и сервер приводит поле к false: два способа записать одно и то же
+  // «нечего рисовать пунктиром» разошлись бы в отпечатке.
+  bool dashed = 8;
+  // ЗАШТРИХОВАТЬ ОБЛАСТЬ ПОД ПОЛИГОНОМ. Контур говорит «вот эта граница», штриховка — «вот эта
+  // площадь»; на дублировании и на пороке ткани это разные указания.
+  //
+  // Только у POLYGON. У прочих видов заливать нечего, и сервер приводит поле к false, а не
+  // отвергает карточку: бессмысленный флаг это не порча данных, а отказ здесь стоил бы дороже,
+  // чем молчаливое приведение к тому единственному, что поле могло бы значить.
+  bool filled = 9;
+  // ДЕТАЛИ КРОЯ, О КОТОРЫХ УКАЗАНИЕ. Список, а не одна: узел законно собирает несколько деталей
+  // сразу — «втачать рукав в пройму» это и рукав, и полочка, и спинка, и указание на снимке
+  // относится ко всем трём. Одиночным полем это выражалось выбором «какая из них главная»,
+  // которого у шва нет.
+  //
+  // СОВМЕСТИМОСТЬ БЕЗ ФЛАГА ПРИСУТСТВИЯ: пустой список читается как [piece_line_key], непустой
+  // вытесняет старое поле целиком. Клиенту, который шлёт только piece_line_key, ничего менять не
+  // нужно; сервер отдаёт оба, и piece_line_key = первый элемент списка.
+  repeated string piece_line_keys = 10;
+}
+
+// Одна картинка операции со своими выносками. Картинка ОПЕРАЦИОННАЯ: она принадлежит шагу, а не
+// карточке, и вложенность делает невалидную ссылку невыразимой — в отличие от карточных выносок,
+// которые операция адресует НОМЕРОМ, а номер позиционный и переживает пересортировку шагов плохо.
+message TechCardOperationMedia {
+  int32 media_id = 1; // FK media(id)
+  string caption = 2;
+  repeated TechCardAnnotation annotations = 3;
+}
+
 message TechCardOperation {
   // --- core: what, where, with what, how long -------------------------------------------------
   int32 operation_number = 8; // human step number (10, 20, …); 0 = derive from position
@@ -1447,6 +1847,44 @@ message TechCardOperation {
   TechCardAttachmentKind attachment_kind = 29;
   optional google.type.Decimal attachment_size_mm = 30; // binder 32/8 etc.; needs attachment_kind
 
+  // --- «на чём»: the machine block, for operation_type = MACHINE ---------------------------------
+  // REQUIRED when the step is MACHINE (on an aware write); rejected on any other type. This is the
+  // second axis: the verb is above, the machine is here.
+  TechCardMachineType machine_type = 31;
+  // Points at ONE profile of construction.equipment_defaults BY KEY — the card may hold several
+  // machines of the same type, and «the overlock» is then not an answer. Empty = resolve by type
+  // (used only when the card has exactly one profile of that type). A key naming no profile in the
+  // payload DETACHES to unset rather than failing the save (the callout precedent: tidying the
+  // defaults must not block saving the steps); a key naming a profile of a DIFFERENT machine type
+  // is a FieldViolation, because that is two answers to one question.
+  string machine_profile_key = 32;
+  // Overrides. Unset = INHERIT (step → profile → card defaults) and the inherited value is NEVER
+  // written into the row: the day it is, «the technologist chose 4» stops being distinguishable
+  // from «it defaulted to 4».
+  int32 thread_count = 33;
+  TechCardNeedleType needle_type = 34;
+  int32 needle_size_nm = 35;
+  TechCardThreadTension thread_tension = 36;
+  string thread_tension_note = 37; // only alongside the scale — a note with no tension states nothing
+  // Stitch WIDTH — the zigzag amplitude, the bite of an overlock / coverstitch. NOT
+  // topstitch.width_mm, which is a distance from an edge; the two are different facts and the
+  // labels must stay different everywhere they are printed.
+  google.type.Decimal stitch_width_mm = 38;
+  // Stitch LENGTH is deliberately absent: density (stitches_per_cm, above) is the stored truth and
+  // length is 10 / density, computed wherever it is shown. One number, written once.
+  //
+  // bed_type and automation are ALSO deliberately absent from a step: they are machine identity.
+  // A step that needs a different bed needs a different machine_type.
+
+  // --- the ВТО block, for operation_type = PRESS / PRESS_OPEN / FUSING ---------------------------
+  TechCardPressEquipment press_equipment = 39; // REQUIRED for a press step on an aware write
+  string press_profile_key = 40; // same key rules as machine_profile_key
+  int32 press_temperature_c = 41;
+  int32 press_dwell_sec = 42;
+  google.type.Decimal press_pressure_n_cm2 = 43; // N/cm², the unit is in the name
+  optional bool press_steam = 44; // absent = inherit; false = «без пара», a real instruction
+  TechCardPressCloth press_cloth = 45; // NONE cancels the profile's press cloth
+
   // --- the only free text left ------------------------------------------------------------------
   // One box, not two: `description` and `note` sat side by side with no rule saying which was
   // which, which guarantees two cards fill them the opposite way round.
@@ -1455,6 +1893,41 @@ message TechCardOperation {
   // --- OUTPUT ------------------------------------------------------------------------------------
   repeated int64 piece_ids = 22; // resolved FKs to the cut-pieces, in the order given
   repeated int64 bom_item_ids = 24; // resolved FKs to the BOM lines, in the order given
+
+  // --- сборка: что шаг берёт со стола и что производит -----------------------------------------
+  // ЕДИНЫЙ упорядоченный список входов шага: каждый ключ — либо TechCardPiece.line_key (деталь),
+  // либо output_unit_key более раннего шага (узел). Предпочтительная форма.
+  //
+  // piece_line_keys (21) остаётся легаси-проекцией «только детали»: она принимается от
+  // неосведомлённой записи и ЭМИТИТСЯ НА ЧТЕНИИ ВСЕГДА. Ни номер 21, ни его имя не
+  // освобождаются никогда: имена полей в JSON REST-гейтвея производны от прото-имён, и на них
+  // держится разбор архивных релизных снапшотов, которые хранятся вербатимным protojson.
+  //
+  // Осведомлённая запись (assembly_aware) берёт входы отсюда, а 21 игнорирует: одно поле — один
+  // источник истины на запись. Но РАЗБИРАЮТСЯ эти поля всегда, независимо от флага: флаг
+  // объявляет способность бандла, а не выключает поля. Иначе серверный round-trip (клон сезона
+  // строит payload сам и флага не несёт) молча стёр бы всю разметку.
+  repeated string input_keys = 46;
+  // Код узла, который производит шаг («SHELL», «FRONT-L»). Пусто = шаг ничего не собирает, это
+  // ОБРАБОТКА: его входы остаются доступными следующим шагам (отстрочка по готовому узлу, ВТО).
+  //
+  // Ключ, совпадающий с одним из input_keys-УЗЛОВ, — ПОГЛОЩЕНИЕ: узел сохраняет идентичность и
+  // получает содержимое (GARMENT + HEM → GARMENT). Без поглощения граф не сходится, потому что
+  // большинство поздних шагов именно таковы.
+  //
+  // Совпадение с input_keys-ДЕТАЛЬЮ поглощением НЕ является и отклоняется: у деталей и узлов
+  // одно пространство имён. Джойну нужно не меньше двух РАЗЛИЧНЫХ СУЩЕСТВУЮЩИХ входов — «узел
+  // из одного входа» это обработка, а не узел. Сравнение ключей ПОБАЙТНОЕ: «SHELL» и «Shell» —
+  // два разных узла.
+  string output_unit_key = 47;
+  // Человеческое имя узла («корпус», «полочка левая в сборе»). Хранится на первом производящем
+  // шаге; поглощающий шаг может его не повторять — на чтении имя разрешается по первому
+  // производителю. Имя без ключа — теневое значение, отклоняется. В дайджест секции НЕ входит:
+  // имя не факт цеха, и хешировать его значило бы протухать подпись от невидимой правки.
+  string output_unit_name = 48;
+  // Фотографии этого шага с выносками. До 10 на шаг, до 30 выносок на картинку — пределы
+  // проверяет сервер. Порядок списка — порядок показа и печати.
+  repeated TechCardOperationMedia media = 49;
 
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
@@ -1810,6 +2283,30 @@ message TechCardPiece {
   // ⇒ снять пометку, это осознанное действие. Новый клиент шлёт поле ВСЕГДА, круглым рейсом того,
   // что прочитал.
   optional bool ungraded = 12;
+  // КАК ИМЕННО ДУБЛИРУЕТСЯ (0304) — см. TechCardPieceFusingMode. Осмысленно только при fused=true;
+  // сервер гасит разметку вместе со снятой галкой, потому что уцелевший режим при снятом fused
+  // читался бы как «не дублируется», а норму давал бы полосой.
+  //
+  // ЯВНОЕ ПРИСУТСТВИЕ по той же причине, что у двух соседей выше, и цена ошибки та же: вкладка со
+  // старым бандлом поля не шлёт вовсе, голый proto3-энум приехал бы как UNKNOWN и СТЁР бы разметку
+  // на всех деталях карточки. ОТСУТСТВИЕ ⇒ сервер несёт хранимое дальше (store:
+  // IF(:fusing_omitted, …), и та же перенос-склейка ПЕРЕД дайджестом, иначе подпись CONSTRUCTION из
+  // такой вкладки рождается устаревшей). ЯВНЫЙ UNKNOWN ⇒ очистить в «не размечено», это осознанное
+  // действие. Новый клиент шлёт поле ВСЕГДА, круглым рейсом того, что прочитал.
+  //
+  // ПАРА АТОМАРНА: присутствие ЭТОГО поля управляет и шириной под ним. Клиент, приславший режим,
+  // обязан прислать и ширину — иначе полоса без числа досталась бы шириной от прошлой правки, то
+  // есть чужой, и молча.
+  optional TechCardPieceFusingMode fusing_mode = 13;
+  // Ширина клеевой полосы в МИЛЛИМЕТРАХ. Обязательна и осмысленна ТОЛЬКО при STRIP: при остальных
+  // режимах сервер её гасит, потому что число рядом с SEAM_ALLOWANCE спорит с эталоном припуска, и
+  // спор молчаливый — на экране видно одно, в расчёте другое. Потолок 100 мм (0304): шире бывает
+  // только ошибка единиц.
+  //
+  // Миллиметры — та же единица, что у эталона припуска (0290 перевёл его туда из сантиметров), и
+  // это не совпадение: режим SEAM_ALLOWANCE берёт ширину полосы прямо из эталона. В сантиметры
+  // геометрии переводит РОВНО ОДНО место — расчёт нормы, у которого на руках оба сомножителя.
+  google.type.Decimal fusing_width_mm = 14;
 }
 
 // SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers
@@ -1992,6 +2489,66 @@ message TechCardInsert {
   // «edited since signing», on every card at once. (The free-text twin it used to be confused with,
   // construction.seam_allowances, no longer exists — the operations break removed it.)
   google.type.Decimal required_seam_allowance_mm = 109;
+
+  // Says «this bundle KNOWS about the machine / ВТО fields on operations and profiles». A new
+  // client sets it on every save; nothing else may.
+  //
+  // Operations are full-replace with no per-field protection, so a save from a bundle that has
+  // never heard of machine_type would silently wipe every machine fact on the card. With this flag
+  // the server can tell the two cases apart and refuse instead: a write WITHOUT it against a card
+  // that carries machine facts fails with FailedPrecondition naming the reason, and a write
+  // without it that nevertheless echoes the new fields fails the same way. A card with no machine
+  // facts saves from an old bundle exactly as before.
+  //
+  // TRANSPORT, NOT CONTENT: it is NOT part of any section digest — which client saved a card is
+  // not something a signature can depend on.
+  bool machine_fields_aware = 110;
+
+  // Осведомлённость бандла о полях сборки (input_keys / output_unit_key / output_unit_name).
+  // Зеркалит machine_fields_aware выше слово в слово по семантике:
+  //   - новый клиент ставит флаг на каждом сохранении; серверные пути (клон сезона) ставят сами;
+  //   - запись БЕЗ флага против карточки, несущей сборочные факты, — FailedPrecondition с
+  //     внятной причиной («карточка размечена узлами сборки; обновите вкладку админки»);
+  //   - запись без флага, которая тем не менее эхоит новые поля, — тот же отказ;
+  //   - карточка без сборочных фактов сохраняется старым бандлом ровно как раньше.
+  //
+  // Флаг НЕ ФИЛЬТРУЕТ ПОЛЯ. Он объявляет способность, а не выключает разбор: операции пишутся
+  // полной заменой, и «игнорировать 46–48 при aware=false» превратило бы штатный клон сезона
+  // (server-built payload, флага не несёт) в тихий стиратель разметки.
+  //
+  // ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест секции.
+  bool assembly_aware = 111;
+  // Явное намерение снять разметку узлов целиком.
+  //
+  // Щит выше закрывает СТАРЫЙ бандл. Он не закрывает запись, которая осведомлена, но пуста:
+  // параллельная вкладка нового клиента, открытая до разметки; применение AI-черновика поверх
+  // размеченной карточки; восстановление до-фичевого локального черновика; сидер или скрипт.
+  // Все они шлют assembly_aware=true и ноль узлов.
+  //
+  // Поэтому: осведомлённая запись, не несущая ни одного сборочного факта против карточки,
+  // которая их несёт, отклоняется, если этот флаг не выставлен. Ставит его только кнопка
+  // «снять разметку узлов» в клиенте — так одно поле служит и защитой, и честным путём
+  // отступления. Флаг без разметки в payload'е и флаг вместе с присланными узлами — оба
+  // противоречивы и отклоняются.
+  //
+  // ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: в дайджест не входит.
+  bool assembly_cleared = 112;
+
+  // ЩИТ СОВМЕСТИМОСТИ ДЛЯ ОПЕРАЦИОННЫХ ФОТО (0308) — третий той же породы, и по той же причине.
+  //
+  // Операции пишутся ПОЛНОЙ ЗАМЕНОЙ: payload без поля `media` неотличим от «удалили все снимки
+  // со всех шагов». Отставшая вкладка, восстановленный до-фичевый черновик или скрипт стёрли бы
+  // десятки выносок молча — и протухшую подпись CONSTRUCTION никто бы не связал с причиной.
+  //
+  // Флаг НЕ ФИЛЬТРУЕТ ПОЛЯ: разбор `media` идёт всегда. «Игнорировать при aware=false»
+  // превратило бы клон сезона (payload строит сервер, флага не несёт) в тихого стирателя.
+  //
+  // ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест секции.
+  bool media_aware = 113;
+  // Явное намерение снять ВСЕ операционные фотографии карточки — единственный законный путь
+  // прислать осведомлённую пустоту против карточки, у которой снимки есть.
+  bool media_cleared = 114;
+
   reserved 108;
   reserved "required_seam_allowance_cm";
 
@@ -2084,6 +2641,11 @@ message TechCard {
   // released-карточка теряла бы способность считать материалы: у детали кроя в контракте нет id,
   // только line_key, и любой ключ на piece_id был бы в слепке нулевым.
   repeated TechCardPieceAreaScope piece_area_scopes = 27;
+  // OUTPUT-ONLY: разрешённые операционные картинки карточки — дистинкт по media_id, тем же
+  // TechCardMediaFull, что мудборд и тех-эскизы. Write-сообщение операции возит только media_id:
+  // URL и размеры это read-данные, и класть их во вход записи значило бы принимать от клиента то,
+  // что сервер обязан знать сам.
+  repeated TechCardMediaFull resolved_operation_media = 28;
   reserved 5; // was resolved_media (single combined list; now split)
 }
 
@@ -2121,6 +2683,16 @@ message TechCardPieceArea {
   // неградуируемых деталей раскладки в MarkerSizeAreasPerGarment).
   int32 size_id = 2;
   google.type.Decimal area_cm2 = 3;
+  // ПЕРИМЕТР того же контура, см (0305) — вторая мера того же обмера, по тем же условиям. Ею
+  // считается КРАЕВОЕ дублирование: клеевая полоса вдоль среза стоит `периметр × ширину полосы`,
+  // тогда как площадь отвечает только за дублирование целиком (см. TechCardPieceFusingMode).
+  //
+  // НЕ ЗАПОЛНЕН — законное и постоянное состояние, а не переходное: все замеры до 0305 периметра не
+  // несут, клиент его тогда не считал. Такая строка честно означает «площадь есть, периметра нет», и
+  // краевая оценка по ней ОТКАЗЫВАЕТ (AreaEstimateNoPerimeter) вместо того, чтобы вывести полосу из
+  // площади правдоподобной формулой. Правдоподобной формулы не существует: у компактной детали и у
+  // длинной узкой одной площади периметры отличаются вдвое, и ошибка ушла бы прямо в закупку.
+  google.type.Decimal perimeter_cm = 6;
   // Контур заменён выпуклой оболочкой при раздутии припуском: площадь завышена, но воспроизводима.
   bool hulled = 4;
   // На слое было несколько совпадающих по площади кандидатов, взят первый: число зависит от порядка
