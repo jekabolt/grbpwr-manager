@@ -35,6 +35,8 @@ var annotationKindFromPb = map[pb_common.TechCardAnnotationKind]entity.TechCardA
 	pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_BRACKET: entity.AnnotationKindBracket,
 	pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_MULTI:   entity.AnnotationKindMulti,
 	pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_ARC:     entity.AnnotationKindArc,
+	pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON: entity.AnnotationKindPolygon,
+	pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_INK:     entity.AnnotationKindInk,
 }
 
 var annotationKindToPb = map[entity.TechCardAnnotationKind]pb_common.TechCardAnnotationKind{
@@ -44,6 +46,8 @@ var annotationKindToPb = map[entity.TechCardAnnotationKind]pb_common.TechCardAnn
 	entity.AnnotationKindBracket: pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_BRACKET,
 	entity.AnnotationKindMulti:   pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_MULTI,
 	entity.AnnotationKindArc:     pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_ARC,
+	entity.AnnotationKindPolygon: pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON,
+	entity.AnnotationKindInk:     pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_INK,
 }
 
 var annotationColorFromPb = map[pb_common.TechCardAnnotationColor]entity.TechCardAnnotationColor{
@@ -51,6 +55,7 @@ var annotationColorFromPb = map[pb_common.TechCardAnnotationColor]entity.TechCar
 	pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_BLUE:   entity.AnnotationColorBlue,
 	pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_GREEN:  entity.AnnotationColorGreen,
 	pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_ORANGE: entity.AnnotationColorOrange,
+	pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_WHITE:  entity.AnnotationColorWhite,
 }
 
 var annotationColorToPb = map[entity.TechCardAnnotationColor]pb_common.TechCardAnnotationColor{
@@ -58,6 +63,7 @@ var annotationColorToPb = map[entity.TechCardAnnotationColor]pb_common.TechCardA
 	entity.AnnotationColorBlue:   pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_BLUE,
 	entity.AnnotationColorGreen:  pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_GREEN,
 	entity.AnnotationColorOrange: pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_ORANGE,
+	entity.AnnotationColorWhite:  pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_WHITE,
 }
 
 var zero = decimal.Zero
@@ -202,19 +208,72 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 		// ставят на снимок, пришедший с примерки, раньше, чем детали кроя родятся из чертежа, и
 		// отказ сохранения всей карточки за неразрешённый ключ стоил бы дороже висящей ссылки.
 		// Клиент показывает «деталь удалена» и даёт перевыбрать — ровно как у входов операции.
-		pieceKey := strings.TrimSpace(a.PieceLineKey)
-		if err := validatePatternLineKey(pieceKey, ap+".piece_line_key"); err != nil {
+		keys, err := annotationPieceKeys(ap, a.PieceLineKeys, a.PieceLineKey)
+		if err != nil {
 			return nil, err
 		}
+		first := ""
+		if len(keys) > 0 {
+			first = keys[0]
+		}
 		out = append(out, entity.TechCardAnnotation{
-			Kind:         kind,
-			Points:       points,
-			Text:         text,
-			LabelX:       lx,
-			LabelY:       ly,
-			Color:        color,
-			PieceLineKey: pieceKey,
+			Kind:          kind,
+			Points:        points,
+			Text:          text,
+			LabelX:        lx,
+			LabelY:        ly,
+			Color:         color,
+			PieceLineKey:  first,
+			PieceLineKeys: keys,
+			Dashed:        a.Dashed && kind.HasLine(),
+			Filled:        a.Filled && kind.HasArea(),
 		})
+	}
+	return out, nil
+}
+
+// maxAnnotationPieces — потолок числа деталей на одном указании. Узел, собирающий больше дюжины
+// деталей сразу, — это не узел, а вся вещь; такое указание не читается ни на экране, ни на бумаге.
+const maxAnnotationPieces = 12
+
+// annotationPieceKeys сводит СПИСОК деталей и старое одиночное поле к одному списку.
+//
+// ПРАВИЛО БЕЗ ФЛАГА ПРИСУТСТВИЯ: непустой список вытесняет старое поле целиком, пустой читается
+// как [legacy]. Клиенту, который про список не знает, менять нечего, а новый шлёт оба и обязан
+// держать legacy равным первому элементу — сервер этого не требует, потому что список у него
+// главный, и расхождение просто теряется.
+//
+// Дубли снимаются молча: «эта строчка на подборте и на подборте» — не два указания, а одно,
+// названное дважды, и отказ здесь был бы отказом за опечатку в интерфейсе, а не за порчу данных.
+func annotationPieceKeys(path string, list []string, legacy string) ([]string, error) {
+	src := list
+	field := path + ".piece_line_keys"
+	if len(src) == 0 {
+		src = []string{legacy}
+		field = path + ".piece_line_key"
+	}
+	out := make([]string, 0, len(src))
+	seen := make(map[string]bool, len(src))
+	for _, raw := range src {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			continue
+		}
+		if err := validatePatternLineKey(key, field); err != nil {
+			return nil, err
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	if len(out) > maxAnnotationPieces {
+		return nil, entity.NewFieldViolation(field, "too_many", fmt.Sprint(len(out)),
+			fmt.Sprintf("на одно указание не больше %d деталей: длиннее его не прочесть ни на экране, ни на бумаге", maxAnnotationPieces))
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }
@@ -249,39 +308,47 @@ func calloutPointsAllowed(k entity.TechCardAnnotationKind) (min, max int, ok boo
 // calloutGeometryFromPb разбирает вид, якоря и цвет карточной выноски. `path` — путь для отказов
 // («callouts[3]»). Отсутствие вида читается как PIN: весь массив живых карточек написан до этого
 // поля и приезжает с нулевым энумом, и трактовать его отказом значило бы отвергнуть каждую.
-func calloutGeometryFromPb(
-	path string,
-	kindPb *pb_common.TechCardAnnotationKind,
-	pointsPb []*pb_common.TechCardAnnotationPoint,
-	colorPb pb_common.TechCardAnnotationColor,
-) (entity.TechCardAnnotationKind, []entity.TechCardAnnotationPoint, entity.TechCardAnnotationColor, error) {
+// calloutGeometry — разобранная фигура карточного указания. Структурой, а не пятью возвратами:
+// группа атомарна (см. proto), и пять значений подряд в сигнатуре — приглашение перепутать их
+// местами на следующем добавленном поле.
+type calloutGeometry struct {
+	Kind   entity.TechCardAnnotationKind
+	Points []entity.TechCardAnnotationPoint
+	Color  entity.TechCardAnnotationColor
+	Dashed bool
+	Filled bool
+}
+
+func calloutGeometryFromPb(path string, c *pb_common.TechCardCallout) (calloutGeometry, error) {
+	var zeroGeom calloutGeometry
+	kindPb, pointsPb, colorPb := c.Kind, c.Points, c.Color
 	kind := entity.AnnotationKindPin
 	if kindPb != nil && *kindPb != pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_UNKNOWN {
 		k, ok := annotationKindFromPb[*kindPb]
 		if !ok {
-			return "", nil, "", entity.NewFieldViolation(path+".kind", "unknown_value", kindPb.String(),
+			return zeroGeom, entity.NewFieldViolation(path+".kind", "unknown_value", kindPb.String(),
 				"вид указания — из закрытого списка: вид определяет и число точек, и что рисуется")
 		}
 		kind = k
 	}
 	min, max, _ := calloutPointsAllowed(kind)
 	if len(pointsPb) < min || len(pointsPb) > max {
-		return "", nil, "", entity.NewFieldViolation(path+".points", "wrong_count", fmt.Sprint(len(pointsPb)),
+		return zeroGeom, entity.NewFieldViolation(path+".points", "wrong_count", fmt.Sprint(len(pointsPb)),
 			fmt.Sprintf("«%s» на эскизе рисуется по %s якорям (номерной маркер стоит отдельно)", kind, pointsRangeText(min, max)))
 	}
 	points := make([]entity.TechCardAnnotationPoint, 0, len(pointsPb))
 	for k, p := range pointsPb {
 		pp := fmt.Sprintf("%s.points[%d]", path, k)
 		if p == nil {
-			return "", nil, "", entity.NewFieldViolation(pp, "required", "", "у указания пропущен якорь")
+			return zeroGeom, entity.NewFieldViolation(pp, "required", "", "у указания пропущен якорь")
 		}
 		x, err := unitInterval(pp+".x", p.X)
 		if err != nil {
-			return "", nil, "", err
+			return zeroGeom, err
 		}
 		y, err := unitInterval(pp+".y", p.Y)
 		if err != nil {
-			return "", nil, "", err
+			return zeroGeom, err
 		}
 		points = append(points, entity.TechCardAnnotationPoint{X: x, Y: y})
 	}
@@ -289,12 +356,58 @@ func calloutGeometryFromPb(
 	if colorPb != pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_UNKNOWN {
 		c, ok := annotationColorFromPb[colorPb]
 		if !ok {
-			return "", nil, "", entity.NewFieldViolation(path+".color", "unknown_value", colorPb.String(),
+			return zeroGeom, entity.NewFieldViolation(path+".color", "unknown_value", colorPb.String(),
 				"цвет указания — из закрытого списка: лист печатают и чёрно-белым")
 		}
 		color = c
 	}
-	return kind, points, color, nil
+	return calloutGeometry{
+		Kind:   kind,
+		Points: points,
+		Color:  color,
+		// Пунктир у точки и заливка у линии приводятся к false, а не отвергаются: бессмысленный
+		// флаг это не порча данных, а два способа записать «нечего рисовать» разошлись бы в
+		// отпечатке секции и объявили бы подпись протухшей за нажатие, ничего не изменившее.
+		Dashed: c.Dashed && kind.HasLine(),
+		Filled: c.Filled && kind.HasArea(),
+	}, nil
+}
+
+// calloutParts сводит СПИСОК деталей карточного указания и старое одиночное `part` к одному
+// списку — теми же правилами, что annotationPieceKeys, и по той же причине: пустой список
+// читается как [part], непустой вытесняет его целиком.
+//
+// Имена, а не ключи: на именах стоит связь «деталь ↔ выноска», и второй способ адресовать деталь
+// развёл бы две половины одной связи. Форма имени не проверяется — `part` всегда был свободным
+// текстом, и указание законно называет узел, которого среди деталей нет вовсе.
+func calloutParts(path string, list []string, legacy string) ([]string, error) {
+	src := list
+	field := path + ".parts"
+	if len(src) == 0 {
+		src = []string{legacy}
+		field = path + ".part"
+	}
+	out := make([]string, 0, len(src))
+	seen := make(map[string]bool, len(src))
+	for _, raw := range src {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) > maxAnnotationPieces {
+		return nil, entity.NewFieldViolation(field, "too_many", fmt.Sprint(len(out)),
+			fmt.Sprintf("на одно указание не больше %d деталей: длиннее его не прочесть ни на экране, ни на бумаге", maxAnnotationPieces))
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // calloutKindPbPtr отдаёт вид ХРАНИМОЙ выноски присутствующим полем. Присутствует всегда: чтение
@@ -334,7 +447,23 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		tc.Callouts[i].Kind = calloutKindOrPin(prev.Kind)
 		tc.Callouts[i].Points = prev.Points
 		tc.Callouts[i].Color = prev.Color
+		// Пунктир и штриховка в той же группе: молчание про вид — молчание про ВСЁ, что описывает
+		// фигуру. Перенести якоря дуги и потерять её пунктир значило бы отдать в цех другую линию.
+		tc.Callouts[i].Dashed = prev.Dashed
+		tc.Callouts[i].Filled = prev.Filled
 	}
+}
+
+// calloutPartsToPb — список деталей ХРАНИМОГО указания. Пустой список у записанного до 0310
+// собирается из `part`: круглый рейс нового клиента иначе вернул бы пустоту и стёр бы деталь.
+func calloutPartsToPb(c entity.TechCardCallout) []string {
+	if len(c.Parts) > 0 {
+		return c.Parts
+	}
+	if name := strings.TrimSpace(c.Part.String); name != "" {
+		return []string{name}
+	}
+	return nil
 }
 
 // calloutPointsToPb — обратный ход якорей.
@@ -375,14 +504,29 @@ func operationMediaToPb(in []entity.TechCardOperationMedia) []*pb_common.TechCar
 					Y: pbDecimalFromDecimal(p.Y),
 				})
 			}
+			// Список деталей отдаётся ВСЕГДА, а старое поле — первым его элементом. Уже
+			// записанные выноски несут только `piece` в JSON-колонке, поэтому список берётся
+			// тем же правилом, что и на чтении с провода: непустой главнее, пустой читается
+			// как [legacy].
+			keys := a.PieceLineKeys
+			if len(keys) == 0 && a.PieceLineKey != "" {
+				keys = []string{a.PieceLineKey}
+			}
+			first := a.PieceLineKey
+			if len(keys) > 0 {
+				first = keys[0]
+			}
 			anns = append(anns, &pb_common.TechCardAnnotation{
-				Kind:         annotationKindToPb[a.Kind],
-				Points:       points,
-				Text:         a.Text,
-				LabelX:       pbDecimalFromDecimal(a.LabelX),
-				LabelY:       pbDecimalFromDecimal(a.LabelY),
-				Color:        annotationColorToPb[a.Color],
-				PieceLineKey: a.PieceLineKey,
+				Kind:           annotationKindToPb[a.Kind],
+				Points:         points,
+				Text:           a.Text,
+				LabelX:         pbDecimalFromDecimal(a.LabelX),
+				LabelY:         pbDecimalFromDecimal(a.LabelY),
+				Color:          annotationColorToPb[a.Color],
+				PieceLineKey:   first,
+				PieceLineKeys:  keys,
+				Dashed:         a.Dashed,
+				Filled:         a.Filled,
 			})
 		}
 		out = append(out, &pb_common.TechCardOperationMedia{

@@ -214,7 +214,7 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
 		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y,
-		       kind, color, points
+		       kind, color, dashed, filled, points, parts
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -234,6 +234,30 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 				c.Points = nil
 				c.Kind = entity.AnnotationKindPin
 			}
+		}
+		if len(c.PartsRaw) > 0 {
+			// Битый список деталей — та же логика, что у якорей: указание остаётся с одной
+			// деталью из `part`, и это видно, а чтение карточки не падает.
+			if err := json.Unmarshal(c.PartsRaw, &c.Parts); err != nil {
+				slog.Default().Error("tech card callout: broken parts json",
+					slog.Int("tech_card_id", r.TechCardID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				c.Parts = nil
+			}
+		}
+		// ПЕРВЫЙ ЭЛЕМЕНТ СПИСКА ОБЯЗАН СОВПАДАТЬ С `part`. В колонку список пишется только когда
+		// деталей больше одной, но испорченная строка (ручная правка, старый бэкфилл) могла бы
+		// развести их — тогда `part` главнее: на нём стоит связь «деталь ↔ выноска», и читатель,
+		// знающий только старое поле (печать, архив релиза), увидел бы другую деталь.
+		if len(c.Parts) > 0 && c.Part.String != "" && c.Parts[0] != c.Part.String {
+			rest := make([]string, 0, len(c.Parts)+1)
+			rest = append(rest, c.Part.String)
+			for _, p := range c.Parts {
+				if p != c.Part.String {
+					rest = append(rest, p)
+				}
+			}
+			c.Parts = rest
 		}
 		out[r.TechCardID] = append(out[r.TechCardID], c)
 	}

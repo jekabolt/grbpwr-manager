@@ -246,12 +246,27 @@ func designProjection(tc *entity.TechCardInsert) any {
 		// ЦВЕТ — НЕ ВХОДИТ, ровно как у выносок на снимке шага: он различает пересекающиеся
 		// указания и смысла не несёт, а протухшая подпись за перекраску наказывала бы за наведение
 		// порядка на листе. По той же причине он и не открывает хвост.
-		if calloutKindOrPin(c.Kind) != entity.AnnotationKindPin || len(c.Points) > 0 {
+		//
+		// ВТОРОЙ ХВОСТ — ПОВЕРХ ПЕРВОГО, а не вместо. Пунктир, штриховка и список деталей приехали
+		// позже (0310), и вписать их внутрь уже существующего хвоста значило бы сдвинуть отпечаток
+		// каждой карточки, где кто-то успел нарисовать мерку. Второй хвост открывается только тем,
+		// что этих фактов ТРЕБУЕТ, и обязательно тянет за собой первый: иначе восьмой элемент
+		// означал бы то геометрию, то стиль, и различать их было бы нечем.
+		//
+		// ПУНКТИР И ШТРИХОВКА ВХОДЯТ В ПОДПИСЬ, в отличие от цвета: сплошная и пунктир на чертеже
+		// говорят разное («шов» против «построения»), а контур и заливка — «эта граница» против
+		// «эта площадь». Цвет же только различает пересекающиеся указания.
+		geom := calloutKindOrPin(c.Kind) != entity.AnnotationKindPin || len(c.Points) > 0
+		style := c.Dashed || c.Filled || len(c.Parts) > 1
+		if geom || style {
 			points := make([]any, 0, len(c.Points))
 			for _, p := range c.Points {
 				points = append(points, []any{p.X.String(), p.Y.String()})
 			}
 			row = append(row, []any{string(calloutKindOrPin(c.Kind)), points})
+		}
+		if style {
+			row = append(row, []any{c.Dashed, c.Filled, c.Parts})
 		}
 		callouts = append(callouts, row)
 	}
@@ -562,8 +577,25 @@ func operationMediaTail(o *entity.TechCardOperation) []any {
 			// кортежу: шестой элемент, поставленный безусловно, сдвинул бы отпечаток каждого
 			// снимка, у которого выноски уже есть. Указание, называющее ДЕТАЛЬ, — часть
 			// инструкции цеху («эту строчку на подборте»), поэтому в подпись входит.
-			if a.PieceLineKey != "" {
-				ann = append(ann, a.PieceLineKey)
+			//
+			// ВТОРОЙ ХВОСТ (0310: пунктир, штриховка, список деталей) кладётся ПОВЕРХ первого и
+			// обязательно тянет его за собой — даже пустым. Иначе шестой элемент означал бы то
+			// деталь, то стиль, и прочесть кортеж, не угадывая, стало бы нельзя. Указание с одной
+			// деталью и без пунктира хешируется байт в байт как до 0310.
+			keys := a.PieceLineKeys
+			if len(keys) == 0 && a.PieceLineKey != "" {
+				keys = []string{a.PieceLineKey}
+			}
+			first := ""
+			if len(keys) > 0 {
+				first = keys[0]
+			}
+			style := a.Dashed || a.Filled || len(keys) > 1
+			if first != "" || style {
+				ann = append(ann, first)
+			}
+			if style {
+				ann = append(ann, []any{a.Dashed, a.Filled, keys})
 			}
 			anns = append(anns, ann)
 		}

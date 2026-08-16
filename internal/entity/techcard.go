@@ -725,6 +725,10 @@ type TechCardCallout struct {
 	PosY        decimal.NullDecimal `db:"pos_y"`
 	Kind        TechCardAnnotationKind  `db:"kind"`
 	Color       TechCardAnnotationColor `db:"color"`
+	// Dashed/Filled — те же правила, что у выноски снимка шага: пунктир входит в подпись,
+	// штриховка живёт только у полигона. Колонки заведены 0310.
+	Dashed bool `db:"dashed"`
+	Filled bool `db:"filled"`
 	// KindOmitted — вкладка со старым бандлом про геометрию не говорила вовсе. Тогда хранимая
 	// тройка (вид, якоря, цвет) переносится по НОМЕРУ выноски, до пересчёта дайджеста. Не колонка:
 	// это факт запроса, а не карточки.
@@ -733,6 +737,13 @@ type TechCardCallout struct {
 	// в PointsRaw и разбирается стором один раз (так же, как выноски снимка шага).
 	Points    []TechCardAnnotationPoint `db:"-"`
 	PointsRaw []byte                    `db:"points"`
+	// Parts — все детали, о которых указание. Имена, а не ключи: связь «деталь ↔ выноска» стоит на
+	// именах (`part`), и заводить второй способ адресовать деталь ради списка значило бы держать
+	// две несогласуемые половины одной связи. Первый элемент обязан совпадать с Part.
+	//
+	// В БД — JSON-колонка (0310), в Go — разобранный список; сырое значение читается в PartsRaw.
+	Parts    []string `db:"-"`
+	PartsRaw []byte   `db:"parts"`
 }
 
 // TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
@@ -2682,7 +2693,17 @@ const (
 	AnnotationKindBracket TechCardAnnotationKind = "bracket" // 2 точки · скобка над участком
 	AnnotationKindMulti   TechCardAnnotationKind = "multi"   // 2..8 точек · одна подпись, много мест
 	AnnotationKindArc     TechCardAnnotationKind = "arc"     // 3 точки · дуга через среднюю точку
+	AnnotationKindPolygon TechCardAnnotationKind = "polygon" // 3..40 точек · замкнутая область
+	AnnotationKindInk     TechCardAnnotationKind = "ink"     // 2..200 точек · свободный след
 )
+
+// LineKinds — виды, у которых есть ЛИНИЯ, то есть те, у которых пунктир что-то значит. Пин это
+// точка, и «пунктирная точка» — не оформление, а второй способ записать одно и то же.
+func (k TechCardAnnotationKind) HasLine() bool { return k != AnnotationKindPin }
+
+// AreaKind — вид, у которого есть ПЛОЩАДЬ. Только полигон: у ломаной, дуги и мерки заливать
+// нечего, и флаг заливки под ними означал бы ровно ничего.
+func (k TechCardAnnotationKind) HasArea() bool { return k == AnnotationKindPolygon }
 
 // PointsAllowed возвращает допустимый диапазон числа точек для вида. Второе значение — false,
 // если вид неизвестен.
@@ -2699,6 +2720,16 @@ func (k TechCardAnnotationKind) PointsAllowed() (min, max int, ok bool) {
 		// считается однозначно, поэтому хранится то, что человек показал, а не то, что вывела
 		// формула.
 		return 3, 3, true
+	case AnnotationKindPolygon:
+		// Три — минимум, при котором область вообще есть: две точки это отрезок, и «замкнуть» его
+		// нечем. Сорок — потолок читаемости: контур, обведённый по сорока углам, на печати
+		// сливается в кляксу, а правится он поштучно.
+		return 3, 40, true
+	case AnnotationKindInk:
+		// Двести — потолок ХРАНЕНИЯ, а не рисования: клиент прореживает след перед отправкой.
+		// Без предела один росчерк мышью кладёт в JSON-колонку тысячи decimal-пар, и карточка
+		// начинает возить их на каждом чтении.
+		return 2, 200, true
 	}
 	return 0, 0, false
 }
@@ -2712,10 +2743,14 @@ const (
 	AnnotationColorBlue   TechCardAnnotationColor = "blue"
 	AnnotationColorGreen  TechCardAnnotationColor = "green"
 	AnnotationColorOrange TechCardAnnotationColor = "orange"
+	// Белый читается на тёмной ткани — а тёмная ткань это половина снимков узла. На бумаге он не
+	// пропадает: отрисовка кладёт под белую линию тёмное гало.
+	AnnotationColorWhite TechCardAnnotationColor = "white"
 )
 
 var ValidTechCardAnnotationColors = map[TechCardAnnotationColor]bool{
-	AnnotationColorRed: true, AnnotationColorBlue: true, AnnotationColorGreen: true, AnnotationColorOrange: true,
+	AnnotationColorRed: true, AnnotationColorBlue: true, AnnotationColorGreen: true,
+	AnnotationColorOrange: true, AnnotationColorWhite: true,
 }
 
 // TechCardAnnotationPoint — точка в нормализованных координатах кадра (0..1). Та же система, что
@@ -2734,10 +2769,22 @@ type TechCardAnnotation struct {
 	LabelX decimal.Decimal           `json:"label_x"`
 	LabelY decimal.Decimal           `json:"label_y"`
 	Color  TechCardAnnotationColor   `json:"color,omitempty"`
-	// PieceLineKey — деталь кроя, о которой указание. Ссылка советующая: указание ставят раньше,
-	// чем детали появляются из чертежа, и неразрешимый ключ не отказ сохранения, а «деталь
+	// PieceLineKey — ПЕРВАЯ из деталей кроя, о которых указание. Ссылка советующая: указание ставят
+	// раньше, чем детали появляются из чертежа, и неразрешимый ключ не отказ сохранения, а «деталь
 	// удалена» на экране. omitempty — чтобы у выносок без детали JSON в колонке не менялся.
+	//
+	// ПОЛЕ ЖИВЁТ РЯДОМ СО СПИСКОМ, а не вместо него: колонка annotations это JSON, и уже записанные
+	// выноски несут `piece`. Читатель берёт список, если он есть, иначе — это поле; писатель
+	// заполняет оба, и первый элемент списка обязан совпадать с ним.
 	PieceLineKey string `json:"piece,omitempty"`
+	// PieceLineKeys — все детали, о которых указание. Узел законно собирает несколько деталей
+	// сразу, и «какая из них главная» у шва не спрашивается.
+	PieceLineKeys []string `json:"pieces,omitempty"`
+	// Dashed — пунктир вместо сплошной. Входит в подпись секции: на чертеже сплошная и пунктир
+	// говорят разное, а не выглядят по-разному.
+	Dashed bool `json:"dashed,omitempty"`
+	// Filled — штриховка области полигона. Только у полигона; у прочих видов сервер обнуляет.
+	Filled bool `json:"filled,omitempty"`
 }
 
 // TechCardOperationMedia — одна картинка шага со своими выносками.
