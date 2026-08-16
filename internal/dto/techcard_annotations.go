@@ -232,6 +232,19 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 	return out, nil
 }
 
+// nonBlank — непустые значения без окружающих пробелов. Общий для обоих сводов: «список пуст» и
+// «список из пустых строк» обязаны означать одно и то же, иначе клиент, приславший слоты вместо
+// значений, стирает деталь, которую сам же прислал старым полем.
+func nonBlank(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if t := strings.TrimSpace(v); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // maxAnnotationPieces — потолок числа деталей на одном указании. Узел, собирающий больше дюжины
 // деталей сразу, — это не узел, а вся вещь; такое указание не читается ни на экране, ни на бумаге.
 const maxAnnotationPieces = 12
@@ -246,20 +259,21 @@ const maxAnnotationPieces = 12
 // Дубли снимаются молча: «эта строчка на подборте и на подборте» — не два указания, а одно,
 // названное дважды, и отказ здесь был бы отказом за опечатку в интерфейсе, а не за порчу данных.
 func annotationPieceKeys(path string, list []string, legacy string) ([]string, error) {
-	src := list
+	// ВЕТКА ВЫБИРАЕТСЯ ПО НЕПУСТЫМ ЭЛЕМЕНТАМ, а не по длине списка. Список из одних пустых строк
+	// (клиент послал слоты, а не значения) — это «сказать нечего», и трактовать его как
+	// «вытеснить старое поле» значило бы молча стереть деталь, которую прислали legacy-полем.
+	src := nonBlank(list)
 	field := path + ".piece_line_keys"
 	if len(src) == 0 {
-		src = []string{legacy}
+		src = nonBlank([]string{legacy})
 		field = path + ".piece_line_key"
 	}
 	out := make([]string, 0, len(src))
 	seen := make(map[string]bool, len(src))
-	for _, raw := range src {
-		key := strings.TrimSpace(raw)
-		if key == "" {
-			continue
-		}
-		if err := validatePatternLineKey(key, field); err != nil {
+	for i, key := range src {
+		// Индекс в пути отказа: без него сообщение «ключ должен быть из 26 знаков» не говорит,
+		// какой из двенадцати. Соседние отказы этого файла пишут `points[2]`.
+		if err := validatePatternLineKey(key, fmt.Sprintf("%s[%d]", field, i)); err != nil {
 			return nil, err
 		}
 		if seen[key] {
@@ -381,19 +395,15 @@ func calloutGeometryFromPb(path string, c *pb_common.TechCardCallout) (calloutGe
 // развёл бы две половины одной связи. Форма имени не проверяется — `part` всегда был свободным
 // текстом, и указание законно называет узел, которого среди деталей нет вовсе.
 func calloutParts(path string, list []string, legacy string) ([]string, error) {
-	src := list
+	src := nonBlank(list)
 	field := path + ".parts"
 	if len(src) == 0 {
-		src = []string{legacy}
+		src = nonBlank([]string{legacy})
 		field = path + ".part"
 	}
 	out := make([]string, 0, len(src))
 	seen := make(map[string]bool, len(src))
-	for _, raw := range src {
-		name := strings.TrimSpace(raw)
-		if name == "" {
-			continue
-		}
+	for _, name := range src {
 		if seen[name] {
 			continue
 		}

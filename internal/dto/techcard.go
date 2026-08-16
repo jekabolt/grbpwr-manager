@@ -524,8 +524,8 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 
 	callouts := make([]entity.TechCardCallout, 0, len(pb.Callouts))
 	for ci, c := range pb.Callouts {
-		if len(c.Part) > maxVarchar255 || len(c.Dimensions) > maxVarchar255 {
-			return nil, fmt.Errorf("callout part and dimensions must be at most %d characters", maxVarchar255)
+		if len(c.Dimensions) > maxVarchar255 {
+			return nil, fmt.Errorf("callout dimensions must be at most %d characters", maxVarchar255)
 		}
 		if c.MediaId < 0 {
 			return nil, fmt.Errorf("callout media_id must not be negative")
@@ -559,6 +559,16 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		part := ""
 		if len(parts) > 0 {
 			part = parts[0]
+		}
+		// ПРЕДЕЛ ПРОВЕРЯЕТСЯ У ТОГО, ЧТО УЕДЕТ В КОЛОНКУ, а не у присланного поля. В `part` теперь
+		// попадает первый элемент СПИСКА, и проверка старого поля обходилась payload'ом, где `part`
+		// пуст, а в `parts` лежит триста знаков: валидация пропускала, а MySQL отвечал сырым 1406,
+		// не называя ни выноску, ни поле.
+		for _, name := range parts {
+			if len(name) > maxVarchar255 {
+				return nil, entity.NewFieldViolation(path+".parts", "too_long", "",
+					fmt.Sprintf("имя детали в указании — не длиннее %d знаков", maxVarchar255))
+			}
 		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),

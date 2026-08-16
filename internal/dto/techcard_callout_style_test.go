@@ -97,6 +97,74 @@ func TestCalloutStyleTailAlwaysCarriesGeometryTail(t *testing.T) {
 		"две детали на пине и мерка без деталей — разные указания, и кортеж обязан их различать")
 }
 
+// ЗАПИСЬ И ЧТЕНИЕ ОДНОЙ И ТОЙ ЖЕ ВЫНОСКИ ОБЯЗАНЫ ДАТЬ ОДИН ОТПЕЧАТОК — и это утверждение,
+// которого не хватало, когда 0310 писался.
+//
+// Стор не пишет колонку `parts`, пока деталь одна: она уже лежит в `part`, и второй экземпляр той
+// же строки был бы вторым местом, откуда её однажды прочтут по-разному. Значит одна и та же
+// выноска выглядит по-разному на записи (Parts=["полочка"]) и на чтении (Parts=nil) — и пока
+// проекция брала поле СЫРЫМ, второй хвост кодировался двумя способами.
+//
+// Цена: подпись DESIGN рождается протухшей при ПЕРВОМ ЖЕ осмысленном применении фичи (пунктирная
+// мерка, заштрихованная зона) и НЕ ЛЕЧИТСЯ переутверждением — повторный штамп берёт то же
+// расхождение. Прошлые тесты этого не ловили: они сравнивали запись с записью.
+func TestCalloutStyleDigestSurvivesRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		shape   func(*entity.TechCardCallout)
+	}{
+		{"пунктирная мерка", func(c *entity.TechCardCallout) {
+			c.Kind = entity.AnnotationKindDim
+			c.Points = []entity.TechCardAnnotationPoint{
+				{X: unit("0.2"), Y: unit("0.5")}, {X: unit("0.5"), Y: unit("0.5")},
+			}
+			c.Dashed = true
+		}},
+		{"заштрихованная зона", func(c *entity.TechCardCallout) {
+			c.Kind = entity.AnnotationKindPolygon
+			c.Points = []entity.TechCardAnnotationPoint{
+				{X: unit("0.1"), Y: unit("0.1")}, {X: unit("0.4"), Y: unit("0.1")}, {X: unit("0.4"), Y: unit("0.5")},
+			}
+			c.Filled = true
+		}},
+		{"пин с пунктиром из архива", func(c *entity.TechCardCallout) { c.Dashed = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// КАК ВЫГЛЯДИТ НА ЗАПИСИ: dto нормализовал список, он непустой.
+			write := calloutDigestFixture()
+			tc.shape(&write.Callouts[0])
+			write.Callouts[0].Parts = []string{write.Callouts[0].Part.String}
+
+			// КАК ВЫГЛЯДИТ НА ЧТЕНИИ: колонка `parts` не заполнялась, деталь только в `part`.
+			read := calloutDigestFixture()
+			tc.shape(&read.Callouts[0])
+			read.Callouts[0].Parts = nil
+
+			require.Equal(t,
+				TechCardSectionDigests(write)[entity.SignoffDesign],
+				TechCardSectionDigests(read)[entity.SignoffDesign],
+				"одна и та же выноска на записи и на чтении: расхождение делает подпись вечно протухшей")
+		})
+	}
+}
+
+// Повторы и пустые строки в колонке — испорченная строка, а не второй смысл: круглый рейс через
+// dto их снимает, и проекция обязана снимать тоже, иначе отпечаток чтения не сойдётся с записью.
+func TestCalloutStyleDigestNormalizesStoredParts(t *testing.T) {
+	clean := calloutDigestFixture()
+	clean.Callouts[0].Dashed = true
+	clean.Callouts[0].Parts = []string{"полочка"}
+
+	dirty := calloutDigestFixture()
+	dirty.Callouts[0].Dashed = true
+	dirty.Callouts[0].Parts = []string{"полочка", "полочка", "  "}
+
+	require.Equal(t,
+		TechCardSectionDigests(clean)[entity.SignoffDesign],
+		TechCardSectionDigests(dirty)[entity.SignoffDesign],
+		"деталь, названная дважды, — одно указание; отпечаток обязан это видеть")
+}
+
 // --- приведение бессмысленных флагов ---------------------------------------------------------
 
 func TestCalloutGeometryNormalizesMeaninglessFlags(t *testing.T) {

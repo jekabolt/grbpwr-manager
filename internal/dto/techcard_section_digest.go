@@ -256,8 +256,14 @@ func designProjection(tc *entity.TechCardInsert) any {
 		// ПУНКТИР И ШТРИХОВКА ВХОДЯТ В ПОДПИСЬ, в отличие от цвета: сплошная и пунктир на чертеже
 		// говорят разное («шов» против «построения»), а контур и заливка — «эта граница» против
 		// «эта площадь». Цвет же только различает пересекающиеся указания.
+		// СПИСОК ДЕТАЛЕЙ БЕРЁТСЯ НОРМАЛИЗОВАННЫМ, а не сырым. Стор не пишет колонку `parts`, пока
+		// деталь одна (она уже в `part`), поэтому сырое поле на ЗАПИСИ содержит ["полочка"], а на
+		// ЧТЕНИИ той же строки — nil. Отпечаток тогда не совпадает сам с собой: подпись DESIGN
+		// рождается протухшей и не лечится переутверждением, потому что повторный штамп берёт то
+		// же расхождение. Одно правило на все три места — `PartList`.
+		parts := c.PartList()
 		geom := calloutKindOrPin(c.Kind) != entity.AnnotationKindPin || len(c.Points) > 0
-		style := c.Dashed || c.Filled || len(c.Parts) > 1
+		style := c.Dashed || c.Filled || len(parts) > 1
 		if geom || style {
 			points := make([]any, 0, len(c.Points))
 			for _, p := range c.Points {
@@ -266,7 +272,7 @@ func designProjection(tc *entity.TechCardInsert) any {
 			row = append(row, []any{string(calloutKindOrPin(c.Kind)), points})
 		}
 		if style {
-			row = append(row, []any{c.Dashed, c.Filled, c.Parts})
+			row = append(row, []any{c.Dashed, c.Filled, parts})
 		}
 		callouts = append(callouts, row)
 	}

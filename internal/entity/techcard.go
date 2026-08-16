@@ -746,6 +746,36 @@ type TechCardCallout struct {
 	PartsRaw []byte   `db:"parts"`
 }
 
+// PartList — детали указания ОДНИМ СПИСКОМ, по единственному правилу: непустой список главнее,
+// пустой читается как [Part]. Возвращает нормализованное значение: без пустых, без повторов.
+//
+// ФУНКЦИЯ ЕСТЬ, ПОТОМУ ЧТО ПРАВИЛО ОДНО, А МЕСТ ТРИ: разбор с провода, проекция в отпечаток и
+// обратный ход на чтении. Пока правило было записано в каждом из них отдельно, они разошлись — и
+// разошлись молча: указание с ОДНОЙ деталью и пунктиром на ЗАПИСИ кодировалось как ["полочка"], а
+// на ЧТЕНИИ как null, потому что стор не пишет список из одного имени (оно уже в Part). Отпечаток
+// DESIGN у такой карточки не совпадал сам с собой, то есть подпись рождалась протухшей и не
+// лечилась переутверждением — повторный штамп брал то же расхождение.
+func (c TechCardCallout) PartList() []string {
+	src := c.Parts
+	if len(src) == 0 {
+		src = []string{c.Part.String}
+	}
+	out := make([]string, 0, len(src))
+	seen := make(map[string]bool, len(src))
+	for _, v := range src {
+		name := strings.TrimSpace(v)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // TechCardRevision is one entry in the server-stamped auto-journal (Q1): who/what/when across a
 // card's significant transitions. Author/Action/Section/ChangeNote/CreatedAt are set by the server.
 type TechCardRevision struct {
