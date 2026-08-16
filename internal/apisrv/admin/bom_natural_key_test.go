@@ -18,7 +18,7 @@ func bomLine(section entity.TechCardBomSection, name string, materialID int64, s
 
 // TestBomNaturalKeyIsStableAcrossNameResolution is the regression guard for the interaction between
 // two independently reasonable changes: BOM names are now RESOLVED from the linked material on read,
-// and the admin client now sends name:'' for a linked line that never had its own name.
+// and the admin client now sends name:” for a linked line that never had its own name.
 //
 // preserveStoredCosting matches the STORED card (enriched, so a linked line carries the catalog
 // material's name) against the INCOMING payload (raw, so the same line may carry an empty name). If

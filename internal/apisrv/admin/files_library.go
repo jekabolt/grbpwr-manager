@@ -9,14 +9,11 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-// libraryFileFKViolationMsg is what a caller gets when a task references a file
-// id that is not there.
-const libraryFileFKViolationMsg = "file_id does not reference an existing library file"
 
 // withLibraryURLs mints the short-lived presigned urls for one file. It is the
 // single place where the inline-safety policy is applied: a type that is not
@@ -91,12 +88,16 @@ func (s *Server) GetLibraryFile(ctx context.Context, req *pb_admin.GetLibraryFil
 // ListLibraryFiles is the grid.
 func (s *Server) ListLibraryFiles(ctx context.Context, req *pb_admin.ListLibraryFilesRequest) (*pb_admin.ListLibraryFilesResponse, error) {
 	files, total, err := s.repo.Files().ListFiles(ctx, entity.LibraryFileListFilter{
-		TopicId:     int(req.TopicId),
-		Untopiced:   req.Untopiced,
-		Search:      req.Search,
-		Limit:       int(req.Limit),
-		Offset:      int(req.Offset),
-		OrderFactor: dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor),
+		TopicId:   int(req.TopicId),
+		Untopiced: req.Untopiced,
+		Search:    req.Search,
+		Limit:     int(req.Limit),
+		Offset:    int(req.Offset),
+		// A library is read newest-first, so an unspecified order must mean
+		// descending. The shared converter maps UNKNOWN to ascending, which is right
+		// for the lists it was written for and wrong here — so the default is chosen
+		// at this call site rather than by changing what UNKNOWN means everywhere.
+		OrderFactor: listOrderOrNewestFirst(req.OrderFactor),
 	})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list library files", slog.String("err", err.Error()))
@@ -157,14 +158,11 @@ func (s *Server) DeleteLibraryFile(ctx context.Context, req *pb_admin.DeleteLibr
 		slog.Default().ErrorContext(ctx, "can't delete library file", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't delete file")
 	}
-	if s.bucket != nil && len(keys) > 0 {
-		if err := s.bucket.RemoveObjectsByKeys(ctx, keys...); err != nil {
-			// The row is already gone; the objects are now orphaned. Log the keys so
-			// they can be swept later rather than failing a delete the user already
-			// saw succeed.
-			slog.Default().ErrorContext(ctx, "orphaned library objects after delete",
-				slog.Any("keys", keys), slog.String("err", err.Error()))
-		}
+	if len(keys) > 0 {
+		// The row is already gone; anything left in the bucket is now unreachable.
+		// Detached context: the delete has already succeeded from the caller's point
+		// of view, and cleanup must not depend on them still waiting.
+		cleanupObjects(ctx, s.bucket, keys...)
 	}
 	return &pb_admin.DeleteLibraryFileResponse{}, nil
 }
@@ -228,8 +226,21 @@ func (s *Server) DeleteFileTopic(ctx context.Context, req *pb_admin.DeleteFileTo
 		if errors.Is(err, entity.ErrFileTopicInUse) {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 		}
+		// A file attached between the pre-check and the DELETE lands here as a raw
+		// FK violation. Same situation, same answer — not a 500.
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.FailedPrecondition, "topic still has files")
+		}
 		slog.Default().ErrorContext(ctx, "can't delete file topic", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't delete topic")
 	}
 	return &pb_admin.DeleteFileTopicResponse{}, nil
+}
+
+// listOrderOrNewestFirst resolves the list order, defaulting to newest-first.
+func listOrderOrNewestFirst(f pb_common.OrderFactor) entity.OrderFactor {
+	if f == pb_common.OrderFactor_ORDER_FACTOR_UNKNOWN {
+		return entity.Descending
+	}
+	return dto.ConvertPBCommonOrderFactorToEntity(f)
 }

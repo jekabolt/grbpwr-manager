@@ -16,6 +16,8 @@ import (
 	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
@@ -32,6 +34,11 @@ const (
 	// preview is a thumbnail of one page; the extra byte is how we detect that the
 	// caller went over rather than landing exactly on the limit.
 	maxUploadPreviewBytes = 2 << 20
+	// maxContentTypeLen mirrors library_file.content_type.
+	maxContentTypeLen = 128
+	// cleanupTimeout bounds the best-effort bucket cleanup that runs after a failed
+	// upload.
+	cleanupTimeout = 10 * time.Second
 )
 
 // uploadMeta is the first multipart part: what the file should be called and
@@ -113,6 +120,11 @@ func (s *Server) FileUploadHandler() http.Handler {
 		if mt, _, err := mime.ParseMediaType(contentType); err == nil {
 			contentType = mt
 		}
+		// content_type is VARCHAR(128); an over-long declared type would fail the
+		// INSERT with a data-truncation error after the bytes are already stored.
+		if len(contentType) > maxContentTypeLen {
+			contentType = contentType[:maxContentTypeLen]
+		}
 		ext := strings.TrimPrefix(filepath.Ext(fileName), ".")
 
 		objectKey, sha256hex, size, err := s.bucket.UploadLibraryObject(ctx, filePart, contentType, ext)
@@ -145,16 +157,25 @@ func (s *Server) FileUploadHandler() http.Handler {
 			return
 		}
 		if size == 0 {
-			_ = s.bucket.RemoveObjectsByKeys(ctx, objectKey)
+			cleanupObjects(ctx, s.bucket, objectKey)
 			writeUploadError(w, http.StatusBadRequest, "the file is empty")
 			return
 		}
 
+		// A preview is a convenience, not part of the file. Only a preview that is
+		// genuinely INVALID is worth refusing over; a transient bucket failure must
+		// not throw away a 90 MB upload that already succeeded and then blame the
+		// person for it.
 		previewKey, err := s.readAndStorePreview(r, mr)
 		if err != nil {
-			_ = s.bucket.RemoveObjectsByKeys(ctx, objectKey)
-			writeUploadError(w, http.StatusBadRequest, err.Error())
-			return
+			if errors.Is(err, bucket.ErrInvalidLibraryUpload) {
+				cleanupObjects(ctx, s.bucket, objectKey)
+				writeUploadError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			slog.Default().ErrorContext(ctx, "library preview failed, storing without one",
+				slog.String("username", username), slog.String("err", err.Error()))
+			previewKey = ""
 		}
 
 		insert := &entity.LibraryFileInsert{
@@ -171,10 +192,7 @@ func (s *Server) FileUploadHandler() http.Handler {
 			// The bytes are already in the bucket and nothing points at them now.
 			// Best-effort removal; if that fails too, the keys are logged so they can
 			// be swept rather than lost.
-			if rmErr := s.bucket.RemoveObjectsByKeys(ctx, objectKey, previewKey); rmErr != nil {
-				slog.Default().ErrorContext(ctx, "orphaned library objects after failed insert",
-					slog.String("object_key", objectKey), slog.String("preview_key", previewKey))
-			}
+			cleanupObjects(ctx, s.bucket, objectKey, previewKey)
 			if s.repo.IsErrForeignKeyViolation(err) {
 				writeUploadError(w, http.StatusBadRequest, "topic_id does not reference an existing topic")
 				return
@@ -320,4 +338,22 @@ func nullStringOrEmpty(s string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: s, Valid: true}
+}
+
+// cleanupObjects removes bucket objects after a failed upload.
+//
+// It deliberately detaches from the request context. The commonest way to reach
+// here is the client going away mid-upload — and that is exactly when the request
+// context is already cancelled, so a cleanup call riding on it would fail every
+// single time and orphan the object it was written to remove.
+func cleanupObjects(ctx context.Context, b dependency.FileStore, keys ...string) {
+	if b == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+	if err := b.RemoveObjectsByKeys(cleanupCtx, keys...); err != nil {
+		slog.Default().ErrorContext(cleanupCtx, "orphaned library objects",
+			slog.Any("keys", keys), slog.String("err", err.Error()))
+	}
 }

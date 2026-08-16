@@ -42,16 +42,16 @@ func TestIsManagedLibraryKey(t *testing.T) {
 		key  string
 		want bool
 	}{
-		"canonical":       {"base/files-library/2026/august/x-deadbeef.pdf", true},
-		"preview nested":  {"base/files-library/previews/2026/august/x.webp", true},
-		"no base folder":  {"files-library/2026/august/x.xlsx", true},
-		"folder is last":  {"base/files-library", false},
-		"pattern key":     {"base/tech-card-patterns/2026/x.pdf", false},
-		"media key":       {"base/media/2026/august/x.jpg", false},
-		"parent segment":  {"base/files-library/../../secrets/x.pdf", false},
-		"substring only":  {"base/files-library-public/x.pdf", false},
-		"empty":           {"", false},
-		"multipart spec":  {"base/files-library/previews/x.webp", true},
+		"canonical":      {"base/files-library/2026/august/x-deadbeef.pdf", true},
+		"preview nested": {"base/files-library/previews/2026/august/x.webp", true},
+		"no base folder": {"files-library/2026/august/x.xlsx", true},
+		"folder is last": {"base/files-library", false},
+		"pattern key":    {"base/tech-card-patterns/2026/x.pdf", false},
+		"media key":      {"base/media/2026/august/x.jpg", false},
+		"parent segment": {"base/files-library/../../secrets/x.pdf", false},
+		"substring only": {"base/files-library-public/x.pdf", false},
+		"empty":          {"", false},
+		"multipart spec": {"base/files-library/previews/x.webp", true},
 	}
 	for name, c := range cases {
 		if got := isManagedKeyInSegment(c.key, libraryFolder); got != c.want {
@@ -157,6 +157,72 @@ func TestPresignWindow(t *testing.T) {
 		}
 		if ttl > 7*24*time.Hour {
 			t.Errorf("at %s: ttl %s exceeds the presign ceiling", at, ttl)
+		}
+	}
+}
+
+// TestContentDispositionSurvivesNonASCII locks the fix for the failure that would
+// have made the download link dead for most of this library: a Content-Disposition
+// carrying a raw UTF-8 filename is rejected by S3 with 400 InvalidArgument, and
+// Russian filenames are the norm here, not the exception.
+func TestContentDispositionSurvivesNonASCII(t *testing.T) {
+	cases := map[string]struct {
+		name         string
+		wantASCII    string
+		wantEncoded  string
+		mustNotHaveW bool
+	}{
+		"cyrillic": {
+			name:        "макет бирки.pdf",
+			wantASCII:   `filename="_____ _____.pdf"`,
+			wantEncoded: `filename*=UTF-8''%D0%BC%D0%B0%D0%BA%D0%B5%D1%82%20%D0%B1%D0%B8%D1%80%D0%BA%D0%B8.pdf`,
+		},
+		"ascii is left alone": {
+			name:        "guideline-v2.pdf",
+			wantASCII:   `filename="guideline-v2.pdf"`,
+			wantEncoded: `filename*=UTF-8''guideline-v2.pdf`,
+		},
+		"space encodes as %20 not plus": {
+			name:        "a b.png",
+			wantASCII:   `filename="a b.png"`,
+			wantEncoded: `filename*=UTF-8''a%20b.png`,
+		},
+		// An ASCII extension is enough to make the fallback meaningful, so the name
+		// keeps its shape rather than collapsing to a placeholder.
+		"non-ascii stem, ascii extension": {
+			name:        "макет.ai",
+			wantASCII:   `filename="_____.ai"`,
+			wantEncoded: `filename*=UTF-8''%D0%BC%D0%B0%D0%BA%D0%B5%D1%82.ai`,
+		},
+		// Nothing ASCII anywhere: underscores alone would name every such file the
+		// same, so it falls back to a neutral stand-in.
+		"nothing ascii at all": {
+			name:      "макет.дизайн",
+			wantASCII: `filename="file"`,
+		},
+	}
+	for label, c := range cases {
+		got := contentDisposition(c.name)
+		if !strings.HasPrefix(got, "attachment; ") {
+			t.Errorf("%s: missing attachment prefix: %s", label, got)
+		}
+		if !strings.Contains(got, c.wantASCII) {
+			t.Errorf("%s: want ascii part %s, got %s", label, c.wantASCII, got)
+		}
+		if c.wantEncoded != "" && !strings.Contains(got, c.wantEncoded) {
+			t.Errorf("%s: want encoded part %s, got %s", label, c.wantEncoded, got)
+		}
+		// The legacy parameter must be pure ASCII or the header is rejected outright.
+		asciiPart := got[:strings.Index(got, "filename*=")]
+		for _, r := range asciiPart {
+			if r > 0x7f {
+				t.Errorf("%s: non-ASCII rune %q leaked into the legacy filename: %s", label, r, got)
+				break
+			}
+		}
+		// '+' as a space would be read literally by clients.
+		if strings.Contains(got[strings.Index(got, "filename*="):], "+") {
+			t.Errorf("%s: '+' in the encoded filename: %s", label, got)
 		}
 	}
 }

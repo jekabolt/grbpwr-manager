@@ -102,8 +102,7 @@ func (b *Bucket) presignManagedObject(ctx context.Context, objectKey, requiredSe
 
 	reqParams := make(url.Values)
 	if download {
-		reqParams.Set("response-content-disposition",
-			fmt.Sprintf("attachment; filename=%q", name))
+		reqParams.Set("response-content-disposition", contentDisposition(name))
 	}
 	u, err := b.Client.PresignedGetObject(ctx, b.S3BucketName, key, time.Until(expiresAt), reqParams)
 	if err != nil {
@@ -147,6 +146,92 @@ func isManagedKeyInSegment(key, requiredSegment string) bool {
 		}
 	}
 	return found
+}
+
+// contentDisposition builds an attachment disposition that survives a non-ASCII
+// filename.
+//
+// The naive `filename="макет бирки.pdf"` is a trap: the header is defined over
+// ISO-8859-1, and S3 rejects a response-content-disposition override carrying raw
+// UTF-8 with 400 InvalidArgument. Since Russian filenames are the norm here rather
+// than the exception, that would have meant the download link is dead for most of
+// the library while inline viewing kept working — a failure that looks like a
+// broken file rather than a broken header.
+//
+// RFC 5987/6266 form: an ASCII-only `filename` that any client can read, plus a
+// percent-encoded `filename*` that modern clients prefer. Both are always emitted;
+// they cost nothing when the name is already ASCII.
+func contentDisposition(name string) string {
+	ascii := asciiFallbackName(name)
+	return fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s",
+		ascii, percentEncodeRFC5987(name))
+}
+
+// asciiFallbackName replaces every non-ASCII rune with '_' so the legacy
+// `filename` parameter stays inside what the header grammar allows. An entirely
+// non-ASCII name would collapse to underscores, so it falls back to a neutral
+// stand-in — clients that understand filename* never see it anyway.
+func asciiFallbackName(name string) string {
+	var b strings.Builder
+	meaningful := false
+	for _, r := range name {
+		switch {
+		case r > 0x7f || r < 0x20 || r == 0x7f:
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+			if r != '_' && r != ' ' && r != '.' {
+				meaningful = true
+			}
+		}
+	}
+	if !meaningful {
+		// Keep the extension when it is itself readable ASCII — it is what tells the
+		// OS how to open the file once it lands on disk. An extension that is also
+		// non-ASCII carries nothing, so appending it would only produce "file.file".
+		if i := strings.LastIndexByte(name, '.'); i >= 0 && i < len(name)-1 {
+			if ext := name[i+1:]; isASCIIAlnum(ext) {
+				return "file." + ext
+			}
+		}
+		return "file"
+	}
+	return b.String()
+}
+
+// isASCIIAlnum reports whether s is non-empty and made only of ASCII letters and
+// digits — the shape a file extension has to have to be worth keeping.
+func isASCIIAlnum(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// percentEncodeRFC5987 encodes a filename for the `filename*` parameter: every
+// byte outside the attr-char set is percent-encoded. url.QueryEscape is not a
+// substitute — it encodes a space as '+', which is wrong here.
+func percentEncodeRFC5987(s string) string {
+	const upperhex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			strings.IndexByte("!#$&+-.^_`|~", c) >= 0 {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('%')
+		b.WriteByte(upperhex[c>>4])
+		b.WriteByte(upperhex[c&0x0f])
+	}
+	return b.String()
 }
 
 // sanitizeDownloadName reduces a stored filename to a bare, header-safe basename. Quotes,
