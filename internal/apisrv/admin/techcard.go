@@ -349,6 +349,11 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// той же причине. Отличие одно: перенос ещё и ГАСИТ разметку, если эта же правка сняла галку
 	// «дублируется», — иначе дайджест подписал бы режим, который стор в ту же транзакцию обнулит.
 	carryOmittedPieceFusingFrom(stored, tc)
+	// ГЕОМЕТРИЯ УКАЗАНИЙ НА ЭСКИЗЕ (0309) — тот же контракт присутствия, но на секции DESIGN.
+	// Вкладка со старым бандлом шлёт выноски без вида, якорей и цвета; без переноса сохранение
+	// такой вкладки стёрло бы каждую мерку и скобку на карточке, а подпись DESIGN, поставленная
+	// из неё, хешировала бы «просто точки» поверх эскиза, где нарисовано указание.
+	dto.CarryOmittedCalloutGeometry(stored, tc)
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}

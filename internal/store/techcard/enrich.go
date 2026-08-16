@@ -3,7 +3,9 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -211,7 +213,8 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 		return map[int][]entity.TechCardCallout{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardCalloutRow](ctx, s.DB, `
-		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y
+		SELECT tech_card_id, callout_number, part, description, dimensions, media_id, pos_x, pos_y,
+		       kind, color, points
 		FROM tech_card_callout
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -220,7 +223,19 @@ func (s *Store) calloutsByTechCardIds(ctx context.Context, ids []int) (map[int][
 	}
 	out := make(map[int][]entity.TechCardCallout, len(ids))
 	for _, r := range rows {
-		out[r.TechCardID] = append(out[r.TechCardID], r.TechCardCallout)
+		c := r.TechCardCallout
+		if len(c.PointsRaw) > 0 {
+			// Битый JSON в колонке — испорченная строка, а не повод уронить чтение всей карточки:
+			// указание вернётся пином, и это видно, в отличие от пятисотки (довод 0308).
+			if err := json.Unmarshal(c.PointsRaw, &c.Points); err != nil {
+				slog.Default().Error("tech card callout: broken points json",
+					slog.Int("tech_card_id", r.TechCardID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				c.Points = nil
+				c.Kind = entity.AnnotationKindPin
+			}
+		}
+		out[r.TechCardID] = append(out[r.TechCardID], c)
 	}
 	return out, nil
 }

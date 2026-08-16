@@ -5,6 +5,7 @@ package techcard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1863,6 +1864,20 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 	}
 	rows := make([]map[string]any, 0, len(callouts))
 	for i, c := range callouts {
+		// Якоря геометрии — JSON-колонкой, одним значением на выноску (0309). Форма уже проверена
+		// в dto: сюда приходит то, что сервер согласился считать указанием.
+		kind := c.Kind
+		if kind == "" {
+			kind = entity.AnnotationKindPin
+		}
+		var points any
+		if len(c.Points) > 0 {
+			raw, err := json.Marshal(c.Points)
+			if err != nil {
+				return fmt.Errorf("marshal callout %d points: %w", c.Number, err)
+			}
+			points = string(raw)
+		}
 		rows = append(rows, map[string]any{
 			"tech_card_id":   id,
 			"callout_number": c.Number,
@@ -1872,7 +1887,12 @@ func insertTechCardCallouts(ctx context.Context, db dependency.DB, id int, callo
 			"media_id":       c.MediaId,
 			"pos_x":          c.PosX,
 			"pos_y":          c.PosY,
-			"display_order":  i,
+			"kind":           string(kind),
+			"color":          string(c.Color),
+			// NULL, а не «[]», когда якорей нет: у пина их не бывает вовсе, и пустой массив в
+			// колонке был бы вторым способом сказать то же самое.
+			"points":        points,
+			"display_order": i,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_callout", rows); err != nil {

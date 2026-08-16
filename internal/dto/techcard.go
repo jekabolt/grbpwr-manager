@@ -523,7 +523,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	media = append(media, technicalMedia...)
 
 	callouts := make([]entity.TechCardCallout, 0, len(pb.Callouts))
-	for _, c := range pb.Callouts {
+	for ci, c := range pb.Callouts {
 		if len(c.Part) > maxVarchar255 || len(c.Dimensions) > maxVarchar255 {
 			return nil, fmt.Errorf("callout part and dimensions must be at most %d characters", maxVarchar255)
 		}
@@ -544,6 +544,11 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		if err := validateUnitInterval(posY, "callout pos_y"); err != nil {
 			return nil, err
 		}
+		kind, points, color, err := calloutGeometryFromPb(
+			fmt.Sprintf("callouts[%d]", ci), c.Kind, c.Points, c.Color)
+		if err != nil {
+			return nil, err
+		}
 		callouts = append(callouts, entity.TechCardCallout{
 			Number:      int(c.Number),
 			Part:        nullStringFromPb(c.Part),
@@ -552,6 +557,12 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			MediaId:     nullInt32FromPb(c.MediaId),
 			PosX:        posX,
 			PosY:        posY,
+			Kind:        kind,
+			Points:      points,
+			Color:       color,
+			// Тройка атомарна: молчание про вид — молчание про всю геометрию, и хранимая
+			// переносится по номеру выноски (carryOmittedCalloutGeometryFrom).
+			KindOmitted: c.Kind == nil,
 		})
 	}
 
@@ -1058,6 +1069,12 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			MediaId:     pbInt32FromNull(c.MediaId),
 			PosX:        pbDecimalFromNull(c.PosX),
 			PosY:        pbDecimalFromNull(c.PosY),
+			// Вид на чтении ВСЕГДА присутствует, и пустой хранимый читается как PIN: так карточка,
+			// записанная до 0309, читается как то, чем она была, а новый клиент возвращает круглым
+			// рейсом присутствующее поле — то есть никогда не молчит про геометрию по ошибке.
+			Kind:   calloutKindPbPtr(c.Kind),
+			Points: calloutPointsToPb(c.Points),
+			Color:  annotationColorToPb[c.Color],
 		})
 	}
 

@@ -228,10 +228,32 @@ func designProjection(tc *entity.TechCardInsert) any {
 	}
 	callouts := make([]any, 0, len(tc.Callouts))
 	for _, c := range tc.Callouts {
-		callouts = append(callouts, []any{
+		row := []any{
 			c.Number, c.Part.String, c.Description.String, c.Dimensions.String,
 			c.MediaId.Int32, digestDecimal(c.PosX), digestDecimal(c.PosY),
-		})
+		}
+		// ХВОСТ, А НЕ СЛОТ — тот же довод, что у cut_symmetry детали и у фотографий шага.
+		// json.Marshal кодирует []any ПОЗИЦИОННО, поэтому восьмой элемент, поставленный
+		// безусловно, сдвинул бы отпечаток КАЖДОЙ карточки в базе и объявил бы каждую подписанную
+		// секцию DESIGN протухшей в момент деплоя — до того, как кто-нибудь нарисовал первую дугу.
+		// Хвост дописывается только у выноски, которая перестала быть простым пином: карточка, где
+		// геометрию никто не рисовал, хэшируется байт в байт как до 0309.
+		//
+		// Входит ли геометрия в подписываемое? Да, без оговорок: DESIGN — подпись под тем, ЧТО
+		// нарисовано на эскизе, а мерка «6 мм» и скобка над участком это указание цеху, а не
+		// метаданные о нём.
+		//
+		// ЦВЕТ — НЕ ВХОДИТ, ровно как у выносок на снимке шага: он различает пересекающиеся
+		// указания и смысла не несёт, а протухшая подпись за перекраску наказывала бы за наведение
+		// порядка на листе. По той же причине он и не открывает хвост.
+		if calloutKindOrPin(c.Kind) != entity.AnnotationKindPin || len(c.Points) > 0 {
+			points := make([]any, 0, len(c.Points))
+			for _, p := range c.Points {
+				points = append(points, []any{p.X.String(), p.Y.String()})
+			}
+			row = append(row, []any{string(calloutKindOrPin(c.Kind)), points})
+		}
+		callouts = append(callouts, row)
 	}
 	details := make([]any, 0, len(tc.Details))
 	for _, d := range tc.Details {
@@ -533,9 +555,17 @@ func operationMediaTail(o *entity.TechCardOperation) []any {
 			for _, p := range a.Points {
 				points = append(points, []any{p.X.String(), p.Y.String()})
 			}
-			anns = append(anns, []any{
+			ann := []any{
 				string(a.Kind), points, a.Text, a.LabelX.String(), a.LabelY.String(),
-			})
+			}
+			// Деталь — ХВОСТОМ, по той же причине, что и всё прочее дописанное к подписываемому
+			// кортежу: шестой элемент, поставленный безусловно, сдвинул бы отпечаток каждого
+			// снимка, у которого выноски уже есть. Указание, называющее ДЕТАЛЬ, — часть
+			// инструкции цеху («эту строчку на подборте»), поэтому в подпись входит.
+			if a.PieceLineKey != "" {
+				ann = append(ann, a.PieceLineKey)
+			}
+			anns = append(anns, ann)
 		}
 		out = append(out, []any{m.MediaId, m.Caption.String, anns})
 	}
