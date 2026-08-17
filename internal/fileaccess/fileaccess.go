@@ -53,11 +53,17 @@ type Files interface {
 	RecordPublicAccess(ctx context.Context, counts map[int]int64, last map[int]time.Time) error
 }
 
-// Presigner — узкий срез dependency.FileStore. ИМЕННО PresignLibraryObject, а не пары
+// Presigner — узкий срез dependency.FileStore. ИМЕННО PresignLibraryObjectShortLived, а не пары
 // «подписать что угодно»: у метода свой сегмент-гейт (files-library/), и он единственный
-// легитимный способ подписать объект библиотеки.
+// легитимный способ подписать объект библиотеки для этого маршрута.
+//
+// И ИМЕННО КОРОТКОЖИВУЩИЙ, А НЕ ОКОННЫЙ PresignLibraryObject. Оконный подписывает на 6–12 часов и
+// мемоизирует строку на процесс; выданный им url переживает и «пересоздать», и истёкший срок, и
+// смену уровня — то есть ровно те три вещи, которыми этот маршрут закрывается. Отзыв, который
+// действует через двенадцать часов, — это не отзыв. Панели мемоизация нужна (эмбеды), здесь она
+// не нужна никому: ссылку открывают один раз.
 type Presigner interface {
-	PresignLibraryObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error)
+	PresignLibraryObjectShortLived(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error)
 }
 
 const (
@@ -319,7 +325,11 @@ func (s *Service) ServeFile(w http.ResponseWriter, r *http.Request) {
 	download := r.URL.Query().Get("dl") == "1" || !dto.IsInlineSafeContentType(row.ContentType)
 	// Имя вложения — ТОЛЬКО из строки базы: оно приземляется в заголовок ответа, и параметр
 	// запроса на его месте был бы инъекцией в Content-Disposition.
-	signed, expiresAt, err := s.presign.PresignLibraryObject(ctx, row.ObjectKey, download, row.FileName)
+	//
+	// Подпись КОРОТКОЖИВУЩАЯ и не мемоизированная (см. Presigner): за этой строкой стоит человек
+	// вне компании, и единственное, чем его можно отключить, — истечение подписи. Всё остальное
+	// (поколение, срок, уровень) проверяется ЗДЕСЬ и на уже выданный bucket-url не действует.
+	signed, expiresAt, err := s.presign.PresignLibraryObjectShortLived(ctx, row.ObjectKey, download, row.FileName)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "library file presign failed", slog.String("err", err.Error()))
 		notFound("presign error")

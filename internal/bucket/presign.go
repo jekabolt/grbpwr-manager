@@ -20,6 +20,20 @@ import (
 // stability requires serving the memoized copy, not re-signing per request.
 const presignWindow = 6 * time.Hour
 
+// publicLinkPresignTTL — срок url'а, который отдаёт НЕАУТЕНТИФИЦИРОВАННЫЙ маршрут /api/f/{token}
+// (internal/fileaccess). Минуты, а не часы, и без округления по окну — потому что здесь стабильность
+// строки не нужна ВООБЩЕ, а её цена — потеря отзыва.
+//
+// Оконный presign живёт от 6 до 12 часов и мемоизируется на процесс. Для панели это ровно то, что
+// нужно: <object>-эмбед не перемонтируется на каждый ответ API. Для публичной ссылки это дыра.
+// «Пересоздать ссылку» двигает поколение, маршрут честно отвечает 404, журнал пишет «прежняя больше
+// не работает» — а bucket-url, ВЫДАННЫЙ ДО этого, качается ещё до двенадцати часов, и остановить его
+// из панели нечем: подпись живёт в бакете и про наше поколение не знает. Тот же разрыв ломает и чип
+// «срок ссылки: 24 ч».
+//
+// Десять минут — это окно «открыл ссылку и скачал», после которого отзыв снова становится настоящим.
+const publicLinkPresignTTL = 10 * time.Minute
+
 // patternObjectPathSegment mirrors storeutil's segment constant: only managed pattern
 // objects may be presigned through this method — it is reachable from an
 // unauthenticated (token-guarded) endpoint and must never sign arbitrary bucket keys.
@@ -75,22 +89,65 @@ func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, dow
 // ACL ОБЪЕКТА НЕ ТРОГАЕТСЯ НИ ОДНИМ ИЗ ДВУХ. Публичность файла — это наш маршрут, который
 // подписывает короткоживущий url на каждое попадание; публичный ACL пережил бы и смену уровня
 // доступа, и удаление файла, и отозвать его было бы нечем.
+//
+// С Ф7b У НЕГО СНОВА ОДИН ВЫЗЫВАЮЩИЙ: панель под RBAC. Публичный маршрут ушёл на
+// PresignLibraryObjectShortLived — см. его комментарий.
 func (b *Bucket) PresignLibraryObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
 	return b.presignManagedObject(ctx, objectKey, libraryFolder, download, downloadName)
+}
+
+// PresignLibraryObjectShortLived подписывает объект библиотеки для ПУБЛИЧНОГО маршрута
+// /api/f/{token}: тот же сегментный гейт и тот же санитайзер имени, но БЕЗ округления по окну и
+// МИМО presignCache, на publicLinkPresignTTL.
+//
+// РАЗДЕЛЕНИЕ СОДЕРЖАТЕЛЬНОЕ, А НЕ КОСМЕТИЧЕСКОЕ. Мемоизация заведена ради <object>-эмбедов панели:
+// строка обязана быть постоянной, иначе браузер перекачивает и перемонтирует просмотрщик на каждый
+// ответ API. У ссылки, которую копируют в мессенджер, потребителя с таким требованием нет вовсе —
+// её открывают один раз, — зато есть требование, которого нет у панели: «пересоздать» и «срок»
+// обязаны действовать. Пока выданный url живёт до 12 часов, не действует ни то, ни другое.
+//
+// Ключ приходит ТОЛЬКО из строки library_file (entity.LibraryFileLinkTarget) и НИКОГДА из запроса —
+// это и есть то, что не даёт неаутентифицированному маршруту стать оракулом на произвольный объект.
+func (b *Bucket) PresignLibraryObjectShortLived(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
+	key, _, reqParams, err := managedPresignInput(objectKey, libraryFolder, download, downloadName)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Now().UTC().Add(publicLinkPresignTTL)
+	u, err := b.Client.PresignedGetObject(ctx, b.S3BucketName, key, publicLinkPresignTTL, reqParams)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("presign public library object %q: %w", key, err)
+	}
+	return u.String(), expiresAt, nil
+}
+
+// managedPresignInput — общая половина обоих подписывателей: сегментный гейт, санитайзер имени
+// вложения и параметры ответа. Одна на двоих намеренно — гейт «ключ лежит под своей папкой» и
+// правило «имя вложения только из хранимых данных» обязаны существовать в ЕДИНСТВЕННОМ экземпляре:
+// вторая копия разошлась бы с первой молча и ровно на том пути, который открыт наружу.
+func managedPresignInput(objectKey, requiredSegment string, download bool, downloadName string) (string, string, url.Values, error) {
+	key := strings.Trim(objectKey, "/")
+	if !isManagedKeyInSegment(key, requiredSegment) {
+		return "", "", nil, fmt.Errorf("object key %q is not a managed %q key", objectKey, requiredSegment)
+	}
+	name := sanitizeDownloadName(downloadName)
+	if name == "" {
+		name = path.Base(key)
+	}
+	reqParams := make(url.Values)
+	if download {
+		reqParams.Set("response-content-disposition", contentDisposition(name))
+	}
+	return key, name, reqParams, nil
 }
 
 // presignManagedObject holds the shared mechanics: the managed-key guard, the
 // window snapping that keeps the url string stable, the memoization and its
 // prune, and the download-name sanitisation.
 func (b *Bucket) presignManagedObject(ctx context.Context, objectKey, requiredSegment string, download bool, downloadName string) (string, time.Time, error) {
-	key := strings.Trim(objectKey, "/")
-	if !isManagedKeyInSegment(key, requiredSegment) {
-		return "", time.Time{}, fmt.Errorf("object key %q is not a managed %q key", objectKey, requiredSegment)
-	}
-
-	name := sanitizeDownloadName(downloadName)
-	if name == "" {
-		name = path.Base(key)
+	key, name, reqParams, err := managedPresignInput(objectKey, requiredSegment, download, downloadName)
+	if err != nil {
+		return "", time.Time{}, err
 	}
 
 	now := time.Now().UTC()
@@ -112,10 +169,6 @@ func (b *Bucket) presignManagedObject(ctx context.Context, objectKey, requiredSe
 	}
 	presignMu.Unlock()
 
-	reqParams := make(url.Values)
-	if download {
-		reqParams.Set("response-content-disposition", contentDisposition(name))
-	}
 	u, err := b.Client.PresignedGetObject(ctx, b.S3BucketName, key, time.Until(expiresAt), reqParams)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("presign pattern object %q: %w", key, err)

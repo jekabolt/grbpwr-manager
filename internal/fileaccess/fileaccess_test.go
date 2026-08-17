@@ -66,14 +66,16 @@ type fakePresign struct {
 	err      error
 }
 
-func (p *fakePresign) PresignLibraryObject(_ context.Context, objectKey string, download bool, _ string) (string, time.Time, error) {
+func (p *fakePresign) PresignLibraryObjectShortLived(_ context.Context, objectKey string, download bool, _ string) (string, time.Time, error) {
 	p.calls++
 	p.key = objectKey
 	p.download = download
 	if p.err != nil {
 		return "", time.Time{}, p.err
 	}
-	return "https://bucket.example/" + objectKey + "?signed=1", time.Now().Add(6 * time.Hour), nil
+	// Срок КОРОТКИЙ, как у настоящего PresignLibraryObjectShortLived: тест `expires_at` в теле
+	// ?mode=json сверяет именно с ним, и шестичасовая заглушка проходила бы мимо смысла правки.
+	return "https://bucket.example/" + objectKey + "?signed=1", time.Now().Add(10 * time.Minute), nil
 }
 
 func linkTarget(id int, epoch int) *entity.LibraryFileLinkTarget {
@@ -257,6 +259,16 @@ func TestPublicLinkJSONMode(t *testing.T) {
 	}
 	if _, ok := got["object_key"]; ok {
 		t.Fatalf("mode=json must not hand out the bucket key")
+	}
+	// СРОК В ТЕЛЕ — ЭТО СРОК ПОДПИСИ, И ОН МИНУТЫ. Здесь url уезжает клиенту прямой строкой, а не
+	// редиректом, то есть его можно сохранить. Всё, чем этот url можно отключить после «пересоздать»,
+	// — его собственное истечение: ни поколение, ни уровень, ни срок ссылки бакету не известны.
+	expiresAt, err := time.Parse(time.RFC3339, got["expires_at"].(string))
+	if err != nil {
+		t.Fatalf("mode=json: expires_at is unparsable: %v", err)
+	}
+	if ttl := time.Until(expiresAt); ttl <= 0 || ttl > time.Hour {
+		t.Fatalf("выданный наружу url обязан жить минуты, а не окно: ttl %s", ttl)
 	}
 }
 

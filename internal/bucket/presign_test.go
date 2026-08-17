@@ -1,9 +1,13 @@
 package bucket
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 // TestIsManagedPatternKey locks the gate that stands between an UNAUTHENTICATED endpoint
@@ -158,6 +162,98 @@ func TestPresignWindow(t *testing.T) {
 		if ttl > 7*24*time.Hour {
 			t.Errorf("at %s: ttl %s exceeds the presign ceiling", at, ttl)
 		}
+	}
+}
+
+// offlinePresignBucket собирает Bucket, у которого подпись считается ЛОКАЛЬНО: регион задан
+// явно, поэтому minio-go не ходит за location бакета и тест не зависит от сети. Ключи выдуманные —
+// подпись проверяется по форме url, а не бакетом.
+func offlinePresignBucket(t *testing.T) *Bucket {
+	t.Helper()
+	cli, err := minio.New("fra1.digitaloceanspaces.com", &minio.Options{
+		Creds:  credentials.NewStaticV4("AKIAEXAMPLE", "secret-not-a-real-key", ""),
+		Secure: true,
+		Region: "fra1",
+	})
+	if err != nil {
+		t.Fatalf("minio.New: %v", err)
+	}
+	return &Bucket{Client: cli, Config: &Config{
+		S3BucketName: "grbpwr", S3Endpoint: "fra1.digitaloceanspaces.com",
+	}}
+}
+
+func presignCacheSize() int {
+	presignMu.Lock()
+	defer presignMu.Unlock()
+	return len(presignCache)
+}
+
+// TestPublicLinkPresignIsShortLivedAndUncached — ПРИЁМКА ОТЗЫВА ПУБЛИЧНОЙ ССЫЛКИ.
+//
+// «Пересоздать» двигает поколение, и маршрут после этого честно отвечает 404. Но отзыв реален
+// ровно настолько, насколько короток УЖЕ ВЫДАННЫЙ bucket-url: подпись живёт в бакете и про наше
+// поколение не знает. Оконный presign отдавал бы её на 6–12 часов ДА ЕЩЁ и мемоизированной, то есть
+// «прежняя больше не работает» в журнале было бы неправдой почти на полсуток. Тот же разрыв ломал
+// чип «срок ссылки: 24 ч».
+//
+// Три утверждения, и все три про это: срок в url'е — минуты, строка НЕ кладётся в presignCache, а
+// панельный подписыватель по тому же ключу продолжает и округлять, и мемоизировать.
+func TestPublicLinkPresignIsShortLivedAndUncached(t *testing.T) {
+	if publicLinkPresignTTL < 5*time.Minute || publicLinkPresignTTL > 15*time.Minute {
+		t.Fatalf("публичный presign обязан жить минуты, а не часы: %s", publicLinkPresignTTL)
+	}
+	b := offlinePresignBucket(t)
+	const key = "base/files-library/2026/смета.pdf"
+
+	before := presignCacheSize()
+	signed, expiresAt, err := b.PresignLibraryObjectShortLived(t.Context(), key, false, "смета.pdf")
+	if err != nil {
+		t.Fatalf("PresignLibraryObjectShortLived: %v", err)
+	}
+	if got := presignCacheSize(); got != before {
+		t.Fatalf("публичная подпись обязана идти МИМО presignCache: было %d записей, стало %d", before, got)
+	}
+	q, err := url.Parse(signed)
+	if err != nil {
+		t.Fatalf("presigned url is unparsable: %v", err)
+	}
+	if got := q.Query().Get("X-Amz-Expires"); got != "600" {
+		t.Fatalf("X-Amz-Expires = %q, want 600 (срок обязан ехать в САМОЙ подписи, а не только в ответе)", got)
+	}
+	if ttl := time.Until(expiresAt); ttl <= 0 || ttl > publicLinkPresignTTL+time.Minute {
+		t.Fatalf("expires_at %s даёт ttl %s — ответ маршрута обязан называть тот же срок, что подпись", expiresAt, ttl)
+	}
+
+	// Второй вызов подписывается ЗАНОВО: у публичного маршрута нет потребителя, которому нужна
+	// постоянная строка, зато есть требование, чтобы срок отсчитывался от текущего момента.
+	if _, secondExpiry, err := b.PresignLibraryObjectShortLived(t.Context(), key, false, "смета.pdf"); err != nil {
+		t.Fatalf("second PresignLibraryObjectShortLived: %v", err)
+	} else if secondExpiry.Before(expiresAt) {
+		t.Fatalf("повторная подпись обязана считать срок от «сейчас», got %s < %s", secondExpiry, expiresAt)
+	}
+	if got := presignCacheSize(); got != before {
+		t.Fatalf("повторная публичная подпись тоже обязана идти мимо кэша: %d != %d", got, before)
+	}
+
+	// А панельный подписыватель по ТОМУ ЖЕ ключу мемоизирует — иначе <object>-эмбед перемонтировался
+	// бы на каждый ответ API. Разделение методов именно за этим и заведено.
+	panelURL, panelExpiry, err := b.PresignLibraryObject(t.Context(), key, false, "смета.pdf")
+	if err != nil {
+		t.Fatalf("PresignLibraryObject: %v", err)
+	}
+	if presignCacheSize() != before+1 {
+		t.Fatalf("панельная подпись обязана попасть в кэш — иначе мемоизация мертва")
+	}
+	again, _, err := b.PresignLibraryObject(t.Context(), key, false, "смета.pdf")
+	if err != nil {
+		t.Fatalf("PresignLibraryObject (repeat): %v", err)
+	}
+	if again != panelURL {
+		t.Fatal("панельная подпись обязана быть постоянной внутри окна")
+	}
+	if time.Until(panelExpiry) <= publicLinkPresignTTL {
+		t.Fatalf("панельная подпись живёт окнами (6–12 ч), а не минутами: %s", time.Until(panelExpiry))
 	}
 }
 

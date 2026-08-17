@@ -1867,11 +1867,17 @@ type (
 		// UploadLibraryPreview stores the small browser-rendered preview image for a
 		// library file under the same privacy rules.
 		UploadLibraryPreview(ctx context.Context, raw []byte, ext string) (objectKey string, err error)
-		// PresignLibraryObject returns a short-lived presigned GET url for a managed
-		// files-library key, with the same window-snapping (and therefore url
-		// stability) as PresignPatternObject. Reachable only from RBAC-gated admin
-		// handlers — unlike the pattern variant, which a token endpoint can reach.
+		// PresignLibraryObject returns a presigned GET url for a managed files-library
+		// key, with the same window-snapping (and therefore url stability) as
+		// PresignPatternObject. Reachable only from RBAC-gated admin handlers: the
+		// stability that the memoization buys is for the panel's <object> embeds.
 		PresignLibraryObject(ctx context.Context, objectKey string, download bool, downloadName string) (url string, expiresAt time.Time, err error)
+		// PresignLibraryObjectShortLived is the same signature for the UNAUTHENTICATED
+		// public route /api/f/{token}: no window snapping, no memoization, minutes of
+		// life. Separate from the method above because the memoized window url survives
+		// «пересоздать ссылку» and the ttl chip by up to 12 hours — on the panel that is
+		// a cache, on a link copied into a messenger that is an unrevokable url.
+		PresignLibraryObjectShortLived(ctx context.Context, objectKey string, download bool, downloadName string) (url string, expiresAt time.Time, err error)
 		// GetLibraryObject reads a PRIVATE library object into memory. Единственное чтение объекта
 		// во всём бакете, и оно появилось ради одного случая: текст заметки едет клиенту по RPC, а
 		// не подписанной ссылкой — text/markdown не в inline-allowlist, и fetch подписанного URL из
