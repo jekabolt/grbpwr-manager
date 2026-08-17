@@ -142,20 +142,18 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 
 	callouts := make([]entity.FittingCallout, 0, len(pb.Callouts))
 	for ci, c := range pb.Callouts {
+		path := fmt.Sprintf("callouts[%d]", ci)
+		// Отказы этого блока НАЗЫВАЮТ ВЫНОСКУ. Плоская строка «fitting callout note is required» на
+		// примерке с тридцатью выносками не говорит, какую из них чинить, и человек ищет её глазами
+		// — при том что индекс у сервера был.
 		if c.Number < 0 {
-			return nil, fmt.Errorf("fitting callout number must not be negative")
-		}
-		note := strings.TrimSpace(c.Note)
-		if note == "" {
-			return nil, fmt.Errorf("fitting callout note is required")
-		}
-		if len(note) > maxTaskText {
-			return nil, fmt.Errorf("fitting callout note must be at most %d characters", maxTaskText)
+			return nil, entity.NewFieldViolation(path+".number", "invalid", fmt.Sprint(c.Number),
+				"номер выноски — то, чем на неё ссылается замечание; отрицательным он не бывает")
 		}
 		if c.MediaId < 0 {
-			return nil, fmt.Errorf("fitting callout media_id must not be negative")
+			return nil, entity.NewFieldViolation(path+".media_id", "invalid", fmt.Sprint(c.MediaId),
+				"выноска либо привязана к снимку, либо не привязана (0); отрицательного медиа нет")
 		}
-		path := fmt.Sprintf("callouts[%d]", ci)
 		// Маркер читается ТОЙ ЖЕ охраняемой проверкой, что и якоря фигуры (unitIntervalNull):
 		// показатель степени в координате стоит одинаково дорого, в каком бы из полей он ни приехал.
 		posX, err := unitIntervalNull(path+".pos_x", c.PosX)
@@ -173,6 +171,32 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		geom, err := calloutGeometryFromPb(path, fittingCalloutGeometryPb(c))
 		if err != nil {
 			return nil, err
+		}
+		// ЗАПИСКА ОБЯЗАТЕЛЬНА ТОЛЬКО У ПИНА, и проверяется ПОСЛЕ разбора фигуры, потому что до него
+		// неизвестно, чего требовать.
+		//
+		// У пина текст и есть всё содержание: нумерованная точка без слов не сообщает ничего, её
+		// нечего читать. У фигуры содержание — САМА ФИГУРА: обведённая зона заломов, дуга по окату,
+		// мерка между двумя точками уже сказали, что не так, и требовать к ним подпись — это
+		// требовать подпись к предложению. Клиенту при таком требовании остаётся выбрасывать
+		// безымянные фигуры перед отправкой, то есть человек обводит зону, сохраняет и обнаруживает,
+		// что её нет: молчаливая потеря нарисованного руками.
+		//
+		// ТРЕБУЕМ ТОЛЬКО У ЯВНО ОБЪЯВЛЕННОГО ПИНА. Вкладка со старым бандлом про вид молчит вовсе, а
+		// её выноска на сервере запросто мерка или зона — её геометрия приедет переносом уже ПОСЛЕ
+		// этой проверки (CarryOmittedFittingCalloutGeometry). Потребовать записку под молчание
+		// значило бы судить о содержании по полю, которого клиент не касался, и отвергнуть всю
+		// примерку за фигуру, которую сам же сервер сейчас и восстановит. Цена решения: старый
+		// клиент может завести пин совсем без текста — бесполезный, но безвредный, и его собственный
+		// интерфейс текста всё равно требует.
+		note := strings.TrimSpace(c.Note)
+		if note == "" && c.Kind != nil && geom.Kind == entity.AnnotationKindPin {
+			return nil, entity.NewFieldViolation(path+".note", "required", "",
+				"у нумерованной точки записка и есть всё содержание: напишите, что не так, или нарисуйте фигуру")
+		}
+		if len(note) > maxTaskText {
+			return nil, entity.NewFieldViolation(path+".note", "too_long", "",
+				fmt.Sprintf("записка выноски — не длиннее %d знаков; развёрнутое замечание живёт в списке изменений", maxTaskText))
 		}
 		callouts = append(callouts, entity.FittingCallout{
 			Number:  int(c.Number),
