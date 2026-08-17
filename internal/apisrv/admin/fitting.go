@@ -16,11 +16,25 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// fittingConvertErr сохраняет СТРУКТУРУ отказа конвертера — ровно как techCardConvertErr.
+//
+// Без него весь свод геометрии указаний работал вхолостую на этом экране: calloutGeometryFromPb
+// отвечает entity.ValidationError с именем поля («callouts[0].points»), apierr.Invalid раскладывает
+// его в google.rpc.BadRequest, а `status.Errorf(codes.InvalidArgument, "%v", err)` расплющивал всё
+// это в плоскую строку — клиент не мог подсветить выноску, из-за которой отказ.
+func fittingConvertErr(err error) error {
+	var ve *entity.ValidationError
+	if errors.As(err, &ve) {
+		return apierr.Invalid(ve)
+	}
+	return status.Errorf(codes.InvalidArgument, "%v", err)
+}
+
 // AddFitting creates a new fitting session.
 func (s *Server) AddFitting(ctx context.Context, req *pb_admin.AddFittingRequest) (*pb_admin.AddFittingResponse, error) {
 	fi, err := dto.ConvertPbFittingInsertToEntity(req.Fitting)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, fittingConvertErr(err)
 	}
 	actor := authsrv.GetAdminUsername(ctx)
 	fi.CreatedBy, fi.UpdatedBy = actor, actor
@@ -111,7 +125,7 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 	}
 	fi, err := dto.ConvertPbFittingInsertToEntity(req.Fitting)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, fittingConvertErr(err)
 	}
 	fi.UpdatedBy = authsrv.GetAdminUsername(ctx)
 	// ГЕОМЕТРИЯ УКАЗАНИЙ НА СНИМКАХ (0319) — тот же контракт присутствия, что у эскиза тех-карты.

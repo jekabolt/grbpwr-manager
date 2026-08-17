@@ -530,21 +530,18 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		if c.MediaId < 0 {
 			return nil, fmt.Errorf("callout media_id must not be negative")
 		}
-		posX, err := nullDecimalFromPb(c.PosX)
-		if err != nil {
-			return nil, fmt.Errorf("callout pos_x: %w", err)
-		}
-		posY, err := nullDecimalFromPb(c.PosY)
-		if err != nil {
-			return nil, fmt.Errorf("callout pos_y: %w", err)
-		}
-		if err := validateUnitInterval(posX, "callout pos_x"); err != nil {
-			return nil, err
-		}
-		if err := validateUnitInterval(posY, "callout pos_y"); err != nil {
-			return nil, err
-		}
 		path := fmt.Sprintf("callouts[%d]", ci)
+		// Маркер читается ТОЙ ЖЕ охраняемой проверкой, что и якоря фигуры (unitIntervalNull):
+		// показатель степени в координате стоит одинаково дорого, в каком бы из полей он ни приехал,
+		// а безохранная проверка соседнего поля сводила защиту якорей на нет.
+		posX, err := unitIntervalNull(path+".pos_x", c.PosX)
+		if err != nil {
+			return nil, err
+		}
+		posY, err := unitIntervalNull(path+".pos_y", c.PosY)
+		if err != nil {
+			return nil, err
+		}
 		geom, err := calloutGeometryFromPb(path, techCardCalloutGeometryPb(c))
 		if err != nil {
 			return nil, err
@@ -3586,16 +3583,10 @@ func isHexColor(s string) bool {
 	return true
 }
 
-// validateUnitInterval rejects a non-null decimal outside [0,1] (callout pos_x/y).
-func validateUnitInterval(nd decimal.NullDecimal, field string) error {
-	if !nd.Valid {
-		return nil
-	}
-	if nd.Decimal.IsNegative() || nd.Decimal.GreaterThan(decimal.NewFromInt(1)) {
-		return fmt.Errorf("%s must be between 0 and 1", field)
-	}
-	return nil
-}
+// validateUnitInterval СНЯТ намеренно, а не остался «на всякий случай». Он проверял только границы
+// кадра, без охраны показателя степени, и существование второй, более слабой проверки той же
+// величины — это приглашение выбрать не ту: ровно так координата МАРКЕРА и оказалась защищена хуже
+// собственных якорей. Единственный вход теперь unitIntervalNull (techcard_annotations.go).
 
 func parseTechCardSizeQuantities(pbs []*pb_common.TechCardSizeQuantity, sizeIds []int) ([]entity.TechCardSizeQuantity, error) {
 	out := make([]entity.TechCardSizeQuantity, 0, len(pbs))

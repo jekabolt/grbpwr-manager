@@ -155,25 +155,22 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		if c.MediaId < 0 {
 			return nil, fmt.Errorf("fitting callout media_id must not be negative")
 		}
-		posX, err := nullDecimalFromPb(c.PosX)
+		path := fmt.Sprintf("callouts[%d]", ci)
+		// Маркер читается ТОЙ ЖЕ охраняемой проверкой, что и якоря фигуры (unitIntervalNull):
+		// показатель степени в координате стоит одинаково дорого, в каком бы из полей он ни приехал.
+		posX, err := unitIntervalNull(path+".pos_x", c.PosX)
 		if err != nil {
-			return nil, fmt.Errorf("fitting callout pos_x: %w", err)
-		}
-		posY, err := nullDecimalFromPb(c.PosY)
-		if err != nil {
-			return nil, fmt.Errorf("fitting callout pos_y: %w", err)
-		}
-		if err := validateUnitInterval(posX, "fitting callout pos_x"); err != nil {
 			return nil, err
 		}
-		if err := validateUnitInterval(posY, "fitting callout pos_y"); err != nil {
+		posY, err := unitIntervalNull(path+".pos_y", c.PosY)
+		if err != nil {
 			return nil, err
 		}
 		// ТОТ ЖЕ свод, что у карточной выноски (calloutGeometryFromPb): вид из закрытого списка,
 		// число якорей по виду, координаты в кадре, цвет из закрытого списка, приведение
 		// бессмысленных пунктира и штриховки. Второй валидатор той же фигуры разошёлся бы с первым
 		// молча — и увидели бы это только на переносе замечания примерки в тех-карту.
-		geom, err := calloutGeometryFromPb(fmt.Sprintf("callouts[%d]", ci), fittingCalloutGeometryPb(c))
+		geom, err := calloutGeometryFromPb(path, fittingCalloutGeometryPb(c))
 		if err != nil {
 			return nil, err
 		}
