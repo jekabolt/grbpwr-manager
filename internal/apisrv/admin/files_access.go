@@ -69,6 +69,12 @@ func (s *Server) GetLibraryFileAccess(ctx context.Context, req *pb_admin.GetLibr
 	}
 	events, err := s.repo.Files().ListFileAccessEvents(ctx, fileID, 0)
 	if err != nil {
+		// Журнал тоже под предикатом (он и сам его проверяет), поэтому ErrNoRows здесь — это
+		// файл, ставший невидимым между двумя чтениями: ответ обязан быть тем же NotFound, что
+		// и у блока доступа, а не 500 на гонке.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
 		// Журнал — часть ответа, а не украшение: «кто открыл» читают именно из него, и тихо
 		// пустой журнал выглядел бы как «никто ничего не менял».
 		slog.Default().ErrorContext(ctx, "can't list library file access events", slog.String("err", err.Error()))

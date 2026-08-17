@@ -442,9 +442,29 @@ func (s *Store) RenameTopic(ctx context.Context, id int, name, description strin
 // DeleteTopic removes a topic only while nothing carries it. Deleting a used one
 // would silently unlabel its files and drop them into «Разобрать», which is the
 // opposite of what the person meant.
+//
+// СЧЁТ ИДЁТ ПОД ПРЕДИКАТОМ ВИДИМОСТИ, тем же билдером Viewer.Where, что и рельс тем.
+// Иначе тема, у которой ВСЁ содержимое невидимо смотрящему, отдаёт в рельс
+// `files_count = 0`, а на удаление отвечает «topic still has files: 1» — то есть
+// называет ЧИСЛО скрытых файлов ровно тем людям, от которых они скрыты. Счётчики тем
+// сделаны персональными именно ради устранения этого сигнала, и отказ удаления не
+// имеет права быть вторым его источником.
+//
+// ЧТО ОСТАЁТСЯ ЗА ПРЕДЕЛАМИ ПРАВКИ И ОСТАЁТСЯ СОЗНАТЕЛЬНО: тема, которую держат ТОЛЬКО
+// невидимые файлы, чужому по-прежнему не удаляется — но упирается она теперь во внешний
+// ключ RESTRICT, и хендлер переводит его в тот же FailedPrecondition БЕЗ числа
+// (files_library.go, ветка IsErrForeignKeyViolation). Снимать связи невидимых файлов
+// было бы хуже любого тупика: это молча разметило бы чужие файлы.
 func (s *Store) DeleteTopic(ctx context.Context, id int) error {
-	used, err := storeutil.QueryCountNamed(ctx, s.DB,
-		`SELECT COUNT(*) FROM library_file_topic WHERE topic_id = :id`, map[string]any{"id": id})
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"id": id}
+	used, err := storeutil.QueryCountNamed(ctx, s.DB, `
+		SELECT COUNT(*) FROM library_file_topic lft
+		JOIN library_file lf ON lf.id = lft.file_id
+		WHERE lft.topic_id = :id AND `+v.Where("lf", params), params)
 	if err != nil {
 		return fmt.Errorf("failed to count files in topic: %w", err)
 	}
@@ -466,6 +486,13 @@ func (s *Store) DeleteTopic(ctx context.Context, id int) error {
 // Одной транзакцией, потому что промежуточное состояние здесь наблюдаемо и
 // разрушительно: связи источника уже сняты, а на цель ещё не перевешены — файлы
 // на это мгновение теряют тему совсем и уезжают в «Разобрать».
+//
+// ПЕРЕВЕШИВАЕТСЯ ВСЁ, А В ОТЧЁТ ИДЁТ ВИДИМОЕ. Слияние — операция над ЯРЛЫКОМ, и оставить
+// невидимый файл висеть на удаляемой теме значило бы уронить её удаление о собственный
+// внешний ключ. А вот возвращаемое число читает человек, и «переехало 7» на теме, в
+// которой он видит два файла, — тот же самый сигнал «здесь есть что-то, чего тебе не
+// показывают», от которого ушли персональные счётчики (и DeleteTopic выше). Поэтому
+// moved считается ПОД предикатом, тем же билдером.
 func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, error) {
 	if sourceID == targetID {
 		// Бэкстоп: хендлер отвечает на это InvalidArgument раньше. Молчаливый
@@ -473,8 +500,12 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 		// запрос убеждает человека, что он сделал то, чего не делал.
 		return 0, fmt.Errorf("cannot merge a topic into itself")
 	}
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return 0, err
+	}
 	var moved int
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Существование проверяем ВНУТРИ транзакции: пишущие транзакции стора идут
 		// в SERIALIZABLE, поэтому проверка реально закрывает гонку с параллельным
 		// удалением темы, а не просто сужает окно.
@@ -487,16 +518,28 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 		if found != 2 {
 			return sql.ErrNoRows
 		}
-		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+		// Число снимается ДО вставки и повторяет её условие слово в слово: «связь источника
+		// есть, связи цели ещё нет» — то самое, что INSERT IGNORE реально вставит, — плюс
+		// предикат видимости. Файл, уже несущий обе темы, в отчёт не попадает, потому что он
+		// и не переехал.
+		movedParams := map[string]any{"source": sourceID, "target": targetID}
+		visibleMoved, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
+			SELECT COUNT(*) FROM library_file_topic lft
+			JOIN library_file lf ON lf.id = lft.file_id
+			WHERE lft.topic_id = :source
+			  AND NOT EXISTS (SELECT 1 FROM library_file_topic done
+					WHERE done.file_id = lft.file_id AND done.topic_id = :target)
+			  AND `+v.Where("lf", movedParams), movedParams)
+		if err != nil {
+			return fmt.Errorf("failed to count visible files moved between topics: %w", err)
+		}
+		if _, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			INSERT IGNORE INTO library_file_topic (file_id, topic_id)
 			SELECT lft.file_id, :target FROM library_file_topic lft WHERE lft.topic_id = :source`,
-			map[string]any{"source": sourceID, "target": targetID})
-		if err != nil {
+			map[string]any{"source": sourceID, "target": targetID}); err != nil {
 			return fmt.Errorf("failed to move file topic links: %w", err)
 		}
-		// INSERT IGNORE считает только реально вставленные строки, поэтому файл,
-		// уже несущий обе темы, в отчёт не попадает — а он и не переехал.
-		moved = int(rows)
+		moved = visibleMoved
 		// Связи источника снимаем ДО удаления самой темы: внешний ключ на тему
 		// стоит без каскада (RESTRICT), иначе DELETE упал бы о собственные связи.
 		if err := storeutil.ExecNamed(ctx, rep.DB(),

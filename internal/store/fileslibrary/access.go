@@ -160,10 +160,15 @@ func loadAccessPeople(ctx context.Context, db dependency.DB, fileIDs []int) (map
 //
 // ЧТО ЗАМЕЩАЕТСЯ, А ЧТО НЕТ. Список людей замещается ТОЛЬКО на уровне `people` — это его
 // единственный уровень, и обнуление списка при уходе на `team` заставило бы человека набирать
-// его заново после каждого «показать всем на минуту». Строка публичной ссылки трогается только
-// на уровне `link`, и она ПЕРЕЖИВАЕТ уход с уровня: возврат в `link` без ротации — сознательное
-// «включить ту же ссылку снова» (маршрут мёртв всё это время, потому что сверяет access_level
-// на самой строке файла, а не наличие строки доступа).
+// его заново после каждого «показать всем на минуту». Строка публичной ссылки ПЕРЕЖИВАЕТ уход с
+// уровня — но перестаёт быть той же ссылкой.
+//
+// УХОД С `link` — ЭТО ОТЗЫВ, А ВОЗВРАТ — НОВАЯ ССЫЛКА (Ф7b). Раньше epoch не двигался ни там, ни
+// там, и ссылка бывшего подрядчика оживала ровно в тот момент, когда файл снова открывали по
+// ссылке — совсем другим людям и, как правило, годы спустя. «Вернули уровень» человек не читает
+// как «снова раздали ту же ссылку», а журнал писал об этом одну строку `level:link`, из которой
+// такого вывода не сделать. Теперь: уход с `link` штампует revoked_at (ссылка выключена), возврат
+// двигает поколение и заводит НОВЫЙ токен, и обе стороны названы в журнале отдельными строками.
 func (s *Store) SetFileAccess(ctx context.Context, fileID int, u entity.LibraryFileAccessUpdate) (*entity.LibraryFileAccess, error) {
 	if !entity.ValidLibraryFileAccessLevels[u.Level] {
 		// Неизвестный уровень ОТКАЗЫВАЕТ, а не толкуется: «непонятный = team» тихо расширил бы
@@ -197,7 +202,19 @@ func (s *Store) SetFileAccess(ctx context.Context, fileID int, u entity.LibraryF
 			}
 		}
 		if u.Level == entity.LibraryFileAccessLink {
-			if err := applyLinkTTL(ctx, db, fileID, u.LinkTTLHours, u.Actor); err != nil {
+			// reissue = «файл ВЕРНУЛСЯ на link». Только в этом случае поколение двигается:
+			// правка одного лишь срока на живом уровне обязана оставить выданную ссылку живой,
+			// иначе чип «7 дней» убивал бы ссылку, которую только что разослали.
+			if err := applyLinkTTL(ctx, db, fileID, u.LinkTTLHours, u.Actor,
+				before.Level != entity.LibraryFileAccessLink); err != nil {
+				return err
+			}
+		} else if before.Level == entity.LibraryFileAccessLink {
+			// Ушли с `link`: ссылка выключена. Маршрут и так мёртв (он сверяет access_level на
+			// строке файла), но штамп — единственное, что делает состояние ЧИТАЕМЫМ: без него
+			// колонка revoked_at не заполнялась нигде, `revoked` на проводе был вечным false, а
+			// ветка отзыва в маршруте — мёртвым кодом.
+			if err := revokePublicLink(ctx, db, fileID, u.Actor); err != nil {
 				return err
 			}
 		}
@@ -288,8 +305,15 @@ func replaceAccessPeople(ctx context.Context, db dependency.DB, fileID int, admi
 // отозванной, отдавала бы свежесобранный url, который мёртв, и починить это из панели было бы
 // нечем (кнопки «снять отзыв» в макете нет — есть «пересоздать»).
 //
-// epoch НЕ трогается: включение уровня — не отзыв. Отзыв — это RotateFileLink, и он один.
-func applyLinkTTL(ctx context.Context, db dependency.DB, fileID, ttlHours int, actor string) error {
+// reissue ДВИГАЕТ ПОКОЛЕНИЕ, и это главное отличие от прежнего поведения. Он приходит true ровно
+// тогда, когда файл ВЕРНУЛСЯ на `link` с другого уровня: всё это время маршрут отвечал 404, ссылку
+// у бывшего подрядчика все считали мёртвой, и оживлять её возвратом уровня нельзя. Правка одного
+// лишь срока (уровень уже был `link`) поколение не трогает — иначе смена чипа убивала бы ссылку,
+// которую только что разослали.
+//
+// Строки может не быть вовсе — тогда двигать нечего: ни одного токена по ней не выдавали, потому
+// что url собирается ИЗ неё (Service.LinkURL по link.Epoch), а не из воздуха.
+func applyLinkTTL(ctx context.Context, db dependency.DB, fileID, ttlHours int, actor string, reissue bool) error {
 	prev, err := readPublicAccess(ctx, db, fileID)
 	if err != nil {
 		return err
@@ -298,12 +322,25 @@ func applyLinkTTL(ctx context.Context, db dependency.DB, fileID, ttlHours int, a
 	if ttlHours > 0 {
 		expires = sql.NullTime{Time: time.Now().UTC().Add(time.Duration(ttlHours) * time.Hour), Valid: true}
 	}
+	bump := 0
+	if reissue && prev != nil {
+		bump = 1
+	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO library_file_public_access (file_id, expires_at)
 		VALUES (:id, :expires)
-		ON DUPLICATE KEY UPDATE expires_at = VALUES(expires_at), revoked_at = NULL`,
-		map[string]any{"id": fileID, "expires": expires}); err != nil {
+		ON DUPLICATE KEY UPDATE expires_at = VALUES(expires_at), revoked_at = NULL,
+			epoch = epoch + :bump`,
+		map[string]any{"id": fileID, "expires": expires, "bump": bump}); err != nil {
 		return fmt.Errorf("failed to upsert library file public access: %w", err)
+	}
+	if bump == 1 {
+		// Строка журнала обязана НАЗЫВАТЬ это: «доступ по ссылке» рядом ничего не говорит о том,
+		// что прежний адрес умер, а именно этого человек и не ожидает от возврата уровня.
+		if err := appendAccessEvent(ctx, db, fileID, actor,
+			"ссылка выдана заново, прежняя больше не работает"); err != nil {
+			return err
+		}
 	}
 	if linkTTLChanged(prev, expires) {
 		if err := appendAccessEvent(ctx, db, fileID, actor, ttlEventWhat(ttlHours)); err != nil {
@@ -311,6 +348,33 @@ func applyLinkTTL(ctx context.Context, db dependency.DB, fileID, ttlHours int, a
 		}
 	}
 	return nil
+}
+
+// revokePublicLink штампует revoked_at, когда файл уходит с уровня `link`.
+//
+// ЗАЧЕМ ВООБЩЕ, ЕСЛИ МАРШРУТ И ТАК ОТВЕЧАЕТ 404. Затем, что состояние «ссылка была и её выключили»
+// иначе нигде не записано: колонка revoked_at до Ф7b только СНИМАЛАСЬ, `revoked` на проводе был
+// вечным false, а ветка отзыва в маршруте — недостижимым кодом. Половина механики, которая
+// выглядит работающей, хуже её отсутствия.
+//
+// И штамп теперь ФАКТИЧЕСКИ ВЕРЕН: раз возврат на `link` выдаёт новое поколение, каждый выданный до
+// этой минуты токен мёртв НАВСЕГДА, а не до следующего включения уровня. Это и есть отзыв.
+//
+// Строки может не быть — файл ни разу не делили ссылкой, отзывать нечего.
+func revokePublicLink(ctx context.Context, db dependency.DB, fileID int, actor string) error {
+	prev, err := readPublicAccess(ctx, db, fileID)
+	if err != nil {
+		return err
+	}
+	if prev == nil || prev.RevokedAt.Valid {
+		return nil
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`UPDATE library_file_public_access SET revoked_at = NOW() WHERE file_id = :id`,
+		map[string]any{"id": fileID}); err != nil {
+		return fmt.Errorf("failed to revoke library file public link: %w", err)
+	}
+	return appendAccessEvent(ctx, db, fileID, actor, "ссылка выключена, прежняя больше не работает")
 }
 
 // linkTTLChanged отвечает, стоит ли писать строку журнала о сроке.
@@ -384,7 +448,20 @@ func (s *Store) RotateFileLink(ctx context.Context, fileID int, actor string) (*
 }
 
 // ListFileAccessEvents returns one file's journal, newest first.
+//
+// ПРЕДИКАТ СТОИТ ВНУТРИ МЕТОДА, А НЕ ПЕРЕД НИМ. Сегодня журнал читает ровно один вызывающий —
+// GetLibraryFileAccess, уже прошедший точку 12, — и без этой проверки метод безопасен ТОЛЬКО
+// поэтому. Но «его зовут в правильном порядке» — свойство вызывающего, а не метода: второй
+// вызывающий (витрина, экспорт, отладочная ручка) появится без единого предупреждения и получит
+// готовое перечисление того, кому и когда открывали невидимый ему файл — с именами.
 func (s *Store) ListFileAccessEvents(ctx context.Context, fileID, limit int) ([]entity.LibraryFileAccessEvent, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := EnsureVisible(ctx, s.DB, v, fileID); err != nil {
+		return nil, err // sql.ErrNoRows нетронутым: невидимый и несуществующий неразличимы
+	}
 	if limit <= 0 {
 		limit = defaultAccessEventLimit
 	}

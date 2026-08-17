@@ -140,14 +140,17 @@ func TestLibraryFileAccess(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, access.Link.ExpiresAt.Valid)
 
-		// Возврат в team НЕ удаляет строку и НЕ двигает поколение — это и есть то, из-за чего
-		// маршрут обязан сверять уровень на строке файла, а не наличие строки доступа.
+		// Возврат в team НЕ удаляет строку (счётчик и история остаются) и НЕ двигает поколение
+		// сам по себе — это и есть то, из-за чего маршрут обязан сверять уровень на строке файла,
+		// а не наличие строки доступа. Но ссылка ВЫКЛЮЧАЕТСЯ, и это записано.
 		team, err := s.Files().SetFileAccess(ctx, fileID, entity.LibraryFileAccessUpdate{
 			Level: entity.LibraryFileAccessTeam, Actor: pasha,
 		})
 		require.NoError(t, err)
 		require.NotNil(t, team.Link)
 		require.Equal(t, 1, team.Link.Epoch)
+		require.True(t, team.Link.RevokedAt.Valid,
+			"уход с link обязан штамповать revoked_at: иначе колонка не пишется нигде, `revoked` на проводе вечно false, а ветка отзыва в маршруте — мёртвый код")
 
 		// А узкое чтение публичного маршрута видит и уровень, и поколение — и отвечает на
 		// вопрос «жива ли ссылка» само.
@@ -156,6 +159,52 @@ func TestLibraryFileAccess(t *testing.T) {
 		require.Equal(t, entity.LibraryFileAccessTeam, target.AccessLevel)
 		require.Equal(t, 1, target.Epoch)
 		require.NotEmpty(t, target.ObjectKey, "the presigner's key must come from this row and nowhere else")
+	})
+
+	t.Run("возврат на link выдаёт НОВУЮ ссылку, а правка срока — ту же", func(t *testing.T) {
+		// Эпоха не двигалась ни при уходе с уровня, ни при возврате, поэтому ссылка бывшего
+		// подрядчика оживала ровно в ту минуту, когда файл снова открывали по ссылке — другим
+		// людям и обычно много позже. «Вернули уровень» никто не читает как «снова раздали ту же
+		// ссылку», а в журнале об этом стояла одна строка `level:link`, из которой такого вывода
+		// не сделать.
+		fileID := insertLibraryFileFixture(ctx, t, "reissue.pdf", 10, pasha)
+
+		first, err := s.Files().SetFileAccess(ctx, fileID, entity.LibraryFileAccessUpdate{
+			Level: entity.LibraryFileAccessLink, LinkTTLHours: 24, Actor: pasha,
+		})
+		require.NoError(t, err)
+		require.Equal(t, 1, first.Link.Epoch, "первая ссылка файла начинается с поколения 1")
+		require.False(t, first.Link.RevokedAt.Valid)
+
+		// ПРАВКА ОДНОГО ЛИШЬ СРОКА НА ЖИВОМ УРОВНЕ ССЫЛКУ НЕ УБИВАЕТ: иначе смена чипа гасила бы
+		// ссылку, которую только что разослали.
+		sameLink, err := s.Files().SetFileAccess(ctx, fileID, entity.LibraryFileAccessUpdate{
+			Level: entity.LibraryFileAccessLink, LinkTTLHours: 168, Actor: pasha,
+		})
+		require.NoError(t, err)
+		require.Equal(t, 1, sameLink.Link.Epoch)
+
+		// Ушли с уровня — ссылка выключена и это в журнале.
+		_, err = s.Files().SetFileAccess(ctx, fileID, entity.LibraryFileAccessUpdate{
+			Level: entity.LibraryFileAccessPeople, AdminIDs: []int{kirillID}, Actor: pasha,
+		})
+		require.NoError(t, err)
+		events, err := s.Files().ListFileAccessEvents(ctx, fileID, 0)
+		require.NoError(t, err)
+		require.Contains(t, journalTexts(events), "ссылка выключена, прежняя больше не работает")
+
+		// Вернулись — НОВОЕ поколение, снятый отзыв и отдельная строка журнала, которая это
+		// называет: сама по себе `level:link` о смерти прежнего адреса не говорит ничего.
+		reissued, err := s.Files().SetFileAccess(ctx, fileID, entity.LibraryFileAccessUpdate{
+			Level: entity.LibraryFileAccessLink, LinkTTLHours: 24, Actor: kirill,
+		})
+		require.NoError(t, err)
+		require.Equal(t, 2, reissued.Link.Epoch,
+			"возврат на link обязан выдать новый токен: прежняя ссылка ушла к людям, которых сегодня уже не звали")
+		require.False(t, reissued.Link.RevokedAt.Valid)
+		events, err = s.Files().ListFileAccessEvents(ctx, fileID, 0)
+		require.NoError(t, err)
+		require.Contains(t, journalTexts(events), "ссылка выдана заново, прежняя больше не работает")
 	})
 
 	t.Run("rotation bumps the epoch, and does it even for a file that never had a link", func(t *testing.T) {
@@ -323,6 +372,17 @@ func TestLibraryFileAccess(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, entity.LibraryFileAccessTeam, access.Level)
 	})
+}
+
+// journalTexts достаёт тексты строк журнала — утверждать «такая строка есть» надёжнее, чем
+// сверяться с индексом: между интересными событиями встают строки о сроке и о людях, и их число
+// зависит от того, менялся ли чип.
+func journalTexts(events []entity.LibraryFileAccessEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.What)
+	}
+	return out
 }
 
 // TestLibraryFileAccessMigrationIsRerunnable: MySQL автокоммитит DDL, поэтому падение в
