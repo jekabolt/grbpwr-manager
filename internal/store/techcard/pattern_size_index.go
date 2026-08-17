@@ -106,7 +106,7 @@ func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.Patte
 		// that names a sheet the scope does not hold is describing a different card.
 		if diff := sheetSetDiff(mine, in.SheetLineKeys); diff != "" {
 			return entity.NewFieldViolation("sheet_line_keys", "sheet_set_mismatch", diff,
-				"re-run “⌕ sizes in files” — the scope's sheets changed between the parse and this call, and an index built over a different set of files would answer for files nobody read")
+				"re-run “⌕ sizes in the files” — the scope's sheets changed between the parse and this call, and an index built over a different set of files would answer for files nobody read")
 		}
 		fingerprint := entity.PatternSheetFingerprint(mine)
 		tokens := entity.NormalizeSizeTokens(in.SizeTokens)
