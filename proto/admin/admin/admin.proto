@@ -1246,6 +1246,211 @@ service AdminService {
     };
   }
 
+  // ListLibraryFileTasks answers «где этот файл ещё используется» from the FILE's
+  // side. The link it reads (task_file) is the very one the task form writes; the
+  // task form simply cannot answer this question, because it starts from a task.
+  //
+  // Gated by tasks:read, NOT files:read, and the section follows WHAT IS IN THE
+  // ANSWER rather than where the button is — precedent:
+  // GetMaterialCuttingCoefficientSuggestion. Titles, columns, assignees and
+  // deadlines are task content, and a files-only account must not read them
+  // sideways. Named consequence: the file card must SURVIVE PermissionDenied here
+  // by drawing «нет доступа к задачам», not by failing.
+  rpc ListLibraryFileTasks(ListLibraryFileTasksRequest) returns (ListLibraryFileTasksResponse) {
+    option (google.api.http) = {get: "/api/admin/files/{id}/tasks"};
+  }
+
+  // AttachLibraryFileToTask links one file to one task, idempotently: a link that
+  // already exists is not an error, because the card cannot know what another tab
+  // did a second ago.
+  //
+  // Deliberately NOT done through UpdateTask: TaskInsert.file_ids is the FULL set
+  // of a task's attachments, so attaching from the file card through it would
+  // mean sending a set this screen has never seen. tasks:write for the same
+  // reason as the read above — the row belongs to the task (task_file cascades
+  // from it), not to the file.
+  rpc AttachLibraryFileToTask(AttachLibraryFileToTaskRequest) returns (AttachLibraryFileToTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/task/attach"
+      body: "*"
+    };
+  }
+
+  // DetachLibraryFileFromTask removes that link. Also idempotent, and for the
+  // same reason: two people clearing the same attachment must both be told it is
+  // gone, not one of them that it never was.
+  rpc DetachLibraryFileFromTask(DetachLibraryFileFromTaskRequest) returns (DetachLibraryFileFromTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/task/detach"
+      body: "*"
+    };
+  }
+
+  // FILE DISCUSSION
+  // A FLAT feed of remarks on a file — no threads on purpose: a file collects a
+  // handful of remarks, and branching buys structure at the price of a
+  // conversation nobody reads to the end. @username is stored as PLAIN TEXT;
+  // highlighting and the picker are the client's, so a mention of somebody who
+  // has left degrades into ordinary text instead of a dangling reference. Nothing
+  // is notified — this wave has no delivery channel, and a notification into
+  // nowhere is worse than none.
+
+  // ListLibraryFileComments returns the feed, oldest first.
+  rpc ListLibraryFileComments(ListLibraryFileCommentsRequest) returns (ListLibraryFileCommentsResponse) {
+    option (google.api.http) = {get: "/api/admin/files/{id}/comments"};
+  }
+
+  // AddLibraryFileComment appends one remark. Classified as a WRITE to the
+  // library: files:read reads the feed and cannot add to it, because a discussion
+  // is content OF the library rather than a view of it.
+  rpc AddLibraryFileComment(AddLibraryFileCommentRequest) returns (AddLibraryFileCommentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/comment/add"
+      body: "*"
+    };
+  }
+
+  // UpdateLibraryFileComment edits a remark and stamps edited_at — an edit that
+  // leaves no trace rewrites the past. files:write is necessary but NOT
+  // sufficient: the handler additionally requires the caller to be the AUTHOR
+  // (a super-admin may edit any), same "map holds one section, code checks the
+  // rest" shape as SetLibraryFileOwners.
+  rpc UpdateLibraryFileComment(UpdateLibraryFileCommentRequest) returns (UpdateLibraryFileCommentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/comment/update"
+      body: "*"
+    };
+  }
+
+  // DeleteLibraryFileComment removes one's own remark (a super-admin any), same
+  // second gate. The literal `comment` segment keeps this clear of DELETE
+  // /files/{id}, which is one segment shorter and therefore a different route.
+  rpc DeleteLibraryFileComment(DeleteLibraryFileCommentRequest) returns (DeleteLibraryFileCommentResponse) {
+    option (google.api.http) = {delete: "/api/admin/files/comment/{id}"};
+  }
+
+  // ACCESS LEVELS
+  // A file is `team` (everyone holding files:read), `people` (a named list, PLUS
+  // the uploader and the owners — without them the person who keeps a file could
+  // switch it to `people`, forget to list themselves, and lose both the file and
+  // the ability to fix that), or `link` (reachable by a public url, and INSIDE the
+  // team still exactly as visible as `team`: a level opens outward, it never
+  // closes inward).
+  //
+  // A file one may not see answers NotFound, never PermissionDenied — everywhere,
+  // reads and writes alike. PermissionDenied would confirm the file exists, and in
+  // this library the NAMES are the secret.
+  //
+  // The public url is NOT a bucket ACL: the object stays private forever and the
+  // public route mints a short-lived presigned url per hit. Revocation is
+  // epoch+1 (see RotateLibraryFileLink) rather than a revocation list.
+
+  // GetLibraryFileAccess returns one file's access block: level, the named people,
+  // the public link with its expiry, and the journal of who changed what when.
+  // Declared before ListShared… — the Get-before-List convention of this file.
+  rpc GetLibraryFileAccess(GetLibraryFileAccessRequest) returns (GetLibraryFileAccessResponse) {
+    option (google.api.http) = {get: "/api/admin/files/{id}/access"};
+  }
+
+  // SetLibraryFileAccess sets the level AND the list of people that goes with it
+  // ATOMICALLY. Two RPCs would leave a window in which a file is already `people`
+  // with an empty list — that is, invisible to everyone who was about to be added.
+  //
+  // files:write is necessary but NOT sufficient: the handler requires the same
+  // circle as SetLibraryFileOwners (uploader | current owner | super-admin).
+  // Otherwise any files:write account could publish somebody else's file to the
+  // internet.
+  rpc SetLibraryFileAccess(SetLibraryFileAccessRequest) returns (SetLibraryFileAccessResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/access/set"
+      body: "*"
+    };
+  }
+
+  // RotateLibraryFileLink mints a new link and kills the old one INSTANTLY: the
+  // token carries the epoch, so bumping the epoch is the revocation — there is no
+  // revocation list to consult and nothing to expire. Same handler circle as
+  // SetLibraryFileAccess.
+  rpc RotateLibraryFileLink(RotateLibraryFileLinkRequest) returns (RotateLibraryFileLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/access/rotate"
+      body: "*"
+    };
+  }
+
+  // ListSharedLibraryFiles is the витрина: everything that is `people` or `link`
+  // RIGHT NOW, so "what have we actually opened up" is one screen instead of a
+  // walk through the grid. Two literal segments — the templated /files/{id} is one
+  // segment long and cannot shadow it.
+  //
+  // The listing runs under the same visibility predicate as the grid (a
+  // super-admin sees all of it), which is why two people can honestly see
+  // different numbers here. That is accepted, and the screen says so.
+  rpc ListSharedLibraryFiles(ListSharedLibraryFilesRequest) returns (ListSharedLibraryFilesResponse) {
+    option (google.api.http) = {get: "/api/admin/files/shared/list"};
+  }
+
+  // MARKDOWN NOTES
+  // A note is an ORDINARY library file whose bytes happen to be text
+  // (content_type text/markdown): topics, owners, access, discussion and task
+  // attachments come with it for free, and nothing else in the library has to
+  // learn that a second kind of object exists. The text lives in the bucket like
+  // any other file's bytes; an edit writes a NEW object under a NEW key
+  // («object_key never reused») and only then repoints the row.
+
+  // CreateLibraryNote creates that file together with its first text. The name is
+  // asked for up front — an untitled note is a note nobody finds later — and the
+  // `.md` suffix is appended by the server rather than demanded of the person.
+  rpc CreateLibraryNote(CreateLibraryNoteRequest) returns (CreateLibraryNoteResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/note/create"
+      body: "*"
+    };
+  }
+
+  // GetLibraryNoteContent returns the TEXT over the RPC rather than a presigned
+  // url, for two hard reasons: text/markdown is not inline-safe, so it only ever
+  // gets an attachment url; and fetching a presigned url from JS runs into the
+  // bucket's CORS, a lesson the patterns feature has already paid for.
+  rpc GetLibraryNoteContent(GetLibraryNoteContentRequest) returns (GetLibraryNoteContentResponse) {
+    option (google.api.http) = {get: "/api/admin/files/{id}/note"};
+  }
+
+  // SaveLibraryNoteContent writes a new version under a COMPARE-AND-SET on
+  // sha256: the caller sends the sha256 it started from, and a row that moved
+  // underneath comes back as DATA (conflict = true, with the stored text), not as
+  // a gRPC error — the client draws «kirill сохранил свою версию, пока вы
+  // правили» and loses nothing, without a second round trip. `force` is the
+  // deliberate overwrite; without it, silently overwriting somebody's text is not
+  // reachable at all, which is the whole point of asking for it.
+  rpc SaveLibraryNoteContent(SaveLibraryNoteContentRequest) returns (SaveLibraryNoteContentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/note/save"
+      body: "*"
+    };
+  }
+
+  // FormatLibraryNoteMarkdown turns the plain text the editor is holding into
+  // tidy markdown. It is a SUGGESTION and persists NOTHING: the answer replaces
+  // the editor's buffer only if the person accepts it, and the write still goes
+  // through SaveLibraryNoteContent with its CAS — so the assistant cannot
+  // overwrite a colleague's text even by racing it.
+  //
+  // The request carries the TEXT and NO file_id, and that is load-bearing: with
+  // no file id there is nothing for the visibility predicate to check, which is
+  // precisely why this RPC is legitimately absent from the list of points where
+  // the predicate stands. Adding file_id «for the logs» would create an RPC that
+  // takes a file id past the predicate.
+  //
+  // Classified as a WRITE (files:write) although it stores nothing — precedent
+  // GenerateTechCardOperations: AI-assisted authoring is authoring.
+  rpc FormatLibraryNoteMarkdown(FormatLibraryNoteMarkdownRequest) returns (FormatLibraryNoteMarkdownResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/note/format"
+      body: "*"
+    };
+  }
+
   // ORDER FULFILLMENT BOARD
   // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
   // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
@@ -4822,6 +5027,28 @@ message LibraryFile {
   // Several are legal, and so is none: an empty list is honest, a
   // randomly-assigned owner is not.
   repeated AdminRef owners = 14;
+  // comments_count is the size of the file's discussion, printed on the tile and
+  // the card. It rides on the file instead of costing a call per tile: the list
+  // resolves it for a whole page in ONE grouped query.
+  int32 comments_count = 15;
+  // access_level is team | people | link. It only ever reaches somebody who can
+  // already SEE the file (a file one may not see is not in the answer at all), so
+  // the level is not a secret from its reader — it is what badges the tile «по
+  // ссылке» / «ограничен» instead of making the person open the card to find out.
+  string access_level = 16;
+  // content_updated_by / content_updated_at are «кто правил последним» for a note
+  // edited THROUGH THE EDITOR. They stand next to uploaded_by rather than
+  // replacing it: the upload is one fact, the last edit another. Empty/unset on a
+  // note that arrived as an upload and was never edited here — the card then
+  // falls back to the uploader, which is the truth in that case.
+  string content_updated_by = 17;
+  google.protobuf.Timestamp content_updated_at = 18;
+  // content_excerpt is the first lines of a note's text: the tile's preview where
+  // there is no picture to render at all (the one documented exception to «no
+  // preview → extension plate»). Written on save through the editor; empty for
+  // .md that arrived as an upload, because reading text on the streaming upload
+  // path would complicate the single hot path for a rare case.
+  string content_excerpt = 19;
 }
 
 // FileTopic is a topic LABEL, not a folder.
@@ -4998,6 +5225,302 @@ message SetAccountSpecialtiesResponse {
   // The resolved set, names as STORED — a name typed in a different case
   // collapses onto the existing entry, and the chips must show that.
   repeated string specialties = 1;
+}
+
+// LibraryFileTask is one task row AS THE FILE CARD DRAWS IT: the #id pill, the
+// title, the column, who is on it and when it is due. Deliberately not
+// common.Task — that message carries content, checklist, resolved media and its
+// own attachments, and shipping it per row would resolve a second file list for
+// every task a file happens to be linked to.
+message LibraryFileTask {
+  int32 task_id = 1;
+  string title = 2;
+  common.TaskStatus status = 3;
+  // assignee is an AdminAccount.username; "" = nobody is on it.
+  string assignee = 4;
+  // due_date unset = no deadline (the row then simply has no date, not "today").
+  google.protobuf.Timestamp due_date = 5;
+  // board is the department lane, so the row can say WHERE the work lives — the
+  // same file is attached from several lanes at once.
+  common.TaskBoard board = 6;
+}
+
+message ListLibraryFileTasksRequest {
+  // id is the FILE's id (the path is /files/{id}/tasks — the file is the subject
+  // here, the tasks are the answer).
+  int32 id = 1;
+}
+
+message ListLibraryFileTasksResponse {
+  repeated LibraryFileTask tasks = 1;
+}
+
+message AttachLibraryFileToTaskRequest {
+  int32 file_id = 1;
+  int32 task_id = 2;
+}
+
+message AttachLibraryFileToTaskResponse {}
+
+message DetachLibraryFileFromTaskRequest {
+  int32 file_id = 1;
+  int32 task_id = 2;
+}
+
+message DetachLibraryFileFromTaskResponse {}
+
+// LibraryFileComment is one remark in a file's discussion.
+message LibraryFileComment {
+  int32 id = 1;
+  int32 file_id = 2;
+  // author is the username AS OF WRITING — a historical fact that outlives the
+  // account, exactly like LibraryFile.uploaded_by. author_id resolves the same
+  // person to a LIVE account and becomes 0 when that account is deleted; the
+  // byline and the avatar read the id, the text of the feed reads the string.
+  string author = 3;
+  int32 author_id = 4;
+  // body is the raw text, @mentions included: the server stores what was typed.
+  string body = 5;
+  google.protobuf.Timestamp created_at = 6;
+  // edited_at unset = the remark was never edited. Set = the feed prints
+  // «изменено», because a silently rewritten remark is a rewritten conversation.
+  google.protobuf.Timestamp edited_at = 7;
+}
+
+message ListLibraryFileCommentsRequest {
+  int32 id = 1; // file id (path param)
+}
+
+message ListLibraryFileCommentsResponse {
+  repeated LibraryFileComment comments = 1;
+}
+
+message AddLibraryFileCommentRequest {
+  int32 file_id = 1;
+  string body = 2;
+}
+
+message AddLibraryFileCommentResponse {
+  // The stored remark, so the feed appends what the server actually wrote
+  // (author and timestamps are stamped there, never sent by the client).
+  LibraryFileComment comment = 1;
+}
+
+message UpdateLibraryFileCommentRequest {
+  int32 id = 1;
+  string body = 2;
+}
+
+message UpdateLibraryFileCommentResponse {
+  // Returned for edited_at: the «изменено» mark comes from the server's clock.
+  LibraryFileComment comment = 1;
+}
+
+message DeleteLibraryFileCommentRequest {
+  int32 id = 1;
+}
+
+message DeleteLibraryFileCommentResponse {}
+
+// LibraryFilePublicLink is the state of the ONE public link a file may carry.
+// The url is our own route plus an HMAC token, not a bucket url: the object
+// itself stays private and is only ever reached through a presigned url minted
+// per hit.
+message LibraryFilePublicLink {
+  // url is empty when the file has never been shared by link.
+  string url = 1;
+  // expires_at unset = the link does not expire on its own.
+  google.protobuf.Timestamp expires_at = 2;
+  bool revoked = 3;
+  // expired is computed, not stored: the level stays `link` after the date
+  // passes (nothing silently un-shares a file behind its owner's back), the route
+  // answers 404, and the UI badges «истёк». Deriving it here keeps two screens
+  // from each inventing their own comparison against server time.
+  bool expired = 4;
+  // Best-effort statistics: the counter is bumped outside the read path, so it
+  // may lag by a hit. It answers «пользуются ли ссылкой вообще», not accounting.
+  google.protobuf.Timestamp last_access_at = 5;
+  int32 access_count = 6;
+}
+
+// LibraryFileAccessEvent is one line of the journal: WHO changed WHAT and WHEN.
+// actor is a username string (it must survive the account being deleted — the
+// journal answers questions about a file that outlives its people).
+message LibraryFileAccessEvent {
+  int32 id = 1;
+  string actor = 2;
+  // what is a rendered description of the change («уровень → по ссылке»,
+  // «+ kirill», «срок 7 дней», «ссылка пересоздана»). Free text on purpose: the
+  // journal is read by people, and a code would need a translation table that
+  // drifts from the events it names.
+  string what = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+// LibraryFileAccess is the whole "who may see this file" state in one place, so
+// the card and the витрина read the same shape.
+message LibraryFileAccess {
+  // level is team | people | link.
+  string level = 1;
+  // people is meaningful only at level `people`. The uploader is always in it —
+  // the server puts them there rather than trusting the client to remember.
+  repeated AdminRef people = 2;
+  LibraryFilePublicLink link = 3;
+}
+
+message GetLibraryFileAccessRequest {
+  int32 id = 1; // file id (path param)
+}
+
+message GetLibraryFileAccessResponse {
+  LibraryFileAccess access = 1;
+  // events newest first — the journal is read to answer «кто это открыл», and
+  // the answer is almost always the last line.
+  repeated LibraryFileAccessEvent events = 2;
+}
+
+message SetLibraryFileAccessRequest {
+  int32 file_id = 1;
+  // level is team | people | link; anything else is refused rather than
+  // interpreted (the column is an ENUM in the database for the same reason).
+  string level = 2;
+  // admin_ids is the FULL set of people for level `people`, replaced atomically
+  // with the level itself. Ignored at the other two levels — and NOT wiped, so
+  // switching team → people → team does not make a person retype the list.
+  repeated int32 admin_ids = 3;
+  // link_ttl is the life of the public link IN HOURS: 24 / 168 / 720 are the
+  // chips, 0 = no expiry. Hours rather than a Duration because it comes from a
+  // fixed set of chips and rides through the JSON gateway as a plain number.
+  // Only read at level `link`.
+  int32 link_ttl = 4;
+}
+
+message SetLibraryFileAccessResponse {
+  // The stored state, so the card redraws from what was written rather than from
+  // what it hoped it sent — same reason as SetLibraryFileOwnersResponse. The
+  // freshly minted url arrives here when the level became `link`.
+  LibraryFileAccess access = 1;
+}
+
+message RotateLibraryFileLinkRequest {
+  int32 file_id = 1;
+}
+
+message RotateLibraryFileLinkResponse {
+  // The NEW link. The old one is already dead when this returns — that is the
+  // whole operation, and the dialog must show what replaced it.
+  LibraryFilePublicLink link = 1;
+}
+
+// SharedLibraryFile is one row of the витрина: the file plus the answers to «кому
+// открыто» and «кто открыл».
+message SharedLibraryFile {
+  // file carries the preview, the name and access_level — the витрина draws the
+  // same tile the grid does, so it resolves the same message.
+  LibraryFile file = 1;
+  // people is the named list at level `people`; empty at level `link`, where the
+  // truthful answer is «кто угодно со ссылкой» and the screen says exactly that.
+  repeated AdminRef people = 2;
+  LibraryFilePublicLink link = 3;
+  // shared_by / shared_at come from the journal: the actor and the time of the
+  // last event that established the CURRENT level. Not «who uploaded it» and not
+  // «who touched it last» — the question this column answers is who is
+  // responsible for the file being open right now.
+  string shared_by = 4;
+  google.protobuf.Timestamp shared_at = 5;
+}
+
+message ListSharedLibraryFilesRequest {
+  // level narrows the витрина: "" = everything special (both levels), "people" or
+  // "link" = one of them. The filter is server-side because the list is paged —
+  // filtering a page on the client would show «3 из 40» and mean neither.
+  string level = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListSharedLibraryFilesResponse {
+  repeated SharedLibraryFile files = 1;
+  int32 total = 2;
+}
+
+message CreateLibraryNoteRequest {
+  // file_name without the extension is fine — the server appends `.md`, and
+  // appending it twice is not a thing that happens.
+  string file_name = 1;
+  // Same topic grammar as everywhere else in the library: existing ids plus names
+  // typed on the fly, an existing name resolving to the existing topic.
+  repeated int32 topic_ids = 2;
+  repeated string new_topics = 3;
+  // content may be empty — a note created to be written into tomorrow is a real
+  // case. Capped at 512 KiB: this is a note, not a book, and the cap is what
+  // keeps the whole text on the RPC path honest.
+  string content = 4;
+}
+
+message CreateLibraryNoteResponse {
+  // The created file, so the client can open the note screen straight away
+  // instead of listing to find what it just made.
+  LibraryFile file = 1;
+}
+
+message GetLibraryNoteContentRequest {
+  int32 id = 1; // file id (path param)
+}
+
+message GetLibraryNoteContentResponse {
+  string content = 1;
+  // sha256 of exactly this content — the base the editor sends back when it
+  // saves. Without it there is no CAS, and every save is a blind overwrite.
+  string sha256 = 2;
+  string last_edited_by = 3;
+  google.protobuf.Timestamp last_edited_at = 4;
+}
+
+message SaveLibraryNoteContentRequest {
+  int32 file_id = 1;
+  string content = 2;
+  // base_sha256 is the sha256 this edit started from. A mismatch means somebody
+  // else saved in the meantime.
+  string base_sha256 = 3;
+  // force writes over that other version deliberately. It is the only path to a
+  // lost edit in the whole design, which is exactly why it must be asked for and
+  // is never a default.
+  bool force = 4;
+}
+
+message SaveLibraryNoteContentResponse {
+  // conflict = true means NOTHING WAS WRITTEN and the fields below describe the
+  // version that is stored. A conflict is DATA, not a gRPC error: the client owes
+  // the person a banner and three choices (show the difference, save as a
+  // separate note, overwrite anyway), and an error status would cost a second
+  // request to build any of them.
+  bool conflict = 1;
+  // current_sha256 is what is stored now — the caller's own text after a
+  // successful save, the other version after a conflict. Either way it is the
+  // base for this editor's NEXT save, so the client never has to re-read to keep
+  // editing.
+  string current_sha256 = 2;
+  // current_content is filled ONLY on conflict (the successful case would just be
+  // echoing back what was sent, over the same 512 KiB budget).
+  string current_content = 3;
+  string last_edited_by = 4;
+  google.protobuf.Timestamp last_edited_at = 5;
+}
+
+message FormatLibraryNoteMarkdownRequest {
+  // content is EXACTLY what goes to the model: the whole buffer or the selection,
+  // decided by the client. Nothing else — not the file name, not the topics, not
+  // the owners, not the discussion — so the leak perimeter is readable from one
+  // function. Capped at 12 000 runes; longer gets InvalidArgument and the client
+  // offers to send a selection instead.
+  string content = 1;
+}
+
+message FormatLibraryNoteMarkdownResponse {
+  // The suggestion. It is not stored anywhere: accepting it replaces the editor's
+  // BUFFER, and the write is a normal SaveLibraryNoteContent with its CAS.
+  string content = 1;
 }
 
 message UpdateTaskRequest {

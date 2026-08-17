@@ -533,12 +533,60 @@ var methodRequirements = map[string]Requirement{
 	// itself INTO a file it was not allowed to see. Precedent for "the map holds one section, the code
 	// checks the rest": PostProductionRunReceipt / ReverseProductionRunReceipt.
 	"SetLibraryFileOwners": wr(SectionFiles),
+	// ОБСУЖДЕНИЕ ФАЙЛА. Чтение ленты — files:read, письмо в ленту — files:write, и асимметрия названа:
+	// обсуждение классифицировано как СОДЕРЖИМОЕ библиотеки, а не как её просмотр, поэтому files:read
+	// ленту читает, но не пополняет. Второй гейт — править и удалять можно ТОЛЬКО свою реплику, супер
+	// любую — стоит в хендлере: карта держит одну секцию, тот же приём, что у SetLibraryFileOwners.
+	"ListLibraryFileComments":  rd(SectionFiles),
+	"AddLibraryFileComment":    wr(SectionFiles),
+	"UpdateLibraryFileComment": wr(SectionFiles),
+	"DeleteLibraryFileComment": wr(SectionFiles),
+	// ДОСТУП К ФАЙЛУ: уровень (team|people|link), поимённый список, публичная ссылка и журнал.
+	//
+	// Чтения — files:read: уровень и список не секрет от того, кто сам файл уже видит, а невидимый файл
+	// до этих RPC не доходит — предикат видимости отвечает NotFound раньше. Витрина «что у нас открыто»
+	// ходит под тем же предикатом, поэтому её выдача у разных людей разная; это принято планом и
+	// написано на самом экране.
+	//
+	// Записи — files:write И круг «загрузивший|владелец|супер» в хендлере, ровно как у владельцев: без
+	// второго гейта любой files:write выкладывает чужой файл в интернет одним запросом. Публичный
+	// маршрут GET|HEAD /api/f/{token} в этой карте отсутствует по построению — он не RPC и ходит без
+	// JWT, как /api/p|pv|rp.
+	"GetLibraryFileAccess":   rd(SectionFiles),
+	"ListSharedLibraryFiles": rd(SectionFiles),
+	"SetLibraryFileAccess":   wr(SectionFiles),
+	"RotateLibraryFileLink":  wr(SectionFiles),
+	// MARKDOWN-ЗАМЕТКИ. Заметка — обычный файл библиотеки, поэтому и права у неё файловые: чтение текста
+	// files:read, создание и сохранение files:write. Своей секции нет сознательно — она дала бы аккаунт,
+	// который читает заметку, но не файл, в котором она лежит.
+	"CreateLibraryNote":      wr(SectionFiles),
+	"GetLibraryNoteContent":  rd(SectionFiles),
+	"SaveLibraryNoteContent": wr(SectionFiles),
+	// AI-ФОРМАТИРОВАНИЕ ТЕКСТА ЗАМЕТКИ — files:WRITE, хотя сервер не сохраняет ни байта: прецедент
+	// GenerateTechCardOperations, где AI-авторинг классифицирован как запись. Довод не формальный: метод
+	// существует, чтобы породить содержимое, которое человек примет в буфер и сохранит, и читатель
+	// библиотеки не должен уметь запустить авторинг. Заодно это единственный тормоз расхода на модель —
+	// платный вызов не должен быть доступен всякому, у кого есть files:read.
+	"FormatLibraryNoteMarkdown": wr(SectionFiles),
 	// task archive + checklist
 	"ArchiveTask":              wr(SectionTasks),
 	"UnarchiveTask":            wr(SectionTasks),
 	"AddTaskChecklistItem":     wr(SectionTasks),
 	"SetTaskChecklistItemDone": wr(SectionTasks),
 	"DeleteTaskChecklistItem":  wr(SectionTasks),
+	// ЗАДАЧИ ФАЙЛА — секция TASKS, а не files, хотя все три RPC живут по адресу /api/admin/files/… и
+	// зовутся с карточки файла. Секция следует за тем, ЧТО В ОТВЕТЕ, а не за тем, где кнопка (прецедент
+	// GetMaterialCuttingCoefficientSuggestion выше в production): в ответе едут заголовки, колонки,
+	// исполнители и сроки задач, а мутация пишет строку принадлежности ЗАДАЧИ — task_file каскадит от
+	// задачи, не от файла. Классифицируй мы это как files, аккаунт с одной библиотекой читал бы доску
+	// боком, поимённо.
+	//
+	// Следствие названо, чтобы его не приняли за баг: на карточке файла человек без tasks:read получает
+	// PermissionDenied, и блок задач обязан пережить его надписью «нет доступа к задачам», а не
+	// сломанной карточкой.
+	"ListLibraryFileTasks":      rd(SectionTasks),
+	"AttachLibraryFileToTask":   wr(SectionTasks),
+	"DetachLibraryFileFromTask": wr(SectionTasks),
 	// fulfillment board (orders projection: annotations + ship/deliver)
 	"GetFulfillmentBoard":             rd(SectionFulfillment),
 	"GetFulfillmentCard":              rd(SectionFulfillment),
