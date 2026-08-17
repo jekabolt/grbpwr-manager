@@ -441,7 +441,7 @@ func computeLayNettoStamp(ctx context.Context, rep dependency.Repository, runID,
 	}
 	markers, err := rep.TechCards().ListRunMarkers(ctx, runID)
 	if err != nil {
-		return decimal.NullDecimal{}, fmt.Errorf("failed to load раскладки of run %d for the netto stamp: %w", runID, err)
+		return decimal.NullDecimal{}, fmt.Errorf("failed to load the markers of run %d for the netto stamp: %w", runID, err)
 	}
 	byID := make(map[int]*entity.TechCardMarkerSummary, len(markers))
 	for i := range markers {
@@ -623,7 +623,7 @@ func validateLayInsert(ins *entity.ProductionRunLayInsert) error {
 		sec := &ins.Sections[i]
 		if sec.MarkerId <= 0 {
 			return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "required", "",
-				"every section lays one раскладка of this run")
+				"every section lays one marker of this run")
 		}
 		if sec.Plies < entity.ProductionLayPliesMin || sec.Plies > entity.ProductionLayPliesMax {
 			return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].plies", i), "out_of_range",
@@ -770,11 +770,11 @@ func requireLaySectionMarkers(ctx context.Context, db dependency.DB, runID, tech
 			return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "marker_is_draft",
 				fmt.Sprintf("marker %d", sections[i].MarkerId),
 				entity.MarkerDraftNormRefusal(d.Name, d.PlacedCount, d.TotalCount)+
-					" В настил она тоже не встаёт: метраж настила считается по её длине.")
+					" It does not go into a lay either: the lay's length is counted from the marker's length.")
 		}
 		return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "not_a_run_marker",
 			fmt.Sprintf("marker %d", sections[i].MarkerId),
-			"a section lays a раскладка taken FOR THIS RUN on this lay's cloth slot; copy the card's раскладка into the run first")
+			"a section lays a marker captured FOR THIS RUN on this lay's cloth slot; copy the card's marker into the run first")
 	}
 	return nil
 }

@@ -291,7 +291,7 @@ func (s *Service) buildManifest(ctx context.Context, runID int) (*Manifest, erro
 	// таком нельзя — иначе единственным следом останется строка лога, которую в цеху не видно.
 	if spec.Release != nil && pack.ReleaseNumber != spec.Release.ReleaseNumber {
 		caveats = append(caveats, fmt.Sprintf(
-			"строка прогона называет Rev.%d, а посчитано по Rev.%d — релиз изменился между чтениями, сверьте наряд с карточкой",
+			"the run row names Rev.%d, while Rev.%d is what was computed — the release changed between the two reads, check the run pack against the card",
 			pack.ReleaseNumber, spec.Release.ReleaseNumber))
 	}
 

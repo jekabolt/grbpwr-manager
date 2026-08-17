@@ -122,7 +122,7 @@ func (s *Store) SaveCutReceipt(ctx context.Context, runID int, layKey string,
 	layKey = strings.TrimSpace(layKey)
 	if layKey == "" {
 		return entity.ProductionRunCutReceipt{}, entity.NewFieldViolation("lay_key", "required", "",
-			"address the настил by the stable key it was created with")
+			"address the lay by the stable key it was created with")
 	}
 	if err := validateCutReceiptInsert(&ins); err != nil {
 		return entity.ProductionRunCutReceipt{}, err
@@ -231,11 +231,11 @@ func (s *Store) DeleteCutReceipt(ctx context.Context, runID int, layKey string, 
 	layKey = strings.TrimSpace(layKey)
 	if layKey == "" {
 		return entity.NewFieldViolation("lay_key", "required", "",
-			"address the настил by the stable key it was created with")
+			"address the lay by the stable key it was created with")
 	}
 	if sizeID <= 0 {
 		return entity.NewFieldViolation("size_id", "required", "",
-			"a cut receipt is addressed by the pair (настил, размер)")
+			"a cut receipt is addressed by the pair (lay, size)")
 	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
@@ -323,15 +323,15 @@ func (s *Store) ListCutReceipts(ctx context.Context, runID int) ([]entity.Produc
 func validateCutReceiptInsert(ins *entity.ProductionRunCutReceiptInsert) error {
 	if ins.SizeId <= 0 {
 		return entity.NewFieldViolation("receipt.size_id", "required", "",
-			"a cut receipt describes the pair (настил, размер)")
+			"a cut receipt describes the pair (lay, size)")
 	}
 	if ins.CutQty < 0 {
 		return entity.NewFieldViolation("receipt.cut_qty", "out_of_range", fmt.Sprintf("%d", ins.CutQty),
-			"выкроено is a count of what came off the настил; it cannot be negative")
+			"cut qty is a count of what came off the lay; it cannot be negative")
 	}
 	if ins.AcceptedQty < 0 {
 		return entity.NewFieldViolation("receipt.accepted_qty", "out_of_range", fmt.Sprintf("%d", ins.AcceptedQty),
-			"принято в пошив is a count of what reached the sewing floor; it cannot be negative")
+			"accepted into sewing is a count of what reached the sewing floor; it cannot be negative")
 	}
 	if ins.Note.Valid {
 		if trimmed := strings.TrimSpace(ins.Note.String); trimmed == "" {

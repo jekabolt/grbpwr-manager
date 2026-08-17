@@ -35,7 +35,7 @@ import (
 // The machine-readable half is entity.ProductionRunLayNotApplicableKey — the SAME key the настил
 // uses, because it is the same fact: no colourways, no cut pieces and no раскладки means no настилы,
 // and a pair (настил, размер) is what a cutting receipt is about.
-const productionRunCutReceiptNotApplicableMsg = "an auxiliary tech card has no настилы, so there is no (настил, размер) pair to report a cut on"
+const productionRunCutReceiptNotApplicableMsg = "an auxiliary tech card has no lays, so there is no (lay, size) pair to report a cut on"
 
 // ListProductionRunCutReceipts returns every cutting receipt of a run, across all of its настилы.
 func (s *Server) ListProductionRunCutReceipts(ctx context.Context, req *pb_admin.ListProductionRunCutReceiptsRequest) (*pb_admin.ListProductionRunCutReceiptsResponse, error) {
@@ -167,7 +167,7 @@ func (s *Server) productionRunCutReceiptError(ctx context.Context, op string, ru
 	case errors.Is(err, sql.ErrNoRows):
 		return status.Error(codes.NotFound, "production run not found")
 	case s.repo.IsErrForeignKeyViolation(err):
-		return status.Error(codes.InvalidArgument, "the cut receipt references a missing настил or size")
+		return status.Error(codes.InvalidArgument, "the cut receipt references a missing lay or size")
 	}
 	slog.Default().ErrorContext(ctx, "production run cut receipt call failed",
 		slog.String("op", op), slog.Int("run_id", runID), slog.String("err", err.Error()))

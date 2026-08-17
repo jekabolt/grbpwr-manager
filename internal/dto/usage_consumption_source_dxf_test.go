@@ -138,9 +138,9 @@ func TestRunReadinessDxfNormIsItsOwnAnswerNotManual(t *testing.T) {
 	require.Equal(t, entity.RunReadinessWarning, f.Severity,
 		"a pattern-derived norm is accepted — выкройки есть раньше раскладки")
 	require.True(t, res.Report.Ready(), "it must not refuse a run; blockers: %v", res.Report.Blockers())
-	require.Contains(t, f.Detail, "снят с выкроек")
+	require.Contains(t, f.Detail, "taken from the patterns")
 	require.Contains(t, f.Detail, "12%", "the percentage that pays for the waste must be named")
-	require.NotContains(t, f.Detail, "введён руками")
+	require.NotContains(t, f.Detail, "entered by hand")
 
 	// Раскладки за такой нормой нет, поэтому пять условий съёмки не имеют предмета — тот же
 	// инвариант 1, что у ручной нормы: один факт краснеет ОДИН раз.
@@ -166,7 +166,7 @@ func TestRunReadinessDxfNormWithoutWastagePercentBlocks(t *testing.T) {
 	f, ok := rrFind(res, entity.RunReadinessKeyNormProvenance)
 	require.True(t, ok)
 	require.Equal(t, entity.RunReadinessBlocker, f.Severity)
-	require.Contains(t, f.Detail, "НЕ ЗАДАН")
+	require.Contains(t, f.Detail, "NOT SET")
 	blockers := res.Report.Blockers()
 	require.Len(t, blockers, 1, "one fact goes red once, got %v", blockers)
 	require.Equal(t, entity.RunReadinessKeyNormProvenance, blockers[0].Key)
@@ -246,7 +246,7 @@ func TestRunReadinessDxfWithoutNormDoesNotDoubleReport(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, entity.RunReadinessWarning, f.Severity,
 		"the missing norm is slot_norm's red, not this row's")
-	require.NotContains(t, f.Detail, "не задан%", "the percentage must not be printed as a bare zero")
+	require.NotContains(t, f.Detail, "not set%", "the percentage must not be printed as a bare zero")
 	blockers := res.Report.Blockers()
 	require.Len(t, blockers, 1, "exactly one red about one missing norm, got %v", blockers)
 	require.Equal(t, entity.RunReadinessKeySlotNorm, blockers[0].Key)
@@ -269,7 +269,7 @@ func TestRunReadinessDxfNormAcceptsTheRunsActualWastagePercent(t *testing.T) {
 		"the run declares 9%% — nothing is understated, so nothing is blocked")
 	require.True(t, res.Report.Ready(), "blockers: %v", res.Report.Blockers())
 	require.Contains(t, f.Detail, "9%")
-	require.Contains(t, f.Detail, "фактический процент прогона")
+	require.Contains(t, f.Detail, "the run's actual percent")
 }
 
 // Фраза кавеата собирается из ПРИСУТСТВУЮЩИХ причин. С W3 причин ровно три — настилы, счётность,

@@ -1097,14 +1097,14 @@ func (s *Server) plannedUnitCostTodayWithReason(ctx context.Context, run *entity
 	// Причина считается ТОЛЬКО когда цифры нет: на успешном пути это лишний расчёт костинга.
 	card, err := s.repo.TechCards().GetTechCardById(ctx, run.TechCardId)
 	if err != nil || card == nil {
-		return nil, "карточка недоступна — по ней сейчас не посчитать"
+		return nil, "the tech card is unavailable — nothing can be computed from it right now"
 	}
 	_, _, reason := dto.ComputeProductionRunPlannedUnitCostWithReason(
 		card, s.costingFx(ctx), run.ActualWastagePercent, run.Lines)
 	if reason == "" {
 		// Цифры нет, а расчёт причины не назвал: значит она не в миксе, а в валюте — snapshot
 		// пишется только в базовой (setPlannedCostIfBase).
-		reason = "костинг карточки не в базовой валюте — плановая цена партии пишется только в ней"
+		reason = "the card's costing is not in the base currency — the planned run cost is written only in that currency"
 	}
 	return nil, reason
 }

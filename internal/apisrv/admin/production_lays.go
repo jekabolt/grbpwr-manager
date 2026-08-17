@@ -40,11 +40,11 @@ const productionRunLayConflictMsg = "production run lay was modified concurrentl
 // productionRunLayNotApplicableMsg explains the FailedPrecondition an auxiliary card gets. The
 // machine-readable half is entity.ProductionRunLayNotApplicableKey, carried as the violation's
 // reason so a client can branch without parsing prose.
-const productionRunLayNotApplicableMsg = "an auxiliary tech card has no colourways, no cut pieces and no раскладки, so it has no lay plan"
+const productionRunLayNotApplicableMsg = "an auxiliary tech card has no colourways, no cut pieces and no markers, so it has no lay plan"
 
 // productionRunMarkerWriteMsg is what an account without production:write is told when it tries to
 // take a раскладка FOR A RUN through SaveTechCardMarker (решение Р3).
-const productionRunMarkerWriteMsg = "production:write is required to take a раскладка for a production run (re-login if the permission was just granted)"
+const productionRunMarkerWriteMsg = "production:write is required to capture a marker for a production run (re-login if the permission was just granted)"
 
 // productionWriteAccess reports whether the caller may write the production section. Mirrors
 // productsWriteAccess, including its fail-closed behaviour on a context that never passed the RBAC
@@ -140,7 +140,7 @@ func (s *Server) SaveProductionRunLay(ctx context.Context, req *pb_admin.SavePro
 	}
 	slog.Default().ErrorContext(ctx, "saved production run lay is missing from its own plan",
 		slog.Int("run_id", runID), slog.String("lay_key", saved.LayKey))
-	return nil, status.Error(codes.Internal, "can't render the saved настил; reload the run")
+	return nil, status.Error(codes.Internal, "can't render the saved lay; reload the run")
 }
 
 // DeleteProductionRunLay removes ONE настил (its sections cascade).
@@ -203,7 +203,7 @@ func (s *Server) loadRunLayPlan(ctx context.Context, runID int, markers *layMark
 					continue
 				}
 				slog.Default().ErrorContext(ctx, "can't load marker for lay plan", slog.String("err", err.Error()))
-				return nil, status.Error(codes.Internal, "can't load раскладка")
+				return nil, status.Error(codes.Internal, "can't load the marker")
 			}
 		}
 	}
@@ -211,7 +211,7 @@ func (s *Server) loadRunLayPlan(ctx context.Context, runID int, markers *layMark
 	runMarkers, err := s.repo.TechCards().ListRunMarkers(ctx, runID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list run markers for lay plan", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't list раскладки of this run")
+		return nil, status.Error(codes.Internal, "can't list the markers of this run")
 	}
 
 	// Артикулы, которые колорвеи пинят на слоты настилов СЕГОДНЯ — identity and the narrowest measured
@@ -284,11 +284,11 @@ func (s *Server) preflightLayForSave(ctx context.Context, runID int, ins entity.
 			if errors.Is(err, entity.ErrMarkerNotFound) {
 				return apierr.Invalid(entity.NewFieldViolation(
 					fmt.Sprintf("lay.sections[%d].marker_id", i), "not_found",
-					fmt.Sprintf("раскладка %d", sec.MarkerId),
-					"pick a раскладка taken for THIS run on this настил's cloth slot"))
+					fmt.Sprintf("marker %d", sec.MarkerId),
+					"pick a marker captured for THIS run on this lay's cloth slot"))
 			}
 			slog.Default().ErrorContext(ctx, "can't load marker for lay save", slog.String("err", err.Error()))
-			return status.Error(codes.Internal, "can't load раскладка")
+			return status.Error(codes.Internal, "can't load the marker")
 		}
 	}
 	err = dto.ValidateLayForSave(dto.LayWriteCheckInput(runID, card.Id, bomItemID, ins, markers.all()))
@@ -349,11 +349,11 @@ func (s *Server) productionRunLayError(ctx context.Context, op string, runID int
 	case errors.Is(err, sql.ErrNoRows):
 		return status.Error(codes.NotFound, "production run not found")
 	case s.repo.IsErrForeignKeyViolation(err):
-		return status.Error(codes.InvalidArgument, "настил references a missing run, colourway, BOM line or раскладка")
+		return status.Error(codes.InvalidArgument, "the lay references a missing run, colourway, BOM line or marker")
 	}
 	slog.Default().ErrorContext(ctx, "production run lay write failed",
 		slog.String("op", op), slog.Int("run_id", runID), slog.String("err", err.Error()))
-	return status.Error(codes.Internal, "can't "+op+" the настил; try again")
+	return status.Error(codes.Internal, "can't "+op+" the lay; try again")
 }
 
 // layMarkerCache is the memo of §14 п.16: ONE GetMarker and ONE protojson parse per distinct

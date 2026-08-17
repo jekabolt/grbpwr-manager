@@ -296,7 +296,7 @@ func TestMarkerYieldFromBlobRefusesIncoherentBlobs(t *testing.T) {
 				Pieces:        []*pb_common.TechCardMarkerPiece{piece(1, "ПОЛОЧКА", "K_FRONT", 10, 1)},
 				Placements:    placements(1, 1, 0),
 			}),
-			"состав",
+			"composition",
 		},
 		{
 			"состав carries a zero quantity",
@@ -306,7 +306,7 @@ func TestMarkerYieldFromBlobRefusesIncoherentBlobs(t *testing.T) {
 				Pieces:        []*pb_common.TechCardMarkerPiece{piece(1, "ПОЛОЧКА", "K_FRONT", 10, 1)},
 				Placements:    placements(1, 1, 0),
 			}),
-			"состав",
+			"composition",
 		},
 		{"a negative schema version", `{"schemaVersion":-3,"placements":[{"pieceId":1}]}`, "schema_version -3"},
 	}

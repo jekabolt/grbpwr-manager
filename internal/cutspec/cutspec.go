@@ -129,7 +129,7 @@ func releaseSpec(ctx context.Context, cards Cards, run *entity.ProductionRun) (*
 	// и без него оно провалилось бы ниже, где первым же действием разыменовывается.
 	case errors.Is(err, sql.ErrNoRows), err == nil && rel == nil:
 		return nil, nil, []string{fmt.Sprintf(
-			"релиз #%d, на который ссылается прогон, не найден — наряд посчитан по ЖИВОЙ карточке", relID)}, nil
+			"release #%d, the one the run references, was not found — the run pack was computed from the LIVE card", relID)}, nil
 	case err != nil:
 		return nil, nil, nil, fmt.Errorf("cut spec: load release %d of run %d: %w", relID, run.Id, err)
 	}
@@ -141,7 +141,7 @@ func releaseSpec(ctx context.Context, cards Cards, run *entity.ProductionRun) (*
 	card := dto.CutSpecCardFromReleaseSnapshot(snap)
 	if card == nil {
 		return nil, nil, []string{fmt.Sprintf(
-			"снапшот релиза Rev.%d пуст — наряд посчитан по ЖИВОЙ карточке, а она могла измениться после релиза",
+			"the snapshot of release Rev.%d is empty — the run pack was computed from the LIVE card, and it may have changed since the release",
 			rel.ReleaseNumber)}, nil
 	}
 	resolveArticles(ctx, cards, card)
@@ -190,7 +190,7 @@ func parseReleaseSnapshot(ctx context.Context, rel *entity.TechCardRelease, tech
 	if rel.TechCardId != techCardID {
 		slog.Default().WarnContext(ctx, "cut spec: run points at a release of another tech card", attrs...)
 		return nil, fmt.Sprintf(
-			"релиз #%d принадлежит другой карточке — наряд посчитан по ЖИВОЙ карточке этого прогона", rel.Id)
+			"release #%d belongs to another card — the run pack was computed from this run's LIVE card", rel.Id)
 	}
 
 	var snap pb_common.TechCard
@@ -200,7 +200,7 @@ func parseReleaseSnapshot(ctx context.Context, rel *entity.TechCardRelease, tech
 		slog.Default().WarnContext(ctx, "cut spec: release snapshot won't parse",
 			append(attrs, slog.String("err", uerr.Error()))...)
 		return nil, fmt.Sprintf(
-			"снапшот релиза Rev.%d не читается текущей схемой — наряд посчитан по ЖИВОЙ карточке, а она могла измениться после релиза",
+			"the snapshot of release Rev.%d cannot be read by the current schema — the run pack was computed from the LIVE card, and it may have changed since the release",
 			rel.ReleaseNumber)
 	}
 	return &snap, ""
