@@ -6,15 +6,17 @@
 //
 // Format: {scope}{id36}.{epoch36}.{sig}
 //   - scope is one byte: 'i' (internal — admin SPA), 'p' (print — tech-pack QR), 'c'
-//     (card viewer — the id names a TECH CARD, not a pattern_object_access row) or 'r'
-//     (run pack — the id names a PRODUCTION RUN).
+//     (card viewer — the id names a TECH CARD, not a pattern_object_access row), 'r'
+//     (run pack — the id names a PRODUCTION RUN) or 'f' (library file — the id names a
+//     LIBRARY FILE).
 //     Scopes sign differently, so revoking a leaked paper tech-pack does not have to
 //     break the admin UI and vice versa (each scope can be re-epoched independently at a
 //     policy level later; today 'i'/'p' share the object row epoch, 'c' has its own row in
-//     tech_card_pattern_viewer_access and 'r' its own in production_run_pack_access).
-//     Because 'c' and 'r' tokens carry DIFFERENT id namespaces, every handler must check
-//     the scope it serves — a card token looked up as an object id would resolve to an
-//     unrelated object, and a run token looked up as a card id would serve an unrelated
+//     tech_card_pattern_viewer_access, 'r' its own in production_run_pack_access and 'f'
+//     its own in library_file_public_access).
+//     Because 'c', 'r' and 'f' tokens carry DIFFERENT id namespaces, every handler must
+//     check the scope it serves — a card token looked up as an object id would resolve to
+//     an unrelated object, and a run token looked up as a card id would serve an unrelated
 //     card's manifest. The check is an allowlist per endpoint, never a denylist.
 //   - id36 / epoch36 are base-36 (lowercase) — compact, so the printed QR stays small.
 //   - sig is base64url(HMAC_SHA256(pepper, "v1|"+scope+"|"+id+"|"+epoch)[:16]) — 128 bits.
@@ -54,7 +56,36 @@ const (
 	// reason every handler allowlists its own scope: a run token accepted by /api/pv would
 	// print the tech card that happens to carry the run's number.
 	ScopeRunPack Scope = 'r'
+	// ScopeFile marks public library-file links (/api/f/{token}, migration 0317): the id is
+	// a LIBRARY FILE id (library_file.id) at the library_file_public_access epoch. It is the
+	// FOURTH id namespace in this format, and the one most likely to be handed to an
+	// outsider — the whole point of the scope is that a person outside the company holds
+	// this string. Sharing numbers with patterns, cards and runs is therefore not a
+	// theoretical collision: without the per-endpoint allowlist, a contractor's file link
+	// re-labelled 'c' would print a tech card, and a QR from the shop floor re-labelled 'f'
+	// would hand out a file. Re-labelling breaks the signature (the scope byte is signed),
+	// so the allowlist and the signature close the door together, not separately.
+	//
+	// The row also holds the level check's other half: the epoch here says "this link is
+	// still the current one", NOT "this file is public". Publicity lives in
+	// library_file.access_level, and the handler must read it — a file switched back to
+	// 'team' keeps its access row, and a token that only matched the epoch would outlive
+	// the decision to close the file.
+	ScopeFile Scope = 'f'
 )
+
+// valid reports whether s is one of the known scopes. Parse refuses everything else, so an
+// unknown scope byte never reaches a handler's allowlist. Kept as a switch (not a chain of
+// !=) because the list grows: the failure mode of a forgotten scope is silent — Parse would
+// reject legitimate tokens of a scope that mints fine.
+func (s Scope) valid() bool {
+	switch s {
+	case ScopeInternal, ScopePrint, ScopeCard, ScopeRunPack, ScopeFile:
+		return true
+	default:
+		return false
+	}
+}
 
 const sigBytes = 16
 
@@ -99,7 +130,7 @@ func (m *Minter) Parse(token string) (scope Scope, id int64, epoch int, err erro
 		return 0, 0, 0, ErrInvalid
 	}
 	scope = Scope(token[0])
-	if scope != ScopeInternal && scope != ScopePrint && scope != ScopeCard && scope != ScopeRunPack {
+	if !scope.valid() {
 		return 0, 0, 0, ErrInvalid
 	}
 	parts := strings.Split(token[1:], ".")

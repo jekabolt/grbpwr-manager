@@ -5,12 +5,34 @@ import (
 	"testing"
 )
 
+// allScopes is the list every scope test iterates. A new scope MUST be added here — the
+// completeness test below fails otherwise, so the list cannot silently fall behind the
+// Scope constants the way it did for 'r' (added in 0293, never reached these tables).
+var allScopes = []Scope{ScopeInternal, ScopePrint, ScopeCard, ScopeRunPack, ScopeFile}
+
+// TestScopeListIsComplete walks the whole byte space and demands that exactly the scopes
+// listed above pass Scope.valid(). Without it, adding a constant and forgetting either
+// valid() or allScopes leaves a scope that mints tokens Parse then rejects — a failure that
+// only shows up as a 404 on a link somebody already sent to an outsider.
+func TestScopeListIsComplete(t *testing.T) {
+	listed := map[Scope]bool{}
+	for _, s := range allScopes {
+		listed[s] = true
+	}
+	for b := 0; b < 256; b++ {
+		s := Scope(b)
+		if got := s.valid(); got != listed[s] {
+			t.Errorf("scope %q: valid()=%v, listed in allScopes=%v", string(rune(b)), got, listed[s])
+		}
+	}
+}
+
 func TestMintParseRoundtrip(t *testing.T) {
 	m, err := NewMinter("test-pepper")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scope := range []Scope{ScopeInternal, ScopePrint, ScopeCard} {
+	for _, scope := range allScopes {
 		tok := m.Mint(scope, 12345, 7)
 		gotScope, id, epoch, err := m.Parse(tok)
 		if err != nil {
@@ -27,26 +49,31 @@ func TestMintDeterministic(t *testing.T) {
 	if m.Mint(ScopeInternal, 42, 0) != m.Mint(ScopeInternal, 42, 0) {
 		t.Fatal("mint must be deterministic")
 	}
-	if m.Mint(ScopeInternal, 42, 0) == m.Mint(ScopePrint, 42, 0) {
-		t.Fatal("scopes must sign differently")
-	}
-	if m.Mint(ScopeCard, 42, 0) == m.Mint(ScopeInternal, 42, 0) ||
-		m.Mint(ScopeCard, 42, 0) == m.Mint(ScopePrint, 42, 0) {
-		t.Fatal("card scope must sign differently from both object scopes")
-	}
 	if m.Mint(ScopeInternal, 42, 0) == m.Mint(ScopeInternal, 42, 1) {
 		t.Fatal("epochs must sign differently")
+	}
+	// Every PAIR of scopes must differ on the same (id, epoch): the id namespaces overlap
+	// by construction (pattern row 42, tech card 42, run 42, library file 42 all exist), so
+	// two scopes producing the same string would let one document's link open another's.
+	seen := map[string]Scope{}
+	for _, s := range allScopes {
+		tok := m.Mint(s, 42, 0)
+		if prev, dup := seen[tok]; dup {
+			t.Fatalf("scopes %c and %c mint the same token %q for the same (id, epoch)", prev, s, tok)
+		}
+		seen[tok] = s
 	}
 }
 
 // TestScopeRelabellingIsForgery — the signature covers the scope byte, so a token of one
 // scope re-labelled as another must not verify. This is the property the /api/p vs
-// /api/pv split stands on: 'c' tokens carry TECH CARD ids, 'i'/'p' tokens carry
-// pattern_object_access row ids, and a relabelled token would smuggle an id across that
-// namespace boundary with a valid-looking signature.
+// /api/pv vs /api/rp vs /api/f split stands on: 'c' tokens carry TECH CARD ids, 'r' carry
+// PRODUCTION RUN ids, 'f' carry LIBRARY FILE ids, 'i'/'p' carry pattern_object_access row
+// ids, and a relabelled token would smuggle an id across that namespace boundary with a
+// valid-looking signature.
 func TestScopeRelabellingIsForgery(t *testing.T) {
 	m, _ := NewMinter("test-pepper")
-	scopes := []Scope{ScopeInternal, ScopePrint, ScopeCard}
+	scopes := allScopes
 	for _, from := range scopes {
 		tok := m.Mint(from, 77, 3)
 		for _, to := range scopes {
