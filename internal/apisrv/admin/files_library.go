@@ -91,17 +91,24 @@ func (s *Server) ListLibraryFiles(ctx context.Context, req *pb_admin.ListLibrary
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	// Фильтр по человеку разбирается ОДНОЙ функцией вместе с ролью: id и роль — половины
+	// одного контрола, и разбери их порознь, «роль без человека» и «человек без роли»
+	// разъехались бы между вызывающими. Несуществующий id — пустая выдача, а не отказ (довод
+	// про оракул существования аккаунтов — в самом конвертере).
+	personID, personRole := dto.ConvertPbLibraryPersonFilterToEntity(req.PersonId, req.PersonRole)
 	files, total, err := s.repo.Files().ListFiles(ctx, entity.LibraryFileListFilter{
 		TopicId: int(req.TopicId),
 		// Пересечение: файл обязан нести ВСЕ выбранные темы. Приоритет фильтров
 		// (untopiced > topic_ids > topic_id) разрешается в сторе, чтобы правило
 		// жило в одном месте и не разъехалось между вызывающими.
-		TopicIds:  topicIDs,
-		Untopiced: req.Untopiced,
-		Search:    req.Search,
-		Limit:     int(req.Limit),
-		Offset:    int(req.Offset),
-		SortBy:    dto.ConvertPbLibraryFileSortToEntity(req.SortBy),
+		TopicIds:   topicIDs,
+		Untopiced:  req.Untopiced,
+		Search:     req.Search,
+		PersonId:   personID,
+		PersonRole: personRole,
+		Limit:      int(req.Limit),
+		Offset:     int(req.Offset),
+		SortBy:     dto.ConvertPbLibraryFileSortToEntity(req.SortBy),
 		// A library is read newest-first, so an unspecified order must mean
 		// descending. The shared converter maps UNKNOWN to ascending, which is right
 		// for the lists it was written for and wrong here — so the default is chosen

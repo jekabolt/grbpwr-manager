@@ -183,6 +183,26 @@ const (
 	LibraryFileSortSize
 )
 
+// LibraryFilePersonRole is the CAPACITY a person is on record for a file in.
+//
+// «Файлы Паши» is TWO questions and they must not be collapsed into one: he
+// UPLOADED the file (a historical fact, whose string half outlives his account)
+// or he KEEPS it (current responsibility, the owners list, which changes without
+// the file changing at all). One person plus a role is therefore the whole
+// control — two independent people filters would let a grid be asked for «залил
+// Паша И ведёт Паша», which is not a question anybody has.
+type LibraryFilePersonRole int
+
+const (
+	// LibraryFilePersonRoleAny — «где он числится вообще»: uploaded OR owns. The
+	// zero value on purpose: it is what an unspecified role has to mean, and it is
+	// also the wider of the two, so a filter that lost its role widens rather than
+	// silently hides files the person is in fact on record for.
+	LibraryFilePersonRoleAny LibraryFilePersonRole = iota
+	LibraryFilePersonRoleUploaded
+	LibraryFilePersonRoleOwner
+)
+
 // LibraryFileListFilter selects a page of the library.
 //
 // TopicId, TopicIds and Untopiced are views of the same rail and are resolved in
@@ -202,7 +222,21 @@ type LibraryFileListFilter struct {
 	// that way; matching the uploader is what makes "что заливал Паша" a question
 	// this input can answer. The implementation is LIKE for now; FULLTEXT or
 	// embeddings swap in behind this same field without touching the API contract.
-	Search      string
+	Search string
+	// PersonId narrows to the files ONE account is on record for; PersonRole says
+	// in which capacity. Non-positive means no person filter at all (not
+	// «nobody»), and an id belonging to no account matches nothing rather than
+	// failing — an error there would answer «does account N exist» to anybody
+	// willing to count up.
+	//
+	// An ACCOUNT ID, never a name, and that is the whole reason this field exists
+	// next to Search: Search matches the uploader as a STRING, which is right for
+	// a typed query and wrong as a filter — admins.username is UNIQUE and is FREED
+	// when the account is deleted, so a namesake hired later would inherit the
+	// whole history of the person who left (the hole closed twice already, in Ф3
+	// and in the visibility predicate).
+	PersonId    int
+	PersonRole  LibraryFilePersonRole
 	Limit       int
 	Offset      int
 	OrderFactor OrderFactor
