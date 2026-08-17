@@ -28,18 +28,13 @@ import (
 const noteRowColumns = `lf.id, lf.file_name, lf.content_type, lf.object_key, lf.sha256, lf.size_bytes,
 	lf.content_updated_by, lf.content_updated_at, lf.uploaded_by`
 
-// ⚠️ ТОЧКА 9 ПЕРЕЧНЯ ВИДИМОСТИ (Ф7, план §Ф7 «точки вырезания»).
+// ТОЧКА 9 ПЕРЕЧНЯ ВИДИМОСТИ (Ф7, план §Ф7 «точки вырезания») ЗАКРЫТА.
 //
-// GetNote и SaveNoteContent обязаны выбирать строку ПОД ТЕМ ЖЕ фрагментом-предикатом, который T-7.3
-// вносит билдером в остальные выдачи (fileslibrary.go). Билдера в пакете ещё нет — фраза «второй
-// способ написать предикат» и есть та дыра, ради которой затевалась Ф7, поэтому здесь он НЕ
-// продублирован от руки. Оба запроса ниже помечены noteVisibilityWhere: T-7.3 подставляет фрагмент
-// ровно в эти две точки и нигде больше.
-//
-// ДО ТОГО МОМЕНТА заметка видна всем, у кого есть files:read — ровно так же, как сейчас видны все
-// остальные чтения библиотеки, которые предикат ещё не накрыл. Это состояние всей ветки, а не
-// поблажка заметкам.
-const noteVisibilityWhere = `lf.id = :id`
+// GetNote и SaveNoteContent выбирают строку ПОД ТЕМ ЖЕ билдером (Viewer.Where, visibility.go),
+// что и остальные выдачи, — ровно в этих двух точках и нигде больше. Помеченная константа
+// noteVisibilityWhere, которую Ф8 оставила вместо предиката, снята: держать рядом с билдером
+// вторую строчку «где искать заметку» значило бы завести тот самый второй способ написать
+// предикат, ради отсутствия которого фаза и делалась.
 
 // CreateNote inserts the note's row with its topics — та же транзакция и та же грамматика тем, что
 // у AddFile, плюс три колонки заметки (0318).
@@ -99,12 +94,16 @@ func (s *Store) CreateNote(ctx context.Context, n *entity.LibraryNoteInsert, top
 // GetNote returns the note's ROW — без текста. Содержимое вызывающий читает по ObjectKey через
 // FileStore.GetLibraryObject; разрез идёт по слою, а не по удобству.
 //
-// sql.ErrNoRows, когда файла нет ИЛИ он невидим (см. noteVisibilityWhere) — эти два случая снаружи
-// неразличимы намеренно.
+// sql.ErrNoRows, когда файла нет ИЛИ он невидим — эти два случая снаружи неразличимы намеренно.
 func (s *Store) GetNote(ctx context.Context, fileID int) (*entity.LibraryNote, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"id": fileID}
 	n, err := storeutil.QueryNamedOne[entity.LibraryNote](ctx, s.DB,
-		`SELECT `+noteRowColumns+` FROM library_file lf WHERE `+noteVisibilityWhere,
-		map[string]any{"id": fileID})
+		`SELECT `+noteRowColumns+` FROM library_file lf WHERE lf.id = :id AND `+v.Where("lf", params),
+		params)
 	if err != nil {
 		return nil, err // sql.ErrNoRows passes through untouched
 	}
@@ -132,15 +131,20 @@ func (s *Store) SaveNoteContent(ctx context.Context, in entity.LibraryNoteSave) 
 		// открывается и ничего не показывает. Это хуже любого отказа.
 		return nil, fmt.Errorf("note object key and sha256 are required (upload the object before saving the row)")
 	}
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var res entity.LibraryNoteSaveResult
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		// Tx повторяет колбэк на транзиентных отказах — результат обязан собираться заново, иначе
 		// повтор дописал бы к нему поля прошлой попытки.
 		res = entity.LibraryNoteSaveResult{}
 
+		params := map[string]any{"id": in.FileId}
 		cur, err := storeutil.QueryNamedOne[entity.LibraryNote](ctx, rep.DB(),
-			`SELECT `+noteRowColumns+` FROM library_file lf WHERE `+noteVisibilityWhere+` FOR UPDATE`,
-			map[string]any{"id": in.FileId})
+			`SELECT `+noteRowColumns+` FROM library_file lf
+			WHERE lf.id = :id AND `+v.Where("lf", params)+` FOR UPDATE`, params)
 		if err != nil {
 			return err // sql.ErrNoRows passes through untouched
 		}

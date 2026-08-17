@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,27 @@ func filesGuard(t *testing.T) {
 		!strings.Contains(testCfg.DSN, "localhost") {
 		t.Skip("skipping outside CI unless the DSN targets a local container (avoids the configured prod DB)")
 	}
+}
+
+// viewerCtx — контекст обычного (не супер) сотрудника: имя из JWT плюс явная НЕполная
+// авторизация. Именно так выглядит живой запрос от аккаунта с правами на секцию files, и именно
+// из него предикат видимости (Ф7) достаёт смотрящего — параметра «кто спрашивает» у методов стора
+// нет и не будет.
+func viewerCtx(ctx context.Context, username string) context.Context {
+	return authsrv.PutAdminAuthz(
+		authsrv.PutAdminUsername(ctx, username),
+		authsrv.AdminAuthz{Perms: map[string]entity.AccessLevel{"files": entity.AccessWrite}},
+	)
+}
+
+// superCtx — контекст супер-админа: предикат для него вырождается в «видно всё». Тесты, которые
+// проверяют МЕХАНИКУ библиотеки, а не видимость, идут под ним — иначе каждый из них однажды
+// покраснеет по чужой причине.
+func superCtx(ctx context.Context) context.Context {
+	return authsrv.PutAdminAuthz(
+		authsrv.PutAdminUsername(ctx, "test-super"),
+		authsrv.AdminAuthz{Super: true},
+	)
 }
 
 // insertLibraryFileFixture inserts one library_file row and registers its removal

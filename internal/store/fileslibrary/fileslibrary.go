@@ -80,25 +80,26 @@ func (s *Store) AddFile(ctx context.Context, f *entity.LibraryFileInsert, topicI
 // UpdateFile renames the file and REPLACES its topic set (task_media semantics:
 // the caller sends the full set it wants, not a delta). Returns sql.ErrNoRows
 // when no such file exists.
+//
+// ТОЧКА 10 ПРЕДИКАТА (запись). Проверка стоит ПЕРВОЙ и внутри транзакции: невидимый файл обязан
+// ответить NotFound, а не PermissionDenied, — «нет прав» подтвердило бы, что файл существует.
+// Rows-affected здесь ничего бы не рассказал: UPDATE на невидимой строке прошёл бы успешно.
 func (s *Store) UpdateFile(ctx context.Context, id int, fileName string, topicIDs []int, newTopics []string) error {
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
-			`UPDATE library_file SET file_name = :fileName WHERE id = :id`,
-			map[string]any{"id": id, "fileName": fileName})
-		if err != nil {
-			return fmt.Errorf("failed to update library file: %w", err)
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return err
+	}
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Существование И видимость — одной проверкой, ВНУТРИ SERIALIZABLE-транзакции: она же
+		// снимает нужду перепроверять существование после UPDATE (ноль затронутых строк дальше
+		// может означать только «имя не изменилось»).
+		if err := EnsureVisible(ctx, rep.DB(), v, id); err != nil {
+			return err // sql.ErrNoRows нетронутым
 		}
-		if rows == 0 {
-			// Rows-affected is 0 both for "no such row" and for "same name again";
-			// disambiguate rather than reporting a spurious not-found.
-			exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-				`SELECT COUNT(*) FROM library_file WHERE id = :id`, map[string]any{"id": id})
-			if err != nil {
-				return fmt.Errorf("failed to check library file existence: %w", err)
-			}
-			if exists == 0 {
-				return sql.ErrNoRows
-			}
+		if _, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+			`UPDATE library_file SET file_name = :fileName WHERE id = :id`,
+			map[string]any{"id": id, "fileName": fileName}); err != nil {
+			return fmt.Errorf("failed to update library file: %w", err)
 		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM library_file_topic WHERE file_id = :id`, map[string]any{"id": id}); err != nil {
@@ -117,9 +118,20 @@ func (s *Store) UpdateFile(ctx context.Context, id int, fileName string, topicID
 // file, returning entity.ErrLibraryFileInUse naming the holders: the FK is the
 // backstop, but a bare constraint error would only say "cannot delete", and the
 // person would have no way to find out why.
+//
+// ТОЧКА 10 ПРЕДИКАТА (запись). Проверка видимости стоит ПЕРЕД списком держателей, и порядок здесь
+// содержательный: отказ ErrLibraryFileInUse НАЗЫВАЕТ номера задач, то есть на невидимом файле
+// подтвердил бы его существование и заодно рассказал, где он используется.
 func (s *Store) DeleteFile(ctx context.Context, id int) ([]string, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var keys []string
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if err := EnsureVisible(ctx, rep.DB(), v, id); err != nil {
+			return err // sql.ErrNoRows нетронутым
+		}
 		// Скалярный вариант обязателен: QueryListNamed сканирует StructScan-ом и на
 		// int ПАНИКУЕТ — но только когда строки есть, то есть ровно в отказе, ради
 		// которого этот запрос и написан. Отказ без покрытия читался как рабочий.
@@ -154,9 +166,18 @@ func (s *Store) DeleteFile(ctx context.Context, id int) ([]string, error) {
 }
 
 // GetFileById returns one file with its topics resolved.
+//
+// ТОЧКА 2 ПРЕДИКАТА. Отказ приходит ОТСЮДА, то есть ДО того, как хендлер минтит presigned-ссылки:
+// невидимый файл неотличим от несуществующего (sql.ErrNoRows → NotFound), и ни имени, ни ссылки
+// на байты за ним не уезжает.
 func (s *Store) GetFileById(ctx context.Context, id int) (*entity.LibraryFile, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"id": id}
 	f, err := storeutil.QueryNamedOne[entity.LibraryFile](ctx, s.DB,
-		`SELECT * FROM library_file WHERE id = :id`, map[string]any{"id": id})
+		`SELECT lf.* FROM library_file lf WHERE lf.id = :id AND `+v.Where("lf", params), params)
 	if err != nil {
 		return nil, err
 	}
@@ -168,12 +189,23 @@ func (s *Store) GetFileById(ctx context.Context, id int) (*entity.LibraryFile, e
 
 // ListFilesByIds resolves an explicit set (task attachments). Order follows the
 // given ids so the card shows attachments in the order they were attached.
+//
+// ТОЧКА 3 ПРЕДИКАТА. Невидимый файл ПРОСТО ВЫПАДАЕТ из резолва, а не роняет карточку задачи:
+// у задачи может быть десяток вложений, и одно ограниченное не повод не показать девять
+// остальных. Голые id в Task.file_ids при этом остаются — числа без имён, решение плана
+// (§Ф7, точка 3), и оно защищает от худшего: отфильтруй мы их, ближайшее сохранение формы
+// задачи (замещающий набор file_ids) МОЛЧА ОТЦЕПИЛО БЫ невидимое вложение.
 func (s *Store) ListFilesByIds(ctx context.Context, ids []int) ([]entity.LibraryFile, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"ids": ids}
 	files, err := storeutil.QueryListNamed[entity.LibraryFile](ctx, s.DB,
-		`SELECT * FROM library_file WHERE id IN (:ids)`, map[string]any{"ids": ids})
+		`SELECT lf.* FROM library_file lf WHERE lf.id IN (:ids) AND `+v.Where("lf", params), params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list library files by ids: %w", err)
 	}
@@ -195,13 +227,23 @@ func (s *Store) ListFilesByIds(ctx context.Context, ids []int) ([]entity.Library
 
 // FindFilesBySha256 backs the duplicate hint in the upload response. It is a
 // hint, not a guard: an identical file is allowed in, it is just called out.
+//
+// ТОЧКА 4 ПРЕДИКАТА, И ЭТО САМАЯ ЗАБЫВАЕМАЯ ИЗ ТРИНАДЦАТИ. Подсказка печатает ИМЯ найденного
+// дубликата — то есть без предиката любой, у кого случайно оказались те же байты, узнавал бы
+// имя ограниченного файла, ни разу не открыв библиотеку. Отпечаток сюда приносит загружающий,
+// значит подобрать его можно намеренно.
 func (s *Store) FindFilesBySha256(ctx context.Context, sha256 string) ([]entity.LibraryFile, error) {
 	if sha256 == "" {
 		return nil, nil
 	}
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"sha": sha256}
 	files, err := storeutil.QueryListNamed[entity.LibraryFile](ctx, s.DB,
-		`SELECT * FROM library_file WHERE sha256 = :sha ORDER BY id`,
-		map[string]any{"sha": sha256})
+		`SELECT lf.* FROM library_file lf WHERE lf.sha256 = :sha AND `+v.Where("lf", params)+
+			` ORDER BY lf.id`, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find library files by sha256: %w", err)
 	}
@@ -220,9 +262,18 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 	}
 	limit = min(limit, maxPageLimit)
 	offset := max(f.Offset, 0)
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 
+	// ТОЧКА 1 ПРЕДИКАТА, И ОН СТОИТ В ТОМ ЖЕ WHERE, ЧТО ФИЛЬТРЫ И ПОИСК — не отдельным проходом
+	// и не UNION'ом. Иначе расширение поиска по автору (LIKE на uploaded_by ниже) вытащило бы
+	// ограниченный файл мимо фильтра видимости: «что заливал Паша» показало бы имя файла, который
+	// Паша от спрашивающего закрыл.
 	where := []string{"1 = 1"}
 	params := map[string]any{}
+	where = append(where, v.Where("lf", params))
 	switch {
 	case f.Untopiced:
 		where = append(where, `NOT EXISTS (SELECT 1 FROM library_file_topic lft WHERE lft.file_id = lf.id)`)
@@ -307,27 +358,43 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 // ListTopics returns the rail: every topic with how many files carry it, plus
 // the two badges that would otherwise cost an extra round-trip each — how many
 // files carry no topic at all, and how many files exist in total.
+//
+// ТОЧКА 5 ПРЕДИКАТА — ВСЕ ТРИ ЧИСЛА СЧИТАЮТСЯ ПОД НИМ, поэтому у разных людей рельс показывает
+// РАЗНЫЕ числа. Это принято сознательно (контекст §3.4), и «починка» здесь ломает саму фазу:
+// одинаковый у всех счётчик означал бы «в этой теме есть что-то, чего тебе не показывают», то
+// есть ту же утечку, только выраженную числом.
+//
+// Предикат стоит в ON внешнего соединения, а не в WHERE: в WHERE он превратил бы LEFT JOIN в
+// INNER и выкинул из рельса ПУСТЫЕ темы, которые обязаны быть видны (в них кладут новое).
 func (s *Store) ListTopics(ctx context.Context) ([]entity.FileTopicWithCount, int, int, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, 0, 0, err
+	}
 	// Ordering by usage, not alphabetically: dead topics sink on their own, and a
 	// list of sixty becomes the eight that are actually in use.
+	topicParams := map[string]any{}
 	topics, err := storeutil.QueryListNamed[entity.FileTopicWithCount](ctx, s.DB, `
-		SELECT ft.*, COUNT(lft.file_id) AS files_count
+		SELECT ft.*, COUNT(lf.id) AS files_count
 		FROM file_topic ft
 		LEFT JOIN library_file_topic lft ON lft.topic_id = ft.id
+		LEFT JOIN library_file lf ON lf.id = lft.file_id AND `+v.Where("lf", topicParams)+`
 		GROUP BY ft.id
-		ORDER BY files_count DESC, ft.name ASC`, map[string]any{})
+		ORDER BY files_count DESC, ft.name ASC`, topicParams)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("failed to list file topics: %w", err)
 	}
+	untopicedParams := map[string]any{}
 	untopiced, err := storeutil.QueryCountNamed(ctx, s.DB, `
 		SELECT COUNT(*) FROM library_file lf
-		WHERE NOT EXISTS (SELECT 1 FROM library_file_topic lft WHERE lft.file_id = lf.id)`,
-		map[string]any{})
+		WHERE NOT EXISTS (SELECT 1 FROM library_file_topic lft WHERE lft.file_id = lf.id)
+		  AND `+v.Where("lf", untopicedParams), untopicedParams)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("failed to count untopiced files: %w", err)
 	}
+	totalParams := map[string]any{}
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
-		`SELECT COUNT(*) FROM library_file`, map[string]any{})
+		`SELECT COUNT(*) FROM library_file lf WHERE `+v.Where("lf", totalParams), totalParams)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("failed to count library files: %w", err)
 	}
@@ -459,8 +526,32 @@ func (s *Store) AssignTopics(ctx context.Context, fileIDs, topicIDs []int, newTo
 	if len(fileIDs) > maxPageLimit {
 		return 0, fmt.Errorf("at most %d files can be labelled in one call, got %d", maxPageLimit, len(fileIDs))
 	}
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return 0, err
+	}
 	var assigned int
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// ТОЧКА 10 ПРЕДИКАТА, СЕМАНТИКА ПАЧКИ: ОДИН невидимый id отказывает ВСЕЙ пачке.
+		//
+		// Частичное применение отвечало бы на видимый и невидимый id по-разному — «проставилось
+		// 4 из 5» и есть подтверждение, что пятый файл существует. Отказ на всю пачку не
+		// различает их вовсе.
+		//
+		// Считается именно НЕВИДИМОЕ (условие под отрицанием), а не «сколько видимо»: файл,
+		// УДАЛЁННЫЙ между загрузкой сетки и нажатием кнопки, обязан остаться тем, чем был до
+		// предиката, — просто отсутствующей строкой, из-за которой пачка не падает (см. довод у
+		// кросс-джойна ниже). Невидимый и удалённый — разные вещи ровно здесь и больше нигде.
+		invisibleParams := map[string]any{"fileIds": fileIDs}
+		invisible, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM library_file lf WHERE lf.id IN (:fileIds) AND NOT (`+
+				v.Where("lf", invisibleParams)+`)`, invisibleParams)
+		if err != nil {
+			return fmt.Errorf("failed to check library files visibility: %w", err)
+		}
+		if invisible > 0 {
+			return sql.ErrNoRows
+		}
 		ids := make(map[int]struct{}, len(topicIDs)+len(newTopics))
 		for _, id := range topicIDs {
 			if id > 0 {
@@ -532,11 +623,22 @@ func (s *Store) AssignTopics(ctx context.Context, fileIDs, topicIDs []int, newTo
 // Читаем старый ключ и пишем новый одной транзакцией: две одновременные
 // перезаливки иначе прочитали бы один и тот же старый ключ, и вторая удалила бы
 // байты, на которые уже указывает первая.
+//
+// ТОЧКА 13 ПРЕДИКАТА, И ОНА ЗАКРЫВАЕТСЯ ЗДЕСЬ ЦЕЛИКОМ. HTTP-довесок POST /api/files/{id}/preview
+// в карте RPC не значится и о правах ничего не знает — он лишь переводит sql.ErrNoRows отсюда в
+// 404, поэтому предикат внутри этого чтения и есть вся проверка. Побочный факт (Ф7): байты
+// превью уезжают в бакет ДО этого вызова и подчищаются после отказа — невидимый файл стоит
+// впустую загруженной картинки, но наружу не выдаёт ничего.
 func (s *Store) SetFilePreview(ctx context.Context, id int, previewKey string) (string, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return "", err
+	}
 	var previous string
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		params := map[string]any{"id": id}
 		f, err := storeutil.QueryNamedOne[entity.LibraryFile](ctx, rep.DB(),
-			`SELECT * FROM library_file WHERE id = :id`, map[string]any{"id": id})
+			`SELECT lf.* FROM library_file lf WHERE lf.id = :id AND `+v.Where("lf", params), params)
 		if err != nil {
 			return err // sql.ErrNoRows passes through untouched
 		}
@@ -696,18 +798,20 @@ func (s *Store) attachOwners(ctx context.Context, files []*entity.LibraryFile) e
 // Замена, а не дельта: владельцев единицы, и пикер показал вызывающему ВЕСЬ
 // текущий набор перед правкой — в отличие от массового проставления тем, которое
 // набора не видело и потому только дописывает.
+// ТОЧКА 10 ПРЕДИКАТА (запись): назначить владельцев невидимому файлу нельзя. Иначе любой с
+// files:write вписал бы себя во владельцы чужого ограниченного файла и тем же движением ОТКРЫЛ
+// БЫ СЕБЕ ДОСТУП — четвёртое плечо предиката ровно про владельцев.
 func (s *Store) SetFileOwners(ctx context.Context, fileID int, adminIDs []int, addedBy string) error {
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		// Существование проверяем ВНУТРИ транзакции: пишущие транзакции стора идут в
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return err
+	}
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Существование И видимость проверяем ВНУТРИ транзакции: пишущие транзакции стора идут в
 		// SERIALIZABLE, поэтому проверка реально закрывает гонку с удалением файла, а
 		// не просто сужает окно.
-		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COUNT(*) FROM library_file WHERE id = :id`, map[string]any{"id": fileID})
-		if err != nil {
-			return fmt.Errorf("failed to check library file existence: %w", err)
-		}
-		if exists == 0 {
-			return sql.ErrNoRows
+		if err := EnsureVisible(ctx, rep.DB(), v, fileID); err != nil {
+			return err // sql.ErrNoRows нетронутым
 		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM library_file_owner WHERE file_id = :id`, map[string]any{"id": fileID}); err != nil {
@@ -735,14 +839,22 @@ func (s *Store) SetFileOwners(ctx context.Context, fileID int, adminIDs []int, a
 }
 
 // attachRelated resolves everything a file carries beyond its own row: topic
-// labels and owners. Читающие пути зовут ЕГО, а не две функции по отдельности —
-// иначе новый путь чтения однажды приедет с темами и без владельцев, и на одном
+// labels, owners and the size of its discussion. Читающие пути зовут ЕГО, а не три функции по
+// отдельности — иначе новый путь чтения однажды приедет с темами и без владельцев, и на одном
 // экране у файла будет ответственный, а на соседнем нет.
+//
+// Счётчик реплик стоит ЗДЕСЬ (а не в конвертере и не в хендлере) по тому же доводу: он обязан
+// приезжать на файл всюду, где приезжают темы, — иначе плитка витрины доступа выглядела бы иначе,
+// чем та же плитка в сетке. Пока этой строки не было, comments_count ехал на провод нулём при
+// полностью рабочем конвертере (Ф5 не могла её вписать: файл держался в карантине под предикат).
 func (s *Store) attachRelated(ctx context.Context, files []*entity.LibraryFile) error {
 	if err := s.attachTopics(ctx, files); err != nil {
 		return err
 	}
-	return s.attachOwners(ctx, files)
+	if err := s.attachOwners(ctx, files); err != nil {
+		return err
+	}
+	return s.AttachCommentsCount(ctx, files)
 }
 
 func (s *Store) attachRelatedSlice(ctx context.Context, files []entity.LibraryFile) error {

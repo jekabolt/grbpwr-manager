@@ -24,10 +24,10 @@ import (
 //   - РАЗБОР @упоминаний. Тело кладётся ровно таким, каким его набрали. Подсветка и поповер —
 //     клиентские; серверная разметка всё равно потребовала бы экранирования у каждого читателя.
 //
-// ЧТО ЗДЕСЬ ПОЯВИТСЯ В Ф7. Все пять методов и счётчик обязаны встать под предикат видимости
-// (T-7.3, точка «comments CRUD → NotFound на невидимом файле»). Запросы ниже написаны так, чтобы
-// предикат добавлялся ОДНИМ фрагментом к WHERE: обращение к library_file уже стоит отдельным
-// шагом (проверка существования в AddComment) либо доступно джойном по file_id.
+// ПРЕДИКАТ ВИДИМОСТИ (Ф7, T-7.3, точка 7) СТОИТ НА ВСЕХ ПЯТИ МЕТОДАХ. Он приходит сюда
+// коррелированным EXISTS'ом (Viewer.ExistsFile, visibility.go) — самой library_file в этих
+// запросах нет, а второй раз писать условие запрещено. Счётчик реплик предиката не требует: его
+// зовут на файлы, которые уже прошли предикат в своей выдаче.
 
 // commentColumns — единственный список колонок ленты. Звёздочку здесь писать нельзя: entity
 // сканируется StructScan-ом, и добавленная в 0316+ колонка без поля в структуре уронила бы КАЖДОЕ
@@ -43,11 +43,19 @@ const commentColumns = `id, file_id, author, author_id, body, created_at, edited
 //
 // Отсутствующий файл отдаёт ПУСТУЮ ленту, а не sql.ErrNoRows: карточка открывается через
 // GetFileById, который про пропавший файл уже сказал, а второй запрос существования на каждое
-// чтение ленты платит за случай, которого на живом клиенте не бывает.
+// чтение ленты платит за случай, которого на живом клиенте не бывает. НЕВИДИМЫЙ файл отдаёт ту
+// же пустую ленту тем же условием — «нет файла» и «не твой файл» обязаны быть неразличимы, а
+// хендлер ленты переводит в Internal всё, что не пусто, поэтому отдельной ошибки здесь и не надо.
 func (s *Store) ListComments(ctx context.Context, fileID int) ([]entity.LibraryFileComment, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"fileId": fileID}
 	comments, err := storeutil.QueryListNamed[entity.LibraryFileComment](ctx, s.DB,
-		`SELECT `+commentColumns+` FROM library_file_comment WHERE file_id = :fileId ORDER BY id`,
-		map[string]any{"fileId": fileID})
+		`SELECT `+commentColumns+` FROM library_file_comment
+		WHERE file_id = :fileId AND `+v.ExistsFile("library_file_comment.file_id", params)+`
+		ORDER BY id`, params)
 	if err != nil {
 		return nil, fmt.Errorf("can't list library file comments: %w", err)
 	}
@@ -55,9 +63,22 @@ func (s *Store) ListComments(ctx context.Context, fileID int) ([]entity.LibraryF
 }
 
 // GetCommentById reads one remark — это то, что читает правило «только свою» ПЕРЕД правкой и
-// удалением: автор хранится, а не приезжает в запросе. sql.ErrNoRows на пропавшей реплике.
+// удалением: автор хранится, а не приезжает в запросе. sql.ErrNoRows на пропавшей реплике И на
+// реплике под невидимым файлом: иначе чужая переписка читалась бы по перебору id реплик, минуя
+// файл целиком.
 func (s *Store) GetCommentById(ctx context.Context, id int) (*entity.LibraryFileComment, error) {
-	return readComment(ctx, s.DB, id)
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{"id": id}
+	c, err := storeutil.QueryNamedOne[entity.LibraryFileComment](ctx, s.DB,
+		`SELECT `+commentColumns+` FROM library_file_comment
+		WHERE id = :id AND `+v.ExistsFile("library_file_comment.file_id", params), params)
+	if err != nil {
+		return nil, err // sql.ErrNoRows passes through untouched
+	}
+	return &c, nil
 }
 
 // AddComment appends one remark and returns it AS STORED.
@@ -73,15 +94,16 @@ func (s *Store) GetCommentById(ctx context.Context, id int) (*entity.LibraryFile
 // ключ — второй рубеж: он бы тоже не дал вставить реплику в пустоту, но сказал бы об этом сырым
 // нарушением констрейнта, которое хендлеру нечем превратить в NotFound.
 func (s *Store) AddComment(ctx context.Context, fileID int, author, body string) (*entity.LibraryFileComment, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var stored *entity.LibraryFileComment
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COUNT(*) FROM library_file WHERE id = :id`, map[string]any{"id": fileID})
-		if err != nil {
-			return fmt.Errorf("failed to check library file existence: %w", err)
-		}
-		if exists == 0 {
-			return sql.ErrNoRows
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Существование И видимость — одной проверкой: написать в обсуждение файла, которого тебе
+		// не показывают, нельзя, и отказ обязан быть NotFound, а не PermissionDenied.
+		if err := EnsureVisible(ctx, rep.DB(), v, fileID); err != nil {
+			return err // sql.ErrNoRows нетронутым
 		}
 		id, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
 			INSERT INTO library_file_comment (file_id, author, author_id, body)
@@ -110,18 +132,29 @@ func (s *Store) AddComment(ctx context.Context, fileID int, author, body string)
 // того же текста в ту же секунду (edited_at при этом тоже не меняется). Поэтому существование
 // перепроверяется отдельно — иначе сохранение без изменений отвечало бы «реплика удалена», и
 // человек искал бы её у себя на экране.
+// Предикат стоит И в UPDATE, И в перепроверке существования. Только в UPDATE было бы мало: на
+// невидимой реплике он затронул бы ноль строк, перепроверка нашла бы её и вернула «сохранено без
+// изменений» — тот же ответ, что у настоящей повторной правки, то есть подтверждение, что реплика
+// (а значит и файл) существует.
 func (s *Store) UpdateComment(ctx context.Context, id int, body string) (*entity.LibraryFileComment, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var stored *entity.LibraryFileComment
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		params := map[string]any{"id": id, "body": body}
 		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
-			`UPDATE library_file_comment SET body = :body, edited_at = CURRENT_TIMESTAMP WHERE id = :id`,
-			map[string]any{"id": id, "body": body})
+			`UPDATE library_file_comment SET body = :body, edited_at = CURRENT_TIMESTAMP
+			WHERE id = :id AND `+v.ExistsFile("library_file_comment.file_id", params), params)
 		if err != nil {
 			return fmt.Errorf("failed to update library file comment: %w", err)
 		}
 		if rows == 0 {
+			existsParams := map[string]any{"id": id}
 			exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-				`SELECT COUNT(*) FROM library_file_comment WHERE id = :id`, map[string]any{"id": id})
+				`SELECT COUNT(*) FROM library_file_comment
+				WHERE id = :id AND `+v.ExistsFile("library_file_comment.file_id", existsParams), existsParams)
 			if err != nil {
 				return fmt.Errorf("failed to check library file comment existence: %w", err)
 			}
@@ -144,8 +177,14 @@ func (s *Store) UpdateComment(ctx context.Context, id int, body string) (*entity
 // Без транзакции сознательно: один оператор атомарен сам по себе, а лента ни на что не ссылается —
 // каскад от файла и обнуление автора живут в схеме (0316), а не в этом коде.
 func (s *Store) DeleteComment(ctx context.Context, id int) error {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"id": id}
 	rows, err := storeutil.ExecNamedRows(ctx, s.DB,
-		`DELETE FROM library_file_comment WHERE id = :id`, map[string]any{"id": id})
+		`DELETE FROM library_file_comment
+		WHERE id = :id AND `+v.ExistsFile("library_file_comment.file_id", params), params)
 	if err != nil {
 		return fmt.Errorf("can't delete library file comment: %w", err)
 	}

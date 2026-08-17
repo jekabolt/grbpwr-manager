@@ -645,9 +645,14 @@ type (
 
 		// ListTasksByFileId answers «где этот файл ещё используется» from the FILE's side: the rows
 		// the file card draws. Returns the projection, not Task — see entity.LibraryFileTask for why.
+		//
+		// ПОД ПРЕДИКАТОМ ВИДИМОСТИ (Ф7): файл, невидимый зовущему, отдаёт ПУСТОЙ список — тот же
+		// ответ, что и несуществующий. Заголовки задач рассказывают, чем занят закрывший файл
+		// человек, поэтому «где он используется» закрыто вместе с самим файлом.
 		ListTasksByFileId(ctx context.Context, fileID int) ([]entity.LibraryFileTask, error)
 		// AttachFileToTask links one file to one task IDEMPOTENTLY (a repeat is a no-op, not a raw
-		// 1062) and puts the row at the END of that task's attachment order.
+		// 1062) and puts the row at the END of that task's attachment order. sql.ErrNoRows, если
+		// файл невидим зовущему (предикат Ф7) или его нет — эти два случая неразличимы намеренно.
 		//
 		// НАЗВАННАЯ ГОНКА, ПРИНЯТАЯ ПЛАНОМ: форма задачи сохраняется полным набором file_ids через
 		// UpdateTask, который набор ЗАМЕЩАЕТ. Привязка, сделанная с карточки файла, пока чужая форма
@@ -665,6 +670,14 @@ type (
 	// topic labels they carry. Topics are LABELS, not folders — a file carries
 	// several at once and may carry none. The bytes themselves belong to
 	// FileStore; nothing here touches the bucket.
+	//
+	// ПРЕДИКАТ ВИДИМОСТИ ДЕЙСТВУЕТ НА ВСЁ, ЧТО НИЖЕ, И СИГНАТУР НЕ МЕНЯЕТ. Смотрящий приезжает из
+	// ctx (username из JWT), поэтому у методов нет и не будет параметра «кто спрашивает»: параметр
+	// можно забыть передать, а контекст есть всегда. Файл уровня `people` ПРОПАДАЕТ у того, кому
+	// нельзя, — из выдач, из счётчиков и из записи (sql.ErrNoRows, то есть NotFound, а не
+	// PermissionDenied: «нет прав» подтвердило бы существование). Загрузивший, названные поимённо,
+	// владельцы и супер видят всегда. Единственное исключение — GetFileByPublicLink, у которого
+	// зовущего нет вовсе (см. его комментарий).
 	Files interface {
 		// AddFile inserts the metadata row and links topics in one transaction.
 		// Names in newTopics are created on the fly; an existing name resolves to

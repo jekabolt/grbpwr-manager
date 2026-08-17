@@ -16,15 +16,12 @@ import (
 
 // Ф7 — ДОСТУП К ФАЙЛУ (0317): уровень, поимённый список, публичная ссылка, журнал и витрина.
 //
-// ПРЕДИКАТ ВИДИМОСТИ СЮДА ЕЩЁ НЕ ВОШЁЛ. Он — задача T-7.3, и его билдер живёт в
-// fileslibrary.go вместе со всеми остальными выдачами. Здесь оставлены ДВЕ точки, куда он
-// обязан войти тем же фрагментом (а не переписанным по месту — второй способ написать предикат
-// и есть дыра, ради которой фаза затевалась):
+// ПРЕДИКАТ ВИДИМОСТИ ВОШЁЛ СЮДА ТЕМ ЖЕ БИЛДЕРОМ (Viewer.Where, visibility.go) в ДВЕ точки:
 //
 //   - GetFileAccess — точка 12: блок доступа не показывается тому, кто не видит файла;
 //   - ListSharedFiles — витрина под тем же предикатом, супер видит всё.
 //
-// Обе помечены комментарием «ТОЧКА ПРЕДИКАТА». Всё остальное в файле предиката не требует:
+// Всё остальное в файле предиката не требует:
 // SetFileAccess/RotateFileLink зовёт хендлер, уже проверивший круг (загрузивший|владелец|супер)
 // на прочитанном файле, а GetFileByPublicLink — единственное чтение библиотеки, у которого
 // зовущего нет вовсе (см. dependency.Files).
@@ -58,9 +55,19 @@ type levelRow struct {
 
 // GetFileAccess returns the file's whole access state: level, named people, link row.
 //
-// ТОЧКА ПРЕДИКАТА (T-7.3, точка 12): фрагмент видимости входит в SELECT уровня ниже. Пока его
-// нет, блок доступа читается всяким, у кого есть files:read, — ровно как и сам файл.
+// ТОЧКА 12 ПРЕДИКАТА. Гейт стоит ОТДЕЛЬНЫМ чтением перед readAccess, а не внутри него, и это
+// разделение содержательное: readAccess зовут ещё и после записи, где предикат не нужен и вреден
+// (см. его комментарий). Отказ обязан быть ИМЕННО sql.ErrNoRows — хендлер делает из него
+// NotFound; отдай мы пустую структуру без ошибки, точка 12 молча открылась бы, а блок доступа
+// подтвердил бы существование ограниченного файла самим кодом ответа.
 func (s *Store) GetFileAccess(ctx context.Context, fileID int) (*entity.LibraryFileAccess, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := EnsureVisible(ctx, s.DB, v, fileID); err != nil {
+		return nil, err // sql.ErrNoRows нетронутым
+	}
 	return s.readAccess(ctx, s.DB, fileID)
 }
 
@@ -396,9 +403,15 @@ func (s *Store) ListFileAccessEvents(ctx context.Context, fileID, limit int) ([]
 
 // ListSharedFiles is the витрина: everything that is `people` or `link` right now.
 //
-// ТОЧКА ПРЕДИКАТА (T-7.3): фрагмент видимости входит в общий WHERE ниже — и в счёт, и в
-// страницу одним и тем же условием, иначе «3 из 40» не будет значить ни одного из двух чисел.
+// ТОЧКА 6 ПРЕДИКАТА: фрагмент видимости входит в общий WHERE ниже — и в счёт, и в страницу одним
+// и тем же условием (переменная `where`), иначе «3 из 40» не будет значить ни одного из двух
+// чисел. Витрина показывает ровно то, что человек и так видит: `link` виден всем, `people` —
+// только своему кругу, супер видит всё и лечит там осиротевшие файлы.
 func (s *Store) ListSharedFiles(ctx context.Context, f entity.SharedLibraryFileFilter) ([]entity.SharedLibraryFile, int, error) {
+	v, err := s.viewer(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	params := map[string]any{}
 	where := `lf.access_level IN ('people', 'link')`
 	switch f.Level {
@@ -410,6 +423,7 @@ func (s *Store) ListSharedFiles(ctx context.Context, f entity.SharedLibraryFileF
 		// `team` — не фильтр витрины, а её отрицание: витрина показывает то, что НЕ по умолчанию.
 		return nil, 0, fmt.Errorf("shared files filter accepts only people or link, got %q", f.Level)
 	}
+	where += ` AND ` + v.Where("lf", params)
 
 	limit := f.Limit
 	if limit <= 0 {

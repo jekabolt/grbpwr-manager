@@ -141,7 +141,7 @@ func TestLibraryFileTaskLinks(t *testing.T) {
 		require.Empty(t, free)
 	})
 
-	t.Run("a missing end of the link FAILS as a foreign key instead of succeeding silently", func(t *testing.T) {
+	t.Run("a missing end of the link FAILS instead of succeeding silently", func(t *testing.T) {
 		// ГЛАВНАЯ ПРОВЕРКА ФАЗЫ. План называл INSERT IGNORE, но IGNORE в MySQL глушит и 1452:
 		// привязка к несуществующей задаче вернула бы nil, ничего не записав, и на бете это
 		// читалось бы как потерянная привязка. Оба конца проверяются, потому что оба — предмет
@@ -151,10 +151,15 @@ func TestLibraryFileTaskLinks(t *testing.T) {
 		require.True(t, s.IsErrForeignKeyViolation(err),
 			"несуществующая задача обязана доехать до хендлера нарушением внешнего ключа")
 
+		// ФАЙЛОВЫЙ КОНЕЦ ПОСЛЕ Ф7 ОТКАЗЫВАЕТ РАНЬШЕ ВНЕШНЕГО КЛЮЧА И ДРУГИМ СПОСОБОМ. Предикат
+		// видимости проверяет строку файла ДО вставки, и его отказ — sql.ErrNoRows, потому что
+		// «файла нет» и «файл тебе не виден» обязаны быть снаружи неразличимы: доедь сюда голое
+		// нарушение ключа, оно отличалось бы от отказа по видимости и тем подтверждало бы
+		// существование ограниченного файла. Хендлер переводит оба исхода в один и тот же
+		// NotFound (libraryFileTaskLinkMissingMsg).
 		err = s.Tasks().AttachFileToTask(ctx, 2147483600, prodTask)
-		require.Error(t, err)
-		require.True(t, s.IsErrForeignKeyViolation(err),
-			"несуществующий файл обязан доехать до хендлера нарушением внешнего ключа")
+		require.ErrorIs(t, err, sql.ErrNoRows,
+			"несуществующий (как и невидимый) файл обязан доехать до хендлера как NotFound")
 
 		var orphans int
 		require.NoError(t, testDB.QueryRowContext(ctx,

@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -59,6 +61,13 @@ func (s *Server) AttachLibraryFileToTask(ctx context.Context, req *pb_admin.Atta
 		return nil, status.Error(codes.InvalidArgument, "task id is required")
 	}
 	if err := s.repo.Tasks().AttachFileToTask(ctx, int(req.FileId), int(req.TaskId)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Файл НЕВИДИМ зовущему (предикат Ф7) либо его нет вовсе. Ответ обязан быть тем же
+			// самым, что у исчезнувшей задачи: отдельный код или отдельный текст на «закрытый»
+			// подтвердил бы существование ограниченного файла, ради сокрытия которого предикат и
+			// написан.
+			return nil, status.Error(codes.NotFound, libraryFileTaskLinkMissingMsg)
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.NotFound, libraryFileTaskLinkMissingMsg)
 		}
