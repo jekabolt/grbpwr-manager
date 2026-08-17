@@ -171,6 +171,7 @@ type Server struct {
 	patternViewerHandler    http.Handler
 	runPackHandler          http.Handler
 	fileUploadHandler       http.Handler
+	filePreviewHandler      http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -203,6 +204,14 @@ func (s *Server) SetPatternAccessHandler(h http.Handler) {
 // file cannot ride inside a single gRPC message.
 func (s *Server) SetFileUploadHandler(h http.Handler) {
 	s.fileUploadHandler = h
+}
+
+// SetFilePreviewHandler registers the preview-replacement endpoint
+// (POST /api/files/{id}/preview). Same posture as the upload above — already
+// wrapped in admin authorization by the caller — but a far smaller body cap: it
+// carries a thumbnail, not a file.
+func (s *Server) SetFilePreviewHandler(h http.Handler) {
+	s.filePreviewHandler = h
 }
 
 // SetPatternViewerHandler registers the card-level pattern viewer manifest endpoint
@@ -319,6 +328,13 @@ const maxAdminJSONBodyBytes = 72 << 20 // 72 MiB (base64 of a 50 MiB video ≈ 6
 // Files above this go through presigned PUT straight to the bucket — which needs
 // a CORS policy on the bucket that only its owner can set, hence not in this pass.
 const maxFileUploadBodyBytes = 95 << 20 // 95 MiB
+
+// maxFilePreviewBodyBytes caps a preview replacement. Deliberately NOT the upload
+// cap: this body carries one thumbnail (bounded at 2 MiB by the handler itself)
+// and nothing else, so the 95 MiB ceiling would be 47× more room than the
+// endpoint can ever legitimately use — and the extra room is the whole cost of an
+// unauthenticated flood. 4 MiB is the 2 MiB payload plus multipart headroom.
+const maxFilePreviewBodyBytes = 4 << 20 // 4 MiB
 
 // limitBody caps the request body via http.MaxBytesReader, so an oversized body is
 // rejected instead of being fully buffered by the JSON gateway.
@@ -526,6 +542,13 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.fileUploadHandler != nil {
 			r.With(limitBody(maxFileUploadBodyBytes)).
 				Method(http.MethodPost, "/files/upload", s.fileUploadHandler)
+		}
+		// Preview replacement ("построить превью заново"). Same authorization
+		// wrapping as the upload, its own body cap: one thumbnail has nothing to do
+		// with the 95 MiB a file may need.
+		if s.filePreviewHandler != nil {
+			r.With(limitBody(maxFilePreviewBodyBytes)).
+				Method(http.MethodPost, "/files/{id}/preview", s.filePreviewHandler)
 		}
 	})
 

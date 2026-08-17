@@ -1148,6 +1148,9 @@ service AdminService {
   // files_upload.go. A gRPC method would have to carry the payload base64-encoded
   // inside a single message, which neither the 50 MiB grpc limit nor the 72 MiB
   // admin-JSON limit can hold for the files this library exists to keep.
+  // Neither is REPLACING A PREVIEW: POST /api/files/{id}/preview, same file, same
+  // reason (an image is a multipart body), with its own 4 MiB body cap and its own
+  // files:write check inside the handler — the gRPC interceptor has no reach there.
 
   // GetLibraryFile returns one file with its topics and freshly minted urls.
   rpc GetLibraryFile(GetLibraryFileRequest) returns (GetLibraryFileResponse) {
@@ -1201,6 +1204,30 @@ service AdminService {
   // DeleteFileTopic removes a topic, refused while files still carry it.
   rpc DeleteFileTopic(DeleteFileTopicRequest) returns (DeleteFileTopicResponse) {
     option (google.api.http) = {delete: "/api/admin/files/topics/{id}"};
+  }
+
+  // MergeFileTopics folds one topic into another: every file carrying the source
+  // ends up carrying the target, and the source topic ceases to exist. It is the
+  // only way out of the duplicates a free-form label vocabulary grows ("бирки" and
+  // "бирка"), which DeleteFileTopic cannot solve — it refuses on a topic that is
+  // in use, and that is exactly the topic that needs merging.
+  rpc MergeFileTopics(MergeFileTopicsRequest) returns (MergeFileTopicsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/topics/merge"
+      body: "*"
+    };
+  }
+
+  // AssignLibraryFileTopics ADDS topics to a set of files. Additive, not
+  // replacing: UpdateLibraryFile already replaces the set of ONE file, where the
+  // caller has just seen that file's labels. A bulk action has not seen them, so a
+  // replacing bulk write would silently erase whatever a colleague labelled those
+  // files with between the grid loading and the button being pressed.
+  rpc AssignLibraryFileTopics(AssignLibraryFileTopicsRequest) returns (AssignLibraryFileTopicsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/topics/assign"
+      body: "*"
+    };
   }
 
   // ORDER FULFILLMENT BOARD
@@ -4761,6 +4788,15 @@ message GetLibraryFileResponse {
   LibraryFile file = 1;
 }
 
+// LibraryFileSort is the grid's sort order for the columns that are not time.
+// UNKNOWN keeps the default (by created_at, direction from order_factor), which
+// is what a library is normally read by.
+enum LibraryFileSort {
+  LIBRARY_FILE_SORT_UNKNOWN = 0;
+  LIBRARY_FILE_SORT_NAME = 1; // A→Z
+  LIBRARY_FILE_SORT_SIZE = 2; // largest first
+}
+
 message ListLibraryFilesRequest {
   // topic_id filters to one topic; 0 means no topic filter.
   int32 topic_id = 1;
@@ -4776,6 +4812,18 @@ message ListLibraryFilesRequest {
   int32 limit = 4;
   int32 offset = 5;
   common.OrderFactor order_factor = 6;
+  // topic_ids is an INTERSECTION filter: a file matches only when it carries ALL
+  // of them. Union would be the wrong default here — picking a second chip is how
+  // a person NARROWS a grid of hundreds, and an OR-filter grows it instead.
+  // Bounded at 20; each id costs one EXISTS subquery.
+  //
+  // Precedence when several filters arrive at once: untopiced > topic_ids >
+  // topic_id. The single-topic field stays for the links already in circulation.
+  repeated int32 topic_ids = 7;
+  // sort_by picks a non-time ordering. UNKNOWN = by created_at, and order_factor
+  // keeps applying to THAT ordering only — name and size have their own fixed
+  // directions (A→Z, largest first), so the two controls never contradict.
+  LibraryFileSort sort_by = 8;
 }
 
 message ListLibraryFilesResponse {
@@ -4835,6 +4883,36 @@ message DeleteFileTopicRequest {
 }
 
 message DeleteFileTopicResponse {}
+
+message MergeFileTopicsRequest {
+  // source_id is the topic that disappears, target_id the one that survives.
+  // Merging a topic into itself is refused rather than treated as a no-op: it can
+  // only come from a mis-wired dialog, and answering "done" would hide that.
+  int32 source_id = 1;
+  int32 target_id = 2;
+}
+
+message MergeFileTopicsResponse {
+  // moved_files is how many files gained the target topic (files already carrying
+  // both are not counted twice). The dialog reports it back — a merge is
+  // irreversible, so the person is owed the size of what just happened.
+  int32 moved_files = 1;
+}
+
+message AssignLibraryFileTopicsRequest {
+  repeated int32 file_ids = 1;
+  // topic_ids are existing topics, new_topics names typed on the fly; an existing
+  // name resolves to the existing topic instead of failing. Both are ADDED to
+  // whatever the files already carry.
+  repeated int32 topic_ids = 2;
+  repeated string new_topics = 3;
+}
+
+message AssignLibraryFileTopicsResponse {
+  // assigned is how many (file, topic) links were actually created — pairs that
+  // already existed are not counted.
+  int32 assigned = 1;
+}
 
 message UpdateTaskRequest {
   int32 id = 1;

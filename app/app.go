@@ -507,6 +507,10 @@ func (a *App) Start(ctx context.Context) error {
 	// authentication: without it the endpoint would be open, since the gRPC
 	// interceptor never sees a plain HTTP route.
 	a.hs.SetFileUploadHandler(authS.WithAdminAuthz(a.adminS.FileUploadHandler()))
+	// Перезаливка превью (POST /api/files/{id}/preview) — тот же случай и та же
+	// ручная обёртка авторизацией: картинка приходит multipart-ом, мимо gRPC, а
+	// значит мимо интерцептора, который проверяет права у всех остальных методов.
+	a.hs.SetFilePreviewHandler(authS.WithAdminAuthz(a.adminS.FilePreviewHandler()))
 
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
 	// When a signing secret is configured for a processor it delivers the fastest

@@ -129,6 +129,40 @@ func ConvertEntityLibraryFileToPb(f *entity.LibraryFile) *pb_admin.LibraryFile {
 	}
 }
 
+// ConvertPbTopicFilterToEntity normalises the intersection filter: ids are
+// deduped (a repeated chip must not cost a second EXISTS subquery) and bounded.
+// Non-positive ids are dropped rather than refused — unlike a topic SELECTION,
+// where a zero id means the caller built a broken write, a filter is read-only
+// and a stray 0 from a url is not worth an error page over.
+func ConvertPbTopicFilterToEntity(topicIDs []int32) ([]int, error) {
+	if len(topicIDs) > entity.MaxLibraryTopicFilters {
+		return nil, fmt.Errorf("at most %d topics can be combined in one filter", entity.MaxLibraryTopicFilters)
+	}
+	ids := make([]int, 0, len(topicIDs))
+	seen := make(map[int]bool, len(topicIDs))
+	for _, id := range topicIDs {
+		if id <= 0 || seen[int(id)] {
+			continue
+		}
+		seen[int(id)] = true
+		ids = append(ids, int(id))
+	}
+	return ids, nil
+}
+
+// ConvertPbLibraryFileSortToEntity maps the grid's sort control. UNKNOWN means
+// the chronological default, which is the only ordering OrderFactor applies to.
+func ConvertPbLibraryFileSortToEntity(s pb_admin.LibraryFileSort) entity.LibraryFileSort {
+	switch s {
+	case pb_admin.LibraryFileSort_LIBRARY_FILE_SORT_NAME:
+		return entity.LibraryFileSortName
+	case pb_admin.LibraryFileSort_LIBRARY_FILE_SORT_SIZE:
+		return entity.LibraryFileSortSize
+	default:
+		return entity.LibraryFileSortDefault
+	}
+}
+
 // ConvertPbTopicSelectionToEntity normalises the (topic_ids, new_topics) pair
 // that both the upload and the update paths carry: ids are deduped and bounded,
 // names are trimmed, validated and deduped case-insensitively so "Brand" typed

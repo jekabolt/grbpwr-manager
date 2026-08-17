@@ -669,6 +669,18 @@ type (
 		// DeleteTopic refuses while files still carry the topic — deleting it would
 		// silently unlabel them into «Разобрать».
 		DeleteTopic(ctx context.Context, id int) error
+		// MergeTopics folds source into target and deletes source, returning how
+		// many files gained the target topic. The only way out of a duplicated
+		// label: DeleteTopic refuses on a topic in use, and that is the one that
+		// needs merging.
+		MergeTopics(ctx context.Context, sourceID, targetID int) (movedFiles int, err error)
+		// AssignTopics ADDS topics to a set of files (never replaces their set) and
+		// returns how many links were created. Names in newTopics are created on the
+		// fly, exactly as on upload.
+		AssignTopics(ctx context.Context, fileIDs, topicIDs []int, newTopics []string) (assigned int, err error)
+		// SetFilePreview points the file at a new preview object and returns the key
+		// it replaced, for best-effort bucket cleanup by the caller.
+		SetFilePreview(ctx context.Context, id int, previewKey string) (previousKey string, err error)
 	}
 
 	// Fulfillment is the orders-fulfillment board's storage: the board-owned

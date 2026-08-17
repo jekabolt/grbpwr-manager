@@ -200,6 +200,10 @@ func (s *Store) FindFilesBySha256(ctx context.Context, sha256 string) ([]entity.
 
 // ListFiles returns a page of the library plus the total matching count.
 func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) ([]entity.LibraryFile, int, error) {
+	if len(f.TopicIds) > entity.MaxLibraryTopicFilters {
+		return nil, 0, fmt.Errorf("at most %d topics can be combined in one filter, got %d",
+			entity.MaxLibraryTopicFilters, len(f.TopicIds))
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = defaultPageLimit
@@ -212,6 +216,17 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 	switch {
 	case f.Untopiced:
 		where = append(where, `NOT EXISTS (SELECT 1 FROM library_file_topic lft WHERE lft.file_id = lf.id)`)
+	case len(f.TopicIds) > 0:
+		// Отдельный EXISTS НА КАЖДУЮ тему — это и есть пересечение. Через
+		// `topic_id IN (...)` получилось бы ИЛИ: каждый следующий выбранный чип
+		// РАСШИРЯЛ бы выдачу, а чипы нажимают ровно затем, чтобы её сузить.
+		for i, id := range f.TopicIds {
+			key := fmt.Sprintf("topicId%d", i)
+			where = append(where, fmt.Sprintf(
+				`EXISTS (SELECT 1 FROM library_file_topic lft%[1]d WHERE lft%[1]d.file_id = lf.id AND lft%[1]d.topic_id = :%[2]s)`,
+				i, key))
+			params[key] = id
+		}
 	case f.TopicId > 0:
 		where = append(where, `EXISTS (SELECT 1 FROM library_file_topic lft WHERE lft.file_id = lf.id AND lft.topic_id = :topicId)`)
 		params["topicId"] = f.TopicId
@@ -220,8 +235,14 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 		// Matching topic names as well as file names is what makes a single input
 		// enough: "фурнитура" has to find the topic even when not one file carries
 		// that word in its name — and graphic PDFs have no extractable text at all,
-		// so names and topics are all there is to match on.
-		where = append(where, `(lf.file_name LIKE :search ESCAPE '\\' OR EXISTS (
+		// so names and topics are all there is to match on. The uploader joins them
+		// for the same reason: in a team of six "что заливал Паша" is a real query,
+		// and a search narrower than its own label reads as broken.
+		//
+		// Расширение сидит ВНУТРИ того же предиката, что и остальная выборка, а не
+		// отдельным UNION: иначе файл, скрытый фильтром видимости, всплыл бы в
+		// поиске по автору — ровно та щель, через которую утекают имена.
+		where = append(where, `(lf.file_name LIKE :search ESCAPE '\\' OR lf.uploaded_by LIKE :search ESCAPE '\\' OR EXISTS (
 			SELECT 1 FROM library_file_topic lft
 			JOIN file_topic ft ON ft.id = lft.topic_id
 			WHERE lft.file_id = lf.id AND ft.name LIKE :search ESCAPE '\\'))`)
@@ -240,15 +261,29 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 
 	// Newest first by default: a library is read from the most recent thing
 	// backwards. id breaks ties so paging can never repeat or skip a row.
-	direction := "DESC"
-	if f.OrderFactor == entity.Ascending {
-		direction = "ASC"
+	//
+	// order_factor управляет ТОЛЬКО хронологией. У имени и размера направление
+	// зафиксировано (А→Я и «крупное сверху»), потому что обратное никому не нужно,
+	// а два независимых контрола дали бы состояния вроде «по имени, но в обратную
+	// сторону от того, что написано на кнопке».
+	orderBy := ""
+	switch f.SortBy {
+	case entity.LibraryFileSortName:
+		orderBy = "lf.file_name ASC, lf.id ASC"
+	case entity.LibraryFileSortSize:
+		orderBy = "lf.size_bytes DESC, lf.id DESC"
+	default:
+		direction := "DESC"
+		if f.OrderFactor == entity.Ascending {
+			direction = "ASC"
+		}
+		orderBy = "lf.created_at " + direction + ", lf.id " + direction
 	}
 	params["limit"] = limit
 	params["offset"] = offset
 	files, err := storeutil.QueryListNamed[entity.LibraryFile](ctx, s.DB,
 		`SELECT lf.* FROM library_file lf WHERE `+clause+
-			` ORDER BY lf.created_at `+direction+`, lf.id `+direction+
+			` ORDER BY `+orderBy+
 			` LIMIT :limit OFFSET :offset`, params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list library files: %w", err)
@@ -344,6 +379,171 @@ func (s *Store) DeleteTopic(ctx context.Context, id int) error {
 		return fmt.Errorf("can't delete file topic: %w", err)
 	}
 	return nil
+}
+
+// MergeTopics folds source into target and deletes source, returning how many
+// files gained the target topic. It is the only way out of a duplicated label
+// ("бирки" next to "бирка"): DeleteTopic refuses on a topic that is in use, which
+// is precisely the topic somebody wants merged.
+//
+// Одной транзакцией, потому что промежуточное состояние здесь наблюдаемо и
+// разрушительно: связи источника уже сняты, а на цель ещё не перевешены — файлы
+// на это мгновение теряют тему совсем и уезжают в «Разобрать».
+func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, error) {
+	if sourceID == targetID {
+		// Бэкстоп: хендлер отвечает на это InvalidArgument раньше. Молчаливый
+		// no-op был бы хуже — слияние необратимо, и «готово» на бессмысленный
+		// запрос убеждает человека, что он сделал то, чего не делал.
+		return 0, fmt.Errorf("cannot merge a topic into itself")
+	}
+	var moved int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Существование проверяем ВНУТРИ транзакции: пишущие транзакции стора идут
+		// в SERIALIZABLE, поэтому проверка реально закрывает гонку с параллельным
+		// удалением темы, а не просто сужает окно.
+		found, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM file_topic WHERE id IN (:ids)`,
+			map[string]any{"ids": []int{sourceID, targetID}})
+		if err != nil {
+			return fmt.Errorf("failed to check file topics existence: %w", err)
+		}
+		if found != 2 {
+			return sql.ErrNoRows
+		}
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+			INSERT IGNORE INTO library_file_topic (file_id, topic_id)
+			SELECT lft.file_id, :target FROM library_file_topic lft WHERE lft.topic_id = :source`,
+			map[string]any{"source": sourceID, "target": targetID})
+		if err != nil {
+			return fmt.Errorf("failed to move file topic links: %w", err)
+		}
+		// INSERT IGNORE считает только реально вставленные строки, поэтому файл,
+		// уже несущий обе темы, в отчёт не попадает — а он и не переехал.
+		moved = int(rows)
+		// Связи источника снимаем ДО удаления самой темы: внешний ключ на тему
+		// стоит без каскада (RESTRICT), иначе DELETE упал бы о собственные связи.
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM library_file_topic WHERE topic_id = :source`,
+			map[string]any{"source": sourceID}); err != nil {
+			return fmt.Errorf("failed to drop source topic links: %w", err)
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM file_topic WHERE id = :source`, map[string]any{"source": sourceID}); err != nil {
+			return fmt.Errorf("failed to delete source topic: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err // sql.ErrNoRows passes through untouched
+	}
+	return moved, nil
+}
+
+// AssignTopics ADDS topics to a set of files and returns how many links were
+// created. Additive on purpose — see the rpc comment: a bulk write has not seen
+// the labels it would be replacing.
+func (s *Store) AssignTopics(ctx context.Context, fileIDs, topicIDs []int, newTopics []string) (int, error) {
+	if len(fileIDs) == 0 {
+		return 0, nil
+	}
+	if len(fileIDs) > maxPageLimit {
+		return 0, fmt.Errorf("at most %d files can be labelled in one call, got %d", maxPageLimit, len(fileIDs))
+	}
+	var assigned int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		ids := make(map[int]struct{}, len(topicIDs)+len(newTopics))
+		for _, id := range topicIDs {
+			if id > 0 {
+				ids[id] = struct{}{}
+			}
+		}
+		if len(ids) > 0 {
+			// Проверка существования тем обязательна ИМЕННО из-за INSERT IGNORE:
+			// IGNORE глушит и нарушение внешнего ключа тоже, так что несуществующая
+			// тема без этой проверки превратилась бы в «ничего не проставилось» с
+			// ответом «готово».
+			list := make([]int, 0, len(ids))
+			for id := range ids {
+				list = append(list, id)
+			}
+			found, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COUNT(*) FROM file_topic WHERE id IN (:ids)`, map[string]any{"ids": list})
+			if err != nil {
+				return fmt.Errorf("failed to check file topics existence: %w", err)
+			}
+			if found != len(list) {
+				return sql.ErrNoRows
+			}
+		}
+		for _, name := range newTopics {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			id, err := upsertTopic(ctx, rep.DB(), name, "")
+			if err != nil {
+				return fmt.Errorf("failed to resolve topic %q: %w", name, err)
+			}
+			ids[id] = struct{}{}
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		list := make([]int, 0, len(ids))
+		for id := range ids {
+			list = append(list, id)
+		}
+		// Кросс-джойн двух наборов id вместо перечисления пар в VALUES: файл,
+		// удалённый между загрузкой сетки и нажатием кнопки, просто не даёт строк,
+		// и вся пачка не падает из-за одного исчезнувшего файла.
+		rows, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
+			INSERT IGNORE INTO library_file_topic (file_id, topic_id)
+			SELECT lf.id, ft.id
+			FROM library_file lf
+			CROSS JOIN file_topic ft
+			WHERE lf.id IN (:fileIds) AND ft.id IN (:topicIds)`,
+			map[string]any{"fileIds": fileIDs, "topicIds": list})
+		if err != nil {
+			return fmt.Errorf("failed to assign file topics: %w", err)
+		}
+		assigned = int(rows)
+		return nil
+	})
+	if err != nil {
+		return 0, err // sql.ErrNoRows passes through untouched
+	}
+	return assigned, nil
+}
+
+// SetFilePreview points the file at a new preview object and returns the key of
+// the one it replaced, so the caller can drop the now-unreachable bytes. An empty
+// key clears the preview.
+//
+// Читаем старый ключ и пишем новый одной транзакцией: две одновременные
+// перезаливки иначе прочитали бы один и тот же старый ключ, и вторая удалила бы
+// байты, на которые уже указывает первая.
+func (s *Store) SetFilePreview(ctx context.Context, id int, previewKey string) (string, error) {
+	var previous string
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		f, err := storeutil.QueryNamedOne[entity.LibraryFile](ctx, rep.DB(),
+			`SELECT * FROM library_file WHERE id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return err // sql.ErrNoRows passes through untouched
+		}
+		if f.PreviewObjectKey.Valid && f.PreviewObjectKey.String != previewKey {
+			previous = f.PreviewObjectKey.String
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`UPDATE library_file SET preview_object_key = :key WHERE id = :id`,
+			map[string]any{"id": id, "key": nullString(previewKey)}); err != nil {
+			return fmt.Errorf("failed to update library file preview: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return previous, nil
 }
 
 // linkTopics attaches an explicit id set plus any names typed on the fly.

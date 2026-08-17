@@ -82,20 +82,44 @@ type FileTopicWithCount struct {
 	FilesCount int `db:"files_count"`
 }
 
+// MaxLibraryTopicFilters bounds the intersection filter. Each selected topic
+// costs one EXISTS subquery, and a set of chips beyond this size cannot come from
+// a person narrowing a grid — it comes from a loop.
+const MaxLibraryTopicFilters = 20
+
+// LibraryFileSort is the ordering of the grid for the columns that are not time.
+// The default (LibraryFileSortDefault) is by created_at, which is the only
+// ordering OrderFactor applies to.
+type LibraryFileSort int
+
+const (
+	LibraryFileSortDefault LibraryFileSort = iota
+	LibraryFileSortName
+	LibraryFileSortSize
+)
+
 // LibraryFileListFilter selects a page of the library.
 //
-// TopicId and Untopiced are mutually exclusive views of the same rail: a topic,
-// or the "Разобрать" bucket of files carrying no topic at all.
+// TopicId, TopicIds and Untopiced are views of the same rail and are resolved in
+// that order of precedence, highest first: Untopiced (the «Разобрать» bucket),
+// TopicIds (files carrying ALL of them), TopicId (one topic — the old single-value
+// field, kept for links already in circulation).
 type LibraryFileListFilter struct {
-	TopicId   int
+	TopicId int
+	// TopicIds is an INTERSECTION: a file matches only when it carries every one
+	// of these topics. Union would be the wrong meaning — a second chip is how a
+	// person narrows the grid, and OR would widen it instead.
+	TopicIds  []int
 	Untopiced bool
-	// Search matches the file name OR the name of a topic the file carries.
-	// Matching topic names is what lets one input be enough: "фурнитура" must
-	// land in the topic even when no single file is named that way. The
-	// implementation is LIKE for now; FULLTEXT or embeddings swap in behind this
-	// same field without touching the API contract.
+	// Search matches the file name OR the name of a topic the file carries OR the
+	// person who uploaded it. Matching topic names is what lets one input be
+	// enough: "фурнитура" must land in the topic even when no single file is named
+	// that way; matching the uploader is what makes "что заливал Паша" a question
+	// this input can answer. The implementation is LIKE for now; FULLTEXT or
+	// embeddings swap in behind this same field without touching the API contract.
 	Search      string
 	Limit       int
 	Offset      int
 	OrderFactor OrderFactor
+	SortBy      LibraryFileSort
 }

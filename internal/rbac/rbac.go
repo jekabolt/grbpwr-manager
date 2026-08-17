@@ -521,6 +521,10 @@ var methodRequirements = map[string]Requirement{
 	"CreateFileTopic":   wr(SectionFiles),
 	"RenameFileTopic":   wr(SectionFiles),
 	"DeleteFileTopic":   wr(SectionFiles),
+	// Merge edits the topic vocabulary, assign labels files: same section as
+	// rename/delete, and both write.
+	"MergeFileTopics":         wr(SectionFiles),
+	"AssignLibraryFileTopics": wr(SectionFiles),
 	// task archive + checklist
 	"ArchiveTask":              wr(SectionTasks),
 	"UnarchiveTask":            wr(SectionTasks),

@@ -12,9 +12,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	chi "github.com/go-chi/chi/v5"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -222,6 +224,126 @@ func (s *Server) FileUploadHandler() http.Handler {
 			slog.Duration("took", time.Since(started)))
 
 		writeUploadSuccess(w, pb, s.duplicatesFor(ctx, sha256hex, id))
+	})
+}
+
+// previewResponse is what a preview replacement returns: the file as the grid
+// knows it, with a freshly minted preview url. Same protojson marshalling as the
+// upload response, and for the same reason — the client drops the result straight
+// into the query cache it fills from the gateway.
+type previewResponse struct {
+	File json.RawMessage `json:"file"`
+}
+
+// FilePreviewHandler REPLACES the preview image of an existing file. Mounted at
+// POST /api/files/{id}/preview, next to the upload endpoint and outside the
+// gateway for the same reason: an image is a multipart body, not a gRPC field.
+//
+// Это «построить превью заново» из state.v1: превью строит браузер, и когда рендер
+// не удался (или не существовал во время загрузки), единственный способ его
+// получить — прислать картинку отдельно, не перезаливая сам файл.
+func (s *Server) FilePreviewHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		// Same posture as the upload handler: the middleware authenticates, the
+		// handler decides what its own section requires, and it fails closed.
+		authz, ok := authsrv.GetAdminAuthz(ctx)
+		if !ok || !(authz.FullAccess() || authz.Perms[rbac.SectionFiles].Covers(entity.AccessWrite)) {
+			writeUploadError(w, http.StatusForbidden, "files:write is required to replace a preview")
+			return
+		}
+		username := authsrv.GetAdminUsername(ctx)
+
+		id, err := strconv.Atoi(chi.URLParam(r, "id"))
+		if err != nil || id <= 0 {
+			writeUploadError(w, http.StatusBadRequest, "file id must be a positive number")
+			return
+		}
+
+		mr, err := r.MultipartReader()
+		if err != nil {
+			writeUploadError(w, http.StatusBadRequest, "request must be multipart/form-data")
+			return
+		}
+		part, err := mr.NextPart()
+		if err != nil || part.FormName() != "preview" {
+			writeUploadError(w, http.StatusBadRequest, `expected a single "preview" part`)
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(part, maxUploadPreviewBytes+1))
+		if err != nil {
+			writeUploadError(w, http.StatusBadRequest, "could not read the preview part")
+			return
+		}
+		if len(raw) == 0 {
+			writeUploadError(w, http.StatusBadRequest, "the preview image is empty")
+			return
+		}
+		if len(raw) > maxUploadPreviewBytes {
+			writeUploadError(w, http.StatusRequestEntityTooLarge, "the preview image is too large")
+			return
+		}
+
+		key, err := s.bucket.UploadLibraryPreview(ctx, raw, "")
+		if err != nil {
+			// Here — unlike on upload — an invalid preview IS the whole request, so
+			// it is refused rather than degraded to "stored without one".
+			if errors.Is(err, bucket.ErrInvalidLibraryUpload) {
+				writeUploadError(w, http.StatusBadRequest, "the preview image must be a PNG or WebP")
+				return
+			}
+			slog.Default().ErrorContext(ctx, "can't store library preview",
+				slog.String("username", username), slog.Int("id", id), slog.String("err", err.Error()))
+			writeUploadError(w, http.StatusInternalServerError, "could not store the preview")
+			return
+		}
+
+		previous, err := s.repo.Files().SetFilePreview(ctx, id, key)
+		if err != nil {
+			// Строка не обновилась — только что залитые байты не принадлежат никому.
+			cleanupObjects(ctx, s.bucket, key)
+			if errors.Is(err, sql.ErrNoRows) {
+				writeUploadError(w, http.StatusNotFound, "file not found")
+				return
+			}
+			slog.Default().ErrorContext(ctx, "can't update library file preview",
+				slog.String("username", username), slog.Int("id", id), slog.String("err", err.Error()))
+			writeUploadError(w, http.StatusInternalServerError, "could not record the preview")
+			return
+		}
+		// Порядок тот же, что у DeleteLibraryFile: строка раньше байтов. Снеси
+		// старый объект первым — и падение записи оставило бы файл со ссылкой на
+		// исчезнувшие байты, то есть карточку с битой картинкой вместо прежней.
+		if previous != "" {
+			cleanupObjects(ctx, s.bucket, previous)
+		}
+
+		stored, err := s.repo.Files().GetFileById(ctx, id)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't read back library file", slog.String("err", err.Error()))
+			writeUploadError(w, http.StatusInternalServerError, "the preview was stored but the file could not be read back")
+			return
+		}
+		pb := s.withLibraryURLs(ctx, stored, dto.ConvertEntityLibraryFileToPb(stored))
+
+		slog.Default().InfoContext(ctx, "library preview replaced",
+			slog.String("username", username),
+			slog.Int("id", id),
+			slog.Int("size_bytes", len(raw)),
+			slog.Bool("had_preview", previous != ""))
+
+		fileJSON, err := protojson.MarshalOptions{EmitUnpopulated: true, UseProtoNames: false}.Marshal(pb)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't marshal library file response", slog.String("err", err.Error()))
+			writeUploadError(w, http.StatusInternalServerError, "could not encode the response")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(previewResponse{File: fileJSON}); err != nil {
+			slog.Default().ErrorContext(ctx, "can't write preview response", slog.String("err", err.Error()))
+		}
 	})
 }
 

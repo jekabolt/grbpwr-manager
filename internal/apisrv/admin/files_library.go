@@ -87,12 +87,21 @@ func (s *Server) GetLibraryFile(ctx context.Context, req *pb_admin.GetLibraryFil
 
 // ListLibraryFiles is the grid.
 func (s *Server) ListLibraryFiles(ctx context.Context, req *pb_admin.ListLibraryFilesRequest) (*pb_admin.ListLibraryFilesResponse, error) {
+	topicIDs, err := dto.ConvertPbTopicFilterToEntity(req.TopicIds)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
 	files, total, err := s.repo.Files().ListFiles(ctx, entity.LibraryFileListFilter{
-		TopicId:   int(req.TopicId),
+		TopicId: int(req.TopicId),
+		// Пересечение: файл обязан нести ВСЕ выбранные темы. Приоритет фильтров
+		// (untopiced > topic_ids > topic_id) разрешается в сторе, чтобы правило
+		// жило в одном месте и не разъехалось между вызывающими.
+		TopicIds:  topicIDs,
 		Untopiced: req.Untopiced,
 		Search:    req.Search,
 		Limit:     int(req.Limit),
 		Offset:    int(req.Offset),
+		SortBy:    dto.ConvertPbLibraryFileSortToEntity(req.SortBy),
 		// A library is read newest-first, so an unspecified order must mean
 		// descending. The shared converter maps UNKNOWN to ascending, which is right
 		// for the lists it was written for and wrong here — so the default is chosen
@@ -235,6 +244,66 @@ func (s *Server) DeleteFileTopic(ctx context.Context, req *pb_admin.DeleteFileTo
 		return nil, status.Error(codes.Internal, "can't delete topic")
 	}
 	return &pb_admin.DeleteFileTopicResponse{}, nil
+}
+
+// MergeFileTopics folds one topic into another and deletes the source.
+func (s *Server) MergeFileTopics(ctx context.Context, req *pb_admin.MergeFileTopicsRequest) (*pb_admin.MergeFileTopicsResponse, error) {
+	if req.SourceId <= 0 || req.TargetId <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "source and target topic ids are required")
+	}
+	if req.SourceId == req.TargetId {
+		// Не no-op: слияние необратимо, и ответ «готово» на бессмысленный запрос
+		// убедил бы человека, что он сделал то, чего не делал.
+		return nil, status.Error(codes.InvalidArgument, "a topic cannot be merged into itself")
+	}
+	moved, err := s.repo.Files().MergeTopics(ctx, int(req.SourceId), int(req.TargetId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "topic not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't merge file topics", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't merge topics")
+	}
+	return &pb_admin.MergeFileTopicsResponse{MovedFiles: int32(moved)}, nil
+}
+
+// AssignLibraryFileTopics ADDS topics to a set of files; it never replaces a
+// file's set (see the rpc comment — a bulk write has not seen what it would erase).
+func (s *Server) AssignLibraryFileTopics(ctx context.Context, req *pb_admin.AssignLibraryFileTopicsRequest) (*pb_admin.AssignLibraryFileTopicsResponse, error) {
+	if len(req.FileIds) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one file id is required")
+	}
+	fileIDs := make([]int, 0, len(req.FileIds))
+	seen := make(map[int]bool, len(req.FileIds))
+	for _, id := range req.FileIds {
+		if id <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "file id must be positive")
+		}
+		if seen[int(id)] {
+			continue
+		}
+		seen[int(id)] = true
+		fileIDs = append(fileIDs, int(id))
+	}
+	topicIDs, newTopics, err := dto.ConvertPbTopicSelectionToEntity(req.TopicIds, req.NewTopics)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if len(topicIDs) == 0 && len(newTopics) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one topic is required")
+	}
+	assigned, err := s.repo.Files().AssignTopics(ctx, fileIDs, topicIDs, newTopics)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "topic not found")
+		}
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, "topic_id does not reference an existing topic")
+		}
+		slog.Default().ErrorContext(ctx, "can't assign library file topics", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't assign topics")
+	}
+	return &pb_admin.AssignLibraryFileTopicsResponse{Assigned: int32(assigned)}, nil
 }
 
 // listOrderOrNewestFirst resolves the list order, defaulting to newest-first.
