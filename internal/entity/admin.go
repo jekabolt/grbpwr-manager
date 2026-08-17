@@ -2,6 +2,7 @@ package entity
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -71,12 +72,29 @@ type AdminRef struct {
 // MaxAdminSpecialtyVocabulary caps the SHARED specialty dictionary. A specialty
 // is NOT a permission and never becomes one: rights live in admin_permission, and
 // nothing in the codebase may branch on a specialty. But anybody authenticated may
-// mint a new entry (решение Р1), nobody may delete one (there is no such RPC, and
-// the link FK is RESTRICT), and the whole vocabulary rides on every people-picker
-// response — so an unbounded dictionary is a one-way inflation of a panel-wide
-// payload. The bound catches a loop, not a person.
+// mint a new entry (решение Р1), and the whole vocabulary rides on every
+// people-picker response — so an unbounded dictionary is a one-way inflation of a
+// panel-wide payload. The bound catches a loop, not a person.
 const MaxAdminSpecialtyVocabulary = 200
 
 // ErrAdminSpecialtyVocabularyFull is returned instead of silently dropping the
 // new name: «сохранено» on a write that stored nothing is the worse answer.
 var ErrAdminSpecialtyVocabularyFull = errors.New("the specialty vocabulary is full")
+
+// ErrAdminSpecialtyInUse refuses to delete a vocabulary entry somebody still
+// carries. Deleting it anyway would silently strip the specialty off every one of
+// those accounts — and the link FK is RESTRICT precisely so that cannot happen by
+// accident; this error is that refusal said in words a person can act on, the same
+// shape as ErrFileTopicInUse.
+//
+// ПОЧЕМУ УДАЛЕНИЕ ВООБЩЕ ПОЯВИЛОСЬ. Словарь пополняет любой аутентифицированный
+// (Р1) — значит, первая же опечатка становится вечной и видна на КАЖДОМ экране с
+// пикером людей. Справочник, который можно только наполнять, чинится лишь походом
+// в базу; починка опечатки не должна требовать доступа к проду.
+var ErrAdminSpecialtyInUse = errors.New("specialty is still carried by accounts")
+
+// NewErrAdminSpecialtyInUse wraps ErrAdminSpecialtyInUse with how many accounts
+// carry the entry, so the refusal can say what is holding it rather than «нельзя».
+func NewErrAdminSpecialtyInUse(accounts int) error {
+	return fmt.Errorf("%w: %d", ErrAdminSpecialtyInUse, accounts)
+}

@@ -147,6 +147,25 @@ type TaskChecklistItem struct {
 	CreatedAt time.Time `db:"created_at"`
 }
 
+// LibraryFileTask is one task row AS THE FILE CARD DRAWS IT: the #id pill, the title, the column,
+// who is on it and when it is due.
+//
+// НЕ Task, И ЭТО НЕ ЭКОНОМИЯ ПОЛЕЙ. Task несёт содержимое, чек-лист, разрешённые медиа и СВОИ
+// вложения — то есть на каждую задачу, к которой прицеплен файл, пришлось бы резолвить ещё один
+// список файлов. Карточка файла рисует строку, а не карточку задачи, и читать надо ровно строку.
+type LibraryFileTask struct {
+	TaskId int        `db:"id"`
+	Title  string     `db:"title"`
+	Status TaskStatus `db:"status"`
+	// Assignee is an account username; "" = задачу никто не взял (это состояние, а не пропуск).
+	Assignee string `db:"assignee"`
+	// DueDate invalid/NULL = срока нет. У строки тогда просто нет даты — не «сегодня».
+	DueDate sql.NullTime `db:"due_date"`
+	// Board is the department lane, чтобы строка говорила, ГДЕ живёт работа: один и тот же файл
+	// висит на задачах из разных досок одновременно.
+	Board TaskBoard `db:"board"`
+}
+
 // TaskListFilter narrows a ListTasks query. Zero-value fields are "no filter".
 type TaskListFilter struct {
 	Board           TaskBoard  // "" = all boards

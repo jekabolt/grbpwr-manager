@@ -636,6 +636,29 @@ type (
 		AddTaskChecklistItem(ctx context.Context, taskID int, content string) (int, error)
 		SetTaskChecklistItemDone(ctx context.Context, id int, done bool) error
 		DeleteTaskChecklistItem(ctx context.Context, id int) error
+
+		// --- Файл ↔ задача, со стороны ФАЙЛА (Ф4) ---
+		//
+		// Эти три живут здесь, а не в Files, по тому же правилу, по которому классифицированы их
+		// RPC: связь task_file принадлежит ЗАДАЧЕ (каскадит от неё), и в ответе — заголовки,
+		// статусы и исполнители задач. Files про задачи не знает и знать не должен.
+
+		// ListTasksByFileId answers «где этот файл ещё используется» from the FILE's side: the rows
+		// the file card draws. Returns the projection, not Task — see entity.LibraryFileTask for why.
+		ListTasksByFileId(ctx context.Context, fileID int) ([]entity.LibraryFileTask, error)
+		// AttachFileToTask links one file to one task IDEMPOTENTLY (a repeat is a no-op, not a raw
+		// 1062) and puts the row at the END of that task's attachment order.
+		//
+		// НАЗВАННАЯ ГОНКА, ПРИНЯТАЯ ПЛАНОМ: форма задачи сохраняется полным набором file_ids через
+		// UpdateTask, который набор ЗАМЕЩАЕТ. Привязка, сделанная с карточки файла, пока чужая форма
+		// задачи открыта, будет снесена сохранением этой формы. Окно сужается тем, что форма
+		// перечитывает file_ids при открытии; настоящая починка — вне волны. Остаток назван, чтобы
+		// пропавшую привязку не искали как баг.
+		AttachFileToTask(ctx context.Context, fileID, taskID int) error
+		// DetachFileFromTask removes that link. Detaching what is not attached is a no-op for the
+		// same reason attach is idempotent: обе кнопки описывают ЖЕЛАЕМОЕ состояние, и повтор не
+		// имеет права стать ошибкой.
+		DetachFileFromTask(ctx context.Context, fileID, taskID int) error
 	}
 
 	// Files is the files-library storage: metadata of private S3 objects and the
@@ -688,6 +711,95 @@ type (
 		// sql.ErrNoRows when the file is gone. WHO may call it is decided by the
 		// handler, not here.
 		SetFileOwners(ctx context.Context, fileID int, adminIDs []int, addedBy string) error
+
+		// --- Обсуждение файла (Ф5) ---
+		//
+		// Лента ПЛОСКАЯ: ветки не заводятся ни здесь, ни в таблице. Право «править и удалять только
+		// свою реплику» проверяет ХЕНДЛЕР (сравнением с username из JWT, супер — любую): стор не
+		// знает, кто зовущий, и правило, размазанное по двум слоям, разошлось бы на первой правке.
+
+		// ListComments returns the whole feed of one file, oldest first. Без пагинации намеренно:
+		// обсуждение файла — это единицы реплик, и «показать ещё» здесь дороже, чем весь список.
+		ListComments(ctx context.Context, fileID int) ([]entity.LibraryFileComment, error)
+		// GetCommentById is what the «только свою реплику» rule reads before it lets an edit or a
+		// delete through — the author is stored, not carried by the request. sql.ErrNoRows when the
+		// remark is gone. Проверка «прочитал → сравнил → изменил» гоночная в теории; цена гонки
+		// здесь — правка своей же реплики, которую в этот момент удалили, и ответ NotFound.
+		GetCommentById(ctx context.Context, id int) (*entity.LibraryFileComment, error)
+		// AddComment appends one remark and returns it AS STORED, so the feed draws what the server
+		// actually wrote. author is the caller's JWT username; author_id стор выводит из неё сам
+		// (одним оператором, как uploaded_by_id у файла) — две половины авторства не должны иметь
+		// возможности разойтись.
+		AddComment(ctx context.Context, fileID int, author, body string) (*entity.LibraryFileComment, error)
+		// UpdateComment rewrites the body and STAMPS edited_at — метка «изменено» рисуется по нему,
+		// потому что молча переписанная реплика это молча переписанный разговор.
+		UpdateComment(ctx context.Context, id int, body string) (*entity.LibraryFileComment, error)
+		DeleteComment(ctx context.Context, id int) error
+
+		// --- Доступ: уровень, люди, публичная ссылка, журнал, витрина (Ф7) ---
+
+		// GetFileAccess returns one file's access state (level, named people, the link row).
+		// sql.ErrNoRows на невидимом файле — точка 12 предиката: сам блок доступа виден только тому,
+		// кто видит файл, иначе код ответа подтверждает существование ограниченного файла.
+		GetFileAccess(ctx context.Context, fileID int) (*entity.LibraryFileAccess, error)
+		// SetFileAccess applies level AND people ATOMICALLY (SERIALIZABLE) and writes the journal
+		// line for what changed. Атомарность здесь не про производительность: два вызова оставили бы
+		// наблюдаемое окно, в котором файл уже ограничен, а список ещё пуст. WHO may call it —
+		// загрузивший | владелец | супер — решает хендлер, не стор: иначе любой files:write открывал
+		// бы чужой файл в интернет.
+		SetFileAccess(ctx context.Context, fileID int, u entity.LibraryFileAccessUpdate) (*entity.LibraryFileAccess, error)
+		// RotateFileLink bumps the epoch: every link issued so far dies INSTANTLY. Это и есть
+		// «отозвать» — отзыва без пересоздания в этой механике не существует, потому что stateless
+		// HMAC нечем найти, его можно только пережить поколением.
+		RotateFileLink(ctx context.Context, fileID int, actor string) (*entity.LibraryFilePublicAccess, error)
+		// ListFileAccessEvents returns the journal of one file, NEWEST FIRST and capped by limit:
+		// журнал читают, чтобы ответить «кто это открыл», а ответ почти всегда в последней строке.
+		ListFileAccessEvents(ctx context.Context, fileID int, limit int) ([]entity.LibraryFileAccessEvent, error)
+		// ListSharedFiles is the витрина: everything that is `people` or `link` right now, under the
+		// same visibility predicate as every other listing (супер видит всё). «Кто открыл» приезжает
+		// из журнала ОДНИМ группированным запросом на страницу — это ровно то место, где N+1
+		// заводится незаметно.
+		ListSharedFiles(ctx context.Context, f entity.SharedLibraryFileFilter) ([]entity.SharedLibraryFile, int, error)
+		// GetFileByPublicLink is the narrow read behind GET|HEAD /api/f/{token}.
+		//
+		// ЕДИНСТВЕННОЕ ЧТЕНИЕ БИБЛИОТЕКИ, КОТОРОЕ НЕ ИДЁТ ЧЕРЕЗ ПРЕДИКАТ ВИДИМОСТИ, и это не
+		// исключение из правила, а его отсутствие: у публичного маршрута нет зовущего, чью
+		// видимость можно было бы вычислить. Вместо предиката тут ТРИ проверки, и все на данных, а
+		// не на JWT: access_level = 'link' на самой строке файла, совпадение epoch и живость срока.
+		// Отсюда и узость типа — см. entity.LibraryFileLinkTarget.
+		GetFileByPublicLink(ctx context.Context, fileID int) (*entity.LibraryFileLinkTarget, error)
+		// RecordPublicAccess folds a DEBOUNCED batch of public-route hits into the rows (счётчик и
+		// время последнего обращения). Пачкой, а не по одному попаданию, по образцу
+		// RecordRunPackAccess: маршрут публичный, и запись в базу на каждый заход — это способ
+		// уронить базу чужими руками. Статистика best-effort: потерянная пачка отвечает на вопрос
+		// «пользуются ли ссылкой» чуть хуже и не значит больше ничего.
+		RecordPublicAccess(ctx context.Context, counts map[int]int64, last map[int]time.Time) error
+
+		// --- Markdown-заметки (Ф8) ---
+		//
+		// Заметка — обычный файл (content_type text/markdown), поэтому темы, владельцы, доступ,
+		// обсуждение и задачи достаются ей даром, теми же методами выше. Своего здесь только текст,
+		// и он ЛЕЖИТ В БАКЕТЕ: стор в бакет не ходит (см. шапку интерфейса), поэтому байты приносит
+		// и уносит вызывающий, а стор двигает строку.
+
+		// CreateNote inserts the note's row with its topics — та же транзакция и та же грамматика
+		// тем, что у AddFile, плюс три колонки заметки (0318). Имя с `.md` и потолок текста —
+		// забота хендлера: это правила ввода, а не свойства хранения.
+		CreateNote(ctx context.Context, n *entity.LibraryNoteInsert, topicIDs []int, newTopics []string) (int, error)
+		// GetNote returns the note's ROW under the visibility predicate (точка 9) — без текста.
+		// Содержимое вызывающий читает по ObjectKey через FileStore.GetLibraryObject; разрез идёт
+		// по слою, а не по удобству. sql.ErrNoRows, когда файла нет ИЛИ он невидим — эти два случая
+		// снаружи неразличимы намеренно.
+		GetNote(ctx context.Context, fileID int) (*entity.LibraryNote, error)
+		// SaveNoteContent is the compare-and-set write: перечитывает строку в SERIALIZABLE-транзакции
+		// и пишет, только если base_sha256 совпал ИЛИ вызывающий явно попросил force. Несовпадение —
+		// это ДАННЫЕ ответа (Conflict + текущая версия), а не ошибка: клиент строит по ним баннер и
+		// три исхода без второго запроса. Молчаливая перезапись невозможна по построению.
+		//
+		// Новый объект вызывающий заливает ДО вызова, старый удаляет ПОСЛЕ успешного возврата
+		// (PreviousObjectKey) — порядок «строка раньше байтов» тот же, что в DeleteFile: упавшая
+		// заливка не трогает строку вообще, а осиротевший объект стоит дешевле потерянного текста.
+		SaveNoteContent(ctx context.Context, in entity.LibraryNoteSave) (*entity.LibraryNoteSaveResult, error)
 	}
 
 	// Fulfillment is the orders-fulfillment board's storage: the board-owned
@@ -1531,6 +1643,18 @@ type (
 		// entity.ErrAdminSpecialtyVocabularyFull when the new names would push the
 		// shared dictionary past its cap.
 		SetSpecialties(ctx context.Context, adminID int, specialtyIDs []int, newSpecialties []string) error
+		// DeleteSpecialty removes ONE entry from the shared vocabulary, BY NAME — по имени, потому
+		// что имя это и есть ключ словаря снаружи: наружу (ListAdmins) едут строки, id клиенту не
+		// показывают вовсе, а уникальность имени регистро-независима на уровне таблицы.
+		//
+		// ЗАЧЕМ УДАЛЕНИЕ ВООБЩЕ ЕСТЬ. Пополнять словарь может любой аутентифицированный (Р1) —
+		// значит, первая же опечатка вечна и видна на КАЖДОМ экране с пикером людей. Справочник,
+		// который умеет только расти, чинится походом в прод-базу; чинить опечатку так нельзя.
+		//
+		// Отказывает на непустых связях (entity.ErrAdminSpecialtyInUse с числом аккаунтов) — FK
+		// стоит RESTRICT ровно для этого, и удаление «заодно со связями» сняло бы специальность с
+		// живых людей молча. sql.ErrNoRows, когда такой позиции нет.
+		DeleteSpecialty(ctx context.Context, name string) error
 	}
 
 	Settings interface {
@@ -1735,6 +1859,16 @@ type (
 		// stability) as PresignPatternObject. Reachable only from RBAC-gated admin
 		// handlers — unlike the pattern variant, which a token endpoint can reach.
 		PresignLibraryObject(ctx context.Context, objectKey string, download bool, downloadName string) (url string, expiresAt time.Time, err error)
+		// GetLibraryObject reads a PRIVATE library object into memory. Единственное чтение объекта
+		// во всём бакете, и оно появилось ради одного случая: текст заметки едет клиенту по RPC, а
+		// не подписанной ссылкой — text/markdown не в inline-allowlist, и fetch подписанного URL из
+		// JS упирается в CORS бакета (грабли выкроек).
+		//
+		// Гардов ровно столько же, сколько у PresignLibraryObject, и по той же причине: ключ
+		// приходит ТОЛЬКО из строки БД, обязан лежать под files-library/, и читается не больше
+		// потолка заметки. Метод не должен УМЕТЬ вытащить произвольный объект бакета — чужой
+		// префикс и превышение размера это отказ, а не усечение.
+		GetLibraryObject(ctx context.Context, objectKey string) ([]byte, error)
 		// RemoveObjectsByKeys best-effort deletes objects addressed by KEY rather than
 		// url. DeleteObjects takes urls, which library files do not store — they keep
 		// keys, because a private object has no durable url to keep.

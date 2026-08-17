@@ -75,6 +75,61 @@ type LibraryFile struct {
 	// Zero owners is legal for the same reason zero topics is: an empty field is
 	// honest, a randomly assigned one is not.
 	Owners []AdminRef `db:"-"`
+	// CommentsCount is how many remarks the file's discussion holds — the number
+	// on the tile and on the card. NOT a column, and deliberately so: a counter
+	// column would have to be kept in step with a feed that cascades away with the
+	// file, and it would drift the first time it was not. It is resolved for a
+	// WHOLE page in one grouped query, exactly like Topics and Owners above.
+	CommentsCount int `db:"-"`
+	// AccessLevel is «кому виден файл» (0317). It only ever reaches somebody who
+	// can already SEE the file — one that may not be seen is not in the answer at
+	// all — so the level is not a secret from its reader: it is what badges the
+	// tile «по ссылке» / «ограничен» instead of making a person open the card to
+	// find out.
+	AccessLevel LibraryFileAccessLevel `db:"access_level"`
+	// ContentUpdatedBy / ContentUpdatedAt are «кто правил последним» for a note
+	// saved THROUGH THE EDITOR (0318). They stand next to UploadedBy rather than
+	// replacing it, because the upload is one fact and the last edit another: a
+	// note that arrived as an upload and was never edited here keeps them empty,
+	// and the card then falls back to the uploader, which is the truth in that case.
+	ContentUpdatedBy string       `db:"content_updated_by"`
+	ContentUpdatedAt sql.NullTime `db:"content_updated_at"`
+	// ContentExcerpt is the first lines of a note's text: the tile preview where
+	// there is no picture to render at all — the one documented exception to «no
+	// preview → extension plate». Written on save through the editor; empty for a
+	// .md that arrived as an upload, because reading text on the streaming upload
+	// path would complicate the single hot path for a rare case.
+	ContentExcerpt string `db:"content_excerpt"`
+}
+
+// LibraryFileComment is one remark in a file's discussion (0316).
+//
+// The feed is FLAT by construction — there is no parent id here and none in the
+// table. Threads turn a six-person conversation into a tree that has to be read
+// twice to find what was decided; a flat feed under the file is the whole of what
+// «обсудить этот файл» needs.
+type LibraryFileComment struct {
+	Id     int `db:"id"`
+	FileId int `db:"file_id"`
+	// Author is the username AS OF WRITING: the historical fact, exactly like
+	// LibraryFile.UploadedBy, and the string the «править можно только свою
+	// реплику» rule compares against. AuthorId is the LIVE account behind it (the
+	// avatar and the specialty byline read it) and is nulled when that account is
+	// deleted. The two are not duplicates — they have different lifetimes.
+	//
+	// NEITHER is caller-supplied: the store derives both from the caller's JWT
+	// username in one statement, so the two halves of authorship cannot disagree.
+	Author   string        `db:"author"`
+	AuthorId sql.NullInt64 `db:"author_id"`
+	// Body is the raw text, @mentions included — the server stores what was typed.
+	// A mention is FLAT text on purpose: the highlight and the people popover are
+	// the client's, and server-side markup would have to be escaped again by every
+	// reader anyway.
+	Body      string    `db:"body"`
+	CreatedAt time.Time `db:"created_at"`
+	// EditedAt invalid/NULL = never edited. Set = the feed prints «изменено»,
+	// because a silently rewritten remark is a silently rewritten conversation.
+	EditedAt sql.NullTime `db:"edited_at"`
 }
 
 // FileTopic is one topic label. Topics are LABELS, not folders — a file carries
