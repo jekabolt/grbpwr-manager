@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -407,6 +408,31 @@ func ValidateChecklistContent(s string) (string, error) {
 		return "", fmt.Errorf("checklist item content must be at most %d characters", maxChecklistContent)
 	}
 	return s, nil
+}
+
+// ConvertEntityLibraryFileTasksToPb converts the task rows a FILE card draws (Ф4).
+//
+// Проекция, а не common.Task, и это решение контракта, а не экономия: Task несёт содержимое,
+// чек-лист, разрешённые медиа и СВОИ вложения, поэтому на каждую задачу, к которой прицеплен файл,
+// пришлось бы резолвить ещё один список файлов ради строки с pill-ом, заголовком и сроком.
+//
+// Неизвестные строки статуса и доски (испорченная колонка, откат на старый бинарь) едут нулевым
+// энумом — ровно как в ConvertEntityTaskToPb: разойтись двум чтениям одной и той же задачи хуже,
+// чем отдать UNKNOWN, а строка карточки от этого остаётся читаемой.
+func ConvertEntityLibraryFileTasksToPb(rows []entity.LibraryFileTask) []*pb_admin.LibraryFileTask {
+	out := make([]*pb_admin.LibraryFileTask, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &pb_admin.LibraryFileTask{
+			TaskId:   int32(r.TaskId),
+			Title:    r.Title,
+			Status:   taskStatusEntityToPb[r.Status],
+			Assignee: r.Assignee,
+			// Срока может не быть, и тогда поля нет вовсе — «нет срока», а не «сегодня».
+			DueDate: pbTimestampFromNullTime(r.DueDate),
+			Board:   taskBoardEntityToPb[r.Board],
+		})
+	}
+	return out
 }
 
 // ConvertPbTaskCommentInsertToEntity validates and converts a comment payload.
