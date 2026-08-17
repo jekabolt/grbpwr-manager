@@ -50,9 +50,16 @@ var (
 
 // GetLibraryObject reads a PRIVATE library object into memory.
 //
-// Range-запрос стоит ровно на потолке (SetRange даёт максимум maxLibraryReadBytes+1 байт), поэтому
-// «слишком большой объект» невозможно СКАЧАТЬ даже случайно: лишний байт приезжает только затем,
-// чтобы отличить «ровно потолок» от «больше потолка».
+// РАНЬШЕ ЗДЕСЬ СТОЯЛ RANGE-ЗАПРОС НА ПОТОЛОК, И ОН ЛОМАЛ ПУСТОЙ ОБЪЕКТ. Диапазон `bytes=0-N`
+// на объекте нулевой длины по стандарту неудовлетворим, и S3 отвечает 416, а не пустым телом.
+// Заметка же создаётся ИМЕННО ПУСТОЙ: имя спрашивают сразу, текст набирают потом — то есть
+// каждая только что созданная заметка не читалась вовсе, и «текст не прочитался» встречало
+// человека на первом же экране.
+//
+// Потолок никуда не делся, он просто там, где ему и место: `readWithinLimit` берёт из потока
+// не больше `maxLibraryReadBytes+1` байт и отказывает, если пришло больше. Лишний байт нужен
+// ровно затем, чтобы отличить «ровно потолок» от «больше потолка». Скачать объект целиком это
+// по-прежнему не даёт: чтение обрывается на потолке, а соединение закрывается по `defer`.
 func (b *Bucket) GetLibraryObject(ctx context.Context, objectKey string) ([]byte, error) {
 	key := strings.Trim(objectKey, "/")
 	// Гард ПЕРВЫМ и до всякого обращения к клиенту: метод не должен уметь сходить в бакет за
@@ -61,12 +68,7 @@ func (b *Bucket) GetLibraryObject(ctx context.Context, objectKey string) ([]byte
 		return nil, fmt.Errorf("%w: %q", ErrLibraryObjectKeyNotManaged, objectKey)
 	}
 
-	opts := minio.GetObjectOptions{}
-	// Диапазон включающий: [0, max] — это max+1 байт.
-	if err := opts.SetRange(0, maxLibraryReadBytes); err != nil {
-		return nil, fmt.Errorf("set range for library object %q: %w", key, err)
-	}
-	obj, err := b.Client.GetObject(ctx, b.S3BucketName, key, opts)
+	obj, err := b.Client.GetObject(ctx, b.S3BucketName, key, minio.GetObjectOptions{})
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't open library object",
 			slog.String("key", key), slog.String("err", err.Error()))
