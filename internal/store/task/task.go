@@ -473,8 +473,10 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	for i := range tasks {
 		tasks[i].Labels = labels[tasks[i].Id]
 		tasks[i].Media = media[tasks[i].Id]
-		// Указания едут и в списке тоже: редактор карточки открывают прямо с доски, и без них он
-		// сохранил бы карточку «без указаний» — полной заменой, то есть стёр бы их.
+		// Указания едут и в списке тоже. Не потому, что доска их рисует — карточку редактируют на
+		// детальной странице, а она читает GetTask, — а потому, что Task.task это ОДНА проекция
+		// содержимого, и поле, молча пропадающее в одном из двух путей чтения, — это ровно тот
+		// способ, которым рождается «редактор сохранил карточку без него».
 		tasks[i].MediaAnnotations = mediaAnnotations[tasks[i].Id]
 		tasks[i].Checklist = checklist[tasks[i].Id]
 		tasks[i].FileIds = fileIDs[tasks[i].Id]
@@ -703,7 +705,12 @@ type taskMediaRow struct {
 	TaskID int `db:"task_id"`
 	// Annotations в БД лежит JSON-колонкой; наружу отдаётся разобранным списком. NULL = строка
 	// записана до 0313.
-	Annotations []byte `db:"annotations"`
+	//
+	// ЧИТАЕТСЯ ПОД ПСЕВДОНИМОМ, а не своим именем: запрос тянет `m.*`, а хендл стора — Unsafe(),
+	// поэтому появись у media когда-нибудь своя колонка `annotations`, коллизия НЕ дала бы ошибки
+	// скана — обе легли бы в это поле, победила бы media, чтение молча отдало бы «указаний нет», и
+	// ближайшее сохранение полной заменой записало бы [].
+	Annotations []byte `db:"task_annotations"`
 	entity.MediaFull
 }
 
@@ -715,18 +722,24 @@ func (s *Store) mediaByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 		return map[int][]entity.MediaFull{}, map[int][]entity.TaskMediaAnnotations{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[taskMediaRow](ctx, s.DB, `
-		SELECT tm.task_id, tm.annotations, m.*
+		SELECT tm.task_id, tm.annotations AS task_annotations, m.*
 		FROM task_media tm
 		JOIN media m ON m.id = tm.media_id
 		WHERE tm.task_id IN (:ids)
-		ORDER BY tm.task_id, tm.display_order`, map[string]any{"ids": ids})
+		ORDER BY tm.task_id, tm.display_order, tm.id`, map[string]any{"ids": ids})
 	if err != nil {
 		return nil, nil, fmt.Errorf("can't load task media: %w", err)
 	}
 	media := make(map[int][]entity.MediaFull, len(ids))
-	// Порядок наборов — порядок картинок (display_order из запроса выше), чтобы круговой рейс
-	// клиента был стабильным и правка описания не переставляла указания местами.
+	// Порядок наборов — порядок картинок (display_order, добитый id: display_order в task_media не
+	// уникален, и без добивки две картинки с одинаковой позицией менялись бы местами от чтения к
+	// чтению). Круговой рейс клиента обязан быть стабильным.
 	anns := make(map[int][]entity.TaskMediaAnnotations, len(ids))
+	// НАБОРЫ СХЛОПЫВАЮТСЯ ПО media_id, первый выигрывает. У task_media нет UNIQUE (task_id,
+	// media_id) — ретроактивный UNIQUE на живых данных ронял бы старт прода, — поэтому дублирующая
+	// строка возможна, и отдать по ней два набора с одним id значило бы вернуть клиенту то, что он
+	// не сможет прислать обратно. Симметрично молчаливому дедупу на входе (см. dto).
+	seen := make(map[int]map[int]bool, len(ids))
 	for _, r := range rows {
 		media[r.TaskID] = append(media[r.TaskID], r.MediaFull)
 		list := decodeTaskMediaAnnotations(r.TaskID, r.MediaFull.Id, r.Annotations)
@@ -735,6 +748,13 @@ func (s *Store) mediaByTaskIds(ctx context.Context, ids []int) (map[int][]entity
 		if len(list) == 0 {
 			continue
 		}
+		if seen[r.TaskID] == nil {
+			seen[r.TaskID] = make(map[int]bool, len(rows))
+		}
+		if seen[r.TaskID][r.MediaFull.Id] {
+			continue
+		}
+		seen[r.TaskID][r.MediaFull.Id] = true
 		anns[r.TaskID] = append(anns[r.TaskID], entity.TaskMediaAnnotations{
 			MediaId:     r.MediaFull.Id,
 			Annotations: list,
