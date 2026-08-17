@@ -84,6 +84,12 @@ func (s *Store) AddFile(ctx context.Context, f *entity.LibraryFileInsert, topicI
 // ТОЧКА 10 ПРЕДИКАТА (запись). Проверка стоит ПЕРВОЙ и внутри транзакции: невидимый файл обязан
 // ответить NotFound, а не PermissionDenied, — «нет прав» подтвердило бы, что файл существует.
 // Rows-affected здесь ничего бы не рассказал: UPDATE на невидимой строке прошёл бы успешно.
+//
+// ЗАМЕНА СЧИТАЕТСЯ РАЗНИЦЕЙ, А НЕ «СНЕСТИ И ЗАВЕСТИ ЗАНОВО», И ЭТО НЕ ОПТИМИЗАЦИЯ. С 0320 на
+// строке связи живёт РОЛЬ файла в проекте, и прежний `DELETE ... WHERE file_id` + вставка стирал
+// бы её МОЛЧА при любом сохранении карточки — переименовал файл, потерял «исходники» во всех
+// съёмках, и ни одного сообщения об этом. Уцелевшие темы теперь не трогаются вовсе, поэтому роль
+// переживает переименование; побочно перестаёт скакать created_at связи.
 func (s *Store) UpdateFile(ctx context.Context, id int, fileName string, topicIDs []int, newTopics []string) error {
 	v, err := s.viewer(ctx)
 	if err != nil {
@@ -101,11 +107,7 @@ func (s *Store) UpdateFile(ctx context.Context, id int, fileName string, topicID
 			map[string]any{"id": id, "fileName": fileName}); err != nil {
 			return fmt.Errorf("failed to update library file: %w", err)
 		}
-		if err := storeutil.ExecNamed(ctx, rep.DB(),
-			`DELETE FROM library_file_topic WHERE file_id = :id`, map[string]any{"id": id}); err != nil {
-			return fmt.Errorf("failed to clear library file topics: %w", err)
-		}
-		return linkTopics(ctx, rep.DB(), id, topicIDs, newTopics)
+		return syncTopics(ctx, rep.DB(), id, topicIDs, newTopics)
 	})
 	if err != nil {
 		return fmt.Errorf("can't update library file: %w", err)
@@ -261,6 +263,19 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 		return nil, 0, fmt.Errorf("%w: at most %d topics can be combined in one filter, got %d",
 			entity.ErrLibraryBatchTooLarge, entity.MaxLibraryTopicFilters, len(f.TopicIds))
 	}
+	// НЕВОЗМОЖНЫЕ КОМБИНАЦИИ ОТВЕРГАЮТСЯ, А НЕ ИГНОРИРУЮТСЯ. Молча отброшенное плечо показало бы
+	// БОЛЬШЕ, чем просили, а лишняя строка в этой библиотеке — это чьё-то говорящее имя файла.
+	//
+	// «Без роли» без проекта означало бы «почти вся библиотека» и не отвечало бы ни на один
+	// вопрос. Проект и роль вместе с «разобрать» — прямое противоречие: файл в проекте несёт
+	// строку связи, значит в «разобрать» его нет по построению, и пустая выдача читалась бы как
+	// «в этом проекте ничего нет».
+	if f.WithoutRole && f.ProjectTopicId <= 0 {
+		return nil, 0, fmt.Errorf("%w: without_role is only meaningful together with a project", entity.ErrLibraryFilterInvalid)
+	}
+	if f.Untopiced && (f.ProjectTopicId > 0 || f.RoleId > 0 || f.WithoutRole) {
+		return nil, 0, fmt.Errorf("%w: untopiced cannot be combined with a project or a role", entity.ErrLibraryFilterInvalid)
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = defaultPageLimit
@@ -296,6 +311,38 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 	case f.TopicId > 0:
 		where = append(where, `EXISTS (SELECT 1 FROM library_file_topic lft WHERE lft.file_id = lf.id AND lft.topic_id = :topicId)`)
 		params["topicId"] = f.TopicId
+	}
+	// ПРОЕКТ И РОЛЬ. Оба плеча дописываются В ТОТ ЖЕ where, что темы, поиск и предикат
+	// видимости, — то есть складываются с ними пересечением и никогда не обходят предикат.
+	//
+	// «ПРОЕКТ × РОЛЬ» — ЭТО ОДИН EXISTS С ДВУМЯ УСЛОВИЯМИ НА ОДНОЙ СТРОКЕ, и в этом вся разница
+	// между правильной моделью и молчаливо ложной. Два независимых EXISTS (один про проект,
+	// другой про роль) — это в точности плоские метки: файл, лежащий в съёмке как «отобранное» и
+	// в лукбуке как «референс», удовлетворил бы обоим, и запрос «съёмка × референс» нашёл бы его,
+	// хотя референсом он был в лукбуке. Ошибка выглядит правдоподобно и проверить её нечем.
+	//
+	// Роль БЕЗ проекта — законный и другой вопрос: «все исходники по всем съёмкам». Там условие
+	// одно, и строка, на которой оно выполняется, может быть любой.
+	//
+	// Предел 20 меряется по-прежнему ТОЛЬКО по TopicIds: проект и роль в него не входят, максимум
+	// становится 21 EXISTS на запрос.
+	switch {
+	case f.ProjectTopicId > 0:
+		params["projectTopicId"] = f.ProjectTopicId
+		cond := `EXISTS (SELECT 1 FROM library_file_topic lft_proj
+			WHERE lft_proj.file_id = lf.id AND lft_proj.topic_id = :projectTopicId`
+		switch {
+		case f.WithoutRole:
+			cond += ` AND lft_proj.role_id IS NULL`
+		case f.RoleId > 0:
+			cond += ` AND lft_proj.role_id = :roleId`
+			params["roleId"] = f.RoleId
+		}
+		where = append(where, cond+`)`)
+	case f.RoleId > 0:
+		where = append(where, `EXISTS (SELECT 1 FROM library_file_topic lft_role
+			WHERE lft_role.file_id = lf.id AND lft_role.role_id = :roleId)`)
+		params["roleId"] = f.RoleId
 	}
 	// ФИЛЬТР ПО ЧЕЛОВЕКУ. Он ДОПИСЫВАЕТСЯ в тот же where, что темы, поиск и предикат
 	// видимости, — то есть складывается с ними пересечением и НИКОГДА не обходит предикат.
@@ -346,10 +393,18 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 		// Расширение сидит ВНУТРИ того же предиката, что и остальная выборка, а не
 		// отдельным UNION: иначе файл, скрытый фильтром видимости, всплыл бы в
 		// поиске по автору — ровно та щель, через которую утекают имена.
+		//
+		// ИМЯ РОЛИ ИЩЕТСЯ ВТОРЫМ EXISTS'ОМ, И ЭТО НЕ ДОВЕСОК. Роль печатается на плитке рядом с
+		// темой и выглядит ровно таким же ярлыком; человек, набравший «исходники», ждёт файлы, а
+		// не пустой экран. До 0320 такой ярлык был темой и находился первым EXISTS'ом даром —
+		// переезд роли в свою таблицу забрал бы это свойство молча.
 		where = append(where, `(lf.file_name LIKE :search ESCAPE '\\' OR lf.uploaded_by LIKE :search ESCAPE '\\' OR EXISTS (
 			SELECT 1 FROM library_file_topic lft
 			JOIN file_topic ft ON ft.id = lft.topic_id
-			WHERE lft.file_id = lf.id AND ft.name LIKE :search ESCAPE '\\'))`)
+			WHERE lft.file_id = lf.id AND ft.name LIKE :search ESCAPE '\\') OR EXISTS (
+			SELECT 1 FROM library_file_topic lft_rs
+			JOIN file_role fr_rs ON fr_rs.id = lft_rs.role_id
+			WHERE lft_rs.file_id = lf.id AND fr_rs.name LIKE :search ESCAPE '\\'))`)
 		params["search"] = "%" + escapeLike(q) + "%"
 	}
 	clause := strings.Join(where, " AND ")
@@ -409,10 +464,22 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 //
 // Предикат стоит в ON внешнего соединения, а не в WHERE: в WHERE он превратил бы LEFT JOIN в
 // INNER и выкинул из рельса ПУСТЫЕ темы, которые обязаны быть видны (в них кладут новое).
-func (s *Store) ListTopics(ctx context.Context) ([]entity.FileTopicWithCount, int, int, error) {
+//
+// АРХИВ ЖЕ ФИЛЬТРУЕТСЯ ИМЕННО В WHERE, и это не противоречие, а разные условия: архив —
+// свойство САМОЙ темы (и WHERE по ft ведущую таблицу не схлопывает), предикат — свойство файлов.
+// Перепутать места здесь стоит ровно того, от чего предыдущий абзац предостерегает.
+//
+// includeArchived = false по умолчанию, и это единственное изменение поведения для уже
+// отгруженного клиента: холст и пикеры архив не показывают, экран тем показывает. Пока никто
+// ничего не заархивировал, изменение инертно.
+func (s *Store) ListTopics(ctx context.Context, includeArchived bool) ([]entity.FileTopicWithCount, int, int, error) {
 	v, err := s.viewer(ctx)
 	if err != nil {
 		return nil, 0, 0, err
+	}
+	archived := "ft.archived_at IS NULL"
+	if includeArchived {
+		archived = "1 = 1"
 	}
 	// Ordering by usage, not alphabetically: dead topics sink on their own, and a
 	// list of sixty becomes the eight that are actually in use.
@@ -422,6 +489,7 @@ func (s *Store) ListTopics(ctx context.Context) ([]entity.FileTopicWithCount, in
 		FROM file_topic ft
 		LEFT JOIN library_file_topic lft ON lft.topic_id = ft.id
 		LEFT JOIN library_file lf ON lf.id = lft.file_id AND `+v.Where("lf", topicParams)+`
+		WHERE `+archived+`
 		GROUP BY ft.id
 		ORDER BY files_count DESC, ft.name ASC`, topicParams)
 	if err != nil {
@@ -552,14 +620,27 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 		// Существование проверяем ВНУТРИ транзакции: пишущие транзакции стора идут
 		// в SERIALIZABLE, поэтому проверка реально закрывает гонку с параллельным
 		// удалением темы, а не просто сужает окно.
-		found, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COUNT(*) FROM file_topic WHERE id IN (:ids)`,
+		type topicKindRow struct {
+			Id   int                  `db:"id"`
+			Kind entity.FileTopicKind `db:"kind"`
+		}
+		found, err := storeutil.QueryListNamed[topicKindRow](ctx, rep.DB(),
+			`SELECT id, kind FROM file_topic WHERE id IN (:ids)`,
 			map[string]any{"ids": []int{sourceID, targetID}})
 		if err != nil {
 			return fmt.Errorf("failed to check file topics existence: %w", err)
 		}
-		if found != 2 {
+		if len(found) != 2 {
 			return sql.ErrNoRows
+		}
+		// СЛИЯНИЕ МЕЖДУ ТИПАМИ ЗАПРЕЩЕНО. Слить проект в обычный ярлык — не редкий случай, а
+		// бессмыслица: роли, живущие на строках связи источника, переехали бы на строки темы,
+		// которая проектом не является, и получилось бы состояние, которого стор больше нигде
+		// не допускает (роль ставится только внутри проекта). Обратное направление ничем не
+		// лучше: даты и разбивка цели остались бы, а половина файлов пришла бы без ролей и
+		// навсегда осела в «без роли», не отличимая от честного приёмника.
+		if found[0].Kind != found[1].Kind {
+			return entity.ErrFileTopicKindMismatch
 		}
 		// Число снимается ДО вставки и повторяет её условие слово в слово: «связь источника
 		// есть, связи цели ещё нет» — то самое, что INSERT IGNORE реально вставит, — плюс
@@ -576,9 +657,18 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 		if err != nil {
 			return fmt.Errorf("failed to count visible files moved between topics: %w", err)
 		}
+		// РОЛЬ ЕДЕТ ТРЕТЬЕЙ КОЛОНКОЙ, И БЕЗ НЕЁ СЛИЯНИЕ ПРОЕКТОВ ТЕРЯЕТ ВСЮ РАЗМЕТКУ. «Две
+		// съёмки оказались одной» — штатный сценарий; проекция без role_id перевесила бы файлы
+		// на целевой проект, обнулив то, чем они в нём являются, и восстановить это было бы
+		// нечем: исходный проект в той же транзакции перестаёт существовать.
+		//
+		// Столкновение (файл уже лежал в цели) гасит INSERT IGNORE: побеждает роль, которая
+		// СТОЯЛА В ЦЕЛЕВОМ проекте. Это единственный разумный выбор — целевой проект переживает
+		// слияние, и его собственная разметка старше приезжей, — но человека о нём надо
+		// предупредить в диалоге, рядом с уже стоящим «обратно это не разбирается».
 		if _, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
-			INSERT IGNORE INTO library_file_topic (file_id, topic_id)
-			SELECT lft.file_id, :target FROM library_file_topic lft WHERE lft.topic_id = :source`,
+			INSERT IGNORE INTO library_file_topic (file_id, topic_id, role_id)
+			SELECT lft.file_id, :target, lft.role_id FROM library_file_topic lft WHERE lft.topic_id = :source`,
 			map[string]any{"source": sourceID, "target": targetID}); err != nil {
 			return fmt.Errorf("failed to move file topic links: %w", err)
 		}
@@ -745,8 +835,9 @@ func (s *Store) SetFilePreview(ctx context.Context, id int, previewKey string) (
 	return previous, nil
 }
 
-// linkTopics attaches an explicit id set plus any names typed on the fly.
-func linkTopics(ctx context.Context, db dependency.DB, fileID int, topicIDs []int, newTopics []string) error {
+// resolveTopicIDs turns the (ids, names typed on the fly) pair into the concrete
+// set of topic ids, creating the new names as it goes.
+func resolveTopicIDs(ctx context.Context, db dependency.DB, topicIDs []int, newTopics []string) (map[int]struct{}, error) {
 	ids := make(map[int]struct{}, len(topicIDs)+len(newTopics))
 	for _, id := range topicIDs {
 		if id > 0 {
@@ -760,21 +851,90 @@ func linkTopics(ctx context.Context, db dependency.DB, fileID int, topicIDs []in
 		}
 		id, err := upsertTopic(ctx, db, name, "")
 		if err != nil {
-			return fmt.Errorf("failed to resolve topic %q: %w", name, err)
+			return nil, fmt.Errorf("failed to resolve topic %q: %w", name, err)
 		}
 		ids[id] = struct{}{}
 	}
+	return ids, nil
+}
+
+// insertTopicLinks writes the given (file, topic) rows.
+//
+// Обычный INSERT, а НЕ `INSERT IGNORE`, и это существенно: IGNORE глушит и нарушение внешнего
+// ключа тоже, поэтому несуществующая тема превратилась бы в «ничего не проставилось» с ответом
+// «готово». Вызывающие рассчитывают на то, что ошибка внешнего ключа доедет до хендлера и станет
+// InvalidArgument.
+func insertTopicLinks(ctx context.Context, db dependency.DB, fileID int, ids []int) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	rows := make([]map[string]any, 0, len(ids))
-	for id := range ids {
+	for _, id := range ids {
 		rows = append(rows, map[string]any{"file_id": fileID, "topic_id": id})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "library_file_topic", rows); err != nil {
 		return fmt.Errorf("failed to link file topics: %w", err)
 	}
 	return nil
+}
+
+// linkTopics attaches an explicit id set plus any names typed on the fly. Used on
+// the CREATE paths (upload, note), where there is nothing to diff against.
+func linkTopics(ctx context.Context, db dependency.DB, fileID int, topicIDs []int, newTopics []string) error {
+	ids, err := resolveTopicIDs(ctx, db, topicIDs, newTopics)
+	if err != nil {
+		return err
+	}
+	list := make([]int, 0, len(ids))
+	for id := range ids {
+		list = append(list, id)
+	}
+	return insertTopicLinks(ctx, db, fileID, list)
+}
+
+// syncTopics brings the file's topic set to exactly the requested one BY
+// DIFFERENCE: only the departed links are removed, only the new ones inserted,
+// and the surviving rows are never touched.
+//
+// «Не трогать уцелевшие» — это и есть весь смысл функции. На строке связи с 0320 живёт роль файла
+// в проекте; снеси мы весь набор и заведи заново, роль исчезала бы при каждом сохранении карточки
+// — молча, без единого сообщения, при обычном переименовании файла. Читается это как «роли иногда
+// пропадают сами», и найти такое по симптому почти невозможно.
+//
+// Читаем текущий набор ВНУТРИ транзакции (пишущие транзакции стора идут в SERIALIZABLE), поэтому
+// разница считается по состоянию, которое никто не переписывает под руками.
+func syncTopics(ctx context.Context, db dependency.DB, fileID int, topicIDs []int, newTopics []string) error {
+	want, err := resolveTopicIDs(ctx, db, topicIDs, newTopics)
+	if err != nil {
+		return err
+	}
+	current, err := storeutil.QueryScalarListNamed[int](ctx, db,
+		`SELECT topic_id FROM library_file_topic WHERE file_id = :id`, map[string]any{"id": fileID})
+	if err != nil {
+		return fmt.Errorf("failed to read current file topics: %w", err)
+	}
+	have := make(map[int]struct{}, len(current))
+	remove := make([]int, 0, len(current))
+	for _, id := range current {
+		have[id] = struct{}{}
+		if _, keep := want[id]; !keep {
+			remove = append(remove, id)
+		}
+	}
+	add := make([]int, 0, len(want))
+	for id := range want {
+		if _, already := have[id]; !already {
+			add = append(add, id)
+		}
+	}
+	if len(remove) > 0 {
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM library_file_topic WHERE file_id = :id AND topic_id IN (:removed)`,
+			map[string]any{"id": fileID, "removed": remove}); err != nil {
+			return fmt.Errorf("failed to drop departed file topics: %w", err)
+		}
+	}
+	return insertTopicLinks(ctx, db, fileID, add)
 }
 
 // upsertTopic returns the id of the topic with this name, creating it when it is
@@ -789,7 +949,16 @@ func upsertTopic(ctx context.Context, db dependency.DB, name, description string
 		map[string]any{"name": name, "description": nullString(description)})
 }
 
-// attachTopics resolves the label set of the given files in one query.
+// attachTopics resolves the label set of the given files in one query — AND their
+// (project → role) pairs out of the same rows, without a second round-trip.
+//
+// Обе половины приезжают из ОДНОГО запроса намеренно: роль живёт на той же строке связи, что и
+// тема, и отдельный запрос за ролями означал бы, что однажды один из двух путей чтения приедет с
+// темами и без ролей — на одном экране у файла будет проект, на соседнем нет.
+//
+// В список ролей попадают только строки с непустым role_id. Проверять при этом, что тема —
+// проект, не нужно: непустой role_id может стоять только внутри проекта (SetFileRoles отказывает
+// на обычной теме, понижение проекта обнуляет роли, слияние разнотипных тем запрещено).
 func (s *Store) attachTopics(ctx context.Context, files []*entity.LibraryFile) error {
 	if len(files) == 0 {
 		return nil
@@ -803,19 +972,36 @@ func (s *Store) attachTopics(ctx context.Context, files []*entity.LibraryFile) e
 	type row struct {
 		FileId int `db:"file_id"`
 		entity.FileTopic
+		// COALESCE, а не sql.Null*: ноль и пустая строка здесь означают ровно «роли на этой
+		// строке нет», и отличать их от NULL незачем — читатель проверяет одно и то же условие.
+		RoleId   int    `db:"role_id"`
+		RoleName string `db:"role_name"`
 	}
 	rows, err := storeutil.QueryListNamed[row](ctx, s.DB, `
-		SELECT lft.file_id, ft.id, ft.name, ft.description, ft.created_at
+		SELECT lft.file_id, ft.id, ft.name, ft.description, ft.created_at,
+			ft.kind, ft.starts_at, ft.ends_at, ft.archived_at,
+			COALESCE(lft.role_id, 0) AS role_id, COALESCE(fr.name, '') AS role_name
 		FROM library_file_topic lft
 		JOIN file_topic ft ON ft.id = lft.topic_id
+		LEFT JOIN file_role fr ON fr.id = lft.role_id
 		WHERE lft.file_id IN (:ids)
 		ORDER BY ft.name`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("failed to load file topics: %w", err)
 	}
 	for _, r := range rows {
-		if f, ok := byId[r.FileId]; ok {
-			f.Topics = append(f.Topics, r.FileTopic)
+		f, ok := byId[r.FileId]
+		if !ok {
+			continue
+		}
+		f.Topics = append(f.Topics, r.FileTopic)
+		if r.RoleId > 0 {
+			f.Roles = append(f.Roles, entity.LibraryFileRoleRef{
+				ProjectTopicId:   r.FileTopic.Id,
+				ProjectTopicName: r.FileTopic.Name,
+				RoleId:           r.RoleId,
+				RoleName:         r.RoleName,
+			})
 		}
 	}
 	return nil

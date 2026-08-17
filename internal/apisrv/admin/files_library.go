@@ -106,9 +106,15 @@ func (s *Server) ListLibraryFiles(ctx context.Context, req *pb_admin.ListLibrary
 		Search:     req.Search,
 		PersonId:   personID,
 		PersonRole: personRole,
-		Limit:      int(req.Limit),
-		Offset:     int(req.Offset),
-		SortBy:     dto.ConvertPbLibraryFileSortToEntity(req.SortBy),
+		// Проект и роль едут как есть: непригодные комбинации («без роли» без проекта, проект
+		// или роль вместе с «разобрать») отвергает СТОР, одним местом на всех вызывающих. Здесь
+		// их отсеивать нельзя — правило, размазанное по двум слоям, разъезжается на первой правке.
+		ProjectTopicId: int(req.ProjectTopicId),
+		RoleId:         int(req.RoleId),
+		WithoutRole:    req.WithoutRole,
+		Limit:          int(req.Limit),
+		Offset:         int(req.Offset),
+		SortBy:         dto.ConvertPbLibraryFileSortToEntity(req.SortBy),
 		// A library is read newest-first, so an unspecified order must mean
 		// descending. The shared converter maps UNKNOWN to ascending, which is right
 		// for the lists it was written for and wrong here — so the default is chosen
@@ -119,7 +125,7 @@ func (s *Server) ListLibraryFiles(ctx context.Context, req *pb_admin.ListLibrary
 		// Предел — довод вызывающего, а не сбой сервера: под Internal он доезжал бы
 		// как «не удалось», и упёршийся в него человек не узнал бы ни причины, ни
 		// того, что делать дальше.
-		if errors.Is(err, entity.ErrLibraryBatchTooLarge) {
+		if errors.Is(err, entity.ErrLibraryBatchTooLarge) || errors.Is(err, entity.ErrLibraryFilterInvalid) {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		slog.Default().ErrorContext(ctx, "can't list library files", slog.String("err", err.Error()))
@@ -190,8 +196,8 @@ func (s *Server) DeleteLibraryFile(ctx context.Context, req *pb_admin.DeleteLibr
 }
 
 // ListFileTopics is the rail: topics by usage plus the two badges.
-func (s *Server) ListFileTopics(ctx context.Context, _ *pb_admin.ListFileTopicsRequest) (*pb_admin.ListFileTopicsResponse, error) {
-	topics, untopiced, total, err := s.repo.Files().ListTopics(ctx)
+func (s *Server) ListFileTopics(ctx context.Context, req *pb_admin.ListFileTopicsRequest) (*pb_admin.ListFileTopicsResponse, error) {
+	topics, untopiced, total, err := s.repo.Files().ListTopics(ctx, req.GetIncludeArchived())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list file topics", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list topics")
@@ -273,6 +279,12 @@ func (s *Server) MergeFileTopics(ctx context.Context, req *pb_admin.MergeFileTop
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "topic not found")
+		}
+		// Слияние между типами — довод вызывающего, а не сбой: проект и обычный ярлык хранят
+		// разное, и «что станет с ролями» не имеет хорошего ответа. Клиент, кроме того, не
+		// предлагает разнотипных целей в пикере, так что сюда доезжает только сломанный диалог.
+		if errors.Is(err, entity.ErrFileTopicKindMismatch) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		slog.Default().ErrorContext(ctx, "can't merge file topics", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't merge topics")

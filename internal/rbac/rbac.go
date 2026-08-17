@@ -527,6 +527,20 @@ var methodRequirements = map[string]Requirement{
 	// rename/delete, and both write.
 	"MergeFileTopics":         wr(SectionFiles),
 	"AssignLibraryFileTopics": wr(SectionFiles),
+	// ГРУППИРОВКА: ТИП ТЕМЫ И СЛОВАРЬ РОЛЕЙ. Та же секция files и никакой новой: это та же
+	// библиотека, разложенная иначе, а не второй раздел. Чтение словаря — files:read (роли не
+	// секрет от того, кто видит сетку; счётчики при этом персональны, как у тем), правки словаря
+	// и простановка роли — files:write.
+	//
+	// SetLibraryFileRoles — ЗАПИСЬ ПОД ПРЕДИКАТОМ: files:write здесь необходим, но проверку
+	// видимости каждого файла делает стор, и один невидимый id отказывает всей пачке. Второго
+	// гейта в хендлере (как у владельцев и доступа) тут нет намеренно — роль не расширяет ничей
+	// доступ, она только раскладывает уже видимое.
+	"UpdateFileTopicMeta": wr(SectionFiles),
+	"ListFileRoles":       rd(SectionFiles),
+	"UpsertFileRole":      wr(SectionFiles),
+	"MergeFileRoles":      wr(SectionFiles),
+	"SetLibraryFileRoles": wr(SectionFiles),
 	// files:write is NECESSARY here but not SUFFICIENT: the handler additionally requires the caller
 	// to be the uploader, a current owner, or a super-admin. Without that second gate any files:write
 	// account could appoint itself owner of anybody's file — and once the access levels land, appoint

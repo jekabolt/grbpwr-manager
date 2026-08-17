@@ -698,8 +698,10 @@ type (
 		// S3 keys behind it for best-effort bucket cleanup by the caller.
 		DeleteFile(ctx context.Context, id int) (objectKeys []string, err error)
 		// ListTopics returns topics ordered by usage, plus the two rail badges:
-		// files carrying no topic, and the total file count.
-		ListTopics(ctx context.Context) (topics []entity.FileTopicWithCount, untopiced, total int, err error)
+		// files carrying no topic, and the total file count. includeArchived brings
+		// the archived topics back — the topics SCREEN sets it, the canvas rail and
+		// the pickers do not (an archive visible in the pickers is not an archive).
+		ListTopics(ctx context.Context, includeArchived bool) (topics []entity.FileTopicWithCount, untopiced, total int, err error)
 		CreateTopic(ctx context.Context, name, description string) (int, error)
 		RenameTopic(ctx context.Context, id int, name, description string) error
 		// DeleteTopic refuses while files still carry the topic — deleting it would
@@ -717,6 +719,38 @@ type (
 		// SetFilePreview points the file at a new preview object and returns the key
 		// it replaced, for best-effort bucket cleanup by the caller.
 		SetFilePreview(ctx context.Context, id int, previewKey string) (previousKey string, err error)
+
+		// --- Группировка: проект × роль (0320) ---
+		//
+		// Тема получает ТИП, а роль файла в проекте живёт на СТРОКЕ СВЯЗИ library_file_topic.
+		// Не меткой на файле: плоский набор меток теряет пару, и «съёмка × референс» находил бы
+		// снимок, который был референсом в лукбуке, — молча и правдоподобно. «Одна роль на файл
+		// в проекте» при этом не правило, а форма: UNIQUE(file_id, topic_id) даёт одну строку на
+		// пару, у строки одно поле роли.
+
+		// UpdateTopicMeta REPLACES a topic's kind, dates and archive flag and returns how many
+		// VISIBLE link rows lost their role because the topic stopped being a project (0 in
+		// every other case). Замена безопасна потому, что RPC новый: старого клиента, который
+		// прислал бы пустой kind и молча понизил проект, у него нет.
+		UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (clearedRoles int, err error)
+		// ListRoles returns the closed role vocabulary with CROSS-PROJECT counts, each counted
+		// under the visibility predicate. Пустые роли остаются в ответе (предикат в ON внешнего
+		// соединения) — «готовое: пусто» и есть половина ценности разбивки.
+		ListRoles(ctx context.Context, includeArchived bool) ([]entity.FileRoleWithCount, error)
+		// UpsertRole creates (id = 0) or edits one role. ЕДИНСТВЕННАЯ точка создания роли —
+		// именно это и означает «закрытый словарь» механически, а не по договорённости.
+		// Совпадение имени НЕ схлопывается в существующую роль: 1062 доезжает до хендлера.
+		UpsertRole(ctx context.Context, r entity.FileRoleUpsert) (int, error)
+		// MergeRoles folds source into target and deletes source, returning how many VISIBLE
+		// link rows changed role. Проще слияния тем: роль — колонка, дедуплицировать нечего.
+		MergeRoles(ctx context.Context, sourceID, targetID int) (movedLinks int, err error)
+		// SetFileRoles puts a batch of files into ONE project in ONE role (roleID = 0 clears the
+		// role, leaving the file in the project) and returns how many link rows changed. Строка
+		// связи заводится, если файла в проекте ещё не было. Семантика пачки — как у
+		// AssignTopics: один невидимый id отказывает всей пачке (sql.ErrNoRows). Роль вне
+		// проекта отвергается (entity.ErrRoleNeedsProjectTopic), заархивированная роль
+		// назначается отказом, а снимается свободно.
+		SetFileRoles(ctx context.Context, fileIDs []int, projectTopicID, roleID int) (updated int, err error)
 		// SetFileOwners REPLACES the file's owner set (owners come in ones and twos
 		// and the caller has just seen the whole current set). An empty set is legal
 		// — a file with nobody keeping it is honest. adminIDs must be deduped by the

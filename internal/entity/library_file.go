@@ -22,6 +22,12 @@ var (
 	// documented limit is told nothing at all, with nothing to try next. A limit
 	// is the caller's argument being wrong, so it has to reach them as such.
 	ErrLibraryBatchTooLarge = errors.New("too many items in one call")
+	// ErrLibraryFilterInvalid is a filter combination that has no meaning, and it
+	// is an ERROR rather than a silently dropped argument on purpose: dropping a
+	// filter shows MORE than was asked for, and in this library the extra row is
+	// somebody's file name. It lives next to the bound above for the same reason —
+	// the handler cannot tell a caller's mistake from a broken query otherwise.
+	ErrLibraryFilterInvalid = errors.New("invalid filter combination")
 )
 
 // NewErrLibraryFileInUse wraps ErrLibraryFileInUse with the ids of the tasks
@@ -86,6 +92,11 @@ type LibraryFile struct {
 	// Topics are the labels this file carries. A file legitimately carries zero
 	// of them: an unclassified file is honest, a wrongly classified one is not.
 	Topics []FileTopic `db:"-"`
+	// Roles — ПАРЫ «проект → роль», по одной на каждый проект, где у файла роль
+	// проставлена. НЕ плоский список ролей, и в этом весь смысл: файл бывает
+	// «исходники» в одной съёмке и «идея» в другой, а плоский набор нашёлся бы по
+	// перекрёстному запросу. Приезжает из того же запроса, что Topics.
+	Roles []LibraryFileRoleRef `db:"-"`
 	// Owners are the people who KEEP this file — who to ask when it goes stale.
 	// Zero owners is legal for the same reason zero topics is: an empty field is
 	// honest, a randomly assigned one is not.
@@ -158,6 +169,19 @@ type FileTopic struct {
 	// separate project entity that nobody would keep up.
 	Description sql.NullString `db:"description"`
 	CreatedAt   time.Time      `db:"created_at"`
+	// Kind — обычный ярлык или проект (0320). Пустая строка приезжает только из
+	// запросов, которые колонку не выбирают (attachTopics берёт четыре поля
+	// явно): для них тип и не нужен, ярлык на плитке рисуется одинаково.
+	Kind FileTopicKind `db:"kind"`
+	// StartsAt / EndsAt — даты проекта, invalid/NULL = не задано. DATE, а не
+	// TIMESTAMP: «12–14 сентября» не имеет часового пояса.
+	StartsAt sql.NullTime `db:"starts_at"`
+	EndsAt   sql.NullTime `db:"ends_at"`
+	// ArchivedAt — invalid/NULL значит «не в архиве». Архив нужен не для порядка:
+	// проекты копятся и почти никогда не удаляются (файлы в них есть всегда, а FK
+	// на тему стоит без каскада), поэтому без архива ряд чипов растёт монотонно и
+	// со временем делает холст ХУЖЕ, а не лучше.
+	ArchivedAt sql.NullTime `db:"archived_at"`
 }
 
 // FileTopicWithCount is a topic plus how many files carry it — the rail badge.
@@ -235,8 +259,24 @@ type LibraryFileListFilter struct {
 	// when the account is deleted, so a namesake hired later would inherit the
 	// whole history of the person who left (the hole closed twice already, in Ф3
 	// and in the visibility predicate).
-	PersonId    int
-	PersonRole  LibraryFilePersonRole
+	PersonId   int
+	PersonRole LibraryFilePersonRole
+	// ProjectTopicId narrows to ONE project (a topic of kind `project`); 0 = no
+	// project filter. Single-valued unlike TopicIds: two projects through AND
+	// means «files lying in BOTH shoots», which is almost always empty. It is
+	// technically an ordinary topic id, so it COMPOSES with TopicIds instead of
+	// replacing them.
+	ProjectTopicId int
+	// RoleId alone is the cross-project question («все исходники по всем
+	// съёмкам»). TOGETHER with ProjectTopicId both conditions land on THE SAME
+	// link row, and that is what makes the pair exact — the whole reason the role
+	// is not a second label on the file.
+	RoleId int
+	// WithoutRole selects «in the project, no role yet» — the intake heap. Only
+	// valid together with ProjectTopicId, and REFUSED otherwise rather than
+	// ignored: alone it would mean almost the whole library, and a silently
+	// ignored filter shows more than was asked for.
+	WithoutRole bool
 	Limit       int
 	Offset      int
 	OrderFactor OrderFactor
