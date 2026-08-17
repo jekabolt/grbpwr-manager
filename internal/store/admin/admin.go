@@ -190,7 +190,15 @@ func (s *Store) GetAccountWithPermissions(ctx context.Context, username string) 
 	if err != nil {
 		return nil, err
 	}
-	return &entity.AdminAccount{Admin: *admin, Permissions: perms}, nil
+	specialties, err := storeutil.LoadAdminSpecialties(ctx, s.DB, []int{admin.Id})
+	if err != nil {
+		return nil, err
+	}
+	return &entity.AdminAccount{
+		Admin:       *admin,
+		Permissions: perms,
+		Specialties: specialties[admin.Id],
+	}, nil
 }
 
 func (s *Store) permissionsByAdminID(ctx context.Context, adminID int) ([]entity.AdminPermission, error) {
@@ -226,11 +234,143 @@ func (s *Store) ListAccounts(ctx context.Context) ([]entity.AdminAccount, error)
 	for _, r := range rows {
 		byAdmin[r.AdminID] = append(byAdmin[r.AdminID], entity.AdminPermission{Section: r.Section, Access: r.Access})
 	}
+	adminIDs := make([]int, 0, len(admins))
+	for _, a := range admins {
+		adminIDs = append(adminIDs, a.Id)
+	}
+	// Третий запрос той же формы, что и второй: специальности всей страницы разом.
+	// Их читает не только экран аккаунтов — на этой же выборке стоит ListAdmins,
+	// пикер людей всей панели, и он рисуется на каждом экране с назначением.
+	specialties, err := storeutil.LoadAdminSpecialties(ctx, s.DB, adminIDs)
+	if err != nil {
+		return nil, err
+	}
 	accounts := make([]entity.AdminAccount, 0, len(admins))
 	for _, a := range admins {
-		accounts = append(accounts, entity.AdminAccount{Admin: a, Permissions: byAdmin[a.Id]})
+		accounts = append(accounts, entity.AdminAccount{
+			Admin:       a,
+			Permissions: byAdmin[a.Id],
+			Specialties: specialties[a.Id],
+		})
 	}
 	return accounts, nil
+}
+
+// ListAdminRefs is the people picker's own read, deliberately NOT a projection of
+// ListAccounts.
+//
+// ДВЕ ПРИЧИНЫ, ОБЕ ПРО ТО, ЧТО ЭТОТ ЗАПРОС ВИДИТ ЛЮБОЙ АУТЕНТИФИЦИРОВАННЫЙ.
+// Первая: ListAccounts тянет `password_hash` и полный набор прав и выбрасывает их
+// при проекции — то есть на каждый рендер пикера поднимает в память учётные данные
+// всех аккаунтов ради имени и id. Проекция была бы корректной и всё равно
+// неправильной: не читать лишнего надёжнее, чем не отдать прочитанное.
+// Вторая: отключённые аккаунты в пикере — неверный ответ на оба вопроса, которые
+// им задают («кого назначить владельцем» и «у кого просить доступ»). Уволенного
+// спрашивать бесполезно. Уже назначенные владельцы этим не задеты: они приезжают
+// на самом файле (library_file.owners), а не из пикера.
+func (s *Store) ListAdminRefs(ctx context.Context) ([]entity.AdminRef, error) {
+	refs, err := storeutil.QueryListNamed[entity.AdminRef](ctx, s.DB,
+		`SELECT id, username, is_super FROM admins WHERE disabled = FALSE ORDER BY username`, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list admin refs: %w", err)
+	}
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	adminIDs := make([]int, 0, len(refs))
+	for _, r := range refs {
+		adminIDs = append(adminIDs, r.Id)
+	}
+	specialties, err := storeutil.LoadAdminSpecialties(ctx, s.DB, adminIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range refs {
+		refs[i].Specialties = specialties[refs[i].Id]
+	}
+	return refs, nil
+}
+
+// ListSpecialties returns the WHOLE specialty vocabulary, most used first and
+// alphabetically within a usage tier. Ordering by usage rather than by name is
+// the same choice ListTopics makes: entries nobody carries sink on their own, and
+// a list of thirty becomes the six that describe this team.
+func (s *Store) ListSpecialties(ctx context.Context) ([]string, error) {
+	names, err := storeutil.QueryScalarListNamed[string](ctx, s.DB, `
+		SELECT sp.name
+		FROM admin_specialty sp
+		LEFT JOIN admin_specialty_link l ON l.specialty_id = sp.id
+		GROUP BY sp.id
+		ORDER BY COUNT(l.admin_id) DESC, sp.name ASC`, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list admin specialties: %w", err)
+	}
+	return names, nil
+}
+
+// SetSpecialties REPLACES what one account says it does. Names in newSpecialties
+// are created on the fly and land in the SHARED vocabulary — the same grammar as
+// a file's topics, so the next person picks the word instead of inventing a
+// synonym for it.
+//
+// Транзакция, потому что промежуточное состояние здесь наблюдаемо: старые связи
+// уже сняты, новые ещё не вставлены — человек на мгновение оказался бы без
+// специальности, и параллельный пикер напечатал бы его без подписи.
+func (s *Store) SetSpecialties(ctx context.Context, adminID int, specialtyIDs []int, newSpecialties []string) error {
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		ids := make(map[int]struct{}, len(specialtyIDs)+len(newSpecialties))
+		for _, id := range specialtyIDs {
+			if id > 0 {
+				ids[id] = struct{}{}
+			}
+		}
+		if len(newSpecialties) > 0 {
+			// ПОТОЛОК СЛОВАРЯ. Завести новую специальность может любой аутентифицированный
+			// (решение Р1), удалить — никто: RPC удаления нет, а FK связи стоит RESTRICT.
+			// При этом ВЕСЬ словарь едет в каждом ответе пикера, то есть на каждый рендер
+			// любого экрана с назначением. Без потолка один цикл навсегда раздувает
+			// панельный ответ, и откатить это некому. Потолок щедрый: он ловит цикл, а не
+			// человека — команде из шести человек до него не дойти.
+			total, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COUNT(*) FROM admin_specialty`, nil)
+			if err != nil {
+				return fmt.Errorf("failed to count admin specialties: %w", err)
+			}
+			if total+len(newSpecialties) > entity.MaxAdminSpecialtyVocabulary {
+				return entity.ErrAdminSpecialtyVocabularyFull
+			}
+		}
+		for _, name := range newSpecialties {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			id, err := storeutil.UpsertAdminSpecialty(ctx, rep.DB(), name)
+			if err != nil {
+				return fmt.Errorf("failed to resolve specialty %q: %w", name, err)
+			}
+			ids[id] = struct{}{}
+		}
+		if _, err := rep.DB().ExecContext(ctx,
+			`DELETE FROM admin_specialty_link WHERE admin_id = ?`, adminID); err != nil {
+			return fmt.Errorf("failed to clear admin specialties: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		// Обычный INSERT, а не INSERT IGNORE: IGNORE глушит и нарушение внешнего
+		// ключа тоже, поэтому несуществующий id специальности превратился бы в
+		// «ничего не проставилось» с ответом «готово». Пусть падает — хендлер
+		// переводит это в внятный InvalidArgument.
+		rows := make([]map[string]any, 0, len(ids))
+		for id := range ids {
+			rows = append(rows, map[string]any{"admin_id": adminID, "specialty_id": id})
+		}
+		if err := storeutil.BulkInsert(ctx, rep.DB(), "admin_specialty_link", rows); err != nil {
+			return fmt.Errorf("failed to link admin specialties: %w", err)
+		}
+		return nil
+	})
 }
 
 // CountSuperAdmins returns the number of non-disabled super-admin accounts. Used

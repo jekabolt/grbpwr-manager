@@ -67,6 +67,45 @@ func QueryListNamed[T any](
 	return target, nil
 }
 
+// QueryScalarListNamed executes a named-parameter single-column SELECT and scans
+// the column into []T.
+//
+// НЕ ЭКЗОТИКА, А ЕДИНСТВЕННЫЙ РАБОЧИЙ СПОСОБ ДЛЯ СКАЛЯРА. QueryListNamed выше
+// сканирует через sqlx StructScan, а тот на не-структуре ПАНИКУЕТ
+// (reflectx.mustBe: «call of TraversalsByName on int Value») — и паникует не при
+// компиляции и не на пустой выборке, а ровно в тот момент, когда запрос впервые
+// вернул строку. Поэтому `QueryListNamed[int]` выглядит рабочим ровно до первого
+// непустого ответа: путь, который «никогда не срабатывает», однажды срабатывает.
+func QueryScalarListNamed[T any](
+	ctx context.Context,
+	conn dependency.DB,
+	query string,
+	params map[string]any,
+) ([]T, error) {
+	query, args, err := makeQuery(query, params)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.QueryxContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query context: %w", err)
+	}
+	defer rows.Close()
+
+	var target []T
+	for rows.Next() {
+		var t T
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		target = append(target, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+	return target, nil
+}
+
 // QueryNamedOne executes a named-parameter SELECT and scans a single row into T.
 func QueryNamedOne[T any](ctx context.Context, conn dependency.DB, query string, params map[string]any) (T, error) {
 	var target T

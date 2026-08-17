@@ -81,20 +81,33 @@ func (s *Server) ListTechCardRoleAssignments(ctx context.Context, req *pb_admin.
 	return resp, nil
 }
 
-// ListAdmins is the lightweight admin-account picker source for role assignment (id + username).
-// Reuses the accounts store read and projects it, so a role-assigner needs only tech_cards:read.
+// ListAdmins is the panel's people picker: id, username, self-declared specialties and the super
+// flag. It is ALLOWLISTED (internal/rbac/rbac.go) — a picker of people is needed from sections that
+// do not contain one another, and any single section gate breaks it on the other screens as an empty
+// list, which reads like "there is nobody to pick" rather than like a refusal.
+//
+// It runs its OWN narrow read (ListAdminRefs) rather than projecting ListAccounts down: permissions
+// and password hashes must not be loaded at all for a call any authenticated account may make, and
+// disabled accounts are excluded because a picker offering somebody who left is a wrong answer to
+// both questions it is asked. What an account may DO is accounts:read material and travels on
+// ListAccounts; what a person IS is what a picker needs.
+//
+// The whole specialty vocabulary rides along — the chip editor offers it as a list, and a seeded
+// entry nobody has picked yet would otherwise be invisible. Failing to read it is NOT fatal: the
+// picker still works off the specialties people already carry, and losing the people list over a
+// missing dictionary would be the wrong trade.
 func (s *Server) ListAdmins(ctx context.Context, _ *pb_admin.ListAdminsRequest) (*pb_admin.ListAdminsResponse, error) {
-	accounts, err := s.repo.Admin().ListAccounts(ctx)
+	refs, err := s.repo.Admin().ListAdminRefs(ctx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list admins for picker", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list admins")
 	}
-	resp := &pb_admin.ListAdminsResponse{Admins: make([]*pb_admin.AdminRef, 0, len(accounts))}
-	for i := range accounts {
-		resp.Admins = append(resp.Admins, &pb_admin.AdminRef{
-			Id:       int32(accounts[i].Id),
-			Username: accounts[i].Username,
-		})
+	specialties, err := s.repo.Admin().ListSpecialties(ctx)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't list admin specialties", slog.String("err", err.Error()))
 	}
-	return resp, nil
+	return &pb_admin.ListAdminsResponse{
+		Admins:      dto.ConvertEntityAdminRefsToPb(refs),
+		Specialties: specialties,
+	}, nil
 }

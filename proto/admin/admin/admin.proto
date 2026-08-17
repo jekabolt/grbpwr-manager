@@ -1230,6 +1230,22 @@ service AdminService {
     };
   }
 
+  // SetLibraryFileOwners REPLACES the file's set of owners (owners come in ones
+  // and twos, and the picker has just shown the caller the whole current set, so
+  // a full replace is honest here — unlike the bulk topic write above).
+  //
+  // files:write is necessary but NOT sufficient: the handler additionally
+  // requires the caller to be the uploader, a current owner, or a super-admin.
+  // Without that circle, anybody holding files:write could make themselves the
+  // owner of anyone's file — and, once the access levels land, widen their own
+  // access to it by doing so.
+  rpc SetLibraryFileOwners(SetLibraryFileOwnersRequest) returns (SetLibraryFileOwnersResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/files/owners"
+      body: "*"
+    };
+  }
+
   // ORDER FULFILLMENT BOARD
   // A kanban PROJECTION of orders (NOT a copy): columns map 1:1 to real order
   // status (To Fulfill=confirmed, Shipped, Delivered). Ship/deliver call the real
@@ -1399,8 +1415,15 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/roles"};
   }
 
-  // ListAdmins is the lightweight admin-account picker source for role assignment (id + username
-  // only), gated tech_cards:read so a role-assigner need not hold the broader accounts:read.
+  // ListAdmins is the panel-wide people picker: id, username, self-declared specialties and the
+  // super flag of every account that can still be assigned something (disabled ones are excluded).
+  //
+  // ANY AUTHENTICATED ACCOUNT MAY CALL IT (allowlisted, not section-gated). A picker of people is
+  // needed from sections that do not contain one another — file owners, task assignees, tech-card
+  // roles — and the permission map allows exactly one section per method, so any single gate breaks
+  // the picker elsewhere as an EMPTY list, which reads like "there is nobody to pick" rather than
+  // like a refusal. Nothing in the answer says what anybody may DO: permissions travel on
+  // ListAccounts, which stays gated on the accounts section.
   rpc ListAdmins(ListAdminsRequest) returns (ListAdminsResponse) {
     option (google.api.http) = {get: "/api/admin/admins/pick"};
   }
@@ -2303,6 +2326,27 @@ service AdminService {
   // accounts section (write).
   rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse) {
     option (google.api.http) = {delete: "/api/admin/accounts/{username}"};
+  }
+
+  // SetAccountSpecialties REPLACES what an account says it does.
+  //
+  // NOT gated on the accounts section, and deliberately so: a person edits their
+  // OWN specialties without any grant, and only somebody else's requires
+  // accounts:write (checked inside the handler, since the interceptor would have
+  // cut the self-edit off before it). A field that needs an administrator to
+  // fill in stays empty — and an empty specialty vocabulary takes the owner
+  // picker and the people search down with it. The field carries no rights, so
+  // the worst a wrong self-description costs is being harder to find.
+  //
+  // The path is /account/ (singular) rather than /accounts/: everything under
+  // /accounts/ is account MANAGEMENT and requires that section, and a route that
+  // reads like management but is not would be the first thing to be gated by
+  // mistake.
+  rpc SetAccountSpecialties(SetAccountSpecialtiesRequest) returns (SetAccountSpecialtiesResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/account/specialties"
+      body: "*"
+    };
   }
 
   // ACCOUNTING (double-entry ledger, docs/plan-accounting/). Every RPC below requires the
@@ -4768,6 +4812,16 @@ message LibraryFile {
   // still perfectly usable — the grid shows an extension plate instead.
   string preview_url = 11;
   google.protobuf.Timestamp urls_expire_at = 12;
+  // uploaded_by_id resolves the uploader to a LIVE account, next to the
+  // uploaded_by STRING above, which is the historical fact. They are not
+  // duplicates: the string outlives the account (a file keeps its author after
+  // the person leaves), the id stops existing with it (0 = no such account any
+  // more). Initials, specialties and the "may edit owners" circle all read the id.
+  int32 uploaded_by_id = 13;
+  // owners are the people who KEEP this file — who to ask when it goes stale.
+  // Several are legal, and so is none: an empty list is honest, a
+  // randomly-assigned owner is not.
+  repeated AdminRef owners = 14;
 }
 
 // FileTopic is a topic LABEL, not a folder.
@@ -4912,6 +4966,38 @@ message AssignLibraryFileTopicsResponse {
   // assigned is how many (file, topic) links were actually created — pairs that
   // already existed are not counted.
   int32 assigned = 1;
+}
+
+message SetLibraryFileOwnersRequest {
+  int32 file_id = 1;
+  // admin_ids is the FULL set of owners, not a delta. An empty list clears them,
+  // which is a legal state: «спросить будет некого» is a truthful answer, and the
+  // card says so.
+  repeated int32 admin_ids = 2;
+}
+
+message SetLibraryFileOwnersResponse {
+  // The resolved owners, so the card redraws from what was actually stored
+  // rather than from what it hoped it sent.
+  repeated AdminRef owners = 1;
+}
+
+message SetAccountSpecialtiesRequest {
+  // username is whose specialties these are. Own username = no permission
+  // needed; anybody else's requires accounts:write.
+  string username = 1;
+  // specialty_ids picks from the existing vocabulary, new_specialties are names
+  // typed on the fly — the same grammar as a file's topics, and for the same
+  // reason: a vocabulary that can only be extended by an administrator stops
+  // being extended.
+  repeated int32 specialty_ids = 2;
+  repeated string new_specialties = 3;
+}
+
+message SetAccountSpecialtiesResponse {
+  // The resolved set, names as STORED — a name typed in a different case
+  // collapses onto the existing entry, and the chips must show that.
+  repeated string specialties = 1;
 }
 
 message UpdateTaskRequest {
@@ -6825,16 +6911,34 @@ message ListTechCardRoleAssignmentsResponse {
   repeated common.TechCardRoleAssignment assignments = 1;
 }
 
-// AdminRef is a lightweight admin-account reference for the role-assignment picker.
+// AdminRef is a lightweight admin-account reference for every people picker in
+// the panel: tech-card roles, file owners, task assignees, @-mentions.
 message AdminRef {
   int32 id = 1;
   string username = 2;
+  // specialties is what this person says they do («конструктор», «фотограф»). It
+  // carries no rights whatsoever — it is a self-description that makes a picker
+  // of six similar usernames searchable, and prints the «kirill · конструктор»
+  // byline next to a name.
+  repeated string specialties = 3;
+  // is_super feeds the "you have no access to this section" screen, which names
+  // WHO can grant it. Inside a panel of six people who know each other, the list
+  // of super-admins is not a secret, and the difference between «доступа нет» and
+  // «доступ выдаёт jekabolt» is the difference between a dead end and a minute.
+  bool is_super = 4;
 }
 
 message ListAdminsRequest {}
 
 message ListAdminsResponse {
   repeated AdminRef admins = 1;
+  // specialties is the WHOLE vocabulary, not just the used part: the chip editor
+  // in an account offers it as a list, and a seeded entry nobody has picked yet
+  // would otherwise be invisible — which is how a dictionary ends up rewritten
+  // from scratch by every person who needs it. It rides on this response rather
+  // than costing a list call of its own, exactly like the two rail badges on
+  // ListFileTopicsResponse. Ordered by usage, then by name.
+  repeated string specialties = 2;
 }
 
 message GetTechCardRequest {
@@ -8481,6 +8585,9 @@ message AdminAccount {
   repeated AdminPermission permissions = 4;
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
+  // specialties is the «чем занимается» column of the accounts table and the
+  // chips on the account card. It grants nothing — see AdminRef.specialties.
+  repeated string specialties = 7;
 }
 
 // AdminSectionInfo describes a grantable section for the permission picker.

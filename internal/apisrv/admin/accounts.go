@@ -2,11 +2,13 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -205,6 +207,78 @@ func (s *Server) DeleteAccount(ctx context.Context, req *pb_admin.DeleteAccountR
 	return &pb_admin.DeleteAccountResponse{}, nil
 }
 
+// accountsWriteAccess reports whether the caller may manage OTHER people's accounts. Fails closed on
+// a context that never passed the RBAC interceptor — a handler-side requirement that defaulted to
+// «allowed» would be worse than none, because it would look enforced. Mirrors productionWriteAccess.
+func accountsWriteAccess(ctx context.Context) bool {
+	az, ok := authsrv.GetAdminAuthz(ctx)
+	if !ok {
+		return false
+	}
+	if az.FullAccess() {
+		return true
+	}
+	lvl, ok := az.Perms[rbac.SectionAccounts]
+	return ok && lvl.Covers(entity.AccessWrite)
+}
+
+// SetAccountSpecialties replaces what an account says it does.
+//
+// СВОЮ СПЕЦИАЛЬНОСТЬ ЧЕЛОВЕК ПРАВИТ САМ, ЧУЖУЮ — ТОЛЬКО С accounts:write. Именно поэтому метод
+// стоит в allowlist карты прав, а проверка живёт здесь: держи мы его в wr(SectionAccounts),
+// интерсептор отрезал бы правку СВОЕГО аккаунта до входа в хендлер, и разрешать было бы уже негде.
+//
+// Довод за само разрешение: специальность не несёт ни грамма прав — это самоописание, которым ищут
+// человека в пикере владельцев и в упоминаниях. Поле, которое нельзя заполнить без администратора
+// аккаунтов, остаётся пустым, а пустой словарь обесценивает и пикер, и поиск людей. Цена ошибки —
+// неверная подпись у себя, и её правит чужая рука с accounts:write.
+func (s *Server) SetAccountSpecialties(ctx context.Context, req *pb_admin.SetAccountSpecialtiesRequest) (*pb_admin.SetAccountSpecialtiesResponse, error) {
+	username := normalizeUsername(req.Username)
+	if username == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	caller := normalizeUsername(authsrv.GetAdminUsername(ctx))
+	// Пустое имя вызывающего (путь мимо интерсептора) НЕ считается совпадением: иначе
+	// неаутентифицированный контекст правил бы аккаунт с пустым именем и попадал в ветку «своё».
+	if caller == "" || caller != username {
+		if !accountsWriteAccess(ctx) {
+			return nil, status.Error(codes.PermissionDenied,
+				"accounts:write is required to edit somebody else's specialties")
+		}
+	}
+	specialtyIDs, newSpecialties, err := dto.ConvertPbSpecialtySelectionToEntity(req.SpecialtyIds, req.NewSpecialties)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	account, err := s.repo.Admin().GetAdminByUsername(ctx, username)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
+	}
+	if err := s.repo.Admin().SetSpecialties(ctx, account.Id, specialtyIDs, newSpecialties); err != nil {
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Error(codes.InvalidArgument, "specialty_id does not reference an existing specialty")
+		}
+		if errors.Is(err, entity.ErrAdminSpecialtyVocabularyFull) {
+			// FailedPrecondition, а не InvalidArgument: запрос корректен, переполнен мир.
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"the shared specialty vocabulary is full (%d); pick an existing one instead of adding a new name",
+				entity.MaxAdminSpecialtyVocabulary)
+		}
+		slog.Default().ErrorContext(ctx, "failed to set account specialties",
+			slog.String("username", username), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "failed to set specialties")
+	}
+	// Перечитываем: имя, набранное в другом регистре, схлопывается на существующую
+	// запись словаря, и чипы обязаны показать то, что ЛЕЖИТ, а не то, что отправили.
+	stored, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "specialties saved but could not be read back",
+			slog.String("username", username), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "specialties were saved but could not be read back")
+	}
+	return &pb_admin.SetAccountSpecialtiesResponse{Specialties: stored.Specialties}, nil
+}
+
 // ensureNotLastSuper returns FailedPrecondition when only one enabled super-admin
 // remains, so the caller does not remove or demote the last one.
 func (s *Server) ensureNotLastSuper(ctx context.Context) error {
@@ -279,6 +353,7 @@ func toProtoAccount(a *entity.AdminAccount) *pb_admin.AdminAccount {
 		IsSuper:     a.IsSuper,
 		Disabled:    a.Disabled,
 		Permissions: perms,
+		Specialties: a.Specialties,
 	}
 	if !a.CreatedAt.IsZero() {
 		acc.CreatedAt = timestamppb.New(a.CreatedAt)

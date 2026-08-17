@@ -46,10 +46,17 @@ func (s *Store) AddFile(ctx context.Context, f *entity.LibraryFileInsert, topicI
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		var err error
+		// uploaded_by_id ВЫВОДИТСЯ ИЗ ТОГО ЖЕ ИМЕНИ ОДНИМ ОПЕРАТОРОМ, а не приходит
+		// вторым параметром: две половины авторства (историческая строка и живая
+		// ссылка) обязаны описывать одного человека, и единственный способ это
+		// гарантировать — не давать вызывающему возможности прислать их порознь.
+		// Тот же UPDATE ... JOIN admins, что делает backfill 0314 для истории.
+		// NULL, если аккаунта с таким именем нет: ссылка в никуда была бы хуже.
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
 			INSERT INTO library_file
-				(object_key, preview_object_key, file_name, content_type, size_bytes, sha256, uploaded_by)
-			VALUES (:objectKey, :previewObjectKey, :fileName, :contentType, :sizeBytes, :sha256, :uploadedBy)`,
+				(object_key, preview_object_key, file_name, content_type, size_bytes, sha256, uploaded_by, uploaded_by_id)
+			VALUES (:objectKey, :previewObjectKey, :fileName, :contentType, :sizeBytes, :sha256, :uploadedBy,
+				(SELECT a.id FROM admins a WHERE a.username = :uploadedBy))`,
 			map[string]any{
 				"objectKey":        f.ObjectKey,
 				"previewObjectKey": f.PreviewObjectKey,
@@ -113,7 +120,10 @@ func (s *Store) UpdateFile(ctx context.Context, id int, fileName string, topicID
 func (s *Store) DeleteFile(ctx context.Context, id int) ([]string, error) {
 	var keys []string
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		holders, err := storeutil.QueryListNamed[int](ctx, rep.DB(),
+		// Скалярный вариант обязателен: QueryListNamed сканирует StructScan-ом и на
+		// int ПАНИКУЕТ — но только когда строки есть, то есть ровно в отказе, ради
+		// которого этот запрос и написан. Отказ без покрытия читался как рабочий.
+		holders, err := storeutil.QueryScalarListNamed[int](ctx, rep.DB(),
 			`SELECT task_id FROM task_file WHERE file_id = :id ORDER BY task_id`,
 			map[string]any{"id": id})
 		if err != nil {
@@ -150,7 +160,7 @@ func (s *Store) GetFileById(ctx context.Context, id int) (*entity.LibraryFile, e
 	if err != nil {
 		return nil, err
 	}
-	if err := s.attachTopics(ctx, []*entity.LibraryFile{&f}); err != nil {
+	if err := s.attachRelated(ctx, []*entity.LibraryFile{&f}); err != nil {
 		return nil, err
 	}
 	return &f, nil
@@ -177,7 +187,7 @@ func (s *Store) ListFilesByIds(ctx context.Context, ids []int) ([]entity.Library
 			out = append(out, f)
 		}
 	}
-	if err := s.attachTopicsSlice(ctx, out); err != nil {
+	if err := s.attachRelatedSlice(ctx, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -288,7 +298,7 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list library files: %w", err)
 	}
-	if err := s.attachTopicsSlice(ctx, files); err != nil {
+	if err := s.attachRelatedSlice(ctx, files); err != nil {
 		return nil, 0, err
 	}
 	return files, total, nil
@@ -622,12 +632,125 @@ func (s *Store) attachTopics(ctx context.Context, files []*entity.LibraryFile) e
 	return nil
 }
 
-func (s *Store) attachTopicsSlice(ctx context.Context, files []entity.LibraryFile) error {
+// attachOwners resolves the owners of the given files in TWO queries total,
+// whatever the page size: one for the (file → person) links, one for the
+// specialties of everybody who turned up. The shape is deliberately the same as
+// attachTopics — a per-file lookup here would be one round-trip per tile, and the
+// grid draws two hundred tiles.
+func (s *Store) attachOwners(ctx context.Context, files []*entity.LibraryFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(files))
+	byId := make(map[int]*entity.LibraryFile, len(files))
+	for _, f := range files {
+		ids = append(ids, f.Id)
+		byId[f.Id] = f
+	}
+	type row struct {
+		FileId int `db:"file_id"`
+		entity.AdminRef
+	}
+	rows, err := storeutil.QueryListNamed[row](ctx, s.DB, `
+		SELECT lfo.file_id, a.id, a.username, a.is_super
+		FROM library_file_owner lfo
+		JOIN admins a ON a.id = lfo.admin_id
+		WHERE lfo.file_id IN (:ids)
+		ORDER BY a.username`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("failed to load library file owners: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	adminIDs := make([]int, 0, len(rows))
+	seen := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if !seen[r.Id] {
+			seen[r.Id] = true
+			adminIDs = append(adminIDs, r.Id)
+		}
+	}
+	// Один и тот же человек ведёт несколько файлов страницы — его специальности
+	// запрашиваются ОДИН раз на всю страницу, а не по разу на каждое владение.
+	specialties, err := storeutil.LoadAdminSpecialties(ctx, s.DB, adminIDs)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		f, ok := byId[r.FileId]
+		if !ok {
+			continue
+		}
+		owner := r.AdminRef
+		owner.Specialties = specialties[r.Id]
+		f.Owners = append(f.Owners, owner)
+	}
+	return nil
+}
+
+// SetFileOwners REPLACES the file's owner set. Returns sql.ErrNoRows when the
+// file does not exist, so a card open on a deleted file says so instead of
+// reporting a successful write into nothing.
+//
+// Замена, а не дельта: владельцев единицы, и пикер показал вызывающему ВЕСЬ
+// текущий набор перед правкой — в отличие от массового проставления тем, которое
+// набора не видело и потому только дописывает.
+func (s *Store) SetFileOwners(ctx context.Context, fileID int, adminIDs []int, addedBy string) error {
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Существование проверяем ВНУТРИ транзакции: пишущие транзакции стора идут в
+		// SERIALIZABLE, поэтому проверка реально закрывает гонку с удалением файла, а
+		// не просто сужает окно.
+		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM library_file WHERE id = :id`, map[string]any{"id": fileID})
+		if err != nil {
+			return fmt.Errorf("failed to check library file existence: %w", err)
+		}
+		if exists == 0 {
+			return sql.ErrNoRows
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM library_file_owner WHERE file_id = :id`, map[string]any{"id": fileID}); err != nil {
+			return fmt.Errorf("failed to clear library file owners: %w", err)
+		}
+		if len(adminIDs) == 0 {
+			return nil
+		}
+		// Несуществующий аккаунт обязан УПАСТЬ внешним ключом, а не пропасть тихо:
+		// «владелец назначен» на пустое место — худший из возможных ответов, потому
+		// что спрашивать по такому файлу будет некого, а карточка скажет, что есть кого.
+		rows := make([]map[string]any, 0, len(adminIDs))
+		for _, id := range adminIDs {
+			rows = append(rows, map[string]any{"file_id": fileID, "admin_id": id, "added_by": addedBy})
+		}
+		if err := storeutil.BulkInsert(ctx, rep.DB(), "library_file_owner", rows); err != nil {
+			return fmt.Errorf("failed to link library file owners: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err // sql.ErrNoRows passes through untouched
+	}
+	return nil
+}
+
+// attachRelated resolves everything a file carries beyond its own row: topic
+// labels and owners. Читающие пути зовут ЕГО, а не две функции по отдельности —
+// иначе новый путь чтения однажды приедет с темами и без владельцев, и на одном
+// экране у файла будет ответственный, а на соседнем нет.
+func (s *Store) attachRelated(ctx context.Context, files []*entity.LibraryFile) error {
+	if err := s.attachTopics(ctx, files); err != nil {
+		return err
+	}
+	return s.attachOwners(ctx, files)
+}
+
+func (s *Store) attachRelatedSlice(ctx context.Context, files []entity.LibraryFile) error {
 	ptrs := make([]*entity.LibraryFile, len(files))
 	for i := range files {
 		ptrs[i] = &files[i]
 	}
-	return s.attachTopics(ctx, ptrs)
+	return s.attachRelated(ctx, ptrs)
 }
 
 // escapeLike neutralises the LIKE wildcards in user input, so searching for

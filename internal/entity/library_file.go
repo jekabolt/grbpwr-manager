@@ -57,9 +57,24 @@ type LibraryFile struct {
 	LibraryFileInsert
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
+	// UploadedById is the LIVE account behind UploadedBy. Both are kept because
+	// they have different lifetimes: the string is the historical fact and
+	// survives the account's deletion, the id is the link and is nulled by it
+	// (0314, ON DELETE SET NULL).
+	//
+	// НЕ В LibraryFileInsert, И ЭТО НЕ КОСМЕТИКА: Insert — это то, что вызывающий
+	// ВПРАВЕ задать, а здесь он не вправе. Значение выводит стор из UploadedBy одним
+	// оператором, чтобы две половины авторства не могли разойтись; лежи поле в
+	// Insert, вызывающий заполнил бы его, не получил ни ошибки, ни эффекта и узнал
+	// бы об этом нескоро.
+	UploadedById sql.NullInt64 `db:"uploaded_by_id"`
 	// Topics are the labels this file carries. A file legitimately carries zero
 	// of them: an unclassified file is honest, a wrongly classified one is not.
 	Topics []FileTopic `db:"-"`
+	// Owners are the people who KEEP this file — who to ask when it goes stale.
+	// Zero owners is legal for the same reason zero topics is: an empty field is
+	// honest, a randomly assigned one is not.
+	Owners []AdminRef `db:"-"`
 }
 
 // FileTopic is one topic label. Topics are LABELS, not folders — a file carries

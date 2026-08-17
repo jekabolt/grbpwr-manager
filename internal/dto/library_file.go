@@ -124,8 +124,13 @@ func ConvertEntityLibraryFileToPb(f *entity.LibraryFile) *pb_admin.LibraryFile {
 		SizeBytes:   f.SizeBytes,
 		Sha256:      f.Sha256,
 		UploadedBy:  f.UploadedBy,
-		Topics:      topics,
-		CreatedAt:   timestamppb.New(f.CreatedAt),
+		// 0 значит «аккаунта больше нет», а НЕ «неизвестно кто»: имя загрузившего
+		// едет строкой выше и переживает удаление аккаунта. Клиент печатает имя
+		// всегда, а ссылку на человека — только когда id ненулевой.
+		UploadedById: int32(f.UploadedById.Int64),
+		Topics:       topics,
+		Owners:       ConvertEntityAdminRefsToPb(f.Owners),
+		CreatedAt:    timestamppb.New(f.CreatedAt),
 	}
 }
 

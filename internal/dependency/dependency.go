@@ -681,6 +681,13 @@ type (
 		// SetFilePreview points the file at a new preview object and returns the key
 		// it replaced, for best-effort bucket cleanup by the caller.
 		SetFilePreview(ctx context.Context, id int, previewKey string) (previousKey string, err error)
+		// SetFileOwners REPLACES the file's owner set (owners come in ones and twos
+		// and the caller has just seen the whole current set). An empty set is legal
+		// — a file with nobody keeping it is honest. adminIDs must be deduped by the
+		// caller: a repeat reaches the unique key as a raw 1062. Returns
+		// sql.ErrNoRows when the file is gone. WHO may call it is decided by the
+		// handler, not here.
+		SetFileOwners(ctx context.Context, fileID int, adminIDs []int, addedBy string) error
 	}
 
 	// Fulfillment is the orders-fulfillment board's storage: the board-owned
@@ -1503,10 +1510,27 @@ type (
 		GetAdminByUsername(ctx context.Context, username string) (*entity.Admin, error)
 		// GetAccountWithPermissions returns an account with its resolved permissions.
 		GetAccountWithPermissions(ctx context.Context, username string) (*entity.AdminAccount, error)
-		// ListAccounts returns every account with its permissions.
+		// ListAccounts returns every account with its permissions and specialties.
 		ListAccounts(ctx context.Context) ([]entity.AdminAccount, error)
 		// CountSuperAdmins returns the number of enabled super-admin accounts.
 		CountSuperAdmins(ctx context.Context) (int, error)
+		// ListAdminRefs is the people picker's narrow read: id, username, is_super
+		// and specialties of the accounts that can still be assigned anything
+		// (disabled ones are excluded). Deliberately not a projection of
+		// ListAccounts — it must never load permissions or password hashes, because
+		// any authenticated account may reach it.
+		ListAdminRefs(ctx context.Context) ([]entity.AdminRef, error)
+		// ListSpecialties returns the whole self-description vocabulary, most used
+		// first. A specialty grants nothing; it is what makes a people picker
+		// searchable by what somebody does.
+		ListSpecialties(ctx context.Context) ([]string, error)
+		// SetSpecialties REPLACES one account's specialties. Names in
+		// newSpecialties are created on the fly into the shared vocabulary, exactly
+		// as topics are on a file. specialtyIDs must be deduped by the caller — a
+		// repeat reaches the unique key as a raw 1062. Returns
+		// entity.ErrAdminSpecialtyVocabularyFull when the new names would push the
+		// shared dictionary past its cap.
+		SetSpecialties(ctx context.Context, adminID int, specialtyIDs []int, newSpecialties []string) error
 	}
 
 	Settings interface {

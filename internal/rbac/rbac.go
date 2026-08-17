@@ -330,11 +330,13 @@ var methodRequirements = map[string]Requirement{
 	"CreateTechCard":             wr(SectionTechCards),
 	"GenerateTechCardOperations": wr(SectionTechCards), // AI-assisted authoring (POST); tech-card write
 	"SuggestStyleNumber":         rd(SectionTechCards), // Q1: propose the next style number for a season
-	// Q5 role assignments + the lightweight admin picker (so a role-assigner needs tech_cards, not accounts).
+	// Q5 role assignments. The lightweight admin picker they were assigned from (ListAdmins) used to
+	// live here on the argument "a role-assigner needs tech_cards, not accounts"; it has since grown
+	// three more callers in sections that do not contain tech cards, so it moved to the allowlist —
+	// see there for the full reasoning.
 	"AssignTechCardRole":           wr(SectionTechCards),
 	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
 	"ListTechCardRoleAssignments":  rd(SectionTechCards),
-	"ListAdmins":                   rd(SectionTechCards),
 	"GetTechCard":                  rd(SectionTechCards),
 	"UpdateTechCard":               wr(SectionTechCards),
 	"DeleteTechCard":               wr(SectionTechCards),
@@ -525,6 +527,12 @@ var methodRequirements = map[string]Requirement{
 	// rename/delete, and both write.
 	"MergeFileTopics":         wr(SectionFiles),
 	"AssignLibraryFileTopics": wr(SectionFiles),
+	// files:write is NECESSARY here but not SUFFICIENT: the handler additionally requires the caller
+	// to be the uploader, a current owner, or a super-admin. Without that second gate any files:write
+	// account could appoint itself owner of anybody's file — and once the access levels land, appoint
+	// itself INTO a file it was not allowed to see. Precedent for "the map holds one section, the code
+	// checks the rest": PostProductionRunReceipt / ReverseProductionRunReceipt.
+	"SetLibraryFileOwners": wr(SectionFiles),
 	// task archive + checklist
 	"ArchiveTask":              wr(SectionTasks),
 	"UnarchiveTask":            wr(SectionTasks),
@@ -660,6 +668,31 @@ var allowlist = map[string]struct{}{
 	// production:write above — reading the shop's настройка and changing it for everyone are
 	// different rights.
 	"GetWorkshopSettings": {},
+	// ПИКЕР ЛЮДЕЙ. Moved here from rd(SectionTechCards), with the GetWorkshopSettings argument above
+	// applied word for word: a picker of people is needed from at least three sections that do not
+	// contain one another (files: owners and, later, access; tasks: the assignee; tech cards: the Q5
+	// roles), methodRequirements allows exactly ONE section per method, and any single section
+	// silently breaks the picker on the other screens — as an EMPTY list of people, which reads like
+	// "there is nobody to pick" rather than like a refusal.
+	//
+	// Allowlisting is safe because of WHAT IS IN THE ANSWER, checked rather than assumed: id,
+	// username, self-declared specialties and the is_super flag. That is the panel's staff directory,
+	// not confidential material — and specifically not the shape that got ListTechCardFabricDirectionGaps
+	// REFUSED an allowlist, which enumerates the whole style portfolio by article and name. Nothing
+	// here says what anybody may DO: permissions travel on ListAccounts, which stays rd(accounts).
+	// is_super is in the answer on purpose: the "no access to this section" screen names who grants it.
+	"ListAdmins": {},
+	// СВОЮ СПЕЦИАЛЬНОСТЬ ЧЕЛОВЕК ПРАВИТ САМ, поэтому запись здесь, а не в wr(SectionAccounts) — и это
+	// не послабление, а единственное место, где проверка вообще может стоять: интерсептор отрезал бы
+	// self-edit ДО хендлера, и «одна строка на свой аккаунт» не выполнилась бы никогда. Чужой
+	// username хендлер требует закрыть правом accounts:write (accountsWriteAccess).
+	//
+	// Довод: специальность не несёт ни грамма прав — это самоописание, которым ищут человека в
+	// пикере. Поле, которое нельзя заполнить без администратора аккаунтов, остаётся пустым, а пустой
+	// словарь специальностей обесценивает и пикер владельцев, и поиск людей, ради которых он заведён.
+	// Цена ошибки — человек напишет себе неверную специальность и его хуже найдут; данных это не
+	// трогает, прав не даёт, правится чужой рукой с accounts:write.
+	"SetAccountSpecialties": {},
 }
 
 // EncodePermissions formats a permission set as the "section:access" strings
