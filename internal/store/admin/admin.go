@@ -324,27 +324,54 @@ func (s *Store) SetSpecialties(ctx context.Context, adminID int, specialtyIDs []
 				ids[id] = struct{}{}
 			}
 		}
-		if len(newSpecialties) > 0 {
-			// ПОТОЛОК СЛОВАРЯ. Завести новую специальность может любой аутентифицированный
-			// (решение Р1), удалить — никто: RPC удаления нет, а FK связи стоит RESTRICT.
-			// При этом ВЕСЬ словарь едет в каждом ответе пикера, то есть на каждый рендер
-			// любого экрана с назначением. Без потолка один цикл навсегда раздувает
-			// панельный ответ, и откатить это некому. Потолок щедрый: он ловит цикл, а не
-			// человека — команде из шести человек до него не дойти.
-			total, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-				`SELECT COUNT(*) FROM admin_specialty`, nil)
-			if err != nil {
-				return fmt.Errorf("failed to count admin specialties: %w", err)
-			}
-			if total+len(newSpecialties) > entity.MaxAdminSpecialtyVocabulary {
-				return entity.ErrAdminSpecialtyVocabularyFull
-			}
-		}
+		// ИМЕНА РЕЗОЛВИМ ДО ПОДСЧЁТА ПОТОЛКА. Присланное имя, которое в словаре уже есть —
+		// в том числе набранное в другом регистре, — словарь не растит: оно схлопнется на
+		// существующую запись. Считать такие имена в потолок значило бы у самой границы
+		// отказывать «словарь переполнен» правке, которая не добавляет ни одного слова.
+		pending := make([]string, 0, len(newSpecialties))
+		seen := make(map[string]struct{}, len(newSpecialties))
 		for _, name := range newSpecialties {
 			name = strings.TrimSpace(name)
 			if name == "" {
 				continue
 			}
+			id, found, err := lookupSpecialtyID(ctx, rep.DB(), name)
+			if err != nil {
+				return err
+			}
+			if found {
+				ids[id] = struct{}{}
+				continue
+			}
+			// Одно и то же новое имя, присланное дважды (хоть в разном регистре), — одна
+			// будущая запись, а не две: без этого потолок считал бы повторы.
+			key := strings.ToLower(name)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			pending = append(pending, name)
+		}
+		if len(pending) > 0 {
+			// ПОТОЛОК СЛОВАРЯ. Завести новую специальность может любой аутентифицированный
+			// (решение Р1), а снять позицию — только accounts:write через
+			// DeleteAccountSpecialty, и то лишь пока её никто не несёт. То есть выход есть,
+			// но он узкий и требует права, которого у пополняющего может не быть. При этом
+			// ВЕСЬ словарь едет в каждом ответе пикера, то есть на каждый рендер любого
+			// экрана с назначением. Без потолка один цикл раздул бы панельный ответ, а
+			// разгребать это пришлось бы вручную, по одной позиции и только по тем, что
+			// никем не заняты. Потолок щедрый: он ловит цикл, а не человека — команде из
+			// шести человек до него не дойти.
+			total, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+				`SELECT COUNT(*) FROM admin_specialty`, nil)
+			if err != nil {
+				return fmt.Errorf("failed to count admin specialties: %w", err)
+			}
+			if total+len(pending) > entity.MaxAdminSpecialtyVocabulary {
+				return entity.ErrAdminSpecialtyVocabularyFull
+			}
+		}
+		for _, name := range pending {
 			id, err := storeutil.UpsertAdminSpecialty(ctx, rep.DB(), name)
 			if err != nil {
 				return fmt.Errorf("failed to resolve specialty %q: %w", name, err)

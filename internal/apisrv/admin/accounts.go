@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"sort"
@@ -25,18 +26,58 @@ const minAdminPasswordLen = 8
 // its token grants), for the admin panel to decide which sections to render. It
 // reflects the token, not the database, so a permission change only shows up
 // after the account logs in again — consistent with how enforcement works.
+//
+// ПРАВА — ИЗ ТОКЕНА, СПЕЦИАЛЬНОСТИ — ИЗ БАЗЫ, И ЭТО НЕ НЕПОСЛЕДОВАТЕЛЬНОСТЬ. Права здесь обязаны
+// совпадать с тем, что применяет интерсептор, а применяет он токен: ответ «у тебя есть секция»,
+// расходящийся с отказом на первом же запросе в неё, хуже устаревшего. Специальность не применяет
+// никто — это самоописание, его правит сам человек через SetAccountSpecialties, и в токене его нет
+// вовсе. Собрать его «из токена» невозможно, поэтому поле раньше ВСЕГДА приезжало пустым: клиент
+// обошёл это чтением себя из ListAdmins, но следующий экран, который поверил бы пустоте, сохранил
+// бы её обратно — SetAccountSpecialties это полная замена набора.
 func (s *Server) GetCurrentAccount(ctx context.Context, _ *pb_admin.GetCurrentAccountRequest) (*pb_admin.GetCurrentAccountResponse, error) {
-	acc := &pb_admin.AdminAccount{Username: authsrv.GetAdminUsername(ctx)}
+	username := authsrv.GetAdminUsername(ctx)
+	acc := &pb_admin.AdminAccount{Username: username}
 	authz, ok := authsrv.GetAdminAuthz(ctx)
-	if ok && authz.FullAccess() {
+	switch {
+	case ok && authz.FullAccess():
 		acc.IsSuper = true
-		return &pb_admin.GetCurrentAccountResponse{Account: acc}, nil
-	}
-	// Scoped account (or, defensively, missing authz): expose only granted sections.
-	if ok {
+	case ok:
+		// Scoped account (or, defensively, missing authz): expose only granted sections.
 		acc.Permissions = permsToProto(authz.Perms)
 	}
+	acc.Specialties = s.currentAccountSpecialties(ctx, username)
 	return &pb_admin.GetCurrentAccountResponse{Account: acc}, nil
+}
+
+// currentAccountSpecialties reads the caller's own specialties, and ONLY them.
+//
+// ЧИТАЕМ ЦЕЛУЮ УЧЁТКУ, А БЕРЁМ ОДНО ПОЛЕ, потому что более узкого чтения в dependency.Admin нет, а
+// две оставшиеся возможности хуже: ListAdminRefs поднял бы весь список людей ради одной строки (и
+// отключённый аккаунт с ещё живым токеном увидел бы у себя пустоту — ровно ту ложь, которую здесь
+// чинят), а собственный метод стора потребовал бы правки интерфейса. Права и is_super из
+// прочитанного НЕ БЕРУТСЯ намеренно: они выше собраны из токена, и подмешать сюда базу значило бы
+// нарисовать панели секции, в которые интерсептор не пустит.
+//
+// ЦЕНА. Вызов частый (панель дёргает его на загрузке), плата — три маленьких запроса по
+// первичному/уникальному ключу вместо нуля. Это меньше, чем один рендер пикера людей, который
+// каждый экран и так делает.
+//
+// ОШИБКУ ЧТЕНИЯ НЕ ПОДНИМАЕМ В ОТВЕТ: этот RPC решает, какие секции панели вообще рисовать, и
+// уронить его из-за подписи значило бы погасить панель целиком. Отдаём аккаунт без специальностей —
+// но, в отличие от прежней структурной пустоты, это состояние ВИДНО в логе.
+func (s *Server) currentAccountSpecialties(ctx context.Context, username string) []string {
+	if username == "" {
+		// Контекст мимо интерсептора: искать в базе нечего, и лезть туда с пустым именем —
+		// значит спрашивать про аккаунт, которого нет.
+		return nil
+	}
+	account, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't read own specialties for the current account",
+			slog.String("username", username), slog.String("err", err.Error()))
+		return nil
+	}
+	return account.Specialties
 }
 
 // ListAccountSections returns the catalog of grantable sections for the UI's
@@ -277,6 +318,43 @@ func (s *Server) SetAccountSpecialties(ctx context.Context, req *pb_admin.SetAcc
 		return nil, status.Error(codes.Internal, "specialties were saved but could not be read back")
 	}
 	return &pb_admin.SetAccountSpecialtiesResponse{Specialties: stored.Specialties}, nil
+}
+
+// DeleteAccountSpecialty removes one entry from the SHARED specialty vocabulary, refused while
+// accounts still carry it.
+//
+// ПРАВО ЗДЕСЬ СТРОЖЕ, ЧЕМ У ЗАПИСИ, И ПРОВЕРЯЕТ ЕГО ИНТЕРСЕПТОР, А НЕ ХЕНДЛЕР. SetAccountSpecialties
+// выше стоит в allowlist, потому что человек правит своё самоописание, и никакой проверки до входа
+// в хендлер быть не может. Здесь ровно наоборот: своего аккаунта действие не касается вовсе — оно
+// снимает слово у всех, кто мог бы его выбрать, — поэтому метод классифицирован wr(SectionAccounts)
+// в карте прав, и без accounts:write сюда не доходят. Никакой ручной проверки прав в теле нет
+// намеренно: вторая проверка рядом с интерсепторной расходится с ней при первой же правке карты.
+func (s *Server) DeleteAccountSpecialty(ctx context.Context, req *pb_admin.DeleteAccountSpecialtyRequest) (*pb_admin.DeleteAccountSpecialtyResponse, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, status.Error(codes.InvalidArgument, "specialty name is required")
+	}
+	if err := s.repo.Admin().DeleteSpecialty(ctx, name); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Errorf(codes.NotFound, "specialty %q not found", name)
+		}
+		if errors.Is(err, entity.ErrAdminSpecialtyInUse) {
+			// %v, а не своя формулировка: число держателей уже вшито в текст ошибки
+			// (entity.NewErrAdminSpecialtyInUse), и оно — единственное, что делает отказ
+			// действием, а не тупиком: человек знает, что сначала надо переназначить N
+			// аккаунтов. Та же форма ответа, что у DeleteFileTopic.
+			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+		}
+		// Аккаунт, поставивший себе эту специальность между проверкой и DELETE, приходит сюда
+		// сырым нарушением внешнего ключа. Ситуация та же — и ответ тот же, а не 500.
+		if s.repo.IsErrForeignKeyViolation(err) {
+			return nil, status.Errorf(codes.FailedPrecondition, "specialty %q is still carried by accounts", name)
+		}
+		slog.Default().ErrorContext(ctx, "failed to delete account specialty",
+			slog.String("specialty", name), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "failed to delete specialty")
+	}
+	return &pb_admin.DeleteAccountSpecialtyResponse{}, nil
 }
 
 // ensureNotLastSuper returns FailedPrecondition when only one enabled super-admin

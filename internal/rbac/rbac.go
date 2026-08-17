@@ -644,6 +644,14 @@ var methodRequirements = map[string]Requirement{
 	"SetAccountDisabled":       wr(SectionAccounts),
 	"DeleteAccount":            wr(SectionAccounts),
 	"ResetAccountPassword":     wr(SectionAccounts),
+	// УДАЛЕНИЕ ПОЗИЦИИ СЛОВАРЯ СПЕЦИАЛЬНОСТЕЙ — ЗДЕСЬ, А НЕ В allowlist РЯДОМ С ЗАПИСЬЮ.
+	// SetAccountSpecialties внизу разрешён всем аутентифицированным, потому что человек правит СВОЁ
+	// самоописание, и новое имя только добавляется: ни у кого на экране ничего не пропадает.
+	// Удаление — ровно наоборот. Словарь общий, он едет в каждом ответе пикера людей, и снятая
+	// позиция исчезает у ВСЕХ, кто мог бы её выбрать. Это действие над чужими аккаунтами, а не над
+	// своей подписью, поэтому послабление Р1 сюда не переносится: нужен accounts:write, то же право,
+	// которым уже закрыта правка чужих специальностей.
+	"DeleteAccountSpecialty": wr(SectionAccounts),
 	// accounting (double-entry ledger, docs/plan-accounting/05-admin-api.md): chart of accounts,
 	// journal (incl. manual entries + reversal), period close/reopen and the financial reports.
 	"ListAcctAccounts":    rd(SectionAccounting),
@@ -740,6 +748,9 @@ var allowlist = map[string]struct{}{
 	// словарь специальностей обесценивает и пикер владельцев, и поиск людей, ради которых он заведён.
 	// Цена ошибки — человек напишет себе неверную специальность и его хуже найдут; данных это не
 	// трогает, прав не даёт, правится чужой рукой с accounts:write.
+	//
+	// Послабление кончается на записи: УДАЛЕНИЕ позиции общего словаря
+	// (DeleteAccountSpecialty) стоит в methodRequirements как wr(SectionAccounts) — см. довод там.
 	"SetAccountSpecialties": {},
 }
 
