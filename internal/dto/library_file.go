@@ -131,6 +131,18 @@ func ConvertEntityLibraryFileToPb(f *entity.LibraryFile) *pb_admin.LibraryFile {
 		Topics:       topics,
 		Owners:       ConvertEntityAdminRefsToPb(f.Owners),
 		CreatedAt:    timestamppb.New(f.CreatedAt),
+		// Поля фаз обсуждения, доступа и заметок. Заполняются здесь, а не в трёх
+		// разных местах: конвертер один, и файл, приехавший из витрины доступа,
+		// обязан выглядеть так же, как приехавший из сетки.
+		CommentsCount:    int32(f.CommentsCount),
+		AccessLevel:      string(f.AccessLevel),
+		ContentUpdatedBy: f.ContentUpdatedBy,
+		// nullTimeToPb (dto/membership.go) отдаёт nil, а не нулевой Timestamp: у
+		// файла, который никто не правил, «правили в первом году» было бы враньём.
+		// Незаполненное время приходит на провод явным null (EmitUnpopulated), и
+		// клиент отличает отсутствие только по нему.
+		ContentUpdatedAt: nullTimeToPb(f.ContentUpdatedAt),
+		ContentExcerpt:   f.ContentExcerpt,
 	}
 }
 
