@@ -16,14 +16,31 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// fittingConvertErr сохраняет СТРУКТУРУ отказа конвертера — ровно как techCardConvertErr.
+//
+// Без него весь свод геометрии указаний работал вхолостую на этом экране: calloutGeometryFromPb
+// отвечает entity.ValidationError с именем поля («callouts[0].points»), apierr.Invalid раскладывает
+// его в google.rpc.BadRequest, а `status.Errorf(codes.InvalidArgument, "%v", err)` расплющивал всё
+// это в плоскую строку — клиент не мог подсветить выноску, из-за которой отказ.
+func fittingConvertErr(err error) error {
+	var ve *entity.ValidationError
+	if errors.As(err, &ve) {
+		return apierr.Invalid(ve)
+	}
+	return status.Errorf(codes.InvalidArgument, "%v", err)
+}
+
 // AddFitting creates a new fitting session.
 func (s *Server) AddFitting(ctx context.Context, req *pb_admin.AddFittingRequest) (*pb_admin.AddFittingResponse, error) {
 	fi, err := dto.ConvertPbFittingInsertToEntity(req.Fitting)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, fittingConvertErr(err)
 	}
 	actor := authsrv.GetAdminUsername(ctx)
 	fi.CreatedBy, fi.UpdatedBy = actor, actor
+	// Переноса геометрии здесь нет и быть не может: у создаваемой примерки хранимого нет, и
+	// умолчавшая выноска — это ровно то, чем она приехала, нумерованная точка. Контракт присутствия
+	// живёт на UpdateFitting, где полная замена может что-то стереть.
 
 	id, err := s.repo.Fittings().AddFitting(ctx, fi)
 	if err != nil {
@@ -108,9 +125,30 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 	}
 	fi, err := dto.ConvertPbFittingInsertToEntity(req.Fitting)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, fittingConvertErr(err)
 	}
 	fi.UpdatedBy = authsrv.GetAdminUsername(ctx)
+	// ГЕОМЕТРИЯ УКАЗАНИЙ НА СНИМКАХ (0319) — тот же контракт присутствия, что у эскиза тех-карты.
+	// Выноски примерки сохраняются ПОЛНОЙ ЗАМЕНОЙ, поэтому вкладка со старым бандлом, приславшая
+	// выноски без вида, якорей и цвета, стёрла бы каждую мерку и каждую обведённую зону — правкой,
+	// которая снимков даже не открывала. Перенос ДО записи, по номеру выноски.
+	//
+	// Хранимое читается ТОЛЬКО когда есть что переносить: новый клиент шлёт вид всегда, и платить
+	// за него лишним чтением всей примерки на каждом сохранении незачем. Гонка здесь безопасна —
+	// чужая правка, вклинившаяся между чтением и записью, сдвинет lock_version, и запись отвергнет
+	// себя сама (ErrFittingConflict), а не запишет перенесённое поверх.
+	if dto.FittingCalloutGeometryOmitted(fi) {
+		stored, err := s.repo.Fittings().GetFittingById(ctx, int(req.Id))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, status.Errorf(codes.NotFound, "fitting not found")
+			}
+			slog.Default().ErrorContext(ctx, "can't load stored fitting before update",
+				slog.Int("fitting_id", int(req.Id)), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't load fitting; try again")
+		}
+		dto.CarryOmittedFittingCalloutGeometry(stored, fi)
+	}
 	orphanedPatternURLs, err := s.repo.Fittings().UpdateFittingAndListOrphanedPatternURLs(
 		ctx, int(req.Id), fi, int(req.GetExpectedLockVersion()))
 	if err != nil {

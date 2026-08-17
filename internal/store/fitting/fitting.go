@@ -4,8 +4,10 @@ package fitting
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -613,6 +615,25 @@ func insertFittingCallouts(ctx context.Context, db dependency.DB, fittingID int,
 	}
 	rows := make([]map[string]any, 0, len(callouts))
 	for i, c := range callouts {
+		// Якоря геометрии — JSON-колонкой, одним значением на выноску (0319). Форма уже проверена
+		// в dto: сюда приходит то, что сервер согласился считать указанием.
+		kind := c.Kind
+		if kind == "" {
+			kind = entity.AnnotationKindPin
+		}
+		// ПУСТОЙ СПИСОК ПИШЕТСЯ КАК `[]`, А НЕ NULL (довод 0308): «якорей нет» — это факт пина, и в
+		// JSON он честнее массивом. Различия при ЧТЕНИИ это не создаёт и создавать не должно: и
+		// здешний читатель, и клиент гейтят на непустоту, а тех-карта в той же ситуации пишет NULL
+		// и переписываться задним числом не будет. Строки старше 0319 несут NULL, и это тот же
+		// самый факт, записанный иначе.
+		points := "[]"
+		if len(c.Points) > 0 {
+			raw, err := json.Marshal(c.Points)
+			if err != nil {
+				return fmt.Errorf("marshal fitting callout %d points: %w", c.Number, err)
+			}
+			points = string(raw)
+		}
 		rows = append(rows, map[string]any{
 			"fitting_id":     fittingID,
 			"callout_number": c.Number,
@@ -620,6 +641,11 @@ func insertFittingCallouts(ctx context.Context, db dependency.DB, fittingID int,
 			"media_id":       c.MediaId,
 			"pos_x":          c.PosX,
 			"pos_y":          c.PosY,
+			"kind":           string(kind),
+			"color":          string(c.Color),
+			"points":         points,
+			"dashed":         c.Dashed,
+			"filled":         c.Filled,
 			"display_order":  i,
 		})
 	}
@@ -862,7 +888,8 @@ func (s *Store) calloutsByFittingIds(ctx context.Context, ids []int) (map[int][]
 		return map[int][]entity.FittingCallout{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[fittingCalloutRow](ctx, s.DB, `
-		SELECT fitting_id, callout_number, note, media_id, pos_x, pos_y
+		SELECT fitting_id, callout_number, note, media_id, pos_x, pos_y,
+		       kind, color, points, dashed, filled
 		FROM fitting_callout
 		WHERE fitting_id IN (:ids)
 		ORDER BY fitting_id, display_order`, map[string]any{"ids": ids})
@@ -871,7 +898,19 @@ func (s *Store) calloutsByFittingIds(ctx context.Context, ids []int) (map[int][]
 	}
 	out := make(map[int][]entity.FittingCallout, len(ids))
 	for _, r := range rows {
-		out[r.FittingID] = append(out[r.FittingID], r.FittingCallout)
+		c := r.FittingCallout
+		if len(c.PointsRaw) > 0 {
+			// Битый JSON в колонке — испорченная строка, а не повод уронить чтение всей примерки:
+			// указание вернётся пином, и это видно, в отличие от пятисотки (довод 0308).
+			if err := json.Unmarshal(c.PointsRaw, &c.Points); err != nil {
+				slog.Default().Error("fitting callout: broken points json",
+					slog.Int("fitting_id", r.FittingID), slog.Int("callout_number", c.Number),
+					slog.String("err", err.Error()))
+				c.Points = nil
+				c.Kind = entity.AnnotationKindPin
+			}
+		}
+		out[r.FittingID] = append(out[r.FittingID], c)
 	}
 	return out, nil
 }

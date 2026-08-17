@@ -3,6 +3,11 @@ syntax = "proto3";
 package common;
 
 import "common/media.proto";
+// Примитив указания в системе ОДИН: виды, точка и палитра объявлены в techcard.proto и
+// переиспользуются здесь как есть. Своего FittingAnnotationKind нет и быть не должно — замечание
+// примерки переносят в тех-карту, и «дуга» обязана остаться той же дугой по обе стороны переноса.
+// Цикла нет: techcard.proto о примерках не знает.
+import "common/techcard.proto";
 import "google/protobuf/timestamp.proto";
 import "google/type/decimal.proto";
 
@@ -119,15 +124,43 @@ message FittingChangeRequestInsert {
 }
 
 // FittingCallout is a numbered marker pinned to a fitting photo, noting a fit
-// problem at a point on the image ("here the shoulder is too tight"). It is the
-// fitting analogue of TechCardCallout but deliberately simpler: a pin + a note,
-// with no part/dimensions (a fitting flags posadka, not spec geometry).
+// problem at a point on the image ("here the shoulder is too tight"). It carries the
+// same drawn-instruction primitive as TechCardCallout (kind + anchors + colour), but
+// no part/dimensions: a fitting flags posadka on a PHOTO, and its remarks bind to
+// pieces through fitting_change_request, not through a name on the callout.
 message FittingCallout {
   int32 number = 1; // marker number shown on the photo
   string note = 2; // what is wrong with the fit here (required)
   int32 media_id = 3; // FK media(id); the fitting photo this callout is pinned to (0 = unanchored)
   google.type.Decimal pos_x = 4; // normalised x (0..1) of the marker on its photo
   google.type.Decimal pos_y = 5; // normalised y (0..1) of the marker on its photo
+  // Вид указания. UNKNOWN и PIN — одно и то же («просто нумерованная точка»).
+  //
+  // ЯВНОЕ ПРИСУТСТВИЕ, ровно как у TechCardCallout.kind, и по той же причине: выноски примерки
+  // сохраняются ПОЛНОЙ ЗАМЕНОЙ, поэтому вкладка со старым бандлом, которая поля не шлёт вовсе,
+  // прислала бы голый proto3-энум как UNKNOWN и стёрла бы геометрию КАЖДОГО указания примерки —
+  // сохранением, которое снимки даже не открывало. ОТСУТСТВИЕ ⇒ сервер несёт ХРАНИМУЮ геометрию
+  // дальше, перенос по НОМЕРУ выноски (единственная её идентичность: номером на неё ссылается
+  // fitting_change_request.callout_number). ЯВНЫЙ PIN ⇒ человек сам превратил указание обратно в
+  // точку, это осознанное действие. Новый клиент шлёт поле ВСЕГДА, круглым рейсом прочитанного.
+  //
+  // ГРУППА АТОМАРНА: присутствие ЭТОГО поля управляет всем, что описывает фигуру, — якорями,
+  // цветом, пунктиром и заливкой. Клиент, приславший вид, обязан прислать их все; иначе дуга без
+  // якорей досталась бы точками от прошлой правки, то есть чужими, и молча.
+  optional TechCardAnnotationKind kind = 6;
+  // Якоря геометрии — БЕЗ маркера: маркер живёт в pos_x/pos_y, потому что на него ссылаются
+  // номером. Пусто у PIN; LABEL — 1, DIM/BRACKET — 2, ARC — 3, MULTI — 2..8, POLYGON — 3..40,
+  // INK — 2..200. Правило и слова отказа те же, что у эскиза: вид один и тот же тип.
+  repeated TechCardAnnotationPoint points = 7;
+  // Цвет различает пересекающиеся указания на одном снимке и смысла не несёт. Белый читается на
+  // тёмной ткани — а тёмная ткань это половина снимков примерки.
+  TechCardAnnotationColor color = 8;
+  // Пунктир — построение, а не шов; штриховка — площадь, а не граница. На примерке разница ровно
+  // та же, что в цеху: обведённая зона заломов и линия, вдоль которой замеряли, — разные слова.
+  // Штриховка живёт только у полигона, пунктир — только там, где есть линия; бессмысленный флаг
+  // приводится к false, а не отвергается.
+  bool dashed = 9;
+  bool filled = 10;
 }
 
 // FittingPattern is one выкройка iteration tried in a fitting (snapshot of the

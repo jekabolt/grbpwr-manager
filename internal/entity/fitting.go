@@ -144,14 +144,32 @@ type FittingPattern struct {
 }
 
 // FittingCallout is a numbered marker pinned to a fitting photo, flagging a fit
-// problem at a point on the image (a pin + a note). Simpler than TechCardCallout —
-// no part/dimensions (a fitting flags posadka, not spec geometry).
+// problem at a point on the image. No part/dimensions (a fitting binds its remarks to
+// pieces through fitting_change_request, not by a name on the callout).
+//
+// Геометрия (Kind/Points/Color/Dashed/Filled) — ТОТ ЖЕ примитив, что у TechCardCallout, теми же
+// типами и с теми же правилами числа точек: замечание примерки переносят в тех-карту, и дуга
+// обязана остаться той же дугой по обе стороны переноса. PosX/PosY остаются положением
+// НУМЕРОВАННОГО МАРКЕРА — по номеру на выноску ссылается FittingChangeRequest.CalloutNumber, —
+// а Points держит якоря фигуры; у пина Points пуст. Колонки заведены 0319.
 type FittingCallout struct {
-	Number  int                 `db:"callout_number"`
-	Note    sql.NullString      `db:"note"`
-	MediaId sql.NullInt32       `db:"media_id"` // the fitting photo this callout is pinned to
-	PosX    decimal.NullDecimal `db:"pos_x"`    // normalised 0..1 marker position
-	PosY    decimal.NullDecimal `db:"pos_y"`
+	Number  int                     `db:"callout_number"`
+	Note    sql.NullString          `db:"note"`
+	MediaId sql.NullInt32           `db:"media_id"` // the fitting photo this callout is pinned to
+	PosX    decimal.NullDecimal     `db:"pos_x"`    // normalised 0..1 marker position
+	PosY    decimal.NullDecimal     `db:"pos_y"`
+	Kind    TechCardAnnotationKind  `db:"kind"`
+	Color   TechCardAnnotationColor `db:"color"`
+	Dashed  bool                    `db:"dashed"`
+	Filled  bool                    `db:"filled"`
+	// KindOmitted — вкладка со старым бандлом про геометрию не говорила вовсе. Тогда хранимая
+	// группа (вид, якоря, цвет, пунктир, штриховка) переносится по НОМЕРУ выноски, до записи. Не
+	// колонка: это факт запроса, а не примерки.
+	KindOmitted bool `db:"-"`
+	// Points в БД лежит JSON-колонкой, в Go — разобранным списком; сырое значение читается
+	// в PointsRaw и разбирается стором один раз (так же, как у карточной выноски).
+	Points    []TechCardAnnotationPoint `db:"-"`
+	PointsRaw []byte                    `db:"points"`
 }
 
 // FittingOutcome is the structured result of a fitting round (distinct from the free Verdict):
