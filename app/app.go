@@ -29,6 +29,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/fxsync"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
@@ -91,6 +92,9 @@ type App struct {
 	patternSvc *patternaccess.Service
 	// runPackSvc is retained for the same reason: it debounces run-pack access stats.
 	runPackSvc *runpackaccess.Service
+	// fileLinkSvc is retained for the same reason again: the public file link debounces its
+	// hit counters, and the flush writes rows — so it must stop while the DB is still open.
+	fileLinkSvc *fileaccess.Service
 	// frontendS/authS are retained so Stop can terminate their in-memory
 	// rate-limiter cleanup goroutines (lifecycle discipline; they are singletons).
 	frontendS *frontend.Server
@@ -501,6 +505,23 @@ func (a *App) Start(ctx context.Context) error {
 	a.hs.SetRunPackHandler(runPackSvc.Handler())
 	a.adminS.SetRunPackTokenService(runPackSvc)
 
+	// Публичная ссылка на файл библиотеки (/api/f/{token}, Ф7): та же капабилити-схема и тот же
+	// pepper — скоуп ('f') подписан вместе с id, поэтому один секрет обслуживает четыре
+	// непересекающихся пространства идентичности. Base url нужен ЗДЕСЬ (в отличие от наряда):
+	// ссылку копируют наружу, в мессенджер, и собрать её из origin панели нельзя. ACL объектов
+	// бакета сервис не трогает никогда — публичность даёт маршрут, а не бакет.
+	fileLinkSvc, err := fileaccess.New(a.db.Files(), a.b,
+		a.c.PatternToken.Pepper, strings.TrimRight(a.c.PatternToken.PublicBaseURL, "/"))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "failed to create file link service",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+	a.fileLinkSvc = fileLinkSvc
+	a.hs.SetFileLinkHandler(fileLinkSvc.Handler())
+	a.adminS.SetFileLinkService(fileLinkSvc)
+
 	// Files-library upload (POST /api/files/upload). The only admin write that is not
 	// a gRPC method — a file cannot fit inside one message — so it is wrapped here in
 	// the admin authorization middleware by hand. That wrapping is the whole of its
@@ -608,6 +629,10 @@ func (a *App) Stop(ctx context.Context) {
 	// DB does.
 	if a.runPackSvc != nil {
 		a.runPackSvc.Stop()
+	}
+	// И для публичной ссылки на файл — по тому же договору: её сброс тоже пишет строки.
+	if a.fileLinkSvc != nil {
+		a.fileLinkSvc.Stop()
 	}
 
 	// The HTTP listener has drained, so no new admin RPC can spawn a revalidation.

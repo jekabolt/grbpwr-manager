@@ -172,6 +172,7 @@ type Server struct {
 	runPackHandler          http.Handler
 	fileUploadHandler       http.Handler
 	filePreviewHandler      http.Handler
+	fileLinkHandler         http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -228,6 +229,17 @@ func (s *Server) SetPatternViewerHandler(h http.Handler) {
 // wrapper, inside the CORS'd /api group.
 func (s *Server) SetRunPackHandler(h http.Handler) {
 	s.runPackHandler = h
+}
+
+// SetFileLinkHandler registers the public library-file link endpoint (/api/f/{token}, Ф7) —
+// the url a person OUTSIDE the company opens. Same posture as /api/p, /api/pv and /api/rp: the
+// token is the credential, no auth wrapper, inside the CORS'd /api group.
+//
+// ОТ ДВУХ СОСЕДЕЙ ВЫШЕ ОН ОТЛИЧАЕТСЯ ОДНИМ: у файла есть уровень доступа, и маршрут обязан
+// проверять его на строке файла, а не только поколение токена. Живой токен на файле, который
+// вернули в `team`, обязан быть мёртв — см. internal/fileaccess.
+func (s *Server) SetFileLinkHandler(h http.Handler) {
+	s.fileLinkHandler = h
 }
 
 // SetWebhookHandler registers the webhook handler for Resend and list-unsubscribe routes.
@@ -533,6 +545,15 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.runPackHandler != nil {
 			r.Method(http.MethodGet, "/rp/{token}", s.runPackHandler)
 			r.Method(http.MethodHead, "/rp/{token}", s.runPackHandler)
+		}
+		// Public library-file link (/api/f/{token}, scope 'f'). ДВУХБУКВЕННЫХ СОСЕДЕЙ НЕ
+		// ШАДОУИТ: /p, /pv, /rp и /f — четыре разных литеральных сегмента, chi разбирает их
+		// как дерево, а не как список префиксов. HEAD монтируется вместе с GET, иначе chi
+		// ответил бы на него 405 — единственный ответ, который отличался бы от одинакового
+		// 404 всех прочих отказов и тем самым подтверждал бы существование пути.
+		if s.fileLinkHandler != nil {
+			r.Method(http.MethodGet, "/f/{token}", s.fileLinkHandler)
+			r.Method(http.MethodHead, "/f/{token}", s.fileLinkHandler)
 		}
 		// Files-library upload. Its own body cap, deliberately NOT the admin-JSON one:
 		// that limit is sized for base64-expanded media inside a gRPC message, and this

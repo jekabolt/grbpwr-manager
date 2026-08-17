@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
@@ -42,7 +43,10 @@ type Server struct {
 	patternURLsBaseURL string
 	// runPackTokens mints the output-only run_pack_token on a run read (/api/rp). Nil-safe
 	// for the same reason patternURLs is.
-	runPackTokens   *runpackaccess.Service
+	runPackTokens *runpackaccess.Service
+	// fileLinks mints the public /api/f/{token} url shown in a file's access block (Ф7).
+	// Nil-safe like the two above: без сервиса блок доступа приезжает без url, а не падает.
+	fileLinks       *fileaccess.Service
 	mailer          dependency.Mailer
 	renderer        *campaignrender.Renderer
 	campaignTestSem chan struct{}
@@ -243,4 +247,12 @@ func (s *Server) SetPatternURLService(svc *patternaccess.Service, baseURL string
 // exactly like pattern_viewer_token — the page that resolves it lives in the SPA.
 func (s *Server) SetRunPackTokenService(svc *runpackaccess.Service) {
 	s.runPackTokens = svc
+}
+
+// SetFileLinkService wires the public library-file link minter (/api/f, Ф7). Base url lives
+// INSIDE the service (unlike the run pack above): эту ссылку копируют в мессенджер и открывают
+// вне панели, поэтому она обязана быть абсолютной и собранной одним местом — тем же, что её
+// потом разбирает.
+func (s *Server) SetFileLinkService(svc *fileaccess.Service) {
+	s.fileLinks = svc
 }

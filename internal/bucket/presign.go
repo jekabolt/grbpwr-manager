@@ -60,9 +60,21 @@ func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, dow
 // It is a SEPARATE method rather than an extra segment accepted by
 // PresignPatternObject on purpose: that one is reachable from the unauthenticated
 // token endpoints (/api/p, /api/pv, /api/rp), and widening the set of keys it can
-// sign would widen what those endpoints could be talked into serving. This one is
-// only ever called from RBAC-gated admin handlers, and keeping the two apart is
-// what keeps that difference true by construction rather than by discipline.
+// sign would widen what those endpoints could be talked into serving. Keeping the
+// two apart is what keeps that difference true by construction rather than by
+// discipline — a pattern token can never reach a library object and vice versa.
+//
+// С Ф7 У НЕГО ДВА ЗАКОННЫХ ВЫЗЫВАЮЩИХ, А НЕ ОДИН: админские хендлеры под RBAC и
+// ПУБЛИЧНЫЙ маршрут /api/f/{token} (internal/fileaccess). Второй — неаутентифицированный,
+// поэтому охранное правило теперь надо назвать вслух: objectKey приходит ТОЛЬКО из строки
+// library_file (entity.LibraryFileLinkTarget) и НИКОГДА из запроса. Сегментный гейт ниже
+// сужает подписываемое до files-library/, но он не отличает чужой ключ библиотеки от своего —
+// «ключ только из строки БД» и есть то, что не даёт этому методу стать оракулом, выдающим
+// произвольный объект библиотеки по подобранному имени.
+//
+// ACL ОБЪЕКТА НЕ ТРОГАЕТСЯ НИ ОДНИМ ИЗ ДВУХ. Публичность файла — это наш маршрут, который
+// подписывает короткоживущий url на каждое попадание; публичный ACL пережил бы и смену уровня
+// доступа, и удаление файла, и отозвать его было бы нечем.
 func (b *Bucket) PresignLibraryObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
 	return b.presignManagedObject(ctx, objectKey, libraryFolder, download, downloadName)
 }
