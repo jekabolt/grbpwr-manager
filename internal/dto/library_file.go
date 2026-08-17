@@ -187,6 +187,36 @@ func ConvertPbLibraryFileSortToEntity(s pb_admin.LibraryFileSort) entity.Library
 	}
 }
 
+// ConvertPbLibraryPersonFilterToEntity normalises the (person_id, person_role)
+// pair into the two fields the store filter carries.
+//
+// НЕСУЩЕСТВУЮЩИЙ ЧЕЛОВЕК — НЕ ОШИБКА, и здесь он даже не проверяется: id уезжает в запрос
+// как есть и просто ничему не совпадает. Проверка существования была бы ОРАКУЛОМ — перебирая
+// id и различая «не найден» от «ничего не нашлось», можно пересчитать аккаунты (и по
+// InvalidArgument на 1..N узнать, где кончается список сотрудников), ни разу не имея права
+// читать admins.
+//
+// Неположительный id — просто ОТСУТСТВИЕ фильтра, а не ошибка: контрол необязателен, и 0 из
+// url'а не стоит страницы отказа. Роль без человека игнорируется по тому же доводу — она одна
+// ничего не сужает.
+func ConvertPbLibraryPersonFilterToEntity(personID int32, role pb_admin.LibraryFilePersonRole) (int, entity.LibraryFilePersonRole) {
+	if personID <= 0 {
+		return 0, entity.LibraryFilePersonRoleAny
+	}
+	switch role {
+	case pb_admin.LibraryFilePersonRole_LIBRARY_FILE_PERSON_ROLE_UPLOADED:
+		return int(personID), entity.LibraryFilePersonRoleUploaded
+	case pb_admin.LibraryFilePersonRole_LIBRARY_FILE_PERSON_ROLE_OWNER:
+		return int(personID), entity.LibraryFilePersonRoleOwner
+	default:
+		// Незнакомое будущее значение енума схлопывается в «любая», а не в отказ: роль
+		// СУЖАЕТ выборку, и неузнанное сужение показало бы меньше, чем человек просил,
+		// ничего об этом не сказав. Расширение до «где он числится вообще» — честный
+		// ответ на «в какой-то роли».
+		return int(personID), entity.LibraryFilePersonRoleAny
+	}
+}
+
 // ConvertPbTopicSelectionToEntity normalises the (topic_ids, new_topics) pair
 // that both the upload and the update paths carry: ids are deduped and bounded,
 // names are trimmed, validated and deduped case-insensitively so "Brand" typed

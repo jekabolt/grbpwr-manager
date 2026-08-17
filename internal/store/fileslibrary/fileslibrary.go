@@ -251,6 +251,11 @@ func (s *Store) FindFilesBySha256(ctx context.Context, sha256 string) ([]entity.
 }
 
 // ListFiles returns a page of the library plus the total matching count.
+//
+// ОДНО УСЛОВИЕ НА СЧЁТ И НА СТРАНИЦУ (`clause` ниже строится один раз и подставляется в оба
+// запроса). Это не экономия строк: разойдись они хоть одним плечом — и «показано N из M»
+// начинает врать, а человек листает страницы за числом, которого нет. Ту же ошибку уже ловили на
+// витрине открытого. Любой НОВЫЙ фильтр обязан дописываться в `where` ДО этой строки.
 func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) ([]entity.LibraryFile, int, error) {
 	if len(f.TopicIds) > entity.MaxLibraryTopicFilters {
 		return nil, 0, fmt.Errorf("%w: at most %d topics can be combined in one filter, got %d",
@@ -291,6 +296,44 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 	case f.TopicId > 0:
 		where = append(where, `EXISTS (SELECT 1 FROM library_file_topic lft WHERE lft.file_id = lf.id AND lft.topic_id = :topicId)`)
 		params["topicId"] = f.TopicId
+	}
+	// ФИЛЬТР ПО ЧЕЛОВЕКУ. Он ДОПИСЫВАЕТСЯ в тот же where, что темы, поиск и предикат
+	// видимости, — то есть складывается с ними пересечением и НИКОГДА не обходит предикат.
+	// Отдельный проход (или UNION по двум ролям) вытащил бы мимо предиката ровно то, что
+	// фильтр по человеку и ищет: файлы, которые этот человек закрыл от спрашивающего.
+	//
+	// ЖИВОЙ id, А НЕ СТРОКА ИМЕНИ. Строка `uploaded_by` переживает аккаунт, UNIQUE на
+	// admins.username освобождает имя при удалении, и следующий однофамилец получил бы всю
+	// историю прежнего. Ту же дыру уже закрывали дважды — в Ф3 (mayEditLibraryFileOwners) и в
+	// предикате видимости (плечо 2). Здесь она закрыта тем же способом: сравнивается ссылка.
+	//
+	// `<=>`, А НЕ `=`: `uploaded_by_id` NULLable (уволенный загрузивший). В ЭТОЙ позиции
+	// разницы в ответе нет — условие стоит в положительном WHERE, где NULL и так ведёт себя
+	// как ложь, а :personId всегда > 0. Пишется NULL-safe сравнение ради одного: то же
+	// выражение однажды окажется под отрицанием (так уже случилось с предикатом видимости в
+	// bulk-проверке AssignTopics, где `NOT NULL` — это снова NULL, и невидимая строка не
+	// считалась), и тогда правка «а тут можно проще» стоила бы молчаливой дыры.
+	//
+	// «Ведёт» — через EXISTS, а не JOIN: у файла несколько владельцев, и соединение
+	// РАЗМНОЖИЛО БЫ строку файла по числу совпадений — страница отдала бы дубли, а total их
+	// сосчитал бы.
+	if f.PersonId > 0 {
+		params["personId"] = f.PersonId
+		uploaded := `lf.uploaded_by_id <=> :personId`
+		owns := `EXISTS (SELECT 1 FROM library_file_owner lfo_person
+			WHERE lfo_person.file_id = lf.id AND lfo_person.admin_id = :personId)`
+		switch f.PersonRole {
+		case entity.LibraryFilePersonRoleUploaded:
+			where = append(where, uploaded)
+		case entity.LibraryFilePersonRoleOwner:
+			where = append(where, owns)
+		default:
+			// «Любая» = ИЛИ, и это единственное место во всей выборке, где ИЛИ уместно:
+			// две роли — не два сужающих чипа, а два способа одному человеку числиться у
+			// файла. Скобки обязательны — без них ИЛИ разошлось бы по всему AND-списку и
+			// разнесло бы и предикат видимости, и фильтр тем.
+			where = append(where, `(`+uploaded+` OR `+owns+`)`)
+		}
 	}
 	if q := strings.TrimSpace(f.Search); q != "" {
 		// Matching topic names as well as file names is what makes a single input
