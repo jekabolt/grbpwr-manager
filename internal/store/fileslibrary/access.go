@@ -421,9 +421,16 @@ func (s *Store) RotateFileLink(ctx context.Context, fileID int, actor string) (*
 		}
 		// Одним оператором: SELECT-потом-UPDATE дал бы двум одновременным «пересоздать» один и
 		// тот же epoch, то есть вторая кнопка не отозвала бы ничего.
+		//
+		// revoked_at НЕ СНИМАЕТСЯ, и это не забывчивость. С Ф7b он значит ровно одно — «файл не на
+		// уровне link, ссылка выключена», — и снимается ровно там, где это перестаёт быть правдой
+		// (applyLinkTTL, возврат на уровень). «Пересоздать» на файле не по ссылке законно (поколение
+		// уезжает, старые токены мертвы), но включением уровня оно не является: сняв здесь штамп, мы
+		// получили бы `revoked = false` на файле, у которого ссылка мертва по уровню, — то самое
+		// состояние, которое врёт панели.
 		if err := storeutil.ExecNamed(ctx, db, `
 			INSERT INTO library_file_public_access (file_id) VALUES (:id)
-			ON DUPLICATE KEY UPDATE epoch = epoch + 1, revoked_at = NULL`,
+			ON DUPLICATE KEY UPDATE epoch = epoch + 1`,
 			map[string]any{"id": fileID}); err != nil {
 			return fmt.Errorf("failed to rotate library file link: %w", err)
 		}

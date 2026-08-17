@@ -193,14 +193,22 @@ func TestLibraryFileAccess(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, journalTexts(events), "ссылка выключена, прежняя больше не работает")
 
+		// «Пересоздать» на файле не по ссылке двигает поколение, но НЕ включает ссылку обратно:
+		// снятый здесь штамп означал бы `revoked = false` на файле, у которого ссылка мертва по
+		// уровню.
+		rotated, err := s.Files().RotateFileLink(ctx, fileID, pasha)
+		require.NoError(t, err)
+		require.Equal(t, 2, rotated.Epoch)
+		require.True(t, rotated.RevokedAt.Valid, "отзыв снимает только возврат на уровень")
+
 		// Вернулись — НОВОЕ поколение, снятый отзыв и отдельная строка журнала, которая это
 		// называет: сама по себе `level:link` о смерти прежнего адреса не говорит ничего.
 		reissued, err := s.Files().SetFileAccess(ctx, fileID, entity.LibraryFileAccessUpdate{
 			Level: entity.LibraryFileAccessLink, LinkTTLHours: 24, Actor: kirill,
 		})
 		require.NoError(t, err)
-		require.Equal(t, 2, reissued.Link.Epoch,
-			"возврат на link обязан выдать новый токен: прежняя ссылка ушла к людям, которых сегодня уже не звали")
+		require.Equal(t, 3, reissued.Link.Epoch,
+			"возврат на link обязан выдать новый токен: прежняя ссылка ушла к людям, которых сегодня уже не звали (2 — от «пересоздать» выше, 3 — от возврата)")
 		require.False(t, reissued.Link.RevokedAt.Valid)
 		events, err = s.Files().ListFileAccessEvents(ctx, fileID, 0)
 		require.NoError(t, err)
