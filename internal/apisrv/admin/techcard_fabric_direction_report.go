@@ -34,7 +34,7 @@ func (s *Server) ListTechCardFabricDirectionGaps(ctx context.Context, req *pb_ad
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list fabric direction gaps",
 			slog.Int("tech_card_id", int(req.GetTechCardId())), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't read the направление ткани report")
+		return nil, status.Error(codes.Internal, "can't read the fabric direction report")
 	}
 	return dto.FabricDirectionGapReportToPb(
 		entity.BuildFabricDirectionGapReport(cards, req.GetIncludeInactive()),

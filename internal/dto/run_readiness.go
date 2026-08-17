@@ -395,8 +395,8 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 		if cw == nil {
 			add(entity.RunReadinessFinding{
 				Key: entity.RunReadinessKeyColorwayLive, Severity: entity.RunReadinessBlocker,
-				Label:  "the colorway belongs to this card and is not archived",
-				Detail: fmt.Sprintf("product #%d is not among this card's live colorways — it is either someone else's or archived", cid),
+				Label:  "the colourway belongs to this card and is not archived",
+				Detail: fmt.Sprintf("product #%d is not among this card's live colourways — it is either someone else's or archived", cid),
 				Target: tgt,
 			})
 			// Everything below is about THIS card's recipe, and there is none for a product that is
@@ -407,7 +407,7 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 		}
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyColorwayLive, Severity: entity.RunReadinessOK,
-			Label: "the colorway belongs to this card and is not archived", Target: tgt,
+			Label: "the colourway belongs to this card and is not archived", Target: tgt,
 		})
 
 		// slot_article / slot_norm — ONE row per key per colourway, listing every offending slot in
@@ -419,7 +419,7 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 			label string
 			lead  string
 		}{
-			{entity.RunReadinessKeySlotArticle, "every required slot has an article", "without an article (neither a colorway pin nor a slot default)"},
+			{entity.RunReadinessKeySlotArticle, "every required slot has an article", "without an article (neither a colourway pin nor a slot default)"},
 			{entity.RunReadinessKeySlotNorm, "every required slot has a consumption norm for every planned size", "without a consumption norm"},
 		} {
 			hits := blocked[cid][spec.key]
@@ -966,15 +966,15 @@ func (b *runReadinessBuilder) runChecks(plan *pb_admin.GetProductionRunMaterialP
 	if len(empty) == 0 {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyQuantitiesPresent, Severity: entity.RunReadinessOK,
-			Label: "every picked colorway has at least one positive quantity", Target: b.target(),
+			Label: "every picked colourway has at least one positive quantity", Target: b.target(),
 		})
 	} else {
 		t := b.target()
 		t.ColorwayId = empty[0]
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyQuantitiesPresent, Severity: entity.RunReadinessWarning,
-			Label:  "every picked colorway has at least one positive quantity",
-			Detail: fmt.Sprintf("picked but with no quantities: %s — these colorways will produce nothing", joinInts(empty)),
+			Label:  "every picked colourway has at least one positive quantity",
+			Detail: fmt.Sprintf("picked but with no quantities: %s — these colourways will produce nothing", joinInts(empty)),
 			Target: t,
 		})
 	}

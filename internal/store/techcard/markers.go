@@ -639,11 +639,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				`SELECT COUNT(*) FROM product WHERE id = :cw AND style_id = :card AND lifecycle_status <> 4`,
 				map[string]any{"cw": ins.ColorwayId, "card": techCardID})
 			if err != nil {
-				return fmt.Errorf("check colorway %d on tech card %d: %w", ins.ColorwayId, techCardID, err)
+				return fmt.Errorf("check colourway %d on tech card %d: %w", ins.ColorwayId, techCardID, err)
 			}
 			if n == 0 {
 				return entity.NewFieldViolation("colorway_id", "not_on_card",
-					fmt.Sprintf("colorway %d", ins.ColorwayId),
+					fmt.Sprintf("colourway %d", ins.ColorwayId),
 					"the marker's colourway must be a live colourway of this tech card, or leave it unset")
 			}
 			colorwayID = sql.NullInt64{Int64: int64(ins.ColorwayId), Valid: true}

@@ -191,7 +191,7 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 		SELECT id FROM product WHERE style_id = :id`,
 		map[string]any{"id": tcID})
 	if err != nil {
-		return fmt.Errorf("failed to load colorway ids for pieces: %w", err)
+		return fmt.Errorf("failed to load colourway ids for pieces: %w", err)
 	}
 	validColorway := make(map[int]bool, len(cwRows))
 	for _, r := range cwRows {
@@ -960,7 +960,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		WHERE c.style_id IN (:ids) AND c.lifecycle_status <> 4
 		ORDER BY c.style_id, c.display_order, c.id`, map[string]any{"ids": ids})
 	if err != nil {
-		return fmt.Errorf("can't load tech card colorways: %w", err)
+		return fmt.Errorf("can't load tech card colourways: %w", err)
 	}
 	colorwaysByCard := make(map[int][]entity.TechCardColorway, len(ids))
 	for _, r := range cwRows {
@@ -983,7 +983,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})
 		if err != nil {
-			return fmt.Errorf("can't load tech card colorway usages: %w", err)
+			return fmt.Errorf("can't load tech card colourway usages: %w", err)
 		}
 		usageByID := make(map[int]*entity.TechCardColorwayUsage, len(usageRows))
 		usageIDs := make([]int, 0, len(usageRows))
@@ -1027,7 +1027,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			WHERE product_id IN (:ids)
 			ORDER BY product_id, currency`, map[string]any{"ids": colorwayIDs})
 		if err != nil {
-			return fmt.Errorf("can't load tech card colorway prices: %w", err)
+			return fmt.Errorf("can't load tech card colourway prices: %w", err)
 		}
 		for _, r := range priceRows {
 			if cw, ok := colorwayByID[r.ProductID]; ok {
@@ -1045,7 +1045,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			WHERE product_id IN (:ids)
 			ORDER BY product_id, round_number`, map[string]any{"ids": colorwayIDs})
 		if err != nil {
-			return fmt.Errorf("can't load tech card colorway lab dip rounds: %w", err)
+			return fmt.Errorf("can't load tech card colourway lab dip rounds: %w", err)
 		}
 		for _, r := range roundRows {
 			if cw, ok := colorwayByID[r.ProductId]; ok {

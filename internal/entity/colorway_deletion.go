@@ -77,7 +77,7 @@ const (
 
 // colorwayBlockerHowToFix — общий выход из любого блокера. Один на все: архив — это и есть
 // «удалить» для всего, что уже прожило хоть что-то.
-const colorwayBlockerHowToFix = "archive the colorway instead of deleting it, or remove the named link"
+const colorwayBlockerHowToFix = "archive the colourway instead of deleting it, or remove the named link"
 
 // ColorwayRunRef — партия, в составе которой стоит колорвей. Статус едет вместе с номером,
 // потому что «черновик» и «в производстве» — разные разговоры с оператором, хотя блокируют оба.
@@ -276,14 +276,14 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 	// верным для ткани), но оператор обязан узнать об этом ДО подтверждения, а не после.
 	o := f.Orphans
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanMarker, o.Markers,
-		"%d marker will lose the colorway (the measurement stays, the article disappears from it)",
-		"%d markers will lose the colorway (the measurement stays, the article disappears from it)")
+		"%d marker will lose the colourway (the measurement stays, the article disappears from it)",
+		"%d markers will lose the colourway (the measurement stays, the article disappears from it)")
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanMaterialMovement, o.MaterialMovements,
-		"%d material movement will lose the colorway", "%d material movements will lose the colorway")
+		"%d material movement will lose the colourway", "%d material movements will lose the colourway")
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanSample, o.Samples,
-		"%d sample will lose the colorway", "%d samples will lose the colorway")
+		"%d sample will lose the colourway", "%d samples will lose the colourway")
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanTask, o.Tasks,
-		"%d task will lose the colorway", "%d tasks will lose the colorway")
+		"%d task will lose the colourway", "%d tasks will lose the colourway")
 
 	return v
 }

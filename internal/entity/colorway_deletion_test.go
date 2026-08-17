@@ -248,7 +248,7 @@ func TestClassifyColorwayDeletion_OrphansAreNeitherBlockerNorCascade(t *testing.
 	if m.Count != 2 {
 		t.Errorf("marker orphan count = %d, want 2", m.Count)
 	}
-	if !strings.Contains(m.Text, "will lose the colorway") {
+	if !strings.Contains(m.Text, "will lose the colourway") {
 		t.Errorf("marker orphan must say what is lost, got %q", m.Text)
 	}
 	for _, e := range v.Cascade {

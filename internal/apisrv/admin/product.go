@@ -245,7 +245,7 @@ func (s *Server) DeleteColorwayByID(ctx context.Context, req *pb_admin.DeleteCol
 			slog.Default().WarnContext(ctx, "colourway delete refused",
 				slog.Int("colorway_id", id), slog.String("blockers", v.BlockerSummary()))
 			return nil, apierr.FailedPreconditionMany(
-				fmt.Sprintf("colorway %s cannot be deleted: %s", v.Label, v.BlockerSummary()),
+				fmt.Sprintf("colourway %s cannot be deleted: %s", v.Label, v.BlockerSummary()),
 				v.FieldViolations())
 		}
 		return nil, colorwayDeleteError(ctx, id, err)

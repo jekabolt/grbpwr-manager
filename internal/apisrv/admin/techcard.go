@@ -1177,7 +1177,7 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 			// when the whole card seeded nothing, so a card with 1 of 3 colourways gated would
 			// otherwise skip silently while the tab still shows a unit cost.
 			if !unit.Valid && dto.HasColorwayForProduct(card, pid) {
-				slog.Default().InfoContext(ctx, "colorway cost not seeded: recipe incomplete or not computable",
+				slog.Default().InfoContext(ctx, "colourway cost not seeded: recipe incomplete or not computable",
 					slog.Int("tech_card_id", techCardID), slog.Int("product_id", pid))
 			}
 			continue

@@ -81,7 +81,10 @@ Rules:
   bartack, buttonhole, button_attach) as an operation_type — that names a MACHINE, not a verb: write
   operation_type "machine" and put the machine in machine_type.
 - "press" is pressing in general (ironing / pressing down / steaming / finishing), "press_open" is
-  specifically pressing a seam open, "fusing" is fusing with an interlining.
+  specifically pressing a seam open, "fusing" is fusing with an interlining. The card text you are
+  reading may still be written in Russian, so map its wording onto these three: приутюжить /
+  заутюжить / отпарить and ВТО in general are "press", разутюжка is "press_open", дублирование is
+  "fusing".
 - machine_type is REQUIRED when operation_type is "machine"; press_equipment is REQUIRED when
   operation_type is "press", "press_open" or "fusing". A step saved without them is refused.
 - Use only these machine_type tokens: {{MACHINE_TYPES}}.

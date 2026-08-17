@@ -237,7 +237,7 @@ func patternsRequirement(card *entity.TechCard, index map[string]entity.PatternS
 		return readinessUnknown(key, label, unknown)
 	default:
 		return readinessReq(key, label, false,
-			fmt.Sprintf("в файлах выкроек нет размеров: %s", strings.Join(missing, ", ")))
+			fmt.Sprintf("the pattern files have no sizes: %s", strings.Join(missing, ", ")))
 	}
 }
 

@@ -235,7 +235,7 @@ func taskMediaAnnotationsFromPb(attached map[int]bool, in []*pb_common.TaskMedia
 		// который его прислал.
 		if mediaID <= 0 {
 			return nil, entity.NewFieldViolation(path+".media_id", "required", "",
-				"набор указаний без картинки не значит ничего — назовите снимок этой карточки")
+				"a set of callouts without a picture means nothing — name the picture of this card")
 		}
 		// ДУБЛЬ СНИМАЕТСЯ МОЛЧА, ПЕРВЫЙ ВЫИГРЫВАЕТ — как labels, media_ids и file_ids этой же
 		// функции: половина списков карточки прощала бы дубль, половина роняла бы сохранение.

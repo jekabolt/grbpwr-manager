@@ -697,20 +697,20 @@ func requireLayColorway(ctx context.Context, db dependency.DB, runID, techCardID
 		`SELECT COUNT(*) FROM product WHERE id = :cw AND style_id = :card`,
 		map[string]any{"cw": colorwayID, "card": techCardID})
 	if err != nil {
-		return fmt.Errorf("check colorway %d on tech card %d: %w", colorwayID, techCardID, err)
+		return fmt.Errorf("check colourway %d on tech card %d: %w", colorwayID, techCardID, err)
 	}
 	if onCard == 0 {
-		return entity.NewFieldViolation("lay.colorway_id", "not_on_card", fmt.Sprintf("colorway %d", colorwayID),
+		return entity.NewFieldViolation("lay.colorway_id", "not_on_card", fmt.Sprintf("colourway %d", colorwayID),
 			"a lay's colourway must be a colourway of this run's tech card")
 	}
 	planned, err := storeutil.QueryCountNamed(ctx, db,
 		`SELECT COUNT(*) FROM production_run_line WHERE run_id = :run AND product_id = :cw`,
 		map[string]any{"run": runID, "cw": colorwayID})
 	if err != nil {
-		return fmt.Errorf("check colorway %d on run %d: %w", colorwayID, runID, err)
+		return fmt.Errorf("check colourway %d on run %d: %w", colorwayID, runID, err)
 	}
 	if planned == 0 {
-		return entity.NewFieldViolation("lay.colorway_id", "not_planned_by_run", fmt.Sprintf("colorway %d", colorwayID),
+		return entity.NewFieldViolation("lay.colorway_id", "not_planned_by_run", fmt.Sprintf("colourway %d", colorwayID),
 			"plan a quantity for this colourway before laying it")
 	}
 	return nil
@@ -1136,7 +1136,7 @@ func loadRunColorwayQuantities(ctx context.Context, db dependency.DB, runID, col
 		WHERE run_id = :run AND product_id = :cw
 		GROUP BY COALESCE(size_id, 0)`, map[string]any{"run": runID, "cw": colorwayID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to load planned quantities of colorway %d on run %d: %w", colorwayID, runID, err)
+		return nil, fmt.Errorf("failed to load planned quantities of colourway %d on run %d: %w", colorwayID, runID, err)
 	}
 	return rows, nil
 }

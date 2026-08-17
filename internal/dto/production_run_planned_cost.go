@@ -126,7 +126,7 @@ func ComputeProductionRunPlannedUnitCostWithReason(tc *entity.TechCard, fx Costi
 			// Edges 2, 4 and 5. НАЗЫВАЕТСЯ ИМЕННО ЯЧЕЙКА: «партия не считается» на партии из двадцати
 			// строк — это приглашение перебирать их руками.
 			return decimal.NullDecimal{}, "", fmt.Sprintf(
-				"cell (colorway %d, size %d) does not compute: its recipe has no norm for this size, or the colorway does not belong to the card",
+				"cell (colourway %d, size %d) does not compute: its recipe has no norm for this size, or the colourway does not belong to the card",
 				cell.productID, cell.sizeID)
 		}
 		if currency == "" {
