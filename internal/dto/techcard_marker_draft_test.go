@@ -127,7 +127,7 @@ func TestDraftSummaryCarriesTheFlagAndWithholdsEveryNumber(t *testing.T) {
 	require.NotEmpty(t, draft.ScalarApplyRefusal, "an absent number must say WHY, or it reads as «not computed yet»")
 	require.Contains(t, draft.ScalarApplyRefusal, "31")
 	require.Contains(t, draft.ScalarApplyRefusal, "45")
-	require.Contains(t, draft.ScalarApplyRefusal, "бюджет")
+	require.Contains(t, draft.ScalarApplyRefusal, "search budget")
 	// The measurements themselves still travel — the operator has to SEE what the run produced in
 	// order to decide whether re-running is worth it.
 	require.Equal(t, int32(31), draft.PlacedCount)

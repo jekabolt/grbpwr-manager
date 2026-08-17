@@ -77,7 +77,7 @@ func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.Patte
 	scopeKey := strings.TrimSpace(in.ScopeKey)
 	if scopeKey == "" {
 		return out, entity.NewFieldViolation("scope_key", "required", "",
-			"name the fabric scope: its назначение, or the BOM line's line_key when the card has not been sorted")
+			"name the fabric scope: its purpose, or the BOM line's line_key when the card has not been sorted")
 	}
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
@@ -97,7 +97,7 @@ func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.Patte
 		mine := sheetsByScope[scopeKey]
 		if len(mine) == 0 {
 			return entity.NewFieldViolation("scope_key", "scope_has_no_sheets", scopeKey,
-				"this fabric scope carries no pattern sheets on the server — upload them, or check that the scope key matches the card's назначение / line_key")
+				"this fabric scope carries no pattern sheets on the server — upload them, or check that the scope key matches the card's purpose / line_key")
 		}
 		// THE MISMATCH REFUSAL. An index computed over the wrong files is worse than no index: it
 		// answers confidently about sheets nobody parsed. BOTH directions are refused — a client that
@@ -106,7 +106,7 @@ func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.Patte
 		// that names a sheet the scope does not hold is describing a different card.
 		if diff := sheetSetDiff(mine, in.SheetLineKeys); diff != "" {
 			return entity.NewFieldViolation("sheet_line_keys", "sheet_set_mismatch", diff,
-				"re-run «⌕ размеры в файлах» — the scope's sheets changed between the parse and this call, and an index built over a different set of files would answer for files nobody read")
+				"re-run “⌕ sizes in files” — the scope's sheets changed between the parse and this call, and an index built over a different set of files would answer for files nobody read")
 		}
 		fingerprint := entity.PatternSheetFingerprint(mine)
 		tokens := entity.NormalizeSizeTokens(in.SizeTokens)

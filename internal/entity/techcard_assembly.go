@@ -318,7 +318,7 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 		if s.OutputUnitKey == "" && s.OutputUnitName != "" {
 			res.Violations = append(res.Violations, AssemblyViolation{
 				Rule: AssemblyRuleHygiene, Detail: AssemblyDetailShadowName, Step: i, Input: -1,
-				Message: "имя узла «" + s.OutputUnitName + "» набрано, но ключа нет: шаг ничего не собирает",
+				Message: "unit name “" + s.OutputUnitName + "” is typed in, but there is no key: the step assembles nothing",
 			})
 		}
 
@@ -336,7 +336,7 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 					// Позиции входов человеку показываются с единицы — как и номера шагов в
 					// соседних сообщениях. Смешивать в одном тексте нумерацию с нуля и с
 					// единицы значит заставить читателя гадать, какая тут какая.
-					Message: "вход повторяется в этом же шаге (впервые — вход " + strconv.Itoa(first+1) + ")",
+					Message: "the input repeats within the same step (first time — input " + strconv.Itoa(first+1) + ")",
 				})
 				continue
 			}
@@ -350,21 +350,21 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 						res.Violations = append(res.Violations, AssemblyViolation{
 							Rule: AssemblyRuleFrontier, Detail: AssemblyDetailSelfReference,
 							Step: i, Input: j, Key: in.Key,
-							Message: "«" + in.Key + "» — это выход самого этого шага: узел появляется после шага, а не до него",
+							Message: "“" + in.Key + "” is the output of this very step: a unit appears after the step, not before it",
 						})
 						continue
 					}
 					res.Violations = append(res.Violations, AssemblyViolation{
 						Rule: AssemblyRuleFrontier, Detail: AssemblyDetailProducedLater,
 						Step: i, Input: j, Key: in.Key,
-						Message: "узел «" + in.Key + "» появится только на шаге " + humanStep(at) + " — он не может быть входом раньше",
+						Message: "unit “" + in.Key + "” only appears at step " + humanStep(at) + " — it can't be an input earlier",
 					})
 					continue
 				}
 				res.Violations = append(res.Violations, AssemblyViolation{
 					Rule: AssemblyRuleFrontier, Detail: AssemblyDetailUnknownKey,
 					Step: i, Input: j, Key: in.Key,
-					Message: "вход «" + in.Key + "» не существует: нет ни такой детали, ни такого узла",
+					Message: "input “" + in.Key + "” doesn't exist: there is no such piece and no such unit",
 				})
 			case !live[in.Key]:
 				eater, ok := res.ConsumedBy[in.Key]
@@ -374,14 +374,14 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 					res.Violations = append(res.Violations, AssemblyViolation{
 						Rule: AssemblyRuleFrontier, Detail: AssemblyDetailOffFrontier,
 						Step: i, Input: j, Key: in.Key,
-						Message: "вход «" + in.Key + "» больше не лежит на столе",
+						Message: "input “" + in.Key + "” is no longer on the table",
 					})
 					continue
 				}
 				res.Violations = append(res.Violations, AssemblyViolation{
 					Rule: AssemblyRuleSingleUse, Detail: AssemblyDetailConsumedEarlier,
 					Step: i, Input: j, Key: in.Key,
-					Message: "«" + in.Key + "» уже съеден шагом " + humanStep(eater) + " и лежит внутри узла " + eaterUnit(steps, eater),
+					Message: "“" + in.Key + "” was already consumed by step " + humanStep(eater) + " and lies inside unit " + eaterUnit(steps, eater),
 				})
 			default:
 				usable[in.Key] = true
@@ -406,7 +406,7 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 			}
 			res.Violations = append(res.Violations, AssemblyViolation{
 				Rule: AssemblyRuleNamespace, Detail: AssemblyDetailKeyIsPiece, Step: i, Input: -1, Key: out,
-				Message: "ключ узла «" + out + "» занят деталью «" + shown + "»: у деталей и узлов одно пространство имён",
+				Message: "unit key “" + out + "” is taken by piece “" + shown + "”: pieces and units share one namespace",
 			})
 			continue
 		}
@@ -414,7 +414,7 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 		if len(usable) < 2 {
 			res.Violations = append(res.Violations, AssemblyViolation{
 				Rule: AssemblyRuleJoinArity, Detail: AssemblyDetailTooFewInputs, Step: i, Input: -1, Key: out,
-				Message: "узел из одного входа — это обработка, а не узел: джойну нужно не меньше двух разных входов",
+				Message: "a unit from a single input is processing, not a unit: a join needs at least two different inputs",
 			})
 			continue
 		}
@@ -426,15 +426,15 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 		if exists && !absorb {
 			// Совет «возьмите его же входом» уместен, только пока узел ещё на столе: съеденный
 			// узел входом взять нельзя, и предлагать это значит послать технолога по кругу.
-			advice := ": чтобы дособрать его, возьмите его же входом"
+			advice := ": to keep assembling it, take it as an input of this step"
 			if eater, eaten := res.ConsumedBy[out]; eaten {
-				advice = " и уже съеден шагом " + humanStep(eater) + ": дособрать его больше нельзя"
+				advice = " and was already consumed by step " + humanStep(eater) + ": it can't be assembled any further"
 			} else if !live[out] {
 				advice = ""
 			}
 			res.Violations = append(res.Violations, AssemblyViolation{
 				Rule: AssemblyRuleSingleUse, Detail: AssemblyDetailSecondProducer, Step: i, Input: -1, Key: out,
-				Message: "узел «" + out + "» уже произведён шагом " + humanStep(prev.ProducedAt) + advice,
+				Message: "unit “" + out + "” was already produced by step " + humanStep(prev.ProducedAt) + advice,
 			})
 			// Узел НЕ переписывается: сохранённое замыкание остаётся честным. Прототип здесь
 			// затирает узел, и накопленные поглощением листья пропадают — после чего правило 4,
@@ -515,12 +515,12 @@ func AssemblyReleaseCheck(pieces []AssemblyPiece, steps []AssemblyStep, res Asse
 	case 0:
 		out = append(out, AssemblyViolation{
 			Rule: AssemblyRuleConverges, Detail: AssemblyDetailNoTerminal, Step: -1, Input: -1,
-			Message: "сборка не сходится: ни одного готового узла в конце",
+			Message: "the assembly doesn't converge: not a single finished unit at the end",
 		})
 	default:
 		out = append(out, AssemblyViolation{
 			Rule: AssemblyRuleConverges, Detail: AssemblyDetailManyTerminals, Step: -1, Input: -1,
-			Message: "терминальных узлов должно быть ровно один, а их " + strconv.Itoa(len(terminals)) + ": " + strings.Join(terminals, ", "),
+			Message: "there must be exactly one terminal unit, and there are " + strconv.Itoa(len(terminals)) + ": " + strings.Join(terminals, ", "),
 		})
 	}
 
@@ -553,7 +553,7 @@ func AssemblyReleaseCheck(pieces []AssemblyPiece, steps []AssemblyStep, res Asse
 	if len(orphans) > 0 {
 		out = append(out, AssemblyViolation{
 			Rule: AssemblyRuleConverges, Detail: AssemblyDetailUnreachedPieces, Step: -1, Input: -1,
-			Message: "не попадают в готовое изделие: " + strings.Join(orphans, ", "),
+			Message: "don't make it into the finished garment: " + strings.Join(orphans, ", "),
 		})
 	}
 	return out

@@ -244,7 +244,7 @@ func TestRunReadinessPieceLayerFindings(t *testing.T) {
 		if !ok || f.Severity != entity.RunReadinessWarning {
 			t.Fatalf("piece_main_fabric = %+v, want WARNING", f)
 		}
-		if !strings.Contains(f.Detail, "подкладка") {
+		if !strings.Contains(f.Detail, "lining") {
 			t.Errorf("detail must name the roles the piece HAS: %q", f.Detail)
 		}
 		if got, _ := rrFind(res, entity.RunReadinessKeyPieceRoleConflict); got.Severity != entity.RunReadinessOK {

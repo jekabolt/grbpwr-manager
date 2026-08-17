@@ -170,12 +170,12 @@ func introducesForbidden(incoming, stored MarkerLayoutFacts) bool {
 func newlyForbidden(incoming, stored MarkerLayoutFacts) string {
 	switch {
 	case incoming.HalfTurnCount > stored.HalfTurnCount && incoming.FlipCount > stored.FlipCount:
-		return fmt.Sprintf("размещений на 180° стало %d (было %d), зеркальных — %d (было %d)",
+		return fmt.Sprintf("180° placements went to %d (were %d), mirrored — to %d (were %d)",
 			incoming.HalfTurnCount, stored.HalfTurnCount, incoming.FlipCount, stored.FlipCount)
 	case incoming.HalfTurnCount > stored.HalfTurnCount:
-		return fmt.Sprintf("размещений на 180° стало %d (было %d)", incoming.HalfTurnCount, stored.HalfTurnCount)
+		return fmt.Sprintf("180° placements went to %d (were %d)", incoming.HalfTurnCount, stored.HalfTurnCount)
 	default:
-		return fmt.Sprintf("зеркальных размещений стало %d (было %d)", incoming.FlipCount, stored.FlipCount)
+		return fmt.Sprintf("mirrored placements went to %d (were %d)", incoming.FlipCount, stored.FlipCount)
 	}
 }
 
@@ -431,12 +431,12 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 		// the blob was never distilled, and the zero value of MarkerLayoutFacts is precisely the one
 		// that would sail through every check below. A default that exempts has to be unreachable.
 		return MarkerDirectionVerdict{}, fmt.Errorf("marker layout facts were not distilled (schema_version 0) — "+
-			"refusing to judge a раскладка linked to %s on inputs nobody filled", scope.Key)
+			"refusing to judge a marker linked to %s on inputs nobody filled", scope.Key)
 	}
 	if FlipPredatesSchema(facts) {
 		return MarkerDirectionVerdict{Judged: true}, NewFieldViolation("layout.placements", ReasonFlipInLegacySchema, "",
 			fmt.Sprintf("the layout declares schema_version %d but carries a mirrored placement, and "+
-				"`flipped` only exists from version %d on — no stored раскладка can contain one, so this is a "+
+				"`flipped` only exists from version %d on — no stored marker can contain one, so this is a "+
 				"client writing a version it does not actually speak; save it as version %d",
 				facts.SchemaVersion, MarkerLayoutSchemaWithFlip, MarkerLayoutSchemaWithFlip))
 	}
@@ -450,15 +450,15 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 	dir, unknown, known := ScopeFabricDirection(scope, lines)
 	if !known {
 		unknown = named(unknown, resolveNames)
-		howToFix := fmt.Sprintf("set направление ткани (any / one_way / two_way) on the BOM tab for %s", labelsOf(unknown))
+		howToFix := fmt.Sprintf("set the fabric direction (any / one_way / two_way) on the BOM tab for %s", labelsOf(unknown))
 		if scope.ByPurpose && namesOtherThan(unknown, bomLineKey) {
 			// Said only when it is surprising: the operator is being sent to a row this раскладка
 			// does not name, and without this clause that reads as a bug rather than as назначение
 			// doing its job.
-			howToFix += fmt.Sprintf(" (they hang off назначение %q together with the line this раскладка is bound to)", scope.Key)
+			howToFix += fmt.Sprintf(" (they hang off purpose %q together with the line this marker is bound to)", scope.Key)
 		}
-		howToFix += " — эта раскладка кладёт деталь вверх ногами, и пока направление неизвестно, " +
-			"сервер не может отличить безобидные 180° от испорченного ворса"
+		howToFix += " — this marker lays a piece upside down, and while the direction is unknown " +
+			"the server can't tell a harmless 180° from a ruined nap"
 		// The field pins the FIRST offending row so a form can focus something; the prose and the
 		// conflicting keys carry all of them, because the fix is a mass fill, not one row.
 		return MarkerDirectionVerdict{Judged: true}, NewFieldViolation(
@@ -510,9 +510,9 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 			// operator told to «re-nest without 180°» would have no idea the reason is that their
 			// stored geometry is unreadable — which is also why re-nesting is in fact the remedy.
 			return refused(ReasonStoredLayoutUnreadable,
-				fmt.Sprintf("%s: %s помечена one_way, а сохранённую геометрию этой раскладки прочитать "+
-					"не удаётся — сервер не может отличить старый поворот от нового, поэтому пересоберите "+
-					"раскладку заново без 180° и без зеркальных размещений", offendingPlacements(facts), labelsOf(blockers)))
+				fmt.Sprintf("%s: %s is marked one_way, and the stored geometry of this marker can't be "+
+					"read — the server can't tell an old rotation from a new one, so re-nest the marker "+
+					"from scratch without 180° and without mirrored placements", offendingPlacements(facts), labelsOf(blockers)))
 		case !introducesForbidden(facts, onFile):
 			// KNOWN AND DELIBERATE RESIDUAL, and now a narrow one: the comparison is by COUNT, so a
 			// row that already carries a half-turn may have a DIFFERENT piece turned instead — the
@@ -527,17 +527,17 @@ func ValidateMarkerFabricDirection(bomLineKey string, lines []FabricDirectionLin
 			// direction on the BOM tab» hint is deliberately absent here — on a row that is already
 			// grandfathered it would read as an invitation to switch the guard off.
 			return refused(ReasonFlipIntroducedOnLegacy,
-				fmt.Sprintf("%s помечена one_way, а эта правка добавляет перевороты к сохранённым: %s — "+
-					"верните сохранённые размещения (переименовать, перепривязать или сохранить раскладку "+
-					"как она лежит по-прежнему можно)", labelsOf(blockers), newlyForbidden(facts, onFile)))
+				fmt.Sprintf("%s is marked one_way, and this edit adds turns on top of the stored ones: %s — "+
+					"put the stored placements back (renaming, re-linking or saving the marker as it lies "+
+					"is still possible)", labelsOf(blockers), newlyForbidden(facts, onFile)))
 		}
 	}
-	howToFix := fmt.Sprintf("%s: %s помечена one_way", offendingPlacements(facts), labelsOf(blockers))
+	howToFix := fmt.Sprintf("%s: %s is marked one_way", offendingPlacements(facts), labelsOf(blockers))
 	if scope.ByPurpose && namesOtherThan(blockers, bomLineKey) {
-		howToFix += fmt.Sprintf(" (через назначение %q)", scope.Key)
+		howToFix += fmt.Sprintf(" (through purpose %q)", scope.Key)
 	}
-	howToFix += " — на направленной ткани деталь нельзя класть вверх ногами: пересоберите раскладку без 180° и " +
-		"без зеркальных размещений, либо исправьте направление ткани на вкладке BOM, если ткань на самом деле не направленная"
+	howToFix += " — on directional cloth a piece can't be laid upside down: re-nest the marker without 180° and " +
+		"without mirrored placements, or fix the fabric direction on the BOM tab if the cloth is not actually directional"
 	return refused(ReasonFlipOnOneWay, howToFix)
 }
 
@@ -564,10 +564,10 @@ func storedFactsOf(storedFacts StoredMarkerFacts) (MarkerLayoutFacts, bool) {
 func offendingPlacements(facts MarkerLayoutFacts) string {
 	switch {
 	case facts.HasHalfTurn() && facts.HasFlip():
-		return "раскладка несёт размещения на 180° и зеркальные"
+		return "the marker carries 180° and mirrored placements"
 	case facts.HasHalfTurn():
-		return "раскладка несёт размещения на 180°"
+		return "the marker carries 180° placements"
 	default:
-		return "раскладка несёт зеркальные размещения"
+		return "the marker carries mirrored placements"
 	}
 }

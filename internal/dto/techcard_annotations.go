@@ -99,7 +99,7 @@ func unitIntervalNull(field string, d *pb_decimal.Decimal) (decimal.NullDecimal,
 	nd, err := nullDecimalFromPb(d)
 	if err != nil {
 		return none, entity.NewFieldViolation(field, "invalid_decimal", "",
-			"координата выноски — доля кадра от 0 до 1")
+			"a callout coordinate is a fraction of the frame from 0 to 1")
 	}
 	if !nd.Valid {
 		return none, nil
@@ -110,16 +110,16 @@ func unitIntervalNull(field string, d *pb_decimal.Decimal) (decimal.NullDecimal,
 	// есть тот самый взрыв, от которого мы защищаемся.
 	if exp := nd.Decimal.Exponent(); exp < -maxCoordinateScale {
 		return none, entity.NewFieldViolation(field, "too_precise", coordSample(d.Value),
-			fmt.Sprintf("координата выноски — доля кадра, не больше %d знаков после запятой: точнее снимок ничего не различает", maxCoordinateScale))
+			fmt.Sprintf("a callout coordinate is a fraction of the frame, at most %d decimal places: the photo resolves nothing finer", maxCoordinateScale))
 	} else if exp > 0 {
 		// Показатель степени сам по себе не преступление, но координата, записанная им, у нас
 		// всегда либо ноль, либо вне кадра — а стоит такое сравнение дороже всей конвертации.
 		return none, entity.NewFieldViolation(field, "bad_scale", coordSample(d.Value),
-			"координата выноски записывается обычной дробью от 0 до 1, а не показателем степени")
+			"a callout coordinate is written as an ordinary fraction from 0 to 1, not in exponent notation")
 	}
 	if nd.Decimal.LessThan(zero) || nd.Decimal.GreaterThan(one) {
 		return none, entity.NewFieldViolation(field, "out_of_frame", nd.Decimal.String(),
-			"координата выноски — доля кадра от 0 до 1: точка вне снимка ничего не указывает")
+			"a callout coordinate is a fraction of the frame from 0 to 1: a point outside the photo points at nothing")
 	}
 	return nd, nil
 }
@@ -157,7 +157,7 @@ func operationMediaFromPb(step string, in []*pb_common.TechCardOperationMedia) (
 	}
 	if len(in) > maxOperationMediaPerStep {
 		return nil, entity.NewFieldViolation(step+".media", "too_many", fmt.Sprint(len(in)),
-			fmt.Sprintf("на шаг не больше %d фотографий: длинный филмстрип перестают листать", maxOperationMediaPerStep))
+			fmt.Sprintf("at most %d photos per step: a long filmstrip stops being scrolled through", maxOperationMediaPerStep))
 	}
 	out := make([]entity.TechCardOperationMedia, 0, len(in))
 	seenMedia := make(map[int]bool, len(in))
@@ -169,20 +169,20 @@ func operationMediaFromPb(step string, in []*pb_common.TechCardOperationMedia) (
 		mediaID := int(m.MediaId)
 		if mediaID <= 0 {
 			return nil, entity.NewFieldViolation(path+".media_id", "required", "",
-				"картинка шага без медиа не значит ничего — выберите файл")
+				"a step picture with no media means nothing — pick a file")
 		}
 		// Один и тот же снимок дважды на шаге — это два филмстрип-кадра, неразличимых глазом, и
 		// два места, куда можно поставить противоречащие выноски.
 		if seenMedia[mediaID] {
 			return nil, entity.NewFieldViolation(path+".media_id", "duplicate", fmt.Sprint(mediaID),
-				"эта фотография уже прикреплена к шагу: выноски ставятся на неё же")
+				"this photo is already attached to the step: put the callouts on that same one")
 		}
 		seenMedia[mediaID] = true
 
 		caption := strings.TrimSpace(m.Caption)
 		if len([]rune(caption)) > maxOperationMediaCaptionLen {
 			return nil, entity.NewFieldViolation(path+".caption", "too_long", "",
-				fmt.Sprintf("подпись к фотографии — не длиннее %d знаков", maxOperationMediaCaptionLen))
+				fmt.Sprintf("a photo caption is at most %d characters", maxOperationMediaCaptionLen))
 		}
 		anns, err := annotationsFromPb(path, m.Annotations)
 		if err != nil {
@@ -209,7 +209,7 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 	}
 	if len(in) > maxAnnotationsPerMedia {
 		return nil, entity.NewFieldViolation(path+".annotations", "too_many", fmt.Sprint(len(in)),
-			fmt.Sprintf("на снимок не больше %d выносок: дальше их не прочесть", maxAnnotationsPerMedia))
+			fmt.Sprintf("at most %d callouts per photo: beyond that they can't be read", maxAnnotationsPerMedia))
 	}
 	out := make([]entity.TechCardAnnotation, 0, len(in))
 	for j, a := range in {
@@ -220,18 +220,18 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 		kind, ok := annotationKindFromPb[a.Kind]
 		if !ok {
 			return nil, entity.NewFieldViolation(ap+".kind", "required", a.Kind.String(),
-				"вид выноски определяет и число точек, и что рисуется — без него фигуры нет")
+				"the callout kind determines both the number of points and what gets drawn — without it there is no shape")
 		}
 		min, max, _ := kind.PointsAllowed()
 		if len(a.Points) < min || len(a.Points) > max {
 			return nil, entity.NewFieldViolation(ap+".points", "wrong_count", fmt.Sprint(len(a.Points)),
-				fmt.Sprintf("«%s» рисуется по %s точкам", kind, pointsRangeText(min, max)))
+				fmt.Sprintf("“%s” is drawn from %s points", kind, pointsRangeText(min, max)))
 		}
 		points := make([]entity.TechCardAnnotationPoint, 0, len(a.Points))
 		for k, p := range a.Points {
 			pp := fmt.Sprintf("%s.points[%d]", ap, k)
 			if p == nil {
-				return nil, entity.NewFieldViolation(pp, "required", "", "у выноски пропущена точка")
+				return nil, entity.NewFieldViolation(pp, "required", "", "the callout has a missing point")
 			}
 			x, err := unitInterval(pp+".x", p.X)
 			if err != nil {
@@ -246,7 +246,7 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 		text := strings.TrimSpace(a.Text)
 		if len([]rune(text)) > maxAnnotationTextRunes {
 			return nil, entity.NewFieldViolation(ap+".text", "too_long", "",
-				fmt.Sprintf("текст выноски — не длиннее %d знаков; длинное объяснение живёт в заметке шага", maxAnnotationTextRunes))
+				fmt.Sprintf("callout text is at most %d characters; a long explanation lives in the step note", maxAnnotationTextRunes))
 		}
 		lx, err := unitInterval(ap+".label_x", a.LabelX)
 		if err != nil {
@@ -263,7 +263,7 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 			c, ok := annotationColorFromPb[a.Color]
 			if !ok {
 				return nil, entity.NewFieldViolation(ap+".color", "unknown_value", a.Color.String(),
-					"цвет выноски — из закрытого списка: лист швеи печатают и чёрно-белым")
+					"a callout colour comes from a closed list: the seamstress's sheet gets printed in black and white too")
 			}
 			color = c
 		}
@@ -347,7 +347,7 @@ func annotationPieceKeys(path string, list []string, legacy string) ([]string, e
 	}
 	if len(out) > maxAnnotationPieces {
 		return nil, entity.NewFieldViolation(field, "too_many", fmt.Sprint(len(out)),
-			fmt.Sprintf("на одно указание не больше %d деталей: длиннее его не прочесть ни на экране, ни на бумаге", maxAnnotationPieces))
+			fmt.Sprintf("at most %d pieces per callout: any longer and it can't be read, on screen or on paper", maxAnnotationPieces))
 	}
 	if len(out) == 0 {
 		return nil, nil
@@ -444,7 +444,7 @@ func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, e
 		k, ok := annotationKindFromPb[*kindPb]
 		if !ok {
 			return zeroGeom, entity.NewFieldViolation(path+".kind", "unknown_value", kindPb.String(),
-				"вид указания — из закрытого списка: вид определяет и число точек, и что рисуется")
+				"the callout kind comes from a closed list: the kind determines both the number of points and what gets drawn")
 		}
 		kind = k
 	}
@@ -453,13 +453,13 @@ func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, e
 		// Слова отказа НЕЙТРАЛЬНЫ к экрану: тот же валидатор отвечает и про эскиз карточки, и про
 		// снимок примерки, а путь (`callouts[3].points`) и так называет место точнее любого слова.
 		return zeroGeom, entity.NewFieldViolation(path+".points", "wrong_count", fmt.Sprint(len(pointsPb)),
-			fmt.Sprintf("«%s» рисуется по %s якорям (нумерованный маркер стоит отдельно)", kind, pointsRangeText(min, max)))
+			fmt.Sprintf("“%s” is drawn from %s anchors (the numbered marker stands apart)", kind, pointsRangeText(min, max)))
 	}
 	points := make([]entity.TechCardAnnotationPoint, 0, len(pointsPb))
 	for k, p := range pointsPb {
 		pp := fmt.Sprintf("%s.points[%d]", path, k)
 		if p == nil {
-			return zeroGeom, entity.NewFieldViolation(pp, "required", "", "у указания пропущен якорь")
+			return zeroGeom, entity.NewFieldViolation(pp, "required", "", "the callout has a missing anchor")
 		}
 		x, err := unitInterval(pp+".x", p.X)
 		if err != nil {
@@ -476,7 +476,7 @@ func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, e
 		c, ok := annotationColorFromPb[colorPb]
 		if !ok {
 			return zeroGeom, entity.NewFieldViolation(path+".color", "unknown_value", colorPb.String(),
-				"цвет указания — из закрытого списка: лист печатают и чёрно-белым")
+				"a callout colour comes from a closed list: the sheet gets printed in black and white too")
 		}
 		color = c
 	}
@@ -517,7 +517,7 @@ func calloutParts(path string, list []string, legacy string) ([]string, error) {
 	}
 	if len(out) > maxAnnotationPieces {
 		return nil, entity.NewFieldViolation(field, "too_many", fmt.Sprint(len(out)),
-			fmt.Sprintf("на одно указание не больше %d деталей: длиннее его не прочесть ни на экране, ни на бумаге", maxAnnotationPieces))
+			fmt.Sprintf("at most %d pieces per callout: any longer and it can't be read, on screen or on paper", maxAnnotationPieces))
 	}
 	if len(out) == 0 {
 		return nil, nil

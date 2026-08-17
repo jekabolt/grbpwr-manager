@@ -3161,16 +3161,16 @@ func ValidatePieceCutSymmetry(field string, sym sql.NullString, piecesPerGarment
 	v := TechCardPieceCutSymmetry(sym.String)
 	if !ValidTechCardPieceCutSymmetries[v] {
 		return NewFieldViolation(field, "unknown cut symmetry", sym.String,
-			"pick one of: identical (одинаковые копии), mirrored (зеркальные пары), fold (крой по сгибу)")
+			"pick one of: identical (identical copies), mirrored (mirrored pairs), fold (cut on fold)")
 	}
 	if v != PieceCutSymmetryMirrored {
 		return nil
 	}
 	if piecesPerGarment < 2 || piecesPerGarment%2 != 0 {
 		return NewFieldViolation(field,
-			"зеркальная пара делится пополам — количество на изделие должно быть чётным и не меньше двух",
+			"a mirrored pair splits in half — the count per garment must be even and at least two",
 			strconv.Itoa(piecesPerGarment),
-			"две строки по одной штуке — это «одинаковые» по штуке каждая; «зеркальные пары» ставят на ОДНУ строку с чётным количеством")
+			"two rows of one piece each are “identical”, one piece each; “mirrored pairs” goes on ONE row with an even count")
 	}
 	return nil
 }
@@ -3263,34 +3263,34 @@ func (p *TechCardPiece) NormalizeFusing() {
 func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm decimal.NullDecimal) error {
 	if !mode.Valid {
 		if widthMm.Valid {
-			return NewFieldViolation(field, "ширина клеевой полосы задана, а режим дублирования не выбран", widthMm.Decimal.String(),
-				"выберите «полосой», либо уберите ширину: у режимов «целиком» и «по припуску» своего числа нет")
+			return NewFieldViolation(field, "a fusing strip width is set, but no fusing mode is picked", widthMm.Decimal.String(),
+				"pick “strip”, or remove the width: the “whole piece” and “by seam allowance” modes have no number of their own")
 		}
 		return nil
 	}
 	if !fused {
-		return NewFieldViolation(field, "режим дублирования задан у детали, которая не дублируется", mode.String,
-			"поднимите галку «дублируется» либо снимите режим")
+		return NewFieldViolation(field, "a fusing mode is set on a piece that is not fused", mode.String,
+			"tick “fused”, or clear the mode")
 	}
 	v := TechCardPieceFusingMode(mode.String)
 	if !ValidTechCardPieceFusingModes[v] {
 		return NewFieldViolation(field, "unknown fusing mode", mode.String,
-			"pick one of: full (вся деталь), seam_allowance (по припуску), strip (полосой заданной ширины)")
+			"pick one of: full (the whole piece), seam_allowance (by the seam allowance), strip (a strip of a given width)")
 	}
 	if v != PieceFusingModeStrip {
 		if widthMm.Valid {
-			return NewFieldViolation(field, "ширина полосы задана при режиме, у которого своей ширины нет", mode.String,
-				"«по припуску» берёт ширину из эталона припуска карточки; своё число ставят режимом «полосой»")
+			return NewFieldViolation(field, "a strip width is set on a mode that has no width of its own", mode.String,
+				"“by seam allowance” takes the width from the card's seam allowance reference; your own number goes with the “strip” mode")
 		}
 		return nil
 	}
 	if !widthMm.Valid {
-		return NewFieldViolation(field, "у режима «полосой» не задана ширина", "",
-			"впишите ширину полосы в миллиметрах, либо выберите «по припуску», чтобы взять её из эталона припуска")
+		return NewFieldViolation(field, "the “strip” mode has no width set", "",
+			"type the strip width in millimetres, or pick “by seam allowance” to take it from the seam allowance reference")
 	}
 	if !widthMm.Decimal.IsPositive() {
-		return NewFieldViolation(field, "ширина клеевой полосы должна быть больше нуля", widthMm.Decimal.String(),
-			"нулевая полоса — это «не дублируется»; снимите галку, если клеевой нет")
+		return NewFieldViolation(field, "the fusing strip width must be greater than zero", widthMm.Decimal.String(),
+			"a zero strip means “not fused”; untick the box if there is no fusing")
 	}
 	// МАСШТАБ КОЛОНКИ ПРОВЕРЯЕТСЯ ЗДЕСЬ, потому что за нас его «поправит» MySQL — и поправит молча.
 	// Колонка DECIMAL(6,1): 25.25 ляжет как 25.3, а дайджест CONSTRUCTION к тому моменту УЖЕ
@@ -3302,14 +3302,14 @@ func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm 
 	// а ширину полосы вводит человек — тихо изменить набранное им число значит подписать не то, что
 	// он видел.
 	if widthMm.Decimal.Exponent() < -1 {
-		return NewFieldViolation(field, "ширина клеевой полосы задаётся с точностью до десятых миллиметра",
+		return NewFieldViolation(field, "the fusing strip width is set to a tenth of a millimetre",
 			widthMm.Decimal.String(),
-			"округлите до одного знака после запятой — например, 25.3 вместо 25.25")
+			"round to one decimal place — for example, 25.3 instead of 25.25")
 	}
 	if widthMm.Decimal.GreaterThan(decimal.NewFromInt(PieceFusingStripWidthCeilingMm)) {
-		return NewFieldViolation(field, "ширина клеевой полосы больше 100 мм — похоже на сантиметры вместо миллиметров",
+		return NewFieldViolation(field, "the fusing strip width is over 100 mm — this looks like centimetres instead of millimetres",
 			widthMm.Decimal.String(),
-			"самая широкая реальная полоса — дублирование низа, 40-50 мм; для дублирования целиком есть режим «вся деталь»")
+			"the widest real strip is a hem fusing, 40-50 mm; to fuse the whole piece there is the “whole piece” mode")
 	}
 	return nil
 }

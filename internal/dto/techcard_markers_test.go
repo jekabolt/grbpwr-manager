@@ -254,7 +254,7 @@ func TestTechCardMarkerSummaryToPbDerivesConsumption(t *testing.T) {
 	require.Empty(t, pbBroken.Composition)
 	require.Equal(t, int32(0), pbBroken.TotalUnits, "0 is «unknown»; 1 would be a claim this row does not make")
 	require.NotEmpty(t, pbBroken.ScalarApplyRefusal)
-	require.Contains(t, pbBroken.ScalarApplyRefusal, "нет состава")
+	require.Contains(t, pbBroken.ScalarApplyRefusal, "has no composition")
 }
 
 // THE DEPLOY-OVERLAP INFLATION (C2). 0273 backfills total_units = sets, then the OLD binary's UPDATE
@@ -362,8 +362,8 @@ func TestMixedCompositionWithholdsTheScalarNorm(t *testing.T) {
 	pb := TechCardMarkerSummaryToPb(m)
 	require.Nil(t, pb.ConsumptionPerUnitCm, "the mean across a состав must not reach a recipe")
 	require.NotEmpty(t, pb.ScalarApplyRefusal)
-	require.Contains(t, pb.ScalarApplyRefusal, "Ф2.4", "the refusal must name what closes the gap")
-	require.Contains(t, pb.ScalarApplyRefusal, "одного размера", "and offer an action")
+	require.Contains(t, pb.ScalarApplyRefusal, "phase 2.4", "the refusal must name what closes the gap")
+	require.Contains(t, pb.ScalarApplyRefusal, "single-size marker", "and offer an action")
 	// The facts stay on the wire: the раскладка is still readable, measurable and displayable.
 	require.Equal(t, int32(4), pb.TotalUnits)
 	require.Len(t, pb.Composition, 3)

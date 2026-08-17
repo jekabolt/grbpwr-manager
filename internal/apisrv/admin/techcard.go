@@ -662,7 +662,7 @@ func machineCapabilityWireGate(pb *pb_common.TechCardInsert) error {
 		return nil
 	}
 	if payloadSpeaksMachineFields(pb) {
-		return outdatedMachineClient("the payload carries machine / ВТО values it does not declare support for")
+		return outdatedMachineClient("the payload carries machine / pressing values it does not declare support for")
 	}
 	return nil
 }
@@ -687,13 +687,13 @@ func machineCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.Te
 		// хранилища. Остаётся скрипт и сидер — их потеря становится СЧИТАЕМОЙ здесь, а не
 		// невидимой. Если счётчик когда-нибудь начнёт расти, это и будет доводом за флаг намерения.
 		if storedHasMachineFacts(stored) && !payloadSpeaksMachineFields(pb) {
-			slog.Default().Warn("machine gate: aware payload drops stored machine/ВТО facts",
+			slog.Default().Warn("machine gate: aware payload drops stored machine/pressing facts",
 				slog.String("gate", "stored"), slog.String("cell", "aware:yes/payload:none/stored:facts"))
 		}
 		return nil
 	}
 	if storedHasMachineFacts(stored) {
-		return outdatedMachineClient("this tech card holds machine / ВТО parameters (equipment profiles, or machine and pressing settings on its steps)")
+		return outdatedMachineClient("this tech card holds machine / pressing parameters (equipment profiles, or machine and pressing settings on its steps)")
 	}
 	return nil
 }

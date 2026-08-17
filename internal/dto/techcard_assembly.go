@@ -67,16 +67,16 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 		name := ops[i].OutputUnitName.String
 		if len(key) > assemblyUnitKeyMaxLen {
 			return entity.NewFieldViolation(step+".output_unit_key", "too_long", key,
-				"код узла — до 64 символов; это код для чтения на печати и в QR, а не описание")
+				"a unit code is up to 64 characters; it is a code to be read on print and in a QR, not a description")
 		}
 		if len(name) > assemblyUnitNameMaxLen {
 			return entity.NewFieldViolation(step+".output_unit_name", "too_long", name,
-				"имя узла — до 255 символов")
+				"a unit name is up to 255 characters")
 		}
 		for j, k := range ops[i].InputKeys {
 			if len(k) > assemblyUnitKeyMaxLen {
 				return entity.NewFieldViolation(inputPath(i, j), "too_long", k,
-					"ключ входа — до 64 символов")
+					"an input key is up to 64 characters")
 			}
 		}
 	}
@@ -114,8 +114,8 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 			if len(ops[i].InputKeys) == 0 && len(ops[i].PieceLineKeys) > 0 {
 				return entity.NewFieldViolation(inputPath(i, 0), "assembly_inputs_missing",
 					strings.Join(ops[i].PieceLineKeys, ", "),
-					"осведомлённая запись описывает входы шага полем input_keys; шаг прислал только "+
-						"легаси-проекцию piece_line_keys — обновите вкладку админки и сохраните заново")
+					"an aware write describes a step's inputs with the input_keys field; this step sent only "+
+						"the legacy projection piece_line_keys — refresh the admin tab and save again")
 			}
 			raw = ops[i].InputKeys
 		} else {
@@ -249,7 +249,7 @@ func assemblyReleaseCheck(ops []entity.TechCardOperation, pieces []entity.TechCa
 		msg += "; " + v.Message
 	}
 	return entity.NewFieldViolation("approval_state", string(violations[0].Detail), "released",
-		"сборка не сходится: "+msg)
+		"the assembly doesn't converge: "+msg)
 }
 
 // TechCardAssemblyBlocker — совещательная половина правила 4 для чек-листа готовности.

@@ -231,7 +231,7 @@ func parseTechCardMachineProfile(pb *pb_common.TechCardMachineProfile, field str
 		return out, err
 	}
 	label, err := trimmedText(pb.Label, entity.MaxEquipmentProfileLabelLen, field+".label",
-		"the label is a NAME for the floor («оверлок у окна»), not a description")
+		"the label is a NAME for the floor (“the overlock by the window”), not a description")
 	if err != nil {
 		return out, err
 	}
@@ -389,7 +389,7 @@ func parseThreadTension(v pb_common.TechCardThreadTension, note, field string) (
 		return sql.NullString{}, sql.NullString{}, err
 	}
 	trimmed, err := trimmedText(note, entity.MaxThreadTensionNoteLen, field+".thread_tension_note",
-		"the note qualifies the scale («на 0.5 туже»), it does not replace it")
+		"the note qualifies the scale (“0.5 tighter”), it does not replace it")
 	if err != nil {
 		return sql.NullString{}, sql.NullString{}, err
 	}
@@ -590,7 +590,7 @@ func parseOperationEquipment(o *pb_common.TechCardOperation, opType entity.TechC
 			{"press_cloth", o.PressCloth != pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_UNKNOWN},
 		}); f != "" {
 			return machine, press, entity.NewFieldViolation(step+"."+f, "not_applicable", string(opType),
-				fmt.Sprintf("the ВТО settings belong to a press / press_open / fusing step; this one is %q — clear the field or switch the step type", string(opType)))
+				fmt.Sprintf("the pressing settings belong to a press / press_open / fusing step; this one is %q — clear the field or switch the step type", string(opType)))
 		}
 	}
 

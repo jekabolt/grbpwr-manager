@@ -1651,8 +1651,8 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			}
 			if !entity.ResolveFabricScope(fabricPurpose.String, "", lines).Live() {
 				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].fabric_purpose", i),
-					fmt.Sprintf("ни одна строка ткани этой карты не имеет назначения %q", fabricPurpose.String), "",
-					"задай это назначение нужной строке на вкладке BOM (поле «назначение»), потом привяжи к нему лекало — или оставь лист непривязанным")
+					fmt.Sprintf("no fabric line of this card carries purpose %q", fabricPurpose.String), "",
+					"set that purpose on the line you need on the BOM tab (the “purpose” field), then bind the pattern piece to it — or leave the sheet unbound")
 			}
 		}
 		if bomLineKey.Valid && bomLineKey.String != "" &&
@@ -1664,7 +1664,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			if !entity.ResolveFabricScope("", bomLineKey.String, lines).Live() {
 				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].bom_line_key", i),
 					fmt.Sprintf("no roll-goods BOM line %q in this tech card", bomLineKey.String), "",
-					"на вкладке ВЫКРОЙКИ выбери для этого DXF ткань — строку BOM секции ткань, подкладка, бортовка или утеплитель, — или оставь лист непривязанным")
+					"pick the fabric for this DXF on the PATTERNS tab — a BOM line of section fabric, lining, interlining or insulation — or leave the sheet unbound")
 			}
 		}
 		params := map[string]any{
