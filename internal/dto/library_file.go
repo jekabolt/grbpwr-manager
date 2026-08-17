@@ -25,6 +25,14 @@ const maxLibraryTopicNameLen = 64
 // scripts in that origin's context, with whatever that origin is trusted for. A
 // library accepts arbitrary file types by design, so the safety cannot live at
 // the upload gate — it lives here, at the moment a url is minted.
+//
+// text/plain БОЛЬШЕ НЕТ В СПИСКЕ (Ф7b). Он лежал здесь, пока url'ы жили только внутри
+// панели под RBAC; Ф7 впервые сделала выдачу url'а НЕаутентифицированной (/api/f/{token}),
+// и этого достаточно, чтобы тип стал опасным: Chromium досниффливает text/plain до
+// text/html, а поставить `nosniff` на presigned url нечем — заголовки ответа принадлежат
+// бакету. То есть .txt со <script> внутри исполнился бы на origin бакета у любого, кому
+// прислали ссылку. Потеря — предпросмотр .txt в панели; заметки её не касаются, они едут
+// text/markdown по RPC (dto/library_note.go) и подписанного url не требуют вовсе.
 var inlineSafeContentTypes = map[string]bool{
 	"application/pdf": true,
 	"image/jpeg":      true,
@@ -34,11 +42,10 @@ var inlineSafeContentTypes = map[string]bool{
 	"image/avif":      true,
 	"video/mp4":       true,
 	"video/webm":      true,
-	"text/plain":      true,
 }
 
 // IsInlineSafeContentType reports whether a stored content type may be served
-// with an inline (viewable) url. Parameters are stripped ("text/plain; charset=
+// with an inline (viewable) url. Parameters are stripped ("image/png; charset=
 // utf-8"), and the comparison is case-insensitive, because both come off a
 // client-declared header.
 func IsInlineSafeContentType(ct string) bool {
