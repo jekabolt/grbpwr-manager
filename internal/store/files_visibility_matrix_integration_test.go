@@ -145,7 +145,7 @@ func TestLibraryFileVisibilityMatrix(t *testing.T) {
 				"поиск по автору не имеет права быть обходом предиката")
 
 			// 3. СЧЁТЧИКИ ТЕМ. Точка 5: у разных людей числа РАЗНЫЕ, и это принято сознательно.
-			topics, _, total, err := s.Files().ListTopics(rctx)
+			topics, _, total, err := s.Files().ListTopics(rctx, false)
 			require.NoError(t, err)
 			var seen *entity.FileTopicWithCount
 			for i := range topics {
@@ -337,7 +337,7 @@ func TestLibraryFileVisibilityMatrix(t *testing.T) {
 		hidden := insertFileTopicFixture(ctx, t, "vis-hidden")
 		linkFileTopicFixture(ctx, t, restricted, hidden)
 
-		topics, _, _, err := s.Files().ListTopics(alien)
+		topics, _, _, err := s.Files().ListTopics(alien, false)
 		require.NoError(t, err)
 		var railCount = -1
 		for _, tp := range topics {

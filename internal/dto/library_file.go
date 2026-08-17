@@ -1,8 +1,10 @@
 package dto
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -89,12 +91,44 @@ func ValidateLibraryTopicName(name string) (string, error) {
 	return name, nil
 }
 
+// libraryDateLayout is how a project's dates ride the wire: a plain calendar day.
+// A Timestamp would force a time zone onto «12–14 сентября», and then the only
+// question left would be whose midnight the day starts at.
+const libraryDateLayout = "2006-01-02"
+
+// nullDateToPb prints a nullable DATE, empty when unset.
+func nullDateToPb(t sql.NullTime) string {
+	if !t.Valid {
+		return ""
+	}
+	return t.Time.Format(libraryDateLayout)
+}
+
+// ParseLibraryDate reads a YYYY-MM-DD off the wire; empty CLEARS the date rather
+// than failing. Anything else is refused: a date the server could not read but
+// stored anyway would be a date nobody typed.
+func ParseLibraryDate(s string) (sql.NullTime, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return sql.NullTime{}, nil
+	}
+	t, err := time.Parse(libraryDateLayout, s)
+	if err != nil {
+		return sql.NullTime{}, fmt.Errorf("date must be YYYY-MM-DD, got %q", s)
+	}
+	return sql.NullTime{Time: t, Valid: true}, nil
+}
+
 // ConvertEntityFileTopicToPb converts one topic label (without a count).
 func ConvertEntityFileTopicToPb(t entity.FileTopic) *pb_admin.FileTopic {
 	return &pb_admin.FileTopic{
 		Id:          int32(t.Id),
 		Name:        t.Name,
 		Description: t.Description.String,
+		Kind:        string(t.Kind),
+		StartsAt:    nullDateToPb(t.StartsAt),
+		EndsAt:      nullDateToPb(t.EndsAt),
+		Archived:    t.ArchivedAt.Valid,
 	}
 }
 
@@ -103,14 +137,43 @@ func ConvertEntityFileTopicToPb(t entity.FileTopic) *pb_admin.FileTopic {
 func ConvertEntityFileTopicsWithCountToPb(topics []entity.FileTopicWithCount) []*pb_admin.FileTopic {
 	out := make([]*pb_admin.FileTopic, 0, len(topics))
 	for _, t := range topics {
-		out = append(out, &pb_admin.FileTopic{
-			Id:          int32(t.Id),
-			Name:        t.Name,
-			Description: t.Description.String,
-			FilesCount:  int32(t.FilesCount),
+		pb := ConvertEntityFileTopicToPb(t.FileTopic)
+		pb.FilesCount = int32(t.FilesCount)
+		out = append(out, pb)
+	}
+	return out
+}
+
+// ConvertEntityFileRolesToPb converts the role vocabulary with its cross-project
+// counts.
+func ConvertEntityFileRolesToPb(roles []entity.FileRoleWithCount) []*pb_admin.FileRole {
+	out := make([]*pb_admin.FileRole, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, &pb_admin.FileRole{
+			Id:         int32(r.Id),
+			Name:       r.Name,
+			SortOrder:  int32(r.SortOrder),
+			Archived:   r.ArchivedAt.Valid,
+			FilesCount: int32(r.FilesCount),
 		})
 	}
 	return out
+}
+
+// ValidateLibraryRoleName trims and bounds a role name. Same bound as a topic
+// name, because both live in a VARCHAR(64) and both are read off the same chips.
+func ValidateLibraryRoleName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("role name is required")
+	}
+	if len([]rune(name)) > maxLibraryTopicNameLen {
+		return "", fmt.Errorf("role name must be at most %d characters", maxLibraryTopicNameLen)
+	}
+	if strings.ContainsAny(name, "\r\n\x00") {
+		return "", fmt.Errorf("role name must not contain control characters")
+	}
+	return name, nil
 }
 
 // ConvertEntityLibraryFileToPb converts the stored metadata. It deliberately
@@ -123,6 +186,17 @@ func ConvertEntityLibraryFileToPb(f *entity.LibraryFile) *pb_admin.LibraryFile {
 	topics := make([]*pb_admin.FileTopic, 0, len(f.Topics))
 	for _, t := range f.Topics {
 		topics = append(topics, ConvertEntityFileTopicToPb(t))
+	}
+	// ПАРЫ, А НЕ ЯРЛЫКИ. Плоский список ролей на файле был бы ровно той моделью, ради ухода от
+	// которой заводилась колонка на строке связи: он не помнит, в каком проекте роль стояла.
+	roles := make([]*pb_admin.LibraryFileRole, 0, len(f.Roles))
+	for _, r := range f.Roles {
+		roles = append(roles, &pb_admin.LibraryFileRole{
+			ProjectTopicId:   int32(r.ProjectTopicId),
+			ProjectTopicName: r.ProjectTopicName,
+			RoleId:           int32(r.RoleId),
+			RoleName:         r.RoleName,
+		})
 	}
 	return &pb_admin.LibraryFile{
 		Id:          int32(f.Id),
@@ -150,6 +224,7 @@ func ConvertEntityLibraryFileToPb(f *entity.LibraryFile) *pb_admin.LibraryFile {
 		// клиент отличает отсутствие только по нему.
 		ContentUpdatedAt: nullTimeToPb(f.ContentUpdatedAt),
 		ContentExcerpt:   f.ContentExcerpt,
+		Roles:            roles,
 	}
 }
 
