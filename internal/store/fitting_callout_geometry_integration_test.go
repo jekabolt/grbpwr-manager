@@ -518,3 +518,80 @@ func fitCallout(number int32, note string, mediaID int, posX, posY string,
 		Kind: &k, Points: points, Color: color, Dashed: dashed, Filled: filled,
 	}
 }
+
+// Фигура без записки доезжает до колонок и читается обратно — целиком.
+//
+// Требование записки у КАЖДОЙ выноски пережило появление видов и стало неверным: у пина текст и есть
+// всё содержание, у фигуры содержание — сама фигура. Клиенту при таком сервере оставалось выбрасывать
+// безымянные фигуры перед отправкой, то есть человек обводил зону, сохранял и обнаруживал, что её
+// нет. Тест держит именно круг «нарисовал → сохранилось → вернулось», а не только разбор.
+func TestFittingCalloutFigureWithoutNote(t *testing.T) {
+	skipUnlessLocalDB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	s, err := NewForTest(ctx, *testCfg)
+	require.NoError(t, err)
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	mediaID := insertTestMedia(t, "fitnote-"+suffix)
+
+	var techCardID, fittingID int
+	defer func() {
+		bg := context.Background()
+		if fittingID != 0 {
+			_ = s.Fittings().DeleteFitting(bg, fittingID)
+		}
+		if techCardID != 0 {
+			_ = s.TechCards().DeleteTechCard(bg, techCardID)
+		}
+		_, _ = testDB.ExecContext(bg, `DELETE FROM media WHERE id = ?`, mediaID)
+	}()
+	techCardID = newFitGeomTechCard(ctx, t, s, suffix)
+
+	fi, err := dto.ConvertPbFittingInsertToEntity(&pb_common.FittingInsert{
+		TechCardId: int32(techCardID), FittingDate: nowPb(),
+		Status:   pb_common.FittingStatus_FITTING_STATUS_PLANNED,
+		Verdict:  pb_common.FittingVerdict_FITTING_VERDICT_PENDING,
+		MediaIds: []int32{int32(mediaID)},
+		Callouts: []*pb_common.FittingCallout{
+			// Зона заломов, обведённая и не подписанная.
+			fitCallout(1, "", mediaID, "0.70", "0.70",
+				pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON,
+				fitPoints("0.60", "0.60", "0.90", "0.60", "0.90", "0.90"),
+				pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_BLUE, false, true),
+			// И пин рядом — с текстом, как ему и положено.
+			fitCallout(2, "плечо жмёт", mediaID, "0.10", "0.10",
+				pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_PIN, nil,
+				pb_common.TechCardAnnotationColor_TECH_CARD_ANNOTATION_COLOR_UNKNOWN, false, false),
+		},
+	})
+	require.NoError(t, err, "безымянная фигура обязана проходить разбор")
+
+	fittingID, err = s.Fittings().AddFitting(ctx, fi)
+	require.NoError(t, err)
+
+	stored, err := s.Fittings().GetFittingById(ctx, fittingID)
+	require.NoError(t, err)
+	require.Len(t, stored.Callouts, 2)
+	require.False(t, stored.Callouts[0].Note.Valid, "пустая записка лежит NULL, а не пустой строкой")
+	require.Equal(t, entity.AnnotationKindPolygon, stored.Callouts[0].Kind)
+	require.Len(t, stored.Callouts[0].Points, 3, "фигура обязана вернуться целиком: её и рисовали")
+	require.True(t, stored.Callouts[0].Filled)
+	require.Equal(t, "плечо жмёт", stored.Callouts[1].Note.String)
+
+	// Круг замыкается: клиент возвращает прочитанное, и безымянная зона переживает пересохранение.
+	back := dto.ConvertEntityFittingToPb(stored).GetFitting()
+	require.Empty(t, back.GetCallouts()[0].GetNote())
+	again, err := dto.ConvertPbFittingInsertToEntity(back)
+	require.NoError(t, err, "прочитанное обязано сохраняться обратно без правок")
+	require.NoError(t, s.Fittings().UpdateFitting(ctx, fittingID, again, stored.LockVersion))
+
+	after, err := s.Fittings().GetFittingById(ctx, fittingID)
+	require.NoError(t, err)
+	require.Len(t, after.Callouts, 2)
+	require.Equal(t, entity.AnnotationKindPolygon, after.Callouts[0].Kind)
+	require.Len(t, after.Callouts[0].Points, 3)
+	require.False(t, after.Callouts[0].Note.Valid)
+}

@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -77,13 +78,13 @@ func TestConvertPbFittingInsertToEntity(t *testing.T) {
 
 	// invalid cases (incl. out-of-range enum values that must be rejected, not defaulted)
 	bad := map[string]*pb_common.FittingInsert{
-		"nil":                  nil,
-		"no anchor":            {ProductId: 0, FittingDate: date},
-		"no date":              {ProductId: 1},
-		"size id zero":         {ProductId: 1, FittingDate: date, Sizes: []*pb_common.FittingSizeInsert{{SizeId: 0}}},
-		"duplicate size":       {ProductId: 1, FittingDate: date, Sizes: []*pb_common.FittingSizeInsert{{SizeId: 4}, {SizeId: 4}}},
-		"bad status":  {ProductId: 1, FittingDate: date, Status: pb_common.FittingStatus(99)},
-		"bad verdict": {ProductId: 1, FittingDate: date, Verdict: pb_common.FittingVerdict(99)},
+		"nil":            nil,
+		"no anchor":      {ProductId: 0, FittingDate: date},
+		"no date":        {ProductId: 1},
+		"size id zero":   {ProductId: 1, FittingDate: date, Sizes: []*pb_common.FittingSizeInsert{{SizeId: 0}}},
+		"duplicate size": {ProductId: 1, FittingDate: date, Sizes: []*pb_common.FittingSizeInsert{{SizeId: 4}, {SizeId: 4}}},
+		"bad status":     {ProductId: 1, FittingDate: date, Status: pb_common.FittingStatus(99)},
+		"bad verdict":    {ProductId: 1, FittingDate: date, Verdict: pb_common.FittingVerdict(99)},
 	}
 	for name, in := range bad {
 		if _, err := ConvertPbFittingInsertToEntity(in); err == nil {
@@ -157,8 +158,9 @@ func TestFittingCalloutsRoundTrip(t *testing.T) {
 		t.Errorf("unanchored callout round-trip mismatch: %+v", pb.Fitting.Callouts[1])
 	}
 
+	pin := pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_PIN
 	bad := map[string]*pb_common.FittingInsert{
-		"note required":   {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Number: 1, Note: "  "}}},
+		"note required":   {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Number: 1, Note: "  ", Kind: &pin}}},
 		"note too long":   {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Number: 1, Note: string(make([]byte, maxTaskText+1))}}},
 		"negative number": {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Number: -1, Note: "x"}}},
 		"negative media":  {ProductId: 1, FittingDate: date, Callouts: []*pb_common.FittingCallout{{Note: "x", MediaId: -1}}},
@@ -168,5 +170,71 @@ func TestFittingCalloutsRoundTrip(t *testing.T) {
 		if _, err := ConvertPbFittingInsertToEntity(bi); err == nil {
 			t.Errorf("case %q: expected error, got nil", name)
 		}
+	}
+}
+
+// TestFittingCalloutNoteRequiredOnlyForPin: записка — содержание ПИНА, но не фигуры.
+//
+// Пока выноска была нумерованной точкой, требование записки у каждой было верным: точка без слов
+// не сообщает ничего. С появлением видов (0319) оно стало требованием подписи к предложению —
+// обведённая зона заломов уже сказала, что не так. Клиенту при таком сервере остаётся выбрасывать
+// безымянные фигуры перед отправкой, то есть терять нарисованное руками молча.
+func TestFittingCalloutNoteRequiredOnlyForPin(t *testing.T) {
+	date := timestamppb.New(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	kind := func(k pb_common.TechCardAnnotationKind) *pb_common.TechCardAnnotationKind { return &k }
+	pt := func(x, y string) *pb_common.TechCardAnnotationPoint {
+		return &pb_common.TechCardAnnotationPoint{
+			X: &pb_decimal.Decimal{Value: x}, Y: &pb_decimal.Decimal{Value: y},
+		}
+	}
+
+	// Фигуры без единого слова — законны, и содержание у них своё.
+	ok := []*pb_common.FittingCallout{
+		{Number: 1, Kind: kind(pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON),
+			Points: []*pb_common.TechCardAnnotationPoint{pt("0.1", "0.1"), pt("0.4", "0.1"), pt("0.4", "0.4")}, Filled: true},
+		{Number: 2, Kind: kind(pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_ARC),
+			Points: []*pb_common.TechCardAnnotationPoint{pt("0.3", "0.2"), pt("0.4", "0.3"), pt("0.5", "0.2")}},
+		{Number: 3, Kind: kind(pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_DIM),
+			Points: []*pb_common.TechCardAnnotationPoint{pt("0.2", "0.5"), pt("0.6", "0.5")}, Note: "   "},
+	}
+	got, err := ConvertPbFittingInsertToEntity(&pb_common.FittingInsert{
+		ProductId: 1, FittingDate: date, Callouts: ok,
+	})
+	if err != nil {
+		t.Fatalf("фигура без текста обязана сохраняться: %v", err)
+	}
+	if len(got.Callouts) != 3 {
+		t.Fatalf("callouts not parsed: %+v", got.Callouts)
+	}
+	for i, c := range got.Callouts {
+		if c.Note.Valid {
+			t.Errorf("callout[%d]: пустая записка обязана лечь NULL, а не пустой строкой: %+v", i, c.Note)
+		}
+	}
+
+	// А ПИН без слов — по-прежнему пустое место, и отказ обязан назвать строку.
+	_, err = ConvertPbFittingInsertToEntity(&pb_common.FittingInsert{
+		ProductId: 1, FittingDate: date,
+		Callouts: []*pb_common.FittingCallout{
+			{Number: 1, Note: "плечо жмёт", Kind: kind(pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_PIN)},
+			{Number: 2, Kind: kind(pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_PIN)},
+		},
+	})
+	if err == nil {
+		t.Fatal("пин без записки не сообщает ничего: отказ обязателен")
+	}
+	var ve *entity.ValidationError
+	if !errors.As(err, &ve) || ve.Field != "callouts[1].note" {
+		t.Errorf("отказ обязан назвать выноску (callouts[1].note), получено: %v", err)
+	}
+
+	// ВКЛАДКА СО СТАРЫМ БАНДЛОМ про вид молчит, а её выноска на сервере запросто зона: требовать с
+	// неё записку значило бы отвергнуть всю примерку за фигуру, которую сервер сейчас же и вернёт
+	// переносом.
+	if _, err := ConvertPbFittingInsertToEntity(&pb_common.FittingInsert{
+		ProductId: 1, FittingDate: date,
+		Callouts: []*pb_common.FittingCallout{{Number: 1}},
+	}); err != nil {
+		t.Errorf("молчание про вид — не заявление о содержании: %v", err)
 	}
 }
