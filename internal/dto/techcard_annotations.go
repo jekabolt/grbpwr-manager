@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -85,33 +86,53 @@ var annotationColorToPb = map[entity.TechCardAnnotationColor]pb_common.TechCardA
 var zero = decimal.Zero
 var one = decimal.NewFromInt(1)
 
-// unitInterval разбирает нормализованную координату. Пусто = 0: у точки в левом верхнем углу
-// координата законно нулевая, и отличать «не прислали» от «прислали ноль» здесь нечем и незачем.
-func unitInterval(field string, d *pb_decimal.Decimal) (decimal.Decimal, error) {
+// unitIntervalNull разбирает нормализованную координату, СОХРАНЯЯ отсутствие: у якоря фигуры пусто
+// означает ноль, а у маркера выноски — NULL в колонке, и схлопывать одно в другое нельзя.
+//
+// ОДНА ОХРАНЯЕМАЯ ПРОВЕРКА НА ОБЕ КООРДИНАТЫ ВЫНОСКИ. Раньше якоря шли сюда, а pos_x/pos_y ТОЙ ЖЕ
+// выноски — через безохранный validateUnitInterval, который сравнивает decimal с границами напрямую.
+// Защита от показателя степени (см. maxCoordinateScale) обходилась соседним полем: «1e-10000000» в
+// координате МАРКЕРА давало ровно тот рескейл, ради которого предел и заводился. Дыра была и на
+// карточной выноске; обе координаты обеих выносок теперь читаются здесь.
+func unitIntervalNull(field string, d *pb_decimal.Decimal) (decimal.NullDecimal, error) {
+	var none decimal.NullDecimal
 	nd, err := nullDecimalFromPb(d)
 	if err != nil {
-		return decimal.Decimal{}, entity.NewFieldViolation(field, "invalid_decimal", "",
+		return none, entity.NewFieldViolation(field, "invalid_decimal", "",
 			"координата выноски — доля кадра от 0 до 1")
 	}
 	if !nd.Valid {
-		return zero, nil
+		return none, nil
 	}
 	// ПОРЯДОК ЗДЕСЬ — ЧАСТЬ ЗАЩИТЫ. Экспонента проверяется ПОСЛЕ разбора строки, но ДО сравнения с
 	// границами кадра: разбор дёшев (он кладёт коэффициент и показатель, ничего не считая), а
 	// дорого именно сравнение. Округлить вместо отказа НЕЛЬЗЯ — rescale на показателе -10000000 и
 	// есть тот самый взрыв, от которого мы защищаемся.
 	if exp := nd.Decimal.Exponent(); exp < -maxCoordinateScale {
-		return decimal.Decimal{}, entity.NewFieldViolation(field, "too_precise", coordSample(d.Value),
+		return none, entity.NewFieldViolation(field, "too_precise", coordSample(d.Value),
 			fmt.Sprintf("координата выноски — доля кадра, не больше %d знаков после запятой: точнее снимок ничего не различает", maxCoordinateScale))
 	} else if exp > 0 {
 		// Показатель степени сам по себе не преступление, но координата, записанная им, у нас
 		// всегда либо ноль, либо вне кадра — а стоит такое сравнение дороже всей конвертации.
-		return decimal.Decimal{}, entity.NewFieldViolation(field, "bad_scale", coordSample(d.Value),
+		return none, entity.NewFieldViolation(field, "bad_scale", coordSample(d.Value),
 			"координата выноски записывается обычной дробью от 0 до 1, а не показателем степени")
 	}
 	if nd.Decimal.LessThan(zero) || nd.Decimal.GreaterThan(one) {
-		return decimal.Decimal{}, entity.NewFieldViolation(field, "out_of_frame", nd.Decimal.String(),
+		return none, entity.NewFieldViolation(field, "out_of_frame", nd.Decimal.String(),
 			"координата выноски — доля кадра от 0 до 1: точка вне снимка ничего не указывает")
+	}
+	return nd, nil
+}
+
+// unitInterval разбирает нормализованную координату ЯКОРЯ. Пусто = 0: у точки в левом верхнем углу
+// координата законно нулевая, и отличать «не прислали» от «прислали ноль» здесь нечем и незачем.
+func unitInterval(field string, d *pb_decimal.Decimal) (decimal.Decimal, error) {
+	nd, err := unitIntervalNull(field, d)
+	if err != nil {
+		return decimal.Decimal{}, err
+	}
+	if !nd.Valid {
+		return zero, nil
 	}
 	return nd.Decimal, nil
 }
@@ -334,18 +355,25 @@ func annotationPieceKeys(path string, list []string, legacy string) ([]string, e
 	return out, nil
 }
 
-// --- геометрия КАРТОЧНОЙ выноски ---------------------------------------------------------------
+// --- геометрия НУМЕРОВАННОЙ выноски -------------------------------------------------------------
 //
-// Тот же словарь видов и те же правила числа точек, что у выноски на снимке шага, — с одним
-// отличием, и оно принципиально: у карточной выноски НУМЕРОВАННЫЙ МАРКЕР живёт отдельно, в
-// pos_x/pos_y, потому что на него ссылаются номером деталь, операция и дефект. Поэтому `points`
-// здесь держит ТОЛЬКО якоря фигуры, и у пина их ноль, а не один: единственная точка пина — это и
-// есть маркер, и дублировать её в якорях значило бы завести два места для одной координаты,
+// ОДИН свод на ОБЕ выноски — карточную (0309/0310) и примерочную (0319). Тот же словарь видов и те
+// же правила числа точек, что у выноски на снимке шага, — с одним отличием, и оно принципиально: у
+// нумерованной выноски МАРКЕР живёт отдельно, в pos_x/pos_y, потому что на него ссылаются НОМЕРОМ
+// (на карточке — деталь, операция и дефект; на примерке — замечание change-request). Поэтому
+// `points` здесь держит ТОЛЬКО якоря фигуры, и у пина их ноль, а не один: единственная точка пина —
+// это и есть маркер, и дублировать её в якорях значило бы завести два места для одной координаты,
 // которые однажды разойдутся.
+//
+// ВТОРОГО ВАЛИДАТОРА НЕТ И БЫТЬ НЕ ДОЛЖНО. Правил тут пять (вид из закрытого списка, число точек по
+// виду, координата в кадре и не длиннее шести знаков, цвет из закрытого списка, согласованность
+// пунктира со штриховкой), и разойдясь хоть в одном, два экрана начали бы принимать разные фигуры
+// под одним именем — притом молча, потому что расхождение видно только на переносе замечания
+// примерки в тех-карту.
 
-// calloutKindOrPin читает вид ХРАНИМОЙ выноски. Пусто = pin: колонка появилась в 0309 с этим
-// дефолтом, но ряд читателей (архивные снапшоты релизов, клон сезона) отдают сущность в обход
-// колонки, и там поле остаётся нулевой строкой.
+// calloutKindOrPin читает вид ХРАНИМОЙ выноски. Пусто = pin: колонка появилась в 0309 (у примерки —
+// в 0319) с этим дефолтом, но ряд читателей (архивные снапшоты релизов, клон сезона) отдают сущность
+// в обход колонки, и там поле остаётся нулевой строкой.
 func calloutKindOrPin(k entity.TechCardAnnotationKind) entity.TechCardAnnotationKind {
 	if k == "" {
 		return entity.AnnotationKindPin
@@ -361,10 +389,7 @@ func calloutPointsAllowed(k entity.TechCardAnnotationKind) (min, max int, ok boo
 	return k.PointsAllowed()
 }
 
-// calloutGeometryFromPb разбирает вид, якоря и цвет карточной выноски. `path` — путь для отказов
-// («callouts[3]»). Отсутствие вида читается как PIN: весь массив живых карточек написан до этого
-// поля и приезжает с нулевым энумом, и трактовать его отказом значило бы отвергнуть каждую.
-// calloutGeometry — разобранная фигура карточного указания. Структурой, а не пятью возвратами:
+// calloutGeometry — разобранная фигура нумерованного указания. Структурой, а не пятью возвратами:
 // группа атомарна (см. proto), и пять значений подряд в сигнатуре — приглашение перепутать их
 // местами на следующем добавленном поле.
 type calloutGeometry struct {
@@ -375,7 +400,43 @@ type calloutGeometry struct {
 	Filled bool
 }
 
-func calloutGeometryFromPb(path string, c *pb_common.TechCardCallout) (calloutGeometry, error) {
+// calloutGeometryPb — та же группа, как она приезжает С ПРОВОДА. Аргументом-структурой, а не
+// конкретным сообщением: полей у карточной выноски и у выноски примерки разное число, а ФИГУРА у
+// них одна, и валидатор обязан видеть ровно фигуру. Так же он не сможет случайно опереться на
+// поле, которого у второй выноски нет.
+type calloutGeometryPb struct {
+	Kind   *pb_common.TechCardAnnotationKind
+	Points []*pb_common.TechCardAnnotationPoint
+	Color  pb_common.TechCardAnnotationColor
+	Dashed bool
+	Filled bool
+}
+
+// techCardCalloutGeometryPb / fittingCalloutGeometryPb — снимок группы с конкретного сообщения.
+// Две строчки на переходник вместо второго валидатора.
+func techCardCalloutGeometryPb(c *pb_common.TechCardCallout) calloutGeometryPb {
+	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled}
+}
+
+func fittingCalloutGeometryPb(c *pb_common.FittingCallout) calloutGeometryPb {
+	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled}
+}
+
+// calloutGeometryFromPb разбирает вид, якоря и цвет нумерованной выноски — карточной или
+// примерочной. `path` — путь для отказов («callouts[3]»). Отсутствие вида читается как PIN: весь
+// массив живых карточек и примерок написан до этого поля и приезжает с нулевым энумом, и трактовать
+// его отказом значило бы отвергнуть каждую.
+//
+// ДВЕ ИЗВЕСТНЫЕ ЩЕЛИ, ОСТАВЛЕННЫЕ НАМЕРЕННО — обе одинаковы у карточки и у примерки, и лечить их
+// на одном экране значило бы развести поведение двух половин одного примитива:
+//
+//   - REST-гейтвей позволяет прислать `kind` ЯВНЫМ нулевым значением. Для proto3 optional это
+//     присутствие, то есть контракт «молчание ⇒ перенос» такой запрос обходит и схлопывает фигуру в
+//     точку. Живёт на проде у тех-карты с 0309; расхождение было бы хуже самой щели.
+//   - Сущность, собранная в обход dto (клон сезона, архивный снапшот), может нести вид без
+//     согласованного числа якорей: стор форму не сверяет и запишет как есть, а следующее сохранение
+//     через dto такую выноску отвергнет. Симметрично тех-карте.
+func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, error) {
 	var zeroGeom calloutGeometry
 	kindPb, pointsPb, colorPb := c.Kind, c.Points, c.Color
 	kind := entity.AnnotationKindPin
@@ -389,8 +450,10 @@ func calloutGeometryFromPb(path string, c *pb_common.TechCardCallout) (calloutGe
 	}
 	min, max, _ := calloutPointsAllowed(kind)
 	if len(pointsPb) < min || len(pointsPb) > max {
+		// Слова отказа НЕЙТРАЛЬНЫ к экрану: тот же валидатор отвечает и про эскиз карточки, и про
+		// снимок примерки, а путь (`callouts[3].points`) и так называет место точнее любого слова.
 		return zeroGeom, entity.NewFieldViolation(path+".points", "wrong_count", fmt.Sprint(len(pointsPb)),
-			fmt.Sprintf("«%s» на эскизе рисуется по %s якорям (номерной маркер стоит отдельно)", kind, pointsRangeText(min, max)))
+			fmt.Sprintf("«%s» рисуется по %s якорям (нумерованный маркер стоит отдельно)", kind, pointsRangeText(min, max)))
 	}
 	points := make([]entity.TechCardAnnotationPoint, 0, len(pointsPb))
 	for k, p := range pointsPb {
@@ -504,6 +567,107 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		tc.Callouts[i].Dashed = prev.Dashed
 		tc.Callouts[i].Filled = prev.Filled
 	}
+}
+
+// FittingCalloutGeometryOmitted — говорит ли payload про геометрию хоть одной выноски. Существует
+// затем, чтобы UpdateFitting не платил лишним чтением всей примерки за каждое сохранение НОВОГО
+// клиента: тот шлёт вид всегда, и переносить ему нечего.
+func FittingCalloutGeometryOmitted(f *entity.FittingInsert) bool {
+	if f == nil {
+		return false
+	}
+	for _, c := range f.Callouts {
+		if c.KindOmitted {
+			return true
+		}
+	}
+	return false
+}
+
+// CarryOmittedFittingCalloutGeometry — то же самое для примерки, и по той же причине: выноски
+// сохраняются ПОЛНОЙ ЗАМЕНОЙ, и вкладка со старым бандлом, изменившая один только вердикт, стёрла бы
+// каждую мерку и каждую обведённую зону на всех снимках.
+//
+// НО ТОЖДЕСТВО ЗДЕСЬ СТРОЖЕ, ЧЕМ У ТЕХ-КАРТЫ, И ЭТО НЕ РАЗНОБОЙ, КОТОРЫЙ НАДО «ПРИВЕСТИ К
+// ЕДИНООБРАЗИЮ». Номер выноску не опознаёт: он выдаётся как max+1, поэтому удаление ПОСЛЕДНЕЙ
+// заметки и заведение новой переиспользует освободившееся число, а удаление первой сдвигает
+// нумерацию остальных. Перенос по одному лишь номеру тогда не теряет фигуру, а ПОДМЕНЯЕТ её:
+// на записку «плечо жмёт» записался бы вид dim с двумя чужими якорями и пунктиром. Строка выходит
+// внутренне согласованной — стор нормализует только пустой вид и число точек не сверяет, — поэтому
+// новый клиент нарисует размерную линию там, где человек ничего не рисовал.
+//
+// У тех-карты этот же промах ловится протухшей подписью DESIGN: отпечаток секции сдвигается, и
+// карточка кричит «изменено с момента утверждения». У примерки подписи нет и журнала нет — подмена
+// осталась бы тихой и навсегда. Поэтому геометрия принадлежит КОНКРЕТНОМУ МАРКЕРУ НА КОНКРЕТНОМ
+// СНИМКЕ: сходятся номер, media_id и обе координаты — переносим; не сходятся — переноса нет.
+//
+// ПОТЕРЯ ЧЕСТНЕЕ ПОДМЕНЫ: стёртую фигуру человек видит и рисует заново, выдуманную — принимает за
+// свою.
+func CarryOmittedFittingCalloutGeometry(stored *entity.Fitting, f *entity.FittingInsert) {
+	if stored == nil || f == nil || len(f.Callouts) == 0 {
+		return
+	}
+	// Повторяющиеся номера В ПРИСЛАННОМ выбывают из переноса целиком. Уникальности номера нет ни в
+	// схеме, ни в проверках (ноль законен), а старый бандл легко шлёт несколько выносок без номера
+	// вовсе: все они претендовали бы на одну и ту же хранимую фигуру, и как минимум одна получила
+	// бы чужую. Отказом на это отвечать нельзя — отказ на сохранении примерки, которую нечем
+	// починить из интерфейса, дороже потерянной фигуры.
+	seen := make(map[int]int, len(f.Callouts))
+	for _, c := range f.Callouts {
+		seen[c.Number]++
+	}
+	for i := range f.Callouts {
+		if !f.Callouts[i].KindOmitted || seen[f.Callouts[i].Number] > 1 {
+			continue
+		}
+		prev, ok := matchStoredFittingCallout(stored.Callouts, f.Callouts[i])
+		if !ok {
+			continue
+		}
+		f.Callouts[i].Kind = calloutKindOrPin(prev.Kind)
+		f.Callouts[i].Points = prev.Points
+		f.Callouts[i].Color = prev.Color
+		// Пунктир и штриховка в той же группе: молчание про вид — молчание про ВСЁ, что описывает
+		// фигуру.
+		f.Callouts[i].Dashed = prev.Dashed
+		f.Callouts[i].Filled = prev.Filled
+	}
+}
+
+// matchStoredFittingCallout ищет ХРАНИМУЮ выноску, тождественную присланной: тот же номер, тот же
+// снимок и тот же маркер на нём. Первая подошедшая выигрывает — на четырёх совпавших полях две
+// хранимые строки различить нечем, и выбор обязан быть детерминированным, иначе одно и то же
+// сохранение дважды дало бы разные фигуры.
+//
+// Координаты сравниваются ЧИСЛЕННО, а не строками: колонка DECIMAL(5,4) возвращает «0.2000», а с
+// провода приезжает «0.2», и сравнение представлений отменило бы перенос вообще всегда — то есть
+// фича молча превратилась бы в «геометрия теряется при любом сохранении старым клиентом».
+func matchStoredFittingCallout(stored []entity.FittingCallout, want entity.FittingCallout) (entity.FittingCallout, bool) {
+	for _, c := range stored {
+		if c.Number == want.Number &&
+			sameNullInt32(c.MediaId, want.MediaId) &&
+			sameNullDecimal(c.PosX, want.PosX) &&
+			sameNullDecimal(c.PosY, want.PosY) {
+			return c, true
+		}
+	}
+	return entity.FittingCallout{}, false
+}
+
+// sameNullInt32 / sameNullDecimal — равенство С УЧЁТОМ отсутствия: «не привязана к снимку» и
+// «привязана к снимку 7» это разные выноски, а два «не привязана» — одна и та же.
+func sameNullInt32(a, b sql.NullInt32) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	return !a.Valid || a.Int32 == b.Int32
+}
+
+func sameNullDecimal(a, b decimal.NullDecimal) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	return !a.Valid || a.Decimal.Equal(b.Decimal)
 }
 
 // calloutPartsToPb — список деталей ХРАНИМОГО указания. Пустой список у записанного до 0310
