@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -61,9 +62,10 @@ Answer with the formatted markdown document and nothing else: no code fence wrap
 // is also why this RPC legitimately stands outside the visibility-predicate points.
 //
 // Degradation: no API key → FailedPrecondition (the beta default); text over the rune cap →
-// InvalidArgument before any call is made; transport/API failure → Unavailable; an empty answer
-// from the model → Internal. The provider's raw error text never leaves the server — it is
-// logged, and the caller gets a stable sentence it can show a human.
+// InvalidArgument before any call is made; too many calls in flight → ResourceExhausted, again
+// before any call is made; transport/API failure → Unavailable; an empty answer OR one too long to
+// save → Internal. The provider's raw error text never leaves the server — it is logged, and the
+// caller gets a stable sentence it can show a human.
 func (s *Server) FormatLibraryNoteMarkdown(
 	ctx context.Context,
 	req *pb_admin.FormatLibraryNoteMarkdownRequest,
@@ -84,6 +86,21 @@ func (s *Server) FormatLibraryNoteMarkdown(
 		return nil, status.Errorf(codes.InvalidArgument,
 			"text is longer than the assistant takes in one go (%d characters, limit %d) — format a selection instead",
 			inRunes, maxNoteFormatRunes)
+	}
+
+	// СЕМАФОР, И ОН ЗДЕСЬ НЕ ФОРМАЛЬНОСТЬ. Всё, что стоит выше, — проверки самого запроса; ниже
+	// начинается вызов платного третьего лица, который держит горутину до 60 с. files:write есть у
+	// всех, кто вообще работает с библиотекой, потолок ввода в рунах не мешает слать 12 000 рун
+	// сколько угодно раз, и без этой двери одна вкладка с циклом превращается и в рост горутин, и в
+	// счёт от провайдера. Форма списана с campaignTestSem — отказ немедленный, а не очередь:
+	// человек, ждущий подсказки по форматированию, предпочтёт «попробуйте через минуту» минуте
+	// молчания.
+	select {
+	case s.noteFormatSem <- struct{}{}:
+		defer func() { <-s.noteFormatSem }()
+	default:
+		return nil, status.Error(codes.ResourceExhausted,
+			"the markdown assistant is busy right now — try again in a moment")
 	}
 
 	started := time.Now()
@@ -111,6 +128,20 @@ func (s *Server) FormatLibraryNoteMarkdown(
 		slog.Default().ErrorContext(ctx, "note markdown formatting returned an empty document",
 			slog.Int("in_runes", inRunes), slog.Duration("took", took))
 		return nil, status.Error(codes.Internal, "the assistant returned nothing to show — try again")
+	}
+	// ПОТОЛОК НА ОТВЕТ, И ОН СВЕРЯЕТСЯ С ТЕМ ЖЕ ЧИСЛОМ, ЧТО И СОХРАНЕНИЕ (entity.MaxLibraryNoteBytes,
+	// через который идёт dto.ValidateLibraryNoteContent). На входе стоит потолок в РУНАХ, на записи —
+	// в БАЙТАХ, и модель, дописавшая разметку, легко выдаёт документ, который принять уже нельзя.
+	// Отдать такой ответ значило бы: клиент заменяет буфер редактора, человек видит красивый текст —
+	// и получает отказ на сохранении, потеряв то, что было в буфере до подсказки. Поэтому отказ
+	// ЗДЕСЬ, до того как ответ уехал, и словами о том, что делать дальше.
+	if len(formatted) > entity.MaxLibraryNoteBytes {
+		slog.Default().ErrorContext(ctx, "note markdown formatting returned an unsavable document",
+			slog.Int("in_runes", inRunes), slog.Int("out_bytes", len(formatted)),
+			slog.Duration("took", took))
+		return nil, status.Errorf(codes.Internal,
+			"the assistant returned more text than a note can hold (%d bytes, limit %d) — format a smaller fragment",
+			len(formatted), entity.MaxLibraryNoteBytes)
 	}
 
 	slog.Default().InfoContext(ctx, "formatted library note markdown",

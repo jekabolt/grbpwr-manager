@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/require"
@@ -56,6 +58,13 @@ func newFakeOpenRouter(t *testing.T, reply func(w http.ResponseWriter)) (*openro
 	return openrouter.New(openrouter.Config{APIKey: "test-key", BaseURL: srv.URL}), &calls
 }
 
+// newNoteFormatServer собирает Server так же, как его собирает New: с семафором. Голый
+// &Server{aiOps: ...} здесь больше не годится, и это НАМЕРЕННО — семафор не nil-safe, потому что
+// nil-канал молча снял бы потолок, а не назвал бы отсутствие сборки.
+func newNoteFormatServer(client *openrouter.Client) *Server {
+	return &Server{aiOps: client, noteFormatSem: make(chan struct{}, maxConcurrentNoteFormats)}
+}
+
 // orReplyWithContent serves one well-formed completion carrying the given assistant message.
 func orReplyWithContent(content string) func(http.ResponseWriter) {
 	return func(w http.ResponseWriter) {
@@ -91,7 +100,7 @@ func TestFormatLibraryNoteMarkdownNotConfigured(t *testing.T) {
 // without a request leaving the process.
 func TestFormatLibraryNoteMarkdownRuneCap(t *testing.T) {
 	client, calls := newFakeOpenRouter(t, orReplyWithContent("# ок"))
-	s := &Server{aiOps: client}
+	s := newNoteFormatServer(client)
 
 	atCap := strings.Repeat("я", maxNoteFormatRunes)
 	require.Len(t, []byte(atCap), 2*maxNoteFormatRunes, "the fixture must be multi-byte, else the test proves nothing")
@@ -113,7 +122,7 @@ func TestFormatLibraryNoteMarkdownRuneCap(t *testing.T) {
 // TestFormatLibraryNoteMarkdownEmptyContent: nothing to format is a caller error, not a model call.
 func TestFormatLibraryNoteMarkdownEmptyContent(t *testing.T) {
 	client, calls := newFakeOpenRouter(t, orReplyWithContent("# ок"))
-	s := &Server{aiOps: client}
+	s := newNoteFormatServer(client)
 
 	for _, content := range []string{"", "   \n\t "} {
 		resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
@@ -129,7 +138,7 @@ func TestFormatLibraryNoteMarkdownEmptyContent(t *testing.T) {
 // the answer must be a markdown document, not a JSON envelope.
 func TestFormatLibraryNoteMarkdownSendsOnlyTheText(t *testing.T) {
 	client, calls := newFakeOpenRouter(t, orReplyWithContent("# заголовок\n\nтекст"))
-	s := &Server{aiOps: client}
+	s := newNoteFormatServer(client)
 
 	const note = "заголовок\n\nтекст про ткань\n- пункт"
 	resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
@@ -148,7 +157,7 @@ func TestFormatLibraryNoteMarkdownSendsOnlyTheText(t *testing.T) {
 // otherwise hand back a note that is one giant code block.
 func TestFormatLibraryNoteMarkdownUnwrapsFence(t *testing.T) {
 	client, _ := newFakeOpenRouter(t, orReplyWithContent("```markdown\n# заголовок\n\nтекст\n```"))
-	s := &Server{aiOps: client}
+	s := newNoteFormatServer(client)
 
 	resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
 		&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "заголовок\n\nтекст"})
@@ -163,7 +172,7 @@ func TestFormatLibraryNoteMarkdownUpstreamFailure(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":{"message":"upstream provider exploded: key sk-secret-123"}}`))
 	})
-	s := &Server{aiOps: client}
+	s := newNoteFormatServer(client)
 
 	resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
 		&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
@@ -186,13 +195,88 @@ func TestFormatLibraryNoteMarkdownEmptyAnswer(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			client, _ := newFakeOpenRouter(t, reply)
-			s := &Server{aiOps: client}
+			s := newNoteFormatServer(client)
 			resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
 				&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
 			require.Nil(t, resp)
 			require.Equal(t, codes.Internal, status.Code(err))
 		})
 	}
+}
+
+// TestFormatLibraryNoteMarkdownIsBounded — ДВЕ ДВЕРИ, КОТОРЫХ У Ф9 НЕ БЫЛО.
+//
+// Обе про одно: RPC — это неограниченный прокси к платной модели, доступный каждому с files:write.
+//
+//  1. СЕМАФОР. Пока потолок занят, следующий вызов отбивается НЕМЕДЛЕННО и не доходит до модели.
+//     Проверяется именно это (модель не увидела запроса), а не только код ответа: очередь вместо
+//     отказа означала бы, что горутины всё равно копятся, просто молча.
+//  2. ПОТОЛОК НА ОТВЕТ. Модель может вернуть текст, который сохранить уже нельзя
+//     (entity.MaxLibraryNoteBytes). Отдать такой ответ значит: клиент заменил буфер редактора,
+//     человек увидел результат — и потерял его на отказе сохранения. Отказ обязан случиться ДО
+//     того, как ответ уехал.
+func TestFormatLibraryNoteMarkdownIsBounded(t *testing.T) {
+	t.Run("семафор отбивает лишний вызов, не доводя его до модели", func(t *testing.T) {
+		client, calls := newFakeOpenRouter(t, orReplyWithContent("# ок"))
+		s := newNoteFormatServer(client)
+		// Потолок выбран целиком: занимаем все места, как это делают живые запросы.
+		for range maxConcurrentNoteFormats {
+			s.noteFormatSem <- struct{}{}
+		}
+
+		resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		require.Nil(t, resp)
+		require.Equal(t, codes.ResourceExhausted, status.Code(err))
+		require.Empty(t, *calls, "отбитый по семафору вызов не имеет права дойти до провайдера")
+
+		// Место освободилось — следующий проходит: это потолок, а не выключатель.
+		<-s.noteFormatSem
+		resp, err = s.FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		require.NoError(t, err)
+		require.Equal(t, "# ок", resp.GetContent())
+		require.Len(t, *calls, 1)
+	})
+
+	t.Run("нил-семафор отказывает, а не снимает потолок", func(t *testing.T) {
+		// Server, собранный мимо New, обязан отвечать отказом: тихая работа без потолка — это
+		// ровно та половина механики, которая выглядит рабочей.
+		client, calls := newFakeOpenRouter(t, orReplyWithContent("# ок"))
+		resp, err := (&Server{aiOps: client}).FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		require.Nil(t, resp)
+		require.Equal(t, codes.ResourceExhausted, status.Code(err))
+		require.Empty(t, *calls)
+	})
+
+	t.Run("ответ длиннее заметки отвергается до того, как уедет клиенту", func(t *testing.T) {
+		tooLong := strings.Repeat("я", entity.MaxLibraryNoteBytes) // кириллица: 2 байта на символ
+		require.Greater(t, len(tooLong), entity.MaxLibraryNoteBytes)
+		client, _ := newFakeOpenRouter(t, orReplyWithContent(tooLong))
+		s := newNoteFormatServer(client)
+
+		resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "коротко"})
+		require.Nil(t, resp, "ответ, который нельзя сохранить, не имеет права доехать до редактора")
+		require.Equal(t, codes.Internal, status.Code(err))
+		require.Contains(t, status.Convert(err).Message(), "more text than a note can hold")
+
+		// Ровно на пределе — проходит: потолок отвергает то, что БОЛЬШЕ, а не то, что «около».
+		atCap := strings.Repeat("a", entity.MaxLibraryNoteBytes)
+		client, _ = newFakeOpenRouter(t, orReplyWithContent(atCap))
+		resp, err = newNoteFormatServer(client).FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "коротко"})
+		require.NoError(t, err)
+		require.Len(t, []byte(resp.GetContent()), entity.MaxLibraryNoteBytes)
+	})
+
+	t.Run("предел ответа — то же число, что и у сохранения", func(t *testing.T) {
+		// Разъехавшиеся числа означали бы ответ, который проходит здесь и падает на записи, — то
+		// есть ровно тот сценарий, ради которого проверка и заведена.
+		require.NoError(t, dto.ValidateLibraryNoteContent(strings.Repeat("a", entity.MaxLibraryNoteBytes)))
+		require.Error(t, dto.ValidateLibraryNoteContent(strings.Repeat("a", entity.MaxLibraryNoteBytes+1)))
+	})
 }
 
 // TestStripWrappingCodeFence pins where unwrapping stops: only a true wrapper is removed, and real

@@ -31,6 +31,15 @@ import (
 const maxConcurrentRevalidations = 4
 const maxConcurrentCampaignTestSends = 2
 
+// maxConcurrentNoteFormats bounds how many markdown-assistant calls may be in flight at once
+// (FormatLibraryNoteMarkdown). Same shape as maxConcurrentCampaignTestSends, and for a stronger
+// reason: that RPC is an unbounded proxy to a paid third party. Everybody who works with the
+// library holds files:write, each call may carry 12 000 runes and parks a goroutine on an upstream
+// request for up to 60 s, and nothing else in the path costs the caller anything. Four is a real
+// team formatting notes at the same time; a fifth waits a moment rather than the process growing
+// goroutines and the account growing a bill.
+const maxConcurrentNoteFormats = 4
+
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
@@ -88,6 +97,10 @@ type Server struct {
 	// OpenRouter (#66). It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so
 	// GenerateTechCardOperations degrades to a clear FailedPrecondition instead of failing.
 	aiOps *openrouter.Client
+	// noteFormatSem bounds concurrent markdown-assistant calls. NOT nil-safe on purpose: a nil
+	// channel makes the acquire fall to its default branch, so a Server built without this field
+	// refuses the RPC loudly instead of silently running with no ceiling at all.
+	noteFormatSem chan struct{}
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.
 	// Zero (unconfigured) → ExportJpkV7M returns FailedPrecondition instead of an invalid filing.
 	jpkTaxpayer jpk.Taxpayer
@@ -140,6 +153,7 @@ func New(
 		defectNormalLossRate: defectNormalLossRate,
 		embedAllowedHosts:    parseEmbedAllowedHosts(embedAllowedHosts),
 		aiOps:                aiOps,
+		noteFormatSem:        make(chan struct{}, maxConcurrentNoteFormats),
 		jpkTaxpayer:          jpkTaxpayer,
 	}, nil
 }
