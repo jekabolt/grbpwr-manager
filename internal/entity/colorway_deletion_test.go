@@ -66,7 +66,7 @@ func TestClassifyColorwayDeletion_EachOwnerBoundaryFactBlocksAlone(t *testing.T)
 			f.Runs = []ColorwayRunRef{{ID: 12, Status: "draft"}}
 		}, ColorwayBlockerProductionRun},
 		{"lay", func(f *ColorwayDeletionFacts) {
-			f.Lays = []ColorwayLayRef{{ID: 3, RunID: 12, Name: "основной"}}
+			f.Lays = []ColorwayLayRef{{ID: 3, RunID: 12, Name: "main"}}
 		}, ColorwayBlockerLay},
 		{"stock", func(f *ColorwayDeletionFacts) { f.StockUnits = 2 }, ColorwayBlockerStock},
 	}
@@ -97,21 +97,21 @@ func TestClassifyColorwayDeletion_DraftRunBlocksAndIsNamedAsDraft(t *testing.T) 
 	if !strings.Contains(e.Text, "#12") {
 		t.Errorf("blocker must name the run number, got %q", e.Text)
 	}
-	if !strings.Contains(e.Text, "черновик") {
+	if !strings.Contains(e.Text, "draft") {
 		t.Errorf("blocker must say the run is a draft, got %q", e.Text)
 	}
 }
 
 // Отказ называет ОБЪЕКТ, а не таблицу, и делает это для каждого статуса словаря.
-func TestClassifyColorwayDeletion_RunStatusesAreNamedInRussian(t *testing.T) {
+func TestClassifyColorwayDeletion_RunStatusesAreNamedInWords(t *testing.T) {
 	want := map[string]string{
-		"draft":              "черновик",
-		"planned":            "запланирована",
-		"in_progress":        "в производстве",
-		"partially_received": "частично принята",
-		"received":           "принята",
-		"closed":             "закрыта",
-		"cancelled":          "отменена",
+		"draft":              "draft",
+		"planned":            "planned",
+		"in_progress":        "in progress",
+		"partially_received": "partially received",
+		"received":           "received",
+		"closed":             "closed",
+		"cancelled":          "cancelled",
 	}
 	for status, label := range want {
 		v := ClassifyColorwayDeletion(factsOf(func(f *ColorwayDeletionFacts) {
@@ -136,7 +136,7 @@ func TestClassifyColorwayDeletion_RunStatusesAreNamedInRussian(t *testing.T) {
 func TestClassifyColorwayDeletion_LaysAreNamed(t *testing.T) {
 	v := ClassifyColorwayDeletion(factsOf(func(f *ColorwayDeletionFacts) {
 		f.Lays = []ColorwayLayRef{
-			{ID: 1, RunID: 12, Name: "основной"},
+			{ID: 1, RunID: 12, Name: "main"},
 			{ID: 2, RunID: 12},
 		}
 	}))
@@ -144,10 +144,10 @@ func TestClassifyColorwayDeletion_LaysAreNamed(t *testing.T) {
 	if e.Count != 2 {
 		t.Errorf("count = %d, want 2", e.Count)
 	}
-	if !strings.Contains(e.Text, "«основной»") {
+	if !strings.Contains(e.Text, "“main”") {
 		t.Errorf("named lay must be quoted by name, got %q", e.Text)
 	}
-	if !strings.Contains(e.Text, "безымянном настиле партии #12") {
+	if !strings.Contains(e.Text, "an unnamed lay of run #12") {
 		t.Errorf("unnamed lay must fall back to its run, got %q", e.Text)
 	}
 }
@@ -163,8 +163,8 @@ func TestClassifyColorwayDeletion_LongObjectListIsTruncated(t *testing.T) {
 	if e.Count != 9 {
 		t.Errorf("count must stay honest at 9, got %d", e.Count)
 	}
-	if !strings.Contains(e.Text, "и ещё 4") {
-		t.Errorf("tail must be folded into «и ещё 4», got %q", e.Text)
+	if !strings.Contains(e.Text, "and 4 more") {
+		t.Errorf("tail must be folded into “and 4 more”, got %q", e.Text)
 	}
 	if strings.Contains(e.Text, "#9") {
 		t.Errorf("truncated tail must not be printed, got %q", e.Text)
@@ -214,11 +214,11 @@ func TestClassifyColorwayDeletion_AllBlockersReportedAtOnce(t *testing.T) {
 		if fv.Conflicting != v.Blockers[i].Text {
 			t.Errorf("violation %d must carry the human sentence, got %q", i, fv.Conflicting)
 		}
-		if !strings.Contains(fv.HowToFix, "архивируйте") {
+		if !strings.Contains(fv.HowToFix, "archive") {
 			t.Errorf("violation %d must point at the archive, got %q", i, fv.HowToFix)
 		}
 	}
-	if s := v.BlockerSummary(); !strings.Contains(s, "продан") || !strings.Contains(s, "#12") || !strings.Contains(s, "5 шт") {
+	if s := v.BlockerSummary(); !strings.Contains(s, "sold") || !strings.Contains(s, "#12") || !strings.Contains(s, "5 pcs") {
 		t.Errorf("summary must carry every blocker, got %q", s)
 	}
 }
@@ -248,7 +248,7 @@ func TestClassifyColorwayDeletion_OrphansAreNeitherBlockerNorCascade(t *testing.
 	if m.Count != 2 {
 		t.Errorf("marker orphan count = %d, want 2", m.Count)
 	}
-	if !strings.Contains(m.Text, "потеряют колорвей") {
+	if !strings.Contains(m.Text, "will lose the colorway") {
 		t.Errorf("marker orphan must say what is lost, got %q", m.Text)
 	}
 	for _, e := range v.Cascade {
@@ -329,17 +329,19 @@ func TestClassifyColorwayDeletion_EveryCascadeAndOrphanFieldSurfaces(t *testing.
 	assertEntrySet("orphans", v.Orphans, wantOrphans)
 }
 
-// Русский счёт: 1 заказ / 2 заказа / 5 заказов / 11 заказов / 21 заказ.
-func TestPluralRU(t *testing.T) {
+// English counting: only 1 takes the singular. 21 and 101 are pinned on purpose — the Russian
+// three-form selector this helper replaced put them in the singular bucket (n%10 == 1), so feeding
+// English words to it would have printed "21 order".
+func TestPluralEN(t *testing.T) {
 	cases := map[int]string{
-		1: "1 заказ", 2: "2 заказа", 4: "4 заказа", 5: "5 заказов",
-		11: "11 заказов", 12: "12 заказов", 14: "14 заказов",
-		21: "21 заказ", 22: "22 заказа", 25: "25 заказов",
-		101: "101 заказ", 111: "111 заказов", 0: "0 заказов",
+		1: "1 order", 2: "2 orders", 4: "4 orders", 5: "5 orders",
+		11: "11 orders", 12: "12 orders", 14: "14 orders",
+		21: "21 orders", 22: "22 orders", 25: "25 orders",
+		101: "101 orders", 111: "111 orders", 0: "0 orders",
 	}
 	for n, want := range cases {
-		if got := pluralRU(n, "%d заказ", "%d заказа", "%d заказов"); got != want {
-			t.Errorf("pluralRU(%d) = %q, want %q", n, got, want)
+		if got := pluralEN(n, "%d order", "%d orders"); got != want {
+			t.Errorf("pluralEN(%d) = %q, want %q", n, got, want)
 		}
 	}
 }

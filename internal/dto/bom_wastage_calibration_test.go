@@ -137,7 +137,7 @@ func TestLayNettoOfSumsSlotLines(t *testing.T) {
 		res := LayNettoOf(card, 500, 5, "m", sections)
 		require.False(t, res.Qty.Valid)
 		require.Contains(t, res.Reason, "manual")
-		require.Contains(t, res.Reason, "неполон")
+		require.Contains(t, res.Reason, "incomplete")
 	})
 
 	t.Run("отказ не зависит от порядка строк рецепта", func(t *testing.T) {
@@ -163,7 +163,7 @@ func TestLayNettoOfRefusesUndefinedUnits(t *testing.T) {
 		res := LayNettoOf(card, 100, 5, "kg", sections)
 		require.False(t, res.Qty.Valid,
 			"пример ревью: dxf 1.2 × 10 изделий при пустой единице слота записал бы netto 12 под фактом 14.4 kg — «+20%» неизвестной размерности")
-		require.Contains(t, res.Reason, "единиц")
+		require.Contains(t, res.Reason, "names no unit")
 	})
 
 	t.Run("единица слота вне перечня", func(t *testing.T) {
@@ -177,7 +177,7 @@ func TestLayNettoOfRefusesUndefinedUnits(t *testing.T) {
 	t.Run("пустая единица факта", func(t *testing.T) {
 		res := LayNettoOf(wastageCard(), 100, 5, "", sections)
 		require.False(t, res.Qty.Valid)
-		require.Contains(t, res.Reason, "факта")
+		require.Contains(t, res.Reason, "the actual names no unit")
 	})
 
 	t.Run("единица факта вне перечня", func(t *testing.T) {
@@ -200,18 +200,18 @@ func TestLayNettoOfNamesEveryRefusal(t *testing.T) {
 		sections  []LayNettoSection
 		contains  string
 	}{
-		"карточка не загружена":                                      {nil, 100, 5, "m", sections, "не загружена"},
-		"настил потерял слот":                                        {card, 100, 0, "m", sections, "потерял слот"},
-		"слота нет в карточке":                                       {card, 100, 999, "m", sections, "не найден"},
+		"карточка не загружена":                                      {nil, 100, 5, "m", sections, "isn't loaded"},
+		"настил потерял слот":                                        {card, 100, 0, "m", sections, "lost its BOM slot"},
+		"слота нет в карточке":                                       {card, 100, 999, "m", sections, "isn't in the card"},
 		"manual-норма не годится в netto (это оценка, не измерение)": {card, 200, 5, "m", sections, "manual"},
-		"нет нормы вовсе":                                            {card, 999, 5, "m", sections, "нет dxf-нормы"},
-		"факт в килограммах против нормы в метрах":                   {card, 100, 5, "kg", sections, "несводимо"},
-		"нет секций":                                                 {card, 100, 5, "m", nil, "нет секций"},
+		"нет нормы вовсе":                                            {card, 999, 5, "m", sections, "no dxf norm"},
+		"факт в килограммах против нормы в метрах":                   {card, 100, 5, "kg", sections, "can't be reconciled"},
+		"нет секций":                                                 {card, 100, 5, "m", nil, "has no sections"},
 		"раскладка без состава": {card, 100, 5, "m",
-			[]LayNettoSection{{Plies: 1, MarkerLabel: "раскладка Б"}}, "состав не записан"},
+			[]LayNettoSection{{Plies: 1, MarkerLabel: "раскладка Б"}}, "no composition recorded"},
 		"размер состава не покрыт нормой": {card, 100, 5, "m",
 			[]LayNettoSection{{Plies: 1, MarkerLabel: "А",
-				Composition: []entity.MarkerCompositionEntry{{SizeId: 3, Quantity: 1}}}}, "размера #3"},
+				Composition: []entity.MarkerCompositionEntry{{SizeId: 3, Quantity: 1}}}}, "size #3"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -297,7 +297,7 @@ func TestWastageSuggestionMedianAndModelCount(t *testing.T) {
 
 func TestWastageSuggestionSkipsWithNamedReasons(t *testing.T) {
 	noNetto := LayWastageObservation{LayId: 1, LayKey: "L1", TechCardId: 7,
-		NettoReason: "у карточки настила нет dxf-нормы слота — netto не из чего взять",
+		NettoReason: "the lay's tech card has no dxf norm for the slot — there is nothing to take netto from",
 		ActualQty:   decimal.NullDecimal{Decimal: decimal.RequireFromString("12"), Valid: true}}
 	noFact := obsOf(2, 7, "10", "")
 	zeroFact := obsOf(3, 7, "10", "0")
@@ -308,7 +308,7 @@ func TestWastageSuggestionSkipsWithNamedReasons(t *testing.T) {
 	require.Equal(t, WastageSuggestionTooFewFacts, got.Status)
 	require.Equal(t, 0, got.LayCount)
 	require.Len(t, got.Drifts, 4, "невошедшие не исчезают — они называются")
-	for i, want := range []string{"нет dxf-нормы", "не введён", "не положителен", "не посчитано"} {
+	for i, want := range []string{"no dxf norm", "isn't entered", "isn't positive", "isn't computed"} {
 		require.False(t, got.Drifts[i].Counted())
 		require.Contains(t, got.Drifts[i].Skipped, want, "строка без числа и без объяснения неотличима от бага")
 	}

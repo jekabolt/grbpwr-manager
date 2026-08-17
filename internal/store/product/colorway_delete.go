@@ -92,7 +92,7 @@ func (s *Store) DeleteColorway(ctx context.Context, colorwayID int) (*entity.Col
 				v.Blockers = append(v.Blockers, entity.ColorwayDeletionEntry{
 					Reason: entity.ColorwayBlockerReferenced,
 					Count:  0,
-					Text:   "на него ссылается запись, которую этот отказ назвать не умеет (схема изменилась)",
+					Text:   "a record references it that this refusal can't name (the schema has changed)",
 				})
 				return entity.ErrColorwayNotDeletable
 			}

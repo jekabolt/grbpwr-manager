@@ -98,7 +98,7 @@ func TestBuildBomWastageSuggestionFallsBackToLiveNorm(t *testing.T) {
 		got := BuildBomWastageSuggestion(in)
 		require.EqualValues(t, 0, got.GetLayCount())
 		require.Len(t, got.GetDrifts(), 1)
-		require.Contains(t, got.GetDrifts()[0].GetSkipped(), "состав не записан")
+		require.Contains(t, got.GetDrifts()[0].GetSkipped(), "no composition recorded")
 	})
 }
 
@@ -127,8 +127,8 @@ func TestBuildBomWastageSuggestionDiscardsDesyncedStamp(t *testing.T) {
 		got := BuildBomWastageSuggestion(in)
 		require.EqualValues(t, 0, got.GetLayCount())
 		require.Len(t, got.GetDrifts(), 1)
-		require.Contains(t, got.GetDrifts()[0].GetSkipped(), "мимо штампа")
-		require.Contains(t, got.GetDrifts()[0].GetSkipped(), "состав не записан")
+		require.Contains(t, got.GetDrifts()[0].GetSkipped(), "past the netto stamp")
+		require.Contains(t, got.GetDrifts()[0].GetSkipped(), "no composition recorded")
 	})
 }
 

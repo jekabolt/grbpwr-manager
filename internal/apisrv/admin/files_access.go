@@ -37,7 +37,7 @@ const (
 
 	// libraryFileAccessMsg НАЗЫВАЕТ круг: «нет прав» без указания, чьё это право, отправляет
 	// человека в телеграм — ровно тот способ работы, который раздел заменяет.
-	libraryFileAccessMsg = "доступ к файлу меняет загрузивший, действующий владелец или супер-админ"
+	libraryFileAccessMsg = "file access is changed by the uploader, a current owner, or a super admin"
 )
 
 // linkURL mints the public url for a file — and ONLY when the file is at level `link` right now.

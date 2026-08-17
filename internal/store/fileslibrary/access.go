@@ -38,7 +38,7 @@ const (
 	// уронил бы запись в strict-режиме, то есть смена доступа провалилась бы целиком из-за
 	// журнала — худший из возможных разменов.
 	maxAccessEventWhatLen = 255
-	// maxAccessEventNames — сколько имён печатается в строке журнала до «и ещё N».
+	// maxAccessEventNames — сколько имён печатается в строке журнала до “and N more”.
 	maxAccessEventNames = 8
 )
 
@@ -335,10 +335,10 @@ func applyLinkTTL(ctx context.Context, db dependency.DB, fileID, ttlHours int, a
 		return fmt.Errorf("failed to upsert library file public access: %w", err)
 	}
 	if bump == 1 {
-		// Строка журнала обязана НАЗЫВАТЬ это: «доступ по ссылке» рядом ничего не говорит о том,
+		// Строка журнала обязана НАЗЫВАТЬ это: “access by link” рядом ничего не говорит о том,
 		// что прежний адрес умер, а именно этого человек и не ожидает от возврата уровня.
 		if err := appendAccessEvent(ctx, db, fileID, actor,
-			"ссылка выдана заново, прежняя больше не работает"); err != nil {
+			"the link was reissued, the previous one no longer works"); err != nil {
 			return err
 		}
 	}
@@ -374,7 +374,7 @@ func revokePublicLink(ctx context.Context, db dependency.DB, fileID int, actor s
 		map[string]any{"id": fileID}); err != nil {
 		return fmt.Errorf("failed to revoke library file public link: %w", err)
 	}
-	return appendAccessEvent(ctx, db, fileID, actor, "ссылка выключена, прежняя больше не работает")
+	return appendAccessEvent(ctx, db, fileID, actor, "the link was revoked, the previous one no longer works")
 }
 
 // linkTTLChanged отвечает, стоит ли писать строку журнала о сроке.
@@ -435,7 +435,7 @@ func (s *Store) RotateFileLink(ctx context.Context, fileID int, actor string) (*
 			return fmt.Errorf("failed to rotate library file link: %w", err)
 		}
 		if err := appendAccessEvent(ctx, db, fileID, actor,
-			"ссылка пересоздана, прежняя больше не работает"); err != nil {
+			"the link was recreated, the previous one no longer works"); err != nil {
 			return err
 		}
 		row, err := readPublicAccess(ctx, db, fileID)
@@ -712,29 +712,33 @@ func levelEventWhat(level entity.LibraryFileAccessLevel) string {
 	tail := ""
 	switch level {
 	case entity.LibraryFileAccessTeam:
-		tail = " доступ у всей команды"
+		tail = " the whole team has access"
 	case entity.LibraryFileAccessPeople:
-		tail = " доступ по списку"
+		tail = " access for a named list"
 	case entity.LibraryFileAccessLink:
-		tail = " доступ по ссылке"
+		tail = " access by link"
 	}
 	return entity.LibraryFileAccessLevelEventPrefix + string(level) + tail
 }
 
-// ttlEventWhat печатает срок так, как он выбран чипом, а не в часах: «7 дней» — это то, что
+// ttlEventWhat печатает срок так, как он выбран чипом, а не в часах: “7 days” — это то, что
 // человек нажал, и то, что он будет искать в журнале.
 func ttlEventWhat(hours int) string {
 	switch {
 	case hours <= 0:
-		return "срок ссылки: бессрочно"
+		return "link expiry: never"
+	case hours == 24:
+		return "link expiry: 1 day"
 	case hours%24 == 0:
-		return fmt.Sprintf("срок ссылки: %d дн.", hours/24)
+		return fmt.Sprintf("link expiry: %d days", hours/24)
+	case hours == 1:
+		return "link expiry: 1 hour"
 	default:
-		return fmt.Sprintf("срок ссылки: %d ч.", hours)
+		return fmt.Sprintf("link expiry: %d hours", hours)
 	}
 }
 
-// namesEventWhat собирает «+ имя, имя» или «- имя», обрезая длинный список до «и ещё N».
+// namesEventWhat собирает «+ имя, имя» или «- имя», обрезая длинный список до “and N more”.
 // Пустой список — пустая строка, и события не будет вовсе.
 func namesEventWhat(prefix string, names []string) string {
 	if len(names) == 0 {
@@ -751,7 +755,7 @@ func namesEventWhat(prefix string, names []string) string {
 	}
 	what := prefix + strings.Join(shown, ", ")
 	if extra > 0 {
-		what += fmt.Sprintf(" и ещё %d", extra)
+		what += fmt.Sprintf(" and %d more", extra)
 	}
 	return truncateRunes(what, maxAccessEventWhatLen)
 }

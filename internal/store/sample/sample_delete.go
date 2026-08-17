@@ -90,7 +90,7 @@ func (s *Store) DeleteSample(ctx context.Context, id int) (*entity.SampleDeletio
 				v.Blockers = append(v.Blockers, entity.SampleDeletionEntry{
 					Reason: entity.SampleBlockerReferenced,
 					Count:  0,
-					Text:   "на него ссылается запись, которую этот отказ назвать не умеет (схема изменилась)",
+					Text:   "a record references it that this refusal can't name (the schema has changed)",
 				})
 				return entity.ErrSampleNotDeletable
 			}

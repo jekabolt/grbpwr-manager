@@ -23,7 +23,7 @@ const maxLibraryFileOwners = 10
 // libraryFileOwnersMsg is what somebody outside the circle is told. It names the
 // circle, because «нет прав» without saying whose right it is sends the person to
 // telegram — the exact way of working this section exists to replace.
-const libraryFileOwnersMsg = "владельцев файла меняет загрузивший, действующий владелец или супер-админ"
+const libraryFileOwnersMsg = "file owners are changed by the uploader, a current owner, or a super admin"
 
 // mayEditLibraryFileOwners reports whether the caller belongs to the circle
 // allowed to change a file's owners: the uploader, a current owner, or a super.

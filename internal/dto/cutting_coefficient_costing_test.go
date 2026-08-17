@@ -541,11 +541,11 @@ func TestWastageSuggestionDetailNamesOneFormulaOnly(t *testing.T) {
 	}
 
 	withCoeff := BomWastageSuggestionOf(obs(ccND("1.06"))).Detail
-	require.Contains(t, withCoeff, "факт ÷ (netto × 1.06) − 1")
-	require.NotContains(t, withCoeff, "факт ÷ netto − 1",
+	require.Contains(t, withCoeff, "actual ÷ (netto × 1.06) − 1")
+	require.NotContains(t, withCoeff, "actual ÷ netto − 1",
 		"старая формула рядом с новой — две несовместимые линейки в одной фразе")
 
 	plain := BomWastageSuggestionOf(obs(decimal.NullDecimal{})).Detail
-	require.Contains(t, plain, "факт ÷ netto − 1")
+	require.Contains(t, plain, "actual ÷ netto − 1")
 	require.NotContains(t, plain, "×")
 }

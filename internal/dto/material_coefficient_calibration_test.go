@@ -58,7 +58,7 @@ func TestCoefficientSuggestionNeedsThreeLays(t *testing.T) {
 		if got.LayCount != 2 {
 			t.Errorf("LayCount = %d, want 2 — сколько фактов есть, говорится и в отказе", got.LayCount)
 		}
-		if !strings.Contains(got.Detail, "мало") || !strings.Contains(got.Detail, "3") {
+		if !strings.Contains(got.Detail, "not enough facts") || !strings.Contains(got.Detail, "3") {
 			t.Errorf("detail must say «фактов мало» and name the threshold: %q", got.Detail)
 		}
 	})
@@ -329,7 +329,7 @@ func TestCoefficientSuggestionOutOfRangeShowsTheMeasurementAndWithholdsTheNumber
 		if got.Status != CoefficientSuggestionOutOfRange || got.Suggested.Valid {
 			t.Fatalf("status = %v, suggested = %+v, want OUT_OF_RANGE без числа", got.Status, got.Suggested)
 		}
-		if !strings.Contains(got.Detail, "замер") {
+		if !strings.Contains(got.Detail, "measurements") {
 			t.Errorf("detail обязан отправить человека в замеры: %q", got.Detail)
 		}
 	})

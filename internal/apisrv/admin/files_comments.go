@@ -17,7 +17,7 @@ import (
 // libraryCommentAuthorMsg — то, что слышит человек, дотянувшийся до чужой реплики. Оно НАЗЫВАЕТ
 // правило целиком, включая исключение: «нет прав» без объяснения отправляет спрашивать в телеграм,
 // то есть ровно туда, откуда этот раздел уводит.
-const libraryCommentAuthorMsg = "править и удалять можно только свою реплику (супер-админ — любую)"
+const libraryCommentAuthorMsg = "you can edit or delete only your own comment (a super admin — any)"
 
 // mayEditLibraryFileComment — ВТОРОЙ ГЕЙТ ленты, и весь смысл этого файла в нём.
 //

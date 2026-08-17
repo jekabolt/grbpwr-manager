@@ -146,7 +146,7 @@ func TestAccessBlockShowsTheUrlOnlyAtLevelLink(t *testing.T) {
 			FileId: 7, Level: entity.LibraryFileAccessLink, Link: linkRow,
 		}, nil)
 		files.EXPECT().ListFileAccessEvents(mock.Anything, 7, 0).Return([]entity.LibraryFileAccessEvent{
-			{Id: 1, Actor: "pasha", What: "level:link доступ по ссылке", CreatedAt: time.Now()},
+			{Id: 1, Actor: "pasha", What: "level:link access by link", CreatedAt: time.Now()},
 		}, nil)
 		repo := mocks.NewMockRepository(t)
 		repo.EXPECT().Files().Return(files)

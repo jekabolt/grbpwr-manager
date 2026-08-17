@@ -55,10 +55,10 @@ Respond with ONE JSON object and NOTHING else — no markdown, no commentary. Sh
       "needle_type": "ballpoint",      // needle POINT, token from the list below
       "needle_size_nm": 90,            // needle size in Nm ({{NEEDLE_SIZE_RANGE}}); Nm 90 = 0.90 mm blade
       "thread_tension": "normal",      // token from the list below, RELATIVE to that machine's usual
-      "thread_tension_note": "на 0.5 туже", // ≤{{MAX_TENSION_NOTE}} chars qualifying that scale; ONLY together with thread_tension
+      "thread_tension_note": "0.5 tighter", // ≤{{MAX_TENSION_NOTE}} chars qualifying that scale; ONLY together with thread_tension
       "stitch_width_mm": "5",          // zigzag amplitude / overlock bite in mm, {{STITCH_WIDTH_RANGE}}
 
-      // PRESSING STEPS ONLY / ВТО (operation_type "press", "press_open" or "fusing"). Omit elsewhere.
+      // PRESSING STEPS ONLY (operation_type "press", "press_open" or "fusing"). Omit elsewhere.
       "press_equipment": "iron",       // REQUIRED on a pressing step — WHAT IT IS PRESSED WITH
       "press_temperature_c": 150,      // °C, {{PRESS_TEMPERATURE_RANGE}}
       "press_dwell_sec": 12,           // seconds under the press, {{PRESS_DWELL_RANGE}}
@@ -80,8 +80,8 @@ Rules:
   Do NOT use a stitch class (lockstitch, double_needle, overlock, coverstitch, chainstitch, blindhem,
   bartack, buttonhole, button_attach) as an operation_type — that names a MACHINE, not a verb: write
   operation_type "machine" and put the machine in machine_type.
-- "press" is pressing in general (приутюжить / заутюжить / отпарить / finishing), "press_open" is
-  specifically pressing a seam open (разутюжка), "fusing" is fusing/дублирование with an interlining.
+- "press" is pressing in general (ironing / pressing down / steaming / finishing), "press_open" is
+  specifically pressing a seam open, "fusing" is fusing with an interlining.
 - machine_type is REQUIRED when operation_type is "machine"; press_equipment is REQUIRED when
   operation_type is "press", "press_open" or "fusing". A step saved without them is refused.
 - Use only these machine_type tokens: {{MACHINE_TYPES}}.
@@ -117,7 +117,7 @@ Rules:
   it has to STATE every setting it needs. Equipment named in no line at all inherits nothing either.
 - A PRESSING LINE ALSO BELONGS TO A PROCESS. A line that reads «for fusing», «for press» or «for
   press_open» is inherited by a step of THAT process alone — an ironing setup is not a fusing recipe,
-  however well the equipment matches — while a line that names no process serves every ВТО step. A
+  however well the equipment matches — while a line that names no process serves every pressing step. A
   press / press_open / fusing step whose equipment has no line for its own process inherits nothing
   and must state press_temperature_c and press_dwell_sec itself.
 - Fill thread_count, needle_type, needle_size_nm, thread_tension, stitch_width_mm,
@@ -224,14 +224,14 @@ func buildUserPrompt(tcx TechCardContext, description string) string {
 		// the model is told to state its settings rather than omit them into a link that will not be
 		// made. Promising inheritance there is how an omitted setting became no setting at all.
 		writeBullets(&b, "CARD MACHINES (name machine_type; an unmarked line is the card's only profile of that machine and a step naming it INHERITS it — omit every setting that matches. A line marked SEVERAL inherits NOTHING: state the settings)", c.MachineProfiles)
-		writeBullets(&b, "CARD PRESSING EQUIPMENT / ВТО (name press_equipment; same rule PLUS the process — an unmarked line is inherited by a press / press_open / fusing step naming that equipment FOR THE PROCESS THE LINE STATES, a line that states no process by any of them, and a line marked SEVERAL by none)", c.PressProfiles)
+		writeBullets(&b, "CARD PRESSING EQUIPMENT (name press_equipment; same rule PLUS the process — an unmarked line is inherited by a press / press_open / fusing step naming that equipment FOR THE PROCESS THE LINE STATES, a line that states no process by any of them, and a line marked SEVERAL by none)", c.PressProfiles)
 	}
 	if v := strings.TrimSpace(tcx.RequiredSeamAllowanceMm); v != "" {
 		writeKV(&b, "Required seam allowance (mm)", v)
 	}
 
 	if len(tcx.Pieces) > 0 {
-		b.WriteString("\nCUT PIECES (детали кроя):\n")
+		b.WriteString("\nCUT PIECES:\n")
 		for _, p := range tcx.Pieces {
 			name := strings.TrimSpace(p.Name)
 			if name == "" {
