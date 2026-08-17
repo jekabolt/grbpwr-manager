@@ -92,6 +92,23 @@ type TaskInsert struct {
 	// merges both into one "attachments" list — the split is a storage fact, not
 	// something a person should have to think about.
 	FileIds []int `db:"-"`
+	// MediaAnnotations — указания, нарисованные на прикреплённых картинках (0313). Живут рядом с
+	// MediaIds и заменяются вместе с ними: набор без своей картинки нельзя ни увидеть, ни убрать,
+	// поэтому dto отбрасывает такие на входе, а стор пишет наборы строками той же полной замены.
+	MediaAnnotations []TaskMediaAnnotations `db:"-"`
+}
+
+// TaskMediaAnnotations — указания одной прикреплённой картинки карточки.
+//
+// ТОТ ЖЕ ПРИМИТИВ, ЧТО НА ЭСКИЗЕ ТЕХ-КАРТЫ И НА СНИМКЕ ШАГА СБОРКИ: TechCardAnnotation, вместе с её
+// видами, точками, цветом, пунктиром и штриховкой. Имя типа историческое — указание в системе ОДНО
+// (довод 0308/0309), и второй набор видов ради задачи развёл бы их на первой же правке.
+//
+// PieceLineKey/PieceLineKeys здесь ВСЕГДА пусты: деталей кроя у карточки канбана нет — ни выбрать,
+// ни показать, — и dto очищает их на входе, чтобы висящий ключ чужой тех-карты однажды не напечатали.
+type TaskMediaAnnotations struct {
+	MediaId     int
+	Annotations []TechCardAnnotation
 }
 
 // Task is a stored kanban card: content (TaskInsert) + placement + resolved media
@@ -99,16 +116,16 @@ type TaskInsert struct {
 type Task struct {
 	Id int `db:"id"`
 	TaskInsert
-	Board     TaskBoard   `db:"board"`
-	Status    TaskStatus  `db:"status"`
-	Position  int         `db:"position"`
-	Media     []MediaFull `db:"-"`
+	Board    TaskBoard   `db:"board"`
+	Status   TaskStatus  `db:"status"`
+	Position int         `db:"position"`
+	Media    []MediaFull `db:"-"`
 	// Files are the resolved library attachments. Resolved by the handler rather
 	// than the task store, so the task store never has to know the files store.
 	Files     []LibraryFile `db:"-"`
 	CreatedBy string        `db:"created_by"`
-	CreatedAt time.Time   `db:"created_at"`
-	UpdatedAt time.Time   `db:"updated_at"`
+	CreatedAt time.Time     `db:"created_at"`
+	UpdatedAt time.Time     `db:"updated_at"`
 	// ArchivedAt is the soft-archive marker: Valid = archived (hidden from the
 	// board and default list, but restorable); invalid/NULL = active.
 	ArchivedAt sql.NullTime `db:"archived_at"`

@@ -179,24 +179,142 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 		fileIds = append(fileIds, int(f))
 	}
 
+	mediaAnnotations, err := taskMediaAnnotationsFromPb(seenMedia, pb.MediaAnnotations)
+	if err != nil {
+		return nil, err
+	}
+
 	return &entity.TaskInsert{
-		Title:           title,
-		Description:     nullStringFromPb(strings.TrimSpace(pb.Description)),
-		Assignee:        strings.TrimSpace(pb.Assignee),
-		Priority:        priority,
-		DueDate:         dueDate,
-		StartDate:       startDate,
-		TechCardId:      nullInt32FromPb(pb.TechCardId),
-		ProductId:       nullInt32FromPb(pb.ProductId),
-		OrderUuid:       nullStringFromPb(orderUUID),
-		ArchiveId:       nullInt32FromPb(pb.ArchiveId),
-		FittingId:       nullInt32FromPb(pb.FittingId),
-		ProductionRunId: nullInt32FromPb(pb.ProductionRunId),
-		SampleId:        nullInt32FromPb(pb.SampleId),
-		Labels:          labels,
-		MediaIds:        mediaIds,
-		FileIds:         fileIds,
+		Title:            title,
+		Description:      nullStringFromPb(strings.TrimSpace(pb.Description)),
+		Assignee:         strings.TrimSpace(pb.Assignee),
+		Priority:         priority,
+		DueDate:          dueDate,
+		StartDate:        startDate,
+		TechCardId:       nullInt32FromPb(pb.TechCardId),
+		ProductId:        nullInt32FromPb(pb.ProductId),
+		OrderUuid:        nullStringFromPb(orderUUID),
+		ArchiveId:        nullInt32FromPb(pb.ArchiveId),
+		FittingId:        nullInt32FromPb(pb.FittingId),
+		ProductionRunId:  nullInt32FromPb(pb.ProductionRunId),
+		SampleId:         nullInt32FromPb(pb.SampleId),
+		Labels:           labels,
+		MediaIds:         mediaIds,
+		FileIds:          fileIds,
+		MediaAnnotations: mediaAnnotations,
 	}, nil
+}
+
+// taskMediaAnnotationsFromPb разбирает указания, нарисованные на вложенных картинках карточки.
+//
+// ПРОВЕРКА ОБЩАЯ С ТЕХ-КАРТОЙ, а не своя: annotationsFromPb уже сверяет вид с числом точек, держит
+// координаты в долях кадра, ограничивает текст, закрывает список цветов и приводит пунктир/штриховку
+// к виду фигуры. Второй валидатор того же сообщения разошёлся бы с первым на первой же добавленной
+// фигуре, и человек, рисующий одним и тем же жестом, получал бы два разных отказа.
+//
+// `attached` — картинки, уже прошедшие разбор media_ids ЭТОЙ ЖЕ карточки.
+//
+// Своего предела на число наборов здесь нет намеренно: набор без прикреплённой картинки
+// отбрасывается, поэтому наборов не больше, чем картинок, а на media_ids задачи потолка не стоит.
+// Предел на выноски внутри одного снимка — общий, maxAnnotationsPerMedia.
+func taskMediaAnnotationsFromPb(attached map[int]bool, in []*pb_common.TaskMediaAnnotations) ([]entity.TaskMediaAnnotations, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]entity.TaskMediaAnnotations, 0, len(in))
+	seen := make(map[int]bool, len(in))
+	for i, set := range in {
+		path := fmt.Sprintf("media_annotations[%d]", i)
+		if set == nil {
+			continue
+		}
+		mediaID := int(set.MediaId)
+		// Нулевой/отрицательный id — ИСПОРЧЕННЫЙ payload, а не устаревший, поэтому отказ, и
+		// проверяется он раньше отбрасывания: иначе такой набор исчезал бы молча вместе с багом,
+		// который его прислал.
+		if mediaID <= 0 {
+			return nil, entity.NewFieldViolation(path+".media_id", "required", "",
+				"набор указаний без картинки не значит ничего — назовите снимок этой карточки")
+		}
+		// ДУБЛЬ СНИМАЕТСЯ МОЛЧА, ПЕРВЫЙ ВЫИГРЫВАЕТ — как labels, media_ids и file_ids этой же
+		// функции: половина списков карточки прощала бы дубль, половина роняла бы сохранение.
+		//
+		// И это не мягкость, а единственный выход. У task_media НЕТ UNIQUE (task_id, media_id):
+		// 0090 её не ставит, 0313 тоже — ретроактивный UNIQUE проверяет всю историю и роняет старт
+		// прода. Значит пара строк с одним media_id физически возможна (сидер, правка руками,
+		// будущий писатель), чтение вернуло бы два набора с одним id, и НЕМЕДЛЕННЫЙ круговой рейс
+		// стал бы вечным 400: карточку нельзя было бы сохранить, пока кто-то не отцепит картинку
+		// руками. Несохраняемая карточка дороже потерянного второго набора, которого ни один наш
+		// клиент не шлёт.
+		//
+		// Отметка ДО проверки прикреплённости, а не после: иначе одна и та же форма запроса
+		// решалась бы по-разному в зависимости от поля, которого в самом наборе нет.
+		if seen[mediaID] {
+			continue
+		}
+		seen[mediaID] = true
+		// НАБОР БЕЗ СВОЕЙ КАРТИНКИ ОТБРАСЫВАЕТСЯ МОЛЧА. Снятие картинки и правка содержимого
+		// приходят ОДНИМ сохранением, и клиент законно шлёт то, что прочитал; отказ за указание на
+		// снимке, которого на карточке уже нет, требовал бы от формы порядка, которого у неё нет.
+		// Хранить такой набор тоже нельзя: его не увидеть и не убрать.
+		if !attached[mediaID] {
+			continue
+		}
+		anns, err := annotationsFromPb(path, set.Annotations)
+		if err != nil {
+			return nil, err
+		}
+		// КЛЮЧИ ДЕТАЛЕЙ КРОЯ ОЧИЩАЮТСЯ: у карточки канбана деталей нет — ни выбрать, ни показать.
+		// Доехавшая сюда ссылка на деталь чужой тех-карты это висящий ключ, который однажды
+		// напечатают.
+		for j := range anns {
+			anns[j].PieceLineKey = ""
+			anns[j].PieceLineKeys = nil
+		}
+		out = append(out, entity.TaskMediaAnnotations{MediaId: mediaID, Annotations: anns})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// taskMediaAnnotationsToPb — обратный ход. Порядок наборов задаёт стор (порядок картинок карточки),
+// и здесь он сохраняется как есть: круговой рейс обязан вернуть то же, что прочитал, включая
+// последовательность.
+//
+// Ключи деталей не отдаются вовсе — их у карточки не бывает (см. разбор выше).
+//
+// ИЗВЕСТНОЕ И ОСОЗНАННОЕ: вид, которого нет в словаре (испорченная строка в колонке, откат на
+// старый бинарь), отдаётся клиенту нулевым энумом, и следующее сохранение такой карточки —
+// вечный 400, потому что на входе неизвестный вид это отказ. Чинить здесь НЕ надо: снимок шага
+// сборки (0308) ведёт себя ровно так же, а разойтись двум поверхностям одного примитива хуже
+// самой болезни — человек рисует одним жестом и вправе ждать одного поведения.
+func taskMediaAnnotationsToPb(in []entity.TaskMediaAnnotations) []*pb_common.TaskMediaAnnotations {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TaskMediaAnnotations, 0, len(in))
+	for _, s := range in {
+		anns := make([]*pb_common.TechCardAnnotation, 0, len(s.Annotations))
+		for _, a := range s.Annotations {
+			anns = append(anns, &pb_common.TechCardAnnotation{
+				Kind:   annotationKindToPb[a.Kind],
+				Points: calloutPointsToPb(a.Points),
+				Text:   a.Text,
+				LabelX: pbDecimalFromDecimal(a.LabelX),
+				LabelY: pbDecimalFromDecimal(a.LabelY),
+				Color:  annotationColorToPb[a.Color],
+				Dashed: a.Dashed,
+				Filled: a.Filled,
+			})
+		}
+		out = append(out, &pb_common.TaskMediaAnnotations{
+			MediaId:     int32(s.MediaId),
+			Annotations: anns,
+		})
+	}
+	return out
 }
 
 // ConvertEntityTaskToPb converts an entity.Task to pb_common.Task, including
@@ -240,6 +358,9 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 			ProductionRunId: pbInt32FromNull(t.ProductionRunId),
 			SampleId:        pbInt32FromNull(t.SampleId),
 			FileIds:         fileIds,
+			// Указания едут ВМЕСТЕ с содержимым, а не отдельным полем ответа: карточку
+			// сохраняет одна форма, и то, что она не прочитала, она сотрёт полной заменой.
+			MediaAnnotations: taskMediaAnnotationsToPb(t.MediaAnnotations),
 		},
 		Board:      taskBoardEntityToPb[t.Board],
 		Status:     taskStatusEntityToPb[t.Status],
