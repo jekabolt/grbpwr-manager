@@ -4,7 +4,9 @@ package task
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -61,7 +63,7 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
 			return err
 		}
-		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds); err != nil {
+		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds, t.MediaAnnotations); err != nil {
 			return err
 		}
 		return insertTaskFiles(ctx, rep.DB(), id, t.FileIds)
@@ -120,7 +122,7 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
 			return err
 		}
-		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds); err != nil {
+		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds, t.MediaAnnotations); err != nil {
 			return err
 		}
 		return insertTaskFiles(ctx, rep.DB(), id, t.FileIds)
@@ -352,7 +354,7 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	media, err := s.mediaByTaskIds(ctx, []int{id})
+	media, mediaAnnotations, err := s.mediaByTaskIds(ctx, []int{id})
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +368,7 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 		return nil, err
 	}
 	t.Media = media[id]
+	t.MediaAnnotations = mediaAnnotations[id]
 	t.Checklist = checklist[id]
 	t.FileIds = fileIDs[id]
 	return &t, nil
@@ -455,7 +458,7 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	if err != nil {
 		return nil, 0, err
 	}
-	media, err := s.mediaByTaskIds(ctx, ids)
+	media, mediaAnnotations, err := s.mediaByTaskIds(ctx, ids)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -470,6 +473,9 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	for i := range tasks {
 		tasks[i].Labels = labels[tasks[i].Id]
 		tasks[i].Media = media[tasks[i].Id]
+		// Указания едут и в списке тоже: редактор карточки открывают прямо с доски, и без них он
+		// сохранил бы карточку «без указаний» — полной заменой, то есть стёр бы их.
+		tasks[i].MediaAnnotations = mediaAnnotations[tasks[i].Id]
 		tasks[i].Checklist = checklist[tasks[i].Id]
 		tasks[i].FileIds = fileIDs[tasks[i].Id]
 	}
@@ -570,16 +576,35 @@ func insertTaskLabels(ctx context.Context, db dependency.DB, taskID int, labels 
 	return nil
 }
 
-func insertTaskMedia(ctx context.Context, db dependency.DB, taskID int, mediaIDs []int) error {
+// insertTaskMedia links media to a card together with the annotations drawn on
+// each image (0313). Annotations live on the media row itself: they are read and
+// written only as a whole with their image, and a detached set is unreachable.
+func insertTaskMedia(ctx context.Context, db dependency.DB, taskID int, mediaIDs []int, annotations []entity.TaskMediaAnnotations) error {
 	if len(mediaIDs) == 0 {
 		return nil
 	}
+	byMedia := make(map[int][]entity.TechCardAnnotation, len(annotations))
+	for _, a := range annotations {
+		byMedia[a.MediaId] = a.Annotations
+	}
 	rows := make([]map[string]any, 0, len(mediaIDs))
 	for i, mid := range mediaIDs {
+		// «Указаний нет» пишется ПУСТЫМ МАССИВОМ, а не NULL: два способа сказать одно заставили бы
+		// каждого читателя их различать (довод 0308). NULL остаётся только на строках, записанных
+		// до 0313.
+		list := byMedia[mid]
+		if list == nil {
+			list = []entity.TechCardAnnotation{}
+		}
+		raw, err := json.Marshal(list)
+		if err != nil {
+			return fmt.Errorf("failed to marshal task media annotations (media %d): %w", mid, err)
+		}
 		rows = append(rows, map[string]any{
 			"task_id":       taskID,
 			"media_id":      mid,
 			"display_order": i,
+			"annotations":   string(raw),
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "task_media", rows); err != nil {
@@ -676,27 +701,65 @@ func (s *Store) labelsByTaskIds(ctx context.Context, ids []int) (map[int][]strin
 
 type taskMediaRow struct {
 	TaskID int `db:"task_id"`
+	// Annotations в БД лежит JSON-колонкой; наружу отдаётся разобранным списком. NULL = строка
+	// записана до 0313.
+	Annotations []byte `db:"annotations"`
 	entity.MediaFull
 }
 
-func (s *Store) mediaByTaskIds(ctx context.Context, ids []int) (map[int][]entity.MediaFull, error) {
+// mediaByTaskIds returns both halves of a card's attachments: the resolved media
+// and the annotations drawn on them. One query, because they are one row —
+// splitting them would let the two orders drift.
+func (s *Store) mediaByTaskIds(ctx context.Context, ids []int) (map[int][]entity.MediaFull, map[int][]entity.TaskMediaAnnotations, error) {
 	if len(ids) == 0 {
-		return map[int][]entity.MediaFull{}, nil
+		return map[int][]entity.MediaFull{}, map[int][]entity.TaskMediaAnnotations{}, nil
 	}
 	rows, err := storeutil.QueryListNamed[taskMediaRow](ctx, s.DB, `
-		SELECT tm.task_id, m.*
+		SELECT tm.task_id, tm.annotations, m.*
 		FROM task_media tm
 		JOIN media m ON m.id = tm.media_id
 		WHERE tm.task_id IN (:ids)
 		ORDER BY tm.task_id, tm.display_order`, map[string]any{"ids": ids})
 	if err != nil {
-		return nil, fmt.Errorf("can't load task media: %w", err)
+		return nil, nil, fmt.Errorf("can't load task media: %w", err)
 	}
-	out := make(map[int][]entity.MediaFull, len(ids))
+	media := make(map[int][]entity.MediaFull, len(ids))
+	// Порядок наборов — порядок картинок (display_order из запроса выше), чтобы круговой рейс
+	// клиента был стабильным и правка описания не переставляла указания местами.
+	anns := make(map[int][]entity.TaskMediaAnnotations, len(ids))
 	for _, r := range rows {
-		out[r.TaskID] = append(out[r.TaskID], r.MediaFull)
+		media[r.TaskID] = append(media[r.TaskID], r.MediaFull)
+		list := decodeTaskMediaAnnotations(r.TaskID, r.MediaFull.Id, r.Annotations)
+		// Пустой набор не едет вовсе: «на этой картинке ничего не нарисовано» — это отсутствие
+		// набора, и возить пустоту на каждую картинку каждой карточки доски незачем.
+		if len(list) == 0 {
+			continue
+		}
+		anns[r.TaskID] = append(anns[r.TaskID], entity.TaskMediaAnnotations{
+			MediaId:     r.MediaFull.Id,
+			Annotations: list,
+		})
 	}
-	return out, nil
+	return media, anns, nil
+}
+
+// decodeTaskMediaAnnotations разбирает JSON-колонку указаний одной картинки.
+//
+// Битый JSON — это испорченная строка, а не повод уронить чтение всей доски: картинка вернётся без
+// указаний, и это видно, в отличие от пятисотки (то же решение, что у снимков шага сборки, 0308).
+// Пусто/NULL = строка записана до 0313: указаний никто не рисовал.
+func decodeTaskMediaAnnotations(taskID, mediaID int, raw []byte) []entity.TechCardAnnotation {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []entity.TechCardAnnotation
+	if err := json.Unmarshal(raw, &out); err != nil {
+		slog.Default().Error("task media: broken annotations json",
+			slog.Int("task_id", taskID), slog.Int("media_id", mediaID),
+			slog.String("err", err.Error()))
+		return nil
+	}
+	return out
 }
 
 func (s *Store) checklistByTaskIds(ctx context.Context, ids []int) (map[int][]entity.TaskChecklistItem, error) {
