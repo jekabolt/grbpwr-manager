@@ -28,6 +28,22 @@ const (
 	maxOperationMediaCaptionLen = 255
 )
 
+// maxCoordinateScale — сколько знаков после запятой имеет право нести координата выноски.
+//
+// ПРЕДЕЛ НЕ КОСМЕТИЧЕСКИЙ, А ЗАЩИТНЫЙ, и без него диапазона 0..1 недостаточно. На проводе
+// координата это СТРОКА (pb_decimal.Decimal), а строка законно записывается показателем степени, и
+// одиннадцать байт разворачиваются во что угодно. Замерено на этом же shopspring/decimal:
+// «0.5e-500000» — 11 байт с провода и 500 005 байт в JSON-колонке; «1E-10000000» — 1.2 с процессора
+// и 44 МиБ ЕЩЁ ДО хранения; «1E+10000000» — 3.3 с и 190 МиБ, причём на пути, который и так
+// заканчивается отказом. Дорого именно СРАВНЕНИЕ с границами кадра: оно выравнивает экспоненты и
+// материализует все нули. Потолки выносок (30 на снимок × 200 точек следа = 12 000 координат)
+// превращают это в часы процессора при теле запроса в двести килобайт — то есть предел размера
+// сообщения сюда не достаёт даже близко.
+//
+// Шесть знаков — с большим запасом: примерка округляет до трёх (toFixed(3)), холст до четырёх, а
+// доля кадра точнее шестого знака это доля пикселя на снимке, которого не бывает.
+const maxCoordinateScale = 6
+
 var annotationKindFromPb = map[pb_common.TechCardAnnotationKind]entity.TechCardAnnotationKind{
 	pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_PIN:     entity.AnnotationKindPin,
 	pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_LABEL:   entity.AnnotationKindLabel,
@@ -80,11 +96,37 @@ func unitInterval(field string, d *pb_decimal.Decimal) (decimal.Decimal, error) 
 	if !nd.Valid {
 		return zero, nil
 	}
+	// ПОРЯДОК ЗДЕСЬ — ЧАСТЬ ЗАЩИТЫ. Экспонента проверяется ПОСЛЕ разбора строки, но ДО сравнения с
+	// границами кадра: разбор дёшев (он кладёт коэффициент и показатель, ничего не считая), а
+	// дорого именно сравнение. Округлить вместо отказа НЕЛЬЗЯ — rescale на показателе -10000000 и
+	// есть тот самый взрыв, от которого мы защищаемся.
+	if exp := nd.Decimal.Exponent(); exp < -maxCoordinateScale {
+		return decimal.Decimal{}, entity.NewFieldViolation(field, "too_precise", coordSample(d.Value),
+			fmt.Sprintf("координата выноски — доля кадра, не больше %d знаков после запятой: точнее снимок ничего не различает", maxCoordinateScale))
+	} else if exp > 0 {
+		// Показатель степени сам по себе не преступление, но координата, записанная им, у нас
+		// всегда либо ноль, либо вне кадра — а стоит такое сравнение дороже всей конвертации.
+		return decimal.Decimal{}, entity.NewFieldViolation(field, "bad_scale", coordSample(d.Value),
+			"координата выноски записывается обычной дробью от 0 до 1, а не показателем степени")
+	}
 	if nd.Decimal.LessThan(zero) || nd.Decimal.GreaterThan(one) {
 		return decimal.Decimal{}, entity.NewFieldViolation(field, "out_of_frame", nd.Decimal.String(),
 			"координата выноски — доля кадра от 0 до 1: точка вне снимка ничего не указывает")
 	}
 	return nd.Decimal, nil
+}
+
+// coordSample обрезает СЫРОЕ значение координаты для текста отказа.
+//
+// Печатать его целиком нельзя, и это не забота о читаемости: ровно та строка, из-за которой отказ,
+// и раздувается — `String()` у неё развернул бы полмегабайта нулей прямо в сообщение об ошибке,
+// то есть отказ стоил бы столько же, сколько атака, от которой он защищает.
+func coordSample(raw string) string {
+	const maxSample = 32
+	if len(raw) <= maxSample {
+		return raw
+	}
+	return raw[:maxSample] + "…"
 }
 
 // operationMediaFromPb разбирает картинки одного шага. `step` — путь для отказов («operations.3»).

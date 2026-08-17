@@ -3,6 +3,9 @@ syntax = "proto3";
 package common;
 
 import "common/media.proto";
+// Указания на вложенной картинке — тот же примитив, что на эскизе и на снимке шага сборки
+// (TechCardAnnotation). Импорт односторонний: techcard.proto о задачах не знает.
+import "common/techcard.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-manager/proto/gen/common;common";
@@ -88,6 +91,34 @@ message TaskInsert {
   // The ACTUAL start (when the card first entered IN_PROGRESS) is the
   // server-stamped Task.started_at, not this field. Unset = no planned start.
   google.protobuf.Timestamp start_date = 13;
+
+  // УКАЗАНИЯ, НАРИСОВАННЫЕ НА ВЛОЖЕННЫХ КАРТИНКАХ. «Тут шов кривой», «вот эту молнию», «отсюда
+  // досюда» — сказанное стрелкой на самом снимке, а не пересказанное словами в описании.
+  //
+  // ПОЛНАЯ ЗАМЕНА ВМЕСТЕ С СОДЕРЖИМЫМ, ровно как media_ids, и по той же причине: обе стороны
+  // пишет одна форма карточки, и присланный без указаний список означает «указаний больше нет».
+  // Присутствия у repeated-поля нет, поэтому клиент обязан слать то, что прочитал, — тот же
+  // круговой рейс, что у labels и media_ids.
+  //
+  // НАБОР БЕЗ СВОЕЙ КАРТИНКИ СБРАСЫВАЕТСЯ СЕРВЕРОМ: указание на снимке, снятом с карточки,
+  // нельзя ни увидеть, ни убрать, а хранить его значило бы копить невидимое.
+  repeated TaskMediaAnnotations media_annotations = 17;
+}
+
+// TaskMediaAnnotations — указания одной прикреплённой картинки.
+//
+// ТА ЖЕ СТРУКТУРА, ЧТО НА ЭСКИЗЕ ТЕХ-КАРТЫ И НА СНИМКЕ ШАГА СБОРКИ: `TechCardAnnotation`, вместе с
+// её видами, точками, цветом и пунктиром. Имя историческое — примитив указания в системе ОДИН (см.
+// довод миграций 0308/0309), и заводить рядом второй набор видов с второй проверкой ради задачи
+// значило бы развести их на первой же правке: человек рисует одним и тем же жестом, а читатель
+// смотрел бы в две системы.
+//
+// `piece_line_key`/`piece_line_keys` у задачи смысла не имеют (деталей кроя у карточки нет) и
+// сервером ОЧИЩАЮТСЯ: ссылка на деталь чужой тех-карты, которую здесь нечем ни выбрать, ни
+// показать, — это висящий ключ, который однажды напечатают.
+message TaskMediaAnnotations {
+  int32 media_id = 1; // FK media(id); ОБЯЗАН быть одним из media_ids этой же карточки
+  repeated TechCardAnnotation annotations = 2;
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
