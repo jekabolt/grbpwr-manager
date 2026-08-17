@@ -109,6 +109,12 @@ func (s *Server) ListLibraryFiles(ctx context.Context, req *pb_admin.ListLibrary
 		OrderFactor: listOrderOrNewestFirst(req.OrderFactor),
 	})
 	if err != nil {
+		// Предел — довод вызывающего, а не сбой сервера: под Internal он доезжал бы
+		// как «не удалось», и упёршийся в него человек не узнал бы ни причины, ни
+		// того, что делать дальше.
+		if errors.Is(err, entity.ErrLibraryBatchTooLarge) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 		slog.Default().ErrorContext(ctx, "can't list library files", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list files")
 	}
@@ -296,6 +302,11 @@ func (s *Server) AssignLibraryFileTopics(ctx context.Context, req *pb_admin.Assi
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "topic not found")
+		}
+		// Предел проверяется ПЕРЕД вопросом к драйверу: это наша собственная граница,
+		// а не нарушение внешнего ключа, и спрашивать про неё MySQL бессмысленно.
+		if errors.Is(err, entity.ErrLibraryBatchTooLarge) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, "topic_id does not reference an existing topic")

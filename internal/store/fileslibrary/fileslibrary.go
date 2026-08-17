@@ -253,8 +253,8 @@ func (s *Store) FindFilesBySha256(ctx context.Context, sha256 string) ([]entity.
 // ListFiles returns a page of the library plus the total matching count.
 func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) ([]entity.LibraryFile, int, error) {
 	if len(f.TopicIds) > entity.MaxLibraryTopicFilters {
-		return nil, 0, fmt.Errorf("at most %d topics can be combined in one filter, got %d",
-			entity.MaxLibraryTopicFilters, len(f.TopicIds))
+		return nil, 0, fmt.Errorf("%w: at most %d topics can be combined in one filter, got %d",
+			entity.ErrLibraryBatchTooLarge, entity.MaxLibraryTopicFilters, len(f.TopicIds))
 	}
 	limit := f.Limit
 	if limit <= 0 {
@@ -567,7 +567,8 @@ func (s *Store) AssignTopics(ctx context.Context, fileIDs, topicIDs []int, newTo
 		return 0, nil
 	}
 	if len(fileIDs) > maxPageLimit {
-		return 0, fmt.Errorf("at most %d files can be labelled in one call, got %d", maxPageLimit, len(fileIDs))
+		return 0, fmt.Errorf("%w: at most %d files can be labelled in one call, got %d",
+			entity.ErrLibraryBatchTooLarge, maxPageLimit, len(fileIDs))
 	}
 	v, err := s.viewer(ctx)
 	if err != nil {

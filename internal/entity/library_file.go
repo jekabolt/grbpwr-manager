@@ -15,6 +15,13 @@ import (
 var (
 	ErrLibraryFileInUse = errors.New("library file is attached to a task")
 	ErrFileTopicInUse   = errors.New("topic still has files")
+	// ErrLibraryBatchTooLarge is a bound the STORE checks, and it exists as a
+	// named error for exactly one reason: without it the handler cannot tell a
+	// bound from a broken query. Both arrive as a bare error, both get logged and
+	// answered `Internal, "can't assign topics"` — and a person who ran into a
+	// documented limit is told nothing at all, with nothing to try next. A limit
+	// is the caller's argument being wrong, so it has to reach them as such.
+	ErrLibraryBatchTooLarge = errors.New("too many items in one call")
 )
 
 // NewErrLibraryFileInUse wraps ErrLibraryFileInUse with the ids of the tasks
@@ -31,6 +38,14 @@ func NewErrLibraryFileInUse(taskIDs []int) error {
 // the topic. Deleting it anyway would drop them all into «Разобрать» silently.
 func NewErrFileTopicInUse(files int) error {
 	return fmt.Errorf("%w: %d", ErrFileTopicInUse, files)
+}
+
+// NewErrLibraryBatchTooLarge wraps ErrLibraryBatchTooLarge with the bound and
+// the count that broke it. The number is not decoration: "too many" with no
+// limit named is nothing the caller can act on, and the limit lives in the
+// store — the client cannot restate it without the two drifting apart.
+func NewErrLibraryBatchTooLarge(detail string) error {
+	return fmt.Errorf("%w: %s", ErrLibraryBatchTooLarge, detail)
 }
 
 // LibraryFileInsert is the writable payload of one library file: everything the
