@@ -141,7 +141,7 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 	}
 
 	callouts := make([]entity.FittingCallout, 0, len(pb.Callouts))
-	for _, c := range pb.Callouts {
+	for ci, c := range pb.Callouts {
 		if c.Number < 0 {
 			return nil, fmt.Errorf("fitting callout number must not be negative")
 		}
@@ -169,12 +169,28 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		if err := validateUnitInterval(posY, "fitting callout pos_y"); err != nil {
 			return nil, err
 		}
+		// ТОТ ЖЕ свод, что у карточной выноски (calloutGeometryFromPb): вид из закрытого списка,
+		// число якорей по виду, координаты в кадре, цвет из закрытого списка, приведение
+		// бессмысленных пунктира и штриховки. Второй валидатор той же фигуры разошёлся бы с первым
+		// молча — и увидели бы это только на переносе замечания примерки в тех-карту.
+		geom, err := calloutGeometryFromPb(fmt.Sprintf("callouts[%d]", ci), fittingCalloutGeometryPb(c))
+		if err != nil {
+			return nil, err
+		}
 		callouts = append(callouts, entity.FittingCallout{
 			Number:  int(c.Number),
 			Note:    nullStringFromPb(note),
 			MediaId: nullInt32FromPb(c.MediaId),
 			PosX:    posX,
 			PosY:    posY,
+			Kind:    geom.Kind,
+			Points:  geom.Points,
+			Color:   geom.Color,
+			Dashed:  geom.Dashed,
+			Filled:  geom.Filled,
+			// Группа атомарна: молчание про вид — молчание про всю геометрию, и хранимая
+			// переносится по номеру выноски (CarryOmittedFittingCalloutGeometry).
+			KindOmitted: c.Kind == nil,
 		})
 	}
 
@@ -413,6 +429,14 @@ func fittingCalloutsToPb(cs []entity.FittingCallout) []*pb_common.FittingCallout
 			MediaId: pbInt32FromNull(c.MediaId),
 			PosX:    pbDecimalFromNull(c.PosX),
 			PosY:    pbDecimalFromNull(c.PosY),
+			// Вид на чтении ВСЕГДА присутствует, и пустой хранимый читается как PIN: так примерка,
+			// записанная до 0319, читается как то, чем она была, а новый клиент возвращает круглым
+			// рейсом присутствующее поле — то есть никогда не молчит про геометрию по ошибке.
+			Kind:   calloutKindPbPtr(c.Kind),
+			Points: calloutPointsToPb(c.Points),
+			Color:  annotationColorToPb[c.Color],
+			Dashed: c.Dashed,
+			Filled: c.Filled,
 		})
 	}
 	return out

@@ -334,18 +334,25 @@ func annotationPieceKeys(path string, list []string, legacy string) ([]string, e
 	return out, nil
 }
 
-// --- геометрия КАРТОЧНОЙ выноски ---------------------------------------------------------------
+// --- геометрия НУМЕРОВАННОЙ выноски -------------------------------------------------------------
 //
-// Тот же словарь видов и те же правила числа точек, что у выноски на снимке шага, — с одним
-// отличием, и оно принципиально: у карточной выноски НУМЕРОВАННЫЙ МАРКЕР живёт отдельно, в
-// pos_x/pos_y, потому что на него ссылаются номером деталь, операция и дефект. Поэтому `points`
-// здесь держит ТОЛЬКО якоря фигуры, и у пина их ноль, а не один: единственная точка пина — это и
-// есть маркер, и дублировать её в якорях значило бы завести два места для одной координаты,
+// ОДИН свод на ОБЕ выноски — карточную (0309/0310) и примерочную (0319). Тот же словарь видов и те
+// же правила числа точек, что у выноски на снимке шага, — с одним отличием, и оно принципиально: у
+// нумерованной выноски МАРКЕР живёт отдельно, в pos_x/pos_y, потому что на него ссылаются НОМЕРОМ
+// (на карточке — деталь, операция и дефект; на примерке — замечание change-request). Поэтому
+// `points` здесь держит ТОЛЬКО якоря фигуры, и у пина их ноль, а не один: единственная точка пина —
+// это и есть маркер, и дублировать её в якорях значило бы завести два места для одной координаты,
 // которые однажды разойдутся.
+//
+// ВТОРОГО ВАЛИДАТОРА НЕТ И БЫТЬ НЕ ДОЛЖНО. Правил тут пять (вид из закрытого списка, число точек по
+// виду, координата в кадре и не длиннее шести знаков, цвет из закрытого списка, согласованность
+// пунктира со штриховкой), и разойдясь хоть в одном, два экрана начали бы принимать разные фигуры
+// под одним именем — притом молча, потому что расхождение видно только на переносе замечания
+// примерки в тех-карту.
 
-// calloutKindOrPin читает вид ХРАНИМОЙ выноски. Пусто = pin: колонка появилась в 0309 с этим
-// дефолтом, но ряд читателей (архивные снапшоты релизов, клон сезона) отдают сущность в обход
-// колонки, и там поле остаётся нулевой строкой.
+// calloutKindOrPin читает вид ХРАНИМОЙ выноски. Пусто = pin: колонка появилась в 0309 (у примерки —
+// в 0319) с этим дефолтом, но ряд читателей (архивные снапшоты релизов, клон сезона) отдают сущность
+// в обход колонки, и там поле остаётся нулевой строкой.
 func calloutKindOrPin(k entity.TechCardAnnotationKind) entity.TechCardAnnotationKind {
 	if k == "" {
 		return entity.AnnotationKindPin
@@ -361,10 +368,7 @@ func calloutPointsAllowed(k entity.TechCardAnnotationKind) (min, max int, ok boo
 	return k.PointsAllowed()
 }
 
-// calloutGeometryFromPb разбирает вид, якоря и цвет карточной выноски. `path` — путь для отказов
-// («callouts[3]»). Отсутствие вида читается как PIN: весь массив живых карточек написан до этого
-// поля и приезжает с нулевым энумом, и трактовать его отказом значило бы отвергнуть каждую.
-// calloutGeometry — разобранная фигура карточного указания. Структурой, а не пятью возвратами:
+// calloutGeometry — разобранная фигура нумерованного указания. Структурой, а не пятью возвратами:
 // группа атомарна (см. proto), и пять значений подряд в сигнатуре — приглашение перепутать их
 // местами на следующем добавленном поле.
 type calloutGeometry struct {
@@ -375,7 +379,33 @@ type calloutGeometry struct {
 	Filled bool
 }
 
-func calloutGeometryFromPb(path string, c *pb_common.TechCardCallout) (calloutGeometry, error) {
+// calloutGeometryPb — та же группа, как она приезжает С ПРОВОДА. Аргументом-структурой, а не
+// конкретным сообщением: полей у карточной выноски и у выноски примерки разное число, а ФИГУРА у
+// них одна, и валидатор обязан видеть ровно фигуру. Так же он не сможет случайно опереться на
+// поле, которого у второй выноски нет.
+type calloutGeometryPb struct {
+	Kind   *pb_common.TechCardAnnotationKind
+	Points []*pb_common.TechCardAnnotationPoint
+	Color  pb_common.TechCardAnnotationColor
+	Dashed bool
+	Filled bool
+}
+
+// techCardCalloutGeometryPb / fittingCalloutGeometryPb — снимок группы с конкретного сообщения.
+// Две строчки на переходник вместо второго валидатора.
+func techCardCalloutGeometryPb(c *pb_common.TechCardCallout) calloutGeometryPb {
+	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled}
+}
+
+func fittingCalloutGeometryPb(c *pb_common.FittingCallout) calloutGeometryPb {
+	return calloutGeometryPb{Kind: c.Kind, Points: c.Points, Color: c.Color, Dashed: c.Dashed, Filled: c.Filled}
+}
+
+// calloutGeometryFromPb разбирает вид, якоря и цвет нумерованной выноски — карточной или
+// примерочной. `path` — путь для отказов («callouts[3]»). Отсутствие вида читается как PIN: весь
+// массив живых карточек и примерок написан до этого поля и приезжает с нулевым энумом, и трактовать
+// его отказом значило бы отвергнуть каждую.
+func calloutGeometryFromPb(path string, c calloutGeometryPb) (calloutGeometry, error) {
 	var zeroGeom calloutGeometry
 	kindPb, pointsPb, colorPb := c.Kind, c.Points, c.Color
 	kind := entity.AnnotationKindPin
@@ -389,8 +419,10 @@ func calloutGeometryFromPb(path string, c *pb_common.TechCardCallout) (calloutGe
 	}
 	min, max, _ := calloutPointsAllowed(kind)
 	if len(pointsPb) < min || len(pointsPb) > max {
+		// Слова отказа НЕЙТРАЛЬНЫ к экрану: тот же валидатор отвечает и про эскиз карточки, и про
+		// снимок примерки, а путь (`callouts[3].points`) и так называет место точнее любого слова.
 		return zeroGeom, entity.NewFieldViolation(path+".points", "wrong_count", fmt.Sprint(len(pointsPb)),
-			fmt.Sprintf("«%s» на эскизе рисуется по %s якорям (номерной маркер стоит отдельно)", kind, pointsRangeText(min, max)))
+			fmt.Sprintf("«%s» рисуется по %s якорям (нумерованный маркер стоит отдельно)", kind, pointsRangeText(min, max)))
 	}
 	points := make([]entity.TechCardAnnotationPoint, 0, len(pointsPb))
 	for k, p := range pointsPb {
@@ -469,6 +501,22 @@ func calloutKindPbPtr(k entity.TechCardAnnotationKind) *pb_common.TechCardAnnota
 	return &v
 }
 
+// storedCalloutGeometryByNumber индексирует ХРАНИМЫЕ указания по номеру — общее ядро переноса для
+// обеих выносок. Первый выигрывает: номера уникальны по смыслу, а дубль в хранимом — испорченные
+// данные, на которых перенос обязан быть детерминированным (иначе одно и то же сохранение из одной
+// и той же вкладки дважды дало бы разные фигуры).
+func storedCalloutGeometryByNumber[T any](stored []T, number func(T) int, geom func(T) calloutGeometry) map[int]calloutGeometry {
+	out := make(map[int]calloutGeometry, len(stored))
+	for _, c := range stored {
+		n := number(c)
+		if _, seen := out[n]; seen {
+			continue
+		}
+		out[n] = geom(c)
+	}
+	return out
+}
+
 // CarryOmittedCalloutGeometry переносит хранимую геометрию указаний в payload, который про неё не
 // говорил. Сопоставление по НОМЕРУ выноски: номер — та самая идентичность, которой на выноску
 // ссылаются деталь, операция и дефект, и другой у неё нет.
@@ -480,14 +528,14 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 	if stored == nil || tc == nil || len(tc.Callouts) == 0 {
 		return
 	}
-	byNumber := make(map[int]entity.TechCardCallout, len(stored.Callouts))
-	for _, c := range stored.Callouts {
-		// Первый выигрывает: номера уникальны по смыслу, а дубль в хранимом — испорченные данные,
-		// на которых перенос обязан быть детерминированным.
-		if _, seen := byNumber[c.Number]; !seen {
-			byNumber[c.Number] = c
-		}
-	}
+	byNumber := storedCalloutGeometryByNumber(stored.Callouts,
+		func(c entity.TechCardCallout) int { return c.Number },
+		func(c entity.TechCardCallout) calloutGeometry {
+			return calloutGeometry{
+				Kind: calloutKindOrPin(c.Kind), Points: c.Points, Color: c.Color,
+				Dashed: c.Dashed, Filled: c.Filled,
+			}
+		})
 	for i := range tc.Callouts {
 		if !tc.Callouts[i].KindOmitted {
 			continue
@@ -496,13 +544,60 @@ func CarryOmittedCalloutGeometry(stored *entity.TechCard, tc *entity.TechCardIns
 		if !ok {
 			continue
 		}
-		tc.Callouts[i].Kind = calloutKindOrPin(prev.Kind)
+		tc.Callouts[i].Kind = prev.Kind
 		tc.Callouts[i].Points = prev.Points
 		tc.Callouts[i].Color = prev.Color
 		// Пунктир и штриховка в той же группе: молчание про вид — молчание про ВСЁ, что описывает
 		// фигуру. Перенести якоря дуги и потерять её пунктир значило бы отдать в цех другую линию.
 		tc.Callouts[i].Dashed = prev.Dashed
 		tc.Callouts[i].Filled = prev.Filled
+	}
+}
+
+// FittingCalloutGeometryOmitted — говорит ли payload про геометрию хоть одной выноски. Существует
+// затем, чтобы UpdateFitting не платил лишним чтением всей примерки за каждое сохранение НОВОГО
+// клиента: тот шлёт вид всегда, и переносить ему нечего.
+func FittingCalloutGeometryOmitted(f *entity.FittingInsert) bool {
+	if f == nil {
+		return false
+	}
+	for _, c := range f.Callouts {
+		if c.KindOmitted {
+			return true
+		}
+	}
+	return false
+}
+
+// CarryOmittedFittingCalloutGeometry — то же самое для примерки, и по той же причине. Подписи у
+// примерки нет, поэтому цена молчания здесь не «протухшая подпись», а прямая потеря: выноски
+// сохраняются ПОЛНОЙ ЗАМЕНОЙ, и вкладка со старым бандлом, изменившая один только вердикт, стёрла
+// бы каждую мерку и каждую обведённую зону на всех снимках примерки.
+func CarryOmittedFittingCalloutGeometry(stored *entity.Fitting, f *entity.FittingInsert) {
+	if stored == nil || f == nil || len(f.Callouts) == 0 {
+		return
+	}
+	byNumber := storedCalloutGeometryByNumber(stored.Callouts,
+		func(c entity.FittingCallout) int { return c.Number },
+		func(c entity.FittingCallout) calloutGeometry {
+			return calloutGeometry{
+				Kind: calloutKindOrPin(c.Kind), Points: c.Points, Color: c.Color,
+				Dashed: c.Dashed, Filled: c.Filled,
+			}
+		})
+	for i := range f.Callouts {
+		if !f.Callouts[i].KindOmitted {
+			continue
+		}
+		prev, ok := byNumber[f.Callouts[i].Number]
+		if !ok {
+			continue
+		}
+		f.Callouts[i].Kind = prev.Kind
+		f.Callouts[i].Points = prev.Points
+		f.Callouts[i].Color = prev.Color
+		f.Callouts[i].Dashed = prev.Dashed
+		f.Callouts[i].Filled = prev.Filled
 	}
 }
 

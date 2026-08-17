@@ -545,7 +545,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 			return nil, err
 		}
 		path := fmt.Sprintf("callouts[%d]", ci)
-		geom, err := calloutGeometryFromPb(path, c)
+		geom, err := calloutGeometryFromPb(path, techCardCalloutGeometryPb(c))
 		if err != nil {
 			return nil, err
 		}

@@ -169,31 +169,31 @@ func TestCalloutStyleDigestNormalizesStoredParts(t *testing.T) {
 
 func TestCalloutGeometryNormalizesMeaninglessFlags(t *testing.T) {
 	pin := pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_PIN
-	geom, err := calloutGeometryFromPb("callouts[0]", &pb_common.TechCardCallout{
+	geom, err := calloutGeometryFromPb("callouts[0]", techCardCalloutGeometryPb(&pb_common.TechCardCallout{
 		Kind: &pin, Dashed: true, Filled: true,
-	})
+	}))
 	require.NoError(t, err, "бессмысленный флаг — не порча данных: отказ здесь стоил бы дороже")
 	require.False(t, geom.Dashed, "у точки нет линии, которую можно сделать пунктирной")
 	require.False(t, geom.Filled, "у точки нет площади, которую можно заштриховать")
 
 	dim := pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_DIM
-	geom, err = calloutGeometryFromPb("callouts[0]", &pb_common.TechCardCallout{
+	geom, err = calloutGeometryFromPb("callouts[0]", techCardCalloutGeometryPb(&pb_common.TechCardCallout{
 		Kind:   &dim,
 		Points: []*pb_common.TechCardAnnotationPoint{unitPointPb("0.2", "0.5"), unitPointPb("0.5", "0.5")},
 		Dashed: true, Filled: true,
-	})
+	}))
 	require.NoError(t, err)
 	require.True(t, geom.Dashed, "у мерки линия есть")
 	require.False(t, geom.Filled, "а площади нет")
 
 	poly := pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON
-	geom, err = calloutGeometryFromPb("callouts[0]", &pb_common.TechCardCallout{
+	geom, err = calloutGeometryFromPb("callouts[0]", techCardCalloutGeometryPb(&pb_common.TechCardCallout{
 		Kind: &poly,
 		Points: []*pb_common.TechCardAnnotationPoint{
 			unitPointPb("0.1", "0.1"), unitPointPb("0.4", "0.1"), unitPointPb("0.4", "0.5"),
 		},
 		Dashed: true, Filled: true,
-	})
+	}))
 	require.NoError(t, err)
 	require.True(t, geom.Dashed)
 	require.True(t, geom.Filled, "площадь есть только у полигона — и там флаг обязан выжить")
@@ -224,10 +224,10 @@ func TestPolygonAndInkPointCounts(t *testing.T) {
 
 	// Два угла — не область: «замкнуть» отрезок нечем, и отказ обязан назвать это словами.
 	poly := pb_common.TechCardAnnotationKind_TECH_CARD_ANNOTATION_KIND_POLYGON
-	_, err := calloutGeometryFromPb("callouts[0]", &pb_common.TechCardCallout{
+	_, err := calloutGeometryFromPb("callouts[0]", techCardCalloutGeometryPb(&pb_common.TechCardCallout{
 		Kind:   &poly,
 		Points: []*pb_common.TechCardAnnotationPoint{unitPointPb("0.1", "0.1"), unitPointPb("0.4", "0.1")},
-	})
+	}))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "polygon")
 }
