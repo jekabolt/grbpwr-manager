@@ -83,6 +83,13 @@ func TestConvertPbTaskInsertToEntity(t *testing.T) {
 		{"negative tech_card", &pb_common.TaskInsert{Title: "x", TechCardId: -1}},
 		{"negative product", &pb_common.TaskInsert{Title: "x", ProductId: -2}},
 		{"negative fitting", &pb_common.TaskInsert{Title: "x", FittingId: -1}},
+		// Ниже — остальные глубокие ссылки. Перечень неполный уже однажды пропустил sample_id:
+		// отрицательный id проходил гейт, уезжал в стор как Valid и умирал об внешний ключ, то есть
+		// внятный отказ про знак подменялся общим перечнем полей.
+		{"negative archive", &pb_common.TaskInsert{Title: "x", ArchiveId: -1}},
+		{"negative production_run", &pb_common.TaskInsert{Title: "x", ProductionRunId: -1}},
+		{"negative sample", &pb_common.TaskInsert{Title: "x", SampleId: -1}},
+		{"negative project_topic", &pb_common.TaskInsert{Title: "x", ProjectTopicId: -1}},
 		{"zero media id", &pb_common.TaskInsert{Title: "x", MediaIds: []int32{0}}},
 		{"long label", &pb_common.TaskInsert{Title: "x", Labels: []string{string(make([]byte, 65))}}},
 		{"long order_uuid", &pb_common.TaskInsert{Title: "x", OrderUuid: string(make([]byte, 37))}},
@@ -99,12 +106,13 @@ func TestConvertEntityTaskToPb(t *testing.T) {
 	e := &entity.Task{
 		Id: 5,
 		TaskInsert: entity.TaskInsert{
-			Title:      "Shoot the drop",
-			Priority:   entity.TaskPriorityMedium,
-			Labels:     []string{"content"},
-			TechCardId: nullInt32FromPb(2),
-			FittingId:  nullInt32FromPb(7),
-			StartDate:  sql.NullTime{Time: now, Valid: true},
+			Title:          "Shoot the drop",
+			Priority:       entity.TaskPriorityMedium,
+			Labels:         []string{"content"},
+			TechCardId:     nullInt32FromPb(2),
+			FittingId:      nullInt32FromPb(7),
+			ProjectTopicId: nullInt32FromPb(4),
+			StartDate:      sql.NullTime{Time: now, Valid: true},
 		},
 		Board:     entity.TaskBoardContent,
 		Status:    entity.TaskStatusInProgress,
@@ -127,6 +135,11 @@ func TestConvertEntityTaskToPb(t *testing.T) {
 	}
 	if pb.Task.FittingId != 7 || pb.Task.StartDate == nil || pb.StartedAt == nil {
 		t.Errorf("fitting/start fields mismatch: fitting=%d start_date=%v started_at=%v", pb.Task.FittingId, pb.Task.StartDate, pb.StartedAt)
+	}
+	// Проект обязан ехать НАРУЖУ, а не только внутрь: форма задачи сохраняется полной заменой
+	// содержимого, поэтому поле, пропавшее в чтении, стирается первым же нажатием «сохранить».
+	if pb.Task.ProjectTopicId != 4 {
+		t.Errorf("project topic mismatch: %d", pb.Task.ProjectTopicId)
 	}
 	if len(pb.Media) != 1 || pb.Media[0].Id != 9 || len(pb.Task.MediaIds) != 1 || pb.Task.MediaIds[0] != 9 {
 		t.Errorf("media mismatch: media=%+v ids=%+v", pb.Media, pb.Task.MediaIds)

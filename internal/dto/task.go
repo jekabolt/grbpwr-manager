@@ -110,8 +110,11 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	if len(pb.Assignee) > maxVarchar255 {
 		return nil, fmt.Errorf("task assignee must be at most %d characters", maxVarchar255)
 	}
+	// ВСЕ глубокие ссылки разом. sample_id тут не хватало с самого его появления: отрицательный
+	// id проходил гейт, уезжал в стор как Valid и умирал об внешний ключ — то есть внятный
+	// InvalidArgument про знак подменялся общим перечнем полей.
 	if pb.TechCardId < 0 || pb.ProductId < 0 || pb.ArchiveId < 0 || pb.FittingId < 0 ||
-		pb.ProductionRunId < 0 || pb.ProjectTopicId < 0 {
+		pb.ProductionRunId < 0 || pb.SampleId < 0 || pb.ProjectTopicId < 0 {
 		return nil, fmt.Errorf("task deep-link ids must not be negative")
 	}
 	orderUUID := strings.TrimSpace(pb.OrderUuid)

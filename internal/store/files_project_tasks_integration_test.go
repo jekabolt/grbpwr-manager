@@ -352,7 +352,7 @@ func TestTaskProjectTopicMigrationIsRerunnable(t *testing.T) {
 			  AND COLUMN_NAME = 'project_topic_id'`)
 		require.NoError(t, err)
 		require.Equal(t, 1, idx,
-			"индекс на колонке обязан остаться ОДНИМ: ключ, созданный раньше индекса, завёл бы служебный, и следующий проход добавил бы второй")
+			"индекс на колонке обязан остаться ОДНИМ: ловится правка, заводящая ВТОРОЙ явный индекс по той же колонке, и дрейф поведения самой MySQL — а НЕ перестановка шагов миграции, которая его не ломает (см. doc-комментарий выше и шапку 0322)")
 
 		fks, err := storeScalarInt(ctx, `
 			SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS

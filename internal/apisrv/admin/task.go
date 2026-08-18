@@ -15,7 +15,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const taskFKViolationMsg = "tech_card_id, product_id, archive_id, fitting_id, project_topic_id, media_id, or file_id does not reference an existing record"
+// taskFKViolationMsg перечисляет ВСЕ поля карточки, у которых есть внешний ключ и которые поэтому
+// могут доехать сюда как 1452. Перечень неполный хуже, чем никакого: человек шлёт мёртвый sample_id,
+// читает список, не находит в нём своего поля и ищет ошибку не там. order_uuid здесь намеренно нет —
+// у него внешнего ключа не было никогда (0090: «best-effort (no FK)»), и назвать его значило бы
+// пообещать проверку, которой не существует.
+const taskFKViolationMsg = "tech_card_id, product_id, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, media_id, or file_id does not reference an existing record"
 
 // AddTask creates a new kanban task from its content + placement. created_by is
 // stamped from the caller's JWT; the card is appended to its (board,status) column.
