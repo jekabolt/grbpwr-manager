@@ -160,7 +160,7 @@ func (y MarkerYield) Attributable() bool {
 // is how they start to disagree, and the blob is the one that was measured.
 func (y MarkerYield) WithSummaryComposition(sizeID, garments int) (MarkerYield, error) {
 	if y.CompositionKnown() {
-		return y, fmt.Errorf("marker layout already carries a состав (%d sizes); the summary's must not override it", len(y.Composition))
+		return y, fmt.Errorf("marker layout already carries a composition (%d sizes); the summary's must not override it", len(y.Composition))
 	}
 	if sizeID <= 0 {
 		return y, fmt.Errorf("summary size_id must be positive, got %d", sizeID)
@@ -219,7 +219,7 @@ func MarkerYieldFromBlob(blob string) (MarkerYield, error) {
 		// silently doubles TotalUnits, and TotalUnits is the denominator every size-agnostic piece is
 		// split by — the error would land as a wrong yield on a piece the blob never mentions.
 		if err := entity.ValidateMarkerComposition(comp); err != nil {
-			return MarkerYield{}, fmt.Errorf("stored marker layout состав: %w", err)
+			return MarkerYield{}, fmt.Errorf("stored marker layout composition: %w", err)
 		}
 		out.Composition = make(map[int]int, len(comp))
 		for _, e := range comp {
@@ -349,7 +349,7 @@ func (y MarkerYield) PerLayerInstances(pieceLineKey string, sizeID int) MarkerPi
 				name = pieceLineKey
 			}
 			out.Caveats = append(out.Caveats, fmt.Sprintf(
-				"деталь %q: %d экземпляров без градации не делятся нацело между размерами состава (%d изделий), взят пол",
+				"piece %q: %d ungraded instances do not divide evenly between the composition's sizes (%d garments), floored",
 				name, agnostic.Total(), y.TotalUnits))
 		}
 	}

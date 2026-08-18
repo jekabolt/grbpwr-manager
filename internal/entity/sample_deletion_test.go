@@ -48,16 +48,16 @@ func TestClassifySampleDeletionOutstandingMaterialBlocksAndNamesIt(t *testing.T)
 		SampleID: 3,
 		Materials: []SampleOutstandingMaterial{
 			material("Wool Melton 340", "m", "2.400"),
-			material("Кнопка 15 мм", "шт", "0"),
+			material("Snap 15 mm", "pcs", "0"),
 		},
 	})
 	require.False(t, v.Deletable)
 	require.Len(t, v.Blockers, 1)
 	require.Equal(t, SampleBlockerMaterialOutstanding, v.Blockers[0].Reason)
-	require.Equal(t, 1, v.Blockers[0].Count, "считаем материалы с остатком, а не все строки ленты")
+	require.Equal(t, 1, v.Blockers[0].Count, "we count materials with a remainder, not every row of the ledger")
 	// 2.400 в DECIMAL(12,3) — это то, как число ЛЕЖИТ, а не то, сколько отмерил оператор.
-	require.Contains(t, v.Blockers[0].Text, "2.4 m «Wool Melton 340»")
-	require.NotContains(t, v.Blockers[0].Text, "Кнопка")
+	require.Contains(t, v.Blockers[0].Text, "2.4 m “Wool Melton 340”")
+	require.NotContains(t, v.Blockers[0].Text, "Snap")
 }
 
 // Возврат больше выдачи — тоже отказ, но разговор другой: лента разошлась, и семпл единственное,
@@ -70,7 +70,7 @@ func TestClassifySampleDeletionOverReturnIsItsOwnBlocker(t *testing.T) {
 	require.False(t, v.Deletable)
 	require.Len(t, v.Blockers, 1)
 	require.Equal(t, SampleBlockerMaterialOverReturn, v.Blockers[0].Reason)
-	require.Contains(t, v.Blockers[0].Text, "1.5 m «Wool Melton 340»", "печатаем модуль, знак уже сказан словами")
+	require.Contains(t, v.Blockers[0].Text, "1.5 m “Wool Melton 340”", "we print the absolute value, the sign is already said in words")
 }
 
 // Обе причины приходят ЗА ОДИН заход. Оператор, снявший первую и узнавший вторую только со второй
@@ -85,7 +85,7 @@ func TestClassifySampleDeletionReportsEveryBlockerAtOnce(t *testing.T) {
 	require.Len(t, v.Blockers, 2)
 	require.Equal(t, SampleBlockerMaterialOutstanding, v.Blockers[0].Reason)
 	require.Equal(t, SampleBlockerFitting, v.Blockers[1].Reason)
-	require.Contains(t, v.Blockers[1].Text, "2 примерки")
+	require.Contains(t, v.Blockers[1].Text, "2 fittings")
 	require.Contains(t, v.BlockerSummary(), "; ")
 }
 
@@ -117,8 +117,8 @@ func TestClassifySampleDeletionUnnamedMaterialStaysAddressable(t *testing.T) {
 		Materials: []SampleOutstandingMaterial{{MaterialID: 7, Qty: decimal.NewFromInt(3)}},
 	})
 	require.False(t, v.Deletable)
-	require.Contains(t, v.Blockers[0].Text, "материал #7")
-	require.NotContains(t, v.Blockers[0].Text, "«»")
+	require.Contains(t, v.Blockers[0].Text, "material #7")
+	require.NotContains(t, v.Blockers[0].Text, "“”")
 }
 
 // Деньги, которые уйдут из сводки стиля. Количество вернулось (не блокер), а костированная
@@ -134,7 +134,7 @@ func TestClassifySampleDeletionNamesTheCostThatLeavesTheStyle(t *testing.T) {
 		}},
 		Orphans: SampleOrphanCounts{MaterialMovements: 3},
 	})
-	require.True(t, v.Deletable, "деньги не блокируют — оценить прошлое задним числом оператор не может")
+	require.True(t, v.Deletable, "money doesn't block — the operator can't price the past after the fact")
 	requireReason(t, v.Orphans, SampleOrphanStyleCost, "20.00 €")
 }
 
@@ -174,7 +174,7 @@ func TestClassifySampleDeletionSeparatesCascadeFromOrphans(t *testing.T) {
 	require.True(t, v.Deletable)
 	require.Len(t, v.Cascade, 2)
 	require.Equal(t, SampleCascadeMedia, v.Cascade[0].Reason)
-	require.Contains(t, v.Cascade[0].Text, "3 фотографии семпла")
+	require.Contains(t, v.Cascade[0].Text, "3 sample photos")
 	require.Equal(t, SampleCascadeSubstitution, v.Cascade[1].Reason)
 
 	require.Len(t, v.Orphans, 4)
@@ -186,5 +186,5 @@ func TestClassifySampleDeletionSeparatesCascadeFromOrphans(t *testing.T) {
 		SampleOrphanMaterialMovement, SampleOrphanDevExpense, SampleOrphanTask, SampleOrphanNextRound,
 	}, reasons)
 	// Деньги остаются деньгами карточки — вердикт обязан сказать именно это, а не «пропадут».
-	require.Contains(t, v.Orphans[1].Text, "останутся на карточке")
+	require.Contains(t, v.Orphans[1].Text, "will stay on the card")
 }

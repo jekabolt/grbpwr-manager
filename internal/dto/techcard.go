@@ -564,7 +564,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		for _, name := range parts {
 			if len(name) > maxVarchar255 {
 				return nil, entity.NewFieldViolation(path+".parts", "too_long", "",
-					fmt.Sprintf("имя детали в указании — не длиннее %d знаков", maxVarchar255))
+					fmt.Sprintf("a piece name in a callout is at most %d characters", maxVarchar255))
 			}
 		}
 		callouts = append(callouts, entity.TechCardCallout{
@@ -698,7 +698,7 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 				// соседних гейтов — FieldViolation → apierr.Invalid → BadRequest.
 				return nil, entity.NewFieldViolation("approval_state", "high_severity_issue_open",
 					is.Description,
-					"закройте претензию высокой важности или понизьте её — карточка с известной несобираемой операцией на фабрику не уходит")
+					"close the high-severity issue or lower it — a card with a known unbuildable operation doesn't go to the factory")
 			}
 		}
 		// Правило 4: сборка обязана сходиться в одно изделие. Включается только на карточке с
@@ -2631,15 +2631,15 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 				if !ok {
 					return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_mode", i),
 						"unknown fusing mode", p.GetFusingMode().String(),
-						"pick one of: full (вся деталь), seam_allowance (по припуску), strip (полосой заданной ширины)")
+						"pick one of: full (the whole piece), seam_allowance (by the seam allowance), strip (a strip of a given width)")
 				}
 				fusingMode = sql.NullString{String: string(fm), Valid: true}
 			}
 			w, err := nullDecimalFromPb(p.FusingWidthMm)
 			if err != nil {
 				return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_width_mm", i),
-					"ширина клеевой полосы — не число", p.GetFusingWidthMm().GetValue(),
-					"впишите ширину в миллиметрах, например 25")
+					"the fusing strip width is not a number", p.GetFusingWidthMm().GetValue(),
+					"type the width in millimetres, for example 25")
 			}
 			fusingWidth = w
 		}

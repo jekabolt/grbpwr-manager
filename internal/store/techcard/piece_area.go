@@ -353,7 +353,7 @@ func ungradedPieceSizedDiff(sizesByPiece map[string]map[int]bool, ungradedNames 
 		if name == "" {
 			name = p
 		}
-		problems = append(problems, fmt.Sprintf("«%s»: деталь помечена как безразмерная (UNI), но замер прислан по размерам", name))
+		problems = append(problems, fmt.Sprintf("“%s”: the piece is marked ungraded (UNI), but the measurement came in by size", name))
 	}
 	return strings.Join(problems, "; ")
 }
@@ -504,15 +504,15 @@ func ungradedFlipOnSizedAreas(pieces []entity.TechCardPiece, flips map[string]in
 		if name == "" {
 			name = strings.TrimSpace(pieces[i].LineKey)
 		}
-		names = append(names, "«"+name+"»")
+		names = append(names, "“"+name+"”")
 	}
 	return entity.NewFieldViolation(
 		fmt.Sprintf("pieces[%d].ungraded", offenders[0]),
 		"ungraded_piece_has_sized_areas",
 		strings.Join(names, ", "),
-		"сначала перемерьте площади: у детали лежат пер-размерные замеры, а у неградуируемой детали бывает "+
-			"только один — безразмерный. Пересчитайте площади этой ткани на вкладке выкроек (или снимите "+
-			"пометку UNI); сервер не стирает измеренную геометрию сам")
+		"re-measure the areas first: the piece holds per-size measurements, while an ungraded piece has "+
+			"only one — sizeless. recompute the areas of this fabric on the patterns tab (or clear the "+
+			"UNI mark); the server doesn't erase measured geometry by itself")
 }
 
 // sameMeasurement reports whether a submitted set is byte-for-byte what is already stored, under the
@@ -616,7 +616,7 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 	scopeKey := strings.TrimSpace(in.ScopeKey)
 	if scopeKey == "" {
 		return out, entity.NewFieldViolation("scope_key", "required", "",
-			"name the fabric scope: its назначение, or the BOM line's line_key when the card has not been sorted")
+			"name the fabric scope: its purpose, or the BOM line's line_key when the card has not been sorted")
 	}
 	if len(in.Rows) == 0 {
 		// An empty set is NOT «this fabric needs no pieces» — it is a parse that found nothing, and
@@ -678,7 +678,7 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		mine := sheetsByScope[scopeKey]
 		if len(mine) == 0 {
 			return entity.NewFieldViolation("scope_key", "scope_has_no_sheets", scopeKey,
-				"this fabric scope carries no pattern sheets on the server — upload them, or check that the scope key matches the card's назначение / line_key")
+				"this fabric scope carries no pattern sheets on the server — upload them, or check that the scope key matches the card's purpose / line_key")
 		}
 		if diff := sheetSetDiff(mine, in.SheetLineKeys); diff != "" {
 			return entity.NewFieldViolation("sheet_line_keys", "sheet_set_mismatch", diff,
@@ -722,7 +722,7 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 			// см. scopeBlockRefs) это остаётся ЕДИНСТВЕННОЙ живой причиной пустоты здесь — значит
 			// именно её и надо называть первой.
 			return entity.NewFieldViolation("scope_key", "scope_has_no_block_links", scopeKey,
-				"this fabric scope has no SAVED блок→деталь links, so a complete set cannot be proven. Open «↔ детали кроя» for this fabric on the PATTERNS tab, save the mapping, then save the card — a mapping that exists only in the form is invisible here")
+				"this fabric scope has no SAVED block→piece links, so a complete set cannot be proven. Open “↔ cut pieces” for this fabric on the PATTERNS tab, save the mapping, then save the card — a mapping that exists only in the form is invisible here")
 		}
 		// Детали карточки — для отдельной, более понятной жалобы на ключ, которого вообще нет.
 		//
@@ -835,7 +835,7 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		// нет.
 		if diff := ungradedPieceSizedDiff(sizesByPiece, ungradedNames); diff != "" {
 			return entity.NewFieldViolation("areas", "ungraded_piece_measured_by_size", diff,
-				"деталь помечена как безразмерная (UNI): её контур один на весь ряд, поэтому у неё бывает ровно одна строка замера — без размера. Либо снимите пометку UNI на вкладке деталей кроя, либо померьте эту деталь один раз")
+				"the piece is marked ungraded (UNI): its contour is one for the whole size range, so it has exactly one measurement row — with no size. either clear the UNI mark on the cut pieces tab, or measure this piece once")
 		}
 		if diff := sizeCoverageDiff(sizesByPiece, cardSizeOrder); diff != "" {
 			return entity.NewFieldViolation("areas", "size_set_incomplete", diff,

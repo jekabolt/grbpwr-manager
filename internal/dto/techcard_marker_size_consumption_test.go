@@ -161,7 +161,7 @@ func TestSummaryEmitsConvergingPerSizeConsumption(t *testing.T) {
 	// and this is still the field a client copies into a sizeless costing row.
 	require.Nil(t, pb.ConsumptionPerUnitCm)
 	require.NotEmpty(t, pb.ScalarApplyRefusal)
-	require.Contains(t, pb.ScalarApplyRefusal, "ПО РАЗМЕРАМ", "the remedy now exists and must be named")
+	require.Contains(t, pb.ScalarApplyRefusal, "PER SIZE", "the remedy now exists and must be named")
 	require.NotContains(t, pb.ScalarApplyRefusal, "Ф2.4", "and must stop pointing at a future phase")
 	require.Equal(t, int32(5), pb.TotalUnits, "derived from the same slice as the composition above")
 }
@@ -204,5 +204,5 @@ func TestMixedSummaryWithoutAreasEmitsNoPerSizeNumbers(t *testing.T) {
 		require.Nil(t, c.AreaPerGarmentCm2)
 	}
 	require.Nil(t, pb.ConsumptionPerUnitCm)
-	require.Contains(t, pb.ScalarApplyRefusal, "Пересохраните")
+	require.Contains(t, pb.ScalarApplyRefusal, "re-save the marker")
 }

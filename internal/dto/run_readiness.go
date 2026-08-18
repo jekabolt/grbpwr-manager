@@ -93,7 +93,7 @@ func ComputeProductionRunReadiness(in RunReadinessInput) RunReadinessResult {
 		res.Report.Card = []entity.RunReadinessFinding{{
 			Key:      entity.RunReadinessKeyCardAuxiliary,
 			Severity: entity.RunReadinessOK,
-			Label:    "вспомогательная карточка — гейт норм ткани к ней не применяется",
+			Label:    "auxiliary card — the cloth norm gate does not apply to it",
 			Target:   entity.RunReadinessTarget{TechCardId: card.Id},
 		}}
 		return res
@@ -158,29 +158,29 @@ func (b *runReadinessBuilder) cardChecks() {
 	case b.in.ReleaseId <= 0:
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyReleaseFrozen, Severity: entity.RunReadinessWarning,
-			Label:  "прогон планируется от замороженного релиза",
-			Detail: "релиз не выбран — прогон планируется от ЖИВОЙ карточки: норма не заморожена, и плановая цена прогона снимется с карточки такой, какой она окажется в момент создания. Пересъёмка нормы или правка рецепта до этого момента молча изменит плановую себестоимость этого прогона",
+			Label:  "the run is planned against a frozen release",
+			Detail: "no release is picked — the run is planned against the LIVE card: the norm is not frozen, and the planned run cost is taken off the card as it stands at the moment of creation. Re-capturing the norm or editing the recipe before that moment silently changes this run's planned unit cost",
 			Target: b.target(),
 		})
 	case b.in.Release == nil:
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyReleaseFrozen, Severity: entity.RunReadinessBlocker,
-			Label:  "прогон планируется от замороженного релиза",
-			Detail: fmt.Sprintf("релиза #%d не существует", b.in.ReleaseId),
+			Label:  "the run is planned against a frozen release",
+			Detail: fmt.Sprintf("release #%d does not exist", b.in.ReleaseId),
 			Target: b.target(),
 		})
 	case b.in.Release.TechCardId != card.Id:
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyReleaseFrozen, Severity: entity.RunReadinessBlocker,
-			Label: "прогон планируется от замороженного релиза",
-			Detail: fmt.Sprintf("релиз #%d принадлежит карточке #%d, а не этой",
+			Label: "the run is planned against a frozen release",
+			Detail: fmt.Sprintf("release #%d belongs to card #%d, not to this one",
 				b.in.ReleaseId, b.in.Release.TechCardId),
 			Target: b.target(),
 		})
 	default:
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyReleaseFrozen, Severity: entity.RunReadinessOK,
-			Label:  "прогон планируется от замороженного релиза",
+			Label:  "the run is planned against a frozen release",
 			Target: b.target(),
 		})
 	}
@@ -189,12 +189,12 @@ func (b *runReadinessBuilder) cardChecks() {
 	if len(card.SizeIds) > 0 {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyCardSizeRange, Severity: entity.RunReadinessOK,
-			Label: "у карточки есть размерный ряд", Target: b.target(),
+			Label: "the card has a size range", Target: b.target(),
 		})
 	} else {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyCardSizeRange, Severity: entity.RunReadinessBlocker,
-			Label: "у карточки есть размерный ряд", Detail: "размерный ряд пуст — планировать нечего",
+			Label: "the card has a size range", Detail: "the size range is empty — there is nothing to plan",
 			Target: b.target(),
 		})
 	}
@@ -203,13 +203,13 @@ func (b *runReadinessBuilder) cardChecks() {
 	if len(card.Pieces) > 0 {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyCardPieces, Severity: entity.RunReadinessOK,
-			Label: "на карточке заведены детали кроя", Target: b.target(),
+			Label: "the card has cut pieces", Target: b.target(),
 		})
 	} else {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyCardPieces, Severity: entity.RunReadinessBlocker,
-			Label:  "на карточке заведены детали кроя",
-			Detail: "ни одной детали кроя — раскроить изделие не по чему",
+			Label:  "the card has cut pieces",
+			Detail: "not a single cut piece — there is nothing to cut the garment from",
 			Target: b.target(),
 		})
 	}
@@ -238,13 +238,13 @@ func (b *runReadinessBuilder) cardChecks() {
 	if len(unaliased) == 0 {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyCardPiecesDxfMatched, Severity: entity.RunReadinessOK,
-			Label: "каждая деталь кроя сопоставлена с блоком DXF", Target: b.target(),
+			Label: "every cut piece is matched to a DXF block", Target: b.target(),
 		})
 	} else {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyCardPiecesDxfMatched, Severity: entity.RunReadinessWarning,
-			Label: "каждая деталь кроя сопоставлена с блоком DXF",
-			Detail: fmt.Sprintf("без блока DXF: %s (%d из %d) — раскладка не узнает эти детали в файле",
+			Label: "every cut piece is matched to a DXF block",
+			Detail: fmt.Sprintf("without a DXF block: %s (%d of %d) — a marker will not recognise these pieces in the file",
 				strings.Join(unaliased, ", "), len(unaliased), len(card.Pieces)),
 			Target: b.target(),
 		})
@@ -260,24 +260,24 @@ func (b *runReadinessBuilder) cardChecks() {
 		if entity.ResolveFabricScope(p.FabricPurpose.String, p.BomLineKey.String, b.rollGoods).Live() {
 			continue
 		}
-		dangling = append(dangling, fmt.Sprintf("лист %q", patternLabel(p)))
+		dangling = append(dangling, fmt.Sprintf("sheet %q", patternLabel(p)))
 	}
 	for _, a := range card.PieceDxfAliases {
 		if a.Scope(b.rollGoods).Live() {
 			continue
 		}
-		dangling = append(dangling, fmt.Sprintf("алиас %q", a.BlockName))
+		dangling = append(dangling, fmt.Sprintf("alias %q", a.BlockName))
 	}
 	if len(dangling) == 0 {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyPatternBindingResolved, Severity: entity.RunReadinessOK,
-			Label: "каждый лист выкройки и алиас привязан к живой рулонной строке", Target: b.target(),
+			Label: "every pattern sheet and alias is bound to a live roll-goods line", Target: b.target(),
 		})
 	} else {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyPatternBindingResolved, Severity: entity.RunReadinessWarning,
-			Label: "каждый лист выкройки и алиас привязан к живой рулонной строке",
-			Detail: fmt.Sprintf("привязка висит в пустоте у %d: %s — строку BOM удалили или увели из рулонных",
+			Label: "every pattern sheet and alias is bound to a live roll-goods line",
+			Detail: fmt.Sprintf("the binding dangles on %d: %s — the BOM line was deleted or moved out of roll goods",
 				len(dangling), strings.Join(dangling, ", ")),
 			Target: b.target(),
 		})
@@ -395,8 +395,8 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 		if cw == nil {
 			add(entity.RunReadinessFinding{
 				Key: entity.RunReadinessKeyColorwayLive, Severity: entity.RunReadinessBlocker,
-				Label:  "колорвей принадлежит этой карточке и не архивирован",
-				Detail: fmt.Sprintf("продукта #%d нет среди живых колорвеев этой карточки — он либо чужой, либо архивирован", cid),
+				Label:  "the colourway belongs to this card and is not archived",
+				Detail: fmt.Sprintf("product #%d is not among this card's live colourways — it is either someone else's or archived", cid),
 				Target: tgt,
 			})
 			// Everything below is about THIS card's recipe, and there is none for a product that is
@@ -407,7 +407,7 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 		}
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyColorwayLive, Severity: entity.RunReadinessOK,
-			Label: "колорвей принадлежит этой карточке и не архивирован", Target: tgt,
+			Label: "the colourway belongs to this card and is not archived", Target: tgt,
 		})
 
 		// slot_article / slot_norm — ONE row per key per colourway, listing every offending slot in
@@ -419,8 +419,8 @@ func (b *runReadinessBuilder) colorwayChecks(plan *pb_admin.GetProductionRunMate
 			label string
 			lead  string
 		}{
-			{entity.RunReadinessKeySlotArticle, "у каждого обязательного слота есть артикул", "без артикула (ни пина колорвея, ни дефолта слота)"},
-			{entity.RunReadinessKeySlotNorm, "у каждого обязательного слота есть норма расхода на каждый планируемый размер", "без нормы расхода"},
+			{entity.RunReadinessKeySlotArticle, "every required slot has an article", "without an article (neither a colourway pin nor a slot default)"},
+			{entity.RunReadinessKeySlotNorm, "every required slot has a consumption norm for every planned size", "without a consumption norm"},
 		} {
 			hits := blocked[cid][spec.key]
 			if len(hits) == 0 {
@@ -491,14 +491,14 @@ func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base
 		switch {
 		case len(pl.mains) >= 2:
 			conflicts = append(conflicts, offender{
-				detail: fmt.Sprintf("деталь %q: %d основные ткани (%s) — цельная деталь кроится из одной основной",
+				detail: fmt.Sprintf("piece %q: %d main fabrics (%s) — a whole piece is cut from one main fabric",
 					name, len(pl.mains), strings.Join(pl.layerNames(pl.mains), ", ")),
 				bom: pl.layers[pl.mains[0]].bom,
 			})
 			conflictSeverity = entity.RunReadinessBlocker
 		case pl.mainConflict():
 			conflicts = append(conflicts, offender{
-				detail: fmt.Sprintf("деталь %q: у слоя %s не задано назначение рядом с другими слоями — не доказать, что это не вторая основная",
+				detail: fmt.Sprintf("piece %q: layer %s carries no purpose alongside the other layers — there is no proving it is not a second main fabric",
 					name, strings.Join(pl.layerNames(pl.unsorted), ", ")),
 				bom: pl.layers[pl.unsorted[0]].bom,
 			})
@@ -519,7 +519,7 @@ func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base
 					continue
 				}
 				conflicts = append(conflicts, offender{
-					detail: fmt.Sprintf("деталь %q: роль «%s» у %d строк (%s)",
+					detail: fmt.Sprintf("piece %q: role “%s” on %d lines (%s)",
 						name, entity.PieceLayerRoleLabel(role), len(idxs), strings.Join(pl.layerNames(idxs), ", ")),
 					bom: pl.layers[idxs[0]].bom,
 				})
@@ -537,7 +537,7 @@ func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base
 				roles = append(roles, entity.PieceLayerRoleLabel(r))
 			}
 			mainless = append(mainless, offender{
-				detail: fmt.Sprintf("деталь %q привязана к %s, но не к основной ткани", name, strings.Join(roles, ", ")),
+				detail: fmt.Sprintf("piece %q is bound to %s but not to a main fabric", name, strings.Join(roles, ", ")),
 				bom:    pl.layers[0].bom,
 			})
 		}
@@ -545,7 +545,7 @@ func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base
 		// П3: детальная строка на fabric-строку без назначения — роль слоя неизвестна.
 		for _, li := range pl.unsorted {
 			unsorted = append(unsorted, offender{
-				detail: fmt.Sprintf("ткань %q (деталь %q)", pl.layers[li].bom.Name, name),
+				detail: fmt.Sprintf("fabric %q (piece %q)", pl.layers[li].bom.Name, name),
 				bom:    pl.layers[li].bom,
 			})
 		}
@@ -573,19 +573,19 @@ func (b *runReadinessBuilder) pieceLayerChecks(cw *entity.TechCardColorway, base
 	}
 
 	emit(entity.RunReadinessKeyPieceRoleConflict,
-		"роли слоёв деталей не конфликтуют",
-		"конфликт ролей",
-		"Оставь детали одну основную ткань или задай второй строке её назначение на вкладке BOM (подкладка, дублерин, контраст…).",
+		"piece layer roles do not conflict",
+		"role conflict",
+		"Leave the piece one main fabric, or set the second line's purpose on the BOM tab (lining, interfacing, contrast…).",
 		conflicts, conflictSeverity)
 	emit(entity.RunReadinessKeyPieceMainFabric,
-		"у каждой детали со слоями есть основная ткань",
-		"деталь без основной",
-		"Добавь строку с тканью назначения «основной материал» — или подтверди, что состав детали такой и есть.",
+		"every piece with layers has a main fabric",
+		"piece without a main fabric",
+		"Add a fabric line with the purpose “main fabric” — or confirm that the piece really is composed this way.",
 		mainless, entity.RunReadinessWarning)
 	emit(entity.RunReadinessKeyPieceFabricSorted,
-		"ткани деталей разложены по назначению",
-		"назначение не задано — роль слоя неизвестна",
-		"Задай назначение строке на вкладке BOM.",
+		"piece fabrics are sorted by purpose",
+		"purpose is not set — the layer role is unknown",
+		"Set the line's purpose on the BOM tab.",
 		unsorted, entity.RunReadinessWarning)
 }
 
@@ -636,15 +636,15 @@ func (b *runReadinessBuilder) normChecks(cw *entity.TechCardColorway, base entit
 		if marker.IsLegacyNorm() {
 			add(entity.RunReadinessFinding{
 				Key: entity.RunReadinessKeyNormConditionsRecorded, Severity: entity.RunReadinessBlocker,
-				Label: "у нормы записаны условия съёмки",
-				Detail: fmt.Sprintf("раскладка %q снята до Ф3 и не говорит, по какому контуру и с каким припуском её мерили — «старая норма». Пересними её, чтобы норма стала проверяемой",
+				Label: "the norm records the conditions it was captured under",
+				Detail: fmt.Sprintf("marker %q was captured before phase 3 and does not say which contour and which seam allowance it was measured with — a “legacy norm”. Re-capture it to make the norm verifiable",
 					marker.Name),
 				Target: tgt,
 			})
 		} else {
 			add(entity.RunReadinessFinding{
 				Key: entity.RunReadinessKeyNormConditionsRecorded, Severity: entity.RunReadinessOK,
-				Label: "у нормы записаны условия съёмки", Target: tgt,
+				Label: "the norm records the conditions it was captured under", Target: tgt,
 			})
 		}
 
@@ -666,7 +666,7 @@ func (b *runReadinessBuilder) workshopSeamAllowance() decimal.NullDecimal {
 // раскладка whose conditions the caller may then judge — nil when there is none to judge.
 func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bom *entity.TechCardBomItem,
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) *entity.TechCardMarkerSummary {
-	const label = "норма расхода взята из нормировочной раскладки"
+	const label = "the consumption norm is taken from the norm marker"
 
 	// НОРМА С ВЫКРОЕК (0294) — свой ответ, а не «введена руками».
 	//
@@ -702,7 +702,7 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 			add(entity.RunReadinessFinding{
 				Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessBlocker,
 				Label: label,
-				Detail: fmt.Sprintf("расход по слоту %q снят с выкроек — это NETTO площадь деталей, поделённая на раскройную ширину, без межлекальных выпадов, кромки и концов настила. Процент раскроя у слота НЕ ЗАДАН, поэтому потребность и себестоимость идут по чистой площади и занижены. Задайте процент раскроя слота или снимите норму с раскладки",
+				Detail: fmt.Sprintf("consumption on slot %q is taken from the patterns — that is the NET area of the pieces divided by the cutting width, without waste between pieces, selvedge or lay ends. The slot's wastage percent is NOT SET, so the requirement and the unit cost go by bare area and are understated. Set the slot's wastage percent, or capture the norm from a marker",
 					bom.Name),
 				Target: tgt,
 			})
@@ -711,17 +711,17 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 		// Процент печатается ТОЛЬКО когда он есть: на строке без нормы (см. выше) его может не быть
 		// вовсе, и `.Decimal` у невалидного NullDecimal — это ноль, который прочитался бы как
 		// заявленный ноль отходов. Худший вид неверного числа: правдоподобный.
-		pct := "не задан"
+		pct := "not set"
 		if declaredPct.Valid {
 			pct = declaredPct.Decimal.String() + "%"
 			if b.in.ActualWastagePercent.Valid {
-				pct += " (фактический процент прогона, он замещает слотовый)"
+				pct += " (the run's actual percent, it replaces the slot's)"
 			}
 		}
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessWarning,
 			Label: label,
-			Detail: fmt.Sprintf("расход по слоту %q снят с выкроек (NETTO площадь деталей ÷ раскройная ширина), отходы доначисляет процент раскроя слота — %s. Гейт это принимает: выкройки есть раньше раскладки, и норма по ним проверяема, в отличие от набранной руками. Но условия съёмки проверить не по чему — раскладки за такой нормой нет, и коэффициент раскроя артикула её не трогает",
+			Detail: fmt.Sprintf("consumption on slot %q is taken from the patterns (NET area of the pieces ÷ cutting width), and the slot's wastage percent adds the waste on top — %s. The gate accepts this: patterns exist before a marker does, and a norm built from them is verifiable, unlike one typed by hand. But there are no capture conditions to check — no marker stands behind such a norm, and the article's cutting coefficient does not touch it",
 				bom.Name, pct),
 			Target: tgt,
 		})
@@ -735,7 +735,7 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessWarning,
 			Label: label,
-			Detail: fmt.Sprintf("расход по слоту %q введён руками (consumption_source='manual'), а не снят с раскладки. Гейт это принимает — без ручного ввода первый же странный DXF останавливал бы производство — но проверить условия съёмки не по чему, и костинг помечает такую норму ручной",
+			Detail: fmt.Sprintf("consumption on slot %q was entered by hand (consumption_source='manual') rather than captured from a marker. The gate accepts this — without manual entry the first odd DXF would halt production — but there are no capture conditions to check, and costing marks such a norm as manual",
 				bom.Name),
 			Target: tgt,
 		})
@@ -745,12 +745,12 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 	scope := entity.NormScope{BomItemId: int64(bom.Id), Bound: true}
 	winner, contenders, ok := entity.SelectNorm(b.normPeers, scope)
 	if !ok {
-		detail := fmt.Sprintf("расход по слоту %q записан как снятый с раскладки, но ни одна раскладка этой ткани не отмечена нормой", bom.Name)
+		detail := fmt.Sprintf("consumption on slot %q is recorded as captured from a marker, but no marker of this fabric is set as the norm", bom.Name)
 		// The orphaned-norm hint. fk_tcm_bom is ON DELETE SET NULL (0257), so deleting a BOM line
 		// moves that line's norm into the «no cloth» scope instead of destroying it. Without this
 		// sentence the operator cannot find their раскладка and re-designates a new one over the top.
 		if orphan, _, orphaned := entity.SelectNorm(b.normPeers, entity.NormScope{}); orphaned {
-			detail += fmt.Sprintf(". На карточке есть норма БЕЗ ТКАНИ — раскладка %q: похоже, слот BOM удаляли, и привязка обнулилась (ON DELETE SET NULL). Привяжите её к слоту заново", orphan.Name)
+			detail += fmt.Sprintf(". The card carries a norm WITH NO FABRIC — marker %q: it looks like a BOM slot was deleted and the binding was nulled (ON DELETE SET NULL). Bind it to the slot again", orphan.Name)
 		}
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessBlocker,
@@ -779,15 +779,15 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 		}
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyNormMultiple, Severity: entity.RunReadinessWarning,
-			Label: "на ткани отмечена ровно одна норма",
-			Detail: fmt.Sprintf("норм отмечено %d: %s. Действует #%d %q (последняя изменённая) — выбор одинаков у всех читателей, но это может быть не та раскладка, которую имели в виду",
+			Label: "exactly one norm is set on the fabric",
+			Detail: fmt.Sprintf("%d norms are set: %s. #%d %q applies (the last edited) — the choice is the same for every reader, but it may not be the marker that was meant",
 				len(contenders), strings.Join(names, ", "), winner.Id, winner.Name),
 			Target: t,
 		})
 	} else {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyNormMultiple, Severity: entity.RunReadinessOK,
-			Label: "на ткани отмечена ровно одна норма", Target: t,
+			Label: "exactly one norm is set on the fabric", Target: t,
 		})
 	}
 	if marker == nil {
@@ -800,20 +800,20 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 
 func (b *runReadinessBuilder) seamAllowanceRow(m *entity.TechCardMarkerSummary, standard decimal.NullDecimal,
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) {
-	const label = "припуск нормы не меньше требуемого"
+	const label = "the norm's seam allowance is not less than required"
 	a := m.Allowance()
 	sev := entity.NormSeamAllowance(a, standard)
 	detail := ""
 	switch {
 	case sev == entity.RunReadinessOK:
 	case !a.Recorded:
-		detail = "припуск съёмки не записан — сравнивать не с чем (см. строку об условиях съёмки)"
+		detail = "the capture's seam allowance was not recorded — there is nothing to compare against (see the capture conditions row)"
 	case !standard.Valid:
-		detail = "эталон припуска не задан ни на карточке, ни в цехе — вердикта нет. Ноль здесь ЗАКОННАЯ настройка («выкройки несут линию кроя»), поэтому подставить его вместо «не задано» нельзя"
+		detail = "the required seam allowance is set neither on the card nor in the workshop — there is no verdict. Zero here is a LEGITIMATE setting (“the patterns carry the cut line”), so it cannot be substituted for “not set”"
 	case sev == entity.RunReadinessBlocker:
-		detail = fmt.Sprintf("на раскладке %s мм припуска, требуется %s мм", a.Mm.String(), standard.Decimal.String())
+		detail = fmt.Sprintf("the marker carries %s mm of seam allowance, %s mm is required", a.Mm.String(), standard.Decimal.String())
 	default:
-		detail = fmt.Sprintf("на раскладке не меньше %s мм припуска при требуемых %s мм, но контурная половина не замерена — известна только НИЖНЯЯ ГРАНИЦА, и она ниже эталона. Утверждать нарушение по нижней границе нельзя",
+		detail = fmt.Sprintf("the marker carries at least %s mm of seam allowance against the required %s mm, but the contour half was not measured — only the LOWER BOUND is known, and it is below the requirement. A violation cannot be asserted from a lower bound",
 			a.Mm.String(), standard.Decimal.String())
 	}
 	add(entity.RunReadinessFinding{Key: entity.RunReadinessKeyNormSeamAllowance, Severity: sev,
@@ -822,7 +822,7 @@ func (b *runReadinessBuilder) seamAllowanceRow(m *entity.TechCardMarkerSummary, 
 
 func (b *runReadinessBuilder) flipPolicyRow(m *entity.TechCardMarkerSummary, bom *entity.TechCardBomItem,
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) {
-	const label = "политика переворота нормы не мягче, чем требует ткань"
+	const label = "the norm's flip policy is not laxer than the fabric requires"
 	scope := entity.MarkerFabricScope(bom.LineKey, b.dirLines)
 	dir, unknownLines, known := entity.ScopeFabricDirection(scope, b.dirLines)
 	sev := entity.NormFlipPolicy(dir, known, m.AllowFlip)
@@ -837,11 +837,11 @@ func (b *runReadinessBuilder) flipPolicyRow(m *entity.TechCardMarkerSummary, bom
 		for _, l := range unknownLines {
 			names = append(names, fabricLineLabel(l))
 		}
-		detail = fmt.Sprintf("направление ткани не заполнено: %s — пока оно неизвестно, сказать, законен ли переворот, нельзя", strings.Join(names, ", "))
+		detail = fmt.Sprintf("fabric direction is not filled in: %s — while it is unknown, there is no saying whether flipping is legitimate", strings.Join(names, ", "))
 	case !m.AllowFlip.Valid:
-		detail = fmt.Sprintf("ткань односторонняя, а раскладка %q не записала, разрешался ли при съёмке переворот детали — вердикта нет", m.Name)
+		detail = fmt.Sprintf("the fabric is one-way, and marker %q did not record whether flipping a piece was allowed at capture — there is no verdict", m.Name)
 	default:
-		detail = fmt.Sprintf("ткань односторонняя, а раскладка %q снята С РАЗРЕШЁННЫМ переворотом: измеренную длину на этой ткани не воспроизвести", m.Name)
+		detail = fmt.Sprintf("the fabric is one-way, and marker %q was captured WITH FLIPPING ALLOWED: the measured length cannot be reproduced on this fabric", m.Name)
 	}
 	add(entity.RunReadinessFinding{Key: entity.RunReadinessKeyNormFlipPolicy, Severity: sev,
 		Label: label, Detail: detail, Target: tgt})
@@ -856,16 +856,16 @@ func fabricLineLabel(l entity.FabricDirectionLine) string {
 
 func (b *runReadinessBuilder) pieceSetRow(m *entity.TechCardMarkerSummary,
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) {
-	const label = "набор деталей карточки не менялся после съёмки нормы"
+	const label = "the card's piece set has not changed since the norm was captured"
 	status := m.PieceSetStatus()
 	sev := entity.NormPieceSet(status)
 	detail := ""
 	switch sev {
 	case entity.RunReadinessOK:
 	case entity.RunReadinessBlocker:
-		detail = fmt.Sprintf("набор деталей кроя изменился после того, как была снята раскладка %q — норма посчитана по другому изделию", m.Name)
+		detail = fmt.Sprintf("the cut piece set changed after marker %q was captured — the norm was measured on a different garment", m.Name)
 	default:
-		detail = fmt.Sprintf("отпечаток набора деталей у раскладки %q не записан (снята до Ф3) либо не вычисляется сегодня — «не проверено», а НЕ «изменился»", m.Name)
+		detail = fmt.Sprintf("the piece set digest of marker %q was not recorded (captured before phase 3) or is not computed today — “not checked”, NOT “changed”", m.Name)
 	}
 	add(entity.RunReadinessFinding{Key: entity.RunReadinessKeyNormPieceSet, Severity: sev,
 		Label: label, Detail: detail, Target: tgt})
@@ -873,7 +873,7 @@ func (b *runReadinessBuilder) pieceSetRow(m *entity.TechCardMarkerSummary,
 
 func (b *runReadinessBuilder) widthRow(m *entity.TechCardMarkerSummary, materialID int,
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) {
-	const label = "ширина съёмки нормы не больше сегодняшней полезной ширины артикула"
+	const label = "the norm's capture width is not greater than the article's usable width today"
 	var (
 		selvedge = decimal.Zero
 		nominal  decimal.NullDecimal
@@ -890,16 +890,16 @@ func (b *runReadinessBuilder) widthRow(m *entity.TechCardMarkerSummary, material
 	// the catalogue), and only one of them is about buying cloth.
 	switch v.Basis {
 	case entity.NormWidthBasisNone:
-		detail = "у артикула нет ни измеренной ширины лота, ни ширины в каталоге — сравнивать не с чем"
+		detail = "the article has neither a measured lot width nor a catalogue width — there is nothing to compare against"
 	case entity.NormWidthBasisLot:
 		if v.Severity != entity.RunReadinessOK {
-			detail = fmt.Sprintf("раскладка %q снята на %s см кроя, а самый узкий доступный лот меряется %s см (минус кромка %s см с каждого края = %s см кроя)",
+			detail = fmt.Sprintf("marker %q was captured at %s cm of cutting width, and the narrowest available lot measures %s cm (less %s cm of selvedge on each edge = %s cm of cutting width)",
 				m.Name, m.FabricWidthCm.String(), v.MeasuredRollCm.Decimal.String(),
 				selvedge.String(), v.TodayCuttingCm.Decimal.String())
 		}
 	case entity.NormWidthBasisNominal:
 		if v.Severity != entity.RunReadinessOK {
-			detail = fmt.Sprintf("раскладка %q снята на %s см кроя, а номинал артикула за вычетом кромки даёт %s см. Измеренных лотов у артикула нет",
+			detail = fmt.Sprintf("marker %q was captured at %s cm of cutting width, and the article's nominal less the selvedge gives %s cm. The article has no measured lots",
 				m.Name, m.FabricWidthCm.String(), v.TodayCuttingCm.Decimal.String())
 		}
 	}
@@ -936,15 +936,15 @@ func (b *runReadinessBuilder) runChecks(plan *pb_admin.GetProductionRunMaterialP
 	if len(stray) == 0 {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeySizesInRange, Severity: entity.RunReadinessOK,
-			Label: "каждый планируемый размер входит в размерный ряд карточки", Target: b.target(),
+			Label: "every planned size is in the card's size range", Target: b.target(),
 		})
 	} else {
 		t := b.target()
 		t.SizeId = stray[0]
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeySizesInRange, Severity: entity.RunReadinessBlocker,
-			Label:  "каждый планируемый размер входит в размерный ряд карточки",
-			Detail: fmt.Sprintf("вне ряда: %s", joinInts(stray)),
+			Label:  "every planned size is in the card's size range",
+			Detail: fmt.Sprintf("out of range: %s", joinInts(stray)),
 			Target: t,
 		})
 	}
@@ -966,15 +966,15 @@ func (b *runReadinessBuilder) runChecks(plan *pb_admin.GetProductionRunMaterialP
 	if len(empty) == 0 {
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyQuantitiesPresent, Severity: entity.RunReadinessOK,
-			Label: "у каждого выбранного колорвея есть хотя бы одно положительное количество", Target: b.target(),
+			Label: "every picked colourway has at least one positive quantity", Target: b.target(),
 		})
 	} else {
 		t := b.target()
 		t.ColorwayId = empty[0]
 		add(entity.RunReadinessFinding{
 			Key: entity.RunReadinessKeyQuantitiesPresent, Severity: entity.RunReadinessWarning,
-			Label:  "у каждого выбранного колорвея есть хотя бы одно положительное количество",
-			Detail: fmt.Sprintf("выбраны, но без количеств: %s — эти колорвеи не произведут ничего", joinInts(empty)),
+			Label:  "every picked colourway has at least one positive quantity",
+			Detail: fmt.Sprintf("picked but with no quantities: %s — these colourways will produce nothing", joinInts(empty)),
 			Target: t,
 		})
 	}
@@ -987,7 +987,7 @@ func (b *runReadinessBuilder) runChecks(plan *pb_admin.GetProductionRunMaterialP
 // the UNKNOWN discipline has to hold: the worst severity wins, but UNKNOWN can only ever beat OK,
 // never turn into BLOCKER and never be absorbed by it into a claim that everything was checked.
 func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)) {
-	const label = "планируемые размеры есть в файлах выкроек"
+	const label = "the planned sizes are present in the pattern files"
 	tgt := b.target()
 
 	// Which sizes: the planned ones, and the whole range before quantities are typed — the modal
@@ -1005,14 +1005,14 @@ func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)
 	}
 	if len(sizes) == 0 {
 		add(entity.RunReadinessFinding{Key: entity.RunReadinessKeySizesInDxf, Severity: entity.RunReadinessUnknown,
-			Label: label, Detail: "у карточки нет размерного ряда — проверять нечего", Target: tgt})
+			Label: label, Detail: "the card has no size range — there is nothing to check", Target: tgt})
 		return
 	}
 
 	scopes := b.patternScopes()
 	if len(scopes) == 0 {
 		add(entity.RunReadinessFinding{Key: entity.RunReadinessKeySizesInDxf, Severity: entity.RunReadinessUnknown,
-			Label: label, Detail: "на карточке нет ни одного файла выкроек — проверить размеры не по чему", Target: tgt})
+			Label: label, Detail: "the card has no pattern files at all — there is nothing to check the sizes against", Target: tgt})
 		return
 	}
 
@@ -1026,15 +1026,15 @@ func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)
 		state, tokens := entity.PatternSizeIndexStatus(rp, entity.PatternSheetFingerprint(sc.sheets))
 		switch state {
 		case entity.PatternSizeIndexMissing:
-			notes = append(notes, fmt.Sprintf("%s: размеры в файлах не проверялись — нажмите «⌕ размеры в файлах» на вкладке выкроек", sc.key))
+			notes = append(notes, fmt.Sprintf("%s: sizes in the files were never checked — press “⌕ sizes in the files” on the patterns tab", sc.key))
 			worst = worseReadiness(worst, entity.RunReadinessUnknown)
 			continue
 		case entity.PatternSizeIndexStale:
-			notes = append(notes, fmt.Sprintf("%s: файлы менялись после проверки — разбор устарел", sc.key))
+			notes = append(notes, fmt.Sprintf("%s: the files changed after the check — the parse is stale", sc.key))
 			worst = worseReadiness(worst, entity.RunReadinessUnknown)
 			continue
 		case entity.PatternSizeIndexUngraded:
-			notes = append(notes, fmt.Sprintf("%s: файлы не несут размерного кодирования (похоже, один размер на файл) — вердикта нет", sc.key))
+			notes = append(notes, fmt.Sprintf("%s: the files carry no size encoding (looks like one size per file) — there is no verdict", sc.key))
 			worst = worseReadiness(worst, entity.RunReadinessUnknown)
 			continue
 		}
@@ -1045,7 +1045,7 @@ func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)
 			}
 		}
 		if len(missing) > 0 {
-			notes = append(notes, fmt.Sprintf("%s: в файлах нет %s", sc.key, strings.Join(missing, ", ")))
+			notes = append(notes, fmt.Sprintf("%s: the files do not contain %s", sc.key, strings.Join(missing, ", ")))
 			worst = worseReadiness(worst, entity.RunReadinessBlocker)
 		}
 	}
@@ -1130,7 +1130,7 @@ func patternScopesOfCard(card *entity.TechCard) []patternScope {
 // factory works. UNKNOWN when the plan could not compare quantities at all, which it signals through
 // unit_code = UNKNOWN — a machine signal, deliberately not the prose of a caveat.
 func (b *runReadinessBuilder) stockShortageRow(plan *pb_admin.GetProductionRunMaterialPlanResponse, add func(entity.RunReadinessFinding)) {
-	const label = "на складе хватает материалов (по голому остатку, без учёта резервов)"
+	const label = "there is enough material on hand (bare on hand, reserves not counted)"
 	tgt := b.target()
 	var short, unresolved []string
 	shortMaterial := int64(0)
@@ -1147,7 +1147,7 @@ func (b *runReadinessBuilder) stockShortageRow(plan *pb_admin.GetProductionRunMa
 			if shortMaterial == 0 {
 				shortMaterial = int64(r.GetMaterialId())
 			}
-			short = append(short, fmt.Sprintf("%s — не хватает %s %s", r.GetMaterialName(), v.String(), r.GetUnit()))
+			short = append(short, fmt.Sprintf("%s — short by %s %s", r.GetMaterialName(), v.String(), r.GetUnit()))
 		}
 	}
 	switch {
@@ -1156,14 +1156,14 @@ func (b *runReadinessBuilder) stockShortageRow(plan *pb_admin.GetProductionRunMa
 		t.MaterialId = shortMaterial
 		detail := strings.Join(short, "; ")
 		if len(unresolved) > 0 {
-			detail += fmt.Sprintf(". Кроме того, единицы не сводятся у: %s — по ним сравнения нет вовсе", strings.Join(unresolved, ", "))
+			detail += fmt.Sprintf(". Besides that, the units do not reconcile for: %s — for those there is no comparison at all", strings.Join(unresolved, ", "))
 		}
 		add(entity.RunReadinessFinding{Key: entity.RunReadinessKeyStockShortage, Severity: entity.RunReadinessWarning,
 			Label: label, Detail: detail, Target: t})
 	case len(unresolved) > 0:
 		add(entity.RunReadinessFinding{Key: entity.RunReadinessKeyStockShortage, Severity: entity.RunReadinessUnknown,
 			Label: label,
-			Detail: fmt.Sprintf("единица измерения не сводится у: %s — число слота под меткой складской единицы сравнивать нельзя, поэтому вердикта по остатку нет",
+			Detail: fmt.Sprintf("the unit of measure does not reconcile for: %s — a slot figure under the stock unit's label cannot be compared, so there is no verdict on what is on hand",
 				strings.Join(unresolved, ", ")),
 			Target: tgt})
 	default:
@@ -1473,11 +1473,11 @@ func pbDecimalString(v string) *pb_decimal.Decimal {
 // as the index fills.
 func TechCardPatternSizeVerdict(card *entity.TechCard, index map[string]entity.PatternSizeIndexRow) (ok bool, unknown string, missing []string) {
 	if card == nil || len(card.SizeIds) == 0 {
-		return false, "размерный ряд пуст — покрытие выкройками считать не по чему", nil
+		return false, "the size range is empty — there is nothing to compute pattern coverage from", nil
 	}
 	scopes := patternScopesOfCard(card)
 	if len(scopes) == 0 {
-		return false, "на карточке нет ни одного файла выкроек с привязкой к ткани", nil
+		return false, "the card has no pattern file bound to a fabric", nil
 	}
 	var reasons []string
 	missingSet := map[int]bool{}
@@ -1490,13 +1490,13 @@ func TechCardPatternSizeVerdict(card *entity.TechCard, index map[string]entity.P
 		state, tokens := entity.PatternSizeIndexStatus(rp, entity.PatternSheetFingerprint(sc.sheets))
 		switch state {
 		case entity.PatternSizeIndexMissing:
-			reasons = append(reasons, fmt.Sprintf("%s: размеры в файлах не проверялись", sc.key))
+			reasons = append(reasons, fmt.Sprintf("%s: sizes in the files were never checked", sc.key))
 			continue
 		case entity.PatternSizeIndexStale:
-			reasons = append(reasons, fmt.Sprintf("%s: файлы менялись после проверки", sc.key))
+			reasons = append(reasons, fmt.Sprintf("%s: the files changed after the check", sc.key))
 			continue
 		case entity.PatternSizeIndexUngraded:
-			reasons = append(reasons, fmt.Sprintf("%s: файлы не несут размерного кодирования", sc.key))
+			reasons = append(reasons, fmt.Sprintf("%s: the files carry no size encoding", sc.key))
 			continue
 		}
 		usable++
@@ -1507,7 +1507,7 @@ func TechCardPatternSizeVerdict(card *entity.TechCard, index map[string]entity.P
 		}
 	}
 	if usable == 0 {
-		return false, strings.Join(reasons, "; ") + " — нажмите «⌕ размеры в файлах» на вкладке выкроек", nil
+		return false, strings.Join(reasons, "; ") + " — press “⌕ sizes in the files” on the patterns tab", nil
 	}
 	if len(missingSet) == 0 {
 		// A partially indexed card still reads as UNKNOWN rather than as met: claiming coverage while
@@ -1538,5 +1538,5 @@ func sizeLabelOf(id int) string {
 	if s, ok := cache.GetSizeById(id); ok && strings.TrimSpace(s.Name) != "" {
 		return s.Name
 	}
-	return fmt.Sprintf("размер #%d", id)
+	return fmt.Sprintf("size #%d", id)
 }

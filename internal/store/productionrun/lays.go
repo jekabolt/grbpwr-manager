@@ -441,7 +441,7 @@ func computeLayNettoStamp(ctx context.Context, rep dependency.Repository, runID,
 	}
 	markers, err := rep.TechCards().ListRunMarkers(ctx, runID)
 	if err != nil {
-		return decimal.NullDecimal{}, fmt.Errorf("failed to load раскладки of run %d for the netto stamp: %w", runID, err)
+		return decimal.NullDecimal{}, fmt.Errorf("failed to load the markers of run %d for the netto stamp: %w", runID, err)
 	}
 	byID := make(map[int]*entity.TechCardMarkerSummary, len(markers))
 	for i := range markers {
@@ -623,7 +623,7 @@ func validateLayInsert(ins *entity.ProductionRunLayInsert) error {
 		sec := &ins.Sections[i]
 		if sec.MarkerId <= 0 {
 			return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "required", "",
-				"every section lays one раскладка of this run")
+				"every section lays one marker of this run")
 		}
 		if sec.Plies < entity.ProductionLayPliesMin || sec.Plies > entity.ProductionLayPliesMax {
 			return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].plies", i), "out_of_range",
@@ -697,20 +697,20 @@ func requireLayColorway(ctx context.Context, db dependency.DB, runID, techCardID
 		`SELECT COUNT(*) FROM product WHERE id = :cw AND style_id = :card`,
 		map[string]any{"cw": colorwayID, "card": techCardID})
 	if err != nil {
-		return fmt.Errorf("check colorway %d on tech card %d: %w", colorwayID, techCardID, err)
+		return fmt.Errorf("check colourway %d on tech card %d: %w", colorwayID, techCardID, err)
 	}
 	if onCard == 0 {
-		return entity.NewFieldViolation("lay.colorway_id", "not_on_card", fmt.Sprintf("colorway %d", colorwayID),
+		return entity.NewFieldViolation("lay.colorway_id", "not_on_card", fmt.Sprintf("colourway %d", colorwayID),
 			"a lay's colourway must be a colourway of this run's tech card")
 	}
 	planned, err := storeutil.QueryCountNamed(ctx, db,
 		`SELECT COUNT(*) FROM production_run_line WHERE run_id = :run AND product_id = :cw`,
 		map[string]any{"run": runID, "cw": colorwayID})
 	if err != nil {
-		return fmt.Errorf("check colorway %d on run %d: %w", colorwayID, runID, err)
+		return fmt.Errorf("check colourway %d on run %d: %w", colorwayID, runID, err)
 	}
 	if planned == 0 {
-		return entity.NewFieldViolation("lay.colorway_id", "not_planned_by_run", fmt.Sprintf("colorway %d", colorwayID),
+		return entity.NewFieldViolation("lay.colorway_id", "not_planned_by_run", fmt.Sprintf("colourway %d", colorwayID),
 			"plan a quantity for this colourway before laying it")
 	}
 	return nil
@@ -770,11 +770,11 @@ func requireLaySectionMarkers(ctx context.Context, db dependency.DB, runID, tech
 			return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "marker_is_draft",
 				fmt.Sprintf("marker %d", sections[i].MarkerId),
 				entity.MarkerDraftNormRefusal(d.Name, d.PlacedCount, d.TotalCount)+
-					" В настил она тоже не встаёт: метраж настила считается по её длине.")
+					" It does not go into a lay either: the lay's length is counted from the marker's length.")
 		}
 		return entity.NewFieldViolation(fmt.Sprintf("lay.sections[%d].marker_id", i), "not_a_run_marker",
 			fmt.Sprintf("marker %d", sections[i].MarkerId),
-			"a section lays a раскладка taken FOR THIS RUN on this lay's cloth slot; copy the card's раскладка into the run first")
+			"a section lays a marker captured FOR THIS RUN on this lay's cloth slot; copy the card's marker into the run first")
 	}
 	return nil
 }
@@ -1136,7 +1136,7 @@ func loadRunColorwayQuantities(ctx context.Context, db dependency.DB, runID, col
 		WHERE run_id = :run AND product_id = :cw
 		GROUP BY COALESCE(size_id, 0)`, map[string]any{"run": runID, "cw": colorwayID})
 	if err != nil {
-		return nil, fmt.Errorf("failed to load planned quantities of colorway %d on run %d: %w", colorwayID, runID, err)
+		return nil, fmt.Errorf("failed to load planned quantities of colourway %d on run %d: %w", colorwayID, runID, err)
 	}
 	return rows, nil
 }

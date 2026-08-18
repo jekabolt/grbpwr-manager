@@ -210,7 +210,7 @@ func ValidateMaxStackHeightCm(v decimal.NullDecimal) error {
 	}
 	if v.Decimal.LessThanOrEqual(decimal.Zero) {
 		return NewFieldViolation(field, "must_be_positive", v.Decimal.String(),
-			"enter the limit in centimetres; to record that the workshop has no stack limit, clear the setting instead of entering 0 — an unset limit withholds the verdict, a zero one fails every настил")
+			"enter the limit in centimetres; to record that the workshop has no stack limit, clear the setting instead of entering 0 — an unset limit withholds the verdict, a zero one fails every lay")
 	}
 	if v.Decimal.GreaterThan(decimal.NewFromInt(MaxStackHeightCm)) {
 		return NewFieldViolation(field, "implausibly_tall", v.Decimal.String(),

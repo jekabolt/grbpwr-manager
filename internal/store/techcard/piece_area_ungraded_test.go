@@ -167,7 +167,7 @@ func TestUngradedFlipOnSizedAreas(t *testing.T) {
 		if !strings.Contains(ve.Message, "карман") {
 			t.Fatalf("refusal must name the piece, got %q", ve.Message)
 		}
-		if !strings.Contains(ve.Message, "перемерьте") {
+		if !strings.Contains(ve.Message, "re-measure the areas") {
 			t.Fatalf("refusal must say how to fix it, got %q", ve.Message)
 		}
 		if strings.Contains(ve.Message, "шлёвка") {

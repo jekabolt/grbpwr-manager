@@ -48,7 +48,7 @@ func TestTrustedNettoStamp(t *testing.T) {
 		l.ActualQty = d("16.0")
 		stamp, reason := l.TrustedNettoStamp()
 		require.False(t, stamp.Valid, "новый факт нельзя делить на знаменатель, посчитанный для старого")
-		require.Contains(t, reason, "мимо штампа")
+		require.Contains(t, reason, "past the netto stamp")
 		require.Contains(t, reason, "14.4", "причина называет факт, который штамп делил, — иначе она неотличима от бага")
 	})
 
@@ -65,7 +65,7 @@ func TestTrustedNettoStamp(t *testing.T) {
 		l.NettoBasisQty, l.NettoBasisUom = decimal.NullDecimal{}, sql.NullString{}
 		stamp, reason := l.TrustedNettoStamp()
 		require.False(t, stamp.Valid)
-		require.Contains(t, reason, "без базиса")
+		require.Contains(t, reason, "no actual basis")
 	})
 
 	t.Run("штампа нет — не отказ, а отсутствие: причина пуста", func(t *testing.T) {

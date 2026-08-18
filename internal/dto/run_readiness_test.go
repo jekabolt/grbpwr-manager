@@ -340,7 +340,7 @@ func TestRunReadinessOrphanedNormIsNamed(t *testing.T) {
 	if f.Severity != entity.RunReadinessBlocker {
 		t.Fatalf("norm_provenance = %s, want blocker", f.Severity)
 	}
-	if !strings.Contains(f.Detail, "БЕЗ ТКАНИ") {
+	if !strings.Contains(f.Detail, "WITH NO FABRIC") {
 		t.Fatalf("the detail must say where the norm went, got %q", f.Detail)
 	}
 }
@@ -358,20 +358,20 @@ func TestRunReadinessSizeIndexStatesAreAllUnknown(t *testing.T) {
 		index map[string]entity.PatternSizeIndexRow
 		want  string // a fragment the detail must contain
 	}{
-		{"nobody ran the audit", nil, "не проверялись"},
+		{"nobody ran the audit", nil, "were never checked"},
 		{
 			"the files changed after the parse — a re-upload must stale the index, not leave it green",
 			map[string]entity.PatternSizeIndexRow{rrLineKey: {
 				ScopeKey: rrLineKey, SheetFingerprint: "fingerprint-of-the-old-files", SizeTokensJSON: `["s","m","l"]`,
 			}},
-			"менялись",
+			"changed after the check",
 		},
 		{
 			"an empty token set is legal and means the files carry no size coding",
 			map[string]entity.PatternSizeIndexRow{rrLineKey: {
 				ScopeKey: rrLineKey, SheetFingerprint: current, SizeTokensJSON: `[]`,
 			}},
-			"размерного кодирования",
+			"no size encoding",
 		},
 	}
 	for _, tt := range tests {
@@ -450,7 +450,7 @@ func TestRunReadinessWidthBlockerNamesTheBranch(t *testing.T) {
 	if f.Severity != entity.RunReadinessBlocker {
 		t.Fatalf("width = %s, want blocker", f.Severity)
 	}
-	if !strings.Contains(f.Detail, "номинал") {
+	if !strings.Contains(f.Detail, "nominal") {
 		t.Fatalf("with no measured lots the detail must say it used the catalogue width, got %q", f.Detail)
 	}
 
@@ -597,7 +597,7 @@ func TestPatternScopesFollowTheSortIntoThePurpose(t *testing.T) {
 	if !ok {
 		t.Fatal("sizes_in_dxf must always be emitted")
 	}
-	if f.Severity == entity.RunReadinessUnknown && strings.Contains(f.Detail, "не проверялись") {
+	if f.Severity == entity.RunReadinessUnknown && strings.Contains(f.Detail, "were never checked") {
 		t.Fatalf("the index stored under the resolved scope must be FOUND, got %s / %q", f.Severity, f.Detail)
 	}
 }

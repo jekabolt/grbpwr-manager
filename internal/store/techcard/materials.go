@@ -191,7 +191,7 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 		SELECT id FROM product WHERE style_id = :id`,
 		map[string]any{"id": tcID})
 	if err != nil {
-		return fmt.Errorf("failed to load colorway ids for pieces: %w", err)
+		return fmt.Errorf("failed to load colourway ids for pieces: %w", err)
 	}
 	validColorway := make(map[int]bool, len(cwRows))
 	for _, r := range cwRows {
@@ -631,7 +631,7 @@ func validateBomKindSection(b *entity.TechCardBomItem, i int) error {
 		return entity.NewFieldViolation(field,
 			"kind applies only to "+kindEligibleSectionNames(),
 			fmt.Sprintf("this line is section %q", b.Section),
-			"clear the kind — roll goods are classified by назначение, and a label's type lives on the label spec")
+			"clear the kind — roll goods are classified by purpose, and a label's type lives on the label spec")
 	}
 	if home != entity.BomKindAnySection && home != b.Section {
 		return entity.NewFieldViolation(field,
@@ -684,7 +684,7 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		// family added there must not leave a stale copy behind in the dto.
 		if b.Purpose.Valid && !rollGoodsSections[string(b.Section)] {
 			return res, entity.NewFieldViolation(fmt.Sprintf("bom_items[%d].purpose", i),
-				"назначение applies only to roll goods (fabric, lining, interlining, insulation)",
+				"purpose applies only to roll goods (fabric, lining, interlining, insulation)",
 				fmt.Sprintf("this line is section %q", b.Section),
 				"clear the purpose, or move the line to a roll-goods section")
 		}
@@ -960,7 +960,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		WHERE c.style_id IN (:ids) AND c.lifecycle_status <> 4
 		ORDER BY c.style_id, c.display_order, c.id`, map[string]any{"ids": ids})
 	if err != nil {
-		return fmt.Errorf("can't load tech card colorways: %w", err)
+		return fmt.Errorf("can't load tech card colourways: %w", err)
 	}
 	colorwaysByCard := make(map[int][]entity.TechCardColorway, len(ids))
 	for _, r := range cwRows {
@@ -983,7 +983,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			WHERE colorway_id IN (:ids)
 			ORDER BY colorway_id, display_order`, map[string]any{"ids": colorwayIDs})
 		if err != nil {
-			return fmt.Errorf("can't load tech card colorway usages: %w", err)
+			return fmt.Errorf("can't load tech card colourway usages: %w", err)
 		}
 		usageByID := make(map[int]*entity.TechCardColorwayUsage, len(usageRows))
 		usageIDs := make([]int, 0, len(usageRows))
@@ -1027,7 +1027,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			WHERE product_id IN (:ids)
 			ORDER BY product_id, currency`, map[string]any{"ids": colorwayIDs})
 		if err != nil {
-			return fmt.Errorf("can't load tech card colorway prices: %w", err)
+			return fmt.Errorf("can't load tech card colourway prices: %w", err)
 		}
 		for _, r := range priceRows {
 			if cw, ok := colorwayByID[r.ProductID]; ok {
@@ -1045,7 +1045,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 			WHERE product_id IN (:ids)
 			ORDER BY product_id, round_number`, map[string]any{"ids": colorwayIDs})
 		if err != nil {
-			return fmt.Errorf("can't load tech card colorway lab dip rounds: %w", err)
+			return fmt.Errorf("can't load tech card colourway lab dip rounds: %w", err)
 		}
 		for _, r := range roundRows {
 			if cw, ok := colorwayByID[r.ProductId]; ok {
@@ -1338,11 +1338,11 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 				if scope.ByPurpose {
 					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].fabric_purpose", i),
 						"not_found", a.FabricPurpose,
-						"ни одна строка ткани этой карты не имеет такого назначения — задай его нужной строке на вкладке BOM (назначение) и сохрани ещё раз")
+						"no fabric line of this card carries that purpose — set it on the line you need on the BOM tab (purpose) and save again")
 				}
 				return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].bom_line_key", i),
 					"not_found", a.BomLineKey,
-					"на вкладке ВЫКРОЙКИ выбери для этого DXF ткань — строку BOM секции ткань, подкладка, бортовка или утеплитель")
+					"pick the fabric for this DXF on the PATTERNS tab — a BOM line of section fabric, lining, interlining or insulation")
 			}
 			if err := storeutil.ExecNamed(ctx, db, `
 				INSERT INTO tech_card_piece_dxf_block
@@ -1361,8 +1361,8 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 					// The DB collation folds more than Go's ToLower (accents, ё=е, ß=ss) — a pair
 					// Go saw as distinct can still collide in MySQL. A readable refusal, not a 500.
 					return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].block_name", i),
-						fmt.Sprintf("блок %q сталкивается с уже существующей связью в этом же скоупе (база складывает регистр и диакритику)", a.BlockName),
-						a.BlockName, "открой «детали кроя» на вкладке ВЫКРОЙКИ и оставь для этого блока одну связь")
+						fmt.Sprintf("block %q collides with a link that already exists in this same scope (the database folds case and diacritics)", a.BlockName),
+						a.BlockName, "open “cut pieces” on the PATTERNS tab and leave one link for this block")
 				}
 				return fmt.Errorf("failed to insert dxf alias: %w", err)
 			}

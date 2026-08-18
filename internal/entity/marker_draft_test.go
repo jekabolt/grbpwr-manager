@@ -84,7 +84,7 @@ func TestAHomogeneousDraftIsRefusedTooAndTheRefusalNamesTheArithmetic(t *testing
 	require.NotEmpty(t, refusal)
 	require.Contains(t, refusal, "31", "the refusal must name how many pieces were laid")
 	require.Contains(t, refusal, "45", "and out of how many")
-	require.Contains(t, refusal, "бюджет", "and the action: raise the search budget and re-run")
+	require.Contains(t, refusal, "search budget", "and the action: raise the search budget and re-run")
 }
 
 // IF THIS FAILS: a черновик becomes the effective НОРМА of a cloth. chk_tcm_draft_not_norm (0299)

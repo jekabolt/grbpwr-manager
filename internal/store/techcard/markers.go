@@ -457,7 +457,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				map[string]any{"id": id, "tech_card_id": techCardID})
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("%w: marker %d is not a раскладка of tech card %d",
+					return fmt.Errorf("%w: marker %d is not a marker of tech card %d",
 						entity.ErrMarkerNotFound, id, techCardID)
 				}
 				return fmt.Errorf("resolve marker %d: %w", id, err)
@@ -482,9 +482,9 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			// невозможного. Тот же довод и то же разделение труда, что у run_marker_cannot_be_norm.
 			if stored.IsNorm {
 				return entity.NewFieldViolation("placed_count", "norm_cannot_become_draft",
-					fmt.Sprintf("%d из %d деталей", ins.PlacedCount, ins.TotalCount),
-					fmt.Sprintf("%s Эта раскладка НАЗНАЧЕНА НОРМОЙ, и её расход уже применяют в рецепт — "+
-						"снимите с неё норму или сохраните пересчёт отдельной раскладкой.",
+					fmt.Sprintf("%d of %d pieces", ins.PlacedCount, ins.TotalCount),
+					fmt.Sprintf("%s This marker IS SET AS THE NORM, and its consumption is already being applied "+
+						"to a recipe — take the norm off it, or save the recomputation as a separate marker.",
 						entity.MarkerDraftNormRefusal(ins.Name, ins.PlacedCount, ins.TotalCount)))
 			}
 			// НАСТИЛЫ. Секция настила берёт с раскладки used_length_cm × слои — это метраж
@@ -499,17 +499,17 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				DisplayOrder int    `db:"display_order"`
 			}](ctx, db, markerLaySectionsQuery, map[string]any{"id": id})
 			if err != nil {
-				return fmt.Errorf("resolve the настилы of marker %d: %w", id, err)
+				return fmt.Errorf("resolve the lays of marker %d: %w", id, err)
 			}
 			if len(lays) > 0 {
 				named := make([]string, 0, 3)
 				for _, l := range lays[:min(len(lays), 3)] {
-					named = append(named, fmt.Sprintf("«%s»", markerLayLabel(l.Name, l.LayKey)))
+					named = append(named, fmt.Sprintf("“%s”", markerLayLabel(l.Name, l.LayKey)))
 				}
 				return entity.NewFieldViolation("placed_count", "lay_marker_cannot_become_draft",
-					fmt.Sprintf("%d из %d деталей", ins.PlacedCount, ins.TotalCount),
-					fmt.Sprintf("%s Эта раскладка стоит в настиле %s, и его метраж считается по её длине — "+
-						"уберите её из секций настила или сохраните пересчёт отдельной раскладкой.",
+					fmt.Sprintf("%d of %d pieces", ins.PlacedCount, ins.TotalCount),
+					fmt.Sprintf("%s This marker stands in lay %s, and that lay's length (m) is computed from "+
+						"the marker's length — remove it from the lay's sections, or save the recomputation as a separate marker.",
 						entity.MarkerDraftNormRefusal(ins.Name, ins.PlacedCount, ins.TotalCount),
 						strings.Join(named, ", ")))
 			}
@@ -543,12 +543,12 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				}
 				more := ""
 				if len(stamped) > 3 {
-					more = " и в других"
+					more = " and in others"
 				}
 				return entity.NewFieldViolation("placed_count", "stamped_marker_cannot_become_draft",
-					fmt.Sprintf("%d из %d деталей", ins.PlacedCount, ins.TotalCount),
-					fmt.Sprintf("%s На неё сослан расход в рецепте: %s%s. Снимите штамп в этих строках "+
-						"(или примените к ним другую норму) — или сохраните пересчёт отдельной раскладкой.",
+					fmt.Sprintf("%d of %d pieces", ins.PlacedCount, ins.TotalCount),
+					fmt.Sprintf("%s Consumption in a recipe references it: %s%s. Clear the stamp on those lines "+
+						"(or apply a different norm to them) — or save the recomputation as a separate marker.",
 						entity.MarkerDraftNormRefusal(ins.Name, ins.PlacedCount, ins.TotalCount),
 						strings.Join(rows, ", "), more))
 			}
@@ -639,11 +639,11 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 				`SELECT COUNT(*) FROM product WHERE id = :cw AND style_id = :card AND lifecycle_status <> 4`,
 				map[string]any{"cw": ins.ColorwayId, "card": techCardID})
 			if err != nil {
-				return fmt.Errorf("check colorway %d on tech card %d: %w", ins.ColorwayId, techCardID, err)
+				return fmt.Errorf("check colourway %d on tech card %d: %w", ins.ColorwayId, techCardID, err)
 			}
 			if n == 0 {
 				return entity.NewFieldViolation("colorway_id", "not_on_card",
-					fmt.Sprintf("colorway %d", ins.ColorwayId),
+					fmt.Sprintf("colourway %d", ins.ColorwayId),
 					"the marker's colourway must be a live colourway of this tech card, or leave it unset")
 			}
 			colorwayID = sql.NullInt64{Int64: int64(ins.ColorwayId), Valid: true}
@@ -769,7 +769,7 @@ func (s *Store) SaveMarker(ctx context.Context, techCardID, id int, ins entity.T
 			}](ctx, db, `SELECT id FROM tech_card_marker WHERE id = :id AND tech_card_id = :tech_card_id`,
 				map[string]any{"id": id, "tech_card_id": techCardID}); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("%w: marker %d is not a раскладка of tech card %d",
+					return fmt.Errorf("%w: marker %d is not a marker of tech card %d",
 						entity.ErrMarkerNotFound, id, techCardID)
 				}
 				return fmt.Errorf("resolve marker %d: %w", id, err)
@@ -883,9 +883,9 @@ func resolveMarkerRunOwner(ctx context.Context, db dependency.DB, techCardID, ma
 		}
 		return sql.NullInt64{}, entity.NewFieldViolation("production_run_id", "immutable",
 			markerRunOwnerLabel(stored),
-			fmt.Sprintf("владение раскладкой не меняется после создания (запрошено %s): "+
-				"раскройная раскладка умирает вместе со своим прогоном, и на неё ссылаются секции его настилов — "+
-				"сохраните копию с нужным production_run_id, а эту оставьте как есть",
+			fmt.Sprintf("marker ownership doesn't change after creation (%s was requested): "+
+				"a run marker dies together with the run that owns it, and the sections of that run's lays reference it — "+
+				"save a copy with the production_run_id you need, and leave this one as it is",
 				markerRunOwnerLabel(wantRunID)))
 	}
 	if wantRunID == 0 {
@@ -906,8 +906,8 @@ func resolveMarkerRunOwner(ctx context.Context, db dependency.DB, techCardID, ma
 	if n == 0 {
 		return sql.NullInt64{}, entity.NewFieldViolation("production_run_id", "not_a_run_of_this_card",
 			markerRunOwnerLabel(wantRunID),
-			"раскройную раскладку можно снять только для прогона ЭТОЙ карточки; "+
-				"оставьте production_run_id пустым, чтобы сохранить её как карточную")
+			"a run marker can only be captured for a run of THIS card; "+
+				"leave production_run_id empty to save it as a card marker")
 	}
 	return sql.NullInt64{Int64: int64(wantRunID), Valid: true}, nil
 }
@@ -916,9 +916,9 @@ func resolveMarkerRunOwner(ctx context.Context, db dependency.DB, techCardID, ma
 // message that printed the number would ask the operator to look for a прогон that does not exist.
 func markerRunOwnerLabel(runID int) string {
 	if runID == 0 {
-		return "карточная раскладка (без прогона)"
+		return "card marker (no run)"
 	}
-	return fmt.Sprintf("прогон %d", runID)
+	return fmt.Sprintf("run %d", runID)
 }
 
 // fabricDirectionLinesQuery reads the card's WHOLE BOM, ordered exactly as the card read orders it
@@ -1030,7 +1030,7 @@ func requireCardSizes(ctx context.Context, db dependency.DB, techCardID int, com
 		// opens), and it must not degrade into "nothing to check": an empty состав means total_units
 		// = 0, i.e. a divisor of zero for every costing read downstream.
 		return entity.NewFieldViolation("composition", entity.ReasonCompositionMissing, "",
-			"the раскладка must say how many garments of which sizes it cuts")
+			"the marker must say how many garments of which sizes it cuts")
 	}
 	ids := make([]int, 0, len(composition))
 	for _, c := range composition {
@@ -1055,8 +1055,8 @@ func requireCardSizes(ctx context.Context, db dependency.DB, techCardID int, com
 	if len(missing) > 0 {
 		return entity.NewFieldViolation("composition", entity.ReasonCompositionNotOnCard,
 			strings.Join(missing, ", "),
-			fmt.Sprintf("the раскладка cuts size(s) %s, which are not in this card's размерный ряд — "+
-				"add them to the card or drop them from the состав", strings.Join(missing, ", ")))
+			fmt.Sprintf("the marker cuts size(s) %s, which are not in this card's size range — "+
+				"add them to the card or drop them from the composition", strings.Join(missing, ", ")))
 	}
 	return nil
 }
@@ -1169,7 +1169,7 @@ var (
 func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username string) (int, error) {
 	if id <= 0 {
 		return 0, entity.NewFieldViolation("id", "must_be_positive", "",
-			"name the раскладка to designate as the norm")
+			"name the marker to designate as the norm")
 	}
 	var previousNormID int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
@@ -1213,9 +1213,9 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 		// never hold it, so the honest answer to both requests is the same sentence.
 		if row.RunId.Valid {
 			return entity.NewFieldViolation("id", "run_marker_cannot_be_norm",
-				fmt.Sprintf("раскладка %d принадлежит прогону %d", id, row.RunId.Int64),
-				"нормой может быть только карточная раскладка: раскройная умирает вместе со своим прогоном, "+
-					"а норма — актив карточки; назначьте нормой карточную раскладку этой ткани")
+				fmt.Sprintf("marker %d belongs to run %d", id, row.RunId.Int64),
+				"only a card marker can be the norm: a run marker dies together with its run, "+
+					"while the norm is an asset of the card; set a card marker of this fabric as the norm")
 		}
 		// ЧЕРНОВИК НОРМОЙ НЕ БЫВАЕТ (0299, chk_tcm_draft_not_norm) — тот же приём и тот же довод, что
 		// строкой выше: без этого гварда назначение доехало бы до MySQL и вернулось ERROR 3819, а
@@ -1226,7 +1226,7 @@ func (s *Store) SetMarkerNorm(ctx context.Context, id int, isNorm bool, username
 		// которого весь инвариант и существует.
 		if row.IsDraft {
 			return entity.NewFieldViolation("id", "draft_cannot_be_norm",
-				fmt.Sprintf("раскладка %d", id),
+				fmt.Sprintf("marker %d", id),
 				entity.MarkerDraftNormRefusal(row.Name, row.PlacedCount, row.TotalCount))
 		}
 		// Designating a norm is a decision about the card's CONTENT, so a released card refuses — like
@@ -1358,7 +1358,7 @@ func markerColorwayLabel(id int, name string) string {
 	if name != "" {
 		return name
 	}
-	return fmt.Sprintf("колорвей %d", id)
+	return fmt.Sprintf("colourway %d", id)
 }
 
 // markerStampedLineLabel names the recipe's BOM slot. A stamp whose bom_item_id went NULL (the line
@@ -1368,7 +1368,7 @@ func markerStampedLineLabel(label string) string {
 	if label != "" {
 		return label
 	}
-	return "строка без слота"
+	return "line without a slot"
 }
 
 // markerLayLabel names a настил in a refusal: how the цех calls it, falling back to its key when it
@@ -1380,7 +1380,7 @@ func markerLayLabel(name, layKey string) string {
 	if name != "" {
 		return name
 	}
-	return fmt.Sprintf("безымянный (%s)", layKey)
+	return fmt.Sprintf("unnamed (%s)", layKey)
 }
 
 // DeleteMarker removes a saved раскладка. It is card content, so a released card refuses — and
@@ -1420,23 +1420,23 @@ func (s *Store) DeleteMarker(ctx context.Context, id int) error {
 			DisplayOrder int    `db:"display_order"`
 		}](ctx, db, markerLaySectionsQuery, map[string]any{"id": id})
 		if err != nil {
-			return fmt.Errorf("resolve the настилы of marker %d: %w", id, err)
+			return fmt.Errorf("resolve the lays of marker %d: %w", id, err)
 		}
 		if len(lays) > 0 {
 			named := make([]string, 0, 3)
 			for _, l := range lays[:min(len(lays), 3)] {
-				named = append(named, fmt.Sprintf("«%s»", markerLayLabel(l.Name, l.LayKey)))
+				named = append(named, fmt.Sprintf("“%s”", markerLayLabel(l.Name, l.LayKey)))
 			}
 			more := ""
 			if len(lays) > 3 {
-				more = " и в других"
+				more = " and in others"
 			}
-			noun := "настиле"
+			noun := "lay"
 			if len(named) > 1 {
-				noun = "настилах"
+				noun = "lays"
 			}
-			return fmt.Errorf("%w: эта раскладка стоит в %s %s%s — уберите её из секций настила, "+
-				"а потом удаляйте", entity.ErrMarkerUsedByLay, noun, strings.Join(named, ", "), more)
+			return fmt.Errorf("%w: this marker stands in %s %s%s — remove it from the lay's sections, "+
+				"and then delete it", entity.ErrMarkerUsedByLay, noun, strings.Join(named, ", "), more)
 		}
 		// Замороженная карточка не даёт удалить СВОЮ раскладку — на неё мог сослаться релиз. На
 		// раскройную это не распространяется по той же границе собственности, что и на съёмке

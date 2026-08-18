@@ -100,7 +100,7 @@ func (s *Server) DeleteSample(ctx context.Context, req *pb_admin.DeleteSampleReq
 			slog.Default().WarnContext(ctx, "sample delete refused",
 				slog.Int("sample_id", id), slog.String("blockers", v.BlockerSummary()))
 			return nil, apierr.FailedPreconditionMany(
-				fmt.Sprintf("сэмпл %s удалить нельзя: %s", v.Label, v.BlockerSummary()),
+				fmt.Sprintf("sample %s cannot be deleted: %s", v.Label, v.BlockerSummary()),
 				v.FieldViolations(scrapped))
 		}
 		return nil, sampleDeleteError(ctx, id, err)

@@ -110,7 +110,7 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 		slog.Int("tech_card_id", storedCardID(stored)))
 	return status.Error(codes.FailedPrecondition,
 		"this save would erase the assembly units on this tech card and does not carry any: "+
-			"if you meant to remove them, use «снять разметку узлов»; otherwise reload the card — "+
+			"if you meant to remove them, use “clear the unit markup”; otherwise reload the card — "+
 			"another tab or a restored draft is about to overwrite it")
 }
 

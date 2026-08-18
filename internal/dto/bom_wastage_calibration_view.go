@@ -97,7 +97,7 @@ func BomWastageObservationsOf(in BomWastageCalibrationInput) ([]LayWastageObserv
 				s := &l.Sections[j]
 				sec := LayNettoSection{Plies: s.Plies, MarkerLabel: s.MarkerName}
 				if sec.MarkerLabel == "" {
-					sec.MarkerLabel = fmt.Sprintf("раскладка #%d", s.MarkerId)
+					sec.MarkerLabel = fmt.Sprintf("marker #%d", s.MarkerId)
 				}
 				if m, ok := in.Markers[s.MarkerId]; ok {
 					// ОДИН владелец состава: CompositionOrLegacy (легаси-пара побеждает проекцию —
@@ -146,7 +146,7 @@ func BuildBomWastageSuggestion(in BomWastageCalibrationInput) *pb_admin.GetBomWa
 	// N» обязана говорить, из какого окна N взят, — иначе она непроверяема.
 	detail := sug.Detail
 	if in.TotalMeasuredLayCount > in.ConsideredLayCount {
-		detail = fmt.Sprintf("%s (рассмотрены %d свежих настилов-кандидатов из %d измеренных)",
+		detail = fmt.Sprintf("%s (%d most recent candidate lays considered out of %d measured)",
 			detail, in.ConsideredLayCount, in.TotalMeasuredLayCount)
 	}
 

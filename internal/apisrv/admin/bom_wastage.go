@@ -131,7 +131,7 @@ func (s *Server) bomWastageCalibrationInput(ctx context.Context, materialID int)
 			seenRuns[runID] = true
 			runMarkers, err := s.repo.TechCards().ListRunMarkers(ctx, runID)
 			if err != nil {
-				return dto.BomWastageCalibrationInput{}, fmt.Errorf("failed to load раскладки of run %d: %w", runID, err)
+				return dto.BomWastageCalibrationInput{}, fmt.Errorf("failed to load markers of run %d: %w", runID, err)
 			}
 			for j := range runMarkers {
 				markers[runMarkers[j].Id] = runMarkers[j]

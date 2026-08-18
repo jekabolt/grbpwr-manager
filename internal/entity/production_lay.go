@@ -464,13 +464,13 @@ func (l ProductionRunLay) TrustedNettoStamp() (decimal.NullDecimal, string) {
 	if !l.NettoBasisQty.Valid || !l.NettoBasisUom.Valid {
 		// Штамп без базиса не мог возникнуть на пути записи (chk_prlay_netto_basis): не гадаем,
 		// каким фактом он был оправдан, — отбрасываем.
-		return decimal.NullDecimal{}, "штамп netto без базиса факта — источник записи неизвестен, штамп отброшен"
+		return decimal.NullDecimal{}, "the netto stamp has no actual basis — nobody knows what wrote it, so the stamp is dropped"
 	}
 	if !l.ActualQty.Valid || !l.ActualUom.Valid ||
 		!l.NettoBasisQty.Decimal.Equal(l.ActualQty.Decimal) ||
 		!SameMaterialUnit(l.NettoBasisUom.String, l.ActualUom.String) {
 		return decimal.NullDecimal{}, fmt.Sprintf(
-			"факт настила правили мимо штампа netto (штамп делил %s %s) — штамп отброшен",
+			"the lay's actual was edited past the netto stamp (the stamp divided %s %s) — the stamp is dropped",
 			l.NettoBasisQty.Decimal.String(), l.NettoBasisUom.String)
 	}
 	return l.NettoQty, ""

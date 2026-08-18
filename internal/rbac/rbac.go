@@ -108,7 +108,7 @@ var catalog = []SectionInfo{
 	{SectionFittings, "Fittings", "Fitting sessions."},
 	{SectionDictionaries, "Dictionaries", "Controlled merch dictionaries: collections, colours, tags, countries. Managing them is separate from editing the catalog that uses them."},
 	{SectionTechCards, "Tech cards", "Tech cards / tech packs."},
-	{SectionProduction, "Production", "Production runs (партии): plan, receive, plan/fact costs."},
+	{SectionProduction, "Production", "Production runs: plan, receive, plan/fact costs."},
 	{SectionInventory, "Inventory", "Material warehouse: on-hand stock, receipts, issues, adjustments and valuation."},
 	{SectionCosting, "Costing", "Confidential cost of goods: tech-card costing & BOM prices, product cost, margin/COGS analytics. Redacts fields, does not hide screens."},
 	{SectionTasks, "Tasks", "Internal team kanban board."},

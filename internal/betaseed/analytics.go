@@ -187,8 +187,8 @@ func (s *Seeder) seedAnalyticsConfig(ctx context.Context, cat []CatalogResult, p
 	empSpecs := []struct {
 		name, role, cur, cost string
 	}{
-		{"Seed Seamstress " + s.Run, "швея", "EUR", "2200.00"},
-		{"Seed Patternmaker " + s.Run, "конструктор", "EUR", "2600.00"},
+		{"Seed Seamstress " + s.Run, "seamstress", "EUR", "2200.00"},
+		{"Seed Patternmaker " + s.Run, "patternmaker", "EUR", "2600.00"},
 		{"Seed Ops " + s.Run, "operations", "EUR", "3000.00"},
 	}
 	for _, e := range empSpecs {

@@ -316,7 +316,7 @@ func TestScalarRefusalNamesTheRemedyThatExists(t *testing.T) {
 		if got == "" {
 			t.Fatal("Ф2.4 does not repeal the refusal: a mixed настил still has no sizeless number")
 		}
-		if !strings.Contains(got, "ПО РАЗМЕРАМ") {
+		if !strings.Contains(got, "PER SIZE") {
 			t.Errorf("the refusal must name the remedy that now exists: %q", got)
 		}
 		if strings.Contains(got, "Ф2.4") {
@@ -329,17 +329,17 @@ func TestScalarRefusalNamesTheRemedyThatExists(t *testing.T) {
 		if got == "" {
 			t.Fatal("a mixed раскладка must still refuse the scalar")
 		}
-		if strings.Contains(got, "ПО РАЗМЕРАМ") {
+		if strings.Contains(got, "PER SIZE") {
 			t.Errorf("this раскладка has no per-size figures — promising the apply would be a lie: %q", got)
 		}
-		if !strings.Contains(got, "Пересохраните") {
+		if !strings.Contains(got, "re-save the marker") {
 			t.Errorf("the text must name the action that produces them: %q", got)
 		}
 	})
 
 	t.Run("состава нет вовсе — прежний отказ", func(t *testing.T) {
 		got := MarkerScalarNormRefusal("испорченная", MarkerPerSizeConsumption(nil, d("1400")))
-		if !strings.Contains(got, "нет состава") {
+		if !strings.Contains(got, "has no composition") {
 			t.Fatalf("an empty состав keeps its own refusal, got %q", got)
 		}
 	})

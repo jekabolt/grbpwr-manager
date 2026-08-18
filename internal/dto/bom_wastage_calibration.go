@@ -160,10 +160,10 @@ func LayNettoOf(card *entity.TechCard, colorwayID int, bomItemID int64, actualUo
 	sections []LayNettoSection) LayNettoResult {
 
 	if card == nil {
-		return LayNettoResult{Reason: "карточка настила не загружена — netto считать не по чему"}
+		return LayNettoResult{Reason: "the lay's tech card isn't loaded — there is nothing to compute netto from"}
 	}
 	if bomItemID <= 0 {
-		return LayNettoResult{Reason: "настил потерял слот BOM — netto не к чему привязать"}
+		return LayNettoResult{Reason: "the lay lost its BOM slot — there is nothing to tie netto to"}
 	}
 	var bom *entity.TechCardBomItem
 	for i := range card.BomItems {
@@ -173,7 +173,7 @@ func LayNettoOf(card *entity.TechCard, colorwayID int, bomItemID int64, actualUo
 		}
 	}
 	if bom == nil {
-		return LayNettoResult{Reason: fmt.Sprintf("слот #%d не найден в карточке — netto не к чему привязать", bomItemID)}
+		return LayNettoResult{Reason: fmt.Sprintf("slot #%d isn't in the card — there is nothing to tie netto to", bomItemID)}
 	}
 
 	// Юзеджи слота: ВСЕ строки ИЗДЕЛИЯ (T8: строка детали — назначение материала, нормы на ней
@@ -200,50 +200,50 @@ func LayNettoOf(card *entity.TechCard, colorwayID int, bomItemID int64, actualUo
 					src = entity.ConsumptionSourceManual
 				}
 				return LayNettoResult{Reason: fmt.Sprintf(
-					"строка слота с нормой %q — netto берётся только из норм «по выкройкам» (dxf): manual — оценка, marker уже содержит выпады; знаменатель из смеси источников неполон", src)}
+					"a slot line with the %q norm — netto is taken only from “from patterns” (dxf) norms: manual is an estimate, marker already contains the waste; a denominator mixed from several sources is incomplete", src)}
 			}
 			usages = append(usages, u)
 		}
 		break
 	}
 	if len(usages) == 0 {
-		return LayNettoResult{Reason: "у карточки настила нет dxf-нормы слота — netto не из чего взять"}
+		return LayNettoResult{Reason: "the lay's tech card has no dxf norm for the slot — there is nothing to take netto from"}
 	}
 
 	// Сверка единиц — обе стороны обязаны быть названы И известны перечню (BLOCKER 2, см. шапку).
 	slotUom, factUom := strings.TrimSpace(bom.Unit.String), strings.TrimSpace(actualUom)
 	if slotUom == "" {
-		return LayNettoResult{Reason: "у слота BOM не названа единица — размерность netto не определена, считать нельзя"}
+		return LayNettoResult{Reason: "the BOM slot names no unit — the dimension of netto is undefined, it can't be computed"}
 	}
 	if _, ok := entity.NormalizeMaterialUnit(slotUom); !ok {
-		return LayNettoResult{Reason: fmt.Sprintf("единица слота %q не из перечня единиц — размерность netto не определена, считать нельзя", slotUom)}
+		return LayNettoResult{Reason: fmt.Sprintf("the slot unit %q is not in the unit list — the dimension of netto is undefined, it can't be computed", slotUom)}
 	}
 	if factUom == "" {
-		return LayNettoResult{Reason: "у факта не названа единица — netto несводимо с фактом"}
+		return LayNettoResult{Reason: "the actual names no unit — netto can't be reconciled with the actual"}
 	}
 	if _, ok := entity.NormalizeMaterialUnit(factUom); !ok {
-		return LayNettoResult{Reason: fmt.Sprintf("единица факта %q не из перечня единиц — netto несводимо с фактом", factUom)}
+		return LayNettoResult{Reason: fmt.Sprintf("the actual's unit %q is not in the unit list — netto can't be reconciled with the actual", factUom)}
 	}
 	if !entity.SameMaterialUnit(slotUom, factUom) {
-		return LayNettoResult{Reason: fmt.Sprintf("факт замерен в %q, а норма слота в %q — netto несводимо с фактом", factUom, slotUom)}
+		return LayNettoResult{Reason: fmt.Sprintf("the actual is measured in %q and the slot norm in %q — netto can't be reconciled with the actual", factUom, slotUom)}
 	}
 
 	if len(sections) == 0 {
-		return LayNettoResult{Reason: "у настила нет секций — netto нулевое, делить не на что"}
+		return LayNettoResult{Reason: "the lay has no sections — netto is zero, there is nothing to divide by"}
 	}
 	total := decimal.Zero
 	for _, s := range sections {
 		label := strings.TrimSpace(s.MarkerLabel)
 		if label == "" {
-			label = "раскладка без имени"
+			label = "an unnamed marker"
 		}
 		if len(s.Composition) == 0 {
 			// Раскладка, не говорящая, что кроит, не превращается в «один комплект» — тот же отказ,
 			// что MarkerScalarNormRefusal делает на костинге.
-			return LayNettoResult{Reason: fmt.Sprintf("%s не говорит, что кроит (состав не записан) — netto секции не посчитать", label)}
+			return LayNettoResult{Reason: fmt.Sprintf("%s doesn't say what it cuts (no composition recorded) — the section's netto can't be computed", label)}
 		}
 		if s.Plies <= 0 {
-			return LayNettoResult{Reason: fmt.Sprintf("%s: секция без слоёв — netto не посчитать", label)}
+			return LayNettoResult{Reason: fmt.Sprintf("%s: a section without plies — netto can't be computed", label)}
 		}
 		perPly := decimal.Zero
 		for _, c := range s.Composition {
@@ -257,7 +257,7 @@ func LayNettoOf(card *entity.TechCard, colorwayID int, bomItemID int64, actualUo
 				norm, _, counted, ok := usageNormForSize(u, c.SizeId)
 				if !ok || counted {
 					// Непокрытый размер НАЗЫВАЕТСЯ, а не пропускается.
-					return LayNettoResult{Reason: fmt.Sprintf("%s: у dxf-нормы слота нет значения для размера #%d состава — netto неполно", label, c.SizeId)}
+					return LayNettoResult{Reason: fmt.Sprintf("%s: the slot's dxf norm has no value for size #%d of the composition — netto is incomplete", label, c.SizeId)}
 				}
 				perGarment = perGarment.Add(norm)
 			}
@@ -266,7 +266,7 @@ func LayNettoOf(card *entity.TechCard, colorwayID int, bomItemID int64, actualUo
 		total = total.Add(perPly.Mul(decimal.NewFromInt(int64(s.Plies))))
 	}
 	if !total.IsPositive() {
-		return LayNettoResult{Reason: "netto настила не положительно — делить факт не на что"}
+		return LayNettoResult{Reason: "the lay's netto isn't positive — there is nothing to divide the actual by"}
 	}
 	return LayNettoResult{Qty: decimal.NullDecimal{Decimal: total.Round(layNettoScale), Valid: true}}
 }
@@ -317,17 +317,17 @@ func LayWastageDriftOf(o LayWastageObservation) LayWastageDrift {
 	case !o.NettoQty.Valid:
 		reason := strings.TrimSpace(o.NettoReason)
 		if reason == "" {
-			reason = "netto настила не посчитано — делить факт не на что"
+			reason = "the lay's netto isn't computed — there is nothing to divide the actual by"
 		}
 		d.Skipped = reason
 	case !o.NettoQty.Decimal.IsPositive():
 		// chk_prlay_netto_qty такую строку не пропустит; вход берётся значениями, поэтому проверка
 		// здесь своя.
-		d.Skipped = fmt.Sprintf("netto настила не положительно (%s) — делить не на что", o.NettoQty.Decimal.String())
+		d.Skipped = fmt.Sprintf("the lay's netto isn't positive (%s) — there is nothing to divide by", o.NettoQty.Decimal.String())
 	case !o.ActualQty.Valid:
-		d.Skipped = "факт расхода по настилу не введён"
+		d.Skipped = "the lay's actual consumption isn't entered"
 	case !o.ActualQty.Decimal.IsPositive():
-		d.Skipped = fmt.Sprintf("факт расхода не положителен (%s)", o.ActualQty.Decimal.String())
+		d.Skipped = fmt.Sprintf("the actual consumption isn't positive (%s)", o.ActualQty.Decimal.String())
 	default:
 		// ЗНАМЕНАТЕЛЬ = netto × КОЭФФИЦИЕНТ АРТИКУЛА (W3), а не чистое netto.
 		//
@@ -353,7 +353,7 @@ func LayWastageDriftOf(o LayWastageObservation) LayWastageDrift {
 			denom = denom.Mul(o.Coefficient.Decimal)
 		}
 		if !denom.IsPositive() {
-			d.Skipped = fmt.Sprintf("знаменатель настила не положителен (%s) — делить не на что", denom.String())
+			d.Skipped = fmt.Sprintf("the lay's denominator isn't positive (%s) — there is nothing to divide by", denom.String())
 			return d
 		}
 		d.Drift = decimal.NullDecimal{
@@ -417,8 +417,8 @@ func BomWastageSuggestionOf(lays []LayWastageObservation) BomWastageSuggestion {
 
 	if out.LayCount < MinLaysForWastageSuggestion {
 		out.Status = WastageSuggestionTooFewFacts
-		out.Detail = fmt.Sprintf("фактов пока мало: настилов с замером и netto %d, нужно %d — процент, выведенный из одного-двух раскроев, это догадка в одежде числа",
-			out.LayCount, MinLaysForWastageSuggestion)
+		out.Detail = fmt.Sprintf("not enough facts yet: %s with a measurement and netto, %d needed — a percent derived from one or two cuts is a guess dressed as a number",
+			calibrationPlural(out.LayCount, "%d lay", "%d lays"), MinLaysForWastageSuggestion)
 		return out
 	}
 
@@ -432,15 +432,20 @@ func BomWastageSuggestionOf(lays []LayWastageObservation) BomWastageSuggestion {
 		// сказать «выпадов нет» там, где измерение говорит «ваша netto-норма завышена — или замер
 		// врёт». Медиана ниже нуля буквально означает, что ткани ушло МЕНЬШЕ безотходной нормы.
 		out.Status = WastageSuggestionOutOfRange
-		out.Detail = fmt.Sprintf("медианный дрейф над %s по %d настилам (%d моделей) — %s%%, а поле принимает от %s до %s — проверьте замеры и dxf-нормы: скорее всего, среди них есть ошибка",
-			denom, out.LayCount, out.TechCardCount, percent.String(), wastagePercentMin.String(), wastagePercentMax.String())
+		out.Detail = fmt.Sprintf("the median drift over %s across %s (%s) is %s%%, but the field accepts from %s to %s — check the measurements and the dxf norms: most likely one of them is wrong",
+			denom,
+			calibrationPlural(out.LayCount, "%d lay", "%d lays"),
+			calibrationPlural(out.TechCardCount, "%d tech card", "%d tech cards"),
+			percent.String(), wastagePercentMin.String(), wastagePercentMax.String())
 		return out
 	}
 
 	out.Status = WastageSuggestionReady
 	out.SuggestedPercent = decimal.NullDecimal{Decimal: percent, Valid: true}
-	out.Detail = fmt.Sprintf("предложение %s%% — медиана «факт ÷ %s − 1» по %d настилам, %d моделей; применяется рукой, не автоматом — и это НЕ коэффициент раскроя артикула: тот меряется от длины раскладки и выпадов не содержит",
-		percent.String(), denom, out.LayCount, out.TechCardCount)
+	out.Detail = fmt.Sprintf("suggestion %s%% — the median of “actual ÷ %s − 1” across %s, %s; applied by hand, not automatically — and this is NOT the article's cutting coefficient: that one is measured from the marker length and contains no waste",
+		percent.String(), denom,
+		calibrationPlural(out.LayCount, "%d lay", "%d lays"),
+		calibrationPlural(out.TechCardCount, "%d tech card", "%d tech cards"))
 	return out
 }
 
@@ -454,4 +459,16 @@ func countedDenominatorCoefficient(lays []LayWastageObservation) decimal.NullDec
 		}
 	}
 	return decimal.NullDecimal{}
+}
+
+// calibrationPlural substitutes n into whichever of the two forms English counting requires:
+// 1 lay, 2 lays. Each form is a format with a single %d, so the number and the word can never be
+// pulled apart. Only n == 1 takes the singular — 0 reads as plural ("0 lays"), which is what
+// English says. Calibration details are read by a HUMAN, and "1 tech cards" is the kind of seam
+// that makes a measured number look like it was assembled by a machine that did not check.
+func calibrationPlural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf(one, n)
+	}
+	return fmt.Sprintf(many, n)
 }

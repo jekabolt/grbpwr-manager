@@ -193,16 +193,16 @@ func LayFactDriftOf(o LayFactObservation, articleUom string) LayFactDrift {
 		// без плана», а настил, чей план посчитать не удалось (слот BOM удалён, маркер отвязан). В
 		// медиану он не идёт: делить на него нечего, а подставить 1 значило бы объявить дрейфом весь
 		// факт целиком.
-		d.Skipped = "у настила нет посчитанного плана — делить факт не на что"
+		d.Skipped = "the lay has no computed plan — there is nothing to divide the actual by"
 	case !o.ActualQty.Valid:
 		// Обычное состояние: настил спланирован, ткань ещё не мерили. Это НЕ дрейф 0 — настил без
 		// факта, посчитанный за «сошлось», притянул бы медиану к нулю тем сильнее, чем меньше в цехе
 		// меряют, то есть ровно тогда, когда калибровке верить нельзя.
-		d.Skipped = "факт расхода по настилу не введён"
+		d.Skipped = "the lay's actual consumption isn't entered"
 	case !o.ActualQty.Decimal.IsPositive():
 		// chk_prlay_actual_qty (0285) такую строку не пропустит; вход берётся значениями, поэтому
 		// проверка здесь своя. Ноль — это не «ушло нисколько», это незаполненная форма.
-		d.Skipped = fmt.Sprintf("факт расхода не положителен (%s)", o.ActualQty.Decimal.String())
+		d.Skipped = fmt.Sprintf("the actual consumption isn't positive (%s)", o.ActualQty.Decimal.String())
 	default:
 		if u, a := normaliseUom(o.ActualUom), normaliseUom(articleUom); u != "" && a != "" && !entity.SameMaterialUnit(u, a) {
 			// Метры, делённые на килограммы, дают число, которое выглядит как дрейф. Ровно этот класс
@@ -217,7 +217,7 @@ func LayFactDriftOf(o LayFactObservation, articleUom string) LayFactDrift {
 			// такого артикула — с виду «фактов пока мало» при полном журнале замеров. Это ровно та
 			// молча-неверная сверка, против которой перечень единиц и заводился (material_unit.go:
 			// «слот, написанный «м», против артикула "m" считался двумя разными единицами»).
-			d.Skipped = fmt.Sprintf("факт замерен в %q, а артикул считается в %q — делить нельзя", u, a)
+			d.Skipped = fmt.Sprintf("the actual is measured in %q and the article is counted in %q — they can't be divided", u, a)
 			return d
 		}
 		d.Drift = decimal.NullDecimal{
@@ -247,8 +247,8 @@ func MaterialCoefficientSuggestionOf(lays []LayFactObservation, articleUom strin
 
 	if out.LayCount < MinLaysForCoefficientSuggestion {
 		out.Status = CoefficientSuggestionTooFewFacts
-		out.Detail = fmt.Sprintf("фактов пока мало: настилов с планом и фактом %d, нужно %d — коэффициент, выведенный из одного-двух замеров, это догадка в одежде числа",
-			out.LayCount, MinLaysForCoefficientSuggestion)
+		out.Detail = fmt.Sprintf("not enough facts yet: %s with a plan and an actual, %d needed — a coefficient derived from one or two measurements is a guess dressed as a number",
+			calibrationPlural(out.LayCount, "%d lay", "%d lays"), MinLaysForCoefficientSuggestion)
 		return out
 	}
 
@@ -265,15 +265,15 @@ func MaterialCoefficientSuggestionOf(lays []LayFactObservation, articleUom strin
 		// систематически завышен» — подменить измерение ближайшим сохраняемым значением. Измерение
 		// остаётся видимым, предложения нет, и это ровно тот случай, когда смотреть надо в замеры.
 		out.Status = CoefficientSuggestionOutOfRange
-		out.Detail = fmt.Sprintf("медианный дрейф по %d настилам даёт коэффициент %s, а поле принимает от %s до %s — проверьте замеры: скорее всего, среди них есть ошибка ввода",
-			out.LayCount, suggested.String(), coefficientMin.String(), coefficientMax.String())
+		out.Detail = fmt.Sprintf("the median drift across %s gives a coefficient of %s, but the field accepts from %s to %s — check the measurements: most likely one of them is a typo",
+			calibrationPlural(out.LayCount, "%d lay", "%d lays"), suggested.String(), coefficientMin.String(), coefficientMax.String())
 		return out
 	}
 
 	out.Status = CoefficientSuggestionReady
 	out.Suggested = decimal.NullDecimal{Decimal: suggested, Valid: true}
-	out.Detail = fmt.Sprintf("предложение %s — медиана дрейфа план-факт по %d настилам; применяется рукой, не автоматом",
-		suggested.String(), out.LayCount)
+	out.Detail = fmt.Sprintf("suggestion %s — the median plan-to-actual drift across %s; applied by hand, not automatically",
+		suggested.String(), calibrationPlural(out.LayCount, "%d lay", "%d lays"))
 	return out
 }
 

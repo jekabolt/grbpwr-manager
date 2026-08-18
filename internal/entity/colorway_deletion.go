@@ -16,7 +16,7 @@ import (
 //
 // Владелец провёл границу: удаляем ровно то, чего НИКОГДА НЕ БЫЛО. Не продан, не стоит ни в одной
 // партии (включая ЧЕРНОВУЮ), не стоит ни в одном настиле, нет остатка. Всё остальное — архив, и
-// отказ обязан НАЗВАТЬ факт, который держит: «продан», «стоит в партии #12», а не «нельзя».
+// отказ обязан НАЗВАТЬ факт, который держит: “sold”, “is in run #12”, а не «нельзя».
 //
 // Черновая партия ДЕРЖИТ УДАЛЕНИЕ намеренно. Черновик дёшево править — оператор убирает колорвей
 // из состава сам; молча снести чужие плановые строки за него мы права не имеем.
@@ -77,7 +77,7 @@ const (
 
 // colorwayBlockerHowToFix — общий выход из любого блокера. Один на все: архив — это и есть
 // «удалить» для всего, что уже прожило хоть что-то.
-const colorwayBlockerHowToFix = "заархивируйте колорвей вместо удаления, либо снимите названную связь"
+const colorwayBlockerHowToFix = "archive the colourway instead of deleting it, or remove the named link"
 
 // ColorwayRunRef — партия, в составе которой стоит колорвей. Статус едет вместе с номером,
 // потому что «черновик» и «в производстве» — разные разговоры с оператором, хотя блокируют оба.
@@ -176,7 +176,7 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 		// Считаем ЗАКАЗЫ, а не строки: оператор мыслит заказами, а один заказ легко держит
 		// несколько строк одного цвета в разных размерах. Падение на строки — защита от
 		// невозможного (order_item.order_id NOT NULL + FK), а не альтернативная формулировка:
-		// «продан: 0 заказов» было бы отказом, отрицающим сам себя.
+		// “sold: 0 orders” было бы отказом, отрицающим сам себя.
 		n := f.Orders
 		if n == 0 {
 			n = f.OrderLines
@@ -184,29 +184,29 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
 			Reason: ColorwayBlockerSold,
 			Count:  n,
-			Text: fmt.Sprintf("продан: %s",
-				pluralRU(n, "%d заказ", "%d заказа", "%d заказов")),
+			Text: fmt.Sprintf("sold: %s",
+				pluralEN(n, "%d order", "%d orders")),
 		})
 	}
 	if len(f.Runs) > 0 {
 		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
 			Reason: ColorwayBlockerProductionRun,
 			Count:  len(f.Runs),
-			Text:   fmt.Sprintf("стоит в %s", joinNames(runNames(f.Runs))),
+			Text:   fmt.Sprintf("is in %s", joinNames(runNames(f.Runs))),
 		})
 	}
 	if len(f.Lays) > 0 {
 		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
 			Reason: ColorwayBlockerLay,
 			Count:  len(f.Lays),
-			Text:   fmt.Sprintf("стоит в %s", joinNames(layNames(f.Lays))),
+			Text:   fmt.Sprintf("is in %s", joinNames(layNames(f.Lays))),
 		})
 	}
 	if f.StockUnits > 0 {
 		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
 			Reason: ColorwayBlockerStock,
 			Count:  f.StockUnits,
-			Text:   fmt.Sprintf("на складе %d шт", f.StockUnits),
+			Text:   fmt.Sprintf("%d pcs in stock", f.StockUnits),
 		})
 	}
 
@@ -219,16 +219,16 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
 			Reason: ColorwayBlockerInventoryTarget,
 			Count:  f.InventoryTargets,
-			Text: fmt.Sprintf("на него заведён %s",
-				pluralRU(f.InventoryTargets, "%d план запаса", "%d плана запаса", "%d планов запаса")),
+			Text: fmt.Sprintf("it has %s",
+				pluralEN(f.InventoryTargets, "%d inventory target", "%d inventory targets")),
 		})
 	}
 	if f.Fittings > 0 {
 		v.Blockers = append(v.Blockers, ColorwayDeletionEntry{
 			Reason: ColorwayBlockerFitting,
 			Count:  f.Fittings,
-			Text: fmt.Sprintf("на него записано %s",
-				pluralRU(f.Fittings, "%d примерка", "%d примерки", "%d примерок")),
+			Text: fmt.Sprintf("%s booked against it",
+				pluralEN(f.Fittings, "%d fitting", "%d fittings")),
 		})
 	}
 
@@ -237,38 +237,38 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 	// --- Каскад ------------------------------------------------------------------------------
 	c := f.Cascade
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeVariant, c.Variants,
-		"%d размерная позиция (вариант)", "%d размерные позиции (варианта)", "%d размерных позиций (вариантов)")
+		"%d size variant", "%d size variants")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeVariantPrice, c.VariantPrices,
-		"%d цена второго сорта", "%d цены второго сорта", "%d цен второго сорта")
+		"%d B-grade price", "%d B-grade prices")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadePrice, c.Prices,
-		"%d цена", "%d цены", "%d цен")
+		"%d price", "%d prices")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeMedia, c.Media,
-		"%d привязка медиа", "%d привязки медиа", "%d привязок медиа")
+		"%d media link", "%d media links")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeTag, c.Tags,
-		"%d тег", "%d тега", "%d тегов")
+		"%d tag", "%d tags")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeTranslation, c.Translations,
-		"%d перевод", "%d перевода", "%d переводов")
+		"%d translation", "%d translations")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeRecipeUsage, c.RecipeUsages,
-		"%d строка рецепта", "%d строки рецепта", "%d строк рецепта")
+		"%d recipe line", "%d recipe lines")
 	// Каскад ВТОРОГО уровня: пер-размерные нормы висят на строке рецепта, а не на колорвее, и
 	// уходят вместе с ней. В диалоге они обязаны быть названы отдельно — «3 строки рецепта» ничего
 	// не говорит о том, что вместе с ними исчезает ряд норм по размерам, который снимали руками.
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeSizeConsumption, c.SizeConsumptions,
-		"%d пер-размерная норма расхода", "%d пер-размерные нормы расхода", "%d пер-размерных норм расхода")
+		"%d per-size consumption norm", "%d per-size consumption norms")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadePieceMaterial, c.PieceMaterials,
-		"%d привязка ткани к детали кроя", "%d привязки ткани к деталям кроя", "%d привязок ткани к деталям кроя")
+		"%d fabric link to a cut piece", "%d fabric links to cut pieces")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadePackagingRecipe, c.PackagingRecipes,
-		"%d строка упаковки", "%d строки упаковки", "%d строк упаковки")
+		"%d packaging line", "%d packaging lines")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeLabDipRound, c.LabDipRounds,
-		"%d раунд лабдипа", "%d раунда лабдипа", "%d раундов лабдипа")
+		"%d lab dip round", "%d lab dip rounds")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeCostEvent, c.CostEvents,
-		"%d событие себестоимости", "%d события себестоимости", "%d событий себестоимости")
+		"%d cost event", "%d cost events")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeWaitlist, c.Waitlist,
-		"%d запись в листе ожидания", "%d записи в листе ожидания", "%d записей в листе ожидания")
+		"%d waitlist entry", "%d waitlist entries")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeStockHistory, c.StockHistory,
-		"%d запись истории остатка", "%d записи истории остатка", "%d записей истории остатка")
+		"%d stock history entry", "%d stock history entries")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeStyleLink, c.StyleLinks,
-		"%d связь со стилем", "%d связи со стилем", "%d связей со стилем")
+		"%d style link", "%d style links")
 
 	// --- Сироты ------------------------------------------------------------------------------
 	// Раскладка, снятая ПОД этот колорвей, переживёт удаление и станет длиной, померенной ни на
@@ -276,15 +276,14 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 	// верным для ткани), но оператор обязан узнать об этом ДО подтверждения, а не после.
 	o := f.Orphans
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanMarker, o.Markers,
-		"%d раскладка потеряет колорвей (замер останется, артикул из него исчезнет)",
-		"%d раскладки потеряют колорвей (замер останется, артикул из него исчезнет)",
-		"%d раскладок потеряют колорвей (замер останется, артикул из него исчезнет)")
+		"%d marker will lose the colourway (the measurement stays, the article disappears from it)",
+		"%d markers will lose the colourway (the measurement stays, the article disappears from it)")
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanMaterialMovement, o.MaterialMovements,
-		"%d движение материала потеряет колорвей", "%d движения материала потеряют колорвей", "%d движений материала потеряют колорвей")
+		"%d material movement will lose the colourway", "%d material movements will lose the colourway")
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanSample, o.Samples,
-		"%d образец потеряет колорвей", "%d образца потеряют колорвей", "%d образцов потеряют колорвей")
+		"%d sample will lose the colourway", "%d samples will lose the colourway")
 	v.Orphans = appendEntry(v.Orphans, ColorwayOrphanTask, o.Tasks,
-		"%d задача потеряет колорвей", "%d задачи потеряют колорвей", "%d задач потеряют колорвей")
+		"%d task will lose the colourway", "%d tasks will lose the colourway")
 
 	return v
 }
@@ -313,21 +312,21 @@ func (v ColorwayDeletionVerdict) BlockerSummary() string {
 	return strings.Join(parts, "; ")
 }
 
-func appendEntry(dst []ColorwayDeletionEntry, reason string, n int, one, few, many string) []ColorwayDeletionEntry {
+func appendEntry(dst []ColorwayDeletionEntry, reason string, n int, one, many string) []ColorwayDeletionEntry {
 	if n <= 0 {
 		return dst
 	}
-	return append(dst, ColorwayDeletionEntry{Reason: reason, Count: n, Text: pluralRU(n, one, few, many)})
+	return append(dst, ColorwayDeletionEntry{Reason: reason, Count: n, Text: pluralEN(n, one, many)})
 }
 
 // maxNamedObjects — сколько партий/настилов называем поимённо, прежде чем свернуть хвост в
-// «и ещё N». Список из тридцати номеров — это уже не сообщение, а дамп.
+// “and N more”. Список из тридцати номеров — это уже не сообщение, а дамп.
 const maxNamedObjects = 5
 
 func runNames(runs []ColorwayRunRef) []string {
 	out := make([]string, 0, len(runs))
 	for _, r := range runs {
-		out = append(out, fmt.Sprintf("партии #%d (%s)", r.ID, runStatusRU(r.Status)))
+		out = append(out, fmt.Sprintf("run #%d (%s)", r.ID, runStatusLabel(r.Status)))
 	}
 	return out
 }
@@ -336,10 +335,10 @@ func layNames(lays []ColorwayLayRef) []string {
 	out := make([]string, 0, len(lays))
 	for _, l := range lays {
 		if l.Name == "" {
-			out = append(out, fmt.Sprintf("безымянном настиле партии #%d", l.RunID))
+			out = append(out, fmt.Sprintf("an unnamed lay of run #%d", l.RunID))
 			continue
 		}
-		out = append(out, fmt.Sprintf("настиле «%s» партии #%d", l.Name, l.RunID))
+		out = append(out, fmt.Sprintf("lay “%s” of run #%d", l.Name, l.RunID))
 	}
 	return out
 }
@@ -349,45 +348,41 @@ func joinNames(names []string) string {
 		return strings.Join(names, ", ")
 	}
 	rest := len(names) - maxNamedObjects
-	return fmt.Sprintf("%s и ещё %d", strings.Join(names[:maxNamedObjects], ", "), rest)
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:maxNamedObjects], ", "), rest)
 }
 
-// runStatusRU — статус партии словом. Словарь закрыт (CHECK chk_production_run_status, 0298);
+// runStatusLabel — статус партии словом. Словарь закрыт (CHECK chk_production_run_status, 0298);
 // незнакомое значение отдаём как есть, а не подменяем «неизвестно»: соврать про статус партии,
 // которая держит удаление, хуже, чем показать сырой код.
-func runStatusRU(status string) string {
+func runStatusLabel(status string) string {
 	switch status {
 	case "draft":
-		return "черновик"
+		return "draft"
 	case "planned":
-		return "запланирована"
+		return "planned"
 	case "in_progress":
-		return "в производстве"
+		return "in progress"
 	case "partially_received":
-		return "частично принята"
+		return "partially received"
 	case "received":
-		return "принята"
+		return "received"
 	case "closed":
-		return "закрыта"
+		return "closed"
 	case "cancelled":
-		return "отменена"
+		return "cancelled"
 	default:
 		return status
 	}
 }
 
-// pluralRU подставляет n в ту из трёх форм, которой требует русский счёт: 1 заказ, 2 заказа,
-// 5 заказов. Каждая форма — формат с одним %d, чтобы число и слово нельзя было развести местами.
-func pluralRU(n int, one, few, many string) string {
+// pluralEN substitutes n into whichever of the two forms English counting requires: 1 order,
+// 2 orders. Each form is a format with a single %d, so the number and the word can never be
+// pulled apart. Only n == 1 takes the singular — 0 and negatives read as plural ("0 orders"),
+// which is what English says.
+func pluralEN(n int, one, many string) string {
 	form := many
-	mod100 := n % 100
-	if mod100 < 11 || mod100 > 14 {
-		switch n % 10 {
-		case 1:
-			form = one
-		case 2, 3, 4:
-			form = few
-		}
+	if n == 1 {
+		form = one
 	}
 	return fmt.Sprintf(form, n)
 }

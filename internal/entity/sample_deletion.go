@@ -65,14 +65,14 @@ const (
 // Как выйти из блокера. Выходы РАЗНЫЕ — в отличие от колорвея, где на все блокеры был один ответ
 // «архивируйте». Здесь каждый блокер снимается своим действием, и назвать его — половина ответа.
 const (
-	sampleFixReturnMaterial = "верните материал на склад из панели МАТЕРИАЛЫ этого семпла, затем удаляйте"
+	sampleFixReturnMaterial = "return the material to stock from this sample's MATERIALS panel, then delete"
 	// Возврат списанному семплу запрещён на входе в склад (checkSampleOpen): статус scrapped
 	// означает «материал уничтожен вместе с семплом», и оприходовать его обратно нельзя. Выход
 	// поэтому начинается со смены статуса — либо семпл остаётся как запись о съеденной ткани.
-	sampleFixReturnScrapped = "снимите статус «списан» (списанному семплу возврат материала запрещён), верните материал на склад, затем удаляйте"
-	sampleFixOverReturn     = "лента склада по этому семплу разошлась: возвращено больше, чем выдавалось — исправьте движения, прежде чем удалять семпл"
-	sampleFixDeleteFittings = "удалите примерки этого семпла, затем удаляйте сам семпл"
-	sampleFixReferenced     = "снимите названную связь; если её не видно на экране — это дефект перечисления на сервере"
+	sampleFixReturnScrapped = "clear the “written off” status (a written-off sample can't take material back), return the material to stock, then delete"
+	sampleFixOverReturn     = "the stock ledger for this sample doesn't add up: more was returned than was issued — fix the movements before deleting the sample"
+	sampleFixDeleteFittings = "delete this sample's fittings, then delete the sample itself"
+	sampleFixReferenced     = "remove the named link; if you can't see it on screen — this is a defect in the server's enumeration"
 )
 
 // SampleOutstandingMaterial — один материал и его ЧИСТЫЙ расход на семпле: выдано минус возвращено.
@@ -117,7 +117,7 @@ type SampleDeletionFacts struct {
 	// Label — как называть семпл в предложении: «сэмпл #3», а при отсутствующем номере — по id.
 	Label string
 	// Scrapped — статус «списан». Меняет не вердикт, а ВЫХОД из него: складу запрещено принимать
-	// возврат по списанному семплу, поэтому совет «верните материал» без снятия статуса
+	// возврат по списанному семплу, поэтому совет “return the material” без снятия статуса
 	// невыполним, и оператор бился бы в отказ склада, следуя совету сервера.
 	Scrapped bool
 
@@ -177,7 +177,7 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 		v.Blockers = append(v.Blockers, SampleDeletionEntry{
 			Reason: SampleBlockerMaterialOutstanding,
 			Count:  len(outstanding),
-			Text:   fmt.Sprintf("не возвращено на склад: %s", joinNames(materialQtyNames(outstanding))),
+			Text:   fmt.Sprintf("not returned to stock: %s", joinNames(materialQtyNames(outstanding))),
 		})
 	}
 	if len(over) > 0 {
@@ -187,7 +187,7 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 		v.Blockers = append(v.Blockers, SampleDeletionEntry{
 			Reason: SampleBlockerMaterialOverReturn,
 			Count:  len(over),
-			Text:   fmt.Sprintf("возвращено больше, чем выдавалось: %s", joinNames(materialQtyNames(over))),
+			Text:   fmt.Sprintf("more returned than issued: %s", joinNames(materialQtyNames(over))),
 		})
 	}
 
@@ -196,8 +196,8 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 		v.Blockers = append(v.Blockers, SampleDeletionEntry{
 			Reason: SampleBlockerFitting,
 			Count:  f.Fittings,
-			Text: fmt.Sprintf("на нём записано %s",
-				pluralRU(f.Fittings, "%d примерка", "%d примерки", "%d примерок")),
+			Text: fmt.Sprintf("%s booked against it",
+				pluralEN(f.Fittings, "%d fitting", "%d fittings")),
 		})
 	}
 
@@ -205,9 +205,9 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 
 	// --- Каскад --------------------------------------------------------------------------------
 	v.Cascade = appendSampleEntry(v.Cascade, SampleCascadeMedia, f.Cascade.Media,
-		"%d фотография семпла", "%d фотографии семпла", "%d фотографий семпла")
+		"%d sample photo", "%d sample photos")
 	v.Cascade = appendSampleEntry(v.Cascade, SampleCascadeSubstitution, f.Cascade.Substitutions,
-		"%d замена материала", "%d замены материала", "%d замен материала")
+		"%d material substitution", "%d material substitutions")
 
 	// --- Сироты --------------------------------------------------------------------------------
 	//
@@ -218,9 +218,8 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 	// обязан узнать это ДО подтверждения.
 	o := f.Orphans
 	v.Orphans = appendSampleEntry(v.Orphans, SampleOrphanMaterialMovement, o.MaterialMovements,
-		"%d движение материала останется в ленте склада без семпла",
-		"%d движения материала останутся в ленте склада без семпла",
-		"%d движений материала останутся в ленте склада без семпла")
+		"%d material movement will stay in the stock ledger without a sample",
+		"%d material movements will stay in the stock ledger without a sample")
 	// ОДНО ИСКЛЮЧЕНИЕ ИЗ «расход стиля не изменится», и молчать о нём нельзя. Количество сошлось в
 	// ноль, а ДЕНЬГИ — нет: так бывает, когда часть выдачи ушла со склада НЕКОСТИРОВАННОЙ (средняя
 	// цена материала тогда не была известна). Возврат такую выдачу оценить не может — оценить её
@@ -232,7 +231,7 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 		v.Orphans = append(v.Orphans, SampleDeletionEntry{
 			Reason: SampleOrphanStyleCost,
 			Count:  1,
-			Text: fmt.Sprintf("%s € уйдёт из расхода стиля на сэмплирование (движения останутся в ленте): часть выдачи ушла без известной цены, и возврат её не снял",
+			Text: fmt.Sprintf("%s € will drop out of the style's sampling cost (the movements stay in the ledger): part of the issue went out without a known price, and the return didn't clear it",
 				residue.StringFixed(2)),
 		})
 	}
@@ -240,15 +239,13 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 	// именно семпл заплатили». Удалять их вместе с семплом было бы хуже: потраченное не исчезает
 	// оттого, что запись о прототипе стёрли.
 	v.Orphans = appendSampleEntry(v.Orphans, SampleOrphanDevExpense, o.DevExpenses,
-		"%d dev-расход останется на карточке и потеряет семпл",
-		"%d dev-расхода останутся на карточке и потеряют семпл",
-		"%d dev-расходов останутся на карточке и потеряют семпл")
+		"%d dev expense will stay on the card and lose the sample",
+		"%d dev expenses will stay on the card and lose the sample")
 	v.Orphans = appendSampleEntry(v.Orphans, SampleOrphanTask, o.Tasks,
-		"%d задача потеряет семпл", "%d задачи потеряют семпл", "%d задач потеряют семпл")
+		"%d task will lose the sample", "%d tasks will lose the sample")
 	v.Orphans = appendSampleEntry(v.Orphans, SampleOrphanNextRound, o.NextRounds,
-		"%d следующий раунд потеряет звено цепочки",
-		"%d следующих раунда потеряют звено цепочки",
-		"%d следующих раундов потеряют звено цепочки")
+		"%d next round will lose a link in the chain",
+		"%d next rounds will lose a link in the chain")
 
 	return v
 }
@@ -259,7 +256,7 @@ func ClassifySampleDeletion(f SampleDeletionFacts) SampleDeletionVerdict {
 // там, где сервер знал ответ целиком с первого раза.
 //
 // Совет по каждому блокеру СВОЙ — и он единственное место, где вердикт учитывает статус «списан»:
-// «верните материал» без снятия статуса невыполним, потому что склад откажет.
+// “return the material” без снятия статуса невыполним, потому что склад откажет.
 func (v SampleDeletionVerdict) FieldViolations(scrapped bool) []*ValidationError {
 	out := make([]*ValidationError, 0, len(v.Blockers))
 	for _, b := range v.Blockers {
@@ -299,11 +296,11 @@ func (v SampleDeletionVerdict) BlockerSummary() string {
 	return strings.Join(parts, "; ")
 }
 
-func appendSampleEntry(dst []SampleDeletionEntry, reason string, n int, one, few, many string) []SampleDeletionEntry {
+func appendSampleEntry(dst []SampleDeletionEntry, reason string, n int, one, many string) []SampleDeletionEntry {
 	if n <= 0 {
 		return dst
 	}
-	return append(dst, SampleDeletionEntry{Reason: reason, Count: n, Text: pluralRU(n, one, few, many)})
+	return append(dst, SampleDeletionEntry{Reason: reason, Count: n, Text: pluralEN(n, one, many)})
 }
 
 // sampleCostedResidue — сколько стоимости осталось на семпле, когда КОЛИЧЕСТВО уже сошлось в ноль.
@@ -317,7 +314,7 @@ func sampleCostedResidue(ms []SampleOutstandingMaterial) decimal.Decimal {
 	return total.Round(2)
 }
 
-// materialQtyNames — «2.4 m «Wool Melton 340»». Количество печатается БЕЗ хвостовых нулей: 2.400
+// materialQtyNames — “2.4 m “Wool Melton 340””. Количество печатается БЕЗ хвостовых нулей: 2.400
 // это то, как число лежит в DECIMAL(12,3), а не то, сколько оператор отмерил. Единица может быть
 // пустой (в справочнике материалов она необязательна) — тогда её просто нет, а не «шт» по догадке.
 func materialQtyNames(ms []SampleOutstandingMaterial) []string {
@@ -326,13 +323,13 @@ func materialQtyNames(ms []SampleOutstandingMaterial) []string {
 		qty := m.Qty.Abs().String()
 		name := m.Name
 		if name == "" {
-			name = fmt.Sprintf("материал #%d", m.MaterialID)
+			name = fmt.Sprintf("material #%d", m.MaterialID)
 		}
 		if unit := strings.TrimSpace(m.Unit); unit != "" {
-			out = append(out, fmt.Sprintf("%s %s «%s»", qty, unit, name))
+			out = append(out, fmt.Sprintf("%s %s “%s”", qty, unit, name))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s «%s»", qty, name))
+		out = append(out, fmt.Sprintf("%s “%s”", qty, name))
 	}
 	return out
 }

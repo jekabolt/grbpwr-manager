@@ -136,8 +136,8 @@ func (s *Server) SaveTechCardMarker(ctx context.Context, req *pb_admin.SaveTechC
 	if entity.CompositionPredatesSchema(facts) {
 		return nil, apierr.Invalid(entity.NewFieldViolation("layout.composition",
 			entity.ReasonCompositionPredatesSchema, "",
-			fmt.Sprintf("the layout declares schema_version %d but carries a состав or a size on a piece, "+
-				"and both exist only from version %d on — no stored раскладка can contain them, so this is a "+
+			fmt.Sprintf("the layout declares schema_version %d but carries a composition or a size on a piece, "+
+				"and both exist only from version %d on — no stored marker can contain them, so this is a "+
 				"client writing a version it does not actually speak; save it as version %d",
 				facts.SchemaVersion, entity.MarkerLayoutSchemaWithComposition,
 				entity.MarkerLayoutSchemaWithComposition)))
@@ -188,7 +188,7 @@ func (s *Server) GetTechCardMarker(ctx context.Context, req *pb_admin.GetTechCar
 		slog.Default().ErrorContext(ctx, "stored marker layout does not parse; serving summary only",
 			slog.Int("marker_id", m.Id), slog.String("err", err.Error()))
 		out.Layout = &pb_common.TechCardMarkerLayout{
-			Warnings: []string{"сохранённая раскладка не читается этой версией — доступны только итоговые цифры"},
+			Warnings: []string{"the stored marker cannot be read by this version — only the summary figures are available"},
 		}
 	} else {
 		out.Layout = &layout
@@ -262,11 +262,11 @@ func (s *Server) techCardMarkerError(ctx context.Context, op string, techCardID 
 		// with a состав all share size_key 0, so on those the name is unique per CARD, and only the
 		// legacy rows still scope it by size. The message states the part that is true for both.
 		return status.Error(codes.FailedPrecondition,
-			"a раскладка with this name already exists on this tech card; pick another name")
+			"a marker with this name already exists on this tech card; pick another name")
 	case s.repo.IsErrForeignKeyViolation(err):
 		return status.Error(codes.InvalidArgument, "marker references a missing tech card, size or BOM line")
 	}
 	slog.Default().ErrorContext(ctx, "tech card marker write failed",
 		slog.String("op", op), slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
-	return status.Error(codes.Internal, "can't save the раскладка; try again")
+	return status.Error(codes.Internal, "can't save the marker; try again")
 }

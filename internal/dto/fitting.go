@@ -148,11 +148,11 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		// — при том что индекс у сервера был.
 		if c.Number < 0 {
 			return nil, entity.NewFieldViolation(path+".number", "invalid", fmt.Sprint(c.Number),
-				"номер выноски — то, чем на неё ссылается замечание; отрицательным он не бывает")
+				"the callout number is what a remark refers to it by; it is never negative")
 		}
 		if c.MediaId < 0 {
 			return nil, entity.NewFieldViolation(path+".media_id", "invalid", fmt.Sprint(c.MediaId),
-				"выноска либо привязана к снимку, либо не привязана (0); отрицательного медиа нет")
+				"a callout is either tied to a picture or not tied at all (0); there is no negative media")
 		}
 		// Маркер читается ТОЙ ЖЕ охраняемой проверкой, что и якоря фигуры (unitIntervalNull):
 		// показатель степени в координате стоит одинаково дорого, в каком бы из полей он ни приехал.
@@ -192,11 +192,11 @@ func ConvertPbFittingInsertToEntity(pb *pb_common.FittingInsert) (*entity.Fittin
 		note := strings.TrimSpace(c.Note)
 		if note == "" && c.Kind != nil && geom.Kind == entity.AnnotationKindPin {
 			return nil, entity.NewFieldViolation(path+".note", "required", "",
-				"у нумерованной точки записка и есть всё содержание: напишите, что не так, или нарисуйте фигуру")
+				"for a numbered point the note is the whole content: write what's wrong, or draw a shape")
 		}
 		if len(note) > maxTaskText {
 			return nil, entity.NewFieldViolation(path+".note", "too_long", "",
-				fmt.Sprintf("записка выноски — не длиннее %d знаков; развёрнутое замечание живёт в списке изменений", maxTaskText))
+				fmt.Sprintf("a callout note is no longer than %d characters; a full remark lives in the change list", maxTaskText))
 		}
 		callouts = append(callouts, entity.FittingCallout{
 			Number:  int(c.Number),

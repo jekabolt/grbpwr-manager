@@ -715,8 +715,8 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 						continue
 					}
 					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
-						"marker_not_on_card", fmt.Sprintf("раскладка %d", id),
-						"the norm stamp must name a раскладка of this tech card — send 0 to clear it")
+						"marker_not_on_card", fmt.Sprintf("marker %d", id),
+						"the norm stamp must name a marker of this tech card — send 0 to clear it")
 				}
 				// РАСКРОЙНАЯ РАСКЛАДКА ПРОГОНА ИСТОЧНИКОМ НОРМЫ НЕ БЫВАЕТ (Ф4, 0282). Она принадлежит
 				// прогону, умирает вместе с ним (CASCADE) и нормой быть не может по
@@ -731,10 +731,10 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				if row.RunId.Valid {
 					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
 						"marker_belongs_to_run",
-						fmt.Sprintf("раскладка %d принадлежит прогону %d", id, row.RunId.Int64),
-						"источником нормы может быть только карточная раскладка: раскройная умирает "+
-							"вместе со своим прогоном и нормой быть не может — примените норму с "+
-							"карточной раскладки этой ткани или пришлите 0, чтобы снять штамп")
+						fmt.Sprintf("marker %d belongs to run %d", id, row.RunId.Int64),
+						"only a card marker can be the source of a norm: a run marker dies together "+
+							"with its run and can never be the norm — apply the norm from a card marker "+
+							"of this fabric, or send 0 to clear the stamp")
 				}
 				// И ТОТ ЖЕ ЗАПРОС ОТКАЗЫВАЕТ ЧЕРНОВИКУ (0299). Штамп утверждает «расход в этой строке
 				// взят вот с той раскладки», а черновик расхода не называет ВООБЩЕ: на проводе у него
@@ -744,7 +744,7 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 				// marker_not_on_card: та отправила бы искать удалённую строку, а искать надо бюджет.
 				if row.IsDraft {
 					return entity.NewFieldViolation(fmt.Sprintf("usages[%d].norm_marker_id", i),
-						"marker_is_draft", fmt.Sprintf("раскладка %d", id),
+						"marker_is_draft", fmt.Sprintf("marker %d", id),
 						entity.MarkerDraftNormRefusal(row.Name, row.PlacedCount, row.TotalCount))
 				}
 			}

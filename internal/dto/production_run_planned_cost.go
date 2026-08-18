@@ -113,7 +113,7 @@ func ComputeProductionRunPlannedUnitCostWithReason(tc *entity.TechCard, fx Costi
 		// Edge 1: explicit NO basis (sizeID 0), never the style default — see the header.
 		unit, ccy := ComputeTechCardUnitCostOnSize(tc, fx, wastageOverride, 0)
 		if !unit.Valid {
-			return unit, ccy, "в партии нет ни одной строки с количеством — считать нечего"
+			return unit, ccy, "the run has no line with a quantity — there is nothing to compute"
 		}
 		return unit, ccy, ""
 	}
@@ -126,21 +126,21 @@ func ComputeProductionRunPlannedUnitCostWithReason(tc *entity.TechCard, fx Costi
 			// Edges 2, 4 and 5. НАЗЫВАЕТСЯ ИМЕННО ЯЧЕЙКА: «партия не считается» на партии из двадцати
 			// строк — это приглашение перебирать их руками.
 			return decimal.NullDecimal{}, "", fmt.Sprintf(
-				"ячейка (колорвей %d, размер %d) не считается: у её рецепта нет нормы на этот размер, либо колорвей не принадлежит карточке",
+				"cell (colourway %d, size %d) does not compute: its recipe has no norm for this size, or the colourway does not belong to the card",
 				cell.productID, cell.sizeID)
 		}
 		if currency == "" {
 			currency = ccy
 		} else if !strings.EqualFold(currency, ccy) {
 			return decimal.NullDecimal{}, "", fmt.Sprintf(
-				"ячейки партии считаются в разных валютах (%s и %s) — взвешенное среднее по двум валютам не число", currency, ccy)
+				"the run's cells compute in different currencies (%s and %s) — a weighted average across two currencies is not a number", currency, ccy)
 		}
 		weighted = weighted.Add(unit.Decimal.Mul(decimal.NewFromInt(qtyByCell[cell])))
 	}
 	avg := roundMoney(weighted.Div(decimal.NewFromInt(totalQty)))
 	if !avg.IsPositive() {
 		// Mirrors ComputeTechCardUnitCost's own rule: a non-positive cost is not a cost.
-		return decimal.NullDecimal{}, "", "посчитанная цена не положительна — это не цена"
+		return decimal.NullDecimal{}, "", "the computed cost is not positive — that is not a cost"
 	}
 	return decimal.NullDecimal{Decimal: avg, Valid: true}, currency, ""
 }

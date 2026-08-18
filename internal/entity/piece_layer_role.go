@@ -76,25 +76,25 @@ func (b *TechCardBomItem) PieceLayerRole() (TechCardBomPurpose, bool) {
 	return DerivePieceLayerRole(b.Section, b.Purpose.String)
 }
 
-// pieceLayerRoleLabels — русские подписи ролей для серверных сообщений (отказ рецепта, блокер
+// pieceLayerRoleLabels — подписи ролей для серверных сообщений (отказ рецепта, блокер
 // кат-плана, находки гейта). Клиентские подписи живут своим зеркалом (bom-purpose-labels.ts);
 // здесь — только то, что сервер печатает сам.
 var pieceLayerRoleLabels = map[TechCardBomPurpose]string{
-	BomPurposeMain:        "основная ткань",
-	BomPurposeLining:      "подкладка",
-	BomPurposePocketing:   "карманка",
-	BomPurposeInterfacing: "дублерин",
-	BomPurposeInsulation:  "утеплитель",
-	BomPurposeContrast:    "контраст",
-	BomPurposeMesh:        "сетка",
-	BomPurposeOther:       "другое",
+	BomPurposeMain:        "main fabric",
+	BomPurposeLining:      "lining",
+	BomPurposePocketing:   "pocketing",
+	BomPurposeInterfacing: "interfacing",
+	BomPurposeInsulation:  "insulation",
+	BomPurposeContrast:    "contrast",
+	BomPurposeMesh:        "mesh",
+	BomPurposeOther:       "other",
 }
 
-// PieceLayerRoleLabel — русское имя роли; у «не разложено» своё, потому что это не роль, а её
+// PieceLayerRoleLabel — имя роли; у «не разложено» своё, потому что это не роль, а её
 // отсутствие, и печатать его шрифтом роли значило бы выдать пробел за факт.
 func PieceLayerRoleLabel(r TechCardBomPurpose) string {
 	if r == PieceLayerRoleUnsorted {
-		return "не разложено"
+		return "unsorted"
 	}
 	if l, ok := pieceLayerRoleLabels[r]; ok {
 		return l

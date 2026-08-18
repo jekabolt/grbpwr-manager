@@ -36,17 +36,24 @@ func TestDerivePieceLayerRole(t *testing.T) {
 	}
 }
 
-// Подписи ролей: каждая роль словаря назначений имеет русское имя, «не разложено» — своё.
+// Подписи ролей: каждая роль словаря назначений имеет имя, «не разложено» — своё.
+//
+// Покрытие проверяется ПО СЛОВАРЮ, а не сравнением подписи с самим значением: подписи английские,
+// и у половины ролей человеческое имя совпадает с значением enum'а ('lining' → "lining"), так что
+// проверка «подпись ≠ значение» доказывала бы только то, что подписи не английские.
 func TestPieceLayerRoleLabel(t *testing.T) {
-	if got := PieceLayerRoleLabel(PieceLayerRoleUnsorted); got != "не разложено" {
+	if got := PieceLayerRoleLabel(PieceLayerRoleUnsorted); got != "unsorted" {
 		t.Errorf("unsorted label = %q", got)
 	}
-	if got := PieceLayerRoleLabel(BomPurposeMain); got != "основная ткань" {
+	if got := PieceLayerRoleLabel(BomPurposeMain); got != "main fabric" {
 		t.Errorf("main label = %q", got)
 	}
 	for _, p := range BomPurposeOrder {
-		if PieceLayerRoleLabel(p) == "" || PieceLayerRoleLabel(p) == string(p) {
-			t.Errorf("purpose %q has no human label", p)
+		if _, ok := pieceLayerRoleLabels[p]; !ok {
+			t.Errorf("purpose %q has no human label in the dictionary", p)
+		}
+		if PieceLayerRoleLabel(p) == "" {
+			t.Errorf("purpose %q renders an empty label", p)
 		}
 	}
 }

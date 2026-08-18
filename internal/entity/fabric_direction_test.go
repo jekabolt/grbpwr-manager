@@ -74,7 +74,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		lines := []FabricDirectionLine{line(0, shellA, "main", "Вельвет", "one_way")}
 		_, err := validate(shellA, lines, v3(0, 1), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
-		if !strings.Contains(ve.HowToFix, "зеркальные") {
+		if !strings.Contains(ve.HowToFix, "mirrored") {
 			t.Errorf("how-to-fix must say a mirror fired: %q", ve.HowToFix)
 		}
 	})
@@ -144,10 +144,10 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		// The remedy has to be «put back what was saved», not «re-nest»: the geometry on file was
 		// fine, and telling an operator to throw it away — or to go switch the guard off on the BOM
 		// tab — would be advice to destroy the very thing the pass protects.
-		if !strings.Contains(ve.HowToFix, "верните сохранённые размещения") {
+		if !strings.Contains(ve.HowToFix, "put the stored placements back") {
 			t.Errorf("how-to-fix must ask for the stored placements back: %q", ve.HowToFix)
 		}
-		if strings.Contains(ve.HowToFix, "исправьте направление") {
+		if strings.Contains(ve.HowToFix, "fix the fabric direction") {
 			t.Errorf("a grandfathered row must not be pointed at switching the guard off: %q", ve.HowToFix)
 		}
 		if !strings.Contains(ve.HowToFix, "180") {
@@ -226,7 +226,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 			// Its own code and its own words: the operator is not being told their geometry is
 			// wrong, they are being told the server cannot read what was there — and that a re-nest,
 			// unusually, IS the remedy, because there is nothing to restore.
-			if !strings.Contains(ve.HowToFix, "прочитать") {
+			if !strings.Contains(ve.HowToFix, "can't be read") {
 				t.Errorf("how-to-fix must say the stored geometry could not be read: %q", ve.HowToFix)
 			}
 		}
@@ -328,7 +328,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		}
 		_, err := validate(shellA, lines, v3(1, 0), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "layout.placements", ReasonFlipOnOneWay)
-		if !strings.Contains(ve.HowToFix, "назначение") || !strings.Contains(ve.HowToFix, "Вельвет") {
+		if !strings.Contains(ve.HowToFix, "purpose") || !strings.Contains(ve.HowToFix, "Вельвет") {
 			t.Errorf("how-to-fix must name the blocking article and why it applies: %q", ve.HowToFix)
 		}
 		if ve.Conflicting != shellB {
@@ -347,7 +347,7 @@ func TestValidateMarkerFabricDirection(t *testing.T) {
 		}
 		_, err := validate(shellA, lines, v3(1, 0), gen(0), nothingOnFile)
 		ve := requireFieldViolation(t, err, "bom_items[7].fabric_direction", ReasonFabricDirectionUnknown)
-		if !strings.Contains(ve.HowToFix, "назначение") {
+		if !strings.Contains(ve.HowToFix, "purpose") {
 			t.Errorf("how-to-fix %q must explain why a line the marker does not name is blocking it", ve.HowToFix)
 		}
 	})

@@ -309,27 +309,27 @@ func areaEstimateUnitFactor(unit string) (decimal.Decimal, bool) {
 func AreaEstimateRefusalText(r AreaEstimateRefusal) string {
 	switch r {
 	case AreaEstimateNoAssignments:
-		return "ни одна деталь кроя не назначена на эту ткань в этом колорвее"
+		return "no cut piece is assigned to this fabric in this colourway"
 	case AreaEstimateNoAreas:
-		return "площади деталей этой ткани не измерены — откройте вкладку выкроек и пересчитайте"
+		return "the piece areas of this fabric are not measured — open the patterns tab and recompute"
 	case AreaEstimateIncomplete:
-		return "у части деталей нет площади на этот размер — комплект неполон, оценка занижала бы"
+		return "some pieces have no area for this size — the set is incomplete, the estimate would be understated"
 	case AreaEstimateStale:
-		return "выкройки менялись после замера площадей — пересчитайте площади"
+		return "the patterns changed after the areas were measured — recompute the areas"
 	case AreaEstimateNoPerimeter:
-		return "у деталей снята площадь, но не периметр — клеевую полосу по краю посчитать нечем; пересчитайте площади этой ткани, замер добавит периметр"
+		return "the pieces have a measured area but no perimeter — there is nothing to compute an edge fusing strip from; recompute the areas of this fabric, the measurement will add the perimeter"
 	case AreaEstimateNoStripWidth:
-		return "деталь дублируется по припуску, а эталон припуска не задан — ни на карточке, ни в настройках цеха; ширины полосы взять неоткуда"
+		return "the piece is fused by seam allowance, and no seam allowance reference is set — neither on the card nor in the workshop settings; there is nowhere to take the strip width from"
 	case AreaEstimateNoWidth:
-		return "у ткани не заполнена ширина полотна — делить не на что"
+		return "the fabric has no roll width filled in — there is nothing to divide by"
 	case AreaEstimateUnitUnknown:
-		return "единица слота не переводится из длины (килограммы считаются только по раскладке)"
+		return "the slot's unit doesn't convert from length (kilograms are computed off a marker only)"
 	case AreaEstimateNoPrice:
-		return "у ткани нет цены ни в строке, ни в каталоге"
+		return "the fabric has no price, neither on the line nor in the catalogue"
 	case AreaEstimateNoBasis:
-		return "нет размера, на котором считать (строка партии не называет размер)"
+		return "there is no size to compute on (the run line doesn't name a size)"
 	case AreaEstimatePinConflict:
-		return "детали одного слота пришпилены к разным артикулам — это два разных рулона"
+		return "pieces of one slot are pinned to different articles — these are two different rolls"
 	}
 	return ""
 }

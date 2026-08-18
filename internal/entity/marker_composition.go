@@ -187,10 +187,10 @@ func CompositionPredatesSchema(f MarkerLayoutFacts) bool {
 func MarkerScalarNormRefusal(name string, perSize []MarkerSizeConsumption) string {
 	label := strings.TrimSpace(name)
 	if len(perSize) == 0 {
-		return fmt.Sprintf("у раскладки %q нет состава: сервер не знает, сколько изделий она выкраивает, "+
-			"и не может назвать расход на изделие. Это не «маркер без состава» — состав есть у каждой "+
-			"раскладки, включая снятые до Ф2, — а испорченная строка: пересохраните раскладку или "+
-			"проверьте tech_card_marker_size.", label)
+		return fmt.Sprintf("marker %q has no composition: the server doesn't know how many garments it cuts, "+
+			"and can't name a per-unit consumption. This is not a “marker without a composition” — every "+
+			"marker has one, including the ones captured before phase 2 — it is a corrupted row: re-save the "+
+			"marker or check tech_card_marker_size.", label)
 	}
 	if len(perSize) == 1 {
 		return ""
@@ -199,17 +199,18 @@ func MarkerScalarNormRefusal(name string, perSize []MarkerSizeConsumption) strin
 	for _, r := range perSize {
 		units += r.Quantity
 	}
-	const preamble = "раскладка %q снята на смешанном составе (%d размеров, %d изделий), и ОДНОГО расхода " +
-		"на изделие у неё нет: среднее по составу завышает мелкие размеры и занижает крупные — ровно тот " +
-		"перекос, ради устранения которого заводился состав. В рецепт такое число не пишется. "
+	const preamble = "marker %q was captured on a mixed composition (%d sizes, %d garments), and it has no " +
+		"SINGLE per-unit consumption: an average over the composition overstates the small sizes and " +
+		"understates the large ones — exactly the skew the composition was introduced to remove. Such a " +
+		"number is not written into a recipe. "
 	if MarkerPerSizeConsumptionComplete(perSize) {
-		return fmt.Sprintf(preamble+"Примените её ПО РАЗМЕРАМ: у каждого размера состава есть свой расход "+
-			"— длина настила распределена по площадям деталей этого размера.",
+		return fmt.Sprintf(preamble+"apply it PER SIZE: every size of the composition has its own "+
+			"consumption — the lay length is distributed over the piece areas of that size.",
 			label, len(perSize), units)
 	}
-	return fmt.Sprintf(preamble+"Пер-размерный расход по ней тоже не считается: в раскладке не записаны "+
-		"площади деталей по размерам (снята до Ф2.4). Пересохраните раскладку из модалки — площади "+
-		"запишутся, и её можно будет применить по размерам, — либо примените раскладку одного размера.",
+	return fmt.Sprintf(preamble+"per-size consumption can't be computed off it either: the marker doesn't "+
+		"carry piece areas by size (it was captured before phase 2.4). re-save the marker from the modal — "+
+		"the areas will be recorded and it will become applicable per size — or apply a single-size marker.",
 		label, len(perSize), units)
 }
 
@@ -227,9 +228,9 @@ func MarkerScalarNormRefusal(name string, perSize []MarkerSizeConsumption) strin
 // The counts are printed even when they look impossible (a total of 0 from a corrupted row): a
 // refusal that silently dropped its numbers would be indistinguishable from one that had none.
 func MarkerDraftNormRefusal(name string, placed, total int) string {
-	return fmt.Sprintf("раскладка %q — ЧЕРНОВИК: движок уложил %d деталей из %d, поэтому измеренная "+
-		"длина настила короче настоящей и расход по ней занижен. Нормой такая раскладка не назначается "+
-		"и в рецепт не применяется — ни целиком, ни по размерам. Увеличьте бюджет поиска и пересчитайте "+
-		"раскладку; когда лягут все детали, она перестанет быть черновиком сама.",
+	return fmt.Sprintf("marker %q is a DRAFT: the engine placed %d pieces out of %d, so the measured lay "+
+		"length is shorter than the real one and the consumption off it is understated. such a marker is "+
+		"not set as the norm and is not applied to a recipe — neither whole nor per size. raise the search "+
+		"budget and recompute the marker; once all the pieces are placed it stops being a draft by itself.",
 		strings.TrimSpace(name), placed, total)
 }

@@ -276,7 +276,7 @@ func TestAnnotationPieceKeysFallback(t *testing.T) {
 		}
 		_, err := annotationPieceKeys("a", many, "")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "не больше")
+		require.Contains(t, err.Error(), "at most")
 	})
 }
 

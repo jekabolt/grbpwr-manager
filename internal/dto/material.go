@@ -189,7 +189,7 @@ func ConvertPbMaterialToEntityInsert(pb *pb_common.Material) (*entity.MaterialIn
 			return nil, fmt.Errorf("material fabric_thickness_mm must be greater than 0 — to record that the thickness was never measured, clear the field instead of sending 0 (a zero thickness would make every stack 0 cm tall and pass every limit)")
 		}
 		if fabricThickness.Decimal.GreaterThan(decimal.NewFromInt(50)) {
-			return nil, fmt.Errorf("material fabric_thickness_mm must be at most 50 mm — the value is in MILLIMETRES for ONE ply (шифон 0.1-0.2, поплин 0.3, драп 1.5-2.5)")
+			return nil, fmt.Errorf("material fabric_thickness_mm must be at most 50 mm — the value is in MILLIMETRES for ONE ply (chiffon 0.1-0.2, poplin 0.3, melton 1.5-2.5)")
 		}
 		// DECIMAL(6,3): MySQL rounds 0.1234 to 0.123 in silence and hands that back, so the operator's
 		// measurement and the planner's would differ with nothing anywhere saying so. Same argument as

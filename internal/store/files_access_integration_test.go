@@ -191,7 +191,7 @@ func TestLibraryFileAccess(t *testing.T) {
 		require.NoError(t, err)
 		events, err := s.Files().ListFileAccessEvents(ctx, fileID, 0)
 		require.NoError(t, err)
-		require.Contains(t, journalTexts(events), "ссылка выключена, прежняя больше не работает")
+		require.Contains(t, journalTexts(events), "the link was revoked, the previous one no longer works")
 
 		// «Пересоздать» на файле не по ссылке двигает поколение, но НЕ включает ссылку обратно:
 		// снятый здесь штамп означал бы `revoked = false` на файле, у которого ссылка мертва по
@@ -212,7 +212,7 @@ func TestLibraryFileAccess(t *testing.T) {
 		require.False(t, reissued.Link.RevokedAt.Valid)
 		events, err = s.Files().ListFileAccessEvents(ctx, fileID, 0)
 		require.NoError(t, err)
-		require.Contains(t, journalTexts(events), "ссылка выдана заново, прежняя больше не работает")
+		require.Contains(t, journalTexts(events), "the link was reissued, the previous one no longer works")
 	})
 
 	t.Run("rotation bumps the epoch, and does it even for a file that never had a link", func(t *testing.T) {
@@ -229,7 +229,7 @@ func TestLibraryFileAccess(t *testing.T) {
 		events, err := s.Files().ListFileAccessEvents(ctx, fileID, 0)
 		require.NoError(t, err)
 		require.Len(t, events, 2)
-		require.Contains(t, events[0].What, "пересоздана")
+		require.Contains(t, events[0].What, "recreated")
 
 		// Файла нет — NotFound, а не молча заведённая строка в никуда.
 		_, err = s.Files().RotateFileLink(ctx, 2147483600, pasha)

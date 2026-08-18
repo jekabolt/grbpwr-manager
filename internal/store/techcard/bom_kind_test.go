@@ -99,7 +99,7 @@ func TestValidateBomKindSection(t *testing.T) {
 	// Roll goods carry назначение instead; the refusal must say so rather than just "not allowed".
 	err := validateBomKindSection(line(entity.BomSectionFabric, entity.BomKindZipper), 3)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "назначение")
+	require.Contains(t, err.Error(), "purpose")
 
 	// A label's vocabulary is owned by tech_card_label.label_type — even `other` is refused there.
 	require.Error(t, validateBomKindSection(line(entity.BomSectionLabel, entity.BomKindOther), 0))
