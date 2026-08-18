@@ -87,7 +87,7 @@ func (s *Server) FormatLibraryNoteMarkdown(
 	// succeed, and "the assistant is not connected" is a truer answer than a complaint about the
 	// text the person wrote.
 	if !s.aiOps.Enabled() {
-		return nil, status.Error(codes.FailedPrecondition, noteFormatNotConfiguredMsg)
+		return nil, aiRefusal(aiReasonNotConfigured, noteFormatNotConfiguredMsg, nil)
 	}
 
 	content := req.GetContent()
@@ -123,7 +123,7 @@ func (s *Server) FormatLibraryNoteMarkdown(
 	took := time.Since(started)
 	if err != nil {
 		if errors.Is(err, openrouter.ErrNotConfigured) {
-			return nil, status.Error(codes.FailedPrecondition, noteFormatNotConfiguredMsg)
+			return nil, aiRefusal(aiReasonNotConfigured, noteFormatNotConfiguredMsg, nil)
 		}
 		// Only length, duration and the MODEL are logged. The note's text is the user's private
 		// writing and has no business in the log stream — but the effective slug does: when the
@@ -135,7 +135,7 @@ func (s *Server) FormatLibraryNoteMarkdown(
 			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
 			slog.String("err", err.Error()))
 		if errors.Is(err, openrouter.ErrModelUnavailable) {
-			return nil, status.Errorf(codes.FailedPrecondition, noteFormatModelUnavailableMsg, s.aiOps.Model())
+			return nil, aiModelRefusal(noteFormatModelUnavailableMsg, s.aiOps.Model())
 		}
 		if isEmptyModelAnswer(err) {
 			return nil, status.Error(codes.Internal, "the assistant returned nothing to show — try again")

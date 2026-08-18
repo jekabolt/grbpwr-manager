@@ -15,6 +15,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -39,6 +40,55 @@ const aiOpsNotConfiguredMsg = "AI operations generation is not configured (set O
 //
 // %q is the effective slug — without it the reader knows a setting is wrong but not what is in it.
 const modelUnavailableAdviceMsg = "the provider serves no endpoint for model %q — check OPENROUTER_MODEL, and OPENROUTER_BASE_URL if this deployment overrides it"
+
+// --- the machine-readable half of an AI refusal ---
+//
+// WHY IT EXISTS. Both unfixable causes arrive as one code, FailedPrecondition, so a client shows
+// them identically — "the assistant is not connected". On beta that is the truth: there is no key
+// and the state is normal. ON PROD THE KEY IS SET, and a retired model slug then looks exactly the
+// same: a calm, expected state that moves nobody to investigate. Making the sentence honest had
+// therefore made the breakage QUIET, and being quiet is precisely what made the last outage
+// expensive — nobody knew until a person complained.
+//
+// The channel already exists and is already used: grpc-gateway carries google.rpc.Status.details
+// into the JSON body, and the client's requestHandler parses details for field violations. So the
+// cause travels as an ErrorInfo reason, machine-readable, while the human sentence stays as it is.
+const (
+	// aiErrorDomain scopes the reasons below. Stable: a client branches on the pair.
+	aiErrorDomain = "ai.grbpwr.com"
+	// aiReasonNotConfigured — no OPENROUTER_API_KEY. On beta this is a deployment fact, not a
+	// fault, and a client is right to stay quiet about it.
+	aiReasonNotConfigured = "AI_NOT_CONFIGURED"
+	// aiReasonModelUnavailable — the key is set and the provider serves no endpoint for the
+	// configured slug. This one IS a fault and a client should look like it.
+	aiReasonModelUnavailable = "AI_MODEL_UNAVAILABLE"
+)
+
+// aiRefusal builds the FailedPrecondition every AI feature returns for an unfixable setting: the
+// sentence for a person, plus an ErrorInfo a client can branch on without matching English prose.
+//
+// If the detail cannot be attached the REFUSAL STILL GOES OUT, plain. A client that cannot read the
+// reason falls back to the state it has always shown; one that loses the refusal itself would hand
+// the person a broken screen instead. The detail is the bonus, never the payload.
+func aiRefusal(reason, msg string, metadata map[string]string) error {
+	st := status.New(codes.FailedPrecondition, msg)
+	withDetails, err := st.WithDetails(&errdetails.ErrorInfo{
+		Reason:   reason,
+		Domain:   aiErrorDomain,
+		Metadata: metadata,
+	})
+	if err != nil {
+		return st.Err()
+	}
+	return withDetails.Err()
+}
+
+// aiModelRefusal is aiRefusal for the dead-slug case, where the slug belongs in the metadata as
+// well as in the sentence: a client that wants to name it should not have to parse it back out.
+func aiModelRefusal(msgFormat, model string) error {
+	return aiRefusal(aiReasonModelUnavailable, fmt.Sprintf(msgFormat, model),
+		map[string]string{"model": model})
+}
 
 // aiOpsModelUnavailableMsg is the message for the OTHER misconfiguration: the key is set, but the
 // provider serves no endpoint for the configured model slug. THIS HANDLER SHARES ONE CLIENT WITH
@@ -67,7 +117,7 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 		return nil, status.Error(codes.InvalidArgument, "description is required")
 	}
 	if !s.aiOps.Enabled() {
-		return nil, status.Error(codes.FailedPrecondition, aiOpsNotConfiguredMsg)
+		return nil, aiRefusal(aiReasonNotConfigured, aiOpsNotConfiguredMsg, nil)
 	}
 
 	card, err := s.repo.TechCards().GetTechCardById(ctx, int(req.TechCardId))
@@ -83,7 +133,7 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 	result, err := s.aiOps.GenerateOperations(ctx, s.buildAIOperationContext(ctx, card), description)
 	if err != nil {
 		if errors.Is(err, openrouter.ErrNotConfigured) {
-			return nil, status.Error(codes.FailedPrecondition, aiOpsNotConfiguredMsg)
+			return nil, aiRefusal(aiReasonNotConfigured, aiOpsNotConfiguredMsg, nil)
 		}
 		// The effective slug is logged deliberately: when the retired default model broke this call,
 		// the slug reached the log only because the provider repeated it in its own sentence. That
@@ -94,7 +144,7 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
 			slog.String("err", err.Error()))
 		if errors.Is(err, openrouter.ErrModelUnavailable) {
-			return nil, status.Errorf(codes.FailedPrecondition, aiOpsModelUnavailableMsg, s.aiOps.Model())
+			return nil, aiModelRefusal(aiOpsModelUnavailableMsg, s.aiOps.Model())
 		}
 		// A malformed-JSON parse failure is a model/content problem (Internal); everything else
 		// here is an upstream transport/API failure the caller may retry (Unavailable).

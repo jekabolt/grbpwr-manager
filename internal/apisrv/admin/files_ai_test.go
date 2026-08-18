@@ -3,6 +3,9 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/protobuf/encoding/protojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -346,5 +349,101 @@ func TestFormatLibraryNoteMarkdownModelUnavailable(t *testing.T) {
 			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
 		require.Nil(t, resp)
 		require.Equal(t, codes.Unavailable, status.Code(err))
+	})
+}
+
+// aiReasonOf pulls the ErrorInfo reason out of a status, or "" when the refusal carries none.
+func aiReasonOf(t *testing.T, err error) string {
+	t.Helper()
+	for _, d := range status.Convert(err).Details() {
+		if info, ok := d.(*errdetails.ErrorInfo); ok {
+			return info.GetReason()
+		}
+	}
+	return ""
+}
+
+// TestAIRefusalsCarryAMachineReadableReason — ПОЧЕМУ ЧЕСТНОГО ТЕКСТА ОКАЗАЛОСЬ МАЛО.
+//
+// Обе неустранимые причины приезжают одним кодом FailedPrecondition, поэтому клиент показывает их
+// одинаково — «помощник не подключён». На бете это правда: ключа нет, состояние штатное. НА ПРОДЕ
+// КЛЮЧ ЕСТЬ, и снятый с обслуживания слуг выглядит там ровно так же — спокойным штатным
+// состоянием, которое никого не побудит разбираться. То есть, убрав ложь из текста, мы заодно
+// сделали поломку ТИХОЙ, а сегодняшний случай был плох именно тем, что о поломке никто не знал,
+// пока человек не пожаловался.
+//
+// Канал для машинночитаемой причины существует и уже используется: grpc-gateway проносит
+// google.rpc.Status.details в тело JSON, а клиентский requestHandler разбирает их для нарушений
+// полей. Здесь в тот же канал кладётся ErrorInfo с разными reason — текст для человека при этом не
+// меняется, он уже верен.
+func TestAIRefusalsCarryAMachineReadableReason(t *testing.T) {
+	const dead = `{"error":{"message":"No endpoints found for anthropic/claude-3.5-sonnet.","code":404}}`
+	deadProvider := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(dead))
+	}
+
+	t.Run("заметка: ключа нет и слуг мёртв — РАЗНЫЕ reason", func(t *testing.T) {
+		_, noKey := (&Server{}).FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		require.Equal(t, codes.FailedPrecondition, status.Code(noKey))
+		require.Equal(t, aiReasonNotConfigured, aiReasonOf(t, noKey))
+
+		client, _ := newFakeOpenRouter(t, deadProvider)
+		_, deadModel := newNoteFormatServer(client).FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		require.Equal(t, codes.FailedPrecondition, status.Code(deadModel))
+		require.Equal(t, aiReasonModelUnavailable, aiReasonOf(t, deadModel))
+
+		require.NotEqual(t, aiReasonOf(t, noKey), aiReasonOf(t, deadModel),
+			"один reason на обе причины вернул бы ровно ту неразличимость, ради которой всё это")
+	})
+
+	t.Run("остальные два потребителя того же клиента — тот же reason", func(t *testing.T) {
+		// Клиент один на троих, и различать причину на одном экране, оставив два других слепыми,
+		// значило бы повторить ту же историю на следующей кнопке.
+		client, _ := newFakeOpenRouter(t, deadProvider)
+		_, tcErr := aiOpsServer(t, client).GenerateTechCardOperations(context.Background(),
+			&pb_admin.GenerateTechCardOperationsRequest{TechCardId: 7, Description: "sew it"})
+		require.Equal(t, aiReasonModelUnavailable, aiReasonOf(t, tcErr))
+
+		campErr := campaignTranslateError(
+			fmt.Errorf("translate en→fr: %w", openrouter.ErrModelUnavailable), "m/x")
+		require.Equal(t, aiReasonModelUnavailable, aiReasonOf(t, campErr))
+	})
+
+	t.Run("отказ, который к помощнику не относится, reason НЕ несёт", func(t *testing.T) {
+		// errCampaignNotDraft — тоже FailedPrecondition, но это состояние кампании, а не настройка
+		// модели. Приклеенный сюда AI-reason увёл бы клиента в «настройка сломана» на совершенно
+		// исправном контуре.
+		require.Empty(t, aiReasonOf(t, campaignTranslateError(errCampaignNotDraft, "m/x")))
+	})
+
+	t.Run("на проводе это доезжает как details с @type", func(t *testing.T) {
+		// Форма, которую увидит клиент: grpc-gateway маршалит именно status.Proto() через
+		// protojson. Пин на неё стоит здесь, чтобы клиентская проба разбирала настоящую форму,
+		// а не выдуманную.
+		client, _ := newFakeOpenRouter(t, deadProvider)
+		_, err := newNoteFormatServer(client).FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		wire, mErr := protojson.Marshal(status.Convert(err).Proto())
+		require.NoError(t, mErr)
+		var got struct {
+			Code    int `json:"code"`
+			Details []struct {
+				Type     string            `json:"@type"`
+				Reason   string            `json:"reason"`
+				Domain   string            `json:"domain"`
+				Metadata map[string]string `json:"metadata"`
+			} `json:"details"`
+		}
+		require.NoError(t, json.Unmarshal(wire, &got))
+		require.Equal(t, int(codes.FailedPrecondition), got.Code)
+		require.Len(t, got.Details, 1)
+		require.Equal(t, "type.googleapis.com/google.rpc.ErrorInfo", got.Details[0].Type)
+		require.Equal(t, aiReasonModelUnavailable, got.Details[0].Reason)
+		require.Equal(t, aiErrorDomain, got.Details[0].Domain)
+		require.NotEmpty(t, got.Details[0].Metadata["model"], "слуг машинночитаемо, а не только во фразе")
 	})
 }

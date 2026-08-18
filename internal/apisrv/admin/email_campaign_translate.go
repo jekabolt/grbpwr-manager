@@ -59,7 +59,7 @@ func (s *Server) AutoTranslateEmailCampaign(
 	}
 	translator := translate.New(s.aiOps)
 	if !translator.Enabled() {
-		return nil, status.Error(codes.FailedPrecondition, "translation is not configured (OPENROUTER_API_KEY unset)")
+		return nil, aiRefusal(aiReasonNotConfigured, "translation is not configured (OPENROUTER_API_KEY unset)", nil)
 	}
 	n, err := autoTranslateCampaign(ctx, s.repo, translator, cache.GetLanguages(), int(req.GetId()), req.GetOverwrite())
 	if err != nil {
@@ -83,7 +83,7 @@ func campaignTranslateError(err error, model string) error {
 	// branch here describes a row in the database; this describes a setting in the deployment, and
 	// no amount of editing the campaign will move it.
 	case errors.Is(err, openrouter.ErrModelUnavailable):
-		return status.Errorf(codes.FailedPrecondition, campaignTranslateModelUnavailableMsg, model)
+		return aiModelRefusal(campaignTranslateModelUnavailableMsg, model)
 	case errors.Is(err, sql.ErrNoRows):
 		return status.Error(codes.NotFound, "email campaign not found")
 	case errors.Is(err, errCampaignNotDraft):
