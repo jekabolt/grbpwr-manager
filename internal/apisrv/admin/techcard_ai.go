@@ -25,12 +25,28 @@ import (
 // pre-check and the client-level ErrNotConfigured path report identically.
 const aiOpsNotConfiguredMsg = "AI operations generation is not configured (set OPENROUTER_API_KEY)"
 
+// modelUnavailableAdviceMsg is THE ONE RECIPE for openrouter.ErrModelUnavailable, shared by every
+// feature that rides s.aiOps — the note assistant, this draft, and campaign auto-translation. It
+// lives in one place because the fault does: all three ran on one client and one slug, all three
+// died the moment the provider retired it, and a recipe copied three times is a recipe that will
+// only ever be corrected in one of them.
+//
+// IT NAMES TWO KNOBS, NOT ONE. A 404 is also what a wrong OPENROUTER_BASE_URL (or a proxy that
+// does not know the route) produces, and sending somebody to swap a perfectly good model would
+// cost more than the original outage. The knob NAMES travel to the caller; the base URL's VALUE
+// stays in the log, because a model slug is public (the draft response already returns it) while
+// an internal proxy hostname is not something to hand to every admin client.
+//
+// %q is the effective slug — without it the reader knows a setting is wrong but not what is in it.
+const modelUnavailableAdviceMsg = "the provider serves no endpoint for model %q — check OPENROUTER_MODEL, and OPENROUTER_BASE_URL if this deployment overrides it"
+
 // aiOpsModelUnavailableMsg is the message for the OTHER misconfiguration: the key is set, but the
-// provider does not serve the configured model slug. THIS HANDLER SHARES ONE CLIENT WITH THE NOTE
-// ASSISTANT (s.aiOps), so when the provider retired the default slug this draft died at exactly the
-// same moment and for exactly the same reason — it simply had nobody pressing its button to notice.
-// A 404 is a setting, not weather: reporting it as Unavailable invites a retry that cannot succeed.
-const aiOpsModelUnavailableMsg = "AI operations generation is misconfigured: the provider does not serve model %q (set OPENROUTER_MODEL to a model it does serve)"
+// provider serves no endpoint for the configured model slug. THIS HANDLER SHARES ONE CLIENT WITH
+// THE NOTE ASSISTANT AND WITH CAMPAIGN AUTO-TRANSLATION (s.aiOps), so when the provider retired the
+// default slug this draft died at exactly the same moment and for exactly the same reason — it
+// simply had nobody pressing its button to notice. A 404 is a setting, not weather: reporting it as
+// Unavailable invites a retry that cannot succeed.
+const aiOpsModelUnavailableMsg = "AI operations generation is misconfigured: " + modelUnavailableAdviceMsg
 
 // GenerateTechCardOperations drafts structured sewing operations for a tech card from a
 // plain-language description via OpenRouter. It loads the card (pieces + BOM + type) purely as
@@ -75,7 +91,8 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 		// all, on the one fault whose whole diagnosis is «which model is it actually asking for».
 		slog.Default().ErrorContext(ctx, "AI ops: generation failed",
 			slog.Int("tech_card_id", int(req.TechCardId)),
-			slog.String("model", s.aiOps.Model()), slog.String("err", err.Error()))
+			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
+			slog.String("err", err.Error()))
 		if errors.Is(err, openrouter.ErrModelUnavailable) {
 			return nil, status.Errorf(codes.FailedPrecondition, aiOpsModelUnavailableMsg, s.aiOps.Model())
 		}

@@ -30,11 +30,10 @@ const (
 	// It was never going to become available. The person kept pressing, because the interface had
 	// promised the fault was temporary.
 	//
-	// So this one names the SETTING, in the same shape as the missing key above, and carries the
-	// effective slug: whoever reads it has to open OPENROUTER_MODEL, and needs to know what is in
-	// there now. The slug is not a secret — GenerateTechCardOperations already returns it on the
-	// success path.
-	noteFormatModelUnavailableMsg = "markdown assistant is misconfigured: the provider does not serve model %q (set OPENROUTER_MODEL to a model it does serve)"
+	// So this one names the SETTING, in the same shape as the missing key above. The recipe itself
+	// is modelUnavailableAdviceMsg, shared with the two other features on this client — see there
+	// for why it names two knobs and why the base URL's value stays in the log.
+	noteFormatModelUnavailableMsg = "markdown assistant is misconfigured: " + modelUnavailableAdviceMsg
 
 	// maxNoteFormatRunes caps what one call may format. It is the mockup's `toolong` threshold
 	// (files-section.html, md=v3: `m.text.length > 12000`), measured here in RUNES rather than
@@ -133,7 +132,8 @@ func (s *Server) FormatLibraryNoteMarkdown(
 		// differently-worded provider message would have cost hours of diagnosis.
 		slog.Default().ErrorContext(ctx, "note markdown formatting failed",
 			slog.Int("in_runes", inRunes), slog.Duration("took", took),
-			slog.String("model", s.aiOps.Model()), slog.String("err", err.Error()))
+			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
+			slog.String("err", err.Error()))
 		if errors.Is(err, openrouter.ErrModelUnavailable) {
 			return nil, status.Errorf(codes.FailedPrecondition, noteFormatModelUnavailableMsg, s.aiOps.Model())
 		}

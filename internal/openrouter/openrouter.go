@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -38,6 +39,9 @@ const (
 	maxOperations = 200
 	// generationTemperature keeps drafts fairly deterministic/consistent.
 	generationTemperature = 0.2
+	// modelProbeTimeout bounds the startup model probe. It is short on purpose: the probe is a
+	// courtesy, and a provider that is slow to answer at boot is not news worth waiting for.
+	modelProbeTimeout = 3 * time.Second
 )
 
 // ErrNotConfigured is returned when GenerateOperations is called with no API key.
@@ -102,6 +106,16 @@ func (c *Client) Model() string {
 		return ""
 	}
 	return c.cfg.Model
+}
+
+// BaseURL returns the effective API root. It exists for LOG LINES: a 404 can mean the model slug
+// is gone or that the base URL points somewhere without this route, and a log that names only the
+// slug sends the reader to the wrong knob. Nil-safe.
+func (c *Client) BaseURL() string {
+	if c == nil {
+		return ""
+	}
+	return c.cfg.BaseURL
 }
 
 // TechCardContext is the tech-card knowledge fed to the model as grounding: the
@@ -490,4 +504,119 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// --- startup model probe ---
+//
+// WHY THIS EXISTS. A retired model slug is invisible until somebody presses a button, and on beta
+// that took weeks: three features were dead and the one complaint that surfaced arrived by hand.
+// The provider will publish the fact for free — so ask it once at boot, and put the answer where
+// somebody is already looking.
+//
+// WHY IT IS SHAPED LIKE THIS. A boot-time check that can delay or fail a start is a worse defect
+// than the one it reports; this project has already had a deploy halted by a check that looked
+// harmless. So: own goroutine, short timeout, log-only, no client state, nothing refused on its
+// basis, and silence on every outcome that is not a clear "this slug has no endpoints".
+
+// modelEndpointsResponse is the shape of GET /models/{slug}/endpoints.
+//
+// EVERY FIELD IS A POINTER, and that is the whole safety of the probe. `endpoints: []` is the
+// alarm, so a response that simply does not CARRY that key — a reshaped API, an HTML error page
+// from a proxy, a body we do not understand — must not decode to "zero endpoints" and shout. Absent
+// and empty have to be different values here, and with a plain slice they would not be.
+type modelEndpointsResponse struct {
+	Data *struct {
+		Endpoints *[]json.RawMessage `json:"endpoints"`
+	} `json:"data"`
+}
+
+// CheckModel asks the provider whether the effective model slug has any live endpoint, via the
+// public GET {base}/models/{slug}/endpoints route.
+//
+// THE ROUTE AND THE VERDICT WERE BOTH MEASURED AGAINST THE LIVE API, because the obvious versions
+// of each are wrong:
+//   - GET /models/{slug} answers 404 for EVERY slug, live ones included. A probe built on it would
+//     have shouted on every boot of every deployment — an alarm that is always on is an alarm
+//     nobody reads.
+//   - GET /models/{slug}/endpoints answers 200 for a retired slug too. `anthropic/claude-3.5-sonnet`
+//     — the slug that caused the outage — still returns 200; what distinguishes it is that its
+//     endpoints array is EMPTY, while a live slug carries several. So the verdict is the array, not
+//     the status, and 404 is kept only for a slug that never existed at all.
+//
+// Returns ErrModelUnavailable when the slug has no endpoints (or does not exist), nil when it has
+// at least one, ErrNotConfigured when the client is disabled, and an ordinary error for every
+// "could not find out" — which callers are expected to treat as silence, not as bad news.
+func (c *Client) CheckModel(ctx context.Context) error {
+	if !c.Enabled() {
+		return ErrNotConfigured
+	}
+	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/models/" + strings.TrimSpace(c.cfg.Model) + "/endpoints"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("openrouter: build model probe: %w", err)
+	}
+	// No Authorization header: the route is public, and sending the key would only add ways to get
+	// a 401 that says nothing about the model. A private proxy that demands auth simply answers
+	// 401/403, which lands in the silent branch.
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("openrouter: model probe failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("openrouter: read model probe: %w", err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w: %q is not a model the provider knows", ErrModelUnavailable, c.cfg.Model)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("openrouter: model probe (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
+	}
+	var mr modelEndpointsResponse
+	if err := json.Unmarshal(body, &mr); err != nil {
+		return fmt.Errorf("openrouter: could not decode model probe: %w", err)
+	}
+	if mr.Data == nil || mr.Data.Endpoints == nil {
+		return fmt.Errorf("openrouter: model probe carried no endpoints field")
+	}
+	if len(*mr.Data.Endpoints) == 0 {
+		return fmt.Errorf("%w: %q has no live endpoints at the provider", ErrModelUnavailable, c.cfg.Model)
+	}
+	return nil
+}
+
+// WarnIfModelRetired probes the effective model slug in the BACKGROUND and shouts in the log if the
+// provider serves no endpoint for it. It returns immediately and is safe to call from a start-up
+// path: the goroutine is owned here rather than by the caller precisely so no call site can forget
+// the `go`, the timeout, or the recover.
+//
+// It changes nothing and refuses nothing — the client keeps working and every feature keeps its own
+// error handling. Anything other than a clear verdict is silence: a boot that cannot reach the
+// network is not evidence that a model is gone, and a false alarm on that line would teach people
+// to ignore the true one.
+func (c *Client) WarnIfModelRetired() {
+	if !c.Enabled() {
+		return // no key: nothing is calling the provider anyway, so there is nothing to warn about
+	}
+	go func() {
+		// The probe touches only its own request; a panic here would still take the whole process
+		// down, and this runs at start-up. A check that can stop a deploy is worse than the fault
+		// it reports.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Default().Warn("openrouter model probe panicked", slog.Any("recovered", r))
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), modelProbeTimeout)
+		defer cancel()
+		if err := c.CheckModel(ctx); errors.Is(err, ErrModelUnavailable) {
+			slog.Default().Error(
+				"OPENROUTER MODEL IS NOT SERVED — note formatting, tech-card operation drafts and campaign auto-translation will all refuse",
+				slog.String("model", c.Model()), slog.String("base_url", c.BaseURL()),
+				slog.String("err", err.Error()))
+		}
+	}()
 }

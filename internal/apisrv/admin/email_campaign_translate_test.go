@@ -2,7 +2,12 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"strings"
 	"testing"
 	"time"
@@ -349,4 +354,46 @@ func blockTrFor(trs []entity.EmailBlockTranslation, id int) entity.EmailBlockTra
 		return trs[i]
 	}
 	return entity.EmailBlockTranslation{}
+}
+
+// TestCampaignTranslateErrorMapping — ТРЕТИЙ ПОТРЕБИТЕЛЬ ТОГО ЖЕ КЛИЕНТА.
+//
+// Авто-перевод кампаний ходит тем же `s.aiOps` и тем же слугом, что заметки и черновик операций:
+// когда провайдер снял слуг с обслуживания, эта кнопка умерла ровно тогда же. Две другие кнопки
+// уже отвечают «настройка», а эта проваливалась в `Internal, "can't auto-translate campaign"` —
+// то есть в следующий раз соврала бы одна из трёх, и именно та, по которой не жаловались.
+//
+// Проверяется ВСЯ таблица, а не одна новая ветка: ветка, вставленная перед `sql.ErrNoRows`, могла
+// бы затенить соседей, и «не найдено» стало бы «почините настройку».
+func TestCampaignTranslateErrorMapping(t *testing.T) {
+	const model = "anthropic/claude-sonnet-5"
+
+	t.Run("слуг не обслуживается — это настройка, а не Internal", func(t *testing.T) {
+		// Именно в такой обёртке ошибка и приходит: translate.go оборачивает через %w
+		// («translate en→fr: …»), поэтому проверяется цепочка, а не голый сентинел.
+		err := campaignTranslateError(
+			fmt.Errorf("translate en→fr: %w", openrouter.ErrModelUnavailable), model)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		msg := status.Convert(err).Message()
+		require.Contains(t, msg, "OPENROUTER_MODEL", "отказ обязан называть настройку")
+		require.Contains(t, msg, model, "и действующий слуг: без него человек не знает, что менять")
+		require.NotContains(t, msg, "can't auto-translate campaign", "это не безымянный сбой")
+	})
+
+	t.Run("остальные ветки не затенены", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			err  error
+			want codes.Code
+		}{
+			"кампании нет":           {sql.ErrNoRows, codes.NotFound},
+			"не черновик":            {errCampaignNotDraft, codes.FailedPrecondition},
+			"правка во время работы": {errCampaignChangedDuringTranslate, codes.Aborted},
+			"ключа нет":              {openrouter.ErrNotConfigured, codes.Internal},
+			"всё остальное":          {errors.New("boom"), codes.Internal},
+		} {
+			t.Run(name, func(t *testing.T) {
+				require.Equal(t, tc.want, status.Code(campaignTranslateError(tc.err, model)))
+			})
+		}
+	})
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/localeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/mail/campaignrender"
+	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/translate"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -28,6 +29,13 @@ const (
 	// locale, so an absurdly large campaign is refused up front instead of firing dozens of
 	// sequential model requests inside one RPC.
 	maxCampaignTranslateStrings = 300
+
+	// campaignTranslateModelUnavailableMsg is the THIRD copy of the same fault, and the reason it
+	// exists: this feature rides the very same s.aiOps client and the very same model slug as the
+	// note assistant and the tech-card draft. When the provider retired the default slug all three
+	// died together — but only two of them said so. This one fell through to a nameless Internal,
+	// on the button nobody happened to press.
+	campaignTranslateModelUnavailableMsg = "campaign auto-translation is misconfigured: " + modelUnavailableAdviceMsg
 )
 
 var (
@@ -55,20 +63,37 @@ func (s *Server) AutoTranslateEmailCampaign(
 	}
 	n, err := autoTranslateCampaign(ctx, s.repo, translator, cache.GetLanguages(), int(req.GetId()), req.GetOverwrite())
 	if err != nil {
-		slog.ErrorContext(ctx, "auto-translate campaign failed", slog.String("err", err.Error()))
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			return nil, status.Error(codes.NotFound, "email campaign not found")
-		case errors.Is(err, errCampaignNotDraft):
-			return nil, status.Error(codes.FailedPrecondition,
-				"only draft campaigns can be auto-translated; pause or cancel it back to draft first")
-		case errors.Is(err, errCampaignChangedDuringTranslate):
-			return nil, status.Error(codes.Aborted,
-				"campaign was edited during translation; re-run auto-translate")
-		}
-		return nil, status.Error(codes.Internal, "can't auto-translate campaign")
+		// model/base_url: the same blindness the other two consumers had. The slug reached the beta
+		// log only because the provider echoed it in its own sentence, which was luck, not design.
+		slog.ErrorContext(ctx, "auto-translate campaign failed",
+			slog.String("model", s.aiOps.Model()), slog.String("base_url", s.aiOps.BaseURL()),
+			slog.String("err", err.Error()))
+		return nil, campaignTranslateError(err, s.aiOps.Model())
 	}
 	return &pb_admin.AutoTranslateEmailCampaignResponse{TranslatedCount: int32(n)}, nil
+}
+
+// campaignTranslateError maps a failure out of autoTranslateCampaign onto the status the caller
+// sees. It is a separate function so the whole table can be tested without a campaign, a repository
+// and a seeded language cache — the RPC reaches this switch only after several store round-trips,
+// which is precisely why the branch below was missing for as long as it was.
+func campaignTranslateError(err error, model string) error {
+	switch {
+	// FIRST, and disjoint from the rest: this one is not about the campaign at all. Every other
+	// branch here describes a row in the database; this describes a setting in the deployment, and
+	// no amount of editing the campaign will move it.
+	case errors.Is(err, openrouter.ErrModelUnavailable):
+		return status.Errorf(codes.FailedPrecondition, campaignTranslateModelUnavailableMsg, model)
+	case errors.Is(err, sql.ErrNoRows):
+		return status.Error(codes.NotFound, "email campaign not found")
+	case errors.Is(err, errCampaignNotDraft):
+		return status.Error(codes.FailedPrecondition,
+			"only draft campaigns can be auto-translated; pause or cancel it back to draft first")
+	case errors.Is(err, errCampaignChangedDuringTranslate):
+		return status.Error(codes.Aborted,
+			"campaign was edited during translation; re-run auto-translate")
+	}
+	return status.Error(codes.Internal, "can't auto-translate campaign")
 }
 
 // defaultCampaignLanguage returns the source language id + canonical locale code for

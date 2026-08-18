@@ -1,8 +1,16 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -643,4 +651,82 @@ func TestAIAttachmentAndTheSignGateAnswerTheSameQuestion(t *testing.T) {
 	if ambiguous || resolved == nil || resolved.ProfileKey != aiUniversalPressKey {
 		t.Fatalf("the gate did not resolve the key the mapper wrote: %+v (ambiguous=%v)", resolved, ambiguous)
 	}
+}
+
+// aiOpsServer builds a Server whose ONLY live parts are the tech-card store and the AI client. The
+// card carries an invalid CategoryId on purpose: resolveCategoryName returns early on it, so the
+// dictionary cache never enters the picture and the test stays about the refusal.
+func aiOpsServer(t *testing.T, client *openrouter.Client) *Server {
+	t.Helper()
+	cards := mocks.NewMockTechCards(t)
+	cards.EXPECT().GetTechCardById(mock.Anything, 7).
+		Return(&entity.TechCard{Id: 7}, nil).Maybe()
+	repo := mocks.NewMockRepository(t)
+	repo.EXPECT().TechCards().Return(cards).Maybe()
+	return &Server{repo: repo, aiOps: client}
+}
+
+// TestGenerateTechCardOperationsModelUnavailable — СИММЕТРИЯ С ЗАМЕТКОЙ, И ОНА НЕ ФОРМАЛЬНОСТЬ.
+//
+// Черновик операций ходит тем же клиентом и тем же слугом, что помощник разметки: когда провайдер
+// снял слуг с обслуживания, он умер тогда же и настолько же молча — по нему просто никто не жал
+// кнопку. Ветка здесь зеркальная, но до этого теста её удаление или сдвиг не заметил бы никто:
+// доказательство жило на уровне openrouter, а на уровне RPC — только на чтение.
+//
+// Проверяется пара: 404 — FailedPrecondition со словами про настройку, 503 — по-прежнему
+// Unavailable. Одна половина без другой означала бы либо прежнюю ложь, либо новую.
+func TestGenerateTechCardOperationsModelUnavailable(t *testing.T) {
+	req := &pb_admin.GenerateTechCardOperationsRequest{TechCardId: 7, Description: "sew it"}
+
+	t.Run("слуг не обслуживается: настройка, а не погода", func(t *testing.T) {
+		client, _ := newFakeOpenRouter(t, func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"No endpoints found for anthropic/claude-3.5-sonnet.","code":404}}`))
+		})
+		resp, err := aiOpsServer(t, client).GenerateTechCardOperations(context.Background(), req)
+		require.Nil(t, resp)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		msg := status.Convert(err).Message()
+		require.Contains(t, msg, "OPENROUTER_MODEL")
+		require.NotContains(t, msg, "try again")
+		// Сырой текст провайдера остаётся в логе, а не едет клиенту: в нём бывают идентификаторы
+		// провайдера и подсказки про ключ.
+		require.NotContains(t, msg, "No endpoints found")
+	})
+
+	t.Run("обычный сбой провайдера остаётся Unavailable", func(t *testing.T) {
+		client, _ := newFakeOpenRouter(t, func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream is having a moment"}}`))
+		})
+		resp, err := aiOpsServer(t, client).GenerateTechCardOperations(context.Background(), req)
+		require.Nil(t, resp)
+		require.Equal(t, codes.Unavailable, status.Code(err))
+	})
+
+	t.Run("ключа нет: до стора дело не доходит", func(t *testing.T) {
+		// Ожиданий на repo нет вовсе — mockery роняет тест на любом неожиданном вызове, и это и
+		// есть доказательство, что пре-чек стоит раньше загрузки карточки.
+		s := &Server{repo: mocks.NewMockRepository(t), aiOps: openrouter.New(openrouter.Config{})}
+		resp, err := s.GenerateTechCardOperations(context.Background(), req)
+		require.Nil(t, resp)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		require.Equal(t, aiOpsNotConfiguredMsg, status.Convert(err).Message())
+	})
+
+	t.Run("карточки нет: NotFound, и модель не зовут", func(t *testing.T) {
+		client, calls := newFakeOpenRouter(t, orReplyWithContent(`{"operations":[]}`))
+		cards := mocks.NewMockTechCards(t)
+		cards.EXPECT().GetTechCardById(mock.Anything, 7).Return(nil, sql.ErrNoRows)
+		repo := mocks.NewMockRepository(t)
+		repo.EXPECT().TechCards().Return(cards)
+
+		resp, err := (&Server{repo: repo, aiOps: client}).
+			GenerateTechCardOperations(context.Background(), req)
+		require.Nil(t, resp)
+		require.Equal(t, codes.NotFound, status.Code(err))
+		require.Empty(t, *calls, "платный вызов не имеет права случиться ради несуществующей карточки")
+	})
 }

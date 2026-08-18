@@ -422,9 +422,15 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	// OpenRouter client for AI tech-card operation drafting (#66). Nil-safe/disabled when
-	// OPENROUTER_API_KEY is unset — GenerateTechCardOperations then reports it as not configured.
+	// OpenRouter client for AI tech-card operation drafting (#66), note markdown formatting and
+	// campaign auto-translation — one client, one model slug, three features. Nil-safe/disabled
+	// when OPENROUTER_API_KEY is unset, and each handler then reports it as not configured.
 	aiOpsClient := openrouter.New(a.c.OpenRouter)
+	// Ask the provider once, in the background, whether that one slug is still served. It returns
+	// immediately, refuses nothing and can only write a log line — see WarnIfModelRetired. It is
+	// here because the alternative is how the last outage was found: by a person pressing a button
+	// weeks later, on one of the three features.
+	aiOpsClient.WarnIfModelRetired()
 
 	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, aiOpsClient, jpk.Taxpayer{
 		NIP:       a.c.JPK.NIP,

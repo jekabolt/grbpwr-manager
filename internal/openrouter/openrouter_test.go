@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
@@ -546,5 +547,160 @@ func TestChat_ModelUnavailableIsAConfigurationFault(t *testing.T) {
 		if errors.Is(err, ErrModelUnavailable) {
 			t.Errorf("a transport failure must NOT be a configuration fault: %v", err)
 		}
+	})
+}
+
+// TestCheckModel pins the STARTUP PROBE, and mostly it pins the two ways of building it wrong.
+// Both were measured against the live API before this was written:
+//
+//   - GET /models/{slug} — the obvious route — answers 404 for every slug, including live ones.
+//     A probe on that route shouts on every boot of every deployment.
+//   - GET /models/{slug}/endpoints answers 200 for the RETIRED slug as well. What separates it
+//     from a live one is an EMPTY endpoints array — 9 endpoints for anthropic/claude-sonnet-5,
+//     0 for anthropic/claude-3.5-sonnet. So the empty array is the alarm, not the status.
+//
+// The rest is the silence contract: anything that is not a clear verdict must produce no alarm,
+// because an alarm that fires on a slow network teaches people to ignore the real one.
+func TestCheckModel(t *testing.T) {
+	// Bodies trimmed from the real responses, keeping the shape that matters.
+	const liveBody = `{"data":{"id":"anthropic/claude-sonnet-5","endpoints":[{"provider_name":"Anthropic"},{"provider_name":"Azure"}]}}`
+	const retiredBody = `{"data":{"id":"anthropic/claude-3.5-sonnet","endpoints":[]}}`
+
+	probe := func(t *testing.T, status int, body string) (error, string) {
+		t.Helper()
+		var gotPath, gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			io.WriteString(w, body)
+		}))
+		defer srv.Close()
+		c := New(Config{APIKey: "k", Model: "anthropic/claude-sonnet-5", BaseURL: srv.URL})
+		err := c.CheckModel(context.Background())
+		if gotAuth != "" {
+			t.Errorf("the probe must not send the key to a public route, sent %q", gotAuth)
+		}
+		return err, gotPath
+	}
+
+	t.Run("a slug with live endpoints is silent", func(t *testing.T) {
+		err, path := probe(t, http.StatusOK, liveBody)
+		if err != nil {
+			t.Errorf("want no verdict, got %v", err)
+		}
+		if path != "/models/anthropic/claude-sonnet-5/endpoints" {
+			t.Errorf("probe hit %q — the /models/{slug} route 404s for every slug, live ones too", path)
+		}
+	})
+
+	t.Run("200 with an EMPTY endpoints array is the alarm", func(t *testing.T) {
+		// This is the exact case that broke beta, and the case a status-only probe misses.
+		err, _ := probe(t, http.StatusOK, retiredBody)
+		if !errors.Is(err, ErrModelUnavailable) {
+			t.Errorf("a retired slug answers 200 with zero endpoints; want ErrModelUnavailable, got %v", err)
+		}
+	})
+
+	t.Run("404 (slug never existed) is the alarm too", func(t *testing.T) {
+		err, _ := probe(t, http.StatusNotFound, `{"error":{"message":"No endpoints found."}}`)
+		if !errors.Is(err, ErrModelUnavailable) {
+			t.Errorf("want ErrModelUnavailable, got %v", err)
+		}
+	})
+
+	t.Run("everything unclear is silence, not bad news", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			status int
+			body   string
+		}{
+			"provider outage":    {http.StatusInternalServerError, `{"error":{"message":"boom"}}`},
+			"proxy demands auth": {http.StatusUnauthorized, `{"error":{"message":"no credentials"}}`},
+			"not json at all":    {http.StatusOK, `<html>proxy error</html>`},
+			"reshaped api":       {http.StatusOK, `{"data":{"id":"x"}}`},
+			"no data envelope":   {http.StatusOK, `{"items":[]}`},
+		} {
+			t.Run(name, func(t *testing.T) {
+				err, _ := probe(t, tc.status, tc.body)
+				if err == nil {
+					t.Errorf("want an ordinary error, got a clean bill of health")
+				}
+				if errors.Is(err, ErrModelUnavailable) {
+					t.Errorf("must NOT raise the alarm on an unclear answer: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("an unreachable provider is silence", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		url := srv.URL
+		srv.Close()
+		err := New(Config{APIKey: "k", BaseURL: url}).CheckModel(context.Background())
+		if err == nil || errors.Is(err, ErrModelUnavailable) {
+			t.Errorf("a boot with no network must not accuse the model: %v", err)
+		}
+	})
+
+	t.Run("no key: the provider is not called at all", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+		defer srv.Close()
+		if err := New(Config{BaseURL: srv.URL}).CheckModel(context.Background()); !errors.Is(err, ErrNotConfigured) {
+			t.Errorf("want ErrNotConfigured, got %v", err)
+		}
+		if called {
+			t.Error("a disabled client must not probe")
+		}
+	})
+}
+
+// TestWarnIfModelRetired pins the START-UP CONTRACT, which matters more here than the message:
+// this runs while the process is coming up, and a check that can block or crash a boot is a worse
+// defect than the one it reports.
+func TestWarnIfModelRetired(t *testing.T) {
+	t.Run("returns immediately and probes in the background", func(t *testing.T) {
+		hit := make(chan string, 1)
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-release // the handler is held: a caller that waited for it would be stuck here
+			hit <- r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"data":{"endpoints":[]}}`)
+		}))
+		defer srv.Close()
+
+		c := New(Config{APIKey: "k", Model: "m/x", BaseURL: srv.URL})
+		start := time.Now()
+		c.WarnIfModelRetired()
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("start-up was blocked for %v", elapsed)
+		}
+		close(release)
+		select {
+		case path := <-hit:
+			if path != "/models/m/x/endpoints" {
+				t.Errorf("probed %q", path)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the background probe never ran")
+		}
+	})
+
+	t.Run("no key: no goroutine, no call", func(t *testing.T) {
+		called := make(chan struct{}, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called <- struct{}{} }))
+		defer srv.Close()
+		New(Config{BaseURL: srv.URL}).WarnIfModelRetired()
+		select {
+		case <-called:
+			t.Error("a disabled client must not probe at boot")
+		case <-time.After(300 * time.Millisecond):
+		}
+	})
+
+	t.Run("a nil client is a no-op, not a boot crash", func(t *testing.T) {
+		var c *Client
+		c.WarnIfModelRetired()
 	})
 }
