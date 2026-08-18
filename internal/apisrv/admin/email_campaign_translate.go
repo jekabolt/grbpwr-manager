@@ -155,6 +155,12 @@ type translateBatch struct {
 	srcs    []string
 	setters []func(string)
 	cleared int
+	// undo restores what clear() blanked. It exists because clearing happens BEFORE the model is
+	// called: without it, a locale whose translation then fails is left blanked, and — since a
+	// blanked field counted as a mutation — the campaign was saved that way and the RPC answered
+	// success. The person pressed "translate", read "done", and found empty translations where
+	// their text had been.
+	undo []func()
 }
 
 func (b *translateBatch) add(src string, set func(string)) {
@@ -168,9 +174,21 @@ func (b *translateBatch) add(src string, set func(string)) {
 // clear blanks a target field whose source has since been emptied (overwrite runs only), so the
 // locale stays a faithful projection of the source instead of keeping copy the English version no
 // longer has.
-func (b *translateBatch) clear(set func(string)) {
+func (b *translateBatch) clear(previous string, set func(string)) {
 	set("")
 	b.cleared++
+	b.undo = append(b.undo, func() { set(previous) })
+}
+
+// restoreCleared puts every blanked field back and forgets the count, so a locale that failed
+// contributes nothing at all. The stale text it restores is the lesser evil by a wide margin: it
+// is what was there a second ago, and the next successful run blanks it again.
+func (b *translateBatch) restoreCleared() {
+	for _, undo := range b.undo {
+		undo()
+	}
+	b.undo = nil
+	b.cleared = 0
 }
 
 // collectBlockFields queues the source block-translation fields (that are non-empty) for
@@ -215,7 +233,7 @@ func collectBlockFields(b *entity.EmailBlock, srcID, tgtID int, overwrite bool, 
 		}
 		if strings.TrimSpace(srcValue) == "" {
 			if strings.TrimSpace(tgtValue) != "" { // reachable only with overwrite
-				batch.clear(func(v string) { assign(target(), v) })
+				batch.clear(tgtValue, func(v string) { assign(target(), v) })
 			}
 			return
 		}
@@ -251,7 +269,7 @@ func collectSubject(v *entity.EmailCampaignVariant, srcID, tgtID int, overwrite 
 	}
 	if strings.TrimSpace(srcSubject) == "" {
 		if strings.TrimSpace(tgtSubject) != "" { // reachable only with overwrite
-			batch.clear(set)
+			batch.clear(tgtSubject, set)
 		}
 		return
 	}
@@ -294,7 +312,11 @@ func autoTranslateCampaign(
 	insert := full.EmailCampaignInsert
 
 	total, mutated := 0, 0
-	var failures []string
+	// []error, NOT []string. Stringifying an error before returning it severs every sentinel in it
+	// — silently, and forever after: errors.Is downstream simply answers false. That is exactly how
+	// the retired-slug branch below shipped unreachable. Joined at the end, every locale's chain
+	// survives, including sentinels nobody has invented yet.
+	var failures []error
 	for _, lang := range langs {
 		if lang.Id == srcID {
 			continue
@@ -304,7 +326,7 @@ func autoTranslateCampaign(
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", tgtCode, err))
+			failures = append(failures, fmt.Errorf("%s: %w", tgtCode, err))
 			break
 		}
 
@@ -319,18 +341,22 @@ func autoTranslateCampaign(
 		for bi := range insert.Body {
 			collectBlockFields(&insert.Body[bi], srcID, lang.Id, overwrite, batch)
 		}
-		mutated += batch.cleared
-
+		// NOTE: batch.cleared is counted at the END of the iteration, not here. Counting a blanked
+		// field as a mutation before the model has answered is what let a failed run save an empty
+		// translation over a real one.
 		if len(batch.srcs) == 0 {
+			mutated += batch.cleared
 			continue
 		}
 		if len(batch.srcs) > maxCampaignTranslateStrings {
-			failures = append(failures, fmt.Sprintf("%s: %d translatable strings exceed the %d limit",
+			failures = append(failures, fmt.Errorf("%s: %d translatable strings exceed the %d limit",
 				tgtCode, len(batch.srcs), maxCampaignTranslateStrings))
+			batch.restoreCleared()
 			continue
 		}
 
 		translatedForLocale := 0
+		localeFailed := false
 		for start := 0; start < len(batch.srcs); start += campaignTranslateChunkSize {
 			end := min(start+campaignTranslateChunkSize, len(batch.srcs))
 			chunk := batch.srcs[start:end]
@@ -344,7 +370,20 @@ func autoTranslateCampaign(
 					slog.String("locale", tgtCode),
 					slog.String("err", err.Error()),
 				)
-				failures = append(failures, fmt.Sprintf("%s: %v", tgtCode, err))
+				// A DEAD MODEL SLUG IS GLOBAL, so this returns instead of collecting: the remaining
+				// locales would each pay for one more doomed round-trip to answer the same thing.
+				// Returning here is also what keeps the campaign unsaved — no partial write, no
+				// blanked translations, and a refusal the caller can name (the %w is load-bearing:
+				// campaignTranslateError branches on this sentinel).
+				if errors.Is(err, openrouter.ErrModelUnavailable) {
+					// The rollback runs even though nothing will be saved: `insert` shares its
+					// slices with the aggregate the CALLER still holds, so leaving the blanks in
+					// place would hand back a half-erased campaign by aliasing alone.
+					batch.restoreCleared()
+					return 0, fmt.Errorf("auto-translate campaign %d: %w", campaignID, err)
+				}
+				failures = append(failures, fmt.Errorf("%s: %w", tgtCode, err))
+				localeFailed = true
 				break // keep the locales/chunks already translated
 			}
 			for i, value := range translated {
@@ -352,13 +391,17 @@ func autoTranslateCampaign(
 			}
 			translatedForLocale += len(chunk)
 		}
+		if localeFailed {
+			// This locale is not going to be written back, so its blanking must not be either.
+			batch.restoreCleared()
+		}
 		total += translatedForLocale
-		mutated += translatedForLocale
+		mutated += translatedForLocale + batch.cleared
 	}
 
 	if mutated == 0 {
 		if len(failures) > 0 {
-			return 0, fmt.Errorf("auto-translate campaign %d: %s", campaignID, strings.Join(failures, "; "))
+			return 0, fmt.Errorf("auto-translate campaign %d: %w", campaignID, errors.Join(failures...))
 		}
 		return 0, nil
 	}
@@ -388,7 +431,7 @@ func autoTranslateCampaign(
 		slog.ErrorContext(ctx, "campaign auto-translate saved with locale failures",
 			slog.Int("campaign_id", campaignID),
 			slog.Int("translated", total),
-			slog.String("failures", strings.Join(failures, "; ")),
+			slog.String("failures", errors.Join(failures...).Error()),
 		)
 	}
 	return total, nil

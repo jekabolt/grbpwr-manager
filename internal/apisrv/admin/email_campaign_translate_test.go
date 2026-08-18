@@ -397,3 +397,82 @@ func TestCampaignTranslateErrorMapping(t *testing.T) {
 		}
 	})
 }
+
+// deadSlugTranslator fails exactly the way translate.go fails on a retired model slug: the
+// sentinel wrapped in the service's own "translate en→fr:" text. Anything less faithful would let
+// a test pass on a chain production never produces — which is how the branch below got shipped
+// unreachable in the first place.
+type deadSlugTranslator struct{}
+
+func (deadSlugTranslator) Enabled() bool { return true }
+func (deadSlugTranslator) Translate(_ context.Context, src, tgt string, _ []string) ([]string, error) {
+	return nil, fmt.Errorf("translate %s→%s: %w", src, tgt, openrouter.ErrModelUnavailable)
+}
+
+// TestAutoTranslateCampaignRetiredSlug — ДВА ДЕФЕКТА НА ОДНОМ ПУТИ, И ВТОРОЙ ТЯЖЕЛЕЕ.
+//
+// 1. ЦЕПОЧКА РВАЛАСЬ ДО switch. Ошибка каждой локали стрингифицировалась в failures, а общий
+//    возврат склеивал их через %s — то есть errors.Is на выходе давал false, и мёртвый слуг
+//    приезжал безымянным Internal. Юнит-тест на campaignTranslateError при этом был зелёным:
+//    он кормил функцию обёрткой из translate.go, которая до неё не доживает. Настоящая обёртка —
+//    "auto-translate campaign %d: …", и проверять надо здесь, на autoTranslateCampaign, которому
+//    langs приходит ПАРАМЕТРОМ и никакого кэша не требует.
+//
+// 2. ПОТЕРЯ ДАННЫХ ПРИ overwrite=true. Поля с опустевшим источником чистятся ДО перевода, и
+//    mutated += batch.cleared делало mutated > 0 ещё до первого вызова модели. На мёртвом слуге
+//    кампания СОХРАНЯЛАСЬ с зачищенными, но не перезаполненными переводами, а RPC отвечал
+//    успехом: человек жмёт «перевести», видит «готово» и обнаруживает пустые переводы вместо
+//    прежних.
+func TestAutoTranslateCampaignRetiredSlug(t *testing.T) {
+	langs := []entity.Language{{Id: 1, Code: "en", IsDefault: true}, {Id: 2, Code: "fr"}}
+
+	t.Run("сентинел доживает до RPC и становится настройкой, а не Internal", func(t *testing.T) {
+		full := &entity.EmailCampaignFull{
+			ID: 7,
+			EmailCampaignInsert: entity.EmailCampaignInsert{
+				Status: entity.EmailCampaignStatusDraft,
+				Variants: []entity.EmailCampaignVariant{{
+					SubjectI18n: []entity.SubjectTranslation{{LanguageID: 1, Subject: "Hello"}},
+				}},
+			},
+		}
+		repo, saved := translateRepo(t, full, false)
+
+		_, err := autoTranslateCampaign(context.Background(), repo, deadSlugTranslator{}, langs, 7, false)
+		require.Error(t, err)
+		require.ErrorIs(t, err, openrouter.ErrModelUnavailable,
+			"стрингификация ошибки перед возвратом убивает сентинел молча")
+		require.Equal(t, codes.FailedPrecondition,
+			status.Code(campaignTranslateError(err, "anthropic/claude-sonnet-5")))
+		require.Nil(t, saved(), "неудачный перевод не имеет права ничего сохранять")
+	})
+
+	t.Run("overwrite: зачищенное не сохраняется и успехом не называется", func(t *testing.T) {
+		// Источник (en) опустел, а во французском тексте он ещё есть: ровно тот случай, ради
+		// которого зачистка и существует. Плюс одно поле с непустым источником, чтобы дело дошло
+		// до модели.
+		full := &entity.EmailCampaignFull{
+			ID: 8,
+			EmailCampaignInsert: entity.EmailCampaignInsert{
+				Status: entity.EmailCampaignStatusDraft,
+				Variants: []entity.EmailCampaignVariant{{
+					SubjectI18n: []entity.SubjectTranslation{
+						{LanguageID: 1, Subject: ""},
+						{LanguageID: 2, Subject: "Bonjour"},
+					},
+					Body: []entity.EmailBlock{{
+						Translations: []entity.EmailBlockTranslation{{LanguageID: 1, Heading: "Hello"}},
+					}},
+				}},
+			},
+		}
+		repo, saved := translateRepo(t, full, false)
+
+		n, err := autoTranslateCampaign(context.Background(), repo, deadSlugTranslator{}, langs, 8, true)
+		require.Error(t, err, "«готово» на мёртвом слуге — это ложь, за которую платят переводами")
+		require.Zero(t, n)
+		require.Nil(t, saved(), "кампания с зачищенными переводами не имеет права уехать в базу")
+		// И в памяти прежний текст на месте: откат зачистки, а не только несохранение.
+		require.Equal(t, "Bonjour", full.Variants[0].SubjectI18n[1].Subject)
+	})
+}
