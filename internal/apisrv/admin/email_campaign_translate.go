@@ -180,9 +180,17 @@ func (b *translateBatch) clear(previous string, set func(string)) {
 	b.undo = append(b.undo, func() { set(previous) })
 }
 
-// restoreCleared puts every blanked field back and forgets the count, so a locale that failed
-// contributes nothing at all. The stale text it restores is the lesser evil by a wide margin: it
-// is what was there a second ago, and the next successful run blanks it again.
+// restoreCleared puts every blanked TEXT field back and forgets the count. The stale text it
+// restores is the lesser evil by a wide margin: it is what was there a second ago, and the next
+// successful run blanks it again.
+//
+// IT IS NOT A FULL UNDO, and calling it one would mislead. clear() reaches its field through
+// target(), which on an overwrite run also refreshes the row's CTAURL and Links from the source —
+// those are copied, never translated — and nothing here puts the previous ones back. So a locale
+// that failed can still leave refreshed links behind if some OTHER locale succeeded and the
+// campaign was saved. That behaviour predates the undo log and is unchanged by it, and the values
+// left behind are the ones a successful run would have written anyway; it is recorded here only so
+// the next reader does not mistake this for a complete rollback.
 func (b *translateBatch) restoreCleared() {
 	for _, undo := range b.undo {
 		undo()
@@ -376,9 +384,18 @@ func autoTranslateCampaign(
 				// blanked translations, and a refusal the caller can name (the %w is load-bearing:
 				// campaignTranslateError branches on this sentinel).
 				if errors.Is(err, openrouter.ErrModelUnavailable) {
-					// The rollback runs even though nothing will be saved: `insert` shares its
-					// slices with the aggregate the CALLER still holds, so leaving the blanks in
-					// place would hand back a half-erased campaign by aliasing alone.
+					// The rollback carries NO production weight on this path, and the earlier
+					// version of this comment claimed otherwise. Nothing is saved here, and `full`
+					// is built fresh from the database inside this very call (Campaigns().
+					// GetEmailCampaignByID — no cache, no shared aggregate), so the blanks would
+					// die with it. `insert` does share slice backing with `full`, but the only
+					// place anybody observes that is the test, whose mock hands back an aggregate
+					// it still holds and asserts the previous text is intact.
+					//
+					// It stays because the rule is worth more than the call: clearing is rolled
+					// back on EVERY failure, without exceptions to remember. An undo that applies
+					// "except on the early return" is the kind of asymmetry a later reader has to
+					// rediscover the hard way.
 					batch.restoreCleared()
 					return 0, fmt.Errorf("auto-translate campaign %d: %w", campaignID, err)
 				}
@@ -392,7 +409,10 @@ func autoTranslateCampaign(
 			translatedForLocale += len(chunk)
 		}
 		if localeFailed {
-			// This locale is not going to be written back, so its blanking must not be either.
+			// Only the BLANKING is rolled back. The chunks that landed before the failure stay and
+			// are saved — that is the deliberate behaviour the `break` above names, and it is not
+			// what this undo is about. What must not survive is a field emptied in preparation for
+			// a translation that never arrived.
 			batch.restoreCleared()
 		}
 		total += translatedForLocale
