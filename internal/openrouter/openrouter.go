@@ -21,8 +21,13 @@ import (
 )
 
 const (
-	// defaultModel is the OpenRouter model slug used when none is configured.
-	defaultModel = "anthropic/claude-3.5-sonnet"
+	// defaultModel is the OpenRouter model slug used when none is configured. IT IS LOAD-BEARING:
+	// OPENROUTER_MODEL is unset on both beta and prod, so this constant is the model every AI
+	// feature actually runs on. The previous value (anthropic/claude-3.5-sonnet) was retired by the
+	// provider and the calls started coming back as HTTP 404 in 0.2 s — see ErrModelUnavailable.
+	// Anything put here must be verified against the live https://openrouter.ai/api/v1/models list
+	// before it is committed; guessing a plausible slug is exactly how the outage happened.
+	defaultModel = "anthropic/claude-sonnet-5"
 	// defaultBaseURL is the OpenRouter API root (OpenAI-compatible).
 	defaultBaseURL = "https://openrouter.ai/api/v1"
 	// defaultTimeout bounds a single generation call (LLM latency can be seconds).
@@ -38,6 +43,21 @@ const (
 // ErrNotConfigured is returned when GenerateOperations is called with no API key.
 // Callers should surface it as a clear "not configured" precondition failure.
 var ErrNotConfigured = errors.New("openrouter: OPENROUTER_API_KEY is not set")
+
+// ErrModelUnavailable is returned when the provider answers 404: the configured model slug is not
+// served by it — retired, renamed, or never existing — or, with a custom OPENROUTER_BASE_URL, the
+// endpoint itself is not there. Both are the SAME KIND of fault, and that is why this sentinel
+// stands apart from a transport failure: nothing about either is transient, so the caller owes the
+// human "the setting is wrong", not "try again in a moment".
+//
+// CLASSIFICATION IS BY STATUS ALONE. No substring of the provider's English sentence is matched,
+// so a reworded provider message cannot silently reclassify the fault. That costs exactly one
+// thing: when a model that does exist is momentarily unroutable, OpenRouter also answers 404, and
+// we will then call a passing outage a configuration fault. That is the cheap direction — it sends
+// somebody to read OPENROUTER_MODEL once. The opposite direction is what actually shipped: a
+// retired slug reported as weather, retried forever by a person the interface had promised it was
+// temporary.
+var ErrModelUnavailable = errors.New("openrouter: the configured model is not available at the provider")
 
 // Config is the OpenRouter client configuration. Bound in config/cfg.go; every
 // field is optional except APIKey (without which the client is disabled).
@@ -384,6 +404,12 @@ func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, error) 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("openrouter: read response: %w", err)
+	}
+	// A 404 is the one non-2xx that is NOT weather — see ErrModelUnavailable. It is wrapped rather
+	// than replaced: the provider's own sentence and the status still reach the log, they simply
+	// stop being the thing a caller has to pattern-match to know a retry is pointless.
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("%w: API error (HTTP %d): %s", ErrModelUnavailable, resp.StatusCode, apiErrorMessage(body))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("openrouter: API error (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))

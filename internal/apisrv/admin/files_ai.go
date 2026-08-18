@@ -24,6 +24,18 @@ const (
 	// itself keeps working.
 	noteFormatNotConfiguredMsg = "markdown assistant is not configured (set OPENROUTER_API_KEY)"
 
+	// noteFormatModelUnavailableMsg is the OTHER misconfiguration, and it exists because the first
+	// version of this handler did not have it: when the provider retired the configured model slug,
+	// a 404 came back in 0.2 s and was reported as "unavailable right now — try again in a moment".
+	// It was never going to become available. The person kept pressing, because the interface had
+	// promised the fault was temporary.
+	//
+	// So this one names the SETTING, in the same shape as the missing key above, and carries the
+	// effective slug: whoever reads it has to open OPENROUTER_MODEL, and needs to know what is in
+	// there now. The slug is not a secret — GenerateTechCardOperations already returns it on the
+	// success path.
+	noteFormatModelUnavailableMsg = "markdown assistant is misconfigured: the provider does not serve model %q (set OPENROUTER_MODEL to a model it does serve)"
+
 	// maxNoteFormatRunes caps what one call may format. It is the mockup's `toolong` threshold
 	// (files-section.html, md=v3: `m.text.length > 12000`), measured here in RUNES rather than
 	// bytes so a Cyrillic note is not silently allowed half the text of a Latin one. A longer
@@ -63,9 +75,11 @@ Answer with the formatted markdown document and nothing else: no code fence wrap
 //
 // Degradation: no API key → FailedPrecondition (the beta default); text over the rune cap →
 // InvalidArgument before any call is made; too many calls in flight → ResourceExhausted, again
-// before any call is made; transport/API failure → Unavailable; an empty answer OR one too long to
-// save → Internal. The provider's raw error text never leaves the server — it is logged, and the
-// caller gets a stable sentence it can show a human.
+// before any call is made; a model slug the provider does not serve → FailedPrecondition, like the
+// missing key and for the same reason (it is a setting, not weather, and no retry will fix it);
+// transport/API failure → Unavailable; an empty answer OR one too long to save → Internal. The
+// provider's raw error text never leaves the server — it is logged, and the caller gets a stable
+// sentence it can show a human.
 func (s *Server) FormatLibraryNoteMarkdown(
 	ctx context.Context,
 	req *pb_admin.FormatLibraryNoteMarkdownRequest,
@@ -112,11 +126,17 @@ func (s *Server) FormatLibraryNoteMarkdown(
 		if errors.Is(err, openrouter.ErrNotConfigured) {
 			return nil, status.Error(codes.FailedPrecondition, noteFormatNotConfiguredMsg)
 		}
-		// Only length and duration are logged. The note's text is the user's private writing and
-		// has no business in the log stream.
+		// Only length, duration and the MODEL are logged. The note's text is the user's private
+		// writing and has no business in the log stream — but the effective slug does: when the
+		// provider retired the default model, the slug was visible in this line only because the
+		// provider happened to repeat it in its own sentence. That was luck, not design, and a
+		// differently-worded provider message would have cost hours of diagnosis.
 		slog.Default().ErrorContext(ctx, "note markdown formatting failed",
 			slog.Int("in_runes", inRunes), slog.Duration("took", took),
-			slog.String("err", err.Error()))
+			slog.String("model", s.aiOps.Model()), slog.String("err", err.Error()))
+		if errors.Is(err, openrouter.ErrModelUnavailable) {
+			return nil, status.Errorf(codes.FailedPrecondition, noteFormatModelUnavailableMsg, s.aiOps.Model())
+		}
 		if isEmptyModelAnswer(err) {
 			return nil, status.Error(codes.Internal, "the assistant returned nothing to show — try again")
 		}

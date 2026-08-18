@@ -303,3 +303,48 @@ func TestStripWrappingCodeFence(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatLibraryNoteMarkdownModelUnavailable — ОТКАЗ ОБЯЗАН НАЗЫВАТЬ НАСТРОЙКУ, А НЕ ПОГОДУ.
+//
+// Это ровно тот отказ, что был на бете 17.08: слуг `anthropic/claude-3.5-sonnet` сняли с
+// обслуживания, провайдер ответил 404 за 0,2 с, а человек получил «the markdown assistant is
+// unavailable right now — try again in a moment» и жал кнопку снова. Повтор был обречён: неверная
+// настройка не заживает ни через минуту, ни через неделю.
+//
+// Проверяется пара, а не одна половина: 404 — FailedPrecondition со словами про OPENROUTER_MODEL,
+// 503 — по-прежнему Unavailable. Одна половина без другой означала бы либо прежнюю ложь, либо
+// новую: «почините настройку» про обычный сбой провайдера.
+func TestFormatLibraryNoteMarkdownModelUnavailable(t *testing.T) {
+	// Тело — дословно то, что вернул живой провайдер.
+	const liveBody = `{"error":{"message":"No endpoints found for anthropic/claude-3.5-sonnet.","code":404}}`
+
+	t.Run("404 — это настройка, а не временная недоступность", func(t *testing.T) {
+		client, _ := newFakeOpenRouter(t, func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(liveBody))
+		})
+		s := newNoteFormatServer(client)
+
+		resp, err := s.FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		require.Nil(t, resp)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err),
+			"неустранимая настройка не имеет права приходить как Unavailable: клиент предложит повтор, а повтор обречён")
+		msg := status.Convert(err).Message()
+		require.Contains(t, msg, "OPENROUTER_MODEL", "отказ обязан называть настройку, которую нужно поправить")
+		require.NotContains(t, msg, "try again", "повторять нечего")
+	})
+
+	t.Run("обычный сбой провайдера остаётся Unavailable", func(t *testing.T) {
+		client, _ := newFakeOpenRouter(t, func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream is having a moment"}}`))
+		})
+		resp, err := newNoteFormatServer(client).FormatLibraryNoteMarkdown(context.Background(),
+			&pb_admin.FormatLibraryNoteMarkdownRequest{Content: "текст"})
+		require.Nil(t, resp)
+		require.Equal(t, codes.Unavailable, status.Code(err))
+	})
+}

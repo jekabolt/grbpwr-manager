@@ -464,3 +464,87 @@ func TestGenerateOperations_MalformedModelJSON(t *testing.T) {
 		t.Errorf("expected a clear parse error, got %v", err)
 	}
 }
+
+// TestChat_ModelUnavailableIsAConfigurationFault reproduces the beta outage of 2026-08-17 byte for
+// byte: `anthropic/claude-3.5-sonnet` was retired at the provider, the call came back in 0.2 s with
+// HTTP 404 and the body below, and every caller reported it as "unavailable right now — try again
+// in a moment". It was never going to become available, and the retry never had a chance.
+//
+// What is pinned here is the SPLIT, not the wording: a 404 is a configuration fault (a sentinel the
+// caller can branch on), while 5xx and a broken transport stay ordinary errors. The provider's own
+// sentence must still travel inside the error — it is what a log reader needs — but it must not be
+// what decides the classification.
+func TestChat_ModelUnavailableIsAConfigurationFault(t *testing.T) {
+	// The exact body the live provider returned; kept verbatim so this test breaks if we ever start
+	// depending on parsing it.
+	const liveBody = `{"error":{"message":"No endpoints found for anthropic/claude-3.5-sonnet.","code":404}}`
+
+	t.Run("404 becomes ErrModelUnavailable", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, liveBody)
+		}))
+		defer srv.Close()
+
+		c := New(Config{APIKey: "k", Model: "anthropic/claude-3.5-sonnet", BaseURL: srv.URL})
+
+		// Both entry points must classify identically: the note assistant goes through Complete,
+		// the tech-card draft through GenerateOperations, and they share one client.
+		_, errComplete := c.Complete(context.Background(), "sys", "user", false)
+		if !errors.Is(errComplete, ErrModelUnavailable) {
+			t.Errorf("Complete: want ErrModelUnavailable, got %v", errComplete)
+		}
+		_, errGen := c.GenerateOperations(context.Background(), TechCardContext{}, "sew it")
+		if !errors.Is(errGen, ErrModelUnavailable) {
+			t.Errorf("GenerateOperations: want ErrModelUnavailable, got %v", errGen)
+		}
+
+		// The provider's sentence and the status still ride along for the log: the sentinel says
+		// what KIND of fault it is, it does not swallow what happened.
+		for _, err := range []error{errComplete, errGen} {
+			if err == nil {
+				continue
+			}
+			if !strings.Contains(err.Error(), "No endpoints found for anthropic/claude-3.5-sonnet.") {
+				t.Errorf("provider message must survive into the error text: %v", err)
+			}
+			if !strings.Contains(err.Error(), "404") {
+				t.Errorf("status must survive into the error text: %v", err)
+			}
+		}
+	})
+
+	t.Run("5xx stays an ordinary retryable error", func(t *testing.T) {
+		// The other half of the split. Without this, "everything is a configuration fault" would
+		// pass the test above and mislabel every genuine outage.
+		for _, code := range []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusTooManyRequests} {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(code)
+				io.WriteString(w, `{"error":{"message":"upstream is having a moment"}}`)
+			}))
+			_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).Complete(context.Background(), "sys", "user", false)
+			srv.Close()
+			if err == nil {
+				t.Fatalf("HTTP %d: expected an error", code)
+			}
+			if errors.Is(err, ErrModelUnavailable) {
+				t.Errorf("HTTP %d must NOT be a configuration fault: %v", code, err)
+			}
+		}
+	})
+
+	t.Run("a dead transport stays an ordinary error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		url := srv.URL
+		srv.Close() // nothing is listening any more
+		_, err := New(Config{APIKey: "k", BaseURL: url}).Complete(context.Background(), "sys", "user", false)
+		if err == nil {
+			t.Fatal("expected a transport error")
+		}
+		if errors.Is(err, ErrModelUnavailable) {
+			t.Errorf("a transport failure must NOT be a configuration fault: %v", err)
+		}
+	})
+}

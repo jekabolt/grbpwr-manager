@@ -25,6 +25,13 @@ import (
 // pre-check and the client-level ErrNotConfigured path report identically.
 const aiOpsNotConfiguredMsg = "AI operations generation is not configured (set OPENROUTER_API_KEY)"
 
+// aiOpsModelUnavailableMsg is the message for the OTHER misconfiguration: the key is set, but the
+// provider does not serve the configured model slug. THIS HANDLER SHARES ONE CLIENT WITH THE NOTE
+// ASSISTANT (s.aiOps), so when the provider retired the default slug this draft died at exactly the
+// same moment and for exactly the same reason — it simply had nobody pressing its button to notice.
+// A 404 is a setting, not weather: reporting it as Unavailable invites a retry that cannot succeed.
+const aiOpsModelUnavailableMsg = "AI operations generation is misconfigured: the provider does not serve model %q (set OPENROUTER_MODEL to a model it does serve)"
+
 // GenerateTechCardOperations drafts structured sewing operations for a tech card from a
 // plain-language description via OpenRouter. It loads the card (pieces + BOM + type) purely as
 // grounding context, asks the model for strictly-JSON operations, and returns them as an UNSAVED
@@ -32,8 +39,9 @@ const aiOpsNotConfiguredMsg = "AI operations generation is not configured (set O
 // them through UpdateTechCard. This handler persists nothing.
 //
 // Degradation: when OPENROUTER_API_KEY is unset the client is disabled and this returns a clear
-// FailedPrecondition; a transport/API failure returns Unavailable; malformed model output returns a
-// clear parse error (Internal). None of these ever mutate the card.
+// FailedPrecondition; so does a model slug the provider does not serve, for the same reason (both
+// are settings, and no retry fixes either); a transport/API failure returns Unavailable; malformed
+// model output returns a clear parse error (Internal). None of these ever mutate the card.
 func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.GenerateTechCardOperationsRequest) (*pb_admin.GenerateTechCardOperationsResponse, error) {
 	if req.TechCardId <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
@@ -61,8 +69,16 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 		if errors.Is(err, openrouter.ErrNotConfigured) {
 			return nil, status.Error(codes.FailedPrecondition, aiOpsNotConfiguredMsg)
 		}
+		// The effective slug is logged deliberately: when the retired default model broke this call,
+		// the slug reached the log only because the provider repeated it in its own sentence. That
+		// was luck. A differently-worded provider message would have left the log naming no model at
+		// all, on the one fault whose whole diagnosis is «which model is it actually asking for».
 		slog.Default().ErrorContext(ctx, "AI ops: generation failed",
-			slog.Int("tech_card_id", int(req.TechCardId)), slog.String("err", err.Error()))
+			slog.Int("tech_card_id", int(req.TechCardId)),
+			slog.String("model", s.aiOps.Model()), slog.String("err", err.Error()))
+		if errors.Is(err, openrouter.ErrModelUnavailable) {
+			return nil, status.Errorf(codes.FailedPrecondition, aiOpsModelUnavailableMsg, s.aiOps.Model())
+		}
 		// A malformed-JSON parse failure is a model/content problem (Internal); everything else
 		// here is an upstream transport/API failure the caller may retry (Unavailable).
 		if strings.Contains(err.Error(), "not valid operations JSON") || strings.Contains(err.Error(), "no JSON object") {
