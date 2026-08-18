@@ -541,6 +541,23 @@ var methodRequirements = map[string]Requirement{
 	"UpsertFileRole":      wr(SectionFiles),
 	"MergeFileRoles":      wr(SectionFiles),
 	"SetLibraryFileRoles": wr(SectionFiles),
+	// ПРОЕКТ ↔ СТИЛЬ (0321): «каким файлом сделана эта вещь». Та же секция files и никакой новой
+	// — библиотека, посмотренная с другой стороны.
+	//
+	// ListStyleFileProjects ЧИТАЕТСЯ С КАРТОЧКИ ВЕЩИ, НО ТРЕБУЕТ files:read, А НЕ techcards:read,
+	// и это осознанно: ответ несёт ИМЕНА проектов и ЧИСЛА файлов, то есть содержимое библиотеки.
+	// Повесить его на секцию тех-карт значило бы сделать карточку вещи боковым каналом, через
+	// который человек без прав на файлы читает, как называются проекты и сколько в них лежит.
+	// Человек без files:read просто не получает этот блок — клиент прячет его на PermissionDenied.
+	//
+	// Обратное плечо симметрично и его здесь НЕТ намеренно: список стилей проекта отдаёт номера и
+	// имена тех-карт обладателю files:read. Это принято — артикул и имя стиля в этой системе не
+	// секрет (их печатает половина экранов), а требовать ОБЕ секции значило бы закрыть страницу
+	// проекта от того самого человека, который её и наполняет.
+	"LinkFileTopicStyle":    wr(SectionFiles),
+	"UnlinkFileTopicStyle":  wr(SectionFiles),
+	"ListFileTopicStyles":   rd(SectionFiles),
+	"ListStyleFileProjects": rd(SectionFiles),
 	// files:write is NECESSARY here but not SUFFICIENT: the handler additionally requires the caller
 	// to be the uploader, a current owner, or a super-admin. Without that second gate any files:write
 	// account could appoint itself owner of anybody's file — and once the access levels land, appoint

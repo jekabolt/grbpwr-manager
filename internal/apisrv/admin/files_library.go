@@ -250,7 +250,8 @@ func (s *Server) DeleteFileTopic(ctx context.Context, req *pb_admin.DeleteFileTo
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "topic id is required")
 	}
-	if err := s.repo.Files().DeleteTopic(ctx, int(req.Id)); err != nil {
+	unlinkedStyles, err := s.repo.Files().DeleteTopic(ctx, int(req.Id))
+	if err != nil {
 		if errors.Is(err, entity.ErrFileTopicInUse) {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 		}
@@ -262,7 +263,12 @@ func (s *Server) DeleteFileTopic(ctx context.Context, req *pb_admin.DeleteFileTo
 		slog.Default().ErrorContext(ctx, "can't delete file topic", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't delete topic")
 	}
-	return &pb_admin.DeleteFileTopicResponse{}, nil
+	// СТИЛИ УДАЛЕНИЕ НЕ ЗАПРЕЩАЮТ, НО ОБЯЗАНЫ БЫТЬ НАЗВАНЫ (0321). Проект без файлов, но с
+	// привязанными вещами, удаляется штатно — счётчик на экране тем показывает файлы и о
+	// привязках не знает, поэтому отказ был бы тупиком без способа увидеть, во что упёрся. А
+	// молчание сделало бы «убрал пустую съёмку» и «у восьми вещей пропал ответ, каким файлом их
+	// сделали» двумя событиями, между которыми месяц.
+	return &pb_admin.DeleteFileTopicResponse{UnlinkedStyles: int32(unlinkedStyles)}, nil
 }
 
 // MergeFileTopics folds one topic into another and deletes the source.

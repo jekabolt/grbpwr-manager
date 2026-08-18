@@ -705,8 +705,13 @@ type (
 		CreateTopic(ctx context.Context, name, description string) (int, error)
 		RenameTopic(ctx context.Context, id int, name, description string) error
 		// DeleteTopic refuses while files still carry the topic — deleting it would
-		// silently unlabel them into «Разобрать».
-		DeleteTopic(ctx context.Context, id int) error
+		// silently unlabel them into «Разобрать». Returns how many STYLES lost their link
+		// to the topic (0321): the link's foreign key is cascading, so a project with no
+		// files but with styles attached deletes normally and takes them with it. Число
+		// точное (стиль не файл библиотеки, предикат видимости к нему не применяется) и
+		// возвращается по тому же доводу, что ClearedStyles у понижения: молчаливая потеря
+		// ответа «каким файлом сделана эта вещь» обнаружилась бы через месяц.
+		DeleteTopic(ctx context.Context, id int) (unlinkedStyles int, err error)
 		// MergeTopics folds source into target and deletes source, returning how
 		// many files gained the target topic. The only way out of a duplicated
 		// label: DeleteTopic refuses on a topic in use, and that is the one that
@@ -728,11 +733,12 @@ type (
 		// в проекте» при этом не правило, а форма: UNIQUE(file_id, topic_id) даёт одну строку на
 		// пару, у строки одно поле роли.
 
-		// UpdateTopicMeta REPLACES a topic's kind, dates and archive flag and returns how many
-		// VISIBLE link rows lost their role because the topic stopped being a project (0 in
-		// every other case). Замена безопасна потому, что RPC новый: старого клиента, который
-		// прислал бы пустой kind и молча понизил проект, у него нет.
-		UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (clearedRoles int, err error)
+		// UpdateTopicMeta REPLACES a topic's kind, dates and archive flag and returns WHAT THE
+		// DEMOTION TOOK AWAY: visible link rows that lost their role (0320) and styles that lost
+		// their link to the project (0321). Оба нуля во всех остальных случаях. Замена безопасна
+		// потому, что RPC новый: старого клиента, который прислал бы пустой kind и молча понизил
+		// проект, у него нет.
+		UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (entity.FileTopicMetaResult, error)
 		// ListRoles returns the closed role vocabulary with CROSS-PROJECT counts, each counted
 		// under the visibility predicate. Пустые роли остаются в ответе (предикат в ON внешнего
 		// соединения) — «готовое: пусто» и есть половина ценности разбивки.
@@ -751,6 +757,35 @@ type (
 		// проекта отвергается (entity.ErrRoleNeedsProjectTopic), заархивированная роль
 		// назначается отказом, а снимается свободно.
 		SetFileRoles(ctx context.Context, fileIDs []int, projectTopicID, roleID int) (updated int, err error)
+
+		// --- Проект ↔ стиль: «каким файлом сделана эта вещь» (0321) ---
+		//
+		// Обратная сторона Ф0: там «что лежит в этой съёмке», здесь «какие проекты касаются этой
+		// вещи». Связь многие-ко-многим потому, что множественны ОБЕ стороны: съёмка покрывает
+		// капсулу, а бекап CLO — одну вещь, которая при этом попадает и в съёмку, и в лукбук.
+
+		// LinkTopicStyle attaches a style to a PROJECT topic. Идемпотентно: повтор — no-op, а не
+		// отказ по уникальному ключу (кнопка живёт на двух экранах сразу). Тема не проект —
+		// entity.ErrStyleNeedsProjectTopic (InvalidArgument), а не отказ внешнего ключа; темы или
+		// стиля нет — sql.ErrNoRows. Заархивированный проект привязку ПРИНИМАЕТ: бекап кладут
+		// после того, как отсняли.
+		LinkTopicStyle(ctx context.Context, topicID, techCardID int) error
+		// UnlinkTopicStyle detaches a style. Идемпотентно; тип темы не проверяется — уборка не
+		// имеет права требовать сначала вернуть тип обратно.
+		UnlinkTopicStyle(ctx context.Context, topicID, techCardID int) error
+		// ListTopicStyles returns the styles a project is about. sql.ErrNoRows на несуществующей
+		// теме. Поле PreviewURL оставляет ПУСТЫМ — его заполняет вызывающий из
+		// TechCards().PreviewURLsByTechCardIds: правило выбора картинки живёт там, и вторая его
+		// реализация здесь разошлась бы с первой молча.
+		ListTopicStyles(ctx context.Context, topicID int) ([]entity.FileTopicStyleRef, error)
+		// ListStyleProjects returns the projects a style is mentioned in — ГЛАВНЫЙ вопрос фазы,
+		// который задаёт карточка вещи. Число файлов в каждом проекте считается ПОД ПРЕДИКАТОМ
+		// ВИДИМОСТИ: иначе карточка вещи стала бы боковым каналом, через который видно, что в
+		// проекте есть скрытые файлы. Несуществующий стиль отдаёт ПУСТОЙ список, а не отказ —
+		// отличимый отказ был бы оракулом существования тех-карт для обладателя одного files:read.
+		// Архивные проекты приезжают ПОМЕЧЕННЫМИ и в конце списка, а не прячутся: вопрос
+		// исторический, и законченная съёмка — это и есть ответ.
+		ListStyleProjects(ctx context.Context, techCardID int) ([]entity.StyleProjectLink, error)
 		// SetFileOwners REPLACES the file's owner set (owners come in ones and twos
 		// and the caller has just seen the whole current set). An empty set is legal
 		// — a file with nobody keeping it is honest. adminIDs must be deduped by the
@@ -919,6 +954,13 @@ type (
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
 		// and up to cardsPerStage light preview cards (gap-01).
 		GetStylePipeline(ctx context.Context, cardsPerStage int) ([]entity.StylePipelineColumn, error)
+		// PreviewURLsByTechCardIds resolves the SAME list thumbnail ListTechCards puts on a card, for
+		// an explicit set of styles, in one batched query. Exists so the files library's «стили
+		// проекта» list (0321) can print pictures WITHOUT a second implementation of the picking rule
+		// (стадия × категория медиа × вид) — two of them would diverge silently and show a different
+		// picture for the same garment in two places. A style with no media is simply absent from the
+		// map.
+		PreviewURLsByTechCardIds(ctx context.Context, ids []int) (map[int]string, error)
 		// GetTechCardReadiness returns the raw counts a style's advance/release checklist is scored
 		// against, in one round trip. sql.ErrNoRows when the card is absent.
 		GetTechCardReadiness(ctx context.Context, techCardID int) (entity.TechCardReadinessFacts, error)

@@ -160,6 +160,44 @@ func ConvertEntityFileRolesToPb(roles []entity.FileRoleWithCount) []*pb_admin.Fi
 	return out
 }
 
+// ConvertEntityFileTopicStylesToPb converts the project page's style list.
+//
+// previews is the map PreviewURLsByTechCardIds returned; a style missing from it simply gets an
+// empty url. A nil map is legal and means «превью не резолвили» — the list still renders, which
+// is the point: a picture is decoration on this screen, the article is the identity.
+func ConvertEntityFileTopicStylesToPb(styles []entity.FileTopicStyleRef, previews map[int]string) []*pb_admin.FileTopicStyle {
+	out := make([]*pb_admin.FileTopicStyle, 0, len(styles))
+	for _, s := range styles {
+		out = append(out, &pb_admin.FileTopicStyle{
+			TechCardId:  int32(s.TechCardId),
+			StyleNumber: s.StyleNumber,
+			Name:        s.Name,
+			Stage:       string(s.Stage),
+			PreviewUrl:  previews[s.TechCardId],
+			LinkedAt:    timestamppb.New(s.LinkedAt),
+		})
+	}
+	return out
+}
+
+// ConvertEntityStyleProjectsToPb converts the garment card's project list.
+//
+// Тема едет ТЕМ ЖЕ конвертером, что и рельс, и это единственный способ не завести второй набор
+// правил для тех же полей: архивность выводится из archived_at, даты печатаются одним и тем же
+// форматом, а счётчик уже посчитан под предикатом видимости в сторе.
+func ConvertEntityStyleProjectsToPb(links []entity.StyleProjectLink) []*pb_admin.StyleFileProject {
+	out := make([]*pb_admin.StyleFileProject, 0, len(links))
+	for _, l := range links {
+		project := ConvertEntityFileTopicToPb(l.FileTopic)
+		project.FilesCount = int32(l.FilesCount)
+		out = append(out, &pb_admin.StyleFileProject{
+			Project:  project,
+			LinkedAt: timestamppb.New(l.LinkedAt),
+		})
+	}
+	return out
+}
+
 // ValidateLibraryRoleName trims and bounds a role name. Same bound as a topic
 // name, because both live in a VARCHAR(64) and both are read off the same chips.
 func ValidateLibraryRoleName(name string) (string, error) {

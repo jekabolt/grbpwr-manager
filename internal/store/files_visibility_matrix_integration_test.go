@@ -347,7 +347,7 @@ func TestLibraryFileVisibilityMatrix(t *testing.T) {
 		}
 		require.Equal(t, 0, railCount, "рельс обязан показать чужому пустую тему — иначе подтест не про то")
 
-		err = s.Files().DeleteTopic(alien, hidden)
+		_, err = s.Files().DeleteTopic(alien, hidden)
 		require.Error(t, err, "тему держит невидимая связь, и снимать её нельзя: это молча разметило бы чужой файл")
 		require.NotErrorIs(t, err, entity.ErrFileTopicInUse,
 			"отказ не имеет права называть число: считать надо ПОД предикатом, а остаток ловит внешний ключ, который хендлер переводит в тот же FailedPrecondition без числа")
@@ -358,12 +358,13 @@ func TestLibraryFileVisibilityMatrix(t *testing.T) {
 		require.Equal(t, 1, alive, "тема обязана уцелеть: отказ полный")
 
 		// Супер видит правду — и число получает.
-		err = s.Files().DeleteTopic(admin, hidden)
+		_, err = s.Files().DeleteTopic(admin, hidden)
 		require.ErrorIs(t, err, entity.ErrFileTopicInUse)
 		require.Contains(t, err.Error(), "1")
 
 		// Обычный путь не сломан: пустую тему чужой удаляет.
-		require.NoError(t, s.Files().DeleteTopic(alien, insertFileTopicFixture(ctx, t, "vis-empty")))
+		_, err = s.Files().DeleteTopic(alien, insertFileTopicFixture(ctx, t, "vis-empty"))
+		require.NoError(t, err)
 	})
 
 	t.Run("слияние перевешивает всё, а в отчёт отдаёт видимое", func(t *testing.T) {

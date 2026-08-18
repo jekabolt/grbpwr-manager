@@ -566,27 +566,58 @@ func (s *Store) RenameTopic(ctx context.Context, id int, name, description strin
 // ключ RESTRICT, и хендлер переводит его в тот же FailedPrecondition БЕЗ числа
 // (files_library.go, ветка IsErrForeignKeyViolation). Снимать связи невидимых файлов
 // было бы хуже любого тупика: это молча разметило бы чужие файлы.
-func (s *Store) DeleteTopic(ctx context.Context, id int) error {
+// ТРАНЗАКЦИЯ ПОЯВИЛАСЬ ВМЕСТЕ С 0321, И БЕЗ НЕЁ УДАЛЕНИЕ СТАЛО БЫ ТЕРЯТЬ ДАННЫЕ МОЛЧА. Для
+// файлов страховкой от гонки «посчитали ноль — коллега привязал — удалили» служил внешний ключ
+// RESTRICT: DELETE упирался в 1452, и хендлер отвечал FailedPrecondition. У связи со стилем
+// ключ КАСКАДНЫЙ, поэтому той же гонке упереться не во что — привязка, заведённая между
+// проверкой и удалением, погибла бы в тот же миг, как появилась, и никто бы этого не заметил.
+// Пишущие транзакции стора идут в SERIALIZABLE, поэтому чтение внутри транзакции реально
+// запирает диапазон, а не просто сужает окно.
+//
+// СТИЛИ НЕ ЗАПРЕЩАЮТ УДАЛЕНИЕ, НО СЧИТАЮТСЯ И ВОЗВРАЩАЮТСЯ. Отказ здесь был бы тупиком: число
+// привязанных стилей на экране тем не показано вовсе, и человек упёрся бы в «нельзя» без
+// единого способа увидеть, во что именно. А молчание — это ровно тот дефект, ради которого
+// понижение проекта возвращает ClearedRoles/ClearedStyles: «убрал пустую съёмку с глаз» и «у
+// восьми вещей пропал ответ, каким файлом их сделали» обязаны быть одним и тем же событием на
+// экране, а не двумя, между которыми месяц.
+func (s *Store) DeleteTopic(ctx context.Context, id int) (int, error) {
 	v, err := s.viewer(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	params := map[string]any{"id": id}
-	used, err := storeutil.QueryCountNamed(ctx, s.DB, `
-		SELECT COUNT(*) FROM library_file_topic lft
-		JOIN library_file lf ON lf.id = lft.file_id
-		WHERE lft.topic_id = :id AND `+v.Where("lf", params), params)
+	var unlinkedStyles int
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		params := map[string]any{"id": id}
+		used, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
+			SELECT COUNT(*) FROM library_file_topic lft
+			JOIN library_file lf ON lf.id = lft.file_id
+			WHERE lft.topic_id = :id AND `+v.Where("lf", params), params)
+		if err != nil {
+			return fmt.Errorf("failed to count files in topic: %w", err)
+		}
+		if used > 0 {
+			return entity.NewErrFileTopicInUse(used)
+		}
+		// Считаем ДО удаления темы: каскад унесёт строки вместе с ней, и после DELETE считать
+		// будет нечего. Число ТОЧНОЕ, без предиката видимости, — стиль не файл библиотеки, он
+		// живёт под собственным RBAC секции techcards.
+		styles, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM file_topic_tech_card WHERE topic_id = :id`,
+			map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to count styles linked to a topic: %w", err)
+		}
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM file_topic WHERE id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("can't delete file topic: %w", err)
+		}
+		unlinkedStyles = styles
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to count files in topic: %w", err)
+		return 0, err // ErrFileTopicInUse и отказ внешнего ключа доезжают нетронутыми
 	}
-	if used > 0 {
-		return entity.NewErrFileTopicInUse(used)
-	}
-	if err := storeutil.ExecNamed(ctx, s.DB,
-		`DELETE FROM file_topic WHERE id = :id`, map[string]any{"id": id}); err != nil {
-		return fmt.Errorf("can't delete file topic: %w", err)
-	}
-	return nil
+	return unlinkedStyles, nil
 }
 
 // MergeTopics folds source into target and deletes source, returning how many
@@ -673,6 +704,19 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 			return fmt.Errorf("failed to move file topic links: %w", err)
 		}
 		moved = visibleMoved
+		// ПРИВЯЗКИ СТИЛЕЙ ПЕРЕЕЗЖАЮТ ТОЖЕ (0321), И БЕЗ ЭТОЙ СТРОКИ ОНИ ИСЧЕЗЛИ БЫ МОЛЧА.
+		// Внешний ключ file_topic_tech_card.topic_id стоит с ON DELETE CASCADE, поэтому
+		// DELETE темы-источника ниже унёс бы её связи со стилями БЕЗ единого отказа — и
+		// «две съёмки оказались одной» стёрло бы ответ на «каким файлом сделана эта вещь»
+		// у всех вещей исходного проекта. Столкновение (стиль уже привязан к цели) гасит
+		// INSERT IGNORE: связь — голый факт без свойств, поэтому какая из двух строк уцелеет,
+		// не наблюдаемо ничем, кроме created_at.
+		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+			INSERT IGNORE INTO file_topic_tech_card (topic_id, tech_card_id)
+			SELECT :target, ftc.tech_card_id FROM file_topic_tech_card ftc WHERE ftc.topic_id = :source`,
+			map[string]any{"source": sourceID, "target": targetID}); err != nil {
+			return fmt.Errorf("failed to move project style links: %w", err)
+		}
 		// Связи источника снимаем ДО удаления самой темы: внешний ключ на тему
 		// стоит без каскада (RESTRICT), иначе DELETE упал бы о собственные связи.
 		if err := storeutil.ExecNamed(ctx, rep.DB(),

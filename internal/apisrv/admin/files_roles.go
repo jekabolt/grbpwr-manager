@@ -47,7 +47,7 @@ func (s *Server) UpdateFileTopicMeta(ctx context.Context, req *pb_admin.UpdateFi
 	if startsAt.Valid && endsAt.Valid && endsAt.Time.Before(startsAt.Time) {
 		return nil, status.Error(codes.InvalidArgument, "ends_at cannot be earlier than starts_at")
 	}
-	cleared, err := s.repo.Files().UpdateTopicMeta(ctx, entity.FileTopicMetaUpdate{
+	res, err := s.repo.Files().UpdateTopicMeta(ctx, entity.FileTopicMetaUpdate{
 		TopicId:  int(req.TopicId),
 		Kind:     kind,
 		StartsAt: startsAt,
@@ -61,7 +61,14 @@ func (s *Server) UpdateFileTopicMeta(ctx context.Context, req *pb_admin.UpdateFi
 		slog.Default().ErrorContext(ctx, "can't update file topic meta", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't update topic")
 	}
-	return &pb_admin.UpdateFileTopicMetaResponse{ClearedRoles: int32(cleared)}, nil
+	// ДВА ЧИСЛА, ПОТОМУ ЧТО ПРОЕКТНЫХ СВОЙСТВ У ТЕМЫ ДВА: роли на строках связи (0320) и
+	// привязанные стили (0321). Понижение снимает оба, и молчание о втором стоило бы дороже:
+	// карточка вещи потеряла бы ответ на «каким файлом меня сделали» в тот день, когда кто-то
+	// переключил тип темы, и связать одно с другим было бы нечем.
+	return &pb_admin.UpdateFileTopicMetaResponse{
+		ClearedRoles:  int32(res.ClearedRoles),
+		ClearedStyles: int32(res.ClearedStyles),
+	}, nil
 }
 
 // ListFileRoles returns the closed role vocabulary with cross-project counts.

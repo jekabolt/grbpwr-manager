@@ -339,11 +339,11 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		setRole(t, one, project, picked)
 		setRole(t, two, project, reference)
 
-		cleared, err := s.Files().UpdateTopicMeta(admin, entity.FileTopicMetaUpdate{
+		res, err := s.Files().UpdateTopicMeta(admin, entity.FileTopicMetaUpdate{
 			TopicId: project, Kind: entity.FileTopicKindPlain,
 		})
 		require.NoError(t, err)
-		require.Equal(t, 2, cleared, "понижение обязано СКАЗАТЬ, сколько ролей оно сняло")
+		require.Equal(t, 2, res.ClearedRoles, "понижение обязано СКАЗАТЬ, сколько ролей оно сняло")
 
 		left, err := storeScalarInt(ctx,
 			`SELECT COUNT(*) FROM library_file_topic WHERE topic_id = ? AND role_id IS NOT NULL`, project)

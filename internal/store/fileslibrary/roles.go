@@ -262,29 +262,37 @@ func (s *Store) SetFileRoles(ctx context.Context, fileIDs []int, projectTopicID,
 	return updated, nil
 }
 
-// UpdateTopicMeta REPLACES a topic's kind, dates and archive flag, returning how
-// many VISIBLE link rows lost their role because the topic stopped being a
-// project.
+// UpdateTopicMeta REPLACES a topic's kind, dates and archive flag, returning what
+// the demotion took away: how many VISIBLE link rows lost their role, and how many
+// styles lost their link to the project.
 //
-// ПОНИЖЕНИЕ ПРОЕКТА ОБНУЛЯЕТ РОЛИ В ТОЙ ЖЕ ТРАНЗАКЦИИ И ГОВОРИТ, СКОЛЬКО СНЯЛО. Оставить их
-// значило бы завести строки, чья роль указывает в тему, проектом не являющуюся, — состояние,
-// которого стор больше нигде не допускает. Оставить молча — ещё хуже: обратное повышение
-// воскресило бы разметку, которой никто не ставил.
+// ПОНИЖЕНИЕ ПРОЕКТА СНИМАЕТ ЕГО ПРОЕКТНЫЕ СВОЙСТВА В ТОЙ ЖЕ ТРАНЗАКЦИИ И ГОВОРИТ, СКОЛЬКО СНЯЛО.
+// Оставить роли значило бы завести строки, чья роль указывает в тему, проектом не являющуюся, —
+// состояние, которого стор больше нигде не допускает. Оставить привязки стилей — то же самое
+// одним уровнем выше: связь «проект ↔ стиль» существует только у проекта, и связь, висящая на
+// ярлыке, невыразима ни в одном экране. Снять молча — хуже обоих вариантов: обратное повышение
+// воскресило бы разметку, которой никто не ставил, а карточка вещи потеряла бы ответ на «каким
+// файлом меня сделали» в день, когда кто-то переключил тип темы.
 //
-// Число считается под предикатом, а обнуляется всё: та же асимметрия, что у слияний, и по той же
-// причине.
-func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (int, error) {
+// ДВА ЧИСЛА СЧИТАЮТСЯ ПО-РАЗНОМУ, И ЭТО НЕ НЕБРЕЖНОСТЬ. Роли считаются ПОД предикатом видимости
+// (а обнуляются все) — та же асимметрия, что у слияний: число читает человек, и «снято 7» в
+// проекте, где ему видно два файла, само рассказало бы, что от него что-то закрыто. Привязки
+// стилей считаются ТОЧНО: стиль — не файл библиотеки, он живёт под собственным RBAC секции
+// techcards, и прятать его от того, кто и так правит проект, значило бы придумать границу,
+// которой в системе нет.
+func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (entity.FileTopicMetaResult, error) {
+	var res entity.FileTopicMetaResult
 	if m.TopicId <= 0 {
-		return 0, sql.ErrNoRows
+		return res, sql.ErrNoRows
 	}
 	if m.Kind != entity.FileTopicKindPlain && m.Kind != entity.FileTopicKindProject {
-		return 0, fmt.Errorf("%w: %q", entity.ErrFileTopicKindUnknown, m.Kind)
+		return res, fmt.Errorf("%w: %q", entity.ErrFileTopicKindUnknown, m.Kind)
 	}
 	v, err := s.viewer(ctx)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
-	var cleared int
+	var cleared, unlinked int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
 			`SELECT COUNT(*) FROM file_topic WHERE id = :id`, map[string]any{"id": m.TopicId})
@@ -310,6 +318,17 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 				return fmt.Errorf("failed to clear roles of a demoted project: %w", err)
 			}
 			cleared = visible
+			// ПРИВЯЗКИ СТИЛЕЙ УХОДЯТ ВМЕСТЕ С ТИПОМ (0321). Число снимается из RowsAffected
+			// самого DELETE, а не отдельным COUNT перед ним: между двумя запросами в одной
+			// SERIALIZABLE-транзакции разойтись они не могут, а лишний запрос — это лишнее
+			// место, где условие можно однажды поправить только в одном из двух.
+			rows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+				`DELETE FROM file_topic_tech_card WHERE topic_id = :id`,
+				map[string]any{"id": m.TopicId})
+			if err != nil {
+				return fmt.Errorf("failed to unlink styles of a demoted project: %w", err)
+			}
+			unlinked = int(rows)
 		}
 		// COALESCE держит МОМЕНТ архивации по тому же доводу, что у роли: правка дат уже
 		// заархивированного проекта не имеет права переписывать «когда его убрали».
@@ -333,7 +352,9 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 		return nil
 	})
 	if err != nil {
-		return 0, err // sql.ErrNoRows passes through untouched
+		return res, err // sql.ErrNoRows passes through untouched
 	}
-	return cleared, nil
+	res.ClearedRoles = cleared
+	res.ClearedStyles = unlinked
+	return res, nil
 }

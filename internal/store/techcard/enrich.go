@@ -203,6 +203,44 @@ func (s *Store) mediaByTechCardIds(ctx context.Context, ids []int) (map[int][]en
 	return items, full, nil
 }
 
+// PreviewURLsByTechCardIds resolves the SAME list thumbnail ListTechCards puts on a card, for an
+// explicit set of styles.
+//
+// ЭКСПОРТИРОВАНО РАДИ ОДНОГО ЧУЖОГО ВЫЗЫВАЮЩЕГО — списка стилей проекта в библиотеке файлов
+// (0321), — и это дешевле любой альтернативы. Правило выбора картинки трёхвходовое (стадия ×
+// категория медиа × вид), живёт в pickTechCardPreviewURL и уже пережило одну правку; вторая его
+// реализация в пакете fileslibrary разошлась бы с первой МОЛЧА, и на экране это выглядело бы как
+// «у одной и той же вещи в двух местах разные картинки» — дефект, который ищут в клиенте, а лежит
+// он в SQL.
+//
+// Одним пакетным запросом на всю страницу, не N+1; стадия берётся отдельным чтением, потому что
+// правило от неё зависит, а в tech_card_media её нет. Стиль без медиа просто отсутствует в карте —
+// вызывающий рисует табличку с артикулом, и это законный вид плитки, а не ошибка.
+func (s *Store) PreviewURLsByTechCardIds(ctx context.Context, ids []int) (map[int]string, error) {
+	out := make(map[int]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	stages, err := storeutil.QueryListNamed[struct {
+		Id    int                  `db:"id"`
+		Stage entity.TechCardStage `db:"stage"`
+	}](ctx, s.DB,
+		`SELECT id, stage FROM tech_card WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load tech card stages for previews: %w", err)
+	}
+	_, full, err := s.mediaByTechCardIds(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, st := range stages {
+		if url := pickTechCardPreviewURL(st.Stage, full[st.Id]); url != "" {
+			out[st.Id] = url
+		}
+	}
+	return out, nil
+}
+
 type techCardCalloutRow struct {
 	TechCardID int `db:"tech_card_id"`
 	entity.TechCardCallout
