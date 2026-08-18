@@ -1252,14 +1252,18 @@ service AdminService {
     };
   }
 
-  // ListFileRoles returns the role vocabulary with CROSS-PROJECT counts, each
-  // counted under the visibility predicate like every other count here.
+  // ListFileRoles returns ONE PROJECT's role vocabulary (project_topic_id = N),
+  // each role counted under the visibility predicate like every other count here.
+  // With 0 it returns every role tagged with its owner — an index for resolving an
+  // old link, not a vocabulary to pick from.
   rpc ListFileRoles(ListFileRolesRequest) returns (ListFileRolesResponse) {
     option (google.api.http) = {get: "/api/admin/files/roles/list"};
   }
 
-  // UpsertFileRole creates or edits one role. THE ONLY path that creates one —
-  // that is what «closed vocabulary» means mechanically rather than by discipline.
+  // UpsertFileRole creates or edits one role IN A PROJECT. THE ONLY path that
+  // creates one — that is what «closed vocabulary» means mechanically rather than
+  // by discipline. Creating requires a project topic; editing never moves the role
+  // to another one.
   rpc UpsertFileRole(UpsertFileRoleRequest) returns (UpsertFileRoleResponse) {
     option (google.api.http) = {
       post: "/api/admin/files/roles/upsert"
@@ -1269,7 +1273,9 @@ service AdminService {
 
   // MergeFileRoles folds one role into another and deletes the source. The
   // standard repair for a vocabulary that drifted; simpler than merging topics,
-  // because a role is a column and cannot collide with itself on a row.
+  // because a role is a column and cannot collide with itself on a row. Both roles
+  // must belong to the SAME project — the request does not carry it, the server
+  // reads it off the roles themselves.
   rpc MergeFileRoles(MergeFileRolesRequest) returns (MergeFileRolesResponse) {
     option (google.api.http) = {
       post: "/api/admin/files/roles/merge"
@@ -5253,13 +5259,16 @@ message LibraryFileRole {
   string role_name = 4;
 }
 
-// FileRole is one entry of the CLOSED role vocabulary.
+// FileRole is one entry of the closed role vocabulary OF ONE PROJECT.
 //
-// Closed on purpose, and the reason is the cross-project question: «все исходники
-// по всем съёмкам» only means anything while «исходники» is the SAME thing
-// everywhere. Free text diverges — not «might», but reliably: исходники /
-// исходные / raw / сырцы — and the filter starts quietly returning half the
-// truth. Autocomplete does not help: it suggests, it does not prevent.
+// The vocabulary is closed (only UpsertFileRole creates a role) and, since the
+// per-project wave, it BELONGS TO A PROJECT: «исходники» in a shoot and
+// «исходники» in a lookbook are two different rows that merely spell the same.
+// The cross-project question «все исходники по всем съёмкам» therefore stops
+// being a question about one entity and becomes a SEARCH BY WORD — the search
+// input already matches role names — which finds every project where the role is
+// NAMED so, and stays silent about the one where it was renamed. That price is
+// the direct cost of «у каждого проекта свои», and it is accepted.
 message FileRole {
   int32 id = 1;
   string name = 2;
@@ -5267,10 +5276,18 @@ message FileRole {
   // fall back to the name.
   int32 sort_order = 3;
   bool archived = 4;
-  // files_count is the CROSS-PROJECT count: how many files carry this role in any
-  // project. Counted under the visibility predicate, like every other count in
-  // this library, so different people legitimately see different numbers.
+  // files_count is how many files carry this role IN ITS PROJECT — the role
+  // belongs to one project, so «in this role» and «in this role in this project»
+  // are the same question. Counted under the visibility predicate, like every
+  // other count in this library, so different people legitimately see different
+  // numbers.
   int32 files_count = 5;
+  // project_topic_id is the OWNER. 0 only ever appears on the dead rows the
+  // migration left behind (a role that existed but was never used anywhere): they
+  // are reachable by no screen and assignable by no write — the composite foreign
+  // key (topic_id, role_id) -> file_role (project_topic_id, id) makes a link row
+  // pointing at an ownerless role inexpressible.
+  int32 project_topic_id = 6;
 }
 
 message GetLibraryFileRequest {
@@ -5558,6 +5575,15 @@ message ListFileRolesRequest {
   // include_archived — same split as the topics rail: the topics screen shows the
   // archive, the chips and the pickers do not.
   bool include_archived = 1;
+  // project_topic_id = N returns the vocabulary OF THAT PROJECT — the only form a
+  // picker or a chip row may use, because a role of another project is refused by
+  // every write anyway.
+  //
+  // 0 returns every role, each tagged with its owner, and it is an INDEX FOR
+  // RESOLUTION rather than a vocabulary: the topics screen lists the projects'
+  // dictionaries side by side, and an old `?frole=N` link uses it to find which
+  // project the role lives in and put the project into the address.
+  int32 project_topic_id = 2;
 }
 
 message ListFileRolesResponse {
@@ -5574,6 +5600,16 @@ message UpsertFileRoleRequest {
   string name = 2;
   int32 sort_order = 3;
   bool archived = 4;
+  // project_topic_id is REQUIRED when creating and IMMUTABLE when editing: a role
+  // does not travel between projects, ever. Its link rows live in its project, so
+  // a move would leave them pointing at a foreign role — the one state the
+  // invariant forbids. On an edit, 0 means «leave the owner alone» (that is what
+  // a client which predates the owner sends), and a DIFFERENT project is refused
+  // rather than silently applied.
+  //
+  // Creating with a topic that is a plain label is refused too: «это исходник
+  // ничего» does not mean anything, exactly as when setting the role.
+  int32 project_topic_id = 5;
 }
 
 message UpsertFileRoleResponse {
@@ -5616,6 +5652,10 @@ message SetLibraryFileRolesRequest {
   int32 project_topic_id = 2;
   // role_id = 0 clears the role. A role that is archived can still be CLEARED but
   // not newly assigned — otherwise the archive would be a suggestion.
+  //
+  // The role must belong to THIS project. The request does not say so twice: the
+  // owner is a property of the role, and the server compares it itself, which is
+  // why this message did not change when roles became per-project.
   int32 role_id = 3;
 }
 

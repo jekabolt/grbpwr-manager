@@ -706,10 +706,39 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 		if err != nil {
 			return fmt.Errorf("failed to count visible files moved between topics: %w", err)
 		}
+		// СЛОВАРЬ ИСТОЧНИКА ДОЕЗЖАЕТ В ЦЕЛЬ ПО ИМЕНАМ (0323). С ролями, принадлежащими проекту,
+		// это ОБЯЗАТЕЛЬНЫЙ шаг, а не удобство: id роли источника в целевом проекте не значит
+		// ничего, а строки словаря источника уйдут каскадом вместе с ним самим.
+		//
+		// Столкновение имён гасит парный UNIQUE (project_topic_id, name): побеждает СВОЯ роль
+		// цели — она старше приезжей, и это тот же выбор, что уже сделан ниже для разметки. Роль,
+		// которой в цели не было, приезжает со своим порядком и архивностью.
+		//
+		// Только для ПРОЕКТОВ: у ярлыка словаря нет по построению, а спящий словарь понижённой
+		// темы — её собственная история, и тащить его в чужую тему значило бы воскрешать разбивку,
+		// которой никто не ставил.
+		if found[0].Kind == entity.FileTopicKindProject {
+			if err := storeutil.ExecNamed(ctx, rep.DB(), `
+				INSERT IGNORE INTO file_role (project_topic_id, name, sort_order, archived_at)
+				SELECT :target, fr.name, fr.sort_order, fr.archived_at
+				FROM file_role fr WHERE fr.project_topic_id = :source`,
+				map[string]any{"source": sourceID, "target": targetID}); err != nil {
+				return fmt.Errorf("failed to move project role vocabulary: %w", err)
+			}
+		}
 		// РОЛЬ ЕДЕТ ТРЕТЬЕЙ КОЛОНКОЙ, И БЕЗ НЕЁ СЛИЯНИЕ ПРОЕКТОВ ТЕРЯЕТ ВСЮ РАЗМЕТКУ. «Две
 		// съёмки оказались одной» — штатный сценарий; проекция без role_id перевесила бы файлы
 		// на целевой проект, обнулив то, чем они в нём являются, и восстановить это было бы
 		// нечем: исходный проект в той же транзакции перестаёт существовать.
+		//
+		// ЕДЕТ ИМЕННО ПЕРЕСЧИТАННЫЙ id, А НЕ ИСХОДНЫЙ (0323). Роль принадлежит проекту, поэтому
+		// role_id источника, поставленный строке ЦЕЛЕВОГО проекта, — это чужая роль на чужой
+		// строке; составной внешний ключ отвечает на это 1452, то есть слияние двух съёмок просто
+		// перестало бы работать. Соответствие ищется ПО ИМЕНИ в словаре цели, дозаполненном
+		// шагом выше, — значит для каждой роли источника оно существует по построению.
+		//
+		// Оба соединения ВНЕШНИЕ: строка без роли (приёмник проекта) обязана переехать так же
+		// свободно, как размеченная, и INNER JOIN тихо выбросил бы её из проекции.
 		//
 		// Столкновение (файл уже лежал в цели) гасит INSERT IGNORE: побеждает роль, которая
 		// СТОЯЛА В ЦЕЛЕВОМ проекте. Это единственный разумный выбор — целевой проект переживает
@@ -717,7 +746,11 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 		// предупредить в диалоге, рядом с уже стоящим «обратно это не разбирается».
 		if _, err := storeutil.ExecNamedRows(ctx, rep.DB(), `
 			INSERT IGNORE INTO library_file_topic (file_id, topic_id, role_id)
-			SELECT lft.file_id, :target, lft.role_id FROM library_file_topic lft WHERE lft.topic_id = :source`,
+			SELECT lft.file_id, :target, mine.id
+			FROM library_file_topic lft
+			LEFT JOIN file_role src ON src.id = lft.role_id
+			LEFT JOIN file_role mine ON mine.project_topic_id = :target AND mine.name = src.name
+			WHERE lft.topic_id = :source`,
 			map[string]any{"source": sourceID, "target": targetID}); err != nil {
 			return fmt.Errorf("failed to move file topic links: %w", err)
 		}

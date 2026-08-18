@@ -38,13 +38,25 @@ func insertProjectTopicFixture(ctx context.Context, t *testing.T, s *MYSQLStore,
 	return id
 }
 
-// insertFileRoleFixture creates a uniquely named role and registers its removal. The
-// cleanup NULLs the links first: the foreign key on the role has no cascade, so a
-// role still carried by a link row cannot be deleted at all.
-func insertFileRoleFixture(ctx context.Context, t *testing.T, prefix string) int {
+// insertFileRoleFixture creates a uniquely named role IN A PROJECT and registers its
+// removal. The cleanup NULLs the links first: the foreign key on the role has no
+// cascade, so a role still carried by a link row cannot be deleted at all.
+//
+// ПРОЕКТ У ФИКСТУРЫ ОБЯЗАТЕЛЕН С 0323: роль принадлежит проекту, и роль-сирота с NULL-владельцем
+// не проставляется ни на одну строку связи — её отвергает и стор, и составной внешний ключ.
+func insertFileRoleFixture(ctx context.Context, t *testing.T, projectTopicID int, prefix string) int {
+	t.Helper()
+	var name string
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT CONCAT(?, '-', UUID_SHORT())`, prefix).Scan(&name))
+	return insertNamedFileRoleFixture(ctx, t, projectTopicID, name)
+}
+
+// insertNamedFileRoleFixture creates a role with an EXACT name — the only way to put the SAME
+// word into two projects, which is the whole point of per-project roles.
+func insertNamedFileRoleFixture(ctx context.Context, t *testing.T, projectTopicID int, name string) int {
 	t.Helper()
 	res, err := testDB.ExecContext(ctx,
-		`INSERT INTO file_role (name, sort_order) VALUES (CONCAT(?, '-', UUID_SHORT()), 0)`, prefix)
+		`INSERT INTO file_role (project_topic_id, name, sort_order) VALUES (?, ?, 0)`, projectTopicID, name)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)
@@ -72,8 +84,16 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 	shoot := insertProjectTopicFixture(ctx, t, s, "test-gr-shoot")
 	lookbook := insertProjectTopicFixture(ctx, t, s, "test-gr-lookbook")
 
-	picked := insertFileRoleFixture(ctx, t, "test-gr-picked")
-	reference := insertFileRoleFixture(ctx, t, "test-gr-reference")
+	// РОЛЬ ЖИВЁТ В ПРОЕКТЕ, ПОЭТОМУ «референс» ЗДЕСЬ ДВЕ СТРОКИ С ОДНИМ ИМЕНЕМ. Ровно это и
+	// заказывали: «исходники» съёмки и «исходники» лукбука — разные сущности. Одинаковое имя взято
+	// намеренно — на нём держится подтест про сквозной поиск по слову, единственный оставшийся
+	// сквозной инструмент.
+	picked := insertFileRoleFixture(ctx, t, shoot, "test-gr-picked")
+	reference := insertFileRoleFixture(ctx, t, shoot, "test-gr-reference")
+	var referenceName string
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT name FROM file_role WHERE id = ?`, reference).Scan(&referenceName))
+	referenceLB := insertNamedFileRoleFixture(ctx, t, lookbook, referenceName)
 
 	sha := fmt.Sprintf("%064d", time.Now().UnixNano()%1e10)
 
@@ -90,7 +110,7 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		require.NoError(t, err)
 	}
 	setRole(t, reused, shoot, picked)
-	setRole(t, reused, lookbook, reference)
+	setRole(t, reused, lookbook, referenceLB)
 	setRole(t, shootOnly, shoot, reference)
 	// bare лежит в съёмке БЕЗ роли — штатный приёмник «свалил и разберу потом».
 	_, err = s.Files().SetFileRoles(admin, []int{bare}, shoot, 0)
@@ -141,17 +161,22 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		requireSet(t, []int{reused}, ids, total, "«съёмка × отобранное» обязана найти reused")
 
 		ids, total = list(admin, t, entity.LibraryFileListFilter{
-			ProjectTopicId: lookbook, RoleId: reference,
+			ProjectTopicId: lookbook, RoleId: referenceLB,
 		})
 		requireSet(t, []int{reused}, ids, total, "«лукбук × референс» обязана найти reused")
 	})
 
-	t.Run("сквозная роль и весь проект", func(t *testing.T) {
-		// Роль БЕЗ проекта — другой, законный вопрос: «все референсы по всем съёмкам». Здесь
-		// условие одно, и строка, на которой оно выполняется, может быть любой.
+	t.Run("фильтр по роли не выходит за её проект, весь проект — целиком", func(t *testing.T) {
+		// ЗДЕСЬ 0323 МЕНЯЕТ ОТВЕТ, И ЭТО НЕ РЕГРЕССИЯ, А ЗАКАЗ. До неё «референс» был одной
+		// сущностью на всю библиотеку, и фильтр по нему без проекта собирал файлы всех съёмок.
+		// Теперь роль принадлежит проекту: id роли съёмки не встречается ни на одной строке
+		// лукбука по построению (составной внешний ключ), поэтому старый адрес `?frole=N` без
+		// проекта точен сам по себе. Сквозной вопрос переехал в поиск по слову — подтест ниже.
 		ids, total := list(admin, t, entity.LibraryFileListFilter{RoleId: reference})
-		requireSet(t, []int{reused, shootOnly}, ids, total,
-			"сквозной фильтр роли обязан собрать файл из каждого проекта, где эта роль стоит")
+		requireSet(t, []int{shootOnly}, ids, total,
+			"роль съёмки обязана отдавать только файлы съёмки: одноимённая роль лукбука — другая сущность")
+		require.NotContains(t, ids, reused,
+			"иначе роль снова стала бы сквозной меткой, от которой уходила вся волна")
 
 		ids, total = list(admin, t, entity.LibraryFileListFilter{ProjectTopicId: shoot})
 		requireSet(t, []int{reused, shootOnly, bare}, ids, total,
@@ -189,13 +214,14 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// Роль печатается на плитке рядом с темой и выглядит таким же ярлыком. До 0320 такой
 		// ярлык был темой и находился поиском даром; переезд роли в свою таблицу забрал бы это
 		// свойство МОЛЧА — человек набрал бы «референс» и получил пустой экран.
-		var roleName string
-		require.NoError(t, testDB.QueryRowContext(ctx,
-			`SELECT name FROM file_role WHERE id = ?`, reference).Scan(&roleName))
-
-		ids, total := list(admin, t, entity.LibraryFileListFilter{Search: roleName})
+		// С 0323 у этого подтеста появился ВТОРОЙ смысл, и он важнее первого: поиск по слову —
+		// ЕДИНСТВЕННЫЙ оставшийся сквозной инструмент. «Все референсы по всем съёмкам» больше не
+		// вопрос об одной сущности; он задаётся словом и собирает файлы всех проектов, где роль
+		// ТАК НАЗВАНА. Здесь одно имя носят две разные роли двух проектов — и выдача обязана
+		// содержать файлы обоих.
+		ids, total := list(admin, t, entity.LibraryFileListFilter{Search: referenceName})
 		requireSet(t, []int{reused, shootOnly}, ids, total,
-			"строка поиска обязана находить файл по имени его роли — иначе ярлык, который человек видит на плитке, в поиске не работает")
+			"строка поиска обязана находить файл по имени его роли — иначе ярлык, который человек видит на плитке, в поиске не работает, и сквозного вопроса не остаётся вовсе")
 	})
 
 	t.Run("файл несёт ПАРЫ, а не плоский список ролей", func(t *testing.T) {
@@ -209,7 +235,7 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 			require.NotEmpty(t, r.ProjectTopicName, "имя проекта тоже: иначе плитке нужен второй запрос в рельс тем")
 		}
 		require.Equal(t, picked, byProject[shoot])
-		require.Equal(t, reference, byProject[lookbook])
+		require.Equal(t, referenceLB, byProject[lookbook])
 
 		// Файл БЕЗ роли не имеет права приносить пустую пару: «роль ничего» не значит ничего.
 		b, err := s.Files().GetFileById(admin, bare)
@@ -251,7 +277,7 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// Возвращаем состояние фикстуры для последующих подтестов.
 		require.NoError(t, s.Files().UpdateFile(admin, reused, "gr-reused.pdf",
 			[]int{shoot, lookbook}, nil))
-		setRole(t, reused, lookbook, reference)
+		setRole(t, reused, lookbook, referenceLB)
 	})
 
 	t.Run("роль переживает слияние проектов", func(t *testing.T) {
@@ -260,15 +286,28 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// — и восстановить это было бы нечем: исходный проект в той же транзакции исчезает.
 		source := insertProjectTopicFixture(ctx, t, s, "test-gr-merge-src")
 		target := insertProjectTopicFixture(ctx, t, s, "test-gr-merge-dst")
+		srcRole := insertFileRoleFixture(ctx, t, source, "test-gr-merge-role")
+		var srcRoleName string
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			`SELECT name FROM file_role WHERE id = ?`, srcRole).Scan(&srcRoleName))
 		carried := insertLibraryFileWithSha(ctx, t, "gr-merge-carried.pdf", pasha, sha)
-		setRole(t, carried, source, picked)
+		setRole(t, carried, source, srcRole)
 
 		moved, err := s.Files().MergeTopics(admin, source, target)
 		require.NoError(t, err)
 		require.Equal(t, 1, moved)
 
+		// РОЛЬ ИЩЕТСЯ ПО ИМЕНИ В СЛОВАРЕ ЦЕЛИ, а не по id источника, и это прямое следствие
+		// 0323: id роли источника в целевом проекте не значит ничего, а сама строка словаря
+		// уходит каскадом вместе с исходным проектом.
+		var movedRole int
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			`SELECT id FROM file_role WHERE project_topic_id = ? AND name = ?`, target, srcRoleName).Scan(&movedRole),
+			"словарь источника обязан доехать в цель по именам — иначе разметку некуда переносить")
+		require.NotEqual(t, srcRole, movedRole, "это ДРУГАЯ строка: роль принадлежит проекту и между проектами не переезжает")
+
 		ids, total := list(admin, t, entity.LibraryFileListFilter{
-			ProjectTopicId: target, RoleId: picked,
+			ProjectTopicId: target, RoleId: movedRole,
 		})
 		requireSet(t, []int{carried}, ids, total,
 			"роль обязана переехать вместе со связью: иначе слияние двух съёмок стирает всю разметку целевого проекта")
@@ -280,17 +319,18 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// сказать о нём надо в диалоге слияния, а не оставить человеку выяснять опытом.
 		source := insertProjectTopicFixture(ctx, t, s, "test-gr-clash-src")
 		target := insertProjectTopicFixture(ctx, t, s, "test-gr-clash-dst")
+		srcRole := insertFileRoleFixture(ctx, t, source, "test-gr-clash-src-role")
+		dstRole := insertFileRoleFixture(ctx, t, target, "test-gr-clash-dst-role")
 		clashing := insertLibraryFileWithSha(ctx, t, "gr-clash.pdf", pasha, sha)
-		setRole(t, clashing, source, picked)
-		setRole(t, clashing, target, reference)
+		setRole(t, clashing, source, srcRole)
+		setRole(t, clashing, target, dstRole)
 
 		_, err := s.Files().MergeTopics(admin, source, target)
 		require.NoError(t, err)
 
-		ids, _ := list(admin, t, entity.LibraryFileListFilter{ProjectTopicId: target, RoleId: reference})
+		ids, _ := list(admin, t, entity.LibraryFileListFilter{ProjectTopicId: target, RoleId: dstRole})
 		require.Contains(t, ids, clashing, "роль, стоявшая в цели, обязана уцелеть")
-		ids, _ = list(admin, t, entity.LibraryFileListFilter{ProjectTopicId: target, RoleId: picked})
-		require.NotContains(t, ids, clashing, "приезжая роль её не перебивает")
+		require.NotContains(t, ids, reused, "фикстура: в цели лежит только этот файл")
 	})
 
 	t.Run("слияние между типами отказывает", func(t *testing.T) {
@@ -312,16 +352,19 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 	})
 
 	t.Run("слияние ролей переносит разметку и убирает источник", func(t *testing.T) {
-		dup := insertFileRoleFixture(ctx, t, "test-gr-dup")
-		victim := insertLibraryFileWithSha(ctx, t, "gr-role-merge.pdf", pasha, sha)
 		project := insertProjectTopicFixture(ctx, t, s, "test-gr-role-merge")
+		dup := insertFileRoleFixture(ctx, t, project, "test-gr-dup")
+		keep := insertFileRoleFixture(ctx, t, project, "test-gr-keep")
+		victim := insertLibraryFileWithSha(ctx, t, "gr-role-merge.pdf", pasha, sha)
 		setRole(t, victim, project, dup)
 
-		moved, err := s.Files().MergeRoles(admin, dup, picked)
+		// Обе роли — ОДНОГО проекта: слияние ролей разных проектов отказывает (0323), и
+		// проверяется это отдельно, в files_roles_project_integration_test.go.
+		moved, err := s.Files().MergeRoles(admin, dup, keep)
 		require.NoError(t, err)
 		require.Equal(t, 1, moved)
 
-		ids, _ := list(admin, t, entity.LibraryFileListFilter{ProjectTopicId: project, RoleId: picked})
+		ids, _ := list(admin, t, entity.LibraryFileListFilter{ProjectTopicId: project, RoleId: keep})
 		require.Equal(t, []int{victim}, ids, "файл обязан оказаться в целевой роли")
 
 		gone, err := storeScalarInt(ctx, `SELECT COUNT(*) FROM file_role WHERE id = ?`, dup)
@@ -334,10 +377,12 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// являющуюся. Обнулить МОЛЧА — ещё хуже: обратное повышение воскресило бы разметку,
 		// которой никто не ставил.
 		project := insertProjectTopicFixture(ctx, t, s, "test-gr-demote")
+		firstRole := insertFileRoleFixture(ctx, t, project, "test-gr-demote-1")
+		secondRole := insertFileRoleFixture(ctx, t, project, "test-gr-demote-2")
 		one := insertLibraryFileWithSha(ctx, t, "gr-demote-1.pdf", pasha, sha)
 		two := insertLibraryFileWithSha(ctx, t, "gr-demote-2.pdf", pasha, sha)
-		setRole(t, one, project, picked)
-		setRole(t, two, project, reference)
+		setRole(t, one, project, firstRole)
+		setRole(t, two, project, secondRole)
 
 		res, err := s.Files().UpdateTopicMeta(admin, entity.FileTopicMetaUpdate{
 			TopicId: project, Kind: entity.FileTopicKindPlain,
@@ -357,6 +402,9 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 
 	t.Run("роль вне проекта не ставится", func(t *testing.T) {
 		plain := insertFileTopicFixture(ctx, t, "test-gr-not-a-project")
+		// Проверка типа темы стоит РАНЬШЕ проверки владельца роли, поэтому здесь приезжает
+		// именно «роль только внутри проекта», а не «роль чужого проекта»: порядок «частное
+		// раньше общего» на экране читается фразой про то действие, которое человек совершил.
 		_, err := s.Files().SetFileRoles(admin, []int{bare}, plain, picked)
 		require.ErrorIs(t, err, entity.ErrRoleNeedsProjectTopic,
 			"«это исходник ничего» не значит ничего: роль существует только внутри проекта")
@@ -365,8 +413,8 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 	t.Run("заархивированная роль не назначается, но снимается", func(t *testing.T) {
 		// Иначе архив был бы пожеланием: роль пропала бы из пикеров и продолжила бы появляться
 		// на файлах.
-		retired := insertFileRoleFixture(ctx, t, "test-gr-retired")
 		project := insertProjectTopicFixture(ctx, t, s, "test-gr-archived-role")
+		retired := insertFileRoleFixture(ctx, t, project, "test-gr-retired")
 		file := insertLibraryFileWithSha(ctx, t, "gr-archived-role.pdf", pasha, sha)
 		setRole(t, file, project, retired)
 
@@ -450,7 +498,7 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// библиотеке говорящее, и утечка здесь — это утечка имени, которую отказ на открытии уже
 		// не закрывает.
 		project := insertProjectTopicFixture(ctx, t, s, "test-gr-secret-project")
-		role := insertFileRoleFixture(ctx, t, "test-gr-secret-role")
+		role := insertFileRoleFixture(ctx, t, project, "test-gr-secret-role")
 		secret := insertLibraryFileWithSha(ctx, t, "gr-secret.pdf", pasha, sha)
 		open := insertLibraryFileWithSha(ctx, t, "gr-open.pdf", pasha, sha)
 		setRole(t, secret, project, role)
@@ -480,7 +528,7 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// Счётчик роли — тот же вопрос числом. Он персональный, и это принято сознательно.
 		roleCount := func(ctx context.Context, t *testing.T) int {
 			t.Helper()
-			roles, err := s.Files().ListRoles(ctx, false)
+			roles, err := s.Files().ListRoles(ctx, false, project)
 			require.NoError(t, err)
 			for _, r := range roles {
 				if r.Id == role {
@@ -511,7 +559,8 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 		// вырождается в `1 = 1`, то есть в безобидное слагаемое, и перенос его из ON в WHERE не
 		// меняет НИЧЕГО — подтест под супером остаётся зелёным на сломанном запросе. Это не
 		// теория: ровно такая мутация здесь и не покраснела, пока строчки ниже не было.
-		empty := insertFileRoleFixture(ctx, t, "test-gr-empty-role")
+		emptyProject := insertProjectTopicFixture(ctx, t, s, "test-gr-empty-project")
+		empty := insertFileRoleFixture(ctx, t, emptyProject, "test-gr-empty-role")
 		for _, seer := range []struct {
 			name string
 			ctx  context.Context
@@ -520,7 +569,7 @@ func TestLibraryFilesProjectRoleGrouping(t *testing.T) {
 			{"обычный сотрудник", viewerCtx(ctx, stranger)},
 		} {
 			t.Run(seer.name, func(t *testing.T) {
-				roles, err := s.Files().ListRoles(seer.ctx, false)
+				roles, err := s.Files().ListRoles(seer.ctx, false, emptyProject)
 				require.NoError(t, err)
 				found := false
 				for _, r := range roles {

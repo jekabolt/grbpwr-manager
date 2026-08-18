@@ -299,7 +299,7 @@ func TestFilesProjectStyleLinks(t *testing.T) {
 		// `1 = 1`, оба числа совпадают, и «починка» второго под предикат не сломала бы ни одного
 		// утверждения.
 		project := insertProjectTopicFixture(ctx, t, s, "test-ps-asym")
-		role := insertFileRoleFixture(ctx, t, "test-ps-asym-role")
+		role := insertFileRoleFixture(ctx, t, project, "test-ps-asym-role")
 		open := insertLibraryFileWithSha(ctx, t, "ps-asym-open.pdf", pasha, sha)
 		hidden := insertLibraryFileWithSha(ctx, t, "ps-asym-hidden.pdf", pasha, sha)
 		_, err := s.Files().SetFileRoles(admin, []int{open, hidden}, project, role)

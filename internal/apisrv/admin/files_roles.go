@@ -77,9 +77,19 @@ func (s *Server) UpdateFileTopicMeta(ctx context.Context, req *pb_admin.UpdateFi
 	}, nil
 }
 
-// ListFileRoles returns the closed role vocabulary with cross-project counts.
+// ListFileRoles returns ONE project's role vocabulary — or, with project_topic_id = 0, every role
+// tagged with its owner.
+//
+// НОЛЬ НЕ ОТКАЗЫВАЕТ, И ЭТО РЕШЕНИЕ ПРО ОКНО СОВМЕСТИМОСТИ, А НЕ ПОБЛАЖКА. Бэкенд уезжает на бету
+// раньше клиента, и клиент, ничего не знающий про владельца, обязан продолжать листать роли и
+// фильтровать по ним; ему же ноль нужен, чтобы разрешить старую ссылку `?frole=N` в проект.
+// Опасности в этом нет: словарь для ВЫБОРА определяется ответом с проектом, а простановку чужой
+// роли сервер отвергает независимо от того, откуда клиент её взял.
 func (s *Server) ListFileRoles(ctx context.Context, req *pb_admin.ListFileRolesRequest) (*pb_admin.ListFileRolesResponse, error) {
-	roles, err := s.repo.Files().ListRoles(ctx, req.GetIncludeArchived())
+	if req.ProjectTopicId < 0 {
+		return nil, status.Error(codes.InvalidArgument, "project topic id must not be negative")
+	}
+	roles, err := s.repo.Files().ListRoles(ctx, req.GetIncludeArchived(), int(req.GetProjectTopicId()))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list file roles", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list roles")
@@ -87,27 +97,47 @@ func (s *Server) ListFileRoles(ctx context.Context, req *pb_admin.ListFileRolesR
 	return &pb_admin.ListFileRolesResponse{Roles: dto.ConvertEntityFileRolesToPb(roles)}, nil
 }
 
-// UpsertFileRole creates or edits one role — THE only path that creates one.
+// UpsertFileRole creates or edits one role IN A PROJECT — THE only path that creates one.
 func (s *Server) UpsertFileRole(ctx context.Context, req *pb_admin.UpsertFileRoleRequest) (*pb_admin.UpsertFileRoleResponse, error) {
 	name, err := dto.ValidateLibraryRoleName(req.Name)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	if req.ProjectTopicId < 0 {
+		return nil, status.Error(codes.InvalidArgument, "project topic id must not be negative")
+	}
 	id, err := s.repo.Files().UpsertRole(ctx, entity.FileRoleUpsert{
-		Id:        int(req.Id),
-		Name:      name,
-		SortOrder: int(req.SortOrder),
-		Archived:  req.Archived,
+		Id:             int(req.Id),
+		ProjectTopicId: int(req.ProjectTopicId),
+		Name:           name,
+		SortOrder:      int(req.SortOrder),
+		Archived:       req.Archived,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			// ДВА РАЗНЫХ ОТСУТСТВИЯ, И РАЗЛИЧАЕТ ИХ ЗАПРОС, А НЕ ОШИБКА. При создании нет
+			// только одного кандидата на пропажу — темы-проекта; при правке — самой роли.
+			// Одна фраза на оба случая отправила бы человека искать не то, что потерялось.
+			if req.Id <= 0 {
+				return nil, status.Error(codes.NotFound, "project topic not found")
+			}
 			return nil, status.Error(codes.NotFound, "role not found")
+		}
+		// РОЛЬ ЗАВОДИТСЯ ТОЛЬКО ВНУТРИ ПРОЕКТА. Это же и есть названное окно несовместимости:
+		// старый клиент, знающий общий словарь, шлёт создание без проекта и получает читаемый
+		// отказ вместо роли-сироты, которую потом не нашёл бы ни один экран.
+		if errors.Is(err, entity.ErrFileRoleNeedsProject) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+		if errors.Is(err, entity.ErrFileRoleProjectImmutable) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		// Совпадение имени — отказ, а не молчаливое схлопывание в существующую роль: словарь
 		// правят руками на одном экране, и «создал новую, а получил чужую» читается там как
-		// потеря.
+		// потеря. Уникальность теперь ПАРНАЯ, поэтому и фраза говорит «в этом проекте»: без
+		// уточнения она врала бы — то же имя в соседнем проекте совершенно законно.
 		if s.repo.IsErrUniqueViolation(err) {
-			return nil, status.Error(codes.InvalidArgument, "a role with this name already exists")
+			return nil, status.Error(codes.InvalidArgument, "a role with this name already exists in this project")
 		}
 		slog.Default().ErrorContext(ctx, "can't upsert file role", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't save role")
@@ -129,6 +159,12 @@ func (s *Server) MergeFileRoles(ctx context.Context, req *pb_admin.MergeFileRole
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "role not found")
+		}
+		// Роли разных проектов слить нельзя: их строки связи живут в разных проектах, и одной
+		// сущностью они не были никогда. Диалог обязан предлагать цели только своего проекта —
+		// этот отказ страхует от списка, собранного не по тому словарю.
+		if errors.Is(err, entity.ErrFileRoleProjectMismatch) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		slog.Default().ErrorContext(ctx, "can't merge file roles", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't merge roles")
@@ -171,6 +207,14 @@ func (s *Server) SetLibraryFileRoles(ctx context.Context, req *pb_admin.SetLibra
 			return nil, status.Error(codes.NotFound, "file, project or role not found")
 		}
 		if errors.Is(err, entity.ErrRoleNeedsProjectTopic) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+		// РОЛЬ ЧУЖОГО ПРОЕКТА — ОТДЕЛЬНАЯ ФРАЗА, А НЕ ТРОЙНОЙ NotFound. Тройка «файл, проект или
+		// роль не найдены» одинакова намеренно: различие кодов подтверждало бы существование
+		// файла. Здесь подтверждать нечего — роль в ответе уже была, клиент сам её показал, — а
+		// вот сказать, ЧТО именно не так, обязательно: иначе диалог, собравший словарь не того
+		// проекта, выглядит сломанным без единой подсказки, что чинить.
+		if errors.Is(err, entity.ErrFileRoleForeignProject) {
 			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		if errors.Is(err, entity.ErrFileRoleArchived) {

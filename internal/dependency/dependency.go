@@ -716,7 +716,9 @@ type (
 		// MergeTopics folds source into target and deletes source, returning how
 		// many files gained the target topic. Style links AND task project links move
 		// to the target too — both keys would otherwise let the source's DELETE drop
-		// them without a single refusal. The only way out of a duplicated label:
+		// them without a single refusal. При слиянии ПРОЕКТОВ словарь ролей источника
+		// доезжает в цель по ИМЕНАМ, и строки связи получают id одноимённой роли ЦЕЛИ
+		// (0323): id роли источника в целевом проекте не значит ничего. The only way out of a duplicated label:
 		// DeleteTopic refuses on a topic in use, and that is the one that needs merging.
 		MergeTopics(ctx context.Context, sourceID, targetID int) (movedFiles int, err error)
 		// AssignTopics ADDS topics to a set of files (never replaces their set) and
@@ -741,23 +743,31 @@ type (
 		// нули во всех остальных случаях. Замена безопасна потому, что RPC новый: старого
 		// клиента, который прислал бы пустой kind и молча понизил проект, у него нет.
 		UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (entity.FileTopicMetaResult, error)
-		// ListRoles returns the closed role vocabulary with CROSS-PROJECT counts, each counted
-		// under the visibility predicate. Пустые роли остаются в ответе (предикат в ON внешнего
-		// соединения) — «готовое: пусто» и есть половина ценности разбивки.
-		ListRoles(ctx context.Context, includeArchived bool) ([]entity.FileRoleWithCount, error)
+		// ListRoles returns the role vocabulary OF ONE PROJECT (projectTopicID > 0), each role
+		// counted under the visibility predicate; 0 отдаёт все роли с их владельцами и служит
+		// ИНДЕКСОМ ДЛЯ РАЗРЕШЕНИЯ (экран тем, старая ссылка `?frole=N`), а не словарём для
+		// выбора. Пустые роли остаются в ответе (предикат в ON внешнего соединения) — «готовое:
+		// пусто» и есть половина ценности разбивки.
+		ListRoles(ctx context.Context, includeArchived bool, projectTopicID int) ([]entity.FileRoleWithCount, error)
 		// UpsertRole creates (id = 0) or edits one role. ЕДИНСТВЕННАЯ точка создания роли —
 		// именно это и означает «закрытый словарь» механически, а не по договорённости.
-		// Совпадение имени НЕ схлопывается в существующую роль: 1062 доезжает до хендлера.
+		// Совпадение имени НЕ схлопывается в существующую роль: 1062 (теперь по ПАРЕ «проект,
+		// имя») доезжает до хендлера. Создание требует темы kind=project
+		// (entity.ErrFileRoleNeedsProject), правка проект не двигает
+		// (entity.ErrFileRoleProjectImmutable): роль не переезжает между проектами никогда.
 		UpsertRole(ctx context.Context, r entity.FileRoleUpsert) (int, error)
 		// MergeRoles folds source into target and deletes source, returning how many VISIBLE
 		// link rows changed role. Проще слияния тем: роль — колонка, дедуплицировать нечего.
+		// Только внутри ОДНОГО проекта (entity.ErrFileRoleProjectMismatch) — иначе строки связи
+		// источника получили бы роль чужого проекта.
 		MergeRoles(ctx context.Context, sourceID, targetID int) (movedLinks int, err error)
 		// SetFileRoles puts a batch of files into ONE project in ONE role (roleID = 0 clears the
 		// role, leaving the file in the project) and returns how many link rows changed. Строка
 		// связи заводится, если файла в проекте ещё не было. Семантика пачки — как у
 		// AssignTopics: один невидимый id отказывает всей пачке (sql.ErrNoRows). Роль вне
-		// проекта отвергается (entity.ErrRoleNeedsProjectTopic), заархивированная роль
-		// назначается отказом, а снимается свободно.
+		// проекта отвергается (entity.ErrRoleNeedsProjectTopic), роль ЧУЖОГО проекта —
+		// entity.ErrFileRoleForeignProject (первый слой инварианта; второй — составной внешний
+		// ключ), заархивированная роль назначается отказом, а снимается свободно.
 		SetFileRoles(ctx context.Context, fileIDs []int, projectTopicID, roleID int) (updated int, err error)
 
 		// --- Проект ↔ стиль: «каким файлом сделана эта вещь» (0321) ---

@@ -11,7 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-// СЛОВАРЬ РОЛЕЙ И ТИП ТЕМЫ (0320).
+// СЛОВАРЬ РОЛЕЙ И ТИП ТЕМЫ (0320), РОЛИ ПРИНАДЛЕЖАТ ПРОЕКТУ (0323).
 //
 // Роль — это то, чем файл является В КОНКРЕТНОМ ПРОЕКТЕ, и хранится она на строке связи
 // `library_file_topic.role_id`. Всё, что здесь написано, — следствия этого решения:
@@ -23,11 +23,28 @@ import (
 //   - словарь ЗАКРЫТ формой данных, а не дисциплиной: роли лежат в своей таблице, и ни один из
 //     путей, создающих темы на лету, туда не дотягивается.
 //
+// 0323 добавила к этому ВЛАДЕЛЬЦА У САМОЙ РОЛИ: словаря на всю библиотеку больше нет, «исходники»
+// съёмки и «исходники» лукбука — разные строки разных проектов. Отсюда два новых правила, которые
+// видно во всех четырёх функциях ниже:
+//
+//   - каждый читающий путь КЛЮЧУЕТСЯ ПРОЕКТОМ, каждый пишущий его ТРЕБУЕТ;
+//   - инвариант «роль на строке — из проекта этой же строки» держится ДВУМЯ слоями: кодом здесь
+//     (человеческая фраза) и составным внешним ключом (topic_id, role_id) →
+//     file_role (project_topic_id, id) последним рубежом (нечитаемый 1452). Кодовые проверки
+//     стоят ПЕРВЫМИ именно поэтому.
+//
 // Все счётчики здесь считаются ПОД ПРЕДИКАТОМ ВИДИМОСТИ, тем же билдером Viewer.Where, что и
 // рельс тем. Одинаковое у всех число означало бы «в этой роли есть что-то, чего тебе не
 // показывают», то есть ту же утечку, только выраженную числом.
 
-// ListRoles returns the role vocabulary with CROSS-PROJECT counts.
+// ListRoles returns the role vocabulary of ONE project (projectTopicID > 0) or, with 0, every
+// role there is — each one carrying its owner.
+//
+// НОЛЬ — ЭТО НЕ «СЛОВАРЬ БИБЛИОТЕКИ», А ИНДЕКС ДЛЯ РАЗРЕШЕНИЯ. Экрану тем он нужен, чтобы
+// показать словари всех проектов сразу, а старой ссылке `?frole=N` — чтобы найти, в каком проекте
+// эта роль живёт, и дописать проект в адрес. Словарём же, из которого выбирают, служит только
+// ответ с проектом: выбор из общего списка снова сделал бы возможной простановку чужой роли,
+// которую сервер всё равно отвергнет.
 //
 // Предикат стоит в ON внешнего соединения, а не в WHERE, ровно по той же причине, что в
 // ListTopics: в WHERE он превратил бы LEFT JOIN в INNER и выкинул ПУСТЫЕ роли. А пустая роль —
@@ -35,7 +52,13 @@ import (
 // Отсутствие рисуется только тогда, когда известно, чего может не хватать.
 //
 // Архив фильтруется в WHERE по самой роли — это её собственное свойство, а не свойство файлов.
-func (s *Store) ListRoles(ctx context.Context, includeArchived bool) ([]entity.FileRoleWithCount, error) {
+//
+// СЧЁТЧИК СТАЛ ВНУТРИПРОЕКТНЫМ ДАРОМ, БЕЗ ЕДИНОЙ ПРАВКИ ЗАПРОСА. Соединение идёт по role_id, а
+// составной внешний ключ не даёт строке связи нести роль чужого проекта — значит все строки, по
+// которым считается роль, лежат в её собственном проекте по построению. Дописывать сюда
+// `AND lft.topic_id = fr.project_topic_id` было бы вторым выражением того же правила, и разошлись
+// бы они молча.
+func (s *Store) ListRoles(ctx context.Context, includeArchived bool, projectTopicID int) ([]entity.FileRoleWithCount, error) {
 	v, err := s.viewer(ctx)
 	if err != nil {
 		return nil, err
@@ -45,12 +68,17 @@ func (s *Store) ListRoles(ctx context.Context, includeArchived bool) ([]entity.F
 		archived = "1 = 1"
 	}
 	params := map[string]any{}
+	scope := "1 = 1"
+	if projectTopicID > 0 {
+		scope = "fr.project_topic_id = :projectTopicId"
+		params["projectTopicId"] = projectTopicID
+	}
 	roles, err := storeutil.QueryListNamed[entity.FileRoleWithCount](ctx, s.DB, `
 		SELECT fr.*, COUNT(lf.id) AS files_count
 		FROM file_role fr
 		LEFT JOIN library_file_topic lft ON lft.role_id = fr.id
 		LEFT JOIN library_file lf ON lf.id = lft.file_id AND `+v.Where("lf", params)+`
-		WHERE `+archived+`
+		WHERE `+archived+` AND `+scope+`
 		GROUP BY fr.id
 		ORDER BY fr.sort_order ASC, fr.name ASC`, params)
 	if err != nil {
@@ -59,47 +87,87 @@ func (s *Store) ListRoles(ctx context.Context, includeArchived bool) ([]entity.F
 	return roles, nil
 }
 
-// UpsertRole creates a role (id = 0) or edits the existing one.
+// UpsertRole creates a role IN A PROJECT (id = 0) or edits the existing one.
 //
 // ЕДИНСТВЕННАЯ ТОЧКА СОЗДАНИЯ РОЛИ во всём репозитории — в этом и состоит «закрытый словарь»
 // механически. Совпадение имени НЕ схлопывается в существующую роль (в отличие от upsertTopic,
 // который так делает намеренно: тему создают на лету двое сразу). Роль заводят руками на экране
 // словаря, и «создал, а получил чужую» там читается как молчаливая потеря; отказ по уникальному
-// ключу честнее.
+// ключу честнее. Уникальность теперь ПАРНАЯ — (проект, имя), — поэтому «исходники» законны в
+// двадцати проектах и незаконны дважды в одном.
+//
+// СОЗДАНИЕ ТРЕБУЕТ ПРОЕКТА, ПРАВКА ЕГО НЕ ДВИГАЕТ. Роль не переезжает между проектами никогда:
+// её строки связи живут в её проекте, и переезд оставил бы их указывать в чужую роль — то самое
+// состояние, которое запрещает инвариант. Ноль в правке значит «не трогать» (так шлёт клиент,
+// не знающий про владельца), другой проект — отказ.
+//
+// ПРОВЕРКА kind ВНУТРИ ТРАНЗАКЦИИ, А НЕ ВНЕШНИМ КЛЮЧОМ: ключ подтверждает лишь существование
+// темы, а ярлык вместо проекта — осмысленный выбор не той сущности, и о нём надо сказать фразой.
+// Пишущие транзакции стора идут в SERIALIZABLE, поэтому чтение kind запирает строку темы и
+// параллельное понижение не проскакивает между проверкой и вставкой.
 func (s *Store) UpsertRole(ctx context.Context, r entity.FileRoleUpsert) (int, error) {
 	name := strings.TrimSpace(r.Name)
 	if name == "" {
 		return 0, fmt.Errorf("role name is empty")
 	}
-	if r.Id <= 0 {
-		id, err := storeutil.ExecNamedLastId(ctx, s.DB, `
-			INSERT INTO file_role (name, sort_order, archived_at)
-			VALUES (:name, :sortOrder, IF(:archived, CURRENT_TIMESTAMP, NULL))`,
-			map[string]any{"name": name, "sortOrder": r.SortOrder, "archived": r.Archived})
-		if err != nil {
-			return 0, err // 1062 доезжает до хендлера нетронутым
+	var id int
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if r.Id <= 0 {
+			if r.ProjectTopicId <= 0 {
+				return entity.ErrFileRoleNeedsProject
+			}
+			kind, err := storeutil.QueryNamedOne[struct {
+				Kind entity.FileTopicKind `db:"kind"`
+			}](ctx, rep.DB(),
+				`SELECT kind FROM file_topic WHERE id = :id`, map[string]any{"id": r.ProjectTopicId})
+			if err != nil {
+				return err // sql.ErrNoRows нетронутым - темы нет
+			}
+			if kind.Kind != entity.FileTopicKindProject {
+				return entity.ErrFileRoleNeedsProject
+			}
+			newID, err := storeutil.ExecNamedLastId(ctx, rep.DB(), `
+				INSERT INTO file_role (project_topic_id, name, sort_order, archived_at)
+				VALUES (:projectTopicId, :name, :sortOrder, IF(:archived, CURRENT_TIMESTAMP, NULL))`,
+				map[string]any{
+					"projectTopicId": r.ProjectTopicId, "name": name,
+					"sortOrder": r.SortOrder, "archived": r.Archived,
+				})
+			if err != nil {
+				return err // 1062 доезжает до хендлера нетронутым
+			}
+			id = newID
+			return nil
 		}
-		return id, nil
-	}
-	exists, err := storeutil.QueryCountNamed(ctx, s.DB,
-		`SELECT COUNT(*) FROM file_role WHERE id = :id`, map[string]any{"id": r.Id})
+		existing, err := storeutil.QueryNamedOne[entity.FileRole](ctx, rep.DB(),
+			`SELECT * FROM file_role WHERE id = :id`, map[string]any{"id": r.Id})
+		if err != nil {
+			return err // sql.ErrNoRows нетронутым
+		}
+		if r.ProjectTopicId > 0 &&
+			(!existing.ProjectTopicId.Valid || int(existing.ProjectTopicId.Int64) != r.ProjectTopicId) {
+			return entity.ErrFileRoleProjectImmutable
+		}
+		// COALESCE держит МОМЕНТ архивации: повторное сохранение уже заархивированной роли не
+		// переписывает дату, иначе «когда убрали» врало бы после любой правки имени.
+		//
+		// project_topic_id в SET НЕ ВХОДИТ, и это не забывчивость: колонка, которой нет в
+		// присваивании, не может уехать ни от какой ошибки вызывающего.
+		if err := storeutil.ExecNamed(ctx, rep.DB(), `
+			UPDATE file_role
+			SET name = :name, sort_order = :sortOrder,
+				archived_at = IF(:archived, COALESCE(archived_at, CURRENT_TIMESTAMP), NULL)
+			WHERE id = :id`,
+			map[string]any{"id": r.Id, "name": name, "sortOrder": r.SortOrder, "archived": r.Archived}); err != nil {
+			return err // 1062 доезжает до хендлера нетронутым
+		}
+		id = r.Id
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("failed to check file role existence: %w", err)
+		return 0, err // sql.ErrNoRows и 1062 проходят насквозь
 	}
-	if exists == 0 {
-		return 0, sql.ErrNoRows
-	}
-	// COALESCE держит МОМЕНТ архивации: повторное сохранение уже заархивированной роли не
-	// переписывает дату, иначе «когда убрали» врало бы после любой правки имени.
-	if err := storeutil.ExecNamed(ctx, s.DB, `
-		UPDATE file_role
-		SET name = :name, sort_order = :sortOrder,
-			archived_at = IF(:archived, COALESCE(archived_at, CURRENT_TIMESTAMP), NULL)
-		WHERE id = :id`,
-		map[string]any{"id": r.Id, "name": name, "sortOrder": r.SortOrder, "archived": r.Archived}); err != nil {
-		return 0, err // 1062 доезжает до хендлера нетронутым
-	}
-	return r.Id, nil
+	return id, nil
 }
 
 // MergeRoles folds source into target and deletes source, returning how many
@@ -112,6 +180,12 @@ func (s *Store) UpsertRole(ctx context.Context, r entity.FileRoleUpsert) (int, e
 // Число считается ПОД предикатом, а переезжает всё — та же асимметрия, что у MergeTopics, и по
 // той же причине: «переехало 7» на роли, где спрашивающий видит два файла, само рассказало бы,
 // что от него что-то закрыто.
+//
+// СЛИЯНИЕ ТОЛЬКО ВНУТРИ ОДНОГО ПРОЕКТА (0323). Строки связи источника лежат в его проекте, и
+// подстановка им роли чужого проекта — ровно то состояние, которое инвариант запрещает; без
+// проверки это молча ловил бы составной ключ нечитаемым 1452. Слияние — это «две роли оказались
+// одной», а роль одного проекта и роль другого одной быть не могут по построению: их значения
+// определяются проектом.
 func (s *Store) MergeRoles(ctx context.Context, sourceID, targetID int) (int, error) {
 	if sourceID == targetID {
 		// Бэкстоп: хендлер отвечает на это InvalidArgument раньше. Молчаливый no-op был бы хуже
@@ -128,14 +202,24 @@ func (s *Store) MergeRoles(ctx context.Context, sourceID, targetID int) (int, er
 		// Существование проверяем ВНУТРИ транзакции: пишущие транзакции стора идут в
 		// SERIALIZABLE, поэтому проверка реально закрывает гонку с параллельным удалением, а не
 		// просто сужает окно.
-		found, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COUNT(*) FROM file_role WHERE id IN (:ids)`,
+		type roleOwnerRow struct {
+			Id             int           `db:"id"`
+			ProjectTopicId sql.NullInt64 `db:"project_topic_id"`
+		}
+		found, err := storeutil.QueryListNamed[roleOwnerRow](ctx, rep.DB(),
+			`SELECT id, project_topic_id FROM file_role WHERE id IN (:ids)`,
 			map[string]any{"ids": []int{sourceID, targetID}})
 		if err != nil {
 			return fmt.Errorf("failed to check file roles existence: %w", err)
 		}
-		if found != 2 {
+		if len(found) != 2 {
 			return sql.ErrNoRows
+		}
+		// Сравниваются СТРУКТУРЫ, а не Int64: у двух легаси-строк с NULL-владельцем Int64 равны
+		// нулю обе, и сравнение чисел объявило бы их одним проектом. sql.NullInt64 сравним, и
+		// NULL совпадает только с NULL - что для мёртвых строк переноса и верно.
+		if found[0].ProjectTopicId != found[1].ProjectTopicId {
+			return entity.ErrFileRoleProjectMismatch
 		}
 		countParams := map[string]any{"source": sourceID}
 		visibleMoved, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
@@ -222,6 +306,17 @@ func (s *Store) SetFileRoles(ctx context.Context, fileIDs []int, projectTopicID,
 			if err != nil {
 				return err // sql.ErrNoRows нетронутым
 			}
+			// РОЛЬ ОБЯЗАНА БЫТЬ РОЛЬЮ ЭТОГО ЖЕ ПРОЕКТА (0323). Проверка стоит ПЕРВОЙ из двух:
+			// последним рубежом ту же строку ловит составной внешний ключ, но отвечает он 1452 с
+			// именем констрейнта, а на экране нужна фраза. Легаси-строка с NULL-владельцем сюда
+			// тоже не проходит - Valid = false отвергается первым же условием.
+			//
+			// Отсюда прямое следствие для проб: утверждать надо ТЕКСТ отказа, а не факт падения.
+			// Выкинутая отсюда проверка оставит тест зелёным, если он проверяет только «упало» -
+			// потому что упадёт ключ.
+			if !role.ProjectTopicId.Valid || int(role.ProjectTopicId.Int64) != projectTopicID {
+				return entity.ErrFileRoleForeignProject
+			}
 			// Снять заархивированную роль можно, поставить — нет. Иначе архив был бы
 			// пожеланием: роль пропала бы из пикеров и продолжила бы появляться на файлах.
 			if role.ArchivedAt.Valid {
@@ -297,13 +392,15 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 	}
 	var cleared, unlinked, clearedTasks int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
-			`SELECT COUNT(*) FROM file_topic WHERE id = :id`, map[string]any{"id": m.TopicId})
+		// ПРЕЖНИЙ ТИП ЧИТАЕТСЯ ЗДЕСЬ ЖЕ, И ЭТО НЕ ЗАМЕНА ПРОВЕРКИ СУЩЕСТВОВАНИЯ, А ЕЁ РАСШИРЕНИЕ:
+		// затравке (ниже) нужен именно ПЕРЕХОД plain → project, а не итоговый тип. Правка дат или
+		// архива уже-проекта перехода не содержит и сеять не имеет права.
+		prev, err := storeutil.QueryNamedOne[struct {
+			Kind entity.FileTopicKind `db:"kind"`
+		}](ctx, rep.DB(),
+			`SELECT kind FROM file_topic WHERE id = :id`, map[string]any{"id": m.TopicId})
 		if err != nil {
-			return fmt.Errorf("failed to check file topic existence: %w", err)
-		}
-		if exists == 0 {
-			return sql.ErrNoRows
+			return err // sql.ErrNoRows нетронутым
 		}
 		if m.Kind == entity.FileTopicKindPlain {
 			countParams := map[string]any{"id": m.TopicId}
@@ -368,6 +465,20 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 			}); err != nil {
 			return fmt.Errorf("failed to update file topic meta: %w", err)
 		}
+		// ЗАТРАВКА СЛОВАРЯ ПРИ ПОВЫШЕНИИ. Довод записан ещё в 0312 — раздел, открывшийся пустым,
+		// заставляет придумывать структуру на месте, а придумывать её никто не будет. Со словарём
+		// у проекта он применим дословно: новый проект без ролей это страница без разбивки.
+		//
+		// ZERO-GUARD, А НЕ «СЕЯТЬ ВСЕГДА». Понижение проекта словарь НЕ трогает (снимаются роли со
+		// СТРОК СВЯЗИ, сами строки словаря остаются спать), поэтому обратное повышение находит
+		// выстраданный набор и не имеет права класть поверх него четыре чужих слова. Краевой
+		// случай назван вслух: владелец, удаливший все свои роли и прогнавший понижение-повышение,
+		// получит стандартные четыре снова — редко и не больно.
+		if prev.Kind != entity.FileTopicKindProject && m.Kind == entity.FileTopicKindProject {
+			if err := seedProjectRoles(ctx, rep.DB(), m.TopicId); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -377,4 +488,49 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 	res.ClearedStyles = unlinked
 	res.ClearedTasks = clearedTasks
 	return res, nil
+}
+
+// defaultProjectRoles — ЗАТРАВКА СЛОВАРЯ НОВОГО ПРОЕКТА, один список на весь бэкенд.
+//
+// Тот же набор снимком повторён в миграции 0323 (шаг 6), которая сеет им проекты, заведённые до
+// per-project словаря. Снимок в тексте миграции законен и не является вторым источником правды:
+// миграции и есть снимки, они описывают ОДИН момент истории и после применения не меняются, а
+// список для БУДУЩИХ проектов живёт здесь.
+//
+// Слова русские, а интерфейс раздела английский — так уже сеял 0320, и менять язык затравки
+// заодно с моделью значило бы смешать два вопроса в одной волне.
+var defaultProjectRoles = []struct {
+	Name      string
+	SortOrder int
+}{
+	{"исходники", 10},
+	{"обработанные", 20},
+	{"идея", 30},
+	{"планирование", 40},
+}
+
+// seedProjectRoles fills a project's EMPTY vocabulary with the default set.
+//
+// INSERT IGNORE поверх zero-guard, а не вместо него: guard отвечает на «словарь уже есть» (и
+// именно он делает повторное повышение безвредным), а IGNORE закрывает гонку двух повышений одной
+// темы — парный UNIQUE (project_topic_id, name) превратил бы её в 1062 на ровном месте.
+func seedProjectRoles(ctx context.Context, db dependency.DB, projectTopicID int) error {
+	existing, err := storeutil.QueryCountNamed(ctx, db,
+		`SELECT COUNT(*) FROM file_role WHERE project_topic_id = :id`,
+		map[string]any{"id": projectTopicID})
+	if err != nil {
+		return fmt.Errorf("failed to count project roles before seeding: %w", err)
+	}
+	if existing > 0 {
+		return nil
+	}
+	for _, r := range defaultProjectRoles {
+		if err := storeutil.ExecNamed(ctx, db, `
+			INSERT IGNORE INTO file_role (project_topic_id, name, sort_order)
+			VALUES (:projectTopicId, :name, :sortOrder)`,
+			map[string]any{"projectTopicId": projectTopicID, "name": r.Name, "sortOrder": r.SortOrder}); err != nil {
+			return fmt.Errorf("failed to seed project roles: %w", err)
+		}
+	}
+	return nil
 }

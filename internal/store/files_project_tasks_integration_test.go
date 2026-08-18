@@ -179,7 +179,7 @@ func TestTaskProjectTopicLink(t *testing.T) {
 		// другим прошла бы незамеченной, а именно она и есть самая правдоподобная ошибка в коде,
 		// который перекладывает три int'а.
 		project := insertProjectTopicFixture(ctx, t, s, "test-pt-demote")
-		role := insertFileRoleFixture(ctx, t, "test-pt-demote-role")
+		role := insertFileRoleFixture(ctx, t, project, "test-pt-demote-role")
 
 		// 1 роль.
 		file := insertLibraryFileFixture(ctx, t, "pt-demote.pdf", 10, "pasha")

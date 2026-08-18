@@ -144,17 +144,23 @@ func ConvertEntityFileTopicsWithCountToPb(topics []entity.FileTopicWithCount) []
 	return out
 }
 
-// ConvertEntityFileRolesToPb converts the role vocabulary with its cross-project
-// counts.
+// ConvertEntityFileRolesToPb converts a project's role vocabulary with its counts.
+//
+// NULL-владелец уезжает НУЛЁМ, а не пропуском строки: такие строки остались от переноса 0323
+// (глобальная роль, которую никто нигде не проставил), и увидеть их можно ровно в одном месте —
+// в ответе без фильтра по проекту, то есть на экране, который для того и существует, чтобы
+// показать, что в библиотеке лежит. Молчаливое выкидывание сделало бы их невидимыми и для того,
+// кто однажды придёт их убирать.
 func ConvertEntityFileRolesToPb(roles []entity.FileRoleWithCount) []*pb_admin.FileRole {
 	out := make([]*pb_admin.FileRole, 0, len(roles))
 	for _, r := range roles {
 		out = append(out, &pb_admin.FileRole{
-			Id:         int32(r.Id),
-			Name:       r.Name,
-			SortOrder:  int32(r.SortOrder),
-			Archived:   r.ArchivedAt.Valid,
-			FilesCount: int32(r.FilesCount),
+			Id:             int32(r.Id),
+			ProjectTopicId: int32(r.ProjectTopicId.Int64),
+			Name:           r.Name,
+			SortOrder:      int32(r.SortOrder),
+			Archived:       r.ArchivedAt.Valid,
+			FilesCount:     int32(r.FilesCount),
 		})
 	}
 	return out
