@@ -1,6 +1,7 @@
 package rbac
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -81,6 +82,39 @@ func TestNoStaleMappings(t *testing.T) {
 	for name := range allowlist {
 		if _, ok := live[name]; !ok {
 			t.Errorf("allowlist has %q but AdminService has no such method", name)
+		}
+	}
+}
+
+// TestProjectTasksStayUnderTaskRights охраняет решение фазы 0322: «какие задачи у этого проекта»
+// читается ФИЛЬТРОМ существующего ListTasks, а не отдельным RPC.
+//
+// Утверждение здесь ровно одно, и оно про ПРАВА, а не про экономию: пока обратный вопрос ходит
+// через ListTasks, у него по построению те же tasks:read, что у доски. Отдельный RPC пришлось бы
+// классифицировать заново, и живой соблазн — повесить его на files, раз он живёт на странице
+// проекта. Тогда обладатель одного лишь files:read прочитал бы заголовки, исполнителей и сроки
+// задач, которых ему не показывают нигде больше, — то есть проект стал бы боковым каналом к доске.
+//
+// Тест краснеет двумя способами: если ListTasks переклассифицируют, и если рядом заведут RPC с
+// «project» и «task» в имени, которому дали права ФАЙЛОВ.
+func TestProjectTasksStayUnderTaskRights(t *testing.T) {
+	req, allowlisted, known := Lookup(MethodPrefix + "ListTasks")
+	if allowlisted || !known {
+		t.Fatal("ListTasks must stay classified: it is the only path to the tasks of a project")
+	}
+	if req.Section != SectionTasks || req.Access != entity.AccessRead {
+		t.Errorf("ListTasks must require %s:read, got %s:%s", SectionTasks, req.Section, req.Access)
+	}
+
+	for name, r := range methodRequirements {
+		lower := strings.ToLower(name)
+		if !strings.Contains(lower, "task") || !strings.Contains(lower, "project") {
+			continue
+		}
+		if r.Section == SectionFiles {
+			t.Errorf("%s reads tasks of a project but is gated by %s — a person holding only "+
+				"files:read would learn titles, assignees and deadlines of tasks they cannot see "+
+				"anywhere else", name, SectionFiles)
 		}
 	}
 }

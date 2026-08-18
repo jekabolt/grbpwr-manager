@@ -5454,6 +5454,16 @@ message DeleteFileTopicResponse {
   // around it: a style is not a library file and the visibility predicate does not
   // apply to it.
   int32 unlinked_styles = 1;
+  // unlinked_tasks is the same fact for kanban cards (0322): how many lost their link
+  // to this project when it went. The KEYS differ and the difference matters — a style
+  // link CASCADES away (it means nothing without the topic), while a task's
+  // project_topic_id is merely SET NULL: the card survives, because it is about work,
+  // not about the shoot. Taking someone's to-do list along with a label would be a far
+  // worse answer than losing a pointer.
+  //
+  // Counted EXACTLY, for the same reason as unlinked_styles: a task is not a library
+  // file, it lives under the tasks section's own rbac.
+  int32 unlinked_tasks = 2;
 }
 
 message MergeFileTopicsRequest {
@@ -5529,6 +5539,19 @@ message UpdateFileTopicMetaResponse {
   // from the person who is editing the project would invent a boundary the system
   // does not have.
   int32 cleared_styles = 2;
+  // cleared_tasks is the THIRD project-only property a demotion takes (0322): how many
+  // kanban cards lost their link to this project because it stopped being one. The
+  // cards themselves survive — they are about WORK, not about the shoot — and lose
+  // only the context.
+  //
+  // Counted EXACTLY, like cleared_styles and unlike cleared_roles: a task is not a
+  // library file either, it lives under the tasks section's own rbac.
+  //
+  // ТРИ ЧИСЛА В ОДНОМ ТОСТЕ — это уже перечисление, и на экране его надо сказать так, как человек
+  // читает, а не выложить тремя строчками отчёта. Поля названы отдельно именно поэтому: клиент
+  // волен собрать фразу, а сервер не имеет права склеить числа за него — склеенные, они больше не
+  // разбираются, и «сняли 7» перестаёт отвечать на «семь чего».
+  int32 cleared_tasks = 3;
 }
 
 message ListFileRolesRequest {
@@ -6088,6 +6111,18 @@ message ListTasksRequest {
   int32 fitting_id = 12; // optional filter; 0 = no filter
   int32 production_run_id = 13; // optional filter; 0 = no filter
   int32 sample_id = 14; // optional filter; 0 = no filter
+  // ЗАДАЧИ ПРОЕКТА (0322) — обратная сторона восьмой глубокой ссылки: страница проекта
+  // спрашивает, что по нему ещё осталось сделать.
+  //
+  // ФИЛЬТР СУЩЕСТВУЮЩЕГО СПИСКА, А НЕ НОВЫЙ RPC, И ЭТО РЕШЕНИЕ О ПРАВАХ, А НЕ ОБ ЭКОНОМИИ. «Какие
+  // задачи у проекта» — тот же список задач, просто суженный, и он обязан идти под rd(tasks), как
+  // доска. Отдельный RPC завёл бы ВТОРОЙ путь к тем же данным, которому нечем помешать однажды
+  // разойтись в правах, — то есть проект стал бы боковым каналом к задачам, которых человек иначе
+  // не видит.
+  //
+  // Несуществующий проект отдаёт пустой список, а не отличимый отказ: у семи соседних фильтров так
+  // же, и различимость сделала бы чтение оракулом по темам.
+  int32 project_topic_id = 15; // optional filter; 0 = no filter
 }
 
 message ListTasksResponse {

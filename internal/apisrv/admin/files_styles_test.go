@@ -110,9 +110,13 @@ func TestLinkFileTopicStyleReadAfterWriteIsNotNotFound(t *testing.T) {
 // ФАЙЛЫ и о привязках не знает, поэтому отказ был бы тупиком без способа увидеть, во что упёрся.
 // Значит число обязано доехать — иначе «убрал пустую съёмку с глаз» и «у восьми вещей пропал
 // ответ, каким файлом их сделали» станут двумя событиями, между которыми месяц.
+//
+// ЧИСЕЛ ДВА (0322), И ОНИ РАЗНЫЕ НАРОЧНО: подмена одного другим на равных количествах была бы
+// невидима, а именно она — самая правдоподобная ошибка в хендлере, который перекладывает поля.
 func TestDeleteFileTopicReportsUnlinkedStyles(t *testing.T) {
 	files := mocks.NewMockFiles(t)
-	files.EXPECT().DeleteTopic(mock.Anything, 5).Return(8, nil)
+	files.EXPECT().DeleteTopic(mock.Anything, 5).
+		Return(entity.FileTopicDeleteResult{UnlinkedStyles: 8, UnlinkedTasks: 3}, nil)
 	repo := mocks.NewMockRepository(t)
 	repo.EXPECT().Files().Return(files)
 
@@ -120,6 +124,8 @@ func TestDeleteFileTopicReportsUnlinkedStyles(t *testing.T) {
 	resp, err := s.DeleteFileTopic(context.Background(), &pb_admin.DeleteFileTopicRequest{Id: 5})
 	require.NoError(t, err)
 	require.Equal(t, int32(8), resp.UnlinkedStyles)
+	require.Equal(t, int32(3), resp.UnlinkedTasks,
+		"задачи теряют проект, но остаются: ключ SET NULL, а не каскадный, — и число обязано быть названо отдельно от стилей")
 }
 
 // TestLinkFileTopicStyleSurvivesPreviewFailure: миниатюра — украшение, а список — ответ.

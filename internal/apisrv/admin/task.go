@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const taskFKViolationMsg = "tech_card_id, product_id, archive_id, fitting_id, media_id, or file_id does not reference an existing record"
+const taskFKViolationMsg = "tech_card_id, product_id, archive_id, fitting_id, project_topic_id, media_id, or file_id does not reference an existing record"
 
 // AddTask creates a new kanban task from its content + placement. created_by is
 // stamped from the caller's JWT; the card is appended to its (board,status) column.
@@ -46,6 +46,12 @@ func (s *Server) AddTask(ctx context.Context, req *pb_admin.AddTaskRequest) (*pb
 	}
 	id, err := s.repo.Tasks().AddTask(ctx, t)
 	if err != nil {
+		// ССЫЛКА НА ТЕМУ, КОТОРАЯ НЕ ПРОЕКТ (0322), ОТВЕЧАЕТ ФРАЗОЙ, А НЕ КОДОМ КЛЮЧА. Внешний
+		// ключ здесь и не срабатывает — тема существует, она просто ярлык, — а сообщение про
+		// «does not reference an existing record» было бы прямым враньём: id существует.
+		if errors.Is(err, entity.ErrTaskNeedsProjectTopic) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, taskFKViolationMsg)
 		}
@@ -105,6 +111,11 @@ func (s *Server) UpdateTask(ctx context.Context, req *pb_admin.UpdateTaskRequest
 	if err := s.repo.Tasks().UpdateTask(ctx, int(req.Id), ti); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "task not found")
+		}
+		// Проверяется ПОСЛЕ ErrNoRows и до внешнего ключа — см. довод в AddTask. Порядок здесь
+		// несущий: «задачи нет» и «тема не проект» — разные ответы на разные ошибки человека.
+		if errors.Is(err, entity.ErrTaskNeedsProjectTopic) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 		if s.repo.IsErrForeignKeyViolation(err) {
 			return nil, status.Error(codes.InvalidArgument, taskFKViolationMsg)
@@ -204,6 +215,11 @@ func (s *Server) ListTasks(ctx context.Context, req *pb_admin.ListTasksRequest) 
 		FittingId:       int(req.FittingId),
 		ProductionRunId: int(req.ProductionRunId),
 		SampleId:        int(req.SampleId),
+		// ЗАДАЧИ ПРОЕКТА ИДУТ ПОД ПРАВАМИ ЗАДАЧ (0322). Здесь для этого не сделано НИЧЕГО, и это
+		// главное свойство решения: фильтр живёт на уже существующем ListTasks, у которого в
+		// rbac.go стоит rd(tasks). Отдельный RPC пришлось бы классифицировать заново, и там
+		// проект однажды стал бы боковым каналом к задачам, которых человек иначе не видит.
+		ProjectTopicId:  int(req.ProjectTopicId),
 		IncludeArchived: req.IncludeArchived,
 		Limit:           int(req.Limit),
 		Offset:          int(req.Offset),

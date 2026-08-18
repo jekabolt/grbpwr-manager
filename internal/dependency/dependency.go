@@ -705,17 +705,19 @@ type (
 		CreateTopic(ctx context.Context, name, description string) (int, error)
 		RenameTopic(ctx context.Context, id int, name, description string) error
 		// DeleteTopic refuses while files still carry the topic — deleting it would
-		// silently unlabel them into «Разобрать». Returns how many STYLES lost their link
-		// to the topic (0321): the link's foreign key is cascading, so a project with no
-		// files but with styles attached deletes normally and takes them with it. Число
-		// точное (стиль не файл библиотеки, предикат видимости к нему не применяется) и
-		// возвращается по тому же доводу, что ClearedStyles у понижения: молчаливая потеря
-		// ответа «каким файлом сделана эта вещь» обнаружилась бы через месяц.
-		DeleteTopic(ctx context.Context, id int) (unlinkedStyles int, err error)
+		// silently unlabel them into «Разобрать». Returns what went with the topic: how
+		// many STYLES lost their link (0321, cascading key) and how many TASKS lost their
+		// project (0322, SET NULL — the card survives, it is about work, not about the
+		// shoot). A project with no files but with styles or cards attached deletes
+		// normally. Оба числа точные (ни стиль, ни задача не файл библиотеки, предикат
+		// видимости к ним не применяется) и возвращаются по тому же доводу, что три числа
+		// понижения: молчаливая потеря обнаружилась бы через месяц.
+		DeleteTopic(ctx context.Context, id int) (entity.FileTopicDeleteResult, error)
 		// MergeTopics folds source into target and deletes source, returning how
-		// many files gained the target topic. The only way out of a duplicated
-		// label: DeleteTopic refuses on a topic in use, and that is the one that
-		// needs merging.
+		// many files gained the target topic. Style links AND task project links move
+		// to the target too — both keys would otherwise let the source's DELETE drop
+		// them without a single refusal. The only way out of a duplicated label:
+		// DeleteTopic refuses on a topic in use, and that is the one that needs merging.
 		MergeTopics(ctx context.Context, sourceID, targetID int) (movedFiles int, err error)
 		// AssignTopics ADDS topics to a set of files (never replaces their set) and
 		// returns how many links were created. Names in newTopics are created on the
@@ -734,10 +736,10 @@ type (
 		// пару, у строки одно поле роли.
 
 		// UpdateTopicMeta REPLACES a topic's kind, dates and archive flag and returns WHAT THE
-		// DEMOTION TOOK AWAY: visible link rows that lost their role (0320) and styles that lost
-		// their link to the project (0321). Оба нуля во всех остальных случаях. Замена безопасна
-		// потому, что RPC новый: старого клиента, который прислал бы пустой kind и молча понизил
-		// проект, у него нет.
+		// DEMOTION TOOK AWAY: visible link rows that lost their role (0320), styles that lost
+		// their link to the project (0321), and kanban cards that lost it too (0322). Все три
+		// нули во всех остальных случаях. Замена безопасна потому, что RPC новый: старого
+		// клиента, который прислал бы пустой kind и молча понизил проект, у него нет.
 		UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (entity.FileTopicMetaResult, error)
 		// ListRoles returns the closed role vocabulary with CROSS-PROJECT counts, each counted
 		// under the visibility predicate. Пустые роли остаются в ответе (предикат в ON внешнего

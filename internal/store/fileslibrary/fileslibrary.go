@@ -574,18 +574,25 @@ func (s *Store) RenameTopic(ctx context.Context, id int, name, description strin
 // Пишущие транзакции стора идут в SERIALIZABLE, поэтому чтение внутри транзакции реально
 // запирает диапазон, а не просто сужает окно.
 //
-// СТИЛИ НЕ ЗАПРЕЩАЮТ УДАЛЕНИЕ, НО СЧИТАЮТСЯ И ВОЗВРАЩАЮТСЯ. Отказ здесь был бы тупиком: число
-// привязанных стилей на экране тем не показано вовсе, и человек упёрся бы в «нельзя» без
-// единого способа увидеть, во что именно. А молчание — это ровно тот дефект, ради которого
-// понижение проекта возвращает ClearedRoles/ClearedStyles: «убрал пустую съёмку с глаз» и «у
+// НИ СТИЛИ, НИ ЗАДАЧИ НЕ ЗАПРЕЩАЮТ УДАЛЕНИЕ, НО СЧИТАЮТСЯ И ВОЗВРАЩАЮТСЯ. Отказ здесь был бы
+// тупиком: ни число привязанных стилей, ни число задач на экране тем не показано вовсе, и человек
+// упёрся бы в «нельзя» без единого способа увидеть, во что именно. А молчание — это ровно тот
+// дефект, ради которого понижение проекта возвращает три числа: «убрал пустую съёмку с глаз» и «у
 // восьми вещей пропал ответ, каким файлом их сделали» обязаны быть одним и тем же событием на
 // экране, а не двумя, между которыми месяц.
-func (s *Store) DeleteTopic(ctx context.Context, id int) (int, error) {
+//
+// КЛЮЧИ У ДВУХ ЧИСЕЛ РАЗНЫЕ, И РАЗНИЦА СУЩЕСТВЕННА. Связь со стилем уходит КАСКАДОМ — она без
+// темы не значит ничего. Ссылка задачи обнуляется (SET NULL, 0322) — карточка остаётся, потому что
+// она про РАБОТУ, а не про съёмку, и уносить её вместе с темой значило бы стереть чей-то список
+// дел заодно с ярлыком. Считаются оба ДО удаления: после него считать будет нечего в одном случае
+// и не по чему в другом.
+func (s *Store) DeleteTopic(ctx context.Context, id int) (entity.FileTopicDeleteResult, error) {
+	var res entity.FileTopicDeleteResult
 	v, err := s.viewer(ctx)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
-	var unlinkedStyles int
+	var unlinkedStyles, unlinkedTasks int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		params := map[string]any{"id": id}
 		used, err := storeutil.QueryCountNamed(ctx, rep.DB(), `
@@ -607,17 +614,28 @@ func (s *Store) DeleteTopic(ctx context.Context, id int) (int, error) {
 		if err != nil {
 			return fmt.Errorf("failed to count styles linked to a topic: %w", err)
 		}
+		// То же и для задач (0322). Число ТОЧНОЕ по тому же доводу: карточка канбана живёт под
+		// собственным RBAC секции tasks, предикат видимости файлов к ней неприменим.
+		tasks, err := storeutil.QueryCountNamed(ctx, rep.DB(),
+			`SELECT COUNT(*) FROM task WHERE project_topic_id = :id`,
+			map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to count tasks linked to a topic: %w", err)
+		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM file_topic WHERE id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("can't delete file topic: %w", err)
 		}
 		unlinkedStyles = styles
+		unlinkedTasks = tasks
 		return nil
 	})
 	if err != nil {
-		return 0, err // ErrFileTopicInUse и отказ внешнего ключа доезжают нетронутыми
+		return res, err // ErrFileTopicInUse и отказ внешнего ключа доезжают нетронутыми
 	}
-	return unlinkedStyles, nil
+	res.UnlinkedStyles = unlinkedStyles
+	res.UnlinkedTasks = unlinkedTasks
+	return res, nil
 }
 
 // MergeTopics folds source into target and deletes source, returning how many
@@ -716,6 +734,19 @@ func (s *Store) MergeTopics(ctx context.Context, sourceID, targetID int) (int, e
 			SELECT :target, ftc.tech_card_id FROM file_topic_tech_card ftc WHERE ftc.topic_id = :source`,
 			map[string]any{"source": sourceID, "target": targetID}); err != nil {
 			return fmt.Errorf("failed to move project style links: %w", err)
+		}
+		// ССЫЛКИ ЗАДАЧ ПЕРЕЕЗЖАЮТ ТОЖЕ (0322), И БЕЗ ЭТОЙ СТРОКИ ОНИ ОБНУЛИЛИСЬ БЫ МОЛЧА. Ключ
+		// task.project_topic_id стоит с ON DELETE SET NULL, поэтому DELETE темы-источника ниже
+		// увёл бы карточки в «проекта не указано» без единого отказа — и «две съёмки оказались
+		// одной» стёрло бы контекст у всей работы исходного проекта. Ровно тот же дефект, что уже
+		// дважды находился на этой волне: сначала у ролей (0320), потом у стилей (0321).
+		//
+		// Столкновения тут не бывает: у карточки ОДНА ссылка на проект, и присвоение цели её
+		// заменяет, а не задваивает, — поэтому здесь UPDATE, а не INSERT IGNORE, как у стилей.
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`UPDATE task SET project_topic_id = :target WHERE project_topic_id = :source`,
+			map[string]any{"source": sourceID, "target": targetID}); err != nil {
+			return fmt.Errorf("failed to move project task links: %w", err)
 		}
 		// Связи источника снимаем ДО удаления самой темы: внешний ключ на тему
 		// стоит без каскада (RESTRICT), иначе DELETE упал бы о собственные связи.

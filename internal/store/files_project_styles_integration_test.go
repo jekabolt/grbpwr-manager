@@ -345,10 +345,12 @@ func TestFilesProjectStyleLinks(t *testing.T) {
 			second := insertTechCardFixture(ctx, t, "test-ps-drop-topic-style-2")
 			require.NoError(t, s.Files().LinkTopicStyle(admin, project, second))
 
-			unlinked, err := s.Files().DeleteTopic(admin, project)
+			res, err := s.Files().DeleteTopic(admin, project)
 			require.NoError(t, err)
-			require.Equal(t, 2, unlinked,
+			require.Equal(t, 2, res.UnlinkedStyles,
 				"удаление темы обязано вернуть число унесённых привязок: это единственный разрушительный путь фазы, и он не имеет права быть немым")
+			require.Zero(t, res.UnlinkedTasks,
+				"а число задач (0322) обязано остаться нулём там, где задач не было: два числа в одном ответе — это два места, где можно однажды подставить не то")
 
 			left, err := storeScalarInt(ctx,
 				`SELECT COUNT(*) FROM file_topic_tech_card WHERE topic_id = ?`, project)

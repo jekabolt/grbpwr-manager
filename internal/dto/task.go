@@ -110,7 +110,8 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 	if len(pb.Assignee) > maxVarchar255 {
 		return nil, fmt.Errorf("task assignee must be at most %d characters", maxVarchar255)
 	}
-	if pb.TechCardId < 0 || pb.ProductId < 0 || pb.ArchiveId < 0 || pb.FittingId < 0 || pb.ProductionRunId < 0 {
+	if pb.TechCardId < 0 || pb.ProductId < 0 || pb.ArchiveId < 0 || pb.FittingId < 0 ||
+		pb.ProductionRunId < 0 || pb.ProjectTopicId < 0 {
 		return nil, fmt.Errorf("task deep-link ids must not be negative")
 	}
 	orderUUID := strings.TrimSpace(pb.OrderUuid)
@@ -199,6 +200,7 @@ func ConvertPbTaskInsertToEntity(pb *pb_common.TaskInsert) (*entity.TaskInsert, 
 		FittingId:        nullInt32FromPb(pb.FittingId),
 		ProductionRunId:  nullInt32FromPb(pb.ProductionRunId),
 		SampleId:         nullInt32FromPb(pb.SampleId),
+		ProjectTopicId:   nullInt32FromPb(pb.ProjectTopicId),
 		Labels:           labels,
 		MediaIds:         mediaIds,
 		FileIds:          fileIds,
@@ -358,6 +360,7 @@ func ConvertEntityTaskToPb(t *entity.Task) *pb_common.Task {
 			FittingId:       pbInt32FromNull(t.FittingId),
 			ProductionRunId: pbInt32FromNull(t.ProductionRunId),
 			SampleId:        pbInt32FromNull(t.SampleId),
+			ProjectTopicId:  pbInt32FromNull(t.ProjectTopicId),
 			FileIds:         fileIds,
 			// Указания едут ВМЕСТЕ с содержимым, а не отдельным полем ответа: карточку
 			// сохраняет одна форма, и то, что она не прочитала, она сотрёт полной заменой.

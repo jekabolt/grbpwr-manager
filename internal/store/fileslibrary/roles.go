@@ -263,8 +263,8 @@ func (s *Store) SetFileRoles(ctx context.Context, fileIDs []int, projectTopicID,
 }
 
 // UpdateTopicMeta REPLACES a topic's kind, dates and archive flag, returning what
-// the demotion took away: how many VISIBLE link rows lost their role, and how many
-// styles lost their link to the project.
+// the demotion took away: how many VISIBLE link rows lost their role, how many
+// styles lost their link to the project, and how many kanban cards lost it too.
 //
 // ПОНИЖЕНИЕ ПРОЕКТА СНИМАЕТ ЕГО ПРОЕКТНЫЕ СВОЙСТВА В ТОЙ ЖЕ ТРАНЗАКЦИИ И ГОВОРИТ, СКОЛЬКО СНЯЛО.
 // Оставить роли значило бы завести строки, чья роль указывает в тему, проектом не являющуюся, —
@@ -274,12 +274,15 @@ func (s *Store) SetFileRoles(ctx context.Context, fileIDs []int, projectTopicID,
 // воскресило бы разметку, которой никто не ставил, а карточка вещи потеряла бы ответ на «каким
 // файлом меня сделали» в день, когда кто-то переключил тип темы.
 //
-// ДВА ЧИСЛА СЧИТАЮТСЯ ПО-РАЗНОМУ, И ЭТО НЕ НЕБРЕЖНОСТЬ. Роли считаются ПОД предикатом видимости
+// ТРИ ЧИСЛА СЧИТАЮТСЯ ПО-РАЗНОМУ, И ЭТО НЕ НЕБРЕЖНОСТЬ. Роли считаются ПОД предикатом видимости
 // (а обнуляются все) — та же асимметрия, что у слияний: число читает человек, и «снято 7» в
 // проекте, где ему видно два файла, само рассказало бы, что от него что-то закрыто. Привязки
-// стилей считаются ТОЧНО: стиль — не файл библиотеки, он живёт под собственным RBAC секции
-// techcards, и прятать его от того, кто и так правит проект, значило бы придумать границу,
-// которой в системе нет.
+// стилей и ссылки задач считаются ТОЧНО: ни стиль, ни карточка канбана не являются файлом
+// библиотеки — они живут под собственным RBAC секций techcards и tasks, — и прятать их от того,
+// кто и так правит проект, значило бы придумать границу, которой в системе нет.
+//
+// ЧИСЛА ПРИЕЗЖАЮТ В ИМЕНОВАННЫЕ ПОЛЯ, а не тройкой в возврате, именно потому, что их стало три:
+// см. довод у entity.FileTopicMetaResult и тест, который ставит три РАЗНЫХ количества.
 func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdate) (entity.FileTopicMetaResult, error) {
 	var res entity.FileTopicMetaResult
 	if m.TopicId <= 0 {
@@ -292,7 +295,7 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 	if err != nil {
 		return res, err
 	}
-	var cleared, unlinked int
+	var cleared, unlinked, clearedTasks int
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		exists, err := storeutil.QueryCountNamed(ctx, rep.DB(),
 			`SELECT COUNT(*) FROM file_topic WHERE id = :id`, map[string]any{"id": m.TopicId})
@@ -329,6 +332,22 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 				return fmt.Errorf("failed to unlink styles of a demoted project: %w", err)
 			}
 			unlinked = int(rows)
+			// ССЫЛКИ ЗАДАЧ УХОДЯТ ВМЕСТЕ С ТИПОМ (0322), ТРЕТЬИМ ПРОЕКТНЫМ СВОЙСТВОМ. Задача при
+			// этом ОСТАЁТСЯ — она про работу, а не про съёмку, — и теряет только контекст.
+			//
+			// SQL ПО ЧУЖОЙ ТАБЛИЦЕ, А НЕ ВЫЗОВ СТОРА ЗАДАЧ, И ЭТО ВЫНУЖДЕННО ПО СУЩЕСТВУ. Понижение
+			// обязано быть ОДНОЙ транзакцией с обнулением: между двумя транзакциями наблюдаемо
+			// состояние «тема уже ярлык, а карточки всё ещё указывают в неё», то есть ровно то,
+			// чего этот код не допускает. А вложенный вызов сюда не годится: sub-store внутри
+			// транзакции несёт txFunc ВНЕШНЕГО стора (initSubStoresForTx в store/db.go), поэтому
+			// rep.Tasks() открыл бы ВТОРУЮ транзакцию и упёрся бы в собственные локи.
+			taskRows, err := storeutil.ExecNamedRows(ctx, rep.DB(),
+				`UPDATE task SET project_topic_id = NULL WHERE project_topic_id = :id`,
+				map[string]any{"id": m.TopicId})
+			if err != nil {
+				return fmt.Errorf("failed to clear project links of a demoted project: %w", err)
+			}
+			clearedTasks = int(taskRows)
 		}
 		// COALESCE держит МОМЕНТ архивации по тому же доводу, что у роли: правка дат уже
 		// заархивированного проекта не имеет права переписывать «когда его убрали».
@@ -356,5 +375,6 @@ func (s *Store) UpdateTopicMeta(ctx context.Context, m entity.FileTopicMetaUpdat
 	}
 	res.ClearedRoles = cleared
 	res.ClearedStyles = unlinked
+	res.ClearedTasks = clearedTasks
 	return res, nil
 }

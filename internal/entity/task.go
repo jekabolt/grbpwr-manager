@@ -83,8 +83,17 @@ type TaskInsert struct {
 	FittingId       sql.NullInt32  `db:"fitting_id"`
 	ProductionRunId sql.NullInt32  `db:"production_run_id"`
 	SampleId        sql.NullInt32  `db:"sample_id"`
-	Labels          []string       `db:"-"`
-	MediaIds        []int          `db:"-"`
+	// ProjectTopicId — ВОСЬМАЯ глубокая ссылка (0322): проект библиотеки файлов, в котором
+	// происходит эта работа. Колонка, а не вторая таблица связи: задача — единица работы, и работа
+	// происходит в ОДНОМ контексте, в отличие от связи «проект ↔ стиль» (0321), где множественны
+	// обе стороны.
+	//
+	// Указывать можно только тему kind='project'. Проверяется в сторе внутри пишущей транзакции —
+	// не CHECK'ом (он проверяет всю историю и останавливает старт прода) и не внешним ключом (тема
+	// СУЩЕСТВУЕТ, она просто ярлык, и ключ на это не срабатывает вовсе).
+	ProjectTopicId sql.NullInt32 `db:"project_topic_id"`
+	Labels         []string      `db:"-"`
+	MediaIds       []int         `db:"-"`
 	// FileIds are library files attached to the card. Separate from MediaIds
 	// because the two live in different buckets with opposite privacy: media is
 	// public-read on the CDN (it ships to the storefront), library files are
@@ -178,7 +187,11 @@ type TaskListFilter struct {
 	FittingId       int        // 0 = no filter
 	ProductionRunId int        // 0 = no filter
 	SampleId        int        // 0 = no filter
-	IncludeArchived bool       // false = active only (default); true = include archived
+	// ProjectTopicId отвечает на ОБРАТНЫЙ вопрос фазы 0322 — «какие задачи у этого проекта».
+	// Фильтр существующего списка, а не отдельный RPC: это тот же список задач, просто суженный, и
+	// второй путь к тем же данным завёл бы вторые права, которым нечем помешать разойтись.
+	ProjectTopicId  int  // 0 = no filter
+	IncludeArchived bool // false = active only (default); true = include archived
 	Limit           int
 	Offset          int
 	OrderFactor     OrderFactor

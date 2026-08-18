@@ -250,7 +250,7 @@ func (s *Server) DeleteFileTopic(ctx context.Context, req *pb_admin.DeleteFileTo
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "topic id is required")
 	}
-	unlinkedStyles, err := s.repo.Files().DeleteTopic(ctx, int(req.Id))
+	res, err := s.repo.Files().DeleteTopic(ctx, int(req.Id))
 	if err != nil {
 		if errors.Is(err, entity.ErrFileTopicInUse) {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -263,12 +263,18 @@ func (s *Server) DeleteFileTopic(ctx context.Context, req *pb_admin.DeleteFileTo
 		slog.Default().ErrorContext(ctx, "can't delete file topic", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't delete topic")
 	}
-	// СТИЛИ УДАЛЕНИЕ НЕ ЗАПРЕЩАЮТ, НО ОБЯЗАНЫ БЫТЬ НАЗВАНЫ (0321). Проект без файлов, но с
-	// привязанными вещами, удаляется штатно — счётчик на экране тем показывает файлы и о
-	// привязках не знает, поэтому отказ был бы тупиком без способа увидеть, во что упёрся. А
-	// молчание сделало бы «убрал пустую съёмку» и «у восьми вещей пропал ответ, каким файлом их
-	// сделали» двумя событиями, между которыми месяц.
-	return &pb_admin.DeleteFileTopicResponse{UnlinkedStyles: int32(unlinkedStyles)}, nil
+	// НИ СТИЛИ, НИ ЗАДАЧИ УДАЛЕНИЕ НЕ ЗАПРЕЩАЮТ, НО ОБЯЗАНЫ БЫТЬ НАЗВАНЫ (0321, 0322). Проект без
+	// файлов, но с привязанными вещами и висящими карточками, удаляется штатно — счётчик на экране
+	// тем показывает файлы и ни о том, ни о другом не знает, поэтому отказ был бы тупиком без
+	// способа увидеть, во что упёрся. А молчание сделало бы «убрал пустую съёмку» и «у восьми вещей
+	// пропал ответ, каким файлом их сделали» двумя событиями, между которыми месяц.
+	//
+	// Числа едут РАЗДЕЛЬНО: склеенные, они больше не разбираются, и «унесло 12» перестаёт отвечать
+	// на «двенадцать чего».
+	return &pb_admin.DeleteFileTopicResponse{
+		UnlinkedStyles: int32(res.UnlinkedStyles),
+		UnlinkedTasks:  int32(res.UnlinkedTasks),
+	}, nil
 }
 
 // MergeFileTopics folds one topic into another and deletes the source.

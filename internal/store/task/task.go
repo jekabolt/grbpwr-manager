@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -39,6 +40,9 @@ func New(base storeutil.Base, txFunc TxFunc) *Store {
 func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if err := ensureProjectTopic(ctx, rep.DB(), t.ProjectTopicId); err != nil {
+			return err
+		}
 		// Append to the end of the target column. Archived tasks are excluded from
 		// position accounting (they are outside the visible sequence).
 		pos, err := storeutil.QueryCountNamed(ctx, rep.DB(),
@@ -53,8 +57,8 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		params["position"] = pos
 		params["createdBy"] = t.CreatedBy
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO task (title, description, board, status, position, assignee, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, started_at)
-			VALUES (:title, :description, :board, :status, :position, :assignee, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId,
+			INSERT INTO task (title, description, board, status, position, assignee, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, started_at)
+			VALUES (:title, :description, :board, :status, :position, :assignee, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId, :projectTopicId,
 				CASE WHEN :status = 'in_progress' THEN UTC_TIMESTAMP() ELSE NULL END)`,
 			params)
 		if err != nil {
@@ -87,6 +91,9 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 		if exists == 0 {
 			return sql.ErrNoRows
 		}
+		if err := ensureProjectTopic(ctx, rep.DB(), t.ProjectTopicId); err != nil {
+			return err
+		}
 		params := taskContentParams(t)
 		params["id"] = id
 		if err := storeutil.ExecNamed(ctx, rep.DB(), `
@@ -103,7 +110,8 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 				archive_id = :archiveId,
 				fitting_id = :fittingId,
 				production_run_id = :productionRunId,
-				sample_id = :sampleId
+				sample_id = :sampleId,
+				project_topic_id = :projectTopicId
 			WHERE id = :id`, params); err != nil {
 			return fmt.Errorf("failed to update task: %w", err)
 		}
@@ -423,6 +431,17 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		where += " AND sample_id = :sampleId"
 		filterParams["sampleId"] = f.SampleId
 	}
+	// «КАКИЕ ЗАДАЧИ У ЭТОГО ПРОЕКТА» — ФИЛЬТР, А НЕ ОТДЕЛЬНЫЙ RPC (0322). Это тот же список задач,
+	// просто суженный, поэтому он ходит под тем же rd(tasks), что и доска. Новый RPC завёл бы
+	// второй путь к тем же данным, и его правам нечем было бы помешать однажды разойтись — проект
+	// стал бы боковым каналом к задачам, которых человек иначе не видит.
+	//
+	// Существование темы здесь НЕ проверяется, как и у семи соседей: несуществующий проект отдаёт
+	// пустой список, а не отличимый отказ, — иначе чтение стало бы оракулом по темам.
+	if f.ProjectTopicId > 0 {
+		where += " AND project_topic_id = :projectTopicId"
+		filterParams["projectTopicId"] = f.ProjectTopicId
+	}
 	// Active-only by default: archived tasks are hidden from the board unless
 	// explicitly requested.
 	if !f.IncludeArchived {
@@ -557,7 +576,44 @@ func taskContentParams(t *entity.TaskInsert) map[string]any {
 		"fittingId":       t.FittingId,
 		"productionRunId": t.ProductionRunId,
 		"sampleId":        t.SampleId,
+		"projectTopicId":  t.ProjectTopicId,
 	}
+}
+
+// ensureProjectTopic отказывает, если карточку привязывают к теме, которая НЕ проект (0322).
+//
+// ЗАЧЕМ ВООБЩЕ ПРОВЕРКА, РАЗ ЕСТЬ ВНЕШНИЙ КЛЮЧ. Ключ здесь не срабатывает вовсе: тема
+// СУЩЕСТВУЕТ, она просто ярлык. CHECK'ом это невыразимо без денормализации `kind` в `task`, а
+// ретроактивный CHECK к тому же проверяет ВСЮ историю таблицы и останавливает старт прода.
+//
+// ВНУТРИ ПИШУЩЕЙ ТРАНЗАКЦИИ, А НЕ ПЕРЕД НЕЙ. Транзакции стора идут в SERIALIZABLE, поэтому чтение
+// `kind` запирает строку темы, и параллельное понижение проекта в ярлык (UpdateTopicMeta, которое
+// в той же транзакции обнуляет ссылки задач) не может проскочить между проверкой и записью.
+// Снаружи транзакции проверка была бы фикцией: под обычным снимком повторное чтение вернуло бы ту
+// же устаревшую картину.
+//
+// НЕСУЩЕСТВУЮЩАЯ ТЕМА ПРОПУСКАЕТСЯ НАМЕРЕННО — на неё ответит внешний ключ (1452), который
+// хендлер переводит в тот же InvalidArgument, что и для остальных семи глубоких ссылок. Иначе
+// пришлось бы вернуть отсюда sql.ErrNoRows, а в UpdateTask он уже занят смыслом «задачи нет» и
+// хендлер ответил бы «task not found» на живую задачу с опечаткой в id темы.
+func ensureProjectTopic(ctx context.Context, db dependency.DB, ref sql.NullInt32) error {
+	if !ref.Valid {
+		return nil
+	}
+	kind, err := storeutil.QueryNamedOne[struct {
+		Kind entity.FileTopicKind `db:"kind"`
+	}](ctx, db, `SELECT kind FROM file_topic WHERE id = :id`,
+		map[string]any{"id": ref.Int32})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("failed to check file topic kind: %w", err)
+	}
+	if kind.Kind != entity.FileTopicKindProject {
+		return entity.ErrTaskNeedsProjectTopic
+	}
+	return nil
 }
 
 func insertTaskLabels(ctx context.Context, db dependency.DB, taskID int, labels []string) error {
