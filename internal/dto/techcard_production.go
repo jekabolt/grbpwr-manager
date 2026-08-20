@@ -351,6 +351,16 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err != nil {
 			return nil, err
 		}
+		// --- «виды операций» (0324): десять блоков семейств и вся их валидация ---------------------
+		//
+		// Разбирается ВСЕГДА, без флага осведомлённости: обязательность объявляет сам глагол, а
+		// глагол волны старый бандл прислать физически не может — токена нет в его словаре. Шаг
+		// БЕЗ единого нового поля проходит здесь без единого отказа, и это ровно то, что держит
+		// круг существующих строк байт-в-байт.
+		kinds, err := parseOperationKindFields(o, opType, machineType, step)
+		if err != nil {
+			return nil, err
+		}
 		// piece_line_keys (WS4): the cut-pieces this operation works on. Repeated because an
 		// assembly operation spans as many pieces as it joins. Blanks are dropped and duplicates
 		// collapsed here so the store's join-table write can stay a straight insert -- the table's
@@ -447,14 +457,60 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			PressPressureNCm2: press.pressureNCm2,
 			PressSteam:        press.steam,
 			PressCloth:        press.cloth,
+
+			// Тридцать две колонки волны — ПОРЯДКОМ §1, тем же, что в структуре entity, в ALTER'е
+			// и в INSERT/SELECT стора. Расхождение порядка между этими списками молчит до первого
+			// сохранения, поэтому порядок здесь не «как удобнее», а канон.
+			NeedleCount:   kinds.needleCount,
+			NeedleGaugeMm: kinds.needleGaugeMm,
+			SeamSecuring:  kinds.seamSecuring,
+			RowSpacingMm:  kinds.rowSpacingMm,
+			FullnessRatio: kinds.fullnessRatio,
+
+			PlacementCount: kinds.placementCount,
+			PitchMm:        kinds.pitchMm,
+
+			AttachMethod:     kinds.attachMethod,
+			HolePrep:         kinds.holePrep,
+			Reinforcement:    kinds.reinforcement,
+			FoldbackMm:       kinds.foldbackMm,
+			CycleStitchCount: kinds.cycleStitchCount,
+
+			PrintMethod:    kinds.printMethod,
+			PeelMode:       kinds.peelMode,
+			SecondPressSec: kinds.secondPressSec,
+			PressureScale:  kinds.pressureScale,
+
+			AirTemperatureC: kinds.airTemperatureC,
+			FeedSpeedMMin:   kinds.feedSpeedMMin,
+
+			TrimAction:          kinds.trimAction,
+			ResidualAllowanceMm: kinds.residualAllowanceMm,
+
+			ResidualTailMaxMm: kinds.residualTailMaxMm,
+
+			CleaningKind:   kinds.cleaningKind,
+			CoverageMode:   kinds.coverageMode,
+			WetProcessKind: kinds.wetProcessKind,
+
+			ButtonholeStyle:       kinds.buttonholeStyle,
+			CutLengthMm:           kinds.cutLengthMm,
+			ButtonholeOrientation: kinds.buttonholeOrientation,
+			BartackLengthMm:       kinds.bartackLengthMm,
+			AttachPattern:         kinds.attachPattern,
+			ZipperApplication:     kinds.zipperApplication,
+			BindingStyle:          kinds.bindingStyle,
+			LabelAttachStitch:     kinds.labelAttachStitch,
 		})
 	}
 	return out, nil
 }
 
 // parseTopstitch splits the sub-message into its three columns and enforces the one rule that makes
-// the mode mean anything: a width belongs to WIDTH and nowhere else. Carrying «6 mm» alongside
-// «edge» would leave a shadow value that nothing reads and the next editor believes.
+// the mode mean anything: a width belongs to the modes that HAVE one (WIDTH and PARALLEL_TO_SEAM)
+// and nowhere else. Carrying «6 mm» alongside «edge» — or alongside «in the ditch», where the line
+// is buried in the seam itself — would leave a shadow value that nothing reads and the next editor
+// believes.
 // The violation paths here are FLAT (`topstitch_width_mm`), not the nested wire path
 // (`topstitch.width_mm`), and that is deliberate: a field violation exists to point the admin at the
 // CONTROL the operator must fix, and the admin routes it by camel-casing the path onto a form field.
@@ -470,21 +526,31 @@ func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString
 	}
 	tok, ok := topstitchModePbToToken[t.Mode]
 	if !ok {
-		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_mode", "unknown_value", t.Mode.String(), "pick edge or width")
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_mode", "unknown_value", t.Mode.String(),
+			"pick where the line runs — along the edge, at a stated width, in the ditch of the seam, or parallel to it")
 	}
 	mode = sql.NullString{String: tok, Valid: true}
 	w, err := nullDecimalFromPb(t.WidthMm)
 	if err != nil {
 		return mode, width, rows, fmt.Errorf("%s.topstitch.width_mm: %w", step, err)
 	}
-	isWidth := t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH
+	// ШИРИНА ЕСТЬ РОВНО У ДВУХ РЕЖИМОВ ИЗ ЧЕТЫРЁХ, и волна 0324 добавила по одному в каждую
+	// половину: PARALLEL_TO_SEAM — это ОТСТУП ОТ ШВА, и без числа он не инструкция; IN_DITCH —
+	// строчка идёт В САМ ШОВ, у неё ширины нет и быть не может. Проверка написана списком режимов,
+	// а не сравнением с одним значением: третий режим со своей стороны добавится сюда, а не
+	// провалится в «иначе».
+	needsWidth := t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH ||
+		t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_PARALLEL_TO_SEAM
 	switch {
-	case isWidth && !w.Valid:
+	case needsWidth && !w.Valid:
 		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "required", "",
-			"a topstitch at a stated width needs the width; pick «edge» if it runs along the fold instead")
-	case !isWidth && w.Valid:
-		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "not_applicable", w.Decimal.String(),
-			"«edge» topstitching has no width — clear it, or switch the mode to width")
+			"a topstitch at a stated width — or at an offset FROM the seam — needs the number; pick «edge» or «in the ditch» if it has no width of its own")
+	case !needsWidth && w.Valid:
+		hint := "«edge» topstitching has no width — clear it, or switch the mode to width"
+		if t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH {
+			hint = "an in-the-ditch topstitch has no width — it follows the seam; clear the number, or switch the mode to width"
+		}
+		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "not_applicable", w.Decimal.String(), hint)
 	}
 	if err := validateDecimalScale(w, step+".topstitch_width_mm", 1, entity.MaxSeamAllowanceMm); err != nil {
 		return mode, width, rows, err
@@ -737,6 +803,22 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Media:          operationMediaToPb(o.Media),
 			OutputUnitKey:  pbStringFromNull(o.OutputUnitKey),
 			OutputUnitName: pbStringFromNull(o.OutputUnitName),
+
+			// Виды операций (0324). Два дискриминатора — полями шага, восемь семейств — блоками, и
+			// блок эмитится только когда в нём есть заполненный факт: пустая обёртка читалась бы
+			// как «про это семейство думали» на каждом шаге, где про него не думал никто.
+			PrintMethod:     printMethodTokenToPb[o.PrintMethod.String],
+			Stitching:       operationStitchingToPb(o),
+			PlacementLayout: operationPlacementToPb(o),
+			Hardware:        operationHardwareToPb(o),
+			Print:           operationPrintToPb(o),
+			Weld:            operationWeldToPb(o),
+			Trim:            operationTrimToPb(o),
+			ThreadTrim:      operationThreadTrimToPb(o),
+			Clean:           operationCleanToPb(o),
+			Inspect:         operationInspectToPb(o),
+			WetProcessKind:  wetProcessKindTokenToPb[o.WetProcessKind.String],
+			Fastening:       operationFasteningToPb(o),
 		})
 	}
 	return out
