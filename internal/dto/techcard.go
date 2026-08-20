@@ -319,6 +319,11 @@ var techCardBomKindPbToEntity = map[pb_common.TechCardBomKind]entity.TechCardBom
 	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_GARMENT_CASE:      entity.BomKindGarmentCase,
 	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_INSERT_CARD:       entity.BomKindInsertCard,
 	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_OTHER:             entity.BomKindOther,
+	// Волна 0324. Номер 54 в enum'е — ДЫРА, обещанная отложенному wet_chemical, поэтому пара
+	// приезжает как 53 и 55; здесь это не видно, и видно быть не должно — таблица говорит о
+	// значениях, а не о номерах.
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SEAM_SEALING_TAPE:     entity.BomKindSeamSealingTape,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_EMBROIDERY_STABILIZER: entity.BomKindEmbroideryStabilizer,
 }
 
 var techCardBomKindEntityToPb = func() map[entity.TechCardBomKind]pb_common.TechCardBomKind {

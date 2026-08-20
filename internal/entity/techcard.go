@@ -931,6 +931,9 @@ const (
 	BomKindBoning   TechCardBomKind = "boning"    // регилин
 	BomKindLace     TechCardBomKind = "lace"      // кружево
 	BomKindRibbing  TechCardBomKind = "ribbing"   // трикотажная резинка
+	// Волна 0324. Лента проклейки шва — метражная лента ОТДЕЛОЧНОЙ секции, соседи по дому у неё
+	// tape / binding / piping / webbing; расходует её шаг на машине seam_taping.
+	BomKindSeamSealingTape TechCardBomKind = "seam_sealing_tape"
 
 	// ДЕКОР (home section: decoration) — applied ONTO the garment; holds nothing together.
 	BomKindPrint        TechCardBomKind = "print"
@@ -963,6 +966,11 @@ const (
 	BomKindDustBag       TechCardBomKind = "dust_bag"     // == AuxSubtypeDustBag
 	BomKindGarmentCase   TechCardBomKind = "garment_case" // == AuxSubtypeGarmentCase
 	BomKindInsertCard    TechCardBomKind = "insert_card"  // печатная карточка, уже AuxSubtypeInsert
+
+	// ПРОКЛАДОЧНЫЕ (home section: interlining). Волна 0324: стабилизатор под вышивку — расходник,
+	// который лежит ПОД тканью на время работы и держит пяльцы; по этому признаку он сосед клеевой
+	// прокладки, а не декора, хотя расходует его вышивальный шаг.
+	BomKindEmbroideryStabilizer TechCardBomKind = "embroidery_stabilizer"
 
 	// ДРУГОЕ — meaning lives in KindNote, never in a shadow value on one of the 51 real kinds.
 	BomKindOther TechCardBomKind = "other"
@@ -1010,6 +1018,10 @@ var bomKindHomeSection = map[TechCardBomKind]TechCardBomSection{
 	BomKindBoning:   BomSectionTrim,
 	BomKindLace:     BomSectionTrim,
 	BomKindRibbing:  BomSectionTrim,
+
+	BomKindSeamSealingTape: BomSectionTrim,
+
+	BomKindEmbroideryStabilizer: BomSectionInterlining,
 
 	BomKindPrint:        BomSectionDecoration,
 	BomKindEmbroidery:   BomSectionDecoration,
@@ -2313,6 +2325,21 @@ const (
 	OpTypeMachine   TechCardOperationType = "machine"    // машинная; the machine is MachineType
 	OpTypePress     TechCardOperationType = "press"      // ВТО: приутюжить / заутюжить / отпарить
 	OpTypePressOpen TechCardOperationType = "press_open" // разутюжка
+
+	// Девять глаголов волны «виды операций» (0324). Каждый из шести первых ОБЪЯВЛЯЕТ СВОЙ
+	// ДИСКРИМИНАТОР обязательным — глагол выбирается только новым бандлом, а бандл, который умеет
+	// его выбрать, умеет заполнить и обязательное поле. FOLD и PACK полей шага не несут вовсе:
+	// сложить и упаковать описываются нормой времени и зоной, и заводить им пустое семейство
+	// значило бы заводить экран без единого поля.
+	OpTypeHardwareSet TechCardOperationType = "hardware_set" // установка фурнитуры; дискриминатор attach_method
+	OpTypePrint       TechCardOperationType = "print"        // печать/перенос; дискриминатор print_method
+	OpTypeTrim        TechCardOperationType = "trim"         // подрезка и выправка; дискриминатор trim_action
+	OpTypeThreadTrim  TechCardOperationType = "thread_trim"  // чистка концов ниток
+	OpTypeClean       TechCardOperationType = "clean"        // чистка изделия; дискриминатор cleaning_kind
+	OpTypeInspect     TechCardOperationType = "inspect"      // контроль; дискриминатор coverage_mode
+	OpTypeFold        TechCardOperationType = "fold"         // сложить; полей шага не несёт
+	OpTypePack        TechCardOperationType = "pack"         // упаковать; полей шага не несёт
+	OpTypeWetProcess  TechCardOperationType = "wet_process"  // мокрая обработка; дискриминатор wet_process_kind
 )
 
 // OperationTypeTokens is THE vocabulary of operation types as it is STORED — the six choosable
@@ -2323,6 +2350,10 @@ const (
 var OperationTypeTokens = []string{
 	"unknown", // unset; legal in storage, rejected on an operation write
 	"machine", "press", "press_open", "fusing", "handwork", "other",
+	// Волна «виды операций» (0324) — ДОПИСАНЫ В КОНЕЦ, тем же порядком, которым их перечисляет
+	// REGEXP chk_op_operation_type: порядок этого слайса и есть порядок словаря в CHECK'е, и lint
+	// сверяет их множествами, а человек — глазами.
+	"hardware_set", "print", "trim", "thread_trim", "clean", "inspect", "fold", "pack", "wet_process",
 }
 
 // LegacyOperationMachineType is the ONE canonicalisation table for the nine legacy operation types:
@@ -2481,6 +2512,9 @@ var MachineTypeTokens = []string{
 	"binding_taping", "zipper_setting", "gathering", "patch_pocket_auto", "welt_pocket_auto",
 	"template_auto", "collar_cuff_auto", "sleeve_setting_auto", "waistband_auto",
 	"other",
+	// Волна 0324: две машины БЕЗ ИГЛЫ И НИТКИ. Легаси-двойника у них нет (в старом словаре
+	// operation_type такого шага не было вовсе), поэтому дописаны в конец, как и в CHECK'е.
+	"seam_taping", "ultrasonic_welder",
 }
 
 var ValidMachineTypes = tokenSet[TechCardMachineType](MachineTypeTokens)
@@ -2533,7 +2567,10 @@ var ValidThreadTensions = tokenSet[TechCardThreadTension](ThreadTensionTokens)
 // same reason it is on the attachment kind: NULL already means «inherit the profile».
 type TechCardPressCloth string
 
-var PressClothTokens = []string{"none", "press_cloth", "damp_press_cloth", "teflon_sheet", "other"}
+var PressClothTokens = []string{
+	"none", "press_cloth", "damp_press_cloth", "teflon_sheet", "other",
+	"silicone_paper", // волна 0324: подложка термопресса; ВТО-блок легален и на шаге PRINT
+}
 
 var ValidPressCloths = tokenSet[TechCardPressCloth](PressClothTokens)
 
@@ -2582,9 +2619,17 @@ type TechCardTopstitchMode string
 const (
 	TopstitchEdge  TechCardTopstitchMode = "edge"
 	TopstitchWidth TechCardTopstitchMode = "width"
+	// Волна 0324. IN_DITCH — строчка идёт В САМ ШОВ, ширины у неё нет и быть не может;
+	// PARALLEL_TO_SEAM — отступ ОТ ШВА, и ширина у него, наоборот, обязательна. Два режима
+	// приехали вместе именно поэтому: они и есть две недостающие половины вопроса «где строчка».
+	TopstitchInDitch        TechCardTopstitchMode = "in_ditch"
+	TopstitchParallelToSeam TechCardTopstitchMode = "parallel_to_seam"
 )
 
-var TopstitchModeTokens = []string{"edge", "width"}
+// Колонка topstitch_mode заводилась VARCHAR(8) (0289) и `parallel_to_seam` в неё не влезает —
+// 0324 расширяет её до VARCHAR(16) ДО пересоздания chk_op_topstitch_mode. Сокращать токен до
+// `parallel` отказались: имя обязано говорить, ОТ ЧЕГО отступ.
+var TopstitchModeTokens = []string{"edge", "width", "in_ditch", "parallel_to_seam"}
 
 var ValidTopstitchModes = tokenSet[TechCardTopstitchMode](TopstitchModeTokens)
 
@@ -2601,6 +2646,211 @@ func tokenSet[T ~string](tokens []string) map[T]bool {
 // MaxTopstitchRows caps the row count. Four rows of topstitching is already decorative extremity;
 // past that it is a typo, and an unbounded count reaches the printed sheet as nonsense.
 const MaxTopstitchRows = 4
+
+// --- словари волны «виды операций» (0324) --------------------------------------------------------
+//
+// Семнадцать закрытых словарей десяти семейств шага. Правила ровно те же, что у словарей
+// оборудования выше, и по той же причине: слайс — ЕДИНСТВЕННЫЙ ИСТОЧНИК, dto строит из него
+// карту proto↔токен (enumTokenMap панике́т на init, если токену не нашлось члена enum), CHECK
+// миграции 0324 повторяет тот же список, а lint сверяет обе половины.
+//
+// Ни один из семнадцати не несёт "unknown": «не указано» — это NULL в колонке, а не токен, иначе
+// «унаследовано» и «решено» перестанут различаться. Где явное «нет» вообще существует, оно —
+// отдельный член словаря (`none` у seam_securing, hole_prep, reinforcement, peel_mode).
+//
+// Порядок в слайсе = порядок, которым словарь читается в форме, печатается в отказе и перечисляется
+// в REGEXP'е CHECK'а. Поэтому слайсы, а не мапы: мапа в Go обходится случайно, и один и тот же
+// отказ печатал бы список каждый раз по-новому.
+
+// TechCardSeamSecuring — чем закреплён конец строчки (S3).
+type TechCardSeamSecuring string
+
+var SeamSecuringTokens = []string{"none", "backtack", "condensed", "latched"}
+
+var ValidSeamSecurings = tokenSet[TechCardSeamSecuring](SeamSecuringTokens)
+
+// TechCardHardwareAttachMethod — КАК фурнитура держится на изделии (H1). Дискриминатор глагола
+// hardware_set: без него шаг не описан вовсе, поэтому он REQUIRED и проверяется безусловно.
+type TechCardHardwareAttachMethod string
+
+const HardwareAttachThreaded TechCardHardwareAttachMethod = "threaded" // единственный, при котором осмыслен foldback_mm
+
+var HardwareAttachMethodTokens = []string{"sew", "prong_clinch", "press_set", "crimp", "threaded"}
+
+var ValidHardwareAttachMethods = tokenSet[TechCardHardwareAttachMethod](HardwareAttachMethodTokens)
+
+// TechCardHolePrep — чем готовится отверстие под фурнитуру (H2).
+type TechCardHolePrep string
+
+var HolePrepTokens = []string{"none", "prong_pierce", "awl_pierce", "punch"}
+
+var ValidHolePreps = tokenSet[TechCardHolePrep](HolePrepTokens)
+
+// TechCardReinforcement — чем усилено место установки (H3).
+type TechCardReinforcement string
+
+var ReinforcementTokens = []string{"none", "fusible_patch", "fabric_stay", "tape", "seam_catch", "other"}
+
+var ValidReinforcements = tokenSet[TechCardReinforcement](ReinforcementTokens)
+
+// TechCardPrintMethod — метод печати или переноса (P1). Дискриминатор глагола print.
+type TechCardPrintMethod string
+
+// laser_engrave — единственный член словаря БЕЗ НОСИТЕЛЯ И БЕЗ ПРИЖИМА: у него нет ни отделения
+// плёнки, ни второго прижима, ни шкалы давления, и ВТО-блок шага при нём тоже бессмыслен.
+const PrintMethodLaserEngrave TechCardPrintMethod = "laser_engrave"
+
+var PrintMethodTokens = []string{"screen", "dtf", "heat_transfer", "foil", "laser_engrave"}
+
+var ValidPrintMethods = tokenSet[TechCardPrintMethod](PrintMethodTokens)
+
+// TechCardPeelMode — как снимается носитель (P2). `none` = носителя нет вовсе.
+type TechCardPeelMode string
+
+var PeelModeTokens = []string{"none", "hot", "warm", "cold"}
+
+var ValidPeelModes = tokenSet[TechCardPeelMode](PeelModeTokens)
+
+// TechCardPressureScale — прижим термопресса ШКАЛОЙ, а не числом: сырое усилие ничего не значит
+// между двумя разными прессами. Шкала упорядочена и поэтому не несёт "other".
+type TechCardPressureScale string
+
+var PressureScaleTokens = []string{"light", "medium", "firm"}
+
+var ValidPressureScales = tokenSet[TechCardPressureScale](PressureScaleTokens)
+
+// TechCardTrimAction — что именно делает подрезка (T1). Дискриминатор глагола trim.
+type TechCardTrimAction string
+
+var TrimActionTokens = []string{
+	"trim_even", "grade_layers", "clip_concave", "notch_convex", "corner_diagonal", "turn_and_shape",
+}
+
+var ValidTrimActions = tokenSet[TechCardTrimAction](TrimActionTokens)
+
+// TechCardCleaningKind — что именно чистят (C1). Дискриминатор глагола clean.
+type TechCardCleaningKind string
+
+var CleaningKindTokens = []string{"spot_clean", "dust_lint", "chalk_removal", "adhesive_removal"}
+
+var ValidCleaningKinds = tokenSet[TechCardCleaningKind](CleaningKindTokens)
+
+// TechCardInspectCoverage — ЧТО ИМЕННО проверяют: каждое изделие, выборку, план AQL или первый
+// выход (Q1). Дискриминатор глагола inspect.
+type TechCardInspectCoverage string
+
+var InspectCoverageTokens = []string{"each_unit", "sample_per_bundle", "aql_plan", "first_output"}
+
+var ValidInspectCoverages = tokenSet[TechCardInspectCoverage](InspectCoverageTokens)
+
+// TechCardWetProcessKind — вид мокрой обработки (WP1). Дискриминатор глагола wet_process.
+type TechCardWetProcessKind string
+
+var WetProcessKindTokens = []string{"rinse", "enzyme", "garment_dye", "softener"}
+
+var ValidWetProcessKinds = tokenSet[TechCardWetProcessKind](WetProcessKindTokens)
+
+// TechCardButtonholeStyle — форма петли (FA1).
+type TechCardButtonholeStyle string
+
+var ButtonholeStyleTokens = []string{"straight", "eyelet", "round_end", "other"}
+
+var ValidButtonholeStyles = tokenSet[TechCardButtonholeStyle](ButtonholeStyleTokens)
+
+// TechCardButtonholeOrientation — как петля лежит (FA5). Не путать с ПОЛОЖЕНИЕМ: где именно
+// петля — говорит выноска, а не словарь.
+type TechCardButtonholeOrientation string
+
+var ButtonholeOrientationTokens = []string{"horizontal", "vertical", "angled"}
+
+var ValidButtonholeOrientations = tokenSet[TechCardButtonholeOrientation](ButtonholeOrientationTokens)
+
+// TechCardButtonAttachPattern — рисунок пришива пуговицы (FA9).
+type TechCardButtonAttachPattern string
+
+var ButtonAttachPatternTokens = []string{"cross_x", "parallel", "square", "u_shape", "other"}
+
+var ValidButtonAttachPatterns = tokenSet[TechCardButtonAttachPattern](ButtonAttachPatternTokens)
+
+// TechCardZipperApplication — способ установки молнии (FA13).
+type TechCardZipperApplication string
+
+var ZipperApplicationTokens = []string{
+	"centered", "lapped", "invisible", "exposed", "fly", "separating_cf", "in_seam_pocket", "other",
+}
+
+var ValidZipperApplications = tokenSet[TechCardZipperApplication](ZipperApplicationTokens)
+
+// TechCardBindingStyle — как сложена бейка (S14).
+type TechCardBindingStyle string
+
+var BindingStyleTokens = []string{"raw", "single_fold", "double_fold"}
+
+var ValidBindingStyles = tokenSet[TechCardBindingStyle](BindingStyleTokens)
+
+// TechCardLabelAttachStitch — какими сторонами пристрочена этикетка (S17). Сама этикетка приезжает
+// строкой BOM; здесь только строчка, которой её сажают.
+type TechCardLabelAttachStitch string
+
+var LabelAttachStitchTokens = []string{
+	"four_sides", "two_sides_top_bottom", "two_sides_left_right", "one_edge", "caught_in_seam",
+	"corners_tack", "other",
+}
+
+var ValidLabelAttachStitches = tokenSet[TechCardLabelAttachStitch](LabelAttachStitchTokens)
+
+// Диапазоны волны 0324. КАЖДЫЙ ИЗ НИХ — САНИТИ, А НЕ СТАНДАРТ: они ловят «14 °C» вместо «140» до
+// цеха, а не объявляют, на что способна машина. Каждый стоит и в схеме одноколоночным CHECK'ом
+// 0324; Go-проверка существует потому, что CHECK отвечает голым 3819 — без поля и без слов, а это
+// числа, которые оператор набрал в форме. Двигать одно — двигать оба.
+const (
+	// Игл в одной строчке: одна обычная, двенадцать — многоигольная цепная.
+	MinNeedleCount = 1
+	MaxNeedleCount = 12
+	// Расстояние между РЯДАМИ строчек, мм. Не путать с расстоянием между иглами.
+	MinRowSpacingMm = 1
+	MaxRowSpacingMm = 30
+	// Повторов на изделии (пуговиц, кнопок, оттисков) и шаг между ними в мм.
+	MinPlacementCount = 1
+	MaxPlacementCount = 99
+	MinPitchMm        = 5
+	MaxPitchMm        = 500
+	// Подгиб стропы через пряжку, мм.
+	MinFoldbackMm = 10
+	MaxFoldbackMm = 80
+	// Стежков в цикле автомата: восемь — короткая закрепка, шестьдесят четыре — плотная петля.
+	MinCycleStitchCount = 8
+	MaxCycleStitchCount = 64
+	// Второй прижим термопереноса, сек.
+	MinSecondPressSec = 1
+	MaxSecondPressSec = 30
+	// Горячий воздух проклейки шва, °C. Потолок — заведомо выше любого паспорта.
+	MinAirTemperatureC = 100
+	MaxAirTemperatureC = 750
+	// Сколько припуска ОСТАЁТСЯ после подрезки и какой хвост нитки допустим — оба в мм.
+	MinResidualAllowanceMm = 1
+	MaxResidualAllowanceMm = 10
+	MinResidualTailMaxMm   = 1
+	MaxResidualTailMaxMm   = 10
+	// Прорезь петли, мм: LBH даёт 6.4..31.8, спец-ножи — 70 и 120.
+	MinCutLengthMm = 4
+	MaxCutLengthMm = 120
+	// Длина закрепки, мм: петельная 1..10, цикловая до 40 — граница взята объединением.
+	MinBartackLengthMm = 1
+	MaxBartackLengthMm = 40
+)
+
+// Три диапазона волны, у которых край ДРОБНЫЙ. Строками, а не float: край границы обязан читаться
+// буквально тем же числом, что стоит в CHECK'е миграции, а float64 уже на 0.3 даёт не то число.
+// dto разбирает их в decimal один раз на init.
+const (
+	MinNeedleGaugeMm = "1.6"  // расстояние МЕЖДУ ИГЛАМИ, мм
+	MaxNeedleGaugeMm = "25.4" // четвертьдюймовая калибровка иглодержателей
+	MinFullnessRatio = "0.60" // посадка/сборка ОТНОШЕНИЕМ: 1.0 — слои один в один
+	MaxFullnessRatio = "4.00"
+	MinFeedSpeedMMin = "0.3" // скорость подачи проклейки/сварки, м/мин
+	MaxFeedSpeedMMin = "10.0"
+)
 
 // TechCardOperation is one sewing step of the assembly order (Sheet «Обработка»).
 //
