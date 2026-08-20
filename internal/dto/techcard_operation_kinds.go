@@ -369,16 +369,20 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 	// же, как ручная установка фурнитуры. А вот attach_method и foldback_mm на них бессмысленны:
 	// как держится пуговица, решает программа автомата, а подгиб стропы — вопрос пряжки.
 	cycleMachine := isMachine && machineIsOneOf(machineType, machineButtonhole, machineButtonAttach, machineBartack)
-	hardwareAll := []populatedField{
+	// Две половины семейства названы ОТДЕЛЬНО, а не индексами общего списка: перестановка полей в
+	// одном списке молча поменяла бы, что именно отвергается на цикловом автомате.
+	hardwareSetOnly := []populatedField{
 		{"attach_method", hw.GetAttachMethod() != pb_common.TechCardHardwareAttachMethod_TECH_CARD_HARDWARE_ATTACH_METHOD_UNKNOWN},
+		{"foldback_mm", decimalSent(hw.GetFoldbackMm())},
+	}
+	hardwareShared := []populatedField{
 		{"hole_prep", hw.GetHolePrep() != pb_common.TechCardHolePrep_TECH_CARD_HOLE_PREP_UNKNOWN},
 		{"reinforcement", hw.GetReinforcement() != pb_common.TechCardReinforcement_TECH_CARD_REINFORCEMENT_UNKNOWN},
-		{"foldback_mm", decimalSent(hw.GetFoldbackMm())},
 		{"cycle_stitch_count", hw.GetCycleStitchCount() != 0},
 	}
 	switch {
 	case !isHardware && !cycleMachine:
-		if fld := firstPopulated(hardwareAll); fld != "" {
+		if fld := firstPopulated(append(append([]populatedField{}, hardwareSetOnly...), hardwareShared...)); fld != "" {
 			return f, verbNotApplicable(step, fld, opType,
 				"the hardware settings belong to a hardware_set step (and, in part, to a buttonhole / button_attach / bartack machine)")
 		}
@@ -406,7 +410,7 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 					f.attachMethod.String))
 		}
 	default: // цикловой автомат: attach_method и foldback_mm неприменимы
-		if fld := firstPopulated([]populatedField{hardwareAll[0], hardwareAll[3]}); fld != "" {
+		if fld := firstPopulated(hardwareSetOnly); fld != "" {
 			return f, entity.NewFieldViolation(step+"."+fld, "not_applicable", machineType.String,
 				fmt.Sprintf("a %s machine sets this by its own program; only the hole prep, the reinforcement and the cycle stitch count belong here — clear the field or make it a hardware_set step",
 					machineType.String))
