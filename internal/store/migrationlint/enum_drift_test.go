@@ -1,6 +1,7 @@
 package migrationlint
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/materialattr"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
 
 // This file extends migrationlint's static, database-free guards (see doc.go) to catch enum-value
@@ -89,25 +91,34 @@ func mapKeysAsStrings[K ~string](m map[K]bool) []string {
 // a length check, so a same-count-but-different-value drift (e.g. a typo'd rename) is caught too.
 func assertSameSet(t *testing.T, label string, dbValues, entityValues []string) {
 	t.Helper()
-	db := make(map[string]bool, len(dbValues))
-	for _, v := range dbValues {
-		if db[v] {
-			t.Errorf("%s: DB value list has a duplicate: %q (%v)", label, v, dbValues)
+	assertSameSetNamed(t, label, "DB CHECK", dbValues, "entity set", entityValues)
+}
+
+// assertSameSetNamed is assertSameSet with both sides named, so the third leg of a vocabulary (the
+// proto enum) can be compared with a message that says which of the two lists is which. A failure
+// that reads "DB CHECK allows X but the entity set does not" when the two lists are actually the
+// proto enum and the entity slice sends the reader to the wrong file.
+func assertSameSetNamed(t *testing.T, label, leftName string, left []string, rightName string, right []string) {
+	t.Helper()
+	l := make(map[string]bool, len(left))
+	for _, v := range left {
+		if l[v] {
+			t.Errorf("%s: %s value list has a duplicate: %q (%v)", label, leftName, v, left)
 		}
-		db[v] = true
+		l[v] = true
 	}
-	ent := make(map[string]bool, len(entityValues))
-	for _, v := range entityValues {
-		ent[v] = true
+	r := make(map[string]bool, len(right))
+	for _, v := range right {
+		r[v] = true
 	}
-	for v := range db {
-		if !ent[v] {
-			t.Errorf("%s: DB CHECK allows %q but the entity set does not", label, v)
+	for v := range l {
+		if !r[v] {
+			t.Errorf("%s: %s allows %q but the %s does not", label, leftName, v, rightName)
 		}
 	}
-	for v := range ent {
-		if !db[v] {
-			t.Errorf("%s: entity set allows %q but the DB CHECK does not", label, v)
+	for v := range r {
+		if !l[v] {
+			t.Errorf("%s: %s allows %q but the %s does not", label, rightName, v, leftName)
 		}
 	}
 }
@@ -411,12 +422,24 @@ func TestPieceCutSymmetryDBCheckIsCaseClosed(t *testing.T) {
 // nowhere visible. Note that entity.ValidTechCardBomKinds is itself derived from bomKindHomeSection,
 // so this one assertion covers the vocabulary AND the pairing table's key set at once.
 //
-// The window is wide (52 values) — extractDBEnumValues bounds its search from the anchor, and a
+// The window is wide (54 values) — extractDBEnumValues bounds its search from the anchor, and a
 // window shorter than the alternation would fail to FIND the list rather than fail to compare it.
+//
+// The anchor is 0324, not 0278: the wave recreated chk_bom_item_kind ONCE with the union of both
+// phases (+seam_sealing_tape, +embroidery_stabilizer). It is also the one dictionary here whose
+// sentinel is spelled ..._UNSET and whose numbering carries a promised hole (54, reserved by promise
+// for the deferred wet_chemical) — see protoEnumTokens for why both are declared and not inferred.
 func TestBomKindDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0278_bom_item_kind.sql")
-	dbValues := extractDBEnumValues(t, content, "kind REGEXP", 800)
-	assertSameSet(t, "TechCardBomKind", dbValues, mapKeysAsStrings(entity.ValidTechCardBomKinds))
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardBomKind",
+		protoNames: pb_common.TechCardBomKind_name,
+		prefix:     "TECH_CARD_BOM_KIND_",
+		zeroMember: "TECH_CARD_BOM_KIND_UNSET",
+		check:      "chk_bom_item_kind CHECK",
+		window:     800,
+		tokens:     mapKeysAsStrings(entity.ValidTechCardBomKinds),
+		holes:      []int32{54},
+	})
 }
 
 // TestBomKindDBCheckIsCaseClosed guards the half of chk_bom_item_kind the drift test cannot see.
@@ -425,7 +448,9 @@ func TestBomKindDBCheckNoDrift(t *testing.T) {
 // refuses 'zip' and nothing about case. STRCMP over a BINARY cast is what actually closes the
 // vocabulary (precedent: chk_bom_item_purpose in 0265, chk_tcp_cut_symmetry in 0275).
 func TestBomKindDBCheckIsCaseClosed(t *testing.T) {
-	content := readMigrationFile(t, "0278_bom_item_kind.sql")
+	// 0324 owns the current constraint (see TestBomKindDBCheckNoDrift): a recreated CHECK that drops
+	// the STRCMP guard would reopen the vocabulary to 'ZIPPER' while the token list still matched.
+	content := readMigrationFile(t, migration0324)
 	const guard = "STRCMP(CAST(kind AS BINARY), CAST(LOWER(kind) AS BINARY)) = 0"
 	stmt := strings.Index(content, "chk_bom_item_kind CHECK")
 	if stmt < 0 {
@@ -518,18 +543,26 @@ const migration0306 = "0306_operation_machines.sql"
 
 // assertPairedCheckNoDrift asserts BOTH schema copies of one vocabulary — the operation's override
 // CHECK and the profile's default CHECK — against the single entity slice.
-func assertPairedCheckNoDrift(t *testing.T, label, opAnchor, eqpAnchor string, window int, tokens []string) {
+//
+// Each half names its OWN anchor migration, and that is not symmetry for its own sake: the 0324 wave
+// recreated both copies of press_cloth and touched neither copy of needle_type, so a single hardcoded
+// file would have to be wrong for one of them. Reading a CHECK that no longer exists in the schema is
+// the failure mode with no symptom — the test stays green over a live constraint it never looked at.
+func assertPairedCheckNoDrift(t *testing.T, label, opMigration, opAnchor, eqpMigration, eqpAnchor string, window int, tokens []string) {
 	t.Helper()
-	content := readMigrationFile(t, migration0306)
 	assertSameSet(t, label+" (tech_card_operation)",
-		extractDBEnumValues(t, content, opAnchor, window), tokens)
+		extractDBEnumValues(t, readMigrationFile(t, opMigration), opAnchor, window), tokens)
 	assertSameSet(t, label+" (tech_card_equipment_profile)",
-		extractDBEnumValues(t, content, eqpAnchor, window), tokens)
+		extractDBEnumValues(t, readMigrationFile(t, eqpMigration), eqpAnchor, window), tokens)
 }
 
-// TestMachineTypeDBCheckNoDrift is the entity<->DB leg for «на чём» (0306): entity.MachineTypeTokens
-// <-> chk_op_machine_type. The profile side of the same vocabulary is NOT a separate CHECK — it is
-// folded into the union chk_eqp_equipment, asserted by TestEquipmentUnionDBCheckNoDrift below.
+// TestMachineTypeDBCheckNoDrift is the entity<->DB leg for «на чём»: entity.MachineTypeTokens <->
+// chk_op_machine_type. The profile side of the same vocabulary is NOT a separate CHECK — it is folded
+// into the union chk_eqp_equipment, asserted by TestEquipmentUnionDBCheckNoDrift below.
+//
+// The anchor moved to 0324, which recreated this CHECK with seam_taping and ultrasonic_welder. 0306
+// still contains the narrower list, and reading it would keep this test green while the live
+// constraint carried two tokens nobody compared against anything.
 //
 // It is load-bearing beyond the usual drift argument: migration 0306 step 5 writes nine of these
 // tokens into existing rows, and the digest's compat projection reads them back through
@@ -537,13 +570,25 @@ func assertPairedCheckNoDrift(t *testing.T, label, opAnchor, eqpAnchor string, w
 // machine the entity does not know would hash as an unmapped tail and stale every signed
 // CONSTRUCTION approval on the card.
 func TestMachineTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, migration0306)
-	dbValues := extractDBEnumValues(t, content, "chk_op_machine_type CHECK", 600)
-	assertSameSet(t, "TechCardMachineType", dbValues, entity.MachineTypeTokens)
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardMachineType",
+		protoNames: pb_common.TechCardMachineType_name,
+		prefix:     "TECH_CARD_MACHINE_TYPE_",
+		zeroMember: "TECH_CARD_MACHINE_TYPE_UNKNOWN",
+		check:      "chk_op_machine_type CHECK",
+		window:     600,
+		tokens:     entity.MachineTypeTokens,
+	})
 }
 
 // TestPressEquipmentDBCheckNoDrift is the entity<->DB leg for the ВТО half: entity.PressEquipmentTokens
 // <-> chk_op_press_equipment. As with the machine list, the profile side lives in the union CHECK.
+//
+// THIS ONE STAYS ON 0306, and staying is the assertion. The 0324 wave deliberately did not recreate
+// chk_op_press_equipment (conveyor_dryer is deferred), so 0306 still owns the current vocabulary.
+// Moving the anchor «for company» with its neighbours would point the test at a file that never
+// mentions this constraint — extractDBEnumValues would fail to find the anchor, and the fix an
+// unsuspecting reader would reach for is to loosen the test.
 func TestPressEquipmentDBCheckNoDrift(t *testing.T) {
 	content := readMigrationFile(t, migration0306)
 	dbValues := extractDBEnumValues(t, content, "chk_op_press_equipment CHECK", 250)
@@ -559,7 +604,9 @@ func TestPressEquipmentDBCheckNoDrift(t *testing.T) {
 // assertSameSet already fails on a duplicated DB value, so the single-'other' rule is enforced by
 // construction rather than by a second assertion.
 func TestEquipmentUnionDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, migration0306)
+	// 0324 recreated this CHECK: both new machines join the union, the press half is untouched, and
+	// 'other' still has to appear exactly once across the two halves.
+	content := readMigrationFile(t, migration0324)
 	dbValues := extractDBEnumValues(t, content, "chk_eqp_equipment CHECK", 700)
 
 	union := make([]string, 0, len(entity.MachineTypeTokens)+len(entity.PressEquipmentTokens))
@@ -597,22 +644,36 @@ func TestEquipmentUnionDBCheckNoDrift(t *testing.T) {
 // TestNeedleTypeDBCheckNoDrift — entity.NeedleTypeTokens <-> chk_op_needle_type / chk_eqp_needle_type.
 func TestNeedleTypeDBCheckNoDrift(t *testing.T) {
 	assertPairedCheckNoDrift(t, "TechCardNeedleType",
-		"chk_op_needle_type CHECK", "chk_eqp_needle_type CHECK", 250, entity.NeedleTypeTokens)
+		migration0306, "chk_op_needle_type CHECK",
+		migration0306, "chk_eqp_needle_type CHECK", 250, entity.NeedleTypeTokens)
 }
 
 // TestThreadTensionDBCheckNoDrift — entity.ThreadTensionTokens <-> chk_op_thread_tension /
 // chk_eqp_thread_tension.
 func TestThreadTensionDBCheckNoDrift(t *testing.T) {
 	assertPairedCheckNoDrift(t, "TechCardThreadTension",
-		"chk_op_thread_tension CHECK", "chk_eqp_thread_tension CHECK", 200, entity.ThreadTensionTokens)
+		migration0306, "chk_op_thread_tension CHECK",
+		migration0306, "chk_eqp_thread_tension CHECK", 200, entity.ThreadTensionTokens)
 }
 
 // TestPressClothDBCheckNoDrift — entity.PressClothTokens <-> chk_op_press_cloth / chk_eqp_press_cloth.
 // 'none' being IN the vocabulary is the point of the whole token: NULL means «inherit the profile»,
 // so without a spelled-out 'none' a step could not cancel the profile's press cloth.
+//
+// BOTH halves moved to 0324, which recreated both with silicone_paper. They have to move together:
+// one half read from 0324 and the other from 0306 would compare the two copies against different
+// lists and so stop proving they are one vocabulary — which is the only thing this pairing is for.
 func TestPressClothDBCheckNoDrift(t *testing.T) {
 	assertPairedCheckNoDrift(t, "TechCardPressCloth",
-		"chk_op_press_cloth CHECK", "chk_eqp_press_cloth CHECK", 250, entity.PressClothTokens)
+		migration0324, "chk_op_press_cloth CHECK",
+		migration0324, "chk_eqp_press_cloth CHECK", 250, entity.PressClothTokens)
+	assertSameSetNamed(t, "TechCardPressCloth", "proto enum",
+		protoEnumTokens(t, waveVocabulary{
+			label:      "TechCardPressCloth",
+			protoNames: pb_common.TechCardPressCloth_name,
+			prefix:     "TECH_CARD_PRESS_CLOTH_",
+			zeroMember: "TECH_CARD_PRESS_CLOTH_UNKNOWN",
+		}), "entity set", entity.PressClothTokens)
 	for _, tok := range entity.PressClothTokens {
 		if tok == "none" {
 			return
@@ -626,7 +687,8 @@ func TestPressClothDBCheckNoDrift(t *testing.T) {
 // absent before profiles existed (0289's own comment said so) and is required now.
 func TestAttachmentKindDBCheckNoDrift(t *testing.T) {
 	assertPairedCheckNoDrift(t, "TechCardAttachmentKind",
-		"chk_op_attachment_kind CHECK", "chk_eqp_attachment CHECK", 350, entity.AttachmentKindTokens)
+		migration0306, "chk_op_attachment_kind CHECK",
+		migration0306, "chk_eqp_attachment CHECK", 350, entity.AttachmentKindTokens)
 	for _, tok := range entity.AttachmentKindTokens {
 		if tok == "walking_foot" {
 			t.Error("walking_foot is deliberately NOT an attachment: industrially it is a machine with unison/top feed — a transport property that belongs next to bed_type")
@@ -672,8 +734,14 @@ func TestAutomationLevelDBCheckNoDrift(t *testing.T) {
 // the schema still admits a shape the canonicalisation is supposed to have made impossible — and the
 // digest's compat projection, which reads `machine` + machine_type, would silently disagree with a
 // row that kept the old spelling.
+// The proto leg is deliberately absent here and only here: TechCardOperationType keeps its nine
+// legacy machine members on the WIRE forever, so the enum is WIDER than the stored vocabulary by
+// design and a set comparison against it would fail on a healthy contract. The legacy-token
+// assertion below is the shape that check takes for this vocabulary.
 func TestOperationTypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, migration0306)
+	// 0324 recreated this CHECK with nine new verbs (hardware_set … wet_process); 0306 owns only the
+	// pre-wave list.
+	content := readMigrationFile(t, migration0324)
 	dbValues := extractDBEnumValues(t, content, "chk_op_operation_type CHECK", 250)
 	assertSameSet(t, "TechCardOperationType (stored)", dbValues, entity.OperationTypeTokens)
 
@@ -737,5 +805,534 @@ func Test0306VocabulariesAreCaseClosed(t *testing.T) {
 			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
 				c.constraint, c.column, rx, gd, limit)
 		}
+	}
+}
+
+// --- 0324: виды операций ---------------------------------------------------------------------------
+//
+// Seventeen new closed vocabularies land on tech_card_operation at once, and the same file recreates
+// seven CHECKs that already existed (operation_type, machine_type, press_cloth ×2, topstitch_mode,
+// equipment, bom_item_kind). That split is exactly what the anchors above encode: a test whose CHECK
+// the wave recreated now reads 0324, and a test whose CHECK the wave did NOT touch keeps reading the
+// file that owns its current vocabulary (chk_op_press_equipment stays on 0306). Retargeting a test
+// «for company» is worse than leaving it alone — it points the anchor at a file that never mentions
+// the constraint, and the honest-looking fix for the resulting failure is to weaken the test.
+//
+// Each vocabulary below is asserted on THREE lists, not two: the proto enum members (what a client
+// can send), the CHECK's token list (what the column accepts) and the entity slice (what Go
+// validates before either). Two of the three agreeing is precisely the state that ships a value the
+// third one refuses — a save that fails on a bare 3819 the operator cannot read, or a value that
+// reaches the column and no screen renders.
+const migration0324 = "0324_operation_kinds.sql"
+
+// waveCheckWindow bounds the search from a CHECK's anchor. The longest new alternation
+// (label_attach_stitch) ends 192 characters past its anchor; a window shorter than the list would
+// make extractDBEnumValues fail to FIND it rather than fail to compare it.
+const waveCheckWindow = 300
+
+// waveVocabulary describes one dictionary of the wave in the three places it exists at once.
+type waveVocabulary struct {
+	label      string           // what to print when the three lists disagree
+	protoNames map[int32]string // the generated enum's _name map
+	prefix     string           // member prefix stripped to get the stored token
+	zeroMember string           // the sentinel member's FULL name — declared, never inferred
+	check      string           // anchor «<constraint> CHECK», unique inside 0324
+	window     int              // 0 = waveCheckWindow
+	tokens     []string         // the entity slice: the single source the validator reads
+	holes      []int32          // enum numbers promised to a later phase and deliberately left empty
+}
+
+// protoEnumTokens derives the STORABLE token list of a proto enum from its generated _name map:
+// strip the member prefix, lowercase what is left. That derivation is what keeps eighteen tests
+// short, and it has exactly one way to break in silence — the sentinel member.
+//
+// Every vocabulary of this wave spells its zero member ..._UNKNOWN. TechCardBomKind spells it
+// ..._UNSET (so does TechCardBomPurpose), because there the zero is not «не указано» but «ещё не
+// классифицировано». A helper that recognised the sentinel BY NAME would therefore treat UNSET as an
+// ordinary member on exactly one dictionary and derive the token "unset", which no CHECK and no
+// entity set contains — the test would fail, but for the wrong reason, and the reader would go
+// looking for a drift that is not there. Spelled the other way round («skip whatever ends in
+// UNKNOWN») it would be worse: a renamed sentinel would pass unnoticed. So the sentinel is found by
+// NUMBER — proto guarantees the zero — and its spelling is asserted against what the caller declares.
+//
+// The numbering check is here for the same reason. `holes` are numbers the contract PROMISED to a
+// later phase (TechCardBomKind skips 54 for the deferred wet_chemical); they are deliberately NOT
+// `reserved` in the .proto, because reserved would close the number forever and a promise is the
+// opposite of that. A density check that did not know about them would go red on a healthy contract;
+// no density check at all would let a typo'd number — a member at 65 instead of 56 — pass as a new
+// value and quietly become a hole nobody promised anyone.
+func protoEnumTokens(t *testing.T, v waveVocabulary) []string {
+	t.Helper()
+	if got := v.protoNames[0]; got != v.zeroMember {
+		t.Fatalf("%s: нулевой член enum'а называется %q, а тест объявил %q — sentinel is skipped by number, so a rename must be declared here (TechCardBomKind uses ..._UNSET, everything else ..._UNKNOWN)",
+			v.label, got, v.zeroMember)
+	}
+	hole := make(map[int32]bool, len(v.holes))
+	for _, h := range v.holes {
+		hole[h] = true
+		if name, taken := v.protoNames[h]; taken {
+			t.Errorf("%s: номер %d объявлен дырой (обещан отложенной фазе), но занят членом %s", v.label, h, name)
+		}
+	}
+	highest := int32(0)
+	for n := range v.protoNames {
+		if n > highest {
+			highest = n
+		}
+	}
+	for _, h := range v.holes {
+		if h > highest {
+			highest = h
+		}
+	}
+	tokens := make([]string, 0, len(v.protoNames))
+	for n := int32(0); n <= highest; n++ {
+		name, ok := v.protoNames[n]
+		if !ok {
+			if !hole[n] {
+				t.Errorf("%s: в нумерации enum'а дыра на %d, и она нигде не объявлена — либо это опечатка в номере, либо пропуск, который надо внести в holes вместе с причиной", v.label, n)
+			}
+			continue
+		}
+		if !strings.HasPrefix(name, v.prefix) {
+			t.Errorf("%s: член %s не начинается с %q — вывод токена из имени сломан, и сравнение ниже сравнивает мусор", v.label, name, v.prefix)
+			continue
+		}
+		if n == 0 {
+			continue
+		}
+		tokens = append(tokens, strings.ToLower(strings.TrimPrefix(name, v.prefix)))
+	}
+	return tokens
+}
+
+// assertWaveVocabularyNoDrift asserts the three lists of one wave dictionary against each other.
+func assertWaveVocabularyNoDrift(t *testing.T, v waveVocabulary) {
+	t.Helper()
+	window := v.window
+	if window == 0 {
+		window = waveCheckWindow
+	}
+	dbValues := extractDBEnumValues(t, readMigrationFile(t, migration0324), v.check, window)
+	assertSameSet(t, v.label, dbValues, v.tokens)
+	assertSameSetNamed(t, v.label, "proto enum", protoEnumTokens(t, v), "entity set", v.tokens)
+}
+
+// assertVocabularyHasToken guards an explicit member whose absence is silent. NULL in these columns
+// means «not said»; a spelled-out member means «said, and the answer is this» — so a vocabulary that
+// loses its explicit 'none' does not start refusing anything, it just stops being able to express the
+// difference (the press-cloth argument above, applied where the wave repeats it).
+func assertVocabularyHasToken(t *testing.T, label string, tokens []string, want, why string) {
+	t.Helper()
+	if slices.Contains(tokens, want) {
+		return
+	}
+	t.Errorf("%s потерял %q: %s", label, want, why)
+}
+
+// TestSeamSecuringDBCheckNoDrift — S3, чем закреплён конец строчки. 'none' is a real answer here
+// («без закрепки»), not the absence of one.
+func TestSeamSecuringDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardSeamSecuring",
+		protoNames: pb_common.TechCardSeamSecuring_name,
+		prefix:     "TECH_CARD_SEAM_SECURING_",
+		zeroMember: "TECH_CARD_SEAM_SECURING_UNKNOWN",
+		check:      "chk_op_seam_securing CHECK",
+		tokens:     entity.SeamSecuringTokens,
+	})
+	assertVocabularyHasToken(t, "TechCardSeamSecuring", entity.SeamSecuringTokens, "none",
+		"NULL уже значит «не сказано», и без явного члена «без закрепки» сказать нечем")
+}
+
+// TestTopstitchModeDBCheckNoDrift — the one pre-existing vocabulary of this family that had no drift
+// guard at all until now: 0289 created chk_op_topstitch_mode, nothing ever compared it to Go.
+//
+// The wave added in_ditch and parallel_to_seam, and the second one is why the migration MODIFYs the
+// column to VARCHAR(16) first: the token is 16 characters and the column was VARCHAR(8), so without
+// the widening the first save is a data-too-long — or, with STRICT off, a silent truncation that the
+// CHECK then refuses. That makes the column width part of this vocabulary's contract, so it is
+// asserted here rather than left to the reader of the migration.
+func TestTopstitchModeDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardTopstitchMode",
+		protoNames: pb_common.TechCardTopstitchMode_name,
+		prefix:     "TECH_CARD_TOPSTITCH_MODE_",
+		zeroMember: "TECH_CARD_TOPSTITCH_MODE_UNKNOWN",
+		check:      "chk_op_topstitch_mode CHECK",
+		tokens:     entity.TopstitchModeTokens,
+	})
+	longest := 0
+	for _, tok := range entity.TopstitchModeTokens {
+		if len(tok) > longest {
+			longest = len(tok)
+		}
+	}
+	content := readMigrationFile(t, migration0324)
+	widen := strings.Index(content, "MODIFY COLUMN topstitch_mode VARCHAR(")
+	if widen < 0 {
+		t.Fatalf("0324 must widen topstitch_mode before recreating its CHECK: the longest token is %d characters and 0289 declared VARCHAR(8)", longest)
+	}
+	var width int
+	if _, err := fmt.Sscanf(content[widen:], "MODIFY COLUMN topstitch_mode VARCHAR(%d)", &width); err != nil {
+		t.Fatalf("cannot read the widened topstitch_mode width: %v", err)
+	}
+	if width < longest {
+		t.Errorf("topstitch_mode is VARCHAR(%d) but the vocabulary needs %d characters — the longest token would be truncated on write and then refused by its own CHECK", width, longest)
+	}
+	// The widening has to come BEFORE the CHECK is recreated: the other order writes a constraint
+	// against a column that cannot hold the value it admits.
+	if rx := strings.Index(content, "chk_op_topstitch_mode CHECK"); rx >= 0 && rx < widen {
+		t.Error("0324 recreates chk_op_topstitch_mode before widening topstitch_mode; the MODIFY must come first")
+	}
+}
+
+// TestHardwareAttachMethodDBCheckNoDrift — H1, как фурнитура держится на изделии. REQUIRED
+// discriminator of the hardware_set verb: without it the step is not described at all.
+func TestHardwareAttachMethodDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardHardwareAttachMethod",
+		protoNames: pb_common.TechCardHardwareAttachMethod_name,
+		prefix:     "TECH_CARD_HARDWARE_ATTACH_METHOD_",
+		zeroMember: "TECH_CARD_HARDWARE_ATTACH_METHOD_UNKNOWN",
+		check:      "chk_op_attach_method CHECK",
+		tokens:     entity.HardwareAttachMethodTokens,
+	})
+}
+
+// TestHolePrepDBCheckNoDrift — H2, чем готовится отверстие под фурнитуру.
+func TestHolePrepDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardHolePrep",
+		protoNames: pb_common.TechCardHolePrep_name,
+		prefix:     "TECH_CARD_HOLE_PREP_",
+		zeroMember: "TECH_CARD_HOLE_PREP_UNKNOWN",
+		check:      "chk_op_hole_prep CHECK",
+		tokens:     entity.HolePrepTokens,
+	})
+	assertVocabularyHasToken(t, "TechCardHolePrep", entity.HolePrepTokens, "none",
+		"«отверстие не готовится» — это ответ, а не молчание")
+}
+
+// TestReinforcementDBCheckNoDrift — H3, чем усилено место установки.
+func TestReinforcementDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardReinforcement",
+		protoNames: pb_common.TechCardReinforcement_name,
+		prefix:     "TECH_CARD_REINFORCEMENT_",
+		zeroMember: "TECH_CARD_REINFORCEMENT_UNKNOWN",
+		check:      "chk_op_reinforcement CHECK",
+		tokens:     entity.ReinforcementTokens,
+	})
+	assertVocabularyHasToken(t, "TechCardReinforcement", entity.ReinforcementTokens, "none",
+		"«не усилено» — решение технолога, и оно обязано отличаться от «не спросили»")
+}
+
+// TestPrintMethodDBCheckNoDrift — P1, метод печати или переноса. Discriminator of the print verb.
+func TestPrintMethodDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardPrintMethod",
+		protoNames: pb_common.TechCardPrintMethod_name,
+		prefix:     "TECH_CARD_PRINT_METHOD_",
+		zeroMember: "TECH_CARD_PRINT_METHOD_UNKNOWN",
+		check:      "chk_op_print_method CHECK",
+		tokens:     entity.PrintMethodTokens,
+	})
+	// entity.PrintMethodLaserEngrave is the one member the Go validator singles out by name (it has
+	// no carrier, no peel, no second press and no pressure scale). A rename on either side would
+	// leave that whole branch of not_applicable rules matching nothing, in silence.
+	assertVocabularyHasToken(t, "TechCardPrintMethod", entity.PrintMethodTokens,
+		string(entity.PrintMethodLaserEngrave),
+		"на нём висят правила not_applicable носителя и прижима — без него они перестают срабатывать молча")
+}
+
+// TestPeelModeDBCheckNoDrift — P2, как снимается носитель. 'none' = носителя нет вовсе.
+func TestPeelModeDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardPeelMode",
+		protoNames: pb_common.TechCardPeelMode_name,
+		prefix:     "TECH_CARD_PEEL_MODE_",
+		zeroMember: "TECH_CARD_PEEL_MODE_UNKNOWN",
+		check:      "chk_op_peel_mode CHECK",
+		tokens:     entity.PeelModeTokens,
+	})
+	assertVocabularyHasToken(t, "TechCardPeelMode", entity.PeelModeTokens, "none",
+		"«носителя нет» — свойство метода печати, а не отсутствие ответа")
+}
+
+// TestPressureScaleDBCheckNoDrift — прижим термопресса ШКАЛОЙ, а не числом: raw force means nothing
+// between two different presses.
+func TestPressureScaleDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardPressureScale",
+		protoNames: pb_common.TechCardPressureScale_name,
+		prefix:     "TECH_CARD_PRESSURE_SCALE_",
+		zeroMember: "TECH_CARD_PRESSURE_SCALE_UNKNOWN",
+		check:      "chk_op_pressure_scale CHECK",
+		tokens:     entity.PressureScaleTokens,
+	})
+	// Same argument as TestAutomationLevelDBCheckNoDrift: an ordered scale that grows an «other» has
+	// stopped being one, and nothing else in the system would notice.
+	if slices.Contains(entity.PressureScaleTokens, "other") {
+		t.Error("pressure_scale is an ordered scale (light < medium < firm) and must not carry 'other'")
+	}
+}
+
+// TestTrimActionDBCheckNoDrift — T1, что именно делает подрезка. Discriminator of the trim verb.
+func TestTrimActionDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardTrimAction",
+		protoNames: pb_common.TechCardTrimAction_name,
+		prefix:     "TECH_CARD_TRIM_ACTION_",
+		zeroMember: "TECH_CARD_TRIM_ACTION_UNKNOWN",
+		check:      "chk_op_trim_action CHECK",
+		tokens:     entity.TrimActionTokens,
+	})
+}
+
+// TestCleaningKindDBCheckNoDrift — C1, что именно чистят. Discriminator of the clean verb.
+func TestCleaningKindDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardCleaningKind",
+		protoNames: pb_common.TechCardCleaningKind_name,
+		prefix:     "TECH_CARD_CLEANING_KIND_",
+		zeroMember: "TECH_CARD_CLEANING_KIND_UNKNOWN",
+		check:      "chk_op_cleaning_kind CHECK",
+		tokens:     entity.CleaningKindTokens,
+	})
+}
+
+// TestInspectCoverageDBCheckNoDrift — Q1, что именно проверяют. The column is coverage_mode, the
+// vocabulary is InspectCoverageTokens: the two names differ, which is exactly why the anchor is
+// spelled out rather than derived from the label.
+func TestInspectCoverageDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardInspectCoverage",
+		protoNames: pb_common.TechCardInspectCoverage_name,
+		prefix:     "TECH_CARD_INSPECT_COVERAGE_",
+		zeroMember: "TECH_CARD_INSPECT_COVERAGE_UNKNOWN",
+		check:      "chk_op_coverage_mode CHECK",
+		tokens:     entity.InspectCoverageTokens,
+	})
+}
+
+// TestWetProcessKindDBCheckNoDrift — WP1, вид мокрой обработки. Discriminator of the wet_process verb.
+func TestWetProcessKindDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardWetProcessKind",
+		protoNames: pb_common.TechCardWetProcessKind_name,
+		prefix:     "TECH_CARD_WET_PROCESS_KIND_",
+		zeroMember: "TECH_CARD_WET_PROCESS_KIND_UNKNOWN",
+		check:      "chk_op_wet_process_kind CHECK",
+		tokens:     entity.WetProcessKindTokens,
+	})
+}
+
+// TestButtonholeStyleDBCheckNoDrift — FA1, форма петли.
+func TestButtonholeStyleDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardButtonholeStyle",
+		protoNames: pb_common.TechCardButtonholeStyle_name,
+		prefix:     "TECH_CARD_BUTTONHOLE_STYLE_",
+		zeroMember: "TECH_CARD_BUTTONHOLE_STYLE_UNKNOWN",
+		check:      "chk_op_buttonhole_style CHECK",
+		tokens:     entity.ButtonholeStyleTokens,
+	})
+}
+
+// TestButtonholeOrientationDBCheckNoDrift — FA5, как петля лежит. Not the position: WHERE the
+// buttonhole sits is a callout on the step's media, never a member of this vocabulary.
+func TestButtonholeOrientationDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardButtonholeOrientation",
+		protoNames: pb_common.TechCardButtonholeOrientation_name,
+		prefix:     "TECH_CARD_BUTTONHOLE_ORIENTATION_",
+		zeroMember: "TECH_CARD_BUTTONHOLE_ORIENTATION_UNKNOWN",
+		check:      "chk_op_buttonhole_orientation CHECK",
+		tokens:     entity.ButtonholeOrientationTokens,
+	})
+}
+
+// TestButtonAttachPatternDBCheckNoDrift — FA9, рисунок пришива пуговицы. The anchor is the full
+// «chk_op_attach_pattern CHECK»: chk_op_attach_method shares its first eighteen characters, and a
+// prefix anchor would read the wrong list without failing.
+func TestButtonAttachPatternDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardButtonAttachPattern",
+		protoNames: pb_common.TechCardButtonAttachPattern_name,
+		prefix:     "TECH_CARD_BUTTON_ATTACH_PATTERN_",
+		zeroMember: "TECH_CARD_BUTTON_ATTACH_PATTERN_UNKNOWN",
+		check:      "chk_op_attach_pattern CHECK",
+		tokens:     entity.ButtonAttachPatternTokens,
+	})
+}
+
+// TestZipperApplicationDBCheckNoDrift — FA13, способ установки молнии.
+func TestZipperApplicationDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardZipperApplication",
+		protoNames: pb_common.TechCardZipperApplication_name,
+		prefix:     "TECH_CARD_ZIPPER_APPLICATION_",
+		zeroMember: "TECH_CARD_ZIPPER_APPLICATION_UNKNOWN",
+		check:      "chk_op_zipper_application CHECK",
+		tokens:     entity.ZipperApplicationTokens,
+	})
+}
+
+// TestBindingStyleDBCheckNoDrift — S14, как сложена бейка.
+func TestBindingStyleDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardBindingStyle",
+		protoNames: pb_common.TechCardBindingStyle_name,
+		prefix:     "TECH_CARD_BINDING_STYLE_",
+		zeroMember: "TECH_CARD_BINDING_STYLE_UNKNOWN",
+		check:      "chk_op_binding_style CHECK",
+		tokens:     entity.BindingStyleTokens,
+	})
+}
+
+// TestLabelAttachStitchDBCheckNoDrift — S17, какими сторонами пристрочена этикетка. The label itself
+// arrives as a BOM line; this vocabulary is only the stitching that seats it.
+func TestLabelAttachStitchDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardLabelAttachStitch",
+		protoNames: pb_common.TechCardLabelAttachStitch_name,
+		prefix:     "TECH_CARD_LABEL_ATTACH_STITCH_",
+		zeroMember: "TECH_CARD_LABEL_ATTACH_STITCH_UNKNOWN",
+		check:      "chk_op_label_attach_stitch CHECK",
+		tokens:     entity.LabelAttachStitchTokens,
+	})
+}
+
+// Test0324VocabulariesAreCaseClosed guards the half of every vocabulary CHECK in the wave that the
+// drift tests cannot see, on the same argument as Test0306VocabulariesAreCaseClosed: REGEXP inherits
+// the column's collation, which is case-INSENSITIVE on both the utf8mb3 of prod and the utf8mb4 of
+// the container, so an alternation on its own accepts 'BACKTACK' and 'Firm'. It refuses 'backtak' and
+// nothing about case; the STRCMP over a BINARY cast is what actually closes the vocabulary.
+//
+// The seven recreated CHECKs are in the list too: a recreation is where the guard gets dropped by
+// accident, and a dropped guard is invisible — the token list still matches, so every drift test
+// above stays green.
+func Test0324VocabulariesAreCaseClosed(t *testing.T) {
+	content := readMigrationFile(t, migration0324)
+	for _, c := range []struct{ constraint, column string }{
+		// новые словари волны
+		{"chk_op_seam_securing", "seam_securing"},
+		{"chk_op_attach_method", "attach_method"},
+		{"chk_op_hole_prep", "hole_prep"},
+		{"chk_op_reinforcement", "reinforcement"},
+		{"chk_op_print_method", "print_method"},
+		{"chk_op_peel_mode", "peel_mode"},
+		{"chk_op_pressure_scale", "pressure_scale"},
+		{"chk_op_trim_action", "trim_action"},
+		{"chk_op_cleaning_kind", "cleaning_kind"},
+		{"chk_op_coverage_mode", "coverage_mode"},
+		{"chk_op_wet_process_kind", "wet_process_kind"},
+		{"chk_op_buttonhole_style", "buttonhole_style"},
+		{"chk_op_buttonhole_orientation", "buttonhole_orientation"},
+		{"chk_op_attach_pattern", "attach_pattern"},
+		{"chk_op_zipper_application", "zipper_application"},
+		{"chk_op_binding_style", "binding_style"},
+		{"chk_op_label_attach_stitch", "label_attach_stitch"},
+		// пересозданные волной
+		{"chk_op_operation_type", "operation_type"},
+		{"chk_op_machine_type", "machine_type"},
+		{"chk_op_press_cloth", "press_cloth"},
+		{"chk_op_topstitch_mode", "topstitch_mode"},
+		{"chk_eqp_equipment", "equipment"},
+		{"chk_eqp_press_cloth", "press_cloth"},
+		{"chk_bom_item_kind", "kind"},
+	} {
+		stmt := strings.Index(content, c.constraint+" CHECK")
+		if stmt < 0 {
+			t.Errorf("named vocabulary CHECK %s not found in 0324", c.constraint)
+			continue
+		}
+		guard := "STRCMP(CAST(" + c.column + " AS BINARY), CAST(LOWER(" + c.column + ") AS BINARY)) = 0"
+		rx := strings.Index(content[stmt:], c.column+" REGEXP")
+		gd := strings.Index(content[stmt:], guard)
+		if rx < 0 {
+			t.Errorf("%s: no REGEXP alternation on %s", c.constraint, c.column)
+			continue
+		}
+		// The guard has to sit INSIDE this CHECK (before the next constraint starts) and AFTER the
+		// REGEXP, so extractDBEnumValues' anchor still finds the alternation.
+		next := strings.Index(content[stmt+len(c.constraint):], "CONSTRAINT chk_")
+		limit := len(content) - stmt
+		if next >= 0 {
+			limit = next + len(c.constraint)
+		}
+		if gd < 0 || gd < rx || gd > limit {
+			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
+				c.constraint, c.column, rx, gd, limit)
+		}
+	}
+}
+
+// TestOperationContractHolesStayOpen is the numbering-density guard for the message the wave grew by
+// thirty-two fields: TechCardOperation. Field numbers are the one part of the contract that is
+// promised and can never be renegotiated, so this test asserts the promise from both sides.
+//
+// Three numbers are DELIBERATELY empty — 50 (`tooling_key`, the tooling phase), 62 (`properties`, the
+// extensible-properties phase) and 64 (the `handwork` block) — and none of the three is `reserved`,
+// on purpose: reserved would close the number forever, and each is promised to a phase that will
+// claim it. A density check that did not know about the three would go red on a healthy contract, and
+// the natural "fix" for that red would be to delete the check. So the holes are declared here, next
+// to the check, with the reason.
+//
+// The other direction matters just as much: without a density check, a member typed at 65 instead of
+// the next free number reads as an ordinary append and silently opens a hole nobody promised — and a
+// hole nobody promised is the number the NEXT phase will take, on a wire where an old client still
+// remembers what used to be there.
+func TestOperationContractHolesStayOpen(t *testing.T) {
+	promised := map[int32]string{
+		50: "`tooling_key` фазы оснастки",
+		62: "`properties` фазы расширяемых свойств",
+		64: "блок `TechCardOperationHandwork handwork`",
+	}
+	md := (&pb_common.TechCardOperation{}).ProtoReflect().Descriptor()
+
+	used := make(map[int32]string)
+	highest := int32(0)
+	fields := md.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		n := int32(f.Number())
+		used[n] = string(f.Name())
+		if n > highest {
+			highest = n
+		}
+	}
+	// Retired numbers: the legacy fields 0289 broke apart. They are `reserved` precisely because they
+	// must never come back, which is the opposite of what a promised hole is.
+	retired := make(map[int32]bool)
+	rr := md.ReservedRanges()
+	for i := 0; i < rr.Len(); i++ {
+		r := rr.Get(i)
+		for n := int32(r[0]); n < int32(r[1]); n++ {
+			retired[n] = true
+		}
+	}
+
+	for n, why := range promised {
+		if name, taken := used[n]; taken {
+			t.Errorf("номер %d обещан (%s), но занят полем %s — обещание номера нельзя переиграть", n, why, name)
+		}
+		if retired[n] {
+			t.Errorf("номер %d обещан (%s), но объявлен reserved — reserved закрывает номер навсегда, а он ждёт своей фазы", n, why)
+		}
+		if n > highest {
+			highest = n
+		}
+	}
+
+	for n := int32(1); n <= highest; n++ {
+		if _, taken := used[n]; taken || retired[n] {
+			continue
+		}
+		if _, ok := promised[n]; ok {
+			continue
+		}
+		t.Errorf("TechCardOperation: номер %d не занят, не reserved и не объявлен обещанной дырой — либо это опечатка в номере поля, либо пропуск, который надо внести в promised вместе с причиной", n)
 	}
 }
