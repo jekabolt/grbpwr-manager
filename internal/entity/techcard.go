@@ -716,13 +716,13 @@ type TechCardMediaFull struct {
 // точек: вид один и тот же тип. PosX/PosY остаются положением НУМЕРОВАННОГО МАРКЕРА, а Points
 // держит якоря фигуры; у пина Points пуст.
 type TechCardCallout struct {
-	Number      int                 `db:"callout_number"`
-	Part        sql.NullString      `db:"part"`
-	Description sql.NullString      `db:"description"`
-	Dimensions  sql.NullString      `db:"dimensions"`
-	MediaId     sql.NullInt32       `db:"media_id"` // sketch this callout is pinned to
-	PosX        decimal.NullDecimal `db:"pos_x"`    // normalised 0..1 marker position
-	PosY        decimal.NullDecimal `db:"pos_y"`
+	Number      int                     `db:"callout_number"`
+	Part        sql.NullString          `db:"part"`
+	Description sql.NullString          `db:"description"`
+	Dimensions  sql.NullString          `db:"dimensions"`
+	MediaId     sql.NullInt32           `db:"media_id"` // sketch this callout is pinned to
+	PosX        decimal.NullDecimal     `db:"pos_x"`    // normalised 0..1 marker position
+	PosY        decimal.NullDecimal     `db:"pos_y"`
 	Kind        TechCardAnnotationKind  `db:"kind"`
 	Color       TechCardAnnotationColor `db:"color"`
 	// Dashed/Filled — те же правила, что у выноски снимка шага: пунктир входит в подпись,
@@ -2668,6 +2668,72 @@ type TechCardOperation struct {
 	// CalloutNumber links the operation to a TechCardCallout.number; NULL/0 = none.
 	CalloutNumber sql.NullInt32 `db:"callout_number"`
 
+	// --- ВИДЫ ОПЕРАЦИЙ: 32 колонки волны 0324 -----------------------------------------------------
+	//
+	// ПОРЯДОК ПОЛЕЙ ЗДЕСЬ — КАНОН. Тем же порядком идут ALTER миграции, список колонок INSERT'а и
+	// SELECT операций: четыре списка, которые обязаны совпасть, и расхождение между ними молчит до
+	// первого сохранения.
+	//
+	// Все колонки NULLable, и NULL значит «НЕ УКАЗАНО» — не ноль и не «нет». Явное «нет» там, где
+	// оно вообще есть, — отдельный токен `none` (seam_securing, hole_prep, reinforcement,
+	// peel_mode). Ни одного tri-state волна не несёт: все четыре кандидата на sql.NullBool
+	// (basting_removal, corded, with_stay_button, elastic_elongation_pct) отложены.
+
+	// Строчка (S) — только OperationType == machine.
+	NeedleCount   sql.NullInt32       `db:"needle_count"`    // игл в строчке, шт; 1..12
+	NeedleGaugeMm decimal.NullDecimal `db:"needle_gauge_mm"` // МЕЖДУ ИГЛАМИ, мм; 1.6..25.4; при needle_count >= 2
+	SeamSecuring  sql.NullString      `db:"seam_securing"`   // none|backtack|condensed|latched
+	RowSpacingMm  decimal.NullDecimal `db:"row_spacing_mm"`  // между РЯДАМИ строчек, мм; 1..30 — не путать с gauge
+	FullnessRatio decimal.NullDecimal `db:"fullness_ratio"`  // посадка/сборка ОТНОШЕНИЕМ, не процентами; 0.60..4.00
+
+	// Раскладка повторов (PL) — machine | hardware_set | print.
+	PlacementCount sql.NullInt32       `db:"placement_count"` // повторов, шт; 1..99; NULL читается как один
+	PitchMm        decimal.NullDecimal `db:"pitch_mm"`        // шаг между повторами, мм; 5..500; при placement_count >= 2
+
+	// Фурнитура (H) — hardware_set целиком; на machine + buttonhole|button_attach|bartack законны
+	// ТОЛЬКО hole_prep, reinforcement и cycle_stitch_count.
+	AttachMethod     sql.NullString      `db:"attach_method"`      // sew|prong_clinch|press_set|crimp|threaded; REQUIRED у hardware_set
+	HolePrep         sql.NullString      `db:"hole_prep"`          // none|prong_pierce|awl_pierce|punch
+	Reinforcement    sql.NullString      `db:"reinforcement"`      // none|fusible_patch|fabric_stay|tape|seam_catch|other
+	FoldbackMm       decimal.NullDecimal `db:"foldback_mm"`        // подгиб стропы через пряжку, мм; 10..80; при attach_method = threaded
+	CycleStitchCount sql.NullInt32       `db:"cycle_stitch_count"` // стежков в цикле автомата, шт; 8..64; NULL = штатная программа
+
+	// Печать (P) — только print. Сам метод лежит КОЛОНКОЙ, а не внутри блока: он REQUIRED, а
+	// обязательное поле не прячут внутрь необязательного сообщения.
+	PrintMethod    sql.NullString `db:"print_method"`     // screen|dtf|heat_transfer|foil|laser_engrave; REQUIRED у print
+	PeelMode       sql.NullString `db:"peel_mode"`        // none|hot|warm|cold; `none` = носителя нет
+	SecondPressSec sql.NullInt32  `db:"second_press_sec"` // второй прижим, сек; 1..30; NULL = второго прижима нет
+	PressureScale  sql.NullString `db:"pressure_scale"`   // light|medium|firm
+
+	// Сварка и проклейка (W) — machine + ЯВНЫЙ machine_type = seam_taping | ultrasonic_welder
+	// (резолв через machine_profile_key не засчитывается).
+	AirTemperatureC sql.NullInt32       `db:"air_temperature_c"` // горячий воздух, °C; 100..750; ТОЛЬКО seam_taping
+	FeedSpeedMMin   decimal.NullDecimal `db:"feed_speed_m_min"`  // скорость подачи, м/мин; 0.3..10.0
+
+	// Подрезка и выправка (T) — только trim.
+	TrimAction          sql.NullString      `db:"trim_action"`           // trim_even|grade_layers|clip_concave|notch_convex|corner_diagonal|turn_and_shape; REQUIRED у trim
+	ResidualAllowanceMm decimal.NullDecimal `db:"residual_allowance_mm"` // сколько припуска ОСТАЁТСЯ, мм; 1..10 — это не seam_allowance_mm
+
+	// Чистка концов ниток (F) — только thread_trim.
+	ResidualTailMaxMm decimal.NullDecimal `db:"residual_tail_max_mm"` // допустимый хвост нитки, мм; 1..10; NULL = стандарт цеха
+
+	// Дискриминаторы трёх финишных глаголов: чистка (C), контроль (Q), мокрая обработка (WP).
+	CleaningKind   sql.NullString `db:"cleaning_kind"`    // spot_clean|dust_lint|chalk_removal|adhesive_removal; REQUIRED у clean
+	CoverageMode   sql.NullString `db:"coverage_mode"`    // each_unit|sample_per_bundle|aql_plan|first_output; REQUIRED у inspect
+	WetProcessKind sql.NullString `db:"wet_process_kind"` // rinse|enzyme|garment_dye|softener; REQUIRED у wet_process
+
+	// Петли, закрепки, пуговицы, молнии (FA) и два поля строчки из дельты (S14, S17). Все — на
+	// machine, каждое при своём ЯВНОМ machine_type; REQUIRED среди них нет ни одного, потому что
+	// эти глаголы и машинки живут в проде годами и старая карточка обязана сохраняться как есть.
+	ButtonholeStyle       sql.NullString      `db:"buttonhole_style"`       // straight|eyelet|round_end|other; buttonhole
+	CutLengthMm           decimal.NullDecimal `db:"cut_length_mm"`          // прорезь петли, мм; 4..120; buttonhole
+	ButtonholeOrientation sql.NullString      `db:"buttonhole_orientation"` // horizontal|vertical|angled; buttonhole
+	BartackLengthMm       decimal.NullDecimal `db:"bartack_length_mm"`      // длина закрепки, мм; 1..40; buttonhole|bartack
+	AttachPattern         sql.NullString      `db:"attach_pattern"`         // cross_x|parallel|square|u_shape|other; button_attach
+	ZipperApplication     sql.NullString      `db:"zipper_application"`     // centered|lapped|invisible|exposed|fly|separating_cf|in_seam_pocket|other; zipper_setting
+	BindingStyle          sql.NullString      `db:"binding_style"`          // raw|single_fold|double_fold; binding_taping
+	LabelAttachStitch     sql.NullString      `db:"label_attach_stitch"`    // four_sides|two_sides_top_bottom|two_sides_left_right|one_edge|caught_in_seam|corners_tack|other; любой machine
+
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
 	PieceLineKeys []string `db:"-"`
@@ -2819,11 +2885,11 @@ type TechCardAnnotation struct {
 
 // TechCardOperationMedia — одна картинка шага со своими выносками.
 type TechCardOperationMedia struct {
-	Id                  int                  `db:"id"`
-	TechCardOperationId int                  `db:"tech_card_operation_id"`
-	MediaId             int                  `db:"media_id"`
-	Caption             sql.NullString       `db:"caption"`
-	DisplayOrder        int                  `db:"display_order"`
+	Id                  int            `db:"id"`
+	TechCardOperationId int            `db:"tech_card_operation_id"`
+	MediaId             int            `db:"media_id"`
+	Caption             sql.NullString `db:"caption"`
+	DisplayOrder        int            `db:"display_order"`
 	// Annotations в БД лежит JSON-колонкой; в Go — разобранным списком. Сырое значение читается
 	// в AnnotationsRaw и разбирается стором один раз.
 	Annotations    []TechCardAnnotation `db:"-"`
