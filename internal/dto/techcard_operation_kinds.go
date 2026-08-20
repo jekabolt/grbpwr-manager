@@ -531,6 +531,14 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 	// игольные overrides на таком шаге — теневые значения: ничего их не читает, ничего не печатает,
 	// а следующий редактор им верит. Проверка висит на ЯВНОМ типе шага, а не на заполненности
 	// weld-блока: шаг на сварочной машине остаётся сварочным и без единого поля семейства.
+	//
+	// Четыре поля S-блока волны попадают сюда по тому же признаку: своё семейство гейтит их только
+	// «это машинный шаг», а сварочная машина машинная — без этого правила на безыгольном шаге
+	// сохранились бы «4 иглы с шагом 3.2 мм и закрепка».
+	//
+	// fullness_ratio из S-блока НЕ отвергается СОЗНАТЕЛЬНО: посадка — соотношение длин двух слоёв
+	// при подаче, свойство ПОДАЧИ, а не иглы. Сварочная машина слои подаёт (у неё на то и есть
+	// feed_speed_m_min), и посаженный шов на ней осмыслен ровно так же, как на ниточной.
 	if isMachine && machineIsOneOf(machineType, weldMachines...) {
 		if fld := firstPopulated([]populatedField{
 			{"thread_count", o.GetThreadCount() != 0},
@@ -539,6 +547,13 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 			{"thread_tension", o.GetThreadTension() != pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_UNKNOWN},
 			{"thread_tension_note", strings.TrimSpace(o.GetThreadTensionNote()) != ""},
 			{"stitch_width_mm", decimalSent(o.GetStitchWidthMm())},
+			// Калибр стоит ПЕРЕД числом игл намеренно: одиночный калибр до этого правила не доходит
+			// вовсе — его раньше отвергает правило 1 (needs_needle_count), — и при обратном порядке
+			// отказ на законной паре «2 иглы + калибр» никогда бы калибр не назвал.
+			{"needle_gauge_mm", decimalSent(st.GetNeedleGaugeMm())},
+			{"needle_count", st.GetNeedleCount() != 0},
+			{"seam_securing", st.GetSeamSecuring() != pb_common.TechCardSeamSecuring_TECH_CARD_SEAM_SECURING_UNKNOWN},
+			{"row_spacing_mm", decimalSent(st.GetRowSpacingMm())},
 		}); fld != "" {
 			return f, entity.NewFieldViolation(step+"."+fld, "not_applicable", machineType.String,
 				fmt.Sprintf("a %s machine has neither needle nor thread — the seam is welded, not sewn; clear the field or change the machine",

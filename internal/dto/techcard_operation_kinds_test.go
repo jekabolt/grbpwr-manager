@@ -663,18 +663,58 @@ func TestOperationKindsWeldMachineRejectsNeedleAndThread(t *testing.T) {
 			op.ThreadTensionNote = "туже"
 		}},
 		{"ширина стежка", "stitch_width_mm", func(op *pb_common.TechCardOperation) { op.StitchWidthMm = dec("4") }},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			op := &pb_common.TechCardOperation{OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mtSeamTaping}
-			tt.fill(op)
-			ve := kindRefusal(t, op)
-			if ve.Field != "operations[0]."+tt.field || ve.Reason != "not_applicable" {
-				t.Errorf("отказ назвал %q/%q, ожидалось operations[0].%s/not_applicable", ve.Field, ve.Reason, tt.field)
+		// Четыре поля S-блока волны. Своё семейство гейтит их только «это машинный шаг», а
+		// сварочная машина машинная — без этого правила на безыгольном шаге сохранялись бы «4 иглы
+		// с шагом 3.2 мм и закрепка».
+		{"калибр между иглами", "needle_gauge_mm", func(op *pb_common.TechCardOperation) {
+			// Калибр едет ПАРОЙ с числом игл (правило 1: одиночный калибр отвергается раньше как
+			// needs_needle_count), и отказ обязан назвать именно калибр — иначе кейс «число игл»
+			// ниже покрывал бы оба поля разом и выпадение калибра из правила прошло бы незаметно.
+			op.Stitching = &pb_common.TechCardOperationStitching{NeedleCount: 2, NeedleGaugeMm: dec("3.2")}
+		}},
+		{"число игл", "needle_count", func(op *pb_common.TechCardOperation) {
+			op.Stitching = &pb_common.TechCardOperationStitching{NeedleCount: 4}
+		}},
+		{"закрепка строчки", "seam_securing", func(op *pb_common.TechCardOperation) {
+			op.Stitching = &pb_common.TechCardOperationStitching{
+				SeamSecuring: pb_common.TechCardSeamSecuring_TECH_CARD_SEAM_SECURING_CONDENSED,
 			}
-			// Та же настройка на швейной машинке остаётся законной — правило про машинку, а не про поле.
-			sewing := &pb_common.TechCardOperation{OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mtOverlock}
-			tt.fill(sewing)
-			kindParse(t, sewing)
+		}},
+		{"шаг между рядами", "row_spacing_mm", func(op *pb_common.TechCardOperation) {
+			op.Stitching = &pb_common.TechCardOperationStitching{RowSpacingMm: dec("6")}
+		}},
+	} {
+		for _, mt := range []pb_common.TechCardMachineType{mtSeamTaping, mtUltrasonic} {
+			t.Run(tt.name+"/"+mt.String(), func(t *testing.T) {
+				op := &pb_common.TechCardOperation{OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mt}
+				tt.fill(op)
+				ve := kindRefusal(t, op)
+				if ve.Field != "operations[0]."+tt.field || ve.Reason != "not_applicable" {
+					t.Errorf("отказ назвал %q/%q, ожидалось operations[0].%s/not_applicable", ve.Field, ve.Reason, tt.field)
+				}
+				// Та же настройка на швейной машинке остаётся законной — правило про машинку, а не про поле.
+				sewing := &pb_common.TechCardOperation{OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mtOverlock}
+				tt.fill(sewing)
+				kindParse(t, sewing)
+			})
+		}
+	}
+}
+
+// TestOperationKindsWeldMachineKeepsFullnessRatio — посадка на сварочной машине ЗАКОННА, и это
+// решение, а не недосмотр: fullness_ratio — соотношение длин двух слоёв при ПОДАЧЕ, свойство подачи,
+// а не иглы. Сварочная машина слои подаёт (на то у неё feed_speed_m_min), поэтому единственное поле
+// S-блока, которое групповое правило безыгольности НЕ отвергает, — именно оно.
+func TestOperationKindsWeldMachineKeepsFullnessRatio(t *testing.T) {
+	for _, mt := range []pb_common.TechCardMachineType{mtSeamTaping, mtUltrasonic} {
+		t.Run(mt.String(), func(t *testing.T) {
+			ins := kindParse(t, &pb_common.TechCardOperation{
+				OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mt,
+				Stitching: &pb_common.TechCardOperationStitching{FullnessRatio: dec("1.15")},
+			})
+			if got := kindFacts(ins.Operations[0])["fullness_ratio"]; got != "1.15" {
+				t.Errorf("посадка на %s сохранилась как %q, ожидалось 1.15", mt.String(), got)
+			}
 		})
 	}
 }

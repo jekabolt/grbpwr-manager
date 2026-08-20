@@ -1,8 +1,14 @@
 package techcard
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,8 +22,10 @@ import (
 // Этот же порядок обязан стоять в четырёх местах: ALTER'е миграции 0324, named-map
 // insertTechCardOperations, techCardOperationsQuery и полях entity.TechCardOperation. Компилятор
 // разъезд между ними не видит: map'а ключи не упорядочивает, а SELECT — просто строка. Поэтому
-// список продублирован здесь как независимый эталон, а тесты ниже сверяют с ним два из четырёх
-// списков (третий — миграция, четвёртый проверяется round-trip'ом на контейнере).
+// список продублирован здесь как независимый эталон, и тесты ниже сверяют с ним ВСЕ ЧЕТЫРЕ списка
+// БЕЗ БАЗЫ: SELECT и db-теги — из пакета, ALTER — из текста миграции, ключи INSERT-карты — из
+// исходника через go/parser. Round-trip на контейнере остаётся, но канон на нём больше не висит:
+// он живёт в пакете, который вне CI роняет таблицы, и потому не гоняется.
 var operationKindColumnCanon = []string{
 	// Строчка (S).
 	"needle_count", "needle_gauge_mm", "seam_securing", "row_spacing_mm", "fullness_ratio",
@@ -138,5 +146,78 @@ func TestTechCardOperationKindColumnsAreNullable(t *testing.T) {
 		if name == "sql.NullBool" {
 			t.Errorf("%s: волна 0324 не несёт ни одного tri-state поля — все четыре кандидата отложены", tag)
 		}
+	}
+}
+
+// TestOperationKindMigrationAddsColumnsInCanonOrder — ТРЕТЬЯ нога канона: ALTER миграции 0324.
+//
+// До этого теста порядок ALTER'а сверялся только глазами и round-trip'ом на контейнере, а тот живёт
+// в пакете, который вне CI роняет таблицы, — то есть на практике его не гоняет никто. Здесь базы не
+// нужно вовсе: имена вынимаются из текста файла.
+//
+// Сканируется ТОЛЬКО Up-половина: Down снимает те же колонки обратным порядком, и подмешивать его в
+// сверку значило бы требовать от отката совпадения с каноном, чего он по устройству не даёт.
+func TestOperationKindMigrationAddsColumnsInCanonOrder(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "sql", "0324_operation_kinds.sql"))
+	if err != nil {
+		t.Fatalf("миграция волны не читается: %v", err)
+	}
+	up := string(body)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	// '--'-комментарии под шаблон не попадают: у них строка начинается с дефисов, а не с ADD COLUMN.
+	re := regexp.MustCompile(`(?m)^\s*ADD COLUMN\s+([a-z_]+)`)
+	var got []string
+	for _, m := range re.FindAllStringSubmatch(up, -1) {
+		got = append(got, m[1])
+	}
+	if !reflect.DeepEqual(got, operationKindColumnCanon) {
+		t.Fatalf("ALTER миграции 0324 разошёлся с каноном §1:\n эталон: %v\n ALTER:  %v", operationKindColumnCanon, got)
+	}
+}
+
+// TestOperationKindInsertMapCarriesKindColumnsInCanonOrder — ЧЕТВЁРТАЯ нога: ключи named-map'ы
+// insertTechCardOperations. Ключи map'ы порядка не имеют, поэтому проверить их можно только по
+// ИСХОДНИКУ: он и читается — go/parser достаёт литерал ровно из тела нужной функции, так что ни
+// комментарий, ни одноимённый ключ из соседней map'ы под сверку не попадут.
+func TestOperationKindInsertMapCarriesKindColumnsInCanonOrder(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "production.go", nil, 0)
+	if err != nil {
+		t.Fatalf("production.go не разбирается: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "insertTechCardOperations" {
+			fn = f
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("insertTechCardOperations не найдена — тест сверяет несуществующий список")
+	}
+	inCanon := make(map[string]bool, len(operationKindColumnCanon))
+	for _, c := range operationKindColumnCanon {
+		inCanon[c] = true
+	}
+	var got []string
+	ast.Inspect(fn, func(n ast.Node) bool {
+		kv, ok := n.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		lit, ok := kv.Key.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		key, err := strconv.Unquote(lit.Value)
+		if err == nil && inCanon[key] {
+			got = append(got, key)
+		}
+		return true
+	})
+	if !reflect.DeepEqual(got, operationKindColumnCanon) {
+		t.Fatalf("ключи insertTechCardOperations разошлись с каноном §1:\n эталон: %v\n INSERT: %v", operationKindColumnCanon, got)
 	}
 }
