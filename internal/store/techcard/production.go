@@ -234,6 +234,65 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			// Колонка ключа _bin — сравнение побайтное, как обещает контракт.
 			"output_unit_key":  o.OutputUnitKey,
 			"output_unit_name": o.OutputUnitName,
+
+			// --- ВИДЫ ОПЕРАЦИЙ: 32 колонки волны 0324 ------------------------------------------
+			//
+			// Порядок ключей ниже — канон волны (§1, он же порядок ALTER'а миграции, SELECT'а ниже
+			// и полей entity.TechCardOperation). Ключи map'ы позиции не имеют, и именно поэтому
+			// порядок здесь держится вручную: это единственное место, где разъезд четырёх списков
+			// нечем поймать компилятору.
+			//
+			// Все 32 — NULLable, и NULL пишется как NULL: «не указано» не ноль и не «нет». Явное
+			// «нет» там, где оно есть, приезжает отдельным токеном none (seam_securing, hole_prep,
+			// reinforcement, peel_mode), и стор его не изобретает и не сворачивает в NULL.
+
+			// Строчка (S).
+			"needle_count":    o.NeedleCount,
+			"needle_gauge_mm": o.NeedleGaugeMm,
+			"seam_securing":   o.SeamSecuring,
+			"row_spacing_mm":  o.RowSpacingMm,
+			"fullness_ratio":  o.FullnessRatio,
+
+			// Раскладка повторов (PL).
+			"placement_count": o.PlacementCount,
+			"pitch_mm":        o.PitchMm,
+
+			// Фурнитура (H).
+			"attach_method":      o.AttachMethod,
+			"hole_prep":          o.HolePrep,
+			"reinforcement":      o.Reinforcement,
+			"foldback_mm":        o.FoldbackMm,
+			"cycle_stitch_count": o.CycleStitchCount,
+
+			// Печать (P).
+			"print_method":     o.PrintMethod,
+			"peel_mode":        o.PeelMode,
+			"second_press_sec": o.SecondPressSec,
+			"pressure_scale":   o.PressureScale,
+
+			// Сварка и проклейка (W).
+			"air_temperature_c": o.AirTemperatureC,
+			"feed_speed_m_min":  o.FeedSpeedMMin,
+
+			// Подрезка и выправка (T), чистка концов ниток (F).
+			"trim_action":           o.TrimAction,
+			"residual_allowance_mm": o.ResidualAllowanceMm,
+			"residual_tail_max_mm":  o.ResidualTailMaxMm,
+
+			// Дискриминаторы финишных глаголов (C, Q, WP).
+			"cleaning_kind":    o.CleaningKind,
+			"coverage_mode":    o.CoverageMode,
+			"wet_process_kind": o.WetProcessKind,
+
+			// Петли, закрепки, пуговицы, молнии (FA) и два поля строчки из дельты (S14, S17).
+			"buttonhole_style":       o.ButtonholeStyle,
+			"cut_length_mm":          o.CutLengthMm,
+			"buttonhole_orientation": o.ButtonholeOrientation,
+			"bartack_length_mm":      o.BartackLengthMm,
+			"attach_pattern":         o.AttachPattern,
+			"zipper_application":     o.ZipperApplication,
+			"binding_style":          o.BindingStyle,
+			"label_attach_stitch":    o.LabelAttachStitch,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -659,6 +718,55 @@ type techCardOperationRow struct {
 	entity.TechCardOperation
 }
 
+// techCardOperationsQuery reads the steps of every requested card.
+//
+// Operations are returned sorted ascending by operation_number (the addressable «оп. 10, 20, …»);
+// unnumbered operations sort last, with display_order as a stable tiebreaker within each group.
+//
+// The LEFT JOIN onto tech_card_bom_item is gone with the singular bom_item_id it resolved: the
+// materials a step consumes are the many-to-many links (0200) read separately, and the single column
+// was a second answer that the printed sheet had to subtract from the first.
+//
+// Explicit column list, not SELECT *, for the reason spelled out at the construction read above.
+//
+// Хвост списка — 32 колонки видов операций (0324), ТЕМ ЖЕ порядком, что в ALTER'е миграции, в
+// named-map insertTechCardOperations и в полях entity.TechCardOperation: S -> PL -> H -> P -> W -> T
+// -> F -> C -> Q -> WP, затем дельта FA -> S14 -> S17. Старая строка отдаёт по ним NULL, и NULL
+// обязан доехать до Valid=false, а не до нуля: «технолог молчит» и «технолог сказал ноль» — разные
+// инструкции цеху.
+//
+// КОММЕНТАРИИ К КОЛОНКАМ ЖИВУТ ЗДЕСЬ, СНАРУЖИ СТРОКИ ЗАПРОСА, А НЕ ВНУТРИ НЕЁ. Двоеточие внутри
+// SQL-комментария «--» sqlx разбирает как именованный параметр и роняет bind этого запроса (у него
+// есть :ids) — уже стоило проекту одного деплоя. Запрос вынесен в константу, чтобы bind можно было
+// пинить тестом без базы; см. techCardOperationsQueryBinds.
+const techCardOperationsQuery = `
+		SELECT o.id, o.tech_card_id, o.operation_number, o.operation_type, o.zone,
+		       o.stitches_per_cm, o.seam_class, o.seam_allowance_mm,
+		       o.topstitch_mode, o.topstitch_width_mm, o.topstitch_rows,
+		       o.attachment_kind, o.attachment_size_mm,
+		       o.machine_type, o.machine_profile_key, o.thread_count, o.needle_type,
+		       o.needle_size_nm, o.thread_tension, o.thread_tension_note, o.stitch_width_mm,
+		       o.press_equipment, o.press_profile_key, o.press_temperature_c, o.press_dwell_sec,
+		       o.press_pressure_n_cm2, o.press_steam, o.press_cloth,
+		       o.smv, o.note, o.callout_number,
+		       o.output_unit_key, o.output_unit_name,
+		       o.needle_count, o.needle_gauge_mm, o.seam_securing, o.row_spacing_mm,
+		       o.fullness_ratio,
+		       o.placement_count, o.pitch_mm,
+		       o.attach_method, o.hole_prep, o.reinforcement, o.foldback_mm,
+		       o.cycle_stitch_count,
+		       o.print_method, o.peel_mode, o.second_press_sec, o.pressure_scale,
+		       o.air_temperature_c, o.feed_speed_m_min,
+		       o.trim_action, o.residual_allowance_mm,
+		       o.residual_tail_max_mm,
+		       o.cleaning_kind, o.coverage_mode, o.wet_process_kind,
+		       o.buttonhole_style, o.cut_length_mm, o.buttonhole_orientation,
+		       o.bartack_length_mm, o.attach_pattern, o.zipper_application,
+		       o.binding_style, o.label_attach_stitch
+		FROM tech_card_operation o
+		WHERE o.tech_card_id IN (:ids)
+		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`
+
 // operationPos locates one operation inside the per-card slice enrichProduction builds, so a link row
 // carrying only operation_id can be attached to the right element.
 type operationPos struct {
@@ -752,27 +860,7 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		d.Presses = append(d.Presses, pressRows[i])
 	}
 
-	// Operations are returned sorted ascending by operation_number (the addressable
-	// «оп. 10, 20, …»); unnumbered operations sort last, with display_order as a
-	// stable tiebreaker within each group.
-	//
-	// The LEFT JOIN onto tech_card_bom_item is gone with the singular bom_item_id it resolved: the
-	// materials a step consumes are the many-to-many links (0200) read below, and the single column
-	// was a second answer that the printed sheet had to subtract from the first.
-	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, `
-		SELECT o.id, o.tech_card_id, o.operation_number, o.operation_type, o.zone,
-		       o.stitches_per_cm, o.seam_class, o.seam_allowance_mm,
-		       o.topstitch_mode, o.topstitch_width_mm, o.topstitch_rows,
-		       o.attachment_kind, o.attachment_size_mm,
-		       o.machine_type, o.machine_profile_key, o.thread_count, o.needle_type,
-		       o.needle_size_nm, o.thread_tension, o.thread_tension_note, o.stitch_width_mm,
-		       o.press_equipment, o.press_profile_key, o.press_temperature_c, o.press_dwell_sec,
-		       o.press_pressure_n_cm2, o.press_steam, o.press_cloth,
-		       o.smv, o.note, o.callout_number,
-		       o.output_unit_key, o.output_unit_name
-		FROM tech_card_operation o
-		WHERE o.tech_card_id IN (:ids)
-		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`,
+	opRows, err := storeutil.QueryListNamed[techCardOperationRow](ctx, s.DB, techCardOperationsQuery,
 		map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card operations: %w", err)
