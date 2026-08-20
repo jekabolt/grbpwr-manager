@@ -1021,7 +1021,7 @@ var bomKindHomeSection = map[TechCardBomKind]TechCardBomSection{
 
 	BomKindSeamSealingTape: BomSectionTrim,
 
-	BomKindEmbroideryStabilizer: BomSectionInterlining,
+	BomKindEmbroideryStabilizer: BomSectionDecoration,
 
 	BomKindPrint:        BomSectionDecoration,
 	BomKindEmbroidery:   BomSectionDecoration,
