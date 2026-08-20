@@ -314,7 +314,10 @@ enum TechCardBomKind {
   // валидации не существует вовсе.
   TECH_CARD_BOM_KIND_SEAM_SEALING_TAPE = 53; // лента проклейки шва (машина seam_taping) — section=trim
   // 54 — ДЫРА: номер обещан отложенному `wet_chemical` фазы расширяемых свойств. НЕ занимать.
-  TECH_CARD_BOM_KIND_EMBROIDERY_STABILIZER = 55; // стабилизатор под вышивку — section=interlining
+  // Стабилизатор под вышивку живёт в section=DECORATION, а НЕ в interlining: interlining — рулонная
+  // секция, а рулонные секции видов не принимают вовсе. Клиентский пикер обязан предлагать этот вид
+  // только в декоре; на паре «вид ↔ секция» стор откажет.
+  TECH_CARD_BOM_KIND_EMBROIDERY_STABILIZER = 55; // стабилизатор под вышивку — section=decoration
 }
 
 // TechCardLabDipStatus is the lab-dip approval lifecycle of a colourway.

@@ -946,6 +946,11 @@ const (
 	BomKindStud         TechCardBomKind = "stud" // декоративная клёпка; несущая — BomKindRivet
 	BomKindFoil         TechCardBomKind = "foil"
 	BomKindLaser        TechCardBomKind = "laser"
+	// Волна 0324. Стабилизатор под вышивку — расходник, который лежит ПОД тканью на время работы и
+	// держит пяльцы; расходует его вышивальный шаг. Дом — ДЕКОР, а не прокладка: секция interlining
+	// рулонная, а рулонные секции виды не принимают вовсе (bomKindHomeSection ниже — единственный
+	// источник дома, и TestBomKindHomeSectionsAreEligible ловит попытку поселить вид в рулонную).
+	BomKindEmbroideryStabilizer TechCardBomKind = "embroidery_stabilizer"
 
 	// НИТКИ (home section: thread) — split by the JOB, which is what picks the machine.
 	BomKindSewingThread     TechCardBomKind = "sewing_thread"
@@ -966,11 +971,6 @@ const (
 	BomKindDustBag       TechCardBomKind = "dust_bag"     // == AuxSubtypeDustBag
 	BomKindGarmentCase   TechCardBomKind = "garment_case" // == AuxSubtypeGarmentCase
 	BomKindInsertCard    TechCardBomKind = "insert_card"  // печатная карточка, уже AuxSubtypeInsert
-
-	// ПРОКЛАДОЧНЫЕ (home section: interlining). Волна 0324: стабилизатор под вышивку — расходник,
-	// который лежит ПОД тканью на время работы и держит пяльцы; по этому признаку он сосед клеевой
-	// прокладки, а не декора, хотя расходует его вышивальный шаг.
-	BomKindEmbroideryStabilizer TechCardBomKind = "embroidery_stabilizer"
 
 	// ДРУГОЕ — meaning lives in KindNote, never in a shadow value on one of the 51 real kinds.
 	BomKindOther TechCardBomKind = "other"
