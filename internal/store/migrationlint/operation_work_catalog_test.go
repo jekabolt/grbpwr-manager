@@ -50,6 +50,20 @@ import (
 //	  обязан быть чистым».
 //	Мутация откачена (git checkout), все три теста снова зелёные.
 //
+// ЩЕЛЬ R1: ВТОРАЯ ВСТАВКА С ДРУГИМ ПОРЯДКОМ КОЛОНОК (закрыта, доказано живой мутацией 2026-08-22).
+// insertBody ищет ОДИН канонический заголовок дословно, поэтому вторая вставка в ту же таблицу с
+// переставленными колонками — `INSERT INTO operation_work (verb, token, …)` — не совпадала со
+// строкой поиска и проходила мимо всех восьми правил И мимо замороженного хеша. Прогон по КОПИИ
+// файла миграции (рабочее дерево не тронуто: копия каталога sql в scratchpad + go test -overlay,
+// подменяющий migrationsDir):
+//
+//	ДО починки: контрабандная работа 'smuggled_work' с несуществующим глаголом 'smuggle' —
+//	  все три теста ЗЕЛЁНЫЕ (щель воспроизведена);
+//	ПОСЛЕ починки: те же три теста красные с «вставок в operation_work найдено 2, ожидается
+//	  ровно 1» — assertOneInsertPerCatalogTable считает вставки ПО ИМЕНИ ТАБЛИЦЫ, а не по
+//	  дословному заголовку, и стоит ПЕРЕД разбором.
+//	Копия удалена, чистое дерево — все три теста зелёные.
+//
 // ПОЧЕМУ РАЗБОР СТРОГИЙ ДО ПРИДИРЧИВОСТИ: каждая непустая строка внутри INSERT'а ОБЯЗАНА
 // разобраться, иначе тест жалуется. Мягкий разбор («что не совпало — пропустим») дал бы ложную
 // зелень ровно на той строке, которую испортили: пропущенная строка не проверяется ничем.
@@ -90,7 +104,57 @@ var (
 	workTupleRe = regexp.MustCompile(
 		`^\('([a-z0-9_]+)', '([a-z0-9_]+)', '([a-z0-9_]+)', '([^']*)', '([a-z]+)', (?:'([a-z0-9_]+)'|NULL), (\d+)\),?$`)
 	pairTupleRe = regexp.MustCompile(`^\('([a-z0-9_]+)', '([^']+)'\),?$`)
+
+	// catalogInsertRe ловит ЛЮБУЮ пишущую вставку в таблицу каталога: INSERT / INSERT IGNORE /
+	// REPLACE, любой регистр, необязательные бэктики — и, главное, ЛЮБОЙ порядок колонок, потому
+	// что имя таблицы стоит до списка колонок. Жадный [a-z_]* дочитывает имя целиком, поэтому
+	// operation_work не засчитывается как префикс operation_work_machine / _syn / _default.
+	catalogInsertRe = regexp.MustCompile("(?i)\\b(?:INSERT(?:\\s+IGNORE)?|REPLACE)\\s+INTO\\s+`?(operation_work[a-z_]*)`?")
 )
+
+// assertOneInsertPerCatalogTable закрывает щель R1: insertBody ищет один ДОСЛОВНЫЙ заголовок,
+// поэтому вторая вставка в ту же таблицу с другим порядком колонок не совпадала со строкой поиска
+// и проходила мимо всех правил и мимо замороженного хеша (доказано живой мутацией, см. шапку).
+// Здесь вставки считаются ПО ИМЕНИ ТАБЛИЦЫ, до и независимо от разбора: в файле обязана быть ровно
+// одна вставка в каждую сеемую таблицу, ноль — в operation_work_default (создаётся здесь же, но
+// глобальные дефолты назначает владелец рукой, файл их не сеет) и ни одной — в таблицу каталога,
+// которой этот тест не знает.
+func assertOneInsertPerCatalogTable(t *testing.T, content string) {
+	t.Helper()
+	want := map[string]int{
+		"operation_work":         1,
+		"operation_work_machine": 1,
+		"operation_work_syn":     1,
+		"operation_work_default": 0,
+	}
+	got := make(map[string]int, len(want))
+	for _, line := range strings.Split(content, "\n") {
+		// Строка-комментарий — не вставка: упоминание «INSERT INTO …» в пояснении шапки не
+		// должно засчитываться. Многострочных /* */ в миграциях этого репо нет (см. 0329:
+		// разделители шапки — только `-- `).
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		for _, m := range catalogInsertRe.FindAllStringSubmatch(line, -1) {
+			got[strings.ToLower(m[1])]++
+		}
+	}
+	for table, n := range got {
+		if _, known := want[table]; !known {
+			t.Errorf("%s: вставка в неизвестную таблицу каталога %s (найдено %d) — guard-тесты её не проверяют ничем",
+				operationWorkMigration, table, n)
+		}
+	}
+	for table, wantN := range want {
+		if got[table] != wantN {
+			t.Errorf("%s: вставок в %s найдено %d, ожидается ровно %d — вторая вставка с другим порядком колонок прошла бы мимо разбора и мимо замороженного хеша",
+				operationWorkMigration, table, got[table], wantN)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+}
 
 // insertBody returns the VALUES tuples of the one INSERT whose header line is `header`, cut at the
 // `ON DUPLICATE KEY UPDATE` clause. It fails loudly when the header is absent or appears twice —
@@ -125,6 +189,9 @@ func insertBody(t *testing.T, content, header string) []string {
 
 func parseSeedCatalog(t *testing.T, content string) seedCatalog {
 	t.Helper()
+	// ПЕРЕД разбором: ровно одна вставка на таблицу (щель R1). Разбор ниже читает канонические
+	// заголовки и не заметил бы вторую вставку с другим порядком колонок.
+	assertOneInsertPerCatalogTable(t, content)
 	var cat seedCatalog
 
 	for _, line := range insertBody(t, content,
