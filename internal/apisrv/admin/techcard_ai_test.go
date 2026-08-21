@@ -294,13 +294,17 @@ func TestAIProfileSummaries(t *testing.T) {
 
 // --- the thread-tension qualifier, and the profile link the model cannot make ---------------------
 
-// TestAIOperationToPb_ThreadTensionNote: the closed scale needs its qualifier to be worth anything at
-// «other», and the qualifier needs the scale to be legal at all.
+// TestAIOperationToPb_ThreadTensionNote: the qualifier needs the scale to be legal at all.
+//
+// ЧЕРНОВИК ТЕПЕРЬ ГОВОРИТ `tighter`, А НЕ `other`: 0328 снял «другое» из УПОРЯДОЧЕННОЙ шкалы —
+// «другое, чем слабее / нормально / туже» не бывает, а то, что имелось в виду («у меня есть
+// конкретное число»), и есть эта самая записка. Записка законна рядом с ЛЮБОЙ ступенью и никуда
+// не делась; исчез только повод выбирать ступень наугад.
 func TestAIOperationToPb_ThreadTensionNote(t *testing.T) {
 	var drafted openrouter.Operation
 	if err := json.Unmarshal([]byte(`{
 	  "operation_type":"machine","machine_type":"overlock","zone":"side",
-	  "thread_tension":"other","thread_tension_note":"на 0.5 туже верхней"
+	  "thread_tension":"tighter","thread_tension_note":"на 0.5 туже верхней"
 	}`), &drafted); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -310,7 +314,7 @@ func TestAIOperationToPb_ThreadTensionNote(t *testing.T) {
 		t.Fatalf("the note never reached the decoded answer: %q", drafted.ThreadTensionNote)
 	}
 	op := aiOperationToPb(drafted)
-	if op.ThreadTension != pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_OTHER {
+	if op.ThreadTension != pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_TIGHTER {
 		t.Fatalf("tension = %v", op.ThreadTension)
 	}
 	if op.ThreadTensionNote != "на 0.5 туже верхней" {
@@ -328,10 +332,10 @@ func TestAIOperationToPb_ThreadTensionNote(t *testing.T) {
 	}
 
 	// Over the column's width the note is CUT and marked, not dropped and not passed on: passed on it
-	// is a save the operator cannot complete, dropped it takes the only content «other» has.
+	// is a save the operator cannot complete, dropped it takes the number the scale cannot carry.
 	long := aiOperationToPb(openrouter.Operation{
 		OperationType: "machine", MachineType: "overlock", Zone: "side",
-		ThreadTension: "other", ThreadTensionNote: strings.Repeat("я", entity.MaxThreadTensionNoteLen+20),
+		ThreadTension: "tighter", ThreadTensionNote: strings.Repeat("я", entity.MaxThreadTensionNoteLen+20),
 	})
 	if n := len([]rune(long.ThreadTensionNote)); n != entity.MaxThreadTensionNoteLen {
 		t.Errorf("truncated note is %d runes, want %d", n, entity.MaxThreadTensionNoteLen)

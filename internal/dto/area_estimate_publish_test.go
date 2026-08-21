@@ -422,15 +422,17 @@ func TestEveryRefusalReachesTheWire(t *testing.T) {
 			}
 			return tc
 		}},
-		// «По припуску» при незаданном эталоне: ширины полосы не существует. Комплект полон, замер
-		// свеж — недостающий факт лежит в настройках цеха, и только эта причина туда и посылает.
+		// Полоса БЕЗ СВОЕГО ЧИСЛА при незаданном эталоне: ширины полосы не существует. Комплект
+		// полон, замер свеж — недостающий факт лежит в настройках цеха, и только эта причина туда и
+		// посылает. До 0328 то же самое состояние записывалось отдельным режимом `seam_allowance`.
 		{"no seam allowance standard", entity.AreaEstimateNoStripWidth, func() *entity.TechCard {
 			tc := measuredCard()
 			tc.BomItems[0].Section = entity.BomSectionInterlining
 			tc.Pieces[0].Fused = true
 			tc.Pieces[0].FusingMode = sql.NullString{
-				String: string(entity.PieceFusingModeSeamAllowance), Valid: true,
+				String: string(entity.PieceFusingModeStrip), Valid: true,
 			}
+			tc.Pieces[0].FusingWidthMm = decimal.NullDecimal{}
 			return tc
 		}},
 		{"pin conflict", entity.AreaEstimatePinConflict, func() *entity.TechCard {

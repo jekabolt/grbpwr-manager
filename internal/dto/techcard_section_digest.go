@@ -547,8 +547,8 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		//
 		// ШИРИНА ВХОДИТ В ПАРУ, а не хешируется отдельно: 10 мм и 25 мм — это разное количество
 		// клеевой и разный физический край изделия, то есть разное содержание того же утверждения.
-		// Пустая строка у режимов без своей ширины — не «ноль», а «своего числа нет», и она законно
-		// отличает «полосой 10 мм» от «по припуску».
+		// Пустая строка — не «ноль», а «своего числа нет», и она законно отличает «полосой 10 мм» от
+		// «полосой по эталону припуска» (0328).
 		//
 		// В ПОДПИСАННОМ СОДЕРЖАНИИ ПОЛЕ ОБЯЗАНО БЫТЬ. CONSTRUCTION — подпись под тем, ЧТО кроят и
 		// шьют; «эта деталь дублируется только по краю на 25 мм» описывает физическую деталь, которая
@@ -825,7 +825,6 @@ func operationKindTails(o *entity.TechCardOperation) []any {
 			opKindStr("print_method", o.PrintMethod),
 			opKindStr("peel_mode", o.PeelMode),
 			opKindInt("second_press_sec", o.SecondPressSec),
-			opKindStr("pressure_scale", o.PressureScale),
 		),
 		operationKindTail("weld",
 			opKindInt("air_temperature_c", o.AirTemperatureC),

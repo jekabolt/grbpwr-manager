@@ -116,7 +116,6 @@ var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirectio
 // TechCardBomPurpose's UNSET follows.
 var techCardPieceFusingModePbToEntity = map[pb_common.TechCardPieceFusingMode]entity.TechCardPieceFusingMode{
 	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_FULL:           entity.PieceFusingModeFull,
-	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE: entity.PieceFusingModeSeamAllowance,
 	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_STRIP:          entity.PieceFusingModeStrip,
 }
 
@@ -2623,10 +2622,10 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			return nil, err
 		}
 		// КАК ДУБЛИРУЕТСЯ (0304) — ПРИСУТСТВИЕ пары, а не значения, ровно как у соседа сверху и по той
-		// же причине. Один флаг на оба поля: присутствие РЕЖИМА управляет и шириной, потому что
-		// «полосой N мм» осмысленно только целиком. Клиент, приславший режим и промолчавший про
-		// ширину, заявляет «полоса без числа» — это ошибка, и её называет ValidatePieceFusing, — а не
-		// «ширину не трогать»; иначе полоса досталась бы шириной от прошлой правки, чужой и молча.
+		// же причине. Один флаг на оба поля: присутствие РЕЖИМА управляет и шириной, потому что пара
+		// атомарна. Клиент, приславший режим и промолчавший про ширину, заявляет «полоса БЕЗ ЧИСЛА» —
+		// с 0328 это ЗАКОННЫЙ ответ «по эталону припуска», — а не «ширину не трогать»; иначе полоса
+		// досталась бы шириной от прошлой правки, чужой и молча.
 		fusingOmitted := p.FusingMode == nil
 		fusingMode := sql.NullString{}
 		fusingWidth := decimal.NullDecimal{}
@@ -2636,7 +2635,7 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 				if !ok {
 					return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_mode", i),
 						"unknown fusing mode", p.GetFusingMode().String(),
-						"pick one of: full (the whole piece), seam_allowance (by the seam allowance), strip (a strip of a given width)")
+						"pick one of: full (the whole piece), strip (a strip along the edge — leave the width empty to take the card's seam-allowance reference)")
 				}
 				fusingMode = sql.NullString{String: string(fm), Valid: true}
 			}
@@ -3393,9 +3392,9 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			// клиента, возвращающего прочитанное, в ту самую старую вкладку, ради которой поле и
 			// сделано optional.
 			FusingMode: pbPtr(PieceFusingModeToPb(p.FusingMode)),
-			// Ширина едет БЕЗ обёртки присутствия, потому что присутствие несёт РЕЖИМ: пара атомарна, и
-			// у режима без своей ширины её и не бывает. nil здесь читается клиентом как «числа нет»,
-			// что верно для «целиком» и «по припуску» и невозможно для «полосой».
+			// Ширина едет БЕЗ обёртки присутствия, потому что присутствие несёт РЕЖИМ: пара атомарна.
+			// nil здесь читается клиентом как «своего числа нет» — что верно для «целиком» и, с 0328,
+			// для полосы по эталону припуска.
 			FusingWidthMm: pbDecimalFromNull(p.FusingWidthMm),
 			Grainline:     p.Grainline,
 			Fused:         p.Fused,

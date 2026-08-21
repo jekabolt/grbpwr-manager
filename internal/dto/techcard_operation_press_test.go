@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -14,7 +15,8 @@ import (
 //
 //  1. блок законен только на PRESS и PRESS_OPEN; FUSING и PRINT отвергаются НАРЯДУ со всеми
 //     прочими, хотя ВТО-блок 39..45 при них законен, — это разные вопросы;
-//  2. на PRESS_OPEN законно только `open`: глагол уже сам себе под-глагол;
+//  2. на PRESS_OPEN под-глагол не законен ВОВСЕ: глагол уже сам себе под-глагол, и с 0327 это его
+//     единственное написание — член `open` снят из контракта;
 //  3. `press_toward` — только при `press_action = to_one_side`;
 //  4. при `to_one_side` он ОБЯЗАТЕЛЕН — и это единственная обязательность, которая не может стать
 //     ретроактивной, потому что значения to_one_side ни одна сохранённая строка иметь не может.
@@ -27,8 +29,12 @@ const (
 	paUnknown   = pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_UNKNOWN
 	paFlat      = pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_PRESS_FLAT
 	paToOneSide = pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_TO_ONE_SIDE
-	paOpen      = pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_OPEN
-	paSteam     = pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_STEAM
+	// РОВНО ТОТ САМЫЙ СНЯТЫЙ НОМЕР, ВЗЯТЫЙ СЫРЫМ ЧИСЛОМ. Именованного члена больше нет — 0327
+	// объявил 3 reserved, — но провод несёт числа, и старый бандл продолжит слать именно это.
+	// Написать здесь `3` вместо имени и есть тот единственный способ проверить, что сервер отвечает
+	// на него ШУМНО и с именем поля, а не молча кладёт в колонку значение, которого нет в словаре.
+	paRetiredOpen = pb_common.TechCardPressAction(3)
+	paSteam       = pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_STEAM
 
 	ptUnknown = pb_common.TechCardPressToward_TECH_CARD_PRESS_TOWARD_UNKNOWN
 	ptFront   = pb_common.TechCardPressToward_TECH_CARD_PRESS_TOWARD_FRONT
@@ -80,10 +86,12 @@ func TestPressBlockNotApplicableByVerb(t *testing.T) {
 
 // ── 2. PRESS_OPEN — САМ СЕБЕ ПОД-ГЛАГОЛ ─────────────────────────────────────────────────────────
 
-// TestPressOpenAcceptsOnlyOpen. Пустой press_action на этом глаголе — КАНОН (пикер его не пишет
-// вовсе), `open` — второе законное написание, принимаемое на чтение, всё остальное — отказ: два
-// разных ответа на один вопрос.
-func TestPressOpenAcceptsOnlyOpen(t *testing.T) {
+// TestPressOpenTakesNoSubVerbAtAll. Пустой press_action на этом глаголе — КАНОН И ЕДИНСТВЕННОЕ
+// ЗАКОННОЕ СОСТОЯНИЕ. До 0327 у разутюжки было два написания — глагол и член `open`, — и они давали
+// два разных кортежа в проекции дайджеста CONSTRUCTION: одна и та же работа на двух карточках
+// получала разные отпечатки. Член снят, значит на этом глаголе отвергается ЛЮБОЙ под-глагол, а не
+// только чужой.
+func TestPressOpenTakesNoSubVerbAtAll(t *testing.T) {
 	base := func(p *pb_common.TechCardOperationPress) *pb_common.TechCardOperation {
 		return &pb_common.TechCardOperation{
 			OperationType: opTypePressOpen, Zone: zoneOuter,
@@ -93,11 +101,6 @@ func TestPressOpenAcceptsOnlyOpen(t *testing.T) {
 	// Канон: глагол без блока.
 	if got := kindFacts(kindParse(t, base(nil)).Operations[0])["press_action"]; got != "" {
 		t.Errorf("канонический press_open обязан хранить press_action пустым, получено %q", got)
-	}
-	// Второе написание принимается и НЕ переписывается в пустоту: авто-канонизация сохранённого
-	// шага пометила бы подписанную карточку как «изменена после подписи» без правки человеком.
-	if got := kindFacts(kindParse(t, base(pressOp(paOpen, ptUnknown))).Operations[0])["press_action"]; got != "open" {
-		t.Errorf("press_action = open на press_open обязан сохраниться как есть, получено %q", got)
 	}
 	for _, tt := range []struct {
 		name   string
@@ -116,37 +119,69 @@ func TestPressOpenAcceptsOnlyOpen(t *testing.T) {
 	}
 }
 
-// TestPressOpenVerbIsNotRewritten — ЯВНАЯ ФИКСАЦИЯ ЗАПРЕТА КАНОНИЗАЦИИ.
+// TestRetiredPressActionOpenIsRefusedByField — ГЛАВНОЕ УТВЕРЖДЕНИЕ F1, и проверяется оно СЫРЫМ
+// НОМЕРОМ, а не именем.
 //
-// Два написания разутюжки дают ДВА РАЗНЫХ кортежа в проекции дайджеста, и это цена, принятая
-// осознанно. Форма не имеет права привести одно к другому ни на записи, ни на чтении: шаг,
-// сохранённый как PRESS + open, обязан вернуться таким же, а глагол PRESS_OPEN обязан остаться
-// глаголом. Тест падает ровно тогда, когда кто-нибудь «причешет» это в конвертере.
-func TestPressOpenVerbIsNotRewritten(t *testing.T) {
+// На месте этого теста стоял TestPressOpenVerbIsNotRewritten — он ЗАКРЕПЛЯЛ оба написания
+// разутюжки как законные и запрещал сводить их друг к другу, «принимая цену осознанно». Цена
+// оказалась не той, что он охранял: пикер предлагал `press` и `press open` соседними строками, а
+// при глаголе `press` открывал второй селект, где строка `press open` стояла снова. Технолог
+// выбирал не приём, а строку в списке, и одна и та же разутюжка на двух карточках получала разные
+// отпечатки CONSTRUCTION. 0327 снял член; тест, закреплявший его, снят вместе с ним.
+//
+// ЧТО ДОКАЗЫВАЕТСЯ ЗДЕСЬ. Бэкенд едет РАНЬШЕ клиента, и до его выкатки старый бандл продолжит
+// слать номер 3 — сырым числом на проводе, без всякого имени. Такое сохранение обязано ОТВЕРГАТЬСЯ
+// ШУМНО И С ИМЕНЕМ ПОЛЯ: «вернулась ошибка» тут не годится, потому что поле-адресат — это то, за
+// что цепляется форма, чтобы подсветить контрол (см. field-errors.ts). Молчаливый приём был бы
+// хуже отказа вдвойне — в колонку легло бы значение, которого нет ни в одном словаре, и CHECK
+// отбил бы всю карточку голым 3819.
+func TestRetiredPressActionOpenIsRefusedByField(t *testing.T) {
+	if _, ok := pb_common.TechCardPressAction_name[3]; ok {
+		t.Fatal("номер 3 снова занят членом enum'а — он объявлен reserved 0327 и закрыт навсегда")
+	}
+	for _, tt := range []struct {
+		name string
+		op   *pb_common.TechCardOperation
+	}{
+		{"на глаголе press", &pb_common.TechCardOperation{
+			OperationType: opTypePress, Zone: zoneOuter, PressEquipment: pressIron,
+			Press: pressOp(paRetiredOpen, ptUnknown)}},
+		{"на глаголе press_open", &pb_common.TechCardOperation{
+			OperationType: opTypePressOpen, Zone: zoneOuter, PressEquipment: pressIron,
+			Press: pressOp(paRetiredOpen, ptUnknown)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ve := kindRefusal(t, tt.op)
+			if ve.Field != "operations[0].press_action" || ve.Reason != "unknown_value" {
+				t.Errorf("отказ назвал %q/%q, ожидалось operations[0].press_action/unknown_value", ve.Field, ve.Reason)
+			}
+		})
+	}
+}
+
+// TestPressOpenVerbSurvivesAsTheOnlySpelling — вторая половина F1, и без неё первая ничего не
+// стоит. Снять член можно было двумя способами: убрать второе написание (то, что сделано) или
+// начать переписывать одно в другое. Второе пометило бы подписанную карточку как «изменена после
+// подписи» без единой человеческой правки, поэтому глагол обязан оставаться глаголом и НЕ
+// обзаводиться дописанным под-глаголом.
+func TestPressOpenVerbSurvivesAsTheOnlySpelling(t *testing.T) {
 	viaVerb := kindParse(t, &pb_common.TechCardOperation{
 		OperationType: opTypePressOpen, Zone: zoneOuter, PressEquipment: pressIron,
 	}).Operations[0]
-	viaAction := kindParse(t, &pb_common.TechCardOperation{
-		OperationType: opTypePress, Zone: zoneOuter, PressEquipment: pressIron,
-		Press: pressOp(paOpen, ptUnknown),
-	}).Operations[0]
-
 	if viaVerb.OperationType != entity.OpTypePressOpen {
 		t.Errorf("глагол press_open переписан в %q — он в проде и в подписанных карточках", viaVerb.OperationType)
 	}
 	if viaVerb.PressAction.Valid {
-		t.Errorf("канонической записи дописали press_action = %q — это переписывание одного написания в другое", viaVerb.PressAction.String)
+		t.Errorf("канонической записи дописали press_action = %q — это изобретённый за технолога ответ", viaVerb.PressAction.String)
 	}
-	if viaAction.OperationType != entity.OpTypePress || viaAction.PressAction.String != "open" {
-		t.Errorf("PRESS + open канонизирован в %q/%q — подписанная карточка протухла бы без единой человеческой правки",
-			viaAction.OperationType, viaAction.PressAction.String)
-	}
-	// И следствие, ради которого запрет существует: два написания дают РАЗНЫЕ отпечатки. Если они
-	// когда-нибудь совпадут, значит кто-то свёл одно к другому — и тогда сведение уже произошло.
-	a := digestOf(constructionProjection(&entity.TechCardInsert{Operations: []entity.TechCardOperation{viaVerb}}))
-	b := digestOf(constructionProjection(&entity.TechCardInsert{Operations: []entity.TechCardOperation{viaAction}}))
-	if a == b {
-		t.Error("два написания разутюжки дали один отпечаток — значит форма их свела, а сведение запрещено")
+	// И ОТПЕЧАТОК ЭТОЙ СТРОКИ НЕ СДВИНУЛСЯ. Пара «press_action, значение» рождается только у
+	// ЗАПОЛНЕННОГО поля, поэтому шаг без под-глагола хешируется ровно так же, как хешировался до
+	// снятия члена. НЕГАТИВНЫЙ КОНТРОЛЬ обязателен: без него тест был бы зелён и на константе.
+	blank := digestOf(constructionProjection(&entity.TechCardInsert{Operations: []entity.TechCardOperation{viaVerb}}))
+	filled := viaVerb
+	filled.PressAction = sql.NullString{String: "press_flat", Valid: true}
+	if blank == digestOf(constructionProjection(&entity.TechCardInsert{Operations: []entity.TechCardOperation{filled}})) {
+		t.Error("заполненный press_action дал ТОТ ЖЕ отпечаток, что пустой — значит хвостовая пара не эмитится вовсе и предыдущая проверка ничего не проверяет")
 	}
 }
 

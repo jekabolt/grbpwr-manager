@@ -103,10 +103,16 @@ func TestUnmarkedFusingCostsAsFull(t *testing.T) {
 	}
 }
 
-// «ПО ПРИПУСКУ» БЕРЁТ ЭТАЛОН КАРТОЧКИ, а при его отсутствии — цеховой. Каскад 0277 целиком, потому
-// что цех, настроивший припуск один раз, не обязан повторять его на каждой карточке.
-func TestSeamAllowanceModeFollowsTheStandardCascade(t *testing.T) {
-	tc := fusedCard(entity.PieceFusingModeSeamAllowance, "")
+// ПОЛОСА БЕЗ СВОЕГО ЧИСЛА БЕРЁТ ЭТАЛОН КАРТОЧКИ, а при его отсутствии — цеховой. Каскад 0277
+// целиком, потому что цех, настроивший припуск один раз, не обязан повторять его на каждой
+// карточке.
+//
+// До 0328 это же состояние записывалось ОТДЕЛЬНЫМ режимом `seam_allowance` — то есть один приём
+// (полоса вдоль среза) был записан двумя значениями, различавшимися лишь тем, названо ли число.
+// Арифметика не изменилась ни на цифру; изменилось только то, чем состояние обозначается: пустой
+// шириной единственного режима вместо второго члена словаря.
+func TestStripWithoutItsOwnWidthFollowsTheStandardCascade(t *testing.T) {
+	tc := fusedCard(entity.PieceFusingModeStrip, "")
 	tc.RequiredSeamAllowanceMm = decimal.NullDecimal{
 		Decimal: decimal.RequireFromString("10"), Valid: true,
 	}
@@ -117,7 +123,7 @@ func TestSeamAllowanceModeFollowsTheStandardCascade(t *testing.T) {
 	}
 
 	// Эталона на карточке нет — берётся цеховой.
-	tc = fusedCard(entity.PieceFusingModeSeamAllowance, "")
+	tc = fusedCard(entity.PieceFusingModeStrip, "")
 	tc.WorkshopSeamAllowanceMm = decimal.NullDecimal{
 		Decimal: decimal.RequireFromString("10"), Valid: true,
 	}
@@ -127,9 +133,9 @@ func TestSeamAllowanceModeFollowsTheStandardCascade(t *testing.T) {
 	}
 
 	// ЭТАЛОНА НЕТ НИГДЕ — ОТКАЗ, а не подстановка полного контура. Подстановка была бы хуже нуля не
-	// величиной, а тем, что молчалива: на экране осталось бы «по припуску», а деньги стояли бы как
-	// за «всю деталь» — 0.42 против 0.026, в 16 раз, и ни одна надпись об этом не сказала бы.
-	est = fusingSlotEstimate(t, fusedCard(entity.PieceFusingModeSeamAllowance, ""))
+	// величиной, а тем, что молчалива: на экране осталось бы «полосой», а деньги стояли бы как за
+	// «всю деталь» — 0.42 против 0.026, в 16 раз, и ни одна надпись об этом не сказала бы.
+	est = fusingSlotEstimate(t, fusedCard(entity.PieceFusingModeStrip, ""))
 	if est.normDerived {
 		t.Fatalf("без эталона припуска норма посчиталась (%s) вместо отказа", est.perGarment)
 	}

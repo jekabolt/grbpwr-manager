@@ -2470,6 +2470,23 @@ var SeamClassTokens = []string{
 
 var ValidSeamClasses = tokenSet[TechCardSeamClass](SeamClassTokens)
 
+// ДВА ЧЛЕНА, НА КОТОРЫХ ВИСЯТ ПРАВИЛА GO, И ПОТОМУ НАЗВАННЫЕ, А НЕ ВПИСАННЫЕ СТРОКОЙ. Правило,
+// сравнивающее с голым литералом, не ломает сборку при опечатке — оно просто НИКОГДА не совпадает,
+// и перестаёт существовать молча.
+//
+//	SeamClassBound      — ведущее поле окантовки: при нём и только при нём законно binding_style
+//	                      (как сложена бейка). До этого исполнение висело на machine_type =
+//	                      binding_taping, то есть окантовка на прямострочке — обычная работа, кант
+//	                      притачан вручную — своё исполнение назвать не могла.
+//	SeamClassTopstitch  — не класс шва наравне с прочими, а утверждение «соединительного шва у
+//	                      этого шага нет, есть только отделочная строчка». Отсюда парное правило:
+//	                      при нём topstitch_mode обязателен, а непустой topstitch_mode при
+//	                      НЕНАЗВАННОМ классе запрещает наследовать умолчание карточки.
+const (
+	SeamClassBound     TechCardSeamClass = "bs_bound"
+	SeamClassTopstitch TechCardSeamClass = "os_topstitch"
+)
+
 // TechCardAttachmentKind is the folder / guide / presser foot a step runs with.
 //
 // "none" IS NOT A SPELLING OF NULL here, though it was until the card grew machine profiles: with
@@ -2503,12 +2520,18 @@ var ValidAttachmentKinds = tokenSet[TechCardAttachmentKind](AttachmentKindTokens
 
 // TechCardMachineType is the machine a MACHINE step runs on: the second axis, the one the old
 // operation type mixed into the verb.
+//
+// `hardware_attach` СНЯТ 0328: он кодировал СПОСОБ КРЕПЛЕНИЯ в поле «на чём». «Пришивная» — это
+// attach_method = sew, а машина у такого шага называется по имени. Взамен machine_type стал
+// законен на глаголе hardware_set, так что шаг называет обе оси сразу. В
+// LegacyOperationMachineType этот токен не упоминается — целью канонизации замороженного легаси он
+// не был, в отличие от lockstitch_double_needle.
 type TechCardMachineType string
 
 var MachineTypeTokens = []string{
 	"lockstitch", "lockstitch_double_needle", "overlock", "coverstitch", "coverlock",
 	"chainstitch", "blindstitch", "zigzag", "bartack", "buttonhole", "button_attach",
-	"embroidery", "handstitch_imitation", "hardware_attach", "elastic_attach",
+	"embroidery", "handstitch_imitation", "elastic_attach",
 	"binding_taping", "zipper_setting", "gathering", "patch_pocket_auto", "welt_pocket_auto",
 	"template_auto", "collar_cuff_auto", "sleeve_setting_auto", "waistband_auto",
 	"other",
@@ -2554,12 +2577,17 @@ var AutomationLevelTokens = []string{"basic", "semi_auto", "auto"}
 
 var ValidAutomationLevels = tokenSet[TechCardAutomationLevel](AutomationLevelTokens)
 
-// TechCardThreadTension is a closed scale RELATIVE to the machine's normal setting, plus a free
+// TechCardThreadTension is an ORDERED scale RELATIVE to the machine's normal setting, plus a free
 // note for the number a particular machine wants. A raw dial figure was rejected deliberately: it
 // means nothing across two machines of the same class.
+//
+// `other` СНЯТ 0328 по тому же доводу, которым этот дом дважды обосновал его отсутствие у
+// AutomationLevel и у снятого PressureScale: «другое, чем слабее / нормально / туже» не бывает, а
+// шкала с «другим» перестаёт быть шкалой. Что имелось в виду — «у меня есть конкретное число», и
+// число живёт в thread_tension_note, законном рядом с ЛЮБОЙ ступенью.
 type TechCardThreadTension string
 
-var ThreadTensionTokens = []string{"looser", "normal", "tighter", "other"}
+var ThreadTensionTokens = []string{"looser", "normal", "tighter"}
 
 var ValidThreadTensions = tokenSet[TechCardThreadTension](ThreadTensionTokens)
 
@@ -2705,17 +2733,21 @@ var HardwareAttachMethodTokens = []string{"sew", "prong_clinch", "press_set", "c
 
 var ValidHardwareAttachMethods = tokenSet[TechCardHardwareAttachMethod](HardwareAttachMethodTokens)
 
-// TechCardHolePrep — чем готовится отверстие под фурнитуру (H2).
+// TechCardHolePrep — готовим ли отверстие ОТДЕЛЬНЫМ шагом и чем (H2). `none` — явный ответ
+// «отдельного отверстия не делаем», в том числе когда фурнитура прокалывает ткань сама: 0327 снял
+// `prong_pierce`, потому что это был он же, сказанный другими словами.
 type TechCardHolePrep string
 
-var HolePrepTokens = []string{"none", "prong_pierce", "awl_pierce", "punch"}
+var HolePrepTokens = []string{"none", "awl_pierce", "punch"}
 
 var ValidHolePreps = tokenSet[TechCardHolePrep](HolePrepTokens)
 
-// TechCardReinforcement — чем усилено место установки (H3).
+// TechCardReinforcement — КАК усилено место установки (H3). Только способ: чем именно —
+// строкой BOM. 0327 свернул `fusible_patch` и `fabric_stay` в один `patch`: способ у них был
+// один, а различались они материалом подложки, то есть тем, что по объявлению живёт в BOM.
 type TechCardReinforcement string
 
-var ReinforcementTokens = []string{"none", "fusible_patch", "fabric_stay", "tape", "seam_catch", "other"}
+var ReinforcementTokens = []string{"none", "patch", "tape", "seam_catch", "other"}
 
 var ValidReinforcements = tokenSet[TechCardReinforcement](ReinforcementTokens)
 
@@ -2723,27 +2755,34 @@ var ValidReinforcements = tokenSet[TechCardReinforcement](ReinforcementTokens)
 type TechCardPrintMethod string
 
 // laser_engrave — единственный член словаря БЕЗ НОСИТЕЛЯ И БЕЗ ПРИЖИМА: у него нет ни отделения
-// плёнки, ни второго прижима, ни шкалы давления, и ВТО-блок шага при нём тоже бессмыслен.
+// плёнки, ни второго прижима, и ВТО-блок шага при нём тоже бессмыслен.
 const PrintMethodLaserEngrave TechCardPrintMethod = "laser_engrave"
+
+// screen — ВТОРОЙ метод без носителя, но С ПРИЖИМОМ: краска кладётся прямо на ткань, отделять
+// нечего, а сушить и прижимать — есть чем. Поэтому при нём отвергается РОВНО peel_mode, а не весь
+// блок печати и не ВТО-блок (0327). До 0327 то же самое говорилось членом словаря peel_mode
+// `none` — и на шелкографии он был истинен одновременно с «не указано».
+const PrintMethodScreen TechCardPrintMethod = "screen"
 
 var PrintMethodTokens = []string{"screen", "dtf", "heat_transfer", "foil", "laser_engrave", "other"}
 
 var ValidPrintMethods = tokenSet[TechCardPrintMethod](PrintMethodTokens)
 
-// TechCardPeelMode — как снимается носитель (P2). `none` = носителя нет вовсе.
+// TechCardPeelMode — как снимается носитель (P2). Члена «носителя нет» здесь НЕТ с 0327: он
+// целиком выводился из print_method, и при обоих методах без носителя (screen, laser_engrave)
+// peel_mode теперь отвергается целиком.
 type TechCardPeelMode string
 
-var PeelModeTokens = []string{"none", "hot", "warm", "cold"}
+var PeelModeTokens = []string{"hot", "warm", "cold"}
 
 var ValidPeelModes = tokenSet[TechCardPeelMode](PeelModeTokens)
 
-// TechCardPressureScale — прижим термопресса ШКАЛОЙ, а не числом: сырое усилие ничего не значит
-// между двумя разными прессами. Шкала упорядочена и поэтому не несёт "other".
-type TechCardPressureScale string
-
-var PressureScaleTokens = []string{"light", "medium", "firm"}
-
-var ValidPressureScales = tokenSet[TechCardPressureScale](PressureScaleTokens)
+// СЛОВАРЬ TechCardPressureScale СНЯТ ЦЕЛИКОМ ВМЕСТЕ С КОЛОНКОЙ (0327). Он описывал ТОТ ЖЕ прижим,
+// что press_pressure_n_cm2 ВТО-блока, только словом вместо числа, и стоял на шаге, где ВТО-блок
+// законен, — то есть в форме печатного шага было два контрола прижима подряд без единого правила
+// взаимного исключения. Довод шкалы («вендорские psi — показание манометра, а не давление на
+// ткань») верен и относится к ЕДИНИЦАМ, а не к существованию второго поля. Если словесная ступень
+// понадобится, она понадобится и ВТО тоже — и тогда это ОДНА шкала на оба глагола, рядом с числом.
 
 // TechCardTrimAction — что именно делает подрезка (T1). Дискриминатор глагола trim.
 type TechCardTrimAction string
@@ -2758,7 +2797,7 @@ var ValidTrimActions = tokenSet[TechCardTrimAction](TrimActionTokens)
 // TechCardCleaningKind — что именно чистят (C1). Дискриминатор глагола clean.
 type TechCardCleaningKind string
 
-var CleaningKindTokens = []string{"spot_clean", "dust_lint", "chalk_removal", "adhesive_removal", "other"}
+var CleaningKindTokens = []string{"spot_clean", "dust_lint", "other"}
 
 var ValidCleaningKinds = tokenSet[TechCardCleaningKind](CleaningKindTokens)
 
@@ -2766,7 +2805,7 @@ var ValidCleaningKinds = tokenSet[TechCardCleaningKind](CleaningKindTokens)
 // выход (Q1). Дискриминатор глагола inspect.
 type TechCardInspectCoverage string
 
-var InspectCoverageTokens = []string{"each_unit", "sample_per_bundle", "aql_plan", "first_output", "other"}
+var InspectCoverageTokens = []string{"each_unit", "sample_per_bundle", "aql_plan", "other"}
 
 var ValidInspectCoverages = tokenSet[TechCardInspectCoverage](InspectCoverageTokens)
 
@@ -2803,7 +2842,7 @@ var ValidButtonAttachPatterns = tokenSet[TechCardButtonAttachPattern](ButtonAtta
 type TechCardZipperApplication string
 
 var ZipperApplicationTokens = []string{
-	"centered", "lapped", "invisible", "exposed", "fly", "separating_cf", "in_seam_pocket", "other",
+	"centered", "lapped", "invisible", "exposed", "fly", "other",
 }
 
 var ValidZipperApplications = tokenSet[TechCardZipperApplication](ZipperApplicationTokens)
@@ -2839,15 +2878,15 @@ type TechCardPressAction string
 // PressActionToOneSide — единственное значение, при котором законен и обязателен PressToward.
 const PressActionToOneSide TechCardPressAction = "to_one_side"
 
-// PressActionOpen — ВТОРОЕ написание разутюжки. Первое и каноническое — сам глагол press_open,
-// который в проде и в подписанных карточках; пикер пишет глагол и press_action не пишет вовсе.
-// Чтение принимает оба, но форма НИКОГДА не переписывает одно написание в другое: два написания
-// дают два разных кортежа в проекции дайджеста, и авто-канонизация пометила бы подписанную
-// карточку как «изменена после подписи» без единой человеческой правки.
-const PressActionOpen TechCardPressAction = "open"
+// РАЗУТЮЖКИ В ЭТОМ СЛОВАРЕ НЕТ, И ЭТО ЕДИНСТВЕННОЕ ЕЁ НАПИСАНИЕ — ГЛАГОЛ press_open. Член `open`
+// был вторым написанием того же факта; 0327 снял его. За глаголом стояли живые строки прода, за
+// членом — ни одной, а два написания давали два разных кортежа в проекции дайджеста, то есть одна
+// и та же разутюжка на двух карточках получала разные отпечатки. Конвенция «пикер пишет глагол и
+// press_action не пишет вовсе» держалась ровно до первого технолога, которому пикер предлагал обе
+// строки подряд.
 
 var PressActionTokens = []string{
-	"press_flat", "to_one_side", "open", "steam", "final", "ease_in", "stretch", "mould", "other",
+	"press_flat", "to_one_side", "steam", "final", "ease_in", "stretch", "mould", "other",
 }
 
 var ValidPressActions = tokenSet[TechCardPressAction](PressActionTokens)
@@ -2863,7 +2902,7 @@ type TechCardPressToward string
 
 var PressTowardTokens = []string{
 	"front", "back", "up", "down", "toward_center", "away_from_center", "sleeve", "body",
-	"facing", "shell", "lining", "side", "other",
+	"facing", "shell", "lining", "other",
 }
 
 var ValidPressTowards = tokenSet[TechCardPressToward](PressTowardTokens)
@@ -3012,17 +3051,18 @@ type TechCardOperation struct {
 	// Фурнитура (H) — hardware_set целиком; на machine + buttonhole|button_attach|bartack законны
 	// ТОЛЬКО hole_prep, reinforcement и cycle_stitch_count.
 	AttachMethod     sql.NullString      `db:"attach_method"`      // sew|prong_clinch|press_set|crimp|threaded; REQUIRED у hardware_set
-	HolePrep         sql.NullString      `db:"hole_prep"`          // none|prong_pierce|awl_pierce|punch
-	Reinforcement    sql.NullString      `db:"reinforcement"`      // none|fusible_patch|fabric_stay|tape|seam_catch|other
+	HolePrep         sql.NullString      `db:"hole_prep"`          // none|awl_pierce|punch
+	Reinforcement    sql.NullString      `db:"reinforcement"`      // none|patch|tape|seam_catch|other
 	FoldbackMm       decimal.NullDecimal `db:"foldback_mm"`        // подгиб стропы через пряжку, мм; 10..80; при attach_method = threaded
 	CycleStitchCount sql.NullInt32       `db:"cycle_stitch_count"` // стежков в цикле автомата, шт; 8..64; NULL = штатная программа
 
 	// Печать (P) — только print. Сам метод лежит КОЛОНКОЙ, а не внутри блока: он REQUIRED, а
 	// обязательное поле не прячут внутрь необязательного сообщения.
 	PrintMethod    sql.NullString `db:"print_method"`     // screen|dtf|heat_transfer|foil|laser_engrave; REQUIRED у print
-	PeelMode       sql.NullString `db:"peel_mode"`        // none|hot|warm|cold; `none` = носителя нет
+	PeelMode       sql.NullString `db:"peel_mode"`        // hot|warm|cold; отвергается при screen и laser_engrave
 	SecondPressSec sql.NullInt32  `db:"second_press_sec"` // второй прижим, сек; 1..30; NULL = второго прижима нет
-	PressureScale  sql.NullString `db:"pressure_scale"`   // light|medium|firm
+	// КОЛОНКА pressure_scale СНЯТА 0327 вместе со словарём: это был прижим ВТО-блока, сказанный
+	// словом вместо числа. Число живёт в PressPressureNCm2 — одно поле на утюг, пресс и термопресс.
 
 	// Сварка и проклейка (W) — machine + ЯВНЫЙ machine_type = seam_taping | ultrasonic_welder
 	// (резолв через machine_profile_key не засчитывается).
@@ -3049,7 +3089,7 @@ type TechCardOperation struct {
 	ButtonholeOrientation sql.NullString      `db:"buttonhole_orientation"` // horizontal|vertical|angled; buttonhole
 	BartackLengthMm       decimal.NullDecimal `db:"bartack_length_mm"`      // длина закрепки, мм; 1..40; buttonhole|bartack
 	AttachPattern         sql.NullString      `db:"attach_pattern"`         // cross_x|parallel|square|u_shape|other; button_attach
-	ZipperApplication     sql.NullString      `db:"zipper_application"`     // centered|lapped|invisible|exposed|fly|separating_cf|in_seam_pocket|other; zipper_setting
+	ZipperApplication     sql.NullString      `db:"zipper_application"`     // centered|lapped|invisible|exposed|fly|other; zipper_setting
 	BindingStyle          sql.NullString      `db:"binding_style"`          // raw|single_fold|double_fold; binding_taping
 	LabelAttachStitch     sql.NullString      `db:"label_attach_stitch"`    // four_sides|two_sides_top_bottom|two_sides_left_right|one_edge|caught_in_seam|corners_tack|other; любой machine
 
@@ -3062,8 +3102,8 @@ type TechCardOperation struct {
 	//
 	// Обе NULLable без DEFAULT: NULL = «не сказано». Явного «нет» у этих двух не бывает вовсе —
 	// поэтому члена `none` в словарях нет, в отличие от seam_securing / hole_prep / peel_mode.
-	PressAction sql.NullString `db:"press_action"` // press_flat|to_one_side|open|steam|final|ease_in|stretch|mould|other; НЕ required
-	PressToward sql.NullString `db:"press_toward"` // front|back|up|down|toward_center|away_from_center|sleeve|body|facing|shell|lining|side|other; ТОЛЬКО при press_action = to_one_side, и там обязателен
+	PressAction sql.NullString `db:"press_action"` // press_flat|to_one_side|steam|final|ease_in|stretch|mould|other; НЕ required; разутюжка — ГЛАГОЛ press_open
+	PressToward sql.NullString `db:"press_toward"` // front|back|up|down|toward_center|away_from_center|sleeve|body|facing|shell|lining|other; ТОЛЬКО при press_action = to_one_side, и там обязателен
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
@@ -3491,9 +3531,9 @@ type TechCardPiece struct {
 	// «целиком», перестаёт быть заметным вопросом в тот самый момент, когда на него ответили за
 	// технолога.
 	FusingMode sql.NullString `db:"fusing_mode"`
-	// FusingWidthMm — ширина клеевой полосы, мм. Значима и обязательна ТОЛЬКО при
-	// PieceFusingModeStrip; при остальных режимах гасится, потому что число рядом с «по припуску»
-	// спорит с эталоном припуска (0277) молча: на экране видно одно, в расчёте другое.
+	// FusingWidthMm — ширина клеевой полосы, мм. Значима ТОЛЬКО при PieceFusingModeStrip и там
+	// НЕОБЯЗАТЕЛЬНА с 0328: пусто = эталон припуска карточки (иначе цеха, 0277), число =
+	// переопределение. При «целиком» гасится — там полосы нет вовсе.
 	FusingWidthMm decimal.NullDecimal `db:"fusing_width_mm"`
 	// FusingOmitted — ПАРЫ не было на проводе, а не «пришла пустой»: тот же отрицательный смысл и та
 	// же причина, что у CutSymmetryOmitted и UngradedOmitted рядом. Один флаг на оба поля, потому что
@@ -3585,19 +3625,20 @@ type TechCardPieceFusingMode string
 
 const (
 	PieceFusingModeFull TechCardPieceFusingMode = "full"
-	// PieceFusingModeSeamAllowance and PieceFusingModeStrip BOTH lay a strip along the edge and differ
-	// only in where its width comes from: the card's (else the workshop's) seam-allowance standard
-	// (0277) versus the number typed on the piece. Collapsing them into one value with a mandatory
-	// number would mean re-typing the allowance on every piece and then diverging from the standard
-	// 0277 exists to hold.
-	PieceFusingModeSeamAllowance TechCardPieceFusingMode = "seam_allowance"
-	PieceFusingModeStrip         TechCardPieceFusingMode = "strip"
+	// PieceFusingModeStrip — ПОЛОСА ВДОЛЬ СРЕЗА, И ОНА ОДНА. До 0328 рядом жил `seam_allowance`, и
+	// комментарий этого места сам формулировал диагноз: оба режима кладут полосу вдоль среза и
+	// различаются ТОЛЬКО источником её ширины. Это дословно width/edge отстрочки. Возражение
+	// «свести их значило бы вписывать припуск руками на каждой детали» било мимо — оно предлагало
+	// не тот способ свести. Ширина стала ОПЦИОНАЛЬНОЙ: пусто = эталон припуска карточки (иначе
+	// цеха, 0277), число = переопределение, ровно как у seam_allowance_mm и всех overrides шага.
+	PieceFusingModeStrip TechCardPieceFusingMode = "strip"
 )
 
-// ValidTechCardPieceFusingModes mirrors the DB CHECK chk_tcp_fusing_mode (0304). "Not marked" is
-// deliberately absent for the same reason as in cut symmetry: it is the NULL column, not a value.
+// ValidTechCardPieceFusingModes mirrors the DB CHECK chk_tcp_fusing_mode (0304, сужен 0328).
+// "Not marked" is deliberately absent for the same reason as in cut symmetry: it is the NULL
+// column, not a value.
 var ValidTechCardPieceFusingModes = map[TechCardPieceFusingMode]bool{
-	PieceFusingModeFull: true, PieceFusingModeSeamAllowance: true, PieceFusingModeStrip: true,
+	PieceFusingModeFull: true, PieceFusingModeStrip: true,
 }
 
 // PieceFusingStripWidthCeilingMm mirrors the ceiling in chk_tcp_fusing_width (0304). The widest real
@@ -3633,8 +3674,8 @@ func PieceFusingModeOrFull(mode sql.NullString) TechCardPieceFusingMode {
 //   - НЕ ДУБЛИРУЕТСЯ ⇒ разметки нет. A mode surviving a cleared checkbox would read «не
 //     дублируется» on screen while handing the estimate a strip — and unchecking the box is exactly
 //     the moment nobody looks at the mode any more.
-//   - ШИРИНА ТОЛЬКО У STRIP. A number left beside «по припуску» argues with the standard silently:
-//     the screen shows the standard, the arithmetic uses the leftover.
+//   - ШИРИНА ТОЛЬКО У STRIP. A number left beside «дублируется целиком» describes nothing at all:
+//     the screen shows a whole contour, the arithmetic would use the leftover.
 //
 // Normalising rather than refusing is the right call here because neither state is an operator's
 // statement — both are residue of a previous edit, and there is exactly one thing they can mean.
@@ -3653,15 +3694,20 @@ func (p *TechCardPiece) NormalizeFusing() {
 // the operator needs. An unset mode is accepted — «не размечено» is legal and the only honest state
 // for every row that predates 0304.
 //
-// Call NormalizeFusing FIRST: this function judges an operator's statement, not residue. The pair it
-// refuses to invent is the one only a human can supply — a strip with no width. Defaulting that to
-// the seam allowance would silently turn «полосой» into «по припуску», and the two differ by
-// whatever the technologist meant to type.
+// Call NormalizeFusing FIRST: this function judges an operator's statement, not residue.
+//
+// ПОЛОСА БЕЗ ЧИСЛА ЗАКОННА С 0328, и это разворот прежнего правила. Раньше она отвергалась, а
+// «ширину берём из эталона припуска» говорилось ОТДЕЛЬНЫМ режимом `seam_allowance` — то есть один
+// приём был записан двумя значениями, различавшимися лишь тем, названо ли число. Теперь число —
+// опциональное свойство единственного режима: пусто = эталон припуска карточки (иначе цеха, 0277),
+// заполнено = переопределение. Ничего не выдумывается за технолога: пустая ширина и есть его ответ
+// «по эталону», и читатель (dto.fusingGeometryFor) разворачивает её в число ровно там, где ему
+// нужно число.
 func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm decimal.NullDecimal) error {
 	if !mode.Valid {
 		if widthMm.Valid {
 			return NewFieldViolation(field, "a fusing strip width is set, but no fusing mode is picked", widthMm.Decimal.String(),
-				"pick “strip”, or remove the width: the “whole piece” and “by seam allowance” modes have no number of their own")
+				"pick “strip”, or remove the width: the “whole piece” mode has no number of its own")
 		}
 		return nil
 	}
@@ -3672,18 +3718,19 @@ func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm 
 	v := TechCardPieceFusingMode(mode.String)
 	if !ValidTechCardPieceFusingModes[v] {
 		return NewFieldViolation(field, "unknown fusing mode", mode.String,
-			"pick one of: full (the whole piece), seam_allowance (by the seam allowance), strip (a strip of a given width)")
+			"pick one of: full (the whole piece), strip (a strip along the edge — leave the width empty to take the card's seam-allowance reference)")
 	}
 	if v != PieceFusingModeStrip {
 		if widthMm.Valid {
 			return NewFieldViolation(field, "a strip width is set on a mode that has no width of its own", mode.String,
-				"“by seam allowance” takes the width from the card's seam allowance reference; your own number goes with the “strip” mode")
+				"“the whole piece” is cut to the same contour as the piece; a width belongs to the “strip” mode")
 		}
 		return nil
 	}
+	// ПУСТАЯ ШИРИНА ПРИ STRIP — ЗАКОННЫЙ ОТВЕТ (0328), а не пропуск: она значит «по эталону
+	// припуска». Проверять дальше нечего.
 	if !widthMm.Valid {
-		return NewFieldViolation(field, "the “strip” mode has no width set", "",
-			"type the strip width in millimetres, or pick “by seam allowance” to take it from the seam allowance reference")
+		return nil
 	}
 	if !widthMm.Decimal.IsPositive() {
 		return NewFieldViolation(field, "the fusing strip width must be greater than zero", widthMm.Decimal.String(),

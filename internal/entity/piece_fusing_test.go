@@ -44,10 +44,10 @@ func TestNormalizeFusingClearsMarkingOnAnUnfusedPiece(t *testing.T) {
 	}
 }
 
-// ШИРИНА ЖИВЁТ ТОЛЬКО У ПОЛОСЫ. Число рядом с «по припуску» спорит с эталоном молча: на экране
-// видно одно, в расчёте другое.
+// ШИРИНА ЖИВЁТ ТОЛЬКО У ПОЛОСЫ. Число рядом с «дублируется целиком» описывает ничто: на экране
+// виден полный контур, а в расчёт ушёл бы остаток от прошлой правки.
 func TestNormalizeFusingDropsWidthOutsideStrip(t *testing.T) {
-	for _, mode := range []TechCardPieceFusingMode{PieceFusingModeFull, PieceFusingModeSeamAllowance} {
+	for _, mode := range []TechCardPieceFusingMode{PieceFusingModeFull} {
 		p := TechCardPiece{Fused: true, FusingMode: fusingMode(mode), FusingWidthMm: fusingDec("25")}
 		p.NormalizeFusing()
 		if p.FusingWidthMm.Valid {
@@ -64,12 +64,30 @@ func TestNormalizeFusingDropsWidthOutsideStrip(t *testing.T) {
 	}
 }
 
-// ПОЛОСА БЕЗ ЧИСЛА — ЕДИНСТВЕННОЕ, ЧТО НЕЛЬЗЯ ДОДУМАТЬ. Подставить сюда припуск значило бы молча
-// превратить «полосой» в «по припуску», а они отличаются ровно на то, что технолог хотел вписать.
-func TestValidatePieceFusingRefusesAStripWithNoWidth(t *testing.T) {
-	err := ValidatePieceFusing("pieces[0].fusing_mode", true, fusingMode(PieceFusingModeStrip), decimal.NullDecimal{})
-	if err == nil {
-		t.Fatal("полоса без ширины принята — норма клеевой посчиталась бы нулём")
+// ПОЛОСА БЕЗ ЧИСЛА — ЗАКОННЫЙ ОТВЕТ «ПО ЭТАЛОНУ ПРИПУСКА» (0328), И ЭТО РАЗВОРОТ ПРЕЖНЕГО ПРАВИЛА.
+//
+// Раньше здесь стоял отказ, а «ширину берём из эталона» говорилось ОТДЕЛЬНЫМ режимом
+// `seam_allowance` — то есть один приём был записан двумя значениями, различавшимися лишь тем,
+// названо ли число. Довод прежнего отказа («подставить припуск значило бы молча превратить
+// „полосой“ в „по припуску“») держался ровно на существовании второго режима: без него подставлять
+// нечего во что, потому что «полосой» и «по припуску» — теперь одно и то же утверждение с
+// заполненным и незаполненным числом.
+//
+// Ничего не выдумывается за технолога и сейчас: пустая ширина ОСТАЁТСЯ пустой в колонке, а
+// разворачивает её в число только читатель, которому число нужно (dto.fusingGeometryFor), и по
+// каскаду эталона 0277.
+func TestValidatePieceFusingAcceptsAStripWithNoWidth(t *testing.T) {
+	if err := ValidatePieceFusing("pieces[0].fusing_mode", true, fusingMode(PieceFusingModeStrip), decimal.NullDecimal{}); err != nil {
+		t.Fatalf("полоса без ширины отклонена: %v — сказать «по эталону припуска» стало нечем", err)
+	}
+	// НЕГАТИВНЫЙ КОНТРОЛЬ: снятый режим не должен вернуться другим путём. Он не член словаря, и
+	// проверка обязана называть его именно неизвестным, а не молча принимать.
+	if err := ValidatePieceFusing("pieces[0].fusing_mode", true, fusingMode("seam_allowance"), decimal.NullDecimal{}); err == nil {
+		t.Fatal("режим seam_allowance принят — 0328 снял его, и полоса по эталону выражается пустой шириной у strip")
+	}
+	// И ширина при «целиком» по-прежнему отвергается: пара атомарна, число там описывает ничто.
+	if err := ValidatePieceFusing("pieces[0].fusing_mode", true, fusingMode(PieceFusingModeFull), fusingDec("25")); err == nil {
+		t.Fatal("ширина при «целиком» принята — на экране полный контур, а в расчёт ушло бы 25 мм")
 	}
 }
 

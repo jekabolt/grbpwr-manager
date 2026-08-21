@@ -117,8 +117,11 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 	// ради которого в токен уже входит геометрия артикула из справочника.
 	//
 	// Эталон подставляется КАСКАДОМ и только там, где он на что-то влияет: карточка → цех, и только
-	// при 'seam_allowance'. Хешировать его безусловно значило бы устаревать подписи карточек, где
-	// клеевой нет вовсе. `ws.id = 1` — синглтон, закреплённый chk_workshop_settings_singleton (0272);
+	// у ПОЛОСЫ БЕЗ СВОЕГО ЧИСЛА. До 0328 то же самое условие писалось как fusing_mode =
+	// 'seam_allowance' — отдельный режим, различавшийся с 'strip' лишь тем, названо ли число; режим
+	// снят, условие стало двухколоночным, а смысл остался прежний: эталон входит в подпись ровно
+	// тогда, когда ширину полосы задаёт он. Хешировать его безусловно значило бы устаревать подписи
+	// карточек, где клеевой нет вовсе. `ws.id = 1` — синглтон, закреплённый chk_workshop_settings_singleton (0272);
 	// LEFT JOIN, потому что ненастроенный цех — законное состояние и строки может не быть.
 	//
 	// pieces_per_garment ВХОДИТ В ТОКЕН, потому что Ф1 умножает на него площадь одного контура:
@@ -142,7 +145,7 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 		       IF(p.fusing_mode IS NULL, '', CONCAT_WS('|',
 		           p.fusing_mode,
 		           COALESCE(p.fusing_width_mm, ''),
-		           IF(p.fusing_mode = 'seam_allowance',
+		           IF(p.fusing_mode = 'strip' AND p.fusing_width_mm IS NULL,
 		              COALESCE(tc.required_seam_allowance_mm, ws.default_seam_allowance_mm, ''),
 		              '')
 		       )) AS fusing_marking,

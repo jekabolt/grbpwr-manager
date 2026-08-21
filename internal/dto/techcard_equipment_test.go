@@ -471,7 +471,7 @@ func TestThreadTensionNoteNeedsTheScale(t *testing.T) {
 		OperationType:     pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
 		Zone:              zoneOuter,
 		MachineType:       pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
-		ThreadTension:     pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_OTHER,
+		ThreadTension:     pb_common.TechCardThreadTension_TECH_CARD_THREAD_TENSION_TIGHTER,
 		ThreadTensionNote: "  дил 3.5  ",
 	}))
 	if err != nil {

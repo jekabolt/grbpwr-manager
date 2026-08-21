@@ -89,7 +89,7 @@ func TestOperationKindsStoredGateRefusesUnawareWriteColumnByColumn(t *testing.T)
 		// Фурнитура (H).
 		{"attach_method", func(o *entity.TechCardOperation) { o.AttachMethod = okStr("press_set") }},
 		{"hole_prep", func(o *entity.TechCardOperation) { o.HolePrep = okStr("punch") }},
-		{"reinforcement", func(o *entity.TechCardOperation) { o.Reinforcement = okStr("fusible_patch") }},
+		{"reinforcement", func(o *entity.TechCardOperation) { o.Reinforcement = okStr("patch") }},
 		{"foldback_mm", func(o *entity.TechCardOperation) { o.FoldbackMm = okDec("35") }},
 		{"cycle_stitch_count", func(o *entity.TechCardOperation) { o.CycleStitchCount = okInt(21) }},
 
@@ -97,7 +97,9 @@ func TestOperationKindsStoredGateRefusesUnawareWriteColumnByColumn(t *testing.T)
 		{"print_method", func(o *entity.TechCardOperation) { o.PrintMethod = okStr("dtf") }},
 		{"peel_mode", func(o *entity.TechCardOperation) { o.PeelMode = okStr("cold") }},
 		{"second_press_sec", func(o *entity.TechCardOperation) { o.SecondPressSec = okInt(5) }},
-		{"pressure_scale", func(o *entity.TechCardOperation) { o.PressureScale = okStr("firm") }},
+		// pressure_scale КЛЕТКИ БОЛЬШЕ НЕТ: 0327 снял колонку вместе со словарём. Клетка на снятой
+		// колонке не «теряется молча», а перестаёт компилироваться, — но контрольное число ниже
+		// обязано было уехать вместе с ней, иначе оно охраняло бы неверный состав.
 
 		// Сварка и проклейка (W).
 		{"air_temperature_c", func(o *entity.TechCardOperation) { o.AirTemperatureC = okInt(450) }},
@@ -126,15 +128,15 @@ func TestOperationKindsStoredGateRefusesUnawareWriteColumnByColumn(t *testing.T)
 		{"binding_style", func(o *entity.TechCardOperation) { o.BindingStyle = okStr("double_fold") }},
 		{"label_attach_stitch", func(o *entity.TechCardOperation) { o.LabelAttachStitch = okStr("four_sides") }},
 
-		// ВТО (0325) — две колонки сверх тридцати двух, и они той же породы, что «восемь полей
+		// ВТО (0325) — две колонки сверх волны 0324, и они той же породы, что «восемь полей
 		// дельты»: press_action сидит на ГЛАГОЛЕ PRESS, который живёт в проде годами и который
 		// сегодняшний бандл шлёт каждый день. Глагол осведомлённости не доказывает — доказывает
 		// заполненность колонки, поэтому клетки и здесь поколоночные.
 		{"press_action", func(o *entity.TechCardOperation) { o.PressAction = okStr("to_one_side") }},
 		{"press_toward", func(o *entity.TechCardOperation) { o.PressToward = okStr("front") }},
 	}
-	if len(cases) != 34 {
-		t.Fatalf("волна — 32 колонки 0324 плюс 2 колонки ВТО 0325, в таблице %d: колонка без клетки теряется молча", len(cases))
+	if len(cases) != 33 {
+		t.Fatalf("волна — 32 колонки 0324 плюс 2 колонки ВТО 0325 минус pressure_scale, снятая 0327, итого 33; в таблице %d: колонка без клетки теряется молча", len(cases))
 	}
 	for _, tt := range cases {
 		t.Run(tt.column, func(t *testing.T) {
@@ -158,7 +160,7 @@ func TestOperationKindsStoredGateRefusesUnawareWriteColumnByColumn(t *testing.T)
 	}
 }
 
-// Девять новых глаголов — тоже факт, даже когда шаг не несёт НИ ОДНОЙ из 32 колонок. FOLD и PACK
+// Девять новых глаголов — тоже факт, даже когда шаг не несёт НИ ОДНОЙ из колонок волны. FOLD и PACK
 // полей не несут вовсе: без глагола в предикате бандл, выбросивший непонятный ему шаг, стёр бы его
 // полной заменой, а предикат по одним колонкам ответил бы «фактов нет».
 func TestOperationKindsStoredGateCountsTheNineVerbsWithoutColumns(t *testing.T) {
@@ -322,8 +324,8 @@ func TestOperationKindsGatesAreSilentOnCardsWithoutWaveFacts(t *testing.T) {
 
 // --- РАСШИРЕННЫЕ СЛОВАРИ ЖИВЫХ КОЛОНОК (шаги 4..9 миграции 0324) ---------------------------------
 //
-// Волна добавила не только 32 колонки и девять глаголов: шесть словарей КОЛОНОК, существующих
-// годами, получили новые токены. Карточка, несущая РОВНО ОДИН такой токен и НИ ОДНОЙ из 32 колонок,
+// Волна добавила не только колонки и девять глаголов: шесть словарей КОЛОНОК, существующих
+// годами, получили новые токены. Карточка, несущая РОВНО ОДИН такой токен и НИ ОДНОЙ колонки волны,
 // для предиката «по колонкам и глаголам» выглядит пустой — и запись отставшей вкладки стирала бы
 // токен молча. Поэтому клетка на КАЖДЫЙ токен, по одному на кейс: пропущенный токен не падает, он
 // просто тихо перестаёт защищаться.

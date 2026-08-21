@@ -576,9 +576,25 @@ func TestMachineTypeDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_MACHINE_TYPE_",
 		zeroMember: "TECH_CARD_MACHINE_TYPE_UNKNOWN",
 		check:      "chk_op_machine_type CHECK",
+		migration:  migration0328,
 		window:     600,
 		tokens:     entity.MachineTypeTokens,
+		retired:    []int32{14}, // TECH_CARD_MACHINE_TYPE_HARDWARE_ATTACH, снят 0328
 	})
+	assertVocabularyLacksToken(t, "TechCardMachineType", entity.MachineTypeTokens, "hardware_attach",
+		"он кодировал СПОСОБ КРЕПЛЕНИЯ в поле «на чём»: «пришивная» — это attach_method = sew, а машина у такого шага называется по имени. Взамен machine_type стал законен на глаголе hardware_set, и шаг называет обе оси сразу")
+	// LOCKSTITCH_DOUBLE_NEEDLE ОСТАЁТСЯ, и это не непоследовательность рядом со снятым соседом.
+	// Он — ЦЕЛЬ КАНОНИЗАЦИИ замороженного легаси-глагола `double_needle`
+	// (entity.LegacyOperationMachineType), то есть снятие сломало бы чтение старых строк.
+	// hardware_attach в той таблице НЕ упоминается — потому его и можно было снять.
+	if entity.LegacyOperationMachineType["double_needle"] == "" {
+		t.Error("канонизация легаси double_needle исчезла — тогда и lockstitch_double_needle перестал быть её целью, и довод «член нельзя снять» надо перечитать заново")
+	}
+	for legacy, machine := range entity.LegacyOperationMachineType {
+		if machine == "hardware_attach" {
+			t.Errorf("легаси-глагол %q канонизируется в снятый токен hardware_attach — снятие сломало бы чтение старых строк", legacy)
+		}
+	}
 }
 
 // TestPressEquipmentDBCheckNoDrift is the entity<->DB leg for the ВТО half: entity.PressEquipmentTokens
@@ -604,9 +620,12 @@ func TestPressEquipmentDBCheckNoDrift(t *testing.T) {
 // assertSameSet already fails on a duplicated DB value, so the single-'other' rule is enforced by
 // construction rather than by a second assertion.
 func TestEquipmentUnionDBCheckNoDrift(t *testing.T) {
-	// 0324 recreated this CHECK: both new machines join the union, the press half is untouched, and
-	// 'other' still has to appear exactly once across the two halves.
-	content := readMigrationFile(t, migration0324)
+	// 0328 пересоздала этот CHECK последней: из машинной половины ушёл hardware_attach, прессовая не
+	// тронута, и 'other' по-прежнему обязан встречаться РОВНО ОДИН раз на обе половины.
+	content := readMigrationFile(t, migration0328)
+	if i := strings.Index(content, "-- +migrate Down"); i >= 0 {
+		content = content[:i]
+	}
 	dbValues := extractDBEnumValues(t, content, "chk_eqp_equipment CHECK", 700)
 
 	union := make([]string, 0, len(entity.MachineTypeTokens)+len(entity.PressEquipmentTokens))
@@ -651,9 +670,21 @@ func TestNeedleTypeDBCheckNoDrift(t *testing.T) {
 // TestThreadTensionDBCheckNoDrift — entity.ThreadTensionTokens <-> chk_op_thread_tension /
 // chk_eqp_thread_tension.
 func TestThreadTensionDBCheckNoDrift(t *testing.T) {
+	// ОБЕ ПОЛОВИНЫ ПЕРЕЕХАЛИ НА 0328 ВМЕСТЕ. Одна половина, читаемая из 0306, сверяла бы entity с
+	// уже переписанным списком и краснела бы на здоровой схеме; хуже — разные якоря у двух копий
+	// одного словаря перестали бы доказывать, что это ОДИН словарь, ради чего пара и заведена.
 	assertPairedCheckNoDrift(t, "TechCardThreadTension",
-		migration0306, "chk_op_thread_tension CHECK",
-		migration0306, "chk_eqp_thread_tension CHECK", 200, entity.ThreadTensionTokens)
+		migration0328, "chk_op_thread_tension CHECK",
+		migration0328, "chk_eqp_thread_tension CHECK", 200, entity.ThreadTensionTokens)
+	assertVocabularyLacksToken(t, "TechCardThreadTension", entity.ThreadTensionTokens, "other",
+		"шкала УПОРЯДОЧЕНА, а «другое, чем слабее / нормально / туже» не бывает: то, что имелось в виду, — конкретное число, и оно живёт в thread_tension_note рядом с любой ступенью")
+	// ТРЕТЬЯ НОГА — proto. assertPairedCheckNoDrift сверяет только entity ↔ БД (у словаря ДВА
+	// констрейнта, и общий помощник построен вокруг этого), поэтому закрытый номер проверяется
+	// здесь отдельно: без него `reserved 4` можно было бы забыть, и enum разошёлся бы с обеими
+	// колонками молча.
+	if name, taken := pb_common.TechCardThreadTension_name[4]; taken {
+		t.Errorf("номер 4 снова занят членом %s — он объявлен reserved 0328 и закрыт навсегда", name)
+	}
 }
 
 // TestPressClothDBCheckNoDrift — entity.PressClothTokens <-> chk_op_press_cloth / chk_eqp_press_cloth.
@@ -838,6 +869,17 @@ const migration0325 = "0325_press_action_toward.sql"
 // который 0326 уже переписал, и получить красноту на здоровой схеме.
 const migration0326 = "0326_topstitch_drop_width.sql"
 
+// 0327 СУЖАЕТ ВОСЕМЬ СЛОВАРЕЙ ВОЛН 0324/0325 СРАЗУ и снимает девятый вместе с колонкой. Владение
+// списком переходит к нему по тому же правилу, что у 0325 и 0326: тест словаря читает ФАЙЛ,
+// ВЛАДЕЮЩИЙ ТЕКУЩИМ СПИСКОМ. Восемь якорей поэтому переезжают сюда; девятый (pressure_scale) не
+// переезжает никуда — его теста больше нет, потому что нет ни enum'а, ни колонки, ни CHECK'а.
+const migration0327 = "0327_operation_kinds_false_splits.sql"
+
+// 0328 СУЖАЕТ ТРИ СЛОВАРЯ НА КОЛОНКАХ, КОТОРЫЕ ЖИВУТ НА ПРОДЕ ГОДАМИ, и делает это в ЧЕТЫРЁХ
+// CHECK'ах: machine_type и thread_tension стоят ДВАЖДЫ — на шаге и в парке оборудования. Владение
+// списками переходит к нему по тому же правилу, что у 0325, 0326 и 0327.
+const migration0328 = "0328_false_splits_prod_live.sql"
+
 // waveCheckWindow bounds the search from a CHECK's anchor. The longest new alternation
 // (label_attach_stitch) ends 192 characters past its anchor; a window shorter than the list would
 // make extractDBEnumValues fail to FIND it rather than fail to compare it.
@@ -853,8 +895,14 @@ type waveVocabulary struct {
 	migration  string           // файл, ВЛАДЕЮЩИЙ текущим списком токенов; "" = migration0324
 	window     int              // 0 = waveCheckWindow
 	tokens     []string         // the entity slice: the single source the validator reads
-	holes      []int32          // enum numbers promised to a later phase and deliberately left empty
-	retired    []int32          // enum numbers `reserved` in the .proto: снято навсегда, вернуть нельзя
+	// anchorLast сдвигает поиск якоря на ПОСЛЕДНЕЕ его вхождение в файле. Нужен ровно там, где одна
+	// миграция пишет один и тот же констрейнт ДВАЖДЫ: 0327 сперва РАСШИРЯЕТ chk_op_reinforcement
+	// (чтобы перенос в `patch` был законен под действующим CHECK'ом), потом СУЖАЕТ окончательно.
+	// По умолчанию якорь берётся первым — и на таком файле сверял бы entity с промежуточным
+	// суперсетом, то есть краснел бы на здоровой схеме.
+	anchorLast bool
+	holes      []int32 // enum numbers promised to a later phase and deliberately left empty
+	retired    []int32 // enum numbers `reserved` in the .proto: снято навсегда, вернуть нельзя
 }
 
 // protoEnumTokens derives the STORABLE token list of a proto enum from its generated _name map:
@@ -945,7 +993,20 @@ func assertWaveVocabularyNoDrift(t *testing.T, v waveVocabulary) {
 	if migration == "" {
 		migration = migration0324
 	}
-	dbValues := extractDBEnumValues(t, readMigrationFile(t, migration), v.check, window)
+	content := readMigrationFile(t, migration)
+	// ТОЛЬКО Up-ПОЛОВИНА. Down у сужающих файлов ВОЗВРАЩАЕТ прежний, более широкий список — это его
+	// работа, — и сверять entity с ним значило бы требовать от отката совпадения с живым словарём.
+	// До 0327 разницы не было (никто не пересоздавал в Down словарь, который есть в Up), и якорь
+	// молча находил единственное вхождение.
+	if i := strings.Index(content, "-- +migrate Down"); i >= 0 {
+		content = content[:i]
+	}
+	if v.anchorLast {
+		if i := strings.LastIndex(content, v.check); i >= 0 {
+			content = content[i:]
+		}
+	}
+	dbValues := extractDBEnumValues(t, content, v.check, window)
 	assertSameSet(t, v.label, dbValues, v.tokens)
 	assertSameSetNamed(t, v.label, "proto enum", protoEnumTokens(t, v), "entity set", v.tokens)
 }
@@ -1069,10 +1130,14 @@ func TestHolePrepDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_HOLE_PREP_",
 		zeroMember: "TECH_CARD_HOLE_PREP_UNKNOWN",
 		check:      "chk_op_hole_prep CHECK",
+		migration:  migration0327,
 		tokens:     entity.HolePrepTokens,
+		retired:    []int32{2}, // TECH_CARD_HOLE_PREP_PRONG_PIERCE, снят 0327
 	})
 	assertVocabularyHasToken(t, "TechCardHolePrep", entity.HolePrepTokens, "none",
-		"«отверстие не готовится» — это ответ, а не молчание")
+		"«отдельного отверстия не делаем» — это ответ, а не молчание")
+	assertVocabularyLacksToken(t, "TechCardHolePrep", entity.HolePrepTokens, "prong_pierce",
+		"«фурнитура прокалывает сама» и есть `none`: колонка спрашивает про ПОДГОТОВИТЕЛЬНЫЙ шаг, а при обоих ответах его нет")
 }
 
 // TestReinforcementDBCheckNoDrift — H3, чем усилено место установки.
@@ -1083,10 +1148,19 @@ func TestReinforcementDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_REINFORCEMENT_",
 		zeroMember: "TECH_CARD_REINFORCEMENT_UNKNOWN",
 		check:      "chk_op_reinforcement CHECK",
+		migration:  migration0327,
+		anchorLast: true, // 0327 пишет этот констрейнт дважды; итоговый список — во ВТОРОЙ редакции
 		tokens:     entity.ReinforcementTokens,
+		retired:    []int32{2, 3}, // FUSIBLE_PATCH и FABRIC_STAY, свёрнуты 0327 в PATCH = 7
 	})
 	assertVocabularyHasToken(t, "TechCardReinforcement", entity.ReinforcementTokens, "none",
 		"«не усилено» — решение технолога, и оно обязано отличаться от «не спросили»")
+	assertVocabularyHasToken(t, "TechCardReinforcement", entity.ReinforcementTokens, "patch",
+		"в него 0327 перенёс обе прежние подложки, и UPDATE миграции пишет именно этот токен")
+	for _, gone := range []string{"fusible_patch", "fabric_stay"} {
+		assertVocabularyLacksToken(t, "TechCardReinforcement", entity.ReinforcementTokens, gone,
+			"способ у них был один — подложка под место установки, — а различались они МАТЕРИАЛОМ, то есть тем, что по объявлению словаря живёт строкой BOM")
+	}
 }
 
 // TestPrintMethodDBCheckNoDrift — P1, метод печати или переноса. Discriminator of the print verb.
@@ -1119,29 +1193,20 @@ func TestPeelModeDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_PEEL_MODE_",
 		zeroMember: "TECH_CARD_PEEL_MODE_UNKNOWN",
 		check:      "chk_op_peel_mode CHECK",
+		migration:  migration0327,
 		tokens:     entity.PeelModeTokens,
+		retired:    []int32{1}, // TECH_CARD_PEEL_MODE_NONE, снят 0327
 	})
-	assertVocabularyHasToken(t, "TechCardPeelMode", entity.PeelModeTokens, "none",
-		"«носителя нет» — свойство метода печати, а не отсутствие ответа")
+	assertVocabularyLacksToken(t, "TechCardPeelMode", entity.PeelModeTokens, "none",
+		"«носителя нет» целиком выводилось из print_method, и оба таких метода (screen, laser_engrave) теперь отвергают peel_mode правилом — то есть член был вторым ответом на уже отвеченный вопрос")
 }
 
-// TestPressureScaleDBCheckNoDrift — прижим термопресса ШКАЛОЙ, а не числом: raw force means nothing
-// between two different presses.
-func TestPressureScaleDBCheckNoDrift(t *testing.T) {
-	assertWaveVocabularyNoDrift(t, waveVocabulary{
-		label:      "TechCardPressureScale",
-		protoNames: pb_common.TechCardPressureScale_name,
-		prefix:     "TECH_CARD_PRESSURE_SCALE_",
-		zeroMember: "TECH_CARD_PRESSURE_SCALE_UNKNOWN",
-		check:      "chk_op_pressure_scale CHECK",
-		tokens:     entity.PressureScaleTokens,
-	})
-	// Same argument as TestAutomationLevelDBCheckNoDrift: an ordered scale that grows an «other» has
-	// stopped being one, and nothing else in the system would notice.
-	if slices.Contains(entity.PressureScaleTokens, "other") {
-		t.Error("pressure_scale is an ordered scale (light < medium < firm) and must not carry 'other'")
-	}
-}
+// ТЕСТА TechCardPressureScale ЗДЕСЬ БОЛЬШЕ НЕТ: 0327 снял словарь целиком вместе с колонкой
+// pressure_scale и её CHECK'ом. Он описывал ТОТ ЖЕ прижим, что press_pressure_n_cm2 ВТО-блока,
+// только словом вместо числа, на шаге, где ВТО-блок законен, — то есть в форме печатного шага
+// стояли два контрола прижима подряд без единого правила взаимного исключения. Сверять было бы
+// нечего: ни enum'а, ни слайса, ни констрейнта. Что колонка действительно снята, а не забыта,
+// сторожит канон колонок в internal/store/techcard/operation_kinds_bind_test.go.
 
 // TestTrimActionDBCheckNoDrift — T1, что именно делает подрезка. Discriminator of the trim verb.
 func TestTrimActionDBCheckNoDrift(t *testing.T) {
@@ -1167,10 +1232,15 @@ func TestCleaningKindDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_CLEANING_KIND_",
 		zeroMember: "TECH_CARD_CLEANING_KIND_UNKNOWN",
 		check:      "chk_op_cleaning_kind CHECK",
-		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
-		migration: migration0325,
+		// СПИСОК ЖИВЁТ В 0327: 0325 дописал `other`, 0327 снял два члена.
+		migration: migration0327,
 		tokens:    entity.CleaningKindTokens,
+		retired:   []int32{3, 4}, // CHALK_REMOVAL и ADHESIVE_REMOVAL, сняты 0327
 	})
+	for _, gone := range []string{"chalk_removal", "adhesive_removal"} {
+		assertVocabularyLacksToken(t, "TechCardCleaningKind", entity.CleaningKindTokens, gone,
+			"оба — это `spot_clean` с названным веществом, то есть ответ на ось «что это за след», которую сам словарь объявил отложенной")
+	}
 	assertVocabularyHasToken(t, "TechCardCleaningKind", entity.CleaningKindTokens, "other",
 		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 }
@@ -1185,10 +1255,13 @@ func TestInspectCoverageDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_INSPECT_COVERAGE_",
 		zeroMember: "TECH_CARD_INSPECT_COVERAGE_UNKNOWN",
 		check:      "chk_op_coverage_mode CHECK",
-		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
-		migration: migration0325,
+		// СПИСОК ЖИВЁТ В 0327: 0325 дописал `other`, 0327 снял `first_output`.
+		migration: migration0327,
 		tokens:    entity.InspectCoverageTokens,
+		retired:   []int32{4}, // TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT, снят 0327
 	})
+	assertVocabularyLacksToken(t, "TechCardInspectCoverage", entity.InspectCoverageTokens, "first_output",
+		"это не охват, а ПОВОД: первую единицу смотрят сплошняком, то есть `each_unit` и `first_output` истинны одновременно, а колонка одна")
 	assertVocabularyHasToken(t, "TechCardInspectCoverage", entity.InspectCoverageTokens, "other",
 		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 }
@@ -1256,8 +1329,16 @@ func TestZipperApplicationDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_ZIPPER_APPLICATION_",
 		zeroMember: "TECH_CARD_ZIPPER_APPLICATION_UNKNOWN",
 		check:      "chk_op_zipper_application CHECK",
+		migration:  migration0327,
 		tokens:     entity.ZipperApplicationTokens,
+		retired:    []int32{6, 7}, // SEPARATING_CF и IN_SEAM_POCKET, сняты 0327
 	})
+	assertVocabularyHasToken(t, "TechCardZipperApplication", entity.ZipperApplicationTokens, "fly",
+		"гульфик — исполнение с собственной геометрией, а не место: он ОСТАЁТСЯ там, где сняты `separating_cf` и `in_seam_pocket`")
+	for _, gone := range []string{"separating_cf", "in_seam_pocket"} {
+		assertVocabularyLacksToken(t, "TechCardZipperApplication", entity.ZipperApplicationTokens, gone,
+			"словарь про ИСПОЛНЕНИЕ (как закрыта лента); место — это обязательная zone шага, разъёмность — свойство артикула из строки BOM")
+	}
 }
 
 // TestBindingStyleDBCheckNoDrift — S14, как сложена бейка.
@@ -1297,19 +1378,17 @@ func TestPressActionDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_PRESS_ACTION_",
 		zeroMember: "TECH_CARD_PRESS_ACTION_UNKNOWN",
 		check:      "chk_op_press_action CHECK",
-		migration:  migration0325,
+		migration:  migration0327,
 		tokens:     entity.PressActionTokens,
+		retired:    []int32{3}, // TECH_CARD_PRESS_ACTION_OPEN, снят 0327
 	})
-	// На обоих членах висят правила Go, и оба находятся ПО ИМЕНИ: to_one_side включает
-	// обязательность направления, open — единственное, что законно на глаголе press_open.
-	// Переименование любого из двух оставило бы правило матчащим ничто, и оно перестало бы
-	// существовать молча.
+	// На to_one_side висит правило Go, и находится оно ПО ИМЕНИ: переименование оставило бы
+	// правило матчащим ничто, и оно перестало бы существовать молча.
 	assertVocabularyHasToken(t, "TechCardPressAction", entity.PressActionTokens,
 		string(entity.PressActionToOneSide),
 		"на нём висит условная обязательность press_toward — без него правило перестаёт срабатывать молча")
-	assertVocabularyHasToken(t, "TechCardPressAction", entity.PressActionTokens,
-		string(entity.PressActionOpen),
-		"второе написание разутюжки: чтение принимает и его, и глагол press_open")
+	assertVocabularyLacksToken(t, "TechCardPressAction", entity.PressActionTokens, "open",
+		"разутюжка выражается ГЛАГОЛОМ press_open, и это её единственное написание: за глаголом стоят живые строки прода, за членом — ни одной, а два написания давали два разных кортежа в проекции дайджеста")
 }
 
 // TestPressTowardDBCheckNoDrift — КУДА лёг припуск. Собственный словарь, а НЕ TechCardGarmentZone:
@@ -1322,9 +1401,12 @@ func TestPressTowardDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_PRESS_TOWARD_",
 		zeroMember: "TECH_CARD_PRESS_TOWARD_UNKNOWN",
 		check:      "chk_op_press_toward CHECK",
-		migration:  migration0325,
+		migration:  migration0327,
 		tokens:     entity.PressTowardTokens,
+		retired:    []int32{12}, // TECH_CARD_PRESS_TOWARD_SIDE, снят 0327
 	})
+	assertVocabularyLacksToken(t, "TechCardPressToward", entity.PressTowardTokens, "side",
+		"на боковом шве «к боку» — это `away_from_center`, а на плечевом «к боку» не значит ничего: синоним, у которого есть швы без смысла")
 	// Ни одного `none`: у направления явного «нет» не бывает — припуск либо заутюжен на сторону, и
 	// сторона названа, либо не заутюжен вовсе, и тогда поля нет. Проверяется от противного: член,
 	// заведённый по инерции с seam_securing / hole_prep / peel_mode, сделал бы выразимым состояние
@@ -1422,6 +1504,300 @@ func Test0325VocabulariesAreCaseClosed(t *testing.T) {
 			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
 				c.constraint, c.column, rx, gd, limit)
 		}
+	}
+}
+
+// Test0327VocabulariesAreCaseClosed — тот же довод, что у 0324, 0325 и 0306, применённый к
+// ВОСЬМИ CHECK'ам, которые 0327 ПЕРЕСОЗДАЁТ. Пересоздание — ровно то место, где гейт регистра
+// теряют по невнимательности, и потеря невидима: список токенов по-прежнему совпадает, и все тесты
+// дрейфа остаются зелёными, а колонка тем временем принимает 'Open' и 'FIRST_OUTPUT'.
+//
+// chk_op_reinforcement пересоздаётся 0327 ДВАЖДЫ — сперва суперсетом ради переноса, потом
+// окончательным списком, — и обе редакции обязаны нести гейт. Поиск идёт по ПОСЛЕДНЕМУ вхождению
+// имени, чтобы проверялась итоговая; первую сторожит Test0327TransferPrecedesNarrowing ниже.
+func Test0327VocabulariesAreCaseClosed(t *testing.T) {
+	content := readMigrationFile(t, migration0327)
+	up := content
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	for _, c := range []struct{ constraint, column string }{
+		{"chk_op_press_action", "press_action"},
+		{"chk_op_press_toward", "press_toward"},
+		{"chk_op_hole_prep", "hole_prep"},
+		{"chk_op_reinforcement", "reinforcement"},
+		{"chk_op_peel_mode", "peel_mode"},
+		{"chk_op_zipper_application", "zipper_application"},
+		{"chk_op_cleaning_kind", "cleaning_kind"},
+		{"chk_op_coverage_mode", "coverage_mode"},
+	} {
+		stmt := strings.LastIndex(up, c.constraint+" CHECK")
+		if stmt < 0 {
+			t.Errorf("named vocabulary CHECK %s not found in 0327", c.constraint)
+			continue
+		}
+		guard := "STRCMP(CAST(" + c.column + " AS BINARY), CAST(LOWER(" + c.column + ") AS BINARY)) = 0"
+		rx := strings.Index(up[stmt:], c.column+" REGEXP")
+		gd := strings.Index(up[stmt:], guard)
+		if rx < 0 {
+			t.Errorf("%s: no REGEXP alternation on %s", c.constraint, c.column)
+			continue
+		}
+		next := strings.Index(up[stmt+len(c.constraint):], "CONSTRAINT chk_")
+		limit := len(up) - stmt
+		if next >= 0 {
+			limit = next + len(c.constraint)
+		}
+		if gd < 0 || gd < rx || gd > limit {
+			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
+				c.constraint, c.column, rx, gd, limit)
+		}
+	}
+}
+
+// Test0327NarrowedChecksDropExactlyTheRetiredTokens — ЦИТАТА, а не пересказ: список 0327 сверяется
+// со списком файла, который владел им ДО, и разница обязана быть РОВНО объявленной.
+//
+// Дрейф-тесты выше сверяют три списка МЕЖДУ СОБОЙ и остались бы зелёными, если бы вместе со снятым
+// членом из клаузы выпал соседний — он выпал бы и из entity, и из proto тем же коммитом. Этот тест
+// смотрит НА ИСТОРИЮ: что именно ушло по сравнению с предыдущей редакцией того же констрейнта.
+func Test0327NarrowedChecksDropExactlyTheRetiredTokens(t *testing.T) {
+	now := readMigrationFile(t, migration0327)
+	up := now
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	for _, c := range []struct {
+		check   string
+		owner   string
+		removed []string
+		added   []string
+		window  int
+	}{
+		{"chk_op_press_action CHECK", migration0325, []string{"open"}, nil, waveCheckWindow},
+		{"chk_op_press_toward CHECK", migration0325, []string{"side"}, nil, waveCheckWindow},
+		{"chk_op_hole_prep CHECK", migration0324, []string{"prong_pierce"}, nil, waveCheckWindow},
+		{"chk_op_peel_mode CHECK", migration0324, []string{"none"}, nil, waveCheckWindow},
+		{"chk_op_zipper_application CHECK", migration0324, []string{"separating_cf", "in_seam_pocket"}, nil, waveCheckWindow},
+		{"chk_op_cleaning_kind CHECK", migration0325, []string{"chalk_removal", "adhesive_removal"}, nil, waveCheckWindow},
+		{"chk_op_coverage_mode CHECK", migration0325, []string{"first_output"}, nil, waveCheckWindow},
+		{"chk_op_reinforcement CHECK", migration0324, []string{"fusible_patch", "fabric_stay"}, []string{"patch"}, 400},
+	} {
+		before := extractDBEnumValues(t, readMigrationFile(t, c.owner), c.check, c.window)
+		// ПОСЛЕДНЕЕ вхождение: у reinforcement 0327 пишет клаузу дважды, и итоговая — вторая.
+		idx := strings.LastIndex(up, c.check)
+		if idx < 0 {
+			t.Errorf("%s: 0327 не пересоздаёт этот констрейнт вовсе", c.check)
+			continue
+		}
+		after := extractDBEnumValues(t, up[idx:], c.check, c.window)
+		was := map[string]bool{}
+		for _, v := range before {
+			was[v] = true
+		}
+		is := map[string]bool{}
+		for _, v := range after {
+			is[v] = true
+		}
+		for _, tok := range c.removed {
+			if !was[tok] {
+				t.Errorf("%s: токен %q, объявленный снятым, отсутствовал и в прежнем списке (%v) — тест сверяет не то, что думает", c.check, tok, before)
+			}
+			if is[tok] {
+				t.Errorf("%s: токен %q объявлен снятым, но стоит в списке 0327 (%v)", c.check, tok, after)
+			}
+		}
+		for _, tok := range c.added {
+			if !is[tok] {
+				t.Errorf("%s: токен %q объявлен добавленным, но его нет в списке 0327 (%v)", c.check, tok, after)
+			}
+		}
+		want := map[string]bool{}
+		for _, v := range before {
+			want[v] = true
+		}
+		for _, tok := range c.removed {
+			delete(want, tok)
+		}
+		for _, tok := range c.added {
+			want[tok] = true
+		}
+		assertSameSetNamed(t, c.check, "ожидаемый список после 0327", mapKeysAsStrings(want), "клауза 0327", after)
+	}
+}
+
+// Test0327TransferPrecedesNarrowing — НЕСУЩИЙ ПОРЯДОК ФАЙЛА, а не косметика.
+//
+// UPDATE, переносящий две прежние подложки в `patch`, обязан стоять МЕЖДУ двумя редакциями
+// chk_op_reinforcement: после расширяющей (иначе он сам упадёт на 3819 — `patch` не член старого
+// списка) и до сужающей (иначе до него не дошло бы, ALTER упал бы первым). Оба порядка неверны
+// по-разному, и оба молчат до прода, поэтому проверяется именно взаимное расположение трёх мест.
+func Test0327TransferPrecedesNarrowing(t *testing.T) {
+	up := readMigrationFile(t, migration0327)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	widen := strings.Index(up, "chk_op_reinforcement CHECK")
+	transfer := strings.Index(up, "UPDATE tech_card_operation SET reinforcement = 'patch'")
+	narrow := strings.LastIndex(up, "chk_op_reinforcement CHECK")
+	switch {
+	case widen < 0:
+		t.Fatal("0327 не расширяет chk_op_reinforcement перед переносом")
+	case transfer < 0:
+		t.Fatal("в 0327 нет UPDATE'а, переносящего fusible_patch / fabric_stay в patch")
+	case widen == narrow:
+		t.Fatal("0327 пишет chk_op_reinforcement один раз — расширение и сужение обязаны быть двумя разными редакциями")
+	case !(widen < transfer && transfer < narrow):
+		t.Fatalf("порядок нарушен: расширение на %d, перенос на %d, сужение на %d — перенос обязан стоять между ними", widen, transfer, narrow)
+	}
+	if !strings.Contains(up[widen:transfer], "fusible_patch") {
+		t.Error("расширяющая редакция chk_op_reinforcement обязана СОХРАНЯТЬ оба старых члена — иначе перенос читать будет уже нечего")
+	}
+}
+
+// Test0327DropsPressureScaleColumn — снятие СЛОВАРЯ и снятие КОЛОНКИ это два разных дела, и второе
+// невидимо для всех тестов дрейфа: они сверяют списки, а списка больше нет вовсе. Здесь читается
+// текст файла, а канон колонок (internal/store/techcard/operation_kinds_bind_test.go) сверяет с ним
+// SELECT, db-теги entity и ключи INSERT-карты.
+func Test0327DropsPressureScaleColumn(t *testing.T) {
+	up := readMigrationFile(t, migration0327)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	if !strings.Contains(up, "DROP CHECK chk_op_pressure_scale") {
+		t.Error("0327 обязана снять chk_op_pressure_scale — колонку нельзя снять, оставив её констрейнт")
+	}
+	if !strings.Contains(up, "DROP COLUMN pressure_scale") {
+		t.Error("0327 обязана снять колонку pressure_scale: словарь снят целиком, а колонка без словаря принимает что угодно")
+	}
+	drop := strings.Index(up, "DROP COLUMN pressure_scale")
+	chk := strings.Index(up, "DROP CHECK chk_op_pressure_scale")
+	if chk > drop {
+		t.Error("DROP CHECK обязан стоять до DROP COLUMN внутри одного ALTER'а — порядок спецификаций читает человек, и обратный вводит в заблуждение")
+	}
+}
+
+// Test0328VocabulariesAreCaseClosed — тот же довод, что у 0324/0325/0327, применённый к ЧЕТЫРЁМ
+// пересозданным CHECK'ам 0328. Пересоздание — место, где гейт регистра теряют по невнимательности,
+// и потеря невидима: список токенов совпадает, дрейф зелен, а колонка принимает 'Overlock'.
+func Test0328VocabulariesAreCaseClosed(t *testing.T) {
+	up := readMigrationFile(t, migration0328)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	for _, c := range []struct{ constraint, column string }{
+		{"chk_op_machine_type", "machine_type"},
+		{"chk_op_thread_tension", "thread_tension"},
+		{"chk_eqp_equipment", "equipment"},
+		{"chk_eqp_thread_tension", "thread_tension"},
+	} {
+		stmt := strings.Index(up, c.constraint+" CHECK")
+		if stmt < 0 {
+			t.Errorf("named vocabulary CHECK %s not found in 0328", c.constraint)
+			continue
+		}
+		guard := "STRCMP(CAST(" + c.column + " AS BINARY), CAST(LOWER(" + c.column + ") AS BINARY)) = 0"
+		rx := strings.Index(up[stmt:], c.column+" REGEXP")
+		gd := strings.Index(up[stmt:], guard)
+		if rx < 0 {
+			t.Errorf("%s: no REGEXP alternation on %s", c.constraint, c.column)
+			continue
+		}
+		next := strings.Index(up[stmt+len(c.constraint):], "CONSTRAINT chk_")
+		limit := len(up) - stmt
+		if next >= 0 {
+			limit = next + len(c.constraint)
+		}
+		if gd < 0 || gd < rx || gd > limit {
+			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
+				c.constraint, c.column, rx, gd, limit)
+		}
+	}
+	// chk_tcp_fusing_mode пишется списком IN, а не REGEXP, — гейт регистра у него тот же STRCMP, и
+	// он ОБЯЗАН быть в клаузе 0328: на бете он отсутствовал (первая редакция 0304, которую гейт по
+	// ИМЕНИ не дал заменить), и этот файл сводит обе базы к одному определению.
+	if !strings.Contains(up, "STRCMP(CAST(fusing_mode AS BINARY), CAST(LOWER(fusing_mode) AS BINARY)) = 0") {
+		t.Error("0328 пересоздаёт chk_tcp_fusing_mode без гейта регистра — коллация колонки регистронезависима, и 'Strip' лёг бы в базу законно")
+	}
+}
+
+// Test0328NarrowedChecksDropExactlyTheRetiredTokens — та же цитата, что у 0327: список 0328
+// сверяется со списком файла, который владел им ДО, и разница обязана быть РОВНО объявленной.
+func Test0328NarrowedChecksDropExactlyTheRetiredTokens(t *testing.T) {
+	up := readMigrationFile(t, migration0328)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	for _, c := range []struct {
+		check   string
+		owner   string
+		removed []string
+		window  int
+	}{
+		{"chk_op_machine_type CHECK", migration0324, []string{"hardware_attach"}, 600},
+		{"chk_eqp_equipment CHECK", migration0324, []string{"hardware_attach"}, 700},
+		{"chk_op_thread_tension CHECK", migration0306, []string{"other"}, 200},
+		{"chk_eqp_thread_tension CHECK", migration0306, []string{"other"}, 200},
+	} {
+		before := extractDBEnumValues(t, readMigrationFile(t, c.owner), c.check, c.window)
+		idx := strings.Index(up, c.check)
+		if idx < 0 {
+			t.Errorf("%s: 0328 не пересоздаёт этот констрейнт вовсе", c.check)
+			continue
+		}
+		after := extractDBEnumValues(t, up[idx:], c.check, c.window)
+		want := map[string]bool{}
+		for _, v := range before {
+			want[v] = true
+		}
+		for _, tok := range c.removed {
+			if !want[tok] {
+				t.Errorf("%s: токен %q, объявленный снятым, отсутствовал и в прежнем списке (%v)", c.check, tok, before)
+			}
+			delete(want, tok)
+		}
+		assertSameSetNamed(t, c.check, "ожидаемый список после 0328", mapKeysAsStrings(want), "клауза 0328", after)
+	}
+}
+
+// Test0328MakesTheFusingWidthOptional — ВТОРАЯ ПОЛОВИНА F8, и без неё первая была бы потерей.
+//
+// Снятие режима `seam_allowance` отняло бы у технолога единственный способ сказать «полосой по
+// эталону припуска», если бы chk_tcp_fusing_width продолжал требовать число при `strip`
+// БЕЗУСЛОВНО. Оба констрейнта обязаны двигаться ОДНИМ файлом: сужение словаря без расширения
+// правила ширины — это не свёртка двух написаний в одно, а вычёркивание одного из двух ответов.
+//
+// Проверяется по ТЕКСТУ Up-половины, потому что живой базы у migrationlint нет: словарь режима
+// потерял `seam_allowance`, а клауза ширины при `strip` научилась принимать NULL.
+func Test0328MakesTheFusingWidthOptional(t *testing.T) {
+	up := readMigrationFile(t, migration0328)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	mode := strings.Index(up, "ADD CONSTRAINT chk_tcp_fusing_mode CHECK")
+	width := strings.Index(up, "ADD CONSTRAINT chk_tcp_fusing_width CHECK")
+	if mode < 0 || width < 0 {
+		t.Fatal("0328 обязана пересоздать ОБА констрейнта дублирования — словарь режима и правило ширины")
+	}
+	modeClause := up[mode:width]
+	if strings.Contains(modeClause, "seam_allowance") {
+		t.Error("chk_tcp_fusing_mode 0328 всё ещё несёт seam_allowance — он и strip кладут одну и ту же полосу и различались лишь тем, названо ли число")
+	}
+	if !strings.Contains(modeClause, "''strip''") || !strings.Contains(modeClause, "''full''") {
+		t.Errorf("chk_tcp_fusing_mode 0328 потерял живой член словаря: %s", modeClause)
+	}
+	end := strings.Index(up[width:], "\nPREPARE")
+	if end < 0 {
+		end = len(up) - width
+	}
+	widthClause := up[width : width+end]
+	if !strings.Contains(widthClause, "fusing_width_mm IS NULL OR") {
+		t.Errorf("chk_tcp_fusing_width 0328 по-прежнему требует число при strip — «полосой по эталону припуска» сказать стало бы нечем: %s", widthClause)
+	}
+	// И правило «числа нет ни при каком другом режиме» обязано уцелеть: пара атомарна, а ширина
+	// рядом с «целиком» описывает ничто.
+	if !strings.Contains(widthClause, "NOT (fusing_mode <=> _utf8mb4''strip'') AND fusing_width_mm IS NULL") {
+		t.Errorf("chk_tcp_fusing_width 0328 разрешил ширину вне полосы: %s", widthClause)
 	}
 }
 

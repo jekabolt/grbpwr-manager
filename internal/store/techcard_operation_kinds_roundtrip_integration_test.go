@@ -78,14 +78,13 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 
 		AttachMethod:     ns("threaded"),
 		HolePrep:         ns("punch"),
-		Reinforcement:    ns("fusible_patch"),
+		Reinforcement:    ns("patch"),
 		FoldbackMm:       nd("35.7"),
 		CycleStitchCount: ni(42),
 
 		PrintMethod:    ns("heat_transfer"),
 		PeelMode:       ns("warm"),
 		SecondPressSec: ni(8),
-		PressureScale:  ns("firm"),
 
 		AirTemperatureC: ni(480),
 		FeedSpeedMMin:   nd("4.3"),
@@ -95,7 +94,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 
 		ResidualTailMaxMm: nd("3.1"),
 
-		CleaningKind:   ns("adhesive_removal"),
+		CleaningKind:   ns("spot_clean"),
 		CoverageMode:   ns("sample_per_bundle"),
 		WetProcessKind: ns("garment_dye"),
 
@@ -104,7 +103,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 		ButtonholeOrientation: ns("horizontal"),
 		BartackLengthMm:       nd("12.7"),
 		AttachPattern:         ns("cross_x"),
-		ZipperApplication:     ns("in_seam_pocket"),
+		ZipperApplication:     ns("lapped"),
 		BindingStyle:          ns("double_fold"),
 		LabelAttachStitch:     ns("two_sides_top_bottom"),
 
@@ -155,14 +154,13 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 
 	require.Equal(t, "threaded", f.AttachMethod.String)
 	require.Equal(t, "punch", f.HolePrep.String)
-	require.Equal(t, "fusible_patch", f.Reinforcement.String)
+	require.Equal(t, "patch", f.Reinforcement.String)
 	eqDec(t, "35.7", f.FoldbackMm, "foldback_mm")
 	require.Equal(t, int32(42), f.CycleStitchCount.Int32)
 
 	require.Equal(t, "heat_transfer", f.PrintMethod.String)
 	require.Equal(t, "warm", f.PeelMode.String)
 	require.Equal(t, int32(8), f.SecondPressSec.Int32)
-	require.Equal(t, "firm", f.PressureScale.String)
 
 	require.Equal(t, int32(480), f.AirTemperatureC.Int32)
 	eqDec(t, "4.3", f.FeedSpeedMMin, "feed_speed_m_min")
@@ -172,7 +170,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 
 	eqDec(t, "3.1", f.ResidualTailMaxMm, "residual_tail_max_mm")
 
-	require.Equal(t, "adhesive_removal", f.CleaningKind.String)
+	require.Equal(t, "spot_clean", f.CleaningKind.String)
 	require.Equal(t, "sample_per_bundle", f.CoverageMode.String)
 	require.Equal(t, "garment_dye", f.WetProcessKind.String)
 
@@ -181,7 +179,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 	require.Equal(t, "horizontal", f.ButtonholeOrientation.String)
 	eqDec(t, "12.7", f.BartackLengthMm, "bartack_length_mm")
 	require.Equal(t, "cross_x", f.AttachPattern.String)
-	require.Equal(t, "in_seam_pocket", f.ZipperApplication.String)
+	require.Equal(t, "lapped", f.ZipperApplication.String)
 	require.Equal(t, "double_fold", f.BindingStyle.String)
 	require.Equal(t, "two_sides_top_bottom", f.LabelAttachStitch.String)
 	require.Equal(t, "to_one_side", f.PressAction.String)
@@ -193,14 +191,14 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 	require.Len(t, f.CoverageMode.String, 17)
 	require.Len(t, f.PressToward.String, 16) // away_from_center при VARCHAR(20)
 
-	// --- B. шаг без единого нового поля: 34 NULL читаются как Valid=false ----------------------------
+	// --- B. шаг без единого нового поля: 33 NULL читаются как Valid=false ----------------------------
 	assertAllUnset := func(t *testing.T, o entity.TechCardOperation, what string) {
 		t.Helper()
 		strs := map[string]sql.NullString{
 			"seam_securing": o.SeamSecuring, "attach_method": o.AttachMethod,
 			"hole_prep": o.HolePrep, "reinforcement": o.Reinforcement,
 			"print_method": o.PrintMethod, "peel_mode": o.PeelMode,
-			"pressure_scale": o.PressureScale, "trim_action": o.TrimAction,
+			"trim_action": o.TrimAction,
 			"cleaning_kind": o.CleaningKind, "coverage_mode": o.CoverageMode,
 			"wet_process_kind": o.WetProcessKind, "buttonhole_style": o.ButtonholeStyle,
 			"buttonhole_orientation": o.ButtonholeOrientation, "attach_pattern": o.AttachPattern,
@@ -256,7 +254,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 		     + (pitch_mm IS NULL) + (attach_method IS NULL) + (hole_prep IS NULL)
 		     + (reinforcement IS NULL) + (foldback_mm IS NULL) + (cycle_stitch_count IS NULL)
 		     + (print_method IS NULL) + (peel_mode IS NULL) + (second_press_sec IS NULL)
-		     + (pressure_scale IS NULL) + (air_temperature_c IS NULL) + (feed_speed_m_min IS NULL)
+		     + (air_temperature_c IS NULL) + (feed_speed_m_min IS NULL)
 		     + (trim_action IS NULL) + (residual_allowance_mm IS NULL) + (residual_tail_max_mm IS NULL)
 		     + (cleaning_kind IS NULL) + (coverage_mode IS NULL) + (wet_process_kind IS NULL)
 		     + (buttonhole_style IS NULL) + (cut_length_mm IS NULL) + (buttonhole_orientation IS NULL)
@@ -264,7 +262,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 		     + (binding_style IS NULL) + (label_attach_stitch IS NULL)
 		     + (press_action IS NULL) + (press_toward IS NULL)
 		FROM tech_card_operation WHERE id = ?`, legacyOpID).Scan(&nullCount))
-	require.Equal(t, 34, nullCount, "строка, писанная мимо волны, обязана нести 34 NULL — без DEFAULT'ов")
+	require.Equal(t, 33, nullCount, "строка, писанная мимо волны, обязана нести 33 NULL — без DEFAULT'ов (34 колонки волн 0324/0325 минус pressure_scale, снятая 0327)")
 
 	reread, err := T.GetTechCardById(ctx, tcID)
 	require.NoError(t, err)

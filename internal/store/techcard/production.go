@@ -268,7 +268,6 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"print_method":     o.PrintMethod,
 			"peel_mode":        o.PeelMode,
 			"second_press_sec": o.SecondPressSec,
-			"pressure_scale":   o.PressureScale,
 
 			// Сварка и проклейка (W).
 			"air_temperature_c": o.AirTemperatureC,
@@ -762,7 +761,7 @@ const techCardOperationsQuery = `
 		       o.placement_count, o.pitch_mm,
 		       o.attach_method, o.hole_prep, o.reinforcement, o.foldback_mm,
 		       o.cycle_stitch_count,
-		       o.print_method, o.peel_mode, o.second_press_sec, o.pressure_scale,
+		       o.print_method, o.peel_mode, o.second_press_sec,
 		       o.air_temperature_c, o.feed_speed_m_min,
 		       o.trim_action, o.residual_allowance_mm,
 		       o.residual_tail_max_mm,
