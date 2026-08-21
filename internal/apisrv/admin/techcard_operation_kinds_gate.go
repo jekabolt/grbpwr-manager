@@ -243,7 +243,13 @@ func payloadSpeaksOperationKinds(pb *pb_common.TechCardInsert) bool {
 			o.GetThreadTrim() != nil ||
 			o.GetClean() != nil ||
 			o.GetInspect() != nil ||
-			o.GetFastening() != nil {
+			o.GetFastening() != nil ||
+			// ВТО-под-глагол и направление припуска (0325) — ОДИННАДЦАТЫЙ блок и тот же довод, что
+			// у десяти выше: присланный блок и есть факт. И довод отдельный, свой: press_action
+			// сидит на ГЛАГОЛЕ PRESS, который живёт в проде годами и который сегодняшний бандл
+			// шлёт каждый день, — то есть глагол осведомлённости не доказывает, доказывает только
+			// блок.
+			o.GetPress() != nil {
 			return true
 		}
 		if o.GetPrintMethod() != pb_common.TechCardPrintMethod_TECH_CARD_PRINT_METHOD_UNKNOWN ||
@@ -347,6 +353,11 @@ func storedHasOperationKindFacts(stored *entity.TechCard) bool {
 		if o.ButtonholeStyle.Valid || o.CutLengthMm.Valid || o.ButtonholeOrientation.Valid ||
 			o.BartackLengthMm.Valid || o.AttachPattern.Valid || o.ZipperApplication.Valid ||
 			o.BindingStyle.Valid || o.LabelAttachStitch.Valid {
+			return true
+		}
+		// ВТО (0325). Две колонки сверх тридцати двух, и считаются они ровно так же — ПО КОЛОНКЕ:
+		// глагол press осведомлённости не доказывает (он в проде годами), доказывает заполненность.
+		if o.PressAction.Valid || o.PressToward.Valid {
 			return true
 		}
 		// И ТРИ РАСШИРЕННЫХ СЛОВАРЯ ЖИВЫХ КОЛОНОК ШАГА — по токену. Незаполненная NullString даёт
