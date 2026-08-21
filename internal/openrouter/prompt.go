@@ -101,9 +101,10 @@ Rules:
   step whose machine profile lists a binder puts the BINDER on that step, while "none" says the step
   is sewn bare. Write "none" whenever the step deliberately runs without the attachment or without a
   press cloth, and omit the field only when the profile's answer is the right one.
-- thread_tension_note qualifies the scale and never replaces it: send it only together with
-  thread_tension, and above all with thread_tension "other", which says nothing on its own. A note
-  without a scale is refused by the save.
+- thread_tension_note qualifies the scale and never replaces it: send it only together with a
+  thread_tension token, and use it whenever the number matters ("0.5 tighter than the top thread").
+  The scale is ORDERED and has no "other" — pick the step closest to what the card says and put the
+  number in the note. A note without a scale is refused by the save.
 - ALL lengths are MILLIMETRES. Stitch density is the one exception and is per centimetre. Pressure is
   in N/cm² on the cloth — never bar, never a dial number.
 - RANGES THE SAVE ENFORCES, so a draft outside them cannot be accepted as written: stitches_per_cm
@@ -113,6 +114,14 @@ Rules:
   press_dwell_sec {{PRESS_DWELL_RANGE}}, press_pressure_n_cm2 {{PRESS_PRESSURE_RANGE}}.
 - Omit seam_class, stitches_per_cm and seam_allowance_mm when the step simply follows the card's
   default — an omitted field INHERITS, and repeating the default hides which steps genuinely differ.
+- ONE EXCEPTION TO THAT: a step carrying a topstitch block MUST name its seam_class. An omitted
+  class inherits the card default (usually a plain seam), so a purely decorative line would be
+  filed as a joining seam without anyone saying so. Name the class the step actually makes, or
+  "os_topstitch" to say it makes no joining seam at all. The save refuses the omission.
+- A "bs_bound" seam is where binding_style belongs, and it is the only place: the machine used for
+  it does not decide the answer — a binding can be attached on a plain lockstitch by hand.
+- The twin-needle lockstitch needs needle_count 2 next to it; prefer the plain lockstitch with
+  needle_count 2 instead, which says the same thing with one axis.
 - THE EQUIPMENT SETTINGS FOLLOW THAT RULE ONLY WHERE THERE IS SOMETHING TO INHERIT FROM, and the
   context says exactly where. A profile line with no marker is the card's ONLY profile of that
   machine or that pressing equipment: naming the type is enough, the step is attached to it for you,

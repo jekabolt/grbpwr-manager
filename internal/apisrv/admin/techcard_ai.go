@@ -765,11 +765,11 @@ func aiMachineType(token string) pb_common.TechCardMachineType {
 // aiBoundedText trims a short free-text answer to the column the save writes it into, in RUNES,
 // marking the cut with an ellipsis.
 //
-// Cut rather than dropped: this qualifier is the only content behind thread_tension "other", and
-// dropping it would leave the technologist a scale that says «not one of the three» and nothing
-// about which. Marked rather than cut silently: a truncated Russian sentence read as if the model
-// had ended it there is a different instruction from the one it wrote, and the ellipsis is what
-// stops the draft from asserting it.
+// Cut rather than dropped: this qualifier carries the NUMBER the ordered scale cannot ("0.5 tighter
+// than the top thread"), and dropping it would leave the technologist a step of the scale and
+// nothing about how far. Marked rather than cut silently: a truncated Russian sentence read as if
+// the model had ended it there is a different instruction from the one it wrote, and the ellipsis is
+// what stops the draft from asserting it.
 func aiBoundedText(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if utf8.RuneCountInString(s) <= max {
