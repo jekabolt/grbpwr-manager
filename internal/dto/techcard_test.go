@@ -593,15 +593,17 @@ func TestConvertTechCardOperations(t *testing.T) {
 			Operations: []*pb_common.TechCardOperation{{Zone: zoneOuter}}},
 		"missing zone": {StyleNumber: "x", Name: "y",
 			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock}}},
-		"edge topstitch with a width": {StyleNumber: "x", Name: "y",
+		// «edge + ширина» ЗДЕСЬ БОЛЬШЕ НЕТ: с 0326 это законная пара (отступ от края), и её
+		// принятие проверяется в TestTopstitchWidthByMode. Отвергаются только две:
+		"in-the-ditch topstitch with a width": {StyleNumber: "x", Name: "y",
 			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter,
 				Topstitch: &pb_common.TechCardTopstitch{
-					Mode:    pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE,
+					Mode:    pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH,
 					WidthMm: dec("6")}}}},
-		"width topstitch without a width": {StyleNumber: "x", Name: "y",
+		"parallel-to-seam topstitch without a width": {StyleNumber: "x", Name: "y",
 			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter,
 				Topstitch: &pb_common.TechCardTopstitch{
-					Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH}}}},
+					Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_PARALLEL_TO_SEAM}}}},
 		"attachment size with no attachment": {StyleNumber: "x", Name: "y",
 			Operations: []*pb_common.TechCardOperation{{OperationType: opTypeLock, Zone: zoneOuter,
 				AttachmentSizeMm: dec("8")}}},

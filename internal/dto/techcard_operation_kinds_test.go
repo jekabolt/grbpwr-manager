@@ -395,7 +395,7 @@ func TestOperationKindsUnawarePayloadUnchanged(t *testing.T) {
 			StitchesPerCm: dec("4.5"),
 			Smv:           dec("1.2"),
 			Topstitch: &pb_common.TechCardTopstitch{
-				Mode:    pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH,
+				Mode:    pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE,
 				WidthMm: dec("6"),
 				Rows:    2,
 			},
@@ -891,9 +891,14 @@ func TestOperationKindsPairRules(t *testing.T) {
 
 // ── 7. ШИРИНА ОТСТРОЧКИ ─────────────────────────────────────────────────────────────────────────
 
-// TestTopstitchWidthByMode — четыре режима × (ширина задана / пуста). Волна добавила по одному
-// режиму в каждую половину: parallel_to_seam — это отступ ОТ ШВА и без числа не инструкция,
-// in_ditch — строчка В САМОМ ШВЕ, и ширины у неё нет и быть не может.
+// TestTopstitchWidthByMode — ТРИ режима × (ширина задана / пуста), шесть клеток, и ни одна не
+// пустует: parallel_to_seam — это отступ ОТ ШВА и без числа не инструкция, in_ditch — строчка В
+// САМОМ ШВЕ, у неё ширины нет и быть не может, edge — от КРАЯ ДЕТАЛИ, и число у него ОПЦИОНАЛЬНО
+// (есть = отступ в мм, нет = вплотную).
+//
+// ОБЕ КЛЕТКИ `edge` ЗЕЛЁНЫЕ, И ЭТО ГЛАВНОЕ, ЧТО ЗДЕСЬ ПРОВЕРЯЕТСЯ. До 0326 «в край с шириной»
+// отвергалось, а число жило в отдельном режиме `width`; клиент выкатывается ПОСЛЕ сервера и шлёт
+// именно такую пару. Если правило вернётся, эта клетка покраснеет раньше, чем админка.
 func TestTopstitchWidthByMode(t *testing.T) {
 	op := func(mode pb_common.TechCardTopstitchMode, width string) *pb_common.TechCardOperation {
 		ts := &pb_common.TechCardTopstitch{Mode: mode}
@@ -911,10 +916,8 @@ func TestTopstitchWidthByMode(t *testing.T) {
 		reason string // "" = сохраняется
 		token  string
 	}{
-		{"в край без ширины", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE, "", "", "edge"},
-		{"в край с шириной", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE, "6", "not_applicable", ""},
-		{"на ширине с шириной", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH, "6", "", "width"},
-		{"на ширине без ширины", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH, "", "required", ""},
+		{"в край без ширины (вплотную)", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE, "", "", "edge"},
+		{"в край с шириной (отступ от края)", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE, "6", "", "edge"},
 		{"в шов без ширины", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH, "", "", "in_ditch"},
 		{"в шов с шириной", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH, "3", "not_applicable", ""},
 		{"параллельно шву с шириной", pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_PARALLEL_TO_SEAM, "12", "", "parallel_to_seam"},

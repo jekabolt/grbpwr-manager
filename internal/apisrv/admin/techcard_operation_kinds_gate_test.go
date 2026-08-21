@@ -514,13 +514,14 @@ func TestOperationKindsWireGateRefusesUnawareExtendedVocabularyEcho(t *testing.T
 func TestOperationKindsGatesDoNotBlockAnOrdinaryPreWaveCard(t *testing.T) {
 	// Сохранённая карточка ДО волны: старая машинка, старый режим отстрочки с шириной и рядами,
 	// старый проутюжильник, старый вид BOM, старые профили парка. Ни одного токена волны.
+	// Режим отстрочки здесь `edge` — второй до-волновой токен 0289, `width`, снят 0326.
 	stored := storedCardWith(func(c *entity.TechCard) {
 		c.Operations = []entity.TechCardOperation{{
 			OperationNumber:  okInt(10),
 			OperationType:    entity.OpTypeMachine,
 			Zone:             "front",
 			MachineType:      okStr("lockstitch"),
-			TopstitchMode:    okStr("width"),
+			TopstitchMode:    okStr("edge"),
 			TopstitchWidthMm: okDec("6"),
 			TopstitchRows:    okInt(2),
 			PressCloth:       okStr("teflon_sheet"),
@@ -543,7 +544,7 @@ func TestOperationKindsGatesDoNotBlockAnOrdinaryPreWaveCard(t *testing.T) {
 		MachineType:     pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
 		PressCloth:      pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_TEFLON_SHEET,
 		Topstitch: &pb_common.TechCardTopstitch{
-			Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH,
+			Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE,
 			Rows: 2,
 		},
 	})

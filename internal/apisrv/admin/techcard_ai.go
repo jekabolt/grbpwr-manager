@@ -605,9 +605,11 @@ func aiOperationToPb(o openrouter.Operation) *pb_common.TechCardOperation {
 	}
 	if mode := aiEnum(o.TopstitchMode, aiTopstitchTokens); mode != pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN {
 		t := &pb_common.TechCardTopstitch{Mode: mode, Rows: parsePositiveInt(o.TopstitchRows.String())}
-		// A width only travels with WIDTH — the same rule the save path enforces. Letting a drafted
-		// «edge, 6 mm» through would hand the technologist a step that cannot be saved as shown.
-		if mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH {
+		// A width travels with every mode that HAS one — the same rule the save path enforces. С 0326
+		// это EDGE (ширина опциональна, отступ от края) и PARALLEL_TO_SEAM (обязательна, отступ от
+		// шва); IN_DITCH ширину отвергает. Пропускать сюда «в шов, 6 мм» значило бы выдать технологу
+		// черновик шага, который нельзя сохранить в том виде, в каком он показан.
+		if mode != pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH {
 			if v := normalizeDecimal(o.TopstitchWidthMm.String()); v != "" {
 				t.WidthMm = &pb_decimal.Decimal{Value: v}
 			}

@@ -832,6 +832,12 @@ const migration0324 = "0324_operation_kinds.sql"
 // перевести «за компанию» всех — направить якорь в файл, где половины констрейнтов нет вовсе.
 const migration0325 = "0325_press_action_toward.sql"
 
+// 0326 СУЖАЕТ ровно один словарь — topstitch_mode, снимая член `width`. Это единственное сужение во
+// всём семействе, и владение переходит к нему по тому же правилу, что у 0325: тест словаря читает
+// ФАЙЛ, ВЛАДЕЮЩИЙ ТЕКУЩИМ СПИСКОМ. Оставить topstitch на 0324 значило бы сверять entity со списком,
+// который 0326 уже переписал, и получить красноту на здоровой схеме.
+const migration0326 = "0326_topstitch_drop_width.sql"
+
 // waveCheckWindow bounds the search from a CHECK's anchor. The longest new alternation
 // (label_attach_stitch) ends 192 characters past its anchor; a window shorter than the list would
 // make extractDBEnumValues fail to FIND it rather than fail to compare it.
@@ -848,6 +854,7 @@ type waveVocabulary struct {
 	window     int              // 0 = waveCheckWindow
 	tokens     []string         // the entity slice: the single source the validator reads
 	holes      []int32          // enum numbers promised to a later phase and deliberately left empty
+	retired    []int32          // enum numbers `reserved` in the .proto: снято навсегда, вернуть нельзя
 }
 
 // protoEnumTokens derives the STORABLE token list of a proto enum from its generated _name map:
@@ -880,6 +887,19 @@ func protoEnumTokens(t *testing.T, v waveVocabulary) []string {
 		hole[h] = true
 		if name, taken := v.protoNames[h]; taken {
 			t.Errorf("%s: номер %d объявлен дырой (обещан отложенной фазе), но занят членом %s", v.label, h, name)
+		}
+	}
+	// RETIRED — ПРОТИВОПОЛОЖНОСТЬ ОБЕЩАННОЙ ДЫРЕ, и потому отдельное поле, а не запись в holes.
+	// Обещанный номер ЖДЁТ своей фазы и намеренно НЕ reserved; снятый закрыт reserved НАВСЕГДА,
+	// потому что отданный новому смыслу он читался бы старым клиентом как прежний член. В
+	// сгенерированном _name map оба выглядят одинаково — как отсутствующий ключ, — так что без
+	// этого различия густота нумерации либо краснела бы на здоровом контракте, либо принимала бы
+	// опечатку в номере за законный пропуск. Тот же довод, что у retired в
+	// TestOperationContractHolesStayOpen, только на уровне enum'а, а не сообщения.
+	for _, r := range v.retired {
+		hole[r] = true
+		if name, taken := v.protoNames[r]; taken {
+			t.Errorf("%s: номер %d объявлен снятым (reserved), но занят членом %s — reserved и живой член взаимоисключающи", v.label, r, name)
 		}
 	}
 	highest := int32(0)
@@ -942,6 +962,18 @@ func assertVocabularyHasToken(t *testing.T, label string, tokens []string, want,
 	t.Errorf("%s потерял %q: %s", label, want, why)
 }
 
+// assertVocabularyLacksToken is the mirror of the helper above, and it exists for the one case the
+// «has» form cannot cover: a token DELIBERATELY REMOVED. Дрейф-тест сам по себе такое не удержит —
+// он сверяет три списка МЕЖДУ СОБОЙ, и возврат `width` во все три сразу остался бы зелёным, хотя
+// вернул бы ровно тот выбор, который владелец распорядился убрать: два написания одного приёма.
+func assertVocabularyLacksToken(t *testing.T, label string, tokens []string, unwanted, why string) {
+	t.Helper()
+	if !slices.Contains(tokens, unwanted) {
+		return
+	}
+	t.Errorf("%s вернул снятый токен %q: %s", label, unwanted, why)
+}
+
 // TestSeamSecuringDBCheckNoDrift — S3, чем закреплён конец строчки. 'none' is a real answer here
 // («без закрепки»), not the absence of one.
 func TestSeamSecuringDBCheckNoDrift(t *testing.T) {
@@ -960,11 +992,20 @@ func TestSeamSecuringDBCheckNoDrift(t *testing.T) {
 // TestTopstitchModeDBCheckNoDrift — the one pre-existing vocabulary of this family that had no drift
 // guard at all until now: 0289 created chk_op_topstitch_mode, nothing ever compared it to Go.
 //
-// The wave added in_ditch and parallel_to_seam, and the second one is why the migration MODIFYs the
-// column to VARCHAR(16) first: the token is 16 characters and the column was VARCHAR(8), so without
-// the widening the first save is a data-too-long — or, with STRICT off, a silent truncation that the
-// CHECK then refuses. That makes the column width part of this vocabulary's contract, so it is
-// asserted here rather than left to the reader of the migration.
+// The 0324 wave added in_ditch and parallel_to_seam, and the second one is why the migration MODIFYs
+// the column to VARCHAR(16) first: the token is 16 characters and the column was VARCHAR(8), so
+// without the widening the first save is a data-too-long — or, with STRICT off, a silent truncation
+// that the CHECK then refuses. That makes the column width part of this vocabulary's contract, so it
+// is asserted here rather than left to the reader of the migration.
+//
+// 0326 СНЯЛ `width` — ЕДИНСТВЕННОЕ СУЖЕНИЕ СЛОВАРЯ ВО ВСЁМ СЕМЕЙСТВЕ, и владение списком перешло к
+// нему; якорь CHECK'а поэтому читается из 0326, а не из 0324. Ширина колонки проверяется по ТОМУ ЖЕ
+// файлу: 0326 переписывает COMMENT колонки (он называл `width` отдельным приёмом) и обязан назвать
+// тип целиком, так что VARCHAR(16) в нём стоит — и это ровно то место, где сужение словаря могло бы
+// незаметно уехать вместе с сужением колонки.
+//
+// Номер 2 объявлен retired, а не holes: proto его RESERVED, то есть закрыл навсегда. Отданный
+// новому смыслу, он читался бы старым клиентом как прежний член — молча и без ошибки на проводе.
 func TestTopstitchModeDBCheckNoDrift(t *testing.T) {
 	assertWaveVocabularyNoDrift(t, waveVocabulary{
 		label:      "TechCardTopstitchMode",
@@ -972,30 +1013,34 @@ func TestTopstitchModeDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_TOPSTITCH_MODE_",
 		zeroMember: "TECH_CARD_TOPSTITCH_MODE_UNKNOWN",
 		check:      "chk_op_topstitch_mode CHECK",
+		migration:  migration0326,
 		tokens:     entity.TopstitchModeTokens,
+		retired:    []int32{2}, // TECH_CARD_TOPSTITCH_MODE_WIDTH, снят 0326
 	})
+	assertVocabularyLacksToken(t, "TechCardTopstitchMode", entity.TopstitchModeTokens, "width",
+		"`width` и `edge` описывали ОДИН приём — строчку от края детали — и различались лишь тем, названо ли число; число стало опциональным свойством `edge`")
 	longest := 0
 	for _, tok := range entity.TopstitchModeTokens {
 		if len(tok) > longest {
 			longest = len(tok)
 		}
 	}
-	content := readMigrationFile(t, migration0324)
+	content := readMigrationFile(t, migration0326)
 	widen := strings.Index(content, "MODIFY COLUMN topstitch_mode VARCHAR(")
 	if widen < 0 {
-		t.Fatalf("0324 must widen topstitch_mode before recreating its CHECK: the longest token is %d characters and 0289 declared VARCHAR(8)", longest)
+		t.Fatalf("0326 must restate the topstitch_mode width alongside its CHECK: the longest token is %d characters and 0289 declared VARCHAR(8)", longest)
 	}
 	var width int
 	if _, err := fmt.Sscanf(content[widen:], "MODIFY COLUMN topstitch_mode VARCHAR(%d)", &width); err != nil {
-		t.Fatalf("cannot read the widened topstitch_mode width: %v", err)
+		t.Fatalf("cannot read the topstitch_mode width: %v", err)
 	}
 	if width < longest {
 		t.Errorf("topstitch_mode is VARCHAR(%d) but the vocabulary needs %d characters — the longest token would be truncated on write and then refused by its own CHECK", width, longest)
 	}
-	// The widening has to come BEFORE the CHECK is recreated: the other order writes a constraint
+	// The MODIFY has to come BEFORE the CHECK is recreated: the other order writes a constraint
 	// against a column that cannot hold the value it admits.
 	if rx := strings.Index(content, "chk_op_topstitch_mode CHECK"); rx >= 0 && rx < widen {
-		t.Error("0324 recreates chk_op_topstitch_mode before widening topstitch_mode; the MODIFY must come first")
+		t.Error("0326 recreates chk_op_topstitch_mode before the MODIFY COLUMN; the MODIFY must come first")
 	}
 }
 
