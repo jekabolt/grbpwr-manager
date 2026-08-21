@@ -2614,11 +2614,16 @@ const (
 // TechCardTopstitchMode replaces the free-text topstitch_width, whose real values were three
 // different KINDS of answer at once: «нет», «в край» (a placement, not a width) and «2 × 6 мм»
 // (a width AND a row count).
+//
+// ТОКЕН `width` СНЯТ (0326). Он и `edge` описывали ОДИН приём — строчку от КРАЯ ДЕТАЛИ, — и
+// различались только тем, названо число или нет. Число стало опциональным свойством `edge`, а
+// пикер перестал спрашивать про приём то, что на деле было вопросом про заполненность ячейки.
 type TechCardTopstitchMode string
 
 const (
-	TopstitchEdge  TechCardTopstitchMode = "edge"
-	TopstitchWidth TechCardTopstitchMode = "width"
+	// TopstitchEdge — точка отсчёта КРАЙ ДЕТАЛИ; ширина ОПЦИОНАЛЬНА (заполнена — отступ от края в
+	// мм, пуста — вплотную к краю). До 0326 ширина при `edge` ОТВЕРГАЛАСЬ; правило снято.
+	TopstitchEdge TechCardTopstitchMode = "edge"
 	// Волна 0324. IN_DITCH — строчка идёт В САМ ШОВ, ширины у неё нет и быть не может;
 	// PARALLEL_TO_SEAM — отступ ОТ ШВА, и ширина у него, наоборот, обязательна. Два режима
 	// приехали вместе именно поэтому: они и есть две недостающие половины вопроса «где строчка».
@@ -2629,7 +2634,12 @@ const (
 // Колонка topstitch_mode заводилась VARCHAR(8) (0289) и `parallel_to_seam` в неё не влезает —
 // 0324 расширяет её до VARCHAR(16) ДО пересоздания chk_op_topstitch_mode. Сокращать токен до
 // `parallel` отказались: имя обязано говорить, ОТ ЧЕГО отступ.
-var TopstitchModeTokens = []string{"edge", "width", "in_ditch", "parallel_to_seam"}
+//
+// СПИСОК СУЖАЕТСЯ, и это единственный случай в семействе, где такое законно: 0326 снимает `width`
+// из словарного CHECK'а, а ADD CONSTRAINT CHECK перечитывает ВСЮ историю таблицы (память
+// retroactive-check-halts-deploy). Безопасно ровно потому, что на день снятия ни одна строка ни в
+// одной базе не имела topstitch_mode вовсе — 0 из 82 на проде, 0 на бете.
+var TopstitchModeTokens = []string{"edge", "in_ditch", "parallel_to_seam"}
 
 var ValidTopstitchModes = tokenSet[TechCardTopstitchMode](TopstitchModeTokens)
 

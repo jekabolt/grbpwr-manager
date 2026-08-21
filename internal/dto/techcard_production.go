@@ -510,11 +510,17 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 	return out, nil
 }
 
-// parseTopstitch splits the sub-message into its three columns and enforces the one rule that makes
-// the mode mean anything: a width belongs to the modes that HAVE one (WIDTH and PARALLEL_TO_SEAM)
-// and nowhere else. Carrying «6 mm» alongside «edge» — or alongside «in the ditch», where the line
-// is buried in the seam itself — would leave a shadow value that nothing reads and the next editor
-// believes.
+// parseTopstitch splits the sub-message into its three columns and enforces the rule that makes the
+// mode mean anything. С 0326 режимов ТРИ, и ширина у каждого своя:
+//
+//   - PARALLEL_TO_SEAM — ширина ОБЯЗАТЕЛЬНА: это ОТСТУП ОТ ЛИНИИ ШВА, и без числа он не инструкция;
+//   - IN_DITCH — ширина ОТВЕРГАЕТСЯ: строчка идёт В САМ ШОВ, ширины у неё нет и быть не может, а
+//     «6 мм» рядом осталось бы теневым значением, которое ничто не читает, а следующий редактор
+//     принимает на веру;
+//   - EDGE — ширина ОПЦИОНАЛЬНА, и это ИЗМЕНЕНИЕ ПРАВИЛА. Раньше рядом с EDGE стоял отдельный режим
+//     WIDTH, а ширина при EDGE отвергалась; на деле это был один приём — строчка от КРАЯ ДЕТАЛИ, —
+//     где выбор между двумя режимами сводился к тому, заполнена ли соседняя ячейка. Теперь
+//     заполненная ширина значит отступ от края, пустая — вплотную к краю.
 // The violation paths here are FLAT (`topstitch_width_mm`), not the nested wire path
 // (`topstitch.width_mm`), and that is deliberate: a field violation exists to point the admin at the
 // CONTROL the operator must fix, and the admin routes it by camel-casing the path onto a form field.
@@ -531,30 +537,28 @@ func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString
 	tok, ok := topstitchModePbToToken[t.Mode]
 	if !ok {
 		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_mode", "unknown_value", t.Mode.String(),
-			"pick where the line runs — along the edge, at a stated width, in the ditch of the seam, or parallel to it")
+			"pick where the line runs — from the edge of the piece, in the ditch of the seam, or parallel to it")
 	}
 	mode = sql.NullString{String: tok, Valid: true}
 	w, err := nullDecimalFromPb(t.WidthMm)
 	if err != nil {
 		return mode, width, rows, fmt.Errorf("%s.topstitch.width_mm: %w", step, err)
 	}
-	// ШИРИНА ЕСТЬ РОВНО У ДВУХ РЕЖИМОВ ИЗ ЧЕТЫРЁХ, и волна 0324 добавила по одному в каждую
-	// половину: PARALLEL_TO_SEAM — это ОТСТУП ОТ ШВА, и без числа он не инструкция; IN_DITCH —
-	// строчка идёт В САМ ШОВ, у неё ширины нет и быть не может. Проверка написана списком режимов,
-	// а не сравнением с одним значением: третий режим со своей стороны добавится сюда, а не
-	// провалится в «иначе».
-	needsWidth := t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH ||
-		t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_PARALLEL_TO_SEAM
-	switch {
-	case needsWidth && !w.Valid:
-		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "required", "",
-			"a topstitch at a stated width — or at an offset FROM the seam — needs the number; pick «edge» or «in the ditch» if it has no width of its own")
-	case !needsWidth && w.Valid:
-		hint := "«edge» topstitching has no width — clear it, or switch the mode to width"
-		if t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH {
-			hint = "an in-the-ditch topstitch has no width — it follows the seam; clear the number, or switch the mode to width"
+	// ТРИ РЕЖИМА — ТРИ РАЗНЫХ ОТВЕТА ПРО ШИРИНУ, и это ИМЕННО switch по режиму, а не пара булевых
+	// «нужна/нельзя»: у EDGE ширина не обязательна и не запрещена, третьего состояния у булевой
+	// пары нет. Четвёртый режим, если он однажды появится, обязан приписать сюда свою ветку, а не
+	// провалиться в чужую.
+	switch t.Mode {
+	case pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_PARALLEL_TO_SEAM:
+		if !w.Valid {
+			return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "required", "",
+				"a topstitch at an offset FROM the seam needs the number; pick «edge» if the line is measured from the edge of the piece instead")
 		}
-		return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "not_applicable", w.Decimal.String(), hint)
+	case pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH:
+		if w.Valid {
+			return mode, width, rows, entity.NewFieldViolation(step+".topstitch_width_mm", "not_applicable", w.Decimal.String(),
+				"an in-the-ditch topstitch has no width — it follows the seam; clear the number, or switch the mode to «edge» or «parallel to the seam»")
+		}
 	}
 	if err := validateDecimalScale(w, step+".topstitch_width_mm", 1, entity.MaxSeamAllowanceMm); err != nil {
 		return mode, width, rows, err

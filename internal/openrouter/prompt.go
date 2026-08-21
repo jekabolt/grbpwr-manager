@@ -41,8 +41,9 @@ Respond with ONE JSON object and NOTHING else — no markdown, no commentary. Sh
       "seam_class": "ss_plain",        // ISO 4916 class, token from the list below (omit to inherit)
       "stitches_per_cm": "4",          // density in stitches per CENTIMETRE (omit to inherit)
       "seam_allowance_mm": "10",       // seam allowance in MILLIMETRES (omit to inherit the card standard)
-      "topstitch_mode": "width",       // {{TOPSTITCH_MODES}}; omit when the step has no topstitching
-      "topstitch_width_mm": "6",       // ONLY with topstitch_mode "width"
+      "topstitch_mode": "edge",        // {{TOPSTITCH_MODES}}; omit when the step has no topstitching
+      "topstitch_width_mm": "6",       // offset in mm: from the EDGE with "edge", from the SEAM with
+                                       // "parallel_to_seam"; NEVER with "in_ditch"
       "topstitch_rows": 2,             // 1..{{MAX_TOPSTITCH_ROWS}}; omit when unknown
       "attachment_kind": "binder",     // token below; "none" = SEWN BARE. Omit only to inherit the machine profile
       "smv_minutes": "0.8",            // standard minute value for the step, numeric

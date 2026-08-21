@@ -1678,25 +1678,41 @@ enum TechCardAttachmentKind {
 // TechCardTopstitchMode replaces the free-text `topstitch_width`, whose real values were three
 // different KINDS of answer at once: «нет», «в край» (a placement, not a width) and «2 × 6 мм»
 // (a width AND a row count).
+//
+// ТРИ ЧЛЕНА, А НЕ ЧЕТЫРЕ: WIDTH СНЯТ. Он и EDGE описывали ОДИН приём — строчку, отмеренную ОТ КРАЯ
+// ДЕТАЛИ, — и различались ровно тем, названо число или нет. Технолог, глядя на пикер, выбирал между
+// «в край» и «на ширину от края» так, будто это разные приёмы; на деле он выбирал, заполнена ли
+// соседняя ячейка. Поэтому режимов теперь три, а число стало НЕОБЯЗАТЕЛЬНЫМ СВОЙСТВОМ EDGE:
+// заполнено — отступ от края в мм, пусто — вплотную к краю. Правило «ширина при EDGE отвергается»,
+// которое сервер держал до 0326, ОТМЕНЕНО.
+//
+// Номер 2 и имя TECH_CARD_TOPSTITCH_MODE_WIDTH ЗАРЕЗЕРВИРОВАНЫ НАВСЕГДА. Снятый номер, отданный
+// новому смыслу, читался бы старым клиентом как прежний член — молча и без единой ошибки на
+// проводе. Переносить при этом было нечего: на день снятия ни одна строка ни в одной базе не имела
+// topstitch_mode вообще (0 из 82 на проде, 0 на бете), релизов с этим полем — 0, подписей — 0.
 enum TechCardTopstitchMode {
+  reserved 2;
+  reserved "TECH_CARD_TOPSTITCH_MODE_WIDTH";
+
   TECH_CARD_TOPSTITCH_MODE_UNKNOWN = 0; // no topstitching
-  TECH_CARD_TOPSTITCH_MODE_EDGE = 1; // в край
-  TECH_CARD_TOPSTITCH_MODE_WIDTH = 2; // at the stated width
-  // В ШОВ («в канавку»): строчка ложится в сам шов, ширины у неё нет — width_mm отвергается,
-  // ровно как у EDGE.
+  // В КРАЙ / НА ОТСТУПЕ ОТ КРАЯ: точка отсчёта — КРАЙ ДЕТАЛИ. width_mm здесь ОПЦИОНАЛЬНА:
+  // заполнена — отступ от края в мм, пуста — строчка идёт вплотную к краю.
+  TECH_CARD_TOPSTITCH_MODE_EDGE = 1;
+  // В ШОВ («в канавку»): строчка ложится в сам шов, ширины у неё нет — width_mm отвергается.
   TECH_CARD_TOPSTITCH_MODE_IN_DITCH = 3;
-  // ПАРАЛЛЕЛЬНО ШВУ: width_mm здесь REQUIRED и значит ОТСТУП ОТ ЛИНИИ ШВА. От WIDTH отличается
-  // точкой отсчёта: у WIDTH это край детали, здесь — шов. Два разных факта под одним числом
-  // разошлись бы на печати молча, поэтому это отдельный режим, а не примечание к WIDTH.
+  // ПАРАЛЛЕЛЬНО ШВУ: width_mm здесь REQUIRED и значит ОТСТУП ОТ ЛИНИИ ШВА. От EDGE отличается
+  // точкой отсчёта: у EDGE это край детали, здесь — шов. Два разных факта под одним числом
+  // разошлись бы на печати молча, поэтому это отдельный режим, а не примечание к EDGE.
   TECH_CARD_TOPSTITCH_MODE_PARALLEL_TO_SEAM = 4;
 }
 
 // TechCardTopstitch is the three answers that used to share one string.
 message TechCardTopstitch {
   TechCardTopstitchMode mode = 1;
-  // Required when mode = WIDTH or PARALLEL_TO_SEAM, rejected under EDGE and IN_DITCH — a width
-  // carried alongside «в край» would be a shadow value nothing reads. Точка отсчёта у двух
-  // требующих режимов разная: WIDTH меряется от края детали, PARALLEL_TO_SEAM — от линии шва.
+  // Required under PARALLEL_TO_SEAM, optional under EDGE, rejected under IN_DITCH. Точка отсчёта
+  // у двух режимов, которые число принимают, РАЗНАЯ: EDGE меряет от края детали,
+  // PARALLEL_TO_SEAM — от линии шва. У IN_DITCH строчка лежит в самом шве, и число рядом с ней
+  // было бы теневым значением, которого никто не читает.
   google.type.Decimal width_mm = 2;
   int32 rows = 3; // 1 = single, 2 = the old «2 × 6 мм»; 0 = unset
 }
