@@ -3077,8 +3077,8 @@ type TechCardOperation struct {
 	ResidualTailMaxMm decimal.NullDecimal `db:"residual_tail_max_mm"` // допустимый хвост нитки, мм; 1..10; NULL = стандарт цеха
 
 	// Дискриминаторы трёх финишных глаголов: чистка (C), контроль (Q), мокрая обработка (WP).
-	CleaningKind   sql.NullString `db:"cleaning_kind"`    // spot_clean|dust_lint|chalk_removal|adhesive_removal; REQUIRED у clean
-	CoverageMode   sql.NullString `db:"coverage_mode"`    // each_unit|sample_per_bundle|aql_plan|first_output; REQUIRED у inspect
+	CleaningKind   sql.NullString `db:"cleaning_kind"`    // spot_clean|dust_lint|other; REQUIRED у clean; вещество следа — прозой в note
+	CoverageMode   sql.NullString `db:"coverage_mode"`    // each_unit|sample_per_bundle|aql_plan|other; REQUIRED у inspect
 	WetProcessKind sql.NullString `db:"wet_process_kind"` // rinse|enzyme|garment_dye|softener; REQUIRED у wet_process
 
 	// Петли, закрепки, пуговицы, молнии (FA) и два поля строчки из дельты (S14, S17). Все — на
