@@ -35,6 +35,9 @@ var operationKindColumnCanon = []string{
 	"attach_method", "hole_prep", "reinforcement", "foldback_mm", "cycle_stitch_count",
 	// Печать (P).
 	"print_method", "peel_mode", "second_press_sec", "pressure_scale",
+	// ⚠️ pressure_scale выше — ИСТОРИЯ, а не живая колонка. 0324 её ДОБАВИЛА (и третья нога канона,
+	// TestOperationKindMigrationAddsColumnsInCanonOrder, читает именно её ALTER), а 0327 СНЯЛА
+	// вместе со словарём. Живой набор строится ниже вычитанием operationKindColumnRetired.
 	// Сварка и проклейка (W).
 	"air_temperature_c", "feed_speed_m_min",
 	// Подрезка и выправка (T), чистка концов ниток (F).
@@ -53,10 +56,41 @@ var operationKindColumnCanon = []string{
 // конец таблицы. Читаемость купленная разъездом четырёх списков — плохая покупка.
 var pressColumnCanon = []string{"press_action", "press_toward"}
 
+// operationKindColumnRetired — колонки волны, СНЯТЫЕ последующей миграцией, и файл, который их снял.
+//
+// Отдельное множество, а не вычёркивание из эталона выше, потому что у канона ДВЕ разные работы, и
+// после первого же снятия они расходятся. ALTER миграции 0324 заморожен: он добавил тридцать две
+// колонки, и переписать его нельзя — он применён на бете и приедет на прод как есть. А SELECT,
+// db-теги entity и ключи INSERT-карты описывают СЕГОДНЯШНЮЮ таблицу, где колонки уже нет. Свести
+// их в один список значило бы либо соврать про 0324, либо потребовать от кода читать снятую
+// колонку.
+var operationKindColumnRetired = map[string]string{
+	// F3 «ложных расщеплений»: это был прижим ВТО-блока (press_pressure_n_cm2), сказанный словом
+	// вместо числа, на шаге, где ВТО-блок законен.
+	"pressure_scale": "0327_operation_kinds_false_splits.sql",
+}
+
+// operationKindColumnLiveCanon / operationColumnLiveCanon — то же, что каноны выше, МИНУС снятое.
+// Именно с ними сверяются три ноги, смотрящие на живой код; ALTER'ы остаются на исторических.
+var operationKindColumnLiveCanon = liveCanon(operationKindColumnCanon)
+
+func liveCanon(all []string) []string {
+	out := make([]string, 0, len(all))
+	for _, c := range all {
+		if _, gone := operationKindColumnRetired[c]; gone {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // operationColumnCanon — канон целиком: 32 колонки 0324 плюс 2 колонки 0325. Именно он сверяется с
 // SELECT'ом, db-тегами entity и ключами INSERT-карты; ALTER'ы проверяются по файлам ПОРОЗНЬ, потому
 // что каждая миграция добавляет только свою часть.
 var operationColumnCanon = append(append([]string{}, operationKindColumnCanon...), pressColumnCanon...)
+
+var operationColumnLiveCanon = liveCanon(operationColumnCanon)
 
 // TestOperationKindColumnCanonSize — контрольное число волны (§1): ровно 32, не 31 и не 33.
 func TestOperationKindColumnCanonSize(t *testing.T) {
@@ -68,6 +102,21 @@ func TestOperationKindColumnCanonSize(t *testing.T) {
 	}
 	if len(operationColumnCanon) != 34 {
 		t.Fatalf("канон целиком — 34 колонки, в эталоне %d", len(operationColumnCanon))
+	}
+	// И контрольное число ЖИВОГО набора: 34 минус снятое. Без него запись в operationKindColumnRetired
+	// с опечаткой в имени просто ничего бы не вычла, и три ноги продолжили бы требовать от кода
+	// колонку, которой в таблице нет.
+	if len(operationColumnLiveCanon) != len(operationColumnCanon)-len(operationKindColumnRetired) {
+		t.Fatalf("живой канон — %d колонок при %d в истории и %d снятых", len(operationColumnLiveCanon), len(operationColumnCanon), len(operationKindColumnRetired))
+	}
+	inHistory := make(map[string]bool, len(operationColumnCanon))
+	for _, c := range operationColumnCanon {
+		inHistory[c] = true
+	}
+	for c, by := range operationKindColumnRetired {
+		if !inHistory[c] {
+			t.Fatalf("колонка %q объявлена снятой (%s), но её никогда не было в каноне — опечатка в имени", c, by)
+		}
 	}
 	seen := make(map[string]bool, len(operationColumnCanon))
 	for _, c := range operationColumnCanon {
@@ -108,14 +157,17 @@ func TestTechCardOperationsQueryCarriesKindColumnsInCanonOrder(t *testing.T) {
 	for _, c := range operationColumnCanon {
 		inCanon[c] = true
 	}
+	// Фильтр строится по ПОЛНОМУ канону, а сверка идёт с ЖИВЫМ: иначе снятая колонка, забытая в
+	// SELECT'е, просто выпала бы из проверяемого набора и равенство сошлось бы. Читать её из базы
+	// нельзя — её там нет, — и такой SELECT падал бы в рантайме на 1054.
 	var got []string
 	for _, m := range re.FindAllStringSubmatch(selectClause, -1) {
 		if inCanon[m[1]] {
 			got = append(got, m[1])
 		}
 	}
-	if !reflect.DeepEqual(got, operationColumnCanon) {
-		t.Fatalf("SELECT операций разошёлся с каноном §1:\n эталон: %v\n запрос: %v", operationColumnCanon, got)
+	if !reflect.DeepEqual(got, operationColumnLiveCanon) {
+		t.Fatalf("SELECT операций разошёлся с живым каноном §1:\n эталон: %v\n запрос: %v", operationColumnLiveCanon, got)
 	}
 }
 
@@ -134,8 +186,8 @@ func TestTechCardOperationEntityCarriesKindColumnsInCanonOrder(t *testing.T) {
 			got = append(got, tag)
 		}
 	}
-	if !reflect.DeepEqual(got, operationColumnCanon) {
-		t.Fatalf("поля entity.TechCardOperation разошлись с каноном §1:\n эталон: %v\n entity: %v", operationColumnCanon, got)
+	if !reflect.DeepEqual(got, operationColumnLiveCanon) {
+		t.Fatalf("поля entity.TechCardOperation разошлись с живым каноном §1:\n эталон: %v\n entity: %v", operationColumnLiveCanon, got)
 	}
 }
 
@@ -143,8 +195,8 @@ func TestTechCardOperationEntityCarriesKindColumnsInCanonOrder(t *testing.T) {
 // Ни одна из 32 не имеет права быть голым int/string/bool: голый тип не отличает «технолог молчит»
 // от «технолог сказал ноль», и волна намеренно не несёт ни одного sql.NullBool.
 func TestTechCardOperationKindColumnsAreNullable(t *testing.T) {
-	inCanon := make(map[string]bool, len(operationColumnCanon))
-	for _, c := range operationColumnCanon {
+	inCanon := make(map[string]bool, len(operationColumnLiveCanon))
+	for _, c := range operationColumnLiveCanon {
 		inCanon[c] = true
 	}
 	allowed := map[string]bool{
@@ -264,7 +316,40 @@ func TestOperationKindInsertMapCarriesKindColumnsInCanonOrder(t *testing.T) {
 		}
 		return true
 	})
-	if !reflect.DeepEqual(got, operationColumnCanon) {
-		t.Fatalf("ключи insertTechCardOperations разошлись с каноном §1:\n эталон: %v\n INSERT: %v", operationColumnCanon, got)
+	if !reflect.DeepEqual(got, operationColumnLiveCanon) {
+		t.Fatalf("ключи insertTechCardOperations разошлись с живым каноном §1:\n эталон: %v\n INSERT: %v", operationColumnLiveCanon, got)
+	}
+}
+
+// TestRetiredOperationKindColumnsAreGoneEverywhere — ЧЕТВЁРТАЯ работа канона, появившаяся вместе с
+// первым снятием: доказать, что снятая колонка ушла ИЗ ВСЕХ ТРЁХ живых мест, а не из одного.
+//
+// Сверка с живым каноном ловит это косвенно (лишний ключ разошёлся бы со списком), но сообщение
+// было бы про порядок, а не про снятие, и читатель пошёл бы искать перестановку. Здесь проверка
+// прямая и называет и колонку, и файл, который её снял. Плюс она ловит случай, невидимый для
+// DeepEqual целиком: колонка, оставшаяся в INSERT-карте, но выпавшая заодно и из entity, — тогда
+// оба списка сойдутся друг с другом, а запись упадёт на 1054 в рантайме.
+func TestRetiredOperationKindColumnsAreGoneEverywhere(t *testing.T) {
+	rt := reflect.TypeOf(entity.TechCardOperation{})
+	for col, by := range operationKindColumnRetired {
+		for i := 0; i < rt.NumField(); i++ {
+			if rt.Field(i).Tag.Get("db") == col {
+				t.Errorf("entity.TechCardOperation всё ещё несёт поле с db-тегом %q, снятым в %s — StructScan попросит у базы колонку, которой нет", col, by)
+			}
+		}
+		if strings.Contains(techCardOperationsQuery, "o."+col) {
+			t.Errorf("SELECT операций всё ещё читает o.%s, снятую в %s — это 1054 на чтении ЛЮБОЙ тех-карты", col, by)
+		}
+		body, err := os.ReadFile(filepath.Join("..", "sql", by))
+		if err != nil {
+			t.Fatalf("миграция %s, объявленная снявшей %s, не читается: %v", by, col, err)
+		}
+		up := string(body)
+		if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+			up = up[:i]
+		}
+		if !strings.Contains(up, "DROP COLUMN "+col) {
+			t.Errorf("%s объявлена снявшей колонку %s, но DROP COLUMN в её Up-половине нет", by, col)
+		}
 	}
 }

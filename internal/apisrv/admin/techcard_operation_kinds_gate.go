@@ -43,7 +43,7 @@ import (
 // (те же две машинки), press_cloth профиля +1 и bom_item.kind +2 (seam_sealing_tape,
 // embroidery_stabilizer). Шаг MACHINE + ultrasonic_welder без единого поля weld-блока, шаг с
 // topstitch_mode = in_ditch, шаг с press_cloth = silicone_paper, строка BOM с
-// kind = embroidery_stabilizer — все законны и НЕ НЕСУТ НИ ОДНОЙ из 32 колонок и ни одного из
+// kind = embroidery_stabilizer — все законны и НЕ НЕСУТ НИ ОДНОЙ из колонок волны и ни одного из
 // девяти глаголов. Теряются они так же молча: parseTopstitch при Mode = UNKNOWN отдаёт пустые
 // mode/width/rows, то есть режим отстрочки уносит с собой и ширину, и число рядов; press_cloth и
 // bom.kind опциональны и стираются без единого слова (machine_type спасён случайно — щит 0306
@@ -233,7 +233,8 @@ func payloadSpeaksOperationKinds(pb *pb_common.TechCardInsert) bool {
 			pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_WET_PROCESS:
 			return true
 		}
-		// Десять блоков и два плоских поля волны — те самые 32 колонки.
+		// Десять блоков и два плоских поля волны — те самые колонки волны (0324 завела 32, 0327 снял
+		// pressure_scale вместе со словарём, живых 31).
 		if o.GetStitching() != nil ||
 			o.GetPlacementLayout() != nil ||
 			o.GetHardware() != nil ||
@@ -269,10 +270,11 @@ func payloadSpeaksOperationKinds(pb *pb_common.TechCardInsert) bool {
 
 // storedHasOperationKindFacts — предикат правила 2: несёт ли СОХРАНЁННАЯ карточка факты волны.
 //
-// ВСЕ 32 КОЛОНКИ, А НЕ ВОСЕМНАДЦАТЬ «ДЕЛЬТОВЫХ», и это решение, а не небрежность. Довод «у
+// ВСЕ КОЛОНКИ ВОЛНЫ (0324 завела 32, 0327 снял pressure_scale — живых 31), А НЕ ВОСЕМНАДЦАТЬ
+// «ДЕЛЬТОВЫХ», и это решение, а не небрежность. Довод «у
 // остальных глагол сам доказывает осведомлённость» верен ровно наполовину: он доказывает, что
 // старый бандл не СОЗДАСТ такой шаг, но ничего не говорит о том, что он его не УДАЛИТ. Шаг PACK
-// или FOLD не несёт ни одной из 32 колонок; бандл, выбросивший непонятный ему шаг из списка,
+// или FOLD не несёт ни одной из них; бандл, выбросивший непонятный ему шаг из списка,
 // стёр бы его при полной замене, а предикат по одним лишь колонкам ответил бы «фактов нет» и
 // пропустил запись. Поэтому глагол здесь считается наравне с колонкой.
 //
@@ -286,9 +288,9 @@ func payloadSpeaksOperationKinds(pb *pb_common.TechCardInsert) bool {
 // правило: любая колонка волны и любой новый глагол — факт.
 //
 // И ОТДЕЛЬНО — ТОКЕНЫ, ДОПИСАННЫЕ В СЛОВАРИ ЖИВЫХ КОЛОНОК (шаги 4..9 миграции). Колонок они не
-// добавляют вовсе, поэтому предикат «по 32 колонкам и девяти глаголам» отвечал бы на такой
+// добавляют вовсе, поэтому предикат «по колонкам и девяти глаголам» отвечал бы на такой
 // карточке «фактов нет»: шаг MACHINE + ultrasonic_welder, шаг с in_ditch, шаг с silicone_paper и
-// BOM-строка с embroidery_stabilizer не несут ни одной из 32. Считаются они ПО ТОКЕНУ и только по
+// BOM-строка с embroidery_stabilizer не несут ни одной из них. Считаются они ПО ТОКЕНУ и только по
 // нему — см. шапку файла.
 func storedHasOperationKindFacts(stored *entity.TechCard) bool {
 	if stored == nil {
@@ -335,7 +337,7 @@ func storedHasOperationKindFacts(stored *entity.TechCard) bool {
 			o.FoldbackMm.Valid || o.CycleStitchCount.Valid {
 			return true
 		}
-		if o.PrintMethod.Valid || o.PeelMode.Valid || o.SecondPressSec.Valid || o.PressureScale.Valid {
+		if o.PrintMethod.Valid || o.PeelMode.Valid || o.SecondPressSec.Valid {
 			return true
 		}
 		if o.AirTemperatureC.Valid || o.FeedSpeedMMin.Valid {
@@ -355,7 +357,7 @@ func storedHasOperationKindFacts(stored *entity.TechCard) bool {
 			o.BindingStyle.Valid || o.LabelAttachStitch.Valid {
 			return true
 		}
-		// ВТО (0325). Две колонки сверх тридцати двух, и считаются они ровно так же — ПО КОЛОНКЕ:
+		// ВТО (0325). Две колонки сверх волны 0324, и считаются они ровно так же — ПО КОЛОНКЕ:
 		// глагол press осведомлённости не доказывает (он в проде годами), доказывает заполненность.
 		if o.PressAction.Valid || o.PressToward.Valid {
 			return true

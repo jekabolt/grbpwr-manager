@@ -63,9 +63,6 @@ var printMethodTokenToPb = invertTokenMap(printMethodPbToToken)
 var peelModePbToToken = enumTokenMap[pb_common.TechCardPeelMode]("TECH_CARD_PEEL_MODE_", entity.PeelModeTokens, pb_common.TechCardPeelMode_value)
 var peelModeTokenToPb = invertTokenMap(peelModePbToToken)
 
-var pressureScalePbToToken = enumTokenMap[pb_common.TechCardPressureScale]("TECH_CARD_PRESSURE_SCALE_", entity.PressureScaleTokens, pb_common.TechCardPressureScale_value)
-var pressureScaleTokenToPb = invertTokenMap(pressureScalePbToToken)
-
 var trimActionPbToToken = enumTokenMap[pb_common.TechCardTrimAction]("TECH_CARD_TRIM_ACTION_", entity.TrimActionTokens, pb_common.TechCardTrimAction_value)
 var trimActionTokenToPb = invertTokenMap(trimActionPbToToken)
 
@@ -186,7 +183,6 @@ type operationKindFields struct {
 	printMethod    sql.NullString
 	peelMode       sql.NullString
 	secondPressSec sql.NullInt32
-	pressureScale  sql.NullString
 
 	airTemperatureC sql.NullInt32
 	feedSpeedMMin   decimal.NullDecimal
@@ -450,7 +446,6 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		{"print_method", o.GetPrintMethod() != pb_common.TechCardPrintMethod_TECH_CARD_PRINT_METHOD_UNKNOWN},
 		{"peel_mode", pr.GetPeelMode() != pb_common.TechCardPeelMode_TECH_CARD_PEEL_MODE_UNKNOWN},
 		{"second_press_sec", pr.GetSecondPressSec() != 0},
-		{"pressure_scale", pr.GetPressureScale() != pb_common.TechCardPressureScale_TECH_CARD_PRESSURE_SCALE_UNKNOWN},
 	}
 	if !isPrint {
 		if fld := firstPopulated(printAll); fld != "" {
@@ -498,10 +493,14 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		if err != nil {
 			return f, err
 		}
-		f.pressureScale, err = parseEquipmentEnum(pr.GetPressureScale(), pressureScalePbToToken,
-			step+".pressure_scale", "pick the pressure on the scale — light, medium or firm")
-		if err != nil {
-			return f, err
+		// F10 (0327): У ШЕЛКОГРАФИИ НОСИТЕЛЯ НЕТ, КАК И У ГРАВИРОВКИ. Раньше это выражалось членом
+		// словаря `none`, и на шелкографии он был истинен ОДНОВРЕМЕННО с «не указано» — заполняющий
+		// выбирал наугад между двумя правдами. Теперь это правило, а не значение, и отвергается
+		// ровно ОДНО поле: прижим у шелкографии, в отличие от лазера, бывает, поэтому весь ВТО-блок
+		// шага при ней остаётся законным.
+		if f.printMethod.String == string(entity.PrintMethodScreen) && f.peelMode.Valid {
+			return f, entity.NewFieldViolation(step+".peel_mode", "not_applicable", f.peelMode.String,
+				"screen printing lays ink straight onto the cloth — there is no carrier to peel; clear the field or change the method")
 		}
 	}
 
@@ -767,18 +766,18 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		}
 	} else {
 		f.pressAction, err = parseEquipmentEnum(ps.GetAction(), pressActionPbToToken,
-			step+".press_action", "pick WHAT the pressing does — press flat, to one side, open, steam, final, ease in, stretch or mould")
+			step+".press_action", "pick WHAT the pressing does — press flat, to one side, steam, final, ease in, stretch or mould")
 		if err != nil {
 			return f, err
 		}
-		// PRESS_OPEN — САМ СЕБЕ ПОД-ГЛАГОЛ. Разутюжка уже названа глаголом, и второй ответ на тот
-		// же вопрос был бы двумя ответами. Пустой press_action здесь законен и КАНОНИЧЕН: пикер на
-		// этом шаге его не пишет вовсе, а `open` принимается только на чтение — форма не
-		// переписывает одно написание в другое, иначе подписанная карточка протухла бы без единой
-		// человеческой правки.
-		if isPressOpen && f.pressAction.Valid && f.pressAction.String != string(entity.PressActionOpen) {
+		// PRESS_OPEN — САМ СЕБЕ ПОД-ГЛАГОЛ, И ТЕПЕРЬ ЕДИНСТВЕННЫЙ. До 0327 у разутюжки было два
+		// написания — глагол и член `open`, — и они давали два разных кортежа в проекции дайджеста
+		// CONSTRUCTION: одна и та же работа на двух карточках получала разные отпечатки. Член снят,
+		// значит на этом глаголе ЛЮБОЙ под-глагол отвергается, а не только чужой. Ретроактивным это
+		// правило стать не может: колонка press_action пуста у всех до единой сохранённых строк.
+		if isPressOpen && f.pressAction.Valid {
 			return f, entity.NewFieldViolation(step+".press_action", "not_applicable", f.pressAction.String,
-				fmt.Sprintf("this step is «press_open» — the verb already says the allowance is pressed open; %q is a different technique, so switch the step to «press» or clear the field",
+				fmt.Sprintf("this step is «press_open» — the verb itself says the allowance is pressed open, and that is its only spelling; %q is a different technique, so switch the step to «press» or clear the field",
 					f.pressAction.String))
 		}
 		f.pressToward, err = parseEquipmentEnum(ps.GetToward(), pressTowardPbToToken,
@@ -859,13 +858,12 @@ func operationHardwareToPb(o entity.TechCardOperation) *pb_common.TechCardOperat
 // print_method в блок НЕ входит — он поле самого шага (51), потому что обязательное поле не прячут
 // внутрь необязательного сообщения, которого может не быть вовсе.
 func operationPrintToPb(o entity.TechCardOperation) *pb_common.TechCardOperationPrint {
-	if !(o.PeelMode.Valid || o.SecondPressSec.Valid || o.PressureScale.Valid) {
+	if !(o.PeelMode.Valid || o.SecondPressSec.Valid) {
 		return nil
 	}
 	return &pb_common.TechCardOperationPrint{
 		PeelMode:       peelModeTokenToPb[o.PeelMode.String],
 		SecondPressSec: pbInt32FromNull(o.SecondPressSec),
-		PressureScale:  pressureScaleTokenToPb[o.PressureScale.String],
 	}
 }
 

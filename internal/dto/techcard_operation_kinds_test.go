@@ -131,7 +131,6 @@ func kindFacts(o entity.TechCardOperation) map[string]string {
 		"print_method":     s(o.PrintMethod),
 		"peel_mode":        s(o.PeelMode),
 		"second_press_sec": i(o.SecondPressSec),
-		"pressure_scale":   s(o.PressureScale),
 
 		"air_temperature_c": i(o.AirTemperatureC),
 		"feed_speed_m_min":  d(o.FeedSpeedMMin),
@@ -181,7 +180,7 @@ func kindRoundTripOps() []*pb_common.TechCardOperation {
 			PlacementLayout: &pb_common.TechCardOperationPlacement{Count: 6, PitchMm: dec("80.5")},
 			Hardware: &pb_common.TechCardOperationHardware{
 				HolePrep:         pb_common.TechCardHolePrep_TECH_CARD_HOLE_PREP_PUNCH,
-				Reinforcement:    pb_common.TechCardReinforcement_TECH_CARD_REINFORCEMENT_FUSIBLE_PATCH,
+				Reinforcement:    pb_common.TechCardReinforcement_TECH_CARD_REINFORCEMENT_PATCH,
 				CycleStitchCount: 42,
 			},
 			Fastening: &pb_common.TechCardOperationFastening{
@@ -206,7 +205,7 @@ func kindRoundTripOps() []*pb_common.TechCardOperation {
 		{ // 3: молния
 			OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mtZipper,
 			Fastening: &pb_common.TechCardOperationFastening{
-				ZipperApplication: pb_common.TechCardZipperApplication_TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET,
+				ZipperApplication: pb_common.TechCardZipperApplication_TECH_CARD_ZIPPER_APPLICATION_LAPPED,
 			},
 		},
 		{ // 4: проклейка шва — горячий воздух живёт только здесь
@@ -228,13 +227,14 @@ func kindRoundTripOps() []*pb_common.TechCardOperation {
 			},
 			PlacementLayout: &pb_common.TechCardOperationPlacement{Count: 2, PitchMm: dec("120")},
 		},
-		{ // 7: печать — вместе с ВТО-блоком, который при PRINT легален
+		{ // 7: печать — вместе с ВТО-блоком, который при PRINT легален. Метод ПЛЁНОЧНЫЙ, а не
+			// шелкография: 0327 отвергает peel_mode при screen (носителя у неё нет вовсе), и на
+			// шелкографии круг не проверил бы съём носителя ни разу.
 			OperationType: opTypePrint, Zone: zoneOuter,
-			PrintMethod: pb_common.TechCardPrintMethod_TECH_CARD_PRINT_METHOD_SCREEN,
+			PrintMethod: pb_common.TechCardPrintMethod_TECH_CARD_PRINT_METHOD_HEAT_TRANSFER,
 			Print: &pb_common.TechCardOperationPrint{
 				PeelMode:       pb_common.TechCardPeelMode_TECH_CARD_PEEL_MODE_HOT,
 				SecondPressSec: 5,
-				PressureScale:  pb_common.TechCardPressureScale_TECH_CARD_PRESSURE_SCALE_FIRM,
 			},
 			PlacementLayout:   &pb_common.TechCardOperationPlacement{Count: 1},
 			PressEquipment:    pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_PRESS,
@@ -255,7 +255,7 @@ func kindRoundTripOps() []*pb_common.TechCardOperation {
 		{ // 10: чистка изделия
 			OperationType: opTypeClean, Zone: zoneOther,
 			Clean: &pb_common.TechCardOperationClean{
-				Kind: pb_common.TechCardCleaningKind_TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL,
+				Kind: pb_common.TechCardCleaningKind_TECH_CARD_CLEANING_KIND_SPOT_CLEAN,
 			},
 		},
 		{ // 11: контроль
@@ -279,11 +279,8 @@ func kindRoundTripOps() []*pb_common.TechCardOperation {
 			},
 			PressEquipment: pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_IRON,
 		},
-		{ // 16: разутюжка ВТОРЫМ написанием — чтение принимает и его, и голый глагол
+		{ // 16: разутюжка — ГЛАГОЛОМ и только им; второе написание снято 0327
 			OperationType: opTypePressOpen, Zone: zoneOuter,
-			Press: &pb_common.TechCardOperationPress{
-				Action: pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_OPEN,
-			},
 			PressEquipment: pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_IRON,
 		},
 	}
@@ -313,21 +310,21 @@ func TestOperationKindsRoundTrip(t *testing.T) {
 
 	// Точечно — по одному факту на семейство, чтобы «пережило круг» не означало «одинаково пусто».
 	want := map[int]map[string]string{
-		0:  {"needle_count": "2", "needle_gauge_mm": "6.4", "seam_securing": "condensed", "row_spacing_mm": "5.5", "fullness_ratio": "1.25", "label_attach_stitch": "four_sides", "placement_count": "6", "pitch_mm": "80.5", "hole_prep": "punch", "reinforcement": "fusible_patch", "cycle_stitch_count": "42", "buttonhole_style": "eyelet", "cut_length_mm": "25.4", "buttonhole_orientation": "horizontal", "bartack_length_mm": "8.5"},
+		0:  {"needle_count": "2", "needle_gauge_mm": "6.4", "seam_securing": "condensed", "row_spacing_mm": "5.5", "fullness_ratio": "1.25", "label_attach_stitch": "four_sides", "placement_count": "6", "pitch_mm": "80.5", "hole_prep": "punch", "reinforcement": "patch", "cycle_stitch_count": "42", "buttonhole_style": "eyelet", "cut_length_mm": "25.4", "buttonhole_orientation": "horizontal", "bartack_length_mm": "8.5"},
 		1:  {"binding_style": "double_fold"},
 		2:  {"attach_pattern": "cross_x"},
-		3:  {"zipper_application": "in_seam_pocket"},
+		3:  {"zipper_application": "lapped"},
 		4:  {"air_temperature_c": "450", "feed_speed_m_min": "1.5"},
 		5:  {"feed_speed_m_min": "0.3", "air_temperature_c": ""},
 		6:  {"attach_method": "threaded", "hole_prep": "none", "reinforcement": "none", "foldback_mm": "40.5", "cycle_stitch_count": "16", "placement_count": "2", "pitch_mm": "120"},
-		7:  {"print_method": "screen", "peel_mode": "hot", "second_press_sec": "5", "pressure_scale": "firm", "placement_count": "1"},
+		7:  {"print_method": "heat_transfer", "peel_mode": "hot", "second_press_sec": "5", "placement_count": "1"},
 		8:  {"trim_action": "grade_layers", "residual_allowance_mm": "3.5"},
 		9:  {"residual_tail_max_mm": "2.5"},
-		10: {"cleaning_kind": "adhesive_removal"},
+		10: {"cleaning_kind": "spot_clean"},
 		11: {"coverage_mode": "sample_per_bundle"},
 		12: {"wet_process_kind": "garment_dye"},
 		15: {"press_action": "to_one_side", "press_toward": "away_from_center"},
-		16: {"press_action": "open", "press_toward": ""},
+		16: {"press_action": "", "press_toward": ""},
 	}
 	for i, cols := range want {
 		facts := kindFacts(second.Operations[i])
@@ -773,12 +770,12 @@ func TestOperationKindsRequiredDiscriminators(t *testing.T) {
 		{"чистка", &pb_common.TechCardOperation{OperationType: opTypeClean, Zone: zoneOther},
 			&pb_common.TechCardOperation{OperationType: opTypeClean, Zone: zoneOther,
 				Clean: &pb_common.TechCardOperationClean{
-					Kind: pb_common.TechCardCleaningKind_TECH_CARD_CLEANING_KIND_CHALK_REMOVAL,
+					Kind: pb_common.TechCardCleaningKind_TECH_CARD_CLEANING_KIND_DUST_LINT,
 				}}, "operations[0].cleaning_kind"},
 		{"контроль", &pb_common.TechCardOperation{OperationType: opTypeInspect, Zone: zoneOther},
 			&pb_common.TechCardOperation{OperationType: opTypeInspect, Zone: zoneOther,
 				Inspect: &pb_common.TechCardOperationInspect{
-					CoverageMode: pb_common.TechCardInspectCoverage_TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT,
+					CoverageMode: pb_common.TechCardInspectCoverage_TECH_CARD_INSPECT_COVERAGE_AQL_PLAN,
 				}}, "operations[0].coverage_mode"},
 		{"мокрая обработка", &pb_common.TechCardOperation{OperationType: opTypeWet, Zone: zoneOther},
 			&pb_common.TechCardOperation{OperationType: opTypeWet, Zone: zoneOther,

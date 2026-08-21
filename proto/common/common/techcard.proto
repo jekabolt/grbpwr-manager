@@ -250,7 +250,9 @@ enum TechCardBomKind {
   TECH_CARD_BOM_KIND_BUCKLE = 9; // пряжка
   TECH_CARD_BOM_KIND_STRAP_ADJUSTER = 10; // регулятор лямки / рамка-регулятор
   TECH_CARD_BOM_KIND_RING = 11; // кольцо / полукольцо
-  TECH_CARD_BOM_KIND_TOGGLE = 12; // толстовочный фиксатор-«клык», пуговица-палочка
+  // ТОЛЬКО пуговица-палочка (дафлкот). «Толстовочный фиксатор» — это CORD_STOPPER, и до 0327 он
+  // стоял в обоих комментариях сразу: классический синоним из списка, собранного в двух местах.
+  TECH_CARD_BOM_KIND_TOGGLE = 12; // пуговица-палочка (дафлкот); фиксатор шнура — CORD_STOPPER
   TECH_CARD_BOM_KIND_CORD_STOPPER = 13; // фиксатор шнура. Сам шнур — DRAWCORD (trim)
   TECH_CARD_BOM_KIND_CORD_END = 14; // наконечник шнура
   TECH_CARD_BOM_KIND_MAGNET = 15; // магнитная застёжка
@@ -1767,37 +1769,49 @@ enum TechCardHardwareAttachMethod {
   TECH_CARD_HARDWARE_ATTACH_METHOD_OTHER = 6; // прочее — + note шага
 }
 
-// Подготовка отверстия под фурнитуру. NONE — явный ответ «фурнитура прокалывает сама».
+// Подготовка отверстия под фурнитуру — ось «готовим отверстие ОТДЕЛЬНЫМ ШАГОМ или нет».
 enum TechCardHolePrep {
+  // PRONG_PIERCE = 2 («прокол зубцами самой фурнитуры») СНЯТ 0327: это и есть NONE, сказанный
+  // другими словами — подготовительного шага нет ни при том, ни при другом. Вдобавок он выводился
+  // из соседнего поля: он верен ровно тогда, когда attach_method = PRONG_CLINCH.
+  reserved 2;
+  reserved "TECH_CARD_HOLE_PREP_PRONG_PIERCE";
+
   TECH_CARD_HOLE_PREP_UNKNOWN = 0; // не указано
-  TECH_CARD_HOLE_PREP_NONE = 1; // явное «отверстие не готовим»
-  TECH_CARD_HOLE_PREP_PRONG_PIERCE = 2; // прокол зубцами самой фурнитуры
+  TECH_CARD_HOLE_PREP_NONE = 1; // явное «отдельного отверстия не делаем»
   TECH_CARD_HOLE_PREP_AWL_PIERCE = 3; // шилом
   TECH_CARD_HOLE_PREP_PUNCH = 4; // пробойником
 }
 
-// Усилитель под фурнитурой, петлёй или закрепкой. NONE — явное «без усилителя». Здесь только
-// СПОСОБ; сам материал усилителя — строкой BOM, а не тенью в этом поле.
+// Усилитель под фурнитурой, петлёй или закрепкой. Здесь только СПОСОБ; сам материал усилителя —
+// строкой BOM, а не тенью в этом поле.
 enum TechCardReinforcement {
+  // FUSIBLE_PATCH = 2 и FABRIC_STAY = 3 СВЁРНУТЫ 0327 в PATCH = 7. Способ у них ОДИН — подложка
+  // под место установки, — а различались они МАТЕРИАЛОМ подложки, то есть ровно тем, что по
+  // объявлению этого же словаря живёт строкой BOM. Два члена на один способ заставляли выбирать
+  // между двумя истинными строками, и выбор уезжал в подпись и на печатный лист.
+  reserved 2, 3;
+  reserved "TECH_CARD_REINFORCEMENT_FUSIBLE_PATCH", "TECH_CARD_REINFORCEMENT_FABRIC_STAY";
+
   TECH_CARD_REINFORCEMENT_UNKNOWN = 0; // не указано
   TECH_CARD_REINFORCEMENT_NONE = 1; // явное «без усилителя»
-  TECH_CARD_REINFORCEMENT_FUSIBLE_PATCH = 2; // клеевая заплатка
-  TECH_CARD_REINFORCEMENT_FABRIC_STAY = 3; // тканевая подложка
   TECH_CARD_REINFORCEMENT_TAPE = 4; // лента / долевик
-  TECH_CARD_REINFORCEMENT_SEAM_CATCH = 5; // ловится швом
+  TECH_CARD_REINFORCEMENT_SEAM_CATCH = 5; // без собственного усилителя: место держит соседний шов
   TECH_CARD_REINFORCEMENT_OTHER = 6; // + note шага
+  TECH_CARD_REINFORCEMENT_PATCH = 7; // подложка-заплатка; ЧЕМ именно — строкой BOM
 }
 
 // Вторая ось шага PRINT — точный образец пары MACHINE / machine_type: глагол говорит ЧТО делаем,
 // это — ЧЕМ. Носитель — TechCardOperation.print_method (поле 51), REQUIRED при PRINT.
 //
 // LASER_ENGRAVE — метод без краски, без носителя и без прижима: при нём отвергаются peel_mode,
-// second_press_sec, pressure_scale и весь ВТО-блок шага.
+// second_press_sec и весь ВТО-блок шага. SCREEN носителя тоже не имеет, и peel_mode при нём
+// отвергается (0327) — но прижим у шелкографии бывает, поэтому весь ВТО-блок при ней законен.
 enum TechCardPrintMethod {
   TECH_CARD_PRINT_METHOD_UNKNOWN = 0; // не указано; REJECTED на шаге PRINT
   TECH_CARD_PRINT_METHOD_SCREEN = 1; // шелкография
   TECH_CARD_PRINT_METHOD_DTF = 2; // перенос с плёнки (direct-to-film)
-  TECH_CARD_PRINT_METHOD_HEAT_TRANSFER = 3; // термотрансфер
+  TECH_CARD_PRINT_METHOD_HEAT_TRANSFER = 3; // плёночный перенос, НЕ DTF и НЕ фольга
   TECH_CARD_PRINT_METHOD_FOIL = 4; // фольгирование
   TECH_CARD_PRINT_METHOD_LASER_ENGRAVE = 5; // лазерная гравировка — без краски и без прижима
   // «Прочее» — ВЫХОД ОБЯЗАТЕЛЬНОГО ДИСКРИМИНАТОРА (0325). Без него отсутствие своего приёма
@@ -1805,28 +1819,24 @@ enum TechCardPrintMethod {
   // отвергается, а значение уходит в подписанный хвост дайджеста, в релизный снапшот и на
   // печатный лист. Отличить «выбрал за неимением своего» от честного ответа было бы уже нечем.
   // ЧТО ИМЕННО — прозой в note шага: своего свободного текста у дискриминаторов нет и не нужно.
-  TECH_CARD_PRINT_METHOD_OTHER = 6; // прочее (сублимация, вышивка-аппликация…) — + note шага
+  // ВЫШИВКИ В ПРИМЕРАХ НЕТ НАМЕРЕННО: вышивка — это МАШИНА (machine_type = embroidery), а не
+  // метод печати, и вторым написанием она была ровно так же, как press_action = open.
+  TECH_CARD_PRINT_METHOD_OTHER = 6; // прочее (сублимация, флок…) — + note шага
 }
 
-// Съём носителя после прижима. NONE — явное «носителя нет вовсе» (шелкография, гравировка), а не
-// «не указано».
+// Съём носителя после прижима.
 enum TechCardPeelMode {
+  // NONE = 1 («носителя нет вовсе») СНЯТ 0327: он целиком выводился из print_method. Гравировка
+  // отвергает peel_mode целиком, а шелкография — единственный оставшийся метод без носителя, и
+  // 0327 отвергает peel_mode и при ней. Собственного факта у члена не оставалось; зато на
+  // шелкографии он был истинен ОДНОВРЕМЕННО с UNKNOWN, и заполняющий выбирал наугад.
+  reserved 1;
+  reserved "TECH_CARD_PEEL_MODE_NONE";
+
   TECH_CARD_PEEL_MODE_UNKNOWN = 0; // не указано
-  TECH_CARD_PEEL_MODE_NONE = 1; // носителя нет
   TECH_CARD_PEEL_MODE_HOT = 2; // снимать горячим
   TECH_CARD_PEEL_MODE_WARM = 3; // снимать тёплым
   TECH_CARD_PEEL_MODE_COLD = 4; // снимать холодным
-}
-
-// Прижим термопресса — УПОРЯДОЧЕННАЯ ШКАЛА, и поэтому без OTHER (прецедент
-// TechCardAutomationLevel: шкала с «другим» перестаёт быть шкалой). Вендорские «40 psi» — это
-// показание манометра цилиндра, а не давление на ткань; настоящее число, когда оно есть, живёт в
-// press_pressure_n_cm2 — тот же довод, что развёл thread_tension и thread_tension_note.
-enum TechCardPressureScale {
-  TECH_CARD_PRESSURE_SCALE_UNKNOWN = 0; // не указано
-  TECH_CARD_PRESSURE_SCALE_LIGHT = 1; // лёгкий
-  TECH_CARD_PRESSURE_SCALE_MEDIUM = 2; // средний
-  TECH_CARD_PRESSURE_SCALE_FIRM = 3; // сильный
 }
 
 // Что именно делает шаг TRIM — дискриминатор: поле REQUIRED, UNKNOWN на таком шаге отвергается.
@@ -1850,11 +1860,16 @@ enum TechCardTrimAction {
 // растворитель, пар, щётка) — отложено: у цеха на это пока один ответ, и поле сегодня записывало
 // бы одно и то же.
 enum TechCardCleaningKind {
+  // CHALK_REMOVAL = 3 и ADHESIVE_REMOVAL = 4 СНЯТЫ 0327: оба — это SPOT_CLEAN с названным
+  // веществом, то есть ответ на ОТЛОЖЕННУЮ ось «что это за след», которую сам этот словарь
+  // объявил отложенной. Технолог, снимающий след мела, выбирал наугад между двумя истинными
+  // строками. Вещество — прозой в note шага, ровно как «чем чистит».
+  reserved 3, 4;
+  reserved "TECH_CARD_CLEANING_KIND_CHALK_REMOVAL", "TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL";
+
   TECH_CARD_CLEANING_KIND_UNKNOWN = 0; // не указано; REJECTED на шаге CLEAN
-  TECH_CARD_CLEANING_KIND_SPOT_CLEAN = 1; // пятно
+  TECH_CARD_CLEANING_KIND_SPOT_CLEAN = 1; // пятно или след — ЧТО ИМЕННО, прозой в note
   TECH_CARD_CLEANING_KIND_DUST_LINT = 2; // пух и пыль
-  TECH_CARD_CLEANING_KIND_CHALK_REMOVAL = 3; // следы мела и разметки
-  TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL = 4; // следы клея
   // «Прочее» — ВЫХОД ОБЯЗАТЕЛЬНОГО ДИСКРИМИНАТОРА (0325). Без него отсутствие своего приёма
   // не оставляет поле пустым, а заставляет технолога выбрать ЧУЖОЙ: поле REQUIRED, UNKNOWN
   // отвергается, а значение уходит в подписанный хвост дайджеста, в релизный снапшот и на
@@ -1863,15 +1878,21 @@ enum TechCardCleaningKind {
   TECH_CARD_CLEANING_KIND_OTHER = 5; // прочее — + note шага
 }
 
-// Охват контроля — дискриминатор шага INSPECT: REQUIRED, UNKNOWN отвергается. Он же разводит
-// межоперационный контроль (SAMPLE_PER_BUNDLE), финальный (AQL_PLAN), сплошной (EACH_UNIT) и
-// первую единицу прогона (FIRST_OUTPUT) — четыре разных работы под одним глаголом.
+// Охват контроля — дискриминатор шага INSPECT: REQUIRED, UNKNOWN отвергается. Словарь отвечает на
+// ОДИН вопрос — сколько изделий смотрим: все (EACH_UNIT) или выборку, и по какому правилу
+// (SAMPLE_PER_BUNDLE, AQL_PLAN).
 enum TechCardInspectCoverage {
+  // FIRST_OUTPUT = 4 («первая единица прогона») СНЯТ 0327: это не охват, а ПОВОД. Первую единицу
+  // смотрят сплошняком, то есть EACH_UNIT и FIRST_OUTPUT были истинны ОДНОВРЕМЕННО, и колонка
+  // одна. Признак «контроль первой единицы» — отдельное поле отдельной волной; пока он живёт
+  // прозой в note шага.
+  reserved 4;
+  reserved "TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT";
+
   TECH_CARD_INSPECT_COVERAGE_UNKNOWN = 0; // не указано; REJECTED на шаге INSPECT
   TECH_CARD_INSPECT_COVERAGE_EACH_UNIT = 1; // каждое изделие
   TECH_CARD_INSPECT_COVERAGE_SAMPLE_PER_BUNDLE = 2; // выборка с пачки
   TECH_CARD_INSPECT_COVERAGE_AQL_PLAN = 3; // по плану AQL
-  TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT = 4; // первая единица прогона
   // «Прочее» — ВЫХОД ОБЯЗАТЕЛЬНОГО ДИСКРИМИНАТОРА (0325). Без него отсутствие своего приёма
   // не оставляет поле пустым, а заставляет технолога выбрать ЧУЖОЙ: поле REQUIRED, UNKNOWN
   // отвергается, а значение уходит в подписанный хвост дайджеста, в релизный снапшот и на
@@ -1927,16 +1948,25 @@ enum TechCardButtonAttachPattern {
   TECH_CARD_BUTTON_ATTACH_PATTERN_OTHER = 5; // + note шага
 }
 
-// Метод втачивания молнии — закрытый список исполнений.
+// Метод втачивания молнии — закрытый список ИСПОЛНЕНИЙ, то есть того, как закрыта лента. Ни МЕСТА,
+// ни свойств самого артикула здесь нет: место — это zone шага, разъёмность — свойство молнии из
+// строки BOM.
 enum TechCardZipperApplication {
+  // SEPARATING_CF = 6 («разъёмная по борту») и IN_SEAM_POCKET = 7 («в шве кармана») СНЯТЫ 0327:
+  // они отвечали не на вопрос словаря. Первый — это разъёмный артикул (строка BOM) плюс
+  // zone = CLOSURE, второй — zone = POCKET, а zone на шаге ОБЯЗАТЕЛЕН. Молния в шве кармана
+  // теперь записывается как zone = pocket + CENTERED / LAPPED, разъёмная по борту — как
+  // zone = closure + EXPOSED / CENTERED. FLY остаётся: гульфик — исполнение с собственной
+  // геометрией, а не место.
+  reserved 6, 7;
+  reserved "TECH_CARD_ZIPPER_APPLICATION_SEPARATING_CF", "TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET";
+
   TECH_CARD_ZIPPER_APPLICATION_UNKNOWN = 0; // не указано
   TECH_CARD_ZIPPER_APPLICATION_CENTERED = 1; // симметричная
   TECH_CARD_ZIPPER_APPLICATION_LAPPED = 2; // с настрочным припуском
   TECH_CARD_ZIPPER_APPLICATION_INVISIBLE = 3; // потайная
   TECH_CARD_ZIPPER_APPLICATION_EXPOSED = 4; // открытая, лента напоказ
   TECH_CARD_ZIPPER_APPLICATION_FLY = 5; // гульфик
-  TECH_CARD_ZIPPER_APPLICATION_SEPARATING_CF = 6; // разъёмная по борту
-  TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET = 7; // в шве кармана
   TECH_CARD_ZIPPER_APPLICATION_OTHER = 8; // + note шага
 }
 
@@ -1969,17 +1999,19 @@ enum TechCardLabelAttachStitch {
 // НЕ REQUIRED. Ни на одном глаголе: старая строка PRESS без под-глагола обязана сохраняться как
 // есть, и обязательность здесь ретроактивно перекрыла бы кислород каждой существующей карточке.
 //
-// `OPEN` уживается с глаголом PRESS_OPEN, а не заменяет его. Глагол в проде и в подписанных
-// карточках, поэтому канонической записью разутюжки остаётся ОН: пикер пишет PRESS_OPEN и
-// press_action не пишет вовсе. Чтение принимает оба, но форма НИКОГДА не переписывает одно
-// написание в другое — два написания дают два разных кортежа в проекции дайджеста секции, и
-// авто-канонизация пометила бы подписанную карточку как «изменена после подписи» без единой
-// человеческой правки.
+// РАЗУТЮЖКИ ЗДЕСЬ НЕТ, И ЭТО НЕ ПРОПУСК. Она выражается ГЛАГОЛОМ press_open — единственным
+// написанием. Член OPEN = 3 был ВТОРЫМ написанием того же факта (0327 снял его): за глаголом
+// стояли живые строки прода, за членом — ни одной, а два написания давали два разных кортежа в
+// проекции дайджеста секции, то есть одна и та же разутюжка на двух карточках получала разные
+// отпечатки. Конвенция «пикер пишет глагол и press_action не пишет вовсе» держалась ровно до
+// первого технолога, которому пикер предлагал обе строки подряд.
 enum TechCardPressAction {
+  reserved 3;
+  reserved "TECH_CARD_PRESS_ACTION_OPEN";
+
   TECH_CARD_PRESS_ACTION_UNKNOWN = 0; // не указано; ЗАКОННО на любом ВТО-шаге
   TECH_CARD_PRESS_ACTION_PRESS_FLAT = 1; // приутюжить
   TECH_CARD_PRESS_ACTION_TO_ONE_SIDE = 2; // заутюжить — ТРЕБУЕТ press_toward
-  TECH_CARD_PRESS_ACTION_OPEN = 3; // разутюжить; на PRESS_OPEN — единственное законное значение
   TECH_CARD_PRESS_ACTION_STEAM = 4; // отпарить
   TECH_CARD_PRESS_ACTION_FINAL = 5; // финишное ВТО
   TECH_CARD_PRESS_ACTION_EASE_IN = 6; // сутюжить
@@ -2008,8 +2040,13 @@ enum TechCardPressToward {
   TECH_CARD_PRESS_TOWARD_FACING = 9; // на обтачку
   TECH_CARD_PRESS_TOWARD_SHELL = 10; // на верх, от обтачки
   TECH_CARD_PRESS_TOWARD_LINING = 11; // к подкладу
-  TECH_CARD_PRESS_TOWARD_SIDE = 12; // к боку
   TECH_CARD_PRESS_TOWARD_OTHER = 13; // + note шага
+
+  // SIDE = 12 («к боку») СНЯТ 0327: на боковом шве это то же самое, что AWAY_FROM_CENTER, а на
+  // плечевом «к боку» не значит ничего. Синоним, у которого есть швы без смысла, — не член
+  // словаря, а вторая строка в пикере для того же ответа.
+  reserved 12;
+  reserved "TECH_CARD_PRESS_TOWARD_SIDE";
 }
 
 // Параметры строчки. Только operation_type = MACHINE.
@@ -2060,9 +2097,17 @@ message TechCardOperationHardware {
 // прижима. ВТО-факты PRINT-шага (температура, выдержка, давление, оборудование) идут ОБЩИМ
 // ВТО-блоком 39..45 и здесь не дублируются — один факт живёт в одном месте.
 message TechCardOperationPrint {
-  TechCardPeelMode peel_mode = 1; // UNKNOWN = не указано, NONE = носителя нет
+  // ПОЛЕ 3 (pressure_scale) И ЕГО ENUM TechCardPressureScale СНЯТЫ 0327 ВМЕСТЕ С КОЛОНКОЙ. Это был
+  // ТОТ ЖЕ прижим, что в press_pressure_n_cm2 ВТО-блока, только словом вместо числа, — и шапка
+  // этого самого сообщения обещала, что ВТО-факты печатного шага здесь не дублируются. В форме
+  // технолог видел два контрола прижима подряд, без единого правила взаимного исключения.
+  // Словесная ступень, если она понадобится, — ОДНА на оба глагола и рядом с числом, а не вторая
+  // на одном.
+  reserved 3;
+  reserved "pressure_scale";
+
+  TechCardPeelMode peel_mode = 1; // UNKNOWN = не указано; отвергается при screen и laser_engrave
   int32 second_press_sec = 2; // второй прижим, сек; 1..30; 0 = второго прижима нет
-  TechCardPressureScale pressure_scale = 3; // шкала прижима; UNKNOWN = не указано
 }
 
 // Сварка и проклейка. Только MACHINE с ЯВНЫМ machine_type = seam_taping | ultrasonic_welder; тип,

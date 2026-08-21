@@ -479,7 +479,6 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			PrintMethod:    kinds.printMethod,
 			PeelMode:       kinds.peelMode,
 			SecondPressSec: kinds.secondPressSec,
-			PressureScale:  kinds.pressureScale,
 
 			AirTemperatureC: kinds.airTemperatureC,
 			FeedSpeedMMin:   kinds.feedSpeedMMin,

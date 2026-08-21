@@ -825,7 +825,6 @@ func operationKindTails(o *entity.TechCardOperation) []any {
 			opKindStr("print_method", o.PrintMethod),
 			opKindStr("peel_mode", o.PeelMode),
 			opKindInt("second_press_sec", o.SecondPressSec),
-			opKindStr("pressure_scale", o.PressureScale),
 		),
 		operationKindTail("weld",
 			opKindInt("air_temperature_c", o.AirTemperatureC),

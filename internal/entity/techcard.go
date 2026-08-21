@@ -2705,17 +2705,21 @@ var HardwareAttachMethodTokens = []string{"sew", "prong_clinch", "press_set", "c
 
 var ValidHardwareAttachMethods = tokenSet[TechCardHardwareAttachMethod](HardwareAttachMethodTokens)
 
-// TechCardHolePrep — чем готовится отверстие под фурнитуру (H2).
+// TechCardHolePrep — готовим ли отверстие ОТДЕЛЬНЫМ шагом и чем (H2). `none` — явный ответ
+// «отдельного отверстия не делаем», в том числе когда фурнитура прокалывает ткань сама: 0327 снял
+// `prong_pierce`, потому что это был он же, сказанный другими словами.
 type TechCardHolePrep string
 
-var HolePrepTokens = []string{"none", "prong_pierce", "awl_pierce", "punch"}
+var HolePrepTokens = []string{"none", "awl_pierce", "punch"}
 
 var ValidHolePreps = tokenSet[TechCardHolePrep](HolePrepTokens)
 
-// TechCardReinforcement — чем усилено место установки (H3).
+// TechCardReinforcement — КАК усилено место установки (H3). Только способ: чем именно —
+// строкой BOM. 0327 свернул `fusible_patch` и `fabric_stay` в один `patch`: способ у них был
+// один, а различались они материалом подложки, то есть тем, что по объявлению живёт в BOM.
 type TechCardReinforcement string
 
-var ReinforcementTokens = []string{"none", "fusible_patch", "fabric_stay", "tape", "seam_catch", "other"}
+var ReinforcementTokens = []string{"none", "patch", "tape", "seam_catch", "other"}
 
 var ValidReinforcements = tokenSet[TechCardReinforcement](ReinforcementTokens)
 
@@ -2723,27 +2727,34 @@ var ValidReinforcements = tokenSet[TechCardReinforcement](ReinforcementTokens)
 type TechCardPrintMethod string
 
 // laser_engrave — единственный член словаря БЕЗ НОСИТЕЛЯ И БЕЗ ПРИЖИМА: у него нет ни отделения
-// плёнки, ни второго прижима, ни шкалы давления, и ВТО-блок шага при нём тоже бессмыслен.
+// плёнки, ни второго прижима, и ВТО-блок шага при нём тоже бессмыслен.
 const PrintMethodLaserEngrave TechCardPrintMethod = "laser_engrave"
+
+// screen — ВТОРОЙ метод без носителя, но С ПРИЖИМОМ: краска кладётся прямо на ткань, отделять
+// нечего, а сушить и прижимать — есть чем. Поэтому при нём отвергается РОВНО peel_mode, а не весь
+// блок печати и не ВТО-блок (0327). До 0327 то же самое говорилось членом словаря peel_mode
+// `none` — и на шелкографии он был истинен одновременно с «не указано».
+const PrintMethodScreen TechCardPrintMethod = "screen"
 
 var PrintMethodTokens = []string{"screen", "dtf", "heat_transfer", "foil", "laser_engrave", "other"}
 
 var ValidPrintMethods = tokenSet[TechCardPrintMethod](PrintMethodTokens)
 
-// TechCardPeelMode — как снимается носитель (P2). `none` = носителя нет вовсе.
+// TechCardPeelMode — как снимается носитель (P2). Члена «носителя нет» здесь НЕТ с 0327: он
+// целиком выводился из print_method, и при обоих методах без носителя (screen, laser_engrave)
+// peel_mode теперь отвергается целиком.
 type TechCardPeelMode string
 
-var PeelModeTokens = []string{"none", "hot", "warm", "cold"}
+var PeelModeTokens = []string{"hot", "warm", "cold"}
 
 var ValidPeelModes = tokenSet[TechCardPeelMode](PeelModeTokens)
 
-// TechCardPressureScale — прижим термопресса ШКАЛОЙ, а не числом: сырое усилие ничего не значит
-// между двумя разными прессами. Шкала упорядочена и поэтому не несёт "other".
-type TechCardPressureScale string
-
-var PressureScaleTokens = []string{"light", "medium", "firm"}
-
-var ValidPressureScales = tokenSet[TechCardPressureScale](PressureScaleTokens)
+// СЛОВАРЬ TechCardPressureScale СНЯТ ЦЕЛИКОМ ВМЕСТЕ С КОЛОНКОЙ (0327). Он описывал ТОТ ЖЕ прижим,
+// что press_pressure_n_cm2 ВТО-блока, только словом вместо числа, и стоял на шаге, где ВТО-блок
+// законен, — то есть в форме печатного шага было два контрола прижима подряд без единого правила
+// взаимного исключения. Довод шкалы («вендорские psi — показание манометра, а не давление на
+// ткань») верен и относится к ЕДИНИЦАМ, а не к существованию второго поля. Если словесная ступень
+// понадобится, она понадобится и ВТО тоже — и тогда это ОДНА шкала на оба глагола, рядом с числом.
 
 // TechCardTrimAction — что именно делает подрезка (T1). Дискриминатор глагола trim.
 type TechCardTrimAction string
@@ -2758,7 +2769,7 @@ var ValidTrimActions = tokenSet[TechCardTrimAction](TrimActionTokens)
 // TechCardCleaningKind — что именно чистят (C1). Дискриминатор глагола clean.
 type TechCardCleaningKind string
 
-var CleaningKindTokens = []string{"spot_clean", "dust_lint", "chalk_removal", "adhesive_removal", "other"}
+var CleaningKindTokens = []string{"spot_clean", "dust_lint", "other"}
 
 var ValidCleaningKinds = tokenSet[TechCardCleaningKind](CleaningKindTokens)
 
@@ -2766,7 +2777,7 @@ var ValidCleaningKinds = tokenSet[TechCardCleaningKind](CleaningKindTokens)
 // выход (Q1). Дискриминатор глагола inspect.
 type TechCardInspectCoverage string
 
-var InspectCoverageTokens = []string{"each_unit", "sample_per_bundle", "aql_plan", "first_output", "other"}
+var InspectCoverageTokens = []string{"each_unit", "sample_per_bundle", "aql_plan", "other"}
 
 var ValidInspectCoverages = tokenSet[TechCardInspectCoverage](InspectCoverageTokens)
 
@@ -2803,7 +2814,7 @@ var ValidButtonAttachPatterns = tokenSet[TechCardButtonAttachPattern](ButtonAtta
 type TechCardZipperApplication string
 
 var ZipperApplicationTokens = []string{
-	"centered", "lapped", "invisible", "exposed", "fly", "separating_cf", "in_seam_pocket", "other",
+	"centered", "lapped", "invisible", "exposed", "fly", "other",
 }
 
 var ValidZipperApplications = tokenSet[TechCardZipperApplication](ZipperApplicationTokens)
@@ -2839,15 +2850,15 @@ type TechCardPressAction string
 // PressActionToOneSide — единственное значение, при котором законен и обязателен PressToward.
 const PressActionToOneSide TechCardPressAction = "to_one_side"
 
-// PressActionOpen — ВТОРОЕ написание разутюжки. Первое и каноническое — сам глагол press_open,
-// который в проде и в подписанных карточках; пикер пишет глагол и press_action не пишет вовсе.
-// Чтение принимает оба, но форма НИКОГДА не переписывает одно написание в другое: два написания
-// дают два разных кортежа в проекции дайджеста, и авто-канонизация пометила бы подписанную
-// карточку как «изменена после подписи» без единой человеческой правки.
-const PressActionOpen TechCardPressAction = "open"
+// РАЗУТЮЖКИ В ЭТОМ СЛОВАРЕ НЕТ, И ЭТО ЕДИНСТВЕННОЕ ЕЁ НАПИСАНИЕ — ГЛАГОЛ press_open. Член `open`
+// был вторым написанием того же факта; 0327 снял его. За глаголом стояли живые строки прода, за
+// членом — ни одной, а два написания давали два разных кортежа в проекции дайджеста, то есть одна
+// и та же разутюжка на двух карточках получала разные отпечатки. Конвенция «пикер пишет глагол и
+// press_action не пишет вовсе» держалась ровно до первого технолога, которому пикер предлагал обе
+// строки подряд.
 
 var PressActionTokens = []string{
-	"press_flat", "to_one_side", "open", "steam", "final", "ease_in", "stretch", "mould", "other",
+	"press_flat", "to_one_side", "steam", "final", "ease_in", "stretch", "mould", "other",
 }
 
 var ValidPressActions = tokenSet[TechCardPressAction](PressActionTokens)
@@ -2863,7 +2874,7 @@ type TechCardPressToward string
 
 var PressTowardTokens = []string{
 	"front", "back", "up", "down", "toward_center", "away_from_center", "sleeve", "body",
-	"facing", "shell", "lining", "side", "other",
+	"facing", "shell", "lining", "other",
 }
 
 var ValidPressTowards = tokenSet[TechCardPressToward](PressTowardTokens)
@@ -3012,17 +3023,18 @@ type TechCardOperation struct {
 	// Фурнитура (H) — hardware_set целиком; на machine + buttonhole|button_attach|bartack законны
 	// ТОЛЬКО hole_prep, reinforcement и cycle_stitch_count.
 	AttachMethod     sql.NullString      `db:"attach_method"`      // sew|prong_clinch|press_set|crimp|threaded; REQUIRED у hardware_set
-	HolePrep         sql.NullString      `db:"hole_prep"`          // none|prong_pierce|awl_pierce|punch
-	Reinforcement    sql.NullString      `db:"reinforcement"`      // none|fusible_patch|fabric_stay|tape|seam_catch|other
+	HolePrep         sql.NullString      `db:"hole_prep"`          // none|awl_pierce|punch
+	Reinforcement    sql.NullString      `db:"reinforcement"`      // none|patch|tape|seam_catch|other
 	FoldbackMm       decimal.NullDecimal `db:"foldback_mm"`        // подгиб стропы через пряжку, мм; 10..80; при attach_method = threaded
 	CycleStitchCount sql.NullInt32       `db:"cycle_stitch_count"` // стежков в цикле автомата, шт; 8..64; NULL = штатная программа
 
 	// Печать (P) — только print. Сам метод лежит КОЛОНКОЙ, а не внутри блока: он REQUIRED, а
 	// обязательное поле не прячут внутрь необязательного сообщения.
 	PrintMethod    sql.NullString `db:"print_method"`     // screen|dtf|heat_transfer|foil|laser_engrave; REQUIRED у print
-	PeelMode       sql.NullString `db:"peel_mode"`        // none|hot|warm|cold; `none` = носителя нет
+	PeelMode       sql.NullString `db:"peel_mode"`        // hot|warm|cold; отвергается при screen и laser_engrave
 	SecondPressSec sql.NullInt32  `db:"second_press_sec"` // второй прижим, сек; 1..30; NULL = второго прижима нет
-	PressureScale  sql.NullString `db:"pressure_scale"`   // light|medium|firm
+	// КОЛОНКА pressure_scale СНЯТА 0327 вместе со словарём: это был прижим ВТО-блока, сказанный
+	// словом вместо числа. Число живёт в PressPressureNCm2 — одно поле на утюг, пресс и термопресс.
 
 	// Сварка и проклейка (W) — machine + ЯВНЫЙ machine_type = seam_taping | ultrasonic_welder
 	// (резолв через machine_profile_key не засчитывается).
@@ -3049,7 +3061,7 @@ type TechCardOperation struct {
 	ButtonholeOrientation sql.NullString      `db:"buttonhole_orientation"` // horizontal|vertical|angled; buttonhole
 	BartackLengthMm       decimal.NullDecimal `db:"bartack_length_mm"`      // длина закрепки, мм; 1..40; buttonhole|bartack
 	AttachPattern         sql.NullString      `db:"attach_pattern"`         // cross_x|parallel|square|u_shape|other; button_attach
-	ZipperApplication     sql.NullString      `db:"zipper_application"`     // centered|lapped|invisible|exposed|fly|separating_cf|in_seam_pocket|other; zipper_setting
+	ZipperApplication     sql.NullString      `db:"zipper_application"`     // centered|lapped|invisible|exposed|fly|other; zipper_setting
 	BindingStyle          sql.NullString      `db:"binding_style"`          // raw|single_fold|double_fold; binding_taping
 	LabelAttachStitch     sql.NullString      `db:"label_attach_stitch"`    // four_sides|two_sides_top_bottom|two_sides_left_right|one_edge|caught_in_seam|corners_tack|other; любой machine
 
@@ -3062,8 +3074,8 @@ type TechCardOperation struct {
 	//
 	// Обе NULLable без DEFAULT: NULL = «не сказано». Явного «нет» у этих двух не бывает вовсе —
 	// поэтому члена `none` в словарях нет, в отличие от seam_securing / hole_prep / peel_mode.
-	PressAction sql.NullString `db:"press_action"` // press_flat|to_one_side|open|steam|final|ease_in|stretch|mould|other; НЕ required
-	PressToward sql.NullString `db:"press_toward"` // front|back|up|down|toward_center|away_from_center|sleeve|body|facing|shell|lining|side|other; ТОЛЬКО при press_action = to_one_side, и там обязателен
+	PressAction sql.NullString `db:"press_action"` // press_flat|to_one_side|steam|final|ease_in|stretch|mould|other; НЕ required; разутюжка — ГЛАГОЛ press_open
+	PressToward sql.NullString `db:"press_toward"` // front|back|up|down|toward_center|away_from_center|sleeve|body|facing|shell|lining|other; ТОЛЬКО при press_action = to_one_side, и там обязателен
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
