@@ -2946,15 +2946,26 @@ message TechCardInsert {
   // ради девяти новых глаголов.
   //
   // У девяти новых глаголов потери быть не должно: старый бандл не знает токенов 16..24 и шага
-  // с таким глаголом не построит. Но ТРИНАДЦАТЬ полей волны сидят на СТАРЫХ парах (глагол,
+  // с таким глаголом не построит. Но ВОСЕМНАДЦАТЬ полей волны сидят на СТАРЫХ парах (глагол,
   // machine_type), которые живут в проде годами и которые сегодняшний бандл шлёт каждый день:
-  //   - блок `stitching` (52) целиком — любой MACHINE: needle_count, needle_gauge_mm,
-  //     seam_securing, row_spacing_mm, fullness_ratio, а также binding_style (binding_taping) и
-  //     label_attach_stitch (любой MACHINE);
+  //   - блок `stitching` (52) целиком — любой MACHINE, СЕМЬ полей: needle_count,
+  //     needle_gauge_mm, seam_securing, row_spacing_mm, fullness_ratio, а также binding_style
+  //     (binding_taping) и label_attach_stitch (любой MACHINE);
   //   - блок `fastening` (63) целиком — MACHINE + buttonhole | bartack | button_attach |
-  //     zipper_setting: шесть полей петель, закрепок, пуговиц и молний;
-  //   - часть блоков `hardware` (54) и `placement_layout` (53) — на MACHINE с цикловым
-  //     machine_type.
+  //     zipper_setting: ШЕСТЬ полей петель, закрепок, пуговиц и молний;
+  //   - ТРИ поля блока `hardware` (54) — hole_prep, reinforcement, cycle_stitch_count — на
+  //     MACHINE с ЦИКЛОВЫМ machine_type (buttonhole | button_attach | bartack); attach_method и
+  //     foldback_mm сюда не входят, они живут только на HARDWARE_SET;
+  //   - блок `placement_layout` (53) целиком — ДВА поля, placement_count и pitch_mm, — на ЛЮБОМ
+  //     MACHINE, без всякой проверки машинки (парсер пускает его на machine | hardware_set |
+  //     print). Итого 7 + 6 + 3 + 2 = 18.
+  //
+  // И ЭТО НЕ ВЕСЬ УБЫТОК: 0324 расширяет ещё и СЛОВАРИ КОЛОНОК, ЖИВУЩИХ ГОДАМИ — machine_type
+  // шага +2 (seam_taping, ultrasonic_welder), press_cloth шага и профиля парка +1
+  // (silicone_paper), topstitch_mode +2 (in_ditch, parallel_to_seam), equipment профиля +2,
+  // bom_item.kind +2 (seam_sealing_tape, embroidery_stabilizer). Такой шаг не несёт ни одной из
+  // 32 колонок и ни одного нового глагола, а теряется так же молча: незнакомый topstitch_mode
+  // уносит с собой и ширину, и число рядов. Поэтому щит считает ТОКЕНЫ, а не заполненность поля.
   //
   // Операции пишутся ПОЛНОЙ ЗАМЕНОЙ, у шага нет стабильного ключа, и перенести хранимое, как
   // переносится разметка детали, невозможно. Значит сценарий потери такой: технолог заполнил

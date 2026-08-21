@@ -178,7 +178,7 @@ func TestOperationKindsStoredGateCountsTheNineVerbsWithoutColumns(t *testing.T) 
 // --- КЛЕТКА, БЕЗ КОТОРОЙ ЩИТ СТАНОВИТСЯ ДЕФЕКТОМ -------------------------------------------------
 //
 // Осведомлённая запись, не несущая полей волны, против карточки, которая их несёт, — ПРОПУСК.
-// Это технолог, стёрший стиль петли. Заведи здесь бекстоп (как у узлов и снимков) — и тринадцать
+// Это технолог, стёрший стиль петли. Заведи здесь бекстоп (как у узлов и снимков) — и восемнадцать
 // полей на старых парах стали бы НЕСТИРАЕМЫМИ навсегда: единственный способ убрать значение
 // исчез бы вместе с ошибкой, которую невозможно объяснить.
 func TestOperationKindsAwareEmptyWriteStillClearsTheFields(t *testing.T) {
@@ -303,5 +303,260 @@ func TestOperationKindsGatesAreSilentOnCardsWithoutWaveFacts(t *testing.T) {
 	}
 	if err := operationKindsStoredGate(pb, nil); err != nil {
 		t.Fatalf("правило 2 на создании (карточки ещё нет): %v", err)
+	}
+}
+
+// --- РАСШИРЕННЫЕ СЛОВАРИ ЖИВЫХ КОЛОНОК (шаги 4..9 миграции 0324) ---------------------------------
+//
+// Волна добавила не только 32 колонки и девять глаголов: шесть словарей КОЛОНОК, существующих
+// годами, получили новые токены. Карточка, несущая РОВНО ОДИН такой токен и НИ ОДНОЙ из 32 колонок,
+// для предиката «по колонкам и глаголам» выглядит пустой — и запись отставшей вкладки стирала бы
+// токен молча. Поэтому клетка на КАЖДЫЙ токен, по одному на кейс: пропущенный токен не падает, он
+// просто тихо перестаёт защищаться.
+
+// storedCardWith даёт собрать карточку с фактом ВНЕ шага — парк оборудования или строка BOM.
+func storedCardWith(mutate func(*entity.TechCard)) *entity.TechCard {
+	card := storedOpWith(func(*entity.TechCardOperation) {})
+	mutate(card)
+	return card
+}
+
+func TestOperationKindsStoredGateCountsExtendedVocabularyTokens(t *testing.T) {
+	cases := []struct {
+		token  string
+		stored *entity.TechCard
+	}{
+		// Шаг 4: machine_type шага. Безыгольные машины легаси-двойника не имеют, поэтому старый
+		// бандл такого шага не строил и токен доказывает нового клиента.
+		{"machine_type=seam_taping", storedOpWith(func(o *entity.TechCardOperation) {
+			o.MachineType = okStr("seam_taping")
+		})},
+		{"machine_type=ultrasonic_welder", storedOpWith(func(o *entity.TechCardOperation) {
+			o.MachineType = okStr("ultrasonic_welder")
+		})},
+
+		// Шаг 6: topstitch_mode. Потеря здесь самая дорогая — parseTopstitch при UNKNOWN обнуляет
+		// заодно ширину и число рядов, то есть за одним токеном уходят три колонки.
+		{"topstitch_mode=in_ditch", storedOpWith(func(o *entity.TechCardOperation) {
+			o.TopstitchMode = okStr("in_ditch")
+		})},
+		{"topstitch_mode=parallel_to_seam", storedOpWith(func(o *entity.TechCardOperation) {
+			o.TopstitchMode = okStr("parallel_to_seam")
+			o.TopstitchWidthMm = okDec("6")
+		})},
+
+		// Шаг 5: press_cloth шага.
+		{"press_cloth=silicone_paper", storedOpWith(func(o *entity.TechCardOperation) {
+			o.PressCloth = okStr("silicone_paper")
+		})},
+
+		// Шаг 7: equipment профиля парка. Сам факт профиля НЕ считается — его закрывает щит 0306,
+		// а бандл между волнами объявляет machine_fields_aware = true и проходит его честно.
+		{"profile.equipment=seam_taping", storedCardWith(func(c *entity.TechCard) {
+			c.Construction = &entity.TechCardConstruction{EquipmentDefaults: &entity.TechCardEquipmentDefaults{
+				Machines: []entity.TechCardMachineProfile{{ProfileKey: "P1", MachineType: "seam_taping"}},
+			}}
+		})},
+		{"profile.equipment=ultrasonic_welder", storedCardWith(func(c *entity.TechCard) {
+			c.Construction = &entity.TechCardConstruction{EquipmentDefaults: &entity.TechCardEquipmentDefaults{
+				Machines: []entity.TechCardMachineProfile{{ProfileKey: "P1", MachineType: "ultrasonic_welder"}},
+			}}
+		})},
+
+		// Шаг 8: press_cloth профиля парка — тот же словарь, что у шага, потому что шаг его
+		// наследует.
+		{"profile.press_cloth=silicone_paper", storedCardWith(func(c *entity.TechCard) {
+			c.Construction = &entity.TechCardConstruction{EquipmentDefaults: &entity.TechCardEquipmentDefaults{
+				Presses: []entity.TechCardPressProfile{{
+					ProfileKey: "P2", PressEquipment: "press", PressCloth: okStr("silicone_paper"),
+				}},
+			}}
+		})},
+
+		// Шаг 9: вид позиции BOM.
+		{"bom.kind=seam_sealing_tape", storedCardWith(func(c *entity.TechCard) {
+			c.BomItems = []entity.TechCardBomItem{{LineKey: "B1", Kind: okStr("seam_sealing_tape")}}
+		})},
+		{"bom.kind=embroidery_stabilizer", storedCardWith(func(c *entity.TechCard) {
+			c.BomItems = []entity.TechCardBomItem{{LineKey: "B1", Kind: okStr("embroidery_stabilizer")}}
+		})},
+	}
+	if len(cases) != 10 {
+		t.Fatalf("волна дописала десять токенов в шесть живых словарей, в таблице %d", len(cases))
+	}
+	for _, tt := range cases {
+		t.Run(tt.token, func(t *testing.T) {
+			err := operationKindsStoredGate(okPayload(false, okOpLegacy()), tt.stored)
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("неосведомлённая запись обязана быть отвергнута, иначе %s сотрётся молча; got %v",
+					tt.token, err)
+			}
+			// И симметрично: осведомлённый бандл редактирует такую карточку как обычно.
+			if err := operationKindsStoredGate(okPayload(true, okOpLegacy()), tt.stored); err != nil {
+				t.Fatalf("осведомлённая запись обязана пройти: %v", err)
+			}
+		})
+	}
+}
+
+// Правило 1 на тех же токенах: неосведомлённый бандл, ЭХОЯЩИЙ новый токен, отвергается ещё до
+// конверсии.
+func TestOperationKindsWireGateRefusesUnawareExtendedVocabularyEcho(t *testing.T) {
+	withOp := func(mutate func(*pb_common.TechCardOperation)) *pb_common.TechCardInsert {
+		op := okOpLegacy()
+		mutate(op)
+		return okPayload(false, op)
+	}
+	withCard := func(mutate func(*pb_common.TechCardInsert)) *pb_common.TechCardInsert {
+		pb := okPayload(false, okOpLegacy())
+		mutate(pb)
+		return pb
+	}
+	cases := []struct {
+		token string
+		pb    *pb_common.TechCardInsert
+	}{
+		{"machine_type=seam_taping", withOp(func(o *pb_common.TechCardOperation) {
+			o.MachineType = pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_SEAM_TAPING
+		})},
+		{"machine_type=ultrasonic_welder", withOp(func(o *pb_common.TechCardOperation) {
+			o.MachineType = pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_ULTRASONIC_WELDER
+		})},
+		{"topstitch_mode=in_ditch", withOp(func(o *pb_common.TechCardOperation) {
+			o.Topstitch = &pb_common.TechCardTopstitch{
+				Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_IN_DITCH,
+			}
+		})},
+		{"topstitch_mode=parallel_to_seam", withOp(func(o *pb_common.TechCardOperation) {
+			o.Topstitch = &pb_common.TechCardTopstitch{
+				Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_PARALLEL_TO_SEAM,
+			}
+		})},
+		{"press_cloth=silicone_paper", withOp(func(o *pb_common.TechCardOperation) {
+			o.PressCloth = pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_SILICONE_PAPER
+		})},
+		{"profile.equipment=seam_taping", withCard(func(pb *pb_common.TechCardInsert) {
+			pb.Construction = &pb_common.TechCardConstruction{
+				EquipmentDefaults: &pb_common.TechCardEquipmentDefaults{
+					Machines: []*pb_common.TechCardMachineProfile{{
+						ProfileKey:  "P1",
+						MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_SEAM_TAPING,
+					}},
+				},
+			}
+		})},
+		{"profile.equipment=ultrasonic_welder", withCard(func(pb *pb_common.TechCardInsert) {
+			pb.Construction = &pb_common.TechCardConstruction{
+				EquipmentDefaults: &pb_common.TechCardEquipmentDefaults{
+					Machines: []*pb_common.TechCardMachineProfile{{
+						ProfileKey:  "P1",
+						MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_ULTRASONIC_WELDER,
+					}},
+				},
+			}
+		})},
+		{"profile.press_cloth=silicone_paper", withCard(func(pb *pb_common.TechCardInsert) {
+			pb.Construction = &pb_common.TechCardConstruction{
+				EquipmentDefaults: &pb_common.TechCardEquipmentDefaults{
+					Presses: []*pb_common.TechCardPressProfile{{
+						ProfileKey: "P2",
+						PressCloth: pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_SILICONE_PAPER,
+					}},
+				},
+			}
+		})},
+		{"bom.kind=seam_sealing_tape", withCard(func(pb *pb_common.TechCardInsert) {
+			kind := pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SEAM_SEALING_TAPE
+			pb.BomItems = []*pb_common.TechCardBomItem{{Kind: &kind}}
+		})},
+		{"bom.kind=embroidery_stabilizer", withCard(func(pb *pb_common.TechCardInsert) {
+			kind := pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_EMBROIDERY_STABILIZER
+			pb.BomItems = []*pb_common.TechCardBomItem{{Kind: &kind}}
+		})},
+	}
+	if len(cases) != 10 {
+		t.Fatalf("волна дописала десять токенов в шесть живых словарей, в таблице %d", len(cases))
+	}
+	for _, tt := range cases {
+		t.Run(tt.token, func(t *testing.T) {
+			if code := status.Code(operationKindsWireGate(tt.pb)); code != codes.FailedPrecondition {
+				t.Fatalf("эхо токена %s обязано быть отвергнуто правилом 1; got %v", tt.token, code)
+			}
+			aware := tt.pb
+			aware.OperationKindsAware = true
+			if err := operationKindsWireGate(aware); err != nil {
+				t.Fatalf("осведомлённый бандл имеет право прислать это: %v", err)
+			}
+		})
+	}
+}
+
+// --- КОНТРОЛЬ, КОТОРЫЙ ВАЖНЕЕ ВСЕХ КЛЕТОК ВЫШЕ ---------------------------------------------------
+//
+// Предикаты обязаны считать ТОКЕНЫ, а не «поле заполнено». Проверка вида `machine_type != UNKNOWN`
+// закрыла бы дыру и одновременно объявила бы фактом волны КАЖДЫЙ обычный MACHINE-шаг — то есть
+// заблокировала бы сегодняшнюю рабочую админку целиком, на каждой карточке, живущей в проде.
+// Ложное срабатывание здесь дороже пропуска, поэтому клетка отдельная и явная.
+func TestOperationKindsGatesDoNotBlockAnOrdinaryPreWaveCard(t *testing.T) {
+	// Сохранённая карточка ДО волны: старая машинка, старый режим отстрочки с шириной и рядами,
+	// старый проутюжильник, старый вид BOM, старые профили парка. Ни одного токена волны.
+	stored := storedCardWith(func(c *entity.TechCard) {
+		c.Operations = []entity.TechCardOperation{{
+			OperationNumber:  okInt(10),
+			OperationType:    entity.OpTypeMachine,
+			Zone:             "front",
+			MachineType:      okStr("lockstitch"),
+			TopstitchMode:    okStr("width"),
+			TopstitchWidthMm: okDec("6"),
+			TopstitchRows:    okInt(2),
+			PressCloth:       okStr("teflon_sheet"),
+		}}
+		c.Construction = &entity.TechCardConstruction{EquipmentDefaults: &entity.TechCardEquipmentDefaults{
+			Machines: []entity.TechCardMachineProfile{{ProfileKey: "P1", MachineType: "lockstitch"}},
+			Presses: []entity.TechCardPressProfile{{
+				ProfileKey: "P2", PressEquipment: "press", PressCloth: okStr("press_cloth"),
+			}},
+		}}
+		c.BomItems = []entity.TechCardBomItem{{LineKey: "B1", Kind: okStr("button")}}
+	})
+	// И ровно тот payload, что шлёт сегодняшняя админка: флага волны нет, зато есть всё, что она
+	// умела до неё.
+	kind := pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_BUTTON
+	pb := okPayload(false, &pb_common.TechCardOperation{
+		OperationNumber: 10,
+		OperationType:   pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+		Zone:            gateZone(),
+		MachineType:     pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+		PressCloth:      pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_TEFLON_SHEET,
+		Topstitch: &pb_common.TechCardTopstitch{
+			Mode: pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_WIDTH,
+			Rows: 2,
+		},
+	})
+	pb.BomItems = []*pb_common.TechCardBomItem{{Kind: &kind}}
+	pb.Construction = &pb_common.TechCardConstruction{
+		EquipmentDefaults: &pb_common.TechCardEquipmentDefaults{
+			Machines: []*pb_common.TechCardMachineProfile{{
+				ProfileKey:  "P1",
+				MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+			}},
+			Presses: []*pb_common.TechCardPressProfile{{
+				ProfileKey: "P2",
+				PressCloth: pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_PRESS_CLOTH,
+			}},
+		},
+	}
+	if err := operationKindsWireGate(pb); err != nil {
+		t.Fatalf("правило 1 объявило обычный до-волновой payload эхом волны — это блокирует сегодняшнюю админку: %v", err)
+	}
+	if err := operationKindsStoredGate(pb, stored); err != nil {
+		t.Fatalf("правило 2 объявило обычную до-волновую карточку несущей факты волны — это блокирует сегодняшнюю админку: %v", err)
+	}
+	// И по отдельности, чтобы отказ было видно на конкретной половине.
+	if payloadSpeaksOperationKinds(pb) {
+		t.Fatal("проводной предикат считает обычный MACHINE + lockstitch фактом волны")
+	}
+	if storedHasOperationKindFacts(stored) {
+		t.Fatal("предикат хранилища считает обычную до-волновую карточку несущей факты волны")
 	}
 }
