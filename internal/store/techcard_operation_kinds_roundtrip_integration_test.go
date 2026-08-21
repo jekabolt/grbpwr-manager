@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestTechCardOperationKindsRoundTrip проводит все 32 колонки волны 0324 через стор: записал ->
+// TestTechCardOperationKindsRoundTrip проводит все 34 колонки (32 волны 0324 + 2 ВТО 0325) через стор: записал ->
 // прочитал -> значения совпали. Проверяется ровно то, что четыре списка (ALTER миграции, named-map
 // INSERT'а, SELECT операций, поля entity.TechCardOperation) сошлись: разъезд между ними компилятору
 // не виден и молчит до первого сохранения.
@@ -59,13 +59,13 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 		require.Equal(t, want, got.Decimal.String(), "%s must round-trip as an exact decimal string", what)
 	}
 
-	// Шаг со ВСЕМИ 32 заполненными. Применимость (какой глагол какое поле имеет право нести) — второй
+	// Шаг со ВСЕМИ 34 заполненными. Применимость (какой глагол какое поле имеет право нести) — второй
 	// эшелон, Go-валидация в internal/dto; стор её не выполняет, а CHECK'и схемы одноколоночные, так
-	// что заполненными законно оказываются все 32 сразу. Именно это здесь и нужно: цель — провод, а
+	// что заполненными законно оказываются все 34 сразу. Именно это здесь и нужно: цель — провод, а
 	// не правила.
 	full := entity.TechCardOperation{
 		OperationNumber: ni(10), OperationType: entity.OpTypeMachine, Zone: entity.ZoneOuter,
-		SMV: nd("1.2"), Note: ns("шаг со всеми 32 полями волны"),
+		SMV: nd("1.2"), Note: ns("шаг со всеми 34 полями волны"),
 
 		NeedleCount:   ni(4),
 		NeedleGaugeMm: nd("6.4"),
@@ -107,9 +107,14 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 		ZipperApplication:     ns("in_seam_pocket"),
 		BindingStyle:          ns("double_fold"),
 		LabelAttachStitch:     ns("two_sides_top_bottom"),
+
+		// ВТО (0325) — две колонки сверх тридцати двух. Применимость по глаголу здесь, как и у
+		// остальных, не проверяется: цель этого теста — ПРОВОД до колонки и обратно.
+		PressAction: ns("to_one_side"),
+		PressToward: ns("away_from_center"),
 	}
 
-	// Шаг без единого нового поля — старая карточка, какой её пишет прод сегодня. Все 32 обязаны
+	// Шаг без единого нового поля — старая карточка, какой её пишет прод сегодня. Все 34 обязаны
 	// прочитаться Valid=false, а не нулями и не пустыми строками.
 	bare := entity.TechCardOperation{
 		OperationNumber: ni(20), OperationType: entity.OpTypeMachine, Zone: entity.ZoneOuter,
@@ -136,7 +141,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 	}
 	require.Len(t, byNumber, 2)
 
-	// --- A. round-trip всех 32 ----------------------------------------------------------------------
+	// --- A. round-trip всех 34 ----------------------------------------------------------------------
 	f := byNumber[10]
 	require.Equal(t, int32(4), f.NeedleCount.Int32)
 	require.True(t, f.NeedleCount.Valid)
@@ -179,13 +184,16 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 	require.Equal(t, "in_seam_pocket", f.ZipperApplication.String)
 	require.Equal(t, "double_fold", f.BindingStyle.String)
 	require.Equal(t, "two_sides_top_bottom", f.LabelAttachStitch.String)
+	require.Equal(t, "to_one_side", f.PressAction.String)
+	require.Equal(t, "away_from_center", f.PressToward.String)
 
 	// Ни одна строка не обрезана шириной колонки: два самых длинных токена волны сидят ровно в край
 	// (two_sides_top_bottom = 20 при VARCHAR(24), sample_per_bundle = 17 при VARCHAR(20)).
 	require.Len(t, f.LabelAttachStitch.String, 20)
 	require.Len(t, f.CoverageMode.String, 17)
+	require.Len(t, f.PressToward.String, 16) // away_from_center при VARCHAR(20)
 
-	// --- B. шаг без единого нового поля: 32 NULL читаются как Valid=false ----------------------------
+	// --- B. шаг без единого нового поля: 34 NULL читаются как Valid=false ----------------------------
 	assertAllUnset := func(t *testing.T, o entity.TechCardOperation, what string) {
 		t.Helper()
 		strs := map[string]sql.NullString{
@@ -198,6 +206,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 			"buttonhole_orientation": o.ButtonholeOrientation, "attach_pattern": o.AttachPattern,
 			"zipper_application": o.ZipperApplication, "binding_style": o.BindingStyle,
 			"label_attach_stitch": o.LabelAttachStitch,
+			"press_action":        o.PressAction, "press_toward": o.PressToward,
 		}
 		ints := map[string]sql.NullInt32{
 			"needle_count": o.NeedleCount, "placement_count": o.PlacementCount,
@@ -212,7 +221,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 			"residual_tail_max_mm":  o.ResidualTailMaxMm, "cut_length_mm": o.CutLengthMm,
 			"bartack_length_mm": o.BartackLengthMm,
 		}
-		require.Equal(t, 32, len(strs)+len(ints)+len(decs), "все 32 колонки волны обязаны быть перечислены здесь")
+		require.Equal(t, 34, len(strs)+len(ints)+len(decs), "все 34 колонки (32 волны 0324 + 2 ВТО 0325) обязаны быть перечислены здесь")
 		for name, v := range strs {
 			require.False(t, v.Valid, "%s: %s должен остаться НЕ УКАЗАН, а не пустой строкой", what, name)
 			require.Empty(t, v.String, "%s: %s", what, name)
@@ -228,7 +237,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 	assertAllUnset(t, byNumber[20], "шаг без полей волны")
 
 	// --- C. НАСТОЯЩАЯ старая строка: писана мимо стора, о новых колонках не упоминает вовсе -----------
-	// Отличается от B тем, что B пишет 32 явных NULL через стор, а здесь колонки не названы в INSERT'е
+	// Отличается от B тем, что B пишет 34 явных NULL через стор, а здесь колонки не названы в INSERT'е
 	// ни разу — так выглядит строка, записанная бинарём до этой волны. Разбор обязан пережить и это.
 	var legacyOpID int64
 	{
@@ -253,8 +262,9 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 		     + (buttonhole_style IS NULL) + (cut_length_mm IS NULL) + (buttonhole_orientation IS NULL)
 		     + (bartack_length_mm IS NULL) + (attach_pattern IS NULL) + (zipper_application IS NULL)
 		     + (binding_style IS NULL) + (label_attach_stitch IS NULL)
+		     + (press_action IS NULL) + (press_toward IS NULL)
 		FROM tech_card_operation WHERE id = ?`, legacyOpID).Scan(&nullCount))
-	require.Equal(t, 32, nullCount, "строка, писанная мимо волны, обязана нести 32 NULL — без DEFAULT'ов")
+	require.Equal(t, 34, nullCount, "строка, писанная мимо волны, обязана нести 34 NULL — без DEFAULT'ов")
 
 	reread, err := T.GetTechCardById(ctx, tcID)
 	require.NoError(t, err)
@@ -268,7 +278,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 	require.Equal(t, "строка до волны 0324", legacy.Note.String)
 	assertAllUnset(t, *legacy, "строка до волны 0324")
 
-	// --- D. полная замена списка операций не теряет 32 колонки ---------------------------------------
+	// --- D. полная замена списка операций не теряет 34 колонки ---------------------------------------
 	require.NoError(t, T.UpdateTechCard(ctx, tcID, &entity.TechCardInsert{
 		Name: "Operation Kinds Style", Stage: entity.TechCardStageProto,
 		StyleNumber: ns("OPK-RT-1"), Purpose: entity.TechCardPurposeSellable,
@@ -285,4 +295,6 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 	eqDec(t, "85.3", a.PitchMm, "pitch_mm после полной замены")
 	require.Equal(t, "two_sides_top_bottom", a.LabelAttachStitch.String)
 	require.Equal(t, int32(480), a.AirTemperatureC.Int32)
+	require.Equal(t, "to_one_side", a.PressAction.String)
+	require.Equal(t, "away_from_center", a.PressToward.String)
 }
