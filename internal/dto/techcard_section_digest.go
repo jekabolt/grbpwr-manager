@@ -394,6 +394,13 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if len(o.Media) > 0 {
 			row = append(row, []any{"media", operationMediaTail(o)})
 		}
+		// ОДИННАДЦАТЬ ХВОСТОВ ВИДОВ ОПЕРАЦИЙ (0324) — ПОСЛЕ media, в замороженном порядке и ПАРАМИ
+		// «ключ, значение» вместо позиций: форма, её цена и что именно в ней заморожено — в
+		// комментарии у operationKindTails.
+		//
+		// НУЛЕВАЯ ВОЛНА: у каждой сегодняшней строки все 32 колонки NULL, значит ни одной пары, ни
+		// одного хвоста, и байты кортежа не двигаются — при выкатке не протухает ни одна подпись.
+		row = append(row, operationKindTails(o)...)
 		ops = append(ops, row)
 	}
 	pieces := make([]any, 0, len(tc.Pieces))
@@ -606,6 +613,160 @@ func operationMediaTail(o *entity.TechCardOperation) []any {
 			anns = append(anns, ann)
 		}
 		out = append(out, []any{m.MediaId, m.Caption.String, anns})
+	}
+	return out
+}
+
+// ── ХВОСТЫ ВИДОВ ОПЕРАЦИЙ (волна 0324) ──────────────────────────────────────────────────────────
+//
+// ФОРМА — ПАРЫ, А НЕ ПОЗИЦИИ. Хвост семейства пишется как ["тег", [[ключ, значение], …]], пара
+// появляется ТОЛЬКО у заполненного (Valid) поля, пары отсортированы ПОБАЙТНО по ключу. Это
+// единственное место проекции, где значения записаны не позиционно, и отступление сделано
+// осознанно.
+//
+// ЗАЧЕМ. Волна урезана вдвое: из 66 разобранных полей в неё вошли 32, а остальные 32 вернутся
+// ПОЗЖЕ И В ТЕ ЖЕ САМЫЕ СЕМЕЙСТВА. При позиционной записи дописать поле в уже рождённый хвост
+// нельзя ни в конец, ни в середину — длина и порядок массива входят в байты, и подпись каждой
+// карточки, которая хвост эмитит, протухла бы. Позиционная схема заставила бы завести
+// "stitching2", "hardware2", "print2", "trim2", "thread_trim2", "clean2", "inspect2",
+// "fastening2" — восемь вечных костылей в самой чувствительной структуре проекта, и всё это ради
+// экономии на именах ключей.
+//
+// С парами дописывание БЕЗОПАСНО ПО ПОСТРОЕНИЮ: у строки, где новое поле пусто, пары не
+// возникает, и её байты не меняются; у строки, где оно заполнено, отпечаток обязан измениться —
+// это новый факт, и подпись должна протухнуть. Ровно то поведение, которого мы хотим.
+//
+// ЗАМОРОЖЕНО НАВСЕГДА: имена тегов, порядок хвостов в кортеже, имена ключей и каноникализация
+// значений. СОСТАВ — НЕ заморожен, в этом весь смысл.
+//
+// КЛЮЧ ПАРЫ — ИМЯ КОЛОНКИ БД, А НЕ ИМЯ ПОЛЯ PROTO. Расходятся ровно три места, и все три —
+// намеренно: TechCardOperationPlacement.count → "placement_count", TechCardOperationTrim.action →
+// "trim_action", TechCardOperationClean.kind → "cleaning_kind". Взять там имя proto значило бы
+// заморозить навсегда ключи "count" / "action" / "kind": без семейства в имени они читаются как
+// что угодно, а переименовать ключ после первой подписи уже нельзя — это ломает отпечаток.
+//
+// ОТДЕЛЬНОГО ПРЕДИКАТА «есть ли хвост» у этих одиннадцати НЕТ, в отличие от machine/press/
+// assembly. Он был бы вторым списком тех же полей и разъехался бы с первым при первой же дописке;
+// здесь предикат ВЫВЕДЕН: пустой набор пар — значит хвоста нет.
+
+// operationKindPair — одна пара «ключ, значение» хвоста семейства.
+type operationKindPair struct {
+	key   string
+	value any
+	valid bool
+}
+
+func opKindStr(key string, v sql.NullString) operationKindPair {
+	return operationKindPair{key: key, value: v.String, valid: v.Valid}
+}
+
+func opKindInt(key string, v sql.NullInt32) operationKindPair {
+	return operationKindPair{key: key, value: v.Int32, valid: v.Valid}
+}
+
+// opKindDec — децимал СТРОКОЙ через digestDecimal, как всё остальное в этой проекции: float64 дал
+// бы 1.50 и 1.5 разными байтами в зависимости от того, что вернула БД.
+func opKindDec(key string, v decimal.NullDecimal) operationKindPair {
+	return operationKindPair{key: key, value: digestDecimal(v), valid: v.Valid}
+}
+
+// operationKindTail собирает хвост одного семейства. nil — когда заполненных полей нет вовсе:
+// хвост тогда не рождается, и байты шага остаются ровно теми, что были до волны.
+func operationKindTail(tag string, pairs ...operationKindPair) []any {
+	filled := make([]operationKindPair, 0, len(pairs))
+	for _, p := range pairs {
+		if p.valid {
+			filled = append(filled, p)
+		}
+	}
+	if len(filled) == 0 {
+		return nil
+	}
+	// ПОБАЙТНО по ключу, а не в порядке объявления: порядок объявления сдвинулся бы при первой же
+	// дописке поля в середину списка. Сравнение строк в Go и есть побайтное — никакой
+	// локале-зависимой сортировки здесь быть не должно, иначе отпечаток начнёт зависеть от машины.
+	sort.Slice(filled, func(i, j int) bool { return filled[i].key < filled[j].key })
+	out := make([]any, 0, len(filled))
+	for _, p := range filled {
+		out = append(out, []any{p.key, p.value})
+	}
+	return []any{tag, out}
+}
+
+// operationKindTails — все одиннадцать хвостов волны в ЗАМОРОЖЕННОМ ПОРЯДКЕ, идущие после
+// media-хвоста. Порядок и имена — навсегда.
+//
+// Двенадцатый, "handwork", в этой волне НЕ РОЖДАЕТСЯ: оба его поля отложены. Имя и последнее
+// место за ним закреплены — когда поля придут, хвост появится сразу полным составом, и это
+// безопасно: существующие строки его всё равно не эмитят.
+func operationKindTails(o *entity.TechCardOperation) []any {
+	tails := [][]any{
+		operationKindTail("stitching",
+			opKindInt("needle_count", o.NeedleCount),
+			opKindDec("needle_gauge_mm", o.NeedleGaugeMm),
+			opKindStr("seam_securing", o.SeamSecuring),
+			opKindDec("row_spacing_mm", o.RowSpacingMm),
+			opKindDec("fullness_ratio", o.FullnessRatio),
+			opKindStr("binding_style", o.BindingStyle),
+			opKindStr("label_attach_stitch", o.LabelAttachStitch),
+		),
+		// Ключ — placement_count, а не count: имя колонки БД. См. довод у заголовка блока.
+		operationKindTail("placement",
+			opKindInt("placement_count", o.PlacementCount),
+			opKindDec("pitch_mm", o.PitchMm),
+		),
+		operationKindTail("hardware",
+			opKindStr("attach_method", o.AttachMethod),
+			opKindStr("hole_prep", o.HolePrep),
+			opKindStr("reinforcement", o.Reinforcement),
+			opKindDec("foldback_mm", o.FoldbackMm),
+			opKindInt("cycle_stitch_count", o.CycleStitchCount),
+		),
+		// print_method лежит в этом же хвосте, хотя на проводе он поле самого шага, а не блока:
+		// хвосты режутся по СЕМЕЙСТВУ ФАКТОВ, а не по форме сообщения. ВТО-факты PRINT-шага идут
+		// существующим press-хвостом — один факт живёт в одном месте.
+		operationKindTail("print",
+			opKindStr("print_method", o.PrintMethod),
+			opKindStr("peel_mode", o.PeelMode),
+			opKindInt("second_press_sec", o.SecondPressSec),
+			opKindStr("pressure_scale", o.PressureScale),
+		),
+		operationKindTail("weld",
+			opKindInt("air_temperature_c", o.AirTemperatureC),
+			opKindDec("feed_speed_m_min", o.FeedSpeedMMin),
+		),
+		// Ключ — trim_action, а не action.
+		operationKindTail("trim",
+			opKindStr("trim_action", o.TrimAction),
+			opKindDec("residual_allowance_mm", o.ResidualAllowanceMm),
+		),
+		operationKindTail("thread_trim",
+			opKindDec("residual_tail_max_mm", o.ResidualTailMaxMm),
+		),
+		// Ключ — cleaning_kind, а не kind.
+		operationKindTail("clean",
+			opKindStr("cleaning_kind", o.CleaningKind),
+		),
+		operationKindTail("inspect",
+			opKindStr("coverage_mode", o.CoverageMode),
+		),
+		operationKindTail("wet",
+			opKindStr("wet_process_kind", o.WetProcessKind),
+		),
+		operationKindTail("fastening",
+			opKindStr("buttonhole_style", o.ButtonholeStyle),
+			opKindDec("cut_length_mm", o.CutLengthMm),
+			opKindStr("buttonhole_orientation", o.ButtonholeOrientation),
+			opKindDec("bartack_length_mm", o.BartackLengthMm),
+			opKindStr("attach_pattern", o.AttachPattern),
+			opKindStr("zipper_application", o.ZipperApplication),
+		),
+	}
+	out := make([]any, 0, len(tails))
+	for _, t := range tails {
+		if t != nil {
+			out = append(out, t)
+		}
 	}
 	return out
 }

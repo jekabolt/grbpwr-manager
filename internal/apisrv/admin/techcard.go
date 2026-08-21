@@ -127,6 +127,11 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Щит видов операций (0324), тот же довод и тот же момент. Стор-гейта на создании у него нет:
+	// парного `*_cleared` он не несёт, а сказать про несуществующую карточку ему больше нечего.
+	if err := operationKindsWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Стор-гейт с nil вместо сохранённой карточки — не заглушка, а ровно то, чем создание
 	// является: карточки ещё нет, стирать нечего. Единственное, что он тут скажет, — «снять
 	// разметку» у создаваемой карточки бессмысленно, и это надо сказать, а не пропустить.
@@ -267,6 +272,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := assemblyCapabilityWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Тот же довод, тот же момент — щит видов операций (0324).
+	if err := operationKindsWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -300,6 +309,13 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, err
 	}
 	if err := assemblyCapabilityStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
+	// Щит видов операций (0324) — правило 2, то самое, что срабатывает на практике: payload
+	// отставшей вкладки, выбросившей непонятные ей блоки, выглядит невинно, и только хранилище
+	// знает, какие восемнадцать полей на старых парах (глагол, machine_type) — и какие токены,
+	// дописанные волной в словари живых колонок, — запись сотрёт.
+	if err := operationKindsStoredGate(req.TechCard, stored); err != nil {
 		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет

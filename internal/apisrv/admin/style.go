@@ -298,13 +298,14 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// теми же конвертерами. Флаг здесь ничего не разблокирует сегодня (клон гейтов не зовёт), но
 	// снимает мину на будущее: гейт, добавленный в этот путь, иначе отказывал бы клону его же
 	// собственный payload — ровно так уже пришлось спасать костинг (stripTechCardCosting выше).
-	// ВСЕ ТРИ ФЛАГА, А НЕ ОДИН ИЗ ТРЁХ. Полу-обезвреженная мина хуже необезвреженной: комментарий
-	// обещает защиту «от гейта, добавленного в этот путь в будущем», а закрывает её ровно у одного
-	// щита из трёх — machine и media остались бы незаявленными, и такой будущий гейт отказал бы
-	// клону его собственный, сервером же собранный payload.
+	// ВСЕ ЧЕТЫРЕ ФЛАГА, А НЕ ОДИН ИЗ ЧЕТЫРЁХ. Полу-обезвреженная мина хуже необезвреженной:
+	// комментарий обещает защиту «от гейта, добавленного в этот путь в будущем», а закрывал бы её
+	// ровно у одного щита из четырёх — остальные остались бы незаявленными, и такой будущий гейт
+	// отказал бы клону его собственный, сервером же собранный payload.
 	pbInsert.AssemblyAware = true
 	pbInsert.MachineFieldsAware = true
 	pbInsert.MediaAware = true
+	pbInsert.OperationKindsAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator

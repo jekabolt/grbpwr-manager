@@ -549,7 +549,8 @@ func decimalSent(d *pb_decimal.Decimal) bool { return d != nil && strings.TrimSp
 // rules:
 //
 //   - a block belongs to its own step type and nowhere else. A thread count on a handwork step is a
-//     shadow value: nothing reads it, nothing prints it, and the next editor believes it.
+//     shadow value: nothing reads it, nothing prints it, and the next editor believes it. The one
+//     verb sharing a block is PRINT, which presses on the same equipment as ВТО does.
 //   - the «на чём» of a step is REQUIRED — but only from a client that knows the fields exist.
 //     A bundle that predates the split cannot fill in a machine, and its FUSING step (which it has
 //     always been able to send) has to keep saving exactly as it did; the capability gate in the
@@ -563,6 +564,12 @@ func parseOperationEquipment(o *pb_common.TechCardOperation, opType entity.TechC
 
 	isMachine := opType == entity.OpTypeMachine
 	isPress := opType == entity.OpTypePress || opType == entity.OpTypePressOpen || opType == entity.OpTypeFusing
+	// ВТО-БЛОК ЛЕГАЛЕН ТАКЖЕ ПРИ PRINT (0324): термопресс — то же самое оборудование, и второй
+	// комплект тех же семи полей внутри блока печати был бы дублём, который немедленно разъедется.
+	// РАЗНИЦА ОДНА: press_equipment остаётся REQUIRED-if-aware только у press / press_open / fusing —
+	// у печати он опционален, потому что печать бывает и без прижима вовсе (лазер), а там весь блок
+	// как раз отвергается — правилом волны, рядом с print_method.
+	pressAllowed := isPress || opType == entity.OpTypePrint
 
 	if !isMachine {
 		if f := firstPopulated([]populatedField{
@@ -579,7 +586,7 @@ func parseOperationEquipment(o *pb_common.TechCardOperation, opType entity.TechC
 				fmt.Sprintf("the machine settings belong to a machine step; this one is %q — clear the field or switch the step type", string(opType)))
 		}
 	}
-	if !isPress {
+	if !pressAllowed {
 		if f := firstPopulated([]populatedField{
 			{"press_equipment", o.PressEquipment != pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_UNKNOWN},
 			{"press_profile_key", strings.TrimSpace(o.PressProfileKey) != ""},
@@ -590,7 +597,7 @@ func parseOperationEquipment(o *pb_common.TechCardOperation, opType entity.TechC
 			{"press_cloth", o.PressCloth != pb_common.TechCardPressCloth_TECH_CARD_PRESS_CLOTH_UNKNOWN},
 		}); f != "" {
 			return machine, press, entity.NewFieldViolation(step+"."+f, "not_applicable", string(opType),
-				fmt.Sprintf("the pressing settings belong to a press / press_open / fusing step; this one is %q — clear the field or switch the step type", string(opType)))
+				fmt.Sprintf("the pressing settings belong to a press / press_open / fusing / print step; this one is %q — clear the field or switch the step type", string(opType)))
 		}
 	}
 
@@ -633,8 +640,8 @@ func parseOperationEquipment(o *pb_common.TechCardOperation, opType entity.TechC
 		}
 	}
 
-	if isPress {
-		if aware && o.PressEquipment == pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_UNKNOWN {
+	if pressAllowed {
+		if isPress && aware && o.PressEquipment == pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_UNKNOWN {
 			return machine, press, entity.NewFieldViolation(step+".press_equipment", "required", "",
 				"pick the equipment — an iron, a fusing press and a steamer are three different instructions")
 		}
