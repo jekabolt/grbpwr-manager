@@ -96,6 +96,13 @@ var bindingStyleTokenToPb = invertTokenMap(bindingStylePbToToken)
 var labelAttachStitchPbToToken = enumTokenMap[pb_common.TechCardLabelAttachStitch]("TECH_CARD_LABEL_ATTACH_STITCH_", entity.LabelAttachStitchTokens, pb_common.TechCardLabelAttachStitch_value)
 var labelAttachStitchTokenToPb = invertTokenMap(labelAttachStitchPbToToken)
 
+// Две карты ВТО-под-глагола (0325), тем же способом и по той же причине, что семнадцать выше.
+var pressActionPbToToken = enumTokenMap[pb_common.TechCardPressAction]("TECH_CARD_PRESS_ACTION_", entity.PressActionTokens, pb_common.TechCardPressAction_value)
+var pressActionTokenToPb = invertTokenMap(pressActionPbToToken)
+
+var pressTowardPbToToken = enumTokenMap[pb_common.TechCardPressToward]("TECH_CARD_PRESS_TOWARD_", entity.PressTowardTokens, pb_common.TechCardPressToward_value)
+var pressTowardTokenToPb = invertTokenMap(pressTowardPbToToken)
+
 // Машинки, которые НАЗЫВАЮТ ПРАВИЛА этой волны. Литералами — как attachmentKindNone рядом, — но с
 // проверкой на init: опечатка в такой строке не ломает сборку, она просто НИКОГДА не совпадает, и
 // правило тихо перестаёт существовать. Сверка со словарём entity это ловит в первую же секунду
@@ -201,6 +208,10 @@ type operationKindFields struct {
 	zipperApplication     sql.NullString
 	bindingStyle          sql.NullString
 	labelAttachStitch     sql.NullString
+
+	// ВТО (0325) — продолжение канона дописыванием, последними.
+	pressAction sql.NullString
+	pressToward sql.NullString
 }
 
 // verbNotApplicable — отказ «это семейство не про этот глагол». Значение нарушения — САМ ГЛАГОЛ:
@@ -733,6 +744,68 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		}
 	}
 
+	// --- ВТО: под-глагол и направление припуска (0325) -------------------------------------------
+	//
+	// НИ ОДНО ИЗ ДВУХ ПОЛЕЙ НЕ REQUIRED САМО ПО СЕБЕ, в отличие от шести дискриминаторов выше.
+	// press_toward обязателен ТОЛЬКО в присутствии press_action = to_one_side — значения, которого
+	// ни одна сохранённая строка иметь не может (обе колонки рождаются миграцией 0325). Поэтому
+	// ретроактивной обязательности здесь не возникает НИГДЕ: старый шаг press без под-глагола
+	// проходит этот блок без единого отказа, как проходил до волны.
+	ps := o.GetPress()
+	isPress := opType == entity.OpTypePress
+	isPressOpen := opType == entity.OpTypePressOpen
+	if !(isPress || isPressOpen) {
+		// FUSING и PRINT сюда попадают НАМЕРЕННО, хотя ВТО-блок 39..45 при них законен: там
+		// оборудование и режим прижима, а здесь — ЧТО ДЕЛАЮТ С ПРИПУСКОМ. У дублирования и у
+		// печати припуска нет вовсе, и «заутюжить на полочку» на таком шаге описывает ничто.
+		if fld := firstPopulated([]populatedField{
+			{"press_action", ps.GetAction() != pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_UNKNOWN},
+			{"press_toward", ps.GetToward() != pb_common.TechCardPressToward_TECH_CARD_PRESS_TOWARD_UNKNOWN},
+		}); fld != "" {
+			return f, verbNotApplicable(step, fld, opType,
+				"the pressing sub-verb and the allowance direction belong to a press or press_open step")
+		}
+	} else {
+		f.pressAction, err = parseEquipmentEnum(ps.GetAction(), pressActionPbToToken,
+			step+".press_action", "pick WHAT the pressing does — press flat, to one side, open, steam, final, ease in, stretch or mould")
+		if err != nil {
+			return f, err
+		}
+		// PRESS_OPEN — САМ СЕБЕ ПОД-ГЛАГОЛ. Разутюжка уже названа глаголом, и второй ответ на тот
+		// же вопрос был бы двумя ответами. Пустой press_action здесь законен и КАНОНИЧЕН: пикер на
+		// этом шаге его не пишет вовсе, а `open` принимается только на чтение — форма не
+		// переписывает одно написание в другое, иначе подписанная карточка протухла бы без единой
+		// человеческой правки.
+		if isPressOpen && f.pressAction.Valid && f.pressAction.String != string(entity.PressActionOpen) {
+			return f, entity.NewFieldViolation(step+".press_action", "not_applicable", f.pressAction.String,
+				fmt.Sprintf("this step is «press_open» — the verb already says the allowance is pressed open; %q is a different technique, so switch the step to «press» or clear the field",
+					f.pressAction.String))
+		}
+		f.pressToward, err = parseEquipmentEnum(ps.GetToward(), pressTowardPbToToken,
+			step+".press_toward", "pick WHERE the allowance ends up — the dictionary names its destination, so every seam has exactly one answer")
+		if err != nil {
+			return f, err
+		}
+		// Двух-полевое правило: направление есть только у заутюженного припуска. У приутюженного,
+		// разутюженного и отпаренного стороны нет вовсе, и «на полочку» рядом с ними — теневое
+		// значение: ничего его не читает, ничего не печатает, а следующий редактор ему верит.
+		if f.pressToward.Valid && !(f.pressAction.Valid && f.pressAction.String == string(entity.PressActionToOneSide)) {
+			said := ""
+			if f.pressAction.Valid {
+				said = f.pressAction.String
+			}
+			return f, entity.NewFieldViolation(step+".press_toward", "needs_press_action", f.pressToward.String,
+				fmt.Sprintf("only an allowance pressed TO ONE SIDE has a side; this step says %q — set the action to «to one side» or clear the direction",
+					said))
+		}
+		// И обратное: «заутюжить» без стороны — ровно та дыра, ради которой заведены обе колонки.
+		// Обязательность УСЛОВНАЯ и потому не ретроактивная: to_one_side в базе сегодня нет.
+		if f.pressAction.Valid && f.pressAction.String == string(entity.PressActionToOneSide) && !f.pressToward.Valid {
+			return f, entity.NewFieldViolation(step+".press_toward", "required", "",
+				"say WHICH SIDE the allowance is pressed to — «заутюжить» without the side is the very gap this field exists to close")
+		}
+	}
+
 	return f, nil
 }
 
@@ -837,6 +910,21 @@ func operationInspectToPb(o entity.TechCardOperation) *pb_common.TechCardOperati
 		return nil
 	}
 	return &pb_common.TechCardOperationInspect{CoverageMode: inspectCoverageTokenToPb[o.CoverageMode.String]}
+}
+
+// operationPressToPb — блок ВТО-под-глагола (0325). Отсутствует, когда не сказано ни одного из
+// двух: пустая обёртка читалась бы как «про ВТО тут думали» на каждом шаге, где не думал никто.
+//
+// ОСТАЛЬНЫЕ ВТО-факты шага (оборудование, температура, выдержка, давление, пар, проутюжильник)
+// эмитятся полями 39..45 самого шага и сюда НЕ дублируются: один факт живёт в одном месте.
+func operationPressToPb(o entity.TechCardOperation) *pb_common.TechCardOperationPress {
+	if !(o.PressAction.Valid || o.PressToward.Valid) {
+		return nil
+	}
+	return &pb_common.TechCardOperationPress{
+		Action: pressActionTokenToPb[o.PressAction.String],
+		Toward: pressTowardTokenToPb[o.PressToward.String],
+	}
 }
 
 func operationFasteningToPb(o entity.TechCardOperation) *pb_common.TechCardOperationFastening {

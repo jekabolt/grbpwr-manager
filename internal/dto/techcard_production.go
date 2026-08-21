@@ -501,6 +501,10 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			ZipperApplication:     kinds.zipperApplication,
 			BindingStyle:          kinds.bindingStyle,
 			LabelAttachStitch:     kinds.labelAttachStitch,
+
+			// ВТО-под-глагол и направление припуска (0325) — канон продолжается дописыванием.
+			PressAction: kinds.pressAction,
+			PressToward: kinds.pressToward,
 		})
 	}
 	return out, nil
@@ -819,6 +823,8 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Inspect:         operationInspectToPb(o),
 			WetProcessKind:  wetProcessKindTokenToPb[o.WetProcessKind.String],
 			Fastening:       operationFasteningToPb(o),
+			// ВТО-под-глагол и направление припуска (0325) — тем же блочным правилом.
+			Press: operationPressToPb(o),
 		})
 	}
 	return out

@@ -33,6 +33,12 @@ const (
 	opTypePack       = pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PACK
 	opTypeWet        = pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_WET_PROCESS
 
+	// ВТО-глаголы (0325). PRESS_OPEN ЖИВОЙ и НЕ ТРОГАЕТСЯ: разутюжка стала одним из значений
+	// press_action, но каноническая запись остаётся глаголом.
+	opTypePress     = pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS
+	opTypePressOpen = pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_PRESS_OPEN
+	opTypeFusing    = pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_FUSING
+
 	mtButtonhole   = pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_BUTTONHOLE
 	mtButtonAttach = pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_BUTTON_ATTACH
 	mtBartack      = pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_BARTACK
@@ -147,6 +153,10 @@ func kindFacts(o entity.TechCardOperation) map[string]string {
 		"zipper_application":     s(o.ZipperApplication),
 		"binding_style":          s(o.BindingStyle),
 		"label_attach_stitch":    s(o.LabelAttachStitch),
+
+		// ВТО (0325) — две колонки сверх тридцати двух, в том же списке: круг у них тот же.
+		"press_action": s(o.PressAction),
+		"press_toward": s(o.PressToward),
 	}
 }
 
@@ -261,6 +271,21 @@ func kindRoundTripOps() []*pb_common.TechCardOperation {
 		// 13, 14: глаголы БЕЗ единого поля шага — они обязаны сохраняться так же, как и остальные.
 		{OperationType: opTypeFold, Zone: zoneOther},
 		{OperationType: opTypePack, Zone: zoneOther},
+		{ // 15: ВТО с под-глаголом и стороной (0325) — вместе с ВТО-блоком 0306
+			OperationType: opTypePress, Zone: zoneOuter,
+			Press: &pb_common.TechCardOperationPress{
+				Action: pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_TO_ONE_SIDE,
+				Toward: pb_common.TechCardPressToward_TECH_CARD_PRESS_TOWARD_AWAY_FROM_CENTER,
+			},
+			PressEquipment: pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_IRON,
+		},
+		{ // 16: разутюжка ВТОРЫМ написанием — чтение принимает и его, и голый глагол
+			OperationType: opTypePressOpen, Zone: zoneOuter,
+			Press: &pb_common.TechCardOperationPress{
+				Action: pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_OPEN,
+			},
+			PressEquipment: pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_IRON,
+		},
 	}
 }
 
@@ -301,6 +326,8 @@ func TestOperationKindsRoundTrip(t *testing.T) {
 		10: {"cleaning_kind": "adhesive_removal"},
 		11: {"coverage_mode": "sample_per_bundle"},
 		12: {"wet_process_kind": "garment_dye"},
+		15: {"press_action": "to_one_side", "press_toward": "away_from_center"},
+		16: {"press_action": "open", "press_toward": ""},
 	}
 	for i, cols := range want {
 		facts := kindFacts(second.Operations[i])

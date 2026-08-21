@@ -46,13 +46,31 @@ var operationKindColumnCanon = []string{
 	"attach_pattern", "zipper_application", "binding_style", "label_attach_stitch",
 }
 
+// pressColumnCanon — две колонки ВТО (0325), дописанные в канон ПОСЛЕ тридцати двух.
+//
+// Дописыванием, а не вклиниванием в ВТО-блок 0306 «по смыслу»: канон — это ОДИН порядок на четыре
+// списка, и вклинивание развело бы порядок entity с порядком ALTER'а, который добавляет колонки в
+// конец таблицы. Читаемость купленная разъездом четырёх списков — плохая покупка.
+var pressColumnCanon = []string{"press_action", "press_toward"}
+
+// operationColumnCanon — канон целиком: 32 колонки 0324 плюс 2 колонки 0325. Именно он сверяется с
+// SELECT'ом, db-тегами entity и ключами INSERT-карты; ALTER'ы проверяются по файлам ПОРОЗНЬ, потому
+// что каждая миграция добавляет только свою часть.
+var operationColumnCanon = append(append([]string{}, operationKindColumnCanon...), pressColumnCanon...)
+
 // TestOperationKindColumnCanonSize — контрольное число волны (§1): ровно 32, не 31 и не 33.
 func TestOperationKindColumnCanonSize(t *testing.T) {
 	if len(operationKindColumnCanon) != 32 {
 		t.Fatalf("волна 0324 несёт 32 колонки, в эталоне %d", len(operationKindColumnCanon))
 	}
-	seen := make(map[string]bool, len(operationKindColumnCanon))
-	for _, c := range operationKindColumnCanon {
+	if len(pressColumnCanon) != 2 {
+		t.Fatalf("волна 0325 несёт 2 колонки ВТО, в эталоне %d", len(pressColumnCanon))
+	}
+	if len(operationColumnCanon) != 34 {
+		t.Fatalf("канон целиком — 34 колонки, в эталоне %d", len(operationColumnCanon))
+	}
+	seen := make(map[string]bool, len(operationColumnCanon))
+	for _, c := range operationColumnCanon {
 		if seen[c] {
 			t.Fatalf("колонка %q продублирована в эталоне", c)
 		}
@@ -86,8 +104,8 @@ func TestTechCardOperationsQueryCarriesKindColumnsInCanonOrder(t *testing.T) {
 		selectClause = selectClause[:i]
 	}
 	re := regexp.MustCompile(`o\.([a-z_]+)`)
-	inCanon := make(map[string]bool, len(operationKindColumnCanon))
-	for _, c := range operationKindColumnCanon {
+	inCanon := make(map[string]bool, len(operationColumnCanon))
+	for _, c := range operationColumnCanon {
 		inCanon[c] = true
 	}
 	var got []string
@@ -96,16 +114,16 @@ func TestTechCardOperationsQueryCarriesKindColumnsInCanonOrder(t *testing.T) {
 			got = append(got, m[1])
 		}
 	}
-	if !reflect.DeepEqual(got, operationKindColumnCanon) {
-		t.Fatalf("SELECT операций разошёлся с каноном §1:\n эталон: %v\n запрос: %v", operationKindColumnCanon, got)
+	if !reflect.DeepEqual(got, operationColumnCanon) {
+		t.Fatalf("SELECT операций разошёлся с каноном §1:\n эталон: %v\n запрос: %v", operationColumnCanon, got)
 	}
 }
 
 // TestTechCardOperationEntityCarriesKindColumnsInCanonOrder — тот же эталон против db-тегов entity.
 // Это второй из четырёх списков; вместе с предыдущим тестом он делает канон проверяемым без базы.
 func TestTechCardOperationEntityCarriesKindColumnsInCanonOrder(t *testing.T) {
-	inCanon := make(map[string]bool, len(operationKindColumnCanon))
-	for _, c := range operationKindColumnCanon {
+	inCanon := make(map[string]bool, len(operationColumnCanon))
+	for _, c := range operationColumnCanon {
 		inCanon[c] = true
 	}
 	rt := reflect.TypeOf(entity.TechCardOperation{})
@@ -116,8 +134,8 @@ func TestTechCardOperationEntityCarriesKindColumnsInCanonOrder(t *testing.T) {
 			got = append(got, tag)
 		}
 	}
-	if !reflect.DeepEqual(got, operationKindColumnCanon) {
-		t.Fatalf("поля entity.TechCardOperation разошлись с каноном §1:\n эталон: %v\n entity: %v", operationKindColumnCanon, got)
+	if !reflect.DeepEqual(got, operationColumnCanon) {
+		t.Fatalf("поля entity.TechCardOperation разошлись с каноном §1:\n эталон: %v\n entity: %v", operationColumnCanon, got)
 	}
 }
 
@@ -125,8 +143,8 @@ func TestTechCardOperationEntityCarriesKindColumnsInCanonOrder(t *testing.T) {
 // Ни одна из 32 не имеет права быть голым int/string/bool: голый тип не отличает «технолог молчит»
 // от «технолог сказал ноль», и волна намеренно не несёт ни одного sql.NullBool.
 func TestTechCardOperationKindColumnsAreNullable(t *testing.T) {
-	inCanon := make(map[string]bool, len(operationKindColumnCanon))
-	for _, c := range operationKindColumnCanon {
+	inCanon := make(map[string]bool, len(operationColumnCanon))
+	for _, c := range operationColumnCanon {
 		inCanon[c] = true
 	}
 	allowed := map[string]bool{
@@ -174,6 +192,28 @@ func TestOperationKindMigrationAddsColumnsInCanonOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, operationKindColumnCanon) {
 		t.Fatalf("ALTER миграции 0324 разошёлся с каноном §1:\n эталон: %v\n ALTER:  %v", operationKindColumnCanon, got)
+	}
+}
+
+// TestPressMigrationAddsColumnsInCanonOrder — та же третья нога для 0325. Файл свой, потому что и
+// ALTER свой: 0324 добавляет тридцать две колонки, 0325 — две, и требовать от каждого файла всего
+// канона значило бы сверять миграцию со списком, половины которого в ней нет.
+func TestPressMigrationAddsColumnsInCanonOrder(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "sql", "0325_press_action_toward.sql"))
+	if err != nil {
+		t.Fatalf("миграция ВТО не читается: %v", err)
+	}
+	up := string(body)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	re := regexp.MustCompile(`(?m)^\s*ADD COLUMN\s+([a-z_]+)`)
+	var got []string
+	for _, m := range re.FindAllStringSubmatch(up, -1) {
+		got = append(got, m[1])
+	}
+	if !reflect.DeepEqual(got, pressColumnCanon) {
+		t.Fatalf("ALTER миграции 0325 разошёлся с каноном:\n эталон: %v\n ALTER:  %v", pressColumnCanon, got)
 	}
 }
 

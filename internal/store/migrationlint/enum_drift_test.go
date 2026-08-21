@@ -825,6 +825,13 @@ func Test0306VocabulariesAreCaseClosed(t *testing.T) {
 // reaches the column and no screen renders.
 const migration0324 = "0324_operation_kinds.sql"
 
+// 0325 добавляет ДВА словаря (press_action, press_toward) и ПЕРЕСОЗДАЁТ шесть CHECK'ов 0324,
+// дописывая в каждый выход `other`. Тест словаря обязан читать ФАЙЛ, ВЛАДЕЮЩИЙ ТЕКУЩИМ СПИСКОМ:
+// у шести расширенных это 0325, у остальных одиннадцати — по-прежнему 0324. Оставить шестерых на
+// 0324 значило бы сверять entity с УЖЕ ПЕРЕПИСАННЫМ списком и получить красноту на здоровой схеме;
+// перевести «за компанию» всех — направить якорь в файл, где половины констрейнтов нет вовсе.
+const migration0325 = "0325_press_action_toward.sql"
+
 // waveCheckWindow bounds the search from a CHECK's anchor. The longest new alternation
 // (label_attach_stitch) ends 192 characters past its anchor; a window shorter than the list would
 // make extractDBEnumValues fail to FIND it rather than fail to compare it.
@@ -836,7 +843,8 @@ type waveVocabulary struct {
 	protoNames map[int32]string // the generated enum's _name map
 	prefix     string           // member prefix stripped to get the stored token
 	zeroMember string           // the sentinel member's FULL name — declared, never inferred
-	check      string           // anchor «<constraint> CHECK», unique inside 0324
+	check      string           // anchor «<constraint> CHECK», unique inside the owning migration
+	migration  string           // файл, ВЛАДЕЮЩИЙ текущим списком токенов; "" = migration0324
 	window     int              // 0 = waveCheckWindow
 	tokens     []string         // the entity slice: the single source the validator reads
 	holes      []int32          // enum numbers promised to a later phase and deliberately left empty
@@ -913,7 +921,11 @@ func assertWaveVocabularyNoDrift(t *testing.T, v waveVocabulary) {
 	if window == 0 {
 		window = waveCheckWindow
 	}
-	dbValues := extractDBEnumValues(t, readMigrationFile(t, migration0324), v.check, window)
+	migration := v.migration
+	if migration == "" {
+		migration = migration0324
+	}
+	dbValues := extractDBEnumValues(t, readMigrationFile(t, migration), v.check, window)
 	assertSameSet(t, v.label, dbValues, v.tokens)
 	assertSameSetNamed(t, v.label, "proto enum", protoEnumTokens(t, v), "entity set", v.tokens)
 }
@@ -996,8 +1008,12 @@ func TestHardwareAttachMethodDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_HARDWARE_ATTACH_METHOD_",
 		zeroMember: "TECH_CARD_HARDWARE_ATTACH_METHOD_UNKNOWN",
 		check:      "chk_op_attach_method CHECK",
-		tokens:     entity.HardwareAttachMethodTokens,
+		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
+		migration: migration0325,
+		tokens:    entity.HardwareAttachMethodTokens,
 	})
+	assertVocabularyHasToken(t, "TechCardHardwareAttachMethod", entity.HardwareAttachMethodTokens, "other",
+		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 }
 
 // TestHolePrepDBCheckNoDrift — H2, чем готовится отверстие под фурнитуру.
@@ -1036,8 +1052,12 @@ func TestPrintMethodDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_PRINT_METHOD_",
 		zeroMember: "TECH_CARD_PRINT_METHOD_UNKNOWN",
 		check:      "chk_op_print_method CHECK",
-		tokens:     entity.PrintMethodTokens,
+		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
+		migration: migration0325,
+		tokens:    entity.PrintMethodTokens,
 	})
+	assertVocabularyHasToken(t, "TechCardPrintMethod", entity.PrintMethodTokens, "other",
+		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 	// entity.PrintMethodLaserEngrave is the one member the Go validator singles out by name (it has
 	// no carrier, no peel, no second press and no pressure scale). A rename on either side would
 	// leave that whole branch of not_applicable rules matching nothing, in silence.
@@ -1086,8 +1106,12 @@ func TestTrimActionDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_TRIM_ACTION_",
 		zeroMember: "TECH_CARD_TRIM_ACTION_UNKNOWN",
 		check:      "chk_op_trim_action CHECK",
-		tokens:     entity.TrimActionTokens,
+		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
+		migration: migration0325,
+		tokens:    entity.TrimActionTokens,
 	})
+	assertVocabularyHasToken(t, "TechCardTrimAction", entity.TrimActionTokens, "other",
+		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 }
 
 // TestCleaningKindDBCheckNoDrift — C1, что именно чистят. Discriminator of the clean verb.
@@ -1098,8 +1122,12 @@ func TestCleaningKindDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_CLEANING_KIND_",
 		zeroMember: "TECH_CARD_CLEANING_KIND_UNKNOWN",
 		check:      "chk_op_cleaning_kind CHECK",
-		tokens:     entity.CleaningKindTokens,
+		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
+		migration: migration0325,
+		tokens:    entity.CleaningKindTokens,
 	})
+	assertVocabularyHasToken(t, "TechCardCleaningKind", entity.CleaningKindTokens, "other",
+		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 }
 
 // TestInspectCoverageDBCheckNoDrift — Q1, что именно проверяют. The column is coverage_mode, the
@@ -1112,8 +1140,12 @@ func TestInspectCoverageDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_INSPECT_COVERAGE_",
 		zeroMember: "TECH_CARD_INSPECT_COVERAGE_UNKNOWN",
 		check:      "chk_op_coverage_mode CHECK",
-		tokens:     entity.InspectCoverageTokens,
+		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
+		migration: migration0325,
+		tokens:    entity.InspectCoverageTokens,
 	})
+	assertVocabularyHasToken(t, "TechCardInspectCoverage", entity.InspectCoverageTokens, "other",
+		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 }
 
 // TestWetProcessKindDBCheckNoDrift — WP1, вид мокрой обработки. Discriminator of the wet_process verb.
@@ -1124,8 +1156,12 @@ func TestWetProcessKindDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_WET_PROCESS_KIND_",
 		zeroMember: "TECH_CARD_WET_PROCESS_KIND_UNKNOWN",
 		check:      "chk_op_wet_process_kind CHECK",
-		tokens:     entity.WetProcessKindTokens,
+		// СПИСОК ЖИВЁТ В 0325: волна «прочего» пересоздала этот CHECK, дописав `other`.
+		migration: migration0325,
+		tokens:    entity.WetProcessKindTokens,
 	})
+	assertVocabularyHasToken(t, "TechCardWetProcessKind", entity.WetProcessKindTokens, "other",
+		"REQUIRED-дискриминатор без выхода «прочее» не оставляет поле пустым, а заставляет выбрать ЧУЖОЙ приём — и это уходит в подписанный хвост дайджеста, в снапшот и на печатный лист")
 }
 
 // TestButtonholeStyleDBCheckNoDrift — FA1, форма петли.
@@ -1202,6 +1238,174 @@ func TestLabelAttachStitchDBCheckNoDrift(t *testing.T) {
 		check:      "chk_op_label_attach_stitch CHECK",
 		tokens:     entity.LabelAttachStitchTokens,
 	})
+}
+
+// --- 0325: под-глагол ВТО и направление припуска ---------------------------------------------------
+
+// TestPressActionDBCheckNoDrift — ЧТО ИМЕННО делает ВТО-шаг. НЕ required ни на одном глаголе, в
+// отличие от шести дискриминаторов выше: старая строка press без под-глагола обязана сохраняться как
+// есть, и обязательность здесь была бы ретроактивной.
+func TestPressActionDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardPressAction",
+		protoNames: pb_common.TechCardPressAction_name,
+		prefix:     "TECH_CARD_PRESS_ACTION_",
+		zeroMember: "TECH_CARD_PRESS_ACTION_UNKNOWN",
+		check:      "chk_op_press_action CHECK",
+		migration:  migration0325,
+		tokens:     entity.PressActionTokens,
+	})
+	// На обоих членах висят правила Go, и оба находятся ПО ИМЕНИ: to_one_side включает
+	// обязательность направления, open — единственное, что законно на глаголе press_open.
+	// Переименование любого из двух оставило бы правило матчащим ничто, и оно перестало бы
+	// существовать молча.
+	assertVocabularyHasToken(t, "TechCardPressAction", entity.PressActionTokens,
+		string(entity.PressActionToOneSide),
+		"на нём висит условная обязательность press_toward — без него правило перестаёт срабатывать молча")
+	assertVocabularyHasToken(t, "TechCardPressAction", entity.PressActionTokens,
+		string(entity.PressActionOpen),
+		"второе написание разутюжки: чтение принимает и его, и глагол press_open")
+}
+
+// TestPressTowardDBCheckNoDrift — КУДА лёг припуск. Собственный словарь, а НЕ TechCardGarmentZone:
+// «вверх», «вниз» и «к центру» зонами не являются, а второе поле зонного типа на шаге, у которого
+// уже есть zone, — ровно ловушка «два ключа под одним именем».
+func TestPressTowardDBCheckNoDrift(t *testing.T) {
+	assertWaveVocabularyNoDrift(t, waveVocabulary{
+		label:      "TechCardPressToward",
+		protoNames: pb_common.TechCardPressToward_name,
+		prefix:     "TECH_CARD_PRESS_TOWARD_",
+		zeroMember: "TECH_CARD_PRESS_TOWARD_UNKNOWN",
+		check:      "chk_op_press_toward CHECK",
+		migration:  migration0325,
+		tokens:     entity.PressTowardTokens,
+	})
+	// Ни одного `none`: у направления явного «нет» не бывает — припуск либо заутюжен на сторону, и
+	// сторона названа, либо не заутюжен вовсе, и тогда поля нет. Проверяется от противного: член,
+	// заведённый по инерции с seam_securing / hole_prep / peel_mode, сделал бы выразимым состояние
+	// «заутюжено в никуда».
+	for _, tok := range entity.PressTowardTokens {
+		if tok == "none" {
+			t.Error("TechCardPressToward: член \"none\" не должен существовать — «не заутюжено» выражается отсутствием press_action = to_one_side, а не направлением «никуда»")
+		}
+	}
+}
+
+// TestPressColumnsAreNullableWithoutDefault пришпиливает форму хранения обеих колонок 0325.
+//
+// NULL значит «не сказано». DEFAULT стёр бы разницу между «технолог ответил» и «технолог молчит», а
+// NOT NULL сделал бы поле обязательным ретроактивно — на КАЖДОЙ существующей строке, ровно то, чего
+// эта фаза обязана избежать. Обе колонки читаются из файла, а не из живой схемы: тест статический.
+func TestPressColumnsAreNullableWithoutDefault(t *testing.T) {
+	content := readMigrationFile(t, migration0325)
+	for _, col := range []struct{ name, typ string }{
+		{"press_action", "VARCHAR(16)"},
+		{"press_toward", "VARCHAR(20)"},
+	} {
+		want := "ADD COLUMN " + col.name + " " + col.typ + " NULL"
+		if !strings.Contains(content, want) {
+			t.Errorf("0325 must add %s as %s NULL (found no %q) — NOT NULL would make the field required on every existing row", col.name, col.typ, want)
+			continue
+		}
+		idx := strings.Index(content, want)
+		end := strings.Index(content[idx:], "\n")
+		if end < 0 {
+			end = len(content) - idx
+		}
+		if strings.Contains(strings.ToUpper(content[idx:idx+end]), "DEFAULT") {
+			t.Errorf("%s carries a DEFAULT — it would erase the difference between «technologist answered» and «technologist is silent»", col.name)
+		}
+	}
+	// И ширины: самый длинный токен обязан помещаться, иначе первая же запись — data-too-long, а со
+	// STRICT off тихое усечение, которое потом отвергнет собственный CHECK колонки (урок
+	// topstitch_mode в 0324).
+	for _, c := range []struct {
+		col    string
+		width  int
+		tokens []string
+	}{
+		{"press_action", 16, entity.PressActionTokens},
+		{"press_toward", 20, entity.PressTowardTokens},
+	} {
+		for _, tok := range c.tokens {
+			if len(tok) > c.width {
+				t.Errorf("%s is VARCHAR(%d) but token %q is %d characters — it would be truncated on write and then refused by its own CHECK", c.col, c.width, tok, len(tok))
+			}
+		}
+	}
+}
+
+// Test0325VocabulariesAreCaseClosed — тот же довод, что у 0306 и 0324: REGEXP наследует коллацию
+// колонки, а она регистронезависима и на utf8mb3 прода, и на utf8mb4 контейнера, поэтому одна
+// альтернация принимает 'FRONT' и 'To_One_Side'. Закрывает словарь STRCMP по BINARY-касту.
+//
+// Шесть ПЕРЕСОЗДАННЫХ CHECK'ов в списке по той же причине, по которой семь пересозданных стоят в
+// тесте 0324: пересоздание — ровно то место, где гейт регистра теряют по невнимательности, и потеря
+// невидима: список токенов по-прежнему совпадает, и все тесты дрейфа остаются зелёными.
+func Test0325VocabulariesAreCaseClosed(t *testing.T) {
+	content := readMigrationFile(t, migration0325)
+	for _, c := range []struct{ constraint, column string }{
+		// новые словари
+		{"chk_op_press_action", "press_action"},
+		{"chk_op_press_toward", "press_toward"},
+		// пересозданные ради выхода «прочее»
+		{"chk_op_attach_method", "attach_method"},
+		{"chk_op_print_method", "print_method"},
+		{"chk_op_trim_action", "trim_action"},
+		{"chk_op_cleaning_kind", "cleaning_kind"},
+		{"chk_op_coverage_mode", "coverage_mode"},
+		{"chk_op_wet_process_kind", "wet_process_kind"},
+	} {
+		stmt := strings.Index(content, c.constraint+" CHECK")
+		if stmt < 0 {
+			t.Errorf("named vocabulary CHECK %s not found in 0325", c.constraint)
+			continue
+		}
+		guard := "STRCMP(CAST(" + c.column + " AS BINARY), CAST(LOWER(" + c.column + ") AS BINARY)) = 0"
+		rx := strings.Index(content[stmt:], c.column+" REGEXP")
+		gd := strings.Index(content[stmt:], guard)
+		if rx < 0 {
+			t.Errorf("%s: no REGEXP alternation on %s", c.constraint, c.column)
+			continue
+		}
+		next := strings.Index(content[stmt+len(c.constraint):], "CONSTRAINT chk_")
+		limit := len(content) - stmt
+		if next >= 0 {
+			limit = next + len(c.constraint)
+		}
+		if gd < 0 || gd < rx || gd > limit {
+			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
+				c.constraint, c.column, rx, gd, limit)
+		}
+	}
+}
+
+// TestPressRecreatedChecksAreSupersets доказывает, что шаг 2 миграции 0325 РАСШИРЯЕТ шесть словарей,
+// а не переписывает их. Сужение здесь — не стилистика: ADD CONSTRAINT проверяет ВСЮ историю таблицы
+// и останавливает старт прода на первой же строке со снятым токеном (память
+// retroactive-check-halts-deploy), а порядок и написание оставшихся членов входят в отпечаток.
+func TestPressRecreatedChecksAreSupersets(t *testing.T) {
+	before := readMigrationFile(t, migration0324)
+	after := readMigrationFile(t, migration0325)
+	for _, check := range []string{
+		"chk_op_attach_method CHECK", "chk_op_print_method CHECK", "chk_op_trim_action CHECK",
+		"chk_op_cleaning_kind CHECK", "chk_op_coverage_mode CHECK", "chk_op_wet_process_kind CHECK",
+	} {
+		old := extractDBEnumValues(t, before, check, waveCheckWindow)
+		now := extractDBEnumValues(t, after, check, waveCheckWindow)
+		if len(now) != len(old)+1 {
+			t.Errorf("%s: 0324 listed %d tokens, 0325 lists %d — the recreation must ADD exactly «other» and touch nothing else", check, len(old), len(now))
+			continue
+		}
+		for i, tok := range old {
+			if now[i] != tok {
+				t.Errorf("%s: token %d moved from %q to %q — order and spelling of the existing members are part of the fingerprint, only the append is allowed", check, i, tok, now[i])
+			}
+		}
+		if now[len(now)-1] != "other" {
+			t.Errorf("%s: the appended token is %q, not \"other\"", check, now[len(now)-1])
+		}
+	}
 }
 
 // Test0324VocabulariesAreCaseClosed guards the half of every vocabulary CHECK in the wave that the
