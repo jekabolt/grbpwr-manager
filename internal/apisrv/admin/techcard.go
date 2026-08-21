@@ -132,6 +132,10 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationKindsWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Щит оси «работа» (0330), тот же довод и тот же момент.
+	if err := operationWorkWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Стор-гейт с nil вместо сохранённой карточки — не заглушка, а ровно то, чем создание
 	// является: карточки ещё нет, стирать нечего. Единственное, что он тут скажет, — «снять
 	// разметку» у создаваемой карточки бессмысленно, и это надо сказать, а не пропустить.
@@ -139,6 +143,11 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, err
 	}
 	if err := assemblyCapabilityStoredGate(req.TechCard, nil); err != nil {
+		return nil, err
+	}
+	// Снятая работа на СОЗДАВАЕМОЙ карточке — всегда отказ: «уже несла этот токен» здесь заведомо
+	// ложно, карточки ещё нет. nil тут не заглушка, а ровно то, чем создание является.
+	if err := operationWorkRetiredGate(req.TechCard, nil); err != nil {
 		return nil, err
 	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
@@ -276,6 +285,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := operationKindsWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Тот же довод, тот же момент — щит оси «работа» (0330).
+	if err := operationWorkWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -316,6 +329,15 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// знает, какие восемнадцать полей на старых парах (глагол, machine_type) — и какие токены,
 	// дописанные волной в словари живых колонок, — запись сотрёт.
 	if err := operationKindsStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
+	// Щит оси «работа» (0330) — правило 2 и, следом, правило снятой работы. Оба здесь по одной
+	// причине: только хранилище знает, что карточка размечена, и только оно даёт снятой работе
+	// право доехать там, где строка уже её несёт.
+	if err := operationWorkStoredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
+	if err := operationWorkRetiredGate(req.TechCard, stored); err != nil {
 		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет

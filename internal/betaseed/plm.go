@@ -209,6 +209,7 @@ func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardI
 	// tcFetch возвращает сохранённые блоки шага, и сохранение без флага было бы отвергнуто как
 	// «старый бандл собирается стереть то, что написал новый».
 	tc.OperationKindsAware = true
+	tc.OperationWorkAware = true
 	err := s.withLock(ctx, styleID, func(lv uint64) error {
 		_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{
 			Id:                  styleID,
@@ -397,6 +398,7 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			AssemblyAware:       true,
 			MediaAware:          true,
 			OperationKindsAware: true,
+			OperationWorkAware:  true,
 		},
 	})
 	if err != nil {
@@ -827,12 +829,12 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 			InputKeys: []string{"SHELL"},
 			Note:      "отстрочка по корпусу"},
 		{OperationNumber: 30,
-			OperationType:  common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
-			MachineType:    common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
-			Zone:           common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_SLEEVE,
-			InputKeys:      []string{"SHELL", st.pieceCuffKey},
-			OutputUnitKey:  "SHELL",
-			Note:           "притачать манжету — узел вбирает деталь, идентичность сохраняется"},
+			OperationType: common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+			MachineType:   common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+			Zone:          common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_SLEEVE,
+			InputKeys:     []string{"SHELL", st.pieceCuffKey},
+			OutputUnitKey: "SHELL",
+			Note:          "притачать манжету — узел вбирает деталь, идентичность сохраняется"},
 	}
 
 	// NEGATIVE: an operation referencing an unknown bom_line_key must be rejected (400).
@@ -856,6 +858,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	neg.AssemblyAware = true
 	neg.MediaAware = true
 	neg.OperationKindsAware = true
+	neg.OperationWorkAware = true
 	_, negErr := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(negLV), TechCard: neg})
 	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
 		return fmt.Errorf("NEGATIVE bad bomLineKey: expected HTTP 400, got %v", negErr)
@@ -1492,6 +1495,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	tc2.AssemblyAware = true
 	tc2.MediaAware = true
 	tc2.OperationKindsAware = true
+	tc2.OperationWorkAware = true
 	strayLV, err := s.lockVersion(ctx, sid)
 	if err != nil {
 		return err
@@ -1566,6 +1570,7 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 			AssemblyAware:       true,
 			MediaAware:          true,
 			OperationKindsAware: true,
+			OperationWorkAware:  true,
 		}})
 		if err != nil {
 			return fmt.Errorf("CreateTechCard(aux %s): %w", names[i], err)
@@ -2229,6 +2234,7 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.AssemblyAware = true
 			body.MediaAware = true
 			body.OperationKindsAware = true
+			body.OperationWorkAware = true
 			_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(raceLV), TechCard: body})
 			if e == nil {
 				codes[idx] = 200
