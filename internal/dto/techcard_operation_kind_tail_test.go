@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"reflect"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -690,6 +691,85 @@ func TestPressTailCarriesNoWaveKeysOnAStoredRow(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		if again := digestOf(constructionProjection(tc)); again != first {
 			t.Fatalf("отпечаток ВТО-строки неустойчив между прогонами: %s != %s", first, again)
+		}
+	}
+}
+
+// ── 7. КЛЮЧИ ВНУТРИ ХВОСТА УНИКАЛЬНЫ ────────────────────────────────────────────────────────────
+
+// opKindEveryFieldFilled — шаг, у которого ВАЛИДНО КАЖДОЕ nullable-поле сущности.
+//
+// Собирается рефлексией, а не списком имён, намеренно. Проверка уникальности ключей имеет смысл
+// только на хвостах, заполненных ЦЕЛИКОМ: пара с дублирующимся ключом родится лишь тогда, когда
+// валидны ОБЕ половины дубля, — а список имён протух бы на первом же дописанном поле, молча сузив
+// проверку до того подмножества, которое кто-то не забыл обновить. Значения не важны, сверяются
+// КЛЮЧИ; важно только то, что Valid выставлен везде.
+func opKindEveryFieldFilled(t *testing.T) entity.TechCardOperation {
+	t.Helper()
+	var op entity.TechCardOperation
+	rv := reflect.ValueOf(&op).Elem()
+	filled := 0
+	for i := 0; i < rv.NumField(); i++ {
+		f := rv.Field(i)
+		if !f.CanSet() || f.Kind() != reflect.Struct {
+			continue
+		}
+		valid := f.FieldByName("Valid")
+		if !valid.IsValid() || valid.Kind() != reflect.Bool || !valid.CanSet() {
+			continue
+		}
+		valid.SetBool(true)
+		filled++
+	}
+	// Страховка от немой рефлексии: если типы полей когда-нибудь перестанут быть {…, Valid bool},
+	// цикл выше тихо не заполнит ничего, и тест ниже станет зелёным на пустом шаге.
+	if filled < 34 {
+		t.Fatalf("рефлексия заполнила %d nullable-полей — меньше, чем одних только колонок волны "+
+			"(34); проверка уникальности ключей пошла бы по недозаполненным хвостам", filled)
+	}
+	return op
+}
+
+// TestOperationKindPairKeysUniqueWithinTail — внутри одного хвоста ключ встречается ровно раз.
+//
+// Это не стилистика и не «чистота списка». Порядок пар задаёт sort.SliceStable по ключу, и он
+// тотален РОВНО ПОКА ключи внутри хвоста уникальны: у двух пар с одним ключом порядок определяет
+// уже не ключ, а объявление. Стабильная сортировка делает такой порядок хотя бы воспроизводимым
+// (у sort.Slice он был бы произволен и мог бы поехать на обновлении Go), но воспроизводимость —
+// не то, чего мы хотим от дубля: дубль означает, что два РАЗНЫХ факта цеха пишутся под одним
+// именем, и прочесть отпечаток однозначно нельзя. Поэтому дубль ловится здесь ЯВНО, а не
+// проявляется когда-нибудь сдвигом замороженного hex.
+func TestOperationKindPairKeysUniqueWithinTail(t *testing.T) {
+	op := opKindEveryFieldFilled(t)
+	var gotTags []string
+	for i, tail := range opKindTailsOf(t, op) {
+		tagged, ok := tail.([]any)
+		if !ok || len(tagged) == 0 {
+			t.Fatalf("хвост %d не тегированный кортеж: %#v", i, tail)
+		}
+		if !opKindIsPairTail(tagged) {
+			continue // assembly и media несут списки объектов, а не пары
+		}
+		tag := tagged[0].(string)
+		gotTags = append(gotTags, tag)
+		seen := map[string]int{}
+		for j, key := range opKindPairKeys(t, tagged) {
+			if prev, dup := seen[key]; dup {
+				t.Errorf("в хвосте %q ключ %q стоит дважды (пары %d и %d) — порядок этих двух пар "+
+					"задаёт уже не ключ, и два разных факта цеха пишутся под одним именем",
+					tag, key, prev, j)
+			}
+			seen[key] = j
+		}
+	}
+	// И вторая половина: проверены ВСЕ полевые хвосты, а не те, что случайно родились. Если хвост
+	// не родился на шаге, где заполнено вообще всё, — его ключи никто не сверял.
+	if len(gotTags) != len(opKindFieldTags) {
+		t.Fatalf("парных хвостов %d, ожидалось %d: %v", len(gotTags), len(opKindFieldTags), gotTags)
+	}
+	for i := range opKindFieldTags {
+		if gotTags[i] != opKindFieldTags[i] {
+			t.Fatalf("состав парных хвостов: %v, ожидалось %v", gotTags, opKindFieldTags)
 		}
 	}
 }

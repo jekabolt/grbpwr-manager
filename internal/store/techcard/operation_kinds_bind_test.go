@@ -221,6 +221,13 @@ func TestPressMigrationAddsColumnsInCanonOrder(t *testing.T) {
 // insertTechCardOperations. Ключи map'ы порядка не имеют, поэтому проверить их можно только по
 // ИСХОДНИКУ: он и читается — go/parser достаёт литерал ровно из тела нужной функции, так что ни
 // комментарий, ни одноимённый ключ из соседней map'ы под сверку не попадут.
+//
+// СВЕРЯЕТСЯ ПОЛНЫЙ КАНОН (34), А НЕ КАНОН 0324 (32), и это не мелочь. Фильтр inCanon выбрасывает
+// всё, чего в эталоне нет, ДО сравнения: с каноном 0324 press_action и press_toward выпадали бы из
+// проверяемого набора, и равенство сходилось бы независимо от того, есть ли эти ключи в карте
+// вообще. Нога, охраняющая ПУТЬ ЗАПИСИ, была слепа ровно на те две колонки, которые волна 0325 и
+// добавила. ALTER'ы остаются на своих половинах канона — у каждой миграции свой файл, — а эта нога
+// смотрит на карту целиком, потому что карта одна.
 func TestOperationKindInsertMapCarriesKindColumnsInCanonOrder(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "production.go", nil, 0)
@@ -237,8 +244,8 @@ func TestOperationKindInsertMapCarriesKindColumnsInCanonOrder(t *testing.T) {
 	if fn == nil {
 		t.Fatal("insertTechCardOperations не найдена — тест сверяет несуществующий список")
 	}
-	inCanon := make(map[string]bool, len(operationKindColumnCanon))
-	for _, c := range operationKindColumnCanon {
+	inCanon := make(map[string]bool, len(operationColumnCanon))
+	for _, c := range operationColumnCanon {
 		inCanon[c] = true
 	}
 	var got []string
@@ -257,7 +264,7 @@ func TestOperationKindInsertMapCarriesKindColumnsInCanonOrder(t *testing.T) {
 		}
 		return true
 	})
-	if !reflect.DeepEqual(got, operationKindColumnCanon) {
-		t.Fatalf("ключи insertTechCardOperations разошлись с каноном §1:\n эталон: %v\n INSERT: %v", operationKindColumnCanon, got)
+	if !reflect.DeepEqual(got, operationColumnCanon) {
+		t.Fatalf("ключи insertTechCardOperations разошлись с каноном §1:\n эталон: %v\n INSERT: %v", operationColumnCanon, got)
 	}
 }

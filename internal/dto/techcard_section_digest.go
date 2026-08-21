@@ -769,7 +769,14 @@ func operationKindTail(tag string, pairs ...operationKindPair) []any {
 	// ПОБАЙТНО по ключу, а не в порядке объявления: порядок объявления сдвинулся бы при первой же
 	// дописке поля в середину списка. Сравнение строк в Go и есть побайтное — никакой
 	// локале-зависимой сортировки здесь быть не должно, иначе отпечаток начнёт зависеть от машины.
-	sort.Slice(filled, func(i, j int) bool { return filled[i].key < filled[j].key })
+	//
+	// СТАБИЛЬНАЯ — не «на всякий случай». sort.Slice равные элементы упорядочивает произвольно, и
+	// контракта на этот произвол между релизами Go нет: смена алгоритма в стандартной библиотеке
+	// перетасовала бы пары с одинаковым ключом и увела бы замороженный hex БЕЗ ЕДИНОЙ ПРАВКИ КОДА.
+	// Замороженный отпечаток не имеет права зависеть от реализации сортировки, поэтому здесь
+	// SliceStable: при дубле ключа порядок задаёт объявление, а сам дубль ловится явно —
+	// TestOperationKindPairKeysUniqueWithinTail в techcard_operation_kind_tail_test.go.
+	sort.SliceStable(filled, func(i, j int) bool { return filled[i].key < filled[j].key })
 	out := make([]any, 0, len(filled))
 	for _, p := range filled {
 		out = append(out, []any{p.key, p.value})
