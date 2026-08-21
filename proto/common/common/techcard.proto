@@ -1220,15 +1220,23 @@ enum TechCardPieceCutSymmetry {
 // оставаться видимо неразмеченной. Иначе вопрос «а как здесь на самом деле» перестанет быть
 // заметен ровно в тот момент, когда на него впервые ответили за технолога.
 //
-// SEAM_ALLOWANCE И STRIP обе кладут полосу вдоль среза и различаются ТОЛЬКО источником её ширины:
-// первая берёт эталон припуска карточки (иначе цеха, 0277), вторая — fusing_width_mm. Свести их в
-// одно значение с обязательным числом значило бы вписывать припуск руками на каждой детали и ловить
-// расхождение с эталоном, ради которого 0277 и заводилась.
+// ПОЛОСА ВДОЛЬ СРЕЗА — ОДИН РЕЖИМ, А НЕ ДВА. До 0328 их было два, и комментарий этого самого места
+// формулировал диагноз: «SEAM_ALLOWANCE и STRIP обе кладут полосу вдоль среза и различаются ТОЛЬКО
+// источником её ширины». Это дословно width/edge отстрочки: один режим с числом, другой без.
+// Возражение «свести их значило бы вписывать припуск руками на каждой детали» било мимо — оно
+// предлагало не тот способ свести. Правильный способ уже используется во всём файле: НЕ ХРАНИТЬ
+// ВЫВОДИМОЕ, unset = наследуй. Поэтому STRIP с пустым fusing_width_mm берёт эталон припуска
+// карточки (иначе цеха, 0277), а с числом — переопределяет его, ровно как seam_allowance_mm,
+// stitches_per_cm и все overrides шага. Связь с эталоном при этом не теряется, а укрепляется:
+// раньше эталон читал только один из двух режимов.
 enum TechCardPieceFusingMode {
+  // SEAM_ALLOWANCE = 2 СНЯТ 0328, его роль исполняет STRIP с пустой шириной.
+  reserved 2;
+  reserved "TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE";
+
   TECH_CARD_PIECE_FUSING_MODE_UNKNOWN = 0; // не размечено (см. выше — это не «целиком»)
   TECH_CARD_PIECE_FUSING_MODE_FULL = 1; // дублируется вся деталь: клеевая = тот же контур
-  TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE = 2; // полоса по припуску; ширина = эталон припуска (0277)
-  TECH_CARD_PIECE_FUSING_MODE_STRIP = 3; // полоса заданной ширины; fusing_width_mm обязателен
+  TECH_CARD_PIECE_FUSING_MODE_STRIP = 3; // полоса вдоль среза; ширина пуста = эталон припуска (0277)
 }
 
 // TechCardSizeQuantity is the TYPICAL calculation batch for a size — «типовой тираж для
@@ -1337,6 +1345,18 @@ enum TechCardLabelType {
 // reason: without it the migration of the legacy `double_needle` operation type would have
 // collapsed irreversibly into the plain lockstitch and lost the fact somebody recorded.
 enum TechCardMachineType {
+  // HARDWARE_ATTACH = 14 («пришивание фурнитуры») СНЯТ 0328: он кодировал СПОСОБ КРЕПЛЕНИЯ в поле
+  // «на чём». «Пришивная» — это attach_method = SEW, а машина у такого шага своя и называется по
+  // имени (button_attach, lockstitch, bartack). Пока оба написания жили рядом, каждое было
+  // НЕПОЛНЫМ: HARDWARE_SET + SEW не мог назвать машину (machine_type отвергался на любом
+  // не-MACHINE глаголе), а MACHINE + hardware_attach не мог назвать способ (attach_method
+  // отвергается на MACHINE и сейчас). Технолог, ставящий пришивную кнопку, обязан был выбрать, что
+  // потерять. 0328 снял член И разрешил machine_type на HARDWARE_SET — теперь шаг называет обе оси
+  // сразу. В entity.LegacyOperationMachineType этот токен НЕ упоминается, то есть целью
+  // канонизации замороженного легаси-глагола он не был (в отличие от LOCKSTITCH_DOUBLE_NEEDLE).
+  reserved 14;
+  reserved "TECH_CARD_MACHINE_TYPE_HARDWARE_ATTACH";
+
   TECH_CARD_MACHINE_TYPE_UNKNOWN = 0; // unset; REJECTED on write for a MACHINE step
   TECH_CARD_MACHINE_TYPE_LOCKSTITCH = 1; // прямострочная (301)
   TECH_CARD_MACHINE_TYPE_LOCKSTITCH_DOUBLE_NEEDLE = 2; // двухигольная прямострочная
@@ -1351,7 +1371,6 @@ enum TechCardMachineType {
   TECH_CARD_MACHINE_TYPE_BUTTON_ATTACH = 11; // пуговичная
   TECH_CARD_MACHINE_TYPE_EMBROIDERY = 12; // вышивальная
   TECH_CARD_MACHINE_TYPE_HANDSTITCH_IMITATION = 13; // имитация ручного стежка (AMF)
-  TECH_CARD_MACHINE_TYPE_HARDWARE_ATTACH = 14; // пришивание фурнитуры
   TECH_CARD_MACHINE_TYPE_ELASTIC_ATTACH = 15; // притачивание резинки
   TECH_CARD_MACHINE_TYPE_BINDING_TAPING = 16; // бейка и кант
   TECH_CARD_MACHINE_TYPE_ZIPPER_SETTING = 17; // пришивание молнии
@@ -1423,11 +1442,18 @@ enum TechCardAutomationLevel {
 // thread_tension_note for the numbers a particular machine wants. A raw dial number was rejected
 // deliberately: it means nothing across two machines of the same class.
 enum TechCardThreadTension {
+  // OTHER = 4 СНЯТ 0328. «Другое, чем слабее / нормально / туже» не бывает: шкала УПОРЯДОЧЕНА, и
+  // «другое» её разрывает — тот же довод, которым этот файл дважды обосновал отсутствие OTHER у
+  // TechCardAutomationLevel и у снятого TechCardPressureScale. Что имелось в виду — «у меня есть
+  // конкретное число», и число живёт в thread_tension_note, который законен рядом со ЛЮБОЙ
+  // ступенью шкалы и никуда не девается.
+  reserved 4;
+  reserved "TECH_CARD_THREAD_TENSION_OTHER";
+
   TECH_CARD_THREAD_TENSION_UNKNOWN = 0; // unset / inherited
   TECH_CARD_THREAD_TENSION_LOOSER = 1; // слабее обычного
   TECH_CARD_THREAD_TENSION_NORMAL = 2;
   TECH_CARD_THREAD_TENSION_TIGHTER = 3; // туже обычного
-  TECH_CARD_THREAD_TENSION_OTHER = 4; // + thread_tension_note
 }
 
 // TechCardPressCloth is what sits between the iron and the cloth.
@@ -2079,6 +2105,13 @@ message TechCardOperationPlacement {
 // buttonhole | button_attach | bartack законны ТОЛЬКО hole_prep, reinforcement и
 // cycle_stitch_count: у петли и закрепки есть подготовка отверстия и усилитель, но нет «способа
 // крепления» и нет стропы, которую подгибают, — attach_method и foldback_mm там отвергаются.
+//
+// НА САМОМ HARDWARE_SET МАШИНУ ТЕПЕРЬ НАЗВАТЬ МОЖНО (0328): machine_type законен на этом глаголе,
+// и это половина починки F6. Пришивная кнопка на ленте — это HARDWARE_SET + attach_method = SEW +
+// machine_type = button_attach, то есть обе оси сразу; прежде технолог обязан был выбрать, какую
+// из двух потерять. Остальной машинный блок (нитки, иглы, натяжение, ширина стежка) при
+// HARDWARE_SET по-прежнему отвергается: он описывает СТРОЧКУ, а её у шага установки фурнитуры нет
+// как факта карточки.
 message TechCardOperationHardware {
   TechCardHardwareAttachMethod attach_method = 1; // REQUIRED при HARDWARE_SET; на MACHINE отвергается
   TechCardHolePrep hole_prep = 2; // UNKNOWN = не указано, NONE = явное «не готовим»

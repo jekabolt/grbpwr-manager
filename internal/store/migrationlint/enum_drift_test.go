@@ -576,9 +576,25 @@ func TestMachineTypeDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_MACHINE_TYPE_",
 		zeroMember: "TECH_CARD_MACHINE_TYPE_UNKNOWN",
 		check:      "chk_op_machine_type CHECK",
+		migration:  migration0328,
 		window:     600,
 		tokens:     entity.MachineTypeTokens,
+		retired:    []int32{14}, // TECH_CARD_MACHINE_TYPE_HARDWARE_ATTACH, снят 0328
 	})
+	assertVocabularyLacksToken(t, "TechCardMachineType", entity.MachineTypeTokens, "hardware_attach",
+		"он кодировал СПОСОБ КРЕПЛЕНИЯ в поле «на чём»: «пришивная» — это attach_method = sew, а машина у такого шага называется по имени. Взамен machine_type стал законен на глаголе hardware_set, и шаг называет обе оси сразу")
+	// LOCKSTITCH_DOUBLE_NEEDLE ОСТАЁТСЯ, и это не непоследовательность рядом со снятым соседом.
+	// Он — ЦЕЛЬ КАНОНИЗАЦИИ замороженного легаси-глагола `double_needle`
+	// (entity.LegacyOperationMachineType), то есть снятие сломало бы чтение старых строк.
+	// hardware_attach в той таблице НЕ упоминается — потому его и можно было снять.
+	if entity.LegacyOperationMachineType["double_needle"] == "" {
+		t.Error("канонизация легаси double_needle исчезла — тогда и lockstitch_double_needle перестал быть её целью, и довод «член нельзя снять» надо перечитать заново")
+	}
+	for legacy, machine := range entity.LegacyOperationMachineType {
+		if machine == "hardware_attach" {
+			t.Errorf("легаси-глагол %q канонизируется в снятый токен hardware_attach — снятие сломало бы чтение старых строк", legacy)
+		}
+	}
 }
 
 // TestPressEquipmentDBCheckNoDrift is the entity<->DB leg for the ВТО half: entity.PressEquipmentTokens
@@ -604,9 +620,12 @@ func TestPressEquipmentDBCheckNoDrift(t *testing.T) {
 // assertSameSet already fails on a duplicated DB value, so the single-'other' rule is enforced by
 // construction rather than by a second assertion.
 func TestEquipmentUnionDBCheckNoDrift(t *testing.T) {
-	// 0324 recreated this CHECK: both new machines join the union, the press half is untouched, and
-	// 'other' still has to appear exactly once across the two halves.
-	content := readMigrationFile(t, migration0324)
+	// 0328 пересоздала этот CHECK последней: из машинной половины ушёл hardware_attach, прессовая не
+	// тронута, и 'other' по-прежнему обязан встречаться РОВНО ОДИН раз на обе половины.
+	content := readMigrationFile(t, migration0328)
+	if i := strings.Index(content, "-- +migrate Down"); i >= 0 {
+		content = content[:i]
+	}
 	dbValues := extractDBEnumValues(t, content, "chk_eqp_equipment CHECK", 700)
 
 	union := make([]string, 0, len(entity.MachineTypeTokens)+len(entity.PressEquipmentTokens))
@@ -651,9 +670,21 @@ func TestNeedleTypeDBCheckNoDrift(t *testing.T) {
 // TestThreadTensionDBCheckNoDrift — entity.ThreadTensionTokens <-> chk_op_thread_tension /
 // chk_eqp_thread_tension.
 func TestThreadTensionDBCheckNoDrift(t *testing.T) {
+	// ОБЕ ПОЛОВИНЫ ПЕРЕЕХАЛИ НА 0328 ВМЕСТЕ. Одна половина, читаемая из 0306, сверяла бы entity с
+	// уже переписанным списком и краснела бы на здоровой схеме; хуже — разные якоря у двух копий
+	// одного словаря перестали бы доказывать, что это ОДИН словарь, ради чего пара и заведена.
 	assertPairedCheckNoDrift(t, "TechCardThreadTension",
-		migration0306, "chk_op_thread_tension CHECK",
-		migration0306, "chk_eqp_thread_tension CHECK", 200, entity.ThreadTensionTokens)
+		migration0328, "chk_op_thread_tension CHECK",
+		migration0328, "chk_eqp_thread_tension CHECK", 200, entity.ThreadTensionTokens)
+	assertVocabularyLacksToken(t, "TechCardThreadTension", entity.ThreadTensionTokens, "other",
+		"шкала УПОРЯДОЧЕНА, а «другое, чем слабее / нормально / туже» не бывает: то, что имелось в виду, — конкретное число, и оно живёт в thread_tension_note рядом с любой ступенью")
+	// ТРЕТЬЯ НОГА — proto. assertPairedCheckNoDrift сверяет только entity ↔ БД (у словаря ДВА
+	// констрейнта, и общий помощник построен вокруг этого), поэтому закрытый номер проверяется
+	// здесь отдельно: без него `reserved 4` можно было бы забыть, и enum разошёлся бы с обеими
+	// колонками молча.
+	if name, taken := pb_common.TechCardThreadTension_name[4]; taken {
+		t.Errorf("номер 4 снова занят членом %s — он объявлен reserved 0328 и закрыт навсегда", name)
+	}
 }
 
 // TestPressClothDBCheckNoDrift — entity.PressClothTokens <-> chk_op_press_cloth / chk_eqp_press_cloth.
@@ -843,6 +874,11 @@ const migration0326 = "0326_topstitch_drop_width.sql"
 // ВЛАДЕЮЩИЙ ТЕКУЩИМ СПИСКОМ. Восемь якорей поэтому переезжают сюда; девятый (pressure_scale) не
 // переезжает никуда — его теста больше нет, потому что нет ни enum'а, ни колонки, ни CHECK'а.
 const migration0327 = "0327_operation_kinds_false_splits.sql"
+
+// 0328 СУЖАЕТ ТРИ СЛОВАРЯ НА КОЛОНКАХ, КОТОРЫЕ ЖИВУТ НА ПРОДЕ ГОДАМИ, и делает это в ЧЕТЫРЁХ
+// CHECK'ах: machine_type и thread_tension стоят ДВАЖДЫ — на шаге и в парке оборудования. Владение
+// списками переходит к нему по тому же правилу, что у 0325, 0326 и 0327.
+const migration0328 = "0328_false_splits_prod_live.sql"
 
 // waveCheckWindow bounds the search from a CHECK's anchor. The longest new alternation
 // (label_attach_stitch) ends 192 characters past its anchor; a window shorter than the list would
@@ -1638,6 +1674,130 @@ func Test0327DropsPressureScaleColumn(t *testing.T) {
 	chk := strings.Index(up, "DROP CHECK chk_op_pressure_scale")
 	if chk > drop {
 		t.Error("DROP CHECK обязан стоять до DROP COLUMN внутри одного ALTER'а — порядок спецификаций читает человек, и обратный вводит в заблуждение")
+	}
+}
+
+// Test0328VocabulariesAreCaseClosed — тот же довод, что у 0324/0325/0327, применённый к ЧЕТЫРЁМ
+// пересозданным CHECK'ам 0328. Пересоздание — место, где гейт регистра теряют по невнимательности,
+// и потеря невидима: список токенов совпадает, дрейф зелен, а колонка принимает 'Overlock'.
+func Test0328VocabulariesAreCaseClosed(t *testing.T) {
+	up := readMigrationFile(t, migration0328)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	for _, c := range []struct{ constraint, column string }{
+		{"chk_op_machine_type", "machine_type"},
+		{"chk_op_thread_tension", "thread_tension"},
+		{"chk_eqp_equipment", "equipment"},
+		{"chk_eqp_thread_tension", "thread_tension"},
+	} {
+		stmt := strings.Index(up, c.constraint+" CHECK")
+		if stmt < 0 {
+			t.Errorf("named vocabulary CHECK %s not found in 0328", c.constraint)
+			continue
+		}
+		guard := "STRCMP(CAST(" + c.column + " AS BINARY), CAST(LOWER(" + c.column + ") AS BINARY)) = 0"
+		rx := strings.Index(up[stmt:], c.column+" REGEXP")
+		gd := strings.Index(up[stmt:], guard)
+		if rx < 0 {
+			t.Errorf("%s: no REGEXP alternation on %s", c.constraint, c.column)
+			continue
+		}
+		next := strings.Index(up[stmt+len(c.constraint):], "CONSTRAINT chk_")
+		limit := len(up) - stmt
+		if next >= 0 {
+			limit = next + len(c.constraint)
+		}
+		if gd < 0 || gd < rx || gd > limit {
+			t.Errorf("%s must close %s against case as well as spelling: STRCMP guard missing or outside the CHECK (regexp at %d, guard at %d, next constraint at %d)",
+				c.constraint, c.column, rx, gd, limit)
+		}
+	}
+	// chk_tcp_fusing_mode пишется списком IN, а не REGEXP, — гейт регистра у него тот же STRCMP, и
+	// он ОБЯЗАН быть в клаузе 0328: на бете он отсутствовал (первая редакция 0304, которую гейт по
+	// ИМЕНИ не дал заменить), и этот файл сводит обе базы к одному определению.
+	if !strings.Contains(up, "STRCMP(CAST(fusing_mode AS BINARY), CAST(LOWER(fusing_mode) AS BINARY)) = 0") {
+		t.Error("0328 пересоздаёт chk_tcp_fusing_mode без гейта регистра — коллация колонки регистронезависима, и 'Strip' лёг бы в базу законно")
+	}
+}
+
+// Test0328NarrowedChecksDropExactlyTheRetiredTokens — та же цитата, что у 0327: список 0328
+// сверяется со списком файла, который владел им ДО, и разница обязана быть РОВНО объявленной.
+func Test0328NarrowedChecksDropExactlyTheRetiredTokens(t *testing.T) {
+	up := readMigrationFile(t, migration0328)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	for _, c := range []struct {
+		check   string
+		owner   string
+		removed []string
+		window  int
+	}{
+		{"chk_op_machine_type CHECK", migration0324, []string{"hardware_attach"}, 600},
+		{"chk_eqp_equipment CHECK", migration0324, []string{"hardware_attach"}, 700},
+		{"chk_op_thread_tension CHECK", migration0306, []string{"other"}, 200},
+		{"chk_eqp_thread_tension CHECK", migration0306, []string{"other"}, 200},
+	} {
+		before := extractDBEnumValues(t, readMigrationFile(t, c.owner), c.check, c.window)
+		idx := strings.Index(up, c.check)
+		if idx < 0 {
+			t.Errorf("%s: 0328 не пересоздаёт этот констрейнт вовсе", c.check)
+			continue
+		}
+		after := extractDBEnumValues(t, up[idx:], c.check, c.window)
+		want := map[string]bool{}
+		for _, v := range before {
+			want[v] = true
+		}
+		for _, tok := range c.removed {
+			if !want[tok] {
+				t.Errorf("%s: токен %q, объявленный снятым, отсутствовал и в прежнем списке (%v)", c.check, tok, before)
+			}
+			delete(want, tok)
+		}
+		assertSameSetNamed(t, c.check, "ожидаемый список после 0328", mapKeysAsStrings(want), "клауза 0328", after)
+	}
+}
+
+// Test0328MakesTheFusingWidthOptional — ВТОРАЯ ПОЛОВИНА F8, и без неё первая была бы потерей.
+//
+// Снятие режима `seam_allowance` отняло бы у технолога единственный способ сказать «полосой по
+// эталону припуска», если бы chk_tcp_fusing_width продолжал требовать число при `strip`
+// БЕЗУСЛОВНО. Оба констрейнта обязаны двигаться ОДНИМ файлом: сужение словаря без расширения
+// правила ширины — это не свёртка двух написаний в одно, а вычёркивание одного из двух ответов.
+//
+// Проверяется по ТЕКСТУ Up-половины, потому что живой базы у migrationlint нет: словарь режима
+// потерял `seam_allowance`, а клауза ширины при `strip` научилась принимать NULL.
+func Test0328MakesTheFusingWidthOptional(t *testing.T) {
+	up := readMigrationFile(t, migration0328)
+	if i := strings.Index(up, "-- +migrate Down"); i >= 0 {
+		up = up[:i]
+	}
+	mode := strings.Index(up, "ADD CONSTRAINT chk_tcp_fusing_mode CHECK")
+	width := strings.Index(up, "ADD CONSTRAINT chk_tcp_fusing_width CHECK")
+	if mode < 0 || width < 0 {
+		t.Fatal("0328 обязана пересоздать ОБА констрейнта дублирования — словарь режима и правило ширины")
+	}
+	modeClause := up[mode:width]
+	if strings.Contains(modeClause, "seam_allowance") {
+		t.Error("chk_tcp_fusing_mode 0328 всё ещё несёт seam_allowance — он и strip кладут одну и ту же полосу и различались лишь тем, названо ли число")
+	}
+	if !strings.Contains(modeClause, "''strip''") || !strings.Contains(modeClause, "''full''") {
+		t.Errorf("chk_tcp_fusing_mode 0328 потерял живой член словаря: %s", modeClause)
+	}
+	end := strings.Index(up[width:], "\nPREPARE")
+	if end < 0 {
+		end = len(up) - width
+	}
+	widthClause := up[width : width+end]
+	if !strings.Contains(widthClause, "fusing_width_mm IS NULL OR") {
+		t.Errorf("chk_tcp_fusing_width 0328 по-прежнему требует число при strip — «полосой по эталону припуска» сказать стало бы нечем: %s", widthClause)
+	}
+	// И правило «числа нет ни при каком другом режиме» обязано уцелеть: пара атомарна, а ширина
+	// рядом с «целиком» описывает ничто.
+	if !strings.Contains(widthClause, "NOT (fusing_mode <=> _utf8mb4''strip'') AND fusing_width_mm IS NULL") {
+		t.Errorf("chk_tcp_fusing_width 0328 разрешил ширину вне полосы: %s", widthClause)
 	}
 }
 

@@ -2503,12 +2503,18 @@ var ValidAttachmentKinds = tokenSet[TechCardAttachmentKind](AttachmentKindTokens
 
 // TechCardMachineType is the machine a MACHINE step runs on: the second axis, the one the old
 // operation type mixed into the verb.
+//
+// `hardware_attach` СНЯТ 0328: он кодировал СПОСОБ КРЕПЛЕНИЯ в поле «на чём». «Пришивная» — это
+// attach_method = sew, а машина у такого шага называется по имени. Взамен machine_type стал
+// законен на глаголе hardware_set, так что шаг называет обе оси сразу. В
+// LegacyOperationMachineType этот токен не упоминается — целью канонизации замороженного легаси он
+// не был, в отличие от lockstitch_double_needle.
 type TechCardMachineType string
 
 var MachineTypeTokens = []string{
 	"lockstitch", "lockstitch_double_needle", "overlock", "coverstitch", "coverlock",
 	"chainstitch", "blindstitch", "zigzag", "bartack", "buttonhole", "button_attach",
-	"embroidery", "handstitch_imitation", "hardware_attach", "elastic_attach",
+	"embroidery", "handstitch_imitation", "elastic_attach",
 	"binding_taping", "zipper_setting", "gathering", "patch_pocket_auto", "welt_pocket_auto",
 	"template_auto", "collar_cuff_auto", "sleeve_setting_auto", "waistband_auto",
 	"other",
@@ -2554,12 +2560,17 @@ var AutomationLevelTokens = []string{"basic", "semi_auto", "auto"}
 
 var ValidAutomationLevels = tokenSet[TechCardAutomationLevel](AutomationLevelTokens)
 
-// TechCardThreadTension is a closed scale RELATIVE to the machine's normal setting, plus a free
+// TechCardThreadTension is an ORDERED scale RELATIVE to the machine's normal setting, plus a free
 // note for the number a particular machine wants. A raw dial figure was rejected deliberately: it
 // means nothing across two machines of the same class.
+//
+// `other` СНЯТ 0328 по тому же доводу, которым этот дом дважды обосновал его отсутствие у
+// AutomationLevel и у снятого PressureScale: «другое, чем слабее / нормально / туже» не бывает, а
+// шкала с «другим» перестаёт быть шкалой. Что имелось в виду — «у меня есть конкретное число», и
+// число живёт в thread_tension_note, законном рядом с ЛЮБОЙ ступенью.
 type TechCardThreadTension string
 
-var ThreadTensionTokens = []string{"looser", "normal", "tighter", "other"}
+var ThreadTensionTokens = []string{"looser", "normal", "tighter"}
 
 var ValidThreadTensions = tokenSet[TechCardThreadTension](ThreadTensionTokens)
 
@@ -3503,9 +3514,9 @@ type TechCardPiece struct {
 	// «целиком», перестаёт быть заметным вопросом в тот самый момент, когда на него ответили за
 	// технолога.
 	FusingMode sql.NullString `db:"fusing_mode"`
-	// FusingWidthMm — ширина клеевой полосы, мм. Значима и обязательна ТОЛЬКО при
-	// PieceFusingModeStrip; при остальных режимах гасится, потому что число рядом с «по припуску»
-	// спорит с эталоном припуска (0277) молча: на экране видно одно, в расчёте другое.
+	// FusingWidthMm — ширина клеевой полосы, мм. Значима ТОЛЬКО при PieceFusingModeStrip и там
+	// НЕОБЯЗАТЕЛЬНА с 0328: пусто = эталон припуска карточки (иначе цеха, 0277), число =
+	// переопределение. При «целиком» гасится — там полосы нет вовсе.
 	FusingWidthMm decimal.NullDecimal `db:"fusing_width_mm"`
 	// FusingOmitted — ПАРЫ не было на проводе, а не «пришла пустой»: тот же отрицательный смысл и та
 	// же причина, что у CutSymmetryOmitted и UngradedOmitted рядом. Один флаг на оба поля, потому что
@@ -3597,19 +3608,20 @@ type TechCardPieceFusingMode string
 
 const (
 	PieceFusingModeFull TechCardPieceFusingMode = "full"
-	// PieceFusingModeSeamAllowance and PieceFusingModeStrip BOTH lay a strip along the edge and differ
-	// only in where its width comes from: the card's (else the workshop's) seam-allowance standard
-	// (0277) versus the number typed on the piece. Collapsing them into one value with a mandatory
-	// number would mean re-typing the allowance on every piece and then diverging from the standard
-	// 0277 exists to hold.
-	PieceFusingModeSeamAllowance TechCardPieceFusingMode = "seam_allowance"
-	PieceFusingModeStrip         TechCardPieceFusingMode = "strip"
+	// PieceFusingModeStrip — ПОЛОСА ВДОЛЬ СРЕЗА, И ОНА ОДНА. До 0328 рядом жил `seam_allowance`, и
+	// комментарий этого места сам формулировал диагноз: оба режима кладут полосу вдоль среза и
+	// различаются ТОЛЬКО источником её ширины. Это дословно width/edge отстрочки. Возражение
+	// «свести их значило бы вписывать припуск руками на каждой детали» било мимо — оно предлагало
+	// не тот способ свести. Ширина стала ОПЦИОНАЛЬНОЙ: пусто = эталон припуска карточки (иначе
+	// цеха, 0277), число = переопределение, ровно как у seam_allowance_mm и всех overrides шага.
+	PieceFusingModeStrip TechCardPieceFusingMode = "strip"
 )
 
-// ValidTechCardPieceFusingModes mirrors the DB CHECK chk_tcp_fusing_mode (0304). "Not marked" is
-// deliberately absent for the same reason as in cut symmetry: it is the NULL column, not a value.
+// ValidTechCardPieceFusingModes mirrors the DB CHECK chk_tcp_fusing_mode (0304, сужен 0328).
+// "Not marked" is deliberately absent for the same reason as in cut symmetry: it is the NULL
+// column, not a value.
 var ValidTechCardPieceFusingModes = map[TechCardPieceFusingMode]bool{
-	PieceFusingModeFull: true, PieceFusingModeSeamAllowance: true, PieceFusingModeStrip: true,
+	PieceFusingModeFull: true, PieceFusingModeStrip: true,
 }
 
 // PieceFusingStripWidthCeilingMm mirrors the ceiling in chk_tcp_fusing_width (0304). The widest real
@@ -3645,8 +3657,8 @@ func PieceFusingModeOrFull(mode sql.NullString) TechCardPieceFusingMode {
 //   - НЕ ДУБЛИРУЕТСЯ ⇒ разметки нет. A mode surviving a cleared checkbox would read «не
 //     дублируется» on screen while handing the estimate a strip — and unchecking the box is exactly
 //     the moment nobody looks at the mode any more.
-//   - ШИРИНА ТОЛЬКО У STRIP. A number left beside «по припуску» argues with the standard silently:
-//     the screen shows the standard, the arithmetic uses the leftover.
+//   - ШИРИНА ТОЛЬКО У STRIP. A number left beside «дублируется целиком» describes nothing at all:
+//     the screen shows a whole contour, the arithmetic would use the leftover.
 //
 // Normalising rather than refusing is the right call here because neither state is an operator's
 // statement — both are residue of a previous edit, and there is exactly one thing they can mean.
@@ -3665,15 +3677,20 @@ func (p *TechCardPiece) NormalizeFusing() {
 // the operator needs. An unset mode is accepted — «не размечено» is legal and the only honest state
 // for every row that predates 0304.
 //
-// Call NormalizeFusing FIRST: this function judges an operator's statement, not residue. The pair it
-// refuses to invent is the one only a human can supply — a strip with no width. Defaulting that to
-// the seam allowance would silently turn «полосой» into «по припуску», and the two differ by
-// whatever the technologist meant to type.
+// Call NormalizeFusing FIRST: this function judges an operator's statement, not residue.
+//
+// ПОЛОСА БЕЗ ЧИСЛА ЗАКОННА С 0328, и это разворот прежнего правила. Раньше она отвергалась, а
+// «ширину берём из эталона припуска» говорилось ОТДЕЛЬНЫМ режимом `seam_allowance` — то есть один
+// приём был записан двумя значениями, различавшимися лишь тем, названо ли число. Теперь число —
+// опциональное свойство единственного режима: пусто = эталон припуска карточки (иначе цеха, 0277),
+// заполнено = переопределение. Ничего не выдумывается за технолога: пустая ширина и есть его ответ
+// «по эталону», и читатель (dto.fusingGeometryFor) разворачивает её в число ровно там, где ему
+// нужно число.
 func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm decimal.NullDecimal) error {
 	if !mode.Valid {
 		if widthMm.Valid {
 			return NewFieldViolation(field, "a fusing strip width is set, but no fusing mode is picked", widthMm.Decimal.String(),
-				"pick “strip”, or remove the width: the “whole piece” and “by seam allowance” modes have no number of their own")
+				"pick “strip”, or remove the width: the “whole piece” mode has no number of its own")
 		}
 		return nil
 	}
@@ -3684,18 +3701,19 @@ func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm 
 	v := TechCardPieceFusingMode(mode.String)
 	if !ValidTechCardPieceFusingModes[v] {
 		return NewFieldViolation(field, "unknown fusing mode", mode.String,
-			"pick one of: full (the whole piece), seam_allowance (by the seam allowance), strip (a strip of a given width)")
+			"pick one of: full (the whole piece), strip (a strip along the edge — leave the width empty to take the card's seam-allowance reference)")
 	}
 	if v != PieceFusingModeStrip {
 		if widthMm.Valid {
 			return NewFieldViolation(field, "a strip width is set on a mode that has no width of its own", mode.String,
-				"“by seam allowance” takes the width from the card's seam allowance reference; your own number goes with the “strip” mode")
+				"“the whole piece” is cut to the same contour as the piece; a width belongs to the “strip” mode")
 		}
 		return nil
 	}
+	// ПУСТАЯ ШИРИНА ПРИ STRIP — ЗАКОННЫЙ ОТВЕТ (0328), а не пропуск: она значит «по эталону
+	// припуска». Проверять дальше нечего.
 	if !widthMm.Valid {
-		return NewFieldViolation(field, "the “strip” mode has no width set", "",
-			"type the strip width in millimetres, or pick “by seam allowance” to take it from the seam allowance reference")
+		return nil
 	}
 	if !widthMm.Decimal.IsPositive() {
 		return NewFieldViolation(field, "the fusing strip width must be greater than zero", widthMm.Decimal.String(),

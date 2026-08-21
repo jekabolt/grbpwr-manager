@@ -563,6 +563,18 @@ func parseOperationEquipment(o *pb_common.TechCardOperation, opType entity.TechC
 	var press operationPressFields
 
 	isMachine := opType == entity.OpTypeMachine
+	// МАШИНА ЗАКОННА И НА УСТАНОВКЕ ФУРНИТУРЫ (0328). До неё «пришивная кнопка» была выразима двумя
+	// НЕПОЛНЫМИ способами: HARDWARE_SET + attach_method = sew не мог назвать машину, а MACHINE +
+	// machine_type = hardware_attach не мог назвать способ (attach_method на MACHINE отвергается и
+	// сейчас). Технолог обязан был выбрать, что потерять. Член hardware_attach снят, а глагол
+	// получил вторую ось — теперь шаг говорит и «что делаем», и «на чём».
+	//
+	// ТОЛЬКО machine_type, и это граница, а не полумера. Остальной машинный блок (профиль, нитки,
+	// иглы, натяжение, ширина стежка) описывает СТРОЧКУ, а у шага установки фурнитуры строчки как
+	// факта карточки нет: пришивная кнопка садится циклом автомата, чьи параметры — свойство
+	// машины, а не шага. Пустить сюда весь блок значило бы завести теневые поля, которые никто не
+	// читает и не печатает, а следующий редактор им верит.
+	isHardware := opType == entity.OpTypeHardwareSet
 	isPress := opType == entity.OpTypePress || opType == entity.OpTypePressOpen || opType == entity.OpTypeFusing
 	// ВТО-БЛОК ЛЕГАЛЕН ТАКЖЕ ПРИ PRINT (0324): термопресс — то же самое оборудование, и второй
 	// комплект тех же семи полей внутри блока печати был бы дублём, который немедленно разъедется.
@@ -572,8 +584,12 @@ func parseOperationEquipment(o *pb_common.TechCardOperation, opType entity.TechC
 	pressAllowed := isPress || opType == entity.OpTypePrint
 
 	if !isMachine {
+		if isHardware {
+			// Машину назвать можно, строчку — нет.
+			machine.machineType = machineType
+		}
 		if f := firstPopulated([]populatedField{
-			{"machine_type", machineType.Valid},
+			{"machine_type", machineType.Valid && !isHardware},
 			{"machine_profile_key", strings.TrimSpace(o.MachineProfileKey) != ""},
 			{"thread_count", o.ThreadCount != 0},
 			{"needle_type", o.NeedleType != pb_common.TechCardNeedleType_TECH_CARD_NEEDLE_TYPE_UNKNOWN},

@@ -639,15 +639,14 @@ func fusingGeometryFor(tc *entity.TechCard, cw *entity.TechCardColorway, bom *en
 	scope := fusedPieceContourScope(tc, cw, bom, p)
 	switch entity.PieceFusingModeOrFull(p.FusingMode) {
 	case entity.PieceFusingModeStrip:
-		if !p.FusingWidthMm.Valid {
-			// Ширины нет там, где она обязательна: колонка этого не допускает (0304), но карточка
-			// могла приехать другим путём (слепок релиза, импорт). НЕ полный контур: подпись на
-			// экране говорит «полосой», и посчитать её как «всю деталь» значило бы разойтись с
-			// написанным в разы — молча. Отказ называет недостающий факт.
-			return decimal.NullDecimal{}, true, scope
+		if p.FusingWidthMm.Valid {
+			return mmToCm(p.FusingWidthMm), false, scope
 		}
-		return mmToCm(p.FusingWidthMm), false, scope
-	case entity.PieceFusingModeSeamAllowance:
+		// ПУСТАЯ ШИРИНА — ЭТО ОТВЕТ «ПО ЭТАЛОНУ ПРИПУСКА», А НЕ ПРОПУСК (0328). До неё то же самое
+		// говорилось отдельным режимом `seam_allowance`, то есть один приём был записан двумя
+		// значениями, различавшимися лишь тем, названо ли число. Ветка осталась та же, сменилось
+		// только условие, по которому в неё попадают.
+		//
 		// ЭТАЛОН ПРИПУСКА, каскадом 0277: переопределение карточки, иначе цеховой дефолт. Не
 		// припуск, под которым СНЯТ замер (tech_card_piece_area.seam_allowance_mm): тот равен нулю,
 		// когда мерили по слою кроя, где припуск уже нарисован, — и полоса вышла бы нулевой ширины на
@@ -655,8 +654,8 @@ func fusingGeometryFor(tc *entity.TechCard, cw *entity.TechCardColorway, bom *en
 		std := entity.RequiredSeamAllowanceMm(tc.RequiredSeamAllowanceMm, tc.WorkshopSeamAllowanceMm)
 		if !std.Valid || !std.Decimal.IsPositive() {
 			// Эталона нет ни на карточке, ни в цехе — ширины полосы не существует. ОТКАЗ, а не полный
-			// контур: «по припуску», посчитанное как «вся деталь», — это цифра, которая не
-			// соответствует подписи рядом с ней, и расходятся они в разы.
+			// контур: «полосой», посчитанное как «вся деталь», — это цифра, которая не соответствует
+			// подписи рядом с ней, и расходятся они в разы.
 			return decimal.NullDecimal{}, true, scope
 		}
 		return mmToCm(std), false, scope

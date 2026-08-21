@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -291,5 +292,128 @@ func TestRetiredKindFieldsDoNotMoveAnExistingFingerprint(t *testing.T) {
 				t.Errorf("заполненный %s дал ТОТ ЖЕ отпечаток, что пустой шаг — значит хвостовая пара этой колонки не эмитится вовсе, и «снятие пустого поля байты не двигает» доказано пустотой", tt.col)
 			}
 		})
+	}
+}
+
+// --- 0328: ТРИ СЛОВАРЯ НА ПРОД-ЖИВЫХ КОЛОНКАХ ---------------------------------------------------
+
+// Снятые 0328 номера, взятые сырыми, — по тому же доводу, что у соседей выше.
+const (
+	retiredMachineHardwareAttach = pb_common.TechCardMachineType(14)
+	retiredThreadTensionOther    = pb_common.TechCardThreadTension(4)
+	retiredFusingSeamAllowance   = pb_common.TechCardPieceFusingMode(2)
+)
+
+// TestRetiredProdLiveMembersAreRefusedByField — провод отвергает каждый снятый 0328 номер, называя
+// поле. Отличие от 0327 здесь не в механике, а в цене ошибки: эти три колонки живут на проде
+// годами, machine_type заполнен у 92 из 105 строк, и «ноль у снимаемого токена» — ЗАМЕР, а не
+// свойство схемы.
+func TestRetiredProdLiveMembersAreRefusedByField(t *testing.T) {
+	t.Run("машина «пришивание фурнитуры» на шаге", func(t *testing.T) {
+		ve := kindRefusal(t, &pb_common.TechCardOperation{
+			OperationType: opTypeMachineNew, Zone: zoneOuter,
+			MachineType: retiredMachineHardwareAttach,
+		})
+		if ve.Field != "operations[0].machine_type" || ve.Reason != "unknown_value" {
+			t.Errorf("отказ назвал %q/%q, ожидалось operations[0].machine_type/unknown_value", ve.Field, ve.Reason)
+		}
+	})
+	t.Run("натяжение «другое» на шаге", func(t *testing.T) {
+		ve := kindRefusal(t, &pb_common.TechCardOperation{
+			OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mtOverlock,
+			ThreadTension: retiredThreadTensionOther,
+		})
+		if ve.Field != "operations[0].thread_tension" || ve.Reason != "unknown_value" {
+			t.Errorf("отказ назвал %q/%q, ожидалось operations[0].thread_tension/unknown_value", ve.Field, ve.Reason)
+		}
+	})
+}
+
+// TestHardwareSetCanNameItsMachine — ВТОРАЯ ПОЛОВИНА F6, и без неё снятие члена было бы потерей.
+//
+// Пока `hardware_attach` жил в списке машин, «пришивная кнопка» была выразима двумя НЕПОЛНЫМИ
+// способами: HARDWARE_SET + attach_method = sew не мог назвать машину (machine_type отвергался на
+// любом не-MACHINE глаголе), а MACHINE + machine_type = hardware_attach не мог назвать способ
+// (attach_method на MACHINE отвергается и сейчас). Технолог обязан был выбрать, что потерять.
+// Снять член, не открыв вторую ось на глаголе, значило бы отнять вторую половину у обоих.
+func TestHardwareSetCanNameItsMachine(t *testing.T) {
+	t.Run("глагол называет и способ, и машину", func(t *testing.T) {
+		ins := kindParse(t, &pb_common.TechCardOperation{
+			OperationType: opTypeHardware, Zone: zoneOuter,
+			MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_BUTTON_ATTACH,
+			Hardware: &pb_common.TechCardOperationHardware{
+				AttachMethod: pb_common.TechCardHardwareAttachMethod_TECH_CARD_HARDWARE_ATTACH_METHOD_SEW,
+			},
+		})
+		op := ins.Operations[0]
+		if op.MachineType.String != "button_attach" {
+			t.Errorf("машина на hardware_set потеряна: %q", op.MachineType.String)
+		}
+		if kindFacts(op)["attach_method"] != "sew" {
+			t.Errorf("способ на hardware_set потерян: %q", kindFacts(op)["attach_method"])
+		}
+	})
+	t.Run("машина на hardware_set НЕОБЯЗАТЕЛЬНА", func(t *testing.T) {
+		// Ретроактивной обязательности не возникает: сегодняшние строки hardware_set машины не
+		// несут, и требовать её значило бы сделать их несохраняемыми.
+		op := kindParse(t, &pb_common.TechCardOperation{
+			OperationType: opTypeHardware, Zone: zoneOuter,
+			Hardware: &pb_common.TechCardOperationHardware{
+				AttachMethod: pb_common.TechCardHardwareAttachMethod_TECH_CARD_HARDWARE_ATTACH_METHOD_SEW,
+			},
+		}).Operations[0]
+		if op.MachineType.Valid {
+			t.Errorf("серверу дописали машину, которую никто не называл: %q", op.MachineType.String)
+		}
+	})
+	t.Run("СТРОЧКА на hardware_set по-прежнему отвергается", func(t *testing.T) {
+		// Граница осталась на месте: открыт ровно machine_type, а не весь машинный блок. Нитки и
+		// иглы описывают СТРОЧКУ, которой у шага установки фурнитуры как факта карточки нет.
+		ve := kindRefusal(t, &pb_common.TechCardOperation{
+			OperationType: opTypeHardware, Zone: zoneOuter,
+			MachineType: pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_BUTTON_ATTACH,
+			ThreadCount: 2,
+			Hardware: &pb_common.TechCardOperationHardware{
+				AttachMethod: pb_common.TechCardHardwareAttachMethod_TECH_CARD_HARDWARE_ATTACH_METHOD_SEW,
+			},
+		})
+		if ve.Field != "operations[0].thread_count" || ve.Reason != "not_applicable" {
+			t.Errorf("отказ назвал %q/%q, ожидалось operations[0].thread_count/not_applicable", ve.Field, ve.Reason)
+		}
+	})
+	t.Run("на прочих глаголах машина по-прежнему отвергается", func(t *testing.T) {
+		ve := kindRefusal(t, &pb_common.TechCardOperation{
+			OperationType: opTypeClean, Zone: zoneOther,
+			MachineType: mtOverlock,
+			Clean:       &pb_common.TechCardOperationClean{Kind: pb_common.TechCardCleaningKind_TECH_CARD_CLEANING_KIND_SPOT_CLEAN},
+		})
+		if ve.Field != "operations[0].machine_type" || ve.Reason != "not_applicable" {
+			t.Errorf("отказ назвал %q/%q, ожидалось operations[0].machine_type/not_applicable", ve.Field, ve.Reason)
+		}
+	})
+}
+
+// TestRetiredFusingSeamAllowanceIsRefusedByField — F8 на проводе. Путь поля здесь `pieces[N]`, а не
+// `operations[N]`, и это существенно: подсветить контрол формы можно только по нему.
+func TestRetiredFusingSeamAllowanceIsRefusedByField(t *testing.T) {
+	if _, ok := pb_common.TechCardPieceFusingMode_name[2]; ok {
+		t.Fatal("номер 2 снова занят членом enum'а — он объявлен reserved 0328 и закрыт навсегда")
+	}
+	card := kindCard()
+	card.Pieces = []*pb_common.TechCardPiece{{
+		Name: "полочка", LineKey: "FRONT", PiecesPerGarment: 1,
+		Fused:      true,
+		FusingMode: pbPtr(retiredFusingSeamAllowance),
+	}}
+	_, err := ConvertPbTechCardInsertToEntity(card)
+	if err == nil {
+		t.Fatal("снятый режим дублирования принят — в колонку легло бы значение, которого нет в словаре, и CHECK отбил бы всю карточку голым 3819")
+	}
+	var ve *entity.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("отказ не назвал поле вовсе: %v", err)
+	}
+	if ve.Field != "pieces[0].fusing_mode" {
+		t.Errorf("отказ назвал %q, ожидалось pieces[0].fusing_mode", ve.Field)
 	}
 }
