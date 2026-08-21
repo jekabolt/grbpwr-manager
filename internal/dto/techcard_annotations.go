@@ -288,8 +288,13 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 			Color:         color,
 			PieceLineKey:  first,
 			PieceLineKeys: keys,
-			Dashed:        a.Dashed && kind.HasLine(),
-			Filled:        a.Filled && kind.HasArea(),
+			// ПРИВЕДЕНИЕ К false МОЛЧИТ ЗАКОННО, обоснование — у карточного близнеца
+			// (calloutGeometryFromPb ниже, «Пунктир у точки и заливка у линии…»): флаг это не
+			// измеренный факт, а признак примитива, у которого рисовать нечего, и ЧТЕНИЕ применяет
+			// ровно ту же функцию (kind.HasLine / kind.HasArea) — асимметрии запись/чтение здесь нет,
+			// а отказ объявлял бы подпись протухшей за нажатие, ничего не изменившее.
+			Dashed: a.Dashed && kind.HasLine(),
+			Filled: a.Filled && kind.HasArea(),
 		})
 	}
 	return out, nil

@@ -431,6 +431,14 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		// bom_line_keys: the materials this operation consumes. The legacy single bom_line_key went
 		// with the break — the chip row was always the real answer, and the single field was a second
 		// one that the printed sheet then had to subtract to stop printing it twice.
+		//
+		// СХЛОПЫВАНИЕ ДУБЛЯ ЗДЕСЬ МОЛЧИТ, И ЭТО ЗАКОННО — тот же довод, что у piece_line_keys выше:
+		// связь «операция ↔ строка BOM» — МНОЖЕСТВО, и её единственность записана в схеме
+		// (`uniq_op_bom_link UNIQUE (operation_id, bom_item_id)`, 0200). Повтор одного ключа не несёт
+		// второго факта, терять в нём нечего, а без схлопывания он вернулся бы драйверным 1062 без
+		// имени поля. Пустая строка отбрасывается по той же причине: это слот, а не ссылка.
+		// Отличие от input_keys ниже НАМЕРЕННОЕ и там же объяснено — для входов сборки повтор
+		// нарушает правило графа, и о нём технолог обязан услышать, а не получить тихую правку.
 		var bomLineKeys []string
 		seenBomKey := make(map[string]bool, len(o.BomLineKeys))
 		for _, k := range o.BomLineKeys {
