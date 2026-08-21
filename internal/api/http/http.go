@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	grpcSlog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
 	grpcRecovery "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
@@ -591,12 +592,67 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	return r, nil
 }
 
-func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
-	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+// newAdminJSONMarshaler — JSON-маршалер admin-гейтвея. ЕДИНСТВЕННОЕ место, где он собирается:
+// его берёт и мукс (newAdminServeMux ниже), и тест marshaler_test.go — не копией опций, а этим же
+// конструктором, иначе тест доказывал бы строгость выдуманной конфигурации, а не работающей.
+//
+// ЗАЧЕМ. По умолчанию grpc-gateway v2.21.0 ставит на мукс protojson с DiscardUnknown: true
+// (runtime/marshaler_registry.go, defaultMarshaler). Это значит, что незнакомое ПОЛЕ и незнакомое
+// ИМЯ ЧЛЕНА ENUM в теле запроса выбрасываются БЕЗ ОШИБКИ: сервер отвечает 200, а присланного
+// значения в сообщении просто нет. Так и случился инцидент Ж7 — владелец получил
+// «operation_type: required» на заполненном поле, а 32 поля шага тех-карты уехали в никуда молча:
+// строка операции пишется полной заменой, и то, что транспорт съел, стёрлось и в базе. Обмен на
+// громкий 400 с ИМЕНЕМ ВИНОВНИКА в теле — это и есть смысл правки: «сломаться можно, исчезнуть
+// нельзя».
+//
+// ПОЧЕМУ ТОЛЬКО ADMIN. У витрины и у auth свои отдельные муксы (frontendJSONGateway /
+// authJSONGateway ниже) — они этой строгости НЕ получают намеренно: публичный клиент витрины
+// обновляется не нами и не синхронно, и 400 на лишнем поле там был бы отказом в обслуживании, а не
+// защитой данных. Терять на витрине нечего: она не пишет карточек.
+//
+// ПОЧЕМУ EmitUnpopulated ОСТАЁТСЯ true. Это дефолт того же маршалера, и на нём стоит контракт
+// admin-клиента: незаполненное вложенное сообщение приходит ЯВНЫМ null, и zod-схемы клиента
+// разбирают именно эту форму. Меняется РОВНО ОДИН бит — DiscardUnknown; остальные опции
+// воспроизводят дефолт v2.21.0 дословно.
+//
+// ГРАНИЦА СОВМЕСТИМОСТИ (инвентарь на 2026-08-21). Бандл admin-клиента СТАРШЕ последнего снятия
+// члена enum / поля теперь получает 400 вместо тихой порчи — это принятое поведение, а не
+// регрессия. Инвентарь по proto/admin/admin/admin.proto + proto/common/common/*.proto: 15
+// зарезервированных ИМЁН членов enum (TECH_CARD_PRESS_ACTION_OPEN, TECH_CARD_TOPSTITCH_MODE_WIDTH,
+// TECH_CARD_REINFORCEMENT_FUSIBLE_PATCH, TECH_CARD_REINFORCEMENT_FABRIC_STAY,
+// TECH_CARD_MACHINE_TYPE_HARDWARE_ATTACH, TECH_CARD_PEEL_MODE_NONE, TECH_CARD_HOLE_PREP_PRONG_PIERCE,
+// TECH_CARD_THREAD_TENSION_OTHER, TECH_CARD_PRESS_TOWARD_SIDE, TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE,
+// TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT, TECH_CARD_CLEANING_KIND_CHALK_REMOVAL,
+// TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL, TECH_CARD_ZIPPER_APPLICATION_SEPARATING_CF,
+// TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET) и 112 пар (сообщение, зарезервированное ИМЯ поля).
+// Клиент ветки feat/operation-kinds-ui не эмитит НИ ОДНОГО из них: сгенерированные типы
+// src/api/proto-http/{admin,common}/index.ts не содержат ни одного зарезервированного ключа в
+// соответствующем сообщении, снятые члены встречаются ровно трижды — двумя комментариями в
+// генерённых файлах, картой ЧТЕНИЯ RETIRED_REINFORCEMENT (operation-options.ts:867-870, на провод
+// из формы уходит уже канонизованный PATCH) и фикстурой печатного стенда print-smoke.tsx, который
+// ничего не сохраняет. Перед прод-деплоем бека это надо ПЕРЕПРОВЕРИТЬ на прод-бандле клиента
+// (он может быть старше беты) — см. Ф8-п.6 плана PHASE-STOP-LOSS. ВАЖНО: списки reserved — не вся
+// граница. Поля и члены, снятые с одним лишь reserved-НОМЕРОМ (без имени), получают тот же 400, но
+// в инвентарь и растяжку не попадают — их поимённый список у retiredFieldNamePairs в
+// marshaler_test.go («СЛЕПОЕ ПЯТНО РАСТЯЖКИ»); прод-проверку вести по объединению обоих списков.
+func newAdminJSONMarshaler() *runtime.HTTPBodyMarshaler {
+	return &runtime.HTTPBodyMarshaler{
+		Marshaler: &runtime.JSONPb{
+			MarshalOptions: protojson.MarshalOptions{
+				EmitUnpopulated: true, // дефолт v2.21.0; контракт явного null у admin-клиента
+			},
+			UnmarshalOptions: protojson.UnmarshalOptions{
+				DiscardUnknown: false, // ЕДИНСТВЕННОЕ отличие от дефолта: незнакомое = 400, не тишина
+			},
+		},
+	}
+}
 
-	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
-
-	mux := runtime.NewServeMux(
+// newAdminServeMux собирает мукс admin-гейтвея. Вынесен из adminJSONGateway, чтобы тест поднимал
+// РОВНО ТОТ мукс, который живёт в проде (со всеми его опциями), и удаление WithMarshalerOption
+// красило тест, а не проходило мимо него.
+func newAdminServeMux() *runtime.ServeMux {
+	return runtime.NewServeMux(
 		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
 			switch key {
 			case "Grpc-Metadata-Authorization":
@@ -605,7 +661,16 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 				return runtime.DefaultHeaderMatcher(key)
 			}
 		}),
+		runtime.WithMarshalerOption(runtime.MIMEWildcard, newAdminJSONMarshaler()),
 	)
+}
+
+func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
+	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+
+	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
+
+	mux := newAdminServeMux()
 
 	err := pb_admin.RegisterAdminServiceHandlerFromEndpoint(ctx, mux, apiEndpoint, grpcDialOpts)
 	if err != nil {
