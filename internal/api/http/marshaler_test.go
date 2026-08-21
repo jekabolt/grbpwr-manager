@@ -129,6 +129,18 @@ func TestAdminGatewayRejectsUnknownField(t *testing.T) {
 	if !strings.Contains(body, "unknown field") {
 		t.Fatalf("тело отказа не говорит про unknown field (форма нужна клиенту для баннера Ф5): %s", body)
 	}
+	// ДИСКРИМИНАТОР ДЛЯ Ф5 — ПРЕФИКС «proto: (line …)», а не сама фраза «unknown field».
+	// Бизнес-валидация тоже умеет выдать code 3 + «unknown field» + пустые details: предикат
+	// email-сегмента заворачивает segment.ErrUnknownField («segment: unknown field: "…"») в
+	// status.Errorf(InvalidArgument, …) БЕЗ BadRequest-details (internal/apisrv/admin/
+	// email_campaign.go, validateEmailSegmentPredicate) — опечатка в поле сегмента дала бы ложный
+	// баннер «расхождение версий». Ошибку транспорта отличает только префикс protojson: он есть у
+	// маршалера и не бывает у status.Errorf. Если эта проверка покраснела после бампа зависимостей —
+	// форма изменилась, и классификатор Ф5 надо пересобирать по новому телу, а не чинить тест.
+	if !strings.Contains(body, "proto: (line ") {
+		t.Fatalf("тело отказа потеряло префикс «proto: (line …)» — единственный признак, отличающий "+
+			"отказ транспорта от бизнес-валидации для баннера Ф5: %s", body)
+	}
 	if stub.updateCalls != 0 {
 		t.Fatalf("RPC вызвана %d раз(а) при отказе транспорта — значит тело разобралось", stub.updateCalls)
 	}
@@ -160,6 +172,13 @@ func TestAdminGatewayRejectsUnknownEnumMember(t *testing.T) {
 			}
 			if !strings.Contains(body, "action") {
 				t.Fatalf("тело отказа не называет поле: %s", body)
+			}
+			// Та же растяжка формы, что в TestAdminGatewayRejectsUnknownField: Ф5 распознаёт
+			// отказ транспорта по префиксу protojson + фразе «invalid value for enum field»,
+			// потому что code 3 + пустые details бизнес-валидация даёт и сама.
+			if !strings.Contains(body, "proto: (line ") || !strings.Contains(body, "invalid value for enum field") {
+				t.Fatalf("тело отказа потеряло сигнатуру «proto: (line …): invalid value for enum field» — "+
+					"классификатор Ф5 стоит на ней: %s", body)
 			}
 			if stub.updateCalls != 0 {
 				t.Fatalf("RPC вызвана %d раз(а) при отказе транспорта", stub.updateCalls)
@@ -307,6 +326,23 @@ var retiredEnumMemberNames = map[string]bool{
 
 // retiredFieldNamePairs — сколько пар (сообщение, снятое ИМЯ поля) стоит сегодня на
 // admin-поверхности. Именами, а не номерами: строгий разбор JSON спотыкается об ИМЯ.
+//
+// СЛЕПОЕ ПЯТНО РАСТЯЖКИ — СНЯТИЯ БЕЗ reserved-ИМЕНИ. Инвентарь и растяжка видят только
+// `reserved "…"`; поле или член, снятые с одним лишь reserved-НОМЕРОМ, из proto исчезают бесследно —
+// а строгий маршалер на их ИМЯ отвечает тем же 400 «unknown field», просто вне этого списка.
+// Известные такие снятия на 2026-08-21 (по «was …»-комментариям в proto; при переснятии инвентаря
+// по прод-бандлу проверять И ИХ):
+//   * TechCardSignoffSection: TECH_CARD_SIGNOFF_SECTION_POM       (techcard.proto:2744)
+//   * TechCardBomItem: placement, consumption, quantity, colorway_colors,
+//     line_total, size_consumptions, size_run_total               (techcard.proto:844)
+//   * TechCardCosting: markup_multiplier, wholesale_price, retail_price,
+//     materials_cost, total_cost, labour_cost                     (techcard.proto:2733-2734)
+//   * TechCardColorwayCost: materials_cost, size_run_total        (techcard.proto:2654)
+//   * TechCard: resolved_media                                    (techcard.proto:3324)
+//   * ReceiveProductionRunRequest: product_id                     (admin.proto:8680)
+//   * Size: sku_system                                            (product.proto:37)
+// Клиент origin/beta (пин зеркала ff1db0b0, protos байт-в-байт с этой веткой) не эмитит ни одного:
+// sizeRunTotal/lineTotal в colorway-recipe.tsx стоят undefined и выбрасываются JSON.stringify.
 const retiredFieldNamePairs = 112
 
 // scanReservedNames разбирает `reserved "…"` по admin-поверхности, разделяя имена членов enum и

@@ -631,7 +631,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // генерённых файлах, картой ЧТЕНИЯ RETIRED_REINFORCEMENT (operation-options.ts:867-870, на провод
 // из формы уходит уже канонизованный PATCH) и фикстурой печатного стенда print-smoke.tsx, который
 // ничего не сохраняет. Перед прод-деплоем бека это надо ПЕРЕПРОВЕРИТЬ на прод-бандле клиента
-// (он может быть старше беты) — см. Ф8-п.6 плана PHASE-STOP-LOSS.
+// (он может быть старше беты) — см. Ф8-п.6 плана PHASE-STOP-LOSS. ВАЖНО: списки reserved — не вся
+// граница. Поля и члены, снятые с одним лишь reserved-НОМЕРОМ (без имени), получают тот же 400, но
+// в инвентарь и растяжку не попадают — их поимённый список у retiredFieldNamePairs в
+// marshaler_test.go («СЛЕПОЕ ПЯТНО РАСТЯЖКИ»); прод-проверку вести по объединению обоих списков.
 func newAdminJSONMarshaler() *runtime.HTTPBodyMarshaler {
 	return &runtime.HTTPBodyMarshaler{
 		Marshaler: &runtime.JSONPb{
