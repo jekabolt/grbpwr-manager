@@ -554,7 +554,29 @@ func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString
 	var mode sql.NullString
 	var width decimal.NullDecimal
 	var rows sql.NullInt32
-	if t == nil || t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN {
+	// ДВЕ ПРИЧИНЫ ПУСТОГО РЕЗУЛЬТАТА РАЗВЕДЕНЫ, И РАНЬШЕ ОНИ БЫЛИ ОДНОЙ СТРОКОЙ. «Блока нет вовсе» и
+	// «блок есть, режим не назван» возвращали одно и то же — три пустых значения и nil-ошибку, — и во
+	// второй присланные ширина и ряды исчезали МОЛЧА: сохранение проходило, число не доезжало ни до
+	// колонки, ни до отказа, а следующее чтение карточки показывало пустое поле там, где человек
+	// оставил число. Это последний тихий дроп на пути записи операций; остальные разборщики этого
+	// пути отвечают на чужое поле именем (firstPopulated + verbNotApplicable / machineNotApplicable).
+	//
+	// ПРАВИЛО СТРОГОЕ И НЕ РЕТРОАКТИВНОЕ — замерено, а не предположено: строк «ширина или ряды без
+	// режима» НОЛЬ на обеих базах (замер 2026-08-21, прод `grbpwr` 126 операций и бета `grbpwr_beta`).
+	// Поэтому оговорки «отказывать, только если UNKNOWN прислан явно» здесь нет: различить «поле не
+	// прислано» и «прислан нулевой член» на proto3-энуме всё равно нельзя, а смягчать нечего.
+	//
+	// Присланность ширины меряется decimalSent, а НЕ `t.WidthMm != nil`: админка шлёт стёртый
+	// децимал-контрол как `{value: ""}` — не-nil указатель без числа, — и проверка по указателю
+	// начала бы требовать режим у того, кто ширину как раз ОЧИСТИЛ.
+	if t == nil {
+		return mode, width, rows, nil
+	}
+	if t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN {
+		if decimalSent(t.WidthMm) || t.Rows != 0 {
+			return mode, width, rows, entity.NewFieldViolation(step+".topstitch_mode", "required", "",
+				"say WHERE the line runs — from the edge of the piece, in the ditch of the seam, or parallel to it; a width or a row count on its own describes a line nobody can find. Clear them if the step has no topstitch")
+		}
 		return mode, width, rows, nil
 	}
 	tok, ok := topstitchModePbToToken[t.Mode]
