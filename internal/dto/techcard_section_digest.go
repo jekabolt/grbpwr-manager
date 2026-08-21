@@ -328,40 +328,55 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 			o.TopstitchMode.String, digestDecimal(o.TopstitchWidthMm), o.TopstitchRows.Int32,
 			o.AttachmentKind.String, digestDecimal(o.AttachmentSizeMm), o.Note.String,
 		}
-		// ДВА УСЛОВНЫХ ХВОСТА, КАЖДЫЙ ПАРОЙ «ИМЯ, ЗНАЧЕНИЕ» — по обоим доводам, которые эта функция
-		// уже держит на деталях. (1) Безусловные элементы сдвинули бы отпечаток КАЖДОГО шага в базе
-		// и объявили бы все утверждённые подписи CONSTRUCTION устаревшими в момент выкатки; при
-		// условном появлении волна равна множеству шагов, где машинные факты реально заполнили, то
-		// есть сегодня — нулю. (2) Голый хвост запрещён уроком 0302/0304 в комментарии к деталям:
-		// типы хвостов пересекаются (обе врезки здесь — массивы), и ["press", …] против [ …] стало
-		// бы неразличимо; тег отвечает на вопрос, ЧЕЙ хвост, навсегда.
+		// ДВА УСЛОВНЫХ ХВОСТА — МАШИНКА И ВТО, оба ПАРАМИ «имя колонки, значение», как и все
+		// остальные. Доводы те же, что эта функция уже держит на деталях. (1) Безусловные элементы
+		// сдвинули бы отпечаток КАЖДОГО шага в базе и объявили бы все утверждённые подписи
+		// CONSTRUCTION устаревшими в момент выкатки; при условном появлении волна равна множеству
+		// шагов, где факты реально заполнили. (2) Голый хвост запрещён уроком 0302/0304 в
+		// комментарии к деталям: типы хвостов пересекаются (обе врезки здесь — массивы), и
+		// ["press", …] против [ …] стало бы неразличимо; тег отвечает на вопрос, ЧЕЙ хвост, навсегда.
+		//
+		// ФОРМА ВЫРОВНЕНА, И ЭТО НЕ КОСМЕТИКА. С 0306 оба хвоста были ПОЗИЦИОННЫМИ, а 0325 добавил
+		// ВТО ещё один хвост — парный — ПОД ТЕМ ЖЕ ТЕГОМ "press", потому что дописать поле в
+		// позиционный массив нельзя. Тег перестал быть ключом: под "press" жили ДВА хвоста, и
+		// различить их можно было только по форме. Теперь у одного тега ровно один хвост одной
+		// формы, а дописка поля в него безопасна по построению — у шага, где новое поле пусто, пары
+		// не возникает и байты не двигаются. Почему переписать форму законно ИМЕННО СЕЙЧАС и почему
+		// это не прецедент — см. комментарий у opGoldConstructionDigestHex.
 		//
 		// В подписанном содержании этим фактам место без оговорок: CONSTRUCTION — подпись под тем,
 		// ЧТО шьют и КАК. «Этот шов идёт на оверлоке в пять нитей иглой Nm 90» и «дублировать при
 		// 150 °C двенадцать секунд» — указания цеху, меняющие физическое изделие, а не метаданные о
 		// нём (в отличие от purpose/kind, исключённых намеренно — см. materialsProjection).
-		if operationHasMachineTail(o) {
-			// machine_type ПУСТ, когда он уже уехал в компат-позицию: там он и хешируется, а
-			// дублировать его здесь значило бы записать один факт дважды. Неоднозначности нет —
-			// компат-позиция при этом несёт legacy-токен, которого нет в новом словаре типов.
-			machineType := o.MachineType.String
-			if _, collapsed := legacyOperationTypeOf(o); collapsed {
-				machineType = ""
-			}
-			row = append(row, []any{"machine",
-				machineType, o.MachineProfileKey.String, o.ThreadCount.Int32,
-				o.NeedleType.String, o.NeedleSizeNm.Int32, o.ThreadTension.String,
-				o.ThreadTensionNote.String, digestDecimal(o.StitchWidthMm)})
+		if t := operationKindTail("machine",
+			opKindStr("machine_type", machineTypeForTail(o)),
+			opKindStr("machine_profile_key", o.MachineProfileKey),
+			opKindInt("thread_count", o.ThreadCount),
+			opKindStr("needle_type", o.NeedleType),
+			opKindInt("needle_size_nm", o.NeedleSizeNm),
+			opKindStr("thread_tension", o.ThreadTension),
+			opKindStr("thread_tension_note", o.ThreadTensionNote),
+			opKindDec("stitch_width_mm", o.StitchWidthMm),
+		); t != nil {
+			row = append(row, t)
 		}
-		if operationHasPressTail(o) {
-			// ПАР — ПАРОЙ {Valid, Bool}, а не одним bool: он трёхзначен по построению (не задано =
-			// наследовать профиль, явное «без пара» = указание цеху, «с паром»), и схлопывание
-			// первых двух дало бы двум РАЗНЫМ режимам ВТО один отпечаток — подпись под «без пара»
-			// читалась бы как действительная под «как получится».
-			row = append(row, []any{"press",
-				o.PressEquipment.String, o.PressProfileKey.String, o.PressTemperatureC.Int32,
-				o.PressDwellSec.Int32, digestDecimal(o.PressPressureNCm2),
-				[]any{o.PressSteam.Valid, o.PressSteam.Bool}, o.PressCloth.String})
+		// ПАР — ПАРОЙ ПО ПОСТРОЕНИЮ ФОРМЫ, и обёртка {Valid, Bool} больше не нужна: он трёхзначен
+		// (не задано = наследовать профиль, явное «без пара» = указание цеху, «с паром»), а пара
+		// рождается ТОЛЬКО у заполненного поля — значит отсутствие пары и есть «никто не отвечал».
+		// Схлопывание «не задано» с «без пара» дало бы двум РАЗНЫМ режимам ВТО один отпечаток;
+		// здесь оно невозможно.
+		if t := operationKindTail("press",
+			opKindStr("press_equipment", o.PressEquipment),
+			opKindStr("press_profile_key", o.PressProfileKey),
+			opKindInt("press_temperature_c", o.PressTemperatureC),
+			opKindInt("press_dwell_sec", o.PressDwellSec),
+			opKindDec("press_pressure_n_cm2", o.PressPressureNCm2),
+			opKindBool("press_steam", o.PressSteam),
+			opKindStr("press_cloth", o.PressCloth),
+			opKindStr("press_action", o.PressAction),
+			opKindStr("press_toward", o.PressToward),
+		); t != nil {
+			row = append(row, t)
 		}
 		// ТРЕТИЙ условный хвост — сборка (0307), по тем же двум доводам, что два выше.
 		//
@@ -527,29 +542,22 @@ func digestOperationTypeCompat(o *entity.TechCardOperation) string {
 	return string(o.OperationType)
 }
 
-// operationHasMachineTail is true only when the step says something ABOVE the compat position — a
-// machine that has no legacy twin, or any of the seven per-step machine overrides. A migrated
-// `lockstitch → (machine, lockstitch)` row therefore carries no tail at all and hashes exactly as it
-// did before 0306.
-func operationHasMachineTail(o *entity.TechCardOperation) bool {
-	if o.MachineType.Valid {
-		if _, collapsed := legacyOperationTypeOf(o); !collapsed {
-			return true
-		}
+// machineTypeForTail отдаёт машинку МАШИННОМУ ХВОСТУ и молчит, когда она уже уехала в
+// компат-позицию: там она и хешируется, а пара "machine_type" здесь записала бы один факт дважды.
+// Неоднозначности нет — компат-позиция при этом несёт legacy-токен, которого нет в новом словаре
+// типов.
+//
+// Отсюда же и предикат «есть ли машинный хвост», которого больше нет отдельной функцией: у
+// мигрированной строки `lockstitch → (machine, lockstitch)` машинка молчит, семь пере-определений
+// шага пусты, набор пар пуст — и хвост не рождается, как не рождался до 0306. Предикат ВЫВЕДЕН из
+// состава пар и потому не может с ним разъехаться; отдельный список тех же полей разъехался бы при
+// первой же дописке. То же и у ВТО: «без пара» — это Valid, значит пара, значит хвост, значит
+// отпечаток, отличный от шага, где никто не отвечал.
+func machineTypeForTail(o *entity.TechCardOperation) sql.NullString {
+	if _, collapsed := legacyOperationTypeOf(o); collapsed {
+		return sql.NullString{}
 	}
-	return o.MachineProfileKey.Valid || o.ThreadCount.Valid || o.NeedleType.Valid ||
-		o.NeedleSizeNm.Valid || o.ThreadTension.Valid || o.ThreadTensionNote.Valid ||
-		o.StitchWidthMm.Valid
-}
-
-// operationHasPressTail mirrors it for ВТО. PressSteam counts by VALIDITY, not by value: «без пара»
-// is an instruction and must produce a tail, and therefore a different fingerprint, than a step
-// nobody has answered. A legacy `fusing` step with no ВТО facts — every fusing row in the database
-// today — carries no tail and hashes as before.
-func operationHasPressTail(o *entity.TechCardOperation) bool {
-	return o.PressEquipment.Valid || o.PressProfileKey.Valid || o.PressTemperatureC.Valid ||
-		o.PressDwellSec.Valid || o.PressPressureNCm2.Valid || o.PressSteam.Valid ||
-		o.PressCloth.Valid
+	return o.MachineType
 }
 
 // operationHasAssemblyTail — есть ли у шага сборочные факты (0307).
@@ -617,12 +625,13 @@ func operationMediaTail(o *entity.TechCardOperation) []any {
 	return out
 }
 
-// ── ХВОСТЫ ВИДОВ ОПЕРАЦИЙ (волна 0324) ──────────────────────────────────────────────────────────
+// ── ПАРНЫЕ ХВОСТЫ ШАГА (волна 0324, и с 0325-b — ВСЕ хвосты полей, включая machine и press) ─────
 //
 // ФОРМА — ПАРЫ, А НЕ ПОЗИЦИИ. Хвост семейства пишется как ["тег", [[ключ, значение], …]], пара
 // появляется ТОЛЬКО у заполненного (Valid) поля, пары отсортированы ПОБАЙТНО по ключу. Это
-// единственное место проекции, где значения записаны не позиционно, и отступление сделано
-// осознанно.
+// ЕДИНСТВЕННАЯ форма дописки к кортежу шага: голова остаётся позиционной, всё правее неё — пары.
+// Исключений ровно два — assembly и media: они несут не поля, а СПИСКИ объектов (упорядоченный
+// union входов; снимки с выносками), и пара «ключ, значение» такую вложенность не выражает.
 //
 // ЗАЧЕМ. Волна урезана вдвое: из 66 разобранных полей в неё вошли 32, а остальные 32 вернутся
 // ПОЗЖЕ И В ТЕ ЖЕ САМЫЕ СЕМЕЙСТВА. При позиционной записи дописать поле в уже рождённый хвост
@@ -645,9 +654,11 @@ func operationMediaTail(o *entity.TechCardOperation) []any {
 // заморозить навсегда ключи "count" / "action" / "kind": без семейства в имени они читаются как
 // что угодно, а переименовать ключ после первой подписи уже нельзя — это ломает отпечаток.
 //
-// ОТДЕЛЬНОГО ПРЕДИКАТА «есть ли хвост» у этих одиннадцати НЕТ, в отличие от machine/press/
-// assembly. Он был бы вторым списком тех же полей и разъехался бы с первым при первой же дописке;
-// здесь предикат ВЫВЕДЕН: пустой набор пар — значит хвоста нет.
+// ОТДЕЛЬНОГО ПРЕДИКАТА «есть ли хвост» нет ни у одного парного хвоста — ни у одиннадцати
+// семейств, ни у machine, ни у press. Он был бы вторым списком тех же полей и разъехался бы с
+// первым при первой же дописке; здесь предикат ВЫВЕДЕН: пустой набор пар — значит хвоста нет.
+// Отдельный предикат остался только у assembly, и по другому поводу: его хвост открывают не
+// «любые непустые поля», а конкретный факт — шаг что-то производит или берёт со стола УЗЕЛ.
 
 // operationKindPair — одна пара «ключ, значение» хвоста семейства.
 type operationKindPair struct {
@@ -668,6 +679,13 @@ func opKindInt(key string, v sql.NullInt32) operationKindPair {
 // бы 1.50 и 1.5 разными байтами в зависимости от того, что вернула БД.
 func opKindDec(key string, v decimal.NullDecimal) operationKindPair {
 	return operationKindPair{key: key, value: digestDecimal(v), valid: v.Valid}
+}
+
+// opKindBool — трёхзначный bool БЕЗ обёртки {Valid, Bool}: третье состояние выражает сама форма
+// пар. «Не задано» пары не даёт, явное «нет» даёт ["ключ", false], «да» — ["ключ", true], и три
+// состояния дают три разных отпечатка. Обёртка здесь была бы не защитой, а лишними байтами.
+func opKindBool(key string, v sql.NullBool) operationKindPair {
+	return operationKindPair{key: key, value: v.Bool, valid: v.Valid}
 }
 
 // operationKindTail собирает хвост одного семейства. nil — когда заполненных полей нет вовсе:
@@ -695,6 +713,11 @@ func operationKindTail(tag string, pairs ...operationKindPair) []any {
 
 // operationKindTails — все одиннадцать хвостов волны в ЗАМОРОЖЕННОМ ПОРЯДКЕ, идущие после
 // media-хвоста. Порядок и имена — навсегда.
+//
+// СЕМЕЙСТВА "press" ЗДЕСЬ НЕТ, и это не пропуск: под-глагол ВТО и направление припуска (0325)
+// живут в ЕДИНСТВЕННОМ ВТО-хвосте выше, вместе с оборудованием, температурой, выдержкой,
+// давлением, паром и проутюжильником. Один факт живёт в одном месте, один тег несёт один хвост.
+// То же и с "machine".
 //
 // Двенадцатый, "handwork", в этой волне НЕ РОЖДАЕТСЯ: оба его поля отложены. Имя и последнее
 // место за ним закреплены — когда поля придут, хвост появится сразу полным составом, и это
@@ -760,21 +783,6 @@ func operationKindTails(o *entity.TechCardOperation) []any {
 			opKindDec("bartack_length_mm", o.BartackLengthMm),
 			opKindStr("attach_pattern", o.AttachPattern),
 			opKindStr("zipper_application", o.ZipperApplication),
-		),
-		// ВТО-под-глагол и направление припуска (0325) — ТОТ ЖЕ ТЕГ "press", что у позиционного
-		// ВТО-хвоста выше, и это осознанно. Тег отвечает на вопрос, ЧЕЙ хвост; оба — ВТО, и второе
-		// имя («press2», «vto») было бы ровно тем вечным костылём, ради отказа от которого вся эта
-		// волна пишется парами. Неоднозначности нет: позиционный хвост — восемь элементов, парный —
-		// два, и проекция сравнивается побайтно, а не разбирается обратно.
-		//
-		// Дописать эти два факта В ПОЗИЦИОННЫЙ ВТО-хвост было нельзя: длина массива входит в байты,
-		// и каждая карточка, где ВТО-факты уже заполнены, протухла бы подписью в момент выкатки.
-		//
-		// Место — ПОСЛЕ "fastening"; закреплённое последнее место "handwork" сдвигается за него.
-		// Сегодня это безопасно по построению: ни одна строка не эмитит ни того, ни другого.
-		operationKindTail("press",
-			opKindStr("press_action", o.PressAction),
-			opKindStr("press_toward", o.PressToward),
 		),
 	}
 	out := make([]any, 0, len(tails))
@@ -924,16 +932,58 @@ func labelsProjection(tc *entity.TechCardInsert) any {
 	return labels
 }
 
+// packagingProjection — упаковочный лист: ГОЛОВА из десяти замороженных позиций плюс тегированные
+// ПАРНЫЕ хвосты, ровно та же дисциплина, что у кортежа шага.
+//
+// ЗАЧЕМ ЗДЕСЬ ВООБЩЕ ХВОСТ. До этой правки проекция была плоским позиционным массивом без единого
+// различителя — то есть структурой, в которую нельзя дописать поле: одиннадцатый элемент,
+// поставленный безусловно, сдвинул бы отпечаток КАЖДОГО упаковочного листа в базе и объявил бы все
+// утверждённые подписи PACKAGING устаревшими в момент выкатки. А T8b заводит листу пять полей
+// сразу (fold_scheme, folded_w_mm, folded_h_mm, face_out, metal_pins_prohibited). Механизм хвоста
+// обязан появиться РАНЬШЕ полей — иначе первое же поле придётся вносить ценой волны.
+//
+// ГОЛОВА ЗАМОРОЖЕНА, И ЭТОЙ ПРАВКОЙ ЕЁ БАЙТЫ НЕ ДВИНУЛИСЬ: сегодня ни одно семейство хвоста не
+// рождается, поэтому отпечаток листа до и после рефакторинга совпадает побайтно — это и
+// проверяется замороженным hex (packagingGoldDigestHex). Переписывать голову в пары было бы
+// правкой ради единообразия, а голова кортежа шага тоже осталась позиционной: пары нужны там, где
+// СОСТАВ будет расти, а не там, где он уже зафиксирован.
 func packagingProjection(tc *entity.TechCardInsert) any {
 	if tc.Packaging == nil {
 		return nil
 	}
 	p := tc.Packaging
-	return []any{
+	out := []any{
 		p.FoldingMethod.String, p.Polybag.String, p.BagSticker.String, p.Inserts.String,
 		p.UnitsPerBox.Int32, p.BoxMarking.String, p.BoxDimensions.String,
 		p.WeightNetGrams.Int32, p.WeightGrossGrams.Int32, p.Notes.String,
 	}
+	return append(out, packagingTails(p)...)
+}
+
+// packagingTails — хвосты упаковочного листа в ЗАМОРОЖЕННОМ ПОРЯДКЕ, той же формы и тем же
+// строителем, что у шага: ["тег", [[имя колонки БД, значение], …]], пара только у заполненного
+// поля, пустой набор пар хвоста не рождает, пары отсортированы побайтно.
+//
+// ОДИН СТРОИТЕЛЬ НА ВСЮ ПРОЕКЦИЮ, А НЕ КОПИЯ ДЛЯ УПАКОВКИ. Копия — это второе место, где живут
+// правила сортировки и рождения пары, и оно разъедется с первым молча, а расплатой будет
+// разъехавшийся отпечаток. Имя operationKindTail историческое; читать его следует как «хвост
+// парной формы».
+//
+// СЕГОДНЯ СПИСОК ПУСТ, и это не заготовка впрок, а порядок работ, предписанный планом: T8a заводит
+// упаковке МЕХАНИЗМ хвоста, T8b — поля. Пустой список означает ровно то, что нужно: байты
+// сегодняшнего листа не двигаются, а первое же поле T8b ляжет в хвост "fold" и сдвинет отпечаток
+// только тех листов, где его реально заполнили.
+func packagingTails(p *entity.TechCardPackaging) []any {
+	tails := [][]any{
+		// T8b: operationKindTail("fold", opKindStr("fold_scheme", p.FoldScheme), …)
+	}
+	out := make([]any, 0, len(tails))
+	for _, t := range tails {
+		if t != nil {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // costingProjection fingerprints what the card COSTS: the manual articles, the declared typical
