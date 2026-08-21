@@ -273,6 +273,36 @@ func opGoldCases() []struct {
 				}},
 			},
 		},
+		{
+			// ОСЬ «РАБОТА» (0330) — ДВЕНАДЦАТЫЙ ХВОСТ, И ОН ПОСЛЕДНИЙ ИЗ СУЩЕСТВУЮЩИХ.
+			//
+			// Шаг взят тот же, что и «машинный шаг с legacy-машинкой» выше, с одной-единственной
+			// разницей — названа работа. Так эталон читается как ДЕЛЬТА: всё, что появилось в
+			// кортеже, появилось из-за work, и ни одна позиция головы не сдвинулась. Это и есть
+			// доказательство нулевой волны в кортежной форме; hex-эталоны рядом доказывают её же в
+			// байтах.
+			//
+			// В ХВОСТЕ ТОЛЬКО ТОКЕН. Ни ярлыка («Topstitch»), ни глагола, ни стадии, ни версии
+			// каталога: они представление, правятся UPDATE-миграцией, и правка ярлыка не смеет
+			// объявлять подписанную карточку изменённой (прецедент: цвет выноски не хешируется).
+			name: "ось работа: хвост work поверх головы, ничего больше",
+			op: entity.TechCardOperation{
+				OperationNumber: opGoldI32(20),
+				OperationType:   entity.OpTypeMachine,
+				MachineType:     opGoldStr("lockstitch"),
+				Zone:            entity.ZoneOuter,
+				PieceLineKeys:   []string{"P1"},
+				SMV:             opGoldDec("1.5"),
+				Work:            opGoldStr("topstitch"),
+			},
+			want: []any{
+				20, "lockstitch", "outer", []string{"P1"}, nil, "1.5", 0,
+				"", "", "", "", "", 0, "", "", "",
+				[]any{"work", []any{
+					[]any{"work", "topstitch"},
+				}},
+			},
+		},
 	}
 }
 
@@ -409,5 +439,131 @@ func TestTechCardConstructionDigestHexFrozen(t *testing.T) {
 		t.Errorf("отпечаток CONSTRUCTION поехал при неизменной проекции — значит поехал слой сборки "+
 			"(кодирование, отступы, порядок склейки), и подписи ВСЕХ карточек в базе протухли разом."+
 			"\n--- эталон ---\n%s\n--- сейчас ---\n%s", opGoldConstructionDigestHex, got)
+	}
+}
+
+// ЗАМОРОЖЕННЫЙ HEX ШАГА С РАБОТОЙ (0330) — ТРЕТИЙ ЭТАЛОН, И ОН НОВЫЙ, А НЕ ПЕРЕПИСАННЫЙ.
+//
+// ПОЧЕМУ ОТДЕЛЬНЫМ ЛИТЕРАЛОМ, А НЕ ДОПИСКОЙ ШАГА В КАРТОЧКУ ВЫШЕ. Тот hex морозит СУЩЕСТВУЮЩИЕ
+// строки — те самые 126, у которых work = NULL, — и его неподвижность и есть цитата «волна нулевая».
+// Допиши в ту карточку work-шаг, и литерал пришлось бы переписать; переписанный эталон нулевой волны
+// не доказывает ничего. Поэтому work морозится СВОЕЙ карточкой: два литерала отвечают на два разных
+// вопроса — «старое не двинулось» и «новое зафиксировано».
+//
+// ЧТО ЛОВИТ ИМЕННО ЭТОТ ЛИТЕРАЛ. Всё, что кортежный голден не видит, потому что происходит ПОСЛЕ
+// проекции (кодировка, разделители, функция хеша), — и вдобавок то, что видит, но на другом уровне:
+// перестановку хвоста "work" относительно соседей. Хвост стоит ДВЕНАДЦАТЫМ, сразу после "fastening",
+// и место это заморожено здесь.
+//
+// КОГДА ПРАВКА ЛИТЕРАЛА ЗАКОННА: ровно тогда же, когда правка соседнего, и ни на шаг раньше — то
+// есть после подсчёта волны пере-утверждения по tech_card_signoff. «Позеленить тест» законным
+// поводом не является ни в одном из двух случаев.
+// ЛИТЕРАЛ ПОСЧИТАН НЕЗАВИСИМО ОТ КОДА, А НЕ СПИСАН С ЕГО ВЫВОДА. Кортеж выше выписан руками и
+// сверен тестом проекции; байты — sha256 от [null,[<кортеж>],[]] в компактном JSON, посчитанные
+// сторонним скриптом по ОБОИМ кортежам, и тем же скриптом на тех же правилах воспроизведён соседний, давно
+// замороженный opGoldConstructionDigestHex. Списанный с падения эталон морозит не форму, а ошибку.
+const opGoldWorkDigestHex = "1b3fda5ff5df5958e001297a6f5de2c4ba894cd32b4bec5c0f22a48200b5b790"
+
+// opWorkNextToFastening — шаг с ДВУМЯ хвостами, "fastening" и "work".
+//
+// ⚠️ ПОЧЕМУ ОН ЖИВЁТ ЗДЕСЬ, А НЕ СРЕДИ opGoldCases. Тот набор — КОРПУС ДО ВОЛНЫ 0324: ни один его
+// кейс не заполняет ни одной колонки волны, и на этом стоит отдельное правило
+// (TestOperationKindTailsAbsentWhenAllNull). Шаг, который НАМЕРЕННО заполняет zipper_application,
+// сломал бы смысл корпуса, а не проверил бы новое свойство. Определение всё равно ОДНО — и кортеж,
+// и hex ниже читают его, поэтому разъехаться им негде.
+//
+// ЗАЧЕМ ОН НУЖЕН. Кейс «хвост work поверх головы» несёт ОДИН хвост и потому слеп к перестановке:
+// переставь "work" куда угодно — единственный хвост останется единственным, и hex не двинется. Это
+// выяснилось МУТАЦИЕЙ, а не рассуждением: «переставить work перед fastening» оставило односоставный
+// эталон зелёным. Здесь хвостов два, и порядок между ними заморожен байтами.
+func opWorkNextToFastening() entity.TechCardOperation {
+	return entity.TechCardOperation{
+		OperationNumber:   opGoldI32(30),
+		OperationType:     entity.OpTypeMachine,
+		MachineType:       opGoldStr("lockstitch"),
+		Zone:              entity.ZoneOuter,
+		ZipperApplication: opGoldStr("invisible"),
+		Work:              opGoldStr("topstitch"),
+	}
+}
+
+// TestWorkTailSitsRightAfterFasteningInTheTuple — кортежная половина той же заморозки: она говорит,
+// ЧТО поехало, тогда как hex ниже говорит только «поехало».
+func TestWorkTailSitsRightAfterFasteningInTheTuple(t *testing.T) {
+	want := []any{
+		30, "lockstitch", "outer", nil, nil, "", 0,
+		"", "", "", "", "", 0, "", "", "",
+		[]any{"fastening", []any{
+			[]any{"zipper_application", "invisible"},
+		}},
+		[]any{"work", []any{
+			[]any{"work", "topstitch"},
+		}},
+	}
+	got := opGoldJSON(t, opGoldProject(t, opWorkNextToFastening()))
+	if got != opGoldJSON(t, want) {
+		t.Errorf("кортеж шага с fastening и work сдвинулся:\n--- эталон ---\n%s\n--- сейчас ---\n%s",
+			opGoldJSON(t, want), got)
+	}
+}
+
+// TestTechCardConstructionWorkDigestHexFrozen — hex-эталон шага с названной работой.
+//
+// ДВА ШАГА, А НЕ ОДИН, И ЭТО НЕ УКРАШЕНИЕ. Первый морозит ФОРМУ хвоста (пара «work → токен» поверх
+// нетронутой головы), второй — его МЕСТО (после "fastening"); почему второй не лежит в opGoldCases,
+// сказано у opWorkNextToFastening.
+func TestTechCardConstructionWorkDigestHexFrozen(t *testing.T) {
+	tc := &entity.TechCardInsert{Operations: []entity.TechCardOperation{
+		opGoldCaseByName(t, "ось работа: хвост work поверх головы, ничего больше"),
+		opWorkNextToFastening(),
+	}}
+	got := digestOf(constructionProjection(tc))
+	if got != opGoldWorkDigestHex {
+		t.Errorf("отпечаток шага с работой поехал: либо изменилась форма хвоста \"work\", либо его "+
+			"место среди хвостов, либо слой сборки отпечатка."+
+			"\n--- эталон ---\n%s\n--- сейчас ---\n%s", opGoldWorkDigestHex, got)
+	}
+}
+
+// TestWorkTailStandsTwelfthAfterFastening — МЕСТО хвоста, названное вслух.
+//
+// Hex выше упадёт и от перестановки, но скажет об этом одной строкой мусора. Этот тест говорит, ЧТО
+// именно поехало: у шага, заполненного и по семействам волны, и по работе, "work" обязан стоять
+// последним и ровно за "fastening". Обещанное "handwork" ПОСЛЕДНЕЕ место цело — он ещё не рождён и
+// встанет ПОСЛЕ "work", тринадцатым.
+func TestWorkTailStandsTwelfthAfterFastening(t *testing.T) {
+	op := entity.TechCardOperation{
+		OperationType:     entity.OpTypeMachine,
+		MachineType:       opGoldStr("lockstitch"),
+		ZipperApplication: opGoldStr("invisible"), // хвост "fastening"
+		Work:              opGoldStr("topstitch"),
+	}
+	tags := opKindTagsOf(t, op)
+	if len(tags) < 2 {
+		t.Fatalf("ожидались хвосты fastening и work, получено: %v", tags)
+	}
+	last, prev := tags[len(tags)-1], tags[len(tags)-2]
+	if last != "work" || prev != "fastening" {
+		t.Fatalf("порядок хвостов %v: ожидалось …, fastening, work — место \"work\" заморожено "+
+			"двенадцатым, сразу после \"fastening\"", tags)
+	}
+}
+
+// TestWorkTailAbsentWhenWorkIsNull — вторая половина нулевой волны, названная точечно.
+//
+// Hex существующих строк доказывает её в байтах на трёх шагах; здесь то же свойство проверяется как
+// ПРАВИЛО: NULL-работа не рождает хвоста вовсе, а не рождает пустой. Пустой хвост ["work", []] —
+// именно та ошибка, которую легко не заметить: кортежный голден на кейсах без work остался бы
+// зелёным только потому, что этих кейсов три, а строк в проде сто двадцать шесть.
+func TestWorkTailAbsentWhenWorkIsNull(t *testing.T) {
+	for _, tag := range opKindTagsOf(t, entity.TechCardOperation{
+		OperationType: entity.OpTypeMachine,
+		MachineType:   opGoldStr("lockstitch"),
+		ThreadCount:   opGoldI32(5),
+	}) {
+		if tag == "work" {
+			t.Fatal("шаг без названной работы отрастил хвост \"work\" — отпечаток каждой из 126 " +
+				"существующих строк прода сдвинулся бы в момент выкатки")
+		}
 	}
 }
