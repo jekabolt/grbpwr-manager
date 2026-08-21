@@ -2470,6 +2470,23 @@ var SeamClassTokens = []string{
 
 var ValidSeamClasses = tokenSet[TechCardSeamClass](SeamClassTokens)
 
+// ДВА ЧЛЕНА, НА КОТОРЫХ ВИСЯТ ПРАВИЛА GO, И ПОТОМУ НАЗВАННЫЕ, А НЕ ВПИСАННЫЕ СТРОКОЙ. Правило,
+// сравнивающее с голым литералом, не ломает сборку при опечатке — оно просто НИКОГДА не совпадает,
+// и перестаёт существовать молча.
+//
+//	SeamClassBound      — ведущее поле окантовки: при нём и только при нём законно binding_style
+//	                      (как сложена бейка). До этого исполнение висело на machine_type =
+//	                      binding_taping, то есть окантовка на прямострочке — обычная работа, кант
+//	                      притачан вручную — своё исполнение назвать не могла.
+//	SeamClassTopstitch  — не класс шва наравне с прочими, а утверждение «соединительного шва у
+//	                      этого шага нет, есть только отделочная строчка». Отсюда парное правило:
+//	                      при нём topstitch_mode обязателен, а непустой topstitch_mode при
+//	                      НЕНАЗВАННОМ классе запрещает наследовать умолчание карточки.
+const (
+	SeamClassBound     TechCardSeamClass = "bs_bound"
+	SeamClassTopstitch TechCardSeamClass = "os_topstitch"
+)
+
 // TechCardAttachmentKind is the folder / guide / presser foot a step runs with.
 //
 // "none" IS NOT A SPELLING OF NULL here, though it was until the card grew machine profiles: with

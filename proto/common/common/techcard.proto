@@ -1359,7 +1359,12 @@ enum TechCardMachineType {
 
   TECH_CARD_MACHINE_TYPE_UNKNOWN = 0; // unset; REJECTED on write for a MACHINE step
   TECH_CARD_MACHINE_TYPE_LOCKSTITCH = 1; // прямострочная (301)
-  TECH_CARD_MACHINE_TYPE_LOCKSTITCH_DOUBLE_NEEDLE = 2; // двухигольная прямострочная
+  // Двухигольная прямострочная. ТРЕБУЕТ needle_count = 2 (правило Go): машина и число игл — один
+  // факт, и до этого правила были законны все четыре комбинации, включая «двухигольная, игл 1».
+  // Член ОСТАЁТСЯ живым, хотя двухигольность выразима числом: он единственная цель канонизации
+  // замороженного легаси-глагола DOUBLE_NEEDLE, и снятие сломало бы чтение старых строк. Из пикера
+  // он убран — писать двухигольность полагается прямострочкой с needle_count = 2.
+  TECH_CARD_MACHINE_TYPE_LOCKSTITCH_DOUBLE_NEEDLE = 2;
   TECH_CARD_MACHINE_TYPE_OVERLOCK = 3; // оверлок (504/514/516)
   TECH_CARD_MACHINE_TYPE_COVERSTITCH = 4; // распошивальная / плоскошовная (602/605)
   TECH_CARD_MACHINE_TYPE_COVERLOCK = 5; // коверлок
@@ -1671,7 +1676,11 @@ enum TechCardSeamClass {
   TECH_CARD_SEAM_CLASS_EF_FACED = 7; // обтачной
   TECH_CARD_SEAM_CLASS_BS_BOUND = 8; // окантовочный
   TECH_CARD_SEAM_CLASS_FS_FLAT = 9; // встык
-  TECH_CARD_SEAM_CLASS_OS_TOPSTITCH = 10; // отделочная строчка
+  // ОТДЕЛОЧНАЯ СТРОЧКА — не класс шва наравне с прочими, а утверждение «соединительного шва у
+  // этого шага нет». ТРЕБУЕТ непустого TechCardTopstitch.mode (правило Go), и обратно: непустой
+  // mode при НЕНАЗВАННОМ классе отвергается — неназванный класс наследует умолчание карточки, и
+  // чисто декоративная строчка молча объявлялась бы стачным швом.
+  TECH_CARD_SEAM_CLASS_OS_TOPSTITCH = 10;
   TECH_CARD_SEAM_CLASS_OTHER = 11;
 }
 
@@ -1742,6 +1751,11 @@ enum TechCardTopstitchMode {
 }
 
 // TechCardTopstitch is the three answers that used to share one string.
+//
+// БЛОК И КЛАСС ШВА СВЯЗАНЫ ПРАВИЛОМ. Непустой mode требует НАЗВАННОГО seam_class: либо назван класс,
+// который шаг делает, либо объявлен OS_TOPSTITCH («соединительного шва нет вовсе»). Иначе
+// неназванный класс наследует умолчание карточки, и чисто отделочная строчка молча уезжает в
+// подпись и на печатный лист стачным швом.
 message TechCardTopstitch {
   TechCardTopstitchMode mode = 1;
   // Required under PARALLEL_TO_SEAM, optional under EDGE, rejected under IN_DITCH. Точка отсчёта
@@ -1998,6 +2012,10 @@ enum TechCardZipperApplication {
 
 // Как сложена бейка. ISO-класс шва при этом НЕ расщепляется: BS_BOUND остаётся одним классом, а
 // это его исполнение — иначе один факт отвечал бы на два вопроса, как когда-то `seam_type`.
+//
+// ВЕДУЩЕЕ ПОЛЕ ОКАНТОВКИ — ИМЕННО seam_class = BS_BOUND, и только при нём это поле законно.
+// Машина (binding_taping) и окантовыватель (attachment_kind = BINDER) говорят «это окантовка»
+// во второй и в третий раз и обязательными спутниками не являются.
 enum TechCardBindingStyle {
   TECH_CARD_BINDING_STYLE_UNKNOWN = 0; // не указано
   TECH_CARD_BINDING_STYLE_RAW = 1; // BSa — с открытым срезом
@@ -2077,7 +2095,9 @@ enum TechCardPressToward {
 
 // Параметры строчки. Только operation_type = MACHINE.
 message TechCardOperationStitching {
-  int32 needle_count = 1; // игл в строчке, шт; 1..12; 0 = не указано
+  // Игл в строчке, шт; 1..12; 0 = не указано. При machine_type = LOCKSTITCH_DOUBLE_NEEDLE
+  // ОБЯЗАТЕЛЕН и обязан быть равен 2: машина и число говорят об одном факте.
+  int32 needle_count = 1;
   // Расстояние МЕЖДУ ИГЛАМИ, мм; 1.6..25.4; unset = не указано. Осмысленно только при
   // needle_count >= 2 — иначе отвергается (правило Go; в БД двухколоночных CHECK'ов нет).
   google.type.Decimal needle_gauge_mm = 2;
@@ -2088,7 +2108,10 @@ message TechCardOperationStitching {
   // Посадка / сборка / дифференциал подачи, ОТНОШЕНИЕ (не проценты); 0.6..4.0; unset = посадки и
   // сборки нет. 1.0 — «слои идут один в один», 2.0 — «присборить вдвое».
   google.type.Decimal fullness_ratio = 5;
-  TechCardBindingStyle binding_style = 6; // только при ЯВНОМ machine_type = binding_taping
+  // Только при seam_class = BS_BOUND. НЕ при machine_type = binding_taping, как было до F22:
+  // окантовка на прямострочке — обычная работа (кант притачан вручную), и своё исполнение она
+  // назвать не могла. Ведущее поле — класс шва: он попадает в подпись и на печатный лист.
+  TechCardBindingStyle binding_style = 6;
   TechCardLabelAttachStitch label_attach_stitch = 7; // любой MACHINE; сама этикетка — строкой BOM
 }
 

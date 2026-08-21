@@ -105,6 +105,7 @@ var pressTowardTokenToPb = invertTokenMap(pressTowardPbToToken)
 // правило тихо перестаёт существовать. Сверка со словарём entity это ловит в первую же секунду
 // жизни процесса.
 const (
+	machineLockstitchDouble = "lockstitch_double_needle"
 	machineButtonhole       = "buttonhole"
 	machineButtonAttach     = "button_attach"
 	machineBartack          = "bartack"
@@ -116,8 +117,8 @@ const (
 
 var _ = func() struct{} {
 	for _, m := range []string{
-		machineButtonhole, machineButtonAttach, machineBartack, machineBindingTaping,
-		machineZipperSetting, machineSeamTaping, machineUltrasonicWelder,
+		machineLockstitchDouble, machineButtonhole, machineButtonAttach, machineBartack,
+		machineBindingTaping, machineZipperSetting, machineSeamTaping, machineUltrasonicWelder,
 	} {
 		if !entity.ValidMachineTypes[entity.TechCardMachineType(m)] {
 			panic("operation kinds name a machine that is not in the vocabulary: " + m)
@@ -253,8 +254,12 @@ func machineIsOneOf(machineType sql.NullString, wants ...string) bool {
 // machineType — ЯВНЫЙ тип шага, каким его вернула canonicaliseOperationType (легаси-глагол,
 // назвавший машинку, тоже явный: он материализуется в ту же колонку). Резолв через
 // machine_profile_key сюда не доходит вовсе и по правилу волны не засчитывается.
+//
+// seamClass — уже разобранный ISO-класс шва этого же шага. Он приходит СЮДА, а не остаётся в
+// вызывающем, ради одного правила: исполнение бейки (binding_style) висит на КЛАССЕ ШВА, а не на
+// машинке. Довод — в самом правиле ниже.
 func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.TechCardOperationType,
-	machineType sql.NullString, step string,
+	machineType sql.NullString, seamClass sql.NullString, step string,
 ) (operationKindFields, error) {
 	var f operationKindFields
 	var err error
@@ -309,6 +314,32 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 			return f, entity.NewFieldViolation(step+".needle_gauge_mm", "needs_needle_count", f.needleGaugeMm.Decimal.String(),
 				"a needle gauge is the gap BETWEEN two needles — set needle_count to 2 or more, or clear the gauge")
 		}
+		// F7: ДВУХИГОЛЬНАЯ МАШИНА И `needle_count = 2` — ОДИН ФАКТ, СКАЗАННЫЙ ДВАЖДЫ, И ДО ЭТОГО
+		// ПРАВИЛА ОНИ МОГЛИ ПРОТИВОРЕЧИТЬ ДРУГ ДРУГУ. Законны были все четыре комбинации, включая
+		// «двухигольная машина, игл 1»: связи не было ни в Go, ни в zod клиента, а единственная
+		// перекрёстная проверка (калибр требует count >= 2) молчит, когда калибр не назван.
+		//
+		// ЧЛЕН СЛОВАРЯ ПРИ ЭТОМ НЕ СНЯТ — и это не непоследовательность рядом с восемью снятыми
+		// соседями. lockstitch_double_needle — ЕДИНСТВЕННАЯ ЦЕЛЬ канонизации замороженного
+		// легаси-глагола `double_needle` (entity.LegacyOperationMachineType), то есть снятие сломало
+		// бы чтение старых строк. Из пикера он уходит (T4), а здесь становится непротиворечивым.
+		//
+		// ЛЕГАСИ-ГЛАГОЛ ОСВОБОЖДЁН ОТ ТРЕБОВАНИЯ, НО НЕ ОТ ЗАПРЕТА ПРОТИВОРЕЧИЯ. Бандл, присылающий
+		// `double_needle` глаголом, поля needle_count не знает вовсе — оно родилось волной 0324, —
+		// и требовать от него число значило бы превратить компат-путь в стену. А вот ЧИСЛО,
+		// противоречащее машине, отвергается и на этом пути: его мог прислать только тот, кто про
+		// поле знает.
+		_, viaLegacyVerb := legacyOperationTypePbToEntity[o.GetOperationType()]
+		if machineIsOneOf(machineType, machineLockstitchDouble) {
+			switch {
+			case f.needleCount.Valid && f.needleCount.Int32 != 2:
+				return f, entity.NewFieldViolation(step+".needle_count", "conflicts_with_machine_type", fmt.Sprint(f.needleCount.Int32),
+					"a twin-needle lockstitch sews with exactly two needles — set needle_count to 2, or pick the plain lockstitch")
+			case !f.needleCount.Valid && !viaLegacyVerb:
+				return f, entity.NewFieldViolation(step+".needle_count", "required", "",
+					"a twin-needle lockstitch sews with exactly two needles — say 2, or pick the plain lockstitch and say how many needles it runs")
+			}
+		}
 		f.seamSecuring, err = parseEquipmentEnum(st.GetSeamSecuring(), seamSecuringPbToToken,
 			step+".seam_securing", "pick how the line is secured, or «none» for no securing at all")
 		if err != nil {
@@ -329,8 +360,29 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		if err != nil {
 			return f, err
 		}
-		if f.bindingStyle.Valid && !machineIsOneOf(machineType, machineBindingTaping) {
-			return f, machineNotApplicable(step, "binding_style", machineType, []string{machineBindingTaping})
+		// F22: ВЕДУЩЕЕ ПОЛЕ ОКАНТОВКИ — КЛАСС ШВА, А НЕ МАШИНКА.
+		//
+		// Один и тот же приём описывали ЧЕТЫРЕ поля: seam_class = bs_bound (ISO-класс),
+		// machine_type = binding_taping (машина «бейка и кант»), attachment_kind = binder
+		// (окантовыватель) и binding_style (как сложена бейка). Собственный факт несёт только
+		// последнее — первые три говорят «это окантовка» трижды. Ни одна пара не была связана
+		// правилом, зато binding_style был привязан к САМОМУ СЛАБОМУ из трёх: к машинке. Отсюда
+		// следовало, что окантовка на прямострочке — законная и совершенно обычная комбинация
+		// (кант притачан вручную) — своё исполнение назвать НЕ МОГЛА, а бессмысленная пара
+		// «ss_plain + binding_taping + binder» оставалась законной.
+		//
+		// Ведущим назначен seam_class: он попадает В ПОДПИСЬ и НА ПЕЧАТНЫЙ ЛИСТ, а machine_type и
+		// attachment_kind перестают быть обязательными спутниками. Правило живёт в Go, а не в
+		// CHECK'е: двухколоночная проверка перечитывала бы всю таблицу и отвечала бы голым 3819 без
+		// имени поля — тот же довод, по которому 0326 вынес правило ширины отстрочки в
+		// parseTopstitch.
+		if f.bindingStyle.Valid && !(seamClass.Valid && seamClass.String == string(entity.SeamClassBound)) {
+			said := "«не указан»"
+			if seamClass.Valid {
+				said = fmt.Sprintf("%q", seamClass.String)
+			}
+			return f, entity.NewFieldViolation(step+".binding_style", "needs_seam_class", f.bindingStyle.String,
+				fmt.Sprintf("how a binding is folded belongs to a BOUND seam; this step says its seam class is %s — set it to «bs_bound», or clear the binding style", said))
 		}
 		// label_attach_stitch — единственное поле дельты БЕЗ правила по типу машинки: этикетку
 		// сажают на чём угодно, и требование назвать машинку сделало бы поле недоступным ровно там,

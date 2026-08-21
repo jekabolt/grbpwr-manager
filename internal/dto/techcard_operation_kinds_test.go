@@ -190,8 +190,11 @@ func kindRoundTripOps() []*pb_common.TechCardOperation {
 				BartackLengthMm:       dec("8.5"),
 			},
 		},
-		{ // 1: окантовочная — единственное место binding_style
+		{ // 1: окантовка. Ведущее поле — КЛАСС ШВА (bs_bound), а не машинка: исполнение бейки висит
+			// на нём с F22. Машинка названа рядом, потому что она тут настоящая, но обязательным
+			// спутником быть перестала.
 			OperationType: opTypeMachineNew, Zone: zoneHem, MachineType: mtBinding,
+			SeamClass: pb_common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_BS_BOUND,
 			Stitching: &pb_common.TechCardOperationStitching{
 				BindingStyle: pb_common.TechCardBindingStyle_TECH_CARD_BINDING_STYLE_DOUBLE_FOLD,
 			},
@@ -391,6 +394,12 @@ func TestOperationKindsUnawarePayloadUnchanged(t *testing.T) {
 			Zone:          zoneOuter,
 			StitchesPerCm: dec("4.5"),
 			Smv:           dec("1.2"),
+			// КЛАСС ШВА НАЗВАН ЯВНО — с F11 непустой блок отстрочки при НЕНАЗВАННОМ классе
+			// отвергается: неназванный класс наследует умолчание карточки (`ss_plain` на трёх
+			// карточках прода), и чисто декоративная строчка молча объявлялась бы стачным швом.
+			// Поле не из волны, оно живёт с 0289, — то есть бандл, умеющий прислать отстрочку,
+			// умеет прислать и класс.
+			SeamClass: pb_common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_OS_TOPSTITCH,
 			Topstitch: &pb_common.TechCardTopstitch{
 				Mode:    pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_EDGE,
 				WidthMm: dec("6"),
@@ -618,11 +627,11 @@ func TestOperationKindsNotApplicableByExplicitMachineType(t *testing.T) {
 				ZipperApplication: pb_common.TechCardZipperApplication_TECH_CARD_ZIPPER_APPLICATION_LAPPED,
 			}
 		}},
-		{"складка бейки", mtBinding, mtOverlock, "binding_style", func(op *pb_common.TechCardOperation) {
-			op.Stitching = &pb_common.TechCardOperationStitching{
-				BindingStyle: pb_common.TechCardBindingStyle_TECH_CARD_BINDING_STYLE_SINGLE_FOLD,
-			}
-		}},
+		// СКЛАДКИ БЕЙКИ В ЭТОЙ ТАБЛИЦЕ БОЛЬШЕ НЕТ, и это не пропуск. Таблица проверяет поля,
+		// привязанные к ЯВНОЙ МАШИНКЕ; binding_style с F22 привязан к КЛАССУ ШВА (bs_bound), потому
+		// что окантовка на прямострочке — обычная работа (кант притачан вручную), и своё исполнение
+		// она назвать могла только через машинку, которой у неё нет. Его собственные клетки —
+		// TestBindingStyleFollowsTheSeamClass.
 		{"горячий воздух", mtSeamTaping, mtUltrasonic, "air_temperature_c", func(op *pb_common.TechCardOperation) {
 			op.Weld = &pb_common.TechCardOperationWeld{AirTemperatureC: 400}
 		}},
@@ -904,6 +913,9 @@ func TestTopstitchWidthByMode(t *testing.T) {
 		}
 		return &pb_common.TechCardOperation{
 			OperationType: opTypeMachineNew, Zone: zoneOuter, MachineType: mtOverlock, Topstitch: ts,
+			// Класс шва назван: с F11 непустой блок отстрочки при неназванном классе отвергается
+			// отдельным правилом, и без него эта таблица проверяла бы не ширину, а его.
+			SeamClass: pb_common.TechCardSeamClass_TECH_CARD_SEAM_CLASS_OS_TOPSTITCH,
 		}
 	}
 	for _, tt := range []struct {

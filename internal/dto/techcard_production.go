@@ -321,6 +321,30 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err != nil {
 			return nil, err
 		}
+		// F11: КЛАСС ШВА И БЛОК ОТСТРОЧКИ ГОВОРЯТ ОБ ОДНОМ ШАГЕ, И ТЕПЕРЬ ОНИ СВЯЗАНЫ.
+		//
+		// os_topstitch — не класс шва наравне с прочими, а утверждение «соединительного шва у этого
+		// шага нет, есть только отделочная строчка». Соседний блок говорит, ГДЕ эта строчка лежит.
+		// До этого правила они жили независимо, и на проде все семь строк с классом шва — это ровно
+		// те же семь строк с режимом отстрочки: каждая говорила «это отстрочка» дважды, а сказать
+		// это ОДИН раз было нельзя.
+		//
+		// ВТОРАЯ ПОЛОВИНА ПРАВИЛА ВАЖНЕЕ ПЕРВОЙ. Неназванный seam_class НАСЛЕДУЕТ умолчание
+		// карточки, а оно на проде `ss_plain` у трёх карточек. Значит чисто декоративная отстрочка,
+		// у которой заполнили только блок, МОЛЧА объявлялась стачным швом — и уезжала такой в
+		// подпись и на печатный лист. Наследование тут нечем отличить от ответа, поэтому шаг обязан
+		// сказать одно из двух: либо класс назван явно, либо шаг объявлен чисто отделочным.
+		//
+		// РЕТРОАКТИВНЫМ ЭТО ПРАВИЛО НЕ СТАНОВИТСЯ (замер 2026-08-21): строк с классом без режима —
+		// ноль на обеих базах, строк с режимом без класса — тоже ноль.
+		switch {
+		case seamClass.Valid && seamClass.String == string(entity.SeamClassTopstitch) && !topMode.Valid:
+			return nil, entity.NewFieldViolation(step+".topstitch_mode", "required", "",
+				"a topstitch seam class says the step has no joining seam, only a decorative line — say WHERE that line runs, or pick the seam class the step actually makes")
+		case topMode.Valid && !seamClass.Valid:
+			return nil, entity.NewFieldViolation(step+".seam_class", "required", "",
+				"an unnamed seam class inherits the card default, and this step is topstitched — name the class it makes, or set «os_topstitch» to say it makes no joining seam at all")
+		}
 		// UNKNOWN -> NULL («inherit the profile's foot»), NONE -> 'none' («this step runs bare»).
 		// The two used to be one value here; see parseEquipmentEnum for why they had to come apart
 		// the day something sat above the step to inherit from.
@@ -357,7 +381,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		// глагол волны старый бандл прислать физически не может — токена нет в его словаре. Шаг
 		// БЕЗ единого нового поля проходит здесь без единого отказа, и это ровно то, что держит
 		// круг существующих строк байт-в-байт.
-		kinds, err := parseOperationKindFields(o, opType, machineType, step)
+		kinds, err := parseOperationKindFields(o, opType, machineType, seamClass, step)
 		if err != nil {
 			return nil, err
 		}
