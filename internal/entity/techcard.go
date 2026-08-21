@@ -2675,7 +2675,19 @@ type TechCardHardwareAttachMethod string
 
 const HardwareAttachThreaded TechCardHardwareAttachMethod = "threaded" // единственный, при котором осмыслен foldback_mm
 
-var HardwareAttachMethodTokens = []string{"sew", "prong_clinch", "press_set", "crimp", "threaded"}
+// «ПРОЧЕЕ» У ШЕСТИ ОБЯЗАТЕЛЬНЫХ ДИСКРИМИНАТОРОВ (0325). attach_method, print_method, trim_action,
+// cleaning_kind, coverage_mode и wet_process_kind — REQUIRED каждый на своём глаголе, а UNKNOWN у
+// них отвергается. Пока в словаре не было выхода, отсутствие своего приёма НЕ оставляло поле
+// пустым: технолог был обязан выбрать ЧУЖОЙ, и это значение уходило дальше в подписанный хвост
+// дайджеста, в релизный снапшот и на печатный лист. Отличить «выбрал за неимением своего» от
+// честного ответа после этого было бы нечем — данные портились молча и необратимо.
+//
+// `other` — ОТВЕТ, а `UNKNOWN` — ЕГО ОТСУТСТВИЕ, и это разные вещи: первый проходит валидацию,
+// второй по-прежнему отвергается. ЧТО ИМЕННО — прозой в note шага: своего свободного текста
+// дискриминаторам не заводится, у шага уже есть ровно одна коробка под прозу, и вторая сделала бы
+// неопределённым, в какую из двух смотреть (тот же довод, по которому description и note слиты в
+// одно поле в 0289).
+var HardwareAttachMethodTokens = []string{"sew", "prong_clinch", "press_set", "crimp", "threaded", "other"}
 
 var ValidHardwareAttachMethods = tokenSet[TechCardHardwareAttachMethod](HardwareAttachMethodTokens)
 
@@ -2700,7 +2712,7 @@ type TechCardPrintMethod string
 // плёнки, ни второго прижима, ни шкалы давления, и ВТО-блок шага при нём тоже бессмыслен.
 const PrintMethodLaserEngrave TechCardPrintMethod = "laser_engrave"
 
-var PrintMethodTokens = []string{"screen", "dtf", "heat_transfer", "foil", "laser_engrave"}
+var PrintMethodTokens = []string{"screen", "dtf", "heat_transfer", "foil", "laser_engrave", "other"}
 
 var ValidPrintMethods = tokenSet[TechCardPrintMethod](PrintMethodTokens)
 
@@ -2724,6 +2736,7 @@ type TechCardTrimAction string
 
 var TrimActionTokens = []string{
 	"trim_even", "grade_layers", "clip_concave", "notch_convex", "corner_diagonal", "turn_and_shape",
+	"other",
 }
 
 var ValidTrimActions = tokenSet[TechCardTrimAction](TrimActionTokens)
@@ -2731,7 +2744,7 @@ var ValidTrimActions = tokenSet[TechCardTrimAction](TrimActionTokens)
 // TechCardCleaningKind — что именно чистят (C1). Дискриминатор глагола clean.
 type TechCardCleaningKind string
 
-var CleaningKindTokens = []string{"spot_clean", "dust_lint", "chalk_removal", "adhesive_removal"}
+var CleaningKindTokens = []string{"spot_clean", "dust_lint", "chalk_removal", "adhesive_removal", "other"}
 
 var ValidCleaningKinds = tokenSet[TechCardCleaningKind](CleaningKindTokens)
 
@@ -2739,14 +2752,14 @@ var ValidCleaningKinds = tokenSet[TechCardCleaningKind](CleaningKindTokens)
 // выход (Q1). Дискриминатор глагола inspect.
 type TechCardInspectCoverage string
 
-var InspectCoverageTokens = []string{"each_unit", "sample_per_bundle", "aql_plan", "first_output"}
+var InspectCoverageTokens = []string{"each_unit", "sample_per_bundle", "aql_plan", "first_output", "other"}
 
 var ValidInspectCoverages = tokenSet[TechCardInspectCoverage](InspectCoverageTokens)
 
 // TechCardWetProcessKind — вид мокрой обработки (WP1). Дискриминатор глагола wet_process.
 type TechCardWetProcessKind string
 
-var WetProcessKindTokens = []string{"rinse", "enzyme", "garment_dye", "softener"}
+var WetProcessKindTokens = []string{"rinse", "enzyme", "garment_dye", "softener", "other"}
 
 var ValidWetProcessKinds = tokenSet[TechCardWetProcessKind](WetProcessKindTokens)
 
@@ -2798,6 +2811,48 @@ var LabelAttachStitchTokens = []string{
 }
 
 var ValidLabelAttachStitches = tokenSet[TechCardLabelAttachStitch](LabelAttachStitchTokens)
+
+// --- ВТО: ЧТО ИМЕННО делаем и КУДА лёг припуск (0325) ---------------------------------------------
+
+// TechCardPressAction — под-глагол ВТО. Подпись глагола press обещала «to one side / steam», а
+// сказать это было нечем: PRESS оставался мешком из четырёх разных приёмов, и разница уезжала в
+// прозу note, которой нет ни в подписи, ни на печатном листе.
+//
+// НЕ REQUIRED НИ НА ОДНОМ ГЛАГОЛЕ: старая строка PRESS без под-глагола обязана сохраняться как
+// есть. Декатирование в словарь намеренно не входит — это подготовка ткани, а не шаг сборки.
+type TechCardPressAction string
+
+// PressActionToOneSide — единственное значение, при котором законен и обязателен PressToward.
+const PressActionToOneSide TechCardPressAction = "to_one_side"
+
+// PressActionOpen — ВТОРОЕ написание разутюжки. Первое и каноническое — сам глагол press_open,
+// который в проде и в подписанных карточках; пикер пишет глагол и press_action не пишет вовсе.
+// Чтение принимает оба, но форма НИКОГДА не переписывает одно написание в другое: два написания
+// дают два разных кортежа в проекции дайджеста, и авто-канонизация пометила бы подписанную
+// карточку как «изменена после подписи» без единой человеческой правки.
+const PressActionOpen TechCardPressAction = "open"
+
+var PressActionTokens = []string{
+	"press_flat", "to_one_side", "open", "steam", "final", "ease_in", "stretch", "mould", "other",
+}
+
+var ValidPressActions = tokenSet[TechCardPressAction](PressActionTokens)
+
+// TechCardPressToward — КУДА лёг припуск. СОБСТВЕННЫЙ словарь, а не переиспользование
+// TechCardGarmentZone: «вверх», «вниз» и «к центру» зонами не являются, а второе поле зонного типа
+// на шаге, у которого уже есть zone, — ровно ловушка «два ключа под одним именем».
+//
+// Словарь называет НАЗНАЧЕНИЕ припуска, поэтому у пары «к рукаву / к пройме» ответ на каждый шов
+// ровно один. Тринадцать членов против восемнадцати зон, и каждый — фраза, которую технолог
+// действительно произносит.
+type TechCardPressToward string
+
+var PressTowardTokens = []string{
+	"front", "back", "up", "down", "toward_center", "away_from_center", "sleeve", "body",
+	"facing", "shell", "lining", "side", "other",
+}
+
+var ValidPressTowards = tokenSet[TechCardPressToward](PressTowardTokens)
 
 // Диапазоны волны 0324. КАЖДЫЙ ИЗ НИХ — САНИТИ, А НЕ СТАНДАРТ: они ловят «14 °C» вместо «140» до
 // цеха, а не объявляют, на что способна машина. Каждый стоит и в схеме одноколоночным CHECK'ом
@@ -2983,6 +3038,18 @@ type TechCardOperation struct {
 	ZipperApplication     sql.NullString      `db:"zipper_application"`     // centered|lapped|invisible|exposed|fly|separating_cf|in_seam_pocket|other; zipper_setting
 	BindingStyle          sql.NullString      `db:"binding_style"`          // raw|single_fold|double_fold; binding_taping
 	LabelAttachStitch     sql.NullString      `db:"label_attach_stitch"`    // four_sides|two_sides_top_bottom|two_sides_left_right|one_edge|caught_in_seam|corners_tack|other; любой machine
+
+	// --- ВТО: под-глагол и направление припуска (0325) -------------------------------------------
+	//
+	// КАНОН ПРОДОЛЖАЕТСЯ ДОПИСЫВАНИЕМ: пара идёт последней и здесь, и в ALTER'е миграции 0325, и в
+	// named-map INSERT'а, и в SELECT'е операций — четыре списка, расхождение между которыми молчит
+	// до первого сохранения. Вклинить её в ВТО-блок 0306 «по смыслу» значило бы развести порядок
+	// entity и порядок ALTER'а ради вида.
+	//
+	// Обе NULLable без DEFAULT: NULL = «не сказано». Явного «нет» у этих двух не бывает вовсе —
+	// поэтому члена `none` в словарях нет, в отличие от seam_securing / hole_prep / peel_mode.
+	PressAction sql.NullString `db:"press_action"` // press_flat|to_one_side|open|steam|final|ease_in|stretch|mould|other; НЕ required
+	PressToward sql.NullString `db:"press_toward"` // front|back|up|down|toward_center|away_from_center|sleeve|body|facing|shell|lining|side|other; ТОЛЬКО при press_action = to_one_side, и там обязателен
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").

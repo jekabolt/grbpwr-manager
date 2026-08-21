@@ -293,6 +293,13 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"zipper_application":     o.ZipperApplication,
 			"binding_style":          o.BindingStyle,
 			"label_attach_stitch":    o.LabelAttachStitch,
+
+			// ВТО: под-глагол и направление припуска (0325). Канон продолжается ДОПИСЫВАНИЕМ —
+			// пара идёт последней и здесь, и в ALTER'е 0325, и в SELECT'е ниже, и в полях
+			// entity.TechCardOperation. Обе NULLable, и NULL пишется как NULL: «не сказано» здесь
+			// не сворачивается ни в какой токен, потому что явного «нет» у этих двух не бывает.
+			"press_action": o.PressAction,
+			"press_toward": o.PressToward,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -762,7 +769,8 @@ const techCardOperationsQuery = `
 		       o.cleaning_kind, o.coverage_mode, o.wet_process_kind,
 		       o.buttonhole_style, o.cut_length_mm, o.buttonhole_orientation,
 		       o.bartack_length_mm, o.attach_pattern, o.zipper_application,
-		       o.binding_style, o.label_attach_stitch
+		       o.binding_style, o.label_attach_stitch,
+		       o.press_action, o.press_toward
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`

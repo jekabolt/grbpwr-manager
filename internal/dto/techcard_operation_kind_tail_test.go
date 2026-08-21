@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"reflect"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -53,6 +54,54 @@ func opKindTagsOf(t *testing.T, op entity.TechCardOperation) []string {
 	return tags
 }
 
+// opKindIsPairTail — ХВОСТ ЛИ ЭТО ПАРНОЙ ФОРМЫ, по его СТРУКТУРЕ, а не по тегу.
+//
+// НЕ ПУТАТЬ С ПРЕЖНИМ УСТРОЙСТВОМ. До 0325-b тег "press" носили ДВА хвоста: позиционный 0306 (оборудование, температура, выдержка,
+// давление, пар, проутюжильник — восемь элементов) и парный хвост 0325 (под-глагол и направление
+// припуска). Тег перестал быть ключом, и различить их можно было только по форме. Теперь они СЛИТЫ
+// в один: у одного тега ровно один хвост одной формы (см. TestEachTagCarriesExactlyOneTail).
+//
+// Предикат остаётся нужен, но отвечает на другой вопрос: ПАРНЫЙ ли это хвост, то есть можно ли в
+// него дописать поле, не сдвинув отпечаток. Парный хвост — РОВНО ДВА элемента, второй из которых
+// список двухэлементных пар со СТРОКОВЫМ ключом. Двум оставшимся спискам объектов эта форма не
+// подходит и они её не имеют: assembly — три элемента, media — два, но его записи трёхэлементны.
+func opKindIsPairTail(tail []any) bool {
+	if len(tail) != 2 {
+		return false
+	}
+	pairs, ok := tail[1].([]any)
+	if !ok || len(pairs) == 0 {
+		return false
+	}
+	for _, p := range pairs {
+		pair, ok := p.([]any)
+		if !ok || len(pair) != 2 {
+			return false
+		}
+		if _, ok := pair[0].(string); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// opKindPairTagsOf — теги ТОЛЬКО парных хвостов шага, по порядку.
+func opKindPairTagsOf(t *testing.T, op entity.TechCardOperation) []string {
+	t.Helper()
+	var tags []string
+	for i, tail := range opKindTailsOf(t, op) {
+		tagged, ok := tail.([]any)
+		if !ok || len(tagged) == 0 {
+			t.Fatalf("хвост %d не тегированный кортеж: %#v", i, tail)
+		}
+		if !opKindIsPairTail(tagged) {
+			continue
+		}
+		tags = append(tags, tagged[0].(string))
+	}
+	return tags
+}
+
 // opKindPairKeys — ключи пар одного хвоста, по порядку записи.
 func opKindPairKeys(t *testing.T, tail []any) []string {
 	t.Helper()
@@ -78,12 +127,20 @@ func opKindPairKeys(t *testing.T, tail []any) []string {
 	return keys
 }
 
-// opKindWaveTags — одиннадцать тегов волны в замороженном порядке. Двенадцатого, "handwork", в
-// волне нет: оба его поля отложены, и место за ним закреплено на будущее.
+// opKindWaveTags — теги ОДИННАДЦАТИ хвостов семейств волны 0324 в замороженном порядке.
+// "handwork" не рождается — оба его поля отложены, — и последнее место закреплено за ним.
+//
+// "press" В ЭТОМ СПИСКЕ НЕТ И БОЛЬШЕ НЕ БУДЕТ. Под-глагол ВТО и направление припуска (0325) с
+// 0325-b живут в ЕДИНСТВЕННОМ ВТО-хвосте, слитом с фактами 0306, и этот хвост стоит СЛЕВА от
+// assembly/media, на своём историческом месте, а не в хвосте списка семейств. То же и "machine".
 var opKindWaveTags = []string{
 	"stitching", "placement", "hardware", "print", "weld", "trim",
 	"thread_trim", "clean", "inspect", "wet", "fastening",
 }
+
+// opKindFieldTags — ВСЕ теги парных хвостов шага в замороженном порядке: сначала два хвоста
+// оборудования (их место — сразу за головой, левее assembly и media), затем одиннадцать семейств.
+var opKindFieldTags = append([]string{"machine", "press"}, opKindWaveTags...)
 
 // ── 1. НУЛЕВАЯ ВОЛНА ────────────────────────────────────────────────────────────────────────────
 
@@ -100,7 +157,11 @@ func TestOperationKindTailsAbsentWhenAllNull(t *testing.T) {
 	}
 	for _, tt := range opGoldCases() {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, tag := range opKindTagsOf(t, tt.op) {
+			// Голден-кейс «блок ВТО» эмитит парный хвост "press" — но "press" не тег СЕМЕЙСТВА
+			// волны, а слитый ВТО-хвост, и его рождение здесь законно: колонки волны в нём NULL,
+			// пар press_action / press_toward он не несёт (это проверяет
+			// TestPressTailCarriesNoWaveKeysOnAStoredRow).
+			for _, tag := range opKindPairTagsOf(t, tt.op) {
 				if wave[tag] {
 					t.Errorf("у шага без единой заполненной колонки волны родился хвост %q — "+
 						"значит выкатка сдвинет отпечаток каждой карточки в базе", tag)
@@ -182,6 +243,61 @@ func TestOperationKindEmptyFieldDoesNotMoveDigest(t *testing.T) {
 				opKindStr("zipper_application", opGoldStr("invisible")),
 				opKindStr("fly_side", sql.NullString{}),                 // FA14, отложено
 				opKindDec("taper_bar_length_mm", decimal.NullDecimal{}), // FA6, отложено
+			),
+		},
+		{
+			name: "press: сегодня press_action, завтра плюс пустое поле того же семейства",
+			op:   entity.TechCardOperation{PressAction: opGoldStr("press_flat")},
+			tag:  "press",
+			tomorrow: operationKindTail("press",
+				opKindStr("press_action", opGoldStr("press_flat")),
+				opKindStr("press_toward", sql.NullString{}),
+				opKindStr("press_pass", sql.NullString{}), // ещё не заведено; пустое обязано молчать
+			),
+		},
+		{
+			// СЛИТЫЙ ВТО-ХВОСТ (0325-b) — то самое, ради чего форму выравнивали. Раньше эти факты
+			// лежали в ПОЗИЦИОННОМ хвосте, и любая дописка к нему двигала бы отпечаток каждой
+			// ВТО-строки; теперь пустое поле молчит.
+			name: "press: строка со старыми фактами 0306, завтра плюс пустые новые поля",
+			op: entity.TechCardOperation{
+				OperationType:     entity.OpTypePress,
+				PressEquipment:    opGoldStr("steam_press"),
+				PressTemperatureC: opGoldI32(150),
+				PressDwellSec:     opGoldI32(12),
+				PressSteam:        sql.NullBool{Bool: false, Valid: true},
+			},
+			tag: "press",
+			tomorrow: operationKindTail("press",
+				opKindStr("press_equipment", opGoldStr("steam_press")),
+				opKindInt("press_temperature_c", opGoldI32(150)),
+				opKindInt("press_dwell_sec", opGoldI32(12)),
+				opKindBool("press_steam", sql.NullBool{Bool: false, Valid: true}),
+				opKindStr("press_action", sql.NullString{}),            // 0325, не заполнено
+				opKindStr("press_toward", sql.NullString{}),            // 0325, не заполнено
+				opKindStr("press_pass", sql.NullString{}),              // ещё не заведено
+				opKindDec("press_cooldown_sec", decimal.NullDecimal{}), // ещё не заведено
+				opKindBool("press_vacuum", sql.NullBool{}),             // ещё не заведено
+			),
+		},
+		{
+			// МАШИННЫЙ БЛОК — второй хвост, переведённый в пары той же правкой.
+			name: "machine: сегодня thread_count и игла, завтра плюс пустые поля",
+			op: entity.TechCardOperation{
+				OperationType: entity.OpTypeMachine,
+				MachineType:   opGoldStr("overlock"), // legacy: уезжает в компат-позицию, пары не даёт
+				ThreadCount:   opGoldI32(5),
+				NeedleType:    opGoldStr("ballpoint"),
+				NeedleSizeNm:  opGoldI32(90),
+			},
+			tag: "machine",
+			tomorrow: operationKindTail("machine",
+				opKindStr("machine_type", sql.NullString{}), // схлопнута в компат-позицию
+				opKindInt("thread_count", opGoldI32(5)),
+				opKindStr("needle_type", opGoldStr("ballpoint")),
+				opKindInt("needle_size_nm", opGoldI32(90)),
+				opKindStr("looper_thread", sql.NullString{}),          // ещё не заведено
+				opKindDec("differential_feed", decimal.NullDecimal{}), // ещё не заведено
 			),
 		},
 		{
@@ -355,8 +471,9 @@ func TestOperationKindSingleFieldTail(t *testing.T) {
 // TestOperationKindTailOrderFrozen — порядок одиннадцати хвостов в кортеже. Он заморожен навсегда:
 // перестановка хвостов местами меняет байты у каждой строки, которая эмитит больше одного.
 func TestOperationKindTailOrderFrozen(t *testing.T) {
-	// Шаг, у которого заполнено по одному полю КАЖДОГО семейства и ни одного факта из старых
-	// четырёх хвостов: MachineType пуст, значит machine-хвост не рождается.
+	// Шаг, у которого заполнено по одному полю КАЖДОГО семейства и ни одного факта оборудования:
+	// MachineType пуст и ни одной ВТО-колонки — значит ни machine-хвоста, ни press-хвоста, и
+	// список парных хвостов состоит ровно из одиннадцати семейств.
 	op := entity.TechCardOperation{
 		OperationType:     entity.OpTypeMachine,
 		NeedleCount:       opGoldI32(2),
@@ -371,7 +488,7 @@ func TestOperationKindTailOrderFrozen(t *testing.T) {
 		WetProcessKind:    opGoldStr("enzyme"),
 		ZipperApplication: opGoldStr("invisible"),
 	}
-	got := opKindTagsOf(t, op)
+	got := opKindPairTagsOf(t, op)
 	if len(got) != len(opKindWaveTags) {
 		t.Fatalf("хвостов %d, ожидалось %d: %v", len(got), len(opKindWaveTags), got)
 	}
@@ -403,5 +520,256 @@ func TestOperationKindDecimalsGoThroughDigestDecimal(t *testing.T) {
 	if digestOf(constructionProjection(one)) != digestOf(constructionProjection(two)) {
 		t.Errorf("1.50 и 1.5 дали разные отпечатки — подпись зависит от формата колонки, " +
 			"а не от содержания")
+	}
+}
+
+// ── 6. ОДИН ТЕГ — ОДИН ХВОСТ ОДНОЙ ФОРМЫ (0325-b) ───────────────────────────────────────────────
+
+// TestEachTagCarriesExactlyOneTail — правило, ради которого выравнивалась форма.
+//
+// ЧТО БЫЛО. С 0325 под тегом "press" жили ДВА хвоста: позиционный 0306 (оборудование, температура,
+// выдержка, давление, пар, проутюжильник) и парный (под-глагол, направление припуска). Дописать
+// новые факты в позиционный было нельзя — длина массива входит в байты, — а завести им второе имя
+// («press2») значило бы поставить в самую чувствительную структуру проекта вечный костыль. Цена
+// компромисса: тег перестал отвечать на вопрос, ЧЕЙ хвост, и различать хвосты приходилось по форме.
+//
+// ЧТО СТАЛО. Оба слиты в один парный хвост. Тег снова ключ, и этот тест — исполнительный механизм
+// под правило: у шага, заполненного ПО ВСЕМ семействам сразу, ни один тег не повторяется.
+func TestEachTagCarriesExactlyOneTail(t *testing.T) {
+	op := entity.TechCardOperation{
+		OperationType: entity.OpTypeMachine,
+		// оборудование: обе половины ВТО — старые факты 0306 и новые 0325 — плюс машинный блок
+		MachineType:       opGoldStr("coverlock"), // вне legacy-словаря: пара machine_type рождается
+		MachineProfileKey: opGoldStr("m-1"),
+		ThreadCount:       opGoldI32(5),
+		NeedleType:        opGoldStr("ballpoint"),
+		NeedleSizeNm:      opGoldI32(90),
+		ThreadTension:     opGoldStr("looser"),
+		ThreadTensionNote: opGoldStr("на пол-оборота"),
+		StitchWidthMm:     opGoldDec("5.5"),
+		PressEquipment:    opGoldStr("steam_press"),
+		PressProfileKey:   opGoldStr("press-1"),
+		PressTemperatureC: opGoldI32(150),
+		PressDwellSec:     opGoldI32(12),
+		PressPressureNCm2: opGoldDec("3.5"),
+		PressSteam:        sql.NullBool{Bool: false, Valid: true},
+		PressCloth:        opGoldStr("cotton"),
+		PressAction:       opGoldStr("to_one_side"),
+		PressToward:       opGoldStr("front"),
+		// сборка и медиа — списки объектов, парной формы не имеют и иметь не должны
+		OutputUnitKey: opGoldStr("COLLAR"),
+		Media:         []entity.TechCardOperationMedia{{MediaId: 7}},
+		// по одному полю каждого из одиннадцати семейств
+		NeedleCount:       opGoldI32(2),
+		PlacementCount:    opGoldI32(6),
+		AttachMethod:      opGoldStr("prong_clinch"),
+		PrintMethod:       opGoldStr("screen"),
+		AirTemperatureC:   opGoldI32(520),
+		TrimAction:        opGoldStr("grade_layers"),
+		ResidualTailMaxMm: opGoldDec("2.5"),
+		CleaningKind:      opGoldStr("spot_clean"),
+		CoverageMode:      opGoldStr("aql_plan"),
+		WetProcessKind:    opGoldStr("enzyme"),
+		ZipperApplication: opGoldStr("invisible"),
+	}
+	seen := map[string]int{}
+	for i, tag := range opKindTagsOf(t, op) {
+		if prev, dup := seen[tag]; dup {
+			t.Errorf("тег %q носят ДВА хвоста (%d и %d) — тег перестал быть ключом, и прочесть "+
+				"кортеж, не угадывая по форме, снова нельзя", tag, prev, i)
+		}
+		seen[tag] = i
+	}
+	// И вторая половина правила: одна форма на тег. Всё, что несёт ПОЛЯ, — парное; списками
+	// объектов остаются ровно два хвоста, assembly и media.
+	listShaped := map[string]bool{"assembly": true, "media": true}
+	for i, tail := range opKindTailsOf(t, op) {
+		tagged := tail.([]any)
+		tag := tagged[0].(string)
+		if listShaped[tag] {
+			if opKindIsPairTail(tagged) {
+				t.Errorf("хвост %q (%d) стал парным — а он несёт СПИСОК объектов", tag, i)
+			}
+			continue
+		}
+		if !opKindIsPairTail(tagged) {
+			t.Errorf("хвост %q (%d) не парной формы: %#v — дописать в него поле нельзя, не сдвинув "+
+				"отпечаток каждой строки, которая его эмитит", tag, i, tagged)
+		}
+	}
+	// И порядок полевых хвостов — замороженный: два хвоста оборудования, затем одиннадцать семейств.
+	got := opKindPairTagsOf(t, op)
+	if len(got) != len(opKindFieldTags) {
+		t.Fatalf("парных хвостов %d, ожидалось %d: %v", len(got), len(opKindFieldTags), got)
+	}
+	for i := range opKindFieldTags {
+		if got[i] != opKindFieldTags[i] {
+			t.Fatalf("порядок парных хвостов поехал: %v, ожидалось %v", got, opKindFieldTags)
+		}
+	}
+}
+
+// TestPressTailIsOneTailNotTwo — та же проверка точечно, на ВТО: старые факты 0306 и новые 0325,
+// заполненные вместе, обязаны лечь в ОДИН хвост с общим набором ключей, отсортированным побайтно.
+func TestPressTailIsOneTailNotTwo(t *testing.T) {
+	op := entity.TechCardOperation{
+		OperationType:     entity.OpTypePress,
+		PressEquipment:    opGoldStr("iron"),
+		PressTemperatureC: opGoldI32(150),
+		PressAction:       opGoldStr("to_one_side"),
+		PressToward:       opGoldStr("front"),
+	}
+	tails := opKindTailsOf(t, op)
+	if len(tails) != 1 {
+		t.Fatalf("у ВТО-шага ожидался РОВНО ОДИН хвост, получено %d: %#v", len(tails), tails)
+	}
+	tagged := tails[0].([]any)
+	if tagged[0] != "press" {
+		t.Fatalf("тег единственного хвоста %v, ожидался press", tagged[0])
+	}
+	got := opKindPairKeys(t, tagged)
+	want := []string{"press_action", "press_equipment", "press_temperature_c", "press_toward"}
+	if len(got) != len(want) {
+		t.Fatalf("ключей %d, ожидалось %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ключи слитого ВТО-хвоста: %v, ожидалось %v", got, want)
+		}
+	}
+	// И то, ради чего форма: под-глагол — новый факт цеха, он ОБЯЗАН двигать отпечаток.
+	plain := entity.TechCardOperation{
+		OperationType:     entity.OpTypePress,
+		PressEquipment:    opGoldStr("iron"),
+		PressTemperatureC: opGoldI32(150),
+	}
+	before := &entity.TechCardInsert{Operations: []entity.TechCardOperation{plain}}
+	after := &entity.TechCardInsert{Operations: []entity.TechCardOperation{op}}
+	if digestOf(constructionProjection(before)) == digestOf(constructionProjection(after)) {
+		t.Error("«заутюжить на полочку» не сдвинуло отпечаток — подпись под шагом без стороны " +
+			"читалась бы как действительная под шагом со стороной")
+	}
+}
+
+// TestPressTailCarriesNoWaveKeysOnAStoredRow — что осталось от обещания нулевой волны 0325 после
+// слияния хвостов, и что от него осталось ЧЕСТНО.
+//
+// Прежняя формулировка («на строке без колонок 0325 парный хвост не рождается вовсе») с 0325-b
+// неверна: ВТО-хвост теперь ОДИН и парный, поэтому строка со старыми фактами 0306 его эмитит.
+// Верным осталось содержательное ядро: обе колонки 0325 рождаются NULL на каждой существующей
+// строке, значит ПАР press_action / press_toward в её хвосте нет, и подписанное содержание такой
+// строки новыми фактами не обрастает.
+//
+// (Байты самой строки слияние двинуло — это и есть та единственная разрешённая правка формы, см.
+// комментарий у opGoldConstructionDigestHex: подписей на день правки не существовало ни одной.)
+func TestPressTailCarriesNoWaveKeysOnAStoredRow(t *testing.T) {
+	op := entity.TechCardOperation{
+		OperationType:     entity.OpTypePress,
+		PressEquipment:    opGoldStr("steam_press"),
+		PressProfileKey:   opGoldStr("press-1"),
+		PressTemperatureC: opGoldI32(150),
+		PressDwellSec:     opGoldI32(12),
+		PressPressureNCm2: opGoldDec("3.5"),
+		PressSteam:        sql.NullBool{Bool: false, Valid: true},
+		PressCloth:        opGoldStr("cotton"),
+	}
+	tails := opKindTailsOf(t, op)
+	if len(tails) != 1 {
+		t.Fatalf("у ВТО-строки ожидался ровно один хвост, получено %d: %#v", len(tails), tails)
+	}
+	for _, key := range opKindPairKeys(t, tails[0].([]any)) {
+		if key == "press_action" || key == "press_toward" {
+			t.Errorf("в хвосте строки, где обе колонки 0325 NULL, родилась пара %q — значит пара "+
+				"появляется не по заполненности, и выкатка обрастила бы новыми фактами каждую "+
+				"ВТО-строку в базе", key)
+		}
+	}
+	// И устойчивость между прогонами на этой же строке: отпечаток шага, заполненного ТОЛЬКО
+	// старыми ВТО-полями, обязан быть одним и тем же, иначе подпись протухала бы сама по себе.
+	tc := &entity.TechCardInsert{Operations: []entity.TechCardOperation{op}}
+	first := digestOf(constructionProjection(tc))
+	for i := 0; i < 8; i++ {
+		if again := digestOf(constructionProjection(tc)); again != first {
+			t.Fatalf("отпечаток ВТО-строки неустойчив между прогонами: %s != %s", first, again)
+		}
+	}
+}
+
+// ── 7. КЛЮЧИ ВНУТРИ ХВОСТА УНИКАЛЬНЫ ────────────────────────────────────────────────────────────
+
+// opKindEveryFieldFilled — шаг, у которого ВАЛИДНО КАЖДОЕ nullable-поле сущности.
+//
+// Собирается рефлексией, а не списком имён, намеренно. Проверка уникальности ключей имеет смысл
+// только на хвостах, заполненных ЦЕЛИКОМ: пара с дублирующимся ключом родится лишь тогда, когда
+// валидны ОБЕ половины дубля, — а список имён протух бы на первом же дописанном поле, молча сузив
+// проверку до того подмножества, которое кто-то не забыл обновить. Значения не важны, сверяются
+// КЛЮЧИ; важно только то, что Valid выставлен везде.
+func opKindEveryFieldFilled(t *testing.T) entity.TechCardOperation {
+	t.Helper()
+	var op entity.TechCardOperation
+	rv := reflect.ValueOf(&op).Elem()
+	filled := 0
+	for i := 0; i < rv.NumField(); i++ {
+		f := rv.Field(i)
+		if !f.CanSet() || f.Kind() != reflect.Struct {
+			continue
+		}
+		valid := f.FieldByName("Valid")
+		if !valid.IsValid() || valid.Kind() != reflect.Bool || !valid.CanSet() {
+			continue
+		}
+		valid.SetBool(true)
+		filled++
+	}
+	// Страховка от немой рефлексии: если типы полей когда-нибудь перестанут быть {…, Valid bool},
+	// цикл выше тихо не заполнит ничего, и тест ниже станет зелёным на пустом шаге.
+	if filled < 34 {
+		t.Fatalf("рефлексия заполнила %d nullable-полей — меньше, чем одних только колонок волны "+
+			"(34); проверка уникальности ключей пошла бы по недозаполненным хвостам", filled)
+	}
+	return op
+}
+
+// TestOperationKindPairKeysUniqueWithinTail — внутри одного хвоста ключ встречается ровно раз.
+//
+// Это не стилистика и не «чистота списка». Порядок пар задаёт sort.SliceStable по ключу, и он
+// тотален РОВНО ПОКА ключи внутри хвоста уникальны: у двух пар с одним ключом порядок определяет
+// уже не ключ, а объявление. Стабильная сортировка делает такой порядок хотя бы воспроизводимым
+// (у sort.Slice он был бы произволен и мог бы поехать на обновлении Go), но воспроизводимость —
+// не то, чего мы хотим от дубля: дубль означает, что два РАЗНЫХ факта цеха пишутся под одним
+// именем, и прочесть отпечаток однозначно нельзя. Поэтому дубль ловится здесь ЯВНО, а не
+// проявляется когда-нибудь сдвигом замороженного hex.
+func TestOperationKindPairKeysUniqueWithinTail(t *testing.T) {
+	op := opKindEveryFieldFilled(t)
+	var gotTags []string
+	for i, tail := range opKindTailsOf(t, op) {
+		tagged, ok := tail.([]any)
+		if !ok || len(tagged) == 0 {
+			t.Fatalf("хвост %d не тегированный кортеж: %#v", i, tail)
+		}
+		if !opKindIsPairTail(tagged) {
+			continue // assembly и media несут списки объектов, а не пары
+		}
+		tag := tagged[0].(string)
+		gotTags = append(gotTags, tag)
+		seen := map[string]int{}
+		for j, key := range opKindPairKeys(t, tagged) {
+			if prev, dup := seen[key]; dup {
+				t.Errorf("в хвосте %q ключ %q стоит дважды (пары %d и %d) — порядок этих двух пар "+
+					"задаёт уже не ключ, и два разных факта цеха пишутся под одним именем",
+					tag, key, prev, j)
+			}
+			seen[key] = j
+		}
+	}
+	// И вторая половина: проверены ВСЕ полевые хвосты, а не те, что случайно родились. Если хвост
+	// не родился на шаге, где заполнено вообще всё, — его ключи никто не сверял.
+	if len(gotTags) != len(opKindFieldTags) {
+		t.Fatalf("парных хвостов %d, ожидалось %d: %v", len(gotTags), len(opKindFieldTags), gotTags)
+	}
+	for i := range opKindFieldTags {
+		if gotTags[i] != opKindFieldTags[i] {
+			t.Fatalf("состав парных хвостов: %v, ожидалось %v", gotTags, opKindFieldTags)
+		}
 	}
 }

@@ -125,9 +125,16 @@ func TestOperationKindsStoredGateRefusesUnawareWriteColumnByColumn(t *testing.T)
 		{"zipper_application", func(o *entity.TechCardOperation) { o.ZipperApplication = okStr("invisible") }},
 		{"binding_style", func(o *entity.TechCardOperation) { o.BindingStyle = okStr("double_fold") }},
 		{"label_attach_stitch", func(o *entity.TechCardOperation) { o.LabelAttachStitch = okStr("four_sides") }},
+
+		// ВТО (0325) — две колонки сверх тридцати двух, и они той же породы, что «восемь полей
+		// дельты»: press_action сидит на ГЛАГОЛЕ PRESS, который живёт в проде годами и который
+		// сегодняшний бандл шлёт каждый день. Глагол осведомлённости не доказывает — доказывает
+		// заполненность колонки, поэтому клетки и здесь поколоночные.
+		{"press_action", func(o *entity.TechCardOperation) { o.PressAction = okStr("to_one_side") }},
+		{"press_toward", func(o *entity.TechCardOperation) { o.PressToward = okStr("front") }},
 	}
-	if len(cases) != 32 {
-		t.Fatalf("волна — 32 колонки, в таблице %d: колонка без клетки теряется молча", len(cases))
+	if len(cases) != 34 {
+		t.Fatalf("волна — 32 колонки 0324 плюс 2 колонки ВТО 0325, в таблице %d: колонка без клетки теряется молча", len(cases))
 	}
 	for _, tt := range cases {
 		t.Run(tt.column, func(t *testing.T) {
@@ -191,6 +198,8 @@ func TestOperationKindsAwareEmptyWriteStillClearsTheFields(t *testing.T) {
 		o.ZipperApplication = okStr("invisible")
 		o.BindingStyle = okStr("double_fold")
 		o.LabelAttachStitch = okStr("four_sides")
+		o.PressAction = okStr("to_one_side")
+		o.PressToward = okStr("front")
 	})
 	// Ровно тот payload, что шлёт НОВЫЙ клиент, когда технолог очистил блок: флаг есть, блоков нет.
 	empty := okPayload(true, okOpLegacy())
@@ -258,6 +267,11 @@ func TestOperationKindsWireGateRefusesUnawareEcho(t *testing.T) {
 		})},
 		{"блок fastening", base(func(o *pb_common.TechCardOperation) {
 			o.Fastening = &pb_common.TechCardOperationFastening{}
+		})},
+		// Одиннадцатый блок (0325). ПУСТОЙ блок — тоже эхо: присутствие сообщения и есть заявление
+		// «бандл про это семейство говорит», а на глагол press опереться нельзя, он старый.
+		{"блок press", base(func(o *pb_common.TechCardOperation) {
+			o.Press = &pb_common.TechCardOperationPress{}
 		})},
 		{"плоское print_method", base(func(o *pb_common.TechCardOperation) {
 			o.PrintMethod = pb_common.TechCardPrintMethod_TECH_CARD_PRINT_METHOD_SCREEN
