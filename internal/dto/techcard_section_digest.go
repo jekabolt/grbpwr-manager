@@ -206,6 +206,57 @@ func digestOf(v any) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// blankAsAbsent — ОДНО НАПИСАНИЕ У ОДНОГО СОДЕРЖАНИЯ: блок, в котором не заполнено НИЧЕГО, даёт
+// ровно тот же отпечаток, что и блок, которого нет вовсе. Каноничным выбрано ОТСУТСТВИЕ (nil), тем
+// же решением, что уже принято у парка оборудования — см. equipmentProfilesTail: присутствие
+// обёртки в отпечаток не входит, только её содержание.
+//
+// ПОЧЕМУ ИМЕННО ОТСУТСТВИЕ, А НЕ ПУСТАЯ ОБЁРТКА. Во-первых, «нет блока» — единственное написание,
+// которое умеет произвести КАЖДАЯ из сторон: чтение отдаёт nil, когда строки нет, а запись — когда
+// клиент про блок не говорил; пустую же обёртку рождает только часть путей (стор заводит пустой
+// Construction карточке, у которой есть профили оборудования, но нет строки конструкции; клиент
+// шлёт пустой блок, если пользователь открыл и закрыл вкладку). Схлопывать надо в то написание,
+// которое общее. Во-вторых, канон «пустая обёртка» сдвинул бы отпечаток каждой карточки без блока
+// — то есть почти всей базы; канон «отсутствие» двигает только карточки с пустой обёрткой, которых
+// сегодня нет ни одной (tech_card_packaging — 0 строк).
+//
+// ПУСТОТА ВЫВЕДЕНА, А НЕ ПЕРЕЧИСЛЕНА: она считается прогоном НУЛЕВОЙ структуры через ТУ ЖЕ
+// функцию-строитель. Второй список полей («какие из них считаются пустыми») разъехался бы со
+// строителем при первой же дописке — молча и с расплатой в виде разъехавшегося отпечатка. Здесь
+// новое поле попадает в проверку само: пока оно пусто, строка нулевой структуры совпадает с
+// настоящей, а как только заполнено — расходится, и блок перестаёт быть пустым.
+//
+// Проекция обязана нормализовать NULL и "" в одно значение (см. заголовок файла) — тогда обёртка
+// из одних NULL и обёртка из одних пустых строк тоже сойдутся здесь в одно nil.
+func blankAsAbsent[T any](v *T, row func(*T) []any) any {
+	if v == nil {
+		return nil
+	}
+	var zero T
+	filled := row(v)
+	if digestOf(filled) == digestOf(row(&zero)) {
+		return nil
+	}
+	return filled
+}
+
+// digestList — то же правило для СПИСКА: «пусто» имеет два написания (nil-срез и срез нулевой
+// длины), json.Marshal пишет их как `null` и `[]`, и без сведения одно и то же содержание давало бы
+// два отпечатка. Каноничным выбрано опять же ОТСУТСТВИЕ — так список отдают стор (append на
+// nil-срез) и оба нормализатора разбора (annotationPieceKeys, TechCardCallout.PartList).
+//
+// Правило стоит В ПРОЕКЦИИ, а не у каждого производителя списка: производителей много и они
+// разъезжаются (parseTechCardDetails собирал media_ids через make(..., 0, n) и отдавал `[]` там,
+// где чтение отдаёт `null`, — отпечаток DESIGN такой карточки не совпадал сам с собой, то есть
+// подпись рождалась протухшей и не лечилась переутверждением). Проекция — единственное место, через
+// которое проходят ОБЕ стороны.
+func digestList[T any](v []T) []T {
+	if len(v) == 0 {
+		return nil
+	}
+	return v
+}
+
 // --- section projections -------------------------------------------------------------------
 //
 // Each returns a plain, fully-normalised value. Field names are short because they are hashed, never
@@ -278,41 +329,52 @@ func designProjection(tc *entity.TechCardInsert) any {
 	}
 	details := make([]any, 0, len(tc.Details))
 	for _, d := range tc.Details {
-		details = append(details, []any{d.Key.String, d.Text.String, d.MediaIds})
+		// digestList — не перестраховка: разбор с провода собирает media_ids через make(..., 0, n) и
+		// отдаёт `[]` у аспекта без картинок, а чтение оставляет срез nil и отдаёт `null`. Отпечаток
+		// DESIGN такой карточки не совпадал сам с собой — подпись рождалась протухшей.
+		details = append(details, []any{d.Key.String, d.Text.String, digestList(d.MediaIds)})
 	}
 	return []any{tc.Concept.String, media, callouts, details}
 }
 
-func constructionProjection(tc *entity.TechCardInsert) any {
-	var construction any
-	if tc.Construction != nil {
-		c := tc.Construction
-		// FIXED ORDER, FOREVER. Reordering these rewrites every stored CONSTRUCTION digest and marks
-		// every approved section as edited-since-signing. This tuple CHANGED SHAPE in the operations
-		// break (0289) — the free-text defaults became typed ones — so approvals on cards that
-		// carried construction defaults are stale exactly once, by design.
-		//
-		// ПОЗИЦИИ 3 И 5 ЗАМОРОЖЕНЫ НАВСЕГДА. В них жили overlock_thread_count и pressing, снятые
-		// парком оборудования (0306): один счёт нитей на карточку мог описать только один оверлок, а
-		// карточка шьётся на нескольких. УДАЛИТЬ элемент из позиционного массива — ровно тот же
-		// безусловный сдвиг, что и дописать: всё, что стоит правее, съезжает, и КАЖДАЯ карточка в
-		// базе, у которой обоих полей не было (то есть подавляющее большинство), получила бы новый
-		// отпечаток и объявила бы свою подпись CONSTRUCTION устаревшей в момент выкатки, ни за что.
-		// Поэтому на их местах стоят ровно те значения, в которые маршалился NULL: int32(0) и "".
-		// Прецедент — позиции 2-3 в costingProjection (бывшие hardware/packaging cost).
-		//
-		// Карточка, у которой эти два поля БЫЛИ заполнены, отпечаток меняет — и это честно, а не
-		// побочный ущерб: миграция 0306 перенесла её pressing в notes (позиция 6 ниже) и завела ей
-		// профиль оверлока, то есть подписанное содержание действительно двинулось. Волна
-		// переутверждения равна множеству таких карточек, а не всей базе.
-		construction = []any{
-			c.DefaultSeamClass.String, digestDecimal(c.DefaultStitchesPerCm),
-			int32(0), // была OverlockThreadCount; NULL маршалился как 0 — ЗАМОРОЖЕНО НАВСЕГДА
-			c.HemFinish.String,
-			"", // была Pressing; NULL маршалился как "" — ЗАМОРОЖЕНО НАВСЕГДА
-			c.Notes.String,
-		}
+// constructionRow — головной кортеж секции: то, что карточка объявляет умолчаниями пошива.
+//
+// FIXED ORDER, FOREVER. Reordering these rewrites every stored CONSTRUCTION digest and marks
+// every approved section as edited-since-signing. This tuple CHANGED SHAPE in the operations
+// break (0289) — the free-text defaults became typed ones — so approvals on cards that
+// carried construction defaults are stale exactly once, by design.
+//
+// ПОЗИЦИИ 3 И 5 ЗАМОРОЖЕНЫ НАВСЕГДА. В них жили overlock_thread_count и pressing, снятые
+// парком оборудования (0306): один счёт нитей на карточку мог описать только один оверлок, а
+// карточка шьётся на нескольких. УДАЛИТЬ элемент из позиционного массива — ровно тот же
+// безусловный сдвиг, что и дописать: всё, что стоит правее, съезжает, и КАЖДАЯ карточка в
+// базе, у которой обоих полей не было (то есть подавляющее большинство), получила бы новый
+// отпечаток и объявила бы свою подпись CONSTRUCTION устаревшей в момент выкатки, ни за что.
+// Поэтому на их местах стоят ровно те значения, в которые маршалился NULL: int32(0) и "".
+// Прецедент — позиции 2-3 в costingProjection (бывшие hardware/packaging cost).
+//
+// Карточка, у которой эти два поля БЫЛИ заполнены, отпечаток меняет — и это честно, а не
+// побочный ущерб: миграция 0306 перенесла её pressing в notes (позиция 6 ниже) и завела ей
+// профиль оверлока, то есть подписанное содержание действительно двинулось. Волна
+// переутверждения равна множеству таких карточек, а не всей базе.
+func constructionRow(c *entity.TechCardConstruction) []any {
+	return []any{
+		c.DefaultSeamClass.String, digestDecimal(c.DefaultStitchesPerCm),
+		int32(0), // была OverlockThreadCount; NULL маршалился как 0 — ЗАМОРОЖЕНО НАВСЕГДА
+		c.HemFinish.String,
+		"", // была Pressing; NULL маршалился как "" — ЗАМОРОЖЕНО НАВСЕГДА
+		c.Notes.String,
 	}
+}
+
+func constructionProjection(tc *entity.TechCardInsert) any {
+	// ПУСТАЯ ОБЁРТКА = ЕЁ ОТСУТСТВИЕ (см. blankAsAbsent). Здесь это не гипотетика: стор САМ заводит
+	// карточке пустой Construction, когда у неё есть профили оборудования, но нет строки конструкции
+	// (0306, production.go), а запись такой карточки блока не несёт вовсе. Без сведения одно и то же
+	// содержание — «умолчаний пошива нет» — давало бы на чтении и на записи разные отпечатки, то есть
+	// вечное «изменено после подписи». Парк оборудования при этом остаётся: он висит на КАРТОЧКЕ, а
+	// не на этой строке, и уезжает отдельным хвостом внешнего кортежа ниже.
+	construction := blankAsAbsent(tc.Construction, constructionRow)
 	// The operation tuple, also FIXED FOREVER. Unlike construction above, changing this one was
 	// free: an EMPTY operations list marshals identically whatever shape the tuple has, and no card
 	// on prod had a single operation when the break landed.
@@ -323,7 +385,11 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		o := &tc.Operations[i]
 		row := []any{
 			o.OperationNumber.Int32, digestOperationTypeCompat(o), string(o.Zone),
-			o.PieceLineKeys, o.BomLineKeys, digestDecimal(o.SMV), o.CalloutNumber.Int32,
+			// Позиции 4 и 5 — через digestList: пустой список обязан иметь ОДНО написание. Оба
+			// сегодняшних производителя отдают nil, и голден-эталон шага фиксирует именно nil; правило
+			// стоит здесь, чтобы третий производитель не завёл молча второе написание.
+			digestList(o.PieceLineKeys), digestList(o.BomLineKeys),
+			digestDecimal(o.SMV), o.CalloutNumber.Int32,
 			digestDecimal(o.StitchesPerCm), o.SeamClass.String, digestDecimal(o.SeamAllowanceMm),
 			o.TopstitchMode.String, digestDecimal(o.TopstitchWidthMm), o.TopstitchRows.Int32,
 			o.AttachmentKind.String, digestDecimal(o.AttachmentSizeMm), o.Note.String,
@@ -616,7 +682,7 @@ func operationMediaTail(o *entity.TechCardOperation) []any {
 				ann = append(ann, first)
 			}
 			if style {
-				ann = append(ann, []any{a.Dashed, a.Filled, keys})
+				ann = append(ann, []any{a.Dashed, a.Filled, digestList(keys)})
 			}
 			anns = append(anns, ann)
 		}
@@ -947,11 +1013,19 @@ func labelsProjection(tc *entity.TechCardInsert) any {
 // проверяется замороженным hex (packagingGoldDigestHex). Переписывать голову в пары было бы
 // правкой ради единообразия, а голова кортежа шага тоже осталась позиционной: пары нужны там, где
 // СОСТАВ будет расти, а не там, где он уже зафиксирован.
+// ПУСТОЙ ЛИСТ = ОТСУТСТВУЮЩИЙ ЛИСТ, и это не косметика. Обёртка, в которой не заполнено ни одного
+// поля, — то же содержание, что и «упаковки нет», а до сведения эти два состояния давали РАЗНЫЕ
+// отпечатки: массив из десяти пустых позиций против null. Карточка, у которой кто-то однажды открыл
+// и закрыл вкладку упаковки, ничего не заполнив, объявляла бы свою секцию PACKAGING изменённой без
+// единого изменения. Довод и выбор каноничного написания — у blankAsAbsent, решение то же, что уже
+// принято у парка оборудования.
 func packagingProjection(tc *entity.TechCardInsert) any {
-	if tc.Packaging == nil {
-		return nil
-	}
-	p := tc.Packaging
+	return blankAsAbsent(tc.Packaging, packagingRow)
+}
+
+// packagingRow — голова плюс хвосты одним строителем: он же прогоняется на НУЛЕВОМ листе, чтобы
+// вывести пустоту, поэтому поле T8b попадёт в это сведение само, без второго списка полей.
+func packagingRow(p *entity.TechCardPackaging) []any {
 	out := []any{
 		p.FoldingMethod.String, p.Polybag.String, p.BagSticker.String, p.Inserts.String,
 		p.UnitsPerBox.Int32, p.BoxMarking.String, p.BoxDimensions.String,
@@ -1012,20 +1086,27 @@ func packagingTails(p *entity.TechCardPackaging) []any {
 // declared range», so no existing approval describes the current figure. The positional-tail
 // trick (see constructionProjection) would have bought nothing here — there is no card for which
 // the two bases agree by construction.
-func costingProjection(tc *entity.TechCardInsert) any {
-	var costing any
-	if c := tc.Costing; c != nil {
-		// Positions 2 and 3 held hardware_cost / packaging_cost until Phase 2 removed them. They stay
-		// as the canonical empty placeholder ("" = digestDecimal of an unset decimal) so the digest of
-		// a card that never had those scalars is BYTE-IDENTICAL to what its approver signed — the
-		// removal must not mass-stale every approved costing sign-off (review S1, digest-rebase). A
-		// card whose scalar WAS migrated changes digest legitimately: its costing content moved.
-		costing = []any{
-			digestDecimal(c.CmtCost), "", "", digestDecimal(c.LogisticsCost),
-			digestDecimal(c.OverheadCost), digestDecimal(c.DefectPercent), c.Currency.String, c.Notes.String,
-			digestDecimal(c.TargetMarginPct),
-		}
+// costingRow — блок ручных статей себестоимости.
+//
+// Positions 2 and 3 held hardware_cost / packaging_cost until Phase 2 removed them. They stay
+// as the canonical empty placeholder ("" = digestDecimal of an unset decimal) so the digest of
+// a card that never had those scalars is BYTE-IDENTICAL to what its approver signed — the
+// removal must not mass-stale every approved costing sign-off (review S1, digest-rebase). A
+// card whose scalar WAS migrated changes digest legitimately: its costing content moved.
+func costingRow(c *entity.TechCardCosting) []any {
+	return []any{
+		digestDecimal(c.CmtCost), "", "", digestDecimal(c.LogisticsCost),
+		digestDecimal(c.OverheadCost), digestDecimal(c.DefectPercent), c.Currency.String, c.Notes.String,
+		digestDecimal(c.TargetMarginPct),
 	}
+}
+
+func costingProjection(tc *entity.TechCardInsert) any {
+	// ПУСТОЙ БЛОК = ЕГО ОТСУТСТВИЕ (см. blankAsAbsent): «ручных статей не заявлено» — одно
+	// содержание, и написаний у него должно быть одно. Отдельно важно здесь: пустую обёртку рождает
+	// не только клиент, но и серверный путь релиза (production_run_release_cost), поэтому без
+	// сведения отпечаток COSTING зависел бы от того, каким путём карточка приехала.
+	costing := blankAsAbsent(tc.Costing, costingRow)
 	qty := make([]any, 0, len(tc.SizeQuantities))
 	for _, q := range tc.SizeQuantities {
 		qty = append(qty, []any{q.SizeId, q.OrderQty})
