@@ -5,6 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -266,5 +270,120 @@ func TestAdminGatewaySilentDropIsOneBitAway(t *testing.T) {
 	press := stub.lastUpdate.GetTechCard().GetOperations()[0].GetPress()
 	if press.GetAction() != pb_common.TechCardPressAction_TECH_CARD_PRESS_ACTION_UNKNOWN {
 		t.Fatalf("незнакомый член enum доехал как %v — тихой потери нет, проба бессмысленна", press.GetAction())
+	}
+}
+
+// ------------------------------------------------------------------------------------------
+// Ф2 п.3 — ИНВЕНТАРЬ ГРАНИЦЫ СОВМЕСТИМОСТИ, сделанный проволокой, а не только прозой.
+//
+// Строгость превращает «бандл старше последнего снятия» из тихой порчи в громкий 400. Кто именно
+// попадает под это — определяется списками `reserved` admin-поверхности. Список в комментарии у
+// newAdminJSONMarshaler протухнет молча при следующем снятии члена; этот тест — растяжка: он
+// падает РОВНО тогда, когда список изменился, и требует переснять инвентарь по клиенту (метод
+// описан в комментарии маршалера: сгенерированные типы src/api/proto-http/{admin,common}/index.ts
+// + grep по снятым именам членов в src/).
+// ------------------------------------------------------------------------------------------
+
+// retiredEnumMemberNames — имена членов enum, СНЯТЫЕ с admin-поверхности. Клиент, который пришлёт
+// любое из них, получает 400 (см. подтест «член снят волной 0327»). На 2026-08-21 клиент ветки
+// feat/operation-kinds-ui не эмитит ни одного.
+var retiredEnumMemberNames = map[string]bool{
+	"TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL":    true,
+	"TECH_CARD_CLEANING_KIND_CHALK_REMOVAL":       true,
+	"TECH_CARD_HOLE_PREP_PRONG_PIERCE":            true,
+	"TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT":     true,
+	"TECH_CARD_MACHINE_TYPE_HARDWARE_ATTACH":      true,
+	"TECH_CARD_PEEL_MODE_NONE":                    true,
+	"TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE":  true,
+	"TECH_CARD_PRESS_ACTION_OPEN":                 true,
+	"TECH_CARD_PRESS_TOWARD_SIDE":                 true,
+	"TECH_CARD_REINFORCEMENT_FABRIC_STAY":         true,
+	"TECH_CARD_REINFORCEMENT_FUSIBLE_PATCH":       true,
+	"TECH_CARD_THREAD_TENSION_OTHER":              true,
+	"TECH_CARD_TOPSTITCH_MODE_WIDTH":              true,
+	"TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET": true,
+	"TECH_CARD_ZIPPER_APPLICATION_SEPARATING_CF":  true,
+}
+
+// retiredFieldNamePairs — сколько пар (сообщение, снятое ИМЯ поля) стоит сегодня на
+// admin-поверхности. Именами, а не номерами: строгий разбор JSON спотыкается об ИМЯ.
+const retiredFieldNamePairs = 112
+
+// scanReservedNames разбирает `reserved "…"` по admin-поверхности, разделяя имена членов enum и
+// имена полей по тому, внутри какого блока стоит строка.
+func scanReservedNames(t *testing.T) (members map[string]bool, fieldPairs int) {
+	t.Helper()
+	files := []string{"../../../proto/admin/admin/admin.proto"}
+	common, err := filepath.Glob("../../../proto/common/common/*.proto")
+	if err != nil {
+		t.Fatalf("glob common protos: %v", err)
+	}
+	sort.Strings(common)
+	files = append(files, common...)
+
+	head := regexp.MustCompile(`^(message|enum|oneof|service)\s+(\w+)`)
+	quoted := regexp.MustCompile(`"([^"]+)"`)
+	members = map[string]bool{}
+
+	type frame struct {
+		kind  string
+		depth int
+	}
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		var stack []frame
+		depth := 0
+		for _, line := range strings.Split(string(raw), "\n") {
+			s := strings.TrimSpace(line)
+			if !strings.HasPrefix(s, "//") {
+				if m := head.FindStringSubmatch(s); m != nil {
+					stack = append(stack, frame{kind: m[1], depth: depth})
+				}
+				if strings.HasPrefix(s, "reserved") && strings.Contains(s, `"`) {
+					kind := ""
+					if len(stack) > 0 {
+						kind = stack[len(stack)-1].kind
+					}
+					for _, q := range quoted.FindAllStringSubmatch(s, -1) {
+						if kind == "enum" {
+							members[q[1]] = true
+						} else {
+							fieldPairs++
+						}
+					}
+				}
+			}
+			depth += strings.Count(line, "{") - strings.Count(line, "}")
+			for len(stack) > 0 && depth <= stack[len(stack)-1].depth {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	return members, fieldPairs
+}
+
+func TestAdminReservedNameInventoryIsCurrent(t *testing.T) {
+	members, pairs := scanReservedNames(t)
+
+	const reinventory = "\nПереснимите инвентарь Ф2-п.3 ПЕРЕД выкаткой: строгий маршалер отвечает 400 " +
+		"на снятое имя, и надо убедиться, что ни бета-, ни ПРОД-бандл admin-клиента его не шлёт " +
+		"(сгенерированные типы src/api/proto-http/{admin,common}/index.ts + grep по снятым именам в src/). " +
+		"Затем обновите список здесь и в комментарии newAdminJSONMarshaler."
+
+	for name := range members {
+		if !retiredEnumMemberNames[name] {
+			t.Errorf("на admin-поверхности появилось НОВОЕ снятое имя члена enum %q, которого нет в инвентаре.%s", name, reinventory)
+		}
+	}
+	for name := range retiredEnumMemberNames {
+		if !members[name] {
+			t.Errorf("имя члена enum %q числится снятым в инвентаре, но в proto его reserved больше нет.%s", name, reinventory)
+		}
+	}
+	if pairs != retiredFieldNamePairs {
+		t.Errorf("пар (сообщение, снятое имя поля) стало %d, в инвентаре — %d.%s", pairs, retiredFieldNamePairs, reinventory)
 	}
 }
