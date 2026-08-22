@@ -299,6 +299,12 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			// не сворачивается ни в какой токен, потому что явного «нет» у этих двух не бывает.
 			"press_action": o.PressAction,
 			"press_toward": o.PressToward,
+
+			// Ось «работа» (0330) — канон продолжается ДОПИСЫВАНИЕМ и здесь. NULL пишется как NULL:
+			// «вид не назначен» — законное состояние, а не ноль и не пустая строка. Внешний ключ на
+			// operation_work(token) стоит на самой колонке, поэтому незнакомый токен сюда не
+			// доезжает вовсе — его отвергает именованное правило в dto задолго до вставки.
+			"work": o.Work,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -739,7 +745,12 @@ type techCardOperationRow struct {
 // named-map insertTechCardOperations и в полях entity.TechCardOperation: S -> PL -> H -> P -> W -> T
 // -> F -> C -> Q -> WP, затем дельта FA -> S14 -> S17. Старая строка отдаёт по ним NULL, и NULL
 // обязан доехать до Valid=false, а не до нуля: «технолог молчит» и «технолог сказал ноль» — разные
-// инструкции цеху.
+// инструкции цеху. Дальше дописыванием: press_action / press_toward (0325), затем work (0330).
+//
+// ⚠️ ЭТОТ СПИСОК — ПЯТЫЙ И САМЫЙ КОВАРНЫЙ ИЗ ПЯТИ. Колонка, забытая ЗДЕСЬ, читается как NULL:
+// запись проходит, шаг открывается пустым по этому полю, а отпечаток ЧТЕНИЯ расходится с
+// отпечатком ЗАПИСИ — и подпись рождается протухшей навсегда, без единой ошибки. Равенство двух
+// отпечатков держит тест симметрии в internal/dto (он читает ЭТОТ текст), а не ревью.
 //
 // КОММЕНТАРИИ К КОЛОНКАМ ЖИВУТ ЗДЕСЬ, СНАРУЖИ СТРОКИ ЗАПРОСА, А НЕ ВНУТРИ НЕЁ. Двоеточие внутри
 // SQL-комментария «--» sqlx разбирает как именованный параметр и роняет bind этого запроса (у него
@@ -769,7 +780,8 @@ const techCardOperationsQuery = `
 		       o.buttonhole_style, o.cut_length_mm, o.buttonhole_orientation,
 		       o.bartack_length_mm, o.attach_pattern, o.zipper_application,
 		       o.binding_style, o.label_attach_stitch,
-		       o.press_action, o.press_toward
+		       o.press_action, o.press_toward,
+		       o.work
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`

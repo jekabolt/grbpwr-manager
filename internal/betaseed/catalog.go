@@ -134,6 +134,7 @@ func (s *Seeder) seedOneStyle(ctx context.Context, idx int, p styleParams) (Cata
 			MachineFieldsAware:  true,
 			AssemblyAware:       true,
 			OperationKindsAware: true,
+			OperationWorkAware:  true,
 		},
 	})
 	if err != nil {

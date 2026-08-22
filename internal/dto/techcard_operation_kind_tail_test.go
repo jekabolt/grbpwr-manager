@@ -139,8 +139,14 @@ var opKindWaveTags = []string{
 }
 
 // opKindFieldTags — ВСЕ теги парных хвостов шага в замороженном порядке: сначала два хвоста
-// оборудования (их место — сразу за головой, левее assembly и media), затем одиннадцать семейств.
-var opKindFieldTags = append([]string{"machine", "press"}, opKindWaveTags...)
+// оборудования (их место — сразу за головой, левее assembly и media), затем одиннадцать семейств
+// волны 0324, и ДВЕНАДЦАТЫМ — "work", ось «работа» (0330).
+//
+// "work" ДОПИСАН В КОНЕЦ, А НЕ ВСТАВЛЕН ПО СМЫСЛУ РЯДОМ С "machine": позиция хвоста в списке
+// значима (json.Marshal пишет []any по порядку), и вставка в середину сдвинула бы байты каждой
+// строки, которая эмитит хоть один хвост правее места вставки. Обещанное "handwork" ПОСЛЕДНЕЕ
+// место цело — он встанет ПОСЛЕ "work", когда оба его отложенных поля придут.
+var opKindFieldTags = append(append([]string{"machine", "press"}, opKindWaveTags...), "work")
 
 // ── 1. НУЛЕВАЯ ВОЛНА ────────────────────────────────────────────────────────────────────────────
 
@@ -571,6 +577,10 @@ func TestEachTagCarriesExactlyOneTail(t *testing.T) {
 		CoverageMode:      opGoldStr("aql_plan"),
 		WetProcessKind:    opGoldStr("enzyme"),
 		ZipperApplication: opGoldStr("invisible"),
+		// и ось «работа» (0330) — двенадцатый парный хвост. Токен настоящий (0329, verb = machine),
+		// потому что он уезжает в отпечаток: выдуманное имя здесь читалось бы как разрешение писать
+		// в эту колонку что попало.
+		Work: opGoldStr("topstitch"),
 	}
 	seen := map[string]int{}
 	for i, tag := range opKindTagsOf(t, op) {

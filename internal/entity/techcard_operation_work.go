@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"sync/atomic"
 	"time"
 )
 
@@ -100,4 +101,93 @@ func stringTokenSet(tokens []string) map[string]bool {
 		m[t] = true
 	}
 	return m
+}
+
+// ── СНИМОК КАТАЛОГА В ПАМЯТИ ПРОЦЕССА ───────────────────────────────────────────────────────────
+//
+// ЗАЧЕМ ОН ЕСТЬ. Правила записи оси «работа» (0330) обязаны знать каталог: «такой работы нет»,
+// «глагол шага не тот, что у работы», «эта работа не живёт на этой машинке». Разбор payload'а —
+// чистая функция без базы (ConvertPbTechCardInsertToEntity), и протаскивать каталог через её
+// подпись значило бы переписать полсотни мест вызова ради данных, которые за жизнь процесса не
+// меняются НИ РАЗУ: каталог правится ТОЛЬКО миграцией, то есть только вместе с перезапуском.
+//
+// ЭТО ТОТ ЖЕ ПРИЁМ, ЧТО УЖЕ СТОИТ В ЭТОМ ПРОЕКТЕ: cache.InitConsts грузит словари в store.New
+// ровно так же и по той же причине. Снимок ставится там же — один писатель на старте, дальше
+// только чтение.
+//
+// ⚠️ НЕЗАГРУЖЕННЫЙ КАТАЛОГ ЗАПИРАЕТ ЗАПИСЬ ВИДА, А НЕ ОТКЛЮЧАЕТ ПРАВИЛА. Молча пропускать работу
+// мимо проверок нельзя: правило, которое «иногда не работает», не защищает ничего, а незнакомый
+// токен всё равно упёрся бы во внешний ключ — но уже голым 1452 без имени поля. Поэтому пустой
+// снимок означает «строку с непустым work сохранить нельзя», и это слышно. Строка БЕЗ работы —
+// сегодня каждая строка обеих баз — не затронута вовсе.
+
+// OperationWorkCatalog is an immutable lookup over the work catalog, built once and shared.
+type OperationWorkCatalog struct {
+	byToken map[string]OperationWork
+}
+
+// NewOperationWorkCatalog indexes the rows the store read. The slice is not retained: the map holds
+// copies, so a later mutation of the caller's slice cannot reach a rule.
+func NewOperationWorkCatalog(works []OperationWork) *OperationWorkCatalog {
+	byToken := make(map[string]OperationWork, len(works))
+	for _, w := range works {
+		byToken[w.Token] = w
+	}
+	return &OperationWorkCatalog{byToken: byToken}
+}
+
+// Lookup returns the work by its token.
+func (c *OperationWorkCatalog) Lookup(token string) (OperationWork, bool) {
+	if c == nil {
+		return OperationWork{}, false
+	}
+	w, ok := c.byToken[token]
+	return w, ok
+}
+
+// AllowsMachine reports whether machineType is one of the work's legal machines. Meaningful only
+// when MachineMode == ask; the two other modes do not ask the question at all.
+func (w OperationWork) AllowsMachine(machineType string) bool {
+	for _, m := range w.Machines {
+		if m == machineType {
+			return true
+		}
+	}
+	return false
+}
+
+// Size reports how many works the snapshot holds (0 for a snapshot that was never loaded).
+func (c *OperationWorkCatalog) Size() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.byToken)
+}
+
+var operationWorkCatalogSnapshot atomic.Pointer[OperationWorkCatalog]
+
+// SetOperationWorkCatalog publishes the process-wide snapshot. Called once, from store.New, right
+// after migrations have run — the same moment and the same reason as cache.InitConsts.
+//
+// ⚠️ ПУСТОЙ СРЕЗ НЕ ПУБЛИКУЕТ НИЧЕГО, И ЭТО ЧАСТЬ ПРАВИЛА, А НЕ УДОБСТВО. Каталог из нуля работ —
+// не каталог: 0329 сеет пятьдесят три строки, и ноль означает ровно одно — миграция на этой базе не
+// прошла, то есть процесс каталога НЕ ЗНАЕТ. Опубликуй мы пустой снимок, отказ остался бы (токена в
+// нём всё равно нет), но человек прочёл бы «такой работы нет в каталоге — выберите из списка»
+// вместо правдивого «этот сервер каталог не загрузил». Диагноз, уводящий в другую сторону, хуже
+// молчания: по нему пойдут искать опечатку в токене.
+//
+// Отсюда же и способ сбросить снимок в тестах: SetOperationWorkCatalog(nil).
+func SetOperationWorkCatalog(works []OperationWork) {
+	if len(works) == 0 {
+		operationWorkCatalogSnapshot.Store(nil)
+		return
+	}
+	operationWorkCatalogSnapshot.Store(NewOperationWorkCatalog(works))
+}
+
+// OperationWorkCatalogSnapshot returns the published catalog, or nil when none was ever published.
+// nil is NOT «no works» — it is «this process never learned the catalog», and the write rules turn
+// it into a refusal rather than into silence.
+func OperationWorkCatalogSnapshot() *OperationWorkCatalog {
+	return operationWorkCatalogSnapshot.Load()
 }

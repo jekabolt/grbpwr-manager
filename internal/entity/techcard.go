@@ -3105,6 +3105,20 @@ type TechCardOperation struct {
 	PressAction sql.NullString `db:"press_action"` // press_flat|to_one_side|steam|final|ease_in|stretch|mould|other; НЕ required; разутюжка — ГЛАГОЛ press_open
 	PressToward sql.NullString `db:"press_toward"` // front|back|up|down|toward_center|away_from_center|sleeve|body|facing|shell|lining|other; ТОЛЬКО при press_action = to_one_side, и там обязателен
 
+	// --- ОСЬ «РАБОТА» (0330) ----------------------------------------------------------------------
+	//
+	// КАНОН ПРОДОЛЖАЕТСЯ ДОПИСЫВАНИЕМ, теперь в ПЯТИ списках: поля entity, ALTER миграции, ключи
+	// named-map INSERT'а, SELECT операций — и хвост проекции дайджеста. Пятый список появился
+	// вместе с этой колонкой и он же самый коварный: колонка, забытая в SELECT'е, читается как
+	// NULL, отпечаток ЧТЕНИЯ расходится с отпечатком ЗАПИСИ, и подпись рождается протухшей НАВСЕГДА
+	// и молча. Держит их равенство тест симметрии в internal/dto, а не ревью.
+	//
+	// Work — токен `operation_work.token` (каталог 0329), под внешним ключом. NULL значит «ВИД НЕ
+	// НАЗНАЧЕН» — законное состояние: сто lockstitch-строк прода размечает человек, автоматическое
+	// переписывание свалки запрещено ограничением владельца. Токен уезжает в дайджест; ярлык,
+	// глагол и синонимы работы — никогда, они представление.
+	Work sql.NullString `db:"work"`
+
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
 	PieceLineKeys []string `db:"-"`

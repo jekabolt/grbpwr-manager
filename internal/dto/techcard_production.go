@@ -385,6 +385,14 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err != nil {
 			return nil, err
 		}
+		// Ось «работа» (0330). Тоже БЕЗ ФЛАГА ОСВЕДОМЛЁННОСТИ и по тому же доводу, что у волны выше:
+		// флаг объявляет способность БАНДЛА, а не выключает разбор. Иначе серверный round-trip
+		// (клон сезона строит payload сам) молча вернул бы карточку без видов. Пустая строка = «вид
+		// не назначен» и стоит ноль правил — это состояние каждой сегодняшней строки обеих баз.
+		work, err := parseOperationWork(o, opType, machineType, step)
+		if err != nil {
+			return nil, err
+		}
 		// piece_line_keys (WS4): the cut-pieces this operation works on. Repeated because an
 		// assembly operation spans as many pieces as it joins. Blanks are dropped and duplicates
 		// collapsed here so the store's join-table write can stay a straight insert -- the table's
@@ -536,6 +544,9 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			// ВТО-под-глагол и направление припуска (0325) — канон продолжается дописыванием.
 			PressAction: kinds.pressAction,
 			PressToward: kinds.pressToward,
+
+			// Ось «работа» (0330) — тем же дописыванием, последней.
+			Work: work,
 		})
 	}
 	return out, nil
@@ -882,6 +893,16 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Fastening:       operationFasteningToPb(o),
 			// ВТО-под-глагол и направление припуска (0325) — тем же блочным правилом.
 			Press: operationPressToPb(o),
+
+			// Ось «работа» (0330). ПОЛЕМ, А НЕ БЛОКОМ, и не «когда заполнено»: строка — не
+			// сообщение, у неё нет разницы между отсутствием и пустотой, поэтому обёртка
+			// присутствия здесь ничего не выразила бы, а стоила бы лишний уровень.
+			//
+			// ЭМИТИТСЯ ВСЕГДА, включая пустую строку. Клон сезона строит payload ИМЕННО ЗДЕСЬ, и
+			// шаг без work в исходящем сообщении уехал бы в конвертер как «вид не назначен» — то
+			// есть клон молча терял бы разметку, без единой ошибки. Ровно та катастрофа, ради
+			// которой флаг осведомлённости не фильтрует поля.
+			Work: pbStringFromNull(o.Work),
 		})
 	}
 	return out
