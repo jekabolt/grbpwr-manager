@@ -130,7 +130,24 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 		return nil, status.Error(codes.Internal, "can't load tech card")
 	}
 
-	result, err := s.aiOps.GenerateOperations(ctx, s.buildAIOperationContext(ctx, card), description)
+	// КАТАЛОГ РАБОТ (0329/0331) ЧИТАЕТСЯ ТЕМ ЖЕ ЗАПРОСОМ, ЧТО И ПИКЕР, И ВТОРОГО ЧИТАТЕЛЯ НЕ
+	// ЗАВОДИТСЯ. Промпту нужны ЯРЛЫК и ЦЕХОВЫЕ СЛОВА — то, ради чего GetOperationWorkCatalog и
+	// собирает три таблицы, — а снимок процесса (entity.OperationWorkCatalogSnapshot) существует
+	// для ПРАВИЛ ЗАПИСИ и своим составом никому ничего не обещает. Один источник — одна правда о
+	// том, какие работы сегодня предлагаются.
+	//
+	// ⚠️ ОШИБКА ЧТЕНИЯ НЕ РОНЯЕТ ЧЕРНОВИК, И ЭТО ТОТ ЖЕ ВЫБОР, ЧТО НА СТАРТЕ ПРОЦЕССА: черновик без
+	// оси работы — сегодняшнее поведение, а отказ отнял бы у владельца всю кнопку ради одной
+	// колонки. Промолчать нельзя тоже, поэтому — громкая запись в лог: без неё «ИИ перестал
+	// проставлять работы» выглядело бы капризом модели, а не сломанным запросом.
+	works, wErr := s.repo.TechCards().GetOperationWorkCatalog(ctx)
+	if wErr != nil {
+		slog.Default().ErrorContext(ctx, "AI ops: can't read the work catalog; the draft will name no works",
+			slog.Int("tech_card_id", int(req.TechCardId)), slog.String("err", wErr.Error()))
+		works = nil
+	}
+
+	result, err := s.aiOps.GenerateOperations(ctx, s.buildAIOperationContext(ctx, card, works), description)
 	if err != nil {
 		if errors.Is(err, openrouter.ErrNotConfigured) {
 			return nil, aiRefusal(aiReasonNotConfigured, aiOpsNotConfiguredMsg, nil)
@@ -158,9 +175,12 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 	// applied to every step: the model answers with equipment, the server answers with which profile
 	// of that equipment the step belongs to.
 	park := newAIEquipmentPark(card.Construction)
+	// Каталог индексируется ОДИН раз на весь черновик, ровно по доводу парка: он не свойство шага,
+	// и складывать map на каждой строке значило бы платить за один и тот же ответ N раз.
+	workCatalog := entity.NewOperationWorkCatalog(works)
 	ops := make([]*pb_common.TechCardOperation, 0, len(result.Operations))
 	for i := range result.Operations {
-		op := aiOperationToPb(result.Operations[i])
+		op := aiDraftOperation(result.Operations[i], workCatalog)
 		park.attach(op)
 		ops = append(ops, op)
 	}
@@ -176,7 +196,12 @@ func (s *Server) GenerateTechCardOperations(ctx context.Context, req *pb_admin.G
 // buildAIOperationContext projects a stored tech card into the grounding context fed to the model:
 // the style header, its cut-pieces and its BOM. The garment-type name is resolved best-effort from
 // the dictionary cache (a lookup failure just leaves it blank rather than failing the draft).
-func (s *Server) buildAIOperationContext(ctx context.Context, card *entity.TechCard) openrouter.TechCardContext {
+//
+// `works` — КАТАЛОГ РАБОТ, и он единственная часть контекста, которая описывает НЕ КАРТОЧКУ, а
+// словарь: работы одни и те же на любом изделии. Едет он всё равно здесь, потому что системный
+// промпт пакета openrouter собирается ОДИН РАЗ НА ПРОЦЕСС из статических словарей entity, а этот
+// словарь живёт в базе и на старте его могло не оказаться вовсе.
+func (s *Server) buildAIOperationContext(ctx context.Context, card *entity.TechCard, works []entity.OperationWork) openrouter.TechCardContext {
 	tcx := openrouter.TechCardContext{
 		TechCardID:  card.Id,
 		StyleName:   card.Name,
@@ -222,6 +247,9 @@ func (s *Server) buildAIOperationContext(ctx context.Context, card *entity.TechC
 			PressProfiles:        aiPressProfileSummaries(c.EquipmentDefaults),
 		}
 	}
+	// Снятые работы отфильтрованы: промпт — это ПРЕДЛОЖЕНИЕ, а снятый пункт больше не предлагают.
+	tcx.Works = aiWorkContexts(works)
+
 	// The card's own allowance standard, in millimetres — the draft should not invent a per-step
 	// allowance that contradicts it, and stating it is cheaper than correcting it afterwards.
 	tcx.RequiredSeamAllowanceMm = decimalOrEmpty(card.RequiredSeamAllowanceMm)

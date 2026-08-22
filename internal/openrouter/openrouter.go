@@ -132,6 +132,12 @@ type TechCardContext struct {
 	Pieces       []PieceContext
 	BOM          []BOMItemContext
 	Construction *ConstructionContext
+	// Works — КАТАЛОГ РАБОТ (0329/0331), уже отфильтрованный от снятых пунктов вызывающим. Он не
+	// свойство карточки, а словарь, и едет тем же сообщением по одной причине: словарь читается из
+	// БАЗЫ, а системный промпт этого пакета собирается один раз на процесс из статических словарей
+	// entity. Пустой срез — законное состояние («этот сервер каталога не загрузил»), и промпт тогда
+	// не говорит о работах ВОВСЕ: спросить токен, не показав списка, значило бы попросить выдумать.
+	Works []WorkContext
 	// RequiredSeamAllowanceMm is the card's allowance standard in MILLIMETRES ("" = none set). Stated
 	// so a draft does not propose per-step allowances that contradict the card.
 	RequiredSeamAllowanceMm string
@@ -185,6 +191,28 @@ type ConstructionContext struct {
 	PressProfiles        []string
 }
 
+// WorkContext is one row of the work catalog as the prompt shows it: WHAT the step is, in the word
+// a technologist says at the machine.
+//
+// СИНОНИМЫ ЗДЕСЬ — НЕСУЩАЯ ЧАСТЬ, А НЕ УКРАШЕНИЕ. Вход этой функции — РЕЧЬ ТЕХНОЛОГА («подогнуть
+// низ московским», «поставить закрепку»), и ярлык каталога написан по-английски. Без цеховых слов
+// модели пришлось бы переводить с русского на английский и обратно угадывать токен — то есть ровно
+// тот способ, которым сто прод-строк оказались в неразличимой свалке. С ними задача становится
+// СОПОСТАВЛЕНИЕМ: слово из описания стоит в списке рядом с токеном.
+//
+// Verb и Machines едут не для красоты: работа НЕСЁТ глагол, и правила когерентности 0330 отвергают
+// шаг, чей глагол ей не равен, а при machine_mode = ask — и машинку вне её списка. Модель, которая
+// видит и то и другое, отвечает согласованно; модель, которая видит один токен, — как повезёт.
+type WorkContext struct {
+	Token string
+	Label string
+	Verb  string
+	// Machines пуст у работ, у которых ось «на чём» не машинная вовсе (ВТО, фурнитура, финиш), и у
+	// работ режима fixed он несёт ровно одну машинку — ту, что и так следует из работы.
+	Machines []string
+	Syn      []string
+}
+
 // Operation is one drafted sewing operation as returned by the model. Numeric-ish fields are
 // captured as jsonNum (tolerating both JSON numbers and strings); the caller parses/validates them
 // when mapping to the persisted operation shape.
@@ -212,6 +240,15 @@ type Operation struct {
 	SmvMinutes       jsonNum `json:"smv_minutes"`
 	CalloutNumber    jsonNum `json:"callout_number"`
 	Note             string  `json:"note"`
+
+	// Work — ТРЕТЬЯ ОСЬ ШАГА (0330): КАКАЯ это работа, токеном каталога. Строка, а не член
+	// перечисления, ровно по той же причине, по которой она строка на проводе: каталог — ДАННЫЕ,
+	// он растёт INSERT-миграцией, а незнакомый член enum protojson выбросил бы молча.
+	//
+	// Выдуманный токен здесь стоит ровно одно поле: вызывающий сверяет его с каталогом и на промах
+	// оставляет работу пустой, не трогая остальной шаг. Промпт просит об этом прямо — «назови
+	// работу токеном или промолчи».
+	Work string `json:"work"`
 
 	// The machine step: «on what», plus the settings that deviate from the card's profile.
 	MachineType   string  `json:"machine_type"`

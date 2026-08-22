@@ -49,6 +49,8 @@ Respond with ONE JSON object and NOTHING else — no markdown, no commentary. Sh
       "smv_minutes": "0.8",            // standard minute value for the step, numeric
       "callout_number": 0,             // sketch callout number if relevant, else 0
       "note": "…",                     // optional remark, free text — the ONLY free-text field
+      "work": "moscow_hem",            // WHICH work this is — a token from the WORK CATALOG listed in
+                                       // the context. Omit it rather than invent one.
 
       // MACHINE STEPS ONLY (operation_type "machine"). Omit every one of these on any other type.
       "machine_type": "overlock",      // REQUIRED on a machine step — WHAT THE STEP IS SEWN ON
@@ -88,6 +90,23 @@ Rules:
   "fusing".
 - machine_type is REQUIRED when operation_type is "machine"; press_equipment is REQUIRED when
   operation_type is "press", "press_open" or "fusing". A step saved without them is refused.
+- A STEP ANSWERS A THIRD QUESTION TOO, AND IT IS THE ONE A TECHNOLOGIST ACTUALLY SAYS OUT LOUD:
+  "work" names WHICH WORK this is — «московский шов», «закрепка», «обметать прорезь». The context
+  carries a WORK CATALOG: one line per work with its token, its name, its verb, the machines it runs
+  on and the shop-floor words (Russian and English) that mean it. Read the description against those
+  words and answer with the TOKEN of the work you matched.
+- NAME THE WORK WITH A TOKEN FROM THAT LIST, OR SAY NOTHING AT ALL. An invented token is WORSE than
+  an empty field: it is dropped on arrival, so the step reaches the technologist with no work either
+  way — but a guessed one first sends them looking for a work that does not exist. Never spell a work
+  in prose, never bend a token into one that "looks right", and never put the work in "note".
+- THE WORK CARRIES THE VERB AND THE MACHINE, AND THEY MUST AGREE WITH THE STEP. A work whose line
+  says "machine" belongs on a step whose operation_type is "machine"; where the line lists machines,
+  machine_type must be one of them. A step whose verb disagrees with the work's — or whose machine is
+  outside a list that offers a choice — has its WORK dropped, not its settings: the disagreement
+  costs the answer, so do not put a work on a step you spelled some other way.
+- The catalog is the WHOLE vocabulary of works: a work that is not in it is not a work you may name.
+  When no line fits what the description says, leave "work" out and describe the step with the other
+  fields — that is the honest answer, and a technologist picks the work in one click.
 - Use only these machine_type tokens: {{MACHINE_TYPES}}.
 - Use only these press_equipment tokens: {{PRESS_EQUIPMENT}}.
 - Use only these needle_type tokens: {{NEEDLE_TYPES}}.
@@ -315,11 +334,71 @@ func buildUserPrompt(tcx TechCardContext, description string) string {
 		}
 	}
 
+	writeWorkCatalog(&b, tcx.Works)
+
 	b.WriteString("\nDESCRIPTION OF THE OPERATIONS TO GENERATE:\n")
 	b.WriteString(strings.TrimSpace(description))
 	b.WriteString("\n\nReturn the operations as the specified JSON object.")
 
 	return b.String()
+}
+
+// writeWorkCatalog renders the work catalog — the vocabulary the "work" field answers from.
+//
+// ⚠️ КАЖДАЯ СТРОКА НЕСЁТ ЦЕХОВЫЕ СЛОВА, И ЭТО НЕ ИЗБЫТОЧНОСТЬ. Описание, ради которого этот вызов
+// вообще существует, надиктовано ПО-РУССКИ («подогнуть низ московским»), а ярлыки каталога
+// написаны по-английски. Без синонимов модель обязана перевести речь технолога и угадать токен по
+// английскому имени — а угаданный токен здесь роняется на приёме, то есть шаг возвращается без
+// работы. Ровно так сто прод-строк из ста двадцати шести и оказались в неразличимой свалке. Со
+// словами задача перестаёт быть переводом и становится сопоставлением.
+//
+// ПУСТОЙ КАТАЛОГ ПИШЕТ НОЛЬ СТРОК — то же молчание, которым этот файл отвечает на незаданный
+// дефолт: попросить токен, не показав списка, значило бы попросить выдумать его.
+//
+// Поля разделены вертикальной чертой, а не тире: в ярлыках каталога тире ЖИВЁТ («Hem — rolled
+// (Moscow)», «Join / seam»), и разделитель, совпадающий с содержимым, склеил бы имя со следующим
+// полем ровно на тех пунктах, чьи имена и без того путают.
+func writeWorkCatalog(b *strings.Builder, works []WorkContext) {
+	var lines []string
+	for _, w := range works {
+		token := strings.TrimSpace(w.Token)
+		if token == "" {
+			continue
+		}
+		parts := []string{token}
+		if v := strings.TrimSpace(w.Label); v != "" {
+			parts = append(parts, v)
+		}
+		if v := strings.TrimSpace(w.Verb); v != "" {
+			parts = append(parts, v)
+		}
+		if m := promptJoinNonEmpty(w.Machines, " / "); m != "" {
+			parts = append(parts, "on: "+m)
+		}
+		if syn := promptJoinNonEmpty(w.Syn, ", "); syn != "" {
+			parts = append(parts, "words: "+syn)
+		}
+		lines = append(lines, strings.Join(parts, " | "))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString("\nWORK CATALOG (the vocabulary for \"work\": token | name | verb | machines | the words a technologist says for it, RU and EN). Answer with a TOKEN from this list or omit \"work\" entirely:\n")
+	for _, l := range lines {
+		b.WriteString("- " + l + "\n")
+	}
+}
+
+// promptJoinNonEmpty joins the non-blank members of a list, or "" when there are none — so an empty
+// list contributes no field at all instead of an empty one.
+func promptJoinNonEmpty(items []string, sep string) string {
+	kept := make([]string, 0, len(items))
+	for _, it := range items {
+		if v := strings.TrimSpace(it); v != "" {
+			kept = append(kept, v)
+		}
+	}
+	return strings.Join(kept, sep)
 }
 
 // writeBullets appends a titled bullet list, or nothing at all when every line is blank — the same
