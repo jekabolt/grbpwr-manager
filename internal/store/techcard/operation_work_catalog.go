@@ -94,3 +94,80 @@ func (s *Store) GetOperationWorkDefaults(ctx context.Context) ([]entity.Operatio
 	}
 	return rows, nil
 }
+
+// ── ЗАПИСЬ ДЕФОЛТОВ И ПОДСКАЗКИ НОРМЫ ВРЕМЕНИ (R3) ──────────────────────────────────────────────
+//
+// ЧТО ЗДЕСЬ НЕ ПРОВЕРЯЕТСЯ, И ЭТО ГРАНИЦА, А НЕ ЩЕЛЬ. Ни имя поля, ни его значение хранилище не
+// судит: реестр «свойства работы — можно, машинные настройки — нельзя» и диапазоны/словари живут
+// в entity (techcard_operation_work_default.go) и стоят на входе RPC, потому что отказ обязан
+// назвать поле человеку, а не прилететь из базы номером ошибки. Хранилище отвечает за две вещи, за
+// которые кроме него не отвечает никто: строка попадает в таблицу по ключу (work, field), и
+// несуществующая работа упирается во внешний ключ.
+
+// SetOperationWorkDefault stores (or overwrites) ONE global default of a work property.
+//
+// UPSERT, А НЕ DELETE+INSERT: пара (work_token, field) — первичный ключ, и «запомнить ещё раз»
+// обязано быть переписыванием одной строки, а не сменой её идентичности. updated_at обновляется
+// схемой (ON UPDATE CURRENT_TIMESTAMP), но ТОЛЬКО когда значение реально изменилось — MySQL не
+// трогает строку, если UPDATE не меняет ни одного байта; для «когда это в последний раз
+// подтверждали» этого достаточно, а точнее нам и не нужно.
+func (s *Store) SetOperationWorkDefault(ctx context.Context, workToken, field, value string) error {
+	err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO operation_work_default (work_token, field, value)
+		VALUES (:work_token, :field, :value)
+		ON DUPLICATE KEY UPDATE value = VALUES(value)`,
+		map[string]any{"work_token": workToken, "field": field, "value": value})
+	if err != nil {
+		return fmt.Errorf("failed to remember operation work default: %w", err)
+	}
+	return nil
+}
+
+// DeleteOperationWorkDefault forgets one stored default. Absent is not an error: «забудь» на том,
+// чего нет, — уже исполненное желание, и отказ здесь заставил бы клиента спрашивать состояние
+// перед каждым жестом.
+func (s *Store) DeleteOperationWorkDefault(ctx context.Context, workToken, field string) error {
+	err := storeutil.ExecNamed(ctx, s.DB, `
+		DELETE FROM operation_work_default WHERE work_token = :work_token AND field = :field`,
+		map[string]any{"work_token": workToken, "field": field})
+	if err != nil {
+		return fmt.Errorf("failed to forget operation work default: %w", err)
+	}
+	return nil
+}
+
+// ListOperationWorkSmvSamples reads the stored steps that BOTH name a work and carry a time norm —
+// the raw material of the «last time it was N» ghost.
+//
+// ⚠️ «ПОСЛЕДНИЙ» ВЫБИРАЕТСЯ НЕ ЗДЕСЬ. Запрос сужает и упорядочивает, а победителя на каждую работу
+// назначает entity.LatestOperationWorkSmv — чистая функция с таблицей клеток. Причина простая:
+// тесты этого пакета ходят в живую базу и запускаться не могут, поэтому единственное
+// содержательное правило подсказки не должно жить в SQL.
+//
+// ORDER BY СУЩЕСТВУЕТ РАДИ LIMIT, А НЕ РАДИ ОТВЕТА: потолок обязан отрезать САМЫЕ СТАРЫЕ строки, а
+// не случайные. Пропади сортировка — ответ остался бы верным (функция сравнивает сама), потерялась
+// бы только предсказуемость того, что именно отброшено.
+//
+// ВОЗРАСТ СТРОКИ ШАГА — ЭТО ВОЗРАСТ КАРТОЧКИ. У tech_card_operation нет своего updated_at, и это
+// не упущение: строки шагов переписываются ПОЛНОЙ ЗАМЕНОЙ на каждом сохранении, то есть все они
+// ровно одного возраста — возраста tech_card.updated_at. Внутри одной карточки их различает только
+// auto_increment id, он и едет вторым ключом сравнения.
+func (s *Store) ListOperationWorkSmvSamples(ctx context.Context) ([]entity.OperationWorkSmvSample, error) {
+	rows, err := storeutil.QueryListNamed[entity.OperationWorkSmvSample](ctx, s.DB, `
+		SELECT o.work AS work_token, o.smv AS smv, o.id AS operation_id,
+		       c.name AS card_name, c.updated_at AS card_updated_at
+		FROM tech_card_operation o
+		JOIN tech_card c ON c.id = o.tech_card_id
+		WHERE o.work IS NOT NULL AND o.work <> '' AND o.smv IS NOT NULL AND o.smv > 0
+		ORDER BY c.updated_at DESC, o.id DESC
+		LIMIT :limit`, map[string]any{"limit": operationWorkSmvSampleLimit})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read operation work smv samples: %w", err)
+	}
+	return rows, nil
+}
+
+// operationWorkSmvSampleLimit — потолок выборки подсказок. Число взято с запасом на два порядка от
+// сегодняшнего мира (126 шагов на всём проде, из них с работой — ноль до ручной разметки) и стоит
+// затем, чтобы читаемый на КАЖДЫЙ запрос каталога срез не мог однажды стать неограниченным.
+const operationWorkSmvSampleLimit = 5000
