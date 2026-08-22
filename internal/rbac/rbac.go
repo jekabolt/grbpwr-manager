@@ -343,6 +343,12 @@ var methodRequirements = map[string]Requirement{
 	"ListTechCards":                rd(SectionTechCards),
 	"GetStylePipeline":             rd(SectionTechCards),
 	"GetTechCardReadiness":         rd(SectionTechCards),
+	// Каталог работ (виды операций, 0329/0330). Чтение — обычное чтение тех-карт: каталог не несёт
+	// ни денег, ни персональных данных, а без него пикер работ пуст. Запись дефолта — ГЛОБАЛЬНАЯ
+	// (пара «работа + поле» на все карточки), поэтому tech-card write, а не read: жест меняет то,
+	// чем заполнится форма у всех остальных.
+	"GetOperationWorkCatalog":      rd(SectionTechCards),
+	"RememberOperationWorkDefault": wr(SectionTechCards),
 	"GetCostingFxRates":            rd(SectionTechCards),
 	"UpsertCostingFxRates":         wr(SectionTechCards),
 	"CreateMaterial":               wr(SectionTechCards),

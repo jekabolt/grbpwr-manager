@@ -40,6 +40,11 @@ func (s *routeStubServer) ListTechCardFabricDirectionGaps(ctx context.Context, r
 	return &pb_admin.ListTechCardFabricDirectionGapsResponse{}, nil
 }
 
+func (s *routeStubServer) GetOperationWorkCatalog(ctx context.Context, req *pb_admin.GetOperationWorkCatalogRequest) (*pb_admin.GetOperationWorkCatalogResponse, error) {
+	s.lastCall = "WorkCatalog"
+	return &pb_admin.GetOperationWorkCatalogResponse{}, nil
+}
+
 // TestTechCardListRouteNotShadowed pins the grpc-gateway route-ordering invariant
 // documented on the proto: GET /tech-card/list must reach ListTechCards, not
 // GetTechCard with id="list". The mux prepends handlers and first-match wins, so
@@ -87,6 +92,20 @@ func TestTechCardListRouteNotShadowed(t *testing.T) {
 	_ = respG.Body.Close()
 	if stub.lastCall != "DirectionGaps" || stub.lastID != 9 {
 		t.Fatalf("GET /tech-card/fabric-direction-gaps dispatched to %q (id=%d), want ListTechCardFabricDirectionGaps id=9",
+			stub.lastCall, stub.lastID)
+	}
+
+	// R3: /tech-card/operation-work/catalog несёт ДВА сегмента, поэтому /tech-card/{id} его не
+	// проглатывает — но решает это тот же порядок прибавления обработчиков, а не форма пути, и
+	// провал был бы тихим: 400 «cannot parse "operation-work" as int32», читающийся как баг клиента.
+	stub.lastCall, stub.lastID = "", 0
+	respW, err := http.Get(ts.URL + "/api/admin/tech-card/operation-work/catalog")
+	if err != nil {
+		t.Fatalf("GET /tech-card/operation-work/catalog: %v", err)
+	}
+	_ = respW.Body.Close()
+	if stub.lastCall != "WorkCatalog" {
+		t.Fatalf("GET /tech-card/operation-work/catalog dispatched to %q (id=%d), want GetOperationWorkCatalog",
 			stub.lastCall, stub.lastID)
 	}
 
