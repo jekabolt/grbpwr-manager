@@ -3085,7 +3085,7 @@ type TechCardOperation struct {
 	// machine, каждое при своём ЯВНОМ machine_type; REQUIRED среди них нет ни одного, потому что
 	// эти глаголы и машинки живут в проде годами и старая карточка обязана сохраняться как есть.
 	ButtonholeStyle       sql.NullString      `db:"buttonhole_style"`       // straight|eyelet|round_end|other; buttonhole
-	CutLengthMm           decimal.NullDecimal `db:"cut_length_mm"`          // прорезь петли, мм; 4..120; buttonhole
+	CutLengthMm           decimal.NullDecimal `db:"cut_length_mm"`          // прорезь, мм; 4..120; buttonhole ИЛИ работа slit_overcast (0331)
 	ButtonholeOrientation sql.NullString      `db:"buttonhole_orientation"` // horizontal|vertical|angled; buttonhole
 	BartackLengthMm       decimal.NullDecimal `db:"bartack_length_mm"`      // длина закрепки, мм; 1..40; buttonhole|bartack
 	AttachPattern         sql.NullString      `db:"attach_pattern"`         // cross_x|parallel|square|u_shape|other; button_attach
