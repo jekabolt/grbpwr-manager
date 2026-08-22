@@ -2,6 +2,7 @@ package dto
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 
@@ -35,6 +36,8 @@ import (
 //	    работы) → красная клетка «петельный автомат без работы: длина законна, как и была» — то
 //	    есть ровно та, которая описывает все 126 сегодняшних строк прода.
 //	(3) REQUIRED снят → красные обе клетки «прорезь без длины» (на зигзаге и на петельном).
+//	(4) ветка «шаг без работы получает ДОСЛОВНО прежний отказ» выключена → красная клетка «зигзаг
+//	    без работы»: «отказ строке БЕЗ работы изменился», с обоими текстами рядом.
 //	Постоянная половина мутации — TestCutLengthRuleIsNotFalseGreen ниже: он держит обе
 //	неправильные версии предиката рядом с правильной и требует, чтобы каждая на чём-нибудь
 //	разошлась с таблицей.
@@ -126,7 +129,25 @@ func TestCutLengthAcceptsButtonholeMachineAndSlitWork(t *testing.T) {
 			if ve.Reason != c.wantReason {
 				t.Fatalf("причина отказа %q, ожидалась %q", ve.Reason, c.wantReason)
 			}
-			if c.wantReason == "not_applicable" && !strings.Contains(ve.HowToFix, workSlitOvercast) {
+			if c.wantReason != "not_applicable" {
+				return
+			}
+			if c.work == "" {
+				// ШАГ БЕЗ РАБОТЫ ОБЯЗАН ПОЛУЧИТЬ ДОСЛОВНО ПРЕЖНИЙ ОТКАЗ. Это и есть «не сузили»,
+				// доведённое до слов: расширение не имеет права менять даже текст там, где ничего
+				// не расширилось — а таких строк сегодня 126 из 126.
+				want := machineNotApplicable("operations[0]", "cut_length_mm", machine, []string{machineButtonhole})
+				var wantVE *entity.ValidationError
+				if !errors.As(want, &wantVE) {
+					t.Fatalf("machineNotApplicable перестал возвращать именованный отказ: %v", want)
+				}
+				if ve.Message != wantVE.Message {
+					t.Errorf("отказ строке БЕЗ работы изменился:\n  было  %s\n  стало %s",
+						wantVE.Message, ve.Message)
+				}
+				return
+			}
+			if !strings.Contains(ve.HowToFix, workSlitOvercast) {
 				t.Errorf("отказ не называет ВТОРОЙ законный вход (%s) — человек не узнает, чем "+
 					"починить: %s", workSlitOvercast, ve.HowToFix)
 			}

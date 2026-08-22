@@ -767,9 +767,15 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		// принимает петельный автомат (как принимал всегда, и без всякой работы) — ИЛИ работа
 		// «прорезь, обмётанная зигзагом». Довод целиком — в techcard_operation_work.go.
 		if f.cutLengthMm.Valid && !machineIsOneOf(machineType, machineButtonhole) && !workAcceptsCutLength(work) {
+			if work == "" {
+				// ШАГ БЕЗ РАБОТЫ — то есть каждая сегодняшняя строка обеих баз — получает
+				// ДОСЛОВНО тот же отказ, что и до 0331, включая ветку «машинка не названа вовсе».
+				// Расширение не имеет права менять даже слова там, где ничего не расширилось.
+				return f, machineNotApplicable(step, "cut_length_mm", machineType, []string{machineButtonhole})
+			}
 			return f, entity.NewFieldViolation(step+".cut_length_mm", "not_applicable", machineType.String,
-				fmt.Sprintf("the cut length belongs to a %s step or to the %q work; this step runs on %q with no such work — clear the field, change the machine, or name the work",
-					machineButtonhole, workSlitOvercast, machineType.String))
+				fmt.Sprintf("the cut length belongs to a %s step or to the %q work; this step names the work %q — clear the field, change the machine, or name the work that cuts a slit",
+					machineButtonhole, workSlitOvercast, work))
 		}
 		// REQUIRED, и ЕДИНСТВЕННЫЙ В ЭТОМ СЕМЕЙСТВЕ. Он достижим только через новый жест (работу
 		// присылает лишь осведомлённый бандл), поэтому ни одну сохранённую строку не ломает.
