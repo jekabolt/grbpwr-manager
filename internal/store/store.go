@@ -17,6 +17,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/store/account"
 	"github.com/jekabolt/grbpwr-manager/internal/store/accounting"
@@ -26,6 +27,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/communication"
 	"github.com/jekabolt/grbpwr-manager/internal/store/content"
 	"github.com/jekabolt/grbpwr-manager/internal/store/dictionary"
+	"github.com/jekabolt/grbpwr-manager/internal/store/fileslibrary"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fitting"
 	"github.com/jekabolt/grbpwr-manager/internal/store/fulfillment"
 	"github.com/jekabolt/grbpwr-manager/internal/store/ga4data"
@@ -43,7 +45,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/settings"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/store/support"
-	"github.com/jekabolt/grbpwr-manager/internal/store/fileslibrary"
 	"github.com/jekabolt/grbpwr-manager/internal/store/task"
 	"github.com/jekabolt/grbpwr-manager/internal/store/techcard"
 	"github.com/jekabolt/grbpwr-manager/internal/store/workshop"
@@ -264,6 +265,31 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	err = cache.InitConsts(ctx, di, hf)
 	if err != nil {
 		return nil, fmt.Errorf("can't init consts: %w", err)
+	}
+
+	// КАТАЛОГ РАБОТ (0329) В ПАМЯТЬ ПРОЦЕССА — ровно там же и по той же причине, что словари выше.
+	// Он правится ТОЛЬКО миграцией, то есть только вместе с перезапуском: кэша с инвалидацией здесь
+	// стеречь нечего, а разбор payload'а (internal/dto) — чистая функция без базы, и правилам оси
+	// «работа» (0330) каталог иначе не достать вовсе.
+	//
+	// ОШИБКА ЧТЕНИЯ НЕ РОНЯЕТ СТАРТ, И ЭТО ВЗВЕШЕННЫЙ ВЫБОР. Уронить — значит поставить весь
+	// сервис в зависимость от одного SELECT'а ради правила, которое касается одной колонки;
+	// на DigitalOcean провалившийся старт откатывает деплой целиком. Пропустить молча — хуже:
+	// правило перестало бы существовать, а незнакомый токен упирался бы во внешний ключ голым 1452.
+	// Поэтому: громкая запись в лог, снимок остаётся пустым, и сохранение шага С РАБОТОЙ отказывает
+	// поимённо. Шаг без работы — сегодня каждый шаг обеих баз — не затронут.
+	// ПУСТОЙ КАТАЛОГ ГРОМЧЕ ОШИБКИ ЧТЕНИЯ, А НЕ ТИШЕ: ноль строк в operation_work означает, что 0329
+	// на этой базе не прошла, и это то же «процесс каталога не знает», только без единой ошибки от
+	// драйвера. entity.SetOperationWorkCatalog пустой срез не публикует намеренно (см. её шапку) —
+	// здесь остаётся сказать об этом вслух.
+	if works, wErr := ss.techCardStore.GetOperationWorkCatalog(ctx); wErr != nil {
+		slog.Default().ErrorContext(ctx, "can't load the operation work catalog; saving a step WITH a work will be refused until the next restart",
+			slog.String("err", wErr.Error()))
+	} else if len(works) == 0 {
+		slog.Default().ErrorContext(ctx, "the operation work catalog is EMPTY (migration 0329 did not seed this database); saving a step WITH a work will be refused until the next restart")
+	} else {
+		entity.SetOperationWorkCatalog(works)
+		slog.Default().InfoContext(ctx, "operation work catalog loaded", slog.Int("works", len(works)))
 	}
 
 	// SKU redesign task 13: repair eligible identities, then enforce the catalog-wide SKU

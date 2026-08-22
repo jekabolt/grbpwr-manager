@@ -288,8 +288,18 @@ func annotationsFromPb(path string, in []*pb_common.TechCardAnnotation) ([]entit
 			Color:         color,
 			PieceLineKey:  first,
 			PieceLineKeys: keys,
-			Dashed:        a.Dashed && kind.HasLine(),
-			Filled:        a.Filled && kind.HasArea(),
+			// ПРИВЕДЕНИЕ К false МОЛЧИТ ЗАКОННО, обоснование — у карточного близнеца
+			// (calloutGeometryFromPb ниже, «Пунктир у точки и заливка у линии…»): флаг это не
+			// измеренный факт, а признак примитива, у которого рисовать нечего. Асимметрии
+			// запись/чтение здесь нет, но НЕ потому, что чтение повторяет kind.HasLine/HasArea —
+			// эмиссия отдаёт хранимое дословно (operationMediaToPb ниже, task.go, fitting.go), —
+			// а потому, что в хранилище флаг попадает ТОЛЬКО через это приведение: каждый пишущий
+			// путь (карточка, задача, примерка) идёт через annotationsFromPb / calloutGeometryFromPb,
+			// и хранимое уже приведено. Значит и отпечаток, считающий Dashed/Filled из entity
+			// (techcard_section_digest.go), на записи и на перечтении видит одно и то же. Отказ
+			// вместо приведения объявлял бы подпись протухшей за нажатие, ничего не изменившее.
+			Dashed: a.Dashed && kind.HasLine(),
+			Filled: a.Filled && kind.HasArea(),
 		})
 	}
 	return out, nil

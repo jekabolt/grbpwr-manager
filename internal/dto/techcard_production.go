@@ -375,13 +375,26 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err != nil {
 			return nil, err
 		}
+		// Ось «работа» (0330). БЕЗ ФЛАГА ОСВЕДОМЛЁННОСТИ, по тому же доводу, что у волны ниже:
+		// флаг объявляет способность БАНДЛА, а не выключает разбор. Иначе серверный round-trip
+		// (клон сезона строит payload сам) молча вернул бы карточку без видов. Пустая строка = «вид
+		// не назначен» и стоит ноль правил — это состояние каждой сегодняшней строки обеих баз.
+		//
+		// РАЗБИРАЕТСЯ ПЕРЕД ПОЛЯМИ ВИДОВ, И ЭТО ПОРЯДОК, А НЕ СЛУЧАЙНОСТЬ (0331): работа стала
+		// вторым законным входом для длины прорези, и правило поля обязано видеть УЖЕ ПРОВЕРЕННЫЙ
+		// токен. Заодно диагностика честнее: опечатка в токене называется опечаткой по имени поля
+		// `work`, а не превращается в «поле не про эту машинку» на соседнем поле.
+		work, err := parseOperationWork(o, opType, machineType, step)
+		if err != nil {
+			return nil, err
+		}
 		// --- «виды операций» (0324): десять блоков семейств и вся их валидация ---------------------
 		//
 		// Разбирается ВСЕГДА, без флага осведомлённости: обязательность объявляет сам глагол, а
 		// глагол волны старый бандл прислать физически не может — токена нет в его словаре. Шаг
 		// БЕЗ единого нового поля проходит здесь без единого отказа, и это ровно то, что держит
 		// круг существующих строк байт-в-байт.
-		kinds, err := parseOperationKindFields(o, opType, machineType, seamClass, step)
+		kinds, err := parseOperationKindFields(o, opType, machineType, seamClass, work.String, step)
 		if err != nil {
 			return nil, err
 		}
@@ -431,6 +444,14 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		// bom_line_keys: the materials this operation consumes. The legacy single bom_line_key went
 		// with the break — the chip row was always the real answer, and the single field was a second
 		// one that the printed sheet then had to subtract to stop printing it twice.
+		//
+		// СХЛОПЫВАНИЕ ДУБЛЯ ЗДЕСЬ МОЛЧИТ, И ЭТО ЗАКОННО — тот же довод, что у piece_line_keys выше:
+		// связь «операция ↔ строка BOM» — МНОЖЕСТВО, и её единственность записана в схеме
+		// (`uniq_op_bom_link UNIQUE (operation_id, bom_item_id)`, 0200). Повтор одного ключа не несёт
+		// второго факта, терять в нём нечего, а без схлопывания он вернулся бы драйверным 1062 без
+		// имени поля. Пустая строка отбрасывается по той же причине: это слот, а не ссылка.
+		// Отличие от input_keys ниже НАМЕРЕННОЕ и там же объяснено — для входов сборки повтор
+		// нарушает правило графа, и о нём технолог обязан услышать, а не получить тихую правку.
 		var bomLineKeys []string
 		seenBomKey := make(map[string]bool, len(o.BomLineKeys))
 		for _, k := range o.BomLineKeys {
@@ -528,6 +549,9 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			// ВТО-под-глагол и направление припуска (0325) — канон продолжается дописыванием.
 			PressAction: kinds.pressAction,
 			PressToward: kinds.pressToward,
+
+			// Ось «работа» (0330) — тем же дописыванием, последней.
+			Work: work,
 		})
 	}
 	return out, nil
@@ -554,7 +578,29 @@ func parseTopstitch(t *pb_common.TechCardTopstitch, step string) (sql.NullString
 	var mode sql.NullString
 	var width decimal.NullDecimal
 	var rows sql.NullInt32
-	if t == nil || t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN {
+	// ДВЕ ПРИЧИНЫ ПУСТОГО РЕЗУЛЬТАТА РАЗВЕДЕНЫ, И РАНЬШЕ ОНИ БЫЛИ ОДНОЙ СТРОКОЙ. «Блока нет вовсе» и
+	// «блок есть, режим не назван» возвращали одно и то же — три пустых значения и nil-ошибку, — и во
+	// второй присланные ширина и ряды исчезали МОЛЧА: сохранение проходило, число не доезжало ни до
+	// колонки, ни до отказа, а следующее чтение карточки показывало пустое поле там, где человек
+	// оставил число. Это последний тихий дроп на пути записи операций; остальные разборщики этого
+	// пути отвечают на чужое поле именем (firstPopulated + verbNotApplicable / machineNotApplicable).
+	//
+	// ПРАВИЛО СТРОГОЕ И НЕ РЕТРОАКТИВНОЕ — замерено, а не предположено: строк «ширина или ряды без
+	// режима» НОЛЬ на обеих базах (замер 2026-08-21, прод `grbpwr` 126 операций и бета `grbpwr_beta`).
+	// Поэтому оговорки «отказывать, только если UNKNOWN прислан явно» здесь нет: различить «поле не
+	// прислано» и «прислан нулевой член» на proto3-энуме всё равно нельзя, а смягчать нечего.
+	//
+	// Присланность ширины меряется decimalSent, а НЕ `t.WidthMm != nil`: админка шлёт стёртый
+	// децимал-контрол как `{value: ""}` — не-nil указатель без числа, — и проверка по указателю
+	// начала бы требовать режим у того, кто ширину как раз ОЧИСТИЛ.
+	if t == nil {
+		return mode, width, rows, nil
+	}
+	if t.Mode == pb_common.TechCardTopstitchMode_TECH_CARD_TOPSTITCH_MODE_UNKNOWN {
+		if decimalSent(t.WidthMm) || t.Rows != 0 {
+			return mode, width, rows, entity.NewFieldViolation(step+".topstitch_mode", "required", "",
+				"say WHERE the line runs — from the edge of the piece, in the ditch of the seam, or parallel to it; a width or a row count on its own describes a line nobody can find. Clear them if the step has no topstitch")
+		}
 		return mode, width, rows, nil
 	}
 	tok, ok := topstitchModePbToToken[t.Mode]
@@ -852,6 +898,16 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			Fastening:       operationFasteningToPb(o),
 			// ВТО-под-глагол и направление припуска (0325) — тем же блочным правилом.
 			Press: operationPressToPb(o),
+
+			// Ось «работа» (0330). ПОЛЕМ, А НЕ БЛОКОМ, и не «когда заполнено»: строка — не
+			// сообщение, у неё нет разницы между отсутствием и пустотой, поэтому обёртка
+			// присутствия здесь ничего не выразила бы, а стоила бы лишний уровень.
+			//
+			// ЭМИТИТСЯ ВСЕГДА, включая пустую строку. Клон сезона строит payload ИМЕННО ЗДЕСЬ, и
+			// шаг без work в исходящем сообщении уехал бы в конвертер как «вид не назначен» — то
+			// есть клон молча терял бы разметку, без единой ошибки. Ровно та катастрофа, ради
+			// которой флаг осведомлённости не фильтрует поля.
+			Work: pbStringFromNull(o.Work),
 		})
 	}
 	return out

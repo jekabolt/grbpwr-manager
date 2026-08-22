@@ -1119,6 +1119,23 @@ type (
 		AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevExpense) (entity.TechCardDevExpense, error)
 		DeleteTechCardDevExpense(ctx context.Context, id int) error
 		ListTechCardDevExpenses(ctx context.Context, techCardID int) ([]entity.TechCardDevExpense, error)
+		// КАТАЛОГ РАБОТ (виды операций, миграции 0329/0330). Пункты, их допустимые машинки и
+		// синонимы поиска — данные, правящиеся ТОЛЬКО миграцией; глобальные дефолты свойств —
+		// единственная таблица каталога с рантайм-записью (жест «запомнить как дефолт»).
+		//
+		// GetOperationWorkCatalog отдаёт каталог целиком, включая СНЯТЫЕ (retired) пункты: они
+		// нужны для ЧТЕНИЯ старых строк шага, а прятать их — дело пикера.
+		GetOperationWorkCatalog(ctx context.Context) ([]entity.OperationWork, error)
+		GetOperationWorkDefaults(ctx context.Context) ([]entity.OperationWorkDefault, error)
+		// SetOperationWorkDefault / DeleteOperationWorkDefault пишут и снимают ОДИН дефолт по ключу
+		// (работа, поле). Реестр допустимых полей — entity, не хранилище: машинные и ВТО-настройки
+		// запрещены по имени, потому что у них своя лестница наследования (0306).
+		SetOperationWorkDefault(ctx context.Context, workToken, field, value string) error
+		DeleteOperationWorkDefault(ctx context.Context, workToken, field string) error
+		// ListOperationWorkSmvSamples — сырьё подсказки «в прошлый раз было столько-то»: шаги,
+		// которые НАЗЫВАЮТ работу и несут норму времени. Победителя на каждую работу выбирает
+		// entity.LatestOperationWorkSmv, а не запрос.
+		ListOperationWorkSmvSamples(ctx context.Context) ([]entity.OperationWorkSmvSample, error)
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size

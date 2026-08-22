@@ -258,8 +258,15 @@ func machineIsOneOf(machineType sql.NullString, wants ...string) bool {
 // seamClass — уже разобранный ISO-класс шва этого же шага. Он приходит СЮДА, а не остаётся в
 // вызывающем, ради одного правила: исполнение бейки (binding_style) висит на КЛАССЕ ШВА, а не на
 // машинке. Довод — в самом правиле ниже.
+//
+// work — УЖЕ ПРОВЕРЕННЫЙ токен работы этого шага (0330/0331), пустая строка = «вид не назначен»,
+// то есть состояние каждой сегодняшней строки обеих баз. Он приходит сюда ради ОДНОГО правила —
+// длины прорези, — и вся мысль про него живёт в techcard_operation_work.go: здесь только вызов.
+// Порядок разбора в вызывающем ради этого переставлен (работа разбирается ПЕРЕД полями видов),
+// и это ещё и лучше диагностически: опечатка в токене называется опечаткой, а не «поле не про эту
+// машинку».
 func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.TechCardOperationType,
-	machineType sql.NullString, seamClass sql.NullString, step string,
+	machineType sql.NullString, seamClass sql.NullString, work string, step string,
 ) (operationKindFields, error) {
 	var f operationKindFields
 	var err error
@@ -756,8 +763,26 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		if err != nil {
 			return f, err
 		}
-		if f.cutLengthMm.Valid && !machineIsOneOf(machineType, machineButtonhole) {
-			return f, machineNotApplicable(step, "cut_length_mm", machineType, []string{machineButtonhole})
+		// ДВА ЗАКОННЫХ ВХОДА, И ВТОРОЙ ДОБАВЛЕН, А НЕ ПОДМЕНИЛ ПЕРВЫЙ (0331): длину прорези
+		// принимает петельный автомат (как принимал всегда, и без всякой работы) — ИЛИ работа
+		// «прорезь, обмётанная зигзагом». Довод целиком — в techcard_operation_work.go.
+		if f.cutLengthMm.Valid && !machineIsOneOf(machineType, machineButtonhole) && !workAcceptsCutLength(work) {
+			if work == "" {
+				// ШАГ БЕЗ РАБОТЫ — то есть каждая сегодняшняя строка обеих баз — получает
+				// ДОСЛОВНО тот же отказ, что и до 0331, включая ветку «машинка не названа вовсе».
+				// Расширение не имеет права менять даже слова там, где ничего не расширилось.
+				return f, machineNotApplicable(step, "cut_length_mm", machineType, []string{machineButtonhole})
+			}
+			return f, entity.NewFieldViolation(step+".cut_length_mm", "not_applicable", machineType.String,
+				fmt.Sprintf("the cut length belongs to a %s step or to the %q work; this step names the work %q — clear the field, change the machine, or name the work that cuts a slit",
+					machineButtonhole, workSlitOvercast, work))
+		}
+		// REQUIRED, и ЕДИНСТВЕННЫЙ В ЭТОМ СЕМЕЙСТВЕ. Он достижим только через новый жест (работу
+		// присылает лишь осведомлённый бандл), поэтому ни одну сохранённую строку не ломает.
+		if workRequiresCutLength(work) && !f.cutLengthMm.Valid {
+			return f, entity.NewFieldViolation(step+".cut_length_mm", "required", "",
+				fmt.Sprintf("say HOW LONG the slit is — a %q with no length is a wish, not an instruction: it has neither a marker nor a check",
+					workSlitOvercast))
 		}
 		f.buttonholeOrientation, err = parseEquipmentEnum(fa.GetButtonholeOrientation(), buttonholeOrientationPbToToken,
 			step+".buttonhole_orientation", "pick how the buttonhole lies")

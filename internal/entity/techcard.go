@@ -3085,7 +3085,7 @@ type TechCardOperation struct {
 	// machine, каждое при своём ЯВНОМ machine_type; REQUIRED среди них нет ни одного, потому что
 	// эти глаголы и машинки живут в проде годами и старая карточка обязана сохраняться как есть.
 	ButtonholeStyle       sql.NullString      `db:"buttonhole_style"`       // straight|eyelet|round_end|other; buttonhole
-	CutLengthMm           decimal.NullDecimal `db:"cut_length_mm"`          // прорезь петли, мм; 4..120; buttonhole
+	CutLengthMm           decimal.NullDecimal `db:"cut_length_mm"`          // прорезь, мм; 4..120; buttonhole ИЛИ работа slit_overcast (0331)
 	ButtonholeOrientation sql.NullString      `db:"buttonhole_orientation"` // horizontal|vertical|angled; buttonhole
 	BartackLengthMm       decimal.NullDecimal `db:"bartack_length_mm"`      // длина закрепки, мм; 1..40; buttonhole|bartack
 	AttachPattern         sql.NullString      `db:"attach_pattern"`         // cross_x|parallel|square|u_shape|other; button_attach
@@ -3104,6 +3104,20 @@ type TechCardOperation struct {
 	// поэтому члена `none` в словарях нет, в отличие от seam_securing / hole_prep / peel_mode.
 	PressAction sql.NullString `db:"press_action"` // press_flat|to_one_side|steam|final|ease_in|stretch|mould|other; НЕ required; разутюжка — ГЛАГОЛ press_open
 	PressToward sql.NullString `db:"press_toward"` // front|back|up|down|toward_center|away_from_center|sleeve|body|facing|shell|lining|other; ТОЛЬКО при press_action = to_one_side, и там обязателен
+
+	// --- ОСЬ «РАБОТА» (0330) ----------------------------------------------------------------------
+	//
+	// КАНОН ПРОДОЛЖАЕТСЯ ДОПИСЫВАНИЕМ, теперь в ПЯТИ списках: поля entity, ALTER миграции, ключи
+	// named-map INSERT'а, SELECT операций — и хвост проекции дайджеста. Пятый список появился
+	// вместе с этой колонкой и он же самый коварный: колонка, забытая в SELECT'е, читается как
+	// NULL, отпечаток ЧТЕНИЯ расходится с отпечатком ЗАПИСИ, и подпись рождается протухшей НАВСЕГДА
+	// и молча. Держит их равенство тест симметрии в internal/dto, а не ревью.
+	//
+	// Work — токен `operation_work.token` (каталог 0329), под внешним ключом. NULL значит «ВИД НЕ
+	// НАЗНАЧЕН» — законное состояние: сто lockstitch-строк прода размечает человек, автоматическое
+	// переписывание свалки запрещено ограничением владельца. Токен уезжает в дайджест; ярлык,
+	// глагол и синонимы работы — никогда, они представление.
+	Work sql.NullString `db:"work"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
