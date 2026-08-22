@@ -665,6 +665,10 @@ func aiOpsServer(t *testing.T, client *openrouter.Client) *Server {
 	cards := mocks.NewMockTechCards(t)
 	cards.EXPECT().GetTechCardById(mock.Anything, 7).
 		Return(&entity.TechCard{Id: 7}, nil).Maybe()
+	// Каталог работ (0329) отдаётся ПУСТЫМ намеренно: эти пробы про отказы, а пустой каталог —
+	// законное состояние («этот сервер каталога не знает»), в котором черновик просто не называет
+	// работ. Ожидание нужно потому, что mockery роняет тест на любом незаявленном вызове.
+	cards.EXPECT().GetOperationWorkCatalog(mock.Anything).Return(nil, nil).Maybe()
 	repo := mocks.NewMockRepository(t)
 	repo.EXPECT().TechCards().Return(cards).Maybe()
 	return &Server{repo: repo, aiOps: client}
