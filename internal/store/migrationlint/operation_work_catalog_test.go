@@ -119,7 +119,7 @@ var (
 // одна вставка в каждую сеемую таблицу, ноль — в operation_work_default (создаётся здесь же, но
 // глобальные дефолты назначает владелец рукой, файл их не сеет) и ни одной — в таблицу каталога,
 // которой этот тест не знает.
-func assertOneInsertPerCatalogTable(t *testing.T, content string) {
+func assertOneInsertPerCatalogTable(t *testing.T, file, content string) {
 	t.Helper()
 	want := map[string]int{
 		"operation_work":         1,
@@ -142,13 +142,13 @@ func assertOneInsertPerCatalogTable(t *testing.T, content string) {
 	for table, n := range got {
 		if _, known := want[table]; !known {
 			t.Errorf("%s: вставка в неизвестную таблицу каталога %s (найдено %d) — guard-тесты её не проверяют ничем",
-				operationWorkMigration, table, n)
+				file, table, n)
 		}
 	}
 	for table, wantN := range want {
 		if got[table] != wantN {
 			t.Errorf("%s: вставок в %s найдено %d, ожидается ровно %d — вторая вставка с другим порядком колонок прошла бы мимо разбора и мимо замороженного хеша",
-				operationWorkMigration, table, got[table], wantN)
+				file, table, got[table], wantN)
 		}
 	}
 	if t.Failed() {
@@ -159,21 +159,21 @@ func assertOneInsertPerCatalogTable(t *testing.T, content string) {
 // insertBody returns the VALUES tuples of the one INSERT whose header line is `header`, cut at the
 // `ON DUPLICATE KEY UPDATE` clause. It fails loudly when the header is absent or appears twice —
 // a silently-empty body is exactly how this whole file would go false-green.
-func insertBody(t *testing.T, content, header string) []string {
+func insertBody(t *testing.T, file, content, header string) []string {
 	t.Helper()
 	idx := strings.Index(content, header)
 	if idx < 0 {
-		t.Fatalf("%s: не найден INSERT с заголовком %q", operationWorkMigration, header)
+		t.Fatalf("%s: не найден INSERT с заголовком %q", file, header)
 	}
 	if strings.Contains(content[idx+len(header):], header) {
 		t.Fatalf("%s: заголовок %q встречается дважды — тест проверил бы только первый",
-			operationWorkMigration, header)
+			file, header)
 	}
 	rest := content[idx+len(header):]
 	end := strings.Index(rest, "ON DUPLICATE KEY UPDATE")
 	if end < 0 {
 		t.Fatalf("%s: у INSERT %q нет клаузы ON DUPLICATE KEY UPDATE — повтор миграции упадёт на 1062",
-			operationWorkMigration, header)
+			file, header)
 	}
 	var out []string
 	for _, line := range strings.Split(rest[:end], "\n") {
@@ -182,27 +182,27 @@ func insertBody(t *testing.T, content, header string) []string {
 		}
 	}
 	if len(out) == 0 {
-		t.Fatalf("%s: тело INSERT %q пусто", operationWorkMigration, header)
+		t.Fatalf("%s: тело INSERT %q пусто", file, header)
 	}
 	return out
 }
 
-func parseSeedCatalog(t *testing.T, content string) seedCatalog {
+func parseSeedCatalog(t *testing.T, file, content string) seedCatalog {
 	t.Helper()
 	// ПЕРЕД разбором: ровно одна вставка на таблицу (щель R1). Разбор ниже читает канонические
 	// заголовки и не заметил бы вторую вставку с другим порядком колонок.
-	assertOneInsertPerCatalogTable(t, content)
+	assertOneInsertPerCatalogTable(t, file, content)
 	var cat seedCatalog
 
-	for _, line := range insertBody(t, content,
+	for _, line := range insertBody(t, file, content,
 		"INSERT INTO operation_work (token, verb, stage, label, machine_mode, default_machine, sort) VALUES") {
 		m := workTupleRe.FindStringSubmatch(line)
 		if m == nil {
-			t.Fatalf("%s: строка сида работ не разбирается: %s", operationWorkMigration, line)
+			t.Fatalf("%s: строка сида работ не разбирается: %s", file, line)
 		}
 		n, err := strconv.Atoi(m[7])
 		if err != nil {
-			t.Fatalf("%s: sort не число в строке %s", operationWorkMigration, line)
+			t.Fatalf("%s: sort не число в строке %s", file, line)
 		}
 		cat.Works = append(cat.Works, seedWork{
 			Token: m[1], Verb: m[2], Stage: m[3], Label: m[4],
@@ -210,18 +210,18 @@ func parseSeedCatalog(t *testing.T, content string) seedCatalog {
 		})
 	}
 
-	for _, line := range insertBody(t, content, "INSERT INTO operation_work_machine (work_token, machine_type) VALUES") {
+	for _, line := range insertBody(t, file, content, "INSERT INTO operation_work_machine (work_token, machine_type) VALUES") {
 		m := pairTupleRe.FindStringSubmatch(line)
 		if m == nil {
-			t.Fatalf("%s: строка сида машинок не разбирается: %s", operationWorkMigration, line)
+			t.Fatalf("%s: строка сида машинок не разбирается: %s", file, line)
 		}
 		cat.Machines = append(cat.Machines, [2]string{m[1], m[2]})
 	}
 
-	for _, line := range insertBody(t, content, "INSERT INTO operation_work_syn (work_token, syn) VALUES") {
+	for _, line := range insertBody(t, file, content, "INSERT INTO operation_work_syn (work_token, syn) VALUES") {
 		m := pairTupleRe.FindStringSubmatch(line)
 		if m == nil {
-			t.Fatalf("%s: строка сида синонимов не разбирается: %s", operationWorkMigration, line)
+			t.Fatalf("%s: строка сида синонимов не разбирается: %s", file, line)
 		}
 		cat.Syns = append(cat.Syns, [2]string{m[1], m[2]})
 	}
@@ -249,7 +249,13 @@ func hasLatin(s string) bool {
 // checkSeedCatalog — ВСЕ ПРАВИЛА В ОДНОЙ ЧИСТОЙ ФУНКЦИИ, и это условие мутационного теста: то, что
 // гоняют по настоящему файлу, и то, что гоняют по испорченной копии, обязано быть ОДНИМ кодом.
 // Возвращает список жалоб; пустой список = сид законен.
-func checkSeedCatalog(cat seedCatalog) []string {
+//
+// wantWorks — сколько работ ожидается в ПРОВЕРЯЕМОМ срезе, и это параметр, а не константа, ровно
+// потому, что срезов стало два: сид 0329 сам по себе (53) и ОБЪЕДИНЁННЫЙ каталог 0329 + 0331 (57).
+// Второй нужен, чтобы правила уникальности токена и sort'а работали ПОПЕРЁК ФАЙЛОВ: работа, чей
+// токен или порядковый номер столкнулся с уже засеянным, ломается не в тесте, а на проде — первая
+// вставка упала бы на дубль ключа и остановила старт.
+func checkSeedCatalog(cat seedCatalog, wantWorks int) []string {
 	var problems []string
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 
@@ -261,8 +267,8 @@ func checkSeedCatalog(cat seedCatalog) []string {
 	}
 
 	// (а) количество, уникальность и форма токена
-	if len(cat.Works) != seededWorkCount {
-		add("работ в сиде %d, ожидалось %d", len(cat.Works), seededWorkCount)
+	if len(cat.Works) != wantWorks {
+		add("работ в сиде %d, ожидалось %d", len(cat.Works), wantWorks)
 	}
 	tokens := make(map[string]bool, len(cat.Works))
 	sorts := make(map[int]string, len(cat.Works))
@@ -400,8 +406,8 @@ func tokenVerbDigest(cat seedCatalog) string {
 
 // TestOperationWorkCatalogSeed — ЦИТАТА: перепись сида в лог плюс восемь правил.
 func TestOperationWorkCatalogSeed(t *testing.T) {
-	cat := parseSeedCatalog(t, readMigrationFile(t, operationWorkMigration))
-	for _, p := range checkSeedCatalog(cat) {
+	cat := parseSeedCatalog(t, operationWorkMigration, readMigrationFile(t, operationWorkMigration))
+	for _, p := range checkSeedCatalog(cat, seededWorkCount) {
 		t.Error(p)
 	}
 
@@ -427,7 +433,7 @@ func TestOperationWorkCatalogSeed(t *testing.T) {
 
 // TestOperationWorkTokenVerbPairsAreFrozen — (е) неизменяемость связки токен↔глагол.
 func TestOperationWorkTokenVerbPairsAreFrozen(t *testing.T) {
-	cat := parseSeedCatalog(t, readMigrationFile(t, operationWorkMigration))
+	cat := parseSeedCatalog(t, operationWorkMigration, readMigrationFile(t, operationWorkMigration))
 	if got := tokenVerbDigest(cat); got != frozenTokenVerbDigest {
 		t.Errorf("пары токен→глагол сида 0329 изменились:\n  было %s\n  стало %s\n"+
 			"Токен уезжает в дайджест строки шага, глагол — в правило когерентности: правка задним "+
@@ -440,8 +446,8 @@ func TestOperationWorkTokenVerbPairsAreFrozen(t *testing.T) {
 // одним способом и требует жалобы с именем виновника. Без этого теста «зелёный checkSeedCatalog»
 // не доказывает ничего: сломанный разбор дал бы ту же зелень.
 func TestOperationWorkCatalogGuardsAreNotFalseGreen(t *testing.T) {
-	base := parseSeedCatalog(t, readMigrationFile(t, operationWorkMigration))
-	if p := checkSeedCatalog(base); len(p) != 0 {
+	base := parseSeedCatalog(t, operationWorkMigration, readMigrationFile(t, operationWorkMigration))
+	if p := checkSeedCatalog(base, seededWorkCount); len(p) != 0 {
 		t.Fatalf("исходный сид обязан быть чистым, иначе мутации ничего не доказывают: %v", p)
 	}
 
@@ -540,7 +546,7 @@ func TestOperationWorkCatalogGuardsAreNotFalseGreen(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := clone()
 			want := tc.mutate(&c)
-			problems := checkSeedCatalog(c)
+			problems := checkSeedCatalog(c, seededWorkCount)
 			if len(problems) == 0 {
 				t.Fatalf("мутация %q НЕ дала ни одной жалобы — guard ложно-зелёный", tc.name)
 			}
