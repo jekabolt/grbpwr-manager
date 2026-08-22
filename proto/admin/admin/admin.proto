@@ -1797,6 +1797,35 @@ service AdminService {
     };
   }
 
+  // КАТАЛОГ РАБОТ (видов операций) — СЕРВЕРНЫЕ ДАННЫЕ, ОТДАВАЕМЫЕ ОДНИМ ЗАПРОСОМ.
+  //
+  // Пункты, их синонимы поиска (RU/EN), допустимые машинки, глобальные дефолты свойств и подсказки
+  // нормы времени приезжают вместе, потому что порознь они бесполезны: пикер работ рисуется целиком
+  // или не рисуется вовсе. Каталог живёт в таблицах operation_work* (миграция 0329) и растёт
+  // INSERT-миграцией — ни один пункт НЕ является членом enum, и добавление работы не требует
+  // перегенерации клиента (инцидент Ж7: незнакомый член enum protojson выбрасывает молча).
+  //
+  // Путь — два сегмента после /tech-card/, поэтому /tech-card/{id} его не проглатывает; порядок
+  // всё равно закреплён TestTechCardListRouteNotShadowed, а не формой пути.
+  rpc GetOperationWorkCatalog(GetOperationWorkCatalogRequest) returns (GetOperationWorkCatalogResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/operation-work/catalog"};
+  }
+
+  // RememberOperationWorkDefault — жест «у меня эта работа всегда такая»: пара (работа, поле) →
+  // значение, глобально, на все карточки. Единственная рантайм-запись во весь каталог; идентичность
+  // работ (токен, глагол) правится только миграциями.
+  //
+  // ⚠️ МАШИННЫЕ И ВТО-НАСТРОЙКИ ЗАПРЕЩЕНЫ ПО ИМЕНИ и отвергаются InvalidArgument: у них уже есть
+  // лестница наследования (шаг → профиль оборудования карточки → не задано, миграция 0306), и
+  // второй механизм поверх неё отвечал бы на один вопрос дважды. Реестр разрешённых полей отдаётся
+  // в default_fields каталога, чтобы жест рисовался по ОДНОМУ списку, а не по второму, своему.
+  rpc RememberOperationWorkDefault(RememberOperationWorkDefaultRequest) returns (RememberOperationWorkDefaultResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/operation-work/default"
+      body: "*"
+    };
+  }
+
   // Material catalog (task 10): shared nomenclature for BOM lines + append-only price history.
   rpc CreateMaterial(CreateMaterialRequest) returns (CreateMaterialResponse) {
     option (google.api.http) = {
@@ -8111,6 +8140,69 @@ message GenerateTechCardOperationsResponse {
   string model = 2; // the model that produced the draft (provenance)
   string notes = 3; // optional model notes / assumptions for the reviewer
 }
+
+// OperationWorkCatalogItem — одна работа каталога.
+//
+// ВСЁ СТРОКАМИ-ТОКЕНАМИ, НИ ОДНОГО ENUM. Словарь работ — данные, а не контракт: он растёт
+// INSERT-миграцией, и клиент, не знающий нового токена, обязан довезти его до экрана текстом, а не
+// потерять. То же и у verb / stage / machine_mode / machines: они сверяются с серверными словарями
+// (entity.OperationTypeTokens, стадии, fixed|ask|none, entity.MachineTypeTokens) на записи каталога,
+// то есть на миграции, и повторять их членами enum значило бы завести второй словарь того же.
+message OperationWorkCatalogItem {
+  string token = 1; // идентичность; уезжает в отпечаток строки шага и не меняется никогда
+  string verb = 2; // глагол шага, которому работа принадлежит; часть идентичности
+  string stage = 3; // группа по СТАДИИ работы, не по железу
+  string label = 4; // имя в интерфейсе и на печатном листе; представление
+  string machine_mode = 5; // fixed | ask | none — задаёт ли работа вопрос «на чём»
+  string default_machine = 6; // чем заполнить «на чём»; пусто при machine_mode = none
+  repeated string machines = 7; // допустимые машинки; закрыт только при machine_mode = ask
+  repeated string syn = 8; // слова поиска, RU и EN
+  int32 sort = 9; // порядок в пикере
+  // retired — пункт СНЯТ: в пикере не предлагается, но отдаётся всегда, потому что строка шага,
+  // уже несущая этот токен, обязана открываться и печататься своим именем, а не сырым токеном.
+  bool retired = 10;
+}
+
+// OperationWorkDefaultItem — один глобальный дефолт свойства работы.
+message OperationWorkDefaultItem {
+  string work_token = 1;
+  string field = 2; // имя колонки шага (topstitch_width_mm, …) из реестра default_fields
+  string value = 3;
+}
+
+// OperationWorkSmvHint — «в прошлый раз было столько-то»: ГОУСТ в пустом поле нормы времени, не
+// значение и не дефолт. SMV зависит от изделия, а не только от работы, поэтому запоминать её как
+// дефолт нельзя — реестр default_fields её и не содержит.
+message OperationWorkSmvHint {
+  string work_token = 1;
+  google.type.Decimal last_smv = 2; // норма последнего шага с этой работой, минуты
+  string card_name = 3; // на какой карточке она стояла — без этого подсказка безадресна
+}
+
+message GetOperationWorkCatalogRequest {}
+
+message GetOperationWorkCatalogResponse {
+  repeated OperationWorkCatalogItem works = 1;
+  repeated OperationWorkDefaultItem defaults = 2;
+  repeated OperationWorkSmvHint smv_hints = 3;
+  // default_fields — ЗАКРЫТЫЙ реестр полей, у которых бывает глобальный дефолт: имена колонок шага
+  // в порядке семейств свойств. Отдаётся сервером затем, чтобы жест «запомнить как дефолт»
+  // рисовался по одному списку с тем, который его принимает: второй, клиентский, разошёлся бы
+  // молча, и человек нажимал бы кнопку, которая всегда отвечает отказом.
+  repeated string default_fields = 4;
+}
+
+// RememberOperationWorkDefaultRequest записывает ИЛИ снимает один дефолт.
+message RememberOperationWorkDefaultRequest {
+  string work_token = 1; // работа каталога; снятая (retired) тоже принимается — её дефолт ещё читают старые строки
+  string field = 2; // одно из default_fields; машинная настройка отвергается по имени
+  string value = 3; // проверяется теми же диапазонами и словарями, что и на шаге; при clear игнорируется
+  // clear снимает сохранённый дефолт. Отдельный флаг, а не «пустое значение»: пустая строка на
+  // проводе неотличима от «поле не заполнили», и снятие дефолта стало бы возможным по случайности.
+  bool clear = 4;
+}
+
+message RememberOperationWorkDefaultResponse {}
 
 message DeleteTechCardRequest {
   int32 id = 1;
