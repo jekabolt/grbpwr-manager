@@ -353,15 +353,38 @@ func (s *Service) ServeFile(w http.ResponseWriter, r *http.Request) {
 		// Для страницы приземления: она рисует имя, тип и размер и только потом ведёт к
 		// байтам — а ещё это единственный способ отдать presigned url тому, кто тянет файл
 		// через fetch (кросс-доменный редирект обнуляет origin и ломает CORS бакета).
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		body := map[string]any{
 			"url":          signed,
 			"expires_at":   expiresAt.Format(time.RFC3339),
 			"file_name":    row.FileName,
 			"content_type": row.ContentType,
 			"size_bytes":   row.SizeBytes,
 			"download":     download,
-		})
+		}
+		// МИНИАТЮРА — ЧТОБЫ ССЫЛКА ПОКАЗЫВАЛА ДОКУМЕНТ, А НЕ ЕГО ИМЯ. Договор, эскиз, чертёж
+		// приезжают подрядчику строкой «birka_sostav_RU_v2.pdf» и двумя кнопками: чтобы понять,
+		// тот ли это файл, его приходится скачать. У библиотеки для таких файлов уже есть
+		// отрисованная первая страница — этот ключ и подписывается здесь.
+		//
+		// ВСЕГДА INLINE, СКОЛЬКО БЫ НИ ПРОСИЛИ `?dl=1`: миниатюра — это картинка, которую
+		// рисует <img>, и вложением она бы просто не показалась. `dl` относится к САМОМУ
+		// файлу и на неё не переносится.
+		//
+		// ОТКАЗ ПОДПИСИ МИНИАТЮРЫ НЕ УБИВАЕТ ОТВЕТ. Ключ мог остаться от удалённого объекта или
+		// не пройти сегментный гейт; и то и другое — повод не показать картинку, а не повод
+		// сказать «ссылка не работает» про живой файл. Тогда поля просто нет, и страница рисует
+		// то же, что рисовала раньше.
+		if key := strings.TrimSpace(row.PreviewObjectKey.String); key != "" {
+			previewURL, _, perr := s.presign.PresignLibraryObjectShortLived(ctx, key, false, row.FileName)
+			if perr != nil {
+				slog.Default().WarnContext(ctx, "library file preview presign failed",
+					slog.Int("file_id", fileID), slog.String("err", perr.Error()))
+			} else {
+				body["preview_url"] = previewURL
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(body)
 		return
 	}
 	http.Redirect(w, r, signed, http.StatusFound)

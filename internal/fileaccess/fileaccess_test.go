@@ -64,12 +64,19 @@ type fakePresign struct {
 	download bool
 	calls    int
 	err      error
+	// keys/downloads — ВСЕ подписи по порядку. Ответ ?mode=json подписывает две вещи (файл и
+	// миниатюру), и «последний ключ» об этой паре не рассказывает ничего: по нему нельзя
+	// отличить «миниатюру подписали инлайном» от «файл подписали дважды».
+	keys      []string
+	downloads []bool
 }
 
 func (p *fakePresign) PresignLibraryObjectShortLived(_ context.Context, objectKey string, download bool, _ string) (string, time.Time, error) {
 	p.calls++
 	p.key = objectKey
 	p.download = download
+	p.keys = append(p.keys, objectKey)
+	p.downloads = append(p.downloads, download)
 	if p.err != nil {
 		return "", time.Time{}, p.err
 	}
@@ -319,5 +326,73 @@ func TestStatsAreDebouncedAndFlushed(t *testing.T) {
 func TestEmptyPepperFailsClosed(t *testing.T) {
 	if _, err := New(&fakeFiles{}, &fakePresign{}, "  ", "https://backend.example"); err == nil {
 		t.Fatal("an empty pepper must refuse to start")
+	}
+}
+
+
+// TestPublicLinkPreview — ССЫЛКА ПОКАЗЫВАЕТ ДОКУМЕНТ ЛИЦОМ.
+//
+// Подрядчику приезжает «birka_sostav_RU_v2.pdf» и две кнопки; понять, тот ли это файл, до сих пор
+// можно было только скачав его. Миниатюра у библиотеки уже есть — здесь проверяется, что она
+// доезжает до публичного ответа и доезжает ПРАВИЛЬНО: подписан ключ МИНИАТЮРЫ (а не файла), и
+// подписан он инлайном даже тогда, когда сам файл затребован вложением. Обратная половина не
+// менее важна: у файла без миниатюры поля нет вовсе — пустая строка в `preview_url` заставила бы
+// страницу рисовать битую картинку.
+func TestPublicLinkPreview(t *testing.T) {
+	const previewKey = "files-library/preview-bbbb.png"
+
+	withPreview := linkTarget(7, 1)
+	withPreview.PreviewObjectKey = sql.NullString{String: previewKey, Valid: true}
+	files := &fakeFiles{rows: map[int]*entity.LibraryFileLinkTarget{7: withPreview, 8: linkTarget(8, 1)}}
+	presign := &fakePresign{}
+	svc := newTestService(t, files, presign)
+
+	decode := func(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("?mode=json: want 200, got %d", w.Code)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return body
+	}
+
+	// 1. Есть миниатюра — есть адрес, и подписан именно её ключ, инлайном.
+	tok := svc.minter.Mint(patterntoken.ScopeFile, 7, 1)
+	body := decode(t, serveFile(svc, http.MethodGet, "/api/f/"+tok+"?mode=json"))
+	preview, _ := body["preview_url"].(string)
+	if !strings.Contains(preview, previewKey) {
+		t.Fatalf("preview_url must be signed from the preview key, got %q", preview)
+	}
+	if url, _ := body["url"].(string); strings.Contains(url, previewKey) {
+		t.Fatalf("url must stay the FILE, got %q", url)
+	}
+	if len(presign.keys) != 2 || presign.keys[0] != withPreview.ObjectKey || presign.keys[1] != previewKey {
+		t.Fatalf("want the file then the preview signed, got %v", presign.keys)
+	}
+	if presign.downloads[1] {
+		t.Fatalf("the preview must be signed inline — <img> cannot render an attachment")
+	}
+
+	// 2. `?dl=1` относится к ФАЙЛУ и на миниатюру не переносится.
+	presign.keys, presign.downloads = nil, nil
+	body = decode(t, serveFile(svc, http.MethodGet, "/api/f/"+tok+"?mode=json&dl=1"))
+	if _, ok := body["preview_url"].(string); !ok {
+		t.Fatal("preview_url must survive ?dl=1")
+	}
+	if !presign.downloads[0] || presign.downloads[1] {
+		t.Fatalf("want file=attachment, preview=inline, got %v", presign.downloads)
+	}
+
+	// 3. Нет миниатюры — нет и поля: страница не должна получать пустую строку в <img src>.
+	presign.keys, presign.downloads = nil, nil
+	body = decode(t, serveFile(svc, http.MethodGet, "/api/f/"+svc.minter.Mint(patterntoken.ScopeFile, 8, 1)+"?mode=json"))
+	if _, ok := body["preview_url"]; ok {
+		t.Fatalf("a file without a preview must not carry preview_url, got %v", body["preview_url"])
+	}
+	if len(presign.keys) != 1 {
+		t.Fatalf("a file without a preview must be signed once, got %v", presign.keys)
 	}
 }
