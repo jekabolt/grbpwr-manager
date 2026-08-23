@@ -650,7 +650,8 @@ func loadSharedBy(ctx context.Context, db dependency.DB, fileIDs []int) (map[int
 // наружу все три — один и тот же голый 404. Фильтр в SQL стёр бы эту разницу в логах.
 func (s *Store) GetFileByPublicLink(ctx context.Context, fileID int) (*entity.LibraryFileLinkTarget, error) {
 	row, err := storeutil.QueryNamedOne[entity.LibraryFileLinkTarget](ctx, s.DB, `
-		SELECT lf.id, lf.file_name, lf.content_type, lf.size_bytes, lf.object_key, lf.access_level,
+		SELECT lf.id, lf.file_name, lf.content_type, lf.size_bytes, lf.object_key,
+		       lf.preview_object_key, lf.access_level,
 		       pa.epoch, pa.expires_at, pa.revoked_at
 		FROM library_file lf
 		JOIN library_file_public_access pa ON pa.file_id = lf.id

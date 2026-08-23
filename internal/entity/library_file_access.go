@@ -186,6 +186,14 @@ type LibraryFileLinkTarget struct {
 	// request. That guard is what keeps the presigner from becoming an oracle for arbitrary bucket
 	// objects.
 	ObjectKey string `db:"object_key"`
+	// PreviewObjectKey — отрисованная миниатюра (первая страница pdf, кадр чертежа), если она у
+	// файла есть. Лежит здесь по той же причине, по какой здесь лежит ObjectKey: страница ссылки
+	// показывает документ ЛИЦОМ, а не именем, и взять картинку ей больше неоткуда — авторизованный
+	// GetLibraryFile ей недоступен по построению.
+	//
+	// ПУСТО — ЭТО НОРМА, А НЕ ОШИБКА: у zip и у файла, чей рендер не удался, миниатюры нет, и
+	// маршрут в этом случае просто не кладёт `preview_url` в ответ.
+	PreviewObjectKey sql.NullString `db:"preview_object_key"`
 	// AccessLevel is checked on the FILE row, not inferred from the presence of a public-access row:
 	// a file switched away from `link` must be dead at any epoch.
 	AccessLevel LibraryFileAccessLevel `db:"access_level"`
