@@ -407,7 +407,10 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				blockAdd(bom.Id, pid, ln.PlannedQty, entity.MaterialPlanBlockerNoArticle, entity.MaterialPlanReasonNoArticle)
 				continue
 			}
-			norm, sizeGraded, counted, ok := usageNormForSize(u, ln.SizeId)
+			// Пара (колорвей × слот) — из ТОГО ЖЕ среза cw.Usages, по которому идёт этот цикл:
+			// счётная норма слота и запас применяются ОДИН РАЗ на пару (0333), иначе слот с двумя
+			// размещениями заказал бы двойное количество и двойной запас.
+			norm, sizeGraded, counted, ok := usageNormForSize(u, ln.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
 			if !ok {
 				blockAdd(bom.Id, pid, ln.PlannedQty, entity.MaterialPlanBlockerNoNorm, entity.MaterialPlanReasonNoNorm)
 				continue
@@ -1137,10 +1140,31 @@ func planBomLine(u *entity.TechCardColorwayUsage, items []entity.TechCardBomItem
 // consumption when graded for that size (sizeGraded=true), else the flat per-garment consumption,
 // else the countable quantity (counted=true — a trim count, which never takes cutting wastage).
 // ok=false when the usage carries no norm at all.
-func usageNormForSize(u *entity.TechCardColorwayUsage, sizeID int) (norm decimal.Decimal, sizeGraded, counted, ok bool) {
+//
+// СЧЁТНОЕ ЧИСЛО ЧИТАЕТСЯ ЧЕРЕЗ ТОТ ЖЕ РЕЗОЛВЕР ПАРЫ, ЧТО И ДЕНЬГИ (0333), и это не симметрия ради
+// симметрии. Потребность и себестоимость обязаны читать ОДНО определение — расхождение здесь
+// означает, что цех получает не то количество, которое оплачено (класс дефекта описан дословно в
+// шапке entity.NormGrossUp). Не сделав эту правку, получили бы цех, которому выдали 6 пуговиц там,
+// где нужно 7: ошибка линейна по запасу и молчалива.
+//
+// pair — все строки пары (колорвей × слот), построенные из ТОГО ЖЕ среза, по которому идёт
+// вызывающий: итог слота и запас лежат на первой строке пары, остальные её строки вносят 0.
+//
+// ПОРЯДОК ВЕТВЕЙ. Счётная ветка стоит ПЕРЕД мерной ТОЛЬКО на счётной секции — там она и есть
+// определение нормы, и там же костинг читает её первой (LineTotal), так что оба пути видят одно
+// число. На МЕРНОЙ секции порядок остался прежним (расход, потом легаси-quantity): историческое
+// расхождение с костингом, который на мерной строке с обоими заполненными полями берёт quantity, —
+// ДОСУЩЕСТВУЮЩЕЕ, и менять его этой волной значило бы молча передвинуть числа на строках, которых
+// счётная норма не касается вовсе.
+func usageNormForSize(u *entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) (norm decimal.Decimal, sizeGraded, counted, ok bool) {
 	for _, sc := range u.SizeConsumptions {
 		if sc.SizeId == sizeID {
 			return sc.Consumption, true, false, true
+		}
+	}
+	if bom != nil && entity.IsCountableSection(bom.Section) {
+		if q := entity.CountablePairRowTotal(pair, u, bom); q.Valid {
+			return q.Decimal, false, true, true
 		}
 	}
 	if u.Consumption.Valid {

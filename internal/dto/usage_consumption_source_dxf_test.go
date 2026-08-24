@@ -56,7 +56,7 @@ func TestDxfNormGrossesUpLikeManual(t *testing.T) {
 		Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("2.5")),
 		ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceDxf, Valid: true},
 	}
-	got := dxf.LineTotal(bom)
+	got := dxf.LineTotal(bom, nil)
 	require.True(t, got.Valid)
 	require.Equal(t, "27", got.Decimal.String(), "dxf netto keeps the 8% gross-up: 2.5×10×1.08")
 
@@ -84,7 +84,7 @@ func TestDxfNormGrossesUpLikeManual(t *testing.T) {
 	// И ни один процент раскроя — ни одного умножения: слот без процента отдаёт чистое netto. Это
 	// и есть та дыра, которую гейт готовности закрывает блокером (см. readiness-тесты ниже).
 	noPct := &entity.TechCardBomItem{UnitPrice: bom.UnitPrice}
-	require.Equal(t, "25", dxf.LineTotal(noPct).Decimal.String(),
+	require.Equal(t, "25", dxf.LineTotal(noPct, nil).Decimal.String(),
 		"wastage_percent NULL means applyWastage multiplies by nothing — netto reaches the money as a total")
 }
 

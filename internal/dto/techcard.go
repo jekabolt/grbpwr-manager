@@ -2963,6 +2963,42 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 				fmt.Sprintf("must be at most %d characters", maxVarchar255), "", "shorten this value")
 		}
 
+		// СЧЁТНАЯ НОРМА СЛОТА (0333) — сколько ШТУК пришивается на изделие и сколько закупается
+		// сверх пришитых, в пакетик.
+		//
+		// ЛОВУШКА ПРОВОДА, РАДИ КОТОРОЙ ЭТОТ КОММЕНТАРИЙ ЗДЕСЬ. У google.type.Decimal нет
+		// `optional`, а nullDecimalFromPb считает пустым И nil, И Decimal{Value:""} — то есть
+		// «очистить» и «не прислали» приходят одинаковым ЗНАЧЕНИЕМ и различаются только
+		// ПРИСУТСТВИЕМ указателя. Наивное `omitted = !qty.Valid` сделало бы поле НЕОЧИЩАЕМЫМ:
+		// оператор стёр бы шестёрку, клиент прислал бы пустое, сервер прочитал бы «не трогай» и
+		// оставил бы шесть навсегда. Поэтому флаг ставится по УКАЗАТЕЛЯМ, а не по значениям.
+		//
+		// ПРИСУТСТВИЕ ОДНО НА ДВОИХ, как у kind/kind_note: количество и запас — две половины одного
+		// утверждения о слоте («шесть пришить, одну в пакетик»), и записать одну поверх сохранённой
+		// второй значило бы получить «пуговиц не задано, а запасных к ним одна». Присланная ЛЮБАЯ
+		// половина означает «пиши обе»; отсутствие ОБЕИХ — «не трогай», и ровно в этом состоянии
+		// приходит вкладка со старым бандлом.
+		countableOmitted := b.QtyPerGarment == nil && b.SpareQty == nil
+		qtyPerGarment, err := nullDecimalFromPb(b.QtyPerGarment)
+		if err != nil {
+			return nil, fmt.Errorf("bom qty_per_garment: %w", err)
+		}
+		spareQty, err := nullDecimalFromPb(b.SpareQty)
+		if err != nil {
+			return nil, fmt.Errorf("bom spare_qty: %w", err)
+		}
+		for _, v := range []struct {
+			nd    decimal.NullDecimal
+			field string
+		}{{qtyPerGarment, "qty_per_garment"}, {spareQty, "spare_qty"}} {
+			if !v.nd.Valid {
+				continue
+			}
+			if err := validateDecimalFits(fmt.Sprintf("bom_items[%d].%s", i, v.field), v.nd.Decimal, bomQtyMaxFrac, bomQtyLimit, false); err != nil {
+				return nil, err
+			}
+		}
+
 		materialID := sql.NullInt64{}
 		if b.MaterialId != 0 {
 			materialID = sql.NullInt64{Int64: b.MaterialId, Valid: true}
@@ -3009,6 +3045,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			WastageSource:            wastageSource,
 			WastageLayCount:          wastageLayCount,
 			WastageProvenanceOmitted: wastageProvenanceOmitted,
+			QtyPerGarment:            qtyPerGarment,
+			SpareQty:                 spareQty,
+			CountableOmitted:         countableOmitted,
 		})
 	}
 	return out, nil
@@ -3283,20 +3322,23 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			})
 		}
 		out = append(out, &pb_common.TechCardColorwayUsage{
-			BomItemIndex:      bomItemIndex,
-			BomItemId:         u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
-			MaterialId:        materialID,
-			Placement:         pbStringFromNull(u.Placement),
-			Color:             pbStringFromNull(u.Color),
-			Pantone:           pbStringFromNull(u.Pantone),
-			Consumption:       pbDecimalFromNull(u.Consumption),
-			Quantity:          pbDecimalFromNull(u.Quantity),
-			SizeConsumptions:  sizeCons,
-			PieceIndex:        pieceIndex,
-			PieceId:           u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
-			PieceLineKey:      pieceKeyByID[u.PieceId.Int64],
-			BomLineKey:        bomKeyByID[u.BomItemId.Int64],
-			LineTotal:         pbMoneyFromNull(u.LineTotal(bom)),
+			BomItemIndex:     bomItemIndex,
+			BomItemId:        u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
+			MaterialId:       materialID,
+			Placement:        pbStringFromNull(u.Placement),
+			Color:            pbStringFromNull(u.Color),
+			Pantone:          pbStringFromNull(u.Pantone),
+			Consumption:      pbDecimalFromNull(u.Consumption),
+			Quantity:         pbDecimalFromNull(u.Quantity),
+			SizeConsumptions: sizeCons,
+			PieceIndex:       pieceIndex,
+			PieceId:          u.PieceId.Int64, // OUTPUT: resolved FK to the cut-piece (WS4); 0 = unset
+			PieceLineKey:     pieceKeyByID[u.PieceId.Int64],
+			BomLineKey:       bomKeyByID[u.BomItemId.Int64],
+			// ПАРА (КОЛОРВЕЙ × СЛОТ) СТРОИТСЯ ИЗ ТОГО ЖЕ СРЕЗА, ПО КОТОРОМУ ИДЁТ ЦИКЛ (0333):
+			// счётный итог слота и запас — свойство пары, а не строки, и лежат они на ПЕРВОЙ строке
+			// пары; остальные её строки отдают 0. Копия среза здесь молча лишила бы носителя денег.
+			LineTotal:         pbMoneyFromNull(u.LineTotal(bom, entity.CountablePairUsages(usages, bom))),
 			SizeRunTotal:      pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
 			ConsumptionSource: pbOptStringFromNull(u.ConsumptionSource),
 			WasteSelvedgePct:  pbDecimalFromNull(u.WasteSelvedgePct),
@@ -3475,6 +3517,13 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem, linked map[int]entity.
 			WastageSource:    pbPtr(wp.Source),
 			WastageLayCount:  pbWastageLayCount(wp.LayCount),
 			WastageAppliedAt: pbTimestampFromNullTime(wp.AppliedAt),
+			// СЧЁТНАЯ НОРМА СЛОТА (0333) — отдаётся КАК ЛЕЖИТ, без всякого эффективного значения:
+			// клиент обязан отличать «на слоте написано 6» от «строка колорвея переопределила», а
+			// эффективное число собирает резолвер пары (entity/countable.go) у того, кто считает
+			// деньги. Незаполненное едет nil'ом, как любой другой Decimal этой строки; ОЧИСТИТЬ
+			// поле клиент обязан явным Decimal{value:""} — см. разбор ловушки в parseTechCardBomItems.
+			QtyPerGarment: pbDecimalFromNull(b.QtyPerGarment),
+			SpareQty:      pbDecimalFromNull(b.SpareQty),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),

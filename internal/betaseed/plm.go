@@ -76,6 +76,8 @@ type plmState struct {
 	// stable line keys
 	pieceFrontKey, pieceBackKey, pieceCuffKey                   string
 	bomFabricKey, bomHardwareKey, bomThreadKey, bomPackagingKey string
+	// СЧЁТНАЯ НОРМА (0333): слот, у которого количество живёт НА СЛОТЕ, а не на строках рецепта.
+	bomButtonKey string
 
 	// durable equipment-profile keys (26-char, the shape the server validates)
 	overlockProfileKey, ironProfileKey string
@@ -294,6 +296,7 @@ func (s *Seeder) plmSetup(ctx context.Context, st *plmState) error {
 	st.bomHardwareKey = s.key("bom-hardware")
 	st.bomThreadKey = s.key("bom-thread")
 	st.bomPackagingKey = s.key("bom-packaging")
+	st.bomButtonKey = s.key("bom-button")
 
 	// Equipment-profile keys are DURABLE CLIENT-MINTED IDENTITIES, not readable run keys: the server
 	// validates a profile_key as exactly 26 alphanumerics (the piece / BOM line-key rule), because a
@@ -790,6 +793,14 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 			Unit: "cone", UnitPrice: decv("6.00"), Currency: "EUR"},
 		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_PACKAGING, Name: "Shipping Box - Standard", MaterialId: m.Packaging, LineKey: st.bomPackagingKey,
 			Unit: "pcs", UnitPrice: decv("0.60"), Currency: "EUR"},
+		// СЧЁТНАЯ НОРМА НА СЛОТЕ (0333) — единственная строка беты, где количество живёт НЕ на
+		// строке рецепта. Шесть пришивается, одна кладётся в пакетик; в рецепте у слота ДВА
+		// размещения (планка и манжета), и обе строки пустые. Это ровно та форма, на которой
+		// ломается построчное чтение слотового числа: наивная реализация запросила бы 12 пуговиц и
+		// два запаса вместо 6 + 1, а бета — единственное место, где это видно глазами.
+		{Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE, Name: "Horn Button 18L", MaterialId: m.Hardware, LineKey: st.bomButtonKey,
+			Unit: "pcs", UnitPrice: decv("0.35"), Currency: "EUR",
+			QtyPerGarment: decv("6"), SpareQty: decv("1")},
 	}
 	// MACHINE + machine_type, not the legacy LOCKSTITCH: «что делаем» and «на чём» are two fields
 	// now, and the legacy token would be canonicalised into exactly this pair anyway. The seeder is
@@ -871,8 +882,8 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	if tc, err = s.tcFetch(ctx, sid); err != nil {
 		return err
 	}
-	if len(tc.GetBomItems()) != 4 {
-		return fmt.Errorf("expected 4 BOM lines, got %d", len(tc.GetBomItems()))
+	if len(tc.GetBomItems()) != 5 {
+		return fmt.Errorf("expected 5 BOM lines, got %d", len(tc.GetBomItems()))
 	}
 	for _, b := range tc.GetBomItems() {
 		switch b.GetLineKey() {
@@ -880,12 +891,20 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 			st.res.FabricBomID = b.GetId()
 		case st.bomHardwareKey:
 			st.res.HardwareBomID = b.GetId()
+		case st.bomButtonKey:
+			// Счётная норма обязана пережить сохранение: пара живёт под ОДНИМ флагом присутствия,
+			// и её потеря на первом же сейве выглядела бы как «поле не сохраняется» без единой
+			// ошибки в ответе.
+			if b.GetQtyPerGarment().GetValue() == "" || b.GetSpareQty().GetValue() == "" {
+				return fmt.Errorf("countable slot lost its per-garment count on save: qty=%q spare=%q",
+					b.GetQtyPerGarment().GetValue(), b.GetSpareQty().GetValue())
+			}
 		}
 	}
 	if st.res.FabricBomID == 0 || st.res.HardwareBomID == 0 {
 		return fmt.Errorf("BOM lines did not resolve stable ids via line_key")
 	}
-	s.pass(st, "C.10 BOM saved: 4 lines, fabric_bom_id=%d hardware_bom_id=%d, materialSnapshot auto-populated", st.res.FabricBomID, st.res.HardwareBomID)
+	s.pass(st, "C.10 BOM saved: 5 lines (incl. a countable slot: 6 sewn + 1 spare on the SLOT), fabric_bom_id=%d hardware_bom_id=%d", st.res.FabricBomID, st.res.HardwareBomID)
 	return nil
 }
 
@@ -1204,6 +1223,12 @@ func (s *Seeder) plmColorways(ctx context.Context, st *plmState) error {
 					{BomLineKey: st.bomFabricKey, Placement: "outer shell", Color: "as dictionary", Consumption: decv("1.4"), PieceLineKey: st.pieceFrontKey, MaterialId: shellPin},
 					{BomLineKey: st.bomFabricKey, Placement: "outer shell", Color: "as dictionary", Consumption: decv("1.1"), PieceLineKey: st.pieceBackKey, MaterialId: shellPin},
 					{BomLineKey: st.bomHardwareKey, Placement: "front placket", Color: "gunmetal", Quantity: decv("1")},
+					// ДВА размещения ОДНОГО счётного слота и ни одного числа на строках: количество
+					// приходит со слота (6 + 1 запасная) и применяется ОДИН РАЗ на пару
+					// (колорвей × слот). 0295 такие повторы разрешает дословно — piece_id NULL под
+					// составной UNIQUE не подпадает.
+					{BomLineKey: st.bomButtonKey, Placement: "front placket", Color: "horn"},
+					{BomLineKey: st.bomButtonKey, Placement: "cuff", Color: "horn"},
 				},
 			})
 			return e

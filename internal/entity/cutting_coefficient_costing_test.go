@@ -47,13 +47,13 @@ func TestMarkerNormTakesTheCoefficientButNeverThePercent(t *testing.T) {
 
 	// 2 × 10 × 1.05 = 21. НЕ 25.2 (это была бы marker-строка, гроssнутая ещё и процентом) и не 20
 	// (это была бы marker-строка до врезки коэффициента).
-	got := u.LineTotal(bom)
+	got := u.LineTotal(bom, nil)
 	require.True(t, got.Valid)
 	require.Equal(t, "21", got.Decimal.String())
 
 	// Тот же артикул без коэффициента даёт ровно ту цифру, что и до W3, — доказательство того, что
 	// разница выше пришла именно от коэффициента, а не от смены правила процента.
-	require.Equal(t, "20", u.LineTotal(ccBom(nil)).Decimal.String())
+	require.Equal(t, "20", u.LineTotal(ccBom(nil), nil).Decimal.String())
 }
 
 // TestNettoNormTakesBothMultipliers — netto-путь (manual и dxf одинаково): процент за настил,
@@ -67,7 +67,7 @@ func TestNettoNormTakesBothMultipliers(t *testing.T) {
 			ConsumptionSource: ccSource(src),
 		}
 		// 2 × 10 × 1.20 × 1.05 = 25.2.
-		got := u.LineTotal(bom)
+		got := u.LineTotal(bom, nil)
 		require.True(t, got.Valid, "source %q", src)
 		require.Equal(t, "25.2", got.Decimal.String(), "source %q", src)
 	}
@@ -81,7 +81,7 @@ func TestCountedTrimIsNeverGrossed(t *testing.T) {
 	bom := ccBom(func(b *TechCardBomItem) { b.CuttingCoefficient = ccCoeff("1.5") })
 	u := TechCardColorwayUsage{Quantity: decimal.NewNullDecimal(decimal.RequireFromString("4"))}
 
-	got := u.LineTotal(bom)
+	got := u.LineTotal(bom, nil)
 	require.True(t, got.Valid)
 	require.Equal(t, "40", got.Decimal.String())
 }
@@ -102,7 +102,7 @@ func TestNonRollSectionIgnoresTheCoefficient(t *testing.T) {
 		})
 		require.False(t, bom.EffectiveCuttingCoefficient().Valid, "section %q", s)
 		// 2 × 10 × 1.20 = 24 — процент как был, рулона нет.
-		require.Equal(t, "24", u.LineTotal(bom).Decimal.String(), "section %q", s)
+		require.Equal(t, "24", u.LineTotal(bom, nil).Decimal.String(), "section %q", s)
 	}
 
 	// Все четыре рулонные секции, наоборот, коэффициент берут.
@@ -113,7 +113,7 @@ func TestNonRollSectionIgnoresTheCoefficient(t *testing.T) {
 			b.Section = s
 			b.CuttingCoefficient = ccCoeff("1.5")
 		})
-		require.Equal(t, "36", u.LineTotal(bom).Decimal.String(), "section %q", s)
+		require.Equal(t, "36", u.LineTotal(bom, nil).Decimal.String(), "section %q", s)
 	}
 }
 
@@ -129,7 +129,7 @@ func TestUnsetCoefficientChangesNothing(t *testing.T) {
 		"ровно единица": ccBom(func(b *TechCardBomItem) { b.CuttingCoefficient = ccCoeff("1") }),
 	} {
 		// 2 × 10 × 1.20 = 24 во всех трёх случаях.
-		require.Equal(t, "24", u.LineTotal(bom).Decimal.String(), name)
+		require.Equal(t, "24", u.LineTotal(bom, nil).Decimal.String(), name)
 	}
 
 	// Значение ниже единицы читается как «не задано», а не как скидка: коэффициент может только
@@ -153,8 +153,8 @@ func TestCoefficientReachesEveryOneOfTheFourMoneyMethods(t *testing.T) {
 	}}
 
 	// LineTotal: 2 × 10 × 1.2 × 1.05 = 25.2 (против 24 без коэффициента).
-	require.Equal(t, "25.2", flat.LineTotal(bom).Decimal.String())
-	require.Equal(t, "24", flat.LineTotal(plain).Decimal.String())
+	require.Equal(t, "25.2", flat.LineTotal(bom, nil).Decimal.String())
+	require.Equal(t, "24", flat.LineTotal(plain, nil).Decimal.String())
 
 	// SizeRunTotal: (2×10 + 3×5) × 10 × 1.2 × 1.05 = 441 (против 420).
 	qty := map[int]int{4: 10, 5: 5}
@@ -170,7 +170,7 @@ func TestCoefficientReachesEveryOneOfTheFourMoneyMethods(t *testing.T) {
 	require.Equal(t, "30", graded.RangeAverageTotal(plain, []int{4, 5}).Decimal.String())
 
 	// UnitTotal композирует их, а не считает заново: базис ряда обязан совпасть с RangeAverageTotal.
-	unit := graded.UnitTotal(bom, CostingBasis{Mode: CostingBasisRangeAverage, RangeSizeIds: []int{4, 5}})
+	unit := graded.UnitTotal(bom, CostingBasis{Mode: CostingBasisRangeAverage, RangeSizeIds: []int{4, 5}}, nil)
 	require.Equal(t, "31.5", unit.Decimal.String())
 }
 
@@ -182,6 +182,6 @@ func TestPieceBoundRowStillHasNoMoneyWithACoefficient(t *testing.T) {
 		PieceId:     sql.NullInt64{Int64: 7, Valid: true},
 		Consumption: decimal.NewNullDecimal(decimal.RequireFromString("2")),
 	}
-	require.False(t, u.LineTotal(bom).Valid)
-	require.False(t, u.UnitTotal(bom, CostingBasis{}).Valid)
+	require.False(t, u.LineTotal(bom, nil).Valid)
+	require.False(t, u.UnitTotal(bom, CostingBasis{}, nil).Valid)
 }

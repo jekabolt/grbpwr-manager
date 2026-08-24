@@ -32,15 +32,15 @@ func TestColorwayUsageTotals(t *testing.T) {
 
 	// measured consumption, no per-size: line_total = 2 × 10 × 1.1 = 22; size_run invalid.
 	measured := entity.TechCardColorwayUsage{Consumption: ndFrom("2")}
-	decEq(t, measured.LineTotal(bom), "22")
+	decEq(t, measured.LineTotal(bom, nil), "22")
 	if rt := measured.SizeRunTotal(bom, map[int]int{4: 10}); rt.Valid {
 		t.Fatalf("size_run_total should be invalid without per-size consumption")
 	}
 
 	// countable quantity: 3 × 10 = 30, wastage N/A even though the article has a wastage %.
 	countable := entity.TechCardColorwayUsage{Quantity: ndFrom("3")}
-	decEq(t, countable.LineTotal(bom), "30")
-	decEq(t, countable.LineTotal(bomNoWaste), "30")
+	decEq(t, countable.LineTotal(bom, nil), "30")
+	decEq(t, countable.LineTotal(bomNoWaste, nil), "30")
 
 	// per-size: line_total invalid; size_run = (1.5×10 + 1.8×20) × 10 × 1.1 = 51 × 11 = 561.
 	perSize := entity.TechCardColorwayUsage{
@@ -50,7 +50,7 @@ func TestColorwayUsageTotals(t *testing.T) {
 			{SizeId: 5, Consumption: decimal.RequireFromString("1.8")},
 		},
 	}
-	if lt := perSize.LineTotal(bom); lt.Valid {
+	if lt := perSize.LineTotal(bom, nil); lt.Valid {
 		t.Fatalf("line_total must be invalid when per-size consumption is present")
 	}
 	decEq(t, perSize.SizeRunTotal(bom, map[int]int{4: 10, 5: 20}), "561")
@@ -62,11 +62,11 @@ func TestColorwayUsageTotals(t *testing.T) {
 	}
 
 	// EffectiveTotal prefers size_run when valid, else falls back to line_total.
-	decEq(t, perSize.EffectiveTotal(bom, map[int]int{4: 10, 5: 20}), "561")
-	decEq(t, measured.EffectiveTotal(bom, map[int]int{4: 10}), "22")
+	decEq(t, perSize.EffectiveTotal(bom, map[int]int{4: 10, 5: 20}, nil), "561")
+	decEq(t, measured.EffectiveTotal(bom, map[int]int{4: 10}, nil), "22")
 
 	// no article (unresolved index) → no cost.
-	if lt := measured.LineTotal(nil); lt.Valid {
+	if lt := measured.LineTotal(nil, nil); lt.Valid {
 		t.Fatalf("line_total against a nil article should be invalid")
 	}
 }

@@ -1347,6 +1347,13 @@ func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
 // return IS the «никогда счётные» boundary of both multipliers; a measured material is
 // Consumption × unit_price × grossNorm's two multipliers (slot geometry, roll reality).
 //
+// СЧЁТНОЕ ЧИСЛО БЕРЁТСЯ У ПАРЫ (КОЛОРВЕЙ × СЛОТ), А НЕ У СТРОКИ (0333). pair — все строки рецепта
+// этой пары (entity.CountablePairUsages, построенная из ТОГО ЖЕ среза, по которому идёт читатель):
+// слот законно повторяется в одном колорвее несколькими размещениями (0295), поэтому счётная норма
+// СЛОТА и запас применяются один раз на пару, а не на каждую строку. Правило целиком — в шапке
+// entity/countable.go; здесь оно только умножается на цену. nil pair законен и означает «пары нет»
+// — строка тогда стоит ровно столько, сколько на ней написано, как до 0333.
+//
 // A PIECE-BOUND ROW HAS NO NORM-MONEY. IsPieceMaterialAssignment rows carry no norm (T8), so
 // the rollups skip them entirely — and the money methods must agree: a legacy number typed on
 // such a row otherwise ships a line_total to the wire that the cost no longer contains, i.e.
@@ -1355,15 +1362,15 @@ func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
 // SizeNormTotal / RangeAverageTotal) are the single definition of «this row's norm-money» —
 // EffectiveTotal and UnitTotal compose them — while the converter is just one reader, and a guard
 // there would leave every other (and every future) caller to rediscover the rule.
-func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem) decimal.NullDecimal {
+func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem, pair []*TechCardColorwayUsage) decimal.NullDecimal {
 	if u.IsPieceMaterialAssignment() {
 		return decimal.NullDecimal{}
 	}
 	if len(u.SizeConsumptions) > 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
-	if u.Quantity.Valid {
-		return decimal.NullDecimal{Decimal: u.Quantity.Decimal.Mul(bom.UnitPrice.Decimal), Valid: true}
+	if qty := CountablePairRowTotal(pair, u, bom); qty.Valid {
+		return decimal.NullDecimal{Decimal: qty.Decimal.Mul(bom.UnitPrice.Decimal), Valid: true}
 	}
 	if !u.Consumption.Valid {
 		return decimal.NullDecimal{}
@@ -1406,11 +1413,11 @@ func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySiz
 // NOT the costing basis — that is UnitTotal, and since the base-size change the two no longer
 // share a denominator. This stays a display/whole-run helper for a caller that genuinely has a
 // quantity per size in hand (a real production run's lines), never for standard cost.
-func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyBySize map[int]int) decimal.NullDecimal {
+func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyBySize map[int]int, pair []*TechCardColorwayUsage) decimal.NullDecimal {
 	if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
 		return rt
 	}
-	return u.LineTotal(bom)
+	return u.LineTotal(bom, pair)
 }
 
 // SizeNormTotal is a size-graded usage's PER-GARMENT material cost AT ONE CONCRETE SIZE: the
@@ -1546,8 +1553,8 @@ func (u *TechCardColorwayUsage) MissingRangeNorms(rangeSizeIds []int) []int {
 // silent understatement both retired bases were caught committing), the typical-run weighted
 // denominator, and any fallback that turns «no basis» into a number. A missing basis is
 // answered with no number and the flag on the wire.
-func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, basis CostingBasis) decimal.NullDecimal {
-	if lt := u.LineTotal(bom); lt.Valid {
+func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, basis CostingBasis, pair []*TechCardColorwayUsage) decimal.NullDecimal {
+	if lt := u.LineTotal(bom, pair); lt.Valid {
 		return lt
 	}
 	switch basis.Mode {
@@ -1746,6 +1753,34 @@ type TechCardBomItem struct {
 	// сохраняется целиком, и вкладка со старым бандлом пары не шлёт вовсе — без различения её сейв
 	// стёр бы аудит применения у всех строк. Пара живёт как одно целое (см. kind/kind_note).
 	WastageProvenanceOmitted bool `db:"-"`
+	// QtyPerGarment / SpareQty — СЧЁТНАЯ НОРМА СЛОТА (0333): сколько штук этого артикула
+	// ПРИШИВАЕТСЯ на изделие и сколько закупается СВЕРХ пришитых (запасная пуговица в пакетик —
+	// покупается, но не пришивается). Число style-level: оно не меняется ни по размеру, ни по
+	// колорвею, и до 0333 выражалось копированием строки рецепта по колорвеям, то есть тем, что
+	// расходится. NULL = не задано (ноль — реальное утверждение, «ни одной»).
+	//
+	// ЧИТАТЬ ТОЛЬКО ЧЕРЕЗ РЕЗОЛВЕР ПАРЫ — entity/countable.go, CountablePairQty /
+	// CountablePairTotal / CountablePairRowTotal. Прямое чтение этих двух полей рядом с
+	// usage.Quantity и есть тот дефект, ради которого резолвер написан: слот законно имеет
+	// НЕСКОЛЬКО строк размещения в одном колорвее (0295), и построчное
+	// COALESCE(usage.quantity, bom.qty_per_garment) умножило бы и количество, и запас.
+	//
+	// В дайджест MATERIALS пара пока НЕ входит: проекция переезжает на парные хвосты отдельным
+	// шагом (задача 02 волны), и пара ("qty_per_garment", …) добавится туда ПОСЛЕ слияния — иначе
+	// первая же колонка сдвинула бы отпечаток каждой карточки в базе.
+	QtyPerGarment decimal.NullDecimal `db:"qty_per_garment"`
+	SpareQty      decimal.NullDecimal `db:"spare_qty"`
+	// CountableOmitted — пара (qty_per_garment, spare_qty) ОТСУТСТВОВАЛА на проводе, а не «пришла
+	// пустой». Тот же НЕГАТИВНЫЙ смысл и та же причина, что у PurposeOmitted/KindOmitted: карточка
+	// сохраняется целиком, админка — SPA, и вкладка со старым бандлом этих полей не шлёт вовсе;
+	// без различения её сейв обнулил бы счётную норму у ВСЕХ строк карточки. Нулевое значение =
+	// «пиши как обычно», поэтому любой внутренний конструктор (тесты, сидер, клон) работает как
+	// писал.
+	//
+	// Пара живёт и меняется КАК ОДНО ЦЕЛОЕ (тот же довод, что у kind/kind_note): запас без
+	// количества и количество без запаса — это две половины одного утверждения о слоте, и
+	// присланная ЛЮБАЯ из них означает «пиши обе».
+	CountableOmitted bool `db:"-"`
 	// WastageClaimVerified — СЕРВЕРНЫЙ вердикт, никогда не провод: обработчик (verifyBomWastageClaims)
 	// пересчитал предложение для артикула строки и подтвердил, что присланная пара (процент, счётчик)
 	// и есть текущая медиана. Это ЕДИНСТВЕННАЯ дверь, через которую свежая заявка 'lays' становится

@@ -1263,7 +1263,18 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 			if u.IsPieceMaterialAssignment() {
 				continue
 			}
-			if bom := planBomLine(u, b.card.BomItems); bom != nil {
+			bom := planBomLine(u, b.card.BomItems)
+			if bom == nil {
+				continue
+			}
+			// ПЕРВАЯ строка слота, а не последняя (0333). Слот законно повторяется в одном
+			// колорвее несколькими размещениями (0295), и счётный итог пары лежит на ПЕРВОЙ её
+			// строке — носителе; сохранив здесь последнюю, готовность спрашивала бы норму у
+			// строки, которая по правилу пары вносит ноль, и объявляла бы блокером слот, у
+			// которого норма задана. У мерного слота выбор между первой и последней и раньше был
+			// произволен (обе игнорируют остальные строки), так что менять тут нечего, кроме
+			// согласования с носителем.
+			if _, seen := usageByBom[bom.Id]; !seen {
 				usageByBom[bom.Id] = u
 			}
 		}
@@ -1284,7 +1295,9 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 				continue
 			}
 			mid, _ := u.EffectiveMaterialId(bom)
-			norm, _, _, hasNorm := usageNormForSize(u, cell.SizeId)
+			// Пара (колорвей × слот) — из ТОГО ЖЕ среза cw.Usages, из которого набран usageByBom
+			// выше, поэтому носитель итога опознаётся по указателю (см. entity/countable.go).
+			norm, _, _, hasNorm := usageNormForSize(u, cell.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
 			if mid == 0 || !hasNorm {
 				ok = false
 				row.BlockingBomItemIds = append(row.BlockingBomItemIds, int64(bom.Id))

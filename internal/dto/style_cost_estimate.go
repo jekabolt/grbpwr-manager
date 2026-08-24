@@ -151,7 +151,9 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				}
 			}
 
-			qty, applyWaste, ok := usagePerGarmentQty(u, basis)
+			// Пара — из ТОГО ЖЕ среза cw.Usages, по которому идёт цикл (носитель итога опознаётся
+			// по указателю, см. entity/countable.go).
+			qty, applyWaste, ok := usagePerGarmentQty(u, basis, entity.CountablePairUsages(cw.Usages, bom), bom)
 			if ok {
 				line.Consumption = pbDecimalFromDecimal(qty)
 			}
@@ -390,10 +392,14 @@ func resolveUsageBom(bomItems []entity.TechCardBomItem, u *entity.TechCardColorw
 // declared range, the card declares no range, or the basis is a size this usage carries no norm
 // for. The estimate must then show the line WITHOUT a consumption and say so in the caveat —
 // averaging whatever subset happens to be graded is the forbidden fallback.
-func usagePerGarmentQty(u *entity.TechCardColorwayUsage, basis entity.CostingBasis) (decimal.Decimal, bool, bool) {
+func usagePerGarmentQty(u *entity.TechCardColorwayUsage, basis entity.CostingBasis, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) (decimal.Decimal, bool, bool) {
 	if len(u.SizeConsumptions) == 0 {
-		if u.Quantity.Valid {
-			return u.Quantity.Decimal, false, true
+		// СЧЁТНОЕ ЧИСЛО — У ПАРЫ (КОЛОРВЕЙ × СЛОТ), А НЕ У СТРОКИ (0333), и берётся оно тем же
+		// резолвером, что в entity.LineTotal: итог слота и запас лежат на ПЕРВОЙ строке пары,
+		// остальные её строки дают валидный НОЛЬ. Ноль здесь несущий: INVALID означал бы «нормы
+		// нет» и поднял бы has_no_norm на втором размещении полностью заполненной пары.
+		if q := entity.CountablePairRowTotal(pair, u, bom); q.Valid {
+			return q.Decimal, false, true
 		}
 		if u.Consumption.Valid {
 			return u.Consumption.Decimal, true, true
