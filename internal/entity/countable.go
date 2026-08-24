@@ -74,6 +74,20 @@ const (
 	CountableBasisSlot CountableBasis = "slot"
 )
 
+// SlotCarriesCountableNorm — СКАЗАЛ ЛИ СЛОТ ХОТЬ ЧТО-ТО СЧЁТНОЕ. Один предикат на весь проект, и
+// он несущий: пока обе колонки пусты, вся конструкция пары обязана молчать и НЕ вмешиваться —
+// деньги и потребность считаются ровно как до 0333.
+//
+// Отдельной функцией, а не двумя `.Valid` по месту, потому что читателей у границы двое и они
+// устроены по-разному. CountablePairRowTotal возвращает в этом случае собственное число строки, но
+// РАЗЛИЧИТЬ «резолвер сказал» и «резолвер вернул то, что было» по одному NullDecimal нельзя, — а
+// usageNormForSize обязан различать: у него счётная ветвь стоит ПЕРЕД Consumption, и включённая
+// впустую она молча превращает расход в штуки (0.5 → 6). Предикат и есть то, чем эти два случая
+// различаются.
+func SlotCarriesCountableNorm(bom *TechCardBomItem) bool {
+	return bom != nil && (bom.QtyPerGarment.Valid || bom.SpareQty.Valid)
+}
+
 // CountablePairUsages — строки рецепта, составляющие ПАРУ (этот колорвей × этот слот).
 //
 // Берёт ВЕСЬ рецепт колорвея и возвращает указатели В ТОТ ЖЕ СРЕЗ: читатель, который идёт по
@@ -180,7 +194,7 @@ func CountablePairRowTotal(pair []*TechCardColorwayUsage, u *TechCardColorwayUsa
 	if bom == nil || !IsCountableSection(bom.Section) {
 		return u.Quantity
 	}
-	if !bom.QtyPerGarment.Valid && !bom.SpareQty.Valid {
+	if !SlotCarriesCountableNorm(bom) {
 		// СЛОТУ НЕЧЕГО СКАЗАТЬ — ЗНАЧИТ ПАРА НЕ ВМЕШИВАЕТСЯ, и строка считается ровно как до 0333.
 		//
 		// Это граница, а не оптимизация. Без неё правило пары молча переписывало ИСТОРИЮ: на

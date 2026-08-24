@@ -655,3 +655,108 @@ func TestRunReadinessUnitCoverageAsksThePairNotOneRow(t *testing.T) {
 			"выдало запас, которого на складе нет", got, got)
 	}
 }
+
+// TestRunReadinessUnitCoverageSumsWithinArticleNotAcrossIt — СКЛАД ЕСТЬ СВОЙСТВО АРТИКУЛА.
+//
+// Строки размещения одного слота пинят артикулы каждая свой (0221). Сложить их нормы и поделить
+// на сумму остаток ОДНОГО из артикулов — хуже, чем считать по одной строке: слот, второго артикула
+// которого на складе нет вовсе, отвечал бы «хватит на десять изделий». Здесь ровно этот случай.
+func TestRunReadinessUnitCoverageSumsWithinArticleNotAcrossIt(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems = append(card.BomItems, entity.TechCardBomItem{
+		Id: 14, LineKey: "CCCCCCCCCCCCCCCCCCCCCCCCCC", Section: entity.BomSectionHardware, Name: "пуговица",
+		MaterialId: sql.NullInt64{Int64: 301, Valid: true},
+		Unit:       sql.NullString{String: "pcs", Valid: true},
+	})
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages,
+		entity.TechCardColorwayUsage{
+			BomItemId:  sql.NullInt64{Int64: 14, Valid: true},
+			MaterialId: sql.NullInt64{Int64: 301, Valid: true}, // артикул A
+			Quantity:   rrNullDec("4"),
+		},
+		entity.TechCardColorwayUsage{
+			BomItemId:  sql.NullInt64{Int64: 14, Valid: true},
+			MaterialId: sql.NullInt64{Int64: 302, Valid: true}, // артикул B
+			Quantity:   rrNullDec("2"),
+		},
+	)
+	in := rrInput(card)
+	in.OnHand[301] = decimal.RequireFromString("60") // A с запасом
+	// B на складе нет вовсе.
+	res := ComputeProductionRunReadiness(in)
+	if got := res.UnitCoverage[0].GetUnitsFromStock(); got != 0 {
+		t.Fatalf("units_from_stock = %d, ожидалось 0: второго артикула слота на складе нет ни "+
+			"одной штуки. Ненулевой ответ означает, что норма пары приписана артикулу первой "+
+			"строки, а склад второго не спрошен вовсе", got)
+	}
+}
+
+// TestRunReadinessUnitCoverageCountsLegacyPositionalRow — ГРУППА СЛОТА СОБИРАЕТСЯ ТЕМ ЖЕ
+// РЕЗОЛВЕРОМ, ЧТО У ПЛАНА.
+//
+// planBomLine резолвит строку рецепта к слоту и по bom_item_id, и по легаси-позиции
+// bom_item_index. Резолвер ПАРЫ намеренно берёт только первый путь (carve-out 0295). Собери группу
+// покрытия парой — и слот, у которого одно размещение заведено ссылкой, а другое позицией, снова
+// считался бы по одной строке, расходясь с планом материалов, который проходит обе.
+func TestRunReadinessUnitCoverageCountsLegacyPositionalRow(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems = append(card.BomItems, entity.TechCardBomItem{
+		Id: 15, LineKey: "DDDDDDDDDDDDDDDDDDDDDDDDDD", Section: entity.BomSectionHardware, Name: "пуговица",
+		MaterialId: sql.NullInt64{Int64: 303, Valid: true},
+		Unit:       sql.NullString{String: "pcs", Valid: true},
+	})
+	idx := int32(len(card.BomItems) - 1)
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages,
+		// Легаси-строка: адресует слот позицией, bom_item_id не заполнен.
+		entity.TechCardColorwayUsage{
+			BomItemIndex: sql.NullInt32{Int32: idx, Valid: true},
+			Quantity:     rrNullDec("4"),
+		},
+		entity.TechCardColorwayUsage{
+			BomItemId: sql.NullInt64{Int64: 15, Valid: true},
+			Quantity:  rrNullDec("2"),
+		},
+	)
+	in := rrInput(card)
+	in.OnHand[303] = decimal.RequireFromString("12") // 12 пуговиц при норме 6 = два изделия
+	res := ComputeProductionRunReadiness(in)
+	if got := res.UnitCoverage[0].GetUnitsFromStock(); got != 2 {
+		t.Fatalf("units_from_stock = %d, ожидалось 2: обе строки слота дают 4 + 2 = 6 на изделие. "+
+			"Другой ответ означает, что легаси-строка в группу не попала", got)
+	}
+}
+
+// TestRunReadinessUnitCoverageBlocksWhenAnyRowOfTheSlotHasNoNorm — ПОКРЫТИЕ И ПЛАН ОБЯЗАНЫ
+// СОГЛАШАТЬСЯ. План материалов проходит строки независимо и ставит блокер на каждой безнормной.
+// Если покрытие довольствуется тем, что норма нашлась ХОТЬ У ОДНОЙ, две половины одного ответа
+// противоречат друг другу: покрытие рапортует «обеспечено», план на том же слоте держит «нормы
+// нет».
+func TestRunReadinessUnitCoverageBlocksWhenAnyRowOfTheSlotHasNoNorm(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems = append(card.BomItems, entity.TechCardBomItem{
+		Id: 16, LineKey: "EEEEEEEEEEEEEEEEEEEEEEEEEE", Section: entity.BomSectionHardware, Name: "пуговица",
+		MaterialId: sql.NullInt64{Int64: 304, Valid: true},
+		Unit:       sql.NullString{String: "pcs", Valid: true},
+	})
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages,
+		entity.TechCardColorwayUsage{BomItemId: sql.NullInt64{Int64: 16, Valid: true}}, // пустая
+		entity.TechCardColorwayUsage{BomItemId: sql.NullInt64{Int64: 16, Valid: true}, Quantity: rrNullDec("2")},
+	)
+	in := rrInput(card)
+	in.OnHand[304] = decimal.RequireFromString("1000")
+	res := ComputeProductionRunReadiness(in)
+	row := res.UnitCoverage[0]
+	if row.GetProvisionedQty() != 0 {
+		t.Fatalf("provisioned = %d, ожидалось 0: одна из строк слота нормы не несёт, и план "+
+			"материалов на ней ставит блокер", row.GetProvisionedQty())
+	}
+	found := false
+	for _, id := range row.GetBlockingBomItemIds() {
+		if id == 16 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("слот 16 не назван блокером: %v", row.GetBlockingBomItemIds())
+	}
+}

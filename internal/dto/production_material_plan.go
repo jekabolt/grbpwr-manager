@@ -1162,7 +1162,14 @@ func usageNormForSize(u *entity.TechCardColorwayUsage, sizeID int, pair []*entit
 			return sc.Consumption, true, false, true
 		}
 	}
-	if bom != nil && entity.IsCountableSection(bom.Section) {
+	// СЧЁТНАЯ ВЕТВЬ ВКЛЮЧАЕТСЯ, ТОЛЬКО КОГДА СЛОТ ДЕЙСТВИТЕЛЬНО НЕСЁТ СЧЁТНУЮ НОРМУ. Проверять
+	// одну лишь валидность ответа резолвера здесь НЕЛЬЗЯ: на пустом слоте он честно возвращает
+	// собственное quantity строки, и по одному NullDecimal «резолвер сказал» неотличимо от
+	// «резолвер вернул то, что было». А ветвь эта стоит ПЕРЕД Consumption — то есть на строке,
+	// несущей ОБА числа (состояние легальное и в истории встречается), включённая впустую она
+	// молча превращала 0.5 расхода в 6 штук, вшестеро завышая требование цеха на данных, которых
+	// волна не касается. В деньгах этого видно не было: там quantity и до 0333 стоял впереди.
+	if bom != nil && entity.IsCountableSection(bom.Section) && entity.SlotCarriesCountableNorm(bom) {
 		if q := entity.CountablePairRowTotal(pair, u, bom); q.Valid {
 			return q.Decimal, false, true, true
 		}

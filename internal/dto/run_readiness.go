@@ -1230,39 +1230,57 @@ func (b *runReadinessBuilder) coverage(plan *pb_admin.GetProductionRunMaterialPl
 // would need placement counts in a lay, which is Ф4.5 and needs data that does not exist (a run has
 // no link to a marker at all). units_from_stock is the fraction that DOES exist, and it comes from
 // the shelf rather than from the recipe.
-// coveragePairNorm — норма ИЗДЕЛИЯ по одному слоту, то есть то, на что делится складской остаток.
+// coverageDemand — сколько ОДНОГО артикула нужно на изделие по этому слоту. Артикулов у слота
+// может быть больше одного: строки размещения пинят их каждая своим (0221).
+type coverageDemand struct {
+	materialID int
+	norm       decimal.Decimal
+}
+
+// coverageDemands — потребность изделия по одному слоту, РАЗЛОЖЕННАЯ ПО АРТИКУЛАМ.
 //
-// ПОЧЕМУ НЕ НОРМА ОДНОЙ СТРОКИ. Слот законно повторяется в одном колорвее несколькими
-// размещениями (0295: «пуговицы — планка» / «пуговицы — манжета»), и на счётном слоте норма
-// изделия — это ИТОГ ПАРЫ, а не доля любой её строки. Пока здесь спрашивали одну строку,
-// покрытие отвечало «хватит на 3 изделия» там, где на складе хватало на 2: 12 пуговиц при
-// размещениях 4 и 2 делились на 4, а не на 6. Выбор строки при этом ничего не менял — обе
-// игнорируют соседок, — поэтому чинится не выбор, а вопрос: складывать по паре.
+// ТРИ ВЕЩИ, КОТОРЫЕ ЗДЕСЬ НЕЛЬЗЯ ПЕРЕПУТАТЬ, и каждая уже была дефектом:
 //
-// Слагаемые берутся ТЕМ ЖЕ usageNormForSize, что и план материалов, а не своей арифметикой: план
-// проходит все строки пары и суммирует их сам, и разойтись этим двум числам нельзя — иначе цех
-// получает не то количество, которое обещало покрытие.
+//  1. НОРМА — СВОЙСТВО ВСЕХ СТРОК СЛОТА, а не одной. 12 пуговиц на складе при размещениях 4 и 2
+//     делились на 4 и обещали три изделия вместо двух.
+//  2. НО СКЛАД — СВОЙСТВО АРТИКУЛА. Сложить нормы двух строк, пинящих РАЗНЫЕ артикулы, и поделить
+//     остаток одного из них на эту сумму — хуже, чем считать по одной строке: слот, у которого
+//     второго артикула на складе нет вовсе, отвечал бы «хватит на десять». Поэтому суммирование
+//     идёт ВНУТРИ артикула, а минимум по складу берётся по каждому отдельно.
+//  3. НОРМЫ НЕТ НИ У ОДНОЙ СТРОКИ — это блокер, и он обязан совпасть с планом материалов, который
+//     проходит строки независимо и ставит блокер на каждой безнормной. Достаточно одной такой
+//     строки: иначе покрытие рапортовало бы «обеспечено», пока план на том же слоте держит
+//     «нормы нет», и две половины одного ответа противоречили бы друг другу.
 //
-// МЕРНЫЙ СЛОТ И ОДИНОЧНАЯ ПАРА идут прежним путём в одну строку. Произвол «какая из нескольких
+// Слагаемые берутся ТЕМ ЖЕ usageNormForSize, которым идёт план: разойтись этим числам нельзя —
+// иначе цех получает не то количество, которое обещало покрытие.
+//
+// МЕРНЫЙ СЛОТ И ОДИНОЧНАЯ СТРОКА идут прежним путём, в одну запись. Произвол «какая из нескольких
 // строк мерного слота отвечает за норму» этой правкой НЕ трогается: он досуществующий, ответа в
 // данных на него нет (метраж двух размещений ткани не складывается сам собой), и счётной нормы он
 // не касается.
-func coveragePairNorm(carrier *entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) (decimal.Decimal, bool) {
-	if bom == nil || !entity.IsCountableSection(bom.Section) || len(pair) < 2 {
-		n, _, _, ok := usageNormForSize(carrier, sizeID, pair, bom)
-		return n, ok
+func coverageDemands(rows []*entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) ([]coverageDemand, bool) {
+	if bom == nil || !entity.IsCountableSection(bom.Section) || len(rows) < 2 {
+		n, _, _, ok := usageNormForSize(rows[0], sizeID, pair, bom)
+		mid, _ := rows[0].EffectiveMaterialId(bom)
+		return []coverageDemand{{materialID: mid, norm: n}}, ok
 	}
-	total := decimal.Zero
-	found := false
-	for _, u := range pair {
+	out := make([]coverageDemand, 0, 2)
+	at := map[int]int{}
+	for _, u := range rows {
 		n, _, _, ok := usageNormForSize(u, sizeID, pair, bom)
 		if !ok {
+			return nil, false
+		}
+		mid, _ := u.EffectiveMaterialId(bom)
+		if i, seen := at[mid]; seen {
+			out[i].norm = out[i].norm.Add(n)
 			continue
 		}
-		total = total.Add(n)
-		found = true
+		at[mid] = len(out)
+		out = append(out, coverageDemand{materialID: mid, norm: n})
 	}
-	return total, found
+	return out, true
 }
 
 func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessUnitCoverage {
@@ -1289,7 +1307,17 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 			out = append(out, row) // provisioned 0; colorway_live already said why
 			continue
 		}
-		usageByBom := map[int]*entity.TechCardColorwayUsage{}
+		// ВСЕ строки слота, а не одна (0333). Слот законно повторяется в одном колорвее
+		// несколькими размещениями (0295), и норма изделия по нему — свойство всех его строк
+		// вместе. Пока карта держала ОДНУ строку (безразлично, первую или последнюю — обе
+		// игнорируют соседок), покрытие отвечало числом, которого на складе нет, и расходилось с
+		// планом материалов, который проходит все строки.
+		//
+		// Разрешение — planBomLine, ТОТ ЖЕ, которым идёт план: он резолвит строку к слоту и по
+		// bom_item_id, и по легаси-позиции bom_item_index. Собрать группу резолвером ПАРЫ было бы
+		// ошибкой: тот намеренно не берёт легаси-строки (carve-out 0295), и слот, у которого одно
+		// размещение заведено ссылкой, а другое позицией, снова считался бы по одной строке.
+		rowsByBom := map[int][]*entity.TechCardColorwayUsage{}
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
 			// A piece-bound row (entity.IsPieceMaterialAssignment) carries no norm; letting it
@@ -1302,17 +1330,7 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 			if bom == nil {
 				continue
 			}
-			// ПЕРВАЯ строка слота, а не последняя (0333) — она же носитель остатка пары. Эта
-			// карта отвечает на вопрос «ЧЕЙ АРТИКУЛ у слота» (EffectiveMaterialId ниже), и
-			// согласовать её с носителем нужно затем, чтобы пин читался у той же строки, у
-			// которой лежит остаток.
-			//
-			// НОРМУ у неё НЕ спрашивают: на счётном слоте с несколькими размещениями итог лежит
-			// на носителе только когда базис — «слот»; при явных числах строк каждая несёт своё,
-			// и одна строка нормы изделия не знает. Складывает пару coveragePairNorm ниже.
-			if _, seen := usageByBom[bom.Id]; !seen {
-				usageByBom[bom.Id] = u
-			}
+			rowsByBom[bom.Id] = append(rowsByBom[bom.Id], u)
 		}
 		ok := true
 		fromStock := -1
@@ -1321,8 +1339,8 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 			if !planSlotSections[bom.Section] {
 				continue
 			}
-			u := usageByBom[bom.Id]
-			if u == nil {
+			rows := rowsByBom[bom.Id]
+			if len(rows) == 0 {
 				// A recipe-section slot the recipe never references. The plan already counts this as a
 				// blocker; the same rule has to hold here or a slot added to the BOM after the
 				// colourways were authored would change nothing in the count.
@@ -1330,17 +1348,31 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 				row.BlockingBomItemIds = append(row.BlockingBomItemIds, int64(bom.Id))
 				continue
 			}
-			mid, _ := u.EffectiveMaterialId(bom)
-			// Пара (колорвей × слот) — из ТОГО ЖЕ среза cw.Usages, из которого набран usageByBom
+			// Пара (колорвей × слот) — из ТОГО ЖЕ среза cw.Usages, по которому набран rowsByBom
 			// выше, поэтому носитель итога опознаётся по указателю (см. entity/countable.go).
-			norm, hasNorm := coveragePairNorm(u, cell.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
-			if mid == 0 || !hasNorm {
+			demands, hasNorm := coverageDemands(rows, cell.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
+			if !hasNorm {
 				ok = false
 				row.BlockingBomItemIds = append(row.BlockingBomItemIds, int64(bom.Id))
 				continue
 			}
-			if norm.IsPositive() {
-				units := b.in.OnHand[mid].Div(norm).IntPart()
+			blocked := false
+			for _, d := range demands {
+				if d.materialID == 0 {
+					blocked = true
+					break
+				}
+			}
+			if blocked {
+				ok = false
+				row.BlockingBomItemIds = append(row.BlockingBomItemIds, int64(bom.Id))
+				continue
+			}
+			for _, d := range demands {
+				if !d.norm.IsPositive() {
+					continue
+				}
+				units := b.in.OnHand[d.materialID].Div(d.norm).IntPart()
 				if units < 0 {
 					units = 0
 				}
