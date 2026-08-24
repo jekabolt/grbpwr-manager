@@ -346,7 +346,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 			Title:    fmt.Sprintf("No equipment profiles on a card that names %d machine types", len(types)),
 			Detail: fmt.Sprintf("The route runs on %s, and tech_card_equipment_profile (0306) is empty "+
 				"for this card. Every step therefore inherits nothing: needle, thread count, tension, "+
-				"stitch density and every ВТО setting are decided at the bench, differently on each shift.",
+				"stitch density and every pressing setting are decided at the bench, differently on each shift.",
 				quotedList(types)),
 			Refs:       []string{RefCard},
 			Suggestion: "Add the machine and press profiles this style is sewn and pressed on.",

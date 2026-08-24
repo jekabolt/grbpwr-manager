@@ -354,7 +354,7 @@ func checkA3PressParameters(v *cardView) []Finding {
 				Severity: severity,
 				Title: aiBoundedText(fmt.Sprintf("%s parameters missing on %d of %d %s operations",
 					capitalise(noun), missing, applicable, noun), 90),
-				Detail: fmt.Sprintf("All five ВТО columns (press_temperature_c, press_dwell_sec, "+
+				Detail: fmt.Sprintf("All five pressing columns (press_temperature_c, press_dwell_sec, "+
 					"press_pressure_n_cm2, press_steam, press_profile_key — 0306) are empty on these "+
 					"steps, and no press profile of the card applies to them (%d press profile(s) on "+
 					"the card in total).", len(profiles)),

@@ -249,8 +249,8 @@ func checkB3FusingTriangle(v *cardView) []Finding {
 		Title:    fmt.Sprintf("Fusing is stated in %d of the 3 places that describe it", nonZeroOf(nl, nf, no)),
 		Detail: fmt.Sprintf("Interlining BOM lines: %d. Cut pieces marked fused: %d of %d. Fusing "+
 			"operations in the route: %d. Fusing is described by all three together, and here they "+
-			"disagree. (tech_card_piece.fused is NOT NULL DEFAULT FALSE, so a zero there is «nobody "+
-			"ticked it» as readily as «no fusing» — this finding states the counts, not the intent.)",
+			"disagree. (tech_card_piece.fused is NOT NULL DEFAULT FALSE, so a zero there is 'nobody "+
+			"ticked it' as readily as 'no fusing' — this finding states the counts, not the intent.)",
 			nl, nf, len(v.card.Pieces), no),
 		Refs: refs,
 		Suggestion: "Reconcile the three: buy the interlining, mark the pieces it backs, and give the " +
@@ -530,7 +530,7 @@ func checkB5bPurposeInversion(v *cardView) []Finding {
 					b.Name, strings.TrimSpace(b.Purpose.String), b.UnitPrice.Decimal.String(), currencyOf(b),
 					dearest.Name, dearest.UnitPrice.Decimal.String(), currencyOf(dearest)),
 				Refs:       refs,
-				Suggestion: "Confirm the two prices, or swap the назначение of the lines.",
+				Suggestion: "Confirm the two prices, or swap the purpose of the lines.",
 			},
 		})
 	}
@@ -543,7 +543,7 @@ func checkB5bPurposeInversion(v *cardView) []Finding {
 				missing, applicable),
 			Detail: "The cheap half of the garment prices dearer than the main cloth on these lines.",
 			Refs:   sample,
-			Suggestion: "Confirm the prices, or check that назначение (purpose, 0265) sits on the right " +
+			Suggestion: "Confirm the prices, or check that the purpose (0265) sits on the right " +
 				"lines.",
 		}
 	})
@@ -701,7 +701,7 @@ func checkB7CmtWithoutBacking(v *cardView) []Finding {
 			"operations state an SMV (0219). Where does the labour cost come from — a measured route, a "+
 			"quote from the factory, or last season's figure?", withSMV, len(v.ops)),
 		Refs: []string{RefCard},
-		Suggestion: "Say in the costing notes where the CMT figure comes from, or норм the route so the " +
+		Suggestion: "Say in the costing notes where the CMT figure comes from, or set an SMV on the route so the " +
 			"number can be derived.",
 	}}
 }
