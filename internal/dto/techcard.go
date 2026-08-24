@@ -115,8 +115,8 @@ var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirectio
 // absence of one («не размечено»), so it can only ever become a NULL column — the same discipline
 // TechCardBomPurpose's UNSET follows.
 var techCardPieceFusingModePbToEntity = map[pb_common.TechCardPieceFusingMode]entity.TechCardPieceFusingMode{
-	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_FULL:           entity.PieceFusingModeFull,
-	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_STRIP:          entity.PieceFusingModeStrip,
+	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_FULL:  entity.PieceFusingModeFull,
+	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_STRIP: entity.PieceFusingModeStrip,
 }
 
 var techCardPieceFusingModeEntityToPb = func() map[entity.TechCardPieceFusingMode]pb_common.TechCardPieceFusingMode {
@@ -323,6 +323,9 @@ var techCardBomKindPbToEntity = map[pb_common.TechCardBomKind]entity.TechCardBom
 	// значениях, а не о номерах.
 	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SEAM_SEALING_TAPE:     entity.BomKindSeamSealingTape,
 	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_EMBROIDERY_STABILIZER: entity.BomKindEmbroideryStabilizer,
+	// Волна счётных норм (0335): пакетик с запаской и шоппер, оба section=packaging.
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_SPARE_KIT_BAG: entity.BomKindSpareKitBag,
+	pb_common.TechCardBomKind_TECH_CARD_BOM_KIND_TOTE_BAG:      entity.BomKindToteBag,
 }
 
 var techCardBomKindEntityToPb = func() map[entity.TechCardBomKind]pb_common.TechCardBomKind {
@@ -4071,6 +4074,7 @@ var auxSubtypePbByEntity = map[entity.TechCardAuxSubtype]pb_common.TechCardAuxSu
 	entity.AuxSubtypeBox:         pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_BOX,
 	entity.AuxSubtypeInsert:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_INSERT,
 	entity.AuxSubtypeHanger:      pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGER,
+	entity.AuxSubtypeSpareKitBag: pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_SPARE_KIT_BAG,
 	entity.AuxSubtypeOther:       pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_OTHER,
 }
 

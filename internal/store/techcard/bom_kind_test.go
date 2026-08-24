@@ -118,6 +118,49 @@ func TestValidateBomKindSection(t *testing.T) {
 	require.Error(t, validateBomKindSection(unknown, 0))
 }
 
+// TestValidateBomKindSectionSpareKitBag pins the pairing of the countable-norms wave's own kind
+// (0335), and it is not a duplicate of the generic case above for a specific reason: `spare_kit_bag`
+// is the ONE kind whose existence is meant to be read as a fact about a DIFFERENT line — the
+// readiness checks pair it with slots carrying spare_qty. A line filed under section='hardware'
+// would still answer «пакетик есть» to a check that looks at kinds, while being bought, grouped and
+// reported as фурнитура — two answers about the same object, from one row.
+//
+// The mirror acceptance is asserted in the same test on purpose: a refusal test alone stays green if
+// the kind is refused EVERYWHERE (a missing bomKindHomeSection entry does exactly that), which is
+// the failure mode this pairing is most likely to grow.
+func TestValidateBomKindSectionSpareKitBag(t *testing.T) {
+	line := func(section entity.TechCardBomSection, kind entity.TechCardBomKind) *entity.TechCardBomItem {
+		return &entity.TechCardBomItem{
+			Section: section,
+			Kind:    sql.NullString{String: string(kind), Valid: true},
+		}
+	}
+
+	require.NoError(t, validateBomKindSection(line(entity.BomSectionPackaging, entity.BomKindSpareKitBag), 0),
+		"packaging is the home section of the spare-kit bag; it must be accepted there")
+	require.NoError(t, validateBomKindSection(line(entity.BomSectionPackaging, entity.BomKindToteBag), 0),
+		"the tote bag rode in on the same migration and is homed on packaging too")
+
+	// Every OTHER eligible section must refuse it, and the message must name both sections — the one
+	// the kind belongs to and the one the line actually sits in — so the operator can fix it without
+	// guessing which of the two the store objects to.
+	for _, s := range kindEligibleSectionList {
+		if s == entity.BomSectionPackaging {
+			continue
+		}
+		err := validateBomKindSection(line(s, entity.BomKindSpareKitBag), 2)
+		require.Error(t, err, "spare_kit_bag must be refused on section %q", s)
+		require.Contains(t, err.Error(), string(entity.BomSectionPackaging))
+		require.Contains(t, err.Error(), string(s))
+	}
+
+	// Roll goods refuse it on the earlier arm (they carry назначение), so the message is the other
+	// one — asserted here because the two arms are easy to conflate when reading the function.
+	err := validateBomKindSection(line(entity.BomSectionFabric, entity.BomKindSpareKitBag), 2)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "purpose")
+}
+
 // bomItemUpsertParams mirrors the map bomItemParams builds (plus the two provenance keys and the id
 // the update adds), so a parameter added to a query and forgotten in the map — or the reverse —
 // surfaces here as a bind failure instead of as a 500 on the card-save path.
