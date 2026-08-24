@@ -918,9 +918,21 @@ func TestRouteIsDeterministicAcrossRuns(t *testing.T) {
 func TestRouteHandlesAnEmptyCard(t *testing.T) {
 	// Карточка без единого сборочного факта проходит вакуумно (§1) — проверки маршрута обязаны
 	// молчать, а не паниковать на пустых картах.
+	//
+	// СУЖЕНО В T4, И ВОТ ПОЧЕМУ. Первая редакция требовала НОЛЬ находок вообще — то есть монополию
+	// маршрутной пробы на общий список. На пустой карточке заговаривает готовность (C1: ноль
+	// операций, ноль деталей, нет размерного ряда; C2; C5), и заговаривает справедливо: пустая
+	// карточка к релизу не готова по определению. Утверждение сужено до «маршрут и BOM молчат»;
+	// поимённый состав readiness-находок пустой карточки закреплён в readiness_test.go.
 	res := RunAudit(&entity.TechCard{}, rtFx)
-	if len(res.Findings) != 0 {
-		t.Errorf("want no route findings on an empty card, got:\n%s", rtDump(res.Findings))
+	var nonReadiness []Finding
+	for _, f := range res.Findings {
+		if f.Category != CategoryReadiness {
+			nonReadiness = append(nonReadiness, f)
+		}
+	}
+	if len(nonReadiness) != 0 {
+		t.Errorf("want no route findings on an empty card, got:\n%s", rtDump(nonReadiness))
 	}
 	if res2 := RunAudit(nil, rtFx); len(res2.Findings) != 0 {
 		t.Errorf("want no findings on a nil card, got:\n%s", rtDump(res2.Findings))
