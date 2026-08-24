@@ -819,6 +819,24 @@ func colorwayRecipeRefsForBom(ctx context.Context, db dependency.DB, bomItemID i
 
 // bomItemParams maps a BOM line to named params for the upsert.
 func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKey string) map[string]any {
+	// СЧЁТНАЯ НОРМА НА МЕРНОЙ СЕКЦИИ СТИРАЕТСЯ, А НЕ СОХРАНЯЕТСЯ, и это не дубль
+	// validateBomCountableSection: та проверяет ПРИСЛАННОЕ, а здесь закрывается дыра между
+	// присланным и СОХРАНЁННЫМ.
+	//
+	// Сценарий целиком: в базе счётный слот с qty_per_garment=6 и spare_qty=1; вкладка со старым
+	// бандлом меняет его секцию на trim и обеих колонок не шлёт. Проверка молчит (проверять
+	// нечего), флаг присутствия говорит «не трогай», и IF в UPDATE сохраняет шестёрку — на строке,
+	// где счётная норма запрещена по определению. Дальше резолвер её игнорирует из-за мерной
+	// секции, и деньги строки исчезают ПОСЛЕ УСПЕШНОГО сохранения, которое оператор считает
+	// безобидным.
+	//
+	// Поэтому «не трогай» здесь перекрывается: секция и счётность — одно утверждение, и сменивший
+	// секцию сменил ответ. Состояние «мерная строка со счётной нормой» становится невыразимым, а не
+	// «проверяемым на входе» — граница, которую нельзя обойти, забыв про неё.
+	qtyPerGarment, spareQty, countableOmitted := b.QtyPerGarment, b.SpareQty, b.CountableOmitted
+	if !entity.IsCountableSection(b.Section) {
+		qtyPerGarment, spareQty, countableOmitted = decimal.NullDecimal{}, decimal.NullDecimal{}, false
+	}
 	return map[string]any{
 		"tech_card_id": tcID,
 		"material_id":  b.MaterialId,
@@ -862,9 +880,9 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		// сохранённой второй значило бы сказать «пуговиц не задано, а запасных к ним одна».
 		// Два параметра, один флаг — SQL читается как то, что он есть: две колонки, каждая под
 		// своей защитой (см. bomItemUpdateQuery).
-		"qty_per_garment":   b.QtyPerGarment,
-		"spare_qty":         b.SpareQty,
-		"countable_omitted": b.CountableOmitted,
+		"qty_per_garment":   qtyPerGarment,
+		"spare_qty":         spareQty,
+		"countable_omitted": countableOmitted,
 		"line_key":          lineKey,
 	}
 }

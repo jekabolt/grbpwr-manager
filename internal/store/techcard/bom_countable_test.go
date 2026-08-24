@@ -46,3 +46,47 @@ func TestBomCountableSectionBoundary(t *testing.T) {
 	// Пустая пара на мерной секции — это КАЖДАЯ существующая строка ткани: молчание, не отказ.
 	require.NoError(t, validateBomCountableSection(&entity.TechCardBomItem{Section: entity.BomSectionFabric}, 0))
 }
+
+// TestBomCountableClearedWhenSectionBecomesMeasured — ДЫРА МЕЖДУ ПРИСЛАННЫМ И СОХРАНЁННЫМ.
+//
+// validateBomCountableSection проверяет то, что ПРИШЛО. Но вкладка со старым бандлом счётных полей
+// не шлёт вовсе, флаг присутствия говорит «не трогай», и IF в UPDATE сохраняет число, лежащее в
+// базе, — на строке, которая этим же сейвом стала мерной. Проверка при этом молчит: проверять
+// нечего.
+//
+// Итог такого сейва — мерная строка со счётной нормой, состояние, запрещённое по определению.
+// Резолвер её игнорирует (граница «счётное/мерное» держится у него), поэтому деньги строки
+// исчезают ПОСЛЕ УСПЕШНОГО сохранения, которое оператор считает безобидным.
+//
+// Здесь проверяется, что параметры записи закрывают это не проверкой, а формой: на мерной секции
+// обе колонки уходят в NULL, а флаг присутствия снимается — иначе IF сохранил бы старое.
+func TestBomCountableClearedWhenSectionBecomesMeasured(t *testing.T) {
+	// Старый бандл: полей нет, флаг «не трогай» стоит, секция сменилась на мерную.
+	stale := &entity.TechCardBomItem{
+		Section:          entity.BomSectionTrim,
+		Name:             "тесьма",
+		CountableOmitted: true,
+	}
+	p := bomItemParams(1, stale, 0, "K0000000000000000000000001")
+	if p["countable_omitted"] != false {
+		t.Fatalf("countable_omitted=%v на мерной секции: IF в UPDATE сохранит счётную норму, "+
+			"которой на этой строке быть не может", p["countable_omitted"])
+	}
+	if q, ok := p["qty_per_garment"].(decimal.NullDecimal); !ok || q.Valid {
+		t.Fatalf("qty_per_garment=%v на мерной секции, ожидался NULL", p["qty_per_garment"])
+	}
+	if q, ok := p["spare_qty"].(decimal.NullDecimal); !ok || q.Valid {
+		t.Fatalf("spare_qty=%v на мерной секции, ожидался NULL", p["spare_qty"])
+	}
+
+	// На счётной секции ничего не меняется: «не трогай» остаётся «не трогай».
+	keep := &entity.TechCardBomItem{
+		Section:          entity.BomSectionHardware,
+		Name:             "пуговица",
+		CountableOmitted: true,
+	}
+	if p := bomItemParams(1, keep, 0, "K0000000000000000000000002"); p["countable_omitted"] != true {
+		t.Fatalf("countable_omitted=%v на счётной секции: сейв старого бандла обнулил бы счётную "+
+			"норму у всех строк карточки", p["countable_omitted"])
+	}
+}
