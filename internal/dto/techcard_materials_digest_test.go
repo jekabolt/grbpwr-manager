@@ -147,9 +147,11 @@ func TestMaterialsHeadIsSeventeenPositions(t *testing.T) {
 	}
 }
 
-// TestMaterialsTailsAreEmptyToday — ОБЕЩАНИЕ НУЛЕВОЙ ВОЛНЫ, отдельной клеткой: сегодня ни одно
-// семейство не рождается, значит байты сегодняшних строк BOM не двигаются вовсе.
-func TestMaterialsTailsAreEmptyToday(t *testing.T) {
+// TestMaterialsTailsAreEmptyWithoutCounts — ОБЕЩАНИЕ ВОЛНЫ, отдельной клеткой: строка, у которой
+// счётная норма не заполнена, хвоста не рождает, значит её байты не двигаются вовсе. Именно это
+// свойство и позволило завести поля, не объявив устаревшими подписи всех карточек в базе: пустых
+// строк там подавляющее большинство, и ни одна из них отпечатка не меняет.
+func TestMaterialsTailsAreEmptyWithoutCounts(t *testing.T) {
 	for i := range materialsGoldCard().BomItems {
 		b := &materialsGoldCard().BomItems[i]
 		if tails := materialsTails(b); len(tails) != 0 {
@@ -160,9 +162,14 @@ func TestMaterialsTailsAreEmptyToday(t *testing.T) {
 	}
 }
 
-// materialsTomorrow — «завтрашняя» карточка задачи 03: та же самая, но у СЧЁТНОЙ строки (индекс 1)
-// правее головы стоит хвост количества. Поля qty_per_garment / spare_qty на сущности ещё нет, так
-// что хвост подаётся сюда искусственно — проверяется МЕХАНИЗМ, а не поля, которых нет.
+// materialsTomorrow — карточка со счётной нормой на СЧЁТНОЙ строке (индекс 1), собранная ЧЕРЕЗ
+// ФОРМУ ХВОСТА, а не через поля сущности.
+//
+// Эта половина осталась искусственной НАМЕРЕННО, и это не дубль materialsWithCounts ниже. Здесь
+// проверяется ФОРМА: что произвольный тегированный хвост, дописанный правее головы, ведёт себя как
+// обещано — пустой не рождается, заполненный сдвигает, порядок пар задаётся ключом. Тесты, стоящие
+// на реальных полях, ту же форму проверить не могут: они видят только те два ключа, которые сегодня
+// эмитит materialsTails, и промолчали бы о правиле, по которому будет заводиться ТРЕТИЙ.
 func materialsTomorrow(t *testing.T, tail []any) string {
 	t.Helper()
 	rows, ok := materialsProjection(materialsGoldCard()).([]any)
@@ -178,6 +185,82 @@ func materialsTomorrow(t *testing.T, tail []any) string {
 		next[1] = append(append([]any(nil), row...), tail)
 	}
 	return digestOf(next)
+}
+
+// materialsWithCounts — та же золотая карточка, но счётная норма проставлена НА САМОЙ СУЩНОСТИ.
+// Через неё идут утверждения о том, что materialsTails действительно ЧИТАЕТ эти два поля: тест,
+// стоящий только на искусственном хвосте, остался бы зелёным и с пустым списком семейств.
+func materialsWithCounts(qty, spare decimal.NullDecimal) *entity.TechCardInsert {
+	tc := materialsGoldCard()
+	tc.BomItems[1].QtyPerGarment = qty
+	tc.BomItems[1].SpareQty = spare
+	return tc
+}
+
+// TestMaterialsCountFieldsReachTheDigest — ШОВ ДВУХ ДОРОЖЕК: механизм хвоста (задача 02) и поля
+// слота (задача 03) встречаются здесь, и до этого коммита не встречались нигде.
+//
+// Утверждение стоит на ПОЛЯХ СУЩНОСТИ, а не на искусственном хвосте, и обязано падать от одной
+// мутации: верните materialsTails пустой список семейств — и все четыре сравнения ниже схлопнутся,
+// потому что отпечаток перестанет зависеть от количества пуговиц. Без этого теста поля можно было
+// бы забыть подключить, а искусственные тесты формы остались бы зелёными и подтверждали бы ровно
+// ничего.
+// ЗАМОРОЖЕННЫЙ HEX СТРОКИ СО СЧЁТНОЙ НОРМОЙ — второй эталон рядом с materialsGoldDigestHex, и он
+// закрывает то, чего первый не видит по построению: первый снят на карточке БЕЗ счётной нормы,
+// поэтому хвост в его байты не входит вовсе.
+//
+// Что ловит именно он: переименование тега "count", переименование ключей пар, перестановку
+// qty_per_garment и spare_qty местами и любую правку слоя сборки, задевающую хвост. Ни одно из
+// этого не меняет ПОВЕДЕНИЯ — все четыре мутации оставляют TestMaterialsCountFieldsReachTheDigest
+// зелёным, потому что отпечатки продолжают различаться между собой, — но каждая уводит подписи
+// всех карточек со счётной нормой молча и навсегда. Значение снято на этом коммите: с него тег и
+// ключи заморожены.
+const materialsCountedGoldDigestHex = "0a8caa9431517de1e3a2025cd9d3b27d422bc36b8330d90aa9893ca40a54c48e"
+
+// TestMaterialsCountedDigestHexFrozen — эталон литералом для строки с заполненной счётной нормой.
+func TestMaterialsCountedDigestHexFrozen(t *testing.T) {
+	if got := materialsDigest(materialsWithCounts(nd("6"), nd("1"))); got != materialsCountedGoldDigestHex {
+		t.Fatalf("отпечаток MATERIALS строки со счётной нормой уехал от замороженного эталона: "+
+			"переименовали тег или ключ пары, поменяли поля местами или тронули слой сборки — "+
+			"подписи ВСЕХ карточек со счётной нормой протухли в момент выкатки.\nэталон: %s\nстало:  %s",
+			materialsCountedGoldDigestHex, got)
+	}
+}
+
+func TestMaterialsCountFieldsReachTheDigest(t *testing.T) {
+	none := materialsDigest(materialsWithCounts(decimal.NullDecimal{}, decimal.NullDecimal{}))
+	if none != materialsGoldDigestHex {
+		t.Fatalf("строка БЕЗ счётной нормы сдвинула отпечаток — значит хвост родился на пустых "+
+			"полях, и подписи всех карточек в базе протухли в момент выкатки."+
+			"\nэталон: %s\nстало:  %s",
+			materialsGoldDigestHex, none)
+	}
+
+	six := materialsDigest(materialsWithCounts(nd("6"), decimal.NullDecimal{}))
+	if six == none {
+		t.Errorf("qty_per_garment не дошло до отпечатка MATERIALS: подпись под «шесть пуговиц» " +
+			"читалась бы как действительная под карточкой без количества вовсе")
+	}
+	sixPlusOne := materialsDigest(materialsWithCounts(nd("6"), nd("1")))
+	if sixPlusOne == six {
+		t.Errorf("spare_qty не дошло до отпечатка MATERIALS: «шесть пришить» и «шесть пришить, " +
+			"одну в пакетик» — разные закупки, а подпись у них вышла бы одна")
+	}
+	zero := materialsDigest(materialsWithCounts(nd("0"), decimal.NullDecimal{}))
+	if zero == none {
+		t.Errorf("«пуговиц ноль» и «количество не задано» дали один отпечаток на РЕАЛЬНЫХ полях — " +
+			"подпись под неотвеченным вопросом читается как подпись под ответом")
+	}
+
+	// Хвост живёт на ТОЙ строке, где заполнено поле, а не на карточке целиком: счётная норма на
+	// мерной строке невозможна (её отвергает store, validateBomCountableSection), но если бы
+	// строитель хвоста читал не свою строку, отпечаток поехал бы у обеих.
+	onFabric := materialsGoldCard()
+	onFabric.BomItems[0].QtyPerGarment = nd("6")
+	if materialsDigest(onFabric) == six {
+		t.Errorf("количество на ПЕРВОЙ строке дало тот же отпечаток, что на второй — строитель " +
+			"хвоста читает не свою строку")
+	}
 }
 
 // TestMaterialsEmptyCountDoesNotMoveTheDigest — СВОЙСТВО, РАДИ КОТОРОГО МЕХАНИЗМ И ЗАВОДИТСЯ,
