@@ -254,7 +254,11 @@ func LayNettoOf(card *entity.TechCard, colorwayID int, bomItemID int64, actualUo
 			// размер: строка без значения — заниженный знаменатель, то есть завышенный дрейф, молча.
 			perGarment := decimal.Zero
 			for _, u := range usages {
-				norm, _, counted, ok := usageNormForSize(u, c.SizeId)
+				// Пара (колорвей × слот) здесь НЕ передаётся, и это не упущение: netto считается
+				// только по МЕРНОМУ слоту с dxf-нормой, где счётного итога нет по построению, а
+				// usages выше — отфильтрованное подмножество строк слота, а не пара. Счётная
+				// строка отсекается ветвью counted строкой ниже, как и до 0333.
+				norm, _, counted, ok := usageNormForSize(u, c.SizeId, nil, bom)
 				if !ok || counted {
 					// Непокрытый размер НАЗЫВАЕТСЯ, а не пропускается.
 					return LayNettoResult{Reason: fmt.Sprintf("%s: the slot's dxf norm has no value for size #%d of the composition — netto is incomplete", label, c.SizeId)}

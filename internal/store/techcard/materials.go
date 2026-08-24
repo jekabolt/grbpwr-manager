@@ -594,6 +594,8 @@ const bomItemUpdateQuery = `
 		wastage_percent=:wastage_percent,
 		wastage_source=:wastage_source, wastage_lay_count=:wastage_lay_count, wastage_applied_at=:wastage_applied_at,
 		wastage_applied_percent=:wastage_applied_percent,
+		qty_per_garment=IF(:countable_omitted, qty_per_garment, :qty_per_garment),
+		spare_qty=IF(:countable_omitted, spare_qty, :spare_qty),
 		price_source=:price_source, price_snapshot_at=:price_snapshot_at
 	WHERE id=:id`
 
@@ -602,11 +604,11 @@ const bomItemInsertQuery = `
 		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, is_sample, name, supplier, supplier_ref,
 		 color, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
 		 fabric_weight_gsm, fabric_direction, wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at,
-		 wastage_applied_percent, line_key, price_source, price_snapshot_at)
+		 wastage_applied_percent, qty_per_garment, spare_qty, line_key, price_source, price_snapshot_at)
 	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :is_sample, :name, :supplier, :supplier_ref,
 		 :color, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
 		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :wastage_source, :wastage_lay_count, :wastage_applied_at,
-		 :wastage_applied_percent, :line_key, :price_source, :price_snapshot_at)`
+		 :wastage_applied_percent, :qty_per_garment, :spare_qty, :line_key, :price_source, :price_snapshot_at)`
 
 // validateBomKindSection enforces the kind↔section pairing (0278) the DB CHECK deliberately does not:
 // a kind is legal only on a kind-eligible section, and within that, only in its own HOME section —
@@ -640,6 +642,32 @@ func validateBomKindSection(b *entity.TechCardBomItem, i int) error {
 			fmt.Sprintf("move the line to section %q, or pick a kind of section %q", home, b.Section))
 	}
 	return nil
+}
+
+// validateBomCountableSection enforces the section boundary of the СЧЁТНОЙ НОРМЫ (0333): штуки на
+// изделие и запас законны только на НЕмерной секции. Проверяется здесь, рядом с проверками
+// назначения и вида, и по той же причине: двухколоночный CHECK (section ↔ qty_per_garment)
+// выстрелил бы сырым MySQL 3819 на UPDATE'е, правящем ОДНУ секцию, и назвал бы оператору колонку,
+// которой тот не касался.
+//
+// Отказ называет секцию, которая ФАКТИЧЕСКИ сработала, и способ выйти — образец
+// validateBomKindSection. Предикат один на весь проект (entity.IsCountableSection), второй копии
+// списка мерных семей быть не должно: клиентский MEASURED_SECTIONS — его зеркало.
+func validateBomCountableSection(b *entity.TechCardBomItem, i int) error {
+	if !b.QtyPerGarment.Valid && !b.SpareQty.Valid {
+		return nil
+	}
+	if entity.IsCountableSection(b.Section) {
+		return nil
+	}
+	field := fmt.Sprintf("bom_items[%d].qty_per_garment", i)
+	if !b.QtyPerGarment.Valid {
+		field = fmt.Sprintf("bom_items[%d].spare_qty", i)
+	}
+	return entity.NewFieldViolation(field,
+		"a measured material is counted by its norm, not by the piece",
+		fmt.Sprintf("this line is section %q", b.Section),
+		"clear the per-garment count, and put the consumption on the colourway recipe row instead")
 }
 
 // upsertTechCardBom reconciles a card's BOM lines by line_key in one transaction instead of the old
@@ -697,6 +725,11 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		// column the operator never edited (the argument 0275 makes for its even-count invariant,
 		// pointing the other way: there the schema must carry it, here the schema must not).
 		if err := validateBomKindSection(b, i); err != nil {
+			return res, err
+		}
+		// СЧЁТНАЯ НОРМА (0333) — третья проверка того же семейства и в том же месте: секция решает,
+		// считается ли строка штуками или нормой, и ответ обязан быть один на обе колонки пары.
+		if err := validateBomCountableSection(b, i); err != nil {
 			return res, err
 		}
 		params := bomItemParams(tcID, b, i, key)
@@ -824,7 +857,15 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		"fabric_direction":         b.FabricDirection,
 		"fabric_direction_omitted": b.FabricDirectionOmitted,
 		"wastage_percent":          b.WastagePercent,
-		"line_key":                 lineKey,
+		// СЧЁТНАЯ НОРМА СЛОТА (0333) — та же пара под ОДНИМ флагом присутствия, что kind/kind_note:
+		// количество и запас это две половины одного утверждения о слоте, и записать одну поверх
+		// сохранённой второй значило бы сказать «пуговиц не задано, а запасных к ним одна».
+		// Два параметра, один флаг — SQL читается как то, что он есть: две колонки, каждая под
+		// своей защитой (см. bomItemUpdateQuery).
+		"qty_per_garment":   b.QtyPerGarment,
+		"spare_qty":         b.SpareQty,
+		"countable_omitted": b.CountableOmitted,
+		"line_key":          lineKey,
 	}
 }
 
@@ -1085,6 +1126,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
 		       bi.wastage_source, bi.wastage_lay_count, bi.wastage_applied_at, bi.wastage_applied_percent,
+		       bi.qty_per_garment, bi.spare_qty,
 		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at,
 		       COALESCE(bi.fabric_width, NULLIF(mfa.width_cm, 0), m.fabric_width) AS effective_fabric_width_cm,
 		       mfa.selvedge_cm AS selvedge_cm

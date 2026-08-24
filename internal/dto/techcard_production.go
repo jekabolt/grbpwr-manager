@@ -1835,7 +1835,12 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		// когда подменять цену нечего. Две функции, один артикул: EffectiveMaterialId у обеих.
 		bom := withCuttingCoefficient(
 			pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base), u, linked)
-		ut := u.UnitTotal(bom, basis)
+		// СЧЁТНЫЙ ИТОГ — СВОЙСТВО ПАРЫ (КОЛОРВЕЙ × СЛОТ), А НЕ СТРОКИ (0333). Пара строится из ТОГО
+		// ЖЕ среза cw.Usages, по которому идёт этот цикл: норма слота и запас лежат на ПЕРВОЙ строке
+		// пары и добавляются ОДИН РАЗ, а остальные её строки вносят 0. Слот законно повторяется в
+		// одном колорвее несколькими размещениями (0295) — построчное чтение слотового числа
+		// умножило бы и количество, и запас на число размещений, молча и линейно.
+		ut := u.UnitTotal(bom, basis, entity.CountablePairUsages(cw.Usages, bom))
 		if !ut.Valid {
 			hasUnpriced = true
 			continue

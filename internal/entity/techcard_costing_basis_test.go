@@ -136,21 +136,21 @@ func TestUnitTotalOnBasis(t *testing.T) {
 	graded := cbGraded()
 	avg := CostingBasis{Mode: CostingBasisRangeAverage, RangeSizeIds: []int{4, 5, 6}}
 
-	got := graded.UnitTotal(bom, avg)
+	got := graded.UnitTotal(bom, avg, nil)
 	require.True(t, got.Valid)
 	require.Equal(t, "27.5", got.Decimal.String(), "style basis: the range average")
 
-	got = graded.UnitTotal(bom, CostingBasis{Mode: CostingBasisSize, SizeID: 6})
+	got = graded.UnitTotal(bom, CostingBasis{Mode: CostingBasisSize, SizeID: 6}, nil)
 	require.True(t, got.Valid)
 	require.Equal(t, "33", got.Decimal.String(), "run-cell basis: that size's own norm")
 
-	require.False(t, graded.UnitTotal(bom, CostingBasis{Mode: CostingBasisNone}).Valid,
+	require.False(t, graded.UnitTotal(bom, CostingBasis{Mode: CostingBasisNone}, nil).Valid,
 		"no basis prices no graded norm — never the average, never a size")
 
 	// A per-garment norm is basis-blind: same figure under every mode.
 	flat := TechCardColorwayUsage{Consumption: decimal.NewNullDecimal(decimal.RequireFromString("2"))}
 	for _, b := range []CostingBasis{avg, {Mode: CostingBasisSize, SizeID: 6}, {Mode: CostingBasisNone}} {
-		ft := flat.UnitTotal(bom, b)
+		ft := flat.UnitTotal(bom, b, nil)
 		require.True(t, ft.Valid)
 		require.Equal(t, "22", ft.Decimal.String(), "2×10×1.1 whatever the basis")
 	}
@@ -159,7 +159,7 @@ func TestUnitTotalOnBasis(t *testing.T) {
 	// row with SizeConsumptions, so the money comes from the grading, not the leftover number.
 	both := cbGraded()
 	both.Consumption = decimal.NewNullDecimal(decimal.RequireFromString("99"))
-	bt := both.UnitTotal(bom, avg)
+	bt := both.UnitTotal(bom, avg, nil)
 	require.True(t, bt.Valid)
 	require.Equal(t, "27.5", bt.Decimal.String(), "per-size grading wins over the scalar")
 }
