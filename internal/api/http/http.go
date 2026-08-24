@@ -439,11 +439,6 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		}
 	})
 
-	// TEMP(techcard-analysis Ф1а, задача T16): временный зонд edge-таймаута, существует ТОЛЬКО при
-	// DEBUG_SLEEP_ENABLED=1 (задаётся в спеке БЕТЫ и нигде больше). См. debug_sleep.go — снимается
-	// удалением того файла и этой строки.
-	registerDebugSleep(r)
-
 	// Readiness probe - indicates the container is ready to accept traffic
 	// Can check dependencies like database connectivity
 	r.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {

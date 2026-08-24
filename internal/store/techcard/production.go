@@ -680,6 +680,50 @@ func insertTechCardIssues(ctx context.Context, db dependency.DB, tcID int, issue
 	return nil
 }
 
+// AddTechCardIssue appends ONE issue row to a tech card and returns its id.
+//
+// WHY IT EXISTS NEXT TO insertTechCardIssues INSTEAD OF REUSING IT. That one is a full-replace leg
+// of the UpdateTechCard transaction: it writes the whole list the client sent, after the card has
+// been emptied of issues. This one appends a single row to a card NOBODY IS REWRITING — and it must
+// work on a card that is `released`, where the full write is refused outright. Issues live outside
+// the CONSTRUCTION digest, so appending one cannot disturb a signature; that is what makes the
+// narrow path safe, and it is why the narrow path had to exist at all.
+//
+// display_order IS max+1, COMPUTED IN THE STATEMENT. The column is NOT NULL DEFAULT 0 (0072), so an
+// insert that simply omitted it would file every new issue at position zero — each newest one
+// landing at the TOP of a list read in display_order, tied with all its predecessors. The subquery
+// is inside the INSERT rather than a read-then-write because two people filing at once would
+// otherwise both read the same max: MySQL permits INSERT ... SELECT over the target table (the 1093
+// restriction is UPDATE/DELETE only), and a duplicate order is a cosmetic tie rather than a lost
+// row, so no lock is taken for it.
+//
+// raised_by ARRIVES AS AN ARGUMENT AND IS NEVER DERIVED HERE: the store has no idea who is calling.
+// The handler stamps it from the auth context.
+func (s *Store) AddTechCardIssue(ctx context.Context, techCardID int, issue entity.TechCardIssue) (int, error) {
+	id, err := storeutil.ExecNamedLastId(ctx, s.DB, `
+		INSERT INTO tech_card_issue
+			(tech_card_id, operation_number, callout_number, raised_by, severity, status,
+			 description, resolution_note, display_order)
+		SELECT :tech_card_id, :operation_number, :callout_number, :raised_by, :severity, :status,
+			:description, :resolution_note, COALESCE(MAX(i.display_order), -1) + 1
+		FROM tech_card_issue i
+		WHERE i.tech_card_id = :tech_card_id`,
+		map[string]any{
+			"tech_card_id":     techCardID,
+			"operation_number": issue.OperationNumber,
+			"callout_number":   issue.CalloutNumber,
+			"raised_by":        issue.RaisedBy,
+			"severity":         string(issue.Severity),
+			"status":           string(issue.Status),
+			"description":      issue.Description,
+			"resolution_note":  issue.ResolutionNote,
+		})
+	if err != nil {
+		return 0, fmt.Errorf("failed to add tech card issue to %d: %w", techCardID, err)
+	}
+	return id, nil
+}
+
 func insertTechCardSignoffs(ctx context.Context, db dependency.DB, tcID int, signoffs []entity.TechCardSignoff) error {
 	if len(signoffs) == 0 {
 		return nil

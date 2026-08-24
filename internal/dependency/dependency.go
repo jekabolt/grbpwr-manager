@@ -1114,6 +1114,16 @@ type (
 		SaveTechCardRelease(ctx context.Context, rel entity.TechCardRelease) error
 		ListTechCardReleases(ctx context.Context, techCardID int) ([]entity.TechCardReleaseMeta, error)
 		GetTechCardRelease(ctx context.Context, id int) (*entity.TechCardRelease, error)
+		// AddTechCardIssue appends ONE issue row to a card and returns its id — the narrow filing
+		// path behind AddTechCardIssue/the CONSTRUCTION review, NOT a leg of UpdateTechCard.
+		//
+		// IT IS SEPARATE FROM THE FULL WRITE BECAUSE IT MUST WORK ON A FROZEN CARD: a released card
+		// refuses UpdateTechCard, and "this cannot be sewn as specified" is exactly the sort of
+		// thing found after release. Issues sit outside the CONSTRUCTION digest, so one more row
+		// cannot disturb a signature. raised_by is stamped BY THE CALLER from the auth context
+		// (the store cannot know who is asking), and display_order is max+1 within the card, so a
+		// newly filed issue lands at the end of the list rather than tied at position zero.
+		AddTechCardIssue(ctx context.Context, techCardID int, issue entity.TechCardIssue) (int, error)
 		// Development (R&D) cost journal (task 14): append + delete + list rows at the tech-card
 		// level (NOT full-replace); a period cost, never seeded into product.cost_price.
 		AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevExpense) (entity.TechCardDevExpense, error)

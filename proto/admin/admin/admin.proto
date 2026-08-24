@@ -1820,6 +1820,44 @@ service AdminService {
     };
   }
 
+  // AnalyzeTechCardConstruction — THE LLM LAYER of the same review, behind the Analyze button. It
+  // reads the SAVED card, sends it to the model with the machine layer's verified facts attached,
+  // and returns ONLY what the model said (source="model") past a verifier that drops every finding
+  // whose anchors do not resolve on this card. The machine findings are already on the screen and
+  // are deliberately not repeated here.
+  //
+  // AN AI FAILURE IS NOT AN RPC FAILURE. Every way this can go wrong — no key, a retired model
+  // slug, a timeout, output that is not usable — arrives as `ai_status` with HTTP 200 and an empty
+  // findings list. That is the deliberate INVERSE of GenerateTechCardOperations, which answers
+  // FailedPrecondition without a key because without the model it has nothing at all to return.
+  // Here the deterministic half of the review is already rendered, so a status the panel can name
+  // beats an error that blanks the tab.
+  //
+  // IT SPENDS MONEY ON EVERY PRESS, which is why it is classified wr(tech_cards) while its machine
+  // sibling is rd, and why three limits stand in front of the call: one run per admin per card at a
+  // time, a minimum interval between runs of the same card, and a per-admin hourly ceiling.
+  rpc AnalyzeTechCardConstruction(AnalyzeTechCardConstructionRequest) returns (AnalyzeTechCardConstructionResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/construction/analyze"
+      body: "*"
+    };
+  }
+
+  // AddTechCardIssue files ONE issue against a tech card — the gesture that turns a finding of the
+  // review into a tracked row someone answers for.
+  //
+  // IT IS NARROW ON PURPOSE, AND IT WORKS ON A FROZEN CARD. Filing through UpdateTechCard would be
+  // impossible exactly when it matters most: a released card refuses the full write, and «the
+  // construction cannot be sewn as specified» is precisely the sort of thing discovered after
+  // release. Issues sit OUTSIDE the CONSTRUCTION digest, so this call cannot disturb a signature —
+  // that is what makes the narrow path safe rather than merely convenient.
+  rpc AddTechCardIssue(AddTechCardIssueRequest) returns (AddTechCardIssueResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/issue"
+      body: "*"
+    };
+  }
+
   // КАТАЛОГ РАБОТ (видов операций) — СЕРВЕРНЫЕ ДАННЫЕ, ОТДАВАЕМЫЕ ОДНИМ ЗАПРОСОМ.
   //
   // Пункты, их синонимы поиска (RU/EN), допустимые машинки, глобальные дефолты свойств и подсказки
@@ -8229,6 +8267,69 @@ message GetTechCardConstructionAuditResponse {
   // without it the client could only learn that AI is unavailable by pressing Analyze and being
   // refused. False = show the Analyze button disabled with a quiet reason, do not call it.
   bool ai_enabled = 4;
+}
+
+// AnalyzeTechCardConstructionRequest — which saved card to run the model over. As with the audit,
+// there is nothing to configure: two runs of a report you can tune are two reports.
+message AnalyzeTechCardConstructionRequest {
+  int32 tech_card_id = 1;
+}
+
+// AnalyzeTechCardConstructionResponse is one LLM run. It is ALWAYS a 200: read ai_status first, and
+// only then the findings.
+message AnalyzeTechCardConstructionResponse {
+  // findings — model findings only (source="model"), already past the verifier. Empty whenever
+  // ai_status is not "ok", and legitimately empty when it is: a card the model found nothing wrong
+  // with is a correct and complete answer.
+  repeated TechCardAnalysisFinding findings = 1;
+  // ai_status — ok | not_configured | model_unavailable | failed | invalid_output | skipped.
+  //   ok               — the model answered and the answer survived verification.
+  //   not_configured   — this deployment has no OPENROUTER_API_KEY. Nothing was called or spent.
+  //   model_unavailable— the provider does not serve `model`. A CONFIGURATION fault, not weather:
+  //                      say the slug out loud, do not offer "try again later".
+  //   failed           — timeout or transport. This one IS weather; retry is honest.
+  //   invalid_output   — the model answered something unusable (cut off by the token ceiling, not
+  //                      JSON, or so many findings failed verification that the run is not
+  //                      trustworthy). There is no auto-retry: paying twice for the same fault
+  //                      without a diagnosis is the same fault twice.
+  //   skipped          — the card carries no assembly fact to analyse, so no call was made.
+  string ai_status = 2;
+  // model — the slug that was actually sent (OPENROUTER_MODEL_ANALYSIS when set, otherwise the
+  // shared one). It is on the wire so a "model_unavailable" verdict names the knob to turn.
+  string model = 3;
+  // dropped_bad_ref — findings discarded because not one of their anchors resolved on this card.
+  int32 dropped_bad_ref = 4;
+  // dropped_contradiction — findings discarded for contradicting the recomputed facts, or for
+  // repeating a machine finding already on the screen.
+  int32 dropped_contradiction = 5;
+  // not_checked — what the MODEL says it did not check. The machine layer's own list travels with
+  // the audit; this one is the model's.
+  repeated string not_checked = 6;
+  // summary — the model's one-paragraph verdict.
+  string summary = 7;
+  // operation_fingerprints — operation_number -> fp8 AT THE MOMENT OF THIS RUN. The client keeps
+  // them with the findings and compares them against a later audit to grey out a finding whose
+  // operation has changed since the model looked at it.
+  map<int32, string> operation_fingerprints = 8;
+}
+
+// AddTechCardIssueRequest files one issue. It carries no status and no callout: a newly filed issue
+// is open by definition, and the callout link belongs to the sketch editor, not to this gesture.
+message AddTechCardIssueRequest {
+  int32 tech_card_id = 1;
+  // operation_number — the human step number this is about (оп. 460). 0 = an issue about the card
+  // as a whole, stored as no link at all rather than as step zero.
+  int32 operation_number = 2;
+  // severity — HIGH | MEDIUM | LOW.
+  string severity = 3;
+  // description — what is hard or impossible. Required.
+  string description = 4;
+}
+
+// AddTechCardIssueResponse returns the new row's id so the client can address it without re-reading
+// the whole card.
+message AddTechCardIssueResponse {
+  int32 issue_id = 1;
 }
 
 // OperationWorkCatalogItem — одна работа каталога.
