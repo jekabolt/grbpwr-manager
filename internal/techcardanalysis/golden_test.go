@@ -188,10 +188,10 @@ const goldenCard8Draft = `FINDINGS (16)
   [warning/bom_mismatch] 44 sewing operations, zero thread lines | refs: card
   [warning/bom_mismatch] Cutting wastage is not stated on 4 of 4 roll-goods lines | refs: bom:Плечевая, bom:основная ткань, bom:подкладка
   [warning/bom_mismatch] Fusing is stated in 1 of the 3 places that describe it | refs: bom:Плечевая
-  [warning/bom_mismatch] PLN has no rate to EUR: 3 line(s) drop out of the total | refs: bom:Карманка, bom:Плечевая, bom:основная ткань
+  [warning/bom_mismatch] PLN has no rate to EUR: 3 lines drop out of the cost total | refs: bom:Карманка, bom:Плечевая, bom:основная ткань
   [warning/naming] Unit keys differ only in case: "Base" and "base" | refs: op:270, op:450, unit:Base, unit:base
-  [warning/parameter] As written this is a one-button garment | refs: op:470
-  [warning/parameter] As written this is a one-button garment | refs: op:480
+  [warning/parameter] As written the garment has exactly one button | refs: op:480
+  [warning/parameter] As written the garment has exactly one buttonhole | refs: op:470
   [warning/parameter] Buttonhole unspecified: no style, no cut length | refs: op:470
   [warning/parameter] Instruction lives only in a note: thread tension | refs: op:40
   [warning/parameter] Pressing parameters missing on 4 of 4 pressing operations | refs: op:100, op:50, op:70
@@ -211,7 +211,7 @@ NOT CHECKED (4)
   sketch (not reviewed: the analysis path is text-only)
   piece geometry (contours are not stored; measured areas are areas, not outlines)
   labour cost (the card carries no tech_card_costing row: neither the CMT figure nor its SMV backing was checked)
-  work ↔ machine legality (this process has not loaded the work catalog of migration 0329)
+  work ↔ machine legality (this process has not loaded the work catalog)
 FINGERPRINTS (48)
   op:10 8a6455c6
   op:20 33aa8f05
@@ -265,25 +265,28 @@ FINGERPRINTS (48)
 
 // goldenCard8InReview — та же карточка с approval_state=in_review и БОЛЬШЕ НИЧЕМ.
 // Единственная разница с формой выше — развёрнутый readiness (§3.0): три находки вместо одной.
-const goldenCard8InReview = `FINDINGS (18)
+const goldenCard8InReview = `FINDINGS (21)
   [error/bom_mismatch] The route sets hardware; the BOM has none | refs: op:470, op:480
   [error/parameter] Seam class ss_plain is not producible on overlock | refs: op:210
   [error/parameter] Seam class ss_plain is not producible on overlock | refs: op:220
   [warning/bom_mismatch] 44 sewing operations, zero thread lines | refs: card
   [warning/bom_mismatch] Cutting wastage is not stated on 4 of 4 roll-goods lines | refs: bom:Плечевая, bom:основная ткань, bom:подкладка
   [warning/bom_mismatch] Fusing is stated in 1 of the 3 places that describe it | refs: bom:Плечевая
-  [warning/bom_mismatch] PLN has no rate to EUR: 3 line(s) drop out of the total | refs: bom:Карманка, bom:Плечевая, bom:основная ткань
+  [warning/bom_mismatch] PLN has no rate to EUR: 3 lines drop out of the cost total | refs: bom:Карманка, bom:Плечевая, bom:основная ткань
   [warning/naming] Unit keys differ only in case: "Base" and "base" | refs: op:270, op:450, unit:Base, unit:base
-  [warning/parameter] As written this is a one-button garment | refs: op:470
-  [warning/parameter] As written this is a one-button garment | refs: op:480
+  [warning/parameter] As written the garment has exactly one button | refs: op:480
+  [warning/parameter] As written the garment has exactly one buttonhole | refs: op:470
   [warning/parameter] Buttonhole unspecified: no style, no cut length | refs: op:470
   [warning/parameter] Instruction lives only in a note: thread tension | refs: op:40
   [warning/parameter] Pressing parameters missing on 4 of 4 pressing operations | refs: op:100, op:50, op:70
   [warning/question] "Карманка" costs more per metre than the main fabric | refs: bom:Карманка, bom:основная ткань
   [warning/question] Is "подкладка" priced or is that a placeholder? | refs: bom:подкладка
   [warning/readiness] No equipment profiles on a card that names 4 machine types | refs: card | clause: no equipment profiles
+  [warning/readiness] No standard time on 48 of 48 operations | refs: op:10, op:20, op:30 | clause: SMV 0/48
+  [warning/readiness] No work assigned on 43 of 48 operations | refs: op:10, op:20, op:30 | clause: works 5/48
   [warning/readiness] The card carries no technical sketch | refs: card | clause: no technical sketch
   [warning/readiness] The print packet would go out with 5 empty sections | refs: card | clause: print packet has 5 empty sections
+  [warning/readiness] The route ends with the last seam and has no finishing block | refs: card | clause: no finishing block
 OBSERVATIONS (8)
   Lexical mirror pairing over unit names suggests left/right twins: 60<->90, 70<->100, 80<->150, 110<->120, 170<->180, 190<->200, 210<->220, 290<->?, 300<->?, 310<->320, 330<->?, 360<->370, 380<->390, 420<->430 (<->? means the pairer found no partner). The pairing is derived from NAMES only; the input lists are the ground truth - correct it freely.
   Method differs inside suspected twins: op 70 is press_open, op 100 is press.
@@ -297,7 +300,7 @@ NOT CHECKED (4)
   sketch (not reviewed: the analysis path is text-only)
   piece geometry (contours are not stored; measured areas are areas, not outlines)
   labour cost (the card carries no tech_card_costing row: neither the CMT figure nor its SMV backing was checked)
-  work ↔ machine legality (this process has not loaded the work catalog of migration 0329)
+  work ↔ machine legality (this process has not loaded the work catalog)
 FINGERPRINTS (48)
   op:10 8a6455c6
   op:20 33aa8f05
@@ -352,8 +355,8 @@ FINGERPRINTS (48)
 // gdCollapsedDraftDetail is the one prose string the golden pins on purpose: the collapsed draft
 // finding of §3.0 IS its enumeration, and a collapse that lost a clause would still look like a
 // perfectly good finding in the projection above.
-const gdCollapsedDraftDetail = "Not yet ready for release: no equipment profiles · no technical sketch · " +
-	"print packet has 5 empty sections"
+const gdCollapsedDraftDetail = "Not yet ready for release: SMV 0/48 · works 5/48 · " +
+	"no equipment profiles · no technical sketch · print packet has 5 empty sections · no finishing block"
 
 func TestGoldenCard8DraftCollapsedText(t *testing.T) {
 	res := RunAudit(card8(), gdFx)
@@ -411,15 +414,24 @@ func TestGoldenCard8AggregatesInsteadOfSpraying(t *testing.T) {
 		// A3: ВТО-шагов четыре (50, 70, 100, 160), находка одна, якорей-образцов три.
 		{"A3 pressing", "Pressing parameters missing on 4 of 4 pressing operations", 1},
 		// B5в: единица пропуска — ВАЛЮТА. Три PLN-линии лечатся ОДНОЙ строкой курса.
-		{"B5в currency", "PLN has no rate to EUR: 3 line(s) drop out of the total", 1},
+		{"B5в currency", "PLN has no rate to EUR: 3 lines drop out of the cost total", 1},
 		// B8: четыре рулонные линии с NULL wastage — одна находка с дробью, а не четыре.
 		{"B8 wastage", "Cutting wastage is not stated on 4 of 4 roll-goods lines", 1},
 		// C2: ПЯТЬ пустот, а не четыре — пятая базовый размер (base_sample_size_id NULL на проде).
 		{"C2 print packet", "The print packet would go out with 5 empty sections", 1},
 		// C4: ноль профилей на четыре типа машин.
 		{"C4 equipment", "No equipment profiles on a card that names 4 machine types", 1},
+		// C7/C8: покрытие считается по ВСЕМУ маршруту, и дробь заголовка называет пропуск, а
+		// клауза §3.0 — покрытие («SMV 0/48»). Обе закреплены: они считают РАЗНОЕ намеренно.
+		{"C7 standard time", "No standard time on 48 of 48 operations", 1},
+		{"C8 works", "No work assigned on 43 of 48 operations", 1},
+		// C9 — не покрытие, а факт: финишных шагов не бывает сорок восемь. Одна находка, якорь card.
+		{"C9 finishing block", "The route ends with the last seam and has no finishing block", 1},
 		// A2 и A4, напротив, агрегации НЕ достигают: по три и по два случая — пер-операционно.
-		{"A2 one-button", "As written this is a one-button garment", 2},
+		// Заголовок A2 называет то, чего ровно одна, ПО СВОЕМУ ШАГУ — иначе на петельной операции
+		// он говорил бы про пуговицы.
+		{"A2 one buttonhole (470)", "As written the garment has exactly one buttonhole", 1},
+		{"A2 one button (480)", "As written the garment has exactly one button", 1},
 		{"A4 seam class", "Seam class ss_plain is not producible on overlock", 2},
 	} {
 		got := 0
@@ -491,7 +503,10 @@ func TestGoldenCard8Silences(t *testing.T) {
 		{"C1 (детали есть)", "The card has no cut pieces"},
 		{"C1 (ряд s/m/l/xl с прода)", "The card declares no size range"},
 		{"C3 (гейт стадии: proto < sms)", "with no labels anywhere"},
-		{"C3 (спека без линии)", "is not linked to a BOM line"},
+		// Подстрока обязана ловить И пер-спековую форму («The care label spec IS not
+		// linked…»), И агрегатную («3 of 5 label specs ARE not linked…»): проба, слепая к
+		// агрегату, зелена ровно на той карточке, где находок много.
+		{"C3 (спека без линии, обе формы)", "not linked to a BOM line"},
 		{"C3 (линия без спеки)", "is a label nothing describes"},
 		{"C4-error (мягких ссылок на профили нет)", "profile the card does not have"},
 		{"C4-error (агрегат)", "references point at nothing"},
@@ -696,11 +711,17 @@ func gdDropUnitInput(op *entity.TechCardOperation, unitKey string) {
 
 func TestGoldenCard8MutationsMoveTheVerdict(t *testing.T) {
 	base := gdFindingLinesOf(card8(), gdFx)
+	baseOffDraft := gdFindingLinesOf(gdInReview(), gdFx)
 
 	for _, tc := range []struct {
-		name         string
-		mutate       func(*entity.TechCard)
-		fx           *Fx
+		name   string
+		mutate func(*entity.TechCard)
+		fx     *Fx
+		// offDraft — мерить на РАЗВЁРНУТОЙ форме. Нужен для класса readiness: на черновике он
+		// схлопнут в одну строку, проекция которой не меняется от того, какая из клауз ушла, и
+		// мутация выглядела бы no-op'ом. Клаузы схлопнутой закреплены отдельно
+		// (TestGoldenCard8DraftCollapsedText) — это две разные пробы одного факта.
+		offDraft     bool
 		lost, gained []string
 	}{
 		{
@@ -717,7 +738,7 @@ func TestGoldenCard8MutationsMoveTheVerdict(t *testing.T) {
 			lost: []string{
 				"[error/bom_mismatch] The route sets hardware; the BOM has none | refs: op:470, op:480",
 				"[warning/bom_mismatch] 44 sewing operations, zero thread lines | refs: card",
-				"[warning/parameter] As written this is a one-button garment | refs: op:480",
+				"[warning/parameter] As written the garment has exactly one button | refs: op:480",
 			},
 			gained: []string{
 				"[error/bom_mismatch] The route sets hardware; the BOM has none | refs: op:470",
@@ -739,7 +760,7 @@ func TestGoldenCard8MutationsMoveTheVerdict(t *testing.T) {
 			mutate: func(c *entity.TechCard) {},
 			fx:     &Fx{Base: "EUR", ToBase: map[string]decimal.Decimal{"PLN": decimal.RequireFromString("0.23")}},
 			lost: []string{
-				"[warning/bom_mismatch] PLN has no rate to EUR: 3 line(s) drop out of the total | refs: bom:Карманка, bom:Плечевая, bom:основная ткань",
+				"[warning/bom_mismatch] PLN has no rate to EUR: 3 lines drop out of the cost total | refs: bom:Карманка, bom:Плечевая, bom:основная ткань",
 			},
 			gained: nil,
 		},
@@ -754,6 +775,54 @@ func TestGoldenCard8MutationsMoveTheVerdict(t *testing.T) {
 			},
 		},
 		{
+			name:     "готовность C7: маршрут пронормирован — клауза SMV уходит",
+			offDraft: true,
+			mutate: func(c *entity.TechCard) {
+				for i := range c.Operations {
+					c.Operations[i].SMV = dec("1.50")
+				}
+			},
+			lost: []string{
+				"[warning/readiness] No standard time on 48 of 48 operations | refs: op:10, op:20, op:30 | clause: SMV 0/48",
+			},
+		},
+		{
+			name:     "готовность C8: работы назначены — клауза works уходит",
+			offDraft: true,
+			mutate: func(c *entity.TechCard) {
+				for i := range c.Operations {
+					if nsEmpty(c.Operations[i].Work) {
+						c.Operations[i].Work = text("join")
+					}
+				}
+			},
+			lost: []string{
+				"[warning/readiness] No work assigned on 43 of 48 operations | refs: op:10, op:20, op:30 | clause: works 5/48",
+			},
+		},
+		{
+			name:     "готовность C9: маршрут закрыт упаковкой — клауза финишного блока уходит",
+			offDraft: true,
+			mutate: func(c *entity.TechCard) {
+				rtAppendOp(c, entity.TechCardOperation{
+					OperationType:  entity.OpTypePack,
+					AssemblyInputs: []entity.OperationInput{rtUnitInput("blazer")},
+					InputKeys:      []string{"blazer"},
+				})
+			},
+			// Добавленный шаг двигает и ЗНАМЕНАТЕЛИ покрытий: 48 → 49. Это не шум, а то самое
+			// сцепление, ради которого голден меряет ВЕСЬ результат, а не одну проверку.
+			lost: []string{
+				"[warning/readiness] No standard time on 48 of 48 operations | refs: op:10, op:20, op:30 | clause: SMV 0/48",
+				"[warning/readiness] No work assigned on 43 of 48 operations | refs: op:10, op:20, op:30 | clause: works 5/48",
+				"[warning/readiness] The route ends with the last seam and has no finishing block | refs: card | clause: no finishing block",
+			},
+			gained: []string{
+				"[warning/readiness] No standard time on 49 of 49 operations | refs: op:10, op:20, op:30 | clause: SMV 0/49",
+				"[warning/readiness] No work assigned on 44 of 49 operations | refs: op:10, op:20, op:30 | clause: works 5/49",
+			},
+		},
+		{
 			name:   "готовность C6: подкладка не втачана — два терминала, релиз откажет",
 			mutate: func(c *entity.TechCard) { gdDropUnitInput(card8OpByNumber(c, 460), "lining") },
 			lost:   nil,
@@ -764,6 +833,11 @@ func TestGoldenCard8MutationsMoveTheVerdict(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := card8()
+			from := base
+			if tc.offDraft {
+				c = gdInReview()
+				from = baseOffDraft
+			}
 			tc.mutate(c)
 			fx := gdFx
 			if tc.fx != nil {
@@ -771,7 +845,7 @@ func TestGoldenCard8MutationsMoveTheVerdict(t *testing.T) {
 			}
 			got := gdFindingLinesOf(c, fx)
 
-			lost, gained := gdMissing(base, got), gdMissing(got, base)
+			lost, gained := gdMissing(from, got), gdMissing(got, from)
 			if len(lost) == 0 && len(gained) == 0 {
 				t.Fatalf("мутация не сдвинула вердикт — либо она no-op, либо проверка мертва")
 			}

@@ -81,10 +81,11 @@ func checkB1HardwareChain(v *cardView) []Finding {
 			Category: CategoryBomMismatch,
 			Severity: SeverityError,
 			Title:    "The route sets hardware; the BOM has none",
-			Detail: fmt.Sprintf("%s set hardware (%s), and the BOM carries zero lines in "+
-				"section 'hardware' — nothing is bought to be set on. The garment as written is "+
-				"assembled with parts that are not in its materials list.",
-				capitalise(opList(opNumbersOf(setters))), settersDescription(setters)),
+			Detail: fmt.Sprintf("%s %s hardware (%s), and the BOM carries zero lines in "+
+				"section 'hardware' — nothing is bought to be set on the garment. The garment as "+
+				"written is assembled with parts that are not in its materials list.",
+				capitalise(opList(opNumbersOf(setters))), verbSet(len(setters)),
+				settersDescription(setters)),
 			Refs:       refsCapped(opRefsOf(setters), 3),
 			Suggestion: "Add the hardware lines to the BOM, or remove the steps that set them.",
 		}}
@@ -173,7 +174,7 @@ func checkB2ThreadLines(v *cardView) []Finding {
 		Severity: SeverityWarning,
 		Title:    fmt.Sprintf("%d sewing operations, zero thread lines", sewing),
 		Detail: fmt.Sprintf("The route carries %d operation(s) of type 'machine', and the BOM has no "+
-			"line in section 'thread' and no line whose kind belongs to the thread family (0278). "+
+			"line in section 'thread' and no line whose kind belongs to the thread family. "+
 			"Thread is bought by nobody and costed at zero.", sewing),
 		Refs:       []string{RefCard},
 		Suggestion: "Add the thread lines the machines actually run.",
@@ -298,7 +299,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 			Category: CategoryBomMismatch,
 			Severity: SeverityWarning,
 			Title:    fmt.Sprintf("%d buttonholes against %d buttons", holes, buttons),
-			Detail: fmt.Sprintf("placement_count (0324) sums to %d over the buttonhole steps (%s) and "+
+			Detail: fmt.Sprintf("placement_count sums to %d over the buttonhole steps (%s) and "+
 				"to %d over the button steps (%s). One of the two numbers is describing a garment "+
 				"nobody is making.", holes, opList(opNumbersOf(holesOps)), buttons,
 				opList(opNumbersOf(buttonsOps))),
@@ -330,7 +331,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 					Category: CategoryBomMismatch,
 					Severity: SeverityError,
 					Title:    aiBoundedText(fmt.Sprintf("More %s set than bought: %d against %s", line.Name, count, qty.String()), 90),
-					Detail: fmt.Sprintf("%s sets %d × %q (placement_count, 0324), and the recipe of "+
+					Detail: fmt.Sprintf("%s sets %d × %q (placement_count), and the recipe of "+
 						"colourway %q buys %s per garment (tech_card_colorway_usage.quantity). The "+
 						"line runs short on every garment.",
 						opLabel(op), count, line.Name, colorway, qty.String()),
@@ -346,7 +347,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 			Severity: SeverityError,
 			Title: fmt.Sprintf("More hardware is set than bought on %d of %d step-to-line links",
 				missing, applicable),
-			Detail: "placement_count (0324) exceeds the countable norm the colourway recipe buys " +
+			Detail: "placement_count exceeds the countable norm the colourway recipe buys " +
 				"(tech_card_colorway_usage.quantity) on these links — the lines run short on every garment.",
 			Refs:       sample,
 			Suggestion: "Raise the quantities on the colourway recipe, or lower the placement counts.",
@@ -543,7 +544,7 @@ func checkB5bPurposeInversion(v *cardView) []Finding {
 				missing, applicable),
 			Detail: "The cheap half of the garment prices dearer than the main cloth on these lines.",
 			Refs:   sample,
-			Suggestion: "Confirm the prices, or check that the purpose (0265) sits on the right " +
+			Suggestion: "Confirm the prices, or check that the purpose sits on the right " +
 				"lines.",
 		}
 	})
@@ -603,12 +604,15 @@ func checkB5cCurrencyWithoutRate(v *cardView) []Finding {
 			Finding: Finding{
 				Category: CategoryBomMismatch,
 				Severity: SeverityWarning,
-				Title:    aiBoundedText(fmt.Sprintf("%s has no rate to %s: %d line(s) drop out of the total", code, v.fx.Base, len(c.lines)), 90),
-				Detail: fmt.Sprintf("%d BOM line(s) are priced in %s (%s), the base currency of this "+
-					"installation is %s, and costing_fx_rate (0093) carries no rate between them. The "+
+				Title: aiBoundedText(fmt.Sprintf("%s has no rate to %s: %s %s out of the cost total",
+					code, v.fx.Base, countedLines(len(c.lines)),
+					plural(len(c.lines), "drops", "drop")), 90),
+				Detail: fmt.Sprintf("%s of the BOM %s priced in %s (%s), the base currency of this "+
+					"installation is %s, and costing_fx_rate carries no rate between them. The "+
 					"cost estimate silently leaves those lines out of the base total and says so in one "+
 					"caveat sentence for the whole card — nothing points at the lines themselves.",
-					len(c.lines), code, quotedList(bomNamesOf(c.lines)), v.fx.Base),
+					capitalise(countedLines(len(c.lines))), plural(len(c.lines), "is", "are"),
+					code, quotedList(bomNamesOf(c.lines)), v.fx.Base),
 				Refs:       refs,
 				Suggestion: fmt.Sprintf("Add a %s → %s rate, or price these lines in %s.", code, v.fx.Base, v.fx.Base),
 			},
@@ -624,7 +628,7 @@ func checkB5cCurrencyWithoutRate(v *cardView) []Finding {
 			Detail: "Lines in these currencies drop out of the base-currency total of the cost estimate, " +
 				"which reports the gap as one caveat sentence with no anchor on any line.",
 			Refs:       sample,
-			Suggestion: "Add the missing rates to costing_fx_rate (0093).",
+			Suggestion: "Add the missing rates to costing_fx_rate.",
 		}
 	})
 }
@@ -698,7 +702,7 @@ func checkB7CmtWithoutBacking(v *cardView) []Finding {
 		Severity: SeverityWarning,
 		Title:    fmt.Sprintf("CMT is quoted with SMV on %d of %d steps", withSMV, len(v.ops)),
 		Detail: fmt.Sprintf("tech_card_costing.cmt_cost carries a number, and only %d of the card's %d "+
-			"operations state an SMV (0219). Where does the labour cost come from — a measured route, a "+
+			"operations state an SMV. Where does the labour cost come from — a measured route, a "+
 			"quote from the factory, or last season's figure?", withSMV, len(v.ops)),
 		Refs: []string{RefCard},
 		Suggestion: "Say in the costing notes where the CMT figure comes from, or set an SMV on the route so the " +
@@ -744,10 +748,10 @@ func checkB8Wastage(v *cardView) []Finding {
 				Category: CategoryBomMismatch,
 				Severity: SeverityWarning,
 				Title:    aiBoundedText(fmt.Sprintf("%q states no cutting wastage", b.Name), 90),
-				Detail: fmt.Sprintf("wastage_percent (0073) is NULL on %q, and the cost estimate grosses "+
+				Detail: fmt.Sprintf("wastage_percent is NULL on %q, and the cost estimate grosses "+
 					"up ONLY non-NULL percentages — so this roll-goods line is costed as if the marker "+
-					"wasted nothing. NULL is not an explicit zero: a stated 0%% is a claim, and it is "+
-					"silent here.", b.Name),
+					"wasted nothing. NULL is not the same as zero: an explicit 0%% is a real claim and "+
+					"would silence this finding.", b.Name),
 				Refs:       []string{RefBom(b.Name)},
 				Suggestion: "State the cutting wastage of the line, or 0 if there genuinely is none.",
 			},
@@ -759,9 +763,9 @@ func checkB8Wastage(v *cardView) []Finding {
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("Cutting wastage is not stated on %d of %d roll-goods lines",
 				missing, applicable),
-			Detail: "wastage_percent (0073) is NULL on these lines, and the cost estimate grosses up only " +
-				"non-NULL percentages — they are costed as if the marker wasted nothing. NULL is not an " +
-				"explicit zero, which is a claim and is silent here.",
+			Detail: "wastage_percent is NULL on these lines, and the cost estimate grosses up only " +
+				"non-NULL percentages — they are costed as if the marker wasted nothing. NULL is not " +
+				"the same as zero: an explicit 0% is a real claim and would silence this finding.",
 			Refs:       sample,
 			Suggestion: "State the cutting wastage on each of these lines, or 0 where there genuinely is none.",
 		}
@@ -1030,4 +1034,21 @@ func sortedTokenSet(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// verbSet agrees the verb of the B1 sentence with the number of steps that set hardware: one step
+// SETS, several SET. Одна строка кода за то, чтобы находка на ЕДИНСТВЕННОМ ставящем шаге не
+// читалась сломанным английским — а технолог видит её на экране при каждом открытии вкладки.
+func verbSet(steps int) string { return plural(steps, "sets", "set") }
+
+// countedLines renders «1 line» / «3 lines» instead of the clerical «%d line(s)». Заголовок
+// ПИНИТСЯ голденом и едет технологу: «(s)» в нём — форма для отчёта, а не для человека.
+func countedLines(n int) string { return fmt.Sprintf("%d %s", n, plural(n, "line", "lines")) }
+
+// plural picks the singular or the plural form.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

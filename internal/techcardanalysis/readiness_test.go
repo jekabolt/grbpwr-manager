@@ -2,10 +2,12 @@ package techcardanalysis
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 )
 
 // ── ПРИЁМКА C1–C6 (design §3.3) ─────────────────────────────────────────────────────────────────
@@ -465,12 +467,94 @@ func TestC6IsSilentOnAnUnmarkedCard(t *testing.T) {
 	rtNone(t, fs, "never sewn into anything")
 }
 
+// ── ПУСТАЯ КАРТОЧКА: ПОИМЁННЫЙ СОСТАВ ───────────────────────────────────────────────────────────
+
+// TestReadinessOnAnEmptyCardIsNamed закрепляет ТО САМОЕ, на что ссылается TestRouteHandlesAnEmptyCard:
+// маршрут и BOM на пустой карточке молчат, а готовность заговаривает — и вот ЧЕМ ИМЕННО. Без
+// поимённого состава ссылка была бы обещанием: «остальное — readiness» зелено и тогда, когда
+// readiness выпускает мусор.
+//
+// Заодно это единственное место, где закреплено молчание проверок ПОКРЫТИЯ на пустом множестве:
+// C7 (SMV), C8 (работы) и C9 (финишный блок) обязаны молчать при нуле операций — «SMV 0/0» было бы
+// шумом поверх C1, которая про тот же ноль уже сказала по-человечески.
+func TestReadinessOnAnEmptyCardIsNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		card *entity.TechCard
+		want []string
+	}{
+		{
+			name: "не sellable: лейблов от неё никто не ждёт",
+			card: &entity.TechCard{},
+			want: []string{
+				"The card declares no size range",
+				"The card has no cut pieces",
+				"The card has no operations",
+				"The card carries no technical sketch",
+				"The print packet would go out with 4 empty sections",
+			},
+		},
+		{
+			name: "sellable: лейблы становятся пятой пустотой печатного пакета",
+			card: &entity.TechCard{TechCardInsert: entity.TechCardInsert{Purpose: entity.TechCardPurposeSellable}},
+			want: []string{
+				"The card declares no size range",
+				"The card has no cut pieces",
+				"The card has no operations",
+				"The card carries no technical sketch",
+				"The print packet would go out with 5 empty sections",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// ApprovalState пустой строки — это НЕ draft, поэтому класс здесь не схлопывается и
+			// состав виден поимённо. Схлопывание проверяется отдельно, на карточке 8.
+			fs := ctFindings(tc.card)
+
+			got := make([]string, 0, len(fs))
+			for _, f := range fs {
+				if f.Category != CategoryReadiness {
+					t.Errorf("на пустой карточке заговаривает только готовность, а пришло: %s",
+						rtDump([]Finding{f}))
+					continue
+				}
+				got = append(got, f.Title)
+			}
+			sort.Strings(got)
+			wantSorted := append([]string(nil), tc.want...)
+			sort.Strings(wantSorted)
+			if strings.Join(got, "\n") != strings.Join(wantSorted, "\n") {
+				t.Errorf("состав readiness-находок пустой карточки поехал:\n want:\n  %s\n got:\n  %s",
+					strings.Join(wantSorted, "\n  "), strings.Join(got, "\n  "))
+			}
+
+			// C1 — error, и это не украшение: схлопнутая severity берёт максимум, и warning здесь
+			// спрятал бы «операций ноль» за словом «предупреждение».
+			for _, f := range fs {
+				wantSev := SeverityWarning
+				if strings.HasPrefix(f.Title, "The card has no") || strings.HasPrefix(f.Title, "The card declares no") {
+					wantSev = SeverityError
+				}
+				if f.Severity != wantSev {
+					t.Errorf("%q: severity %q, want %q", f.Title, f.Severity, wantSev)
+				}
+			}
+
+			// Проверки покрытия на пустом множестве обязаны молчать, а не печатать «0 of 0».
+			for _, silent := range []string{"standard time", "work assigned", "finishing block"} {
+				rtNone(t, fs, silent)
+			}
+		})
+	}
+}
+
 // ── МЕХАНИКА КЛАССА readiness ───────────────────────────────────────────────────────────────────
 
 func TestReadinessCollapsesOnADraftAndExpandsOffIt(t *testing.T) {
 	draft := ctFindings(card8())
 	collapsed := rtOne(t, draft, collapsedReadinessTitle)
-	for _, want := range []string{"no equipment profiles", "no technical sketch", "print packet has 5 empty sections"} {
+	for _, want := range []string{"SMV 0/48", "works 5/48", "no equipment profiles", "no technical sketch",
+		"print packet has 5 empty sections", "no finishing block"} {
 		if !strings.Contains(collapsed.Detail, want) {
 			t.Errorf("схлопнутая находка обязана перечислять клаузы, %q нет: %s", want, collapsed.Detail)
 		}
@@ -481,8 +565,9 @@ func TestReadinessCollapsesOnADraftAndExpandsOffIt(t *testing.T) {
 
 	expanded := ctExpanded(card8())
 	rtNone(t, expanded, collapsedReadinessTitle)
-	if n := ctCountCategory(expanded, CategoryReadiness); n != 3 {
-		t.Errorf("на не-черновике readiness разворачивается в три находки, got %d:\n%s", n, rtDump(expanded))
+	// Шесть: C7 (SMV), C8 (работы), C4 (парк), C5 (эскиз), C2 (печатный пакет), C9 (финишный блок).
+	if n := ctCountCategory(expanded, CategoryReadiness); n != 6 {
+		t.Errorf("на не-черновике readiness разворачивается в шесть находок, got %d:\n%s", n, rtDump(expanded))
 	}
 }
 
@@ -545,4 +630,116 @@ func ctCountCategory(fs []Finding, category string) int {
 		}
 	}
 	return n
+}
+
+// ── ПРИЁМКА C7–C9: ТРИ КЛАУЗЫ, КОТОРЫЕ §3.0 ОБЕЩАЕТ ─────────────────────────────────────────────
+//
+// Обе стороны у каждой: fire на карточке 8 (SMV нет ни у одного шага, работа у пяти из сорока
+// восьми, финишных глаголов ноль) и молчание на карточке, где это заполнено.
+
+// ctFillSmv / ctFillWorks заполняют колонку на ВСЕХ шагах — сторона молчания.
+func ctFillSmv(c *entity.TechCard) {
+	for i := range c.Operations {
+		c.Operations[i].SMV = dec("1.50")
+	}
+}
+
+func ctFillWorks(c *entity.TechCard) {
+	for i := range c.Operations {
+		if nsEmpty(c.Operations[i].Work) {
+			c.Operations[i].Work = text("join")
+		}
+	}
+}
+
+func TestC7FiresOnCard8AndIsSilentOnceTheRouteIsTimed(t *testing.T) {
+	f := rtOne(t, ctExpanded(card8()), "No standard time")
+	if f.Title != "No standard time on 48 of 48 operations" {
+		t.Errorf("дробь заголовка называет ПРОПУСК: %q", f.Title)
+	}
+	if f.Category != CategoryReadiness || f.Severity != SeverityWarning {
+		t.Errorf("want readiness/warning, got %s/%s", f.Category, f.Severity)
+	}
+	// Клауза называет ПОКРЫТИЕ, как в образце §3.0 («SMV 0/48»), а не пропуск.
+	if f.Clause != "SMV 0/48" {
+		t.Errorf("клауза %q, want %q", f.Clause, "SMV 0/48")
+	}
+	if len(f.Refs) != 3 {
+		t.Errorf("закон агрегации §3.0: три якоря-образца, got %v", f.Refs)
+	}
+
+	timed := card8()
+	ctFillSmv(timed)
+	rtNone(t, ctExpanded(timed), "standard time")
+}
+
+func TestC7ReportsPerStepBelowTheAggregationThreshold(t *testing.T) {
+	// Три пропуска — ветка пер-операционных находок, и клауза там ИМЕНУЕТ ШАГ: три копии «SMV
+	// 45/48» схлопнулись бы в перечисление одной и той же дроби трижды.
+	c := card8()
+	ctFillSmv(c)
+	for _, n := range []int32{10, 20, 30} {
+		card8OpByNumber(c, n).SMV = decimal.NullDecimal{}
+	}
+	fs := rtWithTitle(ctExpanded(c), "has no SMV")
+	if len(fs) != 3 {
+		t.Fatalf("три пропуска — три пер-операционные находки, got %d:\n%s", len(fs), rtDump(fs))
+	}
+	seen := map[string]bool{}
+	for _, f := range fs {
+		if seen[f.Clause] {
+			t.Errorf("клаузы пер-операционных находок обязаны различаться, %q повторилась", f.Clause)
+		}
+		seen[f.Clause] = true
+	}
+}
+
+func TestC8FiresOnCard8AndIsSilentOnceWorksAreAssigned(t *testing.T) {
+	f := rtOne(t, ctExpanded(card8()), "No work assigned")
+	if f.Title != "No work assigned on 43 of 48 operations" {
+		t.Errorf("золотой эталон, ошибка 8: работа не назначена у 43 из 48; got %q", f.Title)
+	}
+	if f.Clause != "works 5/48" {
+		t.Errorf("клауза %q, want %q", f.Clause, "works 5/48")
+	}
+	if f.Category != CategoryReadiness || f.Severity != SeverityWarning {
+		t.Errorf("want readiness/warning, got %s/%s", f.Category, f.Severity)
+	}
+
+	assigned := card8()
+	ctFillWorks(assigned)
+	rtNone(t, ctExpanded(assigned), "work assigned")
+}
+
+func TestC9FiresOnCard8AndIsSilentOnceTheRouteCloses(t *testing.T) {
+	f := rtOne(t, ctExpanded(card8()), "no finishing block")
+	if f.Clause != "no finishing block" {
+		t.Errorf("клауза %q", f.Clause)
+	}
+	if !rtHasRef(f, RefCard) {
+		t.Errorf("находка про маршрут целиком якорится на card, got %v", f.Refs)
+	}
+
+	// Один pack закрывает проверку: она утверждает ОТСУТСТВИЕ блока, а не его полноту.
+	packed := card8()
+	rtAppendOp(packed, entity.TechCardOperation{
+		OperationType:  entity.OpTypePack,
+		AssemblyInputs: []entity.OperationInput{rtUnitInput("blazer")},
+		InputKeys:      []string{"blazer"},
+	})
+	rtNone(t, ctExpanded(packed), "finishing block")
+}
+
+func TestC7C8C9CollapseOnTheDraftOfCard8(t *testing.T) {
+	// Ради этого они и класса readiness: на черновике три новые клаузы становятся частью ОДНОЙ
+	// строки, а не тремя находками поверх и без того длинного списка.
+	collapsed := rtOne(t, ctFindings(card8()), collapsedReadinessTitle)
+	for _, want := range []string{"SMV 0/48", "works 5/48", "no finishing block"} {
+		if !strings.Contains(collapsed.Detail, want) {
+			t.Errorf("клаузы %q нет в схлопнутой находке: %s", want, collapsed.Detail)
+		}
+	}
+	if n := ctCountCategory(ctFindings(card8()), CategoryReadiness); n != 1 {
+		t.Errorf("на черновике readiness — ровно одна находка, got %d", n)
+	}
 }

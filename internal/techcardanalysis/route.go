@@ -177,7 +177,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 					Severity: SeverityWarning,
 					Title:    "Buttonhole unspecified: no style, no cut length",
 					Detail: fmt.Sprintf("%s runs on a buttonhole machine, but buttonhole_style and "+
-						"cut_length_mm (0324) are both empty — the card does not say which buttonhole "+
+						"cut_length_mm are both empty — the card does not say which buttonhole "+
 						"is sewn, nor how long the slit is.", opLabel(op)),
 					Refs:       opRefs(op),
 					Suggestion: "Name the buttonhole style and the cut length on the step.",
@@ -190,7 +190,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 				Severity: SeverityWarning,
 				Title: fmt.Sprintf("Buttonhole style and cut length missing on %d of %d buttonhole operations",
 					missing, applicable),
-				Detail: "buttonhole_style and cut_length_mm (0324) are empty on these steps — neither " +
+				Detail: "buttonhole_style and cut_length_mm are empty on these steps — neither " +
 					"the buttonhole nor the length of its slit is stated anywhere on the card.",
 				Refs:       sample,
 				Suggestion: "Name the buttonhole style and the cut length on each buttonhole step.",
@@ -215,8 +215,12 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 				Finding: Finding{
 					Category: CategoryParameter,
 					Severity: SeverityWarning,
-					Title:    "As written this is a one-button garment",
-					Detail: fmt.Sprintf("%s names no placement_count (0324), and NULL there reads as ONE "+
+					// Заголовок обязан быть ВЕРЕН для своего шага: на петельной операции «this is a
+					// one-button garment» говорит про пуговицы там, где речь о петлях, и технолог
+					// читает находку не про тот дефект. Заголовок пинится голденом — тем более.
+					Title: aiBoundedText(fmt.Sprintf("As written the garment has exactly one %s",
+						machineWord(m)), 90),
+					Detail: fmt.Sprintf("%s names no placement_count, and NULL there reads as ONE "+
 						"repeat — so the card states exactly one %s for the whole garment.",
 						opLabel(op), machineWord(m)),
 					Refs:       opRefs(op),
@@ -230,7 +234,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 				Severity: SeverityWarning,
 				Title: fmt.Sprintf("No placement count on %d of %d buttonhole/button steps",
 					missing, applicable),
-				Detail: "placement_count (0324) is NULL on these steps, and NULL reads as ONE repeat — " +
+				Detail: "placement_count is NULL on these steps, and NULL reads as ONE repeat — " +
 					"as written the garment carries a single buttonhole and a single button.",
 				Refs:       sample,
 				Suggestion: "Set placement_count on each of these steps.",
@@ -242,7 +246,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 	out = append(out, discriminatorCoverage(v, entity.OpTypeTrim, "trim_action",
 		func(op *entity.TechCardOperation) bool { return !nsEmpty(op.TrimAction) },
 		"Trim step does not say what is trimmed",
-		"trim_action (0324) is empty: the card says something is cut back, but not whether it is an "+
+		"trim_action is empty: the card says something is cut back, but not whether it is an "+
 			"even trim, a grade, a clip, a notch or a corner.",
 		"Pick the trim action on the step.")...)
 
@@ -312,6 +316,12 @@ func checkA3PressParameters(v *cardView) []Finding {
 	// applicable — профиль ПРИМЕНИМ к шагу, если он универсальный (press_operation_type NULL) или
 	// назван ровно под этот глагол. Иначе «утюг ставится наугад» осталось бы правдой при полном
 	// парке термопрессов на карточке, где гладят разутюжкой.
+	//
+	// ЭТО ПРАВИЛО ЗАКОДИРОВАНО ДВАЖДЫ: второй экземпляр — пресс-ветка applicableProfiles в
+	// readiness.go (C4). Слить их в одну функцию сегодня некуда: там считаются профили ОБЕИХ
+	// парков по шагу, здесь — профили одного глагола по карточке. Дрейф между копиями удерживает
+	// РОВНО ОДИН тест — TestC4AppliesThePressRuleOfA3 (readiness_test.go). Правишь здесь — правь
+	// там же и смотри, что тест краснеет, если правки разошлись.
 	profilesFor := func(verb entity.TechCardOperationType) int {
 		n := 0
 		for i := range profiles {
@@ -340,9 +350,9 @@ func checkA3PressParameters(v *cardView) []Finding {
 					Category: CategoryParameter,
 					Severity: severity,
 					Title:    aiBoundedText(capitalise(noun)+" parameters are not specified", 90),
-					Detail: fmt.Sprintf("%s sets no temperature, dwell, pressure, steam or press profile "+
-						"(0306), and the card carries no press profile that applies to it — the iron is "+
-						"set by guess at the bench.", opLabel(op)),
+					Detail: fmt.Sprintf("%s sets no temperature, dwell, pressure, steam or press "+
+						"profile, and the card carries no press profile that applies to it — the iron "+
+						"is set by guess at the bench.", opLabel(op)),
 					Refs:       opRefs(op),
 					Suggestion: "Give the step its temperature and dwell, or add a press profile to the card and point the step at it.",
 				},
@@ -355,7 +365,7 @@ func checkA3PressParameters(v *cardView) []Finding {
 				Title: aiBoundedText(fmt.Sprintf("%s parameters missing on %d of %d %s operations",
 					capitalise(noun), missing, applicable, noun), 90),
 				Detail: fmt.Sprintf("All five pressing columns (press_temperature_c, press_dwell_sec, "+
-					"press_pressure_n_cm2, press_steam, press_profile_key — 0306) are empty on these "+
+					"press_pressure_n_cm2, press_steam, press_profile_key) are empty on these "+
 					"steps, and no press profile of the card applies to them (%d press profile(s) on "+
 					"the card in total).", len(profiles)),
 				Refs:       sample,
@@ -712,7 +722,7 @@ func checkA8WorkMachineLegality(v *cardView) []Finding {
 
 	catalog := entity.OperationWorkCatalogSnapshot()
 	if catalog == nil || catalog.Size() == 0 {
-		v.notCheck("work ↔ machine legality (this process has not loaded the work catalog of migration 0329)")
+		v.notCheck("work ↔ machine legality (this process has not loaded the work catalog)")
 		return nil
 	}
 
@@ -741,7 +751,7 @@ func checkA8WorkMachineLegality(v *cardView) []Finding {
 					Category: CategoryIntegrity,
 					Severity: SeverityWarning,
 					Title:    aiBoundedText(fmt.Sprintf("Work %q does not belong to a %s step", token, string(op.OperationType)), 90),
-					Detail: fmt.Sprintf("%s carries work %q, which the catalog (0329) declares a %q step, "+
+					Detail: fmt.Sprintf("%s carries work %q, which the catalog declares a %q step, "+
 						"while the step itself is %q.", opLabel(op), token, work.Verb, string(op.OperationType)),
 					Refs:       opRefs(op),
 					Suggestion: "Pick the work that matches the step, or change the step's type.",
@@ -757,7 +767,7 @@ func checkA8WorkMachineLegality(v *cardView) []Finding {
 					Category: CategoryIntegrity,
 					Severity: SeverityWarning,
 					Title:    aiBoundedText(fmt.Sprintf("Work %q does not run on a %s", token, machine), 90),
-					Detail: fmt.Sprintf("%s names machine_type %q, and the catalog (0330) lists work %q as "+
+					Detail: fmt.Sprintf("%s names machine_type %q, and the catalog lists work %q as "+
 						"running on %s.", opLabel(op), machine, token, strings.Join(work.Machines, " / ")),
 					Refs:       opRefs(op),
 					Suggestion: "Pick a machine from the work's list, or pick a work that runs on this machine.",
@@ -777,7 +787,7 @@ func checkA8WorkMachineLegality(v *cardView) []Finding {
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("Work and machine disagree with the catalog on %d of %d steps that name a work",
 				missing, applicable),
-			Detail: "The assigned work names a verb or a machine that the work catalog (0329/0330) does " +
+			Detail: "The assigned work names a verb or a machine that the work catalog does " +
 				"not allow on these steps.",
 			Refs:       sample,
 			Suggestion: "Re-pick the work, the step type or the machine on each of these steps.",
@@ -840,8 +850,8 @@ func checkA9LegacyPieceLinkDrift(v *cardView) []Finding {
 		Severity: SeverityWarning,
 		Title:    "Legacy piece links diverge from assembly inputs",
 		Detail: fmt.Sprintf("Internal inconsistency on %d operation(s): the cut pieces linked through "+
-			"tech_card_operation_piece (0199) are not the piece inputs of tech_card_operation_input "+
-			"(0307). One writer keeps the two tables in lockstep, so a divergence means a write that "+
+			"tech_card_operation_piece are not the piece inputs of tech_card_operation_input. "+
+			"One writer keeps the two tables in lockstep, so a divergence means a write that "+
 			"went around the converter, or a bug — the assembly graph shown on the card and the legacy "+
 			"links two other features still read no longer describe the same route.", len(drifted)),
 		Evidence:   samples,

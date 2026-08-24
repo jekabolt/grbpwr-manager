@@ -418,7 +418,7 @@ func TestB5cAggregatesThreePlnLinesIntoOneFinding(t *testing.T) {
 	// база. Единица пропуска — ВАЛЮТА: три находки об одном недостающем курсе были бы трижды одной
 	// и той же работой в списке.
 	f := rtOne(t, btFindings(card8()), "has no rate to EUR")
-	if f.Title != "PLN has no rate to EUR: 3 line(s) drop out of the total" {
+	if f.Title != "PLN has no rate to EUR: 3 lines drop out of the cost total" {
 		t.Errorf("B5в: %q", f.Title)
 	}
 	rtWantRefs(t, f, RefBom("основная ткань"), RefBom("Плечевая"), RefBom("Карманка"))

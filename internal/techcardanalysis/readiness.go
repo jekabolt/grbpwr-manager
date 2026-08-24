@@ -43,6 +43,9 @@ var _ = register(
 	needsCard(checkC4EquipmentPark),
 	needsCard(checkC5TechnicalSketch),
 	needsCard(checkC6ReleaseRuleFour),
+	needsCard(checkC7SmvCoverage),
+	needsCard(checkC8WorkCoverage),
+	needsCard(checkC9FinishingBlock),
 )
 
 // ── C1. ПОЛ ПОД ВСЕМ ────────────────────────────────────────────────────────────────────────────
@@ -129,7 +132,7 @@ func checkC2PrintPacketDryRun(v *cardView) []Finding {
 		gaps = append(gaps, gap{"labels", "tech_card_label (0 rows on a sellable card)"})
 	}
 	if v.card.Packaging == nil || isEmptyPackaging(v.card.Packaging) {
-		gaps = append(gaps, gap{"packaging", "tech_card_packaging (0070)"})
+		gaps = append(gaps, gap{"packaging", "tech_card_packaging"})
 	}
 	if !v.card.BaseSampleSizeId.Valid {
 		gaps = append(gaps, gap{"base sample size", "tech_card.base_sample_size_id"})
@@ -149,8 +152,8 @@ func checkC2PrintPacketDryRun(v *cardView) []Finding {
 		Category: CategoryReadiness,
 		Severity: SeverityWarning,
 		Title:    fmt.Sprintf("The print packet would go out with %d empty sections", len(gaps)),
-		Detail: fmt.Sprintf("Printed today, the tech pack would carry an empty %s. The columns behind "+
-			"them: %s.", joinAnd(labels), strings.Join(columns, ", ")),
+		Detail: fmt.Sprintf("Printed today, the tech pack would go out with these sections empty: %s. "+
+			"The columns behind them: %s.", joinAnd(labels), strings.Join(columns, ", ")),
 		Refs:       []string{RefCard},
 		Suggestion: "Fill the sections that the factory reads off the printed packet.",
 		Clause:     fmt.Sprintf("print packet has %d empty sections", len(gaps)),
@@ -245,7 +248,7 @@ func checkC3LabelBridge(v *cardView) []Finding {
 				Title: fmt.Sprintf("%d of %d label specs are not linked to a BOM line",
 					missing, applicable),
 				Detail: "These labels are described on the card and nothing in the BOM pays for them " +
-					"(tech_card_label.bom_item_id, 0174) — they are sewn in and costed at nothing.",
+					"(tech_card_label.bom_item_id) — they are sewn in and costed at nothing.",
 				Refs:       sample,
 				Suggestion: "Link each spec to the BOM line that buys it.",
 				Clause:     fmt.Sprintf("%d label specs not costed", missing),
@@ -344,7 +347,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 			Category: CategoryReadiness,
 			Severity: SeverityWarning,
 			Title:    fmt.Sprintf("No equipment profiles on a card that names %d machine types", len(types)),
-			Detail: fmt.Sprintf("The route runs on %s, and tech_card_equipment_profile (0306) is empty "+
+			Detail: fmt.Sprintf("The route runs on %s, and tech_card_equipment_profile is empty "+
 				"for this card. Every step therefore inherits nothing: needle, thread count, tension, "+
 				"stitch density and every pressing setting are decided at the bench, differently on each shift.",
 				quotedList(types)),
@@ -393,7 +396,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 					Severity: SeverityError,
 					Title:    aiBoundedText(fmt.Sprintf("%s points at a %s profile the card does not have", ref.column, ref.kind), 90),
 					Detail: fmt.Sprintf("%s names %s %q, and no %s profile of this card carries that key. "+
-						"The reference is soft — there is no FK, deliberately (0306) — so nothing stopped the "+
+						"The reference is soft — there is no FK, deliberately — so nothing stopped the "+
 						"profile from being deleted or renamed, and the step now inherits nothing while "+
 						"claiming to inherit something.", opLabel(op), ref.column, ref.key, ref.kind),
 					Refs:       opRefs(op),
@@ -409,7 +412,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 			Title: fmt.Sprintf("%d of %d equipment profile references point at nothing",
 				missing, applicable),
 			Detail: "These steps name a machine_profile_key or press_profile_key that no profile of the " +
-				"card carries (0306, soft reference with no FK) — they inherit nothing while claiming to " +
+				"card carries (soft reference with no FK) — they inherit nothing while claiming to " +
 				"inherit something.",
 			Refs:       sample,
 			Suggestion: "Re-point or clear the broken keys.",
@@ -469,6 +472,10 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 //
 // Правило применимости у ВТО — то же, что у A3: универсальный профиль (press_operation_type NULL)
 // применим ко всякому термошагу, названный — только к своему глаголу.
+//
+// ВТОРОЙ ЭКЗЕМПЛЯР ТОГО ЖЕ ПРАВИЛА живёт в profilesFor (route.go, checkA3PressParameters), и
+// удерживает их от расхождения РОВНО ОДИН тест — TestC4AppliesThePressRuleOfA3 в этом файле.
+// Правишь здесь — правь и там; тест обязан покраснеть, если правки разошлись.
 func applicableProfiles(op *entity.TechCardOperation, eq *entity.TechCardEquipmentDefaults) (string, int) {
 	switch op.OperationType {
 	case entity.OpTypePress, entity.OpTypePressOpen, entity.OpTypeFusing:
@@ -516,7 +523,7 @@ func checkC5TechnicalSketch(v *cardView) []Finding {
 		Category: CategoryReadiness,
 		Severity: SeverityWarning,
 		Title:    "The card carries no technical sketch",
-		Detail: "tech_card_media holds no row with category='technical' (0092). Nothing on this card can " +
+		Detail: "tech_card_media holds no row with category='technical'. Nothing on this card can " +
 			"be checked against a drawing — not by this analysis, which is text-only in any case, and not " +
 			"by the technologist reading the printed packet.",
 		Refs:       []string{RefCard},
@@ -622,4 +629,165 @@ func joinAnd(items []string) string {
 		return items[0]
 	}
 	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// ── C7–C9. ТРИ КЛАУЗЫ, КОТОРЫЕ §3.0 ОБЕЩАЕТ, А ПРОИЗВОДИТЕЛЯ ИМ НИКТО НЕ НАПИСАЛ ─────────────────
+//
+// Образец схлопнутой черновой находки §3.0 читается так: «Not yet ready for release: SMV 0/48 ·
+// works 5/48 · no equipment profiles · no finishing block · no labels · hem finish not specified».
+// Профили даёт C4, лейблы — C3, hem finish — C2. ПЕРВЫЕ ДВЕ КЛАУЗЫ И ЧЕТВЁРТУЮ не давал никто:
+// после C1–C6 машинный слой на черновике карточки 8 не говорил про пустой SMV НИЧЕГО.
+//
+// ПОЧЕМУ ЭТО НЕ ДУБЛИРУЕТ ПРОМПТ. §7.2 шлёт покрытие SMV фактом в промпт, и для Ф1 этого
+// достаточно: модель судит ПОСЛЕДСТВИЕ, а не считает строки. Но Ф0 уезжает на бету ОДНА, работает
+// всегда и без ключа OpenRouter, а «ни у одной из 48 операций нет нормы времени» — это карточка,
+// которую нельзя ни просчитать, ни поставить в план (золотой эталон, «чего не хватает», п. 9).
+// B7 про то же заговаривает ТОЛЬКО при заданном cmt_cost, которого на карточке 8 нет, — то есть
+// ровно там, где вопрос уже поздно задавать.
+//
+// ФОРМА — закон покрытия §3.0, как у любой проверки покрытия: одна находка с дробью и ≤3
+// якорями-образцами, никогда 48 находок. Класс readiness — значит, на черновике всё это
+// схлопывается в одну строку, а разворачивается только там, где карточку собираются выпускать.
+
+// checkC7SmvCoverage — readiness, warning. Нормы времени нет ни у одного шага → планировать нечем.
+//
+// Читает tech_card_operation.smv. Подавители: SMV задан у всех шагов; маршрута нет вовсе (тогда
+// говорит C1, а «0 of 0» было бы шумом — Aggregate на пустом множестве молчит сам).
+func checkC7SmvCoverage(v *cardView) []Finding {
+	applicable, missing := 0, []CoverageMiss(nil)
+	for _, op := range v.ops {
+		applicable++
+		if !ndEmpty(op.SMV) {
+			continue
+		}
+		missing = append(missing, CoverageMiss{
+			Refs: opRefs(op),
+			Finding: Finding{
+				Category: CategoryReadiness,
+				Severity: SeverityWarning,
+				Title:    aiBoundedText(opLabel(op)+" has no SMV", 90),
+				Detail: opLabel(op) + " carries no standard minute value, so its share of the labour " +
+					"cost is zero and it takes no time in any plan.",
+				Refs:       opRefs(op),
+				Suggestion: "Measure or estimate the standard time of the step.",
+				Clause:     "no SMV on " + strings.ToLower(opLabel(op)),
+			},
+		})
+	}
+	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
+		return Finding{
+			Category: CategoryReadiness,
+			Severity: SeverityWarning,
+			Title: fmt.Sprintf("No standard time on %d of %d operations",
+				missing, applicable),
+			Detail: fmt.Sprintf("tech_card_operation.smv is empty on %d of the %d steps of the route. "+
+				"A card without standard times cannot be costed for labour, cannot be scheduled and "+
+				"cannot be balanced across a line — every planning number it feeds is a zero that "+
+				"looks like a measurement.", missing, applicable),
+			Refs:       sample,
+			Suggestion: "Measure the route, or carry the times over from the closest measured style.",
+			Clause:     smvClause(applicable-missing, applicable),
+		}
+	})
+}
+
+// smvClause renders the clause of the collapsed draft finding the way §3.0 writes it: «SMV 0/48» —
+// СКОЛЬКО ЕСТЬ из скольких, а не сколько пропущено. Дробь в клаузе и дробь в заголовке считают
+// разное намеренно: заголовок называет пропуск («no standard time on 48 of 48»), клауза — покрытие.
+//
+// Форма покрытия живёт ТОЛЬКО на агрегированной ветке. Пер-операционные находки (≤3 пропусков)
+// именуют шаг: три находки, каждая со своей копией «SMV 45/48», схлопнулись бы в перечисление
+// одной и той же дроби трижды.
+func smvClause(filled, total int) string { return fmt.Sprintf("SMV %d/%d", filled, total) }
+
+// checkC8WorkCoverage — readiness, warning. Шаг без назначенной работы.
+//
+// Читает tech_card_operation.work. Работа — это то, ЧТО делает шаг, в словарных терминах: без неё
+// ни нормировщик не найдёт замер той же работы на других стилях (LatestOperationWorkSmv), ни
+// каталог 0329 не скажет, на какой машине она законна (A8 молчит структурно), ни свод по цеху не
+// сложится. Золотой эталон, ошибка 8: «work не назначен у 43 из 48 операций».
+//
+// Подавители: работа задана у всех шагов; маршрута нет вовсе.
+func checkC8WorkCoverage(v *cardView) []Finding {
+	applicable, missing := 0, []CoverageMiss(nil)
+	for _, op := range v.ops {
+		applicable++
+		if !nsEmpty(op.Work) {
+			continue
+		}
+		missing = append(missing, CoverageMiss{
+			Refs: opRefs(op),
+			Finding: Finding{
+				Category: CategoryReadiness,
+				Severity: SeverityWarning,
+				Title:    aiBoundedText(opLabel(op)+" names no work", 90),
+				Detail: opLabel(op) + " says which machine it runs on, but not what work is done on " +
+					"it — so nothing links the step to a measured time or to the shop-floor dictionary.",
+				Refs:       opRefs(op),
+				Suggestion: "Pick the work of the step from the catalog.",
+				Clause:     "no work on " + strings.ToLower(opLabel(op)),
+			},
+		})
+	}
+	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
+		return Finding{
+			Category: CategoryReadiness,
+			Severity: SeverityWarning,
+			Title:    fmt.Sprintf("No work assigned on %d of %d operations", missing, applicable),
+			Detail: fmt.Sprintf("tech_card_operation.work is empty on %d of the %d steps. The work is "+
+				"what the step DOES in dictionary terms: without it the step cannot borrow a measured "+
+				"time from the same work on another style, the work-machine legality check has nothing "+
+				"to check, and no summary by work adds up.", missing, applicable),
+			Refs:       sample,
+			Suggestion: "Assign the work of each step from the catalog.",
+			Clause:     worksClause(applicable-missing, applicable),
+		}
+	})
+}
+
+func worksClause(filled, total int) string { return fmt.Sprintf("works %d/%d", filled, total) }
+
+// finishingVerbs is the closing block of any garment route: cut the thread ends, clean the garment,
+// press it for the last time, inspect it, fold it, pack it.
+//
+// СПИСОК КУРИРУЕТСЯ, А НЕ ВЫВОДИТСЯ. Это ровно те глаголы словаря, которые делают изделие товаром
+// после того, как оно сшито; press НАМЕРЕННО не входит — утюг работает по всему маршруту, и его
+// присутствие ничего не говорит об окончательной ВТО.
+var finishingVerbs = []entity.TechCardOperationType{
+	entity.OpTypeThreadTrim, entity.OpTypeClean, entity.OpTypeInspect,
+	entity.OpTypeFold, entity.OpTypePack,
+}
+
+// checkC9FinishingBlock — readiness, warning. Маршрут кончается там, где сшили, и не кончается там,
+// где изделие стало товаром.
+//
+// НЕ ПОКРЫТИЕ, А ФАКТ: считать «0 из 48 шагов финишные» бессмысленно — финишных шагов не бывает
+// сорок восемь. Поэтому одна находка с якорем card, как у C2/C4/C5.
+//
+// Подавители: в маршруте есть хоть один финишный глагол; маршрута нет вовсе (говорит C1).
+func checkC9FinishingBlock(v *cardView) []Finding {
+	if len(v.ops) == 0 {
+		return nil
+	}
+	for _, op := range v.ops {
+		if hasVerb(op, finishingVerbs) {
+			return nil
+		}
+	}
+	names := make([]string, 0, len(finishingVerbs))
+	for _, verb := range finishingVerbs {
+		names = append(names, string(verb))
+	}
+	return []Finding{{
+		Category: CategoryReadiness,
+		Severity: SeverityWarning,
+		Title:    "The route ends with the last seam and has no finishing block",
+		Detail: fmt.Sprintf("Not one of the %d steps carries a finishing verb (%s). As written the "+
+			"garment leaves the line with its thread ends on, unpressed, uninspected and unpacked — "+
+			"work that is done in every factory and costed in none of this card.",
+			len(v.ops), strings.Join(names, ", ")),
+		Refs:       []string{RefCard},
+		Suggestion: "Add the closing block: thread trimming, cleaning, final pressing, inspection, folding and packing.",
+		Clause:     "no finishing block",
+	}}
 }

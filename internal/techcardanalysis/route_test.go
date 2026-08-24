@@ -211,12 +211,21 @@ func TestA2FiresOn470And480OfCard8(t *testing.T) {
 		t.Errorf("want parameter/warning, got %s/%s", hole.Category, hole.Severity)
 	}
 
-	counts := rtWithTitle(fs, "one-button garment")
+	// Заголовок называет то, чего ровно одна, ПО СВОЕМУ ШАГУ: на петельной операции это петля, на
+	// пуговичной — пуговица. Общий «one-button garment» на 470 говорил про пуговицы там, где речь
+	// о петлях.
+	counts := rtWithTitle(fs, "the garment has exactly one")
 	if len(counts) != 2 {
 		t.Fatalf("want the placement-count finding on 470 AND 480, got %d:\n%s", len(counts), rtDump(counts))
 	}
 	if !rtHasRef(counts[0], RefOp(470)) || !rtHasRef(counts[1], RefOp(480)) {
 		t.Errorf("want anchors op:470 then op:480, got %v and %v", counts[0].Refs, counts[1].Refs)
+	}
+	if counts[0].Title != "As written the garment has exactly one buttonhole" {
+		t.Errorf("шаг 470 — петельный: %q", counts[0].Title)
+	}
+	if counts[1].Title != "As written the garment has exactly one button" {
+		t.Errorf("шаг 480 — пуговичный: %q", counts[1].Title)
 	}
 }
 
@@ -923,7 +932,8 @@ func TestRouteHandlesAnEmptyCard(t *testing.T) {
 	// маршрутной пробы на общий список. На пустой карточке заговаривает готовность (C1: ноль
 	// операций, ноль деталей, нет размерного ряда; C2; C5), и заговаривает справедливо: пустая
 	// карточка к релизу не готова по определению. Утверждение сужено до «маршрут и BOM молчат»;
-	// поимённый состав readiness-находок пустой карточки закреплён в readiness_test.go.
+	// поимённый состав readiness-находок пустой карточки закреплён в readiness_test.go —
+	// TestReadinessOnAnEmptyCardIsNamed (до T5 эта ссылка была обещанием: теста не существовало).
 	res := RunAudit(&entity.TechCard{}, rtFx)
 	var nonReadiness []Finding
 	for _, f := range res.Findings {
