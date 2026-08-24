@@ -46,7 +46,7 @@ func TestAuxSubtypeValidSetIsClosed(t *testing.T) {
 	all := []TechCardAuxSubtype{
 		AuxSubtypeBrandLabel, AuxSubtypeCareLabel, AuxSubtypeSizeLabel, AuxSubtypeHangtag,
 		AuxSubtypeSticker, AuxSubtypeDustBag, AuxSubtypeGarmentCase, AuxSubtypeToteBag, AuxSubtypeBox,
-		AuxSubtypeInsert, AuxSubtypeHanger, AuxSubtypeOther,
+		AuxSubtypeInsert, AuxSubtypeHanger, AuxSubtypeSpareKitBag, AuxSubtypeOther,
 	}
 	if len(all) != len(ValidTechCardAuxSubtypes) {
 		t.Fatalf("constant list (%d) and ValidTechCardAuxSubtypes (%d) differ in size", len(all), len(ValidTechCardAuxSubtypes))

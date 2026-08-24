@@ -134,11 +134,12 @@ func TestTechCardPurposeDBCheckNoDrift(t *testing.T) {
 // TestTechCardAuxSubtypeDBCheckNoDrift is the WS7 drift guard: entity (TechCardAuxSubtype/
 // ValidTechCardAuxSubtypes) <-> DB CHECK (chk_tech_card_aux_subtype). The value set must stay
 // identical on both sides. It reads the migration that LAST redefined the constraint — 0173 created
-// it, 0227 widened it with garment_case, 0255 with tote_bag — so a further widening must point this
-// at its own file. Migration 0173's backfill CASE stays pinned to entity.AuxSubtypeFromName instead
-// (asserted in the entity unit test): that heuristic is frozen history, not the live value set.
+// it, 0227 widened it with garment_case, 0255 with tote_bag, 0335 with spare_kit — so a further
+// widening must point this at its own file. Migration 0173's backfill CASE stays pinned to
+// entity.AuxSubtypeFromName instead (asserted in the entity unit test): that heuristic is frozen
+// history, not the live value set — which is why `spare_kit` is deliberately absent from it.
 func TestTechCardAuxSubtypeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0255_tech_card_aux_subtype_tote_bag.sql")
+	content := readMigrationFile(t, migration0335)
 	dbValues := extractDBEnumValues(t, content, "aux_subtype REGEXP", 200)
 	assertSameSet(t, "TechCardAuxSubtype", dbValues, mapKeysAsStrings(entity.ValidTechCardAuxSubtypes))
 }
@@ -422,13 +423,16 @@ func TestPieceCutSymmetryDBCheckIsCaseClosed(t *testing.T) {
 // nowhere visible. Note that entity.ValidTechCardBomKinds is itself derived from bomKindHomeSection,
 // so this one assertion covers the vocabulary AND the pairing table's key set at once.
 //
-// The window is wide (54 values) — extractDBEnumValues bounds its search from the anchor, and a
+// The window is wide (56 values) — extractDBEnumValues bounds its search from the anchor, and a
 // window shorter than the alternation would fail to FIND the list rather than fail to compare it.
 //
-// The anchor is 0324, not 0278: the wave recreated chk_bom_item_kind ONCE with the union of both
-// phases (+seam_sealing_tape, +embroidery_stabilizer). It is also the one dictionary here whose
-// sentinel is spelled ..._UNSET and whose numbering carries a promised hole (54, reserved by promise
-// for the deferred wet_chemical) — see protoEnumTokens for why both are declared and not inferred.
+// The anchor is 0335, not 0278 and no longer 0324: 0278 created the constraint, 0324 recreated it
+// with the union of both wave phases (+seam_sealing_tape, +embroidery_stabilizer), and 0335 widened
+// it again for the countable-norms wave (+spare_kit_bag, +tote_bag). The rule is the one 0325..0328
+// spell out above — read the file that owns the CURRENT list, not the one that created it. It is
+// also the one dictionary here whose sentinel is spelled ..._UNSET and whose numbering carries a
+// promised hole (54, reserved by promise for the deferred wet_chemical) — see protoEnumTokens for
+// why both are declared and not inferred.
 func TestBomKindDBCheckNoDrift(t *testing.T) {
 	assertWaveVocabularyNoDrift(t, waveVocabulary{
 		label:      "TechCardBomKind",
@@ -436,6 +440,7 @@ func TestBomKindDBCheckNoDrift(t *testing.T) {
 		prefix:     "TECH_CARD_BOM_KIND_",
 		zeroMember: "TECH_CARD_BOM_KIND_UNSET",
 		check:      "chk_bom_item_kind CHECK",
+		migration:  migration0335,
 		window:     800,
 		tokens:     mapKeysAsStrings(entity.ValidTechCardBomKinds),
 		holes:      []int32{54},
@@ -448,9 +453,9 @@ func TestBomKindDBCheckNoDrift(t *testing.T) {
 // refuses 'zip' and nothing about case. STRCMP over a BINARY cast is what actually closes the
 // vocabulary (precedent: chk_bom_item_purpose in 0265, chk_tcp_cut_symmetry in 0275).
 func TestBomKindDBCheckIsCaseClosed(t *testing.T) {
-	// 0324 owns the current constraint (see TestBomKindDBCheckNoDrift): a recreated CHECK that drops
+	// 0335 owns the current constraint (see TestBomKindDBCheckNoDrift): a recreated CHECK that drops
 	// the STRCMP guard would reopen the vocabulary to 'ZIPPER' while the token list still matched.
-	content := readMigrationFile(t, migration0324)
+	content := readMigrationFile(t, migration0335)
 	const guard = "STRCMP(CAST(kind AS BINARY), CAST(LOWER(kind) AS BINARY)) = 0"
 	stmt := strings.Index(content, "chk_bom_item_kind CHECK")
 	if stmt < 0 {
@@ -879,6 +884,13 @@ const migration0327 = "0327_operation_kinds_false_splits.sql"
 // CHECK'ах: machine_type и thread_tension стоят ДВАЖДЫ — на шаге и в парке оборудования. Владение
 // списками переходит к нему по тому же правилу, что у 0325, 0326 и 0327.
 const migration0328 = "0328_false_splits_prod_live.sql"
+
+// 0335 РАСШИРЯЕТ chk_bom_item_kind двумя членами волны счётных норм (spare_kit_bag, tote_bag) и тем
+// же файлом — chk_tech_card_aux_subtype одним (spare_kit). Владение обоими списками переходит к
+// нему по тому же правилу, что у 0325..0328: тест словаря читает ФАЙЛ, ВЛАДЕЮЩИЙ ТЕКУЩИМ СПИСКОМ.
+// Оставить якорь на 0324 значило бы сверять entity со списком, который 0335 уже переписал, — то
+// есть краснеть на здоровой схеме и звать чинить то, что не сломано.
+const migration0335 = "0335_bom_kind_spare_kit_bag.sql"
 
 // waveCheckWindow bounds the search from a CHECK's anchor. The longest new alternation
 // (label_attach_stitch) ends 192 characters past its anchor; a window shorter than the list would

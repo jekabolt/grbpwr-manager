@@ -308,7 +308,7 @@ enum TechCardBomKind {
 
   // ДРУГОЕ — the ONLY value legal in EVERY eligible section (including section=other, which has no
   // kinds of its own). Its meaning lives in the separate kind_note, never in a shadow value on one
-  // of the 53 real kinds — the same containment chk_bom_item_purpose_note gives назначению.
+  // of the 55 real kinds — the same containment chk_bom_item_purpose_note gives назначению.
   TECH_CARD_BOM_KIND_OTHER = 52;
 
   // ДОБАВЛЕНО ВОЛНОЙ ВИДОВ ОПЕРАЦИЙ, строго append'ом — ПОСЛЕ OTHER. Порядок членов enum'а секции
@@ -320,6 +320,23 @@ enum TechCardBomKind {
   // секция, а рулонные секции видов не принимают вовсе. Клиентский пикер обязан предлагать этот вид
   // только в декоре; на паре «вид ↔ секция» стор откажет.
   TECH_CARD_BOM_KIND_EMBROIDERY_STABILIZER = 55; // стабилизатор под вышивку — section=decoration
+
+  // ДОБАВЛЕНО ВОЛНОЙ СЧЁТНЫХ НОРМ (0335), тем же append'ом в хвост. Оба — section=packaging.
+  //
+  // SPARE_KIT_BAG — пакетик, в котором запасная фурнитура едет с изделием. Не оттенок POLYBAG: у
+  // него есть собственное поведение, которого нет ни у одного соседа — его наличие связано с
+  // запасом (spare_qty) ДРУГОЙ строки той же карточки, и проверки готовности ищут именно его.
+  // Парный ему TECH_CARD_AUX_SUBTYPE_SPARE_KIT_BAG не дубль, а другой субъект: этот говорит, что
+  // строка ПОКУПАЕТ, тот — что вспомогательная карточка ПРОИЗВОДИТ (пара DUST_BAG с 0173).
+  //
+  // ОБА ЧЛЕНА ПАРЫ ПИШУТСЯ ОДНИМ СЛОВОМ — правило блока выше: расходятся только те пары, у которых
+  // предметы разные (HANGTAG_STRING — шнурок, а не ярлык; INSERT_CARD — карточка, а не вкладыш;
+  // CARTON — транспортный короб, а не коробка покупателю). Здесь предмет один — тот самый пакетик.
+  TECH_CARD_BOM_KIND_SPARE_KIT_BAG = 56; // пакетик с запасной фурнитурой — section=packaging
+  // TOTE_BAG закрывает асимметрию, жившую с 0255: TECH_CARD_AUX_SUBTYPE_TOTE_BAG = 12 был, а
+  // назвать шоппер СТРОКОЙ СПЕЦИФИКАЦИИ было нечем — при том, что строка спецификации это
+  // единственное место, где вспомогательный компонент вообще стоит денег.
+  TECH_CARD_BOM_KIND_TOTE_BAG = 57; // шоппер — section=packaging
 }
 
 // TechCardLabDipStatus is the lab-dip approval lifecycle of a colourway.
@@ -361,6 +378,11 @@ enum TechCardAuxSubtype {
   // rather than a dust bag: it is cut, sewn and costed as its own item, and an assembly bill names
   // which carrier ships.
   TECH_CARD_AUX_SUBTYPE_TOTE_BAG = 12;
+  // пакетик с запасной фурнитурой, сшитый своими силами (0335). Пакетик и покупают готовым, и шьют
+  // сами, и ветвления это не создаёт: в обеих ветках он остаётся ОДНОЙ строкой спецификации с
+  // kind=SPARE_KIT_BAG, а этот подтип отвечает на другой вопрос — что производит вспомогательная
+  // карточка. Без него свой пакетик уезжает в ..._OTHER, где перестаёт отличаться от чего угодно.
+  TECH_CARD_AUX_SUBTYPE_SPARE_KIT_BAG = 13;
 }
 
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway

@@ -897,7 +897,8 @@ func IsValidTechCardBomPurpose(p TechCardBomPurpose) bool {
 // The pairing lives in bomKindHomeSection below — as DATA, so that ValidTechCardBomKinds and the
 // section a kind belongs to can never be two lists that disagree.
 //
-// Mirrors the common.TechCardBomKind proto enum and the chk_bom_item_kind DB CHECK (0278); stored as
+// Mirrors the common.TechCardBomKind proto enum and the chk_bom_item_kind DB CHECK (created by 0278,
+// recreated wider by 0324 and 0335 — the LAST of those owns the list); stored as
 // a NULLABLE string in tech_card_bom_item.kind, where NULL means "not classified yet".
 type TechCardBomKind string
 
@@ -971,8 +972,26 @@ const (
 	BomKindDustBag       TechCardBomKind = "dust_bag"     // == AuxSubtypeDustBag
 	BomKindGarmentCase   TechCardBomKind = "garment_case" // == AuxSubtypeGarmentCase
 	BomKindInsertCard    TechCardBomKind = "insert_card"  // печатная карточка, уже AuxSubtypeInsert
+	// Волна счётных норм (0335). Оба вида — упаковка, и оба заведены ОДНОЙ миграцией, потому что
+	// ADD CONSTRAINT CHECK копирует таблицу целиком и второй повод обошёлся бы во второй проход.
+	//
+	// BomKindSpareKitBag — пакетик, в котором запасная фурнитура едет с изделием. Отдельный вид, а
+	// не оттенок BomKindPolybag, ровно потому, что у него есть СОБСТВЕННОЕ поведение: его наличие
+	// связано с запасом (spare_qty) ДРУГОЙ строки той же карточки, и проверки готовности ищут
+	// именно его. Полибэг упаковывает изделие, пакетик — запаску; одним словом их не различить.
+	//
+	// ПИШЕТСЯ ТЕМ ЖЕ СЛОВОМ, ЧТО И ПАРНЫЙ ПОДТИП (AuxSubtypeSpareKitBag = `spare_kit_bag`), и это
+	// правило блока, а не совпадение: одинаковый предмет пишется одинаково (sticker / dust_bag /
+	// garment_case / hanger), а расходятся ровно те три пары, у которых предметы РАЗНЫЕ
+	// (hangtag_string — шнурок, а не ярлык; insert_card — карточка, а не вкладыш вообще; carton —
+	// транспортный короб, а не коробка покупателю). Здесь предмет ОДИН — тот самый пакетик.
+	BomKindSpareKitBag TechCardBomKind = "spare_kit_bag" // == AuxSubtypeSpareKitBag
+	// BomKindToteBag закрывает асимметрию, существовавшую с 0255: AuxSubtypeToteBag есть, а назвать
+	// шоппер СТРОКОЙ СПЕЦИФИКАЦИИ было нечем — при том, что строка спецификации это единственное
+	// место, где вспомогательный компонент вообще стоит денег.
+	BomKindToteBag TechCardBomKind = "tote_bag" // == AuxSubtypeToteBag
 
-	// ДРУГОЕ — meaning lives in KindNote, never in a shadow value on one of the 51 real kinds.
+	// ДРУГОЕ — meaning lives in KindNote, never in a shadow value on one of the 55 real kinds.
 	BomKindOther TechCardBomKind = "other"
 )
 
@@ -1050,6 +1069,12 @@ var bomKindHomeSection = map[TechCardBomKind]TechCardBomSection{
 	BomKindDustBag:       BomSectionPackaging,
 	BomKindGarmentCase:   BomSectionPackaging,
 	BomKindInsertCard:    BomSectionPackaging,
+
+	// Волна счётных норм (0335). Дом у обоих — packaging: пакетик с запаской и шоппер закупаются и
+	// отчитываются как упаковка, и никакая другая секция их не примет (пара «вид ↔ секция»
+	// проверяется в store, validateBomKindSection).
+	BomKindSpareKitBag: BomSectionPackaging,
+	BomKindToteBag:     BomSectionPackaging,
 
 	BomKindOther: BomKindAnySection,
 }
@@ -2082,7 +2107,8 @@ func IsValidTechCardLabelType(t TechCardLabelType) bool {
 // TechCardAuxSubtype sub-classifies an AUXILIARY tech card (purpose=auxiliary) into the concrete kind
 // of non-sold item it produces. It refines tech_card.purpose (an auxiliary card produces a MATERIAL via
 // output_material_id and has no product row) and is stored nullable in tech_card.aux_subtype. Mirrors the
-// common.TechCardAuxSubtype proto enum and the DB CHECK chk_tech_card_aux_subtype (migration 0173).
+// common.TechCardAuxSubtype proto enum and the DB CHECK chk_tech_card_aux_subtype (created by 0173,
+// widened by 0227 garment_case, 0255 tote_bag, 0335 spare_kit — the LAST of those owns the list).
 type TechCardAuxSubtype string
 
 const (
@@ -2103,11 +2129,21 @@ const (
 	AuxSubtypeBox     TechCardAuxSubtype = "box"
 	AuxSubtypeInsert  TechCardAuxSubtype = "insert"
 	AuxSubtypeHanger  TechCardAuxSubtype = "hanger"
-	AuxSubtypeOther   TechCardAuxSubtype = "other"
+	// AuxSubtypeSpareKitBag is a пакетик с запасной фурнитурой, шитый своими силами (migration 0335).
+	// It answers a DIFFERENT question from BomKindSpareKitBag and is not its duplicate: this one
+	// says what an auxiliary card PRODUCES, the kind says what a BOM line BUYS — the same pairing
+	// dust_bag / AuxSubtypeDustBag has carried since 0173. Without it a self-made spare-kit bag
+	// falls into AuxSubtypeOther, where it is no longer distinguishable from anything else.
+	//
+	// Пишется тем же словом, что и парный вид (BomKindSpareKitBag = `spare_kit_bag`): предмет один,
+	// значит и слово одно — правило блока, довод в комментарии там же. VARCHAR(16) держит: 13.
+	AuxSubtypeSpareKitBag TechCardAuxSubtype = "spare_kit_bag"
+	AuxSubtypeOther       TechCardAuxSubtype = "other"
 )
 
 // ValidTechCardAuxSubtypes is the closed set enforced by the DB CHECK; it backs the entity<->DB drift
-// test (internal/store/migrationlint) against migration 0173's chk_tech_card_aux_subtype.
+// test (internal/store/migrationlint) against chk_tech_card_aux_subtype as the migration that LAST
+// redefined it spells it — 0335, not the 0173 that created it.
 var ValidTechCardAuxSubtypes = map[TechCardAuxSubtype]bool{
 	AuxSubtypeBrandLabel:  true,
 	AuxSubtypeCareLabel:   true,
@@ -2120,6 +2156,7 @@ var ValidTechCardAuxSubtypes = map[TechCardAuxSubtype]bool{
 	AuxSubtypeBox:         true,
 	AuxSubtypeInsert:      true,
 	AuxSubtypeHanger:      true,
+	AuxSubtypeSpareKitBag: true,
 	AuxSubtypeOther:       true,
 }
 
