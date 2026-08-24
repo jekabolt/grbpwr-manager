@@ -9,8 +9,8 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protojson"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // СЧЁТНАЯ НОРМА СЛОТА НА ПРОВОДЕ И В ЧИСЛАХ (0333).
