@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
@@ -111,13 +112,34 @@ func tcaHasTitleContaining(resp *pb_admin.GetTechCardConstructionAuditResponse, 
 	return false
 }
 
+// tcaCostingCtx is a SCOPED account that may see money: tech_cards:read to reach the RPC,
+// costing:read to see the findings that quote prices. Scoped rather than super on purpose — super
+// passes everything and would prove nothing about the predicate.
+func tcaCostingCtx() context.Context {
+	return authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{
+			rbac.SectionTechCards: entity.AccessRead,
+			rbac.SectionCosting:   entity.AccessRead,
+		},
+	})
+}
+
+// tcaNoCostingCtx is the account the redaction exists for: it may read tech cards, and it may not
+// see money. This is the real content-manager role named in the rbac.go rationale, not a synthetic
+// edge case.
+func tcaNoCostingCtx() context.Context {
+	return authsrv.PutAdminAuthz(context.Background(), authsrv.AdminAuthz{
+		Perms: map[string]entity.AccessLevel{rbac.SectionTechCards: entity.AccessRead},
+	})
+}
+
 // --- happy path ----------------------------------------------------------------------------------
 
 // TestGetTechCardConstructionAuditHappyPath: a real card comes back as findings + a fingerprint per
 // numbered operation + the not-checked list, all of it converted onto the wire.
 func TestGetTechCardConstructionAuditHappyPath(t *testing.T) {
 	s := tcaStand(t, tcaCard(), nil, map[string]decimal.Decimal{})
-	resp, err := s.GetTechCardConstructionAudit(context.Background(),
+	resp, err := s.GetTechCardConstructionAudit(tcaCostingCtx(),
 		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.GetFindings(), "a card with two steps and a foreign-priced BOM line must produce findings")
@@ -187,7 +209,7 @@ func TestGetTechCardConstructionAuditFeedsTheRatesToTheAnalyzer(t *testing.T) {
 	const noRateTitle = "PLN has no rate to EUR"
 
 	without := tcaStand(t, tcaCard(), nil, map[string]decimal.Decimal{})
-	respWithout, err := without.GetTechCardConstructionAudit(context.Background(),
+	respWithout, err := without.GetTechCardConstructionAudit(tcaCostingCtx(),
 		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
 	require.NoError(t, err)
 	require.True(t, tcaHasTitleContaining(respWithout, noRateTitle),
@@ -196,7 +218,7 @@ func TestGetTechCardConstructionAuditFeedsTheRatesToTheAnalyzer(t *testing.T) {
 	with := tcaStand(t, tcaCard(), nil, map[string]decimal.Decimal{
 		"PLN": decimal.RequireFromString("0.23"),
 	})
-	respWith, err := with.GetTechCardConstructionAudit(context.Background(),
+	respWith, err := with.GetTechCardConstructionAudit(tcaCostingCtx(),
 		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
 	require.NoError(t, err)
 	require.False(t, tcaHasTitleContaining(respWith, noRateTitle),
@@ -229,7 +251,7 @@ func TestGetTechCardConstructionAuditSurvivesARateLoadFailure(t *testing.T) {
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, errors.New("fx table is on fire"))
 	s := &Server{repo: repo}
 
-	resp, err := s.GetTechCardConstructionAudit(context.Background(),
+	resp, err := s.GetTechCardConstructionAudit(tcaCostingCtx(),
 		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
 	require.NoError(t, err, "a rate-load failure must not take the audit down with it")
 	require.True(t, tcaHasTitleContaining(resp, "PLN has no rate to EUR"),
@@ -371,4 +393,146 @@ func TestGetTechCardConstructionAuditIsUnderTechCardRead(t *testing.T) {
 	// A super token passes regardless — which is exactly why the assertions above cannot be replaced
 	// by "we tried it and it worked".
 	require.True(t, rbac.Authorize(method, false, true, nil), "super is allowed everything")
+}
+
+// --- costing redaction ---------------------------------------------------------------------------
+
+// TestGetTechCardConstructionAuditRedactsMoneyWithoutCostingAccess is the acceptance test of the
+// redaction, run on ONE card in BOTH directions.
+//
+// WHY IT EXISTS. The audit is rd(tech_cards); costing is a separate grant that redacts FIELDS rather
+// than gating methods (stripTechCardCosting blanks BOM unit_price/currency out of GetTechCard). So
+// the audience of this RPC is strictly wider than costing's, and B5а/B5б/B5в quote purchase prices
+// and line currencies in prose — prose no field-level strip can reach. Without the filter this call
+// is a side channel to exactly the numbers the neighbouring read hides from the same account.
+//
+// The second half is as load-bearing as the first: EVERY non-money finding must survive. Redaction
+// that is merely "safe" is easy — return nothing — and it would take the whole feature away from the
+// content manager it was supposed to serve.
+func TestGetTechCardConstructionAuditRedactsMoneyWithoutCostingAccess(t *testing.T) {
+	moneyTitles := []string{
+		`Is "подкладка" priced or is that a placeholder?`,
+		`"Карманка" costs more per metre than the main fabric`,
+		"PLN has no rate to EUR",
+	}
+
+	withCosting := tcaStand(t, tcaMoneyCard(), nil, map[string]decimal.Decimal{})
+	respWith, err := withCosting.GetTechCardConstructionAudit(tcaCostingCtx(),
+		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
+	require.NoError(t, err)
+
+	// With the grant: the money findings are there, and nothing tells the reader anything was held.
+	for _, want := range moneyTitles {
+		require.True(t, tcaHasTitleContaining(respWith, want),
+			"an account WITH costing:read must see %q; got %v", want, tcaTitles(respWith))
+	}
+	require.NotContains(t, respWith.GetNotChecked(), auditNoCostingAccessLine,
+		"an account that saw the price checks must not be told they were not run")
+
+	withoutCosting := tcaStand(t, tcaMoneyCard(), nil, map[string]decimal.Decimal{})
+	respWithout, err := withoutCosting.GetTechCardConstructionAudit(tcaNoCostingCtx(),
+		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
+	require.NoError(t, err)
+
+	// Without it: not one money finding, by title or by prose.
+	for _, gone := range moneyTitles {
+		require.False(t, tcaHasTitleContaining(respWithout, gone),
+			"an account WITHOUT costing:read must not see %q; got %v", gone, tcaTitles(respWithout))
+	}
+	for _, f := range respWithout.GetFindings() {
+		text := f.GetTitle() + " " + f.GetDetail() + " " + f.GetSuggestion() + " " + strings.Join(f.GetEvidence(), " ")
+		for _, leak := range []string{" PLN", " EUR", "55", "60"} {
+			require.NotContains(t, text, leak,
+				"finding %q leaks a price or a currency to an account without costing:read: %q", f.GetTitle(), text)
+		}
+	}
+
+	// And it is TOLD, not silently shortened: silence would read as "this card is clean on money".
+	require.Contains(t, respWithout.GetNotChecked(), auditNoCostingAccessLine,
+		"the withheld checks must be named in not_checked")
+
+	// THE OTHER HALF: every non-money finding survives, by name. Without this the test would pass
+	// against a handler that dropped the findings list altogether.
+	kept := tcaTitles(respWithout)
+	for _, title := range tcaTitles(respWith) {
+		if tcaIsMoneyTitle(title, moneyTitles) {
+			continue
+		}
+		require.Contains(t, kept, title,
+			"non-money finding %q was collateral damage of the redaction", title)
+	}
+	require.Equal(t, len(tcaTitles(respWith))-len(moneyTitles), len(kept),
+		"exactly the three money findings may disappear, no more and no fewer")
+
+	// Fingerprints and ai_enabled are not money and are not touched.
+	require.Equal(t, respWith.GetOperationFingerprints(), respWithout.GetOperationFingerprints(),
+		"a fingerprint is a hash of an assembly shape, not money")
+	require.Equal(t, respWith.GetAiEnabled(), respWithout.GetAiEnabled())
+}
+
+// TestGetTechCardConstructionAuditRedactsOnAContextThatNeverPassedTheInterceptor: an in-process
+// caller with a bare context gets the REDACTED answer. costingAccessFor fails closed on a missing
+// authz for exactly this reason, and the audit must inherit that rather than quietly opting out.
+func TestGetTechCardConstructionAuditRedactsOnAContextThatNeverPassedTheInterceptor(t *testing.T) {
+	s := tcaStand(t, tcaMoneyCard(), nil, map[string]decimal.Decimal{})
+	resp, err := s.GetTechCardConstructionAudit(context.Background(),
+		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
+	require.NoError(t, err)
+	require.False(t, tcaHasTitleContaining(resp, "PLN has no rate to EUR"),
+		"a bare context must fail closed, like every other costing decision in this package")
+	require.Contains(t, resp.GetNotChecked(), auditNoCostingAccessLine)
+}
+
+// TestAuditRedactionAnnouncesItselfEvenWithNothingToWithhold: the not_checked line goes in whenever
+// the caller lacks the grant, card regardless. If it appeared only when something was actually
+// withheld, its ABSENCE would tell the reader "this card has no money findings" — the same fact,
+// leaked through the door left open by the fix.
+func TestAuditRedactionAnnouncesItselfEvenWithNothingToWithhold(t *testing.T) {
+	// tcaCard's only priced line is the PLN one; give the run a rate so B5в falls silent, and the
+	// card then produces no money finding at all.
+	s := tcaStand(t, tcaCard(), nil, map[string]decimal.Decimal{"PLN": decimal.RequireFromString("0.23")})
+	resp, err := s.GetTechCardConstructionAudit(tcaNoCostingCtx(),
+		&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
+	require.NoError(t, err)
+	for _, f := range resp.GetFindings() {
+		require.NotContains(t, f.GetTitle(), "PLN has no rate", "precondition: nothing to withhold on this run")
+	}
+	require.Contains(t, resp.GetNotChecked(), auditNoCostingAccessLine,
+		"the line must not double as a signal that this particular card has money findings")
+}
+
+// tcaMoneyCard is tcaCard plus the two fabric lines that make B5а and B5б speak: a lining priced at
+// a token 1 EUR, and a pocketing dearer per metre than the main cloth. Both PLN lines also keep B5в
+// firing, so all three money checks are live on one card.
+func tcaMoneyCard() *entity.TechCard {
+	ns := func(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
+	ndd := func(s string) decimal.NullDecimal {
+		return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true}
+	}
+	card := tcaCard()
+	card.BomItems = []entity.TechCardBomItem{
+		{
+			Id: 1, LineKey: "F1", Name: "основная", Section: entity.BomSectionFabric,
+			Unit: ns("m"), UnitPrice: ndd("55"), Currency: ns("PLN"), Purpose: ns("main"),
+		},
+		{
+			Id: 2, LineKey: "F2", Name: "Карманка", Section: entity.BomSectionFabric,
+			Unit: ns("m"), UnitPrice: ndd("60"), Currency: ns("PLN"), Purpose: ns("pocketing"),
+		},
+		{
+			Id: 3, LineKey: "L1", Name: "подкладка", Section: entity.BomSectionLining,
+			Unit: ns("m"), UnitPrice: ndd("1"), Currency: ns("EUR"),
+		},
+	}
+	return card
+}
+
+// tcaIsMoneyTitle reports whether a projected finding line is one of the money titles.
+func tcaIsMoneyTitle(line string, moneyTitles []string) bool {
+	for _, m := range moneyTitles {
+		if strings.Contains(line, m) {
+			return true
+		}
+	}
+	return false
 }

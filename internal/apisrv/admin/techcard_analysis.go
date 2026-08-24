@@ -57,13 +57,64 @@ func (s *Server) GetTechCardConstructionAudit(ctx context.Context, req *pb_admin
 
 	result := techcardanalysis.RunAudit(card, s.analysisFx(ctx))
 
+	// COSTING REDACTION. The audit is classified rd(tech_cards), so its audience is WIDER than
+	// costing's: a content manager holding tech_cards:read reaches it. Some findings quote purchase
+	// prices and line currencies in prose — the very fields stripTechCardCosting blanks out of
+	// GetTechCard for exactly that account. Without this the audit would be a side channel to them.
+	findings := result.Findings
+	notChecked := result.NotChecked
+	if read, _ := s.costingAccess(ctx); !read {
+		findings, notChecked = redactMoneyFindings(findings, notChecked)
+	}
+
 	return &pb_admin.GetTechCardConstructionAuditResponse{
-		Findings:              dto.TechCardAnalysisFindingsToPb(result.Findings),
+		Findings:              dto.TechCardAnalysisFindingsToPb(findings),
 		OperationFingerprints: result.Fingerprints,
-		NotChecked:            result.NotChecked,
+		NotChecked:            notChecked,
 		// Enabled() is nil-safe, so an unconfigured deployment answers false rather than panicking.
+		// NEITHER THIS NOR THE FINGERPRINTS ARE REDACTED: a fingerprint is a hash of an assembly
+		// shape and this is a deployment fact. Neither is money.
 		AiEnabled: s.aiOps.Enabled(),
 	}, nil
+}
+
+// auditNoCostingAccessLine is what the caller is told INSTEAD of the money findings.
+//
+// Saying it is the whole point. Dropping the findings silently would tell a reader that the card is
+// clean on money, which is a claim nobody made and which this very layer exists to refuse: the
+// audit already reports what it did not check rather than letting silence pass for a verdict. Here
+// the reason is the reader's own rights, and that is still a reason to name.
+const auditNoCostingAccessLine = "price checks were not run (no costing access): findings that quote " +
+	"purchase prices or line currencies are withheld from this account"
+
+// redactMoneyFindings drops every finding flagged Money and says so in not_checked.
+//
+// It filters on techcardanalysis.Finding.Money — the flag the CHECK sets next to itself — and not on
+// a list of check names kept here. A list here is a place a newly written money check never reaches:
+// it would leak by default, quietly. The flag fails the other way round, hiding a finding that is
+// visibly missing.
+//
+// WHOLE FINDINGS, NOT THEIR NUMBERS. "Show the finding without the figures" was considered and
+// rejected: «the pocketing costs more per metre than the main fabric» still discloses the RATIO,
+// and costing redaction hides the price itself, not merely its digits. A half-redaction is a leak
+// that looks like a solved problem.
+func redactMoneyFindings(findings []techcardanalysis.Finding, notChecked []string) ([]techcardanalysis.Finding, []string) {
+	kept := make([]techcardanalysis.Finding, 0, len(findings))
+	withheld := 0
+	for _, f := range findings {
+		if f.Money {
+			withheld++
+			continue
+		}
+		kept = append(kept, f)
+	}
+	// The line goes in whether or not anything was actually withheld: "no money findings on this
+	// card" and "money findings you may not see" must not be distinguishable by their absence,
+	// or the line itself becomes the leak it was added to close.
+	out := make([]string, 0, len(notChecked)+1)
+	out = append(out, notChecked...)
+	out = append(out, auditNoCostingAccessLine)
+	return kept, out
 }
 
 // analysisFx hands the analyzer the currency channel its money checks need: the manual rates to the

@@ -19,6 +19,36 @@ import (
 // разрыв — место, где две части карточки утверждают разное, и ни одна из них не врёт по
 // отдельности.
 //
+// ЧТО ИЗ ЭТОГО БЛОКА — ДЕНЬГИ (Finding.Money; решено поимённо, ПО ВСЕМ ВОСЬМИ, 2026-08-24).
+// Граница — та же, по которой режет stripTechCardCosting: величина, валюта и ОТНОШЕНИЕ величин —
+// деньги; имя недостающего факта — нет.
+//
+//	B1  фурнитура в маршруте против BOM — нет: ни цены, ни валюты, ни суммы.
+//	B2  швейные шаги против ниточных линий — нет: «costed at zero» это ОТСУТСТВИЕ линии, не сумма.
+//	B3  треугольник дублирования — нет: три счётчика деталей и линий.
+//	B4  счёт застёжек против купленного — нет: штуки. Количество — структура, костинг его и так
+//	    показывает (strip снимает line_total, но не consumption).
+//	B5а плейсхолдерная цена — ДА: печатает цену, валюту и процент от самой дорогой линии карточки.
+//	B5б инверсия по назначению — ДА: печатает ОБЕ цены с валютами, а агрегатная форма — ещё и
+//	    отношение прозой. Показать её «без цифр» нельзя: фраза «карманка дороже основной» и ЕСТЬ
+//	    утечка соотношения, ради которой цену прячут.
+//	B5в валюта без курса — ДА: называет ВАЛЮТУ линий поимённо, а `b.Currency` strip обнуляет.
+//	B6  CMT не задан — нет, и это НЕ послабление: ровно эту фразу уже везёт оговорка сметы
+//	    (`estimateCaveats`, dto/style_cost_estimate.go), которую stripStyleCostEstimate осознанно
+//	    НЕ снимает. Величины в находке нет — есть имя незаполненного поля.
+//	B7  CMT без опоры по SMV — нет по тому же правилу (величины нет, есть покрытие нормой, которое
+//	    C7 печатает открыто). И отдельно: B6 и B7 — ДВЕ ВЕТКИ ОДНОГО предиката `CmtCost.Valid`.
+//	    Пометить одну и не пометить другую нельзя: молчание обеих само сообщало бы тот самый бит
+//	    «cmt задан», который пометка якобы прячет. Либо обе, либо ни одной — выбрано «ни одной»,
+//	    потому что тот же бит уже опубликован оговоркой сметы.
+//	B8  wastage — нет: `wastage_percent` strip НЕ снимает, аккаунт видит его на самой строке BOM.
+//	    «Гроссит стоимость на треть» — отношение стоимости к самой себе, ни одной суммы.
+//
+// ИНВАРИАНТ, НА КОТОРОМ СТОИТ РЕДАКТИРОВАНИЕ В ОБРАБОТЧИКЕ: ни одна денежная находка не имеет
+// категории readiness. Иначе на черновике она уехала бы ВНУТРЬ схлопнутой находки (§3.0), у
+// которой Money=false, и подавление по флагу пронесло бы деньги мимо себя. Закреплено тестом
+// TestNoMoneyFindingIsReadiness — трогать классификацию, не прочитав его, нельзя.
+//
 // РЕГИСТРАЦИЯ — В ЭТОМ ФАЙЛЕ (analysis.go после T2 не трогает никто; у маршрута своя строка в
 // route.go, у готовности — своя в readiness.go).
 var _ = register(
@@ -432,6 +462,7 @@ func checkB5aPlaceholderPrice(v *cardView) []Finding {
 			Finding: Finding{
 				Category: CategoryQuestion,
 				Severity: SeverityWarning,
+				Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
 				Title:    aiBoundedText(fmt.Sprintf("Is %q priced or is that a placeholder?", b.Name), 90),
 				Detail: reason + ". A roll-goods line at that price either is a genuine bargain or is a " +
 					"number somebody typed to get past the form — and the plan cost of every garment " +
@@ -446,6 +477,7 @@ func checkB5aPlaceholderPrice(v *cardView) []Finding {
 		return Finding{
 			Category: CategoryQuestion,
 			Severity: SeverityWarning,
+			Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
 			Title: fmt.Sprintf("%d of %d roll-goods lines look priced with a placeholder",
 				missing, applicable),
 			Detail: "These lines are priced at zero or at a tenth of the card's dearest fabric line — " +
@@ -524,6 +556,7 @@ func checkB5bPurposeInversion(v *cardView) []Finding {
 			Finding: Finding{
 				Category: CategoryQuestion,
 				Severity: SeverityWarning,
+				Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
 				Title:    aiBoundedText(fmt.Sprintf("%q costs more per metre than the main fabric", b.Name), 90),
 				Detail: fmt.Sprintf("%q (purpose %q) is %s %s per metre; the main fabric %q is %s %s. "+
 					"The lining and the pocketing of a garment are normally the cheap half of it — either "+
@@ -540,6 +573,7 @@ func checkB5bPurposeInversion(v *cardView) []Finding {
 		return Finding{
 			Category: CategoryQuestion,
 			Severity: SeverityWarning,
+			Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
 			Title: fmt.Sprintf("%d of %d lining/pocketing lines cost more per metre than every main fabric",
 				missing, applicable),
 			Detail: "The cheap half of the garment prices dearer than the main cloth on these lines.",
@@ -604,6 +638,7 @@ func checkB5cCurrencyWithoutRate(v *cardView) []Finding {
 			Finding: Finding{
 				Category: CategoryBomMismatch,
 				Severity: SeverityWarning,
+				Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
 				Title: aiBoundedText(fmt.Sprintf("%s has no rate to %s: %s %s out of the cost total",
 					code, v.fx.Base, countedLines(len(c.lines)),
 					plural(len(c.lines), "drops", "drop")), 90),
@@ -623,6 +658,7 @@ func checkB5cCurrencyWithoutRate(v *cardView) []Finding {
 		return Finding{
 			Category: CategoryBomMismatch,
 			Severity: SeverityWarning,
+			Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
 			Title: fmt.Sprintf("%d of %d BOM currencies have no rate to %s",
 				missing, applicable, v.fx.Base),
 			Detail: "Lines in these currencies drop out of the base-currency total of the cost estimate, " +
