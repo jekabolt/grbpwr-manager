@@ -180,6 +180,16 @@ func CountablePairRowTotal(pair []*TechCardColorwayUsage, u *TechCardColorwayUsa
 	if bom == nil || !IsCountableSection(bom.Section) {
 		return u.Quantity
 	}
+	if !countablePairContains(pair, u) {
+		// СТРОКА НЕ ИЗ ЭТОЙ ПАРЫ — считается как до 0333, своим числом. Случай законный, а не
+		// защитный: planBomLine резолвит строку рецепта к слоту ДВУМЯ путями (bom_item_id и
+		// легаси-позиция bom_item_index), а пара собирается только по первому (carve-out 0295 в
+		// шапке файла). Значит на слоте, где одно размещение заведено ссылкой, а другое позицией,
+		// читатель законно приходит сюда со строкой вне пары. Ответить ей долей пары нельзя — она
+		// в паре не состоит; ответить «валидным нулём» тем более: костинг молча потерял бы её
+		// деньги, а готовность увидела бы норму там, где строка её не несёт.
+		return u.Quantity
+	}
 	total, basis := CountablePairTotal(pair, bom)
 	if basis == CountableBasisNone {
 		// Ни слот, ни строки числа не дают: строка отвечает ровно тем, что на ней есть (обычно
@@ -211,6 +221,17 @@ func countablePairResidual(pair []*TechCardColorwayUsage, total decimal.Decimal,
 		}
 	}
 	return total.Sub(explicit)
+}
+
+// countablePairContains — состоит ли строка в паре. Сравнение по указателю, по той же причине и с
+// тем же требованием к вызывающему, что у isCountablePairCarrier ниже.
+func countablePairContains(pair []*TechCardColorwayUsage, u *TechCardColorwayUsage) bool {
+	for _, p := range pair {
+		if p == u {
+			return true
+		}
+	}
+	return false
 }
 
 // isCountablePairCarrier — носитель остатка пары: её ПЕРВАЯ строка в порядке рецепта. Сравнение по

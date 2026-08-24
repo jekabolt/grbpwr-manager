@@ -268,3 +268,42 @@ func TestCountableSlotDoesNotShadowPerSizeConsumption(t *testing.T) {
 	pair := CountablePairUsages(rec, slot)
 	require.False(t, rec[0].LineTotal(slot, pair).Valid, "деньги пер-размерной строки живут в SizeRunTotal")
 }
+
+// TestCountableRowOutsidePairKeepsItsOwnNumber — СТРОКА, НЕ ВХОДЯЩАЯ В ПАРУ, СЧИТАЕТСЯ КАК ДО 0333.
+//
+// Случай не выдуман: planBomLine (dto/production_material_plan.go) резолвит строку рецепта к слоту
+// ДВУМЯ путями — по bom_item_id и по легаси-позиции bom_item_index, — а пара собирается ТОЛЬКО по
+// первому (carve-out 0295 в шапке countable.go). Значит на слоте с двумя размещениями, где одно
+// заведено ссылкой, а второе позицией, читатель законно приходит сюда со строкой, которой в паре
+// нет. Не отличив её, функция отвечала бы «валидный ноль» — то есть костинг молча терял бы деньги
+// позиционной строки, а готовность видела бы норму там, где строка её не несёт.
+//
+// Граница проверяется в обе стороны: строка вне пары получает СВОЁ число (или его отсутствие), а
+// сумма по самой паре при этом остаётся нетронутой — остаток по-прежнему лежит ровно на носителе.
+func TestCountableRowOutsidePairKeepsItsOwnNumber(t *testing.T) {
+	slot := cnSlot(func(b *TechCardBomItem) {
+		b.QtyPerGarment = cnDec("6")
+		b.SpareQty = cnDec("1")
+	})
+	rec := cnRecipe(cnRow(77, nil))
+	pair := CountablePairUsages(rec, slot)
+	require.Len(t, pair, 1)
+
+	// Легаси-строка того же слота, адресующая его позицией: bom_item_id не заполнен, в пару она
+	// поэтому не входит — и не имеет права получить ни доли пары, ни валидного нуля вместо ответа.
+	legacy := &TechCardColorwayUsage{BomItemIndex: sql.NullInt32{Int32: 0, Valid: true}}
+	require.False(t, CountablePairRowTotal(pair, legacy, slot).Valid,
+		"строка вне пары без своего количества обязана отвечать «нормы нет», а не нулём")
+
+	legacyWithQty := &TechCardColorwayUsage{
+		BomItemIndex: sql.NullInt32{Int32: 0, Valid: true},
+		Quantity:     cnDec("3"),
+	}
+	got := CountablePairRowTotal(pair, legacyWithQty, slot)
+	require.True(t, got.Valid)
+	require.Equal(t, "3", got.Decimal.String(),
+		"строка вне пары стоит ровно столько, сколько на ней написано — как до 0333")
+
+	// Носитель не пострадал: 6 слота + 1 запас по-прежнему на нём и ровно один раз.
+	require.Equal(t, "7", CountablePairRowTotal(pair, pair[0], slot).Decimal.String())
+}
