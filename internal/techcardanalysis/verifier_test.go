@@ -1,12 +1,16 @@
 package techcardanalysis
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 )
 
 // ── ВЕРИФИКАТОР §8: ТЕСТЫ ───────────────────────────────────────────────────────────────────────
@@ -847,4 +851,359 @@ func lastRunes(s string, n int) string {
 		return s
 	}
 	return string(r[len(r)-n:])
+}
+
+// ── §12 / T15: ДЕНЕЖНЫЙ СКРИН МОДЕЛЬНЫХ НАХОДОК ────────────────────────────────────────────────
+//
+// Скрин закрывает дыру, которую машинная половина уже закрыла флагом рядом с проверкой: аудит
+// классифицирован rd(SectionTechCards), а GetTechCard тому же аккаунту режет unit_price и currency
+// (stripTechCardCosting). Промпт кладёт цены НАМЕРЕННО — значит, модель может процитировать цену в
+// любой находке, и без скрина такая находка проезжает redactMoneyFindings насквозь.
+//
+// Карточка 8 несёт строки BOM в EUR и PLN при базе EUR, поэтому ценовой блок в её промпте есть, и
+// скрин на ней ВЗВЕДЁН. Кейсы «не деньги» проверяются на ней же — иначе «не помечено» ничего не
+// доказывало бы: на разоружённом скрине не помечено ВСЁ.
+
+// msFinding builds a model finding whose ONLY interesting text is `detail`: заголовок нейтрален (ни
+// ценового слова, ни цифры), suggestion и evidence пусты, якорь — живой `card`. Кейс, склеивший
+// ценовое слово из заголовка с числом из детали, мерил бы фикстуру, а не правило.
+func msFinding(detail string) rawFinding {
+	return rawFinding{
+		Category: CategoryQuestion, Severity: SeverityWarning,
+		Title: "Question on the BOM", Detail: detail,
+		Refs: []string{RefCard}, Confidence: ConfidenceLikely,
+	}
+}
+
+// msVerifyOne runs one finding through the verifier and returns it, failing if it did not survive.
+func msVerifyOne(t *testing.T, f rawFinding, card *cardView, machine []Finding) Finding {
+	t.Helper()
+	findings, _, _, stats, err := VerifyModelOutput(oneFinding(t, f), card, machine)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("the case finding did not survive verification (%d kept, drops: %+v) — the case "+
+			"measures the money flag and cannot measure it on a dropped finding", len(findings), stats.Drops)
+	}
+	return findings[0]
+}
+
+func TestVerifyModelOutputMoneyScreen(t *testing.T) {
+	card := verifierCard(t)
+
+	cases := []struct {
+		name   string
+		detail string
+		refs   []string
+		want   bool
+		why    string
+	}{{
+		name:   "quotes a card currency with its figure",
+		detail: "The lining line is priced at 1.0000 EUR/m, which reads like a placeholder.",
+		want:   true,
+		why:    "величина И валюта — ровно то, что stripTechCardCosting вырезает из самой карточки",
+	}, {
+		name:   "names a card currency with no figure at all",
+		detail: "The BOM mixes PLN lines and EUR lines without saying why.",
+		want:   true,
+		why:    "currency вырезается из строки BOM наравне с unit_price: назвать её значит раскрыть её",
+	}, {
+		name:   "a comparative price relation with NO figures",
+		detail: "The pocketing costs more per metre than the main fabric, which reads like a mix-up.",
+		want:   true,
+		why: "отношение течёт без цифр: redactMoneyFindings отверг «показать находку без цифр» " +
+			"именно на этом примере",
+	}, {
+		name:   "a superlative price relation with NO figures",
+		detail: "The pocketing is the dearest line in this BOM, and that is worth confirming.",
+		want:   true,
+		why:    "«самая дорогая строка» называет ПОРЯДОК закупочных цен",
+	}, {
+		name:   "a ratio in percent",
+		detail: "The pocketing sits at 140% of the main fabric price.",
+		want:   true,
+		why:    "процент — то же отношение, записанное знаком",
+	}, {
+		name:   "a price word bound to a figure, currency lowercase",
+		detail: "The lining is priced at 60 pln a metre.",
+		want:   true,
+		why:    "строчный код не ловится правилом валюты — его ловит правило «число при ценовом слове»",
+	}, {
+		name:   "a currency SIGN",
+		detail: "The trim is quoted in € on the supplier sheet, not on this card.",
+		want:   true,
+		why:    "знак валюты (Unicode Sc) однозначен сам по себе",
+	}, {
+		name:   "a bom anchor and NO money content",
+		detail: "The lining BOM line has no material linked.",
+		refs:   []string{RefBom("подкладка")},
+		want:   false,
+		why: "якорь bom: — АДРЕС, а не деньги; спрятать эту находку значит спрятать её от технолога, " +
+			"который имеет на неё право (ограничение 2)",
+	}, {
+		name:   "the NAME of a missing fact, next to an operation number",
+		detail: "The lining line at op 470 has no price and no price_source.",
+		want:   false,
+		why: "stripTechCardCosting осознанно оставляет `no_price` и `price_source` видимыми; 470 — " +
+			"адрес шага, а не величина",
+	}, {
+		name:   "a COUNT of missing facts",
+		detail: "2 of 4 fabric lines are unpriced.",
+		want:   false,
+		why:    "счёт недостающих фактов — не величина; окно moneyBindRunes проведено именно здесь",
+	}, {
+		name:   "the NAME of a missing fact, next to a hash-written step number",
+		detail: "The lining line at #470 has no price.",
+		want:   false,
+		why: "«#470» — та же форма адреса, которую терпит parseOpNumber; без этой ветви число " +
+			"стояло бы в восьми рунах от слова «price»",
+	}, {
+		name:   "a garment word that merely starts with a price stem",
+		detail: "The costume needs 2 extra passes at op 120.",
+		want:   false,
+		why: "«costume» начинается на «cost», и число стоит от него в десяти рунах: префиксный " +
+			"матч вместо матча по целому слову пометил бы деньгами находку про костюм",
+	}, {
+		name:   "a plain construction finding",
+		detail: "The step joins shell and lining in one pass, which the route does not allow.",
+		want:   false,
+		why:    "ни валюты, ни величины, ни отношения",
+	}}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := msFinding(c.detail)
+			if len(c.refs) > 0 {
+				f.Refs = c.refs
+			}
+			got := msVerifyOne(t, f, card, nil)
+			if got.Money != c.want {
+				t.Errorf("Money=%v, want %v for %q\nпочему: %s", got.Money, c.want, c.detail, c.why)
+			}
+			// ИНВАРИАНТ §12 НА МОДЕЛЬНОЙ ПОЛОВИНЕ: денежная находка не может нести readiness. На
+			// черновике класс readiness схлопывается в одну находку с Money=false, и денежная
+			// находка отмылась бы этим схлопыванием.
+			if got.Money && got.Category == CategoryReadiness {
+				t.Errorf("finding %q is BOTH money and readiness — on a draft the collapse would "+
+					"launder it past redactMoneyFindings", got.Title)
+			}
+		})
+	}
+}
+
+// TestVerifyModelOutputMoneyScreenReadsEveryDrawnField pins that the screen reads the SAME four
+// fields the client draws. Валюта в suggestion раскрыта ровно настолько же, насколько в detail, а
+// evidence не верифицируется (§8 п.3) — но рисуется.
+func TestVerifyModelOutputMoneyScreenReadsEveryDrawnField(t *testing.T) {
+	card := verifierCard(t)
+	for _, c := range []struct {
+		field string
+		build func() rawFinding
+	}{
+		{"title", func() rawFinding {
+			f := msFinding("Nothing about money here.")
+			f.Title = "The lining runs 1.0000 EUR/m"
+			return f
+		}},
+		{"detail", func() rawFinding { return msFinding("The lining runs 1.0000 EUR/m.") }},
+		{"suggestion", func() rawFinding {
+			f := msFinding("Nothing about money here.")
+			f.Suggestion = "Reprice the line from the catalog; 1.0000 EUR/m is not credible."
+			return f
+		}},
+		{"evidence", func() rawFinding {
+			f := msFinding("Nothing about money here.")
+			f.Evidence = []string{"подкладка | 1.0000 EUR/m"}
+			return f
+		}},
+	} {
+		t.Run(c.field, func(t *testing.T) {
+			if got := msVerifyOne(t, c.build(), card, nil); !got.Money {
+				t.Errorf("a purchase price in %s is not flagged money — the client draws that field, "+
+					"so the price reaches the account exactly as far as one in detail", c.field)
+			}
+		})
+	}
+}
+
+// msNoPriceBlock asserts the stand really does render NO price block, and returns it. Без этой
+// проверки «не помечено деньгами» доказывало бы лишь то, что фикстура тихо перестала быть тем, чем
+// её задумали.
+func msNoPriceBlock(t *testing.T, card *entity.TechCard) *entity.TechCard {
+	t.Helper()
+	ctx, ok := BuildPromptContext(PromptInput{Card: card})
+	if !ok {
+		t.Fatalf("BuildPromptContext refused the fixture — the agreement below cannot be measured")
+	}
+	if ctx.PricesIncluded {
+		t.Fatalf("the stand still renders a price block: PricesIncluded=true")
+	}
+	return card
+}
+
+// TestVerifyModelOutputMoneyScreenIsDisarmedWithoutPrices is design constraint 5: if the price block
+// did not render, WE could not have taught the model a price, and screening its findings would hide
+// them for nothing.
+//
+// ОБЕ ФИКСТУРЫ ОСТАВЛЯЮТ ВАЛЮТЫ НА МЕСТЕ. Карточка без валют разоружила бы скрин ВТОРЫМ способом
+// (матчить нечего), и тест не отличил бы «не взведён» от «нечего искать».
+func TestVerifyModelOutputMoneyScreenIsDisarmedWithoutPrices(t *testing.T) {
+	noAmount := card8()
+	for i := range noAmount.BomItems {
+		noAmount.BomItems[i].UnitPrice = decimal.NullDecimal{}
+	}
+	// ЦЕНА БЕЗ ВАЛЮТЫ НЕ ПЕЧАТАЕТСЯ ВОВСЕ (promptBomLineOf: «величина, валюта и единица вместе»).
+	// Эта фикстура — та самая, на которой правило, переписанное в скрине заново («есть ли на строке
+	// unit_price»), разошлось бы с рендером: величины есть, ценового блока нет.
+	noCurrency := card8()
+	for i := range noCurrency.BomItems {
+		noCurrency.BomItems[i].Currency = sql.NullString{}
+	}
+
+	for _, stand := range []struct {
+		name string
+		card *entity.TechCard
+	}{
+		{"no unit_price on any line", noAmount},
+		{"unit_price but no currency", noCurrency},
+	} {
+		card := stand.card
+		t.Run(stand.name, func(t *testing.T) {
+			msNoPriceBlock(t, card)
+			view := newCardView(card, Fx{Base: "EUR"})
+
+			// АГРЕГАТ ПРОТИВ РЕНДЕРЕРА: взвод скрина обязан совпадать с PricesIncluded, посчитанным
+			// сборщиком контекста. Разойдясь, они разойдутся молча.
+			ctx, _ := BuildPromptContext(PromptInput{Card: card})
+			if armed := newMoneyScreen(view, nil).armed; armed != ctx.PricesIncluded {
+				t.Errorf("screen armed=%v but PromptContext.PricesIncluded=%v — the screen and the "+
+					"prompt renderer disagree about whether a price was shown to the model", armed, ctx.PricesIncluded)
+			}
+
+			got := msVerifyOne(t, msFinding("The lining line is priced at 1.0000 EUR/m."), view, nil)
+			if got.Money {
+				t.Errorf("a finding is flagged money on a card whose prompt carried no price block — " +
+					"the model could not have learned a price from us, and the flag only hides a " +
+					"finding from an account entitled to it")
+			}
+		})
+	}
+}
+
+// TestVerifyModelOutputMoneyScreenArmsOnAFiledMachineMoneyFinding covers the SECOND price channel of
+// the prompt, the one PromptContext.PricesIncluded does not see: buildFiled copies every machine
+// finding into the context verbatim, prices and all. A card whose BOM prints no price block can
+// still hand the model «"подкладка" is priced at zero» through FILED.
+func TestVerifyModelOutputMoneyScreenArmsOnAFiledMachineMoneyFinding(t *testing.T) {
+	card := card8()
+	for i := range card.BomItems {
+		card.BomItems[i].UnitPrice = decimal.NullDecimal{}
+	}
+	msNoPriceBlock(t, card)
+	view := newCardView(card, Fx{Base: "EUR"})
+
+	filed := []Finding{{
+		Source: SourceMachine, Category: CategoryQuestion, Severity: SeverityWarning, Money: true,
+		Title: `Is "подкладка" priced or is that a placeholder?`,
+		Refs:  []string{RefBom("подкладка")},
+	}}
+	got := msVerifyOne(t, msFinding("The lining line is priced at 1.0000 EUR/m."), view, filed)
+	if !got.Money {
+		t.Error("the screen stayed disarmed although a MONEY machine finding was filed into the " +
+			"prompt's FILED block — that block is a price channel of its own, and the model can " +
+			"quote it straight back")
+	}
+}
+
+// TestVerifyModelOutputMoneyScreenMatchesCurrencyCase is the guard on the one decision inside
+// namesCurrency that a reader would «simplify» first: сопоставление кода валюты УЧИТЫВАЕТ РЕГИСТР.
+//
+// Коды ISO — сплошь английские слова: TRY, ALL, TOP, CUP, GEL, BAM. На карточке, номинированной в
+// TRY, регистронезависимый матч пометил бы деньгами КАЖДУЮ находку со словом «try» — то есть почти
+// каждую, потому что «try a different seam class» это обычная фраза технолога. Денежный фильтр,
+// прячущий половину ревью, — не фильтр, а глушилка: находку он прячет НЕОТЛИЧИМО от «находки нет».
+//
+// Обе половины проверяются на ОДНОЙ карточке: без положительной половины тест был бы зелен и на
+// скрине, который не ищет валюту вовсе.
+func TestVerifyModelOutputMoneyScreenMatchesCurrencyCase(t *testing.T) {
+	card := card8()
+	for i := range card.BomItems {
+		card.BomItems[i].Currency = sql.NullString{String: "TRY", Valid: true}
+	}
+	view := newCardView(card, Fx{Base: "TRY"})
+	if ctx, _ := BuildPromptContext(PromptInput{Card: card}); !ctx.PricesIncluded {
+		t.Fatalf("the stand renders no price block, so the screen is disarmed and the case would " +
+			"pass on a screen that never looks at currencies at all")
+	}
+
+	for _, c := range []struct {
+		name   string
+		detail string
+		want   bool
+		why    string
+	}{{
+		name:   "the code as an ordinary English verb, lowercase",
+		detail: "Try a different seam class here: the default does not suit a wool blazer.",
+		want:   false,
+		why:    "«try» строчными — глагол, а не валюта карточки",
+	}, {
+		name:   "the code inside a longer lowercase word",
+		detail: "The industry standard for this seam is a different class.",
+		want:   false,
+		why:    "«indusTRY» — не слово «TRY» даже без учёта регистра: граница слова тоже держит",
+	}, {
+		name:   "the code as the card's currency, uppercase",
+		detail: "The pocketing line on this card is quoted in TRY, unlike the rest of the BOM.",
+		want:   true,
+		why:    "в промпте код печатается заглавными — заглавными его модель и повторяет",
+	}} {
+		t.Run(c.name, func(t *testing.T) {
+			got := msVerifyOne(t, msFinding(c.detail), view, nil)
+			if got.Money != c.want {
+				t.Errorf("Money=%v, want %v for %q\nпочему: %s", got.Money, c.want, c.detail, c.why)
+			}
+		})
+	}
+}
+
+// TestModelFindingsNeverCarryAMachineCategory is design constraint 6 on the model half.
+//
+// Модельные находки не должны пользоваться машинными категориями ВООБЩЕ. Ставка на readiness —
+// прямая: на черновике класс readiness схлопывается в ОДНУ находку, собранную заново и потому с
+// Money=false (CollapseReadiness), и денежная модельная находка с этой категорией отмылась бы
+// схлопыванием мимо redactMoneyFindings. Integrity и assembly проверяются тем же кейсом, потому что
+// закрытость списка — одно свойство, а не три.
+func TestModelFindingsNeverCarryAMachineCategory(t *testing.T) {
+	machineOnly := []string{CategoryReadiness, CategoryIntegrity, CategoryAssembly}
+
+	// Половина первая: ЗАКРЫТОСТЬ СПИСКА. Коэрция §8 п.1 держится ровно на этой карте — член,
+	// добавленный в неё, проехал бы верификатор нетронутым.
+	for _, cat := range machineOnly {
+		if ValidModelCategories[cat] {
+			t.Errorf("%q is in ValidModelCategories — the model would keep a machine-only category, "+
+				"and on a draft a money finding in class readiness would be laundered by the collapse", cat)
+		}
+	}
+
+	// Половина вторая: ПОВЕДЕНИЕ. Находка, назвавшаяся машинной категорией И процитировавшая цену,
+	// обязана выйти вопросом, сохранив денежный флаг.
+	card := verifierCard(t)
+	for _, cat := range machineOnly {
+		t.Run(cat, func(t *testing.T) {
+			f := msFinding("The lining line is priced at 1.0000 EUR/m.")
+			f.Category = cat
+			got := msVerifyOne(t, f, card, nil)
+			if got.Category == cat {
+				t.Errorf("a model finding kept the machine-only category %q", cat)
+			}
+			if got.Category != CategoryQuestion {
+				t.Errorf("category %q was coerced to %q, want %q", cat, got.Category, CategoryQuestion)
+			}
+			if !got.Money {
+				t.Error("the money flag was lost while the category was coerced — the finding quotes " +
+					"a purchase price and would reach an account without costing:read")
+			}
+		})
+	}
 }

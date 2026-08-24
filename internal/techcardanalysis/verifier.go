@@ -148,6 +148,7 @@ func VerifyModelOutput(raw string, card *cardView, machineFindings []Finding) (
 
 	res := newRefResolver(card)
 	machineAnchors := anchorSets(machineFindings)
+	money := newMoneyScreen(card, machineFindings)
 	emitted := *out.Findings
 	stats.Emitted = len(emitted)
 
@@ -177,7 +178,7 @@ func VerifyModelOutput(raw string, card *cardView, machineFindings []Finding) (
 			continue
 		}
 
-		kept = append(kept, Finding{
+		f := Finding{
 			Source:      SourceModel,
 			Category:    category,
 			Severity:    severity,
@@ -188,7 +189,13 @@ func VerifyModelOutput(raw string, card *cardView, machineFindings []Finding) (
 			InsertAfter: coerceInsertAfter(mf.InsertAfter, category, res, &stats),
 			Suggestion:  aiBoundedText(mf.Suggestion, maxFindingSuggestionRunes),
 			Confidence:  confidence,
-		})
+		}
+		// ДЕНЕЖНЫЙ СКРИН — ПО ГОТОВОЙ НАХОДКЕ И ПОСЛЕДНИМ ДЕЙСТВИЕМ. Скрин обязан читать ровно то,
+		// что уедет читателю: категорию ПОСЛЕ коэрции и тексты ПОСЛЕ капов §8 п.7. Поставить флаг
+		// по сырому modelFinding значило бы судить о раскрытии по строке, которой на экране не
+		// будет.
+		f.Money = money.flags(&f)
+		kept = append(kept, f)
 	}
 
 	// Порог смерти (§8 п.5) — ДО обрезки: знаменатель это выпущенное моделью, а не то, что
@@ -798,6 +805,344 @@ func topologyClaim(mf *modelFinding, card *cardView) (string, bool) {
 	}
 	return "", false
 }
+
+// ── ДЕНЕЖНЫЙ СКРИН МОДЕЛЬНЫХ НАХОДОК (design §12, T15) ─────────────────────────────────────────
+//
+// ЗАЧЕМ ОН СУЩЕСТВУЕТ. Аудит классифицирован rd(SectionTechCards), и эта аудитория ШИРЕ костинговой:
+// аккаунт с tech_cards:read и без costing:read до RPC доходит, а GetTechCard тому же аккаунту отдаёт
+// карточку с вырезанными unit_price и currency (stripTechCardCosting). Машинная половина границу уже
+// держит — Finding.Money ставится РЯДОМ С ПРОВЕРКОЙ (bom.go, три места), обработчик режет по флагу
+// (redactMoneyFindings). Модельная не держала её ничем, а промпт кладёт закупочные цены в контекст
+// НАМЕРЕННО (⚠️ ДЕНЬГИ на PromptBomLine.Price): без них из ревью исчезает целый класс находок,
+// отданный §2 модели. Значит, модель может процитировать цену В ЛЮБОЙ своей находке, и без скрина
+// такая находка проезжает ровно тот фильтр, который ради неё и построен.
+//
+// ГРАНИЦА — ТА ЖЕ, ЧТО У stripTechCardCosting: ВЕЛИЧИНА, ВАЛЮТА И ОТНОШЕНИЕ ВЕЛИЧИН — ДЕНЬГИ; ИМЯ
+// НЕДОСТАЮЩЕГО ФАКТА — НЕ ДЕНЬГИ. Тот файл осознанно оставляет видимыми `price_source` и причину
+// `no_price`, и по тому же правилу «у подкладочной строки не проставлена цена» деньгами здесь НЕ
+// является: это не цена, а её отсутствие, и технолог, которому карточку чинить, обязан это видеть.
+//
+// ЦЕНА ОБЕИХ ОШИБОК, И ГДЕ ПРОВЕДЕНА ЧЕРТА (ограничение 1). Недофлаг публикует закупочную цену
+// аккаунту, у которого её вырезают из самой карточки: утечка тихая и необратимая. Перефлаг прячет
+// настоящую находку от технолога, который на неё имеет право, и прячет НЕОТЛИЧИМО ОТ «находки нет»
+// — обработчик дропает находку целиком, оставляя одну и ту же неизменную строку not_checked.
+// Поэтому черта проведена НЕ по «есть ли в тексте цифра» (в находке о маршруте цифра есть почти
+// всегда — это номер шага) и НЕ по «есть ли якорь bom:» (это адрес, а не деньги), а по трём
+// узнаваемым ФОРМАМ РАСКРЫТИЯ. Каждая требует либо одного однозначного признака, либо ДВУХ
+// совпавших:
+//
+//	1. НАЗВАНА ВАЛЮТА, КОТОРОЙ КАРТОЧКА МОГЛА НАУЧИТЬ, ЛИБО ЗНАК ВАЛЮТЫ — единица величины;
+//	2. ЦЕНОВОЕ СЛОВО + ЧИСЛО ПРИ НЁМ                                    — сама величина;
+//	3. ЦЕНОВОЕ СЛОВО + СРАВНЕНИЕ                                        — ОТНОШЕНИЕ, БЕЗ ЦИФР.
+//
+// ПУНКТ 3 — ЭТО ОТВЕТ НА КЛАСС «ОТНОШЕНИЕ БЕЗ ВЕЛИЧИН» (ограничение 3). «The pocketing costs more
+// per metre than the main fabric» не содержит ни числа, ни валюты, но сообщает ПОРЯДОК закупочных
+// цен двух строк. Обработчик уже отказался публиковать это половинчато — «показать находку без
+// цифр» рассмотрено и отвергнуто в redactMoneyFindings теми же словами и на этом же примере, — и
+// если бы скрин ловил только цифры, запрет держался бы ровно на машинной половине, а на модельной
+// не держался бы вовсе.
+//
+// ЯКОРЯ НЕ ЧИТАЮТСЯ ВОВСЕ, И ЭТО РЕШЕНИЕ (ограничение 2). Ссылка `bom:<имя>` — АДРЕС. «The lining
+// BOM line has no material linked» цитирует имя строки, которое тот же аккаунт видит в GetTechCard,
+// и денег в ней нет ни одной формы; спрятать её значило бы перефлагнуть ровно тот случай, ради
+// которого граница проведена по СОДЕРЖАНИЮ, а не по разделу карточки.
+
+const (
+	// moneyBindRunes — сколько рун между ценовым словом и числом ещё считается «число ПРИ этом
+	// слове». Двенадцать — это «priced at 1.00», «costs 60 per metre», «at a price of 55», и это
+	// НЕ «4 fabric lines are unpriced» (восемнадцать рун между «4» и «unpriced»), то есть счёт
+	// НЕДОСТАЮЩИХ фактов остаётся видимым.
+	moneyBindRunes = 12
+	// minCurrencyCodeRunes — короче этого строка валюты матчером не становится (см. addCurrency).
+	minCurrencyCodeRunes = 3
+)
+
+// moneyPriceWords — вокабуляр ДЕНЕГ, и это ЕДИНСТВЕННЫЙ список констант в этом разделе.
+//
+// ПОЧЕМУ ИМЕННО ОН — СПИСОК, А ВАЛЮТЫ — НЕТ (ограничение 4). Множество валют растёт с каждым новым
+// поставщиком, и список валют в этом файле был бы местом, куда новая валюта не попадёт: карточка в
+// CZK утекла бы целиком и молча. Множество английских слов о цене не растёт ни от одного изменения
+// карточки, вывести его из карточки неоткуда, и заменить его на «любое слово» нельзя — «no price on
+// the lining line» это ИМЯ НЕДОСТАЮЩЕГО ФАКТА и по границе stripTechCardCosting деньгами не
+// является.
+//
+// Формы перечислены явно, а не стеммингом по «cost»/«price»: «costume» — законное слово этой
+// предметной области, и префиксный матч пометил бы деньгами находку про костюм.
+var moneyPriceWords = []string{
+	"price", "prices", "priced", "unpriced", "pricing", "pricey", "pricier", "priciest",
+	"cost", "costs", "costed", "costing", "costly",
+	"cheap", "cheaper", "cheapest", "expensive", "dear", "dearer", "dearest",
+	"margin", "markup",
+}
+
+// moneyComparators — слова, которыми ОТНОШЕНИЕ величин выражается без самих величин.
+//
+// Голые «more», «over», «above» сюда НЕ входят: они несут сравнение слишком часто и ни разу
+// однозначно («more passes than needed» — не про деньги), и вместе с ценовым словом дали бы
+// перефлаг на ровном месте. «than» несёт ровно сравнение и ничего больше; сравнительные и
+// превосходные степени самих ценовых прилагательных стоят в обоих списках намеренно — «the dearest
+// fabric line» называет ПОРЯДОК, не назвав ни одной цифры.
+var moneyComparators = []string{
+	"than", "twice", "double", "doubled", "half", "percent", "ratio", "exceed", "exceeds",
+	"cheaper", "cheapest", "dearer", "dearest", "pricier", "priciest",
+}
+
+// moneyOpAnchors — слова, после которых число это АДРЕС ШАГА, а не величина.
+//
+// Грамматика та же, которой ссылки читают splitSigil и parseOpNumber, и это не совпадение: «the
+// lining line at op 470 has no price» ОБЯЗАНО остаться видимым (имя недостающего факта), а без
+// этой оговорки число 470 стояло бы в восьми рунах от слова «price» и находка ушла бы в деньги.
+var moneyOpAnchors = map[string]bool{
+	"op": true, "ops": true, "operation": true, "operations": true, "step": true, "steps": true,
+}
+
+// moneyScreen is the per-run screen: what this card could have taught the model about money, and
+// whether it taught it anything at all.
+type moneyScreen struct {
+	// armed — промпт ЭТОГО прогона мог научить модель денежному факту. Пока false, скрин молчит
+	// (ограничение 5): ценового блока в контексте не было, и цитировать модели нечего.
+	armed bool
+	// currencies — коды валют ЭТОЙ карточки плюс база контура, заглавными.
+	currencies map[string]bool
+}
+
+// newMoneyScreen derives the screen from the card and from the run's own machine findings.
+//
+// ВЗВОД СЧИТАЕТСЯ ПО ФАКТУ РЕНДЕРА И ТОЙ ЖЕ ФУНКЦИЕЙ, КОТОРАЯ РИСУЕТ ПРОМПТ (promptBomLineOf).
+// Правило «цена печатается, только когда есть И величина, И валюта» написанное здесь заново — это
+// два правила, которые однажды разойдутся, и разойдутся МОЛЧА: скрин решит, что цен в промпте не
+// было, ровно тогда, когда они там были. Тот же довод, по которому PromptContext.PricesIncluded
+// считается по факту рендера, а не по «есть ли в карточке цены».
+//
+// ВТОРОЕ СЛАГАЕМОЕ ВЗВОДА — ДЕНЕЖНЫЕ МАШИННЫЕ НАХОДКИ ЭТОГО ЖЕ ПРОГОНА, и оно закрывает ВТОРОЙ
+// канал, которого PricesIncluded не видит. Блок FILED промпта (buildFiled) кладёт в контекст ВСЕ
+// поданные машинные находки дословно, включая B5а/б/в с ценами в заголовке и детали. Карточка, где
+// у строк BOM есть величина, но нет валюты, ценового блока не печатает вовсе — и всё равно печатает
+// в FILED находку «„подкладка“ is priced at zero». Оба слагаемых — данные, уже лежащие у
+// верификатора в руках: machineFindings это ровно то, из чего собран FILED.
+func newMoneyScreen(card *cardView, machineFindings []Finding) *moneyScreen {
+	m := &moneyScreen{currencies: map[string]bool{}}
+	for i := range machineFindings {
+		if machineFindings[i].Money {
+			m.armed = true
+			break
+		}
+	}
+	if card == nil {
+		return m
+	}
+	// База контура — валюта, в которой машинные проверки называют итог («PLN has no rate to EUR»),
+	// и модель видит её в FILED даже на карточке, где ни одна строка в базе не номинирована.
+	m.addCurrency(card.fx.Base)
+	if card.card == nil {
+		return m
+	}
+	for i := range card.card.BomItems {
+		b := &card.card.BomItems[i]
+		m.addCurrency(b.Currency.String)
+		if promptBomLineOf(b).Price != "" {
+			m.armed = true
+		}
+	}
+	return m
+}
+
+// addCurrency keeps a code only if it can be matched as a word at all.
+//
+// Однобуквенный огрызок или строка с цифрой внутри стали бы матчером, срабатывающим на прозе («e» в
+// каждом втором слове), и такой «фильтр» глушил бы ревью целиком вместо того, чтобы прятать деньги
+// — то есть ровно перефлаг, только тотальный. Поле currency в этой схеме несёт код ISO; всё, что на
+// код не похоже, матчить нечем.
+func (m *moneyScreen) addCurrency(code string) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if len([]rune(code)) < minCurrencyCodeRunes {
+		return
+	}
+	for _, r := range code {
+		if !unicode.IsLetter(r) {
+			return
+		}
+	}
+	m.currencies[code] = true
+}
+
+// flags reports whether this model finding discloses money, by the three forms of the section head.
+func (m *moneyScreen) flags(f *Finding) bool {
+	if m == nil || !m.armed || f == nil {
+		return false
+	}
+	text := moneyScreenedText(f)
+	if m.namesCurrency(text) || hasCurrencySymbol(text) {
+		return true
+	}
+	lower := []rune(strings.ToLower(text))
+	words := wordSpans(lower, moneyPriceWords)
+	if len(words) == 0 {
+		// ЦЕНОВОГО СЛОВА НЕТ — ЗНАЧИТ, НЕТ НИ ФОРМЫ 2, НИ ФОРМЫ 3. Обе требуют его вторым
+		// признаком, и это единственное, что удерживает скрин от того, чтобы пометить деньгами
+		// каждую находку с числом.
+		return false
+	}
+	if strings.ContainsRune(text, '%') || len(wordSpans(lower, moneyComparators)) > 0 {
+		return true
+	}
+	return hasBoundMagnitude(lower, words)
+}
+
+// moneyScreenedText is EXACTLY the four fields the client draws, joined.
+//
+// ЧИТАЕТСЯ ТЕКСТ ПОСЛЕ КАПОВ §8 п.7, потому что раскрыто читателю то, что до него доехало, а не то,
+// что модель написала до обрезки. EVIDENCE ВХОДИТ НАРАВНЕ С ОСТАЛЬНЫМИ: она display-only для
+// ВЕРИФИКАЦИИ (§8 п.3 — из-за неё ничего не дропается), но на экране она такой же текст, и валюта в
+// ней раскрыта ровно настолько же, насколько в detail. Refs не читаются намеренно (см. шапку).
+func moneyScreenedText(f *Finding) string {
+	parts := make([]string, 0, 3+len(f.Evidence))
+	parts = append(parts, f.Title, f.Detail, f.Suggestion)
+	parts = append(parts, f.Evidence...)
+	return strings.Join(parts, "\n")
+}
+
+// namesCurrency matches a card currency as an UPPERCASE whole word, and the case-sensitivity is the
+// load-bearing part of the rule.
+//
+// Коды ISO — сплошь и рядом английские слова: TRY (турецкая лира — поставщик ровно того профиля, с
+// которым работает этот бизнес), ALL, TOP, CUP, GEL, BAM. Сопоставление БЕЗ УЧЁТА РЕГИСТРА на
+// карточке в TRY пометило бы деньгами каждую находку со словом «try», то есть почти каждую, и
+// денежный фильтр превратился бы в глушилку ревью. В промпте код печатается заглавными («55.0000
+// PLN/m»), заглавными его модель и повторяет.
+//
+// ЧТО ИЗ ЭТОГО ОСТАЁТСЯ ОТКРЫТЫМ, СКАЗАНО ПРЯМО: «60 pln» строчными этим правилом не ловится.
+// Обычно его ловит форма 2 — ценовое слово при числе, — но находка, написавшая цену строчной
+// валютой и не сказавшая ни одного ценового слова, проедет. Это известная дыра, а не недосмотр:
+// закрыть её регистронезависимостью значит открыть дыру шире, на карточке в TRY.
+func (m *moneyScreen) namesCurrency(text string) bool {
+	if len(m.currencies) == 0 {
+		return false
+	}
+	rs := []rune(text)
+	for code := range m.currencies {
+		if len(wordSpans(rs, []string{code})) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCurrencySymbol reports whether the text carries a currency SIGN.
+//
+// Категория Unicode Sc, а не список глифов: список — снова то место, куда новый знак не попадёт, но
+// в отличие от валют карточки, знак валюты вывести ИЗ КАРТОЧКИ неоткуда, а из Unicode — можно.
+// Знак сам по себе достаточен без второго признака: «€» в находке о конструкции не бывает случайной
+// буквой, в отличие от цифры.
+func hasCurrencySymbol(text string) bool {
+	for _, r := range text {
+		if unicode.Is(unicode.Sc, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasBoundMagnitude — форма 2: число ПРИ ценовом слове.
+//
+// ПОЧЕМУ ОКНО, А НЕ «ЕСТЬ ЛИ ЦИФРА ВООБЩЕ». Находка о маршруте почти всегда содержит номер шага, а
+// находка о готовности — дробь («2 of 4»). Правило «любая цифра рядом со словом price» пометило бы
+// деньгами «2 of 4 fabric lines are unpriced», то есть СЧЁТ НЕДОСТАЮЩИХ ФАКТОВ — ровно то, что
+// граница stripTechCardCosting оставляет видимым.
+func hasBoundMagnitude(rs []rune, words []runeSpan) bool {
+	for i := 0; i < len(rs); {
+		if !unicode.IsDigit(rs[i]) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(rs) && unicode.IsDigit(rs[j]) {
+			j++
+		}
+		if !isOperationAddress(rs, i) {
+			for _, w := range words {
+				if runeGap(w, runeSpan{from: i, to: j}) <= moneyBindRunes {
+					return true
+				}
+			}
+		}
+		i = j
+	}
+	return false
+}
+
+// isOperationAddress reports whether the digit run starting at `at` is the number of an OPERATION —
+// «op:470», «op 470», «operation 470», «step 470», «#470» — and therefore an address, not a
+// magnitude. rs is expected lowercased.
+func isOperationAddress(rs []rune, at int) bool {
+	i := at - 1
+	for i >= 0 && (rs[i] == ' ' || rs[i] == '\t' || rs[i] == ':' || rs[i] == '#') {
+		if rs[i] == '#' {
+			return true
+		}
+		i--
+	}
+	end := i + 1
+	for i >= 0 && unicode.IsLetter(rs[i]) {
+		i--
+	}
+	if i+1 >= end {
+		return false
+	}
+	return moneyOpAnchors[string(rs[i+1:end])]
+}
+
+// runeSpan is a half-open [from, to) range of rune indices.
+type runeSpan struct{ from, to int }
+
+// runeGap is the number of runes between two spans, 0 when they touch or overlap.
+func runeGap(a, b runeSpan) int {
+	if a.to <= b.from {
+		return b.from - a.to
+	}
+	if b.to <= a.from {
+		return a.from - b.to
+	}
+	return 0
+}
+
+// wordSpans finds every WHOLE-WORD occurrence of any needle in rs, in rs's own casing.
+//
+// Граница слова — «сосед не буква и не цифра». ПОДЧЁРКИВАНИЕ СЧИТАЕТСЯ ГРАНИЦЕЙ НАМЕРЕННО:
+// «unit_price» — это слово «price», и модель, процитировавшая имя поля, сказала то же самое.
+func wordSpans(rs []rune, needles []string) []runeSpan {
+	var out []runeSpan
+	for _, needle := range needles {
+		nr := []rune(needle)
+		if len(nr) == 0 {
+			continue
+		}
+		for i := 0; i+len(nr) <= len(rs); i++ {
+			if i > 0 && isWordRune(rs[i-1]) {
+				continue
+			}
+			if end := i + len(nr); end < len(rs) && isWordRune(rs[end]) {
+				continue
+			}
+			if !runesEqualAt(rs, i, nr) {
+				continue
+			}
+			out = append(out, runeSpan{from: i, to: i + len(nr)})
+		}
+	}
+	return out
+}
+
+func runesEqualAt(rs []rune, at int, needle []rune) bool {
+	for k, r := range needle {
+		if rs[at+k] != r {
+			return false
+		}
+	}
+	return true
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // ── КАПЫ ТЕКСТОВ (§8 п.7) ──────────────────────────────────────────────────────────────────────
 
