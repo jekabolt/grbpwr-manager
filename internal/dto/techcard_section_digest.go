@@ -978,21 +978,93 @@ func equipmentProfilesTail(c *entity.TechCardConstruction) any {
 // INPUT TO A DERIVATION rather than a grouping. Today `kind` only buckets lines for a screen. If it
 // ever picks a costing rule, a consumption unit, an assembly step or anything the card's OUTPUT
 // depends on, then "these buttons are now snaps" changes what is made, the MATERIALS signature must
-// move with it, and the field must be folded in — as a POSITIONAL TAIL, appended only when filled
-// (see constructionProjection's cut_symmetry note for why an unconditional element restamps every
-// card in the database at deploy time instead of only the ones somebody actually answered).
+// move with it, and the field must be folded in — as a TAGGED PAIR TAIL, emitted only when filled
+// (see materialsTails below, and constructionProjection's cut_symmetry note for why an unconditional
+// element restamps every card in the database at deploy time instead of only the ones somebody
+// actually answered).
+//
+// ЭТОТ АБЗАЦ РАНЬШЕ ПРЕДПИСЫВАЛ «ПОЗИЦИОННЫЙ ХВОСТ», И ИСПРАВЛЕНО ЭТО НЕ РАДИ СЛОВА. Позиционный
+// хвост закрывает ровно половину задачи: байты строки, где поле пусто, он действительно не двигает,
+// но СОСТАВ хвоста замораживает навсегда — дописать в уже рождённый позиционный массив второе поле
+// нельзя ни в конец, ни в середину, потому что длина и порядок входят в байты. Расплату за это уже
+// увидели на шаге: дописать поле было некуда, и под тегом "press" завелись ДВА хвоста разной формы,
+// различимые только по форме (довод — у кортежа шага в constructionProjection). Поэтому здесь, как
+// у упаковочного листа и у одиннадцати семейств шага, хвост ПАРНЫЙ: ["тег", [[имя колонки БД,
+// значение], …]]. Состав пар расти умеет, голова — нет, и это ровно то разделение, которое нужно.
 func materialsProjection(tc *entity.TechCardInsert) any {
 	items := make([]any, 0, len(tc.BomItems))
-	for _, b := range tc.BomItems {
-		items = append(items, []any{
-			b.LineKey, string(b.Section), b.Name, b.Supplier.String, b.SupplierRef.String,
-			b.Color.String, b.Composition.String, b.Spec.String, b.Unit.String,
-			digestDecimal(b.UnitPrice), b.Currency.String, b.Comment.String,
-			digestDecimal(b.FabricWidth), digestDecimal(b.FabricWeightGsm), b.FabricDirection.String,
-			digestDecimal(b.WastagePercent), b.MaterialId.Int64,
-		})
+	for i := range tc.BomItems {
+		items = append(items, materialsRow(&tc.BomItems[i]))
 	}
 	return items
+}
+
+// materialsRow — ГОЛОВА ИЗ СЕМНАДЦАТИ ЗАМОРОЖЕННЫХ ПОЗИЦИЙ плюс тегированные парные хвосты, одним
+// строителем.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ТЕЛО ЦИКЛА, — тот же довод, что у packagingRow. Строитель есть
+// ЕДИНСТВЕННОЕ место, где перечислены подписываемые поля строки BOM, поэтому именно его открывает
+// тот, кто заводит новое поле. Пока сборка жила прямо в цикле, «дописать поле» читалось как
+// «дописать позицию» — и было бы сделано безусловно, потому что так короче на одну строку; цена
+// этой короткости — новый отпечаток у КАЖДОЙ строки BOM в базе и стена «изменено после подписи»
+// в момент выкатки. Вынос строителя не косметика: он делает дописку хвостом дешевле дописки
+// позицией, а дешёвое и делают.
+//
+// ГОЛОВА ЗАМОРОЖЕНА, И ЭТОЙ ПРАВКОЙ ЕЁ БАЙТЫ НЕ ДВИНУЛИСЬ: сегодня ни одно семейство хвоста не
+// рождается, поэтому отпечаток строки до и после рефакторинга совпадает побайтно — это и
+// проверяется замороженным hex (materialsGoldDigestHex), снятым на коммите ДО правки. Переписывать
+// саму голову в пары было бы правкой ради единообразия ценой волны пере-утверждения на всю базу:
+// пары нужны там, где СОСТАВ будет расти, а не там, где он уже зафиксирован.
+func materialsRow(b *entity.TechCardBomItem) []any {
+	out := []any{
+		b.LineKey, string(b.Section), b.Name, b.Supplier.String, b.SupplierRef.String,
+		b.Color.String, b.Composition.String, b.Spec.String, b.Unit.String,
+		digestDecimal(b.UnitPrice), b.Currency.String, b.Comment.String,
+		digestDecimal(b.FabricWidth), digestDecimal(b.FabricWeightGsm), b.FabricDirection.String,
+		digestDecimal(b.WastagePercent), b.MaterialId.Int64,
+	}
+	return append(out, materialsTails(b)...)
+}
+
+// materialsTails — хвосты строки BOM в ЗАМОРОЖЕННОМ ПОРЯДКЕ, той же формы и ТЕМ ЖЕ строителем, что
+// у шага и у упаковочного листа: пара рождается только у заполненного поля, пустой набор пар хвоста
+// не рождает вовсе, пары внутри хвоста отсортированы побайтно по ключу.
+//
+// ОДИН СТРОИТЕЛЬ НА ВСЮ ПРОЕКЦИЮ, А НЕ КОПИЯ ДЛЯ МАТЕРИАЛОВ. Копия — это второе место, где живут
+// правила сортировки и рождения пары, и оно разъедется с первым молча, а расплатой будет
+// разъехавшийся отпечаток. Имя operationKindTail историческое; читать его следует как «хвост
+// парной формы».
+//
+// СЕГОДНЯ СПИСОК ПУСТ, и это не заготовка впрок, а предписанный порядок работ: эта задача заводит
+// МЕХАНИЗМ, следующая — поля (qty_per_garment и spare_qty на слоте фурнитуры). Пустой список
+// означает ровно то, что нужно: байты сегодняшней строки не двигаются ни на один, а первое же поле
+// сдвинет отпечаток ТОЛЬКО тех строк, где его действительно заполнили. Обратный порядок — поле
+// раньше механизма — стоил бы объявления всех утверждённых подписей MATERIALS устаревшими в момент
+// выкатки, у каждой карточки в базе и ни за что.
+//
+// ПАРА ПИШЕТСЯ ПО Valid, А НЕ ПО «НЕ НОЛЬ». digestDecimal отдаёт "" на NULL и "0" на нуле, то есть
+// «сколько пуговиц — не сказано» и «пуговиц ноль» различаются написанием уже сейчас; правило по
+// Valid сохраняет это различие и в хвосте: у незаполненного поля пары нет вовсе, у нуля пара есть
+// со значением "0". Ноль пуговиц — утверждение технолога, а не молчание, и подпись под ответом
+// не имеет права читаться как подпись под неотвеченным вопросом.
+//
+// ИМЯ ТЕГА ЗАМОРАЖИВАЕТСЯ В МОМЕНТ ПЕРВОГО РОЖДЕНИЯ ХВОСТА, а не сейчас: пока список пуст, тега в
+// байтах нет, и следующая задача вольна назвать семейство так, как ему подходит. После первой же
+// подписи переименовать его будет уже нельзя — имя ключа и имя тега входят в отпечаток.
+func materialsTails(b *entity.TechCardBomItem) []any {
+	tails := [][]any{
+		// Задача 03: operationKindTail("count",
+		//     opKindDec("qty_per_garment", b.QtyPerGarment),
+		//     opKindDec("spare_qty", b.SpareQty),
+		// )
+	}
+	out := make([]any, 0, len(tails))
+	for _, t := range tails {
+		if t != nil {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // colourProjection covers the colour decision the STYLE owns: which fabric (and fusing) each cut
