@@ -42,6 +42,18 @@ func TestCard8MatchesTheDumpShape(t *testing.T) {
 		t.Fatalf("строк BOM %d, в дампе 4", len(c.BomItems))
 	}
 
+	// РАЗМЕРНЫЙ РЯД — с прода, не с дампа (дамп секции размеров не печатает). nil здесь был бы
+	// УТВЕРЖДЕНИЕМ «ряда нет», которого никто не измерял: C1 стоит ровно на этой тройке
+	// (операции / детали / размерный ряд), и вакуумно пустой ряд перевернул бы её.
+	if fmt.Sprint(c.SizeIds) != "[3 4 5 6]" {
+		t.Errorf("размерный ряд %v, на проде size_id 3, 4, 5, 6 (s, m, l, xl)", c.SizeIds)
+	}
+	// А базовый размер на проде NULL — и это ПЯТАЯ пустота печатного пакета для C2, которую
+	// пример §3.3 забывает.
+	if c.BaseSampleSizeId.Valid {
+		t.Errorf("base_sample_size_id = %v, на проде NULL", c.BaseSampleSizeId)
+	}
+
 	// Дефолты конструкции: наследуют ВСЕ 48 шагов, и это одна из несущих находок золотого ревью.
 	cons := c.Construction
 	if cons == nil || cons.DefaultSeamClass.String != "ss_plain" ||
@@ -175,8 +187,23 @@ func TestCard8OperationsMatchTheDump(t *testing.T) {
 	}
 
 	// VERIFIED FACTS §7.2: «Works assigned: 5 of 48. SMV: 0 of 48.»
+	//
+	// СЧЁТА МАЛО. Перенос press_open с оп 50 на оп 40 оставляет пятёрку нетронутой, а «работы
+	// назначены пяти шагам» превращается в утверждение о ДРУГИХ пяти — и приёмка A8 (машина
+	// назначенной работы против каталога 0329/0330) поедет вместе с ним. Карта поимённая.
 	if works != 5 {
-		t.Errorf("назначенных работ %d, в дампе 5 (50/70/160 press_open, 470 buttonhole, 480 button_attach)", works)
+		t.Errorf("назначенных работ %d, в дампе 5", works)
+	}
+	wantWorks := map[int32]string{
+		50: "press_open", 70: "press_open", 160: "press_open",
+		470: "buttonhole", 480: "button_attach",
+	}
+	for i := range c.Operations {
+		op := &c.Operations[i]
+		num := op.OperationNumber.Int32
+		if got := op.Work.String; got != wantWorks[num] {
+			t.Errorf("работа операции #%d = %q, в дампе %q", num, got, wantWorks[num])
+		}
 	}
 	if smv != 0 {
 		t.Errorf("шагов с SMV %d, в дампе 0 из 48", smv)
@@ -185,9 +212,90 @@ func TestCard8OperationsMatchTheDump(t *testing.T) {
 	if seamClass != 0 {
 		t.Errorf("шагов со своим классом шва %d, в дампе 0: все 48 наследуют дефолт карточки", seamClass)
 	}
-	// Четыре типа машин — на них стоит приёмка C4 «0 профилей / 4 типа».
+	// Четыре типа машин — на них стоит приёмка C4 «0 профилей / 4 типа». И снова счёта мало:
+	// overlock оп 220, переставленный в lockstitch, оставляет множество четырёхэлементным, а
+	// приёмка A4 («210/220 наследуют ss_plain — не шьётся на оверлоке») повисает в воздухе.
 	if len(machines) != 4 {
 		t.Errorf("типов машин %d, в дампе 4 (%v)", len(machines), sortedKeys(machines))
+	}
+	// ТРИ ОСИ ШАГА ПОИМЁННО: глагол, машина и зона. Дамп задаёт их построчно, и ни одна проверка
+	// §3.1 не устоит, если ось поедет на соседний шаг: A2 стоит на 470/480, A3 — на четырёх ВТО,
+	// A4 — на двух оверлоках, A6 — на зонах финиша.
+	wantAxes := map[int32]struct{ otype, machine, zone string }{
+		10:  {"machine", "lockstitch", "back"},
+		20:  {"machine", "lockstitch", "back"},
+		30:  {"machine", "lockstitch", "back"},
+		40:  {"machine", "lockstitch", "back"},
+		50:  {"press_open", "", "back"},
+		60:  {"machine", "lockstitch", "pocket"},
+		70:  {"press_open", "", "pocket"},
+		80:  {"machine", "lockstitch", "front"},
+		90:  {"machine", "lockstitch", "pocket"},
+		100: {"press", "", "pocket"},
+		110: {"machine", "lockstitch", "sleeve"},
+		120: {"machine", "lockstitch", "sleeve"},
+		130: {"machine", "lockstitch", "collar"},
+		140: {"machine", "lockstitch", "collar"},
+		150: {"machine", "lockstitch", "front"},
+		160: {"press_open", "", "collar"},
+		170: {"machine", "lockstitch", "outer"},
+		180: {"machine", "lockstitch", "outer"},
+		190: {"machine", "lockstitch", "front"},
+		200: {"machine", "lockstitch", "front"},
+		210: {"machine", "overlock", "pocket"},
+		220: {"machine", "overlock", "pocket"},
+		230: {"machine", "lockstitch", "pocket"},
+		240: {"machine", "lockstitch", "pocket"},
+		250: {"machine", "lockstitch", "pocket"},
+		260: {"machine", "lockstitch", "pocket"},
+		270: {"machine", "lockstitch", "outer"},
+		280: {"machine", "lockstitch", "outer"},
+		290: {"machine", "lockstitch", "pocket"},
+		300: {"machine", "lockstitch", "lining"},
+		310: {"machine", "lockstitch", "lining"},
+		320: {"machine", "lockstitch", "lining"},
+		330: {"machine", "lockstitch", "lining"},
+		340: {"machine", "lockstitch", "lining"},
+		350: {"machine", "lockstitch", "lining"},
+		360: {"machine", "lockstitch", "lining"},
+		370: {"machine", "lockstitch", "lining"},
+		380: {"machine", "lockstitch", "lining"},
+		390: {"machine", "lockstitch", "lining"},
+		400: {"machine", "lockstitch", "lining"},
+		410: {"machine", "lockstitch", "lining"},
+		420: {"machine", "lockstitch", "interlining"},
+		430: {"machine", "lockstitch", "interlining"},
+		440: {"machine", "lockstitch", "outer"},
+		450: {"machine", "lockstitch", "outer"},
+		460: {"machine", "lockstitch", "outer"},
+		470: {"machine", "buttonhole", "front"},
+		480: {"machine", "button_attach", "front"},
+	}
+	if len(wantAxes) != 48 {
+		t.Fatalf("таблица ожиданий покрывает %d шагов из 48", len(wantAxes))
+	}
+	for i := range c.Operations {
+		op := &c.Operations[i]
+		num := op.OperationNumber.Int32
+		want, known := wantAxes[num]
+		if !known {
+			t.Errorf("шаг #%d в дампе отсутствует", num)
+			continue
+		}
+		if string(op.OperationType) != want.otype {
+			t.Errorf("operation_type шага #%d = %q, в дампе %q", num, op.OperationType, want.otype)
+		}
+		if op.MachineType.String != want.machine {
+			t.Errorf("machine_type шага #%d = %q, в дампе %q", num, op.MachineType.String, want.machine)
+		}
+		if string(op.Zone) != want.zone {
+			t.Errorf("zone шага #%d = %q, в дампе %q", num, op.Zone, want.zone)
+		}
+		// NULL и пустая строка у machine_type — одно и то же «нет машины», но хранится это NULL'ом:
+		// ВТО-шаг с machine_type='' прошёл бы в предикат «машина задана» у неаккуратной проверки.
+		if want.machine == "" && op.MachineType.Valid {
+			t.Errorf("machine_type шага #%d — пустая строка, а в дампе NULL", num)
+		}
 	}
 
 	// Ноты: пять непустых, остальные — ПУСТЫЕ СТРОКИ, а не NULL (так их печатает дамп).
