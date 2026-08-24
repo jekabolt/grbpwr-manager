@@ -88,6 +88,33 @@ func NormalizeMaterialComposition(entries []CompositionEntry) ([]CompositionEntr
 	return out, nil
 }
 
+// styleCompositionExcludedPurposes are the назначения whose roll-goods lines are NOT part of the
+// garment's declared fibre composition. Section alone cannot answer this: pocket-bag cloth, a mesh
+// second layer and a contrast fabric are ALL genuinely section='fabric' (roll goods sold by length,
+// laid on the same marker — see TechCardBomPurpose), so only purpose separates the cloth the garment
+// is MADE OF from the cloth that merely bags a pocket. Filing карманка as section='fabric' is
+// CORRECT data entry; counting it as half the garment was the defect — SS26-008 (a 100% hemp shell
+// with a viscose/polyester pocketing line) derived hemp 50 / viscose 45 / polyester 5.
+//
+// This is a DENY-list on purpose. An unrecognised or not-yet-sorted purpose keeps contributing, so
+// neither a NULL purpose (most lines on file today) nor a future addition to the vocabulary can
+// silently empty a style's composition.
+var styleCompositionExcludedPurposes = map[TechCardBomPurpose]bool{
+	BomPurposePocketing:   true, // карманка — мешковина кармана, не оболочка
+	BomPurposeLining:      true, // подкладка — объявляется отдельно от состава оболочки
+	BomPurposeInterfacing: true, // бортовка / прокладка — прикладной материал
+	BomPurposeInsulation:  true, // утеплитель — объявляется отдельно
+}
+
+// CountsTowardStyleComposition reports whether a roll-goods BOM line with this назначение feeds
+// DeriveStyleComposition. An empty purpose — the NULL column, "не разобрано" — counts: most lines on
+// file have none, and excluding them would empty every style composition that exists today.
+//
+// Callers still select by section first; this narrows that set, it does not replace it.
+func CountsTowardStyleComposition(purpose TechCardBomPurpose) bool {
+	return !styleCompositionExcludedPurposes[purpose]
+}
+
 // DeriveStyleComposition aggregates the shell-fabric BOM lines' fibre compositions into the garment
 // composition (source=auto, S17 / acceptance C.11):
 //
