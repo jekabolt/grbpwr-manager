@@ -307,3 +307,44 @@ func TestCountableRowOutsidePairKeepsItsOwnNumber(t *testing.T) {
 	// Носитель не пострадал: 6 слота + 1 запас по-прежнему на нём и ровно один раз.
 	require.Equal(t, "7", CountablePairRowTotal(pair, pair[0], slot).Decimal.String())
 }
+
+// TestCountableSlotWithoutColumnsChangesNothing — ГАРАНТИЯ ВОЛНЫ, выписанная как утверждение:
+// пока слот не несёт НИ ОДНОЙ из двух новых колонок, деньги и потребность обязаны считаться ровно
+// как до 0333 — по строке.
+//
+// Без этой границы правило пары молча переписывало историю. Состояние законное и в базе
+// встречается: счётный слот (фурнитура) без счётной нормы, у которого одна строка рецепта несёт
+// явное quantity, а вторая — свой расход. Наличие явного quantity задавало базис ВСЕЙ паре, вторая
+// строка получала валидный НОЛЬ вместо своего расхода — и её деньги исчезали, притом что ни одна
+// колонка этой волны на слоте не заполнена.
+//
+// Правило пары нужно ровно там, где паре есть что сказать: число слота или запас. Нет ни того, ни
+// другого — паре сказать нечего, и вмешиваться она не имеет права.
+func TestCountableSlotWithoutColumnsChangesNothing(t *testing.T) {
+	bare := cnSlot(nil) // ни qty_per_garment, ни spare_qty
+	rec := cnRecipe(
+		cnRow(77, func(u *TechCardColorwayUsage) { u.Quantity = cnDec("6") }),
+		cnRow(77, func(u *TechCardColorwayUsage) { u.Consumption = cnDec("0.5") }),
+	)
+	pair := CountablePairUsages(rec, bare)
+	require.Len(t, pair, 2)
+
+	require.Equal(t, "6", CountablePairRowTotal(pair, pair[0], bare).Decimal.String(),
+		"строка с явным количеством обязана стоить своим числом")
+	require.False(t, CountablePairRowTotal(pair, pair[1], bare).Valid,
+		"строка без quantity на слоте БЕЗ счётных колонок обязана вернуться к своему расходу "+
+			"(INVALID здесь и означает «числа на строке нет, читай Consumption»), а не к валидному нулю")
+
+	// И то же самое поимённо в деньгах — там, где ошибка и была бы видна цехом.
+	require.Equal(t, "12", pair[0].LineTotal(bare, pair).Decimal.String())
+	lt := pair[1].LineTotal(bare, pair)
+	require.True(t, lt.Valid, "строка с расходом обязана стоить денег")
+	require.Equal(t, "1", lt.Decimal.String(), "0.5 расхода × 2 цены — ровно как до 0333")
+
+	// Стоит слоту получить ЛЮБУЮ из двух колонок — правило пары включается, и это уже новая
+	// карточка, а не переписанная история.
+	withSpare := cnSlot(func(b *TechCardBomItem) { b.SpareQty = cnDec("1") })
+	pair2 := CountablePairUsages(rec, withSpare)
+	require.Equal(t, "7", CountablePairRowTotal(pair2, pair2[0], withSpare).Decimal.String(),
+		"6 явных + 1 запас, один раз, на носителе")
+}

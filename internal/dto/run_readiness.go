@@ -1230,6 +1230,41 @@ func (b *runReadinessBuilder) coverage(plan *pb_admin.GetProductionRunMaterialPl
 // would need placement counts in a lay, which is Ф4.5 and needs data that does not exist (a run has
 // no link to a marker at all). units_from_stock is the fraction that DOES exist, and it comes from
 // the shelf rather than from the recipe.
+// coveragePairNorm — норма ИЗДЕЛИЯ по одному слоту, то есть то, на что делится складской остаток.
+//
+// ПОЧЕМУ НЕ НОРМА ОДНОЙ СТРОКИ. Слот законно повторяется в одном колорвее несколькими
+// размещениями (0295: «пуговицы — планка» / «пуговицы — манжета»), и на счётном слоте норма
+// изделия — это ИТОГ ПАРЫ, а не доля любой её строки. Пока здесь спрашивали одну строку,
+// покрытие отвечало «хватит на 3 изделия» там, где на складе хватало на 2: 12 пуговиц при
+// размещениях 4 и 2 делились на 4, а не на 6. Выбор строки при этом ничего не менял — обе
+// игнорируют соседок, — поэтому чинится не выбор, а вопрос: складывать по паре.
+//
+// Слагаемые берутся ТЕМ ЖЕ usageNormForSize, что и план материалов, а не своей арифметикой: план
+// проходит все строки пары и суммирует их сам, и разойтись этим двум числам нельзя — иначе цех
+// получает не то количество, которое обещало покрытие.
+//
+// МЕРНЫЙ СЛОТ И ОДИНОЧНАЯ ПАРА идут прежним путём в одну строку. Произвол «какая из нескольких
+// строк мерного слота отвечает за норму» этой правкой НЕ трогается: он досуществующий, ответа в
+// данных на него нет (метраж двух размещений ткани не складывается сам собой), и счётной нормы он
+// не касается.
+func coveragePairNorm(carrier *entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) (decimal.Decimal, bool) {
+	if bom == nil || !entity.IsCountableSection(bom.Section) || len(pair) < 2 {
+		n, _, _, ok := usageNormForSize(carrier, sizeID, pair, bom)
+		return n, ok
+	}
+	total := decimal.Zero
+	found := false
+	for _, u := range pair {
+		n, _, _, ok := usageNormForSize(u, sizeID, pair, bom)
+		if !ok {
+			continue
+		}
+		total = total.Add(n)
+		found = true
+	}
+	return total, found
+}
+
 func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessUnitCoverage {
 	byProduct := make(map[int]*entity.TechCardColorway, len(b.card.Colorways))
 	for i := range b.card.Colorways {
@@ -1267,13 +1302,14 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 			if bom == nil {
 				continue
 			}
-			// ПЕРВАЯ строка слота, а не последняя (0333). Слот законно повторяется в одном
-			// колорвее несколькими размещениями (0295), и счётный итог пары лежит на ПЕРВОЙ её
-			// строке — носителе; сохранив здесь последнюю, готовность спрашивала бы норму у
-			// строки, которая по правилу пары вносит ноль, и объявляла бы блокером слот, у
-			// которого норма задана. У мерного слота выбор между первой и последней и раньше был
-			// произволен (обе игнорируют остальные строки), так что менять тут нечего, кроме
-			// согласования с носителем.
+			// ПЕРВАЯ строка слота, а не последняя (0333) — она же носитель остатка пары. Эта
+			// карта отвечает на вопрос «ЧЕЙ АРТИКУЛ у слота» (EffectiveMaterialId ниже), и
+			// согласовать её с носителем нужно затем, чтобы пин читался у той же строки, у
+			// которой лежит остаток.
+			//
+			// НОРМУ у неё НЕ спрашивают: на счётном слоте с несколькими размещениями итог лежит
+			// на носителе только когда базис — «слот»; при явных числах строк каждая несёт своё,
+			// и одна строка нормы изделия не знает. Складывает пару coveragePairNorm ниже.
 			if _, seen := usageByBom[bom.Id]; !seen {
 				usageByBom[bom.Id] = u
 			}
@@ -1297,7 +1333,7 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 			mid, _ := u.EffectiveMaterialId(bom)
 			// Пара (колорвей × слот) — из ТОГО ЖЕ среза cw.Usages, из которого набран usageByBom
 			// выше, поэтому носитель итога опознаётся по указателю (см. entity/countable.go).
-			norm, _, _, hasNorm := usageNormForSize(u, cell.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
+			norm, hasNorm := coveragePairNorm(u, cell.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
 			if mid == 0 || !hasNorm {
 				ok = false
 				row.BlockingBomItemIds = append(row.BlockingBomItemIds, int64(bom.Id))

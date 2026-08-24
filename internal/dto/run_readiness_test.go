@@ -611,3 +611,47 @@ func TestPatternScopesOfAnUnsortedCardAreUnchanged(t *testing.T) {
 		t.Fatalf("unsorted card must keep the line key as its scope, got %+v", scopes)
 	}
 }
+
+// TestRunReadinessUnitCoverageAsksThePairNotOneRow — ПОКРЫТИЕ СЧИТАЕТСЯ ПО ПАРЕ (0333), а не по
+// одной её строке.
+//
+// Слот законно повторяется в одном колорвее несколькими размещениями (0295): «пуговицы — планка» и
+// «пуговицы — манжета». Норма изделия по такому слоту — это ИТОГ ПАРЫ, и покрытие складом обязано
+// делиться именно на него. Пока покрытие спрашивало норму у ОДНОЙ строки (безразлично, у первой
+// или у последней — обе игнорируют соседок), оно отвечало «хватит на 3 изделия» там, где на складе
+// хватает на 2, — и расходилось с планом материалов, который обе строки проходит.
+//
+// Ошибка не косметическая: покрытие — это число, по которому решают, запускать ли прогон.
+func TestRunReadinessUnitCoverageAsksThePairNotOneRow(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems = append(card.BomItems, entity.TechCardBomItem{
+		Id: 13, LineKey: "BBBBBBBBBBBBBBBBBBBBBBBBBB", Section: entity.BomSectionHardware, Name: "пуговица",
+		MaterialId: sql.NullInt64{Int64: 202, Valid: true},
+		Unit:       sql.NullString{String: "pcs", Valid: true},
+	})
+	// Две строки размещения одного слота: 4 на планку, 2 на манжету — итого 6 на изделие.
+	card.Colorways[0].Usages = append(card.Colorways[0].Usages,
+		entity.TechCardColorwayUsage{
+			BomItemId: sql.NullInt64{Int64: 13, Valid: true},
+			Placement: sql.NullString{String: "планка", Valid: true},
+			Quantity:  rrNullDec("4"),
+		},
+		entity.TechCardColorwayUsage{
+			BomItemId: sql.NullInt64{Int64: 13, Valid: true},
+			Placement: sql.NullString{String: "манжета", Valid: true},
+			Quantity:  rrNullDec("2"),
+		},
+	)
+	in := rrInput(card)
+	in.OnHand[202] = decimal.RequireFromString("12") // двенадцать пуговиц = ровно два изделия по шесть
+	res := ComputeProductionRunReadiness(in)
+	if len(res.UnitCoverage) != 1 {
+		t.Fatalf("одна плановая клетка — одна строка покрытия; получено %d", len(res.UnitCoverage))
+	}
+	row := res.UnitCoverage[0]
+	if got := row.GetUnitsFromStock(); got != 2 {
+		t.Fatalf("units_from_stock = %d, ожидалось 2: 12 пуговиц на складе при норме пары 6 на "+
+			"изделие. %d означает, что покрытие спросило норму у ОДНОЙ строки пары (4 или 2) и "+
+			"выдало запас, которого на складе нет", got, got)
+	}
+}

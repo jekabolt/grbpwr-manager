@@ -188,6 +188,22 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			UnitPrice:      frozenDecimal(b.GetUnitPrice()),
 			Currency:       sql.NullString{String: b.GetCurrency(), Valid: b.GetCurrency() != ""},
 			WastagePercent: frozenDecimal(b.GetWastagePercent()),
+			// СЧЁТНАЯ НОРМА СЛОТА (0333) ЕДЕТ В ВОССТАНОВЛЕННУЮ СТРОКУ, и это НЕ формальность.
+			// Снапшот её содержит (techCardBomItemsToPb пишет оба поля в блоб), а этот
+			// восстановитель перечисляет поля ПОИМЁННО — то есть представляет собой шестой список,
+			// который обязан совпасть с пятью в store, и молчит он ровно так же.
+			//
+			// Не перенеся их, релизный расчёт получил бы счётную строку БЕЗ количества: её
+			// UnitTotal стал бы невалидным, колорвей — непосчитанным, и пер-размерная клетка
+			// целиком уехала бы в фолбэк на замороженный скаляр стиля. Ошибка не «на пуговицу»,
+			// а на ВЕСЬ размерный расчёт, и знака у неё нет — на одном size mix она завышает, на
+			// другом занижает.
+			//
+			// Отсутствие полей в блобе (снапшот старше 0333) читается как «не задано» — тот же
+			// принцип, что у коэффициента ниже, только отказывать здесь не за что: пустая счётная
+			// норма и до волны означала «считай строку по её собственному числу».
+			QtyPerGarment: frozenDecimal(b.GetQtyPerGarment()),
+			SpareQty:      frozenDecimal(b.GetSpareQty()),
 		}
 		if mid := b.GetMaterialId(); mid > 0 {
 			item.MaterialId = sql.NullInt64{Int64: mid, Valid: true}
