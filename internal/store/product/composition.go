@@ -18,11 +18,14 @@ import (
 // result, called from UpdateStyle (below) and from techcard.UpdateColorwayRecipe.
 
 // bomFabricRow is one shell-fabric (section='fabric') BOM line of a style: its id (to look up a
-// bom_item_composition override/snapshot) and, if linked to a catalog material, that material's id (the
+// bom_item_composition override/snapshot), its назначение (purpose — the second axis that says whether
+// this cloth is what the garment is MADE OF or merely a pocket bag, see
+// entity.CountsTowardStyleComposition) and, if linked to a catalog material, that material's id (the
 // material_composition fallback).
 type bomFabricRow struct {
-	BomItemID  int           `db:"id"`
-	MaterialID sql.NullInt64 `db:"material_id"`
+	BomItemID  int            `db:"id"`
+	MaterialID sql.NullInt64  `db:"material_id"`
+	Purpose    sql.NullString `db:"purpose"`
 }
 
 type fiberPercentRow struct {
@@ -74,6 +77,12 @@ type styleCompositionRow struct {
 // the style's BOM/recipe — the derive reads whatever is currently committed in this tx, so it reflects
 // what the caller's write just did.
 //
+// Section is necessary but NOT sufficient: pocket-bag cloth, contrast cloth and a mesh second layer are
+// all legitimately section='fabric' (TechCardBomPurpose's doc comment says so outright), so the line's
+// назначение decides whether it counts — entity.CountsTowardStyleComposition. Selecting on section
+// alone was the SS26-008 defect: a viscose/polyester карманка line took an equal 1/N share beside the
+// 100% hemp shell and the style read hemp 50 / viscose 45 / polyester 5.
+//
 // A shell-fabric line with no known composition (neither a bom_item_composition override/snapshot nor,
 // via its material_id, a material_composition row) is excluded from the derive input entirely rather
 // than counted as a defined-but-empty fabric — the latter would make DeriveStyleComposition's equal
@@ -86,7 +95,7 @@ type styleCompositionRow struct {
 // (entity.ReconcileStyleComposition, closing the S17 second defect) — this only refreshes the auto set.
 func ReconcileStyleCompositionTx(ctx context.Context, db dependency.DB, techCardID int) error {
 	fabricRows, err := storeutil.QueryListNamed[bomFabricRow](ctx, db,
-		`SELECT id, material_id FROM tech_card_bom_item WHERE tech_card_id = :id AND section = :section`,
+		`SELECT id, material_id, purpose FROM tech_card_bom_item WHERE tech_card_id = :id AND section = :section`,
 		map[string]any{"id": techCardID, "section": string(entity.BomSectionFabric)})
 	if err != nil {
 		return fmt.Errorf("load style %d shell fabric bom lines: %w", techCardID, err)
@@ -94,6 +103,10 @@ func ReconcileStyleCompositionTx(ctx context.Context, db dependency.DB, techCard
 
 	fabrics := make([][]entity.FiberPercent, 0, len(fabricRows))
 	for _, row := range fabricRows {
+		// purpose is NULLABLE ("не разобрано"); the zero value falls through as counting.
+		if !entity.CountsTowardStyleComposition(entity.TechCardBomPurpose(row.Purpose.String)) {
+			continue
+		}
 		fp, err := loadFabricComposition(ctx, db, row)
 		if err != nil {
 			return err
