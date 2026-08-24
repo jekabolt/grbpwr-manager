@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -61,7 +62,41 @@ func clampDebugSleepSeconds(requested int) int {
 	return requested
 }
 
+// debugSleepFor is the nap itself, and it is a variable for ONE reason: it is the only way a test
+// can drive the whole HTTP path — including the clamp that connects the parsed ?s to the sleep —
+// without actually waiting. Before it existed, both HTTP cases of the clamp test asked for the
+// floor, so deleting the clamp call from the handler left every test green while ?s=9000 became a
+// two-and-a-half-hour nap.
+//
+// IT WATCHES THE CLIENT, AND THAT IS THE WHOLE POINT OF THE select. A plain time.Sleep does not end
+// when the caller hangs up: net/http cancels the request context on the client's FIN but does not
+// reclaim the CONNECTION until the handler returns. An earlier comment here waved this away with
+// "the goroutine ends on its own in ≤150 s" — the goroutine does; the file descriptor does not.
+// Measured on this endpoint: 20 clients that abort after 100 ms still held 20 server connections
+// and 20 goroutines for the entire nap. Unauthenticated, unthrottled, on the root router, with no
+// ReadTimeout/WriteTimeout on the server and h2c carrying up to 250 streams per TCP connection,
+// that is ~1500x amplification from 100 ms of caller time — a denial of service wearing the mask of
+// a measurement tool.
+//
+// Watching the context costs the probe NOTHING: the question it asks is "when does the edge give
+// up on a silent origin", and by the time the edge gives up it has already answered — the 524
+// reached the caller. Returning then is what lets the server reclaim the socket.
+var debugSleepFor = func(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // debugSleepHandler sleeps for the requested number of seconds, then answers 200 "slept N s".
+//
+// It writes NOTHING before the nap is over — no early WriteHeader, no flush, no committing header.
+// Cloudflare's 524 fires on time to FIRST BYTE, not on total duration, so a progress trickle would
+// keep the connection alive and make the probe report a ceiling that no silent request ever meets.
 func debugSleepHandler(w http.ResponseWriter, r *http.Request) {
 	requested := 1
 	if raw := r.URL.Query().Get("s"); raw != "" {
@@ -71,10 +106,12 @@ func debugSleepHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	seconds := clampDebugSleepSeconds(requested)
 
-	// Plain time.Sleep, deliberately: the point is a connection that produces no bytes at all for
-	// the whole interval. It does not watch r.Context() either — a client that gave up has already
-	// answered the question the probe is asking, and the goroutine ends on its own in ≤150 s.
-	time.Sleep(time.Duration(seconds) * time.Second)
+	if !debugSleepFor(r.Context(), time.Duration(seconds)*time.Second) {
+		// The caller gave up first, which already answers the question the probe asks. Return at
+		// once so the server can close the connection; writing to a socket nobody is reading would
+		// only keep this goroutine and its descriptor alive for the rest of the nap.
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)

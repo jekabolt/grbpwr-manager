@@ -2,8 +2,10 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -109,5 +111,86 @@ func TestDebugSleepClampsTheRequestedNap(t *testing.T) {
 	}
 	if got := clampDebugSleepSeconds(42); got != 42 {
 		t.Errorf("?s=42 clamps to %d, want 42 (a value inside the range must pass through)", got)
+	}
+}
+
+// TestDebugSleepClampConnectsToTheEndpoint closes the hole the two HTTP cases above cannot: both of
+// them ask for the FLOOR, so removing clampDebugSleepSeconds from the handler entirely left this
+// package green while ?s=9000 turned into a two-and-a-half-hour nap. Here the nap is stubbed, so the
+// full HTTP path — parse, clamp, sleep — is exercised at the CEILING for free.
+func TestDebugSleepClampConnectsToTheEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  time.Duration
+	}{
+		{"?s=9000", time.Duration(debugSleepMaxSeconds) * time.Second},
+		{"?s=-5", 1 * time.Second},
+		{"?s=42", 42 * time.Second},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			var asked time.Duration
+			restore := debugSleepFor
+			debugSleepFor = func(_ context.Context, d time.Duration) bool { asked = d; return true }
+			t.Cleanup(func() { debugSleepFor = restore })
+
+			t.Setenv(debugSleepEnabledEnv, "1")
+			r := chi.NewRouter()
+			registerDebugSleep(r)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/sleep"+tc.query, nil))
+
+			if asked != tc.want {
+				t.Errorf("GET /debug/sleep%s slept %v, want %v — the handler is not reading the clamp",
+					tc.query, asked, tc.want)
+			}
+			if got, want := rec.Body.String(), "slept "+strconv.Itoa(int(tc.want/time.Second))+" s"; got != want {
+				t.Errorf("answer %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestDebugSleepReleasesTheConnectionWhenTheCallerHangsUp is the availability half. A plain
+// time.Sleep does not end when the caller goes away: net/http cancels the request context on the
+// client's FIN but does not reclaim the connection until the handler RETURNS. Unauthenticated and
+// unthrottled on the root router, that turns 100 ms of caller time into 150 s of held descriptor.
+//
+// The probe here is the handler's own return, not a goroutine count: if the handler returns while
+// the nap is still notionally running, the server is free to close the socket — which is exactly
+// the property that was missing.
+func TestDebugSleepReleasesTheConnectionWhenTheCallerHangsUp(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/debug/sleep?s=150", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() { defer close(done); debugSleepHandler(rec, req) }()
+
+	cancel() // the caller hangs up
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the handler was still asleep 3 s after the caller hung up: a client that aborts " +
+			"after 100 ms would hold a server connection for the full 150 s nap")
+	}
+	if body := rec.Body.String(); body != "" {
+		t.Errorf("handler wrote %q to a caller that had already gone; writing to a dead socket keeps "+
+			"the goroutine and its descriptor alive for the rest of the nap", body)
+	}
+}
+
+// TestDebugSleepStillSleepsForACallerThatWaits is the negative control for the test above: the
+// early return must depend on the CALLER leaving, not fire unconditionally. Without this, a handler
+// that returned immediately in every case would pass the hang-up test and silently measure nothing.
+func TestDebugSleepStillSleepsForACallerThatWaits(t *testing.T) {
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	debugSleepHandler(rec, httptest.NewRequest(http.MethodGet, "/debug/sleep?s=1", nil))
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
+		t.Errorf("a live caller got its answer after %v; the endpoint measures nothing if it does "+
+			"not actually stay silent", elapsed)
+	}
+	if got := rec.Body.String(); got != "slept 1 s" {
+		t.Errorf("answer %q, want %q", got, "slept 1 s")
 	}
 }

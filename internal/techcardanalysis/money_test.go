@@ -2,6 +2,7 @@ package techcardanalysis
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -22,6 +23,14 @@ func TestNoMoneyFindingIsReadiness(t *testing.T) {
 		"card 8 (draft)":     card8(),
 		"card 8 (in_review)": mtInReview(card8()),
 		"money stand":        mtMoneyCard(),
+		// B6 AND B7 MUST BE IN HERE. Every other fixture has Costing == nil, so neither branch of
+		// the cmt_cost predicate ever fires in them — and B6 is the one check in the package that
+		// carries CategoryReadiness, i.e. the only place the laundering this test exists to
+		// prevent can actually happen. Without these two entries, flagging B6 money left the
+		// package green while a draft card carried it past the handler inside the collapse.
+		"costing stand, cmt unset": mtCostingCard(false),
+		"costing stand, cmt set":   mtCostingCard(true),
+		"aggregate money stand":    mtAggregateMoneyCard(),
 	}
 	for name, card := range cards {
 		for _, f := range RunAudit(card, Fx{Base: "EUR"}).Findings {
@@ -76,8 +85,16 @@ func TestMoneyFlagIsOnExactlyThePriceQuotingFindings(t *testing.T) {
 		if f.Money {
 			continue
 		}
-		if strings.Contains(f.Detail, " PLN") || strings.Contains(f.Detail, " EUR") {
-			t.Errorf("finding %q is not flagged money, yet its detail names a currency: %q", f.Title, f.Detail)
+		// EVERY text field the client draws, not just Detail: a currency reaching Title,
+		// Suggestion or Evidence is disclosed exactly as far as one in Detail is.
+		for field, txt := range map[string]string{
+			"title": f.Title, "detail": f.Detail, "suggestion": f.Suggestion,
+			"evidence": strings.Join(f.Evidence, " | "),
+		} {
+			if strings.Contains(txt, " PLN") || strings.Contains(txt, " EUR") {
+				t.Errorf("finding %q is not flagged money, yet its %s names a currency: %q",
+					f.Title, field, txt)
+			}
 		}
 	}
 }
@@ -161,4 +178,84 @@ func mtFindMoneyFlag(t *testing.T, card *entity.TechCard, titleSub string) bool 
 	}
 	t.Fatalf("no finding whose title contains %q — the stand no longer fires the check it was built for", titleSub)
 	return false
+}
+
+// mtAggregateMoneyCard trips the AGGREGATE branch of all three B5 checks at once. It exists because
+// every other money fixture keeps each check under the §3.0 threshold (|M| <= 3), so the
+// `len(missing) > 3` arm of B5а/B5б/B5в was never executed by any test: un-flagging Money on those
+// three findings left the package green while a card with six half-priced fabric lines published
+// the ratio to the dearest one in prose.
+//
+//   - four roll-goods lines priced at zero          -> B5а aggregate
+//   - four pocketing/lining lines dearer than every main fabric -> B5б aggregate
+//   - four accessory lines in four rateless currencies          -> B5в aggregate
+func mtAggregateMoneyCard() *entity.TechCard {
+	card := &entity.TechCard{Id: 93}
+	card.ApprovalState = entity.TechCardApprovalInReview
+	items := []entity.TechCardBomItem{{
+		Id: 1, LineKey: "F0", Name: "основная", Section: entity.BomSectionFabric,
+		Unit: text("m"), UnitPrice: dec("100"), Currency: text("PLN"), Purpose: text("main"),
+	}}
+	for i := 0; i < 4; i++ {
+		items = append(items, entity.TechCardBomItem{
+			Id: 10 + i, LineKey: fmt.Sprintf("Z%d", i), Name: fmt.Sprintf("нулевая %d", i),
+			Section: entity.BomSectionFabric, Unit: text("m"),
+			UnitPrice: dec("0"), Currency: text("PLN"), Purpose: text("main"),
+		})
+		items = append(items, entity.TechCardBomItem{
+			Id: 20 + i, LineKey: fmt.Sprintf("P%d", i), Name: fmt.Sprintf("карманка %d", i),
+			Section: entity.BomSectionFabric, Unit: text("m"),
+			UnitPrice: dec("500"), Currency: text("PLN"), Purpose: text("pocketing"),
+		})
+	}
+	for i, code := range []string{"GBP", "USD", "CHF", "SEK"} {
+		items = append(items, entity.TechCardBomItem{
+			Id: 30 + i, LineKey: fmt.Sprintf("A%d", i), Name: fmt.Sprintf("фурнитура %s", code),
+			Section: entity.BomSectionHardware, Unit: text("pc"),
+			UnitPrice: dec("7"), Currency: text(code),
+		})
+	}
+	card.BomItems = items
+	return card
+}
+
+// TestAggregateBranchOfTheMoneyChecksIsFlagged is the §3.0 half of the money classification. The
+// per-operation form of B5а/B5б/B5в and their aggregate form are DIFFERENT literals in the source,
+// and only the per-item ones were ever built by a test.
+func TestAggregateBranchOfTheMoneyChecksIsFlagged(t *testing.T) {
+	res := RunAudit(mtAggregateMoneyCard(), Fx{Base: "EUR"})
+
+	// The fixture must actually reach the aggregate arm; a card that quietly stayed under the
+	// threshold would make every assertion below vacuous.
+	wantAggregates := []string{
+		"roll-goods lines look priced with a placeholder",
+		"lines cost more per metre than every main fabric",
+		"BOM currencies have no rate to EUR",
+	}
+	for _, want := range wantAggregates {
+		var found *Finding
+		for i := range res.Findings {
+			if strings.Contains(res.Findings[i].Title, want) {
+				found = &res.Findings[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("the fixture did not reach the aggregate arm of %q — titles: %v",
+				want, mtTitles(res.Findings))
+			continue
+		}
+		if !found.Money {
+			t.Errorf("aggregate finding %q is not flagged money, yet it states a ratio to the card's "+
+				"dearest fabric line; an account without costing:read would read it", found.Title)
+		}
+	}
+}
+
+func mtTitles(fs []Finding) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.Title)
+	}
+	return out
 }

@@ -87,9 +87,22 @@ func tcaStand(t *testing.T, card *entity.TechCard, cardErr error, rates map[stri
 	} else {
 		tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(card, nil)
 	}
-	// .Maybe(): the input gate refuses an oversized card BEFORE any rate is needed, and that test
-	// asserts exactly that by way of this expectation never being required.
+	// .Maybe() permits zero calls AND permits calls — it asserts nothing in either direction. The
+	// claim that the gate refuses before touching the rate table is made by tcaStandThatForbidsFx
+	// below, which registers no expectation at all.
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(rates, nil).Maybe()
+	return &Server{repo: repo}
+}
+
+// tcaStandThatForbidsFx is tcaStand minus the rate expectation. mockery fails an unexpected call, so
+// ANY read of the rate table on this stand fails the test by name — which is what makes "the gate
+// refuses an oversized card before any rate is needed" an assertion rather than a comment.
+func tcaStandThatForbidsFx(t *testing.T, card *entity.TechCard) *Server {
+	t.Helper()
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(card, nil)
 	return &Server{repo: repo}
 }
 
@@ -293,7 +306,8 @@ func TestGetTechCardConstructionAuditInputGate(t *testing.T) {
 	})
 
 	t.Run("one over the ceiling is refused", func(t *testing.T) {
-		s := tcaStand(t, tcaCardWithNOperations(techcardanalysis.MaxAnalysisOperations+1), nil, map[string]decimal.Decimal{})
+		// The stand forbids the rate table outright: refusing an oversized card must cost nothing.
+		s := tcaStandThatForbidsFx(t, tcaCardWithNOperations(techcardanalysis.MaxAnalysisOperations+1))
 		_, err := s.GetTechCardConstructionAudit(context.Background(),
 			&pb_admin.GetTechCardConstructionAuditRequest{TechCardId: 7})
 		require.Error(t, err)
@@ -305,13 +319,13 @@ func TestGetTechCardConstructionAuditInputGate(t *testing.T) {
 	})
 }
 
-// TestGetTechCardConstructionAuditGateReadsTheAnalyzersCeiling guards against the second copy of the
-// number. The gate must read techcardanalysis.MaxAnalysisOperations, not a local 200 that will one
-// day disagree with it; the ceiling is exported precisely so there is only one.
-func TestGetTechCardConstructionAuditGateReadsTheAnalyzersCeiling(t *testing.T) {
-	require.Equal(t, 200, techcardanalysis.MaxAnalysisOperations,
-		"if the analyzer's ceiling moved, this test is the reminder that the handler's refusal text moves with it")
-}
+// The gate's second copy of the ceiling is guarded by TestGetTechCardConstructionAuditInputGate
+// itself, not by a separate assertion: both of its cards are sized from
+// techcardanalysis.MaxAnalysisOperations, so a handler still holding a stale number refuses a card
+// that is inside the analyzer's ceiling and the "at the ceiling it runs" case goes red. A test that
+// merely restated `MaxAnalysisOperations == 200` could not fail for the reason it named — the
+// mutation it existed to catch (a literal 200 in the handler) is behaviourally identical while the
+// constant is 200, and stops being identical only in the case InputGate already covers.
 
 // --- request validation --------------------------------------------------------------------------
 
