@@ -341,8 +341,16 @@ func TestNotCheckAndObserveAreCollected(t *testing.T) {
 			t.Error("пустая строка попала в not_checked")
 		}
 	}
-	if len(res.Observations) != 1 || res.Observations[0] != "probe: observation" {
-		t.Errorf("MACHINE OBSERVATIONS = %v, ожидается одна строка", res.Observations)
+	// Проверяется КАНАЛ, а не монополия на него: с T3 блок наблюдений наполняют ещё и эвристики
+	// §3.4 (heuristics.go), поэтому «ровно одна строка» перестало быть свойством карточки 8.
+	// Свойство, которое тест меряет, — что строка проверки доехала и что пустая не доехала.
+	if !strings.Contains(strings.Join(res.Observations, "|"), "probe: observation") {
+		t.Errorf("MACHINE OBSERVATIONS = %v, ожидается строка probe", res.Observations)
+	}
+	for _, s := range res.Observations {
+		if strings.TrimSpace(s) == "" {
+			t.Error("пустая строка попала в observations")
+		}
 	}
 }
 
