@@ -53,10 +53,16 @@ const (
 
 	// Entities that appear on LINES but are never tallied: a material is not imported (it is
 	// matched against the target catalogue — the BOM line is what lands, and that is what
-	// bom_line counts), and card / archive are the whole thing, not a row of it.
-	EntityMaterial = "material"
-	EntityCard     = "card"
-	EntityArchive  = "archive"
+	// bom_line counts), a measurement is a size-chart AXIS rather than a row of the card, and
+	// card / archive are the whole thing, not a row of it.
+	//
+	// EntityMeasurement is the second named axis of sizechart.json and exists precisely so a
+	// measurement problem is NOT reported as "size": an operator told "the size is unknown" about
+	// a measurement goes and reads the wrong dictionary. It pairs with ReasonMeasurementUnknown.
+	EntityMaterial    = "material"
+	EntityMeasurement = "measurement"
+	EntityCard        = "card"
+	EntityArchive     = "archive"
 )
 
 // CountedEntities is the fixed set of entities that carry a counter, in the order they appear in

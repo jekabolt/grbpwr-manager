@@ -562,15 +562,15 @@ func TestOpenArchiveUnknownEntries(t *testing.T) {
 		zipFile{FileCard, cardBytes(t)},
 		photo,
 		zipFile{"swatches/index.json", []byte("[]")}, // a whole directory 1.4 added
-		zipFile{DirMedia + shaHex(samplePhoto) + ".gif", []byte("gif")}, // an extension §1.1 does not list
-		zipFile{DirMedia + "not-a-digest.jpg", []byte("x")},             // right shape, wrong name
+		zipFile{DirMedia + shaHex(samplePhoto) + ".avif", []byte("avif")}, // an extension §1.1 does not list
+		zipFile{DirMedia + "not-a-digest.jpg", []byte("x")},               // right shape, wrong name
 		zipFile{"README.txt", []byte("hello")},
 		zipFile{DirMarkers + "index.json.bak", []byte("{}")},
 	))
 
 	require.Equal(t, []string{
 		"swatches/index.json",
-		DirMedia + shaHex(samplePhoto) + ".gif",
+		DirMedia + shaHex(samplePhoto) + ".avif",
 		DirMedia + "not-a-digest.jpg",
 		"README.txt",
 		DirMarkers + "index.json.bak",
@@ -584,9 +584,9 @@ func TestOpenArchiveUnknownEntries(t *testing.T) {
 	require.Equal(t, []byte("hello"), got)
 
 	// And an unknown media file still verifies against the digest its index row carries.
-	_, err = a.ReadFileVerified(DirMedia+shaHex(samplePhoto)+".gif", shaHex([]byte("gif")))
+	_, err = a.ReadFileVerified(DirMedia+shaHex(samplePhoto)+".avif", shaHex([]byte("avif")))
 	require.NoError(t, err)
-	_, err = a.ReadFileVerified(DirMedia+shaHex(samplePhoto)+".gif", shaHex([]byte("something else")))
+	_, err = a.ReadFileVerified(DirMedia+shaHex(samplePhoto)+".avif", shaHex([]byte("something else")))
 	require.ErrorIs(t, err, ErrCorrupt)
 }
 
@@ -599,6 +599,7 @@ func TestOpenArchiveKnownNamesAreRecognised(t *testing.T) {
 		FileMaterialsIndex, FileMediaIndex, FilePatternsIndex, FileMarkersIndex,
 		DirMedia + digest + ".jpg", DirMedia + digest + ".png",
 		DirMedia + digest + ".webp", DirMedia + digest + ".mp4",
+		DirMedia + digest + ".jpeg", DirMedia + digest + ".gif", DirMedia + digest + ".webm",
 		DirPatterns + digest + ".dxf", DirPatterns + digest + ".pdf",
 		DirMarkers + "mixed-1.json", DirMarkers + "s-12.json", DirMarkers + "3xl-1.json",
 		DirMarkers + "one-size-fits-all-4.json",
@@ -609,7 +610,7 @@ func TestOpenArchiveKnownNamesAreRecognised(t *testing.T) {
 	for _, name := range []string{
 		"card.JSON", "cards.json", "media/index.json.gz",
 		DirMedia + strings.ToUpper(digest) + ".jpg", // §1.1 says lower-case hex
-		DirMedia + digest + ".jpeg",                 // NOT in §1.1's list — a deliberate divergence to raise
+		DirMedia + digest + ".avif",                 // never reaches the bucket: not in mimeTypeToFileExtension
 		DirMedia + digest[:63] + ".jpg",
 		DirMedia + digest + ".jpg.exe",
 		DirPatterns + digest + ".jpg",

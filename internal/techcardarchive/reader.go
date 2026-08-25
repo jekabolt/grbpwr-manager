@@ -407,7 +407,7 @@ func classifyArchiveEntry(name string) archiveEntryClass {
 // still served and still verified against that index's digest. That is what makes the list safe to
 // keep short: being wrong about it costs a report line, not an import.
 var (
-	mediaExtensions   = []string{"jpg", "png", "webp", "mp4"}
+	mediaExtensions   = []string{"jpg", "jpeg", "png", "webp", "gif", "mp4", "webm"}
 	patternExtensions = []string{"dxf", "pdf"}
 )
 

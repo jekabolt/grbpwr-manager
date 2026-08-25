@@ -53,19 +53,26 @@ const (
 // archive too big" appear, and the loser is whichever check runs second.
 //
 // MB in §1.3 is 2^20, as it is everywhere in this codebase (bucket/pattern.go's "40 MB",
-// http.go's "4 MB"); MaxMarkerFileBytes is the same 2 MiB the live marker-save path already
-// enforces on a layout blob (admin.maxMarkerLayoutBytes), which is where the number came from.
+// http.go's "4 MB"). MaxMarkerFileBytes is the ONE ceiling here that is deliberately NOT equal to
+// the live path's number — see the comment on it.
 //
 // MaxUncompressedBytes and MaxZipEntries are the zip-bomb pair and only work together: a cap on
 // output bytes alone is defeated by a million empty entries, and a cap on entries alone by one
 // entry that inflates to a terabyte. Both are counted while streaming — a total read from the ZIP
 // directory is a claim by the archive about itself.
 const (
-	MaxZipEntries           = 4096
-	MaxUncompressedBytes    = 1 * 1024 * 1024 * 1024 // 1 GiB, sum over all entries
-	MaxCardJSONBytes        = 16 * 1024 * 1024       // card.json
-	MaxMarkerFileBytes      = 2 * 1024 * 1024        // one markers/<slug>-<n>.json
-	MaxUploadedArchiveBytes = 256 * 1024 * 1024      // the uploaded body on the import route
+	MaxZipEntries        = 4096
+	MaxUncompressedBytes = 1 * 1024 * 1024 * 1024 // 1 GiB, sum over all entries
+	MaxCardJSONBytes     = 16 * 1024 * 1024       // card.json
+	// One markers/<slug>-<n>.json. THREE MiB, not two, and the extra megabyte is the whole
+	// point: the live save path (admin.maxMarkerLayoutBytes) caps the LAYOUT blob at 2 MiB,
+	// while a marker file here is protojson(summary + that layout). A legally saved 2 MiB
+	// layout would therefore produce an entry over a 2 MiB ceiling, and OpenArchive refuses the
+	// WHOLE archive on the directory pass — no hole, no reason code, and an export that said
+	// nothing. Headroom here is what makes every savable marker representable by construction,
+	// which is why the export needs no ceiling of its own.
+	MaxMarkerFileBytes      = 3 * 1024 * 1024
+	MaxUploadedArchiveBytes = 256 * 1024 * 1024 // the uploaded body on the import route
 )
 
 // Bucket segments the feature owns. The segment (no slash) is what a key's first path element is
@@ -118,8 +125,13 @@ type Source struct {
 // IDMaps are the only dictionaries that survive the trip — the source's ids paired with the names
 // that identify the same thing anywhere.
 type IDMaps struct {
-	// Sizes maps size ids AS THEY APPEAR IN card.json to size names (size.name is UNIQUE in every
-	// instance). JSON object keys are strings, so the id is decimal text.
+	// Sizes maps EVERY size id that appears ANYWHERE in the archive — card.json, every sidecar and
+	// every marker blob — to size names (size.name is UNIQUE in every instance). A superset is
+	// legal and preferred; a subset is not: FORMAT.md §5.7 remaps every size_id inside a marker
+	// blob through this table, and a mixed lay (смешанный настил) names sizes that card.json need
+	// never mention — a miss is a size_unknown hole that drops the whole marker.
+	//
+	// JSON object keys are strings, so the id is decimal text.
 	Sizes map[string]string `json:"sizes"`
 	// CategoryPath is the category triple by name, top level first. Empty = the card had none.
 	CategoryPath []string `json:"category_path"`
@@ -143,7 +155,8 @@ type Contents struct {
 // the archive is valid — the hole travels so nobody has to guess later why a slot is empty.
 type ExportHole struct {
 	// Entity is the human word for what this happened to: media, material, bom_line, pattern,
-	// marker, size, operation, assembly, colorway, card, archive.
+	// marker, size, measurement, operation, assembly, colorway, card, archive. Use the Entity*
+	// constants in report.go — that list and this one are one vocabulary (FORMAT.md §7).
 	Entity string `json:"entity"`
 	// Ref names the row inside its own file — "bom_line_key=…", "media_id=…", "size_name=…".
 	Ref string `json:"ref"`

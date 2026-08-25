@@ -46,9 +46,9 @@ report says `unknown_entry` — that is the MINOR-compatibility rule of §3 in a
   the key the reader hands to the ZIP directory without a join step. (The tree above abbreviates
   the value to `<sha256>.<ext>` for width; the root-relative form is the one that ships.)
 * **Binary files are named by the sha256 of their content**, lower-case hex, plus the extension
-  the source object key carried (`.jpg`, `.png`, `.webp`, `.mp4`, `.dxf`, `.pdf`). Integrity,
-  dedup inside the archive (one photo used by two slots is one file) and dedup on import
-  (`media.content_hash`) all follow from that one convention.
+  the source object key carried (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`, `.mp4`, `.webm`,
+  `.dxf`, `.pdf`). Integrity, dedup inside the archive (one photo used by two slots is one file)
+  and dedup on import (`media.content_hash`) all follow from that one convention.
 * **Marker files are `markers/<slug>-<n>.json`**, where `<slug>` is the marker's size name
   lower-cased with anything outside `[a-z0-9]` replaced by `-`, or the literal `mixed` for a
   marker that has no single size (a смешанный настил, `size_id = 0`), and `<n>` is a 1-based
@@ -72,7 +72,8 @@ top-level JSON files.
 | entries in the ZIP | 4096 |
 | total uncompressed bytes | 1 GiB |
 | `card.json` | 16 MB |
-| one marker file | 2 MB |
+| `manifest.json` and any sidecar or index JSON | 16 MB (the same row as `card.json`: each is read whole into memory, and one number is safer than a new one per file) |
+| one marker file | 3 MiB (the save path caps the layout blob at 2 MiB; the file is summary + layout) |
 | uploaded archive body (import route) | 256 MiB |
 
 ---
@@ -130,11 +131,15 @@ top-level JSON files.
 
 * `source.*` is **provenance, never instruction**. An importer may show it and must not resolve
   anything through it: `tech_card_id` and `lock_version` belong to the exporting instance.
-* `id_maps` are the only dictionaries that survive the trip. `sizes` maps the size ids **as they
-  appear in `card.json`** to size names (`size.name` is UNIQUE in every instance); `category_path`
-  is the category triple by name; `colorways` maps colourway ids (= `product.id` on the source) to
-  their `color_code` — reference only, because a colourway is a product and does not travel
-  (§5.3).
+* `id_maps` are the only dictionaries that survive the trip. `sizes` maps **every size id that
+  appears anywhere in the archive** — `card.json`, every sidecar and every marker blob — to size
+  names (`size.name` is UNIQUE in every instance). A SUPERSET is legal and preferred (the source's
+  whole size dictionary is the simplest thing to ship); a subset is not, and this is not pedantry:
+  §5.7 remaps every `size_id` inside a marker blob through this same table, and a смешанный настил
+  names sizes that need never appear in `card.json` at all — a miss there is a `size_unknown` hole
+  that drops the WHOLE marker. `category_path` is the category triple by name; `colorways` maps
+  colourway ids (= `product.id` on the source) to their `color_code` — reference only, because a
+  colourway is a product and does not travel (§5.3).
 * `contents` counts what the archive claims to contain. It is a **positive control**: an import
   whose parse produced zero media while `contents.media > 0` has a broken parser, not a clean
   card, and must fail rather than report success.
@@ -176,9 +181,16 @@ top-level JSON files.
   (notes, comments) is a residual channel — named here, not closed.
 * **Cryptographic signature fields.** None, not even reserved (owner decision B-4). The archive is
   not evidence of anything; a card arriving from one carries no authority.
-* **The exporting instance's URLs, tokens and object keys.** Pattern `view_url` / `download_url`,
-  resolved media URLs and the like are blanked — the bytes travel in the archive, the links do
-  not.
+* **The exporting instance's URLs, tokens and object keys.** Pattern `url` / `view_url` /
+  `download_url`, resolved media URLs and the like are blanked — the bytes travel in the archive,
+  the links do not.
+* **Role assignments.** `role_assignments` name accounts (`admin_id`, `username`) in the SOURCE
+  instance's admins table — an assignment is a row in a table the target does not share, unlike the
+  `created_by` / `updated_by` names below, which resolve nothing.
+* **Section digests.** `section_digests` are recomputed on every read, so storing them would be
+  storing a derived value; and the costing section's was fingerprinted from content whose money
+  this format then cut, which makes it a trace of exactly what §4 removes. The importing instance
+  computes its own.
 * **Approval.** The importing side forces the card to `DRAFT`, clears `released_at` /
   `approved_at` and drops every signoff before writing anything, so an imported card can never
   *look* signed. See §6.
@@ -379,7 +391,7 @@ a hole — the BOM line itself imports regardless, because it carries its own
     "version": 3,
     "name": "перед",
     "filename": "front_v3.dxf",
-    "fabric_purpose": "TECH_CARD_BOM_PURPOSE_SHELL",
+    "fabric_purpose": "TECH_CARD_BOM_PURPOSE_MAIN",
     "bom_line_key": ""
   }
 ]
@@ -479,5 +491,8 @@ explanation and the report action text.
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 
 `entity` on a hole is the human word for what it happened to — `media`, `material`, `bom_line`,
-`pattern`, `marker`, `size`, `operation`, `assembly`, `colorway`, `card`, `archive` — and `ref` is
-whatever names the row inside its own file (`bom_line_key=…`, `media_id=…`, `size_name=…`).
+`pattern`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`, `card`, `archive`
+— and `ref` is whatever names the row inside its own file (`bom_line_key=…`, `media_id=…`,
+`size_name=…`). `measurement` is the size chart's SECOND named axis and is deliberately not
+`size`: a measurement problem reported as a size problem sends the operator to the wrong
+dictionary. The list is mirrored by the `Entity*` constants in `report.go`.

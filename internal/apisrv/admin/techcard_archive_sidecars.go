@@ -355,7 +355,7 @@ func (s *Server) collectArchiveSizeChart(ctx context.Context, card *entity.TechC
 	for _, c := range chart.Cells {
 		sizeName, ok := sizes[c.SizeID]
 		if !ok {
-			holes = append(holes, archiveHole("size", fmt.Sprintf("size_id=%d", c.SizeID),
+			holes = append(holes, archiveHole(techcardarchive.EntitySize, fmt.Sprintf("size_id=%d", c.SizeID),
 				techcardarchive.ReasonSizeUnknown,
 				"the size is not in the exporting instance's dictionary; the row is not exported"))
 			continue
@@ -364,7 +364,7 @@ func (s *Server) collectArchiveSizeChart(ctx context.Context, card *entity.TechC
 		if !ok {
 			// Своя причина, а не size_unknown: у этого файла ДВЕ именные оси, и оператор,
 			// которому про мерку сказали «размер неизвестен», пойдёт смотреть не тот словарь.
-			holes = append(holes, archiveHole("measurement",
+			holes = append(holes, archiveHole(techcardarchive.EntityMeasurement,
 				fmt.Sprintf("measurement_name_id=%d", c.MeasurementNameID),
 				techcardarchive.ReasonMeasurementUnknown,
 				"the measurement is not in the exporting instance's dictionary; the row is not exported"))
@@ -381,7 +381,7 @@ func (s *Server) collectArchiveSizeChart(ctx context.Context, card *entity.TechC
 			sc.rememberSize(chart.GradeBaseSizeID, name)
 			out.GradeBaseSizeName = name
 		} else {
-			holes = append(holes, archiveHole("size", fmt.Sprintf("size_id=%d", chart.GradeBaseSizeID),
+			holes = append(holes, archiveHole(techcardarchive.EntitySize, fmt.Sprintf("size_id=%d", chart.GradeBaseSizeID),
 				techcardarchive.ReasonSizeUnknown,
 				"the grade base size is not in the exporting instance's dictionary; the grade rule travels without a base"))
 		}
@@ -389,7 +389,7 @@ func (s *Server) collectArchiveSizeChart(ctx context.Context, card *entity.TechC
 	for _, st := range chart.GradeSteps {
 		name, ok := measurements[st.MeasurementNameID]
 		if !ok {
-			holes = append(holes, archiveHole("measurement",
+			holes = append(holes, archiveHole(techcardarchive.EntityMeasurement,
 				fmt.Sprintf("measurement_name_id=%d", st.MeasurementNameID),
 				techcardarchive.ReasonMeasurementUnknown,
 				"the measurement is not in the exporting instance's dictionary; the grade step is not exported"))
@@ -441,7 +441,7 @@ func (s *Server) collectArchiveAssembly(ctx context.Context, card *entity.TechCa
 		if number == "" {
 			// Обе беды — «карточки нет» и «у карточки нет номера стиля» — на выходе одно и то же:
 			// строку нечем адресовать в чужой базе. Код один, различие живёт в detail.
-			holes = append(holes, archiveHole("assembly",
+			holes = append(holes, archiveHole(techcardarchive.EntityAssembly,
 				fmt.Sprintf("component_tech_card_id=%d", a.ComponentTechCardId),
 				techcardarchive.ReasonAssemblyComponentNotFound,
 				"the component card is gone or carries no style number; the line is not exported"))
@@ -457,7 +457,7 @@ func (s *Server) collectArchiveAssembly(ctx context.Context, card *entity.TechCa
 			if name == "" {
 				// null здесь означало бы «строка на ВСЕ размеры» — то есть другое количество
 				// ярлыков на прогон. Молча расширить строку нельзя, поэтому она не едет.
-				holes = append(holes, archiveHole("size", fmt.Sprintf("size_id=%d", a.SizeId.Int32),
+				holes = append(holes, archiveHole(techcardarchive.EntitySize, fmt.Sprintf("size_id=%d", a.SizeId.Int32),
 					techcardarchive.ReasonSizeUnknown,
 					"the assembly line's size is not in the dictionary; the line is not exported "+
 						"because a null size would silently widen it to every size"))
@@ -526,7 +526,7 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, sc *ar
 			for _, cons := range u.SizeConsumptions {
 				name, ok := sizes[cons.SizeId]
 				if !ok {
-					holes = append(holes, archiveHole("colorway", ref,
+					holes = append(holes, archiveHole(techcardarchive.EntityColorway, ref,
 						techcardarchive.ReasonSizeUnknown,
 						fmt.Sprintf("per-size consumption for size_id=%d has no name; the figure is not exported",
 							cons.SizeId)))
@@ -636,7 +636,7 @@ func (s *Server) collectArchiveMaterials(ctx context.Context, card *entity.TechC
 		if !ok {
 			// Строка BOM самодостаточна — у неё свои name/supplier/composition/unit (0068), — так
 			// что карта уезжает целой, а дыра говорит, чего у неё больше нет в каталоге.
-			holes = append(holes, archiveHole("material", wantedBy[id],
+			holes = append(holes, archiveHole(techcardarchive.EntityMaterial, wantedBy[id],
 				techcardarchive.ReasonMaterialNotFound,
 				fmt.Sprintf("material_id=%d is not in the exporting catalogue; the line keeps its own name/supplier/unit", id)))
 			continue
@@ -760,7 +760,7 @@ func (s *Server) collectArchiveMedia(ctx context.Context, card *entity.TechCard,
 		ref := fmt.Sprintf("media_id=%d", sl.id)
 		row, ok := rows[sl.id]
 		if !ok {
-			holes = append(holes, archiveHole("media", ref, techcardarchive.ReasonMediaObjectMissing,
+			holes = append(holes, archiveHole(techcardarchive.EntityMedia, ref, techcardarchive.ReasonMediaObjectMissing,
 				"the media row is gone from the library; the slot travels without bytes"))
 			continue
 		}
@@ -769,7 +769,7 @@ func (s *Server) collectArchiveMedia(ctx context.Context, card *entity.TechCard,
 			if archiveIsFatal(err) {
 				return nil, nil, err
 			}
-			holes = append(holes, archiveHole("media", ref, techcardarchive.ReasonMediaObjectMissing,
+			holes = append(holes, archiveHole(techcardarchive.EntityMedia, ref, techcardarchive.ReasonMediaObjectMissing,
 				fmt.Sprintf("full-size object: %v", err)))
 			continue
 		}
@@ -855,7 +855,7 @@ func (s *Server) collectArchivePatterns(ctx context.Context, card *entity.TechCa
 				sc.rememberSize(p.SizeId, name)
 				sizeName = archiveStringPtr(name)
 			} else {
-				holes = append(holes, archiveHole("pattern", ref, techcardarchive.ReasonSizeUnknown,
+				holes = append(holes, archiveHole(techcardarchive.EntityPattern, ref, techcardarchive.ReasonSizeUnknown,
 					fmt.Sprintf("the sheet is filed under size_id=%d, which has no name; the sheet travels without a size", p.SizeId)))
 			}
 		}
@@ -865,7 +865,7 @@ func (s *Server) collectArchivePatterns(ctx context.Context, card *entity.TechCa
 			if archiveIsFatal(err) {
 				return nil, nil, err
 			}
-			holes = append(holes, archiveHole("pattern", ref, techcardarchive.ReasonPatternInvalid,
+			holes = append(holes, archiveHole(techcardarchive.EntityPattern, ref, techcardarchive.ReasonPatternInvalid,
 				fmt.Sprintf("the sheet's object could not be read: %v", err)))
 			continue
 		}
@@ -962,7 +962,7 @@ func (s *Server) collectArchiveMarkers(ctx context.Context, card *entity.TechCar
 				sc.rememberSize(composition[0].SizeId, name)
 				sizeName = archiveStringPtr(name)
 			} else {
-				holes = append(holes, archiveHole("marker", fmt.Sprintf("marker_name=%s", stored.Name),
+				holes = append(holes, archiveHole(techcardarchive.EntityMarker, fmt.Sprintf("marker_name=%s", stored.Name),
 					techcardarchive.ReasonSizeUnknown,
 					fmt.Sprintf("the marker's size_id=%d has no name; the index cannot label it", composition[0].SizeId)))
 			}

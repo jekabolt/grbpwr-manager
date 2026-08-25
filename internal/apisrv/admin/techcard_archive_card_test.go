@@ -221,6 +221,8 @@ func TestBuildArchiveCard(t *testing.T) {
 		require.NotNil(t, raw.GetColorways()[0].GetCostPrice(), "colourway cost_price")
 		require.NotEmpty(t, raw.GetTechCard().GetSignoffs(), "signoffs")
 		require.NotEmpty(t, raw.GetRoleAssignments(), "role assignments")
+		require.NotEmpty(t, raw.GetTechCard().GetPatterns()[0].GetUrl(), "pattern object url")
+		require.NotEmpty(t, raw.GetSectionDigests(), "section digests")
 		require.NotEmpty(t,
 			raw.GetResolvedTechnicalMedia()[0].GetMedia().GetMedia().GetFullSize().GetMediaUrl(),
 			"resolved media url")
@@ -312,6 +314,14 @@ func TestBuildArchiveCard(t *testing.T) {
 		p := got.GetTechCard().GetPatterns()[0]
 		require.Empty(t, p.GetViewUrl())
 		require.Empty(t, p.GetDownloadUrl())
+		require.Empty(t, p.GetUrl(),
+			"the pattern's own object url is the source instance's key: a foreign host fails the "+
+				"whole import, and a matching one (beta and prod on one CDN) silently writes a live "+
+				"link to an object nobody moved")
+
+		require.Empty(t, got.GetSectionDigests(),
+			"section digests are derived, and the costing section's was fingerprinted BEFORE the "+
+				"money was cut")
 
 		for i, m := range got.GetResolvedTechnicalMedia() {
 			mi := m.GetMedia().GetMedia()

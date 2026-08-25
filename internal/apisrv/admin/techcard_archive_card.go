@@ -80,10 +80,10 @@ func buildArchiveCardJSON(card *entity.TechCard) ([]byte, []techcardarchive.Expo
 }
 
 // sanitizeCardForArchive removes what belongs to the EXPORTING INSTANCE rather than to the card:
-// its signatures, its accounts, its URLs and its price provenance. Money is not this function's
-// job — it runs between the two money layers and touches only what neither of them can see, since
-// none of these names is money and a name list cannot express "blank the url INSIDE resolved
-// media".
+// its signatures, its accounts, its URLs, its price provenance and the digests it derived. Money
+// is not this function's job — it runs between the two money layers and touches only what neither
+// of them can see, since none of these names is money and a name list cannot express "blank the
+// url INSIDE resolved media".
 //
 // What deliberately stays (owner decisions B-2 / B-3, FORMAT.md §4): created_by / updated_by and
 // the revision journal. They are provenance a receiving constructor reads and cannot resolve
@@ -95,6 +95,14 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 
 	// Role assignments name accounts (admin_id + username) in the SOURCE instance's admins table.
 	pb.RoleAssignments = nil
+
+	// Section digests are a READ-SIDE projection the converter recomputes on every read, and PLAN
+	// §7 forbids storing what is derivable. Two reasons beyond the letter of that rule: the costing
+	// section's digest was computed from the insert half BEFORE the money was cut, so it is a
+	// fingerprint of exactly what we just removed; and on the receiving side every one of them is
+	// false the moment ids are remapped, while looking to a partner like a statement about
+	// integrity. The importing instance recomputes them for itself.
+	pb.SectionDigests = nil
 
 	// Colourways are products and do not travel as products (FORMAT.md §5.3): what a receiving
 	// instance can use of them — the recipe and the piece materials — rides in colorways.json,
@@ -124,6 +132,16 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 			// stands between that and a shipped token.
 			p.ViewUrl = ""
 			p.DownloadUrl = ""
+
+			// The source instance's object key, worn as a URL (FORMAT.md §4: object keys are
+			// blanked). Blanking it is stricter than tidiness:
+			// ConvertPbTechCardInsertToEntity REQUIRES a non-empty url and checks it against
+			// managedPatternHosts plus the tech-card-patterns segment. A foreign host fails the
+			// WHOLE import loudly; a host that happens to match (beta and prod behind one CDN)
+			// is worse — the row lands in the target base pointing at an object nobody moved.
+			// Empty makes the failure loud AND addressed at the row. Ф3.1 substitutes the
+			// re-uploaded url before conversion; anything it did not reach must not convert.
+			p.Url = ""
 		}
 
 		for _, b := range ins.BomItems {
