@@ -643,6 +643,12 @@ func writeImportedStyleFacts(ctx context.Context, db dependency.DB, id int,
 // same shape the resolver gives a card that lost its category. It moves no counter: the size counter
 // counts the card's SIZES, and the size itself is imported and fine; it is this reference to it that
 // is not.
+//
+// THE REASON IS size_not_in_card_range AND NOT size_unknown, and every range check below reads the
+// same way: this function runs INSIDE the transaction, against the imported card's own range, long
+// after the resolver placed the name in this base's dictionary. Reporting it as size_unknown sent
+// the operator to a dictionary that is in perfect order, over a card that simply does not make that
+// size — an instruction to fix the wrong thing, which is worse than no instruction at all.
 func importedModelWearsSize(sizeID sql.NullInt32, rng storeutil.TechCardSizeRange, lost *importLosses) sql.NullInt32 {
 	if !sizeID.Valid || sizeID.Int32 <= 0 {
 		return sql.NullInt32{} // 0 is «unset» across the whole contract, never size zero
@@ -651,7 +657,7 @@ func importedModelWearsSize(sizeID sql.NullInt32, rng storeutil.TechCardSizeRang
 		return sizeID
 	}
 	lost.drop(techcardarchive.EntityCard, importedSizeRef(int(sizeID.Int32)),
-		techcardarchive.StatusDegraded, techcardarchive.ReasonSizeUnknown,
+		techcardarchive.StatusDegraded, techcardarchive.ReasonSizeNotInCardRange,
 		"the archive says the model wears this size, which the imported card does not make; the card "+
 			"imported without the reference")
 	return sql.NullInt32{}
@@ -729,20 +735,25 @@ func importedChartCellRows(id int, chart entity.StyleSizeChart,
 
 	for _, sizeID := range sortedIntKeys(outOfRange) {
 		lost.drop(techcardarchive.EntitySize, importedSizeRef(sizeID),
-			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown,
+			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeNotInCardRange,
 			fmt.Sprintf("%s filed under a size the imported card does not make; %s dropped and the rest "+
 				"of the chart imported", rowsPhrase(outOfRange[sizeID], "size chart row"),
 				theyOrIt(outOfRange[sizeID])))
 	}
+	// A cell that addresses NOTHING is not a missing reference and is not reported as one: there is
+	// no measurement to add to a dictionary and no size to widen a range with. The row was already
+	// unusable when the archive was written, which is what archive_row_invalid says — and what its
+	// action text tells the operator to do about it, instead of sending them to a dictionary to look
+	// for a name the row never carried.
 	if noMeasurement > 0 {
 		lost.drop(techcardarchive.EntityMeasurement, "size_chart.measurement_name_id=0",
-			techcardarchive.StatusSkipped, techcardarchive.ReasonMeasurementUnknown,
+			techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
 			fmt.Sprintf("%s carrying no measurement at all, which addresses nothing; %s dropped",
 				rowsPhrase(noMeasurement, "size chart row"), theyOrIt(noMeasurement)))
 	}
 	if noSize > 0 {
 		lost.drop(techcardarchive.EntitySize, "size_chart.size_id=0",
-			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown,
+			techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
 			fmt.Sprintf("%s carrying no size at all, which addresses nothing; %s dropped",
 				rowsPhrase(noSize, "size chart row"), theyOrIt(noSize)))
 	}
@@ -778,8 +789,9 @@ func importedGradeRule(id int, chart entity.StyleSizeChart,
 		})
 	}
 	if unaddressed > 0 {
+		// Addresses nothing, so nothing on this side closes it — see importedChartCellRows.
 		lost.drop(techcardarchive.EntityMeasurement, "grade_step.measurement_name_id=0",
-			techcardarchive.StatusSkipped, techcardarchive.ReasonMeasurementUnknown,
+			techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
 			fmt.Sprintf("%s naming no measurement, which addresses nothing; %s dropped",
 				rowsPhrase(unaddressed, "grade step"), theyOrIt(unaddressed)))
 	}
@@ -793,7 +805,7 @@ func importedGradeRule(id int, chart entity.StyleSizeChart,
 				"reads as an authored rule", rowsPhrase(len(stepRows), "step"))
 		}
 		lost.drop(techcardarchive.EntitySize, importedSizeRef(base),
-			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown, detail)
+			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeNotInCardRange, detail)
 		return 0, nil
 	}
 	return base, stepRows
@@ -1094,11 +1106,19 @@ func insertImportedMarkers(ctx context.Context, db dependency.DB, techCardID int
 // shape, derived from the import's own id, and equal to no sheet set that ever existed. The scope
 // consequently reads «measured on {date}, patterns changed since», which is the honest verdict —
 // the areas describe contours measured somewhere else, and a recount is one button away.
-// A DROPPED AREA IS A REPORTED AREA, under entity `pattern`. The vocabulary of FORMAT.md §7 is
-// closed and has no word for a measured contour, and `pattern` is the true one of the twelve: the
-// areas describe pattern geometry, and the button that fixes a hole in them is on the patterns tab.
-// It moves NO counter — the pattern counter counts SHEETS, and a sheet whose areas were dropped
-// still imported.
+// A DROPPED AREA IS A REPORTED AREA, under entity `piece_area` — the measured contour of one cut
+// piece, which is its own word in FORMAT.md §7 and not `pattern`. It was reported as `pattern` while
+// that word was missing, and the word was worth adding: a pattern is a SHEET, the sheet imported,
+// and «pattern skipped» sends an operator to re-upload a file that is already on the card. It still
+// moves NO counter — the pattern counter counts sheets, and `piece_area` has none by design, because
+// the number of contours an archive measured is not a number anybody is owed a reconciliation of.
+//
+// The two ways a row is lost are told apart by reason, and that is the second half of the same fix.
+// A size the dictionary HAS and this card does not make is `size_not_in_card_range`. A row that
+// names no scope or no piece, states an area that is not an area, or carries a date no column can
+// hold is `archive_row_invalid`: it was already unusable in the archive, and there is nothing on
+// this side to add — which is precisely what `pattern_invalid` («the file is not a readable DXF»)
+// used to tell the operator instead, about a file that read perfectly well.
 func insertImportedPieceAreas(ctx context.Context, db dependency.DB, techCardID int, importID string,
 	areas []entity.TechCardArchivePieceArea, rng storeutil.TechCardSizeRange, lost *importLosses) error {
 	rows, err := importedPieceAreaRows(techCardID, importID, areas, rng, lost)
@@ -1126,20 +1146,19 @@ func importedPieceAreaRows(techCardID int, importID string, areas []entity.TechC
 		scope := strings.TrimSpace(a.ScopeKey)
 		piece := importedLineKey(a.PieceLineKey)
 		if scope == "" || piece == "" {
-			lost.drop(techcardarchive.EntityPattern, importedPieceAreaRef(a.ScopeKey, a.PieceLineKey),
-				techcardarchive.StatusSkipped, techcardarchive.ReasonPatternInvalid,
+			lost.drop(techcardarchive.EntityPieceArea, importedPieceAreaRef(a.ScopeKey, a.PieceLineKey),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
 				"the archive measures an area that names no fabric scope or no cut piece, so it "+
-					"addresses nothing; the row was dropped. Recount the areas from the sheets")
+					"addresses nothing; the row was dropped")
 			continue
 		}
 		// chk_tcpa_area_positive refuses a non-positive area at the schema level; caught here so a
 		// corrupt row costs one report line rather than the whole import.
 		if !a.AreaCm2.IsPositive() {
-			lost.drop(techcardarchive.EntityPattern, importedPieceAreaRef(scope, a.PieceLineKey),
-				techcardarchive.StatusSkipped, techcardarchive.ReasonPatternInvalid,
+			lost.drop(techcardarchive.EntityPieceArea, importedPieceAreaRef(scope, a.PieceLineKey),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
 				fmt.Sprintf("the archive's measured area for this piece is %s, which is not an area; "+
-					"the row was dropped and the piece has no measured geometry here. Recount the "+
-					"areas from the sheets", a.AreaCm2.String()))
+					"the row was dropped and the piece has no measured geometry here", a.AreaCm2.String()))
 			continue
 		}
 		// THE MEASUREMENT'S DATE HAS TO BE STORABLE. parsed_at is a TIMESTAMP NOT NULL (0297) and
@@ -1155,11 +1174,10 @@ func importedPieceAreaRows(techCardID int, importID string, areas []entity.TechC
 		// have. The resolver has already tried the one honest substitute it has (manifest's export
 		// date), so a value that still does not fit has no replacement left that is true.
 		if !fitsMySQLTimestamp(a.ParsedAt) {
-			lost.drop(techcardarchive.EntityPattern, importedPieceAreaRef(scope, a.PieceLineKey),
-				techcardarchive.StatusSkipped, techcardarchive.ReasonPatternInvalid,
+			lost.drop(techcardarchive.EntityPieceArea, importedPieceAreaRef(scope, a.PieceLineKey),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
 				fmt.Sprintf("the archive dates this measurement %s, which is not a date this base can "+
-					"store, and re-dating it would claim a measurement nobody took; the row was "+
-					"dropped. Recount the areas from the sheets",
+					"store, and re-dating it would claim a measurement nobody took; the row was dropped",
 					a.ParsedAt.UTC().Format("2006-01-02 15:04:05")))
 			continue
 		}
@@ -1171,8 +1189,8 @@ func importedPieceAreaRows(techCardID int, importID string, areas []entity.TechC
 			sizeID = sql.NullInt64{}
 		}
 		if sizeID.Valid && !rng.Has(int(sizeID.Int64)) {
-			lost.drop(techcardarchive.EntityPattern, importedSizeRef(int(sizeID.Int64)),
-				techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown,
+			lost.drop(techcardarchive.EntityPieceArea, importedSizeRef(int(sizeID.Int64)),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonSizeNotInCardRange,
 				"the archive measures piece areas for a size the imported card does not make; those "+
 					"rows were dropped and the card states no cloth norm for that size")
 			continue
@@ -1365,9 +1383,9 @@ func importedAssemblyLines(techCardID int, items []entity.StyleAssemblyInsert,
 		case sizeKey(it) > 0 && !rng.Has(sizeKey(it)):
 			// The size itself is fine — the resolver found it in this base's dictionary — it is the
 			// imported CARD that does not make it, so the line describes labels for a garment that
-			// does not exist. size_unknown is the closest the closed dictionary comes; the detail
-			// says which of the two dictionaries actually disagreed.
-			reason = techcardarchive.ReasonSizeUnknown
+			// does not exist. Reported as size_unknown this sent the operator to add a size that is
+			// already there; size_not_in_card_range names the range that actually refused it.
+			reason = techcardarchive.ReasonSizeNotInCardRange
 			detail = fmt.Sprintf("the assembly line is filed under %s, which the imported card does not "+
 				"make", importedSizeRef(sizeKey(it)))
 		case seen[[2]int{it.ComponentTechCardId, sizeKey(it)}]:

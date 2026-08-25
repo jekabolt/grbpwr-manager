@@ -503,6 +503,126 @@ func TestReportActionTextCoversEveryReason(t *testing.T) {
 	})
 }
 
+// TestEntityVocabularyIsDocumented is the reason guard's other half, and it exists because the half
+// that was missing is what produced the defect it now watches.
+//
+// §7 documents TWO closed lists: the reason codes (guarded above, off the source of reasons.go) and
+// the ENTITY words — the human noun for what a line happened to. Only the first was ever checked, so
+// the entity list was prose: `piece_area` was missing from it for as long as the measured contours
+// travelled, and the store dutifully reported every dropped contour as `pattern` — «the nearest word
+// of the twelve» — sending an operator to re-upload a sheet that had imported perfectly well.
+//
+// A word that is in report.go and not in the document is exactly that failure starting again from
+// the other end, so both directions fail.
+func TestEntityVocabularyIsDocumented(t *testing.T) {
+	source := reportParseEntityWords(t, "report.go")
+	documented := reportParseFormatEntityWords(t, formatDocPath)
+
+	for word := range source {
+		if !documented[word] {
+			t.Errorf("report.go declares the entity %q and FORMAT.md §7 does not list it. The §7 "+
+				"vocabulary is what both sides are written against — a word only one side knows is "+
+				"how a line ends up filed under somebody else's noun", word)
+		}
+	}
+	for word := range documented {
+		if !source[word] {
+			t.Errorf("FORMAT.md §7 lists the entity %q, which is no longer an Entity* constant in "+
+				"report.go", word)
+		}
+	}
+	for _, e := range CountedEntities {
+		if !source[e] {
+			t.Errorf("%q is counted and is not an Entity* constant — the two lists are one vocabulary", e)
+		}
+	}
+}
+
+// reportParseEntityWords reads the string values of the Entity* constants out of the SOURCE of
+// report.go. They are untyped string constants (unlike Reason), so they are found by NAME —
+// which also means a constant renamed out of the Entity* family silently leaves this guard, and
+// that is why the count below is asserted.
+func reportParseEntityWords(t *testing.T, path string) map[string]bool {
+	t.Helper()
+
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v — the entity vocabulary lives there; if it moved, re-point this test "+
+			"(do not delete the check)", path, err)
+	}
+
+	out := map[string]bool{}
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if !strings.HasPrefix(name.Name, "Entity") || i >= len(vs.Values) {
+					continue
+				}
+				bl, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || bl.Kind != token.STRING {
+					t.Fatalf("%s: const %s is not a plain string literal (%T); decide by hand whether "+
+						"§7 still documents it", path, name.Name, vs.Values[i])
+				}
+				word, err := strconv.Unquote(bl.Value)
+				if err != nil || word == "" {
+					t.Fatalf("%s: const %s has an unreadable or empty value %s", path, name.Name, bl.Value)
+				}
+				out[word] = true
+			}
+		}
+	}
+
+	if len(out) < len(CountedEntities) {
+		t.Fatalf("%s parsed to %d entity words (%s) — fewer than the %d counted ones, so the file was "+
+			"read and the vocabulary was not found; the comparison would pass against anything",
+			path, len(out), strings.Join(reportSortedKeys(out), ", "), len(CountedEntities))
+	}
+	return out
+}
+
+// reportParseFormatEntityWords reads the entity vocabulary out of the §7 prose — the backticked
+// words of the sentence that enumerates them, which is where the document states the list.
+func reportParseFormatEntityWords(t *testing.T, path string) map[string]bool {
+	t.Helper()
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	section := string(body)
+	i := strings.Index(section, "`entity` on a hole is the human word for what it happened to")
+	if i < 0 {
+		t.Fatalf("%s no longer states the entity vocabulary in §7; find where it went and re-point "+
+			"this test", path)
+	}
+	section = section[i:]
+	if j := strings.Index(section, "— and `ref` is"); j > 0 {
+		section = section[:j]
+	} else {
+		t.Fatalf("%s: the entity sentence no longer ends where this test cuts it; re-point the cut "+
+			"rather than widening it, or every backticked word in §7 would count as an entity", path)
+	}
+
+	out := map[string]bool{}
+	for _, m := range reportFormatWordRe.FindAllStringSubmatch(section, -1) {
+		if m[1] == "entity" { // the sentence names the FIELD before it lists its values
+			continue
+		}
+		out[m[1]] = true
+	}
+	return out
+}
+
+var reportFormatWordRe = regexp.MustCompile("`([a-z0-9_]+)`")
+
 // reportParseReasonCodes reads the string values of the `Reason` constants out of the SOURCE of
 // reasons.go. Source rather than reflection because Go has no way to enumerate a const set at
 // runtime, and a hand-kept list here would be exactly the second copy this test exists to prevent.

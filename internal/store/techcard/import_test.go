@@ -310,7 +310,7 @@ func TestImportedLineKeyFoldsCaseAndSpace(t *testing.T) {
 func TestImportLossesSeparateLinesFromCounters(t *testing.T) {
 	l := newImportLosses()
 	l.drop(techcardarchive.EntityCard, "size_name=XXL", techcardarchive.StatusDegraded,
-		techcardarchive.ReasonSizeUnknown, "the model wears a size this card does not make")
+		techcardarchive.ReasonSizeNotInCardRange, "the model wears a size this card does not make")
 	l.dropCounted(techcardarchive.EntityAssembly, "component_style_number=GRB-LBL-1",
 		techcardarchive.StatusSkipped, techcardarchive.ReasonAssemblyComponentNotFound, "not auxiliary here")
 	l.dropCounted(techcardarchive.EntityAssembly, "component_style_number=GRB-LBL-1",
@@ -350,8 +350,16 @@ func TestImportedModelWearsSizeOutOfRangeIsReported(t *testing.T) {
 	}
 	h := l.holes[0]
 	if h.Entity != techcardarchive.EntityCard || h.Status != techcardarchive.StatusDegraded ||
-		h.Reason != techcardarchive.ReasonSizeUnknown || h.Ref != "size_id=99" {
+		h.Reason != techcardarchive.ReasonSizeNotInCardRange || h.Ref != "size_id=99" {
 		t.Fatalf("line = %+v, want a degraded card line naming size 99", h)
+	}
+	// The reason is the instruction. This check ran against `size_unknown` for a whole review cycle
+	// and passed, while the sentence the operator was shown said «add the size to the dictionary» —
+	// about a size the dictionary already had, refused by the CARD's range. Naming the code is not
+	// enough to catch that; the action text has to be read.
+	if act := techcardarchive.ActionFor(h.Reason); strings.Contains(act, "to the dictionary") {
+		t.Errorf("the action for %q sends the operator to the size dictionary (%q), which placed this "+
+			"size perfectly well — it is the imported card's range that refused it", h.Reason, act)
 	}
 	if l.lost[techcardarchive.EntitySize].Skipped != 0 {
 		t.Fatal("the size itself imported; moving the size counter would say it did not")
@@ -382,17 +390,28 @@ func TestImportedChartCellsReportOneLinePerSize(t *testing.T) {
 	if !strings.Contains(l.holes[0].Detail, "2 size chart rows") {
 		t.Fatalf("the out-of-range line must count the rows it dropped, got %q", l.holes[0].Detail)
 	}
-	if l.holes[0].Ref != "size_id=99" || l.holes[0].Reason != techcardarchive.ReasonSizeUnknown {
-		t.Fatalf("line = %+v, want size 99 reported as size_unknown", l.holes[0])
+	if l.holes[0].Ref != "size_id=99" || l.holes[0].Reason != techcardarchive.ReasonSizeNotInCardRange {
+		t.Fatalf("line = %+v, want size 99 reported as size_not_in_card_range — the dictionary has it, "+
+			"this card does not make it", l.holes[0])
 	}
-	// The two «addresses nothing» lines must be distinguishable: one is a missing measurement, one a
-	// missing size, and an operator told the wrong one reads the wrong dictionary.
+	// The two «addresses nothing» lines must stay distinguishable BY ENTITY: one cell named no
+	// measurement, one named no size. But neither is a missing reference — there is no name to add to
+	// any dictionary — so both carry archive_row_invalid, and an operator is no longer sent to a
+	// dictionary to look for something the row never named.
 	if l.holes[1].Entity != techcardarchive.EntityMeasurement ||
-		l.holes[1].Reason != techcardarchive.ReasonMeasurementUnknown {
-		t.Fatalf("line = %+v, want the measurement-less cell reported as a measurement", l.holes[1])
+		l.holes[1].Reason != techcardarchive.ReasonArchiveRowInvalid {
+		t.Fatalf("line = %+v, want the measurement-less cell reported as a measurement whose ROW is "+
+			"unusable, not as a dictionary miss", l.holes[1])
 	}
-	if l.holes[2].Entity != techcardarchive.EntitySize {
-		t.Fatalf("line = %+v, want the size-less cell reported as a size", l.holes[2])
+	if l.holes[2].Entity != techcardarchive.EntitySize ||
+		l.holes[2].Reason != techcardarchive.ReasonArchiveRowInvalid {
+		t.Fatalf("line = %+v, want the size-less cell reported as a size whose ROW is unusable", l.holes[2])
+	}
+	for _, h := range l.holes[1:] {
+		if act := techcardarchive.ActionFor(h.Reason); strings.Contains(act, "Add the ") {
+			t.Errorf("line %+v is told %q — there is nothing to add: the cell named no dictionary "+
+				"entry at all", h, act)
+		}
 	}
 }
 
@@ -484,9 +503,28 @@ func TestImportedPieceAreaRowsDropWhatTheyCannotStore(t *testing.T) {
 		t.Fatalf("lines = %d, want 4 — every dropped row on the report: %+v", len(l.holes), l.holes)
 	}
 	for _, h := range l.holes {
-		if h.Entity != techcardarchive.EntityPattern {
-			t.Errorf("line %+v: a measured area is reported under `pattern`, the closed vocabulary's "+
-				"nearest word and the tab that fixes it", h)
+		if h.Entity != techcardarchive.EntityPieceArea {
+			t.Errorf("line %+v: a measured contour is its own entity — reported under `pattern` it "+
+				"reads as a sheet that did not import, and the sheet imported", h)
+		}
+	}
+	// THE THREE MALFORMED ROWS AND THE ONE OUT-OF-RANGE SIZE ARE DIFFERENT LOSSES. The first three
+	// were unusable in the archive itself — no scope, no area, no storable date — and nothing added
+	// on this side closes them; the fourth names a size this base has and this card does not make.
+	// Reported under one code (they were both, at different times: pattern_invalid and size_unknown)
+	// the operator is sent to re-upload a readable file, or to add a size that is already there.
+	byReason := map[techcardarchive.Reason]int{}
+	for _, h := range l.holes {
+		byReason[h.Reason]++
+	}
+	if byReason[techcardarchive.ReasonArchiveRowInvalid] != 3 ||
+		byReason[techcardarchive.ReasonSizeNotInCardRange] != 1 {
+		t.Fatalf("reasons = %+v, want 3 archive_row_invalid + 1 size_not_in_card_range: %+v", byReason, l.holes)
+	}
+	for _, h := range l.holes {
+		if act := techcardarchive.ActionFor(h.Reason); act == "" || strings.Contains(act, "DXF") {
+			t.Errorf("line %+v is told %q — the pattern sheet read perfectly well; it is the measured "+
+				"row that did not", h, act)
 		}
 	}
 	if !strings.Contains(l.holes[0].Detail, "1970-01-01 00:00:00") {
@@ -544,7 +582,7 @@ func TestImportedAssemblyLinesMoveTheCounterTheyDrop(t *testing.T) {
 	for _, want := range []string{
 		"component_style_number=GRB-SS26-014|" + string(techcardarchive.ReasonAssemblyComponentNotFound),
 		"component_style_number=GRB-LBL-1|" + string(techcardarchive.ReasonAssemblyComponentNotFound),
-		"component_style_number=GRB-LBL-1|" + string(techcardarchive.ReasonSizeUnknown),
+		"component_style_number=GRB-LBL-1|" + string(techcardarchive.ReasonSizeNotInCardRange),
 		"component_tech_card_id=0|" + string(techcardarchive.ReasonAssemblyComponentNotFound),
 		"component_tech_card_id=7|" + string(techcardarchive.ReasonAssemblyComponentNotFound),
 		"component_tech_card_id=12|" + string(techcardarchive.ReasonAssemblyComponentNotFound),
@@ -557,6 +595,20 @@ func TestImportedAssemblyLinesMoveTheCounterTheyDrop(t *testing.T) {
 	// SHARE a line — while both still left the imported column.
 	if len(l.holes) != 6 {
 		t.Fatalf("lines = %d, want 6: seven losses, six distinct (component, reason) pairs", len(l.holes))
+	}
+	// The size line is the one this bill can get WRONG in a way the operator acts on. Its size is in
+	// this base's dictionary — the resolver put it there — and it is the imported card that does not
+	// make it. Reported as size_unknown, the sentence read «add the size to the dictionary and import
+	// again», which fixes nothing and reruns the whole import to prove it.
+	for _, h := range l.holes {
+		if h.Reason != techcardarchive.ReasonSizeNotInCardRange {
+			continue
+		}
+		act := techcardarchive.ActionFor(h.Reason)
+		if strings.Contains(act, "to the dictionary") || !strings.Contains(act, "size range") {
+			t.Errorf("the assembly line dropped over the card's own size range is told %q; it has to "+
+				"name the RANGE, and must not send anybody to the dictionary", act)
+		}
 	}
 }
 

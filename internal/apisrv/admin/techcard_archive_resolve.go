@@ -1472,7 +1472,64 @@ func (r *tcimpResolver) resolveStyleFacts() {
 		}
 	}
 
+	r.reportCompositionEntries()
 	r.out.StylePlan = facts
+}
+
+// reportCompositionEntries names the ONE thing the outer message carries that this import writes
+// nowhere — the structured fibre breakdown (field 14).
+//
+// IT IS NOT WRITTEN, AND THAT IS THE DECISION, NOT AN OVERSIGHT. composition_entries projects
+// `style_composition`, and that table has exactly one writer in this service —
+// product.ReconcileStyleCompositionTx — which throws the whole set away and RE-DERIVES it from the
+// card's own shell-fabric BOM lines, resolved against THIS catalogue's articles, on every save of
+// the card (UpdateTechCard, UpdateStyle, UpdateColorwayRecipe all end in it). Two consequences
+// decide the matter together:
+//
+//   - what the archive carries is a derivation over the SOURCE's catalogue. Written here it would
+//     state, as a fact about this base's BOM, a breakdown this base's BOM does not produce;
+//   - and it would not survive being read twice: the imported card's FIRST save replaces it in
+//     silence — with an empty set wherever the linked articles carry no fibre composition, which is
+//     the ordinary state of this catalogue. Writing therefore trades a loss the report names for one
+//     that nothing anywhere names, which is the exact trade the owner's rule forbids.
+//
+// So the loss is REPORTED instead, and reported HERE rather than in the write: the dry run is where
+// an operator sees it before committing, and the condition — «the archive carried entries» — is a
+// property of card.json that the transaction has no reason to re-read.
+//
+// The numbers go into the detail because the report is the only place on this side they exist at
+// all, and the list is CAPPED: an archive is somebody else's file and `composition_entries` is
+// repeated, so the detail is bounded by construction rather than by the reader's good manners.
+func (r *tcimpResolver) reportCompositionEntries() {
+	entries := r.card.GetCompositionEntries()
+	if len(entries) == 0 {
+		return
+	}
+
+	const spelled = 12 // more fibres than any garment declares; a hostile archive may carry thousands
+	parts := make([]string, 0, spelled)
+	for _, e := range entries {
+		if len(parts) == spelled {
+			parts = append(parts, fmt.Sprintf("… and %d more", len(entries)-spelled))
+			break
+		}
+		code := strings.TrimSpace(e.GetFiberCode())
+		if code == "" {
+			code = "?"
+		}
+		if pct := e.GetPercent(); pct != nil && strings.TrimSpace(pct.GetValue()) != "" {
+			parts = append(parts, fmt.Sprintf("%s %s%%", code, strings.TrimSpace(pct.GetValue())))
+			continue
+		}
+		parts = append(parts, code)
+	}
+
+	r.hole(techcardarchive.EntityCard, "composition_entries", techcardarchive.StatusDegraded,
+		techcardarchive.ReasonCompositionNotDerived,
+		fmt.Sprintf("the archive states a structured fibre breakdown (%s), which this base derives "+
+			"from the card's own fabric lines rather than importing; the card landed with the "+
+			"free-text composition and no breakdown until it is saved here",
+			strings.Join(parts, ", ")))
 }
 
 // resolvePieceAreas carries the measured contour areas across, translating the one id among them.

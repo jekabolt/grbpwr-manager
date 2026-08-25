@@ -59,8 +59,15 @@ const (
 	// EntityMeasurement is the second named axis of sizechart.json and exists precisely so a
 	// measurement problem is NOT reported as "size": an operator told "the size is unknown" about
 	// a measurement goes and reads the wrong dictionary. It pairs with ReasonMeasurementUnknown.
+	//
+	// EntityPieceArea is the MEASURED CONTOUR of one cut piece — a row of tech_card_piece_area, the
+	// geometry a cloth norm is derived from. It is not `pattern`, which it was reported as while
+	// this word was missing: a pattern is a SHEET, it has its own counter, and a sheet whose
+	// measured areas were dropped imported perfectly well. An operator reading «pattern skipped»
+	// goes to re-upload a file that is already there.
 	EntityMaterial    = "material"
 	EntityMeasurement = "measurement"
+	EntityPieceArea   = "piece_area"
 	EntityCard        = "card"
 	EntityArchive     = "archive"
 )
@@ -391,6 +398,10 @@ var reasonGuide = map[Reason]reasonGuidance{
 	ReasonSizeUnknown: {StatusSkipped,
 		"This size is not in the size dictionary here, so rows filed under it were dropped. Add the " +
 			"size to the dictionary and import the archive again."},
+	ReasonSizeNotInCardRange: {StatusSkipped,
+		"The size dictionary is fine — the imported card's own size range does not include this size, " +
+			"so rows filed under it were dropped. Widen the card's size range and re-enter those rows; " +
+			"a size_unknown line naming the same size means the range lost it on the way in."},
 	ReasonMeasurementUnknown: {StatusSkipped,
 		"This measurement is not in the measurement dictionary here, so its row was dropped from the " +
 			"size chart. Add the measurement, then re-enter the row by hand or import again."},
@@ -407,6 +418,11 @@ var reasonGuide = map[Reason]reasonGuidance{
 	ReasonColorwaysNotApplied: {StatusSkipped,
 		"Colourways are products and do not travel in an archive. Create them here and link them to " +
 			"the card by hand — the archive's colour list is in the report for reference."},
+	ReasonCompositionNotDerived: {StatusDegraded,
+		"The fibre breakdown is derived here from the articles the card's fabric lines link to, and is " +
+			"re-derived every time the card is saved — so the archive's own rows were not written. The " +
+			"free-text composition did travel and is on the card. Save the card to derive the breakdown; " +
+			"if it comes out empty, the linked articles carry no fibre composition in this catalogue."},
 	ReasonWastageClaimDegraded: {StatusDegraded,
 		"The figure stands but its provenance did not travel, so it now reads as entered by hand. " +
 			"Re-check it on the fabric tab and re-derive it from the marker if that matters."},
@@ -420,6 +436,11 @@ var reasonGuide = map[Reason]reasonGuidance{
 	ReasonUnknownEntry: {StatusSkipped,
 		"This server does not know this file — the archive was written by a newer version. Update the " +
 			"server and import again if the missing piece matters."},
+	ReasonArchiveRowInvalid: {StatusSkipped,
+		"The row was already unusable in the archive — it names nothing, or carries a value that is " +
+			"not one — so it was dropped and the rest imported. Nothing here can repair the row itself: " +
+			"re-enter it on this card (measured areas are recounted on the patterns tab), or fix it on " +
+			"the source card and import that archive again."},
 }
 
 // ActionFor is the sentence the operator is shown for a reason code, and it is empty for a code

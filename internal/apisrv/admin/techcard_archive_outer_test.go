@@ -219,7 +219,80 @@ func TestResolveImportStyleFactsTravelVerbatim(t *testing.T) {
 		require.False(t, res.StylePlan.ModelWearsHeightCm.Valid, "0 cm is «unknown» on the wire and NULL in the column, never a height")
 		require.False(t, res.StylePlan.ModelWearsSizeId.Valid)
 		require.Empty(t, res.PieceAreaPlan, "a card with no measured areas plans none — and reports nothing, because nothing was lost")
+		require.Empty(t, tcimpHoles(res, techcardarchive.ReasonCompositionNotDerived),
+			"an archive that carries no fibre breakdown loses none, and a line about a loss that did "+
+				"not happen is the same noise as a missing line about one that did")
 	})
+}
+
+// The structured fibre breakdown (field 14) is the one thing on the outer message the import writes
+// NOWHERE, and it used to go without a word.
+//
+// It is not written on purpose: style_composition's only writer re-derives the whole set from the
+// card's own fabric lines against THIS catalogue on every save, so the archive's rows would state a
+// breakdown of somebody else's catalogue as a fact about this base's BOM — and the imported card's
+// first save would replace them in silence. The owner's rule allows the skip and forbids the
+// silence, so the loss is a REPORTED one, in the dry run, where it is read before anybody commits.
+//
+// Two halves, and the second is the one that keeps this honest: the free-text composition (16) —
+// which the store DOES write — must still travel, or «the breakdown is not imported» would have
+// quietly become «the card says nothing about what it is made of».
+func TestResolveImportReportsTheFibreBreakdownItDoesNotWrite(t *testing.T) {
+	s, _, _, _ := tcimpServer(t)
+	a := tcimpNewArchive()
+	a.outer = func(c *pb_common.TechCard) {
+		c.Composition = "80% wool, 20% pa"
+		c.CompositionEntries = []*pb_common.CompositionEntry{
+			{FiberCode: "WO", Name: "Wool", Percent: &pbdecimal.Decimal{Value: "80"}, Source: "auto"},
+			{FiberCode: "PA", Name: "Polyamide", Percent: &pbdecimal.Decimal{Value: "20"}, Source: "auto"},
+		}
+	}
+
+	res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+	require.NoError(t, err)
+
+	holes := tcimpHoles(res, techcardarchive.ReasonCompositionNotDerived)
+	require.Len(t, holes, 1, "the breakdown is lost once, as one fact of the card")
+	h := holes[0]
+	require.Equal(t, techcardarchive.EntityCard, h.Entity, "the CARD landed, one projection thinner")
+	require.Equal(t, techcardarchive.StatusDegraded, h.Status)
+	require.Equal(t, "composition_entries", h.Ref)
+	// The detail is the only place on this side the archive's numbers exist at all, so it has to
+	// carry them — a line saying «something was lost» is a line nobody can act on.
+	require.Contains(t, h.Detail, "WO 80%")
+	require.Contains(t, h.Detail, "PA 20%")
+	require.NotEmpty(t, techcardarchive.ActionFor(h.Reason))
+
+	// THE OTHER HALF. The legacy free-text composition is a different field with a different fate:
+	// the store writes it, and it is what the card reads until somebody saves it here.
+	require.Equal(t, "80% wool, 20% pa", res.StylePlan.Composition.String,
+		"the free-text composition travels and IS written — without it the card would land silent "+
+			"about its fibres, which is the loss this report line claims did NOT happen")
+}
+
+// A hostile archive can repeat composition_entries as many times as the card.json ceiling allows,
+// and the detail is free text a human reads. It is bounded by construction rather than by the
+// exporter's good manners — the same rule §6 states for every other channel of foreign prose.
+func TestResolveImportCapsTheFibreBreakdownItSpellsOut(t *testing.T) {
+	s, _, _, _ := tcimpServer(t)
+	a := tcimpNewArchive()
+	a.outer = func(c *pb_common.TechCard) {
+		for i := 0; i < 400; i++ {
+			c.CompositionEntries = append(c.CompositionEntries, &pb_common.CompositionEntry{
+				FiberCode: "FIB", Percent: &pbdecimal.Decimal{Value: "0.25"},
+			})
+		}
+	}
+
+	res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+	require.NoError(t, err)
+
+	holes := tcimpHoles(res, techcardarchive.ReasonCompositionNotDerived)
+	require.Len(t, holes, 1)
+	require.Less(t, len(holes[0].Detail), 400,
+		"400 fibres may not become 400 fibres of report line: the detail is a sentence for a human")
+	require.Contains(t, holes[0].Detail, "and 388 more",
+		"a capped list has to say it was capped, or the report reads as a complete breakdown of twelve")
 }
 
 // The measurement's conditions and provenance are facts ABOUT THE MEASUREMENT and cross unchanged:

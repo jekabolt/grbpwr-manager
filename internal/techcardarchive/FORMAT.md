@@ -240,7 +240,7 @@ Four verdicts, and they are not synonyms:
 | 10, 11 | `created_by`, `updated_by` | travel as text — names that resolve nothing (unlike `role_assignments`). **Not written:** the imported card is stamped with the operator who ran the import. |
 | 12 | `role_assignments` | **cleared** (§4). |
 | 13 | `revisions` | travels as text, **never imported** — §4.2. |
-| 14 | `composition_entries` | travels. The structured fibre breakdown is a projection of `style_composition`, a table no import writes, so an imported card keeps the legacy free-text `composition` (16) and has no entries until somebody re-enters them. Named here because the loss is silent otherwise. |
+| 14 | `composition_entries` | travels and is **deliberately not written**, with a `composition_not_derived` line in the report — see «the fibre breakdown» below. |
 | 15, 16, 17 | `fit`, `composition`, `care_instructions` | travel and are **written** — see «style facts» below. |
 | 18 | `section_digests` | **cleared** (§4). |
 | 19 | `care_entries` | travels. An OUTPUT-ONLY projection of 17 against the SOURCE's `care_symbol` dictionary. The import writes the code string (17) and the target resolves its own entries from it. |
@@ -262,7 +262,20 @@ archive's three standing rules: `0` is «unset» and is never remapped; a value 
 cannot place is a `size_unknown` hole and the reference lands NULL rather than pointing at whichever
 local size happens to share the number; and the store additionally clears a size that is not in the
 imported card's OWN size range — «the model wears a size this style does not make» is either a
-foreign id worn as a local one or a fact about nothing.
+foreign id worn as a local one or a fact about nothing. That last refusal is a
+`size_not_in_card_range` line and NOT `size_unknown`: the dictionary placed the size perfectly well,
+and an operator sent to the dictionary would find nothing to fix there.
+
+**The fibre breakdown (14) is DERIVED here and is therefore not written.** `composition_entries`
+projects `style_composition`, whose only writer re-derives the whole set from the card's own
+shell-fabric BOM lines against **this** catalogue's articles, on every save of the card. Writing the
+archive's rows would state a breakdown of somebody else's catalogue as a fact about this base's BOM
+— and the imported card's first save would replace it in silence, trading a loss the report names
+for one it cannot. So the import writes nothing and says so, with a `composition_not_derived` line
+(entity `card`, degraded): the free-text `composition` (16) travels and IS written, so the card is
+never silent about what it is made of, and saving the card derives the breakdown from the articles
+its fabric lines were linked to here. The archive's own numbers are spelled into the line's detail,
+because the report is the only place on this side they survive at all.
 
 **Measured piece areas (27): the remap rule and the provenance rule.** `scope_key` and
 `piece_line_key` are stable KEYS, not ids, and are valid on the imported card as they stand — the
@@ -272,6 +285,14 @@ does not grade and enters every size's set whole» and is carried through as NUL
 map cannot place **drops that one row** with a `size_unknown` line. Dropped, not NULLed — NULL is a
 different statement, and an "S" contour filed as ungraded would be counted into every size of the
 run and would quietly move the cloth norm. The rest of the scope imports.
+
+Two things a dropped area is NOT reported as. Its entity is **`piece_area`**, never `pattern`: the
+sheet it was measured from imported, and it has a counter of its own that must not move because the
+geometry derived from it did not fit. And when the store drops a row inside the transaction, the two
+reasons are told apart: a size the target's dictionary has but this card does not make is
+`size_not_in_card_range`, while a row that names no scope or no piece, states a non-positive area or
+carries a date no column can hold is `archive_row_invalid` — the archive's own row was already
+unusable, so there is nothing on this side to add.
 
 The provenance rule is the opposite of the stamping rule everywhere else: `parsed_by` and
 `parsed_at` are **the source's and are stored as they stand**. Who measured this geometry and when
@@ -616,19 +637,33 @@ explanation and the report action text.
 | `media_upload_failed` | IMPORT side: the bytes were in the archive and the target bucket refused them — the slot is cleared |
 | `pattern_invalid` | the pattern file is unreadable or is not a DXF/PDF |
 | `size_unknown` | the size name is not in the target size dictionary |
+| `size_not_in_card_range` | the size IS in the target dictionary and the imported card does not make it — rows filed under it are dropped |
 | `measurement_unknown` | the measurement name is not in the target measurement dictionary — the row is dropped and the chart imports without it |
 | `work_token_unknown` | the operation's work token is not in the target work catalogue |
 | `category_unknown` | the category path does not resolve — the card lands without a category |
 | `assembly_component_not_found` | the assembly component style number is not in the target base |
 | `colorways_not_applied` | colourways travelled as reference and were not created |
+| `composition_not_derived` | the structured fibre breakdown travelled and was not written — it is derived here from the card's own fabric lines on every save |
 | `wastage_claim_degraded` | a wastage/consumption claim lost its provenance and reads as manual |
 | `norm_marker_lost` | the norm's marker stamp could not be re-sewn — the norm stands, the stamp does not |
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
+| `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |
+
+Every code but the last two means **this side is missing a reference**, and is closed here by adding
+it. `archive_row_invalid` is the one that is not: the row was broken before it travelled, so no
+dictionary entry on this side closes it — it is re-entered on the card or fixed on the source.
+`size_not_in_card_range` is the one whose reference is present and whose *card* is narrower, which is
+why it is not `size_unknown`: the action texts point at two different places, and only one of them
+is where the operator has to go.
 
 `entity` on a hole is the human word for what it happened to — `media`, `material`, `bom_line`,
-`pattern`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`, `card`, `archive`
-— and `ref` is whatever names the row inside its own file (`bom_line_key=…`, `media_id=…`,
-`size_name=…`). `measurement` is the size chart's SECOND named axis and is deliberately not
-`size`: a measurement problem reported as a size problem sends the operator to the wrong
-dictionary. The list is mirrored by the `Entity*` constants in `report.go`.
+`pattern`, `piece_area`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`,
+`card`, `archive` — and `ref` is whatever names the row inside its own file (`bom_line_key=…`,
+`media_id=…`, `size_name=…`). `measurement` is the size chart's SECOND named axis and is
+deliberately not `size`: a measurement problem reported as a size problem sends the operator to the
+wrong dictionary. `piece_area` is the measured contour of one cut piece and is deliberately not
+`pattern` for the same reason: a pattern is a SHEET (and has a counter of its own), and a sheet
+whose measured areas were dropped imported perfectly well — «pattern skipped» would send somebody to
+re-upload a file that is already there. The list is mirrored by the `Entity*` constants in
+`report.go`.

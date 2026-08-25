@@ -146,8 +146,11 @@ func TestAmendInventsNoCounterForAnUncountedEntity(t *testing.T) {
 	lost := NewCounters()
 	lost.AddSkipped(EntityCard, 1)
 
+	// size_not_in_card_range and NOT size_unknown, and the detail beside it says why: the size is in
+	// this base's dictionary and the imported CARD does not make it. The two were one code once, and
+	// the sentence the operator was shown told them to add a size that was already there.
 	out, err := rep.Amend([]ImportHole{{Entity: EntityCard, Ref: "size_id=99",
-		Reason: ReasonSizeUnknown, Detail: "the model wears a size this card does not make"}}, lost)
+		Reason: ReasonSizeNotInCardRange, Detail: "the model wears a size this card does not make"}}, lost)
 	if err != nil {
 		t.Fatalf("amend: %v", err)
 	}
@@ -160,8 +163,54 @@ func TestAmendInventsNoCounterForAnUncountedEntity(t *testing.T) {
 	}
 	// The status the reporter did not state comes from the closed dictionary, not from a default
 	// invented at the call site.
-	if got := amended.msg.GetLines()[0].GetStatus(); got != DefaultStatusFor(ReasonSizeUnknown) {
-		t.Fatalf("status = %q, want the dictionary's %q", got, DefaultStatusFor(ReasonSizeUnknown))
+	if got := amended.msg.GetLines()[0].GetStatus(); got != DefaultStatusFor(ReasonSizeNotInCardRange) {
+		t.Fatalf("status = %q, want the dictionary's %q", got, DefaultStatusFor(ReasonSizeNotInCardRange))
+	}
+}
+
+// The entities the dictionary gained are uncounted ones, and an uncounted entity is the case where a
+// wrong assumption is cheapest to make and most expensive to find: `piece_area` has no counter, so a
+// line about a dropped contour must add a LINE and nothing else. Adding a counter row for it would
+// put a number in front of the operator that no manifest claim can be reconciled against, and
+// ValidateReportAgainstManifest would then be comparing against an entity nobody counts.
+func TestAmendCarriesTheNewUncountedEntities(t *testing.T) {
+	rep := baseReportForTest(t)
+	before := tallyOf(t, rep) // Amend does not modify its receiver — TestAmendLeavesTheReportItAmendedAlone
+
+	out, err := rep.Amend([]ImportHole{
+		{Entity: EntityPieceArea, Ref: "piece_line_key=AAA scope_key=MAIN",
+			Reason: ReasonArchiveRowInvalid, Detail: "the archive measures an area that names no cut piece"},
+		{Entity: EntityCard, Ref: "composition_entries",
+			Reason: ReasonCompositionNotDerived, Detail: "the breakdown is derived here, not imported"},
+	}, NewCounters())
+	if err != nil {
+		t.Fatalf("amend: %v", err)
+	}
+	amended := mustParse(t, out)
+
+	if _, ok := tallyOf(t, amended)[EntityPieceArea]; ok {
+		t.Fatal("piece_area is not a counted entity; the amend must not add a counter row for it")
+	}
+	if got := tallyOf(t, amended); len(got) != len(before) {
+		t.Fatalf("counter rows = %d, want the %d the report already had", len(got), len(before))
+	}
+	lines := amended.msg.GetLines()
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d, want 2", len(lines))
+	}
+	// Each new code has to arrive with the status AND the sentence the dictionary holds for it —
+	// which is the whole reason a code invented at a call site is refused.
+	for i, want := range []Reason{ReasonArchiveRowInvalid, ReasonCompositionNotDerived} {
+		if got := lines[i].GetStatus(); got != DefaultStatusFor(want) {
+			t.Errorf("line %d status = %q, want the dictionary's %q", i, got, DefaultStatusFor(want))
+		}
+		if got := lines[i].GetAction(); got == "" || got != ActionFor(want) {
+			t.Errorf("line %d action = %q, want the dictionary's %q", i, got, ActionFor(want))
+		}
+	}
+	if lines[1].GetStatus() != StatusDegraded {
+		t.Errorf("the card landed, one projection thinner: composition_not_derived is a degradation, "+
+			"not a skip — got %q", lines[1].GetStatus())
 	}
 }
 
