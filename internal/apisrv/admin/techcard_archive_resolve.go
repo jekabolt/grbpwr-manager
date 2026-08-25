@@ -13,6 +13,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -157,6 +158,18 @@ type resolvedTechCardImport struct {
 	// of storing a card that points at nothing.
 	Insert *pb_common.TechCardInsert
 
+	// Card is the WHOLE card.json message AFTER the gates — the outer half that Insert is a
+	// submessage of, sanitised and money-free by the same two calls.
+	//
+	// It is published rather than left private because the alternative is worse and was measured:
+	// Archive.CardJSON() re-parses the ZIP entry on EVERY call, so any later reader that wants the
+	// card's read-side half (its provenance stamps, its catalogue facts) and asks the archive for it
+	// gets a SECOND, UNSANITISED message — approvals intact, prices intact — that merely looks like
+	// the one the resolver worked on. Handing out the sanitised object is what makes that mistake
+	// unnecessary. Its two branches that the write path actually needs are already lifted into
+	// StylePlan and PieceAreaPlan below; nothing has to be re-derived from here.
+	Card *pb_common.TechCard
+
 	MediaPlan     []tcimpMediaPlan
 	PatternPlan   []tcimpPatternPlan
 	MarkerPlan    []tcimpMarkerPlan
@@ -165,6 +178,13 @@ type resolvedTechCardImport struct {
 	LabelPlan     []tcimpLabelLink
 	// MaterialPlan is keyed by the passport's `ref` (the source material_id).
 	MaterialPlan map[int64]tcimpMaterialMatch
+
+	// StylePlan and PieceAreaPlan are the two branches of card.json that do NOT live under
+	// TechCardInsert — they ride the OUTER TechCard message and therefore travel beside Insert
+	// rather than inside it. See section 13: they are the reason this resolver is handed the whole
+	// card message and not only its writable half.
+	StylePlan     entity.TechCardArchiveStyleFacts
+	PieceAreaPlan []entity.TechCardArchivePieceArea
 
 	// ColorwaysRaw is colorways.json VERBATIM. Colourways are products and an import creates none;
 	// the bytes are stored so the later, explicit "create colourways from archive" action (Ф6.2)
@@ -185,6 +205,17 @@ type tcimpResolver struct {
 	s   *Server
 	a   *techcardarchive.Archive
 	out *resolvedTechCardImport
+
+	// card is the WHOLE card.json message, not just its writable half.
+	//
+	// It is held because two branches of the archive live on the outer message and nowhere else:
+	// the style's catalogue facts (fit/composition/care/model_wears_*) and the measured piece areas
+	// (piece_area_scopes). A resolver that kept only Insert could not see either — which is exactly
+	// how model_wears_size_id and piece_area_scopes[].areas[].size_id once travelled with the
+	// SOURCE base's numbers intact. Also NOT re-read from the archive at the call site:
+	// Archive.CardJSON() parses the ZIP entry afresh on every call, so a second reader would get a
+	// second, UNSANITISED message and resolve it through a second copy of this mapping.
+	card *pb_common.TechCard
 
 	// sizeMapping is source size id → target size id, built from manifest.id_maps.sizes against the
 	// target dictionary. sizeNameBySourceID keeps the NAME of every source id the manifest declared,
@@ -256,6 +287,8 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 		return nil, fmt.Errorf("%w: %s carries no tech_card payload", techcardarchive.ErrCorrupt, techcardarchive.FileCard)
 	}
 	r.out.Insert = insert
+	r.out.Card = card
+	r.card = card
 
 	// FIRST, BEFORE ANY REMAPPING, and in this order (sanitize.go says the same):
 	//  1. approval — an imported card may never LOOK signed, and the create pipeline COERCES
@@ -264,8 +297,17 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	//     refuses an archive that does not carry the flag, which stops a pre-versioned bundle; it
 	//     cannot stop a hand-made one that types the flag and keeps the prices. Running the export's
 	//     own denylist over the incoming card is the check the flag is supposed to sit next to.
+	//
+	// THE DENYLIST RUNS OVER `card`, NOT OVER `insert`, and that word is load-bearing: the export
+	// redacts the WHOLE message (buildArchiveCardJSON), so anything narrower here is an import that
+	// redacts less than the export did — a denylist with a hole in exactly the half our own exporter
+	// bothers to clean. The half in question is not hypothetical any more: section 13 reads the outer
+	// message for the style's catalogue facts and the measured piece areas, and the outer message is
+	// also where AdminColorwayRef lives with cost_price / prices / net_prices on it. Our exporter nils
+	// that list (sanitizeCardForArchive) — a hand-made archive does not have to. Since `insert` is a
+	// submessage of `card`, ONE call covers both halves; running two would be two lists to keep in step.
 	techcardarchive.SanitizeImportedCard(insert)
-	techcardarchive.RedactFieldsDeep(insert.ProtoReflect(), techcardarchive.MoneyFieldNamesArchive)
+	techcardarchive.RedactFieldsDeep(card.ProtoReflect(), techcardarchive.MoneyFieldNamesArchive)
 
 	// The six compatibility shields, all of them, exactly as the season clone sets them
 	// (style.go): this payload is built by the SERVER out of a card our own exporter read with our
@@ -285,6 +327,11 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 		return nil, err
 	}
 	r.resolveSizes()
+	// AFTER resolveSizes and not before it, so that a size missing from BOTH the card's own body
+	// and the outer half is reported by the line naming the card's field: the hole list dedupes by
+	// (entity, ref, reason) and the FIRST line for one missing size is the one the operator reads.
+	r.resolveStyleFacts()
+	r.resolvePieceAreas()
 	if err := r.resolveMaterials(ctx); err != nil {
 		return nil, err
 	}
@@ -1360,6 +1407,189 @@ func (r *tcimpResolver) reportUnknownEntries() {
 			techcardarchive.ReasonUnknownEntry,
 			"this server does not know this file — the archive was written by a newer version of the format")
 	}
+}
+
+// ────────── 13. the OUTER card message: catalogue facts and measured piece areas ──────────
+//
+// EVERYTHING ABOVE THIS LINE WORKS ON `Insert`, AND THAT WAS THE HOLE. TechCardInsert is what the
+// write path receives, so it is what the generic walk (Ф0.4) was ever run over — and two branches of
+// card.json do not live there:
+//
+//   - model_wears_size_id (field 21 of TechCard) — a size FK, LISTED in techcardarchive.SizeFieldNames
+//     since the list was written, so the walk would have translated it the moment it reached the
+//     message. It never reached it;
+//   - piece_area_scopes (field 27) — whose areas carry a size FK each.
+//
+// Both are read-only projections written by other RPCs (UpdateStyle and SaveTechCardPieceAreas), which
+// is why they are on the outer message at all, and both are carried by the export verbatim. Left
+// unremapped they land in the target base wearing the SOURCE's numbers, and nothing downstream can
+// tell: the store's own guard (writeImportedStyleFacts / insertImportedPieceAreas) only asks whether
+// the id falls inside the IMPORTED CARD'S size range — which, after the remap above, is made of
+// target ids, while both dictionaries are small integers. A foreign id therefore lands INSIDE the
+// range far more often than not, and the row imports silently under the wrong size. For a piece area
+// that is not cosmetic: the per-size areas feed the base-size costing, so an "S" contour filed under
+// the target's "M" quietly moves the cloth norm.
+//
+// FORMAT.md §6.2 — «no foreign id is ever written» — is therefore only kept if the outer message is
+// resolved here, through the SAME r.sizeMapping. A second mapping built at the handler is not an
+// option and not a style preference: Archive.CardJSON() re-parses the entry on every call, so the
+// handler would be holding a second, unsanitised message, and two copies of one translation drift.
+
+// resolveStyleFacts lifts the style's catalogue half off the outer message, translating the one id
+// among the five.
+//
+// fit / composition / care_instructions / model_wears_* are UpdateStyle's columns — the tech-card
+// create pipeline writes none of them — so without this plan an imported card lands with its fit,
+// composition and care silently blank. The three strings and the height are facts, not references,
+// and travel verbatim; the empty-to-NULL rule is the one ConvertPbStylePatchToEntity applies on the
+// live path, so an imported style and an edited one store the same thing for "not stated".
+//
+// model_wears_size_id goes through r.sizeMapping BY HAND, under the walk's own three rules: 0 is
+// «unset» across the whole contract and is never remapped, a value the manifest's table cannot place
+// is a size_unknown hole and lands NULL, and the source's number is never written through. It counts
+// into sizeMissed like every other miss — one size missing here and in the card's body is ONE
+// unresolved size on the report's size axis, not two.
+func (r *tcimpResolver) resolveStyleFacts() {
+	c := r.card
+	height := c.GetModelWearsHeightCm()
+	facts := entity.TechCardArchiveStyleFacts{
+		Fit:              tcimpNullString(c.GetFit()),
+		Composition:      tcimpNullString(c.GetComposition()),
+		CareInstructions: tcimpNullString(c.GetCareInstructions()),
+		// 0 is «unknown» on the wire (techcard.proto, field 20) and NULL in the column.
+		ModelWearsHeightCm: sql.NullInt32{Int32: height, Valid: height != 0},
+	}
+
+	if src := int64(c.GetModelWearsSizeId()); src != 0 {
+		if local, ok := r.sizeMapping[src]; ok {
+			facts.ModelWearsSizeId = sql.NullInt32{Int32: int32(local), Valid: true}
+		} else {
+			r.sizeMissed[src] = true
+			r.hole(techcardarchive.EntitySize, r.sizeRef(src), techcardarchive.StatusSkipped,
+				techcardarchive.ReasonSizeUnknown,
+				"the size the lookbook model wears is not in this base's dictionary; the card imported "+
+					"without that reference rather than pointing at whichever local size shares the number")
+		}
+	}
+
+	r.out.StylePlan = facts
+}
+
+// resolvePieceAreas carries the measured contour areas across, translating the one id among them.
+//
+// WHAT TRAVELS VERBATIM AND WHY. scope_key and piece_line_key are STABLE KEYS, not ids — the fabric
+// scope (COALESCE(назначение, bom line_key)) and the cut piece's own key — and they are valid on the
+// imported card as they stand; the store re-sews them against the just-inserted rows. The measurement's
+// conditions (contour_layer, seam_allowance_mm) and its provenance (parsed_by, parsed_at) travel
+// unchanged for the reason the entity states: who measured this geometry and when is a fact about the
+// MEASUREMENT, and re-stamping it with today's date and this operator's name would claim a measurement
+// nobody took. `stale` is not carried at all — it is a verdict the reader recomputes, and an imported
+// scope reads stale anyway (the store mints a domain-separated fingerprint for exactly that).
+//
+// size_id IS an id and is the whole point of this function:
+//
+//   - 0 / unset means «the piece does not grade and enters every size's set whole» — a documented
+//     state, carried through as NULL and never reported;
+//   - a value r.sizeMapping cannot place DROPS THAT ONE ROW with a size_unknown line. Dropped, not
+//     NULLed: NULL is a different statement («ungraded»), and an "S" contour filed as ungraded would
+//     be counted into every size of the run. The rest of the scope's rows import — a missing size
+//     costs the sizes it measured and nothing else.
+func (r *tcimpResolver) resolvePieceAreas() {
+	for _, sc := range r.card.GetPieceAreaScopes() {
+		if sc == nil {
+			continue
+		}
+
+		// parsed_at rides the SCOPE (one transaction wrote it) and lands in a TIMESTAMP NOT NULL
+		// column whose range starts one second after the Unix epoch. An archive that carries none
+		// falls back to when the archive was written — an upper bound on when the measurement was
+		// recorded, which is a fact rather than an invention — and if even that is missing the
+		// scope is dropped with a log rather than stamped with a date nobody measured on. Same
+		// answer the size chart gives an unreadable cell: the reason dictionary is closed
+		// (reasons.go) and a malformed sidecar is not a missing reference, so it is a log, not a code.
+		parsedAt := sc.GetParsedAt().AsTime()
+		if sc.GetParsedAt() == nil {
+			parsedAt = r.a.Manifest.ExportedAt
+		}
+		if parsedAt.Unix() <= 0 {
+			slog.Default().Warn("tech card import: dropped a piece-area scope with no measurement date",
+				slog.String("scope_key", sc.GetScopeKey()), slog.Int("areas", len(sc.GetAreas())))
+			continue
+		}
+
+		seam, _ := tcimpWireDecimal(sc.GetSeamAllowanceMm(), "seam_allowance_mm", sc.GetScopeKey())
+
+		for _, ar := range sc.GetAreas() {
+			if ar == nil {
+				continue
+			}
+			ref := sc.GetScopeKey() + "/" + ar.GetPieceLineKey()
+
+			area, ok := tcimpWireDecimal(ar.GetAreaCm2(), "area_cm2", ref)
+			if !ok {
+				// chk_tcpa_area_positive refuses it at the schema level anyway; caught here so a
+				// corrupt row costs one line of the log instead of the transaction.
+				slog.Default().Warn("tech card import: dropped a piece area with no readable area",
+					slog.String("scope_key", sc.GetScopeKey()), slog.String("piece_line_key", ar.GetPieceLineKey()))
+				continue
+			}
+
+			row := entity.TechCardArchivePieceArea{
+				ScopeKey:        sc.GetScopeKey(),
+				PieceLineKey:    ar.GetPieceLineKey(),
+				AreaCm2:         area,
+				ContourLayer:    sc.GetContourLayer(),
+				SeamAllowanceMm: seam,
+				Hulled:          ar.GetHulled(),
+				AmbiguousPick:   ar.GetAmbiguousPick(),
+				ParsedBy:        sc.GetParsedBy(),
+				ParsedAt:        parsedAt,
+			}
+			// An absent perimeter is a LEGAL and permanent state (every measurement before 0305
+			// carries none), so it lands unset and says so — the edge-fusing estimate refuses on it
+			// rather than deriving a strip width from the area.
+			if p, ok := tcimpWireDecimal(ar.GetPerimeterCm(), "perimeter_cm", ref); ok {
+				row.PerimeterCm = decimal.NullDecimal{Decimal: p, Valid: true}
+			}
+
+			if src := int64(ar.GetSizeId()); src != 0 {
+				local, ok := r.sizeMapping[src]
+				if !ok {
+					r.sizeMissed[src] = true
+					r.hole(techcardarchive.EntitySize, r.sizeRef(src), techcardarchive.StatusSkipped,
+						techcardarchive.ReasonSizeUnknown,
+						"a measured cut-piece area is filed under a size this base's dictionary does not "+
+							"have; that area was dropped — an area of an unknown size cannot be read as "+
+							"«the piece does not grade» without inflating every other size's cloth norm")
+					continue
+				}
+				row.SizeId = sql.NullInt64{Int64: local, Valid: true}
+			}
+
+			r.out.PieceAreaPlan = append(r.out.PieceAreaPlan, row)
+		}
+	}
+}
+
+// tcimpWireDecimal reads one google.type.Decimal off the archive. ok=false means "absent or not a
+// number", and the caller decides what that costs — an absent perimeter is legal, an absent area is
+// not a row.
+//
+// Unreadable is LOGGED and then treated as absent rather than given a code of its own: the reason
+// dictionary is closed (reasons.go), a malformed number is not a missing reference, and the size
+// chart's cells already answer the same question the same way.
+func tcimpWireDecimal(d *pb_decimal.Decimal, field, ref string) (decimal.Decimal, bool) {
+	raw := strings.TrimSpace(d.GetValue())
+	if raw == "" {
+		return decimal.Decimal{}, false
+	}
+	v, err := decimal.NewFromString(raw)
+	if err != nil {
+		slog.Default().Warn("tech card import: the archive carries an unreadable decimal",
+			slog.String("field", field), slog.String("ref", ref), slog.String("value", raw))
+		return decimal.Decimal{}, false
+	}
+	return v, true
 }
 
 // ────────────────────────────── shared plumbing ──────────────────────────────

@@ -62,7 +62,11 @@ func tcimpJSON(t *testing.T, v any) []byte {
 type tcimpArchive struct {
 	manifest techcardarchive.Manifest
 	insert   *pb_common.TechCardInsert
-	files    map[string][]byte
+	// outer decorates the OUTER TechCard message before card.json is marshalled — the read-side half
+	// the export carries beside the insert (style catalogue facts, piece_area_scopes). A case that
+	// leaves it nil gets a card.json with the writable half alone, exactly as before.
+	outer func(*pb_common.TechCard)
+	files map[string][]byte
 }
 
 // tcimpNewArchive is a MINIMAL VALID archive of the format: the two mandatory entries, the money
@@ -111,7 +115,11 @@ func (a *tcimpArchive) blob(dir, ext string, body []byte) (name, sha string) {
 
 func (a *tcimpArchive) open(t *testing.T) *techcardarchive.Archive {
 	t.Helper()
-	cardJSON, err := protojson.Marshal(&pb_common.TechCard{Id: 214, TechCard: a.insert})
+	card := &pb_common.TechCard{Id: 214, TechCard: a.insert}
+	if a.outer != nil {
+		a.outer(card)
+	}
+	cardJSON, err := protojson.Marshal(card)
 	require.NoError(t, err)
 
 	files := map[string][]byte{

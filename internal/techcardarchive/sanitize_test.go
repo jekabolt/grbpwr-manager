@@ -497,3 +497,145 @@ func TestSanitizeFieldGuard(t *testing.T) {
 		}
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TestApprovalMarksStayInsideTheInsertHalf — the OTHER half of the guard above.
+//
+// TestSanitizeFieldGuard roots at TechCardInsert, because that is SanitizeImportedCard's
+// argument. That leaves one thing assumed rather than asserted, and sanitizeGuardRoot's own
+// comment names it: the read-side approval projections "live on the outer TechCard message
+// … and never reach an insert". TRUE TODAY, MEASURED, AND HELD UP BY NOTHING — the lists
+// guard themselves, but no test guards WHERE the names are reachable from.
+//
+// It stopped being an academic gap when the import resolver started reading the outer
+// message. Ф2.3 lifts the style's catalogue facts and the measured piece areas off
+// TechCard directly (techcard_archive_resolve.go, section 13), and SanitizeImportedCard
+// cannot cover that half: its parameter is *TechCardInsert, so the outer message is not
+// something it declines to clean — it is something it cannot be handed. The money denylist
+// had exactly this shape, and there it was not zero: seven live paths under `colorways`,
+// which is why the resolver now redacts money over the whole card message. Approval is zero
+// only by luck of where the contract put things.
+//
+// So: the day somebody hangs an `approval_state` on AdminColorwayRef or on
+// TechCardOutputVariant, this test goes red and NAMES THE PATH. Whoever breaks it will read
+// it a year from now with no memory of this conversation, so the failure has to say where.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// walkOuterCardReach returns, for every name in names, the paths by which it is reachable
+// from the OUTER TechCard message WITHOUT going through its `tech_card` field.
+//
+// Its own walk rather than walkSanitizeDescriptors with a parameter: that one answers "what
+// can an insert carry", keyed on a cleared/not-cleared state that has no meaning out here,
+// and bending it into answering two questions would make one test's red ambiguous.
+//
+// A MATCHED FIELD IS RECORDED AND NOT DESCENDED INTO — the same stop rule RedactFieldsDeep
+// applies, because a guard that walks differently from the production code measures a
+// contract nobody enforces. `seen` is keyed by message type: a type's field names are the
+// same however it was reached, so skipping a second visit cannot lose a NAME. It can lose a
+// second PATH to a name already found, which is why the message says "at" and not "only at".
+func walkOuterCardReach(names map[string]bool) (hits map[string][]string, reached int) {
+	hits = map[string][]string{}
+
+	type state struct {
+		md   protoreflect.MessageDescriptor
+		path string
+	}
+	root := (&pb_common.TechCard{}).ProtoReflect().Descriptor()
+	seen := map[string]bool{string(root.FullName()): true}
+	fieldNames := map[string]bool{}
+	queue := []state{{md: root, path: string(root.Name())}}
+
+	for len(queue) > 0 {
+		st := queue[0]
+		queue = queue[1:]
+
+		fields := st.md.Fields()
+		for i := 0; i < fields.Len(); i++ {
+			fd := fields.Get(i)
+			name := string(fd.Name())
+			path := st.path + "." + name
+
+			// THE ONE FIELD THIS WALK DOES NOT ENTER. TechCard.tech_card is the writable half,
+			// it is what SanitizeImportedCard is handed, and TestSanitizeFieldGuard covers it
+			// in full. Everything this walk reaches is by definition the half nothing cleans.
+			if st.md.FullName() == root.FullName() && name == "tech_card" {
+				continue
+			}
+
+			fieldNames[name] = true
+			if names[name] {
+				hits[name] = append(hits[name], path)
+				continue // cleared whole and not descended into — RedactFieldsDeep's rule
+			}
+
+			var child protoreflect.MessageDescriptor
+			switch {
+			case fd.IsMap():
+				if isMessageValueMap(fd) {
+					child = fd.MapValue().Message()
+				}
+			case isMessageKind(fd):
+				child = fd.Message()
+			}
+			if child == nil || seen[string(child.FullName())] {
+				continue
+			}
+			seen[string(child.FullName())] = true
+			queue = append(queue, state{md: child, path: path})
+		}
+	}
+	return hits, len(fieldNames)
+}
+
+func TestApprovalMarksStayInsideTheInsertHalf(t *testing.T) {
+	approval, reached := walkOuterCardReach(ApprovalFieldNames)
+
+	// POSITIVE CONTROL 1 — the walk went somewhere. An emptiness assertion is exactly the
+	// shape that reads green when the instrument is dead, and "no approval marks out here"
+	// is what a walk that visited nothing also says.
+	if reached < 100 {
+		t.Fatalf("the walk reached only %d field names outside TechCard.tech_card — the walk is broken, not the contract", reached)
+	}
+
+	// POSITIVE CONTROL 2 — and it went somewhere THAT MATTERS. The region this test exists to
+	// watch is the outer message's own subtrees, so the instrument has to be shown reaching
+	// into one. Money is the proof by counterexample: run the SAME walk over the money
+	// denylist and it finds the very paths that made widening the resolver's redaction
+	// necessary. A walk that cannot see cost_price under `colorways` could not see an
+	// approval_state hung there either.
+	money, _ := walkOuterCardReach(MoneyFieldNamesArchive)
+	if len(money["cost_price"]) == 0 {
+		t.Fatalf("the walk does not reach cost_price under colorways — it cannot be trusted to report "+
+			"an approval mark hung in the same place (money names it did reach out here: %v)",
+			approvalSortedNames(sanitizeNameSet(money)))
+	}
+
+	// THE ASSERTION.
+	if len(approval) == 0 {
+		return
+	}
+	var lines []string
+	for name, paths := range approval {
+		sort.Strings(paths)
+		lines = append(lines, fmt.Sprintf("%s at %s", name, strings.Join(paths, ", ")))
+	}
+	sort.Strings(lines)
+	t.Errorf("approval marks are now reachable from the OUTER TechCard message, outside its tech_card half:\n  %s\n\n"+
+		"SanitizeImportedCard cannot clear these: its parameter is *TechCardInsert, so it is never handed the "+
+		"message these live on. Ф2.3 (internal/apisrv/admin/techcard_archive_resolve.go) reads that outer half for "+
+		"the style's catalogue facts and the measured piece areas, so an archive can now carry a forged approval "+
+		"mark into a branch nothing sanitises — the same shape the money denylist had, where it was seven live "+
+		"paths under `colorways`.\n"+
+		"Fix it the way money was fixed: clear the approval family over the WHOLE card message at the point Ф2.3 "+
+		"sanitises it, next to the RedactFieldsDeep(card.ProtoReflect(), MoneyFieldNamesArchive) call.",
+		strings.Join(lines, "\n  "))
+}
+
+// sanitizeNameSet reduces a reach map to the set of names it found, for the control's message.
+func sanitizeNameSet(hits map[string][]string) map[string]bool {
+	out := make(map[string]bool, len(hits))
+	for name := range hits {
+		out[name] = true
+	}
+	return out
+}
