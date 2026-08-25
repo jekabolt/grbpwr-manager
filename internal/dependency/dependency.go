@@ -1151,6 +1151,17 @@ type (
 		// in minutes, and an export does not touch the card — so without this row "was this style
 		// ever sent out of the building" has no answer in the database at all.
 		AppendTechCardArchiveExportedEvent(ctx context.Context, techCardID int, author, summary string) error
+		// CreateTechCardImportRow records ONE uploaded import archive (Ф2.5, migration 0336): where
+		// its bytes went in the bucket, what its manifest said, and the colourway payload the much
+		// later "create colourways from the archive" step needs after the bucket object has expired.
+		// It writes only the columns the UPLOAD knows — tech_card_id, report and the commit's
+		// timestamps belong to the write path.
+		//
+		// archiveManifest is manifest.json VERBATIM, never a re-marshal: an archive of a newer MINOR
+		// carries fields this server has no member for, encoding/json drops them silently, and the
+		// row would then show a shorter manifest than the one that arrived under the label "what was
+		// in the ZIP at upload". colorwaysPayload is nil when the archive carried no colorways.json.
+		CreateTechCardImportRow(ctx context.Context, importID, objectKey string, archiveManifest, colorwaysPayload []byte, importedBy string) error
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size

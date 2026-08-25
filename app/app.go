@@ -538,6 +538,12 @@ func (a *App) Start(ctx context.Context) error {
 	// ручная обёртка авторизацией: картинка приходит multipart-ом, мимо gRPC, а
 	// значит мимо интерцептора, который проверяет права у всех остальных методов.
 	a.hs.SetFilePreviewHandler(authS.WithAdminAuthz(a.adminS.FilePreviewHandler()))
+	// Импорт тех-карты архивом (POST /api/techcard-archive/upload) — третий и последний
+	// админский write мимо gRPC: 256-мегабайтный ZIP в одно gRPC-сообщение не влезает. Та же
+	// ручная обёртка авторизацией и по той же причине: интерцептор, проверяющий права у всех
+	// остальных методов, простого HTTP-маршрута не видит вовсе. Сам маршрут дополнительно
+	// требует tech_cards:write внутри хендлера — обёртка аутентифицирует, секцию решает он.
+	a.hs.SetTechCardArchiveUploadHandler(authS.WithAdminAuthz(a.adminS.TechCardArchiveUploadHandler()))
 
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
 	// When a signing secret is configured for a processor it delivers the fastest
