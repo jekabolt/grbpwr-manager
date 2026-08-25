@@ -20,14 +20,31 @@ const (
 
 	// ReasonMediaMissing — the card references a media slot the archive carries no file for.
 	ReasonMediaMissing Reason = "media_missing"
-	// ReasonMediaObjectMissing — the export could not read the object out of the bucket.
+	// ReasonMediaObjectMissing — EXPORT side: the source bucket would not give up the object, so
+	// the archive carries no bytes for that slot at all.
 	ReasonMediaObjectMissing Reason = "media_object_missing"
+	// ReasonMediaUploadFailed — IMPORT side: the bytes WERE in the archive and the target bucket
+	// refused them, so the slot is cleared and the card imports without the picture.
+	//
+	// A second code rather than one widened to «either side could not move the bytes», because a
+	// report line has no field saying which side it came from (TechCardImportReportLine is
+	// entity/ref/status/reason/detail/action) and the import re-reports the manifest's export
+	// holes in the SAME list. The two also send the operator to different places: nothing on the
+	// target closes media_object_missing — the bytes never travelled — while this one is closed by
+	// retrying the import. One code with two action texts is exactly the drift the closed
+	// dictionary exists to prevent.
+	ReasonMediaUploadFailed Reason = "media_upload_failed"
 
 	// ReasonPatternInvalid — the pattern file is unreadable or is not a DXF/PDF.
 	ReasonPatternInvalid Reason = "pattern_invalid"
 
 	// ReasonSizeUnknown — the size name is not in the target size dictionary.
 	ReasonSizeUnknown Reason = "size_unknown"
+	// ReasonMeasurementUnknown — the measurement name is not in the target dictionary: the row is
+	// dropped and the chart imports without it. Its own code and not size_unknown, because
+	// sizechart.json carries TWO name axes (§5.1) and an operator told "size unknown" about a
+	// measurement would look for the wrong dictionary.
+	ReasonMeasurementUnknown Reason = "measurement_unknown"
 	// ReasonWorkTokenUnknown — the operation's work token is not in the target work catalogue.
 	ReasonWorkTokenUnknown Reason = "work_token_unknown"
 	// ReasonCategoryUnknown — the category path does not resolve; the card lands without one.

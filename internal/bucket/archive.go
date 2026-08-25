@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -33,19 +34,26 @@ import (
 // НИКОГДА из запроса. Сегментные гарды ниже сужают достижимое до наших папок, но своё от чужого
 // внутри папки они не отличают — это свойство вызывающего. Ровно та же формулировка стоит у
 // PresignLibraryObject и GetLibraryObject, и по той же причине.
+//
+// ТРИ ИМЕНИ НИЖЕ — ПСЕВДОНИМЫ, А НЕ ОБЪЯВЛЕНИЯ. Сегменты и потолок объекта живут в
+// internal/techcardarchive (FORMAT.md §1.3 и «Bucket segments the feature owns»), потому что это
+// формат, а не свойство бакета: тот же самый потолок стоит на HTTP-маршруте загрузки, те же самые
+// папки называет чистка. Пакет формата — лист и не импортирует ничего нашего, так что цикла тут
+// нет, а связанность держит компилятор, а не внимательность ревьюера. Псевдонимы, а не прямые
+// обращения по всему файлу, — чтобы вызывающие бакета (Ф5.1 передаёт сегмент в
+// ListObjectsOlderThan) не тащили импорт формата ради имени папки.
 const (
-	// ArchiveSegment — папка выгруженных архивов тех-карт. Экспортируется, потому что его имя
-	// нужно вызывающим: Ф5.1 передаёт его в ListObjectsOlderThan.
-	ArchiveSegment = "techcard-archives"
+	// ArchiveSegment — папка выгруженных архивов тех-карт.
+	ArchiveSegment = techcardarchive.BucketSegmentArchives
 	// ImportSegment — папка принятых на импорт архивов.
-	ImportSegment = "techcard-imports"
+	ImportSegment = techcardarchive.BucketSegmentImports
 
 	// MaxArchiveObjectBytes — потолок принимаемого архива, 256 МиБ (решение владельца B-5). Он же
 	// стоит на HTTP-маршруте загрузки (Ф2.5, свой MaxBytesReader), и он же продублирован здесь:
 	// http-потолок защищает маршрут, а этот — метод. Второй нужен потому, что PutObject со
 	// стримом «сколько дадут» не имеет собственной границы вовсе, а GetImportObjectReaderAt
-	// материализует объект на диск.
-	MaxArchiveObjectBytes = 256 * 1024 * 1024
+	// материализует объект на диск. ОБА читают одно число.
+	MaxArchiveObjectBytes = techcardarchive.MaxUploadedArchiveBytes
 
 	// ArchiveLinkTTL — срок presigned-ссылки на архив, 10 минут (решение владельца B-5). Окно
 	// «нажал скачать и скачал», после которого ссылка мертва. НЕ мемоизируется и НЕ округляется

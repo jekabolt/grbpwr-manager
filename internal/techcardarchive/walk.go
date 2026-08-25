@@ -280,8 +280,8 @@ var moneyFieldNamesCosting = map[string]bool{
 // of enumerating its leaves makes "a new money field inside costing leaks into the archive"
 // unexpressible rather than merely guarded: RedactFieldsDeep clears a matched field whole and
 // never descends into it. The cost of that choice is that `total_sam` (labour minutes, not
-// money) goes with it; the per-operation smv/time_norm it sums live outside costing and
-// survive, so the number is rebuilt on the far side rather than lost.
+// money) goes with it; the per-operation `smv` it sums lives outside costing and survives, so
+// the number is rebuilt on the far side rather than lost.
 var moneyFieldNamesTechCard = map[string]bool{
 	"costing":               true, // whole TechCardCosting block, see above
 	"unit_price":            true, // TechCardBomItem

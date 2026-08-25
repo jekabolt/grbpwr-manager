@@ -2,7 +2,11 @@ package techcardarchive
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -508,15 +512,23 @@ type guardHit struct {
 	path string
 }
 
-// guardRoots are the message types the archive actually serialises. TechCard is card.json;
-// StyleSizeChart is sizechart.json and is the ONLY home of grade_base_size_id;
-// Material is materials/index.json and the only home of latest_price. Walking just TechCard
-// would leave those two list entries unverifiable in both directions.
+// guardRoots are the message types the archive actually serialises — all FOUR of them.
+// TechCard is card.json; StyleSizeChart is sizechart.json and is the ONLY home of
+// grade_base_size_id; Material is materials/index.json and the only home of latest_price.
+// Walking just TechCard would leave those two list entries unverifiable in both directions.
+//
+// TechCardMarker is the fourth and it is not reachable from the other three: markers/<slug>-<n>.json
+// is raw protojson of the WHOLE marker (FORMAT.md §5.7), while TechCard carries only marker
+// SUMMARIES (field 26) — the layout half (TechCardMarkerLayout, …Piece, …NestParams,
+// …CompositionEntry) has no path from the card. Without this root a money- or id-shaped field
+// added to the layout tree would ship in the archive with the guard staying green, which is
+// exactly the silence this test exists to break.
 func guardRoots() []protoreflect.MessageDescriptor {
 	return []protoreflect.MessageDescriptor{
 		(&pb_common.TechCard{}).ProtoReflect().Descriptor(),
 		(&pb_common.StyleSizeChart{}).ProtoReflect().Descriptor(),
 		(&pb_common.Material{}).ProtoReflect().Descriptor(),
+		(&pb_common.TechCardMarker{}).ProtoReflect().Descriptor(),
 	}
 }
 
@@ -658,13 +670,113 @@ func TestFieldListGuard(t *testing.T) {
 	})
 
 	t.Run("the copied costing denylist still matches the API's", func(t *testing.T) {
-		// Not a descriptor check: this one guards the COPY. moneyFieldNamesCosting is a
-		// hand-copy of costingRedactedFieldNames from internal/apisrv/admin (which must not be
-		// imported). If the API's list grows, this count is the tripwire that says so.
-		if got, want := len(moneyFieldNamesCosting), 19; got != want {
-			t.Errorf("moneyFieldNamesCosting has %d names, expected %d — re-copy it from "+
-				"internal/apisrv/admin/costing_rbac.go (costingRedactedFieldNames) and update this count",
-				got, want)
+		// Not a descriptor check: this one guards the COPY. moneyFieldNamesCosting is a hand-copy
+		// of costingRedactedFieldNames from internal/apisrv/admin, which must not be IMPORTED —
+		// that package is a handler package and a dependency on it would tie the archive format
+		// to the API layer and cycle back through it.
+		//
+		// Reading its SOURCE is not importing it: go/parser produces no package dependency, so
+		// no cycle exists, and the comparison is against the ORIGINAL rather than against the
+		// copy. That distinction is the whole point. What stood here was `len(...) == 19`, which
+		// could only ever fire when somebody edited the COPY — growing the API's list left it
+		// green, i.e. it guarded the one side that was never at risk while calling itself the
+		// tripwire for the other.
+		const apiSrc = "../apisrv/admin/costing_rbac.go"
+		want := parseStringSetLiteral(t, apiSrc, "costingRedactedFieldNames")
+
+		for _, name := range sortedNames(want) {
+			if !moneyFieldNamesCosting[name] {
+				t.Errorf("%s adds %q to costingRedactedFieldNames and the copy in walk.go does not "+
+					"have it — the API redacts that name and the archive would ship it. Copy the "+
+					"entry into moneyFieldNamesCosting.", apiSrc, name)
+			}
+		}
+		for _, name := range sortedNames(moneyFieldNamesCosting) {
+			if !want[name] {
+				t.Errorf("moneyFieldNamesCosting carries %q, which %s no longer lists — the copy "+
+					"drifted from the original. Re-copy it, or (if the name was deliberately kept "+
+					"after the API dropped it) move it to moneyFieldNamesTechCard where the guard "+
+					"checks it against the contract.", name, apiSrc)
+			}
 		}
 	})
+}
+
+// parseStringSetLiteral reads `var <name> = map[string]bool{"a": true, …}` out of a Go SOURCE FILE
+// and returns its keys. Source, not import: the caller needs the literal of a package it is
+// forbidden to depend on.
+//
+// Every way this can fail — file moved, var gone, var no longer a composite literal, a key that is
+// not a plain string — is reported as a failure rather than an empty set, because an empty set
+// would silently turn the comparison above into "the copy matches nothing" and pass whatever the
+// copy says. The final emptiness check is that positive control.
+func parseStringSetLiteral(t *testing.T, path, name string) map[string]bool {
+	t.Helper()
+
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v — this test reads that file to compare %q against its original; "+
+			"if the file moved, point the test at the new path (do not delete the check)", path, err, name)
+	}
+
+	var lit *ast.CompositeLit
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, id := range vs.Names {
+				if id.Name != name || i >= len(vs.Values) {
+					continue
+				}
+				cl, ok := vs.Values[i].(*ast.CompositeLit)
+				if !ok {
+					t.Fatalf("%s: %s is no longer a composite literal — this test can only read a "+
+						"literal map; decide by hand whether the copy in walk.go still matches", path, name)
+				}
+				lit = cl
+			}
+		}
+	}
+	if lit == nil {
+		t.Fatalf("%s declares no var %s — it was renamed or removed. Whatever the archive's copy "+
+			"of it protects is now guarded by nothing; find the new name and re-point this test", path, name)
+	}
+
+	out := make(map[string]bool, len(lit.Elts))
+	for _, el := range lit.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			t.Fatalf("%s: %s holds an element that is not key: value — cannot read it as a name set", path, name)
+		}
+		bl, ok := kv.Key.(*ast.BasicLit)
+		if !ok || bl.Kind != token.STRING {
+			t.Fatalf("%s: %s has a key that is not a string literal (%T) — cannot compare name sets "+
+				"without evaluating it", path, name, kv.Key)
+		}
+		key, err := strconv.Unquote(bl.Value)
+		if err != nil {
+			t.Fatalf("%s: %s has an unreadable key %s: %v", path, name, bl.Value, err)
+		}
+		out[key] = true
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s: %s parsed to ZERO names — the walk read the file but found nothing, so the "+
+			"comparison above would pass against anything", path, name)
+	}
+	return out
+}
+
+func sortedNames(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }

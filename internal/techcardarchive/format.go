@@ -48,10 +48,35 @@ const (
 	FileMarkersIndex   = DirMarkers + "index.json"
 )
 
+// Ceilings from FORMAT.md §1.3 — the reader's, not a caller's. They live here so that every side
+// of the feature reads ONE number: a reader minting its own limit is how two answers to "is this
+// archive too big" appear, and the loser is whichever check runs second.
+//
+// MB in §1.3 is 2^20, as it is everywhere in this codebase (bucket/pattern.go's "40 MB",
+// http.go's "4 MB"); MaxMarkerFileBytes is the same 2 MiB the live marker-save path already
+// enforces on a layout blob (admin.maxMarkerLayoutBytes), which is where the number came from.
+//
+// MaxUncompressedBytes and MaxZipEntries are the zip-bomb pair and only work together: a cap on
+// output bytes alone is defeated by a million empty entries, and a cap on entries alone by one
+// entry that inflates to a terabyte. Both are counted while streaming — a total read from the ZIP
+// directory is a claim by the archive about itself.
+const (
+	MaxZipEntries           = 4096
+	MaxUncompressedBytes    = 1 * 1024 * 1024 * 1024 // 1 GiB, sum over all entries
+	MaxCardJSONBytes        = 16 * 1024 * 1024       // card.json
+	MaxMarkerFileBytes      = 2 * 1024 * 1024        // one markers/<slug>-<n>.json
+	MaxUploadedArchiveBytes = 256 * 1024 * 1024      // the uploaded body on the import route
+)
+
 // Bucket segments the feature owns. The segment (no slash) is what a key's first path element is
 // compared against by the bucket's allowlist guard; the prefix (with slash) is what a key is built
 // from. Archive objects are PRIVATE — unlike pattern objects, which are historically public with
 // entropy in the key.
+//
+// internal/bucket ALIASES these rather than declaring its own copies (bucket.ArchiveSegment,
+// bucket.ImportSegment, bucket.MaxArchiveObjectBytes): the bucket may import this package — it is
+// a leaf and imports nothing of ours — so the two names are one truth the compiler keeps, not two
+// strings a reviewer has to notice drifting apart.
 const (
 	BucketSegmentArchives = "techcard-archives"
 	BucketSegmentImports  = "techcard-imports"
@@ -171,6 +196,23 @@ type PatternIndexEntry struct {
 
 // MarkerIndexEntry is one row of markers/index.json. The file it names is protojson
 // common.TechCardMarker — summary AND layout, geometry self-contained.
+//
+// THE MARKER BLOB IS THE ONE ENTRY THAT TRAVELS RAW, so it is also the one place where the
+// package doc's "no foreign ids written as ids" is kept by the IMPORT rather than by the shape of
+// the file: the JSON on disk holds the source instance's numbers verbatim. FORMAT.md §5.7 is the
+// contract and this is its summary — inside the blob,
+//
+//   - summary.id / summary.tech_card_id are ignored and re-minted on the imported card;
+//   - every size_id (legacy summary.size_id, both composition lists, layout.pieces[].size_id) is
+//     remapped through the same id_maps.sizes name table, and a size the target does not have is
+//     ReasonSizeUnknown with the WHOLE marker dropped — a раскладка missing a size of its состав
+//     no longer describes the lay that was measured;
+//   - summary.colorway_id is ZEROED with a report line (entity=marker,
+//     ReasonColorwaysNotApplied): colourways are products, an import creates none, and there is
+//     nothing to remap onto;
+//   - summary.production_run_id is 0 by construction — only card markers travel;
+//   - layout.pieces[].source_url is blanked like every other URL of the exporting instance;
+//   - piece_id on pieces/placements is layout-local, not an identity, and is left alone.
 type MarkerIndexEntry struct {
 	// File is "markers/<slug>-<n>.json". The name is display sugar: a reader locates a marker
 	// through this index, never by parsing the file name.

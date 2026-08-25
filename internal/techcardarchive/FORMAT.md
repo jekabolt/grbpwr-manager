@@ -408,6 +408,30 @@ the blob. Each `markers/<slug>-<n>.json` is protojson `common.TechCardMarker` �
 layout, geometry self-contained (contours inside the layout, never URL references). Only markers
 of the CARD travel; a production run's markers belong to the run.
 
+**Foreign identity inside the blob.** The marker file is the one entry that travels as RAW
+protojson, so §6.2 («nothing foreign is written as an id») holds here only because the import
+treats the blob as listed below — the file itself carries the source instance's numbers verbatim.
+This list is the whole contract; nothing else in a marker is an identity.
+
+* `summary.id` and `summary.tech_card_id` are **ignored and re-minted**. They are the source row's
+  own identity: the marker is inserted on the imported card and takes that card's numbers.
+* **Every** `size_id` in the blob — legacy `summary.size_id`, `summary.composition[].size_id`,
+  `layout.composition[].size_id`, `layout.pieces[].size_id` — is remapped through the same
+  `id_maps.sizes` name table as the rest of the archive. A size name the target dictionary does not
+  have is a `size_unknown` hole and the WHOLE MARKER is dropped rather than written with a gap in
+  its состав: a раскладка that lost a size no longer describes the lay that was measured, and
+  the piece-instance formula would silently hand the orphaned contour zero instances.
+* `summary.colorway_id` is **zeroed**, and the import writes a report line (`entity=marker`, reason
+  `colorways_not_applied`). Colourways are products and an import does not create them (§5.3), so
+  there is nothing to remap onto; the marker lands as общекарточная geometry and the hole is what
+  says the length was measured on one colourway's article — at its roll width and its кромка.
+* `summary.production_run_id` is **0 by construction**: only card markers travel (above). A blob
+  carrying a non-zero one is a production run's marker and is not imported.
+* `layout.pieces[].source_url` is **blanked**, like every other URL of the exporting instance
+  (§4): the contours are inside the blob, and the link points at a host the target cannot read.
+* `piece_id` on `layout.pieces` / `layout.placements` is **not an identity and is not touched**. It
+  is layout-local — stable within this one blob, which is the only place that references it.
+
 ---
 
 ## 6. Import-side invariants that the format guarantees
@@ -440,9 +464,11 @@ explanation and the report action text.
 | `material_ambiguous` | several live articles carry that code — none is picked |
 | `material_unit_mismatch` | the code matched but the unit differs — not linked |
 | `media_missing` | the archive has no file for a media slot the card references |
-| `media_object_missing` | the export could not read the object out of the bucket |
+| `media_object_missing` | EXPORT side: the source bucket would not give up the object — the archive has no bytes for that slot |
+| `media_upload_failed` | IMPORT side: the bytes were in the archive and the target bucket refused them — the slot is cleared |
 | `pattern_invalid` | the pattern file is unreadable or is not a DXF/PDF |
 | `size_unknown` | the size name is not in the target size dictionary |
+| `measurement_unknown` | the measurement name is not in the target measurement dictionary — the row is dropped and the chart imports without it |
 | `work_token_unknown` | the operation's work token is not in the target work catalogue |
 | `category_unknown` | the category path does not resolve — the card lands without a category |
 | `assembly_component_not_found` | the assembly component style number is not in the target base |
