@@ -42,6 +42,24 @@ const (
 	// modelProbeTimeout bounds the startup model probe. It is short on purpose: the probe is a
 	// courtesy, and a provider that is slow to answer at boot is not news worth waiting for.
 	modelProbeTimeout = 3 * time.Second
+	// analysisReasoningEffort switches EXTENDED THINKING OFF for the tech-card analysis pass.
+	//
+	// WHY OFF. Reasoning tokens are billed and budgeted as output tokens, and they are spent BEFORE
+	// the answer. The whole analysis chain is sized around a non-reasoning completion — the cap is
+	// 2500 tokens (§5: a real card answers in 1.5–2.5k), the server allows 60 s, the screen waits
+	// 55 s. Pointing that chain at a model which thinks by default produced exactly one outcome on
+	// the first live run: 2500 completion tokens, zero content, 42 s, ~$0.11. Turning thinking on
+	// instead would mean moving the cap, the server budget, the client budget and the price of
+	// every press — a product decision, not a bug fix.
+	//
+	// Opus with thinking off is still a stronger reader than the default slug; that is what the
+	// analysis override is for. To trade money and waiting for depth later, this becomes
+	// `{"max_tokens": N}` and analysisMaxTokens grows by N — in that order, and neither alone.
+	//
+	// Models that do not reason ignore the field; a model that marks reasoning MANDATORY would
+	// refuse to turn it off, and the empty answer would then come back as ErrBudgetExhausted rather
+	// than as silence.
+	analysisReasoningEffort = "none"
 )
 
 // ErrNotConfigured is returned when GenerateOperations is called with no API key.
@@ -62,6 +80,22 @@ var ErrNotConfigured = errors.New("openrouter: OPENROUTER_API_KEY is not set")
 // retired slug reported as weather, retried forever by a person the interface had promised it was
 // temporary.
 var ErrModelUnavailable = errors.New("openrouter: the configured model is not available at the provider")
+
+// ErrBudgetExhausted is returned when the model spends the whole completion budget and hands back
+// an EMPTY message — finish_reason=length with no content at all.
+//
+// IT IS A CONFIGURATION FAULT, NOT WEATHER, and that is the entire reason it is a sentinel. A
+// reasoning model charges its thinking to the same completion budget as its answer (OpenRouter:
+// "reasoning tokens are considered output tokens"), so a cap sized for a non-reasoning model is
+// spent before the answer begins. Nothing about that is transient: the next press produces the
+// same empty message, at the same price. This shipped once already — the first live run on prod
+// burned ~$0.11 and told the human "this one is weather: retry", which is an invitation to burn it
+// again, forever.
+//
+// The distinction from a TRUNCATED answer is finish_reason plus emptiness: content that got cut
+// off is a short review and the verifier refuses it on its own terms; NO content means the budget
+// never reached the answer.
+var ErrBudgetExhausted = errors.New("openrouter: the model spent the whole completion budget without answering")
 
 // Config is the OpenRouter client configuration. Bound in config/cfg.go; every
 // field is optional except APIKey (without which the client is disabled).
@@ -419,6 +453,13 @@ type responseFormat struct {
 	Type string `json:"type"`
 }
 
+// reasoningSpec is OpenRouter's `reasoning` object. Only ONE of effort/max_tokens may be set — the
+// provider documents them as alternatives, not as a pair. Omitted entirely (nil) the provider's own
+// default stands, which is what every feature except the analysis pass wants.
+type reasoningSpec struct {
+	Effort string `json:"effort,omitempty"`
+}
+
 type chatRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
@@ -428,6 +469,9 @@ type chatRequest struct {
 	MaxTokens      int             `json:"max_tokens,omitempty"`
 	Temperature    float64         `json:"temperature"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	// Reasoning is sent only by the analysis pass. Nil leaves the provider default in force, which
+	// is the behaviour every other caller had before the field existed.
+	Reasoning *reasoningSpec `json:"reasoning,omitempty"`
 }
 
 type apiError struct {
@@ -501,7 +545,9 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 // exactly what it did before the response metadata existed — so callers that do not care about the
 // finish reason or the token bill keep the behaviour they had.
 func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool) (string, error) {
-	text, _, _, err := c.complete(ctx, c.Model(), systemPrompt, userPrompt, jsonMode, 0)
+	// nil reasoning: the provider default, i.e. exactly what these features did before the field
+	// existed. Only the analysis pass has a budget tight enough to care.
+	text, _, _, err := c.complete(ctx, c.Model(), systemPrompt, userPrompt, jsonMode, 0, nil)
 	return text, err
 }
 
@@ -519,13 +565,17 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 // OPENROUTER_MODEL_ANALYSIS exists to escalate exactly that pass without dragging the features
 // behind Complete onto a different model. With the override unset the two are the same string.
 func (c *Client) CompleteWithMeta(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool, maxTokens int) (text string, finishReason string, usage Usage, err error) {
-	return c.complete(ctx, c.AnalysisModel(), systemPrompt, userPrompt, jsonMode, maxTokens)
+	// THE ONLY CALLER THAT SETS `reasoning`. See analysisReasoningEffort for why it is off here and
+	// nowhere else: this is the one pass whose token cap, server budget and screen budget were all
+	// sized for a completion that is answer and nothing but answer.
+	return c.complete(ctx, c.AnalysisModel(), systemPrompt, userPrompt, jsonMode, maxTokens,
+		&reasoningSpec{Effort: analysisReasoningEffort})
 }
 
 // complete is the shared body of Complete and CompleteWithMeta: one place that decides the request
 // shape, so the slug, the temperature and the JSON-mode flag cannot drift between the two entry
 // points. The model is a parameter precisely because the two differ in that one value.
-func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt string, jsonMode bool, maxTokens int) (string, string, Usage, error) {
+func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt string, jsonMode bool, maxTokens int, reasoning *reasoningSpec) (string, string, Usage, error) {
 	if !c.Enabled() {
 		return "", "", Usage{}, ErrNotConfigured
 	}
@@ -543,6 +593,7 @@ func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt s
 	if maxTokens > 0 {
 		req.MaxTokens = maxTokens
 	}
+	req.Reasoning = reasoning
 	return c.chat(ctx, req)
 }
 
@@ -601,6 +652,15 @@ func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, string,
 	if content == "" {
 		// The usage still rides along: an empty message is not a free call, and the log line that
 		// reports the failure is the one place the spend would otherwise vanish from.
+		//
+		// EMPTY-BECAUSE-THE-BUDGET-RAN-OUT IS ITS OWN FAULT. finish_reason=length with no content
+		// says the cap was reached before a single character of answer — deterministic, and the
+		// caller owes the human "the setting is wrong", not "try again". Empty for any other reason
+		// stays an unclassified fault: it is genuinely a misbehaving provider.
+		if strings.EqualFold(strings.TrimSpace(cr.Choices[0].FinishReason), "length") {
+			return "", cr.Choices[0].FinishReason, cr.Usage, fmt.Errorf(
+				"%w (%d completion tokens spent, none of them answer)", ErrBudgetExhausted, cr.Usage.Completion)
+		}
 		return "", cr.Choices[0].FinishReason, cr.Usage, fmt.Errorf("openrouter: model returned an empty message")
 	}
 	return content, cr.Choices[0].FinishReason, cr.Usage, nil

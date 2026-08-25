@@ -8282,11 +8282,17 @@ message AnalyzeTechCardConstructionResponse {
   // ai_status is not "ok", and legitimately empty when it is: a card the model found nothing wrong
   // with is a correct and complete answer.
   repeated TechCardAnalysisFinding findings = 1;
-  // ai_status — ok | not_configured | model_unavailable | failed | invalid_output | skipped.
+  // ai_status — ok | not_configured | model_unavailable | budget_exhausted | failed |
+  //             invalid_output | skipped.
   //   ok               — the model answered and the answer survived verification.
   //   not_configured   — this deployment has no OPENROUTER_API_KEY. Nothing was called or spent.
   //   model_unavailable— the provider does not serve `model`. A CONFIGURATION fault, not weather:
   //                      say the slug out loud, do not offer "try again later".
+  //   budget_exhausted — the model spent the whole completion budget and returned NOTHING
+  //                      (finish_reason=length, empty message). The second CONFIGURATION fault:
+  //                      a reasoning model charges its thinking to the completion budget, so a cap
+  //                      sized for a non-reasoning slug is gone before the answer starts. Costs
+  //                      full price and repeats identically — never offer a retry.
   //   failed           — timeout or transport. This one IS weather; retry is honest.
   //   invalid_output   — the model answered something unusable (cut off by the token ceiling, not
   //                      JSON, or so many findings failed verification that the run is not

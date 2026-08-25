@@ -1049,6 +1049,12 @@ func TestAnalyzeLogsEveryNonOkRunOnce(t *testing.T) {
 			client, _ := tcaFakeModel(t, openrouter.Config{}, tcaModelAnswer("not json at all", "stop"))
 			return tcaAnalysisStand(t, tcaCard(), client)
 		}},
+		// The whole completion budget spent on thinking, nothing said. This is the one that
+		// reached production: it must NOT land in `failed`, whose sentence offers a retry.
+		{"budget_exhausted", aiStatusBudgetExhausted, func(t *testing.T) *Server {
+			client, _ := tcaFakeModel(t, openrouter.Config{}, tcaModelAnswer("", "length"))
+			return tcaAnalysisStand(t, tcaCard(), client)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := tcaCaptureLog(t)
@@ -1064,6 +1070,8 @@ func TestAnalyzeLogsEveryNonOkRunOnce(t *testing.T) {
 			require.NotEmpty(t, errs[0].Attrs["model"], "the record must name the model: %+v", errs[0].Attrs)
 			require.Contains(t, errs[0].Attrs, "base_url",
 				"a 404 can mean a dead slug OR a base url pointing nowhere; a log naming only the slug sends the reader to the wrong knob")
+			require.Contains(t, errs[0].Attrs, "finish_reason",
+				"the provider's own word for why the completion stopped is what separates «spent the budget» from «said something broken»; without it the first production failure had to be reconstructed from the token counts printed beside it: %+v", errs[0].Attrs)
 		})
 	}
 }

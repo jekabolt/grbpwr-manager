@@ -895,3 +895,99 @@ func TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce(t *testing.T) {
 		}
 	})
 }
+
+// TestEmptyAnswerIsSplitByFinishReason pins the classification that reached production as its
+// opposite. The first live analysis run on prod came back with 2500 completion tokens spent, an
+// empty message, and a panel that said «this one is weather: retry» — an invitation to spend the
+// same $0.11 again, forever, on a fault that is perfectly deterministic.
+//
+// THE TWO HALVES ARE THE POINT. Empty AT THE CAP is a configuration fault (the budget was gone
+// before the answer began); empty for any OTHER reason is a misbehaving provider and must NOT
+// borrow the configuration verdict, or a genuinely odd reply would send somebody to edit a setting
+// that is correct. A test with only the first half passes on `return ErrBudgetExhausted` for every
+// empty message, which is the mistake next door.
+func TestEmptyAnswerIsSplitByFinishReason(t *testing.T) {
+	cases := map[string]struct {
+		finishReason string
+		wantSentinel bool
+	}{
+		"empty at the cap is a configuration fault": {"length", true},
+		"empty after a normal stop is not":          {"stop", false},
+		"empty with no reason at all is not":        {"", false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"model":"stub-model","choices":[{"message":{"role":"assistant","content":"  "},`+
+					`"finish_reason":"`+tc.finishReason+`"}],`+
+					`"usage":{"prompt_tokens":10149,"completion_tokens":2500,"total_tokens":12649}}`)
+			}))
+			defer srv.Close()
+
+			c := New(Config{APIKey: "k", Model: "shared/slug", BaseURL: srv.URL})
+			_, finishReason, usage, err := c.CompleteWithMeta(context.Background(), "sys", "user", true, 2500)
+			if err == nil {
+				t.Fatal("an empty message must be an error whatever stopped it")
+			}
+			if got := errors.Is(err, ErrBudgetExhausted); got != tc.wantSentinel {
+				t.Errorf("errors.Is(err, ErrBudgetExhausted) = %v, want %v — err was %v", got, tc.wantSentinel, err)
+			}
+			// The spend rides along on BOTH branches: an empty answer is not a free call, and the
+			// log line that reports it is the only place the money would otherwise disappear from.
+			if usage.Completion != 2500 {
+				t.Errorf("usage.Completion = %d, want 2500 — a failed run still cost the full budget", usage.Completion)
+			}
+			if finishReason != tc.finishReason {
+				t.Errorf("finishReason = %q, want %q", finishReason, tc.finishReason)
+			}
+			if tc.wantSentinel && !strings.Contains(err.Error(), "2500") {
+				t.Errorf("the error does not name what was spent: %v", err)
+			}
+		})
+	}
+}
+
+// TestAnalysisPassTurnsExtendedThinkingOff pins the fix for that same outage at its source.
+//
+// Reasoning tokens are billed and budgeted as OUTPUT tokens, so a reasoning slug pointed at a cap
+// sized for a non-reasoning one spends the whole cap thinking and answers nothing. The analysis
+// pass therefore says so explicitly instead of trusting the provider's default.
+//
+// AND IT SAYS IT NOWHERE ELSE. Complete backs note formatting and campaign translation, which never
+// had a `reasoning` field and must keep the provider default: sending it from the shared path would
+// change three features to fix one.
+func TestAnalysisPassTurnsExtendedThinkingOff(t *testing.T) {
+	body := func(t *testing.T, call func(*Client, context.Context) error) string {
+		t.Helper()
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			got = string(b)
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+		}))
+		defer srv.Close()
+		c := New(Config{APIKey: "k", Model: "shared/slug", BaseURL: srv.URL})
+		if err := call(c, context.Background()); err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		return got
+	}
+
+	analysis := body(t, func(c *Client, ctx context.Context) error {
+		_, _, _, err := c.CompleteWithMeta(ctx, "sys", "user", true, 2500)
+		return err
+	})
+	if !strings.Contains(analysis, `"reasoning":{"effort":"none"}`) {
+		t.Errorf("the analysis pass did not turn extended thinking off: %s", analysis)
+	}
+
+	shared := body(t, func(c *Client, ctx context.Context) error {
+		_, err := c.Complete(ctx, "sys", "user", false)
+		return err
+	})
+	if strings.Contains(shared, `"reasoning"`) {
+		t.Errorf("the shared path must not carry a reasoning field — three features hang off it: %s", shared)
+	}
+}

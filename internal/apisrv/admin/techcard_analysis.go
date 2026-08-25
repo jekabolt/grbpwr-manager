@@ -171,6 +171,12 @@ const (
 	// aiStatusSkipped — the card carries no assembly fact at all, so there is nothing to analyse and
 	// the key is not spent (BuildUserPrompt's second value, §1/§7).
 	aiStatusSkipped = "skipped"
+	// aiStatusBudgetExhausted — the model spent the whole completion budget and returned an EMPTY
+	// message (finish_reason=length, no content). A CONFIGURATION fault standing beside
+	// model_unavailable, not beside failed: the token cap and the model's own habits disagree, and
+	// the next press disagrees identically, at the same price. This is the fault that reached
+	// production dressed as weather on the very first live run.
+	aiStatusBudgetExhausted = "budget_exhausted"
 )
 
 // analysisMaxTokens caps the completion of one run (§5: ~1.5–2.5k tokens of output on a real card).
@@ -323,6 +329,11 @@ type analysisRun struct {
 	stats techcardanalysis.VerifyStats
 	usage openrouter.Usage
 	took  time.Duration
+	// finishReason is the provider's own word for why the completion stopped. IT IS IN THE LOG
+	// BECAUSE ITS ABSENCE COST A DIAGNOSIS: the first live failure on prod was an empty answer with
+	// the completion budget fully spent, and the log line said only "empty message" — the cause had
+	// to be reconstructed from the token counts happening to be printed beside it.
+	finishReason string
 	// err is the failure verbatim, for the log only. It never reaches the client: ai_status is what
 	// the panel renders, and a provider's English sentence in a UI field is not a status.
 	err error
@@ -403,6 +414,7 @@ func (s *Server) AnalyzeTechCardConstruction(ctx context.Context, req *pb_admin.
 		ctx, techcardanalysis.AnalysisSystemPrompt(), prompt, true, analysisMaxTokens)
 	run.took = time.Since(started)
 	run.usage = usage
+	run.finishReason = finishReason
 	if err != nil {
 		run.err = err
 		// 404 is a configuration fault and everything else on this path is weather. The split is by
@@ -410,6 +422,9 @@ func (s *Server) AnalyzeTechCardConstruction(ctx context.Context, req *pb_admin.
 		run.status = aiStatusFailed
 		if errors.Is(err, openrouter.ErrModelUnavailable) {
 			run.status = aiStatusModelUnavailable
+		}
+		if errors.Is(err, openrouter.ErrBudgetExhausted) {
+			run.status = aiStatusBudgetExhausted
 		}
 		return s.finishAnalysis(ctx, run)
 	}
@@ -517,6 +532,7 @@ func logAnalysisRun(ctx context.Context, run analysisRun) {
 		slog.Int("prompt_tokens", run.usage.Prompt),
 		slog.Int("completion_tokens", run.usage.Completion),
 		slog.Int("total_tokens", run.usage.Total),
+		slog.String("finish_reason", run.finishReason),
 		slog.Duration("took", run.took),
 	}
 	if run.err != nil {
