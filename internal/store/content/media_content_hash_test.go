@@ -42,10 +42,30 @@ func TestMediaContentHashQueriesBind(t *testing.T) {
 		assert.Equal(t, []any{"abc"}, args)
 	})
 
-	// Neither query may carry SQL comments: '--' and '#' both survive into the scanner.
+	// The two halves of DeleteMediaByIdIfUnused. The lock is the half that would fail SILENTLY if
+	// it stopped locking — the delete would still work, just against a row somebody could take
+	// while the check was in flight — so the FOR UPDATE is asserted here as well as exercised by
+	// the integration test that holds an adopter open across the window.
+	t.Run("the conditional delete binds, and its lock still locks", func(t *testing.T) {
+		for name, src := range map[string]string{
+			"lockMediaRowQuery":    lockMediaRowQuery,
+			"deleteMediaByIdQuery": deleteMediaByIdQuery,
+		} {
+			q, args, err := storeutil.MakeQuery(src, map[string]any{"id": 7001})
+			require.NoErrorf(t, err, "%s must bind", name)
+			assert.NotContainsf(t, q, ":", "%s: no bind name may survive into the final SQL", name)
+			assert.Equalf(t, []any{7001}, args, "%s binds exactly the id", name)
+		}
+		assert.Contains(t, lockMediaRowQuery, "FOR UPDATE",
+			"without the row lock the check and the delete stop being one act")
+	})
+
+	// No query here may carry SQL comments: '--' and '#' both survive into the scanner.
 	for name, q := range map[string]string{
 		"addMediaQuery":               addMediaQuery,
 		"findMediaByContentHashQuery": findMediaByContentHashQuery,
+		"lockMediaRowQuery":           lockMediaRowQuery,
+		"deleteMediaByIdQuery":        deleteMediaByIdQuery,
 	} {
 		assert.NotContainsf(t, q, "--", "%s: SQL comments do not belong in a named query", name)
 		assert.NotContainsf(t, q, "#", "%s: '#' opens a MySQL comment", name)

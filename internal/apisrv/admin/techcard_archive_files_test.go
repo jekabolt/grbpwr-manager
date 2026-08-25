@@ -110,9 +110,9 @@ func TestArchiveFilesPlanReuseIsNeverUploadedAndNeverCompensated(t *testing.T) {
 		"a reused picture keeps the FINAL id the resolver already wrote — it is not remapped a second time")
 	require.EqualValues(t, 7001, items[1].GetMediaId(), "the negative placeholder becomes the row that was just minted")
 
-	// And the compensation deletes that list and nothing else. DeleteMediaById(9001) is not
-	// expected, so the strict mock fails the test if the reused row is ever touched.
-	media.EXPECT().DeleteMediaById(mock.Anything, 7001).Return(nil).Once()
+	// And the compensation deletes that list and nothing else. A delete of 9001 is not expected in
+	// any form, so the strict mock fails the test if the reused row is ever touched.
+	media.EXPECT().DeleteMediaByIdIfUnused(mock.Anything, 7001).Return(true, nil, nil).Once()
 	fs.EXPECT().DeleteObjects(mock.Anything, "https://cdn/og.webp", "https://cdn/c.webp", "https://cdn/t.webp").
 		Return(nil).Once()
 	p.compensate(t.Context(), s)
@@ -249,8 +249,8 @@ func TestArchiveFilesPlanCompensatesItsOwnFailure(t *testing.T) {
 	// deleted under a surviving row leave a row that still carries the archive's content_hash, and
 	// the next import of the same archive would «reuse» it into a card full of 404s.
 	var order []string
-	media.EXPECT().DeleteMediaById(mock.Anything, 7001).
-		Run(func(context.Context, int) { order = append(order, "row") }).Return(nil).Once()
+	media.EXPECT().DeleteMediaByIdIfUnused(mock.Anything, 7001).
+		Run(func(context.Context, int) { order = append(order, "row") }).Return(true, nil, nil).Once()
 	fs.EXPECT().DeleteObjects(mock.Anything, "https://cdn/og.webp", "https://cdn/t.webp").
 		Run(func(context.Context, ...string) { order = append(order, "objects") }).Return(nil).Once()
 
@@ -289,7 +289,7 @@ func TestArchiveFilesPlanACancelledContextStopsInsteadOfHollowingTheCard(t *test
 		Return(nil, context.Canceled).Once()
 	// Compensation runs on a context detached from the cancelled one — otherwise the cleanup of a
 	// cancelled import would itself be cancelled, which is how the orphan is created.
-	media.EXPECT().DeleteMediaById(mock.Anything, 7001).Return(nil).Once()
+	media.EXPECT().DeleteMediaByIdIfUnused(mock.Anything, 7001).Return(true, nil, nil).Once()
 	fs.EXPECT().DeleteObjects(mock.Anything, "https://cdn/og.webp").Return(nil).Once()
 
 	p, err := s.tcflPlaceImportFiles(ctx, arch, res)
@@ -297,6 +297,89 @@ func TestArchiveFilesPlanACancelledContextStopsInsteadOfHollowingTheCard(t *test
 	require.Nil(t, p)
 	require.Empty(t, tcimpHoles(res, techcardarchive.ReasonMediaUploadFailed),
 		"a dead context is not a verdict about any file")
+}
+
+// ────────────────────────────── 3b. the row that was adopted while we lost ─────────────────────
+
+// tcflOneUploadPlacement runs the real pipeline over an archive with a single fresh file and hands
+// back the placement it produced — the same object the commit path would be holding when it finds
+// out it lost. Nothing about the placement is hand-built: «what compensation is looking at» is
+// exactly what the upload path put there.
+func tcflOneUploadPlacement(t *testing.T) (*Server, *mocks.MockMedia, *mocks.MockFileStore, *tcflPlacement) {
+	t.Helper()
+	s, media, fs := tcflServer(t)
+	a := tcimpNewArchive()
+	a.insert.TechnicalMedia = []*pb_common.TechCardMediaItem{{MediaId: 4020}}
+	body := tcflJPEG("the bytes both imports carry")
+	file, sha := a.blob(techcardarchive.DirMedia, ".jpg", body)
+	a.with(techcardarchive.FileMediaIndex, tcimpJSON(t, []techcardarchive.MediaIndexEntry{
+		{Ref: 4020, File: file, SHA256: sha},
+	}))
+	// Nothing in this base matches yet: at OUR resolve time we are the first to see these bytes.
+	media.EXPECT().FindMediaByContentHash(mock.Anything, sha).Return(nil, nil).Once()
+
+	arch := a.open(t)
+	res, err := s.resolveTechCardImport(t.Context(), arch)
+	require.NoError(t, err)
+	fs.EXPECT().UploadContentImageVerbatim(mock.Anything, body, "grbpwr", mock.Anything).
+		Return(tcflMediaFull(7001, "https://cdn/og.webp", "https://cdn/c.webp", "https://cdn/t.webp"), nil).Once()
+
+	p, err := s.tcflPlaceImportFiles(t.Context(), arch, res)
+	require.NoError(t, err)
+	require.Len(t, p.media, 1)
+	return s, media, fs, p
+}
+
+// THE TRACE THIS DEFECT WAS, SEEN FROM THE LOSING SIDE.
+//
+// We uploaded the file and minted row 7001. While we were still on our way to the write, a second
+// import of the same archive matched those bytes by content_hash, REUSED 7001 instead of uploading,
+// won the claim and committed a card whose CALLOUT points at it. We then get
+// ErrImportAlreadyCommitted and compensate.
+//
+// tech_card_callout.media_id is ON DELETE SET NULL, so nothing downstream would have refused us:
+// the store's delete would have succeeded, the winner's callout would have gone quietly NULL, and
+// the three objects underneath — now the winner's pictures — would have gone next. The store
+// answers «kept, and here is who kept it», and the whole point of that answer is the SECOND half of
+// what must not happen: the strict bucket mock has NO DeleteObjects expectation, so a single object
+// deletion fails this test.
+func TestArchiveFilesPlanAnAdoptedRowKeepsItsObjectsToo(t *testing.T) {
+	s, media, _, p := tcflOneUploadPlacement(t)
+
+	media.EXPECT().DeleteMediaByIdIfUnused(mock.Anything, 7001).
+		Return(false, []entity.MediaUsageRef{{
+			MediaId: 7001, Kind: "tech_card", EntityId: 812, Label: "SS26 PARKA", Slot: "callout",
+		}}, nil).Once()
+
+	p.compensate(t.Context(), s)
+}
+
+// THE COUNTER-CHECK, in the same shape as the case above so the contrast is the ONLY difference.
+// Compensation that never deletes anything is not compensation: when the row really was nobody's
+// but ours, both halves must still go, and in that order.
+func TestArchiveFilesPlanAnUnadoptedRowIsStillTakenBackWholly(t *testing.T) {
+	s, media, fs, p := tcflOneUploadPlacement(t)
+
+	var order []string
+	media.EXPECT().DeleteMediaByIdIfUnused(mock.Anything, 7001).
+		Run(func(context.Context, int) { order = append(order, "row") }).Return(true, nil, nil).Once()
+	fs.EXPECT().DeleteObjects(mock.Anything, "https://cdn/og.webp", "https://cdn/c.webp", "https://cdn/t.webp").
+		Run(func(context.Context, ...string) { order = append(order, "objects") }).Return(nil).Once()
+
+	p.compensate(t.Context(), s)
+	require.Equal(t, []string{"row", "objects"}, order)
+}
+
+// A store that cannot ANSWER is not a store that said «free». The failure mode being guarded here is
+// an optimistic reading of the error — deleting the objects anyway «since the row is probably gone»
+// — which is how a compensation turns a transient database error into a card of 404s.
+func TestArchiveFilesPlanAnUnanswerableDeleteLeavesBothHalvesAlone(t *testing.T) {
+	s, media, _, p := tcflOneUploadPlacement(t)
+
+	media.EXPECT().DeleteMediaByIdIfUnused(mock.Anything, 7001).
+		Return(false, nil, errors.New("dial tcp: connection refused")).Once()
+
+	p.compensate(t.Context(), s)
 }
 
 // ────────────────────────────── 4. R2-1: the substitution the brief asked for ──────────────────

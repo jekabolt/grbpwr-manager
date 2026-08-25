@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -43,9 +44,12 @@ import (
 //     that arrives here is ALREADY remapped, so a "old id → new id" pass over it would clear every
 //     picture of the import, including the ones this base already had.
 //
-//   - COMPENSATION DELETES THE MEDIA ROW BEFORE ITS OBJECTS. Deleting the objects and leaving the
-//     row would leave a row whose content_hash still matches the archive — and the NEXT import of
-//     the same archive would happily reuse it and build a card full of 404s.
+//   - COMPENSATION DELETES THE MEDIA ROW BEFORE ITS OBJECTS, AND ONLY IF NOBODY HAS TAKEN IT.
+//     The order first: deleting the objects and leaving the row would leave a row whose
+//     content_hash still matches the archive — and the NEXT import of the same archive would
+//     happily reuse it and build a card full of 404s. The condition second: de-duplication cuts
+//     both ways, so between minting the row and giving it back, a rival import can have matched
+//     it by content hash and committed a card that points at it. See compensate.
 //
 // Names in this package: `dec`, `tcz*`, `amg*` and `tcimp*` are taken (Ф1.2/Ф1.4/Ф2.3). Everything
 // here is `tcfl*` — tech-card files.
@@ -443,8 +447,17 @@ func tcflApplyPatternObjects(res *resolvedTechCardImport, p *tcflPlacement) {
 // content_hash, so the next import of the same archive would «reuse» it and build a card whose
 // every picture is a 404 — silently, because reuse is the healthy path.
 //
-// A reuse is not here at all (see tcflExecuteMediaPlan), which is what makes it impossible for a
-// failed import to delete a picture another card is using.
+// A reuse is not here at all (see tcflExecuteMediaPlan). That keeps a failed import from deleting
+// a row it never created — and it is NOT, on its own, enough to keep it from deleting a row that
+// somebody else has since started using. The row this import minted can be ADOPTED after the fact:
+// content-hash de-duplication means a second import of the same archive finds these very bytes,
+// plans a reuse, wins the claim and commits, all while this import is still on its way to
+// compensating. From this side nothing about that row looks different. Hence the delete goes
+// through DeleteMediaByIdIfUnused, which asks the question under the lock that answers it.
+//
+// The reference that made this real is the one an FK would not have stopped: tech_card_callout
+// .media_id is ON DELETE SET NULL, so the old unconditional delete did not fail against a live
+// card — it succeeded, and blanked the winner's picture on the way out.
 func (p *tcflPlacement) compensate(ctx context.Context, s *Server) {
 	if p == nil || s == nil {
 		return
@@ -454,9 +467,23 @@ func (p *tcflPlacement) compensate(ctx context.Context, s *Server) {
 		// id == 0 is the half-finished upload: objects in the bucket, no row minted. There is
 		// nothing to delete first, and the objects are exactly what must go.
 		if m.id > 0 {
-			if err := s.repo.Media().DeleteMediaById(cctx, int(m.id)); err != nil {
+			deleted, refs, err := s.repo.Media().DeleteMediaByIdIfUnused(cctx, int(m.id))
+			if err != nil {
 				slog.Default().ErrorContext(cctx, "tech card import: orphaned media row after a failed import",
 					slog.Int("media_id", int(m.id)), slog.Any("urls", m.urls), slog.String("err", err.Error()))
+				cancel()
+				continue
+			}
+			// ADOPTED, NOT ORPHANED. Between our upload and this compensation another import of
+			// the same archive matched these bytes by content hash, reused the row instead of
+			// uploading a second copy, and committed. The row is that card's now and the objects
+			// under it are what its pictures resolve to — so this is a case of "the row did not
+			// go", and the rule above (objects stay when the row stays) is already the right one.
+			// It is not an error: the loser is not entitled to the row, only to be told.
+			if !deleted {
+				slog.Default().InfoContext(cctx, "tech card import: media row kept, adopted by another owner",
+					slog.Int("media_id", int(m.id)), slog.Any("urls", m.urls),
+					slog.Any("used_by", tcflUsageSummary(refs)))
 				cancel()
 				continue
 			}
@@ -477,6 +504,17 @@ func (p *tcflPlacement) compensate(ctx context.Context, s *Server) {
 		}
 		cancel()
 	}
+}
+
+// tcflUsageSummary renders the references that kept a row into something a log line can carry —
+// "tech_card 812 (callout)". The refs themselves would land in the log as a nested blob nobody
+// greps; what the operator needs is which card to go and look at.
+func tcflUsageSummary(refs []entity.MediaUsageRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, fmt.Sprintf("%s %d (%s)", r.Kind, r.EntityId, r.Slot))
+	}
+	return out
 }
 
 // tcflCleanupContext detaches from a context that is very likely already cancelled — the commonest

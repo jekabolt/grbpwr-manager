@@ -1197,7 +1197,8 @@ type (
 		// bytes are gone is an operator pressing commit onto a 404.
 		//
 		// 'committed' and 'failed' rows are never touched — the first is a card's provenance,
-		// the second is the record of a commit that did not survive its transaction.
+		// the second a hand-set quarantine (no code path writes 'failed'; a rolled-back commit
+		// leaves the row 'uploaded' deliberately, see entity.TechCardImportStatusFailed).
 		ExpireStaleTechCardImports(ctx context.Context, olderThan time.Time) (int64, error)
 	}
 
@@ -1793,6 +1794,17 @@ type (
 		// including for an empty hash and for every row written before migration 0336,
 		// which carry NULL and are meant to match nothing.
 		FindMediaByContentHash(ctx context.Context, hash string) (*entity.MediaFull, error)
+		// DeleteMediaByIdIfUnused deletes the row only when nothing in the database references
+		// it, taking that decision and the delete under one lock. It returns whether the row
+		// went and, when it did not, the references that kept it.
+		//
+		// It exists because DeleteMediaById is not safe for a caller compensating a failed
+		// import: content-hash de-duplication means the row it minted may already have been
+		// ADOPTED by another import that committed first, and the several ON DELETE SET NULL
+		// foreign keys into media(id) let that delete succeed and blank the winner's picture
+		// instead of refusing. "Still used" is not an error — it means the row is no longer
+		// the caller's to take back, and neither are the objects behind it.
+		DeleteMediaByIdIfUnused(ctx context.Context, id int) (deleted bool, refs []entity.MediaUsageRef, err error)
 	}
 
 	Admin interface {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
@@ -132,16 +133,97 @@ func (s *Store) FindMediaByContentHash(ctx context.Context, hash string) (*entit
 	return &rows[0], nil
 }
 
+// deleteMediaByIdQuery is shared by the unconditional delete and the conditional one below, so
+// the two can never come to mean different things.
+const deleteMediaByIdQuery = `DELETE FROM media WHERE id = :id`
+
+// lockMediaRowQuery pins the row the decision below is about, before the decision is taken.
+//
+// It locks the PARENT row rather than the referencing tables, which is the cheap way to hold off
+// an adopter that has not inserted yet: InnoDB checks a foreign key by taking a shared lock on
+// the parent record, and an exclusive lock held here makes that check wait.
+//
+// MEASURED, NOT ASSUMED: it is a second line of defence, not the only one. The store's write
+// transactions run SERIALIZABLE (store.Tx), where a plain SELECT is already a locking read — so
+// the usage check below blocks on an adopter's uncommitted row by itself, and deleting this line
+// does NOT turn TestDeleteMediaIfUnusedDecidesUnderTheLockNotBeforeIt red. That is exactly why
+// the line stays: without it the guarantee would rest silently on an isolation level chosen
+// elsewhere, and the day someone lowers it, nothing here would say so.
+const lockMediaRowQuery = `SELECT id FROM media WHERE id = :id FOR UPDATE`
+
 // DeleteMediaById deletes a media item by its ID.
 func (s *Store) DeleteMediaById(ctx context.Context, id int) error {
-	query := `DELETE FROM media WHERE id = :id`
-	err := storeutil.ExecNamed(ctx, s.DB, query, map[string]any{
+	err := storeutil.ExecNamed(ctx, s.DB, deleteMediaByIdQuery, map[string]any{
 		"id": id,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to delete media: %w", err)
 	}
 	return nil
+}
+
+// DeleteMediaByIdIfUnused deletes a media row only if nothing in the database references it,
+// and decides that under one lock. It reports whether the row went, and — when it did not —
+// exactly who kept it.
+//
+// WHY THE CONDITION CANNOT BE LEFT TO THE FOREIGN KEYS. The obvious reading — "a reference
+// makes the FK refuse the delete" — is true of most of these columns and false of exactly the
+// ones that matter. Several are ON DELETE SET NULL: tech_card_callout.media_id (0067),
+// fitting_callout.media_id (0092), product.swatch_media_id (0151), material.image_id (0184),
+// product_lab_dip_round.swatch_media_id (0212). Against those a DELETE does not fail — it
+// succeeds, and a live card's picture quietly becomes NULL. So a caller that must not take a
+// picture away from somebody else has to ASK, and the asking has to happen where the answer
+// cannot change between being given and being used.
+//
+// WHY THE ANSWER COMES FROM THE USAGE REGISTRY. mediaUsageOn is the same query the media
+// library's "where is this used" RPC runs. One list of columns, one place to update when a new
+// foreign key lands — the alternative is two lists that agree until they do not.
+//
+// A MISSING ROW COUNTS AS DELETED. Nothing references it and nothing can, so the caller's
+// follow-up (dropping the objects that backed it) is exactly right; this also keeps the method
+// as forgiving of a repeated call as the unconditional delete above.
+//
+// Opens its own transaction: it is a decision plus a write, and the two are the same act.
+func (s *Store) DeleteMediaByIdIfUnused(ctx context.Context, id int) (bool, []entity.MediaUsageRef, error) {
+	var deleted bool
+	var refs []entity.MediaUsageRef
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// The callback is re-run on a deadlock (store.Tx retries), so each attempt starts from
+		// a blank verdict instead of inheriting the one the rolled-back attempt reached.
+		deleted, refs = false, nil
+
+		// QueryScalarListNamed, not QueryListNamed: the latter scans through sqlx's struct
+		// mapper, which panics on a non-struct the moment a row actually comes back.
+		locked, err := storeutil.QueryScalarListNamed[int](ctx, rep.DB(), lockMediaRowQuery,
+			map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to lock media row %d: %w", id, err)
+		}
+		if len(locked) == 0 {
+			deleted = true
+			return nil
+		}
+
+		usage, err := mediaUsageOn(ctx, rep.DB(), []int{id})
+		if err != nil {
+			return fmt.Errorf("failed to check media usage for %d: %w", id, err)
+		}
+		if len(usage[id]) > 0 {
+			refs = usage[id]
+			return nil
+		}
+
+		if err := storeutil.ExecNamed(ctx, rep.DB(), deleteMediaByIdQuery,
+			map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to delete unused media %d: %w", id, err)
+		}
+		deleted = true
+		return nil
+	})
+	if err != nil {
+		return false, nil, err
+	}
+	return deleted, refs, nil
 }
 
 // ListMediaPaged retrieves a paginated list of media items.
