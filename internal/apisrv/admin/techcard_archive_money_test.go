@@ -471,12 +471,21 @@ func amgProtoMoney(m protoreflect.Message, path string) []string {
 // Kept deliberately blunt. A false positive costs one line in amgMoneyKeyExempt with a written
 // reason; a false negative costs a factory learning what GRBPWR pays for its wool.
 //
-// The stems are the ones Ф0.4's descriptor guard settled on (guardSubstrings in
+// The first row is the stems Ф0.4's descriptor guard settled on (guardSubstrings in
 // internal/techcardarchive/walk_test.go), minus the id stems it also carries — this file is about
 // money only. "vat" is deliberately NOT among them: it matches "private" and "activated", and a VAT
-// figure has no home in the tech-card contract for it to leak out of.
+// figure has no home in the tech-card contract for it to leak out of. "rate" is out for the same
+// shape of reason: it matches "generated", "separate" and every *_rate that is a ratio.
+//
+// The second row is WIDER THAN THAT GUARD ON PURPOSE (R2-7). Ф0.4 measured the contract as it
+// stands; this gate has to survive the field nobody has added yet, and `handling_fee`,
+// `import_duty`, `retail_markup` or a `discount` on a recipe line would clear all three instruments
+// at once — not on the denylist, no stem to catch them, and no canary a fixture can plant for a
+// field that does not exist. A false positive here costs one line in amgMoneyKeyExempt with a
+// written reason; a false negative costs a factory learning what GRBPWR pays for its wool.
 var amgMoneyKeyShapes = []string{
 	"price", "cost", "margin", "amount", "currenc", "total", "payment", "invoice",
+	"fee", "tax", "duty", "discount", "retail",
 }
 
 // amgMoneyKeyExempt names keys that match a stem above and are NOT money, each with the reason it

@@ -429,6 +429,68 @@ func TestArchiveSpoolRefusesContentBeyondTheFormatCeiling(t *testing.T) {
 	require.True(t, archiveIsFatal(err), "перебор потолка обязан хоронить экспорт, а не становиться дырой")
 }
 
+// Выходной артикул вспомогательной карточки едет паспортом, как любой пин.
+//
+// Без паспорта импорту НЕЧЕГО сопоставлять, и поле, обязательное до первого прогона, теряется
+// молча — в логе сервера, который отчётом не является. Паспорт кладётся под тем же `ref`
+// (исходный material_id), что и у строки BOM, поэтому импортный матчинг для него уже написан.
+func TestArchiveMaterialsCarryTheAuxOutputArticle(t *testing.T) {
+	auxCard := func() *entity.TechCard {
+		c := &entity.TechCard{Id: 7}
+		c.Purpose = entity.TechCardPurposeAuxiliary
+		c.OutputMaterialId = sql.NullInt64{Int64: 8300, Valid: true}
+		return c
+	}
+
+	t.Run("паспорт в индексе", func(t *testing.T) {
+		repo := mocks.NewMockRepository(t)
+		cards := mocks.NewMockTechCards(t)
+		repo.EXPECT().TechCards().Return(cards)
+		cards.EXPECT().ListMaterials(mock.Anything, "", true).Return([]entity.MaterialWithPrice{
+			tcimpCatalogRow(8300, "AUX-DUSTBAG", "pcs"),
+		}, nil)
+
+		mats, holes, err := (&Server{repo: repo}).collectArchiveMaterials(t.Context(), auxCard())
+		require.NoError(t, err)
+		require.Empty(t, holes)
+		require.Len(t, mats, 1, "у карточки нет ни одной строки BOM — паспорт в индексе только один, и он выходного артикула")
+		require.EqualValues(t, 8300, mats[0].Ref, "ref — исходный material_id: ключ, по которому импорт узнаёт поле карточки")
+		require.Equal(t, "AUX-DUSTBAG", mats[0].Code)
+	})
+
+	t.Run("артикула нет в каталоге — дыра под своим ref", func(t *testing.T) {
+		repo := mocks.NewMockRepository(t)
+		cards := mocks.NewMockTechCards(t)
+		repo.EXPECT().TechCards().Return(cards)
+		cards.EXPECT().ListMaterials(mock.Anything, "", true).Return(nil, nil)
+
+		mats, holes, err := (&Server{repo: repo}).collectArchiveMaterials(t.Context(), auxCard())
+		require.NoError(t, err)
+		require.Empty(t, mats)
+		require.Len(t, holes, 1)
+		require.Equal(t, archiveRefOutputMaterial, holes[0].Ref,
+			"строка BOM зовётся своим line_key, а поле карточки — своим именем")
+		require.Equal(t, techcardarchive.ReasonMaterialNotFound, holes[0].Reason)
+	})
+}
+
+// ИНВАРИАНТ ДВУХ ПОТОЛКОВ, а не сторож одной константы.
+//
+// Файл маркера в архиве — это protojson(summary + layout), а layout приходит с ЖИВОГО пути
+// сохранения, где его режет maxMarkerLayoutBytes. Значит потолок файла обязан быть СТРОГО больше
+// потолка раскладки: при равенстве легально сохранённый маркер в 2 МиБ даёт запись за потолком, и
+// OpenArchive отвергает ВЕСЬ архив на проходе по директории — ни дыры, ни кода причины, ни слова
+// оператору. Это ровно дефект R1-4, и он воскреснет при правке ЛЮБОЙ из двух констант.
+//
+// Тест живёт в пакете admin, потому что это единственное место, откуда видны обе: одна принадлежит
+// формату, вторая — обработчику сохранения, и связь между ними не выражена ничем, кроме этой
+// строки.
+func TestMarkerFileCeilingLeavesRoomForALegallySavedLayout(t *testing.T) {
+	require.Greater(t, techcardarchive.MaxMarkerFileBytes, maxMarkerLayoutBytes,
+		"потолок файла маркера обязан быть строго больше потолка раскладки: файл = summary + layout, "+
+			"и равенство означает архив, который наша же читалка отвергает целиком")
+}
+
 // Имя записи в zip строится из ключа объекта, а ключ — из url, который уже раскодирован: символы,
 // которые FORMAT.md §1.1 в имени запрещает, обязаны отсеиваться здесь, а не в zip-writer'е.
 func TestArchiveObjectExtNeverCarriesAPathIntoTheEntryName(t *testing.T) {

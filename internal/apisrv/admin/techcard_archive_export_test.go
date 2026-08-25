@@ -339,3 +339,28 @@ func TestExportTechCardArchiveMissingCard(t *testing.T) {
 	_, err = srv.ExportTechCardArchive(exportCtx(), &pb_admin.ExportTechCardArchiveRequest{TechCardId: 0})
 	require.Error(t, err, "нулевой id — InvalidArgument, а не поход в базу")
 }
+
+// Журнальная строка обязана пережить ОТМЕНУ клиентского контекста.
+//
+// К моменту записи архив уже лежит в бакете и ссылка уже выдана: отмена не может «отменить»
+// уехавший файл, а вот унести единственный след того, что он уехал, — может. Проверяется именно
+// то, что видит сторона записи: ctx.Err() внутри вставки.
+func TestJournalArchiveExportOutlivesACancelledClient(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	cards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(cards)
+
+	var seen error
+	cards.EXPECT().AppendTechCardArchiveExportedEvent(mock.Anything, 7, "im", mock.Anything).
+		Run(func(ctx context.Context, _ int, _ string, _ string) { seen = ctx.Err() }).Return(nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.Error(t, ctx.Err(), "положительный контроль: контекст вызывающего действительно отменён")
+
+	(&Server{repo: repo}).journalArchiveExport(ctx, &entity.TechCard{Id: 7},
+		techcardarchive.Manifest{ExportedBy: "im"})
+	require.NoError(t, seen,
+		"запись журнала не должна видеть отменённый контекст: иначе обрыв клиента между заливкой и "+
+			"журналом оставляет объект в бакете без строки аудита")
+}

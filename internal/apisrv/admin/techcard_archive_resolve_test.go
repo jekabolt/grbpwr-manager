@@ -310,7 +310,23 @@ func TestResolveImportCategoryPathResolvesAndMisses(t *testing.T) {
 		require.Equal(t, techcardarchive.StatusDegraded, holes[0].Status, "the card lands, thinner")
 	})
 
-	t.Run("no path at all is not a hole", func(t *testing.T) {
+	t.Run("no path and no category is not a hole", func(t *testing.T) {
+		s, _, _, _ := tcimpServer(t)
+		a := tcimpNewArchive() // category_id stays 0 — the card genuinely had none
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.Zero(t, res.Insert.GetCategoryId())
+		require.Empty(t, tcimpHoles(res, techcardarchive.ReasonCategoryUnknown),
+			"a card that had no category lost nothing, so there is nothing to report")
+	})
+
+	// The witness matters: an EMPTY path does not mean "the card had no category". The export's
+	// archiveCategoryPath stops at the first level it cannot name, so a card WITH a category can
+	// produce one — and reading the empty path as "nothing was lost" loses a filing decision with
+	// no line in the report at all. The card's own category_id is the only thing that tells the two
+	// apart, which is why it is read before it is cleared.
+	t.Run("no path but the card HAD a category is a hole", func(t *testing.T) {
 		s, _, _, _ := tcimpServer(t)
 		a := tcimpNewArchive()
 		a.insert.CategoryId = 777
@@ -318,8 +334,11 @@ func TestResolveImportCategoryPathResolvesAndMisses(t *testing.T) {
 		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
 		require.NoError(t, err)
 		require.Zero(t, res.Insert.GetCategoryId())
-		require.Empty(t, tcimpHoles(res, techcardarchive.ReasonCategoryUnknown),
-			"a card that had no category lost nothing, so there is nothing to report")
+		holes := tcimpHoles(res, techcardarchive.ReasonCategoryUnknown)
+		require.Len(t, holes, 1, "the category the export could not NAME is still a category that was lost")
+		require.Equal(t, techcardarchive.EntityCard, holes[0].Entity)
+		require.Equal(t, "category_id=777", holes[0].Ref)
+		require.Equal(t, techcardarchive.StatusDegraded, holes[0].Status)
 	})
 }
 
@@ -461,6 +480,67 @@ func TestResolveImportMaterialVerdictsUnlinkButKeepTheLine(t *testing.T) {
 	require.Equal(t, 2, tally.Imported, "B-OK linked, B-FREE never asked for a link")
 	require.Equal(t, 4, tally.Degraded)
 	require.Equal(t, 6, tally.Sum(), "the tally accounts for every line, so a lost one cannot hide")
+}
+
+// The auxiliary card's OUTPUT article is a pin like any other: the export ships its passport in
+// materials/index.json, so the import matches it through the same catalogue and misses through the
+// same three codes — under a ref the operator can act on, and in the REPORT rather than in a server
+// log, because on an aux card that article is a property of the card itself.
+func TestResolveImportOutputMaterialResolvesThroughItsPassport(t *testing.T) {
+	t.Run("matched", func(t *testing.T) {
+		s, _, cards, _ := tcimpServer(t)
+		a := tcimpNewArchive()
+		a.insert.Purpose = pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY
+		a.insert.OutputMaterialId = 8300
+		a.with(techcardarchive.FileMaterialsIndex, tcimpJSON(t, []techcardarchive.MaterialPassport{
+			{Ref: 8300, Code: "AUX-DUSTBAG", Name: "dust bag", Unit: "pcs"},
+		}))
+		cards.EXPECT().ListMaterials(mock.Anything, "", true).Return([]entity.MaterialWithPrice{
+			tcimpCatalogRow(2001, "AUX-DUSTBAG", "pcs"),
+		}, nil)
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.EqualValues(t, 2001, res.Insert.GetOutputMaterialId(),
+			"the source's 8300 must not survive, and the target's own id must take its place")
+		require.Empty(t, tcimpHoles(res, techcardarchive.ReasonMaterialNotFound))
+	})
+
+	t.Run("a miss is a REPORTED hole under its own ref", func(t *testing.T) {
+		s, _, cards, _ := tcimpServer(t)
+		a := tcimpNewArchive()
+		a.insert.Purpose = pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY
+		a.insert.OutputMaterialId = 8300
+		a.with(techcardarchive.FileMaterialsIndex, tcimpJSON(t, []techcardarchive.MaterialPassport{
+			{Ref: 8300, Code: "AUX-DUSTBAG", Name: "dust bag", Unit: "pcs"},
+		}))
+		cards.EXPECT().ListMaterials(mock.Anything, "", true).Return([]entity.MaterialWithPrice{
+			tcimpCatalogRow(2001, "SOMETHING-ELSE", "pcs"),
+		}, nil)
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.Zero(t, res.Insert.GetOutputMaterialId())
+		holes := tcimpHoles(res, techcardarchive.ReasonMaterialNotFound)
+		require.Len(t, holes, 1, "the loss of the aux card's output bucket must reach the operator, not just the log")
+		require.Equal(t, techcardarchive.EntityMaterial, holes[0].Entity)
+		require.Equal(t, "output_material", holes[0].Ref)
+		require.Equal(t, techcardarchive.StatusDegraded, holes[0].Status)
+	})
+
+	t.Run("no passport in the archive is the same news at this end", func(t *testing.T) {
+		s, _, _, _ := tcimpServer(t)
+		a := tcimpNewArchive()
+		a.insert.Purpose = pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY
+		a.insert.OutputMaterialId = 8300
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.Zero(t, res.Insert.GetOutputMaterialId())
+		holes := tcimpHoles(res, techcardarchive.ReasonMaterialNotFound)
+		require.Len(t, holes, 1)
+		require.Equal(t, "output_material", holes[0].Ref)
+	})
 }
 
 // tcimpAuxCard is a header-only auxiliary style, as ListTechCards returns them.
@@ -781,8 +861,10 @@ func TestResolveImportColourwaysTravelAsReferenceOnly(t *testing.T) {
 func TestResolveImportDropsTheIdsWithNoMap(t *testing.T) {
 	s, _, _, _ := tcimpServer(t)
 	a := tcimpNewArchive()
+	// output_material_id is NOT here any more: it has a map of its own (a passport in
+	// materials/index.json), so it is resolved rather than dropped — see
+	// TestResolveImportOutputMaterialResolvesThroughItsPassport.
 	a.insert.BaseModelId = 4242
-	a.insert.OutputMaterialId = 6161
 	a.insert.BomItems = []*pb_common.TechCardBomItem{{Id: 91, LineKey: "B1", Name: "label stock"}}
 	a.insert.Labels = []*pb_common.TechCardLabel{
 		{LabelType: pb_common.TechCardLabelType_TECH_CARD_LABEL_TYPE_MAIN, BomItemId: 91},
@@ -796,7 +878,6 @@ func TestResolveImportDropsTheIdsWithNoMap(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Zero(t, res.Insert.GetBaseModelId())
-	require.Zero(t, res.Insert.GetOutputMaterialId())
 	require.Zero(t, res.Insert.GetBomItems()[0].GetId(), "the source row's PK does not travel into a write payload")
 	require.Empty(t, res.Insert.GetOperations()[0].GetPieceIds())
 	require.Empty(t, res.Insert.GetOperations()[0].GetBomItemIds())
@@ -904,6 +985,39 @@ func TestResolveImportListsUnknownEntries(t *testing.T) {
 	holes := tcimpHoles(res, techcardarchive.ReasonUnknownEntry)
 	require.Len(t, holes, 1)
 	require.Equal(t, techcardarchive.EntityArchive, holes[0].Entity)
+	require.Equal(t, "entry=future/whatever.json", holes[0].Ref)
+}
+
+// …but a file an executed PLAN already claimed is not unknown, however odd its name looks.
+//
+// Measured (R2-6): media/<sha>.avif is classified by NAME, so an extension outside §1.1 lands in
+// UnknownEntries — while media/index.json names that same file and the media plan is about to move
+// its bytes. Both lines would then describe one file, and the second one would tell the operator
+// «this server does not know this file» about a file it just read. The index is what makes a file
+// known; the plan is the executed proof of it.
+func TestResolveImportDoesNotCallAPlannedFileUnknown(t *testing.T) {
+	s, _, _, media := tcimpServer(t)
+	a := tcimpNewArchive()
+	a.insert.TechnicalMedia = []*pb_common.TechCardMediaItem{{MediaId: 4020}}
+	odd, oddSHA := a.blob(techcardarchive.DirMedia, ".avif", []byte("A"))
+	a.with(techcardarchive.FileMediaIndex, tcimpJSON(t, []techcardarchive.MediaIndexEntry{
+		{Ref: 4020, File: odd, SHA256: oddSHA},
+	}))
+	a.with("future/whatever.json", []byte("{}"))
+	media.EXPECT().FindMediaByContentHash(mock.Anything, oddSHA).Return(nil, nil)
+
+	arch := a.open(t)
+	require.Contains(t, arch.UnknownEntries, odd,
+		"positive control: the reader classifies by NAME, so .avif really is an entry it does not know")
+
+	res, err := s.resolveTechCardImport(t.Context(), arch)
+	require.NoError(t, err)
+	require.Len(t, res.MediaPlan, 1)
+	require.Equal(t, odd, res.MediaPlan[0].File, "…and the plan really did claim it")
+
+	holes := tcimpHoles(res, techcardarchive.ReasonUnknownEntry)
+	require.Len(t, holes, 1,
+		"the file a plan claimed is not reported unknown; the file nothing claimed still is")
 	require.Equal(t, "entry=future/whatever.json", holes[0].Ref)
 }
 

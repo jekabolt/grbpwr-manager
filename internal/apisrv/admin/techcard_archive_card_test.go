@@ -116,6 +116,9 @@ func tczMoneyCard() *entity.TechCard {
 		Id: 1, TechCardId: 214, Role: entity.RoleConstructor,
 		AdminId: 9, AdminUsername: "im", AssignedBy: "im", AssignedAt: tczAt(),
 	}}
+	// The fit model: a row in the SOURCE's model table, the same class as the role assignment
+	// above and carried by the same reasoning (FORMAT.md §4).
+	card.BaseModelId = tczNI(91)
 	card.ResolvedMedia = []entity.TechCardMediaFull{{
 		Media: entity.MediaFull{Id: 4021, CreatedAt: tczAt(), MediaItem: entity.MediaItem{
 			FullSizeMediaURL:   tczURL("2026/08/1a2b.jpg"),
@@ -221,6 +224,7 @@ func TestBuildArchiveCard(t *testing.T) {
 		require.NotNil(t, raw.GetColorways()[0].GetCostPrice(), "colourway cost_price")
 		require.NotEmpty(t, raw.GetTechCard().GetSignoffs(), "signoffs")
 		require.NotEmpty(t, raw.GetRoleAssignments(), "role assignments")
+		require.NotZero(t, raw.GetTechCard().GetBaseModelId(), "fit model")
 		require.NotEmpty(t, raw.GetTechCard().GetPatterns()[0].GetUrl(), "pattern object url")
 		require.NotEmpty(t, raw.GetSectionDigests(), "section digests")
 		require.NotEmpty(t,
@@ -309,6 +313,11 @@ func TestBuildArchiveCard(t *testing.T) {
 
 		require.Nil(t, got.GetTechCard().GetSignoffs(), "an archived card must never look signed")
 		require.Nil(t, got.GetRoleAssignments(), "role assignments name accounts in the source's admins table")
+		require.Zero(t, got.GetTechCard().GetBaseModelId(),
+			"base_model_id is a row in the source's model table and no model dictionary travels: a "+
+				"number left in card.json is one a foreign reader cannot know is nobody's (§4). The "+
+				"import clears it too, but that is the defence against a HAND-MADE archive — our own "+
+				"exports must not produce one")
 		require.Nil(t, got.GetColorways(), "colourways travel in colorways.json, not as product refs")
 
 		p := got.GetTechCard().GetPatterns()[0]

@@ -420,10 +420,10 @@ func (r *tcimpResolver) tallySizes() {
 // the id of the most specific node it reaches.
 //
 // The card's own category_id travels in card.json and is ALWAYS overwritten here — it is the source
-// base's row id and matches nothing but by accident. An unresolvable path (or a card that had no
-// category) lands as 0, which the contract states outright as "unset" (techcard.proto:3104), plus a
-// hole so the operator knows to set it. The card imports either way: a category is a filing
-// decision, not a fact about the garment.
+// base's row id and matches nothing but by accident. An unresolvable path lands as 0, which the
+// contract states outright as "unset" (techcard.proto:3104), plus a hole so the operator knows to
+// set it. The card imports either way: a category is a filing decision, not a fact about the
+// garment. Only a card that DEMONSTRABLY had no category at the source is silent — see below.
 //
 // The walk is parent → child and never positional, because the tree is not uniformly three deep:
 // `dresses` hangs its level-3 types directly off the level-1 top (see DeriveStyleCategoryPath), so
@@ -435,7 +435,19 @@ func (r *tcimpResolver) resolveCategory(categories []entity.Category) {
 
 	path := r.a.Manifest.IDMaps.CategoryPath
 	if len(path) == 0 {
-		// The card had none. Nothing was lost, so nothing is reported.
+		if source == 0 {
+			// The card had none. Nothing was lost, so nothing is reported.
+			return
+		}
+		// AN EMPTY PATH IS NOT THE SAME STATEMENT AS "NO CATEGORY". archiveCategoryPath stops at the
+		// first level it cannot NAME, so a card that HAD a category can still arrive with nothing to
+		// walk — and reading that as "the card had none" would drop a filing decision in silence,
+		// which is the exact failure mode the report exists to prevent. The source id is the only
+		// handle either side has on it, and it names nothing here, which is why the line says so.
+		r.hole(techcardarchive.EntityCard, fmt.Sprintf("category_id=%d", source),
+			techcardarchive.StatusDegraded, techcardarchive.ReasonCategoryUnknown,
+			fmt.Sprintf("the export could not NAME the source's category (id=%d), so the archive carries no "+
+				"category path to walk; the card landed without a category", source))
 		return
 	}
 
@@ -685,7 +697,48 @@ func (r *tcimpResolver) resolveMaterials(ctx context.Context) error {
 
 	r.out.Counters.AddImported(techcardarchive.EntityBOMLine, imported)
 	r.out.Counters.AddDegraded(techcardarchive.EntityBOMLine, degraded)
+
+	r.resolveOutputMaterial(byRef)
 	return nil
+}
+
+// resolveOutputMaterial links the auxiliary card's output article — the warehouse bucket its
+// production run receipts into — through the SAME passports and the same three verdicts as a pin.
+//
+// It lives here and not in resolveForeignScalars because it is not a foreign scalar any more: the
+// export puts a passport for it in materials/index.json under `ref = output_material_id`
+// (FORMAT.md §5.4), so there is something to match. That is the whole fix — no new reason code was
+// invented at this call site (reasons.go forbids it), the existing material codes carry it.
+//
+// Reported rather than logged, unlike base_model_id: on an auxiliary card this article is a
+// property OF THE CARD, required before its first production run, and a server log is not a report.
+// Counted against no entity: it is not a BOM line, and adding it to that tally would make the
+// line count disagree with the number of lines.
+func (r *tcimpResolver) resolveOutputMaterial(byRef map[int64]techcardarchive.MaterialPassport) {
+	source := int64(r.out.Insert.GetOutputMaterialId())
+	if source <= 0 {
+		return
+	}
+	// Cleared first, in every branch: the source's row id must not survive even for the instant it
+	// takes to decide, and a match writes the target's id over it.
+	r.out.Insert.OutputMaterialId = 0
+
+	p, ok := byRef[source]
+	if !ok {
+		r.hole(techcardarchive.EntityMaterial, archiveRefOutputMaterial, techcardarchive.StatusDegraded,
+			techcardarchive.ReasonMaterialNotFound,
+			fmt.Sprintf("the archive carries no passport for the output article (material_id=%d), so there was "+
+				"nothing to match; set the card's output material by hand before its first production run", source))
+		return
+	}
+	if match := r.out.MaterialPlan[source]; match.Verdict == techcardarchive.MaterialMatched && match.TargetID > 0 {
+		r.out.Insert.OutputMaterialId = int32(match.TargetID)
+		return
+	}
+	r.hole(techcardarchive.EntityMaterial, archiveRefOutputMaterial, techcardarchive.StatusDegraded,
+		techcardarchive.ReasonForMaterialVerdict(r.out.MaterialPlan[source].Verdict),
+		fmt.Sprintf("the output article's passport %q (%s / %s) did not resolve to one live article here; set the "+
+			"card's output material by hand before its first production run", p.Code, p.Supplier, p.SupplierRef))
 }
 
 // ────────────────────────────── 5. work tokens ──────────────────────────────
@@ -824,9 +877,9 @@ func (r *tcimpResolver) resolvePatterns() error {
 
 // resolveForeignScalars deals with the ids that belong to no map at all.
 //
-// FORMAT.md §6.2 says every id in the archive is either remapped or dropped. These four have no
-// dictionary travelling beside them, so they are dropped — but they are dropped in FOUR different
-// ways, because they mean four different things:
+// FORMAT.md §6.2 says every id in the archive is either remapped or dropped. These three have no
+// dictionary travelling beside them, so they are dropped — but they are dropped in THREE different
+// ways, because they mean three different things:
 //
 //   - pieces[].materials is the per-colourway "this piece is cut from that article" mapping, and its
 //     colorway_id is a product id of the source base. Colourways do not travel (§5.3), so the whole
@@ -836,11 +889,12 @@ func (r *tcimpResolver) resolvePatterns() error {
 //   - base_model_id names a fit model in the source's model table, and no model dictionary travels.
 //     Cleared, and only LOGGED: the closed reason dictionary has no code for it, and inventing one at
 //     a call site is forbidden (reasons.go). This is the same choice the export makes for a marker
-//     that vanishes mid-read — a loud log beats a made-up code;
-//   - output_material_id is the auxiliary card's warehouse article, and materials/index.json carries
-//     passports only for the articles the BOM and the recipes reference — never for this one. So it
-//     cannot be matched either, and it is cleared and logged for the same reason. 0 is the documented
-//     "unset" and the field is required only before the first production run.
+//     that vanishes mid-read — a loud log beats a made-up code. Our own exports no longer put one in
+//     card.json at all (sanitizeCardForArchive); this is what stands under a hand-made archive.
+//
+// output_material_id USED TO BE the fourth. It is not one any more: the export ships a passport for
+// it in materials/index.json, so it resolves through resolveMaterials like every other pin — and
+// because it does, it must not be cleared here, which runs AFTER that.
 //
 // The output-only ids (bom_items[].id, operations[].piece_ids / bom_item_ids) are cleared too. The
 // converter ignores them today, which is exactly why they are worth clearing: a payload carrying
@@ -894,11 +948,6 @@ func (r *tcimpResolver) resolveForeignScalars() {
 		ins.BaseModelId = 0
 		slog.Default().Warn("tech card import: dropped the source base's fit model reference",
 			slog.Int("base_model_id", int(id)))
-	}
-	if id := ins.GetOutputMaterialId(); id > 0 {
-		ins.OutputMaterialId = 0
-		slog.Default().Warn("tech card import: dropped the source base's output material reference",
-			slog.Int("output_material_id", int(id)))
 	}
 }
 
@@ -1288,8 +1337,25 @@ func (r *tcimpResolver) resolveMarkers() error {
 // exporter may add files and an older reader may not choke on them — and may not swallow them
 // either. The operator is told the archive holds something this server cannot read, which is how a
 // missing piece stops looking like an absent one.
+//
+// A FILE A PLAN ALREADY CLAIMED IS NOT UNKNOWN. The reader classifies an entry by its NAME, and the
+// name carries the extension — so `media/<sha>.avif`, whose extension is outside §1.1, lands in
+// UnknownEntries even though media/index.json points a slot at it and the plan above will move its
+// bytes. Both lines would then be true of the same file and the second one false in spirit: "this
+// server does not know this file" beside a plan to upload it. The index is what makes a file known;
+// the plans are the executed proof that it was read.
 func (r *tcimpResolver) reportUnknownEntries() {
+	claimed := make(map[string]bool, len(r.out.MediaPlan)+len(r.out.PatternPlan))
+	for _, m := range r.out.MediaPlan {
+		claimed[m.File] = true
+	}
+	for _, p := range r.out.PatternPlan {
+		claimed[p.File] = true
+	}
 	for _, name := range r.a.UnknownEntries {
+		if claimed[name] {
+			continue
+		}
 		r.hole(techcardarchive.EntityArchive, fmt.Sprintf("entry=%s", name), techcardarchive.StatusSkipped,
 			techcardarchive.ReasonUnknownEntry,
 			"this server does not know this file — the archive was written by a newer version of the format")

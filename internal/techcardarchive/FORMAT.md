@@ -37,7 +37,10 @@ techcard-<style_number>-<yyyymmdd-hhmm>.zip
 `manifest.json` and `card.json` are **mandatory**; every other entry is optional (a card with no
 media produces no `media/` directory at all, and an empty index is equally legal). An entry whose
 name matches none of the patterns above is **not an error**: the reader lists it and the import
-report says `unknown_entry` — that is the MINOR-compatibility rule of §3 in action.
+report says `unknown_entry` — that is the MINOR-compatibility rule of §3 in action. The one
+exception is an entry an INDEX names and the import actually reads (a media or pattern file whose
+extension is outside §1.1): it is known by its index row, so it produces no `unknown_entry` line —
+one file may not be both planned and unrecognised.
 
 ### 1.1 Names of the entries
 
@@ -187,6 +190,10 @@ top-level JSON files.
 * **Role assignments.** `role_assignments` name accounts (`admin_id`, `username`) in the SOURCE
   instance's admins table — an assignment is a row in a table the target does not share, unlike the
   `created_by` / `updated_by` names below, which resolve nothing.
+* **The fit model.** `base_model_id` is a row in the source's `model` table — the same class as
+  `role_assignments`, and no model dictionary travels beside it. It is blanked on export, so an
+  archive never carries a number that is accidentally somebody's on the receiving side (§6.2). An
+  import clears it anyway, which is the defence against a hand-made archive.
 * **Section digests.** `section_digests` are recomputed on every read, so storing them would be
   storing a derived value; and the costing section's was fingerprinted from content whose money
   this format then cut, which makes it a trace of exactly what §4 removes. The importing instance
@@ -309,8 +316,9 @@ so a human can read what the source card's colourways were.
 
 ### 5.4 `materials/index.json`
 
-Passports of exactly the catalogue articles the card references — BOM lines' `material_id` and
-recipe pins. **Without prices**, and without price history.
+Passports of exactly the catalogue articles the card references — BOM lines' `material_id`, recipe
+pins, and an auxiliary card's `output_material_id` (the warehouse bucket its run receipts into).
+**Without prices**, and without price history.
 
 ```json
 [
@@ -349,7 +357,9 @@ non-archived articles first (the code is unique only among live rows and only in
 the schema does not enforce it), then `(supplier, supplier_ref)`, with the `unit` checked on a
 code match. Ambiguous, unit-mismatched or unmatched articles leave `material_id` empty and produce
 a hole — the BOM line itself imports regardless, because it carries its own
-`name/supplier/supplier_ref/composition/spec/unit`.
+`name/supplier/supplier_ref/composition/spec/unit`. The output article resolves the same way and
+misses with the same three codes, under the `ref` `output_material`; a miss leaves the card's
+`output_material_id` unset, which the operator must fill before the first production run.
 
 ### 5.5 `media/index.json`
 

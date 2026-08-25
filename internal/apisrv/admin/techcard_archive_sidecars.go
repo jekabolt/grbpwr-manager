@@ -572,9 +572,15 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, sc *ar
 
 // ────────────────────────────── materials/index.json ──────────────────────────────
 
+// archiveRefOutputMaterial — `ref` дыры о выходном артикуле вспомогательной карточки. ОДНА
+// строка на два берега: её пишет экспорт, когда паспорта нет в каталоге, и импорт, когда паспорт
+// не сошёлся с чужим каталогом. Разъехавшись, две копии дали бы оператору два разных имени одного
+// и того же поля.
+const archiveRefOutputMaterial = "output_material"
+
 // collectArchiveMaterials строит паспорта ровно тех артикулов каталога, на которые карта
-// ссылается: умолчания слотов BOM и пины рецептов. БЕЗ цен и без истории цен — паспорт нужен,
-// чтобы НАЙТИ тот же артикул в чужом каталоге, и ничего больше.
+// ссылается: умолчания слотов BOM, пины рецептов и выходной артикул aux-карты. БЕЗ цен и без
+// истории цен — паспорт нужен, чтобы НАЙТИ тот же артикул в чужом каталоге, и ничего больше.
 //
 // Один ListMaterials на всё, а не GetMaterial на строку: у карточки десятки строк, и N круговых
 // заходов за одной таблицей — это тот же дефект, что N+1 в списке.
@@ -606,6 +612,16 @@ func (s *Server) collectArchiveMaterials(ctx context.Context, card *entity.TechC
 				ref = fmt.Sprintf("bom_line_key=%s", key)
 			}
 			wantedBy[u.MaterialId.Int64] = ref
+		}
+	}
+	// Выходной артикул aux-карты — свойство КАРТЫ, а не строки: прогон вспомогательной карточки
+	// приходуется в него на склад. Паспорт нужен ему ровно затем же, зачем пину: без паспорта
+	// импорту нечего сопоставлять, и потеря видна только в логе сервера — а лог не отчёт.
+	// Слот `output_material` (не `material_id=N`), потому что на той стороне это единственное
+	// имя, по которому оператор найдёт поле карточки.
+	if card.OutputMaterialId.Valid && card.OutputMaterialId.Int64 > 0 {
+		if _, ok := wantedBy[card.OutputMaterialId.Int64]; !ok {
+			wantedBy[card.OutputMaterialId.Int64] = archiveRefOutputMaterial
 		}
 	}
 	if len(wantedBy) == 0 {

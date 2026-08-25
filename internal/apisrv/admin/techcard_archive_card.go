@@ -80,10 +80,10 @@ func buildArchiveCardJSON(card *entity.TechCard) ([]byte, []techcardarchive.Expo
 }
 
 // sanitizeCardForArchive removes what belongs to the EXPORTING INSTANCE rather than to the card:
-// its signatures, its accounts, its URLs, its price provenance and the digests it derived. Money
-// is not this function's job — it runs between the two money layers and touches only what neither
-// of them can see, since none of these names is money and a name list cannot express "blank the
-// url INSIDE resolved media".
+// its signatures, its accounts, its fit model, its URLs, its price provenance and the digests it
+// derived. Money is not this function's job — it runs between the two money layers and touches only
+// what neither of them can see, since none of these names is money and a name list cannot express
+// "blank the url INSIDE resolved media".
 //
 // What deliberately stays (owner decisions B-2 / B-3, FORMAT.md §4): created_by / updated_by and
 // the revision journal. They are provenance a receiving constructor reads and cannot resolve
@@ -117,6 +117,15 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 		// drops signoffs, and this is the other half of that: the archive does not carry them at
 		// all, so nothing has to be trusted to strip them later.
 		ins.Signoffs = nil
+
+		// The fit model is a row in the SOURCE's model table — the same class as role_assignments
+		// (FORMAT.md §4: "a row in a table the target does not share"), and no model dictionary
+		// travels beside it. Blanked HERE and not only on the import: an id left in card.json is a
+		// number a foreign reader of this format has no way to know is nobody's, and §6.2's "every
+		// id is either remapped or dropped" is a promise the FILE has to keep, not just our
+		// resolver. The import clears it too — that is defence against a hand-made archive, and a
+		// log is enough there because our own exports no longer produce one.
+		ins.BaseModelId = 0
 
 		for _, p := range ins.Patterns {
 			if p == nil {

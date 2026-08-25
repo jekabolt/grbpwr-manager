@@ -403,7 +403,16 @@ func archiveAppVersion() string {
 // It matters that the line exists at all: this is the one RPC that takes the whole card out of the
 // building, and «who took it and when» is not derivable from anything else afterwards — the object
 // expires, the link expires, and the card looks untouched.
+//
+// WithoutCancel for exactly that reason: by the time this runs the archive is in the bucket and the
+// link is already minted, so a client that hangs up in between would take the only record of it
+// having left with them. Cancellation carries no information here — it cannot un-export the file —
+// and honouring it would turn a network hiccup into a hole in the audit trail. The context's VALUES
+// ride along (so the write still carries whatever the request put there); its cancellation and its
+// deadline do not — WithoutCancel drops both — and one INSERT is not something a deadline was
+// protecting anything from.
 func (s *Server) journalArchiveExport(ctx context.Context, card *entity.TechCard, m techcardarchive.Manifest) {
+	ctx = context.WithoutCancel(ctx)
 	summary := fmt.Sprintf("tech card exported as an archive (%d media, %d patterns, %d markers, %d materials, %d holes)",
 		m.Contents.Media, m.Contents.Patterns, m.Contents.Markers, m.Contents.Materials, len(m.ExportHoles))
 	if err := s.repo.TechCards().AppendTechCardArchiveExportedEvent(ctx, card.Id, m.ExportedBy, summary); err != nil {
