@@ -101,7 +101,7 @@
 --    created_at не переписывается при каждом UPDATE статуса.
 CREATE TABLE IF NOT EXISTS tech_card_import (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    import_id CHAR(26) NOT NULL COMMENT 'ULID загрузки; внешний ключ диалога загрузка -> коммит',
+    import_id CHAR(26) NOT NULL COMMENT 'ключ диалога загрузка -> коммит: 26 символов base32 от 128 случайных бит, без временной компоненты (форма ULID, но не ULID: порядка в нём нет)',
     tech_card_id INT NULL COMMENT 'создаётся на коммите; NULL = карточки из этого архива ещё нет',
     object_key VARCHAR(512) NOT NULL COMMENT 'ключ архива в бакете (techcard-imports/...)',
     archive_manifest JSON NOT NULL COMMENT 'что было в ZIP на загрузке',

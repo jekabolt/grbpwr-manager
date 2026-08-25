@@ -5,14 +5,19 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,10 +52,16 @@ import (
 // it. A newID left over from a rolled-back attempt is the kind of bug that only shows up under
 // load, and only as a wrong number in a response.
 //
-// WHAT MAY NOT HAPPEN IN HERE: no bucket calls and no protojson parsing. The files were moved
-// before the transaction opened (Ф3.1) and every payload was parsed before it (Ф2.3) — a
-// transaction that talks to the network holds SERIALIZABLE locks for the duration of somebody
-// else's timeout.
+// WHAT MAY NOT HAPPEN IN HERE: no bucket calls and no parsing of a payload that arrived from
+// outside. The files were moved before the transaction opened (Ф3.1), every payload was parsed
+// before it (Ф2.3) and so is the import report — a transaction that talks to the network, or that
+// reads somebody else's bytes for the first time, holds SERIALIZABLE locks for the duration of
+// somebody else's timeout or for as long as it takes to discover that the payload is rubbish.
+//
+// The one thing that IS encoded in here is the amended report, at the last statement: what the
+// write dropped is only known once the writing is done, and a report stamped outside the
+// transaction could describe an attempt that rolled back. It encodes a message this process built,
+// never parses one, and it happens after every read this transaction needed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // EVERY NAMED QUERY OF THIS FILE IS A PACKAGE CONSTANT, and not for tidiness: sqlx reads EVERY ':'
@@ -129,7 +140,10 @@ const (
 			 :layer, :seam, :hulled, :ambiguous,
 			 :fingerprint, :parsed_by, :parsed_at)`
 
-	archiveImportComponentPurposeQuery = `SELECT id, purpose FROM tech_card WHERE id IN (:ids)`
+	// style_number is read for the REPORT, not for the write: a dropped assembly line has to name
+	// its component the way the resolver's own lines do — by number, which is what is printed on the
+	// card — rather than by an id that means nothing outside this database.
+	archiveImportComponentFactsQuery = `SELECT id, purpose, style_number FROM tech_card WHERE id IN (:ids)`
 
 	archiveImportAssemblyInsertQuery = `
 		INSERT INTO style_assembly
@@ -157,10 +171,17 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 	}
 	// The report is stored in the SAME transaction as the card and is not optional: a committed
 	// import whose report went missing is a card full of unexplained gaps with nothing left that
-	// explains them. Validity is checked HERE, outside the transaction — MySQL would refuse the
-	// JSON column with a raw 3140 from the middle of the last statement, after every write above it.
-	if !json.Valid(in.Report) {
-		return 0, fmt.Errorf("tech card import %s: the report is not valid JSON", importID)
+	// explains them. It is READ HERE, outside the transaction — MySQL would refuse the JSON column
+	// with a raw 3140 from the middle of the last statement, after every write above it, and a
+	// payload that is not a report at all has to be refused before a single row exists.
+	//
+	// Parsed rather than merely checked for well-formedness, because the transaction below does not
+	// stamp these bytes: it stamps them PLUS its own losses (see importLosses). The report the
+	// operator reads has to be true about what was written, and half of what was written is decided
+	// after the dry run answered.
+	baseReport, err := techcardarchive.ParseReport(in.Report)
+	if err != nil {
+		return 0, fmt.Errorf("tech card import %s: %w", importID, err)
 	}
 
 	card := in.Card
@@ -171,9 +192,13 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 	}
 
 	var newID int
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	var losses *importLosses
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 		newID = 0 // a retried attempt must not inherit the rolled-back one's id
+		// ... and must not inherit its losses either: a retry re-runs every drop below, so a
+		// collector carried over would report each dropped row once per attempt.
+		losses = newImportLosses()
 
 		// CLAIM FIRST, WRITE SECOND. The row is taken exclusively before a single byte of the card
 		// exists, so a concurrent twin of this call blocks here and then reads its own refusal —
@@ -211,10 +236,10 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 			return err
 		}
 
-		if err := writeImportedStyleFacts(ctx, db, newID, in.Style, rng); err != nil {
+		if err := writeImportedStyleFacts(ctx, db, newID, in.Style, rng, losses); err != nil {
 			return err
 		}
-		if err := insertImportedSizeChart(ctx, db, newID, in.SizeChart, rng); err != nil {
+		if err := insertImportedSizeChart(ctx, db, newID, in.SizeChart, rng, losses); err != nil {
 			return err
 		}
 
@@ -230,10 +255,10 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err := insertImportedMarkers(ctx, db, newID, in.Markers, bomIDs, in.Actor, rng); err != nil {
 			return err
 		}
-		if err := insertImportedPieceAreas(ctx, db, newID, importID, in.PieceAreas, rng); err != nil {
+		if err := insertImportedPieceAreas(ctx, db, newID, importID, in.PieceAreas, rng, losses); err != nil {
 			return err
 		}
-		if err := insertImportedAssembly(ctx, db, newID, in.Assembly, in.Actor, rng); err != nil {
+		if err := insertImportedAssembly(ctx, db, newID, in.Assembly, in.Actor, rng, losses); err != nil {
 			return err
 		}
 		// A new card links no products of its own (colourways are created separately and an import
@@ -246,10 +271,27 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 			importedFromArchiveSummary(in)); err != nil {
 			return err
 		}
-		return finishTechCardImportRow(ctx, db, importID, newID, in.Report)
+
+		// THE REPORT IS AMENDED HERE AND STAMPED IN THE SAME BREATH. Everything above has finished
+		// dropping rows, and nothing below writes one — so this is the first moment at which the
+		// report can be true and the last at which it can still be written inside the transaction
+		// that made it true.
+		report, err := losses.stamp(baseReport)
+		if err != nil {
+			return err
+		}
+		return finishTechCardImportRow(ctx, db, importID, newID, report)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("can't import tech card archive %s: %w", importID, err)
+	}
+	// Logged once, after the transaction survived, and only as a count: the lines themselves are on
+	// the card now, where the operator reads them. A per-row warning during the write would say the
+	// same thing several times over on a deadlock retry and would still not reach anybody.
+	if losses != nil && len(losses.holes) > 0 {
+		slog.Default().InfoContext(ctx, "tech card import: the write dropped rows the dry run counted as imported",
+			slog.String("import_id", importID), slog.Int("tech_card_id", newID),
+			slog.Int("report_lines_added", len(losses.holes)))
 	}
 	return newID, nil
 }
@@ -285,19 +327,183 @@ func (s *Store) prepareImportedCard(card *entity.TechCardInsert) {
 	s.stampApprovalTimes(card, "", sql.NullTime{}, sql.NullTime{})
 }
 
+// ────────────────────────────── what the WRITE itself dropped ──────────────────────────────
+
+// importLosses is the TRANSACTION's half of the import report.
+//
+// WHY IT EXISTS. in.Report is the dry run's answer — the resolver's holes and the resolver's tally,
+// both produced before this transaction opened. Everything below still drops rows: a measurement
+// cell filed under a size this card does not make, a grade rule authored from one, a measured area
+// that is not a number, an assembly line whose component is not auxiliary in this base. Until this
+// type existed those rows went to slog and the report stamped on the card went on counting them as
+// imported — so the operator read a clean report about a card with holes in it, once, and believed
+// it.
+//
+// AND THE CASE IS NOT EXOTIC. A size can be perfectly present in this base's DICTIONARY — so the
+// resolver mapped it and counted it — and absent from the imported card's own size range, because
+// a card makes eight of the dictionary's twenty sizes. Every row filed under it is dropped here.
+//
+// TWO KINDS OF LOSS, and the difference is whether the dry run counted the row:
+//
+//   - drop() writes a LINE only. The eight counted entities count sizes, sheets, markers, BOM and
+//     assembly lines — not chart cells, not measured areas, not the card's own «model wears» field.
+//     Moving a counter for one of those would claim a size or a sheet did not import when it did.
+//   - dropCounted() writes a line AND moves one row out of the imported column. It is for rows the
+//     resolver planned and tallied: today that is the assembly bill, whose imported count is
+//     exactly the number of lines this transaction was handed.
+//
+// Lines are deduplicated by (entity, ref, reason) the way the resolver deduplicates its own, so one
+// out-of-range size does not produce a line per measurement it appears in. COUNTERS ARE NOT: two
+// rows lost for one reason are two rows, and the report's own contract says the tally and the lines
+// are never derived from each other.
+type importLosses struct {
+	holes []techcardarchive.ImportHole
+	seen  map[string]bool
+	// lost is a MOVE, not a tally: see (*ImportReport).Amend. What is counted here leaves the
+	// imported column of the stamped report.
+	lost techcardarchive.Counters
+}
+
+func newImportLosses() *importLosses {
+	return &importLosses{seen: make(map[string]bool), lost: techcardarchive.NewCounters()}
+}
+
+// stampedReport is the bytes finishTechCardImportRow writes, and the type exists to make the defect
+// this file was carrying UNSPELLABLE.
+//
+// in.Report is a []byte. It fitted the old stamping parameter perfectly, so stamping the dry run's
+// answer as a description of the write was not a mistake anybody could see — it was the shortest
+// thing to write. Only stamp() below returns this type, so reaching the stamp now means passing the
+// write's losses through the report package first; handing it the raw payload instead takes a
+// visible conversion that says what it is doing.
+type stampedReport []byte
+
+// stamp folds the transaction's losses into the dry run's report and hands back what may be stored.
+func (l *importLosses) stamp(base *techcardarchive.ImportReport) (stampedReport, error) {
+	b, err := base.Amend(l.holes, l.lost)
+	if err != nil {
+		return nil, fmt.Errorf("amend the import report with what the write dropped: %w", err)
+	}
+	return stampedReport(b), nil
+}
+
+// drop records one row the write did not keep. The argument order mirrors the resolver's own hole()
+// so the two read alike side by side.
+func (l *importLosses) drop(entityName, ref, status string, reason techcardarchive.Reason, detail string) {
+	key := entityName + "|" + ref + "|" + string(reason)
+	if l.seen[key] {
+		return
+	}
+	l.seen[key] = true
+	l.holes = append(l.holes, techcardarchive.ImportHole{
+		Entity: entityName, Ref: ref, Status: status, Reason: reason, Detail: detail,
+	})
+}
+
+// dropCounted records a row the DRY RUN counted as imported: the line is deduplicated, the counter
+// move is not.
+func (l *importLosses) dropCounted(entityName, ref, status string, reason techcardarchive.Reason, detail string) {
+	switch status {
+	case techcardarchive.StatusDegraded:
+		l.lost.AddDegraded(entityName, 1)
+	default:
+		l.lost.AddSkipped(entityName, 1)
+	}
+	l.drop(entityName, ref, status, reason, detail)
+}
+
+// importedSizeRef names a size the way every other size line of the report names one: by NAME when
+// the dictionary has it, because that is what the operator reads on the card, and by id otherwise.
+// The dictionary was refreshed before the transaction opened (ensureDictionaryFresh), and a name it
+// cannot produce is not worth a second statement inside a SERIALIZABLE transaction.
+func importedSizeRef(sizeID int) string {
+	if s, ok := cache.GetSizeById(sizeID); ok && strings.TrimSpace(s.Name) != "" {
+		return "size_name=" + strings.TrimSpace(s.Name)
+	}
+	return fmt.Sprintf("size_id=%d", sizeID)
+}
+
+// ────────────────────────────── the journal sentence ──────────────────────────────
+
+// Provenance caps, in RUNES. manifest.source is free text out of a file somebody sent us: the
+// reader accepts a manifest of up to 16 MiB and neither of these two fields has a length of its
+// own, while the sentence they are spelled into lands in change_note — a TEXT column (0067) that
+// holds 65 535 BYTES. A manifest that is perfectly valid to the reader, carrying a host of ~70 KiB,
+// would therefore fail the LAST statement of the import with «Data too long» and roll back the card
+// and everything under it; without strict mode it would be cut in half in silence instead.
+//
+// Each cap is the longest a REAL value can be, so clamping can only ever hit one that named nothing
+// on either side: a style number that does not fit tech_card.style_number (VARCHAR(255), 0067)
+// names no card here or there, and a host longer than a fully-qualified DNS name (253 characters,
+// RFC 1035 §2.3.4) names no server. Both together, at four bytes per rune, come to about 2 KiB —
+// two per cent of what the column holds, with the rest left to the sentence itself.
+const (
+	importProvenanceStyleRunes = 255
+	importProvenanceHostRunes  = 253
+)
+
 // importedFromArchiveSummary is the journal sentence. It names the source style and the host it
 // came from, which is the whole point of the entry: months later, «why does this card have gaps»
 // has an answer that does not depend on the tech_card_import row surviving.
+//
+// It is also the LAST channel by which a stranger's free text reaches a permanent record of ours —
+// everything else the archive carries is either matched against a dictionary here or dropped with a
+// line in the report — so both fields are clamped before they are spelled in. See clampProvenance
+// for what that means beyond length.
 func importedFromArchiveSummary(in entity.TechCardArchiveImport) string {
-	style := strings.TrimSpace(in.SourceStyleNumber)
+	style := clampProvenance(in.SourceStyleNumber, importProvenanceStyleRunes)
 	if style == "" {
 		style = "an unnumbered style"
 	}
-	host := strings.TrimSpace(in.SourceHost)
+	host := clampProvenance(in.SourceHost, importProvenanceHostRunes)
 	if host == "" {
 		host = "an unnamed host"
 	}
 	return fmt.Sprintf("imported from archive %s of %s", style, host)
+}
+
+// clampProvenance makes one archive-supplied string fit to stand in a record a human reads.
+//
+// FOUR THINGS, and none of them is decoration:
+//
+//   - INVALID UTF-8 IS DROPPED. MySQL refuses a string with a broken sequence in it (1366) from the
+//     middle of the statement, which on this path means the whole import rolls back at its last
+//     step over a byte in a file's metadata.
+//   - RUNES OUTSIDE THE BMP BECOME U+FFFD. The same 1366 waits for a four-byte rune on a utf8mb3
+//     column, and this schema's charset is the database default — utf8mb4 on beta and in the tests,
+//     utf8mb3 on production. A replacement character is visible; a failed import at the last
+//     statement is a mystery.
+//   - CONTROL CHARACTERS BECOME SPACES and runs of whitespace collapse. A journal entry is read on
+//     a screen next to other entries, and a host carrying newlines or an escape sequence would
+//     rearrange that screen.
+//   - THE CUT IS AT A RUNE BOUNDARY AND IT IS SAID. Slicing bytes would leave half a rune, which is
+//     the invalid UTF-8 of the first point; the ellipsis is part of the stored sentence, because a
+//     truncation nobody can see reads exactly like a short name.
+func clampProvenance(s string, maxRunes int) string {
+	s = strings.ToValidUTF8(s, "")
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r > 0xFFFF:
+			return utf8.RuneError
+		case unicode.IsControl(r):
+			return ' '
+		default:
+			return r
+		}
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	kept := 0
+	for i := range s { // ranging a string steps rune by rune, so i is always a boundary
+		if kept == maxRunes {
+			return s[:i] + "…"
+		}
+		kept++
+	}
+	return s
 }
 
 // ────────────────────────────── the tech_card_import row ──────────────────────────────
@@ -344,7 +550,8 @@ func claimTechCardImportRow(ctx context.Context, db dependency.DB, importID stri
 // The report lands here rather than in a later call for the same reason the whole write is one
 // transaction: an import that committed and then failed to record what it skipped would leave a
 // card whose gaps nobody can explain.
-func finishTechCardImportRow(ctx context.Context, db dependency.DB, importID string, techCardID int, report []byte) error {
+func finishTechCardImportRow(ctx context.Context, db dependency.DB, importID string, techCardID int,
+	report stampedReport) error {
 	if err := storeutil.ExecNamed(ctx, db, archiveImportStampResultQuery,
 		map[string]any{
 			"import_id":    importID,
@@ -356,8 +563,8 @@ func finishTechCardImportRow(ctx context.Context, db dependency.DB, importID str
 	return nil
 }
 
-// GetTechCardImportByImportID returns one upload row by its ULID — the dialogue's state between the
-// dry run and the commit. sql.ErrNoRows when there is none (NOT_FOUND upstream).
+// GetTechCardImportByImportID returns one upload row by its import_id — the dialogue's state
+// between the dry run and the commit. sql.ErrNoRows when there is none (NOT_FOUND upstream).
 func (s *Store) GetTechCardImportByImportID(ctx context.Context, importID string) (entity.TechCardArchiveImportRecord, error) {
 	return storeutil.QueryNamedOne[entity.TechCardArchiveImportRecord](ctx, s.DB,
 		archiveImportRowByIDQuery, map[string]any{"import_id": strings.TrimSpace(importID)})
@@ -410,19 +617,8 @@ func (s *Store) AcknowledgeTechCardImport(ctx context.Context, techCardID int) e
 // abort a whole import, over a value that is derived and can be re-derived by the card's first
 // save. AddTechCard does not run it either, and an imported card is a created card.
 func writeImportedStyleFacts(ctx context.Context, db dependency.DB, id int,
-	f entity.TechCardArchiveStyleFacts, rng storeutil.TechCardSizeRange) error {
-	// «The model wears a size this style does not make» is either a foreign id worn as a local one
-	// or a fact about nothing. Cleared rather than refused, on the same principle the season clone
-	// applies to a grade base outside the range: one display line is not worth failing an import.
-	modelWearsSize := f.ModelWearsSizeId
-	if modelWearsSize.Valid && modelWearsSize.Int32 <= 0 {
-		modelWearsSize = sql.NullInt32{} // 0 is «unset» across the whole contract, never size zero
-	}
-	if modelWearsSize.Valid && !rng.Has(int(modelWearsSize.Int32)) {
-		slog.Default().Warn("tech card import: dropped a model-wears size outside the imported card's range",
-			slog.Int("tech_card_id", id), slog.Int("size_id", int(modelWearsSize.Int32)))
-		modelWearsSize = sql.NullInt32{}
-	}
+	f entity.TechCardArchiveStyleFacts, rng storeutil.TechCardSizeRange, lost *importLosses) error {
+	modelWearsSize := importedModelWearsSize(f.ModelWearsSizeId, rng, lost)
 	if err := storeutil.ExecNamed(ctx, db, archiveImportStyleFactsQuery,
 		map[string]any{
 			"id":                    id,
@@ -437,6 +633,30 @@ func writeImportedStyleFacts(ctx context.Context, db dependency.DB, id int,
 	return nil
 }
 
+// importedModelWearsSize decides the card's «model wears» reference and reports it when it goes.
+//
+// «The model wears a size this style does not make» is either a foreign id worn as a local one or a
+// fact about nothing. Cleared rather than refused, on the same principle the season clone applies to
+// a grade base outside the range: one display line is not worth failing an import over.
+//
+// The line it leaves is entity CARD, degraded — the card landed, one fact thinner — which is the
+// same shape the resolver gives a card that lost its category. It moves no counter: the size counter
+// counts the card's SIZES, and the size itself is imported and fine; it is this reference to it that
+// is not.
+func importedModelWearsSize(sizeID sql.NullInt32, rng storeutil.TechCardSizeRange, lost *importLosses) sql.NullInt32 {
+	if !sizeID.Valid || sizeID.Int32 <= 0 {
+		return sql.NullInt32{} // 0 is «unset» across the whole contract, never size zero
+	}
+	if rng.Has(int(sizeID.Int32)) {
+		return sizeID
+	}
+	lost.drop(techcardarchive.EntityCard, importedSizeRef(int(sizeID.Int32)),
+		techcardarchive.StatusDegraded, techcardarchive.ReasonSizeUnknown,
+		"the archive says the model wears this size, which the imported card does not make; the card "+
+			"imported without the reference")
+	return sql.NullInt32{}
+}
+
 // ────────────────────────────── size chart ──────────────────────────────
 
 // insertImportedSizeChart writes the measurement grid and the grade rule it was authored from.
@@ -446,63 +666,29 @@ func writeImportedStyleFacts(ctx context.Context, db dependency.DB, id int,
 // quietly added a measurement name because one archive spelled it differently would corrupt every
 // other style's chart with it.
 //
-// A cell whose size is outside the imported card's own range is DROPPED, not refused, and logged.
+// A cell whose size is outside the imported card's own range is DROPPED, not refused, and REPORTED.
 // That is the season clone's rule (its carry-over intersects with the clone's size range in SQL)
 // and the resolver's principle in one: a missing reference degrades, and one measurement is not
 // worth failing an import over. It can only happen on a malformed archive, where the manifest's
-// size map and the chart's names disagree.
+// size map and the chart's names disagree — or on a perfectly ordinary one whose size exists in
+// this base's dictionary but not in this card's range.
+//
+// The decisions are two pure functions and the statements are three, because the decisions are what
+// can be wrong: everything this transaction drops has to reach the report, and that is testable
+// without a database only if choosing and writing are separate.
 func insertImportedSizeChart(ctx context.Context, db dependency.DB, id int,
-	chart entity.StyleSizeChart, rng storeutil.TechCardSizeRange) error {
-	rows := make([]map[string]any, 0, len(chart.Cells))
-	for _, c := range chart.Cells {
-		if c.SizeID <= 0 || c.MeasurementNameID <= 0 {
-			slog.Default().Warn("tech card import: dropped an unaddressed size chart cell",
-				slog.Int("tech_card_id", id), slog.Int("size_id", c.SizeID),
-				slog.Int("measurement_name_id", c.MeasurementNameID))
-			continue
-		}
-		if !rng.Has(c.SizeID) {
-			slog.Default().Warn("tech card import: dropped a size chart cell outside the imported card's size range",
-				slog.Int("tech_card_id", id), slog.Int("size_id", c.SizeID))
-			continue
-		}
-		rows = append(rows, map[string]any{
-			"tech_card_id":        id,
-			"size_id":             c.SizeID,
-			"measurement_name_id": c.MeasurementNameID,
-			"measurement_value":   c.Value,
-		})
-	}
-	if len(rows) > 0 {
+	chart entity.StyleSizeChart, rng storeutil.TechCardSizeRange, lost *importLosses) error {
+	if rows := importedChartCellRows(id, chart, rng, lost); len(rows) > 0 {
 		if err := storeutil.BulkInsert(ctx, db, "tech_card_size_measurement", rows); err != nil {
 			return fmt.Errorf("insert imported size chart of tech card %d: %w", id, err)
 		}
 	}
 
-	stepRows := make([]map[string]any, 0, len(chart.GradeSteps))
-	for _, g := range chart.GradeSteps {
-		if g.MeasurementNameID <= 0 {
-			continue
-		}
-		stepRows = append(stepRows, map[string]any{
-			"tech_card_id":        id,
-			"measurement_name_id": g.MeasurementNameID,
-			"step":                g.Step,
-		})
-	}
+	base, stepRows := importedGradeRule(id, chart, rng, lost)
 	if len(stepRows) > 0 {
 		if err := storeutil.BulkInsert(ctx, db, "tech_card_grade_rule", stepRows); err != nil {
 			return fmt.Errorf("insert imported grade rule of tech card %d: %w", id, err)
 		}
-	}
-
-	// The grade base is one column of the same rule and moves with it. Outside the range it is
-	// cleared, which is exactly what the season clone does with a base its clone does not make.
-	base := chart.GradeBaseSizeID
-	if base > 0 && !rng.Has(base) {
-		slog.Default().Warn("tech card import: dropped a grade base size outside the imported card's size range",
-			slog.Int("tech_card_id", id), slog.Int("size_id", base))
-		base = 0
 	}
 	if base > 0 {
 		if err := storeutil.ExecNamed(ctx, db, archiveImportGradeBaseQuery,
@@ -511,6 +697,132 @@ func insertImportedSizeChart(ctx context.Context, db dependency.DB, id int,
 		}
 	}
 	return nil
+}
+
+// importedChartCellRows keeps the cells this card can actually hold and reports the rest.
+//
+// ONE LINE PER OFFENDING SIZE, not per cell: a chart is sizes × measurements, so a single size the
+// card does not make would otherwise put twenty identical lines in front of the operator. The count
+// goes into the detail, where it is a fact rather than a repetition.
+func importedChartCellRows(id int, chart entity.StyleSizeChart,
+	rng storeutil.TechCardSizeRange, lost *importLosses) []map[string]any {
+	rows := make([]map[string]any, 0, len(chart.Cells))
+	outOfRange := make(map[int]int, 4)
+	var noSize, noMeasurement int
+	for _, c := range chart.Cells {
+		switch {
+		case c.MeasurementNameID <= 0:
+			noMeasurement++
+		case c.SizeID <= 0:
+			noSize++
+		case !rng.Has(c.SizeID):
+			outOfRange[c.SizeID]++
+		default:
+			rows = append(rows, map[string]any{
+				"tech_card_id":        id,
+				"size_id":             c.SizeID,
+				"measurement_name_id": c.MeasurementNameID,
+				"measurement_value":   c.Value,
+			})
+		}
+	}
+
+	for _, sizeID := range sortedIntKeys(outOfRange) {
+		lost.drop(techcardarchive.EntitySize, importedSizeRef(sizeID),
+			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown,
+			fmt.Sprintf("%s filed under a size the imported card does not make; %s dropped and the rest "+
+				"of the chart imported", rowsPhrase(outOfRange[sizeID], "size chart row"),
+				theyOrIt(outOfRange[sizeID])))
+	}
+	if noMeasurement > 0 {
+		lost.drop(techcardarchive.EntityMeasurement, "size_chart.measurement_name_id=0",
+			techcardarchive.StatusSkipped, techcardarchive.ReasonMeasurementUnknown,
+			fmt.Sprintf("%s carrying no measurement at all, which addresses nothing; %s dropped",
+				rowsPhrase(noMeasurement, "size chart row"), theyOrIt(noMeasurement)))
+	}
+	if noSize > 0 {
+		lost.drop(techcardarchive.EntitySize, "size_chart.size_id=0",
+			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown,
+			fmt.Sprintf("%s carrying no size at all, which addresses nothing; %s dropped",
+				rowsPhrase(noSize, "size chart row"), theyOrIt(noSize)))
+	}
+	return rows
+}
+
+// importedGradeRule decides the grade rule AS A WHOLE — the base size and the per-measurement steps
+// authored against it — and returns nothing to write when it cannot have both.
+//
+// THE INVARIANT IS «BOTH HALVES OR NEITHER», and it used to break exactly here. The steps were
+// inserted first and the base was range-checked afterwards, so a base outside the imported card's
+// range left the steps standing on their own: a step is «this measurement grows by 2 cm per size
+// away from the base», and away from WHICH size is then unanswerable. Half a rule is not a thinner
+// rule — it reads on the card exactly like one somebody authored, and nothing downstream can tell
+// the difference. So the range check happens before a single step row exists.
+//
+// A rule that arrives with steps and NO base at all is left as it is: the resolver holds the same
+// invariant on the way in, and dropping data the archive carried on the strength of a state it says
+// cannot arrive would be the more expensive mistake.
+func importedGradeRule(id int, chart entity.StyleSizeChart,
+	rng storeutil.TechCardSizeRange, lost *importLosses) (int, []map[string]any) {
+	stepRows := make([]map[string]any, 0, len(chart.GradeSteps))
+	unaddressed := 0
+	for _, g := range chart.GradeSteps {
+		if g.MeasurementNameID <= 0 {
+			unaddressed++
+			continue
+		}
+		stepRows = append(stepRows, map[string]any{
+			"tech_card_id":        id,
+			"measurement_name_id": g.MeasurementNameID,
+			"step":                g.Step,
+		})
+	}
+	if unaddressed > 0 {
+		lost.drop(techcardarchive.EntityMeasurement, "grade_step.measurement_name_id=0",
+			techcardarchive.StatusSkipped, techcardarchive.ReasonMeasurementUnknown,
+			fmt.Sprintf("%s naming no measurement, which addresses nothing; %s dropped",
+				rowsPhrase(unaddressed, "grade step"), theyOrIt(unaddressed)))
+	}
+
+	base := chart.GradeBaseSizeID
+	if base > 0 && !rng.Has(base) {
+		detail := "the size chart's grade rule is authored from a size the imported card does not make, " +
+			"so the rule was dropped whole"
+		if len(stepRows) > 0 {
+			detail += fmt.Sprintf(" — the base and the %s with it, because a step without its base "+
+				"reads as an authored rule", rowsPhrase(len(stepRows), "step"))
+		}
+		lost.drop(techcardarchive.EntitySize, importedSizeRef(base),
+			techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown, detail)
+		return 0, nil
+	}
+	return base, stepRows
+}
+
+// sortedIntKeys puts the report's lines in a fixed order: a report that shuffles between two runs of
+// the same archive cannot be diffed by the person reading it.
+func sortedIntKeys(m map[int]int) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// rowsPhrase and theyOrIt keep a detail line a sentence rather than a template with a «(s)» in it.
+func rowsPhrase(n int, noun string) string {
+	if n == 1 {
+		return "one " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+func theyOrIt(n int) string {
+	if n == 1 {
+		return "it was"
+	}
+	return "they were"
 }
 
 // ────────────────────────────── BOM keys → new ids ──────────────────────────────
@@ -782,8 +1094,31 @@ func insertImportedMarkers(ctx context.Context, db dependency.DB, techCardID int
 // shape, derived from the import's own id, and equal to no sheet set that ever existed. The scope
 // consequently reads «measured on {date}, patterns changed since», which is the honest verdict —
 // the areas describe contours measured somewhere else, and a recount is one button away.
+// A DROPPED AREA IS A REPORTED AREA, under entity `pattern`. The vocabulary of FORMAT.md §7 is
+// closed and has no word for a measured contour, and `pattern` is the true one of the twelve: the
+// areas describe pattern geometry, and the button that fixes a hole in them is on the patterns tab.
+// It moves NO counter — the pattern counter counts SHEETS, and a sheet whose areas were dropped
+// still imported.
 func insertImportedPieceAreas(ctx context.Context, db dependency.DB, techCardID int, importID string,
-	areas []entity.TechCardArchivePieceArea, rng storeutil.TechCardSizeRange) error {
+	areas []entity.TechCardArchivePieceArea, rng storeutil.TechCardSizeRange, lost *importLosses) error {
+	rows, err := importedPieceAreaRows(techCardID, importID, areas, rng, lost)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := storeutil.ExecNamed(ctx, db, archiveImportPieceAreaInsertQuery, row); err != nil {
+			return fmt.Errorf("insert imported piece area %q of tech card %d: %w", row["piece"], techCardID, err)
+		}
+	}
+	return nil
+}
+
+// importedPieceAreaRows keeps the measurements this card can hold and reports the rest. It refuses
+// only on a DUPLICATE, which is the archive contradicting itself rather than the target missing a
+// reference — the row it would collide with is in the same file.
+func importedPieceAreaRows(techCardID int, importID string, areas []entity.TechCardArchivePieceArea,
+	rng storeutil.TechCardSizeRange, lost *importLosses) ([]map[string]any, error) {
+	rows := make([]map[string]any, 0, len(areas))
 	// UNIQUE (tech_card_id, scope_key, piece_line_key, size_key) — a duplicate in the archive would
 	// otherwise arrive as a bare 1062 with no hint of which row it was.
 	seen := make(map[[3]string]bool, len(areas))
@@ -791,17 +1126,41 @@ func insertImportedPieceAreas(ctx context.Context, db dependency.DB, techCardID 
 		scope := strings.TrimSpace(a.ScopeKey)
 		piece := importedLineKey(a.PieceLineKey)
 		if scope == "" || piece == "" {
-			slog.Default().Warn("tech card import: dropped an unaddressed piece area",
-				slog.Int("tech_card_id", techCardID), slog.String("scope_key", a.ScopeKey),
-				slog.String("piece_line_key", a.PieceLineKey))
+			lost.drop(techcardarchive.EntityPattern, importedPieceAreaRef(a.ScopeKey, a.PieceLineKey),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonPatternInvalid,
+				"the archive measures an area that names no fabric scope or no cut piece, so it "+
+					"addresses nothing; the row was dropped. Recount the areas from the sheets")
 			continue
 		}
 		// chk_tcpa_area_positive refuses a non-positive area at the schema level; caught here so a
-		// corrupt row costs one line of the log rather than the whole import.
+		// corrupt row costs one report line rather than the whole import.
 		if !a.AreaCm2.IsPositive() {
-			slog.Default().Warn("tech card import: dropped a piece area that is not a positive number",
-				slog.Int("tech_card_id", techCardID), slog.String("piece_line_key", a.PieceLineKey),
-				slog.String("area_cm2", a.AreaCm2.String()))
+			lost.drop(techcardarchive.EntityPattern, importedPieceAreaRef(scope, a.PieceLineKey),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonPatternInvalid,
+				fmt.Sprintf("the archive's measured area for this piece is %s, which is not an area; "+
+					"the row was dropped and the piece has no measured geometry here. Recount the "+
+					"areas from the sheets", a.AreaCm2.String()))
+			continue
+		}
+		// THE MEASUREMENT'S DATE HAS TO BE STORABLE. parsed_at is a TIMESTAMP NOT NULL (0297) and
+		// MySQL's TIMESTAMP range starts one second AFTER the Unix epoch — while the zero value of
+		// a protobuf Timestamp IS the epoch. An archive that simply left the field unset would
+		// therefore reach the driver as 1292 from the middle of this loop, with the card and every
+		// child already written and nothing on screen but a MySQL error code.
+		//
+		// DROPPED RATHER THAN RE-DATED, and that is this file's own rule rather than a preference:
+		// parsed_by and parsed_at are the SOURCE's and are stored as they stand, because who
+		// measured this geometry and when is a fact about the measurement. Stamping today's date on
+		// it would claim a measurement nobody took, and stamping 1970 would claim one nobody could
+		// have. The resolver has already tried the one honest substitute it has (manifest's export
+		// date), so a value that still does not fit has no replacement left that is true.
+		if !fitsMySQLTimestamp(a.ParsedAt) {
+			lost.drop(techcardarchive.EntityPattern, importedPieceAreaRef(scope, a.PieceLineKey),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonPatternInvalid,
+				fmt.Sprintf("the archive dates this measurement %s, which is not a date this base can "+
+					"store, and re-dating it would claim a measurement nobody took; the row was "+
+					"dropped. Recount the areas from the sheets",
+					a.ParsedAt.UTC().Format("2006-01-02 15:04:05")))
 			continue
 		}
 		// chk_tcpa_size_positive: the size is either UNSET (the piece does not grade and enters
@@ -812,9 +1171,10 @@ func insertImportedPieceAreas(ctx context.Context, db dependency.DB, techCardID 
 			sizeID = sql.NullInt64{}
 		}
 		if sizeID.Valid && !rng.Has(int(sizeID.Int64)) {
-			slog.Default().Warn("tech card import: dropped a piece area outside the imported card's size range",
-				slog.Int("tech_card_id", techCardID), slog.String("piece_line_key", a.PieceLineKey),
-				slog.Int64("size_id", sizeID.Int64))
+			lost.drop(techcardarchive.EntityPattern, importedSizeRef(int(sizeID.Int64)),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonSizeUnknown,
+				"the archive measures piece areas for a size the imported card does not make; those "+
+					"rows were dropped and the card states no cloth norm for that size")
 			continue
 		}
 		// Mirrors the generated size_key the UNIQUE index is built on (NULL folds to 0). Named to
@@ -825,32 +1185,65 @@ func insertImportedPieceAreas(ctx context.Context, db dependency.DB, techCardID 
 		}
 		dedupe := [3]string{strings.ToUpper(scope), piece, areaSizeKey}
 		if seen[dedupe] {
-			return entity.NewFieldViolation("piece_areas", "duplicate",
+			return nil, entity.NewFieldViolation("piece_areas", "duplicate",
 				fmt.Sprintf("%s / %s / size %s", scope, piece, areaSizeKey),
 				"the archive measures the same piece twice in one fabric scope and size")
 		}
 		seen[dedupe] = true
 
-		if err := storeutil.ExecNamed(ctx, db, archiveImportPieceAreaInsertQuery,
-			map[string]any{
-				"card":        techCardID,
-				"scope":       scope,
-				"piece":       piece,
-				"size":        sizeID,
-				"area":        a.AreaCm2,
-				"perimeter":   a.PerimeterCm,
-				"layer":       a.ContourLayer,
-				"seam":        a.SeamAllowanceMm,
-				"hulled":      a.Hulled,
-				"ambiguous":   a.AmbiguousPick,
-				"fingerprint": importedPieceAreaFingerprint(importID, scope),
-				"parsed_by":   a.ParsedBy,
-				"parsed_at":   a.ParsedAt,
-			}); err != nil {
-			return fmt.Errorf("insert imported piece area %q of tech card %d: %w", a.PieceLineKey, techCardID, err)
-		}
+		rows = append(rows, map[string]any{
+			"card":        techCardID,
+			"scope":       scope,
+			"piece":       piece,
+			"size":        sizeID,
+			"area":        a.AreaCm2,
+			"perimeter":   a.PerimeterCm,
+			"layer":       a.ContourLayer,
+			"seam":        a.SeamAllowanceMm,
+			"hulled":      a.Hulled,
+			"ambiguous":   a.AmbiguousPick,
+			"fingerprint": importedPieceAreaFingerprint(importID, scope),
+			"parsed_by":   a.ParsedBy,
+			"parsed_at":   a.ParsedAt,
+		})
 	}
-	return nil
+	return rows, nil
+}
+
+// MySQL's TIMESTAMP range as UTC instants: '1970-01-01 00:00:01' through '2038-01-19 03:14:07'. It
+// begins ONE SECOND after the Unix epoch, and that second is what makes an unset protobuf Timestamp
+// — which is exactly the epoch — a value the column refuses rather than a value it stores oddly.
+var (
+	mysqlTimestampMin = time.Date(1970, 1, 1, 0, 0, 1, 0, time.UTC)
+	mysqlTimestampMax = time.Date(2038, 1, 19, 3, 14, 7, 0, time.UTC)
+)
+
+// fitsMySQLTimestamp reports whether an instant the ARCHIVE supplied can go into a TIMESTAMP NOT
+// NULL column at all.
+//
+// It is a predicate rather than three lines at the one call site because it is a property of the
+// COLUMN TYPE, not of piece areas: every instant this file takes from an archive and writes into a
+// TIMESTAMP passes through here, so the next such column cannot be written without the check. Today
+// there is exactly one — tech_card_piece_area.parsed_at (0297).
+func fitsMySQLTimestamp(t time.Time) bool {
+	if t.IsZero() {
+		return false
+	}
+	u := t.UTC()
+	return !u.Before(mysqlTimestampMin) && !u.After(mysqlTimestampMax)
+}
+
+// importedPieceAreaRef names a measured row in the report the way its own file names it: by the
+// piece's stable key, with the fabric scope beside it, because one piece is measured once per scope.
+func importedPieceAreaRef(scope, pieceLineKey string) string {
+	piece := strings.TrimSpace(pieceLineKey)
+	if piece == "" {
+		piece = "?"
+	}
+	if s := strings.TrimSpace(scope); s != "" {
+		return fmt.Sprintf("piece_line_key=%s scope_key=%s", piece, s)
+	}
+	return "piece_line_key=" + piece
 }
 
 // importedPieceAreaFingerprint mints the provenance token an imported scope carries.
@@ -874,10 +1267,16 @@ func importedPieceAreaFingerprint(importID, scopeKey string) string {
 // matched them against this base, dropping the ones it has no card for with a hole. What is checked
 // here is what the target alone can know, and it is the same pair UpsertStyleAssembly checks: the
 // component must be an AUXILIARY card (the FK proves the row exists, not what it is), and a
-// size-scoped line must name a size this card makes. A line failing either is dropped with a log
-// rather than refused, the season clone's rule for exactly this data.
+// size-scoped line must name a size this card makes. A line failing either is dropped rather than
+// refused, the season clone's rule for exactly this data.
+//
+// THIS IS THE ONE PLACE A COUNTER MOVES. The resolver counted every line it planned as imported —
+// `assembly.imported` is exactly the length of the slice handed in here — so a line dropped below
+// was counted as landed by the report the operator will read. It leaves the imported column and
+// enters skipped, one row at a time, next to the line that says why.
 func insertImportedAssembly(ctx context.Context, db dependency.DB, techCardID int,
-	items []entity.StyleAssemblyInsert, actor string, rng storeutil.TechCardSizeRange) error {
+	items []entity.StyleAssemblyInsert, actor string, rng storeutil.TechCardSizeRange,
+	lost *importLosses) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -887,47 +1286,19 @@ func insertImportedAssembly(ctx context.Context, db dependency.DB, techCardID in
 			componentIDs = append(componentIDs, it.ComponentTechCardId)
 		}
 	}
-	if len(componentIDs) == 0 {
-		return nil // every line names nothing; the loop below would drop them all anyway
-	}
-	purposeRows, err := storeutil.QueryListNamed[struct {
-		Id      int    `db:"id"`
-		Purpose string `db:"purpose"`
-	}](ctx, db, archiveImportComponentPurposeQuery, map[string]any{"ids": componentIDs})
-	if err != nil {
-		return fmt.Errorf("load imported assembly component purposes: %w", err)
-	}
-	purposeByID := make(map[int]string, len(purposeRows))
-	for _, r := range purposeRows {
-		purposeByID[r.Id] = r.Purpose
+	facts := make(map[int]importedComponentFacts, len(componentIDs))
+	if len(componentIDs) > 0 {
+		rows, err := storeutil.QueryListNamed[importedComponentFacts](ctx, db,
+			archiveImportComponentFactsQuery, map[string]any{"ids": componentIDs})
+		if err != nil {
+			return fmt.Errorf("load imported assembly components: %w", err)
+		}
+		for _, r := range rows {
+			facts[r.Id] = r
+		}
 	}
 
-	seen := make(map[[2]int]bool, len(items))
-	for _, it := range items {
-		reason := ""
-		switch {
-		case it.ComponentTechCardId <= 0:
-			reason = "the line names no component"
-		case it.ComponentTechCardId == techCardID:
-			reason = "a style cannot be its own assembly component"
-		case !it.Qty.IsPositive():
-			reason = "the quantity is not positive"
-		case entity.TechCardPurpose(purposeByID[it.ComponentTechCardId]) != entity.TechCardPurposeAuxiliary:
-			reason = "the component is not an auxiliary card here"
-		// A non-positive size key means «all sizes» — not size zero — and is always in range.
-		case sizeKey(it) > 0 && !rng.Has(sizeKey(it)):
-			reason = "the line is filed under a size this card does not make"
-		case seen[[2]int{it.ComponentTechCardId, sizeKey(it)}]:
-			reason = "the same component and size is listed twice"
-		}
-		if reason != "" {
-			slog.Default().Warn("tech card import: dropped an assembly line",
-				slog.Int("tech_card_id", techCardID),
-				slog.Int("component_tech_card_id", it.ComponentTechCardId),
-				slog.String("reason", reason))
-			continue
-		}
-		seen[[2]int{it.ComponentTechCardId, sizeKey(it)}] = true
+	for _, it := range importedAssemblyLines(techCardID, items, facts, rng, lost) {
 		if err := storeutil.ExecNamed(ctx, db, archiveImportAssemblyInsertQuery,
 			map[string]any{
 				"style_id":               techCardID,
@@ -944,4 +1315,81 @@ func insertImportedAssembly(ctx context.Context, db dependency.DB, techCardID in
 		}
 	}
 	return nil
+}
+
+// importedComponentFacts is what the TARGET knows about a component the archive named: whether it
+// is an auxiliary card here, and the number an operator recognises it by.
+//
+// The style number is read for the REPORT and for nothing else. The resolver's own assembly lines
+// say `component_style_number=…`, and a line from this side saying `component_tech_card_id=41`
+// about the same bill would send the operator looking up an id that means nothing on the card.
+type importedComponentFacts struct {
+	Id          int    `db:"id"`
+	Purpose     string `db:"purpose"`
+	StyleNumber string `db:"style_number"`
+}
+
+// importedAssemblyLines keeps the assembly lines this base will accept and reports the rest.
+//
+// Every refusal is the TARGET's, which is why none of them is a corrupt archive and none of them
+// takes the import down: the component may be a perfectly good card here that simply is not an
+// auxiliary one, or the line may name a size this particular card does not make.
+func importedAssemblyLines(techCardID int, items []entity.StyleAssemblyInsert,
+	facts map[int]importedComponentFacts, rng storeutil.TechCardSizeRange,
+	lost *importLosses) []entity.StyleAssemblyInsert {
+	out := make([]entity.StyleAssemblyInsert, 0, len(items))
+	seen := make(map[[2]int]bool, len(items))
+	for _, it := range items {
+		f, known := facts[it.ComponentTechCardId]
+		detail, reason := "", techcardarchive.ReasonAssemblyComponentNotFound
+		switch {
+		case it.ComponentTechCardId <= 0:
+			detail = "the assembly line names no component at all, so there is nothing to attach"
+		case it.ComponentTechCardId == techCardID:
+			detail = "the assembly line names the imported card itself, and a style cannot be its own " +
+				"assembly component"
+		case !it.Qty.IsPositive():
+			detail = fmt.Sprintf("the assembly line asks for a quantity of %s, which is not a quantity",
+				it.Qty.String())
+		case !known:
+			// The resolver matched this component against THIS base, so its absence now means the
+			// card went away between the dry run and the commit. Said as it is rather than folded
+			// into the purpose check below, which would tell the operator to change the purpose of
+			// a card that is not there.
+			detail = "the component the archive named is not in this base any more; it was matched " +
+				"when the archive was read and gone by the time the card was written"
+		case entity.TechCardPurpose(f.Purpose) != entity.TechCardPurposeAuxiliary:
+			detail = "a card with this number exists here but is not an AUXILIARY one, and only " +
+				"auxiliary cards can be assembly components"
+		// A non-positive size key means «all sizes» — not size zero — and is always in range.
+		case sizeKey(it) > 0 && !rng.Has(sizeKey(it)):
+			// The size itself is fine — the resolver found it in this base's dictionary — it is the
+			// imported CARD that does not make it, so the line describes labels for a garment that
+			// does not exist. size_unknown is the closest the closed dictionary comes; the detail
+			// says which of the two dictionaries actually disagreed.
+			reason = techcardarchive.ReasonSizeUnknown
+			detail = fmt.Sprintf("the assembly line is filed under %s, which the imported card does not "+
+				"make", importedSizeRef(sizeKey(it)))
+		case seen[[2]int{it.ComponentTechCardId, sizeKey(it)}]:
+			detail = "the archive lists this component twice for the same size; the second line was " +
+				"dropped and the first imported"
+		}
+		if detail != "" {
+			lost.dropCounted(techcardarchive.EntityAssembly,
+				importedAssemblyRef(f, it.ComponentTechCardId),
+				techcardarchive.StatusSkipped, reason, detail)
+			continue
+		}
+		seen[[2]int{it.ComponentTechCardId, sizeKey(it)}] = true
+		out = append(out, it)
+	}
+	return out
+}
+
+// importedAssemblyRef names a component the way the resolver's own assembly lines name one.
+func importedAssemblyRef(f importedComponentFacts, componentID int) string {
+	if n := strings.TrimSpace(f.StyleNumber); n != "" {
+		return "component_style_number=" + n
+	}
+	return fmt.Sprintf("component_tech_card_id=%d", componentID)
 }

@@ -32,9 +32,15 @@ var ErrImportAlreadyCommitted = errors.New("this archive has already been import
 // design, valid on the imported card verbatim, and resolved against THIS card's just-inserted rows
 // inside the transaction.
 type TechCardArchiveImport struct {
-	// ImportID is the ULID of the upload dialogue — the key of the tech_card_import row the commit
-	// claims. Empty is refused: without it the import cannot be marked committed and the same
-	// archive could be imported twice.
+	// ImportID is the key of the upload dialogue — the tech_card_import row the commit claims.
+	// Empty is refused: without it the import cannot be marked committed and the same archive could
+	// be imported twice.
+	//
+	// It is NOT a ULID, though it wears a ULID's shape: 26 characters of base32 over 128 random
+	// bits, minted by tcupMintImportID (internal/apisrv/admin/techcard_archive_upload.go), with no
+	// time component and therefore no order. Nothing sorts by it — the import rows are read by id
+	// and by tech_card_id — so the missing half costs nothing; the WORD cost something, because a
+	// reader who believed it would take the largest string for the newest import.
 	ImportID string
 	// Actor is the admin username the whole write is stamped with: created_by/updated_by on the
 	// card, the assembly lines and the markers, and the author of the journal entry. The archive's
@@ -77,9 +83,15 @@ type TechCardArchiveImport struct {
 	// TechCardArchiveLabelLink: without this list the link is lost SILENTLY.
 	Labels []TechCardArchiveLabelLink
 
-	// Report is the finished import report as JSON — the same bytes the RPC answers with. It is
+	// Report is the DRY RUN's import report as JSON — the same bytes the RPC answers with. It is
 	// stored in the same transaction as the card on purpose: a committed import whose report went
 	// missing is a card with unexplained gaps and nothing to explain them.
+	//
+	// It is NOT stored verbatim. The write drops rows of its own — only the transaction knows the
+	// imported card's size range or what a component is in this base — and it adds them to this
+	// report before stamping it, in the same transaction (see importLosses in the store). A report
+	// stamped as it arrived would count those rows as imported, which is a lie an operator reads
+	// exactly once and then believes.
 	Report []byte
 }
 
@@ -116,7 +128,10 @@ type TechCardArchiveStyleFacts struct {
 //
 // PARSED-BY / PARSED-AT ARE THE SOURCE'S AND ARE STORED AS THEY STAND: who measured this geometry
 // and when is a fact about the measurement, not about the import, and re-stamping it with today's
-// date and this operator's name would claim a measurement nobody took.
+// date and this operator's name would claim a measurement nobody took. A ParsedAt that MySQL cannot
+// hold — an unset one arrives as the Unix epoch, one second below what a TIMESTAMP column accepts —
+// therefore costs the ROW, with a line in the report, and not the import: re-dating it is the very
+// claim this paragraph refuses.
 type TechCardArchivePieceArea struct {
 	ScopeKey     string
 	PieceLineKey string

@@ -41,6 +41,23 @@ func LoadTechCardSizeRange(ctx context.Context, db dependency.DB, styleID int) (
 	return TechCardSizeRange{styleID: styleID, ids: ids}, nil
 }
 
+// NewTechCardSizeRange builds a range from ids already in hand, without a statement.
+//
+// It exists because the DECISIONS a range drives — which chart cells a card can hold, which assembly
+// lines it can attach — are worth testing on their own, and the loader above is the only other way
+// to obtain one, which puts a MySQL behind every such test. A non-positive id is dropped rather than
+// stored: 0 means «not size-scoped» everywhere in this contract, and a range that contained it would
+// answer Has(0) with true for the wrong reason.
+func NewTechCardSizeRange(styleID int, sizeIDs ...int) TechCardSizeRange {
+	ids := make(map[int]bool, len(sizeIDs))
+	for _, id := range sizeIDs {
+		if id > 0 {
+			ids[id] = true
+		}
+	}
+	return TechCardSizeRange{styleID: styleID, ids: ids}
+}
+
 // Declared reports whether the style has picked a size range at all.
 func (r TechCardSizeRange) Declared() bool { return len(r.ids) > 0 }
 
