@@ -1,8 +1,10 @@
 package admin
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -293,6 +295,45 @@ func TestResolveImportCapsTheFibreBreakdownItSpellsOut(t *testing.T) {
 		"400 fibres may not become 400 fibres of report line: the detail is a sentence for a human")
 	require.Contains(t, holes[0].Detail, "and 388 more",
 		"a capped list has to say it was capped, or the report reads as a complete breakdown of twelve")
+}
+
+// THE CAP THAT MATTERS IS THE BYTE ONE, and the test above cannot see it: four hundred SHORT values
+// prove only that the COUNT of spelled-out entries is bounded. `fiber_code` and `percent` are
+// strings off somebody else's file and card.json may be 16 MiB, so TWELVE entries are enough to
+// make a report line of megabytes — which is then written into the card's stored `report` column
+// and returned by every read of the card afterwards.
+//
+// Twelve is exactly the number the producer spells out, so nothing here is saved by the entry cap:
+// every one of these is inside it.
+func TestResolveImportCapsTheFibreBreakdownInBytesNotEntries(t *testing.T) {
+	s, _, _, _ := tcimpServer(t)
+	a := tcimpNewArchive()
+	const huge = 100_000
+	a.outer = func(c *pb_common.TechCard) {
+		for i := 0; i < 12; i++ {
+			c.CompositionEntries = append(c.CompositionEntries, &pb_common.CompositionEntry{
+				FiberCode: strings.Repeat("Ф", huge),
+				Percent:   &pbdecimal.Decimal{Value: strings.Repeat("9", huge)},
+			})
+		}
+	}
+
+	res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+	require.NoError(t, err)
+
+	holes := tcimpHoles(res, techcardarchive.ReasonCompositionNotDerived)
+	require.Len(t, holes, 1)
+	require.LessOrEqual(t, len(holes[0].Detail), techcardarchive.DetailLimit,
+		"the detail is stored on the card and returned by every read of it: it is bounded in BYTES, "+
+			"and twelve entries inside the entry cap were enough to blow past a bound that counts entries")
+	require.True(t, utf8.ValidString(holes[0].Detail),
+		"a clip landing inside a rune is invalid UTF-8, and protojson refuses to marshal the very "+
+			"report the guard exists to keep small")
+
+	// Cyrillic on purpose: a guard counting RUNES would let through twice the ceiling it names.
+	require.Contains(t, holes[0].Detail, "Ф", "the fibre codes still reach the operator, clipped")
+	require.NotContains(t, holes[0].Detail, strings.Repeat("9", 200),
+		"one hostile value may cost its own slot and never the eleven others' room")
 }
 
 // The measurement's conditions and provenance are facts ABOUT THE MEASUREMENT and cross unchanged:

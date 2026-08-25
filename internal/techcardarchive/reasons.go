@@ -34,6 +34,19 @@ const (
 	// retrying the import. One code with two action texts is exactly the drift the closed
 	// dictionary exists to prevent.
 	ReasonMediaUploadFailed Reason = "media_upload_failed"
+	// ReasonMediaVanished — IMPORT side, and a RACE rather than a failure: the picture's bytes
+	// matched a media row this base ALREADY held, so nothing was uploaded — and that row was
+	// deleted out from under the import before it committed (in practice by another import being
+	// rolled back). The slot is cleared and the card lands without the picture.
+	//
+	// Its own code and not media_upload_failed, whose ACTION is right here («import the archive
+	// again») and whose PROSE is false: nothing about this instance's storage refused anything, and
+	// a sentence ending «if it keeps failing, the bucket needs looking at» sends the operator to
+	// inspect a bucket that is working perfectly. Not media_missing either — the archive DID carry
+	// the file, and «the archive has no file for this slot» would send them to re-export a source
+	// card that exported fine. The wrong dictionary entry does not merely read oddly: it decides
+	// which of three places a person spends an afternoon in.
+	ReasonMediaVanished Reason = "media_vanished"
 
 	// ReasonPatternInvalid — the pattern file is unreadable or is not a DXF/PDF.
 	ReasonPatternInvalid Reason = "pattern_invalid"
@@ -73,8 +86,16 @@ const (
 	// saying so — a reported loss traded for an unreported one. The legacy free-text `composition`
 	// travels and IS written, so the card is not silent about what it is made of.
 	ReasonCompositionNotDerived Reason = "composition_not_derived"
-	// ReasonWastageClaimDegraded — a wastage/consumption claim lost its provenance and reads as
-	// manual.
+	// ReasonWastageClaimDegraded — a wastage/consumption claim could not be confirmed against THIS
+	// base's own cut lays, so the figure imports as entered by hand.
+	//
+	// The badge is not a label that travels: «медиана по N раскроям» is an ASSERTION that the
+	// number IS this server's current median, and the server that stores it is the one that has to
+	// stand behind it. So the import re-runs the same check the save path runs (verifyBomWastageClaims)
+	// against the lays measured HERE — a restore into the base the card came from re-earns the badge,
+	// an import into a base that never cut that article does not — and this code is what says which
+	// of the two happened. Without it the badge simply became 'manual' with nothing written down,
+	// which reads on the fabric tab as a number somebody typed.
 	ReasonWastageClaimDegraded Reason = "wastage_claim_degraded"
 	// ReasonNormMarkerLost — the norm's marker stamp could not be re-sewn: the norm stands, the
 	// stamp does not.

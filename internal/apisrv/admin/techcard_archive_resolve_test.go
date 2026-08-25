@@ -4,16 +4,20 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	pbdecimal "google.golang.org/genproto/googleapis/type/decimal"
@@ -1039,4 +1043,397 @@ func TestResolveImportRefusesACorruptSidecar(t *testing.T) {
 	_, err := s.resolveTechCardImport(t.Context(), a.open(t))
 	require.ErrorIs(t, err, techcardarchive.ErrCorrupt)
 	require.True(t, techcardarchive.IsFatal(err))
+}
+
+// ──────────── the wastage badge: an assertion about THIS base, re-earned or lost ────────────
+//
+// `wastage_source = 'lays'` is not a label that travels with a number: it says the number IS this
+// server's current median over its measured cut lays. The export writes the effective provenance
+// into card.json, so the claim arrives — and before verifyWastageClaims nothing on this side ever
+// looked at it. The whole chain ended in silence: the commit pipeline does not run
+// verifyBomWastageClaims (only CreateTechCard does), WastageClaimVerified stayed false, and
+// entity.ResolveBomWastageProvenance turned «new row + lays + unverified» into 'manual' with no
+// hole, no line and no counter. A measured median became a typed number between two screens.
+
+func tcimpDec(s string) decimal.NullDecimal {
+	return decimal.NullDecimal{Decimal: decimal.RequireFromString(s), Valid: true}
+}
+
+// tcimpMeasuredLay is ONE настил of the TARGET base as the calibration reads it: a consumption
+// fact, a netto stamp whose basis agrees with that fact (so TrustedNettoStamp keeps it and no
+// раскладки are loaded), and the card that resolves it to its article.
+func tcimpMeasuredLay(id, cardID int, bomItemID int64, netto, actual string) entity.ProductionRunLayFact {
+	f := entity.ProductionRunLayFact{TechCardId: cardID}
+	f.Id = id
+	f.LayKey = fmt.Sprintf("LAY-%026d", id)
+	f.RunId = 700 + id
+	f.BomItemId = sql.NullInt64{Int64: bomItemID, Valid: true}
+	f.ActualQty = tcimpDec(actual)
+	f.ActualUom = sql.NullString{String: "m", Valid: true}
+	f.NettoQty = tcimpDec(netto)
+	f.NettoBasisQty = tcimpDec(actual)
+	f.NettoBasisUom = sql.NullString{String: "m", Valid: true}
+	return f
+}
+
+// tcimpLayCard is the card a настил hangs off: the lay stores a colourway and a BOM slot, never a
+// material_id, so the article is resolved through here (dto.LayArticleMaterialId).
+func tcimpLayCard(cardID int, bomItemID int64, materialID int) *entity.TechCard {
+	c := &entity.TechCard{Id: cardID}
+	c.BomItems = []entity.TechCardBomItem{{
+		Id:         int(bomItemID),
+		LineKey:    "LOCAL-1",
+		MaterialId: sql.NullInt64{Int64: int64(materialID), Valid: true},
+	}}
+	return c
+}
+
+// tcimpWastageArchive: one BOM line arriving with the badge on it, linked through a passport that
+// matches catalogue article 1001 here.
+func tcimpWastageArchive(t *testing.T, percent string, layCount int32) *tcimpArchive {
+	t.Helper()
+	a := tcimpNewArchive()
+	a.insert.BomItems = []*pb_common.TechCardBomItem{{
+		LineKey:         "BOM-CLOTH",
+		Name:            "wool melton",
+		MaterialId:      8120,
+		WastagePercent:  &pbdecimal.Decimal{Value: percent},
+		WastageSource:   tcimpStrPtr(entity.BomWastageSourceLays),
+		WastageLayCount: &layCount,
+	}}
+	a.manifest.Contents.Materials = 1
+	a.with(techcardarchive.FileMaterialsIndex, tcimpJSON(t, []techcardarchive.MaterialPassport{
+		{Ref: 8120, Code: "F-WOOL-320", Name: "wool melton", Unit: "m"},
+	}))
+	return a
+}
+
+// tcimpExpectCalibration wires the three reads one article's median stands on. The lays carry a
+// TRUSTED netto stamp, so ListRunMarkers is never called — and the strict mock is what proves it.
+func tcimpExpectCalibration(cards *mocks.MockTechCards, runs *mocks.MockProductionRuns, materialID int) {
+	const layCard, layBom = 55, int64(900)
+	runs.EXPECT().ListMeasuredLayCandidates(mock.Anything, materialID, mock.Anything).Return(
+		[]entity.ProductionRunLayFact{
+			tcimpMeasuredLay(1, layCard, layBom, "100", "122"),
+			tcimpMeasuredLay(2, layCard, layBom, "100", "122"),
+			tcimpMeasuredLay(3, layCard, layBom, "100", "122"),
+		}, 3, nil)
+	cards.EXPECT().GetTechCardById(mock.Anything, layCard).
+		Return(tcimpLayCard(layCard, layBom, materialID), nil)
+	// No cutting coefficient on the article, so the denominator is plain netto: 122/100 − 1 = 22%.
+	cards.EXPECT().GetMaterial(mock.Anything, materialID).
+		Return(&entity.MaterialWithPrice{}, nil)
+}
+
+// THE OWNER'S MAIN CASE: a card exported from this base and restored into it. The lays have not
+// moved, the median is the same number, and the claim RE-EARNS itself — the badge survives because
+// it was re-checked, not because it was believed. That is also what keeps a round-trip test over
+// this field honest.
+func TestResolveImportWastageBadgeIsReEarnedAgainstThisBase(t *testing.T) {
+	s, repo, cards, _ := tcimpServer(t)
+	runs := mocks.NewMockProductionRuns(t)
+	repo.EXPECT().ProductionRuns().Return(runs).Maybe()
+	cards.EXPECT().ListMaterials(mock.Anything, "", true).Return([]entity.MaterialWithPrice{
+		tcimpCatalogRow(1001, "F-WOOL-320", "m"),
+	}, nil)
+	tcimpExpectCalibration(cards, runs, 1001)
+
+	// "22.00" against a median of 22: the comparison is by VALUE, never by representation.
+	res, err := s.resolveTechCardImport(t.Context(), tcimpWastageArchive(t, "22.00", 3).open(t))
+	require.NoError(t, err)
+
+	require.Empty(t, tcimpHoles(res, techcardarchive.ReasonWastageClaimDegraded),
+		"the median here IS the archive's claim — degrading it would be a report line about nothing")
+	require.True(t, res.WastageVerified["BOM-CLOTH"],
+		"the verdict is the resolver's, and it is the only door to the badge")
+	b := res.Insert.GetBomItems()[0]
+	require.Equal(t, entity.BomWastageSourceLays, b.GetWastageSource())
+	require.EqualValues(t, 3, b.GetWastageLayCount())
+
+	tally := tcimpTally(t, res, techcardarchive.EntityBOMLine)
+	require.Equal(t, 1, tally.Imported)
+	require.Equal(t, 0, tally.Degraded)
+
+	// THE HALF THAT MAKES IT REAL. The badge only lands if the verdict reaches the entity: the store
+	// is fail-closed (entity.ResolveBomWastageProvenance) and a payload merely SAYING 'lays' lands
+	// 'manual'. So the assertion is the end state, through the store's own rule.
+	card := tcimpEntityBomInsert("BOM-CLOTH", "22.00", 3)
+	res.stampVerifiedWastageClaims(card)
+	require.True(t, card.BomItems[0].WastageClaimVerified)
+	require.Equal(t, entity.BomWastageSourceLays, tcimpStoredProvenance(card.BomItems[0]).Source,
+		"a re-earned claim is a badge on the imported card, which is what a restore into the same base owes")
+}
+
+// The same archive imported into a base whose lays say something else: the NUMBER stands (nothing
+// is thrown away), the assertion about where it came from does not, and the operator is told.
+func TestResolveImportWastageBadgeDegradesWhenThisBaseDisagrees(t *testing.T) {
+	s, repo, cards, _ := tcimpServer(t)
+	runs := mocks.NewMockProductionRuns(t)
+	repo.EXPECT().ProductionRuns().Return(runs).Maybe()
+	cards.EXPECT().ListMaterials(mock.Anything, "", true).Return([]entity.MaterialWithPrice{
+		tcimpCatalogRow(1001, "F-WOOL-320", "m"),
+	}, nil)
+	tcimpExpectCalibration(cards, runs, 1001) // this base's median is 22% over 3 lays
+
+	res, err := s.resolveTechCardImport(t.Context(), tcimpWastageArchive(t, "17.50", 9).open(t))
+	require.NoError(t, err)
+
+	holes := tcimpHoles(res, techcardarchive.ReasonWastageClaimDegraded)
+	require.Len(t, holes, 1, "a badge that silently becomes 'manual' is the silent loss this feature forbids")
+	require.Equal(t, techcardarchive.EntityBOMLine, holes[0].Entity)
+	require.Equal(t, "bom_line_key=BOM-CLOTH", holes[0].Ref)
+	require.Equal(t, techcardarchive.StatusDegraded, holes[0].Status)
+	require.Contains(t, holes[0].Detail, "22", "the line names THIS base's median, or it is unactionable")
+	require.Contains(t, holes[0].Detail, "17.5")
+	require.NotEmpty(t, techcardarchive.ActionFor(holes[0].Reason))
+
+	b := res.Insert.GetBomItems()[0]
+	require.Equal(t, entity.BomWastageSourceManual, b.GetWastageSource(),
+		"the plan the dry run shows and the row the commit writes have to say the same thing")
+	require.Nil(t, b.WastageLayCount, "a lay count with no 'lays' beside it is refused by the wire converter")
+	require.Equal(t, "17.50", b.GetWastagePercent().GetValue(), "the FIGURE is untouched — only its provenance moved")
+	require.False(t, res.WastageVerified["BOM-CLOTH"])
+
+	tally := tcimpTally(t, res, techcardarchive.EntityBOMLine)
+	require.Equal(t, 0, tally.Imported)
+	require.Equal(t, 1, tally.Degraded)
+	require.Equal(t, 1, tally.Sum(), "one line is one row of the tally, however many ways it degraded")
+}
+
+// A calibration read that FAILS must not kill the import, and this is the one place where the
+// answer differs from the live save path. There a transient failure may not drop a badge the card
+// already has, so the save is refused; here the card does not exist yet and there is no badge to
+// take away — refusing would throw a whole import away over a database blip.
+func TestResolveImportWastageCalibrationFailureDegradesInsteadOfKillingTheImport(t *testing.T) {
+	s, repo, cards, _ := tcimpServer(t)
+	runs := mocks.NewMockProductionRuns(t)
+	repo.EXPECT().ProductionRuns().Return(runs).Maybe()
+	cards.EXPECT().ListMaterials(mock.Anything, "", true).Return([]entity.MaterialWithPrice{
+		tcimpCatalogRow(1001, "F-WOOL-320", "m"),
+	}, nil)
+	// ONCE, not per line: a card with several lines of one article must not hammer a database that
+	// is already unhappy. The strict mock is the assertion.
+	runs.EXPECT().ListMeasuredLayCandidates(mock.Anything, 1001, mock.Anything).
+		Return(nil, 0, errors.New("boom")).Once()
+
+	a := tcimpWastageArchive(t, "22.00", 3)
+	second := int32(3)
+	a.insert.BomItems = append(a.insert.BomItems, &pb_common.TechCardBomItem{
+		LineKey: "BOM-LINING", Name: "lining", MaterialId: 8120,
+		WastagePercent:  &pbdecimal.Decimal{Value: "22.00"},
+		WastageSource:   tcimpStrPtr(entity.BomWastageSourceLays),
+		WastageLayCount: &second,
+	})
+
+	res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+	require.NoError(t, err, "a database blip may not cost the operator the whole card")
+
+	holes := tcimpHoles(res, techcardarchive.ReasonWastageClaimDegraded)
+	require.Len(t, holes, 2, "both lines lose the badge, and both say so")
+	for _, h := range holes {
+		require.Contains(t, h.Detail, "could not be read")
+	}
+	for _, b := range res.Insert.GetBomItems() {
+		require.Equal(t, entity.BomWastageSourceManual, b.GetWastageSource())
+	}
+	require.Empty(t, res.WastageVerified)
+}
+
+// A badge on a line that did not land linked to an article cannot be re-checked and must not send
+// the resolver to the database to find that out. The strict mock — which fails on an unexpected
+// ProductionRuns() — is what proves the read never happened.
+func TestResolveImportWastageClaimWithoutAnArticleAsksNothingOfTheDatabase(t *testing.T) {
+	s, _, cards, _ := tcimpServer(t)
+	cards.EXPECT().ListMaterials(mock.Anything, "", true).Return(nil, nil) // empty catalogue: nothing matches
+
+	res, err := s.resolveTechCardImport(t.Context(), tcimpWastageArchive(t, "22.00", 3).open(t))
+	require.NoError(t, err)
+
+	holes := tcimpHoles(res, techcardarchive.ReasonWastageClaimDegraded)
+	require.Len(t, holes, 1)
+	require.Contains(t, holes[0].Detail, "no lays")
+	require.Equal(t, entity.BomWastageSourceManual, res.Insert.GetBomItems()[0].GetWastageSource())
+
+	// The line already lost its catalogue link and was counted degraded for it. Losing the badge on
+	// top is the SAME row, not a second one — otherwise the column counts more lines than the card has.
+	tally := tcimpTally(t, res, techcardarchive.EntityBOMLine)
+	require.Equal(t, 0, tally.Imported)
+	require.Equal(t, 1, tally.Degraded)
+	require.Equal(t, 1, tally.Sum())
+}
+
+// A lay count with no 'lays' source beside it is a badge's counter on a hand-typed number, and
+// dto.parseTechCardBomItems refuses the PAYLOAD over it — one malformed row of somebody else's file
+// would cost the whole import. Dropped with a line instead, under the owner's rule.
+func TestResolveImportDropsALayCountThatClaimsNothing(t *testing.T) {
+	s, _, _, _ := tcimpServer(t)
+	a := tcimpNewArchive()
+	orphan := int32(7)
+	a.insert.BomItems = []*pb_common.TechCardBomItem{{
+		LineKey: "BOM-ORPHAN", Name: "wool",
+		WastagePercent:  &pbdecimal.Decimal{Value: "12"},
+		WastageLayCount: &orphan,
+	}}
+
+	res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+	require.NoError(t, err)
+	require.Nil(t, res.Insert.GetBomItems()[0].WastageLayCount)
+	require.Equal(t, "12", res.Insert.GetBomItems()[0].GetWastagePercent().GetValue())
+
+	holes := tcimpHoles(res, techcardarchive.ReasonArchiveRowInvalid)
+	require.Len(t, holes, 1)
+	require.Equal(t, "bom_line_key=BOM-ORPHAN", holes[0].Ref)
+}
+
+// tcimpEntityBomInsert is the payload as ConvertPbTechCardInsertToEntity would hand it over: the
+// pair present on the wire ('lays' + count) and the server verdict NOT yet stamped.
+func tcimpEntityBomInsert(lineKey, percent string, layCount int64) *entity.TechCardInsert {
+	return &entity.TechCardInsert{BomItems: []entity.TechCardBomItem{{
+		LineKey:         lineKey,
+		WastagePercent:  tcimpDec(percent),
+		WastageSource:   entity.BomWastageSourceLays,
+		WastageLayCount: sql.NullInt64{Int64: layCount, Valid: true},
+	}}}
+}
+
+// tcimpStoredProvenance runs the store's own rule for a NEW row — which is what an import writes —
+// so the assertion is what actually lands in the column, not a restatement of the flag.
+func tcimpStoredProvenance(b entity.TechCardBomItem) entity.BomWastageProvenance {
+	return entity.ResolveBomWastageProvenance(
+		entity.BomWastageProvenance{}, decimal.NullDecimal{}, b.WastagePercent,
+		entity.BomWastageProvenance{Source: b.WastageSource, LayCount: b.WastageLayCount},
+		!b.WastageProvenanceOmitted, b.WastageClaimVerified, time.Now())
+}
+
+// The stamp is the LAST HALF of the check, and without it the check decides nothing: the store is
+// fail-closed on purpose (a direct caller cannot open the door), so an unstamped payload that says
+// 'lays' as loudly as it likes still lands 'manual'.
+func TestStampVerifiedWastageClaimsIsTheOnlyDoorToTheBadge(t *testing.T) {
+	res := &resolvedTechCardImport{WastageVerified: map[string]bool{"BOM-CLOTH": true}}
+
+	unstamped := tcimpEntityBomInsert("BOM-CLOTH", "22.00", 3)
+	require.Equal(t, entity.BomWastageSourceManual, tcimpStoredProvenance(unstamped.BomItems[0]).Source,
+		"this is the defect: the payload asserts 'lays' and the store, correctly, does not believe it")
+
+	stamped := tcimpEntityBomInsert("BOM-CLOTH", "22.00", 3)
+	res.stampVerifiedWastageClaims(stamped)
+	got := tcimpStoredProvenance(stamped.BomItems[0])
+	require.Equal(t, entity.BomWastageSourceLays, got.Source)
+	require.EqualValues(t, 3, got.LayCount.Int64)
+	require.Equal(t, "22", got.AppliedPercent.Decimal.String(),
+		"the badge is self-checking: the stamp certifies the number it was applied to")
+
+	// A line the resolver did NOT verify is not stamped by proximity to one that was.
+	other := tcimpEntityBomInsert("BOM-OTHER", "22.00", 3)
+	res.stampVerifiedWastageClaims(other)
+	require.Equal(t, entity.BomWastageSourceManual, tcimpStoredProvenance(other.BomItems[0]).Source)
+}
+
+// ──────────── archive_row_invalid: the rows that used to be thrown into a log ────────────
+//
+// Every case here was a `slog.Warn` and nothing else: the row vanished, the card imported, and the
+// report said the import was clean. The reason code for it already existed and had ZERO producers
+// — «the archive's own row is not a usable row» — which is exactly the shape of all of them.
+func TestResolveImportReportsTheRowsItUsedToOnlyLog(t *testing.T) {
+	t.Run("size chart cell and grade step", func(t *testing.T) {
+		s, _, _, _ := tcimpServer(t)
+		a := tcimpNewArchive()
+		a.with(techcardarchive.FileSizeChart, tcimpJSON(t, techcardarchive.SizeChart{
+			Cells: []techcardarchive.SizeChartCell{
+				{SizeName: "m", Measurement: "chest", Value: "52"},
+				{SizeName: "m", Measurement: "length", Value: "about 70"},
+			},
+			GradeBaseSizeName: "m",
+			GradeSteps: []techcardarchive.SizeChartGradeStep{
+				{Measurement: "chest", Step: "two centimetres"},
+			},
+		}))
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.Len(t, res.SizeChartPlan.Cells, 1, "the readable cell still imports")
+
+		holes := tcimpHoles(res, techcardarchive.ReasonArchiveRowInvalid)
+		require.Len(t, holes, 2)
+		refs := []string{holes[0].Ref, holes[1].Ref}
+		require.Contains(t, refs, "size_name=m/measurement=length")
+		require.Contains(t, refs, "measurement=chest")
+		for _, h := range holes {
+			require.Equal(t, techcardarchive.EntityMeasurement, h.Entity,
+				"a chart row reported as `size` sends the operator to a dictionary that is in perfect order")
+		}
+	})
+
+	t.Run("assembly line with an unusable quantity", func(t *testing.T) {
+		s, _, cards, _ := tcimpServer(t)
+		a := tcimpNewArchive()
+		a.with(techcardarchive.FileAssembly, tcimpJSON(t, []techcardarchive.AssemblyLink{
+			{ComponentStyleNumber: "AUX-1", Qty: "one per coat", Active: true},
+		}))
+		cards.EXPECT().ListTechCards(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return([]entity.TechCard{tcimpAuxCard(4100, "AUX-1")}, 1, nil)
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.Empty(t, res.AssemblyPlan)
+
+		holes := tcimpHoles(res, techcardarchive.ReasonArchiveRowInvalid)
+		require.Len(t, holes, 1)
+		require.Equal(t, techcardarchive.EntityAssembly, holes[0].Entity)
+		require.Equal(t, "component_style_number=AUX-1", holes[0].Ref)
+		require.Equal(t, 1, tcimpTally(t, res, techcardarchive.EntityAssembly).Skipped,
+			"the counter moved before and still does — the line is what was missing")
+	})
+
+	t.Run("marker index naming a file the archive does not carry", func(t *testing.T) {
+		s, _, _, _ := tcimpServer(t)
+		a := tcimpNewArchive()
+		a.with(techcardarchive.FileMarkersIndex, tcimpJSON(t, []techcardarchive.MarkerIndexEntry{
+			{MarkerName: "LAY-M", File: techcardarchive.DirMarkers + strings.Repeat("a", 64) + ".json"},
+		}))
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.Empty(t, res.MarkerPlan)
+
+		holes := tcimpHoles(res, techcardarchive.ReasonArchiveRowInvalid)
+		require.Len(t, holes, 1)
+		require.Equal(t, techcardarchive.EntityMarker, holes[0].Entity)
+		require.Equal(t, "marker_name=LAY-M", holes[0].Ref,
+			"a раскладка is referenced by nobody but this index, so a line here is the only line there will be")
+		require.Equal(t, 1, tcimpTally(t, res, techcardarchive.EntityMarker).Skipped)
+	})
+
+	t.Run("piece areas with no date and with no number", func(t *testing.T) {
+		s, _, _, _ := tcimpServer(t)
+		a := tcimpNewArchive()
+		a.outer = func(c *pb_common.TechCard) {
+			c.PieceAreaScopes = []*pb_common.TechCardPieceAreaScope{
+				{ // no parsed_at anywhere: the manifest carries no export time either
+					ScopeKey: "undated",
+					Areas: []*pb_common.TechCardPieceArea{
+						{PieceLineKey: "PIECE-A", AreaCm2: &pbdecimal.Decimal{Value: "100"}},
+					},
+				},
+				tcimpAreaScope("shell",
+					&pb_common.TechCardPieceArea{PieceLineKey: "PIECE-B", AreaCm2: &pbdecimal.Decimal{Value: "big"}},
+					&pb_common.TechCardPieceArea{PieceLineKey: "PIECE-C", AreaCm2: &pbdecimal.Decimal{Value: "900"}},
+				),
+			}
+		}
+
+		res, err := s.resolveTechCardImport(t.Context(), a.open(t))
+		require.NoError(t, err)
+		require.Len(t, res.PieceAreaPlan, 1, "the readable contour of the dated scope still imports")
+
+		holes := tcimpHoles(res, techcardarchive.ReasonArchiveRowInvalid)
+		require.Len(t, holes, 2)
+		refs := []string{holes[0].Ref, holes[1].Ref}
+		require.Contains(t, refs, "scope_key=undated")
+		require.Contains(t, refs, "shell/PIECE-B")
+		for _, h := range holes {
+			require.Equal(t, techcardarchive.EntityPieceArea, h.Entity,
+				"`pattern` would send somebody to re-upload a sheet that imported perfectly well")
+		}
+	})
 }

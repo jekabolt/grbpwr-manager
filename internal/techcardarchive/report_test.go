@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
@@ -720,4 +721,108 @@ func reportSortedKeys(set map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ────────────────────────────── the detail is bounded in BYTES ──────────────────────────────
+
+// A hole's detail quotes the archive — a fibre code, a size name, a scope key — and the archive is
+// somebody else's 16 MiB file. Counting the ENTRIES a producer spells out bounds nothing when one
+// entry can be megabytes: the string lands in the card's stored report and in every read of it
+// afterwards. So the assertion here is in BYTES, which is what the column and the wire hold, and
+// never in runes: a rune limit over Cyrillic prose bounds the string at twice the number it looks
+// like, and every detail in this package may be Cyrillic.
+func TestClipDetailBoundsBytesAndSaysItCut(t *testing.T) {
+	t.Run("short strings are untouched", func(t *testing.T) {
+		const s = "the row named nothing"
+		if got := ClipDetail(s, DetailLimit); got != s {
+			t.Errorf("ClipDetail rewrote a string that fits: %q", got)
+		}
+	})
+
+	t.Run("a long string is clipped to the limit and says so", func(t *testing.T) {
+		got := ClipDetail(strings.Repeat("x", 100_000), DetailLimit)
+		if len(got) > DetailLimit {
+			t.Errorf("ClipDetail returned %d bytes, over the %d-byte limit", len(got), DetailLimit)
+		}
+		if !strings.HasSuffix(got, detailClipMark) {
+			t.Errorf("a clipped detail that does not SAY it was clipped reads as a complete one: %q",
+				got[max(0, len(got)-40):])
+		}
+	})
+
+	t.Run("cyrillic is bounded in bytes and stays valid UTF-8", func(t *testing.T) {
+		// Two bytes per rune, so a rune-counting guard would let through twice the ceiling — and a
+		// cut landing mid-rune produces invalid UTF-8, which protojson refuses to marshal: the
+		// guard would then abort the very answer it exists to keep small.
+		got := ClipDetail(strings.Repeat("я", 50_000), DetailLimit)
+		if len(got) > DetailLimit {
+			t.Errorf("ClipDetail returned %d bytes, over the %d-byte limit", len(got), DetailLimit)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("the cut landed inside a rune — protojson would refuse the report: %q",
+				got[max(0, len(got)-16):])
+		}
+		if !strings.HasSuffix(got, detailClipMark) {
+			t.Errorf("no clip mark on a clipped cyrillic detail: %q", got[max(0, len(got)-40):])
+		}
+	})
+
+	t.Run("a limit too small to hold the mark still says it cut", func(t *testing.T) {
+		got := ClipDetail(strings.Repeat("x", 500), 3)
+		if got != detailClipMark {
+			t.Errorf("a nonsensical limit must answer with the mark and never with a silent cut, got %q", got)
+		}
+	})
+}
+
+// The clip lives in reportLine, which is the ONE funnel both kinds of hole pass through — and one
+// of the two kinds is foreign prose: an export hole's detail is copied out of somebody else's
+// manifest.json verbatim. A producer that bounds its own text is doing it twice; a producer that
+// forgets is bounded anyway, which is the property worth having.
+func TestReportLineClipsAnExportHoleFromAForeignManifest(t *testing.T) {
+	rep := BuildReport(ReportInput{
+		ExportHoles: []ExportHole{{
+			Entity: EntityMedia,
+			Ref:    "media_id=7",
+			Reason: ReasonMediaObjectMissing,
+			Detail: strings.Repeat("д", 200_000),
+		}},
+	})
+
+	if len(rep.GetLines()) != 1 {
+		t.Fatalf("expected the re-reported export hole, got %d lines", len(rep.GetLines()))
+	}
+	got := rep.GetLines()[0].GetDetail()
+	if len(got) > DetailLimit {
+		t.Errorf("a foreign manifest's detail reached the report at %d bytes — it is stored on the "+
+			"card and returned by every read of it", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Error("the clip cut inside a rune: protojson would refuse to marshal the report")
+	}
+}
+
+// The defect this code exists to close: the handler used to report a media row that VANISHED under
+// a running import with media_upload_failed. The action («import the archive again») was right and
+// the PROSE was false — nothing about this instance's storage refused anything — and its tail sent
+// the operator to inspect a bucket that is working perfectly. A wrong dictionary entry does not read
+// oddly; it decides which of three places a person spends an afternoon in.
+func TestMediaVanishedDoesNotBorrowTheUploadFailureSentence(t *testing.T) {
+	vanished := ActionFor(ReasonMediaVanished)
+	if vanished == "" {
+		t.Fatal("media_vanished has no action text; the closed dictionary keeps the code, its §7 row and its sentence together")
+	}
+	if vanished == ActionFor(ReasonMediaUploadFailed) {
+		t.Error("media_vanished repeats media_upload_failed's sentence — then the two codes are one code with two names")
+	}
+	if strings.Contains(strings.ToLower(vanished), "bucket") {
+		t.Errorf("the sentence sends the operator to the bucket, which is the false half it was "+
+			"split off to stop saying: %q", vanished)
+	}
+	if !strings.Contains(strings.ToLower(vanished), "again") {
+		t.Errorf("the remedy IS to import again, and the line has to say so: %q", vanished)
+	}
+	if got := DefaultStatusFor(ReasonMediaVanished); got != StatusSkipped {
+		t.Errorf("a slot left empty is skipped, not %q", got)
+	}
 }

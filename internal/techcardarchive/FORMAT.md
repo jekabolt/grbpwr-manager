@@ -635,6 +635,7 @@ explanation and the report action text.
 | `media_missing` | the archive has no file for a media slot the card references |
 | `media_object_missing` | EXPORT side: the source bucket would not give up the object — the archive has no bytes for that slot |
 | `media_upload_failed` | IMPORT side: the bytes were in the archive and the target bucket refused them — the slot is cleared |
+| `media_vanished` | IMPORT side: the bytes matched a media row this base already held, and that row was deleted mid-import — the slot is cleared |
 | `pattern_invalid` | the pattern file is unreadable or is not a DXF/PDF |
 | `size_unknown` | the size name is not in the target size dictionary |
 | `size_not_in_card_range` | the size IS in the target dictionary and the imported card does not make it — rows filed under it are dropped |
@@ -650,12 +651,32 @@ explanation and the report action text.
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |
 
-Every code but the last two means **this side is missing a reference**, and is closed here by adding
-it. `archive_row_invalid` is the one that is not: the row was broken before it travelled, so no
-dictionary entry on this side closes it — it is re-entered on the card or fixed on the source.
-`size_not_in_card_range` is the one whose reference is present and whose *card* is narrower, which is
-why it is not `size_unknown`: the action texts point at two different places, and only one of them
-is where the operator has to go.
+The table is precise; the sentence a maintainer picks a code by is what used to lie. There is no
+one axis here — there are FIVE CLASSES, and the class is the answer to «where does the person go?»,
+which is the only question a reason code exists to answer:
+
+1. **This side is missing a reference** — `material_not_found`, `material_ambiguous`,
+   `material_unit_mismatch`, `size_unknown`, `measurement_unknown`, `work_token_unknown`,
+   `category_unknown`, `assembly_component_not_found`, `norm_marker_lost`. Closed HERE: add the
+   article, the size, the measurement, the work, the category, the component — or re-run the marker
+   — and the card is whole. Importing the same archive again after that finishes the job.
+2. **The archive did not bring it** — `media_missing`, `media_object_missing`, `pattern_invalid`,
+   `archive_row_invalid`. Nothing on this side closes any of them: the bytes never travelled, or
+   travelled broken, or the row was already unusable when it was written. Fix it on the SOURCE card
+   and export again — or re-enter that one row here.
+3. **This import deliberately does not write it** — `colorways_not_applied`,
+   `composition_not_derived`, `wastage_claim_degraded`. Not a gap and not a failure: colourways are
+   products, the fibre breakdown is re-derived from this base's own catalogue, and a «median over N
+   cut lays» badge is an assertion about THIS server's lays that only this server's lays can
+   re-earn. The line is there so the loss is visible, not so somebody chases it.
+4. **This side collided or faltered** — `style_number_taken`, `media_upload_failed`,
+   `media_vanished`. The archive is fine and the reference is fine; the target base was busy. Each
+   has its own remedy (rename the card, look at the bucket, import again) and none of them is «add
+   the missing thing».
+5. **Neither side is at fault** — `size_not_in_card_range` (the size IS in the dictionary and the
+   imported card's own range is narrower — which is exactly why it is not `size_unknown`, whose
+   action text sends the operator to a dictionary that is in perfect order) and `unknown_entry`
+   (this server is older than the archive).
 
 `entity` on a hole is the human word for what it happened to — `media`, `material`, `bom_line`,
 `pattern`, `piece_area`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`,

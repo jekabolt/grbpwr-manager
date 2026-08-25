@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
@@ -211,9 +212,52 @@ func reportLine(entity, ref, status string, reason Reason, detail string) *pb_ad
 		Ref:    ref,
 		Status: status,
 		Reason: string(reason),
-		Detail: detail,
+		// CLIPPED HERE because this is the ONE funnel both kinds of hole pass through, and one of
+		// the two kinds is foreign prose: ExportHoles come out of manifest.json, which some other
+		// instance wrote, and their detail is copied into the stored report and into the RPC answer
+		// verbatim. A producer that bounds its own text is doing it twice; a producer that forgets
+		// is bounded anyway, which is the property worth having.
+		Detail: ClipDetail(detail, DetailLimit),
 		Action: ActionFor(reason),
 	}
+}
+
+// DetailLimit is the ceiling on ONE hole's free-text detail, in bytes.
+//
+// A couple of kilobytes: enough for the longest sentence any producer here writes plus the row it
+// names, and small enough that a report full of holes stays a report. The number that makes it
+// necessary is the other one — card.json may be 16 MiB, every repeated field in it is somebody
+// else's file, and a detail built out of one of those travels into the `report` JSON column and
+// into every read of the card afterwards. Counting ENTRIES bounds nothing when one entry can be
+// megabytes.
+const DetailLimit = 2048
+
+// detailClipMark is what a clipped detail ends with. It has to be visible: a sentence cut without
+// saying so reads as a complete one, and the operator acts on a list they think they have all of.
+const detailClipMark = "… [clipped]"
+
+// ClipDetail bounds s to limit BYTES, cutting on a rune boundary and saying that it cut.
+//
+// Bytes, not runes, because bytes are what the column and the wire hold — a rune limit over
+// Cyrillic prose (which every detail in this package may be) bounds the string at twice the number
+// it looks like. The cut walks back to a rune start, so the result never ends in half a character:
+// half a rune is invalid UTF-8, which protojson refuses to marshal — the guard would abort the very
+// answer it exists to keep small.
+//
+// A limit too small to hold the mark is a programming error and is answered with the mark alone,
+// because the alternative — a silent cut — is the thing this function exists to prevent.
+func ClipDetail(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	keep := limit - len(detailClipMark)
+	if keep <= 0 {
+		return detailClipMark
+	}
+	for keep > 0 && !utf8.RuneStart(s[keep]) {
+		keep--
+	}
+	return s[:keep] + detailClipMark
 }
 
 // buildCounters emits the eight counted entities in their fixed order, then anything else the
@@ -390,6 +434,11 @@ var reasonGuide = map[Reason]reasonGuidance{
 	ReasonMediaUploadFailed: {StatusSkipped,
 		"The picture travelled but this instance's storage refused it, so the slot was left empty. " +
 			"Import the same archive again; if it keeps failing, the bucket needs looking at."},
+	ReasonMediaVanished: {StatusSkipped,
+		"This picture was already stored here, so nothing was uploaded — and that stored copy was " +
+			"deleted while the import was running, usually by another import being rolled back. " +
+			"Nothing is wrong with the archive or with the storage: import the same archive again " +
+			"and the file will be uploaded afresh."},
 
 	ReasonPatternInvalid: {StatusSkipped,
 		"The pattern file could not be read as a DXF or a PDF. Upload the sheet by hand on the " +
@@ -424,8 +473,9 @@ var reasonGuide = map[Reason]reasonGuidance{
 			"free-text composition did travel and is on the card. Save the card to derive the breakdown; " +
 			"if it comes out empty, the linked articles carry no fibre composition in this catalogue."},
 	ReasonWastageClaimDegraded: {StatusDegraded,
-		"The figure stands but its provenance did not travel, so it now reads as entered by hand. " +
-			"Re-check it on the fabric tab and re-derive it from the marker if that matters."},
+		"The figure stands, but this base's own measured lays do not confirm it as their median, so " +
+			"it now reads as entered by hand. Open the fabric tab and apply this base's suggestion " +
+			"if you want the badge back — the number itself is unchanged either way."},
 	ReasonNormMarkerLost: {StatusDegraded,
 		"The norm stands, the marker stamp behind it does not. Re-run the marker on this card if you " +
 			"need the geometry the norm came from."},

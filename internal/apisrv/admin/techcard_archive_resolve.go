@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -193,10 +194,42 @@ type resolvedTechCardImport struct {
 	// re-marshal would drop them under the label "what the archive said".
 	ColorwaysRaw json.RawMessage
 
+	// WastageVerified holds the `line_key` of every BOM line whose 'lays' wastage badge THIS base's
+	// own calibration re-confirmed (verifyWastageClaims). It is a SERVER VERDICT and has no wire
+	// field: entity.TechCardBomItem.WastageClaimVerified is `db:"-"`, and it is the single door
+	// through which a fresh claim becomes a badge (entity.ResolveBomWastageProvenance, fail-closed
+	// — a direct store caller can open nothing). The write path stamps it onto the converted
+	// payload with stampVerifiedWastageClaims; a line that is not in here lands 'manual', which is
+	// what the archive was rewritten to say and what its report line records.
+	WastageVerified map[string]bool
+
 	// Holes are what could not be placed cleanly; Counters are how much was seen. TWO SOURCES, kept
 	// separate on purpose — see report.go.
 	Holes    []techcardarchive.ImportHole
 	Counters techcardarchive.Counters
+}
+
+// stampVerifiedWastageClaims carries the resolver's verdict onto the entity payload the store
+// takes, and it is the LAST HALF of the badge check — without it the check is a read that decides
+// nothing.
+//
+// It is separate from the resolver because the entity does not exist yet when the resolver runs:
+// the payload is converted from `Insert` after the archive's files have moved (tcciPayload), and
+// WastageClaimVerified lives only on the entity. Idempotent, so the commit's repair path — which
+// re-derives the payload from the same plan — stamps the same lines a second time and no others.
+func (res *resolvedTechCardImport) stampVerifiedWastageClaims(card *entity.TechCardInsert) {
+	if res == nil || card == nil || len(res.WastageVerified) == 0 {
+		return
+	}
+	for i := range card.BomItems {
+		b := &card.BomItems[i]
+		if b.WastageSource != entity.BomWastageSourceLays {
+			continue
+		}
+		if res.WastageVerified[strings.TrimSpace(b.LineKey)] {
+			b.WastageClaimVerified = true
+		}
+	}
 }
 
 // tcimpResolver is the working state of one resolve. It exists so the six maps, the hole list and
@@ -235,6 +268,11 @@ type tcimpResolver struct {
 	// holeSeen dedupes by (entity, ref, reason). One missing size is referenced by ten fields of the
 	// card and would otherwise produce ten identical lines; the tally still counts the rows.
 	holeSeen map[string]bool
+
+	// bomDegraded remembers which BOM lines have already been moved out of the imported column, so
+	// a line that loses BOTH its catalogue link and its wastage badge is one degraded row and not
+	// two. Keyed by the payload's own pointer — see degradeBomLine.
+	bomDegraded map[*pb_common.TechCardBomItem]bool
 }
 
 // resolveTechCardImport turns an opened archive into a plan for THIS base.
@@ -256,8 +294,9 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	r := &tcimpResolver{
 		s: s, a: a,
 		out: &resolvedTechCardImport{
-			Counters:     techcardarchive.NewCounters(),
-			MaterialPlan: map[int64]tcimpMaterialMatch{},
+			Counters:        techcardarchive.NewCounters(),
+			MaterialPlan:    map[int64]tcimpMaterialMatch{},
+			WastageVerified: map[string]bool{},
 		},
 		sizeIDByName:        make(map[string]int, len(di.Sizes)),
 		measurementIDByName: make(map[string]int, len(di.Measurements)),
@@ -266,6 +305,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 		sizeMissed:          map[int64]bool{},
 		syntheticSizeID:     map[string]int64{},
 		holeSeen:            map[string]bool{},
+		bomDegraded:         map[*pb_common.TechCardBomItem]bool{},
 	}
 	for _, sz := range di.Sizes {
 		r.sizeIDByName[tcimpKey(sz.Name)] = sz.Id
@@ -335,6 +375,9 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	if err := r.resolveMaterials(ctx); err != nil {
 		return nil, err
 	}
+	// AFTER resolveMaterials, because the badge is a claim about the lays of the line's article and
+	// the article it names is the TARGET one that step just linked (or did not).
+	r.verifyWastageClaims(ctx)
 	if err := r.resolveWorkTokens(ctx); err != nil {
 		return nil, err
 	}
@@ -374,7 +417,13 @@ func (r *tcimpResolver) hole(entityName, ref, status string, reason techcardarch
 	}
 	r.holeSeen[key] = true
 	r.out.Holes = append(r.out.Holes, techcardarchive.ImportHole{
-		Entity: entityName, Ref: ref, Status: status, Reason: reason, Detail: detail,
+		Entity: entityName, Ref: ref, Status: status, Reason: reason,
+		// BOUNDED HERE, at the one funnel every hole of this file passes through. Half the details
+		// below quote the archive — a fibre code, a size name, a quantity, a scope key — and the
+		// archive is somebody else's 16 MiB file, so «the producer was sensible» is not a property
+		// this side may rely on. The dry run answers with these, the commit stores them on the card
+		// forever, and both are read by a human.
+		Detail: techcardarchive.ClipDetail(detail, techcardarchive.DetailLimit),
 	})
 }
 
@@ -723,6 +772,7 @@ func (r *tcimpResolver) resolveMaterials(ctx context.Context) error {
 			// says so with material_not_found); this is the second half of the same news, on the
 			// side where the line actually lands unlinked.
 			degraded++
+			r.bomDegraded[b] = true
 			r.hole(techcardarchive.EntityMaterial, ref, techcardarchive.StatusDegraded,
 				techcardarchive.ReasonMaterialNotFound,
 				fmt.Sprintf("the archive carries no passport for material_id=%d, so there was nothing to match; "+
@@ -736,6 +786,7 @@ func (r *tcimpResolver) resolveMaterials(ctx context.Context) error {
 			continue
 		}
 		degraded++
+		r.bomDegraded[b] = true
 		r.hole(techcardarchive.EntityMaterial, ref, techcardarchive.StatusDegraded,
 			techcardarchive.ReasonForMaterialVerdict(match.Verdict),
 			fmt.Sprintf("passport %q (%s / %s) did not resolve to one live article here; the line imported unlinked",
@@ -787,6 +838,162 @@ func (r *tcimpResolver) resolveOutputMaterial(byRef map[int64]techcardarchive.Ma
 		fmt.Sprintf("the output article's passport %q (%s / %s) did not resolve to one live article here; set the "+
 			"card's output material by hand before its first production run", p.Code, p.Supplier, p.SupplierRef))
 }
+
+// ──────────── 4b. the wastage badge: an assertion about THIS base, re-earned or lost ────────────
+
+// verifyWastageClaims re-runs the save path's own claim check (verifyBomWastageClaims) over the
+// archive's BOM lines, against the настилы measured HERE.
+//
+// WHY IT EXISTS AT ALL. `wastage_source = 'lays'` is not a label attached to a number: it is the
+// ASSERTION that the number IS this server's current median over its measured cut lays, and the
+// server storing it is the one that has to stand behind it (bom_wastage.go says so in as many
+// words). The export writes the EFFECTIVE provenance into card.json (dto.techCardBomItemsToPb), so
+// the claim travels — and until this function existed, nothing on the import side ever checked it.
+// The chain ended in silence: the commit pipeline does not call verifyBomWastageClaims (only
+// CreateTechCard does), so entity.TechCardBomItem.WastageClaimVerified stayed false, and
+// entity.ResolveBomWastageProvenance turned «new row + source lays + unverified» into 'manual'
+// — no badge, no hole, no line. A figure that was a measured median on one screen became a figure
+// somebody typed on another, and the report said nothing at all.
+//
+// IT RUNS IN THE RESOLVER because the resolver is the ONE step both the dry run
+// (PrepareTechCardImport) and the commit go through, and the operator has to see this before they
+// press the button, not after. It is also a pure READ of the target base, which is all a resolver
+// may do.
+//
+// THE HAPPY PATH IS THE OWNER'S MAIN CASE: restoring a card into the base it came from. The lays
+// have not moved, the median is the same number, the claim re-earns itself, and the badge survives
+// legitimately rather than by being trusted. That is also what keeps a round-trip test over this
+// field honest — it passes because the assertion was re-checked, not because it was waved through.
+//
+// A FAILED CALIBRATION READ IS A DEGRADATION, NOT A REFUSAL, and this is the one place where that
+// differs from the live save path. There, a transient read failure must NOT silently drop a badge
+// the card already has (bom_wastage.go, MAJOR 1), so the save is refused. Here the card does not
+// exist yet and there is no badge to take away: refusing would throw away a whole import over a
+// database blip, while degrading costs the line its provenance and says so in the report. The
+// number itself is untouched either way.
+func (r *tcimpResolver) verifyWastageClaims(ctx context.Context) {
+	// nil in the cache means «this article's calibration could not be read» — remembered so a card
+	// with eight lines of one article does not hammer a database that is already unhappy.
+	cache := make(map[int]*dto.BomWastageSuggestion)
+
+	for _, b := range r.out.Insert.GetBomItems() {
+		if b == nil {
+			continue
+		}
+		ref := fmt.Sprintf("bom_line_key=%s", b.GetLineKey())
+		if strings.TrimSpace(b.GetWastageSource()) != entity.BomWastageSourceLays {
+			// A lay count with no 'lays' beside it is a badge's counter on a hand-typed number, and
+			// the wire converter refuses the payload over it (dto.parseTechCardBomItems) — which
+			// would cost the whole import one malformed row of somebody else's file. Dropped with a
+			// line instead, under the owner's rule.
+			if b.WastageLayCount != nil {
+				b.WastageLayCount = nil
+				r.hole(techcardarchive.EntityBOMLine, ref, techcardarchive.StatusDegraded,
+					techcardarchive.ReasonArchiveRowInvalid,
+					"the archive files a measured-lay count on a line whose wastage percent is not "+
+						"claimed to come from lays; the count named nothing and was dropped, and the "+
+						"percent imported as it stands")
+				r.degradeBomLine(b)
+			}
+			continue
+		}
+
+		if why := r.wastageClaimMiss(ctx, b, ref, cache); why != "" {
+			// The number stands; only the assertion about where it came from does not. Rewritten on
+			// the payload rather than left for the store to turn down, so the plan the dry run shows
+			// and the row the commit writes say the same thing — and so a claim the wire converter
+			// would refuse outright (a count below the suggestion threshold, a 'lays' with no
+			// percent) costs one report line instead of the whole import.
+			b.WastageSource = tcimpStringPtr(entity.BomWastageSourceManual)
+			b.WastageLayCount = nil
+			r.hole(techcardarchive.EntityBOMLine, ref, techcardarchive.StatusDegraded,
+				techcardarchive.ReasonWastageClaimDegraded, why)
+			r.degradeBomLine(b)
+			continue
+		}
+		if key := strings.TrimSpace(b.GetLineKey()); key != "" {
+			r.out.WastageVerified[key] = true
+		}
+	}
+}
+
+// wastageClaimMiss answers WHY this base cannot stand behind the archive's badge, in the words the
+// report line will carry. The empty string means it can.
+//
+// Every branch is the same comparison verifyBomWastageClaims makes on the save path — the median
+// and the lay count, both, off bomWastageCalibrationInput, so the two sides stand on ONE ruler.
+// Re-deriving it more cheaply here (say, over the lays alone, without the article's cutting
+// coefficient in the denominator) is the exact drift that file warns about: the claim would stop
+// confirming and the badge would become 'manual' for no reason anybody could name.
+func (r *tcimpResolver) wastageClaimMiss(ctx context.Context, b *pb_common.TechCardBomItem, ref string,
+	cache map[int]*dto.BomWastageSuggestion) string {
+
+	const readFailed = "this base's own measured lays could not be read just now, so the claim could " +
+		"not be confirmed here; the percent imported as entered by hand and nothing was thrown away"
+
+	matID := int(b.GetMaterialId())
+	if matID <= 0 {
+		return "the badge claims this percent is the median over measured lays of the line's article, " +
+			"and the line did not land linked to an article here — there are no lays to take a median of"
+	}
+	percent, ok := tcimpWireDecimal(b.GetWastagePercent(), "wastage_percent", ref)
+	if !ok {
+		return "the badge claims this percent is a median and the archive carries no readable percent " +
+			"beside it, so there is nothing to confirm"
+	}
+	if b.WastageLayCount == nil || b.GetWastageLayCount() <= 0 {
+		return "the badge names no lay count, and a median nobody says how many lays it stands on " +
+			"cannot be re-checked against this base"
+	}
+
+	sug, cached := cache[matID]
+	if !cached {
+		in, err := r.s.bomWastageCalibrationInput(ctx, matID)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "tech card import: can't re-check an imported wastage claim",
+				slog.Int("material_id", matID), slog.String("bom_line_key", b.GetLineKey()),
+				slog.String("err", err.Error()))
+			cache[matID] = nil
+			return readFailed
+		}
+		obs, _ := dto.BomWastageObservationsOf(in)
+		s := dto.BomWastageSuggestionOf(obs)
+		sug, cache[matID] = &s, &s
+	}
+	if sug == nil {
+		return readFailed
+	}
+
+	if sug.Status != dto.WastageSuggestionReady || !sug.SuggestedPercent.Valid {
+		return fmt.Sprintf("this base has no median to confirm the claim against for that article "+
+			"(%s over %d measured lays); the archive claims %s%% over %d",
+			sug.Status, sug.LayCount, percent.String(), b.GetWastageLayCount())
+	}
+	if !sug.SuggestedPercent.Decimal.Equal(percent) || int(b.GetWastageLayCount()) != sug.LayCount {
+		return fmt.Sprintf("this base's own median for that article is %s%% over %d measured lays, "+
+			"and the archive claims %s%% over %d — a badge is an assertion about THIS server's lays",
+			sug.SuggestedPercent.Decimal.String(), sug.LayCount, percent.String(), b.GetWastageLayCount())
+	}
+	return ""
+}
+
+// degradeBomLine moves ONE line from the imported column to the degraded one, once.
+//
+// resolveMaterials has already counted every line as imported or degraded against the CATALOGUE
+// LINK, and a line that loses its wastage badge afterwards is the same row, not a second one:
+// adding a degraded without taking the imported back would make the bom_line column count more
+// rows than the card has. The dedupe is by the payload's own pointer rather than by line_key,
+// because line_key is the archive's and two lines of a hostile file may share one.
+func (r *tcimpResolver) degradeBomLine(b *pb_common.TechCardBomItem) {
+	if r.bomDegraded[b] {
+		return
+	}
+	r.bomDegraded[b] = true
+	r.out.Counters.AddImported(techcardarchive.EntityBOMLine, -1)
+	r.out.Counters.AddDegraded(techcardarchive.EntityBOMLine, 1)
+}
+
+func tcimpStringPtr(s string) *string { return &s }
 
 // ────────────────────────────── 5. work tokens ──────────────────────────────
 
@@ -1030,12 +1237,16 @@ func (r *tcimpResolver) resolveSizeChart() error {
 		}
 		value, err := decimal.NewFromString(strings.TrimSpace(c.Value))
 		if err != nil {
-			// A decimal that is not a decimal is a malformed sidecar, not a missing reference, and
-			// the closed dictionary has no code for it. Dropping the one cell keeps the chart; the
-			// log is what stops it being silent.
-			slog.Default().Warn("tech card import: size chart cell carries an unreadable value",
-				slog.String("size", c.SizeName), slog.String("measurement", c.Measurement),
-				slog.String("value", c.Value))
+			// A decimal that is not a decimal is a malformed sidecar rather than a missing
+			// reference, and archive_row_invalid is exactly that half of the dictionary: the row
+			// was already broken when it was written, so nothing on this side closes it. Dropping
+			// the one cell keeps the chart — but a server log is not a report, and a chart quietly
+			// one cell short is the silent loss this whole feature exists to make impossible.
+			r.hole(techcardarchive.EntityMeasurement,
+				fmt.Sprintf("size_name=%s/measurement=%s", c.SizeName, c.Measurement),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the size chart's cell carries %q, which is not a number; the cell was "+
+					"dropped and the rest of the chart imported", c.Value))
 			continue
 		}
 		out.Cells = append(out.Cells, entity.StyleSizeChartCell{
@@ -1055,8 +1266,13 @@ func (r *tcimpResolver) resolveSizeChart() error {
 		}
 		step, err := decimal.NewFromString(strings.TrimSpace(st.Step))
 		if err != nil {
-			slog.Default().Warn("tech card import: grade step carries an unreadable value",
-				slog.String("measurement", st.Measurement), slog.String("step", st.Step))
+			// Same code and same reason as the cell above — and it costs more than one cell: the
+			// half-rule guard below throws the WHOLE grade rule away when the steps do not survive,
+			// so a chart can arrive with no grading at all off one unreadable number.
+			r.hole(techcardarchive.EntityMeasurement, fmt.Sprintf("measurement=%s", st.Measurement),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the size chart's grade step carries %q, which is not a number; the step "+
+					"was dropped, and a grade rule that loses its steps is not imported at all", st.Step))
 			continue
 		}
 		out.GradeSteps = append(out.GradeSteps, entity.StyleSizeChartGradeStep{
@@ -1163,11 +1379,15 @@ func (r *tcimpResolver) resolveAssembly(ctx context.Context) error {
 		qty, err := decimal.NewFromString(strings.TrimSpace(l.Qty))
 		if err != nil || !qty.IsPositive() {
 			// The store refuses a non-positive qty with a field violation, which would take the
-			// whole import down over one label line. No reason code covers "the sidecar's number is
-			// not a number", so the line is dropped, counted and logged.
+			// whole import down over one label line. Dropped, counted and REPORTED under
+			// archive_row_invalid — «the row carries a value that is not one» is that code's own
+			// definition, and a component silently missing from an assembly bill is a label nobody
+			// finds out was not sewn on.
 			skipped++
-			slog.Default().WarnContext(ctx, "tech card import: assembly line carries an unusable quantity",
-				slog.String("component", number), slog.String("qty", l.Qty))
+			r.hole(techcardarchive.EntityAssembly, ref, techcardarchive.StatusSkipped,
+				techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the assembly line carries the quantity %q, which is not a usable number; "+
+					"the component was not linked and the rest of the bill imported", l.Qty))
 			continue
 		}
 
@@ -1300,9 +1520,14 @@ func (r *tcimpResolver) resolveMarkers() error {
 	for _, e := range index {
 		ref := fmt.Sprintf("marker_name=%s", e.MarkerName)
 		if !r.a.Has(e.File) {
+			// The index is the archive's own row and it points at nothing. Unlike a media slot —
+			// whose miss is reported where the CARD uses it — a раскладка is referenced by nobody
+			// but this index, so a line written here is the only line there will ever be.
 			skipped++
-			slog.Default().Warn("tech card import: marker index names a file the archive does not carry",
-				slog.String("file", e.File), slog.String("marker", e.MarkerName))
+			r.hole(techcardarchive.EntityMarker, ref, techcardarchive.StatusSkipped,
+				techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the marker index names %q and the archive does not carry that file; the "+
+					"раскладка was not imported", e.File))
 			continue
 		}
 		raw, err := r.a.ReadFile(e.File)
@@ -1320,8 +1545,11 @@ func (r *tcimpResolver) resolveMarkers() error {
 			// built the archive already filtered them out; this is the second half of the same
 			// statement, so a change of that read cannot smuggle one in.
 			skipped++
-			slog.Default().Warn("tech card import: skipped a production run's marker found in a style archive",
-				slog.String("file", e.File), slog.Int("production_run_id", int(summary.GetProductionRunId())))
+			r.hole(techcardarchive.EntityMarker, ref, techcardarchive.StatusSkipped,
+				techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("this раскладка belongs to production run %d and a style archive may not "+
+					"carry one; it was not imported, and the card's own markers were",
+					summary.GetProductionRunId()))
 			continue
 		}
 
@@ -1498,8 +1726,19 @@ func (r *tcimpResolver) resolveStyleFacts() {
 // property of card.json that the transaction has no reason to re-read.
 //
 // The numbers go into the detail because the report is the only place on this side they exist at
-// all, and the list is CAPPED: an archive is somebody else's file and `composition_entries` is
-// repeated, so the detail is bounded by construction rather than by the reader's good manners.
+// all, and the list is CAPPED IN BOTH DIRECTIONS: how many entries are spelled out, and how many
+// BYTES each of them may contribute.
+//
+// COUNTING ENTRIES BOUNDS NOTHING ON ITS OWN, and that was the defect. `fiber_code` and `percent`
+// are strings off somebody else's file, `card.json` may be 16 MiB, and twelve entries of a hostile
+// archive can therefore be twelve megabytes of report line — stored in the card's `report` JSON
+// column and returned by every read of it afterwards. A test that feeds four hundred SHORT values
+// proves only the first cap; the ceiling that matters is the byte one, and it is asserted in bytes.
+//
+// Each field is clipped first (a rogue value costs its own slot and not the eleven others' room),
+// then the finished sentence is clipped again — belt and braces, because the count of entries is
+// bounded and the count of clipped fields therefore is too, but the header text around them is not
+// this function's to reason about.
 func (r *tcimpResolver) reportCompositionEntries() {
 	entries := r.card.GetCompositionEntries()
 	if len(entries) == 0 {
@@ -1507,18 +1746,22 @@ func (r *tcimpResolver) reportCompositionEntries() {
 	}
 
 	const spelled = 12 // more fibres than any garment declares; a hostile archive may carry thousands
-	parts := make([]string, 0, spelled)
+	// 48 bytes holds every fibre code and every percentage a real breakdown has ever carried, with
+	// room to spare for the Cyrillic ones — and twelve of them cannot add up to a line nobody reads.
+	const fieldLimit = 48
+
+	parts := make([]string, 0, spelled+1)
 	for _, e := range entries {
 		if len(parts) == spelled {
 			parts = append(parts, fmt.Sprintf("… and %d more", len(entries)-spelled))
 			break
 		}
-		code := strings.TrimSpace(e.GetFiberCode())
+		code := techcardarchive.ClipDetail(strings.TrimSpace(e.GetFiberCode()), fieldLimit)
 		if code == "" {
 			code = "?"
 		}
-		if pct := e.GetPercent(); pct != nil && strings.TrimSpace(pct.GetValue()) != "" {
-			parts = append(parts, fmt.Sprintf("%s %s%%", code, strings.TrimSpace(pct.GetValue())))
+		if pct := strings.TrimSpace(e.GetPercent().GetValue()); pct != "" {
+			parts = append(parts, fmt.Sprintf("%s %s%%", code, techcardarchive.ClipDetail(pct, fieldLimit)))
 			continue
 		}
 		parts = append(parts, code)
@@ -1569,8 +1812,11 @@ func (r *tcimpResolver) resolvePieceAreas() {
 			parsedAt = r.a.Manifest.ExportedAt
 		}
 		if parsedAt.Unix() <= 0 {
-			slog.Default().Warn("tech card import: dropped a piece-area scope with no measurement date",
-				slog.String("scope_key", sc.GetScopeKey()), slog.Int("areas", len(sc.GetAreas())))
+			r.hole(techcardarchive.EntityPieceArea, fmt.Sprintf("scope_key=%s", sc.GetScopeKey()),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("this measured scope carries no date, and neither does the archive, so its "+
+					"%d contour areas were dropped rather than stamped with a day nobody measured on; "+
+					"re-measure the pattern sheets here to recount them", len(sc.GetAreas())))
 			continue
 		}
 
@@ -1585,9 +1831,14 @@ func (r *tcimpResolver) resolvePieceAreas() {
 			area, ok := tcimpWireDecimal(ar.GetAreaCm2(), "area_cm2", ref)
 			if !ok {
 				// chk_tcpa_area_positive refuses it at the schema level anyway; caught here so a
-				// corrupt row costs one line of the log instead of the transaction.
-				slog.Default().Warn("tech card import: dropped a piece area with no readable area",
-					slog.String("scope_key", sc.GetScopeKey()), slog.String("piece_line_key", ar.GetPieceLineKey()))
+				// corrupt row costs one report line instead of the transaction. Reported and not
+				// merely logged, because the per-size areas feed the base-size cloth norm: a
+				// contour that quietly fails to arrive moves money on a screen nobody is looking at.
+				r.hole(techcardarchive.EntityPieceArea, ref, techcardarchive.StatusSkipped,
+					techcardarchive.ReasonArchiveRowInvalid,
+					fmt.Sprintf("the measured area of this cut piece is %q, which is not a usable "+
+						"number; the row was dropped and the scope's other contours imported",
+						ar.GetAreaCm2().GetValue()))
 				continue
 			}
 
