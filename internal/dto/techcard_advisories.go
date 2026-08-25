@@ -251,7 +251,24 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 			if cw.Status == entity.ColorwayStatusArchived {
 				continue
 			}
-			for _, u := range entity.CountablePairUsages(cw.Usages, b) {
+			for k := range cw.Usages {
+				u := &cw.Usages[k]
+				// СТРОКА РЕЗОЛВИТСЯ К СЛОТУ ДВУМЯ ПУТЯМИ, И СПРАШИВАТЬ НАДО ОБА. Пара
+				// (CountablePairUsages) по carve-out'у 0295 намеренно исключает легаси-строки,
+				// адресующие слот позиционным индексом: в ДЕНЬГАХ они не группируются, потому что
+				// схлопывание смешало бы разные материалы. Но вопрос этой проверки другой —
+				// «поминает ли слот хоть одна строка рецепта», — и на него легаси-строка отвечает
+				// ДА: она этот слот потребляет и платит за него своим числом. Спросить только пару
+				// значило бы обвинить исправную карточку в том, что её слот никто не покупает.
+				// Тот же resolveUsageBom, которым идёт костинг, — второй копии правила нет.
+				if resolveUsageBom(tc.BomItems, u) != b {
+					continue
+				}
+				// Строка, привязанная к детали кроя, назначает материал и нормы не несёт (T8):
+				// «поминает» слот она не в том смысле, о котором спрашивают деньги.
+				if u.IsPieceMaterialAssignment() {
+					continue
+				}
 				used = true
 				if len(u.SizeConsumptions) > 0 {
 					sized = true

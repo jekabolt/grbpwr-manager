@@ -106,10 +106,12 @@ func parseOperationBomQuantities(
 				"reference an existing BOM line by its line_key")
 		}
 		if !entity.IsCountableSection(section) {
+			// Причина — МАШИННЫЙ токен, а третий аргумент — конфликтующее значение: собранное
+			// сообщение читается как «field: reason (used by conflicting)», и предложение,
+			// поставленное причиной, дало бы «…not by the piece (used by BOM line …)».
 			return nil, entity.NewFieldViolation(field+".qty_per_garment",
-				"a measured material is counted by its norm, not by the piece",
-				fmt.Sprintf("BOM line %q is section %q", key, section),
-				"clear the per-step count, and put the consumption on the colourway recipe row instead")
+				"measured_section", string(section),
+				"a measured material is counted by its norm, not by the piece: clear the per-step count and put the consumption on the colourway recipe row instead")
 		}
 		out = append(out, entity.OperationBomQty{LineKey: key, QtyPerGarment: nd.Decimal})
 	}

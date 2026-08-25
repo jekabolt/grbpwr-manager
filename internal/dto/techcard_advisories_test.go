@@ -281,6 +281,26 @@ func TestTechCardAdvisoriesCountableSlot(t *testing.T) {
 			want:   nil,
 		},
 		{
+			// ШОВ С CARVE-OUT'ОМ 0295. Легаси-строка адресует слот ПОЗИЦИОННЫМ индексом, и пара
+			// (CountablePairUsages) её намеренно не берёт — в деньгах такие строки не группируются.
+			// Но слот она потребляет и платит за него, поэтому обвинение «его не поминает ни один
+			// рецепт» было бы ложным. Спрашивать надо оба пути резолва, как это делает костинг.
+			name:   "слот поминает ЛЕГАСИ-строка, адресующая его позицией, — молчание",
+			bom:    []entity.TechCardBomItem{countable()},
+			usages: []entity.TechCardColorwayUsage{{BomItemIndex: advI32(0), Quantity: advDec("6")}},
+			want:   nil,
+		},
+		{
+			// Отрицательное утверждение рядом с предыдущим: строка, привязанная к ДЕТАЛИ, слот не
+			// «поминает» в том смысле, о котором спрашивают деньги, — нормы она не несёт вовсе.
+			name: "строка назначает материал ДЕТАЛИ — слот всё ещё никем не куплен",
+			bom:  []entity.TechCardBomItem{countable()},
+			usages: []entity.TechCardColorwayUsage{{
+				BomItemId: advI64(10), PieceId: advI64(77),
+			}},
+			want: []string{AdviceCountableSlotUnused},
+		},
+		{
 			name: "строка рецепта считается ПО РАЗМЕРАМ — счётное число не читается",
 			bom:  []entity.TechCardBomItem{countable()},
 			usages: []entity.TechCardColorwayUsage{{
