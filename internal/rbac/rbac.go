@@ -627,6 +627,13 @@ var methodRequirements = map[string]Requirement{
 	"AddTaskChecklistItem":     wr(SectionTasks),
 	"SetTaskChecklistItemDone": wr(SectionTasks),
 	"DeleteTaskChecklistItem":  wr(SectionTasks),
+	// Сабтаски, связи и удаление реплики. Все четыре — ЗАПИСЬ по секции задач; у DeleteTaskComment
+	// поверх этого стоит ВТОРОЙ гейт в хендлере («свою реплику — автор, супер — любую»), потому что
+	// карта прав знает секцию, но не знает, чья это реплика.
+	"SetTaskParent":     wr(SectionTasks),
+	"AddTaskLink":       wr(SectionTasks),
+	"DeleteTaskLink":    wr(SectionTasks),
+	"DeleteTaskComment": wr(SectionTasks),
 	// ЗАДАЧИ ФАЙЛА — секция TASKS, а не files, хотя все три RPC живут по адресу /api/admin/files/… и
 	// зовутся с карточки файла. Секция следует за тем, ЧТО В ОТВЕТЕ, а не за тем, где кнопка (прецедент
 	// GetMaterialCuttingCoefficientSuggestion выше в production): в ответе едут заголовки, колонки,

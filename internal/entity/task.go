@@ -2,7 +2,26 @@ package entity
 
 import (
 	"database/sql"
+	"errors"
 	"time"
+)
+
+// Отказы, у которых есть ФРАЗА, а не код нарушения ключа. Оба про отношения между двумя живыми
+// карточками, поэтому живут здесь, а не рядом с ErrTaskNeedsProjectTopic (та — про семью «проектное
+// свойство бывает только у проекта»).
+//
+// Хендлер обязан проверять их ПОСЛЕ sql.ErrNoRows: «задачи нет» и «так связывать нельзя» — разные
+// ответы на разные ошибки человека, и порядок здесь несущий (тот же порядок, что в UpdateTask).
+var (
+	// ErrTaskParentCycle — предлагаемый родитель является потомком самой задачи (или ею самой).
+	// Ловится подъёмом по цепочке parent_task_id ВНУТРИ пишущей SERIALIZABLE-транзакции: только там
+	// чтение цепочки запирает строки и закрывает гонку двух встречных SetTaskParent.
+	ErrTaskParentCycle = errors.New("a task cannot become a subtask of its own descendant")
+	// ErrTaskReverseBlock — обратная связь blocks уже существует (B блокирует A, просят A блокирует
+	// B). Это ошибка ВСЕГДА и проверяется одним SELECT. Длинные циклы (A→B→C→A) наоборот терпятся:
+	// блокер здесь совет, а не замок, и отказ «эта связь замыкает цикл через 4 задачи» ценой обхода
+	// графа на каждую вставку путал бы сильнее самого цикла.
+	ErrTaskReverseBlock = errors.New("these tasks already block each other the other way round")
 )
 
 // TaskBoard is the department lane a kanban task lives in. Stored verbatim.
@@ -70,10 +89,16 @@ var ValidTaskPriorities = map[TaskPriority]bool{
 // TaskInsert is the writable CONTENT of a task. Placement (board/status/position)
 // and server-stamped fields (id, created_by, timestamps) live on Task, not here.
 type TaskInsert struct {
-	Title           string         `db:"title"`
-	Description     sql.NullString `db:"description"`
-	Assignee        string         `db:"assignee"`
-	Priority        TaskPriority   `db:"priority"`
+	Title       string         `db:"title"`
+	Description sql.NullString `db:"description"`
+	// Assignees — ИСПОЛНИТЕЛИ КАРТОЧКИ, список без «главного» (task_assignee, 0337). Порядок = порядок
+	// показа. Заменяются целиком при сохранении, как Labels.
+	//
+	// Поля Assignee здесь БОЛЬШЕ НЕТ, и колонка task.assignee этим кодом не читается и не пишется.
+	// Она осиротела и ждёт отдельной миграции на снос — internal/store/sql/README-pending-drops.md.
+	// На проводе поле assignee живёт ещё один релиз алиасом совместимости (см. dto).
+	Assignees []string     `db:"-"`
+	Priority  TaskPriority `db:"priority"`
 	DueDate         sql.NullTime   `db:"due_date"`
 	StartDate       sql.NullTime   `db:"start_date"` // planned start (manual); actual start is Task.StartedAt
 	TechCardId      sql.NullInt32  `db:"tech_card_id"`
@@ -142,6 +167,53 @@ type Task struct {
 	// in_progress, never cleared afterwards. Invalid/NULL = not started yet.
 	StartedAt sql.NullTime        `db:"started_at"`
 	Checklist []TaskChecklistItem `db:"-"`
+	// ParentTaskId — родитель-сабтаска (0338). Invalid/NULL = верхний уровень. Меняется ТОЛЬКО через
+	// SetTaskParent (и задаётся при AddTask), никогда не приезжает внутри TaskInsert.
+	ParentTaskId sql.NullInt32 `db:"parent_task_id"`
+	// Links — все связи карточки, обе стороны blocks плюс relates, со ВТОРЫМ КОНЦОМ уже разрешённым.
+	Links []TaskLink `db:"-"`
+	// SubtaskTotal/SubtaskDone — свёртка АКТИВНЫХ (незаархивированных) детей для карточки на доске.
+	SubtaskTotal int `db:"-"`
+	SubtaskDone  int `db:"-"`
+}
+
+// TaskLinkKind — вид связи В ХРАНИЛИЩЕ. Их ДВА, и это не сокращение контракта: BLOCKED_BY на проводе
+// это blocks, прочитанный с другого конца, а не третий вид строки. Одна строка на факт — иначе пара
+// могла бы полусуществовать.
+type TaskLinkKind string
+
+const (
+	TaskLinkKindBlocks  TaskLinkKind = "blocks"
+	TaskLinkKindRelates TaskLinkKind = "relates"
+)
+
+// ValidTaskLinkKinds is the set of accepted stored link kinds (mirrors chk_task_link_kind).
+var ValidTaskLinkKinds = map[TaskLinkKind]bool{
+	TaskLinkKindBlocks:  true,
+	TaskLinkKindRelates: true,
+}
+
+// TaskLinkRole — вид связи С ТОЧКИ ЗРЕНИЯ карточки, в чьём списке эта строка едет. Отличается от
+// TaskLinkKind ровно на BlockedBy: он и есть blocks, прочитанный со стороны блокируемой задачи.
+type TaskLinkRole string
+
+const (
+	TaskLinkRoleBlocks    TaskLinkRole = "blocks"
+	TaskLinkRoleBlockedBy TaskLinkRole = "blocked_by"
+	TaskLinkRoleRelates   TaskLinkRole = "relates"
+)
+
+// TaskLink — одна связь, как её рисует карточка: второй конец уже разрешён в заголовок/статус/доску.
+type TaskLink struct {
+	// OwnerTaskId — карточка, в чьём списке едет строка (для группировки батч-чтения).
+	OwnerTaskId int `db:"owner_task_id"`
+	// TaskId — ВТОРОЙ конец связи.
+	TaskId   int          `db:"task_id"`
+	Role     TaskLinkRole `db:"-"`
+	Title    string       `db:"title"`
+	Status   TaskStatus   `db:"status"`
+	Board    TaskBoard    `db:"board"`
+	Archived bool         `db:"archived"`
 }
 
 // TaskChecklistItem is one row of a task's checklist — a lightweight subtask with
@@ -166,8 +238,10 @@ type LibraryFileTask struct {
 	TaskId int        `db:"id"`
 	Title  string     `db:"title"`
 	Status TaskStatus `db:"status"`
-	// Assignee is an account username; "" = задачу никто не взял (это состояние, а не пропуск).
-	Assignee string `db:"assignee"`
+	// Assignees — все, кто на задаче; пусто = её никто не взял (это состояние, а не пропуск).
+	// Дозаполняется батч-запросом по собранным id, как и у доски: колонки task.assignee этот код
+	// больше не читает (см. README-pending-drops.md).
+	Assignees []string `db:"-"`
 	// DueDate invalid/NULL = срока нет. У строки тогда просто нет даты — не «сегодня».
 	DueDate sql.NullTime `db:"due_date"`
 	// Board is the department lane, чтобы строка говорила, ГДЕ живёт работа: один и тот же файл
@@ -177,10 +251,12 @@ type LibraryFileTask struct {
 
 // TaskListFilter narrows a ListTasks query. Zero-value fields are "no filter".
 type TaskListFilter struct {
-	Board           TaskBoard  // "" = all boards
-	Status          TaskStatus // "" = all columns
-	Assignee        string     // "" = any assignee
-	TechCardId      int        // 0 = no filter
+	Board  TaskBoard  // "" = all boards
+	Status TaskStatus // "" = all columns
+	// Assignee — ЧЛЕНСТВО в списке исполнителей, а не равенство одному полю: «мои» находит и
+	// задачи, где я второй. "" = any assignee.
+	Assignee        string
+	TechCardId      int // 0 = no filter
 	ProductId       int        // 0 = no filter
 	OrderUuid       string     // "" = no filter
 	ArchiveId       int        // 0 = no filter
@@ -190,7 +266,10 @@ type TaskListFilter struct {
 	// ProjectTopicId отвечает на ОБРАТНЫЙ вопрос фазы 0322 — «какие задачи у этого проекта».
 	// Фильтр существующего списка, а не отдельный RPC: это тот же список задач, просто суженный, и
 	// второй путь к тем же данным завёл бы вторые права, которым нечем помешать разойтись.
-	ProjectTopicId  int  // 0 = no filter
+	ProjectTopicId int // 0 = no filter
+	// ParentTaskId — «сабтаски этой задачи». Фильтр того же списка, а не отдельный RPC (доктрина
+	// 0322: не заводить второй путь к тем же данным). 0 = no filter.
+	ParentTaskId    int
 	IncludeArchived bool // false = active only (default); true = include archived
 	Limit           int
 	Offset          int
@@ -206,9 +285,15 @@ type TaskCommentInsert struct {
 
 // TaskComment is a stored comment on a task.
 type TaskComment struct {
-	Id        int       `db:"id"`
-	TaskId    int       `db:"task_id"`
-	Author    string    `db:"author"`
-	Body      string    `db:"body"`
-	CreatedAt time.Time `db:"created_at"`
+	Id     int    `db:"id"`
+	TaskId int    `db:"task_id"`
+	Author string `db:"author"` // username НА МОМЕНТ ПИСЬМА: строка-факт, переживает удаление аккаунта
+	// AuthorId — ЖИВАЯ ссылка на аккаунт автора (0339). Invalid/NULL = аккаунта больше нет.
+	//
+	// Право «удалить свою реплику» требует ИМЕННО ПАРЫ «имя совпало И ссылка жива»: UNIQUE на
+	// admins.username освобождает имя при удалении аккаунта, и новый однофамилец совпал бы по строке
+	// со всей перепиской прежнего. Тот же гейт и тот же довод, что у LibraryFileComment (0316).
+	AuthorId  sql.NullInt32 `db:"author_id"`
+	Body      string        `db:"body"`
+	CreatedAt time.Time     `db:"created_at"`
 }

@@ -56,15 +56,24 @@ func (s *Store) AddTask(ctx context.Context, t *entity.Task) (int, error) {
 		params["status"] = string(t.Status)
 		params["position"] = pos
 		params["createdBy"] = t.CreatedBy
+		// Родитель едет прямо в INSERT — единственное место, где он приезжает не отдельным
+		// SetTaskParent: стирать здесь нечего, карточки ещё нет. Несуществующий родитель умирает об
+		// внешний ключ (1452), который хендлер переводит в InvalidArgument вместе с остальными
+		// глубокими ссылками. Цикл при создании невозможен по построению: новорождённая карточка не
+		// может быть ничьим предком.
+		params["parentTaskId"] = t.ParentTaskId
 		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
-			INSERT INTO task (title, description, board, status, position, assignee, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, started_at)
-			VALUES (:title, :description, :board, :status, :position, :assignee, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId, :projectTopicId,
+			INSERT INTO task (title, description, board, status, position, priority, due_date, start_date, created_by, tech_card_id, product_id, order_uuid, archive_id, fitting_id, production_run_id, sample_id, project_topic_id, parent_task_id, started_at)
+			VALUES (:title, :description, :board, :status, :position, :priority, :dueDate, :startDate, :createdBy, :techCardId, :productId, :orderUuid, :archiveId, :fittingId, :productionRunId, :sampleId, :projectTopicId, :parentTaskId,
 				CASE WHEN :status = 'in_progress' THEN UTC_TIMESTAMP() ELSE NULL END)`,
 			params)
 		if err != nil {
 			return fmt.Errorf("failed to insert task: %w", err)
 		}
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
+			return err
+		}
+		if err := insertTaskAssignees(ctx, rep.DB(), id, t.Assignees); err != nil {
 			return err
 		}
 		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds, t.MediaAnnotations); err != nil {
@@ -100,7 +109,6 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 			UPDATE task SET
 				title = :title,
 				description = :description,
-				assignee = :assignee,
 				priority = :priority,
 				due_date = :dueDate,
 				start_date = :startDate,
@@ -119,6 +127,13 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 			`DELETE FROM task_label WHERE task_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear task labels: %w", err)
 		}
+		// Исполнители заменяются ЦЕЛИКОМ, как labels: форма карточки владеет списком, и присланный
+		// пустой набор означает «исполнителей больше нет». Ссылка «связь принадлежит двум карточкам»,
+		// из-за которой связи задач НЕ заменяются, здесь неприменима: исполнителя ставит одна форма.
+		if err := storeutil.ExecNamed(ctx, rep.DB(),
+			`DELETE FROM task_assignee WHERE task_id = :id`, map[string]any{"id": id}); err != nil {
+			return fmt.Errorf("failed to clear task assignees: %w", err)
+		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM task_media WHERE task_id = :id`, map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear task media: %w", err)
@@ -128,6 +143,9 @@ func (s *Store) UpdateTask(ctx context.Context, id int, t *entity.TaskInsert) er
 			return fmt.Errorf("failed to clear task files: %w", err)
 		}
 		if err := insertTaskLabels(ctx, rep.DB(), id, t.Labels); err != nil {
+			return err
+		}
+		if err := insertTaskAssignees(ctx, rep.DB(), id, t.Assignees); err != nil {
 			return err
 		}
 		if err := insertTaskMedia(ctx, rep.DB(), id, t.MediaIds, t.MediaAnnotations); err != nil {
@@ -375,10 +393,26 @@ func (s *Store) GetTaskById(ctx context.Context, id int) (*entity.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	assignees, err := s.assigneesByTaskIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
+	links, err := s.linksByTaskIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
+	counts, err := s.subtaskCountsByTaskIds(ctx, []int{id})
+	if err != nil {
+		return nil, err
+	}
 	t.Media = media[id]
 	t.MediaAnnotations = mediaAnnotations[id]
 	t.Checklist = checklist[id]
 	t.FileIds = fileIDs[id]
+	t.Assignees = assignees[id]
+	t.Links = links[id]
+	t.SubtaskTotal = counts[id].Total
+	t.SubtaskDone = counts[id].Done
 	return &t, nil
 }
 
@@ -399,8 +433,11 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 		where += " AND status = :status"
 		filterParams["status"] = string(f.Status)
 	}
+	// ЧЛЕНСТВО, А НЕ РАВЕНСТВО. При многих исполнителях «мои задачи» обязаны находить и те, где я
+	// второй, — иначе фильтр врал бы ровно в том случае, ради которого мультиасайн и заводили.
+	// EXISTS по UNIQUE (task_id, username): индекс есть, подзапрос коррелированный.
 	if f.Assignee != "" {
-		where += " AND assignee = :assignee"
+		where += " AND EXISTS (SELECT 1 FROM task_assignee ta WHERE ta.task_id = task.id AND ta.username = :assignee)"
 		filterParams["assignee"] = f.Assignee
 	}
 	if f.TechCardId > 0 {
@@ -441,6 +478,12 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	if f.ProjectTopicId > 0 {
 		where += " AND project_topic_id = :projectTopicId"
 		filterParams["projectTopicId"] = f.ProjectTopicId
+	}
+	// «САБТАСКИ ЭТОЙ ЗАДАЧИ» — тот же список, просто суженный, по тому же доводу о правах, что у
+	// project_topic_id выше. Несуществующий родитель отдаёт пустоту, а не отличимый отказ.
+	if f.ParentTaskId > 0 {
+		where += " AND parent_task_id = :parentTaskId"
+		filterParams["parentTaskId"] = f.ParentTaskId
 	}
 	// Active-only by default: archived tasks are hidden from the board unless
 	// explicitly requested.
@@ -489,9 +532,27 @@ func (s *Store) ListTasks(ctx context.Context, f entity.TaskListFilter) ([]entit
 	if err != nil {
 		return nil, 0, err
 	}
+	// Три батч-чтения волны, в той же форме, что и четыре соседних выше. N+1 нет ни в одном:
+	// связи — один запрос UNION'ом на обе стороны, счётчики — один GROUP BY.
+	assignees, err := s.assigneesByTaskIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	links, err := s.linksByTaskIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	counts, err := s.subtaskCountsByTaskIds(ctx, ids)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range tasks {
 		tasks[i].Labels = labels[tasks[i].Id]
 		tasks[i].Media = media[tasks[i].Id]
+		tasks[i].Assignees = assignees[tasks[i].Id]
+		tasks[i].Links = links[tasks[i].Id]
+		tasks[i].SubtaskTotal = counts[tasks[i].Id].Total
+		tasks[i].SubtaskDone = counts[tasks[i].Id].Done
 		// Указания едут и в списке тоже. Не потому, что доска их рисует — карточку редактируют на
 		// детальной странице, а она читает GetTask, — а потому, что Task.task это ОДНА проекция
 		// содержимого, и поле, молча пропадающее в одном из двух путей чтения, — это ровно тот
@@ -516,8 +577,14 @@ func (s *Store) AddTaskComment(ctx context.Context, c *entity.TaskCommentInsert,
 		if exists == 0 {
 			return sql.ErrNoRows
 		}
-		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(),
-			`INSERT INTO task_comment (task_id, author, body) VALUES (:taskId, :author, :body)`,
+		// ДВЕ ПОЛОВИНЫ АВТОРСТВА ЗАПИСЫВАЮТСЯ ОДНИМ ОПЕРАТОРОМ — приём взят у AddComment библиотеки
+		// (0316) вместе с доводом: живая ссылка ВЫВОДИТСЯ из той же строки username, а не приезжает
+		// вторым параметром. Дай прислать их порознь — и однажды приедет реплика, у которой строка
+		// говорит «pasha», а ссылка ведёт на kirill. Аккаунта с таким именем нет — NULL, и это не
+		// ошибка: строка-факт остаётся, а удалить такую реплику сможет только супер.
+		id, err = storeutil.ExecNamedLastId(ctx, rep.DB(), `
+			INSERT INTO task_comment (task_id, author, author_id, body)
+			VALUES (:taskId, :author, (SELECT a.id FROM admins a WHERE a.username = :author), :body)`,
 			map[string]any{"taskId": c.TaskId, "author": author, "body": c.Body})
 		if err != nil {
 			return fmt.Errorf("failed to insert task comment: %w", err)
@@ -533,12 +600,47 @@ func (s *Store) AddTaskComment(ctx context.Context, c *entity.TaskCommentInsert,
 // ListTaskComments returns a task's comments, oldest first.
 func (s *Store) ListTaskComments(ctx context.Context, taskID int) ([]entity.TaskComment, error) {
 	comments, err := storeutil.QueryListNamed[entity.TaskComment](ctx, s.DB,
-		`SELECT id, task_id, author, body, created_at FROM task_comment WHERE task_id = :taskId ORDER BY created_at, id`,
+		`SELECT `+taskCommentColumns+` FROM task_comment WHERE task_id = :taskId ORDER BY created_at, id`,
 		map[string]any{"taskId": taskID})
 	if err != nil {
 		return nil, fmt.Errorf("can't list task comments: %w", err)
 	}
 	return comments, nil
+}
+
+// taskCommentColumns — единственный список колонок ленты задачи. Звёздочку писать нельзя: entity
+// сканируется StructScan-ом, и добавленная колонка без поля в структуре уронила бы КАЖДОЕ чтение
+// ленты, а не то место, где её забыли описать (то же правило, что у commentColumns библиотеки).
+const taskCommentColumns = `id, task_id, author, author_id, body, created_at`
+
+// GetTaskCommentById reads one remark — это то, что читает правило «только свою» ПЕРЕД удалением:
+// автор хранится, а не приезжает в запросе. sql.ErrNoRows проходит наружу нетронутым.
+func (s *Store) GetTaskCommentById(ctx context.Context, id int) (*entity.TaskComment, error) {
+	c, err := storeutil.QueryNamedOne[entity.TaskComment](ctx, s.DB,
+		`SELECT `+taskCommentColumns+` FROM task_comment WHERE id = :id`,
+		map[string]any{"id": id})
+	if err != nil {
+		return nil, err // sql.ErrNoRows passes through untouched
+	}
+	return &c, nil
+}
+
+// DeleteTaskComment removes one remark. sql.ErrNoRows, если удалять было нечего, — НЕ молчаливая
+// идемпотентность: «удалено» про то, чего нет, оставляет реплику на экране и человека в уверенности,
+// что она ушла. Ровно как DeleteComment библиотеки (0316).
+//
+// Право проверяет ХЕНДЛЕР: стор не знает, кто зовущий, и размазать правило по двум слоям значило бы
+// дать ему разойтись молча.
+func (s *Store) DeleteTaskComment(ctx context.Context, id int) error {
+	rows, err := storeutil.ExecNamedRows(ctx, s.DB,
+		`DELETE FROM task_comment WHERE id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("can't delete task comment: %w", err)
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // taskPlacement is the placement subset of a task row, read for a move.
@@ -563,9 +665,10 @@ func clampPagination(limit, offset int) (int, int) {
 
 func taskContentParams(t *entity.TaskInsert) map[string]any {
 	return map[string]any{
-		"title":           t.Title,
-		"description":     t.Description,
-		"assignee":        t.Assignee,
+		"title":       t.Title,
+		"description": t.Description,
+		// Колонки assignee здесь БОЛЬШЕ НЕТ: исполнители живут в task_assignee (0337). Колонка
+		// осиротела и ждёт отдельной миграции на снос — README-pending-drops.md.
 		"priority":        string(t.Priority),
 		"dueDate":         t.DueDate,
 		"startDate":       t.StartDate,
@@ -632,6 +735,58 @@ func insertTaskLabels(ctx context.Context, db dependency.DB, taskID int, labels 
 		return fmt.Errorf("failed to insert task labels: %w", err)
 	}
 	return nil
+}
+
+// insertTaskAssignees writes the card's assignees — точная копия формы insertTaskLabels, включая
+// полную замену вызывающим и display_order по позиции в списке.
+//
+// Дедуп и обрезка делаются в dto, как у labels: сюда список приезжает уже чистым, и UNIQUE
+// (task_id, username) — второй рубеж, а не первый.
+func insertTaskAssignees(ctx context.Context, db dependency.DB, taskID int, assignees []string) error {
+	if len(assignees) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(assignees))
+	for i, a := range assignees {
+		rows = append(rows, map[string]any{
+			"task_id":       taskID,
+			"username":      a,
+			"display_order": i,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "task_assignee", rows); err != nil {
+		return fmt.Errorf("failed to insert task assignees: %w", err)
+	}
+	return nil
+}
+
+type taskAssigneeRow struct {
+	TaskID   int    `db:"task_id"`
+	Username string `db:"username"`
+}
+
+// assigneesByTaskIds — батч-чтение исполнителей страницы, форма labelsByTaskIds.
+//
+// ORDER BY ... display_order, id: display_order не уникален (UNIQUE стоит по паре task/username), и
+// без добивки id два исполнителя с одинаковой позицией менялись бы местами от чтения к чтению —
+// круговой рейс формы обязан быть стабильным.
+func (s *Store) assigneesByTaskIds(ctx context.Context, ids []int) (map[int][]string, error) {
+	if len(ids) == 0 {
+		return map[int][]string{}, nil
+	}
+	rows, err := storeutil.QueryListNamed[taskAssigneeRow](ctx, s.DB, `
+		SELECT task_id, username
+		FROM task_assignee
+		WHERE task_id IN (:ids)
+		ORDER BY task_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load task assignees: %w", err)
+	}
+	out := make(map[int][]string, len(ids))
+	for _, r := range rows {
+		out[r.TaskID] = append(out[r.TaskID], r.Username)
+	}
+	return out, nil
 }
 
 // insertTaskMedia links media to a card together with the annotations drawn on
