@@ -71,6 +71,11 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 		ContentHash:        sql.NullString{String: contentHash, Valid: true},
 	})
 	if err != nil {
+		// The object is already in the bucket but no row references it. Unlike the image
+		// path, the caller gets nil back here — it has no urls to put in a compensation
+		// plan, so nobody would ever be able to remove it. Same remedy as the image path:
+		// take it back on the spot.
+		b.cleanupUploadedVariants(&pb_common.MediaInfo{MediaUrl: url})
 		slog.Default().ErrorContext(ctx, "can't add media to db",
 			slog.String("err", err.Error()))
 		return nil, err

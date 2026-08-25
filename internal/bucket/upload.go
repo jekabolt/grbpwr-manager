@@ -10,6 +10,11 @@ import (
 const (
 	// maxImagePayloadBytes is the maximum allowed size of a base64-encoded image string (~20 MB decoded).
 	maxImagePayloadBytes = 28 * 1024 * 1024 // base64 overhead is ~1.37x, so 28 MB covers 20 MB decoded
+	// maxRawImagePayloadBytes is the same ceiling expressed for a RAW (already decoded)
+	// payload — the verbatim path (UploadContentImageVerbatim) never sees the base64
+	// envelope. Base64 expands by exactly 4/3, so this is maxImagePayloadBytes×3/4 and the
+	// two paths admit the same pictures.
+	maxRawImagePayloadBytes = maxImagePayloadBytes / 4 * 3
 	// maxImageDimension is the maximum allowed width or height of a decoded image in pixels.
 	maxImageDimension = 12000
 	// maxVideoPayloadBytes is the maximum allowed size of a raw video payload.

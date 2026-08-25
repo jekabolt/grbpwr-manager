@@ -93,8 +93,10 @@ func TestArchiveFilesPlanReuseIsNeverUploadedAndNeverCompensated(t *testing.T) {
 	require.NoError(t, err)
 
 	// Exactly ONE upload — the strict mock refuses a second — and it carries the fresh file's
-	// bytes in the data-uri envelope UploadContentImage parses.
-	fs.EXPECT().UploadContentImage(mock.Anything, tcflDataURI("image/jpeg", tcflJPEG("brand new")), "grbpwr", mock.Anything).
+	// bytes AS THEY LIE IN THE ARCHIVE. That equality is the de-duplication contract itself:
+	// media.content_hash is the sha of the stored full-size object, so anything but the raw
+	// payload arriving here is a hash the next import of this archive can never match.
+	fs.EXPECT().UploadContentImageVerbatim(mock.Anything, tcflJPEG("brand new"), "grbpwr", mock.Anything).
 		Return(tcflMediaFull(7001, "https://cdn/og.webp", "https://cdn/c.webp", "https://cdn/t.webp"), nil).Once()
 
 	p, err := s.tcflPlaceImportFiles(t.Context(), arch, res)
@@ -135,9 +137,9 @@ func TestArchiveFilesPlanOneRefusedFileIsAHoleNotAFailedImport(t *testing.T) {
 	res, err := s.resolveTechCardImport(t.Context(), arch)
 	require.NoError(t, err)
 
-	fs.EXPECT().UploadContentImage(mock.Anything, tcflDataURI("image/jpeg", goodBody), "grbpwr", mock.Anything).
+	fs.EXPECT().UploadContentImageVerbatim(mock.Anything, goodBody, "grbpwr", mock.Anything).
 		Return(tcflMediaFull(7001, "https://cdn/og.webp"), nil).Once()
-	fs.EXPECT().UploadContentImage(mock.Anything, tcflDataURI("image/jpeg", badBody), "grbpwr", mock.Anything).
+	fs.EXPECT().UploadContentImageVerbatim(mock.Anything, badBody, "grbpwr", mock.Anything).
 		Return(nil, errors.New("507 insufficient storage")).Once()
 
 	p, err := s.tcflPlaceImportFiles(t.Context(), arch, res)
@@ -209,7 +211,7 @@ func TestArchiveFilesPlanADigestIsProvedBeforeAnyByteReachesTheBucket(t *testing
 
 	t.Run("the same archive with an honest digest does upload", func(t *testing.T) {
 		s, fs, arch, res := build(t, tcflSHA(body))
-		fs.EXPECT().UploadContentImage(mock.Anything, tcflDataURI("image/jpeg", body), "grbpwr", mock.Anything).
+		fs.EXPECT().UploadContentImageVerbatim(mock.Anything, body, "grbpwr", mock.Anything).
 			Return(tcflMediaFull(7001, "https://cdn/og.webp"), nil).Once()
 
 		p, err := s.tcflPlaceImportFiles(t.Context(), arch, res)
@@ -240,7 +242,7 @@ func TestArchiveFilesPlanCompensatesItsOwnFailure(t *testing.T) {
 	res, err := s.resolveTechCardImport(t.Context(), arch)
 	require.NoError(t, err)
 
-	fs.EXPECT().UploadContentImage(mock.Anything, tcflDataURI("image/jpeg", goodBody), "grbpwr", mock.Anything).
+	fs.EXPECT().UploadContentImageVerbatim(mock.Anything, goodBody, "grbpwr", mock.Anything).
 		Return(tcflMediaFull(7001, "https://cdn/og.webp", "https://cdn/t.webp"), nil).Once()
 
 	// The row goes BEFORE its objects, and the order is asserted rather than described: objects
@@ -280,10 +282,10 @@ func TestArchiveFilesPlanACancelledContextStopsInsteadOfHollowingTheCard(t *test
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	fs.EXPECT().UploadContentImage(mock.Anything, tcflDataURI("image/jpeg", firstBody), "grbpwr", mock.Anything).
+	fs.EXPECT().UploadContentImageVerbatim(mock.Anything, firstBody, "grbpwr", mock.Anything).
 		Return(tcflMediaFull(7001, "https://cdn/og.webp"), nil).Once()
-	fs.EXPECT().UploadContentImage(mock.Anything, tcflDataURI("image/jpeg", secondBody), "grbpwr", mock.Anything).
-		Run(func(context.Context, string, string, string) { cancel() }).
+	fs.EXPECT().UploadContentImageVerbatim(mock.Anything, secondBody, "grbpwr", mock.Anything).
+		Run(func(context.Context, []byte, string, string) { cancel() }).
 		Return(nil, context.Canceled).Once()
 	// Compensation runs on a context detached from the cancelled one — otherwise the cleanup of a
 	// cancelled import would itself be cancelled, which is how the orphan is created.

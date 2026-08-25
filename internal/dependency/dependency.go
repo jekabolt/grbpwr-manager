@@ -2101,6 +2101,16 @@ type (
 		// listed — that gate is what makes "the cleanup worker touches nothing else" true
 		// by construction.
 		ListObjectsOlderThan(ctx context.Context, segment string, age time.Duration) ([]string, error)
+		// UploadContentImageVerbatim stores a picture whose FULL-SIZE object must be the bytes
+		// it was handed, byte-for-byte, and derives the compressed/thumbnail variants from
+		// them. UploadContentImage re-encodes every JPEG/PNG/WebP into a fresh full-size WebP,
+		// so media.content_hash — the sha of the full-size object as stored — describes bytes
+		// that did not exist before the upload. That is fatal for the tech-card archive, whose
+		// de-duplication is exactly the comparison of the archive's sha against that column: a
+		// re-imported archive would never match, would store every picture again, and would add
+		// another lossy generation each time. Same byte/pixel/dimension ceilings as the
+		// re-encoding path, all read from the header; JPEG, PNG, WebP and GIF only.
+		UploadContentImageVerbatim(ctx context.Context, raw []byte, folder, imageName string) (*pb_common.MediaFull, error)
 	}
 
 	// ReaderAtCloser is what zip.NewReader needs plus the Close that releases whatever

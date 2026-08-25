@@ -59,23 +59,45 @@ type testFileStore struct {
 	mediaStoreMock *mocks.MockMedia
 }
 
-func BucketFromConfig(t *testing.T) (*testFileStore, error) {
+// BucketFromConfig builds a bucket wired to the REAL DigitalOcean Spaces credentials in
+// config/config.toml. The three tests below are live-network integration tests: without that file
+// there is nothing to talk to, and the honest verdict is "not run here", not "failed".
+//
+// IT RETURNS NO ERROR, AND THAT IS THE POINT.
+//
+// It used to return (nil, error), and all three call sites wrote `assert.NoError(t, err)` — assert,
+// not require. assert MARKS the test failed and lets it run on, so on a machine without the config
+// every one of them walked into `tb.mediaStoreMock` holding a nil `tb`. A nil dereference in a test
+// is not a failed test: it PANICS THE WHOLE TEST BINARY, and every test the package had not reached
+// yet simply never ran. `go test ./internal/bucket/` reported 12 outcomes out of 58 and called the
+// difference "known redness". The gate was lying, and it was lying silently.
+//
+// Handing back only a usable store removes the shape in which that mistake can be written: there is
+// no error to under-assert and no nil to dereference. A missing config skips (this machine cannot
+// run these); a config that is present but does not work is a t.Fatalf — a real failure, still not
+// a panic, and the tests after it still run.
+func BucketFromConfig(t *testing.T) *testFileStore {
+	t.Helper()
 	skipCI(t)
+
 	cfg, err := loadConfig("")
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
+		t.Skipf("skipping live bucket test: config/config.toml with real S3 credentials is required "+
+			"and could not be read (%v); run these from a checkout that has it", err)
 	}
 
 	mediaStoreMock := mocks.NewMockMedia(t)
 	fs, err := New(cfg, mediaStoreMock)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize MinIO client: %w", err)
+		// Credentials ARE configured and do not work — a genuine failure worth seeing, unlike
+		// their absence. Fatalf ends this test only; the binary lives.
+		t.Fatalf("bucket configured but unusable: %v", err)
 	}
 
 	return &testFileStore{
 		fs:             fs,
 		mediaStoreMock: mediaStoreMock,
-	}, nil
+	}
 }
 
 func fileToBytes(filePath string) ([]byte, error) {
@@ -98,8 +120,7 @@ func TestUploadContentImage(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	tb, err := BucketFromConfig(t)
-	assert.NoError(t, err)
+	tb := BucketFromConfig(t)
 
 	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
 
@@ -138,8 +159,7 @@ func TestUploadContentVideoMP4(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	tb, err := BucketFromConfig(t)
-	assert.NoError(t, err)
+	tb := BucketFromConfig(t)
 
 	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
 
@@ -158,8 +178,7 @@ func TestUploadContentVideoWEBM(t *testing.T) {
 	skipCI(t)
 	ctx := context.Background()
 
-	tb, err := BucketFromConfig(t)
-	assert.NoError(t, err)
+	tb := BucketFromConfig(t)
 
 	tb.mediaStoreMock.EXPECT().AddMedia(ctx, mock.Anything).Return(1, nil)
 

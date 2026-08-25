@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"path"
@@ -30,10 +29,10 @@ import (
 //     straight into PutObject has already handed over almost the whole file by the time the
 //     mismatch is known — and a consumer that stops early and closes has verified NOTHING at all.
 //     ReadFileVerified is the shape in which that mistake cannot be made: io.ReadAll always reaches
-//     EOF, so when these bytes reach a bucket call their digest has already been proved. The three
-//     upload entry points of FileStore take a []byte (or a base64 string) anyway, so nothing is lost
-//     by it. One file is read, uploaded and released before the next one is opened, because the
-//     image path costs another ×1.33 of the payload in its base64 envelope.
+//     EOF, so when these bytes reach a bucket call their digest has already been proved. The
+//     upload entry points of FileStore this file uses take a []byte anyway, so nothing is lost by
+//     it. One file is read, uploaded and released before the next one is opened, so an archive of
+//     large pictures never holds more than one of them in memory.
 //
 //   - A DIGEST MISMATCH KILLS THE WHOLE IMPORT; A REFUSED UPLOAD IS A HOLE. FORMAT.md §1.2 and §6.3:
 //     corruption is the one thing that is never degraded into a report line, because bytes that do
@@ -268,7 +267,15 @@ func (s *Server) tcflUploadMediaBytes(ctx context.Context, entry string, raw []b
 	if family == tcflFamilyVideo {
 		full, err = s.bucket.UploadContentVideo(ctx, raw, s.bucket.GetBaseFolder(), bucket.GetMediaName(), mime)
 	} else {
-		full, err = s.bucket.UploadContentImage(ctx, tcflDataURI(mime, raw), s.bucket.GetBaseFolder(), bucket.GetMediaName())
+		// VERBATIM, and not UploadContentImage. That method re-encodes every JPEG/PNG/WebP into a
+		// fresh full-size WebP and then records media.content_hash from the bytes it produced —
+		// which are not the bytes the archive carries the sha of. De-duplication (§6.2, the whole
+		// reason media.content_hash exists) would therefore NEVER fire for a raster: re-importing
+		// the same archive would store every picture again and add one more lossy generation to
+		// each. The verbatim path stores the payload as it stands, so the hash it writes is the
+		// hash the archive brought. `mime` is not passed: that path sniffs the bytes itself, and
+		// the extension's claim about the file has no vote there.
+		full, err = s.bucket.UploadContentImageVerbatim(ctx, raw, s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	}
 	// The urls travel back even on an error: an upload that stored two variants and then failed on
 	// the third has already put bytes in the bucket, and the caller records what it is given before
@@ -673,19 +680,6 @@ func tcflSniffMedia(raw []byte) (family, mime string) {
 // characters), so this only has to read it.
 func tcflEntryExt(entry string) string {
 	return strings.ToLower(strings.TrimPrefix(path.Ext(entry), "."))
-}
-
-// tcflDataURI wraps raw bytes in the "data:<mime>;base64,<payload>" envelope UploadContentImage
-// parses. Built in one allocation on purpose: the envelope already costs ×1.33 of the picture, and
-// growing a string into it would briefly cost twice that.
-func tcflDataURI(mime string, raw []byte) string {
-	var b strings.Builder
-	b.Grow(len("data:") + len(mime) + len(";base64,") + base64.StdEncoding.EncodedLen(len(raw)))
-	b.WriteString("data:")
-	b.WriteString(mime)
-	b.WriteString(";base64,")
-	b.WriteString(base64.StdEncoding.EncodeToString(raw))
-	return b.String()
 }
 
 // tcflHole records a media hole on the resolved import. The code is always media_upload_failed and
