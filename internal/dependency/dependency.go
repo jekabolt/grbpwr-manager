@@ -2013,6 +2013,52 @@ type (
 		// (empty and duplicate URLs are ignored). Used so deleting a media row or a
 		// partially-failed variant upload does not orphan public CDN objects.
 		DeleteObjects(ctx context.Context, urls ...string) error
+		// GetManagedObject opens a bucket object for STREAMING and returns its size. It is
+		// what puts media and pattern bytes into a tech-card archive (a link to a foreign
+		// host is not an export). The key must sit in a segment this method is allowed to
+		// read — media base folder, tech-card-patterns, techcard-archives,
+		// techcard-imports, with files-library explicitly excluded because it has its own
+		// reader and its own read cap. A foreign prefix is refused BEFORE any S3 call.
+		// The key comes ONLY from a DB row (media.url via the managed-url parser), never
+		// from a request: the segment gate narrows what is reachable, it does not tell our
+		// object from someone else's inside the folder.
+		GetManagedObject(ctx context.Context, objectKey string) (io.ReadCloser, int64, error)
+		// UploadArchiveObject streams an exported tech-card zip into a PRIVATE object and
+		// returns its key. Private is the ABSENCE of the public-read acl the media/pattern/
+		// label paths set: an archive carries a whole tech card and must never be publicly
+		// addressable — it is reachable only through a short-lived presigned GET.
+		UploadArchiveObject(ctx context.Context, r io.Reader, name string) (objectKey string, err error)
+		// UploadImportObject streams an archive accepted for import into
+		// techcard-imports/<importID>.zip and returns the key (stored in
+		// tech_card_import.object_key). The 256 MiB ceiling is enforced here as well as on
+		// the HTTP route: a stream of unknown length has no bound of its own.
+		UploadImportObject(ctx context.Context, r io.Reader, importID string) (objectKey string, err error)
+		// PresignArchiveObject returns a presigned GET for an archive object, valid for
+		// ttl (callers pass 10 minutes — owner decision B-5). Only the techcard-archives
+		// segment can be signed, and unlike PresignPatternObject there is no window
+		// snapping and no memoization: those buy a stable url string for the panel's
+		// <object> embeds, and the price (a url that outlives revocation by up to 12h) is
+		// not payable for a full card export.
+		PresignArchiveObject(ctx context.Context, objectKey string, ttl time.Duration) (url string, expiresAt time.Time, err error)
+		// GetImportObjectReaderAt materializes an uploaded import archive as the io.ReaderAt
+		// zip.NewReader needs, plus the Close that releases it. *minio.Object does implement
+		// io.ReaderAt, but every ReadAt is a separate ranged GET, and zip reads in 4-32 KiB
+		// chunks — so the object is downloaded once, streaming, into a temp file instead.
+		GetImportObjectReaderAt(ctx context.Context, objectKey string) (ReaderAtCloser, int64, error)
+		// ListObjectsOlderThan returns the keys in an archive segment last modified before
+		// now-age; the pair to RemoveObjectsByKeys, split from it so the selection can be
+		// checked without deleting. Only techcard-archives and techcard-imports may be
+		// listed — that gate is what makes "the cleanup worker touches nothing else" true
+		// by construction.
+		ListObjectsOlderThan(ctx context.Context, segment string, age time.Duration) ([]string, error)
+	}
+
+	// ReaderAtCloser is what zip.NewReader needs plus the Close that releases whatever
+	// backs it. It lives here rather than in the bucket package because FileStore is
+	// declared here and bucket imports dependency, not the other way round.
+	ReaderAtCloser interface {
+		io.ReaderAt
+		io.Closer
 	}
 
 	RevalidationService interface {
