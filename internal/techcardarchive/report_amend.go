@@ -43,6 +43,20 @@ import (
 // there is one statement of the wire shape rather than two that agree today.
 var reportMarshalOptions = protojson.MarshalOptions{EmitUnpopulated: true, UseProtoNames: false}
 
+// reportUnmarshalOptions reads a report the way §3 of FORMAT.md says a MINOR is read: unknown
+// fields are IGNORED, not fatal.
+//
+// The report is not a wire message that lives for one call — it is stored in tech_card_import.report
+// and read back from the card months later, by whichever binary happens to be running then. A
+// rolling deploy alone is enough to have one process write a report carrying a field the process
+// reading it has no member for, and a strict parse would answer that with a 500 on a card whose
+// only sin is having been imported by a newer server. The report evolves the way the format does —
+// new fields only — so the field a reader does not know is exactly the field it can afford to drop.
+//
+// What this does NOT relax is whether the payload is a report at all: a wrong TYPE on a known field
+// still fails, which is what keeps ParseReport a gate in front of the write's transaction.
+var reportUnmarshalOptions = protojson.UnmarshalOptions{DiscardUnknown: true}
+
 // ImportReport is a report that has already been built once and is on its way into
 // tech_card_import.report — parsed, so the write can add to it, and opaque, so the write cannot
 // assemble a line by hand.
@@ -66,10 +80,30 @@ func ParseReport(b []byte) (*ImportReport, error) {
 		return nil, fmt.Errorf("the import report is empty")
 	}
 	msg := &pb_admin.TechCardImportReport{}
-	if err := protojson.Unmarshal(b, msg); err != nil {
+	if err := reportUnmarshalOptions.Unmarshal(b, msg); err != nil {
 		return nil, fmt.Errorf("the import report does not read as one: %w", err)
 	}
 	return &ImportReport{msg: msg}, nil
+}
+
+// Message returns the parsed report as the message the RPC answers with.
+//
+// It exists so that the READ path (GetTechCardImportReport) parses stored reports through the same
+// door the write path does, instead of standing up a second protojson call with its own options —
+// two parsers of one payload are two chances to disagree about whether an unknown field is fatal.
+//
+// A COPY, because ImportReport is otherwise opaque on purpose: handing out the pointer would let a
+// caller edit the report the amend is built from, and Amend's promise not to modify its receiver
+// (a deadlock retry must not count one dropped row twice) would stop being the package's to keep.
+func (r *ImportReport) Message() *pb_admin.TechCardImportReport {
+	if r == nil || r.msg == nil {
+		return nil
+	}
+	out, ok := proto.Clone(r.msg).(*pb_admin.TechCardImportReport)
+	if !ok { // unreachable: Clone returns the same concrete type it was given
+		return nil
+	}
+	return out
 }
 
 // MarshalReport writes a report the way both routes answer with one.
