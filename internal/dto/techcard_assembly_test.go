@@ -458,7 +458,7 @@ func TestAssemblyParsedFromWire(t *testing.T) {
 			OutputUnitName: "корпус",
 		},
 	}
-	ops, err := parseTechCardOperations(pbOps, map[int]bool{}, 0, nil, true)
+	ops, err := parseTechCardOperations(pbOps, map[int]bool{}, 0, nil, nil, true)
 	if err != nil {
 		t.Fatalf("разбор операций отвергнут: %v", err)
 	}

@@ -311,6 +311,9 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	pbInsert.MachineFieldsAware = true
 	pbInsert.MediaAware = true
 	pbInsert.OperationKindsAware = true
+	// И флаг количеств на связях шага (0334) — по тому же доводу: клон строит payload сам, гейта
+	// иначе не проходит, и количества уехали бы из клона молча.
+	pbInsert.BomQtyAware = true
 	pbInsert.OperationWorkAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {

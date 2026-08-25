@@ -201,7 +201,7 @@ func TestOperationWorkDigestSymmetry(t *testing.T) {
 		Zone:            pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OUTER,
 		Work:            "topstitch",
 	}}
-	written, err := parseTechCardOperations(pbOps, map[int]bool{}, 0, nil, true)
+	written, err := parseTechCardOperations(pbOps, map[int]bool{}, 0, nil, nil, true)
 	if err != nil {
 		t.Fatalf("payload с названной работой не разобрался: %v", err)
 	}

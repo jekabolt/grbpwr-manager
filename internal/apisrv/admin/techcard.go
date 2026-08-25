@@ -136,6 +136,12 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationWorkWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Щит количеств на связях шага (0334), тот же довод и тот же момент. Стор-гейта на создании у
+	// него нет по той же причине, что у щита видов: парного `*_cleared` он не несёт, а сказать про
+	// несуществующую карточку ему больше нечего.
+	if err := bomQtyWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Стор-гейт с nil вместо сохранённой карточки — не заглушка, а ровно то, чем создание
 	// является: карточки ещё нет, стирать нечего. Единственное, что он тут скажет, — «снять
 	// разметку» у создаваемой карточки бессмысленно, и это надо сказать, а не пропустить.
@@ -289,6 +295,10 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if err := operationWorkWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	// Тот же довод, тот же момент — щит количеств на связях шага (0334).
+	if err := bomQtyWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntity(req.TechCard)
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -338,6 +348,12 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, err
 	}
 	if err := operationWorkRetiredGate(req.TechCard, stored); err != nil {
+		return nil, err
+	}
+	// Щит количеств на связях шага (0334) — правило 2, то самое, что срабатывает на практике:
+	// payload отставшей вкладки про количества не говорит вовсе и выглядит невинно, а полная
+	// замена операций стёрла бы их молча и безвозвратно.
+	if err := bomQtyStoredGate(req.TechCard, stored); err != nil {
 		return nil, err
 	}
 	// Заявки провенанса 'lays' на процент раскроя (MAJOR 3): чистое эхо сохранённого бейджа едет
