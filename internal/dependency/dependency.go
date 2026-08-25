@@ -1162,6 +1162,34 @@ type (
 		// row would then show a shorter manifest than the one that arrived under the label "what was
 		// in the ZIP at upload". colorwaysPayload is nil when the archive carried no colorways.json.
 		CreateTechCardImportRow(ctx context.Context, importID, objectKey string, archiveManifest, colorwaysPayload []byte, importedBy string) error
+		// ImportTechCardArchive writes ONE imported archive in ONE transaction (Ф3.2): a NEW tech
+		// card — never an update, whatever the style number says — plus its children, its size
+		// chart and grade rule, its markers, its measured piece areas, its assembly bill, the
+		// journal entry saying where it came from, and the commit stamp on the tech_card_import
+		// row. Returns the new card's id.
+		//
+		// The card is forced to DRAFT with its sign-offs dropped before the first INSERT: the
+		// create pipeline COERCES supplied sign-offs into fresh ones stamped with the importing
+		// operator's name rather than refusing them, so handing it none is the only defence that
+		// does not rest on the exporter's manners.
+		//
+		// entity.ErrImportAlreadyCommitted when that import_id has already produced a card (the
+		// double-click race, closed by claiming the row inside the transaction); sql.ErrNoRows when
+		// there is no such import_id. A UNIQUE violation on style_number comes out AS IT IS:
+		// retrying inside a SERIALIZABLE transaction would re-run every write above it, so the
+		// caller picks a new number and calls again.
+		ImportTechCardArchive(ctx context.Context, in entity.TechCardArchiveImport) (int, error)
+		// GetTechCardImportByImportID returns one upload row by its ULID — the state carried
+		// between the dry run and the commit. sql.ErrNoRows when there is none.
+		GetTechCardImportByImportID(ctx context.Context, importID string) (entity.TechCardArchiveImportRecord, error)
+		// GetTechCardImportReport returns the LATEST import a card came from, so the card can say
+		// «this arrived as an archive, and here is what did not fit». sql.ErrNoRows for a card
+		// nobody imported, which is every card anybody typed by hand.
+		GetTechCardImportReport(ctx context.Context, techCardID int) (entity.TechCardArchiveImportRecord, error)
+		// AcknowledgeTechCardImport closes the «imported» banner on a card. Idempotent by
+		// construction — the guard is `acknowledged_at IS NULL`, so a second click writes nothing
+		// and the stamp keeps the moment the report was actually read.
+		AcknowledgeTechCardImport(ctx context.Context, techCardID int) error
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size
