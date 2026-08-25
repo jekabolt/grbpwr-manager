@@ -287,16 +287,19 @@ func TestBomQtyWriteAndReadNameTheSameColumn(t *testing.T) {
 		t.Error("ключ qty_per_garment кладётся условно — BulkInsert возьмёт колонки по первой строке")
 	}
 
-	// Читающий запрос связей — по тексту SELECT'а, не по всему файлу: `qty_per_garment` встречается
-	// в файле и во вставке, и поиск по файлу целиком зеленел бы при пустом SELECT'е.
-	sel := bomQtyLinkSelect(t, src)
-	if !strings.Contains(sel, "qty_per_garment") {
+	// ДВЕ ПОЛОВИНЫ ЧТЕНИЯ ПРОВЕРЯЮТСЯ ПОРОЗНЬ, И ЭТО НЕ ПЕДАНТИЗМ — ЭТО НАЙДЕНО МУТАЦИЕЙ. Первая
+	// версия теста резала весь блок QueryListNamed целиком, вместе с объявлением строки результата;
+	// убранная из SQL колонка оставляла в куске тег `db:"qty_per_garment"`, и проверка ЗЕЛЕНЕЛА при
+	// сломанном чтении. Текст запроса и объявление строки — два разных утверждения, и совпадать они
+	// обязаны оба.
+	sql, decl := bomQtyLinkSelect(t, src)
+	if !strings.Contains(sql, "qty_per_garment") {
 		t.Errorf("SELECT связей шага не тянет qty_per_garment — количество читается как NULL, "+
-			"и подпись CONSTRUCTION протухает после первого же чтения:\n%s", sel)
+			"и подпись CONSTRUCTION протухает после первого же чтения:\n%s", sql)
 	}
-	if !strings.Contains(sel, `db:"qty_per_garment"`) {
-		t.Error("у строки результата нет поля с тегом db:\"qty_per_garment\" — колонка в запросе " +
-			"есть, а разложить её некуда")
+	if !strings.Contains(decl, `db:"qty_per_garment"`) {
+		t.Errorf("у строки результата нет поля с тегом db:\"qty_per_garment\" — колонка в запросе "+
+			"есть, а разложить её некуда:\n%s", decl)
 	}
 }
 
@@ -316,9 +319,10 @@ func bomQtyFuncBody(t *testing.T, src, header string) string {
 	return src[start : start+end]
 }
 
-// bomQtyLinkSelect вырезает ТЕКСТ читающего запроса связей шага — от имени переменной результата до
-// закрывающего бэктика.
-func bomQtyLinkSelect(t *testing.T, src string) string {
+// bomQtyLinkSelect вырезает чтение связей шага ДВУМЯ КУСКАМИ: сырой текст SQL (между бэктиками) и
+// объявление строки результата (то, что стоит до него). Одним куском их резать нельзя — см. мутацию
+// в теле теста выше.
+func bomQtyLinkSelect(t *testing.T, src string) (sqlText, decl string) {
 	t.Helper()
 	start := strings.Index(src, "bomLinkRows, err := storeutil.QueryListNamed")
 	if start < 0 {
@@ -326,14 +330,27 @@ func bomQtyLinkSelect(t *testing.T, src string) string {
 			productionStoreSource)
 	}
 	rest := src[start:]
-	end := strings.Index(rest, "map[string]any{\"ids\": ids})")
-	if end < 0 {
-		t.Fatalf("не найден конец запроса связей шага — разбор сломан")
+	// Якорь — бэктик ПОСЛЕ аргументов QueryListNamed: бэктики есть и в тегах структуры результата,
+	// и первый попавшийся увёл бы извлекатель в объявление строки.
+	const queryOpen = "](ctx, s.DB, `"
+	open := strings.Index(rest, queryOpen)
+	if open < 0 {
+		t.Fatalf("у запроса связей шага не найден открывающий бэктик — разбор сломан")
 	}
-	sel := rest[:end]
-	if !strings.Contains(sel, "FROM tech_card_operation_bom") {
-		t.Fatalf("вырезанный кусок не содержит FROM tech_card_operation_bom — извлекатель смотрит "+
-			"не туда, а сломанный извлекатель зеленит тест на любой ошибке:\n%s", sel)
+	open += len(queryOpen)
+	close := strings.Index(rest[open:], "`")
+	if close < 0 {
+		t.Fatalf("у запроса связей шага не найден закрывающий бэктик — разбор сломан")
 	}
-	return sel
+	sqlText = rest[open : open+close]
+	decl = rest[:open]
+	if !strings.Contains(sqlText, "FROM tech_card_operation_bom") {
+		t.Fatalf("вырезанный SQL не содержит FROM tech_card_operation_bom — извлекатель смотрит "+
+			"не туда, а сломанный извлекатель зеленит тест на любой ошибке:\n%s", sqlText)
+	}
+	if !strings.Contains(decl, "db:\"line_key\"") {
+		t.Fatalf("вырезанное объявление строки не содержит даже db:\"line_key\" — извлекатель "+
+			"смотрит не туда:\n%s", decl)
+	}
+	return sqlText, decl
 }
