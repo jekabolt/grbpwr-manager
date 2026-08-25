@@ -1444,7 +1444,14 @@ func (s *Server) ListTechCards(ctx context.Context, req *pb_admin.ListTechCardsR
 		CategoryIds: categoryIDs,
 		// Коллекция фильтруется по хранимому ИМЕНИ: колонки-ссылки у тех-карты нет — её дропнула
 		// 0240 как мёртвую схему. "" = нет фильтра.
-		Collection: strings.TrimSpace(req.GetCollection()),
+		//
+		// БЕЗ TrimSpace, И ЭТО НЕ ЗАБЫТО — в отличие от Name/Brand выше. Те принимают НАБРАННЫЙ
+		// человеком текст и ищут подстроку, поэтому обрезка там милосердна. Сюда приезжает
+		// ВЫБРАННОЕ значение из пула, который клиент собрал из строк листа, отданных этим же
+		// сервером: карта с рукописным именем " SS25" кладёт в пул " SS25" дословно. Обрежь мы
+		// запрос — и карта пропала бы при фильтре по СВОЕМУ ЖЕ значению, потому что на utf8mb3
+		// сравнение PAD SPACE добивает хвостовые пробелы, а ведущий не трогает никогда.
+		Collection: req.GetCollection(),
 	}
 
 	cards, total, err := s.repo.TechCards().ListTechCards(ctx, int(req.Limit), int(req.Offset),

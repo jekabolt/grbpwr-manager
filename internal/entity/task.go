@@ -97,8 +97,8 @@ type TaskInsert struct {
 	// Поля Assignee здесь БОЛЬШЕ НЕТ, и колонка task.assignee этим кодом не читается и не пишется.
 	// Она осиротела и ждёт отдельной миграции на снос — internal/store/sql/README-pending-drops.md.
 	// На проводе поле assignee живёт ещё один релиз алиасом совместимости (см. dto).
-	Assignees []string     `db:"-"`
-	Priority  TaskPriority `db:"priority"`
+	Assignees       []string       `db:"-"`
+	Priority        TaskPriority   `db:"priority"`
 	DueDate         sql.NullTime   `db:"due_date"`
 	StartDate       sql.NullTime   `db:"start_date"` // planned start (manual); actual start is Task.StartedAt
 	TechCardId      sql.NullInt32  `db:"tech_card_id"`
@@ -256,13 +256,13 @@ type TaskListFilter struct {
 	// Assignee — ЧЛЕНСТВО в списке исполнителей, а не равенство одному полю: «мои» находит и
 	// задачи, где я второй. "" = any assignee.
 	Assignee        string
-	TechCardId      int // 0 = no filter
-	ProductId       int        // 0 = no filter
-	OrderUuid       string     // "" = no filter
-	ArchiveId       int        // 0 = no filter
-	FittingId       int        // 0 = no filter
-	ProductionRunId int        // 0 = no filter
-	SampleId        int        // 0 = no filter
+	TechCardId      int    // 0 = no filter
+	ProductId       int    // 0 = no filter
+	OrderUuid       string // "" = no filter
+	ArchiveId       int    // 0 = no filter
+	FittingId       int    // 0 = no filter
+	ProductionRunId int    // 0 = no filter
+	SampleId        int    // 0 = no filter
 	// ProjectTopicId отвечает на ОБРАТНЫЙ вопрос фазы 0322 — «какие задачи у этого проекта».
 	// Фильтр существующего списка, а не отдельный RPC: это тот же список задач, просто суженный, и
 	// второй путь к тем же данным завёл бы вторые права, которым нечем помешать разойтись.
