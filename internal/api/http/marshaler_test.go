@@ -137,13 +137,31 @@ func TestAdminGatewayRejectsUnknownField(t *testing.T) {
 	// баннер «расхождение версий». Ошибку транспорта отличает только префикс protojson: он есть у
 	// маршалера и не бывает у status.Errorf. Если эта проверка покраснела после бампа зависимостей —
 	// форма изменилась, и классификатор Ф5 надо пересобирать по новому телу, а не чинить тест.
-	if !strings.Contains(body, "proto: (line ") {
+	if !strings.Contains(protoPrefixNormalized(body), "proto: (line ") {
 		t.Fatalf("тело отказа потеряло префикс «proto: (line …)» — единственный признак, отличающий "+
 			"отказ транспорта от бизнес-валидации для баннера Ф5: %s", body)
 	}
 	if stub.updateCalls != 0 {
 		t.Fatalf("RPC вызвана %d раз(а) при отказе транспорта — значит тело разобралось", stub.updateCalls)
 	}
+}
+
+// protoPrefixNormalized приводит тело отказа к одному написанию префикса protojson.
+//
+// protobuf-go НАМЕРЕННО рандомизирует пробел после «proto:»: detrand подставляет то обычный U+0020,
+// то неразрывный U+00A0, и выбор делается ПО ХЕШУ СОБРАННОГО БИНАРЯ — то есть меняется от любой
+// правки .proto, не трогающей ни одного из этих сообщений. Проверка на литерал «proto: (line » от
+// этого краснела и зеленела сама по себе, четырьмя тестами разом, и каждый такой прогон читался как
+// «форма ответа изменилась» — ровно то, о чём предупреждает комментарий ниже, только неправдой.
+//
+// Нормализуется РОВНО пробел. Всё остальное в префиксе — литерал, и его пропажа обязана краснеть:
+// дискриминатор Ф5 держится на том, что «proto:» и «(line» стоят рядом.
+//
+// ТО ЖЕ САМОЕ ОБЯЗАН ДЕЛАТЬ КЛИЕНТСКИЙ КЛАССИФИКАТОР, когда его напишут: сравнение с литералом,
+// содержащим обычный пробел, на половине сборок сервера не совпадёт, и баннер «обновите вкладку» не
+// покажется именно тогда, когда он нужен.
+func protoPrefixNormalized(body string) string {
+	return strings.ReplaceAll(body, "\u00a0", " ")
 }
 
 // TestAdminGatewayRejectsUnknownEnumMember — цитата (б) и (в).
@@ -176,7 +194,8 @@ func TestAdminGatewayRejectsUnknownEnumMember(t *testing.T) {
 			// Та же растяжка формы, что в TestAdminGatewayRejectsUnknownField: Ф5 распознаёт
 			// отказ транспорта по префиксу protojson + фразе «invalid value for enum field»,
 			// потому что code 3 + пустые details бизнес-валидация даёт и сама.
-			if !strings.Contains(body, "proto: (line ") || !strings.Contains(body, "invalid value for enum field") {
+			if !strings.Contains(protoPrefixNormalized(body), "proto: (line ") ||
+				!strings.Contains(body, "invalid value for enum field") {
 				t.Fatalf("тело отказа потеряло сигнатуру «proto: (line …): invalid value for enum field» — "+
 					"классификатор Ф5 стоит на ней: %s", body)
 			}
@@ -421,5 +440,30 @@ func TestAdminReservedNameInventoryIsCurrent(t *testing.T) {
 	}
 	if pairs != retiredFieldNamePairs {
 		t.Errorf("пар (сообщение, снятое имя поля) стало %d, в инвентаре — %d.%s", pairs, retiredFieldNamePairs, reinventory)
+	}
+}
+
+// TestProtoPrefixNormalizedAcceptsBothSpacesDetrandEmits — положительный контроль к нормализатору.
+//
+// Он нужен именно здесь и именно такой. Четыре теста-«шлюза» выше зелены на ЭТОЙ сборке потому,
+// что detrand выбрал по хешу бинаря обычный пробел; на соседней сборке — по любой правке .proto —
+// он выберет неразрывный, и без нормализации те же четыре покраснеют, ничего не изменив в коде.
+// То есть их зелень про нормализатор не свидетельствует ВООБЩЕ: тело до него не доходит в том
+// написании, ради которого он написан. Второе написание подставляется здесь руками.
+func TestProtoPrefixNormalizedAcceptsBothSpacesDetrandEmits(t *testing.T) {
+	const want = "proto: (line "
+	for name, body := range map[string]string{
+		"обычный пробел":     "proto: (line 1:23): unknown field \"x\"",
+		"неразрывный пробел": "proto: (line 1:23): unknown field \"x\"",
+	} {
+		if !strings.Contains(protoPrefixNormalized(body), want) {
+			t.Errorf("%s: нормализатор не свёл тело к %q — дискриминатор Ф5 промолчит на половине "+
+				"сборок сервера: %q", name, want, body)
+		}
+	}
+	// Граница: нормализуется РОВНО пробел. Пропажа самого префикса обязана краснеть.
+	if strings.Contains(protoPrefixNormalized("segment: unknown field: \"x\""), want) {
+		t.Error("нормализатор принял бизнес-валидацию за отказ транспорта — баннер «обновите " +
+			"вкладку» покажется на опечатке в поле сегмента")
 	}
 }

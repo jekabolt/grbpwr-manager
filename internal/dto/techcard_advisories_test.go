@@ -2,6 +2,9 @@ package dto
 
 import (
 	"database/sql"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -406,6 +409,77 @@ func TestTechCardAdvisoriesCountableSlot(t *testing.T) {
 	}
 }
 
+// TestTechCardAdvisoriesSpareIsCountedPerPairNotPerCard — БАЗИС ЕСТЬ СВОЙСТВО ПАРЫ.
+//
+// Слот несёт только запас. Чёрный колорвей число сказал, белый — нет. Флаг «где-то на карточке
+// число есть» подавил бы замечание ровно там, где оно нужно: белое изделие уезжает и без пуговиц,
+// и без пакетика, а карточка отвечает «всё в порядке». Однопалитровые тесты этого не видят вовсе.
+func TestTechCardAdvisoriesSpareIsCountedPerPairNotPerCard(t *testing.T) {
+	bom := []entity.TechCardBomItem{{
+		Id: 10, LineKey: "k-buttons", Name: "buttons",
+		Section: entity.BomSectionHardware, SpareQty: advDec("2"),
+	}, {
+		Id: 11, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+		Kind: advStr(string(entity.BomKindSpareKitBag)),
+	}}
+	card := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		BomItems: bom,
+		Colorways: []entity.TechCardColorway{
+			{Id: 1, Name: "black", ColorCode: "BLK", Status: entity.ColorwayStatusActive,
+				Usages: []entity.TechCardColorwayUsage{{BomItemId: advI64(10), Quantity: advDec("6")}}},
+			{Id: 2, Name: "white", ColorCode: "WHT", Status: entity.ColorwayStatusActive,
+				Usages: []entity.TechCardColorwayUsage{{BomItemId: advI64(10)}}},
+		},
+	}}
+	got := TechCardAdvisories(card, nil, nil)
+	require.Equal(t, []string{AdviceCountableSpareWithoutQty}, advKeys(got))
+	require.Contains(t, got[0].Text, "neither its units nor its spares",
+		"колорвей без числа не покупает НИЧЕГО — фраза обязана сказать именно это")
+}
+
+// TestTechCardAdvisoriesLegacyRowNeverGetsTheSpare — ЛЕГАСИ-СТРОКА ПЛАТИТ ЗА СЕБЯ, НО ЗАПАС К НЕЙ
+// НЕ ПРИБАВЛЯЕТСЯ НИКОГДА.
+//
+// Строка адресует слот позиционным индексом, поэтому в пару (carve-out 0295) не входит, а запас
+// прибавляется РОВНО К ПАРЕ. Её собственные шесть куплены, запас — нет, и текст обязан различать
+// эти два убытка: «не покупается ничего» здесь было бы ложью про деньги оператора.
+func TestTechCardAdvisoriesLegacyRowNeverGetsTheSpare(t *testing.T) {
+	card := advCard([]entity.TechCardBomItem{{
+		Id: 10, LineKey: "k-buttons", Name: "buttons",
+		Section: entity.BomSectionHardware, SpareQty: advDec("2"),
+	}, {
+		Id: 11, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+		Kind: advStr(string(entity.BomKindSpareKitBag)),
+	}}, entity.TechCardColorwayUsage{BomItemIndex: advI32(0), Quantity: advDec("6")})
+	got := TechCardAdvisories(card, nil, nil)
+	require.Equal(t, []string{AdviceCountableSpareWithoutQty}, advKeys(got))
+	require.Contains(t, got[0].Text, "pays for its own units",
+		"строка своё число платит — терять надо ровно запас, а не всё")
+}
+
+// TestTechCardAdvisoriesSizedRowStillLosesTheSpare — ПО-РАЗМЕРНАЯ СТРОКА ПОКУПАЕТ СВОИ ЕДИНИЦЫ.
+//
+// Единицы куплены по-размерной нормой (usagePerGarmentQty выходит на неё раньше резолвера пары), и
+// теряется только запас. Общая фраза «не покупается ничего» соврала бы про уже посчитанные деньги.
+func TestTechCardAdvisoriesSizedRowStillLosesTheSpare(t *testing.T) {
+	card := advCard([]entity.TechCardBomItem{{
+		Id: 10, LineKey: "k-buttons", Name: "buttons",
+		Section: entity.BomSectionHardware, SpareQty: advDec("2"),
+	}, {
+		Id: 11, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+		Kind: advStr(string(entity.BomKindSpareKitBag)),
+	}}, entity.TechCardColorwayUsage{
+		BomItemId: advI64(10),
+		SizeConsumptions: []entity.TechCardBomSizeConsumption{
+			{SizeId: 1, Consumption: decimal.NewFromInt(6)},
+		},
+	})
+	got := TechCardAdvisories(card, nil, nil)
+	require.Equal(t, []string{AdviceCountableSpareWithoutQty}, advKeys(got))
+	require.Contains(t, got[0].Text, "pays for its own units",
+		"по-размерная норма действует — теряется только запас")
+}
+
 // TestTechCardAdvisoriesCountableSlotText — фраза называет СЛОТ и говорит, чем это кончится.
 func TestTechCardAdvisoriesCountableSlotText(t *testing.T) {
 	card := advCard([]entity.TechCardBomItem{{
@@ -445,4 +519,81 @@ func TestTechCardAdvisoriesNoColorways(t *testing.T) {
 // TestTechCardAdvisoriesNilCard — читатель зовёт функцию с тем, что вернул стор; nil там законен.
 func TestTechCardAdvisoriesNilCard(t *testing.T) {
 	require.Nil(t, TechCardAdvisories(nil, []entity.StyleAssembly{advAssemblyLine()}, nil))
+}
+
+// TestAdviceKeysAreAllListedInTheProtoContract — третий список, который волна чуть не завела.
+//
+// Ключей два места: константы Advice* здесь и перечисление в комментарии к TechCardReadinessAdvice,
+// по которому ветвится клиент. Шестой ключ уже один раз доехал до сервера, но не до перечисления —
+// и на клиенте это выглядело бы не как «контракт разошёлся», а как «замечание не поднимается».
+// Тест не заводит ТРЕТИЙ список: он вынимает ключи из исходника констант и требует каждый в proto.
+func TestAdviceKeysAreAllListedInTheProtoContract(t *testing.T) {
+	src, err := os.ReadFile("techcard_advisories.go")
+	if err != nil {
+		t.Fatalf("не читается источник констант: %v", err)
+	}
+	keys := regexp.MustCompile(`(?m)^\tAdvice\w+ = "([a-z_]+)"$`).FindAllStringSubmatch(string(src), -1)
+	if len(keys) < 6 {
+		t.Fatalf("из источника вынулось %d ключей — регулярка отстала от кода, и тест "+
+			"проверяет пустоту", len(keys))
+	}
+
+	body, err := os.ReadFile("../../proto/admin/admin/admin.proto")
+	if err != nil {
+		t.Fatalf("не читается контракт: %v", err)
+	}
+	proto := string(body)
+	from := strings.Index(proto, "message TechCardReadinessAdvice {")
+	to := strings.Index(proto[max(from, 0):], "string key = 1;")
+	if from < 0 || to < 0 {
+		t.Fatalf("блок TechCardReadinessAdvice не найден (%d, %d) — тест ничего не измеряет", from, to)
+	}
+	block := proto[from : from+to]
+	for _, k := range keys {
+		if !strings.Contains(block, k[1]) {
+			t.Errorf("ключ %q поднимается сервером, но не перечислен в контракте: клиент по нему "+
+				"не ветвится, и замечание выглядит непоявившимся", k[1])
+		}
+	}
+}
+
+// TestTechCardAdvisoriesRowWithoutAnyBomReferenceIsNotAUse — строка рецепта, не называющая слот
+// НИКАК: ни bom_item_id, ни позиционного bom_item_index.
+//
+// Такие строки в базе есть — их родил импорт, у которого ссылка не собралась, — и все три чтения
+// слота обязаны считать их немыми. Опасен здесь не отказ, а щедрость: прочитай такую строку как
+// «слот кем-то используется» — и countable_slot_unused замолчит ровно на карточке, где норма
+// действительно никуда не доехала.
+func TestTechCardAdvisoriesRowWithoutAnyBomReferenceIsNotAUse(t *testing.T) {
+	slot := entity.TechCardBomItem{
+		Id: 10, LineKey: "k-buttons", Name: "buttons", Section: entity.BomSectionHardware,
+		QtyPerGarment: advDec("6"),
+	}
+	orphan := entity.TechCardColorwayUsage{Quantity: advDec("6")} // ссылки нет ни одной
+
+	got := advKeys(TechCardAdvisories(advCard([]entity.TechCardBomItem{slot}, orphan), nil, nil))
+	require.Equal(t, []string{AdviceCountableSlotUnused}, got,
+		"немая строка прочитана как использование слота — замечание молчит там, где норма никуда "+
+			"не доехала")
+}
+
+// TestTechCardAdvisoriesOrphanRowDoesNotSilenceTheSpare — та же немая строка против шестого
+// замечания. Отдельный тест, потому что путь другой: там слот ищется по ссылке, здесь — считается
+// корзина пары, и «щедрое» чтение гасит уже не одно замечание, а два.
+func TestTechCardAdvisoriesOrphanRowDoesNotSilenceTheSpare(t *testing.T) {
+	slot := entity.TechCardBomItem{
+		Id: 10, LineKey: "k-buttons", Name: "buttons", Section: entity.BomSectionHardware,
+		SpareQty: advDec("2"),
+	}
+	bag := entity.TechCardBomItem{
+		Id: 11, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+		Kind: advStr(string(entity.BomKindSpareKitBag)),
+	}
+	// Строка ЕСТЬ и число несёт, но слот не называет: пара остаётся без пришиваемого количества.
+	orphan := entity.TechCardColorwayUsage{Quantity: advDec("6")}
+
+	got := advKeys(TechCardAdvisories(advCard([]entity.TechCardBomItem{slot, bag}, orphan), nil, nil))
+	require.Equal(t, []string{AdviceCountableSlotUnused}, got,
+		"немая строка сошла за использование слота: запас объявлен закупаемым, хотя закупать его "+
+			"не с чем")
 }

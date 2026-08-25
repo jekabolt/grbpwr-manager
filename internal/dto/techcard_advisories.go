@@ -260,12 +260,19 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 		if !entity.IsCountableSection(b.Section) || !entity.SlotCarriesCountableNorm(b) {
 			continue
 		}
-		used, sized, explicit := false, false, false
+		used, sized := false, false
+		// ЗАПАС СЧИТАЕТСЯ ПО ПАРЕ, А НЕ ПО КАРТОЧКЕ. Базис (slot | rows | none) — свойство ПАРЫ
+		// (колорвей × слот), и колорвей, чья строка числа не несёт, покупает НОЛЬ независимо от
+		// того, что написал сосед. Глобальный флаг «где-то на карточке число есть» подавлял бы
+		// замечание ровно там, где оно нужно: чёрный сказал шесть, белый не сказал ничего, и белое
+		// изделие уезжает без пуговиц и без пакетика.
+		spareLost, unitsLost := false, false
 		for j := range tc.Colorways {
 			cw := &tc.Colorways[j]
 			if cw.Status == entity.ColorwayStatusArchived {
 				continue
 			}
+			mentions, buysOwn := false, false
 			for k := range cw.Usages {
 				u := &cw.Usages[k]
 				// СТРОКА РЕЗОЛВИТСЯ К СЛОТУ ДВУМЯ ПУТЯМИ, И СПРАШИВАТЬ НАДО ОБА. Пара
@@ -284,12 +291,27 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 				if u.IsPieceMaterialAssignment() {
 					continue
 				}
-				used = true
-				if u.Quantity.Valid {
-					explicit = true
+				used, mentions = true, true
+				// «Строка платит сама за себя»: собственное явное число или по-размерные нормы.
+				// Это ОТДЕЛЬНЫЙ вопрос от базиса пары: легаси-строка своё число платит, но в пару
+				// не входит, поэтому запас слота к ней не прибавляется НИКОГДА.
+				if u.Quantity.Valid || len(u.SizeConsumptions) > 0 {
+					buysOwn = true
 				}
 				if len(u.SizeConsumptions) > 0 {
 					sized = true
+				}
+			}
+			if !mentions || !b.SpareQty.Valid || !b.SpareQty.Decimal.IsPositive() {
+				continue
+			}
+			// Запас прибавляется РОВНО ОДИН РАЗ и РОВНО К ПАРЕ, и только когда у пары есть базис.
+			// Пустая пара (слот поминает лишь легаси-строка) базиса не имеет — значит запас этого
+			// колорвея не покупает никто.
+			if _, basis := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, b), b); basis == entity.CountableBasisNone {
+				spareLost = true
+				if !buysOwn {
+					unitsLost = true
 				}
 			}
 		}
@@ -300,18 +322,20 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 				Text: bomSlotLabel(b) +
 					": the slot carries a quantity, but no colourway recipe uses it, so it will be neither costed nor purchased",
 			})
-		case b.SpareQty.Valid && b.SpareQty.Decimal.IsPositive() && !b.QtyPerGarment.Valid && !explicit:
-			// ЗАПАС БЕЗ ПРИШИВАЕМОГО КОЛИЧЕСТВА НЕ СТАНОВИТСЯ ЗАКУПКОЙ, и сказать об этом обязан
-			// именно чек-лист: CountablePairTotal отказывается прибавлять запас к отсутствующему
-			// основанию дословно по этой причине («положить в пакетик запасную к ничему» —
-			// недописанное утверждение, а не число), и там же записано, что назвать его должны
-			// здесь, а не деньги. До этой строки не называл никто: пакетик на карточке есть,
-			// поэтому обе половины проверки пакетика молчат, слот поминается рецептом, поэтому
-			// молчит и «не входит ни в один рецепт», — а закуплено ноль.
+		case spareLost:
+			// ЗАПАС БЕЗ ОСНОВАНИЯ НЕ СТАНОВИТСЯ ЗАКУПКОЙ, и сказать об этом обязан именно чек-лист:
+			// CountablePairTotal отказывается прибавлять запас к отсутствующему базису дословно по
+			// этой причине («положить в пакетик запасную к ничему» — недописанное утверждение, а
+			// не число), и там же записано, что назвать это должны здесь, а не деньги. До шестого
+			// замечания не называл никто: пакетик на карточке есть — обе половины проверки пакетика
+			// молчат; слот поминается рецептом — молчит и «не входит ни в один рецепт».
+			//
+			// ДВА ТЕКСТА, ПОТОМУ ЧТО ТЕРЯЕТСЯ РАЗНОЕ. Если строка платит сама за себя (собственное
+			// число или по-размерные нормы), изделие свои единицы получает и теряется ТОЛЬКО запас;
+			// сказать там «не покупается ничего» значило бы соврать оператору про его же деньги.
 			out = append(out, TechCardAdvice{
-				Key: AdviceCountableSpareWithoutQty,
-				Text: bomSlotLabel(b) +
-					": the slot sets spares aside, but states no per-garment quantity — neither the spares nor the garment's own units are purchased",
+				Key:  AdviceCountableSpareWithoutQty,
+				Text: spareLostText(b, unitsLost),
 			})
 		case sized:
 			out = append(out, TechCardAdvice{
@@ -322,6 +346,19 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 		}
 	}
 	return out
+}
+
+// spareLostText разводит два разных убытка. unitsLost — колорвей не покупает НИЧЕГО: ни своих
+// единиц, ни запаса (строка слот поминает, но числа не несёт, и слот молчит тоже). Иначе единицы
+// куплены — своим числом строки или по-размерной нормой, — и теряется ровно запас: он прибавляется
+// один раз и только к паре с базисом.
+func spareLostText(b *entity.TechCardBomItem, unitsLost bool) string {
+	if unitsLost {
+		return bomSlotLabel(b) +
+			": the slot sets spares aside, but a colourway recipe states no per-garment quantity — that colourway purchases neither its units nor its spares"
+	}
+	return bomSlotLabel(b) +
+		": the recipe line pays for its own units, but the slot's spares are never added to it — the spares are not purchased"
 }
 
 // bomSlotLabel — как слот назвать оператору: его имя, иначе стабильный ключ строки, иначе id. Та же

@@ -72,6 +72,10 @@ func bomQtyViolation(t *testing.T, pb *pb_common.TechCardInsert, wantField strin
 func TestBomQtyOnMeasuredSlotIsRefused(t *testing.T) {
 	ve := bomQtyViolation(t, bomQtyCard(bomQtyWire("thr-1", "1.5")),
 		"operations[0].bom_quantities[0].qty_per_garment")
+	if ve.Reason != "measured_section" {
+		t.Errorf("причина отказа %q, ожидалось measured_section — админка ветвится по причине, "+
+			"а не по тексту, и на чужой причине покажет не тот контрол", ve.Reason)
+	}
 	if !strings.Contains(ve.Conflicting, "thread") {
 		t.Errorf("отказ не назвал секцию, которая сработала (%q) — оператор не поймёт, что чинить",
 			ve.Conflicting)

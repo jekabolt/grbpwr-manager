@@ -29,7 +29,23 @@ func bqPayload(aware bool, ops ...*pb_common.TechCardOperation) *pb_common.TechC
 		StyleNumber: "BQ-GATE",
 		Name:        "gate",
 		BomQtyAware: aware,
-		Operations:  ops,
+		// Остальные пять флагов осведомлённости подняты намеренно: единственная переменная этих
+		// тестов — количества на связях. Прогоняя payload через живой обработчик, невзведённый
+		// флаг соседней волны отказал бы РАНЬШЕ (шаг типа «машина» — уже машинный факт), и тест
+		// измерял бы чужой щит. На тестах, зовущих bomQtyStoredGate напрямую, флаги не читаются.
+		// Строка BOM, на которую ссылается связь шага: без неё разбор количеств отказывает раньше
+		// щита («no_such_bom_line»), и положительный контроль измерял бы валидацию, а не порядок.
+		BomItems: []*pb_common.TechCardBomItem{{
+			Section: pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_HARDWARE,
+			Name:    "пуговица",
+			LineKey: "btn-1",
+		}},
+		MachineFieldsAware:  true,
+		AssemblyAware:       true,
+		MediaAware:          true,
+		OperationKindsAware: true,
+		OperationWorkAware:  true,
+		Operations:          ops,
 	}
 }
 
@@ -40,6 +56,7 @@ func bqOpLinkedNoQty() *pb_common.TechCardOperation {
 	return &pb_common.TechCardOperation{
 		OperationNumber: 10,
 		OperationType:   pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+		MachineType:     pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_OVERLOCK, // требование конверсии, а не щита: шаг «на машине» обязан назвать машину
 		Zone:            gateZone(),
 		BomLineKeys:     []string{"btn-1"},
 	}
@@ -182,13 +199,22 @@ func TestBomQtyUnawareWriteAgainstStoredQuantitiesIsRefused(t *testing.T) {
 // Проверка текстуальная, и это её граница: она пинит порядок ЛЕКСЕМ в исходнике, а не порядок
 // исполнения. Оба якоря обязаны найтись, иначе пустой результат прочитался бы как «порядок
 // соблюдён» — тот же положительный контроль, что у счётчика вызовов выше.
+//
+// Якорь взят ЦЕЛИКОМ, вместе с `if err :=` и `err != nil`, а не одним именем функции: `_ =
+// bomQtyStoredGate(...)` — вызов, отказ которого выброшен, — совпал бы с коротким якорем и оставил
+// проверку зелёной над щитом, не отказывающим никогда.
+//
+// Порядок ИСПОЛНЕНИЯ покупается отдельно и на живом обработчике —
+// TestUpdateTechCardRefusesUnawareBundleBeforeTouchingTheStore. Текстовый тест остаётся, потому что
+// он один называет причину в терминах исходника, когда порядок ломают; исполнительный один ловит
+// перенос, которого в тексте не видно (обёртка, defer, ветка).
 func TestBomQtyStoredGateStandsBeforeTheWrite(t *testing.T) {
 	body, err := os.ReadFile("techcard.go")
 	if err != nil {
 		t.Fatalf("не читается techcard.go: %v", err)
 	}
 	src := string(body)
-	gate := strings.Index(src, "bomQtyStoredGate(req.TechCard, stored)")
+	gate := strings.Index(src, "if err := bomQtyStoredGate(req.TechCard, stored); err != nil {")
 	write := strings.Index(src, "UpdateTechCardAndListOrphanedPatternURLs(")
 	if gate < 0 || write < 0 {
 		t.Fatalf("якоря не найдены (щит %d, запись %d) — проверка ничего не измеряет", gate, write)
@@ -297,5 +323,30 @@ func TestCloneDeclaresBomQtyAware(t *testing.T) {
 	if !strings.Contains(src, "pbInsert.BomQtyAware = true") {
 		t.Error("клон сезона не объявляет bom_qty_aware — карточка с количествами не склонируется " +
 			"вовсе: её остановит собственный щит")
+	}
+}
+
+// TestUpdateTechCardRefusesUnawareBundleBeforeTouchingTheStore — порядок ИСПОЛНЕНИЯ, а не лексем.
+//
+// Стор поднят без ожидания на запись: mockery валит тест на первом же необъявленном вызове, поэтому
+// «запись не состоялась» здесь утверждается самим прогоном, а не чтением файла. Отказ при этом
+// сверяется текстом (`bqRequireRefusal` требует «per-step material quantities»): без этого тест
+// прошёл бы и от отказа ЛЮБОГО из шести щитов, стоящих выше, — то есть измерял бы чужой порядок.
+func TestUpdateTechCardRefusesUnawareBundleBeforeTouchingTheStore(t *testing.T) {
+	err := gateUpdate(t, bqStoredWithQty(), bqPayload(false, bqOpLinkedNoQty()), gateStopsAtStored)
+	bqRequireRefusal(t, err, "устаревшая вкладка против карточки с количествами, живой обработчик")
+}
+
+// TestUpdateTechCardAwareBundleReachesTheStore — положительный контроль к тесту выше.
+//
+// Без него «запись не состоялась» ничего не стоило бы: обработчик мог бы не доходить до стора по
+// любой причине — упавшая конверсия, чужой щит, опечатка в фикстуре, — и порядок остался бы
+// неизмеренным. Здесь тот же payload, но осведомлённый, обязан ДОЙТИ до записи.
+func TestUpdateTechCardAwareBundleReachesTheStore(t *testing.T) {
+	err := gateUpdate(t, bqStoredWithQty(), bqPayload(true, bqOpWithQty()), gateReachesStore)
+	if st, _ := status.FromError(err); st.Code() != codes.Aborted {
+		t.Fatalf("осведомлённый бандл не дошёл до записи: %v — стор отвечает конфликтом (Aborted) "+
+			"только когда запись состоялась; тест выше измеряет не порядок, а остановку по "+
+			"другой причине", err)
 	}
 }

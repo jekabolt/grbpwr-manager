@@ -388,7 +388,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 						opLabel(op), count.String(), line.Name, operationSpendSource(fromLink),
 						countNormPhrase(qty, colorway, basis)),
 					Refs:       refs,
-					Suggestion: "Raise the quantity on the colourway recipe, or lower the placement count on the step.",
+					Suggestion: "Raise the quantity on the colourway recipe, or lower " + operationSpendFix(fromLink) + ".",
 				},
 			})
 		}
@@ -404,7 +404,8 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 				"(tech_card_bom_item.qty_per_garment, or tech_card_colorway_usage.quantity where the " +
 				"recipe overrides it) on these links — the lines run short on every garment.",
 			Refs:       sample,
-			Suggestion: "Raise the quantities on the colourway recipe, or lower the placement counts.",
+			Suggestion: "Raise the quantities on the colourway recipe, or lower what the steps spend — " +
+				"the quantity on the step's link to the line where it is stated, the placement count otherwise.",
 		}
 	})...)
 
@@ -1030,6 +1031,20 @@ func operationSpendOn(op *entity.TechCardOperation, line *entity.TechCardBomItem
 // operationSpendSource называет источник числа поимённо: «шаг тратит 6 по счётчику связи» чинится
 // на связи, «по числу повторов» — в поле повторов, и отправить читателя не в тот контрол значит
 // отправить его чинить не то.
+// operationSpendFix называет ТУ САМУЮ клетку, правка которой убирает находку.
+//
+// Совет обязан указывать на число, которое проверка прочитала. Пока расход брался только из
+// повторов, «понизьте placement_count» было верно всегда; с 0334 у половины находок расход приходит
+// с связи, и на них этот совет отправляет технолога править поле, которое ни на что не влияет:
+// повторы можно обнулить, а находка останется. Совет, не убирающий находку, хуже отсутствия совета
+// — он тратит правку и подрывает доверие ко всей проверке.
+func operationSpendFix(fromLink bool) string {
+	if fromLink {
+		return "the quantity on the step's link to this line"
+	}
+	return "the placement count on the step"
+}
+
 func operationSpendSource(fromLink bool) string {
 	if fromLink {
 		return "tech_card_operation_bom.qty_per_garment"
