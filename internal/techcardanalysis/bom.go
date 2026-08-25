@@ -304,15 +304,25 @@ func nonZeroOf(counts ...int) int {
 // bom_mismatch. Две независимые ветки: несовпадение счётов петель и пуговиц — warning; счёт
 // установки больше закупленной счётной нормы — error.
 //
-// СЧЁТНАЯ НОРМА ЖИВЁТ ПО КОЛОРВЕЮ (`tech_card_colorway_usage.quantity`, entity:1220), а не на
-// строке BOM: строка BOM — это РОЛЬ («пуговица основная»), а сколько их и какого артикула — решает
-// рецепт колорвея. Проверка поэтому сверяется с САМЫМ СКУПЫМ колорвеем: карточка, у которой один
-// колорвей покупает восемь пуговиц, а другой шесть, при шести установках законна, а при семи —
-// нет, и назвать надо тот колорвей, который не сходится.
+// СЧЁТНУЮ НОРМУ СОБИРАЕТ ПАРА (КОЛОРВЕЙ × СЛОТ), И СПРАШИВАТЬ ЕЁ НАДО ТАМ, А НЕ У СТРОКИ РЕЦЕПТА.
+// Число живёт на слоте (`tech_card_bom_item.qty_per_garment`, 0333) и может быть переопределено
+// строками рецепта (`tech_card_colorway_usage.quantity`); 0295 дословно разрешает НЕСКОЛЬКИМ
+// строкам одного колорвея поминать один слот с разными placement («планка» / «манжета»). Правило
+// целиком — в entity.CountablePairQty, и B4 его не переписывает: своё чтение по строкам врало бы
+// дважды — молчало бы на карточке, где число стоит на слоте, и на паре «4 + 2» брало бы 2 вместо
+// 6, печатая ошибку про недостачу там, где карточка сходится.
+//
+// СВЕРКА ИДЁТ С ПРИШИВАЕМЫМ, А НЕ С ЗАКУПАЕМЫМ (CountablePairQty, не CountablePairTotal): запас
+// слота уезжает в пакетик покупателю, и ставить из него — значит отдать пакетик пустым. Слот,
+// покупающий пять на изделие и три в запас, при шести установках недостачу ИМЕЕТ.
+//
+// Проверка сверяется с САМЫМ СКУПЫМ колорвеем: карточка, у которой один колорвей покупает восемь
+// пуговиц, а другой шесть, при шести установках законна, а при семи — нет, и назвать надо тот
+// колорвей, который не сходится.
 //
 // Подавители: `placement_count` NULL (это уже находка A2 — «как написано, изделие однопуговичное»,
 // и вторая находка о том же числе была бы вторым голосом об одном факте); линка шага на строку BOM
-// нет; у строки нет счётной нормы ни в одном колорвее.
+// нет; счётной нормы у линии нет ни в одном колорвее (ни на слоте, ни на строках).
 //
 // ЧЕГО ЗДЕСЬ НЕТ: диаметра пуговицы (`material_hardware_attr.diameter_mm`, 0157). Он живёт в
 // каталоге номенклатуры, а пакет в БД не ходит — сверка «петля 20 мм под пуговицу 15 мм» возможна
@@ -346,7 +356,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 		}
 		count := op.PlacementCount.Int32
 		for _, line := range v.linkedBomLines(op) {
-			qty, colorway, ok := v.tightestCountNorm(line)
+			qty, colorway, basis, ok := v.tightestCountNorm(line)
 			if !ok {
 				continue // подавитель: счётной нормы у линии нет ни в одном колорвее
 			}
@@ -361,10 +371,9 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 					Category: CategoryBomMismatch,
 					Severity: SeverityError,
 					Title:    aiBoundedText(fmt.Sprintf("More %s set than bought: %d against %s", line.Name, count, qty.String()), 90),
-					Detail: fmt.Sprintf("%s sets %d × %q (placement_count), and the recipe of "+
-						"colourway %q buys %s per garment (tech_card_colorway_usage.quantity). The "+
+					Detail: fmt.Sprintf("%s sets %d × %q (placement_count), and %s. The "+
 						"line runs short on every garment.",
-						opLabel(op), count, line.Name, colorway, qty.String()),
+						opLabel(op), count, line.Name, countNormPhrase(qty, colorway, basis)),
 					Refs:       refs,
 					Suggestion: "Raise the quantity on the colourway recipe, or lower the placement count on the step.",
 				},
@@ -377,8 +386,9 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 			Severity: SeverityError,
 			Title: fmt.Sprintf("More hardware is set than bought on %d of %d step-to-line links",
 				missing, applicable),
-			Detail: "placement_count exceeds the countable norm the colourway recipe buys " +
-				"(tech_card_colorway_usage.quantity) on these links — the lines run short on every garment.",
+			Detail: "placement_count exceeds the countable norm the card sews per garment " +
+				"(tech_card_bom_item.qty_per_garment, or tech_card_colorway_usage.quantity where the " +
+				"recipe overrides it) on these links — the lines run short on every garment.",
 			Refs:       sample,
 			Suggestion: "Raise the quantities on the colourway recipe, or lower the placement counts.",
 		}
@@ -944,27 +954,54 @@ func (v *cardView) linkedBomLines(op *entity.TechCardOperation) []*entity.TechCa
 	return out
 }
 
-// tightestCountNorm returns the SMALLEST countable norm any colourway buys for that line, and the
-// colourway that buys it. Самый скупой колорвей и есть тот, на котором линия кончится первой.
-func (v *cardView) tightestCountNorm(line *entity.TechCardBomItem) (decimal.Decimal, string, bool) {
+// tightestCountNorm returns the SMALLEST countable norm any colourway SEWS on that line, the
+// colourway that sews it and откуда взялось число. Самый скупой колорвей и есть тот, на котором
+// линия кончится первой.
+//
+// ЧИСЛО СПРАШИВАЕТСЯ У ПАРЫ, А НЕ У СТРОКИ: правило («итог пары применяется один раз», «явные
+// quantity строк суммируются и отменяют слот») живёт в entity.CountablePairQty и здесь не
+// повторяется. Легаси-строки без bom_item_id в пару не входят по carve-out 0295 — они адресуют
+// слот позиционным ключом и считаются каждая своим числом, ровно как их считает
+// CountablePairRowTotal.
+func (v *cardView) tightestCountNorm(line *entity.TechCardBomItem) (decimal.Decimal, string, entity.CountableBasis, bool) {
 	var best decimal.Decimal
-	name, found := "", false
-	for i := range v.card.Colorways {
-		cw := &v.card.Colorways[i]
-		for j := range cw.Usages {
-			u := &cw.Usages[j]
-			if !u.Quantity.Valid {
-				continue
-			}
-			if !(u.BomItemId.Valid && u.BomItemId.Int64 == int64(line.Id)) && u.BomLineKey != line.LineKey {
-				continue
-			}
-			if !found || u.Quantity.Decimal.LessThan(best) {
-				best, name, found = u.Quantity.Decimal, cw.Name, true
-			}
+	name, basis, found := "", entity.CountableBasisNone, false
+	consider := func(q decimal.Decimal, cw string, b entity.CountableBasis) {
+		if !found || q.LessThan(best) {
+			best, name, basis, found = q, cw, b, true
 		}
 	}
-	return best, name, found
+	for i := range v.card.Colorways {
+		cw := &v.card.Colorways[i]
+		if qty, b := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, line), line); b != entity.CountableBasisNone {
+			consider(qty.Decimal, cw.Name, b)
+		}
+		for j := range cw.Usages {
+			u := &cw.Usages[j]
+			if !u.Quantity.Valid || u.IsPieceMaterialAssignment() {
+				continue
+			}
+			if u.BomItemId.Valid && u.BomItemId.Int64 == int64(line.Id) {
+				continue // строка состоит в паре — её число уже учтено итогом пары
+			}
+			if u.BomLineKey != line.LineKey {
+				continue
+			}
+			consider(u.Quantity.Decimal, cw.Name, entity.CountableBasisRows)
+		}
+	}
+	return best, name, basis, found
+}
+
+// countNormPhrase говорит, ОТКУДА взялось число, которому не хватило установок. Провенанс здесь не
+// украшение: «слот покупает шесть» чинится на строке BOM, а «рецепт колорвея покупает шесть» — в
+// рецепте, и отправить читателя не в тот экран значит отправить его чинить не то.
+func countNormPhrase(qty decimal.Decimal, colorway string, basis entity.CountableBasis) string {
+	if basis == entity.CountableBasisSlot {
+		return fmt.Sprintf("the BOM line sews %s per garment (tech_card_bom_item.qty_per_garment)", qty.String())
+	}
+	return fmt.Sprintf("the recipe of colourway %q sews %s per garment (tech_card_colorway_usage.quantity)",
+		colorway, qty.String())
 }
 
 // markerSourcedBomIDs is the set of BOM line ids whose consumption came from a saved раскладка.

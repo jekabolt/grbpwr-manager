@@ -319,6 +319,75 @@ func TestB4IsSilentWhenTheSpareIsBought(t *testing.T) {
 	}
 }
 
+// btMentionSlot поминает слот строкой рецепта БЕЗ собственного числа: пара существует, а норму
+// несёт слот. Ровно так выглядит карточка, заполненная после 0333.
+func btMentionSlot(c *entity.TechCard, b *entity.TechCardBomItem) {
+	cw := &c.Colorways[0]
+	cw.Usages = append(cw.Usages, entity.TechCardColorwayUsage{
+		BomItemId: sql.NullInt64{Int64: int64(b.Id), Valid: true},
+	})
+}
+
+func TestB4ReadsTheNormOffTheSlot(t *testing.T) {
+	// Шов с волной счётных норм (0333): число стоит на слоте, строка рецепта его не повторяет.
+	// Чтение по строкам молчало бы здесь совсем — то есть проверка выключалась бы ровно на тех
+	// карточках, ради которых счётная норма и заводилась.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+		QtyPerGarment: dec("6"),
+	})
+	btMentionSlot(c, line)
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 7, Valid: true}
+	btLinkOpToBom(op, line)
+
+	f := rtOne(t, btFindings(c), "More пуговица set than bought")
+	if !strings.Contains(f.Detail, "qty_per_garment") {
+		t.Errorf("находка обязана отправить чинить на строку BOM, а не в рецепт: %s", f.Detail)
+	}
+	if !strings.Contains(f.Detail, "6") {
+		t.Errorf("напечатать надо норму слота: %s", f.Detail)
+	}
+}
+
+func TestB4SumsThePairInsteadOfTakingItsSmallestRow(t *testing.T) {
+	// 0295 разрешает двум строкам одного колорвея поминать один слот с разными размещениями:
+	// четыре пуговицы на планке и две на манжете. Шесть установок такую карточку СХОДЯТ, и
+	// построчный минимум (2) печатал бы ошибку на исправных данных.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	btAddUsage(c, line, "2")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 6, Valid: true}
+	btLinkOpToBom(op, line)
+
+	rtNone(t, btFindings(c), "set than bought")
+}
+
+func TestB4DoesNotSetFromTheSpareKit(t *testing.T) {
+	// Запас слота уезжает в пакетик покупателю. Пять на изделие плюс три в запас — это восемь
+	// закупленных и ПЯТЬ пришиваемых: шесть установок недостачу имеют, и сверка с закупаемым
+	// итогом (CountablePairTotal) молча отдала бы пакетик пустым.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+		QtyPerGarment: dec("5"), SpareQty: dec("3"),
+	})
+	btMentionSlot(c, line)
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 6, Valid: true}
+	btLinkOpToBom(op, line)
+
+	f := rtOne(t, btFindings(c), "More пуговица set than bought")
+	if !strings.Contains(f.Detail, "5") {
+		t.Errorf("сверяться надо с пришиваемым числом, а не с закупаемым: %s", f.Detail)
+	}
+}
+
 func TestB4IsSilentWithoutALink(t *testing.T) {
 	c := card8()
 	line := btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionHardware, Name: "пуговица"})
