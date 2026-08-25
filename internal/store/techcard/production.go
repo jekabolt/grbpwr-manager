@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // --- inserts (called within the AddTechCard / UpdateTechCard transaction) ---
@@ -425,6 +426,22 @@ func insertTechCardOperationBoms(ctx context.Context, db dependency.DB, tcID int
 		if !ok {
 			return fmt.Errorf("operation %d missing after insert", i)
 		}
+		// СТОРОЖА «СЧЁТНОЙ СЕКЦИИ» ЗДЕСЬ НЕТ, И ЭТО ДОПУЩЕНИЕ, А НЕ НЕДОСМОТР. У нормы слота
+		// (0333) такой сторож есть — bomItemParams стирает счётные колонки на мерной секции, —
+		// потому что там значение переживает запись через *_omitted и может приехать из хранилища.
+		// Здесь связи пишутся ПОЛНОЙ ЗАМЕНОЙ: единственный источник числа — payload, а его
+		// проверил конвертер (parseOperationBomQuantities). Состояние «число на мерном слоте»
+		// невыразимо по построению. ЕСЛИ ПОЛНАЯ ЗАМЕНА КОГДА-НИБУДЬ СТАНЕТ ЧАСТИЧНОЙ — сторож
+		// придётся завести здесь же, иначе число переживёт смену секции молча, и хвост подписи
+		// CONSTRUCTION удостоверит его как инструкцию цеху.
+		//
+		// Количества на связях (0334) — ПО КЛЮЧУ, а не по позиции. Список количеств РАЗРЕЖЁННЫЙ:
+		// связь без числа в него не попадает, поэтому индексы двух списков не совпадают и
+		// позиционная раскладка молча приписала бы число не тому материалу.
+		qtyByKey := make(map[string]decimal.Decimal, len(o.BomQuantities))
+		for _, q := range o.BomQuantities {
+			qtyByKey[q.LineKey] = q.QtyPerGarment
+		}
 		for j, key := range o.BomLineKeys {
 			bomID, err := resolveBomRef(bomRes, key, sql.NullInt32{},
 				fmt.Sprintf("operations[%d].bom_line_keys[%d]", i, j))
@@ -434,10 +451,18 @@ func insertTechCardOperationBoms(ctx context.Context, db dependency.DB, tcID int
 			if bomID == nil {
 				continue
 			}
+			// КЛЮЧ КЛАДЁТСЯ ВСЕГДА, значение — nil там, где числа нет: storeutil.BulkInsert строит
+			// один INSERT по набору ключей ПЕРВОЙ строки, и строка с лишним ключом уехала бы не в
+			// свою колонку либо уронила бы вставку целиком.
+			var qty any
+			if v, ok := qtyByKey[key]; ok {
+				qty = v
+			}
 			links = append(links, map[string]any{
-				"operation_id":  opID,
-				"bom_item_id":   bomID,
-				"display_order": j,
+				"operation_id":    opID,
+				"bom_item_id":     bomID,
+				"display_order":   j,
+				"qty_per_garment": qty,
 			})
 		}
 	}
@@ -1037,8 +1062,13 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		OpID      int    `db:"op_id"`
 		BomItemID int    `db:"bom_item_id"`
 		BomKey    string `db:"line_key"`
+		// Количество на связи (0334). Колонка, забытая в этом SELECT'е, читается как NULL и молча
+		// протухает подпись CONSTRUCTION: запись хеширует хвост "bom_qty", чтение — нет, и карточка
+		// рождается «изменённой после подписания» без единой правки человеком.
+		Qty decimal.NullDecimal `db:"qty_per_garment"`
 	}](ctx, s.DB, `
-		SELECT o.id AS op_id, l.bom_item_id AS bom_item_id, b.line_key AS line_key
+		SELECT o.id AS op_id, l.bom_item_id AS bom_item_id, b.line_key AS line_key,
+		       l.qty_per_garment AS qty_per_garment
 		FROM tech_card_operation_bom l
 		JOIN tech_card_operation o ON o.id = l.operation_id
 		JOIN tech_card_bom_item b ON b.id = l.bom_item_id
@@ -1056,6 +1086,14 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		list := opsByCard[pos.cardID]
 		list[pos.index].BomIds = append(list[pos.index].BomIds, l.BomItemID)
 		list[pos.index].BomLineKeys = append(list[pos.index].BomLineKeys, l.BomKey)
+		// РАЗРЕЖЁННО: связь без числа в список количеств не попадает вовсе, поэтому его индексы с
+		// двумя списками выше НЕ совпадают — и связываться с ними обязаны по ключу. Порядок здесь
+		// тот же, что у ключей (ORDER BY l.display_order, l.id), но на отпечаток он не влияет:
+		// хвост дайджеста сортирует пары сам.
+		if l.Qty.Valid {
+			list[pos.index].BomQuantities = append(list[pos.index].BomQuantities,
+				entity.OperationBomQty{LineKey: l.BomKey, QtyPerGarment: l.Qty.Decimal})
+		}
 	}
 
 	// Фотографии шагов с выносками (0308). Цепляются по operation_id — идентичности строки, а не

@@ -320,9 +320,18 @@ func nonZeroOf(counts ...int) int {
 // пуговиц, а другой шесть, при шести установках законна, а при семи — нет, и назвать надо тот
 // колорвей, который не сходится.
 //
-// Подавители: `placement_count` NULL (это уже находка A2 — «как написано, изделие однопуговичное»,
-// и вторая находка о том же числе была бы вторым голосом об одном факте); линка шага на строку BOM
-// нет; счётной нормы у линии нет ни в одном колорвее (ни на слоте, ни на строках).
+// СКОЛЬКО ШАГ ТРАТИТ — СПРАШИВАЕТСЯ У СВЯЗИ, А НЕ У ПОВТОРОВ. 0334 завела на связи «шаг × артикул»
+// число «сколько единиц ЭТОГО артикула шаг тратит на изделие», и оно здесь главнее: повторы шага и
+// потраченные штуки — РАЗНЫЕ утверждения, и вывод одного из другого врёт на живых примерах,
+// перечисленных в шапке самой миграции («обметать 6 петель» — повторов шесть, пуговиц ноль;
+// «поставить 4 хольнитена» — повторов четыре, а артикула два, у каждого своё число). Пока числа на
+// связи нет, остаётся прежняя эвристика по placement_count — она старше 0334 и на карточках без
+// проставленных количеств единственная, что есть.
+//
+// Подавители: у шага нет НИ числа на связи, НИ `placement_count` (пустой счёт повторов — это уже
+// находка A2, «как написано, изделие однопуговичное», и вторая находка о том же числе была бы
+// вторым голосом об одном факте); линка шага на строку BOM нет; счётной нормы у линии нет ни в
+// одном колорвее (ни на слоте, ни на строках).
 //
 // ЧЕГО ЗДЕСЬ НЕТ: диаметра пуговицы (`material_hardware_attr.diameter_mm`, 0157). Он живёт в
 // каталоге номенклатуры, а пакет в БД не ходит — сверка «петля 20 мм под пуговицу 15 мм» возможна
@@ -351,17 +360,20 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 	// ── 2. Ставим больше, чем закуплено ─────────────────────────────────────────────────────────
 	applicable, missing := 0, []CoverageMiss(nil)
 	for _, op := range v.ops {
-		if !isHardwareSettingOp(op) || niEmpty(op.PlacementCount) {
+		if !isHardwareSettingOp(op) {
 			continue
 		}
-		count := op.PlacementCount.Int32
 		for _, line := range v.linkedBomLines(op) {
+			count, fromLink, stated := operationSpendOn(op, line)
+			if !stated {
+				continue // шаг не сказал ни числа на связи, ни повторов — сравнивать нечего
+			}
 			qty, colorway, basis, ok := v.tightestCountNorm(line)
 			if !ok {
 				continue // подавитель: счётной нормы у линии нет ни в одном колорвее
 			}
 			applicable++
-			if !decimal.NewFromInt(int64(count)).GreaterThan(qty) {
+			if !count.GreaterThan(qty) {
 				continue // запаска легальна: закупить больше, чем ставим, — нормальная практика
 			}
 			refs := append(opRefs(op), RefBom(line.Name))
@@ -370,12 +382,13 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 				Finding: Finding{
 					Category: CategoryBomMismatch,
 					Severity: SeverityError,
-					Title:    aiBoundedText(fmt.Sprintf("More %s set than bought: %d against %s", line.Name, count, qty.String()), 90),
-					Detail: fmt.Sprintf("%s sets %d × %q (placement_count), and %s. The "+
+					Title:    aiBoundedText(fmt.Sprintf("More %s set than bought: %s against %s", line.Name, count.String(), qty.String()), 90),
+					Detail: fmt.Sprintf("%s spends %s × %q (%s), and %s. The "+
 						"line runs short on every garment.",
-						opLabel(op), count, line.Name, countNormPhrase(qty, colorway, basis)),
+						opLabel(op), count.String(), line.Name, operationSpendSource(fromLink),
+						countNormPhrase(qty, colorway, basis)),
 					Refs:       refs,
-					Suggestion: "Raise the quantity on the colourway recipe, or lower the placement count on the step.",
+					Suggestion: "Raise the quantity on the colourway recipe, or lower " + operationSpendFix(fromLink) + ".",
 				},
 			})
 		}
@@ -386,11 +399,13 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 			Severity: SeverityError,
 			Title: fmt.Sprintf("More hardware is set than bought on %d of %d step-to-line links",
 				missing, applicable),
-			Detail: "placement_count exceeds the countable norm the card sews per garment " +
+			Detail: "what the steps spend (tech_card_operation_bom.qty_per_garment where stated, " +
+				"placement_count otherwise) exceeds the countable norm the card sews per garment " +
 				"(tech_card_bom_item.qty_per_garment, or tech_card_colorway_usage.quantity where the " +
 				"recipe overrides it) on these links — the lines run short on every garment.",
 			Refs:       sample,
-			Suggestion: "Raise the quantities on the colourway recipe, or lower the placement counts.",
+			Suggestion: "Raise the quantities on the colourway recipe, or lower what the steps spend — " +
+				"the quantity on the step's link to the line where it is stated, the placement count otherwise.",
 		}
 	})...)
 
@@ -991,6 +1006,50 @@ func (v *cardView) tightestCountNorm(line *entity.TechCardBomItem) (decimal.Deci
 		}
 	}
 	return best, name, basis, found
+}
+
+// operationSpendOn — сколько единиц ЭТОГО артикула тратит ЭТОТ шаг, и откуда число взято.
+//
+// Лестница в один шаг: явное число на связи (0334) БЬЁТ повторы шага всегда, потому что отвечает
+// ровно на заданный вопрос, тогда как placement_count отвечает на соседний. Обратного порядка быть
+// не может: шаг, где число проставлено руками, — это шаг, где человек уже сказал правду.
+//
+// stated=false значит «шаг не сказал ничего» — ни числа, ни повторов. Это не ноль: ноль на связи
+// законное утверждение («этот шаг артикула не тратит»), и он в сравнение ВХОДИТ.
+func operationSpendOn(op *entity.TechCardOperation, line *entity.TechCardBomItem) (decimal.Decimal, bool, bool) {
+	for _, q := range op.BomQuantities {
+		if q.LineKey == line.LineKey {
+			return q.QtyPerGarment, true, true
+		}
+	}
+	if niEmpty(op.PlacementCount) {
+		return decimal.Zero, false, false
+	}
+	return decimal.NewFromInt(int64(op.PlacementCount.Int32)), false, true
+}
+
+// operationSpendSource называет источник числа поимённо: «шаг тратит 6 по счётчику связи» чинится
+// на связи, «по числу повторов» — в поле повторов, и отправить читателя не в тот контрол значит
+// отправить его чинить не то.
+// operationSpendFix называет ТУ САМУЮ клетку, правка которой убирает находку.
+//
+// Совет обязан указывать на число, которое проверка прочитала. Пока расход брался только из
+// повторов, «понизьте placement_count» было верно всегда; с 0334 у половины находок расход приходит
+// с связи, и на них этот совет отправляет технолога править поле, которое ни на что не влияет:
+// повторы можно обнулить, а находка останется. Совет, не убирающий находку, хуже отсутствия совета
+// — он тратит правку и подрывает доверие ко всей проверке.
+func operationSpendFix(fromLink bool) string {
+	if fromLink {
+		return "the quantity on the step's link to this line"
+	}
+	return "the placement count on the step"
+}
+
+func operationSpendSource(fromLink bool) string {
+	if fromLink {
+		return "tech_card_operation_bom.qty_per_garment"
+	}
+	return "placement_count"
 }
 
 // countNormPhrase говорит, ОТКУДА взялось число, которому не хватило установок. Провенанс здесь не

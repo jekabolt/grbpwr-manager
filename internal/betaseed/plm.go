@@ -211,6 +211,8 @@ func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardI
 	// tcFetch возвращает сохранённые блоки шага, и сохранение без флага было бы отвергнуто как
 	// «старый бандл собирается стереть то, что написал новый».
 	tc.OperationKindsAware = true
+	// И количества на связях шага (0334) — та же природа read-modify-write.
+	tc.BomQtyAware = true
 	tc.OperationWorkAware = true
 	err := s.withLock(ctx, styleID, func(lv uint64) error {
 		_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{
@@ -401,6 +403,7 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			AssemblyAware:       true,
 			MediaAware:          true,
 			OperationKindsAware: true,
+			BomQtyAware:         true,
 			OperationWorkAware:  true,
 		},
 	})
@@ -869,6 +872,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	neg.AssemblyAware = true
 	neg.MediaAware = true
 	neg.OperationKindsAware = true
+	neg.BomQtyAware = true
 	neg.OperationWorkAware = true
 	_, negErr := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(negLV), TechCard: neg})
 	if e, ok := AsAPIError(negErr); !ok || e.Code != 400 {
@@ -1520,6 +1524,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	tc2.AssemblyAware = true
 	tc2.MediaAware = true
 	tc2.OperationKindsAware = true
+	tc2.BomQtyAware = true
 	tc2.OperationWorkAware = true
 	strayLV, err := s.lockVersion(ctx, sid)
 	if err != nil {
@@ -1595,6 +1600,7 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 			AssemblyAware:       true,
 			MediaAware:          true,
 			OperationKindsAware: true,
+			BomQtyAware:         true,
 			OperationWorkAware:  true,
 		}})
 		if err != nil {
@@ -2259,6 +2265,7 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.AssemblyAware = true
 			body.MediaAware = true
 			body.OperationKindsAware = true
+			body.BomQtyAware = true
 			body.OperationWorkAware = true
 			_, e := s.C.UpdateTechCard(ctx, &admin.UpdateTechCardRequest{Id: sid, ExpectedLockVersion: int32(raceLV), TechCard: body})
 			if e == nil {

@@ -246,7 +246,7 @@ func parseSeamClass(v pb_common.TechCardSeamClass, field string) (sql.NullString
 // about the machine / ВТО fields at all — the two «required» rules below hold only for a client
 // that could have filled them in, because a bundle that predates the split must keep saving exactly
 // as it did.
-func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers map[int]bool, bomItemCount int, park *equipmentPark, aware bool) ([]entity.TechCardOperation, error) {
+func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers map[int]bool, bomItemCount int, bomSections map[string]entity.TechCardBomSection, park *equipmentPark, aware bool) ([]entity.TechCardOperation, error) {
 	_ = bomItemCount // the positional bom_item_index went with the break; the line keys are the reference
 	out := make([]entity.TechCardOperation, 0, len(pbs))
 	for i, o := range pbs {
@@ -462,6 +462,14 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			seenBomKey[k] = true
 			bomLineKeys = append(bomLineKeys, k)
 		}
+		// Количества на связях (0334) — РАЗРЕЖЁННЫМ списком поверх bomLineKeys, разобранным на
+		// строку выше: список 23 остаётся единственным владельцем членства, здесь только числа.
+		// Разбор идёт ВСЕГДА, независимо от bom_qty_aware, — довод в шапке
+		// techcard_operation_bom_qty.go (клон сезона флагов не эмитит).
+		bomQuantities, err := parseOperationBomQuantities(o.BomQuantities, bomLineKeys, bomSections, step)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardOperation{
 			// operation_number is server-assigned = (position+1)*10 («оп. 10, 20, …»);
 			// any client value is ignored (plan §4). Reorder shifts numbers (Q6).
@@ -481,6 +489,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			CalloutNumber:    calloutNumber,
 			PieceLineKeys:    pieceLineKeys,
 			BomLineKeys:      bomLineKeys,
+			BomQuantities:    bomQuantities,
 			InputKeys:        inputKeys,
 			OutputUnitKey:    nullStringFromPb(outputUnitKey),
 			OutputUnitName:   nullStringFromPb(outputUnitName),
@@ -846,6 +855,9 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			PieceIds:         pieceIds,
 			BomLineKeys:      o.BomLineKeys,
 			BomItemIds:       bomIds,
+			// Количества на связях (0334). Разрежённый список: связь без числа сюда не попадает, и
+			// клиент отличает «числа нет» от «нуля» самим отсутствием записи.
+			BomQuantities: operationBomQuantitiesToPb(o.BomQuantities),
 
 			// The machine block. A NULL token maps to the enum's zero member (UNKNOWN) = «inherit»,
 			// which is the same statement the column makes.

@@ -388,6 +388,70 @@ func TestB4DoesNotSetFromTheSpareKit(t *testing.T) {
 	}
 }
 
+// btSetLinkQty ставит на связь шага с линией явное число 0334 — «сколько единиц ЭТОГО артикула шаг
+// тратит на изделие».
+func btSetLinkQty(op *entity.TechCardOperation, b *entity.TechCardBomItem, qty string) {
+	op.BomQuantities = append(op.BomQuantities, entity.OperationBomQty{
+		LineKey: b.LineKey, QtyPerGarment: dec(qty).Decimal,
+	})
+}
+
+func TestB4SpendsWhatTheLinkSaysNotWhatTheStepRepeats(t *testing.T) {
+	// Шов с 0334: повторы шага и потраченные штуки — разные утверждения. Шаг повторяется один раз,
+	// а тратит шесть (один проход автомата ставит шесть кнопок); рецепт покупает четыре. По
+	// повторам (1 против 4) проверка молчала бы на карточке, где двух единиц не хватает.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 1, Valid: true}
+	btLinkOpToBom(op, line)
+	btSetLinkQty(op, line, "6")
+
+	f := rtOne(t, btFindings(c), "More пуговица set than bought")
+	if !strings.Contains(f.Detail, "qty_per_garment") {
+		t.Errorf("находка обязана назвать источник числа — связь, а не повторы: %s", f.Detail)
+	}
+	if !strings.Contains(f.Detail, "6") {
+		t.Errorf("сравнивать надо число со связи: %s", f.Detail)
+	}
+}
+
+func TestB4CountsAZeroOnTheLinkAsARealZero(t *testing.T) {
+	// «Обметать 6 петель» — повторов шесть, пуговиц потрачено НОЛЬ. Ровно этот пример стоит в шапке
+	// 0334 как довод, почему одно нельзя выводить из другого. По повторам проверка объявила бы
+	// недостачу на исправной карточке.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 6, Valid: true}
+	btLinkOpToBom(op, line)
+	btSetLinkQty(op, line, "0")
+
+	rtNone(t, btFindings(c), "set than bought")
+}
+
+func TestB4ChecksAStepThatStatesOnlyTheLinkQuantity(t *testing.T) {
+	// «Втачать молнию» повторов не имеет вовсе. До 0334 такой шаг выпадал из проверки целиком —
+	// подавитель стоял на пустом placement_count; теперь число на связи говорит за него.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{}
+	btLinkOpToBom(op, line)
+	btSetLinkQty(op, line, "7")
+
+	rtOne(t, btFindings(c), "More пуговица set than bought")
+}
+
 func TestB4IsSilentWithoutALink(t *testing.T) {
 	c := card8()
 	line := btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionHardware, Name: "пуговица"})
@@ -722,4 +786,108 @@ func TestB8IgnoresCountableSections(t *testing.T) {
 	btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionHardware, Name: "пуговица"})
 	btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionThread, Name: "нитка"})
 	rtNone(t, btFindings(c), "states no cutting wastage")
+}
+
+// TestB4AdvisesTheFieldThatActuallyRemovesTheFinding — совет обязан указывать на прочитанное число.
+//
+// Тест не верит тексту на слово, а ВЫПОЛНЯЕТ обе правки: обнуляет повторы (совет до 0334) и
+// понижает число на связи (совет после). Находка обязана пережить первую и уйти от второй — иначе
+// «понизьте placement_count» отправляет технолога править поле, которое ни на что не влияет.
+func TestB4AdvisesTheFieldThatActuallyRemovesTheFinding(t *testing.T) {
+	build := func(placement int32, linkQty string) *entity.TechCard {
+		c := card8()
+		line := btAddBom(c, entity.TechCardBomItem{
+			Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+		})
+		btAddUsage(c, line, "4")
+		op := card8OpByNumber(c, 480)
+		op.PlacementCount = sql.NullInt32{Int32: placement, Valid: true}
+		btLinkOpToBom(op, line)
+		btSetLinkQty(op, line, linkQty)
+		return c
+	}
+
+	f := rtOne(t, btFindings(build(1, "6")), "More пуговица set than bought")
+	if strings.Contains(f.Suggestion, "placement count") {
+		t.Errorf("совет зовёт править повторы, хотя расход прочитан со связи: %q", f.Suggestion)
+	}
+	if !strings.Contains(f.Suggestion, "link") {
+		t.Errorf("совет не называет связь, где живёт прочитанное число: %q", f.Suggestion)
+	}
+
+	// Правка по старому совету: повторов не осталось вовсе — находка на месте.
+	rtOne(t, btFindings(build(0, "6")), "More пуговица set than bought")
+	// Правка по новому: число на связи опущено до закупленного — находка ушла.
+	rtNone(t, btFindings(build(1, "4")), "set than bought")
+
+	// Обратная клетка: числа на связи нет, расход прочитан с повторов — совет зовёт править их.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 6, Valid: true}
+	btLinkOpToBom(op, line)
+	byPlacement := rtOne(t, btFindings(c), "More пуговица set than bought")
+	if !strings.Contains(byPlacement.Suggestion, "placement count") {
+		t.Errorf("расход прочитан с повторов, а совет их не называет: %q", byPlacement.Suggestion)
+	}
+}
+
+// TestB4CountsOnlyCheckedLinksInTheDenominator — знаменатель «N из M».
+//
+// M — это связи, которые проверка СМОГЛА проверить, а не все связи шага. Связь без счётной нормы
+// из проверки выпадает (сравнивать не с чем), и посчитать её в M значило бы отчитаться «2 из 5»
+// там, где рассмотрено три: доля выглядит благополучнее, чем есть, ровно на непроверенном.
+func TestB4CountsOnlyCheckedLinksInTheDenominator(t *testing.T) {
+	c := card8()
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{}
+	for _, name := range []string{"пуговица", "кнопка", "хольнитен", "люверс"} {
+		line := btAddBom(c, entity.TechCardBomItem{
+			Section: entity.BomSectionHardware, Name: name, Unit: text("pc"),
+		})
+		btAddUsage(c, line, "1")
+		btLinkOpToBom(op, line)
+		btSetLinkQty(op, line, "6")
+	}
+	// Пятая связь: счётной нормы нет ни на слоте, ни в рецепте — проверка её не рассматривает.
+	unchecked := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "блочка", Unit: text("pc"),
+	})
+	btLinkOpToBom(op, unchecked)
+	btSetLinkQty(op, unchecked, "6")
+
+	f := rtOne(t, btFindings(c), "More hardware is set than bought")
+	if !strings.Contains(f.Title, "4 of 4") {
+		t.Errorf("знаменатель посчитал непроверенную связь: %q", f.Title)
+	}
+}
+
+// TestB4ComparesFractionalLinkQuantitiesAsNumbers — дробное число на связи.
+//
+// Счётный слот не обязан быть целым: «0.5 м резинки на изделие» ложится в штучную секцию, если
+// закупается отрезками. Сравнение обязано идти десятичным, а не через целое — усечение 2.4 до 2
+// прячет недостачу, а округление 1.6 до 2 выдумывает её на исправной карточке.
+func TestB4ComparesFractionalLinkQuantitiesAsNumbers(t *testing.T) {
+	build := func(linkQty, bought string) []Finding {
+		c := card8()
+		line := btAddBom(c, entity.TechCardBomItem{
+			Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+		})
+		btAddUsage(c, line, bought)
+		op := card8OpByNumber(c, 480)
+		op.PlacementCount = sql.NullInt32{}
+		btLinkOpToBom(op, line)
+		btSetLinkQty(op, line, linkQty)
+		return btFindings(c)
+	}
+	// 2.4 против 2 — недостача есть, и усечение до целого её бы съело.
+	f := rtOne(t, build("2.4", "2"), "More пуговица set than bought")
+	if !strings.Contains(f.Detail, "2.4") {
+		t.Errorf("находка округлила прочитанное число: %s", f.Detail)
+	}
+	// 1.6 против 2 — недостачи нет, и округление вверх выдумало бы её.
+	rtNone(t, build("1.6", "2"), "set than bought")
 }

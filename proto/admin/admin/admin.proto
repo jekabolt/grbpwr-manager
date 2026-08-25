@@ -8467,6 +8467,25 @@ message TechCardReadinessRequirement {
 // ADVISORY, NOT A GATE. Stage and approval_state remain free-standing fields on UpdateTechCard: this
 // RPC reports, it does not authorise, and nothing here blocks a save. The only stage rule the server
 // ENFORCES is still the backward one (a style with samples/releases/colourways cannot regress).
+// TechCardReadinessAdvice — ЗАМЕЧАНИЕ, А НЕ УСЛОВИЕ, и оно живёт в собственном списке именно
+// поэтому. Невыполненная TechCardReadinessRequirement по построению БЛОКИРУЕТ: она входит в
+// next_stage_ready / release_ready, и любая строка, положенная туда «просто чтобы сказать», молча
+// становится запретом. `unknown` тоже не подходит — он означает «сервер не смог ответить», а здесь
+// сервер отвечает уверенно: он видит и слот, и рецепт, и сборочную ведомость, и говорит о том, что
+// видит.
+message TechCardReadinessAdvice {
+  // key — стабильное машинное имя, по которому клиент ветвится:
+  // spare_kit_missing | spare_kit_empty | assembly_component_not_in_bom | countable_slot_unused |
+  // countable_slot_sized | countable_spare_without_quantity
+  //
+  // Список обязан совпадать с константами Advice* в internal/dto/techcard_advisories.go: клиент
+  // ветвится по нему, а ключ, до перечисления не доехавший, выглядит как «замечание не поднялось».
+  // Совпадение проверяется тестом TestAdviceKeysAreAllListedInTheProtoContract — перечисление здесь
+  // не документация, а часть контракта.
+  string key = 1;
+  string text = 2; // фраза словами оператора, готовая к показу как есть
+}
+
 message GetTechCardReadinessRequest {
   int32 tech_card_id = 1;
 }
@@ -8482,6 +8501,12 @@ message GetTechCardReadinessResponse {
   // stage checklist: a card can be sampling-complete and still un-releasable.
   repeated TechCardReadinessRequirement release_requirements = 5;
   bool release_ready = 6;
+  // Замечания — то, что стоит поправить, но что НИ ВО ЧТО не упирается: отдельное поле, а не строки
+  // двух списков выше, потому что там любая невыполненная строка блокирует (allReadinessMet), а
+  // замечание блокировать не должно. Оно не участвует ни в next_stage_ready, ни в release_ready —
+  // карточка с полным набором замечаний остаётся релизуемой, и клиент, пересчитывающий готовность
+  // из строк, обязан считать так же. Пустой список = сказать нечего.
+  repeated TechCardReadinessAdvice advisories = 7;
 }
 
 // GetStylePipeline is the development board: one column per lifecycle stage

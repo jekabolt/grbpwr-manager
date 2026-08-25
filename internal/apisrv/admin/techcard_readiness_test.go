@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -10,11 +11,23 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// readinessSideReads — чтения, которые чек-лист делает ПОМИМО своего снимка: курсы для блокеров
+// себестоимости и сборочная ведомость с цветами компонентов для замечаний. Все три деградируют в
+// «нечего сказать», поэтому фикстуре достаточно ответить пусто — но ответить обязана, иначе тест
+// падает на неожиданном вызове мока, а не на утверждении, которое проверяет.
+func readinessSideReads(tc *mocks.MockTechCards, cardID int) {
+	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil).Maybe()
+	tc.EXPECT().ListStyleAssembly(mock.Anything, cardID).Return(nil, nil).Maybe()
+	tc.EXPECT().ListOutputVariantsByCardIds(mock.Anything, mock.Anything).
+		Return(map[int][]entity.TechCardOutputVariant{}, nil).Maybe()
+}
 
 // readinessByKey indexes a checklist by its machine key so a case asserts only the rows it cares
 // about (and, via the length check, that no row was silently added or dropped).
@@ -258,6 +271,7 @@ func TestGetTechCardReadiness(t *testing.T) {
 				Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
 			tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 7).
 				Return(tt.facts, readinessCardForFacts(tt.facts, tt.staleSection), nil)
+			readinessSideReads(tc, 7)
 			// Р4: the `patterns` row now reads the Ф6.3 size index. These fixtures carry none, which
 			// is the state of every card on the day this ships — and the assertions below say what
 			// that has to produce: UNKNOWN, and a stage that is NOT held back by it.
@@ -335,6 +349,7 @@ func TestGetTechCardReadinessReleaseListIsStable(t *testing.T) {
 			Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
 		tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 3).
 			Return(facts, readinessCardForFacts(facts, ""), nil)
+		readinessSideReads(tc, 3)
 
 		s := &Server{repo: repo}
 		resp, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 3})
@@ -345,7 +360,8 @@ func TestGetTechCardReadinessReleaseListIsStable(t *testing.T) {
 			keys = append(keys, r.Key)
 		}
 		require.Equal(t, []string{
-			"style_number", "size_range", "bom_fabric", "costing", "colorway_linked", "lab_dip", "signoffs",
+			"style_number", "size_range", "bom_fabric", "costing", "costing_computes",
+			"colorway_linked", "lab_dip", "signoffs", "construction_graph",
 		}, keys, "release checklist for stage %s", stage)
 	}
 }
@@ -366,4 +382,174 @@ func TestGetTechCardReadinessBadRequest(t *testing.T) {
 	s := &Server{repo: mocks.NewMockRepository(t)}
 	_, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 0})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+// advisoryCard — карточка, на которой ОДНОВРЕМЕННО стоят четыре из пяти замечаний, и при этом не
+// нарушено ни одно условие релиза: слот с запасом и без пакетика, слот со счётным числом вне
+// рецепта, слот со счётным числом на по-размерной строке и компонент ведомости вне спецификации.
+//
+// ЧЕТЫРЕ, А НЕ ПЯТЬ: spare_kit_missing и spare_kit_empty — две половины одного утверждения и
+// взаимно исключаются по построению (запас без пакетика ИЛИ пакетик без запаса). Второй случай
+// проверяется отдельным подтестом.
+func advisoryCard(withBag bool) *entity.TechCard {
+	buttons := entity.TechCardBomItem{
+		Id: 10, LineKey: "k-buttons", Name: "buttons",
+		Section: entity.BomSectionHardware, QtyPerGarment: decimal.NullDecimal{Decimal: decimal.NewFromInt(6), Valid: true},
+	}
+	snaps := entity.TechCardBomItem{
+		Id: 11, LineKey: "k-snaps", Name: "snaps",
+		Section: entity.BomSectionHardware, QtyPerGarment: decimal.NullDecimal{Decimal: decimal.NewFromInt(4), Valid: true},
+	}
+	bom := []entity.TechCardBomItem{
+		{Id: 1, LineKey: "k-fabric", Name: "main fabric", Section: entity.BomSectionFabric,
+			MaterialId: sql.NullInt64{Int64: 500, Valid: true}},
+		buttons, snaps,
+	}
+	if withBag {
+		// Пакетик есть, а запаса не заявил ни один слот → spare_kit_empty.
+		bom = append(bom, entity.TechCardBomItem{
+			Id: 12, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+			Kind: sql.NullString{String: string(entity.BomKindSpareKitBag), Valid: true},
+		})
+	} else {
+		// Запас есть, пакетика нет → spare_kit_missing.
+		bom[1].SpareQty = decimal.NullDecimal{Decimal: decimal.NewFromInt(2), Valid: true}
+	}
+	card := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+		BomItems: bom,
+		Colorways: []entity.TechCardColorway{{
+			Id: 1, Name: "black", ColorCode: "BLK", Status: entity.ColorwayStatusActive,
+			Usages: []entity.TechCardColorwayUsage{{
+				// Строка рецепта на snaps считается ПО РАЗМЕРАМ → countable_slot_sized;
+				// buttons не поминает никто → countable_slot_unused.
+				BomItemId:        sql.NullInt64{Int64: 11, Valid: true},
+				SizeConsumptions: []entity.TechCardBomSizeConsumption{{SizeId: 1, Consumption: decimal.NewFromInt(4)}},
+			}},
+		}},
+	}}
+	// Подписи должны совпасть с ТЕКУЩИМ содержимым карточки, иначе строка signoffs покраснеет как
+	// «устаревшая», и тест перестанет проверять то, ради чего написан.
+	current := dto.TechCardSectionDigests(&card.TechCardInsert)
+	for _, section := range []entity.TechCardSignoffSection{
+		entity.SignoffDesign, entity.SignoffConstruction, entity.SignoffMaterials,
+		entity.SignoffColour, entity.SignoffLabels, entity.SignoffPackaging, entity.SignoffCosting,
+	} {
+		card.Signoffs = append(card.Signoffs, entity.TechCardSignoff{
+			Section: section, State: entity.SignoffStateApproved,
+			SignedDigest: sql.NullString{String: current[section], Valid: true},
+		})
+	}
+	return card
+}
+
+// TestGetTechCardReadinessAdvisoriesNeverBlock — НЕСУЩЕЕ утверждение всей конструкции: замечание
+// советует, а не запрещает. Карточка, набравшая полный совместимый набор замечаний, остаётся и
+// релизуемой, и готовой к следующей стадии.
+//
+// Здесь же пинится, что замечания живут ОТДЕЛЬНЫМ полем: ни один их ключ не встречается среди
+// строк двух чек-листов. Положи их туда — и allReadinessMet превратит совет в запрет молча.
+func TestGetTechCardReadinessAdvisoriesNeverBlock(t *testing.T) {
+	tests := []struct {
+		name     string
+		withBag  bool
+		wantKeys []string
+	}{
+		{
+			name:    "запас без пакетика",
+			withBag: false,
+			wantKeys: []string{
+				dto.AdviceSpareKitMissing, dto.AdviceAssemblyComponentNotInBom,
+				dto.AdviceCountableSlotUnused, dto.AdviceCountableSlotSized,
+			},
+		},
+		{
+			name:    "пакетик без запаса",
+			withBag: true,
+			wantKeys: []string{
+				dto.AdviceSpareKitEmpty, dto.AdviceAssemblyComponentNotInBom,
+				dto.AdviceCountableSlotUnused, dto.AdviceCountableSlotSized,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			facts := entity.TechCardReadinessFacts{
+				Stage: entity.TechCardStageFit, HasStyleNumber: true, Sizes: 3, BomFabricLines: 1,
+				HasCosting: true, HasCostingCurrency: true, LiveColorways: 1,
+				Signoffs: 7, SignoffsApproved: 7, FittingsApproved: 1,
+			}
+			repo := mocks.NewMockRepository(t)
+			tc := mocks.NewMockTechCards(t)
+			repo.EXPECT().TechCards().Return(tc)
+			tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 7).Return(facts, advisoryCard(tt.withBag), nil)
+			tc.EXPECT().GetTechCardPatternSizeIndex(mock.Anything, 7).
+				Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
+			tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil).Maybe()
+			// Ведомость называет компонент 77, чей чёрный выход (артикул 900) в спецификации не
+			// встречается ни слотом, ни пином.
+			tc.EXPECT().ListStyleAssembly(mock.Anything, 7).Return([]entity.StyleAssembly{{
+				Id: 1, ComponentTechCardId: 77, Active: true, ComponentName: "care label",
+				Qty: decimal.NewFromInt(1),
+			}}, nil)
+			tc.EXPECT().ListOutputVariantsByCardIds(mock.Anything, []int{77}).
+				Return(map[int][]entity.TechCardOutputVariant{77: {{
+					TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{
+						Id: 1, ColorCode: "BLK", MaterialId: 900, Active: true,
+					},
+					ColorName: "black", MaterialName: "care label black",
+				}}}, nil)
+
+			s := &Server{repo: repo}
+			resp, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 7})
+			require.NoError(t, err)
+
+			gotKeys := make([]string, 0, len(resp.Advisories))
+			for _, a := range resp.Advisories {
+				gotKeys = append(gotKeys, a.Key)
+				require.NotEmptyf(t, a.Text, "замечание %q обязано говорить словами оператора", a.Key)
+			}
+			require.Equal(t, tt.wantKeys, gotKeys, "замечания и их порядок")
+
+			require.True(t, resp.ReleaseReady, "замечание НЕ должно мешать релизу")
+			require.True(t, resp.NextStageReady, "замечание НЕ должно мешать переходу на стадию")
+			for _, r := range append(resp.ReleaseRequirements, resp.NextStageRequirements...) {
+				require.Truef(t, r.Met, "строка %q обязана быть выполнена: замечания не строки чек-листа", r.Key)
+				require.NotContainsf(t, tt.wantKeys, r.Key,
+					"ключ замечания %q оказался строкой чек-листа — совет превратился в запрет", r.Key)
+			}
+		})
+	}
+}
+
+// TestGetTechCardReadinessSurvivesAssemblyReadFailure — сборочная ведомость не читается: замечание
+// про компонент молчит, а ОСТАЛЬНОЙ чек-лист отвечает как обычно. Одна недоступная производная
+// таблица не гасит ответ целиком — та же деградация, что у индекса размеров выкроек.
+func TestGetTechCardReadinessSurvivesAssemblyReadFailure(t *testing.T) {
+	facts := entity.TechCardReadinessFacts{
+		Stage: entity.TechCardStageFit, HasStyleNumber: true, Sizes: 3, BomFabricLines: 1,
+		HasCosting: true, HasCostingCurrency: true, LiveColorways: 1,
+		Signoffs: 7, SignoffsApproved: 7, FittingsApproved: 1,
+	}
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().GetTechCardReadinessSnapshot(mock.Anything, 7).Return(facts, advisoryCard(false), nil)
+	tc.EXPECT().GetTechCardPatternSizeIndex(mock.Anything, 7).
+		Return(map[string]entity.PatternSizeIndexRow{}, nil).Maybe()
+	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil).Maybe()
+	tc.EXPECT().ListStyleAssembly(mock.Anything, 7).Return(nil, errors.New("assembly table is down"))
+
+	s := &Server{repo: repo}
+	resp, err := s.GetTechCardReadiness(context.Background(), &pb_admin.GetTechCardReadinessRequest{TechCardId: 7})
+	require.NoError(t, err, "нечитаемая ведомость не роняет чек-лист")
+
+	gotKeys := make([]string, 0, len(resp.Advisories))
+	for _, a := range resp.Advisories {
+		gotKeys = append(gotKeys, a.Key)
+	}
+	require.Equal(t, []string{
+		dto.AdviceSpareKitMissing, dto.AdviceCountableSlotUnused, dto.AdviceCountableSlotSized,
+	}, gotKeys, "проверка про компонент молчит, остальные говорят")
+	require.True(t, resp.ReleaseReady)
+	require.NotEmpty(t, resp.ReleaseRequirements, "чек-лист отвечает как обычно")
 }

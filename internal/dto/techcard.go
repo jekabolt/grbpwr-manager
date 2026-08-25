@@ -629,7 +629,11 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 	if construction != nil {
 		park = newEquipmentPark(construction.EquipmentDefaults)
 	}
-	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems), park, pb.MachineFieldsAware)
+	// Секции строк BOM ЭТОГО payload'а — источник счётности для количеств на связях шага (0334).
+	// Из payload'а, а не из сохранённой карточки: секцию слота законно меняют тем же сохранением, и
+	// проверять надо ту, которая станет правдой ПОСЛЕ записи.
+	bomSections := bomSectionsByLineKey(bomItems)
+	operations, err := parseTechCardOperations(pb.Operations, calloutNumbers, len(bomItems), bomSections, park, pb.MachineFieldsAware)
 	if err != nil {
 		return nil, err
 	}
@@ -782,6 +786,9 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// payload и что он при этом намеревался — не то, что удостоверяет подпись.
 		AssemblyAware:   pb.AssemblyAware,
 		AssemblyCleared: pb.AssemblyCleared,
+		// Транспортный флаг количеств на связях (0334) — по тому же правилу: доезжает до сущности,
+		// но НИ В ОДИН дайджест не входит (закрыто TestBomQtyAwareIsNotHashed).
+		BomQtyAware: pb.BomQtyAware,
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:
