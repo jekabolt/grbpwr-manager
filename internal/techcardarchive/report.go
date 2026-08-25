@@ -81,8 +81,9 @@ var CountedEntities = []string{
 }
 
 // ErrParseControl marks every refusal that comes out of the positive control, so the import route
-// can answer with "this archive did not parse" instead of a generic failure. errors.Is against it;
-// the wrapped text names every violation found, not just the first.
+// can answer with "this archive contradicts itself" instead of a generic failure — the file DID
+// parse, and its own contents claim is what disagrees with the parse. errors.Is against it; the
+// wrapped text names every violation found, not just the first.
 var ErrParseControl = errors.New("import report failed its positive control")
 
 // EntityTally is one entity's three numbers as the RESOLVER counted them while it worked.

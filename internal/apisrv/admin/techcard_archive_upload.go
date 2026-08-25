@@ -236,7 +236,13 @@ func (s *Server) tcupDryRun(ctx context.Context, w http.ResponseWriter, importID
 	if err := techcardarchive.ValidateReportAgainstManifest(rep, arch.Manifest); err != nil {
 		slog.Default().ErrorContext(ctx, "tech card import: the report failed its positive control",
 			slog.String("import_id", importID), slog.String("err", err.Error()))
-		writeUploadError(w, http.StatusBadRequest, "this archive did not parse: "+err.Error())
+		// NOT "did not parse" (R2-11). The file opened, the ZIP was walked and the manifest was
+		// read — telling the operator it did not parse sends them hunting for a corrupt download,
+		// which is the one thing this is not. What failed is the positive control: the archive's
+		// own `contents` claim and what came out of the parse disagree. The words have to name
+		// that CONTRADICTION, because it is what the operator has to act on — either the manifest
+		// overstates the archive, or the parse stopped halfway.
+		writeUploadError(w, http.StatusBadRequest, "this archive contradicts itself: "+err.Error())
 		return nil, nil, nil, false
 	}
 

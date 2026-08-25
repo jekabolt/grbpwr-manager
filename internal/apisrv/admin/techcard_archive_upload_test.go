@@ -113,24 +113,33 @@ func tcupBody(t *testing.T, partName string, payload []byte) (*bytes.Buffer, str
 	return &buf, mw.FormDataContentType()
 }
 
-// tcupLimitBody mirrors internal/api/http's limitBody — the route middleware whose MaxBytesReader is
-// what a body over the ceiling actually meets in production. Copied rather than imported because it
-// is unexported there; what matters for this file is the ERROR SHAPE it produces, which is
-// http.MaxBytesError either way.
-func tcupLimitBody(max int64, next http.Handler) http.Handler {
+// tcupCapBody puts a MaxBytesReader in front of the handler so the handler can be asked what it
+// does with the error one produces. IT IS NOT A GUARD ON THE ROUTE'S CEILING AND MUST NEVER BE READ
+// AS ONE: internal/api/http's limitBody is unexported and the route lives in another package, so
+// nothing this file does can tell whether /api/techcard-archive/upload still carries a cap at all.
+// A test that leaned on this to prove the route stayed green while the wrap was deleted — a guard
+// standing next to a copy of the thing it guards.
+//
+// The route's own ceiling is guarded where the route is assembled:
+// internal/api/http/route_body_cap_test.go raises the production router out of setupHTTPAPI and
+// pushes a body one byte over maxImportArchiveBodyBytes through the real path. What is left HERE is
+// the other half — the CLASSIFICATION of http.MaxBytesError as 413 rather than 500 — and it needs
+// only a cap of the same shape, which is why 512 bytes stands in for 256 MiB below.
+func tcupCapBody(max int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, max)
 		next.ServeHTTP(w, r)
 	})
 }
 
-// tcupServe drives the handler through a chi mux mounted at the production path. bodyCap > 0 puts
-// the route's body ceiling in front of it.
+// tcupServe drives the handler through a chi mux mounted at the production path. bodyCap > 0 puts a
+// MaxBytesReader of that size in front of it — a stand-in for the route's ceiling, not the ceiling
+// itself; see tcupCapBody.
 func tcupServe(t *testing.T, s *Server, ctx context.Context, body io.Reader, contentType string, bodyCap int64) *httptest.ResponseRecorder {
 	t.Helper()
 	var h http.Handler = s.TechCardArchiveUploadHandler()
 	if bodyCap > 0 {
-		h = tcupLimitBody(bodyCap, h)
+		h = tcupCapBody(bodyCap, h)
 	}
 	r := chi.NewRouter()
 	r.Method(http.MethodPost, "/techcard-archive/upload", h)
@@ -491,8 +500,11 @@ func TestTechcardArchiveUploadStoresTheManifestVerbatim(t *testing.T) {
 // sends the operator hunting for a fault that does not exist. Nor is it a truncation: a silently
 // cut ZIP is indistinguishable from a corrupt one, so nothing is recorded either.
 //
-// The cap here is 512 bytes rather than 256 MiB for the obvious reason; what the test exercises is
-// the CLASSIFICATION of the error MaxBytesReader produces, which is the same error at either size.
+// The cap here is 512 bytes rather than 256 MiB for the obvious reason, and it is installed BY THIS
+// TEST rather than by the route (tcupCapBody): what is exercised here is the CLASSIFICATION of the
+// error MaxBytesReader produces, which is the same error at either size. Whether the production
+// route still installs one at all is a different claim, proved at the router — see
+// internal/api/http/route_body_cap_test.go, which goes red when the wrap is deleted from the route.
 func TestTechcardArchiveUploadRefusesABodyOverTheCeiling(t *testing.T) {
 	s, cards, fs := tcupServer(t)
 	tcupBucket(t, fs)
@@ -539,8 +551,9 @@ func TestTechcardArchiveUploadFailsThePositiveControl(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("a report that failed its positive control: want 400, got %d (%s)", w.Code, w.Body.String())
 	}
-	if msg := tcupErrorText(t, w); !strings.Contains(msg, "did not parse") {
-		t.Errorf("the refusal must say the archive did not parse, got %q", msg)
+	if msg := tcupErrorText(t, w); !strings.Contains(msg, "contradicts itself") {
+		t.Errorf("the refusal must say the archive contradicts itself — NOT that it did not parse, "+
+			"which is a corrupt download and sends the operator to the wrong place (R2-11), got %q", msg)
 	}
 	if *row != nil {
 		t.Errorf("a failed positive control must record nothing, got %+v", *row)

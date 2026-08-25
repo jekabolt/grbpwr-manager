@@ -119,6 +119,17 @@ func tczMoneyCard() *entity.TechCard {
 	// The fit model: a row in the SOURCE's model table, the same class as the role assignment
 	// above and carried by the same reasoning (FORMAT.md §4).
 	card.BaseModelId = tczNI(91)
+	// The output colour variants of an auxiliary card. Not money — which is exactly why neither
+	// money layer can see them — but `on_hand` is the source warehouse's CURRENT BALANCE, and
+	// material_id/id/tech_card_id are three rows of the source base. Filled here so the claim
+	// "output_variants do not travel" has something to be a claim ABOUT.
+	card.OutputVariants = []entity.TechCardOutputVariant{{
+		TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{
+			Id: 55, ColorCode: "BLK", MaterialId: 8301, Active: true,
+		},
+		TechCardId: 214, ColorName: "Black", MaterialName: "Dust bag / black",
+		Unit: "pcs", OnHand: tczND("820"),
+	}}
 	card.ResolvedMedia = []entity.TechCardMediaFull{{
 		Media: entity.MediaFull{Id: 4021, CreatedAt: tczAt(), MediaItem: entity.MediaItem{
 			FullSizeMediaURL:   tczURL("2026/08/1a2b.jpg"),
@@ -225,6 +236,8 @@ func TestBuildArchiveCard(t *testing.T) {
 		require.NotEmpty(t, raw.GetTechCard().GetSignoffs(), "signoffs")
 		require.NotEmpty(t, raw.GetRoleAssignments(), "role assignments")
 		require.NotZero(t, raw.GetTechCard().GetBaseModelId(), "fit model")
+		require.NotEmpty(t, raw.GetOutputVariants(), "output colour variants")
+		require.NotNil(t, raw.GetOutputVariants()[0].GetOnHand(), "the variant's warehouse balance")
 		require.NotEmpty(t, raw.GetTechCard().GetPatterns()[0].GetUrl(), "pattern object url")
 		require.NotEmpty(t, raw.GetSectionDigests(), "section digests")
 		require.NotEmpty(t,
@@ -319,6 +332,11 @@ func TestBuildArchiveCard(t *testing.T) {
 				"import clears it too, but that is the defence against a HAND-MADE archive — our own "+
 				"exports must not produce one")
 		require.Nil(t, got.GetColorways(), "colourways travel in colorways.json, not as product refs")
+		require.Nil(t, got.GetOutputVariants(),
+			"output variants are warehouse buckets: on_hand is the SOURCE'S STOCK BALANCE — no money "+
+				"layer can see it and no id rule covers it — and material_id names a catalogue row "+
+				"with no passport beside it. What the card produces travels as output_material_id "+
+				"plus its passport in materials/index.json (§4)")
 
 		p := got.GetTechCard().GetPatterns()[0]
 		require.Empty(t, p.GetViewUrl())

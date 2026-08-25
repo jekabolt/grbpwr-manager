@@ -80,14 +80,18 @@ func buildArchiveCardJSON(card *entity.TechCard) ([]byte, []techcardarchive.Expo
 }
 
 // sanitizeCardForArchive removes what belongs to the EXPORTING INSTANCE rather than to the card:
-// its signatures, its accounts, its fit model, its URLs, its price provenance and the digests it
-// derived. Money is not this function's job — it runs between the two money layers and touches only
-// what neither of them can see, since none of these names is money and a name list cannot express
-// "blank the url INSIDE resolved media".
+// its signatures, its accounts, its fit model, its URLs, its warehouse balances, its price
+// provenance and the digests it derived. Money is not this function's job — it runs between the two
+// money layers and touches only what neither of them can see, since none of these names is money
+// and a name list cannot express "blank the url INSIDE resolved media".
 //
 // What deliberately stays (owner decisions B-2 / B-3, FORMAT.md §4): created_by / updated_by and
 // the revision journal. They are provenance a receiving constructor reads and cannot resolve
 // anything through — unlike an account assignment, which names a row in the source's admins table.
+// They stay IN THE FILE and are not written on the far side: the imported row is stamped with the
+// operator who ran the import, and the archive's journal never becomes the target's (FORMAT.md
+// §4.2 — free-text change notes are the last channel by which somebody else's prices could enter
+// our permanent records as prose, and neither money layer can read prose).
 func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	if pb == nil {
 		return
@@ -109,6 +113,36 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	// keyed by colour code, and this derived list would only offer the source's product ids
 	// alongside a second, money-bearing copy of the same recipe.
 	pb.Colorways = nil
+
+	// Output variants are WAREHOUSE BUCKETS, and buckets do not travel — the same decision as the
+	// colourways above, taken by the same rule rather than by a second mechanism invented for it.
+	//
+	// The loudest of the three reasons is not an id at all: `on_hand` is the SOURCE'S CURRENT STOCK
+	// BALANCE of that bucket. It is not money, so neither money layer can see it; it is not an id,
+	// so §6.2 says nothing about it. It rode out of the building purely because the message it sits
+	// on is OUTPUT-ONLY and nobody cut it — and a partner opening this archive on the same admin
+	// panel reads how much of that article we hold today.
+	//
+	// The other two are the ordinary ones. `id` / `tech_card_id` are the source rows' own identity.
+	// `material_id` names a row of the source's material catalogue with NO passport travelling
+	// beside it: collectArchiveMaterials builds passports from BOM lines, colourway usages and
+	// `output_material_id` — never from a variant's bucket — so §6.2 ("every id is either remapped
+	// or dropped") leaves exactly one option for it.
+	//
+	// WHY NOT REFERENCE-ONLY — colour codes kept, ids and balance cut? Because nothing on the far
+	// side would read it. A variant owns warehouse stock, so a full-replace card save may not mint
+	// one: they exist only through Upsert/DeleteTechCardOutputVariant, and entity.TechCardArchiveImport
+	// accordingly has no member for them. A pruned copy would be reference nobody consumes, kept as
+	// RAW protojson of an output-only message — which is the very property that let `on_hand` out.
+	// The next field added to TechCardOutputVariant would ship the same way, without anyone deciding
+	// it should. (Reference payloads that a human DOES read have a sidecar of their own: §5.3.)
+	//
+	// WHAT THE CARD PRODUCES IS NOT LOST. The output ARTICLE travels by the R2 mechanism —
+	// `output_material_id` stays on the insert half and its passport rides in materials/index.json
+	// under ref=output_material, where resolveOutputMaterial matches it against the target
+	// catalogue. The COLOUR DIMENSION over that article is what the receiving instance declares for
+	// its own warehouse, in its own buckets, through the RPC that owns them.
+	pb.OutputVariants = nil
 
 	// Nil-checked like stripTechCardCosting rather than assumed, so the two are safe in either
 	// order on the same value; a card without its insert half does not occur in practice.

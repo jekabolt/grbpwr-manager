@@ -19,7 +19,8 @@ techcard-<style_number>-<yyyymmdd-hhmm>.zip
 │                      #   money_policy, id_maps{sizes: {"3":"s",...}, category_path: [...],
 │                      #   colorways: {"812":"BLK",...}}, contents{media,patterns,markers,materials},
 │                      #   export_holes[{entity, ref, reason, detail}]
-├── card.json          # protojson common.TechCard: деньги вырезаны, подписи/релизы/URL вычищены
+├── card.json          # protojson common.TechCard: деньги вырезаны, подписи/релизы/URL вычищены;
+│                      #   вердикт по КАЖДОМУ полю внешнего сообщения — §4.1
 ├── sizechart.json     # мерки + грейд-правило, размеры и мерки ИМЕНАМИ (§5.1)
 ├── assembly.json      # [{component_style_number, size_name?, qty, print_note, position_note, active}]
 ├── colorways.json     # [{color_code, base_sku, recipe[], piece_materials[]}] — без денег
@@ -173,7 +174,7 @@ top-level JSON files.
 
 ---
 
-## 4. What the format deliberately does NOT carry
+## 4. What travels, and what the format deliberately does NOT carry
 
 * **Money.** Costing, BOM prices, colourway unit costs, `latest_price`, `unit_price`, `currency`,
   `cost_price`, `line_total`, `size_run_total`, price provenance — all of it is cut, twice: by
@@ -202,8 +203,113 @@ top-level JSON files.
   `approved_at` and drops every signoff before writing anything, so an imported card can never
   *look* signed. See §6.
 
-What **does** travel as it stands (owner decisions B-2 / B-3, no partner profile exists):
-`created_by` / `updated_by`, the revision journal, and the `parsed_by` stamps of measurements.
+* **The revision journal, as a journal.** The entries travel inside `card.json` (owner decisions
+  B-2 / B-3, no partner profile exists) and are **never written into the target's journal** — see
+  §4.2, which is the whole of that decision.
+
+What **does** travel as it stands and is **written** on the far side (owner decisions B-2 / B-3):
+the `parsed_by` / `parsed_at` stamps of measurements (§4.1, `piece_area_scopes`). `created_by` /
+`updated_by` travel as text and are read by a person, not written: the imported row is stamped with
+whoever ran the import. The line-by-line ledger below is the authority on which is which.
+
+### 4.1 `card.json`: the outer message
+
+`card.json` is protojson of `common.TechCard` — the OUTER message, not just its writable
+`tech_card` half. The bullets above name what is cut; this table names **every** field of that
+outer message and what becomes of it, in the same gesture §5.7 uses for the marker blob: the list
+is the whole contract, and a field not in it does not exist yet.
+
+Four verdicts, and they are not synonyms:
+
+* **travels** — the value is in the file exactly as the source had it, and the import does not
+  write it anywhere. It is provenance for a person to read.
+* **written** — the import puts it in the target database.
+* **remapped** — the value is a foreign id, translated through the named `id_maps` table before
+  anything is written; a name the target dictionary does not have is a `size_unknown` hole.
+* **cleared** — the export blanks it; the field is absent from the file.
+
+| # | field | verdict |
+| --- | --- | --- |
+| 1 | `id` | travels. The source row's own number, the same statement `manifest.source.tech_card_id` makes. The import mints a new card and resolves nothing through it. |
+| 2 | `tech_card` | travels — **the payload**. Everything §5 and §6 say about ids applies inside it: media slots, materials, sizes, category, patterns, labels. `base_model_id` and the pattern URLs inside it are cleared (above). |
+| 3, 4 | `created_at`, `updated_at` | travel. The source's clock; the target stamps its own on insert. |
+| 5 | *reserved* | was `resolved_media`, split into 7/8/28. Never re-used (§3). |
+| 6 | `lock_version` | travels. The source's optimistic-lock token — §2's rule about `source.*` applies to it verbatim. |
+| 7, 8, 28 | `resolved_moodboard_media`, `resolved_technical_media`, `resolved_operation_media` | travel with **every URL blanked** (§4). Width, height and the blurhash stay: they describe the picture, not where this instance keeps it. The `media_id` inside them is the SOURCE's and is **not** remapped — these are display projections of the slots on the writable half, and it is those slots the import remaps and writes. |
+| 9 | `colorways` | **cleared.** A colourway is a product and does not travel as one; what a receiving instance can use of them rides in `colorways.json` (§5.3). |
+| 10, 11 | `created_by`, `updated_by` | travel as text — names that resolve nothing (unlike `role_assignments`). **Not written:** the imported card is stamped with the operator who ran the import. |
+| 12 | `role_assignments` | **cleared** (§4). |
+| 13 | `revisions` | travels as text, **never imported** — §4.2. |
+| 14 | `composition_entries` | travels. The structured fibre breakdown is a projection of `style_composition`, a table no import writes, so an imported card keeps the legacy free-text `composition` (16) and has no entries until somebody re-enters them. Named here because the loss is silent otherwise. |
+| 15, 16, 17 | `fit`, `composition`, `care_instructions` | travel and are **written** — see «style facts» below. |
+| 18 | `section_digests` | **cleared** (§4). |
+| 19 | `care_entries` | travels. An OUTPUT-ONLY projection of 17 against the SOURCE's `care_symbol` dictionary. The import writes the code string (17) and the target resolves its own entries from it. |
+| 20 | `model_wears_height_cm` | travels and is **written**. `0` = unknown, stored NULL. |
+| 21 | `model_wears_size_id` | travels, **remapped** through `id_maps.sizes`, then written — see «style facts» below. |
+| 22, 23, 24 | `top_category_id`, `sub_category_id`, `type_id` | travel and are **ignored**. The category resolves through `id_maps.category_path` (a triple of NAMES, walked down the target's tree), and the target re-derives its own triple from the node it landed on. The source's three numbers are read by nobody. |
+| 25 | `output_variants` | **cleared.** An auxiliary card's colour variants are warehouse buckets: `on_hand` is the source's current stock balance, and `material_id` names a catalogue row with no passport travelling beside it. What the card produces still travels — `tech_card.output_material_id` plus its passport in `materials/index.json` under `ref = output_material` (§5.4). The colour dimension over that article is declared by the receiving instance, in its own buckets. |
+| 26 | `markers` | travel as **summaries** and are **ignored**. The authority is `markers/index.json` plus the blobs (§5.7); a summary here carries the source's `id`, `tech_card_id`, `colorway_id` and `size_id`, and nothing remaps them because nothing reads them. |
+| 27 | `piece_area_scopes` | travel and are **written**, with `size_id` **remapped** — see «measured piece areas» below. |
+
+**Style facts (15/16/17/20/21) are WRITTEN, and that is not obvious.** `fit`, `composition`,
+`care_instructions` and the two `model_wears_*` are catalogue columns of `tech_card` that
+`UpdateStyle` owns on every other path — the tech-card create pipeline touches none of them. An
+import that only ran the create pipeline would land a card whose fit, composition and care were
+silently blank, so the import writes them from this outer message. The three strings and the height
+are facts and travel verbatim (empty → NULL, the same rule the live path applies).
+`model_wears_size_id` is the one id among the five and goes through **`id_maps.sizes`** under the
+archive's three standing rules: `0` is «unset» and is never remapped; a value the manifest's table
+cannot place is a `size_unknown` hole and the reference lands NULL rather than pointing at whichever
+local size happens to share the number; and the store additionally clears a size that is not in the
+imported card's OWN size range — «the model wears a size this style does not make» is either a
+foreign id worn as a local one or a fact about nothing.
+
+**Measured piece areas (27): the remap rule and the provenance rule.** `scope_key` and
+`piece_line_key` are stable KEYS, not ids, and are valid on the imported card as they stand — the
+store re-sews them against the rows it just inserted. `size_id` **is** an id and is remapped through
+**`id_maps.sizes`**, with one difference from every other size in the archive: `0` means «this piece
+does not grade and enters every size's set whole» and is carried through as NULL, while a size the
+map cannot place **drops that one row** with a `size_unknown` line. Dropped, not NULLed — NULL is a
+different statement, and an "S" contour filed as ungraded would be counted into every size of the
+run and would quietly move the cloth norm. The rest of the scope imports.
+
+The provenance rule is the opposite of the stamping rule everywhere else: `parsed_by` and
+`parsed_at` are **the source's and are stored as they stand**. Who measured this geometry and when
+is a fact about the MEASUREMENT, not about the import; re-stamping them with today's date and this
+operator's name would claim a measurement nobody took. An archive carrying no `parsed_at` falls back
+to `manifest.exported_at` — an upper bound on when the measurement was recorded, which is a fact
+rather than an invention — and a scope with no usable date at all is dropped rather than stamped.
+`stale` (the scope's staleness verdict) does **not** travel: it is recomputed by the reader, and an
+imported scope reads stale anyway, because the store mints a fingerprint of its own for it.
+
+### 4.2 The revision journal is NOT transferable
+
+`revisions` is a server-stamped auto-journal: `tech_card_revision` is appended by
+`AddTechCard` / `UpdateTechCard` and is **never** written from a payload. The entries ride in
+`card.json` as text a person can read, and the import writes **exactly one** entry of its own —
+`imported from archive <style_number> of <host>` — into the target's journal. The source's history
+does not survive the trip, and the format says so here rather than letting the gap read as a bug.
+
+Three reasons, and the third is the one that closes the format's last hole:
+
+1. **There is no write path, and giving it one is the wrong fix.** The journal's entire value is
+   that only the server writes it. A payload-fed journal is a journal that can be dictated.
+2. **Every imported entry would be a false statement about THIS instance.** «approved by im,
+   12 March» describes an approval that happened in another base, and it would sit in the same list
+   as this base's own entries with no field separating the two. §6.1 forbids an imported card from
+   *looking* signed; an imported approval line is that same claim made in prose.
+3. **It is the last channel by which somebody else's money could enter our permanent records.**
+   Money is cut twice — by name and by a recursive protoreflect pass — and neither pass can read
+   prose. `change_note` is free text: «re-priced after the March quote, 60 PLN/m» is a price, and it
+   would land in a table nobody ever edits. §4 already names free text as a residual channel on the
+   card itself; the difference is that a note lives on a field a human can correct, while a journal
+   entry is immutable history.
+
+Nothing is lost that the format does not replace: `manifest.source` says where the card came from,
+the stored import report says what arrived and what did not, and the one journal entry above ties
+the two to the card forever — including for the day the `tech_card_import` row is gone. A sanitised
+journal format was considered and rejected: stripping prose of money is not a thing a name list or
+a protoreflect walk can do, and «sanitised free text» is a promise this format cannot keep.
 
 ---
 
@@ -386,6 +492,23 @@ misses with the same three codes, under the `ref` `output_material`; a miss leav
   index says only "these bytes are this media".
 * The bytes are the **full-size** variant as it lies in the bucket — the same bytes
   `media.content_hash` is computed over, which is what makes import-side dedup possible.
+* **The import stores them VERBATIM, and that is what makes the dedup real.** The full-size object
+  it writes is byte-for-byte the file out of the archive, so the `content_hash` it records IS this
+  entry's `sha256` — for every raster, not only for the formats a bucket happens to keep as they
+  stand. An import path that re-encoded JPEG/PNG/WebP into a fresh WebP would hash the bytes it
+  produced rather than the bytes the archive carries: the match would never fire, importing one
+  archive twice would store every picture twice, and each round would add a lossy generation. Only
+  the DERIVED variants (compressed, thumbnail, blurhash) are made on this side.
+* **A file whose bytes are not what its name claims is a hole, not a refusal.** The extension
+  decides two things and no more: whether the file may be uploaded at all (the list in §1.1) and
+  which upload path it takes. The bytes are then sniffed again, and a payload this server does not
+  store is refused there. The reachable case is an `ftyp` container — HEIC or AVIF under a `.jpg`
+  or `.png` name, which the extension list cannot exclude because `.mp4` carries the same header.
+  It lands as a `media_upload_failed` hole: that one slot is left empty, the rest of the card
+  imports, and the operator reads the line. An archive THIS server writes cannot contain one (it
+  carries the objects its own bucket holds, none of which is an `ftyp` container, and HEIC is not
+  in §1.1 at all), so the case is reachable only from a hand-made archive — which is why it is
+  written down as declared behaviour instead of being left to be discovered.
 * A media row whose object could not be read is a hole (`media_object_missing`) and gets no entry;
   the slot stays in `card.json` and the import reports it a second time (`media_missing`).
 
@@ -471,6 +594,9 @@ The format cannot enforce behaviour, but it is designed so these hold:
    line.
 4. **The report is not empty by default.** `contents` vs the parsed counters is the positive
    control that separates "a clean archive" from "a parser that silently produced nothing".
+5. **The imported card's journal holds exactly one entry, and this instance wrote it.** The
+   archive's own revision journal is never appended to the target's (§4.2), so no line of this
+   card's permanent history is a statement another base made.
 
 ---
 
