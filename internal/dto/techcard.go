@@ -2215,6 +2215,10 @@ func ConvertEntityTechCardToListItemPb(tc *entity.TechCard) *pb_common.TechCardL
 		// Saved раскладки (0257): count only — a "latest consumption" without its size and BOM
 		// slot would mislead, so the number stays on the card itself.
 		MarkerCount: int32(tc.MarkerCount),
+		// Коллекция — хранимое ИМЯ (колонки-ссылки не существует, её дропнула 0240). Едет в строку
+		// листа не только ради показа: из неё клиент собирает пул значений фасета, и карты с
+		// рукописными и архивными именами вне словаря становятся фильтруемыми.
+		Collection: pbStringFromNull(tc.Collection),
 	}
 }
 

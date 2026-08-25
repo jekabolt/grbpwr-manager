@@ -49,14 +49,31 @@ func (s *Store) ListTasksByFileId(ctx context.Context, fileID int) ([]entity.Lib
 		return nil, err
 	}
 	params := map[string]any{"fileId": fileID}
+	// Колонки t.assignee здесь БОЛЬШЕ НЕТ: исполнителей у задачи много (0337), и они дозаполняются
+	// тем же батч-хелпером, что и у доски, — по собранным id, а не JOIN'ом, иначе строка задачи
+	// размножилась бы по числу исполнителей.
 	rows, err := storeutil.QueryListNamed[entity.LibraryFileTask](ctx, s.DB, `
-		SELECT t.id, t.title, t.status, t.assignee, t.due_date, t.board
+		SELECT t.id, t.title, t.status, t.due_date, t.board
 		FROM task_file tf
 		JOIN task t ON t.id = tf.task_id
 		WHERE tf.file_id = :fileId AND `+v.ExistsFile("tf.file_id", params)+`
 		ORDER BY (t.archived_at IS NULL) DESC, t.id DESC`, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tasks by file id: %w", err)
+	}
+	if len(rows) == 0 {
+		return rows, nil
+	}
+	ids := make([]int, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.TaskId)
+	}
+	assignees, err := s.assigneesByTaskIds(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].Assignees = assignees[rows[i].TaskId]
 	}
 	return rows, nil
 }

@@ -637,6 +637,32 @@ type (
 		SetTaskChecklistItemDone(ctx context.Context, id int, done bool) error
 		DeleteTaskChecklistItem(ctx context.Context, id int) error
 
+		// --- Сабтаски и связи задач (0338) ---
+
+		// SetTaskParent делает задачу сабтаской другой; parentID 0 = снять родителя. sql.ErrNoRows,
+		// если самой задачи нет; entity.ErrTaskParentCycle, если предлагаемый родитель — потомок этой
+		// задачи или она сама. Несуществующий РОДИТЕЛЬ доезжает нарушением внешнего ключа, как и
+		// восемь глубоких ссылок карточки.
+		SetTaskParent(ctx context.Context, taskID, parentID int) error
+		// AddTaskLink связывает две задачи ИДЕМПОТЕНТНО (повтор — no-op, не 1062). kind приезжает уже
+		// развёрнутым в сторону хранилища: BLOCKED_BY снимается перестановкой концов В DTO, потому
+		// что перспектива — свойство контракта. relates нормализуется здесь (min,max — инвариант
+		// CHECK'а). entity.ErrTaskReverseBlock на прямую обратную пару blocks.
+		AddTaskLink(ctx context.Context, fromTaskID, toTaskID int, kind entity.TaskLinkKind, createdBy string) error
+		// DeleteTaskLink снимает связь; снять несуществующую — no-op по тому же доводу, что у
+		// DetachFileFromTask: кнопка описывает ЖЕЛАЕМОЕ состояние.
+		DeleteTaskLink(ctx context.Context, fromTaskID, toTaskID int, kind entity.TaskLinkKind) error
+
+		// --- Удаление реплики (0339) ---
+
+		// GetTaskCommentById читает реплику ПЕРЕД проверкой права «только свою»: автор хранится, а не
+		// приезжает в запросе. sql.ErrNoRows, если реплики нет.
+		GetTaskCommentById(ctx context.Context, id int) (*entity.TaskComment, error)
+		// DeleteTaskComment удаляет реплику. sql.ErrNoRows, если удалять было нечего, — НЕ молчаливая
+		// идемпотентность: хендлеру нужен NotFound, иначе «удалено» про несуществующее оставляет
+		// реплику на экране. Право проверяет ХЕНДЛЕР, стор не знает зовущего.
+		DeleteTaskComment(ctx context.Context, id int) error
+
 		// --- Файл ↔ задача, со стороны ФАЙЛА (Ф4) ---
 		//
 		// Эти три живут здесь, а не в Files, по тому же правилу, по которому классифицированы их

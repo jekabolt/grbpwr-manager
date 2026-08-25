@@ -10,6 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// assigneeList превращает «одного исполнителя или никого» в список: "" — это состояние «не
+// назначена», то есть ПУСТОЙ набор, а не набор с пустым именем.
+func assigneeList(assignee string) []string {
+	if assignee == "" {
+		return nil
+	}
+	return []string{assignee}
+}
+
 // addTaskFixtureForFiles creates one kanban card through the real store path and registers its
 // removal (task_file cascades with the card).
 func addTaskFixtureForFiles(ctx context.Context, t *testing.T, s *MYSQLStore, title string,
@@ -17,9 +26,11 @@ func addTaskFixtureForFiles(ctx context.Context, t *testing.T, s *MYSQLStore, ti
 	t.Helper()
 	id, err := s.Tasks().AddTask(ctx, &entity.Task{
 		TaskInsert: entity.TaskInsert{
-			Title:    title,
-			Assignee: assignee,
-			DueDate:  due,
+			Title: title,
+			// Исполнители — СПИСОК (0337). Пустая строка означает «задачу никто не взял», и списком
+			// это пустой набор, а не набор из пустого имени.
+			Assignees: assigneeList(assignee),
+			DueDate:   due,
 			// Приоритет — NOT NULL с CHECK по словарю: пустая строка роняет вставку 3819.
 			Priority: entity.TaskPriorityUnknown,
 		},
@@ -126,12 +137,12 @@ func TestLibraryFileTaskLinks(t *testing.T) {
 		require.Equal(t, "отшить семпл", got.Title)
 		require.Equal(t, entity.TaskStatusInProgress, got.Status)
 		require.Equal(t, entity.TaskBoardProduction, got.Board)
-		require.Equal(t, "kirill", got.Assignee)
+		require.Equal(t, []string{"kirill"}, got.Assignees)
 		require.True(t, got.DueDate.Valid)
 		require.True(t, due.Equal(got.DueDate.Time))
 
 		// «Никто не взял» и «срока нет» — состояния, а не пропуски.
-		require.Empty(t, byID[designTask].Assignee)
+		require.Empty(t, byID[designTask].Assignees)
 		require.False(t, byID[designTask].DueDate.Valid)
 		require.Equal(t, entity.TaskBoardDesign, byID[designTask].Board)
 

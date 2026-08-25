@@ -26,12 +26,12 @@ func TestListLibraryFileTasksDrawsTheRow(t *testing.T) {
 	tasks := mocks.NewMockTasks(t)
 	tasks.EXPECT().ListTasksByFileId(mock.Anything, 7).Return([]entity.LibraryFileTask{
 		{
-			TaskId:   42,
-			Title:    "отшить семпл",
-			Status:   entity.TaskStatusInProgress,
-			Assignee: "kirill",
-			DueDate:  sql.NullTime{Time: due, Valid: true},
-			Board:    entity.TaskBoardProduction,
+			TaskId:    42,
+			Title:     "отшить семпл",
+			Status:    entity.TaskStatusInProgress,
+			Assignees: []string{"kirill", "olya"},
+			DueDate:   sql.NullTime{Time: due, Valid: true},
+			Board:     entity.TaskBoardProduction,
 		},
 		// Вторая строка — «задачу никто не взял и срока нет»: это СОСТОЯНИЕ, а не пропуск, и
 		// пустой срок обязан приезжать отсутствующим полем, а не нулевым временем (иначе карточка
@@ -50,13 +50,17 @@ func TestListLibraryFileTasksDrawsTheRow(t *testing.T) {
 	require.Equal(t, int32(42), got.TaskId)
 	require.Equal(t, "отшить семпл", got.Title)
 	require.Equal(t, pb_common.TaskStatus_TASK_STATUS_IN_PROGRESS, got.Status)
+	require.Equal(t, []string{"kirill", "olya"}, got.Assignees)
+	// Deprecated-алиас поля 4 заполнен ПЕРВЫМ исполнителем. Пустым он остаться не имеет права, пока
+	// поле на проводе: старая вкладка читает только его и нарисовала бы строку неназначенной.
 	require.Equal(t, "kirill", got.Assignee)
 	require.Equal(t, pb_common.TaskBoard_TASK_BOARD_PRODUCTION, got.Board)
 	require.NotNil(t, got.DueDate)
 	require.True(t, due.Equal(got.DueDate.AsTime()))
 
 	require.Nil(t, resp.Tasks[1].DueDate, "срока нет — поля нет; ноль времени карточка покажет как дедлайн 1970 года")
-	require.Empty(t, resp.Tasks[1].Assignee)
+	require.Empty(t, resp.Tasks[1].Assignees)
+	require.Empty(t, resp.Tasks[1].Assignee, "алиас пустого списка — пустая строка, а не первый элемент несуществующего списка")
 	require.Equal(t, pb_common.TaskBoard_TASK_BOARD_DESIGN, resp.Tasks[1].Board)
 }
 

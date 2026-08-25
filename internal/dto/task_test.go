@@ -36,8 +36,10 @@ func TestConvertPbTaskInsertToEntity(t *testing.T) {
 	if got.Title != "Sew the sample" {
 		t.Errorf("title not trimmed: %q", got.Title)
 	}
-	if got.Assignee != "olya" || got.Priority != entity.TaskPriorityHigh {
-		t.Errorf("assignee/priority mismatch: %+v", got)
+	// Поле 3 приехало одно, без assignees — это старый клиент, и алиас обязан стать списком из
+	// одного. Полный разбор правила слияния и обратного хода — TestTaskAssigneeAliasMerge.
+	if len(got.Assignees) != 1 || got.Assignees[0] != "olya" || got.Priority != entity.TaskPriorityHigh {
+		t.Errorf("assignees/priority mismatch: %+v", got)
 	}
 	if !got.DueDate.Valid || !got.DueDate.Time.Equal(time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("due date mismatch: %+v", got.DueDate)

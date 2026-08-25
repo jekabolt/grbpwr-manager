@@ -4146,6 +4146,10 @@ type TechCardListFilter struct {
 	// category browser, is enough — the client does not have to expand the tree itself. Empty = no
 	// filter.
 	CategoryIds []int
+	// Collection — точное совпадение ХРАНИМОГО ИМЕНИ коллекции (tech_card.collection); "" = no
+	// filter. Именем, а не id: колонки-ссылки у тех-карты не существует, её дропнула
+	// 0240_drop_tech_card_collection_id.sql как мёртвую схему.
+	Collection string
 	// A product-linking picker passes "sellable" so auxiliary (packaging) cards, which can never
 	// produce a SKU, do not clutter the choice (PR5-E).
 }

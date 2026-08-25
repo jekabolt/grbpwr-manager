@@ -1133,6 +1133,50 @@ service AdminService {
     option (google.api.http) = {delete: "/api/admin/task/checklist/{id}"};
   }
 
+  // SetTaskParent делает задачу сабтаской другой (или возвращает её на верхний уровень).
+  //
+  // ОТДЕЛЬНЫЙ RPC, А НЕ ПОЛЕ TaskInsert: содержимое карточки сохраняется полной заменой, и клиент,
+  // не знающий поля, стирал бы родителя каждым сохранением. Ровно та же причина, по которой
+  // placement меняется отдельным MoveTask.
+  //
+  // Циклы запрещены: подъём по цепочке родителей идёт внутри пишущей SERIALIZABLE-транзакции.
+  rpc SetTaskParent(SetTaskParentRequest) returns (SetTaskParentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/parent"
+      body: "*"
+    };
+  }
+
+  // AddTaskLink связывает две задачи. ИДЕМПОТЕНТНО: существующая связь — no-op, а не 1062.
+  //
+  // kind задаётся С ТОЧКИ ЗРЕНИЯ task_id; BLOCKED_BY хранится перевёрнутым blocks, поэтому пара
+  // никогда не может полусуществовать. Прямая пара A⇄B по blocks отвергается (она ошибка всегда);
+  // длинные циклы терпятся — блокер здесь совет, а не замок.
+  rpc AddTaskLink(AddTaskLinkRequest) returns (AddTaskLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/link/add"
+      body: "*"
+    };
+  }
+
+  // DeleteTaskLink снимает связь, с любой из двух сторон. Идемпотентно: снять несуществующую связь —
+  // no-op, потому что обе кнопки описывают ЖЕЛАЕМОЕ состояние.
+  rpc DeleteTaskLink(DeleteTaskLinkRequest) returns (DeleteTaskLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/link/remove"
+      body: "*"
+    };
+  }
+
+  // DeleteTaskComment removes one's own remark (a super admin — any): ТОТ ЖЕ ВТОРОЙ ГЕЙТ, что у
+  // DeleteLibraryFileComment. Права на секцию tasks недостаточно — стирать чужие слова по одному
+  // лишь tasks:write значило бы превратить журнал обсуждения в поле формы.
+  //
+  // Литеральный сегмент comment отводит маршрут от DELETE /api/admin/task/{id}.
+  rpc DeleteTaskComment(DeleteTaskCommentRequest) returns (DeleteTaskCommentResponse) {
+    option (google.api.http) = {delete: "/api/admin/task/comment/{id}"};
+  }
+
   // FILES LIBRARY
   // Shared internal documents: mockups, design guidelines, icons, 3D parts,
   // spreadsheets. The bytes live PRIVATELY in object storage (unlike the media
@@ -5274,6 +5318,11 @@ message AddTaskRequest {
   common.TaskInsert task = 1; // content
   common.TaskBoard board = 2; // required: the department lane the card is created in
   common.TaskStatus status = 3; // initial column; TASK_STATUS_UNKNOWN = server default (TODO)
+  // Родитель СОЗДАВАЕМОЙ карточки; 0 = верхний уровень. Единственное место, где родитель едет не
+  // отдельным SetTaskParent: «создать сабтаску» обязано быть одним вызовом, а стирать здесь нечего —
+  // карточки ещё нет. Несуществующий id отвечает тем же InvalidArgument, что остальные глубокие
+  // ссылки.
+  int32 parent_task_id = 4;
 }
 
 message AddTaskResponse {
@@ -5970,13 +6019,17 @@ message LibraryFileTask {
   int32 task_id = 1;
   string title = 2;
   common.TaskStatus status = 3;
-  // assignee is an AdminAccount.username; "" = nobody is on it.
-  string assignee = 4;
+  // DEPRECATED АЛИАС ОДНОГО РЕЛИЗА = assignees[0] или "". Настоящий список — assignees ниже; снять
+  // reserved'ом следующей волной (см. TaskInsert.assignee — там же довод про DiscardUnknown).
+  string assignee = 4 [deprecated = true];
   // due_date unset = no deadline (the row then simply has no date, not "today").
   google.protobuf.Timestamp due_date = 5;
   // board is the department lane, so the row can say WHERE the work lives — the
   // same file is attached from several lanes at once.
   common.TaskBoard board = 6;
+  // Все, кто на задаче; пусто = её никто не взял. Порядок — порядок показа аватарок, «главного»
+  // среди них нет (см. common.TaskInsert.assignees).
+  repeated string assignees = 7;
 }
 
 message ListLibraryFileTasksRequest {
@@ -6306,6 +6359,10 @@ message ListTasksRequest {
   // Несуществующий проект отдаёт пустой список, а не отличимый отказ: у семи соседних фильтров так
   // же, и различимость сделала бы чтение оракулом по темам.
   int32 project_topic_id = 15; // optional filter; 0 = no filter
+  // САБТАСКИ ЭТОЙ ЗАДАЧИ — фильтр того же списка, а не новый RPC (та же доктрина, что у
+  // project_topic_id выше): это тот же список задач, просто суженный, и он обязан идти под тем же
+  // rd(tasks). 0 = no filter.
+  int32 parent_task_id = 16;
 }
 
 message ListTasksResponse {
@@ -6362,6 +6419,35 @@ message DeleteTaskChecklistItemRequest {
 }
 
 message DeleteTaskChecklistItemResponse {}
+
+message SetTaskParentRequest {
+  int32 id = 1; // задача, которую делают сабтаской
+  int32 parent_task_id = 2; // 0 = снять родителя, вернуть на верхний уровень
+}
+
+message SetTaskParentResponse {}
+
+message AddTaskLinkRequest {
+  int32 task_id = 1;
+  int32 other_task_id = 2;
+  common.TaskLinkKind kind = 3; // required, С ТОЧКИ ЗРЕНИЯ task_id
+}
+
+message AddTaskLinkResponse {}
+
+message DeleteTaskLinkRequest {
+  int32 task_id = 1;
+  int32 other_task_id = 2;
+  common.TaskLinkKind kind = 3; // required, С ТОЧКИ ЗРЕНИЯ task_id
+}
+
+message DeleteTaskLinkResponse {}
+
+message DeleteTaskCommentRequest {
+  int32 id = 1; // comment id
+}
+
+message DeleteTaskCommentResponse {}
 
 // ORDER FULFILLMENT BOARD
 
@@ -8604,6 +8690,13 @@ message ListTechCardsRequest {
   // category browser can pass whichever node the operator picked — "outerwear" (a top category) or
   // "parka" (a type) — without the client having to expand the tree itself. Empty = no filter.
   repeated int32 category_ids = 12;
+  // ФИЛЬТР ПО КОЛЛЕКЦИИ — ТОЧНОЕ СОВПАДЕНИЕ ХРАНИМОГО ИМЕНИ ("" = нет фильтра).
+  //
+  // ИМЕНЕМ, А НЕ ID, И ЭТО НЕ НЕДОСМОТР: колонки-ссылки у тех-карты НЕТ — `tech_card.collection_id`
+  // и её FK дропнула 0240_drop_tech_card_collection_id.sql как мёртвую схему («an unread orphan —
+  // the tech-card form writes the collection NAME string»). Живая колонка ровно одна,
+  // `tech_card.collection`, свободный текст, и клиент пишет в неё ИМЯ.
+  string collection = 13;
 }
 
 message ListTechCardsResponse {
