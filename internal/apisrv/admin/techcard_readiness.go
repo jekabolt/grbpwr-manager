@@ -72,7 +72,56 @@ func (s *Server) GetTechCardReadiness(ctx context.Context, req *pb_admin.GetTech
 	resp.ReleaseRequirements = releaseRequirements(facts, staleSignoffs,
 		dto.TechCardCostBlockers(card, s.costingFx(ctx)), dto.TechCardAssemblyBlocker(card))
 	resp.ReleaseReady = allReadinessMet(resp.ReleaseRequirements)
+	// ЗАМЕЧАНИЯ СЧИТАЮТСЯ ПОСЛЕ ОБОИХ *_ready И НЕ УЧАСТВУЮТ НИ В ОДНОМ ИЗ НИХ. Это не порядок
+	// строк, а всё содержание конструкции: замечание — совет, и карточка с полным их набором
+	// обязана оставаться релизуемой (потому оно и не строка чек-листа — см. шапку
+	// dto.TechCardAdvisories).
+	assembly, variants := s.readinessAssembly(ctx, tcID)
+	for _, a := range dto.TechCardAdvisories(card, assembly, variants) {
+		resp.Advisories = append(resp.Advisories, &pb_admin.TechCardReadinessAdvice{Key: a.Key, Text: a.Text})
+	}
 	return resp, nil
+}
+
+// readinessAssembly загружает сборочную ведомость карточки и цвета её компонентов — два чтения,
+// которых у чек-листа до сих пор не было.
+//
+// ОШИБКА ЛЮБОГО ИЗ ДВУХ НЕ РОНЯЕТ ВЕСЬ ЧЕК-ЛИСТ: возвращается nil, и проверка «компонента нет в
+// спецификации» просто молчит. Ровно та же деградация, что у индекса размеров выкроек выше, и по
+// той же причине — одна недоступная производная таблица не должна гасить остальные строки ответа.
+// Молчание здесь безопасно вдвойне: проверка совещательная, и её отсутствие никого не блокирует.
+func (s *Server) readinessAssembly(ctx context.Context, tcID int) ([]entity.StyleAssembly, map[int][]entity.TechCardOutputVariant) {
+	assembly, err := s.repo.TechCards().ListStyleAssembly(ctx, tcID)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load style assembly for readiness advisories",
+			slog.String("err", err.Error()), slog.Int("tech_card_id", tcID))
+		return nil, nil
+	}
+	// Выключенные строки ведомости на изделие не идут, поэтому их цвета не читаются: тот же отбор,
+	// что у упаковочной спецификации (assemblyForSize), и та же экономия одного запроса.
+	componentIDs := make([]int, 0, len(assembly))
+	seen := map[int]bool{}
+	for _, a := range assembly {
+		if !a.Active || a.ComponentTechCardId <= 0 || seen[a.ComponentTechCardId] {
+			continue
+		}
+		seen[a.ComponentTechCardId] = true
+		componentIDs = append(componentIDs, a.ComponentTechCardId)
+	}
+	if len(componentIDs) == 0 {
+		return assembly, nil
+	}
+	variants, err := s.repo.TechCards().ListOutputVariantsByCardIds(ctx, componentIDs)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load component colour variants for readiness advisories",
+			slog.String("err", err.Error()), slog.Int("tech_card_id", tcID))
+		// Ведомость без цветов отдавать НЕЛЬЗЯ: entity.ResolveAssemblyOutput на пустом списке
+		// вариантов уходит в легаси-ветку и разрешает выход по tech_card.output_material_id — то
+		// есть по полю, которое у карточки с цветовыми вариантами устарело по построению. Обвинение
+		// по устаревшему полю хуже молчания, поэтому молчит вся проверка целиком.
+		return nil, nil
+	}
+	return assembly, variants
 }
 
 // nextTechCardStage returns the stage one lifecycle step ahead of s. Not ok at prod (the last stage)
