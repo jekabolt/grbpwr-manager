@@ -39,6 +39,9 @@ const (
 	AdviceCountableSlotUnused = "countable_slot_unused"
 	// AdviceCountableSlotSized — счётная норма на слоте, чья строка рецепта считается по размерам.
 	AdviceCountableSlotSized = "countable_slot_sized"
+	// AdviceCountableSpareWithoutQty — запас есть, а пришиваемого количества нет ни на слоте, ни на
+	// строках: запас не закупается вовсе.
+	AdviceCountableSpareWithoutQty = "countable_spare_without_quantity"
 )
 
 // TechCardAdvice — одно замечание: машинный ключ и фраза словами оператора, готовая к показу как
@@ -119,6 +122,18 @@ func spareKitAdvisories(tc *entity.TechCard) []TechCardAdvice {
 // НЕРАЗРЕШЁННЫЙ ВЫХОД → МОЛЧАНИЕ, а не обвинение. Ретайренный цвет, архивный материал, спорящие
 // варианты — это «не знаю, какое ведро», а не «ведра нет в спецификации»: обвинить здесь значит
 // отправить оператора заводить строку BOM на компонент, который в ней, возможно, уже есть.
+//
+// ЧТО ИМЕННО ПРОВЕРЯЕТСЯ — «ЕСТЬ ЛИ ВЫХОД В СПЕЦИФИКАЦИИ ВООБЩЕ», А НЕ «КУПИЛ ЛИ ЕГО ЭТОТ
+// КОЛОРВЕЙ». Множество известных артикулов строится по ВСЕЙ карточке (умолчания слотов + пины всех
+// колорвеев), поэтому редкий случай «пины перепутаны между цветами» — чёрный колорвей взял белый
+// кофр, белый чёрный — проверка не поймает: оба артикула в спецификации есть.
+//
+// ЭТО ОСОЗНАННАЯ ГРАНИЦА, А НЕ НЕДОСМОТР, и она куплена замером. Поколорвейная сверка обязана
+// строить множество из СТРОК РЕЦЕПТА этого колорвея — деньги считаются только по ним, — а рецептом
+// сегодня поминается 10 строк BOM из 34 на бете и 6 из 28 на проде (замер 2026-08-25). То есть
+// точная версия обвинила бы почти каждый вспомогательный компонент на каждой полузаполненной
+// карточке, и совещательный список утонул бы в ложных фразах. Пересматривать это стоит тогда,
+// когда рецепты начнут покрывать спецификацию, а не раньше.
 //
 // ОДНО ЗАМЕЧАНИЕ НА КОМПОНЕНТ, а не на пару (компонент × колорвей): факт один — «этого компонента
 // нет в спецификации», — и повторённый по числу цветов он залил бы экран одной и той же фразой.
@@ -245,7 +260,7 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 		if !entity.IsCountableSection(b.Section) || !entity.SlotCarriesCountableNorm(b) {
 			continue
 		}
-		used, sized := false, false
+		used, sized, explicit := false, false, false
 		for j := range tc.Colorways {
 			cw := &tc.Colorways[j]
 			if cw.Status == entity.ColorwayStatusArchived {
@@ -270,6 +285,9 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 					continue
 				}
 				used = true
+				if u.Quantity.Valid {
+					explicit = true
+				}
 				if len(u.SizeConsumptions) > 0 {
 					sized = true
 				}
@@ -281,6 +299,19 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 				Key: AdviceCountableSlotUnused,
 				Text: bomSlotLabel(b) +
 					": the slot carries a quantity, but no colourway recipe uses it, so it will be neither costed nor purchased",
+			})
+		case b.SpareQty.Valid && b.SpareQty.Decimal.IsPositive() && !b.QtyPerGarment.Valid && !explicit:
+			// ЗАПАС БЕЗ ПРИШИВАЕМОГО КОЛИЧЕСТВА НЕ СТАНОВИТСЯ ЗАКУПКОЙ, и сказать об этом обязан
+			// именно чек-лист: CountablePairTotal отказывается прибавлять запас к отсутствующему
+			// основанию дословно по этой причине («положить в пакетик запасную к ничему» —
+			// недописанное утверждение, а не число), и там же записано, что назвать его должны
+			// здесь, а не деньги. До этой строки не называл никто: пакетик на карточке есть,
+			// поэтому обе половины проверки пакетика молчат, слот поминается рецептом, поэтому
+			// молчит и «не входит ни в один рецепт», — а закуплено ноль.
+			out = append(out, TechCardAdvice{
+				Key: AdviceCountableSpareWithoutQty,
+				Text: bomSlotLabel(b) +
+					": the slot sets spares aside, but states no per-garment quantity — neither the spares nor the garment's own units are purchased",
 			})
 		case sized:
 			out = append(out, TechCardAdvice{

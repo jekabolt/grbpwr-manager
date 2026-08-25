@@ -388,6 +388,70 @@ func TestB4DoesNotSetFromTheSpareKit(t *testing.T) {
 	}
 }
 
+// btSetLinkQty ставит на связь шага с линией явное число 0334 — «сколько единиц ЭТОГО артикула шаг
+// тратит на изделие».
+func btSetLinkQty(op *entity.TechCardOperation, b *entity.TechCardBomItem, qty string) {
+	op.BomQuantities = append(op.BomQuantities, entity.OperationBomQty{
+		LineKey: b.LineKey, QtyPerGarment: dec(qty).Decimal,
+	})
+}
+
+func TestB4SpendsWhatTheLinkSaysNotWhatTheStepRepeats(t *testing.T) {
+	// Шов с 0334: повторы шага и потраченные штуки — разные утверждения. Шаг повторяется один раз,
+	// а тратит шесть (один проход автомата ставит шесть кнопок); рецепт покупает четыре. По
+	// повторам (1 против 4) проверка молчала бы на карточке, где двух единиц не хватает.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 1, Valid: true}
+	btLinkOpToBom(op, line)
+	btSetLinkQty(op, line, "6")
+
+	f := rtOne(t, btFindings(c), "More пуговица set than bought")
+	if !strings.Contains(f.Detail, "qty_per_garment") {
+		t.Errorf("находка обязана назвать источник числа — связь, а не повторы: %s", f.Detail)
+	}
+	if !strings.Contains(f.Detail, "6") {
+		t.Errorf("сравнивать надо число со связи: %s", f.Detail)
+	}
+}
+
+func TestB4CountsAZeroOnTheLinkAsARealZero(t *testing.T) {
+	// «Обметать 6 петель» — повторов шесть, пуговиц потрачено НОЛЬ. Ровно этот пример стоит в шапке
+	// 0334 как довод, почему одно нельзя выводить из другого. По повторам проверка объявила бы
+	// недостачу на исправной карточке.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{Int32: 6, Valid: true}
+	btLinkOpToBom(op, line)
+	btSetLinkQty(op, line, "0")
+
+	rtNone(t, btFindings(c), "set than bought")
+}
+
+func TestB4ChecksAStepThatStatesOnlyTheLinkQuantity(t *testing.T) {
+	// «Втачать молнию» повторов не имеет вовсе. До 0334 такой шаг выпадал из проверки целиком —
+	// подавитель стоял на пустом placement_count; теперь число на связи говорит за него.
+	c := card8()
+	line := btAddBom(c, entity.TechCardBomItem{
+		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
+	})
+	btAddUsage(c, line, "4")
+	op := card8OpByNumber(c, 480)
+	op.PlacementCount = sql.NullInt32{}
+	btLinkOpToBom(op, line)
+	btSetLinkQty(op, line, "7")
+
+	rtOne(t, btFindings(c), "More пуговица set than bought")
+}
+
 func TestB4IsSilentWithoutALink(t *testing.T) {
 	c := card8()
 	line := btAddBom(c, entity.TechCardBomItem{Section: entity.BomSectionHardware, Name: "пуговица"})

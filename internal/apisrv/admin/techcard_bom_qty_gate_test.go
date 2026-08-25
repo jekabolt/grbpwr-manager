@@ -154,9 +154,11 @@ func TestBomQtyGateTruthTable(t *testing.T) {
 // TestBomQtyUnawareWriteAgainstStoredQuantitiesIsRefused — ТЕСТ 5, названный отдельно, потому что
 // это единственная клетка, ради которой щит существует.
 //
-// ДАННЫЕ НЕ ТРОНУТЫ — и это проверяется здесь же: гейт вызывается ДО конверсии и до любого похода в
-// стор, поэтому отказ означает, что сохранение не началось вовсе. Сохранённая карточка после
-// отказа обязана нести ровно то же количество.
+// «ДАННЫЕ НЕ ТРОНУТЫ» ЗДЕСЬ УТВЕРЖДАЕТСЯ ТОЛЬКО ПРО САМ ЩИТ: он чистая функция и переданную
+// карточку не меняет. ЭТОГО МАЛО, и знать об этом обязан каждый, кто читает тест: перенеси вызов
+// щита НИЖЕ записи в стор — и эта проверка останется зелёной, потому что локальный объект
+// по-прежнему не изменится, а база уже потеряет количества до того, как вернётся отказ. Порядок
+// «щит раньше записи» покупается отдельно и текстуально — TestBomQtyStoredGateStandsBeforeTheWrite.
 func TestBomQtyUnawareWriteAgainstStoredQuantitiesIsRefused(t *testing.T) {
 	stored := bqStoredWithQty()
 	before := stored.Operations[0].BomQuantities[0].QtyPerGarment.String()
@@ -168,6 +170,32 @@ func TestBomQtyUnawareWriteAgainstStoredQuantitiesIsRefused(t *testing.T) {
 	if before != after {
 		t.Fatalf("щит тронул сохранённые данные: было %q, стало %q — он обязан только отказывать",
 			before, after)
+	}
+}
+
+// TestBomQtyStoredGateStandsBeforeTheWrite — ПОРЯДОК, а не наличие вызова.
+//
+// Щит, стоящий после записи, бесполезен целиком: отказ вернётся, но количества к тому моменту уже
+// стёрты полной заменой связей, и восстановить их неоткуда. Счётчик вызовов такого переноса не
+// замечает вовсе — он считает, что вызов есть, — поэтому порядок утверждается отдельно.
+//
+// Проверка текстуальная, и это её граница: она пинит порядок ЛЕКСЕМ в исходнике, а не порядок
+// исполнения. Оба якоря обязаны найтись, иначе пустой результат прочитался бы как «порядок
+// соблюдён» — тот же положительный контроль, что у счётчика вызовов выше.
+func TestBomQtyStoredGateStandsBeforeTheWrite(t *testing.T) {
+	body, err := os.ReadFile("techcard.go")
+	if err != nil {
+		t.Fatalf("не читается techcard.go: %v", err)
+	}
+	src := string(body)
+	gate := strings.Index(src, "bomQtyStoredGate(req.TechCard, stored)")
+	write := strings.Index(src, "UpdateTechCardAndListOrphanedPatternURLs(")
+	if gate < 0 || write < 0 {
+		t.Fatalf("якоря не найдены (щит %d, запись %d) — проверка ничего не измеряет", gate, write)
+	}
+	if gate > write {
+		t.Errorf("щит количеств стоит ПОСЛЕ записи в стор (%d > %d): отказ вернётся, но связи уже "+
+			"переписаны полной заменой и количества потеряны безвозвратно", gate, write)
 	}
 }
 

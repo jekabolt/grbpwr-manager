@@ -312,6 +312,46 @@ func TestTechCardAdvisoriesCountableSlot(t *testing.T) {
 			want: []string{AdviceCountableSlotSized},
 		},
 		{
+			// countable.go отказывается прибавлять запас к отсутствующему основанию и ПРЯМО
+			// перекладывает эту фразу на чек-лист. До шестого замечания её не говорил никто:
+			// пакетик на карточке есть — обе половины проверки пакетика молчат; слот поминается
+			// рецептом — молчит и «не входит ни в один рецепт»; а закуплено ноль.
+			name: "запас есть, пришиваемого количества нет ни на слоте, ни на строке",
+			bom: []entity.TechCardBomItem{{
+				Id: 10, LineKey: "k-buttons", Name: "buttons", Section: entity.BomSectionHardware,
+				SpareQty: advDec("2"),
+			}, {
+				Id: 11, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+				Kind: advStr(string(entity.BomKindSpareKitBag)),
+			}},
+			usages: []entity.TechCardColorwayUsage{{BomItemId: advI64(10)}},
+			want:   []string{AdviceCountableSpareWithoutQty},
+		},
+		{
+			name: "тот же запас, но основание названо СТРОКОЙ рецепта — молчание",
+			bom: []entity.TechCardBomItem{{
+				Id: 10, LineKey: "k-buttons", Name: "buttons", Section: entity.BomSectionHardware,
+				SpareQty: advDec("2"),
+			}, {
+				Id: 11, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+				Kind: advStr(string(entity.BomKindSpareKitBag)),
+			}},
+			usages: []entity.TechCardColorwayUsage{{BomItemId: advI64(10), Quantity: advDec("6")}},
+			want:   nil,
+		},
+		{
+			name: "тот же запас, но основание названо СЛОТОМ — молчание",
+			bom: []entity.TechCardBomItem{{
+				Id: 10, LineKey: "k-buttons", Name: "buttons", Section: entity.BomSectionHardware,
+				QtyPerGarment: advDec("6"), SpareQty: advDec("2"),
+			}, {
+				Id: 11, LineKey: "k-bag", Name: "spare kit bag", Section: entity.BomSectionPackaging,
+				Kind: advStr(string(entity.BomKindSpareKitBag)),
+			}},
+			usages: []entity.TechCardColorwayUsage{{BomItemId: advI64(10)}},
+			want:   nil,
+		},
+		{
 			name: "слот НИЧЕГО счётного не сказал — конструкция пары молчит целиком",
 			bom: []entity.TechCardBomItem{{
 				Id: 10, LineKey: "k-buttons", Name: "buttons", Section: entity.BomSectionHardware,
