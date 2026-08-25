@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -79,4 +80,42 @@ func (s *Store) CreateTechCardImportRow(ctx context.Context, importID, objectKey
 		return fmt.Errorf("record tech card import %s: %w", importID, err)
 	}
 	return nil
+}
+
+// expireStaleTechCardImportsQuery is named rather than inlined so the guard in import_row_test.go
+// asserts against THE statement that runs, not a copy of it that can drift away from it.
+const expireStaleTechCardImportsQuery = `
+		UPDATE tech_card_import
+		SET status = :expired
+		WHERE status = :uploaded AND created_at < :olderThan`
+
+// ExpireStaleTechCardImports marks every still-uncommitted upload older than olderThan as expired
+// and returns how many rows it moved. The background cleanup (Ф5.1) calls it on the same tick that
+// deletes the aged-out bucket objects, with the SAME cutoff, because the two halves describe one
+// fact: after the retention window the archive's bytes are gone, so the row can no longer become a
+// card and must stop claiming it might.
+//
+// THE CUTOFF ARRIVES AS AN ARGUMENT RATHER THAN AS `NOW() - INTERVAL 7 DAY` ON PURPOSE. The
+// retention period is one number (bucket.ArchiveRetention, an owner decision) and it already
+// governs the object half; spelling it a second time in SQL would let the two halves drift apart
+// silently — and the direction they would drift matters, because a row that still says "uploaded"
+// after its object is deleted is an operator pressing commit onto a 404. Passing the instant down
+// is also the house convention for age-based sweeps (see GetStuckPlacedOrders).
+//
+// ONLY 'uploaded' MOVES. 'committed' rows are a card's provenance and are read long after the
+// object expires; 'failed' rows are the record of a commit that did not survive its transaction,
+// and repainting either as "expired" would erase what actually happened. The status is matched by
+// the entity constant rather than a literal for the same reason the insert does: two spellings of
+// one status is a row nobody picks up.
+func (s *Store) ExpireStaleTechCardImports(ctx context.Context, olderThan time.Time) (int64, error) {
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, expireStaleTechCardImportsQuery,
+		map[string]any{
+			"expired":   entity.TechCardImportStatusExpired,
+			"uploaded":  entity.TechCardImportStatusUploaded,
+			"olderThan": olderThan,
+		})
+	if err != nil {
+		return 0, fmt.Errorf("expire stale tech card imports older than %s: %w", olderThan, err)
+	}
+	return n, nil
 }

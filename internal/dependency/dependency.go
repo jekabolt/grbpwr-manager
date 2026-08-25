@@ -1190,6 +1190,15 @@ type (
 		// construction — the guard is `acknowledged_at IS NULL`, so a second click writes nothing
 		// and the stamp keeps the moment the report was actually read.
 		AcknowledgeTechCardImport(ctx context.Context, techCardID int) error
+		// ExpireStaleTechCardImports moves every still-'uploaded' import row created before
+		// olderThan to 'expired' and returns how many moved (Ф5.1). The background cleanup calls
+		// it on the same tick that deletes the aged-out bucket objects, with the SAME cutoff: the
+		// two halves state one fact, and a row that still says "uploaded" after its archive's
+		// bytes are gone is an operator pressing commit onto a 404.
+		//
+		// 'committed' and 'failed' rows are never touched — the first is a card's provenance,
+		// the second is the record of a commit that did not survive its transaction.
+		ExpireStaleTechCardImports(ctx context.Context, olderThan time.Time) (int64, error)
 	}
 
 	// ProductionRuns is the production-run (партия) repository: the run header + per-size
