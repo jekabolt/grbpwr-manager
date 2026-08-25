@@ -431,3 +431,312 @@ func TestSanitizeCardForArchiveBlanksDecoratedURLs(t *testing.T) {
 	require.NotEmpty(t, pb.GetTechCard().GetPatterns()[0].GetLineKey(),
 		"line_key is the sheet's identity across the trip and must not be caught up in the blanking")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.1 №27 — the measured scopes' `stale` verdict does not travel.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestArchiveDropsTheStalenessVerdict. `stale` is not a stored column: the server recomputes it on
+// every read by comparing today's sheet fingerprint with the one the areas were measured under
+// (entity.PieceAreaScope). Carrying it would put a READ-SIDE PROJECTION in the file — the same
+// class as section_digests, cut by the same rule — and the value it carries is about the SOURCE
+// instance's pattern files, which the receiver has neither got nor can check.
+//
+// The positive control is the whole test: `stale` is a bool, so «absent from the archive» and «the
+// export never set it» look identical downstream. The fixture is therefore built STALE, shown stale
+// before the builder runs, and required false after.
+func TestArchiveDropsTheStalenessVerdict(t *testing.T) {
+	card := tczMoneyCard()
+	card.PieceAreaScopes = map[string]entity.PieceAreaScope{
+		"B1": {
+			ScopeKey: "B1",
+			Stale:    true,
+			Rows: []entity.PieceAreaRow{{
+				PieceLineKey: "P1",
+				SizeId:       sql.NullInt64{Int64: 3, Valid: true},
+				AreaCm2:      tczDecimal("1400"),
+				ContourLayer: "1",
+				ParsedBy:     "im",
+				ParsedAt:     tczAt(),
+			}},
+		},
+	}
+
+	raw := dto.ConvertEntityTechCardToPb(card, dto.CostingFx{})
+	require.Len(t, raw.GetPieceAreaScopes(), 1, "positive control: the scope reaches the wire at all")
+	require.True(t, raw.GetPieceAreaScopes()[0].GetStale(),
+		"positive control: the fixture must read STALE before the builder runs, or `false` afterwards "+
+			"proves nothing about the builder")
+
+	got := tczBuild(t, card)
+
+	require.Len(t, got.GetPieceAreaScopes(), 1,
+		"the SCOPE travels — it is the measurement, and §4.1 №27 writes it on the far side")
+	sc := got.GetPieceAreaScopes()[0]
+	require.False(t, sc.GetStale(), "the verdict over the measurement does not travel")
+	require.Len(t, sc.GetAreas(), 1, "and nothing else on the scope goes with it")
+	require.Equal(t, "im", sc.GetParsedBy(),
+		"provenance is a fact about the MEASUREMENT and is stored as it stands (§4.1)")
+	require.NotNil(t, sc.GetParsedAt())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RE-IMPORT PROBE — a card can be exportable and NOT importable.
+//
+// MEASURED, and the measurement is the point of these tests. The store is softer than the
+// converter every API write passes through: AddTechCard takes an entity.TechCardInsert and writes
+// it, while ConvertPbTechCardInsertToEntity — which the import stands behind (tcciPayload) —
+// refuses shapes the store never looks at. Three of them are covered below, each with a positive
+// control showing the CONVERTER refusing the very payload the archive was built from.
+//
+// Every case also requires the export to SUCCEED. A hole is not a failure: the archive still opens
+// and is still worth reading. What the card gains is the sentence, said where somebody can act on
+// it, instead of a field violation weeks later in another base.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// tczAssembledCard is the clean baseline for the probe: three cut pieces and two machine steps that
+// assemble them — front+back into a shell, then shell+cuff into the garment. It is the shape the
+// violations below are made from, and on its own it must probe CLEAN.
+func tczAssembledCard() *entity.TechCard {
+	card := tczMoneyCard()
+	// A REAL sheet key, unlike the shorthand tczMoneyCard uses. The probe only looks at pattern
+	// rows when a bucket host is configured (see the url test below), and the converter's key rule
+	// is 26 alphanumerics — a shorthand here would make that test fail for the key while it is
+	// asking about the url.
+	card.Patterns = []entity.TechCardSizePattern{{
+		SizeId: 3, LineKey: tczSheetFront, URL: tczURL("patterns/front-v1.dxf"),
+		Filename: tczNS("front-v1.dxf"), Version: 1, UploadedAt: tczNT(),
+	}}
+	card.Pieces = []entity.TechCardPiece{
+		{LineKey: "P1", Name: "front"},
+		{LineKey: "P2", Name: "back"},
+		{LineKey: "P3", Name: "cuff"},
+	}
+	card.Operations = []entity.TechCardOperation{
+		{
+			OperationNumber: tczNI(10), OperationType: entity.OpTypeMachine, Zone: entity.ZoneOuter,
+			MachineType:   tczNS("lockstitch"),
+			PieceLineKeys: []string{"P1", "P2"},
+			InputKeys:     []string{"P1", "P2"},
+			OutputUnitKey: tczNS("SHELL"), OutputUnitName: tczNS("shell"),
+		},
+		{
+			OperationNumber: tczNI(20), OperationType: entity.OpTypeMachine, Zone: entity.ZoneOuter,
+			MachineType: tczNS("lockstitch"),
+			// The legacy projection carries ONLY the piece; the union carries the unit beside it.
+			// That difference is what the aware-flag test below turns on.
+			PieceLineKeys: []string{"P3"},
+			InputKeys:     []string{"SHELL", "P3"},
+			OutputUnitKey: tczNS("GARMENT"), OutputUnitName: tczNS("garment"),
+		},
+	}
+	return card
+}
+
+// tczProbeHole runs the builder and returns the single hole it raised, failing on any other count.
+// The archive itself must still have been built: a hole is not a refusal.
+func tczProbeHole(t *testing.T, card *entity.TechCard) techcardarchive.ExportHole {
+	t.Helper()
+	blob, holes, err := buildArchiveCardJSON(card)
+	require.NoError(t, err, "a card the import would refuse still EXPORTS — the file is readable and useful")
+	require.NotEmpty(t, blob)
+	require.Len(t, holes, 1, "exactly one hole, about the card as a whole: %+v", holes)
+	return holes[0]
+}
+
+// tczConverterRefuses is the positive control every case below opens with: the payload the archive
+// was built from really is one the import's converter rejects. Without it a hole proves only that
+// the probe fired, not that it fired over a real defect.
+func tczConverterRefuses(t *testing.T, card *entity.TechCard) string {
+	t.Helper()
+	insert := dto.ConvertEntityTechCardToPb(card, dto.CostingFx{}).GetTechCard()
+	require.NotNil(t, insert)
+	insert.AssemblyAware = true
+	insert.MachineFieldsAware = true
+	insert.MediaAware = true
+	insert.OperationKindsAware = true
+	insert.OperationWorkAware = true
+	insert.BomQtyAware = true
+	// The pattern rows go, exactly as the probe drops them when no bucket host is configured —
+	// otherwise this control would fail on the url rule, which is the one rule the probe does not
+	// ask about (the import overwrites every surviving row's url before it converts).
+	insert.Patterns = nil
+
+	_, err := dto.ConvertPbTechCardInsertToEntity(insert)
+	require.Error(t, err, "positive control: the import's converter must refuse this card")
+	return err.Error()
+}
+
+// Sheet keys of the probe fixtures: 26 alphanumerics, the shape the converter requires.
+const (
+	tczSheetFront = "01TCZPATTERNFRONT00000000A"
+	tczSheetBack  = "01TCZPATTERNBACK000000000B"
+)
+
+func TestReimportProbeCatchesWhatTheStoreLetsThrough(t *testing.T) {
+	t.Run("positive control: the assembled baseline probes clean", func(t *testing.T) {
+		_, holes, err := buildArchiveCardJSON(tczAssembledCard())
+		require.NoError(t, err)
+		require.Empty(t, holes,
+			"the baseline has to be importable, or every case below would pass on a card that was "+
+				"already broken for some other reason: %+v", holes)
+	})
+
+	t.Run("a per-step material count on a MEASURED bom section", func(t *testing.T) {
+		// The store writes this without a word — and says so in its own comment («СТОРОЖА
+		// "СЧЁТНОЙ СЕКЦИИ" ЗДЕСЬ НЕТ … его проверил конвертер», store/techcard/production.go).
+		// B1 is a fabric line, and fabric is measured: its norm lives on the colourway recipe, so
+		// a count per step would be a third answer to one question.
+		card := tczAssembledCard()
+		require.False(t, entity.IsCountableSection(card.BomItems[0].Section),
+			"positive control: B1 has to be a MEASURED section for this case to be the case")
+		card.Operations[0].BomLineKeys = []string{"B1"}
+		card.Operations[0].BomQuantities = []entity.OperationBomQty{{
+			LineKey: "B1", QtyPerGarment: tczDecimal("6"),
+		}}
+
+		want := tczConverterRefuses(t, card)
+		hole := tczProbeHole(t, card)
+
+		require.Equal(t, techcardarchive.EntityCard, hole.Entity)
+		require.Equal(t, techcardarchive.ReasonCardNotImportable, hole.Reason)
+		require.Equal(t, "style_number=GRB-SS26-014", hole.Ref,
+			"the ref names the card the way a person reads it, not by an id that means nothing elsewhere")
+		require.Contains(t, hole.Detail, want,
+			"the detail carries the converter's own words — it is the only thing that tells the "+
+				"operator WHICH field to go and fix")
+	})
+
+	t.Run("an equipment profile key that is not a 26-character key", func(t *testing.T) {
+		// CHAR(26) in the schema, and MySQL pads a shorter value rather than refusing it. The
+		// 26-alphanumeric rule lives only in the converter (parseProfileKey → validatePatternLineKey).
+		card := tczAssembledCard()
+		card.Construction = &entity.TechCardConstruction{
+			EquipmentDefaults: &entity.TechCardEquipmentDefaults{
+				Machines: []entity.TechCardMachineProfile{{
+					ProfileKey: "MACH-01", MachineType: "lockstitch",
+				}},
+			},
+		}
+
+		want := tczConverterRefuses(t, card)
+		hole := tczProbeHole(t, card)
+
+		require.Equal(t, techcardarchive.ReasonCardNotImportable, hole.Reason)
+		require.Contains(t, hole.Detail, want)
+	})
+
+	t.Run("an assembly graph that breaks rule 3", func(t *testing.T) {
+		// Rule 3: a join needs two distinct existing inputs — a unit made of one input is a
+		// treatment, not a unit. entity.AssemblySweep runs in the converter and nowhere near the
+		// store, so a graph like this is written and read back without complaint.
+		card := tczAssembledCard()
+		card.Operations[0].PieceLineKeys = []string{"P1"}
+		card.Operations[0].InputKeys = []string{"P1"}
+
+		want := tczConverterRefuses(t, card)
+		hole := tczProbeHole(t, card)
+
+		require.Equal(t, techcardarchive.ReasonCardNotImportable, hole.Reason)
+		require.Contains(t, hole.Detail, want)
+	})
+
+	t.Run("a card with no style number is named by its id", func(t *testing.T) {
+		card := tczAssembledCard()
+		card.StyleNumber = sql.NullString{}
+		card.Stage = entity.TechCardStageIdea
+		card.Operations[0].InputKeys = []string{"P1"}
+		card.Operations[0].PieceLineKeys = []string{"P1"}
+
+		hole := tczProbeHole(t, card)
+		require.Equal(t, "tech_card_id=214", hole.Ref)
+	})
+}
+
+// TestReimportProbeRunsTheConverterTheImportWillRun is the mutation this design would otherwise
+// die of quietly.
+//
+// The six *_aware flags are write-only transport flags: the read converter never emits them, and
+// the import's resolver sets all six to true before converting. They are not decoration — with
+// AssemblyAware false the graph is classified from the LEGACY piece-only projection, so a step
+// joining a UNIT to a PIECE reads as having ONE input and breaks rule 3. A probe that forgot the
+// flags would therefore report a perfectly importable card as un-importable, on every card that
+// uses assembly units at all — the loudest possible false alarm.
+//
+// So: the baseline probes clean (asserted above and again here), and the SAME payload without the
+// flags is refused. If the flags are ever dropped from the probe, the first half of this test goes
+// red and names the reason.
+func TestReimportProbeRunsTheConverterTheImportWillRun(t *testing.T) {
+	card := tczAssembledCard()
+
+	_, holes, err := buildArchiveCardJSON(card)
+	require.NoError(t, err)
+	require.Empty(t, holes, "the baseline is importable: %+v", holes)
+
+	unaware := dto.ConvertEntityTechCardToPb(card, dto.CostingFx{}).GetTechCard()
+	unaware.Patterns = nil
+	_, err = dto.ConvertPbTechCardInsertToEntity(unaware)
+	require.Error(t, err,
+		"positive control: without the aware flags the very same payload is refused, which is what "+
+			"makes setting them load-bearing rather than tidy")
+	require.ErrorContains(t, err, "too-few-inputs",
+		"and refused for the GRAPH reason specifically: read from the legacy piece-only projection, "+
+			"the second step joins a single piece and breaks rule 3 — the exact false alarm the "+
+			"flags prevent, not some unrelated field")
+}
+
+// TestReimportProbeDoesNotBlameThePatternURL is the scope boundary, and it is a boundary rather
+// than an omission.
+//
+// The archive does not carry a pattern url — the sanitiser blanks it — and the import never
+// converts the one it travelled with: tcflApplyPatternObjects overwrites every surviving row's url
+// with the target's own re-uploaded object and drops the rows it could not place. A probe that
+// asked the url rule would therefore produce the one thing worse than silence: a true-sounding
+// «no import will take this card» whose stated cause the import does not even look at.
+//
+// The fixture's pattern url is on a host this instance does not manage, which the converter refuses
+// outright (the positive control below). The export must still report NOTHING.
+func TestReimportProbeDoesNotBlameThePatternURL(t *testing.T) {
+	dto.SetManagedPatternHosts("cdn.this-instance.example")
+	t.Cleanup(func() { dto.SetManagedPatternHosts() })
+
+	card := tczAssembledCard()
+	require.NotEmpty(t, card.Patterns, "positive control: the fixture must carry a sheet at all")
+
+	insert := dto.ConvertEntityTechCardToPb(card, dto.CostingFx{}).GetTechCard()
+	insert.AssemblyAware = true
+	insert.MachineFieldsAware = true
+	_, err := dto.ConvertPbTechCardInsertToEntity(insert)
+	require.ErrorContains(t, err, "pattern url",
+		"positive control: the card's own url is NOT a managed object here, so the converter "+
+			"refuses it — which is exactly the false alarm the stand-in exists to prevent")
+
+	_, holes, err := buildArchiveCardJSON(card)
+	require.NoError(t, err)
+	require.Empty(t, holes, "the export says nothing about a field it does not carry: %+v", holes)
+
+	// ONE STAND-IN PER ROW, and this is what that buys. The parser reads the url a second time —
+	// two keyed rows sharing a (size, url) pair are refused as one sheet hung twice — so a single
+	// stand-in shared by every row would invent that collision on any card with two sheets in one
+	// size. Two distinct sheets on one size must probe clean.
+	two := tczAssembledCard()
+	two.Patterns = append(two.Patterns, entity.TechCardSizePattern{
+		SizeId: 3, LineKey: tczSheetBack, URL: tczURL("patterns/back-v1.dxf"), Version: 1,
+	})
+	_, holes, err = buildArchiveCardJSON(two)
+	require.NoError(t, err)
+	require.Empty(t, holes,
+		"two sheets filed under one size are ordinary; a shared stand-in would report them as the "+
+			"same sheet hung twice: %+v", holes)
+
+	// And the stand-in must not paper over the OTHER pattern rules: a duplicate line_key is still
+	// caught, because the url is the ONLY field that leaves the probe's scope.
+	dup := tczAssembledCard()
+	dup.Patterns = append(dup.Patterns, entity.TechCardSizePattern{
+		SizeId: 4, LineKey: tczSheetFront, URL: tczURL("patterns/back-v1.dxf"), Version: 1,
+	})
+	hole := tczProbeHole(t, dup)
+	require.Equal(t, techcardarchive.ReasonCardNotImportable, hole.Reason)
+	require.Contains(t, hole.Detail, "line_key",
+		"the url leaves the probe's scope; every other rule of the pattern row stays in it")
+}

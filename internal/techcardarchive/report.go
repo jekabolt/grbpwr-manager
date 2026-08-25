@@ -491,6 +491,10 @@ var reasonGuide = map[Reason]reasonGuidance{
 			"not one — so it was dropped and the rest imported. Nothing here can repair the row itself: " +
 			"re-enter it on this card (measured areas are recounted on the patterns tab), or fix it on " +
 			"the source card and import that archive again."},
+	ReasonCardNotImportable: {StatusSkipped,
+		"An import will REFUSE this archive whole: the card breaks a rule the write path enforces, so " +
+			"it can be read and inspected but not restored anywhere. The detail names the field. Open " +
+			"the source card, fix that field, save it — the save runs the same check — and export again."},
 }
 
 // ActionFor is the sentence the operator is shown for a reason code, and it is empty for a code

@@ -3596,6 +3596,39 @@ func SetManagedPatternHosts(hosts ...string) {
 	managedPatternHosts = next
 }
 
+// ManagedPatternURLStandIn returns a url of the shape a STORED pattern row carries on this
+// instance — an object under the dedicated pattern folder, on one of the bucket's own hosts — for
+// a caller that has to hand the pattern parser a url it will accept and has none of its own.
+//
+// IT EXISTS FOR ONE CALLER AND THE REASON IS NOT CONVENIENCE. The archive export probes a card
+// against this very converter to tell the operator, while they still hold the file, that no import
+// will take it back (apisrv/admin: reimportProbe). The pattern url is the one field of that payload
+// the question cannot be asked about: the archive deliberately does not carry it and the import
+// overwrites every surviving row's url with its OWN re-uploaded object before converting. Left
+// alone, the probe would be answering a question about this instance's bucket configuration and
+// filing the answer as a defect of somebody's tech card. A stand-in takes that one rule out of
+// scope and leaves every other rule of the pattern row — the size, the duplicate keys, the
+// lengths — where it belongs.
+//
+// "" when no host is configured. That is not a failure to handle: with an empty set nothing is a
+// managed object, the live save path cannot store a pattern row at all, and there is no such shape
+// to return. The caller decides what to do with a missing stand-in; inventing one here would be
+// inventing the fail-closed rule's own exception.
+func ManagedPatternURLStandIn() string {
+	if len(managedPatternHosts) == 0 {
+		return ""
+	}
+	// The lowest host by name, not «whichever the map yields»: a value that changed between two
+	// runs over the same card would make anything built on it irreproducible for no benefit.
+	host := ""
+	for h := range managedPatternHosts {
+		if host == "" || h < host {
+			host = h
+		}
+	}
+	return "https://" + host + "/tech-card-patterns/stand-in.dxf"
+}
+
 // managedPatternObjectKey mirrors storeutil.PatternObjectKey (dto cannot import storeutil
 // — dependency imports dto). Keep the recognition rule in sync: https url on one of OUR
 // hosts whose path contains the dedicated "tech-card-patterns" segment before the object

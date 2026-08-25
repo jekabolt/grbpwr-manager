@@ -117,4 +117,27 @@ const (
 	// on this side closes it. A code per offending shape would be a dozen action texts saying the
 	// same sentence, which is how a closed dictionary stops being read.
 	ReasonArchiveRowInvalid Reason = "archive_row_invalid"
+
+	// ReasonCardNotImportable — EXPORT side, and the only code here that is about the WHOLE card
+	// rather than a row: the card as it stands in this base breaks a rule the import's converter
+	// enforces, so an import would refuse this archive entirely.
+	//
+	// It exists because THE STORE IS SOFTER THAN THE CONVERTER. Every write that goes through the
+	// API passes dto.ConvertPbTechCardInsertToEntity; a write that goes straight to the store —
+	// a seeder, a migration backfill, a future importer, a hand-written repair — passes nothing,
+	// and the store documents that it relies on the converter having run (see the «сторожа
+	// счётной секции здесь нет» note in store/techcard/production.go). Such a card exports
+	// perfectly and is refused whole on the far side.
+	//
+	// A HOLE AND NOT AN EXPORT FAILURE. The archive is still worth having: it opens, it can be
+	// read, its sidecars and files are all there, and the operator may be exporting it to look at
+	// it rather than to move it. What was missing was not the file but the SENTENCE — the refusal
+	// used to happen weeks later, in another base, worded as a field violation about a payload
+	// nobody there had written.
+	//
+	// Its own code and not archive_row_invalid, whose whole contract is «the row is dropped and
+	// everything around it imports». Nothing is dropped here and nothing around it imports: the
+	// import refuses the card. An operator told «one row was unusable» would go looking for the
+	// row and find a card that simply does not arrive.
+	ReasonCardNotImportable Reason = "card_not_importable"
 )

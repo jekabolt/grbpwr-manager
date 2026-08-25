@@ -249,7 +249,7 @@ Four verdicts, and they are not synonyms:
 | 22, 23, 24 | `top_category_id`, `sub_category_id`, `type_id` | travel and are **ignored**. The category resolves through `id_maps.category_path` (a triple of NAMES, walked down the target's tree), and the target re-derives its own triple from the node it landed on. The source's three numbers are read by nobody. |
 | 25 | `output_variants` | **cleared.** An auxiliary card's colour variants are warehouse buckets: `on_hand` is the source's current stock balance, and `material_id` names a catalogue row with no passport travelling beside it. What the card produces still travels — `tech_card.output_material_id` plus its passport in `materials/index.json` under `ref = output_material` (§5.4). The colour dimension over that article is declared by the receiving instance, in its own buckets. |
 | 26 | `markers` | travel as **summaries** and are **ignored**. The authority is `markers/index.json` plus the blobs (§5.7); a summary here carries the source's `id`, `tech_card_id`, `colorway_id` and `size_id`, and nothing remaps them because nothing reads them. |
-| 27 | `piece_area_scopes` | travel and are **written**, with `size_id` **remapped** — see «measured piece areas» below. |
+| 27 | `piece_area_scopes` | travel and are **written**, with `size_id` **remapped** and the scope's `stale` verdict **cleared** — see «measured piece areas» below. |
 
 **Style facts (15/16/17/20/21) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions` and the two `model_wears_*` are catalogue columns of `tech_card` that
@@ -300,8 +300,17 @@ is a fact about the MEASUREMENT, not about the import; re-stamping them with tod
 operator's name would claim a measurement nobody took. An archive carrying no `parsed_at` falls back
 to `manifest.exported_at` — an upper bound on when the measurement was recorded, which is a fact
 rather than an invention — and a scope with no usable date at all is dropped rather than stamped.
-`stale` (the scope's staleness verdict) does **not** travel: it is recomputed by the reader, and an
-imported scope reads stale anyway, because the store mints a fingerprint of its own for it.
+`stale` (the scope's staleness verdict) does **not** travel: the export **clears** it, in the same
+gesture and for the same rule as `section_digests` (§4) — it is a READ-SIDE PROJECTION, recomputed
+by the server on every read from today's sheet fingerprint, and §7 of the plan forbids storing what
+is derivable. Two things beyond the letter of that rule. It is a statement about the SOURCE
+instance's files, which the receiving base does not have and cannot check — the one class of fact
+this format cuts everywhere else. And it would be false on arrival in either direction: an imported
+scope reads stale no matter what the file said, because the store mints a domain-separated
+fingerprint of its own for it (see `insertImportedPieceAreas`), so a carried `false` would be a
+partner-visible claim that the measurement is current when the reader is about to compute the
+opposite. Nothing is lost with it: the areas, their conditions and their provenance all travel, and
+the verdict over them is the reader's to take.
 
 ### 4.2 The revision journal is NOT transferable
 
@@ -650,9 +659,10 @@ explanation and the report action text.
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |
+| `card_not_importable` | EXPORT side: the card breaks a rule the write path enforces, so an import would refuse this archive whole — the file is still readable, and the detail names the field |
 
 The table is precise; the sentence a maintainer picks a code by is what used to lie. There is no
-one axis here — there are FIVE CLASSES, and the class is the answer to «where does the person go?»,
+one axis here — there are SIX CLASSES, and the class is the answer to «where does the person go?»,
 which is the only question a reason code exists to answer:
 
 1. **This side is missing a reference** — `material_not_found`, `material_ambiguous`,
@@ -677,6 +687,19 @@ which is the only question a reason code exists to answer:
    imported card's own range is narrower — which is exactly why it is not `size_unknown`, whose
    action text sends the operator to a dictionary that is in perfect order) and `unknown_entry`
    (this server is older than the archive).
+6. **The card will not be accepted anywhere** — `card_not_importable`, and it is the only code
+   raised on the EXPORT side about the whole card rather than a row. Nothing is missing from the
+   archive: it is complete, it opens, and every other line of the report is about it being complete.
+   What it says is that the card BREAKS A RULE THE WRITE PATH ENFORCES, so an import would refuse
+   it entirely.
+
+   Such a card exists because the store is softer than the converter every API write passes
+   through: a seeder, a migration backfill or a hand repair writes `entity.TechCardInsert`
+   straight, and `ConvertPbTechCardInsertToEntity` — which the import stands behind — never sees
+   it. The export therefore runs that same converter over the payload it just assembled and says
+   so HERE, next to the file, instead of letting the refusal surface weeks later in another base,
+   worded as a field violation about a payload nobody there wrote. The person goes to the SOURCE
+   card, fixes the field the detail names (saving it runs the same check) and exports again.
 
 `entity` on a hole is the human word for what it happened to — `media`, `material`, `bom_line`,
 `pattern`, `piece_area`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`,
