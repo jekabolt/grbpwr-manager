@@ -120,3 +120,87 @@ func TestReconcileStyleComposition_ManualNeverOverwritten(t *testing.T) {
 		t.Fatalf("auto should take the derived set, got source=%s rows=%v", src, asMap(rows))
 	}
 }
+
+// TestCountsTowardStyleComposition pins the назначение filter that section alone cannot express:
+// карманка / подкладка / бортовка / утеплитель are all legitimately section='fabric' roll goods, and
+// none of them is what the garment is MADE OF. Regression for SS26-008, which read
+// hemp 50 / viscose 45 / polyester 5 for a 100% hemp shell because its pocketing line took an equal
+// 1/N share.
+func TestCountsTowardStyleComposition(t *testing.T) {
+	counts := []TechCardBomPurpose{
+		BomPurposeMain,
+		BomPurposeContrast,
+		BomPurposeMesh,
+		BomPurposeOther, // role lives in a free-text note — undecidable, so it keeps contributing
+		"",              // NULL column: "не разобрано", the state most lines on file are in today
+	}
+	for _, p := range counts {
+		if !CountsTowardStyleComposition(p) {
+			t.Errorf("purpose %q must count toward the style composition", p)
+		}
+	}
+
+	excluded := []TechCardBomPurpose{
+		BomPurposePocketing,
+		BomPurposeLining,
+		BomPurposeInterfacing,
+		BomPurposeInsulation,
+	}
+	for _, p := range excluded {
+		if CountsTowardStyleComposition(p) {
+			t.Errorf("purpose %q must NOT count toward the style composition", p)
+		}
+	}
+}
+
+// TestCountsTowardStyleCompositionCoversVocabulary guards the deny-list against vocabulary drift: a
+// purpose added to BomPurposeOrder without a decision here silently starts contributing. That is the
+// SAFE default (nothing empties), so this test does not fail on the new value — it fails only if the
+// deny-list names something that is no longer a purpose at all, which would be a dead entry.
+func TestCountsTowardStyleCompositionCoversVocabulary(t *testing.T) {
+	for p := range styleCompositionExcludedPurposes {
+		if !IsValidTechCardBomPurpose(p) {
+			t.Errorf("deny-list names %q, which is not a valid BOM purpose any more", p)
+		}
+	}
+}
+
+// TestDeriveStyleCompositionSS26008 reproduces the reported card end to end at the entity layer: the
+// 100% hemp shell alone, once the карманка line is filtered out, derives 100% hemp — not the
+// hemp 50 / viscose 45 / polyester 5 that the equal split produced when both lines went in.
+func TestDeriveStyleCompositionSS26008(t *testing.T) {
+	shell := []FiberPercent{fp("HMP", "100")}
+	pocketing := []FiberPercent{fp("VIS", "90"), fp("POL", "10")}
+
+	before, err := DeriveStyleComposition([][]FiberPercent{shell, pocketing})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := asMap(before); got["HMP"] != "50" {
+		t.Fatalf("precondition: unfiltered derive should still split equally, got %v", got)
+	}
+
+	var fabrics [][]FiberPercent
+	for _, line := range []struct {
+		purpose TechCardBomPurpose
+		fibres  []FiberPercent
+	}{
+		{BomPurposeMain, shell},
+		{BomPurposePocketing, pocketing},
+	} {
+		if CountsTowardStyleComposition(line.purpose) {
+			fabrics = append(fabrics, line.fibres)
+		}
+	}
+	after, err := DeriveStyleComposition(fabrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := asMap(after)
+	if len(got) != 1 || got["HMP"] != "100" {
+		t.Fatalf("filtered derive = %v, want HMP 100 only", got)
+	}
+	if !total(after).Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("total = %s, want 100", total(after))
+	}
+}

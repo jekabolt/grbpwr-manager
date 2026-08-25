@@ -70,6 +70,18 @@ type Config struct {
 	Model       string        `mapstructure:"model"`        // OPENROUTER_MODEL; empty = defaultModel
 	BaseURL     string        `mapstructure:"base_url"`     // OPENROUTER_BASE_URL; empty = defaultBaseURL
 	HTTPTimeout time.Duration `mapstructure:"http_timeout"` // OPENROUTER_HTTP_TIMEOUT; <=0 = defaultTimeout
+	// ModelAnalysis is the OPTIONAL slug for the tech-card analysis pass (OPENROUTER_MODEL_ANALYSIS).
+	// EMPTY IS THE NORMAL STATE and means "the shared slug": the override exists so escalating the
+	// quality of that one pass costs an env var instead of a deploy.
+	//
+	// IT DELIBERATELY HAS NO DEFAULT CONSTANT OF ITS OWN. A second baked-in slug would be a second
+	// thing that rots silently at the provider, and one such constant (defaultModel) already carries
+	// every AI feature; the outage it documents is exactly what a forgotten second one would repeat.
+	//
+	// It only reaches the process because config/cfg.go binds the name EXPLICITLY: AutomaticEnv is
+	// intentionally off in this repo, so an unbound variable is silently empty — and silently empty
+	// is indistinguishable from the correct default, which is why the binding has its own test.
+	ModelAnalysis string `mapstructure:"model_analysis"`
 }
 
 // Client is a configured OpenRouter chat client. A nil *Client is a valid,
@@ -88,6 +100,9 @@ func New(cfg Config) *Client {
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = defaultBaseURL
 	}
+	// Trimmed, but NOT defaulted: empty stays empty and is resolved to the shared slug at read time
+	// by AnalysisModel, so there is exactly one place that decides what "unset" means.
+	cfg.ModelAnalysis = strings.TrimSpace(cfg.ModelAnalysis)
 	timeout := cfg.HTTPTimeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -106,6 +121,58 @@ func (c *Client) Model() string {
 		return ""
 	}
 	return c.cfg.Model
+}
+
+// AnalysisModel returns the effective model slug for the tech-card analysis pass: the optional
+// OPENROUTER_MODEL_ANALYSIS override, or the shared slug when that override is unset — which is the
+// normal state on every deployment. Nil-safe.
+//
+// Callers that REPORT which model answered (the analysis response carries the slug so a
+// "model_unavailable" verdict names the knob to turn) must use this, not Model(), or the panel will
+// name a slug that was never called.
+func (c *Client) AnalysisModel() string {
+	if c == nil {
+		return ""
+	}
+	if m := strings.TrimSpace(c.cfg.ModelAnalysis); m != "" {
+		return m
+	}
+	return c.cfg.Model
+}
+
+// effectiveModel is one slug this client can actually send, paired with what stops working if the
+// provider no longer serves it. The pairing is the whole value of the boot warning: "a model is
+// gone" sends nobody anywhere, "tech-card analysis will refuse" does.
+type effectiveModel struct {
+	slug     string
+	features string
+}
+
+const (
+	sharedModelFeatures   = "note formatting, tech-card operation drafts and campaign auto-translation"
+	analysisModelFeatures = "tech-card construction analysis"
+)
+
+// effectiveModels returns the DISTINCT slugs this client can send. It is a set on purpose: with
+// OPENROUTER_MODEL_ANALYSIS unset — again, the normal state — both roles are the same string, and
+// probing it twice would double the boot traffic and shout twice about a single fault.
+func (c *Client) effectiveModels() []effectiveModel {
+	if c == nil {
+		return nil
+	}
+	shared := strings.TrimSpace(c.cfg.Model)
+	analysis := strings.TrimSpace(c.AnalysisModel())
+	if shared != "" && analysis == shared {
+		return []effectiveModel{{slug: shared, features: sharedModelFeatures + ", " + analysisModelFeatures}}
+	}
+	out := make([]effectiveModel, 0, 2)
+	if shared != "" {
+		out = append(out, effectiveModel{slug: shared, features: sharedModelFeatures})
+	}
+	if analysis != "" {
+		out = append(out, effectiveModel{slug: analysis, features: analysisModelFeatures})
+	}
+	return out
 }
 
 // BaseURL returns the effective API root. It exists for LOG LINES: a 404 can mean the model slug
@@ -353,8 +420,12 @@ type responseFormat struct {
 }
 
 type chatRequest struct {
-	Model          string          `json:"model"`
-	Messages       []chatMessage   `json:"messages"`
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	// MaxTokens caps the COMPLETION. Omitted when zero, which leaves the provider's own default in
+	// force — the behaviour every caller had before the field existed. The analysis pass sets it
+	// explicitly, because a default this codebase does not own is not a budget it can reason about.
+	MaxTokens      int             `json:"max_tokens,omitempty"`
 	Temperature    float64         `json:"temperature"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
@@ -371,7 +442,21 @@ type chatResponse struct {
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Model string    `json:"model"`
+	Usage Usage     `json:"usage"`
 	Error *apiError `json:"error"`
+}
+
+// Usage is the token accounting the provider returns for one completion. The field names are the
+// OpenAI-compatible ones OpenRouter answers with; the Go names are shortened because the "_tokens"
+// suffix on a type called Usage says nothing.
+//
+// A MISSING OR MISSPELLED TAG HERE IS SILENT: every field simply stays zero, the call still
+// succeeds, and the only symptom is that the price of every run reads as free in the log. That is
+// why the test asserts NON-ZERO numbers rather than "no error".
+type Usage struct {
+	Prompt     int `json:"prompt_tokens"`
+	Completion int `json:"completion_tokens"`
+	Total      int `json:"total_tokens"`
 }
 
 // GenerateOperations asks the model to draft sewing operations for the given tech
@@ -385,7 +470,7 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 		return nil, fmt.Errorf("openrouter: description is required")
 	}
 
-	content, err := c.chat(ctx, chatRequest{
+	content, _, _, err := c.chat(ctx, chatRequest{
 		Model: c.cfg.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
@@ -411,12 +496,41 @@ func (c *Client) GenerateOperations(ctx context.Context, tcx TechCardContext, de
 // Complete runs a single chat completion and returns the assistant's raw message content. It is
 // the generic primitive behind feature-specific methods (e.g. translation). jsonMode requests a
 // JSON-object response from the model. Returns ErrNotConfigured when no API key is set.
+//
+// It is a thin wrapper over the shared path with the SHARED slug and no explicit token cap —
+// exactly what it did before the response metadata existed — so callers that do not care about the
+// finish reason or the token bill keep the behaviour they had.
 func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool) (string, error) {
+	text, _, _, err := c.complete(ctx, c.Model(), systemPrompt, userPrompt, jsonMode, 0)
+	return text, err
+}
+
+// CompleteWithMeta runs a single chat completion for the TECH-CARD ANALYSIS pass and returns the
+// assistant content together with what the caller needs in order to judge it.
+//
+// WHY THE METADATA IS NOT OPTIONAL. Without finishReason a reply truncated by the token cap is
+// indistinguishable from a model that emitted broken JSON, and those two owe the human different
+// sentences ("it was cut off, ask again" vs "the model misbehaved"). Without usage the price of a
+// run is invisible, and a per-press LLM call whose cost nobody can see is a bill nobody notices.
+//
+// maxTokens caps the completion; <= 0 omits the field and leaves the provider default in force.
+//
+// THE SLUG IS AnalysisModel(), NOT Model(). This method exists for the analysis pass, and
+// OPENROUTER_MODEL_ANALYSIS exists to escalate exactly that pass without dragging the features
+// behind Complete onto a different model. With the override unset the two are the same string.
+func (c *Client) CompleteWithMeta(ctx context.Context, systemPrompt, userPrompt string, jsonMode bool, maxTokens int) (text string, finishReason string, usage Usage, err error) {
+	return c.complete(ctx, c.AnalysisModel(), systemPrompt, userPrompt, jsonMode, maxTokens)
+}
+
+// complete is the shared body of Complete and CompleteWithMeta: one place that decides the request
+// shape, so the slug, the temperature and the JSON-mode flag cannot drift between the two entry
+// points. The model is a parameter precisely because the two differ in that one value.
+func (c *Client) complete(ctx context.Context, model, systemPrompt, userPrompt string, jsonMode bool, maxTokens int) (string, string, Usage, error) {
 	if !c.Enabled() {
-		return "", ErrNotConfigured
+		return "", "", Usage{}, ErrNotConfigured
 	}
 	req := chatRequest{
-		Model: c.cfg.Model,
+		Model: model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
@@ -426,20 +540,28 @@ func (c *Client) Complete(ctx context.Context, systemPrompt, userPrompt string, 
 	if jsonMode {
 		req.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
+	if maxTokens > 0 {
+		req.MaxTokens = maxTokens
+	}
 	return c.chat(ctx, req)
 }
 
-// chat performs one chat/completions request and returns the assistant message content, or a
-// clear error on transport failure, non-2xx status, or an empty/malformed envelope.
-func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, error) {
+// chat performs one chat/completions request and returns the assistant message content plus the
+// response metadata (finish reason, token usage), or a clear error on transport failure, non-2xx
+// status, or an empty/malformed envelope.
+//
+// THIS IS THE ONLY REQUEST PATH IN THE PACKAGE — GenerateOperations, Complete and CompleteWithMeta
+// all funnel through it. A second one would be a second place for the auth header, the 404
+// classification and the response-size cap to drift apart.
+func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, string, Usage, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("openrouter: marshal request: %w", err)
+		return "", "", Usage{}, fmt.Errorf("openrouter: marshal request: %w", err)
 	}
 	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return "", fmt.Errorf("openrouter: build request: %w", err)
+		return "", "", Usage{}, fmt.Errorf("openrouter: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.cfg.APIKey))
@@ -448,38 +570,40 @@ func (c *Client) chat(ctx context.Context, reqBody chatRequest) (string, error) 
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("openrouter: request failed: %w", err)
+		return "", "", Usage{}, fmt.Errorf("openrouter: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return "", fmt.Errorf("openrouter: read response: %w", err)
+		return "", "", Usage{}, fmt.Errorf("openrouter: read response: %w", err)
 	}
 	// A 404 is the one non-2xx that is NOT weather — see ErrModelUnavailable. It is wrapped rather
 	// than replaced: the provider's own sentence and the status still reach the log, they simply
 	// stop being the thing a caller has to pattern-match to know a retry is pointless.
 	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("%w: API error (HTTP %d): %s", ErrModelUnavailable, resp.StatusCode, apiErrorMessage(body))
+		return "", "", Usage{}, fmt.Errorf("%w: API error (HTTP %d): %s", ErrModelUnavailable, resp.StatusCode, apiErrorMessage(body))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openrouter: API error (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
+		return "", "", Usage{}, fmt.Errorf("openrouter: API error (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(body, &cr); err != nil {
-		return "", fmt.Errorf("openrouter: could not decode API response envelope: %w", err)
+		return "", "", Usage{}, fmt.Errorf("openrouter: could not decode API response envelope: %w", err)
 	}
 	if cr.Error != nil && strings.TrimSpace(cr.Error.Message) != "" {
-		return "", fmt.Errorf("openrouter: API error: %s", cr.Error.Message)
+		return "", "", Usage{}, fmt.Errorf("openrouter: API error: %s", cr.Error.Message)
 	}
 	if len(cr.Choices) == 0 {
-		return "", fmt.Errorf("openrouter: API response contained no choices")
+		return "", "", Usage{}, fmt.Errorf("openrouter: API response contained no choices")
 	}
 	content := strings.TrimSpace(cr.Choices[0].Message.Content)
 	if content == "" {
-		return "", fmt.Errorf("openrouter: model returned an empty message")
+		// The usage still rides along: an empty message is not a free call, and the log line that
+		// reports the failure is the one place the spend would otherwise vanish from.
+		return "", cr.Choices[0].FinishReason, cr.Usage, fmt.Errorf("openrouter: model returned an empty message")
 	}
-	return content, nil
+	return content, cr.Choices[0].FinishReason, cr.Usage, nil
 }
 
 // parseResult extracts the JSON object from the model content (tolerating a ```json
@@ -587,7 +711,15 @@ func (c *Client) CheckModel(ctx context.Context) error {
 	if !c.Enabled() {
 		return ErrNotConfigured
 	}
-	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/models/" + strings.TrimSpace(c.cfg.Model) + "/endpoints"
+	return c.checkModel(ctx, c.cfg.Model)
+}
+
+// checkModel is CheckModel for ONE named slug. It exists because a client now has a SET of
+// effective slugs (the shared one and, when OPENROUTER_MODEL_ANALYSIS is set, the analysis one),
+// and the boot warning has to ask about each — with the same route, the same verdict rule and the
+// same silence contract, from one body.
+func (c *Client) checkModel(ctx context.Context, model string) error {
+	endpoint := strings.TrimRight(c.cfg.BaseURL, "/") + "/models/" + strings.TrimSpace(model) + "/endpoints"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("openrouter: build model probe: %w", err)
@@ -607,7 +739,7 @@ func (c *Client) CheckModel(ctx context.Context) error {
 		return fmt.Errorf("openrouter: read model probe: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: %q is not a model the provider knows", ErrModelUnavailable, c.cfg.Model)
+		return fmt.Errorf("%w: %q is not a model the provider knows", ErrModelUnavailable, model)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("openrouter: model probe (HTTP %d): %s", resp.StatusCode, apiErrorMessage(body))
@@ -620,12 +752,12 @@ func (c *Client) CheckModel(ctx context.Context) error {
 		return fmt.Errorf("openrouter: model probe carried no endpoints field")
 	}
 	if len(*mr.Data.Endpoints) == 0 {
-		return fmt.Errorf("%w: %q has no live endpoints at the provider", ErrModelUnavailable, c.cfg.Model)
+		return fmt.Errorf("%w: %q has no live endpoints at the provider", ErrModelUnavailable, model)
 	}
 	return nil
 }
 
-// WarnIfModelRetired probes the effective model slug in the BACKGROUND and shouts in the log if the
+// WarnIfModelRetired probes EVERY effective model slug in the BACKGROUND and shouts in the log if the
 // provider serves no endpoint for it. It returns immediately and is safe to call from a start-up
 // path: the goroutine is owned here rather than by the caller precisely so no call site can forget
 // the `go`, the timeout, or the recover.
@@ -638,6 +770,9 @@ func (c *Client) WarnIfModelRetired() {
 	if !c.Enabled() {
 		return // no key: nothing is calling the provider anyway, so there is nothing to warn about
 	}
+	// The set is taken on the calling goroutine so the work is decided by the configuration as it
+	// stands at boot, not as it might be read later.
+	models := c.effectiveModels()
 	go func() {
 		// The probe touches only its own request; a panic here would still take the whole process
 		// down, and this runs at start-up. A check that can stop a deploy is worse than the fault
@@ -647,13 +782,19 @@ func (c *Client) WarnIfModelRetired() {
 				slog.Default().Warn("openrouter model probe panicked", slog.Any("recovered", r))
 			}
 		}()
-		ctx, cancel := context.WithTimeout(context.Background(), modelProbeTimeout)
-		defer cancel()
-		if err := c.CheckModel(ctx); errors.Is(err, ErrModelUnavailable) {
-			slog.Default().Error(
-				"OPENROUTER MODEL IS NOT SERVED — note formatting, tech-card operation drafts and campaign auto-translation will all refuse",
-				slog.String("model", c.Model()), slog.String("base_url", c.BaseURL()),
-				slog.String("err", err.Error()))
+		// Sequential, each with its OWN short timeout: the slugs are one or two, the budget stays
+		// bounded per probe, and nothing downstream waits on any of it.
+		for _, m := range models {
+			func() {
+				ctx, cancel := context.WithTimeout(context.Background(), modelProbeTimeout)
+				defer cancel()
+				if err := c.checkModel(ctx, m.slug); errors.Is(err, ErrModelUnavailable) {
+					slog.Default().Error(
+						"OPENROUTER MODEL IS NOT SERVED — the features on this slug will refuse",
+						slog.String("model", m.slug), slog.String("affects", m.features),
+						slog.String("base_url", c.BaseURL()), slog.String("err", err.Error()))
+				}
+			}()
 		}
 	}()
 }

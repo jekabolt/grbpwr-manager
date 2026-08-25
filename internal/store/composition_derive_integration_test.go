@@ -163,3 +163,71 @@ func TestReconcileStyleCompositionOnUpdateStyle(t *testing.T) {
 	require.Len(t, cardManual.CompositionEntries, 1)
 	require.Equal(t, "SLK", cardManual.CompositionEntries[0].FiberCode)
 }
+
+// TestReconcileStyleCompositionExcludesNonShellPurposes is the SS26-008 regression at the wiring
+// level: the card's карманка is a legitimate section='fabric' roll-goods line (TechCardBomPurpose says
+// pocket-bag cloth belongs there), so selecting on section alone gave it an equal 1/N share and a 100%
+// hemp shell read hemp 50 / viscose 45 / polyester 5. The unit tests pin the predicate
+// (entity.CountsTowardStyleComposition); this pins that ReconcileStyleCompositionTx actually reads
+// purpose and applies it — a SELECT that forgets the column would still pass those.
+func TestReconcileStyleCompositionExcludesNonShellPurposes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+	T := s.TechCards()
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
+
+	tcID, err := T.AddTechCard(ctx, &entity.TechCardInsert{
+		Name: "Purpose Filter Style", Stage: entity.TechCardStageProto, StyleNumber: ns("C11-COMP-PURPOSE"),
+		MeasurementUnit: entity.TechCardUnitMm, ApprovalState: entity.TechCardApprovalDraft,
+		BomItems: []entity.TechCardBomItem{
+			{LineKey: "SHELL", Section: entity.BomSectionFabric, Name: "Main Fabric",
+				Purpose: ns(string(entity.BomPurposeMain))},
+			{LineKey: "POCKET", Section: entity.BomSectionFabric, Name: "Карманка",
+				Purpose: ns(string(entity.BomPurposePocketing))},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = testDB.ExecContext(bg, "DELETE FROM style_composition WHERE tech_card_id = ?", tcID)
+		_, _ = testDB.ExecContext(bg, "DELETE FROM tech_card WHERE id = ?", tcID)
+	})
+
+	card, err := T.GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	require.Len(t, card.BomItems, 2)
+	byKey := map[string]int{}
+	for _, b := range card.BomItems {
+		byKey[b.LineKey] = b.Id
+	}
+	require.NotZero(t, byKey["SHELL"])
+	require.NotZero(t, byKey["POCKET"])
+
+	// Both lines carry a real fibre breakdown, so neither is skipped for lack of data — the ONLY thing
+	// that can keep the pocketing out of the derive is its назначение. (The shell is WOL rather than the
+	// reported card's hemp only because HMP is not in the seeded fibre dictionary — 0177; the shape is
+	// identical: one pure shell against a two-fibre pocket bag.)
+	_, err = testDB.ExecContext(ctx,
+		"INSERT INTO bom_item_composition (bom_item_id, fiber_code, percent) VALUES (?, 'WOL', 100.00)", byKey["SHELL"])
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx,
+		"INSERT INTO bom_item_composition (bom_item_id, fiber_code, percent) VALUES (?, 'VIS', 90.00), (?, 'POL', 10.00)",
+		byKey["POCKET"], byKey["POCKET"])
+	require.NoError(t, err)
+
+	cardForSave, err := T.GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	require.NoError(t, T.UpdateTechCard(ctx, tcID, &cardForSave.TechCardInsert, cardForSave.LockVersion))
+
+	rows := readStyleComposition(t, ctx, tcID)
+	require.Len(t, rows, 1, "pocketing must not contribute a fibre row (got %v)", rows)
+	require.Equal(t, "WOL", rows[0].FiberCode)
+	require.Equal(t, "100.00", rows[0].Percent, "the shell alone is the composition, not an equal split with карманка")
+	require.Equal(t, entity.CompositionSourceAuto, rows[0].Source)
+}

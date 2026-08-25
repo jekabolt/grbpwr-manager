@@ -338,8 +338,18 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			missingNormSizes = append(missingNormSizes, sizeLabelOf(id))
 		}
 	}
+	// ТРУД, КОТОРОГО НЕТ В ИТОГЕ. Статья 'cmt' скипается голым `continue` в цикле статей выше
+	// (`if !amt.Valid`), а на карточке без строки костинга цикл не исполняется вовсе — и в обоих
+	// случаях смета печатала уверенный unit_cost, в котором труда нет ни строкой, ни оговоркой.
+	// Из остальных caveat'ов ни один об этом не говорит: они все про МАТЕРИАЛЫ.
+	//
+	// ГЕЙТ — НЕПУСТОЙ МАРШРУТ, и он не косметический: карточка без единого шага труда и не обещает,
+	// а оговорка на каждой такой смете была бы шумом, который научатся не читать.
+	hasNoCmt := len(tc.Operations) > 0 && (tc.Costing == nil || !tc.Costing.CmtCost.Valid)
+
 	caveats := estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat,
-		hasUnconvertibleArt, hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine, missingNormSizes)
+		hasUnconvertibleArt, hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine, hasNoCmt,
+		missingNormSizes)
 	if hasAreaEstimate {
 		caveats = append(caveats,
 			"some fabric lines are an AREA ESTIMATE (netto: piece areas ÷ cutting width) — a lower bound with no inter-piece waste in it; take a marker to turn it into a norm")
@@ -482,7 +492,7 @@ func grossByWastage(base decimal.Decimal, wastagePercent decimal.NullDecimal) de
 }
 
 func estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat, hasUnconvertibleArt,
-	hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine bool, missingNormSizes []string) []string {
+	hasIncompleteRangeNorm, hasNoSizeRange, hasNoNormLine, hasNoCmt bool, missingNormSizes []string) []string {
 	var c []string
 	if usedCatalogFallback {
 		c = append(c, "some material lines use the latest catalog price (no BOM snapshot); the estimate may drift from the saved plan document")
@@ -505,6 +515,12 @@ func estimateCaveats(usedCatalogFallback, hasUnpricedLine, hasUnconvertibleMat, 
 	}
 	if hasUnpricedLine {
 		c = append(c, "some material lines have no price (neither a BOM snapshot nor a catalog price) — the estimate understates")
+	}
+	if hasNoCmt {
+		// Единственная оговорка не про материалы. Без неё смета карточки с полным маршрутом и
+		// пустым tech_card_costing.cmt_cost выглядит как посчитанная целиком: статья просто
+		// отсутствует в списке, а отсутствие статьи неотличимо от статьи в ноль.
+		c = append(c, "the card has a route and no labour cost (tech_card_costing.cmt_cost is not set) — the estimate is materials-only and understates by the whole CMT")
 	}
 	if hasUnconvertibleMat || hasUnconvertibleArt {
 		c = append(c, "some amounts have no FX rate to the base currency and are excluded from the base total")

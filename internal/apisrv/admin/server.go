@@ -97,6 +97,10 @@ type Server struct {
 	// OpenRouter (#66). It is nil-safe/disabled when OPENROUTER_API_KEY is unset, so
 	// GenerateTechCardOperations degrades to a clear FailedPrecondition instead of failing.
 	aiOps *openrouter.Client
+	// analysisRuns is the spend fence in front of AnalyzeTechCardConstruction: who is running what,
+	// when they last ran it, and how many runs this account has bought in the last hour. Its zero
+	// value works — see analysisRunGuard for why that is deliberate rather than lazy.
+	analysisRuns analysisRunGuard
 	// noteFormatSem bounds concurrent markdown-assistant calls. NOT nil-safe on purpose: a nil
 	// channel makes the acquire fall to its default branch, so a Server built without this field
 	// refuses the RPC loudly instead of silently running with no ceiling at all.

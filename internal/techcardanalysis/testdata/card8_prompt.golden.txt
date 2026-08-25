@@ -1,0 +1,165 @@
+TECH CARD UNDER REVIEW
+Style: Blazer | style number: SS26-008 | garment type: blazer | target gender: male | purpose: sellable
+Stage: proto | approval state: draft  (review as a DRAFT - see maturity rule)
+Required seam allowance: 10.0 mm
+Card defaults: seam class ss_plain; stitch density 3.00 stitches/cm; hem finish: not specified;
+construction notes: not specified
+Operations without their own seam class / allowance / density INHERIT the card defaults.
+On this card ALL 48 operations inherit all three.
+Equipment profiles on the card: none.
+
+CUT PIECES (name | per garment | fabric bucket | non-default attributes):
+- BP_L | x1 | main
+- BP_R | x1 | main
+- BPU_L | x1 | main
+- BPU_R | x1 | main
+- CLR_INS | x1 | main
+- CLR_INS_1 | x1 | main
+- CLR_MAIN | x1 | main
+- CLR_MAIN_1 | x1 | main
+- INS_D_PCK | x1 | main
+- INS_U_PCK | x1 | main
+- MP_L | x1 | main
+- MP_R | x1 | main
+- P_L | x1 | main
+- P_LIN_L_2 | x1 | main
+- P_LIN_R_2 | x1 | main
+- P_R | x1 | main
+- PCK_MAIN_L_1 | x1 | main
+- PCK_MAIN_R_1 | x1 | main
+- SL_INS_L | x1 | main
+- SL_INS_R | x1 | main
+- SL_LIN_L | x1 | main
+- SL_LIN_R | x1 | main
+- SL_OUT_L | x1 | main
+- SL_OUT_R | x1 | main
+- BP_LIN_L_2 | x1 | lining
+- BP_LIN_R_1 | x1 | lining
+- MP_LIN_L_1 | x1 | lining
+- MP_LIN_R_1 | x1 | lining
+- PCK_LOCKER | x1 | lining
+- PD_LIN_L_2 | x1 | lining
+- PD_LIN_R_2 | x1 | lining
+- PU_LIN_L | x1 | lining
+- PU_LIN_R | x1 | lining
+- SL_INS_LIN_L | x1 | lining
+- SL_INS_LIN_R | x1 | lining
+- SL_OUT_LIN_L | x1 | lining
+- SL_OUT_LIN_R | x1 | lining
+- PCK_INS_S | x1 | pocketing | ungraded
+- PCK_MAIN_INS_S | x1 | pocketing | ungraded
+- PCK_MAIN_L_S | x1 | pocketing | ungraded
+- PCK_MAIN_R_S | x1 | pocketing | ungraded
+- PCK_OUT_L_S | x1 | pocketing | ungraded
+- PCK_OUT_R_S | x1 | pocketing | ungraded
+- PCK_UP_INS_S | x1 | pocketing | ungraded
+- SHLD_1_L | x1 | other
+- SHLD_1_R | x1 | other
+- SHLD_L | x1 | other
+- SHLD_R | x1 | other
+
+BILL OF MATERIALS (section, purpose | name | price):
+- [lining, purpose lining] подкладка - 1.0000 EUR/m
+- [fabric, purpose main] основная ткань - 55.0000 PLN/m
+- [interlining, purpose other ("Плечи")] Плечевая - 36.0000 PLN/m
+- [fabric, purpose pocketing] Карманка - 60.0000 PLN/m
+
+OPERATIONS (the assembly route; unit keys are byte-exact and case-sensitive):
+- op 10 | machine on lockstitch | zone: back | consumes: BPU_L + BPU_R | produces: "Back Panels Upper"
+- op 20 | machine on lockstitch | zone: back | consumes: BP_L + BP_R | produces: "Back panels bottom"
+- op 30 | machine on lockstitch | zone: back | consumes: UNIT<Back panels bottom> + UNIT<Back Panels Upper> | produces: "Back"
+- op 40 | machine on lockstitch | zone: back | consumes: UNIT<Back> | produces: (nothing - processing step) | note: "Low thread tension stich"
+- op 50 | press_open | zone: back | consumes: UNIT<Back> | produces: (nothing - processing step)
+- op 60 | machine on lockstitch | zone: pocket | consumes: PCK_MAIN_R_S + PCK_MAIN_R_1 | produces: "right main pocket detail"
+- op 70 | press_open | zone: pocket | consumes: UNIT<right main pocket detail> | produces: (nothing - processing step)
+- op 80 | machine on lockstitch | zone: front | consumes: PCK_OUT_R_S + P_R | produces: "right front panel with pocket detail"
+- op 90 | machine on lockstitch | zone: pocket | consumes: PCK_MAIN_L_S + PCK_MAIN_L_1 | produces: "left main pocket detail"
+- op 100 | press | zone: pocket | consumes: UNIT<left main pocket detail> | produces: (nothing - processing step)
+- op 110 | machine on lockstitch | zone: sleeve | consumes: SL_INS_L + SL_OUT_L | produces: "left sleeve" | note: "front seam"
+- op 120 | machine on lockstitch | zone: sleeve | consumes: SL_OUT_R + SL_INS_R | produces: "right sleeve" | note: "front seam"
+- op 130 | machine on lockstitch | zone: collar | consumes: CLR_MAIN_1 + CLR_INS_1 | produces: "Collar inner"
+- op 140 | machine on lockstitch | zone: collar | consumes: CLR_MAIN + CLR_INS | produces: "collar outer"
+- op 150 | machine on lockstitch | zone: front | consumes: PCK_OUT_L_S + P_L | produces: "left front panel with pocket detail"
+- op 160 | press_open | zone: collar | consumes: UNIT<collar outer> | produces: (nothing - processing step)
+- op 170 | machine on lockstitch | zone: outer | consumes: UNIT<right main pocket detail> + MP_R | produces: "Right side with pocket detail"
+- op 180 | machine on lockstitch | zone: outer | consumes: UNIT<left main pocket detail> + MP_L | produces: "Left side with pocket detail"
+- op 190 | machine on lockstitch | zone: front | consumes: UNIT<right front panel with pocket detail> + UNIT<Right side with pocket detail> | produces: "Right front panel with pockets"
+- op 200 | machine on lockstitch | zone: front | consumes: UNIT<left front panel with pocket detail> + UNIT<Left side with pocket detail> | produces: "LEft front panel with pockets"
+- op 210 | machine on overlock | zone: pocket | consumes: UNIT<Right front panel with pockets> | produces: (nothing - processing step) | note: "join pockets"
+- op 220 | machine on overlock | zone: pocket | consumes: UNIT<LEft front panel with pockets> | produces: (nothing - processing step) | note: "join pockets"
+- op 230 | machine on lockstitch | zone: pocket | consumes: PCK_INS_S + INS_D_PCK | produces: "Pocket detail inside"
+- op 240 | machine on lockstitch | zone: pocket | consumes: PCK_LOCKER + PCK_UP_INS_S + INS_U_PCK | produces: "Pocket piece with flap"
+- op 250 | machine on lockstitch | zone: pocket | consumes: UNIT<Pocket detail inside> + UNIT<Pocket piece with flap> | produces: "pocket base"
+- op 260 | machine on lockstitch | zone: pocket | consumes: PCK_MAIN_INS_S + UNIT<pocket base> | produces: "pocket base" (absorbing)
+- op 270 | machine on lockstitch | zone: outer | consumes: UNIT<Back> + UNIT<Right front panel with pockets> + UNIT<LEft front panel with pockets> | produces: "Base"
+- op 280 | machine on lockstitch | zone: outer | consumes: UNIT<collar outer> + UNIT<Base> | produces: "base with collar"
+- op 290 | machine on lockstitch | zone: pocket | consumes: UNIT<pocket base> + P_LIN_L_2 | produces: "left lining detail with pocket"
+- op 300 | machine on lockstitch | zone: lining | consumes: PD_LIN_L_2 + PU_LIN_L + UNIT<left lining detail with pocket> | produces: "left lining with pocket"
+- op 310 | machine on lockstitch | zone: lining | consumes: PU_LIN_R + P_LIN_R_2 + PD_LIN_R_2 | produces: "right lining"
+- op 320 | machine on lockstitch | zone: lining | consumes: MP_LIN_L_1 + BP_LIN_L_2 | produces: "left lining"
+- op 330 | machine on lockstitch | zone: lining | consumes: BP_LIN_R_1 + MP_LIN_R_1 | produces: "right lining panels"
+- op 340 | machine on lockstitch | zone: lining | consumes: UNIT<left lining> + UNIT<right lining panels> | produces: "lining back"
+- op 350 | machine on lockstitch | zone: lining | consumes: UNIT<left lining with pocket> + UNIT<right lining> + UNIT<lining back> | produces: "lining base"
+- op 360 | machine on lockstitch | zone: lining | consumes: SL_INS_LIN_L + SL_OUT_LIN_L | produces: "left sleeve lining"
+- op 370 | machine on lockstitch | zone: lining | consumes: SL_INS_LIN_R + SL_OUT_LIN_R | produces: "Right sleeve lining"
+- op 380 | machine on lockstitch | zone: lining | consumes: UNIT<Right sleeve lining> + SL_LIN_R | produces: "right sleeve lining main"
+- op 390 | machine on lockstitch | zone: lining | consumes: UNIT<left sleeve lining> + SL_LIN_L | produces: "left sleeve lining main"
+- op 400 | machine on lockstitch | zone: lining | consumes: UNIT<left sleeve lining main> + UNIT<right sleeve lining main> + UNIT<lining base> | produces: "lining with sleeves"
+- op 410 | machine on lockstitch | zone: lining | consumes: UNIT<Collar inner> + UNIT<lining with sleeves> | produces: "lining"
+- op 420 | machine on lockstitch | zone: interlining | consumes: SHLD_1_L + SHLD_L | produces: "underlining left" | materials: Плечевая
+- op 430 | machine on lockstitch | zone: interlining | consumes: SHLD_1_R + SHLD_R | produces: "underlining right" | materials: Плечевая
+- op 440 | machine on lockstitch | zone: outer | consumes: UNIT<underlining left> + UNIT<underlining right> + UNIT<base with collar> | produces: "base with underlining"
+- op 450 | machine on lockstitch | zone: outer | consumes: UNIT<left sleeve> + UNIT<right sleeve> + UNIT<base with underlining> | produces: "base"
+- op 460 | machine on lockstitch | zone: outer | consumes: UNIT<lining> + UNIT<base> | produces: "blazer"
+- op 470 | buttonhole (machine: buttonhole) | zone: front | consumes: UNIT<blazer> | produces: (nothing - processing step)
+- op 480 | button_attach (machine: button_attach) | zone: front | consumes: UNIT<blazer> | produces: (nothing - processing step)
+
+VERIFIED FACTS (recomputed from the stored card at run time; closed world):
+- The graph is acyclic, has no forward references and no dangling unit references.
+- Exactly one terminal unit: "blazer" (op 460). All 48 declared cut pieces are consumed
+  exactly once.
+- op 260 consumes UNIT<pocket base> and produces "pocket base" again after adding
+  PCK_MAIN_INS_S - the software classifies this as a legal absorbing chain, not a
+  duplicate producer.
+- 9 of 48 operations produce no unit (processing steps; their inputs stay available):
+  40, 50, 70, 100, 160, 210, 220, 470, 480.
+- Works assigned: 5 of 48. SMV: 0 of 48. Equipment profiles: 0.
+- Pieces marked fused: 0 of 48. Fusing operations: 0. Interlining BOM lines: 1
+  ("Плечевая", purpose note "Плечи").
+- Finishing verbs used (trim / thread_trim / clean / inspect / fold / pack / wet_process): 0.
+
+MACHINE FINDINGS ALREADY FILED (part of the closed world; shown to the user next to your
+report - do not re-report the detection, judge its consequences):
+- naming: "Base" (op 270) and "base" (op 450) are two different units distinguished only
+  by case; "pocket base" (250/260) and "lining base" (350) are further senses of the word.
+- parameter: pressing parameters absent on 4 of 4 pressing operations (50, 70, 100, 160);
+  the card has no press profiles.
+- parameter: op 470 (buttonhole) has no placement count, style or cut length; op 480
+  (button_attach) has no placement count. As written this is a one-button blazer with an
+  unspecified buttonhole.
+- parameter: overlock ops 210/220 inherit effective seam class ss_plain - not producible
+  on an overlock.
+- bom_mismatch: ops 470/480 set hardware; the BOM has zero hardware lines.
+- bom_mismatch: 44 sewing operations; the BOM has zero thread lines.
+- bom_mismatch: interlining line present while 0 pieces are fused and 0 fusing operations
+  exist.
+- parameter: note "Low thread tension stich" (op 40) carries an instruction; the
+  thread_tension field is empty.
+- question: "подкладка" priced 1.0000 EUR/m looks like a placeholder; "Карманка"
+  (60 PLN/m) costs more than the main fabric (55 PLN/m).
+- readiness (draft, collapsed): not yet ready for release - SMV 0/48, works 5/48, no
+  equipment profiles, no finishing block, no labels, no packaging, hem finish not
+  specified.
+
+MACHINE OBSERVATIONS (automatic heuristics - they MAY BE WRONG; confirm, refine or refute
+by citing operations):
+- Lexical mirror pairing over unit names suggests left/right twins: 60<->90, 70<->100,
+  80<->150, 110<->120, 130<->140, 170<->180, 190<->200, 210<->220, 310<->320, 330<->?,
+  360<->370, 380<->390, 420<->430. The pairing is derived from NAMES only; the input
+  lists are the ground truth - correct it freely.
+- Method differs inside suspected twins: op 70 is press_open, op 100 is press. Ops 80 and
+  150 are separated by ops 90-140.
+- Suspected typo: irregular capitalisation inside unit key "LEft front panel with
+  pockets" (op 200; consumed by 220 and 270).
+
+Review the route against the checklist and return the JSON object.

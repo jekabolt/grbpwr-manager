@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -43,6 +44,12 @@ func (s *routeStubServer) ListTechCardFabricDirectionGaps(ctx context.Context, r
 func (s *routeStubServer) GetOperationWorkCatalog(ctx context.Context, req *pb_admin.GetOperationWorkCatalogRequest) (*pb_admin.GetOperationWorkCatalogResponse, error) {
 	s.lastCall = "WorkCatalog"
 	return &pb_admin.GetOperationWorkCatalogResponse{}, nil
+}
+
+func (s *routeStubServer) GetTechCardConstructionAudit(ctx context.Context, req *pb_admin.GetTechCardConstructionAuditRequest) (*pb_admin.GetTechCardConstructionAuditResponse, error) {
+	s.lastCall = "ConstructionAudit"
+	s.lastID = req.TechCardId
+	return &pb_admin.GetTechCardConstructionAuditResponse{}, nil
 }
 
 // TestTechCardListRouteNotShadowed pins the grpc-gateway route-ordering invariant
@@ -106,6 +113,23 @@ func TestTechCardListRouteNotShadowed(t *testing.T) {
 	_ = respW.Body.Close()
 	if stub.lastCall != "WorkCatalog" {
 		t.Fatalf("GET /tech-card/operation-work/catalog dispatched to %q (id=%d), want GetOperationWorkCatalog",
+			stub.lastCall, stub.lastID)
+	}
+
+	// Ф0а: POST /tech-card/construction/audit несёт ДВА литеральных сегмента, и решает его тот же
+	// порядок прибавления обработчиков. Соседи по POST той же длины — /tech-card/{tech_card_id}/
+	// piece-areas и /tech-card/{tech_card_id}/pattern-size-index, поэтому промах был бы тихим:
+	// 400 «cannot parse "construction" as int32», читающийся как баг клиента, на каждом открытии
+	// вкладки CONSTRUCTION.
+	stub.lastCall, stub.lastID = "", 0
+	respA, err := http.Post(ts.URL+"/api/admin/tech-card/construction/audit", "application/json",
+		strings.NewReader(`{"tech_card_id":8}`))
+	if err != nil {
+		t.Fatalf("POST /tech-card/construction/audit: %v", err)
+	}
+	_ = respA.Body.Close()
+	if stub.lastCall != "ConstructionAudit" || stub.lastID != 8 {
+		t.Fatalf("POST /tech-card/construction/audit dispatched to %q (id=%d), want GetTechCardConstructionAudit id=8",
 			stub.lastCall, stub.lastID)
 	}
 

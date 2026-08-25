@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -702,5 +703,195 @@ func TestWarnIfModelRetired(t *testing.T) {
 	t.Run("a nil client is a no-op, not a boot crash", func(t *testing.T) {
 		var c *Client
 		c.WarnIfModelRetired()
+	})
+}
+
+// TestCompleteWithMeta_CarriesFinishReasonAndUsage pins the two numbers the analysis pass cannot
+// work without, and it asserts them NON-ZERO on purpose.
+//
+// Both failure modes here are silent. A forgotten `json:"usage"` tag (the field was not parsed at
+// all before this change) leaves every count at zero while the call still succeeds — so a test that
+// only checked "no error", or that compared against a zero-valued Usage, would pass on exactly the
+// bug it is meant to catch. A dropped finish_reason turns a reply truncated by the token cap into
+// something indistinguishable from a model that emitted broken JSON.
+func TestCompleteWithMeta_CarriesFinishReasonAndUsage(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		// Shaped like a real OpenRouter reply: usage is a sibling of choices, not a member of one.
+		io.WriteString(w, `{"model":"stub-model","choices":[{"message":{"role":"assistant","content":"{\"findings\":[]}"},"finish_reason":"length"}],`+
+			`"usage":{"prompt_tokens":4321,"completion_tokens":2500,"total_tokens":6821}}`)
+	}))
+	defer srv.Close()
+
+	c := New(Config{APIKey: "k", Model: "shared/slug", BaseURL: srv.URL})
+	text, finishReason, usage, err := c.CompleteWithMeta(context.Background(), "sys", "user", true, 2500)
+	if err != nil {
+		t.Fatalf("CompleteWithMeta: %v", err)
+	}
+	if text != `{"findings":[]}` {
+		t.Errorf("content = %q", text)
+	}
+	if finishReason != "length" {
+		t.Errorf("finishReason = %q, want %q — without it a truncated reply reads as malformed JSON", finishReason, "length")
+	}
+	if usage.Prompt != 4321 {
+		t.Errorf("usage.Prompt = %d, want 4321 — zero means the `json:\"prompt_tokens\"` field never decoded", usage.Prompt)
+	}
+	if usage.Completion != 2500 {
+		t.Errorf("usage.Completion = %d, want 2500 — zero means the `json:\"completion_tokens\"` field never decoded", usage.Completion)
+	}
+	if usage.Total != 6821 {
+		t.Errorf("usage.Total = %d, want 6821 — zero means the response has no `json:\"usage\"` tag and every run logs as free", usage.Total)
+	}
+	if !strings.Contains(gotBody, `"max_tokens":2500`) {
+		t.Errorf("request body carries no explicit completion cap: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"response_format":{"type":"json_object"}`) {
+		t.Errorf("jsonMode did not reach the request: %s", gotBody)
+	}
+}
+
+// TestCompleteWithMeta_UsesTheAnalysisSlugWhileCompleteKeepsTheSharedOne pins the whole point of
+// OPENROUTER_MODEL_ANALYSIS: it escalates the analysis pass ALONE. If it leaked into Complete, note
+// formatting and campaign translation would silently move to a different (and pricier) model; if it
+// never reached CompleteWithMeta, the variable would be decoration.
+func TestCompleteWithMeta_UsesTheAnalysisSlugWhileCompleteKeepsTheSharedOne(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	c := New(Config{APIKey: "k", Model: "shared/slug", ModelAnalysis: "escalated/slug", BaseURL: srv.URL})
+	if _, _, _, err := c.CompleteWithMeta(context.Background(), "sys", "user", false, 0); err != nil {
+		t.Fatalf("CompleteWithMeta: %v", err)
+	}
+	if _, err := c.Complete(context.Background(), "sys", "user", false); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("want 2 requests, got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[0], `"model":"escalated/slug"`) {
+		t.Errorf("CompleteWithMeta did not send the analysis slug: %s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], `"model":"shared/slug"`) {
+		t.Errorf("Complete must stay on the shared slug, sent: %s", bodies[1])
+	}
+	// maxTokens <= 0 must leave the provider default in force rather than send a cap of zero,
+	// which the API would read as "no room for an answer".
+	if strings.Contains(bodies[1], "max_tokens") {
+		t.Errorf("an unset cap must be omitted from the request, not sent as zero: %s", bodies[1])
+	}
+}
+
+// TestAnalysisModel_UnsetOverrideMeansTheSharedSlug covers the state every deployment is actually
+// in. Empty is not an error and must not become a second baked-in default.
+func TestAnalysisModel_UnsetOverrideMeansTheSharedSlug(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg  Config
+		want string
+	}{
+		"override unset":        {Config{Model: "shared/slug"}, "shared/slug"},
+		"override blank":        {Config{Model: "shared/slug", ModelAnalysis: "   "}, "shared/slug"},
+		"override set":          {Config{Model: "shared/slug", ModelAnalysis: " escalated/slug "}, "escalated/slug"},
+		"nothing configured":    {Config{}, defaultModel},
+		"override with no base": {Config{ModelAnalysis: "escalated/slug"}, "escalated/slug"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := New(tc.cfg).AnalysisModel(); got != tc.want {
+				t.Errorf("AnalysisModel() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("a nil client is not a panic", func(t *testing.T) {
+		var c *Client
+		if got := c.AnalysisModel(); got != "" {
+			t.Errorf("AnalysisModel() = %q, want empty", got)
+		}
+	})
+}
+
+// TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce extends the boot warning to the SET of slugs
+// the client can send. A retired analysis slug is the same invisible fault as a retired shared one
+// — and probing a single slug twice, when the override happens to equal the shared value, would
+// shout twice about one fault and double the boot traffic.
+func TestWarnIfModelRetired_ProbesEveryEffectiveSlugOnce(t *testing.T) {
+	probe := func(t *testing.T, cfg Config, want int) []string {
+		t.Helper()
+		var mu sync.Mutex
+		paths := []string{}
+		done := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			paths = append(paths, r.URL.Path)
+			if len(paths) == want {
+				close(done)
+			}
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"data":{"endpoints":[]}}`) // the retired shape: 200, zero endpoints
+		}))
+		defer srv.Close()
+
+		cfg.APIKey, cfg.BaseURL = "k", srv.URL
+		New(cfg).WarnIfModelRetired()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			mu.Lock()
+			got := append([]string{}, paths...)
+			mu.Unlock()
+			t.Fatalf("want %d probes, saw %v", want, got)
+		}
+		// Give a stray extra probe a chance to arrive before counting.
+		time.Sleep(200 * time.Millisecond)
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != want {
+			t.Fatalf("want %d probes, got %d: %v", want, len(paths), paths)
+		}
+		return append([]string{}, paths...)
+	}
+
+	t.Run("both slugs are probed when the override differs", func(t *testing.T) {
+		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "escalated/slug"}, 2)
+		seen := map[string]bool{}
+		for _, p := range paths {
+			seen[p] = true
+		}
+		if !seen["/models/shared/slug/endpoints"] {
+			t.Errorf("the shared slug was not probed: %v", paths)
+		}
+		if !seen["/models/escalated/slug/endpoints"] {
+			t.Errorf("the analysis slug was not probed — a retired override would stay invisible: %v", paths)
+		}
+	})
+
+	t.Run("one probe when the override repeats the shared slug", func(t *testing.T) {
+		paths := probe(t, Config{Model: "shared/slug", ModelAnalysis: "shared/slug"}, 1)
+		if paths[0] != "/models/shared/slug/endpoints" {
+			t.Errorf("probed %v", paths)
+		}
+	})
+
+	t.Run("one probe when no override is set", func(t *testing.T) {
+		paths := probe(t, Config{Model: "shared/slug"}, 1)
+		if paths[0] != "/models/shared/slug/endpoints" {
+			t.Errorf("probed %v", paths)
+		}
 	})
 }

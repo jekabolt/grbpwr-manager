@@ -126,6 +126,55 @@ func TestComputeStyleCostEstimateFxFoldAndGap(t *testing.T) {
 	require.Contains(t, est.Caveat, "FX rate")
 }
 
+// TestComputeStyleCostEstimateCmtNotSet pins the one caveat that is not about materials.
+//
+// ДЫРА, КОТОРУЮ ОН ЗАКРЫВАЕТ: статья 'cmt' скипается голым `continue`, когда cmt_cost NULL, и до
+// этой правки смета карточки с полным маршрутом печатала уверенный unit_cost, в котором труда нет
+// вовсе — ни строкой в Articles, ни словом в Caveat. Отсутствие статьи неотличимо от статьи в ноль.
+func TestComputeStyleCostEstimateCmtNotSet(t *testing.T) {
+	fx := CostingFx{Base: "EUR"}
+	route := []entity.TechCardOperation{
+		{OperationNumber: bidx(10), OperationType: entity.OpTypeMachine},
+		{OperationNumber: bidx(20), OperationType: entity.OpTypeMachine},
+	}
+
+	t.Run("a route with no CMT is called out", func(t *testing.T) {
+		c := baseEstimateCard()
+		c.Operations = route
+		c.Costing.CmtCost = decimal.NullDecimal{}
+		est := ComputeStyleCostEstimate(c, 0, nil, fx)
+		require.Contains(t, est.Caveat, "cmt_cost is not set")
+		require.Contains(t, est.Caveat, "materials-only")
+		for _, al := range est.Articles {
+			require.NotEqual(t, "cmt", al.Kind, "the skipped article really is absent from the list")
+		}
+	})
+
+	t.Run("no costing row at all is the same silence", func(t *testing.T) {
+		c := baseEstimateCard()
+		c.Operations = route
+		c.Costing = nil
+		est := ComputeStyleCostEstimate(c, 0, nil, fx)
+		require.Contains(t, est.Caveat, "cmt_cost is not set")
+	})
+
+	t.Run("a set CMT is silent", func(t *testing.T) {
+		c := baseEstimateCard()
+		c.Operations = route
+		est := ComputeStyleCostEstimate(c, 0, nil, fx)
+		require.NotContains(t, est.Caveat, "cmt_cost")
+	})
+
+	t.Run("a card with no route is silent", func(t *testing.T) {
+		// Карточка без единого шага труда и не обещает; оговорка на каждой такой смете была бы
+		// шумом, который научатся не читать.
+		c := baseEstimateCard()
+		c.Costing.CmtCost = decimal.NullDecimal{}
+		est := ComputeStyleCostEstimate(c, 0, nil, fx)
+		require.NotContains(t, est.Caveat, "cmt_cost")
+	})
+}
+
 func TestComputeStyleCostEstimateUnknownColorway(t *testing.T) {
 	est := ComputeStyleCostEstimate(baseEstimateCard(), 99999, nil, CostingFx{Base: "EUR"})
 	require.NotNil(t, est)

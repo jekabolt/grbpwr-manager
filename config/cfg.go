@@ -548,6 +548,12 @@ func bindEnvVars() {
 	// OPENROUTER_MODEL / BASE_URL / HTTP_TIMEOUT are optional overrides (sane defaults applied).
 	viper.BindEnv("openrouter.api_key", "OPENROUTER_API_KEY")
 	viper.BindEnv("openrouter.model", "OPENROUTER_MODEL")
+	// OPENROUTER_MODEL_ANALYSIS is the optional per-feature slug for the tech-card analysis pass
+	// (empty => the shared slug). It needs this line to exist at all: AutomaticEnv is off above on
+	// purpose, so an unbound name reads as empty — which is also exactly what a correct unset
+	// override looks like, making a missing binding invisible until somebody wonders why the
+	// escalation did nothing.
+	viper.BindEnv("openrouter.model_analysis", "OPENROUTER_MODEL_ANALYSIS")
 	viper.BindEnv("openrouter.base_url", "OPENROUTER_BASE_URL")
 	viper.BindEnv("openrouter.http_timeout", "OPENROUTER_HTTP_TIMEOUT")
 }
