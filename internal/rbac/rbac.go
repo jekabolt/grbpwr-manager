@@ -422,6 +422,33 @@ var methodRequirements = map[string]Requirement{
 	// asymmetry rather than a gap. Never allowlisted: allowlisted means ANY authenticated account may
 	// call it, and this one enumerates the whole style portfolio by article and name.
 	"ListTechCardFabricDirectionGaps": rd(SectionTechCards),
+	// ЭКСПОРТ/ИМПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ.
+	//
+	// ExportTechCardArchive — wr(tech_cards), и это НЕ описка рядом с GetTechCard. Экспорт не
+	// «читает карточку»: он одним файлом уносит ЗА ПРЕДЕЛЫ панели приватные выкройки, паспорта
+	// материалов и медиа. Осознанная выдача наружу — право того, кто карточку ведёт, а не всякого,
+	// кому её дали посмотреть; повесить архив на чтение значило бы раздать вынос вместе с просмотром.
+	// Денег в архиве нет по построению (money_policy манифеста), поэтому SectionCosting здесь не
+	// участвует — иначе право на цены пришлось бы проверять ещё и тут.
+	//
+	// CommitTechCardImport — wr(tech_cards), хотя импорт пишет НЕ ТОЛЬКО в тех-карты: он заводит
+	// строки медиатеки и кладёт файлы в бакет, то есть содержимое секции content. Второй секцией
+	// его не гейтим — карта допускает ровно одну секцию на метод, и требование content:write
+	// отняло бы импорт у технолога, который в медиатеку сам не ходит. Классификация идёт ЗА
+	// СОДЕРЖИМЫМ ОТВЕТА и за смыслом жеста (прецедент — GetBomWastageSuggestion и
+	// GetProductionRunMaterialPlan ниже: обе читают факты карточки, но классифицированы по тому,
+	// чей это экран). Медиа тут — материал одной карточки, а не курирование библиотеки.
+	//
+	// Загрузка архива с сухим прогоном в этой карте отсутствует СОЗНАТЕЛЬНО: она HTTP-multipart
+	// (POST /api/techcard-archive/upload), а карта гейтит только gRPC-методы. Тот маршрут проверяет
+	// wr(tech_cards) руками, до чтения тела.
+	"ExportTechCardArchive": wr(SectionTechCards),
+	"CommitTechCardImport":  wr(SectionTechCards),
+	// Отчёт импорта — обычное чтение тех-карты: он не несёт ни денег, ни чужих секций, а без него
+	// баннер «импортировано» на карточке не объясним. Закрытие баннера — запись: жест снимает
+	// предупреждение у ВСЕХ, кто откроет карточку, и берёт дыры импорта на себя.
+	"GetTechCardImportReport":         rd(SectionTechCards),
+	"AcknowledgeTechCardImportReport": wr(SectionTechCards),
 	// production runs (партии)
 	"CreateProductionRun":  wr(SectionProduction),
 	"UpdateProductionRun":  wr(SectionProduction),

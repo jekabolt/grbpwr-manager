@@ -1887,6 +1887,59 @@ service AdminService {
     };
   }
 
+  // ЭКСПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ — карточка целиком одним файлом: card.json, размерная сетка,
+  // сборка, колорвеи, паспорта материалов, медиа, выкройки и раскладки. Деньги из архива вырезаны
+  // (money_policy манифеста), подписи и релизы вычищены: архив — исходник для чужой панели, а не
+  // копия состояния этой.
+  //
+  // Ответ несёт presigned-ссылку с явным сроком жизни И ПАСПОРТ архива (manifest), чтобы человек
+  // увидел, ЧТО именно уехало и чего в архиве НЕТ, до того как отдаст файл наружу. Дыры экспорта
+  // (пропавший объект медиа, нечитаемая выкройка) НЕ роняют вызов — они перечисляются в
+  // manifest.holes, потому что отказ целиком превратил бы одну потерянную картинку в «экспорт
+  // сломан».
+  //
+  // Классифицирован wr(tech_cards), а не rd, и это не описка рядом с GetTechCard: архив уносит
+  // приватные выкройки и паспорта материалов ЗА ПРЕДЕЛЫ панели одним файлом. Это осознанная
+  // выдача, а не чтение карточки, и право на неё — право автора карточки, а не её читателя.
+  rpc ExportTechCardArchive(ExportTechCardArchiveRequest) returns (ExportTechCardArchiveResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/archive/export"
+      body: "*"
+    };
+  }
+
+  // ФИКСАЦИЯ ИМПОРТА — вторая половина двухшагового импорта.
+  //
+  // ПЕРВОЙ ПОЛОВИНЫ В ЭТОМ КОНТРАКТЕ НЕТ И НЕ БУДЕТ: заливка архива с сухим прогоном —
+  // multipart/form-data (POST /api/techcard-archive/upload), а multipart не выражается в protobuf.
+  // Оттуда приезжает import_id и предварительный отчёт; сюда возвращается только import_id.
+  //
+  // Отчёт СТРОИТСЯ ЗАНОВО на коммите, а не берётся из сухого прогона: между загрузкой и нажатием
+  // база могла уехать (материал переименован, размер снят), и показать старый отчёт значило бы
+  // соврать о том, что произошло на самом деле.
+  rpc CommitTechCardImport(CommitTechCardImportRequest) returns (CommitTechCardImportResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/import/commit"
+      body: "*"
+    };
+  }
+
+  // ОТЧЁТ ИМПОРТА ПО КАРТОЧКЕ — что именно приехало, что пропущено и что приехало обеднённым.
+  // Карточка без импорта — норма, а не ошибка: у неё просто нет строки отчёта.
+  rpc GetTechCardImportReport(GetTechCardImportReportRequest) returns (GetTechCardImportReportResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/import/report/{tech_card_id}"};
+  }
+
+  // ЗАКРЫТИЕ БАННЕРА «карточка импортирована»: человек прочитал отчёт и берёт дыры на себя.
+  // Идемпотентно — повторный ack не ошибка. wr(tech_cards): жест снимает предупреждение с
+  // карточки у ВСЕХ, кто её откроет, и это решение владельца карточки, а не её читателя.
+  rpc AcknowledgeTechCardImportReport(AcknowledgeTechCardImportReportRequest) returns (AcknowledgeTechCardImportReportResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/import/report/acknowledge"
+      body: "*"
+    };
+  }
+
   // Material catalog (task 10): shared nomenclature for BOM lines + append-only price history.
   rpc CreateMaterial(CreateMaterialRequest) returns (CreateMaterialResponse) {
     option (google.api.http) = {
@@ -8400,6 +8453,131 @@ message RememberOperationWorkDefaultRequest {
 }
 
 message RememberOperationWorkDefaultResponse {}
+
+// ЭКСПОРТ/ИМПОРТ ТЕХ-КАРТЫ ZIP-АРХИВОМ.
+//
+// Отчёты и паспорт архива — ПЛОСКИЕ СПИСКИ строк, а не словари и не enum'ы, и это выбор, а не
+// лень. Словарь причин (reason) живёт в Go (internal/techcardarchive) и растёт вместе с фичей:
+// незнакомый член enum protojson выбрасывает МОЛЧА (инцидент Ж7), поэтому новая причина у старого
+// клиента обязана доехать как незнакомая строка, а не исчезнуть. По той же причине счётчики —
+// список пар, а не поле на каждую сущность: новая сущность архива не должна требовать
+// перегенерации клиента, чтобы её посчитали.
+
+message ExportTechCardArchiveRequest {
+  int32 tech_card_id = 1;
+}
+
+message ExportTechCardArchiveResponse {
+  // url — presigned-ссылка на объект архива в бакете. Живёт до expires_at, после чего
+  // экспорт повторяют: ссылка не хранится ни на карточке, ни в отчёте.
+  string url = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  TechCardArchiveManifest manifest = 3;
+}
+
+// TechCardArchiveManifest — ЧИТАЕМАЯ ЧЕЛОВЕКОМ проекция manifest.json архива, ровно та его часть,
+// которую рисует панель: откуда архив, сколько чего в нём и чего в нём НЕ хватает. Полный манифест
+// (id_maps размеров/категорий/колорвеев) сюда сознательно не тащится — он машинный, нужен только
+// импортёру и читается из самого архива.
+message TechCardArchiveManifest {
+  string format = 1;
+  // format_version — "MAJOR.MINOR". Чужой MAJOR импорт отвергает; MINOR аддитивен.
+  string format_version = 2;
+  // money_policy — обязательный штамп «деньги вырезаны» (v1: "stripped-v1"). Архив без него
+  // импорт отвергает: молчание тут неотличимо от «цены забыли вырезать».
+  string money_policy = 3;
+  google.protobuf.Timestamp exported_at = 4;
+  string exported_by = 5;
+  TechCardArchiveSource source = 6;
+  // counters — сколько объектов каждого рода легло в архив (media, patterns, markers, materials).
+  repeated TechCardArchiveCounter counters = 7;
+  // holes — чего в архиве НЕТ и почему. Пустой список — единственное доказательство полноты.
+  repeated TechCardArchiveHole holes = 8;
+}
+
+// TechCardArchiveSource — паспорт источника: откуда, что и в каком состоянии уехало.
+message TechCardArchiveSource {
+  string host = 1;
+  int32 tech_card_id = 2;
+  string style_number = 3;
+  int32 lock_version = 4;
+  string approval_state_at_export = 5;
+  string app_version = 6;
+}
+
+message TechCardArchiveCounter {
+  string entity = 1;
+  int32 count = 2;
+}
+
+message TechCardArchiveHole {
+  string entity = 1;
+  // ref — чем дыра опознаётся на карточке-источнике (id медиа, line_key выкройки, код материала).
+  string ref = 2;
+  // reason — код словаря причин; строка, а не enum: словарь аддитивен и живёт на сервере.
+  string reason = 3;
+  string detail = 4;
+}
+
+message CommitTechCardImportRequest {
+  // import_id — ULID загруженного архива, выданный multipart-маршрутом загрузки.
+  string import_id = 1;
+}
+
+message CommitTechCardImportResponse {
+  int32 tech_card_id = 1;
+  TechCardImportReport report = 2;
+}
+
+message GetTechCardImportReportRequest {
+  int32 tech_card_id = 1;
+}
+
+message GetTechCardImportReportResponse {
+  TechCardImportReport report = 1;
+  // acknowledged_at не задан — отчёт ещё не закрыт человеком, баннер на карточке висит.
+  google.protobuf.Timestamp acknowledged_at = 2;
+}
+
+message AcknowledgeTechCardImportReportRequest {
+  int32 tech_card_id = 1;
+}
+
+message AcknowledgeTechCardImportReportResponse {}
+
+// TechCardImportReport — что произошло при импорте. Он остаётся НА КАРТОЧКЕ после коммита:
+// импортированная карточка неотличима от заведённой руками, и единственное, что помнит о её
+// происхождении и о потерях — этот отчёт.
+message TechCardImportReport {
+  repeated TechCardImportReportLine lines = 1;
+  repeated TechCardImportCounter counters = 2;
+  // style_number и stage — ИТОГОВЫЕ, как карточка легла в эту базу. Номер из архива мог быть занят,
+  // и тогда он здесь другой (со строкой отчёта style_number_taken) или пустой при stage=idea.
+  string style_number = 3;
+  string stage = 4;
+  string import_id = 5;
+}
+
+message TechCardImportReportLine {
+  string entity = 1;
+  // ref — чем строка опознаётся в архиве (line_key BOM, код материала, имя файла выкройки).
+  string ref = 2;
+  // status — imported | skipped | degraded. Строка, а не enum: см. комментарий над блоком.
+  string status = 3;
+  // reason — код словаря причин сервера; клиент показывает его человеческий перевод, а незнакомый
+  // код — как есть, но НЕ прячет.
+  string reason = 4;
+  string detail = 5;
+  // action — что человеку сделать руками, чтобы дыру закрыть. Пусто, если делать нечего.
+  string action = 6;
+}
+
+message TechCardImportCounter {
+  string entity = 1;
+  int32 imported = 2;
+  int32 skipped = 3;
+  int32 degraded = 4;
+}
 
 message DeleteTechCardRequest {
   int32 id = 1;
